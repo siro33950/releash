@@ -51,7 +51,7 @@ nodes:
 
 | 種別 | 役割 | 形 |
 | --- | --- | --- |
-| Session | provider CLI と継続対話する葉 Node | `session:` |
+| Session | provider CLI と継続対話する Node。delegate の子を持てる | `session:` |
 | Command | shell command を一度実行する葉 Node | `command:` |
 | Fanout | children を並列に束ねる合成子 | `fanout:` |
 | Sequence | children を時系列に束ねる合成子 | `sequence:` |
@@ -66,10 +66,10 @@ Node 共通 field は kind block と同じ階層に書く。
 | --- | --- |
 | `input` | Node が受け取るパラメータのリスト。文字列は型なし、`- name: Contract` は型あり |
 | `artifact` | Node が産出する Artifact の Contract 名。Sequence / Fanout には宣言しない |
-| `completion` | Node の完了に対する要求の map。`require: approval` で承認を要求する。要求しない場合は `completion` を省略する |
+| `completion` | Node の完了に対する要求の map。`require: approval` で承認を要求する。`delegate` は Session の同一会話内の続行条件を指定する。要求しない場合は `completion` を省略する |
 | `worktree` | `shared` / `isolated`。省略時は `shared` で、親の実行worktreeを継承する |
 
-`input` と `artifact` は Node の Interface であり、`inputs` は children エントリに置く配線である。本文はパラメータ名を参照し、供給元 Node 名は配線にだけ現れる。
+`input` と `artifact` は Node の Interface であり、`inputs` は children エントリまたは Session の `completion.delegate` に置く配線である。本文はパラメータ名を参照し、供給元 Node 名は配線にだけ現れる。
 
 ```yaml
 nodes:
@@ -276,11 +276,13 @@ review:
 
 `completion` を省略した Session は、同一 Node attempt の Submit と provider Stop の二信号が揃ったときに完了する。順序は問わず、一方だけでは完了しない。`completion` に `require: approval` を宣言すると二信号が揃った後に WaitingApproval となり、人間の Approve で完了する。
 
+Session に `completion.delegate` を指定すると、Artifact 提出を起点に child を実行して同じ会話で続行できる。受理条件、評価と上限は次の completion 節に従う。
+
 ### completion
 
 `completion` は全4種の Node で宣言できる要求の map である。`require: approval` は本来の完了条件を満たした後に WaitingApproval となり、人間が承認するまで完了を保留する。要求しない場合は `completion` を省略し、本来の完了条件を満たした時点で完了する。
 
-`completion` を書く場合は要求を一つ以上持つ。空 map、文字列形式、`approval` 以外の `require`、`require` 以外のキー（`delegate` を含む）は Error Diagnostic になる。
+`completion` を書く場合は要求を一つ以上持つ。空 map、文字列形式、`approval` 以外の `require`、`require` / `delegate` 以外のキーは Error Diagnostic になる。`delegate` は `artifact` を宣言した Session だけが受理する。
 
 | Node | `completion` 省略 | `require: approval` |
 | --- | --- | --- |
@@ -288,6 +290,41 @@ review:
 | Command | process 終了 | 終了後に Approve |
 | Fanout | 全 child が決着 | 全 child 決着後に Approve |
 | Sequence | 終端へ到達 | 終端到達後に Approve |
+
+#### Session の delegate
+
+`delegate` は親 Session が Artifact を提出したときに子 Node を実行し、その結果を同じ provider session へ返す仕組みである。Session は子の実行中も完了せず、結果注入後も同じ NodeExecution・attempt・AgentSession のまま続行する。提出後はいったん provider の turn を終了し、結果の追加入力を受けて作業と再提出を行う。
+
+```yaml
+implement:
+  input: [task, spec]
+  artifact: implementation_result
+  session:
+    provider: codex
+    facets: {instruction: implement}
+  completion:
+    require: approval
+    delegate:
+      child: verify
+      inputs: {task: task, spec: spec, result: implement}
+      when:
+        or: [done, child.complete]
+      max_iterations: 3
+```
+
+`child` / `when` / `max_iterations` は必須、`inputs` は任意である。未知キー、欠落、不正な型、1未満の `max_iterations` は load 時 Error Diagnostic になる。child はカタログ上の Artifact を持つ Node を指す。Command / Sequence / Fanout、または `artifact` 宣言か `worktree: isolated` を持つ Session を指定できる。他の合成子や別の delegate の child と共有できず、親 Session 自身、root、親 Session を部分木に含む Node も指定できない。delegate だけから参照される child も到達可能である。
+
+`inputs` の供給元は親の `input` パラメータ、親 Session の Node 名による親 Artifact（例: `implement.summary` / `implement.child.reason`）、`request` に限る。名前の曖昧さ、存在しない参照先・field、配線先の不一致を load 時に検査する。名前を持たない inline Session は自分の Artifact を Node 名で参照できない。各発火時に親の最新提出と直近の child の結果から解決して渡す。
+
+`when` は required boolean field の参照文字列、または非空の `and` / `or` 配列を持つ map で、再帰的に合成できる。親の提出 field と `child` 以下の field を使い、既存の述語と同じ型検査を受ける。Artifact の提出直後と child 完了直後に評価し、実行時に未解決または非booleanの参照は false とする。提出直後に true なら child を起こさず、false なら child を起こす。child 完了後に true なら親の完了条件が成立し、false なら結果を親に注入して再提出を待つ。いずれの完了も Submit と provider Stop の二信号を必要とする。
+
+`max_iterations` は child の発火回数の上限であり、親の attempt は増えない。N回目の child の結果が false なら結果を注入し、次の親の提出では述語を評価せず child も起こさず完了する。この最終提出にも直近の child の結果を保持し、後続の辺で参照できる。`require: approval` との併記は and であり、delegate の完了条件と二信号が揃った後に WaitingApproval へ移り、Approve により完了する。
+
+engine は親の Artifact に予約キー `child` を合成する。未実行・実行中は `null`、完了後は child の Artifact そのものである。Session / Command の child は `implement.child.complete` のように直接参照する。Sequence は `implement.child.check.complete`、Fanout は items なしなら `implement.child.check.complete`、items ありなら `implement.child.0.complete` のように統合 map を辿る。配線・`when.on`・`switch.on` の参照と型検査はこの合成された形を使う。
+
+child の NodeExecution は親 Session の部分木に発火ごとの行として載り、attempt が増える。中断後は完了済み child の Artifact を再利用し、未確定の child だけを再実行する。注入前の中断では resume 時に未注入の結果を返し、注入済みの事実があれば再注入しない。親の provider session を復元できない場合は既存の失敗経路と手動 Retry に委ねる。
+
+child の worktree も共通規則に従う。省略または `shared` なら親 Session の実行 worktree を引き継ぐ。`isolated` なら発火ごとの attempt が親 Session の worktree の HEAD から新しい隔離 worktree を作り、child Artifact に `worktree` を合成する。
 
 ### rules と辺
 
@@ -385,6 +422,8 @@ schemas:
 
 `artifact` は Session / Command で Object Contract を参照する。Sequence は child Artifact の統合 map、Fanout は child Artifact の map を engine が組み立てるため、どちらも `artifact` を宣言しない。routing field は `properties` と `required` の両方に必要である。Command の `ok` は宣言なしで boolean routing field として使える。全 Node の Artifact Contract の直下に `worktree` を再宣言しない。Command の Artifact Contract には標準結果 field の `ok` / `exit_code` / `stdout` / `stderr` / `duration` を再宣言しない。
 
+delegate を宣言した Session の Artifact Contract の直下には `child` を宣言しない。engine が child の Artifact schema を合成して参照を検査する。delegate のない Node の `child` field は予約しない。
+
 ### 予約語
 
 次は Node 名に使えない。
@@ -393,6 +432,8 @@ schemas:
 command session fanout sequence input artifact completion env worktree
 inputs rules on_failure items entry children
 ```
+
+`child` は delegate を宣言した Session の Artifact の直下だけで予約する。Node 名や input パラメータ名全体を予約するものではない。
 
 `request` と `items` は input 配線の予約供給元名であり、input パラメータ名には使えない。`request` は `schemas` の Contract 名としても使えない。
 
@@ -404,7 +445,7 @@ engine は隔離 Node の Artifact に `worktree: { branch, path }` を合成す
 
 ## Lua
 
-`.lua` は load 時に一度だけ評価され、YAML と同じ `WorkflowDefinition` を構築する。実行中に Lua は評価されない。chunk は `r.workflow{...}` を返す必要がある。
+`.lua` は load 時に一度だけ評価され、YAML と同じ `WorkflowDefinition` を構築する。実行中に Lua は評価されない。chunk は `r.workflow{...}` を返す必要がある。Lua の `completion` table は `require` だけを受理し、`delegate` は受理しない。
 
 ```lua
 local r = require("releash")
@@ -453,7 +494,7 @@ return r.workflow{
 | `r.input(name, contract?)` | Input |
 | `r.request` / `r.items` | Source |
 | `r.worktree.shared` / `r.worktree.isolated` | Worktree（各 Node builder の `worktree` 値。文字列は受理しない） |
-| `r.completion.approval` | CompletionRequirement（`completion` table の `require` 値） |
+| `r.completion.approval` | CompletionRequirement（`completion` table は `require` のみ受理。`delegate` は未対応） |
 | `r.provider.claude` / `r.provider.codex` | Provider |
 | `r.schema.object{ name?, properties, required? }` | Schema |
 | `r.schema.array{ name?, items }` | Schema |

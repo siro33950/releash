@@ -7,6 +7,7 @@
 pub(crate) mod command;
 pub(crate) mod control_plane;
 mod definition;
+pub(crate) mod delegate;
 pub(crate) mod dto;
 pub(crate) mod event_draft;
 mod facet;

@@ -179,6 +179,12 @@ pub struct NodeNamespace {
 }
 
 impl NodeNamespace {
+    const SYNTHESIZED_SEPARATOR: char = '#';
+
+    pub fn is_synthesized(name: &str) -> bool {
+        name.contains(Self::SYNTHESIZED_SEPARATOR)
+    }
+
     pub fn register(&mut self, name: impl Into<String>) -> Result<String, NodeNamespaceError> {
         let name = name.into();
         if !self.names.insert(name.clone()) {
@@ -203,7 +209,10 @@ impl NodeNamespace {
         owner: &str,
         child_index: usize,
     ) -> Result<String, NodeNamespaceError> {
-        self.register(format!("{owner}#{child_index}"))
+        self.register(format!(
+            "{owner}{}{child_index}",
+            Self::SYNTHESIZED_SEPARATOR
+        ))
     }
 
     #[cfg(test)]
@@ -392,20 +401,39 @@ pub enum CompletionRequirement {
     Approval,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct NodeCompletion {
     pub require: Option<CompletionRequirement>,
+    pub delegate: Option<SessionDelegate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionDelegate {
+    pub child: String,
+    pub inputs: Vec<(String, InputSourceRef)>,
+    pub when: super::Predicate<String>,
+    pub max_iterations: u32,
+}
+
+impl SessionDelegate {
+    pub fn child_entry(&self) -> ChildEntry {
+        ChildEntry {
+            inputs: self.inputs.clone(),
+            ..ChildEntry::reference(&self.child)
+        }
+    }
 }
 
 impl NodeCompletion {
     pub fn require_approval() -> Self {
         Self {
             require: Some(CompletionRequirement::Approval),
+            delegate: None,
         }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.require.is_none()
+        self.require.is_none() && self.delegate.is_none()
     }
 
     pub fn requires_approval(&self) -> bool {
@@ -776,7 +804,7 @@ impl Serialize for ChildEntry {
     }
 }
 
-struct InputsMap<'a>(&'a [(String, InputSourceRef)]);
+pub(crate) struct InputsMap<'a>(pub(crate) &'a [(String, InputSourceRef)]);
 
 impl Serialize for InputsMap<'_> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -1128,7 +1156,7 @@ where
     }
 }
 
-struct InputsMapSeed;
+pub(crate) struct InputsMapSeed;
 
 impl<'de> de::DeserializeSeed<'de> for InputsMapSeed {
     type Value = Vec<(String, InputSourceRef)>;
@@ -1546,6 +1574,10 @@ impl NodeDefinition {
 
     pub fn is_composite(&self) -> bool {
         self.is_fanout() || self.is_sequence()
+    }
+
+    pub fn has_child_executions(&self) -> bool {
+        self.is_composite() || (self.is_session() && self.completion.delegate.is_some())
     }
 
     pub fn command(&self) -> Option<&str> {

@@ -491,6 +491,15 @@ pub(super) fn apply_record(
             );
             Ok(())
         }
+        NodeFact::DelegateResultInjected(child_execution_id) => {
+            let injection =
+                crate::domain::workflow::entities::workflow_execution::DelegateInjection {
+                    node_execution_id: id.to_string(),
+                    child_execution_id: child_execution_id.clone(),
+                };
+            aggregate.record_delegate_injected(&injection, timestamp);
+            Ok(())
+        }
         NodeFact::ApprovalGranted(_) => aggregate.derive_approval_completion(id, timestamp),
         NodeFact::RetryRequested => {
             let _ = aggregate.request_node_retry(id, timestamp);
@@ -535,7 +544,11 @@ pub(super) fn restore_artifact_scope(
                             .children
                             .iter()
                             .any(|child| child.name == candidate.name),
-                        _ => false,
+                        _ => definition
+                            .completion
+                            .delegate
+                            .as_ref()
+                            .is_some_and(|delegate| delegate.child == candidate.name),
                     }
                 }))
                 .cloned()

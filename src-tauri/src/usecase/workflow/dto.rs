@@ -61,9 +61,20 @@ pub(crate) enum CompletionRequirementDto {
     Approval,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct NodeCompletionDto {
-    pub require: CompletionRequirementDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub require: Option<CompletionRequirementDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegate: Option<SessionDelegateDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct SessionDelegateDto {
+    pub child: String,
+    pub inputs: Vec<ChildInputDto>,
+    pub when: PredicateDto,
+    pub max_iterations: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -132,7 +143,7 @@ pub(crate) struct NodeDefinitionDto {
     pub worktree: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub(crate) enum PredicateDto {
     Ref(String),
@@ -321,7 +332,7 @@ fn node_to_dto(node: &domain::NodeDefinition) -> NodeDefinitionDto {
         sequence: node.sequence().map(sequence_to_dto),
         artifact: node.artifact.clone(),
         input: node.input.iter().map(input_param_to_dto).collect(),
-        completion: completion_to_dto(node.completion),
+        completion: completion_to_dto(&node.completion),
         worktree: node.worktree.map(|mode| {
             match mode {
                 domain::WorktreeMode::Shared => "shared",
@@ -407,11 +418,27 @@ fn node_kind_to_dto(kind: domain::NodeKindName) -> NodeKindDto {
     }
 }
 
-fn completion_to_dto(completion: domain::NodeCompletion) -> Option<NodeCompletionDto> {
-    completion.require.map(|require| NodeCompletionDto {
-        require: match require {
+fn completion_to_dto(completion: &domain::NodeCompletion) -> Option<NodeCompletionDto> {
+    (!completion.is_empty()).then(|| NodeCompletionDto {
+        require: completion.require.map(|require| match require {
             domain::CompletionRequirement::Approval => CompletionRequirementDto::Approval,
-        },
+        }),
+        delegate: completion
+            .delegate
+            .as_ref()
+            .map(|delegate| SessionDelegateDto {
+                child: delegate.child.clone(),
+                inputs: delegate
+                    .inputs
+                    .iter()
+                    .map(|(parameter, source)| ChildInputDto {
+                        parameter: parameter.clone(),
+                        source: source.raw().into(),
+                    })
+                    .collect(),
+                when: predicate_to_dto(&delegate.when),
+                max_iterations: delegate.max_iterations,
+            }),
     })
 }
 

@@ -12,11 +12,11 @@ Releash のドメイン横断ユビキタス言語を定義する。この文書
 | WorkflowExecution | WorkflowDefinition から開始された1本の実行木 | workflow / Worktree |
 | NodeDefinition | Node の Interface、kind 固有設定、completion の定義 | workflow / WorkflowDefinition |
 | NodeExecution | NodeDefinition または単独 Session の一回の実行インスタンス | workflow / execution tree |
-| Session | provider CLI と継続対話する葉 Node | workflow |
+| Session | provider CLI と継続対話し、delegate の child を部分木として持てる Node | workflow |
 | Command | 非対話 command を一度実行する葉 Node | workflow |
 | Fanout | children を並列に束ねる合成 Node | workflow |
 | Sequence | children を時系列に束ね、辺を所有する合成 Node | workflow |
-| completion | Node の完了に対する要求の集合。`require: approval` で承認を要求し、要求を書かないことが自動完了を意味する | NodeDefinition / NodeExecution |
+| completion | Node の完了に対する要求の集合。`require: approval` で承認、Session の `delegate` で同一会話内の続行条件を要求する。併記は and で、要求を省略すると本来の完了条件を使う | NodeDefinition / NodeExecution |
 | 実行木（execution tree） | 実際に開始した NodeExecution が作る再帰木 | Worktree |
 | 辺（edge） | Node completion 後の進行先。Sequence の children エントリが所有する | Sequence |
 | 述語（Predicate） | 辺と completion の判断に使う真偽値の論理式。原子は Artifact の required boolean field への参照で、`and` / `or` で合成する | workflow |
@@ -110,6 +110,8 @@ Operation Surface は domain state を所有しない。同じ backend usecase �
 ### 実行木
 
 WorkflowExecution は木全体の `Running` / `Completed` / `Aborted` を所有する。WaitingApproval、Paused、Failed、Interrupted と completion signal は NodeExecution が所有する。workflow aggregate だけが transition を決める。
+
+Session の delegate は、親 Session が所有する同一 session 継続機構である。Artifact の提出を起点に child を実行し、結果により親の続行・完了を決める。child の NodeExecution は親 Session の部分木であり、発火ごとに新しい NodeExecution と attempt を持つ。親の NodeExecution・attempt・AgentSession は維持する。child の結果、発火回数、注入済みの事実から続行状態を導出し、親 Artifact の `child` は engine が管理する。
 
 ### AgentSession
 

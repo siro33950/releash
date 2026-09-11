@@ -36,6 +36,29 @@ impl AgentSessionInitialInstructionUsecase {
         Self { sessions, terminal }
     }
 
+    pub(crate) async fn dispatch_continuation(
+        &self,
+        agent_session_id: &str,
+        instruction: &str,
+    ) -> Result<(), AgentSessionInitialInstructionError> {
+        let _operation = self
+            .sessions
+            .lock_operation(agent_session_id)
+            .await
+            .map_err(map_session_error)?;
+        let session = self
+            .sessions
+            .find(agent_session_id)
+            .await
+            .map_err(map_session_error)?
+            .ok_or(AgentSessionInitialInstructionError::NotFound)?;
+        if !session.session().can_receive_workflow_instruction() || instruction.trim().is_empty() {
+            return Err(AgentSessionInitialInstructionError::InvalidInput);
+        }
+        self.write_instruction(&session.session().terminal_surface_owner(), instruction)
+            .map_err(|_| AgentSessionInitialInstructionError::StorageUnavailable)
+    }
+
     pub(crate) async fn dispatch(
         &self,
         agent_session_id: &str,
@@ -65,17 +88,21 @@ impl AgentSessionInitialInstructionUsecase {
             .await
             .map_err(map_session_error)?
             .ok_or(AgentSessionInitialInstructionError::NotFound)?;
-        let instruction = instruction.trim_end_matches(['\r', '\n']);
-        let submitted_instruction = format!("\u{1b}[200~{instruction}\u{1b}[201~\r");
-        match self.terminal.write(
-            &session.session().terminal_surface_owner(),
-            &submitted_instruction,
-        ) {
+        match self.write_instruction(&session.session().terminal_surface_owner(), instruction) {
             Ok(()) => Ok(AgentSessionInitialInstructionDeliveryOutcome::Delivered),
             Err(ProviderAgentTerminalGatewayError::Unavailable) => {
                 Ok(AgentSessionInitialInstructionDeliveryOutcome::DeliveryUnknown)
             }
         }
+    }
+    fn write_instruction(
+        &self,
+        owner: &crate::domain::terminal_surface::TerminalSurfaceOwner,
+        instruction: &str,
+    ) -> Result<(), ProviderAgentTerminalGatewayError> {
+        let instruction = instruction.trim_end_matches(['\r', '\n']);
+        self.terminal
+            .write(owner, &format!("\u{1b}[200~{instruction}\u{1b}[201~\r"))
     }
 }
 

@@ -1,6 +1,46 @@
 use super::*;
 use crate::domain::workflow::entities::workflow_execution::ExecutionAdvanceDecision;
+use crate::domain::workflow::entities::workflow_execution::{
+    CompositePreparation, DelegateInjection,
+};
 use std::collections::VecDeque;
+
+pub(super) enum NodePreparation {
+    Leaf(LeafStart),
+    Composite(CompositePreparation),
+}
+
+impl NodePreparation {
+    fn node_execution_id(&self) -> &str {
+        match self {
+            Self::Leaf(leaf) => &leaf.node_execution_id,
+            Self::Composite(composite) => &composite.node_execution_id,
+        }
+    }
+}
+
+#[derive(Default)]
+pub(super) struct PreparedNodes {
+    pub(super) leaves: Vec<LeafStart>,
+    pub(super) injections: Vec<DelegateInjection>,
+}
+
+pub(super) fn partition_actions(
+    actions: Vec<NodeStart>,
+) -> (Vec<NodePreparation>, Vec<DelegateInjection>) {
+    let mut preparations = Vec::new();
+    let mut injections = Vec::new();
+    for action in actions {
+        match action {
+            NodeStart::Leaf(leaf) => preparations.push(NodePreparation::Leaf(leaf)),
+            NodeStart::PrepareComposite(composite) => {
+                preparations.push(NodePreparation::Composite(composite))
+            }
+            NodeStart::InjectDelegate(injection) => injections.push(injection),
+        }
+    }
+    (preparations, injections)
+}
 
 impl WorkflowRuntimeHost {
     pub(super) async fn prepare_isolated_starts<R: tauri::Runtime + 'static>(
@@ -8,12 +48,12 @@ impl WorkflowRuntimeHost {
         app: &tauri::AppHandle<R>,
         execution_id: &str,
         worktree_path: &str,
-        starts: Vec<NodeStart>,
-    ) -> Result<Vec<LeafStart>, WorkflowRuntimeError> {
+        starts: Vec<NodePreparation>,
+    ) -> Result<PreparedNodes, WorkflowRuntimeError> {
         let gate = self.runtime_activation_gate(execution_id).await;
         let guard = gate.lock.lock().await;
         let mut pending = VecDeque::from(starts);
-        let mut leaves = Vec::new();
+        let mut prepared = PreparedNodes::default();
         let mut failures = Vec::new();
         let mut committed = None;
         while let Some(start) = pending.pop_front() {
@@ -57,11 +97,11 @@ impl WorkflowRuntimeHost {
                 }
             }
             let composite = match start {
-                NodeStart::Leaf(leaf) => {
-                    leaves.push(leaf);
+                NodePreparation::Leaf(leaf) => {
+                    prepared.leaves.push(leaf);
                     continue;
                 }
-                NodeStart::PrepareComposite(composite) => composite,
+                NodePreparation::Composite(composite) => composite,
             };
             let (before, snapshot, applied) = {
                 let mut executions = self.executions.lock().await;
@@ -103,7 +143,9 @@ impl WorkflowRuntimeHost {
                 continue;
             }
             if let ExecutionAdvanceDecision::StartNodes(children) = applied.decision {
+                let (children, injections) = partition_actions(children);
                 pending.extend(children);
+                prepared.injections.extend(injections);
             }
             committed = Some(snapshot);
         }
@@ -122,6 +164,6 @@ impl WorkflowRuntimeHost {
             ))
             .await?;
         }
-        Ok(leaves)
+        Ok(prepared)
     }
 }

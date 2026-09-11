@@ -327,6 +327,7 @@ fn project_tree(
             },
             workflow_capabilities,
             session_capabilities,
+            children: Vec::new(),
             past_attempts_collapsed: !past_attempts.is_empty(),
             past_attempts,
             updated_at: node.updated_at(),
@@ -423,14 +424,21 @@ fn project_tree(
                 }
                 _ => {
                     let root = root_projections.get(node.id.as_str());
-                    vec![WorkspaceTreeItemDto::Node(node_dto(
+                    let mut projected = node_dto(
                         node,
                         root.map_or_else(|| node.id.clone(), |root| root.public_id.clone()),
                         root.map_or_else(|| node.title.clone(), |root| root.public_title.clone()),
                         root.and_then(|root| root.workflow_capabilities.clone()),
                         root.and_then(|root| root.session_capabilities.clone()),
                         by_id,
-                    ))]
+                    );
+                    projected.children =
+                        branch(Some(&node.id), children, hidden, by_id, root_projections);
+                    for past in &mut projected.past_attempts {
+                        past.children =
+                            branch(Some(&past.id), children, hidden, by_id, root_projections);
+                    }
+                    vec![WorkspaceTreeItemDto::Node(projected)]
                 }
             })
             .collect()

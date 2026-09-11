@@ -65,6 +65,7 @@ export interface WorkspaceNode {
 	capabilities: WorkspaceNodeCapabilities;
 	workflowCapabilities?: WorkspaceWorkflowCapabilities | null;
 	sessionCapabilities?: WorkspaceSessionCapabilities | null;
+	children?: WorkspaceTreeItem[];
 	pastAttempts: WorkspaceNode[];
 	pastAttemptsCollapsed: boolean;
 	updatedAt: number;

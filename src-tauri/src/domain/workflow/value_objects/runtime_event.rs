@@ -49,6 +49,12 @@ pub enum WorkflowEvent {
         session_id: String,
         timestamp: f64,
     },
+    DelegateResultInjected {
+        execution_id: String,
+        node_execution_id: String,
+        child_execution_id: String,
+        timestamp: f64,
+    },
     NodeSubmitReceived {
         execution_id: String,
         node_execution_id: String,

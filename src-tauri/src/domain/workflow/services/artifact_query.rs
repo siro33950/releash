@@ -112,7 +112,11 @@ impl<'a> ArtifactQuery<'a> {
                         .get(parent.parent_id.as_str())
                         .and_then(|records| records.first())
                         .is_some_and(|record| {
-                            record.meta.kind.is_composite_kind()
+                            query
+                                .root
+                                .definition
+                                .node_by_name(&record.meta.node_name)
+                                .is_some_and(NodeDefinition::has_child_executions)
                                 && matches!(record.fact, NodeFact::Started(_))
                         })
                     {
@@ -158,7 +162,7 @@ impl<'a> ArtifactQuery<'a> {
         {
             return Ok(None);
         }
-        if definition.kind_name().is_composite_kind() {
+        if definition.has_child_executions() {
             return self.composite_artifact(start, definition, before);
         }
         let mut records: Vec<_> = self.by_node[start.meta.node_execution_id.as_str()]
@@ -214,7 +218,12 @@ impl<'a> ArtifactQuery<'a> {
             .copied()
             .filter(|child| child.seq < before)
         {
-            if child.meta.kind.is_composite_kind() {
+            if self
+                .root
+                .definition
+                .node_by_name(&child.meta.node_name)
+                .is_some_and(NodeDefinition::has_child_executions)
+            {
                 observations.push(Observation::Fact(child));
                 if let Some(output) = self.node_artifact(child, before)? {
                     observations.push(Observation::Child(Box::new(output)));

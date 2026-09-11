@@ -178,3 +178,98 @@ nodes:
         );
     }
 }
+
+#[test]
+fn test_delegate値域_直接構築された定義でもゼロを拒否し正の回数を受理する() {
+    use crate::domain::workflow::{
+        CommandSpec, NodeCompletion, Predicate, SessionDelegate, SessionSpec,
+    };
+    // Given
+    let mut workflow = WorkflowDefinition {
+        name: "delegate-limit".into(),
+        entry: "main".into(),
+        nodes: vec![
+            NodeDefinition {
+                name: "main".into(),
+                kind: NodeKind::Session(SessionSpec::default()),
+                artifact: Some("result".into()),
+                completion: NodeCompletion {
+                    require: None,
+                    delegate: Some(SessionDelegate {
+                        child: "verify".into(),
+                        inputs: Vec::new(),
+                        when: Predicate::Ref("child.ok".into()),
+                        max_iterations: 0,
+                    }),
+                },
+                ..Default::default()
+            },
+            NodeDefinition {
+                name: "verify".into(),
+                kind: NodeKind::Command(CommandSpec {
+                    command: "check".into(),
+                    env: Default::default(),
+                }),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    for count in [0, 1, u32::MAX] {
+        workflow.nodes[0]
+            .completion
+            .delegate
+            .as_mut()
+            .unwrap()
+            .max_iterations = count;
+        // When
+        let errors = collect_delegate_errors(&workflow);
+        // Then
+        assert_eq!(
+            errors.iter().any(|error| matches!(
+                error,
+                ValidationError::InvalidDelegate {
+                    kind: InvalidDelegateKind::MaxIterations,
+                    ..
+                }
+            )),
+            count == 0
+        );
+    }
+}
+
+#[test]
+fn test_delegate検査kind_宣言fieldとmessageの位置を同じ対応から取得する() {
+    for (kind, field) in [
+        (
+            InvalidDelegateKind::UnsupportedNodeKind,
+            "completion.delegate",
+        ),
+        (
+            InvalidDelegateKind::MissingArtifactContract,
+            "completion.delegate",
+        ),
+        (
+            InvalidDelegateKind::ChildWithoutArtifact,
+            "completion.delegate.child",
+        ),
+        (
+            InvalidDelegateKind::MaxIterations,
+            "completion.delegate.max_iterations",
+        ),
+        (
+            InvalidDelegateKind::WhenFieldNotBoolean,
+            "completion.delegate.when",
+        ),
+    ] {
+        // Given
+        let error = ValidationError::InvalidDelegate {
+            node: "worker".into(),
+            kind,
+            reason: "invalid".into(),
+        };
+        // When / Then
+        assert_eq!(kind.field_path(), field);
+        assert_eq!(error.to_string(), format!("node 'worker' {field}: invalid"));
+    }
+}

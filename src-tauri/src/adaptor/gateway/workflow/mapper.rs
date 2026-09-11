@@ -62,7 +62,7 @@ fn domain_node_to_schema(
         kind: domain_kind_to_schema(&node.kind),
         artifact: node.artifact.clone(),
         input: node.input.clone(),
-        completion: node.completion,
+        completion: node.completion.clone(),
         worktree: node.worktree,
     }
 }

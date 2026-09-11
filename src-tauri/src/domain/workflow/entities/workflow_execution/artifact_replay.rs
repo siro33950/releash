@@ -62,6 +62,16 @@ impl WorkflowExecution {
         let timestamp = child.completed_at.unwrap_or(child.started_at);
         match child.status {
             RuntimeNodeExecutionStatus::Succeeded => {
+                if child.kind == NodeKindName::Session {
+                    if let Some(target) = self
+                        .runtime
+                        .node_executions
+                        .iter_mut()
+                        .find(|node| node.id == child.id)
+                    {
+                        target.completion_signals = child.completion_signals;
+                    }
+                }
                 self.record_pending_result(
                     &child.id,
                     child.result_summary.clone(),

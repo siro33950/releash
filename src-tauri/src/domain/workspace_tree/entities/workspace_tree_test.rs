@@ -2047,3 +2047,156 @@ fn missing_session_keeps_node_but_returns_no_unusable_session_id() {
     assert_eq!(node.session_id, None);
     assert!(!node.can_close);
 }
+
+#[test]
+fn test_初回選択_delegateのsession配下へ降下して実行中または待機中のchildを優先する() {
+    for status in [WorkspaceNodeStatus::Running, WorkspaceNodeStatus::Waiting] {
+        // Given
+        let mut tree = WorkspaceTree::empty("/repo");
+        WorkspaceTreeProjector::project(
+            &mut tree,
+            [
+                WorkspaceStructureFact::WorkflowStarted {
+                    execution_id: "00000000-0000-4000-8000-000000000743".into(),
+                    workflow_name: "delegate".into(),
+                    worktree_path: "/repo".into(),
+                    dynamic_fanout_names: Default::default(),
+                    timestamp: 1.0,
+                },
+                WorkspaceStructureFact::NodeStarted {
+                    execution_id: "00000000-0000-4000-8000-000000000743".into(),
+                    node_execution_id: "parent".into(),
+                    node_name: "implement".into(),
+                    kind: NodeKindName::Session,
+                    attempt: 1,
+                    parent: None,
+                    timestamp: 2.0,
+                },
+                WorkspaceStructureFact::NodeStarted {
+                    execution_id: "00000000-0000-4000-8000-000000000743".into(),
+                    node_execution_id: "child".into(),
+                    node_name: "verify".into(),
+                    kind: NodeKindName::Session,
+                    attempt: 1,
+                    parent: Some(ExecutionParentRef::delegate_child("parent")),
+                    timestamp: 3.0,
+                },
+            ],
+        )
+        .unwrap();
+        let child = tree
+            .nodes
+            .iter_mut()
+            .find(|node| node.node_execution_id.as_deref() == Some("child"))
+            .unwrap();
+        child.status = status;
+        let child_id = child.id.clone();
+        // When
+        let preferred = tree.preferred_node_id(&HashSet::new());
+        let restored = WorkspaceTree::restore("/repo", tree.nodes.clone()).unwrap();
+        // Then
+        assert_eq!(preferred.as_deref(), Some(child_id.as_str()));
+        assert_eq!(restored.preferred_node_id(&HashSet::new()), preferred);
+    }
+}
+
+#[test]
+fn test_初回選択_子を持たないsessionとcommandは候補のままである() {
+    for kind in [NodeKindName::Session, NodeKindName::Command] {
+        // Given
+        let mut tree = WorkspaceTree::empty("/repo");
+        WorkspaceTreeProjector::project(
+            &mut tree,
+            [
+                WorkspaceStructureFact::WorkflowStarted {
+                    execution_id: "00000000-0000-4000-8000-000000000743".into(),
+                    workflow_name: "leaf".into(),
+                    worktree_path: "/repo".into(),
+                    dynamic_fanout_names: Default::default(),
+                    timestamp: 1.0,
+                },
+                WorkspaceStructureFact::NodeStarted {
+                    execution_id: "00000000-0000-4000-8000-000000000743".into(),
+                    node_execution_id: "leaf".into(),
+                    node_name: "main".into(),
+                    kind,
+                    attempt: 1,
+                    parent: None,
+                    timestamp: 2.0,
+                },
+            ],
+        )
+        .unwrap();
+        let leaf = tree
+            .nodes
+            .iter()
+            .find(|node| node.node_execution_id.as_deref() == Some("leaf"))
+            .unwrap();
+        // When / Then
+        assert_eq!(
+            tree.preferred_node_id(&HashSet::new()).as_deref(),
+            Some(leaf.id.as_str())
+        );
+    }
+}
+
+#[test]
+fn test_初回選択_childが完了済みまたは全て非表示なら実行中と待機中の親を選ぶ() {
+    for status in [WorkspaceNodeStatus::Running, WorkspaceNodeStatus::Waiting] {
+        // Given
+        let mut tree = WorkspaceTree::empty("/repo");
+        WorkspaceTreeProjector::project(
+            &mut tree,
+            [
+                WorkspaceStructureFact::WorkflowStarted {
+                    execution_id: "00000000-0000-4000-8000-000000000743".into(),
+                    workflow_name: "delegate".into(),
+                    worktree_path: "/repo".into(),
+                    dynamic_fanout_names: Default::default(),
+                    timestamp: 1.0,
+                },
+                WorkspaceStructureFact::NodeStarted {
+                    execution_id: "00000000-0000-4000-8000-000000000743".into(),
+                    node_execution_id: "parent".into(),
+                    node_name: "implement".into(),
+                    kind: NodeKindName::Session,
+                    attempt: 1,
+                    parent: None,
+                    timestamp: 2.0,
+                },
+                WorkspaceStructureFact::NodeStarted {
+                    execution_id: "00000000-0000-4000-8000-000000000743".into(),
+                    node_execution_id: "child".into(),
+                    node_name: "verify".into(),
+                    kind: NodeKindName::Session,
+                    attempt: 1,
+                    parent: Some(ExecutionParentRef::delegate_child("parent")),
+                    timestamp: 3.0,
+                },
+            ],
+        )
+        .unwrap();
+        let child = tree
+            .nodes
+            .iter_mut()
+            .find(|node| node.node_execution_id.as_deref() == Some("child"))
+            .unwrap();
+        child.status = WorkspaceNodeStatus::Completed;
+        let child_id = child.id.clone();
+        let parent = tree
+            .nodes
+            .iter_mut()
+            .find(|node| node.node_execution_id.as_deref() == Some("parent"))
+            .unwrap();
+        parent.status = status;
+        let parent_id = parent.id.clone();
+        for hidden in [HashSet::new(), HashSet::from([child_id.clone()])] {
+            // When
+            let preferred = tree.preferred_node_id(&hidden);
+            let restored = WorkspaceTree::restore("/repo", tree.nodes.clone()).unwrap();
+            // Then
+            assert_eq!(preferred.as_deref(), Some(parent_id.as_str()));
+            assert_eq!(restored.preferred_node_id(&hidden), preferred);
+        }
+    }
+}

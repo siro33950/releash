@@ -12,6 +12,7 @@ impl WorkflowEvent {
             Self::ExecutionStarted { execution_id, .. }
             | Self::NodeStarted { execution_id, .. }
             | Self::SessionAttached { execution_id, .. }
+            | Self::DelegateResultInjected { execution_id, .. }
             | Self::NodeSubmitReceived { execution_id, .. }
             | Self::NodeStopReceived { execution_id, .. }
             | Self::NodeRetryRequested { execution_id, .. }
@@ -39,6 +40,7 @@ impl WorkflowEvent {
             Self::ExecutionStarted { timestamp, .. }
             | Self::NodeStarted { timestamp, .. }
             | Self::SessionAttached { timestamp, .. }
+            | Self::DelegateResultInjected { timestamp, .. }
             | Self::NodeSubmitReceived { timestamp, .. }
             | Self::NodeStopReceived { timestamp, .. }
             | Self::NodeRetryRequested { timestamp, .. }

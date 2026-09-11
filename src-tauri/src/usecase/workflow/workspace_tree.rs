@@ -61,9 +61,24 @@ pub(crate) struct WorkspaceNodeDto {
     pub workflow_capabilities: Option<WorkspaceWorkflowCapabilitiesDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_capabilities: Option<WorkspaceSessionCapabilitiesDto>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<WorkspaceTreeItemDto>,
+    #[serde(serialize_with = "serialize_past_attempts")]
     pub past_attempts: Vec<WorkspaceNodeDto>,
     pub past_attempts_collapsed: bool,
     pub updated_at: f64,
+}
+
+fn serialize_past_attempts<S: serde::Serializer>(
+    attempts: &[WorkspaceNodeDto],
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    #[derive(Serialize)]
+    #[serde(tag = "kind", rename_all = "camelCase")]
+    enum PastAttempt<'a> {
+        Node(&'a WorkspaceNodeDto),
+    }
+    serializer.collect_seq(attempts.iter().map(PastAttempt::Node))
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -388,7 +403,11 @@ fn reconcile_workspace_tree_selection(
 fn workspace_tree_contains_node(nodes: &[WorkspaceTreeItemDto], node_id: &str) -> bool {
     nodes.iter().any(|item| match item {
         WorkspaceTreeItemDto::Node(node) => {
-            node.id == node_id || node.past_attempts.iter().any(|past| past.id == node_id)
+            node.id == node_id
+                || workspace_tree_contains_node(&node.children, node_id)
+                || node.past_attempts.iter().any(|past| {
+                    past.id == node_id || workspace_tree_contains_node(&past.children, node_id)
+                })
         }
         WorkspaceTreeItemDto::Sequence(sequence) => {
             workspace_tree_contains_node(&sequence.children, node_id)
@@ -436,6 +455,7 @@ mod tests {
                         },
                         workflow_capabilities: None,
                         session_capabilities: None,
+                        children: Vec::new(),
                         past_attempts: Vec::new(),
                         past_attempts_collapsed: false,
                         updated_at: 1.0,
@@ -500,5 +520,68 @@ mod tests {
 
         // Then
         assert_classifications(&reconciliation.snapshot.nodes);
+    }
+    #[test]
+    fn test_delegate_子を選択した状態はsnapshotの照合で維持される() {
+        // Given
+        let snapshot = nested_snapshot();
+        let WorkspaceTreeItemDto::Sequence(root) = &snapshot.nodes[0] else {
+            panic!()
+        };
+        let WorkspaceTreeItemDto::Fanout(fanout) = &root.children[0] else {
+            panic!()
+        };
+        let WorkspaceTreeItemDto::Node(child) = &fanout.children[0] else {
+            panic!()
+        };
+        let mut parent = child.clone();
+        parent.id = "parent".into();
+        parent.children = vec![WorkspaceTreeItemDto::Node(child.clone())];
+        // When / Then
+        assert!(workspace_tree_contains_node(
+            &[WorkspaceTreeItemDto::Node(parent)],
+            &child.id
+        ));
+    }
+    #[test]
+    fn test_選択整合_過去attemptとdelegate部分木の存在を新snapshotで判定する() {
+        // Given
+        let mut snapshot = nested_snapshot();
+        let WorkspaceTreeItemDto::Sequence(root) = &mut snapshot.nodes[0] else {
+            panic!()
+        };
+        let WorkspaceTreeItemDto::Fanout(fanout) = &mut root.children[0] else {
+            panic!()
+        };
+        let WorkspaceTreeItemDto::Node(current) = &mut fanout.children[0] else {
+            panic!()
+        };
+        let mut past = current.clone();
+        past.id = "past-parent".into();
+        let mut leaf = current.clone();
+        leaf.id = "past-judge".into();
+        past.children = vec![WorkspaceTreeItemDto::Sequence(WorkspaceSequenceDto {
+            id: "past-checks".into(),
+            title: "checks".into(),
+            status: "idle".into(),
+            worktree: None,
+            workflow_capabilities: None,
+            children: vec![WorkspaceTreeItemDto::Node(leaf)],
+            updated_at: 1.0,
+        })];
+        current.past_attempts = vec![past];
+        // When / Then
+        for (id, present) in [
+            ("past-parent", true),
+            ("past-judge", true),
+            ("removed-judge", false),
+        ] {
+            let reconciled = reconcile_workspace_tree_selection(snapshot.clone(), id);
+            assert_eq!(
+                reconciled.reconciliation.selection_in_snapshot, present,
+                "{id}"
+            );
+            assert_eq!(reconciled.snapshot, snapshot);
+        }
     }
 }

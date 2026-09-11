@@ -586,7 +586,10 @@ impl WorkflowRuntimeHost {
                 worktree_path,
             )
         };
-        if events.is_empty() && paused_commands.is_empty() {
+        if events.is_empty()
+            && paused_commands.is_empty()
+            && candidate.pending_delegate_injections().is_empty()
+        {
             return Ok(());
         }
         let mut rollbacks = HashMap::new();
@@ -596,8 +599,9 @@ impl WorkflowRuntimeHost {
                 .recover_workflow_agent_session_provider(session_id, node_execution_id)
                 .await
             {
-                if candidate.execution_worktree_path(node_execution_id)
-                    != Some(worktree_path.as_str())
+                if candidate.is_delegate_parent(node_execution_id)
+                    || candidate.execution_worktree_path(node_execution_id)
+                        != Some(worktree_path.as_str())
                 {
                     self.restore_unactivated_resumes(
                         app,
@@ -661,16 +665,43 @@ impl WorkflowRuntimeHost {
                 }
             }
         };
+        if let Some(snapshot) = snapshot {
+            workflow_runtime_session::broadcast_state(app, &worktree_path, snapshot).await;
+        }
         let mut unactivated = rollbacks;
         for (node_execution_id, session_id, _) in resumed_sessions {
-            let activation = self
-                .workflow_agent_sessions
-                .dispatch_initial_instruction(
-                    &session_id,
-                    &node_execution_id,
-                    "Continue the paused workflow node from the existing conversation context.",
+            let (is_delegate, waiting_child, injection) = {
+                let executions = self.executions.lock().await;
+                let execution = executions
+                    .get(execution_id)
+                    .ok_or_else(|| WorkflowRuntimeError::ExecutionNotFound(execution_id.into()))?;
+                (
+                    execution.is_delegate_parent(&node_execution_id),
+                    execution.delegate_waits_for_child(&node_execution_id),
+                    execution.pending_delegate_injection(&node_execution_id),
                 )
-                .await;
+            };
+            let activation = if let Some(injection) = injection {
+                self.inject_delegate_result(app, execution_id, &injection)
+                    .await
+            } else if waiting_child {
+                Ok(())
+            } else if is_delegate {
+                self.workflow_agent_sessions
+                    .dispatch_continuation(
+                        &session_id,
+                        "Continue the paused workflow node from the existing conversation context.",
+                    )
+                    .await
+            } else {
+                self.workflow_agent_sessions
+                    .dispatch_initial_instruction(
+                        &session_id,
+                        &node_execution_id,
+                        "Continue the paused workflow node from the existing conversation context.",
+                    )
+                    .await
+            };
             if let Err(error) = activation {
                 let isolated =
                     self.executions
@@ -678,8 +709,9 @@ impl WorkflowRuntimeHost {
                         .await
                         .get(execution_id)
                         .is_some_and(|execution| {
-                            execution.execution_worktree_path(&node_execution_id)
-                                != Some(worktree_path.as_str())
+                            execution.is_delegate_parent(&node_execution_id)
+                                || execution.execution_worktree_path(&node_execution_id)
+                                    != Some(worktree_path.as_str())
                         });
                 if isolated {
                     unactivated.remove(&node_execution_id);
@@ -711,12 +743,31 @@ impl WorkflowRuntimeHost {
             }
             unactivated.remove(&node_execution_id);
         }
+        let pending_injections = self
+            .executions
+            .lock()
+            .await
+            .get(execution_id)
+            .map(|execution| execution.pending_delegate_injections())
+            .unwrap_or_default();
+        for injection in pending_injections {
+            if let Err(error) = self
+                .inject_delegate_result(app, execution_id, &injection)
+                .await
+            {
+                self.fail_resumed_isolated_session(
+                    app,
+                    execution_id,
+                    &injection.node_execution_id,
+                    &error,
+                )
+                .await?;
+                return Err(error);
+            }
+        }
         for node_execution_id in paused_commands {
             self.restart_paused_command_node(app, execution_id, &node_execution_id)
                 .await?;
-        }
-        if let Some(snapshot) = snapshot {
-            workflow_runtime_session::broadcast_state(app, &worktree_path, snapshot).await;
         }
         Ok(())
     }

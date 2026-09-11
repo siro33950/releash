@@ -215,7 +215,26 @@ pub(crate) fn resolve_node_field_path(
     let mut current = node;
     let mut position = 0;
     let mut visited = HashSet::from([node.name.as_str()]);
-    while current.is_composite() {
+    loop {
+        if let Some(delegate) = &current.completion.delegate {
+            if field_path
+                .segments()
+                .get(position)
+                .is_some_and(|segment| segment == "child")
+            {
+                let child = workflow
+                    .node_by_name(&delegate.child)
+                    .filter(|child| node_has_artifact(child))
+                    .filter(|child| visited.insert(child.name.as_str()))
+                    .ok_or_else(|| missing_node_field(position, "child"))?;
+                current = child;
+                position += 1;
+                continue;
+            }
+        }
+        if !current.is_composite() {
+            break;
+        }
         if current.is_isolated()
             && field_path
                 .segments()

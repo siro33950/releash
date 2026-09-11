@@ -154,9 +154,9 @@ fn node_execution_to_view_with_retry(
         parent: node
             .parent
             .map(|parent| workflow_wire::ExecutionParentRefView {
+                item_index: parent.fanout_slot().and_then(|slot| slot.item_index),
+                child_index: parent.fanout_slot().map(|slot| slot.child_index),
                 parent_id: parent.parent_id,
-                item_index: parent.fanout_slot.and_then(|slot| slot.item_index),
-                child_index: parent.fanout_slot.map(|slot| slot.child_index),
             }),
         started_at: node.started_at,
         completed_at: node.completed_at,

@@ -1689,3 +1689,29 @@ fn test_agent_session_restore成功時にlast_exit_abnormalを解除する() {
 
     assert!(!session.last_exit_abnormal());
 }
+
+#[test]
+fn test_delegate_追加入力は開いているworkflow_sessionだけが受け取れる() {
+    // Given
+    for workflow in [false, true] {
+        let location = if workflow {
+            workflow_location("tree", "node")
+        } else {
+            standalone_location("agent")
+        };
+        let mut session = AgentSession::create(
+            "agent",
+            WorkspaceIdentity::new("/repo"),
+            "/repo",
+            ProviderKind::Codex,
+            location,
+        )
+        .unwrap();
+        // When / Then
+        assert_eq!(session.can_receive_workflow_instruction(), workflow);
+        if workflow {
+            session.observe_provider_process_exit(Some(0));
+            assert!(!session.can_receive_workflow_instruction());
+        }
+    }
+}

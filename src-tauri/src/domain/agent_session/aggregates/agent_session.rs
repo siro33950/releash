@@ -690,6 +690,11 @@ impl AgentSession {
             .ok_or(AgentSessionRecoveryError::ProviderSessionUnknown)
     }
 
+    pub(crate) fn can_receive_workflow_instruction(&self) -> bool {
+        self.tree_location.launched_as == ExecutionTreeLaunch::Workflow
+            && self.lifecycle == AgentSessionLifecycle::Open
+    }
+
     pub(crate) fn admit_initial_instruction(
         &mut self,
     ) -> Result<AgentSessionInitialInstructionOutcome, AgentSessionInitialInstructionError> {

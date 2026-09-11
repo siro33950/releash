@@ -370,7 +370,7 @@ impl WorkflowDefinitionResolver for AcceptanceWorkflowDefinitionResolver {
                     completion: NodeCompletion::default(),
                     worktree: None,
                 },
-                acceptance_session_node("agent-first", provider, completion),
+                acceptance_session_node("agent-first", provider, completion.clone()),
                 acceptance_session_node("agent-second", provider, completion),
             ]
         } else {

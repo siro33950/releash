@@ -102,7 +102,7 @@ pub(crate) fn derive_fanouts(nodes: &[NodeExecution]) -> Vec<Fanout> {
                 let slot = |node: &NodeExecution| {
                     node.parent
                         .as_ref()
-                        .and_then(|reference| reference.fanout_slot)
+                        .and_then(|reference| reference.fanout_slot())
                         .map(|slot| (slot.item_index.unwrap_or(0), slot.child_index))
                         .unwrap_or((0, 0))
                 };

@@ -19,9 +19,6 @@ use crate::usecase::workflow::ports::{
     WorkflowStopExecutionGateway,
 };
 
-use super::runtime_resolver::{
-    AppConfigManagedWorktreeResolver, DefaultWorkflowDefinitionResolver,
-};
 use crate::adaptor::gateway::workflow::workflow_host::WorkflowRuntimeHost;
 use crate::usecase::workflow::runtime_error::WorkflowRuntimeError;
 
@@ -163,48 +160,6 @@ impl<R: tauri::Runtime> TauriWorkflowRuntimeCommandGateway<R> {
         repository.commit_batch(batch).await.is_ok()
     }
 
-    pub(crate) fn new_with_default_driver(
-        app: tauri::AppHandle<R>,
-        deps: TauriWorkflowRuntimeCommandGatewayDeps,
-    ) -> Result<Self, WorkflowRuntimeError> {
-        let TauriWorkflowRuntimeCommandGatewayDeps {
-            repository_usecase,
-            app_config,
-            data_dir,
-            workspace_query,
-            local_event_repository,
-            local_event_installation_id,
-            agent_session_launch,
-            agent_session_initial_instruction,
-            agent_session_interrupt,
-            agent_session_lifecycle,
-            provider_availability,
-            isolated_worktrees,
-        } = deps;
-        let driver = Arc::new(WorkflowRuntimeHost::new_canonical(
-            Arc::new(DefaultWorkflowDefinitionResolver),
-            Arc::new(AppConfigManagedWorktreeResolver::new(
-                repository_usecase,
-                app_config,
-            )),
-            data_dir,
-            workspace_query,
-            agent_session_launch,
-            agent_session_initial_instruction,
-            agent_session_interrupt,
-            agent_session_lifecycle,
-            provider_availability,
-            isolated_worktrees,
-        ));
-        Ok(Self {
-            app,
-            driver,
-            local_event_repository,
-            local_event_installation_id,
-        })
-    }
-
-    #[cfg(debug_assertions)]
     pub(crate) fn new_with_driver(
         app: tauri::AppHandle<R>,
         driver: Arc<WorkflowRuntimeHost>,

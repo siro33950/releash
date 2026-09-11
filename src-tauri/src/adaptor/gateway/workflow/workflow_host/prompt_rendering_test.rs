@@ -48,3 +48,28 @@ async fn test_fanout集約command_fixtureのjqがmapの全slotのlgtmを判定�
         assert_eq!(artifact["all_lgtm"], json!(expected), "{bindings:?}");
     }
 }
+
+#[test]
+fn test_delegate_起動指示は同一sessionでの再提出とturn終了と予約キーを説明する() {
+    // Given
+    let workflow: WorkflowDefinition = serde_saphyr::from_str("name: test\ndescription: test\nnodes:\n  main: {session: {provider: codex, facets: {instruction: implement}}, artifact: result, completion: {delegate: {child: check, when: child.ok, max_iterations: 2}}}\n  check: {command: check}\nschemas:\n  result: {type: object, properties: {done: {type: boolean}}, required: [done]}").unwrap();
+    let facets = crate::domain::workflow::FacetContents {
+        instruction: Some("implement".into()),
+        ..Default::default()
+    };
+    // When
+    let (_, prompt) = super::build_leaf_prompt(
+        workflow.node_by_name("main").unwrap(),
+        Some(&facets),
+        "node-1",
+        &[],
+        &workflow.schemas,
+    )
+    .unwrap();
+    // Then
+    assert!(prompt.contains("同じnode-executionへArtifactを再提出"));
+    assert!(prompt.contains("childキーはengineが管理"));
+    assert!(prompt.contains("turnを終了"));
+    assert!(prompt.contains("--node-execution node-1"));
+    assert!(prompt.contains("--type result"));
+}

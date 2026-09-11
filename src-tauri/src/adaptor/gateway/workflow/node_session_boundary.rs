@@ -64,6 +64,12 @@ pub(crate) trait WorkflowAgentSessionPort: Send + Sync {
         instruction: &str,
     ) -> Result<(), WorkflowRuntimeError>;
 
+    async fn dispatch_continuation(
+        &self,
+        node_session_id: &str,
+        instruction: &str,
+    ) -> Result<(), WorkflowRuntimeError>;
+
     async fn recover_workflow_agent_session_provider(
         &self,
         node_session_id: &str,
@@ -227,6 +233,21 @@ impl WorkflowAgentSessionPort for ProviderWorkflowAgentSessionPort {
                 ))
             })?;
         Ok(())
+    }
+
+    async fn dispatch_continuation(
+        &self,
+        node_session_id: &str,
+        instruction: &str,
+    ) -> Result<(), WorkflowRuntimeError> {
+        self.initial_instruction
+            .dispatch_continuation(node_session_id, instruction)
+            .await
+            .map_err(|error| {
+                WorkflowRuntimeError::AgentSession(format!(
+                    "continue Workflow AgentSession '{node_session_id}': {error:?}"
+                ))
+            })
     }
 
     async fn recover_workflow_agent_session_provider(

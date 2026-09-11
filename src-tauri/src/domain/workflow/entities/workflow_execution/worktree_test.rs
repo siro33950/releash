@@ -460,7 +460,7 @@ fn test_隔離実行_正本のfix_allはfix_and_verifyをslotごとに隔離し�
                     .node_name,
                 "fix_all"
             );
-            assert!(parent.fanout_slot.is_some());
+            assert!(parent.fanout_slot().is_some());
             assert_eq!(execution.parent_worktree_path(&node.id), Some("/repo"));
             node.worktree.clone().unwrap()
         })

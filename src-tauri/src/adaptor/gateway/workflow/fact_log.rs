@@ -187,6 +187,19 @@ fn fact_rows_for_events(
                 });
                 rows.push(pending_row(&meta, tree_id, &fact, timestamp)?);
             }
+            WorkflowEvent::DelegateResultInjected {
+                node_execution_id,
+                child_execution_id,
+                ..
+            } => {
+                let meta = resolve(&batch_meta, node_execution_id)?;
+                rows.push(pending_row(
+                    &meta,
+                    tree_id,
+                    &NodeFact::DelegateResultInjected(child_execution_id.clone()),
+                    timestamp,
+                )?);
+            }
             WorkflowEvent::NodeSubmitReceived {
                 node_execution_id, ..
             } => {
@@ -870,6 +883,7 @@ pub(crate) fn reconcile_tree_pass(
     loop {
         let advances = folded.aggregate.derive_pending_advances().into_iter().filter(|advance| {
             let scope_id = match advance {
+                crate::domain::workflow::entities::workflow_execution::PendingAdvance::Delegate { node_execution_id } => node_execution_id,
                 crate::domain::workflow::entities::workflow_execution::PendingAdvance::StartEntry { scope_id }
                 | crate::domain::workflow::entities::workflow_execution::PendingAdvance::ExpandFanout { scope_id }
                 | crate::domain::workflow::entities::workflow_execution::PendingAdvance::AfterChild { scope_id, .. } => scope_id,
@@ -887,6 +901,7 @@ pub(crate) fn reconcile_tree_pass(
         advance_rounds += 1;
         for advance in advances {
             let scope_id = match &advance {
+                crate::domain::workflow::entities::workflow_execution::PendingAdvance::Delegate { node_execution_id } => node_execution_id,
                 crate::domain::workflow::entities::workflow_execution::PendingAdvance::StartEntry { scope_id }
                 | crate::domain::workflow::entities::workflow_execution::PendingAdvance::ExpandFanout { scope_id }
                 | crate::domain::workflow::entities::workflow_execution::PendingAdvance::AfterChild { scope_id, .. } => scope_id,
