@@ -63,6 +63,9 @@ const RELEASH_STUB: &str = r#"---@meta
 ---@class ReleashPredicate
 ---@class ReleashSource
 ---@class ReleashNode: ReleashSource
+---@class ReleashSession: ReleashNode
+---@field delegate fun(options: ReleashDelegateOptions) Session handles only; requires an Artifact Contract; declare once with node.delegate{...}.
+---@field child ReleashSource Only on a Session with delegate. Session/Command fields are direct; Sequence/Fanout fields traverse the merged map.
 ---@class ReleashChild
 ---@class ReleashRule
 ---@class ReleashOnFailure
@@ -105,6 +108,12 @@ const RELEASH_STUB: &str = r#"---@meta
 ---@field input? ReleashInput[]
 ---@field completion? ReleashCompletion
 ---@field worktree? ReleashWorktree
+
+---@class ReleashDelegateOptions
+---@field child ReleashNode
+---@field inputs? table<string, ReleashSource> Parent Input, parent Artifact (including the Node itself and child fields), or releash.request.
+---@field when ReleashSource|ReleashPredicate Parent Artifact or child fields; required boolean leaves.
+---@field max_iterations integer At least 1.
 
 ---@class ReleashChildOptions
 ---@field node ReleashNode
@@ -177,7 +186,7 @@ const RELEASH_STUB: &str = r#"---@meta
 
 ---@class ReleashModule
 ---@field command fun(options: ReleashCommandOptions): ReleashNode
----@field session fun(options: ReleashSessionOptions): ReleashNode
+---@field session fun(options: ReleashSessionOptions): ReleashSession
 ---@field fanout fun(options: ReleashFanoutOptions): ReleashNode
 ---@field sequence fun(options: ReleashSequenceOptions): ReleashNode
 ---@field child fun(options: ReleashChildOptions): ReleashChild

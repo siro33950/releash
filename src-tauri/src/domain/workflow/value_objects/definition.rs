@@ -407,12 +407,33 @@ pub struct NodeCompletion {
     pub delegate: Option<SessionDelegate>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Eq)]
 pub struct SessionDelegate {
     pub child: String,
     pub inputs: Vec<(String, InputSourceRef)>,
     pub when: super::Predicate<String>,
     pub max_iterations: u32,
+}
+
+impl PartialEq for SessionDelegate {
+    fn eq(&self, other: &Self) -> bool {
+        let mut inputs = self
+            .inputs
+            .iter()
+            .map(|(name, source)| (name.as_str(), source.raw(), source.synthesized_node))
+            .collect::<Vec<_>>();
+        let mut other_inputs = other
+            .inputs
+            .iter()
+            .map(|(name, source)| (name.as_str(), source.raw(), source.synthesized_node))
+            .collect::<Vec<_>>();
+        inputs.sort_unstable();
+        other_inputs.sort_unstable();
+        self.child == other.child
+            && inputs == other_inputs
+            && self.when == other.when
+            && self.max_iterations == other.max_iterations
+    }
 }
 
 impl SessionDelegate {
@@ -820,22 +841,51 @@ impl Serialize for InputsMap<'_> {
 }
 
 /// children エントリの inputs 供給元。分類（request / items / 兄弟 / 自パラメータ）
-/// はスコープ文脈が要るため検証・束縛時に行い、ここでは記述そのものを保持する。
+/// はスコープ文脈が要るため検証・束縛時に行う。生成名への内部参照は文字列の供給元と区別する。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InputSourceRef(String);
+pub struct InputSourceRef {
+    raw: String,
+    synthesized_node: bool,
+}
 
 impl InputSourceRef {
     pub fn new(raw: impl Into<String>) -> Self {
-        Self(raw.into())
+        Self {
+            raw: raw.into(),
+            synthesized_node: false,
+        }
+    }
+
+    pub fn node_artifact(raw: impl Into<String>) -> Self {
+        let mut source = Self::new(raw);
+        source.synthesized_node = NodeNamespace::is_synthesized(source.root());
+        source
+    }
+
+    pub fn is_synthesized_node_artifact(&self) -> bool {
+        self.synthesized_node
+    }
+
+    pub fn field_path(&self) -> Option<FieldPath> {
+        let generated_reference;
+        let reference = if self.synthesized_node {
+            generated_reference = format!("source{}", &self.raw[self.root().len()..]);
+            &generated_reference
+        } else {
+            &self.raw
+        };
+        FieldPath::from_reference(reference)
+            .ok()
+            .map(|(_, path)| path)
     }
 
     pub fn raw(&self) -> &str {
-        &self.0
+        &self.raw
     }
 
     /// 最初の `.` より前（field パスなしなら全体）。
     pub fn root(&self) -> &str {
-        self.0.split('.').next().unwrap_or(&self.0)
+        self.raw.split('.').next().unwrap_or(&self.raw)
     }
 }
 
@@ -844,7 +894,13 @@ impl Serialize for InputSourceRef {
     where
         S: Serializer,
     {
-        serializer.serialize_str(&self.0)
+        if self.synthesized_node {
+            let mut map = serializer.serialize_map(Some(1))?;
+            map.serialize_entry("node_artifact", &self.raw)?;
+            map.end()
+        } else {
+            serializer.serialize_str(&self.raw)
+        }
     }
 }
 
@@ -1145,7 +1201,7 @@ where
             if body.inputs.is_some() {
                 return Err(de::Error::custom("duplicate field `inputs`"));
             }
-            body.inputs = Some(map.next_value_seed(InputsMapSeed)?);
+            body.inputs = Some(map.next_value_seed(InputsMapSeed::Source)?);
             Ok(())
         }
         "rules" => set_once(map, &mut body.rules, key),
@@ -1156,7 +1212,10 @@ where
     }
 }
 
-pub(crate) struct InputsMapSeed;
+pub(crate) enum InputsMapSeed {
+    Source,
+    DelegateSnapshot,
+}
 
 impl<'de> de::DeserializeSeed<'de> for InputsMapSeed {
     type Value = Vec<(String, InputSourceRef)>;
@@ -1165,7 +1224,7 @@ impl<'de> de::DeserializeSeed<'de> for InputsMapSeed {
     where
         D: Deserializer<'de>,
     {
-        struct InputsVisitor;
+        struct InputsVisitor(InputsMapSeed);
 
         impl<'de> de::Visitor<'de> for InputsVisitor {
             type Value = Vec<(String, InputSourceRef)>;
@@ -1179,9 +1238,33 @@ impl<'de> de::DeserializeSeed<'de> for InputsMapSeed {
                 A: de::MapAccess<'de>,
             {
                 let mut entries: Vec<(String, InputSourceRef)> = Vec::new();
-                while let Some((parameter, source)) =
-                    access.next_entry::<String, InputSourceRef>()?
-                {
+                while let Some(parameter) = access.next_key::<String>()? {
+                    let source = match self.0 {
+                        InputsMapSeed::Source => access.next_value::<InputSourceRef>()?,
+                        InputsMapSeed::DelegateSnapshot => {
+                            let value = access.next_value::<Value>()?;
+                            if let Some(map) = value.as_object() {
+                                let raw = map
+                                    .get("node_artifact")
+                                    .and_then(Value::as_str)
+                                    .filter(|_| map.len() == 1)
+                                    .ok_or_else(|| {
+                                        de::Error::custom("invalid node Artifact source snapshot")
+                                    })?;
+                                let source = InputSourceRef::node_artifact(raw);
+                                if !source.is_synthesized_node_artifact()
+                                    || source.field_path().is_none()
+                                {
+                                    return Err(de::Error::custom(
+                                        "invalid synthesized node Artifact source snapshot",
+                                    ));
+                                }
+                                source
+                            } else {
+                                InputSourceRef::deserialize(value).map_err(de::Error::custom)?
+                            }
+                        }
+                    };
                     if entries.iter().any(|(existing, _)| *existing == parameter) {
                         return Err(de::Error::custom(format!(
                             "inputs parameter '{parameter}' is duplicated"
@@ -1193,7 +1276,7 @@ impl<'de> de::DeserializeSeed<'de> for InputsMapSeed {
             }
         }
 
-        deserializer.deserialize_map(InputsVisitor)
+        deserializer.deserialize_map(InputsVisitor(self))
     }
 }
 

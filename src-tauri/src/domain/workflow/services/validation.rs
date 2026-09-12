@@ -1018,7 +1018,8 @@ fn collect_children_wiring_errors(workflow: &WorkflowDefinition) -> Vec<Validati
                     }
                 }
 
-                let Some((root, field)) = reference::split_reference(source.raw()) else {
+                let root = source.root();
+                let Some(field) = source.field_path() else {
                     push(
                         &mut errors,
                         InputWiringKind::InvalidSourceFormat,
@@ -1064,8 +1065,12 @@ fn collect_children_wiring_errors(workflow: &WorkflowDefinition) -> Vec<Validati
 
                 // sequence は兄弟 + 自パラメータ、fanout は自パラメータのみ
                 // （fanout の子に兄弟参照は無い）。
-                let is_node_source =
-                    !is_fanout_scope && root != entry.name && sibling_names.contains(root);
+                let is_node_source = !is_fanout_scope
+                    && root != entry.name
+                    && (sibling_names.contains(root)
+                        || (delegate_entry.is_some()
+                            && source.is_synthesized_node_artifact()
+                            && root == owner.name));
                 let is_own_param = own_params.contains(root);
                 match (is_node_source, is_own_param) {
                     (true, true) => push(

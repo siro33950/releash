@@ -411,7 +411,7 @@ pub fn resolve_entry_bindings(
             artifacts
                 .get(source.root())
                 .and_then(|value| {
-                    let (_, field_path) = FieldPath::from_reference(source.raw()).ok()?;
+                    let field_path = source.field_path()?;
                     resolve_value_at_path(value, &field_path)
                 })
                 .map(|value| (parameter.clone(), value.clone()))
