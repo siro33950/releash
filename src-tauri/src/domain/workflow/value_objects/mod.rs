@@ -54,8 +54,9 @@ pub use node_fact::{
     AgentActivityObservedFact, AgentSessionActivity, ApprovalGrantedFact, ArtifactProducedFact,
     CommandSpawnedFact, ExecutionTreeLaunch, NodeFact, NodeFactMeta, NodeFactRecord,
     ProcessExitedFact, ProviderSessionTitleObservedFact, RuntimeFailureObservedFact,
-    SessionAttachedFact, SessionExecutionTreeRootFacts, SessionNodeRenamedFact, StartedFact,
-    StopReceivedFact, SubmitReceivedFact, SubmitRejectedFact, TreeRootFact,
+    SessionAttachedFact, SessionContinuationAdmittedFact, SessionExecutionTreeRootFacts,
+    SessionNodeRenamedFact, StartedFact, StopReceivedFact, SubmitReceivedFact, SubmitRejectedFact,
+    TreeRootFact,
 };
 pub use predicate::{Predicate, PredicateError};
 pub use runtime_event::{ContractViolationRecord, WorkflowEvent};

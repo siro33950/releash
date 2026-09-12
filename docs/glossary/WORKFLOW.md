@@ -322,7 +322,7 @@ implement:
 
 engine は親の Artifact に予約キー `child` を合成する。未実行・実行中は `null`、完了後は child の Artifact そのものである。Session / Command の child は `implement.child.complete` のように直接参照する。Sequence は `implement.child.check.complete`、Fanout は items なしなら `implement.child.check.complete`、items ありなら `implement.child.0.complete` のように統合 map を辿る。配線・`when.on`・`switch.on` の参照と型検査はこの合成された形を使う。
 
-child の NodeExecution は親 Session の部分木に発火ごとの行として載り、attempt が増える。中断後は完了済み child の Artifact を再利用し、未確定の child だけを再実行する。注入前の中断では resume 時に未注入の結果を返し、注入済みの事実があれば再注入しない。親の provider session を復元できない場合は既存の失敗経路と手動 Retry に委ねる。
+child の NodeExecution は親 Session の部分木に発火ごとの行として載り、attempt が増える。中断後は完了済み child の Artifact を再利用し、未確定の child だけを再実行する。注入前の中断では resume 時に未注入の結果を返す。親 Session は child ごとに結果の送付を一度だけ受理するため、注入済みの事実が残っていなくても再送しない。受理の後・provider に届く前の中断も再送せず、初回指示と同じく人間の介入に委ねる。親の provider session を復元できない場合は既存の失敗経路と手動 Retry に委ねる。
 
 child の worktree も共通規則に従う。省略または `shared` なら親 Session の実行 worktree を引き継ぐ。`isolated` なら発火ごとの attempt が親 Session の worktree の HEAD から新しい隔離 worktree を作り、child Artifact に `worktree` を合成する。
 

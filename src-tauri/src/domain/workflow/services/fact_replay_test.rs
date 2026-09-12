@@ -467,6 +467,30 @@ mod standalone_session_tests {
     }
 
     #[test]
+    fn test_session_受理済みの続行指示識別子を同じsessionの事実からだけ集める() {
+        let mut log = FactLog::new();
+        let root_meta = meta("root-exec", None, "session", NodeKindName::Session, 1);
+        log.push(root_meta.clone(), started_root(session_root()));
+        log.push(root_meta.clone(), attached("session-1"));
+        let admitted = |session_id: &str, request_id: &str| {
+            NodeFact::SessionContinuationAdmitted(
+                crate::domain::workflow::SessionContinuationAdmittedFact {
+                    session_id: session_id.to_string(),
+                    request_id: request_id.to_string(),
+                },
+            )
+        };
+        log.push(root_meta.clone(), admitted("session-1", "child-1"));
+        log.push(root_meta.clone(), admitted("session-2", "child-x"));
+        log.push(root_meta.clone(), admitted("session-1", "child-2"));
+
+        let view = super::derive_session_facts(&log.records, "root-exec", "session-1");
+
+        assert_eq!(view.admitted_continuations, vec!["child-1", "child-2"]);
+        assert!(!view.exited);
+    }
+
+    #[test]
     fn test_単独session_活動状態を初期値と最後の観測から導出しprocess_exitで戻す() {
         let mut log = FactLog::new();
         let root_meta = meta("root-exec", None, "session", NodeKindName::Session, 1);

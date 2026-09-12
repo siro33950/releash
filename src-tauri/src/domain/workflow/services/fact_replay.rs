@@ -514,6 +514,7 @@ pub(super) fn apply_record(
             Ok(())
         }
         NodeFact::AgentActivityObserved(_)
+        | NodeFact::SessionContinuationAdmitted(_)
         | NodeFact::SessionNodeRenamed(_)
         | NodeFact::ProviderSessionTitleObserved(_)
         | NodeFact::ArchiveRequested
@@ -632,6 +633,8 @@ pub struct SessionFactsView {
     pub manual_name: Option<String>,
     pub provider_session_title: Option<String>,
     pub initial_instruction_admitted: bool,
+    /// session が受理済みの delegate 続行指示の識別子。
+    pub admitted_continuations: Vec<String>,
     /// 後続の attach / resume が無い process_exited（= Paused の根拠）。
     pub exited: bool,
     /// 後続の restore が無い archive_requested。
@@ -669,6 +672,9 @@ pub fn derive_session_facts(
                 }
                 view.initial_instruction_admitted |= fact.initial_instruction_admitted;
                 exited = None;
+            }
+            NodeFact::SessionContinuationAdmitted(fact) if fact.session_id == session_id => {
+                view.admitted_continuations.push(fact.request_id.clone());
             }
             NodeFact::SessionNodeRenamed(fact) => view.manual_name = Some(fact.name.clone()),
             NodeFact::ProviderSessionTitleObserved(fact)

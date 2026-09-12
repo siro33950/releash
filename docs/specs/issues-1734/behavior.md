@@ -126,6 +126,7 @@ GIVEN `delegate` を宣言した Session の child が完了し、その結果�
 WHEN その WorkflowExecution を resume する
 THEN child は再実行されない
 AND child の結果が親 Session に注入され、親 Session は続行する
+AND 例外として、親 Session が結果の送付を受理した後・provider に届く前に中断していた場合は、resume で再送されず、親 Session は入力待ちのまま続行を人間に委ねる（初回指示と同じ扱い）
 
 ## B-019: 注入後の中断からの resume
 

@@ -2948,6 +2948,7 @@ nodes:
         async fn dispatch_continuation(
             &self,
             _node_session_id: &str,
+            _child_execution_id: &str,
             _instruction: &str,
         ) -> Result<(), WorkflowRuntimeError> {
             panic!("unexpected delegate continuation")
@@ -3249,6 +3250,7 @@ nodes:
             async fn dispatch_continuation(
                 &self,
                 _node_session_id: &str,
+                _child_execution_id: &str,
                 _instruction: &str,
             ) -> Result<(), WorkflowRuntimeError> {
                 panic!("unexpected delegate continuation")
@@ -3405,6 +3407,7 @@ nodes:
             async fn dispatch_continuation(
                 &self,
                 _node_session_id: &str,
+                _child_execution_id: &str,
                 _instruction: &str,
             ) -> Result<(), WorkflowRuntimeError> {
                 panic!("unexpected delegate continuation")
@@ -3552,6 +3555,7 @@ nodes:
             async fn dispatch_continuation(
                 &self,
                 _node_session_id: &str,
+                _child_execution_id: &str,
                 _instruction: &str,
             ) -> Result<(), WorkflowRuntimeError> {
                 panic!("unexpected delegate continuation")
@@ -3701,6 +3705,7 @@ nodes:
             async fn dispatch_continuation(
                 &self,
                 _node_session_id: &str,
+                _child_execution_id: &str,
                 _instruction: &str,
             ) -> Result<(), WorkflowRuntimeError> {
                 panic!("unexpected delegate continuation")
@@ -3808,6 +3813,7 @@ nodes:
             async fn dispatch_continuation(
                 &self,
                 _node_session_id: &str,
+                _child_execution_id: &str,
                 _instruction: &str,
             ) -> Result<(), WorkflowRuntimeError> {
                 panic!("unexpected delegate continuation")
@@ -3898,6 +3904,7 @@ nodes:
             async fn dispatch_continuation(
                 &self,
                 _node_session_id: &str,
+                _child_execution_id: &str,
                 _instruction: &str,
             ) -> Result<(), WorkflowRuntimeError> {
                 panic!("unexpected delegate continuation")

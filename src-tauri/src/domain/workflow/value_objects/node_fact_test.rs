@@ -62,6 +62,10 @@ mod vocabulary_tests {
             }),
             NodeFact::ApprovalGranted(ApprovalGrantedFact { comment: None }),
             NodeFact::DelegateResultInjected("child-1".into()),
+            NodeFact::SessionContinuationAdmitted(SessionContinuationAdmittedFact {
+                session_id: "session-1".into(),
+                request_id: "workflow-delegate-continuation-child-1".into(),
+            }),
             NodeFact::RetryRequested,
             NodeFact::ResumeRequested,
             NodeFact::AbortRequested,
@@ -87,6 +91,7 @@ mod vocabulary_tests {
                 "artifact_produced",
                 "approval_granted",
                 "delegate_result_injected",
+                "session_continuation_admitted",
                 "retry_requested",
                 "resume_requested",
                 "abort_requested",

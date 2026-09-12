@@ -28,9 +28,11 @@ impl DelegateContinuationGateway for Gateway {
     async fn send_instruction(
         &self,
         session: &str,
+        child_execution_id: &str,
         instruction: &str,
     ) -> Result<(), WorkflowRuntimeError> {
         assert_eq!(session, "agent");
+        assert_eq!(child_execution_id, "node-2");
         let value: serde_json::Value =
             serde_json::from_str(instruction.split_once("\n\n").unwrap().1).unwrap();
         assert_eq!(value["child"]["ok"], false);

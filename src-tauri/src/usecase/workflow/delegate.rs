@@ -22,6 +22,7 @@ pub(crate) trait DelegateContinuationGateway: Send + Sync {
     async fn send_instruction(
         &self,
         session_id: &str,
+        child_execution_id: &str,
         instruction: &str,
     ) -> Result<(), WorkflowRuntimeError>;
     async fn commit(
@@ -62,7 +63,7 @@ impl DelegateContinuationUsecase {
             .restore_provider(session_id, &injection.node_execution_id)
             .await?;
         self.gateway
-            .send_instruction(session_id, &instruction)
+            .send_instruction(session_id, &injection.child_execution_id, &instruction)
             .await?;
         let timestamp = self.gateway.current_timestamp();
         let mut candidate = current.clone();

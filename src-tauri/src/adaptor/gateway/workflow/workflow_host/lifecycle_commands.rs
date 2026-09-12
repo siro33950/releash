@@ -670,13 +670,12 @@ impl WorkflowRuntimeHost {
         }
         let mut unactivated = rollbacks;
         for (node_execution_id, session_id, _) in resumed_sessions {
-            let (is_delegate, waiting_child, injection) = {
+            let (waiting_child, injection) = {
                 let executions = self.executions.lock().await;
                 let execution = executions
                     .get(execution_id)
                     .ok_or_else(|| WorkflowRuntimeError::ExecutionNotFound(execution_id.into()))?;
                 (
-                    execution.is_delegate_parent(&node_execution_id),
                     execution.delegate_waits_for_child(&node_execution_id),
                     execution.pending_delegate_injection(&node_execution_id),
                 )
@@ -686,13 +685,6 @@ impl WorkflowRuntimeHost {
                     .await
             } else if waiting_child {
                 Ok(())
-            } else if is_delegate {
-                self.workflow_agent_sessions
-                    .dispatch_continuation(
-                        &session_id,
-                        "Continue the paused workflow node from the existing conversation context.",
-                    )
-                    .await
             } else {
                 self.workflow_agent_sessions
                     .dispatch_initial_instruction(

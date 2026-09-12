@@ -36,11 +36,19 @@ impl AgentSessionInitialInstructionUsecase {
         Self { sessions, terminal }
     }
 
+    /// delegate child の結果を親 session へ続行指示として送る。
+    /// session 側が `caller_request_id` ごとに受理を永続化してから terminal に書くため、
+    /// 同じ識別子の再送は書かずに `AlreadyDispatched` を返す。
     pub(crate) async fn dispatch_continuation(
         &self,
         agent_session_id: &str,
         instruction: &str,
-    ) -> Result<(), AgentSessionInitialInstructionError> {
+        caller_request_id: &str,
+    ) -> Result<AgentSessionInitialInstructionDeliveryOutcome, AgentSessionInitialInstructionError>
+    {
+        if instruction.trim().is_empty() || caller_request_id.trim().is_empty() {
+            return Err(AgentSessionInitialInstructionError::InvalidInput);
+        }
         let _operation = self
             .sessions
             .lock_operation(agent_session_id)
@@ -52,11 +60,23 @@ impl AgentSessionInitialInstructionUsecase {
             .await
             .map_err(map_session_error)?
             .ok_or(AgentSessionInitialInstructionError::NotFound)?;
-        if !session.session().can_receive_workflow_instruction() || instruction.trim().is_empty() {
+        if !session.session().can_receive_workflow_instruction() {
             return Err(AgentSessionInitialInstructionError::InvalidInput);
         }
-        self.write_instruction(&session.session().terminal_surface_owner(), instruction)
-            .map_err(|_| AgentSessionInitialInstructionError::StorageUnavailable)
+        let admission = self
+            .sessions
+            .admit_continuation(agent_session_id, caller_request_id)
+            .await
+            .map_err(map_session_error)?;
+        if admission == AgentSessionInitialInstructionOutcome::AlreadyAdmitted {
+            return Ok(AgentSessionInitialInstructionDeliveryOutcome::AlreadyDispatched);
+        }
+        match self.write_instruction(&session.session().terminal_surface_owner(), instruction) {
+            Ok(()) => Ok(AgentSessionInitialInstructionDeliveryOutcome::Delivered),
+            Err(ProviderAgentTerminalGatewayError::Unavailable) => {
+                Ok(AgentSessionInitialInstructionDeliveryOutcome::DeliveryUnknown)
+            }
+        }
     }
 
     pub(crate) async fn dispatch(

@@ -229,8 +229,9 @@ impl ProviderAgentTerminalInputGateway for ContinuationTerminalInput {
 }
 
 #[tokio::test]
-async fn test_delegate_続行指示は初期配送済みでも同じsessionへ複数回送りエラーを返す() {
+async fn test_delegate_続行指示は識別子ごとに一度だけ送り再送は受理済みとして書かない() {
     use super::agent_session_initial_instruction::AgentSessionInitialInstructionError;
+    use crate::domain::agent_session::aggregates::AgentSessionInitialInstructionOutcome;
     for fail in [false, true] {
         // Given
         let directory = tempfile::tempdir().unwrap();
@@ -264,23 +265,49 @@ async fn test_delegate_続行指示は初期配送済みでも同じsessionへ�
             AgentSessionInitialInstructionUsecase::new(sessions.clone(), terminal.clone());
         // When / Then
         assert_eq!(
-            usecase.dispatch_continuation("agent", " \n").await,
+            usecase
+                .dispatch_continuation("agent", " \n", "child-1")
+                .await,
             Err(AgentSessionInitialInstructionError::InvalidInput)
         );
         assert_eq!(
-            usecase.dispatch_continuation("missing", "continue").await,
+            usecase
+                .dispatch_continuation("agent", "continue", " ")
+                .await,
+            Err(AgentSessionInitialInstructionError::InvalidInput)
+        );
+        assert_eq!(
+            usecase
+                .dispatch_continuation("missing", "continue", "child-1")
+                .await,
             Err(AgentSessionInitialInstructionError::NotFound)
         );
-        for instruction in ["first\n", "second\r\n"] {
-            assert_eq!(
-                usecase.dispatch_continuation("agent", instruction).await,
-                if fail {
-                    Err(AgentSessionInitialInstructionError::StorageUnavailable)
-                } else {
-                    Ok(())
-                }
-            );
-        }
+        let first_delivery = if fail {
+            AgentSessionInitialInstructionDeliveryOutcome::DeliveryUnknown
+        } else {
+            AgentSessionInitialInstructionDeliveryOutcome::Delivered
+        };
+        assert_eq!(
+            usecase
+                .dispatch_continuation("agent", "first\n", "child-1")
+                .await
+                .unwrap(),
+            first_delivery
+        );
+        assert_eq!(
+            usecase
+                .dispatch_continuation("agent", "second\r\n", "child-2")
+                .await
+                .unwrap(),
+            first_delivery
+        );
+        assert_eq!(
+            usecase
+                .dispatch_continuation("agent", "first again\n", "child-1")
+                .await
+                .unwrap(),
+            AgentSessionInitialInstructionDeliveryOutcome::AlreadyDispatched
+        );
         let writes = terminal.writes.lock().unwrap();
         if fail {
             assert!(writes.is_empty());
@@ -293,13 +320,23 @@ async fn test_delegate_続行指示は初期配送済みでも同じsessionへ�
             assert_eq!(writes[0].1, "\u{1b}[200~first\u{1b}[201~\r");
             assert_eq!(writes[1].1, "\u{1b}[200~second\u{1b}[201~\r");
         }
-        assert!(sessions
-            .find("agent")
-            .await
-            .unwrap()
-            .unwrap()
-            .session()
-            .initial_instruction_admitted());
+        // 受理は terminal への書き込み結果によらず永続化され、再読込後も同じ識別子を拒む。
+        let reloaded =
+            AgentSessionUsecase::new(Arc::new(LocalAgentSessionRepository::new(store.clone())));
+        assert_eq!(
+            reloaded
+                .admit_continuation("agent", "child-1")
+                .await
+                .unwrap(),
+            AgentSessionInitialInstructionOutcome::AlreadyAdmitted
+        );
+        assert_eq!(
+            reloaded
+                .admit_continuation("agent", "child-3")
+                .await
+                .unwrap(),
+            AgentSessionInitialInstructionOutcome::Admitted
+        );
     }
 }
 
@@ -335,7 +372,7 @@ async fn test_terminal投入_初期指示と継続指示は同じ末尾改行処
         AgentSessionInitialInstructionDeliveryOutcome::Delivered
     );
     usecase
-        .dispatch_continuation("agent", "first\nsecond \r\n\r")
+        .dispatch_continuation("agent", "first\nsecond \r\n\r", "child-1")
         .await
         .unwrap();
     // Then

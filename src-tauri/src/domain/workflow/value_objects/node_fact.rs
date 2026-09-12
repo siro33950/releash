@@ -65,6 +65,8 @@ pub enum NodeFact {
     /// 外部入力: 受理された Submit。
     SubmitReceived(SubmitReceivedFact),
     DelegateResultInjected(String),
+    /// 副作用: 親 Session が delegate child の結果の続行指示を受理した。
+    SessionContinuationAdmitted(SessionContinuationAdmittedFact),
     /// 副作用: Contract 違反として Submit を拒否した。
     SubmitRejected(SubmitRejectedFact),
     /// 外部入力: provider の Stop。
@@ -236,6 +238,14 @@ pub struct SessionAttachedFact {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SessionContinuationAdmittedFact {
+    pub session_id: String,
+    /// 続行指示の識別子。同じ識別子の再送を session 側で拒む鍵。
+    pub request_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CommandSpawnedFact {
     pub display_command: String,
 }
@@ -381,6 +391,7 @@ impl NodeFact {
             Self::SubmitRejected(_) => "submit_rejected",
             Self::StopReceived(_) => Self::STOP_RECEIVED_EVENT_TYPE,
             Self::DelegateResultInjected(_) => "delegate_result_injected",
+            Self::SessionContinuationAdmitted(_) => "session_continuation_admitted",
             Self::ArtifactProduced(_) => "artifact_produced",
             Self::ApprovalGranted(_) => "approval_granted",
             Self::RetryRequested => "retry_requested",
@@ -408,6 +419,7 @@ impl NodeFact {
             Self::DelegateResultInjected(child) => {
                 serde_json::to_string(&serde_json::json!({"childExecutionId": child}))
             }
+            Self::SessionContinuationAdmitted(fact) => serde_json::to_string(fact),
             Self::ArtifactProduced(fact) => serde_json::to_string(fact),
             Self::ApprovalGranted(fact) => serde_json::to_string(fact),
             Self::RetryRequested
@@ -467,6 +479,9 @@ impl NodeFact {
                         event_type: event_type.into(),
                         reason: "childExecutionId is required".into(),
                     })
+            }
+            "session_continuation_admitted" => {
+                parse(event_type, detail).map(Self::SessionContinuationAdmitted)
             }
             "artifact_produced" => parse(event_type, detail).map(Self::ArtifactProduced),
             "approval_granted" => parse(event_type, detail).map(Self::ApprovalGranted),

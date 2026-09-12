@@ -38,11 +38,12 @@ impl<R: tauri::Runtime> DelegateContinuationGateway for HostDelegateContinuation
     async fn send_instruction(
         &self,
         session_id: &str,
+        child_execution_id: &str,
         instruction: &str,
     ) -> Result<(), WorkflowRuntimeError> {
         self.host
             .workflow_agent_sessions
-            .dispatch_continuation(session_id, instruction)
+            .dispatch_continuation(session_id, child_execution_id, instruction)
             .await
     }
 

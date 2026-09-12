@@ -58,6 +58,7 @@ pub(super) struct TestSessions {
     pub(super) dispatched: StdMutex<Vec<String>>,
     pub(super) dispatch_fails_on: StdMutex<Option<String>>,
     pub(super) continuations: StdMutex<Vec<(String, String)>>,
+    pub(super) admitted_continuations: StdMutex<std::collections::BTreeSet<String>>,
     pub(super) continuation_fails: AtomicBool,
     pub(super) block_continuation: AtomicBool,
     pub(super) continuation_entered: tokio::sync::Notify,
@@ -120,6 +121,7 @@ impl WorkflowAgentSessionPort for TestSessions {
     async fn dispatch_continuation(
         &self,
         session_id: &str,
+        child_execution_id: &str,
         instruction: &str,
     ) -> Result<(), WorkflowRuntimeError> {
         if self.block_continuation.load(Ordering::SeqCst) {
@@ -130,6 +132,15 @@ impl WorkflowAgentSessionPort for TestSessions {
             return Err(WorkflowRuntimeError::AgentSession(
                 "continuation failed".into(),
             ));
+        }
+        // 本物の port と同じく child ごとに一度だけ受理する。
+        if !self
+            .admitted_continuations
+            .lock()
+            .unwrap()
+            .insert(child_execution_id.to_string())
+        {
+            return Ok(());
         }
         self.continuations
             .lock()
