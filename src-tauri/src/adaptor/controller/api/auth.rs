@@ -7,6 +7,7 @@ use axum::response::{IntoResponse, Response};
 use subtle::ConstantTimeEq;
 
 use super::error::ApiError;
+use crate::adaptor::protocol::terminal::TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX;
 
 #[derive(Clone)]
 pub(super) struct AcceptedBearerTokens(Arc<[Arc<str>]>);
@@ -37,24 +38,31 @@ pub(super) async fn require_bearer(
     // ブラウザのWebSocketはheaderを設定できないため、WS handshakeに限り
     // Sec-WebSocket-Protocol経由のbearerも受理する（terminal streamが使用）
     let subprotocol_authorized = is_websocket_handshake(&request)
-        && request
-            .headers()
-            .get(axum::http::header::SEC_WEBSOCKET_PROTOCOL)
-            .and_then(|value| value.to_str().ok())
-            .is_some_and(|value| {
-                value.split(',').map(str::trim).any(|candidate| {
-                    candidate
-                        .strip_prefix(
-                            crate::adaptor::protocol::terminal::TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX,
-                        )
-                        .is_some_and(|token| accepted.accepts(token))
-                })
-            });
+        && bearer_subprotocols(request.headers()).any(|candidate| {
+            accepted.accepts(&candidate[TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX.len()..])
+        });
     let authorized = header_authorized || subprotocol_authorized;
     if !authorized {
         return ApiError::unauthorized().into_response();
     }
     next.run(request).await
+}
+
+fn bearer_subprotocols(headers: &axum::http::HeaderMap) -> impl Iterator<Item = &str> {
+    headers
+        .get(axum::http::header::SEC_WEBSOCKET_PROTOCOL)
+        .and_then(|value| value.to_str().ok())
+        .into_iter()
+        .flat_map(|value| value.split(','))
+        .map(str::trim)
+        .filter(|value| value.starts_with(TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX))
+}
+
+pub(super) fn echo_bearer_subprotocol(
+    ws: axum::extract::ws::WebSocketUpgrade,
+    headers: &axum::http::HeaderMap,
+) -> axum::extract::ws::WebSocketUpgrade {
+    ws.protocols(bearer_subprotocols(headers).take(1).map(str::to_owned))
 }
 
 fn is_websocket_handshake(request: &Request) -> bool {
@@ -91,10 +99,7 @@ mod tests {
     }
 
     fn bearer_subprotocol(token: &str) -> String {
-        format!(
-            "{}{token}",
-            crate::adaptor::protocol::terminal::TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX
-        )
+        format!("{}{token}", TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX)
     }
 
     #[tokio::test]

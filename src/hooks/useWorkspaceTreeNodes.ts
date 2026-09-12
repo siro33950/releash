@@ -1,9 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { subscribeAgentSessionChanged } from "@/lib/agentSessionEvents";
+import { listenClient } from "@/lib/clientSocket";
 import { getErrorMessage } from "@/lib/errorMessage";
-import type { WorkflowExecutionChangedPayload } from "@/types/workflow";
 import type {
 	WorkspaceTreeItem,
 	WorkspaceTreeSelectionSnapshot,
@@ -309,15 +309,17 @@ export function useWorkspaceTreeNodes(
 		);
 
 		const setup = async () => {
-			const nextUnlistenWorkflow =
-				await listen<WorkflowExecutionChangedPayload>(
-					"workflow-execution-changed",
-					(event) => {
-						if (!mounted) return;
-						if (event.payload.worktreePath !== worktreePath) return;
-						scheduleRefresh();
-					},
-				);
+			const nextUnlistenWorkflow = await listenClient(
+				"workflow-execution-changed",
+				(event) => {
+					if (!mounted) return;
+					if (event.payload.worktreePath !== worktreePath) return;
+					scheduleRefresh();
+				},
+				() => {
+					if (mounted) scheduleRefresh();
+				},
+			);
 			if (!mounted) {
 				nextUnlistenWorkflow();
 				return;

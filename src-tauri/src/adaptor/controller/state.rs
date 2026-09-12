@@ -17,7 +17,7 @@ use crate::usecase::workflow::WorkflowUsecase;
 
 /// frontendがterminal streamをWebSocketで購読するための接続情報。
 /// local API server起動時にmanageされる（起動失敗時は存在しない）。
-/// tokenはterminal routeだけを認証するterminal専用tokenで、
+/// tokenはclient / terminal routeを認証するクライアント共通tokenで、
 /// masterのdiscovery tokenはrendererへ渡さない。
 pub struct TerminalStreamEndpoint {
     pub port: u16,

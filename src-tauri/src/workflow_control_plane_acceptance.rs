@@ -463,6 +463,7 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
                 .map_err(|error| error.to_string())?;
         let repository: Arc<dyn LocalEventTransactionRepository> = store.clone();
         let installation_id = store.installation_id().to_string();
+        app.manage(Arc::new(crate::infrastructure::push::PushSink::new()));
         app.manage(store.clone());
         app.manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
             config.data_dir.clone(),
@@ -559,6 +560,7 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             runtime.clone(),
             token.clone(),
             binding.terminal_bearer_token(),
+            None,
             None,
             Some(composition.lifecycle_ingress.clone()),
         );

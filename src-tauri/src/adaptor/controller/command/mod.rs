@@ -1,6 +1,7 @@
 pub(crate) mod agent_session;
 pub(crate) mod app_config;
 pub(crate) mod application_lifecycle;
+pub(crate) mod client;
 pub(crate) mod code;
 pub(crate) mod comment;
 pub(crate) mod external_editor;
@@ -15,16 +16,16 @@ pub(crate) mod workflow;
 pub(crate) mod workspace_state;
 pub(crate) mod workspace_tree;
 
-type InvokeHandler = Box<dyn Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync>;
+type InvokeHandler<R = tauri::Wry> = Box<dyn Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync>;
 
-pub(crate) struct CommandRouter {
-    fallback: InvokeHandler,
-    domains: Vec<CommandDomainRoute>,
+pub(crate) struct CommandRouter<H = InvokeHandler> {
+    fallback: H,
+    domains: Vec<CommandDomainRoute<H>>,
 }
 
-struct CommandDomainRoute {
+struct CommandDomainRoute<H> {
     command_names: &'static [&'static str],
-    handler: InvokeHandler,
+    handler: H,
 }
 
 const STARTUP_COMMANDS: [&str; 2] = [
@@ -63,37 +64,25 @@ pub(crate) fn gate_invoke_before_domain_routing<R: tauri::Runtime>(
     }
 }
 
-impl CommandRouter {
-    fn new(fallback: InvokeHandler) -> Self {
+impl<H> CommandRouter<H> {
+    pub(crate) fn new(fallback: H) -> Self {
         Self {
             fallback,
             domains: Vec::new(),
         }
     }
 
-    pub(crate) fn register_domain(
-        &mut self,
-        command_names: &'static [&'static str],
-        handler: InvokeHandler,
-    ) {
+    pub(crate) fn register_domain(&mut self, command_names: &'static [&'static str], handler: H) {
         self.domains.push(CommandDomainRoute {
             command_names,
             handler,
         });
     }
 
-    fn handle(&self, invoke: tauri::ipc::Invoke<tauri::Wry>) -> bool {
-        let invoke = match gate_invoke_before_domain_routing(invoke) {
-            Ok(invoke) => invoke,
-            Err(handled) => return handled,
-        };
-        let route_index = self.domain_route_index(invoke.message.command());
-
-        if let Some(route_index) = route_index {
-            (self.domains[route_index].handler)(invoke)
-        } else {
-            (self.fallback)(invoke)
-        }
+    fn resolve(&self, command: &str) -> &H {
+        self.domain_route_index(command)
+            .map(|index| &self.domains[index].handler)
+            .unwrap_or(&self.fallback)
     }
 
     fn domain_route_index(&self, command: &str) -> Option<usize> {
@@ -103,9 +92,30 @@ impl CommandRouter {
     }
 }
 
+impl<R: tauri::Runtime> CommandRouter<InvokeHandler<R>> {
+    pub(crate) fn handle(&self, invoke: tauri::ipc::Invoke<R>) -> bool {
+        let invoke = match gate_invoke_before_domain_routing(invoke) {
+            Ok(invoke) => invoke,
+            Err(handled) => return handled,
+        };
+        if let Some(dispatch) = invoke
+            .message
+            .state_ref()
+            .try_get::<std::sync::Arc<client::ClientCommandDispatch>>()
+        {
+            if dispatch.contains(invoke.message.command()) {
+                let dispatch = dispatch.inner().clone();
+                return client::handle_invoke(invoke, dispatch);
+            }
+        }
+        (self.resolve(invoke.message.command()))(invoke)
+    }
+}
+
 pub(crate) fn register_all(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
     let app_handler: InvokeHandler = Box::new(|_invoke| false);
     let mut router = CommandRouter::new(app_handler);
+    client::register(&mut router);
     agent_session::register(&mut router);
     app_config::register(&mut router);
     application_lifecycle::register(&mut router);
@@ -249,6 +259,7 @@ mod tests {
 
     fn command_domains() -> Vec<(&'static str, &'static [&'static str], RegisterFn)> {
         vec![
+            ("client", client::COMMAND_NAMES, client::register),
             (
                 "agent_session",
                 agent_session::COMMAND_NAMES,
@@ -512,6 +523,50 @@ mod tests {
         assert_eq!(router.domain_route_index("delete_notion_config"), Some(0));
         assert_eq!(router.domain_route_index("validate_notion_config"), Some(0));
         assert_eq!(router.domain_route_index("get_git_status"), None);
+    }
+    #[test]
+    fn test_共有dispatch_対象外commandは既存domain_handlerとfallbackへ届く() {
+        use crate::usecase::application_startup::ApplicationStartupAuthority;
+        use client::ClientCommandDispatch;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        // Given
+        let effects = Arc::new(AtomicUsize::new(0));
+        let authority = Arc::new(ApplicationStartupAuthority::ready());
+        let dispatch = Arc::new(ClientCommandDispatch::new(
+            Arc::new(crate::adaptor::controller::wiring::build_repository_usecase()),
+            authority.clone(),
+        ));
+        let mut router: CommandRouter<InvokeHandler<tauri::test::MockRuntime>> =
+            CommandRouter::new(Box::new(|invoke| {
+                invoke.resolver.resolve("fallback-result");
+                true
+            }));
+        router.register_domain(
+            &["record_normal_command_effect"],
+            Box::new(tauri::generate_handler![record_normal_command_effect]),
+        );
+        let app = tauri::test::mock_builder()
+            .manage(authority)
+            .manage(dispatch)
+            .manage(effects.clone())
+            .invoke_handler(move |invoke| router.handle(invoke))
+            .build(crate::application_context())
+            .unwrap();
+        let window = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .unwrap();
+        // When / Then
+        for (command, expected) in [
+            ("record_normal_command_effect", "normal-effect-ran"),
+            ("unregistered", "fallback-result"),
+        ] {
+            let result = tauri::test::get_ipc_response(&window, invoke_request(command))
+                .unwrap()
+                .deserialize::<String>()
+                .unwrap();
+            assert_eq!(result, expected);
+        }
+        assert_eq!(effects.load(Ordering::SeqCst), 1);
     }
 }
 

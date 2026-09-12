@@ -19,15 +19,6 @@ pub async fn list_branches(
 }
 
 #[tauri::command]
-pub async fn get_current_branch(
-    state: State<'_, AppState>,
-    repo_path: String,
-) -> Result<String, AppError> {
-    let uc = state.repository_usecase.clone();
-    run_blocking(move || uc.get_current_branch(&repo_path)).await
-}
-
-#[tauri::command]
 pub async fn get_default_branch(
     state: State<'_, AppState>,
     repo_path: String,

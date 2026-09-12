@@ -67,6 +67,7 @@ fn start_local_api_test_host_with_policy(
         binding.terminal_bearer_token(),
         None,
         None,
+        None,
     );
     let server_runtime = tokio::runtime::Runtime::new().unwrap();
     let server = binding.start(router, server_runtime.handle());

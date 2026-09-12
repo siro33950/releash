@@ -13,7 +13,6 @@ use crate::domain::app_config::error::AppConfigError;
 use crate::domain::app_config::repository::{
     ConfigRepository, ConfigSecretRepository, ConfigUpdate, NotionConfigRepository,
 };
-use crate::domain::app_config::services::generate_token;
 use crate::domain::app_config::value_objects as domain_vo;
 use crate::domain::provider_lifecycle::ProviderKind;
 
@@ -56,6 +55,26 @@ impl AppConfig {
         let result = f(&mut config)?;
         write_config(&self.config_path, &config)?;
         Ok(result)
+    }
+
+    fn read_legacy_server_token(&self) -> Result<Option<String>, AppConfigError> {
+        let content = match fs::read_to_string(&self.config_path) {
+            Ok(content) => content,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(AppConfigError::Repository(format!(
+                    "設定ファイル読み込み失敗: {error}"
+                )))
+            }
+        };
+        let legacy = toml::from_str::<toml::Value>(&content)
+            .map_err(|_| AppConfigError::Repository("秘匿対象の旧設定のパース失敗".to_string()))?;
+        Ok(legacy
+            .get("server")
+            .and_then(|server| server.get("token"))
+            .and_then(toml::Value::as_str)
+            .filter(|token| token.len() >= 8)
+            .map(str::to_string))
     }
 }
 
@@ -128,20 +147,18 @@ impl ProviderExecutableConfigRepository for AppConfig {
 
 impl ConfigSecretRepository for AppConfig {
     fn configured_secret_values(&self) -> Result<Vec<String>, AppConfigError> {
-        self.get_config()
-            .map(|config| {
-                let mut values = Vec::new();
-                if config.server.token.len() >= 8 {
-                    values.push(config.server.token);
-                }
-                for notion in config.notion.into_values() {
-                    if notion.api_token.len() >= 8 {
-                        values.push(notion.api_token);
-                    }
-                }
-                values
-            })
-            .map_err(AppConfigError::Repository)
+        let config = self.get_config().map_err(AppConfigError::Repository)?;
+        let mut values = Vec::new();
+        for notion in config.notion.into_values() {
+            if notion.api_token.len() >= 8 {
+                values.push(notion.api_token);
+            }
+        }
+        match self.read_legacy_server_token() {
+            Ok(token) => values.extend(token),
+            Err(error) => log::warn!("{error}"),
+        }
+        Ok(values)
     }
 }
 
@@ -263,8 +280,8 @@ struct LegacyTelemetryProbe {
 }
 
 pub fn load_or_create_config(path: &Path) -> Result<ReleashConfig, String> {
-    let mut needs_write = false;
-    let mut config = if path.exists() {
+    let mut needs_write = !path.exists();
+    let config = if path.exists() {
         let content =
             fs::read_to_string(path).map_err(|e| format!("設定ファイル読み込み失敗: {e}"))?;
         let mut config = toml::from_str::<ReleashConfig>(&content)
@@ -281,10 +298,6 @@ pub fn load_or_create_config(path: &Path) -> Result<ReleashConfig, String> {
         ReleashConfig::default()
     };
 
-    if config.server.token.is_empty() {
-        config.server.token = generate_token();
-        needs_write = true;
-    }
     if needs_write {
         write_config(path, &config)?;
     }
@@ -350,13 +363,16 @@ fn write_config_tmp_file(tmp_path: &Path, content: &str) -> Result<(), String> {
 }
 
 #[cfg(test)]
+#[path = "repository_impl_test.rs"]
+mod repository_impl_tests;
+
+#[cfg(test)]
 mod tests {
     use super::super::config_models::{
         AgentsSection, AppSection, NotionPropertyMappingModel, NotionRepoConfigModel,
         WorkflowSection,
     };
     use super::*;
-    use crate::domain::app_config::services::TOKEN_LENGTH;
     use tempfile::TempDir;
 
     fn config_path(dir: &TempDir) -> PathBuf {
@@ -437,137 +453,55 @@ mod tests {
     }
 
     #[test]
-    fn creates_default_config_with_token() {
+    fn test_設定作成_serverを出力せず既定値を保存する() {
+        // Given
         let dir = TempDir::new().unwrap();
         let path = config_path(&dir);
-
+        // When
         let config = load_or_create_config(&path).unwrap();
-
-        assert_eq!(config.server.bind, "127.0.0.1");
-        assert_eq!(config.server.port, 9700);
-        assert_eq!(config.server.token.len(), TOKEN_LENGTH);
-        assert!(!config.server.tls.enabled);
+        // Then
         assert!(config.telemetry.performance_telemetry);
         assert!(path.exists());
+        assert!(!fs::read_to_string(path).unwrap().contains("[server]"));
     }
 
     #[test]
-    fn loads_existing_config() {
+    fn test_旧server設定_読み込み可能で再保存時に削除する() {
+        // Given
         let dir = TempDir::new().unwrap();
         let path = config_path(&dir);
-
-        let content = r#"
+        fs::write(
+            &path,
+            r#"
 [server]
 bind = "0.0.0.0"
 port = 8080
-token = "existing_token_value_here_with_enough_length_!!"
-"#;
-        fs::write(&path, content).unwrap();
-
-        let config = load_or_create_config(&path).unwrap();
-
-        assert_eq!(config.server.bind, "0.0.0.0");
-        assert_eq!(config.server.port, 8080);
-        assert_eq!(
-            config.server.token,
-            "existing_token_value_here_with_enough_length_!!"
-        );
-    }
-
-    #[test]
-    fn loads_existing_config_with_legacy_mcp_fields() {
-        let dir = TempDir::new().unwrap();
-        let path = config_path(&dir);
-
-        let content = r#"
-[server]
-bind = "0.0.0.0"
-port = 8080
-token = "existing_token_value_here_with_enough_length_!!"
+token = "legacy-secret"
 mcp_port = 19801
-mcp_token = "legacy_mcp_token_value"
-"#;
-        fs::write(&path, content).unwrap();
-
+[server.tls]
+enabled = true
+cert = "cert.pem"
+key = "key.pem"
+[app]
+close_to_tray = false
+"#,
+        )
+        .unwrap();
+        let original = fs::read_to_string(&path).unwrap();
+        // When
         let config = load_or_create_config(&path).unwrap();
-
-        assert_eq!(config.server.bind, "0.0.0.0");
-        assert_eq!(config.server.port, 8080);
-        assert_eq!(
-            config.server.token,
-            "existing_token_value_here_with_enough_length_!!"
-        );
-    }
-
-    #[test]
-    fn generates_token_when_empty_and_writes_back() {
-        let dir = TempDir::new().unwrap();
-        let path = config_path(&dir);
-
-        let content = r#"
-[server]
-bind = "0.0.0.0"
-port = 9700
-token = ""
-"#;
-        fs::write(&path, content).unwrap();
-
-        let config = load_or_create_config(&path).unwrap();
-
-        assert_eq!(config.server.token.len(), TOKEN_LENGTH);
-
-        let reloaded = fs::read_to_string(&path).unwrap();
-        let reloaded: ReleashConfig = toml::from_str(&reloaded).unwrap();
-        assert_eq!(reloaded.server.token, config.server.token);
-    }
-
-    #[test]
-    fn fills_defaults_for_partial_config() {
-        let dir = TempDir::new().unwrap();
-        let path = config_path(&dir);
-
-        let content = "[server]\nport = 3000\n";
-        fs::write(&path, content).unwrap();
-
-        let config = load_or_create_config(&path).unwrap();
-
-        assert_eq!(config.server.bind, "127.0.0.1");
-        assert_eq!(config.server.port, 3000);
-        assert_eq!(config.server.token.len(), TOKEN_LENGTH);
-        assert!(!config.server.tls.enabled);
-    }
-
-    #[test]
-    fn roundtrip_serialize_deserialize() {
-        let mut config = ReleashConfig::default();
-        config.server.token = generate_token();
-        config.server.bind = "192.168.1.1".to_string();
-        config.server.port = 5555;
-        config.server.tls.enabled = true;
-        config.server.tls.cert = "/path/to/cert.pem".to_string();
-        config.server.tls.key = "/path/to/key.pem".to_string();
-
-        let serialized = toml::to_string_pretty(&config).unwrap();
-        let deserialized: ReleashConfig = toml::from_str(&serialized).unwrap();
-
-        assert_eq!(deserialized.server.bind, config.server.bind);
-        assert_eq!(deserialized.server.port, config.server.port);
-        assert_eq!(deserialized.server.token, config.server.token);
-        assert_eq!(deserialized.server.tls.enabled, config.server.tls.enabled);
-        assert_eq!(deserialized.server.tls.cert, config.server.tls.cert);
-        assert_eq!(deserialized.server.tls.key, config.server.tls.key);
-    }
-
-    #[test]
-    fn generated_tokens_are_unique_and_correct_length() {
-        let t1 = generate_token();
-        let t2 = generate_token();
-
-        assert_ne!(t1, t2);
-        assert_eq!(t1.len(), TOKEN_LENGTH);
-        assert_eq!(t2.len(), TOKEN_LENGTH);
-        assert!(t1.chars().all(|c| c.is_ascii_alphanumeric()));
-        assert!(t2.chars().all(|c| c.is_ascii_alphanumeric()));
+        // Then
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        // When
+        write_config(&path, &config).unwrap();
+        // Then
+        let saved = fs::read_to_string(&path).unwrap();
+        assert!(!saved.contains("[server"));
+        assert!(!saved.contains("legacy-secret"));
+        assert!(!saved.contains("cert.pem"));
+        let reloaded = load_or_create_config(&path).unwrap();
+        assert!(!reloaded.app.close_to_tray);
+        assert!(reloaded.telemetry.performance_telemetry);
     }
 
     #[test]
@@ -777,7 +711,6 @@ new_thread = "Ctrl Shift N"
         let path = config_path(&dir);
 
         let mut config = ReleashConfig::default();
-        config.server.token = generate_token();
         config.telemetry.crash_reporting = false;
         config.telemetry.performance_telemetry = false;
         write_config(&path, &config).unwrap();
@@ -824,8 +757,7 @@ auto_start_on_lan = true
         fs::write(&path, content).unwrap();
 
         let config = load_or_create_config(&path).unwrap();
-        assert_eq!(config.server.bind, "127.0.0.1");
-        assert_eq!(config.server.port, 9700);
+        assert!(!toml::to_string(&config).unwrap().contains("[remote]"));
     }
 
     #[test]
@@ -840,7 +772,6 @@ auto_start_on_lan = true
         let path = config_path(&dir);
 
         let mut config = ReleashConfig::default();
-        config.server.token = generate_token();
         config.workflow.approval_auto_approve = true;
         write_config(&path, &config).unwrap();
 
@@ -883,7 +814,6 @@ token = "existing_token_value_here_with_enough_length_!!"
         let path = config_path(&dir);
 
         let mut config = ReleashConfig::default();
-        config.server.token = generate_token();
         config.app.close_to_tray = false;
         config.app.auto_launch = true;
         config.app.start_minimized = true;
@@ -954,7 +884,6 @@ last_bind_ip = "192.168.1.1"
         let path = config_path(&dir);
 
         let mut config = ReleashConfig::default();
-        config.server.token = generate_token();
         config.app.last_repo_paths = vec![
             "/repo/a".to_string(),
             "/repo/b".to_string(),
@@ -994,7 +923,6 @@ token = "existing_token_value_here_with_enough_length_!!"
         let path = config_path(&dir);
 
         let mut config = ReleashConfig::default();
-        config.server.token = generate_token();
         config.notion.insert(
             "/path/to/repo".to_string(),
             NotionRepoConfigModel {
@@ -1126,7 +1054,6 @@ token = "existing_token_value_here_with_enough_length_!!"
         let path = config_path(&dir);
 
         let mut config = ReleashConfig::default();
-        config.server.token = generate_token();
         config.agents.codex.cli_path = Some("/opt/bin/codex".to_string());
         write_config(&path, &config).unwrap();
 
@@ -1144,7 +1071,6 @@ token = "existing_token_value_here_with_enough_length_!!"
         let path = config_path(&dir);
 
         let mut config = ReleashConfig::default();
-        config.server.token = generate_token();
         config.agents.claude.cli_path = Some("/opt/bin/claude".to_string());
         write_config(&path, &config).unwrap();
 

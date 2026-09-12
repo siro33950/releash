@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use notify_debouncer_mini::{new_debouncer, notify::RecursiveMode};
-use tauri::Emitter;
+use std::sync::Arc;
 
 fn review_events_signature(dir: &Path) -> Vec<(String, u64, Option<SystemTime>)> {
     let mut signature = Vec::new();
@@ -54,12 +54,7 @@ fn review_events_signature(dir: &Path) -> Vec<(String, u64, Option<SystemTime>)>
 /// `app_data_dir` 配下に `review-comments/` が無ければ作成する。作成に失敗
 /// したり debouncer の生成に失敗した場合は watcher は spawn せず警告ログを
 /// 出すのみ（既存 Tauri コマンド経由の `emit_changed` は引き続き機能する）。
-pub fn spawn_review_comments_watcher<R: tauri::Runtime + 'static>(
-    app: tauri::AppHandle<R>,
-    app_data_dir: PathBuf,
-) {
-    let dir = crate::adaptor::gateway::comment::state_dir(&app_data_dir);
-
+pub fn spawn_review_comments_watcher(dir: PathBuf, notify_changed: Arc<dyn Fn() + Send + Sync>) {
     if let Err(e) = std::fs::create_dir_all(&dir) {
         log::error!(
             "Failed to prepare review-comments directory {}: {e}",
@@ -68,7 +63,7 @@ pub fn spawn_review_comments_watcher<R: tauri::Runtime + 'static>(
         return;
     }
 
-    let emit_app = app.clone();
+    let emit_changed = notify_changed.clone();
     let debouncer_result = new_debouncer(
         Duration::from_millis(500),
         move |res: Result<
@@ -88,9 +83,7 @@ pub fn spawn_review_comments_watcher<R: tauri::Runtime + 'static>(
                 if !relevant {
                     return;
                 }
-                if let Err(e) = emit_app.emit("review-comments-changed", "*") {
-                    log::warn!("Failed to emit review-comments-changed: {e}");
-                }
+                emit_changed();
             }
             Err(e) => {
                 log::warn!("review-comments watcher error: {e:?}");
@@ -116,7 +109,7 @@ pub fn spawn_review_comments_watcher<R: tauri::Runtime + 'static>(
 
     // debouncer は drop されるまで OS watch を保つ。tokio タスクが debouncer の
     // 所有権を握り、アプリ終了時に runtime が落ちるタイミングで drop される。
-    let poll_app = app.clone();
+
     let poll_dir = dir.clone();
     let task = async move {
         let _retained_debouncer = debouncer;
@@ -128,9 +121,7 @@ pub fn spawn_review_comments_watcher<R: tauri::Runtime + 'static>(
             let next_signature = review_events_signature(&poll_dir);
             if next_signature != last_signature {
                 last_signature = next_signature;
-                if let Err(e) = poll_app.emit("review-comments-changed", "*") {
-                    log::warn!("Failed to emit review-comments-changed from poll fallback: {e}");
-                }
+                notify_changed();
             }
         }
     };
@@ -145,7 +136,7 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
-    use tauri::Listener;
+    use tauri::{Emitter, Listener};
     use tempfile::TempDir;
 
     fn make_app() -> tauri::App<tauri::test::MockRuntime> {
@@ -186,12 +177,20 @@ mod tests {
         );
         received.lock().unwrap().clear();
 
-        spawn_review_comments_watcher(app.handle().clone(), data_dir.path().to_path_buf());
+        spawn_review_comments_watcher(
+            data_dir.path().join("review-comments"),
+            Arc::new({
+                let app = app.handle().clone();
+                move || app.emit("review-comments-changed", "*").unwrap()
+            }),
+        );
         // watcher の watch 開始が反映されるまで少し待つ
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        let target =
-            crate::adaptor::gateway::comment::state_dir(data_dir.path()).join("dummy.events.json");
+        let target = data_dir
+            .path()
+            .join("review-comments")
+            .join("dummy.events.json");
         let deadline = tokio::time::Instant::now() + Duration::from_secs(4);
         let mut attempt = 0usize;
         loop {
@@ -223,11 +222,19 @@ mod tests {
         let app = make_app();
         let received = install_listener(app.handle());
 
-        spawn_review_comments_watcher(app.handle().clone(), data_dir.path().to_path_buf());
+        spawn_review_comments_watcher(
+            data_dir.path().join("review-comments"),
+            Arc::new({
+                let app = app.handle().clone();
+                move || app.emit("review-comments-changed", "*").unwrap()
+            }),
+        );
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        let target =
-            crate::adaptor::gateway::comment::state_dir(data_dir.path()).join("dummy.events.lock");
+        let target = data_dir
+            .path()
+            .join("review-comments")
+            .join("dummy.events.lock");
         std::fs::write(&target, b"lock").unwrap();
 
         // debounce 後にも emit されないことを確認する。

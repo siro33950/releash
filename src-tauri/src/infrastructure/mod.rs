@@ -11,3 +11,5 @@ pub(crate) mod provider_history;
 pub(crate) mod provider_lifecycle;
 pub(crate) mod telemetry;
 pub(crate) mod terminal;
+
+pub(crate) mod push;

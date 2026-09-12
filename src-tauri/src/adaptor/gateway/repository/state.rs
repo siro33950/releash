@@ -2,9 +2,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::adaptor::gateway::push::BackendPush;
 use notify_debouncer_mini::notify::RecursiveMode;
 use notify_debouncer_mini::{new_debouncer, DebouncedEvent};
-use tauri::{Emitter, Runtime};
+use tauri::Runtime;
 
 use crate::usecase::repository_state::runtime::{
     RepositoryStateInvalidationReceiver, RepositoryStateInvalidationSender,
@@ -293,7 +294,7 @@ impl<R: Runtime> RepositoryStateNotifier for TauriRepositoryStateNotifier<R> {
                 worktree_path.clone(),
                 &notification.snapshot,
             );
-            let _ = self.app.emit("repository-snapshot-changed", event);
+            BackendPush::RepositorySnapshotChanged(&event).emit(&self.app);
         }
 
         if notification.phase == SnapshotNotificationPhase::RefreshStarted {
@@ -301,15 +302,13 @@ impl<R: Runtime> RepositoryStateNotifier for TauriRepositoryStateNotifier<R> {
         }
 
         for worktree_path in &notification.worktree_paths {
-            let _ = self.app.emit(
-                "git-status-changed",
-                GitStatusChangedEvent {
-                    repo_path: worktree_path.clone(),
-                },
-            );
+            BackendPush::GitStatusChanged(&GitStatusChangedEvent {
+                repo_path: worktree_path.clone(),
+            })
+            .emit(&self.app);
         }
 
-        let _ = self.app.emit("branch-list-sync", ());
+        BackendPush::BranchListSync.emit(&self.app);
 
         if notification.reason.file_change {
             let path = notification.reason.path.unwrap_or_else(|| {
@@ -320,14 +319,12 @@ impl<R: Runtime> RepositoryStateNotifier for TauriRepositoryStateNotifier<R> {
                     .unwrap_or_default()
             });
             for watcher_id in notification.file_watcher_ids {
-                let _ = self.app.emit(
-                    "file-change",
-                    FileChangeEvent {
-                        watcher_id,
-                        path: path.clone(),
-                        kind: "change".to_string(),
-                    },
-                );
+                BackendPush::FileChange(&FileChangeEvent {
+                    watcher_id,
+                    path: path.clone(),
+                    kind: "change".to_string(),
+                })
+                .emit(&self.app);
             }
         }
     }

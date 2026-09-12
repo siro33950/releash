@@ -1,4 +1,4 @@
-use tauri::Emitter;
+use crate::adaptor::gateway::push::BackendPush;
 
 use crate::adaptor::protocol::workflow::{
     WorkflowExecutionChangedPayloadView, WorkflowExecutionView,
@@ -17,7 +17,7 @@ fn emit_workflow_execution_view<R: tauri::Runtime>(
         worktree_path: view.worktree_path.clone(),
         workflow_execution: view,
     };
-    let _ = app.emit("workflow-execution-changed", payload);
+    BackendPush::WorkflowExecutionChanged(&payload).emit(app);
 }
 
 /// Maps the already-updated runtime snapshot to the public execution read model.

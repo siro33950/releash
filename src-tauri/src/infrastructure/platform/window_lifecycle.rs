@@ -399,7 +399,7 @@ mod tests {
 
     use crate::domain::app_config::repository::ConfigUpdate;
     use crate::domain::app_config::value_objects::{
-        AppConfigDocument, AppSettings, ServerConfig, TelemetryConfig, TlsConfig, WorkflowConfig,
+        AppConfigDocument, AppSettings, TelemetryConfig, WorkflowConfig,
     };
     use crate::domain::app_config::AppConfigError;
 
@@ -518,16 +518,6 @@ mod tests {
 
     fn config_with_startup_policy(start_minimized: bool, close_to_tray: bool) -> AppConfigDocument {
         AppConfigDocument {
-            server: ServerConfig {
-                bind: "127.0.0.1".to_string(),
-                port: 0,
-                token: String::new(),
-                tls: TlsConfig {
-                    enabled: false,
-                    cert: String::new(),
-                    key: String::new(),
-                },
-            },
             telemetry: TelemetryConfig {
                 crash_reporting: false,
                 performance_telemetry: false,

@@ -1,24 +1,8 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppConfigDocument {
-    pub server: ServerConfig,
     pub telemetry: TelemetryConfig,
     pub app: AppSettings,
     pub workflow: WorkflowConfig,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ServerConfig {
-    pub bind: String,
-    pub port: u16,
-    pub token: String,
-    pub tls: TlsConfig,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TlsConfig {
-    pub enabled: bool,
-    pub cert: String,
-    pub key: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

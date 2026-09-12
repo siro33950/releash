@@ -2,6 +2,8 @@ mod adaptor;
 #[cfg(debug_assertions)]
 pub mod agent_session_tui_acceptance;
 pub mod cli;
+#[cfg(debug_assertions)]
+pub mod client_api_acceptance;
 mod domain;
 mod infrastructure;
 mod other;
@@ -675,6 +677,8 @@ pub fn run() {
             let startup_authority = Arc::new(
                 usecase::application_startup::ApplicationStartupAuthority::ready(),
             );
+            let push_sink = Arc::new(infrastructure::push::PushSink::new());
+            app.manage(push_sink.clone());
             app.manage(local_event_store.clone());
             let projected_local_event_repository: Arc<
                 dyn domain::local_event::LocalEventTransactionRepository,
@@ -1049,8 +1053,11 @@ pub fn run() {
 
             // CLI / Agent / 外部編集由来の review comment 変更を UI へ通知する。
             infrastructure::comment::watcher::spawn_review_comments_watcher(
-                app.handle().clone(),
-                data_dir.clone(),
+                adaptor::gateway::comment::state_dir(&data_dir),
+                Arc::new({
+                    let app = app.handle().clone();
+                    move || adaptor::gateway::push::BackendPush::ReviewCommentsChanged("*").emit(&app)
+                }),
             );
 
             infrastructure::platform::menu::setup_menu(app)?;
@@ -1088,6 +1095,10 @@ pub fn run() {
                 let local_api_binding =
                     infrastructure::local_api::LocalApiServerBinding::bind(data_dir.clone())
                         .map_err(|error| format!("local API の起動に失敗しました: {error}"))?;
+                let client_dispatch = Arc::new(adaptor::controller::command::client::ClientCommandDispatch::new(
+                    repository_usecase.clone(), startup_authority.clone(),
+                ));
+                app.manage(client_dispatch.clone());
                 let local_api_router = adaptor::controller::api::build_router(
                     Arc::new(workflow_query_usecase.read_usecase()),
                     workflow_runtime_usecase.clone(),
@@ -1095,6 +1106,10 @@ pub fn run() {
                     local_api_binding.terminal_bearer_token(),
                     Some(adaptor::controller::api::TerminalApiDeps::new(
                         terminal_surface.clone(),
+                    )),
+                    Some(adaptor::controller::api::ClientApiDeps::new(
+                        client_dispatch.clone(),
+                        adaptor::gateway::push::ClientPushGateway::new(push_sink.clone()),
                     )),
                     Some(provider_lifecycle_ingress.clone()),
                 );

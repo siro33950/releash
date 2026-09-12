@@ -42,8 +42,7 @@ impl LocalApiServerBinding {
             .map_err(LocalApiServerError::Nonblocking)?;
 
         let token = Arc::<str>::from(generate_token());
-        // renderer JSへ渡すterminal専用token。discovery fileには書き出さず、
-        // in-processでterminal streamの認証にだけ使う。
+        // rendererのclient / terminal共通token。discovery fileには書き出さない。
         let terminal_token = Arc::<str>::from(generate_token());
         let instance_id = uuid::Uuid::new_v4().simple().to_string();
         let pid = std::process::id();

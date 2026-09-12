@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::usecase::workflow::{WorkflowGetOutputResult, WorkflowValidateOutputResult};
 
@@ -151,6 +152,70 @@ impl From<GetArtifactResponse> for WorkflowGetOutputResult {
         }
     }
 }
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum ClientRequest {
+    Command(CommandRequest),
+    Stream(StreamEnvelope),
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub(crate) struct CommandRequest {
+    pub request_id: String,
+    pub command: String,
+    pub args: Value,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct CommandResponse {
+    pub request_id: String,
+    #[serde(flatten)]
+    pub outcome: CommandOutcome,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub(crate) enum CommandOutcome {
+    Success { result: Value },
+    Failure { error: crate::other::AppError },
+}
+
+impl CommandResponse {
+    pub(crate) fn new(request_id: String, result: Result<Value, crate::other::AppError>) -> Self {
+        Self {
+            request_id,
+            outcome: match result {
+                Ok(result) => CommandOutcome::Success { result },
+                Err(error) => CommandOutcome::Failure { error },
+            },
+        }
+    }
+}
+
+/// A2 stream contract: each serialized JSON frame is at most 64 KiB, including
+/// envelope overhead. Split larger data at UTF-8 boundaries before serialization;
+/// each fragment increments sequence within its attachment, starting at 1.
+/// Ack is cumulative for that attachment only. A1 does not transmit stream frames.
+pub(crate) const MAX_STREAM_FRAME_BYTES: usize = 64 * 1024;
+
+#[derive(Debug, Deserialize, Serialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(crate) enum StreamEnvelope {
+    Stream {
+        attachment_id: String,
+        sequence: u64,
+        data: String,
+    },
+    Ack {
+        attachment_id: String,
+        sequence: u64,
+    },
+}
+
+#[cfg(test)]
+#[path = "protocol_test.rs"]
+mod protocol_tests;
 
 #[cfg(test)]
 mod tests {

@@ -6,7 +6,6 @@ fn assert_domain_roundtrip(config: ReleashConfig) {
 
     apply_domain_to_config(&mut roundtripped, domain);
 
-    assert_eq!(roundtripped.server, config.server);
     assert_eq!(roundtripped.telemetry, config.telemetry);
     assert_eq!(roundtripped.app, config.app);
     assert_eq!(roundtripped.workflow, config.workflow);
@@ -29,16 +28,6 @@ fn test_config_model変換_既定値がdomain往復で同値になる() {
 #[test]
 fn test_config_model変換_変更済み値がdomain往復で同値になる() {
     let config = ReleashConfig {
-        server: ServerSection {
-            bind: "0.0.0.0".to_string(),
-            port: 18080,
-            token: "server-token".to_string(),
-            tls: TlsSection {
-                enabled: true,
-                cert: "/tmp/cert.pem".to_string(),
-                key: "/tmp/key.pem".to_string(),
-            },
-        },
         telemetry: TelemetrySection {
             crash_reporting: false,
             performance_telemetry: false,

@@ -7,6 +7,7 @@ use tokio_tungstenite::tungstenite::Message;
 use super::*;
 use crate::adaptor::gateway::terminal_surface::event_hub::TerminalSurfaceEventHub;
 use crate::adaptor::gateway::terminal_surface::output_flow_control::TERMINAL_OUTPUT_CREDIT_CODE_UNITS;
+use crate::adaptor::protocol::terminal::TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX;
 use crate::domain::terminal_surface::entities::TerminalSurface;
 use crate::domain::terminal_surface::gateway::{
     TerminalSurfaceEvent, TerminalSurfaceEventSink, TerminalSurfaceRepository,

@@ -1,4 +1,6 @@
 mod auth;
+mod client;
+pub(crate) use client::ClientApiDeps;
 mod error;
 pub(crate) mod protocol;
 pub(crate) mod provider_lifecycle;
@@ -28,6 +30,7 @@ pub(crate) fn build_router(
     token: Arc<str>,
     terminal_token: Arc<str>,
     terminal: Option<TerminalApiDeps>,
+    client: Option<ClientApiDeps>,
     provider_lifecycle: Option<
         Arc<dyn crate::usecase::provider_lifecycle::ProviderLifecycleIngressPort>,
     >,
@@ -42,10 +45,12 @@ pub(crate) fn build_router(
             error::ApiError::not_found("local API endpoint was not found").into_response()
         })
         .with_state(state.clone());
-    // terminal routeだけはrendererへ渡すterminal専用tokenでも認証できる。
+    // renderer向けのws routeは共通の非master tokenでも認証できる。
     // masterのdiscovery tokenはrenderer JSに露出させない。
     let terminal_router = authenticated_with_tokens(
-        terminal::router().with_state(state),
+        terminal::router()
+            .with_state(state)
+            .merge(client::router(client)),
         auth::AcceptedBearerTokens::new([token.clone(), terminal_token]),
     );
     authenticated(
@@ -576,7 +581,8 @@ pub(crate) mod test_support {
         terminal_token: &str,
         terminal: TerminalApiDeps,
     ) -> Router {
-        test_router_with_optional_deps(data_dir, token, terminal_token, Some(terminal), None).0
+        test_router_with_optional_deps(data_dir, token, terminal_token, Some(terminal), None, None)
+            .0
     }
 
     pub(crate) fn test_router_with_provider_lifecycle(
@@ -586,7 +592,8 @@ pub(crate) mod test_support {
             dyn crate::usecase::provider_lifecycle::ProviderLifecycleIngressPort,
         >,
     ) -> Router {
-        test_router_with_optional_deps(data_dir, token, token, None, Some(provider_lifecycle)).0
+        test_router_with_optional_deps(data_dir, token, token, None, None, Some(provider_lifecycle))
+            .0
     }
 
     fn test_router_with_optional_terminal(
@@ -598,7 +605,7 @@ pub(crate) mod test_support {
         Arc<WorkflowRuntimeUsecase>,
         Arc<RecordingRuntimeGateway>,
     ) {
-        test_router_with_optional_deps(data_dir, token, token, terminal, None)
+        test_router_with_optional_deps(data_dir, token, token, terminal, None, None)
     }
 
     fn test_router_with_optional_deps(
@@ -606,6 +613,7 @@ pub(crate) mod test_support {
         token: &str,
         terminal_token: &str,
         terminal: Option<TerminalApiDeps>,
+        client: Option<ClientApiDeps>,
         provider_lifecycle: Option<
             Arc<dyn crate::usecase::provider_lifecycle::ProviderLifecycleIngressPort>,
         >,
@@ -643,6 +651,7 @@ pub(crate) mod test_support {
             Arc::<str>::from(token),
             Arc::<str>::from(terminal_token),
             terminal,
+            client,
             provider_lifecycle,
         );
         (router, runtime, gateway)

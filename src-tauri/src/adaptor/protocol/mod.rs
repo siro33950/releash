@@ -11,3 +11,5 @@ pub(crate) mod notion;
 pub(crate) mod provider_lifecycle;
 pub(crate) mod terminal;
 pub(crate) mod workflow;
+
+pub(crate) mod client;
