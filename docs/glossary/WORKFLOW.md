@@ -445,7 +445,7 @@ engine は隔離 Node の Artifact に `worktree: { branch, path }` を合成す
 
 ## Lua
 
-`.lua` は load 時に一度だけ評価され、YAML と同じ `WorkflowDefinition` を構築する。実行中に Lua は評価されない。chunk は `r.workflow{...}` を返す必要がある。Lua の `completion` table は `require` だけを受理し、`delegate` は受理しない。
+`.lua` は load 時に一度だけ評価され、YAML と同じ `WorkflowDefinition` を構築する。実行中に Lua は評価されない。chunk は `r.workflow{...}` を返す必要がある。Session の delegate は、構築後の handle に `work.delegate{ child, inputs?, when, max_iterations }` と宣言する。親自身の Artifact は `work` / `work.<field>...`、child の Artifact は `work.child.<field>...` で参照する。
 
 ```lua
 local r = require("releash")
@@ -483,6 +483,7 @@ return r.workflow{
 | `r.session{ name?, provider, model?, permission?, facets?, artifact?, input?, completion?: { require = r.completion.approval }, worktree? }` | Node |
 | `r.fanout{ name?, children, items?, input?, completion?: { require = r.completion.approval }, worktree? }` | Node |
 | `r.sequence{ name?, entry?, children, input?, completion?: { require = r.completion.approval }, worktree? }` | Node |
+| `work.delegate{ child, inputs?, when, max_iterations }`（Session handle のメソッド） | なし |
 | `r.child{ node, inputs?, rules?, on_failure? }` | Child |
 | `r.next(node)` | Rule |
 | `r.when{ on, on_true, next }`（`on` は Source または Predicate） | Rule |
@@ -494,7 +495,7 @@ return r.workflow{
 | `r.input(name, contract?)` | Input |
 | `r.request` / `r.items` | Source |
 | `r.worktree.shared` / `r.worktree.isolated` | Worktree（各 Node builder の `worktree` 値。文字列は受理しない） |
-| `r.completion.approval` | CompletionRequirement（`completion` table は `require` のみ受理。`delegate` は未対応） |
+| `r.completion.approval` | CompletionRequirement（`completion` table の `require` に指定） |
 | `r.provider.claude` / `r.provider.codex` | Provider |
 | `r.schema.object{ name?, properties, required? }` | Schema |
 | `r.schema.array{ name?, items }` | Schema |
@@ -502,6 +503,41 @@ return r.workflow{
 | `r.workflow{ name, description, main }` | Workflow |
 
 `completion` は `completion = { require = r.completion.approval }` の table で宣言する。handle を table で包まず直接渡す旧形式は Error Diagnostic になる。`require` の値はこの handle だけを受理し、文字列は受理しない。
+
+`delegate` は Artifact Contract を宣言した Session handle で一度だけ宣言できる。`child` は Node 値、`when` は Source または `r.all` / `r.any` の Predicate、`max_iterations` は1以上の整数で、いずれも必須である。任意の `inputs` は `<パラメータ名> = <Source>` の table で、親 Session の Input、親自身の Artifact 全体または field（`child` 以下を含む）、`r.request` を渡せる。
+
+```lua
+local check = r.session{
+  name = "check",
+  provider = r.provider.codex,
+  facets = { instruction = f.instruction.implement_fix_plan },
+  input = { r.input("result") },
+  artifact = r.schema.object{
+    properties = { complete = r.schema.boolean() },
+    required = { "complete" },
+  },
+}
+local work = r.session{
+  name = "work",
+  provider = r.provider.codex,
+  facets = { instruction = f.instruction.implement_fix_plan },
+  artifact = r.schema.object{
+    properties = { done = r.schema.boolean() },
+    required = { "done" },
+  },
+  completion = { require = r.completion.approval },
+}
+work.delegate{
+  child = check,
+  inputs = { result = work },
+  when = work.child.complete,
+  max_iterations = 3,
+}
+```
+
+`when` は親自身の提出 field（`work.done` など）と `work.child` 以下の field を参照し、各 Ref は required boolean field でなければならない。delegate を宣言した Session の `child` は、child が Session / Command なら直接、Sequence / Fanout なら統合 map を辿る（`work.child.check.complete`、`work.child["0"].complete` など）。`inputs` / `when` は child の Artifact Contract に沿って load 時に型検査される。delegate だけから参照する child も定義に含まれる。
+
+`completion = { require = r.completion.approval }` と delegate の併記は and になる。`completion = { delegate = {...} }` は引き続き `WFS002` で拒否する。同じ handle への二重宣言も `WFS002` / `parse_shape` になる。Session の Artifact Contract 直下に `delegate` field があっても、`work.delegate` はメソッドに解決され、その field を Lua の値参照には使えない。これによる Error Diagnostic の追加や YAML の参照規則の変更はない。
 
 `r.all` / `r.any` は top-level の述語 builder である。要素は1つ以上で、空の builder はネスト内でも YAML と同じ parse/shape の Error Diagnostic になる。`r.when.on` の単一 Source は従来どおり使える。述語内の全 Source は、その辺の自 child の Artifact field を指し、多段 Object や Sequence / Fanout の map を辿れる。論理演算・型検査・欠損または非boolean値を Ref 単位で false とする評価は YAML と同じで、実行中に Lua で評価しない。
 

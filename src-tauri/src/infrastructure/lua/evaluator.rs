@@ -63,6 +63,10 @@ pub(crate) enum LuaData {
     String(String),
     Table(LuaTableData),
     Handle(LuaHostHandle),
+    BoundFunction {
+        function: u32,
+        receiver: LuaHostHandle,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -577,6 +581,19 @@ fn data_to_lua<H: LuaHost + 'static>(
         LuaData::Handle(handle) => Ok(Value::UserData(
             lua.create_userdata(HostUserData { handle, host })?,
         )),
+        LuaData::BoundFunction { function, receiver } => Ok(Value::Function(lua.create_function(
+            move |lua, arguments: MultiValue| {
+                let location = caller_location(lua);
+                let arguments = std::iter::once(Ok(LuaData::Handle(receiver.clone())))
+                    .chain(arguments.into_iter().map(lua_to_data::<H>))
+                    .collect::<mlua::Result<Vec<_>>>()?;
+                let result = host
+                    .borrow_mut()
+                    .call(function, arguments, location.clone())
+                    .map_err(|error| host_error_to_mlua(error, location))?;
+                data_to_lua(lua, result, Rc::clone(&host))
+            },
+        )?)),
     }
 }
 

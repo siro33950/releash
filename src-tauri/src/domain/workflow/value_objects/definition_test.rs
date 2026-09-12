@@ -547,6 +547,102 @@ fn test_completion要求_省略時は要求なしで承認要求だけが完了�
 }
 
 #[test]
+fn test_delegateの等価性_inputsの順序だけを無視し構成要素の差を区別する() {
+    // Given
+    let delegate = SessionDelegate {
+        child: "check".into(),
+        inputs: vec![
+            ("result".into(), InputSourceRef::new("work")),
+            ("task".into(), InputSourceRef::new("request")),
+        ],
+        when: Predicate::Ref("child.complete".into()),
+        max_iterations: 3,
+    };
+    let original_inputs = delegate.inputs.clone();
+    let mut reordered = delegate.clone();
+    reordered.inputs.reverse();
+    let reversed_inputs = reordered.inputs.clone();
+    // When / Then
+    assert_eq!(delegate, reordered);
+    assert_eq!(reordered, delegate);
+    assert_eq!(delegate.inputs, original_inputs);
+    assert_eq!(reordered.inputs, reversed_inputs);
+
+    for difference in [
+        "child",
+        "when",
+        "max_iterations",
+        "parameter",
+        "source",
+        "missing",
+        "extra",
+    ] {
+        // Given
+        let mut other = delegate.clone();
+        match difference {
+            "child" => other.child = "another".into(),
+            "when" => other.when = Predicate::Ref("done".into()),
+            "max_iterations" => other.max_iterations = 2,
+            "parameter" => other.inputs[0].0 = "another".into(),
+            "source" => other.inputs[0].1 = InputSourceRef::new("work.done"),
+            "missing" => {
+                other.inputs.pop();
+            }
+            "extra" => other
+                .inputs
+                .push(("another".into(), InputSourceRef::new("request"))),
+            _ => unreachable!(),
+        }
+        // When / Then
+        assert_ne!(delegate, other, "{difference}");
+        assert_ne!(other, delegate, "{difference}");
+    }
+    let mut generated = delegate.clone();
+    generated.inputs[0].1 = InputSourceRef::node_artifact("main#0");
+    let mut raw = generated.clone();
+    raw.inputs[0].1 = InputSourceRef::new("main#0");
+    assert_ne!(generated, raw);
+}
+
+#[test]
+fn test_生成nodeのartifact参照_文字列参照と区別してfieldを検証する() {
+    // Given
+    for (raw, fields) in [
+        ("main#0", vec![]),
+        ("main#0#1.child.complete", vec!["child", "complete"]),
+    ] {
+        let source = InputSourceRef::node_artifact(raw);
+        // When / Then
+        assert!(source.is_synthesized_node_artifact());
+        assert_eq!(source.field_path().unwrap().segments(), fields);
+        assert!(InputSourceRef::new(raw).field_path().is_none());
+    }
+    for raw in ["main#0.", "main#0..done", "main#0.child.bad field"] {
+        assert!(InputSourceRef::node_artifact(raw).field_path().is_none());
+    }
+    assert_eq!(
+        InputSourceRef::node_artifact("work.done"),
+        InputSourceRef::new("work.done")
+    );
+}
+
+#[test]
+fn test_delegateの保存_不正な生成node参照snapshotを拒否する() {
+    // Given
+    for source in [
+        serde_json::json!({"node_artifact": "work.done"}),
+        serde_json::json!({"node_artifact": "main#0..done"}),
+        serde_json::json!({"node_artifact": "main#0", "extra": true}),
+        serde_json::json!({"node_artifact": 1}),
+        serde_json::json!({"unknown": "main#0"}),
+    ] {
+        let snapshot = serde_json::json!({"child": "check", "inputs": {"result": source}, "when": "done", "max_iterations": 3});
+        // When / Then
+        assert!(serde_json::from_value::<SessionDelegate>(snapshot).is_err());
+    }
+}
+
+#[test]
 fn test_node名前空間_生成した無名inlineだけを合成名と判定する() {
     // Given
     let mut namespace = NodeNamespace::default();

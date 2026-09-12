@@ -63,7 +63,7 @@ fn parse_delegate(value: &Value) -> Result<SessionDelegate, CompletionShapeError
         .ok_or_else(|| invalid("completion delegate must be a map"))?;
     let inputs = map
         .get("inputs")
-        .map(|value| InputsMapSeed.deserialize(value))
+        .map(|value| InputsMapSeed::Source.deserialize(value))
         .transpose()
         .map_err(|error| CompletionShapeError::InvalidDelegate(error.to_string()))?
         .unwrap_or_default();
@@ -154,7 +154,7 @@ impl<'de> Deserialize<'de> for SessionDelegate {
                 let mut inputs: Vec<(String, InputSourceRef)> = Vec::new();
                 while let Some(key) = access.next_key::<String>()? {
                     if key == "inputs" {
-                        inputs = access.next_value_seed(InputsMapSeed)?;
+                        inputs = access.next_value_seed(InputsMapSeed::DelegateSnapshot)?;
                     } else {
                         fields.insert(key, access.next_value()?);
                     }

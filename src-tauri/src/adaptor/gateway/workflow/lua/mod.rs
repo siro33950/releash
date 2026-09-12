@@ -11,7 +11,7 @@ use crate::domain::workflow::value_objects::{
     ChildEntry, CommandSpec, EnvironmentVariableName, EnvironmentVariableNameError, FacetRefs,
     FanoutSpec, InputParam, InputParameterRef, InputSourceRef, ItemsSource, NodeCompletion,
     NodeDefinition, NodeKind, NodeNamespace, NodeNamespaceError, OnFailure, Predicate, Rule,
-    SchemaDef, SequenceSpec, SessionPermission, SessionSpec, WorkflowDefinition,
+    SchemaDef, SequenceSpec, SessionDelegate, SessionPermission, SessionSpec, WorkflowDefinition,
     MAIN_ENTRY_NODE_NAME,
 };
 use crate::infrastructure::lua::{
@@ -66,6 +66,7 @@ const FN_SCHEMA_NUMBER: u32 = 17;
 const FN_WORKFLOW: u32 = 18;
 const FN_ALL: u32 = 19;
 const FN_ANY: u32 = 20;
+const FN_DELEGATE: u32 = 21;
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct LuaFacetCatalog {
@@ -181,7 +182,17 @@ struct NodeDraft {
     artifact: Option<usize>,
     input: Vec<usize>,
     completion: NodeCompletion,
+    delegate: Option<DelegateDraft>,
     worktree: Option<crate::domain::workflow::WorktreeMode>,
+    location: LuaSourceLocation,
+}
+
+#[derive(Debug, Clone)]
+struct DelegateDraft {
+    child: usize,
+    inputs: Vec<(String, usize)>,
+    when: Predicate<usize>,
+    max_iterations: u32,
     location: LuaSourceLocation,
 }
 
@@ -647,6 +658,7 @@ impl LuaHost for WorkflowLuaHost {
         match function {
             FN_COMMAND => self.call_command(arguments, location),
             FN_SESSION => self.call_session(arguments, location),
+            FN_DELEGATE => self.call_delegate(arguments, location),
             FN_FANOUT => self.call_fanout(arguments, location),
             FN_SEQUENCE => self.call_sequence(arguments, location),
             FN_CHILD => self.call_child(arguments, location),
@@ -704,6 +716,15 @@ impl LuaHost for WorkflowLuaHost {
                 kind: HANDLE_FACET.to_string(),
                 index,
             }));
+        }
+        if handle.kind == HANDLE_NODE
+            && key == "delegate"
+            && matches!(self.nodes[handle.index].kind, NodeDraftKind::Session { .. })
+        {
+            return Ok(LuaData::BoundFunction {
+                function: FN_DELEGATE,
+                receiver: handle.clone(),
+            });
         }
         let (node, parent_path) = match handle.kind.as_str() {
             HANDLE_NODE => (
@@ -775,6 +796,7 @@ impl WorkflowLuaHost {
             input: optional_handle_array(&table, "input", HANDLE_INPUT, &location)?
                 .unwrap_or_default(),
             completion: parse_completion(&table, &location)?,
+            delegate: None,
             worktree: parse_worktree(&table, &location)?,
             location,
         };
@@ -865,6 +887,7 @@ impl WorkflowLuaHost {
             input: optional_handle_array(&table, "input", HANDLE_INPUT, &location)?
                 .unwrap_or_default(),
             completion: parse_completion(&table, &location)?,
+            delegate: None,
             worktree: parse_worktree(&table, &location)?,
             location,
         };
@@ -995,6 +1018,7 @@ impl WorkflowLuaHost {
             input: optional_handle_array(&table, "input", HANDLE_INPUT, &location)?
                 .unwrap_or_default(),
             completion: parse_completion(&table, &location)?,
+            delegate: None,
             worktree: parse_worktree(&table, &location)?,
             location,
         };
@@ -1046,6 +1070,7 @@ impl WorkflowLuaHost {
             input: optional_handle_array(&table, "input", HANDLE_INPUT, &location)?
                 .unwrap_or_default(),
             completion: parse_completion(&table, &location)?,
+            delegate: None,
             worktree: parse_worktree(&table, &location)?,
             location,
         };
@@ -1063,26 +1088,7 @@ impl WorkflowLuaHost {
             &["node", "inputs", "rules", "on_failure"],
             &location,
         )?;
-        let inputs = match table.get_string("inputs") {
-            None | Some(LuaData::Nil) => Vec::new(),
-            Some(LuaData::Table(values)) => {
-                let mut result = Vec::new();
-                for (key, value) in &values.entries {
-                    // inputs は 1 回の呼び出しで要素数ぶんの Source を積むため、
-                    // 呼び出し入口の検査だけでは上限を超えられる。要素ごとに見る。
-                    self.ensure_arena_budget(1, &location)?;
-                    let LuaTableKey::String(key) = key else {
-                        return Err(type_error("inputs", "string-keyed table", &location));
-                    };
-                    let source = self
-                        .source_index(value, &location)
-                        .map_err(|_| type_error("inputs", "Source values", &location))?;
-                    result.push((key.clone(), source));
-                }
-                result
-            }
-            Some(_) => return Err(type_error("inputs", "table", &location)),
-        };
+        let inputs = self.parse_inputs(&table, &location)?;
         let rules = optional_handle_array(&table, "rules", HANDLE_RULE, &location)?;
         let on_failure = match table.get_string("on_failure") {
             None | Some(LuaData::Nil) => None,
@@ -1106,6 +1112,86 @@ impl WorkflowLuaHost {
             location,
         });
         Ok(handle(HANDLE_CHILD, index))
+    }
+
+    fn parse_inputs(
+        &mut self,
+        table: &LuaTableData,
+        location: &LuaSourceLocation,
+    ) -> Result<Vec<(String, usize)>, LuaHostError> {
+        Ok(match table.get_string("inputs") {
+            None | Some(LuaData::Nil) => Vec::new(),
+            Some(LuaData::Table(values)) => {
+                let mut result = Vec::new();
+                for (key, value) in &values.entries {
+                    // inputs は 1 回の呼び出しで要素数ぶんの Source を積むため、
+                    // 呼び出し入口の検査だけでは上限を超えられる。要素ごとに見る。
+                    self.ensure_arena_budget(1, location)?;
+                    let LuaTableKey::String(key) = key else {
+                        return Err(type_error("inputs", "string-keyed table", location));
+                    };
+                    let source = self
+                        .source_index(value, location)
+                        .map_err(|_| type_error("inputs", "Source values", location))?;
+                    result.push((key.clone(), source));
+                }
+                result
+            }
+            Some(_) => return Err(type_error("inputs", "table", location)),
+        })
+    }
+
+    fn call_delegate(
+        &mut self,
+        arguments: Vec<LuaData>,
+        location: LuaSourceLocation,
+    ) -> Result<LuaData, LuaHostError> {
+        let invalid = |message: &str| {
+            host_field_error("WFS002", message, location.clone(), "completion.delegate")
+        };
+        let [receiver, LuaData::Table(table)] = arguments.as_slice() else {
+            return Err(invalid("completion delegate must be a map"));
+        };
+        let owner = expect_handle(receiver, HANDLE_NODE)
+            .map_err(|_| invalid("delegate requires a Session handle"))?;
+        if self.nodes[owner].delegate.is_some() {
+            return Err(invalid(
+                "the same Session handle cannot declare delegate twice",
+            ));
+        }
+        if table.entries.keys().any(|key| {
+            !matches!(key, LuaTableKey::String(key) if matches!(key.as_str(), "child" | "inputs" | "when" | "max_iterations"))
+        }) {
+            return Err(invalid(
+                "completion delegate only accepts child, inputs, when, and max_iterations",
+            ));
+        }
+        let child = table
+            .get_string("child")
+            .and_then(|value| expect_handle(value, HANDLE_NODE).ok())
+            .ok_or_else(|| invalid("completion delegate requires a child node name"))?;
+        let when = table
+            .get_string("when")
+            .ok_or_else(|| invalid("completion delegate requires when"))?;
+        let when = self
+            .predicate_value(when, "completion.delegate.when", &location)?
+            .0;
+        let max_iterations = match table.get_string("max_iterations") {
+            Some(LuaData::Integer(value)) => u32::try_from(*value).ok(),
+            _ => None,
+        }
+        .ok_or_else(|| {
+            invalid("completion delegate max_iterations must be an unsigned 32-bit integer")
+        })?;
+        let inputs = self.parse_inputs(table, &location)?;
+        self.nodes[owner].delegate = Some(DelegateDraft {
+            child,
+            inputs,
+            when,
+            max_iterations,
+            location,
+        });
+        Ok(LuaData::Nil)
     }
 
     fn input_as_source_index(
@@ -1614,37 +1700,10 @@ impl WorkflowGraphBuilder {
                     Some(child.location.clone()),
                 ));
             }
-            let child_node = self.host.nodes.get(child.node).ok_or_else(|| {
-                build_error(
-                    "WFR001",
-                    "child node does not exist",
-                    Some(child.location.clone()),
-                )
-            })?;
-            let child_name = match &child_node.name {
-                Some(explicit) => {
-                    self.namespace
-                        .register_explicit(explicit.clone())
-                        .map_err(|error| {
-                            let code = match &error {
-                                NodeNamespaceError::Reserved(_) => "WFR004",
-                                NodeNamespaceError::Duplicate(_) => "WFS006",
-                            };
-                            build_error(code, error.to_string(), Some(child_node.location.clone()))
-                        })?
-                }
-                None => self
-                    .namespace
-                    .register_synthesized(&name, position)
-                    .map_err(|error| {
-                        build_error(
-                            "WFS006",
-                            error.to_string(),
-                            Some(child_node.location.clone()),
-                        )
-                    })?,
-            };
-            self.names.insert(child.node, child_name);
+            self.assign_node_name(child.node, &name, position, child.location.clone())?;
+        }
+        if let Some(delegate) = &draft.delegate {
+            self.assign_node_name(delegate.child, &name, 0, delegate.location.clone())?;
         }
         let artifact = draft
             .artifact
@@ -1701,19 +1760,76 @@ impl WorkflowGraphBuilder {
                 self.artifact_spans.insert(name.clone(), span);
             }
         }
+        let mut completion = draft.completion;
+        if let Some(delegate) = &draft.delegate {
+            let scope = HashSet::from([index]);
+            let owner_inputs = draft.input.iter().copied().collect();
+            completion.delegate = Some(SessionDelegate {
+                child: self.names[&delegate.child].clone(),
+                inputs: delegate
+                    .inputs
+                    .iter()
+                    .map(|(parameter, source)| {
+                        self.source_ref(*source, &scope, &owner_inputs, false, &delegate.location)
+                            .map(|raw| {
+                                let source = if matches!(self.host.sources[*source], SourceDraft::Node { node, .. } if node == index) {
+                                    InputSourceRef::node_artifact(raw)
+                                } else {
+                                    InputSourceRef::new(raw)
+                                };
+                                (parameter.clone(), source)
+                            })
+                    })
+                    .collect::<Result<_, _>>()?,
+                when: self.build_rule_predicate(&delegate.when, index, &delegate.location)?,
+                max_iterations: delegate.max_iterations,
+            });
+        }
         self.locations.insert(name.clone(), draft.location);
         self.nodes.push(NodeDefinition {
             name,
             kind,
             artifact,
             input,
-            completion: draft.completion.clone(),
+            completion,
             worktree: draft.worktree,
         });
         for child_index in &child_indices {
             let node = self.host.children[*child_index].node;
             self.visit_node(node)?;
         }
+        if let Some(delegate) = draft.delegate {
+            self.visit_node(delegate.child)?;
+        }
+        Ok(())
+    }
+
+    fn assign_node_name(
+        &mut self,
+        index: usize,
+        owner: &str,
+        position: usize,
+        location: LuaSourceLocation,
+    ) -> Result<(), LuaWorkflowError> {
+        if self.names.contains_key(&index) {
+            return Ok(());
+        }
+        let node =
+            self.host.nodes.get(index).ok_or_else(|| {
+                build_error("WFR001", "child node does not exist", Some(location))
+            })?;
+        let name = match &node.name {
+            Some(explicit) => self.namespace.register_explicit(explicit.clone()),
+            None => self.namespace.register_synthesized(owner, position),
+        }
+        .map_err(|error| {
+            let code = match &error {
+                NodeNamespaceError::Reserved(_) => "WFR004",
+                NodeNamespaceError::Duplicate(_) => "WFS006",
+            };
+            build_error(code, error.to_string(), Some(node.location.clone()))
+        })?;
+        self.names.insert(index, name);
         Ok(())
     }
 
@@ -2523,7 +2639,9 @@ fn lua_to_json(value: &LuaData, location: &LuaSourceLocation) -> Result<Value, L
             }
             Ok(Value::Object(object))
         }
-        LuaData::Handle(_) => Err(type_error("items", "JSON-compatible value", location)),
+        LuaData::Handle(_) | LuaData::BoundFunction { .. } => {
+            Err(type_error("items", "JSON-compatible value", location))
+        }
     }
 }
 
