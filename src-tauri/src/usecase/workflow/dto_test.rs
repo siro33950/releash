@@ -86,3 +86,25 @@ fn test_completion表示dto_承認要求はmapで示し要求なしは省略す�
         );
     }
 }
+
+#[test]
+fn test_delegate表示dto_配線と述語と上限を含むcompletionを保持する() {
+    // Given
+    let workflow: domain::WorkflowDefinition = serde_saphyr::from_str("name: test\ndescription: test\nnodes:\n  main: {session: {provider: codex}, artifact: result, completion: {require: approval, delegate: {child: check, inputs: {task: main.task}, when: child.ok, max_iterations: 2}}}\n  check: {command: check}").unwrap();
+    // When
+    let dto = node_to_dto(workflow.node_by_name("main").unwrap());
+    let value = serde_json::to_value(&dto).unwrap();
+    // Then
+    assert_eq!(value["completion"]["require"], "approval");
+    assert_eq!(value["completion"]["delegate"]["child"], "check");
+    assert_eq!(value["completion"]["delegate"]["when"], "child.ok");
+    assert_eq!(value["completion"]["delegate"]["max_iterations"], 2);
+    assert_eq!(
+        value["completion"]["delegate"]["inputs"][0],
+        serde_json::json!({"parameter": "task", "source": "main.task"})
+    );
+    assert_eq!(
+        serde_json::from_value::<NodeDefinitionDto>(value).unwrap(),
+        dto
+    );
+}

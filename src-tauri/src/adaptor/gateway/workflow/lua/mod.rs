@@ -1707,7 +1707,7 @@ impl WorkflowGraphBuilder {
             kind,
             artifact,
             input,
-            completion: draft.completion,
+            completion: draft.completion.clone(),
             worktree: draft.worktree,
         });
         for child_index in &child_indices {
@@ -2470,7 +2470,12 @@ fn parse_completion(
         return Err(error(CompletionShapeError::ExpectedMap));
     }
     if completion.entries.len() != 1 || completion.get_string("require").is_none() {
-        return Err(error(CompletionShapeError::UnknownField));
+        return Err(host_field_error(
+            "WFS002",
+            "completion map only accepts the key 'require'",
+            location.clone(),
+            "completion",
+        ));
     }
     match completion.get_string("require") {
         Some(value) if expect_handle(value, HANDLE_COMPLETION) == Ok(0) => {

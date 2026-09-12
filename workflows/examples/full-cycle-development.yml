@@ -94,6 +94,15 @@ schemas:
     required:
     - tasks
 
+  implement-task-result:
+    type: object
+    properties:
+      task_id: string
+      summary: string
+    required:
+    - task_id
+    - summary
+
   implement-task-check-result:
     type: object
     properties:
@@ -559,7 +568,7 @@ nodes:
   implement_all:
     fanout:
       children:
-      - implement_and_verify:
+      - implement_task:
           inputs:
             task: items
             spec: spec
@@ -567,26 +576,17 @@ nodes:
     input:
     - spec
 
-  # 部品 sequence: 1 タスクの実装と検証。検証結果を子名キーの統合 map に含める。
-  implement_and_verify:
-    worktree: isolated
-    sequence:
-      children:
-      - implement_task:
-          inputs:
-            task: task
-            spec: spec
-          rules:
-          - next: verify_task
-      - verify_task:
-          inputs:
-            task: task
-            spec: spec
-    input:
-    - task: implement-task
-    - spec
-
   implement_task:
+    worktree: isolated
+    artifact: implement-task-result
+    completion:
+      delegate:
+        child: verify_task
+        inputs:
+          task: task
+          spec: spec
+        when: child.complete
+        max_iterations: 3
     session:
       provider: codex
       model: gpt-5.6-sol
@@ -596,7 +596,7 @@ nodes:
         knowledge: implement-task
         instruction: implement
     input:
-    - task
+    - task: implement-task
     - spec
 
   verify_task:
@@ -613,7 +613,7 @@ nodes:
     - spec
     artifact: implement-task-check-result
 
-  # 検証結果（implement_all の添字キーごとの子 Artifact map）と各 task branch の diff を確認し、
+  # 検証結果（implement_all の添字キーごとの child）と各 task branch の diff を確認し、
   # 親 worktree へ統合する。統合は通常の Git 操作（専用構文は持たない）。
   merge_implementations:
     session:

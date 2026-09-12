@@ -1225,6 +1225,13 @@ fn validation_error_code_stage(
 ) -> (&'static str, DiagnosticStage) {
     use validation::ValidationError;
     let code = match error {
+        ValidationError::InvalidDelegate { kind, .. } => match kind {
+            validation::InvalidDelegateKind::UnsupportedNodeKind => "WFC011",
+            validation::InvalidDelegateKind::MissingArtifactContract => "WFT006",
+            validation::InvalidDelegateKind::ChildWithoutArtifact => "WFT006",
+            validation::InvalidDelegateKind::MaxIterations => "WFC005",
+            validation::InvalidDelegateKind::WhenFieldNotBoolean => "WFT001",
+        },
         ValidationError::EmptyName
         | ValidationError::InvalidChars { .. }
         | ValidationError::EmptyNodes
@@ -1835,6 +1842,10 @@ fn load_workflows_in_scope(
 fn validation_error_context(e: &validation::ValidationError) -> (Option<String>, Option<String>) {
     use validation::ValidationError;
     match e {
+        ValidationError::InvalidDelegate { node, kind, .. } => {
+            let field = kind.field_path();
+            (Some(node.clone()), Some(field.into()))
+        }
         ValidationError::EmptyName | ValidationError::InvalidChars { .. } => {
             (None, Some("name".to_string()))
         }
@@ -6178,3 +6189,7 @@ return r.workflow{ name = "items-non-object", description = "items non-object", 
 #[cfg(test)]
 #[path = "diagnostics_test.rs"]
 mod diagnostics_tests;
+
+#[cfg(test)]
+#[path = "delegate_diagnostics_test.rs"]
+mod delegate_diagnostics_tests;

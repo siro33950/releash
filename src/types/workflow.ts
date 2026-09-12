@@ -56,7 +56,13 @@ export type Rule =
 
 export type NodeKind = "command" | "session" | "fanout" | "sequence";
 export interface NodeCompletion {
-	require: "approval";
+	require?: "approval";
+	delegate?: {
+		child: string;
+		inputs: ChildInput[];
+		when: Predicate;
+		max_iterations: number;
+	};
 }
 
 export interface FacetRefs {

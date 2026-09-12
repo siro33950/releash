@@ -1232,10 +1232,15 @@ fn test_述語の回帰_builtinと正本サンプルの全18辺は単一参照�
 }
 
 #[test]
-fn test_completion診断_yamlとluaの同じ誤りはcode_stage_messageが一致する() {
+fn test_completion診断_yamlとluaの同じ誤りはcode_stageと各表面のmessageを保つ() {
     // Given
     let directory = tempfile::tempdir().unwrap();
     for (yaml_value, lua_value, message) in [
+        (
+            "{require: approval, extra: true}",
+            "{ require = r.completion.approval, extra = true }",
+            "completion map contains an unsupported key",
+        ),
         (
             "approval",
             "r.completion.approval",
@@ -1285,16 +1290,6 @@ fn test_completion診断_yamlとluaの同じ誤りはcode_stage_messageが一致
             "{ require = { r.completion.approval } }",
             "completion require must be approval",
         ),
-        (
-            "{delegate: worker}",
-            "{ delegate = 'worker' }",
-            "completion map only accepts the key 'require'",
-        ),
-        (
-            "{require: approval, extra: true}",
-            "{ require = r.completion.approval, extra = true }",
-            "completion map only accepts the key 'require'",
-        ),
     ] {
         let lua_source = format!("local r = require('releash')\nreturn r.workflow{{ name = 'completion', description = 'test', main = r.command{{\n  command = 'true',\n  completion = {lua_value},\n}} }}");
         let yaml_bodies = [
@@ -1314,7 +1309,13 @@ fn test_completion診断_yamlとluaの同じ誤りはcode_stage_messageが一致
                 None,
             );
             // Then
-            for diagnosis in [&yaml, &lua] {
+            let lua_message = match message {
+                "completion map contains an unsupported key" => {
+                    "completion map only accepts the key 'require'"
+                }
+                _ => message,
+            };
+            for (diagnosis, message) in [(&yaml, message), (&lua, lua_message)] {
                 assert!(diagnosis.workflow.is_none(), "{yaml_value} / {lua_value}");
                 assert_eq!(
                     diagnosis.diagnostics.len(),

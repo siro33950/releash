@@ -27,23 +27,26 @@ pub enum NodeCompletionSignal {
 
 /// 実行木上の親参照。root の実行インスタンス以外のすべての NodeExecution が持つ。
 ///
-/// 親は合成子（sequence / fanout）の実行インスタンスを node_execution_id で
+/// 親は sequence / fanout / delegate を宣言した Session の実行インスタンスを node_execution_id で
 /// 直接指す。ループで同名 node のインスタンスが複数並ぶ実行木でも一意に決まる。
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecutionParentRef {
-    /// 親（合成子インスタンス）の node_execution_id。
     pub parent_id: String,
-    /// fanout の子のみ: 展開座標（items 行 / children 列）。
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub fanout_slot: Option<FanoutSlot>,
+    relation: ExecutionParentRelation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ExecutionParentRelation {
+    Sequence,
+    Fanout(FanoutSlot),
+    Delegate,
 }
 
 impl ExecutionParentRef {
     pub fn sequence_child(parent_id: impl Into<String>) -> Self {
         Self {
             parent_id: parent_id.into(),
-            fanout_slot: None,
+            relation: ExecutionParentRelation::Sequence,
         }
     }
 
@@ -54,15 +57,33 @@ impl ExecutionParentRef {
     ) -> Self {
         Self {
             parent_id: parent_id.into(),
-            fanout_slot: Some(FanoutSlot {
+            relation: ExecutionParentRelation::Fanout(FanoutSlot {
                 item_index,
                 child_index,
             }),
         }
     }
 
+    pub fn delegate_child(parent_id: impl Into<String>) -> Self {
+        Self {
+            parent_id: parent_id.into(),
+            relation: ExecutionParentRelation::Delegate,
+        }
+    }
+
+    pub fn fanout_slot(&self) -> Option<FanoutSlot> {
+        match self.relation {
+            ExecutionParentRelation::Fanout(slot) => Some(slot),
+            _ => None,
+        }
+    }
+
+    pub fn is_delegate_child(&self) -> bool {
+        matches!(self.relation, ExecutionParentRelation::Delegate)
+    }
+
     pub fn is_fanout_child(&self) -> bool {
-        self.fanout_slot.is_some()
+        self.fanout_slot().is_some()
     }
 }
 
@@ -202,7 +223,7 @@ mod tests {
     fn sequence_child_has_no_fanout_slot() {
         let parent = ExecutionParentRef::sequence_child("seq-1");
         assert_eq!(parent.parent_id, "seq-1");
-        assert_eq!(parent.fanout_slot, None);
+        assert_eq!(parent.fanout_slot(), None);
         assert!(!parent.is_fanout_child());
     }
 
@@ -211,7 +232,7 @@ mod tests {
         let parent = ExecutionParentRef::fanout_child("fan-1", Some(2), 1);
         assert_eq!(parent.parent_id, "fan-1");
         assert_eq!(
-            parent.fanout_slot,
+            parent.fanout_slot(),
             Some(FanoutSlot {
                 item_index: Some(2),
                 child_index: 1,
@@ -222,7 +243,7 @@ mod tests {
         let static_child = ExecutionParentRef::fanout_child("fan-1", None, 0);
         assert!(static_child.is_fanout_child());
         assert_eq!(
-            static_child.fanout_slot,
+            static_child.fanout_slot(),
             Some(FanoutSlot {
                 item_index: None,
                 child_index: 0,

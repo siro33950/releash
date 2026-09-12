@@ -10,8 +10,8 @@ mod vocabulary_tests {
     use super::*;
 
     #[test]
-    fn test_事実語彙_event_typeが18種の固定文字列である() {
-        // Given: 全21 variant
+    fn test_事実語彙_event_typeが19種の固定文字列である() {
+        // Given: 全19 variant
         let facts: Vec<NodeFact> = vec![
             NodeFact::Started(StartedFact {
                 parent: None,
@@ -61,6 +61,11 @@ mod vocabulary_tests {
                 request_id: None,
             }),
             NodeFact::ApprovalGranted(ApprovalGrantedFact { comment: None }),
+            NodeFact::DelegateResultInjected("child-1".into()),
+            NodeFact::SessionContinuationAdmitted(SessionContinuationAdmittedFact {
+                session_id: "session-1".into(),
+                request_id: "workflow-delegate-continuation-child-1".into(),
+            }),
             NodeFact::RetryRequested,
             NodeFact::ResumeRequested,
             NodeFact::AbortRequested,
@@ -85,6 +90,8 @@ mod vocabulary_tests {
                 "stop_received",
                 "artifact_produced",
                 "approval_granted",
+                "delegate_result_injected",
+                "session_continuation_admitted",
                 "retry_requested",
                 "resume_requested",
                 "abort_requested",
@@ -470,5 +477,38 @@ mod session_execution_tree_root_facts_tests {
             .unwrap_err(),
             SessionExecutionTreeRootFactsError::WorktreePath
         );
+    }
+}
+
+#[test]
+fn test_delegate注入事実_未知fieldの型を問わずchildを復元する() {
+    for unknown in [
+        serde_json::json!(42),
+        serde_json::json!(true),
+        serde_json::json!({"nested": [null]}),
+    ] {
+        // Given
+        let detail = serde_json::json!({"childExecutionId": "child-1", "future": unknown});
+        // When
+        let fact = NodeFact::decode("delegate_result_injected", &detail.to_string()).unwrap();
+        // Then
+        assert_eq!(fact, NodeFact::DelegateResultInjected("child-1".into()));
+    }
+}
+
+#[test]
+fn test_delegate注入事実_child識別子の欠落と空文字と非文字列を拒否する() {
+    for detail in [
+        "{}",
+        r#"{"childExecutionId":""}"#,
+        r#"{"childExecutionId":42}"#,
+    ] {
+        // Given / When
+        let result = NodeFact::decode("delegate_result_injected", detail);
+        // Then
+        assert!(matches!(
+            result,
+            Err(NodeFactDecodeError::DetailMismatch { .. })
+        ));
     }
 }

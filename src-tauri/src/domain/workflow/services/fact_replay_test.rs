@@ -467,6 +467,30 @@ mod standalone_session_tests {
     }
 
     #[test]
+    fn test_session_受理済みの続行指示識別子を同じsessionの事実からだけ集める() {
+        let mut log = FactLog::new();
+        let root_meta = meta("root-exec", None, "session", NodeKindName::Session, 1);
+        log.push(root_meta.clone(), started_root(session_root()));
+        log.push(root_meta.clone(), attached("session-1"));
+        let admitted = |session_id: &str, request_id: &str| {
+            NodeFact::SessionContinuationAdmitted(
+                crate::domain::workflow::SessionContinuationAdmittedFact {
+                    session_id: session_id.to_string(),
+                    request_id: request_id.to_string(),
+                },
+            )
+        };
+        log.push(root_meta.clone(), admitted("session-1", "child-1"));
+        log.push(root_meta.clone(), admitted("session-2", "child-x"));
+        log.push(root_meta.clone(), admitted("session-1", "child-2"));
+
+        let view = super::derive_session_facts(&log.records, "root-exec", "session-1");
+
+        assert_eq!(view.admitted_continuations, vec!["child-1", "child-2"]);
+        assert!(!view.exited);
+    }
+
+    #[test]
     fn test_単独session_活動状態を初期値と最後の観測から導出しprocess_exitで戻す() {
         let mut log = FactLog::new();
         let root_meta = meta("root-exec", None, "session", NodeKindName::Session, 1);
@@ -1904,4 +1928,90 @@ fn test_隔離成果選択_同名slotは開始順と完了順によらず最後�
         composite.value["1"]["worktree"]["branch"],
         "releash/isolated/second-a1"
     );
+}
+
+fn delegate_submission_log() -> FactLog {
+    let mut parent = session_leaf("main");
+    parent.artifact = Some("result".into());
+    parent.completion.delegate = Some(crate::domain::workflow::SessionDelegate {
+        child: "verify".into(),
+        inputs: Vec::new(),
+        when: crate::domain::workflow::Predicate::Ref("child.ok".into()),
+        max_iterations: 2,
+    });
+    let definition = workflow_definition(vec![parent, command_leaf("verify")], "main");
+    let parent_meta = meta("parent", None, "main", NodeKindName::Session, 1);
+    let mut log = FactLog::new();
+    log.push(parent_meta.clone(), started_root(workflow_root(definition)));
+    log.push(parent_meta.clone(), attached("agent"));
+    log.push(parent_meta.clone(), submit());
+    log.push(parent_meta, artifact("result", serde_json::json!({})));
+    log
+}
+
+#[test]
+fn test_delegate復旧_提出保存後の未開始childは前進しstarted追記後は再導出しない() {
+    use crate::domain::workflow::entities::workflow_execution::{
+        ExecutionAdvanceDecision, PendingAdvance,
+    };
+    // Given
+    let mut log = delegate_submission_log();
+    let mut folded = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+    let advance = PendingAdvance::Delegate {
+        node_execution_id: "parent".into(),
+    };
+    assert_eq!(
+        folded.aggregate.derive_pending_advances(),
+        [advance.clone()]
+    );
+    // When
+    let applied = folded
+        .aggregate
+        .apply_pending_advance(&advance, &mut || "child".into(), 5.0)
+        .unwrap();
+    log.push(
+        meta("child", Some("parent"), "verify", NodeKindName::Command, 1),
+        started_child(ExecutionParentRef::delegate_child("parent")),
+    );
+    let replayed = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+    // Then
+    let ExecutionAdvanceDecision::StartNodes(starts) = applied.decision else {
+        panic!()
+    };
+    assert_eq!(starts.len(), 1);
+    assert_eq!(starts[0].node_execution_id(), "child");
+    assert!(folded.aggregate.derive_pending_advances().is_empty());
+    assert!(replayed.aggregate.derive_pending_advances().is_empty());
+    assert_eq!(
+        folded.aggregate.node_executions,
+        replayed.aggregate.node_executions
+    );
+}
+
+#[test]
+fn test_delegate復旧_child定義が復元不能なら親を未解決にして起動しない() {
+    // Given
+    let mut log = delegate_submission_log();
+    let NodeFact::Started(started) = &mut log.records[0].fact else {
+        panic!()
+    };
+    started
+        .root
+        .as_mut()
+        .unwrap()
+        .definition_resolution
+        .node_errors
+        .insert("verify".into(), "child definition unavailable".into());
+    // When
+    let folded = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+    // Then
+    let parent = folded.aggregate.node_execution("parent").unwrap();
+    assert_eq!(parent.status, RuntimeNodeExecutionStatus::Unresolved);
+    assert!(parent
+        .recovery_reason
+        .as_ref()
+        .unwrap()
+        .contains("child definition unavailable"));
+    assert!(folded.aggregate.derive_pending_advances().is_empty());
+    assert_eq!(folded.aggregate.node_executions.len(), 1);
 }

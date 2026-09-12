@@ -1618,3 +1618,158 @@ fn test_隔離合成子の表示_空のchildrenや終端でもそのattemptのbr
         }
     }
 }
+
+#[test]
+fn test_delegate_親session配下に発火順の子を表示し子の部分木も保持する() {
+    // Given
+    let owner = tree_owner("tree");
+    let parent = child_node(
+        "parent",
+        "tree",
+        "tree",
+        WorkspaceNodeKind::WorkflowSession,
+        "implement",
+    );
+    let mut first = child_node(
+        "first",
+        "parent",
+        "tree",
+        WorkspaceNodeKind::WorkflowSession,
+        "verify",
+    );
+    first.sibling_order = 0;
+    first.attempt = Some(1);
+    first.status = WorkspaceNodeStatus::Completed;
+    let mut second = child_node(
+        "second",
+        "parent",
+        "tree",
+        WorkspaceNodeKind::Sequence,
+        "checks",
+    );
+    second.sibling_order = 1;
+    second.attempt = Some(2);
+    let nested = child_node(
+        "nested",
+        "second",
+        "tree",
+        WorkspaceNodeKind::WorkflowCommand,
+        "check",
+    );
+    let tree = WorkspaceTree::restore("/repo", vec![owner, parent, first, second, nested]).unwrap();
+    // When
+    let result = project_tree(&tree, &HashSet::new(), &HashSet::from(["tree".into()]), &[]);
+    let json = serde_json::to_value(result).unwrap();
+    // Then
+    assert_eq!(json[0]["kind"], "node");
+    assert_eq!(json[0]["children"][0]["title"], "verify");
+    assert_eq!(json[0]["children"][1]["kind"], "sequence");
+    assert_eq!(json[0]["children"][1]["children"][0]["title"], "check");
+}
+
+#[test]
+fn test_delegate_親の過去attemptに当該attemptのchild部分木を投影する() {
+    // Given
+    let owner = tree_owner("tree");
+    let mut past = child_node(
+        "past",
+        "tree",
+        "tree",
+        WorkspaceNodeKind::WorkflowSession,
+        "implement",
+    );
+    past.attempt = Some(1);
+    past.status = WorkspaceNodeStatus::Failed;
+    let mut current = child_node(
+        "current",
+        "tree",
+        "tree",
+        WorkspaceNodeKind::WorkflowSession,
+        "implement",
+    );
+    current.attempt = Some(2);
+    current.sibling_order = 1;
+    current.retry_predecessor_id = Some("past-execution".into());
+    let prior_child = child_node(
+        "prior-checks",
+        "past",
+        "tree",
+        WorkspaceNodeKind::Sequence,
+        "checks",
+    );
+    let prior_leaf = child_node(
+        "prior-judge",
+        "prior-checks",
+        "tree",
+        WorkspaceNodeKind::WorkflowSession,
+        "judge",
+    );
+    let current_child = child_node(
+        "current-checks",
+        "current",
+        "tree",
+        WorkspaceNodeKind::WorkflowSession,
+        "checks",
+    );
+    let tree = WorkspaceTree::restore(
+        "/repo",
+        vec![owner, past, current, prior_child, prior_leaf, current_child],
+    )
+    .unwrap();
+    // When
+    let result = serde_json::to_value(project_tree(
+        &tree,
+        &HashSet::new(),
+        &HashSet::from(["tree".into()]),
+        &[],
+    ))
+    .unwrap();
+    // Then
+    assert_eq!(result.as_array().unwrap().len(), 1);
+    assert_eq!(result[0]["children"][0]["id"], "current-checks");
+    assert_eq!(result[0]["pastAttempts"][0]["id"], "past");
+    assert_eq!(result[0]["pastAttempts"][0]["kind"], "node");
+    assert_eq!(result[0]["pastAttempts"][0]["contentKind"], "session");
+    assert_eq!(
+        result[0]["pastAttempts"][0]["children"][0]["id"],
+        "prior-checks"
+    );
+    assert_eq!(
+        result[0]["pastAttempts"][0]["children"][0]["children"][0]["id"],
+        "prior-judge"
+    );
+}
+
+#[test]
+fn test_過去attempt_子のないsessionとcommandも通常行と同じkindを返す() {
+    for (kind, content_kind) in [
+        (WorkspaceNodeKind::WorkflowSession, "session"),
+        (WorkspaceNodeKind::WorkflowCommand, "command"),
+    ] {
+        // Given
+        let owner = tree_owner("tree");
+        let mut past = child_node("past", "tree", "tree", kind, "work");
+        past.attempt = Some(1);
+        past.status = WorkspaceNodeStatus::Failed;
+        let mut current = child_node("current", "tree", "tree", kind, "work");
+        current.attempt = Some(2);
+        current.sibling_order = 1;
+        current.retry_predecessor_id = Some("past-execution".into());
+        let tree = WorkspaceTree::restore("/repo", vec![owner, past, current]).unwrap();
+        // When
+        let result = serde_json::to_value(project_tree(
+            &tree,
+            &HashSet::new(),
+            &HashSet::from(["tree".into()]),
+            &[],
+        ))
+        .unwrap();
+        // Then
+        let past = &result[0]["pastAttempts"][0];
+        assert_eq!(past["id"], "past");
+        assert_eq!(past["kind"], "node");
+        assert_eq!(past["contentKind"], content_kind);
+        assert!(past.get("children").is_none());
+        assert_eq!(past["pastAttempts"], serde_json::json!([]));
+    }
+}

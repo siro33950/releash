@@ -208,6 +208,20 @@ impl WorkflowExecution {
         }
         for advance in self.derive_pending_advances() {
             let (scope_id, reason) = match &advance {
+                PendingAdvance::Delegate { node_execution_id } => {
+                    let reason = self
+                        .node_execution(node_execution_id)
+                        .and_then(|node| self.workflow.node_by_name(&node.node_name))
+                        .and_then(|node| node.completion.delegate.as_ref())
+                        .and_then(|delegate| {
+                            self.start_unavailable_reason(
+                                Some(node_execution_id),
+                                &delegate.child,
+                                None,
+                            )
+                        });
+                    (node_execution_id, reason)
+                }
                 PendingAdvance::AfterChild {
                     scope_id,
                     child_name,
@@ -279,7 +293,7 @@ impl WorkflowExecution {
                 let occupied = self.runtime.node_executions.iter().any(|node| {
                     node.parent.as_ref().is_some_and(|parent| {
                         parent.parent_id == scope_id
-                            && parent.fanout_slot.is_some_and(|slot| {
+                            && parent.fanout_slot().is_some_and(|slot| {
                                 slot.child_index == child_index
                                     && slot.item_index == fanout.items.as_ref().map(|_| item_index)
                             })

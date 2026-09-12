@@ -64,6 +64,14 @@ pub(crate) trait WorkflowAgentSessionPort: Send + Sync {
         instruction: &str,
     ) -> Result<(), WorkflowRuntimeError>;
 
+    /// `child_execution_id` ごとに一度だけ届く。同じ child の再送は session 側が拒む。
+    async fn dispatch_continuation(
+        &self,
+        node_session_id: &str,
+        child_execution_id: &str,
+        instruction: &str,
+    ) -> Result<(), WorkflowRuntimeError>;
+
     async fn recover_workflow_agent_session_provider(
         &self,
         node_session_id: &str,
@@ -227,6 +235,27 @@ impl WorkflowAgentSessionPort for ProviderWorkflowAgentSessionPort {
                 ))
             })?;
         Ok(())
+    }
+
+    async fn dispatch_continuation(
+        &self,
+        node_session_id: &str,
+        child_execution_id: &str,
+        instruction: &str,
+    ) -> Result<(), WorkflowRuntimeError> {
+        self.initial_instruction
+            .dispatch_continuation(
+                node_session_id,
+                instruction,
+                &format!("workflow-delegate-continuation-{child_execution_id}"),
+            )
+            .await
+            .map(|_| ())
+            .map_err(|error| {
+                WorkflowRuntimeError::AgentSession(format!(
+                    "continue Workflow AgentSession '{node_session_id}': {error:?}"
+                ))
+            })
     }
 
     async fn recover_workflow_agent_session_provider(

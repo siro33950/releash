@@ -491,6 +491,15 @@ pub(super) fn apply_record(
             );
             Ok(())
         }
+        NodeFact::DelegateResultInjected(child_execution_id) => {
+            let injection =
+                crate::domain::workflow::entities::workflow_execution::DelegateInjection {
+                    node_execution_id: id.to_string(),
+                    child_execution_id: child_execution_id.clone(),
+                };
+            aggregate.record_delegate_injected(&injection, timestamp);
+            Ok(())
+        }
         NodeFact::ApprovalGranted(_) => aggregate.derive_approval_completion(id, timestamp),
         NodeFact::RetryRequested => {
             let _ = aggregate.request_node_retry(id, timestamp);
@@ -505,6 +514,7 @@ pub(super) fn apply_record(
             Ok(())
         }
         NodeFact::AgentActivityObserved(_)
+        | NodeFact::SessionContinuationAdmitted(_)
         | NodeFact::SessionNodeRenamed(_)
         | NodeFact::ProviderSessionTitleObserved(_)
         | NodeFact::ArchiveRequested
@@ -535,7 +545,11 @@ pub(super) fn restore_artifact_scope(
                             .children
                             .iter()
                             .any(|child| child.name == candidate.name),
-                        _ => false,
+                        _ => definition
+                            .completion
+                            .delegate
+                            .as_ref()
+                            .is_some_and(|delegate| delegate.child == candidate.name),
                     }
                 }))
                 .cloned()
@@ -619,6 +633,8 @@ pub struct SessionFactsView {
     pub manual_name: Option<String>,
     pub provider_session_title: Option<String>,
     pub initial_instruction_admitted: bool,
+    /// session が受理済みの delegate 続行指示の識別子。
+    pub admitted_continuations: Vec<String>,
     /// 後続の attach / resume が無い process_exited（= Paused の根拠）。
     pub exited: bool,
     /// 後続の restore が無い archive_requested。
@@ -656,6 +672,9 @@ pub fn derive_session_facts(
                 }
                 view.initial_instruction_admitted |= fact.initial_instruction_admitted;
                 exited = None;
+            }
+            NodeFact::SessionContinuationAdmitted(fact) if fact.session_id == session_id => {
+                view.admitted_continuations.push(fact.request_id.clone());
             }
             NodeFact::SessionNodeRenamed(fact) => view.manual_name = Some(fact.name.clone()),
             NodeFact::ProviderSessionTitleObserved(fact)

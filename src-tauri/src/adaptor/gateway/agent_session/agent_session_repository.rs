@@ -37,8 +37,8 @@ use crate::domain::provider_lifecycle::{
 use crate::domain::workflow::services::fact_replay::derive_session_facts;
 use crate::domain::workflow::{
     AgentActivityObservedFact, ExecutionTreeLaunch, NodeFact, NodeFactRecord, ProcessExitedFact,
-    ProviderSessionTitleObservedFact, SessionAttachedFact, SessionExecutionTreeRootFacts,
-    SessionNodeRenamedFact,
+    ProviderSessionTitleObservedFact, SessionAttachedFact, SessionContinuationAdmittedFact,
+    SessionExecutionTreeRootFacts, SessionNodeRenamedFact,
 };
 use crate::domain::workspace_tree::WorkspaceIdentity;
 use crate::usecase::provider_lifecycle::ProviderSessionStartTransaction;
@@ -123,6 +123,12 @@ impl LocalAgentSessionRepository {
                         provider_session_id: session.provider_session_id().map(str::to_string),
                         transcript_ref: session.transcript_ref().map(str::to_string),
                         initial_instruction_admitted: true,
+                    })
+                }
+                AgentSessionLifecycleEvent::ContinuationAdmitted { request_id } => {
+                    NodeFact::SessionContinuationAdmitted(SessionContinuationAdmittedFact {
+                        session_id: session_id.to_string(),
+                        request_id: request_id.clone(),
                     })
                 }
                 AgentSessionLifecycleEvent::LifecycleChanged {
@@ -989,6 +995,12 @@ fn derive_session(
     }
     if view.initial_instruction_admitted {
         let _ = session.admit_initial_instruction();
+        session.take_uncommitted_events();
+    }
+    for request_id in &view.admitted_continuations {
+        session
+            .admit_continuation(request_id)
+            .map_err(|_| AgentSessionRepositoryError::Corrupt)?;
         session.take_uncommitted_events();
     }
     session.restore_derived_lifecycle(lifecycle, view.last_exit_abnormal, view.activity);

@@ -14,6 +14,7 @@ use tokio::sync::Mutex;
 mod activation;
 pub(crate) mod approval_runtime;
 mod command_preparation;
+pub(crate) mod delegate;
 pub(crate) mod execution_registry;
 pub(crate) mod execution_state;
 mod isolated_worktree;
@@ -124,6 +125,8 @@ pub struct WorkflowRuntimeHost {
     worktree_resolver: Arc<dyn ManagedWorktreeResolver>,
     workflow_agent_sessions: Arc<dyn WorkflowAgentSessionPort>,
     isolated_worktrees: Arc<dyn crate::domain::workflow::IsolatedWorktreeGateway>,
+    pub(crate) delegate_continuation:
+        Option<Arc<crate::usecase::workflow::delegate::DelegateContinuationUsecase>>,
 }
 
 enum RequiredEventCommitFailure {
@@ -451,6 +454,7 @@ impl WorkflowRuntimeHost {
             worktree_resolver,
             workflow_agent_sessions,
             isolated_worktrees,
+            delegate_continuation: None,
         }
     }
 
@@ -1300,9 +1304,26 @@ impl WorkflowRuntimeHost {
         if starts.is_empty() {
             return Ok(());
         }
-        let leaves = self
-            .prepare_isolated_starts(app, execution_id, worktree_path, starts)
+        let (preparations, mut injections) = isolated_worktree::partition_actions(starts);
+        let prepared = self
+            .prepare_isolated_starts(app, execution_id, worktree_path, preparations)
             .await?;
+        injections.extend(prepared.injections);
+        for injection in injections {
+            if let Err(error) = self
+                .inject_delegate_result(app, execution_id, &injection)
+                .await
+            {
+                Box::pin(self.settle_runtime_failure_for_node(
+                    app,
+                    execution_id,
+                    &injection.node_execution_id,
+                    &error,
+                ))
+                .await?;
+            }
+        }
+        let leaves = prepared.leaves;
         if leaves.is_empty() {
             return Ok(());
         }
@@ -2924,6 +2945,15 @@ nodes:
             unreachable!()
         }
 
+        async fn dispatch_continuation(
+            &self,
+            _node_session_id: &str,
+            _child_execution_id: &str,
+            _instruction: &str,
+        ) -> Result<(), WorkflowRuntimeError> {
+            panic!("unexpected delegate continuation")
+        }
+
         async fn recover_workflow_agent_session_provider(
             &self,
             _node_session_id: &str,
@@ -3217,6 +3247,15 @@ nodes:
                 Ok(())
             }
 
+            async fn dispatch_continuation(
+                &self,
+                _node_session_id: &str,
+                _child_execution_id: &str,
+                _instruction: &str,
+            ) -> Result<(), WorkflowRuntimeError> {
+                panic!("unexpected delegate continuation")
+            }
+
             async fn recover_workflow_agent_session_provider(
                 &self,
                 node_session_id: &str,
@@ -3365,6 +3404,15 @@ nodes:
                 Ok(())
             }
 
+            async fn dispatch_continuation(
+                &self,
+                _node_session_id: &str,
+                _child_execution_id: &str,
+                _instruction: &str,
+            ) -> Result<(), WorkflowRuntimeError> {
+                panic!("unexpected delegate continuation")
+            }
+
             async fn recover_workflow_agent_session_provider(
                 &self,
                 node_session_id: &str,
@@ -3502,6 +3550,15 @@ nodes:
                     ));
                 }
                 Ok(())
+            }
+
+            async fn dispatch_continuation(
+                &self,
+                _node_session_id: &str,
+                _child_execution_id: &str,
+                _instruction: &str,
+            ) -> Result<(), WorkflowRuntimeError> {
+                panic!("unexpected delegate continuation")
             }
 
             async fn recover_workflow_agent_session_provider(
@@ -3645,6 +3702,15 @@ nodes:
                 Ok(())
             }
 
+            async fn dispatch_continuation(
+                &self,
+                _node_session_id: &str,
+                _child_execution_id: &str,
+                _instruction: &str,
+            ) -> Result<(), WorkflowRuntimeError> {
+                panic!("unexpected delegate continuation")
+            }
+
             async fn recover_workflow_agent_session_provider(
                 &self,
                 _node_session_id: &str,
@@ -3744,6 +3810,15 @@ nodes:
                 Ok(())
             }
 
+            async fn dispatch_continuation(
+                &self,
+                _node_session_id: &str,
+                _child_execution_id: &str,
+                _instruction: &str,
+            ) -> Result<(), WorkflowRuntimeError> {
+                panic!("unexpected delegate continuation")
+            }
+
             async fn recover_workflow_agent_session_provider(
                 &self,
                 _node_session_id: &str,
@@ -3824,6 +3899,15 @@ nodes:
                 _instruction: &str,
             ) -> Result<(), WorkflowRuntimeError> {
                 Ok(())
+            }
+
+            async fn dispatch_continuation(
+                &self,
+                _node_session_id: &str,
+                _child_execution_id: &str,
+                _instruction: &str,
+            ) -> Result<(), WorkflowRuntimeError> {
+                panic!("unexpected delegate continuation")
             }
 
             async fn recover_workflow_agent_session_provider(
@@ -6713,3 +6797,7 @@ nodes:
 #[cfg(test)]
 #[path = "workflow_host/isolated_worktree_test.rs"]
 mod isolated_worktree_tests;
+
+#[cfg(test)]
+#[path = "workflow_host/test_helpers.rs"]
+mod test_helpers;

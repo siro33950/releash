@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::repository::normalize_repo_path;
 use crate::domain::terminal_surface::TerminalSurfaceOwner;
@@ -40,6 +42,9 @@ pub(crate) enum AgentSessionLifecycleEvent {
         title: AgentSessionDisplayName,
     },
     InitialInstructionAdmitted,
+    ContinuationAdmitted {
+        request_id: String,
+    },
 }
 
 /// AgentSession が属する実行木と NodeExecution の必須の所在。
@@ -187,6 +192,7 @@ pub(crate) enum AgentSessionInitialInstructionOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AgentSessionInitialInstructionError {
     NotWorkflowOwned,
+    EmptyRequestId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -302,6 +308,7 @@ pub(crate) struct AgentSession {
     provider_session_id: Option<String>,
     transcript_ref: Option<String>,
     initial_instruction_admitted: bool,
+    admitted_continuations: BTreeSet<String>,
     last_exit_abnormal: bool,
     last_exit_code: Option<i32>,
     uncommitted_events: Vec<AgentSessionLifecycleEvent>,
@@ -350,6 +357,7 @@ impl AgentSession {
             provider_session_id: None,
             transcript_ref: None,
             initial_instruction_admitted: false,
+            admitted_continuations: BTreeSet::new(),
             last_exit_abnormal: false,
             last_exit_code: None,
             uncommitted_events: vec![created],
@@ -690,6 +698,11 @@ impl AgentSession {
             .ok_or(AgentSessionRecoveryError::ProviderSessionUnknown)
     }
 
+    pub(crate) fn can_receive_workflow_instruction(&self) -> bool {
+        self.tree_location.launched_as == ExecutionTreeLaunch::Workflow
+            && self.lifecycle == AgentSessionLifecycle::Open
+    }
+
     pub(crate) fn admit_initial_instruction(
         &mut self,
     ) -> Result<AgentSessionInitialInstructionOutcome, AgentSessionInitialInstructionError> {
@@ -702,6 +715,28 @@ impl AgentSession {
         self.initial_instruction_admitted = true;
         self.uncommitted_events
             .push(AgentSessionLifecycleEvent::InitialInstructionAdmitted);
+        Ok(AgentSessionInitialInstructionOutcome::Admitted)
+    }
+
+    /// delegate child の結果の続行指示を識別子ごとに一度だけ受理する。
+    /// 受理の永続化後に provider へ書くため、書く前に中断した続行指示は再送されない。
+    pub(crate) fn admit_continuation(
+        &mut self,
+        request_id: &str,
+    ) -> Result<AgentSessionInitialInstructionOutcome, AgentSessionInitialInstructionError> {
+        if self.tree_location.launched_as != ExecutionTreeLaunch::Workflow {
+            return Err(AgentSessionInitialInstructionError::NotWorkflowOwned);
+        }
+        if request_id.trim().is_empty() {
+            return Err(AgentSessionInitialInstructionError::EmptyRequestId);
+        }
+        if !self.admitted_continuations.insert(request_id.to_string()) {
+            return Ok(AgentSessionInitialInstructionOutcome::AlreadyAdmitted);
+        }
+        self.uncommitted_events
+            .push(AgentSessionLifecycleEvent::ContinuationAdmitted {
+                request_id: request_id.to_string(),
+            });
         Ok(AgentSessionInitialInstructionOutcome::Admitted)
     }
 

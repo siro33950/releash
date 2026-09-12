@@ -76,10 +76,9 @@ impl WorkspaceTree {
                 if hidden.contains(&node.id) {
                     continue;
                 }
+                collect(Some(&node.id), children, hidden, leaves);
                 if node.is_leaf() {
                     leaves.push(node);
-                } else {
-                    collect(Some(&node.id), children, hidden, leaves);
                 }
             }
         }
@@ -147,6 +146,7 @@ impl WorkspaceTree {
                     WorkspaceNodeKind::Workflow
                         | WorkspaceNodeKind::Fanout
                         | WorkspaceNodeKind::Sequence
+                        | WorkspaceNodeKind::WorkflowSession
                 ) {
                     return Err(WorkspaceTreeError::InvalidParent(parent.clone()));
                 }
@@ -390,7 +390,7 @@ impl WorkspaceTree {
                         && node.node_name.as_deref() == Some(node_name.as_str())
                 })
                 .count();
-            let semantic_key = match parent.fanout_slot {
+            let semantic_key = match parent.fanout_slot() {
                 Some(slot) if parent_dynamic => fanout_dynamic_child_occurrence_key(
                     &parent.parent_id,
                     slot.child_index,

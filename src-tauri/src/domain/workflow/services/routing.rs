@@ -170,6 +170,15 @@ pub fn validate_rules(workflow: &WorkflowDefinition) -> Vec<RoutingValidationErr
         }
     }
 
+    for node in &workflow.nodes {
+        if let Some(delegate) = &node.completion.delegate {
+            composites_by_child
+                .entry(&delegate.child)
+                .or_default()
+                .push(&node.name);
+        }
+    }
+
     for scope in &scopes {
         errors.extend(validate_scope_children(workflow, scope, &node_by_name));
     }
@@ -183,7 +192,7 @@ pub fn validate_rules(workflow: &WorkflowDefinition) -> Vec<RoutingValidationErr
                     composite: (*composite).to_string(),
                     child: (*child).to_string(),
                     reason: format!(
-                        "node '{child}' is already a child of composite '{}'",
+                        "node '{child}' is already a child of node '{}'",
                         composites[0]
                     ),
                 });
@@ -197,7 +206,7 @@ pub fn validate_rules(workflow: &WorkflowDefinition) -> Vec<RoutingValidationErr
             errors.push(RoutingValidationError::ChildReferenceViolation {
                 composite: (*composite).to_string(),
                 child: workflow.entry.clone(),
-                reason: "the workflow root node cannot be a composite child".to_string(),
+                reason: "the workflow root node cannot be a child".to_string(),
             });
         }
     }
@@ -494,6 +503,9 @@ fn catalog_reference_closure(workflow: &WorkflowDefinition) -> HashSet<&str> {
         let Some(node) = node_by_name.get(current).copied() else {
             continue;
         };
+        if let Some(delegate) = &node.completion.delegate {
+            queue.push_back(delegate.child.as_str());
+        }
         let children = match &node.kind {
             NodeKind::Sequence(sequence) => Some(&sequence.children),
             NodeKind::Fanout(fanout) => Some(&fanout.children),
@@ -684,11 +696,25 @@ fn guarded_target_in_scope(
     )))
 }
 
-fn validate_routing_field(
+pub(crate) fn validate_routing_field(
     workflow: &WorkflowDefinition,
     node: &NodeDefinition,
     field: &str,
     expected: RoutingFieldKind,
+) -> Result<Vec<String>, String> {
+    let declaration = match expected {
+        RoutingFieldKind::Boolean => "when.on",
+        RoutingFieldKind::Enum => "switch.on",
+    };
+    validate_artifact_field(workflow, node, field, expected, declaration)
+}
+
+pub(crate) fn validate_artifact_field(
+    workflow: &WorkflowDefinition,
+    node: &NodeDefinition,
+    field: &str,
+    expected: RoutingFieldKind,
+    declaration: &str,
 ) -> Result<Vec<String>, String> {
     let field_path = routing_field_path(field)?;
     let resolved = reference::resolve_node_field_path(workflow, node, &field_path)
@@ -728,10 +754,10 @@ fn validate_routing_field(
     if kind != expected {
         return Err(match expected {
             RoutingFieldKind::Boolean => {
-                format!("when.on field '{field}' must be a required boolean")
+                format!("{declaration} field '{field}' must be a required boolean")
             }
             RoutingFieldKind::Enum => {
-                format!("switch.on field '{field}' must be a required enum")
+                format!("{declaration} field '{field}' must be a required enum")
             }
         });
     }

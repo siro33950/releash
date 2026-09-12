@@ -781,6 +781,89 @@ mod reconciliation_tests {
         read_tree_records(store, TREE).unwrap().len()
     }
 
+    #[test]
+    fn test_delegate復旧_提出だけ保存された木のchild開始を追記し再導出しない() {
+        use crate::domain::workflow::entities::workflow_execution::{
+            ExecutionAdvanceDecision, PendingAdvance,
+        };
+        // Given
+        let (_directory, store) = open_store();
+        let definition: WorkflowDefinition = serde_saphyr::from_str("name: delegate\ndescription: test\nnodes:\n  main: {session: {provider: codex}, artifact: result, completion: {delegate: {child: verify, when: child.ok, max_iterations: 2}}}\n  verify: {command: check}\nschemas:\n  result: {type: object, properties: {}, required: []}").unwrap();
+        let parent_meta = test_fact_meta(TREE, "parent");
+        let root = TreeRootFact {
+            repository_root: None,
+            workspace_identity: "/repo".into(),
+            worktree_path: "/repo".into(),
+            created_from: ExecutionOrigin::Cli,
+            request: "please".into(),
+            definition,
+            definition_resolution: Default::default(),
+            launched_as: ExecutionTreeLaunch::Workflow,
+        };
+        for (index, fact) in [
+            NodeFact::Started(StartedFact {
+                parent: None,
+                root: Some(Box::new(root)),
+            }),
+            NodeFact::SessionAttached(SessionAttachedFact {
+                session_id: "agent".into(),
+                provider_session_id: None,
+                transcript_ref: None,
+                initial_instruction_admitted: false,
+            }),
+            NodeFact::SubmitReceived(SubmitReceivedFact { request_id: None }),
+            NodeFact::ArtifactProduced(ArtifactProducedFact {
+                contract: Some("result".into()),
+                value: serde_json::json!({}),
+                request_id: None,
+            }),
+        ]
+        .iter()
+        .enumerate()
+        {
+            append_single_fact(&store, &parent_meta, fact, (index as i64 + 1) * 1000).unwrap();
+        }
+        let mut folded = fold_tree_from(&FactLogReadBackend::Live(store.clone()), TREE)
+            .unwrap()
+            .unwrap();
+        let advance = PendingAdvance::Delegate {
+            node_execution_id: "parent".into(),
+        };
+        assert_eq!(
+            folded.aggregate.derive_pending_advances(),
+            [advance.clone()]
+        );
+        // When
+        let applied = folded
+            .aggregate
+            .apply_pending_advance(&advance, &mut || "child".into(), 5.0)
+            .unwrap();
+        append_facts_for_events(&store, &applied.events).unwrap();
+        let restored = fold_tree_from(&FactLogReadBackend::Live(store.clone()), TREE)
+            .unwrap()
+            .unwrap();
+        // Then
+        let ExecutionAdvanceDecision::StartNodes(starts) = applied.decision else {
+            panic!()
+        };
+        assert_eq!(starts.len(), 1);
+        assert_eq!(starts[0].node_execution_id(), "child");
+        assert!(restored.aggregate.derive_pending_advances().is_empty());
+        assert_eq!(
+            restored.aggregate.node_executions,
+            folded.aggregate.node_executions
+        );
+        assert_eq!(
+            read_tree_records(&store, TREE)
+                .unwrap()
+                .iter()
+                .filter(|record| record.meta.node_name == "verify"
+                    && matches!(record.fact, NodeFact::Started(_)))
+                .count(),
+            1
+        );
+    }
+
     #[tokio::test]
     async fn test_session起動由来のstop受信済みnodeをreconcileしてもattentionを維持する() {
         let (_root, store) = open_store();

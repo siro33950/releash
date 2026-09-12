@@ -1,5 +1,6 @@
 mod contract;
 mod definition;
+pub(crate) use definition::{InputsMap, InputsMapSeed};
 mod definition_resolution;
 mod execution;
 mod execution_metadata;
@@ -21,8 +22,9 @@ pub use definition::{
     EnvironmentVariableName, EnvironmentVariableNameError, FacetRefs, FanoutSpec, InputParam,
     InputParameterRef, InputSourceRef, ItemsSource, NodeCompletion, NodeDefinition, NodeKind,
     NodeKindName, NodeNamespace, NodeNamespaceError, OnFailure, Rule, SchemaDef, SequenceSpec,
-    SessionPermission, SessionSpec, WorkflowDefinition, WorkflowSourceFormat, WorkflowSummary,
-    WorktreeMode, MAIN_ENTRY_NODE_NAME, MAX_FANOUT_CHILDREN, MAX_NODES_PER_WORKFLOW,
+    SessionDelegate, SessionPermission, SessionSpec, WorkflowDefinition, WorkflowSourceFormat,
+    WorkflowSummary, WorktreeMode, MAIN_ENTRY_NODE_NAME, MAX_FANOUT_CHILDREN,
+    MAX_NODES_PER_WORKFLOW,
 };
 pub use definition_resolution::DefinitionResolution;
 pub use execution::{
@@ -52,8 +54,9 @@ pub use node_fact::{
     AgentActivityObservedFact, AgentSessionActivity, ApprovalGrantedFact, ArtifactProducedFact,
     CommandSpawnedFact, ExecutionTreeLaunch, NodeFact, NodeFactMeta, NodeFactRecord,
     ProcessExitedFact, ProviderSessionTitleObservedFact, RuntimeFailureObservedFact,
-    SessionAttachedFact, SessionExecutionTreeRootFacts, SessionNodeRenamedFact, StartedFact,
-    StopReceivedFact, SubmitReceivedFact, SubmitRejectedFact, TreeRootFact,
+    SessionAttachedFact, SessionContinuationAdmittedFact, SessionExecutionTreeRootFacts,
+    SessionNodeRenamedFact, StartedFact, StopReceivedFact, SubmitReceivedFact, SubmitRejectedFact,
+    TreeRootFact,
 };
 pub use predicate::{Predicate, PredicateError};
 pub use runtime_event::{ContractViolationRecord, WorkflowEvent};

@@ -8,6 +8,9 @@
 //! 再帰木を成し、合成子（sequence / fanout）の実行インスタンスごとの進行
 //! カーソル・子カウント・子 Artifact は `ScopeRuntime` が所有する。
 
+mod delegate;
+pub use delegate::DelegateInjection;
+use delegate::{DelegatePhase, DelegateRuntime};
 mod recovery;
 pub mod scope;
 
@@ -524,6 +527,7 @@ pub enum TransitionOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeCompletionHandshakeDecision {
     AwaitingSignal,
+    Delegate,
     CompleteAuto,
     RequestApproval,
     AlreadySettled,
@@ -670,6 +674,7 @@ pub struct CompositePreparation {
 pub enum NodeStart {
     Leaf(LeafStart),
     PrepareComposite(CompositePreparation),
+    InjectDelegate(DelegateInjection),
 }
 
 impl NodeStart {
@@ -677,6 +682,7 @@ impl NodeStart {
         match self {
             Self::Leaf(leaf) => &leaf.node_execution_id,
             Self::PrepareComposite(composite) => &composite.node_execution_id,
+            Self::InjectDelegate(injection) => &injection.node_execution_id,
         }
     }
 
@@ -685,6 +691,7 @@ impl NodeStart {
         match self {
             Self::Leaf(leaf) => &leaf.node_name,
             Self::PrepareComposite(composite) => &composite.node_name,
+            Self::InjectDelegate(_) => "delegate injection",
         }
     }
 }
@@ -693,7 +700,9 @@ impl NodeStart {
 fn expect_leaf(start: &NodeStart) -> &LeafStart {
     match start {
         NodeStart::Leaf(leaf) => leaf,
-        NodeStart::PrepareComposite(_) => panic!("expected leaf runtime start"),
+        NodeStart::PrepareComposite(_) | NodeStart::InjectDelegate(_) => {
+            panic!("expected leaf runtime start")
+        }
     }
 }
 
@@ -727,15 +736,22 @@ pub struct AppliedAdvance {
 /// 導出状態にあるが、まだ実行されていない前進（reconciliation の検出結果）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PendingAdvance {
+    Delegate {
+        node_execution_id: String,
+    },
     /// 完了済みの子からの前進（次の子の started が無い）。
     AfterChild {
         scope_id: String,
         child_name: String,
     },
     /// 合成子は開始済みだが実効 entry の子が未開始。
-    StartEntry { scope_id: String },
+    StartEntry {
+        scope_id: String,
+    },
     /// fanout の展開が途中で途切れている（欠けている展開座標がある）。
-    ExpandFanout { scope_id: String },
+    ExpandFanout {
+        scope_id: String,
+    },
 }
 
 /// children エントリの on_failure 処遇の適用結果: 追記すべきイベント列と
@@ -763,6 +779,7 @@ pub struct WorkflowExecution {
     interruption_reason: Option<ExecutionInterruptionReason>,
     runtime: WorkflowExecutionView,
     pending_restart: Option<PendingRestart>,
+    delegates: HashMap<String, DelegateRuntime>,
     pending_empty_fanout: Option<String>,
     definition_resolution: crate::domain::workflow::DefinitionResolution,
 }
@@ -845,6 +862,7 @@ impl WorkflowExecution {
             state: restore.lifecycle.state,
             interruption_reason: restore.lifecycle.interruption_reason,
             pending_restart: None,
+            delegates: HashMap::new(),
             pending_empty_fanout: None,
             definition_resolution: Default::default(),
             runtime: WorkflowExecutionView {
@@ -1000,7 +1018,22 @@ impl WorkflowExecution {
                     "node '{node_name}' is undefined"
                 ))
             })?;
+        let delegate_parent = parent_scope_id.filter(|id| self.is_delegate_parent(id));
         let attempt = match parent_scope_id {
+            Some(id) if delegate_parent.is_some() => {
+                self.node_executions
+                    .iter()
+                    .filter(|child| {
+                        child
+                            .parent
+                            .as_ref()
+                            .is_some_and(|parent| parent.parent_id == id)
+                    })
+                    .map(|child| child.attempt)
+                    .max()
+                    .unwrap_or(0)
+                    + 1
+            }
             Some(scope_id) => {
                 // sequence の子起動専用（fanout の子は start_fanout_child_instance）。
                 let sequence = self
@@ -1023,7 +1056,13 @@ impl WorkflowExecution {
             None => 1,
         };
         let id = new_id();
-        let parent = parent_scope_id.map(ExecutionParentRef::sequence_child);
+        let parent = parent_scope_id.map(|id| {
+            if delegate_parent.is_some() {
+                ExecutionParentRef::delegate_child(id)
+            } else {
+                ExecutionParentRef::sequence_child(id)
+            }
+        });
         self.push_started_node(
             &node,
             attempt,
@@ -1032,9 +1071,12 @@ impl WorkflowExecution {
             timestamp,
             events,
         )?;
+        if let Some(parent_id) = delegate_parent {
+            self.delegate_child_started(parent_id, &id);
+        }
+        let bindings = self.resolve_child_bindings(parent_scope_id, &node, None);
         match node.kind_name() {
             NodeKindName::Command | NodeKindName::Session => {
-                let bindings = self.resolve_child_bindings(parent_scope_id, &node, None);
                 starts.push(NodeStart::Leaf(LeafStart {
                     node_execution_id: id.clone(),
                     node_name: node.name.clone(),
@@ -1044,7 +1086,7 @@ impl WorkflowExecution {
                 }));
             }
             NodeKindName::Sequence => {
-                let parameters = self.resolve_child_bindings(parent_scope_id, &node, None);
+                let parameters = bindings;
                 self.runtime.scopes.push(ScopeRuntime {
                     node_execution_id: id.clone(),
                     node_name: node.name.clone(),
@@ -1079,7 +1121,7 @@ impl WorkflowExecution {
                 )?;
             }
             NodeKindName::Fanout => {
-                let parameters = self.resolve_child_bindings(parent_scope_id, &node, None);
+                let parameters = bindings;
                 self.runtime.scopes.push(ScopeRuntime {
                     node_execution_id: id.clone(),
                     node_name: node.name.clone(),
@@ -1186,7 +1228,7 @@ impl WorkflowExecution {
                 if parent.parent_id != scope_id {
                     return None;
                 }
-                let slot = parent.fanout_slot?;
+                let slot = parent.fanout_slot()?;
                 Some((slot.item_index, slot.child_index))
             })
             .collect();
@@ -1402,6 +1444,9 @@ impl WorkflowExecution {
         let Some(scope_id) = parent_scope_id else {
             return Vec::new();
         };
+        if self.is_delegate_parent(scope_id) {
+            return self.delegate_bindings(scope_id);
+        }
         let Some(scope) = self.scope(scope_id) else {
             return Vec::new();
         };
@@ -1688,7 +1733,7 @@ impl WorkflowExecution {
                             let key = self
                                 .node_execution(&child.node_execution_id)
                                 .and_then(|execution| execution.parent.as_ref())
-                                .and_then(|parent| parent.fanout_slot)
+                                .and_then(|parent| parent.fanout_slot())
                                 .and_then(|slot| node.fanout()?.artifact_key(slot))
                                 .ok_or_else(|| {
                                     crate::domain::workflow::WorkflowError::invalid_state(format!(
@@ -1753,6 +1798,13 @@ impl WorkflowExecution {
             .scopes
             .retain(|active| active.node_execution_id != scope_id);
 
+        if let Some(parent_id) = scope
+            .parent_scope_id
+            .as_deref()
+            .filter(|id| self.is_delegate_parent(id))
+        {
+            return self.settle_delegate_child(parent_id, scope_id, effects, timestamp);
+        }
         match scope.parent_scope_id.as_deref() {
             None => {
                 let _ = self.complete();
@@ -1900,6 +1952,12 @@ impl WorkflowExecution {
             fanout_children: None,
             state: crate::domain::workflow::NODE_STATUS_COMPLETED.to_string(),
         });
+        if let Some(parent_id) = parent_scope_id
+            .as_deref()
+            .filter(|id| self.is_delegate_parent(id))
+        {
+            return self.settle_delegate_child(parent_id, node_execution_id, effects, timestamp);
+        }
         match parent_scope_id.as_deref() {
             None => {
                 // 単独実行の root leaf: workflow 完了。
@@ -2093,6 +2151,7 @@ impl WorkflowExecution {
             .as_ref()
             .map(|parent| parent.parent_id.clone());
         let new_attempt = match parent_scope_id.as_deref() {
+            Some(scope_id) if self.is_delegate_parent(scope_id) => target.attempt.saturating_add(1),
             Some(scope_id) => match self.scope_mut(scope_id)?.sequence_mut() {
                 Some(sequence) => sequence.record_child_start(&target.node_name),
                 // fanout: attempt は slot（lane）が所有する。
@@ -2144,6 +2203,14 @@ impl WorkflowExecution {
         self.runtime
             .retry_predecessors
             .insert(new_node_execution_id.clone(), node_execution_id.to_string());
+        if let Some(parent_id) = parent_scope_id
+            .as_deref()
+            .filter(|id| self.is_delegate_parent(id))
+        {
+            let state = self.delegates.get_mut(parent_id)?;
+            state.last_child = Some(new_node_execution_id.clone());
+            state.phase = DelegatePhase::WaitingChild;
+        }
         let attempt = self.node_execution(&new_node_execution_id).cloned()?;
         let leaf = self.leaf_start_for(&new_node_execution_id).ok()?;
         Some(RestartedNodeAttempt {
@@ -2467,6 +2534,10 @@ impl WorkflowExecution {
             self.runtime.updated_at = timestamp;
             return TransitionOutcome::Applied;
         };
+        if self.is_delegate_parent(&scope_id) {
+            self.runtime.updated_at = timestamp;
+            return TransitionOutcome::Applied;
+        }
         let Some(scope) = self.scope_mut(&scope_id) else {
             return TransitionOutcome::NotApplicable;
         };
@@ -2536,7 +2607,9 @@ impl WorkflowExecution {
         if execution.node_name != node_name {
             return TransitionOutcome::Rejected(TransitionRejection::ArtifactNotAccepted);
         }
-        if execution.artifact.as_ref() == Some(&value) {
+        if !self.is_delegate_parent(node_execution_id)
+            && execution.artifact.as_ref() == Some(&value)
+        {
             return TransitionOutcome::AlreadyApplied;
         }
         if execution.kind.is_composite_kind() {
@@ -2553,14 +2626,8 @@ impl WorkflowExecution {
             self.runtime.updated_at = timestamp;
             return TransitionOutcome::Applied;
         }
-        self.record_pending_result(
-            node_execution_id,
-            None,
-            Some(value),
-            contract,
-            None,
-            timestamp,
-        )
+        self.accept_submitted_artifact(node_execution_id, None, value, contract, timestamp)
+            .unwrap_or(TransitionOutcome::NotApplicable)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2586,14 +2653,10 @@ impl WorkflowExecution {
         if !execution.status.is_active() {
             return TransitionOutcome::NotApplicable;
         }
-        self.record_pending_result(
-            node_execution_id,
-            result,
-            Some(output),
-            Some(contract),
-            None,
-            timestamp,
-        )
+        self.accept_submitted_artifact(node_execution_id, result, output, Some(contract), timestamp)
+            .unwrap_or(TransitionOutcome::Rejected(
+                TransitionRejection::ArtifactNotAccepted,
+            ))
     }
 
     pub fn mark_node_waiting_approval(
@@ -2934,6 +2997,21 @@ impl WorkflowExecution {
             }
             RuntimeNodeExecutionStatus::Running | RuntimeNodeExecutionStatus::Paused => {}
         }
+        if let Some(state) = self.delegates.get(node_execution_id) {
+            match state.phase {
+                DelegatePhase::StartChild => return NodeCompletionHandshakeDecision::Delegate,
+                DelegatePhase::InjectResult if execution.completion_signals.is_ready() => {
+                    return NodeCompletionHandshakeDecision::Delegate
+                }
+                DelegatePhase::Complete => {}
+                _ => return NodeCompletionHandshakeDecision::AwaitingSignal,
+            }
+        }
+        if self.is_delegate_parent(node_execution_id)
+            && !self.delegates.contains_key(node_execution_id)
+        {
+            return NodeCompletionHandshakeDecision::AwaitingSignal;
+        }
         if !execution.completion_signals.is_ready() {
             return NodeCompletionHandshakeDecision::AwaitingSignal;
         }
@@ -2969,6 +3047,37 @@ impl WorkflowExecution {
                 Ok(AppliedNodeCompletionHandshake {
                     advance: None,
                     events: Vec::new(),
+                })
+            }
+            NodeCompletionHandshakeDecision::Delegate => {
+                let mut events = Vec::new();
+                let mut starts = Vec::new();
+                if let Some(injection) = self.pending_delegate_injection(node_execution_id) {
+                    starts.push(NodeStart::InjectDelegate(injection));
+                } else if self
+                    .delegates
+                    .get(node_execution_id)
+                    .is_some_and(|state| state.phase == DelegatePhase::StartChild)
+                {
+                    let child = self
+                        .node_execution(node_execution_id)
+                        .and_then(|parent| self.workflow.node_by_name(&parent.node_name))
+                        .and_then(|node| node.completion.delegate.as_ref())
+                        .unwrap()
+                        .child
+                        .clone();
+                    self.start_node_instance(
+                        Some(node_execution_id),
+                        &child,
+                        new_id,
+                        timestamp,
+                        &mut events,
+                        &mut starts,
+                    )?;
+                }
+                Ok(AppliedNodeCompletionHandshake {
+                    advance: Some(ExecutionAdvanceDecision::StartNodes(starts)),
+                    events,
                 })
             }
             NodeCompletionHandshakeDecision::NotApplicable => Err(
@@ -3128,7 +3237,7 @@ impl WorkflowExecution {
         let parent = target.parent.as_ref()?;
         let scope = self.scope(&parent.parent_id)?;
         let owner = self.runtime.workflow.node_by_name(&scope.node_name)?;
-        match parent.fanout_slot {
+        match parent.fanout_slot() {
             Some(slot) => owner
                 .fanout()?
                 .children
@@ -3155,7 +3264,7 @@ impl WorkflowExecution {
         };
         self.node_execution(&slot.node_execution_id)
             .and_then(|execution| execution.parent.as_ref())
-            .and_then(|parent| parent.fanout_slot)
+            .and_then(|parent| parent.fanout_slot())
             .and_then(|coords| spec.children.get(coords.child_index))
             .and_then(|entry| entry.on_failure)
             == Some(OnFailure::Ignore)
@@ -3185,7 +3294,7 @@ impl WorkflowExecution {
     /// 消化され、復活しない）。
     fn auto_retry_budget_left(&self, target: &RuntimeNodeExecution, max_retries: u32) -> bool {
         let attempts_in_visit = match target.parent.as_ref() {
-            Some(parent) if parent.fanout_slot.is_none() => {
+            Some(parent) if parent.fanout_slot().is_none() => {
                 let base = self
                     .scope(&parent.parent_id)
                     .and_then(ScopeRuntime::sequence)
@@ -3295,6 +3404,7 @@ impl WorkflowExecution {
     ) -> Result<(), String> {
         match self.decide_node_completion_handshake(node_execution_id) {
             NodeCompletionHandshakeDecision::AwaitingSignal
+            | NodeCompletionHandshakeDecision::Delegate
             | NodeCompletionHandshakeDecision::AlreadySettled
             | NodeCompletionHandshakeDecision::NotApplicable => Ok(()),
             NodeCompletionHandshakeDecision::RequestApproval => {
@@ -3532,6 +3642,17 @@ impl WorkflowExecution {
                 }
             }
         }
+        for (id, state) in &self.delegates {
+            if state.phase == DelegatePhase::StartChild
+                && self
+                    .node_execution(id)
+                    .is_some_and(|node| node.status == RuntimeNodeExecutionStatus::Running)
+            {
+                pending.push(PendingAdvance::Delegate {
+                    node_execution_id: id.clone(),
+                });
+            }
+        }
         pending
     }
 
@@ -3546,6 +3667,14 @@ impl WorkflowExecution {
         let mut events = Vec::new();
         let mut starts = Vec::new();
         match advance {
+            PendingAdvance::Delegate { node_execution_id } => {
+                let applied =
+                    self.apply_node_completion_handshake(node_execution_id, new_id, timestamp)?;
+                return Ok(AppliedAdvance {
+                    decision: applied.advance.unwrap_or(ExecutionAdvanceDecision::Persist),
+                    events: applied.events,
+                });
+            }
             PendingAdvance::AfterChild {
                 scope_id,
                 child_name,
@@ -3708,84 +3837,98 @@ impl WorkflowExecution {
         let is_restart = retry_predecessor.is_some();
         // 親スコープの進行を再現する。
         if let Some(parent_ref) = &parent {
-            let scope_id = parent_ref.parent_id.clone();
-            let slot_item = parent_ref.fanout_slot.and_then(|slot| {
-                slot.item_index.and_then(|index| {
-                    self.scope(&scope_id)
-                        .and_then(ScopeRuntime::fanout)
-                        .and_then(|fanout| fanout.items.as_ref())
-                        .and_then(|items| items.get(index).cloned())
-                })
-            });
-            // retry の replay で旧 slot を差し替えるため、slot の展開座標を
-            // node_executions の親参照から引けるようにしておく。
-            let slot_coordinates: HashMap<String, crate::domain::workflow::FanoutSlot> = self
-                .runtime
-                .node_executions
-                .iter()
-                .filter_map(|execution| {
-                    let parent = execution.parent.as_ref()?;
-                    if parent.parent_id != scope_id {
-                        return None;
-                    }
-                    Some((execution.id.clone(), parent.fanout_slot?))
-                })
-                .collect();
-            let contract = node.as_ref().and_then(|node| node.artifact.clone());
-            let scope = self
-                .scope_mut(&scope_id)
-                .ok_or_else(|| format!("parent scope '{scope_id}' is not active"))?;
-            match (&mut scope.kind, parent_ref.fanout_slot) {
-                (ScopeRuntimeKind::Sequence(sequence), _) => {
-                    sequence.raise_child_count_to(node_name, attempt);
-                    if !is_restart {
-                        // fresh visit: retry 予算の基点を live 経路と同じ規則で張る。
-                        sequence
-                            .visit_bases
-                            .insert(node_name.to_string(), attempt.saturating_sub(1));
-                    }
-                    sequence.current_child = Some(node_name.to_string());
-                    sequence.artifacts.remove(node_name);
+            if parent_ref.is_delegate_child() {
+                if is_restart {
+                    let state = self
+                        .delegates
+                        .entry(parent_ref.parent_id.clone())
+                        .or_default();
+                    state.last_child = Some(node_execution_id.to_string());
+                    state.phase = DelegatePhase::WaitingChild;
+                } else {
+                    self.delegate_child_started(&parent_ref.parent_id, node_execution_id);
                 }
-                (ScopeRuntimeKind::Fanout(fanout), slot_ref) => {
-                    // retry の replay では同じ展開座標の旧 slot を新しい attempt へ
-                    // 差し替える。
-                    let existing = slot_ref.and_then(|slot_ref| {
-                        fanout.children.iter_mut().find(|slot| {
-                            slot.node_execution_id != node_execution_id
-                                && slot.state != FanoutChildRuntimeState::Completed
-                                && slot_coordinates.get(&slot.node_execution_id) == Some(&slot_ref)
-                        })
-                    });
-                    match existing {
-                        Some(slot) => {
-                            slot.node_execution_id = node_execution_id.to_string();
-                            slot.session_id = String::new();
-                            slot.state = FanoutChildRuntimeState::Running;
-                            slot.result = None;
-                            slot.artifact = None;
-                            slot.failure_kind = None;
-                            slot.failure_disposition = None;
-                            slot.token_usage = TokenUsage::default();
-                            slot.attempt = attempt;
-                            slot.completed_at = None;
+            } else {
+                let scope_id = parent_ref.parent_id.clone();
+                let slot_item = parent_ref.fanout_slot().and_then(|slot| {
+                    slot.item_index.and_then(|index| {
+                        self.scope(&scope_id)
+                            .and_then(ScopeRuntime::fanout)
+                            .and_then(|fanout| fanout.items.as_ref())
+                            .and_then(|items| items.get(index).cloned())
+                    })
+                });
+                // retry の replay で旧 slot を差し替えるため、slot の展開座標を
+                // node_executions の親参照から引けるようにしておく。
+                let slot_coordinates: HashMap<String, crate::domain::workflow::FanoutSlot> = self
+                    .runtime
+                    .node_executions
+                    .iter()
+                    .filter_map(|execution| {
+                        let parent = execution.parent.as_ref()?;
+                        if parent.parent_id != scope_id {
+                            return None;
                         }
-                        None => {
-                            fanout.children.push(FanoutChildRuntime {
-                                node_execution_id: node_execution_id.to_string(),
-                                node_name: node_name.to_string(),
-                                session_id: String::new(),
-                                state: FanoutChildRuntimeState::Running,
-                                result: None,
-                                artifact: None,
-                                contract,
-                                failure_kind: None,
-                                failure_disposition: None,
-                                token_usage: TokenUsage::default(),
-                                attempt,
-                                completed_at: None,
-                                item: slot_item,
-                            });
+                        Some((execution.id.clone(), parent.fanout_slot()?))
+                    })
+                    .collect();
+                let contract = node.as_ref().and_then(|node| node.artifact.clone());
+                let scope = self
+                    .scope_mut(&scope_id)
+                    .ok_or_else(|| format!("parent scope '{scope_id}' is not active"))?;
+                match (&mut scope.kind, parent_ref.fanout_slot()) {
+                    (ScopeRuntimeKind::Sequence(sequence), _) => {
+                        sequence.raise_child_count_to(node_name, attempt);
+                        if !is_restart {
+                            // fresh visit: retry 予算の基点を live 経路と同じ規則で張る。
+                            sequence
+                                .visit_bases
+                                .insert(node_name.to_string(), attempt.saturating_sub(1));
+                        }
+                        sequence.current_child = Some(node_name.to_string());
+                        sequence.artifacts.remove(node_name);
+                    }
+                    (ScopeRuntimeKind::Fanout(fanout), slot_ref) => {
+                        // retry の replay では同じ展開座標の旧 slot を新しい attempt へ
+                        // 差し替える。
+                        let existing = slot_ref.and_then(|slot_ref| {
+                            fanout.children.iter_mut().find(|slot| {
+                                slot.node_execution_id != node_execution_id
+                                    && slot.state != FanoutChildRuntimeState::Completed
+                                    && slot_coordinates.get(&slot.node_execution_id)
+                                        == Some(&slot_ref)
+                            })
+                        });
+                        match existing {
+                            Some(slot) => {
+                                slot.node_execution_id = node_execution_id.to_string();
+                                slot.session_id = String::new();
+                                slot.state = FanoutChildRuntimeState::Running;
+                                slot.result = None;
+                                slot.artifact = None;
+                                slot.failure_kind = None;
+                                slot.failure_disposition = None;
+                                slot.token_usage = TokenUsage::default();
+                                slot.attempt = attempt;
+                                slot.completed_at = None;
+                            }
+                            None => {
+                                fanout.children.push(FanoutChildRuntime {
+                                    node_execution_id: node_execution_id.to_string(),
+                                    node_name: node_name.to_string(),
+                                    session_id: String::new(),
+                                    state: FanoutChildRuntimeState::Running,
+                                    result: None,
+                                    artifact: None,
+                                    contract,
+                                    failure_kind: None,
+                                    failure_disposition: None,
+                                    token_usage: TokenUsage::default(),
+                                    attempt,
+                                    completed_at: None,
+                                    item: slot_item,
+                                });
+                            }
                         }
                     }
                 }
@@ -3815,7 +3958,7 @@ impl WorkflowExecution {
             let parent_scope_id = parent.as_ref().map(|parent| parent.parent_id.clone());
             let slot_item = parent
                 .as_ref()
-                .and_then(|parent| parent.fanout_slot)
+                .and_then(|parent| parent.fanout_slot())
                 .and_then(|slot| slot.item_index)
                 .and_then(|index| {
                     parent_scope_id
@@ -5314,7 +5457,7 @@ mod tests {
             .resolve_approval_attempt_target("implement", Some("child-2"))
             .unwrap();
         assert_eq!(target.node_execution_id, "child-2");
-        assert_eq!(target.parent.unwrap().fanout_slot.unwrap().child_index, 1);
+        assert_eq!(target.parent.unwrap().fanout_slot().unwrap().child_index, 1);
     }
 
     #[test]
@@ -6026,7 +6169,7 @@ mod tests {
         );
     }
 
-    fn started_names(events: &[WorkflowEvent]) -> Vec<String> {
+    pub(super) fn started_names(events: &[WorkflowEvent]) -> Vec<String> {
         events
             .iter()
             .filter_map(|event| match event {
@@ -6036,7 +6179,7 @@ mod tests {
             .collect()
     }
 
-    fn execution_id_of(execution: &WorkflowExecution, node_name: &str) -> String {
+    pub(super) fn execution_id_of(execution: &WorkflowExecution, node_name: &str) -> String {
         execution
             .node_executions()
             .iter()
@@ -6072,7 +6215,7 @@ mod tests {
         completed
     }
 
-    fn settle_session_leaf(
+    pub(super) fn settle_session_leaf(
         execution: &mut WorkflowExecution,
         node_execution_id: &str,
         new_id: &mut dyn FnMut() -> String,
@@ -6161,7 +6304,7 @@ mod tests {
             .unwrap();
         let part_parent = part.parent.clone().unwrap();
         assert_eq!(part_parent.parent_id, fan_id);
-        assert!(part_parent.fanout_slot.is_some());
+        assert!(part_parent.fanout_slot().is_some());
         let fan = execution
             .node_executions()
             .iter()
@@ -6193,203 +6336,6 @@ mod tests {
                 "composite instance '{name}' must complete bottom-up"
             );
         }
-    }
-
-    #[test]
-    fn canonical_example_starts_nested_sequence_inside_fanout() {
-        let source_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../workflows/examples/full-cycle-development.yml");
-        let source = std::fs::read_to_string(source_path).unwrap();
-        let workflow: WorkflowDefinition = serde_saphyr::from_str(&source).unwrap();
-        let mut execution = WorkflowExecution::restore_runtime(WorkflowExecutionRestore {
-            id: "canonical-example-execution".to_string(),
-            repository_root: Some("/repo".into()),
-            worktree_path: "/repo".into(),
-            workflow,
-            ..WorkflowExecutionRestore::default()
-        });
-
-        execution
-            .replay_node_started("main", "main", NodeKindName::Sequence, 1, None, 1.0)
-            .unwrap();
-        execution
-            .replay_node_started(
-                "implementation",
-                "implementation",
-                NodeKindName::Sequence,
-                1,
-                Some(ExecutionParentRef::sequence_child("main")),
-                2.0,
-            )
-            .unwrap();
-        execution
-            .replay_node_started(
-                "create-detailed-design",
-                "create_detailed_design",
-                NodeKindName::Session,
-                1,
-                Some(ExecutionParentRef::sequence_child("implementation")),
-                3.0,
-            )
-            .unwrap();
-
-        let tasks = serde_json::json!({
-            "tasks": [
-                {
-                    "task_id": "task-1",
-                    "requirements": [],
-                    "depends_on": [],
-                    "parallel": true,
-                    "files": [],
-                    "outputs": [],
-                    "verify": []
-                },
-                {
-                    "task_id": "task-2",
-                    "requirements": [],
-                    "depends_on": [],
-                    "parallel": true,
-                    "files": [],
-                    "outputs": [],
-                    "verify": []
-                }
-            ]
-        });
-        assert_eq!(
-            execution.record_pending_result(
-                "create-detailed-design",
-                Some("created two tasks".to_string()),
-                Some(tasks),
-                Some("implement-tasks".to_string()),
-                None,
-                4.0,
-            ),
-            TransitionOutcome::Applied
-        );
-
-        let mut new_id = tree_id_source();
-        let applied =
-            settle_session_leaf(&mut execution, "create-detailed-design", &mut new_id, 5.0);
-        assert_eq!(
-            started_names(&applied.events),
-            [
-                "implement_all",
-                "implement_and_verify",
-                "implement_and_verify",
-            ]
-        );
-        let Some(ExecutionAdvanceDecision::StartNodes(implement_leaves)) = applied.advance else {
-            panic!("canonical example must start one implementation leaf per task");
-        };
-        assert_eq!(implement_leaves.len(), 2);
-        let implement_leaves = implement_leaves
-            .into_iter()
-            .flat_map(|composite| {
-                assert!(matches!(composite, NodeStart::PrepareComposite(_)));
-                let prepared = execution
-                    .start_prepared_composite(composite.node_execution_id(), &mut new_id, 5.0)
-                    .unwrap();
-                assert_eq!(started_names(&prepared.events), ["implement_task"]);
-                let ExecutionAdvanceDecision::StartNodes(leaves) = prepared.decision else {
-                    panic!("prepared isolated sequence must start its child");
-                };
-                leaves
-            })
-            .collect::<Vec<_>>();
-        assert_ne!(
-            execution.execution_worktree_path(implement_leaves[0].node_execution_id()),
-            execution.execution_worktree_path(implement_leaves[1].node_execution_id())
-        );
-
-        let mut verify_leaves = Vec::new();
-        for (index, leaf) in implement_leaves.iter().enumerate() {
-            let applied = settle_session_leaf(
-                &mut execution,
-                leaf.node_execution_id(),
-                &mut new_id,
-                6.0 + index as f64,
-            );
-            let Some(ExecutionAdvanceDecision::StartNodes(leaves)) = applied.advance else {
-                panic!("implement_and_verify must advance from implement_task to verify_task");
-            };
-            assert_eq!(
-                leaves
-                    .iter()
-                    .map(|leaf| leaf.node_name())
-                    .collect::<Vec<_>>(),
-                ["verify_task"]
-            );
-            verify_leaves.extend(leaves);
-        }
-
-        let mut final_started = Vec::new();
-        for (index, leaf) in verify_leaves.iter().enumerate() {
-            assert_eq!(
-                execution.record_pending_result(
-                    leaf.node_execution_id(),
-                    Some("verified".to_string()),
-                    Some(serde_json::json!({
-                        "task_id": format!("task-{}", index + 1),
-                        "complete": true,
-                        "reason": "ok"
-                    })),
-                    Some("implement-task-check-result".to_string()),
-                    None,
-                    8.0 + index as f64,
-                ),
-                TransitionOutcome::Applied
-            );
-            let applied = settle_session_leaf(
-                &mut execution,
-                leaf.node_execution_id(),
-                &mut new_id,
-                10.0 + index as f64,
-            );
-            final_started.extend(started_names(&applied.events));
-        }
-
-        assert_eq!(final_started, ["merge_implementations"]);
-        let worktrees = execution
-            .node_executions
-            .iter()
-            .filter(|node| node.node_name == "implement_and_verify")
-            .map(|node| node.worktree.as_ref().unwrap())
-            .collect::<Vec<_>>();
-        let expected_results = serde_json::json!({
-            "0": {"verify_task": {"task_id": "task-1", "complete": true, "reason": "ok"}, "worktree": {"branch": worktrees[0].branch, "path": worktrees[0].path}},
-            "1": {"verify_task": {"task_id": "task-2", "complete": true, "reason": "ok"}, "worktree": {"branch": worktrees[1].branch, "path": worktrees[1].path}}
-        });
-        let merge_id = execution_id_of(&execution, "merge_implementations");
-        let merge = execution.leaf_start_for(&merge_id).unwrap();
-        assert_eq!(
-            merge
-                .bindings
-                .iter()
-                .find(|(name, _)| name == "results")
-                .map(|(_, value)| value),
-            Some(&expected_results)
-        );
-        assert_eq!(
-            execution
-                .node_executions()
-                .iter()
-                .filter(|node| node.node_name == "implement_and_verify")
-                .map(|node| node.status)
-                .collect::<Vec<_>>(),
-            [
-                RuntimeNodeExecutionStatus::Succeeded,
-                RuntimeNodeExecutionStatus::Succeeded,
-            ]
-        );
-        assert_eq!(
-            execution
-                .node_executions()
-                .iter()
-                .find(|node| node.node_name == "implement_all")
-                .expect("canonical fanout must have started")
-                .status,
-            RuntimeNodeExecutionStatus::Succeeded
-        );
     }
 
     #[test]

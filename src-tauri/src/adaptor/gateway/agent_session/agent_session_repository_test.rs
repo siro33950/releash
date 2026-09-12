@@ -13,7 +13,8 @@ use crate::adaptor::gateway::workflow::test_support::{
     seed_workflow_session_facts, WorkflowSessionFactSeed,
 };
 use crate::domain::agent_session::aggregates::{
-    AgentSession, AgentSessionLifecycle, AgentSessionTreeLocation,
+    AgentSession, AgentSessionInitialInstructionOutcome, AgentSessionLifecycle,
+    AgentSessionTreeLocation,
 };
 use crate::domain::agent_session::repository::{
     AgentSessionRepository, AgentSessionRepositoryError,
@@ -539,6 +540,69 @@ async fn test_agent_session_repository_workflow子sessionも同じ活動保存�
             if fact.activity == AgentSessionActivity::Working
                 && records.last().unwrap().meta.node_execution_id == "workflow-session-node"
     ));
+}
+
+#[tokio::test]
+async fn test_agent_session_repository_続行指示の受理を木の事実として保存し再読込後も同じ識別子を拒む(
+) {
+    let directory = TempDir::new().unwrap();
+    let store = open_store(&directory);
+    seed_workflow_session_facts(
+        &store,
+        WorkflowSessionFactSeed {
+            workflow_name: "delegate-workflow",
+            request: "implement",
+            worktree_path: "/repo/workflow-delegate",
+            provider: ProviderKind::Codex,
+            workflow_execution_id: "workflow-delegate",
+            node_execution_id: "workflow-session-node",
+            session_id: "workflow-agent-session",
+            initial_instruction_admitted: true,
+        },
+    )
+    .unwrap();
+    let repository = new_repository(&store);
+    let mut saved = repository
+        .find("workflow-agent-session")
+        .await
+        .unwrap()
+        .unwrap();
+    saved
+        .session_mut()
+        .admit_continuation("workflow-delegate-continuation-child-1")
+        .unwrap();
+    repository
+        .save(saved, "delegate-continuation-child-1")
+        .await
+        .unwrap();
+
+    let records = fact_log::read_tree_records(&store, "workflow-delegate").unwrap();
+    assert!(matches!(
+        &records.last().unwrap().fact,
+        NodeFact::SessionContinuationAdmitted(fact)
+            if fact.session_id == "workflow-agent-session"
+                && fact.request_id == "workflow-delegate-continuation-child-1"
+                && records.last().unwrap().meta.node_execution_id == "workflow-session-node"
+    ));
+    let mut reloaded = repository
+        .find("workflow-agent-session")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        reloaded
+            .session_mut()
+            .admit_continuation("workflow-delegate-continuation-child-1")
+            .unwrap(),
+        AgentSessionInitialInstructionOutcome::AlreadyAdmitted
+    );
+    assert_eq!(
+        reloaded
+            .session_mut()
+            .admit_continuation("workflow-delegate-continuation-child-2")
+            .unwrap(),
+        AgentSessionInitialInstructionOutcome::Admitted
+    );
 }
 
 #[tokio::test]

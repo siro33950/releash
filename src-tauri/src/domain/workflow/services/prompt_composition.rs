@@ -57,6 +57,14 @@ releash workflow output submit \\\n  --node-execution {node_execution_id} \\\n  
     )
 }
 
+pub fn delegate_submission_guidance() -> &'static str {
+    "このSessionはdelegateを持つ。提出成功後はいったんturnを終了する。engineがchildの結果を追加入力したら、同じ会話で結果を確認して作業を続行し、同じnode-executionへArtifactを再提出する。childキーはengineが管理するため提出JSONに含めない。"
+}
+
+pub fn delegate_continuation_instruction(artifact: &serde_json::Value) -> String {
+    format!("delegate childが完了した。以下の親Artifactのchildが今回の結果である。この結果を確認し、同じSessionで作業を続行してArtifactを再提出すること。\n\n{}", artifact)
+}
+
 pub fn artifactless_completion_action(node_execution_id: &str) -> String {
     let quoted_node_execution_id = crate::domain::shell::quote_path_for_shell(node_execution_id);
     format!(

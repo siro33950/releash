@@ -161,6 +161,10 @@ pub(crate) fn build_leaf_prompt(
         .map(|content| render_parameter_references(&content, bindings));
     let rendered_user = render_parameter_references(&composed.user_message, bindings);
     let mut prompt = inject_input_parameters(&rendered_user, node, bindings);
+    if node.completion.delegate.is_some() {
+        prompt.push_str("\n\n");
+        prompt.push_str(prompt_composition::delegate_submission_guidance());
+    }
     append_completion_action(
         &mut prompt,
         node.artifact.as_deref(),

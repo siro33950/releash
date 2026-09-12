@@ -296,7 +296,7 @@ impl WorkflowControlPlaneUsecase {
             });
         }
         if let Some((contract, validated)) = validated_artifact {
-            if candidate.apply_submitted_output(
+            let artifact_outcome = candidate.apply_submitted_output(
                 target.node_name.clone(),
                 &command.node_execution_id,
                 target.attempt,
@@ -305,13 +305,21 @@ impl WorkflowControlPlaneUsecase {
                 validated.artifact.clone(),
                 validated.result,
                 timestamp,
-            )
-                != crate::domain::workflow::entities::workflow_execution::TransitionOutcome::Applied
-            {
-                return Err(WorkflowError::invalid_state(format!(
-                    "node execution '{}' disappeared during Submit",
-                    command.node_execution_id
-                )));
+            );
+            match artifact_outcome {
+                TransitionOutcome::Applied => {}
+                TransitionOutcome::NotApplicable => {
+                    return Err(WorkflowError::invalid_state(format!(
+                        "node execution '{}' disappeared during Submit",
+                        command.node_execution_id
+                    )));
+                }
+                _ => {
+                    return Err(WorkflowError::invalid_state(format!(
+                        "node execution '{}' cannot accept Artifact in its current state",
+                        command.node_execution_id
+                    )));
+                }
             }
             events.push(submission::artifact_produced_event(
                 &execution_id,
@@ -324,19 +332,20 @@ impl WorkflowControlPlaneUsecase {
                 timestamp,
             ));
         }
-        let outcome = if submit_signal_applied {
-            let mut new_id = self.node_execution_id_source();
-            let (outcome, handshake_events) = apply_completion_handshake(
-                &mut candidate,
-                &command.node_execution_id,
-                &mut new_id,
-                timestamp,
-            )?;
-            events.extend(handshake_events);
-            outcome
-        } else {
-            None
-        };
+        let outcome =
+            if submit_signal_applied || candidate.is_delegate_parent(&command.node_execution_id) {
+                let mut new_id = self.node_execution_id_source();
+                let (outcome, handshake_events) = apply_completion_handshake(
+                    &mut candidate,
+                    &command.node_execution_id,
+                    &mut new_id,
+                    timestamp,
+                )?;
+                events.extend(handshake_events);
+                outcome
+            } else {
+                None
+            };
         let worktree_path = current.worktree_path.clone();
         let snapshot = self
             .runtime

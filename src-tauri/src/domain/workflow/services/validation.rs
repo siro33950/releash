@@ -89,8 +89,33 @@ pub struct InputWiringViolation {
     pub reason: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvalidDelegateKind {
+    UnsupportedNodeKind,
+    MissingArtifactContract,
+    ChildWithoutArtifact,
+    MaxIterations,
+    WhenFieldNotBoolean,
+}
+
+impl InvalidDelegateKind {
+    pub fn field_path(self) -> &'static str {
+        match self {
+            Self::MaxIterations => "completion.delegate.max_iterations",
+            Self::WhenFieldNotBoolean => "completion.delegate.when",
+            Self::ChildWithoutArtifact => "completion.delegate.child",
+            Self::UnsupportedNodeKind | Self::MissingArtifactContract => "completion.delegate",
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum ValidationError {
+    InvalidDelegate {
+        node: String,
+        kind: InvalidDelegateKind,
+        reason: String,
+    },
     EmptyName,
     InvalidChars {
         name: String,
@@ -260,6 +285,10 @@ pub enum ValidationError {
 impl fmt::Display for ValidationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidDelegate { node, kind, reason } => {
+                let field = kind.field_path();
+                write!(f, "node '{node}' {field}: {reason}")
+            }
             Self::EmptyName => write!(f, "ワークフロー名が空です"),
             Self::InvalidChars { name } => write!(
                 f,
@@ -282,7 +311,7 @@ impl fmt::Display for ValidationError {
                 write!(f, "composite node '{node}' must declare at least one child")
             }
             Self::UnknownChildNode { node, child } => {
-                write!(f, "composite node '{node}' references unknown child node '{child}'")
+                write!(f, "node '{node}' references unknown child node '{child}'")
             }
             Self::DuplicateChildReference { node, child } => {
                 write!(
@@ -335,7 +364,7 @@ impl fmt::Display for ValidationError {
             } => {
                 write!(
                     f,
-                    "composite node '{node}' child '{child}' violates child reference constraints: {reason}"
+                    "node '{node}' child '{child}' violates child reference constraints: {reason}"
                 )
             }
             Self::IgnoredChildDependency { node, child, kind } => match kind {
@@ -381,7 +410,7 @@ impl fmt::Display for ValidationError {
             Self::CompositeInclusionCycle { node, cycle } => {
                 write!(
                     f,
-                    "composite node '{node}' contains itself through its children ({cycle})"
+                    "node '{node}' contains itself through its children ({cycle})"
                 )
             }
             Self::UnknownRuleTarget { node, target } => write!(
@@ -853,6 +882,77 @@ fn collect_fanout_items_errors(workflow: &WorkflowDefinition) -> Vec<ValidationE
     errors
 }
 
+fn collect_delegate_errors(workflow: &WorkflowDefinition) -> Vec<ValidationError> {
+    let mut errors = Vec::new();
+    for node in &workflow.nodes {
+        let Some(delegate) = &node.completion.delegate else {
+            continue;
+        };
+        let invalid = |kind, reason: &str| ValidationError::InvalidDelegate {
+            node: node.name.clone(),
+            kind,
+            reason: reason.to_string(),
+        };
+        if !node.is_session() {
+            errors.push(invalid(
+                InvalidDelegateKind::UnsupportedNodeKind,
+                "delegate can only be declared by a Session",
+            ));
+        } else if node.artifact.is_none() {
+            errors.push(invalid(
+                InvalidDelegateKind::MissingArtifactContract,
+                "delegate requires an artifact Contract",
+            ));
+        }
+        if delegate.max_iterations == 0 {
+            errors.push(invalid(
+                InvalidDelegateKind::MaxIterations,
+                "delegate max_iterations must be at least 1",
+            ));
+        }
+        match workflow.node_by_name(&delegate.child) {
+            None => errors.push(ValidationError::UnknownChildNode {
+                node: node.name.clone(),
+                child: delegate.child.clone(),
+            }),
+            Some(child) if !reference::node_has_artifact(child) => {
+                errors.push(invalid(
+                    InvalidDelegateKind::ChildWithoutArtifact,
+                    "delegate child must produce an Artifact",
+                ));
+            }
+            _ => {}
+        }
+        if let Some(contract) = node.artifact.as_deref() {
+            if let Some(SchemaDef::Object { properties, .. }) = workflow.schemas.get(contract) {
+                if properties.contains_key("child") {
+                    errors.push(ValidationError::ReservedArtifactField {
+                        node: node.name.clone(),
+                        contract: contract.to_string(),
+                        field: "child".into(),
+                    });
+                }
+            }
+        }
+        errors.extend(delegate.when.validate(&mut |field| {
+            routing::validate_artifact_field(
+                workflow,
+                node,
+                field,
+                contract_schema::RoutingFieldKind::Boolean,
+                InvalidDelegateKind::WhenFieldNotBoolean.field_path(),
+            )
+            .map(|_| ())
+            .map_err(|reason| ValidationError::InvalidDelegate {
+                node: node.name.clone(),
+                kind: InvalidDelegateKind::WhenFieldNotBoolean,
+                reason,
+            })
+        }));
+    }
+    errors
+}
+
 /// 全合成子スコープの children エントリの inputs 配線を検証する。
 ///
 /// sequence の供給元解決は自分の children（兄弟）+ 自合成子の input パラメータ +
@@ -863,14 +963,29 @@ fn collect_children_wiring_errors(workflow: &WorkflowDefinition) -> Vec<Validati
     let mut errors = Vec::new();
 
     for owner in &workflow.nodes {
+        let delegate_entry = owner
+            .completion
+            .delegate
+            .as_ref()
+            .map(|delegate| vec![delegate.child_entry()]);
         let (children, fanout_has_items) = match &owner.kind {
             NodeKind::Sequence(sequence) => (&sequence.children, None),
             NodeKind::Fanout(fanout) => (&fanout.children, Some(fanout.items.is_some())),
+            NodeKind::Session(_) if delegate_entry.is_some() => {
+                (delegate_entry.as_ref().unwrap(), None)
+            }
             _ => continue,
         };
         let is_fanout_scope = fanout_has_items.is_some();
-        let sibling_names: BTreeSet<&str> =
-            children.iter().map(|entry| entry.name.as_str()).collect();
+        let sibling_names: BTreeSet<&str> = if delegate_entry.is_some() {
+            std::iter::once(owner.name.as_str())
+                .filter(|name| {
+                    !crate::domain::workflow::value_objects::NodeNamespace::is_synthesized(name)
+                })
+                .collect()
+        } else {
+            children.iter().map(|entry| entry.name.as_str()).collect()
+        };
         let own_params: BTreeSet<&str> = owner.input_parameter_names().collect();
 
         for entry in children {
@@ -1175,7 +1290,13 @@ fn collect_inclusion_cycle_errors(workflow: &WorkflowDefinition) -> Vec<Validati
             let children = match &node.kind {
                 NodeKind::Sequence(sequence) => &sequence.children,
                 NodeKind::Fanout(fanout) => &fanout.children,
-                _ => return None,
+                _ => {
+                    return node
+                        .completion
+                        .delegate
+                        .as_ref()
+                        .map(|delegate| (node.name.as_str(), vec![delegate.child.as_str()]));
+                }
             };
             Some((
                 node.name.as_str(),
@@ -1184,7 +1305,7 @@ fn collect_inclusion_cycle_errors(workflow: &WorkflowDefinition) -> Vec<Validati
                     .filter(|entry| {
                         workflow
                             .node_by_name(&entry.name)
-                            .is_some_and(NodeDefinition::is_composite)
+                            .is_some_and(|node| node.has_child_executions())
                     })
                     .map(|entry| entry.name.as_str())
                     .collect(),
@@ -1313,6 +1434,9 @@ pub fn validate(workflow: &WorkflowDefinition) -> Result<(), ValidationError> {
         return Err(routing_error_to_validation_error(err));
     }
     if let Some(err) = collect_inclusion_cycle_errors(workflow).into_iter().next() {
+        return Err(err);
+    }
+    if let Some(err) = collect_delegate_errors(workflow).into_iter().next() {
         return Err(err);
     }
     if let Some(err) = collect_children_wiring_errors(workflow).into_iter().next() {
@@ -1682,6 +1806,7 @@ pub fn validate_all(workflow: &WorkflowDefinition) -> Vec<ValidationError> {
             .map(routing_error_to_validation_error),
     );
     errors.extend(collect_inclusion_cycle_errors(workflow));
+    errors.extend(collect_delegate_errors(workflow));
     errors.extend(collect_children_wiring_errors(workflow));
     errors.extend(collect_fanout_items_errors(workflow));
     errors.extend(collect_reserved_parameter_errors(workflow));

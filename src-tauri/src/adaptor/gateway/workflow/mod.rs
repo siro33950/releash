@@ -4,6 +4,7 @@
 //! execution state and events use the fixed SQLite local event store.
 
 mod completion_wire;
+mod execution_parent_wire;
 mod predicate_wire;
 
 pub(crate) mod builtin;

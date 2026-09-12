@@ -1472,6 +1472,141 @@ describe("WorkspaceList", () => {
 		);
 	});
 
+	it("過去attemptの履歴展開で当該attemptのdelegateの子と部分木を表示して選択できる", async () => {
+		const user = userEvent.setup();
+		const grandchild = standaloneSessionNode({
+			id: "past-delegate-grandchild",
+			title: "Past judge",
+			status: "idle",
+			canArchive: false,
+		});
+		const child: WorkspaceNode = {
+			...standaloneSessionNode({
+				id: "past-delegate-child",
+				title: "Past verify",
+				status: "idle",
+				canArchive: false,
+			}),
+			children: [grandchild],
+		};
+		const past: WorkspaceNode = {
+			...standaloneSessionNode({
+				id: "past-delegate-parent",
+				title: "Implement",
+				status: "failure",
+				canArchive: false,
+			}),
+			children: [child],
+		};
+		const latest: WorkspaceNode = {
+			...standaloneSessionNode({
+				id: "latest-delegate-parent",
+				title: "Implement",
+				status: "active",
+				canArchive: false,
+			}),
+			pastAttempts: [past],
+			pastAttemptsCollapsed: true,
+			children: [
+				standaloneSessionNode({
+					id: "latest-delegate-child",
+					title: "Current verify",
+					status: "active",
+					canArchive: false,
+				}),
+			],
+		};
+		mocks.treeStateOverrides.set("/repo/wt", {
+			nodes: [latest],
+			archivedSessions: [],
+		});
+		const { onSelectWorktree } = renderWorkspaceList();
+
+		expect(screen.queryByRole("button", { name: /^Past / })).toBeNull();
+		await user.click(
+			screen.getByRole("button", {
+				name: "Show past executions for Implement",
+			}),
+		);
+
+		const rows = screen.getAllByRole("button", {
+			name: /^(Implement|Past verify|Past judge|Current verify),/,
+		});
+		expect(rows.map((row) => row.getAttribute("aria-label"))).toEqual([
+			"Implement, failure",
+			"Past verify, idle",
+			"Past judge, idle",
+			"Implement, active",
+			"Current verify, active",
+		]);
+		for (const [row, nodeId] of [
+			[rows[1], child.id],
+			[rows[2], grandchild.id],
+		] as const) {
+			await user.click(row);
+			expect(onSelectWorktree).toHaveBeenLastCalledWith(
+				"/repo/wt",
+				"feature",
+				"repo",
+				{ kind: "node", worktreePath: "/repo/wt", nodeId },
+			);
+		}
+		await user.click(
+			screen.getByRole("button", {
+				name: "Hide past executions for Implement",
+			}),
+		);
+		expect(screen.queryByRole("button", { name: /^Past / })).toBeNull();
+		expect(
+			screen.getByRole("button", { name: "Current verify, active" }),
+		).toBeInTheDocument();
+	});
+
+	it("delegateの子を親Sessionの下に発火順で表示して選択できる", async () => {
+		const user = userEvent.setup();
+		const first = standaloneSessionNode({
+			id: "delegate-first",
+			title: "Verify 1",
+			status: "idle",
+			canArchive: false,
+		});
+		const second = standaloneSessionNode({
+			id: "delegate-second",
+			title: "Verify 2",
+			status: "active",
+			canArchive: false,
+		});
+		const parent: WorkspaceNode = {
+			...standaloneSessionNode({
+				id: "delegate-parent",
+				title: "Implement",
+				status: "active",
+				canArchive: false,
+			}),
+			children: [first, second],
+		};
+		mocks.treeStateOverrides.set("/repo/wt", {
+			nodes: [parent],
+			archivedSessions: [],
+		});
+		const { onSelectWorktree } = renderWorkspaceList();
+		const rows = screen.getAllByRole("button", {
+			name: /^(Implement|Verify [12]),/,
+		});
+		expect(rows.map((row) => row.getAttribute("aria-label"))).toEqual([
+			"Implement, active",
+			"Verify 1, idle",
+			"Verify 2, active",
+		]);
+		await user.click(rows[1]);
+		expect(onSelectWorktree).toHaveBeenLastCalledWith(
+			"/repo/wt",
+			"feature",
+			"repo",
+			{ kind: "node", worktreePath: "/repo/wt", nodeId: "delegate-first" },
+		);
+	});
+
 	it("NewSessionはNewWorkflowと同じsubmenuでProviderを選択して作成する", async () => {
 		const user = userEvent.setup();
 		let providerSessionListCalls = 0;

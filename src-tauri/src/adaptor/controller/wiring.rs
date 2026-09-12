@@ -375,9 +375,49 @@ pub(crate) fn build_workflow_runtime_usecase(
     app: tauri::AppHandle,
     deps: TauriWorkflowRuntimeCommandGatewayDeps,
 ) -> Result<WorkflowRuntimeUsecase, WorkflowRuntimeError> {
+    use crate::adaptor::gateway::workflow::{
+        runtime_resolver::{AppConfigManagedWorktreeResolver, DefaultWorkflowDefinitionResolver},
+        workflow_host::WorkflowRuntimeHost,
+    };
+    let driver = WorkflowRuntimeHost::new_canonical(
+        Arc::new(DefaultWorkflowDefinitionResolver),
+        Arc::new(AppConfigManagedWorktreeResolver::new(
+            deps.repository_usecase,
+            deps.app_config,
+        )),
+        deps.data_dir,
+        deps.workspace_query,
+        deps.agent_session_launch,
+        deps.agent_session_initial_instruction,
+        deps.agent_session_interrupt,
+        deps.agent_session_lifecycle,
+        deps.provider_availability,
+        deps.isolated_worktrees,
+    );
+    let driver = wire_delegate_continuation(app.clone(), driver);
     Ok(WorkflowRuntimeUsecase::new(Arc::new(
-        TauriWorkflowRuntimeCommandGateway::new_with_default_driver(app, deps)?,
+        TauriWorkflowRuntimeCommandGateway::new_with_driver(
+            app,
+            Arc::new(driver),
+            deps.local_event_repository,
+            deps.local_event_installation_id,
+        ),
     )))
+}
+
+pub(crate) fn wire_delegate_continuation<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    mut host: crate::adaptor::gateway::workflow::workflow_host::WorkflowRuntimeHost,
+) -> crate::adaptor::gateway::workflow::workflow_host::WorkflowRuntimeHost {
+    use crate::adaptor::gateway::workflow::workflow_host::delegate::HostDelegateContinuation;
+    use crate::usecase::workflow::delegate::DelegateContinuationUsecase;
+    host.delegate_continuation = Some(Arc::new(DelegateContinuationUsecase {
+        gateway: Arc::new(HostDelegateContinuation {
+            host: host.clone(),
+            app,
+        }),
+    }));
+    host
 }
 
 /// Runs issue #1372 maintenance only after the fixed SQLite authority is

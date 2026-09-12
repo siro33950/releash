@@ -537,11 +537,64 @@ fn test_completion要求_省略時は要求なしで承認要求だけが完了�
         (NodeCompletion::require_approval(), true),
     ] {
         let node = NodeDefinition {
-            completion,
+            completion: completion.clone(),
             ..Default::default()
         };
         // When / Then
         assert_eq!(completion.is_empty(), !requires_approval);
         assert_eq!(node.requires_approval_completion(), requires_approval);
+    }
+}
+
+#[test]
+fn test_node名前空間_生成した無名inlineだけを合成名と判定する() {
+    // Given
+    let mut namespace = NodeNamespace::default();
+    let explicit = namespace.register_explicit("worker").unwrap();
+    let inline = namespace.register_synthesized("main", 0).unwrap();
+    let nested = namespace.register_synthesized(&inline, 1).unwrap();
+    // When / Then
+    assert!(!NodeNamespace::is_synthesized(&explicit));
+    assert_eq!(inline, "main#0");
+    assert!(NodeNamespace::is_synthesized(&inline));
+    assert!(NodeNamespace::is_synthesized(&nested));
+}
+
+#[test]
+fn test_子実行の分類_合成子とdelegateを持つsessionだけが子を持つ() {
+    for kind in [
+        NodeKind::Session(SessionSpec::default()),
+        NodeKind::Command(CommandSpec {
+            command: "true".into(),
+            env: Default::default(),
+        }),
+        NodeKind::Sequence(SequenceSpec::default()),
+        NodeKind::Fanout(FanoutSpec::default()),
+    ] {
+        for delegate in [false, true] {
+            // Given
+            let node = NodeDefinition {
+                kind: kind.clone(),
+                completion: NodeCompletion {
+                    require: None,
+                    delegate: delegate.then(|| SessionDelegate {
+                        child: "verify".into(),
+                        inputs: Vec::new(),
+                        when: crate::domain::workflow::Predicate::Ref("child.ok".into()),
+                        max_iterations: 1,
+                    }),
+                },
+                ..Default::default()
+            };
+            // When
+            let owns_children = node.has_child_executions();
+            // Then
+            let expected = match kind {
+                NodeKind::Session(_) => delegate,
+                NodeKind::Command(_) => false,
+                NodeKind::Sequence(_) | NodeKind::Fanout(_) => true,
+            };
+            assert_eq!(owns_children, expected);
+        }
     }
 }

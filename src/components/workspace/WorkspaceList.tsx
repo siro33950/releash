@@ -577,14 +577,16 @@ function WorkspaceTreeItemRow({
 			<>
 				{pastExpanded &&
 					item.pastAttempts.map((past) => (
-						<WorkspaceNodeRow
+						<WorkspaceTreeItemRow
 							key={past.id}
-							node={past}
+							item={past}
 							indentPx={indentPx}
-							selected={isNodeSelected(centerSelection, past)}
-							onSelect={() => onSelectNode(past)}
-							onClose={() => onCloseNode(past)}
-							onRename={(name) => onRenameNode(past, name)}
+							centerSelection={centerSelection}
+							onSelectNode={onSelectNode}
+							onCloseNode={onCloseNode}
+							onArchiveSession={onArchiveSession}
+							onDeleteSession={onDeleteSession}
+							onRenameNode={onRenameNode}
 							onWorkflowAction={onWorkflowAction}
 							onArchiveWorkflow={onArchiveWorkflow}
 						/>
@@ -603,6 +605,21 @@ function WorkspaceTreeItemRow({
 					onWorkflowAction={onWorkflowAction}
 					onArchiveWorkflow={onArchiveWorkflow}
 				/>
+				{item.children?.map((child) => (
+					<WorkspaceTreeItemRow
+						key={child.id}
+						item={child}
+						indentPx={indentPx + TREE_LEVEL_INDENT_PX}
+						centerSelection={centerSelection}
+						onSelectNode={onSelectNode}
+						onCloseNode={onCloseNode}
+						onArchiveSession={onArchiveSession}
+						onDeleteSession={onDeleteSession}
+						onRenameNode={onRenameNode}
+						onWorkflowAction={onWorkflowAction}
+						onArchiveWorkflow={onArchiveWorkflow}
+					/>
+				))}
 			</>
 		);
 	}

@@ -64,6 +64,9 @@ pub enum NodeFact {
     ProviderSessionTitleObserved(ProviderSessionTitleObservedFact),
     /// 外部入力: 受理された Submit。
     SubmitReceived(SubmitReceivedFact),
+    DelegateResultInjected(String),
+    /// 副作用: 親 Session が delegate child の結果の続行指示を受理した。
+    SessionContinuationAdmitted(SessionContinuationAdmittedFact),
     /// 副作用: Contract 違反として Submit を拒否した。
     SubmitRejected(SubmitRejectedFact),
     /// 外部入力: provider の Stop。
@@ -235,6 +238,14 @@ pub struct SessionAttachedFact {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SessionContinuationAdmittedFact {
+    pub session_id: String,
+    /// 続行指示の識別子。同じ識別子の再送を session 側で拒む鍵。
+    pub request_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CommandSpawnedFact {
     pub display_command: String,
 }
@@ -379,6 +390,8 @@ impl NodeFact {
             Self::SubmitReceived(_) => "submit_received",
             Self::SubmitRejected(_) => "submit_rejected",
             Self::StopReceived(_) => Self::STOP_RECEIVED_EVENT_TYPE,
+            Self::DelegateResultInjected(_) => "delegate_result_injected",
+            Self::SessionContinuationAdmitted(_) => "session_continuation_admitted",
             Self::ArtifactProduced(_) => "artifact_produced",
             Self::ApprovalGranted(_) => "approval_granted",
             Self::RetryRequested => "retry_requested",
@@ -403,6 +416,10 @@ impl NodeFact {
             Self::SubmitReceived(fact) => serde_json::to_string(fact),
             Self::SubmitRejected(fact) => serde_json::to_string(fact),
             Self::StopReceived(fact) => serde_json::to_string(fact),
+            Self::DelegateResultInjected(child) => {
+                serde_json::to_string(&serde_json::json!({"childExecutionId": child}))
+            }
+            Self::SessionContinuationAdmitted(fact) => serde_json::to_string(fact),
             Self::ArtifactProduced(fact) => serde_json::to_string(fact),
             Self::ApprovalGranted(fact) => serde_json::to_string(fact),
             Self::RetryRequested
@@ -449,6 +466,23 @@ impl NodeFact {
             "submit_received" => parse(event_type, detail).map(Self::SubmitReceived),
             "submit_rejected" => parse(event_type, detail).map(Self::SubmitRejected),
             Self::STOP_RECEIVED_EVENT_TYPE => parse(event_type, detail).map(Self::StopReceived),
+            "delegate_result_injected" => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct Detail {
+                    child_execution_id: String,
+                }
+                let detail: Detail = parse(event_type, detail)?;
+                (!detail.child_execution_id.is_empty())
+                    .then_some(Self::DelegateResultInjected(detail.child_execution_id))
+                    .ok_or_else(|| NodeFactDecodeError::DetailMismatch {
+                        event_type: event_type.into(),
+                        reason: "childExecutionId is required".into(),
+                    })
+            }
+            "session_continuation_admitted" => {
+                parse(event_type, detail).map(Self::SessionContinuationAdmitted)
+            }
             "artifact_produced" => parse(event_type, detail).map(Self::ArtifactProduced),
             "approval_granted" => parse(event_type, detail).map(Self::ApprovalGranted),
             "retry_requested" => empty(event_type, detail).map(|()| Self::RetryRequested),
@@ -494,31 +528,33 @@ mod workflow_definition_snapshot_serde {
     where
         S: Serializer,
     {
-        let mut value = serde_json::to_value(definition).map_err(serde::ser::Error::custom)?;
-        let fields = value
-            .as_object_mut()
-            .ok_or_else(|| serde::ser::Error::custom("workflow definition must be an object"))?;
-        fields.insert(
-            "entry".to_string(),
-            serde_json::Value::String(definition.entry.clone()),
-        );
-        value.serialize(serializer)
+        #[derive(Serialize)]
+        struct Snapshot<'a> {
+            #[serde(flatten)]
+            definition: &'a WorkflowDefinition,
+            entry: &'a str,
+        }
+        Snapshot {
+            definition,
+            entry: &definition.entry,
+        }
+        .serialize(serializer)
     }
 
     pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<WorkflowDefinition, D::Error>
     where
         D: Deserializer<'de>,
     {
-        let mut value = serde_json::Value::deserialize(deserializer)?;
-        let fields = value
-            .as_object_mut()
-            .ok_or_else(|| serde::de::Error::custom("workflow definition must be an object"))?;
-        let entry = fields
-            .remove("entry")
-            .and_then(|value| value.as_str().map(ToOwned::to_owned))
-            .ok_or_else(|| serde::de::Error::custom("workflow definition entry is required"))?;
-        let mut definition: WorkflowDefinition =
-            serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+        #[derive(Deserialize)]
+        struct Snapshot {
+            entry: String,
+            #[serde(flatten)]
+            definition: WorkflowDefinition,
+        }
+        let Snapshot {
+            mut definition,
+            entry,
+        } = Snapshot::deserialize(deserializer)?;
         definition.entry = entry;
         Ok(definition)
     }

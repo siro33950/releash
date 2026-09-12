@@ -737,3 +737,133 @@ fn test_隔離成果選択_提出順と完了順が逆転しても最後の提�
         "releash/isolated/second-a1"
     );
 }
+
+#[test]
+fn test_delegate_保存事実の再生は注入前後と同一内容の再提出と上限を保持する() {
+    // Given
+    let mut log = Log::new("  main: {artifact: result, session: {provider: codex}, completion: {delegate: {child: check, when: child.passed, max_iterations: 2}}}\n  check: {artifact: result, session: {provider: codex}}");
+    log.start("parent", "main", None, 1);
+    for round in 1..=2 {
+        log.submit("parent", Some(serde_json::json!({"done": false})));
+        log.stop("parent");
+        let id = format!("check-{round}");
+        log.start(
+            &id,
+            "check",
+            Some(ExecutionParentRef::delegate_child("parent")),
+            round,
+        );
+        log.submit(
+            &id,
+            Some(serde_json::json!({"passed": false, "round": round})),
+        );
+        log.stop(&id);
+        // When / Then
+        assert_eq!(log.output("main").unwrap().value["child"]["round"], round);
+        let tree = fact_replay::fold_execution_tree("tree", &log.records)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            tree.aggregate
+                .pending_delegate_injection("parent")
+                .unwrap()
+                .child_execution_id,
+            id
+        );
+        assert!(tree.aggregate.derive_pending_advances().is_empty());
+        log.fact("parent", NodeFact::DelegateResultInjected(id));
+        let tree = fact_replay::fold_execution_tree("tree", &log.records)
+            .unwrap()
+            .unwrap();
+        assert!(tree.aggregate.pending_delegate_injections().is_empty());
+        assert_eq!(log.output("main").unwrap().value["child"]["round"], round);
+    }
+    log.submit("parent", Some(serde_json::json!({"done": false})));
+    log.stop("parent");
+    let tree = fact_replay::fold_execution_tree("tree", &log.records)
+        .unwrap()
+        .unwrap();
+    assert_eq!(tree.aggregate.node_execution("parent").unwrap().status, crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecutionStatus::Succeeded);
+    assert_eq!(
+        log.output("main").unwrap().value,
+        serde_json::json!({"done": false, "child": {"passed": false, "round": 2}})
+    );
+}
+
+#[test]
+fn test_delegate_合成子の配下でも子のmapと後続参照用の成果を局所的に再生する() {
+    for kind in ["sequence", "fanout"] {
+        // Given
+        let mut log = Log::new(&format!("  root: {{sequence: {{children: [main]}}}}\n  main: {{artifact: result, session: {{provider: codex}}, completion: {{delegate: {{child: checks, when: child.check.passed, max_iterations: 2}}}}}}\n  checks: {{{kind}: {{children: [check]}}}}\n  check: {{artifact: result, session: {{provider: codex}}}}"));
+        log.start("root", "root", None, 1);
+        log.start(
+            "parent",
+            "main",
+            Some(ExecutionParentRef::sequence_child("root")),
+            1,
+        );
+        log.submit("parent", Some(serde_json::json!({"done": false})));
+        log.stop("parent");
+        log.start(
+            "checks",
+            "checks",
+            Some(ExecutionParentRef::delegate_child("parent")),
+            1,
+        );
+        let parent = if kind == "sequence" {
+            ExecutionParentRef::sequence_child("checks")
+        } else {
+            ExecutionParentRef::fanout_child("checks", None, 0)
+        };
+        log.start("check", "check", Some(parent), 1);
+        // When
+        log.submit("check", Some(serde_json::json!({"passed": true})));
+        log.stop("check");
+        // Then
+        let expected = serde_json::json!({"done": false, "child": {"check": {"passed": true}}});
+        assert_eq!(log.output("main").unwrap().value, expected);
+        assert_eq!(log.output("root").unwrap().value["main"], expected);
+    }
+}
+
+#[test]
+fn test_delegate_childの失敗と手動retryの成果を部分木から再生する() {
+    // Given
+    let mut log = Log::new("  main: {artifact: result, session: {provider: codex}, completion: {delegate: {child: check, when: child.passed, max_iterations: 2}}}\n  check: {artifact: result, session: {provider: codex}}");
+    log.start("parent", "main", None, 1);
+    log.submit("parent", Some(serde_json::json!({"done": false})));
+    log.stop("parent");
+    log.start(
+        "first",
+        "check",
+        Some(ExecutionParentRef::delegate_child("parent")),
+        1,
+    );
+    log.fact(
+        "first",
+        NodeFact::RuntimeFailureObserved(crate::domain::workflow::RuntimeFailureObservedFact {
+            reason: "child failed".into(),
+            failure_kind: crate::domain::workflow::NodeExecutionFailureKind::InfrastructureCrash,
+        }),
+    );
+    log.fact("first", NodeFact::RetryRequested);
+    log.start(
+        "retry",
+        "check",
+        Some(ExecutionParentRef::delegate_child("parent")),
+        2,
+    );
+    // When
+    log.submit("retry", Some(serde_json::json!({"passed": false})));
+    log.stop("retry");
+    // Then
+    assert_eq!(
+        log.output("main").unwrap().value,
+        serde_json::json!({"done": false, "child": {"passed": false}})
+    );
+    log.fact("parent", NodeFact::DelegateResultInjected("retry".into()));
+    assert_eq!(
+        log.output("main").unwrap().value["child"],
+        serde_json::json!({"passed": false})
+    );
+}

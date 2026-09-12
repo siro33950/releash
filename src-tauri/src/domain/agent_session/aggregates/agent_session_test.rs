@@ -1087,6 +1087,65 @@ fn test_agent_session_initial_instruction_同じsessionへの再要求を冪等�
 }
 
 #[test]
+fn test_agent_session_続行指示_識別子ごとに一度だけ受理しeventを発生させる() {
+    let mut session = AgentSession::create(
+        "agent-session-1",
+        WorkspaceIdentity::new("/repo"),
+        "/repo/.worktrees/feature",
+        ProviderKind::Claude,
+        workflow_location("workflow-execution-1", "node-execution-1"),
+    )
+    .unwrap();
+    session.take_uncommitted_events();
+
+    assert_eq!(
+        session.admit_continuation("child-1").unwrap(),
+        AgentSessionInitialInstructionOutcome::Admitted
+    );
+    assert_eq!(
+        session.admit_continuation("child-1").unwrap(),
+        AgentSessionInitialInstructionOutcome::AlreadyAdmitted
+    );
+    assert_eq!(
+        session.admit_continuation("child-2").unwrap(),
+        AgentSessionInitialInstructionOutcome::Admitted
+    );
+    assert_eq!(
+        session.admit_continuation(" ").unwrap_err(),
+        AgentSessionInitialInstructionError::EmptyRequestId
+    );
+
+    assert_eq!(
+        session.uncommitted_events(),
+        &[
+            AgentSessionLifecycleEvent::ContinuationAdmitted {
+                request_id: "child-1".into()
+            },
+            AgentSessionLifecycleEvent::ContinuationAdmitted {
+                request_id: "child-2".into()
+            },
+        ]
+    );
+}
+
+#[test]
+fn test_agent_session_続行指示_session起動由来では拒否する() {
+    let mut session = AgentSession::create(
+        "agent-session-1",
+        WorkspaceIdentity::new("/repo"),
+        "/repo/.worktrees/feature",
+        ProviderKind::Claude,
+        standalone_location("agent-session-1"),
+    )
+    .unwrap();
+
+    assert_eq!(
+        session.admit_continuation("child-1").unwrap_err(),
+        AgentSessionInitialInstructionError::NotWorkflowOwned
+    );
+}
+
+#[test]
 fn test_agent_session_initial_instruction_session起動由来では拒否する() {
     let mut session = AgentSession::create(
         "agent-session-1",
@@ -1688,4 +1747,30 @@ fn test_agent_session_restore成功時にlast_exit_abnormalを解除する() {
         .unwrap();
 
     assert!(!session.last_exit_abnormal());
+}
+
+#[test]
+fn test_delegate_追加入力は開いているworkflow_sessionだけが受け取れる() {
+    // Given
+    for workflow in [false, true] {
+        let location = if workflow {
+            workflow_location("tree", "node")
+        } else {
+            standalone_location("agent")
+        };
+        let mut session = AgentSession::create(
+            "agent",
+            WorkspaceIdentity::new("/repo"),
+            "/repo",
+            ProviderKind::Codex,
+            location,
+        )
+        .unwrap();
+        // When / Then
+        assert_eq!(session.can_receive_workflow_instruction(), workflow);
+        if workflow {
+            session.observe_provider_process_exit(Some(0));
+            assert!(!session.can_receive_workflow_instruction());
+        }
+    }
 }
