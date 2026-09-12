@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { buildMockConfig } from "./helpers/fixtures";
+import { buildMockConfig, kanbanBranches } from "./helpers/fixtures";
 import { setupTauriMock, emitTauriEvent } from "./helpers/tauri-mock";
 import { waitForApp } from "./helpers/utils";
 
@@ -28,14 +28,39 @@ function statusBarConfig(overrides: Record<string, unknown> = {}) {
 }
 
 test.describe("StatusBar", () => {
+	test("workflowのws pushでworkspaceの表示が更新される", async ({ page }) => {
+		const client = await setupTauriMock(page, statusBarConfig({
+            list_branches_with_status: kanbanBranches.filter((branch) => branch.name === "feat/wip"),
+			list_workspace_worktree_nodes: { nodes: [], archivedSessions: [], preferredNodeId: null },
+		}));
+		await waitForApp(page);
+		await expect(page.getByText("feat/my-branch")).toBeVisible();
+		await page.evaluate(() => window.__TAURI_INTERNALS__?.setMockResponse("list_workspace_worktree_nodes", {
+			nodes: [{ kind: "node", id: "ws-node", title: "From ws push", status: "active", contentKind: "session", capabilities: { canRename: false, canApprove: false, canRetry: false, canClose: false }, pastAttempts: [], pastAttemptsCollapsed: false, updatedAt: 2 }],
+			archivedSessions: [], preferredNodeId: null,
+		}));
+		client.push("workflow-execution-changed", { worktreePath: "/test/repo-worktrees/feat-wip", workflowExecution: { id: "execution-1" } });
+		await expect(page.getByText("From ws push")).toBeVisible();
+		expect(await page.evaluate(() => window.__TAURI_INTERNALS__?.invocations.some(({ cmd, args }) => cmd === "plugin:event|listen" && args.event === "workflow-execution-changed"))).toBe(false);
+	});
+
 	test("ブランチ名が表示される", async ({ page }) => {
 		const config = statusBarConfig();
-		await setupTauriMock(page, config);
+		const client = await setupTauriMock(page, config);
 		await waitForApp(page);
 
-		// StatusBar にブランチ名が表示される
 		await expect(page.getByText("feat/my-branch")).toBeVisible();
+        expect(client.clientRequests).toContainEqual({ request_id: expect.any(String), command: "get_current_branch", args: { repoPath: "/test/repo" } });
+        expect(await page.evaluate(() => window.__TAURI_INTERNALS__?.invocations.some(({ cmd }) => cmd === "get_current_branch"))).toBe(false);
 	});
+
+    test("ws取得失敗時はブランチ名を表示せずTauriへfallbackしない", async ({ page }) => {
+        const client = await setupTauriMock(page, statusBarConfig({ get_current_branch: { __mockError: "failed" } }));
+        await waitForApp(page);
+        await expect.poll(() => client.clientRequests.length).toBeGreaterThan(0);
+        await expect(page.getByText("feat/my-branch")).not.toBeVisible();
+        expect(await page.evaluate(() => window.__TAURI_INTERNALS__?.invocations.some(({ cmd }) => cmd === "get_current_branch"))).toBe(false);
+    });
 
 	test("workspace 状態イベントを受けてもレイアウトが維持される", async ({
 		page,

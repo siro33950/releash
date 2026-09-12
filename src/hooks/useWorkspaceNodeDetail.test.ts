@@ -1,3 +1,5 @@
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkspaceNodeDetail } from "@/types/workspace-tree";
@@ -10,11 +12,8 @@ import {
 const mockInvoke = vi.fn();
 const mockListen = vi.fn();
 
-vi.mock("@tauri-apps/api/core", () => ({
-	invoke: (...args: unknown[]) => mockInvoke(...args),
-}));
-vi.mock("@tauri-apps/api/event", () => ({
-	listen: (...args: unknown[]) => mockListen(...args),
+vi.mock("@/lib/clientSocket", () => ({
+	listenClient: (...args: unknown[]) => mockListen(...args),
 }));
 
 type Listener = (event: { payload: never }) => void;
@@ -68,6 +67,8 @@ describe("useWorkspaceNodeDetail", () => {
 
 	beforeEach(() => {
 		vi.clearAllMocks();
+		vi.mocked(invoke).mockImplementation(mockInvoke);
+		vi.mocked(listen).mockImplementation(mockListen);
 		listeners = {};
 		responses = [];
 		mockListen.mockImplementation((event: string, listener: Listener) => {
@@ -158,6 +159,23 @@ describe("useWorkspaceNodeDetail", () => {
 		await waitFor(() =>
 			expect(result.current.detail?.title).toBe("workflow refresh"),
 		);
+	});
+
+	it("再接続で現在のdetailを取得し解除後は再取得しない", async () => {
+		responses.push(detail("node", "before"), detail("node", "after reconnect"));
+		const { result, unmount } = renderHook(() =>
+			useWorkspaceNodeDetail({ worktreePath: "/repo", nodeId: "node" }),
+		);
+		await waitFor(() => expect(result.current.detail?.title).toBe("before"));
+		const reconnect = mockListen.mock.calls.find(
+			([event]) => event === "workflow-execution-changed",
+		)?.[2];
+		await act(async () => reconnect());
+		expect(result.current.detail?.title).toBe("after reconnect");
+		unmount();
+		mockInvoke.mockClear();
+		reconnect();
+		expect(mockInvoke).not.toHaveBeenCalled();
 	});
 
 	it("reloads for a matching agent session event", async () => {

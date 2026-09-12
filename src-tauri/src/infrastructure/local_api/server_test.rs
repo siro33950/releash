@@ -15,6 +15,18 @@ fn test_local_api_token_空でなく起動ごとに異なる値を生成する()
 }
 
 #[test]
+fn test_クライアントtoken_masterと分離しdiscoveryへ書き込まない() {
+    // Given / When
+    let directory = tempfile::tempdir().unwrap();
+    let binding = LocalApiServerBinding::bind(directory.path().to_path_buf()).unwrap();
+    let discovery = std::fs::read_to_string(binding.discovery.path()).unwrap();
+    // Then
+    assert_ne!(binding.terminal_bearer_token(), binding.bearer_token());
+    assert!(discovery.contains(binding.bearer_token().as_ref()));
+    assert!(!discovery.contains(binding.terminal_bearer_token().as_ref()));
+}
+
+#[test]
 fn test_local_api_server_error_全variantが原因errorを保持する() {
     let address: std::net::SocketAddr = "192.0.2.1:43123".parse().unwrap();
     let errors = [

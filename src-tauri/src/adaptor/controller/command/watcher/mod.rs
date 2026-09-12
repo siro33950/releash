@@ -1,6 +1,7 @@
+use crate::adaptor::gateway::push::BackendPush;
 use std::path::Path;
 
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 
 use crate::adaptor::controller::state::AppState;
 use crate::adaptor::gateway::repository::watch::{
@@ -47,7 +48,7 @@ fn start_watching_blocking(app: AppHandle, path: String) -> Result<u64, String> 
     app.state::<FileWatcherManager>()
         .start_watching(watcher_id, path, move |event| {
             let event = file_change_event_from_path(watcher_id, &event.path);
-            let _ = app_clone.emit("file-change", event);
+            BackendPush::FileChange(&event).emit(&app_clone);
         })
 }
 

@@ -4109,7 +4109,6 @@ dependencies = [
  "parking_lot",
  "portable-pty",
  "proptest",
- "rand 0.10.2",
  "regex",
  "reqwest",
  "ring",

@@ -1,5 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useState } from "react";
+import { invokeClient } from "@/lib/clientSocket";
 
 export function useCurrentBranch(rootPath: string | null) {
 	const [branch, setBranch] = useState<string | null>(null);
@@ -10,7 +10,7 @@ export function useCurrentBranch(rootPath: string | null) {
 			return;
 		}
 		try {
-			const name = await invoke<string>("get_current_branch", {
+			const name = await invokeClient<string>("get_current_branch", {
 				repoPath: rootPath,
 			});
 			setBranch(name);

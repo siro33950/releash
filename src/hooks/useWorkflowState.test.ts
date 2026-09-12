@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -9,12 +10,8 @@ import { useWorkflowState } from "./useWorkflowState";
 const mockInvoke = vi.fn();
 const mockListen = vi.fn();
 
-vi.mock("@tauri-apps/api/core", () => ({
-	invoke: (...args: unknown[]) => mockInvoke(...args),
-}));
-
-vi.mock("@tauri-apps/api/event", () => ({
-	listen: (...args: unknown[]) => mockListen(...args),
+vi.mock("@/lib/clientSocket", () => ({
+	listenClient: (...args: unknown[]) => mockListen(...args),
 }));
 
 const makeExecution = (
@@ -56,6 +53,7 @@ const mockResolveAndExecution = (
 describe("useWorkflowState", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		vi.mocked(invoke).mockImplementation(mockInvoke);
 		mockListen.mockResolvedValue(vi.fn());
 	});
 
@@ -227,5 +225,47 @@ describe("useWorkflowState", () => {
 		});
 		expect(result.current.workflowExecution).toBeNull();
 		consoleSpy.mockRestore();
+	});
+	it("再接続で現在状態を取得し後続pushより古い取得結果は反映しない", async () => {
+		mockResolveAndExecution("execution-1", makeExecution());
+		const { result, unmount } = renderHook(() => useWorkflowState("/repo"));
+		await waitFor(() =>
+			expect(result.current.workflowExecution?.currentNode).toBe("plan"),
+		);
+		const [, push, reconnect] = mockListen.mock.calls[0];
+		mockResolveAndExecution(
+			"execution-1",
+			makeExecution({ currentNode: "offline-update" }),
+		);
+		await act(async () => reconnect());
+		expect(result.current.workflowExecution?.currentNode).toBe(
+			"offline-update",
+		);
+		let resolveStale: (value: WorkflowExecution) => void = () => {};
+		mockInvoke.mockImplementation((command: string) =>
+			command === "resolve_active_execution_by_worktree"
+				? Promise.resolve("execution-1")
+				: new Promise<WorkflowExecution>((resolve) => {
+						resolveStale = resolve;
+					}),
+		);
+		await act(async () => reconnect());
+		await act(async () => {
+			push({
+				payload: {
+					worktreePath: "/repo",
+					workflowExecution: makeExecution({ currentNode: "latest-push" }),
+				},
+			});
+			resolveStale(makeExecution({ currentNode: "stale-refresh" }));
+		});
+		expect(result.current.workflowExecution?.currentNode).toBe("latest-push");
+		mockResolveAndExecution(null, null);
+		await act(async () => reconnect());
+		expect(result.current.workflowExecution).toBeNull();
+		unmount();
+		mockInvoke.mockClear();
+		reconnect();
+		expect(mockInvoke).not.toHaveBeenCalled();
 	});
 });

@@ -18,7 +18,6 @@ use crate::usecase::repository_state::RepositoryStateError;
 
 pub(super) const COMMAND_NAMES: &[&str] = &[
     "list_branches",
-    "get_current_branch",
     "get_default_branch",
     "git_create_branch",
     "delete_branch",
@@ -53,7 +52,6 @@ pub(crate) fn invoke_handler(
 ) -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static {
     tauri::generate_handler![
         branch::list_branches,
-        branch::get_current_branch,
         branch::get_default_branch,
         branch::git_create_branch,
         branch::delete_branch,
@@ -148,4 +146,24 @@ mod tests {
         assert_eq!(app_err.to_string(), "git2 boom");
         assert_eq!(serde_json::to_string(&app_err).unwrap(), "\"git2 boom\"");
     }
+}
+
+pub(super) fn register_shared(router: &mut super::CommandRouter<super::client::CommandHandler>) {
+    router.register_domain(
+        &["get_current_branch"],
+        Box::new(|repository, args| {
+            Box::pin(async move {
+                #[derive(serde::Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct Args {
+                    repo_path: String,
+                }
+                let args: Args = serde_json::from_value(args)
+                    .map_err(|error| AppError::coded("INVALID_REQUEST", error.to_string()))?;
+                run_blocking(move || repository.get_current_branch(&args.repo_path))
+                    .await
+                    .map(serde_json::Value::String)
+            })
+        }),
+    );
 }

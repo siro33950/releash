@@ -1,4 +1,4 @@
-import type { Page } from "@playwright/test";
+import type { Page, WebSocketRoute } from "@playwright/test";
 
 export interface MockConfig {
 	/**
@@ -44,6 +44,22 @@ declare global {
  * ページナビゲーション前に呼ぶこと。
  */
 export async function setupTauriMock(page: Page, config: MockConfig) {
+    const endpoint = { url: "ws://127.0.0.1:19799/v1/client", authSubprotocol: "releash-bearer.test-client" };
+    config = { ...config, ipcHandler: { get_client_endpoint: endpoint, ...config.ipcHandler } };
+    const clientRequests: Array<{ request_id: string; command: string; args: Record<string, unknown> }> = [];
+    const clients = new Set<WebSocketRoute>();
+    await page.routeWebSocket(endpoint.url, (socket) => {
+        clients.add(socket);
+        socket.onClose(() => clients.delete(socket));
+        socket.onMessage((message) => {
+            const request = JSON.parse(String(message));
+            clientRequests.push(request);
+            const value = config.ipcHandler[request.command];
+            socket.send(JSON.stringify(value && typeof value === "object" && "__mockError" in value
+                ? { request_id: request.request_id, error: value.__mockError }
+                : { request_id: request.request_id, result: value ?? null }));
+        });
+    });
 	await page.addInitScript((cfg: MockConfig) => {
 		const callbacks = new Map<
 			number,
@@ -537,6 +553,12 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 				unregisterCallback(id),
 		};
 	}, config);
+    return {
+        clientRequests,
+        push: (event: string, payload: unknown) => {
+            for (const socket of clients) socket.send(JSON.stringify({ status: "push", event, payload }));
+        },
+    };
 }
 
 /**

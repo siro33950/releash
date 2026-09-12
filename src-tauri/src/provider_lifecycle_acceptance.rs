@@ -154,7 +154,8 @@ pub struct ProviderLifecycleAcceptanceHost {
     workflow_runtime_command_count: Arc<AtomicUsize>,
 }
 
-struct AcceptanceWorkflowRuntimeGateway {
+#[derive(Default)]
+pub(crate) struct AcceptanceWorkflowRuntimeGateway {
     command_count: Arc<AtomicUsize>,
 }
 
@@ -350,6 +351,7 @@ impl ProviderLifecycleAcceptanceHost {
             runtime,
             binding.bearer_token(),
             binding.terminal_bearer_token(),
+            None,
             None,
             Some(usecase.clone()),
         );

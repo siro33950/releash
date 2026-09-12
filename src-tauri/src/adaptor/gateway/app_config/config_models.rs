@@ -11,8 +11,6 @@ fn default_true() -> bool {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ReleashConfig {
     #[serde(default)]
-    pub server: ServerSection,
-    #[serde(default)]
     pub telemetry: TelemetrySection,
     #[serde(default)]
     pub notion: HashMap<String, NotionRepoConfigModel>,
@@ -185,50 +183,8 @@ impl Default for TelemetrySection {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ServerSection {
-    #[serde(default = "default_bind")]
-    pub bind: String,
-    #[serde(default = "default_port")]
-    pub port: u16,
-    #[serde(default)]
-    pub token: String,
-    #[serde(default)]
-    pub tls: TlsSection,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct TlsSection {
-    #[serde(default)]
-    pub enabled: bool,
-    #[serde(default)]
-    pub cert: String,
-    #[serde(default)]
-    pub key: String,
-}
-
-fn default_bind() -> String {
-    "127.0.0.1".to_string()
-}
-
-fn default_port() -> u16 {
-    9700
-}
-
-impl Default for ServerSection {
-    fn default() -> Self {
-        Self {
-            bind: default_bind(),
-            port: default_port(),
-            token: String::new(),
-            tls: TlsSection::default(),
-        }
-    }
-}
-
 pub fn config_to_domain(config: &ReleashConfig) -> domain_vo::AppConfigDocument {
     domain_vo::AppConfigDocument {
-        server: server_to_domain(&config.server),
         telemetry: telemetry_to_domain(&config.telemetry),
         app: app_to_domain(&config.app),
         workflow: workflow_to_domain(&config.workflow),
@@ -236,36 +192,9 @@ pub fn config_to_domain(config: &ReleashConfig) -> domain_vo::AppConfigDocument 
 }
 
 pub fn apply_domain_to_config(config: &mut ReleashConfig, domain: domain_vo::AppConfigDocument) {
-    config.server = server_to_model(domain.server);
     config.telemetry = telemetry_to_model(domain.telemetry);
     config.app = app_to_model(domain.app);
     config.workflow = workflow_to_model(domain.workflow);
-}
-
-pub fn server_to_domain(server: &ServerSection) -> domain_vo::ServerConfig {
-    domain_vo::ServerConfig {
-        bind: server.bind.clone(),
-        port: server.port,
-        token: server.token.clone(),
-        tls: domain_vo::TlsConfig {
-            enabled: server.tls.enabled,
-            cert: server.tls.cert.clone(),
-            key: server.tls.key.clone(),
-        },
-    }
-}
-
-pub fn server_to_model(server: domain_vo::ServerConfig) -> ServerSection {
-    ServerSection {
-        bind: server.bind,
-        port: server.port,
-        token: server.token,
-        tls: TlsSection {
-            enabled: server.tls.enabled,
-            cert: server.tls.cert,
-            key: server.tls.key,
-        },
-    }
 }
 
 pub fn telemetry_to_domain(telemetry: &TelemetrySection) -> domain_vo::TelemetryConfig {

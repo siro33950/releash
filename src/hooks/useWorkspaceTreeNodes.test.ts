@@ -1,3 +1,5 @@
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkflowExecutionChangedPayload } from "@/types/workflow";
@@ -11,11 +13,8 @@ import { useWorkspaceTreeNodes } from "./useWorkspaceTreeNodes";
 const mockInvoke = vi.fn();
 const mockListen = vi.fn();
 
-vi.mock("@tauri-apps/api/core", () => ({
-	invoke: (...args: unknown[]) => mockInvoke(...args),
-}));
-vi.mock("@tauri-apps/api/event", () => ({
-	listen: (...args: unknown[]) => mockListen(...args),
+vi.mock("@/lib/clientSocket", () => ({
+	listenClient: (...args: unknown[]) => mockListen(...args),
 }));
 
 type ListenerMap = Record<string, Array<(event: { payload: never }) => void>>;
@@ -85,6 +84,8 @@ describe("useWorkspaceTreeNodes", () => {
 
 	beforeEach(() => {
 		vi.clearAllMocks();
+		vi.mocked(invoke).mockImplementation(mockInvoke);
+		vi.mocked(listen).mockImplementation(mockListen);
 		listeners = {};
 		treeResponses = [];
 		selectionResponses = [];
@@ -123,6 +124,35 @@ describe("useWorkspaceTreeNodes", () => {
 		expect(
 			countInvocations("get_workspace_tree_selection_reconciliation"),
 		).toBe(0);
+	});
+
+	it("再接続で現在のtreeとhistoryを再取得し解除後は再取得しない", async () => {
+		treeResponses.push(
+			makeSnapshot([makeNode("before")]),
+			makeSnapshot([makeNode("after")]),
+		);
+		const { result, unmount } = renderHook(() =>
+			useWorkspaceTreeNodes("/repo"),
+		);
+		await waitFor(() =>
+			expect(result.current.nodes).toEqual([makeNode("before")]),
+		);
+		const reconnect = mockListen.mock.calls.find(
+			([event]) => event === "workflow-execution-changed",
+		)?.[2];
+		await act(async () => {
+			reconnect();
+			await waitForScheduledRefresh();
+		});
+		expect(result.current.nodes).toEqual([makeNode("after")]);
+		expect(countInvocations("list_workspace_workflow_history")).toBe(2);
+		unmount();
+		mockInvoke.mockClear();
+		await act(async () => {
+			reconnect();
+			await waitForScheduledRefresh();
+		});
+		expect(mockInvoke).not.toHaveBeenCalled();
 	});
 
 	it("Agent TUI cutover後はlegacy closed Sessionを読み込まない", async () => {

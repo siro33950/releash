@@ -201,6 +201,7 @@ impl Fixture {
             LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into()))
                 .unwrap();
         let app = tauri::test::mock_builder()
+            .manage(Arc::new(crate::infrastructure::push::PushSink::new()))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
         app.manage(store.clone());

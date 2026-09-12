@@ -9,7 +9,7 @@ use futures_util::{SinkExt, StreamExt};
 
 use crate::adaptor::protocol::terminal::{
     TerminalSurfaceOwnerV1, TerminalWsAttachedRequestV1, TerminalWsErrorV1, TerminalWsRequestV1,
-    TerminalWsResponseV1, TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX, TERMINAL_WS_PATH,
+    TerminalWsResponseV1, TERMINAL_WS_PATH,
 };
 use crate::usecase::terminal_surface::application::TerminalSurfaceApplication;
 
@@ -108,23 +108,9 @@ async fn upgrade(
     let Ok(permit) = deps.connection_limit.clone().try_acquire_owned() else {
         return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
-    // subprotocol認証を使うクライアントにはhandshake成立のためechoが必要
-    let bearer_subprotocol = headers
-        .get(axum::http::header::SEC_WEBSOCKET_PROTOCOL)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| {
-            value
-                .split(',')
-                .map(str::trim)
-                .find(|candidate| candidate.starts_with(TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX))
-                .map(str::to_string)
-        });
-    let mut ws = ws
+    let ws = super::auth::echo_bearer_subprotocol(ws, &headers)
         .max_message_size(MAX_TERMINAL_REQUEST_BYTES + 1)
         .max_frame_size(MAX_TERMINAL_REQUEST_BYTES + 1);
-    if let Some(subprotocol) = bearer_subprotocol {
-        ws = ws.protocols([subprotocol]);
-    }
     ws.on_upgrade(move |socket| serve(socket, deps, permit))
 }
 

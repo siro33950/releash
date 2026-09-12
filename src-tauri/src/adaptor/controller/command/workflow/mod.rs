@@ -311,6 +311,7 @@ mod tests {
         let config_secret_repository: Arc<dyn crate::domain::app_config::ConfigSecretRepository> =
             app_config.clone();
         tauri::test::mock_builder()
+            .manage(Arc::new(crate::infrastructure::push::PushSink::new()))
             .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
                 data_dir,
             ))

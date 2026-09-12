@@ -2568,6 +2568,7 @@ mod workflow_host_tests {
                 ))
                 .unwrap();
                 let app = tauri::test::mock_builder()
+                    .manage(Arc::new(crate::infrastructure::push::PushSink::new()))
                     .build(tauri::test::mock_context(tauri::test::noop_assets()))
                     .unwrap();
                 app.manage(store.clone());
@@ -2749,6 +2750,7 @@ mod workflow_host_tests {
         ))
         .unwrap();
         let app = tauri::test::mock_builder()
+            .manage(Arc::new(crate::infrastructure::push::PushSink::new()))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
         app.manage(store.clone());
@@ -2823,6 +2825,7 @@ nodes:
         ))
         .unwrap();
         let app = tauri::test::mock_builder()
+            .manage(Arc::new(crate::infrastructure::push::PushSink::new()))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
         app.manage(store.clone());
@@ -4005,6 +4008,7 @@ nodes:
             config.fault = fault.clone();
             let store = LocalEventStore::open(config).unwrap();
             let app = tauri::test::mock_builder()
+                .manage(Arc::new(crate::infrastructure::push::PushSink::new()))
                 .build(tauri::test::mock_context(tauri::test::noop_assets()))
                 .unwrap();
             app.manage(store.clone());
@@ -4103,6 +4107,7 @@ nodes:
             ))
             .unwrap();
             let app = tauri::test::mock_builder()
+                .manage(Arc::new(crate::infrastructure::push::PushSink::new()))
                 .build(tauri::test::mock_context(tauri::test::noop_assets()))
                 .unwrap();
             app.manage(store.clone());
@@ -4198,6 +4203,7 @@ nodes:
             ))
             .unwrap();
             let app = tauri::test::mock_builder()
+                .manage(Arc::new(crate::infrastructure::push::PushSink::new()))
                 .build(tauri::test::mock_context(tauri::test::noop_assets()))
                 .unwrap();
             app.manage(store.clone());
@@ -4545,6 +4551,7 @@ nodes:
         async fn test_started実行木登録_store未管理ならsession_storeを返す() {
             let fixture = runtime_effect_fixture(NodeCompletion::default(), false).await;
             let unmanaged_app = tauri::test::mock_builder()
+                .manage(Arc::new(crate::infrastructure::push::PushSink::new()))
                 .build(tauri::test::mock_context(tauri::test::noop_assets()))
                 .unwrap();
 
@@ -4769,6 +4776,7 @@ nodes:
                 .await
                 .unwrap();
             let unmanaged_app = tauri::test::mock_builder()
+                .manage(Arc::new(crate::infrastructure::push::PushSink::new()))
                 .build(tauri::test::mock_context(tauri::test::noop_assets()))
                 .unwrap();
             assert!(fixture
@@ -4803,6 +4811,7 @@ nodes:
             ))
             .unwrap();
             let app = tauri::test::mock_builder()
+                .manage(Arc::new(crate::infrastructure::push::PushSink::new()))
                 .build(tauri::test::mock_context(tauri::test::noop_assets()))
                 .unwrap();
             app.manage(store.clone());
@@ -4989,6 +4998,7 @@ nodes:
             ))
             .unwrap();
             let app = tauri::test::mock_builder()
+                .manage(Arc::new(crate::infrastructure::push::PushSink::new()))
                 .build(tauri::test::mock_context(tauri::test::noop_assets()))
                 .unwrap();
             app.manage(store.clone());
@@ -6188,6 +6198,7 @@ nodes:
             ))
             .unwrap();
             let app = tauri::test::mock_builder()
+                .manage(Arc::new(crate::infrastructure::push::PushSink::new()))
                 .build(tauri::test::mock_context(tauri::test::noop_assets()))
                 .unwrap();
             app.manage(store.clone());
@@ -6423,6 +6434,7 @@ nodes:
                 .unwrap()
                 .len();
             let app = tauri::test::mock_builder()
+                .manage(Arc::new(crate::infrastructure::push::PushSink::new()))
                 .build(tauri::test::mock_context(tauri::test::noop_assets()))
                 .unwrap();
             app.manage(store.clone());
@@ -6577,6 +6589,7 @@ nodes:
                 .len();
 
             let app = tauri::test::mock_builder()
+                .manage(Arc::new(crate::infrastructure::push::PushSink::new()))
                 .build(tauri::test::mock_context(tauri::test::noop_assets()))
                 .unwrap();
             app.manage(store.clone());
@@ -6666,6 +6679,7 @@ nodes:
             assert!(!node.can_retry());
 
             let app = tauri::test::mock_builder()
+                .manage(Arc::new(crate::infrastructure::push::PushSink::new()))
                 .build(tauri::test::mock_context(tauri::test::noop_assets()))
                 .unwrap();
             app.manage(store);
@@ -6801,3 +6815,7 @@ mod isolated_worktree_tests;
 #[cfg(test)]
 #[path = "workflow_host/test_helpers.rs"]
 mod test_helpers;
+
+#[cfg(test)]
+#[path = "workflow_host/secret_redaction_test.rs"]
+mod secret_redaction_tests;

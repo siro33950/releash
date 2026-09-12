@@ -1,7 +1,8 @@
+use crate::adaptor::gateway::push::BackendPush;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 
 use crate::domain::comment::{ReviewActor, ReviewTarget};
 use crate::infrastructure::platform::path_aliases::{alias_name_for_profile, BuildProfile};
@@ -17,7 +18,7 @@ fn data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 }
 
 fn emit_changed(app: &tauri::AppHandle, worktree_name: &str) {
-    let _ = app.emit("review-comments-changed", worktree_name);
+    BackendPush::ReviewCommentsChanged(worktree_name).emit(app);
 }
 
 async fn blocking<T, F>(f: F) -> Result<T, String>

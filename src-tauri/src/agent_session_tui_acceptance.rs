@@ -174,6 +174,7 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
         config: AgentSessionTuiAcceptanceConfig,
         app: tauri::App<R>,
     ) -> Result<Self, String> {
+        app.manage(Arc::new(crate::infrastructure::push::PushSink::new()));
         std::fs::create_dir_all(&config.data_dir).map_err(|error| error.to_string())?;
         let store =
             LocalEventStore::open(LocalEventStoreConfig::production(config.data_dir.clone()))
