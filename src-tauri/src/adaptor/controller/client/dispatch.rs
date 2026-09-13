@@ -55,7 +55,17 @@ impl ClientCommandDispatch {
         super::code::register_shared(self, deps);
         super::comment::register_shared(self, deps);
         super::agent_session::register_shared(self, deps);
+        super::terminal_surface::register_shared(self, deps);
         super::workflow::register_shared(self, deps);
+        super::workspace_tree::register_shared(self, deps);
+        super::workspace_state::register_shared(self, deps);
+        super::app_config::register_shared(self, deps);
+        super::notion::register_shared(self, deps);
+        super::git_host::register_shared(self, deps);
+        super::external_editor::register_shared(self, deps);
+        super::telemetry::register_shared(self, deps);
+        super::watcher::register_shared(self, deps);
+        super::application_lifecycle::register_shared(self, deps);
     }
     pub(crate) fn register_domain(
         &mut self,
@@ -146,4 +156,12 @@ pub(crate) fn command_admitted(
     authority.is_some_and(|authority| {
         STARTUP_COMMANDS.contains(&command) || authority.normal_admission_ready()
     })
+}
+
+pub(crate) fn finite(value: f64) -> Result<f64, wire::CommandError> {
+    if value.is_finite() {
+        Ok(value)
+    } else {
+        Err(invalid_request("Expected finite number"))
+    }
 }

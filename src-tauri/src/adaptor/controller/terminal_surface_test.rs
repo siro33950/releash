@@ -178,14 +178,14 @@ fn test_ターミナル起動性能計測_commandは匿名phaseとdurationだけ
     crate::other::telemetry::set_performance_configured(true);
     crate::other::telemetry::set_performance_enabled(true);
 
-    start_terminal_launch_performance_collection();
+    start_terminal_launch_performance_collection_shared();
     crate::other::telemetry::record_terminal_launch(
         crate::other::telemetry::TerminalLaunch::PtyOpenAndSpawn,
         std::time::Duration::from_millis(7),
     );
 
     assert_eq!(
-        take_terminal_launch_performance_samples(),
+        take_terminal_launch_performance_samples_shared(),
         vec![
             crate::adaptor::protocol::terminal::TerminalLaunchPerformanceSampleV1 {
                 phase: "terminal.launch.pty_open_and_spawn".to_string(),
@@ -193,27 +193,31 @@ fn test_ターミナル起動性能計測_commandは匿名phaseとdurationだけ
             }
         ]
     );
-    assert!(take_terminal_launch_performance_samples().is_empty());
+    assert!(take_terminal_launch_performance_samples_shared().is_empty());
     crate::other::telemetry::reset_test_metrics();
 }
 
 #[test]
 fn test_ターミナル起動性能計測_rendererは許可したphaseと有限durationだけを記録する() {
     let _guard = crate::other::telemetry::lock_test_telemetry();
-    start_terminal_launch_performance_collection();
+    start_terminal_launch_performance_collection_shared();
 
-    assert!(record_terminal_launch_renderer_phase("provider_id".to_string(), 1.0).is_err());
-    assert!(
-        record_terminal_launch_renderer_phase("first_xterm_parsed".to_string(), f64::NAN,).is_err()
-    );
-    assert!(
-        record_terminal_launch_renderer_phase("first_xterm_parsed".to_string(), f64::MAX,).is_err()
-    );
-    record_terminal_launch_renderer_phase("first_xterm_parsed".to_string(), 8.0).unwrap();
-    record_terminal_launch_renderer_phase("first_paint".to_string(), 13.0).unwrap();
+    assert!(record_terminal_launch_renderer_phase_shared("provider_id".to_string(), 1.0).is_err());
+    assert!(record_terminal_launch_renderer_phase_shared(
+        "first_xterm_parsed".to_string(),
+        f64::NAN,
+    )
+    .is_err());
+    assert!(record_terminal_launch_renderer_phase_shared(
+        "first_xterm_parsed".to_string(),
+        f64::MAX,
+    )
+    .is_err());
+    record_terminal_launch_renderer_phase_shared("first_xterm_parsed".to_string(), 8.0).unwrap();
+    record_terminal_launch_renderer_phase_shared("first_paint".to_string(), 13.0).unwrap();
 
     assert_eq!(
-        take_terminal_launch_performance_samples(),
+        take_terminal_launch_performance_samples_shared(),
         vec![
             crate::adaptor::protocol::terminal::TerminalLaunchPerformanceSampleV1 {
                 phase: "terminal.launch.first_xterm_parsed".to_string(),

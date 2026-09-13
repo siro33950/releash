@@ -16,8 +16,8 @@ if (typeof Element.prototype.releasePointerCapture !== "function") {
 	Element.prototype.releasePointerCapture = () => {};
 }
 
-vi.mock("@tauri-apps/api/core", () => ({
-	invoke: vi.fn().mockResolvedValue(null),
+vi.mock("@/lib/clientSocket", () => ({
+	invokeClient: vi.fn().mockResolvedValue(null),
 }));
 
 const defaultProps: DiffToolbarProps = {
@@ -125,7 +125,7 @@ describe("DiffToolbar", () => {
 		});
 
 		it("should invoke open_in_editor with filePath when clicked", async () => {
-			const { invoke } = await import("@tauri-apps/api/core");
+			const { invokeClient: invoke } = await import("@/lib/clientSocket");
 			const user = userEvent.setup();
 			renderToolbar({ filePath: "/repo/src/main.ts" });
 			const button = screen.getByRole("button", { name: "Open in Editor" });
