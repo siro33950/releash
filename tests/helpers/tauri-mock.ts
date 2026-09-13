@@ -1,3 +1,20 @@
+import { clientJson } from "../../src/lib/clientJson";
+import {
+	create,
+	fromBinary,
+	fromJson,
+	toBinary,
+	toJson,
+} from "@bufbuild/protobuf";
+import {
+	EnvelopeSchema,
+	CommandRequestSchema,
+	CommandResultSchema,
+	CommandErrorSchema,
+	PushSchema,
+	TerminalEventSchema,
+} from "../../src/generated/client_pb";
+import type { TerminalSurfaceStreamItem } from "../../src/lib/terminalSurfaceStream";
 import type { Page, WebSocketRoute } from "@playwright/test";
 
 export interface MockConfig {
@@ -12,6 +29,11 @@ export function workspaceTreeReconciliation(snapshot: unknown): unknown {
 }
 
 interface TauriMockInternals {
+	invokeClientCommand: (
+		cmd: string,
+		args?: Record<string, unknown>,
+	) => Promise<unknown>;
+	ipcInvocations: Array<{ cmd: string; args: Record<string, unknown> }>;
 	invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
 	transformCallback: (cb: (data: unknown) => void, once?: boolean) => number;
 	unregisterCallback: (id: number) => void;
@@ -32,6 +54,10 @@ interface TauriEventPluginInternals {
 
 declare global {
 	interface Window {
+		__releashTerminalEvent: (
+			attachmentId: string,
+			item: TerminalSurfaceStreamItem,
+		) => Promise<void>;
 		__TAURI_INTERNALS__?: TauriMockInternals;
 		__TAURI_EVENT_PLUGIN_INTERNALS__?: TauriEventPluginInternals;
 	}
@@ -44,22 +70,166 @@ declare global {
  * ページナビゲーション前に呼ぶこと。
  */
 export async function setupTauriMock(page: Page, config: MockConfig) {
-    const endpoint = { url: "ws://127.0.0.1:19799/v1/client", authSubprotocol: "releash-bearer.test-client" };
-    config = { ...config, ipcHandler: { get_client_endpoint: endpoint, ...config.ipcHandler } };
-    const clientRequests: Array<{ request_id: string; command: string; args: Record<string, unknown> }> = [];
-    const clients = new Set<WebSocketRoute>();
-    await page.routeWebSocket(endpoint.url, (socket) => {
-        clients.add(socket);
-        socket.onClose(() => clients.delete(socket));
-        socket.onMessage((message) => {
-            const request = JSON.parse(String(message));
-            clientRequests.push(request);
-            const value = config.ipcHandler[request.command];
-            socket.send(JSON.stringify(value && typeof value === "object" && "__mockError" in value
-                ? { request_id: request.request_id, error: value.__mockError }
-                : { request_id: request.request_id, result: value ?? null }));
-        });
-    });
+	const endpoint = {
+		url: "ws://127.0.0.1:19799/v1/client",
+		authSubprotocol: "releash-bearer.test-client",
+	};
+	config = {
+		...config,
+		ipcHandler: { get_client_endpoint: endpoint, ...config.ipcHandler },
+	};
+	const clientRequests: Array<{
+		request_id: string;
+		command: string;
+		args: Record<string, unknown>;
+	}> = [];
+	const clients = new Set<WebSocketRoute>();
+	const attachments = new Map<
+		string,
+		{ socket: WebSocketRoute; sequence: bigint }
+	>();
+	const send = (
+		socket: WebSocketRoute,
+		body: Parameters<typeof fromJson<typeof EnvelopeSchema>>[1],
+	) => {
+		socket.send(
+			Buffer.from(toBinary(EnvelopeSchema, fromJson(EnvelopeSchema, body))),
+		);
+	};
+	await page.exposeFunction(
+		"__releashTerminalEvent",
+		(attachmentId: string, item: TerminalSurfaceStreamItem) => {
+			const attachment = attachments.get(attachmentId);
+			if (!attachment) return;
+			const event =
+				item.type === "snapshot"
+					? {
+							snapshot: {
+								sessionKey: item.surface.session_key,
+								...item.surface.terminal_surface,
+								sequence: String(item.surface.terminal_surface.sequence),
+								isExited: item.surface.is_exited,
+								exitCode: item.surface.exit_code,
+							},
+						}
+					: {
+							[item.type === "input_unavailable"
+								? "inputUnavailable"
+								: item.type]: {
+								...item,
+								type: undefined,
+								sequence:
+									"sequence" in item ? String(item.sequence) : undefined,
+							},
+						};
+			const data = toBinary(
+				TerminalEventSchema,
+				fromJson(TerminalEventSchema, JSON.parse(JSON.stringify(event))),
+			);
+			for (let offset = 0; offset < data.length; offset += 60 * 1024) {
+				attachment.sequence += 1n;
+				const end = offset + 60 * 1024 >= data.length;
+				const envelope = create(EnvelopeSchema, {
+					body: {
+						case: "stream",
+						value: {
+							attachmentId,
+							sequence: attachment.sequence,
+							data: data.slice(offset, offset + 60 * 1024),
+							end,
+						},
+					},
+				});
+				attachment.socket.send(Buffer.from(toBinary(EnvelopeSchema, envelope)));
+			}
+		},
+	);
+	await page.routeWebSocket(endpoint.url, (socket) => {
+		clients.add(socket);
+		socket.onClose(() => {
+			clients.delete(socket);
+			for (const [id, attachment] of attachments)
+				if (attachment.socket === socket) attachments.delete(id);
+		});
+		socket.onMessage(async (message) => {
+			if (typeof message === "string")
+				throw new Error("Client requests must be binary");
+			const { body } = fromBinary(EnvelopeSchema, message);
+			if (body.case === "requestAck") return;
+			if (body.case === "ack") {
+				const attachment = attachments.get(body.value.attachmentId);
+				if (!attachment) return;
+				if (body.value.outputSequence !== undefined) {
+					await page.evaluate(
+						({ attachmentId, sequence }) =>
+							window.__TAURI_INTERNALS__?.invokeClientCommand(
+								"ack_terminal_surface_output",
+								{ attachmentId, sequence },
+							),
+						{
+							attachmentId: body.value.attachmentId,
+							sequence: Number(body.value.outputSequence),
+						},
+					);
+				}
+				return;
+			}
+			if (body.case !== "request")
+				throw new Error("Client request envelope required");
+			const selection = body.value.command;
+			if (!selection.case) throw new Error("Client command required");
+			const field = CommandRequestSchema.field[selection.case];
+			const command = field.name;
+			const args = clientJson(
+				field.message,
+				toJson(field.message, selection.value),
+				false,
+			) as Record<string, unknown>;
+			const request = { request_id: body.value.requestId, command, args };
+			clientRequests.push(request);
+			if (command === "attach_terminal_surface")
+				attachments.set(String(args.attachmentId), { socket, sequence: 0n });
+			if (command === "detach_terminal_surface")
+				attachments.delete(String(args.attachmentId));
+			const result = await page.evaluate(
+				async ({ command, args }) => {
+					try {
+						return {
+							result: await window.__TAURI_INTERNALS__!.invokeClientCommand(
+								command,
+								args,
+							),
+						};
+					} catch (error) {
+						return { error: error instanceof Error ? error.message : error };
+					}
+				},
+				{ command, args },
+			);
+			const outcome =
+				"error" in result
+					? { error: clientJson(CommandErrorSchema, result.error, true) }
+					: (() => {
+							const field = CommandResultSchema.fields.find(
+								(field) => field.name === command,
+							)!;
+							try {
+								return {
+									result: {
+										[field.jsonName]: clientJson(
+											field.message!,
+											result.result ?? null,
+											true,
+										),
+									},
+								};
+							} catch (error) {
+								throw new Error(`Invalid ${command} fixture: ${error}`);
+							}
+						})();
+			send(socket, { response: { requestId: request.request_id, ...outcome } });
+		});
+	});
 	await page.addInitScript((cfg: MockConfig) => {
 		const callbacks = new Map<
 			number,
@@ -121,7 +291,7 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 			});
 		}
 
-		async function invoke(
+		async function executeCommand(
 			cmd: string,
 			args: Record<string, unknown> = {},
 		): Promise<unknown> {
@@ -164,7 +334,6 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 				return {
 					disableOutputFlowControl: false,
 					disableTerminalJournal: false,
-					disableTerminalWebsocket: false,
 					disableRendererWriteSerialization: false,
 					disableWebglRenderer: true,
 				};
@@ -191,15 +360,7 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 					branches: cards,
 					// backend が確定する表示グループ。fixture は作業の場だけを持つ。
 					worktree_display_groups: {
-						working_areas: worktreeCards.filter(
-							(card: Record<string, unknown>) =>
-								card.management_kind === "working_area",
-						),
-						cleanup_candidates: worktreeCards.filter(
-							(card: Record<string, unknown>) =>
-								card.management_kind === "cleanup_candidate" ||
-								card.management_kind === "untracked_cleanup_candidate",
-						),
+						working_areas: worktreeCards,
 					},
 				};
 			}
@@ -215,29 +376,23 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 						"__mockTerminalPerformanceAttachment" in
 							(value as Record<string, unknown>))
 				) {
-					const rawChannel = args.onEvent;
-					const channel =
-						typeof rawChannel === "string"
-							? rawChannel
-							: rawChannel &&
-									typeof rawChannel === "object" &&
-									"id" in rawChannel
-								? `__CHANNEL__:${String((rawChannel as { id: unknown }).id)}`
-								: "";
-					const channelId = /^__CHANNEL__:(\d+)$/.exec(channel)?.[1];
-					if (!channelId) {
-						throw new Error("attach_terminal_surface requires a Tauri Channel");
-					}
+					const channelId = transformCallback((data) => {
+						const { message } = data as { message: TerminalSurfaceStreamItem };
+						void window.__releashTerminalEvent(
+							String(args.attachmentId),
+							message,
+						);
+					});
 					if (
 						"__mockTerminalPerformanceAttachment" in
 						(value as Record<string, unknown>)
 					) {
 						const config = (
 							value as {
-							__mockTerminalPerformanceAttachment: {
-								targetBytes: number;
-								chunkCodeUnits: number;
-								initialReplay?: string;
+								__mockTerminalPerformanceAttachment: {
+									targetBytes: number;
+									chunkCodeUnits: number;
+									initialReplay?: string;
 								};
 							}
 						).__mockTerminalPerformanceAttachment;
@@ -394,7 +549,15 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 						: [
 								{
 									type: "snapshot",
-									surface: cfg.ipcHandler.get_terminal_surface,
+									surface: {
+										...(cfg.ipcHandler.get_terminal_surface as object),
+										terminal_surface: {
+											replay: "",
+											sequence: 0,
+											cols: 80,
+											rows: 24,
+										},
+									},
 								},
 							];
 					queueMicrotask(() => {
@@ -477,9 +640,7 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 					typeof value === "object" &&
 					"__mockError" in (value as Record<string, unknown>)
 				) {
-					throw new Error(
-						(value as { __mockError: string }).__mockError,
-					);
+					throw new Error((value as { __mockError: string }).__mockError);
 				}
 				return value;
 			}
@@ -500,7 +661,11 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 						message?: string;
 					};
 					let changed = false;
-					if (update.action === "failure" && update.operation && update.message) {
+					if (
+						update.action === "failure" &&
+						update.operation &&
+						update.message
+					) {
 						agentSessionNotices.set(sessionId, {
 							operation: update.operation,
 							message: update.message,
@@ -531,8 +696,17 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 			return null;
 		}
 
+		const ipcInvocations: Array<{
+			cmd: string;
+			args: Record<string, unknown>;
+		}> = [];
 		window.__TAURI_INTERNALS__ = {
-			invoke,
+			invoke: (cmd, args = {}) => {
+				ipcInvocations.push({ cmd, args });
+				return executeCommand(cmd, args);
+			},
+			invokeClientCommand: executeCommand,
+			ipcInvocations,
 			transformCallback,
 			unregisterCallback,
 			runCallback,
@@ -553,12 +727,19 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 				unregisterCallback(id),
 		};
 	}, config);
-    return {
-        clientRequests,
-        push: (event: string, payload: unknown) => {
-            for (const socket of clients) socket.send(JSON.stringify({ status: "push", event, payload }));
-        },
-    };
+	return {
+		clientRequests,
+		push: (event: string, payload: unknown) => {
+			const field = PushSchema.fields.find(
+				(field) => field.name.replaceAll("_", "-") === event,
+			);
+			if (!field) throw new Error(`Unknown client event: ${event}`);
+			const push = {
+				[field.jsonName]: clientJson(field.message!, payload, true),
+			};
+			for (const socket of clients) send(socket, { push });
+		},
+	};
 }
 
 /**

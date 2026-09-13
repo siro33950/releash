@@ -2,7 +2,7 @@ use parking_lot::Mutex;
 
 use crate::infrastructure::platform::menu::MenuItemsState;
 
-pub(super) const COMMAND_NAMES: &[&str] = &["set_menu_items_enabled"];
+pub(crate) const COMMAND_NAMES: &[&str] = &["set_menu_items_enabled"];
 
 pub(crate) fn register(router: &mut super::CommandRouter) {
     router.register_domain(COMMAND_NAMES, Box::new(invoke_handler()));

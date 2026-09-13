@@ -28,19 +28,9 @@ struct CommandDomainRoute<H> {
     handler: H,
 }
 
-const STARTUP_COMMANDS: [&str; 2] = [
-    "get_application_startup_outcome",
-    "quit_after_startup_failure",
-];
-
-fn command_admitted(
-    command: &str,
-    authority: Option<&crate::usecase::application_startup::ApplicationStartupAuthority>,
-) -> bool {
-    authority.is_some_and(|authority| {
-        STARTUP_COMMANDS.contains(&command) || authority.normal_admission_ready()
-    })
-}
+use super::client::command_admitted;
+#[cfg(test)]
+use super::client::dispatch::STARTUP_COMMANDS;
 
 pub(crate) fn gate_invoke_before_domain_routing<R: tauri::Runtime>(
     invoke: tauri::ipc::Invoke<R>,
@@ -98,16 +88,6 @@ impl<R: tauri::Runtime> CommandRouter<InvokeHandler<R>> {
             Ok(invoke) => invoke,
             Err(handled) => return handled,
         };
-        if let Some(dispatch) = invoke
-            .message
-            .state_ref()
-            .try_get::<std::sync::Arc<client::ClientCommandDispatch>>()
-        {
-            if dispatch.contains(invoke.message.command()) {
-                let dispatch = dispatch.inner().clone();
-                return client::handle_invoke(invoke, dispatch);
-            }
-        }
         (self.resolve(invoke.message.command()))(invoke)
     }
 }
@@ -526,8 +506,8 @@ mod tests {
     }
     #[test]
     fn test_共有dispatch_対象外commandは既存domain_handlerとfallbackへ届く() {
+        use crate::adaptor::controller::client::ClientCommandDispatch;
         use crate::usecase::application_startup::ApplicationStartupAuthority;
-        use client::ClientCommandDispatch;
         use std::sync::atomic::{AtomicUsize, Ordering};
         // Given
         let effects = Arc::new(AtomicUsize::new(0));

@@ -305,6 +305,20 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
         app.manage(composition.lifecycle.clone());
         app.manage(composition.read.clone());
         app.manage(composition.provider_availability.clone());
+        let authority =
+            Arc::new(crate::usecase::application_startup::ApplicationStartupAuthority::ready());
+        app.manage(authority.clone());
+        app.manage(Arc::new(
+            crate::infrastructure::file_watcher::FileWatcherManager::default(),
+        ));
+        let mut dispatch = crate::adaptor::controller::client::ClientCommandDispatch::new(
+            Arc::new(crate::adaptor::controller::wiring::build_repository_usecase_with_worktree_terminals(terminal.application())),
+            authority,
+        );
+        dispatch.register_dependencies(
+            &crate::adaptor::controller::wiring::build_client_dependencies(app.handle()),
+        );
+        app.manage(Arc::new(dispatch));
         let window = tauri::WebviewWindowBuilder::new(
             &app,
             "agent-session-product-driver",
@@ -519,6 +533,7 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
         app.unmanage::<Arc<AgentSessionLaunchUsecase>>();
         app.unmanage::<Arc<AgentSessionInitialInstructionUsecase>>();
         app.unmanage::<Arc<AgentSessionLifecycleUsecase>>();
+        app.unmanage::<Arc<crate::adaptor::controller::client::ClientCommandDispatch>>();
         app.unmanage::<Arc<AgentSessionReadUsecase>>();
         app.unmanage::<Arc<crate::usecase::agent_session::ProviderAvailabilityUsecase>>();
         app.unmanage::<Arc<LocalEventStore>>();
@@ -540,7 +555,7 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
 
 pub fn product_agent_session_invoke_handler<R: tauri::Runtime>(
 ) -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static {
-    crate::adaptor::controller::command::agent_session::agent_session_invoke_handler()
+    crate::adaptor::controller::command::client::handle_registered_invoke
 }
 
 fn provider_kind(provider: AcceptanceProvider) -> ProviderKind {

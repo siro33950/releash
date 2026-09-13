@@ -254,13 +254,7 @@ fn reject_lua_source_save(
 
 fn storage_error_to_source_save_error(error: storage::StorageError) -> WorkflowSourceSaveError {
     match error {
-        storage::StorageError::Diagnostics(items) => {
-            let diagnostics = items
-                .into_iter()
-                .map(|item| serde_json::to_value(item).unwrap_or(serde_json::Value::Null))
-                .collect();
-            WorkflowSourceSaveError::Diagnostics(diagnostics)
-        }
+        storage::StorageError::Diagnostics(items) => WorkflowSourceSaveError::Diagnostics(items),
         other => WorkflowSourceSaveError::Workflow(WorkflowError::external(other.to_string())),
     }
 }
@@ -473,6 +467,11 @@ nodes:
         let WorkflowSourceSaveError::Diagnostics(items) = error else {
             panic!("missing knowledge must remain a structured diagnostic");
         };
+        let items = serde_json::to_value(items)
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .clone();
         let diagnostic = items
             .iter()
             .find(|item| item["code"] == "FAC002")

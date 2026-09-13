@@ -4,7 +4,8 @@ use std::sync::Arc;
 use tauri::Manager;
 
 use crate::adaptor::controller::api::{ClientApiDeps, TerminalApiDeps};
-use crate::adaptor::controller::command::client::{client_endpoint, ClientCommandDispatch};
+use crate::adaptor::controller::client::ClientCommandDispatch;
+use crate::adaptor::controller::command::client::client_endpoint;
 use crate::adaptor::controller::command::CommandRouter;
 use crate::adaptor::controller::state::TerminalStreamEndpoint;
 use crate::adaptor::controller::terminal_surface_runtime::TerminalSurfaceRuntime;
@@ -20,9 +21,7 @@ use crate::usecase::workflow::WorkflowRuntimeUsecase;
 pub use crate::adaptor::gateway::push::{AgentSessionChangedPayload, BackendPush};
 pub use crate::adaptor::gateway::repository::branch::BranchGateway;
 pub use crate::adaptor::gateway::repository::watch::{FileChangeEvent, GitStatusChangedEvent};
-pub use crate::adaptor::protocol::terminal::{
-    TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX, TERMINAL_WS_PATH,
-};
+pub use crate::adaptor::protocol::terminal::TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX;
 pub use crate::adaptor::protocol::workflow::*;
 pub use crate::domain::repository::{Branch, BranchRepository, RepositoryError};
 use crate::domain::workflow::{ExecutionOrigin, RuntimeExecutionState, WorkflowRuntimeSnapshot};
@@ -60,7 +59,9 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
             authority.clone(),
         ));
         let router: CommandRouter<Box<dyn Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync>> =
-            CommandRouter::new(Box::new(|_| false));
+            CommandRouter::new(Box::new(
+                crate::adaptor::controller::command::client::handle_registered_invoke,
+            ));
         let sink = Arc::new(PushSink::new());
         let binding = LocalApiServerBinding::bind(data_dir.to_path_buf()).unwrap();
         let master_subprotocol = format!(
@@ -111,7 +112,7 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
         client_endpoint(self.app.handle()).unwrap()
     }
 
-    pub fn subscribe_push(&self) -> tokio::sync::broadcast::Receiver<Arc<str>> {
+    pub fn subscribe_push(&self) -> tokio::sync::broadcast::Receiver<Arc<[u8]>> {
         self.app.state::<Arc<PushSink>>().subscribe()
     }
 
@@ -152,4 +153,30 @@ impl<R: tauri::Runtime> Drop for ClientApiAcceptanceHost<R> {
     fn drop(&mut self) {
         self.server.shutdown();
     }
+}
+
+pub use crate::adaptor::controller::api::protocol::client::{
+    command_request, command_response, envelope, Ack, CommandRequest, Envelope,
+};
+
+pub fn encode_client_request(id: &str, name: &str, args: serde_json::Value) -> Vec<u8> {
+    use prost::Message;
+    let mut request = CommandRequest::from_value(name, args).expect("command arguments");
+    request.request_id = id.into();
+    Envelope {
+        body: Some(envelope::Body::Request(Box::new(request))),
+    }
+    .encode_to_vec()
+}
+
+pub fn decode_client_value(
+    value: impl crate::adaptor::controller::api::protocol::client::ClientValue,
+) -> serde_json::Value {
+    crate::adaptor::controller::api::protocol::client::from_value(value).unwrap()
+}
+
+pub fn decode_client_push(
+    push: crate::adaptor::controller::api::protocol::client::Push,
+) -> (&'static str, serde_json::Value) {
+    push.into_value().unwrap()
 }

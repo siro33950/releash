@@ -3,64 +3,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TerminalOutputScheduler } from "@/lib/terminalOutputScheduler";
 import { resetTerminalPerformanceSwitchesCache } from "@/lib/terminalPerformanceSwitches";
-import { resetTerminalStreamEndpointCache } from "@/lib/terminalStreamEndpoint";
 import { useTerminal } from "./useTerminal";
-
-class MockWebSocket {
-	static instances: MockWebSocket[] = [];
-	static readonly CONNECTING = 0;
-	static readonly OPEN = 1;
-	static readonly CLOSING = 2;
-	static readonly CLOSED = 3;
-	readyState = MockWebSocket.CONNECTING;
-	sent: string[] = [];
-	onopen: (() => void) | null = null;
-	onerror: (() => void) | null = null;
-	onclose: (() => void) | null = null;
-	onmessage: ((event: { data: string }) => void) | null = null;
-	url: string;
-	protocols?: string[];
-
-	constructor(url: string, protocols?: string[]) {
-		this.url = url;
-		this.protocols = protocols;
-		MockWebSocket.instances.push(this);
-	}
-
-	send(data: string) {
-		this.sent.push(data);
-	}
-
-	close() {
-		this.readyState = MockWebSocket.CLOSED;
-		this.onclose?.();
-	}
-
-	open() {
-		this.readyState = MockWebSocket.OPEN;
-		this.onopen?.();
-	}
-
-	// 実ブラウザは接続失敗時にerror→closeを連鎖発火する
-	failConnection() {
-		this.onerror?.();
-		this.readyState = MockWebSocket.CLOSED;
-		this.onclose?.();
-	}
-
-	receive(payload: unknown) {
-		this.onmessage?.({ data: JSON.stringify(payload) });
-	}
-
-	acceptAttach() {
-		const attach = this.sent
-			.map((frame) => JSON.parse(frame))
-			.find((frame) => frame.type === "attach_surface");
-		if (!attach) throw new Error("attach_surface frame is missing");
-		this.receive({ status: "attached", id: attach.id });
-	}
-}
-vi.stubGlobal("WebSocket", MockWebSocket);
 
 const mockWebglAddonInstances: Array<{
 	onContextLoss: ReturnType<typeof vi.fn>;
@@ -84,8 +27,12 @@ const REPO_WORKSPACE_OWNER = {
 const mockInvoke = vi.fn();
 const mockListen = vi.fn();
 const mockOpenUrl = vi.fn();
-const mockChannels: Array<{ onmessage: (message: unknown) => void }> = [];
-let mockChannelConstructionError: Error | null = null;
+const mockStreams: Array<{
+	attachmentId: string;
+	onmessage: (message: unknown) => void;
+	onClosed: () => void;
+}> = [];
+let mockStreamSubscriptionError: Error | null = null;
 let mockOnDataCallback: (data: string) => void = () => {};
 let mockTerminalConstructorOptions: Record<string, unknown> = {};
 let mockTerminalInstance: {
@@ -107,18 +54,32 @@ let mockTerminalInstance: {
 	cols: number;
 };
 
-vi.mock("@tauri-apps/api/core", () => ({
-	invoke: (...args: unknown[]) => mockInvoke(...args),
-	Channel: class MockChannel {
-		onmessage = (_message: unknown) => {};
+let mockConnectionListener: (connected: boolean) => void = () => {};
+function streamForAttachment(attachmentId: unknown) {
+	const stream = mockStreams.find(
+		(entry) => entry.attachmentId === attachmentId,
+	);
+	if (!stream) throw new Error("Missing stream subscription");
+	return stream;
+}
 
-		constructor() {
-			if (mockChannelConstructionError) {
-				throw mockChannelConstructionError;
-			}
-			mockChannels.push(this);
-		}
+vi.mock("@/lib/clientSocket", () => ({
+	invokeClient: (...args: unknown[]) => mockInvoke(...args),
+	onClientConnection: (listener: (connected: boolean) => void) => {
+		mockConnectionListener = listener;
+		return vi.fn();
 	},
+	listenClientStream: (
+		attachmentId: string,
+		onmessage: (message: unknown) => void,
+		onClosed: () => void,
+	) => {
+		if (mockStreamSubscriptionError) throw mockStreamSubscriptionError;
+		mockStreams.push({ attachmentId, onmessage, onClosed });
+		return vi.fn();
+	},
+	acknowledgeClientStream: (attachmentId: string, sequence: number) =>
+		mockInvoke("ack_terminal_surface_output", { attachmentId, sequence }),
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -309,13 +270,12 @@ describe("useTerminal", () => {
 		mockInvoke.mockReset();
 		mockListen.mockReset();
 		mockOpenUrl.mockReset().mockResolvedValue(undefined);
-		mockChannels.length = 0;
-		mockChannelConstructionError = null;
+		mockStreams.length = 0;
+		mockStreamSubscriptionError = null;
 		mockTerminalConstructorOptions = {};
 		mockWebglAddonInstances.length = 0;
-		MockWebSocket.instances.length = 0;
+		mockConnectionListener = () => {};
 		resetTerminalPerformanceSwitchesCache();
-		resetTerminalStreamEndpointCache();
 		delete window.__RELEASH_TERMINAL_PERFORMANCE__;
 
 		containerRef = { current: document.createElement("div") };
@@ -341,9 +301,7 @@ describe("useTerminal", () => {
 					});
 				}
 				if (cmd === "attach_terminal_surface") {
-					const channel = args?.onEvent as {
-						onmessage: (message: unknown) => void;
-					};
+					const channel = streamForAttachment(args?.attachmentId);
 					queueMicrotask(() => {
 						channel.onmessage({
 							type: "snapshot",
@@ -514,7 +472,6 @@ describe("useTerminal", () => {
 					return Promise.resolve({
 						disableOutputFlowControl: false,
 						disableTerminalJournal: false,
-						disableTerminalWebsocket: false,
 						disableRendererWriteSerialization: false,
 						disableWebglRenderer: true,
 					});
@@ -526,7 +483,7 @@ describe("useTerminal", () => {
 		renderHook(() => useTerminal(containerRef));
 
 		await waitFor(() => {
-			expect(mockChannels.length).toBeGreaterThan(0);
+			expect(mockStreams.length).toBeGreaterThan(0);
 		});
 		expect(mockWebglAddonInstances).toHaveLength(0);
 	});
@@ -563,7 +520,7 @@ describe("useTerminal", () => {
 		});
 	});
 
-	it("backend attachment Channelを使いglobal PTY listenerを登録しない", async () => {
+	it("共有wsのattachmentを購読しChannel引数を渡さない", async () => {
 		renderHook(() => useTerminal(containerRef));
 
 		await waitFor(() => {
@@ -571,10 +528,9 @@ describe("useTerminal", () => {
 				owner: { kind: "workspace", workspacePath: "" },
 				attachmentId: expect.any(String),
 				recovery: false,
-				onEvent: mockChannels[0],
 			});
 		});
-		expect(mockChannels).toHaveLength(1);
+		expect(mockStreams).toHaveLength(1);
 		expect(mockListen).not.toHaveBeenCalled();
 	});
 
@@ -624,9 +580,7 @@ describe("useTerminal", () => {
 					});
 				}
 				if (cmd === "attach_terminal_surface") {
-					const channel = args?.onEvent as {
-						onmessage: (message: unknown) => void;
-					};
+					const channel = streamForAttachment(args?.attachmentId);
 					channel.onmessage({
 						type: "snapshot",
 						surface: {
@@ -1024,7 +978,7 @@ describe("useTerminal", () => {
 		});
 	});
 
-	it("Channel write失敗を無加工で通知し新attachmentへ自動resyncする", async () => {
+	it("ws write失敗を無加工で通知し新attachmentへ自動resyncする", async () => {
 		const onTerminalError = vi.fn();
 		const onTerminalReady = vi.fn();
 		const baseImplementation = mockInvoke.getMockImplementation();
@@ -1110,7 +1064,7 @@ describe("useTerminal", () => {
 				expect.any(Object),
 			);
 		});
-		mockChannels[mockChannels.length - 1]?.onmessage({
+		mockStreams[mockStreams.length - 1]?.onmessage({
 			type: "input_unavailable",
 			session_key: "test-uuid-1234",
 			message: "Terminal input could not be sent. Try again.",
@@ -1141,7 +1095,7 @@ describe("useTerminal", () => {
 		const firstAttachmentId = (firstAttachCall[1] as { attachmentId: string })
 			.attachmentId;
 
-		mockChannels[0].onmessage({
+		mockStreams[0].onmessage({
 			type: "input_unavailable",
 			session_key: "test-uuid-1234",
 			message: "Terminal input could not be sent. Try again.",
@@ -1194,9 +1148,9 @@ describe("useTerminal", () => {
 		renderHook(() => useTerminal(containerRef, { onTerminalError }));
 
 		await waitFor(() => {
-			expect(mockChannels).toHaveLength(1);
+			expect(mockStreams).toHaveLength(1);
 		});
-		mockChannels[0].onmessage({
+		mockStreams[0].onmessage({
 			type: "input_unavailable",
 			session_key: "test-uuid-1234",
 			message: "stale attachment",
@@ -1223,7 +1177,7 @@ describe("useTerminal", () => {
 			throw new Error("resize boom");
 		});
 
-		mockChannels[0].onmessage({
+		mockStreams[0].onmessage({
 			type: "resize",
 			session_key: "test-uuid-1234",
 			cols: 120,
@@ -1235,7 +1189,7 @@ describe("useTerminal", () => {
 				["Failed to apply terminal stream item: resize boom"],
 				[null],
 			]);
-			expect(mockChannels).toHaveLength(2);
+			expect(mockStreams).toHaveLength(2);
 		});
 		expect(errorSpy).toHaveBeenCalledWith(
 			"Failed to apply terminal stream item: resize boom",
@@ -1253,9 +1207,7 @@ describe("useTerminal", () => {
 				if (cmd === "attach_terminal_surface") {
 					attachCalls += 1;
 					if (attachCalls === 1) {
-						const channel = args?.onEvent as {
-							onmessage: (message: unknown) => void;
-						};
+						const channel = streamForAttachment(args?.attachmentId);
 						queueMicrotask(() => {
 							channel.onmessage({
 								type: "snapshot",
@@ -1291,7 +1243,7 @@ describe("useTerminal", () => {
 			throw new Error("resize boom");
 		});
 
-		mockChannels[0].onmessage({
+		mockStreams[0].onmessage({
 			type: "resize",
 			session_key: "test-uuid-1234",
 			cols: 120,
@@ -1299,17 +1251,17 @@ describe("useTerminal", () => {
 			sequence: 1,
 		});
 		await waitFor(() => {
-			expect(mockChannels).toHaveLength(2);
+			expect(mockStreams).toHaveLength(2);
 			expect(attachResolvers).toHaveLength(1);
 		});
-		mockChannels[1].onmessage({
+		mockStreams[1].onmessage({
 			type: "resize",
 			session_key: "test-uuid-1234",
 			cols: 121,
 			rows: 41,
 			sequence: 2,
 		});
-		mockChannels[1].onmessage({
+		mockStreams[1].onmessage({
 			type: "resize",
 			session_key: "test-uuid-1234",
 			cols: 122,
@@ -1347,9 +1299,9 @@ describe("useTerminal", () => {
 
 		const { unmount } = renderHook(() => useTerminal(containerRef));
 		await waitFor(() => {
-			expect(mockChannels).toHaveLength(1);
+			expect(mockStreams).toHaveLength(1);
 		});
-		mockChannels[0].onmessage({
+		mockStreams[0].onmessage({
 			type: "input_unavailable",
 			session_key: "test-uuid-1234",
 			message: "stale attachment",
@@ -1372,10 +1324,10 @@ describe("useTerminal", () => {
 		const onTerminalError = vi.fn();
 		renderHook(() => useTerminal(containerRef, { onTerminalError }));
 		await waitFor(() => {
-			expect(mockChannels).toHaveLength(1);
+			expect(mockStreams).toHaveLength(1);
 		});
-		mockChannelConstructionError = new Error("renderer recovery setup failed");
-		mockChannels[0].onmessage({
+		mockStreamSubscriptionError = new Error("renderer recovery setup failed");
+		mockStreams[0].onmessage({
 			type: "input_unavailable",
 			session_key: "test-uuid-1234",
 			message: "stale attachment",
@@ -1405,9 +1357,9 @@ describe("useTerminal", () => {
 		renderHook(() => useTerminal(containerRef, { onTerminalError }));
 
 		await waitFor(() => {
-			expect(mockChannels).toHaveLength(1);
+			expect(mockStreams).toHaveLength(1);
 		});
-		mockChannels[0].onmessage({
+		mockStreams[0].onmessage({
 			type: "input_unavailable",
 			session_key: "test-uuid-1234",
 			message: "stale attachment",
@@ -1458,15 +1410,46 @@ describe("useTerminal", () => {
 		expect(mockTerminalInstance.dispose).toHaveBeenCalled();
 	});
 
+	it.each([false, true])(
+		"requestKill 後にwsが切断されてもsnapshot到着前のunmountでkillする（再接続: %s）",
+		async (reconnect) => {
+			const { result, unmount } = renderHook(() =>
+				useTerminal(containerRef, { cwd: "/repo" }),
+			);
+			await waitFor(() =>
+				expect(result.current.isRunningRef.current).toBe(true),
+			);
+			const original = mockInvoke.getMockImplementation();
+			mockInvoke.mockImplementation(
+				(command: string, args?: Record<string, unknown>) =>
+					command === "attach_terminal_surface"
+						? Promise.resolve()
+						: original?.(command, args),
+			);
+
+			result.current.requestKill();
+			mockConnectionListener(false);
+			if (reconnect) {
+				mockConnectionListener(true);
+				await waitFor(() => expect(mockStreams).toHaveLength(2));
+			}
+			unmount();
+
+			expect(mockInvoke).toHaveBeenCalledWith("kill_terminal_surface", {
+				owner: REPO_WORKSPACE_OWNER,
+			});
+		},
+	);
+
 	it("pty-exit 後のアンマウントでは kill_terminal_surface が呼ばれない", async () => {
 		const { unmount } = renderHook(() => useTerminal(containerRef));
 
 		await waitFor(() => {
-			expect(mockChannels).toHaveLength(1);
+			expect(mockStreams).toHaveLength(1);
 		});
 
 		// process exit後もsurface identityは保持し、書き込みだけを停止する。
-		mockChannels[0].onmessage({
+		mockStreams[0].onmessage({
 			type: "exit",
 			session_key: "test-uuid-1234",
 			exit_code: 0,
@@ -1491,7 +1474,7 @@ describe("useTerminal", () => {
 		renderHook(() => useTerminal(containerRef));
 
 		await waitFor(() => {
-			expect(mockChannels).toHaveLength(1);
+			expect(mockStreams).toHaveLength(1);
 			expect(mockInvoke).toHaveBeenCalledWith(
 				"resize_terminal_surface",
 				expect.objectContaining({ rows: 24, cols: 80 }),
@@ -1500,7 +1483,7 @@ describe("useTerminal", () => {
 		expect(mockTerminalInstance.resize).not.toHaveBeenCalled();
 		mockTerminalInstance.write.mockClear();
 
-		mockChannels[0].onmessage({
+		mockStreams[0].onmessage({
 			type: "resize",
 			session_key: "test-uuid-1234",
 			cols: 111,
@@ -1511,7 +1494,7 @@ describe("useTerminal", () => {
 		await waitFor(() => {
 			expect(mockTerminalInstance.resize).toHaveBeenCalledWith(111, 37);
 		});
-		mockChannels[0].onmessage({
+		mockStreams[0].onmessage({
 			type: "exit",
 			session_key: "test-uuid-1234",
 			exit_code: 0,
@@ -1529,20 +1512,20 @@ describe("useTerminal", () => {
 		renderHook(() => useTerminal(containerRef));
 
 		await waitFor(() => {
-			expect(mockChannels).toHaveLength(1);
+			expect(mockStreams).toHaveLength(1);
 		});
 		mockInvoke.mockClear();
 		mockTerminalInstance.write.mockImplementation(
 			(_data: string, callback?: () => void) => callback?.(),
 		);
 
-		mockChannels[0].onmessage({
+		mockStreams[0].onmessage({
 			type: "output",
 			session_key: "test-uuid-1234",
 			data: "a".repeat(2 * 1024 * 1024),
 			sequence: 1,
 		});
-		mockChannels[0].onmessage({
+		mockStreams[0].onmessage({
 			type: "output",
 			session_key: "test-uuid-1234",
 			data: "b".repeat(256 * 1024),
@@ -1555,7 +1538,7 @@ describe("useTerminal", () => {
 					([command]) => command === "attach_terminal_surface",
 				),
 			).toHaveLength(1);
-			expect(mockChannels).toHaveLength(2);
+			expect(mockStreams).toHaveLength(2);
 		});
 		expect(
 			mockInvoke.mock.calls.filter(
@@ -1564,7 +1547,7 @@ describe("useTerminal", () => {
 		).toHaveLength(1);
 
 		mockTerminalInstance.write.mockClear();
-		mockChannels[1].onmessage({
+		mockStreams[1].onmessage({
 			type: "output",
 			session_key: "test-uuid-1234",
 			data: "after-resync",
@@ -1594,7 +1577,7 @@ describe("useTerminal", () => {
 
 		renderHook(() => useTerminal(containerRef));
 		await waitFor(() => {
-			expect(mockChannels).toHaveLength(1);
+			expect(mockStreams).toHaveLength(1);
 		});
 
 		mockOnDataCallback("a");
@@ -1609,7 +1592,7 @@ describe("useTerminal", () => {
 			expect(attachResolvers).toHaveLength(1);
 		});
 		attachResolvers[0]();
-		mockChannels[0].onmessage({
+		mockStreams[0].onmessage({
 			type: "snapshot",
 			surface: {
 				session_key: "test-uuid-1234",
@@ -1651,7 +1634,7 @@ describe("useTerminal", () => {
 
 		renderHook(() => useTerminal(containerRef));
 		await waitFor(() => {
-			expect(mockChannels).toHaveLength(1);
+			expect(mockStreams).toHaveLength(1);
 		});
 		mockOnDataCallback("a");
 		await waitFor(() => {
@@ -1666,13 +1649,13 @@ describe("useTerminal", () => {
 		mockTerminalInstance.write.mockImplementation(
 			(_data: string, callback?: () => void) => callback?.(),
 		);
-		mockChannels[0].onmessage({
+		mockStreams[0].onmessage({
 			type: "output",
 			session_key: "test-uuid-1234",
 			data: "a".repeat(2 * 1024 * 1024),
 			sequence: 1,
 		});
-		mockChannels[0].onmessage({
+		mockStreams[0].onmessage({
 			type: "output",
 			session_key: "test-uuid-1234",
 			data: "b".repeat(256 * 1024),
@@ -1699,12 +1682,12 @@ describe("useTerminal", () => {
 		// attach完了＋snapshot後は新attachmentへsequence 0から送られる
 		secondAttachResolvers[0]?.();
 		await waitFor(() => {
-			expect(mockChannels).toHaveLength(2);
+			expect(mockStreams).toHaveLength(2);
 		});
 		const resizePtyCallsBefore = mockInvoke.mock.calls.filter(
 			([command]) => command === "resize_terminal_surface",
 		).length;
-		mockChannels[1].onmessage({
+		mockStreams[1].onmessage({
 			type: "snapshot",
 			surface: {
 				session_key: "test-uuid-1234",
@@ -1734,150 +1717,6 @@ describe("useTerminal", () => {
 		});
 	});
 
-	it("stream endpointが有効ならWebSocketでattachし入力・ackもWSで送る", async () => {
-		const baseImplementation = mockInvoke.getMockImplementation();
-		mockInvoke.mockImplementation(
-			(cmd: string, args?: Record<string, unknown>) => {
-				if (cmd === "get_terminal_stream_endpoint") {
-					return Promise.resolve({
-						url: "ws://127.0.0.1:9999/v1/terminal",
-						authSubprotocol: "releash-bearer.test-token",
-					});
-				}
-				return baseImplementation?.(cmd, args);
-			},
-		);
-
-		renderHook(() => useTerminal(containerRef));
-		await waitFor(() => {
-			expect(MockWebSocket.instances).toHaveLength(1);
-		});
-		const socket = MockWebSocket.instances[0];
-		expect(socket.url).toBe("ws://127.0.0.1:9999/v1/terminal");
-		expect(socket.protocols).toEqual(["releash-bearer.test-token"]);
-
-		socket.open();
-		await waitFor(() => {
-			expect(socket.sent).toHaveLength(1);
-		});
-		const attach = JSON.parse(socket.sent[0]);
-		expect(attach.type).toBe("attach_surface");
-		expect(attach.attachment_id).toBe(attach.id);
-		socket.acceptAttach();
-
-		socket.receive({
-			status: "event",
-			item: {
-				type: "snapshot",
-				surface: {
-					session_key: "test-uuid-1234",
-					terminal_surface: { replay: "", sequence: 0, cols: 80, rows: 24 },
-					is_exited: false,
-					exit_code: null,
-				},
-			},
-		});
-		await waitFor(() => {
-			expect(mockInvoke).toHaveBeenCalledWith(
-				"resize_terminal_surface",
-				expect.objectContaining({ rows: 24, cols: 80 }),
-			);
-		});
-
-		mockOnDataCallback("a");
-		await waitFor(() => {
-			expect(socket.sent.length).toBeGreaterThanOrEqual(2);
-		});
-		const write = JSON.parse(socket.sent[1]);
-		expect(write).toMatchObject({
-			type: "write",
-			attachment_id: attach.attachment_id,
-			sequence: 0,
-			data: "a",
-		});
-		expect(
-			mockInvoke.mock.calls.filter(
-				([command]) => command === "write_terminal_surface",
-			),
-		).toHaveLength(0);
-		expect(
-			mockInvoke.mock.calls.filter(
-				([command]) => command === "attach_terminal_surface",
-			),
-		).toHaveLength(0);
-
-		// 出力parse後のackもWSで送られる
-		socket.receive({
-			status: "event",
-			item: {
-				type: "output",
-				session_key: "test-uuid-1234",
-				data: "echo-a",
-				sequence: 1,
-			},
-		});
-		await waitFor(() => {
-			const ack = socket.sent
-				.map((raw) => JSON.parse(raw))
-				.find((frame) => frame.type === "ack");
-			expect(ack).toMatchObject({
-				attachment_id: attach.attachment_id,
-				sequence: 1,
-			});
-		});
-		expect(
-			mockInvoke.mock.calls.filter(
-				([command]) => command === "ack_terminal_surface_output",
-			),
-		).toHaveLength(0);
-	});
-
-	it("WebSocket接続に失敗したらTauri Channelへfallbackする", async () => {
-		const baseImplementation = mockInvoke.getMockImplementation();
-		mockInvoke.mockImplementation(
-			(cmd: string, args?: Record<string, unknown>) => {
-				if (cmd === "get_terminal_stream_endpoint") {
-					return Promise.resolve({
-						url: "ws://127.0.0.1:9999/v1/terminal",
-						authSubprotocol: "releash-bearer.test-token",
-					});
-				}
-				return baseImplementation?.(cmd, args);
-			},
-		);
-
-		renderHook(() => useTerminal(containerRef));
-		await waitFor(() => {
-			expect(MockWebSocket.instances).toHaveLength(1);
-		});
-		MockWebSocket.instances[0].failConnection();
-
-		await waitFor(() => {
-			expect(
-				mockInvoke.mock.calls.filter(
-					([command]) => command === "attach_terminal_surface",
-				),
-			).toHaveLength(1);
-			expect(mockChannels).toHaveLength(1);
-		});
-		mockOnDataCallback("a");
-		await waitFor(() => {
-			expect(
-				mockInvoke.mock.calls.filter(
-					([command]) => command === "write_terminal_surface",
-				),
-			).toHaveLength(1);
-		});
-		// error→close連鎖でfallbackとrecoveryのattachが二重発行されないこと
-		expect(
-			mockInvoke.mock.calls.filter(
-				([command]) => command === "attach_terminal_surface",
-			),
-		).toHaveLength(1);
-		expect(mockChannels).toHaveLength(1);
-		expect(MockWebSocket.instances).toHaveLength(1);
-	});
-
 	it("初期replay中のprocess exitを失わずsurface identityを保持する", async () => {
 		type SpawnResult = {
 			session_key: string;
@@ -1900,9 +1739,7 @@ describe("useTerminal", () => {
 			(command: string, args?: Record<string, unknown>) => {
 				if (command === "get_or_spawn_terminal_surface") return pendingSpawn;
 				if (command === "attach_terminal_surface") {
-					const channel = args?.onEvent as {
-						onmessage: (message: unknown) => void;
-					};
+					const channel = streamForAttachment(args?.attachmentId);
 					channel.onmessage({
 						type: "snapshot",
 						surface: {
@@ -1991,9 +1828,7 @@ describe("useTerminal", () => {
 					});
 				}
 				if (cmd === "attach_terminal_surface") {
-					const channel = args?.onEvent as {
-						onmessage: (message: unknown) => void;
-					};
+					const channel = streamForAttachment(args?.attachmentId);
 					channel.onmessage({
 						type: "snapshot",
 						surface: {
@@ -2037,9 +1872,7 @@ describe("useTerminal", () => {
 					});
 				}
 				if (cmd === "attach_terminal_surface") {
-					const channel = args?.onEvent as {
-						onmessage: (message: unknown) => void;
-					};
+					const channel = streamForAttachment(args?.attachmentId);
 					channel.onmessage({
 						type: "snapshot",
 						surface: {
@@ -2084,7 +1917,7 @@ describe("useTerminal", () => {
 		renderHook(() => useTerminal(containerRef));
 
 		await waitFor(() => {
-			expect(mockChannels).toHaveLength(1);
+			expect(mockStreams).toHaveLength(1);
 			expect(mockInvoke).toHaveBeenCalledWith(
 				"resize_terminal_surface",
 				expect.objectContaining({ rows: 24, cols: 80 }),
@@ -2104,19 +1937,19 @@ describe("useTerminal", () => {
 			},
 		);
 
-		mockChannels[0].onmessage({
+		mockStreams[0].onmessage({
 			type: "output",
 			session_key: "test-uuid-1234",
 			data: "chunk-1",
 			sequence: 1,
 		});
-		mockChannels[0].onmessage({
+		mockStreams[0].onmessage({
 			type: "output",
 			session_key: "test-uuid-1234",
 			data: "chunk-2",
 			sequence: 2,
 		});
-		mockChannels[0].onmessage({
+		mockStreams[0].onmessage({
 			type: "output",
 			session_key: "test-uuid-1234",
 			data: "chunk-3",
@@ -2151,60 +1984,74 @@ describe("useTerminal", () => {
 		completeCoalescedWrite?.();
 	});
 
-	it("live outputはxterm parse完了後だけattachmentへ累積ACKする", async () => {
-		let parsed!: () => void;
-		renderHook(() => useTerminal(containerRef));
+	it.each([false, true])(
+		"backend flow control無効=%sでもparse完了後にstreamをackする",
+		async (disabled) => {
+			const previous = mockInvoke.getMockImplementation();
+			mockInvoke.mockImplementation(async (cmd, args) => {
+				if (cmd === "get_terminal_performance_switches")
+					return {
+						disableOutputFlowControl: disabled,
+						disableTerminalJournal: false,
+						disableRendererWriteSerialization: false,
+						disableWebglRenderer: false,
+					};
+				return previous?.(cmd, args);
+			});
+			let parsed!: () => void;
+			renderHook(() => useTerminal(containerRef));
 
-		await waitFor(() => {
-			expect(mockChannels).toHaveLength(1);
-		});
-		const attachmentCall = mockInvoke.mock.calls.find(
-			([command]) => command === "attach_terminal_surface",
-		);
-		const attachmentId = (
-			attachmentCall?.[1] as { attachmentId?: string } | undefined
-		)?.attachmentId;
-		expect(attachmentId).toEqual(expect.any(String));
-		mockTerminalInstance.write.mockImplementation(
-			(_data: string, callback?: () => void) => {
-				if (callback) parsed = callback;
-			},
-		);
-		mockInvoke.mockClear();
-
-		mockChannels[0].onmessage({
-			type: "output",
-			session_key: "test-uuid-1234",
-			data: "provider output",
-			sequence: 7,
-		});
-		await waitFor(() => {
-			expect(mockTerminalInstance.write).toHaveBeenCalledWith(
-				"provider output",
-				expect.any(Function),
+			await waitFor(() => {
+				expect(mockStreams).toHaveLength(1);
+			});
+			const attachmentCall = mockInvoke.mock.calls.find(
+				([command]) => command === "attach_terminal_surface",
 			);
-		});
-		expect(mockInvoke).not.toHaveBeenCalledWith(
-			"ack_terminal_surface_output",
-			expect.anything(),
-		);
+			const attachmentId = (
+				attachmentCall?.[1] as { attachmentId?: string } | undefined
+			)?.attachmentId;
+			expect(attachmentId).toEqual(expect.any(String));
+			mockTerminalInstance.write.mockImplementation(
+				(_data: string, callback?: () => void) => {
+					if (callback) parsed = callback;
+				},
+			);
+			mockInvoke.mockClear();
 
-		parsed();
-		await waitFor(() => {
-			expect(mockInvoke).toHaveBeenCalledWith("ack_terminal_surface_output", {
-				attachmentId,
+			mockStreams[0].onmessage({
+				type: "output",
+				session_key: "test-uuid-1234",
+				data: "provider output",
 				sequence: 7,
 			});
-		});
-	});
+			await waitFor(() => {
+				expect(mockTerminalInstance.write).toHaveBeenCalledWith(
+					"provider output",
+					expect.any(Function),
+				);
+			});
+			expect(mockInvoke).not.toHaveBeenCalledWith(
+				"ack_terminal_surface_output",
+				expect.anything(),
+			);
 
-	it("ack commandのIPC失敗へ操作文脈を付けて通知する", async () => {
+			parsed();
+			await waitFor(() => {
+				expect(mockInvoke).toHaveBeenCalledWith("ack_terminal_surface_output", {
+					attachmentId,
+					sequence: 7,
+				});
+			});
+		},
+	);
+
+	it("ack frameの送信失敗へ操作文脈を付けて通知する", async () => {
 		const onTerminalError = vi.fn();
 		const baseImplementation = mockInvoke.getMockImplementation();
 		mockInvoke.mockImplementation(
 			(cmd: string, args?: Record<string, unknown>) => {
 				if (cmd === "ack_terminal_surface_output") {
-					return Promise.reject("IPC bridge unavailable");
+					throw new Error("WebSocket unavailable");
 				}
 				return baseImplementation?.(cmd, args);
 			},
@@ -2212,9 +2059,9 @@ describe("useTerminal", () => {
 		renderHook(() => useTerminal(containerRef, { onTerminalError }));
 
 		await waitFor(() => {
-			expect(mockChannels).toHaveLength(1);
+			expect(mockStreams).toHaveLength(1);
 		});
-		mockChannels[0].onmessage({
+		mockStreams[0].onmessage({
 			type: "output",
 			session_key: "test-uuid-1234",
 			data: "provider output",
@@ -2223,7 +2070,7 @@ describe("useTerminal", () => {
 
 		await waitFor(() => {
 			expect(onTerminalError).toHaveBeenCalledWith(
-				"Failed to acknowledge terminal output: IPC bridge unavailable",
+				"Failed to acknowledge terminal output: WebSocket unavailable",
 			);
 		});
 	});
@@ -2237,9 +2084,9 @@ describe("useTerminal", () => {
 		renderHook(() => useTerminal(containerRef));
 
 		await waitFor(() => {
-			expect(mockChannels).toHaveLength(1);
+			expect(mockStreams).toHaveLength(1);
 		});
-		mockChannels[0].onmessage({
+		mockStreams[0].onmessage({
 			type: "output",
 			session_key: "test-uuid-1234",
 			data: "first provider frame",
@@ -2288,8 +2135,8 @@ describe("useTerminal", () => {
 			}),
 		);
 
-		await waitFor(() => expect(mockChannels).toHaveLength(1));
-		mockChannels[0].onmessage({
+		await waitFor(() => expect(mockStreams).toHaveLength(1));
+		mockStreams[0].onmessage({
 			type: "output",
 			session_key: "test-uuid-1234",
 			data: "first provider frame",
@@ -2313,10 +2160,10 @@ describe("useTerminal", () => {
 		renderHook(() => useTerminal(containerRef));
 
 		await waitFor(() => {
-			expect(mockChannels).toHaveLength(1);
+			expect(mockStreams).toHaveLength(1);
 		});
 		mockTerminalInstance.resize.mockClear();
-		mockChannels[0].onmessage({
+		mockStreams[0].onmessage({
 			type: "resize",
 			session_key: "test-uuid-1234",
 			cols: 111,
@@ -2341,9 +2188,7 @@ describe("useTerminal", () => {
 					return pendingSpawn;
 				}
 				if (cmd === "attach_terminal_surface") {
-					const channel = args?.onEvent as {
-						onmessage: (message: unknown) => void;
-					};
+					const channel = streamForAttachment(args?.attachmentId);
 					channel.onmessage({
 						type: "snapshot",
 						surface: {
@@ -2449,9 +2294,7 @@ describe("useTerminal", () => {
 					});
 				}
 				if (cmd === "attach_terminal_surface") {
-					const channel = args?.onEvent as {
-						onmessage: (message: unknown) => void;
-					};
+					const channel = streamForAttachment(args?.attachmentId);
 					for (const message of [
 						{
 							type: "snapshot",
@@ -2551,9 +2394,7 @@ describe("useTerminal", () => {
 					});
 				}
 				if (cmd === "attach_terminal_surface") {
-					const channel = args?.onEvent as {
-						onmessage: (message: unknown) => void;
-					};
+					const channel = streamForAttachment(args?.attachmentId);
 					channel.onmessage({
 						type: "snapshot",
 						surface: {
@@ -2621,9 +2462,7 @@ describe("useTerminal", () => {
 					});
 				}
 				if (cmd === "attach_terminal_surface") {
-					const channel = args?.onEvent as {
-						onmessage: (message: unknown) => void;
-					};
+					const channel = streamForAttachment(args?.attachmentId);
 					channel.onmessage({
 						type: "snapshot",
 						surface: {
@@ -3200,729 +3039,163 @@ describe("useTerminal", () => {
 		});
 	});
 
-	describe("WS切断リカバリとack経路", () => {
-		const streamEndpoint = {
-			url: "ws://127.0.0.1:9999/v1/terminal",
-			authSubprotocol: "releash-bearer.test-token",
-		};
-		const wsSnapshot = {
-			status: "event",
-			item: {
-				type: "snapshot",
-				surface: {
-					session_key: "test-uuid-1234",
-					terminal_surface: { replay: "", sequence: 0, cols: 80, rows: 24 },
-					is_exited: false,
-					exit_code: null,
-				},
-			},
-		};
-
-		const mockStreamEndpoint = () => {
-			const baseImplementation = mockInvoke.getMockImplementation();
+	describe("共有ws接続の再attach", () => {
+		it("切断中は入力を送らず再接続後に新attachmentで再開する", async () => {
+			renderHook(() => useTerminal(containerRef, { cwd: "/repo" }));
+			await waitFor(() => expect(mockStreams).toHaveLength(1));
+			await waitFor(() =>
+				expect(mockInvoke).toHaveBeenCalledWith(
+					"resize_terminal_surface",
+					expect.anything(),
+				),
+			);
+			const first = mockInvoke.mock.calls.find(
+				([cmd]) => cmd === "attach_terminal_surface",
+			)?.[1].attachmentId;
+			mockConnectionListener(false);
+			mockInvoke.mockClear();
+			mockOnDataCallback("offline");
+			expect(mockInvoke).not.toHaveBeenCalledWith(
+				"write_terminal_surface",
+				expect.anything(),
+			);
+			mockConnectionListener(true);
+			await waitFor(() => expect(mockStreams).toHaveLength(2));
+			await waitFor(() =>
+				expect(mockInvoke).toHaveBeenCalledWith(
+					"attach_terminal_surface",
+					expect.objectContaining({ recovery: true }),
+				),
+			);
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			mockOnDataCallback("online");
+			const write = mockInvoke.mock.calls.find(
+				([cmd]) => cmd === "write_terminal_surface",
+			)?.[1];
+			expect(write).toMatchObject({ data: "online", sequence: 0 });
+			expect(write.attachmentId).not.toBe(first);
+		});
+		it("初回の接続失敗後は接続確立時に初期化とattachを再試行する", async () => {
+			const original = mockInvoke.getMockImplementation();
+			let failed = false;
 			mockInvoke.mockImplementation(
-				(cmd: string, args?: Record<string, unknown>) => {
-					if (cmd === "get_terminal_stream_endpoint") {
-						return Promise.resolve(streamEndpoint);
+				(cmd: string, args: Record<string, unknown>) => {
+					if (cmd === "get_or_spawn_terminal_surface" && !failed) {
+						failed = true;
+						return Promise.reject(new Error("connection closed"));
 					}
-					return baseImplementation?.(cmd, args);
+					return original?.(cmd, args);
 				},
 			);
-		};
-
-		it("初期化中のWS stream errorをresyncし初期化完走時にクリアする", async () => {
-			mockStreamEndpoint();
-			const onTerminalError = vi.fn();
 			const onTerminalReady = vi.fn();
-
-			renderHook(() =>
-				useTerminal(containerRef, { onTerminalError, onTerminalReady }),
-			);
-			await waitFor(() => {
-				expect(MockWebSocket.instances).toHaveLength(1);
-			});
-			const socket = MockWebSocket.instances[0];
-			socket.open();
-			await waitFor(() => {
-				expect(socket.sent).toHaveLength(1);
-			});
-			socket.acceptAttach();
-			socket.receive({
-				status: "error",
-				error: {
-					code: "PTY_ERROR",
-					message: "Terminal input could not be sent. Try again.",
-				},
-			});
-
-			expect(onTerminalError).toHaveBeenCalledWith(
-				"Terminal input could not be sent. Try again.",
-			);
-			await waitFor(() => {
-				expect(MockWebSocket.instances).toHaveLength(2);
-			});
-			const recoverySocket = MockWebSocket.instances[1];
-			recoverySocket.open();
-			await waitFor(() => {
-				expect(recoverySocket.sent).toHaveLength(1);
-			});
-			recoverySocket.acceptAttach();
-			recoverySocket.receive(wsSnapshot);
-
-			await waitFor(() => {
-				expect(onTerminalReady).toHaveBeenCalledWith("test-uuid-1234");
-			});
-			expect(onTerminalError).toHaveBeenCalledWith(null);
-		});
-
-		it("古いepochの再同期成功では新しい再同期失敗をクリアしない", async () => {
-			mockStreamEndpoint();
 			const onTerminalError = vi.fn();
+			renderHook(() =>
+				useTerminal(containerRef, {
+					cwd: "/repo",
+					onTerminalReady,
+					onTerminalError,
+				}),
+			);
+			await waitFor(() =>
+				expect(onTerminalError).toHaveBeenCalledWith("connection closed"),
+			);
+			expect(mockStreams).toHaveLength(0);
+			mockConnectionListener(true);
+			await waitFor(() =>
+				expect(onTerminalReady).toHaveBeenCalledWith("test-uuid-1234"),
+			);
+			expect(mockStreams).toHaveLength(1);
+		});
+		it("attach中の切断後も接続確立時に再同期する", async () => {
+			const original = mockInvoke.getMockImplementation();
+			let failed = false;
+			mockInvoke.mockImplementation(
+				(cmd: string, args: Record<string, unknown>) => {
+					if (cmd === "attach_terminal_surface" && !failed) {
+						failed = true;
+						return Promise.reject(new Error("connection closed"));
+					}
+					return original?.(cmd, args);
+				},
+			);
 			const onTerminalReady = vi.fn();
-
-			renderHook(() =>
-				useTerminal(containerRef, { onTerminalError, onTerminalReady }),
-			);
-			await waitFor(() => {
-				expect(MockWebSocket.instances).toHaveLength(1);
-			});
-			const first = MockWebSocket.instances[0];
-			first.open();
-			await waitFor(() => {
-				expect(first.sent).toHaveLength(1);
-			});
-			first.acceptAttach();
-			first.receive(wsSnapshot);
-			await waitFor(() => {
-				expect(onTerminalReady).toHaveBeenCalledWith("test-uuid-1234");
-			});
-			onTerminalError.mockClear();
-
-			first.receive({
-				status: "event",
-				item: {
-					type: "input_unavailable",
-					session_key: "test-uuid-1234",
-					message: "stale attachment",
-				},
-			});
-			await waitFor(() => {
-				expect(MockWebSocket.instances).toHaveLength(2);
-			});
-			const second = MockWebSocket.instances[1];
-			second.open();
-			await waitFor(() => {
-				expect(second.sent).toHaveLength(1);
-			});
-			mockChannelConstructionError = new Error(
-				"renderer recovery setup failed",
-			);
-			const closeFirst = first.close.bind(first);
-			first.close = () => {
-				closeFirst();
-				second.close();
-			};
-
-			second.acceptAttach();
-
-			await waitFor(() => {
-				expect(onTerminalError).toHaveBeenCalledWith(
-					"Failed to resynchronize terminal: renderer recovery setup failed",
-				);
-			});
-			await Promise.resolve();
-			expect(onTerminalError).not.toHaveBeenCalledWith(null);
-			expect(onTerminalError).toHaveBeenLastCalledWith(
-				"Failed to resynchronize terminal: renderer recovery setup failed",
-			);
-		});
-
-		it("snapshot後の予期しないWS切断はChannelへ単発resyncし以後の入力はinvoke経路になる", async () => {
-			mockStreamEndpoint();
-
-			renderHook(() => useTerminal(containerRef));
-			await waitFor(() => {
-				expect(MockWebSocket.instances).toHaveLength(1);
-			});
-			const socket = MockWebSocket.instances[0];
-			socket.open();
-			await waitFor(() => {
-				expect(socket.sent).toHaveLength(1);
-			});
-			const wsAttachmentId = JSON.parse(socket.sent[0]).attachment_id as string;
-			socket.acceptAttach();
-			socket.receive(wsSnapshot);
-			await waitFor(() => {
-				expect(mockInvoke).toHaveBeenCalledWith(
-					"resize_terminal_surface",
-					expect.objectContaining({ rows: 24, cols: 80 }),
-				);
-			});
-
-			// server側の予期しない切断（socketsClosedByUs外）
-			socket.close();
-
-			await waitFor(() => {
-				expect(
-					mockInvoke.mock.calls.filter(
-						([command]) => command === "attach_terminal_surface",
-					),
-				).toHaveLength(1);
-				expect(mockChannels).toHaveLength(1);
-			});
-			const attachCall = mockInvoke.mock.calls.find(
-				([command]) => command === "attach_terminal_surface",
-			);
-			if (!attachCall)
-				throw new Error("attach_terminal_surface call is missing");
-			const channelAttachmentId = (attachCall[1] as { attachmentId: string })
-				.attachmentId;
-			expect(channelAttachmentId).not.toBe(wsAttachmentId);
-			expect(MockWebSocket.instances).toHaveLength(1);
-
-			mockOnDataCallback("a");
-			await waitFor(() => {
-				const writes = mockInvoke.mock.calls.filter(
-					([command]) => command === "write_terminal_surface",
-				);
-				expect(writes).toHaveLength(1);
-				expect(writes[0][1]).toMatchObject({
-					attachmentId: channelAttachmentId,
-					sequence: 0,
-					data: "a",
-				});
-			});
-			expect(
-				mockInvoke.mock.calls.filter(
-					([command]) => command === "attach_terminal_surface",
-				),
-			).toHaveLength(1);
-		});
-
-		it("WS stream errorはbackend messageを無加工で通知しresync成功でクリアする", async () => {
-			mockStreamEndpoint();
 			const onTerminalError = vi.fn();
-			const onTerminalReady = vi.fn();
-
 			renderHook(() =>
-				useTerminal(containerRef, { onTerminalError, onTerminalReady }),
+				useTerminal(containerRef, {
+					cwd: "/repo",
+					onTerminalReady,
+					onTerminalError,
+				}),
 			);
-			await waitFor(() => {
-				expect(MockWebSocket.instances).toHaveLength(1);
-			});
-			const socket = MockWebSocket.instances[0];
-			socket.open();
-			await waitFor(() => {
-				expect(socket.sent).toHaveLength(1);
-			});
-			socket.acceptAttach();
-			socket.receive(wsSnapshot);
-			await waitFor(() => {
-				expect(onTerminalReady).toHaveBeenCalledWith("test-uuid-1234");
-			});
-			onTerminalError.mockClear();
-			socket.receive({
-				status: "error",
-				error: {
-					code: "PTY_ERROR",
-					message: "Terminal input could not be sent. Try again.",
-				},
-			});
-
-			await waitFor(() => {
-				expect(MockWebSocket.instances).toHaveLength(2);
-			});
-			const recoverySocket = MockWebSocket.instances[1];
-			recoverySocket.open();
-			await waitFor(() => {
-				expect(recoverySocket.sent).toHaveLength(1);
-			});
-			recoverySocket.acceptAttach();
-			recoverySocket.receive(wsSnapshot);
-
-			await waitFor(() => {
-				expect(onTerminalError.mock.calls).toEqual([
-					["Terminal input could not be sent. Try again."],
-					[null],
-				]);
-			});
-			expect(onTerminalError).not.toHaveBeenCalledWith(
-				expect.stringContaining("Terminal stream error:"),
+			await waitFor(() =>
+				expect(onTerminalError).toHaveBeenCalledWith("connection closed"),
+			);
+			mockConnectionListener(false);
+			mockConnectionListener(true);
+			await waitFor(() =>
+				expect(onTerminalReady).toHaveBeenCalledWith("test-uuid-1234"),
 			);
 		});
-
-		it("messageのないWS error frameは表示せずsocketを閉じてresyncする", async () => {
-			mockStreamEndpoint();
-			const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-			const onTerminalError = vi.fn();
-
-			try {
-				renderHook(() => useTerminal(containerRef, { onTerminalError }));
-				await waitFor(() => {
-					expect(MockWebSocket.instances).toHaveLength(1);
-				});
-				const socket = MockWebSocket.instances[0];
-				socket.open();
-				await waitFor(() => {
-					expect(socket.sent).toHaveLength(1);
-				});
-				socket.acceptAttach();
-				socket.receive(wsSnapshot);
-				socket.receive({ status: "error", error: { code: "PTY_ERROR" } });
-
-				await waitFor(() => {
-					expect(socket.readyState).toBe(MockWebSocket.CLOSED);
-					expect(
-						mockInvoke.mock.calls.filter(
-							([command]) => command === "attach_terminal_surface",
-						),
-					).toHaveLength(1);
-				});
-				expect(
-					onTerminalError.mock.calls.filter(([message]) => message !== null),
-				).toEqual([]);
-				expect(warnSpy).toHaveBeenCalledWith(
-					"Closing terminal stream after an error frame without a backend message",
+		it.each([false, true])(
+			"Exitなしの終了は再attachし失敗時はエラーを表示する: %s",
+			async (fails) => {
+				const onTerminalError = vi.fn();
+				renderHook(() =>
+					useTerminal(containerRef, { cwd: "/repo", onTerminalError }),
 				);
-			} finally {
-				warnSpy.mockRestore();
-			}
-		});
-
-		it("recovery中のWSがsnapshot前に切断されてもepoch単位で再入し回復する", async () => {
-			mockStreamEndpoint();
-
-			renderHook(() => useTerminal(containerRef));
-			await waitFor(() => {
-				expect(MockWebSocket.instances).toHaveLength(1);
-			});
-			const first = MockWebSocket.instances[0];
-			first.open();
-			await waitFor(() => {
-				expect(first.sent).toHaveLength(1);
-			});
-			first.acceptAttach();
-			first.receive(wsSnapshot);
-			await waitFor(() => {
-				expect(mockInvoke).toHaveBeenCalledWith(
-					"resize_terminal_surface",
-					expect.objectContaining({ rows: 24, cols: 80 }),
-				);
-			});
-
-			// renderer queue超過でWS再attach（recovery）を開始する
-			mockTerminalInstance.write.mockImplementation(
-				(_data: string, callback?: () => void) => callback?.(),
-			);
-			first.receive({
-				status: "event",
-				item: {
-					type: "output",
-					session_key: "test-uuid-1234",
-					data: "a".repeat(2 * 1024 * 1024),
-					sequence: 1,
-				},
-			});
-			first.receive({
-				status: "event",
-				item: {
-					type: "output",
-					session_key: "test-uuid-1234",
-					data: "b".repeat(256 * 1024),
-					sequence: 2,
-				},
-			});
-			await waitFor(() => {
-				expect(MockWebSocket.instances).toHaveLength(2);
-			});
-			const second = MockWebSocket.instances[1];
-			second.open();
-			await waitFor(() => {
-				expect(second.sent).toHaveLength(1);
-			});
-			second.acceptAttach();
-			await waitFor(() => {
-				expect(first.readyState).toBe(MockWebSocket.CLOSED);
-			});
-
-			// snapshot到達前の予期しない切断でもフリーズせず再入する
-			second.close();
-
-			await waitFor(() => {
-				expect(
-					mockInvoke.mock.calls.filter(
-						([command]) => command === "attach_terminal_surface",
-					),
-				).toHaveLength(1);
-				expect(mockChannels).toHaveLength(1);
-			});
-			mockChannels[0].onmessage({
-				type: "output",
-				session_key: "test-uuid-1234",
-				data: "after-recovery",
-				sequence: 3,
-			});
-			await waitFor(() => {
-				expect(mockTerminalInstance.write).toHaveBeenCalledWith(
-					"after-recovery",
-					expect.any(Function),
-				);
-			});
-
-			mockOnDataCallback("x");
-			await waitFor(() => {
-				const writes = mockInvoke.mock.calls.filter(
-					([command]) => command === "write_terminal_surface",
-				);
-				expect(writes).toHaveLength(1);
-				expect(writes[0][1]).toMatchObject({ sequence: 0, data: "x" });
-			});
-			expect(
-				mockInvoke.mock.calls.filter(
-					([command]) => command === "attach_terminal_surface",
-				),
-			).toHaveLength(1);
-			expect(MockWebSocket.instances).toHaveLength(2);
-		});
-
-		it("WS再attach完了前の入力は旧socketへ送られ、完了後はsequence 0から新socketへ送る", async () => {
-			mockStreamEndpoint();
-
-			renderHook(() => useTerminal(containerRef));
-			await waitFor(() => {
-				expect(MockWebSocket.instances).toHaveLength(1);
-			});
-			const first = MockWebSocket.instances[0];
-			first.open();
-			await waitFor(() => {
-				expect(first.sent).toHaveLength(1);
-			});
-			first.acceptAttach();
-			const firstAttachmentId = JSON.parse(first.sent[0])
-				.attachment_id as string;
-			first.receive(wsSnapshot);
-			await waitFor(() => {
-				expect(mockInvoke).toHaveBeenCalledWith(
-					"resize_terminal_surface",
-					expect.objectContaining({ rows: 24, cols: 80 }),
-				);
-			});
-			mockOnDataCallback("a");
-
-			// renderer queue超過で再attach（2本目のWSは未openのまま保持）
-			mockTerminalInstance.write.mockImplementation(
-				(_data: string, callback?: () => void) => callback?.(),
-			);
-			first.receive({
-				status: "event",
-				item: {
-					type: "output",
-					session_key: "test-uuid-1234",
-					data: "a".repeat(2 * 1024 * 1024),
-					sequence: 1,
-				},
-			});
-			first.receive({
-				status: "event",
-				item: {
-					type: "output",
-					session_key: "test-uuid-1234",
-					data: "b".repeat(256 * 1024),
-					sequence: 2,
-				},
-			});
-			await waitFor(() => {
-				expect(MockWebSocket.instances).toHaveLength(2);
-			});
-			const second = MockWebSocket.instances[1];
-
-			// attach未完了の間の打鍵は旧socketへ旧attachmentのsequence連番で送られる
-			mockOnDataCallback("x");
-			const firstWrites = first.sent
-				.map((raw) => JSON.parse(raw))
-				.filter((frame) => frame.type === "write");
-			expect(firstWrites).toHaveLength(2);
-			expect(firstWrites[0]).toMatchObject({
-				attachment_id: firstAttachmentId,
-				sequence: 0,
-				data: "a",
-			});
-			expect(firstWrites[1]).toMatchObject({
-				attachment_id: firstAttachmentId,
-				sequence: 1,
-				data: "x",
-			});
-
-			// attach完了＋snapshot後は新socketへsequence 0から送られる
-			second.open();
-			await waitFor(() => {
-				expect(second.sent).toHaveLength(1);
-			});
-			second.acceptAttach();
-			await waitFor(() => {
-				expect(first.readyState).toBe(MockWebSocket.CLOSED);
-			});
-			const secondAttachmentId = JSON.parse(second.sent[0])
-				.attachment_id as string;
-			expect(secondAttachmentId).not.toBe(firstAttachmentId);
-			second.receive({
-				status: "event",
-				item: {
-					type: "snapshot",
-					surface: {
-						session_key: "test-uuid-1234",
-						terminal_surface: { replay: "", sequence: 2, cols: 80, rows: 24 },
-						is_exited: false,
-						exit_code: null,
+				await waitFor(() => expect(mockStreams).toHaveLength(1));
+				await waitFor(() => expect(onTerminalError).toHaveBeenCalledWith(null));
+				const original = mockInvoke.getMockImplementation();
+				mockInvoke.mockImplementation(
+					(cmd: string, args: Record<string, unknown>) => {
+						if (fails && cmd === "attach_terminal_surface")
+							return Promise.reject({
+								code: "PTY_ERROR",
+								message: "Terminal resynchronization failed. Try again.",
+							});
+						return original?.(cmd, args);
 					},
-				},
-			});
-			await waitFor(() => {
-				expect(
-					mockInvoke.mock.calls.filter(
-						([command]) => command === "resize_terminal_surface",
-					).length,
-				).toBeGreaterThan(1);
-			});
-			mockOnDataCallback("y");
-			const secondWrites = second.sent
-				.map((raw) => JSON.parse(raw))
-				.filter((frame) => frame.type === "write");
-			expect(secondWrites).toHaveLength(1);
-			expect(secondWrites[0]).toMatchObject({
-				attachment_id: secondAttachmentId,
-				sequence: 0,
-				data: "y",
-			});
-			expect(
-				mockInvoke.mock.calls.filter(
-					([command]) => command === "write_terminal_surface",
-				),
-			).toHaveLength(0);
-		});
-
-		it("stale epochのoutput ackはWSでなくinvoke ackへ落ちる", async () => {
-			mockStreamEndpoint();
-
-			renderHook(() => useTerminal(containerRef));
-			await waitFor(() => {
-				expect(MockWebSocket.instances).toHaveLength(1);
-			});
-			const first = MockWebSocket.instances[0];
-			first.open();
-			await waitFor(() => {
-				expect(first.sent).toHaveLength(1);
-			});
-			first.acceptAttach();
-			const firstAttachmentId = JSON.parse(first.sent[0])
-				.attachment_id as string;
-			first.receive(wsSnapshot);
-			await waitFor(() => {
-				expect(mockInvoke).toHaveBeenCalledWith(
-					"resize_terminal_surface",
-					expect.objectContaining({ rows: 24, cols: 80 }),
 				);
-			});
-
-			let parsed!: () => void;
-			mockTerminalInstance.write.mockImplementation(
-				(data: string, callback?: () => void) => {
-					if (data === "traced-output") {
-						if (callback) parsed = callback;
-						return;
-					}
-					callback?.();
-				},
-			);
-			first.receive({
-				status: "event",
-				item: {
-					type: "output",
-					session_key: "test-uuid-1234",
-					data: "traced-output",
-					sequence: 7,
-				},
-			});
-			await waitFor(() => {
-				expect(mockTerminalInstance.write).toHaveBeenCalledWith(
-					"traced-output",
-					expect.any(Function),
+				mockStreams[0].onClosed();
+				await waitFor(() => expect(mockStreams).toHaveLength(2));
+				await waitFor(() =>
+					expect(mockInvoke).toHaveBeenCalledWith(
+						"attach_terminal_surface",
+						expect.objectContaining({ recovery: true }),
+					),
 				);
-			});
-
-			// overflowで再attachが始まりepochが進む（新socketは未openのまま）
-			first.receive({
-				status: "event",
-				item: {
-					type: "output",
-					session_key: "test-uuid-1234",
-					data: "a".repeat(2 * 1024 * 1024),
-					sequence: 8,
-				},
-			});
-			await waitFor(() => {
-				expect(MockWebSocket.instances).toHaveLength(2);
-			});
-
-			parsed();
-			await waitFor(() => {
-				expect(mockInvoke).toHaveBeenCalledWith("ack_terminal_surface_output", {
-					attachmentId: firstAttachmentId,
-					sequence: 7,
-				});
-			});
-			const ackFrames = first.sent
-				.map((raw) => JSON.parse(raw))
-				.filter((frame) => frame.type === "ack");
-			expect(ackFrames).toHaveLength(0);
-		});
-
-		it("disableOutputFlowControl時はWS経路でackを送らない", async () => {
-			const baseImplementation = mockInvoke.getMockImplementation();
-			mockInvoke.mockImplementation(
-				(cmd: string, args?: Record<string, unknown>) => {
-					if (cmd === "get_terminal_performance_switches") {
-						return Promise.resolve({
-							disableOutputFlowControl: true,
-							disableTerminalJournal: false,
-							disableTerminalWebsocket: false,
-							disableRendererWriteSerialization: false,
-							disableWebglRenderer: false,
-						});
-					}
-					if (cmd === "get_terminal_stream_endpoint") {
-						return Promise.resolve(streamEndpoint);
-					}
-					return baseImplementation?.(cmd, args);
-				},
-			);
-
-			renderHook(() => useTerminal(containerRef));
-			await waitFor(() => {
-				expect(MockWebSocket.instances).toHaveLength(1);
-			});
-			const socket = MockWebSocket.instances[0];
-			socket.open();
-			await waitFor(() => {
-				expect(socket.sent).toHaveLength(1);
-			});
-			socket.acceptAttach();
-			socket.receive(wsSnapshot);
-			await waitFor(() => {
-				expect(mockInvoke).toHaveBeenCalledWith(
-					"resize_terminal_surface",
-					expect.objectContaining({ rows: 24, cols: 80 }),
-				);
-			});
-
-			socket.receive({
-				status: "event",
-				item: {
-					type: "output",
-					session_key: "test-uuid-1234",
-					data: "echo-a",
-					sequence: 1,
-				},
-			});
-			await waitFor(() => {
-				expect(mockTerminalInstance.write).toHaveBeenCalledWith(
-					"echo-a",
-					expect.any(Function),
-				);
-			});
-			const ackFrames = socket.sent
-				.map((raw) => JSON.parse(raw))
-				.filter((frame) => frame.type === "ack");
-			expect(ackFrames).toHaveLength(0);
-			expect(mockInvoke).not.toHaveBeenCalledWith(
-				"ack_terminal_surface_output",
-				expect.anything(),
-			);
-		});
-
-		it("disableOutputFlowControl時はChannel経路でもinvoke ackを送らない", async () => {
-			const baseImplementation = mockInvoke.getMockImplementation();
-			mockInvoke.mockImplementation(
-				(cmd: string, args?: Record<string, unknown>) => {
-					if (cmd === "get_terminal_performance_switches") {
-						return Promise.resolve({
-							disableOutputFlowControl: true,
-							disableTerminalJournal: false,
-							disableTerminalWebsocket: false,
-							disableRendererWriteSerialization: false,
-							disableWebglRenderer: false,
-						});
-					}
-					return baseImplementation?.(cmd, args);
-				},
-			);
-
-			renderHook(() => useTerminal(containerRef));
-			await waitFor(() => {
-				expect(mockChannels).toHaveLength(1);
-			});
-			mockChannels[0].onmessage({
-				type: "output",
-				session_key: "test-uuid-1234",
-				data: "provider output",
-				sequence: 5,
-			});
-			await waitFor(() => {
-				expect(mockTerminalInstance.write).toHaveBeenCalledWith(
-					"provider output",
-					expect.any(Function),
-				);
-			});
-			expect(mockInvoke).not.toHaveBeenCalledWith(
-				"ack_terminal_surface_output",
-				expect.anything(),
-			);
-		});
-
-		it("unmount中に完了したWS recoveryの新socketはcloseされる", async () => {
-			mockStreamEndpoint();
-
+				if (fails) {
+					await waitFor(() =>
+						expect(onTerminalError).toHaveBeenCalledWith(
+							"Terminal resynchronization failed. Try again.",
+						),
+					);
+				} else {
+					await waitFor(() =>
+						expect(onTerminalError).toHaveBeenLastCalledWith(null),
+					);
+					mockOnDataCallback("recovered");
+					expect(mockInvoke).toHaveBeenCalledWith(
+						"write_terminal_surface",
+						expect.objectContaining({
+							attachmentId: mockStreams[1].attachmentId,
+							data: "recovered",
+							sequence: 0,
+						}),
+					);
+				}
+			},
+		);
+		it("解除済み画面は再接続してもattachしない", async () => {
 			const { unmount } = renderHook(() => useTerminal(containerRef));
-			await waitFor(() => {
-				expect(MockWebSocket.instances).toHaveLength(1);
-			});
-			const first = MockWebSocket.instances[0];
-			first.open();
-			await waitFor(() => {
-				expect(first.sent).toHaveLength(1);
-			});
-			first.acceptAttach();
-			first.receive(wsSnapshot);
-			await waitFor(() => {
-				expect(mockInvoke).toHaveBeenCalledWith(
-					"resize_terminal_surface",
-					expect.objectContaining({ rows: 24, cols: 80 }),
-				);
-			});
-
-			first.receive({
-				status: "event",
-				item: {
-					type: "input_unavailable",
-					session_key: "test-uuid-1234",
-					message: "stale attachment",
-				},
-			});
-			await waitFor(() => {
-				expect(MockWebSocket.instances).toHaveLength(2);
-			});
-			const second = MockWebSocket.instances[1];
-
+			await waitFor(() => expect(mockStreams).toHaveLength(1));
 			unmount();
-			second.open();
-			await waitFor(() => {
-				expect(second.sent).toHaveLength(1);
-			});
-			second.acceptAttach();
-
-			await waitFor(() => {
-				expect(second.readyState).toBe(MockWebSocket.CLOSED);
-			});
+			mockInvoke.mockClear();
+			mockConnectionListener(true);
+			expect(mockInvoke).not.toHaveBeenCalledWith(
+				"attach_terminal_surface",
+				expect.anything(),
+			);
 		});
 	});
 
@@ -3944,7 +3217,7 @@ describe("useTerminal", () => {
 
 			renderHook(() => useTerminal(containerRef));
 			await waitFor(() => {
-				expect(mockChannels).toHaveLength(1);
+				expect(mockStreams).toHaveLength(1);
 			});
 
 			mockOnDataCallback("a".repeat(1024));
@@ -3957,7 +3230,7 @@ describe("useTerminal", () => {
 				expect(attachResolvers).toHaveLength(1);
 			});
 			attachResolvers[0]();
-			mockChannels[0].onmessage({
+			mockStreams[0].onmessage({
 				type: "snapshot",
 				surface: {
 					session_key: "test-uuid-1234",
@@ -4004,7 +3277,7 @@ describe("useTerminal", () => {
 				useTerminal(containerRef, { onTerminalError, onTerminalReady }),
 			);
 			await waitFor(() => {
-				expect(mockChannels).toHaveLength(1);
+				expect(mockStreams).toHaveLength(1);
 			});
 
 			mockOnDataCallback("abc");
@@ -4012,7 +3285,7 @@ describe("useTerminal", () => {
 				expect(attachResolvers).toHaveLength(1);
 			});
 			attachResolvers[0]();
-			mockChannels[0].onmessage({
+			mockStreams[0].onmessage({
 				type: "snapshot",
 				surface: {
 					session_key: "test-uuid-1234",
