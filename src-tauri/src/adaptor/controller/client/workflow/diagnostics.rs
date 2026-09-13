@@ -3,9 +3,8 @@ use std::sync::Arc;
 
 use crate::adaptor::controller::state::AppState;
 
-#[tauri::command]
-pub async fn diagnose_all_cmd(
-    state: tauri::State<'_, AppState>,
+pub(crate) async fn diagnose_all_cmd_shared(
+    state: &AppState,
     dir: Option<String>,
 ) -> Result<crate::usecase::workflow::diagnostic_dto::DiagnosticReport, String> {
     diagnose_all_impl(&state.workflow_usecase, dir).await
@@ -25,9 +24,8 @@ pub(crate) async fn diagnose_all_impl(
         .map_err(|e| format!("task join error: {e}"))?
 }
 
-#[tauri::command]
-pub async fn render_facet_preview(
-    state: tauri::State<'_, AppState>,
+pub(crate) async fn render_facet_preview_shared(
+    state: &AppState,
     content: String,
     sample_values: HashMap<String, String>,
 ) -> Result<String, String> {
@@ -36,8 +34,7 @@ pub async fn render_facet_preview(
         .render_facet_preview(&content, &sample_values))
 }
 
-#[tauri::command]
-pub fn get_automation_config_dir(state: tauri::State<'_, AppState>) -> Result<String, String> {
+pub(crate) fn get_automation_config_dir_shared(state: &AppState) -> Result<String, String> {
     state
         .workflow_usecase
         .automation_config_dir()

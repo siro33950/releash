@@ -55,6 +55,7 @@ impl ClientCommandDispatch {
         super::code::register_shared(self, deps);
         super::comment::register_shared(self, deps);
         super::agent_session::register_shared(self, deps);
+        super::workflow::register_shared(self, deps);
     }
     pub(crate) fn register_domain(
         &mut self,

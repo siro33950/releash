@@ -16,6 +16,8 @@ pub(crate) struct ClientDependencies {
         Option<std::sync::Arc<crate::usecase::provider_lifecycle::ProviderHookHealthReadUsecase>>,
     pub(crate) review_comment_usecase:
         Option<std::sync::Arc<crate::usecase::comment::ReviewCommentUsecase>>,
+    pub(crate) workflow_runtime_usecase:
+        Option<std::sync::Arc<crate::usecase::workflow::WorkflowRuntimeUsecase>>,
     pub(crate) data_dir: Result<std::path::PathBuf, String>,
     pub(crate) comment_notify: Arc<crate::adaptor::gateway::push::CommentChangeGateway>,
 }

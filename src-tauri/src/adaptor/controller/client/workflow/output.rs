@@ -52,10 +52,9 @@ async fn authorize_output_node_execution_access(
 /// を経由して、CLI 経路と同一の state mutation 境界に合流する（spec [08] L169）。
 /// worktree-scoped 認可境界（spec [08] が依拠する [05] 観測経路の認可境界）を通過しない caller には
 /// 「該当 execution なし」と同表現で拒否を返し、存在情報を漏らさない。
-#[tauri::command]
-pub async fn workflow_submit_output(
-    state: tauri::State<'_, AppState>,
-    runtime: tauri::State<'_, Arc<WorkflowRuntimeUsecase>>,
+pub(crate) async fn workflow_submit_output_shared(
+    state: &AppState,
+    runtime: &Arc<WorkflowRuntimeUsecase>,
     worktree_path: String,
     node_execution_id: String,
     artifact: Option<WorkflowSubmitArtifactInput>,
@@ -85,9 +84,8 @@ pub async fn workflow_submit_output(
 /// event log の `ExecutionStarted.workflow_definition` から解決する（spec [08] 要求:
 /// 「execution_id と node_name を主語に CLI/API 経由で engine に提出できる」境界。
 /// caller 指定の contract 文字列を信用しない）。
-#[tauri::command]
-pub async fn workflow_validate_output(
-    state: tauri::State<'_, AppState>,
+pub(crate) async fn workflow_validate_output_shared(
+    state: &AppState,
     worktree_path: String,
     execution_id: String,
     node_name: String,
@@ -117,9 +115,8 @@ pub async fn workflow_validate_output(
 
 /// [08] 提出済みの構造化出力を取得する Tauri command。未提出の場合は決定論的に
 /// `NotSubmitted` を返す（spec [08] 振る舞い定義 Rule 3）。
-#[tauri::command]
-pub async fn workflow_get_output(
-    state: tauri::State<'_, AppState>,
+pub(crate) async fn workflow_get_output_shared(
+    state: &AppState,
     worktree_path: String,
     execution_id: String,
     node_name: String,

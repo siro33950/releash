@@ -70,7 +70,7 @@ fn parity_app_with_runtime(
     Arc<ClientCommandDispatch>,
 ) {
     let (app, data_dir, _store) =
-        crate::adaptor::controller::command::workflow::tests::make_read_only_app();
+        crate::adaptor::controller::client::workflow::tests::make_read_only_app();
     if let Some(runtime) = runtime {
         app.manage(runtime);
     }
@@ -205,6 +205,13 @@ parity!(
     "get_provider_availability",
     json!({}),
     outcome(invoke_tauri(&app, "get_provider_availability", json!({})).await)
+);
+parity!(
+    test_workflow_protoはusecase結果と一致する,
+    app,
+    "list_workflows",
+    json!({}),
+    outcome(invoke_tauri(&app, "list_workflows", json!({})).await)
 );
 #[tokio::test]
 async fn test_クライアントws_切断しても受理済みcommandを途中で破棄しない() {
@@ -614,6 +621,87 @@ async fn test_review_group変更_protoは複合引数と部分stagingとusecase�
             modified
         );
     }
+}
+
+#[tokio::test]
+async fn test_workflow変更_protoは実引数とruntime結果を保持する() {
+    // Given
+    use crate::adaptor::controller::api::test_support::RecordingRuntimeGateway;
+    use crate::usecase::workflow::WorkflowRuntimeUsecase;
+    let gateway = Arc::new(RecordingRuntimeGateway::default());
+    let runtime = Arc::new(WorkflowRuntimeUsecase::new(gateway.clone()));
+    let (app, dispatch) = parity_app_with_runtime(Some(runtime));
+    let id = "00000000-0000-4000-8000-000000000001";
+    for failure in [false, true] {
+        if failure {
+            let mut errors = gateway.errors.lock().unwrap();
+            errors.start = Some(crate::domain::workflow::WorkflowError::external(
+                "start failed",
+            ));
+            errors.abort = Some(crate::domain::workflow::WorkflowError::external(
+                "abort failed",
+            ));
+            errors.stop = Some(crate::domain::workflow::WorkflowError::external(
+                "stop failed",
+            ));
+            errors.resume = Some(crate::domain::workflow::WorkflowError::external(
+                "resume failed",
+            ));
+        }
+        // When / Then
+        let expected = outcome(
+            invoke_tauri(&app, "start_workflow", json!({"workflowName": "workflow-name","worktreePath": "/workspace with space","request": Some("日本語の依頼"),"createdFrom": Some("cli")}))
+            .await,
+        );
+        assert_eq!(expected.is_err(), failure);
+        assert_parity(&dispatch, "start_workflow", json!({"workflowName":"workflow-name","worktreePath":"/workspace with space","request":"日本語の依頼","createdFrom":"cli"}), expected).await;
+        let expected =
+            outcome(invoke_tauri(&app, "abort_workflow", json!({"executionId": id})).await);
+        assert_eq!(expected.is_err(), failure);
+        assert_parity(
+            &dispatch,
+            "abort_workflow",
+            json!({"executionId":id}),
+            expected,
+        )
+        .await;
+        let expected =
+            outcome(invoke_tauri(&app, "stop_workflow", json!({"executionId": id})).await);
+        assert_eq!(expected.is_err(), failure);
+        assert_parity(
+            &dispatch,
+            "stop_workflow",
+            json!({"executionId":id}),
+            expected,
+        )
+        .await;
+        let expected =
+            outcome(invoke_tauri(&app, "resume_workflow", json!({"executionId": id})).await);
+        assert_eq!(expected.is_err(), failure);
+        assert_parity(
+            &dispatch,
+            "resume_workflow",
+            json!({"executionId":id}),
+            expected,
+        )
+        .await;
+    }
+    let commands = gateway.commands.lock().unwrap();
+    assert_eq!(commands.starts.len(), 2);
+    assert_eq!(commands.starts[0], commands.starts[1]);
+    assert_eq!(commands.starts[0].workflow_name, "workflow-name");
+    assert_eq!(commands.starts[0].worktree_path, "/workspace with space");
+    assert_eq!(commands.starts[0].request.as_deref(), Some("日本語の依頼"));
+    assert_eq!(
+        commands.starts[0].created_from,
+        crate::domain::workflow::ExecutionOrigin::Cli
+    );
+    assert_eq!(commands.aborts.len(), 2);
+    assert_eq!(commands.aborts[0], commands.aborts[1]);
+    assert_eq!(commands.stops.len(), 2);
+    assert_eq!(commands.stops[0], commands.stops[1]);
+    assert_eq!(commands.resumes.len(), 2);
+    assert_eq!(commands.resumes[0], commands.resumes[1]);
 }
 
 fn mutation_repository() -> (tempfile::TempDir, String) {

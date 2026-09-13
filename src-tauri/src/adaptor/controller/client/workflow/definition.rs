@@ -1,24 +1,15 @@
+use crate::adaptor::controller::api::protocol::client::{
+    save_workflow_source_result_dto::Variant, SaveWorkflowDiagnostics, SaveWorkflowSourceResultDto,
+    SaveWorkflowSuccess,
+};
 use crate::adaptor::controller::state::AppState;
 use crate::usecase::workflow::dto::{
     workflow_to_dto, workflow_to_dto_with_source_format, WorkflowDto, WorkflowSummaryDto,
 };
 use crate::usecase::workflow::ports::WorkflowSourceSaveError;
-use serde::Serialize;
 
-#[derive(Debug, Serialize)]
-pub struct SaveWorkflowSourceResultDto {
-    ok: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    workflow: Option<WorkflowDto>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    diagnostics: Vec<crate::usecase::workflow::diagnostic_dto::DiagnosticItem>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
-}
-
-#[tauri::command]
-pub async fn list_workflows(
-    state: tauri::State<'_, AppState>,
+pub(crate) async fn list_workflows_shared(
+    state: &AppState,
 ) -> Result<Vec<WorkflowSummaryDto>, String> {
     let read = state.workflow_usecase.read_usecase();
     tokio::task::spawn_blocking(move || read.list_workflow_summaries().map_err(|e| e.to_string()))
@@ -26,9 +17,8 @@ pub async fn list_workflows(
         .map_err(|e| format!("task join error: {e}"))?
 }
 
-#[tauri::command]
-pub async fn get_workflow(
-    state: tauri::State<'_, AppState>,
+pub(crate) async fn get_workflow_shared(
+    state: &AppState,
     name: String,
 ) -> Result<WorkflowDto, String> {
     let query = state.workflow_usecase.clone();
@@ -48,9 +38,8 @@ pub async fn get_workflow(
     .map_err(|e| format!("task join error: {e}"))?
 }
 
-#[tauri::command]
-pub async fn get_workflow_source(
-    state: tauri::State<'_, AppState>,
+pub(crate) async fn get_workflow_source_shared(
+    state: &AppState,
     name: String,
 ) -> Result<String, String> {
     let query = state.workflow_usecase.clone();
@@ -64,9 +53,8 @@ pub async fn get_workflow_source(
     .map_err(|e| format!("task join error: {e}"))?
 }
 
-#[tauri::command]
-pub async fn save_workflow_source(
-    state: tauri::State<'_, AppState>,
+pub(crate) async fn save_workflow_source_shared(
+    state: &AppState,
     source: String,
     original_name: Option<String>,
 ) -> Result<SaveWorkflowSourceResultDto, String> {
@@ -74,17 +62,18 @@ pub async fn save_workflow_source(
     tokio::task::spawn_blocking(move || {
         match usecase.save_workflow_source_with_diagnostics(&source, original_name.as_deref()) {
             Ok(workflow) => Ok(SaveWorkflowSourceResultDto {
-                ok: true,
-                workflow: Some(workflow_to_dto(&workflow)),
-                diagnostics: Vec::new(),
-                error: None,
+                variant: Some(Variant::Success(SaveWorkflowSuccess {
+                    ok: Some(true),
+                    workflow: Some(workflow_to_dto(&workflow).try_into()?),
+                })),
             }),
             Err(WorkflowSourceSaveError::Diagnostics(diagnostics)) => {
                 Ok(SaveWorkflowSourceResultDto {
-                    ok: false,
-                    workflow: None,
-                    diagnostics,
-                    error: Some("workflow_diagnostics".to_string()),
+                    variant: Some(Variant::Diagnostics(SaveWorkflowDiagnostics {
+                        ok: Some(false),
+                        diagnostics: Some(diagnostics.try_into()?),
+                        error: Some("workflow_diagnostics".to_string()),
+                    })),
                 })
             }
             Err(WorkflowSourceSaveError::Workflow(error)) => Err(error.to_string()),
@@ -94,31 +83,22 @@ pub async fn save_workflow_source(
     .map_err(|e| format!("task join error: {e}"))?
 }
 
-#[tauri::command]
-pub async fn delete_workflow(
-    state: tauri::State<'_, AppState>,
-    name: String,
-) -> Result<(), String> {
+pub(crate) async fn delete_workflow_shared(state: &AppState, name: String) -> Result<(), String> {
     let usecase = state.workflow_usecase.clone();
     tokio::task::spawn_blocking(move || usecase.delete_workflow(&name).map_err(|e| e.to_string()))
         .await
         .map_err(|e| format!("task join error: {e}"))?
 }
 
-#[tauri::command]
-pub fn open_workflow_in_editor(
-    state: tauri::State<'_, AppState>,
-    name: String,
-) -> Result<(), String> {
+pub(crate) fn open_workflow_in_editor_shared(state: &AppState, name: String) -> Result<(), String> {
     state
         .workflow_usecase
         .open_workflow_in_editor(&name)
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-pub async fn duplicate_workflow(
-    state: tauri::State<'_, AppState>,
+pub(crate) async fn duplicate_workflow_shared(
+    state: &AppState,
     source_name: String,
     new_name: String,
 ) -> Result<(), String> {

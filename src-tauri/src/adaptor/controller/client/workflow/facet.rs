@@ -11,9 +11,8 @@ fn parse_domain_facet_kind(kind: &str) -> Result<FacetKind, String> {
     }
 }
 
-#[tauri::command]
-pub async fn list_facets(
-    state: tauri::State<'_, AppState>,
+pub(crate) async fn list_facets_shared(
+    state: &AppState,
     kind: String,
 ) -> Result<Vec<String>, String> {
     let kind = parse_domain_facet_kind(&kind)?;
@@ -23,9 +22,8 @@ pub async fn list_facets(
         .map_err(|e| format!("task join error: {e}"))?
 }
 
-#[tauri::command]
-pub async fn get_facet(
-    state: tauri::State<'_, AppState>,
+pub(crate) async fn get_facet_shared(
+    state: &AppState,
     kind: String,
     key: String,
 ) -> Result<String, String> {
@@ -36,9 +34,8 @@ pub async fn get_facet(
         .map_err(|e| format!("task join error: {e}"))?
 }
 
-#[tauri::command]
-pub async fn save_facet(
-    state: tauri::State<'_, AppState>,
+pub(crate) async fn save_facet_shared(
+    state: &AppState,
     kind: String,
     key: String,
     content: String,
@@ -56,9 +53,8 @@ pub async fn save_facet(
     .map_err(|e| format!("task join error: {e}"))?
 }
 
-#[tauri::command]
-pub async fn delete_facet(
-    state: tauri::State<'_, AppState>,
+pub(crate) async fn delete_facet_shared(
+    state: &AppState,
     kind: String,
     key: String,
 ) -> Result<(), String> {
@@ -69,9 +65,8 @@ pub async fn delete_facet(
         .map_err(|e| format!("task join error: {e}"))?
 }
 
-#[tauri::command]
-pub async fn list_facet_summaries(
-    state: tauri::State<'_, AppState>,
+pub(crate) async fn list_facet_summaries_shared(
+    state: &AppState,
     kind: String,
 ) -> Result<Vec<FacetSummaryDto>, String> {
     let kind = parse_domain_facet_kind(&kind)?;
@@ -86,9 +81,8 @@ pub async fn list_facet_summaries(
     .map_err(|e| format!("task join error: {e}"))?
 }
 
-#[tauri::command]
-pub async fn duplicate_facet(
-    state: tauri::State<'_, AppState>,
+pub(crate) async fn duplicate_facet_shared(
+    state: &AppState,
     kind: String,
     source_key: String,
     new_key: String,
@@ -104,9 +98,8 @@ pub async fn duplicate_facet(
     .map_err(|e| format!("task join error: {e}"))?
 }
 
-#[tauri::command]
-pub fn open_facet_in_editor(
-    state: tauri::State<'_, AppState>,
+pub(crate) fn open_facet_in_editor_shared(
+    state: &AppState,
     kind: String,
     key: String,
 ) -> Result<(), String> {

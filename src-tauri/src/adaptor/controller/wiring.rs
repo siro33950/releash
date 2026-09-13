@@ -572,6 +572,7 @@ pub(crate) fn build_client_dependencies<R: tauri::Runtime>(
         agent_session_history_read_usecase: app.try_state::<std::sync::Arc<crate::usecase::agent_session::AgentSessionHistoryReadUsecase>>().map(|state| state.inner().clone()),
         provider_hook_health_read_usecase: app.try_state::<std::sync::Arc<crate::usecase::provider_lifecycle::ProviderHookHealthReadUsecase>>().map(|state| state.inner().clone()),
         review_comment_usecase: app.try_state::<std::sync::Arc<crate::usecase::comment::ReviewCommentUsecase>>().map(|state| state.inner().clone()),
+        workflow_runtime_usecase: app.try_state::<std::sync::Arc<crate::usecase::workflow::WorkflowRuntimeUsecase>>().map(|state| state.inner().clone()),
         data_dir: app.path().app_data_dir().map_err(|error| format!("Failed to get app data dir: {error}")),
         comment_notify: Arc::new(crate::adaptor::gateway::push::CommentChangeGateway::new(app.clone())),
     }

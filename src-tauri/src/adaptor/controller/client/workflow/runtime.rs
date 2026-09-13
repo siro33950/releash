@@ -1,8 +1,6 @@
 use std::sync::Arc;
 
-use serde::Deserialize;
-
-use crate::adaptor::controller::command::workflow::validate_execution_id;
+use crate::adaptor::controller::client::workflow::validate_execution_id;
 use crate::usecase::workflow::command::{
     AbortExecutionCommand, ApprovalCommand, ResumeExecutionCommand, StartExecutionCommand,
     StopExecutionCommand,
@@ -19,27 +17,8 @@ fn parse_execution_origin(
         .map_err(|error| error.to_string())
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct ApproveWorkflowNodeArgs {
-    pub execution_id: String,
-    pub node_name: String,
-    #[serde(default)]
-    pub node_execution_id: Option<String>,
-    #[serde(default)]
-    pub comment: Option<String>,
-}
-
-#[cfg(test)]
-pub(crate) fn parse_approve_workflow_node_args(
-    value: &serde_json::Value,
-) -> Result<ApproveWorkflowNodeArgs, serde_json::Error> {
-    serde_json::from_value::<ApproveWorkflowNodeArgs>(value.clone())
-}
-
-#[tauri::command]
-pub async fn start_workflow(
-    runtime: tauri::State<'_, Arc<WorkflowRuntimeUsecase>>,
+pub(crate) async fn start_workflow_shared(
+    runtime: &Arc<WorkflowRuntimeUsecase>,
     workflow_name: String,
     worktree_path: String,
     request: Option<String>,
@@ -57,9 +36,8 @@ pub async fn start_workflow(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-pub async fn abort_workflow(
-    runtime: tauri::State<'_, Arc<WorkflowRuntimeUsecase>>,
+pub(crate) async fn abort_workflow_shared(
+    runtime: &Arc<WorkflowRuntimeUsecase>,
     execution_id: String,
 ) -> Result<(), String> {
     validate_execution_id(&execution_id)?;
@@ -76,9 +54,8 @@ pub async fn abort_workflow(
         })
 }
 
-#[tauri::command]
-pub async fn stop_workflow(
-    runtime: tauri::State<'_, Arc<WorkflowRuntimeUsecase>>,
+pub(crate) async fn stop_workflow_shared(
+    runtime: &Arc<WorkflowRuntimeUsecase>,
     execution_id: String,
 ) -> Result<(), String> {
     validate_execution_id(&execution_id)?;
@@ -92,9 +69,8 @@ pub async fn stop_workflow(
         })
 }
 
-#[tauri::command]
-pub async fn resume_workflow(
-    runtime: tauri::State<'_, Arc<WorkflowRuntimeUsecase>>,
+pub(crate) async fn resume_workflow_shared(
+    runtime: &Arc<WorkflowRuntimeUsecase>,
     execution_id: String,
 ) -> Result<(), String> {
     validate_execution_id(&execution_id)?;
@@ -108,41 +84,35 @@ pub async fn resume_workflow(
         })
 }
 
-#[tauri::command]
-pub async fn approve_workflow_node(
-    runtime: tauri::State<'_, Arc<WorkflowRuntimeUsecase>>,
-    args: ApproveWorkflowNodeArgs,
+pub(crate) async fn approve_workflow_node_shared(
+    runtime: &Arc<WorkflowRuntimeUsecase>,
+    command: ApprovalCommand,
 ) -> Result<(), String> {
-    approve_workflow_node_with_runtime(runtime.inner().as_ref(), args).await
-}
-
-/// Tauri wrapper と transport-independent boundary test が共有する production adapter。
-/// state transition は持たず、typed command を `WorkflowRuntimeUsecase` へ渡すだけに保つ。
-pub(crate) async fn approve_workflow_node_with_runtime(
-    runtime: &WorkflowRuntimeUsecase,
-    args: ApproveWorkflowNodeArgs,
-) -> Result<(), String> {
-    let ApproveWorkflowNodeArgs {
-        execution_id,
-        node_name,
-        node_execution_id,
-        comment,
-    } = args;
-    validate_execution_id(&execution_id)?;
+    validate_execution_id(&command.execution_id)?;
     runtime
-        .resolve_approval(ApprovalCommand {
-            execution_id,
-            node_name,
-            node_execution_id,
-            comment,
-        })
+        .resolve_approval(command)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parse_approve_workflow_node_args(
+        args: &serde_json::Value,
+    ) -> Result<ApprovalCommand, String> {
+        use crate::adaptor::controller::api::protocol::client as wire;
+        let request = wire::CommandRequest::from_value(
+            "approve_workflow_node",
+            serde_json::json!({"args":args}),
+        )?;
+        let wire::command_request::Command::ApproveWorkflowNode(request) = request.command.unwrap()
+        else {
+            panic!("approve request");
+        };
+        request.args.unwrap().try_into()
+    }
 
     #[test]
     fn approve_args_accept_optional_node_execution_address() {

@@ -9,7 +9,7 @@ use crate::usecase::workflow::{
     WorkspaceTreeSnapshotDto, WorkspaceWorkflowHistoryItemDto,
 };
 
-pub(super) const COMMAND_NAMES: &[&str] = &[
+pub(crate) const COMMAND_NAMES: &[&str] = &[
     "list_workspace_worktree_nodes",
     "get_workspace_tree_selection_reconciliation",
     "list_workspace_workflow_history",

@@ -119,11 +119,11 @@ pub(crate) mod test_support {
     }
 
     #[derive(Default)]
-    struct RecordedRuntimeErrors {
-        start: Option<WorkflowError>,
-        abort: Option<WorkflowError>,
-        stop: Option<WorkflowError>,
-        resume: Option<WorkflowError>,
+    pub(crate) struct RecordedRuntimeErrors {
+        pub(crate) start: Option<WorkflowError>,
+        pub(crate) abort: Option<WorkflowError>,
+        pub(crate) stop: Option<WorkflowError>,
+        pub(crate) resume: Option<WorkflowError>,
         approval: Option<WorkflowError>,
         output: Option<WorkflowError>,
     }
@@ -134,7 +134,7 @@ pub(crate) mod test_support {
         node_execution_owners: Mutex<HashMap<String, String>>,
         workflow_resolution: Mutex<Option<(PathBuf, PathBuf)>>,
         output_persistence_data_dir: Mutex<Option<PathBuf>>,
-        errors: Mutex<RecordedRuntimeErrors>,
+        pub(crate) errors: Mutex<RecordedRuntimeErrors>,
     }
 
     impl RecordingRuntimeGateway {

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::adaptor::controller::command::workflow::validate_execution_id;
+use crate::adaptor::controller::client::workflow::validate_execution_id;
 use crate::adaptor::controller::state::AppState;
 use crate::adaptor::protocol::workflow::{NodeExecutionView, WorkflowExecutionView};
 use crate::usecase::workflow::dto::{
@@ -12,9 +12,8 @@ use crate::usecase::workflow::WorkflowEventView;
 /// `worktree_path` は必須。caller の認可済み worktree のみを対象にすることで
 /// 別 worktree の execution を観測できる経路を閉じる（spec [05] L104-108 観測経路の
 /// 認可境界）。`status` は optional な filter。
-#[tauri::command]
-pub async fn list_workflow_executions(
-    state: tauri::State<'_, AppState>,
+pub(crate) async fn list_workflow_executions_shared(
+    state: &AppState,
     status: Option<String>,
     worktree_path: String,
 ) -> Result<Vec<WorkflowExecutionSummaryDto>, String> {
@@ -46,9 +45,8 @@ pub async fn list_workflow_executions(
 /// active / terminal のいずれであっても返す。該当 execution なし、または execution の
 /// worktree_path が caller の認可済み worktree に合致しない場合は `Ok(None)`
 /// （spec [05] L104-108 / L182）。
-#[tauri::command]
-pub async fn get_workflow_execution(
-    state: tauri::State<'_, AppState>,
+pub(crate) async fn get_workflow_execution_shared(
+    state: &AppState,
     execution_id: String,
 ) -> Result<Option<WorkflowExecutionSummaryDto>, String> {
     validate_execution_id(&execution_id)?;
@@ -73,9 +71,8 @@ pub async fn get_workflow_execution(
 /// spec issues-1023 L132/L150: 観測 invoke は caller の現 worktree path を必須引数
 /// として受け取り、`canonicalize_managed_worktree_path` + execution metadata の
 /// `worktree_path` 一致を二重に検証してから event log を返す。
-#[tauri::command]
-pub async fn get_workflow_execution_log(
-    state: tauri::State<'_, AppState>,
+pub(crate) async fn get_workflow_execution_log_shared(
+    state: &AppState,
     worktree_path: String,
     execution_id: String,
 ) -> Result<Option<Vec<WorkflowEventView>>, String> {
@@ -83,7 +80,7 @@ pub async fn get_workflow_execution_log(
 }
 
 /// [05] 内部経路。Tauri command 側は injected state を受け取り本関数に委譲する。
-pub(super) async fn get_workflow_execution_log_impl(
+pub(crate) async fn get_workflow_execution_log_impl(
     query: &Arc<crate::usecase::workflow::WorkflowUsecase>,
     worktree_path: String,
     execution_id: String,
@@ -122,9 +119,8 @@ pub(super) async fn get_workflow_execution_log_impl(
 /// spec issues-1023 L132/L150: 観測 invoke は caller の現 worktree path を必須引数
 /// として受け取り、`canonicalize_managed_worktree_path` + execution metadata の
 /// `worktree_path` 一致を二重に検証してから state を返す。
-#[tauri::command]
-pub async fn get_workflow_execution_state(
-    state: tauri::State<'_, AppState>,
+pub(crate) async fn get_workflow_execution_state_shared(
+    state: &AppState,
     worktree_path: String,
     execution_id: String,
 ) -> Result<Option<WorkflowExecutionView>, String> {
@@ -132,7 +128,7 @@ pub async fn get_workflow_execution_state(
 }
 
 /// [05] 内部経路。Tauri command 側は injected state を受け取り本関数に委譲する。
-pub(super) async fn get_workflow_execution_state_impl(
+pub(crate) async fn get_workflow_execution_state_impl(
     query: &Arc<crate::usecase::workflow::WorkflowUsecase>,
     worktree_path: String,
     execution_id: String,
@@ -159,9 +155,8 @@ pub(super) async fn get_workflow_execution_state_impl(
 /// spec issues-1023: 選択 node の入出力・遷移結果・所要時間を 1 つの View で返す
 /// 観測用 API。frontend で execution 全体を再走査する代わりに、`worktree_path` /
 /// `execution_id` / `node_execution_id` を渡してこの View を受け取る境界。
-#[tauri::command]
-pub async fn get_workflow_node_detail(
-    state: tauri::State<'_, AppState>,
+pub(crate) async fn get_workflow_node_detail_shared(
+    state: &AppState,
     worktree_path: String,
     execution_id: String,
     node_execution_id: String,
@@ -175,7 +170,7 @@ pub async fn get_workflow_node_detail(
     .await
 }
 
-pub(super) async fn get_workflow_node_detail_impl(
+pub(crate) async fn get_workflow_node_detail_impl(
     query: &Arc<crate::usecase::workflow::WorkflowUsecase>,
     worktree_path: String,
     execution_id: String,
@@ -202,9 +197,8 @@ pub(super) async fn get_workflow_node_detail_impl(
 }
 
 /// worktree_path から active な execution_id を解決する（双方向 lookup の一方向）。
-#[tauri::command]
-pub async fn resolve_active_execution_by_worktree(
-    state: tauri::State<'_, AppState>,
+pub(crate) async fn resolve_active_execution_by_worktree_shared(
+    state: &AppState,
     worktree_path: String,
 ) -> Result<Option<String>, String> {
     let query = state.workflow_usecase.clone();
@@ -229,9 +223,8 @@ pub async fn resolve_active_execution_by_worktree(
 /// execution_id から worktree_path を解決する（双方向 lookup のもう一方向）。
 /// active / 終了済みの両方について metadata 経由で解決する。
 /// path traversal 対策として command 入口で UUID 形式を検証する。
-#[tauri::command]
-pub async fn resolve_worktree_by_execution(
-    state: tauri::State<'_, AppState>,
+pub(crate) async fn resolve_worktree_by_execution_shared(
+    state: &AppState,
     execution_id: String,
 ) -> Result<Option<String>, String> {
     validate_execution_id(&execution_id)?;

@@ -353,7 +353,38 @@ describe("clientSocket", () => {
 			});
 		},
 	);
-
+	it("push未読溢れでworkflowを再取得し同じ接続の要求と後続pushを維持する", async () => {
+		let current = execution();
+		FakeWebSocket.respond = (command) =>
+			command === "resolveActiveExecutionByWorktree" ? current.id : current;
+		const { result, unmount } = renderHook(() => useWorkflowState("/repo"));
+		await vi.waitFor(() =>
+			expect(result.current.workflowExecution?.status).toBe("running"),
+		);
+		const socket = FakeWebSocket.instances[0];
+		current = { ...current, status: "completed" };
+		await act(async () => {
+			const bytes = toBinary(
+				EnvelopeSchema,
+				create(EnvelopeSchema, { body: { case: "pushResync", value: {} } }),
+			);
+			socket.onmessage?.({ data: bytes.buffer as ArrayBuffer });
+		});
+		await vi.waitFor(() =>
+			expect(result.current.workflowExecution?.status).toBe("completed"),
+		);
+		await act(async () =>
+			socket.message({
+				status: "push",
+				event: "workflow-execution-changed",
+				payload: { worktreePath: "/repo", workflowExecution: execution() },
+			}),
+		);
+		expect(result.current.workflowExecution?.status).toBe("running");
+		expect(socket.close).not.toHaveBeenCalled();
+		expect(FakeWebSocket.instances).toHaveLength(1);
+		unmount();
+	});
 	it("attachment終了は対象だけ通知し別streamと保留要求を継続する", async () => {
 		const closed = vi.fn(),
 			otherClosed = vi.fn(),
@@ -646,7 +677,9 @@ describe("clientSocket", () => {
 		await act(async () => {
 			await vi.advanceTimersByTimeAsync(0);
 		});
-		expect(result.current.workflowExecution?.currentNode).toBe("before");
+		expect(result.current.workflowExecution).toBeNull();
+		FakeWebSocket.respond = (command) =>
+			command === "resolveActiveExecutionByWorktree" ? "execution-1" : current;
 		current = { ...current, currentNode: "offline-update" };
 		await act(async () => {
 			await vi.advanceTimersByTimeAsync(1_000);
