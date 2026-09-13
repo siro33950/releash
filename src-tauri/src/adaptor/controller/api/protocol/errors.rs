@@ -111,6 +111,19 @@ impl From<crate::usecase::application_startup::ApplicationUnavailable> for wire:
         Self { variant: Some(wire::command_error::Variant::Application(Box::new(match value { crate::usecase::application_startup::ApplicationUnavailable::ApplicationUnavailable => wire::ApplicationError { r#type: Some("application_unavailable".into()), message: None, correlation_id: None, failure: None } }))) }
     }
 }
+impl From<crate::adaptor::controller::terminal_surface::TerminalCommandError>
+    for wire::CommandError
+{
+    fn from(value: crate::adaptor::controller::terminal_surface::TerminalCommandError) -> Self {
+        Self {
+            variant: Some(wire::command_error::Variant::Coded(wire::CodedError {
+                code: Some(value.code),
+                message: Some(value.message),
+            })),
+        }
+    }
+}
+
 #[cfg(test)]
 #[path = "errors_test.rs"]
 mod errors_tests;

@@ -22,7 +22,6 @@ pub struct TerminalPerformanceSwitchesV1 {
     pub disable_terminal_journal: bool,
     pub disable_renderer_write_serialization: bool,
     pub disable_webgl_renderer: bool,
-    pub disable_terminal_websocket: bool,
 }
 
 impl From<crate::other::performance_switches::TerminalPerformanceSwitches>
@@ -34,7 +33,6 @@ impl From<crate::other::performance_switches::TerminalPerformanceSwitches>
             disable_terminal_journal: switches.disable_terminal_journal,
             disable_renderer_write_serialization: switches.disable_renderer_write_serialization,
             disable_webgl_renderer: switches.disable_webgl_renderer,
-            disable_terminal_websocket: switches.disable_terminal_websocket,
         }
     }
 }
@@ -129,17 +127,6 @@ impl From<GetOrSpawnTerminalOutcome> for GetOrSpawnTerminalV1 {
 /// terminal WebSocket認証に使うsubprotocolのprefix。クライアントは
 /// `{prefix}{bearer_token}` を Sec-WebSocket-Protocol として送る。
 pub const TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX: &str = "releash-bearer.";
-
-/// terminal WebSocket transportのroute path。
-pub const TERMINAL_WS_PATH: &str = "/v1/terminal";
-
-/// frontendがterminal streamをWebSocket購読するための接続情報。
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TerminalStreamEndpointV1 {
-    pub url: String,
-    pub auth_subprotocol: String,
-}
 
 /// replay全量を含まないTerminal Surfaceの読み取り応答。
 /// frontendのattach前照会はsession identityと生存状態だけを必要とする。
@@ -268,63 +255,6 @@ impl TryFrom<TerminalSurfaceOwnerV1> for TerminalSurfaceOwner {
         }
         .map_err(|error| format!("invalid Terminal Surface owner: {error:?}"))
     }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum TerminalWsRequestV1 {
-    AttachSurface {
-        id: String,
-        owner: TerminalSurfaceOwnerV1,
-        #[serde(default)]
-        attachment_id: Option<String>,
-    },
-}
-
-/// attach確立後にクライアントから届く要求。write/ackはterminalのhot pathで、
-/// Tauri invokeを介さないことがWS transportの目的そのもの。
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum TerminalWsAttachedRequestV1 {
-    Write {
-        owner: TerminalSurfaceOwnerV1,
-        attachment_id: String,
-        sequence: u64,
-        data: String,
-        #[serde(default)]
-        client_started_at_unix_ms: Option<f64>,
-    },
-    Ack {
-        attachment_id: String,
-        sequence: u64,
-    },
-    Resize {
-        owner: TerminalSurfaceOwnerV1,
-        rows: u16,
-        cols: u16,
-    },
-}
-
-#[derive(Serialize)]
-#[serde(tag = "status", rename_all = "snake_case")]
-pub enum TerminalWsResponseV1 {
-    Attached {
-        id: String,
-    },
-    Error {
-        id: String,
-        error: TerminalWsErrorV1,
-    },
-    Event {
-        id: String,
-        item: TerminalSurfaceStreamItemV1,
-    },
-}
-
-#[derive(Serialize)]
-pub struct TerminalWsErrorV1 {
-    pub code: &'static str,
-    pub message: String,
 }
 
 #[cfg(test)]

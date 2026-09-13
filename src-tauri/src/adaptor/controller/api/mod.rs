@@ -1,13 +1,14 @@
 mod auth;
 mod client;
+pub(crate) mod client_stream;
 pub(crate) use client::ClientApiDeps;
 mod error;
 pub(crate) mod protocol;
 pub(crate) mod provider_lifecycle;
-mod terminal;
+
 mod workflow;
 
-pub(crate) use terminal::TerminalApiDeps;
+pub(crate) use crate::adaptor::controller::api::client_stream::TerminalApiDeps;
 
 use std::sync::Arc;
 
@@ -21,7 +22,6 @@ use crate::usecase::workflow::{WorkflowReadUsecase, WorkflowRuntimeUsecase};
 struct LocalApiState {
     workflow: Arc<WorkflowReadUsecase>,
     runtime: Arc<WorkflowRuntimeUsecase>,
-    terminal: Option<TerminalApiDeps>,
 }
 
 pub(crate) fn build_router(
@@ -35,11 +35,7 @@ pub(crate) fn build_router(
         Arc<dyn crate::usecase::provider_lifecycle::ProviderLifecycleIngressPort>,
     >,
 ) -> Router {
-    let state = LocalApiState {
-        workflow,
-        runtime,
-        terminal,
-    };
+    let state = LocalApiState { workflow, runtime };
     let application_router = workflow::router()
         .fallback(|| async {
             error::ApiError::not_found("local API endpoint was not found").into_response()
@@ -48,9 +44,7 @@ pub(crate) fn build_router(
     // renderer向けのws routeは共通の非master tokenでも認証できる。
     // masterのdiscovery tokenはrenderer JSに露出させない。
     let terminal_router = authenticated_with_tokens(
-        terminal::router()
-            .with_state(state)
-            .merge(client::router(client)),
+        client::router(client.map(|client| client.with_terminal(terminal))),
         auth::AcceptedBearerTokens::new([token.clone(), terminal_token]),
     );
     authenticated(
@@ -565,24 +559,6 @@ pub(crate) mod test_support {
         Arc<RecordingRuntimeGateway>,
     ) {
         test_router_with_optional_terminal(data_dir, token, None)
-    }
-
-    pub(crate) fn test_router_with_terminal(
-        data_dir: &Path,
-        token: &str,
-        terminal: TerminalApiDeps,
-    ) -> Router {
-        test_router_with_optional_terminal(data_dir, token, Some(terminal)).0
-    }
-
-    pub(crate) fn test_router_with_terminal_tokens(
-        data_dir: &Path,
-        token: &str,
-        terminal_token: &str,
-        terminal: TerminalApiDeps,
-    ) -> Router {
-        test_router_with_optional_deps(data_dir, token, terminal_token, Some(terminal), None, None)
-            .0
     }
 
     pub(crate) fn test_router_with_provider_lifecycle(

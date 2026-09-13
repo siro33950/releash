@@ -376,19 +376,13 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 						"__mockTerminalPerformanceAttachment" in
 							(value as Record<string, unknown>))
 				) {
-					const rawChannel = args.onEvent;
-					const channel =
-						typeof rawChannel === "string"
-							? rawChannel
-							: rawChannel &&
-									typeof rawChannel === "object" &&
-									"id" in rawChannel
-								? `__CHANNEL__:${String((rawChannel as { id: unknown }).id)}`
-								: "";
-					const channelId = /^__CHANNEL__:(\d+)$/.exec(channel)?.[1];
-					if (!channelId) {
-						throw new Error("attach_terminal_surface requires a Tauri Channel");
-					}
+					const channelId = transformCallback((data) => {
+						const { message } = data as { message: TerminalSurfaceStreamItem };
+						void window.__releashTerminalEvent(
+							String(args.attachmentId),
+							message,
+						);
+					});
 					if (
 						"__mockTerminalPerformanceAttachment" in
 						(value as Record<string, unknown>)
