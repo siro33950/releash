@@ -42,6 +42,181 @@ fn dispatch() -> ClientCommandDispatch {
     )
 }
 
+#[derive(Default)]
+struct Files(std::sync::Mutex<bool>);
+impl crate::domain::repository::file_watcher::FileWatchGateway for Files {
+    fn start(&self, _: &str) -> Result<u64, String> {
+        *self.0.lock().unwrap() = true;
+        Ok(42)
+    }
+    fn stop(&self, _: u64) -> Result<(), String> {
+        *self.0.lock().unwrap() = false;
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn test_監視開始_応答未受領の切断だけがfileとgit監視を回収する() {
+    use crate::usecase::watcher::WatcherUsecase;
+    for git in [false, true] {
+        for phase in ["running", "unreceived", "received"] {
+            // Given
+            let directory = tempfile::tempdir().unwrap();
+            let repository =
+                Arc::new(crate::usecase::repository_state::service::tests::watching_service());
+            let files = Arc::new(Files::default());
+            let watcher = Arc::new(WatcherUsecase::new(
+                git.then(|| repository.clone()),
+                files.clone(),
+            ));
+            let gate = Arc::new(tokio::sync::Semaphore::new(0));
+            let started = Arc::new(tokio::sync::Notify::new());
+            let stopped = Arc::new(tokio::sync::Notify::new());
+            let watch_id = Arc::new(std::sync::Mutex::new(None));
+            let mut dispatch = dispatch();
+            let name = if git {
+                "start_git_dir_watching"
+            } else {
+                "start_watching"
+            };
+            let path = directory.path().to_str().unwrap().to_owned();
+            {
+                let (watcher, gate, started, watch_id) = (
+                    watcher.clone(),
+                    gate.clone(),
+                    started.clone(),
+                    watch_id.clone(),
+                );
+                dispatch.register_domain(
+                    if git {
+                        &["start_git_dir_watching"]
+                    } else {
+                        &["start_watching"]
+                    },
+                    Box::new(move |_| {
+                        let (watcher, gate, started, watch_id, path) = (
+                            watcher.clone(),
+                            gate.clone(),
+                            started.clone(),
+                            watch_id.clone(),
+                            path.clone(),
+                        );
+                        Box::pin(async move {
+                            started.notify_one();
+                            let _gate = gate.acquire().await.unwrap();
+                            let id = if git {
+                                watcher.start_git_dir(&path)
+                            } else {
+                                watcher.start(&path)
+                            }
+                            .unwrap();
+                            *watch_id.lock().unwrap() = Some(id);
+                            let value = wire::ResultUint64 { value: Some(id) };
+                            Ok(if git {
+                                wire::command_result::Command::StartGitDirWatching(value)
+                            } else {
+                                wire::command_result::Command::StartWatching(value)
+                            })
+                        })
+                    }),
+                );
+            }
+            {
+                let (watcher, stopped) = (watcher.clone(), stopped.clone());
+                dispatch.register_domain(
+                    &["stop_watching"],
+                    Box::new(move |command| {
+                        let (watcher, stopped) = (watcher.clone(), stopped.clone());
+                        Box::pin(async move {
+                            let wire::command_request::Command::StopWatching(args) = command else {
+                                panic!("stop");
+                            };
+                            watcher.stop(args.watcher_id.unwrap()).unwrap();
+                            stopped.notify_one();
+                            Ok(wire::command_result::Command::StopWatching(wire::Unit {}))
+                        })
+                    }),
+                );
+            }
+            let deps = ClientApiDeps::new(
+                Arc::new(dispatch),
+                ClientPushGateway::new(Arc::new(crate::infrastructure::push::PushSink::new())),
+            );
+            let slots = deps.connection_limit.clone();
+            let (mut socket, _, server) = connect(deps).await;
+            socket
+                .send(request(
+                    "watch",
+                    name,
+                    if git {
+                        json!({"repoPath":directory.path()})
+                    } else {
+                        json!({"path":directory.path()})
+                    },
+                ))
+                .await
+                .unwrap();
+            started.notified().await;
+            // When
+            if phase != "running" {
+                gate.add_permits(1);
+                assert!(matches!(receive(&mut socket).await, Body::Response(_)));
+                if phase == "received" {
+                    socket
+                        .send(WsMessage::Binary(
+                            Envelope {
+                                body: Some(Body::RequestAck(wire::RequestAck {
+                                    request_id: "watch".into(),
+                                })),
+                            }
+                            .encode_to_vec()
+                            .into(),
+                        ))
+                        .await
+                        .unwrap();
+                    socket
+                        .send(request(
+                            "barrier",
+                            "get_current_branch",
+                            json!({"repoPath":"/missing"}),
+                        ))
+                        .await
+                        .unwrap();
+                    assert!(matches!(receive(&mut socket).await, Body::Response(_)));
+                }
+            }
+            socket.close(None).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while slots.available_permits() != 16 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            if phase == "running" {
+                gate.add_permits(1);
+            }
+            // Then
+            if phase != "received" {
+                tokio::time::timeout(Duration::from_secs(5), stopped.notified())
+                    .await
+                    .unwrap();
+            }
+            let id = watch_id.lock().unwrap().unwrap();
+            if git {
+                assert_eq!(
+                    repository.stop_watching(id).unwrap(),
+                    phase == "received",
+                    "{phase}"
+                );
+            } else {
+                assert_eq!(*files.0.lock().unwrap(), phase == "received", "{phase}");
+            }
+            server.abort();
+        }
+    }
+}
+
 #[tokio::test]
 async fn test_workspace保存_先行保存が遅れても受信順に永続化し再起動後に復元する() {
     assert_workspace_save_order("same").await;
