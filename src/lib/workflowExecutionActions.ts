@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invokeClient as invoke } from "@/lib/clientSocket";
 import { getErrorMessage } from "@/lib/errorMessage";
 
 export type WorkflowExecutionAction = "stop" | "resume" | "abort";

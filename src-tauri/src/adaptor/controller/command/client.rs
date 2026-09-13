@@ -1,63 +1,28 @@
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::Arc;
-
-use serde_json::Value;
-use tauri::Manager;
-
 use super::CommandRouter;
+use crate::adaptor::controller::api::protocol::client as wire;
+use crate::adaptor::controller::client::ClientCommandDispatch;
 use crate::adaptor::protocol::client::{ClientEndpoint, CLIENT_WS_PATH};
 use crate::adaptor::protocol::terminal::TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX;
-use crate::other::AppError;
-use crate::usecase::application_startup::ApplicationStartupAuthority;
-use crate::usecase::repository_usecase::RepositoryUsecase;
+use std::sync::Arc;
+use tauri::Manager;
 
-pub(super) type CommandHandler = Box<
-    dyn Fn(
-            Arc<RepositoryUsecase>,
-            Value,
-        ) -> Pin<Box<dyn Future<Output = Result<Value, AppError>> + Send>>
-        + Send
-        + Sync,
->;
-
-pub(crate) struct ClientCommandDispatch {
-    router: CommandRouter<CommandHandler>,
-    repository: Arc<RepositoryUsecase>,
-    authority: Arc<ApplicationStartupAuthority>,
-}
-
-impl ClientCommandDispatch {
-    pub(crate) fn new(
-        repository: Arc<RepositoryUsecase>,
-        authority: Arc<ApplicationStartupAuthority>,
-    ) -> Self {
-        let fallback: CommandHandler = Box::new(|_, _| {
-            Box::pin(async { Err(AppError::coded("UNKNOWN_COMMAND", "Command was not found")) })
-        });
-        let mut router = CommandRouter::new(fallback);
-        super::repository::register_shared(&mut router);
-        Self {
-            router,
-            repository,
-            authority,
-        }
+pub(crate) fn handle_registered_invoke<R: tauri::Runtime>(invoke: tauri::ipc::Invoke<R>) -> bool {
+    let Some(dispatch) = invoke
+        .message
+        .state_ref()
+        .try_get::<Arc<ClientCommandDispatch>>()
+        .map(|state| state.inner().clone())
+    else {
+        invoke.resolver.reject(crate::other::AppError::coded(
+            "APPLICATION_UNAVAILABLE",
+            "Application is unavailable",
+        ));
+        return true;
+    };
+    if !dispatch.contains(invoke.message.command()) {
+        return false;
     }
-
-    pub(crate) fn contains(&self, command: &str) -> bool {
-        self.router.domain_route_index(command).is_some()
-    }
-
-    pub(crate) async fn dispatch(&self, command: &str, args: Value) -> Result<Value, AppError> {
-        if !super::command_admitted(command, Some(&self.authority)) {
-            return Err(AppError::coded(
-                "APPLICATION_UNAVAILABLE",
-                "Application is unavailable",
-            ));
-        }
-        let handler = self.router.resolve(command);
-        handler(self.repository.clone(), args).await
-    }
+    handle_invoke(invoke, dispatch)
 }
 
 pub(super) fn handle_invoke<R: tauri::Runtime>(
@@ -66,20 +31,34 @@ pub(super) fn handle_invoke<R: tauri::Runtime>(
 ) -> bool {
     let command = invoke.message.command().to_string();
     let tauri::ipc::InvokeBody::Json(args) = invoke.message.payload() else {
-        invoke.resolver.reject(AppError::coded(
+        invoke.resolver.reject(crate::other::AppError::coded(
             "INVALID_REQUEST",
             "Command arguments must be JSON",
         ));
         return true;
     };
-    let args = args.clone();
-    invoke
-        .resolver
-        .respond_async(async move { dispatch.dispatch(&command, args).await.map_err(Into::into) });
+    let request = wire::CommandRequest::from_value(&command, args.clone());
+    invoke.resolver.respond_async(async move {
+        let result = match request {
+            Ok(request) => {
+                dispatch
+                    .dispatch(request.command.expect("parsed command"))
+                    .await
+            }
+            Err(error) => Err(crate::adaptor::controller::client::invalid_request(error)),
+        };
+        match result {
+            Ok(command) => wire::from_value(wire::CommandResult {
+                command: Some(command),
+            })
+            .map_err(Into::into),
+            Err(error) => Err(wire::from_value(error).expect("command error").into()),
+        }
+    });
     true
 }
 
-pub(super) const COMMAND_NAMES: &[&str] = &["get_client_endpoint"];
+pub(crate) const COMMAND_NAMES: &[&str] = &["get_client_endpoint"];
 
 pub(crate) fn register(router: &mut CommandRouter) {
     router.register_domain(
@@ -105,4 +84,4 @@ pub(crate) fn client_endpoint<R: tauri::Runtime>(
 
 #[cfg(test)]
 #[path = "client_test.rs"]
-mod client_tests;
+pub(crate) mod client_tests;

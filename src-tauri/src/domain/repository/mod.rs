@@ -15,3 +15,5 @@ pub use repository::{
     RepoPathsRepository, StatusRepository, WorktreeRepository,
 };
 pub use value_objects::{normalize_repo_path, worktree_dir, worktree_path};
+
+pub(crate) mod file_watcher;

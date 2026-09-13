@@ -77,7 +77,7 @@ pub trait WorkflowDefinitionSourceGateway: Send + Sync {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum WorkflowSourceSaveError {
-    Diagnostics(Vec<serde_json::Value>),
+    Diagnostics(Vec<super::diagnostic_dto::DiagnosticItem>),
     Workflow(WorkflowError),
 }
 
@@ -119,7 +119,7 @@ pub trait WorkflowDiagnosticsGateway: Send + Sync {
     fn diagnose_all(
         &self,
         target: WorkflowDiagnosticsTarget,
-    ) -> Result<serde_json::Value, WorkflowError>;
+    ) -> Result<super::diagnostic_dto::DiagnosticReport, WorkflowError>;
 }
 
 pub trait WorkflowConfigPathGateway: Send + Sync {

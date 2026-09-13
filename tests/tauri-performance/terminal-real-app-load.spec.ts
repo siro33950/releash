@@ -467,7 +467,7 @@ describe("Real WorkbenchApp terminal load harness", () => {
 		);
 
 		const report = buildRealAppLoadReport({
-			transport: switches.disableTerminalWebsocket ? "tauri-ipc" : "websocket",
+			transport: "websocket",
 			realApp: true,
 			switches: { ...switches },
 			loadFixture: {
@@ -499,7 +499,6 @@ describe("Real WorkbenchApp terminal load harness", () => {
 				`typed key cadence = ${TYPED_KEY_INTERVAL_MS}ms (RELEASH_PERFORMANCE_TYPED_KEY_INTERVAL_MS); intervals shorter than the echo latency keep multiple keystrokes in-flight (multi-pending echo sampler)`,
 				"IME commit drives the real composition event sequence (compositionstart/update/end) but the events are synthesized without the OS IME; native IME timing may differ",
 				"DSR replies are xterm CPR responses to ESC[6n embedded in the load stream; cadence deviation measures pipeline queueing, not absolute latency",
-				"transport is derived from the disableTerminalWebsocket switch; a channel fallback after a websocket connection failure is not distinguished in this report",
 				`renderer: webgl-default=${!switches.disableWebglRenderer}; canvas-detected=${webglCanvasDetected}`,
 			],
 		});

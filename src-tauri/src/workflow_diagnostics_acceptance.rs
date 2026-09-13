@@ -258,11 +258,12 @@ impl WorkflowDiagnosticsAcceptanceHost {
         let directory = directory
             .to_str()
             .ok_or_else(|| "diagnostics directory must be valid UTF-8".to_string())?;
-        crate::adaptor::controller::command::workflow::diagnostics::diagnose_all_impl(
+        crate::adaptor::controller::client::workflow::diagnostics::diagnose_all_impl(
             &self.ui_usecase,
             Some(directory.to_string()),
         )
         .await
+        .and_then(|report| serde_json::to_value(report).map_err(|error| error.to_string()))
     }
 
     pub async fn diagnose(&self, directory: Option<&Path>) -> Result<serde_json::Value, String> {

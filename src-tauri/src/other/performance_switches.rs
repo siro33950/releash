@@ -5,7 +5,6 @@ const DISABLE_TERMINAL_JOURNAL_ENV: &str = "RELEASH_PERF_DISABLE_TERMINAL_JOURNA
 const DISABLE_RENDERER_WRITE_SERIALIZATION_ENV: &str =
     "RELEASH_PERF_DISABLE_RENDERER_WRITE_SERIALIZATION";
 const DISABLE_WEBGL_RENDERER_ENV: &str = "RELEASH_PERF_DISABLE_WEBGL_RENDERER";
-const DISABLE_TERMINAL_WEBSOCKET_ENV: &str = "RELEASH_PERF_DISABLE_TERMINAL_WEBSOCKET";
 
 /// Performance A/B kill-switches. Every switch defaults to `false` so that a
 /// process launched without any `RELEASH_PERF_DISABLE_*` env behaves exactly
@@ -16,7 +15,6 @@ pub struct TerminalPerformanceSwitches {
     pub disable_terminal_journal: bool,
     pub disable_renderer_write_serialization: bool,
     pub disable_webgl_renderer: bool,
-    pub disable_terminal_websocket: bool,
 }
 
 impl TerminalPerformanceSwitches {
@@ -28,7 +26,6 @@ impl TerminalPerformanceSwitches {
                 DISABLE_RENDERER_WRITE_SERIALIZATION_ENV,
             )),
             disable_webgl_renderer: is_enabled(read(DISABLE_WEBGL_RENDERER_ENV)),
-            disable_terminal_websocket: is_enabled(read(DISABLE_TERMINAL_WEBSOCKET_ENV)),
         }
     }
 }

@@ -21,7 +21,6 @@ test("Terminal Surface接続はbackend resizeより先にsnapshotを投影する
 					is_locked: false,
 					dirty_count: 0,
 					base_branch: null,
-					management_kind: "working_area",
 				},
 			],
 		}),
@@ -36,7 +35,7 @@ test("Terminal Surface接続はbackend resizeより先にsnapshotを投影する
 				),
 			),
 		)
-			.toBe(true);
+		.toBe(true);
 });
 
 test("Terminal Surfaceのproduction wireをreload後もsnapshotとlive outputとして投影する", async ({
@@ -65,7 +64,6 @@ test("Terminal Surfaceのproduction wireをreload後もsnapshotとlive outputと
 					is_locked: false,
 					dirty_count: 0,
 					base_branch: null,
-					management_kind: "working_area",
 				},
 			],
 			get_or_spawn_terminal_surface: {
@@ -75,7 +73,11 @@ test("Terminal Surfaceのproduction wireをreload後もsnapshotとlive outputと
 				is_exited: false,
 				exit_code: null,
 			},
-			get_terminal_surface: snapshot,
+			get_terminal_surface: {
+				session_key: snapshot.session_key,
+				is_exited: snapshot.is_exited,
+				exit_code: snapshot.exit_code,
+			},
 			attach_terminal_surface: {
 				__mockTerminalAttachment: true,
 				messages: [
@@ -126,7 +128,6 @@ test("backend AVT生成checkpointを実xtermへalternate screen・属性・wide�
 					is_locked: false,
 					dirty_count: 0,
 					base_branch: null,
-					management_kind: "working_area",
 				},
 			],
 			get_or_spawn_terminal_surface: {
@@ -136,7 +137,11 @@ test("backend AVT生成checkpointを実xtermへalternate screen・属性・wide�
 				is_exited: false,
 				exit_code: null,
 			},
-			get_terminal_surface: snapshot,
+			get_terminal_surface: {
+				session_key: snapshot.session_key,
+				is_exited: snapshot.is_exited,
+				exit_code: snapshot.exit_code,
+			},
 			attach_terminal_surface: {
 				__mockTerminalAttachment: true,
 				messages: [{ type: "snapshot", surface: snapshot }],
@@ -169,6 +174,7 @@ test("backend AVT生成checkpointを実xtermへalternate screen・属性・wide�
 		narrowBox!.width * 1.7,
 	);
 
-	await expect(page.locator(".xterm-rows > div").nth(4).locator(".xterm-cursor"))
-		.toBeVisible();
+	await expect(
+		page.locator(".xterm-rows > div").nth(4).locator(".xterm-cursor"),
+	).toBeVisible();
 });

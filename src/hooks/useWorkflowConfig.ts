@@ -1,5 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useState } from "react";
+import { invokeClient as invoke } from "@/lib/clientSocket";
 import { getErrorMessage } from "@/lib/errorMessage";
 import type { WorkflowDefinitionSummary } from "@/types/workflow";
 
@@ -12,7 +12,7 @@ export function useWorkflowConfig(open: boolean) {
 		setLoading(true);
 		setError(null);
 		try {
-			const list = await invoke<WorkflowDefinitionSummary[]>("list_workflows");
+			const list = await invoke("list_workflows");
 			setWorkflows(list);
 		} catch (e) {
 			setError(getErrorMessage(e));

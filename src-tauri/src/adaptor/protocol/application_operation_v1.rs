@@ -82,14 +82,14 @@ impl From<crate::domain::local_event::SafeOperationFailure> for SafeOperationFai
 }
 
 #[derive(Serialize)]
-struct ApplicationCommandErrorWire<'a> {
+pub(crate) struct ApplicationCommandErrorWire<'a> {
     #[serde(rename = "type")]
-    error_type: &'static str,
-    message: &'static str,
+    pub(crate) error_type: &'static str,
+    pub(crate) message: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
-    correlation_id: Option<&'a str>,
+    pub(crate) correlation_id: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    failure: Option<&'a SafeOperationFailureDtoV1>,
+    pub(crate) failure: Option<&'a SafeOperationFailureDtoV1>,
 }
 
 impl<'a> ApplicationCommandErrorWire<'a> {
@@ -121,12 +121,9 @@ pub(crate) enum OperationApplicationErrorDtoV1 {
     Internal { correlation_id: String },
 }
 
-impl Serialize for OperationApplicationErrorDtoV1 {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let wire = match self {
+impl OperationApplicationErrorDtoV1 {
+    pub(crate) fn wire(&self) -> ApplicationCommandErrorWire<'_> {
+        match self {
             Self::InvalidRequest => ApplicationCommandErrorWire::new(
                 "invalid_request",
                 "Releash could not access application operation history because the request is invalid.",
@@ -144,8 +141,16 @@ impl Serialize for OperationApplicationErrorDtoV1 {
                 "Releash could not access application operation history. Try again.",
             )
             .with_correlation_id(correlation_id),
-        };
-        wire.serialize(serializer)
+        }
+    }
+}
+
+impl Serialize for OperationApplicationErrorDtoV1 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.wire().serialize(serializer)
     }
 }
 
@@ -157,12 +162,9 @@ pub(crate) enum ApplicationQuitErrorDtoV1 {
     Internal { correlation_id: String },
 }
 
-impl Serialize for ApplicationQuitErrorDtoV1 {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let wire = match self {
+impl ApplicationQuitErrorDtoV1 {
+    pub(crate) fn wire(&self) -> ApplicationCommandErrorWire<'_> {
+        match self {
             Self::InvalidRequest => ApplicationCommandErrorWire::new(
                 "invalid_request",
                 "Releash could not start the application quit because the request is invalid.",
@@ -180,8 +182,16 @@ impl Serialize for ApplicationQuitErrorDtoV1 {
                 "Releash could not complete the application quit. Try again.",
             )
             .with_correlation_id(correlation_id),
-        };
-        wire.serialize(serializer)
+        }
+    }
+}
+
+impl Serialize for ApplicationQuitErrorDtoV1 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.wire().serialize(serializer)
     }
 }
 
@@ -195,12 +205,9 @@ pub(crate) enum ApplicationQuitLookupErrorDtoV1 {
     Internal { correlation_id: String },
 }
 
-impl Serialize for ApplicationQuitLookupErrorDtoV1 {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let wire = match self {
+impl ApplicationQuitLookupErrorDtoV1 {
+    pub(crate) fn wire(&self) -> ApplicationCommandErrorWire<'_> {
+        match self {
             Self::InvalidRequest => ApplicationCommandErrorWire::new(
                 "invalid_request",
                 "Releash could not check the application quit because the request is invalid.",
@@ -227,8 +234,16 @@ impl Serialize for ApplicationQuitLookupErrorDtoV1 {
                 "Releash could not check the application quit. Try again.",
             )
             .with_correlation_id(correlation_id),
-        };
-        wire.serialize(serializer)
+        }
+    }
+}
+
+impl Serialize for ApplicationQuitLookupErrorDtoV1 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.wire().serialize(serializer)
     }
 }
 
@@ -237,18 +252,23 @@ pub(crate) enum CurrentShutdownErrorDtoV1 {
     Internal { correlation_id: String },
 }
 
-impl Serialize for CurrentShutdownErrorDtoV1 {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
+impl CurrentShutdownErrorDtoV1 {
+    pub(crate) fn wire(&self) -> ApplicationCommandErrorWire<'_> {
         let Self::Internal { correlation_id } = self;
         ApplicationCommandErrorWire::new(
             "internal",
             "Releash could not check the current application shutdown. Try again.",
         )
         .with_correlation_id(correlation_id)
-        .serialize(serializer)
+    }
+}
+
+impl Serialize for CurrentShutdownErrorDtoV1 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.wire().serialize(serializer)
     }
 }
 
@@ -266,12 +286,9 @@ pub(crate) enum ShutdownPlanQueryErrorDtoV1 {
     Internal { correlation_id: String },
 }
 
-impl Serialize for ShutdownPlanQueryErrorDtoV1 {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let wire = match self {
+impl ShutdownPlanQueryErrorDtoV1 {
+    pub(crate) fn wire(&self) -> ApplicationCommandErrorWire<'_> {
+        match self {
             Self::InvalidRequest => ApplicationCommandErrorWire::new(
                 "invalid_request",
                 "Releash could not load the shutdown plan because the request is invalid.",
@@ -314,8 +331,16 @@ impl Serialize for ShutdownPlanQueryErrorDtoV1 {
                 "Releash could not load the shutdown plan. Try again.",
             )
             .with_correlation_id(correlation_id),
-        };
-        wire.serialize(serializer)
+        }
+    }
+}
+
+impl Serialize for ShutdownPlanQueryErrorDtoV1 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.wire().serialize(serializer)
     }
 }
 
@@ -325,12 +350,9 @@ pub(crate) enum ShutdownDetailsMutationErrorDtoV1 {
     Internal { correlation_id: String },
 }
 
-impl Serialize for ShutdownDetailsMutationErrorDtoV1 {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let wire = match self {
+impl ShutdownDetailsMutationErrorDtoV1 {
+    pub(crate) fn wire(&self) -> ApplicationCommandErrorWire<'_> {
+        match self {
             Self::InvalidRequest => ApplicationCommandErrorWire::new(
                 "invalid_request",
                 "Releash could not compact the shutdown details because the request is invalid.",
@@ -340,8 +362,16 @@ impl Serialize for ShutdownDetailsMutationErrorDtoV1 {
                 "Releash could not compact the shutdown details. Try again.",
             )
             .with_correlation_id(correlation_id),
-        };
-        wire.serialize(serializer)
+        }
+    }
+}
+
+impl Serialize for ShutdownDetailsMutationErrorDtoV1 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.wire().serialize(serializer)
     }
 }
 
@@ -353,12 +383,9 @@ pub(crate) enum RecoveryActionCommandErrorDtoV1 {
     Internal { correlation_id: String },
 }
 
-impl Serialize for RecoveryActionCommandErrorDtoV1 {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let wire = match self {
+impl RecoveryActionCommandErrorDtoV1 {
+    pub(crate) fn wire(&self) -> ApplicationCommandErrorWire<'_> {
+        match self {
             Self::InvalidRequest => ApplicationCommandErrorWire::new(
                 "invalid_request",
                 "Releash could not resolve the shutdown target because the request is invalid.",
@@ -377,8 +404,16 @@ impl Serialize for RecoveryActionCommandErrorDtoV1 {
                 "Releash could not resolve the shutdown target action. Try again.",
             )
             .with_correlation_id(correlation_id),
-        };
-        wire.serialize(serializer)
+        }
+    }
+}
+
+impl Serialize for RecoveryActionCommandErrorDtoV1 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.wire().serialize(serializer)
     }
 }
 

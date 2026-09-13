@@ -1,20 +1,20 @@
+import { invoke } from "@tauri-apps/api/core";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { invokeClient } from "@/lib/clientSocket";
 import App from "./App";
 
-const invoke = vi.hoisted(() => vi.fn());
-
-vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 
 describe("B-071 safe startup surface", () => {
 	beforeEach(() => {
-		invoke.mockReset();
+		vi.mocked(invoke).mockReset();
+		vi.mocked(invokeClient).mockClear();
 	});
 
 	it("mounts no workbench and exposes only safe failure data and Quit", async () => {
-		invoke.mockImplementation((command: string) => {
+		vi.mocked(invoke).mockImplementation((command: string) => {
 			if (command === "get_application_startup_outcome") {
 				return Promise.resolve({
 					type: "failed",
@@ -49,22 +49,27 @@ describe("B-071 safe startup surface", () => {
 		).toBeInTheDocument();
 		expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
 		expect(invoke).toHaveBeenCalledTimes(1);
+		expect(invokeClient).not.toHaveBeenCalled();
 
 		await userEvent.click(screen.getByRole("button", { name: "Quit" }));
 		await waitFor(() =>
 			expect(invoke).toHaveBeenLastCalledWith("quit_after_startup_failure"),
 		);
 		expect(
-			invoke.mock.calls.every(
-				([command]) =>
-					command === "get_application_startup_outcome" ||
-					command === "quit_after_startup_failure",
-			),
+			vi
+				.mocked(invoke)
+				.mock.calls.every(
+					([command]) =>
+						command === "get_application_startup_outcome" ||
+						command === "quit_after_startup_failure",
+				),
 		).toBe(true);
 	});
 
 	it("does not synthesize a failure kind, description, correlation, or Quit when the Rust outcome is unavailable", async () => {
-		invoke.mockRejectedValueOnce(new Error("startup authority missing"));
+		vi.mocked(invoke).mockRejectedValueOnce(
+			new Error("startup authority missing"),
+		);
 
 		render(<App />);
 
@@ -78,6 +83,9 @@ describe("B-071 safe startup surface", () => {
 			screen.queryByRole("button", { name: "Quit" }),
 		).not.toBeInTheDocument();
 		expect(invoke).toHaveBeenCalledTimes(1);
-		expect(invoke.mock.calls).toEqual([["get_application_startup_outcome"]]);
+		expect(invokeClient).not.toHaveBeenCalled();
+		expect(vi.mocked(invoke).mock.calls).toEqual([
+			["get_application_startup_outcome"],
+		]);
 	});
 });

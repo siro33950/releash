@@ -1,9 +1,9 @@
-import { invoke } from "@tauri-apps/api/core";
 import { act, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { invokeClient as invoke } from "@/lib/clientSocket";
 import { ProviderHookHealthBanner } from "./ProviderHookHealthBanner";
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+vi.mock("@/lib/clientSocket", () => ({ invokeClient: vi.fn() }));
 
 const mockInvoke = vi.mocked(invoke);
 
@@ -19,8 +19,16 @@ describe("ProviderHookHealthBanner", () => {
 
 	it("Provider別の未解消healthをアプリ全体の警告一つに集約する", async () => {
 		mockInvoke.mockResolvedValueOnce([
-			{ provider: "claude" },
-			{ provider: "codex" },
+			{
+				provider: "claude",
+				launchId: "launch-claude",
+				reason: "hook_unavailable",
+			},
+			{
+				provider: "codex",
+				launchId: "launch-codex",
+				reason: "hook_unavailable",
+			},
 		]);
 
 		render(<ProviderHookHealthBanner />);
@@ -35,7 +43,13 @@ describe("ProviderHookHealthBanner", () => {
 
 	it("後続SessionStartでbackend healthが解消されたら警告を消す", async () => {
 		mockInvoke
-			.mockResolvedValueOnce([{ provider: "codex" }])
+			.mockResolvedValueOnce([
+				{
+					provider: "codex",
+					launchId: "launch-codex",
+					reason: "hook_unavailable",
+				},
+			])
 			.mockResolvedValueOnce([]);
 
 		render(<ProviderHookHealthBanner />);

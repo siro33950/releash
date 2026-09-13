@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import {
 	AlignJustify,
 	ChevronLeft,
@@ -16,6 +15,7 @@ import {
 	TooltipTrigger,
 } from "@/components/ui/tooltip";
 import type { FileNavigationResult } from "@/hooks/useFileNavigation";
+import { invokeClient as invoke } from "@/lib/clientSocket";
 import { getErrorMessage } from "@/lib/errorMessage";
 import { cn } from "@/lib/utils";
 import type { DiffMode } from "@/types/settings";

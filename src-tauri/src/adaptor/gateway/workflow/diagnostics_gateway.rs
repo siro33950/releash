@@ -27,7 +27,7 @@ impl WorkflowDiagnosticsGateway for WorkflowDiagnosticsFileGateway {
     fn diagnose_all(
         &self,
         target: WorkflowDiagnosticsTarget,
-    ) -> Result<serde_json::Value, WorkflowError> {
+    ) -> Result<crate::usecase::workflow::diagnostic_dto::DiagnosticReport, WorkflowError> {
         let report = match target {
             WorkflowDiagnosticsTarget::AppliedConfigDirectory => {
                 diagnostics::diagnose_all(&self.workflows_dir, &self.facets_base_dir)
@@ -48,8 +48,7 @@ impl WorkflowDiagnosticsGateway for WorkflowDiagnosticsFileGateway {
                 diagnostics::diagnose_directory(&dir)
             }
         };
-        serde_json::to_value(report)
-            .map_err(|e| WorkflowError::external(format!("serialize workflow diagnostics: {e}")))
+        Ok(report)
     }
 }
 
@@ -67,10 +66,10 @@ mod tests {
             .diagnose_all(WorkflowDiagnosticsTarget::AppliedConfigDirectory)
             .unwrap();
 
-        assert!(report["items"].is_array());
-        assert!(report["workflow_summaries"].is_object());
-        assert!(report["facet_summaries"].is_object());
-        assert!(report["facet_usage"].is_object());
+        assert!(serde_json::to_value(&report).unwrap()["items"].is_array());
+        assert!(serde_json::to_value(&report).unwrap()["workflow_summaries"].is_object());
+        assert!(serde_json::to_value(&report).unwrap()["facet_summaries"].is_object());
+        assert!(serde_json::to_value(&report).unwrap()["facet_usage"].is_object());
     }
 
     #[test]
@@ -88,7 +87,7 @@ mod tests {
             .unwrap();
 
         // Then
-        assert!(report["items"]
+        assert!(serde_json::to_value(&report).unwrap()["items"]
             .as_array()
             .unwrap()
             .iter()
@@ -110,7 +109,7 @@ mod tests {
             .unwrap();
 
         // Then
-        assert_eq!(actual, expected);
+        assert_eq!(serde_json::to_value(actual).unwrap(), expected);
     }
 
     #[test]

@@ -16,8 +16,17 @@ impl AppConfigUsecase {
         Self { repository, query }
     }
 
-    pub fn query(&self) -> &AppConfigQueryService {
-        &self.query
+    pub fn get_app_settings(&self) -> Result<AppSettings, UsecaseError> {
+        self.query.get_app_settings()
+    }
+    pub fn get_workflow_config(&self) -> Result<WorkflowConfig, UsecaseError> {
+        self.query.get_workflow_config()
+    }
+    pub fn get_crash_reporting_enabled(&self) -> Result<bool, UsecaseError> {
+        self.query.get_crash_reporting_enabled()
+    }
+    pub fn get_performance_telemetry_enabled(&self) -> Result<bool, UsecaseError> {
+        self.query.get_performance_telemetry_enabled()
     }
 
     pub fn update_performance_telemetry(&self, enabled: bool) -> Result<(), UsecaseError> {

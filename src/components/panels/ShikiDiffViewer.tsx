@@ -1,5 +1,4 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { invoke } from "@tauri-apps/api/core";
 import { Plus } from "lucide-react";
 import React, {
 	useCallback,
@@ -16,6 +15,7 @@ import {
 	type DiffLine,
 } from "@/hooks/useDiffTokens";
 import { useShikiHighlighter } from "@/hooks/useShikiHighlighter";
+import { invokeClient as invoke } from "@/lib/clientSocket";
 import type { ChangeGroup, Hunk } from "@/lib/computeHunks";
 import {
 	getThreadEndLine,
@@ -1698,7 +1698,7 @@ export function ShikiDiffViewer({
 		}
 
 		let cancelled = false;
-		invoke<HiddenRange[]>("compute_hidden_ranges_from_content", {
+		invoke("compute_hidden_ranges_from_content", {
 			original: originalContent,
 			modified: modifiedContent,
 			contextLines: 3,
