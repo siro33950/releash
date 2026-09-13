@@ -1282,6 +1282,36 @@ impl TryFrom<crate::usecase::workflow::dto::InputParamDto> for wire::InputParamD
     }
 }
 
+impl TryFrom<crate::usecase::git_host::dto::IssueInfoDto> for wire::IssueInfoDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::git_host::dto::IssueInfoDto) -> Result<Self, String> {
+        Ok(Self {
+            number: Some(cv(value.number)?),
+            default_branch_name: Some(cv(value.default_branch_name)?),
+            title: Some(cv(value.title)?),
+            state: Some(cv(value.state)?),
+            url: Some(cv(value.url)?),
+            author: Some(cv(value.author)?),
+            created_at: Some(cv(value.created_at)?),
+            updated_at: Some(cv(value.updated_at)?),
+            labels: Some(cv(value.labels)?),
+            assignees: Some(cv(value.assignees)?),
+            body: Some(cv(value.body)?),
+            milestone: value.milestone.map(cv).transpose()?,
+        })
+    }
+}
+
+impl TryFrom<crate::usecase::git_host::dto::IssueLabelDto> for wire::IssueLabelDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::git_host::dto::IssueLabelDto) -> Result<Self, String> {
+        Ok(Self {
+            name: Some(cv(value.name)?),
+            color: Some(cv(value.color)?),
+        })
+    }
+}
+
 impl TryFrom<crate::usecase::workflow::dto::ItemsSourceDto> for wire::ItemsSourceDto {
     type Error = String;
     fn try_from(value: crate::usecase::workflow::dto::ItemsSourceDto) -> Result<Self, String> {
@@ -1613,6 +1643,30 @@ where
         })
     }
 }
+impl<T> TryFrom<Vec<T>> for wire::ListIssueInfoDto
+where
+    wire::IssueInfoDto: TryFrom<T>,
+    <wire::IssueInfoDto as TryFrom<T>>::Error: std::fmt::Display,
+{
+    type Error = String;
+    fn try_from(value: Vec<T>) -> Result<Self, String> {
+        Ok(Self {
+            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
+        })
+    }
+}
+impl<T> TryFrom<Vec<T>> for wire::ListIssueLabelDto
+where
+    wire::IssueLabelDto: TryFrom<T>,
+    <wire::IssueLabelDto as TryFrom<T>>::Error: std::fmt::Display,
+{
+    type Error = String;
+    fn try_from(value: Vec<T>) -> Result<Self, String> {
+        Ok(Self {
+            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
+        })
+    }
+}
 impl<T> TryFrom<Vec<T>> for wire::ListNodeDefinitionDto
 where
     wire::NodeDefinitionDto: TryFrom<T>,
@@ -1629,6 +1683,18 @@ impl<T> TryFrom<Vec<T>> for wire::ListNodeExecutionView
 where
     wire::NodeExecutionView: TryFrom<T>,
     <wire::NodeExecutionView as TryFrom<T>>::Error: std::fmt::Display,
+{
+    type Error = String;
+    fn try_from(value: Vec<T>) -> Result<Self, String> {
+        Ok(Self {
+            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
+        })
+    }
+}
+impl<T> TryFrom<Vec<T>> for wire::ListPrAuthorDto
+where
+    wire::PrAuthorDto: TryFrom<T>,
+    <wire::PrAuthorDto as TryFrom<T>>::Error: std::fmt::Display,
 {
     type Error = String;
     fn try_from(value: Vec<T>) -> Result<Self, String> {
@@ -1996,6 +2062,36 @@ where
             .collect()
     }
 }
+impl<T> TryFrom<std::collections::BTreeMap<String, T>> for wire::MapPrInfoDto
+where
+    wire::PrInfoDto: TryFrom<T>,
+    <wire::PrInfoDto as TryFrom<T>>::Error: std::fmt::Display,
+{
+    type Error = String;
+    fn try_from(value: std::collections::BTreeMap<String, T>) -> Result<Self, String> {
+        Ok(Self {
+            entries: value
+                .into_iter()
+                .map(|(key, value)| Ok((key, cv(value)?)))
+                .collect::<Result<_, String>>()?,
+        })
+    }
+}
+impl<T> TryFrom<std::collections::HashMap<String, T>> for wire::MapPrInfoDto
+where
+    wire::PrInfoDto: TryFrom<T>,
+    <wire::PrInfoDto as TryFrom<T>>::Error: std::fmt::Display,
+{
+    type Error = String;
+    fn try_from(value: std::collections::HashMap<String, T>) -> Result<Self, String> {
+        Ok(Self {
+            entries: value
+                .into_iter()
+                .map(|(key, value)| Ok((key, cv(value)?)))
+                .collect::<Result<_, String>>()?,
+        })
+    }
+}
 impl<T> TryFrom<std::collections::BTreeMap<String, T>> for wire::Mapstring
 where
     String: TryFrom<T>,
@@ -2079,6 +2175,15 @@ impl TryFrom<wire::MarkdownDiffSideInput> for String {
                 wire::markdown_diff_side_input::Value::Original => "original".to_owned(),
             },
         )
+    }
+}
+
+impl TryFrom<crate::usecase::git_host::dto::MilestoneDto> for wire::MilestoneDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::git_host::dto::MilestoneDto) -> Result<Self, String> {
+        Ok(Self {
+            title: Some(cv(value.title)?),
+        })
     }
 }
 
@@ -2501,6 +2606,35 @@ where
         })
     }
 }
+impl TryFrom<crate::usecase::git_host::dto::PrAuthorDto> for wire::PrAuthorDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::git_host::dto::PrAuthorDto) -> Result<Self, String> {
+        Ok(Self {
+            login: Some(cv(value.login)?),
+        })
+    }
+}
+
+impl TryFrom<crate::usecase::git_host::dto::PrInfoDto> for wire::PrInfoDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::git_host::dto::PrInfoDto) -> Result<Self, String> {
+        Ok(Self {
+            number: Some(cv(value.number)?),
+            url: Some(cv(value.url)?),
+        })
+    }
+}
+
+impl TryFrom<crate::usecase::git_host::dto::PrStatusDto> for wire::PrStatusDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::git_host::dto::PrStatusDto) -> Result<Self, String> {
+        Ok(Self {
+            open_prs: Some(cv(value.open_prs)?),
+            merged_branches: Some(cv(value.merged_branches)?),
+        })
+    }
+}
+
 impl TryFrom<crate::usecase::workflow::dto::PredicateDto> for wire::PredicateDto {
     type Error = String;
     fn try_from(value: crate::usecase::workflow::dto::PredicateDto) -> Result<Self, String> {
