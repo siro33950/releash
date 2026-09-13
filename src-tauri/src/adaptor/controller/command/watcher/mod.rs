@@ -48,7 +48,7 @@ fn start_watching_blocking(app: AppHandle, path: String) -> Result<u64, String> 
     app.state::<FileWatcherManager>()
         .start_watching(watcher_id, path, move |event| {
             let event = file_change_event_from_path(watcher_id, &event.path);
-            BackendPush::FileChange(&event).emit(&app_clone);
+            BackendPush::FileChange(event).emit(&app_clone);
         })
 }
 

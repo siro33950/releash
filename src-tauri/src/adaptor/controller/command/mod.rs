@@ -101,11 +101,10 @@ impl<R: tauri::Runtime> CommandRouter<InvokeHandler<R>> {
         if let Some(dispatch) = invoke
             .message
             .state_ref()
-            .try_get::<std::sync::Arc<client::ClientCommandDispatch>>()
+            .try_get::<std::sync::Arc<super::client::ClientCommandDispatch>>()
         {
             if dispatch.contains(invoke.message.command()) {
-                let dispatch = dispatch.inner().clone();
-                return client::handle_invoke(invoke, dispatch);
+                return client::handle_registered_invoke(invoke);
             }
         }
         (self.resolve(invoke.message.command()))(invoke)
@@ -526,8 +525,8 @@ mod tests {
     }
     #[test]
     fn test_共有dispatch_対象外commandは既存domain_handlerとfallbackへ届く() {
+        use crate::adaptor::controller::client::ClientCommandDispatch;
         use crate::usecase::application_startup::ApplicationStartupAuthority;
-        use client::ClientCommandDispatch;
         use std::sync::atomic::{AtomicUsize, Ordering};
         // Given
         let effects = Arc::new(AtomicUsize::new(0));

@@ -1095,7 +1095,7 @@ pub fn run() {
                 let local_api_binding =
                     infrastructure::local_api::LocalApiServerBinding::bind(data_dir.clone())
                         .map_err(|error| format!("local API の起動に失敗しました: {error}"))?;
-                let client_dispatch = Arc::new(adaptor::controller::command::client::ClientCommandDispatch::new(
+                let client_dispatch = Arc::new(adaptor::controller::client::ClientCommandDispatch::new(
                     repository_usecase.clone(), startup_authority.clone(),
                 ));
                 app.manage(client_dispatch.clone());

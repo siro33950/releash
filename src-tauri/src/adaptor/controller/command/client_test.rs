@@ -1,4 +1,5 @@
 use super::*;
+use crate::usecase::application_startup::ApplicationStartupAuthority;
 
 #[tokio::test]
 async fn test_クライアントdispatch_startup失敗時はusecase実行前に拒否する() {
@@ -11,15 +12,16 @@ async fn test_クライアントdispatch_startup失敗時はusecase実行前に�
     );
     // When
     let error = dispatch
-        .dispatch(
-            "get_current_branch",
-            serde_json::json!({"repoPath":"/missing"}),
-        )
+        .dispatch(wire::command_request::Command::GetCurrentBranch(
+            wire::GetCurrentBranchRequest {
+                repo_path: Some("/missing".into()),
+            },
+        ))
         .await
         .unwrap_err();
     // Then
     assert_eq!(
-        serde_json::to_value(error).unwrap()["code"],
+        wire::from_value(error).unwrap()["code"],
         "APPLICATION_UNAVAILABLE"
     );
 }
