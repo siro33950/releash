@@ -1781,6 +1781,49 @@ where
         })
     }
 }
+impl<T> TryFrom<Vec<T>> for wire::ListWorkspaceNodeDto
+where
+    wire::WorkspaceNodeDto: TryFrom<T>,
+    <wire::WorkspaceNodeDto as TryFrom<T>>::Error: std::fmt::Display,
+{
+    type Error = String;
+    fn try_from(value: Vec<T>) -> Result<Self, String> {
+        Ok(Self {
+            items: value
+                .into_iter()
+                .map(|item| {
+                    Ok(wire::WorkspacePastAttemptDto {
+                        variant: Some(wire::workspace_past_attempt_dto::Variant::Node(cv(item)?)),
+                    })
+                })
+                .collect::<Result<_, String>>()?,
+        })
+    }
+}
+impl<T> TryFrom<Vec<T>> for wire::ListWorkspaceTreeItemDto
+where
+    wire::WorkspaceTreeItemDto: TryFrom<T>,
+    <wire::WorkspaceTreeItemDto as TryFrom<T>>::Error: std::fmt::Display,
+{
+    type Error = String;
+    fn try_from(value: Vec<T>) -> Result<Self, String> {
+        Ok(Self {
+            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
+        })
+    }
+}
+impl<T> TryFrom<Vec<T>> for wire::ListWorkspaceWorkflowHistoryItemDto
+where
+    wire::WorkspaceWorkflowHistoryItemDto: TryFrom<T>,
+    <wire::WorkspaceWorkflowHistoryItemDto as TryFrom<T>>::Error: std::fmt::Display,
+{
+    type Error = String;
+    fn try_from(value: Vec<T>) -> Result<Self, String> {
+        Ok(Self {
+            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
+        })
+    }
+}
 impl<T> TryFrom<Vec<T>> for wire::ListWorktreeEntryDto
 where
     wire::WorktreeEntryDto: TryFrom<T>,
@@ -2393,6 +2436,18 @@ impl<T> TryFrom<Option<T>> for wire::NullableWorkflowExecutionView
 where
     wire::WorkflowExecutionView: TryFrom<T>,
     <wire::WorkflowExecutionView as TryFrom<T>>::Error: std::fmt::Display,
+{
+    type Error = String;
+    fn try_from(value: Option<T>) -> Result<Self, String> {
+        Ok(Self {
+            value: value.map(cv).transpose()?,
+        })
+    }
+}
+impl<T> TryFrom<Option<T>> for wire::NullableWorkspaceNodeDetailDto
+where
+    wire::WorkspaceNodeDetailDto: TryFrom<T>,
+    <wire::WorkspaceNodeDetailDto as TryFrom<T>>::Error: std::fmt::Display,
 {
     type Error = String;
     fn try_from(value: Option<T>) -> Result<Self, String> {
@@ -3753,6 +3808,408 @@ where
             .collect()
     }
 }
+impl TryFrom<crate::usecase::workflow::WorkspaceCommandNodeContentDto>
+    for wire::WorkspaceCommandNodeContentDto
+{
+    type Error = String;
+    fn try_from(
+        value: crate::usecase::workflow::WorkspaceCommandNodeContentDto,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            display_command: value.display_command.map(cv).transpose()?,
+            result: value.result.map(cv).transpose()?,
+        })
+    }
+}
+
+impl TryFrom<crate::usecase::workflow::WorkspaceCommandResultDto>
+    for wire::WorkspaceCommandResultDto
+{
+    type Error = String;
+    fn try_from(
+        value: crate::usecase::workflow::WorkspaceCommandResultDto,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            exit_code: Some(cv(value.exit_code)?),
+            duration: Some(cv(value.duration)?),
+            stdout: Some(cv(value.stdout)?),
+            stderr: Some(cv(value.stderr)?),
+        })
+    }
+}
+
+impl TryFrom<String> for wire::WorkspaceContentKind {
+    type Error = String;
+    fn try_from(value: String) -> Result<Self, String> {
+        Ok(Self {
+            value: Some(match value.as_str() {
+                "session" => wire::workspace_content_kind::Value::Session as i32,
+                "command" => wire::workspace_content_kind::Value::Command as i32,
+                _ => return Err(format!("Invalid WorkspaceContentKind: {value}")),
+            }),
+        })
+    }
+}
+
+impl TryFrom<&str> for wire::WorkspaceContentKind {
+    type Error = String;
+    fn try_from(value: &str) -> Result<Self, String> {
+        cv(value.to_owned())
+    }
+}
+
+impl TryFrom<crate::usecase::workflow::WorkspaceFanoutDto> for wire::WorkspaceFanoutDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::workflow::WorkspaceFanoutDto) -> Result<Self, String> {
+        Ok(Self {
+            worktree: value.worktree.map(cv).transpose()?,
+            id: Some(cv(value.id)?),
+            title: Some(cv(value.title)?),
+            status: Some(cv(value.status)?),
+            workflow_capabilities: value.workflow_capabilities.map(cv).transpose()?,
+            children: Some(cv(value.children)?),
+            updated_at: Some(cv(value.updated_at)?),
+        })
+    }
+}
+
+impl TryFrom<String> for wire::WorkspaceHistoryStatus {
+    type Error = String;
+    fn try_from(value: String) -> Result<Self, String> {
+        Ok(Self {
+            value: Some(match value.as_str() {
+                "unresolved" => wire::workspace_history_status::Value::Unresolved as i32,
+                "running" => wire::workspace_history_status::Value::Running as i32,
+                "paused" => wire::workspace_history_status::Value::Paused as i32,
+                "failed" => wire::workspace_history_status::Value::Failed as i32,
+                "waiting" => wire::workspace_history_status::Value::Waiting as i32,
+                "aborted" => wire::workspace_history_status::Value::Aborted as i32,
+                "completed" => wire::workspace_history_status::Value::Completed as i32,
+                "waiting_approval" => wire::workspace_history_status::Value::WaitingApproval as i32,
+                "interrupted" => wire::workspace_history_status::Value::Interrupted as i32,
+                _ => return Err(format!("Invalid WorkspaceHistoryStatus: {value}")),
+            }),
+        })
+    }
+}
+
+impl TryFrom<&str> for wire::WorkspaceHistoryStatus {
+    type Error = String;
+    fn try_from(value: &str) -> Result<Self, String> {
+        cv(value.to_owned())
+    }
+}
+
+impl TryFrom<crate::usecase::workflow::WorkspaceNodeCapabilitiesDto>
+    for wire::WorkspaceNodeCapabilitiesDto
+{
+    type Error = String;
+    fn try_from(
+        value: crate::usecase::workflow::WorkspaceNodeCapabilitiesDto,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            can_rename: Some(cv(value.can_rename)?),
+            can_approve: Some(cv(value.can_approve)?),
+            can_retry: Some(cv(value.can_retry)?),
+            can_close: Some(cv(value.can_close)?),
+        })
+    }
+}
+
+impl TryFrom<crate::usecase::workflow::WorkspaceNodeContentDto> for wire::WorkspaceNodeContentDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::workflow::WorkspaceNodeContentDto) -> Result<Self, String> {
+        Ok(Self {
+            variant: Some(match value {
+                crate::usecase::workflow::WorkspaceNodeContentDto::Session(value) => {
+                    wire::workspace_node_content_dto::Variant::Session(cv(value)?)
+                }
+                crate::usecase::workflow::WorkspaceNodeContentDto::Command(value) => {
+                    wire::workspace_node_content_dto::Variant::Command(cv(value)?)
+                }
+            }),
+        })
+    }
+}
+
+impl TryFrom<crate::usecase::workflow::WorkspaceNodeDetailDto> for wire::WorkspaceNodeDetailDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::workflow::WorkspaceNodeDetailDto) -> Result<Self, String> {
+        Ok(Self {
+            worktree: value.worktree.map(cv).transpose()?,
+            id: Some(cv(value.id)?),
+            title: Some(cv(value.title)?),
+            status: Some(cv(value.status)?),
+            status_classification: Some(cv(value.status_classification)?),
+            submit_received: Some(cv(value.submit_received)?),
+            stop_received: Some(cv(value.stop_received)?),
+            waiting_for: value.waiting_for.map(cv).transpose()?,
+            has_artifact: Some(cv(value.has_artifact)?),
+            error_reason: value.error_reason.map(cv).transpose()?,
+            recovery_reason: value.recovery_reason.map(cv).transpose()?,
+            capabilities: Some(cv(value.capabilities)?),
+            updated_at: Some(cv(value.updated_at)?),
+            content: Some(cv(value.content)?),
+        })
+    }
+}
+
+impl TryFrom<crate::usecase::workflow::WorkspaceNodeDto> for wire::WorkspaceNodeDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::workflow::WorkspaceNodeDto) -> Result<Self, String> {
+        Ok(Self {
+            id: Some(cv(value.id)?),
+            title: Some(cv(value.title)?),
+            status: Some(cv(value.status)?),
+            error_reason: value.error_reason.map(cv).transpose()?,
+            content_kind: Some(cv(value.content_kind)?),
+            capabilities: Some(cv(value.capabilities)?),
+            workflow_capabilities: value.workflow_capabilities.map(cv).transpose()?,
+            session_capabilities: value.session_capabilities.map(cv).transpose()?,
+            children: Some(cv(value.children)?),
+            past_attempts: Some(cv(value.past_attempts)?),
+            past_attempts_collapsed: Some(cv(value.past_attempts_collapsed)?),
+            updated_at: Some(cv(value.updated_at)?),
+        })
+    }
+}
+
+impl TryFrom<crate::domain::workspace_tree::WorkspaceNodeStatus> for wire::WorkspaceNodeStatus {
+    type Error = String;
+    fn try_from(value: crate::domain::workspace_tree::WorkspaceNodeStatus) -> Result<Self, String> {
+        Ok(Self {
+            value: Some(match value {
+                crate::domain::workspace_tree::WorkspaceNodeStatus::Unresolved => {
+                    wire::workspace_node_status::Value::Unresolved as i32
+                }
+                crate::domain::workspace_tree::WorkspaceNodeStatus::Running => {
+                    wire::workspace_node_status::Value::Running as i32
+                }
+                crate::domain::workspace_tree::WorkspaceNodeStatus::Paused => {
+                    wire::workspace_node_status::Value::Paused as i32
+                }
+                crate::domain::workspace_tree::WorkspaceNodeStatus::Failed => {
+                    wire::workspace_node_status::Value::Failed as i32
+                }
+                crate::domain::workspace_tree::WorkspaceNodeStatus::Waiting => {
+                    wire::workspace_node_status::Value::Waiting as i32
+                }
+                crate::domain::workspace_tree::WorkspaceNodeStatus::Aborted => {
+                    wire::workspace_node_status::Value::Aborted as i32
+                }
+                crate::domain::workspace_tree::WorkspaceNodeStatus::Completed => {
+                    wire::workspace_node_status::Value::Completed as i32
+                }
+            }),
+        })
+    }
+}
+
+impl TryFrom<String> for wire::WorkspaceNodeStatus {
+    type Error = String;
+    fn try_from(value: String) -> Result<Self, String> {
+        Ok(Self {
+            value: Some(match value.as_str() {
+                "unresolved" => wire::workspace_node_status::Value::Unresolved as i32,
+                "running" => wire::workspace_node_status::Value::Running as i32,
+                "paused" => wire::workspace_node_status::Value::Paused as i32,
+                "failed" => wire::workspace_node_status::Value::Failed as i32,
+                "waiting" => wire::workspace_node_status::Value::Waiting as i32,
+                "aborted" => wire::workspace_node_status::Value::Aborted as i32,
+                "completed" => wire::workspace_node_status::Value::Completed as i32,
+                _ => return Err(format!("Invalid WorkspaceNodeStatus: {value}")),
+            }),
+        })
+    }
+}
+
+impl TryFrom<&str> for wire::WorkspaceNodeStatus {
+    type Error = String;
+    fn try_from(value: &str) -> Result<Self, String> {
+        cv(value.to_owned())
+    }
+}
+
+impl TryFrom<crate::usecase::workflow::WorkspaceSelectionReconciliationDto>
+    for wire::WorkspaceSelectionReconciliationDto
+{
+    type Error = String;
+    fn try_from(
+        value: crate::usecase::workflow::WorkspaceSelectionReconciliationDto,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            selection_in_snapshot: Some(cv(value.selection_in_snapshot)?),
+        })
+    }
+}
+
+impl TryFrom<crate::usecase::workflow::WorkspaceSequenceDto> for wire::WorkspaceSequenceDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::workflow::WorkspaceSequenceDto) -> Result<Self, String> {
+        Ok(Self {
+            worktree: value.worktree.map(cv).transpose()?,
+            id: Some(cv(value.id)?),
+            title: Some(cv(value.title)?),
+            status: Some(cv(value.status)?),
+            workflow_capabilities: value.workflow_capabilities.map(cv).transpose()?,
+            children: Some(cv(value.children)?),
+            updated_at: Some(cv(value.updated_at)?),
+        })
+    }
+}
+
+impl TryFrom<crate::usecase::workflow::WorkspaceSessionCapabilitiesDto>
+    for wire::WorkspaceSessionCapabilitiesDto
+{
+    type Error = String;
+    fn try_from(
+        value: crate::usecase::workflow::WorkspaceSessionCapabilitiesDto,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            session_ref: Some(cv(value.session_ref)?),
+            can_archive: Some(cv(value.can_archive)?),
+            can_delete: Some(cv(value.can_delete)?),
+        })
+    }
+}
+
+impl TryFrom<crate::usecase::workflow::WorkspaceSessionNodeContentDto>
+    for wire::WorkspaceSessionNodeContentDto
+{
+    type Error = String;
+    fn try_from(
+        value: crate::usecase::workflow::WorkspaceSessionNodeContentDto,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            session_id: value.session_id.map(cv).transpose()?,
+        })
+    }
+}
+
+impl TryFrom<String> for wire::WorkspaceStatusClassification {
+    type Error = String;
+    fn try_from(value: String) -> Result<Self, String> {
+        Ok(Self {
+            value: Some(match value.as_str() {
+                "active" => wire::workspace_status_classification::Value::Active as i32,
+                "attention" => wire::workspace_status_classification::Value::Attention as i32,
+                "failure" => wire::workspace_status_classification::Value::Failure as i32,
+                "idle" => wire::workspace_status_classification::Value::Idle as i32,
+                "unbound" => wire::workspace_status_classification::Value::Unbound as i32,
+                _ => return Err(format!("Invalid WorkspaceStatusClassification: {value}")),
+            }),
+        })
+    }
+}
+
+impl TryFrom<&str> for wire::WorkspaceStatusClassification {
+    type Error = String;
+    fn try_from(value: &str) -> Result<Self, String> {
+        cv(value.to_owned())
+    }
+}
+
+impl TryFrom<crate::usecase::workflow::WorkspaceTreeItemDto> for wire::WorkspaceTreeItemDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::workflow::WorkspaceTreeItemDto) -> Result<Self, String> {
+        Ok(Self {
+            variant: Some(match value {
+                crate::usecase::workflow::WorkspaceTreeItemDto::Node(value) => {
+                    wire::workspace_tree_item_dto::Variant::Node(cv(value)?)
+                }
+                crate::usecase::workflow::WorkspaceTreeItemDto::Sequence(value) => {
+                    wire::workspace_tree_item_dto::Variant::Sequence(cv(value)?)
+                }
+                crate::usecase::workflow::WorkspaceTreeItemDto::Fanout(value) => {
+                    wire::workspace_tree_item_dto::Variant::Fanout(cv(value)?)
+                }
+            }),
+        })
+    }
+}
+
+impl TryFrom<crate::usecase::workflow::WorkspaceTreeSelectionSnapshotDto>
+    for wire::WorkspaceTreeSelectionSnapshotDto
+{
+    type Error = String;
+    fn try_from(
+        value: crate::usecase::workflow::WorkspaceTreeSelectionSnapshotDto,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            snapshot: Some(cv(value.snapshot)?),
+            reconciliation: Some(cv(value.reconciliation)?),
+        })
+    }
+}
+
+impl TryFrom<crate::usecase::workflow::WorkspaceTreeSnapshotDto>
+    for wire::WorkspaceTreeSnapshotDto
+{
+    type Error = String;
+    fn try_from(value: crate::usecase::workflow::WorkspaceTreeSnapshotDto) -> Result<Self, String> {
+        Ok(Self {
+            nodes: Some(cv(value.nodes)?),
+            archived_sessions: Some(cv(value.archived_sessions)?),
+            preferred_node_id: value.preferred_node_id.map(cv).transpose()?,
+        })
+    }
+}
+
+impl TryFrom<String> for wire::WorkspaceWaitingFor {
+    type Error = String;
+    fn try_from(value: String) -> Result<Self, String> {
+        Ok(Self {
+            value: Some(match value.as_str() {
+                "submit" => wire::workspace_waiting_for::Value::Submit as i32,
+                "stop" => wire::workspace_waiting_for::Value::Stop as i32,
+                _ => return Err(format!("Invalid WorkspaceWaitingFor: {value}")),
+            }),
+        })
+    }
+}
+
+impl TryFrom<&str> for wire::WorkspaceWaitingFor {
+    type Error = String;
+    fn try_from(value: &str) -> Result<Self, String> {
+        cv(value.to_owned())
+    }
+}
+
+impl TryFrom<crate::usecase::workflow::WorkspaceWorkflowCapabilitiesDto>
+    for wire::WorkspaceWorkflowCapabilitiesDto
+{
+    type Error = String;
+    fn try_from(
+        value: crate::usecase::workflow::WorkspaceWorkflowCapabilitiesDto,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            can_stop: Some(cv(value.can_stop)?),
+            can_resume: Some(cv(value.can_resume)?),
+            can_abort: Some(cv(value.can_abort)?),
+            can_archive: Some(cv(value.can_archive)?),
+        })
+    }
+}
+
+impl TryFrom<crate::usecase::workflow::WorkspaceWorkflowHistoryItemDto>
+    for wire::WorkspaceWorkflowHistoryItemDto
+{
+    type Error = String;
+    fn try_from(
+        value: crate::usecase::workflow::WorkspaceWorkflowHistoryItemDto,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            execution_id: Some(cv(value.execution_id)?),
+            worktree_path: Some(cv(value.worktree_path)?),
+            title: Some(cv(value.title)?),
+            status: Some(cv(value.status)?),
+            updated_at: Some(cv(value.updated_at)?),
+            archived_at: Some(cv(value.archived_at)?),
+            archive_reason: Some(cv(value.archive_reason)?),
+        })
+    }
+}
+
 impl TryFrom<crate::usecase::repository_dto::WorktreeDisplayGroupsDto>
     for wire::WorktreeDisplayGroupsDto
 {

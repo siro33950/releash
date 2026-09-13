@@ -213,6 +213,20 @@ parity!(
     json!({}),
     outcome(invoke_tauri(&app, "list_workflows", json!({})).await)
 );
+parity!(
+    test_workspace_tree_protoはusecase結果と一致する,
+    app,
+    "list_workspace_workflow_history",
+    json!({"worktreePath":"/missing"}),
+    outcome(
+        invoke_tauri(
+            &app,
+            "list_workspace_workflow_history",
+            json!({"worktreePath": "/missing"})
+        )
+        .await
+    )
+);
 #[tokio::test]
 async fn test_クライアントws_切断しても受理済みcommandを途中で破棄しない() {
     use crate::adaptor::controller::api;

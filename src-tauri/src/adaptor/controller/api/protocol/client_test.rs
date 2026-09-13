@@ -105,6 +105,65 @@ fn test_push_protoが既存payloadを保持し未定義eventを拒否する() {
 }
 
 #[test]
+fn test_workspace過去試行_両commandでnodeタグとchildren省略を保持する() {
+    use crate::usecase::workflow as dto;
+    // Given
+    let node = |id: &str| dto::WorkspaceNodeDto {
+        id: id.into(),
+        title: id.into(),
+        status: "active".into(),
+        error_reason: None,
+        content_kind: "command",
+        capabilities: dto::WorkspaceNodeCapabilitiesDto {
+            can_rename: false,
+            can_approve: false,
+            can_retry: true,
+            can_close: false,
+        },
+        workflow_capabilities: None,
+        session_capabilities: None,
+        children: vec![],
+        past_attempts: vec![],
+        past_attempts_collapsed: true,
+        updated_at: 1.0,
+    };
+    let mut current = node("current");
+    current.past_attempts.push(node("past"));
+    let snapshot = dto::WorkspaceTreeSnapshotDto {
+        nodes: vec![dto::WorkspaceTreeItemDto::Node(current)],
+        archived_sessions: vec![],
+        preferred_node_id: None,
+    };
+    let selection = dto::WorkspaceTreeSelectionSnapshotDto {
+        snapshot: snapshot.clone(),
+        reconciliation: dto::WorkspaceSelectionReconciliationDto {
+            selection_in_snapshot: true,
+        },
+    };
+    // When / Then
+    for (result, expected) in [
+        (
+            command_result::Command::ListWorkspaceWorktreeNodes(
+                snapshot.clone().try_into().unwrap(),
+            ),
+            serde_json::to_value(snapshot).unwrap(),
+        ),
+        (
+            command_result::Command::GetWorkspaceTreeSelectionReconciliation(
+                selection.clone().try_into().unwrap(),
+            ),
+            serde_json::to_value(selection).unwrap(),
+        ),
+    ] {
+        let result = CommandResult {
+            command: Some(result),
+        };
+        let decoded = CommandResult::decode(result.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(from_value(decoded).unwrap(), expected);
+    }
+}
+
+#[test]
 fn test_workflowログ_固定metadataを型付きで生成messageへ渡す() {
     // Given
     let view = crate::usecase::workflow::WorkflowEventView {
