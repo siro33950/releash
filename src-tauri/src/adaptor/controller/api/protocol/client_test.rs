@@ -1,5 +1,4 @@
 use super::*;
-use prost::Message;
 use serde_json::json;
 
 #[test]
@@ -82,6 +81,50 @@ fn test_クライアント引数_必須フィールドと整数型を検証す�
 }
 
 #[test]
+fn test_型に合わない結果は成功応答にせず相関したerrorを返す() {
+    // Given / When
+    let envelope::Body::Response(response) = response(
+        "id".into(),
+        Err(
+            crate::adaptor::controller::client::value::<_, WorkspaceCenterTab>(
+                "invalid".to_string(),
+            )
+            .unwrap_err(),
+        ),
+    )
+    .body
+    .unwrap() else {
+        panic!("response");
+    };
+    // Then
+    assert_eq!(response.request_id, "id");
+    let command_response::Outcome::Error(error) = response.outcome.unwrap() else {
+        panic!("error");
+    };
+    assert_eq!(from_value(error).unwrap()["code"], "INVALID_RESPONSE");
+}
+
+#[test]
+fn test_stream規約_attachmentと最大sequenceと分割終端を保持する() {
+    // Given / When / Then
+    for id in ["a", "b"] {
+        let envelope::Body::Stream(frame) = Envelope::decode(
+            stream_frame(id, u64::MAX, "日本語".as_bytes().to_vec(), true).as_slice(),
+        )
+        .unwrap()
+        .body
+        .unwrap() else {
+            panic!("stream");
+        };
+        assert_eq!(frame.attachment_id, id);
+        assert_eq!(frame.sequence, u64::MAX);
+        assert_eq!(frame.data, "日本語".as_bytes());
+        assert!(frame.end);
+    }
+    assert_eq!(MAX_STREAM_FRAME_BYTES, 65536);
+}
+
+#[test]
 fn test_push_protoが既存payloadを保持し未定義eventを拒否する() {
     // Given / When / Then
     for (event, payload) in [
@@ -102,6 +145,65 @@ fn test_push_protoが既存payloadを保持し未定義eventを拒否する() {
         assert_eq!(frame.into_value().unwrap(), (event, payload));
     }
     assert!(Push::from_value("unknown", Json::Null).is_err());
+}
+
+#[test]
+fn test_workspace過去試行_両commandでnodeタグとchildren省略を保持する() {
+    use crate::usecase::workflow as dto;
+    // Given
+    let node = |id: &str| dto::WorkspaceNodeDto {
+        id: id.into(),
+        title: id.into(),
+        status: "active".into(),
+        error_reason: None,
+        content_kind: "command",
+        capabilities: dto::WorkspaceNodeCapabilitiesDto {
+            can_rename: false,
+            can_approve: false,
+            can_retry: true,
+            can_close: false,
+        },
+        workflow_capabilities: None,
+        session_capabilities: None,
+        children: vec![],
+        past_attempts: vec![],
+        past_attempts_collapsed: true,
+        updated_at: 1.0,
+    };
+    let mut current = node("current");
+    current.past_attempts.push(node("past"));
+    let snapshot = dto::WorkspaceTreeSnapshotDto {
+        nodes: vec![dto::WorkspaceTreeItemDto::Node(current)],
+        archived_sessions: vec![],
+        preferred_node_id: None,
+    };
+    let selection = dto::WorkspaceTreeSelectionSnapshotDto {
+        snapshot: snapshot.clone(),
+        reconciliation: dto::WorkspaceSelectionReconciliationDto {
+            selection_in_snapshot: true,
+        },
+    };
+    // When / Then
+    for (result, expected) in [
+        (
+            command_result::Command::ListWorkspaceWorktreeNodes(
+                snapshot.clone().try_into().unwrap(),
+            ),
+            serde_json::to_value(snapshot).unwrap(),
+        ),
+        (
+            command_result::Command::GetWorkspaceTreeSelectionReconciliation(
+                selection.clone().try_into().unwrap(),
+            ),
+            serde_json::to_value(selection).unwrap(),
+        ),
+    ] {
+        let result = CommandResult {
+            command: Some(result),
+        };
+        let decoded = CommandResult::decode(result.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(from_value(decoded).unwrap(), expected);
+    }
 }
 
 #[test]

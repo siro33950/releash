@@ -207,6 +207,33 @@ async fn test_クライアント認証_wsで有効な非master_tokenはhttp入�
 }
 
 #[tokio::test]
+async fn test_terminal接続情報_削除済みcommandはtauri_invokeでエラーになる() {
+    // Given
+    let fixture = Fixture::new().await;
+    let window = tauri::WebviewWindowBuilder::new(&fixture.host.app, "main", Default::default())
+        .build()
+        .unwrap();
+    // When
+    let result = tauri::test::get_ipc_response(
+        &window,
+        tauri::webview::InvokeRequest {
+            cmd: "get_terminal_stream_endpoint".into(),
+            callback: tauri::ipc::CallbackFn(0),
+            error: tauri::ipc::CallbackFn(1),
+            url: "tauri://localhost".parse().unwrap(),
+            body: tauri::ipc::InvokeBody::Json(json!({})),
+            headers: Default::default(),
+            invoke_key: tauri::test::INVOKE_KEY.into(),
+        },
+    );
+    // Then
+    assert_eq!(
+        result.unwrap_err(),
+        json!("Command get_terminal_stream_endpoint not found")
+    );
+}
+
+#[tokio::test]
 async fn test_レビューコメント監視_events_json変更がtauriとwsへ届く() {
     // Given
     let fixture = Fixture::new().await;
@@ -291,6 +318,19 @@ async fn test_クライアントws_失敗と不正引数も同じrequest_idで�
     assert_eq!(response["request_id"], "failed");
     assert!(response.get("result").is_none());
     assert!(response["error"].is_string());
+    socket
+        .send(ClientMessage::Binary(
+            encode_frame(json!({"type":"ack","attachment_id":"a","sequence":1})).into(),
+        ))
+        .await
+        .unwrap();
+    let response = request(
+        &mut socket,
+        json!({"request_id":"after-ack", "command":"get_current_branch", "args":fixture.args()}),
+    )
+    .await;
+    assert_eq!(response["request_id"], "after-ack");
+    assert_eq!(response["result"], "ws-branch");
     socket.close(None).await.unwrap();
 }
 
@@ -582,6 +622,50 @@ async fn test_クライアントws_pingと不正protoを処理しtextを拒否�
     ));
 }
 
+#[tokio::test]
+async fn test_クライアント接続情報_非master_tokenで単一wsへ接続し旧routeを拒否する() {
+    // Given
+    let fixture = Fixture::new().await;
+    let terminal_url = fixture.url.replace("/v1/client", "/v1/terminal");
+
+    // When
+    let endpoint = fixture.host.endpoint();
+
+    // Then
+    assert_ne!(endpoint.auth_subprotocol, fixture.host.master_subprotocol);
+    for url in [endpoint.url] {
+        let mut request = url.into_client_request().unwrap();
+        request.headers_mut().insert(
+            "sec-websocket-protocol",
+            format!("other, {}", endpoint.auth_subprotocol)
+                .parse()
+                .unwrap(),
+        );
+        let (mut socket, response) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            tokio_tungstenite::connect_async(request),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(response.status(), 101);
+        assert_eq!(
+            response.headers()["sec-websocket-protocol"],
+            endpoint.auth_subprotocol
+        );
+        socket.close(None).await.unwrap();
+    }
+    let mut request = terminal_url.into_client_request().unwrap();
+    request.headers_mut().insert(
+        "sec-websocket-protocol",
+        endpoint.auth_subprotocol.parse().unwrap(),
+    );
+    let error = tokio_tungstenite::connect_async(request).await.unwrap_err();
+    assert!(
+        matches!(error, tokio_tungstenite::tungstenite::Error::Http(response) if response.status() != 101)
+    );
+}
+
 #[derive(prost::Message)]
 struct PaddedEnvelope {
     #[prost(bytes = "vec", tag = "1")]
@@ -745,5 +829,48 @@ async fn test_クライアントws_command完了待ちの間も容量を超え�
         receive(&mut socket).await,
         json!({"request_id": "paused", "result": "ws-branch"})
     );
+    socket.close(None).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_クライアントws_保留要求上限でもackを受信し超過要求を拒否する() {
+    // Given
+    let (resume, receiver) = std::sync::mpsc::channel();
+    let fixture = Fixture::with_branch(Arc::new(PausedBranch {
+        started: Arc::new(tokio::sync::Notify::new()),
+        resume: std::sync::Mutex::new(receiver),
+    }))
+    .await;
+    let mut socket = fixture.connect().await;
+    // When
+    for index in 0..65 {
+        socket
+            .send(ClientMessage::Binary(
+                encode_client_request(
+                    &format!("request-{index}"),
+                    "get_current_branch",
+                    fixture.args(),
+                )
+                .into(),
+            ))
+            .await
+            .unwrap();
+    }
+    // Then
+    let response = receive(&mut socket).await;
+    assert_eq!(response["request_id"], "request-64");
+    assert_eq!(response["error"]["code"], "REQUEST_LIMIT");
+    socket
+        .send(ClientMessage::Binary(
+            encode_frame(json!({"type":"ack","attachment_id":"missing","sequence":1})).into(),
+        ))
+        .await
+        .unwrap();
+    for _ in 0..64 {
+        resume.send(()).unwrap();
+    }
+    for _ in 0..64 {
+        assert_eq!(receive(&mut socket).await["result"], "ws-branch");
+    }
     socket.close(None).await.unwrap();
 }

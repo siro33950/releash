@@ -18,8 +18,8 @@ vi.mock("@/hooks/useWorkspaceStateCache", () => ({
 	}),
 }));
 
-vi.mock("@tauri-apps/api/core", () => ({
-	invoke: vi.fn(),
+vi.mock("@/lib/clientSocket", () => ({
+	invokeClient: vi.fn(),
 }));
 
 import type { InternalWorktreeState } from "@/types/workspace-state";

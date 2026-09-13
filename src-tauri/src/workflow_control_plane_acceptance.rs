@@ -818,8 +818,10 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
         worktree_path: &str,
         node_id: &str,
     ) -> Result<(), String> {
-        crate::adaptor::controller::command::workspace_tree::retry_workspace_node(
-            self._app.state::<Arc<WorkspaceNodeCommandUsecase>>(),
+        crate::adaptor::controller::client::workspace_tree::retry_workspace_node_shared(
+            self._app
+                .state::<Arc<WorkspaceNodeCommandUsecase>>()
+                .inner(),
             worktree_path.to_string(),
             node_id.to_string(),
         )
