@@ -1,7 +1,5 @@
 //! review read model の Tauri コマンド。
 
-use tauri::State;
-
 use super::run_blocking;
 use crate::adaptor::controller::state::AppState;
 use crate::adaptor::protocol::code::{
@@ -11,18 +9,16 @@ use crate::other::AppError;
 use crate::usecase::code_dto::{ReviewFileViewDto, ReviewSnapshotDto};
 use crate::usecase::review_usecase::{ReviewTarget, ReviewViewport};
 
-#[tauri::command]
-pub async fn get_review_snapshot(
-    state: State<'_, AppState>,
+pub(crate) async fn get_review_snapshot_shared(
+    state: &AppState,
     input: ReviewSnapshotInput,
 ) -> Result<ReviewSnapshotDto, AppError> {
     let review = state.review_usecase.clone();
     run_blocking(move || review.get_review_snapshot(&input.worktree_path, &input.base)).await
 }
 
-#[tauri::command]
-pub async fn get_review_file_view(
-    state: State<'_, AppState>,
+pub(crate) async fn get_review_file_view_shared(
+    state: &AppState,
     input: ReviewFileViewInput,
 ) -> Result<ReviewFileViewDto, AppError> {
     let review = state.review_usecase.clone();
@@ -45,9 +41,8 @@ pub async fn get_review_file_view(
     .await
 }
 
-#[tauri::command]
-pub async fn git_stage_review_group(
-    state: State<'_, AppState>,
+pub(crate) async fn git_stage_review_group_shared(
+    state: &AppState,
     input: ReviewGroupActionInput,
 ) -> Result<(), AppError> {
     let review = state.review_usecase.clone();
@@ -63,9 +58,8 @@ pub async fn git_stage_review_group(
     .await
 }
 
-#[tauri::command]
-pub async fn git_unstage_review_group(
-    state: State<'_, AppState>,
+pub(crate) async fn git_unstage_review_group_shared(
+    state: &AppState,
     input: ReviewGroupActionInput,
 ) -> Result<(), AppError> {
     let review = state.review_usecase.clone();

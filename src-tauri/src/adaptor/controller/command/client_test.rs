@@ -171,6 +171,20 @@ parity!(
             .unwrap()
     )
 );
+parity!(
+    test_code_protoはusecase結果と一致する,
+    app,
+    "get_language_from_path",
+    json!({"filePath":"main.rs"}),
+    outcome(
+        invoke_tauri(
+            &app,
+            "get_language_from_path",
+            json!({"filePath": "main.rs"})
+        )
+        .await
+    )
+);
 #[tokio::test]
 async fn test_クライアントws_切断しても受理済みcommandを途中で破棄しない() {
     use crate::adaptor::controller::api;
@@ -371,6 +385,214 @@ async fn test_worktree変更_protoは実引数の成功とusecaseエラーを保
     )
     .await;
     assert!(!std::path::Path::new(&worktree_path).exists());
+}
+
+#[tokio::test]
+async fn test_staging変更_protoは複数pathとusecaseエラーを保持する() {
+    // Given
+    let (_temp, path) = mutation_repository();
+    let (app, dispatch) = parity_app();
+    let paths = vec!["space name.txt".to_string(), "日本語.txt".to_string()];
+    for name in &paths {
+        std::fs::write(std::path::Path::new(&path).join(name), name).unwrap();
+    }
+    let uc = app
+        .state::<crate::adaptor::controller::state::AppState>()
+        .code_usecase
+        .clone();
+    let expected = outcome(
+        invoke_tauri(
+            &app,
+            "git_stage",
+            json!({"repoPath": path.clone(),"paths": paths.clone()}),
+        )
+        .await,
+    );
+    assert!(expected.is_ok());
+    uc.git_unstage(&path, paths.clone()).unwrap();
+    // When / Then
+    assert_parity(
+        &dispatch,
+        "git_stage",
+        json!({"repoPath":path,"paths":paths}),
+        expected,
+    )
+    .await;
+    assert_eq!(
+        git2::Repository::open(&path)
+            .unwrap()
+            .index()
+            .unwrap()
+            .len(),
+        2
+    );
+    let expected = outcome(
+        invoke_tauri(
+            &app,
+            "git_unstage",
+            json!({"repoPath": path.clone(),"paths": paths.clone()}),
+        )
+        .await,
+    );
+    uc.git_stage(&path, paths.clone()).unwrap();
+    assert_parity(
+        &dispatch,
+        "git_unstage",
+        json!({"repoPath":path,"paths":paths}),
+        expected,
+    )
+    .await;
+    assert_eq!(
+        git2::Repository::open(&path)
+            .unwrap()
+            .index()
+            .unwrap()
+            .len(),
+        0
+    );
+    for name in ["git_stage", "git_unstage"] {
+        let missing = format!("{path}/missing-repo");
+        let expected = if name == "git_stage" {
+            outcome(
+                invoke_tauri(
+                    &app,
+                    "git_stage",
+                    json!({"repoPath": missing.clone(),"paths": paths.clone()}),
+                )
+                .await,
+            )
+        } else {
+            outcome(
+                invoke_tauri(
+                    &app,
+                    "git_unstage",
+                    json!({"repoPath": missing.clone(),"paths": paths.clone()}),
+                )
+                .await,
+            )
+        };
+        assert!(expected.is_err());
+        assert_parity(
+            &dispatch,
+            name,
+            json!({"repoPath":missing,"paths":paths}),
+            expected,
+        )
+        .await;
+    }
+}
+
+#[tokio::test]
+async fn test_review_group変更_protoは複合引数と部分stagingとusecaseエラーを保持する() {
+    use crate::usecase::{code_dto::ReviewFileViewDto, review_usecase::ReviewTarget};
+
+    for (command, section) in [
+        ("git_stage_review_group", "changes"),
+        ("git_unstage_review_group", "staged"),
+    ] {
+        // Given
+        let (_temp, path) = mutation_repository();
+        let (app, dispatch) = parity_app();
+        let state = app.state::<crate::adaptor::controller::state::AppState>();
+        let repo = git2::Repository::open(&path).unwrap();
+        let path = repo.workdir().unwrap().to_string_lossy().into_owned();
+        let file = "日本語 space.txt";
+        let original = (1..=20)
+            .map(|line| format!("line {line}\n"))
+            .collect::<String>();
+        let modified = original
+            .replace("line 2\n", "first change\n")
+            .replace("line 18\n", "last change\n");
+        std::fs::write(std::path::Path::new(&path).join(file), &original).unwrap();
+        state
+            .code_usecase
+            .git_stage(&path, vec![file.into()])
+            .unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let signature = git2::Signature::now("test", "test@example.com").unwrap();
+        repo.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "tracked file",
+            &repo.find_tree(tree_id).unwrap(),
+            &[&repo.head().unwrap().peel_to_commit().unwrap()],
+        )
+        .unwrap();
+        std::fs::write(std::path::Path::new(&path).join(file), &modified).unwrap();
+        if section == "staged" {
+            state
+                .code_usecase
+                .git_stage(&path, vec![file.into()])
+                .unwrap();
+        }
+        let ReviewFileViewDto::TextDiff(view) = state
+            .review_usecase
+            .get_review_file_view(
+                &path,
+                ReviewTarget::Path(file.into()),
+                section,
+                "head",
+                None,
+                None,
+            )
+            .unwrap()
+        else {
+            panic!("text diff");
+        };
+        assert_eq!(view.change_groups.len(), 2);
+        let input = json!({"worktreePath":path,"path":file,"section":section,"base":"head","groupId":view.change_groups[1].group_id});
+        let app_ref = &app;
+        let call = |input: Value| async move {
+            invoke_tauri(app_ref, command, json!({"input": input})).await
+        };
+        // When / Then
+        for (field, invalid) in [
+            ("worktreePath", format!("{path}/missing")),
+            ("path", "missing.txt".into()),
+            ("section", "invalid-section".into()),
+            ("base", "invalid-base".into()),
+            ("groupId", "missing-group".into()),
+        ] {
+            let mut invalid_input = input.clone();
+            invalid_input[field] = json!(invalid);
+            let expected = outcome(call(invalid_input.clone()).await);
+            assert!(expected.is_err(), "{command}: {field}");
+            assert_parity(&dispatch, command, json!({"input":invalid_input}), expected).await;
+        }
+        let expected = outcome(call(input.clone()).await);
+        assert_eq!(expected, Ok(Value::Null));
+        let index_content = || {
+            let mut index = repo.index().unwrap();
+            index.read(true).unwrap();
+            let id = index.get_path(std::path::Path::new(file), 0).unwrap().id;
+            repo.find_blob(id).unwrap().content().to_vec()
+        };
+        let expected_content = index_content();
+        let partial = if section == "changes" {
+            original.replace("line 18\n", "last change\n")
+        } else {
+            original.replace("line 2\n", "first change\n")
+        };
+        assert_eq!(expected_content, partial.as_bytes());
+        if section == "changes" {
+            state
+                .code_usecase
+                .git_unstage(&path, vec![file.into()])
+                .unwrap();
+        } else {
+            state
+                .code_usecase
+                .git_stage(&path, vec![file.into()])
+                .unwrap();
+        }
+        assert_parity(&dispatch, command, json!({"input":input}), expected).await;
+        assert_eq!(index_content(), expected_content);
+        assert_eq!(
+            std::fs::read_to_string(std::path::Path::new(&path).join(file)).unwrap(),
+            modified
+        );
+    }
 }
 
 fn mutation_repository() -> (tempfile::TempDir, String) {

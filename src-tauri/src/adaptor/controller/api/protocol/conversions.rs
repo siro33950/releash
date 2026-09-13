@@ -52,12 +52,52 @@ impl TryFrom<crate::usecase::repository_dto::BranchCardDto> for wire::BranchCard
     }
 }
 
+impl TryFrom<crate::usecase::code_dto::BranchDiffSummaryDto> for wire::BranchDiffSummaryDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::code_dto::BranchDiffSummaryDto) -> Result<Self, String> {
+        Ok(Self {
+            base_branch: Some(cv(value.base_branch)?),
+            changed_files: Some(cv(value.changed_files)?),
+            stats: Some(cv(value.stats)?),
+        })
+    }
+}
+
 impl TryFrom<crate::usecase::repository_dto::BranchDto> for wire::BranchDto {
     type Error = String;
     fn try_from(value: crate::usecase::repository_dto::BranchDto) -> Result<Self, String> {
         Ok(Self {
             name: Some(cv(value.name)?),
             is_remote: Some(cv(value.is_remote)?),
+        })
+    }
+}
+
+impl TryFrom<crate::usecase::code_dto::ChangeGroupDto> for wire::ChangeGroupDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::code_dto::ChangeGroupDto) -> Result<Self, String> {
+        Ok(Self {
+            group_index: Some(cv(value.group_index)?),
+            group_id: Some(cv(value.group_id)?),
+            hunk_index: Some(cv(value.hunk_index)?),
+            new_start: Some(cv(value.new_start)?),
+            new_end: Some(cv(value.new_end)?),
+            line_offset_start: Some(cv(value.line_offset_start)?),
+            line_offset_end: Some(cv(value.line_offset_end)?),
+            is_staged: value.is_staged.map(cv).transpose()?,
+        })
+    }
+}
+
+impl TryFrom<crate::usecase::code_dto::ChangedFileDto> for wire::ChangedFileDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::code_dto::ChangedFileDto) -> Result<Self, String> {
+        Ok(Self {
+            path: Some(cv(value.path)?),
+            old_path: value.old_path.map(cv).transpose()?,
+            status: Some(cv(value.status)?),
+            binary: Some(cv(value.binary)?),
+            stats: Some(cv(value.stats)?),
         })
     }
 }
@@ -73,6 +113,165 @@ impl TryFrom<crate::usecase::repository_dto::CommitDto> for wire::CommitDto {
             author_email: Some(cv(value.author_email)?),
             timestamp: Some(cv(value.timestamp)?),
         })
+    }
+}
+
+impl TryFrom<String> for wire::DiffBase {
+    type Error = String;
+    fn try_from(value: String) -> Result<Self, String> {
+        Ok(Self {
+            value: Some(match value.as_str() {
+                "branch-base" => wire::diff_base::Value::BranchBase as i32,
+                "head" => wire::diff_base::Value::Head as i32,
+                _ => return Err(format!("Invalid DiffBase: {value}")),
+            }),
+        })
+    }
+}
+
+impl TryFrom<&str> for wire::DiffBase {
+    type Error = String;
+    fn try_from(value: &str) -> Result<Self, String> {
+        cv(value.to_owned())
+    }
+}
+
+impl TryFrom<wire::DiffFileEntryInput> for crate::adaptor::protocol::code::DiffFileEntryInput {
+    type Error = String;
+    fn try_from(value: wire::DiffFileEntryInput) -> Result<Self, String> {
+        Ok(Self {
+            path: cv(req(value.path, "path")?)?,
+            status: cv(req(value.status, "status")?)?,
+            additions: cv(req(value.additions, "additions")?)?,
+            deletions: cv(req(value.deletions, "deletions")?)?,
+        })
+    }
+}
+
+impl TryFrom<crate::usecase::code_dto::DiffRangeDto> for wire::DiffRangeDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::code_dto::DiffRangeDto) -> Result<Self, String> {
+        Ok(Self {
+            start_line: Some(cv(value.start_line)?),
+            end_line: Some(cv(value.end_line)?),
+            kind: Some(cv(value.kind)?),
+        })
+    }
+}
+
+impl TryFrom<crate::usecase::code_dto::DiffRangeKindDto> for wire::DiffRangeKindDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::code_dto::DiffRangeKindDto) -> Result<Self, String> {
+        Ok(Self {
+            value: Some(match value {
+                crate::usecase::code_dto::DiffRangeKindDto::Added => {
+                    wire::diff_range_kind_dto::Value::Added as i32
+                }
+                crate::usecase::code_dto::DiffRangeKindDto::Modified => {
+                    wire::diff_range_kind_dto::Value::Modified as i32
+                }
+                crate::usecase::code_dto::DiffRangeKindDto::Deleted => {
+                    wire::diff_range_kind_dto::Value::Deleted as i32
+                }
+            }),
+        })
+    }
+}
+
+impl TryFrom<String> for wire::DiffRangeKindDto {
+    type Error = String;
+    fn try_from(value: String) -> Result<Self, String> {
+        Ok(Self {
+            value: Some(match value.as_str() {
+                "added" => wire::diff_range_kind_dto::Value::Added as i32,
+                "modified" => wire::diff_range_kind_dto::Value::Modified as i32,
+                "deleted" => wire::diff_range_kind_dto::Value::Deleted as i32,
+                _ => return Err(format!("Invalid DiffRangeKindDto: {value}")),
+            }),
+        })
+    }
+}
+
+impl TryFrom<&str> for wire::DiffRangeKindDto {
+    type Error = String;
+    fn try_from(value: &str) -> Result<Self, String> {
+        cv(value.to_owned())
+    }
+}
+
+impl TryFrom<crate::usecase::code_dto::DiffStatsDto> for wire::DiffStatsDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::code_dto::DiffStatsDto) -> Result<Self, String> {
+        Ok(Self {
+            additions: Some(cv(value.additions)?),
+            deletions: Some(cv(value.deletions)?),
+        })
+    }
+}
+
+impl TryFrom<crate::usecase::code_dto::DiffTreeNodeDto> for wire::DiffTreeNodeDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::code_dto::DiffTreeNodeDto) -> Result<Self, String> {
+        Ok(Self {
+            id: Some(cv(value.id)?),
+            name: Some(cv(value.name)?),
+            path: Some(cv(value.path)?),
+            node_type: Some(cv(value.node_type)?),
+            status: value.status.map(cv).transpose()?,
+            additions: value.additions.map(cv).transpose()?,
+            deletions: value.deletions.map(cv).transpose()?,
+            children: Some(cv(value.children)?),
+        })
+    }
+}
+
+impl TryFrom<wire::DiffTreeNodeInput> for crate::adaptor::protocol::code::DiffTreeNodeInput {
+    type Error = String;
+    fn try_from(value: wire::DiffTreeNodeInput) -> Result<Self, String> {
+        Ok(Self {
+            id: cv(req(value.id, "id")?)?,
+            name: cv(req(value.name, "name")?)?,
+            path: cv(req(value.path, "path")?)?,
+            node_type: cv(req(value.node_type, "node_type")?)?,
+            status: value.status.map(cv).transpose()?,
+            additions: value.additions.map(cv).transpose()?,
+            deletions: value.deletions.map(cv).transpose()?,
+            children: cv(req(value.children, "children")?)?,
+        })
+    }
+}
+
+impl TryFrom<String> for wire::DiffTreeNodeType {
+    type Error = String;
+    fn try_from(value: String) -> Result<Self, String> {
+        Ok(Self {
+            value: Some(match value.as_str() {
+                "file" => wire::diff_tree_node_type::Value::File as i32,
+                "folder" => wire::diff_tree_node_type::Value::Folder as i32,
+                _ => return Err(format!("Invalid DiffTreeNodeType: {value}")),
+            }),
+        })
+    }
+}
+
+impl TryFrom<&str> for wire::DiffTreeNodeType {
+    type Error = String;
+    fn try_from(value: &str) -> Result<Self, String> {
+        cv(value.to_owned())
+    }
+}
+
+impl TryFrom<wire::DiffTreeNodeType> for String {
+    type Error = String;
+    fn try_from(value: wire::DiffTreeNodeType) -> Result<Self, String> {
+        Ok(
+            match wire::diff_tree_node_type::Value::try_from(req(value.value, "value")?)
+                .map_err(|_| "Invalid DiffTreeNodeType")?
+            {
+                wire::diff_tree_node_type::Value::File => "file".to_owned(),
+                wire::diff_tree_node_type::Value::Folder => "folder".to_owned(),
+            },
+        )
     }
 }
 
@@ -278,6 +477,18 @@ impl TryFrom<crate::usecase::repository_dto::FileDiffStatDto> for wire::FileDiff
     }
 }
 
+impl TryFrom<crate::usecase::code_dto::FileNavigationResultDto> for wire::FileNavigationResultDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::code_dto::FileNavigationResultDto) -> Result<Self, String> {
+        Ok(Self {
+            current_index: Some(cv(value.current_index)?),
+            total: Some(cv(value.total)?),
+            prev_file: value.prev_file.map(cv).transpose()?,
+            next_file: value.next_file.map(cv).transpose()?,
+        })
+    }
+}
+
 impl TryFrom<crate::usecase::repository_dto::FileStatusDto> for wire::FileStatusDto {
     type Error = String;
     fn try_from(value: crate::usecase::repository_dto::FileStatusDto) -> Result<Self, String> {
@@ -348,6 +559,97 @@ impl TryFrom<&str> for wire::GitWorktreeStatus {
     }
 }
 
+impl TryFrom<crate::usecase::code_dto::HiddenRangeDto> for wire::HiddenRangeDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::code_dto::HiddenRangeDto) -> Result<Self, String> {
+        Ok(Self {
+            start_line: Some(cv(value.start_line)?),
+            end_line: Some(cv(value.end_line)?),
+            hidden_count: Some(cv(value.hidden_count)?),
+        })
+    }
+}
+
+impl TryFrom<crate::usecase::code_dto::HunkDto> for wire::HunkDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::code_dto::HunkDto) -> Result<Self, String> {
+        Ok(Self {
+            index: Some(cv(value.index)?),
+            hunk_id: Some(cv(value.hunk_id)?),
+            old_start: Some(cv(value.old_start)?),
+            old_lines: Some(cv(value.old_lines)?),
+            new_start: Some(cv(value.new_start)?),
+            new_lines: Some(cv(value.new_lines)?),
+            lines: Some(cv(value.lines)?),
+        })
+    }
+}
+
+impl TryFrom<wire::HunkInput> for crate::adaptor::protocol::code::HunkInput {
+    type Error = String;
+    fn try_from(value: wire::HunkInput) -> Result<Self, String> {
+        Ok(Self {
+            index: cv(req(value.index, "index")?)?,
+            hunk_id: value.hunk_id.map(cv).transpose()?.unwrap_or_default(),
+            old_start: cv(req(value.old_start, "oldStart")?)?,
+            old_lines: cv(req(value.old_lines, "oldLines")?)?,
+            new_start: cv(req(value.new_start, "newStart")?)?,
+            new_lines: cv(req(value.new_lines, "newLines")?)?,
+            lines: cv(req(value.lines, "lines")?)?,
+        })
+    }
+}
+
+impl TryFrom<crate::usecase::code_dto::InlineChunkDto> for wire::InlineChunkDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::code_dto::InlineChunkDto) -> Result<Self, String> {
+        Ok(Self {
+            content: Some(cv(value.content)?),
+            kind: Some(cv(value.kind)?),
+        })
+    }
+}
+
+impl TryFrom<crate::usecase::code_dto::InlineChunkKindDto> for wire::InlineChunkKindDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::code_dto::InlineChunkKindDto) -> Result<Self, String> {
+        Ok(Self {
+            value: Some(match value {
+                crate::usecase::code_dto::InlineChunkKindDto::Unchanged => {
+                    wire::inline_chunk_kind_dto::Value::Unchanged as i32
+                }
+                crate::usecase::code_dto::InlineChunkKindDto::Added => {
+                    wire::inline_chunk_kind_dto::Value::Added as i32
+                }
+                crate::usecase::code_dto::InlineChunkKindDto::Removed => {
+                    wire::inline_chunk_kind_dto::Value::Removed as i32
+                }
+            }),
+        })
+    }
+}
+
+impl TryFrom<String> for wire::InlineChunkKindDto {
+    type Error = String;
+    fn try_from(value: String) -> Result<Self, String> {
+        Ok(Self {
+            value: Some(match value.as_str() {
+                "unchanged" => wire::inline_chunk_kind_dto::Value::Unchanged as i32,
+                "added" => wire::inline_chunk_kind_dto::Value::Added as i32,
+                "removed" => wire::inline_chunk_kind_dto::Value::Removed as i32,
+                _ => return Err(format!("Invalid InlineChunkKindDto: {value}")),
+            }),
+        })
+    }
+}
+
+impl TryFrom<&str> for wire::InlineChunkKindDto {
+    type Error = String;
+    fn try_from(value: &str) -> Result<Self, String> {
+        cv(value.to_owned())
+    }
+}
+
 impl<T> TryFrom<Vec<T>> for wire::ListArtifactView
 where
     wire::ArtifactView: TryFrom<T>,
@@ -384,6 +686,30 @@ where
         })
     }
 }
+impl<T> TryFrom<Vec<T>> for wire::ListChangeGroupDto
+where
+    wire::ChangeGroupDto: TryFrom<T>,
+    <wire::ChangeGroupDto as TryFrom<T>>::Error: std::fmt::Display,
+{
+    type Error = String;
+    fn try_from(value: Vec<T>) -> Result<Self, String> {
+        Ok(Self {
+            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
+        })
+    }
+}
+impl<T> TryFrom<Vec<T>> for wire::ListChangedFileDto
+where
+    wire::ChangedFileDto: TryFrom<T>,
+    <wire::ChangedFileDto as TryFrom<T>>::Error: std::fmt::Display,
+{
+    type Error = String;
+    fn try_from(value: Vec<T>) -> Result<Self, String> {
+        Ok(Self {
+            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
+        })
+    }
+}
 impl<T> TryFrom<Vec<T>> for wire::ListCommitDto
 where
     wire::CommitDto: TryFrom<T>,
@@ -394,6 +720,48 @@ where
         Ok(Self {
             items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
         })
+    }
+}
+impl<T: TryFrom<wire::DiffFileEntryInput>> TryFrom<wire::ListDiffFileEntryInput> for Vec<T>
+where
+    T::Error: std::fmt::Display,
+{
+    type Error = String;
+    fn try_from(value: wire::ListDiffFileEntryInput) -> Result<Self, String> {
+        value.items.into_iter().map(cv).collect()
+    }
+}
+impl<T> TryFrom<Vec<T>> for wire::ListDiffRangeDto
+where
+    wire::DiffRangeDto: TryFrom<T>,
+    <wire::DiffRangeDto as TryFrom<T>>::Error: std::fmt::Display,
+{
+    type Error = String;
+    fn try_from(value: Vec<T>) -> Result<Self, String> {
+        Ok(Self {
+            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
+        })
+    }
+}
+impl<T> TryFrom<Vec<T>> for wire::ListDiffTreeNodeDto
+where
+    wire::DiffTreeNodeDto: TryFrom<T>,
+    <wire::DiffTreeNodeDto as TryFrom<T>>::Error: std::fmt::Display,
+{
+    type Error = String;
+    fn try_from(value: Vec<T>) -> Result<Self, String> {
+        Ok(Self {
+            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
+        })
+    }
+}
+impl<T: TryFrom<wire::DiffTreeNodeInput>> TryFrom<wire::ListDiffTreeNodeInput> for Vec<T>
+where
+    T::Error: std::fmt::Display,
+{
+    type Error = String;
+    fn try_from(value: wire::ListDiffTreeNodeInput) -> Result<Self, String> {
+        value.items.into_iter().map(cv).collect()
     }
 }
 impl<T> TryFrom<Vec<T>> for wire::ListFanoutView
@@ -432,10 +800,91 @@ where
         })
     }
 }
+impl<T> TryFrom<Vec<T>> for wire::ListHiddenRangeDto
+where
+    wire::HiddenRangeDto: TryFrom<T>,
+    <wire::HiddenRangeDto as TryFrom<T>>::Error: std::fmt::Display,
+{
+    type Error = String;
+    fn try_from(value: Vec<T>) -> Result<Self, String> {
+        Ok(Self {
+            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
+        })
+    }
+}
+impl<T> TryFrom<Vec<T>> for wire::ListHunkDto
+where
+    wire::HunkDto: TryFrom<T>,
+    <wire::HunkDto as TryFrom<T>>::Error: std::fmt::Display,
+{
+    type Error = String;
+    fn try_from(value: Vec<T>) -> Result<Self, String> {
+        Ok(Self {
+            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
+        })
+    }
+}
+impl<T: TryFrom<wire::HunkInput>> TryFrom<wire::ListHunkInput> for Vec<T>
+where
+    T::Error: std::fmt::Display,
+{
+    type Error = String;
+    fn try_from(value: wire::ListHunkInput) -> Result<Self, String> {
+        value.items.into_iter().map(cv).collect()
+    }
+}
+impl<T> TryFrom<Vec<T>> for wire::ListInlineChunkDto
+where
+    wire::InlineChunkDto: TryFrom<T>,
+    <wire::InlineChunkDto as TryFrom<T>>::Error: std::fmt::Display,
+{
+    type Error = String;
+    fn try_from(value: Vec<T>) -> Result<Self, String> {
+        Ok(Self {
+            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
+        })
+    }
+}
 impl<T> TryFrom<Vec<T>> for wire::ListNodeExecutionView
 where
     wire::NodeExecutionView: TryFrom<T>,
     <wire::NodeExecutionView as TryFrom<T>>::Error: std::fmt::Display,
+{
+    type Error = String;
+    fn try_from(value: Vec<T>) -> Result<Self, String> {
+        Ok(Self {
+            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
+        })
+    }
+}
+impl<T> TryFrom<Vec<T>> for wire::ListReviewFileEntryDto
+where
+    wire::ReviewFileEntryDto: TryFrom<T>,
+    <wire::ReviewFileEntryDto as TryFrom<T>>::Error: std::fmt::Display,
+{
+    type Error = String;
+    fn try_from(value: Vec<T>) -> Result<Self, String> {
+        Ok(Self {
+            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
+        })
+    }
+}
+impl<T> TryFrom<Vec<T>> for wire::ListSplitRowDto
+where
+    wire::SplitRowDto: TryFrom<T>,
+    <wire::SplitRowDto as TryFrom<T>>::Error: std::fmt::Display,
+{
+    type Error = String;
+    fn try_from(value: Vec<T>) -> Result<Self, String> {
+        Ok(Self {
+            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
+        })
+    }
+}
+impl<T> TryFrom<Vec<T>> for wire::ListVisibleBlockDto
+where
+    wire::VisibleBlockDto: TryFrom<T>,
+    <wire::VisibleBlockDto as TryFrom<T>>::Error: std::fmt::Display,
 {
     type Error = String;
     fn try_from(value: Vec<T>) -> Result<Self, String> {
@@ -535,6 +984,36 @@ where
             .collect()
     }
 }
+impl TryFrom<wire::MarkdownDiffSideInput>
+    for crate::adaptor::protocol::code::MarkdownDiffSideInput
+{
+    type Error = String;
+    fn try_from(value: wire::MarkdownDiffSideInput) -> Result<Self, String> {
+        Ok(
+            match wire::markdown_diff_side_input::Value::try_from(req(value.value, "value")?)
+                .map_err(|_| "Invalid MarkdownDiffSideInput")?
+            {
+                wire::markdown_diff_side_input::Value::Modified => Self::Modified,
+                wire::markdown_diff_side_input::Value::Original => Self::Original,
+            },
+        )
+    }
+}
+
+impl TryFrom<wire::MarkdownDiffSideInput> for String {
+    type Error = String;
+    fn try_from(value: wire::MarkdownDiffSideInput) -> Result<Self, String> {
+        Ok(
+            match wire::markdown_diff_side_input::Value::try_from(req(value.value, "value")?)
+                .map_err(|_| "Invalid MarkdownDiffSideInput")?
+            {
+                wire::markdown_diff_side_input::Value::Modified => "modified".to_owned(),
+                wire::markdown_diff_side_input::Value::Original => "original".to_owned(),
+            },
+        )
+    }
+}
+
 impl TryFrom<crate::adaptor::protocol::workflow::NodeCompletionSignalView>
     for wire::NodeCompletionSignalView
 {
@@ -857,6 +1336,27 @@ impl TryFrom<crate::usecase::repository_state::snapshot::RepositoryDiffStatsSnap
     }
 }
 
+impl TryFrom<crate::usecase::repository_state::snapshot::RepositoryHeadDiffFileTreeSnapshotDto>
+    for wire::RepositoryHeadDiffFileTreeSnapshotDto
+{
+    type Error = String;
+    fn try_from(
+        value: crate::usecase::repository_state::snapshot::RepositoryHeadDiffFileTreeSnapshotDto,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            version: Some(cv(value.version)?),
+            stale: Some(cv(value.stale)?),
+            loading: Some(cv(value.loading)?),
+            limited: Some(cv(value.limited)?),
+            combined_tree: Some(cv(value.combined_tree)?),
+            staged_tree: Some(cv(value.staged_tree)?),
+            changes_tree: Some(cv(value.changes_tree)?),
+            staged_file_count: Some(cv(value.staged_file_count)?),
+            changes_file_count: Some(cv(value.changes_file_count)?),
+        })
+    }
+}
+
 impl TryFrom<crate::usecase::repository_state::snapshot::RepositorySnapshotChangedEvent>
     for wire::RepositorySnapshotChangedEvent
 {
@@ -940,6 +1440,324 @@ impl TryFrom<wire::ResultUint64> for u64 {
     }
 }
 
+impl TryFrom<crate::usecase::code_dto::ReviewBinaryDto> for wire::ReviewBinaryDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::code_dto::ReviewBinaryDto) -> Result<Self, String> {
+        Ok(Self {
+            version: Some(cv(value.version)?),
+            stale: Some(cv(value.stale)?),
+            file_id: Some(cv(value.file_id)?),
+            path: Some(cv(value.path)?),
+            original_url: value.original_url.map(cv).transpose()?,
+            modified_url: value.modified_url.map(cv).transpose()?,
+            original_size: value.original_size.map(cv).transpose()?,
+            modified_size: value.modified_size.map(cv).transpose()?,
+        })
+    }
+}
+
+impl TryFrom<crate::usecase::code_dto::ReviewFallbackDto> for wire::ReviewFallbackDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::code_dto::ReviewFallbackDto) -> Result<Self, String> {
+        Ok(Self {
+            version: Some(cv(value.version)?),
+            stale: Some(cv(value.stale)?),
+            file_id: Some(cv(value.file_id)?),
+            path: Some(cv(value.path)?),
+            reason: Some(cv(value.reason)?),
+            total_lines: value.total_lines.map(cv).transpose()?,
+            size_bytes: value.size_bytes.map(cv).transpose()?,
+            hunk_count: value.hunk_count.map(cv).transpose()?,
+            limited: Some(cv(value.limited)?),
+        })
+    }
+}
+
+impl TryFrom<crate::usecase::code_dto::ReviewFileEntryDto> for wire::ReviewFileEntryDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::code_dto::ReviewFileEntryDto) -> Result<Self, String> {
+        Ok(Self {
+            file_id: Some(cv(value.file_id)?),
+            path: Some(cv(value.path)?),
+            index_status: Some(cv(value.index_status)?),
+            worktree_status: Some(cv(value.worktree_status)?),
+            additions: Some(cv(value.additions)?),
+            deletions: Some(cv(value.deletions)?),
+        })
+    }
+}
+
+impl TryFrom<crate::usecase::code_dto::ReviewFileViewDto> for wire::ReviewFileViewDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::code_dto::ReviewFileViewDto) -> Result<Self, String> {
+        Ok(Self {
+            variant: Some(match value {
+                crate::usecase::code_dto::ReviewFileViewDto::TextDiff(value) => {
+                    wire::review_file_view_dto::Variant::TextDiff(cv(value)?)
+                }
+                crate::usecase::code_dto::ReviewFileViewDto::Image(value) => {
+                    wire::review_file_view_dto::Variant::Image(cv(value)?)
+                }
+                crate::usecase::code_dto::ReviewFileViewDto::Binary(value) => {
+                    wire::review_file_view_dto::Variant::Binary(cv(value)?)
+                }
+                crate::usecase::code_dto::ReviewFileViewDto::Fallback(value) => {
+                    wire::review_file_view_dto::Variant::Fallback(cv(value)?)
+                }
+            }),
+        })
+    }
+}
+
+impl TryFrom<wire::ReviewFileViewInput> for crate::adaptor::protocol::code::ReviewFileViewInput {
+    type Error = String;
+    fn try_from(value: wire::ReviewFileViewInput) -> Result<Self, String> {
+        Ok(Self {
+            worktree_path: cv(req(value.worktree_path, "worktreePath")?)?,
+            target: cv(req(value.target, "target")?)?,
+            section: cv(req(value.section, "section")?)?,
+            base: cv(req(value.base, "base")?)?,
+            snapshot_version: value.snapshot_version.map(cv).transpose()?,
+            viewport: value.viewport.map(cv).transpose()?,
+        })
+    }
+}
+
+impl TryFrom<wire::ReviewGroupActionInput>
+    for crate::adaptor::protocol::code::ReviewGroupActionInput
+{
+    type Error = String;
+    fn try_from(value: wire::ReviewGroupActionInput) -> Result<Self, String> {
+        Ok(Self {
+            worktree_path: cv(req(value.worktree_path, "worktreePath")?)?,
+            path: cv(req(value.path, "path")?)?,
+            section: cv(req(value.section, "section")?)?,
+            base: cv(req(value.base, "base")?)?,
+            group_id: cv(req(value.group_id, "groupId")?)?,
+        })
+    }
+}
+
+impl TryFrom<crate::usecase::code_dto::ReviewImageDto> for wire::ReviewImageDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::code_dto::ReviewImageDto) -> Result<Self, String> {
+        Ok(Self {
+            version: Some(cv(value.version)?),
+            stale: Some(cv(value.stale)?),
+            file_id: Some(cv(value.file_id)?),
+            path: Some(cv(value.path)?),
+            original_url: value.original_url.map(cv).transpose()?,
+            modified_url: value.modified_url.map(cv).transpose()?,
+            mime: Some(cv(value.mime)?),
+        })
+    }
+}
+
+impl TryFrom<crate::usecase::code_dto::ReviewLimitReasonDto> for wire::ReviewLimitReasonDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::code_dto::ReviewLimitReasonDto) -> Result<Self, String> {
+        Ok(Self {
+            value: Some(match value {
+                crate::usecase::code_dto::ReviewLimitReasonDto::FileSize => {
+                    wire::review_limit_reason_dto::Value::FileSize as i32
+                }
+                crate::usecase::code_dto::ReviewLimitReasonDto::LineCount => {
+                    wire::review_limit_reason_dto::Value::LineCount as i32
+                }
+                crate::usecase::code_dto::ReviewLimitReasonDto::HunkCount => {
+                    wire::review_limit_reason_dto::Value::HunkCount as i32
+                }
+                crate::usecase::code_dto::ReviewLimitReasonDto::Tokenization => {
+                    wire::review_limit_reason_dto::Value::Tokenization as i32
+                }
+            }),
+        })
+    }
+}
+
+impl TryFrom<String> for wire::ReviewLimitReasonDto {
+    type Error = String;
+    fn try_from(value: String) -> Result<Self, String> {
+        Ok(Self {
+            value: Some(match value.as_str() {
+                "fileSize" => wire::review_limit_reason_dto::Value::FileSize as i32,
+                "lineCount" => wire::review_limit_reason_dto::Value::LineCount as i32,
+                "hunkCount" => wire::review_limit_reason_dto::Value::HunkCount as i32,
+                "tokenization" => wire::review_limit_reason_dto::Value::Tokenization as i32,
+                _ => return Err(format!("Invalid ReviewLimitReasonDto: {value}")),
+            }),
+        })
+    }
+}
+
+impl TryFrom<&str> for wire::ReviewLimitReasonDto {
+    type Error = String;
+    fn try_from(value: &str) -> Result<Self, String> {
+        cv(value.to_owned())
+    }
+}
+
+impl TryFrom<crate::usecase::code_dto::ReviewSnapshotDto> for wire::ReviewSnapshotDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::code_dto::ReviewSnapshotDto) -> Result<Self, String> {
+        Ok(Self {
+            version: Some(cv(value.version)?),
+            stale: Some(cv(value.stale)?),
+            loading: Some(cv(value.loading)?),
+            limited: Some(cv(value.limited)?),
+            base: Some(cv(value.base)?),
+            files: Some(cv(value.files)?),
+            staged_files: Some(cv(value.staged_files)?),
+            changed_files: Some(cv(value.changed_files)?),
+            diff_stats: Some(cv(value.diff_stats)?),
+            tree: Some(cv(value.tree)?),
+            staged_tree: Some(cv(value.staged_tree)?),
+            changes_tree: Some(cv(value.changes_tree)?),
+            staged_file_count: Some(cv(value.staged_file_count)?),
+            changes_file_count: Some(cv(value.changes_file_count)?),
+        })
+    }
+}
+
+impl TryFrom<wire::ReviewSnapshotInput> for crate::adaptor::protocol::code::ReviewSnapshotInput {
+    type Error = String;
+    fn try_from(value: wire::ReviewSnapshotInput) -> Result<Self, String> {
+        Ok(Self {
+            worktree_path: cv(req(value.worktree_path, "worktreePath")?)?,
+            base: cv(req(value.base, "base")?)?,
+        })
+    }
+}
+
+impl TryFrom<wire::ReviewTargetInput> for crate::adaptor::protocol::code::ReviewTargetInput {
+    type Error = String;
+    fn try_from(value: wire::ReviewTargetInput) -> Result<Self, String> {
+        Ok(match req(value.variant, "variant")? {
+            wire::review_target_input::Variant::FileId(value) => {
+                crate::adaptor::protocol::code::ReviewTargetInput::FileId(cv(value)?)
+            }
+            wire::review_target_input::Variant::Path(value) => {
+                crate::adaptor::protocol::code::ReviewTargetInput::Path(cv(value)?)
+            }
+        })
+    }
+}
+
+impl TryFrom<crate::usecase::code_dto::ReviewTextDiffDto> for wire::ReviewTextDiffDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::code_dto::ReviewTextDiffDto) -> Result<Self, String> {
+        Ok(Self {
+            version: Some(cv(value.version)?),
+            stale: Some(cv(value.stale)?),
+            file_id: Some(cv(value.file_id)?),
+            path: Some(cv(value.path)?),
+            original: Some(cv(value.original)?),
+            modified: Some(cv(value.modified)?),
+            source: Some(cv(value.source)?),
+            hunks: Some(cv(value.hunks)?),
+            change_groups: Some(cv(value.change_groups)?),
+            limited: Some(cv(value.limited)?),
+            viewport: value.viewport.map(cv).transpose()?,
+            total_lines: Some(cv(value.total_lines)?),
+        })
+    }
+}
+
+impl TryFrom<crate::usecase::code_dto::ReviewTextSource> for wire::ReviewTextSource {
+    type Error = String;
+    fn try_from(value: crate::usecase::code_dto::ReviewTextSource) -> Result<Self, String> {
+        Ok(Self {
+            value: Some(match value {
+                crate::usecase::code_dto::ReviewTextSource::Diff => {
+                    wire::review_text_source::Value::Diff as i32
+                }
+                crate::usecase::code_dto::ReviewTextSource::Added => {
+                    wire::review_text_source::Value::Added as i32
+                }
+                crate::usecase::code_dto::ReviewTextSource::Deleted => {
+                    wire::review_text_source::Value::Deleted as i32
+                }
+            }),
+        })
+    }
+}
+
+impl TryFrom<String> for wire::ReviewTextSource {
+    type Error = String;
+    fn try_from(value: String) -> Result<Self, String> {
+        Ok(Self {
+            value: Some(match value.as_str() {
+                "diff" => wire::review_text_source::Value::Diff as i32,
+                "added" => wire::review_text_source::Value::Added as i32,
+                "deleted" => wire::review_text_source::Value::Deleted as i32,
+                _ => return Err(format!("Invalid ReviewTextSource: {value}")),
+            }),
+        })
+    }
+}
+
+impl TryFrom<&str> for wire::ReviewTextSource {
+    type Error = String;
+    fn try_from(value: &str) -> Result<Self, String> {
+        cv(value.to_owned())
+    }
+}
+
+impl TryFrom<crate::usecase::code_dto::SplitRowDto> for wire::SplitRowDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::code_dto::SplitRowDto) -> Result<Self, String> {
+        Ok(Self {
+            left: value.left.map(cv).transpose()?,
+            right: value.right.map(cv).transpose()?,
+            kind: Some(cv(value.kind)?),
+        })
+    }
+}
+
+impl TryFrom<crate::usecase::code_dto::SplitRowKindDto> for wire::SplitRowKindDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::code_dto::SplitRowKindDto) -> Result<Self, String> {
+        Ok(Self {
+            value: Some(match value {
+                crate::usecase::code_dto::SplitRowKindDto::Unchanged => {
+                    wire::split_row_kind_dto::Value::Unchanged as i32
+                }
+                crate::usecase::code_dto::SplitRowKindDto::Added => {
+                    wire::split_row_kind_dto::Value::Added as i32
+                }
+                crate::usecase::code_dto::SplitRowKindDto::Removed => {
+                    wire::split_row_kind_dto::Value::Removed as i32
+                }
+                crate::usecase::code_dto::SplitRowKindDto::Modified => {
+                    wire::split_row_kind_dto::Value::Modified as i32
+                }
+            }),
+        })
+    }
+}
+
+impl TryFrom<String> for wire::SplitRowKindDto {
+    type Error = String;
+    fn try_from(value: String) -> Result<Self, String> {
+        Ok(Self {
+            value: Some(match value.as_str() {
+                "unchanged" => wire::split_row_kind_dto::Value::Unchanged as i32,
+                "added" => wire::split_row_kind_dto::Value::Added as i32,
+                "removed" => wire::split_row_kind_dto::Value::Removed as i32,
+                "modified" => wire::split_row_kind_dto::Value::Modified as i32,
+                _ => return Err(format!("Invalid SplitRowKindDto: {value}")),
+            }),
+        })
+    }
+}
+
+impl TryFrom<&str> for wire::SplitRowKindDto {
+    type Error = String;
+    fn try_from(value: &str) -> Result<Self, String> {
+        cv(value.to_owned())
+    }
+}
+
 impl TryFrom<crate::adaptor::protocol::workflow::TokenUsageView> for wire::TokenUsageView {
     type Error = String;
     fn try_from(value: crate::adaptor::protocol::workflow::TokenUsageView) -> Result<Self, String> {
@@ -962,6 +1780,38 @@ impl TryFrom<wire::Unit> for () {
     fn try_from(value: wire::Unit) -> Result<Self, String> {
         let _ = value;
         Ok(())
+    }
+}
+
+impl TryFrom<crate::usecase::code_dto::ViewportDto> for wire::ViewportDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::code_dto::ViewportDto) -> Result<Self, String> {
+        Ok(Self {
+            start_line: Some(cv(value.start_line)?),
+            end_line: Some(cv(value.end_line)?),
+        })
+    }
+}
+
+impl TryFrom<wire::ViewportInput> for crate::adaptor::protocol::code::ViewportInput {
+    type Error = String;
+    fn try_from(value: wire::ViewportInput) -> Result<Self, String> {
+        Ok(Self {
+            start_line: cv(req(value.start_line, "startLine")?)?,
+            end_line: cv(req(value.end_line, "endLine")?)?,
+        })
+    }
+}
+
+impl TryFrom<crate::usecase::code_dto::VisibleBlockDto> for wire::VisibleBlockDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::code_dto::VisibleBlockDto) -> Result<Self, String> {
+        Ok(Self {
+            start_line: Some(cv(value.start_line)?),
+            end_line: Some(cv(value.end_line)?),
+            content: Some(cv(value.content)?),
+            deleted_content: value.deleted_content.map(cv).transpose()?,
+        })
     }
 }
 

@@ -1,16 +1,13 @@
 //! Markdown diff read model Tauri コマンド。
 
-use tauri::State;
-
 use super::run_blocking;
 use crate::adaptor::controller::state::AppState;
 use crate::adaptor::protocol::code::MarkdownDiffSideInput;
 use crate::other::AppError;
 use crate::usecase::code_dto::{DiffRangeDto, InlineChunkDto, SplitRowDto};
 
-#[tauri::command]
-pub async fn compute_markdown_diff_ranges(
-    state: State<'_, AppState>,
+pub(crate) async fn compute_markdown_diff_ranges_shared(
+    state: &AppState,
     original: String,
     modified: String,
     side: MarkdownDiffSideInput,
@@ -22,9 +19,8 @@ pub async fn compute_markdown_diff_ranges(
     .await
 }
 
-#[tauri::command]
-pub async fn compute_markdown_split_rows(
-    state: State<'_, AppState>,
+pub(crate) async fn compute_markdown_split_rows_shared(
+    state: &AppState,
     original: String,
     modified: String,
 ) -> Result<Vec<SplitRowDto>, AppError> {
@@ -32,9 +28,8 @@ pub async fn compute_markdown_split_rows(
     run_blocking(move || Ok(uc.compute_markdown_split_rows(&original, &modified))).await
 }
 
-#[tauri::command]
-pub async fn compute_markdown_inline_chunks(
-    state: State<'_, AppState>,
+pub(crate) async fn compute_markdown_inline_chunks_shared(
+    state: &AppState,
     original: String,
     modified: String,
 ) -> Result<Vec<InlineChunkDto>, AppError> {

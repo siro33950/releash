@@ -1,14 +1,11 @@
 //! staging（差分 Approve）の Tauri コマンド。
 
-use tauri::State;
-
 use super::run_blocking;
 use crate::adaptor::controller::state::AppState;
 use crate::other::AppError;
 
-#[tauri::command]
-pub async fn git_stage(
-    state: State<'_, AppState>,
+pub(crate) async fn git_stage_shared(
+    state: &AppState,
     repo_path: String,
     paths: Vec<String>,
 ) -> Result<(), AppError> {
@@ -16,9 +13,8 @@ pub async fn git_stage(
     run_blocking(move || uc.git_stage(&repo_path, paths)).await
 }
 
-#[tauri::command]
-pub async fn git_unstage(
-    state: State<'_, AppState>,
+pub(crate) async fn git_unstage_shared(
+    state: &AppState,
     repo_path: String,
     paths: Vec<String>,
 ) -> Result<(), AppError> {

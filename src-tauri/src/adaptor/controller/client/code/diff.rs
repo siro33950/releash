@@ -1,7 +1,5 @@
 //! diff_tree / branch_diff / 相対パスの Tauri コマンド。
 
-use tauri::State;
-
 use super::run_blocking;
 use crate::adaptor::controller::state::AppState;
 use crate::adaptor::protocol::code::{DiffFileEntryInput, DiffTreeNodeInput};
@@ -9,9 +7,8 @@ use crate::other::AppError;
 use crate::usecase::code_dto::{BranchDiffSummaryDto, DiffTreeNodeDto, FileNavigationResultDto};
 use crate::usecase::repository_state::snapshot::RepositoryHeadDiffFileTreeSnapshotDto;
 
-#[tauri::command]
-pub async fn build_diff_file_tree(
-    state: State<'_, AppState>,
+pub(crate) async fn build_diff_file_tree_shared(
+    state: &AppState,
     entries: Vec<DiffFileEntryInput>,
 ) -> Result<Vec<DiffTreeNodeDto>, AppError> {
     let uc = state.code_usecase.clone();
@@ -25,21 +22,19 @@ pub async fn build_diff_file_tree(
     .await
 }
 
-#[tauri::command]
-pub async fn get_head_diff_file_tree_snapshot(
-    state: State<'_, AppState>,
+pub(crate) async fn get_head_diff_file_tree_snapshot_shared(
+    state: &AppState,
     repo_path: String,
 ) -> Result<RepositoryHeadDiffFileTreeSnapshotDto, AppError> {
     let service = state.repository_state.clone();
-    crate::adaptor::controller::client::repository::run_repository_state(move || {
+    super::super::repository::run_repository_state(move || {
         service.get_head_diff_file_tree_snapshot(&repo_path)
     })
     .await
 }
 
-#[tauri::command]
-pub async fn get_file_navigation(
-    state: State<'_, AppState>,
+pub(crate) async fn get_file_navigation_shared(
+    state: &AppState,
     tree: Vec<DiffTreeNodeInput>,
     current_file: String,
 ) -> Result<FileNavigationResultDto, AppError> {
@@ -54,9 +49,8 @@ pub async fn get_file_navigation(
     .await
 }
 
-#[tauri::command]
-pub async fn get_branch_diff_summary(
-    state: State<'_, AppState>,
+pub(crate) async fn get_branch_diff_summary_shared(
+    state: &AppState,
     repo_path: String,
     base_branch: Option<String>,
 ) -> Result<BranchDiffSummaryDto, AppError> {
@@ -64,9 +58,8 @@ pub async fn get_branch_diff_summary(
     run_blocking(move || uc.get_branch_diff_summary(&repo_path, base_branch.as_deref())).await
 }
 
-#[tauri::command]
-pub async fn get_relative_path(
-    state: State<'_, AppState>,
+pub(crate) async fn get_relative_path_shared(
+    state: &AppState,
     root_path: String,
     file_path: String,
 ) -> Result<Option<String>, AppError> {

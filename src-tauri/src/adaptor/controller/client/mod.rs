@@ -1,3 +1,4 @@
+pub(crate) mod code;
 mod dependencies;
 pub(crate) mod dispatch;
 pub(crate) mod repository;

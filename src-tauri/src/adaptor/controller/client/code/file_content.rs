@@ -1,14 +1,11 @@
 //! ファイル内容参照（at_ref / at_branch_base / staged、テキスト／バイナリ）の Tauri コマンド。
 
-use tauri::State;
-
 use super::run_blocking;
 use crate::adaptor::controller::state::AppState;
 use crate::other::AppError;
 
-#[tauri::command]
-pub async fn get_file_at_ref(
-    state: State<'_, AppState>,
+pub(crate) async fn get_file_at_ref_shared(
+    state: &AppState,
     file_path: String,
     git_ref: String,
 ) -> Result<String, AppError> {
@@ -22,9 +19,8 @@ pub async fn get_file_at_ref(
     .await
 }
 
-#[tauri::command]
-pub async fn get_staged_content(
-    state: State<'_, AppState>,
+pub(crate) async fn get_staged_content_shared(
+    state: &AppState,
     file_path: String,
 ) -> Result<String, AppError> {
     let uc = state.code_usecase.clone();
@@ -37,9 +33,8 @@ pub async fn get_staged_content(
     .await
 }
 
-#[tauri::command]
-pub async fn get_binary_staged_content(
-    state: State<'_, AppState>,
+pub(crate) async fn get_binary_staged_content_shared(
+    state: &AppState,
     file_path: String,
 ) -> Result<String, AppError> {
     let uc = state.code_usecase.clone();
@@ -52,9 +47,8 @@ pub async fn get_binary_staged_content(
     .await
 }
 
-#[tauri::command]
-pub async fn get_file_at_branch_base(
-    state: State<'_, AppState>,
+pub(crate) async fn get_file_at_branch_base_shared(
+    state: &AppState,
     file_path: String,
 ) -> Result<String, AppError> {
     let uc = state.code_usecase.clone();
@@ -67,9 +61,8 @@ pub async fn get_file_at_branch_base(
     .await
 }
 
-#[tauri::command]
-pub async fn get_binary_file_at_branch_base(
-    state: State<'_, AppState>,
+pub(crate) async fn get_binary_file_at_branch_base_shared(
+    state: &AppState,
     file_path: String,
 ) -> Result<String, AppError> {
     let uc = state.code_usecase.clone();
@@ -82,9 +75,8 @@ pub async fn get_binary_file_at_branch_base(
     .await
 }
 
-#[tauri::command]
-pub async fn get_binary_file_at_ref(
-    state: State<'_, AppState>,
+pub(crate) async fn get_binary_file_at_ref_shared(
+    state: &AppState,
     file_path: String,
     git_ref: String,
 ) -> Result<String, AppError> {
