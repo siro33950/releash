@@ -1,6 +1,6 @@
-import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { NotionTask, NotionTaskPage } from "@/types/notion";
+import { invokeClient as invoke } from "@/lib/clientSocket";
+import type { NotionTask } from "@/types/notion";
 
 const DEBOUNCE_MS = 300;
 
@@ -33,7 +33,7 @@ export function useNotionTasks(
 		) => {
 			setLoading(true);
 			try {
-				const result = await invoke<NotionTaskPage>("query_notion_tasks", {
+				const result = await invoke("query_notion_tasks", {
 					repoPath,
 					query: {
 						title_filter: title,

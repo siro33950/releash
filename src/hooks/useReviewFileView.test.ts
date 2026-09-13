@@ -1,10 +1,10 @@
-import { invoke } from "@tauri-apps/api/core";
 import { renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { invokeClient as invoke } from "@/lib/clientSocket";
 import { useReviewFileView } from "./useReviewFileView";
 
-vi.mock("@tauri-apps/api/core", () => ({
-	invoke: vi.fn(),
+vi.mock("@/lib/clientSocket", () => ({
+	invokeClient: vi.fn(),
 }));
 
 const mockInvoke = vi.mocked(invoke);

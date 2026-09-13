@@ -18,7 +18,6 @@ function settingsConfig(overrides: Record<string, unknown> = {}) {
 				is_locked: false,
 				dirty_count: 0,
 				base_branch: null,
-				management_kind: "working_area",
 			},
 		],
 		get_current_branch: "feat/test",

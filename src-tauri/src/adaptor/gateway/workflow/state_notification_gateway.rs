@@ -17,7 +17,7 @@ fn emit_workflow_execution_view<R: tauri::Runtime>(
         worktree_path: view.worktree_path.clone(),
         workflow_execution: view,
     };
-    BackendPush::WorkflowExecutionChanged(&payload).emit(app);
+    BackendPush::WorkflowExecutionChanged(Box::new(payload)).emit(app);
 }
 
 /// Maps the already-updated runtime snapshot to the public execution read model.

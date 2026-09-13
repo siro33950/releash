@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
 	act,
@@ -10,9 +9,10 @@ import {
 import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useWorkspaceNodeDetail } from "@/hooks/useWorkspaceNodeDetail";
+import { invokeClient as invoke } from "@/lib/clientSocket";
 import { AgentSessionPanel, AgentSessionRoute } from "./AgentSessionPanel";
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+vi.mock("@/lib/clientSocket", () => ({ invokeClient: vi.fn() }));
 vi.mock("@/components/panels/TerminalPanel", () => ({
 	TerminalPanel: (props: Record<string, unknown>) => {
 		const onTerminalError = props.onTerminalError as
@@ -46,6 +46,8 @@ const mockInvoke = vi.mocked(invoke);
 const session = {
 	id: "agent-session-1",
 	workspaceIdentity: "/repo",
+	providerSessionId: null,
+	transcriptRef: null,
 	workspaceWorktreePath: "/repo/worktree",
 	worktreePath: "/repo-worktrees/.releash-isolated/node-a1",
 	provider: "claude" as const,

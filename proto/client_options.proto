@@ -1,0 +1,23 @@
+syntax = "proto2";
+package releash.client.v1;
+import "google/protobuf/descriptor.proto";
+
+extend google.protobuf.MessageOptions {
+  optional string json_wrapper = 51000;
+  optional bool json_unit = 51001;
+  optional string json_tag = 51003;
+  optional string json_content = 51004;
+  optional bool json_untagged = 51006;
+}
+extend google.protobuf.FieldOptions {
+  optional bool json_required = 51010;
+  optional bool json_nullable = 51011;
+  optional bool json_default = 51012;
+  optional bool json_omit_empty = 51013;
+  optional bool json_omit_none = 51014;
+  optional string json_literal = 51015;
+  optional bool json_flatten = 51016;
+}
+extend google.protobuf.EnumValueOptions {
+  optional string json_enum_name = 51020;
+}

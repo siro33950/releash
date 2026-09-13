@@ -6,6 +6,7 @@
 	"type": "module",
 	"scripts": {
 		"dev": "vite",
+		"generate:protocol": "protoc --proto_path=proto --plugin=protoc-gen-es=node_modules/.bin/protoc-gen-es --es_out=src/generated --es_opt=target=ts proto/client.proto proto/client_options.proto && node scripts/generate-client-protocol.mjs && biome check --write src/generated/client_pb.ts src/generated/client_options_pb.ts src/generated/client_types.ts",
 		"build": "tsc && vite build",
 		"build:performance": "tsc && vite build --mode performance",
 		"preview": "vite preview",
@@ -29,6 +30,7 @@
 		"test:integration:ui": "playwright test --ui"
 	},
 	"dependencies": {
+		"@bufbuild/protobuf": "^2.15.0",
 		"@react-symbols/icons": "^1.4.1",
 		"@shikijs/langs": "^4.4.3",
 		"@shikijs/themes": "^4.4.3",
@@ -63,6 +65,7 @@
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.5.10",
+		"@bufbuild/protoc-gen-es": "^2.15.0",
 		"@playwright/test": "^1.62.1",
 		"@tailwindcss/vite": "^4.3.3",
 		"@tauri-apps/cli": "^2.11.4",

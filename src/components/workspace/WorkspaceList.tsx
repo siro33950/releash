@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke as invokeTauri } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
@@ -50,6 +50,7 @@ import { useWorkflowConfig } from "@/hooks/useWorkflowConfig";
 import { useWorkspaceTreeNodes } from "@/hooks/useWorkspaceTreeNodes";
 import { useWorktreeList } from "@/hooks/useWorktreeList";
 import { notifyAgentSessionChanged } from "@/lib/agentSessionEvents";
+import { invokeClient as invoke } from "@/lib/clientSocket";
 import { getErrorMessage } from "@/lib/errorMessage";
 import { trackEvent } from "@/lib/telemetry";
 import {
@@ -58,7 +59,6 @@ import {
 } from "@/lib/workflowExecutionActions";
 import type {
 	AgentSessionHistoryCandidate,
-	AgentSessionHistoryPage,
 	AgentSessionItem,
 } from "@/types/agent-session";
 import type { WorktreeBranch } from "@/types/git";
@@ -848,9 +848,7 @@ function WorktreeTreeItem({
 			};
 			setProviderActionError(null);
 			try {
-				const outcome = await invoke<
-					"archived" | "already_archived" | "delete_confirmation_required"
-				>("archive_agent_session", {
+				const outcome = await invoke("archive_agent_session", {
 					agentSessionId: target.id,
 					callerRequestId: `archive.${crypto.randomUUID()}`,
 				});
@@ -939,13 +937,10 @@ function WorktreeTreeItem({
 				});
 				notifyAgentSessionChanged(session.workspaceWorktreePath);
 				await refreshAgentSessions();
-				const nodeId = await invoke<string | null>(
-					"get_workspace_session_node_id",
-					{
-						worktreePath: branch.worktree_path,
-						sessionId: session.id,
-					},
-				);
+				const nodeId = await invoke("get_workspace_session_node_id", {
+					worktreePath: branch.worktree_path,
+					sessionId: session.id,
+				});
 				if (!nodeId) throw new Error("Restored Session Node was not found");
 				selectCenter({
 					kind: "node",
@@ -970,13 +965,10 @@ function WorktreeTreeItem({
 		if (!branch.worktree_path) return;
 		setProviderHistoryLoading(true);
 		try {
-			const page = await invoke<AgentSessionHistoryPage>(
-				"list_agent_session_history",
-				{
-					worktreePath: branch.worktree_path,
-					limit: 100,
-				},
-			);
+			const page = await invoke("list_agent_session_history", {
+				worktreePath: branch.worktree_path,
+				limit: 100,
+			});
 			setProviderHistory(page?.items ?? []);
 			setProviderHistoryNextAfter(page?.nextAfter ?? null);
 		} catch (error) {
@@ -992,14 +984,11 @@ function WorktreeTreeItem({
 		if (!branch.worktree_path || !providerHistoryNextAfter) return;
 		setProviderHistoryLoading(true);
 		try {
-			const page = await invoke<AgentSessionHistoryPage>(
-				"list_agent_session_history",
-				{
-					worktreePath: branch.worktree_path,
-					limit: 100,
-					after: providerHistoryNextAfter,
-				},
-			);
+			const page = await invoke("list_agent_session_history", {
+				worktreePath: branch.worktree_path,
+				limit: 100,
+				after: providerHistoryNextAfter,
+			});
 			setProviderHistory((current) => [...current, ...(page?.items ?? [])]);
 			setProviderHistoryNextAfter(page?.nextAfter ?? null);
 			setProviderActionError(null);
@@ -1015,7 +1004,7 @@ function WorktreeTreeItem({
 			if (!branch.worktree_path) return;
 			setProviderActionError(null);
 			try {
-				const agentSessionId = await invoke<string>(
+				const agentSessionId = await invoke(
 					"resume_agent_session_history_candidate",
 					{
 						workspaceIdentity: branch.worktree_path,
@@ -1028,13 +1017,10 @@ function WorktreeTreeItem({
 					},
 				);
 				await refreshAgentSessions();
-				const nodeId = await invoke<string | null>(
-					"get_workspace_session_node_id",
-					{
-						worktreePath: branch.worktree_path,
-						sessionId: agentSessionId,
-					},
-				);
+				const nodeId = await invoke("get_workspace_session_node_id", {
+					worktreePath: branch.worktree_path,
+					sessionId: agentSessionId,
+				});
 				if (!nodeId) throw new Error("Resumed Session Node was not found");
 				selectCenter({
 					kind: "node",
@@ -1111,9 +1097,7 @@ function WorktreeTreeItem({
 		setProviderMenuLoading(true);
 		setProviderActionError(null);
 		try {
-			const providers = await invoke<string[]>(
-				"list_available_agent_session_providers",
-			);
+			const providers = await invoke("list_available_agent_session_providers");
 			setAvailableProviders(providers ?? []);
 		} catch (error) {
 			setAvailableProviders([]);
@@ -1148,7 +1132,7 @@ function WorktreeTreeItem({
 				);
 			};
 			try {
-				const agentSessionId = await invoke<string>("create_agent_session", {
+				const agentSessionId = await invoke("create_agent_session", {
 					workspaceIdentity: branch.worktree_path,
 					worktreePath: branch.worktree_path,
 					provider,
@@ -1157,13 +1141,10 @@ function WorktreeTreeItem({
 					callerRequestId: `create.${launchToken}`,
 				});
 				if (isLaunchSelectionCurrent()) {
-					const nodeId = await invoke<string | null>(
-						"get_workspace_session_node_id",
-						{
-							worktreePath: branch.worktree_path,
-							sessionId: agentSessionId,
-						},
-					);
+					const nodeId = await invoke("get_workspace_session_node_id", {
+						worktreePath: branch.worktree_path,
+						sessionId: agentSessionId,
+					});
 					if (!nodeId) throw new Error("Created Session Node was not found");
 					selectCenter({
 						kind: "node",
@@ -1217,7 +1198,7 @@ function WorktreeTreeItem({
 		setWorkflowStarting(true);
 		setWorkflowStartError(null);
 		try {
-			await invoke<string>("start_workflow", {
+			await invoke("start_workflow", {
 				workflowName: selectedWorkflowName,
 				worktreePath: branch.worktree_path,
 				request: workflowRequestInput.trim(),
@@ -1250,7 +1231,7 @@ function WorktreeTreeItem({
 			if (!branch.worktree_path || !node.capabilities.canClose) return;
 			setWorkflowActionError(null);
 			try {
-				await invoke("close_workspace_node", {
+				await invokeTauri("close_workspace_node", {
 					worktreePath: branch.worktree_path,
 					nodeId: node.id,
 				});

@@ -8,10 +8,7 @@ import {
 	setupTauriMock,
 	workspaceTreeReconciliation,
 } from "./helpers/tauri-mock";
-import {
-	waitForApp,
-	waitForWorkspaceTreeQuiescence,
-} from "./helpers/utils";
+import { waitForApp, waitForWorkspaceTreeQuiescence } from "./helpers/utils";
 
 async function waitForAnimations(locator: Locator) {
 	await locator.evaluate(async (element) => {
@@ -27,15 +24,19 @@ function agentSession(id: string, worktreePath: string) {
 	return {
 		id,
 		workspaceIdentity: worktreePath,
+		workspaceWorktreePath: worktreePath,
+		treeLocation: { treeId: "mock-tree", nodeExecutionId: id },
 		worktreePath,
 		provider: "codex",
 		lifecycle: "open",
-		activity: "idle",
 		lastExitAbnormal: false,
+		providerSessionId: null,
+		transcriptRef: null,
 		operations: {
 			canArchive: true,
 			canRestore: false,
 			canDelete: false,
+			canResume: false,
 		},
 	};
 }
@@ -70,9 +71,7 @@ test.describe("Workspace Manager", () => {
 
 		// useWorktreeList は worktree_path != null のブランチのみ表示する
 		await expect(page.getByTestId("worktree-item-feat/wip")).toBeVisible();
-		await expect(
-			page.getByTestId("worktree-item-feat/review"),
-		).toBeVisible();
+		await expect(page.getByTestId("worktree-item-feat/review")).toBeVisible();
 	});
 
 	test("worktree 付きブランチをクリックするとツリーが折りたたまれる", async ({
@@ -88,9 +87,10 @@ test.describe("Workspace Manager", () => {
 						kind: "node",
 						id: "node-session-1",
 						title: "Direct session",
-						status: "running",
+						status: "active",
 						contentKind: "session",
 						capabilities: {
+							canRename: false,
 							canApprove: false,
 							canRetry: false,
 							canClose: true,
@@ -127,7 +127,7 @@ test.describe("Workspace Manager", () => {
 						kind: "sequence",
 						id: "workflow-opaque-1",
 						title: "Release workflow",
-						status: "running",
+						status: "active",
 						workflowCapabilities: {
 							canStop: true,
 							canResume: false,
@@ -140,9 +140,10 @@ test.describe("Workspace Manager", () => {
 								kind: "node",
 								id: "node-build-opaque",
 								title: "build",
-								status: "running",
+								status: "active",
 								contentKind: "session",
 								capabilities: {
+									canRename: false,
 									canApprove: false,
 									canRetry: false,
 									canClose: false,
@@ -179,7 +180,9 @@ test.describe("Workspace Manager", () => {
 		expect(menuBox!.y).toBeGreaterThan(10);
 		expect(
 			Math.abs(
-				menuBox!.x + menuBox!.width / 2 - (triggerBox!.x + triggerBox!.width / 2),
+				menuBox!.x +
+					menuBox!.width / 2 -
+					(triggerBox!.x + triggerBox!.width / 2),
 			),
 		).toBeLessThan(160);
 		expect(
@@ -209,10 +212,12 @@ test.describe("Workspace Manager", () => {
 			create_agent_session: agentSessionId,
 			get_workspace_session_node_id: agentSessionId,
 			get_workspace_node_detail: {
+				statusClassification: "active",
 				id: agentSessionId,
 				title: "New Session",
 				status: "running",
 				capabilities: {
+					canRename: false,
 					canApprove: false,
 					canRetry: false,
 					canClose: true,
@@ -275,8 +280,9 @@ test.describe("Workspace Manager", () => {
 		expect(
 			invocations.some((entry) => entry.cmd === "open_agent_session"),
 		).toBe(false);
-		expect(invocations.some((entry) => entry.cmd === "create_workspace_session"))
-			.toBe(false);
+		expect(
+			invocations.some((entry) => entry.cmd === "create_workspace_session"),
+		).toBe(false);
 	});
 
 	test("the first Workflow Node is selected after an initially empty snapshot", async ({
@@ -287,9 +293,10 @@ test.describe("Workspace Manager", () => {
 			kind: "node",
 			id: "node-first-workflow-opaque",
 			title: "First workflow Session",
-			status: "running",
+			status: "active",
 			contentKind: "session",
 			capabilities: {
+				canRename: false,
 				canApprove: false,
 				canRetry: false,
 				canClose: false,
@@ -305,9 +312,13 @@ test.describe("Workspace Manager", () => {
 		const config = buildMockConfig({
 			list_worktrees: [
 				{
+					name: "feat-wip",
+					is_main: false,
+					is_locked: false,
+					dirty_count: 0,
+					base_branch: "main",
 					path: worktreePath,
 					branch: "feat/wip",
-					management_kind: "working_area",
 				},
 			],
 			list_branches_with_status: kanbanBranches.filter(
@@ -333,7 +344,7 @@ test.describe("Workspace Manager", () => {
 								kind: "sequence",
 								id: "workflow-first",
 								title: "First workflow",
-								status: "running",
+								status: "active",
 								workflowCapabilities: {
 									canStop: true,
 									canResume: false,
@@ -351,9 +362,10 @@ test.describe("Workspace Manager", () => {
 				window.__TAURI_INTERNALS__?.setMockResponse(
 					"get_workspace_node_detail",
 					{
+						statusClassification: "active",
 						id: workflowNode.id,
 						title: workflowNode.title,
-						status: workflowNode.status,
+						status: "running",
 						capabilities: workflowNode.capabilities,
 						updatedAt: workflowNode.updatedAt,
 						submitReceived: false,
@@ -422,7 +434,7 @@ test.describe("Workspace Manager", () => {
 						kind: "sequence",
 						id: "workflow-session-parent",
 						title: "Review workflow",
-						status: "waiting",
+						status: "attention",
 						workflowCapabilities: {
 							canStop: false,
 							canResume: false,
@@ -435,9 +447,10 @@ test.describe("Workspace Manager", () => {
 								kind: "node",
 								id: "node-workflow-session",
 								title: "Review changes",
-								status: "waiting",
+								status: "attention",
 								contentKind: "session",
 								capabilities: {
+									canRename: false,
 									canApprove: false,
 									canRetry: false,
 									canClose: false,
@@ -453,10 +466,12 @@ test.describe("Workspace Manager", () => {
 				preferredNodeId: null,
 			},
 			get_workspace_node_detail: {
+				statusClassification: "attention",
 				id: "node-workflow-session",
 				title: "Review changes",
 				status: "waiting",
 				capabilities: {
+					canRename: false,
 					canApprove: false,
 					canRetry: false,
 					canClose: false,
@@ -474,7 +489,7 @@ test.describe("Workspace Manager", () => {
 		await waitForApp(page);
 
 		await page
-			.getByRole("button", { name: "Review changes, waiting" })
+			.getByRole("button", { name: "Review changes, attention" })
 			.click();
 
 		await expect
@@ -522,7 +537,7 @@ test.describe("Workspace Manager", () => {
 						kind: "sequence",
 						id: "workflow-fanout-parent",
 						title: "Fanout workflow",
-						status: "running",
+						status: "active",
 						workflowCapabilities: {
 							canStop: true,
 							canResume: false,
@@ -535,16 +550,17 @@ test.describe("Workspace Manager", () => {
 								kind: "fanout",
 								id: "fanout-branch",
 								title: "Matrix jobs",
-								status: "running",
+								status: "active",
 								updatedAt: 1000,
 								children: [
 									{
 										kind: "node",
 										id: "fanout-child-a",
 										title: "Linux job",
-										status: "running",
+										status: "active",
 										contentKind: "command",
 										capabilities: {
+											canRename: false,
 											canApprove: false,
 											canRetry: false,
 											canClose: false,
@@ -568,13 +584,16 @@ test.describe("Workspace Manager", () => {
 		const fanout = page.getByRole("button", { name: "Matrix jobs" });
 		await expect(page.getByText("Linux job", { exact: true })).toBeVisible();
 		await fanout.click();
-		await expect(page.getByText("Linux job", { exact: true })).not.toBeVisible();
+		await expect(
+			page.getByText("Linux job", { exact: true }),
+		).not.toBeVisible();
 		await fanout.click();
 		await expect(page.getByText("Linux job", { exact: true })).toBeVisible();
-		const detailCalls = await page.evaluate(() =>
-			window.__TAURI_INTERNALS__?.invocations.filter(
-				(entry) => entry.cmd === "get_workspace_node_detail",
-			).length,
+		const detailCalls = await page.evaluate(
+			() =>
+				window.__TAURI_INTERNALS__?.invocations.filter(
+					(entry) => entry.cmd === "get_workspace_node_detail",
+				).length,
 		);
 		expect(detailCalls).toBe(0);
 	});
@@ -592,7 +611,7 @@ test.describe("Workspace Manager", () => {
 						kind: "sequence",
 						id: "workflow-command-parent",
 						title: "Deploy workflow",
-						status: "completed",
+						status: "idle",
 						workflowCapabilities: {
 							canStop: false,
 							canResume: false,
@@ -605,16 +624,17 @@ test.describe("Workspace Manager", () => {
 								kind: "fanout",
 								id: "fanout-opaque",
 								title: "Deploy batch",
-								status: "completed",
+								status: "idle",
 								updatedAt: 1000,
 								children: [
 									{
 										kind: "node",
 										id: "node-command-opaque",
 										title: "Deploy",
-										status: "completed",
+										status: "idle",
 										contentKind: "command",
 										capabilities: {
+											canRename: false,
 											canApprove: false,
 											canRetry: false,
 											canClose: false,
@@ -632,10 +652,12 @@ test.describe("Workspace Manager", () => {
 				preferredNodeId: null,
 			},
 			get_workspace_node_detail: {
+				statusClassification: "idle",
 				id: "node-command-opaque",
 				title: "Deploy",
 				status: "completed",
 				capabilities: {
+					canRename: false,
 					canApprove: false,
 					canRetry: false,
 					canClose: false,
@@ -664,10 +686,12 @@ test.describe("Workspace Manager", () => {
 		await expect(page.getByText("deploy complete")).not.toBeVisible();
 		await page.getByRole("button", { name: "Deploy batch" }).click();
 		await expect(page.getByText("Deploy", { exact: true })).not.toBeVisible();
-		await expect(page.getByText("Select a Node from the Workspace tree.")).not.toBeVisible();
+		await expect(
+			page.getByText("Select a Node from the Workspace tree."),
+		).not.toBeVisible();
 		await page.getByRole("button", { name: "Deploy batch" }).click();
 		await page
-			.getByRole("button", { name: "Deploy, completed", exact: true })
+			.getByRole("button", { name: "Deploy, idle", exact: true })
 			.click();
 
 		await expect(page.getByTestId("workspace-command")).toContainText(
@@ -681,7 +705,9 @@ test.describe("Workspace Manager", () => {
 			"masked warning",
 		);
 		await expect(page.getByText("raw-super-secret")).not.toBeVisible();
-		await expect(page.getByText("internal-node-execution-uuid")).not.toBeVisible();
+		await expect(
+			page.getByText("internal-node-execution-uuid"),
+		).not.toBeVisible();
 		await expect(page.getByText(/attempt 4/i)).not.toBeVisible();
 	});
 
@@ -697,9 +723,10 @@ test.describe("Workspace Manager", () => {
 					kind: "node",
 					id: fallbackNodeId,
 					title: "Archive fallback",
-					status: "running",
+					status: "active",
 					contentKind: "session",
 					capabilities: {
+						canRename: false,
 						canApprove: false,
 						canRetry: false,
 						canClose: true,
@@ -712,7 +739,7 @@ test.describe("Workspace Manager", () => {
 					kind: "sequence",
 					id: "archivable-workflow",
 					title: "Archivable integration workflow",
-					status: "completed",
+					status: "idle",
 					workflowCapabilities: {
 						canStop: false,
 						canResume: false,
@@ -725,9 +752,10 @@ test.describe("Workspace Manager", () => {
 							kind: "node",
 							id: selectedNodeId,
 							title: "Archive selected",
-							status: "completed",
+							status: "idle",
 							contentKind: "session",
 							capabilities: {
+								canRename: false,
 								canApprove: false,
 								canRetry: false,
 								canClose: false,
@@ -756,10 +784,12 @@ test.describe("Workspace Manager", () => {
 				workspaceTreeReconciliation(reconciledSnapshot),
 			archive_workspace_workflow_execution: null,
 			get_workspace_node_detail: {
+				statusClassification: "idle",
 				id: selectedNodeId,
 				title: "Archive selected",
 				status: "completed",
 				capabilities: {
+					canRename: false,
 					canApprove: false,
 					canRetry: false,
 					canClose: false,
@@ -782,11 +812,9 @@ test.describe("Workspace Manager", () => {
 		await setupTauriMock(page, config);
 		await waitForApp(page);
 
-		await page
-			.getByRole("button", { name: "Archive selected, completed" })
-			.click();
+		await page.getByRole("button", { name: "Archive selected, idle" }).click();
 		await expect(
-			page.getByRole("button", { name: "Archive selected, completed" }),
+			page.getByRole("button", { name: "Archive selected, idle" }),
 		).toHaveAttribute("aria-current", "page");
 		await page
 			.getByRole("button", {
@@ -799,7 +827,7 @@ test.describe("Workspace Manager", () => {
 			.click();
 
 		await expect(
-			page.getByRole("button", { name: "Archive fallback, running" }),
+			page.getByRole("button", { name: "Archive fallback, active" }),
 		).toHaveAttribute("aria-current", "page");
 		const reconciliationInvocations = await page.evaluate(
 			() =>
@@ -824,9 +852,10 @@ test.describe("Workspace Manager", () => {
 			kind: "node",
 			id: "occurrence-a-1",
 			title: "Loop step",
-			status: "running",
+			status: "active",
 			contentKind: "session",
 			capabilities: {
+				canRename: false,
 				canApprove: false,
 				canRetry: false,
 				canClose: false,
@@ -839,7 +868,7 @@ test.describe("Workspace Manager", () => {
 			kind: "sequence",
 			id: "loop-workflow",
 			title: "Loop workflow",
-			status: "running",
+			status: "active",
 			workflowCapabilities: {
 				canStop: true,
 				canResume: false,
@@ -859,10 +888,12 @@ test.describe("Workspace Manager", () => {
 				preferredNodeId: null,
 			},
 			get_workspace_node_detail: {
+				statusClassification: "active",
 				id: "occurrence-a-1",
 				title: "Loop step",
 				status: "running",
 				capabilities: {
+					canRename: false,
 					canApprove: false,
 					canRetry: false,
 					canClose: false,
@@ -876,16 +907,13 @@ test.describe("Workspace Manager", () => {
 					sessionId: "agent-session-loop-a-1",
 				},
 			},
-			get_agent_session: agentSession(
-				"agent-session-loop-a-1",
-				worktreePath,
-			),
+			get_agent_session: agentSession("agent-session-loop-a-1", worktreePath),
 			open_agent_session: "attached",
 		});
 		await setupTauriMock(page, config);
 		await waitForApp(page);
 		const firstRow = page.getByRole("button", {
-			name: "Loop step, running",
+			name: "Loop step, active",
 			exact: true,
 		});
 		await firstRow.click();
@@ -905,8 +933,7 @@ test.describe("Workspace Manager", () => {
 		);
 		expect(
 			refreshInvocations.filter(
-				(entry) =>
-					entry.cmd === "get_workspace_tree_selection_reconciliation",
+				(entry) => entry.cmd === "get_workspace_tree_selection_reconciliation",
 			),
 		).toHaveLength(0);
 		await expect(firstRow).toHaveAttribute("aria-current", "page");
@@ -917,13 +944,13 @@ test.describe("Workspace Manager", () => {
 				if (!internals) throw new Error("Tauri mock not initialized");
 				const completedFirst = {
 					...firstOccurrence,
-					status: "completed",
+					status: "idle",
 					updatedAt: 2000,
 				};
 				const secondOccurrence = {
 					...firstOccurrence,
 					id: "occurrence-a-2",
-					status: "running",
+					status: "active",
 					updatedAt: 3000,
 				};
 				internals.setMockResponse("list_workspace_worktree_nodes", {
@@ -938,10 +965,12 @@ test.describe("Workspace Manager", () => {
 					preferredNodeId: "occurrence-a-2",
 				});
 				internals.setMockResponse("get_workspace_node_detail", {
+					statusClassification: "idle",
 					id: "occurrence-a-1",
 					title: "Loop step",
 					status: "completed",
 					capabilities: {
+						canRename: false,
 						canApprove: false,
 						canRetry: false,
 						canClose: false,
@@ -965,11 +994,11 @@ test.describe("Workspace Manager", () => {
 		);
 
 		const completedFirstRow = page.getByRole("button", {
-			name: "Loop step, completed",
+			name: "Loop step, idle",
 			exact: true,
 		});
 		const secondRow = page.getByRole("button", {
-			name: "Loop step, running",
+			name: "Loop step, active",
 			exact: true,
 		});
 		await expect(completedFirstRow).toHaveAttribute("aria-current", "page");
@@ -979,24 +1008,22 @@ test.describe("Workspace Manager", () => {
 		);
 		expect(
 			updateInvocations.filter(
-				(entry) =>
-					entry.cmd === "get_workspace_tree_selection_reconciliation",
+				(entry) => entry.cmd === "get_workspace_tree_selection_reconciliation",
 			),
 		).toHaveLength(0);
 
-		const secondSession = agentSession(
-			"agent-session-loop-a-2",
-			worktreePath,
-		);
+		const secondSession = agentSession("agent-session-loop-a-2", worktreePath);
 		await page.evaluate(
 			({ worktreePath, secondSession }) => {
 				const internals = window.__TAURI_INTERNALS__;
 				if (!internals) throw new Error("Tauri mock not initialized");
 				internals.setMockResponse("get_workspace_node_detail", {
+					statusClassification: "active",
 					id: "occurrence-a-2",
 					title: "Loop step",
 					status: "running",
 					capabilities: {
+						canRename: false,
 						canApprove: false,
 						canRetry: false,
 						canClose: false,
@@ -1057,7 +1084,9 @@ test.describe("CreateWorktreeModal", () => {
 		await waitForApp(page);
 
 		await page.getByTitle("Add worktree").click();
-		await expect(page.getByRole("heading", { name: "New Worktree" })).toBeVisible();
+		await expect(
+			page.getByRole("heading", { name: "New Worktree" }),
+		).toBeVisible();
 
 		const dialog = page.getByRole("dialog");
 
@@ -1085,7 +1114,9 @@ test.describe("CreateWorktreeModal", () => {
 		await waitForApp(page);
 
 		await page.getByTitle("Add worktree").click();
-		await expect(page.getByRole("heading", { name: "New Worktree" })).toBeVisible();
+		await expect(
+			page.getByRole("heading", { name: "New Worktree" }),
+		).toBeVisible();
 
 		await page.getByRole("button", { name: "Cancel" }).click();
 
@@ -1105,7 +1136,9 @@ test.describe("CreateWorktreeModal", () => {
 		await waitForApp(page);
 
 		await page.getByTitle("Add worktree").click();
-		await expect(page.getByRole("heading", { name: "New Worktree" })).toBeVisible();
+		await expect(
+			page.getByRole("heading", { name: "New Worktree" }),
+		).toBeVisible();
 
 		// Plain モードがデフォルト
 		const branchInput = page.getByPlaceholder("feat/my-feature");

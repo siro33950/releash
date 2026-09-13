@@ -1,11 +1,11 @@
 import { renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-vi.mock("@tauri-apps/api/core", () => ({
-	invoke: vi.fn(),
+vi.mock("@/lib/clientSocket", () => ({
+	invokeClient: vi.fn(),
 }));
 
-import { invoke } from "@tauri-apps/api/core";
+import { invokeClient as invoke } from "@/lib/clientSocket";
 import type { DiffTreeNode } from "@/types/review";
 import { useFileNavigation } from "./useFileNavigation";
 

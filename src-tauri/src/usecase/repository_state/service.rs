@@ -307,7 +307,7 @@ impl RepositoryStateService {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::usecase::repository_dto::{BranchCardDto, FileDiffStatDto, FileStatusDto};
     use crate::usecase::repository_state::runtime::tests_support::{
@@ -467,6 +467,12 @@ mod tests {
                 .push(state.worktree_path().to_string());
             Ok(Box::new(()))
         }
+    }
+
+    pub(crate) fn watching_service() -> RepositoryStateService {
+        test_service(Arc::new(EmptyScanner {
+            ignored_calls: AtomicUsize::new(0),
+        }))
     }
 
     fn test_service(scanner: Arc<EmptyScanner>) -> RepositoryStateService {

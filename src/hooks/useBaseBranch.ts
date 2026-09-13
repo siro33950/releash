@@ -1,10 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useState } from "react";
-
-interface BranchInfo {
-	name: string;
-	is_remote: boolean;
-}
+import { invokeClient as invoke } from "@/lib/clientSocket";
 
 export function useBaseBranch(
 	rootPath: string | null,
@@ -21,11 +16,11 @@ export function useBaseBranch(
 		}
 		try {
 			const [base, branches] = await Promise.all([
-				invoke<string | null>("get_branch_base", {
+				invoke("get_branch_base", {
 					repoPath: rootPath,
 					branchName,
 				}),
-				invoke<BranchInfo[]>("list_branches", { repoPath: rootPath }),
+				invoke("list_branches", { repoPath: rootPath }),
 			]);
 			setBaseBranchState(base);
 			setLocalBranches(

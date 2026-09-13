@@ -43,7 +43,7 @@ beforeAll(() => {
 
 describe("SettingsModal", () => {
 	beforeEach(async () => {
-		const { invoke } = await import("@tauri-apps/api/core");
+		const { invokeClient: invoke } = await import("@/lib/clientSocket");
 		vi.mocked(invoke).mockImplementation((cmd: string) => {
 			switch (cmd) {
 				case "get_workflow_config":
@@ -128,7 +128,7 @@ describe("SettingsModal", () => {
 	});
 
 	it("does not expose the retired agent command palette settings", async () => {
-		const { invoke } = await import("@tauri-apps/api/core");
+		const { invokeClient: invoke } = await import("@/lib/clientSocket");
 		render(<SettingsModal {...defaultProps} />);
 		fireEvent.click(screen.getByText("Agent"));
 
@@ -144,7 +144,7 @@ describe("SettingsModal", () => {
 	});
 
 	it("does not expose or invoke the legacy Claude Hook configuration", async () => {
-		const { invoke } = await import("@tauri-apps/api/core");
+		const { invokeClient: invoke } = await import("@/lib/clientSocket");
 		render(<SettingsModal {...defaultProps} />);
 		fireEvent.click(screen.getByText("Agent"));
 
@@ -185,7 +185,7 @@ describe("SettingsModal", () => {
 
 	it("Provider CLI path変更をglobal Saveからbackendへ保存する", async () => {
 		const user = userEvent.setup();
-		const { invoke } = await import("@tauri-apps/api/core");
+		const { invokeClient: invoke } = await import("@/lib/clientSocket");
 		vi.mocked(invoke).mockImplementation((cmd: string) => {
 			if (cmd === "get_provider_availability") {
 				return Promise.resolve({
@@ -223,7 +223,7 @@ describe("SettingsModal", () => {
 
 	it("Provider CLIのresetとrefreshをbackend操作へ転送する", async () => {
 		const user = userEvent.setup();
-		const { invoke } = await import("@tauri-apps/api/core");
+		const { invokeClient: invoke } = await import("@/lib/clientSocket");
 		render(<SettingsModal {...defaultProps} />);
 		fireEvent.click(screen.getByText("Agent"));
 		await user.click(
@@ -241,7 +241,7 @@ describe("SettingsModal", () => {
 
 	it("一方のProvider CLIをresetしても他方の未保存draftを維持する", async () => {
 		const user = userEvent.setup();
-		const { invoke } = await import("@tauri-apps/api/core");
+		const { invokeClient: invoke } = await import("@/lib/clientSocket");
 		const provider = (id: string, configuredExecutable: string | null) => ({
 			provider: id,
 			displayName: id === "claude" ? "Claude" : "Codex",
@@ -282,7 +282,7 @@ describe("SettingsModal", () => {
 
 	it("Provider CLI refresh失敗時は直前snapshotを維持してerrorを表示する", async () => {
 		const user = userEvent.setup();
-		const { invoke } = await import("@tauri-apps/api/core");
+		const { invokeClient: invoke } = await import("@/lib/clientSocket");
 		vi.mocked(invoke).mockImplementation((cmd: string) => {
 			if (cmd === "get_provider_availability") {
 				return Promise.resolve({
@@ -435,7 +435,7 @@ describe("SettingsModal", () => {
 	it("should toggle performance telemetry off and call onSave", async () => {
 		const user = userEvent.setup();
 		const onSave = vi.fn();
-		const { invoke } = await import("@tauri-apps/api/core");
+		const { invokeClient: invoke } = await import("@/lib/clientSocket");
 		render(<SettingsModal {...defaultProps} onSave={onSave} />);
 		fireEvent.click(screen.getByText("Privacy & Updates"));
 		const checkbox = screen.getByRole("checkbox", {
@@ -454,7 +454,7 @@ describe("SettingsModal", () => {
 	it("should re-enable performance telemetry and call onSave", async () => {
 		const user = userEvent.setup();
 		const onSave = vi.fn();
-		const { invoke } = await import("@tauri-apps/api/core");
+		const { invokeClient: invoke } = await import("@/lib/clientSocket");
 		render(
 			<SettingsModal
 				{...defaultProps}
@@ -479,7 +479,7 @@ describe("SettingsModal", () => {
 	it("should call settings_saved after performance telemetry update completes", async () => {
 		const user = userEvent.setup();
 		const onSave = vi.fn();
-		const { invoke } = await import("@tauri-apps/api/core");
+		const { invokeClient: invoke } = await import("@/lib/clientSocket");
 		const callOrder: string[] = [];
 		let resolveTelemetryUpdate: (() => void) | undefined;
 
@@ -569,7 +569,7 @@ describe("SettingsModal", () => {
 	});
 
 	it("should display Repositories section in nav and switch to it", async () => {
-		const { invoke } = await import("@tauri-apps/api/core");
+		const { invokeClient: invoke } = await import("@/lib/clientSocket");
 		vi.mocked(invoke).mockImplementation((cmd: string) => {
 			switch (cmd) {
 				case "list_branches":
@@ -592,7 +592,7 @@ describe("SettingsModal", () => {
 
 	it("should load and save approval auto-approve independently from agent auto-approve", async () => {
 		const user = userEvent.setup();
-		const { invoke } = await import("@tauri-apps/api/core");
+		const { invokeClient: invoke } = await import("@/lib/clientSocket");
 		vi.mocked(invoke).mockImplementation((cmd: string) => {
 			switch (cmd) {
 				case "get_workflow_config":
@@ -631,7 +631,7 @@ describe("SettingsModal", () => {
 
 	it("should save external editor selection via Save button", async () => {
 		const user = userEvent.setup();
-		const { invoke } = await import("@tauri-apps/api/core");
+		const { invokeClient: invoke } = await import("@/lib/clientSocket");
 		vi.mocked(invoke).mockImplementation((cmd: string) => {
 			switch (cmd) {
 				case "get_external_editor":
@@ -672,7 +672,7 @@ describe("SettingsModal", () => {
 
 	it("should save base branch via Apply button", async () => {
 		const user = userEvent.setup();
-		const { invoke } = await import("@tauri-apps/api/core");
+		const { invokeClient: invoke } = await import("@/lib/clientSocket");
 		vi.mocked(invoke).mockImplementation((cmd: string) => {
 			switch (cmd) {
 				case "list_branches":
@@ -710,7 +710,7 @@ describe("SettingsModal", () => {
 	});
 
 	it("should show workflow list in Automation section", async () => {
-		const { invoke } = await import("@tauri-apps/api/core");
+		const { invokeClient: invoke } = await import("@/lib/clientSocket");
 		const emptyReport = {
 			items: [],
 			workflow_summaries: {},
@@ -725,11 +725,15 @@ describe("SettingsModal", () => {
 							name: "quick-fix",
 							description: "素早いバグ修正",
 							builtin: true,
+							sourceFormat: "yaml" as const,
+							is_running: false,
 						},
 						{
 							name: "my-workflow",
 							description: "カスタムワークフロー",
 							builtin: false,
+							sourceFormat: "yaml" as const,
+							is_running: false,
 						},
 					]);
 				case "diagnose_all_cmd":
@@ -765,7 +769,7 @@ describe("SettingsModal", () => {
 
 	it("should open custom workflow in the panel editor", async () => {
 		const user = userEvent.setup();
-		const { invoke } = await import("@tauri-apps/api/core");
+		const { invokeClient: invoke } = await import("@/lib/clientSocket");
 		const emptyReport = {
 			items: [],
 			workflow_summaries: {},
@@ -780,6 +784,7 @@ describe("SettingsModal", () => {
 							name: "my-workflow",
 							description: "カスタムワークフロー",
 							builtin: false,
+							sourceFormat: "yaml" as const,
 							is_running: false,
 						},
 					]);
@@ -790,6 +795,7 @@ describe("SettingsModal", () => {
 						name: "my-workflow",
 						description: "カスタムワークフロー",
 						builtin: false,
+						sourceFormat: "yaml",
 						nodes: [],
 					});
 				case "diagnose_all_cmd":
@@ -822,7 +828,7 @@ describe("SettingsModal", () => {
 
 	it("should call delete_workflow when Delete button is clicked", async () => {
 		const user = userEvent.setup();
-		const { invoke } = await import("@tauri-apps/api/core");
+		const { invokeClient: invoke } = await import("@/lib/clientSocket");
 		const emptyReport = {
 			items: [],
 			workflow_summaries: {},
@@ -837,6 +843,8 @@ describe("SettingsModal", () => {
 							name: "my-workflow",
 							description: "カスタムワークフロー",
 							builtin: false,
+							sourceFormat: "yaml" as const,
+							is_running: false,
 						},
 					]);
 				case "delete_workflow":
@@ -866,7 +874,7 @@ describe("SettingsModal", () => {
 	});
 
 	it("should not show delete button for builtin workflows", async () => {
-		const { invoke } = await import("@tauri-apps/api/core");
+		const { invokeClient: invoke } = await import("@/lib/clientSocket");
 		const emptyReport = {
 			items: [],
 			workflow_summaries: {},
@@ -881,6 +889,8 @@ describe("SettingsModal", () => {
 							name: "quick-fix",
 							description: "素早いバグ修正",
 							builtin: true,
+							sourceFormat: "yaml" as const,
+							is_running: false,
 						},
 					]);
 				case "diagnose_all_cmd":
@@ -902,7 +912,7 @@ describe("SettingsModal", () => {
 
 	describe("Repository removal", () => {
 		const repoMockSetup = async () => {
-			const { invoke } = await import("@tauri-apps/api/core");
+			const { invokeClient: invoke } = await import("@/lib/clientSocket");
 			vi.mocked(invoke).mockImplementation((cmd: string) => {
 				switch (cmd) {
 					case "list_branches":

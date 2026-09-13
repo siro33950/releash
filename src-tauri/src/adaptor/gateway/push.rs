@@ -16,33 +16,113 @@ pub struct AgentSessionChangedPayload<'a> {
 pub enum BackendPush<'a> {
     AgentSessionChanged(AgentSessionChangedPayload<'a>),
     BranchListSync,
-    FileChange(&'a FileChangeEvent),
-    GitStatusChanged(&'a GitStatusChangedEvent),
+    FileChange(FileChangeEvent),
+    GitStatusChanged(GitStatusChangedEvent),
     RepoPathsChanged(&'a [String]),
-    RepositorySnapshotChanged(&'a RepositorySnapshotChangedEvent),
+    RepositorySnapshotChanged(RepositorySnapshotChangedEvent),
     ReviewCommentsChanged(&'a str),
-    WorkflowExecutionChanged(&'a WorkflowExecutionChangedPayloadView),
+    WorkflowExecutionChanged(Box<WorkflowExecutionChangedPayloadView>),
 }
 
 impl BackendPush<'_> {
     pub fn emit<R: tauri::Runtime>(self, app: &tauri::AppHandle<R>) {
+        use crate::adaptor::controller::api::protocol::client as wire;
+        use prost::Message;
+        use tauri::Emitter;
         let sink = app.state::<Arc<PushSink>>();
-        match self {
-            Self::AgentSessionChanged(payload) => sink.emit(app, "agent-session-changed", payload),
-            Self::BranchListSync => sink.emit(app, "branch-list-sync", ()),
-            Self::FileChange(payload) => sink.emit(app, "file-change", payload),
-            Self::GitStatusChanged(payload) => sink.emit(app, "git-status-changed", payload),
-            Self::RepoPathsChanged(payload) => sink.emit(app, "repo-paths-changed", payload),
-            Self::RepositorySnapshotChanged(payload) => {
-                sink.emit(app, "repository-snapshot-changed", payload)
-            }
-            Self::ReviewCommentsChanged(payload) => {
-                sink.emit(app, "review-comments-changed", payload)
-            }
-            Self::WorkflowExecutionChanged(payload) => {
-                sink.emit(app, "workflow-execution-changed", payload)
-            }
+        macro_rules! publish {
+            ($name:literal, $payload:expr, $variant:ident, $value:expr) => {{
+                if let Err(error) = app.emit($name, $payload) {
+                    log::error!("Tauri push failed for {}: {error}", $name);
+                }
+                let event = $value.map(wire::push::Event::$variant);
+                match event {
+                    Ok(event) => sink.send(
+                        wire::Envelope {
+                            body: Some(wire::envelope::Body::Push(wire::Push {
+                                event: Some(event),
+                            })),
+                        }
+                        .encode_to_vec(),
+                    ),
+                    Err(error) => {
+                        log::error!("Client push conversion failed for {}: {error}", $name)
+                    }
+                }
+            }};
         }
+        match self {
+            Self::AgentSessionChanged(payload) => publish!(
+                "agent-session-changed",
+                &payload,
+                AgentSessionChanged,
+                Ok::<_, String>(wire::AgentSessionChangedPayload {
+                    worktree_path: Some(payload.worktree_path.into())
+                })
+            ),
+            Self::BranchListSync => publish!(
+                "branch-list-sync",
+                (),
+                BranchListSync,
+                Ok::<_, String>(wire::Unit {})
+            ),
+            Self::FileChange(payload) => publish!(
+                "file-change",
+                &payload,
+                FileChange,
+                wire::FileChangeEvent::try_from(payload)
+            ),
+            Self::GitStatusChanged(payload) => publish!(
+                "git-status-changed",
+                &payload,
+                GitStatusChanged,
+                wire::GitStatusChangedEvent::try_from(payload)
+            ),
+            Self::RepoPathsChanged(payload) => publish!(
+                "repo-paths-changed",
+                payload,
+                RepoPathsChanged,
+                Ok::<_, String>(wire::Liststring {
+                    items: payload.to_vec()
+                })
+            ),
+            Self::RepositorySnapshotChanged(payload) => publish!(
+                "repository-snapshot-changed",
+                &payload,
+                RepositorySnapshotChanged,
+                wire::RepositorySnapshotChangedEvent::try_from(payload)
+            ),
+            Self::ReviewCommentsChanged(payload) => publish!(
+                "review-comments-changed",
+                payload,
+                ReviewCommentsChanged,
+                Ok::<_, String>(wire::ResultString {
+                    value: Some(payload.into())
+                })
+            ),
+            Self::WorkflowExecutionChanged(payload) => publish!(
+                "workflow-execution-changed",
+                &payload,
+                WorkflowExecutionChanged,
+                wire::WorkflowExecutionChangedPayloadView::try_from(*payload).map(Box::new)
+            ),
+        }
+    }
+}
+
+pub(crate) struct CommentChangeGateway {
+    notify: Box<dyn Fn(&str) + Send + Sync>,
+}
+impl CommentChangeGateway {
+    pub(crate) fn new<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Self {
+        Self {
+            notify: Box::new(move |worktree| {
+                BackendPush::ReviewCommentsChanged(worktree).emit(&app)
+            }),
+        }
+    }
+    pub(crate) fn notify(&self, worktree: &str) {
+        (self.notify)(worktree);
     }
 }
 
@@ -61,7 +141,7 @@ impl ClientPushGateway {
     }
 }
 
-pub(crate) struct ClientPushSubscription(tokio::sync::broadcast::Receiver<Arc<str>>);
+pub(crate) struct ClientPushSubscription(tokio::sync::broadcast::Receiver<Arc<[u8]>>);
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ClientPushError {
@@ -72,7 +152,11 @@ pub(crate) enum ClientPushError {
 }
 
 impl ClientPushSubscription {
-    pub(crate) async fn recv(&mut self) -> Result<Arc<str>, ClientPushError> {
+    pub(crate) fn resubscribe(&mut self) {
+        self.0 = self.0.resubscribe();
+    }
+
+    pub(crate) async fn recv(&mut self) -> Result<Arc<[u8]>, ClientPushError> {
         self.0.recv().await.map_err(|error| match error {
             tokio::sync::broadcast::error::RecvError::Lagged(count) => {
                 ClientPushError::Lagged(count)

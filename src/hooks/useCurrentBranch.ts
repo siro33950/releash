@@ -10,7 +10,7 @@ export function useCurrentBranch(rootPath: string | null) {
 			return;
 		}
 		try {
-			const name = await invokeClient<string>("get_current_branch", {
+			const name = await invokeClient("get_current_branch", {
 				repoPath: rootPath,
 			});
 			setBranch(name);
