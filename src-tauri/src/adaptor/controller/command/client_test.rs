@@ -256,6 +256,13 @@ parity!(
     json!({"repoPath":"/missing"}),
     outcome(invoke_tauri(&app, "get_cached_issues", json!({"repoPath": "/missing"})).await)
 );
+parity!(
+    test_external_editor_protoはusecase結果と一致する,
+    app,
+    "get_external_editor",
+    json!({}),
+    outcome(invoke_tauri(&app, "get_external_editor", json!({})).await)
+);
 #[tokio::test]
 async fn test_クライアントws_切断しても受理済みcommandを途中で破棄しない() {
     use crate::adaptor::controller::api;
