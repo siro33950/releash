@@ -1,8 +1,6 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use tauri::State;
-
 use crate::adaptor::protocol::agent_session::{
     AgentSessionArchiveResponse, AgentSessionOpenResponse, ProviderAvailabilitySnapshotResponse,
     ProviderHookHealthProviderResponse, ProviderHookHealthWarningResponse,
@@ -23,9 +21,8 @@ use crate::usecase::provider_lifecycle::{
     ProviderHookHealthReadUsecase, ProviderHookHealthUsecaseError, ProviderHookHealthWarning,
 };
 
-#[tauri::command]
-pub fn list_available_agent_session_providers(
-    availability: State<'_, Arc<ProviderAvailabilityUsecase>>,
+pub(crate) fn list_available_agent_session_providers_shared(
+    availability: &Arc<ProviderAvailabilityUsecase>,
 ) -> Result<Vec<AgentSessionProviderDto>, AppError> {
     availability
         .available_providers()
@@ -41,9 +38,8 @@ pub fn list_available_agent_session_providers(
         .map_err(provider_availability_error)
 }
 
-#[tauri::command]
-pub fn get_provider_availability(
-    availability: State<'_, Arc<ProviderAvailabilityUsecase>>,
+pub(crate) fn get_provider_availability_shared(
+    availability: &Arc<ProviderAvailabilityUsecase>,
 ) -> Result<ProviderAvailabilitySnapshotResponse, AppError> {
     availability
         .snapshot()
@@ -51,24 +47,22 @@ pub fn get_provider_availability(
         .map_err(provider_availability_error)
 }
 
-#[tauri::command]
-pub async fn refresh_provider_availability(
-    availability: State<'_, Arc<ProviderAvailabilityUsecase>>,
+pub(crate) async fn refresh_provider_availability_shared(
+    availability: &Arc<ProviderAvailabilityUsecase>,
 ) -> Result<ProviderAvailabilitySnapshotResponse, AppError> {
-    let availability = Arc::clone(availability.inner());
+    let availability = Arc::clone(availability);
     run_provider_availability_blocking(move || availability.refresh())
         .await
         .map(Into::into)
 }
 
-#[tauri::command]
-pub async fn update_provider_executable(
-    availability: State<'_, Arc<ProviderAvailabilityUsecase>>,
+pub(crate) async fn update_provider_executable_shared(
+    availability: &Arc<ProviderAvailabilityUsecase>,
     provider: String,
     executable: String,
 ) -> Result<ProviderAvailabilitySnapshotResponse, AppError> {
     let provider = parse_provider(&provider, ProviderParseOperation::ConfigureProvider)?;
-    let availability = Arc::clone(availability.inner());
+    let availability = Arc::clone(availability);
     run_provider_availability_blocking(move || {
         availability.update_configured_executable(provider, &executable)
     })
@@ -76,13 +70,12 @@ pub async fn update_provider_executable(
     .map(Into::into)
 }
 
-#[tauri::command]
-pub async fn reset_provider_executable(
-    availability: State<'_, Arc<ProviderAvailabilityUsecase>>,
+pub(crate) async fn reset_provider_executable_shared(
+    availability: &Arc<ProviderAvailabilityUsecase>,
     provider: String,
 ) -> Result<ProviderAvailabilitySnapshotResponse, AppError> {
     let provider = parse_provider(&provider, ProviderParseOperation::ConfigureProvider)?;
-    let availability = Arc::clone(availability.inner());
+    let availability = Arc::clone(availability);
     run_provider_availability_blocking(move || availability.reset_configured_executable(provider))
         .await
         .map(Into::into)
@@ -275,9 +268,8 @@ fn provider_availability_error(error: ProviderAvailabilityUsecaseError) -> AppEr
     }
 }
 
-#[tauri::command]
-pub async fn create_agent_session(
-    launch: State<'_, Arc<AgentSessionLaunchUsecase>>,
+pub(crate) async fn create_agent_session_shared(
+    launch: &Arc<AgentSessionLaunchUsecase>,
     workspace_identity: String,
     worktree_path: String,
     provider: String,
@@ -291,7 +283,7 @@ pub async fn create_agent_session(
         crate::other::telemetry::TerminalLaunch::CommandIngress,
         command_ingress.elapsed(),
     );
-    Arc::clone(launch.inner())
+    Arc::clone(launch)
         .launch_standalone_idempotent(AgentSessionLaunchRequest {
             workspace: WorkspaceIdentity::new(workspace_identity),
             worktree_path,
@@ -304,28 +296,27 @@ pub async fn create_agent_session(
         .map_err(|error| launch_error(error, AgentSessionLaunchOperation::Start))
 }
 
-#[tauri::command]
-#[allow(clippy::too_many_arguments)]
-pub async fn resume_agent_session_history_candidate(
-    launch: State<'_, Arc<AgentSessionLaunchUsecase>>,
-    workspace_identity: String,
-    worktree_path: String,
-    provider: String,
-    provider_session_id: String,
-    rows: u16,
-    cols: u16,
-    caller_request_id: String,
-) -> Result<String, AppError> {
-    let provider = parse_provider(&provider, ProviderParseOperation::ResumeHistory)?;
+pub(crate) async fn resume_agent_session_history_candidate_shared(
+    launch: &Arc<AgentSessionLaunchUsecase>,
+    args: crate::adaptor::controller::api::protocol::client::ResumeAgentSessionHistoryCandidateRequest,
+) -> Result<String, crate::adaptor::controller::api::protocol::client::CommandError> {
+    use crate::adaptor::controller::client::{convert, required};
+    let provider = parse_provider(
+        &required(args.provider, "provider")?,
+        ProviderParseOperation::ResumeHistory,
+    )?;
     let outcome = launch
         .resume_history(AgentSessionHistoryResumeRequest {
-            workspace: WorkspaceIdentity::new(workspace_identity),
-            worktree_path,
+            workspace: WorkspaceIdentity::new(required(
+                args.workspace_identity,
+                "workspaceIdentity",
+            )?),
+            worktree_path: required(args.worktree_path, "worktreePath")?,
             provider,
-            provider_session_id,
-            rows,
-            cols,
-            caller_request_id,
+            provider_session_id: required(args.provider_session_id, "providerSessionId")?,
+            rows: convert(required(args.rows, "rows")?)?,
+            cols: convert(required(args.cols, "cols")?)?,
+            caller_request_id: required(args.caller_request_id, "callerRequestId")?,
         })
         .await
         .map_err(|error| launch_error(error, AgentSessionLaunchOperation::ResumeHistory))?;
@@ -350,17 +341,15 @@ fn parse_provider(
     }
 }
 
-#[tauri::command]
-pub async fn get_agent_session(
-    read: State<'_, Arc<AgentSessionReadUsecase>>,
+pub(crate) async fn get_agent_session_shared(
+    read: &Arc<AgentSessionReadUsecase>,
     agent_session_id: String,
 ) -> Result<Option<AgentSessionItemDto>, AppError> {
     read.get(&agent_session_id).await.map_err(read_error)
 }
 
-#[tauri::command]
-pub async fn open_agent_session(
-    lifecycle: State<'_, Arc<AgentSessionLifecycleUsecase>>,
+pub(crate) async fn open_agent_session_shared(
+    lifecycle: &Arc<AgentSessionLifecycleUsecase>,
     agent_session_id: String,
     rows: u16,
     cols: u16,
@@ -373,9 +362,8 @@ pub async fn open_agent_session(
         .map_err(lifecycle_error)
 }
 
-#[tauri::command]
-pub async fn resume_agent_session(
-    lifecycle: State<'_, Arc<AgentSessionLifecycleUsecase>>,
+pub(crate) async fn resume_agent_session_shared(
+    lifecycle: &Arc<AgentSessionLifecycleUsecase>,
     agent_session_id: String,
     rows: u16,
     cols: u16,
@@ -388,9 +376,8 @@ pub async fn resume_agent_session(
         .map_err(lifecycle_error)
 }
 
-#[tauri::command]
-pub async fn restore_agent_session(
-    lifecycle: State<'_, Arc<AgentSessionLifecycleUsecase>>,
+pub(crate) async fn restore_agent_session_shared(
+    lifecycle: &Arc<AgentSessionLifecycleUsecase>,
     agent_session_id: String,
     rows: u16,
     cols: u16,
@@ -403,9 +390,8 @@ pub async fn restore_agent_session(
         .map_err(lifecycle_error)
 }
 
-#[tauri::command]
-pub async fn archive_agent_session(
-    lifecycle: State<'_, Arc<AgentSessionLifecycleUsecase>>,
+pub(crate) async fn archive_agent_session_shared(
+    lifecycle: &Arc<AgentSessionLifecycleUsecase>,
     agent_session_id: String,
     caller_request_id: String,
 ) -> Result<AgentSessionArchiveResponse, AppError> {
@@ -416,9 +402,8 @@ pub async fn archive_agent_session(
         .map_err(lifecycle_error)
 }
 
-#[tauri::command]
-pub async fn delete_agent_session(
-    lifecycle: State<'_, Arc<AgentSessionLifecycleUsecase>>,
+pub(crate) async fn delete_agent_session_shared(
+    lifecycle: &Arc<AgentSessionLifecycleUsecase>,
     agent_session_id: String,
     caller_request_id: String,
 ) -> Result<(), AppError> {
@@ -428,9 +413,8 @@ pub async fn delete_agent_session(
         .map_err(lifecycle_error)
 }
 
-#[tauri::command]
-pub async fn confirm_agent_session_archive_delete(
-    lifecycle: State<'_, Arc<AgentSessionLifecycleUsecase>>,
+pub(crate) async fn confirm_agent_session_archive_delete_shared(
+    lifecycle: &Arc<AgentSessionLifecycleUsecase>,
     agent_session_id: String,
     caller_request_id: String,
 ) -> Result<(), AppError> {
@@ -440,9 +424,8 @@ pub async fn confirm_agent_session_archive_delete(
         .map_err(lifecycle_error)
 }
 
-#[tauri::command]
-pub async fn list_agent_session_history(
-    query: State<'_, Arc<AgentSessionHistoryReadUsecase>>,
+pub(crate) async fn list_agent_session_history_shared(
+    query: &Arc<AgentSessionHistoryReadUsecase>,
     worktree_path: String,
     limit: Option<usize>,
     after: Option<String>,
@@ -457,9 +440,8 @@ pub async fn list_agent_session_history(
         .map_err(history_error)
 }
 
-#[tauri::command]
-pub async fn list_provider_hook_health_warnings(
-    query: State<'_, Arc<ProviderHookHealthReadUsecase>>,
+pub(crate) async fn list_provider_hook_health_warnings_shared(
+    query: &Arc<ProviderHookHealthReadUsecase>,
 ) -> Result<Vec<ProviderHookHealthWarningResponse>, AppError> {
     query
         .warnings()

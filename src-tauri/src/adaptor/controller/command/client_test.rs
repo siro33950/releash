@@ -199,6 +199,13 @@ parity!(
         .await
     )
 );
+parity!(
+    test_agent_session_protoはusecase結果と一致する,
+    app,
+    "get_provider_availability",
+    json!({}),
+    outcome(invoke_tauri(&app, "get_provider_availability", json!({})).await)
+);
 #[tokio::test]
 async fn test_クライアントws_切断しても受理済みcommandを途中で破棄しない() {
     use crate::adaptor::controller::api;

@@ -2,6 +2,18 @@ use std::sync::Arc;
 
 pub(crate) struct ClientDependencies {
     pub(crate) app_state: Option<crate::adaptor::controller::state::AppState>,
+    pub(crate) agent_session_lifecycle_usecase:
+        Option<std::sync::Arc<crate::usecase::agent_session::AgentSessionLifecycleUsecase>>,
+    pub(crate) agent_session_launch_usecase:
+        Option<std::sync::Arc<crate::usecase::agent_session::AgentSessionLaunchUsecase>>,
+    pub(crate) agent_session_read_usecase:
+        Option<std::sync::Arc<crate::usecase::agent_session::AgentSessionReadUsecase>>,
+    pub(crate) provider_availability_usecase:
+        Option<std::sync::Arc<crate::usecase::agent_session::ProviderAvailabilityUsecase>>,
+    pub(crate) agent_session_history_read_usecase:
+        Option<std::sync::Arc<crate::usecase::agent_session::AgentSessionHistoryReadUsecase>>,
+    pub(crate) provider_hook_health_read_usecase:
+        Option<std::sync::Arc<crate::usecase::provider_lifecycle::ProviderHookHealthReadUsecase>>,
     pub(crate) review_comment_usecase:
         Option<std::sync::Arc<crate::usecase::comment::ReviewCommentUsecase>>,
     pub(crate) data_dir: Result<std::path::PathBuf, String>,
