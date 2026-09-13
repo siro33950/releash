@@ -63,6 +63,7 @@ impl ClientCommandDispatch {
         super::external_editor::register_shared(self, deps);
         super::telemetry::register_shared(self, deps);
         super::watcher::register_shared(self, deps);
+        super::application_lifecycle::register_shared(self, deps);
     }
     pub(crate) fn register_domain(
         &mut self,

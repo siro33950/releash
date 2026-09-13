@@ -271,6 +271,43 @@ parity!(
     outcome(invoke_tauri(&app, "stop_watching", json!({"watcherId": 999})).await)
 );
 #[tokio::test]
+async fn test_application起動結果_protoは本番shell入口の成功と失敗に一致する() {
+    for authority in [
+        ApplicationStartupAuthority::ready(),
+        ApplicationStartupAuthority::failed_kind(
+            crate::usecase::application_startup::StartupFailureKind::StoreValidationFailed,
+        ),
+    ] {
+        // Given
+        let (app, _data_dir, _store) =
+            crate::adaptor::controller::client::workflow::tests::make_read_only_app();
+        app.manage(Arc::new(
+            crate::infrastructure::file_watcher::FileWatcherManager::default(),
+        ));
+        let authority = Arc::new(authority);
+        app.manage(authority.clone());
+        let mut dispatch = ClientCommandDispatch::new(
+            Arc::new(crate::adaptor::controller::wiring::build_repository_usecase()),
+            authority,
+        );
+        dispatch.register_dependencies(
+            &crate::adaptor::controller::wiring::build_client_dependencies(app.handle()),
+        );
+        // When: the shell must work without a managed client dispatch.
+        let expected = invoke_tauri(&app, "get_application_startup_outcome", json!({})).await;
+        assert!(expected.is_ok());
+        // Then
+        assert_parity(
+            &dispatch,
+            "get_application_startup_outcome",
+            json!({}),
+            expected,
+        )
+        .await;
+    }
+}
+
+#[tokio::test]
 async fn test_telemetry_protoはcommand結果と一致する() {
     // Given
     let _guard = crate::other::telemetry::lock_test_telemetry();

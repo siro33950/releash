@@ -576,6 +576,10 @@ pub(crate) fn build_client_dependencies<R: tauri::Runtime>(
 ) -> super::client::ClientDependencies {
     use tauri::Manager;
     super::client::ClientDependencies {
+        caller_attempt_journal: app.try_state::<std::sync::Arc<crate::usecase::application_lifecycle::operation::CallerAttemptJournal>>().map(|state| state.inner().clone()),
+        shutdown_coordinator: app.try_state::<std::sync::Arc<crate::usecase::shutdown_coordinator::ShutdownCoordinator>>().map(|state| state.inner().clone()),
+        application_startup_authority: app.try_state::<std::sync::Arc<crate::usecase::application_startup::ApplicationStartupAuthority>>().map(|state| state.inner().clone()),
+        application_process_action_dispatcher: app.try_state::<std::sync::Arc<crate::adaptor::controller::application_lifecycle::ApplicationProcessActionDispatcher>>().map(|state| state.inner().clone()),
         workspace_node_command_usecase: app.try_state::<std::sync::Arc<crate::usecase::workflow::WorkspaceNodeCommandUsecase>>().map(|state| state.inner().clone()),
         app_state: app.try_state::<crate::adaptor::controller::state::AppState>().map(|state| state.inner().clone()),
         workspace_state_store: app.try_state::<std::sync::Arc<crate::adaptor::gateway::workspace_state::WorkspaceStateStore>>().map(|state| state.inner().clone()),
@@ -592,5 +596,6 @@ pub(crate) fn build_client_dependencies<R: tauri::Runtime>(
         watcher: build_watcher_usecase(app),
         data_dir: app.path().app_data_dir().map_err(|error| format!("Failed to get app data dir: {error}")),
         comment_notify: Arc::new(crate::adaptor::gateway::push::CommentChangeGateway::new(app.clone())),
+        process_port: Arc::new(super::application_lifecycle::TauriApplicationProcessActionPort::new(app.clone())),
     }
 }
