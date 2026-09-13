@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import {
 	Check,
 	GitBranch,
@@ -43,6 +42,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useIssues } from "@/hooks/useIssues";
 import { useNotionLabelOptions } from "@/hooks/useNotionLabelOptions";
 import { useNotionTasks } from "@/hooks/useNotionTasks";
+import { invokeClient as invoke } from "@/lib/clientSocket";
 import { trackEvent } from "@/lib/telemetry";
 import { cn } from "@/lib/utils";
 import type {
@@ -54,14 +54,6 @@ import type {
 import type { NotionTask } from "@/types/notion";
 
 type CreateMode = "plain" | "branch" | "issue" | "notion";
-
-interface BranchCardsSnapshot {
-	version: number;
-	stale: boolean;
-	loading: boolean;
-	limited: boolean;
-	branches: WorktreeBranch[];
-}
 
 interface CreateWorktreeModalProps {
 	open: boolean;
@@ -115,7 +107,7 @@ export function CreateWorktreeModal({
 		setLocalBranches([]);
 		setAllBranches([]);
 		setBaseBranch("HEAD");
-		invoke<BranchInfo[]>("list_branches", { repoPath: selectedRepoPath })
+		invoke("list_branches", { repoPath: selectedRepoPath })
 			.then((result) => {
 				if (!alive) return;
 				setLocalBranches(result.filter((b) => !b.is_remote));
@@ -129,7 +121,7 @@ export function CreateWorktreeModal({
 				setLocalBranches([]);
 				setBaseBranch("HEAD");
 			});
-		invoke<BranchCardsSnapshot>("list_branches_with_status_snapshot", {
+		invoke("list_branches_with_status_snapshot", {
 			repoPath: selectedRepoPath,
 		})
 			.then((result) => {
@@ -177,7 +169,7 @@ export function CreateWorktreeModal({
 			for (const branch of selectedBranches) {
 				const isNewBranch = !existingNames.includes(branch);
 				try {
-					const entry = await invoke<WorktreeEntry>("create_worktree", {
+					const entry = await invoke("create_worktree", {
 						repoPath: selectedRepoPath,
 						branch,
 						createBranch: isNewBranch,

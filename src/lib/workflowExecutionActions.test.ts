@@ -6,8 +6,8 @@ import {
 
 const invokeMock = vi.hoisted(() => vi.fn());
 
-vi.mock("@tauri-apps/api/core", () => ({
-	invoke: invokeMock,
+vi.mock("@/lib/clientSocket", () => ({
+	invokeClient: invokeMock,
 }));
 
 describe("executeWorkflowAction", () => {

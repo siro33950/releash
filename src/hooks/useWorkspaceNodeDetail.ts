@@ -1,8 +1,7 @@
-import { invoke } from "@tauri-apps/api/core";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { useEffect, useRef, useState } from "react";
 import { subscribeAgentSessionChanged } from "@/lib/agentSessionEvents";
-import { listenClient } from "@/lib/clientSocket";
+import { invokeClient as invoke, listenClient } from "@/lib/clientSocket";
 import { getErrorMessage } from "@/lib/errorMessage";
 import type { WorkspaceNodeDetail } from "@/types/workspace-tree";
 
@@ -70,7 +69,7 @@ export function useWorkspaceNodeDetail({
 				error: null,
 				missingNodeId: null,
 			}));
-			void invoke<WorkspaceNodeDetail | null>("get_workspace_node_detail", {
+			void invoke("get_workspace_node_detail", {
 				worktreePath,
 				nodeId,
 			})
@@ -167,7 +166,7 @@ export async function approveWorkspaceNode({
 	window.dispatchEvent(
 		new CustomEvent("workspace-tree-refresh", { detail: { worktreePath } }),
 	);
-	return invoke<WorkspaceNodeDetail | null>("get_workspace_node_detail", {
+	return invoke("get_workspace_node_detail", {
 		worktreePath,
 		nodeId,
 	});
@@ -184,7 +183,7 @@ export async function retryWorkspaceNode({
 	window.dispatchEvent(
 		new CustomEvent("workspace-tree-refresh", { detail: { worktreePath } }),
 	);
-	return invoke<WorkspaceNodeDetail | null>("get_workspace_node_detail", {
+	return invoke("get_workspace_node_detail", {
 		worktreePath,
 		nodeId,
 	});

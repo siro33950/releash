@@ -1,5 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
 import { useCallback } from "react";
+import { invokeClient as invoke } from "@/lib/clientSocket";
 
 export function useGitActions() {
 	const stage = useCallback(async (repoPath: string, paths: string[]) => {

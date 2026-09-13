@@ -2,8 +2,8 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { ShikiDiffViewer } from "./ShikiDiffViewer";
 
-vi.mock("@tauri-apps/api/core", () => ({
-	invoke: vi.fn().mockResolvedValue([]),
+vi.mock("@/lib/clientSocket", () => ({
+	invokeClient: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock("@/hooks/useShikiHighlighter", () => ({
@@ -427,7 +427,7 @@ describe("ShikiDiffViewer", () => {
 				lines: ["-line5", "+changed"],
 			},
 		];
-		const { invoke } = await import("@tauri-apps/api/core");
+		const { invokeClient: invoke } = await import("@/lib/clientSocket");
 		vi.mocked(invoke).mockResolvedValue([
 			{ startLine: 1, endLine: 2, hiddenCount: 2 },
 		]);
