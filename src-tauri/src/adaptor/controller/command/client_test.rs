@@ -242,6 +242,13 @@ parity!(
         .unwrap()
     )
 );
+parity!(
+    test_git_host_protoはusecase結果と一致する,
+    app,
+    "get_cached_issues",
+    json!({"repoPath":"/missing"}),
+    outcome(invoke_tauri(&app, "get_cached_issues", json!({"repoPath": "/missing"})).await)
+);
 #[tokio::test]
 async fn test_クライアントws_切断しても受理済みcommandを途中で破棄しない() {
     use crate::adaptor::controller::api;

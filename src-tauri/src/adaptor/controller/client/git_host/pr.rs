@@ -1,22 +1,18 @@
-use tauri::State;
-
 use super::run_blocking;
 use crate::adaptor::controller::state::AppState;
 use crate::other::AppError;
 use crate::usecase::git_host::PrStatusDto;
 
-#[tauri::command]
-pub async fn fetch_pr_status(
-    state: State<'_, AppState>,
+pub(crate) async fn fetch_pr_status_shared(
+    state: &AppState,
     repo_path: String,
 ) -> Result<PrStatusDto, AppError> {
     let uc = state.git_host_usecase.clone();
     run_blocking(move || PrStatusDto::from(uc.fetch_pr_status(&repo_path))).await
 }
 
-#[tauri::command]
-pub async fn get_cached_pr_status(
-    state: State<'_, AppState>,
+pub(crate) async fn get_cached_pr_status_shared(
+    state: &AppState,
     repo_path: String,
 ) -> Result<PrStatusDto, AppError> {
     let uc = state.git_host_usecase.clone();

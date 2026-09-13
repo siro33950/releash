@@ -3,6 +3,7 @@ pub(crate) mod code;
 pub(crate) mod comment;
 mod dependencies;
 pub(crate) mod dispatch;
+pub(crate) mod git_host;
 pub(crate) mod repository;
 pub(crate) mod workflow;
 pub(crate) mod workspace_state;
