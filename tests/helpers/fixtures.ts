@@ -6,20 +6,14 @@ import type { MockConfig } from "./tauri-mock";
 
 interface WorktreeBranch {
 	name: string;
-	is_default: boolean;
+	is_main_worktree: boolean;
 	worktree_path: string | null;
-	management_kind: "working_area" | null;
 	dirty_count: number;
 	is_merged: boolean;
-	has_pr: boolean;
-	pr_number: number | null;
-	pr_url: string | null;
 	ahead: number;
 	behind: number;
 	has_upstream: boolean;
 	base_ahead: number;
-	agent_state?: "running" | "done" | "error" | "waiting";
-	agent_state_timestamp?: number;
 }
 
 interface PrStatus {
@@ -34,19 +28,46 @@ interface PrStatus {
 const baseIpcHandler: Record<string, unknown> = {
 	// App.tsx 初期化
 	get_cwd: "/test/repo",
+	get_application_startup_outcome: { type: "ready" },
+	get_application_shutdown: { type: "current", plan: null },
+	list_pending_application_attempts: { entries: [], next_cursor: null },
+	list_provider_hook_health_warnings: [],
 	get_main_repo_path: "/test/repo",
 	list_worktrees: [],
 	set_menu_items_enabled: null,
 
 	// WorktreeView 初期化
 	start_watching: 1,
+	start_git_dir_watching: 1,
+	stop_git_dir_watching: null,
+	load_workspace_state: null,
+	list_review_threads: [],
+	get_review_snapshot: {
+		version: 1,
+		stale: false,
+		loading: false,
+		limited: false,
+		base: "head",
+		files: [],
+		stagedFiles: [],
+		changedFiles: [],
+		diffStats: [],
+		tree: [],
+		stagedTree: [],
+		changesTree: [],
+		stagedFileCount: 0,
+		changesFileCount: 0,
+	},
 	stop_watching: null,
 	get_current_branch: "feat/test-branch",
 	get_git_status: [],
 
 	// RepoKanbanBoard
 	list_branches_with_status: [],
-	get_cached_pr_status: { open_prs: {}, merged_branches: [] } satisfies PrStatus,
+	get_cached_pr_status: {
+		open_prs: {},
+		merged_branches: [],
+	} satisfies PrStatus,
 	get_cached_issues: [],
 	fetch_issues: [],
 	list_workspace_statuses: [],
@@ -87,12 +108,6 @@ const baseIpcHandler: Record<string, unknown> = {
 	},
 	get_terminal_surface: {
 		session_key: "mock-session",
-		terminal_surface: {
-			replay: "",
-			sequence: 0,
-			cols: 80,
-			rows: 24,
-		},
 		is_exited: false,
 		exit_code: null,
 	},
@@ -109,8 +124,8 @@ const baseIpcHandler: Record<string, unknown> = {
 
 	// Repo registry
 	get_repo_paths: ["/test/repo"],
-	add_repo_path: null,
-	remove_repo_path: null,
+	add_repo_path: true,
+	remove_repo_path: true,
 
 	// Editor
 	get_file_at_ref: "",
@@ -186,6 +201,15 @@ const baseIpcHandler: Record<string, unknown> = {
 
 	// Workflow
 	list_workflows: [],
+	get_workflow_config: { approval_auto_approve: false },
+	get_automation_config_dir: "/test/automation",
+	list_facets: [],
+	diagnose_all_cmd: {
+		items: [],
+		workflow_summaries: {},
+		facet_summaries: {},
+		facet_usage: {},
+	},
 	start_workflow: null,
 	abort_workflow: null,
 	approve_workflow_node: null,
@@ -221,14 +245,10 @@ const baseIpcHandler: Record<string, unknown> = {
 export const kanbanBranches: WorktreeBranch[] = [
 	{
 		name: "feat/todo",
-		is_default: false,
+		is_main_worktree: false,
 		worktree_path: null,
-		management_kind: null,
 		dirty_count: 0,
 		is_merged: false,
-		has_pr: false,
-		pr_number: null,
-		pr_url: null,
 		ahead: 0,
 		behind: 0,
 		has_upstream: true,
@@ -236,14 +256,10 @@ export const kanbanBranches: WorktreeBranch[] = [
 	},
 	{
 		name: "feat/wip",
-		is_default: false,
+		is_main_worktree: false,
 		worktree_path: "/test/repo-worktrees/feat-wip",
-		management_kind: "working_area",
 		dirty_count: 2,
 		is_merged: false,
-		has_pr: false,
-		pr_number: null,
-		pr_url: null,
 		ahead: 0,
 		behind: 0,
 		has_upstream: true,
@@ -251,14 +267,10 @@ export const kanbanBranches: WorktreeBranch[] = [
 	},
 	{
 		name: "feat/review",
-		is_default: false,
+		is_main_worktree: false,
 		worktree_path: "/test/repo-worktrees/feat-review",
-		management_kind: "working_area",
 		dirty_count: 0,
 		is_merged: false,
-		has_pr: true,
-		pr_number: 42,
-		pr_url: "https://github.com/test/repo/pull/42",
 		ahead: 0,
 		behind: 0,
 		has_upstream: true,
@@ -266,14 +278,10 @@ export const kanbanBranches: WorktreeBranch[] = [
 	},
 	{
 		name: "feat/done",
-		is_default: false,
+		is_main_worktree: false,
 		worktree_path: null,
-		management_kind: null,
 		dirty_count: 0,
 		is_merged: true,
-		has_pr: false,
-		pr_number: null,
-		pr_url: null,
 		ahead: 0,
 		behind: 0,
 		has_upstream: true,

@@ -1,5 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
 import { useCallback } from "react";
+import { invokeClient as invoke } from "@/lib/clientSocket";
 import type { DiffBase, DiffSection } from "@/types/settings";
 
 export interface UseDiffOperationsParams {
@@ -33,7 +33,10 @@ export function useDiffOperations({
 	onGitChanged,
 }: UseDiffOperationsParams): UseDiffOperationsResult {
 	const applyGroupAction = useCallback(
-		async (command: string, groupId: string) => {
+		async (
+			command: "git_stage_review_group" | "git_unstage_review_group",
+			groupId: string,
+		) => {
 			if (!rootPath || !filePath || !groupId) return;
 
 			try {

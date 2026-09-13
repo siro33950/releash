@@ -1,3 +1,4 @@
+use prost::Message as _;
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
@@ -81,15 +82,50 @@ async fn receive(socket: &mut ClientSocket) -> Value {
         .unwrap()
         .unwrap()
         .unwrap();
-    serde_json::from_str(frame.to_text().unwrap()).unwrap()
+    let ClientMessage::Binary(bytes) = frame else {
+        panic!("binary envelope: {frame:?}");
+    };
+    match Envelope::decode(bytes).unwrap().body.unwrap() {
+        envelope::Body::Response(response) => match response.outcome.unwrap() {
+            command_response::Outcome::Result(value) => {
+                json!({"request_id":response.request_id,"result":decode_client_value(value)})
+            }
+            command_response::Outcome::Error(value) => {
+                json!({"request_id":response.request_id,"error":decode_client_value(value)})
+            }
+        },
+        envelope::Body::Push(push) => {
+            let (event, payload) = decode_client_push(push);
+            json!({"status":"push","event":event,"payload":payload})
+        }
+        other => panic!("unexpected envelope: {other:?}"),
+    }
 }
 
 async fn request(socket: &mut ClientSocket, frame: Value) -> Value {
     socket
-        .send(ClientMessage::Text(frame.to_string().into()))
+        .send(ClientMessage::Binary(encode_frame(frame).into()))
         .await
         .unwrap();
     receive(socket).await
+}
+
+fn encode_frame(frame: Value) -> Vec<u8> {
+    if frame["type"] == "ack" {
+        return Envelope {
+            body: Some(envelope::Body::Ack(Ack {
+                attachment_id: frame["attachment_id"].as_str().unwrap().into(),
+                sequence: frame["sequence"].as_u64().unwrap(),
+                output_sequence: None,
+            })),
+        }
+        .encode_to_vec();
+    }
+    encode_client_request(
+        frame["request_id"].as_str().unwrap_or_default(),
+        frame["command"].as_str().unwrap_or_default(),
+        frame.get("args").cloned().unwrap_or(json!({})),
+    )
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -141,6 +177,63 @@ async fn test_クライアントws_認証と相関とtauri同一結果を返す(
 }
 
 #[tokio::test]
+async fn test_クライアント認証_wsで有効な非master_tokenはhttp入口で拒否する() {
+    // Given
+    let fixture = Fixture::new().await;
+    let mut socket = fixture.connect().await;
+    let mut url = url::Url::parse(&fixture.url).unwrap();
+    url.set_scheme("http").unwrap();
+    url.set_path("/v1/workflows");
+    let master = fixture
+        .host
+        .master_subprotocol
+        .strip_prefix(TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX)
+        .unwrap();
+    let client = reqwest::Client::new();
+    // When / Then
+    for (token, expected) in [
+        (fixture.token.as_ref(), reqwest::StatusCode::UNAUTHORIZED),
+        (master, reqwest::StatusCode::OK),
+    ] {
+        let response = client
+            .get(url.clone())
+            .bearer_auth(token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected);
+    }
+    socket.close(None).await.unwrap();
+}
+
+#[tokio::test]
+async fn test_terminal接続情報_削除済みcommandはtauri_invokeでエラーになる() {
+    // Given
+    let fixture = Fixture::new().await;
+    let window = tauri::WebviewWindowBuilder::new(&fixture.host.app, "main", Default::default())
+        .build()
+        .unwrap();
+    // When
+    let result = tauri::test::get_ipc_response(
+        &window,
+        tauri::webview::InvokeRequest {
+            cmd: "get_terminal_stream_endpoint".into(),
+            callback: tauri::ipc::CallbackFn(0),
+            error: tauri::ipc::CallbackFn(1),
+            url: "tauri://localhost".parse().unwrap(),
+            body: tauri::ipc::InvokeBody::Json(json!({})),
+            headers: Default::default(),
+            invoke_key: tauri::test::INVOKE_KEY.into(),
+        },
+    );
+    // Then
+    assert_eq!(
+        result.unwrap_err(),
+        json!("Command get_terminal_stream_endpoint not found")
+    );
+}
+
+#[tokio::test]
 async fn test_レビューコメント監視_events_json変更がtauriとwsへ届く() {
     // Given
     let fixture = Fixture::new().await;
@@ -184,37 +277,60 @@ async fn test_クライアントws_失敗と不正引数も同じrequest_idで�
     let fixture = Fixture::new().await;
     let mut socket = fixture.connect().await;
     // When / Then
-    for (command, args, code) in [
-        ("missing", json!({}), Some("UNKNOWN_COMMAND")),
-        ("get_current_branch", json!({}), Some("INVALID_REQUEST")),
-        (
-            "get_current_branch",
-            json!({"repoPath":"/missing-releash-repository"}),
-            None,
-        ),
+    #[derive(prost::Message)]
+    struct UnknownRequest {
+        #[prost(string, tag = "1")]
+        request_id: String,
+        #[prost(uint32, tag = "999")]
+        command: u32,
+    }
+    for request in [
+        UnknownRequest {
+            request_id: "failed".into(),
+            command: 5,
+        }
+        .encode_to_vec(),
+        CommandRequest {
+            request_id: "failed".into(),
+            command: Some(command_request::Command::GetCurrentBranch(
+                Default::default(),
+            )),
+        }
+        .encode_to_vec(),
     ] {
-        let response = request(
-            &mut socket,
-            json!({"request_id":"failed","command":command,"args":args}),
-        )
-        .await;
+        socket
+            .send(ClientMessage::Binary(
+                PaddedEnvelope {
+                    request,
+                    padding: vec![],
+                }
+                .encode_to_vec()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let response = receive(&mut socket).await;
         assert_eq!(response["request_id"], "failed");
         assert!(response.get("result").is_none());
-        if let Some(code) = code {
-            assert_eq!(response["error"]["code"], code);
-        } else {
-            assert!(response["error"].is_string());
-        }
+        assert_eq!(response["error"]["code"], "INVALID_REQUEST");
     }
-    let response = request(&mut socket, json!({"request_id":"malformed","command":5})).await;
-    assert_eq!(response["request_id"], "malformed");
-    assert_eq!(response["error"]["code"], "INVALID_REQUEST");
+    let response = request(&mut socket, json!({"request_id":"failed", "command":"get_current_branch", "args":{"repoPath":"/missing-releash-repository"}})).await;
+    assert_eq!(response["request_id"], "failed");
+    assert!(response.get("result").is_none());
+    assert!(response["error"].is_string());
+    socket
+        .send(ClientMessage::Binary(
+            encode_frame(json!({"type":"ack","attachment_id":"a","sequence":1})).into(),
+        ))
+        .await
+        .unwrap();
     let response = request(
         &mut socket,
-        json!({"type":"ack","attachment_id":"a","sequence":1}),
+        json!({"request_id":"after-ack", "command":"get_current_branch", "args":fixture.args()}),
     )
     .await;
-    assert_eq!(response["error"]["code"], "UNSUPPORTED_STREAM");
+    assert_eq!(response["request_id"], "after-ack");
+    assert_eq!(response["result"], "ws-branch");
     socket.close(None).await.unwrap();
 }
 
@@ -291,12 +407,12 @@ async fn test_backend通知_8イベントがtauriとwsへ同じpayloadで届く(
             worktree_path: "/repo",
         }),
         BackendPush::BranchListSync,
-        BackendPush::FileChange(&file),
-        BackendPush::GitStatusChanged(&git),
+        BackendPush::FileChange(file),
+        BackendPush::GitStatusChanged(git),
         BackendPush::RepoPathsChanged(&paths),
-        BackendPush::RepositorySnapshotChanged(&snapshot),
+        BackendPush::RepositorySnapshotChanged(snapshot),
         BackendPush::ReviewCommentsChanged("*"),
-        BackendPush::WorkflowExecutionChanged(&workflow),
+        BackendPush::WorkflowExecutionChanged(Box::new(workflow.clone())),
     ];
     for (index, push) in pushes.into_iter().enumerate() {
         push.emit(fixture.host.app.handle());
@@ -304,8 +420,14 @@ async fn test_backend通知_8イベントがtauriとwsへ同じpayloadで届く(
         // Then
         assert_eq!(frame["status"], "push");
         assert_eq!(frame["event"], events[index]);
-        assert_eq!(frame["payload"], received.lock().unwrap()[index]);
         if events[index] == "workflow-execution-changed" {
+            assert_eq!(
+                serde_json::from_value::<WorkflowExecutionChangedPayloadView>(
+                    received.lock().unwrap()[index].clone()
+                )
+                .unwrap(),
+                workflow
+            );
             assert_eq!(
                 serde_json::from_value::<WorkflowExecutionChangedPayloadView>(
                     frame["payload"].clone()
@@ -313,6 +435,8 @@ async fn test_backend通知_8イベントがtauriとwsへ同じpayloadで届く(
                 .unwrap(),
                 workflow
             );
+        } else {
+            assert_eq!(frame["payload"], received.lock().unwrap()[index]);
         }
     }
     socket.close(None).await.unwrap();
@@ -433,7 +557,7 @@ async fn test_クライアントws_接続数上限と切断後の解放() {
 }
 
 #[tokio::test]
-async fn test_クライアントws_pushの欠落時は接続を閉じる() {
+async fn test_クライアントws_pushの欠落時は再同期通知後も同じ接続を使える() {
     // Given
     let fixture = Fixture::new().await;
     let mut socket = fixture.connect().await;
@@ -447,11 +571,31 @@ async fn test_クライアントws_pushの欠落時は接続を閉じる() {
         .unwrap()
         .unwrap()
         .unwrap();
-    assert!(matches!(frame, ClientMessage::Close(_)));
+    let ClientMessage::Binary(bytes) = frame else {
+        panic!("binary resync notification");
+    };
+    assert!(matches!(
+        Envelope::decode(bytes).unwrap().body,
+        Some(envelope::Body::PushResync(_))
+    ));
+    let response = request(
+        &mut socket,
+        json!({"request_id":"after-lag", "command":"get_current_branch", "args":fixture.args()}),
+    )
+    .await;
+    assert_eq!(
+        response,
+        json!({"request_id":"after-lag", "result":"ws-branch"})
+    );
+    BackendPush::BranchListSync.emit(fixture.host.app.handle());
+    assert_eq!(
+        receive(&mut socket).await,
+        json!({"status":"push", "event":"branch-list-sync", "payload":null})
+    );
 }
 
 #[tokio::test]
-async fn test_クライアントws_pingと不正jsonとbinaryを処理する() {
+async fn test_クライアントws_pingと不正protoを処理しtextを拒否する() {
     // Given
     let fixture = Fixture::new().await;
     let mut socket = fixture.connect().await;
@@ -464,14 +608,14 @@ async fn test_クライアントws_pingと不正jsonとbinaryを処理する() {
         socket.next().await.unwrap().unwrap(),
         ClientMessage::Pong(vec![1, 2].into())
     );
-    socket.send(ClientMessage::Text("{".into())).await.unwrap();
-    let response = receive(&mut socket).await;
-    assert_eq!(response["request_id"], "");
-    assert_eq!(response["error"]["code"], "INVALID_REQUEST");
     socket
         .send(ClientMessage::Binary(vec![1].into()))
         .await
         .unwrap();
+    let response = receive(&mut socket).await;
+    assert_eq!(response["request_id"], "");
+    assert_eq!(response["error"]["code"], "INVALID_REQUEST");
+    socket.send(ClientMessage::Text("{".into())).await.unwrap();
     assert!(matches!(
         socket.next().await.unwrap().unwrap(),
         ClientMessage::Close(_)
@@ -479,17 +623,17 @@ async fn test_クライアントws_pingと不正jsonとbinaryを処理する() {
 }
 
 #[tokio::test]
-async fn test_クライアント接続情報_発行された非master_tokenで両ws_routeへ接続できる() {
+async fn test_クライアント接続情報_非master_tokenで単一wsへ接続し旧routeを拒否する() {
     // Given
     let fixture = Fixture::new().await;
-    let terminal_url = fixture.url.replace("/v1/client", TERMINAL_WS_PATH);
+    let terminal_url = fixture.url.replace("/v1/client", "/v1/terminal");
 
     // When
     let endpoint = fixture.host.endpoint();
 
     // Then
     assert_ne!(endpoint.auth_subprotocol, fixture.host.master_subprotocol);
-    for url in [endpoint.url, terminal_url] {
+    for url in [endpoint.url] {
         let mut request = url.into_client_request().unwrap();
         request.headers_mut().insert(
             "sec-websocket-protocol",
@@ -511,30 +655,68 @@ async fn test_クライアント接続情報_発行された非master_tokenで�
         );
         socket.close(None).await.unwrap();
     }
+    let mut request = terminal_url.into_client_request().unwrap();
+    request.headers_mut().insert(
+        "sec-websocket-protocol",
+        endpoint.auth_subprotocol.parse().unwrap(),
+    );
+    let error = tokio_tungstenite::connect_async(request).await.unwrap_err();
+    assert!(
+        matches!(error, tokio_tungstenite::tungstenite::Error::Http(response) if response.status() != 101)
+    );
+}
+
+#[derive(prost::Message)]
+struct PaddedEnvelope {
+    #[prost(bytes = "vec", tag = "1")]
+    request: Vec<u8>,
+    #[prost(bytes = "vec", tag = "999")]
+    padding: Vec<u8>,
 }
 
 #[tokio::test]
 async fn test_クライアントws_受信上限以内は応答し超過frameと分割messageは拒否する() {
     // Given
     let fixture = Fixture::new().await;
-    let frame =
-        json!({"request_id":"boundary","command":"get_current_branch","args":fixture.args()})
-            .to_string();
-    let bounded = format!("{frame}{}", " ".repeat(65536 - frame.len()));
+    let limit = 16 * 1024 * 1024;
+    let envelope::Body::Request(request) = Envelope::decode(
+        encode_client_request("boundary", "get_current_branch", fixture.args()).as_slice(),
+    )
+    .unwrap()
+    .body
+    .unwrap() else {
+        panic!("request");
+    };
+    let mut envelope = PaddedEnvelope {
+        request: request.encode_to_vec(),
+        padding: vec![0; limit],
+    };
+    let overhead = envelope.encoded_len() - limit;
+    envelope.padding.truncate(limit - overhead);
+    let bounded = envelope.encode_to_vec();
+    assert_eq!(bounded.len(), limit);
     let mut socket = fixture.connect().await;
     // When / Then
     socket
-        .send(ClientMessage::Text(bounded.clone().into()))
+        .send(ClientMessage::Binary(bounded.clone().into()))
         .await
         .unwrap();
     assert_eq!(
         receive(&mut socket).await,
         json!({"request_id":"boundary","result":"ws-branch"})
     );
-    socket
-        .send(ClientMessage::Text(format!("{bounded} ").into()))
+    if let Err(error) = socket
+        .send(ClientMessage::Binary(
+            [bounded.as_slice(), &[0]].concat().into(),
+        ))
         .await
-        .unwrap();
+    {
+        assert!(matches!(
+            error,
+            tokio_tungstenite::tungstenite::Error::Io(_)
+                | tokio_tungstenite::tungstenite::Error::ConnectionClosed
+        ));
+    }
     assert_closed(&mut socket).await;
 
     let mut socket = fixture.connect().await;
@@ -544,8 +726,8 @@ async fn test_クライアントws_受信上限以内は応答し超過frameと�
     };
     socket
         .send(ClientMessage::Frame(Frame::message(
-            bounded.into_bytes(),
-            OpCode::Data(Data::Text),
+            bounded,
+            OpCode::Data(Data::Binary),
             false,
         )))
         .await
@@ -616,12 +798,8 @@ async fn test_クライアントws_command完了待ちの間も容量を超え�
     .await;
     let mut socket = fixture.connect().await;
     socket
-        .send(ClientMessage::Text(
-            json!({
-                "request_id": "paused", "command": "get_current_branch", "args": fixture.args()
-            })
-            .to_string()
-            .into(),
+        .send(ClientMessage::Binary(
+            encode_client_request("paused", "get_current_branch", fixture.args()).into(),
         ))
         .await
         .unwrap();
@@ -632,19 +810,67 @@ async fn test_クライアントws_command完了待ちの間も容量を超え�
     // When / Then
     for index in 0..65 {
         let payload = workflow_payload();
-        BackendPush::WorkflowExecutionChanged(&payload).emit(fixture.host.app.handle());
+        BackendPush::WorkflowExecutionChanged(Box::new(payload.clone()))
+            .emit(fixture.host.app.handle());
         let frame = receive(&mut socket).await;
         assert_eq!(
             frame["status"], "push",
             "push {index} arrived before command completion"
         );
         assert_eq!(frame["event"], "workflow-execution-changed");
-        assert_eq!(frame["payload"], serde_json::to_value(payload).unwrap());
+        assert_eq!(
+            serde_json::from_value::<WorkflowExecutionChangedPayloadView>(frame["payload"].clone())
+                .unwrap(),
+            payload
+        );
     }
     resume.send(()).unwrap();
     assert_eq!(
         receive(&mut socket).await,
         json!({"request_id": "paused", "result": "ws-branch"})
     );
+    socket.close(None).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_クライアントws_保留要求上限でもackを受信し超過要求を拒否する() {
+    // Given
+    let (resume, receiver) = std::sync::mpsc::channel();
+    let fixture = Fixture::with_branch(Arc::new(PausedBranch {
+        started: Arc::new(tokio::sync::Notify::new()),
+        resume: std::sync::Mutex::new(receiver),
+    }))
+    .await;
+    let mut socket = fixture.connect().await;
+    // When
+    for index in 0..65 {
+        socket
+            .send(ClientMessage::Binary(
+                encode_client_request(
+                    &format!("request-{index}"),
+                    "get_current_branch",
+                    fixture.args(),
+                )
+                .into(),
+            ))
+            .await
+            .unwrap();
+    }
+    // Then
+    let response = receive(&mut socket).await;
+    assert_eq!(response["request_id"], "request-64");
+    assert_eq!(response["error"]["code"], "REQUEST_LIMIT");
+    socket
+        .send(ClientMessage::Binary(
+            encode_frame(json!({"type":"ack","attachment_id":"missing","sequence":1})).into(),
+        ))
+        .await
+        .unwrap();
+    for _ in 0..64 {
+        resume.send(()).unwrap();
+    }
+    for _ in 0..64 {
+        assert_eq!(receive(&mut socket).await["result"], "ws-branch");
+    }
     socket.close(None).await.unwrap();
 }

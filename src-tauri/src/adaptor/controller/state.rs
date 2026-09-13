@@ -24,6 +24,7 @@ pub struct TerminalStreamEndpoint {
     pub token: std::sync::Arc<str>,
 }
 
+#[derive(Clone)]
 pub struct AppState {
     pub repository_usecase: Arc<RepositoryUsecase>,
     pub repository_state: Arc<RepositoryStateService>,

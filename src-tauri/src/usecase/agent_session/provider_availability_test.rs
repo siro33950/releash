@@ -15,7 +15,7 @@ use crate::domain::provider_lifecycle::ProviderKind;
 use super::{ProviderAvailabilityUsecase, ProviderAvailabilityUsecaseError};
 
 #[derive(Default)]
-struct FakeProviderExecutableConfigRepository {
+pub(crate) struct FakeProviderExecutableConfigRepository {
     overrides: Mutex<HashMap<ProviderKind, ProviderExecutable>>,
     fail_save: AtomicBool,
 }
@@ -66,7 +66,7 @@ impl ProviderExecutableConfigRepository for FakeProviderExecutableConfigReposito
 }
 
 #[derive(Default)]
-struct FakeProviderExecutableProbeGateway {
+pub(crate) struct FakeProviderExecutableProbeGateway {
     force_missing: AtomicBool,
     refreshes: Mutex<usize>,
 }

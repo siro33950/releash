@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import {
 	useCallback,
 	useEffect,
@@ -6,6 +5,7 @@ import {
 	useRef,
 	useState,
 } from "react";
+import { invokeClient as invoke } from "@/lib/clientSocket";
 import {
 	type AppSettings,
 	DEFAULT_SETTINGS,
@@ -71,7 +71,7 @@ export function useSettings() {
 
 	useEffect(() => {
 		let cancelled = false;
-		invoke<boolean>("get_performance_telemetry_enabled")
+		invoke("get_performance_telemetry_enabled")
 			.then((enabled) => {
 				if (cancelled || typeof enabled !== "boolean") return;
 				setSettings((prev) =>

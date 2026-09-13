@@ -1,8 +1,17 @@
-import { Channel, invoke } from "@tauri-apps/api/core";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { type ITheme, Terminal } from "@xterm/xterm";
 import { type RefObject, useCallback, useEffect, useMemo, useRef } from "react";
+import type {
+	ClientCommandArgs,
+	ClientCommandResults,
+} from "@/generated/client_types";
+import {
+	acknowledgeClientStream,
+	invokeClient as invoke,
+	listenClientStream,
+	onClientConnection,
+} from "@/lib/clientSocket";
 import { getErrorMessage } from "@/lib/errorMessage";
 import {
 	reportMountedXtermMounted,
@@ -26,8 +35,6 @@ import {
 } from "@/lib/terminalPerformanceProbe";
 import { getTerminalPerformanceSwitches } from "@/lib/terminalPerformanceSwitches";
 import { StartupInputBuffer } from "@/lib/terminalStartupInputBuffer";
-import { getTerminalStreamEndpoint } from "@/lib/terminalStreamEndpoint";
-import { openTerminalStreamSocket } from "@/lib/terminalStreamSocket";
 import {
 	applyTerminalStreamItem,
 	type TerminalStreamApplyContext,
@@ -38,20 +45,14 @@ import type { Theme } from "@/types/settings";
 
 export type { TerminalSurfaceOwner } from "@/lib/terminalSurfaceStream";
 
-interface GetOrSpawnTerminalResult {
-	session_key: string;
-	is_exited: boolean;
-	exit_code: number | null;
-}
-
 class TerminalBackendCommandError extends Error {}
 
-async function invokeTerminalBackendCommand<T>(
-	command: string,
-	args: Record<string, unknown>,
-): Promise<T> {
+async function invokeTerminalBackendCommand<K extends keyof ClientCommandArgs>(
+	command: K,
+	args: ClientCommandArgs[K],
+): Promise<ClientCommandResults[K]> {
 	try {
-		return await invoke<T>(command, args);
+		return await invoke(command, args);
 	} catch (error) {
 		throw new TerminalBackendCommandError(getErrorMessage(error));
 	}
@@ -265,15 +266,11 @@ export function useTerminal(
 			);
 		});
 		let deliverInput: (data: string) => void = () => {};
-		let activeSocket: WebSocket | null = null;
-		let wsTransportFailed = false;
-		const socketsClosedByUs = new WeakSet<WebSocket>();
+		let releaseStream: (() => void) | null = null;
 		const releaseCurrentAttachment = () => {
-			if (activeSocket) {
-				socketsClosedByUs.add(activeSocket);
-				activeSocket.close();
-				activeSocket = null;
-			} else if (attachmentId) {
+			releaseStream?.();
+			releaseStream = null;
+			if (attachmentId) {
 				const releasedAttachmentId = attachmentId;
 				invoke("detach_terminal_surface", {
 					attachmentId: releasedAttachmentId,
@@ -358,7 +355,6 @@ export function useTerminal(
 
 			// 1. Get or spawn the PTY owned by the selected product surface.
 			const performanceSwitchesPromise = getTerminalPerformanceSwitches();
-			const streamEndpointPromise = getTerminalStreamEndpoint();
 			const { rows, cols } = terminal;
 			const worktreePath = cwd ?? null;
 			const requestStartedAt = performance.now();
@@ -369,13 +365,10 @@ export function useTerminal(
 			performanceRequestStartedAt = launchOrigin ?? requestStartedAt;
 			const result =
 				initialization === "attach-existing"
-					? await invokeTerminalBackendCommand<GetOrSpawnTerminalResult>(
-							"get_terminal_surface",
-							{
-								owner: terminalOwner,
-							},
-						)
-					: await invokeTerminalBackendCommand<GetOrSpawnTerminalResult>(
+					? await invokeTerminalBackendCommand("get_terminal_surface", {
+							owner: terminalOwner,
+						})
+					: await invokeTerminalBackendCommand(
 							"get_or_spawn_terminal_surface",
 							{
 								rows,
@@ -412,8 +405,6 @@ export function useTerminal(
 
 			// 2. Attach to one backend-owned snapshot + sequenced stream.
 			const performanceSwitches = await performanceSwitchesPromise;
-			const streamEndpoint = await streamEndpointPromise;
-			const suppressOutputAcks = performanceSwitches.disableOutputFlowControl;
 			liveOutputScheduler.setMaxWritesInFlight(
 				performanceSwitches.disableRendererWriteSerialization ? 8 : 1,
 			);
@@ -443,36 +434,18 @@ export function useTerminal(
 			let firstChannelReceived = false;
 			const attachStream = async (recovery: boolean) => {
 				const previousAttachmentId = attachmentId;
-				const previousSocket = activeSocket;
+				const previousReleaseStream = releaseStream;
 				const epoch = ++attachmentEpoch;
 				const nextAttachmentId = crypto.randomUUID();
 				const acknowledgeOutput = (sequence: number) => {
-					if (suppressOutputAcks) return;
-					if (
-						activeSocket &&
-						activeSocket.readyState === WebSocket.OPEN &&
-						epoch === attachmentEpoch
-					) {
-						activeSocket.send(
-							JSON.stringify({
-								type: "ack",
-								attachment_id: nextAttachmentId,
-								sequence,
-							}),
-						);
-						return;
-					}
-					void invoke("ack_terminal_surface_output", {
-						attachmentId: nextAttachmentId,
-						sequence,
-					}).catch((error) => {
-						if (!isMounted || epoch !== attachmentEpoch) return;
-						const message = getErrorMessage(error);
-						const contextualMessage = `Failed to acknowledge terminal output: ${message}`;
-						console.error(contextualMessage);
-						onTerminalErrorRef.current?.(contextualMessage);
+					if (epoch !== attachmentEpoch) return;
+					try {
+						acknowledgeClientStream(nextAttachmentId, sequence);
+					} catch (error) {
+						const message = `Failed to acknowledge terminal output: ${getErrorMessage(error)}`;
+						onTerminalErrorRef.current?.(message);
 						recoverAttachment?.();
-					});
+					}
 				};
 				const applyContext: TerminalStreamApplyContext = {
 					isCurrent: () => isMounted && epoch === attachmentEpoch,
@@ -545,63 +518,42 @@ export function useTerminal(
 						}),
 					);
 				};
-				// hot path（stream配信・write・ack）はWebSocketを優先する。
-				// Tauri ChannelはメッセージごとにmacOSメインスレッドのevalを経由し、
-				// 高頻度出力時に配送待ち行列が入力遅延・invoke応答遅延の支配要因になる。
-				let nextSocket: WebSocket | null = null;
-				if (streamEndpoint && !wsTransportFailed) {
-					try {
-						nextSocket = await openTerminalStreamSocket(
-							streamEndpoint,
-							{ attachmentId: nextAttachmentId, owner: terminalOwner },
-							{
-								isClosedByUs: (socket) => socketsClosedByUs.has(socket),
-								onUnexpectedClose: (socket) => {
-									if (!isMounted || epoch !== attachmentEpoch) return;
-									// 予期しない切断はChannel transportへ切り替えて単発resyncする
-									wsTransportFailed = true;
-									if (activeSocket === socket) activeSocket = null;
-									recoverAttachment?.(epoch);
-								},
-								onStreamItem: handleStreamItem,
-								onStreamError: (message) => {
-									if (!isMounted || epoch !== attachmentEpoch) return;
-									console.error(message);
-									onTerminalErrorRef.current?.(message);
-									recoverAttachment?.();
-								},
-							},
-						);
-					} catch (error) {
-						console.error(
-							"Terminal WebSocket attach failed, falling back to Tauri Channel:",
-							error,
-						);
-						wsTransportFailed = true;
-					}
-				}
-				if (!nextSocket) {
-					const nextChannel = new Channel<TerminalSurfaceStreamItem>();
-					nextChannel.onmessage = handleStreamItem;
+				const nextReleaseStream = listenClientStream(
+					nextAttachmentId,
+					handleStreamItem,
+					() => {
+						if (!isMounted || epoch !== attachmentEpoch) return;
+						attachmentId = null;
+						recoverAttachment?.(epoch);
+					},
+				);
+				try {
 					await invokeTerminalBackendCommand("attach_terminal_surface", {
 						owner: terminalOwner,
 						attachmentId: nextAttachmentId,
 						recovery,
-						onEvent: nextChannel,
 					});
+				} catch (error) {
+					nextReleaseStream();
+					throw error;
 				}
+				if (!isMounted || epoch !== attachmentEpoch) {
+					nextReleaseStream();
+					await invoke("detach_terminal_surface", {
+						attachmentId: nextAttachmentId,
+					});
+					return;
+				}
+				releaseStream = nextReleaseStream;
 				// 入力の宛先はbackendがattachmentを受理した後にだけ切り替える。
 				// 先に切り替えると、attach完了前の打鍵が新attachment IDと
 				// sequence 0..Nで送られて棄却され、以後の入力sequenceが恒久的に
 				// 欠番となり全打鍵が無音でバッファされ続ける。
-				activeSocket = nextSocket;
 				attachmentId = nextAttachmentId;
 				inputSequence = 0;
 				pendingPerformanceInputSequences = [];
-				if (previousSocket) {
-					socketsClosedByUs.add(previousSocket);
-					previousSocket.close();
-				} else if (previousAttachmentId) {
+				previousReleaseStream?.();
+				if (previousAttachmentId) {
 					await invokeTerminalBackendCommand("detach_terminal_surface", {
 						attachmentId: previousAttachmentId,
 					});
@@ -642,7 +594,9 @@ export function useTerminal(
 					},
 				);
 			};
-			await attachStream(false);
+			await attachStream(false).catch((error) => {
+				if (isMounted) onTerminalErrorRef.current?.(getErrorMessage(error));
+			});
 			if (!isMounted) {
 				releaseCurrentAttachment();
 				return;
@@ -668,15 +622,38 @@ export function useTerminal(
 			});
 		};
 
-		initTerminal().catch((error) => {
-			console.error("Failed to initialize PTY:", error);
+		let initializing = false;
+		const initialize = () => {
+			if (initializing || !isMounted) return;
+			initializing = true;
+			void initTerminal()
+				.catch((error) => {
+					console.error("Failed to initialize PTY:", error);
+					if (isMounted)
+						onTerminalErrorRef.current?.(
+							error instanceof TerminalBackendCommandError
+								? error.message
+								: `Failed to initialize terminal: ${getErrorMessage(error)}`,
+						);
+				})
+				.finally(() => {
+					initializing = false;
+				});
+		};
+		const releaseConnection = onClientConnection((connected) => {
 			if (!isMounted) return;
-			const message =
-				error instanceof TerminalBackendCommandError
-					? error.message
-					: `Failed to initialize terminal: ${getErrorMessage(error)}`;
-			onTerminalErrorRef.current?.(message);
+			if (!connected) {
+				attachmentEpoch += 1;
+				attachmentId = null;
+				releaseStream?.();
+				releaseStream = null;
+			} else if (recoverAttachment) {
+				recoverAttachment(attachmentEpoch);
+			} else {
+				initialize();
+			}
 		});
+		initialize();
 
 		deliverInput = (data: string) => {
 			const activeAttachmentId = attachmentId;
@@ -691,29 +668,15 @@ export function useTerminal(
 				pendingPerformanceInputSequences.push(sequence);
 				reportTerminalInputPerformancePoint(sequence, "on_data");
 			}
-			if (activeSocket && activeSocket.readyState === WebSocket.OPEN) {
-				activeSocket.send(
-					JSON.stringify({
-						type: "write",
-						owner: terminalOwner,
-						attachment_id: activeAttachmentId,
-						sequence,
-						data,
-						...(clientStartedAtUnixMs === undefined
-							? {}
-							: { client_started_at_unix_ms: clientStartedAtUnixMs }),
-					}),
-				);
-				return;
-			}
-			void invoke<void>("write_terminal_surface", {
+
+			void invoke("write_terminal_surface", {
 				owner: terminalOwner,
 				attachmentId: activeAttachmentId,
 				sequence,
 				data,
 				...(clientStartedAtUnixMs === undefined
 					? {}
-					: { clientStartedAtUnixMs }),
+					: { clientStartedAtUnixMs: clientStartedAtUnixMs }),
 			}).catch((error) => {
 				if (!isMounted || writeEpoch !== attachmentEpoch) return;
 				const message = getErrorMessage(error);
@@ -789,6 +752,7 @@ export function useTerminal(
 		return () => {
 			isMounted = false;
 			resolveUnmount();
+			releaseConnection();
 			unregisterBufferReader();
 			inputDispatchRef.current = () => {};
 			liveOutputScheduler.dispose();

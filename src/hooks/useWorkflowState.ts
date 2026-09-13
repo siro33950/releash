@@ -1,7 +1,6 @@
-import { invoke } from "@tauri-apps/api/core";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { useEffect, useState } from "react";
-import { listenClient } from "@/lib/clientSocket";
+import { invokeClient as invoke, listenClient } from "@/lib/clientSocket";
 import type { WorkflowExecution } from "@/types/workflow";
 
 export function useWorkflowState(worktreePath: string | undefined) {
@@ -22,7 +21,7 @@ export function useWorkflowState(worktreePath: string | undefined) {
 		let loadSequence = 0;
 		const load = () => {
 			const sequence = ++loadSequence;
-			invoke<string | null>("resolve_active_execution_by_worktree", {
+			invoke("resolve_active_execution_by_worktree", {
 				worktreePath,
 			})
 				.then((executionId) => {
@@ -31,10 +30,10 @@ export function useWorkflowState(worktreePath: string | undefined) {
 						setWorkflowExecution(null);
 						return null;
 					}
-					return invoke<WorkflowExecution | null>(
-						"get_workflow_execution_state",
-						{ worktreePath, executionId },
-					).then((execution) => {
+					return invoke("get_workflow_execution_state", {
+						worktreePath,
+						executionId,
+					}).then((execution) => {
 						if (!cancelled && sequence === loadSequence) {
 							setWorkflowExecution(execution ?? null);
 						}

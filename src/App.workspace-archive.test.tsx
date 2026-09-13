@@ -28,7 +28,13 @@ const mocks = vi.hoisted(() => ({
 		| null,
 }));
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
+vi.mock("@/lib/clientSocket", async (importOriginal) => ({
+	...(await importOriginal<typeof import("@/lib/clientSocket")>()),
+	invokeClient: mocks.invoke,
+}));
+
+import { invoke } from "@tauri-apps/api/core";
+
 vi.mock("@tauri-apps/api/event", () => ({
 	emit: mocks.emit,
 	listen: mocks.listen,
@@ -234,6 +240,7 @@ beforeEach(() => {
 	mocks.postArchiveSnapshot = fallbackSnapshot;
 	mocks.reconciliationFailuresRemaining = 0;
 	mocks.workspaceSelectionInvalidated = null;
+	vi.mocked(invoke).mockResolvedValue({ type: "ready" });
 	mocks.invoke.mockImplementation((command: string, args?: unknown) => {
 		if (command === "get_application_startup_outcome") {
 			return Promise.resolve({ type: "ready" });

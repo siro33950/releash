@@ -75,7 +75,7 @@ mod agent_session_rename_tests;
 mod agent_session_tests;
 #[cfg(test)]
 #[path = "provider_availability_test.rs"]
-mod provider_availability_tests;
+pub(crate) mod provider_availability_tests;
 #[cfg(test)]
 #[path = "provider_session_title_ingestion_test.rs"]
 mod provider_session_title_ingestion_tests;

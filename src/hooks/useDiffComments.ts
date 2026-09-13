@@ -1,11 +1,10 @@
-import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { invokeClient as invoke } from "@/lib/clientSocket";
 import {
 	getThreadFilePath,
 	type ReviewDiscussionThread,
 } from "@/types/diffComment";
-import type { ReviewThread } from "@/types/protocol";
 
 interface UseDiffCommentsOptions {
 	worktreeName: string;
@@ -22,7 +21,7 @@ export function useDiffComments({ worktreeName }: UseDiffCommentsOptions) {
 		const requestedWorktree = worktreeName;
 		setLoading(true);
 		try {
-			const result = await invoke<ReviewThread[]>("list_review_threads", {
+			const result = await invoke("list_review_threads", {
 				worktreeName: requestedWorktree,
 				filter: null,
 			});
@@ -60,7 +59,7 @@ export function useDiffComments({ worktreeName }: UseDiffCommentsOptions) {
 			endLine?: number;
 			content: string;
 		}) => {
-			return invoke<ReviewThread>("create_review_thread", {
+			return invoke("create_review_thread", {
 				worktreeName,
 				filePath: params.filePath ?? null,
 				lineNumber: params.lineNumber ?? null,
@@ -73,7 +72,7 @@ export function useDiffComments({ worktreeName }: UseDiffCommentsOptions) {
 
 	const appendComment = useCallback(
 		async (threadId: string, content: string) => {
-			await invoke<ReviewThread>("append_review_comment", {
+			await invoke("append_review_comment", {
 				worktreeName,
 				threadId,
 				content,
@@ -84,7 +83,7 @@ export function useDiffComments({ worktreeName }: UseDiffCommentsOptions) {
 
 	const resolveThread = useCallback(
 		async (threadId: string, outcome: string, summary: string) => {
-			await invoke<ReviewThread>("resolve_review_thread", {
+			await invoke("resolve_review_thread", {
 				worktreeName,
 				threadId,
 				outcome,
@@ -96,7 +95,7 @@ export function useDiffComments({ worktreeName }: UseDiffCommentsOptions) {
 
 	const deleteThread = useCallback(
 		async (threadId: string) => {
-			await invoke<void>("delete_review_thread", {
+			await invoke("delete_review_thread", {
 				worktreeName,
 				threadId,
 			});

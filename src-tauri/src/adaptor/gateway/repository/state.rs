@@ -294,7 +294,7 @@ impl<R: Runtime> RepositoryStateNotifier for TauriRepositoryStateNotifier<R> {
                 worktree_path.clone(),
                 &notification.snapshot,
             );
-            BackendPush::RepositorySnapshotChanged(&event).emit(&self.app);
+            BackendPush::RepositorySnapshotChanged(event).emit(&self.app);
         }
 
         if notification.phase == SnapshotNotificationPhase::RefreshStarted {
@@ -302,7 +302,7 @@ impl<R: Runtime> RepositoryStateNotifier for TauriRepositoryStateNotifier<R> {
         }
 
         for worktree_path in &notification.worktree_paths {
-            BackendPush::GitStatusChanged(&GitStatusChangedEvent {
+            BackendPush::GitStatusChanged(GitStatusChangedEvent {
                 repo_path: worktree_path.clone(),
             })
             .emit(&self.app);
@@ -319,7 +319,7 @@ impl<R: Runtime> RepositoryStateNotifier for TauriRepositoryStateNotifier<R> {
                     .unwrap_or_default()
             });
             for watcher_id in notification.file_watcher_ids {
-                BackendPush::FileChange(&FileChangeEvent {
+                BackendPush::FileChange(FileChangeEvent {
                     watcher_id,
                     path: path.clone(),
                     kind: "change".to_string(),
