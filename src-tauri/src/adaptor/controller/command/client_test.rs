@@ -185,6 +185,20 @@ parity!(
         .await
     )
 );
+parity!(
+    test_comment_protoはusecaseの不正入力エラーと一致する,
+    app,
+    "list_review_threads",
+    json!({"worktreeName":"../invalid"}),
+    outcome(
+        invoke_tauri(
+            &app,
+            "list_review_threads",
+            json!({"worktreeName": "../invalid","filter": null})
+        )
+        .await
+    )
+);
 #[tokio::test]
 async fn test_クライアントws_切断しても受理済みcommandを途中で破棄しない() {
     use crate::adaptor::controller::api;

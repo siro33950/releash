@@ -53,6 +53,7 @@ impl ClientCommandDispatch {
     pub(crate) fn register_dependencies(&mut self, deps: &super::ClientDependencies) {
         super::repository::register_shared(self, deps);
         super::code::register_shared(self, deps);
+        super::comment::register_shared(self, deps);
     }
     pub(crate) fn register_domain(
         &mut self,

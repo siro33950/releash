@@ -567,5 +567,15 @@ pub(crate) fn build_client_dependencies<R: tauri::Runtime>(
         app_state: app
             .try_state::<crate::adaptor::controller::state::AppState>()
             .map(|state| state.inner().clone()),
+        review_comment_usecase: app
+            .try_state::<std::sync::Arc<crate::usecase::comment::ReviewCommentUsecase>>()
+            .map(|state| state.inner().clone()),
+        data_dir: app
+            .path()
+            .app_data_dir()
+            .map_err(|error| format!("Failed to get app data dir: {error}")),
+        comment_notify: Arc::new(crate::adaptor::gateway::push::CommentChangeGateway::new(
+            app.clone(),
+        )),
     }
 }

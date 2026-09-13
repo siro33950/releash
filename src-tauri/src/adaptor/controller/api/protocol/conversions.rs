@@ -35,6 +35,34 @@ impl TryFrom<crate::adaptor::protocol::workflow::ArtifactView> for wire::Artifac
     }
 }
 
+impl TryFrom<wire::AuthorScopeDto> for crate::usecase::comment::dto::AuthorScopeDto {
+    type Error = String;
+    fn try_from(value: wire::AuthorScopeDto) -> Result<Self, String> {
+        Ok(
+            match wire::author_scope_dto::Value::try_from(req(value.value, "value")?)
+                .map_err(|_| "Invalid AuthorScopeDto")?
+            {
+                wire::author_scope_dto::Value::Mine => Self::Mine,
+                wire::author_scope_dto::Value::Other => Self::Other,
+            },
+        )
+    }
+}
+
+impl TryFrom<wire::AuthorScopeDto> for String {
+    type Error = String;
+    fn try_from(value: wire::AuthorScopeDto) -> Result<Self, String> {
+        Ok(
+            match wire::author_scope_dto::Value::try_from(req(value.value, "value")?)
+                .map_err(|_| "Invalid AuthorScopeDto")?
+            {
+                wire::author_scope_dto::Value::Mine => "mine".to_owned(),
+                wire::author_scope_dto::Value::Other => "other".to_owned(),
+            },
+        )
+    }
+}
+
 impl TryFrom<crate::usecase::repository_dto::BranchCardDto> for wire::BranchCardDto {
     type Error = String;
     fn try_from(value: crate::usecase::repository_dto::BranchCardDto) -> Result<Self, String> {
@@ -857,10 +885,46 @@ where
         })
     }
 }
+impl<T> TryFrom<Vec<T>> for wire::ListReviewCommentDto
+where
+    wire::ReviewCommentDto: TryFrom<T>,
+    <wire::ReviewCommentDto as TryFrom<T>>::Error: std::fmt::Display,
+{
+    type Error = String;
+    fn try_from(value: Vec<T>) -> Result<Self, String> {
+        Ok(Self {
+            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
+        })
+    }
+}
 impl<T> TryFrom<Vec<T>> for wire::ListReviewFileEntryDto
 where
     wire::ReviewFileEntryDto: TryFrom<T>,
     <wire::ReviewFileEntryDto as TryFrom<T>>::Error: std::fmt::Display,
+{
+    type Error = String;
+    fn try_from(value: Vec<T>) -> Result<Self, String> {
+        Ok(Self {
+            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
+        })
+    }
+}
+impl<T> TryFrom<Vec<T>> for wire::ListReviewHistoryEntryDto
+where
+    wire::ReviewHistoryEntryDto: TryFrom<T>,
+    <wire::ReviewHistoryEntryDto as TryFrom<T>>::Error: std::fmt::Display,
+{
+    type Error = String;
+    fn try_from(value: Vec<T>) -> Result<Self, String> {
+        Ok(Self {
+            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
+        })
+    }
+}
+impl<T> TryFrom<Vec<T>> for wire::ListReviewThreadDto
+where
+    wire::ReviewThreadDto: TryFrom<T>,
+    <wire::ReviewThreadDto as TryFrom<T>>::Error: std::fmt::Display,
 {
     type Error = String;
     fn try_from(value: Vec<T>) -> Result<Self, String> {
@@ -1440,6 +1504,58 @@ impl TryFrom<wire::ResultUint64> for u64 {
     }
 }
 
+impl TryFrom<crate::usecase::comment::dto::ReviewActorKindWireDto>
+    for wire::ReviewActorKindWireDto
+{
+    type Error = String;
+    fn try_from(
+        value: crate::usecase::comment::dto::ReviewActorKindWireDto,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            value: Some(match value {
+                crate::usecase::comment::dto::ReviewActorKindWireDto::Human => {
+                    wire::review_actor_kind_wire_dto::Value::Human as i32
+                }
+                crate::usecase::comment::dto::ReviewActorKindWireDto::Agent => {
+                    wire::review_actor_kind_wire_dto::Value::Agent as i32
+                }
+            }),
+        })
+    }
+}
+
+impl TryFrom<String> for wire::ReviewActorKindWireDto {
+    type Error = String;
+    fn try_from(value: String) -> Result<Self, String> {
+        Ok(Self {
+            value: Some(match value.as_str() {
+                "human" => wire::review_actor_kind_wire_dto::Value::Human as i32,
+                "agent" => wire::review_actor_kind_wire_dto::Value::Agent as i32,
+                _ => return Err(format!("Invalid ReviewActorKindWireDto: {value}")),
+            }),
+        })
+    }
+}
+
+impl TryFrom<&str> for wire::ReviewActorKindWireDto {
+    type Error = String;
+    fn try_from(value: &str) -> Result<Self, String> {
+        cv(value.to_owned())
+    }
+}
+
+impl TryFrom<crate::usecase::comment::dto::ReviewActorWireDto> for wire::ReviewActorWireDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::comment::dto::ReviewActorWireDto) -> Result<Self, String> {
+        Ok(Self {
+            kind: Some(cv(value.kind)?),
+            backend_id: value.backend_id.map(cv).transpose()?,
+            model: value.model.map(cv).transpose()?,
+            display_name: Some(cv(value.display_name)?),
+        })
+    }
+}
+
 impl TryFrom<crate::usecase::code_dto::ReviewBinaryDto> for wire::ReviewBinaryDto {
     type Error = String;
     fn try_from(value: crate::usecase::code_dto::ReviewBinaryDto) -> Result<Self, String> {
@@ -1452,6 +1568,19 @@ impl TryFrom<crate::usecase::code_dto::ReviewBinaryDto> for wire::ReviewBinaryDt
             modified_url: value.modified_url.map(cv).transpose()?,
             original_size: value.original_size.map(cv).transpose()?,
             modified_size: value.modified_size.map(cv).transpose()?,
+        })
+    }
+}
+
+impl TryFrom<crate::usecase::comment::dto::ReviewCommentDto> for wire::ReviewCommentDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::comment::dto::ReviewCommentDto) -> Result<Self, String> {
+        Ok(Self {
+            id: Some(cv(value.id)?),
+            thread_id: Some(cv(value.thread_id)?),
+            author: Some(cv(value.author)?),
+            content: Some(cv(value.content)?),
+            created_at: Some(cv(value.created_at)?),
         })
     }
 }
@@ -1538,6 +1667,84 @@ impl TryFrom<wire::ReviewGroupActionInput>
     }
 }
 
+impl TryFrom<crate::usecase::comment::dto::ReviewHistoryEntryDto> for wire::ReviewHistoryEntryDto {
+    type Error = String;
+    fn try_from(
+        value: crate::usecase::comment::dto::ReviewHistoryEntryDto,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            variant: Some(match value {
+                crate::usecase::comment::dto::ReviewHistoryEntryDto::ThreadCreated {
+                    id,
+                    thread_id,
+                    comment_id,
+                    actor,
+                    target,
+                    content,
+                    at,
+                } => wire::review_history_entry_dto::Variant::ThreadCreated(
+                    wire::ReviewHistoryEntryDtoThreadCreated {
+                        id: Some(cv(id)?),
+                        thread_id: Some(cv(thread_id)?),
+                        comment_id: Some(cv(comment_id)?),
+                        actor: Some(cv(actor)?),
+                        target: Some(cv(target)?),
+                        content: Some(cv(content)?),
+                        at: Some(cv(at)?),
+                    },
+                ),
+                crate::usecase::comment::dto::ReviewHistoryEntryDto::CommentAppended {
+                    id,
+                    thread_id,
+                    comment_id,
+                    actor,
+                    content,
+                    at,
+                } => wire::review_history_entry_dto::Variant::CommentAppended(
+                    wire::ReviewHistoryEntryDtoCommentAppended {
+                        id: Some(cv(id)?),
+                        thread_id: Some(cv(thread_id)?),
+                        comment_id: Some(cv(comment_id)?),
+                        actor: Some(cv(actor)?),
+                        content: Some(cv(content)?),
+                        at: Some(cv(at)?),
+                    },
+                ),
+                crate::usecase::comment::dto::ReviewHistoryEntryDto::ThreadResolved {
+                    id,
+                    thread_id,
+                    actor,
+                    outcome,
+                    summary,
+                    at,
+                } => wire::review_history_entry_dto::Variant::ThreadResolved(
+                    wire::ReviewHistoryEntryDtoThreadResolved {
+                        id: Some(cv(id)?),
+                        thread_id: Some(cv(thread_id)?),
+                        actor: Some(cv(actor)?),
+                        outcome: Some(cv(outcome)?),
+                        summary: Some(cv(summary)?),
+                        at: Some(cv(at)?),
+                    },
+                ),
+                crate::usecase::comment::dto::ReviewHistoryEntryDto::ThreadDeleted {
+                    id,
+                    thread_id,
+                    actor,
+                    at,
+                } => wire::review_history_entry_dto::Variant::ThreadDeleted(
+                    wire::ReviewHistoryEntryDtoThreadDeleted {
+                        id: Some(cv(id)?),
+                        thread_id: Some(cv(thread_id)?),
+                        actor: Some(cv(actor)?),
+                        at: Some(cv(at)?),
+                    },
+                ),
+            }),
+        })
+    }
+}
+
 impl TryFrom<crate::usecase::code_dto::ReviewImageDto> for wire::ReviewImageDto {
     type Error = String;
     fn try_from(value: crate::usecase::code_dto::ReviewImageDto) -> Result<Self, String> {
@@ -1597,6 +1804,18 @@ impl TryFrom<&str> for wire::ReviewLimitReasonDto {
     }
 }
 
+impl TryFrom<crate::usecase::comment::dto::ReviewResolveInfoDto> for wire::ReviewResolveInfoDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::comment::dto::ReviewResolveInfoDto) -> Result<Self, String> {
+        Ok(Self {
+            actor: Some(cv(value.actor)?),
+            outcome: Some(cv(value.outcome)?),
+            summary: Some(cv(value.summary)?),
+            resolved_at: Some(cv(value.resolved_at)?),
+        })
+    }
+}
+
 impl TryFrom<crate::usecase::code_dto::ReviewSnapshotDto> for wire::ReviewSnapshotDto {
     type Error = String;
     fn try_from(value: crate::usecase::code_dto::ReviewSnapshotDto) -> Result<Self, String> {
@@ -1639,6 +1858,17 @@ impl TryFrom<wire::ReviewTargetInput> for crate::adaptor::protocol::code::Review
             wire::review_target_input::Variant::Path(value) => {
                 crate::adaptor::protocol::code::ReviewTargetInput::Path(cv(value)?)
             }
+        })
+    }
+}
+
+impl TryFrom<crate::usecase::comment::dto::ReviewTargetWireDto> for wire::ReviewTargetWireDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::comment::dto::ReviewTargetWireDto) -> Result<Self, String> {
+        Ok(Self {
+            file_path: value.file_path.map(cv).transpose()?,
+            line_number: value.line_number.map(cv).transpose()?,
+            end_line: value.end_line.map(cv).transpose()?,
         })
     }
 }
@@ -1700,6 +1930,102 @@ impl TryFrom<&str> for wire::ReviewTextSource {
     type Error = String;
     fn try_from(value: &str) -> Result<Self, String> {
         cv(value.to_owned())
+    }
+}
+
+impl TryFrom<crate::usecase::comment::dto::ReviewThreadDto> for wire::ReviewThreadDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::comment::dto::ReviewThreadDto) -> Result<Self, String> {
+        Ok(Self {
+            id: Some(cv(value.id)?),
+            worktree_name: Some(cv(value.worktree_name)?),
+            author: Some(cv(value.author)?),
+            target: Some(cv(value.target)?),
+            state: Some(cv(value.state)?),
+            comments: Some(cv(value.comments)?),
+            resolve: value.resolve.map(cv).transpose()?,
+            created_at: Some(cv(value.created_at)?),
+            updated_at: Some(cv(value.updated_at)?),
+            version: Some(cv(value.version)?),
+            can_resolve: Some(cv(value.can_resolve)?),
+        })
+    }
+}
+
+impl TryFrom<wire::ReviewThreadFilterDto> for crate::usecase::comment::dto::ReviewThreadFilterDto {
+    type Error = String;
+    fn try_from(value: wire::ReviewThreadFilterDto) -> Result<Self, String> {
+        Ok(Self {
+            file: value.file.map(cv).transpose()?,
+            state: value.state.map(cv).transpose()?,
+            author: value.author.map(cv).transpose()?,
+            unread: value.unread.map(cv).transpose()?,
+            thread_id: value.thread_id.map(cv).transpose()?.unwrap_or_default(),
+        })
+    }
+}
+
+impl TryFrom<crate::usecase::comment::dto::ReviewThreadStateDto> for wire::ReviewThreadStateDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::comment::dto::ReviewThreadStateDto) -> Result<Self, String> {
+        Ok(Self {
+            value: Some(match value {
+                crate::usecase::comment::dto::ReviewThreadStateDto::Open => {
+                    wire::review_thread_state_dto::Value::Open as i32
+                }
+                crate::usecase::comment::dto::ReviewThreadStateDto::Resolved => {
+                    wire::review_thread_state_dto::Value::Resolved as i32
+                }
+            }),
+        })
+    }
+}
+
+impl TryFrom<wire::ReviewThreadStateDto> for crate::usecase::comment::dto::ReviewThreadStateDto {
+    type Error = String;
+    fn try_from(value: wire::ReviewThreadStateDto) -> Result<Self, String> {
+        Ok(
+            match wire::review_thread_state_dto::Value::try_from(req(value.value, "value")?)
+                .map_err(|_| "Invalid ReviewThreadStateDto")?
+            {
+                wire::review_thread_state_dto::Value::Open => Self::Open,
+                wire::review_thread_state_dto::Value::Resolved => Self::Resolved,
+            },
+        )
+    }
+}
+
+impl TryFrom<String> for wire::ReviewThreadStateDto {
+    type Error = String;
+    fn try_from(value: String) -> Result<Self, String> {
+        Ok(Self {
+            value: Some(match value.as_str() {
+                "open" => wire::review_thread_state_dto::Value::Open as i32,
+                "resolved" => wire::review_thread_state_dto::Value::Resolved as i32,
+                _ => return Err(format!("Invalid ReviewThreadStateDto: {value}")),
+            }),
+        })
+    }
+}
+
+impl TryFrom<&str> for wire::ReviewThreadStateDto {
+    type Error = String;
+    fn try_from(value: &str) -> Result<Self, String> {
+        cv(value.to_owned())
+    }
+}
+
+impl TryFrom<wire::ReviewThreadStateDto> for String {
+    type Error = String;
+    fn try_from(value: wire::ReviewThreadStateDto) -> Result<Self, String> {
+        Ok(
+            match wire::review_thread_state_dto::Value::try_from(req(value.value, "value")?)
+                .map_err(|_| "Invalid ReviewThreadStateDto")?
+            {
+                wire::review_thread_state_dto::Value::Open => "open".to_owned(),
+                wire::review_thread_state_dto::Value::Resolved => "resolved".to_owned(),
+            },
+        )
     }
 }
 

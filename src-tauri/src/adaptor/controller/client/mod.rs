@@ -1,4 +1,5 @@
 pub(crate) mod code;
+pub(crate) mod comment;
 mod dependencies;
 pub(crate) mod dispatch;
 pub(crate) mod repository;
