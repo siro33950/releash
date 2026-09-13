@@ -1,6 +1,6 @@
-import { invoke } from "@tauri-apps/api/core";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { invokeClient as invoke } from "@/lib/clientSocket";
 import { DEFAULT_SETTINGS } from "@/types/settings";
 import { useSettings } from "./useSettings";
 

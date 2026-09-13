@@ -1,3 +1,4 @@
+import { invoke as invokeTauri } from "@tauri-apps/api/core";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useEffect, useState } from "react";
@@ -47,7 +48,7 @@ vi.mock("react-resizable-panels", () => ({
 	),
 	Separator: () => <div />,
 }));
-vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
+vi.mock("@/lib/clientSocket", () => ({ invokeClient: mocks.invoke }));
 vi.mock("@tauri-apps/api/event", () => ({
 	emit: mocks.emit,
 	listen: mocks.listen,
@@ -358,6 +359,7 @@ function wireSelectionRoundTrip({
 }
 
 beforeEach(() => {
+	vi.mocked(invokeTauri).mockReset().mockResolvedValue(null);
 	for (const mock of Object.values(mocks)) {
 		if (typeof mock === "function" && "mockClear" in mock) {
 			mock.mockClear();
@@ -1769,7 +1771,7 @@ describe("WorkspaceList", () => {
 			screen.getByRole("button", { name: "Close Direct session" }),
 		);
 
-		expect(mocks.invoke).toHaveBeenCalledWith("close_workspace_node", {
+		expect(invokeTauri).toHaveBeenCalledWith("close_workspace_node", {
 			worktreePath: "/repo/wt",
 			nodeId: directNode.id,
 		});
@@ -2079,7 +2081,7 @@ describe("WorkspaceList", () => {
 		);
 
 		await waitFor(() => expect(detailRefresh).toHaveBeenCalledOnce());
-		expect(mocks.invoke).toHaveBeenCalledWith("close_workspace_node", {
+		expect(invokeTauri).toHaveBeenCalledWith("close_workspace_node", {
 			worktreePath: "/repo/wt",
 			nodeId: directNode.id,
 		});

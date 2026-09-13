@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import {
 	BookOpen,
 	Bot,
@@ -35,6 +34,7 @@ import { useBackgroundConfig } from "@/hooks/useAppSettings";
 import { useAutomation } from "@/hooks/useAutomation";
 import { useNotionSettings } from "@/hooks/useNotionSettings";
 import { useProviderAvailabilitySettings } from "@/hooks/useProviderAvailabilitySettings";
+import { invokeClient as invoke } from "@/lib/clientSocket";
 import { getErrorMessage } from "@/lib/errorMessage";
 import { setPerformanceTelemetryEnabled, trackEvent } from "@/lib/telemetry";
 import { cn } from "@/lib/utils";
@@ -65,7 +65,7 @@ function useWorkflowSettings(open: boolean) {
 		let cancelled = false;
 		setLoading(true);
 		setError(null);
-		invoke<WorkflowConfig>("get_workflow_config")
+		invoke("get_workflow_config")
 			.then((loaded) => {
 				if (cancelled) return;
 				const normalized = loaded ?? DEFAULT_WORKFLOW_CONFIG;
@@ -196,10 +196,7 @@ function useExternalEditorConfig(open: boolean) {
 		let cancelled = false;
 		setLoading(true);
 		setError(null);
-		Promise.all([
-			invoke<string>("get_external_editor"),
-			invoke<EditorInfo[]>("detect_editors"),
-		])
+		Promise.all([invoke("get_external_editor"), invoke("detect_editors")])
 			.then(([current, detected]) => {
 				if (cancelled) return;
 				setEditor(current);
@@ -370,8 +367,8 @@ function RepoBaseBranchItem({
 		setError(null);
 
 		Promise.all([
-			invoke<BranchInfo[]>("list_branches", { repoPath }),
-			invoke<string | null>("get_releash_base", { repoPath }),
+			invoke("list_branches", { repoPath }),
+			invoke("get_releash_base", { repoPath }),
 		])
 			.then(([branchList, currentBase]) => {
 				setBranches(branchList.filter((b) => !b.is_remote));

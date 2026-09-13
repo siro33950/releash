@@ -1,22 +1,9 @@
-import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { PrStatus, WorktreeBranch } from "@/types/git";
+import { invokeClient as invoke } from "@/lib/clientSocket";
+import type { WorktreeBranch } from "@/types/git";
 
 const POLL_INTERVAL = 120_000;
-
-interface WorktreeDisplayGroups {
-	working_areas: WorktreeBranch[];
-}
-
-interface BranchCardsSnapshot {
-	version: number;
-	stale: boolean;
-	loading: boolean;
-	limited: boolean;
-	branches: WorktreeBranch[];
-	worktree_display_groups: WorktreeDisplayGroups;
-}
 
 export function useWorktreeList(repoPath: string) {
 	const [branches, setBranches] = useState<WorktreeBranch[]>([]);
@@ -27,7 +14,7 @@ export function useWorktreeList(repoPath: string) {
 	const enrichWithPrStatus = useCallback(
 		async (cards: WorktreeBranch[]): Promise<WorktreeBranch[]> => {
 			try {
-				const prStatus = await invoke<PrStatus>("get_cached_pr_status", {
+				const prStatus = await invoke("get_cached_pr_status", {
 					repoPath,
 				});
 				return cards.map((b) => {
@@ -58,12 +45,9 @@ export function useWorktreeList(repoPath: string) {
 			const seq = ++refreshSeqRef.current;
 			if (!options?.silent) setLoading(true);
 			try {
-				const snapshot = await invoke<BranchCardsSnapshot>(
-					"list_branches_with_status_snapshot",
-					{
-						repoPath,
-					},
-				);
+				const snapshot = await invoke("list_branches_with_status_snapshot", {
+					repoPath,
+				});
 				// 表示先の振り分けは backend が確定済み。ここでは PR 情報を重ねるだけ。
 				const groups = snapshot.worktree_display_groups;
 				const filtered = await enrichWithPrStatus(groups.working_areas);
@@ -95,7 +79,7 @@ export function useWorktreeList(repoPath: string) {
 		let isMounted = true;
 		const start = async () => {
 			try {
-				const id = await invoke<number>("start_git_dir_watching", {
+				const id = await invoke("start_git_dir_watching", {
 					repoPath,
 				});
 				if (!isMounted) {

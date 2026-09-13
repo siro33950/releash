@@ -10,8 +10,8 @@ const mocks = vi.hoisted(() => ({
 	writeText: vi.fn(),
 }));
 
-vi.mock("@tauri-apps/api/core", () => ({
-	invoke: (...args: unknown[]) => mocks.invoke(...args),
+vi.mock("@/lib/clientSocket", () => ({
+	invokeClient: (...args: unknown[]) => mocks.invoke(...args),
 }));
 
 function HandoffButton() {

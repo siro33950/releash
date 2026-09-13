@@ -4,7 +4,7 @@ import { useNotionSettings } from "./useNotionSettings";
 
 describe("useNotionSettings", () => {
 	it("should load configs for each repo path", async () => {
-		const { invoke } = await import("@tauri-apps/api/core");
+		const { invokeClient: invoke } = await import("@/lib/clientSocket");
 		vi.mocked(invoke).mockImplementation(async (cmd, args) => {
 			if (cmd === "get_notion_config") {
 				const { repoPath } = args as { repoPath: string };
@@ -39,7 +39,7 @@ describe("useNotionSettings", () => {
 	});
 
 	it("should report isDirty when draft changes", async () => {
-		const { invoke } = await import("@tauri-apps/api/core");
+		const { invokeClient: invoke } = await import("@/lib/clientSocket");
 		vi.mocked(invoke).mockResolvedValue(null);
 
 		const { result } = renderHook(() => useNotionSettings(["/repo/a"]));
@@ -61,7 +61,7 @@ describe("useNotionSettings", () => {
 	});
 
 	it("should report isDirty when marked for delete", async () => {
-		const { invoke } = await import("@tauri-apps/api/core");
+		const { invokeClient: invoke } = await import("@/lib/clientSocket");
 		vi.mocked(invoke).mockResolvedValue({
 			api_token: "token-a",
 			database_id: "db-a",
@@ -89,7 +89,7 @@ describe("useNotionSettings", () => {
 	});
 
 	it("should save changed configs and delete marked ones", async () => {
-		const { invoke } = await import("@tauri-apps/api/core");
+		const { invokeClient: invoke } = await import("@/lib/clientSocket");
 		vi.mocked(invoke).mockImplementation(async (cmd, args) => {
 			if (cmd === "get_notion_config") {
 				const { repoPath } = args as { repoPath: string };
@@ -163,7 +163,7 @@ describe("useNotionSettings", () => {
 	});
 
 	it("should reset drafts to configs", async () => {
-		const { invoke } = await import("@tauri-apps/api/core");
+		const { invokeClient: invoke } = await import("@/lib/clientSocket");
 		vi.mocked(invoke).mockResolvedValue({
 			api_token: "token-a",
 			database_id: "db-a",
@@ -199,7 +199,7 @@ describe("useNotionSettings", () => {
 	});
 
 	it("should validate a repo config", async () => {
-		const { invoke } = await import("@tauri-apps/api/core");
+		const { invokeClient: invoke } = await import("@/lib/clientSocket");
 		vi.mocked(invoke).mockImplementation(async (cmd) => {
 			if (cmd === "get_notion_config") return null;
 			if (cmd === "validate_notion_config") {
@@ -247,7 +247,7 @@ describe("useNotionSettings", () => {
 	});
 
 	it("should set validationStatus for invalid_token", async () => {
-		const { invoke } = await import("@tauri-apps/api/core");
+		const { invokeClient: invoke } = await import("@/lib/clientSocket");
 		vi.mocked(invoke).mockImplementation(async (cmd) => {
 			if (cmd === "get_notion_config") return null;
 			if (cmd === "validate_notion_config") {
@@ -278,7 +278,7 @@ describe("useNotionSettings", () => {
 	});
 
 	it("should set validationStatus for invalid_database", async () => {
-		const { invoke } = await import("@tauri-apps/api/core");
+		const { invokeClient: invoke } = await import("@/lib/clientSocket");
 		vi.mocked(invoke).mockImplementation(async (cmd) => {
 			if (cmd === "get_notion_config") return null;
 			if (cmd === "validate_notion_config") {
@@ -308,7 +308,7 @@ describe("useNotionSettings", () => {
 	});
 
 	it("should set validationStatus for network_error", async () => {
-		const { invoke } = await import("@tauri-apps/api/core");
+		const { invokeClient: invoke } = await import("@/lib/clientSocket");
 		vi.mocked(invoke).mockImplementation(async (cmd) => {
 			if (cmd === "get_notion_config") return null;
 			if (cmd === "validate_notion_config") {
@@ -338,7 +338,7 @@ describe("useNotionSettings", () => {
 	});
 
 	it("should handle validate exception without leaving validating stuck", async () => {
-		const { invoke } = await import("@tauri-apps/api/core");
+		const { invokeClient: invoke } = await import("@/lib/clientSocket");
 		vi.mocked(invoke).mockImplementation(async (cmd) => {
 			if (cmd === "get_notion_config") return null;
 			if (cmd === "validate_notion_config") {
@@ -368,7 +368,7 @@ describe("useNotionSettings", () => {
 	});
 
 	it("should not call save_notion_config when apiToken is empty", async () => {
-		const { invoke } = await import("@tauri-apps/api/core");
+		const { invokeClient: invoke } = await import("@/lib/clientSocket");
 		vi.mocked(invoke).mockResolvedValue(null);
 
 		const { result } = renderHook(() => useNotionSettings(["/repo/a"]));

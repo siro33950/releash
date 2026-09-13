@@ -117,8 +117,8 @@ vi.mock("@/hooks/useFileNavigation", () => ({
 	}),
 }));
 
-vi.mock("@tauri-apps/api/core", () => ({
-	invoke: vi.fn().mockResolvedValue(null),
+vi.mock("@/lib/clientSocket", () => ({
+	invokeClient: vi.fn().mockResolvedValue(null),
 }));
 
 vi.mock("./DiffViewerSection", () => ({
