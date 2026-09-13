@@ -281,7 +281,7 @@ fn validate_template_variables(content: &str) -> Result<(), String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::execution::{
         get_workflow_execution, get_workflow_execution_log_impl, get_workflow_execution_state_impl,
         get_workflow_node_detail_impl, list_workflow_executions,
@@ -311,6 +311,7 @@ mod tests {
         let config_secret_repository: Arc<dyn crate::domain::app_config::ConfigSecretRepository> =
             app_config.clone();
         tauri::test::mock_builder()
+            .invoke_handler(crate::adaptor::controller::command::client::handle_registered_invoke)
             .manage(Arc::new(crate::infrastructure::push::PushSink::new()))
             .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
                 data_dir,
@@ -1284,7 +1285,7 @@ mod tests {
         );
     }
 
-    fn make_read_only_app() -> (
+    pub(crate) fn make_read_only_app() -> (
         AdapterTestApp,
         std::path::PathBuf,
         Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>,

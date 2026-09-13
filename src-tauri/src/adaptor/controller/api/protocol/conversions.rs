@@ -35,6 +35,47 @@ impl TryFrom<crate::adaptor::protocol::workflow::ArtifactView> for wire::Artifac
     }
 }
 
+impl TryFrom<crate::usecase::repository_dto::BranchCardDto> for wire::BranchCardDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::repository_dto::BranchCardDto) -> Result<Self, String> {
+        Ok(Self {
+            name: Some(cv(value.name)?),
+            is_main_worktree: Some(cv(value.is_main_worktree)?),
+            worktree_path: value.worktree_path.map(cv).transpose()?,
+            dirty_count: Some(cv(value.dirty_count)?),
+            is_merged: Some(cv(value.is_merged)?),
+            ahead: Some(cv(value.ahead)?),
+            behind: Some(cv(value.behind)?),
+            has_upstream: Some(cv(value.has_upstream)?),
+            base_ahead: Some(cv(value.base_ahead)?),
+        })
+    }
+}
+
+impl TryFrom<crate::usecase::repository_dto::BranchDto> for wire::BranchDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::repository_dto::BranchDto) -> Result<Self, String> {
+        Ok(Self {
+            name: Some(cv(value.name)?),
+            is_remote: Some(cv(value.is_remote)?),
+        })
+    }
+}
+
+impl TryFrom<crate::usecase::repository_dto::CommitDto> for wire::CommitDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::repository_dto::CommitDto) -> Result<Self, String> {
+        Ok(Self {
+            hash: Some(cv(value.hash)?),
+            short_hash: Some(cv(value.short_hash)?),
+            message: Some(cv(value.message)?),
+            author_name: Some(cv(value.author_name)?),
+            author_email: Some(cv(value.author_email)?),
+            timestamp: Some(cv(value.timestamp)?),
+        })
+    }
+}
+
 impl TryFrom<crate::adaptor::protocol::workflow::ExecutionInterruptionReasonView>
     for wire::ExecutionInterruptionReasonView
 {
@@ -224,6 +265,53 @@ impl TryFrom<crate::adaptor::gateway::repository::watch::FileChangeEvent>
     }
 }
 
+impl TryFrom<crate::usecase::repository_dto::FileDiffStatDto> for wire::FileDiffStatDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::repository_dto::FileDiffStatDto) -> Result<Self, String> {
+        Ok(Self {
+            path: Some(cv(value.path)?),
+            index_additions: Some(cv(value.index_additions)?),
+            index_deletions: Some(cv(value.index_deletions)?),
+            wt_additions: Some(cv(value.wt_additions)?),
+            wt_deletions: Some(cv(value.wt_deletions)?),
+        })
+    }
+}
+
+impl TryFrom<crate::usecase::repository_dto::FileStatusDto> for wire::FileStatusDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::repository_dto::FileStatusDto) -> Result<Self, String> {
+        Ok(Self {
+            path: Some(cv(value.path)?),
+            index_status: Some(cv(value.index_status)?),
+            worktree_status: Some(cv(value.worktree_status)?),
+        })
+    }
+}
+
+impl TryFrom<String> for wire::GitIndexStatus {
+    type Error = String;
+    fn try_from(value: String) -> Result<Self, String> {
+        Ok(Self {
+            value: Some(match value.as_str() {
+                "new" => wire::git_index_status::Value::New as i32,
+                "modified" => wire::git_index_status::Value::Modified as i32,
+                "deleted" => wire::git_index_status::Value::Deleted as i32,
+                "none" => wire::git_index_status::Value::None as i32,
+                "renamed" => wire::git_index_status::Value::Renamed as i32,
+                _ => return Err(format!("Invalid GitIndexStatus: {value}")),
+            }),
+        })
+    }
+}
+
+impl TryFrom<&str> for wire::GitIndexStatus {
+    type Error = String;
+    fn try_from(value: &str) -> Result<Self, String> {
+        cv(value.to_owned())
+    }
+}
+
 impl TryFrom<crate::adaptor::gateway::repository::watch::GitStatusChangedEvent>
     for wire::GitStatusChangedEvent
 {
@@ -237,10 +325,69 @@ impl TryFrom<crate::adaptor::gateway::repository::watch::GitStatusChangedEvent>
     }
 }
 
+impl TryFrom<String> for wire::GitWorktreeStatus {
+    type Error = String;
+    fn try_from(value: String) -> Result<Self, String> {
+        Ok(Self {
+            value: Some(match value.as_str() {
+                "new" => wire::git_worktree_status::Value::New as i32,
+                "modified" => wire::git_worktree_status::Value::Modified as i32,
+                "deleted" => wire::git_worktree_status::Value::Deleted as i32,
+                "ignored" => wire::git_worktree_status::Value::Ignored as i32,
+                "none" => wire::git_worktree_status::Value::None as i32,
+                _ => return Err(format!("Invalid GitWorktreeStatus: {value}")),
+            }),
+        })
+    }
+}
+
+impl TryFrom<&str> for wire::GitWorktreeStatus {
+    type Error = String;
+    fn try_from(value: &str) -> Result<Self, String> {
+        cv(value.to_owned())
+    }
+}
+
 impl<T> TryFrom<Vec<T>> for wire::ListArtifactView
 where
     wire::ArtifactView: TryFrom<T>,
     <wire::ArtifactView as TryFrom<T>>::Error: std::fmt::Display,
+{
+    type Error = String;
+    fn try_from(value: Vec<T>) -> Result<Self, String> {
+        Ok(Self {
+            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
+        })
+    }
+}
+impl<T> TryFrom<Vec<T>> for wire::ListBranchCardDto
+where
+    wire::BranchCardDto: TryFrom<T>,
+    <wire::BranchCardDto as TryFrom<T>>::Error: std::fmt::Display,
+{
+    type Error = String;
+    fn try_from(value: Vec<T>) -> Result<Self, String> {
+        Ok(Self {
+            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
+        })
+    }
+}
+impl<T> TryFrom<Vec<T>> for wire::ListBranchDto
+where
+    wire::BranchDto: TryFrom<T>,
+    <wire::BranchDto as TryFrom<T>>::Error: std::fmt::Display,
+{
+    type Error = String;
+    fn try_from(value: Vec<T>) -> Result<Self, String> {
+        Ok(Self {
+            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
+        })
+    }
+}
+impl<T> TryFrom<Vec<T>> for wire::ListCommitDto
+where
+    wire::CommitDto: TryFrom<T>,
+    <wire::CommitDto as TryFrom<T>>::Error: std::fmt::Display,
 {
     type Error = String;
     fn try_from(value: Vec<T>) -> Result<Self, String> {
@@ -261,10 +408,46 @@ where
         })
     }
 }
+impl<T> TryFrom<Vec<T>> for wire::ListFileDiffStatDto
+where
+    wire::FileDiffStatDto: TryFrom<T>,
+    <wire::FileDiffStatDto as TryFrom<T>>::Error: std::fmt::Display,
+{
+    type Error = String;
+    fn try_from(value: Vec<T>) -> Result<Self, String> {
+        Ok(Self {
+            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
+        })
+    }
+}
+impl<T> TryFrom<Vec<T>> for wire::ListFileStatusDto
+where
+    wire::FileStatusDto: TryFrom<T>,
+    <wire::FileStatusDto as TryFrom<T>>::Error: std::fmt::Display,
+{
+    type Error = String;
+    fn try_from(value: Vec<T>) -> Result<Self, String> {
+        Ok(Self {
+            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
+        })
+    }
+}
 impl<T> TryFrom<Vec<T>> for wire::ListNodeExecutionView
 where
     wire::NodeExecutionView: TryFrom<T>,
     <wire::NodeExecutionView as TryFrom<T>>::Error: std::fmt::Display,
+{
+    type Error = String;
+    fn try_from(value: Vec<T>) -> Result<Self, String> {
+        Ok(Self {
+            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
+        })
+    }
+}
+impl<T> TryFrom<Vec<T>> for wire::ListWorktreeEntryDto
+where
+    wire::WorktreeEntryDto: TryFrom<T>,
+    <wire::WorktreeEntryDto as TryFrom<T>>::Error: std::fmt::Display,
 {
     type Error = String;
     fn try_from(value: Vec<T>) -> Result<Self, String> {
@@ -627,6 +810,53 @@ where
         })
     }
 }
+impl<T> TryFrom<Option<T>> for wire::Nullablestring
+where
+    String: TryFrom<T>,
+    <String as TryFrom<T>>::Error: std::fmt::Display,
+{
+    type Error = String;
+    fn try_from(value: Option<T>) -> Result<Self, String> {
+        Ok(Self {
+            value: value.map(cv).transpose()?,
+        })
+    }
+}
+impl TryFrom<crate::usecase::repository_state::snapshot::RepositoryBranchCardsSnapshotDto>
+    for wire::RepositoryBranchCardsSnapshotDto
+{
+    type Error = String;
+    fn try_from(
+        value: crate::usecase::repository_state::snapshot::RepositoryBranchCardsSnapshotDto,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            version: Some(cv(value.version)?),
+            stale: Some(cv(value.stale)?),
+            loading: Some(cv(value.loading)?),
+            limited: Some(cv(value.limited)?),
+            branches: Some(cv(value.branches)?),
+            worktree_display_groups: Some(cv(value.worktree_display_groups)?),
+        })
+    }
+}
+
+impl TryFrom<crate::usecase::repository_state::snapshot::RepositoryDiffStatsSnapshotDto>
+    for wire::RepositoryDiffStatsSnapshotDto
+{
+    type Error = String;
+    fn try_from(
+        value: crate::usecase::repository_state::snapshot::RepositoryDiffStatsSnapshotDto,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            version: Some(cv(value.version)?),
+            stale: Some(cv(value.stale)?),
+            loading: Some(cv(value.loading)?),
+            limited: Some(cv(value.limited)?),
+            diff_stats: Some(cv(value.diff_stats)?),
+        })
+    }
+}
+
 impl TryFrom<crate::usecase::repository_state::snapshot::RepositorySnapshotChangedEvent>
     for wire::RepositorySnapshotChangedEvent
 {
@@ -640,6 +870,23 @@ impl TryFrom<crate::usecase::repository_state::snapshot::RepositorySnapshotChang
             stale: Some(cv(value.stale)?),
             loading: Some(cv(value.loading)?),
             limited: Some(cv(value.limited)?),
+        })
+    }
+}
+
+impl TryFrom<crate::usecase::repository_state::snapshot::RepositoryStatusSnapshotDto>
+    for wire::RepositoryStatusSnapshotDto
+{
+    type Error = String;
+    fn try_from(
+        value: crate::usecase::repository_state::snapshot::RepositoryStatusSnapshotDto,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            version: Some(cv(value.version)?),
+            stale: Some(cv(value.stale)?),
+            loading: Some(cv(value.loading)?),
+            limited: Some(cv(value.limited)?),
+            status: Some(cv(value.status)?),
         })
     }
 }
@@ -669,6 +916,13 @@ impl TryFrom<wire::ResultString> for String {
     type Error = String;
     fn try_from(value: wire::ResultString) -> Result<Self, String> {
         req(value.value, "value")
+    }
+}
+
+impl TryFrom<u32> for wire::ResultUint32 {
+    type Error = String;
+    fn try_from(value: u32) -> Result<Self, String> {
+        Ok(Self { value: Some(value) })
     }
 }
 
@@ -859,5 +1113,32 @@ where
             .into_iter()
             .map(|(key, value)| Ok((key, cv(value)?)))
             .collect()
+    }
+}
+impl TryFrom<crate::usecase::repository_dto::WorktreeDisplayGroupsDto>
+    for wire::WorktreeDisplayGroupsDto
+{
+    type Error = String;
+    fn try_from(
+        value: crate::usecase::repository_dto::WorktreeDisplayGroupsDto,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            working_areas: Some(cv(value.working_areas)?),
+        })
+    }
+}
+
+impl TryFrom<crate::usecase::repository_dto::WorktreeEntryDto> for wire::WorktreeEntryDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::repository_dto::WorktreeEntryDto) -> Result<Self, String> {
+        Ok(Self {
+            name: Some(cv(value.name)?),
+            path: Some(cv(value.path)?),
+            branch: Some(cv(value.branch)?),
+            is_main: Some(cv(value.is_main)?),
+            is_locked: Some(cv(value.is_locked)?),
+            dirty_count: Some(cv(value.dirty_count)?),
+            base_branch: value.base_branch.map(cv).transpose()?,
+        })
     }
 }

@@ -608,7 +608,7 @@ pub(crate) mod test_support {
         test_router_with_optional_deps(data_dir, token, token, terminal, None, None)
     }
 
-    fn test_router_with_optional_deps(
+    pub(crate) fn test_router_with_optional_deps(
         data_dir: &Path,
         token: &str,
         terminal_token: &str,

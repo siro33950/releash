@@ -31,7 +31,7 @@ pub async fn get_head_diff_file_tree_snapshot(
     repo_path: String,
 ) -> Result<RepositoryHeadDiffFileTreeSnapshotDto, AppError> {
     let service = state.repository_state.clone();
-    super::super::repository::run_repository_state(move || {
+    crate::adaptor::controller::client::repository::run_repository_state(move || {
         service.get_head_diff_file_tree_snapshot(&repo_path)
     })
     .await

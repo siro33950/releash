@@ -558,3 +558,14 @@ mod tests {
         assert_eq!(tauri_tree, direct_tree);
     }
 }
+
+pub(crate) fn build_client_dependencies<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> super::client::ClientDependencies {
+    use tauri::Manager;
+    super::client::ClientDependencies {
+        app_state: app
+            .try_state::<crate::adaptor::controller::state::AppState>()
+            .map(|state| state.inner().clone()),
+    }
+}

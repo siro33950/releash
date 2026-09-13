@@ -50,6 +50,9 @@ impl ClientCommandDispatch {
         dispatch
     }
 
+    pub(crate) fn register_dependencies(&mut self, deps: &super::ClientDependencies) {
+        super::repository::register_shared(self, deps);
+    }
     pub(crate) fn register_domain(
         &mut self,
         names: &'static [&'static str],
@@ -97,6 +100,18 @@ pub(crate) fn invalid_request(message: impl Into<String>) -> wire::CommandError 
 }
 pub(crate) fn required<T>(value: Option<T>, field: &str) -> Result<T, wire::CommandError> {
     value.ok_or_else(|| invalid_request(format!("Missing {field}")))
+}
+pub(crate) fn convert<T, U: TryFrom<T>>(value: T) -> Result<U, wire::CommandError>
+where
+    U::Error: std::fmt::Display,
+{
+    U::try_from(value).map_err(|error| invalid_request(error.to_string()))
+}
+pub(crate) fn optional<T, U: TryFrom<T>>(value: Option<T>) -> Result<Option<U>, wire::CommandError>
+where
+    U::Error: std::fmt::Display,
+{
+    value.map(convert).transpose()
 }
 pub(crate) fn value<T, U: TryFrom<T>>(value: T) -> Result<U, wire::CommandError>
 where

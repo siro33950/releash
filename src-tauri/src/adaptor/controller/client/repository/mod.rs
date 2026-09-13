@@ -4,6 +4,17 @@
 //! query service に委ねる。git2 のブロッキング呼び出しを非同期境界へ
 //! 載せるため、各コマンドは `spawn_blocking` でユースケースを呼ぶ。
 
+mod shared;
+pub(crate) use shared::register_shared;
+
+pub(crate) mod branch;
+pub(crate) mod git_config;
+pub(crate) mod log;
+pub(crate) mod repo_paths;
+pub(crate) mod status;
+pub(crate) mod util;
+pub(crate) mod worktree;
+
 use crate::other::AppError;
 use crate::usecase::repository_error::UsecaseError;
 use crate::usecase::repository_state::RepositoryStateError;

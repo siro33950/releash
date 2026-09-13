@@ -1,13 +1,10 @@
-use tauri::State;
-
 use super::run_blocking;
 use crate::adaptor::controller::state::AppState;
 use crate::other::AppError;
 use crate::usecase::repository_dto::BranchDto;
 
-#[tauri::command]
-pub async fn list_branches(
-    state: State<'_, AppState>,
+pub(crate) async fn list_branches_shared(
+    state: &AppState,
     repo_path: String,
 ) -> Result<Vec<BranchDto>, AppError> {
     let uc = state.repository_usecase.clone();
@@ -18,18 +15,16 @@ pub async fn list_branches(
     .await
 }
 
-#[tauri::command]
-pub async fn get_default_branch(
-    state: State<'_, AppState>,
+pub(crate) async fn get_default_branch_shared(
+    state: &AppState,
     repo_path: String,
 ) -> Result<String, AppError> {
     let uc = state.repository_usecase.clone();
     run_blocking(move || uc.get_default_branch(&repo_path)).await
 }
 
-#[tauri::command]
-pub async fn git_create_branch(
-    state: State<'_, AppState>,
+pub(crate) async fn git_create_branch_shared(
+    state: &AppState,
     repo_path: String,
     branch_name: String,
 ) -> Result<(), AppError> {
@@ -37,9 +32,8 @@ pub async fn git_create_branch(
     run_blocking(move || uc.create_branch(&repo_path, &branch_name)).await
 }
 
-#[tauri::command]
-pub async fn delete_branch(
-    state: State<'_, AppState>,
+pub(crate) async fn delete_branch_shared(
+    state: &AppState,
     repo_path: String,
     branch_name: String,
     force: bool,
