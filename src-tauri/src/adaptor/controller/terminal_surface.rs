@@ -1,12 +1,10 @@
 use serde::Serialize;
-use tauri::{ipc::Channel, Manager, State};
 
 use crate::adaptor::controller::state::AppState;
 use crate::adaptor::protocol::terminal::{
     GetOrSpawnTerminalV1, TerminalInputPerformanceSampleV1, TerminalLaunchPerformanceSampleV1,
-    TerminalPerformanceSwitchesV1, TerminalStreamEndpointV1, TerminalSurfaceOwnerV1,
-    TerminalSurfaceStreamItemV1, TerminalSurfaceSummaryV1, TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX,
-    TERMINAL_WS_PATH,
+    TerminalPerformanceSwitchesV1, TerminalSurfaceOwnerV1, TerminalSurfaceStreamItemV1,
+    TerminalSurfaceSummaryV1,
 };
 use crate::usecase::terminal_surface::application::{
     TerminalSurfaceApplication, TerminalSurfaceAttachmentStream,
@@ -14,7 +12,7 @@ use crate::usecase::terminal_surface::application::{
 use crate::usecase::terminal_surface::error::UsecaseError;
 
 #[derive(Clone, Copy)]
-enum TerminalCommandErrorCode {
+pub(crate) enum TerminalCommandErrorCode {
     PtyError,
     InvalidRequest,
 }
@@ -28,7 +26,7 @@ impl TerminalCommandErrorCode {
     }
 }
 
-fn invalid_owner_error(
+pub(crate) fn invalid_owner_error(
     operation: TerminalCommandOperation,
     internal_cause: String,
 ) -> TerminalCommandError {
@@ -45,7 +43,7 @@ fn invalid_owner_error(
     }
 }
 
-fn invalid_terminal_write_owner_error(internal_cause: String) -> String {
+pub(crate) fn invalid_terminal_write_owner_error(internal_cause: String) -> String {
     log::warn!(
         "Terminal command failed: operation=write_terminal_surface code=INVALID_REQUEST cause={}",
         internal_cause
@@ -53,7 +51,7 @@ fn invalid_terminal_write_owner_error(internal_cause: String) -> String {
     "Terminal input could not be sent because the request is invalid.".to_string()
 }
 
-fn terminal_write_error(error: UsecaseError) -> String {
+pub(crate) fn terminal_write_error(error: UsecaseError) -> String {
     log::error!(
         "Terminal command failed: operation=write_terminal_surface code=PTY_ERROR cause={}",
         error
@@ -61,7 +59,7 @@ fn terminal_write_error(error: UsecaseError) -> String {
     "Terminal input could not be sent. Try again.".to_string()
 }
 
-fn invalid_terminal_resize_owner_error(internal_cause: String) -> String {
+pub(crate) fn invalid_terminal_resize_owner_error(internal_cause: String) -> String {
     log::warn!(
         "Terminal command failed: operation=resize_terminal_surface code=INVALID_REQUEST cause={}",
         internal_cause
@@ -69,7 +67,7 @@ fn invalid_terminal_resize_owner_error(internal_cause: String) -> String {
     "Terminal resize failed because the request is invalid.".to_string()
 }
 
-fn terminal_resize_error(error: UsecaseError) -> String {
+pub(crate) fn terminal_resize_error(error: UsecaseError) -> String {
     log::error!(
         "Terminal command failed: operation=resize_terminal_surface code=PTY_ERROR cause={}",
         error
@@ -77,41 +75,22 @@ fn terminal_resize_error(error: UsecaseError) -> String {
     "Terminal resize failed. Try again.".to_string()
 }
 
-#[tauri::command(async)]
-pub fn get_terminal_performance_switches() -> TerminalPerformanceSwitchesV1 {
-    crate::other::performance_switches::terminal_performance_switches().into()
+pub(crate) fn get_terminal_performance_switches_shared() -> TerminalPerformanceSwitchesV1 {
+    telemetry().terminal_performance_switches().into()
 }
 
-#[tauri::command(async)]
-pub fn get_terminal_stream_endpoint(app: tauri::AppHandle) -> Option<TerminalStreamEndpointV1> {
-    if crate::other::performance_switches::terminal_performance_switches()
-        .disable_terminal_websocket
-    {
-        return None;
-    }
-    let endpoint = app.try_state::<crate::adaptor::controller::state::TerminalStreamEndpoint>()?;
-    Some(TerminalStreamEndpointV1 {
-        url: format!("ws://127.0.0.1:{}{}", endpoint.port, TERMINAL_WS_PATH),
-        auth_subprotocol: format!(
-            "{}{}",
-            TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX, endpoint.token
-        ),
-    })
+pub(crate) fn get_performance_real_app_mode_shared() -> bool {
+    telemetry().performance_real_app_mode()
 }
 
-#[tauri::command(async)]
-pub fn get_performance_real_app_mode() -> bool {
-    crate::other::performance_switches::performance_real_app_mode()
+pub(crate) fn start_terminal_launch_performance_collection_shared() {
+    telemetry().start_terminal_launch_collection();
 }
 
-#[tauri::command(async)]
-pub fn start_terminal_launch_performance_collection() {
-    crate::other::telemetry::start_terminal_launch_sample_collection();
-}
-
-#[tauri::command(async)]
-pub fn take_terminal_launch_performance_samples() -> Vec<TerminalLaunchPerformanceSampleV1> {
-    crate::other::telemetry::take_terminal_launch_samples()
+pub(crate) fn take_terminal_launch_performance_samples_shared(
+) -> Vec<TerminalLaunchPerformanceSampleV1> {
+    telemetry()
+        .take_terminal_launch_samples()
         .into_iter()
         .map(|sample| TerminalLaunchPerformanceSampleV1 {
             phase: sample.phase.to_string(),
@@ -120,14 +99,14 @@ pub fn take_terminal_launch_performance_samples() -> Vec<TerminalLaunchPerforman
         .collect()
 }
 
-#[tauri::command(async)]
-pub fn start_terminal_input_performance_collection() {
-    crate::other::telemetry::start_terminal_input_sample_collection();
+pub(crate) fn start_terminal_input_performance_collection_shared() {
+    telemetry().start_terminal_input_collection();
 }
 
-#[tauri::command(async)]
-pub fn take_terminal_input_performance_samples() -> Vec<TerminalInputPerformanceSampleV1> {
-    crate::other::telemetry::take_terminal_input_samples()
+pub(crate) fn take_terminal_input_performance_samples_shared(
+) -> Vec<TerminalInputPerformanceSampleV1> {
+    telemetry()
+        .take_terminal_input_samples()
         .into_iter()
         .map(|sample| TerminalInputPerformanceSampleV1 {
             sequence: sample.sequence,
@@ -142,8 +121,7 @@ pub fn take_terminal_input_performance_samples() -> Vec<TerminalInputPerformance
         .collect()
 }
 
-#[tauri::command(async)]
-pub fn record_terminal_launch_renderer_phase(
+pub(crate) fn record_terminal_launch_renderer_phase_shared(
     phase: String,
     duration_ms: f64,
 ) -> Result<(), String> {
@@ -159,7 +137,7 @@ pub fn record_terminal_launch_renderer_phase(
     };
     let duration = std::time::Duration::try_from_secs_f64(duration_ms / 1_000.0)
         .map_err(|_| "Terminal launch renderer duration is out of range".to_string())?;
-    crate::other::telemetry::record_terminal_launch(metric, duration);
+    telemetry().record_terminal_launch(metric, duration);
     Ok(())
 }
 
@@ -170,7 +148,7 @@ pub struct TerminalCommandError {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TerminalCommandOperation {
+pub(crate) enum TerminalCommandOperation {
     Initialize,
     GetExisting,
     Attach,
@@ -241,9 +219,8 @@ impl TerminalCommandError {
     }
 }
 
-#[tauri::command(async)]
-pub fn write_terminal_surface(
-    state: State<'_, AppState>,
+pub(crate) fn write_terminal_surface_shared(
+    state: &AppState,
     owner: TerminalSurfaceOwnerV1,
     attachment_id: String,
     sequence: u64,
@@ -265,9 +242,8 @@ pub fn write_terminal_surface(
         .map_err(terminal_write_error)
 }
 
-#[tauri::command(async)]
-pub fn write_paths_to_terminal_surface(
-    state: State<'_, AppState>,
+pub(crate) fn write_paths_to_terminal_surface_shared(
+    state: &AppState,
     owner: TerminalSurfaceOwnerV1,
     paths: Vec<String>,
 ) -> Result<(), String> {
@@ -278,9 +254,8 @@ pub fn write_paths_to_terminal_surface(
         .map_err(|error| error.to_string())
 }
 
-#[tauri::command(async)]
-pub fn resize_terminal_surface(
-    state: State<'_, AppState>,
+pub(crate) fn resize_terminal_surface_shared(
+    state: &AppState,
     owner: TerminalSurfaceOwnerV1,
     rows: u16,
     cols: u16,
@@ -294,9 +269,8 @@ pub fn resize_terminal_surface(
         .map_err(terminal_resize_error)
 }
 
-#[tauri::command(async)]
-pub fn get_terminal_surface(
-    state: State<'_, AppState>,
+pub(crate) fn get_terminal_surface_shared(
+    state: &AppState,
     owner: TerminalSurfaceOwnerV1,
 ) -> Result<TerminalSurfaceSummaryV1, TerminalCommandError> {
     let owner = owner
@@ -327,39 +301,12 @@ pub(crate) async fn forward_terminal_surface_attachment<F>(
     application.detach(&attachment_id);
 }
 
-#[tauri::command(async)]
-pub fn attach_terminal_surface(
-    state: State<'_, AppState>,
-    attachment_id: String,
-    owner: TerminalSurfaceOwnerV1,
-    recovery: bool,
-    on_event: Channel<TerminalSurfaceStreamItemV1>,
-) -> Result<(), TerminalCommandError> {
-    let operation = TerminalCommandOperation::attachment(recovery);
-    let owner = owner
-        .try_into()
-        .map_err(|cause| invalid_owner_error(operation, cause))?;
-    let application = state.terminal_surface.clone();
-    let attachment = application
-        .attach(&attachment_id, &owner)
-        .map_err(|error| TerminalCommandError::from_usecase(error, operation))?;
-    tauri::async_runtime::spawn(forward_terminal_surface_attachment(
-        application,
-        attachment_id,
-        attachment,
-        move |item| on_event.send(item).map_err(|error| error.to_string()),
-    ));
-    Ok(())
-}
-
-#[tauri::command(async)]
-pub fn detach_terminal_surface(state: State<'_, AppState>, attachment_id: String) {
+pub(crate) fn detach_terminal_surface_shared(state: &AppState, attachment_id: String) {
     state.terminal_surface.detach(&attachment_id);
 }
 
-#[tauri::command(async)]
-pub fn ack_terminal_surface_output(
-    state: State<'_, AppState>,
+pub(crate) fn ack_terminal_surface_output_shared(
+    state: &AppState,
     attachment_id: String,
     sequence: u64,
 ) {
@@ -368,9 +315,8 @@ pub fn ack_terminal_surface_output(
         .acknowledge_output(&attachment_id, sequence);
 }
 
-#[tauri::command(async)]
-pub fn kill_terminal_surface(
-    state: State<'_, AppState>,
+pub(crate) fn kill_terminal_surface_shared(
+    state: &AppState,
     owner: TerminalSurfaceOwnerV1,
 ) -> Result<(), String> {
     let owner = owner.try_into()?;
@@ -380,10 +326,8 @@ pub fn kill_terminal_surface(
         .map_err(|error| error.to_string())
 }
 
-#[tauri::command(async)]
-#[allow(clippy::too_many_arguments)]
-pub fn get_or_spawn_terminal_surface(
-    state: State<'_, AppState>,
+pub(crate) fn get_or_spawn_terminal_surface_shared(
+    state: &AppState,
     rows: u16,
     cols: u16,
     cwd: Option<String>,
@@ -403,6 +347,33 @@ pub fn get_or_spawn_terminal_surface(
         })
 }
 
+pub(crate) fn attach(
+    application: &TerminalSurfaceApplication,
+    attachment_id: &str,
+    owner: TerminalSurfaceOwnerV1,
+    recovery: bool,
+) -> Result<TerminalSurfaceAttachmentStream, TerminalCommandError> {
+    if attachment_id.is_empty() || attachment_id.len() > 128 {
+        return Err(TerminalCommandError {
+            code: TerminalCommandErrorCode::InvalidRequest.code().to_string(),
+            message: "Invalid attachment ID".to_string(),
+        });
+    }
+    let operation = TerminalCommandOperation::attachment(recovery);
+    let owner = owner
+        .try_into()
+        .map_err(|cause| invalid_owner_error(operation, cause))?;
+    application
+        .attach(attachment_id, &owner)
+        .map_err(|error| TerminalCommandError::from_usecase(error, operation))
+}
+
 #[cfg(test)]
-#[path = "commands_test.rs"]
-mod commands_tests;
+#[path = "terminal_surface_test.rs"]
+mod terminal_surface_tests;
+
+fn telemetry() -> crate::usecase::telemetry::TelemetryUsecase<'static> {
+    crate::usecase::telemetry::TelemetryUsecase::new(
+        &crate::adaptor::gateway::telemetry::TelemetryGateway,
+    )
+}

@@ -207,6 +207,22 @@ parity!(
     outcome(invoke_tauri(&app, "get_provider_availability", json!({})).await)
 );
 parity!(
+    test_terminal_surface_protoはusecase結果と一致する,
+    app,
+    "get_terminal_surface",
+    json!({"owner":{"kind":"workspace","workspacePath":"/missing"}}),
+    outcome(
+        invoke_tauri(
+            &app,
+            "get_terminal_surface",
+            json!({"owner": crate::adaptor::protocol::terminal::TerminalSurfaceOwnerV1::Workspace {
+                workspace_path: "/missing".into()
+            }})
+        )
+        .await
+    )
+);
+parity!(
     test_workflow_protoはusecase結果と一致する,
     app,
     "list_workflows",
@@ -241,6 +257,13 @@ parity!(
         .await
         .unwrap()
     )
+);
+parity!(
+    test_app_config_protoはusecase結果と一致する,
+    app,
+    "get_app_settings",
+    json!({}),
+    outcome(invoke_tauri(&app, "get_app_settings", json!({})).await)
 );
 parity!(
     test_notion_protoはusecase結果と一致する,

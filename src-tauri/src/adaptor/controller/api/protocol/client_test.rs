@@ -1,5 +1,4 @@
 use super::*;
-use prost::Message;
 use serde_json::json;
 
 #[test]
@@ -103,6 +102,26 @@ fn test_型に合わない結果は成功応答にせず相関したerrorを返�
         panic!("error");
     };
     assert_eq!(from_value(error).unwrap()["code"], "INVALID_RESPONSE");
+}
+
+#[test]
+fn test_stream規約_attachmentと最大sequenceと分割終端を保持する() {
+    // Given / When / Then
+    for id in ["a", "b"] {
+        let envelope::Body::Stream(frame) = Envelope::decode(
+            stream_frame(id, u64::MAX, "日本語".as_bytes().to_vec(), true).as_slice(),
+        )
+        .unwrap()
+        .body
+        .unwrap() else {
+            panic!("stream");
+        };
+        assert_eq!(frame.attachment_id, id);
+        assert_eq!(frame.sequence, u64::MAX);
+        assert_eq!(frame.data, "日本語".as_bytes());
+        assert!(frame.end);
+    }
+    assert_eq!(MAX_STREAM_FRAME_BYTES, 65536);
 }
 
 #[test]

@@ -246,6 +246,50 @@ impl TryFrom<crate::usecase::agent_session::AgentSessionTreeLocationDto>
     }
 }
 
+impl TryFrom<crate::adaptor::gateway::app_config::AppSection> for wire::AppSection {
+    type Error = String;
+    fn try_from(value: crate::adaptor::gateway::app_config::AppSection) -> Result<Self, String> {
+        Ok(Self {
+            close_to_tray: Some(cv(value.close_to_tray)?),
+            auto_launch: Some(cv(value.auto_launch)?),
+            start_minimized: Some(cv(value.start_minimized)?),
+            last_root_path: Some(cv(value.last_root_path)?),
+            last_repo_paths: Some(cv(value.last_repo_paths)?),
+            external_editor: Some(cv(value.external_editor)?),
+        })
+    }
+}
+
+impl TryFrom<wire::AppSection> for crate::adaptor::gateway::app_config::AppSection {
+    type Error = String;
+    fn try_from(value: wire::AppSection) -> Result<Self, String> {
+        Ok(Self {
+            close_to_tray: value.close_to_tray.map(cv).transpose()?.unwrap_or(true),
+            auto_launch: value.auto_launch.map(cv).transpose()?.unwrap_or_default(),
+            start_minimized: value
+                .start_minimized
+                .map(cv)
+                .transpose()?
+                .unwrap_or_default(),
+            last_root_path: value
+                .last_root_path
+                .map(cv)
+                .transpose()?
+                .unwrap_or_default(),
+            last_repo_paths: value
+                .last_repo_paths
+                .map(cv)
+                .transpose()?
+                .unwrap_or_default(),
+            external_editor: value
+                .external_editor
+                .map(cv)
+                .transpose()?
+                .unwrap_or_default(),
+        })
+    }
+}
+
 impl TryFrom<crate::adaptor::protocol::application_lifecycle_v1::ApplicationQuitIntentDtoV1>
     for wire::ApplicationQuitIntentDtoV1
 {
@@ -1239,6 +1283,23 @@ impl TryFrom<crate::usecase::repository_dto::FileStatusDto> for wire::FileStatus
     }
 }
 
+impl TryFrom<crate::adaptor::protocol::terminal::GetOrSpawnTerminalV1>
+    for wire::GetOrSpawnTerminalV1
+{
+    type Error = String;
+    fn try_from(
+        value: crate::adaptor::protocol::terminal::GetOrSpawnTerminalV1,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            session_key: Some(cv(value.session_key)?),
+            restored_from_checkpoint: Some(cv(value.restored_from_checkpoint)?),
+            is_new: Some(cv(value.is_new)?),
+            is_exited: Some(cv(value.is_exited)?),
+            exit_code: value.exit_code.map(cv).transpose()?,
+        })
+    }
+}
+
 impl TryFrom<String> for wire::GitIndexStatus {
     type Error = String;
     fn try_from(value: String) -> Result<Self, String> {
@@ -2059,6 +2120,30 @@ impl<T> TryFrom<Vec<T>> for wire::ListStartupFailureActionDtoV1
 where
     wire::StartupFailureActionDtoV1: TryFrom<T>,
     <wire::StartupFailureActionDtoV1 as TryFrom<T>>::Error: std::fmt::Display,
+{
+    type Error = String;
+    fn try_from(value: Vec<T>) -> Result<Self, String> {
+        Ok(Self {
+            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
+        })
+    }
+}
+impl<T> TryFrom<Vec<T>> for wire::ListTerminalInputPerformanceSampleV1
+where
+    wire::TerminalInputPerformanceSampleV1: TryFrom<T>,
+    <wire::TerminalInputPerformanceSampleV1 as TryFrom<T>>::Error: std::fmt::Display,
+{
+    type Error = String;
+    fn try_from(value: Vec<T>) -> Result<Self, String> {
+        Ok(Self {
+            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
+        })
+    }
+}
+impl<T> TryFrom<Vec<T>> for wire::ListTerminalLaunchPerformanceSampleV1
+where
+    wire::TerminalLaunchPerformanceSampleV1: TryFrom<T>,
+    <wire::TerminalLaunchPerformanceSampleV1 as TryFrom<T>>::Error: std::fmt::Display,
 {
     type Error = String;
     fn try_from(value: Vec<T>) -> Result<Self, String> {
@@ -4448,6 +4533,94 @@ impl TryFrom<crate::adaptor::protocol::application_lifecycle_v1::StartupFailureQ
     }
 }
 
+impl TryFrom<crate::adaptor::protocol::terminal::TerminalInputPerformanceSampleV1>
+    for wire::TerminalInputPerformanceSampleV1
+{
+    type Error = String;
+    fn try_from(
+        value: crate::adaptor::protocol::terminal::TerminalInputPerformanceSampleV1,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            sequence: Some(cv(value.sequence)?),
+            on_data_to_command_ingress_ms: Some(cv(value.on_data_to_command_ingress_ms)?),
+            command_ingress_to_admission_ms: Some(cv(value.command_ingress_to_admission_ms)?),
+            admission_to_writer_enqueue_ms: Some(cv(value.admission_to_writer_enqueue_ms)?),
+            writer_enqueue_to_output_read_ms: Some(cv(value.writer_enqueue_to_output_read_ms)?),
+            output_read_to_model_apply_ms: Some(cv(value.output_read_to_model_apply_ms)?),
+            model_apply_to_event_publish_ms: Some(cv(value.model_apply_to_event_publish_ms)?),
+            event_published_at_unix_ms: Some(cv(value.event_published_at_unix_ms)?),
+        })
+    }
+}
+
+impl TryFrom<crate::adaptor::protocol::terminal::TerminalLaunchPerformanceSampleV1>
+    for wire::TerminalLaunchPerformanceSampleV1
+{
+    type Error = String;
+    fn try_from(
+        value: crate::adaptor::protocol::terminal::TerminalLaunchPerformanceSampleV1,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            phase: Some(cv(value.phase)?),
+            duration_ms: Some(cv(value.duration_ms)?),
+        })
+    }
+}
+
+impl TryFrom<crate::adaptor::protocol::terminal::TerminalPerformanceSwitchesV1>
+    for wire::TerminalPerformanceSwitchesV1
+{
+    type Error = String;
+    fn try_from(
+        value: crate::adaptor::protocol::terminal::TerminalPerformanceSwitchesV1,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            disable_output_flow_control: Some(cv(value.disable_output_flow_control)?),
+            disable_terminal_journal: Some(cv(value.disable_terminal_journal)?),
+            disable_renderer_write_serialization: Some(cv(
+                value.disable_renderer_write_serialization
+            )?),
+            disable_webgl_renderer: Some(cv(value.disable_webgl_renderer)?),
+        })
+    }
+}
+
+impl TryFrom<wire::TerminalSurfaceOwnerV1>
+    for crate::adaptor::protocol::terminal::TerminalSurfaceOwnerV1
+{
+    type Error = String;
+    fn try_from(value: wire::TerminalSurfaceOwnerV1) -> Result<Self, String> {
+        Ok(match req(value.variant, "variant")? {
+            wire::terminal_surface_owner_v1::Variant::Workspace(value) => {
+                crate::adaptor::protocol::terminal::TerminalSurfaceOwnerV1::Workspace {
+                    workspace_path: cv(req(value.workspace_path, "workspacePath")?)?,
+                }
+            }
+            wire::terminal_surface_owner_v1::Variant::Session(value) => {
+                crate::adaptor::protocol::terminal::TerminalSurfaceOwnerV1::Session {
+                    workspace_path: cv(req(value.workspace_path, "workspacePath")?)?,
+                    session_id: cv(req(value.session_id, "sessionId")?)?,
+                }
+            }
+        })
+    }
+}
+
+impl TryFrom<crate::adaptor::protocol::terminal::TerminalSurfaceSummaryV1>
+    for wire::TerminalSurfaceSummaryV1
+{
+    type Error = String;
+    fn try_from(
+        value: crate::adaptor::protocol::terminal::TerminalSurfaceSummaryV1,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            session_key: Some(cv(value.session_key)?),
+            is_exited: Some(cv(value.is_exited)?),
+            exit_code: value.exit_code.map(cv).transpose()?,
+        })
+    }
+}
+
 impl TryFrom<crate::usecase::workflow::dto::TokenUsageDto> for wire::TokenUsageDto {
     type Error = String;
     fn try_from(value: crate::usecase::workflow::dto::TokenUsageDto) -> Result<Self, String> {
@@ -4654,6 +4827,30 @@ impl TryFrom<wire::WorkflowNumber> for f64 {
     type Error = String;
     fn try_from(value: wire::WorkflowNumber) -> Result<Self, String> {
         req(value.value, "value")
+    }
+}
+
+impl TryFrom<crate::adaptor::gateway::app_config::WorkflowSection> for wire::WorkflowSection {
+    type Error = String;
+    fn try_from(
+        value: crate::adaptor::gateway::app_config::WorkflowSection,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            approval_auto_approve: Some(cv(value.approval_auto_approve)?),
+        })
+    }
+}
+
+impl TryFrom<wire::WorkflowSection> for crate::adaptor::gateway::app_config::WorkflowSection {
+    type Error = String;
+    fn try_from(value: wire::WorkflowSection) -> Result<Self, String> {
+        Ok(Self {
+            approval_auto_approve: value
+                .approval_auto_approve
+                .map(cv)
+                .transpose()?
+                .unwrap_or_default(),
+        })
     }
 }
 
