@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { TerminalPanel } from "@/components/panels/TerminalPanel";
 import { Button } from "@/components/ui/button";
@@ -6,6 +5,7 @@ import {
 	notifyAgentSessionChanged,
 	subscribeAgentSessionChanged,
 } from "@/lib/agentSessionEvents";
+import { invokeClient as invoke } from "@/lib/clientSocket";
 import { getErrorMessage } from "@/lib/errorMessage";
 import type {
 	AgentSessionItem,
@@ -125,7 +125,7 @@ export function AgentSessionPanel({
 			setState("loading");
 			setError(null);
 			try {
-				const outcome = await invoke<OpenOutcome>(command, {
+				const outcome = await invoke(command, {
 					agentSessionId: session.id,
 					rows: 24,
 					cols: 80,
@@ -324,7 +324,7 @@ export function AgentSessionRoute({
 		let active = true;
 		setError(null);
 		setUnavailable(false);
-		void invoke<AgentSessionItem | null>("get_agent_session", {
+		void invoke("get_agent_session", {
 			agentSessionId,
 		})
 			.then((result) => {

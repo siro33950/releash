@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -13,6 +12,7 @@ const mockInvoke = vi.fn();
 const mockListen = vi.fn();
 
 vi.mock("@/lib/clientSocket", () => ({
+	invokeClient: (...args: unknown[]) => mockInvoke(...args),
 	listenClient: (...args: unknown[]) => mockListen(...args),
 }));
 
@@ -67,7 +67,6 @@ describe("useWorkspaceNodeDetail", () => {
 
 	beforeEach(() => {
 		vi.clearAllMocks();
-		vi.mocked(invoke).mockImplementation(mockInvoke);
 		vi.mocked(listen).mockImplementation(mockListen);
 		listeners = {};
 		responses = [];

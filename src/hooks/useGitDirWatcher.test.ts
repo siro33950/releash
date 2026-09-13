@@ -4,8 +4,8 @@ import { useGitDirWatcher } from "./useGitDirWatcher";
 
 const mockInvoke = vi.fn();
 
-vi.mock("@tauri-apps/api/core", () => ({
-	invoke: (...args: unknown[]) => mockInvoke(...args),
+vi.mock("@/lib/clientSocket", () => ({
+	invokeClient: (...args: unknown[]) => mockInvoke(...args),
 }));
 
 describe("useGitDirWatcher", () => {

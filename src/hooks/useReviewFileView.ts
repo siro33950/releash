@@ -1,5 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useRef, useState } from "react";
+import { invokeClient as invoke } from "@/lib/clientSocket";
 import { getErrorMessage } from "@/lib/errorMessage";
 import type { ReviewFileView, ReviewViewport } from "@/types/review";
 import type { DiffBase, DiffSection } from "@/types/settings";
@@ -30,7 +30,7 @@ export function useReviewFileView(
 
 		setLoading(true);
 		setError(null);
-		invoke<ReviewFileView>("get_review_file_view", {
+		invoke("get_review_file_view", {
 			input: {
 				worktreePath: rootPath,
 				target: { by: "path", value: filePath },
