@@ -110,6 +110,22 @@ impl BackendPush<'_> {
     }
 }
 
+pub(crate) struct CommentChangeGateway {
+    notify: Box<dyn Fn(&str) + Send + Sync>,
+}
+impl CommentChangeGateway {
+    pub(crate) fn new<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Self {
+        Self {
+            notify: Box::new(move |worktree| {
+                BackendPush::ReviewCommentsChanged(worktree).emit(&app)
+            }),
+        }
+    }
+    pub(crate) fn notify(&self, worktree: &str) {
+        (self.notify)(worktree);
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct ClientPushGateway {
     sink: Arc<PushSink>,

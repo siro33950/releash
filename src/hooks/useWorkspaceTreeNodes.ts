@@ -1,8 +1,7 @@
-import { invoke } from "@tauri-apps/api/core";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { subscribeAgentSessionChanged } from "@/lib/agentSessionEvents";
-import { listenClient } from "@/lib/clientSocket";
+import { invokeClient as invoke, listenClient } from "@/lib/clientSocket";
 import { getErrorMessage } from "@/lib/errorMessage";
 import type {
 	WorkspaceTreeItem,
@@ -129,22 +128,16 @@ export function useWorkspaceTreeNodes(
 		}
 		try {
 			const snapshotRequest = activeRequestContext
-				? invoke<WorkspaceTreeSelectionSnapshot>(
-						"get_workspace_tree_selection_reconciliation",
-						{
-							worktreePath,
-							selectedNodeId: activeRequestContext.selectedNodeId,
-						},
-					)
-				: invoke<WorkspaceTreeSnapshot>("list_workspace_worktree_nodes", {
+				? invoke("get_workspace_tree_selection_reconciliation", {
+						worktreePath,
+						selectedNodeId: activeRequestContext.selectedNodeId,
+					})
+				: invoke("list_workspace_worktree_nodes", {
 						worktreePath,
 					});
 			const [treeResult, nextWorkflowHistory] = await Promise.all([
 				snapshotRequest,
-				invoke<WorkspaceWorkflowHistoryItem[]>(
-					"list_workspace_workflow_history",
-					{ worktreePath },
-				),
+				invoke("list_workspace_workflow_history", { worktreePath }),
 			]);
 			if (seq !== refreshSeqRef.current) return null;
 

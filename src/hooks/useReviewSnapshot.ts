@@ -1,5 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { invokeClient as invoke } from "@/lib/clientSocket";
 import type { ReviewSnapshot } from "@/types/review";
 import type { DiffBase } from "@/types/settings";
 
@@ -56,7 +56,7 @@ export function useReviewSnapshot(
 
 		setLoading(true);
 		try {
-			const result = await invoke<ReviewSnapshot>("get_review_snapshot", {
+			const result = await invoke("get_review_snapshot", {
 				input: { worktreePath: rootPath, base: diffBase },
 			});
 			if (

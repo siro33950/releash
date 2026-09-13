@@ -20,3 +20,18 @@ pub fn open_folder_in_editor(
     let editor = settings.selected_editor()?;
     launcher.open_path(folder_path, &editor, "フォルダ")
 }
+
+pub fn get_external_editor(settings: &dyn EditorSettingsGateway) -> Result<String, String> {
+    settings.selected_editor()
+}
+
+pub fn update_external_editor(
+    settings: &dyn EditorSettingsGateway,
+    editor: String,
+) -> Result<(), String> {
+    settings.update_selected_editor(editor)
+}
+
+#[cfg(test)]
+#[path = "open_usecase_test.rs"]
+mod open_usecase_tests;

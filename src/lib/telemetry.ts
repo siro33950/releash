@@ -1,4 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
+import type { ClientCommandArgs } from "@/generated/client_types";
+import { invokeClient as invoke } from "@/lib/clientSocket";
 import { getErrorMessage } from "@/lib/errorMessage";
 
 let mountedXtermCount = 0;
@@ -6,9 +7,9 @@ let errorHandlersInstalled = false;
 let errorHandler: ((event: ErrorEvent) => void) | null = null;
 let rejectionHandler: ((event: PromiseRejectionEvent) => void) | null = null;
 
-function invokeTelemetry(
-	command: string,
-	args?: Record<string, unknown>,
+function invokeTelemetry<K extends keyof ClientCommandArgs>(
+	command: K,
+	args: ClientCommandArgs[K],
 ): Promise<void> {
 	return invoke(command, args)
 		.then(() => undefined)

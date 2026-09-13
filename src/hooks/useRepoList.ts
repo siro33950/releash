@@ -1,6 +1,6 @@
-import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useState } from "react";
+import { invokeClient as invoke } from "@/lib/clientSocket";
 
 export interface UseRepoListReturn {
 	repoPaths: string[];
@@ -13,7 +13,7 @@ export function useRepoList(): UseRepoListReturn {
 	const [repoPaths, setRepoPaths] = useState<string[]>([]);
 
 	useEffect(() => {
-		invoke<string[]>("get_repo_paths")
+		invoke("get_repo_paths")
 			.then(setRepoPaths)
 			.catch((err) => console.warn("[useRepoList] get_repo_paths failed", err));
 	}, []);

@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke as invokeTauri } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ApplicationShutdownBanner } from "@/components/layout/ApplicationShutdownBanner";
@@ -12,8 +12,8 @@ import { useRepoList } from "@/hooks/useRepoList";
 import { useSettings } from "@/hooks/useSettings";
 import { useUpdateChecker } from "@/hooks/useUpdateChecker";
 import { useWorkspaceNavigation } from "@/hooks/useWorkspaceNavigation";
+import { invokeClient as invoke } from "@/lib/clientSocket";
 import { MainLayout } from "@/screens/MainLayout";
-import type { WorktreeEntry } from "@/types/git";
 import type { CenterSelection } from "@/types/workspace-tree";
 
 type WorktreeCenterState =
@@ -50,7 +50,7 @@ function StartupFailureScreen({
 		if (quitting) return;
 		setQuitting(true);
 		try {
-			await invoke("quit_after_startup_failure");
+			await invokeTauri("quit_after_startup_failure");
 		} catch {
 			setQuitting(false);
 		}
@@ -133,12 +133,12 @@ function WorkbenchApp() {
 	useEffect(() => {
 		(async () => {
 			try {
-				const cwd = await invoke<string>("get_cwd");
-				const mainPath = await invoke<string>("get_main_repo_path", {
+				const cwd = await invoke("get_cwd");
+				const mainPath = await invoke("get_main_repo_path", {
 					anyPath: cwd,
 				});
 				initFromCwd(mainPath);
-				const worktrees = await invoke<WorktreeEntry[]>("list_worktrees", {
+				const worktrees = await invoke("list_worktrees", {
 					repoPath: mainPath,
 				});
 				const workingAreas = worktrees;
@@ -160,7 +160,7 @@ function WorkbenchApp() {
 		const selected = await open({ directory: true, multiple: false });
 		if (!selected) return;
 		try {
-			const mainPath = await invoke<string>("get_main_repo_path", {
+			const mainPath = await invoke("get_main_repo_path", {
 				anyPath: selected,
 			});
 			addRepo(mainPath);
@@ -235,7 +235,7 @@ function WorkbenchApp() {
 	);
 	const isWorktreeActive = selectedWorktreeId != null;
 	useEffect(() => {
-		invoke("set_menu_items_enabled", { enabled: isWorktreeActive }).catch(
+		invokeTauri("set_menu_items_enabled", { enabled: isWorktreeActive }).catch(
 			() => {},
 		);
 	}, [isWorktreeActive]);
@@ -319,7 +319,9 @@ function App() {
 
 	useEffect(() => {
 		let active = true;
-		void invoke<ApplicationStartupOutcome>("get_application_startup_outcome")
+		void invokeTauri<ApplicationStartupOutcome>(
+			"get_application_startup_outcome",
+		)
 			.then((result) => {
 				if (active) setOutcome(result);
 			})
