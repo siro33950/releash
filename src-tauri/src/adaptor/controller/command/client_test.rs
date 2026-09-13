@@ -53,6 +53,7 @@ fn test_クライアント接続情報_terminalと同じ非master_tokenを返す
 }
 
 use crate::adaptor::controller::api::protocol::client as wire;
+use crate::adaptor::controller::command as commands;
 use prost::Message;
 use serde_json::json;
 
@@ -349,6 +350,57 @@ async fn test_telemetry_protoはcommand結果と一致する() {
 }
 
 #[tokio::test]
+async fn test_クライアントdispatch_proto全commandの登録と引数検証() {
+    // Given
+    let (_app, dispatch) = parity_app();
+    // When / Then
+    assert_eq!(wire::COMMAND_NAMES.len(), 173);
+    for command in commands::tests::registered_command_names() {
+        if !["set_menu_items_enabled", "get_client_endpoint"].contains(&command) {
+            assert!(wire::COMMAND_NAMES.contains(&command), "{command}");
+        }
+    }
+    assert!(!commands::tests::registered_command_names().contains(&"get_terminal_stream_endpoint"));
+    for command in wire::COMMAND_NAMES {
+        assert!(
+            dispatch.contains(command) || *command == "attach_terminal_surface",
+            "{command}"
+        );
+    }
+    for command in [
+        "menu",
+        "get_client_endpoint",
+        "get_terminal_stream_endpoint",
+    ] {
+        assert!(!wire::COMMAND_NAMES.contains(&command), "{command}");
+    }
+    for args in [json!({}), json!({"filePath":9})] {
+        let error = invoke_tauri(&_app, "get_language_from_path", args)
+            .await
+            .unwrap_err();
+        assert_eq!(error["code"], "INVALID_REQUEST");
+    }
+}
+
+#[tokio::test]
+async fn test_クライアントdispatch_startup失敗時はstreamも拒否する() {
+    // Given
+    let dispatch = ClientCommandDispatch::new(
+        Arc::new(crate::adaptor::controller::wiring::build_repository_usecase()),
+        Arc::new(ApplicationStartupAuthority::failed_kind(
+            crate::usecase::application_startup::StartupFailureKind::StoreValidationFailed,
+        )),
+    );
+    // When / Then
+    for command in ["attach_terminal_surface", "detach_terminal_surface"] {
+        assert_eq!(
+            wire::from_value(dispatch.admit(command).unwrap_err()).unwrap()["code"],
+            "APPLICATION_UNAVAILABLE"
+        );
+    }
+}
+
+#[tokio::test]
 async fn test_クライアントws_切断しても受理済みcommandを途中で破棄しない() {
     use crate::adaptor::controller::api;
     use futures_util::{SinkExt, StreamExt};
@@ -470,6 +522,329 @@ async fn test_クライアントws_切断しても受理済みcommandを途中�
     .forget();
     socket.close(None).await.unwrap();
     server.abort();
+}
+
+fn mutation_repository() -> (tempfile::TempDir, String) {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("repository");
+    let repo = git2::Repository::init(&path).unwrap();
+    let signature = git2::Signature::now("test", "test@example.com").unwrap();
+    let tree_id = repo.index().unwrap().write_tree().unwrap();
+    let tree = repo.find_tree(tree_id).unwrap();
+    repo.commit(
+        Some("refs/heads/base"),
+        &signature,
+        &signature,
+        "initial",
+        &tree,
+        &[],
+    )
+    .unwrap();
+    repo.set_head("refs/heads/base").unwrap();
+    (temp, path.to_string_lossy().into_owned())
+}
+
+#[tokio::test]
+async fn test_未呼出34command_wsの実行結果とエラーがtauriと一致する() {
+    use crate::adaptor::controller::{api, application_lifecycle, state::AppState};
+    use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
+    use crate::usecase::shutdown_coordinator::{
+        ApplicationQuitIntent, ApplicationQuitOutcome, ApplicationQuitRequest, ApplicationQuitState,
+    };
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message};
+
+    // Given
+    let (temp, path) = mutation_repository();
+    let repo = git2::Repository::open(&path).unwrap();
+    let path = repo.workdir().unwrap().to_string_lossy().into_owned();
+    let file = std::path::Path::new(&path).join("日本語 space.txt");
+    std::fs::write(&file, "committed\n").unwrap();
+    let mut index = repo.index().unwrap();
+    index
+        .add_path(std::path::Path::new("日本語 space.txt"))
+        .unwrap();
+    index.write().unwrap();
+    let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+    let signature = git2::Signature::now("test", "test@example.com").unwrap();
+    let commit = repo
+        .commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "tracked file",
+            &tree,
+            &[&repo.head().unwrap().peel_to_commit().unwrap()],
+        )
+        .unwrap();
+    repo.branch("main", &repo.find_commit(commit).unwrap(), false)
+        .unwrap();
+    std::fs::write(&file, "staged\n").unwrap();
+    index
+        .add_path(std::path::Path::new("日本語 space.txt"))
+        .unwrap();
+    index.write().unwrap();
+    std::fs::write(&file, "working tree\n").unwrap();
+    let worktree = temp.path().join("managed-worktree");
+    repo.worktree("managed-worktree", &worktree, None).unwrap();
+    let worktree = worktree.canonicalize().unwrap();
+    let gateway = Arc::new(api::test_support::RecordingRuntimeGateway::default());
+    let runtime = Arc::new(crate::usecase::workflow::WorkflowRuntimeUsecase::new(
+        gateway.clone(),
+    ));
+    let (app, _data_dir, _store) =
+        crate::adaptor::controller::client::workflow::tests::make_read_only_app();
+    app.manage(runtime.clone());
+    app.manage(Arc::new(ApplicationStartupAuthority::ready()));
+    app.manage(Arc::new(
+        crate::adaptor::controller::wiring::build_review_comment_usecase(),
+    ));
+    app.manage(Arc::new(
+        crate::infrastructure::file_watcher::FileWatcherManager::default(),
+    ));
+    let config = app.state::<Arc<dyn crate::domain::app_config::ConfigRepository>>();
+    let mut settings = config.load().unwrap();
+    settings.app.last_repo_paths = vec![path.clone()];
+    config.save(settings).unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let store =
+        LocalEventStore::open(LocalEventStoreConfig::production(data.path().to_owned())).unwrap();
+    let coordinator = application_lifecycle::build_shutdown_coordinator(
+        store.clone(),
+        store,
+        application_lifecycle::RuntimeShutdownDependencies::new(
+            runtime,
+            app.state::<AppState>().terminal_surface.clone(),
+            Arc::new(|| {}),
+            Arc::new(|| {}),
+        ),
+    );
+    let ApplicationQuitOutcome::Accepted { receipt, state } = coordinator.request(ApplicationQuitRequest {
+        principal: crate::usecase::application_lifecycle::operation::LOCAL_INSTALLATION_OPERATION_PRINCIPAL.into(),
+        request_id: "protocol-parity".into(),
+        intent: ApplicationQuitIntent::Exit { code: 0 },
+    }).await.unwrap() else { panic!("accepted shutdown"); };
+    assert_eq!(state, ApplicationQuitState::Completed);
+    coordinator
+        .compact_shutdown_details(crate::domain::local_event::ShutdownPlanKey {
+            shutdown_id: receipt.shutdown_id.clone(),
+        })
+        .await
+        .unwrap();
+    app.manage(coordinator);
+    let mut dispatch = ClientCommandDispatch::new(
+        app.state::<AppState>().repository_usecase.clone(),
+        app.state::<Arc<ApplicationStartupAuthority>>()
+            .inner()
+            .clone(),
+    );
+    dispatch.register_dependencies(
+        &crate::adaptor::controller::wiring::build_client_dependencies(app.handle()),
+    );
+    let dispatch = Arc::new(dispatch);
+    app.manage(dispatch.clone());
+    let router = api::test_support::test_router_with_optional_deps(
+        data.path(),
+        "master",
+        "client",
+        None,
+        Some(api::ClientApiDeps::new(
+            dispatch,
+            crate::adaptor::gateway::push::ClientPushGateway::new(Arc::new(
+                crate::infrastructure::push::PushSink::new(),
+            )),
+        )),
+        None,
+    )
+    .0;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    let mut request = format!("ws://{address}/v1/client")
+        .into_client_request()
+        .unwrap();
+    request
+        .headers_mut()
+        .insert("authorization", "Bearer client".parse().unwrap());
+    let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+    let execution = "00000000-0000-4000-8000-000000000123";
+    let cases = [
+        ("get_crash_reporting_enabled", json!({}), true),
+        (
+            "get_file_at_ref",
+            json!({"filePath":file,"gitRef":"HEAD"}),
+            true,
+        ),
+        ("get_staged_content", json!({"filePath":file}), true),
+        ("get_binary_staged_content", json!({"filePath":file}), true),
+        ("get_file_at_branch_base", json!({"filePath":file}), true),
+        (
+            "get_binary_file_at_branch_base",
+            json!({"filePath":file}),
+            true,
+        ),
+        (
+            "get_binary_file_at_ref",
+            json!({"filePath":file,"gitRef":"HEAD"}),
+            true,
+        ),
+        (
+            "get_branch_diff_summary",
+            json!({"repoPath":path,"baseBranch":"main"}),
+            true,
+        ),
+        (
+            "build_diff_file_tree",
+            json!({"entries":[{"path":"src/日本語.rs","status":"modified","additions":3,"deletions":1}]}),
+            true,
+        ),
+        (
+            "get_head_diff_file_tree_snapshot",
+            json!({"repoPath":path}),
+            true,
+        ),
+        (
+            "compute_hidden_ranges",
+            json!({"hunks":[{"index":0,"oldStart":10,"oldLines":1,"newStart":10,"newLines":2,"lines":["-old","+new","+line"]}],"totalLines":30,"contextLines":2}),
+            true,
+        ),
+        (
+            "get_relative_path",
+            json!({"rootPath":path,"filePath":file}),
+            true,
+        ),
+        (
+            "get_review_thread",
+            json!({"worktreeName":"../invalid","threadId":"missing"}),
+            false,
+        ),
+        (
+            "get_review_thread_history",
+            json!({"worktreeName":"../invalid","threadId":"missing"}),
+            false,
+        ),
+        ("fetch_pr_status", json!({"repoPath":path}), true),
+        ("get_default_branch", json!({"repoPath":path}), true),
+        (
+            "get_git_status",
+            json!({"repoPath":path,"includeIgnored":true}),
+            true,
+        ),
+        ("get_git_status_snapshot", json!({"repoPath":path}), true),
+        ("get_status_diff_stats", json!({"repoPath":path}), true),
+        (
+            "get_status_diff_stats_snapshot",
+            json!({"repoPath":path}),
+            true,
+        ),
+        ("get_git_log", json!({"repoPath":path,"limit":1}), true),
+        (
+            "get_worktree_dirty_count",
+            json!({"worktreePath":path}),
+            true,
+        ),
+        ("get_repo_git_dir", json!({"filePath":file}), true),
+        (
+            "approve_workflow_node",
+            json!({"args":{"executionId":execution,"nodeName":"review","nodeExecutionId":"ne-review-1","comment":"確認済み"}}),
+            true,
+        ),
+        (
+            "list_workflow_executions",
+            json!({"worktreePath":worktree,"status":"active"}),
+            true,
+        ),
+        (
+            "get_workflow_execution",
+            json!({"executionId":execution}),
+            true,
+        ),
+        (
+            "get_workflow_execution_log",
+            json!({"worktreePath":worktree,"executionId":execution}),
+            true,
+        ),
+        (
+            "get_workflow_node_detail",
+            json!({"worktreePath":worktree,"executionId":execution,"nodeExecutionId":"ne-review-1"}),
+            true,
+        ),
+        (
+            "resolve_worktree_by_execution",
+            json!({"executionId":execution}),
+            true,
+        ),
+        ("list_facets", json!({"kind":"instruction"}), true),
+        (
+            "workflow_submit_output",
+            json!({"worktreePath":worktree,"nodeExecutionId":"missing-node","artifact":{"contract":"review-result","value":{"status":"approved"}}}),
+            false,
+        ),
+        (
+            "workflow_validate_output",
+            json!({"worktreePath":worktree,"executionId":execution,"nodeName":"review","structuredOutput":{"status":"approved"}}),
+            false,
+        ),
+        (
+            "workflow_get_output",
+            json!({"worktreePath":worktree,"executionId":execution,"nodeName":"review"}),
+            false,
+        ),
+        (
+            "compact_application_shutdown_details",
+            json!({"shutdownId":receipt.shutdown_id}),
+            true,
+        ),
+    ];
+    assert_eq!(
+        cases
+            .iter()
+            .map(|(name, _, _)| *name)
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        34
+    );
+    // When / Then
+    for (command, args, succeeds) in cases {
+        let expected = invoke_tauri(&app, command, args.clone()).await;
+        assert_eq!(expected.is_ok(), succeeds, "{command}: {expected:?}");
+        if let Err(error) = &expected {
+            assert!(error.is_string(), "usecase error: {command}: {error}");
+        }
+        socket
+            .send(Message::Binary(
+                crate::client_api_acceptance::encode_client_request(command, command, args).into(),
+            ))
+            .await
+            .unwrap();
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), socket.next())
+            .await
+            .expect(command)
+            .unwrap()
+            .unwrap();
+        let Message::Binary(bytes) = frame else {
+            panic!("{command}: binary response");
+        };
+        let wire::envelope::Body::Response(response) =
+            wire::Envelope::decode(bytes).unwrap().body.unwrap()
+        else {
+            panic!("{command}: response");
+        };
+        assert_eq!(response.request_id, command);
+        let actual = match response.outcome.unwrap() {
+            wire::command_response::Outcome::Result(value) => Ok(wire::from_value(value).unwrap()),
+            wire::command_response::Outcome::Error(value) => Err(wire::from_value(value).unwrap()),
+        };
+        assert_eq!(actual, expected, "{command}");
+    }
+    socket.close(None).await.unwrap();
+    server.abort();
+    let approvals = &gateway.commands.lock().unwrap().approvals;
+    assert_eq!(approvals.len(), 2);
+    assert_eq!(approvals[0], approvals[1]);
+    assert_eq!(approvals[0].comment.as_deref(), Some("確認済み"));
 }
 
 #[tokio::test]
@@ -839,6 +1214,44 @@ async fn test_workflow変更_protoは実引数とruntime結果を保持する() 
     assert_eq!(commands.resumes[0], commands.resumes[1]);
 }
 
+fn value(result: impl serde::Serialize) -> Result<Value, Value> {
+    serde_json::to_value(result).map_err(|error| json!(error.to_string()))
+}
+fn outcome<T: serde::Serialize, E: serde::Serialize>(result: Result<T, E>) -> Result<Value, Value> {
+    result
+        .map_err(|error| serde_json::to_value(error).unwrap())
+        .and_then(value)
+}
+
+pub(crate) async fn invoke_tauri(
+    app: &tauri::App<tauri::test::MockRuntime>,
+    command: &str,
+    args: Value,
+) -> Result<Value, Value> {
+    let window = tauri::WebviewWindowBuilder::new(
+        app,
+        format!("parity-{}", uuid::Uuid::new_v4()),
+        Default::default(),
+    )
+    .build()
+    .unwrap();
+    let result = tauri::test::get_ipc_response(
+        &window,
+        tauri::webview::InvokeRequest {
+            cmd: command.into(),
+            callback: tauri::ipc::CallbackFn(0),
+            error: tauri::ipc::CallbackFn(1),
+            url: "tauri://localhost".parse().unwrap(),
+            body: tauri::ipc::InvokeBody::Json(args),
+            headers: Default::default(),
+            invoke_key: tauri::test::INVOKE_KEY.to_string(),
+        },
+    )
+    .map(|response| response.deserialize::<Value>().unwrap());
+    window.destroy().unwrap();
+    result
+}
+
 #[tokio::test]
 async fn test_workspace保存_wsがui追加fieldを受理し既存項目を再起動後に復元する() {
     use crate::adaptor::controller::api;
@@ -942,60 +1355,36 @@ async fn test_workspace保存_wsがui追加fieldを受理し既存項目を再�
     assert_eq!(persisted, expected);
 }
 
-fn mutation_repository() -> (tempfile::TempDir, String) {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("repository");
-    let repo = git2::Repository::init(&path).unwrap();
-    let signature = git2::Signature::now("test", "test@example.com").unwrap();
-    let tree_id = repo.index().unwrap().write_tree().unwrap();
-    let tree = repo.find_tree(tree_id).unwrap();
-    repo.commit(
-        Some("refs/heads/base"),
-        &signature,
-        &signature,
-        "initial",
-        &tree,
-        &[],
-    )
-    .unwrap();
-    repo.set_head("refs/heads/base").unwrap();
-    (temp, path.to_string_lossy().into_owned())
-}
-
-fn value(result: impl serde::Serialize) -> Result<Value, Value> {
-    serde_json::to_value(result).map_err(|error| json!(error.to_string()))
-}
-fn outcome<T: serde::Serialize, E: serde::Serialize>(result: Result<T, E>) -> Result<Value, Value> {
-    result
-        .map_err(|error| serde_json::to_value(error).unwrap())
-        .and_then(value)
-}
-
-pub(crate) async fn invoke_tauri(
-    app: &tauri::App<tauri::test::MockRuntime>,
-    command: &str,
-    args: Value,
-) -> Result<Value, Value> {
-    let window = tauri::WebviewWindowBuilder::new(
-        app,
-        format!("parity-{}", uuid::Uuid::new_v4()),
-        Default::default(),
-    )
-    .build()
-    .unwrap();
-    let result = tauri::test::get_ipc_response(
-        &window,
-        tauri::webview::InvokeRequest {
-            cmd: command.into(),
-            callback: tauri::ipc::CallbackFn(0),
-            error: tauri::ipc::CallbackFn(1),
-            url: "tauri://localhost".parse().unwrap(),
-            body: tauri::ipc::InvokeBody::Json(args),
-            headers: Default::default(),
-            invoke_key: tauri::test::INVOKE_KEY.to_string(),
-        },
-    )
-    .map(|response| response.deserialize::<Value>().unwrap());
-    window.destroy().unwrap();
-    result
+#[tokio::test]
+async fn test_生成要求_必須fieldと非有限数をusecase実行前に拒否する() {
+    // Given
+    let (_, dispatch) = parity_app();
+    use wire::command_request::Command;
+    // When / Then
+    for request in [
+        Command::GetCurrentBranch(wire::GetCurrentBranchRequest::default()),
+        Command::SaveWorkspaceState(wire::SaveWorkspaceStateRequest {
+            worktree_name: Some("workspace".into()),
+            state: Some(wire::WorkspaceStateDto {
+                version: Some(2),
+                ..Default::default()
+            }),
+        }),
+        Command::RecordTerminalLaunchRendererPhase(
+            wire::RecordTerminalLaunchRendererPhaseRequest {
+                phase: Some("ready".into()),
+                duration_ms: Some(f64::NAN),
+            },
+        ),
+    ] {
+        let error = dispatch.dispatch(request).await.unwrap_err();
+        assert_eq!(wire::from_value(error).unwrap()["code"], "INVALID_REQUEST");
+    }
+    for number in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        assert!(crate::adaptor::controller::client::finite(number).is_err());
+    }
+    assert_eq!(
+        crate::adaptor::controller::client::finite(1.5).unwrap(),
+        1.5
+    );
 }
