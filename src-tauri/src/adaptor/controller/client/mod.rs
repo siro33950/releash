@@ -1,4 +1,5 @@
 pub(crate) mod agent_session;
+pub(crate) mod application_lifecycle;
 pub(crate) mod code;
 pub(crate) mod comment;
 mod dependencies;
