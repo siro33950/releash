@@ -12,7 +12,9 @@ use crate::adaptor::controller::client::ClientCommandDispatch;
 use crate::adaptor::gateway::push::{ClientPushError, ClientPushGateway, ClientPushSubscription};
 use crate::adaptor::protocol::client::CLIENT_WS_PATH;
 
-use crate::adaptor::controller::client::invalid_request as invalid;
+use crate::adaptor::controller::api::client_stream::{
+    invalid, TerminalApiDeps, TerminalConnection,
+};
 
 const MAX_CLIENT_REQUEST_BYTES: usize = 16 * 1024 * 1024;
 
@@ -20,6 +22,7 @@ const MAX_CLIENT_REQUEST_BYTES: usize = 16 * 1024 * 1024;
 pub(crate) struct ClientApiDeps {
     dispatch: Arc<ClientCommandDispatch>,
     push: ClientPushGateway,
+    terminal: Option<TerminalApiDeps>,
     connection_limit: Arc<tokio::sync::Semaphore>,
     request_limit: Arc<tokio::sync::Semaphore>,
     // ponytail: saves share one queue across connections; split by worktree if they block each other.
@@ -31,10 +34,16 @@ impl ClientApiDeps {
         Self {
             dispatch,
             push,
+            terminal: None,
             connection_limit: Arc::new(tokio::sync::Semaphore::new(16)),
             request_limit: Arc::new(tokio::sync::Semaphore::new(64)),
             save_tail: Arc::new(parking_lot::Mutex::new(None)),
         }
+    }
+
+    pub(super) fn with_terminal(mut self, terminal: Option<TerminalApiDeps>) -> Self {
+        self.terminal = terminal;
+        self
     }
 }
 
@@ -69,6 +78,7 @@ async fn serve(
     _permit: tokio::sync::OwnedSemaphorePermit,
 ) {
     let (mut sink, mut input) = socket.split();
+    let mut terminal = TerminalConnection::new(deps.terminal);
     let mut requests = FuturesUnordered::new();
     let mut unreceived_watches: HashMap<String, UnreceivedWatch> = HashMap::new();
     let mut push_open = true;
@@ -91,6 +101,10 @@ async fn serve(
                             Some(command) => {
                                 if let Err(error) = deps.dispatch.admit(command.name()) {
                                     wire::response(id, Err(error))
+                                } else if matches!(&command, wire::command_request::Command::AttachTerminalSurface(_) | wire::command_request::Command::DetachTerminalSurface(_)) {
+                                    wire::response(id, terminal.dispatch(command))
+                                } else if matches!(&command, wire::command_request::Command::ResizeTerminalSurface(_)) {
+                                    wire::response(id, deps.dispatch.dispatch(command).await)
                                 } else if let Ok(permit) = deps.request_limit.clone().try_acquire_owned() {
                                     let dispatch = deps.dispatch.clone();
                                     let (previous_save, save_done) = if matches!(&command, wire::command_request::Command::SaveWorkspaceState(_)) {
@@ -122,6 +136,17 @@ async fn serve(
                         }
                         continue;
                     }
+                    Ok(Some(Body::Ack(ack))) => {
+                        match terminal.acknowledge(&ack.attachment_id, ack.sequence) {
+                            Ok(()) => {
+                                if let Some(sequence) = ack.output_sequence {
+                                    terminal.acknowledge_output(&ack.attachment_id, sequence);
+                                }
+                                continue;
+                            },
+                            Err(error) => wire::response(String::new(), Err(error)),
+                        }
+                    }
                     _ => wire::response(String::new(), Err(invalid("Invalid client envelope"))),
                 }
             }
@@ -135,6 +160,12 @@ async fn serve(
                     },
                     Err(error) => { log::error!("Client command task failed: {error}"); break; }
                 }
+            }
+            event = terminal.receiver.recv() => {
+                if let Some(frame) = event.and_then(|frame| terminal.receive(frame)) {
+                    if sink.send(Message::Binary(frame.into())).await.is_err() { break; }
+                }
+                continue;
             }
             frame = push.recv(), if push_open => match frame {
                 Ok(frame) => {
@@ -186,3 +217,7 @@ impl Drop for UnreceivedWatch {
         });
     }
 }
+
+#[cfg(test)]
+#[path = "client_test.rs"]
+mod client_tests;

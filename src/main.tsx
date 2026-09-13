@@ -20,12 +20,13 @@ async function bootstrap() {
 	let root: React.ReactNode;
 	if (import.meta.env.MODE === "performance") {
 		await import("@wdio/tauri-plugin");
-		const [{ invoke }, { installPerformanceCollector }] = await Promise.all([
-			import("@tauri-apps/api/core"),
-			import("./test/performance/performanceCollector"),
-		]);
+		const [{ invokeClient: invoke }, { installPerformanceCollector }] =
+			await Promise.all([
+				import("./lib/clientSocket"),
+				import("./test/performance/performanceCollector"),
+			]);
 		const realAppMode = await Promise.resolve()
-			.then(() => invoke<boolean>("get_performance_real_app_mode"))
+			.then(() => invoke("get_performance_real_app_mode"))
 			.catch(() => false);
 		if (realAppMode) {
 			installPerformanceCollector();

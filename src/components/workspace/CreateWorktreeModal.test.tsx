@@ -1,7 +1,7 @@
-import { invoke } from "@tauri-apps/api/core";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { invokeClient as invoke } from "@/lib/clientSocket";
 import type { IssueInfo, WorktreeBranch, WorktreeEntry } from "@/types/git";
 import type { NotionTask } from "@/types/notion";
 import { CreateWorktreeModal } from "./CreateWorktreeModal";
@@ -106,6 +106,7 @@ describe("CreateWorktreeModal", () => {
 					loading: false,
 					limited: false,
 					branches: branchCards,
+					worktree_display_groups: { working_areas: branchCards },
 				});
 			}
 			if (command === "create_worktree") {

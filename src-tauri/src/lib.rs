@@ -689,7 +689,7 @@ pub fn run() {
             app.manage(Arc::new(
                 adaptor::controller::wiring::build_review_comment_usecase(),
             ));
-            app.manage(infrastructure::file_watcher::FileWatcherManager::default());
+            app.manage(Arc::new(infrastructure::file_watcher::FileWatcherManager::default()));
             app.manage::<adaptor::gateway::repository::repo_paths::SharedRepoPaths>(Arc::new(
                 parking_lot::RwLock::new(Vec::new()),
             ));

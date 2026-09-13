@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
 	forwardRef,
@@ -22,6 +21,7 @@ import {
 	type TerminalSurfaceOwner,
 	useTerminal,
 } from "@/hooks/useTerminal";
+import { invokeClient as invoke } from "@/lib/clientSocket";
 import type { Theme } from "@/types/settings";
 import "@xterm/xterm/css/xterm.css";
 

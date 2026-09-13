@@ -1,6 +1,6 @@
 use super::*;
 
-use crate::adaptor::controller::command::workflow::diagnostics::diagnose_all_impl;
+use crate::adaptor::controller::client::workflow::diagnostics::diagnose_all_impl;
 use crate::cli::test_helpers::start_local_api_test_host as start_host;
 
 const VALID_WORKFLOW: &str = r#"name: valid-fixture

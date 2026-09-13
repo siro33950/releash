@@ -63,10 +63,4 @@ fn test_disable_webgl_renderer_switchはenvで有効になりdefaultは無効() 
         "1",
     )]));
     assert!(switches.disable_webgl_renderer);
-
-    let switches = TerminalPerformanceSwitches::from_env_reader(reader(&[(
-        "RELEASH_PERF_DISABLE_TERMINAL_WEBSOCKET",
-        "1",
-    )]));
-    assert!(switches.disable_terminal_websocket);
 }

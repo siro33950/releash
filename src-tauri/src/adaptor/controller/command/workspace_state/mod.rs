@@ -1,15 +1,8 @@
-pub(crate) mod commands;
-
-pub(super) const COMMAND_NAMES: &[&str] = &["load_workspace_state", "save_workspace_state"];
+pub(crate) const COMMAND_NAMES: &[&str] = &["load_workspace_state", "save_workspace_state"];
 
 pub(crate) fn register(router: &mut super::CommandRouter) {
-    router.register_domain(COMMAND_NAMES, Box::new(invoke_handler()));
-}
-
-pub(crate) fn invoke_handler(
-) -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static {
-    tauri::generate_handler![
-        commands::load_workspace_state,
-        commands::save_workspace_state
-    ]
+    router.register_domain(
+        COMMAND_NAMES,
+        Box::new(super::client::handle_registered_invoke),
+    );
 }

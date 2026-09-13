@@ -1,5 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef } from "react";
+import { invokeClient as invoke } from "@/lib/clientSocket";
 import {
 	type WorkspaceState,
 	worktreeNameFromPath,
@@ -29,22 +29,24 @@ export function useWorkspaceStateCache(): UseWorkspaceStateCacheReturn {
 		invoke("save_workspace_state", {
 			worktreeName: worktreeNameFromPath(rootPath),
 			state,
-		}).catch((e) => {
-			console.error("Failed to save workspace state:", e);
-		});
-		dirtyRef.current.delete(rootPath);
+		})
+			.then(() => {
+				if (cacheRef.current.get(rootPath) === state) {
+					dirtyRef.current.delete(rootPath);
+				}
+			})
+			.catch((e) => {
+				console.error("Failed to save workspace state:", e);
+			});
 	}, []);
 
 	const loadState = useCallback(
 		async (rootPath: string): Promise<WorkspaceState | undefined> => {
 			try {
-				const state = await invoke<WorkspaceState | null>(
-					"load_workspace_state",
-					{
-						worktreeName: worktreeNameFromPath(rootPath),
-						worktreeRoot: rootPath,
-					},
-				);
+				const state = await invoke("load_workspace_state", {
+					worktreeName: worktreeNameFromPath(rootPath),
+					worktreeRoot: rootPath,
+				});
 				if (state) {
 					cacheRef.current.set(rootPath, state);
 					return state;
@@ -100,15 +102,10 @@ export function useWorkspaceStateCache(): UseWorkspaceStateCacheReturn {
 				clearTimeout(timer);
 			}
 			for (const rootPath of dirtyRef.current) {
-				const state = cacheRef.current.get(rootPath);
-				if (!state) continue;
-				invoke("save_workspace_state", {
-					worktreeName: worktreeNameFromPath(rootPath),
-					state,
-				}).catch(() => {});
+				saveToBackend(rootPath);
 			}
 		};
-	}, []);
+	}, [saveToBackend]);
 
 	return { getState, loadState, updateState, flushState };
 }

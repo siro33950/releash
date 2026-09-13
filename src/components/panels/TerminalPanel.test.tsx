@@ -1,7 +1,7 @@
-import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { invokeClient as invoke } from "@/lib/clientSocket";
 import { TerminalPanel } from "./TerminalPanel";
 
 const mockSendInput = vi.fn();

@@ -1,6 +1,6 @@
-import { invoke } from "@tauri-apps/api/core";
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
 import { useCallback, useEffect, useState } from "react";
+import { invokeClient as invoke } from "@/lib/clientSocket";
 import { getErrorMessage } from "@/lib/errorMessage";
 
 export interface BackgroundConfig {
@@ -15,12 +15,6 @@ const DEFAULT_CONFIG: BackgroundConfig = {
 	start_minimized: false,
 };
 
-interface AppSectionResponse {
-	close_to_tray: boolean;
-	start_minimized: boolean;
-	last_root_path: string;
-}
-
 export function useBackgroundConfig() {
 	const [config, setConfig] = useState<BackgroundConfig>(DEFAULT_CONFIG);
 	const [draft, setDraft] = useState<BackgroundConfig>(DEFAULT_CONFIG);
@@ -32,7 +26,7 @@ export function useBackgroundConfig() {
 		setLoading(true);
 		setError(null);
 
-		Promise.all([invoke<AppSectionResponse>("get_app_settings"), isEnabled()])
+		Promise.all([invoke("get_app_settings"), isEnabled()])
 			.then(([settings, osAutoStartEnabled]) => {
 				const cfg: BackgroundConfig = {
 					close_to_tray: settings.close_to_tray,

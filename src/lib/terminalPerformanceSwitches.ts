@@ -3,7 +3,6 @@ import { createCachedInvoke } from "./cachedInvoke";
 export interface TerminalPerformanceSwitches {
 	disableOutputFlowControl: boolean;
 	disableTerminalJournal: boolean;
-	disableTerminalWebsocket: boolean;
 	disableRendererWriteSerialization: boolean;
 	disableWebglRenderer: boolean;
 }
@@ -12,13 +11,12 @@ export const DEFAULT_TERMINAL_PERFORMANCE_SWITCHES: TerminalPerformanceSwitches 
 	{
 		disableOutputFlowControl: false,
 		disableTerminalJournal: false,
-		disableTerminalWebsocket: false,
 		disableRendererWriteSerialization: false,
 		disableWebglRenderer: false,
 	};
 
 const cachedSwitches = createCachedInvoke<
-	TerminalPerformanceSwitches | null,
+	"get_terminal_performance_switches",
 	TerminalPerformanceSwitches
 >({
 	command: "get_terminal_performance_switches",

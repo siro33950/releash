@@ -1,13 +1,20 @@
-import { invoke } from "@tauri-apps/api/core";
+import type { ClientCommandResults } from "@/generated/client_types";
+import {
+	type EmptyClientCommand,
+	invokeClient as invoke,
+} from "@/lib/clientSocket";
 
 export interface CachedInvoke<TValue> {
 	get(): Promise<TValue>;
 	reset(): void;
 }
 
-export function createCachedInvoke<TResponse, TValue>(options: {
-	command: string;
-	normalize: (response: TResponse) => TValue;
+export function createCachedInvoke<
+	K extends EmptyClientCommand,
+	TValue,
+>(options: {
+	command: K;
+	normalize: (response: ClientCommandResults[K]) => TValue;
 	fallback: TValue;
 	failureMessage: string;
 }): CachedInvoke<TValue> {
@@ -15,7 +22,7 @@ export function createCachedInvoke<TResponse, TValue>(options: {
 	return {
 		get() {
 			cached ??= Promise.resolve()
-				.then(() => invoke<TResponse>(options.command))
+				.then(() => invoke(options.command))
 				.then(options.normalize)
 				.catch((error) => {
 					console.warn(options.failureMessage, error);

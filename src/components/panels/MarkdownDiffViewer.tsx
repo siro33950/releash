@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import {
 	useCallback,
 	useDeferredValue,
@@ -9,6 +8,11 @@ import {
 import Markdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
+import type {
+	ClientCommandArgs,
+	ClientCommandResults,
+} from "@/generated/client_types";
+import { invokeClient as invoke } from "@/lib/clientSocket";
 import { getErrorMessage } from "@/lib/errorMessage";
 import { rehypeSourceLines } from "@/lib/rehypeSourceLines";
 import type { DiffRange, InlineChunk, SplitRow } from "@/types/markdown-diff";
@@ -84,13 +88,21 @@ function currentReadModelResult<T>(
 		: null;
 }
 
-function useReadModel<T>(
-	command: string,
-	args: ReadModelArgs,
-	fallbackData: T,
-): ReadModelState<T> {
+function useReadModel<
+	K extends
+		| "compute_markdown_diff_ranges"
+		| "compute_markdown_split_rows"
+		| "compute_markdown_inline_chunks"
+		| "compute_visible_markdown_blocks",
+>(
+	command: K,
+	args: ClientCommandArgs[K],
+	fallbackData: ClientCommandResults[K],
+): ReadModelState<ClientCommandResults[K]> {
 	const inputKey = useMemo(() => readModelInputKeyFromArgs(args), [args]);
-	const [state, setState] = useState<StoredReadModelState<T>>({
+	const [state, setState] = useState<
+		StoredReadModelState<ClientCommandResults[K]>
+	>({
 		status: "loading",
 		result: null,
 		error: null,
@@ -103,7 +115,7 @@ function useReadModel<T>(
 			result: currentReadModelResult(prev.result, inputKey),
 			error: null,
 		}));
-		invoke<T>(command, args)
+		invoke(command, args)
 			.then((data) => {
 				if (!cancelled) {
 					setState({
@@ -161,11 +173,11 @@ function GutterView({
 		() => ({
 			original: originalContent,
 			modified: modifiedContent,
-			side: "modified",
+			side: "modified" as const,
 		}),
 		[originalContent, modifiedContent],
 	);
-	const diffRanges = useReadModel<DiffRange[]>(
+	const diffRanges = useReadModel(
 		"compute_markdown_diff_ranges",
 		readModelArgs,
 		EMPTY_DIFF_RANGES,
@@ -226,7 +238,7 @@ function SplitView({
 		}),
 		[originalContent, modifiedContent],
 	);
-	const rows = useReadModel<SplitRow[]>(
+	const rows = useReadModel(
 		"compute_markdown_split_rows",
 		readModelArgs,
 		EMPTY_SPLIT_ROWS,
@@ -285,7 +297,7 @@ function InlineView({
 		}),
 		[originalContent, modifiedContent],
 	);
-	const chunks = useReadModel<InlineChunk[]>(
+	const chunks = useReadModel(
 		"compute_markdown_inline_chunks",
 		readModelArgs,
 		EMPTY_INLINE_CHUNKS,
@@ -339,7 +351,7 @@ function DiffOnlyMarkdownView({
 		}),
 		[originalContent, modifiedContent],
 	);
-	const visibleBlocks = useReadModel<VisibleBlock[]>(
+	const visibleBlocks = useReadModel(
 		"compute_visible_markdown_blocks",
 		readModelArgs,
 		EMPTY_VISIBLE_BLOCKS,
