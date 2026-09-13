@@ -264,6 +264,24 @@ parity!(
     outcome(invoke_tauri(&app, "get_external_editor", json!({})).await)
 );
 #[tokio::test]
+async fn test_telemetry_protoはcommand結果と一致する() {
+    // Given
+    let _guard = crate::other::telemetry::lock_test_telemetry();
+    let (app, dispatch) = parity_app();
+    // When / Then
+    invoke_tauri(&app, "report_mounted_xterm_count", json!({"count": 2}))
+        .await
+        .unwrap();
+    assert_parity(
+        &dispatch,
+        "report_mounted_xterm_count",
+        json!({"count":2}),
+        Ok(Value::Null),
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn test_クライアントws_切断しても受理済みcommandを途中で破棄しない() {
     use crate::adaptor::controller::api;
     use futures_util::{SinkExt, StreamExt};
