@@ -114,7 +114,7 @@ async fn list_workflows(
 async fn diagnose_workflows(
     State(state): State<LocalApiState>,
     query: Result<Query<DiagnosticsQuery>, QueryRejection>,
-) -> Result<Json<serde_json::Value>, ApiError> {
+) -> Result<Json<crate::usecase::workflow::diagnostic_dto::DiagnosticReport>, ApiError> {
     let Query(query) = query.map_err(|error| ApiError::invalid_request(error.body_text()))?;
     let target = WorkflowDiagnosticsTarget::from_optional_directory(query.dir)?;
     let workflow = state.workflow;
@@ -173,7 +173,7 @@ async fn get_execution_log(
     State(state): State<LocalApiState>,
     Path(execution_id): Path<String>,
     query: Result<Query<ExecutionLogQuery>, QueryRejection>,
-) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
+) -> Result<Json<Vec<crate::usecase::workflow::WorkflowEventView>>, ApiError> {
     let Query(query) = query.map_err(|error| ApiError::invalid_request(error.body_text()))?;
     let page = parse_page(query.limit, query.offset)?;
     let workflow = state.workflow;

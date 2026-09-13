@@ -1756,10 +1756,10 @@ mod tests {
         .expect("get_workflow_execution_log must succeed")
         .expect("execution must be found");
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0]["event"], "started");
+        assert_eq!(events[0].event, "started");
         // spec issues-1023: 永続化された秒単位 timestamp は API 境界で ms 単位の
         // view 型へ変換されて返る（`timestampMs` フィールドで単位を明示）。
-        assert_eq!(events[0]["timestampMs"].as_f64(), Some(400_000.0));
+        assert_eq!(events[0].timestamp_ms, 400_000.0);
 
         let missing = get_workflow_execution_log_impl(
             &app.state::<AppState>().workflow_usecase,

@@ -26,6 +26,8 @@ pub(crate) mod test_support;
 mod workspace_node_command;
 mod workspace_tree;
 
+pub mod diagnostic_dto;
+
 use serde_json::Value;
 
 use crate::domain::workflow::{
@@ -89,7 +91,7 @@ impl WorkflowReadUsecase {
     pub(crate) fn diagnose_all(
         &self,
         target: WorkflowDiagnosticsTarget,
-    ) -> Result<serde_json::Value, WorkflowError> {
+    ) -> Result<diagnostic_dto::DiagnosticReport, WorkflowError> {
         self.diagnostics.diagnose_all(target)
     }
 
@@ -473,7 +475,7 @@ impl WorkflowUsecase {
     pub fn diagnose_all(
         &self,
         target: WorkflowDiagnosticsTarget,
-    ) -> Result<serde_json::Value, WorkflowError> {
+    ) -> Result<diagnostic_dto::DiagnosticReport, WorkflowError> {
         self.read.diagnose_all(target)
     }
 
@@ -814,9 +816,14 @@ mod tests {
         fn diagnose_all(
             &self,
             target: WorkflowDiagnosticsTarget,
-        ) -> Result<serde_json::Value, WorkflowError> {
+        ) -> Result<diagnostic_dto::DiagnosticReport, WorkflowError> {
             self.targets.lock().unwrap().push(target);
-            Ok(serde_json::json!({"items": [], "workflowSummaries": {}}))
+            Ok(diagnostic_dto::DiagnosticReport {
+                items: vec![],
+                workflow_summaries: Default::default(),
+                facet_summaries: Default::default(),
+                facet_usage: Default::default(),
+            })
         }
     }
 
@@ -1288,7 +1295,13 @@ mod tests {
             .unwrap();
 
         // Then
-        assert_eq!(report["items"].as_array().unwrap().len(), 0);
+        assert_eq!(
+            serde_json::to_value(&report).unwrap()["items"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
         assert_eq!(
             fixture.diagnostics.targets(),
             vec![WorkflowDiagnosticsTarget::Directory(path)]
@@ -1307,7 +1320,13 @@ mod tests {
             .unwrap();
 
         // Then
-        assert_eq!(report["items"].as_array().unwrap().len(), 0);
+        assert_eq!(
+            serde_json::to_value(&report).unwrap()["items"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
         assert_eq!(
             fixture.diagnostics.targets(),
             vec![WorkflowDiagnosticsTarget::AppliedConfigDirectory]

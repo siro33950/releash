@@ -11,7 +11,7 @@ pub struct SaveWorkflowSourceResultDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     workflow: Option<WorkflowDto>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    diagnostics: Vec<serde_json::Value>,
+    diagnostics: Vec<crate::usecase::workflow::diagnostic_dto::DiagnosticItem>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
 }

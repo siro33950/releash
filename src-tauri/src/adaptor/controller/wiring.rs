@@ -472,7 +472,9 @@ mod tests {
             .unwrap();
 
         // Then
-        assert!(report["workflow_summaries"]["configured"].is_object());
+        assert!(
+            serde_json::to_value(report).unwrap()["workflow_summaries"]["configured"].is_object()
+        );
     }
 
     async fn seed_b006_execution(store: &Arc<LocalEventStore>, workspace: &str) {

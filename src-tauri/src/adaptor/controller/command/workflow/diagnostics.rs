@@ -7,7 +7,7 @@ use crate::adaptor::controller::state::AppState;
 pub async fn diagnose_all_cmd(
     state: tauri::State<'_, AppState>,
     dir: Option<String>,
-) -> Result<serde_json::Value, String> {
+) -> Result<crate::usecase::workflow::diagnostic_dto::DiagnosticReport, String> {
     diagnose_all_impl(&state.workflow_usecase, dir).await
 }
 
@@ -15,7 +15,7 @@ pub async fn diagnose_all_cmd(
 pub(crate) async fn diagnose_all_impl(
     usecase: &Arc<crate::usecase::workflow::WorkflowUsecase>,
     dir: Option<String>,
-) -> Result<serde_json::Value, String> {
+) -> Result<crate::usecase::workflow::diagnostic_dto::DiagnosticReport, String> {
     let target =
         crate::usecase::workflow::ports::WorkflowDiagnosticsTarget::from_optional_directory(dir)
             .map_err(|e| e.to_string())?;

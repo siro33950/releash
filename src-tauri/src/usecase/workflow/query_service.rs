@@ -19,7 +19,15 @@ use super::ports::{
     WorkflowExecutionProjectionRepository,
 };
 
-pub type WorkflowEventView = Value;
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct WorkflowEventView {
+    pub event: String,
+    pub execution_id: String,
+    #[serde(rename = "timestampMs")]
+    pub timestamp_ms: f64,
+    #[serde(flatten)]
+    pub payload: Map<String, Value>,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum WorkflowGetOutputResult {
@@ -204,16 +212,15 @@ fn event_draft_to_log_view(event: WorkflowEventDraft) -> WorkflowEventView {
 
     rename_seconds_field_to_ms(&mut object, "requested_at", "requestedAtMs");
     rename_seconds_field_to_ms(&mut object, "submitted_at", "submittedAtMs");
-    object.insert("event".to_string(), Value::String(event.event_kind));
-    object.insert(
-        "execution_id".to_string(),
-        Value::String(event.execution_id),
-    );
-    object.insert(
-        "timestampMs".to_string(),
-        serde_json::json!(seconds_to_ms(event.timestamp)),
-    );
-    Value::Object(object)
+    for key in ["event", "execution_id", "timestampMs"] {
+        object.remove(key);
+    }
+    WorkflowEventView {
+        event: event.event_kind,
+        execution_id: event.execution_id,
+        timestamp_ms: seconds_to_ms(event.timestamp),
+        payload: object,
+    }
 }
 
 fn rename_seconds_field_to_ms(object: &mut Map<String, Value>, source: &str, target: &str) {
@@ -703,7 +710,8 @@ mod tests {
             .get_execution_log(test_execution_id())
             .unwrap();
 
-        assert_eq!(events.len(), 1);
+        let events = serde_json::to_value(events).unwrap();
+        assert_eq!(events.as_array().unwrap().len(), 1);
         assert_eq!(events[0]["event"], "execution_started");
         assert_eq!(events[0]["execution_id"], test_execution_id());
         assert_eq!(events[0]["workflow_name"], "wf");
@@ -731,7 +739,8 @@ mod tests {
             .get_execution_log_page(test_execution_id(), WorkflowPageRequest::new(1, 1))
             .unwrap();
 
-        assert_eq!(events.len(), 1);
+        let events = serde_json::to_value(events).unwrap();
+        assert_eq!(events.as_array().unwrap().len(), 1);
         assert_eq!(events[0]["event"], "node_started");
         assert_eq!(events[0]["timestampMs"].as_f64(), Some(2000.0));
     }
@@ -761,6 +770,7 @@ mod tests {
             .get_execution_log(test_execution_id())
             .unwrap();
 
+        let events = serde_json::to_value(events).unwrap();
         assert_eq!(events[0]["submittedAtMs"].as_f64(), Some(4000.0));
         assert!(events[0].get("submitted_at").is_none());
         assert_eq!(events[0]["timestampMs"].as_f64(), Some(4000.0));
