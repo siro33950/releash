@@ -711,6 +711,18 @@ impl TryFrom<wire::DiffTreeNodeType> for String {
     }
 }
 
+impl TryFrom<crate::usecase::external_editor::dto::EditorInfoDto> for wire::EditorInfoDto {
+    type Error = String;
+    fn try_from(
+        value: crate::usecase::external_editor::dto::EditorInfoDto,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            name: Some(cv(value.name)?),
+            path: Some(cv(value.path)?),
+        })
+    }
+}
+
 impl TryFrom<crate::usecase::workflow::dto::ExecutionInterruptionReasonDto>
     for wire::ExecutionInterruptionReasonDto
 {
@@ -1540,6 +1552,18 @@ impl<T> TryFrom<Vec<T>> for wire::ListDurableWorkflowFactLogEntry
 where
     wire::DurableWorkflowFactLogEntry: TryFrom<T>,
     <wire::DurableWorkflowFactLogEntry as TryFrom<T>>::Error: std::fmt::Display,
+{
+    type Error = String;
+    fn try_from(value: Vec<T>) -> Result<Self, String> {
+        Ok(Self {
+            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
+        })
+    }
+}
+impl<T> TryFrom<Vec<T>> for wire::ListEditorInfoDto
+where
+    wire::EditorInfoDto: TryFrom<T>,
+    <wire::EditorInfoDto as TryFrom<T>>::Error: std::fmt::Display,
 {
     type Error = String;
     fn try_from(value: Vec<T>) -> Result<Self, String> {
