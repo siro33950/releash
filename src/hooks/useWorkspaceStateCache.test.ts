@@ -4,8 +4,8 @@ import type { WorkspaceState } from "@/types/workspace-state";
 import { useWorkspaceStateCache } from "./useWorkspaceStateCache";
 
 const mockInvoke = vi.fn();
-vi.mock("@tauri-apps/api/core", () => ({
-	invoke: (...args: unknown[]) => mockInvoke(...args),
+vi.mock("@/lib/clientSocket", () => ({
+	invokeClient: (...args: unknown[]) => mockInvoke(...args),
 }));
 
 function makeState(overrides?: Partial<WorkspaceState>): WorkspaceState {
@@ -35,6 +35,7 @@ describe("useWorkspaceStateCache", () => {
 
 	afterEach(() => {
 		vi.useRealTimers();
+		vi.restoreAllMocks();
 	});
 
 	it("getState returns undefined for unknown path", () => {
@@ -107,6 +108,71 @@ describe("useWorkspaceStateCache", () => {
 			vi.advanceTimersByTime(1000);
 		});
 		expect(mockInvoke).toHaveBeenCalledTimes(1);
+	});
+
+	it("未応答の保存はflushで再送し、成功後はflushとunmountで再送しない", async () => {
+		let resolveSave!: () => void;
+		mockInvoke.mockReturnValueOnce(
+			new Promise<void>((resolve) => {
+				resolveSave = resolve;
+			}),
+		);
+		const { result, unmount } = renderHook(() => useWorkspaceStateCache());
+		const state = makeState();
+
+		act(() => {
+			result.current.updateState("/repo", state);
+			vi.advanceTimersByTime(500);
+		});
+		expect(mockInvoke).toHaveBeenCalledTimes(1);
+		await act(async () => {
+			result.current.flushState("/repo");
+		});
+		expect(mockInvoke).toHaveBeenCalledTimes(2);
+		expect(mockInvoke).toHaveBeenLastCalledWith("save_workspace_state", {
+			worktreeName: "repo",
+			state,
+		});
+		await act(async () => resolveSave());
+		act(() => result.current.flushState("/repo"));
+		unmount();
+		expect(mockInvoke).toHaveBeenCalledTimes(2);
+	});
+
+	it("先行保存の成功は、後続の保存が失敗した最新状態の未保存マークを消さない", async () => {
+		let resolveSave!: () => void;
+		mockInvoke.mockReturnValueOnce(
+			new Promise<void>((resolve) => {
+				resolveSave = resolve;
+			}),
+		);
+		const error = new Error("Client WebSocket connection closed");
+		mockInvoke.mockRejectedValueOnce(error);
+		const logError = vi.spyOn(console, "error").mockImplementation(() => {});
+		const { result, unmount } = renderHook(() => useWorkspaceStateCache());
+		const latest = makeState({ tabs: { editors: [], activeEditorPath: null } });
+
+		act(() => {
+			result.current.updateState("/repo", makeState());
+			result.current.flushState("/repo");
+		});
+		await act(async () => {
+			result.current.updateState("/repo", latest);
+			result.current.flushState("/repo");
+		});
+		expect(logError).toHaveBeenCalledWith(
+			"Failed to save workspace state:",
+			error,
+		);
+		await act(async () => resolveSave());
+		await act(async () => result.current.flushState("/repo"));
+		expect(mockInvoke).toHaveBeenCalledTimes(3);
+		expect(mockInvoke).toHaveBeenLastCalledWith("save_workspace_state", {
+			worktreeName: "repo",
+			state: latest,
+		});
+		unmount();
+		expect(mockInvoke).toHaveBeenCalledTimes(3);
 	});
 
 	it("loadState calls invoke and caches result", async () => {

@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { invokeClient } from "@/lib/clientSocket";
 import App from "./App";
 
 vi.mock("react-resizable-panels", () => {
@@ -15,10 +16,11 @@ vi.mock("react-resizable-panels", () => {
 	return { Panel, Group, Separator };
 });
 
-const mockInvoke = vi.mocked(invoke);
+const mockInvoke = vi.mocked(invokeClient);
 
 beforeEach(() => {
 	localStorage.clear();
+	vi.mocked(invoke).mockResolvedValue({ type: "ready" });
 	mockInvoke.mockImplementation((cmd: string) => {
 		if (cmd === "get_application_startup_outcome") {
 			return Promise.resolve({ type: "ready" });

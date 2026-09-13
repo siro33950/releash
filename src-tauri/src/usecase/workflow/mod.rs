@@ -57,9 +57,10 @@ pub(crate) use workspace_node_command::{
 pub(crate) use workspace_tree::{
     NodeWorktreeDto, WorkspaceCommandNodeContentDto, WorkspaceCommandResultDto, WorkspaceFanoutDto,
     WorkspaceNodeCapabilitiesDto, WorkspaceNodeContentDto, WorkspaceNodeDetailDto,
-    WorkspaceNodeDto, WorkspaceSequenceDto, WorkspaceSessionCapabilitiesDto,
-    WorkspaceSessionNodeContentDto, WorkspaceTreeItemDto, WorkspaceTreeSelectionSnapshotDto,
-    WorkspaceTreeSnapshotDto, WorkspaceWorkflowCapabilitiesDto, WorkspaceWorkflowHistoryItemDto,
+    WorkspaceNodeDto, WorkspaceSelectionReconciliationDto, WorkspaceSequenceDto,
+    WorkspaceSessionCapabilitiesDto, WorkspaceSessionNodeContentDto, WorkspaceTreeItemDto,
+    WorkspaceTreeSelectionSnapshotDto, WorkspaceTreeSnapshotDto, WorkspaceWorkflowCapabilitiesDto,
+    WorkspaceWorkflowHistoryItemDto,
 };
 
 #[derive(Clone)]

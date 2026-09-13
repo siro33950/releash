@@ -24,7 +24,9 @@ import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useCurrentBranch } from "@/hooks/useCurrentBranch";
 import { useWorkflowState } from "@/hooks/useWorkflowState";
+import { useWorkspaceStateCache } from "@/hooks/useWorkspaceStateCache";
 import type { WorkflowExecution } from "@/types/workflow";
+import type { WorkspaceState } from "@/types/workspace-state";
 import { clientJson } from "./clientJson";
 import {
 	acknowledgeClientStream,
@@ -353,7 +355,38 @@ describe("clientSocket", () => {
 			});
 		},
 	);
-
+	it("push未読溢れでworkflowを再取得し同じ接続の要求と後続pushを維持する", async () => {
+		let current = execution();
+		FakeWebSocket.respond = (command) =>
+			command === "resolveActiveExecutionByWorktree" ? current.id : current;
+		const { result, unmount } = renderHook(() => useWorkflowState("/repo"));
+		await vi.waitFor(() =>
+			expect(result.current.workflowExecution?.status).toBe("running"),
+		);
+		const socket = FakeWebSocket.instances[0];
+		current = { ...current, status: "completed" };
+		await act(async () => {
+			const bytes = toBinary(
+				EnvelopeSchema,
+				create(EnvelopeSchema, { body: { case: "pushResync", value: {} } }),
+			);
+			socket.onmessage?.({ data: bytes.buffer as ArrayBuffer });
+		});
+		await vi.waitFor(() =>
+			expect(result.current.workflowExecution?.status).toBe("completed"),
+		);
+		await act(async () =>
+			socket.message({
+				status: "push",
+				event: "workflow-execution-changed",
+				payload: { worktreePath: "/repo", workflowExecution: execution() },
+			}),
+		);
+		expect(result.current.workflowExecution?.status).toBe("running");
+		expect(socket.close).not.toHaveBeenCalled();
+		expect(FakeWebSocket.instances).toHaveLength(1);
+		unmount();
+	});
 	it("attachment終了は対象だけ通知し別streamと保留要求を継続する", async () => {
 		const closed = vi.fn(),
 			otherClosed = vi.fn(),
@@ -416,7 +449,86 @@ describe("clientSocket", () => {
 		socket.onclose?.();
 		await closedAssertion;
 	});
-
+	it.each([
+		["接続失敗", "flush"],
+		["接続失敗", "unmount"],
+		["応答前の切断", "flush"],
+		["応答前の切断", "unmount"],
+	])(
+		"workspace保存の%s後は%sで最新状態を再送し再マウント後に復元する",
+		async (failure, retry) => {
+			const logError = vi.spyOn(console, "error").mockImplementation(() => {});
+			FakeWebSocket.failOpen = failure === "接続失敗";
+			const { result, unmount } = renderHook(() => useWorkspaceStateCache());
+			const state: WorkspaceState = {
+				version: 1,
+				tabs: { editors: [], activeEditorPath: null },
+				layout: {
+					centerTab: "agent",
+					activeView: "git",
+					leftNavCollapsed: true,
+					rightCollapsed: false,
+					rightBottomCollapsed: false,
+				},
+			};
+			act(() => {
+				result.current.updateState("/repo", state);
+				result.current.flushState("/repo");
+			});
+			if (failure === "応答前の切断") {
+				const { socket } = await sent();
+				await act(async () => socket.onclose?.());
+			}
+			await vi.waitFor(() => expect(logError).toHaveBeenCalledTimes(1));
+			expect(result.current.getState("/repo")).toEqual(state);
+			FakeWebSocket.failOpen = false;
+			const connected = invokeClient("get_current_branch", {
+				repoPath: "/repo",
+			});
+			const connection = await sent(1, 1);
+			connection.socket.message({
+				request_id: connection.frames[0].request_id,
+				result: "main",
+			});
+			await connected;
+			act(() => {
+				if (retry === "unmount") unmount();
+				else result.current.flushState("/repo");
+			});
+			const saved = await sent(2, 1);
+			expect(saved.frames[1]).toMatchObject({
+				command: "save_workspace_state",
+				args: { worktreeName: "repo", state },
+			});
+			await act(async () => {
+				saved.socket.message({
+					request_id: saved.frames[1].request_id,
+					result: null,
+				});
+			});
+			if (retry === "flush") unmount();
+			expect(saved.socket.send).toHaveBeenCalledTimes(2);
+			const restored = renderHook(() => useWorkspaceStateCache());
+			expect(restored.result.current.getState("/repo")).toBeUndefined();
+			await act(async () => {
+				const loaded = restored.result.current.loadState("/repo");
+				const loading = await sent(3, 1);
+				expect(loading.frames[2]).toMatchObject({
+					command: "load_workspace_state",
+					args: { worktreeName: "repo", worktreeRoot: "/repo" },
+				});
+				loading.socket.message({
+					request_id: loading.frames[2].request_id,
+					result: (saved.frames[1].args as { state: JsonValue }).state,
+				});
+				await expect(loaded).resolves.toEqual(state);
+			});
+			expect(restored.result.current.getState("/repo")).toEqual(state);
+			restored.unmount();
+			expect(invoke).toHaveBeenCalledTimes(2);
+			expect(invoke).toHaveBeenCalledWith("get_client_endpoint");
+		},
+	);
 	it("workflow pushを購読者へ届け解除後は届けない", async () => {
 		const listener = vi.fn();
 		const unlisten = await listenClient(
@@ -646,7 +758,9 @@ describe("clientSocket", () => {
 		await act(async () => {
 			await vi.advanceTimersByTimeAsync(0);
 		});
-		expect(result.current.workflowExecution?.currentNode).toBe("before");
+		expect(result.current.workflowExecution).toBeNull();
+		FakeWebSocket.respond = (command) =>
+			command === "resolveActiveExecutionByWorktree" ? "execution-1" : current;
 		current = { ...current, currentNode: "offline-update" };
 		await act(async () => {
 			await vi.advanceTimersByTimeAsync(1_000);

@@ -214,7 +214,7 @@ impl TerminalSurfaceRuntime {
             .map_err(|error| error.to_string())?;
         let (sender, receiver) = tokio::sync::mpsc::channel(256);
         tauri::async_runtime::spawn(
-            crate::adaptor::controller::command::terminal_surface::commands::forward_terminal_surface_attachment(
+            crate::adaptor::controller::terminal_surface::forward_terminal_surface_attachment(
                 Arc::clone(&self.application),
                 attachment_id,
                 attachment,

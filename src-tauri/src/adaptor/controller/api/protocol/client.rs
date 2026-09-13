@@ -1,8 +1,11 @@
 use super::json::{from_message, to_message};
+use prost::Message;
 use serde_json::Value as Json;
 
 include!(concat!(env!("OUT_DIR"), "/releash.client.v1.rs"));
 include!(concat!(env!("OUT_DIR"), "/client_commands.rs"));
+
+pub const MAX_STREAM_FRAME_BYTES: usize = 64 * 1024;
 
 pub trait ClientValue {
     fn into_json(self) -> Result<Json, String>;
@@ -98,6 +101,23 @@ impl From<crate::adaptor::protocol::terminal::TerminalSurfaceStreamItemV1> for T
             }),
         }
     }
+}
+
+pub(crate) fn stream_frame(
+    attachment_id: &str,
+    sequence: u64,
+    data: Vec<u8>,
+    end: bool,
+) -> Vec<u8> {
+    Envelope {
+        body: Some(envelope::Body::Stream(Stream {
+            attachment_id: attachment_id.into(),
+            sequence,
+            data,
+            end,
+        })),
+    }
+    .encode_to_vec()
 }
 
 #[cfg(test)]

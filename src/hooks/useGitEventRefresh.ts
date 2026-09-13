@@ -1,6 +1,6 @@
-import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef } from "react";
+import { invokeClient as invoke } from "@/lib/clientSocket";
 
 interface FileChangeEvent {
 	watcher_id: number;
@@ -46,7 +46,7 @@ export function useGitEventRefresh(
 			unlisten = off;
 
 			try {
-				const id = await invoke<number>("start_watching", {
+				const id = await invoke("start_watching", {
 					path: rootPath,
 				});
 				if (disposed) {

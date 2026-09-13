@@ -17,3 +17,5 @@ pub(crate) mod workspace_state;
 pub(crate) mod workspace_tree;
 
 pub(crate) mod push;
+
+pub(crate) mod telemetry;

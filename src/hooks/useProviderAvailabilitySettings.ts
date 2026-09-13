@@ -1,5 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { invokeClient as invoke } from "@/lib/clientSocket";
 import { getErrorMessage } from "@/lib/errorMessage";
 
 export interface ProviderAvailabilityItem {
@@ -67,7 +67,7 @@ export function useProviderAvailabilitySettings(open: boolean) {
 		setError(null);
 		setSnapshot(null);
 		setDrafts({});
-		invoke<ProviderAvailabilitySnapshot>("get_provider_availability")
+		invoke("get_provider_availability")
 			.then((next) => {
 				if (!cancelled) acceptSnapshot(next);
 			})
@@ -104,10 +104,10 @@ export function useProviderAvailabilitySettings(open: boolean) {
 			for (const provider of snapshot.providers) {
 				const executable = drafts[provider.provider] ?? "";
 				if (executable === (provider.configuredExecutable ?? "")) continue;
-				latest = await invoke<ProviderAvailabilitySnapshot>(
-					"update_provider_executable",
-					{ provider: provider.provider, executable },
-				);
+				latest = await invoke("update_provider_executable", {
+					provider: provider.provider,
+					executable,
+				});
 				setSnapshot(latest);
 			}
 			acceptSnapshot(latest);
@@ -125,10 +125,7 @@ export function useProviderAvailabilitySettings(open: boolean) {
 			setSaving(true);
 			setError(null);
 			try {
-				const next = await invoke<ProviderAvailabilitySnapshot>(
-					"reset_provider_executable",
-					{ provider },
-				);
+				const next = await invoke("reset_provider_executable", { provider });
 				setSnapshot(next);
 				setDrafts(draftsAfterReset(provider, drafts, snapshot, next));
 			} catch (cause) {
@@ -144,11 +141,7 @@ export function useProviderAvailabilitySettings(open: boolean) {
 		setRefreshing(true);
 		setError(null);
 		try {
-			acceptSnapshot(
-				await invoke<ProviderAvailabilitySnapshot>(
-					"refresh_provider_availability",
-				),
-			);
+			acceptSnapshot(await invoke("refresh_provider_availability"));
 		} catch (cause) {
 			setError(getErrorMessage(cause));
 		} finally {

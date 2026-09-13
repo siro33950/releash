@@ -8,3 +8,5 @@ pub(crate) mod command;
 pub(crate) mod state;
 pub(crate) mod terminal_surface_runtime;
 pub(crate) mod wiring;
+
+pub(crate) mod terminal_surface;

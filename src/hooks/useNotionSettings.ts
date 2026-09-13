@@ -1,10 +1,9 @@
-import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { invokeClient as invoke } from "@/lib/clientSocket";
 import { getErrorMessage } from "@/lib/errorMessage";
 import type {
 	NotionPropertyInfo,
 	NotionRepoConfig,
-	NotionValidationResult,
 	PropertyMapping,
 } from "@/types/notion";
 
@@ -74,10 +73,7 @@ export function useNotionSettings(
 			const entries = await Promise.all(
 				paths.map(async (repoPath) => {
 					try {
-						const config = await invoke<NotionRepoConfig | null>(
-							"get_notion_config",
-							{ repoPath },
-						);
+						const config = await invoke("get_notion_config", { repoPath });
 						return [repoPath, config] as const;
 					} catch {
 						return [repoPath, null] as const;
@@ -154,13 +150,10 @@ export function useNotionSettings(
 			}));
 
 			try {
-				const result = await invoke<NotionValidationResult>(
-					"validate_notion_config",
-					{
-						apiToken: draft.apiToken,
-						databaseId: draft.databaseId,
-					},
-				);
+				const result = await invoke("validate_notion_config", {
+					apiToken: draft.apiToken,
+					databaseId: draft.databaseId,
+				});
 
 				let status: string | null = null;
 				if (result.status === "configured") {

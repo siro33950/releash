@@ -1,6 +1,6 @@
-import { invoke } from "@tauri-apps/api/core";
 import { AlertTriangle } from "lucide-react";
 import { useEffect, useState } from "react";
+import { invokeClient as invoke } from "@/lib/clientSocket";
 
 interface ProviderHookHealthWarning {
 	provider: string;
@@ -21,9 +21,7 @@ export function ProviderHookHealthBanner() {
 		let active = true;
 		const refresh = async () => {
 			try {
-				const result = await invoke<ProviderHookHealthWarning[]>(
-					"list_provider_hook_health_warnings",
-				);
+				const result = await invoke("list_provider_hook_health_warnings");
 				if (active && Array.isArray(result)) setWarnings(result);
 			} catch (error) {
 				console.warn("Failed to refresh provider hook health warnings:", error);
