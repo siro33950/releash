@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import {
 	createContext,
 	useCallback,
@@ -6,6 +5,7 @@ import {
 	useMemo,
 	useState,
 } from "react";
+import { invokeClient as invoke } from "@/lib/clientSocket";
 import { getErrorMessage } from "@/lib/errorMessage";
 
 export interface ReviewThreadHandoffFeedback {
@@ -66,7 +66,7 @@ export function ReviewThreadHandoffProvider({
 		async (threadId: string) => {
 			let content: string;
 			try {
-				content = await invoke<string>("build_review_thread_handoff", {
+				content = await invoke("build_review_thread_handoff", {
 					worktreeName,
 					threadId,
 				});

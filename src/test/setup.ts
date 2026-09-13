@@ -75,3 +75,8 @@ vi.mock("@tauri-apps/plugin-updater", () => ({
 vi.mock("@tauri-apps/plugin-process", () => ({
 	relaunch: vi.fn().mockResolvedValue(undefined),
 }));
+
+vi.mock("@/lib/clientSocket", async (importOriginal) => {
+	const original = await importOriginal<typeof import("@/lib/clientSocket")>();
+	return { ...original, invokeClient: vi.fn().mockResolvedValue(1) };
+});

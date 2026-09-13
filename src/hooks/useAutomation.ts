@@ -1,12 +1,11 @@
-import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useState } from "react";
+import { invokeClient as invoke } from "@/lib/clientSocket";
 import { getErrorMessage } from "@/lib/errorMessage";
 import type {
 	DiagnosticReport,
 	FacetKind,
 	FacetSummary,
-	SaveWorkflowSourceResponse,
 	WorkflowDefinition,
 	WorkflowDefinitionSummary,
 } from "@/types/workflow";
@@ -54,8 +53,8 @@ export function useAutomation(open: boolean) {
 		setError(null);
 		try {
 			const [wfList, diagReport] = await Promise.all([
-				invoke<WorkflowDefinitionSummary[]>("list_workflows"),
-				invoke<DiagnosticReport>("diagnose_all_cmd"),
+				invoke("list_workflows"),
+				invoke("diagnose_all_cmd"),
 			]);
 			setWorkflows(wfList);
 			setReport(diagReport);
@@ -68,7 +67,7 @@ export function useAutomation(open: boolean) {
 
 	const fetchFacets = useCallback(async (kind: FacetKind) => {
 		try {
-			const list = await invoke<FacetSummary[]>("list_facet_summaries", {
+			const list = await invoke("list_facet_summaries", {
 				kind,
 			});
 			setFacets(list);
@@ -79,7 +78,7 @@ export function useAutomation(open: boolean) {
 
 	const refreshDiagnostics = useCallback(async () => {
 		try {
-			const diagReport = await invoke<DiagnosticReport>("diagnose_all_cmd");
+			const diagReport = await invoke("diagnose_all_cmd");
 			setReport(diagReport);
 		} catch (e) {
 			setError(getErrorMessage(e));
@@ -129,8 +128,8 @@ export function useAutomation(open: boolean) {
 			unlisten = off;
 
 			try {
-				const dir = await invoke<string>("get_automation_config_dir");
-				const id = await invoke<number>("start_watching", { path: dir });
+				const dir = await invoke("get_automation_config_dir");
+				const id = await invoke("start_watching", { path: dir });
 				if (disposed) {
 					invoke("stop_watching", { watcherId: id }).catch(() => {});
 					return;
@@ -162,13 +161,13 @@ export function useAutomation(open: boolean) {
 					workflows.find((workflow) => workflow.name === name)?.sourceFormat ??
 					"yaml";
 				if (sourceFormat === "yaml") {
-					const source = await invoke<string>("get_workflow_source", { name });
+					const source = await invoke("get_workflow_source", { name });
 					setSelectedWorkflowSource(source);
 				} else {
 					setSelectedWorkflowSource(null);
 				}
 				try {
-					const wf = await invoke<WorkflowDefinition>("get_workflow", { name });
+					const wf = await invoke("get_workflow", { name });
 					setSelectedWorkflow(wf);
 				} catch (e) {
 					setSelectedWorkflow(null);
@@ -187,13 +186,10 @@ export function useAutomation(open: boolean) {
 	const saveWorkflowSource = useCallback(
 		async (source: string, originalName?: string) => {
 			try {
-				const response = await invoke<SaveWorkflowSourceResponse>(
-					"save_workflow_source",
-					{
-						source,
-						originalName: originalName ?? null,
-					},
-				);
+				const response = await invoke("save_workflow_source", {
+					source,
+					originalName: originalName ?? null,
+				});
 				if (!response.ok) {
 					return {
 						ok: false as const,
@@ -260,7 +256,7 @@ export function useAutomation(open: boolean) {
 
 	const selectFacet = useCallback(async (kind: FacetKind, key: string) => {
 		try {
-			const content = await invoke<string>("get_facet", { kind, key });
+			const content = await invoke("get_facet", { kind, key });
 			setSelectedFacetContent(content);
 			setSelectedFacetKey(key);
 			setSelectedFacetKind(kind);
@@ -335,7 +331,7 @@ export function useAutomation(open: boolean) {
 	const renderFacetPreview = useCallback(
 		async (content: string, sampleValues: Record<string, string>) => {
 			try {
-				const rendered = await invoke<string>("render_facet_preview", {
+				const rendered = await invoke("render_facet_preview", {
 					content,
 					sampleValues,
 				});

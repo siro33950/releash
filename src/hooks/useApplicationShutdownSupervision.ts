@@ -1,5 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { invokeClient as invoke } from "@/lib/clientSocket";
 import { getErrorMessage } from "@/lib/errorMessage";
 
 interface PendingApplicationAttempt {
@@ -26,10 +26,6 @@ interface ShutdownOutcomeUnknown {
 	intent: { type: "exit" | "restart"; code: number };
 }
 
-type CurrentShutdownResult =
-	| { type: "current"; plan: ShutdownProjection | null }
-	| ({ type: "outcome_unknown" } & ShutdownOutcomeUnknown);
-
 export interface ShutdownTargetCapability {
 	ordinal: string;
 	target_key: string;
@@ -53,12 +49,6 @@ export interface ShutdownTargetCapability {
 		action: string;
 		origin_revision: string;
 	}>;
-}
-
-interface ShutdownPlanPage {
-	plan: ShutdownProjection;
-	targets: ShutdownTargetCapability[];
-	next_cursor: string | null;
 }
 
 interface ApplicationShutdownSupervisionState {
@@ -134,10 +124,10 @@ async function loadAttempts(
 	for (let page = 0; page < MAX_ATTEMPT_PAGES; page += 1) {
 		let result: PendingApplicationAttemptPage;
 		try {
-			result = await invoke<PendingApplicationAttemptPage>(
-				"list_pending_application_attempts",
-				{ limit: 32, cursor },
-			);
+			result = await invoke("list_pending_application_attempts", {
+				limit: 32,
+				cursor,
+			});
 		} catch (error) {
 			if (isInvalidPendingAttemptCursor(error, cursor)) onInvalidCursor();
 			throw error;
@@ -161,7 +151,7 @@ async function redispatchPendingQuit(attempts: PendingApplicationAttempt[]) {
 	) {
 		return;
 	}
-	const outcome = await invoke<{ type: string }>("request_application_quit", {
+	const outcome = await invoke("request_application_quit", {
 		request: {
 			request_id: snapshot.requestId,
 			intent: snapshot.intent,
@@ -196,7 +186,7 @@ export function useApplicationShutdownSupervision() {
 			});
 			const [attemptPage, shutdownResult] = await Promise.all([
 				attemptPagePromise,
-				invoke<CurrentShutdownResult>("get_application_shutdown"),
+				invoke("get_application_shutdown"),
 			]);
 			attemptCursor.current = attemptPage.nextCursor;
 			await redispatchPendingQuit(attemptPage.entries);
@@ -213,7 +203,7 @@ export function useApplicationShutdownSupervision() {
 					: null;
 			const shutdownTargets = shutdown
 				? (
-						await invoke<ShutdownPlanPage>("get_shutdown_plan", {
+						await invoke("get_shutdown_plan", {
 							shutdownId: shutdown.shutdown_id,
 							limit: 128,
 							cursor: null,
@@ -284,7 +274,7 @@ export function useApplicationShutdownSupervision() {
 			QUIT_ATTEMPT_STORAGE_KEY,
 			JSON.stringify(snapshot),
 		);
-		const outcome = await invoke<{ type: string }>("request_application_quit", {
+		const outcome = await invoke("request_application_quit", {
 			request: {
 				request_id: snapshot.requestId,
 				intent: snapshot.intent,

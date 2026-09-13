@@ -1,5 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
+import { invokeClient as invoke } from "@/lib/clientSocket";
 import type { ChangeGroup, Hunk } from "@/lib/computeHunks";
 import type { ReviewDiscussionThread } from "@/types/diffComment";
 import type { DiffMode } from "@/types/settings";
@@ -70,7 +70,7 @@ export function CodeDiffViewer({
 
 		let cancelled = false;
 		setDetectedLanguage("plaintext");
-		invoke<string>("get_language_from_path", { filePath })
+		invoke("get_language_from_path", { filePath })
 			.then((detectedLang) => {
 				if (!cancelled) setDetectedLanguage(detectedLang);
 			})

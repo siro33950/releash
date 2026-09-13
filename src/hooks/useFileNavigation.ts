@@ -1,5 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useState } from "react";
+import { invokeClient as invoke } from "@/lib/clientSocket";
 import type { DiffTreeNode } from "@/types/review";
 
 export interface FileNavigationResult {
@@ -29,7 +29,7 @@ export function useFileNavigation(
 			return;
 		}
 
-		invoke<FileNavigationResult>("get_file_navigation", {
+		invoke("get_file_navigation", {
 			tree,
 			currentFile,
 		})

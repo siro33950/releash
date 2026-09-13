@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-mod dto;
+pub(crate) mod dto;
 
 use crate::domain::comment::{
     apply_filter, ensure_can_delete, ensure_thread_open, project_thread, project_threads,

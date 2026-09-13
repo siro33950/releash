@@ -1,5 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useRef } from "react";
+import { invokeClient as invoke } from "@/lib/clientSocket";
 
 export function useGitDirWatcher(repoPath: string | null): void {
 	const watcherIdRef = useRef<number | null>(null);
@@ -11,7 +11,7 @@ export function useGitDirWatcher(repoPath: string | null): void {
 
 		const start = async () => {
 			try {
-				const id = await invoke<number>("start_git_dir_watching", {
+				const id = await invoke("start_git_dir_watching", {
 					repoPath,
 				});
 				if (!isMounted) {

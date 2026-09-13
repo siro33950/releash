@@ -53,11 +53,17 @@ pub(crate) trait ApplicationProcessActionPort: Send + Sync {
     fn execute(&self, action: ApplicationProcessAction);
 }
 
-struct TauriApplicationProcessActionPort {
-    app: tauri::AppHandle,
+pub(crate) struct TauriApplicationProcessActionPort<R: tauri::Runtime> {
+    app: tauri::AppHandle<R>,
 }
 
-impl ApplicationProcessActionPort for TauriApplicationProcessActionPort {
+impl<R: tauri::Runtime> TauriApplicationProcessActionPort<R> {
+    pub(crate) fn new(app: tauri::AppHandle<R>) -> Self {
+        Self { app }
+    }
+}
+
+impl<R: tauri::Runtime> ApplicationProcessActionPort for TauriApplicationProcessActionPort<R> {
     fn execute(&self, action: ApplicationProcessAction) {
         match action {
             ApplicationProcessAction::Exit { code } => self.app.exit(code),
@@ -95,9 +101,9 @@ impl ApplicationProcessActionDispatcher {
         true
     }
 
-    pub(crate) fn dispatch_tauri(
+    pub(crate) fn dispatch_tauri<R: tauri::Runtime>(
         &self,
-        app: tauri::AppHandle,
+        app: tauri::AppHandle<R>,
         action: ApplicationProcessAction,
     ) -> bool {
         self.dispatch(&TauriApplicationProcessActionPort { app }, action)
