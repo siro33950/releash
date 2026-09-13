@@ -559,6 +559,18 @@ mod tests {
     }
 }
 
+pub(crate) fn build_watcher_usecase<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> std::sync::Arc<crate::usecase::watcher::WatcherUsecase> {
+    use tauri::Manager;
+    std::sync::Arc::new(crate::usecase::watcher::WatcherUsecase::new(
+        app.try_state::<crate::adaptor::controller::state::AppState>().map(|state| state.repository_state.clone()),
+        std::sync::Arc::new(crate::adaptor::gateway::repository::file_watcher::FileWatcherGateway::new(
+            app.state::<std::sync::Arc<crate::infrastructure::file_watcher::FileWatcherManager>>().inner().clone(), app.clone(),
+        )),
+    ))
+}
+
 pub(crate) fn build_client_dependencies<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> super::client::ClientDependencies {
@@ -577,6 +589,7 @@ pub(crate) fn build_client_dependencies<R: tauri::Runtime>(
         config_repository: app.try_state::<std::sync::Arc<dyn crate::domain::app_config::ConfigRepository>>().map(|state| state.inner().clone()),
         workflow_runtime_usecase: app.try_state::<std::sync::Arc<crate::usecase::workflow::WorkflowRuntimeUsecase>>().map(|state| state.inner().clone()),
         editor_launcher: Arc::new(crate::adaptor::gateway::external_editor::TauriEditorLauncherGateway::new(app.clone())),
+        watcher: build_watcher_usecase(app),
         data_dir: app.path().app_data_dir().map_err(|error| format!("Failed to get app data dir: {error}")),
         comment_notify: Arc::new(crate::adaptor::gateway::push::CommentChangeGateway::new(app.clone())),
     }

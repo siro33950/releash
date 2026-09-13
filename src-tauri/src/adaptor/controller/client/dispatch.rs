@@ -62,6 +62,7 @@ impl ClientCommandDispatch {
         super::git_host::register_shared(self, deps);
         super::external_editor::register_shared(self, deps);
         super::telemetry::register_shared(self, deps);
+        super::watcher::register_shared(self, deps);
     }
     pub(crate) fn register_domain(
         &mut self,

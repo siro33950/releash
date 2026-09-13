@@ -263,6 +263,13 @@ parity!(
     json!({}),
     outcome(invoke_tauri(&app, "get_external_editor", json!({})).await)
 );
+parity!(
+    test_watcher_protoはusecase結果と一致する,
+    app,
+    "stop_watching",
+    json!({"watcherId":999}),
+    outcome(invoke_tauri(&app, "stop_watching", json!({"watcherId": 999})).await)
+);
 #[tokio::test]
 async fn test_telemetry_protoはcommand結果と一致する() {
     // Given
