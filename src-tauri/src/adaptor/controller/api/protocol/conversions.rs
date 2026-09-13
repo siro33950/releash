@@ -1328,6 +1328,28 @@ impl TryFrom<crate::usecase::workflow::dto::ItemsSourceDto> for wire::ItemsSourc
     }
 }
 
+impl TryFrom<crate::adaptor::protocol::notion::LabelPropertyView> for wire::LabelPropertyView {
+    type Error = String;
+    fn try_from(
+        value: crate::adaptor::protocol::notion::LabelPropertyView,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            name: Some(cv(value.name)?),
+            property_type: Some(cv(value.property_type)?),
+        })
+    }
+}
+
+impl TryFrom<wire::LabelPropertyView> for crate::adaptor::protocol::notion::LabelPropertyView {
+    type Error = String;
+    fn try_from(value: wire::LabelPropertyView) -> Result<Self, String> {
+        Ok(Self {
+            name: cv(req(value.name, "name")?)?,
+            property_type: cv(req(value.property_type, "property_type")?)?,
+        })
+    }
+}
+
 impl<T> TryFrom<Vec<T>> for wire::ListAgentSessionHistoryCandidateDto
 where
     wire::AgentSessionHistoryCandidateDto: TryFrom<T>,
@@ -1667,6 +1689,27 @@ where
         })
     }
 }
+impl<T> TryFrom<Vec<T>> for wire::ListLabelPropertyView
+where
+    wire::LabelPropertyView: TryFrom<T>,
+    <wire::LabelPropertyView as TryFrom<T>>::Error: std::fmt::Display,
+{
+    type Error = String;
+    fn try_from(value: Vec<T>) -> Result<Self, String> {
+        Ok(Self {
+            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
+        })
+    }
+}
+impl<T: TryFrom<wire::LabelPropertyView>> TryFrom<wire::ListLabelPropertyView> for Vec<T>
+where
+    T::Error: std::fmt::Display,
+{
+    type Error = String;
+    fn try_from(value: wire::ListLabelPropertyView) -> Result<Self, String> {
+        value.items.into_iter().map(cv).collect()
+    }
+}
 impl<T> TryFrom<Vec<T>> for wire::ListNodeDefinitionDto
 where
     wire::NodeDefinitionDto: TryFrom<T>,
@@ -1683,6 +1726,42 @@ impl<T> TryFrom<Vec<T>> for wire::ListNodeExecutionView
 where
     wire::NodeExecutionView: TryFrom<T>,
     <wire::NodeExecutionView as TryFrom<T>>::Error: std::fmt::Display,
+{
+    type Error = String;
+    fn try_from(value: Vec<T>) -> Result<Self, String> {
+        Ok(Self {
+            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
+        })
+    }
+}
+impl<T> TryFrom<Vec<T>> for wire::ListNotionLabelOptionView
+where
+    wire::NotionLabelOptionView: TryFrom<T>,
+    <wire::NotionLabelOptionView as TryFrom<T>>::Error: std::fmt::Display,
+{
+    type Error = String;
+    fn try_from(value: Vec<T>) -> Result<Self, String> {
+        Ok(Self {
+            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
+        })
+    }
+}
+impl<T> TryFrom<Vec<T>> for wire::ListNotionPropertyInfoView
+where
+    wire::NotionPropertyInfoView: TryFrom<T>,
+    <wire::NotionPropertyInfoView as TryFrom<T>>::Error: std::fmt::Display,
+{
+    type Error = String;
+    fn try_from(value: Vec<T>) -> Result<Self, String> {
+        Ok(Self {
+            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
+        })
+    }
+}
+impl<T> TryFrom<Vec<T>> for wire::ListNotionTaskView
+where
+    wire::NotionTaskView: TryFrom<T>,
+    <wire::NotionTaskView as TryFrom<T>>::Error: std::fmt::Display,
 {
     type Error = String;
     fn try_from(value: Vec<T>) -> Result<Self, String> {
@@ -2510,6 +2589,162 @@ impl TryFrom<crate::usecase::workflow::NodeWorktreeDto> for wire::NodeWorktreeDt
     }
 }
 
+impl TryFrom<crate::adaptor::protocol::notion::NotionConfigStatusView>
+    for wire::NotionConfigStatusView
+{
+    type Error = String;
+    fn try_from(
+        value: crate::adaptor::protocol::notion::NotionConfigStatusView,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            value: Some(match value {
+                crate::adaptor::protocol::notion::NotionConfigStatusView::NotConfigured => {
+                    wire::notion_config_status_view::Value::NotConfigured as i32
+                }
+                crate::adaptor::protocol::notion::NotionConfigStatusView::Configured => {
+                    wire::notion_config_status_view::Value::Configured as i32
+                }
+                crate::adaptor::protocol::notion::NotionConfigStatusView::InvalidToken => {
+                    wire::notion_config_status_view::Value::InvalidToken as i32
+                }
+                crate::adaptor::protocol::notion::NotionConfigStatusView::InvalidDatabase => {
+                    wire::notion_config_status_view::Value::InvalidDatabase as i32
+                }
+                crate::adaptor::protocol::notion::NotionConfigStatusView::NetworkError => {
+                    wire::notion_config_status_view::Value::NetworkError as i32
+                }
+            }),
+        })
+    }
+}
+
+impl TryFrom<String> for wire::NotionConfigStatusView {
+    type Error = String;
+    fn try_from(value: String) -> Result<Self, String> {
+        Ok(Self {
+            value: Some(match value.as_str() {
+                "not_configured" => wire::notion_config_status_view::Value::NotConfigured as i32,
+                "configured" => wire::notion_config_status_view::Value::Configured as i32,
+                "invalid_token" => wire::notion_config_status_view::Value::InvalidToken as i32,
+                "invalid_database" => {
+                    wire::notion_config_status_view::Value::InvalidDatabase as i32
+                }
+                "network_error" => wire::notion_config_status_view::Value::NetworkError as i32,
+                _ => return Err(format!("Invalid NotionConfigStatusView: {value}")),
+            }),
+        })
+    }
+}
+
+impl TryFrom<&str> for wire::NotionConfigStatusView {
+    type Error = String;
+    fn try_from(value: &str) -> Result<Self, String> {
+        cv(value.to_owned())
+    }
+}
+
+impl TryFrom<crate::adaptor::protocol::notion::NotionLabelOptionView>
+    for wire::NotionLabelOptionView
+{
+    type Error = String;
+    fn try_from(
+        value: crate::adaptor::protocol::notion::NotionLabelOptionView,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            property_name: Some(cv(value.property_name)?),
+            property_type: Some(cv(value.property_type)?),
+            options: Some(cv(value.options)?),
+            option_ids: Some(cv(value.option_ids)?),
+        })
+    }
+}
+
+impl TryFrom<crate::adaptor::protocol::notion::NotionPropertyInfoView>
+    for wire::NotionPropertyInfoView
+{
+    type Error = String;
+    fn try_from(
+        value: crate::adaptor::protocol::notion::NotionPropertyInfoView,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            name: Some(cv(value.name)?),
+            property_type: Some(cv(value.property_type)?),
+            options: Some(cv(value.options)?),
+        })
+    }
+}
+
+impl TryFrom<crate::adaptor::protocol::notion::NotionRepoConfigView>
+    for wire::NotionRepoConfigView
+{
+    type Error = String;
+    fn try_from(
+        value: crate::adaptor::protocol::notion::NotionRepoConfigView,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            api_token: Some(cv(value.api_token)?),
+            database_id: Some(cv(value.database_id)?),
+            property_mapping: Some(cv(value.property_mapping)?),
+        })
+    }
+}
+
+impl TryFrom<crate::adaptor::protocol::notion::NotionTaskPageView> for wire::NotionTaskPageView {
+    type Error = String;
+    fn try_from(
+        value: crate::adaptor::protocol::notion::NotionTaskPageView,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            tasks: Some(cv(value.tasks)?),
+            has_more: Some(cv(value.has_more)?),
+            next_cursor: value.next_cursor.map(cv).transpose()?,
+        })
+    }
+}
+
+impl TryFrom<wire::NotionTaskQueryInput>
+    for crate::adaptor::protocol::notion::NotionTaskQueryInput
+{
+    type Error = String;
+    fn try_from(value: wire::NotionTaskQueryInput) -> Result<Self, String> {
+        Ok(Self {
+            title_filter: cv(req(value.title_filter, "title_filter")?)?,
+            label_filters: cv(req(value.label_filters, "label_filters")?)?,
+            cursor: value.cursor.map(cv).transpose()?,
+            page_size: value.page_size.map(cv).transpose()?,
+        })
+    }
+}
+
+impl TryFrom<crate::adaptor::protocol::notion::NotionTaskView> for wire::NotionTaskView {
+    type Error = String;
+    fn try_from(value: crate::adaptor::protocol::notion::NotionTaskView) -> Result<Self, String> {
+        Ok(Self {
+            id: Some(cv(value.id)?),
+            title: Some(cv(value.title)?),
+            url: Some(cv(value.url)?),
+            labels: Some(cv(value.labels)?),
+            branch_name: Some(cv(value.branch_name)?),
+            created_at: Some(cv(value.created_at)?),
+            last_edited_at: Some(cv(value.last_edited_at)?),
+        })
+    }
+}
+
+impl TryFrom<crate::adaptor::protocol::notion::NotionValidationResultView>
+    for wire::NotionValidationResultView
+{
+    type Error = String;
+    fn try_from(
+        value: crate::adaptor::protocol::notion::NotionValidationResultView,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            status: Some(cv(value.status)?),
+            properties: Some(cv(value.properties)?),
+        })
+    }
+}
+
 impl<T> TryFrom<Option<T>> for wire::NullableAgentSessionItemDto
 where
     wire::AgentSessionItemDto: TryFrom<T>,
@@ -2538,6 +2773,18 @@ impl<T> TryFrom<Option<T>> for wire::NullableNodeExecutionView
 where
     wire::NodeExecutionView: TryFrom<T>,
     <wire::NodeExecutionView as TryFrom<T>>::Error: std::fmt::Display,
+{
+    type Error = String;
+    fn try_from(value: Option<T>) -> Result<Self, String> {
+        Ok(Self {
+            value: value.map(cv).transpose()?,
+        })
+    }
+}
+impl<T> TryFrom<Option<T>> for wire::NullableNotionRepoConfigView
+where
+    wire::NotionRepoConfigView: TryFrom<T>,
+    <wire::NotionRepoConfigView as TryFrom<T>>::Error: std::fmt::Display,
 {
     type Error = String;
     fn try_from(value: Option<T>) -> Result<Self, String> {
@@ -2652,6 +2899,32 @@ impl TryFrom<crate::usecase::workflow::dto::PredicateDto> for wire::PredicateDto
                     wire::predicate_dto::Variant::Or(wire::PredicateDtoOr { or: Some(cv(or)?) })
                 }
             }),
+        })
+    }
+}
+
+impl TryFrom<crate::adaptor::protocol::notion::PropertyMappingView> for wire::PropertyMappingView {
+    type Error = String;
+    fn try_from(
+        value: crate::adaptor::protocol::notion::PropertyMappingView,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            title: Some(cv(value.title)?),
+            labels: Some(cv(value.labels)?),
+            branch_name: Some(cv(value.branch_name)?),
+            branch_prefix: Some(cv(value.branch_prefix)?),
+        })
+    }
+}
+
+impl TryFrom<wire::PropertyMappingView> for crate::adaptor::protocol::notion::PropertyMappingView {
+    type Error = String;
+    fn try_from(value: wire::PropertyMappingView) -> Result<Self, String> {
+        Ok(Self {
+            title: value.title.map(cv).transpose()?.unwrap_or_default(),
+            labels: value.labels.map(cv).transpose()?.unwrap_or_default(),
+            branch_name: value.branch_name.map(cv).transpose()?.unwrap_or_default(),
+            branch_prefix: value.branch_prefix.map(cv).transpose()?.unwrap_or_default(),
         })
     }
 }

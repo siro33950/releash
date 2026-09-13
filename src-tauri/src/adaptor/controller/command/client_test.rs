@@ -243,6 +243,13 @@ parity!(
     )
 );
 parity!(
+    test_notion_protoはusecase結果と一致する,
+    app,
+    "get_notion_config",
+    json!({"repoPath":"/missing"}),
+    outcome(invoke_tauri(&app, "get_notion_config", json!({"repoPath": "/missing"})).await)
+);
+parity!(
     test_git_host_protoはusecase結果と一致する,
     app,
     "get_cached_issues",

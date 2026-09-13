@@ -1,5 +1,3 @@
-use tauri::State;
-
 use crate::adaptor::controller::state::AppState;
 use crate::adaptor::protocol::notion::{
     NotionLabelOptionView, NotionRepoConfigView, NotionTaskPageView, NotionTaskQueryInput,
@@ -15,9 +13,8 @@ fn map_usecase_error(error: NotionUsecaseError) -> String {
     error.to_string()
 }
 
-#[tauri::command]
-pub(crate) async fn query_notion_tasks(
-    state: State<'_, AppState>,
+pub(crate) async fn query_notion_tasks_shared(
+    state: &AppState,
     repo_path: String,
     query: NotionTaskQueryInput,
 ) -> Result<NotionTaskPageView, String> {
@@ -33,9 +30,8 @@ pub(crate) async fn query_notion_tasks(
     .map_err(map_usecase_error)
 }
 
-#[tauri::command]
-pub(crate) async fn fetch_notion_label_options(
-    state: State<'_, AppState>,
+pub(crate) async fn fetch_notion_label_options_shared(
+    state: &AppState,
     repo_path: String,
 ) -> Result<Vec<NotionLabelOptionView>, String> {
     let notion_usecase = state.notion_usecase.clone();
@@ -49,9 +45,8 @@ pub(crate) async fn fetch_notion_label_options(
     .map_err(map_usecase_error)
 }
 
-#[tauri::command]
-pub(crate) async fn save_notion_config(
-    state: State<'_, AppState>,
+pub(crate) async fn save_notion_config_shared(
+    state: &AppState,
     repo_path: String,
     api_token: String,
     database_id: String,
@@ -70,9 +65,8 @@ pub(crate) async fn save_notion_config(
         .map_err(map_usecase_error)
 }
 
-#[tauri::command]
-pub(crate) fn get_notion_config(
-    state: State<'_, AppState>,
+pub(crate) fn get_notion_config_shared(
+    state: &AppState,
     repo_path: String,
 ) -> Result<Option<NotionRepoConfigView>, String> {
     state
@@ -82,9 +76,8 @@ pub(crate) fn get_notion_config(
         .map_err(map_usecase_error)
 }
 
-#[tauri::command]
-pub(crate) async fn delete_notion_config(
-    state: State<'_, AppState>,
+pub(crate) async fn delete_notion_config_shared(
+    state: &AppState,
     repo_path: String,
 ) -> Result<(), String> {
     let notion_usecase = state.notion_usecase.clone();
@@ -94,9 +87,8 @@ pub(crate) async fn delete_notion_config(
         .map_err(map_usecase_error)
 }
 
-#[tauri::command]
-pub(crate) async fn validate_notion_config(
-    state: State<'_, AppState>,
+pub(crate) async fn validate_notion_config_shared(
+    state: &AppState,
     api_token: String,
     database_id: String,
 ) -> Result<NotionValidationResultView, String> {

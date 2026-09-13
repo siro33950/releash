@@ -58,6 +58,7 @@ impl ClientCommandDispatch {
         super::workflow::register_shared(self, deps);
         super::workspace_tree::register_shared(self, deps);
         super::workspace_state::register_shared(self, deps);
+        super::notion::register_shared(self, deps);
         super::git_host::register_shared(self, deps);
     }
     pub(crate) fn register_domain(
