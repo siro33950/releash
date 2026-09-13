@@ -16,6 +16,8 @@ name = "releash_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
+prost-build = "0.14.4"
+protoc-bin-vendored = "3"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
@@ -64,6 +66,8 @@ opentelemetry-otlp = { version = "0.32", default-features = false, features = ["
 opentelemetry_sdk = "0.32"
 sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 tempfile = "3"
+prost = "0.14.4"
+prost-reflect = { version = "0.16.5", features = ["serde"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
