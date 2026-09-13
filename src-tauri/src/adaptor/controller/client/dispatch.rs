@@ -61,6 +61,7 @@ impl ClientCommandDispatch {
         super::notion::register_shared(self, deps);
         super::git_host::register_shared(self, deps);
         super::external_editor::register_shared(self, deps);
+        super::telemetry::register_shared(self, deps);
     }
     pub(crate) fn register_domain(
         &mut self,

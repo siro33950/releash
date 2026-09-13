@@ -7,6 +7,7 @@ pub(crate) mod external_editor;
 pub(crate) mod git_host;
 pub(crate) mod notion;
 pub(crate) mod repository;
+pub(crate) mod telemetry;
 pub(crate) mod workflow;
 pub(crate) mod workspace_state;
 pub(crate) mod workspace_tree;
