@@ -227,6 +227,21 @@ parity!(
         .await
     )
 );
+parity!(
+    test_workspace_state_protoはusecase結果と一致する,
+    app,
+    "load_workspace_state",
+    json!({"worktreeName":"missing","worktreeRoot":"/missing"}),
+    value(
+        invoke_tauri(
+            &app,
+            "load_workspace_state",
+            json!({"worktreeName": "missing","worktreeRoot": "/missing"})
+        )
+        .await
+        .unwrap()
+    )
+);
 #[tokio::test]
 async fn test_クライアントws_切断しても受理済みcommandを途中で破棄しない() {
     use crate::adaptor::controller::api;
@@ -716,6 +731,109 @@ async fn test_workflow変更_protoは実引数とruntime結果を保持する() 
     assert_eq!(commands.stops[0], commands.stops[1]);
     assert_eq!(commands.resumes.len(), 2);
     assert_eq!(commands.resumes[0], commands.resumes[1]);
+}
+
+#[tokio::test]
+async fn test_workspace保存_wsがui追加fieldを受理し既存項目を再起動後に復元する() {
+    use crate::adaptor::controller::api;
+    use crate::adaptor::gateway::workspace_state::WorkspaceStateStore;
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message};
+    // Given
+    let data = tempfile::tempdir().unwrap();
+    let worktree = data.path().join("worktree");
+    std::fs::create_dir_all(worktree.join("src")).unwrap();
+    std::fs::write(worktree.join("src/main.rs"), "fn main() {}\n").unwrap();
+    let state = json!({"version":1,"tabs":{"editors":[{"path":"src/main.rs","name":"main.rs"}],"activeEditorPath":"src/main.rs"},"layout":{"centerTab":"editor","activeView":"git","leftNavCollapsed":true,"rightCollapsed":true,"rightBottomCollapsed":false,"rightBottomActiveTab":"terminal","selectedDiffFile":"src/main.rs","reviewCollapsed":true,"diffOnlyMode":true}});
+    let (app, _) = parity_app();
+    let mut deps = crate::adaptor::controller::wiring::build_client_dependencies(app.handle());
+    deps.workspace_state_store = Some(Arc::new(WorkspaceStateStore::new(data.path().to_owned())));
+    let mut dispatch = ClientCommandDispatch::new(
+        Arc::new(crate::adaptor::controller::wiring::build_repository_usecase()),
+        Arc::new(ApplicationStartupAuthority::ready()),
+    );
+    dispatch.register_dependencies(&deps);
+    let router = api::test_support::test_router_with_optional_deps(
+        data.path(),
+        "master",
+        "client",
+        None,
+        Some(api::ClientApiDeps::new(
+            Arc::new(dispatch),
+            crate::adaptor::gateway::push::ClientPushGateway::new(Arc::new(
+                crate::infrastructure::push::PushSink::new(),
+            )),
+        )),
+        None,
+    )
+    .0;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    let mut request = format!("ws://{address}/v1/client")
+        .into_client_request()
+        .unwrap();
+    request
+        .headers_mut()
+        .insert("authorization", "Bearer client".parse().unwrap());
+    let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+    // When
+    socket
+        .send(Message::Binary(
+            crate::client_api_acceptance::encode_client_request(
+                "save",
+                "save_workspace_state",
+                json!({"worktreeName":"workspace","state":state}),
+            )
+            .into(),
+        ))
+        .await
+        .unwrap();
+    let Message::Binary(bytes) = socket.next().await.unwrap().unwrap() else {
+        panic!("binary response");
+    };
+    let wire::envelope::Body::Response(response) =
+        wire::Envelope::decode(bytes).unwrap().body.unwrap()
+    else {
+        panic!("response");
+    };
+    assert_eq!(response.request_id, "save");
+    let wire::command_response::Outcome::Result(result) = response.outcome.unwrap() else {
+        panic!("save succeeded");
+    };
+    assert_eq!(wire::from_value(result).unwrap(), Value::Null);
+    socket.close(None).await.unwrap();
+    server.abort();
+    deps.workspace_state_store = Some(Arc::new(WorkspaceStateStore::new(data.path().to_owned())));
+    let mut restarted = ClientCommandDispatch::new(
+        Arc::new(crate::adaptor::controller::wiring::build_repository_usecase()),
+        Arc::new(ApplicationStartupAuthority::ready()),
+    );
+    restarted.register_dependencies(&deps);
+    let mut expected = state;
+    expected["layout"]
+        .as_object_mut()
+        .unwrap()
+        .remove("reviewCollapsed");
+    expected["layout"]
+        .as_object_mut()
+        .unwrap()
+        .remove("diffOnlyMode");
+    // Then
+    assert_parity(
+        &restarted,
+        "load_workspace_state",
+        json!({"worktreeName":"workspace","worktreeRoot":worktree}),
+        Ok(expected.clone()),
+    )
+    .await;
+    let persisted: Value = serde_json::from_slice(
+        &std::fs::read(data.path().join("workspace_state/workspace.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(persisted, expected);
 }
 
 fn mutation_repository() -> (tempfile::TempDir, String) {

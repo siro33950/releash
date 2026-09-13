@@ -1800,6 +1800,27 @@ where
         })
     }
 }
+impl<T> TryFrom<Vec<T>> for wire::ListWorkspaceTabEntryDto
+where
+    wire::WorkspaceTabEntryDto: TryFrom<T>,
+    <wire::WorkspaceTabEntryDto as TryFrom<T>>::Error: std::fmt::Display,
+{
+    type Error = String;
+    fn try_from(value: Vec<T>) -> Result<Self, String> {
+        Ok(Self {
+            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
+        })
+    }
+}
+impl<T: TryFrom<wire::WorkspaceTabEntryDto>> TryFrom<wire::ListWorkspaceTabEntryDto> for Vec<T>
+where
+    T::Error: std::fmt::Display,
+{
+    type Error = String;
+    fn try_from(value: wire::ListWorkspaceTabEntryDto) -> Result<Self, String> {
+        value.items.into_iter().map(cv).collect()
+    }
+}
 impl<T> TryFrom<Vec<T>> for wire::ListWorkspaceTreeItemDto
 where
     wire::WorkspaceTreeItemDto: TryFrom<T>,
@@ -2448,6 +2469,18 @@ impl<T> TryFrom<Option<T>> for wire::NullableWorkspaceNodeDetailDto
 where
     wire::WorkspaceNodeDetailDto: TryFrom<T>,
     <wire::WorkspaceNodeDetailDto as TryFrom<T>>::Error: std::fmt::Display,
+{
+    type Error = String;
+    fn try_from(value: Option<T>) -> Result<Self, String> {
+        Ok(Self {
+            value: value.map(cv).transpose()?,
+        })
+    }
+}
+impl<T> TryFrom<Option<T>> for wire::NullableWorkspaceStateDto
+where
+    wire::WorkspaceStateDto: TryFrom<T>,
+    <wire::WorkspaceStateDto as TryFrom<T>>::Error: std::fmt::Display,
 {
     type Error = String;
     fn try_from(value: Option<T>) -> Result<Self, String> {
@@ -3808,6 +3841,40 @@ where
             .collect()
     }
 }
+impl TryFrom<String> for wire::WorkspaceCenterTab {
+    type Error = String;
+    fn try_from(value: String) -> Result<Self, String> {
+        Ok(Self {
+            value: Some(match value.as_str() {
+                "agent" => wire::workspace_center_tab::Value::Agent as i32,
+                "editor" => wire::workspace_center_tab::Value::Editor as i32,
+                _ => return Err(format!("Invalid WorkspaceCenterTab: {value}")),
+            }),
+        })
+    }
+}
+
+impl TryFrom<&str> for wire::WorkspaceCenterTab {
+    type Error = String;
+    fn try_from(value: &str) -> Result<Self, String> {
+        cv(value.to_owned())
+    }
+}
+
+impl TryFrom<wire::WorkspaceCenterTab> for String {
+    type Error = String;
+    fn try_from(value: wire::WorkspaceCenterTab) -> Result<Self, String> {
+        Ok(
+            match wire::workspace_center_tab::Value::try_from(req(value.value, "value")?)
+                .map_err(|_| "Invalid WorkspaceCenterTab")?
+            {
+                wire::workspace_center_tab::Value::Agent => "agent".to_owned(),
+                wire::workspace_center_tab::Value::Editor => "editor".to_owned(),
+            },
+        )
+    }
+}
+
 impl TryFrom<crate::usecase::workflow::WorkspaceCommandNodeContentDto>
     for wire::WorkspaceCommandNodeContentDto
 {
@@ -3897,6 +3964,44 @@ impl TryFrom<&str> for wire::WorkspaceHistoryStatus {
     type Error = String;
     fn try_from(value: &str) -> Result<Self, String> {
         cv(value.to_owned())
+    }
+}
+
+impl TryFrom<crate::usecase::workspace_state::dto::WorkspaceLayoutStateDto>
+    for wire::WorkspaceLayoutStateDto
+{
+    type Error = String;
+    fn try_from(
+        value: crate::usecase::workspace_state::dto::WorkspaceLayoutStateDto,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            center_tab: Some(cv(value.center_tab)?),
+            active_view: Some(cv(value.active_view)?),
+            left_nav_collapsed: Some(cv(value.left_nav_collapsed)?),
+            right_collapsed: Some(cv(value.right_collapsed)?),
+            right_bottom_collapsed: Some(cv(value.right_bottom_collapsed)?),
+            right_bottom_active_tab: value.right_bottom_active_tab.map(cv).transpose()?,
+            selected_diff_file: value.selected_diff_file.map(cv).transpose()?,
+            review_collapsed: None,
+            diff_only_mode: None,
+        })
+    }
+}
+
+impl TryFrom<wire::WorkspaceLayoutStateDto>
+    for crate::usecase::workspace_state::dto::WorkspaceLayoutStateDto
+{
+    type Error = String;
+    fn try_from(value: wire::WorkspaceLayoutStateDto) -> Result<Self, String> {
+        Ok(Self {
+            center_tab: cv(req(value.center_tab, "centerTab")?)?,
+            active_view: cv(req(value.active_view, "activeView")?)?,
+            left_nav_collapsed: cv(req(value.left_nav_collapsed, "leftNavCollapsed")?)?,
+            right_collapsed: cv(req(value.right_collapsed, "rightCollapsed")?)?,
+            right_bottom_collapsed: cv(req(value.right_bottom_collapsed, "rightBottomCollapsed")?)?,
+            right_bottom_active_tab: value.right_bottom_active_tab.map(cv).transpose()?,
+            selected_diff_file: value.selected_diff_file.map(cv).transpose()?,
+        })
     }
 }
 
@@ -4086,6 +4191,33 @@ impl TryFrom<crate::usecase::workflow::WorkspaceSessionNodeContentDto>
     }
 }
 
+impl TryFrom<crate::usecase::workspace_state::dto::WorkspaceStateDto> for wire::WorkspaceStateDto {
+    type Error = String;
+    fn try_from(
+        value: crate::usecase::workspace_state::dto::WorkspaceStateDto,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            version: Some(cv(value.version)?),
+            tabs: Some(cv(value.tabs)?),
+            layout: Some(cv(value.layout)?),
+        })
+    }
+}
+
+impl TryFrom<wire::WorkspaceStateDto> for crate::usecase::workspace_state::dto::WorkspaceStateDto {
+    type Error = String;
+    fn try_from(value: wire::WorkspaceStateDto) -> Result<Self, String> {
+        if value.version != Some(1) {
+            return Err("Expected workspace state version 1".into());
+        }
+        Ok(Self {
+            version: cv(req(value.version, "version")?)?,
+            tabs: cv(req(value.tabs, "tabs")?)?,
+            layout: cv(req(value.layout, "layout")?)?,
+        })
+    }
+}
+
 impl TryFrom<String> for wire::WorkspaceStatusClassification {
     type Error = String;
     fn try_from(value: String) -> Result<Self, String> {
@@ -4106,6 +4238,58 @@ impl TryFrom<&str> for wire::WorkspaceStatusClassification {
     type Error = String;
     fn try_from(value: &str) -> Result<Self, String> {
         cv(value.to_owned())
+    }
+}
+
+impl TryFrom<crate::usecase::workspace_state::dto::WorkspaceTabEntryDto>
+    for wire::WorkspaceTabEntryDto
+{
+    type Error = String;
+    fn try_from(
+        value: crate::usecase::workspace_state::dto::WorkspaceTabEntryDto,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            path: Some(cv(value.path)?),
+            name: Some(cv(value.name)?),
+        })
+    }
+}
+
+impl TryFrom<wire::WorkspaceTabEntryDto>
+    for crate::usecase::workspace_state::dto::WorkspaceTabEntryDto
+{
+    type Error = String;
+    fn try_from(value: wire::WorkspaceTabEntryDto) -> Result<Self, String> {
+        Ok(Self {
+            path: cv(req(value.path, "path")?)?,
+            name: cv(req(value.name, "name")?)?,
+        })
+    }
+}
+
+impl TryFrom<crate::usecase::workspace_state::dto::WorkspaceTabsStateDto>
+    for wire::WorkspaceTabsStateDto
+{
+    type Error = String;
+    fn try_from(
+        value: crate::usecase::workspace_state::dto::WorkspaceTabsStateDto,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            editors: Some(cv(value.editors)?),
+            active_editor_path: value.active_editor_path.map(cv).transpose()?,
+        })
+    }
+}
+
+impl TryFrom<wire::WorkspaceTabsStateDto>
+    for crate::usecase::workspace_state::dto::WorkspaceTabsStateDto
+{
+    type Error = String;
+    fn try_from(value: wire::WorkspaceTabsStateDto) -> Result<Self, String> {
+        Ok(Self {
+            editors: cv(req(value.editors, "editors")?)?,
+            active_editor_path: value.active_editor_path.map(cv).transpose()?,
+        })
     }
 }
 

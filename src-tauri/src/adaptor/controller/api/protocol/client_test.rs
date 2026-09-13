@@ -82,6 +82,30 @@ fn test_クライアント引数_必須フィールドと整数型を検証す�
 }
 
 #[test]
+fn test_型に合わない結果は成功応答にせず相関したerrorを返す() {
+    // Given / When
+    let envelope::Body::Response(response) = response(
+        "id".into(),
+        Err(
+            crate::adaptor::controller::client::value::<_, WorkspaceCenterTab>(
+                "invalid".to_string(),
+            )
+            .unwrap_err(),
+        ),
+    )
+    .body
+    .unwrap() else {
+        panic!("response");
+    };
+    // Then
+    assert_eq!(response.request_id, "id");
+    let command_response::Outcome::Error(error) = response.outcome.unwrap() else {
+        panic!("error");
+    };
+    assert_eq!(from_value(error).unwrap()["code"], "INVALID_RESPONSE");
+}
+
+#[test]
 fn test_push_protoが既存payloadを保持し未定義eventを拒否する() {
     // Given / When / Then
     for (event, payload) in [

@@ -186,3 +186,7 @@ impl Drop for UnreceivedWatch {
         });
     }
 }
+
+#[cfg(test)]
+#[path = "client_test.rs"]
+mod client_tests;

@@ -566,6 +566,7 @@ pub(crate) fn build_client_dependencies<R: tauri::Runtime>(
     super::client::ClientDependencies {
         workspace_node_command_usecase: app.try_state::<std::sync::Arc<crate::usecase::workflow::WorkspaceNodeCommandUsecase>>().map(|state| state.inner().clone()),
         app_state: app.try_state::<crate::adaptor::controller::state::AppState>().map(|state| state.inner().clone()),
+        workspace_state_store: app.try_state::<std::sync::Arc<crate::adaptor::gateway::workspace_state::WorkspaceStateStore>>().map(|state| state.inner().clone()),
         agent_session_lifecycle_usecase: app.try_state::<std::sync::Arc<crate::usecase::agent_session::AgentSessionLifecycleUsecase>>().map(|state| state.inner().clone()),
         agent_session_launch_usecase: app.try_state::<std::sync::Arc<crate::usecase::agent_session::AgentSessionLaunchUsecase>>().map(|state| state.inner().clone()),
         agent_session_read_usecase: app.try_state::<std::sync::Arc<crate::usecase::agent_session::AgentSessionReadUsecase>>().map(|state| state.inner().clone()),
