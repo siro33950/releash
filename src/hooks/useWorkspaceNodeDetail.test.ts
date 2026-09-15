@@ -31,7 +31,6 @@ function detail(id: string, title = id): WorkspaceNodeDetail {
 			canRename: false,
 			canApprove: false,
 			canRetry: false,
-			canClose: false,
 		},
 		updatedAt: 1,
 		content: { kind: "session", sessionId: `session-${id}` },
@@ -440,15 +439,24 @@ describe("useWorkspaceNodeDetail", () => {
 			return Promise.resolve(null);
 		});
 
-		const result = await approveWorkspaceNode({
-			worktreePath: "/repo",
-			nodeId: "node",
-		});
+		const onUncertain = vi.fn();
+		const result = await approveWorkspaceNode(
+			{
+				worktreePath: "/repo",
+				nodeId: "node",
+			},
+			{ onUncertain },
+		);
 
-		expect(mockInvoke).toHaveBeenNthCalledWith(1, "approve_workspace_node", {
-			worktreePath: "/repo",
-			nodeId: "node",
-		});
+		expect(mockInvoke).toHaveBeenNthCalledWith(
+			1,
+			"approve_workspace_node",
+			{
+				worktreePath: "/repo",
+				nodeId: "node",
+			},
+			{ onUncertain },
+		);
 		expect(mockInvoke).toHaveBeenNthCalledWith(2, "get_workspace_node_detail", {
 			worktreePath: "/repo",
 			nodeId: "node",
@@ -465,15 +473,21 @@ describe("useWorkspaceNodeDetail", () => {
 			return Promise.resolve(null);
 		});
 
-		const result = await retryWorkspaceNode({
-			worktreePath: "/repo",
-			nodeId: "node",
-		});
+		const onUncertain = vi.fn();
+		const result = await retryWorkspaceNode(
+			{ worktreePath: "/repo", nodeId: "node" },
+			{ onUncertain },
+		);
 
-		expect(mockInvoke).toHaveBeenNthCalledWith(1, "retry_workspace_node", {
-			worktreePath: "/repo",
-			nodeId: "node",
-		});
+		expect(mockInvoke).toHaveBeenNthCalledWith(
+			1,
+			"retry_workspace_node",
+			{
+				worktreePath: "/repo",
+				nodeId: "node",
+			},
+			{ onUncertain },
+		);
 		expect(mockInvoke).toHaveBeenNthCalledWith(2, "get_workspace_node_detail", {
 			worktreePath: "/repo",
 			nodeId: "node",

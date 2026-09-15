@@ -43,8 +43,9 @@ test.describe("StatusBar", () => {
 		);
 		await waitForApp(page);
 		await expect(page.getByText("feat/my-branch")).toBeVisible();
+		await expect(page.getByText("No sessions or workflows")).toBeVisible();
 		await page.evaluate(() =>
-			window.__TAURI_INTERNALS__?.setMockResponse(
+			window.__RELEASH_BACKEND__?.setMockResponse(
 				"list_workspace_worktree_nodes",
 				{
 					nodes: [
@@ -58,7 +59,6 @@ test.describe("StatusBar", () => {
 								canRename: false,
 								canApprove: false,
 								canRetry: false,
-								canClose: false,
 							},
 							pastAttempts: [],
 							pastAttemptsCollapsed: false,
@@ -92,6 +92,14 @@ test.describe("StatusBar", () => {
 				approvalTarget: null,
 			},
 		});
+		await expect
+			.poll(
+				() =>
+					client.clientRequests.filter(
+						(request) => request.command === "list_workspace_worktree_nodes",
+					).length,
+			)
+			.toBeGreaterThan(2);
 		await expect(page.getByText("From ws push")).toBeVisible();
 		expect(
 			await page.evaluate(() =>
@@ -164,16 +172,8 @@ test.describe("StatusBar", () => {
 		await setupTauriMock(page, config);
 		await waitForApp(page);
 
-		// workspace-status-changed イベントを発火（Rust 中央管理からの通知）
-		await emitTauriEvent(page, "workspace-status-changed", {
-			worktree_id: "/test/repo",
-			worktree_path: "/test/repo",
-			aggregated_state: "running",
-			running_count: 1,
-			waiting_count: 0,
-			error_count: 0,
-			session_count: 1,
-			last_activity_at: 1000,
+		await emitTauriEvent(page, "agent-session-changed", {
+			worktreePath: "/test/repo",
 		});
 
 		await expect(page.getByText("feat/my-branch")).toBeVisible();

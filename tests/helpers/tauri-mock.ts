@@ -21,7 +21,7 @@ export interface MockConfig {
 	/**
 	 * cmd → 返り値のマッピング。関数はシリアライズできないため使用不可。
 	 */
-	ipcHandler: Record<string, unknown>;
+	responses: Record<string, unknown>;
 }
 
 export function workspaceTreeReconciliation(snapshot: unknown): unknown {
@@ -29,18 +29,12 @@ export function workspaceTreeReconciliation(snapshot: unknown): unknown {
 }
 
 interface TauriMockInternals {
-	invokeClientCommand: (
-		cmd: string,
-		args?: Record<string, unknown>,
-	) => Promise<unknown>;
 	ipcInvocations: Array<{ cmd: string; args: Record<string, unknown> }>;
 	invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
 	transformCallback: (cb: (data: unknown) => void, once?: boolean) => number;
 	unregisterCallback: (id: number) => void;
 	runCallback: (id: number, data: unknown) => void;
 	callbacks: Map<number, { cb: (data: unknown) => void; once: boolean }>;
-	invocations: Array<{ cmd: string; args: Record<string, unknown> }>;
-	setMockResponse: (cmd: string, value: unknown) => void;
 	metadata: {
 		currentWindow: { label: string };
 		currentWebview: { windowLabel: string; label: string };
@@ -54,18 +48,26 @@ interface TauriEventPluginInternals {
 
 declare global {
 	interface Window {
+		__releashPush: (event: string, payload: unknown) => Promise<void>;
 		__releashTerminalEvent: (
 			attachmentId: string,
 			item: TerminalSurfaceStreamItem,
 		) => Promise<void>;
+		__RELEASH_BACKEND__?: {
+			execute: (
+				cmd: string,
+				args?: Record<string, unknown>,
+			) => Promise<unknown>;
+			invocations: Array<{ cmd: string; args: Record<string, unknown> }>;
+			setMockResponse: (cmd: string, value: unknown) => void;
+		};
 		__TAURI_INTERNALS__?: TauriMockInternals;
 		__TAURI_EVENT_PLUGIN_INTERNALS__?: TauriEventPluginInternals;
 	}
 }
 
 /**
- * page.addInitScript() で window.__TAURI_INTERNALS__ を注入し、
- * 全 Tauri IPC 呼び出しをモックする。
+ * WS backend fixture と UI shell の Tauri IPC mock を設定する。
  *
  * ページナビゲーション前に呼ぶこと。
  */
@@ -76,7 +78,7 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 	};
 	config = {
 		...config,
-		ipcHandler: { get_client_endpoint: endpoint, ...config.ipcHandler },
+		responses: { get_client_endpoint: endpoint, ...config.responses },
 	};
 	const clientRequests: Array<{
 		request_id: string;
@@ -144,6 +146,19 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 			}
 		},
 	);
+	await page.exposeFunction(
+		"__releashPush",
+		(event: string, payload: unknown) => {
+			const field = PushSchema.fields.find(
+				(field) => field.name.replaceAll("_", "-") === event,
+			);
+			if (!field?.message) throw new Error(`Unknown client event: ${event}`);
+			for (const socket of clients)
+				send(socket, {
+					push: { [field.jsonName]: clientJson(field.message, payload, true) },
+				});
+		},
+	);
 	await page.routeWebSocket(endpoint.url, (socket) => {
 		clients.add(socket);
 		socket.onClose(() => {
@@ -155,14 +170,29 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 			if (typeof message === "string")
 				throw new Error("Client requests must be binary");
 			const { body } = fromBinary(EnvelopeSchema, message);
-			if (body.case === "requestAck") return;
+			if (body.case === "hello") {
+				send(socket, { hello: { instanceId: "fixture-backend" } });
+				return;
+			}
+			if (body.case === "heartbeat") {
+				send(socket, { heartbeat: { nonce: body.value.nonce } });
+				return;
+			}
+			if (body.case === "operationQuery") {
+				send(socket, { operationStatus: { requestId: body.value.requestId, queryId: body.value.queryId, state: body.value.sent ? "unknown" : "ready" } });
+				return;
+			}
+			if (body.case === "requestAck") {
+                if (body.value.confirmWatch) send(socket, { operationStatus: { requestId: body.value.requestId, state: "watch_active" } });
+                return;
+            }
 			if (body.case === "ack") {
 				const attachment = attachments.get(body.value.attachmentId);
 				if (!attachment) return;
 				if (body.value.outputSequence !== undefined) {
 					await page.evaluate(
 						({ attachmentId, sequence }) =>
-							window.__TAURI_INTERNALS__?.invokeClientCommand(
+							window.__RELEASH_BACKEND__?.execute(
 								"ack_terminal_surface_output",
 								{ attachmentId, sequence },
 							),
@@ -195,10 +225,7 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 				async ({ command, args }) => {
 					try {
 						return {
-							result: await window.__TAURI_INTERNALS__!.invokeClientCommand(
-								command,
-								args,
-							),
+							result: await window.__RELEASH_BACKEND__!.execute(command, args),
 						};
 					} catch (error) {
 						return { error: error instanceof Error ? error.message : error };
@@ -260,10 +287,6 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 
 		// イベントリスナー管理
 		const eventListeners = new Map<string, number[]>();
-		const agentSessionNotices = new Map<
-			string,
-			{ operation: string; message: string }
-		>();
 		let terminalPerformanceStarted = false;
 		let terminalPerformanceCompleted = false;
 		let terminalPerformanceSequence = 0;
@@ -272,7 +295,6 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 			| null = null;
 		let startTerminalPerformanceFixture: (() => void) | null = null;
 		let emitTerminalPerformanceOutput: ((data: string) => void) | null = null;
-		let agentSessionNoticeRevision = 0;
 		const invocations: Array<{
 			cmd: string;
 			args: Record<string, unknown>;
@@ -329,7 +351,7 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 			// DOMレンダラを明示する（WebGL既定の実機経路はwdio harnessが担う）。
 			if (
 				cmd === "get_terminal_performance_switches" &&
-				!(cmd in cfg.ipcHandler)
+				!(cmd in cfg.responses)
 			) {
 				return {
 					disableOutputFlowControl: false,
@@ -344,10 +366,10 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 			// ラップして返す（既存フィクスチャの override をそのまま活かす）。
 			if (
 				cmd === "list_branches_with_status_snapshot" &&
-				!(cmd in cfg.ipcHandler) &&
-				"list_branches_with_status" in cfg.ipcHandler
+				!(cmd in cfg.responses) &&
+				"list_branches_with_status" in cfg.responses
 			) {
-				const branches = cfg.ipcHandler.list_branches_with_status;
+				const branches = cfg.responses.list_branches_with_status;
 				const cards = Array.isArray(branches) ? branches : [];
 				const worktreeCards = cards.filter(
 					(card: Record<string, unknown>) => card.worktree_path != null,
@@ -366,8 +388,8 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 			}
 
 			// ユーザー定義コマンド
-			if (cmd in cfg.ipcHandler) {
-				let value = cfg.ipcHandler[cmd];
+			if (cmd in cfg.responses) {
+				let value = cfg.responses[cmd];
 				if (
 					cmd === "attach_terminal_surface" &&
 					value &&
@@ -550,7 +572,7 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 								{
 									type: "snapshot",
 									surface: {
-										...(cfg.ipcHandler.get_terminal_surface as object),
+										...(cfg.responses.get_terminal_surface as object),
 										terminal_surface: {
 											replay: "",
 											sequence: 0,
@@ -649,47 +671,6 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 				return { type: "ready" };
 			}
 
-			if (
-				cmd === "get_agent_session_notice" ||
-				cmd === "update_agent_session_notice"
-			) {
-				const sessionId = args.sessionId as string;
-				if (cmd === "update_agent_session_notice") {
-					const update = args.update as {
-						action: "failure" | "success" | "dismiss" | "remove_session";
-						operation?: string;
-						message?: string;
-					};
-					let changed = false;
-					if (
-						update.action === "failure" &&
-						update.operation &&
-						update.message
-					) {
-						agentSessionNotices.set(sessionId, {
-							operation: update.operation,
-							message: update.message,
-						});
-						changed = true;
-					} else if (update.action === "success" && update.operation) {
-						if (
-							agentSessionNotices.get(sessionId)?.operation === update.operation
-						) {
-							agentSessionNotices.delete(sessionId);
-							changed = true;
-						}
-					} else {
-						changed = agentSessionNotices.delete(sessionId);
-					}
-					if (changed) agentSessionNoticeRevision += 1;
-				}
-				const notice = agentSessionNotices.get(sessionId);
-				return {
-					sessionId,
-					revision: agentSessionNoticeRevision,
-					notice: notice ? { message: notice.message } : null,
-				};
-			}
 
 			// 未定義コマンドはnull返却（ログ出力）
 			console.warn("[tauri-mock] unhandled:", cmd, args);
@@ -700,21 +681,33 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 			cmd: string;
 			args: Record<string, unknown>;
 		}> = [];
+		window.__RELEASH_BACKEND__ = {
+			execute: executeCommand,
+			invocations,
+			setMockResponse: (cmd, value) => {
+				cfg.responses[cmd] = value;
+			},
+		};
 		window.__TAURI_INTERNALS__ = {
 			invoke: (cmd, args = {}) => {
 				ipcInvocations.push({ cmd, args });
+				if (
+					!cmd.startsWith("plugin:") &&
+					![
+						"get_client_endpoint",
+						"get_application_startup_outcome",
+						"quit_after_startup_failure",
+						"set_menu_items_enabled",
+					].includes(cmd)
+				)
+					throw new Error(`Backend command used Tauri IPC: ${cmd}`);
 				return executeCommand(cmd, args);
 			},
-			invokeClientCommand: executeCommand,
 			ipcInvocations,
 			transformCallback,
 			unregisterCallback,
 			runCallback,
 			callbacks,
-			invocations,
-			setMockResponse: (cmd: string, value: unknown) => {
-				cfg.ipcHandler[cmd] = value;
-			},
 			metadata: {
 				currentWindow: { label: "main" },
 				currentWebview: { windowLabel: "main", label: "main" },
@@ -755,7 +748,9 @@ export async function emitTauriEvent(
 		async ({ event, payload }) => {
 			const internals = window.__TAURI_INTERNALS__;
 			if (!internals) throw new Error("Tauri mock not initialized");
-			await internals.invoke("plugin:event|emit", { event, payload });
+			if (["menu-event", "native-file-drop"].includes(event))
+				await internals.invoke("plugin:event|emit", { event, payload });
+			else await window.__releashPush(event, payload);
 		},
 		{ event, payload },
 	);

@@ -8,13 +8,15 @@ use crate::domain::terminal_surface::gateway::{
 use crate::domain::workspace_tree::WorkspaceIdentity;
 use parking_lot::Mutex;
 
-struct FakePtyGateway {
+pub(crate) struct FakePtyGateway {
+    pub(crate) resizes: Mutex<Vec<(String, u16, u16)>>,
     writes: Mutex<Vec<(String, String)>>,
 }
 
 impl FakePtyGateway {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
+            resizes: Mutex::new(Vec::new()),
             writes: Mutex::new(Vec::new()),
         }
     }
@@ -104,10 +106,11 @@ impl TerminalSurfaceGateway for FakePtyGateway {
 
     fn resize(
         &self,
-        _session_key: &str,
-        _rows: u16,
-        _cols: u16,
+        session_key: &str,
+        rows: u16,
+        cols: u16,
     ) -> Result<(), TerminalSurfaceGatewayError> {
+        self.resizes.lock().push((session_key.into(), rows, cols));
         Ok(())
     }
 

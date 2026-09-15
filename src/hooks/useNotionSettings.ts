@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { invokeClient as invoke } from "@/lib/clientSocket";
+import {
+	type ClientTransportError,
+	invokeClient as invoke,
+} from "@/lib/clientSocket";
 import { getErrorMessage } from "@/lib/errorMessage";
 import type {
 	NotionPropertyInfo,
 	NotionRepoConfig,
 	PropertyMapping,
 } from "@/types/notion";
+import { useClientRefresh } from "./useClientRefresh";
 
 export interface NotionRepoDraft {
 	apiToken: string;
@@ -36,10 +40,24 @@ function configToDraft(config: NotionRepoConfig | null): NotionRepoDraft {
 	};
 }
 
+function draftChanged(draft: NotionRepoDraft, config: NotionRepoConfig | null) {
+	const original = configToDraft(config);
+	return (
+		draft.markedForDelete ||
+		draft.apiToken !== original.apiToken ||
+		draft.databaseId !== original.databaseId ||
+		JSON.stringify(draft.propertyMapping) !==
+			JSON.stringify(original.propertyMapping)
+	);
+}
+
 export interface UseNotionSettingsReturn {
 	drafts: Map<string, NotionRepoDraft>;
+	errors: Map<string, string>;
+	saveError: string | null;
 	loading: boolean;
 	isDirty: boolean;
+	uncertain: ClientTransportError | null;
 	updateDraft: (
 		repoPath: string,
 		updater: (d: NotionRepoDraft) => NotionRepoDraft,
@@ -53,10 +71,14 @@ export interface UseNotionSettingsReturn {
 export function useNotionSettings(
 	repoPaths: string[],
 ): UseNotionSettingsReturn {
+	const clientRefresh = useClientRefresh();
+	const [uncertain, setUncertain] = useState<ClientTransportError | null>(null);
+	const [saveError, setSaveError] = useState<string | null>(null);
 	const [configs, setConfigs] = useState<Map<string, NotionRepoConfig | null>>(
 		new Map(),
 	);
 	const [drafts, setDrafts] = useState<Map<string, NotionRepoDraft>>(new Map());
+	const [errors, setErrors] = useState<Map<string, string>>(new Map());
 	const [loading, setLoading] = useState(true);
 	const repoPathsRef = useRef(repoPaths);
 	repoPathsRef.current = repoPaths;
@@ -66,30 +88,40 @@ export function useNotionSettings(
 	configsRef.current = configs;
 	const loadSeqRef = useRef(0);
 
-	const load = useCallback(async (paths: string[]) => {
+	const load = useCallback(async (paths: string[], refresh: AbortSignal) => {
+		if (refresh.aborted) return;
 		const seq = ++loadSeqRef.current;
 		setLoading(true);
 		try {
-			const entries = await Promise.all(
-				paths.map(async (repoPath) => {
-					try {
-						const config = await invoke("get_notion_config", { repoPath });
-						return [repoPath, config] as const;
-					} catch {
-						return [repoPath, null] as const;
-					}
-				}),
+			const results = await Promise.allSettled(
+				paths.map((repoPath) => invoke("get_notion_config", { repoPath })),
 			);
-			if (seq === loadSeqRef.current) {
-				const configMap = new Map(entries);
-				const draftMap = new Map(
-					entries.map(([path, config]) => [path, configToDraft(config)]),
-				);
+			if (seq === loadSeqRef.current && !refresh.aborted) {
+				const configMap = new Map<string, NotionRepoConfig | null>();
+				const draftMap = new Map<string, NotionRepoDraft>();
+				const errorMap = new Map<string, string>();
+				results.forEach((result, index) => {
+					const path = paths[index];
+					const draft = draftsRef.current.get(path);
+					const config = configsRef.current.get(path) ?? null;
+					if (draft && draftChanged(draft, config)) {
+						configMap.set(path, config);
+						draftMap.set(path, draft);
+						if (result.status === "rejected")
+							errorMap.set(path, getErrorMessage(result.reason));
+					} else if (result.status === "fulfilled") {
+						configMap.set(path, result.value);
+						draftMap.set(path, configToDraft(result.value));
+					} else {
+						errorMap.set(path, getErrorMessage(result.reason));
+					}
+				});
 				setConfigs(configMap);
 				setDrafts(draftMap);
+				setErrors(errorMap);
 			}
 		} finally {
-			if (seq === loadSeqRef.current) {
+			if (seq === loadSeqRef.current && !refresh.aborted) {
 				setLoading(false);
 			}
 		}
@@ -100,30 +132,18 @@ export function useNotionSettings(
 	useEffect(() => {
 		const paths = JSON.parse(repoPathsKey) as string[];
 		if (paths.length > 0) {
-			load(paths);
+			load(paths, clientRefresh);
 		} else {
 			setConfigs(new Map());
 			setDrafts(new Map());
+			setErrors(new Map());
 			setLoading(false);
 		}
-	}, [repoPathsKey, load]);
+	}, [repoPathsKey, load, clientRefresh]);
 
-	const isDirty = (() => {
-		for (const [path, draft] of drafts) {
-			if (draft.markedForDelete) return true;
-			const config = configs.get(path) ?? null;
-			const original = configToDraft(config);
-			if (
-				draft.apiToken !== original.apiToken ||
-				draft.databaseId !== original.databaseId ||
-				JSON.stringify(draft.propertyMapping) !==
-					JSON.stringify(original.propertyMapping)
-			) {
-				return true;
-			}
-		}
-		return false;
-	})();
+	const isDirty = [...drafts].some(([path, draft]) =>
+		draftChanged(draft, configs.get(path) ?? null),
+	);
 
 	const updateDraft = useCallback(
 		(repoPath: string, updater: (d: NotionRepoDraft) => NotionRepoDraft) => {
@@ -196,13 +216,30 @@ export function useNotionSettings(
 	);
 
 	const save = useCallback(async () => {
+		setSaveError(null);
 		const promises: Promise<void>[] = [];
 		const currentDrafts = draftsRef.current;
 		const currentConfigs = configsRef.current;
 
 		for (const [path, draft] of currentDrafts) {
 			if (draft.markedForDelete) {
-				promises.push(invoke("delete_notion_config", { repoPath: path }));
+				promises.push(
+					invoke(
+						"delete_notion_config",
+						{ repoPath: path },
+						{ onUncertain: setUncertain },
+					).then(() => {
+						configsRef.current = new Map(configsRef.current).set(path, null);
+						setConfigs(configsRef.current);
+						if (draftsRef.current.get(path) === draft) {
+							draftsRef.current = new Map(draftsRef.current).set(
+								path,
+								configToDraft(null),
+							);
+							setDrafts(draftsRef.current);
+						}
+					}),
+				);
 				continue;
 			}
 			const config = currentConfigs.get(path) ?? null;
@@ -214,11 +251,23 @@ export function useNotionSettings(
 					JSON.stringify(original.propertyMapping);
 			if (changed && draft.apiToken && draft.databaseId) {
 				promises.push(
-					invoke("save_notion_config", {
-						repoPath: path,
-						apiToken: draft.apiToken,
-						databaseId: draft.databaseId,
-						propertyMapping: draft.propertyMapping,
+					invoke(
+						"save_notion_config",
+						{
+							repoPath: path,
+							apiToken: draft.apiToken,
+							databaseId: draft.databaseId,
+							propertyMapping: draft.propertyMapping,
+						},
+						{ onUncertain: setUncertain },
+					).then(() => {
+						const config = {
+							api_token: draft.apiToken,
+							database_id: draft.databaseId,
+							property_mapping: draft.propertyMapping,
+						};
+						configsRef.current = new Map(configsRef.current).set(path, config);
+						setConfigs(configsRef.current);
 					}),
 				);
 			}
@@ -226,10 +275,14 @@ export function useNotionSettings(
 
 		try {
 			await Promise.all(promises);
+		} catch (error) {
+			setSaveError(getErrorMessage(error));
+			throw error;
 		} finally {
-			await load(repoPathsRef.current);
+			setUncertain(null);
+			await load(repoPathsRef.current, clientRefresh);
 		}
-	}, [load]);
+	}, [load, clientRefresh]);
 
 	const reset = useCallback(() => {
 		const draftMap = new Map<string, NotionRepoDraft>();
@@ -241,8 +294,11 @@ export function useNotionSettings(
 
 	return {
 		drafts,
+		errors,
+		saveError,
 		loading,
 		isDirty,
+		uncertain,
 		updateDraft,
 		validate,
 		markForDelete,

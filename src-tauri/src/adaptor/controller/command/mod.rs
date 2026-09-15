@@ -1,20 +1,6 @@
-pub(crate) mod agent_session;
-pub(crate) mod app_config;
 pub(crate) mod application_lifecycle;
 pub(crate) mod client;
-pub(crate) mod code;
-pub(crate) mod comment;
-pub(crate) mod external_editor;
-pub(crate) mod git_host;
 pub(crate) mod menu;
-pub(crate) mod notion;
-pub(crate) mod repository;
-pub(crate) mod telemetry;
-pub(crate) mod terminal_surface;
-pub(crate) mod watcher;
-pub(crate) mod workflow;
-pub(crate) mod workspace_state;
-pub(crate) mod workspace_tree;
 
 type InvokeHandler<R = tauri::Wry> = Box<dyn Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync>;
 
@@ -95,24 +81,14 @@ impl<R: tauri::Runtime> CommandRouter<InvokeHandler<R>> {
 pub(crate) fn register_all(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
     let app_handler: InvokeHandler = Box::new(|_invoke| false);
     let mut router = CommandRouter::new(app_handler);
-    client::register(&mut router);
-    agent_session::register(&mut router);
-    app_config::register(&mut router);
-    application_lifecycle::register(&mut router);
-    code::register(&mut router);
-    comment::register(&mut router);
-    external_editor::register(&mut router);
-    git_host::register(&mut router);
-    menu::register(&mut router);
-    notion::register(&mut router);
-    terminal_surface::register(&mut router);
-    repository::register(&mut router);
-    telemetry::register(&mut router);
-    watcher::register(&mut router);
-    workspace_state::register(&mut router);
-    workspace_tree::register(&mut router);
-    workflow::register(&mut router);
+    register_shell_commands(&mut router);
     builder.invoke_handler(move |invoke: tauri::ipc::Invoke<tauri::Wry>| router.handle(invoke))
+}
+
+fn register_shell_commands(router: &mut CommandRouter) {
+    client::register(router);
+    application_lifecycle::register(router);
+    menu::register(router);
 }
 
 #[cfg(test)]
@@ -127,47 +103,35 @@ mod tests {
     }
 
     #[test]
-    fn test_agent_session_commandを本番routerの単一routeとして登録する() {
+    fn test_本番tauri受付はshellの4commandだけを登録する() {
+        // Given
         let mut router = CommandRouter::new(dummy_handler());
-
-        agent_session::register(&mut router);
-
-        assert_eq!(router.domains.len(), 1);
-        assert!(router.domains.iter().any(|route| {
-            route.command_names.contains(&"create_agent_session")
-                && !route.command_names.contains(&"create_session")
-        }));
+        // When
+        register_shell_commands(&mut router);
+        // Then
+        let registered: Vec<_> = router
+            .domains
+            .iter()
+            .flat_map(|domain| domain.command_names.iter().copied())
+            .collect();
+        assert_eq!(
+            registered,
+            [
+                "get_client_endpoint",
+                "get_application_startup_outcome",
+                "quit_after_startup_failure",
+                "set_menu_items_enabled"
+            ]
+        );
+        for command in crate::adaptor::controller::api::protocol::client::COMMAND_NAMES {
+            if !STARTUP_COMMANDS.contains(command) {
+                assert_eq!(router.domain_route_index(command), None, "{command}");
+            }
+        }
     }
 
     #[test]
-    fn test_agent_tui_atomic_cutover_agent_sessionはcanonicalな単一routeだけを登録する() {
-        let mut router = CommandRouter::new(dummy_handler());
-
-        agent_session::register(&mut router);
-
-        assert_eq!(router.domains.len(), 1);
-        let commands = router.domains[0].command_names;
-        assert_eq!(
-            commands,
-            [
-                "list_available_agent_session_providers",
-                "get_provider_availability",
-                "refresh_provider_availability",
-                "update_provider_executable",
-                "reset_provider_executable",
-                "create_agent_session",
-                "resume_agent_session_history_candidate",
-                "get_agent_session",
-                "open_agent_session",
-                "resume_agent_session",
-                "archive_agent_session",
-                "restore_agent_session",
-                "delete_agent_session",
-                "confirm_agent_session_archive_delete",
-                "list_agent_session_history",
-                "list_provider_hook_health_warnings",
-            ]
-        );
+    fn test_廃止済みagent_commandをprotocolに残さない() {
         let registered = registered_command_names();
         for removed in [
             "create_session",
@@ -241,60 +205,20 @@ mod tests {
         vec![
             ("client", client::COMMAND_NAMES, client::register),
             (
-                "agent_session",
-                agent_session::COMMAND_NAMES,
-                agent_session::register,
-            ),
-            (
-                "app_config",
-                app_config::COMMAND_NAMES,
-                app_config::register,
-            ),
-            (
                 "application_lifecycle",
                 application_lifecycle::COMMAND_NAMES,
                 application_lifecycle::register,
             ),
-            ("code", code::COMMAND_NAMES, code::register),
-            ("comment", comment::COMMAND_NAMES, comment::register),
-            (
-                "external_editor",
-                external_editor::COMMAND_NAMES,
-                external_editor::register,
-            ),
-            ("git_host", git_host::COMMAND_NAMES, git_host::register),
             ("menu", menu::COMMAND_NAMES, menu::register),
-            ("notion", notion::COMMAND_NAMES, notion::register),
-            (
-                "terminal_surface",
-                terminal_surface::COMMAND_NAMES,
-                terminal_surface::register,
-            ),
-            (
-                "repository",
-                repository::COMMAND_NAMES,
-                repository::register,
-            ),
-            ("telemetry", telemetry::COMMAND_NAMES, telemetry::register),
-            ("watcher", watcher::COMMAND_NAMES, watcher::register),
-            (
-                "workspace_state",
-                workspace_state::COMMAND_NAMES,
-                workspace_state::register,
-            ),
-            (
-                "workspace_tree",
-                workspace_tree::COMMAND_NAMES,
-                workspace_tree::register,
-            ),
-            ("workflow", workflow::COMMAND_NAMES, workflow::register),
         ]
     }
 
     pub(super) fn registered_command_names() -> Vec<&'static str> {
-        command_domains()
-            .into_iter()
-            .flat_map(|(_, command_names, _)| command_names.iter().copied())
+        crate::adaptor::controller::api::protocol::client::COMMAND_NAMES
+            .iter()
+            .copied()
+            .chain(client::COMMAND_NAMES.iter().copied())
+            .chain(menu::COMMAND_NAMES.iter().copied())
             .collect()
     }
 
@@ -476,34 +400,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn git_host_register_routes_git_host_commands_before_fallback() {
-        let mut router = CommandRouter::new(dummy_handler());
-
-        git_host::register(&mut router);
-
-        assert_eq!(router.domain_route_index("fetch_pr_status"), Some(0));
-        assert_eq!(router.domain_route_index("get_cached_issues"), Some(0));
-        assert_eq!(router.domain_route_index("get_git_status"), None);
-    }
-
-    #[test]
-    fn notion_register_routes_notion_commands_before_fallback() {
-        let mut router = CommandRouter::new(dummy_handler());
-
-        notion::register(&mut router);
-
-        assert_eq!(router.domain_route_index("query_notion_tasks"), Some(0));
-        assert_eq!(
-            router.domain_route_index("fetch_notion_label_options"),
-            Some(0)
-        );
-        assert_eq!(router.domain_route_index("save_notion_config"), Some(0));
-        assert_eq!(router.domain_route_index("get_notion_config"), Some(0));
-        assert_eq!(router.domain_route_index("delete_notion_config"), Some(0));
-        assert_eq!(router.domain_route_index("validate_notion_config"), Some(0));
-        assert_eq!(router.domain_route_index("get_git_status"), None);
-    }
     #[test]
     fn test_共有dispatch_対象外commandは既存domain_handlerとfallbackへ届く() {
         use crate::adaptor::controller::client::ClientCommandDispatch;

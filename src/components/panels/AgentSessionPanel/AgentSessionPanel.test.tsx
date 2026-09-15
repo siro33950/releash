@@ -1,4 +1,3 @@
-import { listen } from "@tauri-apps/api/event";
 import {
 	act,
 	fireEvent,
@@ -9,10 +8,16 @@ import {
 import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useWorkspaceNodeDetail } from "@/hooks/useWorkspaceNodeDetail";
-import { invokeClient as invoke } from "@/lib/clientSocket";
+import {
+	invokeClient as invoke,
+	listenClient as listen,
+} from "@/lib/clientSocket";
 import { AgentSessionPanel, AgentSessionRoute } from "./AgentSessionPanel";
 
-vi.mock("@/lib/clientSocket", () => ({ invokeClient: vi.fn() }));
+vi.mock("@/lib/clientSocket", () => ({
+	invokeClient: vi.fn(),
+	listenClient: vi.fn().mockResolvedValue(() => {}),
+}));
 vi.mock("@/components/panels/TerminalPanel", () => ({
 	TerminalPanel: (props: Record<string, unknown>) => {
 		const onTerminalError = props.onTerminalError as

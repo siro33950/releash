@@ -1,6 +1,8 @@
-import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useState } from "react";
-import { invokeClient as invoke } from "@/lib/clientSocket";
+import {
+	invokeClient as invoke,
+	listenClient as listen,
+} from "@/lib/clientSocket";
 
 export interface UseRepoListReturn {
 	repoPaths: string[];
@@ -19,9 +21,17 @@ export function useRepoList(): UseRepoListReturn {
 	}, []);
 
 	useEffect(() => {
-		const unlisten = listen<string[]>("repo-paths-changed", (event) => {
-			setRepoPaths(event.payload);
-		});
+		const unlisten = listen(
+			"repo-paths-changed",
+			(event) => {
+				setRepoPaths(event.payload);
+			},
+			() => {
+				void invoke("get_repo_paths")
+					.then(setRepoPaths)
+					.catch((err) => console.warn("[useRepoList] refresh failed", err));
+			},
+		);
 		return () => {
 			unlisten.then((fn) => fn());
 		};

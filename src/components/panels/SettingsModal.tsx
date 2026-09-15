@@ -10,7 +10,14 @@ import {
 	Trash2,
 	Workflow,
 } from "lucide-react";
-import { Fragment, useCallback, useEffect, useReducer, useState } from "react";
+import {
+	Fragment,
+	useCallback,
+	useEffect,
+	useReducer,
+	useRef,
+	useState,
+} from "react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -32,9 +39,14 @@ import { Separator } from "@/components/ui/separator";
 import { Slider } from "@/components/ui/slider";
 import { useBackgroundConfig } from "@/hooks/useAppSettings";
 import { useAutomation } from "@/hooks/useAutomation";
+import { useClientRefresh } from "@/hooks/useClientRefresh";
 import { useNotionSettings } from "@/hooks/useNotionSettings";
 import { useProviderAvailabilitySettings } from "@/hooks/useProviderAvailabilitySettings";
-import { invokeClient as invoke } from "@/lib/clientSocket";
+import {
+	type ClientTransportError,
+	invokeClient as invoke,
+	retryClientOperation,
+} from "@/lib/clientSocket";
 import { getErrorMessage } from "@/lib/errorMessage";
 import { setPerformanceTelemetryEnabled, trackEvent } from "@/lib/telemetry";
 import { cn } from "@/lib/utils";
@@ -54,52 +66,66 @@ const DEFAULT_WORKFLOW_CONFIG: WorkflowConfig = {
 };
 
 function useWorkflowSettings(open: boolean) {
+	const refresh = useClientRefresh(open);
+	const wasOpen = useRef(false);
 	const [config, setConfig] = useState<WorkflowConfig>(DEFAULT_WORKFLOW_CONFIG);
 	const [draft, setDraft] = useState<WorkflowConfig>(DEFAULT_WORKFLOW_CONFIG);
+	const isDirty = JSON.stringify(draft) !== JSON.stringify(config);
+	const dirty = useRef(isDirty);
+	dirty.current = isDirty;
 	const [loading, setLoading] = useState(false);
 	const [saving, setSaving] = useState(false);
+	const [uncertain, setUncertain] = useState<ClientTransportError | null>(null);
 	const [error, setError] = useState<string | null>(null);
 
 	useEffect(() => {
+		const preserveDraft = wasOpen.current;
+		wasOpen.current = open;
 		if (!open) return;
 		let cancelled = false;
 		setLoading(true);
 		setError(null);
 		invoke("get_workflow_config")
 			.then((loaded) => {
-				if (cancelled) return;
+				if (cancelled || refresh.aborted) return;
 				const normalized = loaded ?? DEFAULT_WORKFLOW_CONFIG;
-				setConfig(normalized);
-				setDraft(normalized);
+				if (!preserveDraft || !dirty.current) {
+					setConfig(normalized);
+					setDraft(normalized);
+				}
 			})
 			.catch((e) => {
-				if (!cancelled) setError(getErrorMessage(e));
+				if (!cancelled && !refresh.aborted) setError(getErrorMessage(e));
 			})
 			.finally(() => {
-				if (!cancelled) setLoading(false);
+				if (!cancelled && !refresh.aborted) setLoading(false);
 			});
 		return () => {
 			cancelled = true;
 		};
-	}, [open]);
-
-	const isDirty = JSON.stringify(draft) !== JSON.stringify(config);
+	}, [open, refresh]);
 
 	const save = useCallback(async () => {
 		setSaving(true);
 		setError(null);
 		try {
-			await invoke("update_workflow_config", { workflow: draft });
+			await invoke(
+				"update_workflow_config",
+				{ workflow: draft },
+				{ onUncertain: setUncertain },
+			);
+			setError(null);
 			setConfig({ ...draft });
 		} catch (e) {
 			setError(getErrorMessage(e));
 			throw e;
 		} finally {
 			setSaving(false);
+			setUncertain(null);
 		}
 	}, [draft]);
 
-	return { draft, setDraft, isDirty, loading, saving, error, save };
+	return { draft, setDraft, isDirty, loading, saving, uncertain, error, save };
 }
 
 type SettingsSection =
@@ -185,49 +211,73 @@ interface EditorInfo {
 }
 
 function useExternalEditorConfig(open: boolean) {
+	const [uncertain, setUncertain] = useState<ClientTransportError | null>(null);
+	const refresh = useClientRefresh(open);
+	const wasOpen = useRef(false);
 	const [editor, setEditor] = useState("");
 	const [initialEditor, setInitialEditor] = useState("");
+	const dirty = useRef(false);
+	dirty.current = editor !== initialEditor;
 	const [editors, setEditors] = useState<EditorInfo[]>([]);
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState<string | null>(null);
 
 	useEffect(() => {
+		const preserveDraft = wasOpen.current;
+		wasOpen.current = open;
 		if (!open) return;
 		let cancelled = false;
 		setLoading(true);
 		setError(null);
 		Promise.all([invoke("get_external_editor"), invoke("detect_editors")])
 			.then(([current, detected]) => {
-				if (cancelled) return;
-				setEditor(current);
-				setInitialEditor(current);
+				if (cancelled || refresh.aborted) return;
+				if (!preserveDraft || !dirty.current) {
+					setEditor(current);
+					setInitialEditor(current);
+				}
 				setEditors(detected);
 			})
 			.catch((e) => {
-				if (!cancelled) setError(getErrorMessage(e));
+				if (!cancelled && !refresh.aborted) setError(getErrorMessage(e));
 			})
 			.finally(() => {
-				if (!cancelled) setLoading(false);
+				if (!cancelled && !refresh.aborted) setLoading(false);
 			});
 		return () => {
 			cancelled = true;
 		};
-	}, [open]);
+	}, [open, refresh]);
 
 	const isDirty = editor !== initialEditor;
 
 	const save = useCallback(async () => {
 		setError(null);
 		try {
-			await invoke("update_external_editor", { editor });
+			await invoke(
+				"update_external_editor",
+				{ editor },
+				{ onUncertain: setUncertain },
+			);
 			setInitialEditor(editor);
 		} catch (e) {
 			setError(getErrorMessage(e));
 			throw e;
+		} finally {
+			setUncertain(null);
 		}
 	}, [editor]);
 
-	return { editor, setEditor, editors, isDirty, loading, error, save };
+	return {
+		editor,
+		setEditor,
+		editors,
+		isDirty,
+		loading,
+		error,
+		uncertain,
+		save,
+	};
 }
 
 function EditorSection({
@@ -356,9 +406,12 @@ function RepoBaseBranchItem({
 		selectedBase: string,
 	) => void;
 }) {
+	const refresh = useClientRefresh();
 	const [branches, setBranches] = useState<BranchInfo[]>([]);
 	const [selectedBase, setSelectedBase] = useState("");
 	const [initialBase, setInitialBase] = useState("");
+	const dirty = useRef(false);
+	dirty.current = selectedBase !== initialBase;
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState<string | null>(null);
 
@@ -371,18 +424,21 @@ function RepoBaseBranchItem({
 			invoke("get_releash_base", { repoPath }),
 		])
 			.then(([branchList, currentBase]) => {
+				if (refresh.aborted) return;
 				setBranches(branchList.filter((b) => !b.is_remote));
 				const base = currentBase ?? "";
-				setSelectedBase(base);
-				setInitialBase(base);
+				if (!dirty.current) {
+					setSelectedBase(base);
+					setInitialBase(base);
+				}
 			})
 			.catch((e) => {
-				setError(getErrorMessage(e));
+				if (!refresh.aborted) setError(getErrorMessage(e));
 			})
 			.finally(() => {
-				setLoading(false);
+				if (!refresh.aborted) setLoading(false);
 			});
-	}, [repoPath]);
+	}, [repoPath, refresh]);
 
 	const handleChange = useCallback(
 		(v: string) => {
@@ -445,6 +501,7 @@ interface RepoChanges {
 }
 
 function useRepoChanges() {
+	const [uncertain, setUncertain] = useState<ClientTransportError | null>(null);
 	const [state, setState] = useState<RepoChanges>({
 		pendingBases: new Map(),
 		isDirty: false,
@@ -473,7 +530,11 @@ function useRepoChanges() {
 		try {
 			await Promise.all(
 				entries.map(([repoPath, base]) =>
-					invoke("set_releash_base", { repoPath, base: base || null }),
+					invoke(
+						"set_releash_base",
+						{ repoPath, base: base || null },
+						{ onUncertain: setUncertain },
+					),
 				),
 			);
 			setState((prev) => ({
@@ -485,6 +546,8 @@ function useRepoChanges() {
 		} catch (e) {
 			setState((prev) => ({ ...prev, error: getErrorMessage(e) }));
 			throw e;
+		} finally {
+			setUncertain(null);
 		}
 	}, [state.pendingBases]);
 
@@ -497,7 +560,7 @@ function useRepoChanges() {
 		}));
 	}, []);
 
-	return { ...state, handleDirtyChange, save, reset };
+	return { ...state, uncertain, handleDirtyChange, save, reset };
 }
 
 function RepositoriesSection({
@@ -611,7 +674,9 @@ function AgentSection({
 					approval.
 				</p>
 				{workflow.error && (
-					<p className="text-[10px] text-destructive">{workflow.error}</p>
+					<p role="alert" className="text-[10px] text-destructive">
+						{workflow.error}
+					</p>
 				)}
 			</div>
 
@@ -718,8 +783,10 @@ function BackgroundSection({
 						</label>
 					</div>
 
-					{background.error && (
-						<p className="text-xs text-destructive">{background.error}</p>
+					{background.error && !background.uncertain && (
+						<p role="alert" className="text-xs text-destructive">
+							{background.error}
+						</p>
 					)}
 				</>
 			)}
@@ -872,6 +939,13 @@ export function SettingsModal({
 	const automation = useAutomation(open);
 	const workflow = useWorkflowSettings(open);
 	const providerAvailability = useProviderAvailabilitySettings(open);
+	const uncertain =
+		background.uncertain ??
+		workflow.uncertain ??
+		externalEditor.uncertain ??
+		repos.uncertain ??
+		notion.uncertain ??
+		providerAvailability.uncertain;
 
 	// Reset draft when dialog opens
 	if (open !== state.prevOpen) {
@@ -983,13 +1057,25 @@ export function SettingsModal({
 				);
 			case "notion":
 				return (
-					<NotionSettingsSection
-						repoPaths={repoPaths}
-						drafts={notion.drafts}
-						updateDraft={notion.updateDraft}
-						validate={notion.validate}
-						markForDelete={notion.markForDelete}
-					/>
+					<>
+						{notion.saveError && (
+							<p role="alert" className="text-xs text-destructive">
+								{notion.saveError}
+							</p>
+						)}
+						{Array.from(notion.errors, ([path, error]) => (
+							<p key={path} role="alert" className="text-xs text-destructive">
+								{path}: {error}
+							</p>
+						))}
+						<NotionSettingsSection
+							repoPaths={repoPaths}
+							drafts={notion.drafts}
+							updateDraft={notion.updateDraft}
+							validate={notion.validate}
+							markForDelete={notion.markForDelete}
+						/>
+					</>
 				);
 			case "agent":
 				return (
@@ -1053,13 +1139,30 @@ export function SettingsModal({
 				</div>
 
 				<DialogFooter className="px-6 py-4 border-t border-border shrink-0">
+					{uncertain && (
+						<p role="alert" className="text-xs text-muted-foreground">
+							{uncertain.message}
+						</p>
+					)}
 					<Button
 						type="button"
 						size="sm"
-						onClick={handleSave}
-						disabled={!isDirty || saving}
+						onClick={
+							uncertain
+								? () => retryClientOperation(uncertain.requestId)
+								: handleSave
+						}
+						disabled={
+							!uncertain && (!isDirty || saving || providerAvailability.loading)
+						}
 					>
-						{saving ? <Loader2 className="size-3.5 animate-spin" /> : "Save"}
+						{uncertain ? (
+							"元の操作の結果を確認"
+						) : saving ? (
+							<Loader2 className="size-3.5 animate-spin" />
+						) : (
+							"Save"
+						)}
 					</Button>
 				</DialogFooter>
 			</DialogContent>

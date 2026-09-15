@@ -95,7 +95,6 @@ pub(crate) struct WorkspaceNodeCapabilitiesDto {
     pub can_rename: bool,
     pub can_approve: bool,
     pub can_retry: bool,
-    pub can_close: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -451,7 +450,6 @@ mod tests {
                             can_rename: false,
                             can_approve: false,
                             can_retry: false,
-                            can_close: false,
                         },
                         workflow_capabilities: None,
                         session_capabilities: None,

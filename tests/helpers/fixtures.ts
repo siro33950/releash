@@ -314,7 +314,7 @@ export function buildMockConfig(
 	overrides: Record<string, unknown> = {},
 ): MockConfig {
 	return {
-		ipcHandler: {
+		responses: {
 			...baseIpcHandler,
 			...overrides,
 		},

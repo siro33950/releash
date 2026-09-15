@@ -826,7 +826,6 @@ fn node() -> WorkspaceTreeNode {
         can_rename: false,
         can_approve: true,
         can_retry: false,
-        can_close: false,
         can_stop: false,
         can_resume: false,
         resume_eligible: false,

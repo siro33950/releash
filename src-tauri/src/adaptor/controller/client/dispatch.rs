@@ -75,6 +75,10 @@ impl ClientCommandDispatch {
         assert_eq!(names.len(), 1);
         assert!(self.handlers.insert(names[0], handler).is_none());
     }
+    pub(crate) fn command_names(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.handlers.keys().copied()
+    }
+    #[cfg(test)]
     pub(crate) fn contains(&self, name: &str) -> bool {
         self.handlers.contains_key(name)
     }
@@ -88,24 +92,31 @@ impl ClientCommandDispatch {
         }
         Ok(())
     }
-    pub(crate) async fn dispatch(
+    pub(crate) fn dispatch(
         &self,
         command: wire::command_request::Command,
-    ) -> Result<wire::command_result::Command, wire::CommandError> {
-        self.admit(command.name())?;
-        self.dispatch_admitted(command).await
+    ) -> Pin<
+        Box<dyn Future<Output = Result<wire::command_result::Command, wire::CommandError>> + Send>,
+    > {
+        if let Err(error) = self.admit(command.name()) {
+            return Box::pin(std::future::ready(Err(error)));
+        }
+        self.dispatch_admitted(command)
     }
-    pub(crate) async fn dispatch_admitted(
+    pub(crate) fn dispatch_admitted(
         &self,
         command: wire::command_request::Command,
-    ) -> Result<wire::command_result::Command, wire::CommandError> {
-        let handler = self.handlers.get(command.name()).ok_or_else(|| {
-            wire::CommandError::from(crate::other::AppError::coded(
+    ) -> Pin<
+        Box<dyn Future<Output = Result<wire::command_result::Command, wire::CommandError>> + Send>,
+    > {
+        match self.handlers.get(command.name()) {
+            Some(handler) => handler(command),
+            None => Box::pin(std::future::ready(Err(crate::other::AppError::coded(
                 "UNKNOWN_COMMAND",
                 "Command was not found",
-            ))
-        })?;
-        handler(command).await
+            )
+            .into()))),
+        }
     }
 }
 

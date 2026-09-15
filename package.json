@@ -6,7 +6,7 @@
 	"type": "module",
 	"scripts": {
 		"dev": "vite",
-		"generate:protocol": "protoc --proto_path=proto --plugin=protoc-gen-es=node_modules/.bin/protoc-gen-es --es_out=src/generated --es_opt=target=ts proto/client.proto proto/client_options.proto && node scripts/generate-client-protocol.mjs && biome check --write src/generated/client_pb.ts src/generated/client_options_pb.ts src/generated/client_types.ts",
+		"generate:protocol": "protoc --proto_path=proto --plugin=protoc-gen-es=node_modules/.bin/protoc-gen-es --es_out=src/generated --es_opt=target=ts proto/client.proto proto/client_options.proto && node scripts/generate-client-protocol.mjs && biome check --write src/generated/client_pb.ts src/generated/client_options_pb.ts src/generated/client_types.ts src/generated/client_transport.ts",
 		"build": "tsc && vite build",
 		"build:performance": "tsc && vite build --mode performance",
 		"preview": "vite preview",

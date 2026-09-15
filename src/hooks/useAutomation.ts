@@ -1,6 +1,10 @@
-import { listen } from "@tauri-apps/api/event";
-import { useCallback, useEffect, useState } from "react";
-import { invokeClient as invoke } from "@/lib/clientSocket";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+	invokeClient as invoke,
+	listenClient as listen,
+	onClientRefresh,
+	watchClient,
+} from "@/lib/clientSocket";
 import { getErrorMessage } from "@/lib/errorMessage";
 import type {
 	DiagnosticReport,
@@ -21,6 +25,7 @@ export type FacetSubTab = "policy" | "knowledge" | "instruction";
 
 export function useAutomation(open: boolean) {
 	const [workflows, setWorkflows] = useState<WorkflowDefinitionSummary[]>([]);
+	const facetKind = useRef<FacetKind | null>(null);
 	const [facets, setFacets] = useState<FacetSummary[]>([]);
 	const [report, setReport] = useState<DiagnosticReport>(EMPTY_REPORT);
 	const [loading, setLoading] = useState(false);
@@ -66,11 +71,12 @@ export function useAutomation(open: boolean) {
 	}, []);
 
 	const fetchFacets = useCallback(async (kind: FacetKind) => {
+		facetKind.current = kind;
 		try {
 			const list = await invoke("list_facet_summaries", {
 				kind,
 			});
-			setFacets(list);
+			if (facetKind.current === kind) setFacets(list);
 		} catch (e) {
 			setError(getErrorMessage(e));
 		}
@@ -106,9 +112,28 @@ export function useAutomation(open: boolean) {
 		let disposed = false;
 		let unlisten: (() => void) | null = null;
 		let watcherId: number | null = null;
+		let stopWatch: (() => void) | undefined;
 
+		let preparation = 0;
+		const prepareWatcher = async () => {
+			if (stopWatch) return;
+			const current = ++preparation;
+			try {
+				const dir = await invoke("get_automation_config_dir");
+				if (disposed || current !== preparation) return;
+				stopWatch = watchClient("start_watching", { path: dir }, (id) => {
+					watcherId = id;
+				});
+			} catch (e) {
+				if (!disposed && current === preparation) setError(getErrorMessage(e));
+			}
+		};
+		const refresh = () => {
+			void fetchAll();
+			if (facetKind.current) void fetchFacets(facetKind.current);
+		};
 		const setup = async () => {
-			const off = await listen<{ watcher_id: number }>(
+			const off = await listen(
 				"file-change",
 				(event) => {
 					if (
@@ -117,8 +142,12 @@ export function useAutomation(open: boolean) {
 						event.payload.watcher_id === watcherId
 					) {
 						setExternalChangeDetected(true);
-						fetchAll();
+						refresh();
 					}
+				},
+				() => {
+					refresh();
+					void prepareWatcher();
 				},
 			);
 			if (disposed) {
@@ -126,34 +155,23 @@ export function useAutomation(open: boolean) {
 				return;
 			}
 			unlisten = off;
-
-			try {
-				const dir = await invoke("get_automation_config_dir");
-				const id = await invoke("start_watching", { path: dir });
-				if (disposed) {
-					invoke("stop_watching", { watcherId: id }).catch(() => {});
-					return;
-				}
-				watcherId = id;
-			} catch (e) {
-				console.error("Failed to start automation config watcher:", e);
-			}
+			await prepareWatcher();
 		};
 		void setup();
 
 		return () => {
 			disposed = true;
 			unlisten?.();
-			if (watcherId !== null) {
-				invoke("stop_watching", { watcherId }).catch(() => {});
-			}
+			stopWatch?.();
 		};
-	}, [open, fetchAll]);
+	}, [open, fetchAll, fetchFacets]);
 
 	// --- Workflow operations ---
 
+	const selectionSequence = useRef(0);
 	const selectWorkflow = useCallback(
 		async (name: string) => {
+			const sequence = ++selectionSequence.current;
 			setSelectedWorkflowName(name);
 			setError(null);
 			try {
@@ -162,19 +180,23 @@ export function useAutomation(open: boolean) {
 					"yaml";
 				if (sourceFormat === "yaml") {
 					const source = await invoke("get_workflow_source", { name });
+					if (sequence !== selectionSequence.current) return;
 					setSelectedWorkflowSource(source);
 				} else {
 					setSelectedWorkflowSource(null);
 				}
 				try {
 					const wf = await invoke("get_workflow", { name });
+					if (sequence !== selectionSequence.current) return;
 					setSelectedWorkflow(wf);
 				} catch (e) {
+					if (sequence !== selectionSequence.current) return;
 					setSelectedWorkflow(null);
 					setError(getErrorMessage(e));
 					await refreshDiagnostics();
 				}
 			} catch (e) {
+				if (sequence !== selectionSequence.current) return;
 				setSelectedWorkflow(null);
 				setSelectedWorkflowSource(null);
 				setError(getErrorMessage(e));
@@ -182,6 +204,13 @@ export function useAutomation(open: boolean) {
 		},
 		[refreshDiagnostics, workflows],
 	);
+
+	useEffect(() => {
+		if (!open || !selectedWorkflowName) return;
+		return onClientRefresh(() => {
+			void selectWorkflow(selectedWorkflowName);
+		});
+	}, [open, selectedWorkflowName, selectWorkflow]);
 
 	const saveWorkflowSource = useCallback(
 		async (source: string, originalName?: string) => {

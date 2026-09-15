@@ -40,7 +40,19 @@ export function useReviewFileView(
 				viewport: viewport ?? null,
 			},
 		})
-			.then((result) => {
+			.then(async (result) => {
+				if (requestId !== requestIdRef.current) return;
+				if (result.kind === "image") {
+					const [originalUrl, modifiedUrl] = await Promise.all([
+						result.originalUrl
+							? invoke("get_review_blob", { reference: result.originalUrl })
+							: null,
+						result.modifiedUrl
+							? invoke("get_review_blob", { reference: result.modifiedUrl })
+							: null,
+					]);
+					result = { ...result, originalUrl, modifiedUrl };
+				}
 				if (requestId !== requestIdRef.current) return;
 				setView(result);
 				setLoading(false);

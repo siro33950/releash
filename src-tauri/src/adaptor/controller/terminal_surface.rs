@@ -259,14 +259,17 @@ pub(crate) fn resize_terminal_surface_shared(
     owner: TerminalSurfaceOwnerV1,
     rows: u16,
     cols: u16,
-) -> Result<(), String> {
-    let owner = owner
+) -> impl std::future::Future<Output = Result<(), String>> + Send + use<> {
+    let resize = owner
         .try_into()
-        .map_err(invalid_terminal_resize_owner_error)?;
-    state
-        .terminal_surface
-        .resize(&owner, rows, cols)
-        .map_err(terminal_resize_error)
+        .map_err(invalid_terminal_resize_owner_error)
+        .map(|owner| state.terminal_surface.prepare_resize(owner, rows, cols));
+    async move {
+        tokio::task::spawn_blocking(resize?)
+            .await
+            .map_err(|error| format!("Terminal resize task failed: {error}"))?
+            .map_err(terminal_resize_error)
+    }
 }
 
 pub(crate) fn get_terminal_surface_shared(

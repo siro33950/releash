@@ -1,4 +1,4 @@
-//! Review image / binary 用 custom URI の URL provider。
+//! Review image / binary をクライアント経由で取得する参照の provider。
 
 use crate::domain::code::{ReviewBlobSide, ReviewBlobUrlParams, ReviewBlobUrlProvider};
 
@@ -7,7 +7,7 @@ pub struct ReviewBlobUrlGateway;
 impl ReviewBlobUrlProvider for ReviewBlobUrlGateway {
     fn url(&self, params: &ReviewBlobUrlParams) -> String {
         let mut url =
-            url::Url::parse("review-blob://localhost/blob").expect("valid review blob URL");
+            url::Url::parse("https://releash.invalid/blob").expect("valid review blob URL");
         let side = match params.side {
             ReviewBlobSide::Original => "original",
             ReviewBlobSide::Modified => "modified",
@@ -19,7 +19,7 @@ impl ReviewBlobUrlProvider for ReviewBlobUrlGateway {
             .append_pair("section", &params.section)
             .append_pair("base", &params.base)
             .append_pair("version", &params.version.to_string());
-        url.to_string()
+        format!("blob?{}", url.query().expect("blob query"))
     }
 }
 
@@ -38,7 +38,7 @@ mod tests {
             version: 9,
         });
 
-        assert!(url.starts_with("review-blob://"));
+        assert!(url.starts_with("blob?"));
         assert!(url.contains("path=src%2Fimage.png"));
         assert!(url.contains("side=original"));
         assert!(url.contains("version=9"));

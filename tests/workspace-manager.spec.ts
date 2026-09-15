@@ -93,7 +93,6 @@ test.describe("Workspace Manager", () => {
 							canRename: false,
 							canApprove: false,
 							canRetry: false,
-							canClose: true,
 						},
 						pastAttempts: [],
 						pastAttemptsCollapsed: false,
@@ -146,7 +145,6 @@ test.describe("Workspace Manager", () => {
 									canRename: false,
 									canApprove: false,
 									canRetry: false,
-									canClose: false,
 								},
 								pastAttempts: [],
 								pastAttemptsCollapsed: false,
@@ -220,7 +218,6 @@ test.describe("Workspace Manager", () => {
 					canRename: false,
 					canApprove: false,
 					canRetry: false,
-					canClose: true,
 				},
 				updatedAt: 1000,
 				submitReceived: false,
@@ -241,7 +238,7 @@ test.describe("Workspace Manager", () => {
 		await expect
 			.poll(() =>
 				page.evaluate(() =>
-					window.__TAURI_INTERNALS__?.invocations.find(
+					window.__RELEASH_BACKEND__?.invocations.find(
 						(entry) =>
 							entry.cmd === "attach_terminal_surface" &&
 							entry.args.owner?.kind === "session",
@@ -258,7 +255,7 @@ test.describe("Workspace Manager", () => {
 				},
 			});
 		const creation = await page.evaluate(() =>
-			window.__TAURI_INTERNALS__?.invocations.find(
+			window.__RELEASH_BACKEND__?.invocations.find(
 				(entry) => entry.cmd === "create_agent_session",
 			),
 		);
@@ -271,7 +268,7 @@ test.describe("Workspace Manager", () => {
 			callerRequestId: expect.any(String),
 		});
 		const invocations = await page.evaluate(
-			() => window.__TAURI_INTERNALS__?.invocations ?? [],
+			() => window.__RELEASH_BACKEND__?.invocations ?? [],
 		);
 		expect(invocations).toContainEqual({
 			cmd: "get_agent_session",
@@ -299,7 +296,6 @@ test.describe("Workspace Manager", () => {
 				canRename: false,
 				canApprove: false,
 				canRetry: false,
-				canClose: false,
 			},
 			pastAttempts: [],
 			pastAttemptsCollapsed: false,
@@ -336,7 +332,7 @@ test.describe("Workspace Manager", () => {
 
 		await page.evaluate(
 			({ worktreePath, workflowNode, firstWorkflowSession }) => {
-				window.__TAURI_INTERNALS__?.setMockResponse(
+				window.__RELEASH_BACKEND__?.setMockResponse(
 					"list_workspace_worktree_nodes",
 					{
 						nodes: [
@@ -359,7 +355,7 @@ test.describe("Workspace Manager", () => {
 						preferredNodeId: workflowNode.id,
 					},
 				);
-				window.__TAURI_INTERNALS__?.setMockResponse(
+				window.__RELEASH_BACKEND__?.setMockResponse(
 					"get_workspace_node_detail",
 					{
 						statusClassification: "active",
@@ -377,11 +373,11 @@ test.describe("Workspace Manager", () => {
 						},
 					},
 				);
-				window.__TAURI_INTERNALS__?.setMockResponse(
+				window.__RELEASH_BACKEND__?.setMockResponse(
 					"get_agent_session",
 					firstWorkflowSession,
 				);
-				window.__TAURI_INTERNALS__?.setMockResponse(
+				window.__RELEASH_BACKEND__?.setMockResponse(
 					"open_agent_session",
 					"attached",
 				);
@@ -401,7 +397,7 @@ test.describe("Workspace Manager", () => {
 		await expect
 			.poll(() =>
 				page.evaluate(() =>
-					window.__TAURI_INTERNALS__?.invocations.find(
+					window.__RELEASH_BACKEND__?.invocations.find(
 						(entry) =>
 							entry.cmd === "attach_terminal_surface" &&
 							entry.args.owner?.kind === "session",
@@ -453,7 +449,6 @@ test.describe("Workspace Manager", () => {
 									canRename: false,
 									canApprove: false,
 									canRetry: false,
-									canClose: false,
 								},
 								pastAttempts: [],
 								pastAttemptsCollapsed: false,
@@ -474,7 +469,6 @@ test.describe("Workspace Manager", () => {
 					canRename: false,
 					canApprove: false,
 					canRetry: false,
-					canClose: false,
 				},
 				updatedAt: 1000,
 				submitReceived: false,
@@ -495,7 +489,7 @@ test.describe("Workspace Manager", () => {
 		await expect
 			.poll(() =>
 				page.evaluate(() =>
-					window.__TAURI_INTERNALS__?.invocations.find(
+					window.__RELEASH_BACKEND__?.invocations.find(
 						(entry) =>
 							entry.cmd === "attach_terminal_surface" &&
 							entry.args.owner?.kind === "session",
@@ -519,7 +513,7 @@ test.describe("Workspace Manager", () => {
 			"respond_agent_permission",
 		]);
 		const invocations = await page.evaluate(
-			() => window.__TAURI_INTERNALS__?.invocations ?? [],
+			() => window.__RELEASH_BACKEND__?.invocations ?? [],
 		);
 		expect(invocations.some(({ cmd }) => legacyCommands.has(cmd))).toBe(false);
 	});
@@ -563,7 +557,6 @@ test.describe("Workspace Manager", () => {
 											canRename: false,
 											canApprove: false,
 											canRetry: false,
-											canClose: false,
 										},
 										pastAttempts: [],
 										pastAttemptsCollapsed: false,
@@ -591,7 +584,7 @@ test.describe("Workspace Manager", () => {
 		await expect(page.getByText("Linux job", { exact: true })).toBeVisible();
 		const detailCalls = await page.evaluate(
 			() =>
-				window.__TAURI_INTERNALS__?.invocations.filter(
+				window.__RELEASH_BACKEND__?.invocations.filter(
 					(entry) => entry.cmd === "get_workspace_node_detail",
 				).length,
 		);
@@ -637,7 +630,6 @@ test.describe("Workspace Manager", () => {
 											canRename: false,
 											canApprove: false,
 											canRetry: false,
-											canClose: false,
 										},
 										pastAttempts: [],
 										pastAttemptsCollapsed: false,
@@ -660,7 +652,6 @@ test.describe("Workspace Manager", () => {
 					canRename: false,
 					canApprove: false,
 					canRetry: false,
-					canClose: false,
 				},
 				updatedAt: 1000,
 				submitReceived: false,
@@ -729,7 +720,6 @@ test.describe("Workspace Manager", () => {
 						canRename: false,
 						canApprove: false,
 						canRetry: false,
-						canClose: true,
 					},
 					pastAttempts: [],
 					pastAttemptsCollapsed: false,
@@ -758,7 +748,6 @@ test.describe("Workspace Manager", () => {
 								canRename: false,
 								canApprove: false,
 								canRetry: false,
-								canClose: false,
 							},
 							pastAttempts: [],
 							pastAttemptsCollapsed: false,
@@ -792,7 +781,6 @@ test.describe("Workspace Manager", () => {
 					canRename: false,
 					canApprove: false,
 					canRetry: false,
-					canClose: false,
 				},
 				updatedAt: 2000,
 				submitReceived: false,
@@ -831,7 +819,7 @@ test.describe("Workspace Manager", () => {
 		).toHaveAttribute("aria-current", "page");
 		const reconciliationInvocations = await page.evaluate(
 			() =>
-				window.__TAURI_INTERNALS__?.invocations.filter(
+				window.__RELEASH_BACKEND__?.invocations.filter(
 					(entry) =>
 						entry.cmd === "get_workspace_tree_selection_reconciliation",
 				) ?? [],
@@ -858,7 +846,6 @@ test.describe("Workspace Manager", () => {
 				canRename: false,
 				canApprove: false,
 				canRetry: false,
-				canClose: false,
 			},
 			pastAttempts: [],
 			pastAttemptsCollapsed: false,
@@ -896,7 +883,6 @@ test.describe("Workspace Manager", () => {
 					canRename: false,
 					canApprove: false,
 					canRetry: false,
-					canClose: false,
 				},
 				updatedAt: 1000,
 				submitReceived: false,
@@ -920,7 +906,7 @@ test.describe("Workspace Manager", () => {
 		await expect
 			.poll(() =>
 				page.evaluate(() =>
-					window.__TAURI_INTERNALS__?.invocations.find(
+					window.__RELEASH_BACKEND__?.invocations.find(
 						(entry) =>
 							entry.cmd === "attach_terminal_surface" &&
 							entry.args.owner?.sessionId === "agent-session-loop-a-1",
@@ -929,7 +915,7 @@ test.describe("Workspace Manager", () => {
 			)
 			.toBeTruthy();
 		const refreshInvocations = await page.evaluate(
-			() => window.__TAURI_INTERNALS__?.invocations ?? [],
+			() => window.__RELEASH_BACKEND__?.invocations ?? [],
 		);
 		expect(
 			refreshInvocations.filter(
@@ -940,7 +926,7 @@ test.describe("Workspace Manager", () => {
 
 		await page.evaluate(
 			({ worktreePath, workflowSummary, firstOccurrence }) => {
-				const internals = window.__TAURI_INTERNALS__;
+				const internals = window.__RELEASH_BACKEND__;
 				if (!internals) throw new Error("Tauri mock not initialized");
 				const completedFirst = {
 					...firstOccurrence,
@@ -973,7 +959,6 @@ test.describe("Workspace Manager", () => {
 						canRename: false,
 						canApprove: false,
 						canRetry: false,
-						canClose: false,
 					},
 					updatedAt: 2000,
 					submitReceived: false,
@@ -1004,7 +989,7 @@ test.describe("Workspace Manager", () => {
 		await expect(completedFirstRow).toHaveAttribute("aria-current", "page");
 		await expect(secondRow).not.toHaveAttribute("aria-current");
 		const updateInvocations = await page.evaluate(
-			() => window.__TAURI_INTERNALS__?.invocations ?? [],
+			() => window.__RELEASH_BACKEND__?.invocations ?? [],
 		);
 		expect(
 			updateInvocations.filter(
@@ -1015,7 +1000,7 @@ test.describe("Workspace Manager", () => {
 		const secondSession = agentSession("agent-session-loop-a-2", worktreePath);
 		await page.evaluate(
 			({ worktreePath, secondSession }) => {
-				const internals = window.__TAURI_INTERNALS__;
+				const internals = window.__RELEASH_BACKEND__;
 				if (!internals) throw new Error("Tauri mock not initialized");
 				internals.setMockResponse("get_workspace_node_detail", {
 					statusClassification: "active",
@@ -1026,7 +1011,6 @@ test.describe("Workspace Manager", () => {
 						canRename: false,
 						canApprove: false,
 						canRetry: false,
-						canClose: false,
 					},
 					updatedAt: 3000,
 					submitReceived: false,
@@ -1046,7 +1030,7 @@ test.describe("Workspace Manager", () => {
 		await expect
 			.poll(() =>
 				page.evaluate(() =>
-					window.__TAURI_INTERNALS__?.invocations.find(
+					window.__RELEASH_BACKEND__?.invocations.find(
 						(entry) =>
 							entry.cmd === "attach_terminal_surface" &&
 							entry.args.owner?.sessionId === "agent-session-loop-a-2",
@@ -1154,4 +1138,64 @@ test.describe("CreateWorktreeModal", () => {
 		// Create ボタンが enabled になる
 		await expect(createBtn).toBeEnabled();
 	});
+});
+
+test("worktree作成完了のfrontend通知で一覧を再取得し新しいworktreeを表示する", async ({ page }) => {
+	const created = { ...kanbanBranches[0], name: "feat/created", worktree_path: "/test/repo-worktrees/created" };
+	await setupTauriMock(page, buildMockConfig({
+		list_branches_with_status: kanbanBranches,
+		create_worktree: { name: "created", path: created.worktree_path, branch: created.name, is_main: false, is_locked: false, dirty_count: 0, base_branch: "main" },
+	}));
+	await waitForApp(page);
+	await page.evaluate(({ created, branches }) => {
+        window.addEventListener("branch-list-refresh", () => performance.mark("worktree-created-notification"));
+		const backend = window.__RELEASH_BACKEND__!;
+		const execute = backend.execute;
+		backend.execute = async (command, args) => {
+			const result = await execute(command, args);
+			if (command === "create_worktree") backend.setMockResponse("list_branches_with_status", [...branches, created]);
+			return result;
+		};
+	}, { created, branches: kanbanBranches });
+	await page.getByRole("button", { name: "Add Worktree", exact: true }).click();
+	await page.getByLabel("Branch name", { exact: true }).fill(created.name);
+	await page.getByRole("button", { name: "Create", exact: true }).click();
+	await expect(page.getByTestId(`worktree-item-${created.name}`)).toBeVisible();
+	const calls = await page.evaluate(() => window.__RELEASH_BACKEND__!.invocations.map(({ cmd }) => cmd));
+	const creation = calls.indexOf("create_worktree");
+	expect(creation).toBeGreaterThanOrEqual(0);
+	expect(calls.slice(creation + 1)).toContain("list_branches_with_status_snapshot");
+    expect(await page.evaluate(() => performance.getEntriesByName("worktree-created-notification").length)).toBe(1);
+	const ipc = await page.evaluate(() => window.__TAURI_INTERNALS__!.ipcInvocations);
+	expect(ipc.some(({ cmd }) => cmd === "plugin:event|emit" || cmd === "create_worktree")).toBe(false);
+});
+
+
+test("期限後に確定したArchive結果が元の操作の削除確認画面を開く", async ({page}) => {
+    const branch = kanbanBranches.find(branch => branch.name === "feat/wip")!;
+    await setupTauriMock(page, buildMockConfig({
+        list_branches_with_status: [branch],
+        list_workspace_worktree_nodes: {nodes: [{kind: "node", id: "archive-session", title: "Late Archive", status: "idle", contentKind: "session", capabilities: {canRename: false, canApprove: false, canRetry: false}, sessionCapabilities: {sessionRef: "archive-session", canArchive: true, canDelete: false}, pastAttempts: [], pastAttemptsCollapsed: false, updatedAt: 1}], archivedSessions: [], preferredNodeId: null},
+        archive_agent_session: "delete_confirmation_required",
+    }));
+    await waitForApp(page);
+    await page.clock.install();
+    await page.evaluate(() => {
+        const backend = window.__RELEASH_BACKEND__!;
+        const execute = backend.execute;
+        backend.execute = async (command, args) => {
+            const result = await execute(command, args);
+            if (command === "archive_agent_session") await new Promise<void>(resolve => window.addEventListener("finish-archive", () => resolve(), {once: true}));
+            return result;
+        };
+    });
+    await page.getByRole("button", {name: "Late Archive, idle", exact: true}).hover();
+    await page.getByRole("button", {name: "Archive Late Archive", exact: true}).click();
+    await expect.poll(() => page.evaluate(() => window.__RELEASH_BACKEND__!.invocations.filter(({cmd}) => cmd === "archive_agent_session").length)).toBe(1);
+    await page.clock.fastForward(31_000);
+    await expect(page.getByText("archive_agent_session: 操作結果を確認できません。", {exact: true})).toBeVisible();
+    await page.evaluate(() => window.dispatchEvent(new Event("finish-archive")));
+    await expect(page.getByText(/This AgentSession has no Provider session ID and cannot be archived/)).toBeVisible();
+    await expect(page.getByText(/操作結果を確認できません/)).toHaveCount(0);
+    expect(await page.evaluate(() => window.__RELEASH_BACKEND__!.invocations.filter(({cmd}) => cmd === "archive_agent_session").length)).toBe(1);
 });

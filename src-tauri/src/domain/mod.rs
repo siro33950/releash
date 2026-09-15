@@ -16,3 +16,5 @@ pub(crate) mod terminal_surface;
 pub(crate) mod workflow;
 pub(crate) mod workspace_state;
 pub(crate) mod workspace_tree;
+
+pub mod client_operation;

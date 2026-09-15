@@ -1,6 +1,7 @@
 import { invoke as invokeTauri } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { ClientConnectionBanner } from "@/components/ClientConnectionBanner";
 import { ApplicationShutdownBanner } from "@/components/layout/ApplicationShutdownBanner";
 import { ProviderHookHealthBanner } from "@/components/layout/ProviderHookHealthBanner";
 import { SettingsModal } from "@/components/panels/SettingsModal";
@@ -287,6 +288,7 @@ function WorkbenchApp() {
 				leftNav={leftNav}
 				topBanner={
 					<>
+						<ClientConnectionBanner />
 						<ApplicationShutdownBanner />
 						<ProviderHookHealthBanner />
 					</>

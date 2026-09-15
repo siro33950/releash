@@ -1,6 +1,8 @@
 use super::*;
+use crate::adaptor::controller::client::ClientCommandDispatch;
 use crate::usecase::application_startup::ApplicationStartupAuthority;
 use serde_json::Value;
+use std::sync::Arc;
 
 #[tokio::test]
 async fn test_クライアントdispatch_startup失敗時はusecase実行前に拒否する() {
@@ -354,7 +356,7 @@ async fn test_クライアントdispatch_proto全commandの登録と引数検証
     // Given
     let (_app, dispatch) = parity_app();
     // When / Then
-    assert_eq!(wire::COMMAND_NAMES.len(), 173);
+    assert_eq!(wire::COMMAND_NAMES.len(), 174);
     for command in commands::tests::registered_command_names() {
         if !["set_menu_items_enabled", "get_client_endpoint"].contains(&command) {
             assert!(wire::COMMAND_NAMES.contains(&command), "{command}");
@@ -1228,6 +1230,27 @@ pub(crate) async fn invoke_tauri(
     command: &str,
     args: Value,
 ) -> Result<Value, Value> {
+    if ![
+        "get_application_startup_outcome",
+        "quit_after_startup_failure",
+        "attach_terminal_surface",
+    ]
+    .contains(&command)
+    {
+        let dispatch = app.state::<Arc<ClientCommandDispatch>>();
+        let request = wire::CommandRequest::from_value(command, args)
+            .map_err(|error| json!({"code":"INVALID_REQUEST", "message":error}))?;
+        return dispatch
+            .dispatch(request.command.unwrap())
+            .await
+            .map(|command| {
+                wire::from_value(wire::CommandResult {
+                    command: Some(command),
+                })
+                .unwrap()
+            })
+            .map_err(|error| wire::from_value(error).unwrap());
+    }
     let window = tauri::WebviewWindowBuilder::new(
         app,
         format!("parity-{}", uuid::Uuid::new_v4()),

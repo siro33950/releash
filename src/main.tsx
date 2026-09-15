@@ -25,6 +25,7 @@ async function bootstrap() {
 				import("./lib/clientSocket"),
 				import("./test/performance/performanceCollector"),
 			]);
+		window.__RELEASH_INVOKE_CLIENT__ = invoke;
 		const realAppMode = await Promise.resolve()
 			.then(() => invoke("get_performance_real_app_mode"))
 			.catch(() => false);

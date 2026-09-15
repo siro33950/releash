@@ -1,35 +1,39 @@
 use crate::adaptor::gateway::repository::file_watcher::file_change_event_from_path;
 use std::path::Path;
 
-#[test]
-fn test_変更監視_startの返却idが実際の変更通知へ渡る() {
+#[tokio::test]
+async fn test_変更監視_startの返却idが実際の変更通知へ渡る() {
     use super::*;
     use tauri::Manager;
     // Given
     let app = tauri::test::mock_builder()
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .unwrap();
-    app.manage(Arc::new(crate::infrastructure::push::PushSink::new()));
+    let sink = Arc::new(crate::infrastructure::push::PushSink::new());
+    let mut receiver = sink.subscribe();
+    app.manage(sink);
     let gateway = FileWatcherGateway::new(
         Arc::new(FileWatcherManager::default()),
         app.handle().clone(),
     );
     let directory = tempfile::tempdir().unwrap();
-    let (sender, receiver) = std::sync::mpsc::channel();
-    use tauri::Listener;
-    app.listen("file-change", move |event| {
-        sender.send(event.payload().to_string()).unwrap();
-    });
     // When
     let id = gateway.start(directory.path().to_str().unwrap()).unwrap();
     let path = directory.path().join("changed.txt");
     std::fs::write(&path, "changed").unwrap();
-    let event: serde_json::Value = serde_json::from_str(
-        &receiver
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .unwrap(),
-    )
-    .unwrap();
+    use crate::adaptor::controller::api::protocol::client as wire;
+    use prost::Message;
+    let frame = tokio::time::timeout(std::time::Duration::from_secs(5), receiver.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let Some(wire::envelope::Body::Push(push)) =
+        wire::Envelope::decode(frame.as_ref()).unwrap().body
+    else {
+        panic!("push frame");
+    };
+    let (name, event) = push.into_value().unwrap();
+    assert_eq!(name, "file-change");
     gateway.stop(id).unwrap();
     // Then
     assert_eq!(event["watcher_id"], id);

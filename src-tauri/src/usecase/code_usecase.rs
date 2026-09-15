@@ -547,10 +547,7 @@ mod code_usecase_tests {
                 ReviewBlobSide::Original => "original",
                 ReviewBlobSide::Modified => "modified",
             };
-            format!(
-                "review-blob://localhost/blob?side={side}&version={}",
-                params.version
-            )
+            format!("blob?side={side}&version={}", params.version)
         }
     }
 

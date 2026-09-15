@@ -31,6 +31,8 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/lib/clientSocket", async (importOriginal) => ({
 	...(await importOriginal<typeof import("@/lib/clientSocket")>()),
 	invokeClient: mocks.invoke,
+	listenClient: mocks.listen,
+	subscribeClientStatus: vi.fn(() => () => {}),
 }));
 
 import { invoke } from "@tauri-apps/api/core";
@@ -147,7 +149,6 @@ const initialSnapshot: WorkspaceTreeSnapshot = {
 				canRename: false,
 				canApprove: false,
 				canRetry: false,
-				canClose: true,
 			},
 			pastAttempts: [],
 			pastAttemptsCollapsed: false,
@@ -175,7 +176,6 @@ const initialSnapshot: WorkspaceTreeSnapshot = {
 						canRename: false,
 						canApprove: false,
 						canRetry: false,
-						canClose: false,
 					},
 					pastAttempts: [],
 					pastAttemptsCollapsed: false,
@@ -201,7 +201,6 @@ const fallbackSnapshot: WorkspaceTreeSnapshot = {
 				canRename: false,
 				canApprove: false,
 				canRetry: false,
-				canClose: true,
 			},
 			pastAttempts: [],
 			pastAttemptsCollapsed: false,

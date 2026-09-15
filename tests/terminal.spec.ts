@@ -30,7 +30,7 @@ test("Terminal Surface接続はbackend resizeより先にsnapshotを投影する
 	await expect
 		.poll(() =>
 			page.evaluate(() =>
-				window.__TAURI_INTERNALS__?.invocations.some(
+				window.__RELEASH_BACKEND__?.invocations.some(
 					(invocation) => invocation.cmd === "resize_terminal_surface",
 				),
 			),

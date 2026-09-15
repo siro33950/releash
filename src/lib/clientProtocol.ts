@@ -13,6 +13,8 @@ import {
 	type CommandResult,
 	CommandResultSchema,
 	EnvelopeSchema,
+	type OperationReference,
+	OperationReferenceSchema,
 	type Push,
 	PushSchema,
 	type Stream,
@@ -24,10 +26,16 @@ import type { TerminalSurfaceStreamItem } from "./terminalSurfaceStream";
 
 export const MAX_STREAM_FRAME_BYTES = 64 * 1024;
 
-export function encodeClientCommand(
+export function createClientCommand(
 	requestId: string,
 	command: string,
 	args: Record<string, unknown> = {},
+	instanceId = "",
+	recover = false,
+	predecessors: OperationReference[] = [],
+	deadlineUnixMs = 0,
+	userRetry = false,
+	successors: OperationReference[] = [],
 ) {
 	const field = CommandRequestSchema.fields.find(
 		(field) => field.name === command,
@@ -35,6 +43,16 @@ export function encodeClientCommand(
 	if (!field?.message) throw new Error(`Unknown client command: ${command}`);
 	const request = fromJson(CommandRequestSchema, {
 		requestId,
+		instanceId,
+		recover,
+		deadlineUnixMs: String(deadlineUnixMs),
+		userRetry,
+		successors: successors.map((reference) =>
+			toJson(OperationReferenceSchema, reference),
+		),
+		predecessors: predecessors.map((reference) =>
+			toJson(OperationReferenceSchema, reference),
+		),
 		[field.jsonName]: clientJson(
 			field.message,
 			JSON.parse(JSON.stringify(args)),
@@ -43,6 +61,13 @@ export function encodeClientCommand(
 	});
 	if (!request.command.case)
 		throw new Error(`Unknown client command: ${command}`);
+	return request;
+}
+
+export function encodeClientCommand(
+	...args: Parameters<typeof createClientCommand>
+) {
+	const request = createClientCommand(...args);
 	return toBinary(
 		EnvelopeSchema,
 		create(EnvelopeSchema, { body: { case: "request", value: request } }),
@@ -74,11 +99,18 @@ export function encodeClientAck(
 	);
 }
 
-export function encodeClientRequestAck(requestId: string) {
+export function encodeClientRequestAck(
+	requestId: string,
+	releaseWatch = false,
+	confirmWatch = false,
+) {
 	return toBinary(
 		EnvelopeSchema,
 		create(EnvelopeSchema, {
-			body: { case: "requestAck", value: { requestId } },
+			body: {
+				case: "requestAck",
+				value: { requestId, releaseWatch, confirmWatch },
+			},
 		}),
 	);
 }

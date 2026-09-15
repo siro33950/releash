@@ -19,7 +19,7 @@ export async function waitForWorkspaceTreeQuiescence(page: Page) {
 	for (let attempt = 0; attempt < 40; attempt += 1) {
 		const current = await page.evaluate(
 			() =>
-				(window.__TAURI_INTERNALS__?.invocations ?? []).filter(
+				(window.__RELEASH_BACKEND__?.invocations ?? []).filter(
 					(entry) => entry.cmd === "list_workspace_worktree_nodes",
 				).length,
 		);

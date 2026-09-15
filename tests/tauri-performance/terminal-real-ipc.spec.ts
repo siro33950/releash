@@ -8,16 +8,6 @@ import {
 } from "../../src/test/performance/terminalPerformanceReport";
 import { terminalBufferContains } from "./helpers";
 
-interface BackendInputSample {
-	sequence: number;
-	onDataToCommandIngressMs: number;
-	commandIngressToAdmissionMs: number;
-	admissionToWriterEnqueueMs: number;
-	writerEnqueueToOutputReadMs: number;
-	outputReadToModelApplyMs: number;
-	modelApplyToEventPublishMs: number;
-	eventPublishedAtUnixMs: number;
-}
 
 const AGENT_TUI_FRAME =
 	"\u001b[38;5;220m◆ tool\u001b[0m 日本語🙂 wide\r\n" +
@@ -26,11 +16,11 @@ const AGENT_TUI_FRAME =
 	"history-line 日本語🙂\r\n";
 const TARGET_FIXTURE_BYTES = 10 * 1024 * 1024;
 
-describe("Terminal Surface real Tauri IPC performance harness", () => {
+describe("Terminal Surface real WebSocket performance harness", () => {
 	let keyLatencyMs: number[] = [];
 	let inputTraceSamples: TerminalInputTraceSample[] = [];
 
-	it("実Tauri command、実PTY、Channel、xtermを通って入力を表示する", async () => {
+	it("実WebSocket、実PTY、xtermを通って入力を表示する", async () => {
 		const ready = await $('[data-testid="performance-terminal-ready"]');
 		await ready.waitForDisplayed();
 		await browser.waitUntil(async () => (await ready.getText()) === "ready");
@@ -41,8 +31,8 @@ describe("Terminal Surface real Tauri IPC performance harness", () => {
 			"data-owner-workspace-path",
 		);
 		expect(workspacePath).toMatch(/^releash-performance-terminal-/);
-		const surface = await browser.tauri.execute(({ core }, ownerWorkspacePath) =>
-			core.invoke<{ session_key: string }>("get_terminal_surface", {
+		const surface = await browser.execute((ownerWorkspacePath) =>
+			window.__RELEASH_INVOKE_CLIENT__!("get_terminal_surface", {
 				owner: {
 					kind: "workspace",
 					workspacePath: ownerWorkspacePath,
@@ -61,8 +51,8 @@ describe("Terminal Surface real Tauri IPC performance harness", () => {
 	});
 
 	it("16入力をRust ingressからxterm paintまで匿名sequenceで相関する", async () => {
-		await browser.tauri.execute(({ core }) =>
-			core.invoke("start_terminal_input_performance_collection"),
+		await browser.execute(() =>
+			window.__RELEASH_INVOKE_CLIENT__!("start_terminal_input_performance_collection"),
 		);
 		await browser.execute(() => {
 			const state = window.__RELEASH_TERMINAL_PERFORMANCE_STATE__;
@@ -95,9 +85,8 @@ describe("Terminal Surface real Tauri IPC performance harness", () => {
 			terminalBufferContains("abcdefghijklmnop"),
 		);
 
-		const backend = await browser.tauri.execute(({ core }) =>
-			core.invoke<BackendInputSample[]>(
-				"take_terminal_input_performance_samples",
+		const backend = await browser.execute(() =>
+			window.__RELEASH_INVOKE_CLIENT__!("take_terminal_input_performance_samples",
 			),
 		);
 		const frontend = await browser.execute(

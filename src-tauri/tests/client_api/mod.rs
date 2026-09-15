@@ -1,4 +1,5 @@
 use prost::Message as _;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
@@ -129,7 +130,7 @@ fn encode_frame(frame: Value) -> Vec<u8> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_クライアントws_認証と相関とtauri同一結果を返す() {
+async fn test_クライアントws_認証と相関を保ちtauri経路を拒否する() {
     // Given
     let fixture = Fixture::new().await;
     for token in [None, Some("wrong")] {
@@ -166,13 +167,9 @@ async fn test_クライアントws_認証と相関とtauri同一結果を返す(
         headers: Default::default(),
         invoke_key: tauri::test::INVOKE_KEY.into(),
     };
-    let tauri_response = tauri::test::get_ipc_response(&window, invoke)
-        .unwrap()
-        .deserialize::<String>()
-        .unwrap();
-    // Then
-    assert_eq!(response, json!({"request_id":"one","result":"ws-branch"}));
-    assert_eq!(response["result"], tauri_response);
+    assert!(tauri::test::get_ipc_response(&window, invoke).is_err());
+    assert_eq!(response["request_id"], "one");
+    assert_eq!(response["result"], "ws-branch");
     socket.close(None).await.unwrap();
 }
 
@@ -234,7 +231,7 @@ async fn test_terminal接続情報_削除済みcommandはtauri_invokeでエラ�
 }
 
 #[tokio::test]
-async fn test_レビューコメント監視_events_json変更がtauriとwsへ届く() {
+async fn test_レビューコメント監視_events_json変更がwsだけへ届く() {
     // Given
     let fixture = Fixture::new().await;
     let mut socket = fixture.connect().await;
@@ -267,7 +264,7 @@ async fn test_レビューコメント監視_events_json変更がtauriとwsへ�
         receive(&mut socket).await,
         json!({"status": "push", "event": "review-comments-changed", "payload": "*"})
     );
-    assert!(received.lock().unwrap().contains(&json!("*")));
+    assert!(received.lock().unwrap().is_empty());
     socket.close(None).await.unwrap();
 }
 
@@ -291,10 +288,14 @@ async fn test_クライアントws_失敗と不正引数も同じrequest_idで�
         }
         .encode_to_vec(),
         CommandRequest {
+            instance_id: String::new(),
+            recover: false,
+            predecessors: Vec::new(),
             request_id: "failed".into(),
             command: Some(command_request::Command::GetCurrentBranch(
                 Default::default(),
             )),
+            ..Default::default()
         }
         .encode_to_vec(),
     ] {
@@ -360,7 +361,7 @@ fn workflow_payload() -> WorkflowExecutionChangedPayloadView {
 }
 
 #[tokio::test]
-async fn test_backend通知_8イベントがtauriとwsへ同じpayloadで届く() {
+async fn test_backend通知_8イベントがwsだけへ届く() {
     // Given
     let fixture = Fixture::new().await;
     let mut socket = fixture.connect().await;
@@ -420,25 +421,20 @@ async fn test_backend通知_8イベントがtauriとwsへ同じpayloadで届く(
         // Then
         assert_eq!(frame["status"], "push");
         assert_eq!(frame["event"], events[index]);
-        if events[index] == "workflow-execution-changed" {
-            assert_eq!(
-                serde_json::from_value::<WorkflowExecutionChangedPayloadView>(
-                    received.lock().unwrap()[index].clone()
-                )
-                .unwrap(),
-                workflow
-            );
-            assert_eq!(
-                serde_json::from_value::<WorkflowExecutionChangedPayloadView>(
-                    frame["payload"].clone()
-                )
-                .unwrap(),
-                workflow
-            );
-        } else {
-            assert_eq!(frame["payload"], received.lock().unwrap()[index]);
-        }
+        let expected = [
+            json!({"worktreePath":"/repo"}),
+            Value::Null,
+            json!({"watcher_id":1,"path":"/repo/file","kind":"change"}),
+            json!({"repo_path":"/repo"}),
+            json!(["/repo"]),
+            json!({"worktree_path":"/repo","version":2,"stale":false,"loading":false,"limited":false}),
+            json!("*"),
+            serde_json::to_value(&workflow).unwrap(),
+        ];
+        assert_eq!(frame["payload"], expected[index]);
+        assert!(received.lock().unwrap().is_empty());
     }
+
     socket.close(None).await.unwrap();
 }
 
@@ -459,6 +455,8 @@ async fn test_クライアントws_往復レイテンシ実測() {
         }
     }
     samples.sort_by(f64::total_cmp);
+    assert!(samples[949] <= 1.0, "p95 exceeds 1ms: {}", samples[949]);
+    assert!(samples[989] <= 2.0, "p99 exceeds 2ms: {}", samples[989]);
     println!("client-ws get_current_branch n={} warmup=100 min_ms={:.6} median_ms={:.6} p95_ms={:.6} p99_ms={:.6} max_ms={:.6} mean_ms={:.6}", samples.len(), samples[0], samples[499], samples[949], samples[989], samples[999], samples.iter().sum::<f64>() / samples.len() as f64);
     socket.close(None).await.unwrap();
 }
@@ -873,4 +871,36 @@ async fn test_クライアントws_保留要求上限でもackを受信し超過
         assert_eq!(receive(&mut socket).await["result"], "ws-branch");
     }
     socket.close(None).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_実クライアント復旧_無関係な完了後も確定済み設定と副作用を保持する() {
+    // Given
+    let host = ClientRecoveryAcceptanceHost::start().await;
+    // When
+    let output = tokio::process::Command::new("node")
+        .arg("tests/helpers/client-recovery.mjs")
+        .args(&host.urls)
+        .current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap())
+        .kill_on_drop(true)
+        .output();
+    let output = tokio::time::timeout(Duration::from_secs(30), output)
+        .await
+        .expect("client recovery deadline")
+        .expect("node client recovery");
+    // Then
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        *host.state.lock().unwrap(),
+        ClientRecoveryState {
+            crash_reporting: false,
+            mounted_xterms: 3,
+            effects: vec!["crash:true".into(), "crash:false".into(), "xterms:3".into()],
+        }
+    );
 }

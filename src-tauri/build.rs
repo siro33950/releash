@@ -54,11 +54,7 @@ fn generate_client_protocol() {
         } else {
             "Command"
         };
-        let decode_test = if message == "CommandRequest" {
-            "#[cfg(test)] "
-        } else {
-            ""
-        };
+        let decode_test = "";
         let encode_test = if message == "CommandRequest" {
             ""
         } else {
@@ -95,7 +91,9 @@ fn generate_client_protocol() {
         decode.push_str("} } }\n");
         encode.push_str("_ => return Err(format!(\"Unknown protocol name: {name}\")), })");
         if message == "CommandRequest" {
-            encode.push_str(", request_id: String::new()");
+            encode.push_str(
+                ", request_id: String::new(), instance_id: String::new(), recover: false, predecessors: Vec::new(), deadline_unix_ms: 0, user_retry: false, successors: Vec::new()",
+            );
         }
         encode.push_str("}) } }\n");
         command_names.push_str("} } }\n");

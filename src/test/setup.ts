@@ -78,5 +78,14 @@ vi.mock("@tauri-apps/plugin-process", () => ({
 
 vi.mock("@/lib/clientSocket", async (importOriginal) => {
 	const original = await importOriginal<typeof import("@/lib/clientSocket")>();
-	return { ...original, invokeClient: vi.fn().mockResolvedValue(1) };
+	const invokeClient = vi.fn().mockResolvedValue(1);
+	const { mockWatchClient } = await import("./watchClient");
+	return {
+		...original,
+		invokeClient,
+		watchClient: mockWatchClient(invokeClient),
+		onClientRefresh: vi.fn().mockReturnValue(() => {}),
+		listenClient: vi.fn().mockResolvedValue(() => {}),
+		subscribeClientStatus: vi.fn().mockReturnValue(() => {}),
+	};
 });

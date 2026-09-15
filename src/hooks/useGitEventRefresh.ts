@@ -1,12 +1,9 @@
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { useCallback, useEffect, useRef } from "react";
-import { invokeClient as invoke } from "@/lib/clientSocket";
+import { listenClient as listen } from "@/lib/clientSocket";
 
-interface FileChangeEvent {
-	watcher_id: number;
-	path: string;
-	kind: string;
-}
+type UnlistenFn = () => void;
+
+import { useCallback, useEffect, useRef } from "react";
+import { watchClient } from "@/lib/clientSocket";
 
 export function useGitEventRefresh(
 	rootPath: string | null,
@@ -28,35 +25,36 @@ export function useGitEventRefresh(
 
 		let unlisten: UnlistenFn | null = null;
 		let disposed = false;
+		let stopWatch: (() => void) | undefined;
 
 		const setup = async () => {
-			const off = await listen<FileChangeEvent>("file-change", (event) => {
-				if (
-					!disposed &&
-					watcherIdRef.current !== null &&
-					event.payload.watcher_id === watcherIdRef.current
-				) {
-					debouncedRefresh();
-				}
-			});
+			const off = await listen(
+				"file-change",
+				(event) => {
+					if (
+						!disposed &&
+						watcherIdRef.current !== null &&
+						event.payload.watcher_id === watcherIdRef.current
+					) {
+						debouncedRefresh();
+					}
+				},
+				debouncedRefresh,
+			);
 			if (disposed) {
 				off();
 				return;
 			}
 			unlisten = off;
 
-			try {
-				const id = await invoke("start_watching", {
-					path: rootPath,
-				});
-				if (disposed) {
-					invoke("stop_watching", { watcherId: id }).catch(() => {});
-					return;
-				}
-				watcherIdRef.current = id;
-			} catch (e) {
-				console.error("Failed to start file watcher:", e);
-			}
+			stopWatch = watchClient(
+				"start_watching",
+				{ path: rootPath },
+				(id) => {
+					watcherIdRef.current = id;
+				},
+				(error) => console.error("Failed to start file watcher:", error),
+			);
 		};
 		void setup();
 
@@ -64,12 +62,8 @@ export function useGitEventRefresh(
 			disposed = true;
 			unlisten?.();
 			if (timerRef.current) clearTimeout(timerRef.current);
-			if (watcherIdRef.current !== null) {
-				invoke("stop_watching", { watcherId: watcherIdRef.current }).catch(
-					() => {},
-				);
-				watcherIdRef.current = null;
-			}
+			stopWatch?.();
+			watcherIdRef.current = null;
 		};
 	}, [debouncedRefresh, rootPath, enabled]);
 
@@ -80,13 +74,14 @@ export function useGitEventRefresh(
 		let disposed = false;
 
 		const setup = async () => {
-			const off = await listen<{ repo_path: string }>(
+			const off = await listen(
 				"git-status-changed",
 				(event) => {
 					if (!disposed && event.payload.repo_path === rootPath) {
 						debouncedRefresh();
 					}
 				},
+				debouncedRefresh,
 			);
 			if (disposed) {
 				off();

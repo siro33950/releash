@@ -1,6 +1,9 @@
-import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { invokeClient as invoke } from "@/lib/clientSocket";
+import {
+	invokeClient as invoke,
+	listenClient as listen,
+} from "@/lib/clientSocket";
+import { getErrorMessage } from "@/lib/errorMessage";
 import {
 	getThreadFilePath,
 	type ReviewDiscussionThread,
@@ -13,6 +16,7 @@ interface UseDiffCommentsOptions {
 export function useDiffComments({ worktreeName }: UseDiffCommentsOptions) {
 	const [comments, setComments] = useState<ReviewDiscussionThread[]>([]);
 	const [loading, setLoading] = useState(false);
+	const [error, setError] = useState<string | null>(null);
 	const worktreeNameRef = useRef(worktreeName);
 	worktreeNameRef.current = worktreeName;
 
@@ -27,9 +31,14 @@ export function useDiffComments({ worktreeName }: UseDiffCommentsOptions) {
 			});
 			if (worktreeNameRef.current === requestedWorktree) {
 				setComments(result ?? []);
+				setError(null);
+			}
+		} catch (reason) {
+			if (worktreeNameRef.current === requestedWorktree) {
+				setError(getErrorMessage(reason));
 			}
 		} finally {
-			setLoading(false);
+			if (worktreeNameRef.current === requestedWorktree) setLoading(false);
 		}
 	}, [worktreeName]);
 
@@ -38,15 +47,22 @@ export function useDiffComments({ worktreeName }: UseDiffCommentsOptions) {
 	}, [loadComments]);
 
 	useEffect(() => {
-		const unlisten = listen<string>("review-comments-changed", (event) => {
-			// payload "*" は CLI/Agent/外部書き込みを拾う file watcher 由来の通知。
-			// worktree 名を逆引きしない設計のため、ワイルドカードのときは全 listener が
-			// それぞれ自分の worktreeName で reload する（無関係 worktree に書き込まれた
-			// 場合の不要 reload は実コスト微小なので許容）。
-			if (event.payload === "*" || event.payload === worktreeNameRef.current) {
-				loadComments();
-			}
-		});
+		const unlisten = listen(
+			"review-comments-changed",
+			(event) => {
+				// payload "*" は CLI/Agent/外部書き込みを拾う file watcher 由来の通知。
+				// worktree 名を逆引きしない設計のため、ワイルドカードのときは全 listener が
+				// それぞれ自分の worktreeName で reload する（無関係 worktree に書き込まれた
+				// 場合の不要 reload は実コスト微小なので許容）。
+				if (
+					event.payload === "*" ||
+					event.payload === worktreeNameRef.current
+				) {
+					loadComments();
+				}
+			},
+			loadComments,
+		);
 		return () => {
 			unlisten.then((fn) => fn());
 		};
@@ -115,6 +131,7 @@ export function useDiffComments({ worktreeName }: UseDiffCommentsOptions) {
 	return {
 		comments,
 		loading,
+		error,
 		unsentCount: 0,
 		addComment,
 		appendComment,

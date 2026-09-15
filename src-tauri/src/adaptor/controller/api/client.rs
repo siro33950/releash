@@ -1,4 +1,8 @@
-use std::{collections::HashMap, sync::Arc};
+use super::client_operation::{decision, input as operation_input, response as operation_response};
+use crate::domain::client_operation::policy;
+use crate::domain::client_operation::registry::RecoveryAttempt;
+use crate::usecase::client_operation::{ClientOperationUsecase, OperationCompletion};
+use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
@@ -21,23 +25,42 @@ const MAX_CLIENT_REQUEST_BYTES: usize = 16 * 1024 * 1024;
 #[derive(Clone)]
 pub(crate) struct ClientApiDeps {
     dispatch: Arc<ClientCommandDispatch>,
+    operations: Arc<ClientOperationUsecase<wire::Envelope>>,
     push: ClientPushGateway,
     terminal: Option<TerminalApiDeps>,
     connection_limit: Arc<tokio::sync::Semaphore>,
     request_limit: Arc<tokio::sync::Semaphore>,
-    // ponytail: saves share one queue across connections; split by worktree if they block each other.
-    save_tail: Arc<parking_lot::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>>,
 }
 
 impl ClientApiDeps {
     pub(crate) fn new(dispatch: Arc<ClientCommandDispatch>, push: ClientPushGateway) -> Self {
+        let stop_dispatch = dispatch.clone();
+        let operations = ClientOperationUsecase::new(
+            uuid::Uuid::new_v4().to_string(),
+            Arc::new(super::client_operation::now_ms),
+            Arc::new(move |id| {
+                let dispatch = stop_dispatch.clone();
+                Box::pin(async move {
+                    if let Err(error) = dispatch
+                        .dispatch_admitted(wire::command_request::Command::StopWatching(
+                            wire::StopWatchingRequest {
+                                watcher_id: Some(id),
+                            },
+                        ))
+                        .await
+                    {
+                        log::error!("Unreceived watcher {id} cleanup failed: {error:?}");
+                    }
+                })
+            }),
+        );
         Self {
             dispatch,
+            operations: Arc::new(operations),
             push,
             terminal: None,
             connection_limit: Arc::new(tokio::sync::Semaphore::new(16)),
             request_limit: Arc::new(tokio::sync::Semaphore::new(64)),
-            save_tail: Arc::new(parking_lot::Mutex::new(None)),
         }
     }
 
@@ -47,7 +70,12 @@ impl ClientApiDeps {
     }
 }
 
-pub(super) fn router(deps: Option<ClientApiDeps>) -> Router {
+pub(crate) fn router(deps: Option<ClientApiDeps>) -> Router {
+    if let Some(deps) = &deps {
+        tokio::spawn(super::client_operation::maintain(Arc::downgrade(
+            &deps.operations,
+        )));
+    }
     Router::new()
         .route(CLIENT_WS_PATH, get(upgrade))
         .with_state(deps)
@@ -80,9 +108,42 @@ async fn serve(
     let (mut sink, mut input) = socket.split();
     let mut terminal = TerminalConnection::new(deps.terminal);
     let mut requests = FuturesUnordered::new();
-    let mut unreceived_watches: HashMap<String, UnreceivedWatch> = HashMap::new();
+    let connection_id = uuid::Uuid::new_v4().to_string();
     let mut push_open = true;
+    let hello = Envelope {
+        body: Some(Body::Hello(wire::ClientHello {
+            instance_id: deps.operations.instance_id.to_string(),
+            heartbeat_interval_ms: policy::HEARTBEAT_INTERVAL_MS,
+            heartbeat_timeout_ms: policy::HEARTBEAT_TIMEOUT_MS,
+            connect_timeout_ms: policy::CONNECT_TIMEOUT_MS,
+            reconnect_interval_ms: policy::RECONNECT_INTERVAL_MS,
+            sleep_gap_ms: policy::SLEEP_GAP_MS,
+            tick_interval_ms: policy::TICK_INTERVAL_MS,
+            policies: deps
+                .dispatch
+                .command_names()
+                .map(|name| {
+                    (
+                        name.into(),
+                        wire::CommandPolicy {
+                            waits_for_result: policy::waits_for_result(name),
+                            polls_result: policy::polls_result(name),
+                            disconnect: policy::disconnect_action(name, false).into(),
+                            expired_disconnect: policy::disconnect_action(name, true).into(),
+                        },
+                    )
+                })
+                .collect(),
+            deadlines_ms: deps
+                .dispatch
+                .command_names()
+                .map(|name| (name.into(), policy::deadline_ms(name)))
+                .collect(),
+        })),
+    };
+
     loop {
+        deps.operations.maintain().await;
         let envelope = tokio::select! {
             frame = input.next() => {
                 let data = match frame {
@@ -95,46 +156,91 @@ async fn serve(
                     _ => break,
                 };
                 match Envelope::decode(data).map(|envelope| envelope.body) {
+                    Ok(Some(Body::Hello(_))) => hello.clone(),
+                    Ok(Some(Body::Heartbeat(heartbeat))) => Envelope { body: Some(Body::Heartbeat(heartbeat)) },
+                    Ok(Some(Body::OperationQuery(query))) => {
+                        let mut response = match &query.request {
+                        Some(request) => match operation_input(request) {
+                            Ok((identity, predecessors)) => match super::client_operation::references(&request.successors) {
+                                Ok(successors) => decision(&query.request_id,
+                                    deps.operations.prepare(&query.request_id, &query.instance_id, &identity, &predecessors, &RecoveryAttempt {
+                                        connection: &connection_id, sent: query.sent,
+                                        expired: query.expired || (request.deadline_unix_ms > 0 && super::client_operation::now_ms() >= request.deadline_unix_ms),
+                                        user_retry: request.user_retry, successors: &successors,
+                                    }), &identity),
+                                Err(error) => wire::response(query.request_id, Err(error)),
+                            },
+                            Err(error) => wire::response(query.request_id, Err(error)),
+                        },
+                        None => operation_response(&query.request_id, deps.operations.query(&query.request_id, &query.instance_id)),
+                        };
+                        if let Some(Body::OperationStatus(status)) = &mut response.body {
+                            status.query_id = query.query_id;
+                        }
+                        response
+                    },
                     Ok(Some(Body::Request(request))) => {
                         let id = request.request_id.clone();
-                        match request.command {
-                            Some(command) => {
-                                if let Err(error) = deps.dispatch.admit(command.name()) {
-                                    wire::response(id, Err(error))
-                                } else if matches!(&command, wire::command_request::Command::AttachTerminalSurface(_) | wire::command_request::Command::DetachTerminalSurface(_)) {
-                                    wire::response(id, terminal.dispatch(command))
-                                } else if matches!(&command, wire::command_request::Command::ResizeTerminalSurface(_)) {
-                                    wire::response(id, deps.dispatch.dispatch(command).await)
-                                } else if let Ok(permit) = deps.request_limit.clone().try_acquire_owned() {
-                                    let dispatch = deps.dispatch.clone();
-                                    let (previous_save, save_done) = if matches!(&command, wire::command_request::Command::SaveWorkspaceState(_)) {
-                                        let (done, next) = tokio::sync::oneshot::channel::<()>();
-                                        (deps.save_tail.lock().replace(next), Some(done))
-                                    } else { (None, None) };
-                                    requests.push(tokio::spawn(async move {
-                                        if let Some(previous) = previous_save { let _ = previous.await; }
-                                        let result = dispatch.dispatch(command).await;
-                                        drop(save_done);
-                                        let watcher_id = match &result {
-                                            Ok(wire::command_result::Command::StartWatching(value) | wire::command_result::Command::StartGitDirWatching(value)) => value.value,
-                                            _ => None,
-                                        };
-                                        let watch = watcher_id.map(|id| UnreceivedWatch { id: Some(id), dispatch, _permit: permit });
-                                        (wire::response(id, result), watch)
-                                    }));
-                                    continue;
-                                } else {
-                                    wire::response(id, Err(crate::other::AppError::coded("REQUEST_LIMIT", "Too many pending client commands").into()))
-                                }
+                        let (identity, predecessors) = match operation_input(&request) {
+                            Ok(input) => input,
+                            Err(error) => {
+                                if sink.send(Message::Binary(wire::response(id, Err(error)).encode_to_vec().into())).await.is_err() { break; }
+                                continue;
                             }
-                            None => wire::response(id, Err(invalid("Missing command"))),
+                        };
+                        let successors = match super::client_operation::references(&request.successors) {
+                            Ok(items) => items,
+                            Err(error) => {
+                                if sink.send(Message::Binary(wire::response(id, Err(error)).encode_to_vec().into())).await.is_err() { break; }
+                                continue;
+                            }
+                        };
+                        let command = request.command.expect("validated command");
+                        let terminal_request = matches!(&command, wire::command_request::Command::AttachTerminalSurface(_) | wire::command_request::Command::DetachTerminalSurface(_));
+                        let stopped_watch = match &command { wire::command_request::Command::StopWatching(args) => args.watcher_id, _ => None };
+                        let result_id = id.clone();
+                        let execution = deps.operations.execute(id.clone(), &request.instance_id, identity, &predecessors, &RecoveryAttempt {
+                            connection: &connection_id, sent: request.recover,
+                            expired: request.deadline_unix_ms > 0 && super::client_operation::now_ms() >= request.deadline_unix_ms,
+                            user_retry: request.user_retry, successors: &successors,
+                        }, || {
+                            let result = if let Err(error) = deps.dispatch.admit(command.name()) {
+                                futures_util::future::Either::Left(std::future::ready(Err(error)))
+                            } else if matches!(&command, wire::command_request::Command::AttachTerminalSurface(_) | wire::command_request::Command::DetachTerminalSurface(_)) {
+                                futures_util::future::Either::Left(std::future::ready(terminal.dispatch(command)))
+                            } else {
+                                let permit = deps.request_limit.clone().try_acquire_owned();
+                                let dispatch = permit.as_ref().ok().map(|_| deps.dispatch.dispatch(command));
+                                futures_util::future::Either::Right(async move {
+                                    let _permit = permit.map_err(|_| wire::CommandError::from(crate::other::AppError::coded("REQUEST_LIMIT", "Too many pending client commands")))?;
+                                    dispatch.expect("request permit").await
+                                })
+                            };
+                            async move {
+                                let result = result.await;
+                                let started_watch = match &result {
+                                    Ok(wire::command_result::Command::StartWatching(value) | wire::command_result::Command::StartGitDirWatching(value)) => value.value,
+                                    _ => None,
+                                };
+                                let stopped_watch = result.is_ok().then_some(stopped_watch).flatten();
+                                OperationCompletion { result: wire::response(result_id, result), started_watch, stopped_watch }
+                            }
+                        });
+                        if terminal_request {
+                            operation_response(&id, execution.await)
+                        } else {
+                            requests.push(tokio::spawn(async move { operation_response(&id, execution.await) }));
+                            continue;
                         }
                     }
                     Ok(Some(Body::RequestAck(ack))) => {
-                        if let Some(mut watch) = unreceived_watches.remove(&ack.request_id) {
-                            watch.id = None;
-                        }
-                        continue;
+                        let active = deps.operations.acknowledge(&ack.request_id, ack.release_watch).await;
+                        if !ack.confirm_watch { continue; }
+                        Envelope { body: Some(Body::OperationStatus(wire::OperationStatus {
+                            request_id: ack.request_id,
+                            state: if active { "watch_active" } else { "watch_released" }.into(),
+                            ..Default::default()
+                        })) }
                     }
                     Ok(Some(Body::Ack(ack))) => {
                         match terminal.acknowledge(&ack.attachment_id, ack.sequence) {
@@ -152,12 +258,7 @@ async fn serve(
             }
             response = requests.next(), if !requests.is_empty() => {
                 match response.expect("pending command") {
-                    Ok((response, watch)) => {
-                        if let (Some(watch), Some(Body::Response(result))) = (watch, &response.body) {
-                            unreceived_watches.insert(result.request_id.clone(), watch);
-                        }
-                        response
-                    },
+                    Ok(response) => response,
                     Err(error) => { log::error!("Client command task failed: {error}"); break; }
                 }
             }
@@ -188,34 +289,8 @@ async fn serve(
             break;
         }
     }
+    deps.operations.disconnect(&connection_id).await;
     let _ = sink.send(Message::Close(None)).await;
-}
-
-struct UnreceivedWatch {
-    id: Option<u64>,
-    dispatch: Arc<ClientCommandDispatch>,
-    _permit: tokio::sync::OwnedSemaphorePermit,
-}
-
-impl Drop for UnreceivedWatch {
-    fn drop(&mut self) {
-        let Some(id) = self.id else {
-            return;
-        };
-        let dispatch = self.dispatch.clone();
-        tokio::spawn(async move {
-            if let Err(error) = dispatch
-                .dispatch_admitted(wire::command_request::Command::StopWatching(
-                    wire::StopWatchingRequest {
-                        watcher_id: Some(id),
-                    },
-                ))
-                .await
-            {
-                log::error!("Unreceived watcher {id} cleanup failed: {error:?}");
-            }
-        });
-    }
 }
 
 #[cfg(test)]
