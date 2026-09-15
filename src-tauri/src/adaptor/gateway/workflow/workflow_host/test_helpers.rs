@@ -343,3 +343,35 @@ impl Fixture {
         .expect("command must complete")
     }
 }
+
+pub(super) fn record_workflow_execution_broadcasts<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> tokio::sync::broadcast::Receiver<Arc<[u8]>> {
+    app.state::<Arc<crate::infrastructure::push::PushSink>>()
+        .subscribe()
+}
+
+pub(super) fn take_workflow_execution_broadcasts(
+    receiver: &mut tokio::sync::broadcast::Receiver<Arc<[u8]>>,
+) -> Vec<crate::adaptor::protocol::workflow::WorkflowExecutionChangedPayloadView> {
+    use crate::adaptor::controller::api::protocol::client as wire;
+    use prost::Message;
+    let mut broadcasts = Vec::new();
+    loop {
+        let frame = match receiver.try_recv() {
+            Ok(frame) => frame,
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+            Err(error) => panic!("push reception failed: {error}"),
+        };
+        let Some(wire::envelope::Body::Push(push)) =
+            wire::Envelope::decode(frame.as_ref()).unwrap().body
+        else {
+            panic!("push frame");
+        };
+        let (event, payload) = push.into_value().unwrap();
+        if event == "workflow-execution-changed" {
+            broadcasts.push(serde_json::from_value(payload).unwrap());
+        }
+    }
+    broadcasts
+}

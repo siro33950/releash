@@ -20,11 +20,33 @@ pub(crate) struct TerminalSurfaceApplication {
     event_source: Arc<dyn TerminalSurfaceEventSource>,
     attachment_cancellations: Arc<Mutex<HashMap<String, TerminalSurfaceAttachmentRegistration>>>,
     runtime_lifecycle: Arc<RwLock<TerminalSurfaceRuntimeLifecycle>>,
+    resize_tails: Arc<Mutex<HashMap<String, std::sync::mpsc::Receiver<()>>>>,
 }
 
 struct TerminalSurfaceAttachmentRegistration {
     session_key: String,
     cancellation: Arc<dyn TerminalSurfaceEventCancellation>,
+}
+
+struct TerminalSurfaceResizeCompletion {
+    application: TerminalSurfaceApplication,
+    session_key: String,
+    done: Option<std::sync::mpsc::Sender<()>>,
+}
+
+impl Drop for TerminalSurfaceResizeCompletion {
+    fn drop(&mut self) {
+        drop(self.done.take());
+        let mut tails = self.application.resize_tails.lock().unwrap();
+        if tails.get(&self.session_key).is_some_and(|tail| {
+            matches!(
+                tail.try_recv(),
+                Err(std::sync::mpsc::TryRecvError::Disconnected)
+            )
+        }) {
+            tails.remove(&self.session_key);
+        }
+    }
 }
 
 pub(crate) struct TerminalSurfaceAttachmentStream {
@@ -202,6 +224,7 @@ impl TerminalSurfaceApplication {
         Self {
             gateway,
             event_source,
+            resize_tails: Arc::new(Mutex::new(HashMap::new())),
             attachment_cancellations: Arc::new(Mutex::new(HashMap::new())),
             runtime_lifecycle: Arc::new(RwLock::new(TerminalSurfaceRuntimeLifecycle::new(
                 "application-process".to_string(),
@@ -449,8 +472,35 @@ impl TerminalSurfaceApplication {
         rows: u16,
         cols: u16,
     ) -> Result<(), UsecaseError> {
-        let _admission = self.admit_mutation()?;
-        super::io_usecase::resize(self.gateway.as_ref(), owner, rows, cols)
+        self.prepare_resize(owner.clone(), rows, cols)()
+    }
+
+    pub(crate) fn prepare_resize(
+        &self,
+        owner: TerminalSurfaceOwner,
+        rows: u16,
+        cols: u16,
+    ) -> impl FnOnce() -> Result<(), UsecaseError> + Send + 'static {
+        let (done, next) = std::sync::mpsc::channel();
+        let previous = self
+            .resize_tails
+            .lock()
+            .unwrap()
+            .insert(owner.stable_key(), next);
+        let application = self.clone();
+        let completion = TerminalSurfaceResizeCompletion {
+            application: application.clone(),
+            session_key: owner.stable_key(),
+            done: Some(done),
+        };
+        move || {
+            let _completion = completion;
+            if let Some(previous) = previous {
+                let _ = previous.recv();
+            }
+            let _admission = application.admit_mutation()?;
+            super::io_usecase::resize(application.gateway.as_ref(), &owner, rows, cols)
+        }
     }
 
     pub(crate) fn kill(&self, owner: &TerminalSurfaceOwner) -> Result<(), UsecaseError> {

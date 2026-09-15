@@ -7,6 +7,9 @@ import { FileDescriptorSetSchema } from "@bufbuild/protobuf/wkt";
 
 const temporary = mkdtempSync(join(tmpdir(), "releash-protocol-"));
 try {
+  const transport = join(temporary, "client-transport");
+  execFileSync("rustc", ["--edition=2021", "scripts/generate-client-transport.rs", "-o", transport]);
+  writeFileSync("src/generated/client_transport.ts", execFileSync(transport));
   const descriptor = join(temporary, "client.bin");
   execFileSync("protoc", ["--proto_path=proto", "--include_imports", `--descriptor_set_out=${descriptor}`, "proto/client.proto"]);
   const registry = createFileRegistry(fromBinary(FileDescriptorSetSchema, readFileSync(descriptor)));
@@ -41,7 +44,7 @@ try {
     return name;
   }
   const mappings = [["ClientCommandArgs", "CommandRequest"], ["ClientCommandResults", "CommandResult"], ["ClientPushPayloads", "Push"]].map(([name, proto]) => {
-    const fields = registry.getMessage(`releash.client.v1.${proto}`).fields.filter(field => field.message);
+    const fields = registry.getMessage(`releash.client.v1.${proto}`).fields.filter(field => field.message && field.oneof);
     if (name === "ClientCommandResults") return `export interface ClientCommands {\n${fields.map(field => `${JSON.stringify(field.name)}(args: ClientCommandArgs[${JSON.stringify(field.name)}]): Promise<${option(field.message, "json_unit") ? "void" : messageType(field.message)}>;`).join("\n")}\n}\nexport type ClientCommandResults = { [K in keyof ClientCommands]: Awaited<ReturnType<ClientCommands[K]>> };`;
     return `export interface ${name} {\n${fields.map(field => `${JSON.stringify(proto === "Push" ? field.name.replaceAll("_", "-") : field.name)}: ${name === "ClientCommandResults" && option(field.message, "json_unit") ? "void" : messageType(field.message, name === "ClientCommandArgs")};`).join("\n")}\n}`;
   });

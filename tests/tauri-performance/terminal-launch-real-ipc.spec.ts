@@ -14,10 +14,6 @@ type LaunchProvider = "fixture" | "tui-fixture" | "claude" | "codex";
 const TUI_FIXTURE_READY_MARKER = "LAUNCH-TUI-READY";
 const INTERACTIVE_PROBE = "zqzq";
 
-interface TerminalLaunchPerformanceSample {
-	phase: string;
-	durationMs: number;
-}
 
 const BACKEND_PHASES: Record<string, TerminalLaunchPhase> = {
 	"terminal.launch.command_ingress": "commandIngress",
@@ -130,21 +126,19 @@ launchDescribe("Provider AgentSession real Tauri launch performance", () => {
 			window.__RELEASH_TERMINAL_PERFORMANCE_SESSION_DRIVER__?.clearSession();
 		});
 		await browser.pause(10);
-		await browser.tauri.execute(async ({ core }, sessionId) => {
-			const outcome = await core.invoke<
-				"archived" | "already_archived" | "delete_confirmation_required"
-			>("archive_agent_session", {
+		await browser.execute(async (sessionId) => {
+			const outcome = await window.__RELEASH_INVOKE_CLIENT__!("archive_agent_session", {
 				agentSessionId: sessionId,
 				callerRequestId: `performance-archive.${crypto.randomUUID()}`,
 			});
 			if (outcome === "delete_confirmation_required") {
-				await core.invoke("confirm_agent_session_archive_delete", {
+				await window.__RELEASH_INVOKE_CLIENT__!("confirm_agent_session_archive_delete", {
 					agentSessionId: sessionId,
 					callerRequestId: `performance-confirm-delete.${crypto.randomUUID()}`,
 				});
 				return;
 			}
-			await core.invoke("delete_agent_session", {
+			await window.__RELEASH_INVOKE_CLIENT__!("delete_agent_session", {
 				agentSessionId: sessionId,
 				callerRequestId: `performance-delete.${crypto.randomUUID()}`,
 			});
@@ -153,8 +147,8 @@ launchDescribe("Provider AgentSession real Tauri launch performance", () => {
 
 	async function launchAndPaint(run: number, collect: boolean): Promise<void> {
 		if (collect) {
-			await browser.tauri.execute(({ core }) =>
-				core.invoke("start_terminal_launch_performance_collection"),
+			await browser.execute(() =>
+				window.__RELEASH_INVOKE_CLIENT__!("start_terminal_launch_performance_collection"),
 			);
 		}
 		const before = await browser.execute(() => ({
@@ -166,9 +160,9 @@ launchDescribe("Provider AgentSession real Tauri launch performance", () => {
 					?.length ?? 0,
 			startedAt: performance.now(),
 		}));
-		const agentSessionId = await browser.tauri.execute(
-			({ core }, request) =>
-				core.invoke<string>("create_agent_session", request),
+		const agentSessionId = await browser.execute(
+			(request) =>
+				window.__RELEASH_INVOKE_CLIENT__!("create_agent_session", request),
 			{
 				workspaceIdentity: worktreePath,
 				worktreePath,
@@ -221,9 +215,8 @@ launchDescribe("Provider AgentSession real Tauri launch performance", () => {
 		}, before);
 
 		if (collect) {
-			const backend = await browser.tauri.execute(({ core }) =>
-				core.invoke<TerminalLaunchPerformanceSample[]>(
-					"take_terminal_launch_performance_samples",
+			const backend = await browser.execute(() =>
+				window.__RELEASH_INVOKE_CLIENT__!("take_terminal_launch_performance_samples",
 				),
 			);
 			for (const [backendName, reportName] of Object.entries(BACKEND_PHASES)) {

@@ -1143,8 +1143,6 @@ pub fn run() {
             .ok_or_else(|| std::io::Error::other("normal startup admission was not Ready"))??;
             Ok(())
         });
-    let builder =
-        adaptor::controller::command::code::review_blob::register_review_blob_protocol(builder);
 
     let builder = adaptor::controller::command::register_all(builder);
     builder

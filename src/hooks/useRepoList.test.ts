@@ -3,15 +3,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useRepoList } from "./useRepoList";
 
 const mockInvoke = vi.fn();
-vi.mock("@/lib/clientSocket", () => ({
-	invokeClient: (...args: unknown[]) => mockInvoke(...args),
-}));
 
 type ListenCallback = (event: { payload: string[] }) => void;
 let capturedListeners: Map<string, ListenCallback>;
 
-vi.mock("@tauri-apps/api/event", () => ({
-	listen: vi.fn((eventName: string, callback: ListenCallback) => {
+vi.mock("@/lib/clientSocket", () => ({
+	invokeClient: (...args: unknown[]) => mockInvoke(...args),
+	listenClient: vi.fn((eventName: string, callback: ListenCallback) => {
 		capturedListeners.set(eventName, callback);
 		return Promise.resolve(() => {
 			capturedListeners.delete(eventName);

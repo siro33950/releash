@@ -28,13 +28,9 @@ impl BackendPush<'_> {
     pub fn emit<R: tauri::Runtime>(self, app: &tauri::AppHandle<R>) {
         use crate::adaptor::controller::api::protocol::client as wire;
         use prost::Message;
-        use tauri::Emitter;
         let sink = app.state::<Arc<PushSink>>();
         macro_rules! publish {
-            ($name:literal, $payload:expr, $variant:ident, $value:expr) => {{
-                if let Err(error) = app.emit($name, $payload) {
-                    log::error!("Tauri push failed for {}: {error}", $name);
-                }
+            ($name:literal, $variant:ident, $value:expr) => {{
                 let event = $value.map(wire::push::Event::$variant);
                 match event {
                     Ok(event) => sink.send(
@@ -54,7 +50,6 @@ impl BackendPush<'_> {
         match self {
             Self::AgentSessionChanged(payload) => publish!(
                 "agent-session-changed",
-                &payload,
                 AgentSessionChanged,
                 Ok::<_, String>(wire::AgentSessionChangedPayload {
                     worktree_path: Some(payload.worktree_path.into())
@@ -62,25 +57,21 @@ impl BackendPush<'_> {
             ),
             Self::BranchListSync => publish!(
                 "branch-list-sync",
-                (),
                 BranchListSync,
                 Ok::<_, String>(wire::Unit {})
             ),
             Self::FileChange(payload) => publish!(
                 "file-change",
-                &payload,
                 FileChange,
                 wire::FileChangeEvent::try_from(payload)
             ),
             Self::GitStatusChanged(payload) => publish!(
                 "git-status-changed",
-                &payload,
                 GitStatusChanged,
                 wire::GitStatusChangedEvent::try_from(payload)
             ),
             Self::RepoPathsChanged(payload) => publish!(
                 "repo-paths-changed",
-                payload,
                 RepoPathsChanged,
                 Ok::<_, String>(wire::Liststring {
                     items: payload.to_vec()
@@ -88,13 +79,11 @@ impl BackendPush<'_> {
             ),
             Self::RepositorySnapshotChanged(payload) => publish!(
                 "repository-snapshot-changed",
-                &payload,
                 RepositorySnapshotChanged,
                 wire::RepositorySnapshotChangedEvent::try_from(payload)
             ),
             Self::ReviewCommentsChanged(payload) => publish!(
                 "review-comments-changed",
-                payload,
                 ReviewCommentsChanged,
                 Ok::<_, String>(wire::ResultString {
                     value: Some(payload.into())
@@ -102,7 +91,6 @@ impl BackendPush<'_> {
             ),
             Self::WorkflowExecutionChanged(payload) => publish!(
                 "workflow-execution-changed",
-                &payload,
                 WorkflowExecutionChanged,
                 wire::WorkflowExecutionChangedPayloadView::try_from(*payload).map(Box::new)
             ),

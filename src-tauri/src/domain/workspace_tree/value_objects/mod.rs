@@ -129,7 +129,6 @@ pub struct WorkspaceTreeNode {
     pub can_rename: bool,
     pub can_approve: bool,
     pub can_retry: bool,
-    pub can_close: bool,
     pub can_stop: bool,
     pub can_resume: bool,
     /// Runtime aggregate が resume を受理する leaf。公開 capability は workflow root の
@@ -369,7 +368,6 @@ mod tests {
             can_rename: false,
             can_approve: false,
             can_retry: false,
-            can_close: false,
             can_stop: false,
             can_resume: false,
             resume_eligible: false,

@@ -3,14 +3,17 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutomation } from "./useAutomation";
 
 const mockInvoke = vi.fn();
-vi.mock("@/lib/clientSocket", () => ({
+vi.mock("@/lib/clientSocket", async () => ({
+	watchClient: (await import("@/test/watchClient")).mockWatchClient((...args) =>
+		mockInvoke(...args),
+	),
+	onClientRefresh: (...args: unknown[]) => mockRefresh(...args),
+	listenClient: (...args: unknown[]) => mockListen(...args),
 	invokeClient: (...args: unknown[]) => mockInvoke(...args),
 }));
 
 const mockListen = vi.fn();
-vi.mock("@tauri-apps/api/event", () => ({
-	listen: (...args: unknown[]) => mockListen(...args),
-}));
+const mockRefresh = vi.fn().mockReturnValue(() => {});
 
 const sessionNode = {
 	name: "step-1",
@@ -50,6 +53,48 @@ describe("useAutomation", () => {
 					return Promise.resolve(undefined);
 			}
 		});
+	});
+
+	it("監視準備が失敗しても接続回復で準備と表示中facet一覧を取得し直す", async () => {
+		const initial = mockInvoke.getMockImplementation();
+		if (!initial) throw new Error("Missing invoke fixture");
+		let connected = false;
+		mockInvoke.mockImplementation((command, args) => {
+			if (command === "get_automation_config_dir" && !connected)
+				return Promise.reject(new Error("deadline"));
+			if (command === "list_facet_summaries")
+				return Promise.resolve(
+					connected
+						? [{ key: "new", kind: "policy", name: "new", builtin: false }]
+						: [],
+				);
+			return initial(command, args);
+		});
+		const { result } = renderHook(() => useAutomation(true));
+		await waitFor(() => expect(result.current.error).toBe("deadline"));
+		await act(() => result.current.fetchFacets("policy"));
+		expect(mockInvoke).not.toHaveBeenCalledWith(
+			"start_watching",
+			expect.anything(),
+		);
+		await act(async () => {
+			connected = true;
+			const subscription = mockListen.mock.calls.find(
+				([event]) => event === "file-change",
+			);
+			if (!subscription) throw new Error("Missing file-change subscription");
+			subscription[2]();
+		});
+		await waitFor(() =>
+			expect(mockInvoke).toHaveBeenCalledWith("start_watching", {
+				path: "/mock/config/dir",
+			}),
+		);
+		expect(result.current.facets.map((facet) => facet.key)).toEqual(["new"]);
+		await act(async () =>
+			mockListen.mock.calls[0][1]({ payload: { watcher_id: 42 } }),
+		);
+		expect(result.current.externalChangeDetected).toBe(true);
 	});
 
 	it("fetchAll is called when open=true", async () => {
@@ -240,6 +285,7 @@ describe("useAutomation", () => {
 		await waitFor(() => {
 			expect(mockListen).toHaveBeenCalledWith(
 				"file-change",
+				expect.any(Function),
 				expect.any(Function),
 			);
 		});
@@ -437,5 +483,63 @@ describe("useAutomation", () => {
 			kind: "policy",
 			key: "my-policy",
 		});
+	});
+
+	it.each(["get_workflow_source", "get_workflow"])(
+		"%sの期限後の再取得通知で選択中workflowの詳細を回復する",
+		async (blocked) => {
+			const base = mockInvoke.getMockImplementation();
+			if (!base) throw new Error("Missing invoke fixture");
+			let recovered = false;
+			mockInvoke.mockImplementation((command, args) => {
+				if (command === blocked && !recovered)
+					return Promise.reject(new Error("deadline"));
+				if (command === "get_workflow")
+					return Promise.resolve({ name: "selected", nodes: [sessionNode] });
+				return base(command, args);
+			});
+			const { result } = renderHook(() => useAutomation(true));
+			await act(() => result.current.selectWorkflow("selected"));
+			expect(result.current.selectedWorkflow).toBeNull();
+			await act(async () => {
+				recovered = true;
+				mockRefresh.mock.lastCall?.[0]();
+			});
+			expect(result.current.selectedWorkflow?.name).toBe("selected");
+			expect(result.current.selectedWorkflowSource).toBe(
+				"name: test\nnodes: []\n",
+			);
+			expect(result.current.error).toBeNull();
+		},
+	);
+	it("再取得で先に確定した詳細を古い選択の遅延応答で上書きしない", async () => {
+		const base = mockInvoke.getMockImplementation();
+		if (!base) throw new Error("Missing invoke fixture");
+		let finish!: (value: unknown) => void;
+		let recovered = false;
+		mockInvoke.mockImplementation((command, args) => {
+			if (command === "get_workflow")
+				return recovered
+					? Promise.resolve({ name: "new", nodes: [] })
+					: new Promise((resolve) => {
+							finish = resolve;
+						});
+			return base(command, args);
+		});
+		const { result } = renderHook(() => useAutomation(true));
+		let initial!: Promise<void>;
+		await act(async () => {
+			initial = result.current.selectWorkflow("selected");
+		});
+		await act(async () => {
+			recovered = true;
+			mockRefresh.mock.lastCall?.[0]();
+		});
+		expect(result.current.selectedWorkflow?.name).toBe("new");
+		await act(async () => {
+			finish({ name: "old", nodes: [] });
+			await initial;
+		});
+		expect(result.current.selectedWorkflow?.name).toBe("new");
 	});
 });

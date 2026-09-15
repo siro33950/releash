@@ -24,7 +24,11 @@ export function RightSidebarBottom({
 	onToggleCollapse,
 	collapsed,
 }: RightSidebarBottomProps) {
-	const { comments, deleteThread } = useDiffComments({ worktreeName });
+	const {
+		comments,
+		deleteThread,
+		error: commentsError,
+	} = useDiffComments({ worktreeName });
 	const [terminalError, setTerminalError] = useState<string | null>(null);
 
 	return (
@@ -70,6 +74,14 @@ export function RightSidebarBottom({
 					<Separator />
 					<Panel id="comments" defaultSize="50%" minSize="20%">
 						<div className="h-full overflow-hidden">
+							{commentsError && (
+								<div
+									role="alert"
+									className="px-3 py-2 text-sm text-destructive"
+								>
+									コメントを取得できません: {commentsError}
+								</div>
+							)}
 							<DiffCommentList
 								comments={comments}
 								onThreadClick={onThreadClick ?? (() => {})}

@@ -210,23 +210,23 @@ pub(crate) fn register_shared(
         router.register_domain(
             &["resize_terminal_surface"],
             Box::new(move |command| {
-                let state = state.clone();
-                Box::pin(async move {
+                let resize = (|| {
                     let wire::command_request::Command::ResizeTerminalSurface(args) = command
                     else {
                         return Err(invalid_request("Mismatched command"));
                     };
-                    let result = async move {
-                        let state = state
-                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        outcome(commands::resize_terminal_surface_shared(
-                            &state,
-                            convert(required(args.owner, "owner")?)?,
-                            convert(required(args.rows, "rows")?)?,
-                            convert(required(args.cols, "cols")?)?,
-                        ))
-                    }
-                    .await?;
+                    let state = state
+                        .as_ref()
+                        .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
+                    Ok(commands::resize_terminal_surface_shared(
+                        state,
+                        convert(required(args.owner, "owner")?)?,
+                        convert(required(args.rows, "rows")?)?,
+                        convert(required(args.cols, "cols")?)?,
+                    ))
+                })();
+                Box::pin(async move {
+                    let result = outcome(resize?.await)?;
                     Ok(wire::command_result::Command::ResizeTerminalSurface(result))
                 })
             }),

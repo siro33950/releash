@@ -141,8 +141,9 @@ test("10MiB agent-TUI負荷でTerminal Surfaceのstrict performance budgetを守
 		expectedInput += key;
 		await page.waitForFunction(
 			(expected) =>
-				document.querySelector(".xterm-rows")?.textContent?.includes(expected) ??
-				false,
+				document
+					.querySelector(".xterm-rows")
+					?.textContent?.includes(expected) ?? false,
 			expectedInput,
 			{ timeout: 5_000 },
 		);
@@ -155,15 +156,16 @@ test("10MiB agent-TUI負荷でTerminal Surfaceのstrict performance budgetを守
 		expectedInput += commit;
 		await page.waitForFunction(
 			(expected) =>
-				document.querySelector(".xterm-rows")?.textContent?.includes(expected) ??
-				false,
+				document
+					.querySelector(".xterm-rows")
+					?.textContent?.includes(expected) ?? false,
 			expectedInput,
 			{ timeout: 5_000 },
 		);
 		imeCommitLatencyMs.push((await now(page)) - startedAt);
 	}
 	await page.evaluate(() =>
-		window.__TAURI_INTERNALS__?.invoke("start_terminal_performance_fixture"),
+		window.__RELEASH_BACKEND__?.execute("start_terminal_performance_fixture"),
 	);
 	const workspaceSelectionLatencyMs = await page.evaluate(async () => {
 		const worktree = document.querySelector<HTMLButtonElement>(
@@ -175,7 +177,9 @@ test("10MiB agent-TUI負荷でTerminal Surfaceのstrict performance budgetを守
 			const startedAt = performance.now();
 			worktree.click();
 			while (worktree.getAttribute("aria-expanded") !== expanded) {
-				await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+				await new Promise<void>((resolve) =>
+					requestAnimationFrame(() => resolve()),
+				);
 			}
 			samples.push(performance.now() - startedAt);
 		}
@@ -199,7 +203,7 @@ test("10MiB agent-TUI負荷でTerminal Surfaceのstrict performance budgetを守
 			{ length: 300 },
 			(_, index) => `scroll-row-${index}\r\n`,
 		).join("");
-		return window.__TAURI_INTERNALS__?.invoke("write_terminal_surface", {
+		return window.__RELEASH_BACKEND__?.execute("write_terminal_surface", {
 			data: scrollFixture,
 		});
 	});
@@ -213,17 +217,19 @@ test("10MiB agent-TUI負荷でTerminal Surfaceのstrict performance budgetを守
 		terminalBox.y + terminalBox.height / 2,
 	);
 	await page.mouse.wheel(0, -600);
-	await expect
-		.poll(() => rows.textContent())
-		.not.toBe(rowsBeforeScroll);
+	await expect.poll(() => rows.textContent()).not.toBe(rowsBeforeScroll);
 	const scrollLatencyMs = (await now(page)) - scrollStartedAt;
 	const rowsAfterScroll = await rows.textContent();
 
 	await page.getByRole("button", { name: "Collapse panel" }).click();
-	await expect(page.getByRole("button", { name: "Expand panel" })).toBeVisible();
+	await expect(
+		page.getByRole("button", { name: "Expand panel" }),
+	).toBeVisible();
 	const revisitStartedAt = await now(page);
 	await page.getByRole("button", { name: "Expand panel" }).click();
-	await expect(page.getByRole("button", { name: "Collapse panel" })).toBeVisible();
+	await expect(
+		page.getByRole("button", { name: "Collapse panel" }),
+	).toBeVisible();
 	await expect.poll(() => rows.textContent()).toBe(rowsAfterScroll);
 	const revisitLatencyMs = (await now(page)) - revisitStartedAt;
 
@@ -264,8 +270,7 @@ test("10MiB agent-TUI負荷でTerminal Surfaceのstrict performance budgetを守
 		rendererPeakQueuedCodeUnits: state.rendererPeakQueuedCodeUnits,
 		rendererDroppedBacklogs: state.rendererMetrics.droppedBacklogs,
 		snapshotResyncs: state.rendererMetrics.snapshotResyncs,
-		rendererLongStallsOver100Ms:
-			state.rendererMetrics.longStallsOver100Ms,
+		rendererLongStallsOver100Ms: state.rendererMetrics.longStallsOver100Ms,
 		throughputMiBPerSecond:
 			state.fixtureByteLength /
 			(1024 * 1024) /

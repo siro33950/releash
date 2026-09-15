@@ -1,8 +1,7 @@
 use super::test_helpers::*;
 use super::*;
 use crate::domain::workflow::{NodeFact, ProcessExitedFact};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Mutex as StdMutex;
+use std::sync::atomic::Ordering;
 
 #[tokio::test]
 async fn test_隔離起動_commandのcwdと環境変数は生成済みworktreeを指す() {
@@ -532,7 +531,6 @@ async fn test_隔離再開_dispatch失敗は対象だけを失敗にし他の未
 #[tokio::test]
 async fn test_隔離合成子_子開始commitの状態通知は一度だけ送る() {
     // Given
-    use tauri::Listener;
     let fixture = Fixture::new(0);
     let snapshot = fixture.persist_started("  main: {worktree: isolated, sequence: {children: [work]}}\n  work: {session: {provider: codex}}", "/repo").await;
     let starts = fixture
@@ -544,11 +542,7 @@ async fn test_隔離合成子_子開始commitの状態通知は一度だけ送�
         .unwrap()
         .isolated_composite_start(&snapshot.node_executions[0].id)
         .unwrap();
-    let broadcasts = Arc::new(AtomicUsize::new(0));
-    let observed = broadcasts.clone();
-    fixture.app.listen("workflow-execution-changed", move |_| {
-        observed.fetch_add(1, Ordering::SeqCst);
-    });
+    let mut broadcasts = record_workflow_execution_broadcasts(fixture.app.handle());
     // When
     let leaves = fixture
         .host
@@ -562,23 +556,14 @@ async fn test_隔離合成子_子開始commitの状態通知は一度だけ送�
         .unwrap();
     // Then
     assert_eq!(leaves.leaves.len(), 1);
-    assert_eq!(broadcasts.load(Ordering::SeqCst), 1);
+    assert_eq!(take_workflow_execution_broadcasts(&mut broadcasts).len(), 1);
 }
 
 #[tokio::test]
 async fn test_空の隔離fanout_liveと再読取で同じworktree成果を持ち完了する() {
     // Given
-    use tauri::Listener;
     let fixture = Fixture::new(0);
-    let views = Arc::new(StdMutex::new(Vec::new()));
-    let observed = views.clone();
-    fixture
-        .app
-        .listen("workflow-execution-changed", move |event| {
-            let payload: crate::adaptor::protocol::workflow::WorkflowExecutionChangedPayloadView =
-                serde_json::from_str(event.payload()).unwrap();
-            observed.lock().unwrap().push(payload.workflow_execution);
-        });
+    let mut broadcasts = record_workflow_execution_broadcasts(fixture.app.handle());
     // When
     let id = fixture.start("  main: {worktree: isolated, fanout: {items: [], children: [work]}}\n  work: {session: {provider: codex}}").await;
     let folded = workflow_fact_log::fold_tree_from(
@@ -595,8 +580,8 @@ async fn test_空の隔離fanout_liveと再読取で同じworktree成果を持�
     );
     assert_eq!(fixture.worktrees.calls.lock().unwrap().len(), 1);
     assert!(fixture.sessions.prepared.lock().unwrap().is_empty());
-    let views = views.lock().unwrap();
-    let live = views.last().unwrap();
+    let views = take_workflow_execution_broadcasts(&mut broadcasts);
+    let live = &views.last().unwrap().workflow_execution;
     assert_eq!(
         live.status,
         crate::adaptor::protocol::workflow::ExecutionStatusView::Completed

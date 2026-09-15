@@ -59,9 +59,7 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
             authority.clone(),
         ));
         let router: CommandRouter<Box<dyn Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync>> =
-            CommandRouter::new(Box::new(
-                crate::adaptor::controller::command::client::handle_registered_invoke,
-            ));
+            CommandRouter::new(Box::new(|_| false));
         let sink = Arc::new(PushSink::new());
         let binding = LocalApiServerBinding::bind(data_dir.to_path_buf()).unwrap();
         let master_subprotocol = format!(
@@ -156,7 +154,7 @@ impl<R: tauri::Runtime> Drop for ClientApiAcceptanceHost<R> {
 }
 
 pub use crate::adaptor::controller::api::protocol::client::{
-    command_request, command_response, envelope, Ack, CommandRequest, Envelope,
+    command_request, command_response, envelope, Ack, CommandRequest, Envelope, RequestAck,
 };
 
 pub fn encode_client_request(id: &str, name: &str, args: serde_json::Value) -> Vec<u8> {
@@ -179,4 +177,94 @@ pub fn decode_client_push(
     push: crate::adaptor::controller::api::protocol::client::Push,
 ) -> (&'static str, serde_json::Value) {
     push.into_value().unwrap()
+}
+
+#[derive(Default, Debug, PartialEq)]
+pub struct ClientRecoveryState {
+    pub crash_reporting: bool,
+    pub mounted_xterms: u64,
+    pub effects: Vec<String>,
+}
+
+pub struct ClientRecoveryAcceptanceHost {
+    pub urls: Vec<String>,
+    pub state: Arc<std::sync::Mutex<ClientRecoveryState>>,
+    servers: Vec<tokio::task::JoinHandle<()>>,
+}
+
+impl ClientRecoveryAcceptanceHost {
+    pub async fn start() -> Self {
+        use crate::adaptor::controller::api::protocol::client as wire;
+        let state = Arc::new(std::sync::Mutex::new(ClientRecoveryState::default()));
+        let mut dispatch = ClientCommandDispatch::new(
+            Arc::new(crate::adaptor::controller::wiring::build_repository_usecase_with_worktree_terminals(
+                Arc::new(crate::adaptor::gateway::repository::worktree_terminal::NoopWorktreeTerminalGateway),
+            )),
+            Arc::new(ApplicationStartupAuthority::ready()),
+        );
+        for names in [
+            &["update_crash_reporting"][..],
+            &["report_mounted_xterm_count"][..],
+        ] {
+            let target = state.clone();
+            dispatch.register_domain(
+                names,
+                Box::new(move |command| {
+                    let target = target.clone();
+                    Box::pin(async move {
+                        let mut state = target.lock().unwrap();
+                        Ok(match command {
+                            wire::command_request::Command::UpdateCrashReporting(args) => {
+                                let enabled = args.enabled.expect("enabled");
+                                state.crash_reporting = enabled;
+                                state.effects.push(format!("crash:{enabled}"));
+                                wire::command_result::Command::UpdateCrashReporting(wire::Unit {})
+                            }
+                            wire::command_request::Command::ReportMountedXtermCount(args) => {
+                                let count = args.count.expect("count");
+                                state.mounted_xterms = count;
+                                state.effects.push(format!("xterms:{count}"));
+                                wire::command_result::Command::ReportMountedXtermCount(
+                                    wire::Unit {},
+                                )
+                            }
+                            _ => unreachable!(),
+                        })
+                    })
+                }),
+            );
+        }
+        let dispatch = Arc::new(dispatch);
+        let mut urls = Vec::new();
+        let mut servers = Vec::new();
+        for _ in 0..2 {
+            let deps = ClientApiDeps::new(
+                dispatch.clone(),
+                ClientPushGateway::new(Arc::new(PushSink::new())),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            urls.push(format!("ws://{}/v1/client", listener.local_addr().unwrap()));
+            servers.push(tokio::spawn(async move {
+                axum::serve(
+                    listener,
+                    crate::adaptor::controller::api::client::router(Some(deps)),
+                )
+                .await
+                .unwrap();
+            }));
+        }
+        Self {
+            urls,
+            state,
+            servers,
+        }
+    }
+}
+
+impl Drop for ClientRecoveryAcceptanceHost {
+    fn drop(&mut self) {
+        for server in &self.servers {
+            server.abort();
+        }
+    }
 }

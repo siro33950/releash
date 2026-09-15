@@ -37,7 +37,6 @@ describe("clientProtocol", () => {
 				canRename: false,
 				canApprove: false,
 				canRetry: true,
-				canClose: false,
 			},
 			pastAttempts: [],
 			pastAttemptsCollapsed: true,

@@ -3,6 +3,67 @@ import { describe, expect, it, vi } from "vitest";
 import { useNotionSettings } from "./useNotionSettings";
 
 describe("useNotionSettings", () => {
+	it("取得失敗を未設定と区別し失敗した設定を編集や保存の対象にしない", async () => {
+		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		vi.mocked(invoke).mockImplementation(async (command, args) => {
+			if (
+				command === "get_notion_config" &&
+				(args as { repoPath: string }).repoPath === "/repo/a"
+			) {
+				throw { code: "CONFIG_UNAVAILABLE", message: "Cannot load config" };
+			}
+			return null;
+		});
+		const { result, rerender } = renderHook(
+			({ paths }) => useNotionSettings(paths),
+			{ initialProps: { paths: ["/repo/a", "/repo/b"] } },
+		);
+		await waitFor(() => expect(result.current.loading).toBe(false));
+		expect(result.current.errors.get("/repo/a")).toBe("Cannot load config");
+		expect(result.current.drafts.has("/repo/a")).toBe(false);
+		expect(result.current.drafts.get("/repo/b")?.apiToken).toBe("");
+
+		act(() => {
+			result.current.reset();
+			for (const path of ["/repo/a", "/repo/b"]) {
+				result.current.updateDraft(path, (draft) => ({
+					...draft,
+					apiToken: "new-token",
+					databaseId: "new-db",
+				}));
+			}
+			result.current.markForDelete("/repo/a");
+		});
+		await act(async () => {
+			await result.current.validate("/repo/a");
+			await result.current.save();
+		});
+		expect(
+			vi
+				.mocked(invoke)
+				.mock.calls.filter(([command]) => command !== "get_notion_config"),
+		).toEqual([
+			[
+				"save_notion_config",
+				{
+					repoPath: "/repo/b",
+					apiToken: "new-token",
+					databaseId: "new-db",
+					propertyMapping: {
+						title: "Name",
+						labels: [],
+						branch_name: "",
+						branch_prefix: "",
+					},
+				},
+				{ onUncertain: expect.any(Function) },
+			],
+		]);
+		expect(result.current.drafts.has("/repo/a")).toBe(false);
+		rerender({ paths: [] });
+		expect(result.current.errors.size).toBe(0);
+	});
+
 	it("should load configs for each repo path", async () => {
 		const { invokeClient: invoke } = await import("@/lib/clientSocket");
 		vi.mocked(invoke).mockImplementation(async (cmd, args) => {
@@ -145,21 +206,29 @@ describe("useNotionSettings", () => {
 			await result.current.save();
 		});
 
-		expect(invoke).toHaveBeenCalledWith("save_notion_config", {
-			repoPath: "/repo/a",
-			apiToken: "new-token-a",
-			databaseId: "db-a",
-			propertyMapping: {
-				title: "Name",
-				labels: [],
-				branch_name: "",
-				branch_prefix: "",
+		expect(invoke).toHaveBeenCalledWith(
+			"save_notion_config",
+			{
+				repoPath: "/repo/a",
+				apiToken: "new-token-a",
+				databaseId: "db-a",
+				propertyMapping: {
+					title: "Name",
+					labels: [],
+					branch_name: "",
+					branch_prefix: "",
+				},
 			},
-		});
+			{ onUncertain: expect.any(Function) },
+		);
 
-		expect(invoke).toHaveBeenCalledWith("delete_notion_config", {
-			repoPath: "/repo/b",
-		});
+		expect(invoke).toHaveBeenCalledWith(
+			"delete_notion_config",
+			{
+				repoPath: "/repo/b",
+			},
+			{ onUncertain: expect.any(Function) },
+		);
 	});
 
 	it("should reset drafts to configs", async () => {
@@ -395,4 +464,71 @@ describe("useNotionSettings", () => {
 			.mock.calls.filter(([cmd]) => cmd === "save_notion_config");
 		expect(saveCalls).toHaveLength(0);
 	});
+
+	it.each([false, true])(
+		"保存後の古い取得signalで回復後のロードを無効にしない: error=%s",
+		async (failure) => {
+			const { invokeClient: invoke, onClientRefresh } = await import(
+				"@/lib/clientSocket"
+			);
+			const config = {
+				api_token: "old",
+				database_id: "db",
+				property_mapping: {
+					title: "Name",
+					labels: [],
+					branch_name: "",
+					branch_prefix: "",
+				},
+			};
+			let finishSave!: () => void;
+			let finishLoad!: (value: typeof config) => void;
+			let failLoad!: (cause: unknown) => void;
+			let loadingRecovery = false;
+			vi.mocked(invoke).mockImplementation((command) => {
+				if (command === "save_notion_config")
+					return new Promise<void>((resolve) => {
+						finishSave = resolve;
+					});
+				if (command === "get_notion_config" && loadingRecovery)
+					return new Promise((resolve, reject) => {
+						finishLoad = resolve;
+						failLoad = reject;
+					});
+				return Promise.resolve(config);
+			});
+			const { result } = renderHook(() => useNotionSettings(["/repo"]));
+			await waitFor(() => expect(result.current.loading).toBe(false));
+			act(() =>
+				result.current.updateDraft("/repo", (draft) => ({
+					...draft,
+					apiToken: "saved",
+				})),
+			);
+			let saving!: Promise<void>;
+			act(() => {
+				saving = result.current.save();
+			});
+			act(() => {
+				loadingRecovery = true;
+				vi.mocked(onClientRefresh).mock.lastCall?.[0]();
+			});
+			expect(result.current.loading).toBe(true);
+			await act(async () => {
+				finishSave();
+				await saving;
+			});
+			await act(async () => {
+				if (failure) failLoad(new Error("recovery failed"));
+				else finishLoad({ ...config, api_token: "current" });
+			});
+			expect(result.current.loading).toBe(false);
+			if (failure)
+				expect(result.current.errors.get("/repo")).toBe("recovery failed");
+			else {
+				expect(result.current.drafts.get("/repo")?.apiToken).toBe("current");
+				expect(result.current.errors.size).toBe(0);
+			}
+		},
+	);
 });

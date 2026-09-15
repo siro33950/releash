@@ -17,7 +17,14 @@ message Push {
 }
 message CommandRequest {
   string request_id = 1;
+  string instance_id = 2;
+  bool recover = 3;
+  repeated OperationReference predecessors = 4;
+  uint64 deadline_unix_ms = 5;
+  bool user_retry = 6;
+  repeated OperationReference successors = 7;
   oneof command {
+    GetReviewBlobRequest get_review_blob = 183;
     AbortWorkflowRequest abort_workflow = 10;
     AckTerminalSurfaceOutputRequest ack_terminal_surface_output = 11;
     AcknowledgeApplicationAttemptRequest acknowledge_application_attempt = 12;
@@ -196,6 +203,7 @@ message CommandRequest {
 
 message CommandResult {
   oneof command {
+    ResultString get_review_blob = 183;
     Unit abort_workflow = 10;
     Unit ack_terminal_surface_output = 11;
     Unit acknowledge_application_attempt = 12;
@@ -2070,7 +2078,8 @@ message WorkspaceNodeCapabilitiesDto {
   optional bool can_rename = 1 [json_name = "canRename", (json_required) = true];
   optional bool can_approve = 2 [json_name = "canApprove", (json_required) = true];
   optional bool can_retry = 3 [json_name = "canRetry", (json_required) = true];
-  optional bool can_close = 4 [json_name = "canClose", (json_required) = true];
+  reserved 4;
+  reserved "can_close";
 }
 
 message WorkspaceNodeContentDto {
@@ -3454,6 +3463,10 @@ message Envelope {
     RequestAck request_ack = 6;
     Unit push_resync = 7;
     StreamClosed stream_closed = 8;
+    ClientHello hello = 9;
+    Heartbeat heartbeat = 10;
+    OperationQuery operation_query = 11;
+    OperationStatus operation_status = 12;
   }
 }
 
@@ -3491,6 +3504,8 @@ message Stream {
 
 message RequestAck {
   string request_id = 1;
+  bool release_watch = 2;
+  bool confirm_watch = 3;
 }
 
 message StreamClosed {
@@ -3704,3 +3719,43 @@ message WorkflowNumber {
   option (json_wrapper) = "value";
   optional double value = 1 [(json_required) = true];
 }
+message GetReviewBlobRequest {
+  optional string reference = 1 [(json_required) = true];
+}
+
+message ClientHello {
+  string instance_id = 1;
+  uint64 heartbeat_interval_ms = 2;
+  uint64 heartbeat_timeout_ms = 3;
+  uint64 connect_timeout_ms = 4;
+  uint64 reconnect_interval_ms = 5;
+  uint64 sleep_gap_ms = 6;
+  uint64 tick_interval_ms = 7;
+  map<string, uint64> deadlines_ms = 8;
+  map<string, CommandPolicy> policies = 9;
+}
+
+message CommandPolicy {
+  bool waits_for_result = 1;
+  bool polls_result = 2;
+  string disconnect = 3;
+  string expired_disconnect = 4;
+}
+
+message Heartbeat { string nonce = 1; }
+message OperationReference {
+  string request_id = 1;
+  string command = 3;
+  bool uncertain = 4;
+  bytes fingerprint = 5;
+  bytes ordering_target = 6;
+}
+message OperationQuery {
+  string request_id = 1;
+  string instance_id = 2;
+  CommandRequest request = 3;
+  bool sent = 4;
+  bool expired = 5;
+  string query_id = 6;
+}
+message OperationStatus { string request_id = 1; string state = 2; string operation_id = 3; bytes fingerprint = 4; bytes ordering_target = 5; string query_id = 6; }

@@ -5195,7 +5195,6 @@ impl TryFrom<crate::usecase::workflow::WorkspaceNodeCapabilitiesDto>
             can_rename: Some(cv(value.can_rename)?),
             can_approve: Some(cv(value.can_approve)?),
             can_retry: Some(cv(value.can_retry)?),
-            can_close: Some(cv(value.can_close)?),
         })
     }
 }

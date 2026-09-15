@@ -1,6 +1,5 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { TerminalPerformanceSwitches } from "../../src/lib/terminalPerformanceSwitches";
 import {
 	buildRealAppLoadReport,
 	formatRealAppLoadSummary,
@@ -87,8 +86,8 @@ async function terminalTextarea() {
 
 describe("Real WorkbenchApp terminal load harness", () => {
 	it("実WorkbenchAppが起動しworktree一覧から選択できる", async () => {
-		const realApp = await browser.tauri.execute(({ core }) =>
-			core.invoke<boolean>("get_performance_real_app_mode"),
+		const realApp = await browser.execute(() =>
+			window.__RELEASH_INVOKE_CLIENT__!("get_performance_real_app_mode"),
 		);
 		expect(realApp).toBe(true);
 
@@ -182,8 +181,8 @@ describe("Real WorkbenchApp terminal load harness", () => {
 		await browser.pause(500);
 
 		// --- 負荷中の連続タイプ（echo markerの可視化時刻で計測） ---
-		await browser.tauri.execute(({ core }) =>
-			core.invoke("start_terminal_input_performance_collection"),
+		await browser.execute(() =>
+			window.__RELEASH_INVOKE_CLIENT__!("start_terminal_input_performance_collection"),
 		);
 		let typedSoFar = "";
 		for (const key of TYPED_KEYS) {
@@ -420,9 +419,8 @@ describe("Real WorkbenchApp terminal load harness", () => {
 
 		// backend区間: on_data→event publish（sequence厳密join）と
 		// publish→echo可視（配送＋parseの合算）に分解する
-		const backendSamples = await browser.tauri.execute(({ core }) =>
-			core.invoke<Array<{ sequence: number; eventPublishedAtUnixMs: number }>>(
-				"take_terminal_input_performance_samples",
+		const backendSamples = await browser.execute(() =>
+			window.__RELEASH_INVOKE_CLIENT__!("take_terminal_input_performance_samples",
 			),
 		);
 		const backendBySequence = new Map(
@@ -460,9 +458,8 @@ describe("Real WorkbenchApp terminal load harness", () => {
 			.map((entry) => entry.points.on_data ?? 0);
 
 		const loadTimerDriftMs = state.maxHeartbeatDriftMs;
-		const switches = await browser.tauri.execute(({ core }) =>
-			core.invoke<TerminalPerformanceSwitches>(
-				"get_terminal_performance_switches",
+		const switches = await browser.execute(() =>
+			window.__RELEASH_INVOKE_CLIENT__!("get_terminal_performance_switches",
 			),
 		);
 

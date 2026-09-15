@@ -1,14 +1,6 @@
 pub(crate) const COMMAND_NAMES: &[&str] = &[
     "get_application_startup_outcome",
     "quit_after_startup_failure",
-    "list_pending_application_attempts",
-    "acknowledge_application_attempt",
-    "request_application_quit",
-    "get_application_quit_operation",
-    "get_application_shutdown",
-    "get_shutdown_plan",
-    "resolve_shutdown_target_action",
-    "compact_application_shutdown_details",
 ];
 
 pub(crate) fn register(router: &mut super::CommandRouter) {
@@ -17,23 +9,9 @@ pub(crate) fn register(router: &mut super::CommandRouter) {
 
 pub(crate) fn invoke_handler<R: tauri::Runtime>(
 ) -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync {
-    let shell: super::InvokeHandler<R> = Box::new(tauri::generate_handler![
-        get_application_startup_outcome,
-        quit_after_startup_failure
-    ]);
-    move |invoke: tauri::ipc::Invoke<R>| {
-        if [
-            "get_application_startup_outcome",
-            "quit_after_startup_failure",
-        ]
-        .contains(&invoke.message.command())
-        {
-            shell(invoke)
-        } else {
-            super::client::handle_registered_invoke(invoke)
-        }
-    }
+    tauri::generate_handler![get_application_startup_outcome, quit_after_startup_failure]
 }
+
 use crate::adaptor::controller::client::application_lifecycle::{
     get_application_startup_outcome_shared, quit_after_startup_failure_shared,
 };

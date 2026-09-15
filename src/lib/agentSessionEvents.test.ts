@@ -4,7 +4,7 @@ import {
 	subscribeAgentSessionChanged,
 } from "./agentSessionEvents";
 
-const tauriEvents = vi.hoisted(() => ({
+const clientEvents = vi.hoisted(() => ({
 	handlers: new Map<
 		string,
 		(event: { payload: { worktreePath?: string } | null }) => void
@@ -12,20 +12,20 @@ const tauriEvents = vi.hoisted(() => ({
 	unlisten: vi.fn(),
 }));
 
-vi.mock("@tauri-apps/api/event", () => ({
-	listen: (
+vi.mock("@/lib/clientSocket", () => ({
+	listenClient: (
 		eventName: string,
 		handler: (event: { payload: { worktreePath?: string } | null }) => void,
 	) => {
-		tauriEvents.handlers.set(eventName, handler);
-		return Promise.resolve(tauriEvents.unlisten);
+		clientEvents.handlers.set(eventName, handler);
+		return Promise.resolve(clientEvents.unlisten);
 	},
 }));
 
 describe("agentSessionEvents", () => {
 	beforeEach(() => {
-		tauriEvents.handlers.clear();
-		tauriEvents.unlisten.mockClear();
+		clientEvents.handlers.clear();
+		clientEvents.unlisten.mockClear();
 	});
 
 	it("windowイベントのdetailをlistenerへ届ける", () => {
@@ -41,7 +41,7 @@ describe("agentSessionEvents", () => {
 	it("backendイベントのpayloadをlistenerへ届ける", () => {
 		const listener = vi.fn();
 		const unsubscribe = subscribeAgentSessionChanged(listener);
-		const handler = tauriEvents.handlers.get("agent-session-changed");
+		const handler = clientEvents.handlers.get("agent-session-changed");
 		expect(handler).toBeDefined();
 
 		handler?.({ payload: { worktreePath: "/repo/worktree" } });
@@ -53,7 +53,7 @@ describe("agentSessionEvents", () => {
 	it("payload欠落時は空のdetailへfallbackする", () => {
 		const listener = vi.fn();
 		const unsubscribe = subscribeAgentSessionChanged(listener);
-		const handler = tauriEvents.handlers.get("agent-session-changed");
+		const handler = clientEvents.handlers.get("agent-session-changed");
 
 		handler?.({ payload: null });
 
@@ -69,6 +69,8 @@ describe("agentSessionEvents", () => {
 
 		notifyAgentSessionChanged("/repo/worktree");
 		expect(listener).not.toHaveBeenCalled();
-		await vi.waitFor(() => expect(tauriEvents.unlisten).toHaveBeenCalledOnce());
+		await vi.waitFor(() =>
+			expect(clientEvents.unlisten).toHaveBeenCalledOnce(),
+		);
 	});
 });

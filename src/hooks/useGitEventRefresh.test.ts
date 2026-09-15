@@ -15,12 +15,13 @@ type ListenCallback = (event: {
 }) => void;
 
 const mockListen = vi.fn();
-vi.mock("@tauri-apps/api/event", () => ({
-	listen: (...args: unknown[]) => mockListen(...args),
-}));
 
 const mockInvoke = vi.fn();
-vi.mock("@/lib/clientSocket", () => ({
+vi.mock("@/lib/clientSocket", async () => ({
+	watchClient: (await import("@/test/watchClient")).mockWatchClient((...args) =>
+		mockInvoke(...args),
+	),
+	listenClient: (...args: unknown[]) => mockListen(...args),
 	invokeClient: (...args: unknown[]) => mockInvoke(...args),
 }));
 
@@ -68,9 +69,11 @@ describe("useGitEventRefresh", () => {
 		expect(mockListen).toHaveBeenCalledWith(
 			"file-change",
 			expect.any(Function),
+			expect.any(Function),
 		);
 		expect(mockListen).toHaveBeenCalledWith(
 			"git-status-changed",
+			expect.any(Function),
 			expect.any(Function),
 		);
 		expect(mockInvoke).toHaveBeenCalledWith("start_watching", {

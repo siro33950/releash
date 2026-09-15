@@ -315,7 +315,7 @@ async fn test_atui_010_実ptyのproduction_attachが欠落重複逆転なく再�
             &format!("{}\n", fixture_process_shell_command(&fixture)),
         )
         .expect("launch fixture");
-    wait_surface_contains(&runtime, &owner, "atui-010-live-attach").await;
+    wait_surface_contains(&runtime, &owner, "atui-010-live-attach 日本語🙂").await;
 
     let markers = (0..FRAME_COUNT)
         .map(|index| format!("frame-{index:03}-{}", "x".repeat(200)))
@@ -433,7 +433,7 @@ async fn test_atui_010_実ptyのproduction_attachが注入された欠落重複�
             &format!("{}\n", fixture_process_shell_command(&fixture)),
         )
         .expect("launch fault-injection fixture");
-    wait_surface_contains(&runtime, &owner, "atui-010-fault-injection").await;
+    wait_surface_contains(&runtime, &owner, "atui-010-fault-injection 日本語🙂").await;
     let mut attached = runtime
         .attach("atui-010-faults".to_string(), owner.clone())
         .expect("attach production continuity detector");
@@ -527,7 +527,7 @@ async fn test_atui_011_terminal_checkpointが画面属性と終了後のbounded_
     let mut monitor = runtime
         .attach("atui-011-monitor".to_string(), owner.clone())
         .expect("attach alternate-screen monitor");
-    receive_until(&mut monitor, "atui-011-wide-日本語🙂").await;
+    receive_until(&mut monitor, "atui-011-wide-日本語🙂 日本語🙂").await;
     runtime
         .resize(owner.clone(), 37, 111)
         .expect("resize Terminal Surface");
@@ -598,7 +598,7 @@ async fn test_atui_011_terminal_checkpointが画面属性と終了後のbounded_
             bounded_owner.clone(),
         )
         .expect("attach bounded monitor");
-    receive_until(&mut bounded_monitor, "atui-011-bounded").await;
+    receive_until(&mut bounded_monitor, "atui-011-bounded 日本語🙂").await;
     for index in 0..FRAME_COUNT {
         let marker = format!("bounded-{index:03}-{}", "x".repeat(100));
         runtime
@@ -753,7 +753,7 @@ async fn test_atui_012_app再構築後は同一process扱いせず最終画面�
     let mut monitor = first_runtime
         .attach("atui-012-monitor".to_string(), owner.clone())
         .expect("attach first runtime");
-    receive_until(&mut monitor, "atui-012-cold-restore").await;
+    receive_until(&mut monitor, "atui-012-cold-restore 日本語🙂").await;
     for index in 0..FRAME_COUNT {
         let marker = format!("restart-{index:03}-{}", "x".repeat(80));
         first_runtime

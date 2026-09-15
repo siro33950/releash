@@ -995,7 +995,6 @@ mod tests {
             can_rename: false,
             can_approve: false,
             can_retry: false,
-            can_close: false,
             can_stop: false,
             can_resume: false,
             resume_eligible: false,

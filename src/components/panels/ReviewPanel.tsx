@@ -302,6 +302,7 @@ export function ReviewPanel({
 
 	const {
 		comments: allComments,
+		error: commentsError,
 		addComment,
 		appendComment,
 		resolveThread,
@@ -491,9 +492,15 @@ export function ReviewPanel({
 	);
 
 	// Empty state
+	const commentsAlert = commentsError && (
+		<div role="alert" className="px-3 py-2 text-sm text-destructive">
+			コメントを取得できません: {commentsError}
+		</div>
+	);
 	if (totalFileCount === 0) {
 		return (
 			<div className="flex flex-col h-full">
+				{commentsAlert}
 				<div className="flex items-center justify-between px-2 h-[32px] border-b border-border bg-card shrink-0">
 					<div className="w-5" />
 					<div className="flex items-center gap-1">
@@ -545,6 +552,7 @@ export function ReviewPanel({
 
 	return (
 		<div className="flex flex-col h-full">
+			{commentsAlert}
 			{/* Header */}
 			<div className="flex items-center justify-between px-2 h-[32px] border-b border-border bg-card shrink-0">
 				<Tooltip>

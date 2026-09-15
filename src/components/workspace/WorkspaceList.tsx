@@ -1,5 +1,3 @@
-import { invoke as invokeTauri } from "@tauri-apps/api/core";
-import { emit } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
 	Ban,
@@ -50,7 +48,10 @@ import { useWorkflowConfig } from "@/hooks/useWorkflowConfig";
 import { useWorkspaceTreeNodes } from "@/hooks/useWorkspaceTreeNodes";
 import { useWorktreeList } from "@/hooks/useWorktreeList";
 import { notifyAgentSessionChanged } from "@/lib/agentSessionEvents";
-import { invokeClient as invoke } from "@/lib/clientSocket";
+import {
+	type ClientTransportError,
+	invokeClient as invoke,
+} from "@/lib/clientSocket";
 import { getErrorMessage } from "@/lib/errorMessage";
 import { trackEvent } from "@/lib/telemetry";
 import {
@@ -158,7 +159,6 @@ function WorkspaceNodeRow({
 	indentPx,
 	selected,
 	onSelect,
-	onClose,
 	historyExpanded,
 	onToggleHistory,
 	onArchiveSession,
@@ -171,7 +171,6 @@ function WorkspaceNodeRow({
 	indentPx: number;
 	selected?: boolean;
 	onSelect: () => void;
-	onClose?: () => void;
 	historyExpanded?: boolean;
 	onToggleHistory?: () => void;
 	onArchiveSession?: () => void;
@@ -345,21 +344,7 @@ function WorkspaceNodeRow({
 					<Trash2 className="size-3" />
 				</Button>
 			)}
-			{node.capabilities.canClose && (
-				<Button
-					size="icon-xs"
-					variant="ghost"
-					className="hidden size-5 shrink-0 text-muted-foreground group-hover:flex group-focus-within:flex"
-					onClick={(event) => {
-						event.stopPropagation();
-						onClose?.();
-					}}
-					aria-label={`Close ${node.title}`}
-					title="Close"
-				>
-					<X className="size-3" />
-				</Button>
-			)}
+
 			<WorkflowControls
 				item={node}
 				onWorkflowAction={onWorkflowAction}
@@ -453,7 +438,6 @@ function WorkspaceBranchRow({
 	indentPx,
 	centerSelection,
 	onSelectNode,
-	onCloseNode,
 	onArchiveSession,
 	onDeleteSession,
 	onRenameNode,
@@ -464,7 +448,6 @@ function WorkspaceBranchRow({
 	indentPx: number;
 	centerSelection: CenterSelection | null;
 	onSelectNode: (node: WorkspaceNode) => void;
-	onCloseNode: (node: WorkspaceNode) => void | Promise<void>;
 	onArchiveSession: (node: WorkspaceNode) => void | Promise<void>;
 	onDeleteSession: (node: WorkspaceNode) => void | Promise<void>;
 	onRenameNode: (node: WorkspaceNode, name: string) => Promise<boolean>;
@@ -531,7 +514,6 @@ function WorkspaceBranchRow({
 						indentPx={indentPx + TREE_LEVEL_INDENT_PX}
 						centerSelection={centerSelection}
 						onSelectNode={onSelectNode}
-						onCloseNode={onCloseNode}
 						onArchiveSession={onArchiveSession}
 						onDeleteSession={onDeleteSession}
 						onRenameNode={onRenameNode}
@@ -548,7 +530,6 @@ function WorkspaceTreeItemRow({
 	indentPx,
 	centerSelection,
 	onSelectNode,
-	onCloseNode,
 	onArchiveSession,
 	onDeleteSession,
 	onRenameNode,
@@ -559,7 +540,6 @@ function WorkspaceTreeItemRow({
 	indentPx: number;
 	centerSelection: CenterSelection | null;
 	onSelectNode: (node: WorkspaceNode) => void;
-	onCloseNode: (node: WorkspaceNode) => void | Promise<void>;
 	onArchiveSession: (node: WorkspaceNode) => void | Promise<void>;
 	onDeleteSession: (node: WorkspaceNode) => void | Promise<void>;
 	onRenameNode: (node: WorkspaceNode, name: string) => Promise<boolean>;
@@ -583,7 +563,6 @@ function WorkspaceTreeItemRow({
 							indentPx={indentPx}
 							centerSelection={centerSelection}
 							onSelectNode={onSelectNode}
-							onCloseNode={onCloseNode}
 							onArchiveSession={onArchiveSession}
 							onDeleteSession={onDeleteSession}
 							onRenameNode={onRenameNode}
@@ -596,7 +575,6 @@ function WorkspaceTreeItemRow({
 					indentPx={indentPx}
 					selected={isNodeSelected(centerSelection, item)}
 					onSelect={() => onSelectNode(item)}
-					onClose={() => onCloseNode(item)}
 					historyExpanded={pastExpanded}
 					onToggleHistory={() => setPastExpanded((current) => !current)}
 					onArchiveSession={() => onArchiveSession(item)}
@@ -612,7 +590,6 @@ function WorkspaceTreeItemRow({
 						indentPx={indentPx + TREE_LEVEL_INDENT_PX}
 						centerSelection={centerSelection}
 						onSelectNode={onSelectNode}
-						onCloseNode={onCloseNode}
 						onArchiveSession={onArchiveSession}
 						onDeleteSession={onDeleteSession}
 						onRenameNode={onRenameNode}
@@ -629,7 +606,6 @@ function WorkspaceTreeItemRow({
 			indentPx={indentPx}
 			centerSelection={centerSelection}
 			onSelectNode={onSelectNode}
-			onCloseNode={onCloseNode}
 			onArchiveSession={onArchiveSession}
 			onDeleteSession={onDeleteSession}
 			onRenameNode={onRenameNode}
@@ -1110,6 +1086,7 @@ function WorktreeTreeItem({
 	const handleCreateAgentSession = useCallback(
 		async (provider: string) => {
 			if (!branch.worktree_path || providerCreating) return;
+			const worktreePath = branch.worktree_path;
 			setCreateMenuOpen(false);
 			setProviderCreating(provider);
 			setProviderActionError(null);
@@ -1131,15 +1108,38 @@ function WorktreeTreeItem({
 					current.launchToken === launchToken
 				);
 			};
+			const showLaunchError = (error: unknown) => {
+				const message = getErrorMessage(error);
+				setProviderActionError(message);
+				if (isLaunchSelectionCurrent()) {
+					selectCenter({
+						kind: "agent_session_launching",
+						worktreePath,
+						provider,
+						launchToken,
+						error: message,
+					});
+				}
+			};
 			try {
-				const agentSessionId = await invoke("create_agent_session", {
-					workspaceIdentity: branch.worktree_path,
-					worktreePath: branch.worktree_path,
-					provider,
-					rows: 24,
-					cols: 80,
-					callerRequestId: `create.${launchToken}`,
-				});
+				const agentSessionId = await invoke(
+					"create_agent_session",
+					{
+						workspaceIdentity: branch.worktree_path,
+						worktreePath: branch.worktree_path,
+						provider,
+						rows: 24,
+						cols: 80,
+						callerRequestId: `create.${launchToken}`,
+					},
+					{
+						onUncertain: (error) => {
+							setProviderCreating(null);
+							showLaunchError(error);
+						},
+					},
+				);
+				setProviderActionError(null);
 				if (isLaunchSelectionCurrent()) {
 					const nodeId = await invoke("get_workspace_session_node_id", {
 						worktreePath: branch.worktree_path,
@@ -1161,17 +1161,7 @@ function WorktreeTreeItem({
 				}
 				void refreshAgentSessions();
 			} catch (error) {
-				const message = getErrorMessage(error);
-				setProviderActionError(message);
-				if (isLaunchSelectionCurrent()) {
-					selectCenter({
-						kind: "agent_session_launching",
-						worktreePath: branch.worktree_path,
-						provider,
-						launchToken,
-						error: message,
-					});
-				}
+				showLaunchError(error);
 			} finally {
 				setProviderCreating(null);
 			}
@@ -1198,11 +1188,20 @@ function WorktreeTreeItem({
 		setWorkflowStarting(true);
 		setWorkflowStartError(null);
 		try {
-			await invoke("start_workflow", {
-				workflowName: selectedWorkflowName,
-				worktreePath: branch.worktree_path,
-				request: workflowRequestInput.trim(),
-			});
+			await invoke(
+				"start_workflow",
+				{
+					workflowName: selectedWorkflowName,
+					worktreePath: branch.worktree_path,
+					request: workflowRequestInput.trim(),
+				},
+				{
+					onUncertain: (error) => {
+						setWorkflowStarting(false);
+						setWorkflowStartError(error.message);
+					},
+				},
+			);
 			setSelectedWorkflowName(null);
 			setWorkflowRequestInput("");
 			await refreshTree();
@@ -1225,28 +1224,6 @@ function WorktreeTreeItem({
 		setWorkflowRequestInput("");
 		setWorkflowStartError(null);
 	}, []);
-
-	const handleCloseNode = useCallback(
-		async (node: WorkspaceNode) => {
-			if (!branch.worktree_path || !node.capabilities.canClose) return;
-			setWorkflowActionError(null);
-			try {
-				await invokeTauri("close_workspace_node", {
-					worktreePath: branch.worktree_path,
-					nodeId: node.id,
-				});
-				window.dispatchEvent(
-					new CustomEvent("workspace-tree-refresh", {
-						detail: { worktreePath: branch.worktree_path },
-					}),
-				);
-				await refreshTree();
-			} catch (error) {
-				setWorkflowActionError(getErrorMessage(error));
-			}
-		},
-		[branch.worktree_path, refreshTree],
-	);
 
 	return (
 		<div>
@@ -1588,7 +1565,6 @@ function WorktreeTreeItem({
 								indentPx={WORKTREE_NAME_INDENT_PX}
 								centerSelection={scopedCenterSelection}
 								onSelectNode={handleSelectNode}
-								onCloseNode={handleCloseNode}
 								onArchiveSession={handleArchiveAgentSession}
 								onDeleteSession={(node) => {
 									if (!branch.worktree_path || !node.sessionCapabilities)
@@ -1754,26 +1730,35 @@ function RepoTreeSectionView({
 	}, [refresh]);
 
 	const handleDeleteConfirm = useCallback(
-		async (branch: WorktreeBranch, force: boolean) => {
-			try {
-				if (branch.worktree_path) {
-					await invoke("remove_worktree", {
+		async (
+			branch: WorktreeBranch,
+			force: boolean,
+			onUncertain: (error: ClientTransportError) => void,
+		) => {
+			if (branch.worktree_path) {
+				await invoke(
+					"remove_worktree",
+					{
 						repoPath,
 						worktreePath: branch.worktree_path,
 						force,
-					});
-					trackEvent("worktree_removed");
-				} else if (branch.is_merged) {
-					await invoke("delete_branch", {
+					},
+					{ onUncertain },
+				);
+				trackEvent("worktree_removed");
+			} else if (branch.is_merged) {
+				await invoke(
+					"delete_branch",
+					{
 						repoPath,
 						branchName: branch.name,
 						force,
-					});
-				}
-				await refresh();
-			} finally {
-				setDeletingBranch(null);
+					},
+					{ onUncertain },
+				);
 			}
+			await refresh();
+			setDeletingBranch((current) => (current === branch ? null : current));
 		},
 		[repoPath, refresh],
 	);
@@ -1834,6 +1819,7 @@ function RepoTreeSectionView({
 				</div>
 			)}
 			<DeleteWorktreeDialog
+				key={deletingBranch?.name}
 				open={!!deletingBranch}
 				branch={deletingBranch}
 				onConfirm={handleDeleteConfirm}
@@ -1952,7 +1938,7 @@ export function WorkspaceList({
 					repoPaths={repoPaths}
 					onCreated={(rootPath, branchName, repoName) => {
 						setShowCreate(false);
-						emit("branch-list-sync");
+						window.dispatchEvent(new Event("branch-list-refresh"));
 						onSelectWorktree(rootPath, branchName, repoName);
 					}}
 					onClose={() => setShowCreate(false)}

@@ -1,7 +1,11 @@
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
-import { useCallback, useEffect, useState } from "react";
-import { invokeClient as invoke } from "@/lib/clientSocket";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+	type ClientTransportError,
+	invokeClient as invoke,
+} from "@/lib/clientSocket";
 import { getErrorMessage } from "@/lib/errorMessage";
+import { useClientRefresh } from "./useClientRefresh";
 
 export interface BackgroundConfig {
 	close_to_tray: boolean;
@@ -16,10 +20,15 @@ const DEFAULT_CONFIG: BackgroundConfig = {
 };
 
 export function useBackgroundConfig() {
+	const clientRefresh = useClientRefresh();
 	const [config, setConfig] = useState<BackgroundConfig>(DEFAULT_CONFIG);
 	const [draft, setDraft] = useState<BackgroundConfig>(DEFAULT_CONFIG);
+	const isDirty = JSON.stringify(draft) !== JSON.stringify(config);
+	const dirty = useRef(isDirty);
+	dirty.current = isDirty;
 	const [loading, setLoading] = useState(true);
 	const [saving, setSaving] = useState(false);
+	const [uncertain, setUncertain] = useState<ClientTransportError | null>(null);
 	const [error, setError] = useState<string | null>(null);
 
 	useEffect(() => {
@@ -28,23 +37,24 @@ export function useBackgroundConfig() {
 
 		Promise.all([invoke("get_app_settings"), isEnabled()])
 			.then(([settings, osAutoStartEnabled]) => {
+				if (clientRefresh.aborted) return;
 				const cfg: BackgroundConfig = {
 					close_to_tray: settings.close_to_tray,
 					auto_launch: osAutoStartEnabled,
 					start_minimized: settings.start_minimized,
 				};
-				setConfig(cfg);
-				setDraft(cfg);
+				if (!dirty.current) {
+					setConfig(cfg);
+					setDraft(cfg);
+				}
 			})
 			.catch((e) => {
-				setError(getErrorMessage(e));
+				if (!clientRefresh.aborted) setError(getErrorMessage(e));
 			})
 			.finally(() => {
-				setLoading(false);
+				if (!clientRefresh.aborted) setLoading(false);
 			});
-	}, []);
-
-	const isDirty = JSON.stringify(draft) !== JSON.stringify(config);
+	}, [clientRefresh]);
 
 	const save = useCallback(async () => {
 		setSaving(true);
@@ -58,22 +68,37 @@ export function useBackgroundConfig() {
 				}
 			}
 
-			await invoke("update_app_settings", {
-				app: {
-					close_to_tray: draft.close_to_tray,
-					auto_launch: draft.auto_launch,
-					start_minimized: draft.start_minimized,
+			await invoke(
+				"update_app_settings",
+				{
+					app: {
+						close_to_tray: draft.close_to_tray,
+						auto_launch: draft.auto_launch,
+						start_minimized: draft.start_minimized,
+					},
 				},
-			});
+				{ onUncertain: setUncertain },
+			);
 
+			setError(null);
 			setConfig({ ...draft });
 		} catch (e) {
 			setError(getErrorMessage(e));
 			throw e;
 		} finally {
 			setSaving(false);
+			setUncertain(null);
 		}
 	}, [draft, config]);
 
-	return { draft, setDraft, isDirty, loading, saving, error, save };
+	return {
+		draft,
+		setDraft,
+		isDirty,
+		loading,
+		saving,
+		uncertain,
+		error: uncertain?.message ?? error,
+		save,
+	};
 }

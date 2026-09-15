@@ -535,3 +535,88 @@ async fn test_ターミナル画面再接続_重複逆転を除外し連番欠�
             if data.as_ref() == "next" && sequence == 8
     ));
 }
+
+#[tokio::test]
+async fn test_サイズ更新_別入口からも予約順を守り別terminalを待たせない() {
+    // Given
+    let gateway = Arc::new(super::super::io_usecase::io_usecase_tests::FakePtyGateway::new());
+    let application = super::TerminalSurfaceApplication::new(
+        gateway.clone(),
+        Arc::new(TerminalSurfaceEventHub::new()),
+    );
+    let other_entry = application.clone();
+    let owner = TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/repo")).unwrap();
+    let other_owner = TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/other")).unwrap();
+    let first = application.prepare_resize(owner.clone(), 40, 80);
+    let second = other_entry.prepare_resize(owner.clone(), 50, 100);
+    // When
+    let second = tokio::task::spawn_blocking(second);
+    let unrelated = tokio::task::spawn_blocking(move || other_entry.resize(&other_owner, 20, 60));
+    tokio::time::timeout(std::time::Duration::from_secs(1), unrelated)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(gateway.resizes.lock().len(), 1);
+    tokio::task::spawn_blocking(first).await.unwrap().unwrap();
+    second.await.unwrap().unwrap();
+    // Then
+    assert_eq!(
+        gateway
+            .resizes
+            .lock()
+            .iter()
+            .map(|(_, rows, cols)| (*rows, *cols))
+            .collect::<Vec<_>>(),
+        [(20, 60), (40, 80), (50, 100)]
+    );
+    assert!(application.resize_tails.lock().unwrap().is_empty());
+}
+
+#[test]
+fn test_サイズ更新_最後の完了で待機列を解放し後続予約は保持する() {
+    // Given
+    let gateway = Arc::new(super::super::io_usecase::io_usecase_tests::FakePtyGateway::new());
+    let application = super::TerminalSurfaceApplication::new(
+        gateway.clone(),
+        Arc::new(TerminalSurfaceEventHub::new()),
+    );
+    // When / Then
+    for id in 0..10 {
+        let owner =
+            TerminalSurfaceOwner::session(WorkspaceIdentity::new("/repo"), format!("session-{id}"))
+                .unwrap();
+        let first = application.prepare_resize(owner.clone(), 40, 80);
+        let second = application.prepare_resize(owner, 50, 100);
+        first().unwrap();
+        assert_eq!(application.resize_tails.lock().unwrap().len(), 1);
+        second().unwrap();
+        assert!(application.resize_tails.lock().unwrap().is_empty());
+    }
+    assert_eq!(gateway.resizes.lock().len(), 20);
+}
+
+#[test]
+fn test_サイズ更新_予約の破棄と受付失敗でも待機列を解放する() {
+    // Given
+    let gateway = Arc::new(super::super::io_usecase::io_usecase_tests::FakePtyGateway::new());
+    let application = super::TerminalSurfaceApplication::new(
+        gateway.clone(),
+        Arc::new(TerminalSurfaceEventHub::new()),
+    );
+    let owner = TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/repo")).unwrap();
+    // When / Then
+    let resize = application.prepare_resize(owner.clone(), 40, 80);
+    drop(resize);
+    assert!(application.resize_tails.lock().unwrap().is_empty());
+    let resize = application.prepare_resize(owner, 50, 100);
+    application.shutdown().unwrap();
+    assert_eq!(
+        resize(),
+        Err(super::UsecaseError::Gateway(
+            "Terminal Surface runtime is shutting down".into()
+        ))
+    );
+    assert!(application.resize_tails.lock().unwrap().is_empty());
+    assert!(gateway.resizes.lock().is_empty());
+}

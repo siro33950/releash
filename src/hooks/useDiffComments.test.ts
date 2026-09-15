@@ -7,11 +7,8 @@ const mockInvoke = vi.fn();
 const mockListen = vi.fn();
 
 vi.mock("@/lib/clientSocket", () => ({
+	listenClient: (...args: unknown[]) => mockListen(...args),
 	invokeClient: (...args: unknown[]) => mockInvoke(...args),
-}));
-
-vi.mock("@tauri-apps/api/event", () => ({
-	listen: (...args: unknown[]) => mockListen(...args),
 }));
 
 const makeThread = (
@@ -63,6 +60,33 @@ describe("useDiffComments", () => {
 		});
 	});
 
+	it("再接続の再取得失敗を保持し次の成功でエラーを解除する", async () => {
+		mockInvoke.mockResolvedValue([makeThread()]);
+		const { result } = renderHook(() =>
+			useDiffComments({ worktreeName: "wt" }),
+		);
+		await waitFor(() => expect(result.current.comments).toHaveLength(1));
+		const reconnect = mockListen.mock.calls[0][2] as () => Promise<void>;
+		mockInvoke.mockRejectedValueOnce({ message: "read denied" });
+		await act(async () => {
+			await expect(reconnect()).resolves.toBeUndefined();
+		});
+		expect(result.current.error).toBe("read denied");
+		expect(result.current.loading).toBe(false);
+		expect(result.current.comments).toHaveLength(1);
+		mockInvoke.mockResolvedValue([]);
+		await act(() => reconnect());
+		expect(result.current.error).toBeNull();
+		expect(result.current.comments).toEqual([]);
+	});
+	it("初回の取得失敗も未処理rejectionにせず表示へ渡す", async () => {
+		mockInvoke.mockRejectedValue(new Error("read denied"));
+		const { result } = renderHook(() =>
+			useDiffComments({ worktreeName: "wt" }),
+		);
+		await waitFor(() => expect(result.current.error).toBe("read denied"));
+		expect(result.current.loading).toBe(false);
+	});
 	it("returns empty array when worktreeName is empty", async () => {
 		const { result } = renderHook(() => useDiffComments({ worktreeName: "" }));
 
@@ -299,6 +323,7 @@ describe("useDiffComments", () => {
 		await waitFor(() => {
 			expect(mockListen).toHaveBeenCalledWith(
 				"review-comments-changed",
+				expect.any(Function),
 				expect.any(Function),
 			);
 		});

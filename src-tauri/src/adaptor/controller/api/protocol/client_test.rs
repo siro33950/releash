@@ -71,6 +71,12 @@ fn test_クライアント引数_必須フィールドと整数型を検証す�
         .unwrap();
     assert_eq!(decoded, ("ack_terminal_surface_output", args));
     let request = CommandRequest {
+        instance_id: String::new(),
+        recover: false,
+        predecessors: Vec::new(),
+        deadline_unix_ms: 0,
+        user_retry: false,
+        successors: Vec::new(),
         request_id: "id".into(),
         command: Some(command_request::Command::GetCurrentBranch(
             GetCurrentBranchRequest::default(),
@@ -161,7 +167,6 @@ fn test_workspace過去試行_両commandでnodeタグとchildren省略を保持�
             can_rename: false,
             can_approve: false,
             can_retry: true,
-            can_close: false,
         },
         workflow_capabilities: None,
         session_capabilities: None,

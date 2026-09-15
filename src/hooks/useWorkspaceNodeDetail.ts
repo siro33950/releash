@@ -155,14 +155,17 @@ export function useWorkspaceNodeDetail({
 	return state;
 }
 
-export async function approveWorkspaceNode({
-	worktreePath,
-	nodeId,
-}: {
-	worktreePath: string;
-	nodeId: string;
-}): Promise<WorkspaceNodeDetail | null> {
-	await invoke("approve_workspace_node", { worktreePath, nodeId });
+export async function approveWorkspaceNode(
+	{
+		worktreePath,
+		nodeId,
+	}: {
+		worktreePath: string;
+		nodeId: string;
+	},
+	options?: Parameters<typeof invoke>[2],
+): Promise<WorkspaceNodeDetail | null> {
+	await invoke("approve_workspace_node", { worktreePath, nodeId }, options);
 	window.dispatchEvent(
 		new CustomEvent("workspace-tree-refresh", { detail: { worktreePath } }),
 	);
@@ -172,14 +175,11 @@ export async function approveWorkspaceNode({
 	});
 }
 
-export async function retryWorkspaceNode({
-	worktreePath,
-	nodeId,
-}: {
-	worktreePath: string;
-	nodeId: string;
-}): Promise<WorkspaceNodeDetail | null> {
-	await invoke("retry_workspace_node", { worktreePath, nodeId });
+export async function retryWorkspaceNode(
+	{ worktreePath, nodeId }: { worktreePath: string; nodeId: string },
+	options?: Parameters<typeof invoke>[2],
+): Promise<WorkspaceNodeDetail | null> {
+	await invoke("retry_workspace_node", { worktreePath, nodeId }, options);
 	window.dispatchEvent(
 		new CustomEvent("workspace-tree-refresh", { detail: { worktreePath } }),
 	);

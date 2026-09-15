@@ -2045,7 +2045,6 @@ fn missing_session_keeps_node_but_returns_no_unusable_session_id() {
         .find(|node| node.node_execution_id.as_deref() == Some("missing-session"))
         .unwrap();
     assert_eq!(node.session_id, None);
-    assert!(!node.can_close);
 }
 
 #[test]

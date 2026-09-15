@@ -1,6 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
+import { useDiffComments } from "@/hooks/useDiffComments";
 import { RightSidebarBottom } from "./RightSidebarBottom";
 
 // react-resizable-panels does not work in jsdom
@@ -42,9 +43,10 @@ vi.mock("@/components/panels/TerminalPanel", () => ({
 }));
 
 vi.mock("@/hooks/useDiffComments", () => ({
-	useDiffComments: () => ({
+	useDiffComments: vi.fn(() => ({
 		comments: [],
 		loading: false,
+		error: null,
 		unsentCount: 0,
 		addComment: vi.fn(),
 		appendComment: vi.fn(),
@@ -52,7 +54,7 @@ vi.mock("@/hooks/useDiffComments", () => ({
 		deleteThread: vi.fn().mockResolvedValue(undefined),
 		getCommentsForFile: vi.fn(() => []),
 		reload: vi.fn(),
-	}),
+	})),
 }));
 
 const defaultProps = {
@@ -61,6 +63,18 @@ const defaultProps = {
 };
 
 describe("RightSidebarBottom", () => {
+	it("コメント再取得の失敗を表示する", () => {
+		const current = useDiffComments({ worktreeName: "wt" });
+		vi.mocked(useDiffComments).mockReturnValueOnce({
+			...current,
+			error: "read denied",
+		});
+		render(<RightSidebarBottom {...defaultProps} />);
+		expect(screen.getByRole("alert")).toHaveTextContent(
+			"コメントを取得できません: read denied",
+		);
+	});
+
 	it("should render terminal panel", () => {
 		render(<RightSidebarBottom {...defaultProps} />);
 

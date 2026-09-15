@@ -1,4 +1,4 @@
-import { listen } from "@tauri-apps/api/event";
+import { listenClient as listen } from "@/lib/clientSocket";
 
 const AGENT_SESSION_REFRESH_EVENT = "agent-session-refresh";
 const AGENT_SESSION_CHANGED_BACKEND_EVENT = "agent-session-changed";
@@ -22,11 +22,12 @@ export function subscribeAgentSessionChanged(
 		listener((event as CustomEvent<AgentSessionChangedDetail>).detail ?? {});
 	};
 	window.addEventListener(AGENT_SESSION_REFRESH_EVENT, handleEvent);
-	const unlistenBackend = listen<AgentSessionChangedDetail>(
+	const unlistenBackend = listen(
 		AGENT_SESSION_CHANGED_BACKEND_EVENT,
 		(event) => {
 			listener(event.payload ?? {});
 		},
+		() => listener({}),
 	);
 	return () => {
 		window.removeEventListener(AGENT_SESSION_REFRESH_EVENT, handleEvent);

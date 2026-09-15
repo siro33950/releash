@@ -24,6 +24,9 @@ struct BackendOwnedSurface {
     missing_snapshot: std::sync::atomic::AtomicBool,
     attached_writes: std::sync::Mutex<Vec<AttachedWrite>>,
     resizes: std::sync::Mutex<Vec<(String, u16, u16)>>,
+    resize_gate: Option<std::sync::Mutex<std::sync::mpsc::Receiver<()>>>,
+    resize_started: tokio::sync::Notify,
+    panic_resize: std::sync::atomic::AtomicBool,
     deactivated: std::sync::Mutex<Vec<String>>,
 }
 
@@ -177,8 +180,24 @@ impl crate::domain::terminal_surface::gateway::TerminalSurfaceGateway for Backen
         rows: u16,
         cols: u16,
     ) -> Result<(), crate::domain::terminal_surface::gateway::TerminalSurfaceGatewayError> {
+        assert!(
+            !self.panic_resize.load(std::sync::atomic::Ordering::SeqCst),
+            "resize panic"
+        );
         if rows == 40 {
-            std::thread::sleep(Duration::from_millis(30));
+            if let Some(gate) = &self.resize_gate {
+                self.resize_started.notify_one();
+                gate.lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(5))
+                    .map_err(|error| {
+                        crate::domain::terminal_surface::gateway::TerminalSurfaceGatewayError::new(
+                            error.to_string(),
+                        )
+                    })?;
+            } else {
+                std::thread::sleep(Duration::from_millis(30));
+            }
         }
         self.resizes
             .lock()
@@ -540,7 +559,7 @@ async fn test_terminal_stream_出力の終端ackだけがbackend_creditを解放
 }
 
 #[tokio::test]
-async fn test_terminal_stream_attachのid長境界は本番tauri入口と結果が一致する() {
+async fn test_terminal_stream_attachのid長境界を検証しtauri入口を拒否する() {
     use crate::adaptor::controller::{command, state::AppState};
     use tauri::Manager;
 
@@ -551,8 +570,14 @@ async fn test_terminal_stream_attachのid長境界は本番tauri入口と結果�
         crate::adaptor::controller::client::workflow::tests::make_read_only_app_with_terminal(
             application.clone(),
         );
+    let router: command::CommandRouter<
+        Box<dyn Fn(tauri::ipc::Invoke<tauri::test::MockRuntime>) -> bool + Send + Sync>,
+    > = command::CommandRouter::new(Box::new(|_| false));
     let app = tauri::test::mock_builder()
-        .invoke_handler(command::terminal_surface::invoke_handler())
+        .manage(Arc::new(
+            crate::usecase::application_startup::ApplicationStartupAuthority::ready(),
+        ))
+        .invoke_handler(move |invoke| router.handle(invoke))
         .manage(fixture_app.state::<AppState>().inner().clone())
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .unwrap();
@@ -600,12 +625,7 @@ async fn test_terminal_stream_attachのid長境界は本番tauri入口と結果�
             } else {
                 Err(json!({"code": "INVALID_REQUEST", "message": "Invalid attachment ID"}))
             };
-            assert_eq!(
-                tauri_result,
-                expected,
-                "Tauri: bytes={}, recovery={recovery}",
-                id.len()
-            );
+            assert!(tauri_result.is_err());
             assert_eq!(
                 ws_result,
                 expected,
@@ -661,14 +681,16 @@ async fn test_terminal_stream_不正attachと未来ackを拒否しdetach後のfr
 }
 
 #[tokio::test]
-async fn test_terminal_stream_単一wsでattachと入力とresizeとpushと通常応答を多重化する() {
+async fn test_terminal_stream_resize待機中も入力と出力とpushと通常応答を多重化する() {
     use crate::adaptor::controller::{api, client::ClientCommandDispatch, state::AppState};
     use futures_util::{SinkExt, StreamExt};
     use tauri::Manager;
     use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message};
     // Given
+    let (resize_done, resize_gate) = std::sync::mpsc::channel();
     let gateway = Arc::new(BackendOwnedSurface {
         replay: Some("x".repeat(2 * 1024 * 1024)),
+        resize_gate: Some(std::sync::Mutex::new(resize_gate)),
         ..Default::default()
     });
     let hub = Arc::new(TerminalSurfaceEventHub::new());
@@ -746,12 +768,13 @@ async fn test_terminal_stream_単一wsでattachと入力とresizeとpushと通�
             assert_eq!(frame.sequence, index);
         }
     }
-    socket.send(send("write", "write_terminal_surface", json!({"owner":{"kind":"workspace","workspacePath":"/repo"},"attachmentId":"a","sequence":0,"data":"echo hi\n"}))).await.unwrap();
     for rows in 40..45 {
         socket.send(send(&format!("resize-{rows}"), "resize_terminal_surface",
             json!({"owner":{"kind":"workspace","workspacePath":"/repo"},"rows":rows,"cols":rows * 3})
         )).await.unwrap();
     }
+    gateway.resize_started.notified().await;
+    socket.send(send("write", "write_terminal_surface", json!({"owner":{"kind":"workspace","workspacePath":"/repo"},"attachmentId":"a","sequence":0,"data":"echo hi\n"}))).await.unwrap();
     socket
         .send(Message::Binary(
             wire::Envelope {
@@ -777,11 +800,40 @@ async fn test_terminal_stream_単一wsでattachと入力とresizeとpushと通�
     for _ in 0..128 {
         crate::adaptor::gateway::push::BackendPush::BranchListSync.emit(app.handle());
     }
+    socket
+        .send(Message::Binary(
+            wire::Envelope {
+                body: Some(wire::envelope::Body::Ack(wire::Ack {
+                    attachment_id: "a".into(),
+                    sequence: 16,
+                    output_sequence: None,
+                })),
+            }
+            .encode_to_vec()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    socket
+        .send(Message::Binary(
+            wire::Envelope {
+                body: Some(wire::envelope::Body::Heartbeat(wire::Heartbeat {
+                    nonce: "alive".into(),
+                })),
+            }
+            .encode_to_vec()
+            .into(),
+        ))
+        .await
+        .unwrap();
     // Then
     let mut ids = std::collections::HashSet::new();
     let mut pushed = false;
     let mut resynced = false;
-    while ids.len() < 7 || !pushed || !resynced {
+    let mut streamed = false;
+    let mut alive = false;
+    let mut released = false;
+    while ids.len() < 7 || !pushed || !resynced || !streamed || !alive {
         let frame = tokio::time::timeout(Duration::from_secs(5), socket.next())
             .await
             .unwrap()
@@ -792,6 +844,9 @@ async fn test_terminal_stream_単一wsでattachと入力とresizeとpushと通�
         };
         match wire::Envelope::decode(bytes).unwrap().body.unwrap() {
             wire::envelope::Body::Response(response) => {
+                if !released {
+                    assert!(response.request_id == "write" || response.request_id == "query");
+                }
                 let wire::command_response::Outcome::Result(result) = response.outcome.unwrap()
                 else {
                     panic!("success");
@@ -809,9 +864,25 @@ async fn test_terminal_stream_単一wsでattachと入力とresizeとpushと通�
                 resynced = true;
                 crate::adaptor::gateway::push::BackendPush::BranchListSync.emit(app.handle());
             }
-            _ => panic!("unacked stream must stay blocked"),
+            wire::envelope::Body::Stream(frame) => {
+                if !streamed {
+                    assert_eq!(frame.sequence, 17);
+                }
+                streamed = true;
+            }
+            wire::envelope::Body::Heartbeat(heartbeat) => {
+                assert_eq!(heartbeat.nonce, "alive");
+                alive = true;
+            }
+            _ => panic!("unexpected frame"),
+        }
+        if !released && ids.len() == 2 && pushed && resynced && streamed && alive {
+            assert!(gateway.resizes.lock().unwrap().is_empty());
+            resize_done.send(()).unwrap();
+            released = true;
         }
     }
+    assert!(released);
     assert!(pushed);
     assert_eq!(ids.len(), 7);
     assert_eq!(
@@ -829,33 +900,71 @@ async fn test_terminal_stream_単一wsでattachと入力とresizeとpushと通�
             .map(|rows| (workspace_owner().stable_key(), rows, rows * 3))
             .collect::<Vec<_>>()
     );
+    gateway
+        .panic_resize
+        .store(true, std::sync::atomic::Ordering::SeqCst);
     socket
-        .send(Message::Binary(
-            wire::Envelope {
-                body: Some(wire::envelope::Body::Ack(wire::Ack {
-                    attachment_id: "a".into(),
-                    sequence: 16,
-                    output_sequence: None,
-                })),
-            }
-            .encode_to_vec()
-            .into(),
+        .send(send(
+            "resize-error",
+            "resize_terminal_surface",
+            json!({
+                "owner":{"kind":"workspace","workspacePath":"/repo"},"rows":45,"cols":135
+            }),
         ))
         .await
         .unwrap();
-    let message = tokio::time::timeout(Duration::from_secs(5), socket.next())
+    loop {
+        let Message::Binary(bytes) = tokio::time::timeout(Duration::from_secs(5), socket.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+        else {
+            panic!("binary");
+        };
+        if let Some(wire::envelope::Body::Response(response)) =
+            wire::Envelope::decode(bytes).unwrap().body
+        {
+            assert_eq!(response.request_id, "resize-error");
+            let Some(wire::command_response::Outcome::Error(error)) = response.outcome else {
+                panic!("resize error");
+            };
+            assert!(wire::from_value(error)
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .contains("Terminal resize task failed"));
+            break;
+        }
+    }
+    socket
+        .send(send(
+            "after-error",
+            "get_language_from_path",
+            json!({"filePath":"main.rs"}),
+        ))
         .await
-        .unwrap()
-        .unwrap()
         .unwrap();
-    let Message::Binary(bytes) = message else {
-        panic!("binary");
-    };
-    let wire::envelope::Body::Stream(frame) = wire::Envelope::decode(bytes).unwrap().body.unwrap()
-    else {
-        panic!("stream");
-    };
-    assert_eq!(frame.sequence, 17);
+    loop {
+        let Message::Binary(bytes) = tokio::time::timeout(Duration::from_secs(5), socket.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+        else {
+            panic!("binary");
+        };
+        if let Some(wire::envelope::Body::Response(response)) =
+            wire::Envelope::decode(bytes).unwrap().body
+        {
+            assert_eq!(response.request_id, "after-error");
+            let Some(wire::command_response::Outcome::Result(result)) = response.outcome else {
+                panic!("success");
+            };
+            assert_eq!(wire::from_value(result).unwrap(), "rust");
+            break;
+        }
+    }
     socket.close(None).await.unwrap();
     server.abort();
 }

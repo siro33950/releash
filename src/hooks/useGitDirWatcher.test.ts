@@ -4,7 +4,10 @@ import { useGitDirWatcher } from "./useGitDirWatcher";
 
 const mockInvoke = vi.fn();
 
-vi.mock("@/lib/clientSocket", () => ({
+vi.mock("@/lib/clientSocket", async () => ({
+	watchClient: (await import("@/test/watchClient")).mockWatchClient((...args) =>
+		mockInvoke(...args),
+	),
 	invokeClient: (...args: unknown[]) => mockInvoke(...args),
 }));
 

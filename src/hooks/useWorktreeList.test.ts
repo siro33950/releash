@@ -6,12 +6,12 @@ import { useWorktreeList } from "./useWorktreeList";
 const mockInvoke = vi.fn();
 const mockListen = vi.fn();
 
-vi.mock("@/lib/clientSocket", () => ({
+vi.mock("@/lib/clientSocket", async () => ({
+	watchClient: (await import("@/test/watchClient")).mockWatchClient((...args) =>
+		mockInvoke(...args),
+	),
+	listenClient: (...args: unknown[]) => mockListen(...args),
 	invokeClient: (...args: unknown[]) => mockInvoke(...args),
-}));
-
-vi.mock("@tauri-apps/api/event", () => ({
-	listen: (...args: unknown[]) => mockListen(...args),
 }));
 
 const makeBranch = (

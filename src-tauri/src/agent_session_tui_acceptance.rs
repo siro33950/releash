@@ -155,7 +155,8 @@ impl ManagedWorktreeResolver for AcceptanceManagedWorktreeResolver {
 
 pub struct AgentSessionTuiAcceptanceHost<R: tauri::Runtime> {
     _app: tauri::App<R>,
-    window: tauri::WebviewWindow<R>,
+    client_api: Arc<LocalApiServer>,
+    client_endpoint: crate::adaptor::protocol::client::ClientEndpoint,
     exit_observer: tauri::async_runtime::JoinHandle<()>,
     exit_observer_cancellation:
         Arc<dyn crate::domain::terminal_surface::gateway::TerminalSurfaceEventCancellation>,
@@ -318,17 +319,33 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
         dispatch.register_dependencies(
             &crate::adaptor::controller::wiring::build_client_dependencies(app.handle()),
         );
-        app.manage(Arc::new(dispatch));
-        let window = tauri::WebviewWindowBuilder::new(
-            &app,
-            "agent-session-product-driver",
-            Default::default(),
+        let dispatch = Arc::new(dispatch);
+        let client_binding = crate::infrastructure::local_api::LocalApiServerBinding::bind(
+            data_dir.join("desktop-client"),
         )
-        .build()
         .map_err(|error| error.to_string())?;
+        let client_endpoint = crate::adaptor::protocol::client::ClientEndpoint {
+            url: format!("ws://127.0.0.1:{}/v1/client", client_binding.port()),
+            auth_subprotocol: format!("releash-bearer.{}", client_binding.terminal_bearer_token()),
+        };
+        let client_router = crate::adaptor::controller::api::authenticated(
+            crate::adaptor::controller::api::client::router(Some(
+                crate::adaptor::controller::api::ClientApiDeps::new(
+                    dispatch,
+                    crate::adaptor::gateway::push::ClientPushGateway::new(
+                        app.state::<Arc<crate::infrastructure::push::PushSink>>()
+                            .inner()
+                            .clone(),
+                    ),
+                ),
+            )),
+            client_binding.terminal_bearer_token(),
+        );
+        let client_api = client_binding.start(client_router, &tokio::runtime::Handle::current());
         Ok(Self {
             _app: app,
-            window,
+            client_api,
+            client_endpoint,
             exit_observer,
             exit_observer_cancellation,
             terminal,
@@ -341,8 +358,8 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
         })
     }
 
-    pub fn window(&self) -> &tauri::WebviewWindow<R> {
-        &self.window
+    pub fn client_endpoint(&self) -> &crate::adaptor::protocol::client::ClientEndpoint {
+        &self.client_endpoint
     }
 
     pub fn terminal(&self) -> &TerminalSurfaceRuntime {
@@ -496,7 +513,8 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
     pub async fn shutdown(self) -> Result<(), String> {
         let Self {
             _app: app,
-            window,
+            client_api,
+            client_endpoint: _,
             exit_observer,
             exit_observer_cancellation,
             terminal,
@@ -512,6 +530,10 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
             .await
             .map_err(|error| format!("join AgentSession exit observer: {error}"))?;
         terminal.shutdown()?;
+        client_api
+            .shutdown_and_wait()
+            .await
+            .map_err(|error| error.to_string())?;
         let local_api = local_api
             .into_inner()
             .map_err(|_| "lock local API server".to_string())?;
@@ -543,7 +565,7 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
             workflow_agent_sessions,
             provider_lifecycle_ingress,
             terminal,
-            window,
+            client_api,
             app,
         ));
         let store = Arc::try_unwrap(store)
@@ -551,11 +573,6 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
         store.drain_and_close();
         Ok(())
     }
-}
-
-pub fn product_agent_session_invoke_handler<R: tauri::Runtime>(
-) -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static {
-    crate::adaptor::controller::command::client::handle_registered_invoke
 }
 
 fn provider_kind(provider: AcceptanceProvider) -> ProviderKind {

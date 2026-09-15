@@ -74,3 +74,68 @@ pub(crate) async fn git_unstage_review_group_shared(
     })
     .await
 }
+
+pub(crate) async fn get_review_blob_shared(
+    state: &AppState,
+    reference: String,
+) -> Result<String, AppError> {
+    use base64::Engine;
+    let blob = parse_blob_reference(&reference)?;
+    let review = state.review_usecase.clone();
+    let mime = crate::usecase::review_usecase::review_blob_mime_for_path(&blob.path);
+    let bytes = run_blocking(move || {
+        review.read_review_blob_bytes(
+            &blob.worktree,
+            &blob.path,
+            blob.side,
+            &blob.section,
+            &blob.base,
+            blob.version,
+        )
+    })
+    .await?;
+    Ok(format!(
+        "data:{mime};base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    ))
+}
+
+struct BlobReference {
+    worktree: String,
+    path: String,
+    side: crate::domain::code::ReviewBlobSide,
+    section: String,
+    base: String,
+    version: u64,
+}
+
+fn parse_blob_reference(reference: &str) -> Result<BlobReference, AppError> {
+    let invalid = || AppError::coded("INVALID_REQUEST", "Invalid review blob reference");
+    let query = reference.strip_prefix("blob?").ok_or_else(invalid)?;
+    let params: std::collections::HashMap<_, _> = url::form_urlencoded::parse(query.as_bytes())
+        .into_owned()
+        .collect();
+    let required = |key| {
+        params
+            .get(key)
+            .filter(|value| !value.is_empty())
+            .cloned()
+            .ok_or_else(invalid)
+    };
+    Ok(BlobReference {
+        worktree: required("worktree")?,
+        path: required("path")?,
+        side: match required("side")?.as_str() {
+            "original" => crate::domain::code::ReviewBlobSide::Original,
+            "modified" => crate::domain::code::ReviewBlobSide::Modified,
+            _ => return Err(invalid()),
+        },
+        section: required("section")?,
+        base: required("base")?,
+        version: required("version")?.parse().map_err(|_| invalid())?,
+    })
+}
+
+#[cfg(test)]
+#[path = "review_test.rs"]
+mod review_tests;

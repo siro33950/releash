@@ -41,4 +41,4 @@ pub fn resize<G: TerminalSurfaceGateway + ?Sized>(
 
 #[cfg(test)]
 #[path = "io_usecase_test.rs"]
-mod io_usecase_tests;
+pub(super) mod io_usecase_tests;

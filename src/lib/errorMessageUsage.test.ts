@@ -15,6 +15,7 @@ const TARGET_FILES = [
 	"src/components/panels/AgentSessionPanel/AgentSessionPanel.tsx",
 	"src/components/panels/MarkdownDiffViewer.tsx",
 	"src/hooks/useReviewFileView.ts",
+	"src/hooks/useDiffComments.ts",
 	"src/lib/telemetry.ts",
 	"src/hooks/useTerminal.ts",
 	"src/components/panels/NodeContentView/NodeContentView.tsx",

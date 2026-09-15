@@ -9,6 +9,7 @@ import {
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { invokeClient, listenClient } from "@/lib/clientSocket";
 import type { GitFileStatus } from "@/types/git";
 import type { DiffTreeNode, ReviewFileView } from "@/types/review";
 import { ReviewPanel } from "./ReviewPanel";
@@ -118,6 +119,7 @@ vi.mock("@/hooks/useFileNavigation", () => ({
 }));
 
 vi.mock("@/lib/clientSocket", () => ({
+	listenClient: vi.fn().mockResolvedValue(() => {}),
 	invokeClient: vi.fn().mockResolvedValue(null),
 }));
 
@@ -316,6 +318,27 @@ function mockNonEmptyHeadSnapshot(
 }
 
 describe("ReviewPanel", () => {
+	it("再接続時のコメント取得失敗を空のreviewにも表示する", async () => {
+		render(
+			<TooltipProvider>
+				<ReviewPanel
+					rootPath="/repo"
+					diffOnlyMode={false}
+					onDiffOnlyModeChange={vi.fn()}
+				/>
+			</TooltipProvider>,
+		);
+		const reconnect = vi
+			.mocked(listenClient)
+			.mock.calls.find(([event]) => event === "review-comments-changed")?.[2];
+		expect(reconnect).toBeDefined();
+		vi.mocked(invokeClient).mockRejectedValueOnce(new Error("read denied"));
+		await act(async () => reconnect?.());
+		expect(screen.getByRole("alert")).toHaveTextContent(
+			"コメントを取得できません: read denied",
+		);
+	});
+
 	it("should show 'No changes' when totalFileCount is 0", () => {
 		render(
 			<TooltipProvider>

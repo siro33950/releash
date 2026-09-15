@@ -1,7 +1,16 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+	act,
+	fireEvent,
+	render,
+	screen,
+	waitFor,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { invokeClient as invoke } from "@/lib/clientSocket";
+import {
+	ClientTransportError,
+	invokeClient as invoke,
+} from "@/lib/clientSocket";
 import type { IssueInfo, WorktreeBranch, WorktreeEntry } from "@/types/git";
 import type { NotionTask } from "@/types/notion";
 import { CreateWorktreeModal } from "./CreateWorktreeModal";
@@ -125,6 +134,43 @@ describe("CreateWorktreeModal", () => {
 		});
 	});
 
+	it.each([
+		[
+			new ClientTransportError("operation", "unknown"),
+			"操作結果を確認できません",
+		],
+		[new ClientTransportError("operation", "not_sent"), "未実行"],
+		[new Error("backend failure"), "Failed to create: feat/new"],
+	])(
+		"作成結果の未確認・未送信・確定失敗を区別して表示する: %s",
+		async (failure, expected) => {
+			const base = mockInvoke.getMockImplementation();
+			if (!base) throw new Error("Missing worktree fixture");
+			mockInvoke.mockImplementation((command, args) =>
+				command === "create_worktree"
+					? Promise.reject(failure)
+					: base(command, args),
+			);
+			render(
+				<CreateWorktreeModal
+					open
+					repoPaths={["/repo"]}
+					onCreated={vi.fn()}
+					onClose={vi.fn()}
+				/>,
+			);
+			fireEvent.change(screen.getByLabelText("Branch name"), {
+				target: { value: "feat/new" },
+			});
+			fireEvent.click(screen.getByRole("button", { name: "Create" }));
+			await waitFor(() =>
+				expect(screen.getByText(new RegExp(expected))).toBeInTheDocument(),
+			);
+			if (failure instanceof ClientTransportError)
+				expect(screen.queryByText(/Failed to create/)).not.toBeInTheDocument();
+		},
+	);
+
 	it("create_worktree に frontend 導出の worktreePath を渡さない", async () => {
 		render(
 			<CreateWorktreeModal
@@ -148,6 +194,7 @@ describe("CreateWorktreeModal", () => {
 					branch: "feat/plain",
 					createBranch: true,
 				}),
+				{ onUncertain: expect.any(Function) },
 			);
 		});
 		const createArgs = mockInvoke.mock.calls.find(
@@ -185,6 +232,7 @@ describe("CreateWorktreeModal", () => {
 				expect.objectContaining({
 					branch: "backend/issue-1302",
 				}),
+				{ onUncertain: expect.any(Function) },
 			);
 		});
 	});
@@ -254,6 +302,7 @@ describe("CreateWorktreeModal", () => {
 				expect.objectContaining({
 					branch: "notion/page1",
 				}),
+				{ onUncertain: expect.any(Function) },
 			);
 		});
 	});
@@ -292,7 +341,63 @@ describe("CreateWorktreeModal", () => {
 				expect.objectContaining({
 					branch: "feat/move-notion-branch-rules",
 				}),
+				{ onUncertain: expect.any(Function) },
 			);
 		});
+	});
+
+	it("送信済みの結果不明では作成中表示を終え、遅延成功を後続処理へ渡す", async () => {
+		const base = mockInvoke.getMockImplementation();
+		if (!base) throw new Error("Missing invoke fixture");
+		let complete!: (entry: WorktreeEntry) => void;
+		let unknown!: (error: ClientTransportError) => void;
+		mockInvoke.mockImplementation((command, args, options) => {
+			if (command !== "create_worktree") return base(command, args);
+			if (!options?.onUncertain)
+				throw new Error("Missing uncertainty callback");
+			unknown = options.onUncertain;
+			return new Promise((resolve) => {
+				complete = resolve;
+			});
+		});
+		const onCreated = vi.fn();
+		render(
+			<CreateWorktreeModal
+				open
+				repoPaths={["/repo"]}
+				onCreated={onCreated}
+				onClose={vi.fn()}
+			/>,
+		);
+		fireEvent.change(screen.getByLabelText("Branch name"), {
+			target: { value: "new" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: "Create" }));
+		expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+		act(() => unknown(new ClientTransportError("original", "unknown")));
+		expect(screen.queryByText("Creating...")).not.toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+		expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
+		expect(screen.getByText(/操作結果を確認できません/)).toBeInTheDocument();
+		expect(screen.queryByText(/Failed to create/)).not.toBeInTheDocument();
+		await act(async () =>
+			complete({
+				name: "new",
+				path: "/repo/new",
+				branch: "new",
+				is_main: false,
+				is_locked: false,
+				dirty_count: 0,
+				base_branch: "main",
+			}),
+		);
+		expect(onCreated).toHaveBeenCalledExactlyOnceWith(
+			"/repo/new",
+			"new",
+			"repo",
+		);
+		expect(
+			screen.queryByText(/操作結果を確認できません/),
+		).not.toBeInTheDocument();
 	});
 });

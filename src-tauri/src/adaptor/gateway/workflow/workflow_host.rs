@@ -2465,6 +2465,9 @@ impl WorkflowRuntimeHost {
 
 #[cfg(test)]
 mod workflow_host_tests {
+    use super::test_helpers::{
+        record_workflow_execution_broadcasts, take_workflow_execution_broadcasts,
+    };
     use super::*;
     use crate::adaptor::gateway::agent_session::LocalAgentSessionRepository;
     use crate::adaptor::gateway::local_event_store::fault::FaultInjector;
@@ -2473,9 +2476,7 @@ mod workflow_host_tests {
     use crate::adaptor::gateway::workflow::node_session_boundary::NodeSessionInfo;
     use crate::adaptor::gateway::workflow::TauriWorkflowRuntimeCommandGateway;
     use crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository;
-    use crate::adaptor::protocol::workflow::{
-        NodeExecutionStatusView, WorkflowExecutionChangedPayloadView,
-    };
+    use crate::adaptor::protocol::workflow::NodeExecutionStatusView;
     use crate::domain::agent_session::aggregates::{AgentSession, AgentSessionTreeLocation};
     use crate::domain::agent_session::repository::AgentSessionRepository;
     use crate::domain::local_event::{
@@ -2499,7 +2500,6 @@ mod workflow_host_tests {
     use crate::usecase::workflow::runtime_resolver::{
         ManagedWorktreeResolverError, WorkflowDefinitionResolverError,
     };
-    use tauri::Listener as _;
 
     const EFFECT_WORKTREE_PATH: &str = "/repo/effect-test";
     const EFFECT_NODE_NAME: &str = "agent";
@@ -2643,16 +2643,7 @@ mod workflow_host_tests {
                     schemas: Default::default(),
                     session_id: None,
                 };
-                let broadcasts = Arc::new(std::sync::Mutex::new(Vec::new()));
-                let recorded = broadcasts.clone();
-                app.listen("workflow-execution-changed", move |event| {
-                    recorded.lock().unwrap().push(
-                        serde_json::from_str::<WorkflowExecutionChangedPayloadView>(
-                            event.payload(),
-                        )
-                        .unwrap(),
-                    );
-                });
+                let mut broadcasts = record_workflow_execution_broadcasts(app.handle());
 
                 // When
                 host.commit_command_output(
@@ -2677,8 +2668,9 @@ mod workflow_host_tests {
                 assert!(!records
                     .iter()
                     .any(|record| matches!(record.fact, NodeFact::ApprovalGranted(_))));
+                let mut observed = take_workflow_execution_broadcasts(&mut broadcasts);
                 {
-                    let broadcasts = broadcasts.lock().unwrap();
+                    let broadcasts = &observed;
                     assert!(!broadcasts.is_empty());
                     let statuses = broadcasts
                         .iter()
@@ -2728,8 +2720,8 @@ mod workflow_host_tests {
                         .any(|record| record.meta.node_execution_id == node_execution_id
                             && matches!(record.fact, NodeFact::ApprovalGranted(_))));
                 }
-                let broadcasts = broadcasts.lock().unwrap();
-                let completed = &broadcasts.last().unwrap().workflow_execution;
+                observed.extend(take_workflow_execution_broadcasts(&mut broadcasts));
+                let completed = &observed.last().unwrap().workflow_execution;
                 assert_eq!(
                     completed.status,
                     crate::adaptor::protocol::workflow::ExecutionStatusView::Completed
@@ -4445,20 +4437,6 @@ nodes:
             node_execution_ids
         }
 
-        fn record_workflow_execution_broadcasts<R: tauri::Runtime>(
-            app: &tauri::AppHandle<R>,
-        ) -> Arc<std::sync::Mutex<Vec<WorkflowExecutionChangedPayloadView>>> {
-            let broadcasts = Arc::new(std::sync::Mutex::new(Vec::new()));
-            let recorded = broadcasts.clone();
-            app.listen("workflow-execution-changed", move |event| {
-                recorded
-                    .lock()
-                    .unwrap()
-                    .push(serde_json::from_str(event.payload()).unwrap());
-            });
-            broadcasts
-        }
-
         async fn assert_resume_paused_siblings_in_memory(
             host: &Arc<WorkflowRuntimeHost>,
             execution_id: &str,
@@ -4479,10 +4457,10 @@ nodes:
         }
 
         fn assert_resume_paused_siblings_in_latest_broadcast(
-            broadcasts: &Arc<std::sync::Mutex<Vec<WorkflowExecutionChangedPayloadView>>>,
+            broadcasts: &mut tokio::sync::broadcast::Receiver<Arc<[u8]>>,
             node_execution_ids: &[String],
         ) {
-            let broadcasts = broadcasts.lock().unwrap();
+            let broadcasts = take_workflow_execution_broadcasts(broadcasts);
             let snapshot = &broadcasts
                 .last()
                 .expect("resume compensation broadcasts its restored snapshot")
@@ -5702,7 +5680,7 @@ nodes:
             );
             sessions.close_all();
             sessions.fail_on(&second_node_execution_id);
-            let broadcasts = record_workflow_execution_broadcasts(fixture.app.handle());
+            let mut broadcasts = record_workflow_execution_broadcasts(fixture.app.handle());
 
             let error = fixture
                 .host
@@ -5719,7 +5697,7 @@ nodes:
                 &paused_sibling_ids,
             )
             .await;
-            assert_resume_paused_siblings_in_latest_broadcast(&broadcasts, &paused_sibling_ids);
+            assert_resume_paused_siblings_in_latest_broadcast(&mut broadcasts, &paused_sibling_ids);
         }
 
         #[tokio::test]
@@ -5742,7 +5720,7 @@ nodes:
             )
             .await;
             append_process_exit(&fixture, Some(7));
-            let broadcasts = record_workflow_execution_broadcasts(fixture.app.handle());
+            let mut broadcasts = record_workflow_execution_broadcasts(fixture.app.handle());
 
             let error = fixture
                 .host
@@ -5757,7 +5735,7 @@ nodes:
                 &paused_sibling_ids,
             )
             .await;
-            assert_resume_paused_siblings_in_latest_broadcast(&broadcasts, &paused_sibling_ids);
+            assert_resume_paused_siblings_in_latest_broadcast(&mut broadcasts, &paused_sibling_ids);
         }
 
         #[tokio::test]
@@ -5785,7 +5763,7 @@ nodes:
             .await;
             append_process_exit(&fixture, Some(7));
             dispatch_fails.store(true, std::sync::atomic::Ordering::SeqCst);
-            let broadcasts = record_workflow_execution_broadcasts(fixture.app.handle());
+            let mut broadcasts = record_workflow_execution_broadcasts(fixture.app.handle());
 
             let error = fixture
                 .host
@@ -5800,7 +5778,7 @@ nodes:
                 &paused_sibling_ids,
             )
             .await;
-            assert_resume_paused_siblings_in_latest_broadcast(&broadcasts, &paused_sibling_ids);
+            assert_resume_paused_siblings_in_latest_broadcast(&mut broadcasts, &paused_sibling_ids);
         }
 
         #[tokio::test]
@@ -5836,7 +5814,7 @@ nodes:
             sessions.close_all();
             sessions.skip_persisted_resume();
             sessions.fail_on(&second_node_execution_id);
-            let broadcasts = record_workflow_execution_broadcasts(fixture.app.handle());
+            let mut broadcasts = record_workflow_execution_broadcasts(fixture.app.handle());
 
             let error = fixture
                 .host
@@ -5853,7 +5831,7 @@ nodes:
                 &paused_sibling_ids,
             )
             .await;
-            assert!(broadcasts.lock().unwrap().is_empty());
+            assert!(take_workflow_execution_broadcasts(&mut broadcasts).is_empty());
         }
 
         #[tokio::test]

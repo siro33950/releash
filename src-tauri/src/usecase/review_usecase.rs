@@ -1644,7 +1644,7 @@ mod tests {
                 ReviewBlobSide::Modified => "modified",
             };
             format!(
-                "review-blob://localhost/blob?path={path}&side={side}&section={}&base={}&version={version}",
+                "blob?path={path}&side={side}&section={}&base={}&version={version}",
                 section.as_str(),
                 base.as_str()
             )
@@ -2525,16 +2525,8 @@ mod tests {
             panic!("expected image view");
         };
         assert_eq!(image.mime, "image/png");
-        assert!(image
-            .original_url
-            .as_deref()
-            .unwrap()
-            .starts_with("review-blob://"));
-        assert!(image
-            .modified_url
-            .as_deref()
-            .unwrap()
-            .starts_with("review-blob://"));
+        assert!(image.original_url.as_deref().unwrap().starts_with("blob?"));
+        assert!(image.modified_url.as_deref().unwrap().starts_with("blob?"));
         assert!(!image.modified_url.as_deref().unwrap().starts_with("data:"));
 
         let ReviewFileViewDto::Binary(binary) = binary else {
@@ -2587,11 +2579,7 @@ mod tests {
         );
 
         assert_eq!(binary.original_url, None);
-        assert!(binary
-            .modified_url
-            .as_deref()
-            .unwrap()
-            .starts_with("review-blob://"));
+        assert!(binary.modified_url.as_deref().unwrap().starts_with("blob?"));
         assert!(!binary.modified_url.as_deref().unwrap().starts_with("data:"));
     }
 
@@ -2627,11 +2615,7 @@ mod tests {
         );
 
         assert_eq!(binary.original_url, None);
-        assert!(binary
-            .modified_url
-            .as_deref()
-            .unwrap()
-            .starts_with("review-blob://"));
+        assert!(binary.modified_url.as_deref().unwrap().starts_with("blob?"));
         assert!(!binary.modified_url.as_deref().unwrap().starts_with("data:"));
     }
 

@@ -30,14 +30,6 @@ pub(crate) mod runtime;
 pub(crate) mod session_errors;
 
 #[cfg(test)]
-use crate::adaptor::controller::command::workflow::COMMAND_NAMES;
-
-#[cfg(test)]
-fn handles_command(command: &str) -> bool {
-    COMMAND_NAMES.contains(&command)
-}
-
-#[cfg(test)]
 use self::session_errors::redacted_workflow_tab_error;
 
 #[cfg(test)]
@@ -222,7 +214,6 @@ pub(crate) mod tests {
     use crate::adaptor::gateway::workflow::schema::{
         FacetRefs, NodeDefinition, NodeKind, NodeKindName, SessionSpec,
     };
-    use std::collections::HashSet;
     use std::path::Path;
     use tempfile::TempDir;
 
@@ -292,9 +283,17 @@ pub(crate) mod tests {
 
     #[test]
     fn workflow_command_registry_uses_execution_and_node_names() {
-        let unique: HashSet<_> = COMMAND_NAMES.iter().copied().collect();
-
-        assert_eq!(unique.len(), COMMAND_NAMES.len());
+        let (app, _data_dir, _store) = make_read_only_app();
+        app.manage(Arc::new(
+            crate::infrastructure::file_watcher::FileWatcherManager::default(),
+        ));
+        let deps = crate::adaptor::controller::wiring::build_client_dependencies(app.handle());
+        let mut dispatch = crate::adaptor::controller::client::ClientCommandDispatch::new(
+            Arc::new(crate::adaptor::controller::wiring::build_repository_usecase()),
+            Arc::new(crate::usecase::application_startup::ApplicationStartupAuthority::ready()),
+        );
+        register_shared(&mut dispatch, &deps);
+        let handles_command = |command| dispatch.contains(command);
         for command in REQUIRED_WORKFLOW_EXECUTION_COMMANDS {
             assert!(
                 handles_command(command),
@@ -308,18 +307,23 @@ pub(crate) mod tests {
             );
         }
 
-        let workspace_commands = crate::adaptor::controller::command::workspace_tree::COMMAND_NAMES;
-        let unique_workspace: HashSet<_> = workspace_commands.iter().copied().collect();
-        assert_eq!(unique_workspace.len(), workspace_commands.len());
+        let mut workspace_dispatch = crate::adaptor::controller::client::ClientCommandDispatch::new(
+            Arc::new(crate::adaptor::controller::wiring::build_repository_usecase()),
+            Arc::new(crate::usecase::application_startup::ApplicationStartupAuthority::ready()),
+        );
+        crate::adaptor::controller::client::workspace_tree::register_shared(
+            &mut workspace_dispatch,
+            &deps,
+        );
         for command in REQUIRED_WORKSPACE_EXECUTION_COMMANDS {
             assert!(
-                workspace_commands.contains(command),
+                workspace_dispatch.contains(command),
                 "missing workspace workflow command: {command}"
             );
         }
         for command in RETIRED_WORKFLOW_COMMANDS {
             assert!(
-                !workspace_commands.contains(command),
+                !workspace_dispatch.contains(command),
                 "retired workspace workflow command is still registered: {command}"
             );
         }

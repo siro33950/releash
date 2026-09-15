@@ -6,9 +6,9 @@ use std::time::Duration;
 
 use agent_tui_fixture::{fixture_process_shell_command, FixtureLifecycleCommand, FixturePlan};
 use releash_lib::agent_session_tui_acceptance::{
-    product_agent_session_invoke_handler, AcceptanceAgentSessionLifecycle,
-    AcceptanceAgentSessionTreeLocation, AcceptanceArchiveOutcome, AcceptanceHookWarning,
-    AcceptanceOpenOutcome, AcceptanceProvider, AgentSessionTuiAcceptanceConfig,
+    AcceptanceAgentSessionLifecycle, AcceptanceAgentSessionTreeLocation, AcceptanceArchiveOutcome,
+    AcceptanceHookWarning, AcceptanceOpenOutcome, AcceptanceProvider,
+    AgentSessionTuiAcceptanceConfig,
     AgentSessionTuiAcceptanceHost as AgentSessionTuiAcceptanceComposition,
 };
 use releash_lib::terminal_surface::{
@@ -107,16 +107,46 @@ struct ProviderAvailabilityItem {
 
 struct AgentSessionTuiAcceptanceHost {
     composition: AgentSessionTuiAcceptanceComposition<tauri::test::MockRuntime>,
+    client: std::sync::Mutex<
+        tokio_tungstenite::tungstenite::WebSocket<
+            tokio_tungstenite::tungstenite::stream::MaybeTlsStream<std::net::TcpStream>,
+        >,
+    >,
 }
 
 impl AgentSessionTuiAcceptanceHost {
     fn start(config: AgentSessionTuiAcceptanceConfig) -> Result<Self, String> {
         let app = tauri::test::mock_builder()
-            .invoke_handler(product_agent_session_invoke_handler())
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .map_err(|error| error.to_string())?;
-        AgentSessionTuiAcceptanceComposition::start(config, app)
-            .map(|composition| Self { composition })
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let composition = AgentSessionTuiAcceptanceComposition::start(config, app)?;
+        let endpoint = composition.client_endpoint();
+        let mut request = endpoint
+            .url
+            .as_str()
+            .into_client_request()
+            .map_err(|error| error.to_string())?;
+        request.headers_mut().insert(
+            "Sec-WebSocket-Protocol",
+            endpoint
+                .auth_subprotocol
+                .parse()
+                .map_err(|error| format!("{error}"))?,
+        );
+        let (client, _) =
+            tokio_tungstenite::tungstenite::connect(request).map_err(|error| error.to_string())?;
+        if let tokio_tungstenite::tungstenite::stream::MaybeTlsStream::Plain(socket) =
+            client.get_ref()
+        {
+            socket
+                .set_read_timeout(Some(Duration::from_secs(130)))
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(Self {
+            composition,
+            client: std::sync::Mutex::new(client),
+        })
     }
 
     fn invoke<T: DeserializeOwned>(
@@ -124,27 +154,55 @@ impl AgentSessionTuiAcceptanceHost {
         command: &str,
         body: serde_json::Value,
     ) -> Result<T, String> {
-        tauri::test::get_ipc_response(
-            self.composition.window(),
-            tauri::webview::InvokeRequest {
-                cmd: command.to_string(),
-                callback: tauri::ipc::CallbackFn(0),
-                error: tauri::ipc::CallbackFn(1),
-                url: if cfg!(any(windows, target_os = "android")) {
-                    "http://tauri.localhost"
-                } else {
-                    "tauri://localhost"
+        use prost::Message;
+        use releash_lib::client_api_acceptance::{
+            command_response, decode_client_value, encode_client_request, envelope, Envelope,
+        };
+        use tokio_tungstenite::tungstenite::Message as WsMessage;
+        let id = uuid::Uuid::new_v4().to_string();
+        let mut client = self.client.lock().map_err(|error| error.to_string())?;
+        client
+            .send(WsMessage::Binary(
+                encode_client_request(&id, command, body).into(),
+            ))
+            .map_err(|error| error.to_string())?;
+        loop {
+            let message = client.read().map_err(|error| error.to_string())?;
+            let WsMessage::Binary(bytes) = message else {
+                continue;
+            };
+            let envelope = Envelope::decode(bytes).map_err(|error| error.to_string())?;
+            if let Some(envelope::Body::Response(response)) = envelope.body {
+                if response.request_id != id {
+                    return Err("uncorrelated command response".into());
                 }
-                .parse()
-                .expect("valid Tauri invoke URL"),
-                body: tauri::ipc::InvokeBody::Json(body),
-                headers: Default::default(),
-                invoke_key: tauri::test::INVOKE_KEY.to_string(),
-            },
-        )
-        .map_err(|error| error.to_string())?
-        .deserialize::<T>()
-        .map_err(|error| error.to_string())
+                client
+                    .send(WsMessage::Binary(
+                        Envelope {
+                            body: Some(envelope::Body::RequestAck(
+                                releash_lib::client_api_acceptance::RequestAck {
+                                    request_id: id,
+                                    release_watch: false,
+                                    confirm_watch: false,
+                                },
+                            )),
+                        }
+                        .encode_to_vec()
+                        .into(),
+                    ))
+                    .map_err(|error| error.to_string())?;
+                match response.outcome {
+                    Some(command_response::Outcome::Result(result)) => {
+                        return serde_json::from_value(decode_client_value(result))
+                            .map_err(|error| error.to_string());
+                    }
+                    Some(command_response::Outcome::Error(error)) => {
+                        return Err(decode_client_value(error).to_string())
+                    }
+                    None => return Err("missing command result".into()),
+                }
+            }
+        }
     }
 
     fn terminal(&self) -> &releash_lib::terminal_surface::TerminalSurfaceRuntime {
@@ -461,6 +519,11 @@ impl AgentSessionTuiAcceptanceHost {
     }
 
     async fn shutdown(self) -> Result<(), String> {
+        self.client
+            .into_inner()
+            .map_err(|error| error.to_string())?
+            .close(None)
+            .map_err(|error| error.to_string())?;
         self.composition.shutdown().await
     }
 }

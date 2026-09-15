@@ -2,6 +2,7 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { ClientTransportError } from "@/lib/clientSocket";
 
 Element.prototype.scrollIntoView = vi.fn();
 
@@ -275,6 +276,25 @@ describe("MainLayout node-centered workspace", () => {
 
 		expect(screen.getByTestId("agent-session-launching")).toBeInTheDocument();
 		expect(screen.queryByTestId("node-content-view-mock")).toBeNull();
+	});
+
+	it("Session作成の結果不明はOpening表示を置き換える", () => {
+		const error = new ClientTransportError("original-create", "unknown");
+		renderMainLayout({
+			centerSelectionByWorktree: {
+				"/managed/wt": {
+					kind: "agent_session_launching",
+					worktreePath: "/managed/wt",
+					provider: "codex",
+					launchToken: "launch-1",
+					error: error.message,
+				},
+			},
+		});
+		expect(
+			screen.queryByText("Opening AgentSession..."),
+		).not.toBeInTheDocument();
+		expect(screen.getByRole("alert")).toHaveTextContent(error.message);
 	});
 
 	it("does not leak another worktree's selection into the current view", () => {

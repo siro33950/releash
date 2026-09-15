@@ -1,6 +1,9 @@
-import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { invokeClient as invoke } from "@/lib/clientSocket";
+import {
+	invokeClient as invoke,
+	listenClient as listen,
+	watchClient,
+} from "@/lib/clientSocket";
 import type { WorktreeBranch } from "@/types/git";
 
 const POLL_INTERVAL = 120_000;
@@ -73,41 +76,25 @@ export function useWorktreeList(repoPath: string) {
 		refresh();
 	}, [refresh]);
 
-	const watcherIdRef = useRef<number | null>(null);
+	useEffect(
+		() =>
+			watchClient(
+				"start_git_dir_watching",
+				{ repoPath },
+				() => {},
+				(error) => console.error("Failed to start git dir watcher:", error),
+			),
+		[repoPath],
+	);
 
 	useEffect(() => {
-		let isMounted = true;
-		const start = async () => {
-			try {
-				const id = await invoke("start_git_dir_watching", {
-					repoPath,
-				});
-				if (!isMounted) {
-					invoke("stop_watching", { watcherId: id }).catch(() => {});
-					return;
-				}
-				watcherIdRef.current = id;
-			} catch (e) {
-				console.error("Failed to start git dir watcher:", e);
-			}
+		const reload = () => {
+			void refresh({ silent: true });
 		};
-		start();
+		const unlisten = listen("branch-list-sync", reload, reload);
+		window.addEventListener("branch-list-refresh", reload);
 		return () => {
-			isMounted = false;
-			if (watcherIdRef.current !== null) {
-				invoke("stop_watching", { watcherId: watcherIdRef.current }).catch(
-					() => {},
-				);
-				watcherIdRef.current = null;
-			}
-		};
-	}, [repoPath]);
-
-	useEffect(() => {
-		const unlisten = listen("branch-list-sync", () => {
-			refresh({ silent: true });
-		});
-		return () => {
+			window.removeEventListener("branch-list-refresh", reload);
 			unlisten.then((fn) => fn());
 		};
 	}, [refresh]);

@@ -39,7 +39,6 @@ export interface WorkspaceNodeCapabilities {
 	canRename: boolean;
 	canApprove: boolean;
 	canRetry: boolean;
-	canClose: boolean;
 }
 
 export interface WorkspaceWorkflowCapabilities {

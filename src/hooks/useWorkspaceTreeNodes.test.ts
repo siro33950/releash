@@ -30,7 +30,6 @@ function makeNode(id: string): WorkspaceTreeItem {
 			canRename: false,
 			canApprove: false,
 			canRetry: false,
-			canClose: true,
 		},
 		pastAttempts: [],
 		pastAttemptsCollapsed: false,

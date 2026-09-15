@@ -1,5 +1,9 @@
 // Generated from proto/client.proto. Run pnpm generate:protocol.
 
+export type InputGetReviewBlobRequest = {
+	reference: string;
+};
+
 export type InputAbortWorkflowRequest = {
 	executionId: string;
 };
@@ -1034,6 +1038,8 @@ export type InputCompactApplicationShutdownDetailsRequest = {
 	shutdownId: string;
 };
 
+export type ResultString = string;
+
 export type ResultBool = boolean;
 
 export type ReviewThreadDto = {
@@ -1088,8 +1094,6 @@ export type AgentSessionArchiveResponse =
 	| "archived"
 	| "already_archived"
 	| "delete_confirmation_required";
-
-export type ResultString = string;
 
 export type ListHiddenRangeDto = Array<HiddenRangeDto>;
 
@@ -2054,7 +2058,6 @@ export type WorkspaceNodeCapabilitiesDto = {
 	canRename: boolean;
 	canApprove: boolean;
 	canRetry: boolean;
-	canClose: boolean;
 };
 
 export type WorkspaceNodeContentDto =
@@ -2695,6 +2698,7 @@ export type WorkflowExecutionChangedPayloadView = {
 };
 
 export interface ClientCommandArgs {
+	get_review_blob: InputGetReviewBlobRequest;
 	abort_workflow: InputAbortWorkflowRequest;
 	ack_terminal_surface_output: InputAckTerminalSurfaceOutputRequest;
 	acknowledge_application_attempt: InputAcknowledgeApplicationAttemptRequest;
@@ -2871,6 +2875,9 @@ export interface ClientCommandArgs {
 }
 
 export interface ClientCommands {
+	get_review_blob(
+		args: ClientCommandArgs["get_review_blob"],
+	): Promise<ResultString>;
 	abort_workflow(args: ClientCommandArgs["abort_workflow"]): Promise<void>;
 	ack_terminal_surface_output(
 		args: ClientCommandArgs["ack_terminal_surface_output"],
