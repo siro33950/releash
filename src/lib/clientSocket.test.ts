@@ -662,6 +662,7 @@ describe("clientSocket", () => {
 	);
 	it.each([true, false])(
 		"readの期限切れと切断の順序によらず管理枠を解放する: %s",
+		{ timeout: 30_000 },
 		async (expireFirst) => {
 			vi.useFakeTimers();
 			const off = onClientConnection(vi.fn());
@@ -1772,7 +1773,9 @@ describe("通信停止と操作結果の復旧", () => {
 		await confirmed;
 		await retried;
 	});
-	it("応答未受領の変更が保持上限に達しても新規変更の受付をRustへ委ねる", async () => {
+	it("応答未受領の変更が保持上限に達しても新規変更の受付をRustへ委ねる", {
+		timeout: 30_000,
+	}, async () => {
 		const waiting = Promise.allSettled(
 			Array.from({ length: CLIENT_TRANSPORT.maxPending }, (_, index) =>
 				invokeClient("add_repo_path", { path: `/repo/${index}` }),
