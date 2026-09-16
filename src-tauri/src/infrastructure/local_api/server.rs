@@ -19,6 +19,7 @@ pub(crate) struct LocalApiServerBinding {
     terminal_token: Arc<str>,
     instance_id: String,
     discovery: LocalApiDiscoveryFile,
+    client_discovery: LocalApiDiscoveryFile,
 }
 
 impl LocalApiServerBinding {
@@ -42,7 +43,7 @@ impl LocalApiServerBinding {
             .map_err(LocalApiServerError::Nonblocking)?;
 
         let token = Arc::<str>::from(generate_token());
-        // rendererのclient / terminal共通token。discovery fileには書き出さない。
+        // rendererのclient / terminal共通token。masterとは別のdiscovery fileへ書き出す。
         let terminal_token = Arc::<str>::from(generate_token());
         let instance_id = uuid::Uuid::new_v4().simple().to_string();
         let pid = std::process::id();
@@ -63,6 +64,23 @@ impl LocalApiServerBinding {
         )
         .map_err(LocalApiServerError::Discovery)?;
 
+        let client_discovery = LocalApiDiscoveryFile::create_client(
+            &data_dir,
+            LocalApiDiscovery {
+                port: address.port(),
+                token: terminal_token.to_string(),
+                instance_id: instance_id.clone(),
+                pid,
+                process_started_at,
+            },
+        )
+        .map_err(|error| {
+            if let Err(cleanup) = discovery.remove_if_owned() {
+                log::warn!("failed to remove incomplete daemon discovery: {cleanup}");
+            }
+            LocalApiServerError::Discovery(error)
+        })?;
+
         Ok(Self {
             listener,
             port: address.port(),
@@ -70,6 +88,7 @@ impl LocalApiServerBinding {
             terminal_token,
             instance_id,
             discovery,
+            client_discovery,
         })
     }
 
@@ -81,6 +100,7 @@ impl LocalApiServerBinding {
         self.terminal_token.clone()
     }
 
+    #[cfg(any(test, all(debug_assertions, feature = "desktop")))]
     pub(crate) fn port(&self) -> u16 {
         self.port
     }
@@ -95,15 +115,20 @@ impl LocalApiServerBinding {
             port,
             instance_id,
             discovery,
+            client_discovery,
             ..
         } = self;
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let discovery_for_task = discovery.clone();
+        let client_discovery_for_task = client_discovery.clone();
         let task = runtime.spawn(async move {
             let listener = match tokio::net::TcpListener::from_std(listener) {
                 Ok(listener) => listener,
                 Err(error) => {
                     log::error!("failed to initialize local API listener: {error}");
+                    if let Err(error) = client_discovery_for_task.remove_if_owned() {
+                        log::warn!("failed to remove client discovery file: {error}");
+                    }
                     if let Err(error) = discovery_for_task.remove_if_owned() {
                         log::warn!("failed to remove local API discovery file: {error}");
                     }
@@ -122,6 +147,9 @@ impl LocalApiServerBinding {
             if let Err(error) = result {
                 log::error!("local API server stopped with an error: {error}");
             }
+            if let Err(error) = client_discovery_for_task.remove_if_owned() {
+                log::warn!("failed to remove client discovery file: {error}");
+            }
             if let Err(error) = discovery_for_task.remove_if_owned() {
                 log::warn!("failed to remove local API discovery file: {error}");
             }
@@ -132,6 +160,7 @@ impl LocalApiServerBinding {
             shutdown: parking_lot::Mutex::new(Some(shutdown_tx)),
             task: parking_lot::Mutex::new(Some(task)),
             discovery,
+            client_discovery,
         })
     }
 }
@@ -140,12 +169,16 @@ pub(crate) struct LocalApiServer {
     shutdown: parking_lot::Mutex<Option<oneshot::Sender<()>>>,
     task: parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>,
     discovery: LocalApiDiscoveryFile,
+    client_discovery: LocalApiDiscoveryFile,
 }
 
 impl LocalApiServer {
     pub(crate) fn shutdown(&self) {
         if let Some(sender) = self.shutdown.lock().take() {
             let _ = sender.send(());
+        }
+        if let Err(error) = self.client_discovery.remove_if_owned() {
+            log::warn!("failed to remove client discovery file: {error}");
         }
         if let Err(error) = self.discovery.remove_if_owned() {
             log::warn!("failed to remove local API discovery file: {error}");

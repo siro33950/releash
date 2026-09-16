@@ -1,12 +1,12 @@
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", test, debug_assertions))]
 use std::fmt;
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", test, debug_assertions))]
 use std::path::{Path, PathBuf};
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 const CLI_LINK_PATH: &str = "/usr/local/bin/releash";
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", test, debug_assertions))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CliInstallStatus {
     AlreadyInstalled(PathBuf),
@@ -14,7 +14,7 @@ pub(crate) enum CliInstallStatus {
     SkippedTranslocated(PathBuf),
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", test, debug_assertions))]
 impl fmt::Display for CliInstallStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -36,7 +36,7 @@ pub(crate) fn ensure_cli_symlink_installed() {
     {
         if !should_install_cli_symlink_for_startup(
             cfg!(debug_assertions),
-            cfg!(feature = "performance-wdio"),
+            cfg!(feature = "performance"),
         ) {
             log::info!("Skipping Releash CLI install for this startup profile");
             return;
@@ -48,11 +48,30 @@ pub(crate) fn ensure_cli_symlink_installed() {
                 return;
             }
         };
-        match install_cli_symlink(&exe, Path::new(CLI_LINK_PATH)) {
-            Ok(status) => log::info!("Releash CLI {status}"),
+        match install_cli_symlink_for_startup(
+            cfg!(debug_assertions),
+            cfg!(feature = "performance"),
+            &exe,
+            Path::new(CLI_LINK_PATH),
+        ) {
+            Ok(()) => {}
             Err(e) => log::warn!("Failed to install Releash CLI: {e}"),
         }
     }
+}
+
+#[cfg(all(unix, any(target_os = "macos", test, debug_assertions)))]
+pub(crate) fn install_cli_symlink_for_startup(
+    is_debug: bool,
+    is_performance: bool,
+    executable: &Path,
+    link: &Path,
+) -> Result<(), String> {
+    if should_install_cli_symlink_for_startup(is_debug, is_performance) {
+        let status = install_cli_symlink(executable, link)?;
+        log::info!("Releash CLI {status}");
+    }
+    Ok(())
 }
 
 /// `/usr/local/bin/releash` を install してよいかをビルド種別から判定する純粋関数。
@@ -60,7 +79,7 @@ pub(crate) fn ensure_cli_symlink_installed() {
 /// dev ビルドは本番 CLI 名 `releash` を所有しない（spec [01]「dev 起動による本番 CLI の不変性」）。
 /// `/usr/local/bin/releash` を debug binary に張り替えると本番 CLI を破壊するため、
 /// dev 起動はこの install 経路に関与しない。
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", test, debug_assertions))]
 pub(crate) fn should_install_cli_symlink_for_startup(
     is_debug_build: bool,
     is_performance_harness: bool,
@@ -68,12 +87,12 @@ pub(crate) fn should_install_cli_symlink_for_startup(
     !is_debug_build && !is_performance_harness
 }
 
-#[cfg(all(unix, any(target_os = "macos", test)))]
+#[cfg(all(unix, any(target_os = "macos", test, debug_assertions)))]
 fn install_cli_symlink(exe_path: &Path, link_path: &Path) -> Result<CliInstallStatus, String> {
     install_cli_symlink_with_runner(exe_path, link_path, run_admin_script)
 }
 
-#[cfg(all(unix, any(target_os = "macos", test)))]
+#[cfg(all(unix, any(target_os = "macos", test, debug_assertions)))]
 fn install_cli_symlink_with_runner<F>(
     exe_path: &Path,
     link_path: &Path,
@@ -126,7 +145,7 @@ where
     }
 }
 
-#[cfg(all(unix, any(target_os = "macos", test)))]
+#[cfg(all(unix, any(target_os = "macos", test, debug_assertions)))]
 fn existing_symlink_target(path: &Path) -> Result<Option<PathBuf>, String> {
     match std::fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
@@ -143,7 +162,7 @@ fn existing_symlink_target(path: &Path) -> Result<Option<PathBuf>, String> {
     }
 }
 
-#[cfg(all(unix, any(target_os = "macos", test)))]
+#[cfg(all(unix, any(target_os = "macos", test, debug_assertions)))]
 fn try_install_cli_symlink(exe_path: &Path, link_path: &Path) -> Result<(), std::io::Error> {
     let parent = link_path
         .parent()
@@ -155,7 +174,7 @@ fn try_install_cli_symlink(exe_path: &Path, link_path: &Path) -> Result<(), std:
     std::os::unix::fs::symlink(exe_path, link_path)
 }
 
-#[cfg(all(unix, any(target_os = "macos", test)))]
+#[cfg(all(unix, any(target_os = "macos", test, debug_assertions)))]
 fn build_admin_install_script(exe_path: &Path, link_path: &Path) -> Result<String, String> {
     let parent = link_path
         .parent()
@@ -169,7 +188,7 @@ fn build_admin_install_script(exe_path: &Path, link_path: &Path) -> Result<Strin
     ))
 }
 
-#[cfg(all(unix, any(target_os = "macos", test)))]
+#[cfg(all(unix, any(target_os = "macos", test, debug_assertions)))]
 fn run_admin_script(script: &str) -> Result<(), String> {
     let expression = format!(
         "do shell script {} with administrator privileges",
@@ -186,18 +205,18 @@ fn run_admin_script(script: &str) -> Result<(), String> {
     }
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", test, debug_assertions))]
 fn is_app_translocated(path: &Path) -> bool {
     path.to_string_lossy().contains("/AppTranslocation/")
 }
 
-#[cfg(all(unix, any(target_os = "macos", test)))]
+#[cfg(all(unix, any(target_os = "macos", test, debug_assertions)))]
 fn shell_quote(path: &Path) -> String {
     let value = path.to_string_lossy();
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-#[cfg(all(unix, any(target_os = "macos", test)))]
+#[cfg(all(unix, any(target_os = "macos", test, debug_assertions)))]
 fn applescript_string(value: &str) -> String {
     format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }

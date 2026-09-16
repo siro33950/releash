@@ -10,7 +10,6 @@ pub(crate) use discovery::{
     local_api_discovery_path, lookup_process_start_time, process_start_time, LocalApiDiscovery,
     LocalApiDiscoveryFile, ProcessStartTimeLookup,
 };
-#[cfg(debug_assertions)]
 pub(crate) use server::LocalApiServer;
 pub(crate) use server::LocalApiServerBinding;
 

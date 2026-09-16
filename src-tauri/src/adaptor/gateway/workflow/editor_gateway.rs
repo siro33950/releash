@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::adaptor::gateway::external_editor::TauriEditorLauncherGateway;
+use crate::adaptor::gateway::external_editor::NativeEditorLauncherGateway;
 use crate::adaptor::gateway::workflow::{builtin, facet, storage};
 use crate::domain::app_config::ConfigRepository;
 use crate::domain::external_editor::EditorLauncherGateway as _;
@@ -9,8 +9,7 @@ use crate::domain::workflow::WorkflowError;
 use crate::usecase::workflow::ports::ExternalEditorGateway;
 
 #[derive(Clone)]
-pub(crate) struct TauriWorkflowExternalEditorGateway<R: tauri::Runtime> {
-    app: tauri::AppHandle<R>,
+pub(crate) struct WorkflowExternalEditorGateway {
     config: Arc<dyn ConfigRepository>,
     workflows_dir: PathBuf,
     facets_base_dir: PathBuf,
@@ -30,10 +29,9 @@ impl ExternalEditorGateway for NoopWorkflowExternalEditorGateway {
     }
 }
 
-impl<R: tauri::Runtime> TauriWorkflowExternalEditorGateway<R> {
-    pub(crate) fn new(app: tauri::AppHandle<R>, config: Arc<dyn ConfigRepository>) -> Self {
+impl WorkflowExternalEditorGateway {
+    pub(crate) fn new(config: Arc<dyn ConfigRepository>) -> Self {
         Self {
-            app,
             config,
             workflows_dir: storage::workflows_dir(),
             facets_base_dir: facet::facets_base_dir(),
@@ -41,7 +39,7 @@ impl<R: tauri::Runtime> TauriWorkflowExternalEditorGateway<R> {
     }
 }
 
-impl<R: tauri::Runtime + 'static> ExternalEditorGateway for TauriWorkflowExternalEditorGateway<R> {
+impl ExternalEditorGateway for WorkflowExternalEditorGateway {
     fn open_workflow(&self, name: &str) -> Result<(), WorkflowError> {
         let path = resolve_workflow_editor_path(&self.workflows_dir, name)?;
         let editor = self
@@ -50,7 +48,7 @@ impl<R: tauri::Runtime + 'static> ExternalEditorGateway for TauriWorkflowExterna
             .map_err(|e| WorkflowError::external(e.to_string()))?
             .app
             .external_editor;
-        TauriEditorLauncherGateway::new(self.app.clone())
+        NativeEditorLauncherGateway
             .open_path(&path.to_string_lossy(), &editor, "ワークフロー")
             .map_err(WorkflowError::external)
     }
@@ -63,7 +61,7 @@ impl<R: tauri::Runtime + 'static> ExternalEditorGateway for TauriWorkflowExterna
             .map_err(|e| WorkflowError::external(e.to_string()))?
             .app
             .external_editor;
-        TauriEditorLauncherGateway::new(self.app.clone())
+        NativeEditorLauncherGateway
             .open_path(&path.to_string_lossy(), &editor, "ファセット")
             .map_err(WorkflowError::external)
     }

@@ -98,3 +98,13 @@ async fn test_local_api_server終了_timeout時にtaskをabortして待機する
 
     assert!(dropped.load(Ordering::SeqCst));
 }
+
+#[test]
+fn test_クライアントdiscovery_作成失敗時はmasterの公開を取り消す() {
+    let directory = tempfile::tempdir().unwrap();
+    // Given
+    std::fs::create_dir(directory.path().join("client-api.json")).unwrap();
+    // When / Then
+    assert!(LocalApiServerBinding::bind(directory.path().to_owned()).is_err());
+    assert!(!directory.path().join("local-api.json").exists());
+}

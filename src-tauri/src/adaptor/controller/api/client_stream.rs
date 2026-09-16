@@ -249,6 +249,6 @@ pub(crate) struct OutputFrame {
     bytes: Vec<u8>,
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "desktop"))]
 #[path = "client_stream_test.rs"]
 mod client_stream_tests;

@@ -2,7 +2,7 @@ use super::test_helpers::Fixture;
 use super::*;
 use crate::adaptor::gateway::app_config::AppConfig;
 use crate::adaptor::gateway::workflow::{
-    TauriWorkflowRuntimeCommandGateway, WorkflowSecretSourceConfigGateway,
+    WorkflowRuntimeCommandGateway, WorkflowSecretSourceConfigGateway,
 };
 use crate::domain::app_config::ConfigSecretRepository;
 use crate::domain::workflow::{NodeFact, SecretSourceGateway};
@@ -16,7 +16,7 @@ use crate::usecase::workflow::control_plane::WorkflowControlPlaneUsecase;
 async fn test_workflowの秘匿_設定取得失敗でも表示とartifactと承認でnotionを秘匿する() {
     for parse_failure in [false, true] {
         // Given
-        let fixture = Fixture::new(0);
+        let mut fixture = Fixture::new(0);
         let path = fixture._directory.path().join("releash.toml");
         if parse_failure {
             std::fs::write(&path, "[server]\ntoken = 'legacy-sensitive-value' invalid").unwrap();
@@ -27,11 +27,11 @@ async fn test_workflowの秘匿_設定取得失敗でも表示とartifactと承�
             toml::from_str("[notion.'/repo']\napi_token = 'notion-value-1234'\ndatabase_id = 'db'")
                 .unwrap();
         let config: Arc<dyn ConfigSecretRepository> = Arc::new(AppConfig::new(config, path));
-        fixture.app.manage(config.clone());
+        fixture.app.secrets = Some(config.clone());
         let token = "notion-value-1234";
 
         // When
-        let secrets = secret_source::collect_configured_secret_values(fixture.app.handle());
+        let secrets = secret_source::collect_configured_secret_values(&fixture.app);
         let display_command =
             workflow_secret_masker::mask_sensitive_text(&format!("echo {token}"), &secrets);
         let artifact = build_command_artifact(
@@ -81,8 +81,8 @@ schemas:
             .find(|node| node.node_name == "main")
             .unwrap();
         let control = WorkflowControlPlaneUsecase::new(Arc::new(
-            TauriWorkflowRuntimeCommandGateway::new_with_driver(
-                fixture.app.handle().clone(),
+            WorkflowRuntimeCommandGateway::new_with_driver(
+                fixture.app.clone(),
                 Arc::new(fixture.host.clone()),
                 fixture.store.clone(),
                 fixture.store.installation_id().to_string(),

@@ -20,7 +20,9 @@ use opentelemetry::KeyValue;
 use resource::ProcessResourceObserver;
 
 pub(crate) use attributes::HotPathMetric as HotPath;
-pub(crate) use attributes::{StartupMetric as Startup, TerminalLaunchMetric as TerminalLaunch};
+#[cfg(feature = "desktop")]
+pub(crate) use attributes::StartupMetric as Startup;
+pub(crate) use attributes::TerminalLaunchMetric as TerminalLaunch;
 
 #[cfg(not(test))]
 static PERFORMANCE_CONFIGURED: AtomicBool = AtomicBool::new(false);
@@ -492,6 +494,7 @@ fn startup_elapsed() -> Option<Duration> {
     load_startup_elapsed()
 }
 
+#[cfg(feature = "desktop")]
 pub(crate) fn record_startup_from_origin(metric: StartupMetric) {
     if let Some(elapsed) = startup_elapsed() {
         record_startup(metric, elapsed);

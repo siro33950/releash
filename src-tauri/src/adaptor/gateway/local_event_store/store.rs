@@ -448,6 +448,7 @@ pub struct LocalEventStore {
 impl LocalEventStore {
     /// Stop new writes, persist every request already admitted to the writer,
     /// then join all store workers.
+    #[cfg(any(test, all(debug_assertions, feature = "desktop")))]
     pub(crate) fn drain_and_close(mut self) {
         self.queue.close_after_drain();
         self.readers.close();

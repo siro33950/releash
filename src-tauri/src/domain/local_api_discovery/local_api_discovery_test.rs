@@ -123,3 +123,37 @@ fn test_discovery接続先判定_観測結果を受理または専用失敗へ�
         Err(DiscoveryRejection::ConnectionUnreachable)
     );
 }
+
+#[test]
+fn test_クライアントdiscovery_同一instanceの別tokenだけを受け付ける() {
+    // Given
+    let master = DiscoveryContent::new(12345, "master".into(), "instance".into(), 123, 456);
+    let client = DiscoveryContent::new(12345, "client".into(), "instance".into(), 123, 456);
+    // When / Then
+    assert!(master.accepts_client(&client));
+    for invalid in [
+        master.clone(),
+        DiscoveryContent {
+            port: 12346,
+            ..client.clone()
+        },
+        DiscoveryContent {
+            token: " ".into(),
+            ..client.clone()
+        },
+        DiscoveryContent {
+            instance_id: "next".into(),
+            ..client.clone()
+        },
+        DiscoveryContent {
+            pid: 124,
+            ..client.clone()
+        },
+        DiscoveryContent {
+            process_started_at: 457,
+            ..client.clone()
+        },
+    ] {
+        assert!(!master.accepts_client(&invalid));
+    }
+}

@@ -28,6 +28,7 @@ pub(crate) struct ClientApiDeps {
     operations: Arc<ClientOperationUsecase<wire::Envelope>>,
     push: ClientPushGateway,
     terminal: Option<TerminalApiDeps>,
+    desktop_settings: Option<Arc<crate::usecase::app_config::AppConfigUsecase>>,
     connection_limit: Arc<tokio::sync::Semaphore>,
     request_limit: Arc<tokio::sync::Semaphore>,
 }
@@ -59,9 +60,30 @@ impl ClientApiDeps {
             operations: Arc::new(operations),
             push,
             terminal: None,
+            desktop_settings: None,
             connection_limit: Arc::new(tokio::sync::Semaphore::new(16)),
             request_limit: Arc::new(tokio::sync::Semaphore::new(64)),
         }
+    }
+
+    pub(crate) fn with_desktop_settings(
+        mut self,
+        settings: crate::usecase::app_config::AppConfigUsecase,
+    ) -> Self {
+        self.desktop_settings = Some(Arc::new(settings));
+        self
+    }
+
+    fn desktop_settings(&self) -> Result<Option<wire::DesktopSettings>, String> {
+        self.desktop_settings
+            .as_ref()
+            .map(|settings| {
+                settings
+                    .desktop_settings()
+                    .map(Into::into)
+                    .map_err(String::from)
+            })
+            .transpose()
     }
 
     pub(super) fn with_terminal(mut self, terminal: Option<TerminalApiDeps>) -> Self {
@@ -106,13 +128,14 @@ async fn serve(
     _permit: tokio::sync::OwnedSemaphorePermit,
 ) {
     let (mut sink, mut input) = socket.split();
-    let mut terminal = TerminalConnection::new(deps.terminal);
+    let mut terminal = TerminalConnection::new(deps.terminal.clone());
     let mut requests = FuturesUnordered::new();
     let connection_id = uuid::Uuid::new_v4().to_string();
     let mut push_open = true;
     let hello = Envelope {
         body: Some(Body::Hello(wire::ClientHello {
             instance_id: deps.operations.instance_id.to_string(),
+            desktop_settings: None,
             heartbeat_interval_ms: policy::HEARTBEAT_INTERVAL_MS,
             heartbeat_timeout_ms: policy::HEARTBEAT_TIMEOUT_MS,
             connect_timeout_ms: policy::CONNECT_TIMEOUT_MS,
@@ -144,7 +167,7 @@ async fn serve(
 
     loop {
         deps.operations.maintain().await;
-        let envelope = tokio::select! {
+        let mut envelope = tokio::select! {
             frame = input.next() => {
                 let data = match frame {
                     Some(Ok(Message::Binary(data))) => data,
@@ -281,6 +304,25 @@ async fn serve(
                 Err(ClientPushError::Closed) => { push_open = false; continue; }
             },
         };
+        let settings = match &mut envelope.body {
+            Some(Body::Hello(hello)) => Some(&mut hello.desktop_settings),
+            Some(Body::Response(response)) if response.outcome.as_ref().is_some_and(|outcome| {
+                matches!(outcome, wire::command_response::Outcome::Result(result) if matches!(result.command,
+                    Some(wire::command_result::Command::UpdateAppSettings(_)
+                    | wire::command_result::Command::UpdateCrashReporting(_)
+                    | wire::command_result::Command::UpdatePerformanceTelemetry(_))))
+            }) => Some(&mut response.desktop_settings),
+            _ => None,
+        };
+        if let Some(settings) = settings {
+            match deps.desktop_settings() {
+                Ok(current) => *settings = current,
+                Err(error) => {
+                    log::error!("Desktop settings could not be read: {error}");
+                    break;
+                }
+            }
+        }
         if sink
             .send(Message::Binary(envelope.encode_to_vec().into()))
             .await
@@ -293,6 +335,6 @@ async fn serve(
     let _ = sink.send(Message::Close(None)).await;
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "desktop"))]
 #[path = "client_test.rs"]
 mod client_tests;

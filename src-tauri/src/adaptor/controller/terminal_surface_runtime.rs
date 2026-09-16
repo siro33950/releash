@@ -1,8 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tauri::Manager;
-
 use crate::adaptor::protocol::terminal::{
     GetOrSpawnTerminalV1, TerminalProcessLaunchV1, TerminalSurfaceOwnerV1,
     TerminalSurfaceStreamItemV1, TerminalSurfaceV1,
@@ -28,59 +26,35 @@ impl TerminalSurfaceWireAttachment {
 }
 
 impl TerminalSurfaceRuntime {
-    pub fn new<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Self {
-        Self::compose(app)
-    }
-
-    pub fn new_with_data_dir<R: tauri::Runtime>(
-        app: tauri::AppHandle<R>,
-        data_dir: PathBuf,
-    ) -> Self {
-        if app
-            .try_state::<crate::infrastructure::platform::app_data_dir::TestDataDir>()
-            .is_none()
-        {
-            app.manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
-                data_dir,
-            ));
-        }
-        Self::compose(app)
+    pub fn new(data_dir: PathBuf) -> Self {
+        Self::compose(data_dir)
     }
 
     #[doc(hidden)]
-    pub fn new_with_data_dir_and_event_faults<R: tauri::Runtime>(
-        app: tauri::AppHandle<R>,
+    pub fn new_with_data_dir_and_event_faults(
         data_dir: PathBuf,
     ) -> (Self, TerminalSurfaceEventFaultController) {
-        if app
-            .try_state::<crate::infrastructure::platform::app_data_dir::TestDataDir>()
-            .is_none()
-        {
-            app.manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
-                data_dir,
-            ));
-        }
         let event_hub = Arc::new(
             crate::adaptor::gateway::terminal_surface::event_hub::TerminalSurfaceEventHub::new(),
         );
         let event_target: Arc<dyn TerminalSurfaceEventSink> = event_hub.clone();
         let (event_sink, faults) = crate::adaptor::gateway::terminal_surface::event_fault_relay::fault_injecting_event_sink(event_target);
         (
-            Self::compose_with_event_transport(app, event_hub, event_sink),
+            Self::compose_with_event_transport(data_dir, event_hub, event_sink),
             faults,
         )
     }
 
-    fn compose<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Self {
+    fn compose(data_dir: PathBuf) -> Self {
         let event_hub = Arc::new(
             crate::adaptor::gateway::terminal_surface::event_hub::TerminalSurfaceEventHub::new(),
         );
         let event_sink: Arc<dyn TerminalSurfaceEventSink> = event_hub.clone();
-        Self::compose_with_event_transport(app, event_hub, event_sink)
+        Self::compose_with_event_transport(data_dir, event_hub, event_sink)
     }
 
-    fn compose_with_event_transport<R: tauri::Runtime>(
-        app: tauri::AppHandle<R>,
+    fn compose_with_event_transport(
+        data_dir: PathBuf,
         event_hub: Arc<
             crate::adaptor::gateway::terminal_surface::event_hub::TerminalSurfaceEventHub,
         >,
@@ -89,7 +63,7 @@ impl TerminalSurfaceRuntime {
         let journal_enabled = !crate::other::performance_switches::terminal_performance_switches()
             .disable_terminal_journal;
         let gateway = Arc::new(crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor::new_with_event_sink(
-            app,
+            data_dir,
             event_sink,
             journal_enabled,
         ));
@@ -213,7 +187,7 @@ impl TerminalSurfaceRuntime {
             .attach(&attachment_id, &owner.try_into()?)
             .map_err(|error| error.to_string())?;
         let (sender, receiver) = tokio::sync::mpsc::channel(256);
-        tauri::async_runtime::spawn(
+        tokio::spawn(
             crate::adaptor::controller::terminal_surface::forward_terminal_surface_attachment(
                 Arc::clone(&self.application),
                 attachment_id,

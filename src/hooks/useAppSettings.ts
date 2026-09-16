@@ -35,7 +35,8 @@ export function useBackgroundConfig() {
 		setLoading(true);
 		setError(null);
 
-		Promise.all([invoke("get_app_settings"), isEnabled()])
+		const settingsRequest = invoke("get_app_settings");
+		Promise.all([settingsRequest, isEnabled()])
 			.then(([settings, osAutoStartEnabled]) => {
 				if (clientRefresh.aborted) return;
 				const cfg: BackgroundConfig = {

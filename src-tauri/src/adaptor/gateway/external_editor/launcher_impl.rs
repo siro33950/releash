@@ -1,30 +1,32 @@
 use crate::domain::external_editor::EditorLauncherGateway;
 
 #[derive(Clone)]
-pub struct TauriEditorLauncherGateway<R: tauri::Runtime> {
-    app: tauri::AppHandle<R>,
-}
+pub struct NativeEditorLauncherGateway;
 
-impl<R: tauri::Runtime> TauriEditorLauncherGateway<R> {
-    pub fn new(app: tauri::AppHandle<R>) -> Self {
-        Self { app }
-    }
-}
-
-impl<R: tauri::Runtime + 'static> EditorLauncherGateway for TauriEditorLauncherGateway<R> {
+impl EditorLauncherGateway for NativeEditorLauncherGateway {
     fn open_path(&self, path: &str, editor: &str, label: &str) -> Result<(), String> {
-        use tauri_plugin_opener::OpenerExt;
-
-        if editor.is_empty() {
-            self.app
-                .opener()
-                .open_path(path, None::<&str>)
-                .map_err(|e| format!("{label}を開けませんでした: {e}"))
-        } else {
-            self.app
-                .opener()
-                .open_path(path, Some(editor))
-                .map_err(|e| format!("エディタで{label}を開けませんでした: {e}"))
-        }
+        open_path_with(path, editor, label, |path, editor| match editor {
+            Some(editor) => open::with_detached(path, editor),
+            None => open::that_detached(path),
+        })
     }
 }
+
+fn open_path_with(
+    path: &str,
+    editor: &str,
+    label: &str,
+    open: impl FnOnce(&str, Option<&str>) -> std::io::Result<()>,
+) -> Result<(), String> {
+    if editor.is_empty() {
+        std::fs::metadata(path)
+            .and_then(|_| open(path, None))
+            .map_err(|e| format!("{label}を開けませんでした: {e}"))
+    } else {
+        open(path, Some(editor)).map_err(|e| format!("エディタで{label}を開けませんでした: {e}"))
+    }
+}
+
+#[cfg(test)]
+#[path = "launcher_impl_test.rs"]
+mod launcher_impl_tests;

@@ -42,6 +42,7 @@ pub(crate) mod state;
 mod state_notification_gateway;
 pub(crate) mod storage;
 pub(crate) mod stored_definition;
+#[cfg(any(test, all(debug_assertions, feature = "desktop")))]
 pub(crate) mod test_support;
 pub(crate) mod workflow_host;
 pub(crate) mod worktree_context;
@@ -54,13 +55,13 @@ pub(crate) use definition_repository::{
 pub(crate) use diagnostics_gateway::WorkflowDiagnosticsFileGateway;
 #[cfg(test)]
 pub(crate) use editor_gateway::NoopWorkflowExternalEditorGateway;
-pub(crate) use editor_gateway::TauriWorkflowExternalEditorGateway;
+pub(crate) use editor_gateway::WorkflowExternalEditorGateway;
 pub(crate) use event_repository::WorkflowEventLogRepository;
 pub(crate) use execution_archive_repository::WorkflowExecutionArchiveFileRepository;
 pub(crate) use execution_projection_repository::WorkflowExecutionProjectionLogRepository;
 pub(crate) use facet_repository::WorkflowFacetFileRepository;
 pub(crate) use runtime_command_gateway::{
-    TauriWorkflowRuntimeCommandGateway, TauriWorkflowRuntimeCommandGatewayDeps,
+    WorkflowRuntimeCommandGateway, WorkflowRuntimeCommandGatewayDeps,
 };
 #[cfg(test)]
 pub(crate) use runtime_resolver::resolve_workflow_by_name;

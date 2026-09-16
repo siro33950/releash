@@ -17,6 +17,8 @@ pub(crate) mod workspace_state;
 pub(crate) mod workspace_tree;
 pub(crate) use dependencies::ClientDependencies;
 pub(crate) use dispatch::{
-    command_admitted, convert, finite, invalid_request, optional, outcome, required, value,
-    ClientCommandDispatch,
+    convert, finite, invalid_request, optional, outcome, required, value, ClientCommandDispatch,
 };
+
+#[cfg(feature = "desktop")]
+pub(crate) use dispatch::command_admitted;

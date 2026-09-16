@@ -158,13 +158,7 @@ fn test_ターミナル画面_再起動復元_復元点破損時は新規画面�
         .unwrap()
         .path();
     std::fs::write(&checkpoint_path, b"{broken-checkpoint").unwrap();
-    let app = tauri::test::mock_builder()
-        .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
-            data_dir.path().to_path_buf(),
-        ))
-        .build(tauri::test::mock_context(tauri::test::noop_assets()))
-        .unwrap();
-    let gateway = TerminalSurfaceRuntimeGatewayFor::new(app.handle().clone());
+    let gateway = TerminalSurfaceRuntimeGatewayFor::new(data_dir.path().to_path_buf());
 
     let result = crate::usecase::terminal_surface::spawn_usecase::get_or_spawn(
         &gateway,
@@ -203,13 +197,7 @@ fn test_ターミナル画面_pty起動は初期checkpoint永続化を待たな�
         b"not-a-directory",
     )
     .unwrap();
-    let app = tauri::test::mock_builder()
-        .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
-            data_dir.path().to_path_buf(),
-        ))
-        .build(tauri::test::mock_context(tauri::test::noop_assets()))
-        .unwrap();
-    let gateway = TerminalSurfaceRuntimeGatewayFor::new(app.handle().clone());
+    let gateway = TerminalSurfaceRuntimeGatewayFor::new(data_dir.path().to_path_buf());
 
     gateway
         .spawn_runtime(TerminalRuntimeSpawnRequest {
@@ -424,8 +412,8 @@ impl TerminalSurfaceEventSink for BlockingSessionSink {
     }
 }
 
-fn insert_test_session_with_resizer<R: tauri::Runtime>(
-    gateway: &TerminalSurfaceRuntimeGatewayFor<R>,
+fn insert_test_session_with_resizer(
+    gateway: &TerminalSurfaceRuntimeGatewayFor,
     runtime_generation: u64,
     session_key: &str,
     worktree_path: Option<&str>,
@@ -476,8 +464,8 @@ fn insert_test_session_with_resizer<R: tauri::Runtime>(
     (killed, written)
 }
 
-fn insert_test_session<R: tauri::Runtime>(
-    gateway: &TerminalSurfaceRuntimeGatewayFor<R>,
+fn insert_test_session(
+    gateway: &TerminalSurfaceRuntimeGatewayFor,
     runtime_generation: u64,
     session_key: &str,
     worktree_path: Option<&str>,
@@ -753,9 +741,7 @@ fn test_ターミナル画面_寸法変更_実pty変更中の出力適用を同�
 
 #[test]
 fn test_ターミナル画面_イベント順序_別画面の配信を相互に停止させない() {
-    let app = tauri::test::mock_builder()
-        .build(tauri::test::mock_context(tauri::test::noop_assets()))
-        .unwrap();
+    let data_dir = tempfile::tempdir().unwrap();
     let first_started = Arc::new((StdMutex::new(false), Condvar::new()));
     let release_first = Arc::new((StdMutex::new(false), Condvar::new()));
     let sink = Arc::new(BlockingSessionSink {
@@ -764,7 +750,7 @@ fn test_ターミナル画面_イベント順序_別画面の配信を相互に�
         release: Arc::clone(&release_first),
     });
     let gateway = Arc::new(TerminalSurfaceRuntimeGatewayFor::new_with_event_sink(
-        app.handle().clone(),
+        data_dir.path().to_path_buf(),
         sink,
         true,
     ));
@@ -803,12 +789,10 @@ fn test_ターミナル画面_イベント順序_別画面の配信を相互に�
 
 #[test]
 fn test_ターミナル画面_寸法変更_次の画面_連番で配信する() {
-    let app = tauri::test::mock_builder()
-        .build(tauri::test::mock_context(tauri::test::noop_assets()))
-        .unwrap();
+    let data_dir = tempfile::tempdir().unwrap();
     let captured = Arc::new(CapturedTerminalOutput::default());
     let gateway = TerminalSurfaceRuntimeGatewayFor::new_with_event_sink(
-        app.handle().clone(),
+        data_dir.path().to_path_buf(),
         captured.clone(),
         true,
     );

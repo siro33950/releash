@@ -67,6 +67,17 @@ pub(crate) struct StartupFailure {
     pub(crate) retry_on_next_launch: bool,
 }
 
+impl StartupFailure {
+    pub(crate) fn new(kind: StartupFailureKind) -> Self {
+        Self {
+            kind,
+            safe_description: kind.safe_description(),
+            correlation_id: uuid::Uuid::new_v4().to_string(),
+            retry_on_next_launch: kind.retry_on_next_launch(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ApplicationStartupOutcome {
     Ready,
@@ -74,7 +85,7 @@ pub(crate) enum ApplicationStartupOutcome {
 }
 
 pub(crate) struct ApplicationStartupAuthority {
-    outcome: ApplicationStartupOutcome,
+    failure: Option<StartupFailure>,
     failure_exit: Option<Arc<dyn ProcessLocalExitPort>>,
     exit_dispatched: AtomicBool,
 }
@@ -82,23 +93,19 @@ pub(crate) struct ApplicationStartupAuthority {
 impl ApplicationStartupAuthority {
     pub(crate) fn ready() -> Self {
         Self {
-            outcome: ApplicationStartupOutcome::Ready,
+            failure: None,
             failure_exit: None,
             exit_dispatched: AtomicBool::new(false),
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn failed(
         kind: StartupFailureKind,
         failure_exit: Arc<dyn ProcessLocalExitPort>,
     ) -> Self {
         Self {
-            outcome: ApplicationStartupOutcome::Failed(StartupFailure {
-                kind,
-                safe_description: kind.safe_description(),
-                correlation_id: uuid::Uuid::new_v4().to_string(),
-                retry_on_next_launch: kind.retry_on_next_launch(),
-            }),
+            failure: Some(StartupFailure::new(kind)),
             failure_exit: Some(failure_exit),
             exit_dispatched: AtomicBool::new(false),
         }
@@ -110,18 +117,20 @@ impl ApplicationStartupAuthority {
     }
 
     pub(crate) fn outcome(&self) -> ApplicationStartupOutcome {
-        self.outcome.clone()
+        match &self.failure {
+            Some(failure) => ApplicationStartupOutcome::Failed(failure.clone()),
+            None => ApplicationStartupOutcome::Ready,
+        }
     }
 
     pub(crate) fn normal_admission_ready(&self) -> bool {
-        matches!(self.outcome, ApplicationStartupOutcome::Ready)
+        self.failure.is_none()
     }
 
     pub(crate) fn failed_correlation_id(&self) -> Option<&str> {
-        match &self.outcome {
-            ApplicationStartupOutcome::Ready => None,
-            ApplicationStartupOutcome::Failed(failure) => Some(&failure.correlation_id),
-        }
+        self.failure
+            .as_ref()
+            .map(|failure| failure.correlation_id.as_str())
     }
 
     pub(crate) fn quit_after_failure(&self) -> Result<String, ApplicationUnavailable> {

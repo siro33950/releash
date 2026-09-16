@@ -20,9 +20,18 @@ pub enum BuildProfile {
     Production,
     /// dev ビルド (debug)。
     Development,
+    Performance,
 }
 
 impl BuildProfile {
+    pub fn application() -> Self {
+        if cfg!(feature = "performance") {
+            Self::Performance
+        } else {
+            Self::current()
+        }
+    }
+
     /// 現在の cargo ビルド種別から `BuildProfile` を導出する。
     pub fn current() -> Self {
         if cfg!(debug_assertions) {
@@ -36,7 +45,7 @@ impl BuildProfile {
 /// `BuildProfile` から CLI alias 名を決定する。
 pub fn alias_name_for_profile(profile: BuildProfile) -> &'static str {
     match profile {
-        BuildProfile::Production => "releash",
+        BuildProfile::Production | BuildProfile::Performance => "releash",
         BuildProfile::Development => "releash-dev",
     }
 }
@@ -46,6 +55,7 @@ pub fn default_data_dir_name_for_profile(profile: BuildProfile) -> &'static str 
     match profile {
         BuildProfile::Production => "com.releash.app",
         BuildProfile::Development => "com.releash.app.dev",
+        BuildProfile::Performance => "com.releash.app.performance",
     }
 }
 
@@ -72,24 +82,12 @@ pub struct PathAliases {
 impl PathAliases {
     /// 起動環境から `PathAliases` を構築する。
     ///
-    /// `data_dir_override` を渡した場合、その値を `releash` alias の data_dir として使う。
-    /// Tauri 側では `AppHandle::path().app_data_dir()` の解決結果を渡すことで、
-    /// `tauri.conf.dev.json` の identifier (`com.releash.app.dev`) が反映された
-    /// 実 data dir と一致させる。CLI 単体起動などで override が無い場合は
-    /// `dirs::data_dir()` + bundle identifier 既定値から組み立てる。
-    ///
-    /// `data_dir_override` が `None` かつ `dirs::data_dir()` が解決失敗した場合は
-    /// `Err` を返す。spec [01]「CLI alias と実行対象の一意な対応」境界を守るため、
-    /// 失敗時は cwd へのサイレントフォールバックではなく明示エラー化する。
-    pub fn from_runtime(data_dir_override: Option<PathBuf>) -> Result<Self, String> {
+    /// daemon が解決した data_dir を使い、子プロセスの接続先を一致させる。
+    pub fn from_runtime(data_dir: PathBuf) -> Result<Self, String> {
         let profile = BuildProfile::current();
         let exe_path = std::env::current_exe()
             .map_err(|e| format!("failed to resolve current executable path: {e}"))?;
         let name = alias_name_for_profile(profile);
-        let data_dir = match data_dir_override {
-            Some(d) => d,
-            None => default_data_dir_for_profile(profile)?,
-        };
         Ok(Self {
             releash: PathAlias {
                 name: name.to_string(),
@@ -139,7 +137,7 @@ pub enum ResolvedDataDirEnv {
     Keep,
 }
 
-/// 既知 Releash alias の data_dir パス一覧 (両 `BuildProfile` 分)。
+/// 既知 Releash alias の data_dir パス一覧 (全 `BuildProfile` 分)。
 ///
 /// `resolve_session_data_dir_env` で「親プロセス env が別 Releash binary 由来の inherit
 /// かどうか」を判定する材料。`dirs::data_dir()` 解決失敗時は `Err` を返し、呼び出し側が
@@ -148,6 +146,7 @@ pub fn known_alias_data_dirs() -> Result<Vec<PathBuf>, String> {
     Ok(vec![
         default_data_dir_for_profile(BuildProfile::Production)?,
         default_data_dir_for_profile(BuildProfile::Development)?,
+        default_data_dir_for_profile(BuildProfile::Performance)?,
     ])
 }
 
@@ -181,7 +180,7 @@ pub fn resolve_session_data_dir_env(
     }
 }
 
-/// Tauri app 起動直後に呼び、自プロセスの `RELEASH_DATA_DIR` env を
+/// daemon 起動直後に呼び、自プロセスの `RELEASH_DATA_DIR` env を
 /// startup boundaryで解決済みのalias data_dirで正す。
 ///
 /// 別 Releash binary (例: prod 版 Releash の Terminal Panel) から inherit された env を
@@ -277,7 +276,7 @@ fn compose_path_with_alias_bin(existing_path: Option<&str>, bin_dir: &Path) -> S
 /// `PathAliases::from_runtime` → `child_env_overrides` の組として一箇所に束ね、
 /// テストから直接検証可能にする。
 ///
-/// - `data_dir` が `None` の場合（Tauri 側 `app_data_dir()` 解決失敗時など）は空の env を
+/// - `data_dir` が `None` の場合（data_dir 解決失敗時など）は空の env を
 ///   返し、呼び出し側が alias なしで spawn する既存挙動を温存する。
 /// - `data_dir` が `Some` の場合に wrapper 作成等で失敗したら `Err` を返し、呼び出し側で
 ///   spawn を中止する。
@@ -285,7 +284,7 @@ pub fn prepare_child_env(data_dir: Option<PathBuf>) -> Result<Vec<(String, Strin
     let Some(data_dir) = data_dir else {
         return Ok(Vec::new());
     };
-    let aliases = PathAliases::from_runtime(Some(data_dir))?;
+    let aliases = PathAliases::from_runtime(data_dir)?;
     child_env_overrides(&aliases)
 }
 
@@ -353,6 +352,10 @@ fn write_wrapper_script(path: &Path, script: &str) -> Result<(), String> {
 }
 
 #[cfg(test)]
+#[path = "path_aliases_test.rs"]
+mod path_aliases_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -383,7 +386,7 @@ mod tests {
 
     #[test]
     fn from_runtime_uses_build_profile_for_alias_name() {
-        let aliases = PathAliases::from_runtime(Some(PathBuf::from("/tmp/data"))).unwrap();
+        let aliases = PathAliases::from_runtime(PathBuf::from("/tmp/data")).unwrap();
         let releash = aliases.releash();
         assert_eq!(
             releash.name,
@@ -395,22 +398,6 @@ mod tests {
     #[test]
     fn known_keys_contains_only_releash() {
         assert_eq!(PathAliases::known_keys(), &["releash"]);
-    }
-
-    #[test]
-    fn from_runtime_uses_default_dir_when_no_override() {
-        // dirs::data_dir() が解決できる環境では default 解決経路に乗る。
-        if dirs::data_dir().is_none() {
-            return;
-        }
-        let aliases = PathAliases::from_runtime(None).unwrap();
-        let releash = aliases.releash();
-        let expected_suffix = default_data_dir_name_for_profile(BuildProfile::current());
-        assert!(
-            releash.data_dir.ends_with(expected_suffix),
-            "data_dir should end with {expected_suffix}: {}",
-            releash.data_dir.display()
-        );
     }
 
     #[test]

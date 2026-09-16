@@ -41,12 +41,12 @@ use crate::adaptor::gateway::workflow::{
 };
 use crate::adaptor::gateway::workflow::{
     RepoPathsManagedWorktreeGateway, RepositoryManagedWorktreeGateway,
-    TauriWorkflowExternalEditorGateway, TauriWorkflowRuntimeCommandGateway,
-    TauriWorkflowRuntimeCommandGatewayDeps, WorkflowConfigPathFileGateway,
-    WorkflowDefinitionFileRepository, WorkflowDefinitionFileSourceGateway,
-    WorkflowDiagnosticsFileGateway, WorkflowEventLogRepository,
-    WorkflowExecutionArchiveFileRepository, WorkflowExecutionProjectionLogRepository,
-    WorkflowFacetFileRepository, WorkflowSecretSourceConfigGateway,
+    WorkflowConfigPathFileGateway, WorkflowDefinitionFileRepository,
+    WorkflowDefinitionFileSourceGateway, WorkflowDiagnosticsFileGateway,
+    WorkflowEventLogRepository, WorkflowExecutionArchiveFileRepository,
+    WorkflowExecutionProjectionLogRepository, WorkflowExternalEditorGateway,
+    WorkflowFacetFileRepository, WorkflowRuntimeCommandGateway, WorkflowRuntimeCommandGatewayDeps,
+    WorkflowSecretSourceConfigGateway,
 };
 use crate::domain::app_config::{ConfigRepository, ConfigSecretRepository};
 use crate::domain::git_host::{CacheTtl, IssueInfo, PrStatus};
@@ -133,14 +133,7 @@ fn build_code_usecase_with_gateways() -> CodeUsecase {
     )
 }
 
-#[cfg(test)]
 pub(crate) fn build_code_usecase() -> CodeUsecase {
-    build_code_usecase_with_gateways()
-}
-
-pub(crate) fn build_code_usecase_with_app<R: tauri::Runtime + 'static>(
-    _app: tauri::AppHandle<R>,
-) -> CodeUsecase {
     build_code_usecase_with_gateways()
 }
 
@@ -209,12 +202,11 @@ pub(crate) fn build_workflow_usecase_and_store(
     (workflow_usecase, local_event_store)
 }
 
-pub(crate) fn build_workflow_services_with_repository_worktrees<R: tauri::Runtime + 'static>(
+pub(crate) fn build_workflow_services_with_repository_worktrees(
     data_dir: impl Into<std::path::PathBuf>,
     repository_usecase: Arc<RepositoryUsecase>,
     app_config: Arc<dyn ConfigRepository>,
     config_secrets: Arc<dyn ConfigSecretRepository>,
-    app: tauri::AppHandle<R>,
     local_event_store: Arc<LocalEventStore>,
 ) -> (
     WorkflowUsecase,
@@ -227,7 +219,7 @@ pub(crate) fn build_workflow_services_with_repository_worktrees<R: tauri::Runtim
             repository_usecase,
             app_config.clone(),
         )),
-        Arc::new(TauriWorkflowExternalEditorGateway::new(app, app_config)),
+        Arc::new(WorkflowExternalEditorGateway::new(app_config)),
         Arc::new(WorkflowSecretSourceConfigGateway::new(config_secrets)),
         local_event_store,
     )
@@ -372,8 +364,8 @@ pub(crate) fn build_workflow_services_with_gateways(
 }
 
 pub(crate) fn build_workflow_runtime_usecase(
-    app: tauri::AppHandle,
-    deps: TauriWorkflowRuntimeCommandGatewayDeps,
+    app: crate::adaptor::gateway::workflow::workflow_host::WorkflowRuntimeDependencies,
+    deps: WorkflowRuntimeCommandGatewayDeps,
 ) -> Result<WorkflowRuntimeUsecase, WorkflowRuntimeError> {
     use crate::adaptor::gateway::workflow::{
         runtime_resolver::{AppConfigManagedWorktreeResolver, DefaultWorkflowDefinitionResolver},
@@ -396,7 +388,7 @@ pub(crate) fn build_workflow_runtime_usecase(
     );
     let driver = wire_delegate_continuation(app.clone(), driver);
     Ok(WorkflowRuntimeUsecase::new(Arc::new(
-        TauriWorkflowRuntimeCommandGateway::new_with_driver(
+        WorkflowRuntimeCommandGateway::new_with_driver(
             app,
             Arc::new(driver),
             deps.local_event_repository,
@@ -405,8 +397,8 @@ pub(crate) fn build_workflow_runtime_usecase(
     )))
 }
 
-pub(crate) fn wire_delegate_continuation<R: tauri::Runtime>(
-    app: tauri::AppHandle<R>,
+pub(crate) fn wire_delegate_continuation(
+    app: crate::adaptor::gateway::workflow::workflow_host::WorkflowRuntimeDependencies,
     mut host: crate::adaptor::gateway::workflow::workflow_host::WorkflowRuntimeHost,
 ) -> crate::adaptor::gateway::workflow::workflow_host::WorkflowRuntimeHost {
     use crate::adaptor::gateway::workflow::workflow_host::delegate::HostDelegateContinuation;
@@ -435,7 +427,7 @@ pub(crate) fn spawn_startup_app_data_gc(
     shared_repo_paths: crate::adaptor::gateway::repository::repo_paths::SharedRepoPaths,
     repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository>,
 ) {
-    tauri::async_runtime::spawn(async move {
+    tokio::spawn(async move {
         if let Err(error) = composition
             .run_startup_gc_pass(shared_repo_paths, repository)
             .await
@@ -556,46 +548,5 @@ mod tests {
         assert_eq!(live_loopback_executions, direct_executions);
         assert_eq!(standalone_executions, direct_executions);
         assert_eq!(tauri_tree, direct_tree);
-    }
-}
-
-pub(crate) fn build_watcher_usecase<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-) -> std::sync::Arc<crate::usecase::watcher::WatcherUsecase> {
-    use tauri::Manager;
-    std::sync::Arc::new(crate::usecase::watcher::WatcherUsecase::new(
-        app.try_state::<crate::adaptor::controller::state::AppState>().map(|state| state.repository_state.clone()),
-        std::sync::Arc::new(crate::adaptor::gateway::repository::file_watcher::FileWatcherGateway::new(
-            app.state::<std::sync::Arc<crate::infrastructure::file_watcher::FileWatcherManager>>().inner().clone(), app.clone(),
-        )),
-    ))
-}
-
-pub(crate) fn build_client_dependencies<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-) -> super::client::ClientDependencies {
-    use tauri::Manager;
-    super::client::ClientDependencies {
-        caller_attempt_journal: app.try_state::<std::sync::Arc<crate::usecase::application_lifecycle::operation::CallerAttemptJournal>>().map(|state| state.inner().clone()),
-        shutdown_coordinator: app.try_state::<std::sync::Arc<crate::usecase::shutdown_coordinator::ShutdownCoordinator>>().map(|state| state.inner().clone()),
-        application_startup_authority: app.try_state::<std::sync::Arc<crate::usecase::application_startup::ApplicationStartupAuthority>>().map(|state| state.inner().clone()),
-        application_process_action_dispatcher: app.try_state::<std::sync::Arc<crate::adaptor::controller::application_lifecycle::ApplicationProcessActionDispatcher>>().map(|state| state.inner().clone()),
-        workspace_node_command_usecase: app.try_state::<std::sync::Arc<crate::usecase::workflow::WorkspaceNodeCommandUsecase>>().map(|state| state.inner().clone()),
-        app_state: app.try_state::<crate::adaptor::controller::state::AppState>().map(|state| state.inner().clone()),
-        workspace_state_store: app.try_state::<std::sync::Arc<crate::adaptor::gateway::workspace_state::WorkspaceStateStore>>().map(|state| state.inner().clone()),
-        agent_session_lifecycle_usecase: app.try_state::<std::sync::Arc<crate::usecase::agent_session::AgentSessionLifecycleUsecase>>().map(|state| state.inner().clone()),
-        agent_session_launch_usecase: app.try_state::<std::sync::Arc<crate::usecase::agent_session::AgentSessionLaunchUsecase>>().map(|state| state.inner().clone()),
-        agent_session_read_usecase: app.try_state::<std::sync::Arc<crate::usecase::agent_session::AgentSessionReadUsecase>>().map(|state| state.inner().clone()),
-        provider_availability_usecase: app.try_state::<std::sync::Arc<crate::usecase::agent_session::ProviderAvailabilityUsecase>>().map(|state| state.inner().clone()),
-        agent_session_history_read_usecase: app.try_state::<std::sync::Arc<crate::usecase::agent_session::AgentSessionHistoryReadUsecase>>().map(|state| state.inner().clone()),
-        provider_hook_health_read_usecase: app.try_state::<std::sync::Arc<crate::usecase::provider_lifecycle::ProviderHookHealthReadUsecase>>().map(|state| state.inner().clone()),
-        review_comment_usecase: app.try_state::<std::sync::Arc<crate::usecase::comment::ReviewCommentUsecase>>().map(|state| state.inner().clone()),
-        config_repository: app.try_state::<std::sync::Arc<dyn crate::domain::app_config::ConfigRepository>>().map(|state| state.inner().clone()),
-        workflow_runtime_usecase: app.try_state::<std::sync::Arc<crate::usecase::workflow::WorkflowRuntimeUsecase>>().map(|state| state.inner().clone()),
-        editor_launcher: Arc::new(crate::adaptor::gateway::external_editor::TauriEditorLauncherGateway::new(app.clone())),
-        watcher: build_watcher_usecase(app),
-        data_dir: app.path().app_data_dir().map_err(|error| format!("Failed to get app data dir: {error}")),
-        comment_notify: Arc::new(crate::adaptor::gateway::push::CommentChangeGateway::new(app.clone())),
-        process_port: Arc::new(super::application_lifecycle::TauriApplicationProcessActionPort::new(app.clone())),
     }
 }

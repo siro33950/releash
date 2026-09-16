@@ -1056,6 +1056,7 @@ impl AgentSessionLaunchUsecase {
         self.standalone_requests.lock().await.in_flight.len()
     }
 
+    #[cfg(any(test, all(debug_assertions, feature = "desktop")))]
     pub(crate) async fn wait_for_background_tasks(&self) -> Result<(), tokio::task::JoinError> {
         let tasks = {
             let mut tasks = self

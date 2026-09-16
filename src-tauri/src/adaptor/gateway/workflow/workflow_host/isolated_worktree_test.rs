@@ -52,7 +52,7 @@ async fn test_隔離復旧_生成後かつ起動記録前のleafと合成子を�
         let restored = fixture.restarted_host();
 
         // When
-        restored.reconcile_startup(fixture.app.handle()).await.unwrap();
+        restored.reconcile_startup(&fixture.app).await.unwrap();
 
         // Then
         if node.kind == NodeKindName::Command {
@@ -125,8 +125,8 @@ async fn test_隔離起動_on_failure省略のleafは生成失敗後に手動ret
         // When
         fixture.worktrees.failures.store(1, Ordering::SeqCst);
         let gateway =
-            crate::adaptor::gateway::workflow::TauriWorkflowRuntimeCommandGateway::new_with_driver(
-                fixture.app.handle().clone(),
+            crate::adaptor::gateway::workflow::WorkflowRuntimeCommandGateway::new_with_driver(
+                fixture.app.clone(),
                 Arc::new(fixture.host.clone()),
                 fixture.store.clone(),
                 fixture.store.installation_id().to_string(),
@@ -298,7 +298,7 @@ async fn test_隔離再開_実体喪失によるprovider起動失敗をnode失�
     // When
     let result = fixture
         .host
-        .resume_workflow_execution(fixture.app.handle(), &execution_id)
+        .resume_workflow_execution(&fixture.app, &execution_id)
         .await;
 
     // Then
@@ -315,13 +315,12 @@ async fn test_隔離再開_実体喪失によるprovider起動失敗をnode失�
     assert!(failed.recovery_reason.is_none());
     assert!(failed.can_retry());
     assert!(failed.resume_previous_state().is_none());
-    let gateway =
-        crate::adaptor::gateway::workflow::TauriWorkflowRuntimeCommandGateway::new_with_driver(
-            fixture.app.handle().clone(),
-            Arc::new(fixture.host.clone()),
-            fixture.store.clone(),
-            fixture.store.installation_id().to_string(),
-        );
+    let gateway = crate::adaptor::gateway::workflow::WorkflowRuntimeCommandGateway::new_with_driver(
+        fixture.app.clone(),
+        Arc::new(fixture.host.clone()),
+        fixture.store.clone(),
+        fixture.store.installation_id().to_string(),
+    );
     let control = crate::usecase::workflow::control_plane::WorkflowControlPlaneUsecase::new(
         Arc::new(gateway),
     );
@@ -489,7 +488,7 @@ async fn test_隔離再開_dispatch失敗は対象だけを失敗にし他の未
     // When
     let result = fixture
         .host
-        .resume_workflow_execution(fixture.app.handle(), &execution_id)
+        .resume_workflow_execution(&fixture.app, &execution_id)
         .await;
     // Then
     assert!(
@@ -542,12 +541,12 @@ async fn test_隔離合成子_子開始commitの状態通知は一度だけ送�
         .unwrap()
         .isolated_composite_start(&snapshot.node_executions[0].id)
         .unwrap();
-    let mut broadcasts = record_workflow_execution_broadcasts(fixture.app.handle());
+    let mut broadcasts = record_workflow_execution_broadcasts(&fixture.app);
     // When
     let leaves = fixture
         .host
         .prepare_isolated_starts(
-            fixture.app.handle(),
+            &fixture.app,
             &snapshot.execution_id,
             "/repo",
             vec![super::isolated_worktree::NodePreparation::Composite(starts)],
@@ -563,7 +562,7 @@ async fn test_隔離合成子_子開始commitの状態通知は一度だけ送�
 async fn test_空の隔離fanout_liveと再読取で同じworktree成果を持ち完了する() {
     // Given
     let fixture = Fixture::new(0);
-    let mut broadcasts = record_workflow_execution_broadcasts(fixture.app.handle());
+    let mut broadcasts = record_workflow_execution_broadcasts(&fixture.app);
     // When
     let id = fixture.start("  main: {worktree: isolated, fanout: {items: [], children: [work]}}\n  work: {session: {provider: codex}}").await;
     let folded = workflow_fact_log::fold_tree_from(

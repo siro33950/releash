@@ -50,9 +50,7 @@ pub use query_service::{WorkflowEventView, WorkflowGetOutputResult};
 pub use runtime_command::WorkflowRuntimeUsecase;
 pub(crate) use workspace_node_command::{
     ApproveWorkspaceNodeCommand, RenameWorkspaceSessionNodeCommand, RetryWorkspaceNodeCommand,
-    WorkspaceNodeActionResolver, WorkspaceNodeApprovalTarget, WorkspaceNodeCommandUsecase,
-    WorkspaceNodeRetryTarget, WorkspaceNodeWorkflowCommandExecutor,
-    WorkspaceSessionNodeRenameTarget,
+    WorkspaceNodeActionResolver, WorkspaceNodeCommandUsecase, WorkspaceNodeWorkflowCommandExecutor,
 };
 pub(crate) use workspace_tree::{
     NodeWorktreeDto, WorkspaceCommandNodeContentDto, WorkspaceCommandResultDto, WorkspaceFanoutDto,
@@ -1343,3 +1341,8 @@ mod tests {
         );
     }
 }
+
+#[cfg(all(debug_assertions, feature = "desktop"))]
+pub(crate) use workspace_node_command::{
+    WorkspaceNodeApprovalTarget, WorkspaceNodeRetryTarget, WorkspaceSessionNodeRenameTarget,
+};

@@ -48,9 +48,9 @@ fn reapply_cached_paused_nodes(
 
 /// abort / stop / resume の execution ライフサイクル typed command 群。
 impl WorkflowRuntimeHost {
-    pub(crate) async fn abort_workflow_execution<R: tauri::Runtime>(
+    pub(crate) async fn abort_workflow_execution(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &WorkflowRuntimeDependencies,
         execution_id: &str,
         expected_node_name: Option<&str>,
     ) -> Result<(), WorkflowRuntimeError> {
@@ -172,9 +172,9 @@ impl WorkflowRuntimeHost {
 
     /// Pause all currently running Node Attempts without changing the Workflow lifecycle.
     /// NodePaused is published only after every targeted runtime has accepted cancellation.
-    pub(crate) async fn stop_workflow_execution<R: tauri::Runtime>(
+    pub(crate) async fn stop_workflow_execution(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &WorkflowRuntimeDependencies,
         execution_id: &str,
     ) -> Result<(), WorkflowRuntimeError> {
         let metadata = self.validate_execution_command_target(execution_id).await?;
@@ -287,9 +287,9 @@ impl WorkflowRuntimeHost {
         Ok(())
     }
 
-    async fn restore_unstopped_pauses_to_running<R: tauri::Runtime>(
+    async fn restore_unstopped_pauses_to_running(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &WorkflowRuntimeDependencies,
         execution_id: &str,
         node_execution_ids: &HashSet<String>,
     ) -> Result<(), WorkflowRuntimeError> {
@@ -337,9 +337,9 @@ impl WorkflowRuntimeHost {
     }
 
     /// Restore Agent Node Attempts that failed to activate after an in-place Resume.
-    async fn restore_unactivated_resumes<R: tauri::Runtime>(
+    async fn restore_unactivated_resumes(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &WorkflowRuntimeDependencies,
         execution_id: &str,
         previously_paused_node_execution_ids: &HashSet<String>,
         rollbacks: &HashMap<String, (String, RuntimeNodeResumePreviousState)>,
@@ -347,16 +347,11 @@ impl WorkflowRuntimeHost {
         if rollbacks.is_empty() {
             return Ok(());
         }
-        let store = app
-            .try_state::<std::sync::Arc<
-                crate::adaptor::gateway::local_event_store::LocalEventStore,
-            >>()
-            .map(|store| store.inner().clone())
-            .ok_or_else(|| {
-                WorkflowRuntimeError::SessionStore(
-                    "workflow SQLite event authority is not managed".to_string(),
-                )
-            })?;
+        let store = app.store.clone().ok_or_else(|| {
+            WorkflowRuntimeError::SessionStore(
+                "workflow SQLite event authority is not managed".to_string(),
+            )
+        })?;
         let mut durable = workflow_fact_log::fold_tree_from(
             &workflow_fact_log::FactLogReadBackend::Live(store),
             execution_id,
@@ -456,9 +451,9 @@ impl WorkflowRuntimeHost {
         Ok(())
     }
 
-    async fn restore_unactivated_resumes_after_failure<R: tauri::Runtime>(
+    async fn restore_unactivated_resumes_after_failure(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &WorkflowRuntimeDependencies,
         execution_id: &str,
         previously_paused_node_execution_ids: &HashSet<String>,
         rollbacks: &HashMap<String, (String, RuntimeNodeResumePreviousState)>,
@@ -480,9 +475,9 @@ impl WorkflowRuntimeHost {
         }
     }
 
-    pub(crate) async fn resume_workflow_execution<R: tauri::Runtime + 'static>(
+    pub(crate) async fn resume_workflow_execution(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &WorkflowRuntimeDependencies,
         execution_id: &str,
     ) -> Result<(), WorkflowRuntimeError> {
         let metadata = self.validate_execution_command_target(execution_id).await?;
@@ -492,16 +487,11 @@ impl WorkflowRuntimeHost {
                 metadata.status.as_str()
             )));
         }
-        let store = app
-            .try_state::<std::sync::Arc<
-                crate::adaptor::gateway::local_event_store::LocalEventStore,
-            >>()
-            .map(|store| store.inner().clone())
-            .ok_or_else(|| {
-                WorkflowRuntimeError::SessionStore(
-                    "workflow SQLite event authority is not managed".to_string(),
-                )
-            })?;
+        let store = app.store.clone().ok_or_else(|| {
+            WorkflowRuntimeError::SessionStore(
+                "workflow SQLite event authority is not managed".to_string(),
+            )
+        })?;
         let backend = workflow_fact_log::FactLogReadBackend::Live(store);
         let timestamp = current_timestamp();
         let (
@@ -763,9 +753,9 @@ impl WorkflowRuntimeHost {
         }
         Ok(())
     }
-    async fn fail_resumed_isolated_session<R: tauri::Runtime>(
+    async fn fail_resumed_isolated_session(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &WorkflowRuntimeDependencies,
         execution_id: &str,
         node_execution_id: &str,
         error: &WorkflowRuntimeError,
@@ -865,9 +855,9 @@ impl WorkflowRuntimeHost {
     ///
     /// 外部から直接呼ばれることはなく、`abort_workflow_execution*` runtime primitive 経路のみが
     /// 利用する（Spec [04]: 内部呼び出し元も driver の private method を直接叩かない）。
-    async fn commit_abort_workflow_by_execution_id<R: tauri::Runtime>(
+    async fn commit_abort_workflow_by_execution_id(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &WorkflowRuntimeDependencies,
         execution_id: &str,
         expected_node_name: Option<&str>,
     ) -> Result<AbortCommit, WorkflowRuntimeError> {
@@ -976,11 +966,7 @@ impl WorkflowRuntimeHost {
         Ok(AbortCommit::Aborted)
     }
 
-    async fn finish_committed_abort<R: tauri::Runtime>(
-        &self,
-        app: &tauri::AppHandle<R>,
-        execution_id: &str,
-    ) {
+    async fn finish_committed_abort(&self, app: &WorkflowRuntimeDependencies, execution_id: &str) {
         // ExecutionAborted is durable before this method is called. Runtime activation must be
         // quiesced before entering this terminal cleanup so it cannot recreate a closed runtime.
         self.shutdown_active_commands_for_execution(execution_id)
@@ -999,9 +985,9 @@ impl WorkflowRuntimeHost {
     /// 事実は既に ExecutionAborted で確定しており、ここでの副作用失敗を command failure に
     /// 射影すると spec [04] の「post-commit 失敗は command failure として返さない」に
     /// 違反するため。
-    pub(super) async fn finalize_terminal_transition_after_required_append<R: tauri::Runtime>(
+    pub(super) async fn finalize_terminal_transition_after_required_append(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &WorkflowRuntimeDependencies,
         execution_id: &str,
     ) {
         let (snapshot, worktree_path) = {

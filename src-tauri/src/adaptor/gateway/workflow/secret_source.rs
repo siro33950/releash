@@ -1,14 +1,8 @@
-use std::sync::Arc;
-
-use tauri::Manager;
-
-use crate::domain::app_config::ConfigSecretRepository;
-
-pub(crate) fn collect_configured_secret_values<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) fn collect_configured_secret_values(
+    app: &super::workflow_host::WorkflowRuntimeDependencies,
 ) -> Vec<String> {
     let mut values = Vec::new();
-    if let Some(config) = app.try_state::<Arc<dyn ConfigSecretRepository>>() {
+    if let Some(config) = app.secrets.as_ref() {
         values.extend(config.configured_secret_values().unwrap_or_default());
     }
     values.extend(

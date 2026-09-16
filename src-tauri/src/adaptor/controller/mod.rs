@@ -4,7 +4,9 @@ pub(crate) mod api;
 pub(crate) mod app_data_composition;
 pub(crate) mod application_lifecycle;
 pub(crate) mod client;
+#[cfg(feature = "desktop")]
 pub(crate) mod command;
+pub(crate) mod daemon;
 pub(crate) mod state;
 pub(crate) mod terminal_surface_runtime;
 pub(crate) mod wiring;

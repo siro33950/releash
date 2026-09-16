@@ -81,7 +81,14 @@ use runtime_commit::{
     self as workflow_runtime_commit, AbortOutcome, AbortTargetLookup, RequiredEventCommit,
 };
 use runtime_session as workflow_runtime_session;
-use tauri::Manager as _;
+
+#[derive(Clone)]
+pub(crate) struct WorkflowRuntimeDependencies {
+    pub(crate) store: Option<Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>>,
+    pub(crate) config: Option<Arc<dyn crate::domain::app_config::ConfigRepository>>,
+    pub(crate) secrets: Option<Arc<dyn crate::domain::app_config::ConfigSecretRepository>>,
+    pub(crate) push: Arc<crate::infrastructure::push::PushSink>,
+}
 
 fn current_timestamp() -> f64 {
     std::time::SystemTime::now()
@@ -316,24 +323,19 @@ impl WorkflowRuntimeHost {
         self.executions.lock().await.contains_key(tree_id) || reservations.contains(tree_id)
     }
 
-    pub(crate) async fn register_started_execution_tree<R: tauri::Runtime>(
+    pub(crate) async fn register_started_execution_tree(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &WorkflowRuntimeDependencies,
         tree_id: &str,
     ) -> Result<(), WorkflowRuntimeError> {
         if self.executions.lock().await.contains_key(tree_id) {
             return Ok(());
         }
-        let store = app
-            .try_state::<std::sync::Arc<
-                crate::adaptor::gateway::local_event_store::LocalEventStore,
-            >>()
-            .map(|store| store.inner().clone())
-            .ok_or_else(|| {
-                WorkflowRuntimeError::SessionStore(
-                    "workflow SQLite event authority is not managed".to_string(),
-                )
-            })?;
+        let store = app.store.clone().ok_or_else(|| {
+            WorkflowRuntimeError::SessionStore(
+                "workflow SQLite event authority is not managed".to_string(),
+            )
+        })?;
         let backend = workflow_fact_log::FactLogReadBackend::Live(store);
         let folded = workflow_fact_log::fold_tree_from(&backend, tree_id)
             .map_err(WorkflowRuntimeError::SessionStore)?
@@ -373,9 +375,9 @@ impl WorkflowRuntimeHost {
         Ok(())
     }
 
-    pub(crate) async fn commit_workflow_control_plane<R: tauri::Runtime>(
+    pub(crate) async fn commit_workflow_control_plane(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &WorkflowRuntimeDependencies,
         commit: crate::usecase::workflow::control_plane::WorkflowControlPlaneCommit,
     ) -> Result<RuntimeCommitSnapshot, WorkflowRuntimeError> {
         self.commit_control_plane_candidate(
@@ -392,9 +394,9 @@ impl WorkflowRuntimeHost {
         .await
     }
 
-    pub(crate) async fn finish_workflow_control_plane_commit<R: tauri::Runtime>(
+    pub(crate) async fn finish_workflow_control_plane_commit(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &WorkflowRuntimeDependencies,
         worktree_path: &str,
         snapshot: &RuntimeCommitSnapshot,
         outcome: Option<NodeOutcome>,
@@ -653,18 +655,16 @@ impl WorkflowRuntimeHost {
     ///   される。既に事実が揃っている行動は差分に現れないため二重実行されない。
     ///
     /// 起動時復旧はこの1周目と同一であり、復旧専用経路は存在しない。
-    pub async fn reconcile_startup<R: tauri::Runtime>(
+    pub async fn reconcile_startup(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &WorkflowRuntimeDependencies,
     ) -> Result<(), WorkflowRuntimeError> {
         let _reconcile_guard = self.startup_recovery_lock.lock().await;
-        let Some(store) = app.try_state::<std::sync::Arc<
-            crate::adaptor::gateway::local_event_store::LocalEventStore,
-        >>() else {
+        let Some(store) = app.store.as_ref() else {
             // canonical store の無い（テスト）構成では対象の木が無い。
             return Ok(());
         };
-        let store = store.inner().clone();
+        let store = store.clone();
         let backend = workflow_fact_log::FactLogReadBackend::Live(store.clone());
         let tree_ids = workflow_fact_log::list_tree_ids(&backend, None)
             .map_err(WorkflowRuntimeError::SessionStore)?;
@@ -776,9 +776,9 @@ impl WorkflowRuntimeHost {
     /// `execution_id` を `execution_id` として「昇格」させた値であり、ここ以外で採番されることはない。
     /// state 変化の入口は resolved StartExecution port からこの private handler に合流する。
     /// 外部入口としては公開せず、usecase/gateway が解決済み workflow を渡す境界にする。
-    async fn start_workflow<R: tauri::Runtime>(
+    async fn start_workflow(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &WorkflowRuntimeDependencies,
         workflow: WorkflowDefinition,
         worktree_path: String,
         request: Option<String>,
@@ -801,8 +801,6 @@ impl WorkflowRuntimeHost {
         // Spec issues-1011 finding 5/8: 並行起動でも parent ChatSession を孤立させないために
         // Execution Store reservation を「最初の副作用」にする。reservation が失敗（同一 worktree
         // への並行起動）した場合は AlreadyActive として返り、他の副作用は走らない。
-        let data_dir = crate::infrastructure::platform::app_data_dir::resolve_data_dir(app)
-            .map_err(|e| WorkflowRuntimeError::SessionStore(format!("resolve_data_dir: {e}")))?;
         let now = current_timestamp();
         let execution_id = self
             .reserve_workflow_execution(
@@ -837,7 +835,6 @@ impl WorkflowRuntimeHost {
             }
         };
 
-        let _ = data_dir; // unused after parent session removal
         let workflow_defaults = WorkflowDefaults;
 
         // validate_start → insert → スナップショット確定を同一ロックで原子的に実行。
@@ -937,9 +934,9 @@ impl WorkflowRuntimeHost {
             .map_err(Into::into)
     }
 
-    pub(crate) async fn start_resolved_workflow<R: tauri::Runtime>(
+    pub(crate) async fn start_resolved_workflow(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &WorkflowRuntimeDependencies,
         workflow: WorkflowDefinition,
         worktree_path: String,
         request: Option<String>,
@@ -949,9 +946,9 @@ impl WorkflowRuntimeHost {
             .await
     }
 
-    async fn restart_paused_command_node<R: tauri::Runtime>(
+    async fn restart_paused_command_node(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &WorkflowRuntimeDependencies,
         execution_id: &str,
         node_execution_id: &str,
     ) -> Result<(), WorkflowRuntimeError> {
@@ -959,9 +956,9 @@ impl WorkflowRuntimeHost {
             .await
     }
 
-    async fn restart_workflow_command_node<R: tauri::Runtime>(
+    async fn restart_workflow_command_node(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &WorkflowRuntimeDependencies,
         execution_id: &str,
         node_execution_id: &str,
     ) -> Result<(), WorkflowRuntimeError> {
@@ -1033,9 +1030,9 @@ impl WorkflowRuntimeHost {
         Ok(())
     }
 
-    async fn commit_control_plane_candidate<R: tauri::Runtime>(
+    async fn commit_control_plane_candidate(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &WorkflowRuntimeDependencies,
         commit: ControlPlaneCommitCandidate<'_>,
     ) -> Result<RuntimeCommitSnapshot, WorkflowRuntimeError> {
         let ControlPlaneCommitCandidate {
@@ -1095,18 +1092,13 @@ impl WorkflowRuntimeHost {
                 )));
             }
             Err(WorkflowTransactionCommitError::Persistence(error)) => {
-                let backend =
-                    workflow_fact_log::FactLogReadBackend::Live(
-                        app.try_state::<std::sync::Arc<
-                            crate::adaptor::gateway::local_event_store::LocalEventStore,
-                        >>()
-                        .map(|store| store.inner().clone())
-                        .ok_or_else(|| {
-                            WorkflowRuntimeError::SessionStore(
-                                "workflow SQLite event authority is not managed".to_string(),
-                            )
-                        })?,
-                    );
+                let backend = workflow_fact_log::FactLogReadBackend::Live(
+                    app.store.clone().ok_or_else(|| {
+                        WorkflowRuntimeError::SessionStore(
+                            "workflow SQLite event authority is not managed".to_string(),
+                        )
+                    })?,
+                );
                 let refreshed_snapshot = match workflow_fact_log::fold_tree_from(
                     &backend,
                     execution_id,
@@ -1206,9 +1198,9 @@ impl WorkflowRuntimeHost {
         }
     }
 
-    async fn finish_control_plane_commit<R: tauri::Runtime>(
+    async fn finish_control_plane_commit(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &WorkflowRuntimeDependencies,
         worktree_path: &str,
         snapshot: &RuntimeCommitSnapshot,
         outcome: Option<NodeOutcome>,
@@ -1252,7 +1244,7 @@ impl WorkflowRuntimeHost {
             .and_then(|execution| RuntimeCommitSnapshot::from_execution(execution).ok())
     }
 
-    #[cfg(debug_assertions)]
+    #[cfg(all(debug_assertions, feature = "desktop"))]
     pub(crate) async fn acceptance_state_by_execution_id(
         &self,
         execution_id: &str,
@@ -1294,9 +1286,9 @@ impl WorkflowRuntimeHost {
 
     /// advance が返した Node を準備して起動する。Session はまとめて prepare →
     /// SessionAttached を一括 commit → activate、Command は spawn する。
-    async fn start_nodes<R: tauri::Runtime + 'static>(
+    async fn start_nodes(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &WorkflowRuntimeDependencies,
         execution_id: &str,
         worktree_path: &str,
         starts: Vec<NodeStart>,
@@ -1617,9 +1609,9 @@ impl WorkflowRuntimeHost {
         rollback_failure
     }
 
-    async fn spawn_command_execution<R: tauri::Runtime + 'static>(
+    async fn spawn_command_execution(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &WorkflowRuntimeDependencies,
         mut input: CommandExecutionInput,
     ) -> Result<(), WorkflowRuntimeError> {
         let raw_command = input.raw_command.take().ok_or_else(|| {
@@ -1744,9 +1736,9 @@ impl WorkflowRuntimeHost {
         Ok(())
     }
 
-    async fn observe_command_completion<R: tauri::Runtime + 'static>(
+    async fn observe_command_completion(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &WorkflowRuntimeDependencies,
         input: CommandExecutionInput,
         running: workflow_command_runner::RunningCommand,
     ) {
@@ -1816,9 +1808,9 @@ impl WorkflowRuntimeHost {
         command_execution_input_is_current(exec, input)
     }
 
-    async fn commit_command_output<R: tauri::Runtime>(
+    async fn commit_command_output(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &WorkflowRuntimeDependencies,
         input: CommandExecutionInput,
         output: CommandRunOutput,
     ) -> Result<(), WorkflowRuntimeError> {
@@ -1935,9 +1927,9 @@ impl WorkflowRuntimeHost {
         Ok(())
     }
 
-    async fn fail_current_command_node<R: tauri::Runtime>(
+    async fn fail_current_command_node(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &WorkflowRuntimeDependencies,
         input: &CommandExecutionInput,
         reason: String,
     ) -> Result<(), WorkflowRuntimeError> {
@@ -2092,9 +2084,9 @@ impl WorkflowRuntimeHost {
         .await
     }
 
-    async fn commit_required_events<R: tauri::Runtime>(
+    async fn commit_required_events(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &WorkflowRuntimeDependencies,
         commit: RequiredEventCommit<'_>,
     ) -> Result<(), WorkflowRuntimeError> {
         self.commit_required_events_with_phase(app, commit)
@@ -2102,9 +2094,9 @@ impl WorkflowRuntimeHost {
             .map_err(RequiredEventCommitFailure::into_workflow_error)
     }
 
-    async fn commit_required_events_with_phase<R: tauri::Runtime>(
+    async fn commit_required_events_with_phase(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &WorkflowRuntimeDependencies,
         commit: RequiredEventCommit<'_>,
     ) -> Result<(), RequiredEventCommitFailure> {
         let RequiredEventCommit {
@@ -2199,9 +2191,9 @@ impl WorkflowRuntimeHost {
     /// [04] post-commit phase: broadcast and runtime release. Every required
     /// transition/terminal event is already in the canonical commit; this
     /// phase contains only derived notifications and in-memory cleanup.
-    async fn finalize_after_commit<R: tauri::Runtime>(
+    async fn finalize_after_commit(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &WorkflowRuntimeDependencies,
         snapshot: &RuntimeCommitSnapshot,
         worktree_path: &str,
     ) {
@@ -2216,9 +2208,9 @@ impl WorkflowRuntimeHost {
         }
     }
 
-    async fn settle_runtime_failure<R: tauri::Runtime>(
+    async fn settle_runtime_failure(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &WorkflowRuntimeDependencies,
         execution_id: &str,
         error: &WorkflowRuntimeError,
     ) -> Result<(), WorkflowRuntimeError> {
@@ -2246,9 +2238,9 @@ impl WorkflowRuntimeHost {
             .await
     }
 
-    async fn settle_runtime_failure_for_node<R: tauri::Runtime>(
+    async fn settle_runtime_failure_for_node(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &WorkflowRuntimeDependencies,
         execution_id: &str,
         node_execution_id: &str,
         error: &WorkflowRuntimeError,
@@ -2284,9 +2276,9 @@ impl WorkflowRuntimeHost {
         }))
     }
 
-    async fn settle_node_failure_for_node<R: tauri::Runtime>(
+    async fn settle_node_failure_for_node(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &WorkflowRuntimeDependencies,
         execution_id: &str,
         node_execution_id: &str,
         reason: String,
@@ -2416,9 +2408,9 @@ impl WorkflowRuntimeHost {
     /// （non-command 経路）と `handle_approval` などの 4 command handler の双方から
     /// 呼ばれ、副作用ロジックの単一 source of truth として機能する。失敗は warn 化して
     /// command 結果に伝播させない設計に揃える（spec [04] post-commit 境界）。
-    async fn dispatch_node_outcome_side_effects<R: tauri::Runtime>(
+    async fn dispatch_node_outcome_side_effects(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &WorkflowRuntimeDependencies,
         worktree_path: &str,
         outcome: NodeOutcome,
     ) -> Result<(), WorkflowRuntimeError> {
@@ -2454,9 +2446,9 @@ impl WorkflowRuntimeHost {
     /// [04] spec『event 列と domain state の整合』Rule: 同一 command 受理サイクル内で
     /// 複数 required event を発行する場合は本 helper を使う。永続形は純粋事実の
     /// 行 append であり、導出表 mutation は存在しない。
-    fn write_log_required_batch<R: tauri::Runtime>(
+    fn write_log_required_batch(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &WorkflowRuntimeDependencies,
         events: &[WorkflowEvent],
     ) -> Result<(), String> {
         workflow_event_log_writer::append_required_events_for_app(app, events)
@@ -2474,7 +2466,7 @@ mod workflow_host_tests {
     use crate::adaptor::gateway::local_event_store::node_events::NewNodeEventRow;
     use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
     use crate::adaptor::gateway::workflow::node_session_boundary::NodeSessionInfo;
-    use crate::adaptor::gateway::workflow::TauriWorkflowRuntimeCommandGateway;
+    use crate::adaptor::gateway::workflow::WorkflowRuntimeCommandGateway;
     use crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository;
     use crate::adaptor::protocol::workflow::NodeExecutionStatusView;
     use crate::domain::agent_session::aggregates::{AgentSession, AgentSessionTreeLocation};
@@ -2567,14 +2559,7 @@ mod workflow_host_tests {
                     directory.path().to_path_buf(),
                 ))
                 .unwrap();
-                let app = tauri::test::mock_builder()
-                    .manage(Arc::new(crate::infrastructure::push::PushSink::new()))
-                    .build(tauri::test::mock_context(tauri::test::noop_assets()))
-                    .unwrap();
-                app.manage(store.clone());
-                app.manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
-                    directory.path().to_path_buf(),
-                ));
+                let app = test_helpers::dependencies(Some(store.clone()));
                 let host = Arc::new(WorkflowRuntimeHost::with_execution_store(
                     Arc::new(UnusedWorkflowResolver),
                     Arc::new(AcceptingWorktreeResolver),
@@ -2622,8 +2607,7 @@ mod workflow_host_tests {
                     timestamp: now,
                 }];
                 start_events.extend(applied.events);
-                host.write_log_required_batch(app.handle(), &start_events)
-                    .unwrap();
+                host.write_log_required_batch(&app, &start_events).unwrap();
                 let node = started
                     .node_executions
                     .iter()
@@ -2643,11 +2627,11 @@ mod workflow_host_tests {
                     schemas: Default::default(),
                     session_id: None,
                 };
-                let mut broadcasts = record_workflow_execution_broadcasts(app.handle());
+                let mut broadcasts = record_workflow_execution_broadcasts(&app);
 
                 // When
                 host.commit_command_output(
-                    app.handle(),
+                    &app,
                     input,
                     CommandRunOutput {
                         exit_code: 0,
@@ -2698,8 +2682,8 @@ mod workflow_host_tests {
                         NodeExecutionStatus::WaitingApproval
                     );
                     assert_ne!(snapshot.state, RuntimeExecutionState::Completed);
-                    let gateway = Arc::new(TauriWorkflowRuntimeCommandGateway::new_with_driver(
-                        app.handle().clone(),
+                    let gateway = Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(
+                        app.clone(),
                         host.clone(),
                         store.clone(),
                         store.installation_id().to_string(),
@@ -2741,14 +2725,7 @@ mod workflow_host_tests {
             directory.path().to_path_buf(),
         ))
         .unwrap();
-        let app = tauri::test::mock_builder()
-            .manage(Arc::new(crate::infrastructure::push::PushSink::new()))
-            .build(tauri::test::mock_context(tauri::test::noop_assets()))
-            .unwrap();
-        app.manage(store.clone());
-        app.manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
-            directory.path().to_path_buf(),
-        ));
+        let app = test_helpers::dependencies(Some(store.clone()));
         let host = WorkflowRuntimeHost::with_execution_store(
             Arc::new(UnusedWorkflowResolver),
             Arc::new(AcceptingWorktreeResolver),
@@ -2772,7 +2749,7 @@ nodes:
 
         let execution_id = host
             .start_resolved_workflow(
-                app.handle(),
+                &app,
                 workflow,
                 directory.path().to_string_lossy().into_owned(),
                 None,
@@ -2816,14 +2793,7 @@ nodes:
             directory.path().to_path_buf(),
         ))
         .unwrap();
-        let app = tauri::test::mock_builder()
-            .manage(Arc::new(crate::infrastructure::push::PushSink::new()))
-            .build(tauri::test::mock_context(tauri::test::noop_assets()))
-            .unwrap();
-        app.manage(store.clone());
-        app.manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
-            directory.path().to_path_buf(),
-        ));
+        let app = test_helpers::dependencies(Some(store.clone()));
         let host = WorkflowRuntimeHost::with_execution_store(
             Arc::new(UnusedWorkflowResolver),
             Arc::new(AcceptingWorktreeResolver),
@@ -2853,7 +2823,7 @@ nodes:
 
         let execution_id = host
             .start_resolved_workflow(
-                app.handle(),
+                &app,
                 workflow,
                 directory.path().to_string_lossy().into_owned(),
                 Some("before\0after".to_string()),
@@ -3939,7 +3909,7 @@ nodes:
         }
 
         struct RuntimeEffectFixture {
-            app: tauri::App<tauri::test::MockRuntime>,
+            app: WorkflowRuntimeDependencies,
             store: Arc<LocalEventStore>,
             fault: Arc<FaultInjector>,
             host: Arc<WorkflowRuntimeHost>,
@@ -3951,7 +3921,7 @@ nodes:
         }
 
         struct SequentialRuntimeEffectFixture {
-            _app: tauri::App<tauri::test::MockRuntime>,
+            _app: WorkflowRuntimeDependencies,
             host: Arc<WorkflowRuntimeHost>,
             control_plane: WorkflowControlPlaneUsecase,
             calls: Arc<std::sync::Mutex<Vec<RuntimeEffectCall>>>,
@@ -3962,7 +3932,7 @@ nodes:
         }
 
         struct MultiResumeFixture {
-            app: tauri::App<tauri::test::MockRuntime>,
+            app: WorkflowRuntimeDependencies,
             store: Arc<LocalEventStore>,
             host: Arc<WorkflowRuntimeHost>,
             execution_id: String,
@@ -3999,14 +3969,7 @@ nodes:
             let mut config = LocalEventStoreConfig::production(directory.path().to_path_buf());
             config.fault = fault.clone();
             let store = LocalEventStore::open(config).unwrap();
-            let app = tauri::test::mock_builder()
-                .manage(Arc::new(crate::infrastructure::push::PushSink::new()))
-                .build(tauri::test::mock_context(tauri::test::noop_assets()))
-                .unwrap();
-            app.manage(store.clone());
-            app.manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
-                directory.path().to_path_buf(),
-            ));
+            let app = test_helpers::dependencies(Some(store.clone()));
             let host = Arc::new(WorkflowRuntimeHost::with_execution_store(
                 Arc::new(UnusedWorkflowResolver),
                 Arc::new(AcceptingWorktreeResolver),
@@ -4041,7 +4004,7 @@ nodes:
             };
             let execution_id = host
                 .start_resolved_workflow(
-                    app.handle(),
+                    &app,
                     workflow,
                     EFFECT_WORKTREE_PATH.to_string(),
                     None,
@@ -4070,8 +4033,8 @@ nodes:
             );
             assert_eq!(node.session_id.as_deref(), Some(EFFECT_AGENT_SESSION_ID));
             let repository: Arc<dyn LocalEventTransactionRepository> = store.clone();
-            let gateway = Arc::new(TauriWorkflowRuntimeCommandGateway::new_with_driver(
-                app.handle().clone(),
+            let gateway = Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(
+                app.clone(),
                 host.clone(),
                 repository,
                 store.installation_id().to_string(),
@@ -4098,14 +4061,7 @@ nodes:
                 directory.path().to_path_buf(),
             ))
             .unwrap();
-            let app = tauri::test::mock_builder()
-                .manage(Arc::new(crate::infrastructure::push::PushSink::new()))
-                .build(tauri::test::mock_context(tauri::test::noop_assets()))
-                .unwrap();
-            app.manage(store.clone());
-            app.manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
-                directory.path().to_path_buf(),
-            ));
+            let app = test_helpers::dependencies(Some(store.clone()));
             let host = Arc::new(WorkflowRuntimeHost::with_execution_store(
                 Arc::new(UnusedWorkflowResolver),
                 Arc::new(AcceptingWorktreeResolver),
@@ -4158,7 +4114,7 @@ nodes:
             };
             let execution_id = host
                 .start_resolved_workflow(
-                    app.handle(),
+                    &app,
                     workflow,
                     EFFECT_WORKTREE_PATH.to_string(),
                     None,
@@ -4194,14 +4150,7 @@ nodes:
                 directory.path().to_path_buf(),
             ))
             .unwrap();
-            let app = tauri::test::mock_builder()
-                .manage(Arc::new(crate::infrastructure::push::PushSink::new()))
-                .build(tauri::test::mock_context(tauri::test::noop_assets()))
-                .unwrap();
-            app.manage(store.clone());
-            app.manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
-                directory.path().to_path_buf(),
-            ));
+            let app = test_helpers::dependencies(Some(store.clone()));
             let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
             let host = Arc::new(WorkflowRuntimeHost::with_execution_store(
                 Arc::new(UnusedWorkflowResolver),
@@ -4255,7 +4204,7 @@ nodes:
             };
             let execution_id = host
                 .start_resolved_workflow(
-                    app.handle(),
+                    &app,
                     workflow,
                     EFFECT_WORKTREE_PATH.to_string(),
                     None,
@@ -4273,8 +4222,8 @@ nodes:
             let first_node_execution_id = first.id.clone();
             let first_agent_session_id = first.session_id.clone().unwrap();
             let repository: Arc<dyn LocalEventTransactionRepository> = store.clone();
-            let gateway = Arc::new(TauriWorkflowRuntimeCommandGateway::new_with_driver(
-                app.handle().clone(),
+            let gateway = Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(
+                app.clone(),
                 host.clone(),
                 repository,
                 store.installation_id().to_string(),
@@ -4370,8 +4319,8 @@ nodes:
             .unwrap();
         }
 
-        async fn stop_with_resume_paused_siblings<R: tauri::Runtime + 'static>(
-            app: &tauri::AppHandle<R>,
+        async fn stop_with_resume_paused_siblings(
+            app: &WorkflowRuntimeDependencies,
             store: &Arc<LocalEventStore>,
             host: &Arc<WorkflowRuntimeHost>,
             execution_id: &str,
@@ -4419,7 +4368,7 @@ nodes:
                 .await
                 .insert(execution_id.to_string(), durable);
 
-            host.stop_workflow_execution(app, execution_id)
+            host.stop_workflow_execution(&app, execution_id)
                 .await
                 .unwrap();
             let snapshot = host.get_state_by_execution_id(execution_id).await.unwrap();
@@ -4528,14 +4477,11 @@ nodes:
         #[tokio::test]
         async fn test_started実行木登録_store未管理ならsession_storeを返す() {
             let fixture = runtime_effect_fixture(NodeCompletion::default(), false).await;
-            let unmanaged_app = tauri::test::mock_builder()
-                .manage(Arc::new(crate::infrastructure::push::PushSink::new()))
-                .build(tauri::test::mock_context(tauri::test::noop_assets()))
-                .unwrap();
+            let unmanaged_app = test_helpers::dependencies(None);
 
             let error = fixture
                 .host
-                .register_started_execution_tree(unmanaged_app.handle(), "unmanaged-tree")
+                .register_started_execution_tree(&unmanaged_app, "unmanaged-tree")
                 .await
                 .unwrap_err();
 
@@ -4549,7 +4495,7 @@ nodes:
 
             let error = fixture
                 .host
-                .register_started_execution_tree(fixture.app.handle(), missing_tree_id)
+                .register_started_execution_tree(&fixture.app, missing_tree_id)
                 .await
                 .unwrap_err();
 
@@ -4589,7 +4535,7 @@ nodes:
 
             let error = fixture
                 .host
-                .register_started_execution_tree(fixture.app.handle(), session_id)
+                .register_started_execution_tree(&fixture.app, session_id)
                 .await
                 .unwrap_err();
 
@@ -4620,11 +4566,7 @@ nodes:
                 .await
                 .unwrap();
 
-            fixture
-                .host
-                .reconcile_startup(fixture.app.handle())
-                .await
-                .unwrap();
+            fixture.host.reconcile_startup(&fixture.app).await.unwrap();
 
             let records = workflow_fact_log::read_tree_records(&fixture.store, session_id).unwrap();
             assert!(!records
@@ -4632,7 +4574,7 @@ nodes:
                 .any(|record| matches!(record.fact, NodeFact::ProcessExited(_))));
             fixture
                 .host
-                .register_started_execution_tree(fixture.app.handle(), session_id)
+                .register_started_execution_tree(&fixture.app, session_id)
                 .await
                 .unwrap();
             fixture
@@ -4696,10 +4638,7 @@ nodes:
                 Arc::new(FailingWorkflowAgentSessions),
                 Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
             );
-            restarted
-                .reconcile_startup(fixture.app.handle())
-                .await
-                .unwrap();
+            restarted.reconcile_startup(&fixture.app).await.unwrap();
 
             let restarted_fold = workflow_fact_log::fold_tree_from(&backend, session_id)
                 .unwrap()
@@ -4753,13 +4692,10 @@ nodes:
                 )
                 .await
                 .unwrap();
-            let unmanaged_app = tauri::test::mock_builder()
-                .manage(Arc::new(crate::infrastructure::push::PushSink::new()))
-                .build(tauri::test::mock_context(tauri::test::noop_assets()))
-                .unwrap();
+            let unmanaged_app = test_helpers::dependencies(None);
             assert!(fixture
                 .host
-                .register_started_execution_tree(unmanaged_app.handle(), session_id)
+                .register_started_execution_tree(&unmanaged_app, session_id)
                 .await
                 .is_err());
 
@@ -4768,11 +4704,7 @@ nodes:
                 .release_started_execution_tree_reservation(session_id)
                 .await
                 .unwrap();
-            fixture
-                .host
-                .reconcile_startup(fixture.app.handle())
-                .await
-                .unwrap();
+            fixture.host.reconcile_startup(&fixture.app).await.unwrap();
 
             let records = workflow_fact_log::read_tree_records(&fixture.store, session_id).unwrap();
             assert!(records
@@ -4788,14 +4720,7 @@ nodes:
                 directory.path().to_path_buf(),
             ))
             .unwrap();
-            let app = tauri::test::mock_builder()
-                .manage(Arc::new(crate::infrastructure::push::PushSink::new()))
-                .build(tauri::test::mock_context(tauri::test::noop_assets()))
-                .unwrap();
-            app.manage(store.clone());
-            app.manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
-                directory.path().to_path_buf(),
-            ));
+            let app = test_helpers::dependencies(Some(store.clone()));
             let sessions = Arc::new(StopDuringActivationWorkflowAgentSessions {
                 control_plane: tokio::sync::Mutex::new(None),
                 execution_id: std::sync::Mutex::new(None),
@@ -4810,8 +4735,8 @@ nodes:
                 Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
             ));
             let repository: Arc<dyn LocalEventTransactionRepository> = store.clone();
-            let gateway = Arc::new(TauriWorkflowRuntimeCommandGateway::new_with_driver(
-                app.handle().clone(),
+            let gateway = Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(
+                app.clone(),
                 host.clone(),
                 repository,
                 store.installation_id().to_string(),
@@ -4845,7 +4770,7 @@ nodes:
             // When
             let execution_id = host
                 .start_resolved_workflow(
-                    app.handle(),
+                    &app,
                     workflow,
                     EFFECT_WORKTREE_PATH.to_string(),
                     None,
@@ -4919,7 +4844,7 @@ nodes:
                 .unwrap();
             fixture
                 .host
-                .register_started_execution_tree(fixture.app.handle(), standalone_id)
+                .register_started_execution_tree(&fixture.app, standalone_id)
                 .await
                 .unwrap();
 
@@ -4975,14 +4900,7 @@ nodes:
                 directory.path().to_path_buf(),
             ))
             .unwrap();
-            let app = tauri::test::mock_builder()
-                .manage(Arc::new(crate::infrastructure::push::PushSink::new()))
-                .build(tauri::test::mock_context(tauri::test::noop_assets()))
-                .unwrap();
-            app.manage(store.clone());
-            app.manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
-                directory.path().to_path_buf(),
-            ));
+            let app = test_helpers::dependencies(Some(store.clone()));
             let session_id = "agent-session-workflow-coexistence";
             LocalAgentSessionRepository::new(store.clone())
                 .create(
@@ -5012,7 +4930,7 @@ nodes:
                 }),
                 Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
             ));
-            host.register_started_execution_tree(app.handle(), session_id)
+            host.register_started_execution_tree(&app, session_id)
                 .await
                 .unwrap();
             let workflow = WorkflowDefinition {
@@ -5042,7 +4960,7 @@ nodes:
             // When: workflow の実行として同じ worktree に木を起こす
             let workflow_id = host
                 .start_resolved_workflow(
-                    app.handle(),
+                    &app,
                     workflow.clone(),
                     EFFECT_WORKTREE_PATH.to_string(),
                     None,
@@ -5057,7 +4975,7 @@ nodes:
             assert_eq!(host.execution_store.list_active().await.unwrap().len(), 1);
             let second = host
                 .start_resolved_workflow(
-                    app.handle(),
+                    &app,
                     workflow,
                     EFFECT_WORKTREE_PATH.to_string(),
                     None,
@@ -5371,7 +5289,7 @@ nodes:
             let result = fixture
                 .host
                 .settle_runtime_failure_for_node(
-                    fixture.app.handle(),
+                    &fixture.app,
                     &fixture.execution_id,
                     &fixture.node_execution_id,
                     &runtime_error,
@@ -5407,7 +5325,7 @@ nodes:
             fixture
                 .host
                 .settle_runtime_failure_for_node(
-                    fixture.app.handle(),
+                    &fixture.app,
                     &fixture.execution_id,
                     &fixture.node_execution_id,
                     &runtime_error,
@@ -5418,7 +5336,7 @@ nodes:
 
             fixture
                 .host
-                .resume_workflow_execution(fixture.app.handle(), &fixture.execution_id)
+                .resume_workflow_execution(&fixture.app, &fixture.execution_id)
                 .await
                 .unwrap();
 
@@ -5472,7 +5390,7 @@ nodes:
 
                 fixture
                     .host
-                    .resume_workflow_execution(fixture.app.handle(), &fixture.execution_id)
+                    .resume_workflow_execution(&fixture.app, &fixture.execution_id)
                     .await
                     .unwrap();
 
@@ -5520,7 +5438,7 @@ nodes:
 
             let error = fixture
                 .host
-                .resume_workflow_execution(fixture.app.handle(), &fixture.execution_id)
+                .resume_workflow_execution(&fixture.app, &fixture.execution_id)
                 .await
                 .unwrap_err();
 
@@ -5576,7 +5494,7 @@ nodes:
 
             let error = fixture
                 .host
-                .resume_workflow_execution(fixture.app.handle(), &fixture.execution_id)
+                .resume_workflow_execution(&fixture.app, &fixture.execution_id)
                 .await
                 .unwrap_err();
 
@@ -5613,7 +5531,7 @@ nodes:
             sessions.allow_recovery();
             fixture
                 .host
-                .resume_workflow_execution(fixture.app.handle(), &fixture.execution_id)
+                .resume_workflow_execution(&fixture.app, &fixture.execution_id)
                 .await
                 .unwrap();
 
@@ -5658,7 +5576,7 @@ nodes:
                 fixture._directory.path().join("local-event-store.sqlite3"),
             );
             let paused_sibling_ids = stop_with_resume_paused_siblings(
-                fixture.app.handle(),
+                &fixture.app,
                 &fixture.store,
                 &fixture.host,
                 &fixture.execution_id,
@@ -5680,11 +5598,11 @@ nodes:
             );
             sessions.close_all();
             sessions.fail_on(&second_node_execution_id);
-            let mut broadcasts = record_workflow_execution_broadcasts(fixture.app.handle());
+            let mut broadcasts = record_workflow_execution_broadcasts(&fixture.app);
 
             let error = fixture
                 .host
-                .resume_workflow_execution(fixture.app.handle(), &fixture.execution_id)
+                .resume_workflow_execution(&fixture.app, &fixture.execution_id)
                 .await
                 .unwrap_err();
 
@@ -5713,18 +5631,18 @@ nodes:
             .await;
             sessions.bind(&fixture);
             let paused_sibling_ids = stop_with_resume_paused_siblings(
-                fixture.app.handle(),
+                &fixture.app,
                 &fixture.store,
                 &fixture.host,
                 &fixture.execution_id,
             )
             .await;
             append_process_exit(&fixture, Some(7));
-            let mut broadcasts = record_workflow_execution_broadcasts(fixture.app.handle());
+            let mut broadcasts = record_workflow_execution_broadcasts(&fixture.app);
 
             let error = fixture
                 .host
-                .resume_workflow_execution(fixture.app.handle(), &fixture.execution_id)
+                .resume_workflow_execution(&fixture.app, &fixture.execution_id)
                 .await
                 .unwrap_err();
 
@@ -5755,7 +5673,7 @@ nodes:
             )
             .await;
             let paused_sibling_ids = stop_with_resume_paused_siblings(
-                fixture.app.handle(),
+                &fixture.app,
                 &fixture.store,
                 &fixture.host,
                 &fixture.execution_id,
@@ -5763,11 +5681,11 @@ nodes:
             .await;
             append_process_exit(&fixture, Some(7));
             dispatch_fails.store(true, std::sync::atomic::Ordering::SeqCst);
-            let mut broadcasts = record_workflow_execution_broadcasts(fixture.app.handle());
+            let mut broadcasts = record_workflow_execution_broadcasts(&fixture.app);
 
             let error = fixture
                 .host
-                .resume_workflow_execution(fixture.app.handle(), &fixture.execution_id)
+                .resume_workflow_execution(&fixture.app, &fixture.execution_id)
                 .await
                 .unwrap_err();
 
@@ -5791,7 +5709,7 @@ nodes:
                 fixture._directory.path().join("local-event-store.sqlite3"),
             );
             let paused_sibling_ids = stop_with_resume_paused_siblings(
-                fixture.app.handle(),
+                &fixture.app,
                 &fixture.store,
                 &fixture.host,
                 &fixture.execution_id,
@@ -5814,11 +5732,11 @@ nodes:
             sessions.close_all();
             sessions.skip_persisted_resume();
             sessions.fail_on(&second_node_execution_id);
-            let mut broadcasts = record_workflow_execution_broadcasts(fixture.app.handle());
+            let mut broadcasts = record_workflow_execution_broadcasts(&fixture.app);
 
             let error = fixture
                 .host
-                .resume_workflow_execution(fixture.app.handle(), &fixture.execution_id)
+                .resume_workflow_execution(&fixture.app, &fixture.execution_id)
                 .await
                 .unwrap_err();
 
@@ -5863,7 +5781,7 @@ nodes:
 
             let error = fixture
                 .host
-                .resume_workflow_execution(fixture.app.handle(), &fixture.execution_id)
+                .resume_workflow_execution(&fixture.app, &fixture.execution_id)
                 .await
                 .unwrap_err();
 
@@ -5897,7 +5815,7 @@ nodes:
 
                     let result = fixture
                         .host
-                        .resume_workflow_execution(fixture.app.handle(), &fixture.execution_id)
+                        .resume_workflow_execution(&fixture.app, &fixture.execution_id)
                         .await;
                     assert!(
                         result.is_err(),
@@ -5943,7 +5861,7 @@ nodes:
 
                     fixture
                         .host
-                        .resume_workflow_execution(fixture.app.handle(), &fixture.execution_id)
+                        .resume_workflow_execution(&fixture.app, &fixture.execution_id)
                         .await
                         .unwrap();
 
@@ -5983,7 +5901,7 @@ nodes:
 
             let error = fixture
                 .host
-                .resume_workflow_execution(fixture.app.handle(), &fixture.execution_id)
+                .resume_workflow_execution(&fixture.app, &fixture.execution_id)
                 .await
                 .unwrap_err();
 
@@ -6020,7 +5938,7 @@ nodes:
             .await;
             fixture
                 .host
-                .stop_workflow_execution(fixture.app.handle(), &fixture.execution_id)
+                .stop_workflow_execution(&fixture.app, &fixture.execution_id)
                 .await
                 .unwrap();
             assert_eq!(
@@ -6039,7 +5957,7 @@ nodes:
 
             fixture
                 .host
-                .resume_workflow_execution(fixture.app.handle(), &fixture.execution_id)
+                .resume_workflow_execution(&fixture.app, &fixture.execution_id)
                 .await
                 .unwrap();
 
@@ -6098,7 +6016,7 @@ nodes:
 
                 let error = fixture
                     .host
-                    .resume_workflow_execution(fixture.app.handle(), &fixture.execution_id)
+                    .resume_workflow_execution(&fixture.app, &fixture.execution_id)
                     .await
                     .unwrap_err();
 
@@ -6154,7 +6072,7 @@ nodes:
 
             let error = fixture
                 .host
-                .resume_workflow_execution(fixture.app.handle(), &fixture.execution_id)
+                .resume_workflow_execution(&fixture.app, &fixture.execution_id)
                 .await
                 .unwrap_err();
 
@@ -6175,14 +6093,7 @@ nodes:
                 directory.path().to_path_buf(),
             ))
             .unwrap();
-            let app = tauri::test::mock_builder()
-                .manage(Arc::new(crate::infrastructure::push::PushSink::new()))
-                .build(tauri::test::mock_context(tauri::test::noop_assets()))
-                .unwrap();
-            app.manage(store.clone());
-            app.manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
-                directory.path().to_path_buf(),
-            ));
+            let app = test_helpers::dependencies(Some(store.clone()));
             let stop_calls = Arc::new(std::sync::Mutex::new(Vec::new()));
             let dispatch_fails = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let sessions = recording_agent_sessions(
@@ -6216,7 +6127,7 @@ nodes:
                 )
                 .await
                 .unwrap();
-            host.register_started_execution_tree(app.handle(), SESSION_ID)
+            host.register_started_execution_tree(&app, SESSION_ID)
                 .await
                 .unwrap();
             let backend = workflow_fact_log::FactLogReadBackend::Live(store.clone());
@@ -6243,8 +6154,8 @@ nodes:
                 .await
                 .unwrap();
             let repository: Arc<dyn LocalEventTransactionRepository> = store.clone();
-            let gateway = Arc::new(TauriWorkflowRuntimeCommandGateway::new_with_driver(
-                app.handle().clone(),
+            let gateway = Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(
+                app.clone(),
                 host.clone(),
                 repository,
                 store.installation_id().to_string(),
@@ -6276,7 +6187,7 @@ nodes:
 
             // When: provider 復旧後の initial instruction 配送が失敗する
             let error = host
-                .resume_workflow_execution(app.handle(), SESSION_ID)
+                .resume_workflow_execution(&app, SESSION_ID)
                 .await
                 .unwrap_err();
 
@@ -6305,7 +6216,7 @@ nodes:
                 .any(|record| matches!(record.fact, NodeFact::SessionAttached(_))));
 
             dispatch_fails.store(false, std::sync::atomic::Ordering::SeqCst);
-            host.resume_workflow_execution(app.handle(), SESSION_ID)
+            host.resume_workflow_execution(&app, SESSION_ID)
                 .await
                 .unwrap();
             assert_eq!(
@@ -6322,7 +6233,7 @@ nodes:
             // When
             let result = fixture
                 .host
-                .abort_workflow_execution(fixture.app.handle(), &fixture.execution_id, None)
+                .abort_workflow_execution(&fixture.app, &fixture.execution_id, None)
                 .await;
 
             // Then
@@ -6411,11 +6322,7 @@ nodes:
             let before = workflow_fact_log::read_tree_records(&store, session_id)
                 .unwrap()
                 .len();
-            let app = tauri::test::mock_builder()
-                .manage(Arc::new(crate::infrastructure::push::PushSink::new()))
-                .build(tauri::test::mock_context(tauri::test::noop_assets()))
-                .unwrap();
-            app.manage(store.clone());
+            let app = test_helpers::dependencies(Some(store.clone()));
             let host = WorkflowRuntimeHost::with_execution_store(
                 Arc::new(UnusedWorkflowResolver),
                 Arc::new(UnusedWorktreeResolver),
@@ -6424,7 +6331,7 @@ nodes:
                 Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
             );
 
-            host.reconcile_startup(app.handle()).await.unwrap();
+            host.reconcile_startup(&app).await.unwrap();
 
             let snapshot = host.get_state_by_execution_id(session_id).await.unwrap();
             let node = snapshot
@@ -6566,11 +6473,7 @@ nodes:
                 .unwrap()
                 .len();
 
-            let app = tauri::test::mock_builder()
-                .manage(Arc::new(crate::infrastructure::push::PushSink::new()))
-                .build(tauri::test::mock_context(tauri::test::noop_assets()))
-                .unwrap();
-            app.manage(store.clone());
+            let app = test_helpers::dependencies(Some(store.clone()));
             let host = WorkflowRuntimeHost::with_execution_store(
                 Arc::new(UnusedWorkflowResolver),
                 Arc::new(UnusedWorktreeResolver),
@@ -6579,7 +6482,7 @@ nodes:
                 Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
             );
 
-            let error = host.reconcile_startup(app.handle()).await.unwrap_err();
+            let error = host.reconcile_startup(&app).await.unwrap_err();
 
             assert!(matches!(error, WorkflowRuntimeError::SessionStore(_)));
             assert!(host
@@ -6656,11 +6559,7 @@ nodes:
                 .contains("bypassPermissions"));
             assert!(!node.can_retry());
 
-            let app = tauri::test::mock_builder()
-                .manage(Arc::new(crate::infrastructure::push::PushSink::new()))
-                .build(tauri::test::mock_context(tauri::test::noop_assets()))
-                .unwrap();
-            app.manage(store);
+            let app = test_helpers::dependencies(Some(store));
             let host = WorkflowRuntimeHost::with_execution_store(
                 Arc::new(UnusedWorkflowResolver),
                 Arc::new(UnusedWorktreeResolver),
@@ -6669,7 +6568,7 @@ nodes:
                 Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
             );
 
-            host.reconcile_startup(app.handle()).await.unwrap();
+            host.reconcile_startup(&app).await.unwrap();
         }
     }
 }

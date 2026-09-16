@@ -14,14 +14,18 @@ const QUEUE_CAPACITY: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LocalLogProcess {
+    #[cfg(any(test, feature = "desktop"))]
     Gui,
+    Daemon,
     Cli,
 }
 
 impl LocalLogProcess {
     fn as_str(self) -> &'static str {
         match self {
+            #[cfg(any(test, feature = "desktop"))]
             Self::Gui => "gui",
+            Self::Daemon => "daemon",
             Self::Cli => "cli",
         }
     }

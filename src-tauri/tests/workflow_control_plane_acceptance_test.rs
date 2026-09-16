@@ -36,7 +36,7 @@ fn install_fixture_executable(
         alternate_screen: true,
         emit_input_completion_marker: true,
         lifecycle_command: Some(FixtureLifecycleCommand {
-            executable: env!("CARGO_BIN_EXE_releash").to_string(),
+            executable: env!("CARGO_BIN_EXE_releash-backend").to_string(),
             arguments: vec![
                 "hook".to_string(),
                 "receive".to_string(),

@@ -49,3 +49,33 @@ fn test_通常終了_terminal_surface実行環境停止後にlocal_apiを停止�
         ]
     );
 }
+
+#[test]
+fn test_daemon終了_一度だけ終了コードをrun_loopへ渡す() {
+    use super::{ApplicationProcessActionDispatcher, DaemonProcessActionPort};
+    // Given
+    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+    let port = DaemonProcessActionPort(sender);
+    let dispatcher = ApplicationProcessActionDispatcher::default();
+    let action = crate::usecase::shutdown_coordinator::ApplicationProcessAction::Exit { code: 7 };
+    // When / Then
+    assert!(dispatcher.dispatch(&port, action));
+    assert!(!dispatcher.dispatch(&port, action));
+    assert_eq!(receiver.try_recv().unwrap(), 7);
+    assert!(receiver.try_recv().is_err());
+}
+
+#[test]
+fn test_daemon再起動意図_senderと接続が残っていても終了通知を送る() {
+    use super::ApplicationProcessActionPort;
+    use crate::usecase::shutdown_coordinator::ApplicationProcessAction;
+    // Given
+    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+    let retained_sender = sender.clone();
+    let port = super::DaemonProcessActionPort(sender);
+    // When
+    port.execute(ApplicationProcessAction::Restart { code: 23 });
+    // Then
+    assert_eq!(receiver.try_recv().unwrap(), 23);
+    assert!(!retained_sender.is_closed());
+}

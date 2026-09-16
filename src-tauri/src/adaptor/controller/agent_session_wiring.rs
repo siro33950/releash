@@ -41,12 +41,13 @@ pub(crate) struct AgentSessionCompositionInput {
 }
 
 pub(crate) struct AgentSessionComposition {
+    #[cfg(all(debug_assertions, feature = "desktop"))]
     pub(crate) provider_lifecycle: Arc<ProviderLifecycleUsecase>,
+    #[cfg(all(debug_assertions, feature = "desktop"))]
     pub(crate) sessions: Arc<AgentSessionUsecase>,
     pub(crate) history_read: Arc<AgentSessionHistoryReadUsecase>,
     pub(crate) provider_session_title_ingestion: Arc<ProviderSessionTitleIngestionUsecase>,
     pub(crate) rename: Arc<AgentSessionRenameUsecase>,
-    pub(crate) hook_health: Arc<ProviderHookHealthUsecase>,
     pub(crate) hook_health_read: Arc<ProviderHookHealthReadUsecase>,
     pub(crate) lifecycle_ingress: Arc<ProviderLifecycleIngressUsecase>,
     pub(crate) launch: Arc<AgentSessionLaunchUsecase>,
@@ -277,12 +278,13 @@ pub(crate) fn compose_agent_sessions(
     ));
 
     Ok(AgentSessionComposition {
+        #[cfg(all(debug_assertions, feature = "desktop"))]
         provider_lifecycle,
+        #[cfg(all(debug_assertions, feature = "desktop"))]
         sessions,
         history_read,
         provider_session_title_ingestion,
         rename,
-        hook_health,
         hook_health_read,
         lifecycle_ingress,
         launch,

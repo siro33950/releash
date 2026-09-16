@@ -5,7 +5,6 @@ use std::time::Duration;
 use crate::adaptor::gateway::push::BackendPush;
 use notify_debouncer_mini::notify::RecursiveMode;
 use notify_debouncer_mini::{new_debouncer, DebouncedEvent};
-use tauri::Runtime;
 
 use crate::usecase::repository_state::runtime::{
     RepositoryStateInvalidationReceiver, RepositoryStateInvalidationSender,
@@ -277,24 +276,24 @@ impl WorktreePathNormalizer for FsWorktreePathNormalizer {
     }
 }
 
-pub struct TauriRepositoryStateNotifier<R: Runtime> {
-    app: tauri::AppHandle<R>,
+pub struct ClientRepositoryStateNotifier {
+    sink: std::sync::Arc<crate::infrastructure::push::PushSink>,
 }
 
-impl<R: Runtime> TauriRepositoryStateNotifier<R> {
-    pub fn new(app: tauri::AppHandle<R>) -> Self {
-        Self { app }
+impl ClientRepositoryStateNotifier {
+    pub fn new(sink: std::sync::Arc<crate::infrastructure::push::PushSink>) -> Self {
+        Self { sink }
     }
 }
 
-impl<R: Runtime> RepositoryStateNotifier for TauriRepositoryStateNotifier<R> {
+impl RepositoryStateNotifier for ClientRepositoryStateNotifier {
     fn snapshot_changed(&self, notification: SnapshotNotification) {
         for worktree_path in &notification.worktree_paths {
             let event = RepositorySnapshotChangedEvent::from_snapshot(
                 worktree_path.clone(),
                 &notification.snapshot,
             );
-            BackendPush::RepositorySnapshotChanged(event).emit(&self.app);
+            BackendPush::RepositorySnapshotChanged(event).emit(&self.sink);
         }
 
         if notification.phase == SnapshotNotificationPhase::RefreshStarted {
@@ -305,10 +304,10 @@ impl<R: Runtime> RepositoryStateNotifier for TauriRepositoryStateNotifier<R> {
             BackendPush::GitStatusChanged(GitStatusChangedEvent {
                 repo_path: worktree_path.clone(),
             })
-            .emit(&self.app);
+            .emit(&self.sink);
         }
 
-        BackendPush::BranchListSync.emit(&self.app);
+        BackendPush::BranchListSync.emit(&self.sink);
 
         if notification.reason.file_change {
             let path = notification.reason.path.unwrap_or_else(|| {
@@ -324,7 +323,7 @@ impl<R: Runtime> RepositoryStateNotifier for TauriRepositoryStateNotifier<R> {
                     path: path.clone(),
                     kind: "change".to_string(),
                 })
-                .emit(&self.app);
+                .emit(&self.sink);
             }
         }
     }

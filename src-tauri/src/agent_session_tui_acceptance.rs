@@ -15,7 +15,7 @@ use crate::adaptor::gateway::workflow::test_support::{
     seed_workflow_session_facts, WorkflowSessionFactSeed,
 };
 use crate::adaptor::gateway::workflow::workflow_host::WorkflowRuntimeHost;
-use crate::adaptor::gateway::workflow::TauriWorkflowRuntimeCommandGateway;
+use crate::adaptor::gateway::workflow::WorkflowRuntimeCommandGateway;
 use crate::domain::local_event::LocalEventTransactionRepository;
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::workflow::WorkflowDefinition;
@@ -180,10 +180,7 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
         let store =
             LocalEventStore::open(LocalEventStoreConfig::production(config.data_dir.clone()))
                 .map_err(|error| error.to_string())?;
-        let terminal = TerminalSurfaceRuntime::new_with_data_dir(
-            app.handle().clone(),
-            config.data_dir.clone(),
-        );
+        let terminal = TerminalSurfaceRuntime::new(config.data_dir.clone());
         let data_dir = config.data_dir.clone();
         let composition = compose_agent_sessions(AgentSessionCompositionInput {
             store: store.clone(),
@@ -226,8 +223,8 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
             cli_binary: "releash-dev".to_string(),
             terminal: terminal.application(),
             change_notifier: Arc::new(
-                crate::adaptor::presenter::agent_session_changed::TauriAgentSessionChangeNotifier::new(
-                    app.handle().clone(),
+                crate::adaptor::gateway::push::ClientAgentSessionChangeNotifier::new(
+                    crate::desktop_test_support::push_sink(app.handle()),
                 ),
             ),
         })
@@ -280,8 +277,8 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
             composition.availability_reader.clone(),
             Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
         ));
-        let gateway = Arc::new(TauriWorkflowRuntimeCommandGateway::new_with_driver(
-            app.handle().clone(),
+        let gateway = Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(
+            crate::desktop_test_support::workflow_dependencies(app.handle()),
             driver,
             repository,
             installation_id,
@@ -316,9 +313,9 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
             Arc::new(crate::adaptor::controller::wiring::build_repository_usecase_with_worktree_terminals(terminal.application())),
             authority,
         );
-        dispatch.register_dependencies(
-            &crate::adaptor::controller::wiring::build_client_dependencies(app.handle()),
-        );
+        dispatch.register_dependencies(&crate::desktop_test_support::build_client_dependencies(
+            app.handle(),
+        ));
         let dispatch = Arc::new(dispatch);
         let client_binding = crate::infrastructure::local_api::LocalApiServerBinding::bind(
             data_dir.join("desktop-client"),

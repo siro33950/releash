@@ -1,5 +1,9 @@
 import type { Options } from "@wdio/types";
-import { resolve } from "node:path";
+import { resolve, join } from "node:path";
+import { homedir } from "node:os";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { startPerformanceDaemon } from "./tests/helpers/performance-daemon.mjs";
 
 export const appBinaryPath = "./src-tauri/target/release/releash";
 const launchProvider = process.env.RELEASH_PERFORMANCE_LAUNCH_PROVIDER;
@@ -17,6 +21,8 @@ const appEnvironment: Record<string, string> = {
 	// echo内容を非決定にするため、harnessのPTYはplain bashに固定する。
 	SHELL: "/bin/bash",
 };
+if (launchProvider)
+	appEnvironment.RELEASH_PERFORMANCE_LAUNCH_PROVIDER = launchProvider;
 if (launchProvider === "fixture") {
 	appEnvironment.RELEASH_PERFORMANCE_PROVIDER_FIXTURE_EXECUTABLE = resolve(
 		"tests/fixtures/terminal-launch-provider-fixture",
@@ -31,7 +37,36 @@ if (realAppMode) {
 	appEnvironment.RELEASH_PERF_REAL_APP = "1";
 }
 
+let stopDaemon: (() => Promise<void>) | undefined;
 export const config: Options.Testrunner = {
+	async onPrepare() {
+		await promisify(execFile)(
+			"cargo",
+			[
+				"build",
+				"--locked",
+				"--release",
+				"--no-default-features",
+				"--features",
+				"performance",
+				"--bin",
+				"releash-backend",
+			],
+			{ cwd: "src-tauri" },
+		);
+		const dataRoot =
+			process.platform === "darwin"
+				? join(homedir(), "Library", "Application Support")
+				: process.env.XDG_DATA_HOME || join(homedir(), ".local", "share");
+		stopDaemon = await startPerformanceDaemon(
+			"src-tauri/target/release/releash-backend",
+			join(dataRoot, "com.releash.app.performance"),
+			appEnvironment,
+		);
+	},
+	async onComplete() {
+		await stopDaemon?.();
+	},
 	runner: "local",
 	specs: realAppMode
 		? ["./tests/tauri-performance/terminal-real-app-load.spec.ts"]

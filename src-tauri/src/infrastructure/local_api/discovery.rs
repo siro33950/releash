@@ -66,12 +66,17 @@ pub(crate) struct LocalApiDiscoveryFile {
 
 impl LocalApiDiscoveryFile {
     pub(crate) fn create(data_dir: &Path, discovery: LocalApiDiscovery) -> io::Result<Self> {
+        Self::create_named(data_dir, LOCAL_API_DISCOVERY_FILE_NAME, discovery)
+    }
+
+    pub(crate) fn create_client(data_dir: &Path, discovery: LocalApiDiscovery) -> io::Result<Self> {
+        Self::create_named(data_dir, "client-api.json", discovery)
+    }
+
+    fn create_named(data_dir: &Path, name: &str, discovery: LocalApiDiscovery) -> io::Result<Self> {
         fs::create_dir_all(data_dir)?;
-        let path = local_api_discovery_path(data_dir);
-        let temporary_path = data_dir.join(format!(
-            ".{LOCAL_API_DISCOVERY_FILE_NAME}.{}.tmp",
-            uuid::Uuid::new_v4()
-        ));
+        let path = data_dir.join(name);
+        let temporary_path = data_dir.join(format!(".{name}.{}.tmp", uuid::Uuid::new_v4()));
         let encoded = serde_json::to_vec(&discovery).map_err(io::Error::other)?;
 
         let result = (|| {

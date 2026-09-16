@@ -27,7 +27,7 @@ pub(crate) fn set_crash_reporting_enabled(enabled: bool) {
 }
 
 #[cfg(test)]
-fn reset_for_tests() {
+pub(crate) fn reset_for_tests() {
     CRASH_REPORTING_ENABLED.store(true, Ordering::Relaxed);
     OTLP_CONFIGURED.store(false, Ordering::Relaxed);
     *LOGGER_PROVIDER.lock().unwrap_or_else(|e| e.into_inner()) = None;
@@ -151,13 +151,13 @@ fn scrub_sensitive(text: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use opentelemetry::logs::AnyValue;
     use opentelemetry::Key;
     use opentelemetry_sdk::logs::{InMemoryLogExporter, SdkLogRecord, SdkLoggerProvider};
 
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
+    pub(crate) static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn any_value_to_string(value: &AnyValue) -> String {
         match value {
@@ -178,7 +178,7 @@ mod tests {
         record.body().map(any_value_to_string)
     }
 
-    fn install_test_exporter(
+    pub(crate) fn install_test_exporter(
         enabled: bool,
         configured: bool,
     ) -> (SdkLoggerProvider, InMemoryLogExporter) {
@@ -188,6 +188,30 @@ mod tests {
             .build();
         init_crash_reporting(Some(provider.clone()), enabled, configured);
         (provider, exporter)
+    }
+
+    #[test]
+    fn test_rust_panic_hook_有効時にpanicをotlp_logへ送る() {
+        // Given
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        let (provider, exporter) = install_test_exporter(true, true);
+        // When
+        assert!(std::panic::catch_unwind(|| panic!("desktop panic test")).is_err());
+        provider.force_flush().unwrap();
+        // Then
+        let logs = exporter.get_emitted_logs().unwrap();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(
+            attr(&logs[0].record, "exception.source").as_deref(),
+            Some("rust")
+        );
+        assert_eq!(
+            attr(&logs[0].record, "exception.type").as_deref(),
+            Some("panic")
+        );
+        assert_eq!(body(&logs[0].record).as_deref(), Some("desktop panic test"));
+        reset_for_tests();
     }
 
     #[test]

@@ -1,5 +1,8 @@
-use super::json::{from_message, to_message};
+use super::json::from_message;
+#[cfg(any(test, all(debug_assertions, feature = "desktop")))]
+use super::json::to_message;
 use prost::Message;
+#[cfg(any(test, all(debug_assertions, feature = "desktop")))]
 use serde_json::Value as Json;
 
 include!(concat!(env!("OUT_DIR"), "/releash.client.v1.rs"));
@@ -7,24 +10,29 @@ include!(concat!(env!("OUT_DIR"), "/client_commands.rs"));
 
 pub const MAX_STREAM_FRAME_BYTES: usize = 64 * 1024;
 
+#[cfg(any(test, all(debug_assertions, feature = "desktop")))]
 pub trait ClientValue {
     fn into_json(self) -> Result<Json, String>;
 }
+#[cfg(any(test, all(debug_assertions, feature = "desktop")))]
 impl<T: ClientValue> ClientValue for Box<T> {
     fn into_json(self) -> Result<Json, String> {
         (*self).into_json()
     }
 }
+#[cfg(any(test, all(debug_assertions, feature = "desktop")))]
 impl ClientValue for CommandResult {
     fn into_json(self) -> Result<Json, String> {
         self.into_value().map(|(_, value)| value)
     }
 }
+#[cfg(any(test, all(debug_assertions, feature = "desktop")))]
 impl ClientValue for CommandError {
     fn into_json(self) -> Result<Json, String> {
         from_message("releash.client.v1.CommandError", &self)
     }
 }
+#[cfg(any(test, all(debug_assertions, feature = "desktop")))]
 pub fn from_value(value: impl ClientValue) -> Result<Json, String> {
     value.into_json()
 }
@@ -43,6 +51,7 @@ pub(crate) fn response(
         body: Some(envelope::Body::Response(CommandResponse {
             request_id,
             outcome: Some(outcome),
+            desktop_settings: None,
         })),
     }
 }
@@ -123,3 +132,26 @@ pub(crate) fn stream_frame(
 #[cfg(test)]
 #[path = "client_test.rs"]
 mod client_tests;
+
+impl From<crate::usecase::app_config::query_service::DesktopSettingsDto> for DesktopSettings {
+    fn from(value: crate::usecase::app_config::query_service::DesktopSettingsDto) -> Self {
+        Self {
+            close_to_tray: value.close_to_tray,
+            start_minimized: value.start_minimized,
+            crash_reporting: value.crash_reporting,
+            performance_telemetry: value.performance_telemetry,
+        }
+    }
+}
+
+#[cfg(feature = "desktop")]
+impl From<DesktopSettings> for crate::usecase::app_config::query_service::DesktopSettingsDto {
+    fn from(value: DesktopSettings) -> Self {
+        Self {
+            close_to_tray: value.close_to_tray,
+            start_minimized: value.start_minimized,
+            crash_reporting: value.crash_reporting,
+            performance_telemetry: value.performance_telemetry,
+        }
+    }
+}

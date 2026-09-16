@@ -2,7 +2,7 @@ import { defineConfig, devices } from "@playwright/test";
 
 export default defineConfig({
 	testDir: "./tests",
-	testIgnore: ["terminal-performance.spec.ts", "tauri-performance/**"],
+	testIgnore: ["terminal-performance.spec.ts", "tauri-performance/**", "helpers/**"],
 	fullyParallel: false,
 	retries: process.env.CI ? 1 : 0,
 	workers: 1,

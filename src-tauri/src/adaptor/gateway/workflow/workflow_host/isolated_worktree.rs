@@ -43,9 +43,9 @@ pub(super) fn partition_actions(
 }
 
 impl WorkflowRuntimeHost {
-    pub(super) async fn prepare_isolated_starts<R: tauri::Runtime + 'static>(
+    pub(super) async fn prepare_isolated_starts(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &WorkflowRuntimeDependencies,
         execution_id: &str,
         worktree_path: &str,
         starts: Vec<NodePreparation>,

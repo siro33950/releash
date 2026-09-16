@@ -1,7 +1,7 @@
 //! AppState（DI 受け皿）。
 //!
 //! repository 責務のユースケース／クエリサービスを `Arc` で保持する。
-//! `lib.rs` の起動時配線で組み立てて `manage` する。
+//! daemon の composition root で組み立てる。
 
 use std::sync::Arc;
 
@@ -14,15 +14,6 @@ use crate::usecase::repository_usecase::RepositoryUsecase;
 use crate::usecase::review_usecase::ReviewUsecase;
 use crate::usecase::terminal_surface::application::TerminalSurfaceApplication;
 use crate::usecase::workflow::WorkflowUsecase;
-
-/// frontendがterminal streamをWebSocketで購読するための接続情報。
-/// local API server起動時にmanageされる（起動失敗時は存在しない）。
-/// tokenはclient / terminal routeを認証するクライアント共通tokenで、
-/// masterのdiscovery tokenはrendererへ渡さない。
-pub struct TerminalStreamEndpoint {
-    pub port: u16,
-    pub token: std::sync::Arc<str>,
-}
 
 #[derive(Clone)]
 pub struct AppState {

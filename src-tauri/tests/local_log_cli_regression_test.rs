@@ -1,6 +1,6 @@
 use std::process::Command;
 
-const RELEASH_CLI_PATH: &str = env!("CARGO_BIN_EXE_releash");
+const RELEASH_CLI_PATH: &str = env!("CARGO_BIN_EXE_releash-backend");
 
 #[test]
 fn test_review_cli_存在しないdata_dirをlogger初期化で作らずnot_foundを返す() {

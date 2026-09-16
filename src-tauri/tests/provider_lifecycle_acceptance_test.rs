@@ -15,7 +15,7 @@ use releash_lib::provider_lifecycle_acceptance::{
     ProviderLifecycleAcceptanceHost,
 };
 
-const CLI_PATH: &str = env!("CARGO_BIN_EXE_releash");
+const CLI_PATH: &str = env!("CARGO_BIN_EXE_releash-backend");
 const TRANSCRIPT_BODY_MARKER: &str = "provider-conversation-body-must-not-be-persisted";
 
 #[test]

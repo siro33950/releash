@@ -1,3 +1,4 @@
+use super::workflow_host::WorkflowRuntimeDependencies;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -23,14 +24,14 @@ use crate::adaptor::gateway::workflow::workflow_host::WorkflowRuntimeHost;
 use crate::usecase::workflow::runtime_error::WorkflowRuntimeError;
 
 #[derive(Clone)]
-pub(crate) struct TauriWorkflowRuntimeCommandGateway<R: tauri::Runtime = tauri::Wry> {
-    app: tauri::AppHandle<R>,
+pub(crate) struct WorkflowRuntimeCommandGateway {
+    app: WorkflowRuntimeDependencies,
     driver: Arc<WorkflowRuntimeHost>,
     local_event_repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository>,
     local_event_installation_id: String,
 }
 
-pub(crate) struct TauriWorkflowRuntimeCommandGatewayDeps {
+pub(crate) struct WorkflowRuntimeCommandGatewayDeps {
     pub(crate) isolated_worktrees: Arc<dyn crate::domain::workflow::IsolatedWorktreeGateway>,
     pub(crate) repository_usecase: Arc<RepositoryUsecase>,
     pub(crate) app_config: Arc<dyn ConfigRepository>,
@@ -60,7 +61,7 @@ struct WorkflowShutdownRecord<'a> {
     revision: crate::domain::local_event::Revision,
 }
 
-impl<R: tauri::Runtime> TauriWorkflowRuntimeCommandGateway<R> {
+impl WorkflowRuntimeCommandGateway {
     fn shutdown_obligation_id(effect_identity: &str) -> String {
         use sha2::Digest;
         let digest = sha2::Sha256::digest(effect_identity.as_bytes());
@@ -161,7 +162,7 @@ impl<R: tauri::Runtime> TauriWorkflowRuntimeCommandGateway<R> {
     }
 
     pub(crate) fn new_with_driver(
-        app: tauri::AppHandle<R>,
+        app: WorkflowRuntimeDependencies,
         driver: Arc<WorkflowRuntimeHost>,
         local_event_repository: Arc<
             dyn crate::domain::local_event::LocalEventTransactionRepository,
@@ -178,7 +179,7 @@ impl<R: tauri::Runtime> TauriWorkflowRuntimeCommandGateway<R> {
 }
 
 #[async_trait::async_trait]
-impl<R: tauri::Runtime> WorkflowStartExecutionGateway for TauriWorkflowRuntimeCommandGateway<R> {
+impl WorkflowStartExecutionGateway for WorkflowRuntimeCommandGateway {
     async fn resolve_start_execution_worktree(
         &self,
         worktree_path: String,
@@ -242,7 +243,7 @@ fn workflow_runtime_error_to_workflow_error(error: WorkflowRuntimeError) -> Work
 }
 
 #[async_trait::async_trait]
-impl<R: tauri::Runtime> WorkflowAbortExecutionGateway for TauriWorkflowRuntimeCommandGateway<R> {
+impl WorkflowAbortExecutionGateway for WorkflowRuntimeCommandGateway {
     async fn abort_execution(&self, command: AbortExecutionCommand) -> Result<(), WorkflowError> {
         self.driver
             .abort_workflow_execution(
@@ -256,7 +257,7 @@ impl<R: tauri::Runtime> WorkflowAbortExecutionGateway for TauriWorkflowRuntimeCo
 }
 
 #[async_trait::async_trait]
-impl<R: tauri::Runtime> WorkflowStopExecutionGateway for TauriWorkflowRuntimeCommandGateway<R> {
+impl WorkflowStopExecutionGateway for WorkflowRuntimeCommandGateway {
     async fn stop_execution(&self, command: StopExecutionCommand) -> Result<(), WorkflowError> {
         self.driver
             .stop_workflow_execution(&self.app, &command.execution_id)
@@ -266,7 +267,7 @@ impl<R: tauri::Runtime> WorkflowStopExecutionGateway for TauriWorkflowRuntimeCom
 }
 
 #[async_trait::async_trait]
-impl<R: tauri::Runtime> WorkflowResumeExecutionGateway for TauriWorkflowRuntimeCommandGateway<R> {
+impl WorkflowResumeExecutionGateway for WorkflowRuntimeCommandGateway {
     async fn resume_execution(&self, command: ResumeExecutionCommand) -> Result<(), WorkflowError> {
         self.driver
             .resume_workflow_execution(&self.app, &command.execution_id)
@@ -276,7 +277,7 @@ impl<R: tauri::Runtime> WorkflowResumeExecutionGateway for TauriWorkflowRuntimeC
 }
 
 #[async_trait::async_trait]
-impl<R: tauri::Runtime> WorkflowControlPlaneGateway for TauriWorkflowRuntimeCommandGateway<R> {
+impl WorkflowControlPlaneGateway for WorkflowRuntimeCommandGateway {
     fn current_timestamp(&self) -> f64 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -291,14 +292,9 @@ impl<R: tauri::Runtime> WorkflowControlPlaneGateway for TauriWorkflowRuntimeComm
         &self,
         node_execution_id: &str,
     ) -> Result<Option<String>, WorkflowError> {
-        use tauri::Manager as _;
-        let store = self
-            .app
-            .try_state::<std::sync::Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>>()
-            .map(|store| store.inner().clone())
-            .ok_or_else(|| {
-                WorkflowError::external("workflow SQLite event authority is not managed")
-            })?;
+        let store = self.app.store.clone().ok_or_else(|| {
+            WorkflowError::external("workflow SQLite event authority is not managed")
+        })?;
         super::fact_log::FactLogReadBackend::Live(store)
             .tree_id_for_node(node_execution_id)
             .map_err(WorkflowError::external)
@@ -358,14 +354,9 @@ impl<R: tauri::Runtime> WorkflowControlPlaneGateway for TauriWorkflowRuntimeComm
         node_name: &str,
         node_execution_id: Option<&str>,
     ) -> Result<bool, WorkflowError> {
-        use tauri::Manager as _;
-        let store = self
-            .app
-            .try_state::<std::sync::Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>>()
-            .map(|store| store.inner().clone())
-            .ok_or_else(|| {
-                WorkflowError::external("workflow SQLite event authority is not managed")
-            })?;
+        let store = self.app.store.clone().ok_or_else(|| {
+            WorkflowError::external("workflow SQLite event authority is not managed")
+        })?;
         let records = super::fact_log::read_tree_records(&store, execution_id)
             .map_err(|error| WorkflowError::external(error.to_string()))?;
         Ok(records.iter().any(|record| {
@@ -411,7 +402,7 @@ impl<R: tauri::Runtime> WorkflowControlPlaneGateway for TauriWorkflowRuntimeComm
 }
 
 #[async_trait::async_trait]
-impl<R: tauri::Runtime> WorkflowRuntimeStateGateway for TauriWorkflowRuntimeCommandGateway<R> {
+impl WorkflowRuntimeStateGateway for WorkflowRuntimeCommandGateway {
     async fn recover_startup(&self) -> Result<(), WorkflowError> {
         self.driver
             .reconcile_startup(&self.app)
@@ -435,7 +426,7 @@ impl<R: tauri::Runtime> WorkflowRuntimeStateGateway for TauriWorkflowRuntimeComm
 }
 
 #[async_trait::async_trait]
-impl<R: tauri::Runtime> WorkflowRuntimeShutdownGateway for TauriWorkflowRuntimeCommandGateway<R> {
+impl WorkflowRuntimeShutdownGateway for WorkflowRuntimeCommandGateway {
     async fn shutdown_active_commands(&self) {
         self.driver.shutdown_all_active_commands().await;
     }

@@ -4,18 +4,10 @@ use std::path::Path;
 #[tokio::test]
 async fn test_変更監視_startの返却idが実際の変更通知へ渡る() {
     use super::*;
-    use tauri::Manager;
     // Given
-    let app = tauri::test::mock_builder()
-        .build(tauri::test::mock_context(tauri::test::noop_assets()))
-        .unwrap();
     let sink = Arc::new(crate::infrastructure::push::PushSink::new());
     let mut receiver = sink.subscribe();
-    app.manage(sink);
-    let gateway = FileWatcherGateway::new(
-        Arc::new(FileWatcherManager::default()),
-        app.handle().clone(),
-    );
+    let gateway = FileWatcherGateway::new(Arc::new(FileWatcherManager::default()), sink);
     let directory = tempfile::tempdir().unwrap();
     // When
     let id = gateway.start(directory.path().to_str().unwrap()).unwrap();

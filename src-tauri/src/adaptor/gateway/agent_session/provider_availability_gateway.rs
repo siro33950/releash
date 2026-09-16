@@ -37,7 +37,7 @@ impl LocalProviderExecutableProbeGateway {
         }
     }
 
-    #[cfg(debug_assertions)]
+    #[cfg(any(test, all(debug_assertions, feature = "desktop")))]
     pub(crate) fn with_search_path(search_path: Option<OsString>) -> Self {
         Self {
             search_path: RwLock::new(SearchPathState {
@@ -66,7 +66,10 @@ impl LocalProviderExecutableProbeGateway {
         }
     }
 
-    #[cfg(all(debug_assertions, any(target_os = "macos", target_os = "linux")))]
+    #[cfg(all(
+        any(test, all(debug_assertions, feature = "desktop")),
+        any(target_os = "macos", target_os = "linux")
+    ))]
     pub(crate) fn with_search_path_source(
         search_path: Option<OsString>,
         search_path_source: Arc<dyn SearchPathSource>,

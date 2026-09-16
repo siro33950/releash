@@ -657,8 +657,7 @@ async fn test_レビュー画像_失効した参照のws応答は元の要求に
     app.manage(Arc::new(
         crate::infrastructure::file_watcher::FileWatcherManager::default(),
     ));
-    let mut dependencies =
-        crate::adaptor::controller::wiring::build_client_dependencies(app.handle());
+    let mut dependencies = crate::desktop_test_support::build_client_dependencies(app.handle());
     dependencies.app_state.as_mut().unwrap().review_usecase = Arc::new(
         crate::usecase::review_usecase::tests_support::review_usecase_with_snapshot_version(8),
     );
@@ -709,9 +708,9 @@ async fn test_レビュー画像_wsの画像参照から元のmimeとbytesを取
         crate::infrastructure::file_watcher::FileWatcherManager::default(),
     ));
     let mut dispatch = dispatch();
-    dispatch.register_dependencies(
-        &crate::adaptor::controller::wiring::build_client_dependencies(app.handle()),
-    );
+    dispatch.register_dependencies(&crate::desktop_test_support::build_client_dependencies(
+        app.handle(),
+    ));
     let push = app
         .state::<Arc<crate::infrastructure::push::PushSink>>()
         .inner()

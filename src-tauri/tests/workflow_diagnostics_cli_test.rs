@@ -1,6 +1,6 @@
 use std::process::Command;
 
-const RELEASH_CLI_PATH: &str = env!("CARGO_BIN_EXE_releash");
+const RELEASH_CLI_PATH: &str = env!("CARGO_BIN_EXE_releash-backend");
 
 const VALID_WORKFLOW: &str = r#"name: valid-fixture
 description: valid diagnostics fixture

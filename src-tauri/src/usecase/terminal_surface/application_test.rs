@@ -16,9 +16,7 @@ fn test_ターミナル画面_所有者概要lookup_不在とowner不整合を�
     let owner =
         TerminalSurfaceOwner::session(WorkspaceIdentity::new("/repo"), "agent-session-1").unwrap();
     let gateway = Arc::new(
-        crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor::<
-            tauri::test::MockRuntime,
-        >::default(),
+        crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor::default(),
     );
     let application = super::TerminalSurfaceApplication::new(
         gateway.clone(),
@@ -57,9 +55,7 @@ fn test_ターミナル画面_所有者概要lookup_不在とowner不整合を�
 fn test_ターミナル画面接続_surface不在時はowner購読を残さない() {
     let owner = TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/repo")).unwrap();
     let gateway = Arc::new(
-        crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor::<
-            tauri::test::MockRuntime,
-        >::default(),
+        crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor::default(),
     );
     let event_hub = Arc::new(TerminalSurfaceEventHub::new());
     let application = super::TerminalSurfaceApplication::new(gateway, event_hub.clone());
@@ -73,9 +69,7 @@ fn test_summary系読み取りはsnapshot全量再構築を伴わない() {
     let owner =
         TerminalSurfaceOwner::session(WorkspaceIdentity::new("/repo"), "agent-session-1").unwrap();
     let gateway = Arc::new(
-        crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor::<
-            tauri::test::MockRuntime,
-        >::default(),
+        crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor::default(),
     );
     gateway.insert_surface(TerminalSurface {
         session_key: owner.stable_key(),
@@ -228,9 +222,7 @@ fn test_ターミナル画面_出力credit_切断は停止中producerを解放�
 async fn test_ターミナル画面接続_エンティティ_画面写像とバックエンド_イベント配信を返す() {
     let owner = TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/repo")).unwrap();
     let gateway = Arc::new(
-        crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor::<
-            tauri::test::MockRuntime,
-        >::default(),
+        crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor::default(),
     );
     gateway.insert_surface(TerminalSurface {
         session_key: owner.stable_key(),
@@ -280,9 +272,7 @@ async fn test_ターミナル画面接続_エンティティ_画面写像とバ�
 async fn test_ターミナル画面接続_出力寸法変更終了を一つの連番で並べる() {
     let owner = TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/repo")).unwrap();
     let gateway = Arc::new(
-        crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor::<
-            tauri::test::MockRuntime,
-        >::default(),
+        crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor::default(),
     );
     gateway.insert_surface(TerminalSurface::with_checkpoint(
         1,
@@ -354,9 +344,7 @@ async fn test_ターミナル画面接続_出力寸法変更終了を一つの�
 async fn test_ターミナル画面切断_対象購読だけを取消す() {
     let owner = TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/repo")).unwrap();
     let gateway = Arc::new(
-        crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor::<
-            tauri::test::MockRuntime,
-        >::default(),
+        crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor::default(),
     );
     gateway.insert_surface(TerminalSurface {
         session_key: owner.stable_key(),
@@ -387,9 +375,7 @@ async fn test_ターミナル画面切断_対象購読だけを取消す() {
 async fn test_ターミナル画面再同期_遅延欠落後にエンティティから復元して包含済み出力を飛ばす() {
     let owner = TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/repo")).unwrap();
     let gateway = Arc::new(
-        crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor::<
-            tauri::test::MockRuntime,
-        >::default(),
+        crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor::default(),
     );
     let surface = |sequence| TerminalSurface {
         session_key: owner.stable_key(),
@@ -460,9 +446,7 @@ async fn test_ターミナル画面再同期_遅延欠落後にエンティテ�
 async fn test_ターミナル画面再接続_重複逆転を除外し連番欠落を最新画面写像へ再同期する() {
     let owner = TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/repo")).unwrap();
     let gateway = Arc::new(
-        crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor::<
-            tauri::test::MockRuntime,
-        >::default(),
+        crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor::default(),
     );
     let surface = |sequence| {
         TerminalSurface::with_checkpoint(
