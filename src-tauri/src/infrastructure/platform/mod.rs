@@ -1,8 +1,12 @@
 pub(crate) mod app_data_dir;
 pub(crate) mod cli_install;
 pub(crate) mod file_replace;
+#[cfg(feature = "desktop")]
 pub(crate) mod menu;
+#[cfg(feature = "desktop")]
 pub(crate) mod native_drop;
 pub(crate) mod path_aliases;
+#[cfg(feature = "desktop")]
 pub(crate) mod tray;
+#[cfg(feature = "desktop")]
 pub(crate) mod window_lifecycle;

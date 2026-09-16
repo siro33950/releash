@@ -32,9 +32,7 @@ fn surface_for(
 
 fn application_with(surface: Option<TerminalSurface>) -> TerminalSurfaceApplication {
     let gateway = Arc::new(
-        crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor::<
-            tauri::test::MockRuntime,
-        >::default(),
+        crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor::default(),
     );
     if let Some(surface) = surface {
         gateway.insert_surface(surface);

@@ -16,6 +16,12 @@ impl AppConfigUsecase {
         Self { repository, query }
     }
 
+    pub(crate) fn desktop_settings(
+        &self,
+    ) -> Result<super::query_service::DesktopSettingsDto, UsecaseError> {
+        self.query.desktop_settings()
+    }
+
     pub fn get_app_settings(&self) -> Result<AppSettings, UsecaseError> {
         self.query.get_app_settings()
     }

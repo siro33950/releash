@@ -7,13 +7,12 @@ use crate::usecase::workflow::control_plane::WorkflowControlPlaneUsecase;
 use std::sync::atomic::Ordering;
 
 fn control(fixture: &Fixture, host: &WorkflowRuntimeHost) -> WorkflowControlPlaneUsecase {
-    let gateway =
-        crate::adaptor::gateway::workflow::TauriWorkflowRuntimeCommandGateway::new_with_driver(
-            fixture.app.handle().clone(),
-            Arc::new(host.clone()),
-            fixture.store.clone(),
-            fixture.store.installation_id().to_string(),
-        );
+    let gateway = crate::adaptor::gateway::workflow::WorkflowRuntimeCommandGateway::new_with_driver(
+        fixture.app.clone(),
+        Arc::new(host.clone()),
+        fixture.store.clone(),
+        fixture.store.installation_id().to_string(),
+    );
     WorkflowControlPlaneUsecase::new(Arc::new(gateway))
 }
 
@@ -223,7 +222,7 @@ async fn test_delegate_再起動後のresumeは完了childを再実行せず未�
             stop(&initial_control, &tree, &child).await;
             fixture
                 .host
-                .stop_workflow_execution(fixture.app.handle(), &tree)
+                .stop_workflow_execution(&fixture.app, &tree)
                 .await
                 .unwrap();
         } else {
@@ -238,13 +237,10 @@ async fn test_delegate_再起動後のresumeは完了childを再実行せず未�
             .unwrap();
         }
         let restored = fixture.restarted_host();
-        restored
-            .reconcile_startup(fixture.app.handle())
-            .await
-            .unwrap();
+        restored.reconcile_startup(&fixture.app).await.unwrap();
         // When
         restored
-            .resume_workflow_execution(fixture.app.handle(), &tree)
+            .resume_workflow_execution(&fixture.app, &tree)
             .await
             .unwrap();
         // Then
@@ -350,7 +346,7 @@ async fn test_delegate_送信成功後の注入済み事実保存失敗からres
     connection.execute_batch("CREATE TRIGGER fail_delegate_injected BEFORE INSERT ON node_events WHEN NEW.event_type = 'delegate_result_injected' BEGIN SELECT RAISE(ABORT, 'injected delegate fact failure'); END;").unwrap();
     assert!(fixture
         .host
-        .inject_delegate_result(fixture.app.handle(), &tree, &injection)
+        .inject_delegate_result(&fixture.app, &tree, &injection)
         .await
         .is_err());
     assert_eq!(fixture.sessions.continuations.lock().unwrap().len(), 1);
@@ -362,14 +358,11 @@ async fn test_delegate_送信成功後の注入済み事実保存失敗からres
         .execute_batch("DROP TRIGGER fail_delegate_injected;")
         .unwrap();
     let restored = fixture.restarted_host();
-    restored
-        .reconcile_startup(fixture.app.handle())
-        .await
-        .unwrap();
+    restored.reconcile_startup(&fixture.app).await.unwrap();
 
     // When
     restored
-        .resume_workflow_execution(fixture.app.handle(), &tree)
+        .resume_workflow_execution(&fixture.app, &tree)
         .await
         .unwrap();
 
@@ -411,7 +404,7 @@ async fn test_delegate_共有worktreeでもresume時のprovider復元失敗は�
     let parent = fixture.host.executions.lock().await[&tree].node_executions[0].clone();
     fixture
         .host
-        .stop_workflow_execution(fixture.app.handle(), &tree)
+        .stop_workflow_execution(&fixture.app, &tree)
         .await
         .unwrap();
     fixture
@@ -421,7 +414,7 @@ async fn test_delegate_共有worktreeでもresume時のprovider復元失敗は�
     // When
     let result = fixture
         .host
-        .resume_workflow_execution(fixture.app.handle(), &tree)
+        .resume_workflow_execution(&fixture.app, &tree)
         .await;
     // Then
     assert!(result.is_err());
@@ -508,9 +501,9 @@ async fn test_delegate_注入時とresume時の復元と送信の失敗はon_fai
                     )
                     .unwrap();
                     let host = fixture.restarted_host();
-                    host.reconcile_startup(fixture.app.handle()).await.unwrap();
+                    host.reconcile_startup(&fixture.app).await.unwrap();
                     assert!(host
-                        .resume_workflow_execution(fixture.app.handle(), &tree)
+                        .resume_workflow_execution(&fixture.app, &tree)
                         .await
                         .is_err());
                     host
@@ -740,17 +733,14 @@ async fn test_delegate_未完了childを持つ再起動resumeは既存childだ�
         .clone();
     fixture
         .host
-        .stop_workflow_execution(fixture.app.handle(), &tree)
+        .stop_workflow_execution(&fixture.app, &tree)
         .await
         .unwrap();
     let restored = fixture.restarted_host();
-    restored
-        .reconcile_startup(fixture.app.handle())
-        .await
-        .unwrap();
+    restored.reconcile_startup(&fixture.app).await.unwrap();
     // When
     restored
-        .resume_workflow_execution(fixture.app.handle(), &tree)
+        .resume_workflow_execution(&fixture.app, &tree)
         .await
         .unwrap();
     // Then
@@ -848,14 +838,15 @@ async fn test_delegate_同じpendingを並行注入しても送信とcommitは�
         .block_continuation
         .store(true, Ordering::SeqCst);
     // When
+    let dependencies = fixture.app.clone();
     let first = fixture
         .host
-        .inject_delegate_result(fixture.app.handle(), &tree, &injection);
+        .inject_delegate_result(&dependencies, &tree, &injection);
     let second = async {
         fixture.sessions.continuation_entered.notified().await;
         let second = fixture
             .host
-            .inject_delegate_result(fixture.app.handle(), &tree, &injection);
+            .inject_delegate_result(&dependencies, &tree, &injection);
         tokio::pin!(second);
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(25), &mut second)
@@ -929,7 +920,7 @@ async fn test_delegate_組み立てが欠けた入口は送信せずエラーを
     };
     // When
     let error = host
-        .inject_delegate_result(fixture.app.handle(), "tree", &injection)
+        .inject_delegate_result(&fixture.app, "tree", &injection)
         .await
         .unwrap_err();
     // Then
@@ -1004,7 +995,7 @@ async fn test_delegate_child失敗の手動retryは親を待機させ注入と�
     fixture
         .host
         .settle_runtime_failure_for_node(
-            fixture.app.handle(),
+            &fixture.app,
             &tree,
             &first.id,
             &WorkflowRuntimeError::AgentSession("child provider failed".into()),
@@ -1238,7 +1229,7 @@ schemas:
     let tree = fixture
         .host
         .start_resolved_workflow(
-            fixture.app.handle(),
+            &fixture.app,
             definition,
             "/repo-worktrees/development".into(),
             Some("specification".into()),
@@ -1304,13 +1295,10 @@ schemas:
         expected_inputs
     );
     let restored = fixture.restarted_host();
-    restored
-        .reconcile_startup(fixture.app.handle())
-        .await
-        .unwrap();
+    restored.reconcile_startup(&fixture.app).await.unwrap();
     // When
     restored
-        .resume_workflow_execution(fixture.app.handle(), &tree)
+        .resume_workflow_execution(&fixture.app, &tree)
         .await
         .unwrap();
     submit(
@@ -1397,12 +1385,9 @@ async fn test_delegate_false_childが親stopより先に完了しても再開後
             .is_empty());
         let restored = if interrupted {
             let restored = fixture.restarted_host();
+            restored.reconcile_startup(&fixture.app).await.unwrap();
             restored
-                .reconcile_startup(fixture.app.handle())
-                .await
-                .unwrap();
-            restored
-                .resume_workflow_execution(fixture.app.handle(), &tree)
+                .resume_workflow_execution(&fixture.app, &tree)
                 .await
                 .unwrap();
             restored

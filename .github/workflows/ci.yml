@@ -133,6 +133,10 @@ jobs:
       - run: cargo clippy --locked -- -D warnings
       - run: cargo deny --locked check
       - run: cargo build --locked
+      - name: Lint Tauri-free backend
+        run: cargo clippy --locked --no-default-features --bin releash-backend -- -D warnings
+      - name: Build Tauri-free backend
+        run: cargo build --locked --no-default-features --bin releash-backend
 
   rust-test:
     runs-on: ubuntu-latest
@@ -164,6 +168,15 @@ jobs:
       - name: Agent TUI harness self-test
         run: cargo test --locked --test agent_tui_harness
       - run: cargo test --locked
+      - name: Headless backend unit tests
+        run: cargo test --locked --no-default-features --lib
+      - name: Performance CLI data directory tests
+        run: "cargo test --locked --no-default-features --features performance --lib cli::common::tests::"
+      - name: Performance daemon helper self-test
+        working-directory: .
+        run: pnpm test:performance:daemon
+      - name: Headless daemon protocol smoke test
+        run: cargo test --locked --no-default-features --test daemon_smoke
 
   # ruleset の required status check が参照する名前を保つための集約ジョブ。
   # lint と test を並列に回しても、片方の失敗でもう片方の結果を失わない。

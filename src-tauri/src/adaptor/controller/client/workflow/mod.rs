@@ -1,23 +1,23 @@
 mod shared;
 pub(crate) use shared::register_shared;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "desktop"))]
 use crate::adaptor::controller::state::AppState;
-#[cfg(test)]
+#[cfg(all(test, feature = "desktop"))]
 use crate::adaptor::gateway::workflow::builtin;
-#[cfg(test)]
+#[cfg(all(test, feature = "desktop"))]
 use crate::adaptor::gateway::workflow::facet::FacetKind;
-#[cfg(test)]
+#[cfg(all(test, feature = "desktop"))]
 use crate::adaptor::gateway::workflow::schema::{
     FacetSummary as GatewayFacetSummary, WorkflowDefinitionYaml,
 };
-#[cfg(test)]
+#[cfg(all(test, feature = "desktop"))]
 use crate::adaptor::gateway::workflow::storage;
-#[cfg(test)]
+#[cfg(all(test, feature = "desktop"))]
 use std::path::Path;
-#[cfg(test)]
+#[cfg(all(test, feature = "desktop"))]
 use std::sync::Arc;
-#[cfg(test)]
+#[cfg(all(test, feature = "desktop"))]
 use tauri::Manager;
 
 pub(crate) mod definition;
@@ -26,13 +26,13 @@ pub(crate) mod execution;
 pub(crate) mod facet;
 pub(crate) mod output;
 pub(crate) mod runtime;
-#[cfg(test)]
+#[cfg(all(test, feature = "desktop"))]
 pub(crate) mod session_errors;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "desktop"))]
 use self::session_errors::redacted_workflow_tab_error;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "desktop"))]
 fn parse_facet_kind(kind: &str) -> Result<FacetKind, String> {
     match kind {
         "policy" => Ok(FacetKind::Policy),
@@ -48,21 +48,21 @@ fn parse_facet_kind(kind: &str) -> Result<FacetKind, String> {
 // テンポラリディレクトリ上で再現することで、3 種それぞれの正常経路到達と、
 // 廃止済み種別および未知種別での I/O 非発生を直接検証できるようにする。
 
-#[cfg(test)]
+#[cfg(all(test, feature = "desktop"))]
 fn list_facets_inner(kind: &str, base_dir: &Path) -> Result<Vec<String>, String> {
     let facet_kind = parse_facet_kind(kind)?;
     crate::adaptor::gateway::workflow::facet::list_facets(facet_kind, base_dir)
         .map_err(|e| e.to_string())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "desktop"))]
 fn get_facet_inner(kind: &str, key: &str, base_dir: &Path) -> Result<String, String> {
     let facet_kind = parse_facet_kind(kind)?;
     crate::adaptor::gateway::workflow::facet::load_facet(facet_kind, key, base_dir)
         .map_err(|e| e.to_string())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "desktop"))]
 fn save_facet_inner(
     kind: &str,
     key: &str,
@@ -86,7 +86,7 @@ fn save_facet_inner(
         .map_err(|e| e.to_string())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "desktop"))]
 fn delete_facet_inner(kind: &str, key: &str, base_dir: &Path) -> Result<(), String> {
     let facet_kind = parse_facet_kind(kind)?;
     if builtin::is_builtin_facet(facet_kind, key) {
@@ -96,7 +96,7 @@ fn delete_facet_inner(kind: &str, key: &str, base_dir: &Path) -> Result<(), Stri
         .map_err(|e| e.to_string())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "desktop"))]
 fn list_facet_summaries_inner(
     kind: &str,
     base_dir: &Path,
@@ -106,7 +106,7 @@ fn list_facet_summaries_inner(
         .map_err(|e| e.to_string())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "desktop"))]
 fn duplicate_facet_inner(
     kind: &str,
     source_key: &str,
@@ -130,7 +130,7 @@ fn duplicate_facet_inner(
 
 /// `open_facet_in_editor` の中核ロジック。エディタ起動はテストで差し替え可能にするため
 /// `opener` を引数で受け取る（production では実エディタ起動を渡す）。
-#[cfg(test)]
+#[cfg(all(test, feature = "desktop"))]
 fn open_facet_in_editor_inner<F>(
     kind: &str,
     key: &str,
@@ -151,7 +151,7 @@ where
     opener(&path_str)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "desktop"))]
 fn validation_error_string(
     e: crate::domain::workflow::services::validation::ValidationError,
 ) -> String {
@@ -160,7 +160,7 @@ fn validation_error_string(
 
 // ---- ワークフロー実行コマンド ----
 
-#[cfg(test)]
+#[cfg(all(test, feature = "desktop"))]
 fn parse_execution_origin(
     value: Option<String>,
 ) -> Result<crate::adaptor::gateway::workflow::execution_store::ExecutionOrigin, String> {
@@ -186,7 +186,7 @@ fn validate_execution_id(execution_id: &str) -> Result<(), String> {
 
 // ---- 新規コマンド ----
 
-#[cfg(test)]
+#[cfg(all(test, feature = "desktop"))]
 fn validate_template_variables(content: &str) -> Result<(), String> {
     let errors =
         crate::adaptor::gateway::workflow::workflow_host::prompt_rendering::find_undefined_template_variables(
@@ -201,7 +201,7 @@ fn validate_template_variables(content: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "desktop"))]
 pub(crate) mod tests {
     use super::execution::{
         get_workflow_execution_log_impl, get_workflow_execution_shared as get_workflow_execution,
@@ -236,9 +236,7 @@ pub(crate) mod tests {
                 crate::adaptor::controller::command::application_lifecycle::invoke_handler(),
             )
             .manage(Arc::new(crate::infrastructure::push::PushSink::new()))
-            .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
-                data_dir,
-            ))
+            .manage(crate::desktop_test_support::TestDataDir(data_dir))
             .manage(app_config)
             .manage(config_repository)
             .manage(config_secret_repository)
@@ -287,7 +285,7 @@ pub(crate) mod tests {
         app.manage(Arc::new(
             crate::infrastructure::file_watcher::FileWatcherManager::default(),
         ));
-        let deps = crate::adaptor::controller::wiring::build_client_dependencies(app.handle());
+        let deps = crate::desktop_test_support::build_client_dependencies(app.handle());
         let mut dispatch = crate::adaptor::controller::client::ClientCommandDispatch::new(
             Arc::new(crate::adaptor::controller::wiring::build_repository_usecase()),
             Arc::new(crate::usecase::application_startup::ApplicationStartupAuthority::ready()),
@@ -1241,8 +1239,7 @@ pub(crate) mod tests {
         Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>,
     ) {
         let app = make_adapter_app();
-        let data_dir =
-            crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
+        let data_dir = crate::desktop_test_support::data_dir(app.handle()).unwrap();
         // workflow コマンドは repository usecase を State 注入で受け取る。
         let repository_usecase =
             Arc::new(crate::adaptor::controller::wiring::build_repository_usecase());
@@ -1315,7 +1312,6 @@ pub(crate) mod tests {
                 repository_usecase.clone(),
                 config_repository,
                 config_secret_repository,
-                app.handle().clone(),
                 local_event_store.clone(),
             );
         app.manage(AppState {

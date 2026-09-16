@@ -200,3 +200,146 @@ fn map_transport_error(error: LocalApiTransportError) -> LocalApiClientError {
 #[cfg(test)]
 #[path = "local_api_test.rs"]
 mod local_api_tests;
+
+#[cfg(any(test, feature = "desktop"))]
+pub(crate) struct ClientConnectionFileQuery(pub(crate) PathBuf);
+
+#[cfg(any(test, feature = "desktop"))]
+#[async_trait::async_trait]
+impl crate::usecase::client_connection::ClientConnectionQueryService for ClientConnectionFileQuery {
+    #[cfg(feature = "desktop")]
+    async fn desktop_settings(
+        &self,
+    ) -> Result<
+        crate::usecase::app_config::query_service::DesktopSettingsDto,
+        crate::usecase::client_connection::ClientConnectionError,
+    > {
+        use crate::adaptor::controller::api::protocol::client as wire;
+        use crate::usecase::client_connection::ClientConnectionError;
+        use futures_util::{SinkExt, StreamExt};
+        use prost::Message;
+        use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as Frame};
+
+        let endpoint = self.read()?;
+        let read = async {
+            let mut request = endpoint
+                .url
+                .into_client_request()
+                .map_err(|e| e.to_string())?;
+            request.headers_mut().insert(
+                "sec-websocket-protocol",
+                endpoint
+                    .auth_subprotocol
+                    .parse()
+                    .map_err(|e| format!("invalid client subprotocol: {e}"))?,
+            );
+            let (mut socket, _) = tokio_tungstenite::connect_async(request)
+                .await
+                .map_err(|e| e.to_string())?;
+            socket
+                .send(Frame::Binary(
+                    wire::Envelope {
+                        body: Some(wire::envelope::Body::Hello(wire::ClientHello::default())),
+                    }
+                    .encode_to_vec()
+                    .into(),
+                ))
+                .await
+                .map_err(|e| e.to_string())?;
+            loop {
+                let frame = socket
+                    .next()
+                    .await
+                    .ok_or("desktop settings connection closed")?
+                    .map_err(|e| e.to_string())?;
+                if let Frame::Binary(bytes) = frame {
+                    if let Some(wire::envelope::Body::Hello(hello)) = wire::Envelope::decode(bytes)
+                        .map_err(|e| e.to_string())?
+                        .body
+                    {
+                        let settings = hello
+                            .desktop_settings
+                            .ok_or("daemon desktop settings are unavailable")?;
+                        socket.close(None).await.map_err(|e| e.to_string())?;
+                        return Ok::<_, String>(settings.into());
+                    }
+                }
+            }
+        };
+        tokio::time::timeout(
+            std::time::Duration::from_millis(
+                crate::domain::client_operation::policy::CONNECT_TIMEOUT_MS,
+            ),
+            read,
+        )
+        .await
+        .map_err(|_| ClientConnectionError("desktop settings connection timed out".into()))?
+        .map_err(ClientConnectionError)
+    }
+
+    fn read(
+        &self,
+    ) -> Result<
+        crate::usecase::client_connection::ClientConnectionDto,
+        crate::usecase::client_connection::ClientConnectionError,
+    > {
+        self.read_with_process_lookup(lookup_process_start_time)
+    }
+}
+
+#[cfg(any(test, feature = "desktop"))]
+impl ClientConnectionFileQuery {
+    fn read_with_process_lookup(
+        &self,
+        lookup_process: impl FnOnce(u32) -> ProcessStartTimeLookup,
+    ) -> Result<
+        crate::usecase::client_connection::ClientConnectionDto,
+        crate::usecase::client_connection::ClientConnectionError,
+    > {
+        use crate::usecase::client_connection::{ClientConnectionDto, ClientConnectionError};
+        let discovery = read_local_api_discovery(&self.0)
+            .map_err(|_| ClientConnectionError("daemon discovery is unreadable".into()))?
+            .ok_or_else(|| ClientConnectionError("daemon discovery is unavailable".into()))?;
+        let client: crate::infrastructure::local_api::LocalApiDiscovery = serde_json::from_slice(
+            &std::fs::read(self.0.join("client-api.json"))
+                .map_err(|_| ClientConnectionError("client discovery is unreadable".into()))?,
+        )
+        .map_err(|_| ClientConnectionError("client discovery is invalid".into()))?;
+        let content = |value: &crate::infrastructure::local_api::LocalApiDiscovery| {
+            DiscoveryContent::new(
+                value.port,
+                value.token.clone(),
+                value.instance_id.clone(),
+                value.pid,
+                value.process_started_at,
+            )
+        };
+        if !content(&discovery).accepts_client(&content(&client)) {
+            return Err(ClientConnectionError(
+                "client discovery does not match daemon identity".into(),
+            ));
+        }
+        let process = lookup_process(discovery.pid);
+        DiscoveryAdmissionService::assess_process(
+            &content(&discovery),
+            ProcessObservation::from_raw(process.process_list_available, process.start_time),
+        )
+        .map_err(|rejection| {
+            ClientConnectionError(
+                map_process_rejection(rejection, local_api_discovery_path(&self.0)).to_string(),
+            )
+        })?;
+        Ok(ClientConnectionDto {
+            url: format!(
+                "ws://127.0.0.1:{}{}",
+                client.port,
+                crate::adaptor::protocol::client::CLIENT_WS_PATH
+            ),
+            auth_subprotocol: format!(
+                "{}{}",
+                crate::adaptor::protocol::terminal::TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX,
+                client.token
+            ),
+        })
+    }
+}

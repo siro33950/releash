@@ -235,9 +235,7 @@ fn test_ターミナル起動性能計測_rendererは許可したphaseと有限d
 async fn test_ターミナル画面接続_画面写像後は新しい出力と終了だけを送る() {
     let owner = TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/repo")).unwrap();
     let gateway = Arc::new(
-        crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor::<
-            tauri::test::MockRuntime,
-        >::default(),
+        crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor::default(),
     );
     gateway.insert_surface(TerminalSurface {
         session_key: owner.stable_key(),

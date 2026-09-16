@@ -29,3 +29,6 @@ pub(crate) mod workspace_tree;
 pub(crate) mod watcher;
 
 pub(crate) mod telemetry;
+
+#[cfg(any(test, feature = "desktop"))]
+pub(crate) mod client_connection;

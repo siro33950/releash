@@ -1,7 +1,5 @@
 use std::sync::Arc;
 
-use tauri::Manager;
-
 use crate::adaptor::gateway::repository::watch::{FileChangeEvent, GitStatusChangedEvent};
 use crate::adaptor::protocol::workflow::WorkflowExecutionChangedPayloadView;
 use crate::infrastructure::push::PushSink;
@@ -25,10 +23,9 @@ pub enum BackendPush<'a> {
 }
 
 impl BackendPush<'_> {
-    pub fn emit<R: tauri::Runtime>(self, app: &tauri::AppHandle<R>) {
+    pub(crate) fn emit(self, sink: &PushSink) {
         use crate::adaptor::controller::api::protocol::client as wire;
         use prost::Message;
-        let sink = app.state::<Arc<PushSink>>();
         macro_rules! publish {
             ($name:literal, $variant:ident, $value:expr) => {{
                 let event = $value.map(wire::push::Event::$variant);
@@ -102,10 +99,10 @@ pub(crate) struct CommentChangeGateway {
     notify: Box<dyn Fn(&str) + Send + Sync>,
 }
 impl CommentChangeGateway {
-    pub(crate) fn new<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Self {
+    pub(crate) fn new(sink: std::sync::Arc<crate::infrastructure::push::PushSink>) -> Self {
         Self {
             notify: Box::new(move |worktree| {
-                BackendPush::ReviewCommentsChanged(worktree).emit(&app)
+                BackendPush::ReviewCommentsChanged(worktree).emit(&sink)
             }),
         }
     }
@@ -157,3 +154,22 @@ impl ClientPushSubscription {
 #[cfg(test)]
 #[path = "push_test.rs"]
 mod push_tests;
+
+use crate::usecase::agent_session::AgentSessionChangeNotifier;
+
+pub(crate) struct ClientAgentSessionChangeNotifier {
+    sink: std::sync::Arc<crate::infrastructure::push::PushSink>,
+}
+
+impl ClientAgentSessionChangeNotifier {
+    pub(crate) fn new(sink: std::sync::Arc<crate::infrastructure::push::PushSink>) -> Self {
+        Self { sink }
+    }
+}
+
+impl AgentSessionChangeNotifier for ClientAgentSessionChangeNotifier {
+    fn agent_session_changed(&self, worktree_path: &str) {
+        BackendPush::AgentSessionChanged(AgentSessionChangedPayload { worktree_path })
+            .emit(&self.sink);
+    }
+}

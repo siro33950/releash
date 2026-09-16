@@ -8,24 +8,27 @@ use crate::adaptor::gateway::repository::watch::{
 use crate::domain::repository::file_watcher::FileWatchGateway;
 use crate::infrastructure::file_watcher::FileWatcherManager;
 
-pub(crate) struct FileWatcherGateway<R: tauri::Runtime> {
+pub(crate) struct FileWatcherGateway {
     manager: Arc<FileWatcherManager>,
-    app: tauri::AppHandle<R>,
+    sink: std::sync::Arc<crate::infrastructure::push::PushSink>,
 }
 
-impl<R: tauri::Runtime> FileWatcherGateway<R> {
-    pub(crate) fn new(manager: Arc<FileWatcherManager>, app: tauri::AppHandle<R>) -> Self {
-        Self { manager, app }
+impl FileWatcherGateway {
+    pub(crate) fn new(
+        manager: Arc<FileWatcherManager>,
+        sink: std::sync::Arc<crate::infrastructure::push::PushSink>,
+    ) -> Self {
+        Self { manager, sink }
     }
 }
 
-impl<R: tauri::Runtime> FileWatchGateway for FileWatcherGateway<R> {
+impl FileWatchGateway for FileWatcherGateway {
     fn start(&self, path: &str) -> Result<u64, String> {
         let id = generate_watcher_id();
-        let app = self.app.clone();
+        let sink = self.sink.clone();
         self.manager
             .start_watching(id, path.to_string(), move |event| {
-                BackendPush::FileChange(file_change_event_from_path(id, &event.path)).emit(&app);
+                BackendPush::FileChange(file_change_event_from_path(id, &event.path)).emit(&sink);
             })
     }
     fn stop(&self, watcher_id: u64) -> Result<(), String> {

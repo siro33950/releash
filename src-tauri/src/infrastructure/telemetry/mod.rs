@@ -1,7 +1,6 @@
 pub(crate) mod config;
 pub(crate) mod crash;
 
-use crate::adaptor::gateway::app_config::ReleashConfig;
 use opentelemetry::global;
 use opentelemetry::KeyValue;
 use opentelemetry_otlp::{
@@ -26,7 +25,10 @@ impl Drop for TelemetryGuard {
     }
 }
 
-pub(crate) fn init_telemetry(config: &ReleashConfig) -> Option<TelemetryGuard> {
+pub(crate) fn init_telemetry(
+    crash_reporting: bool,
+    performance_telemetry: bool,
+) -> Option<TelemetryGuard> {
     let endpoint = config::endpoint();
     let license_key = config::license_key();
     let configured = config::configured(endpoint, license_key);
@@ -34,14 +36,14 @@ pub(crate) fn init_telemetry(config: &ReleashConfig) -> Option<TelemetryGuard> {
         config::BuildType::current(),
         endpoint,
         license_key,
-        config.telemetry.performance_telemetry,
+        performance_telemetry,
     );
 
     crate::other::telemetry::set_performance_configured(configured);
     crate::other::telemetry::set_performance_enabled(active);
 
     if !configured {
-        crash::init_crash_reporting(None, config.telemetry.crash_reporting, false);
+        crash::init_crash_reporting(None, crash_reporting, false);
         return None;
     }
 
@@ -57,7 +59,7 @@ pub(crate) fn init_telemetry(config: &ReleashConfig) -> Option<TelemetryGuard> {
         Ok(exporter) => exporter,
         Err(error) => {
             log::warn!("Failed to build OTLP span exporter: {error}");
-            crash::init_crash_reporting(None, config.telemetry.crash_reporting, false);
+            crash::init_crash_reporting(None, crash_reporting, false);
             return None;
         }
     };
@@ -70,7 +72,7 @@ pub(crate) fn init_telemetry(config: &ReleashConfig) -> Option<TelemetryGuard> {
         Ok(exporter) => exporter,
         Err(error) => {
             log::warn!("Failed to build OTLP metric exporter: {error}");
-            crash::init_crash_reporting(None, config.telemetry.crash_reporting, false);
+            crash::init_crash_reporting(None, crash_reporting, false);
             return None;
         }
     };
@@ -83,7 +85,7 @@ pub(crate) fn init_telemetry(config: &ReleashConfig) -> Option<TelemetryGuard> {
         Ok(exporter) => exporter,
         Err(error) => {
             log::warn!("Failed to build OTLP log exporter: {error}");
-            crash::init_crash_reporting(None, config.telemetry.crash_reporting, false);
+            crash::init_crash_reporting(None, crash_reporting, false);
             return None;
         }
     };
@@ -105,11 +107,7 @@ pub(crate) fn init_telemetry(config: &ReleashConfig) -> Option<TelemetryGuard> {
         .with_batch_exporter(log_exporter)
         .with_resource(resource)
         .build();
-    crash::init_crash_reporting(
-        Some(logger_provider.clone()),
-        config.telemetry.crash_reporting,
-        configured,
-    );
+    crash::init_crash_reporting(Some(logger_provider.clone()), crash_reporting, configured);
 
     Some(TelemetryGuard {
         tracer_provider,

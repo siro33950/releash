@@ -3472,6 +3472,7 @@ message Envelope {
 
 message CommandResponse {
   string request_id = 1;
+  DesktopSettings desktop_settings = 4;
   oneof outcome {
     CommandResult result = 2;
     CommandError error = 3;
@@ -3733,6 +3734,7 @@ message ClientHello {
   uint64 tick_interval_ms = 7;
   map<string, uint64> deadlines_ms = 8;
   map<string, CommandPolicy> policies = 9;
+  DesktopSettings desktop_settings = 10;
 }
 
 message CommandPolicy {
@@ -3759,3 +3761,10 @@ message OperationQuery {
   string query_id = 6;
 }
 message OperationStatus { string request_id = 1; string state = 2; string operation_id = 3; bytes fingerprint = 4; bytes ordering_target = 5; string query_id = 6; }
+
+message DesktopSettings {
+  bool close_to_tray = 1;
+  bool start_minimized = 2;
+  bool crash_reporting = 3;
+  bool performance_telemetry = 4;
+}

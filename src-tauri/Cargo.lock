@@ -4256,6 +4256,7 @@ dependencies = [
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
+ "open",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",

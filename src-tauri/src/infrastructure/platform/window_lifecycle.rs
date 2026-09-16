@@ -3,8 +3,6 @@ use std::sync::Arc;
 
 use tauri::Manager;
 
-use crate::domain::app_config::ConfigRepository;
-
 pub(crate) const NORMAL_WINDOW_LABEL: &str = "main";
 pub(crate) const STARTUP_FAILURE_WINDOW_LABEL: &str = "startup-failure";
 
@@ -297,37 +295,49 @@ mod native_exit_tests {
     }
 }
 
-pub fn apply_startup_visibility(
-    app_handle: &tauri::AppHandle,
-    config_repository: &dyn ConfigRepository,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct WindowPreferences {
+    pub(crate) start_minimized: bool,
+    pub(crate) close_to_tray: bool,
+}
+
+pub(crate) struct WindowPreferencesState(pub(crate) parking_lot::RwLock<WindowPreferences>);
+
+impl WindowPreferencesState {
+    pub(crate) fn read(&self) -> WindowPreferences {
+        *self.0.read()
+    }
+}
+
+pub(crate) fn apply_startup_window_preferences<R: tauri::Runtime>(
+    app_handle: &tauri::AppHandle<R>,
+    preferences: WindowPreferences,
 ) {
     if !is_hidden_startup(std::env::args()) {
         return;
     }
-
-    if let Some(action) = hidden_startup_visibility_action(config_repository) {
-        if let Some(window) = app_handle.get_webview_window("main") {
-            match action {
-                StartupVisibilityAction::Hide => {
+    if let Some(action) = hidden_startup_visibility_action(&preferences) {
+        if let Some(window) = app_handle.get_webview_window(NORMAL_WINDOW_LABEL) {
+            apply_window_view_close(
+                action,
+                || {
                     let _ = window.hide();
-                }
-                StartupVisibilityAction::Minimize => {
+                },
+                || {
                     let _ = window.minimize();
-                }
-            }
+                },
+            );
         }
     }
 }
 
 fn close_window_to_configured_destination(app_handle: &tauri::AppHandle, label: &str) {
-    let close_to_tray = app_handle
-        .try_state::<Arc<dyn ConfigRepository>>()
-        .and_then(|cfg| cfg.load().ok())
-        .is_none_or(|c| c.app.close_to_tray);
+    let preferences = app_handle.state::<WindowPreferencesState>();
+    let preferences = preferences.read();
 
     if let Some(window) = app_handle.get_webview_window(label) {
         apply_window_view_close(
-            startup_visibility_action(close_to_tray),
+            startup_visibility_action(preferences.close_to_tray),
             || {
                 let _ = window.hide();
             },
@@ -343,21 +353,11 @@ fn is_hidden_startup(args: impl IntoIterator<Item = String>) -> bool {
 }
 
 fn hidden_startup_visibility_action(
-    config_repository: &dyn ConfigRepository,
+    preferences: &WindowPreferences,
 ) -> Option<StartupVisibilityAction> {
-    let start_minimized = config_repository
-        .load()
-        .is_ok_and(|config| config.app.start_minimized);
-
-    if !start_minimized {
-        return None;
-    }
-
-    let close_to_tray = config_repository
-        .load()
-        .is_ok_and(|config| config.app.close_to_tray);
-
-    Some(startup_visibility_action(close_to_tray))
+    preferences
+        .start_minimized
+        .then(|| startup_visibility_action(preferences.close_to_tray))
 }
 
 fn startup_visibility_action(close_to_tray: bool) -> StartupVisibilityAction {
@@ -397,16 +397,6 @@ mod tests {
 
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
-    use crate::domain::app_config::repository::ConfigUpdate;
-    use crate::domain::app_config::value_objects::{
-        AppConfigDocument, AppSettings, TelemetryConfig, WorkflowConfig,
-    };
-    use crate::domain::app_config::AppConfigError;
-
-    struct StubConfigRepository {
-        config: AppConfigDocument,
-    }
-
     #[test]
     fn close_quit_window_close_is_view_only() {
         for (close_to_tray, expected_hidden, expected_minimized) in [(true, 1, 0), (false, 0, 1)] {
@@ -434,24 +424,6 @@ mod tests {
         }
     }
 
-    impl ConfigRepository for StubConfigRepository {
-        fn load(&self) -> Result<AppConfigDocument, AppConfigError> {
-            Ok(self.config.clone())
-        }
-
-        fn save(&self, _config: AppConfigDocument) -> Result<(), AppConfigError> {
-            Err(AppConfigError::Repository(
-                "save is not used in window lifecycle tests".to_string(),
-            ))
-        }
-
-        fn update(&self, _f: ConfigUpdate) -> Result<(), AppConfigError> {
-            Err(AppConfigError::Repository(
-                "update is not used in window lifecycle tests".to_string(),
-            ))
-        }
-    }
-
     #[test]
     fn hidden_startup_detects_hidden_flag_only() {
         assert!(is_hidden_startup([
@@ -466,21 +438,15 @@ mod tests {
 
     #[test]
     fn hidden_startup_visibility_action_requires_start_minimized() {
-        let repository = StubConfigRepository {
-            config: config_with_startup_policy(false, true),
-        };
+        let repository = config_with_startup_policy(false, true);
 
         assert_eq!(hidden_startup_visibility_action(&repository), None);
     }
 
     #[test]
     fn hidden_startup_visibility_action_follows_close_to_tray_policy() {
-        let close_to_tray_repository = StubConfigRepository {
-            config: config_with_startup_policy(true, true),
-        };
-        let minimize_repository = StubConfigRepository {
-            config: config_with_startup_policy(true, false),
-        };
+        let close_to_tray_repository = config_with_startup_policy(true, true);
+        let minimize_repository = config_with_startup_policy(true, false);
 
         assert_eq!(
             hidden_startup_visibility_action(&close_to_tray_repository),
@@ -516,23 +482,10 @@ mod tests {
         super::super::tray::QUIT_REQUESTED.store(false, Ordering::SeqCst);
     }
 
-    fn config_with_startup_policy(start_minimized: bool, close_to_tray: bool) -> AppConfigDocument {
-        AppConfigDocument {
-            telemetry: TelemetryConfig {
-                crash_reporting: false,
-                performance_telemetry: false,
-            },
-            app: AppSettings {
-                close_to_tray,
-                auto_launch: false,
-                start_minimized,
-                last_root_path: String::new(),
-                last_repo_paths: Vec::new(),
-                external_editor: String::new(),
-            },
-            workflow: WorkflowConfig {
-                approval_auto_approve: false,
-            },
+    fn config_with_startup_policy(start_minimized: bool, close_to_tray: bool) -> WindowPreferences {
+        WindowPreferences {
+            start_minimized,
+            close_to_tray,
         }
     }
 }

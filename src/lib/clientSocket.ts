@@ -82,6 +82,7 @@ interface PendingRequest extends RequestOptions {
 	reject(reason: unknown): void;
 }
 let connection: Promise<WebSocket> | null = null;
+let desktopSettingsUpdate: Promise<void> = Promise.resolve();
 let connectedSocket: WebSocket | null = null;
 let instanceId = "";
 let hasConnected = false;
@@ -435,10 +436,21 @@ function connect(): Promise<WebSocket> {
 				};
 				socket.onerror = fail;
 				socket.onclose = fail;
-				socket.onmessage = (event) => {
+				socket.onmessage = async (event) => {
 					if (closed) return;
 					try {
 						const { body } = decodeClientEnvelope(event.data);
+						if (
+							(body.case === "hello" || body.case === "response") &&
+							body.value.desktopSettings
+						) {
+							const settings = body.value.desktopSettings;
+							const apply = () =>
+								invoke<void>("apply_desktop_settings", { settings });
+							desktopSettingsUpdate = desktopSettingsUpdate.then(apply, apply);
+							await desktopSettingsUpdate;
+							if (closed) return;
+						}
 						if (body.case === "hello") {
 							if (!body.value.instanceId)
 								throw new Error("Missing backend identity");

@@ -473,3 +473,149 @@ fn test_local_api_discovery_空または0の内容を従来の表示で拒否す
         );
     }
 }
+
+#[test]
+fn test_クライアント接続情報_再起動したinstanceを再読込しmasterを返さない() {
+    use crate::infrastructure::local_api::{LocalApiDiscovery, LocalApiDiscoveryFile};
+    use crate::usecase::client_connection::ClientConnectionQueryService;
+    let directory = tempfile::tempdir().unwrap();
+    // Given
+    let query = super::ClientConnectionFileQuery(directory.path().to_owned());
+    // When / Then
+    assert!(query.read().is_err());
+    for (instance, port) in [("first", 12345), ("second", 23456)] {
+        let master = LocalApiDiscovery {
+            port,
+            token: format!("master-{instance}"),
+            instance_id: instance.into(),
+            pid: std::process::id(),
+            process_started_at: process_start_time(std::process::id()).unwrap(),
+        };
+        LocalApiDiscoveryFile::create(directory.path(), master.clone()).unwrap();
+        assert!(query.read().is_err());
+        let client = LocalApiDiscovery {
+            token: format!("client-{instance}"),
+            ..master.clone()
+        };
+        LocalApiDiscoveryFile::create_client(directory.path(), client).unwrap();
+        let endpoint = query.read().unwrap();
+        assert_eq!(endpoint.url, format!("ws://127.0.0.1:{port}/v1/client"));
+        assert_eq!(
+            endpoint.auth_subprotocol,
+            format!("releash-bearer.client-{instance}")
+        );
+        assert!(!endpoint.auth_subprotocol.contains(&master.token));
+    }
+    std::fs::write(directory.path().join("client-api.json"), b"invalid").unwrap();
+    assert!(query.read().is_err());
+}
+
+#[test]
+fn test_クライアント接続情報_停止済みとpid再利用と参照不能では接続先もtokenも返さない() {
+    use crate::infrastructure::local_api::{LocalApiDiscovery, LocalApiDiscoveryFile};
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let master = LocalApiDiscovery {
+        port: listener.local_addr().unwrap().port(),
+        token: "master-secret".into(),
+        instance_id: "instance".into(),
+        pid: 42,
+        process_started_at: 123,
+    };
+    LocalApiDiscoveryFile::create(directory.path(), master.clone()).unwrap();
+    LocalApiDiscoveryFile::create_client(
+        directory.path(),
+        LocalApiDiscovery {
+            token: "client-secret".into(),
+            ..master
+        },
+    )
+    .unwrap();
+    let query = ClientConnectionFileQuery(directory.path().into());
+    // When / Then
+    for observation in [
+        ProcessStartTimeLookup {
+            process_list_available: true,
+            start_time: None,
+        },
+        found_process(124),
+        ProcessStartTimeLookup {
+            process_list_available: false,
+            start_time: None,
+        },
+    ] {
+        let error = query
+            .read_with_process_lookup(|pid| {
+                assert_eq!(pid, 42);
+                observation
+            })
+            .unwrap_err();
+        assert!(!error.to_string().contains("secret"));
+        assert!(
+            matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+        );
+    }
+    assert!(query
+        .read_with_process_lookup(|_| found_process(123))
+        .is_ok());
+}
+
+#[cfg(feature = "desktop")]
+#[tokio::test]
+async fn test_desktop設定_wsの欠落不正切断を設定値へ置き換えない() {
+    use crate::adaptor::controller::api::protocol::client as wire;
+    use crate::infrastructure::local_api::{LocalApiDiscovery, LocalApiDiscoveryFile};
+    use crate::usecase::client_connection::ClientConnectionQueryService;
+    use futures_util::{SinkExt, StreamExt};
+    use prost::Message;
+    use tokio_tungstenite::tungstenite::Message as Frame;
+    for response in [
+        Some(
+            wire::Envelope {
+                body: Some(wire::envelope::Body::Hello(wire::ClientHello::default())),
+            }
+            .encode_to_vec(),
+        ),
+        Some(vec![255]),
+        None,
+    ] {
+        // Given
+        let directory = tempfile::tempdir().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let master = LocalApiDiscovery {
+            port: listener.local_addr().unwrap().port(),
+            token: "master".into(),
+            instance_id: "test".into(),
+            pid: std::process::id(),
+            process_started_at: process_start_time(std::process::id()).unwrap(),
+        };
+        LocalApiDiscoveryFile::create(directory.path(), master.clone()).unwrap();
+        LocalApiDiscoveryFile::create_client(
+            directory.path(),
+            LocalApiDiscovery {
+                token: "client".into(),
+                ..master
+            },
+        )
+        .unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_hdr_async(stream, |request: &tokio_tungstenite::tungstenite::handshake::server::Request, mut response: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                response.headers_mut().insert("sec-websocket-protocol", request.headers()["sec-websocket-protocol"].clone());
+                Ok(response)
+            }).await.unwrap();
+            socket.next().await.unwrap().unwrap();
+            if let Some(response) = response {
+                socket.send(Frame::Binary(response.into())).await.unwrap();
+            }
+        });
+        // When / Then
+        let result = ClientConnectionFileQuery(directory.path().into())
+            .desktop_settings()
+            .await;
+        assert!(result.is_err());
+        server.await.unwrap();
+    }
+}

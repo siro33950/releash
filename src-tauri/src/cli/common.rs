@@ -79,11 +79,10 @@ pub(super) fn resolve_data_dir() -> Result<PathBuf, String> {
 /// spec [01] 解決順序「明示指定 > alias 内包値」をテストで検証可能にするための分離。
 /// 明示指定が空文字列の場合は未設定扱いとし、alias 内包値にフォールバックする。
 fn resolve_data_dir_from_env(env_value: Option<String>) -> Result<PathBuf, String> {
-    if let Some(custom) = env_value.filter(|s| !s.is_empty()) {
-        return Ok(PathBuf::from(custom));
-    }
-    let aliases = crate::infrastructure::platform::path_aliases::PathAliases::from_runtime(None)?;
-    Ok(aliases.releash().data_dir.clone())
+    crate::infrastructure::platform::app_data_dir::resolve_for_profile(
+        crate::infrastructure::platform::path_aliases::BuildProfile::application(),
+        env_value,
+    )
 }
 
 /// data_dir を解決し、パスが実在することを確認する。
@@ -469,6 +468,23 @@ mod tests {
         ensure_existing_data_dir(tmp.path()).expect("existing data_dir must succeed");
     }
 
+    #[cfg(feature = "performance")]
+    #[test]
+    fn test_cli既定保存先_performanceはdaemonと同じidentifierを使う() {
+        // Given
+        let expected = dirs::data_dir()
+            .unwrap()
+            .join("com.releash.app.performance");
+        // When / Then
+        for override_path in [None, Some(String::new())] {
+            assert_eq!(resolve_data_dir_from_env(override_path).unwrap(), expected);
+        }
+        assert_eq!(
+            resolve_data_dir_from_env(Some("/explicit".into())).unwrap(),
+            PathBuf::from("/explicit")
+        );
+    }
+
     /// spec [01] 解決順序「明示指定 > alias 内包値」: RELEASH_DATA_DIR が明示
     /// 指定されている場合は、その値がそのまま採用される（PathBuf 化のみ）。
     #[test]
@@ -488,7 +504,7 @@ mod tests {
         let resolved = resolve_data_dir_from_env(None).unwrap();
         let expected_suffix =
             crate::infrastructure::platform::path_aliases::default_data_dir_name_for_profile(
-                crate::infrastructure::platform::path_aliases::BuildProfile::current(),
+                crate::infrastructure::platform::path_aliases::BuildProfile::application(),
             );
         assert!(
             resolved.ends_with(expected_suffix),
@@ -508,7 +524,7 @@ mod tests {
         let resolved = resolve_data_dir_from_env(Some(String::new())).unwrap();
         let expected_suffix =
             crate::infrastructure::platform::path_aliases::default_data_dir_name_for_profile(
-                crate::infrastructure::platform::path_aliases::BuildProfile::current(),
+                crate::infrastructure::platform::path_aliases::BuildProfile::application(),
             );
         assert!(
             resolved.ends_with(expected_suffix),

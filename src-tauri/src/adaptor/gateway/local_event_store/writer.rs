@@ -236,6 +236,7 @@ impl WriteQueue {
 
     /// Stop admission and let the writer consume every already-admitted
     /// request before it exits.
+    #[cfg(any(test, all(debug_assertions, feature = "desktop")))]
     pub fn close_after_drain(&self) {
         let mut state = self.state.lock().expect("write queue poisoned");
         state.closed = true;

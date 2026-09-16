@@ -25,7 +25,7 @@ async fn test_atui_030_provider_cliがterminal_surfaceのroot_processとして�
     let cwd = tempfile::TempDir::new().unwrap();
     let path = cwd.path().to_string_lossy().into_owned();
     let owner = session_owner(&path, "agent-session-root-process");
-    let (_app, runtime) = build_runtime(data_dir.path());
+    let runtime = TerminalSurfaceRuntime::new(data_dir.path().to_path_buf());
     let fixture = FixturePlan {
         input_lines: 1,
         alternate_screen: true,
@@ -119,17 +119,6 @@ async fn wait_process_exit(pid: &str) {
     })
     .await
     .unwrap_or_else(|_| panic!("old Terminal Surface process remained alive: {pid}"));
-}
-
-fn build_runtime(
-    data_dir: &std::path::Path,
-) -> (tauri::App<tauri::test::MockRuntime>, TerminalSurfaceRuntime) {
-    let app = tauri::test::mock_builder()
-        .build(tauri::test::mock_context(tauri::test::noop_assets()))
-        .expect("build Tauri product-path app");
-    let runtime =
-        TerminalSurfaceRuntime::new_with_data_dir(app.handle().clone(), data_dir.to_path_buf());
-    (app, runtime)
 }
 
 async fn receive_until(
@@ -294,7 +283,7 @@ async fn test_atui_010_実ptyのproduction_attachが欠落重複逆転なく再�
     let cwd = tempfile::TempDir::new().unwrap();
     let path = cwd.path().to_string_lossy().into_owned();
     let owner = workspace_owner(&path);
-    let (_app, runtime) = build_runtime(data_dir.path());
+    let runtime = TerminalSurfaceRuntime::new(data_dir.path().to_path_buf());
     let spawned = runtime
         .get_or_spawn(
             24,
@@ -412,13 +401,8 @@ async fn test_atui_010_実ptyのproduction_attachが注入された欠落重複�
     let cwd = tempfile::TempDir::new().unwrap();
     let path = cwd.path().to_string_lossy().into_owned();
     let owner = session_owner(&path, "fault-injection");
-    let app = tauri::test::mock_builder()
-        .build(tauri::test::mock_context(tauri::test::noop_assets()))
-        .expect("build Tauri product-path app");
-    let (runtime, faults) = TerminalSurfaceRuntime::new_with_data_dir_and_event_faults(
-        app.handle().clone(),
-        data_dir.path().to_path_buf(),
-    );
+    let (runtime, faults) =
+        TerminalSurfaceRuntime::new_with_data_dir_and_event_faults(data_dir.path().to_path_buf());
     runtime
         .get_or_spawn(24, 240, Some(path), owner.clone(), None)
         .expect("spawn fault-injection PTY");
@@ -503,7 +487,7 @@ async fn test_atui_011_terminal_checkpointが画面属性と終了後のbounded_
     let cwd = tempfile::TempDir::new().unwrap();
     let path = cwd.path().to_string_lossy().into_owned();
     let owner = workspace_owner(&path);
-    let (_app, runtime) = build_runtime(data_dir.path());
+    let runtime = TerminalSurfaceRuntime::new(data_dir.path().to_path_buf());
     runtime
         .get_or_spawn(
             24,
@@ -638,7 +622,7 @@ async fn test_atui_011_複数terminal_surfaceの画面状態が混線しない()
     let path = cwd.path().to_string_lossy().into_owned();
     let first_owner = session_owner(&path, "first");
     let second_owner = session_owner(&path, "second");
-    let (_app, runtime) = build_runtime(data_dir.path());
+    let runtime = TerminalSurfaceRuntime::new(data_dir.path().to_path_buf());
 
     for (owner, label) in [
         (first_owner.clone(), "terminal-surface-first"),
@@ -726,7 +710,7 @@ async fn test_atui_012_app再構築後は同一process扱いせず最終画面�
         shell_quote(&first_pid_path.to_string_lossy())
     );
 
-    let (first_app, first_runtime) = build_runtime(data_dir.path());
+    let first_runtime = TerminalSurfaceRuntime::new(data_dir.path().to_path_buf());
     let first = first_runtime
         .get_or_spawn_with_startup(
             24,
@@ -766,11 +750,10 @@ async fn test_atui_012_app再構築後は同一process扱いせず最終画面�
         .shutdown()
         .expect("stop, drain, and checkpoint first app process");
     drop(first_runtime);
-    drop(first_app);
     #[cfg(unix)]
     wait_process_exit(&first_pid).await;
 
-    let (_second_app, second_runtime) = build_runtime(data_dir.path());
+    let second_runtime = TerminalSurfaceRuntime::new(data_dir.path().to_path_buf());
     let restored = second_runtime
         .get_or_spawn_with_startup(
             24,
@@ -826,7 +809,7 @@ async fn test_atui_012_通常終了は実ptyを停止して出力drain後の最�
     let cwd = tempfile::TempDir::new().unwrap();
     let path = cwd.path().to_string_lossy().into_owned();
     let owner = session_owner(&path, "shutdown-drain");
-    let (_first_app, first_runtime) = build_runtime(data_dir.path());
+    let first_runtime = TerminalSurfaceRuntime::new(data_dir.path().to_path_buf());
     first_runtime
         .get_or_spawn(
             24,
@@ -885,7 +868,7 @@ async fn test_atui_012_通常終了は実ptyを停止して出力drain後の最�
         .is_err());
     drop(first_runtime);
 
-    let (_second_app, second_runtime) = build_runtime(data_dir.path());
+    let second_runtime = TerminalSurfaceRuntime::new(data_dir.path().to_path_buf());
     let restored = second_runtime
         .get_or_spawn(24, 120, Some(path), owner.clone(), None)
         .expect("cold restore final drained screen");
@@ -908,7 +891,7 @@ async fn test_atui_012_明示kill後はcheckpointを復元せず起動コマン�
         "printf x >> {}",
         shell_quote(&startup_count.to_string_lossy())
     );
-    let (_app, runtime) = build_runtime(data_dir.path());
+    let runtime = TerminalSurfaceRuntime::new(data_dir.path().to_path_buf());
 
     let first = runtime
         .get_or_spawn_with_startup(

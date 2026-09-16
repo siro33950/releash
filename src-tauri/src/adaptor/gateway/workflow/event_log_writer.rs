@@ -1,5 +1,3 @@
-use tauri::Manager;
-
 use crate::adaptor::gateway::workflow::event::WorkflowEvent;
 
 pub(crate) enum ProviderStopCommitOutcome {
@@ -7,11 +5,11 @@ pub(crate) enum ProviderStopCommitOutcome {
     CanonicalFactsCommittedWithProviderLifecycleFailure(String),
 }
 
-fn managed_store<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+fn managed_store(
+    app: &super::workflow_host::WorkflowRuntimeDependencies,
 ) -> Result<std::sync::Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>, String> {
-    app.try_state::<std::sync::Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>>()
-        .map(|store| store.inner().clone())
+    app.store
+        .clone()
         .ok_or_else(|| "workflow SQLite event authority is not managed".to_string())
 }
 
@@ -19,8 +17,8 @@ fn managed_store<R: tauri::Runtime>(
 ///
 /// 原子性依存は行単位の append のみ（純粋事実ログの規約）。導出表・遷移 event の
 /// 永続化は存在しない。
-pub(crate) fn append_required_events_for_app<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) fn append_required_events_for_app(
+    app: &super::workflow_host::WorkflowRuntimeDependencies,
     events: &[WorkflowEvent],
 ) -> Result<(), String> {
     if events.is_empty() {
@@ -36,8 +34,8 @@ pub(crate) fn append_required_events_for_app<R: tauri::Runtime>(
 /// canonical facts の追記後に provider lifecycle commit が失敗した場合は post-commit
 /// outcome として返す。呼び出し側は warning を記録するが、確定済みの Stop 受理は
 /// 失敗へ戻さない。retry と診断情報の永続化はこの境界では行わない。
-pub(crate) async fn append_provider_stop_for_app<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) async fn append_provider_stop_for_app(
+    app: &super::workflow_host::WorkflowRuntimeDependencies,
     events: &[WorkflowEvent],
     provider_events: Vec<crate::domain::provider_lifecycle::ScopedProviderLifecycleEvent>,
 ) -> Result<ProviderStopCommitOutcome, String> {

@@ -32,9 +32,9 @@ pub(super) fn command_execution_input_is_current(
 }
 
 impl WorkflowRuntimeHost {
-    pub(super) async fn commit_command_spawned<R: tauri::Runtime>(
+    pub(super) async fn commit_command_spawned(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &WorkflowRuntimeDependencies,
         input: &CommandExecutionInput,
         display_command: String,
     ) -> Result<bool, WorkflowRuntimeError> {

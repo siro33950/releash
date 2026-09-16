@@ -546,7 +546,7 @@ fn install_fixture_executable(
         input_lines,
         alternate_screen: true,
         lifecycle_command: Some(FixtureLifecycleCommand {
-            executable: env!("CARGO_BIN_EXE_releash").to_string(),
+            executable: env!("CARGO_BIN_EXE_releash-backend").to_string(),
             arguments: vec![
                 "hook".to_string(),
                 "receive".to_string(),
@@ -844,7 +844,7 @@ fn install_actual_provider_host(root: &Path) -> AgentSessionTuiAcceptanceHost {
         &releash_dev,
         format!(
             "#!/bin/sh\nexec \"{}\" \"$@\"\n",
-            env!("CARGO_BIN_EXE_releash")
+            env!("CARGO_BIN_EXE_releash-backend")
         ),
     )
     .unwrap();

@@ -3,13 +3,13 @@ use crate::domain::workflow::entities::workflow_execution::DelegateInjection;
 use crate::usecase::workflow::control_plane::WorkflowControlPlaneCommit;
 use crate::usecase::workflow::delegate::DelegateContinuationGateway;
 
-pub(crate) struct HostDelegateContinuation<R: tauri::Runtime> {
+pub(crate) struct HostDelegateContinuation {
     pub(crate) host: WorkflowRuntimeHost,
-    pub(crate) app: tauri::AppHandle<R>,
+    pub(crate) app: WorkflowRuntimeDependencies,
 }
 
 #[async_trait::async_trait]
-impl<R: tauri::Runtime> DelegateContinuationGateway for HostDelegateContinuation<R> {
+impl DelegateContinuationGateway for HostDelegateContinuation {
     fn current_timestamp(&self) -> f64 {
         current_timestamp()
     }
@@ -58,9 +58,9 @@ impl<R: tauri::Runtime> DelegateContinuationGateway for HostDelegateContinuation
 }
 
 impl WorkflowRuntimeHost {
-    pub(super) async fn inject_delegate_result<R: tauri::Runtime + 'static>(
+    pub(super) async fn inject_delegate_result(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &WorkflowRuntimeDependencies,
         execution_id: &str,
         injection: &DelegateInjection,
     ) -> Result<(), WorkflowRuntimeError> {

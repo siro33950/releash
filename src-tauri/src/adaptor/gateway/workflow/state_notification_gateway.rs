@@ -9,15 +9,15 @@ use crate::domain::workflow::{
     WorkflowRuntimeSnapshot,
 };
 
-fn emit_workflow_execution_view<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+fn emit_workflow_execution_view(
+    sink: &std::sync::Arc<crate::infrastructure::push::PushSink>,
     view: WorkflowExecutionView,
 ) {
     let payload = WorkflowExecutionChangedPayloadView {
         worktree_path: view.worktree_path.clone(),
         workflow_execution: view,
     };
-    BackendPush::WorkflowExecutionChanged(Box::new(payload)).emit(app);
+    BackendPush::WorkflowExecutionChanged(Box::new(payload)).emit(sink);
 }
 
 /// Maps the already-updated runtime snapshot to the public execution read model.
@@ -125,13 +125,13 @@ pub(crate) async fn build_workflow_execution_view_from_snapshot(
     )
 }
 
-pub(crate) async fn emit_workflow_execution_from_snapshot<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) async fn emit_workflow_execution_from_snapshot(
+    sink: &std::sync::Arc<crate::infrastructure::push::PushSink>,
     _worktree_path: &str,
     state: WorkflowRuntimeSnapshot,
 ) {
     let view = build_workflow_execution_view_from_snapshot(state).await;
-    emit_workflow_execution_view(app, view);
+    emit_workflow_execution_view(sink, view);
 }
 
 #[cfg(test)]

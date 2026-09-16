@@ -61,7 +61,9 @@ impl HotPathMetric {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StartupMetric {
+    #[cfg(any(test, feature = "desktop"))]
     AppStartup,
+    #[cfg(any(test, feature = "desktop"))]
     FirstWindowReady,
     FirstRepoSnapshotReady,
 }
@@ -120,7 +122,9 @@ impl TerminalLaunchMetric {
 impl StartupMetric {
     pub(crate) fn operation(self) -> &'static str {
         match self {
+            #[cfg(any(test, feature = "desktop"))]
             Self::AppStartup => "startup.app",
+            #[cfg(any(test, feature = "desktop"))]
             Self::FirstWindowReady => "startup.first_window_ready",
             Self::FirstRepoSnapshotReady => "startup.first_repo_snapshot_ready",
         }

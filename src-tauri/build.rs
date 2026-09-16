@@ -8,6 +8,7 @@ fn main() {
     if std::env::var("NEW_RELIC_LICENSE_KEY").is_err() {
         println!("cargo:rustc-env=NEW_RELIC_LICENSE_KEY=");
     }
+    #[cfg(feature = "desktop")]
     tauri_build::build()
 }
 
@@ -54,9 +55,14 @@ fn generate_client_protocol() {
         } else {
             "Command"
         };
-        let decode_test = "";
-        let encode_test = if message == "CommandRequest" {
+        let harness_only = "#[cfg(any(test, all(debug_assertions, feature = \"desktop\")))] ";
+        let decode_test = if message == "CommandRequest" {
             ""
+        } else {
+            harness_only
+        };
+        let encode_test = if message == "CommandRequest" {
+            harness_only
         } else {
             "#[cfg(test)] "
         };

@@ -11,7 +11,7 @@ use releash_lib::provider_lifecycle_acceptance::{
     AcceptanceScope, AcceptanceUnavailableReason, ProviderLifecycleAcceptanceHost,
 };
 
-const RELEASH_CLI_PATH: &str = env!("CARGO_BIN_EXE_releash");
+const RELEASH_CLI_PATH: &str = env!("CARGO_BIN_EXE_releash-backend");
 const SUPPORTED_CLAUDE_VERSION: &str = "2.1.223 (Claude Code)";
 const SUPPORTED_CODEX_VERSION: &str = "codex-cli 0.146.1";
 static CHARACTERIZATION_GATE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());

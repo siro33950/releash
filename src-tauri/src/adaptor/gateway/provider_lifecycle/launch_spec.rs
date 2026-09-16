@@ -163,12 +163,12 @@ impl ProviderLaunchSpec {
         }
     }
 
-    #[cfg(debug_assertions)]
+    #[cfg(any(test, all(debug_assertions, feature = "desktop")))]
     pub(crate) fn arguments(&self) -> &[String] {
         &self.arguments
     }
 
-    #[cfg(debug_assertions)]
+    #[cfg(any(test, all(debug_assertions, feature = "desktop")))]
     pub(crate) fn environment(&self) -> &[(String, String)] {
         &self.environment
     }

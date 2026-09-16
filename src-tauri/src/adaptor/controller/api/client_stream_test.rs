@@ -707,9 +707,9 @@ async fn test_terminal_stream_resize待機中も入力と出力とpushと通常�
     app.manage(Arc::new(
         crate::infrastructure::file_watcher::FileWatcherManager::default(),
     ));
-    dispatch.register_dependencies(
-        &crate::adaptor::controller::wiring::build_client_dependencies(app.handle()),
-    );
+    dispatch.register_dependencies(&crate::desktop_test_support::build_client_dependencies(
+        app.handle(),
+    ));
     let sink = app
         .state::<Arc<crate::infrastructure::push::PushSink>>()
         .inner()
@@ -798,7 +798,8 @@ async fn test_terminal_stream_resize待機中も入力と出力とpushと通常�
         .await
         .unwrap();
     for _ in 0..128 {
-        crate::adaptor::gateway::push::BackendPush::BranchListSync.emit(app.handle());
+        crate::adaptor::gateway::push::BackendPush::BranchListSync
+            .emit(&crate::desktop_test_support::push_sink(app.handle()));
     }
     socket
         .send(Message::Binary(
@@ -862,7 +863,8 @@ async fn test_terminal_stream_resize待機中も入力と出力とpushと通常�
             wire::envelope::Body::Push(_) => pushed = true,
             wire::envelope::Body::PushResync(_) => {
                 resynced = true;
-                crate::adaptor::gateway::push::BackendPush::BranchListSync.emit(app.handle());
+                crate::adaptor::gateway::push::BackendPush::BranchListSync
+                    .emit(&crate::desktop_test_support::push_sink(app.handle()));
             }
             wire::envelope::Body::Stream(frame) => {
                 if !streamed {
@@ -1097,9 +1099,9 @@ async fn test_terminal_stream_実wsのackとdetachはtauriと結果とbackend作
         app.manage(Arc::new(
             crate::infrastructure::file_watcher::FileWatcherManager::default(),
         ));
-        dispatch.register_dependencies(
-            &crate::adaptor::controller::wiring::build_client_dependencies(app.handle()),
-        );
+        dispatch.register_dependencies(&crate::desktop_test_support::build_client_dependencies(
+            app.handle(),
+        ));
         let dispatch = Arc::new(dispatch);
         app.manage(dispatch.clone());
         let router = api::test_support::test_router_with_optional_deps(

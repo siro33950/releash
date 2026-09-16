@@ -187,7 +187,7 @@ impl WorkflowAgentSessionPort for TestSessions {
 
 pub(super) struct Fixture {
     pub(super) _directory: tempfile::TempDir,
-    pub(super) app: tauri::App<tauri::test::MockRuntime>,
+    pub(super) app: WorkflowRuntimeDependencies,
     pub(super) store: Arc<LocalEventStore>,
     pub(super) host: WorkflowRuntimeHost,
     pub(super) worktrees: Arc<TestWorktrees>,
@@ -200,14 +200,7 @@ impl Fixture {
         let store =
             LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into()))
                 .unwrap();
-        let app = tauri::test::mock_builder()
-            .manage(Arc::new(crate::infrastructure::push::PushSink::new()))
-            .build(tauri::test::mock_context(tauri::test::noop_assets()))
-            .unwrap();
-        app.manage(store.clone());
-        app.manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
-            directory.path().into(),
-        ));
+        let app = test_helpers::dependencies(Some(store.clone()));
         let worktrees = Arc::new(TestWorktrees {
             failures: AtomicUsize::new(failures),
             ..Default::default()
@@ -220,10 +213,8 @@ impl Fixture {
             sessions.clone(),
             worktrees.clone(),
         );
-        let host = crate::adaptor::controller::wiring::wire_delegate_continuation(
-            app.handle().clone(),
-            host,
-        );
+        let host =
+            crate::adaptor::controller::wiring::wire_delegate_continuation(app.clone(), host);
         Self {
             _directory: directory,
             app,
@@ -245,7 +236,7 @@ impl Fixture {
         .unwrap();
         self.host
             .start_resolved_workflow(
-                self.app.handle(),
+                &self.app,
                 definition,
                 root.into(),
                 None,
@@ -299,7 +290,7 @@ impl Fixture {
         }];
         events.extend(applied.events);
         self.host
-            .write_log_required_batch(self.app.handle(), &events)
+            .write_log_required_batch(&self.app, &events)
             .unwrap();
         snapshot
     }
@@ -312,10 +303,7 @@ impl Fixture {
             self.sessions.clone(),
             self.host.isolated_worktrees.clone(),
         );
-        crate::adaptor::controller::wiring::wire_delegate_continuation(
-            self.app.handle().clone(),
-            host,
-        )
+        crate::adaptor::controller::wiring::wire_delegate_continuation(self.app.clone(), host)
     }
 
     pub(super) async fn command_artifact(&self, execution_id: &str) -> serde_json::Value {
@@ -344,11 +332,10 @@ impl Fixture {
     }
 }
 
-pub(super) fn record_workflow_execution_broadcasts<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(super) fn record_workflow_execution_broadcasts(
+    app: &WorkflowRuntimeDependencies,
 ) -> tokio::sync::broadcast::Receiver<Arc<[u8]>> {
-    app.state::<Arc<crate::infrastructure::push::PushSink>>()
-        .subscribe()
+    app.push.subscribe()
 }
 
 pub(super) fn take_workflow_execution_broadcasts(
@@ -374,4 +361,13 @@ pub(super) fn take_workflow_execution_broadcasts(
         }
     }
     broadcasts
+}
+
+pub(super) fn dependencies(store: Option<Arc<LocalEventStore>>) -> WorkflowRuntimeDependencies {
+    WorkflowRuntimeDependencies {
+        store,
+        config: None,
+        secrets: None,
+        push: Arc::new(crate::infrastructure::push::PushSink::new()),
+    }
 }

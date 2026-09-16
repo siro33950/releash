@@ -1,8 +1,6 @@
 //! Approval admission and session coordination.
 
-use std::sync::Arc;
-
-use tauri::Manager;
+use super::WorkflowRuntimeDependencies;
 
 #[cfg(test)]
 use crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecutionStatus;
@@ -22,10 +20,9 @@ pub(crate) fn validate_approve_comment(comment: Option<&str>) -> Result<(), Work
         .map_err(|err| WorkflowRuntimeError::ValidationError(err.to_string()))
 }
 
-pub(crate) fn workflow_approval_auto_approve_enabled<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-) -> bool {
-    app.try_state::<Arc<dyn crate::domain::app_config::ConfigRepository>>()
+pub(crate) fn workflow_approval_auto_approve_enabled(app: &WorkflowRuntimeDependencies) -> bool {
+    app.config
+        .as_ref()
         .and_then(|config| config.load().ok())
         .is_some_and(|cfg| cfg.workflow.approval_auto_approve)
 }

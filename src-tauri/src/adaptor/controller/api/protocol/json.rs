@@ -1,9 +1,9 @@
 use std::sync::LazyLock;
 
 use prost::Message;
-use prost_reflect::{
-    DescriptorPool, DynamicMessage, FieldDescriptor, Kind, MessageDescriptor, ReflectMessage, Value,
-};
+#[cfg(any(test, all(debug_assertions, feature = "desktop")))]
+use prost_reflect::MessageDescriptor;
+use prost_reflect::{DescriptorPool, DynamicMessage, FieldDescriptor, Kind, ReflectMessage, Value};
 use serde_json::{Map, Value as Json};
 
 static POOL: LazyLock<DescriptorPool> = LazyLock::new(|| {
@@ -29,6 +29,7 @@ fn label(options: DynamicMessage, name: &str) -> String {
         .to_string()
 }
 
+#[cfg(any(test, all(debug_assertions, feature = "desktop")))]
 pub(super) fn to_message<M: Message + Default>(name: &str, value: Json) -> Result<M, String> {
     let descriptor = POOL
         .get_message_by_name(name)
@@ -49,6 +50,7 @@ pub(super) fn from_message<M: Message>(name: &str, value: &M) -> Result<Json, St
     from_dynamic(&dynamic)
 }
 
+#[cfg(any(test, all(debug_assertions, feature = "desktop")))]
 fn to_dynamic(descriptor: MessageDescriptor, value: Json) -> Result<DynamicMessage, String> {
     let mut result = DynamicMessage::new(descriptor.clone());
     if flag(descriptor.options(), "json_unit") {
@@ -134,6 +136,7 @@ fn to_dynamic(descriptor: MessageDescriptor, value: Json) -> Result<DynamicMessa
     Ok(result)
 }
 
+#[cfg(any(test, all(debug_assertions, feature = "desktop")))]
 fn to_field(field: &FieldDescriptor, value: Json) -> Result<Value, String> {
     let literal = label(field.options(), "json_literal");
     if !literal.is_empty()
@@ -172,6 +175,7 @@ fn to_field(field: &FieldDescriptor, value: Json) -> Result<Value, String> {
     to_kind(field.kind(), value)
 }
 
+#[cfg(any(test, all(debug_assertions, feature = "desktop")))]
 fn to_kind(kind: Kind, value: Json) -> Result<Value, String> {
     Ok(match kind {
         Kind::Message(descriptor) => Value::Message(to_dynamic(descriptor, value)?),

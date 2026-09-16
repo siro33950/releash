@@ -17,6 +17,7 @@
 		"lint:fix": "biome check --write .",
 		"format": "biome format --write .",
 		"test": "vitest run",
+		"test:performance:daemon": "cargo build --manifest-path src-tauri/Cargo.toml --locked --release --no-default-features --features performance --bin releash-backend && node --test tests/helpers/performance-daemon.test.mjs",
 		"test:performance": "pnpm build && playwright test --config playwright.performance.config.ts",
 		"test:performance:tauri": "pnpm tauri build --no-bundle --features performance-wdio --config src-tauri/tauri.conf.performance.json && wdio run wdio.performance.conf.ts",
 		"test:performance:launch:fixture": "RELEASH_PERFORMANCE_LAUNCH_PROVIDER=fixture wdio run wdio.performance.conf.ts",

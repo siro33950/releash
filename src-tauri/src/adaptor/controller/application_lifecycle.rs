@@ -1,41 +1,20 @@
+#[cfg(feature = "desktop")]
+use crate::usecase::shutdown_coordinator::ApplicationQuitIntent;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::usecase::shutdown_coordinator::{
-    ApplicationProcessAction, ApplicationQuitIntent, ApplicationQuitOutcome,
-    ApplicationQuitRequest, ShutdownCoordinator, ShutdownEffectReadback, ShutdownTarget,
+    ApplicationProcessAction, ShutdownCoordinator, ShutdownEffectReadback, ShutdownTarget,
     ShutdownTargetExecutor,
 };
 
-pub(crate) struct TauriProcessLocalExitPort {
-    app: tauri::AppHandle,
-}
-
-impl TauriProcessLocalExitPort {
-    pub(crate) fn new(app: tauri::AppHandle) -> Self {
-        Self { app }
-    }
-}
-
-fn dispatch_startup_failure_process_exit(exit: impl FnOnce()) {
-    // `AppHandle::exit` itself emits `RunEvent::ExitRequested`. Grant the
-    // native exit before dispatch so the lifecycle hook does not prevent the
-    // one process-local effect and then join its own already-fired flight.
-    crate::infrastructure::platform::tray::mark_quit_requested();
-    exit();
-}
-
-impl crate::usecase::application_startup::ProcessLocalExitPort for TauriProcessLocalExitPort {
-    fn exit(&self, code: i32) {
-        dispatch_startup_failure_process_exit(|| self.app.exit(code));
-    }
-}
-
+#[cfg(feature = "desktop")]
 #[derive(Clone)]
 pub(crate) struct ApplicationQuitIngress {
     handler: Arc<dyn Fn(ApplicationQuitIntent) + Send + Sync>,
 }
 
+#[cfg(feature = "desktop")]
 impl ApplicationQuitIngress {
     pub(crate) fn new(handler: impl Fn(ApplicationQuitIntent) + Send + Sync + 'static) -> Self {
         Self {
@@ -53,20 +32,26 @@ pub(crate) trait ApplicationProcessActionPort: Send + Sync {
     fn execute(&self, action: ApplicationProcessAction);
 }
 
+#[cfg(all(debug_assertions, feature = "desktop"))]
 pub(crate) struct TauriApplicationProcessActionPort<R: tauri::Runtime> {
     app: tauri::AppHandle<R>,
 }
 
+#[cfg(all(debug_assertions, feature = "desktop"))]
 impl<R: tauri::Runtime> TauriApplicationProcessActionPort<R> {
     pub(crate) fn new(app: tauri::AppHandle<R>) -> Self {
         Self { app }
     }
 }
 
+#[cfg(all(debug_assertions, feature = "desktop"))]
 impl<R: tauri::Runtime> ApplicationProcessActionPort for TauriApplicationProcessActionPort<R> {
     fn execute(&self, action: ApplicationProcessAction) {
         match action {
-            ApplicationProcessAction::Exit { code } => self.app.exit(code),
+            ApplicationProcessAction::Exit { code } => {
+                crate::infrastructure::platform::tray::mark_quit_requested();
+                self.app.exit(code);
+            }
             // `request_restart` selects Tauri's relaunch path. The signed code
             // remains part of the durable/public action even though Tauri uses
             // its own reserved restart exit code for the process handoff.
@@ -96,17 +81,8 @@ impl ApplicationProcessActionDispatcher {
         {
             return false;
         }
-        crate::infrastructure::platform::tray::mark_quit_requested();
         port.execute(action);
         true
-    }
-
-    pub(crate) fn dispatch_tauri<R: tauri::Runtime>(
-        &self,
-        app: tauri::AppHandle<R>,
-        action: ApplicationProcessAction,
-    ) -> bool {
-        self.dispatch(&TauriApplicationProcessActionPort { app }, action)
     }
 }
 
@@ -307,73 +283,15 @@ pub(crate) fn build_shutdown_coordinator(
     ))
 }
 
-pub(crate) fn request_application_quit(
-    app: tauri::AppHandle,
-    coordinator: Arc<ShutdownCoordinator>,
-    process_actions: Arc<ApplicationProcessActionDispatcher>,
-    intent: ApplicationQuitIntent,
-) {
-    tauri::async_runtime::spawn(async move {
-        let request_id = format!("quit-{}", uuid::Uuid::new_v4());
-        match coordinator
-            .request(ApplicationQuitRequest {
-                principal: crate::usecase::application_lifecycle::operation::LOCAL_INSTALLATION_OPERATION_PRINCIPAL.to_string(),
-                request_id,
-                intent,
-            })
-            .await
-        {
-            Ok(ApplicationQuitOutcome::Accepted { receipt, state })
-                if state.grants_exit_permit() =>
-            {
-                process_actions.dispatch_tauri(app, receipt.intent.into());
-            }
-            Ok(ApplicationQuitOutcome::Accepted { .. })
-            | Ok(ApplicationQuitOutcome::OutcomeUnknown { .. })
-            | Ok(ApplicationQuitOutcome::RejectedBeforeCommit { .. })
-            | Err(_) => {
-                crate::infrastructure::platform::tray::QUIT_REQUESTED
-                    .store(false, Ordering::SeqCst);
-                log::error!("application shutdown aborted before durable activation");
-            }
-        }
-    });
-}
-
 #[cfg(test)]
 #[path = "application_lifecycle_test.rs"]
 mod application_lifecycle_tests;
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        dispatch_startup_failure_process_exit, ApplicationProcessActionDispatcher,
-        ApplicationProcessActionPort,
-    };
+    use super::{ApplicationProcessActionDispatcher, ApplicationProcessActionPort};
     use crate::usecase::shutdown_coordinator::ApplicationProcessAction;
     use std::sync::{Arc, Mutex};
-
-    #[test]
-    fn startup_failure_process_exit_grants_the_native_exit_before_dispatch() {
-        let _guard = crate::infrastructure::platform::tray::QUIT_REQUESTED_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        crate::infrastructure::platform::tray::QUIT_REQUESTED
-            .store(false, std::sync::atomic::Ordering::SeqCst);
-        let calls = std::sync::atomic::AtomicUsize::new(0);
-
-        dispatch_startup_failure_process_exit(|| {
-            assert!(
-                !crate::infrastructure::platform::window_lifecycle::should_prevent_exit(),
-                "the native ExitRequested callback must observe an exit permit"
-            );
-            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        });
-
-        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
-        crate::infrastructure::platform::tray::QUIT_REQUESTED
-            .store(false, std::sync::atomic::Ordering::SeqCst);
-    }
 
     #[derive(Default)]
     struct RecordingProcessPort {
@@ -391,12 +309,6 @@ mod tests {
 
     #[test]
     fn f11_concrete_process_port_routes_exit_and_restart_to_distinct_destinations() {
-        let _guard = crate::infrastructure::platform::tray::QUIT_REQUESTED_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        crate::infrastructure::platform::tray::QUIT_REQUESTED
-            .store(false, std::sync::atomic::Ordering::SeqCst);
-
         let exit_port = RecordingProcessPort::default();
         let exit_dispatcher = ApplicationProcessActionDispatcher::default();
         assert!(exit_dispatcher.dispatch(&exit_port, ApplicationProcessAction::Exit { code: -7 },));
@@ -427,12 +339,6 @@ mod tests {
 
     #[test]
     fn f11_first_process_destination_is_one_shot_across_concurrent_surface_replays() {
-        let _guard = crate::infrastructure::platform::tray::QUIT_REQUESTED_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        crate::infrastructure::platform::tray::QUIT_REQUESTED
-            .store(false, std::sync::atomic::Ordering::SeqCst);
-
         let dispatcher = Arc::new(ApplicationProcessActionDispatcher::default());
         let port = Arc::new(RecordingProcessPort::default());
         assert!(dispatcher.dispatch(
@@ -463,5 +369,19 @@ mod tests {
             &[ApplicationProcessAction::Restart { code: 23 }],
             "same/different identity replays and response loss cannot change or repeat the first process action"
         );
+    }
+}
+
+pub(crate) struct DaemonProcessActionPort(pub(crate) tokio::sync::mpsc::UnboundedSender<i32>);
+
+impl ApplicationProcessActionPort for DaemonProcessActionPort {
+    fn execute(&self, action: ApplicationProcessAction) {
+        let code = match action {
+            ApplicationProcessAction::Exit { code }
+            | ApplicationProcessAction::Restart { code } => code,
+        };
+        if self.0.send(code).is_err() {
+            log::error!("daemon exit receiver is unavailable");
+        }
     }
 }

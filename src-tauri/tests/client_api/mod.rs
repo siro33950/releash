@@ -247,13 +247,7 @@ async fn test_レビューコメント監視_events_json変更がwsだけへ届�
                 .push(serde_json::from_str::<Value>(event.payload()).unwrap());
         });
     let dir = fixture._data.path().join("review-comments");
-    spawn_review_comments_watcher(
-        dir.clone(),
-        Arc::new({
-            let app = fixture.host.app.handle().clone();
-            move || BackendPush::ReviewCommentsChanged("*").emit(&app)
-        }),
-    );
+    spawn_review_comments_watcher(dir.clone(), fixture.host.review_comment_notifier());
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // When
@@ -416,7 +410,7 @@ async fn test_backend通知_8イベントがwsだけへ届く() {
         BackendPush::WorkflowExecutionChanged(Box::new(workflow.clone())),
     ];
     for (index, push) in pushes.into_iter().enumerate() {
-        push.emit(fixture.host.app.handle());
+        fixture.host.emit(push);
         let frame = receive(&mut socket).await;
         // Then
         assert_eq!(frame["status"], "push");
@@ -561,7 +555,7 @@ async fn test_クライアントws_pushの欠落時は再同期通知後も同�
     let mut socket = fixture.connect().await;
     // When
     for _ in 0..65 {
-        BackendPush::BranchListSync.emit(fixture.host.app.handle());
+        fixture.host.emit(BackendPush::BranchListSync);
     }
     // Then
     let frame = tokio::time::timeout(Duration::from_secs(5), socket.next())
@@ -585,7 +579,7 @@ async fn test_クライアントws_pushの欠落時は再同期通知後も同�
         response,
         json!({"request_id":"after-lag", "result":"ws-branch"})
     );
-    BackendPush::BranchListSync.emit(fixture.host.app.handle());
+    fixture.host.emit(BackendPush::BranchListSync);
     assert_eq!(
         receive(&mut socket).await,
         json!({"status":"push", "event":"branch-list-sync", "payload":null})
@@ -808,8 +802,11 @@ async fn test_クライアントws_command完了待ちの間も容量を超え�
     // When / Then
     for index in 0..65 {
         let payload = workflow_payload();
-        BackendPush::WorkflowExecutionChanged(Box::new(payload.clone()))
-            .emit(fixture.host.app.handle());
+        fixture
+            .host
+            .emit(BackendPush::WorkflowExecutionChanged(Box::new(
+                payload.clone(),
+            )));
         let frame = receive(&mut socket).await;
         assert_eq!(
             frame["status"], "push",

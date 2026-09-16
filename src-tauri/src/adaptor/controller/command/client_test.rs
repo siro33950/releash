@@ -35,11 +35,36 @@ fn test_クライアント接続情報_terminalと同じ非master_tokenを返す
     let app = tauri::test::mock_builder()
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .unwrap();
-    assert!(client_endpoint(app.handle()).is_none());
-    app.manage(crate::adaptor::controller::state::TerminalStreamEndpoint {
+    assert!(client_endpoint(app.handle()).is_err());
+    let directory = tempfile::tempdir().unwrap();
+    let discovery = crate::infrastructure::local_api::LocalApiDiscovery {
         port: 12345,
-        token: Arc::from("client-only"),
-    });
+        token: "master-only".into(),
+        instance_id: "instance".into(),
+        pid: std::process::id(),
+        process_started_at:
+            crate::infrastructure::local_api::process_start_time(std::process::id()).unwrap(),
+    };
+    crate::infrastructure::local_api::LocalApiDiscoveryFile::create(
+        directory.path(),
+        discovery.clone(),
+    )
+    .unwrap();
+    crate::infrastructure::local_api::LocalApiDiscoveryFile::create_client(
+        directory.path(),
+        crate::infrastructure::local_api::LocalApiDiscovery {
+            token: "client-only".into(),
+            ..discovery
+        },
+    )
+    .unwrap();
+    app.manage(crate::usecase::client_connection::ClientConnectionUsecase(
+        Box::new(
+            crate::adaptor::gateway::local_api::ClientConnectionFileQuery(
+                directory.path().to_path_buf(),
+            ),
+        ),
+    ));
     // When
     let endpoint = client_endpoint(app.handle()).unwrap();
     // Then
@@ -104,9 +129,9 @@ fn parity_app_with_runtime(
             .clone(),
         authority,
     );
-    dispatch.register_dependencies(
-        &crate::adaptor::controller::wiring::build_client_dependencies(app.handle()),
-    );
+    dispatch.register_dependencies(&crate::desktop_test_support::build_client_dependencies(
+        app.handle(),
+    ));
     let dispatch = Arc::new(dispatch);
     app.manage(dispatch.clone());
     (app, dispatch)
@@ -316,9 +341,9 @@ async fn test_application起動結果_protoは本番shell入口の成功と失�
             Arc::new(crate::adaptor::controller::wiring::build_repository_usecase()),
             authority,
         );
-        dispatch.register_dependencies(
-            &crate::adaptor::controller::wiring::build_client_dependencies(app.handle()),
-        );
+        dispatch.register_dependencies(&crate::desktop_test_support::build_client_dependencies(
+            app.handle(),
+        ));
         // When: the shell must work without a managed client dispatch.
         let expected = invoke_tauri(&app, "get_application_startup_outcome", json!({})).await;
         assert!(expected.is_ok());
@@ -358,7 +383,13 @@ async fn test_クライアントdispatch_proto全commandの登録と引数検証
     // When / Then
     assert_eq!(wire::COMMAND_NAMES.len(), 174);
     for command in commands::tests::registered_command_names() {
-        if !["set_menu_items_enabled", "get_client_endpoint"].contains(&command) {
+        if ![
+            "set_menu_items_enabled",
+            "get_client_endpoint",
+            "apply_desktop_settings",
+        ]
+        .contains(&command)
+        {
             assert!(wire::COMMAND_NAMES.contains(&command), "{command}");
         }
     }
@@ -371,7 +402,9 @@ async fn test_クライアントdispatch_proto全commandの登録と引数検証
     }
     for command in [
         "menu",
+        "set_menu_items_enabled",
         "get_client_endpoint",
+        "apply_desktop_settings",
         "get_terminal_stream_endpoint",
     ] {
         assert!(!wire::COMMAND_NAMES.contains(&command), "{command}");
@@ -640,9 +673,9 @@ async fn test_未呼出34command_wsの実行結果とエラーがtauriと一致�
             .inner()
             .clone(),
     );
-    dispatch.register_dependencies(
-        &crate::adaptor::controller::wiring::build_client_dependencies(app.handle()),
-    );
+    dispatch.register_dependencies(&crate::desktop_test_support::build_client_dependencies(
+        app.handle(),
+    ));
     let dispatch = Arc::new(dispatch);
     app.manage(dispatch.clone());
     let router = api::test_support::test_router_with_optional_deps(
@@ -1288,7 +1321,7 @@ async fn test_workspace保存_wsがui追加fieldを受理し既存項目を再�
     std::fs::write(worktree.join("src/main.rs"), "fn main() {}\n").unwrap();
     let state = json!({"version":1,"tabs":{"editors":[{"path":"src/main.rs","name":"main.rs"}],"activeEditorPath":"src/main.rs"},"layout":{"centerTab":"editor","activeView":"git","leftNavCollapsed":true,"rightCollapsed":true,"rightBottomCollapsed":false,"rightBottomActiveTab":"terminal","selectedDiffFile":"src/main.rs","reviewCollapsed":true,"diffOnlyMode":true}});
     let (app, _) = parity_app();
-    let mut deps = crate::adaptor::controller::wiring::build_client_dependencies(app.handle());
+    let mut deps = crate::desktop_test_support::build_client_dependencies(app.handle());
     deps.workspace_state_store = Some(Arc::new(WorkspaceStateStore::new(data.path().to_owned())));
     let mut dispatch = ClientCommandDispatch::new(
         Arc::new(crate::adaptor::controller::wiring::build_repository_usecase()),

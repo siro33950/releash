@@ -1,12 +1,8 @@
 use parking_lot::{Condvar, Mutex};
 use std::collections::{HashMap, VecDeque};
-use std::marker::PhantomData;
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-#[cfg(test)]
-use tauri::Wry;
-use tauri::{AppHandle, Runtime};
 
 use crate::domain::terminal_surface::entities::{
     TerminalSurface, TerminalSurfaceInputIngressError, TerminalSurfaceInputIngressRegistry,
@@ -51,12 +47,12 @@ pub(crate) struct AttachedTerminalRuntime {
 }
 
 #[cfg(test)]
-pub type TerminalSurfaceRuntimeGateway = TerminalSurfaceRuntimeGatewayFor<Wry>;
+pub type TerminalSurfaceRuntimeGateway = TerminalSurfaceRuntimeGatewayFor;
 
 const CHECKPOINT_PERSIST_INTERVAL: Duration = Duration::from_millis(250);
 
-pub struct TerminalSurfaceRuntimeGatewayFor<R: Runtime> {
-    app: Option<AppHandle<R>>,
+pub struct TerminalSurfaceRuntimeGatewayFor {
+    data_dir: Option<std::path::PathBuf>,
     event_sink: Option<Arc<dyn TerminalSurfaceEventSink>>,
     registry: Arc<Mutex<TerminalSurfaceRegistry>>,
     input_ingress: Mutex<TerminalSurfaceInputIngressRegistry>,
@@ -66,14 +62,13 @@ pub struct TerminalSurfaceRuntimeGatewayFor<R: Runtime> {
     journal_enabled: bool,
     #[cfg(test)]
     snapshot_materialization_count: std::sync::atomic::AtomicUsize,
-    runtime: PhantomData<fn() -> R>,
 }
 
 #[cfg(test)]
-impl<R: Runtime> Default for TerminalSurfaceRuntimeGatewayFor<R> {
+impl Default for TerminalSurfaceRuntimeGatewayFor {
     fn default() -> Self {
         Self {
-            app: None,
+            data_dir: None,
             event_sink: None,
             registry: Arc::new(Mutex::new(TerminalSurfaceRegistry::default())),
             input_ingress: Mutex::new(TerminalSurfaceInputIngressRegistry::default()),
@@ -82,7 +77,6 @@ impl<R: Runtime> Default for TerminalSurfaceRuntimeGatewayFor<R> {
             native_pty: NativePtySystem,
             journal_enabled: true,
             snapshot_materialization_count: std::sync::atomic::AtomicUsize::new(0),
-            runtime: PhantomData,
         }
     }
 }
@@ -453,11 +447,11 @@ fn wait_for_output_drain(output_drained: &Arc<(Mutex<bool>, Condvar)>) {
     }
 }
 
-impl<R: Runtime> TerminalSurfaceRuntimeGatewayFor<R> {
+impl TerminalSurfaceRuntimeGatewayFor {
     #[cfg(test)]
-    pub fn new(app: AppHandle<R>) -> Self {
+    pub fn new(data_dir: std::path::PathBuf) -> Self {
         Self {
-            app: Some(app),
+            data_dir: Some(data_dir),
             event_sink: None,
             registry: Arc::new(Mutex::new(TerminalSurfaceRegistry::default())),
             input_ingress: Mutex::new(TerminalSurfaceInputIngressRegistry::default()),
@@ -466,17 +460,16 @@ impl<R: Runtime> TerminalSurfaceRuntimeGatewayFor<R> {
             native_pty: NativePtySystem,
             journal_enabled: true,
             snapshot_materialization_count: std::sync::atomic::AtomicUsize::new(0),
-            runtime: PhantomData,
         }
     }
 
     pub fn new_with_event_sink(
-        app: AppHandle<R>,
+        data_dir: std::path::PathBuf,
         event_sink: Arc<dyn TerminalSurfaceEventSink>,
         journal_enabled: bool,
     ) -> Self {
         Self {
-            app: Some(app),
+            data_dir: Some(data_dir),
             event_sink: Some(event_sink),
             registry: Arc::new(Mutex::new(TerminalSurfaceRegistry::default())),
             input_ingress: Mutex::new(TerminalSurfaceInputIngressRegistry::default()),
@@ -486,7 +479,6 @@ impl<R: Runtime> TerminalSurfaceRuntimeGatewayFor<R> {
             journal_enabled,
             #[cfg(test)]
             snapshot_materialization_count: std::sync::atomic::AtomicUsize::new(0),
-            runtime: PhantomData,
         }
     }
 
@@ -496,8 +488,8 @@ impl<R: Runtime> TerminalSurfaceRuntimeGatewayFor<R> {
             .load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    fn app(&self) -> Result<&AppHandle<R>, TerminalSurfaceGatewayError> {
-        self.app
+    fn data_dir(&self) -> Result<&std::path::PathBuf, TerminalSurfaceGatewayError> {
+        self.data_dir
             .as_ref()
             .ok_or_else(|| TerminalSurfaceGatewayError::new("Terminal runtime host is not bound"))
     }
@@ -578,7 +570,7 @@ impl<R: Runtime> TerminalSurfaceRuntimeGatewayFor<R> {
     }
 }
 
-impl<R: Runtime> TerminalSurfaceRepository for TerminalSurfaceRuntimeGatewayFor<R> {
+impl TerminalSurfaceRepository for TerminalSurfaceRuntimeGatewayFor {
     fn find_summary_by_session_key(&self, session_key: &str) -> Option<TerminalSurfaceSummary> {
         self.registry
             .lock()
@@ -591,7 +583,7 @@ impl<R: Runtime> TerminalSurfaceRepository for TerminalSurfaceRuntimeGatewayFor<
     }
 }
 
-impl<R: Runtime> TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor<R> {
+impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
     fn next_runtime_generation(&self) -> u64 {
         self.registry.lock().next_runtime_generation()
     }
@@ -600,12 +592,11 @@ impl<R: Runtime> TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor<R> 
         &self,
         session_key: &str,
     ) -> Result<Option<DomainTerminalCheckpoint>, TerminalSurfaceGatewayError> {
-        let Some(app) = self.app.as_ref() else {
+        let Some(data_dir) = self.data_dir.as_ref() else {
             return Ok(None);
         };
-        let data_dir = crate::infrastructure::platform::app_data_dir::resolve_data_dir(app)
-            .map_err(TerminalSurfaceGatewayError::new)?;
-        TerminalCheckpointFileStore::new(&data_dir, TERMINAL_SURFACE_SCROLLBACK_ROWS)
+
+        TerminalCheckpointFileStore::new(data_dir, TERMINAL_SURFACE_SCROLLBACK_ROWS)
             .load(session_key)
             .map(|checkpoint| checkpoint.map(into_domain_checkpoint))
             .map_err(TerminalSurfaceGatewayError::new)
@@ -615,12 +606,11 @@ impl<R: Runtime> TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor<R> 
         &self,
         session_key: &str,
     ) -> Result<(), TerminalSurfaceGatewayError> {
-        let Some(app) = self.app.as_ref() else {
+        let Some(data_dir) = self.data_dir.as_ref() else {
             return Ok(());
         };
-        let data_dir = crate::infrastructure::platform::app_data_dir::resolve_data_dir(app)
-            .map_err(TerminalSurfaceGatewayError::new)?;
-        TerminalCheckpointFileStore::new(&data_dir, TERMINAL_SURFACE_SCROLLBACK_ROWS)
+
+        TerminalCheckpointFileStore::new(data_dir, TERMINAL_SURFACE_SCROLLBACK_ROWS)
             .delete(session_key)
             .map_err(TerminalSurfaceGatewayError::new)
     }
@@ -629,10 +619,9 @@ impl<R: Runtime> TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor<R> 
         &self,
         request: TerminalRuntimeSpawnRequest,
     ) -> Result<(), TerminalSurfaceGatewayError> {
-        let app = self.app()?;
+        let data_dir = self.data_dir()?;
         let runtime_generation = request.runtime_generation;
-        let app_data_dir = crate::infrastructure::platform::app_data_dir::resolve_data_dir(app)
-            .map_err(TerminalSurfaceGatewayError::new)?;
+        let app_data_dir = data_dir.clone();
         let integration_dir = if request.process.is_some() {
             None
         } else {

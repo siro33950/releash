@@ -103,7 +103,7 @@ mod tests {
     }
 
     #[test]
-    fn test_本番tauri受付はshellの4commandだけを登録する() {
+    fn test_本番tauri受付はshellのcommandだけを登録する() {
         // Given
         let mut router = CommandRouter::new(dummy_handler());
         // When
@@ -118,9 +118,10 @@ mod tests {
             registered,
             [
                 "get_client_endpoint",
+                "apply_desktop_settings",
                 "get_application_startup_outcome",
                 "quit_after_startup_failure",
-                "set_menu_items_enabled"
+                "set_menu_items_enabled",
             ]
         );
         for command in crate::adaptor::controller::api::protocol::client::COMMAND_NAMES {

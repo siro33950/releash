@@ -32,6 +32,17 @@ impl DiscoveryContent {
             && self.process_started_at != 0
     }
 
+    #[cfg(any(test, feature = "desktop"))]
+    pub(crate) fn accepts_client(&self, client: &Self) -> bool {
+        self.is_acceptable()
+            && client.is_acceptable()
+            && self.port == client.port
+            && self.instance_id == client.instance_id
+            && self.pid == client.pid
+            && self.process_started_at == client.process_started_at
+            && self.token != client.token
+    }
+
     pub(crate) fn process_started_at(&self) -> u64 {
         self.process_started_at
     }

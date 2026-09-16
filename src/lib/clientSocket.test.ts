@@ -2437,6 +2437,7 @@ describe("購読画面のWS回復", () => {
 				.flatMap((socket) => socket.sendFrame.mock.calls)
 				.map(([bytes]) => fromBinary(EnvelopeSchema, bytes).body);
 			for (const command of [
+				"getAppSettings",
 				"getExternalEditor",
 				"detectEditors",
 				"getWorkflowConfig",
@@ -3087,6 +3088,47 @@ describe("購読画面のWS回復", () => {
 			expect(observed.resolved).toHaveBeenCalledTimes(1);
 			expect(observed.rejected).not.toHaveBeenCalled();
 			expect(getClientStatus().operations).toEqual([]);
+		},
+	);
+
+	it.each([false, true])(
+		"daemon の起動設定と更新要求の応答を同じ接続から shell へ適用する: crashReporting=%s",
+		async (enabled) => {
+			const initial = {
+				closeToTray: false,
+				startMinimized: true,
+				crashReporting: !enabled,
+				performanceTelemetry: true,
+			};
+			FakeWebSocket.hello = { desktopSettings: initial };
+			const update = invokeClient("update_crash_reporting", { enabled });
+			const observed = observeResult(update);
+			const { socket, frames } = await sent();
+			expect(frames[0]).toMatchObject({
+				command: "update_crash_reporting",
+				args: { enabled },
+			});
+			expect(invoke).toHaveBeenCalledWith("apply_desktop_settings", {
+				settings: expect.objectContaining(initial),
+			});
+			const changed = { ...initial, crashReporting: enabled };
+			expect(invoke).not.toHaveBeenCalledWith("apply_desktop_settings", {
+				settings: expect.objectContaining(changed),
+			});
+			expect(observed.resolved).not.toHaveBeenCalled();
+			expect(observed.rejected).not.toHaveBeenCalled();
+			socket.control({
+				response: {
+					requestId: frames[0].request_id,
+					desktopSettings: changed,
+					result: { updateCrashReporting: {} },
+				},
+			});
+			await expect(update).resolves.toBeNull();
+			expect(invoke).toHaveBeenLastCalledWith("apply_desktop_settings", {
+				settings: expect.objectContaining(changed),
+			});
+			expect(FakeWebSocket.instances).toHaveLength(1);
 		},
 	);
 });

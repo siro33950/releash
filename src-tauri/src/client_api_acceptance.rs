@@ -7,7 +7,6 @@ use crate::adaptor::controller::api::{ClientApiDeps, TerminalApiDeps};
 use crate::adaptor::controller::client::ClientCommandDispatch;
 use crate::adaptor::controller::command::client::client_endpoint;
 use crate::adaptor::controller::command::CommandRouter;
-use crate::adaptor::controller::state::TerminalStreamEndpoint;
 use crate::adaptor::controller::terminal_surface_runtime::TerminalSurfaceRuntime;
 use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
 use crate::adaptor::gateway::push::ClientPushGateway;
@@ -27,6 +26,22 @@ pub use crate::domain::repository::{Branch, BranchRepository, RepositoryError};
 use crate::domain::workflow::{ExecutionOrigin, RuntimeExecutionState, WorkflowRuntimeSnapshot};
 pub use crate::infrastructure::comment::watcher::spawn_review_comments_watcher;
 pub use crate::usecase::repository_state::snapshot::RepositorySnapshotChangedEvent;
+
+pub fn desktop_connection_app<R: tauri::Runtime>(
+    builder: tauri::Builder<R>,
+    data_dir: &Path,
+) -> tauri::App<R> {
+    let mut router: CommandRouter<Box<dyn Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync>> =
+        CommandRouter::new(Box::new(|_| false));
+    crate::adaptor::controller::command::client::register(&mut router);
+    let app = builder
+        .manage(Arc::new(ApplicationStartupAuthority::ready()))
+        .invoke_handler(move |invoke| router.handle(invoke))
+        .build(crate::application_context())
+        .unwrap();
+    crate::desktop::configure_client_connection(app.handle(), data_dir.to_path_buf()).unwrap();
+    app
+}
 
 pub struct ClientApiAcceptanceHost<R: tauri::Runtime> {
     pub app: tauri::App<R>,
@@ -70,10 +85,13 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
             .manage(sink.clone())
             .manage(authority)
             .manage(dispatch.clone())
-            .manage(TerminalStreamEndpoint {
-                port: binding.port(),
-                token: binding.terminal_bearer_token(),
-            })
+            .manage(crate::usecase::client_connection::ClientConnectionUsecase(
+                Box::new(
+                    crate::adaptor::gateway::local_api::ClientConnectionFileQuery(
+                        data_dir.to_path_buf(),
+                    ),
+                ),
+            ))
             .invoke_handler(move |invoke| router.handle(invoke))
             .build(crate::application_context())
             .unwrap();
@@ -88,8 +106,7 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
         let runtime = WorkflowRuntimeUsecase::new(Arc::new(
             crate::provider_lifecycle_acceptance::AcceptanceWorkflowRuntimeGateway::default(),
         ));
-        let terminal =
-            TerminalSurfaceRuntime::new_with_data_dir(app.handle().clone(), data_dir.to_path_buf());
+        let terminal = TerminalSurfaceRuntime::new(data_dir.to_path_buf());
         let router = crate::adaptor::controller::api::build_router(
             Arc::new(workflow),
             Arc::new(runtime),
@@ -108,6 +125,15 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
 
     pub fn endpoint(&self) -> ClientEndpoint {
         client_endpoint(self.app.handle()).unwrap()
+    }
+
+    pub fn review_comment_notifier(&self) -> Arc<dyn Fn() + Send + Sync> {
+        let sink = crate::desktop_test_support::push_sink(self.app.handle());
+        Arc::new(move || BackendPush::ReviewCommentsChanged("*").emit(&sink))
+    }
+
+    pub fn emit(&self, push: BackendPush<'_>) {
+        push.emit(&crate::desktop_test_support::push_sink(self.app.handle()));
     }
 
     pub fn subscribe_push(&self) -> tokio::sync::broadcast::Receiver<Arc<[u8]>> {
@@ -139,7 +165,7 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
             updated_at,
         };
         crate::adaptor::gateway::workflow::emit_workflow_execution_from_snapshot(
-            self.app.handle(),
+            &crate::desktop_test_support::push_sink(self.app.handle()),
             worktree_path,
             state,
         )
@@ -267,4 +293,22 @@ impl Drop for ClientRecoveryAcceptanceHost {
             server.abort();
         }
     }
+}
+
+pub async fn initialize_desktop_settings<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    use tauri::Manager;
+    let settings = app
+        .state::<crate::usecase::client_connection::ClientConnectionUsecase>()
+        .desktop_settings()
+        .await
+        .unwrap();
+    crate::desktop::apply_desktop_settings(app, settings);
+}
+
+pub fn desktop_window_preferences<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> (bool, bool) {
+    use tauri::Manager;
+    let settings = app
+        .state::<crate::infrastructure::platform::window_lifecycle::WindowPreferencesState>()
+        .read();
+    (settings.close_to_tray, settings.start_minimized)
 }
