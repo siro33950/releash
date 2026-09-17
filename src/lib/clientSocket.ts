@@ -12,6 +12,7 @@ import type {
 	ClientCommandResults,
 	ClientPushPayloads,
 } from "@/generated/client_types";
+import { getErrorMessage } from "@/lib/errorMessage";
 import {
 	ClientStreamDecoder,
 	createClientCommand,
@@ -23,12 +24,9 @@ import {
 	encodeClientRequestAck,
 	MAX_STREAM_FRAME_BYTES,
 } from "./clientProtocol";
+import { DesktopClientSocket as WebSocket } from "./desktopClientSocket";
 import type { TerminalSurfaceStreamItem } from "./terminalSurfaceStream";
 
-interface ClientEndpoint {
-	url: string;
-	authSubprotocol: string;
-}
 export type ClientCommand = keyof ClientCommandArgs;
 export type EmptyClientCommand = {
 	[K in ClientCommand]: Record<string, never> extends ClientCommandArgs[K]
@@ -44,17 +42,21 @@ export interface ClientStatus {
 		command: ClientCommand;
 		state: ClientRequestState;
 		expired: boolean;
+		canQuery?: boolean;
+		canDismiss?: boolean;
 	}>;
 }
 export class ClientTransportError extends Error {
 	constructor(
 		readonly requestId: string,
 		readonly state: ClientRequestState,
+		detail = "",
 	) {
 		super(
-			state === "not_sent"
+			(state === "not_sent"
 				? "接続が回復しなかったため、この要求は送信されていません（未実行）。"
-				: "操作結果を確認できません。元の操作の結果を確認しています。再実行は行っていません。",
+				: "操作結果を確認できません。元の操作の結果を確認しています。再実行は行っていません。") +
+				detail,
 		);
 	}
 }
@@ -71,6 +73,7 @@ interface PendingRequest extends RequestOptions {
 	fingerprint: Uint8Array;
 	orderingTarget: Uint8Array;
 	sent: boolean;
+	sending?: boolean;
 	instanceId: string;
 	uncertain: boolean;
 	expired: boolean;
@@ -81,6 +84,14 @@ interface PendingRequest extends RequestOptions {
 	resolve(value: unknown): void;
 	reject(reason: unknown): void;
 }
+interface HandoffReference {
+	id: string;
+	command: ClientCommand;
+	fingerprint: number[];
+	orderingTarget: number[];
+}
+let handoff: HandoffReference[] = [];
+let handoffLoaded = false;
 let connection: Promise<WebSocket> | null = null;
 let desktopSettingsUpdate: Promise<void> = Promise.resolve();
 let connectedSocket: WebSocket | null = null;
@@ -154,21 +165,35 @@ function publishStatus() {
 	status = {
 		connected: connectedSocket !== null,
 		message: connectionMessage,
-		operations: [...pending.values()]
-			.filter((request) => request.uncertain || !request.sent)
-			.map((request) => ({
-				id: request.id,
-				command: request.command,
-				state: request.uncertain ? ("unknown" as const) : ("not_sent" as const),
-				expired: request.expired,
+		operations: handoff
+			.filter((reference) => !pending.has(reference.id))
+			.map<ClientStatus["operations"][number]>((reference) => ({
+				id: reference.id,
+				command: reference.command,
+				state: "unknown" as ClientRequestState,
+				expired: true,
+				canQuery: false,
+				canDismiss: true,
 			}))
 			.concat(
-				[...notSentOperations].map(([id, command]) => ({
-					id,
-					command,
-					state: "not_sent" as const,
-					expired: true,
-				})),
+				[...pending.values()]
+					.filter((request) => request.uncertain || !request.sent)
+					.map((request) => ({
+						id: request.id,
+						command: request.command,
+						state: request.uncertain
+							? ("unknown" as const)
+							: ("not_sent" as const),
+						expired: request.expired,
+					}))
+					.concat(
+						[...notSentOperations].map(([id, command]) => ({
+							id,
+							command,
+							state: "not_sent" as const,
+							expired: true,
+						})),
+					),
 			),
 	};
 	for (const listener of statusListeners) listener();
@@ -176,7 +201,11 @@ function publishStatus() {
 export function getClientStatus() {
 	return status;
 }
-export function dismissClientOperation(id: string) {
+export async function dismissClientOperation(id: string) {
+	if (handoff.some((reference) => reference.id === id)) {
+		await invoke("forget_client_operation", { id });
+		handoff = handoff.filter((reference) => reference.id !== id);
+	}
 	notSentOperations.delete(id);
 	publishStatus();
 }
@@ -205,7 +234,14 @@ function probe() {
 	});
 }
 function predecessors(request: PendingRequest) {
-	const references = [];
+	const references: OperationReference[] = handoff.map((reference) => ({
+		$typeName: "releash.client.v1.OperationReference",
+		requestId: reference.id,
+		command: reference.command,
+		uncertain: true,
+		fingerprint: new Uint8Array(reference.fingerprint),
+		orderingTarget: new Uint8Array(reference.orderingTarget),
+	}));
 	for (const previous of pending.values()) {
 		if (previous === request) break;
 		references.push({
@@ -340,13 +376,18 @@ function scheduleReconnect() {
 		void connect().catch(() => {});
 	}, timing.reconnectIntervalMs);
 }
-function sendRequest(request: PendingRequest, authorized = false) {
-	if (!connectedSocket || Date.now() >= request.deadline) return;
+async function sendRequest(request: PendingRequest, authorized = false) {
+	if (!connectedSocket || request.sending || Date.now() >= request.deadline)
+		return;
+	const authorizedSocket = connectedSocket;
 	try {
 		if (!authorized) {
 			query(request);
 			return;
 		}
+		request.sending = true;
+		if (connectedSocket !== authorizedSocket || Date.now() >= request.deadline)
+			return;
 		const bytes = encodeClientCommand(
 			request.id,
 			request.command,
@@ -359,13 +400,32 @@ function sendRequest(request: PendingRequest, authorized = false) {
 			request.successors,
 		);
 		request.instanceId ||= instanceId;
-		connectedSocket.send(bytes);
+		const sending = connectedSocket.send(bytes);
 		request.sent = true;
+		await sending;
 	} catch (error) {
-		if (!request.sent) {
+		const state =
+			typeof error === "object" && error !== null && "state" in error
+				? error.state
+				: "unknown";
+		if (state === "not_sent" || !request.sent) {
+			request.sent = false;
+			notSentOperations.set(request.id, request.command);
 			pending.delete(request.id);
-			request.reject(error);
-		} else request.uncertain = true;
+			request.reject(
+				new ClientTransportError(
+					request.id,
+					"not_sent",
+					getErrorMessage(error),
+				),
+			);
+		} else {
+			request.uncertain = true;
+			request.onUncertain?.(new ClientTransportError(request.id, "unknown"));
+		}
+	} finally {
+		request.sending = false;
+		publishStatus();
 	}
 }
 function restoreWatches() {
@@ -385,12 +445,14 @@ function restoreWatches() {
 function connect(): Promise<WebSocket> {
 	if (connection) return connection;
 	startClock();
-	const attempt = invoke<ClientEndpoint | null>("get_client_endpoint")
-		.then((endpoint) => {
-			if (!endpoint) throw new Error("Client endpoint is unavailable");
+	const attempt = Promise.resolve()
+		.then(async () => {
+			if (!handoffLoaded) {
+				handoff = await invoke<HandoffReference[]>("list_client_handoff");
+				handoffLoaded = true;
+			}
 			return new Promise<WebSocket>((resolve, reject) => {
-				const socket = new WebSocket(endpoint.url, [endpoint.authSubprotocol]);
-				socket.binaryType = "arraybuffer";
+				const socket = new WebSocket();
 				const timeout = setTimeout(() => fail(), timing.connectTimeoutMs);
 				let closed = false;
 				function fail() {
@@ -440,6 +502,13 @@ function connect(): Promise<WebSocket> {
 					if (closed) return;
 					try {
 						const { body } = decodeClientEnvelope(event.data);
+						if (body.case === "hello") {
+							await invoke("validate_daemon_connection", {
+								launchId: body.value.launchId,
+								release: body.value.release,
+							});
+							if (closed) return;
+						}
 						if (
 							(body.case === "hello" || body.case === "response") &&
 							body.value.desktopSettings
@@ -599,6 +668,12 @@ function connect(): Promise<WebSocket> {
 								if (body.value.state === "not_sent")
 									notSentOperations.set(request.id, request.command);
 								pending.delete(request.id);
+							} else if (body.value.state === "restored_unknown") {
+								handoff = await invoke<HandoffReference[]>(
+									"list_client_handoff",
+								);
+								pending.delete(request.id);
+								request.reject(new ClientTransportError(request.id, "unknown"));
 							} else if (body.value.state === "unknown") {
 								request.uncertain = true;
 								request.onUncertain?.(
@@ -667,10 +742,15 @@ function connect(): Promise<WebSocket> {
 							return;
 						}
 						const outcome = body.value.outcome;
-						if (outcome.case === "error")
-							request.reject(decodeClientValue(outcome.value));
-						else if (outcome.case === "result") {
-							const value = decodeClientValue(outcome.value, request.command);
+						if (outcome.case !== "error" && outcome.case !== "result")
+							throw new Error("Invalid command response");
+						const value = decodeClientValue(
+							outcome.value,
+							outcome.case === "result" ? request.command : undefined,
+						);
+
+						if (outcome.case === "error") request.reject(value);
+						else {
 							if (request.watchId !== undefined) {
 								request.watchResult = Number(value);
 								const watch = watches.get(request.watchId);
@@ -682,7 +762,7 @@ function connect(): Promise<WebSocket> {
 								return;
 							}
 							request.resolve(value);
-						} else throw new Error("Invalid command response");
+						}
 						if (requestPolicy(request.command).waitsForResult)
 							socket.send(
 								encodeClientRequestAck(
@@ -710,6 +790,10 @@ function connect(): Promise<WebSocket> {
 								];
 							}
 						}
+
+						handoff = handoff.filter(
+							(reference) => reference.id !== request.id,
+						);
 						pending.delete(request.id);
 						for (const queued of pending.values())
 							if (!queued.sent) sendRequest(queued);
@@ -742,15 +826,23 @@ function connect(): Promise<WebSocket> {
 	connection = attempt;
 	return attempt;
 }
-function requestCommand(
+async function requestCommand(
 	command: ClientCommand,
 	args: Record<string, unknown>,
 	watchId?: number,
 	identity?: { id: string; instanceId: string; sent?: boolean },
 	options?: RequestOptions,
 ): Promise<unknown> {
+	const admissionId = identity?.id ?? crypto.randomUUID();
+	try {
+		await invoke("admit_client_command", { command });
+	} catch {
+		notSentOperations.set(admissionId, command);
+		publishStatus();
+		throw new ClientTransportError(admissionId, "not_sent");
+	}
 	startClock();
-	const requestId = identity?.id ?? crypto.randomUUID();
+	const requestId = admissionId;
 	const promise = new Promise((resolve, reject) => {
 		const request: PendingRequest = {
 			id: requestId,
@@ -929,6 +1021,8 @@ window.addEventListener("pagehide", () => {
 		);
 	pending.clear();
 	notSentOperations.clear();
+	handoff = [];
+	handoffLoaded = false;
 	listeners.clear();
 	refreshListeners.clear();
 	hasConnected = false;
@@ -948,3 +1042,8 @@ window.addEventListener("pagehide", () => {
 	connectionMessage = null;
 	publishStatus();
 });
+
+export async function completeClientRestoration(generation: number) {
+	const socket = await connect();
+	await socket.completeRestoration(generation);
+}

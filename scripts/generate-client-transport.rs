@@ -27,8 +27,9 @@ fn main() {
             Recovery::Connection => "connection",
         };
         println!(
-            "{name}: {{ recovery: \"{recovery}\", deadlineMs: {}, watch: {}, waitsForResult: {}, pollsResult: {}, disconnect: [\"{}\", \"{}\"] }},",
+            "{name}: {{ recovery: \"{recovery}\", deadlineMs: {}, persistsForRestart: {}, watch: {}, waitsForResult: {}, pollsResult: {}, disconnect: [\"{}\", \"{}\"] }},",
             deadline_ms(name),
+            persists_for_restart(name),
             is_watch(name),
             waits_for_result(name),
             polls_result(name),

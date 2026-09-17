@@ -156,7 +156,7 @@ impl ManagedWorktreeResolver for AcceptanceManagedWorktreeResolver {
 pub struct AgentSessionTuiAcceptanceHost<R: tauri::Runtime> {
     _app: tauri::App<R>,
     client_api: Arc<LocalApiServer>,
-    client_endpoint: crate::adaptor::protocol::client::ClientEndpoint,
+    client_endpoint: crate::client_api_acceptance::ClientEndpoint,
     exit_observer: tauri::async_runtime::JoinHandle<()>,
     exit_observer_cancellation:
         Arc<dyn crate::domain::terminal_surface::gateway::TerminalSurfaceEventCancellation>,
@@ -321,7 +321,7 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
             data_dir.join("desktop-client"),
         )
         .map_err(|error| error.to_string())?;
-        let client_endpoint = crate::adaptor::protocol::client::ClientEndpoint {
+        let client_endpoint = crate::client_api_acceptance::ClientEndpoint {
             url: format!("ws://127.0.0.1:{}/v1/client", client_binding.port()),
             auth_subprotocol: format!("releash-bearer.{}", client_binding.terminal_bearer_token()),
         };
@@ -355,7 +355,7 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
         })
     }
 
-    pub fn client_endpoint(&self) -> &crate::adaptor::protocol::client::ClientEndpoint {
+    pub fn client_endpoint(&self) -> &crate::client_api_acceptance::ClientEndpoint {
         &self.client_endpoint
     }
 

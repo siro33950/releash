@@ -1,3 +1,12 @@
+vi.mock("./desktopClientSocket", () => ({
+	DesktopClientSocket: vi.fn(function DesktopClientSocket() {
+		if (!new.target) throw new Error("DesktopClientSocket requires new");
+		return new WebSocket("ws://127.0.0.1:123/v1/client", [
+			"releash-bearer.client",
+		]);
+	}),
+}));
+
 import {
 	create,
 	fromBinary,
@@ -18,11 +27,6 @@ import {
 
 vi.unmock("./clientSocket");
 vi.mock("monaco-editor", () => ({}));
-vi.mock("@tauri-apps/plugin-autostart", () => ({
-	isEnabled: vi.fn().mockResolvedValue(false),
-	enable: vi.fn(),
-	disable: vi.fn(),
-}));
 
 import type { JsonValue } from "@bufbuild/protobuf";
 import { invoke } from "@tauri-apps/api/core";
@@ -276,10 +280,18 @@ describe("clientSocket", () => {
 		FakeWebSocket.instanceId = "backend-1";
 		FakeWebSocket.autoOpen = true;
 		vi.stubGlobal("WebSocket", FakeWebSocket);
-		vi.mocked(invoke).mockResolvedValue({
-			url: "ws://127.0.0.1:123/v1/client",
-			authSubprotocol: "releash-bearer.client",
-		});
+		vi.mocked(invoke).mockImplementation(async (command) =>
+			command === "get_login_item_status"
+				? {
+						enabled: false,
+						requested: false,
+						requiresApproval: false,
+						reason: null,
+					}
+				: command === "list_client_handoff"
+					? []
+					: undefined,
+		);
 	});
 	afterEach(() => {
 		for (const socket of FakeWebSocket.instances) socket.onclose?.();
@@ -288,6 +300,173 @@ describe("clientSocket", () => {
 		vi.useRealTimers();
 		vi.restoreAllMocks();
 	});
+
+	it("Rustが起動切替中として拒否した通常要求は照会にもキューにも入れない", async () => {
+		const delegate = vi.mocked(invoke).getMockImplementation();
+		vi.mocked(invoke).mockImplementation(async (name, args, options) => {
+			if (name === "admit_client_command") throw new Error("switching");
+			return delegate?.(name, args, options);
+		});
+		await expect(
+			invokeClient("add_repo_path", { path: "/blocked" }),
+		).rejects.toMatchObject({ state: "not_sent" });
+		expect(FakeWebSocket.instances).toEqual([]);
+		expect(getClientStatus().operations).toContainEqual(
+			expect.objectContaining({ command: "add_repo_path", state: "not_sent" }),
+		);
+		expect(invoke).not.toHaveBeenCalledWith(
+			"remember_client_operation",
+			expect.anything(),
+		);
+	});
+	it.each(["add_repo_path", "remove_repo_path"] as const)(
+		"復元した未確認handoffを%sの照会へ渡しRustの拘束に従う",
+		async (command) => {
+			const reference = {
+				id: "previous-launch-operation",
+				command: "add_repo_path",
+				fingerprint: Array(32).fill(1),
+				orderingTarget: Array(32).fill(2),
+			};
+			const delegate = vi.mocked(invoke).getMockImplementation();
+			vi.mocked(invoke).mockImplementation(async (name, args, options) =>
+				name === "list_client_handoff"
+					? [reference]
+					: delegate?.(name, args, options),
+			);
+			FakeWebSocket.nextDecision = { state: "restored_unknown" };
+			await expect(
+				invokeClient(command, { path: "/repo" }),
+			).rejects.toMatchObject({ state: "unknown" });
+			const socket = FakeWebSocket.instances[0];
+			expect(socket.proposals.mock.lastCall?.[0].request.predecessors).toEqual([
+				expect.objectContaining({
+					requestId: reference.id,
+					command: reference.command,
+					fingerprint: new Uint8Array(reference.fingerprint),
+					orderingTarget: new Uint8Array(reference.orderingTarget),
+					uncertain: true,
+				}),
+			]);
+			expect(
+				socket.sendFrame.mock.calls.map(
+					([bytes]) => fromBinary(EnvelopeSchema, bytes).body.case,
+				),
+			).not.toContain("request");
+			expect(getClientStatus().operations).toContainEqual(
+				expect.objectContaining({ id: reference.id, state: "unknown" }),
+			);
+			expect(invoke).not.toHaveBeenCalledWith(
+				"forget_client_operation",
+				expect.anything(),
+			);
+			const unrelated = invokeClient("get_current_branch", {
+				repoPath: "/other",
+			});
+			const { frames } = await sent();
+			const request = socket.sendFrame.mock.calls
+				.map(([bytes]) => fromBinary(EnvelopeSchema, bytes).body)
+				.find((body) => body.case === "request");
+			expect(request?.value).toMatchObject({
+				predecessors: socket.proposals.mock.lastCall?.[0].request.predecessors,
+			});
+			expect(
+				socket.proposals.mock.lastCall?.[0].request.predecessors,
+			).toHaveLength(1);
+			socket.message({ request_id: frames[0].request_id, result: "main" });
+			await expect(unrelated).resolves.toBe("main");
+		},
+	);
+
+	it("復元した結果不明は確認済みの保存成功後だけ後続の拘束を解く", async () => {
+		const reference = {
+			id: "old-operation",
+			command: "add_repo_path",
+			fingerprint: Array(32).fill(1),
+			orderingTarget: Array(32).fill(2),
+		};
+		const delegate = vi.mocked(invoke).getMockImplementation();
+		let deleteFails = true;
+		vi.mocked(invoke).mockImplementation(async (name, args, options) => {
+			if (name === "list_client_handoff") return [reference];
+			if (name === "forget_client_operation") {
+				if (deleteFails) throw new Error("disk full");
+				return;
+			}
+			return delegate?.(name, args, options);
+		});
+		const off = onClientConnection(vi.fn());
+		await vi.waitFor(() => expect(getClientStatus().connected).toBe(true));
+		expect(getClientStatus().operations).toContainEqual(
+			expect.objectContaining({
+				id: reference.id,
+				canQuery: false,
+				canDismiss: true,
+			}),
+		);
+		await expect(dismissClientOperation(reference.id)).rejects.toThrow(
+			"disk full",
+		);
+		expect(getClientStatus().operations).toHaveLength(1);
+		deleteFails = false;
+		await dismissClientOperation(reference.id);
+		expect(getClientStatus().operations).toEqual([]);
+		const next = invokeClient("add_repo_path", { path: "/repo" });
+		const { socket, frames } = await sent();
+		expect(socket.proposals.mock.lastCall?.[0].request.predecessors).toEqual(
+			[],
+		);
+		socket.message({ request_id: frames[0].request_id, result: true });
+		await expect(next).resolves.toBe(true);
+		off();
+	});
+	it.each([
+		["stale-launch", "0.4.13", "Daemon instance does not match"],
+		["expected-launch", "older-release", "Daemon release does not match"],
+	])(
+		"接続先検証の拒否で通常要求を送信しない: %s / %s",
+		async (launchId, release, reason) => {
+			// Given
+			vi.useFakeTimers();
+			vi.spyOn(console, "error").mockImplementation(() => {});
+			FakeWebSocket.hello = { launchId, release };
+			const original = vi.mocked(invoke).getMockImplementation();
+			vi.mocked(invoke).mockImplementation(async (command, args) => {
+				if (command === "validate_daemon_connection") throw new Error(reason);
+				return original?.(command, args);
+			});
+			const connected = vi.fn();
+			const unlisten = onClientConnection(connected);
+			// When
+			const result = observeResult(
+				invokeClient("update_external_editor", { editor: "vim" }),
+			);
+			await vi.advanceTimersByTimeAsync(0);
+			// Then
+			expect(invoke).toHaveBeenCalledWith("validate_daemon_connection", {
+				launchId,
+				release,
+			});
+			expect(getClientStatus().connected).toBe(false);
+			expect(getClientStatus().operations).toEqual([
+				expect.objectContaining({
+					command: "update_external_editor",
+					state: "not_sent",
+				}),
+			]);
+			expect(connected).not.toHaveBeenCalledWith(true);
+			const socket = FakeWebSocket.instances[0];
+			expect(socket.close).toHaveBeenCalledOnce();
+			expect(socket.proposals).not.toHaveBeenCalled();
+			expect(socket.sendFrame).not.toHaveBeenCalled();
+			expect(invoke).not.toHaveBeenCalledWith(
+				"remember_client_operation",
+				expect.anything(),
+			);
+			expect(result.resolved).not.toHaveBeenCalled();
+			unlisten();
+		},
+	);
 	it("1接続で複数要求をrequest_idで相関し逆順の応答を返す", async () => {
 		const first = invokeClient("get_current_branch", { repoPath: "/a" });
 		const second = invokeClient("get_current_branch", { repoPath: "/b" });
@@ -302,8 +481,12 @@ describe("clientSocket", () => {
 		socket.message({ request_id: frames[0].request_id, result: "a" });
 		await expect(first).resolves.toBe("a");
 		await expect(second).resolves.toBe("b");
-		expect(invoke).toHaveBeenCalledTimes(1);
-		expect(invoke).toHaveBeenCalledWith("get_client_endpoint");
+		expect(
+			vi
+				.mocked(invoke)
+				.mock.calls.filter(([command]) => command === "list_client_handoff"),
+		).toHaveLength(1);
+		expect(invoke).not.toHaveBeenCalledWith("get_client_endpoint");
 	});
 	it("安全整数範囲外のworkflow応答とpushでも共有要求とterminalを継続する", async () => {
 		const listener = vi.fn();
@@ -566,12 +749,14 @@ describe("clientSocket", () => {
 		expect(getClientStatus().operations).toEqual([]);
 	});
 	it("workflow pushを購読者へ届け解除後は届けない", async () => {
+		vi.useFakeTimers();
 		const listener = vi.fn();
 		const unlisten = await listenClient(
 			"workflow-execution-changed",
 			listener,
 			vi.fn(),
 		);
+		await vi.advanceTimersByTimeAsync(0);
 		const socket = FakeWebSocket.instances[0];
 		const payload = {
 			worktreePath: "/repo",
@@ -598,10 +783,12 @@ describe("clientSocket", () => {
 	});
 	it("未送信の変更要求は期限内の接続回復で一度送る", async () => {
 		vi.useFakeTimers();
-		vi.mocked(invoke).mockResolvedValueOnce(null);
+		FakeWebSocket.failOpen = true;
 		const result = invokeClient("update_crash_reporting", { enabled: true });
+		await vi.advanceTimersByTimeAsync(0);
+		FakeWebSocket.failOpen = false;
 		await vi.advanceTimersByTimeAsync(1_000);
-		const { socket, frames } = await sent();
+		const { socket, frames } = await sent(1, 1);
 		socket.message({ request_id: frames[0].request_id, result: null });
 		await expect(result).resolves.toBeNull();
 	});
@@ -620,13 +807,17 @@ describe("clientSocket", () => {
 			FakeWebSocket.instances.flatMap((socket) => socket.sendFrame.mock.calls),
 		).toEqual([]);
 	});
-	it.each([null, new Error("endpoint failed")])(
+	it.each(["handoff", "handshake"])(
 		"未送信の変更を期限後に未実行と表示し回復しても送らない: %s",
-		async (endpoint) => {
+		async (failure) => {
 			vi.useFakeTimers();
-			if (endpoint instanceof Error)
-				vi.mocked(invoke).mockRejectedValue(endpoint);
-			else vi.mocked(invoke).mockResolvedValue(endpoint);
+			vi.mocked(invoke).mockImplementation(async (command) => {
+				if (command === "admit_client_command") return undefined;
+				if (command === "list_client_handoff" && failure === "handoff")
+					throw new Error("handoff failed");
+				return command === "list_client_handoff" ? [] : undefined;
+			});
+			FakeWebSocket.failOpen = failure === "handshake";
 			const view = render(createElement(ClientConnectionBanner));
 			const result = invokeClient("add_repo_path", { path: "/repo" });
 			const rejected = expect(result).rejects.toMatchObject({
@@ -634,7 +825,9 @@ describe("clientSocket", () => {
 			});
 			await act(() => vi.advanceTimersByTimeAsync(1_000));
 			expect(screen.getByRole("status")).toHaveTextContent(
-				"接続情報を取得できません",
+				failure === "handoff"
+					? "接続情報を取得できません"
+					: "接続が切れています",
 			);
 			expect(screen.getByRole("status")).toHaveTextContent("未送信");
 			await act(() => vi.advanceTimersByTimeAsync(29_000));
@@ -643,10 +836,10 @@ describe("clientSocket", () => {
 				"add_repo_path: 要求は送信されていません（未実行）。",
 			);
 			const [operation] = getClientStatus().operations;
-			vi.mocked(invoke).mockResolvedValue({
-				url: "ws://127.0.0.1:123/v1/client",
-				authSubprotocol: "client",
-			});
+			vi.mocked(invoke).mockImplementation(async (command) =>
+				command === "list_client_handoff" ? [] : undefined,
+			);
+			FakeWebSocket.failOpen = false;
 			await act(() => vi.advanceTimersByTimeAsync(1_000));
 			expect(getClientStatus().connected).toBe(true);
 			expect(screen.getByRole("status")).toHaveTextContent("未実行");
@@ -655,7 +848,7 @@ describe("clientSocket", () => {
 					(socket) => socket.sendFrame.mock.calls,
 				),
 			).toEqual([]);
-			act(() => dismissClientOperation(operation.id));
+			await act(() => dismissClientOperation(operation.id));
 			expect(screen.queryByRole("status")).not.toBeInTheDocument();
 			view.unmount();
 		},
@@ -715,6 +908,7 @@ describe("clientSocket", () => {
 			operationId: initial.frames[0].request_id,
 		};
 		const retry = invokeClient("add_repo_path", { path: "/a" });
+		await Promise.resolve();
 		expect(socket.close).not.toHaveBeenCalled();
 		socket.message({ request_id: frames[0].request_id, result: true });
 		await expect(first).resolves.toBe(true);
@@ -785,15 +979,13 @@ describe("clientSocket", () => {
 		socket.message({ request_id: body.value.requestId, result: "completed" });
 		await expect(result).resolves.toBe("completed");
 	});
-	it.each(["endpoint", "unavailable", "handshake", "timeout"])(
+	it.each(["handoff", "handshake", "timeout"])(
 		"初期接続失敗(%s)後も有効な購読を回復し解除済み購読は呼ばない",
 		async (failure) => {
 			vi.useFakeTimers();
 			vi.spyOn(console, "warn").mockImplementation(() => {});
-			if (failure === "endpoint")
-				vi.mocked(invoke).mockRejectedValueOnce(new Error("endpoint failed"));
-			else if (failure === "unavailable")
-				vi.mocked(invoke).mockResolvedValueOnce(null);
+			if (failure === "handoff")
+				vi.mocked(invoke).mockRejectedValueOnce(new Error("handoff failed"));
 			else if (failure === "timeout") FakeWebSocket.autoOpen = false;
 			else FakeWebSocket.failOpen = true;
 			const listener = vi.fn();
@@ -840,6 +1032,7 @@ describe("clientSocket", () => {
 			listener,
 			reconnect,
 		);
+		await vi.advanceTimersByTimeAsync(0);
 		unlisten();
 		const socket = FakeWebSocket.instances[0];
 		socket.onopen?.();
@@ -852,7 +1045,11 @@ describe("clientSocket", () => {
 		await vi.advanceTimersByTimeAsync(5_000);
 		expect(listener).not.toHaveBeenCalled();
 		expect(reconnect).not.toHaveBeenCalled();
-		expect(invoke).toHaveBeenCalledTimes(1);
+		expect(
+			vi
+				.mocked(invoke)
+				.mock.calls.filter(([command]) => command === "list_client_handoff"),
+		).toHaveLength(1);
 	});
 
 	it("同じworktreeの画面は初期接続失敗から現在状態と後続pushを回復する", async () => {
@@ -861,13 +1058,18 @@ describe("clientSocket", () => {
 		let attempts = 0;
 		let current = { ...execution(), currentNode: "before" };
 		vi.mocked(invoke).mockImplementation(async (command) => {
-			if (command === "get_client_endpoint") {
-				if (++attempts === 1) throw new Error("endpoint failed");
-				return {
-					url: "ws://127.0.0.1:123/v1/client",
-					authSubprotocol: "releash-bearer.client",
-				};
+			if (command === "list_client_handoff") {
+				if (++attempts === 1) throw new Error("handoff unavailable");
+				return [];
 			}
+			if (
+				[
+					"validate_daemon_connection",
+					"forget_client_operation",
+					"admit_client_command",
+				].includes(command)
+			)
+				return undefined;
 			if (command === "resolve_active_execution_by_worktree")
 				return "execution-1";
 			if (command === "get_workflow_execution_state") return current;
@@ -924,12 +1126,15 @@ describe("clientSocket", () => {
 		const first = FakeWebSocket.instances[0];
 		first.onclose?.();
 		first.onerror?.();
-		vi.mocked(invoke).mockRejectedValueOnce(new Error("endpoint unavailable"));
+		FakeWebSocket.failOpen = true;
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		await vi.advanceTimersByTimeAsync(1_000);
 		expect(reconnect).not.toHaveBeenCalled();
-		await vi.advanceTimersByTimeAsync(1_000);
 		expect(FakeWebSocket.instances).toHaveLength(2);
+		FakeWebSocket.instances[1].onclose?.();
+		FakeWebSocket.failOpen = false;
+		await vi.advanceTimersByTimeAsync(1_000);
+		expect(FakeWebSocket.instances).toHaveLength(3);
 		expect(reconnect).toHaveBeenCalledTimes(1);
 		const frame = {
 			status: "push",
@@ -937,14 +1142,14 @@ describe("clientSocket", () => {
 			payload: { worktreePath: "/repo", workflowExecution: execution() },
 		};
 		first.message(frame);
-		FakeWebSocket.instances[1].message(frame);
+		FakeWebSocket.instances[2].message(frame);
 		expect(listener).toHaveBeenCalledTimes(1);
 		expect(removedListener).not.toHaveBeenCalled();
 		expect(removedReconnect).not.toHaveBeenCalled();
-		FakeWebSocket.instances[1].onclose?.();
+		FakeWebSocket.instances[2].onclose?.();
 		unlisten();
 		await vi.advanceTimersByTimeAsync(5_000);
-		expect(FakeWebSocket.instances).toHaveLength(2);
+		expect(FakeWebSocket.instances).toHaveLength(3);
 		warn.mockRestore();
 	});
 	it("review画像のWS応答をdata URLのまま表示へ渡す", async () => {
@@ -1245,10 +1450,18 @@ describe("通信停止と操作結果の復旧", () => {
 		FakeWebSocket.heartbeatResponds = true;
 		FakeWebSocket.instanceId = "backend-1";
 		vi.stubGlobal("WebSocket", FakeWebSocket);
-		vi.mocked(invoke).mockResolvedValue({
-			url: "ws://127.0.0.1:123/v1/client",
-			authSubprotocol: "releash-bearer.client",
-		});
+		vi.mocked(invoke).mockImplementation(async (command) =>
+			command === "get_login_item_status"
+				? {
+						enabled: false,
+						requested: false,
+						requiresApproval: false,
+						reason: null,
+					}
+				: command === "list_client_handoff"
+					? []
+					: undefined,
+		);
 	});
 	afterEach(() => {
 		window.dispatchEvent(new Event("pagehide"));
@@ -1846,10 +2059,21 @@ describe("Rustの復旧指示と監視所有の回帰", () => {
 		FakeWebSocket.heartbeatResponds = true;
 		FakeWebSocket.instanceId = "backend-1";
 		vi.stubGlobal("WebSocket", FakeWebSocket);
-		vi.mocked(invoke).mockResolvedValue({
-			url: "ws://127.0.0.1:123/v1/client",
-			authSubprotocol: "client",
-		});
+		vi.mocked(invoke).mockImplementation(async (command) =>
+			command === "get_login_item_status"
+				? {
+						enabled: false,
+						requested: false,
+						requiresApproval: false,
+						reason: null,
+					}
+				: command === "list_client_handoff"
+					? []
+					: {
+							url: "ws://127.0.0.1:123/v1/client",
+							authSubprotocol: "client",
+						},
+		);
 	});
 	afterEach(() => {
 		window.dispatchEvent(new Event("pagehide"));
@@ -1931,6 +2155,7 @@ describe("Rustの復旧指示と監視所有の回帰", () => {
 			operationId: first.frames[0].request_id,
 		};
 		const retry = invokeClient("add_repo_path", { path: "/repo" });
+		await Promise.resolve();
 		expect(
 			first.socket.proposals.mock.lastCall?.[0].request.predecessors[0],
 		).toMatchObject({
@@ -2204,10 +2429,21 @@ describe("購読画面のWS回復", () => {
 		FakeWebSocket.heartbeatResponds = true;
 		FakeWebSocket.instanceId = "backend-1";
 		vi.stubGlobal("WebSocket", FakeWebSocket);
-		vi.mocked(invoke).mockResolvedValue({
-			url: "ws://127.0.0.1:123/v1/client",
-			authSubprotocol: "client",
-		});
+		vi.mocked(invoke).mockImplementation(async (command) =>
+			command === "get_login_item_status"
+				? {
+						enabled: false,
+						requested: false,
+						requiresApproval: false,
+						reason: null,
+					}
+				: command === "list_client_handoff"
+					? []
+					: {
+							url: "ws://127.0.0.1:123/v1/client",
+							authSubprotocol: "client",
+						},
+		);
 	});
 	afterEach(() => {
 		window.dispatchEvent(new Event("pagehide"));
@@ -2330,7 +2566,15 @@ describe("購読画面のWS回復", () => {
 		expect(
 			vi
 				.mocked(invoke)
-				.mock.calls.every(([command]) => command === "get_client_endpoint"),
+				.mock.calls.every(([command]) =>
+					[
+						"validate_daemon_connection",
+						"admit_client_command",
+						"forget_client_operation",
+						"list_client_handoff",
+						"get_login_item_status",
+					].includes(command),
+				),
 		).toBe(true);
 		view.unmount();
 		offAgent();
@@ -2401,6 +2645,7 @@ describe("購読画面のWS回復", () => {
 				const operation = invokeClient("update_external_editor", {
 					editor: "zed",
 				});
+				await act(() => vi.advanceTimersByTimeAsync(0));
 				const requests = socket.sendFrame.mock.calls.map(
 					([bytes]) => fromBinary(EnvelopeSchema, bytes).body,
 				);
@@ -2452,7 +2697,15 @@ describe("購読画面のWS回復", () => {
 			expect(
 				vi
 					.mocked(invoke)
-					.mock.calls.every(([command]) => command === "get_client_endpoint"),
+					.mock.calls.every(([command]) =>
+						[
+							"validate_daemon_connection",
+							"admit_client_command",
+							"forget_client_operation",
+							"list_client_handoff",
+							"get_login_item_status",
+						].includes(command),
+					),
 			).toBe(true);
 			view.unmount();
 		},
@@ -2651,6 +2904,7 @@ describe("購読画面のWS回復", () => {
 			observeResult(result);
 			const other = invokeClient("get_current_branch", { repoPath: "/b" });
 			observeResult(other);
+			await Promise.resolve();
 			const target = queries[0];
 			socket.control({ operationStatus: { ...queries[1], state: "ready" } });
 			const withOther = await sent(2);
@@ -2960,6 +3214,7 @@ describe("購読画面のWS回復", () => {
 		};
 		const onUncertain = vi.fn();
 		const retried = invokeClient("create_worktree", args, { onUncertain });
+		await Promise.resolve();
 		expect(onUncertain).toHaveBeenCalledWith(
 			expect.objectContaining({
 				requestId: initial.frames[0].request_id,
@@ -3047,7 +3302,6 @@ describe("購読画面のWS回復", () => {
 			{
 				app: {
 					close_to_tray: false,
-					auto_launch: true,
 					start_minimized: false,
 				},
 			},
@@ -3125,9 +3379,19 @@ describe("購読画面のWS回復", () => {
 				},
 			});
 			await expect(update).resolves.toBeNull();
-			expect(invoke).toHaveBeenLastCalledWith("apply_desktop_settings", {
-				settings: expect.objectContaining(changed),
-			});
+			expect(
+				vi
+					.mocked(invoke)
+					.mock.calls.filter(
+						([command]) => command === "apply_desktop_settings",
+					)
+					.slice(-1)[0],
+			).toEqual([
+				"apply_desktop_settings",
+				{
+					settings: expect.objectContaining(changed),
+				},
+			]);
 			expect(FakeWebSocket.instances).toHaveLength(1);
 		},
 	);

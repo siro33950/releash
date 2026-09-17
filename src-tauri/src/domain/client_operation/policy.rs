@@ -195,7 +195,7 @@ pub fn ordering_scope(command: &str) -> Option<OrderingScope> {
         "resize_terminal_surface" => TerminalSize,
         "ack_terminal_surface_output" => TerminalOutput,
         "stop_watching" => Watch,
-        "update_app_settings" => ApplicationSettings,
+        "update_app_settings" | "update_login_item_preference" => ApplicationSettings,
         "update_external_editor" => ExternalEditor,
         "update_workflow_config" => WorkflowConfiguration,
         "update_crash_reporting" => CrashReporting,
@@ -222,7 +222,7 @@ pub fn may_replay(command: &str, same_generation: bool, expired: bool) -> bool {
 }
 
 pub fn waits_for_result(command: &str) -> bool {
-    !matches!(recovery(command), Recovery::Read | Recovery::Connection) || is_watch(command)
+    persists_for_restart(command) || is_watch(command)
 }
 
 pub fn polls_result(command: &str) -> bool {
@@ -252,3 +252,7 @@ pub fn deadline_ms(command: &str) -> u64 {
 #[cfg(test)]
 #[path = "policy_test.rs"]
 mod policy_tests;
+
+pub fn persists_for_restart(command: &str) -> bool {
+    !matches!(recovery(command), Recovery::Read | Recovery::Connection)
+}

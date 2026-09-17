@@ -67,12 +67,7 @@ fn b071_pre_admission_window_grants_no_plugin_ipc_capability() {
     let permissions = normal["permissions"]
         .as_array()
         .expect("normal workbench capability permissions");
-    for plugin in [
-        "fs:default",
-        "updater:default",
-        "process:allow-restart",
-        "autostart:allow-enable",
-    ] {
+    for plugin in ["fs:default"] {
         assert!(
             permissions.iter().any(|permission| permission == plugin),
             "Ready-only capability lost {plugin}"
@@ -104,7 +99,6 @@ fn test_desktop設定_daemonの設定だけを保持して閉じる操作へ渡�
     // Then
     let preferences = app.state::<WindowPreferencesState>().read();
     assert!(!preferences.close_to_tray);
-    assert!(preferences.start_minimized);
     // When
     settings.close_to_tray = true;
     super::apply_desktop_settings(app.handle(), settings);

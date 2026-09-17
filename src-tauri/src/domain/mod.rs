@@ -3,6 +3,8 @@ pub(crate) mod app_config;
 pub(crate) mod app_data_gc;
 pub(crate) mod code;
 pub(crate) mod comment;
+#[cfg(any(test, feature = "desktop"))]
+pub(crate) mod daemon_supervision;
 pub(crate) mod external_editor;
 pub(crate) mod git_host;
 pub(crate) mod local_api_discovery;
@@ -18,3 +20,6 @@ pub(crate) mod workspace_state;
 pub(crate) mod workspace_tree;
 
 pub mod client_operation;
+
+#[cfg(feature = "desktop")]
+pub(crate) mod login_item;

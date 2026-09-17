@@ -33,6 +33,7 @@ describe("useRepoList", () => {
 			expect(result.current.repoPaths).toEqual(["/repo/a", "/repo/b"]);
 		});
 		expect(mockInvoke).toHaveBeenCalledWith("get_repo_paths");
+		expect(result.current.loaded).toBe(true);
 	});
 
 	it("should not throw when invoke('get_repo_paths') fails", async () => {
@@ -43,6 +44,8 @@ describe("useRepoList", () => {
 		await act(async () => {});
 
 		expect(result.current.repoPaths).toEqual([]);
+		expect(result.current.loaded).toBe(false);
+		expect(result.current.loadError).toBe("backend error");
 	});
 
 	it("should update repoPaths when 'repo-paths-changed' event is received", async () => {

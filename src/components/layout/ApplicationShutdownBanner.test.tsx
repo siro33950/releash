@@ -30,7 +30,7 @@ describe("ApplicationShutdownBanner", () => {
 			}
 		});
 
-		render(<ApplicationShutdownBanner />);
+		render(<ApplicationShutdownBanner container={document.body} />);
 
 		const warning = await screen.findByTestId("shutdown-outcome-unknown");
 		expect(warning).toHaveTextContent("Application shutdown outcome unknown");
@@ -50,7 +50,7 @@ describe("ApplicationShutdownBanner", () => {
 			}
 		});
 
-		render(<ApplicationShutdownBanner />);
+		render(<ApplicationShutdownBanner container={document.body} />);
 
 		await vi.waitFor(() =>
 			expect(
@@ -60,5 +60,32 @@ describe("ApplicationShutdownBanner", () => {
 			).toBe(true),
 		);
 		expect(screen.queryByTestId("application-shutdown")).toBeNull();
+	});
+	it("表示先を切り替えても終了監督を再作成しない", async () => {
+		mockInvoke.mockImplementation(async (command) =>
+			command === "list_pending_application_attempts"
+				? { entries: [], next_cursor: null }
+				: {
+						type: "outcome_unknown",
+						operation_id: "pending",
+						intent: { type: "restart", code: 0 },
+					},
+		);
+		const first = document.createElement("div");
+		const second = document.createElement("div");
+		document.body.append(first, second);
+		const view = render(<ApplicationShutdownBanner container={first} />);
+		await screen.findByTestId("shutdown-outcome-unknown");
+		view.rerender(<ApplicationShutdownBanner container={second} />);
+		expect(first).toBeEmptyDOMElement();
+		expect(second).toHaveTextContent("pending");
+		expect(
+			mockInvoke.mock.calls.filter(
+				([command]) => command === "get_application_shutdown",
+			),
+		).toHaveLength(1);
+		view.unmount();
+		first.remove();
+		second.remove();
 	});
 });

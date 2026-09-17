@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::adaptor::gateway::app_config::{
-    app_to_domain, app_to_model, workflow_to_domain, workflow_to_model, AppSection, WorkflowSection,
+    app_to_model, workflow_to_domain, workflow_to_model, AppSection, WorkflowSection,
 };
 use crate::domain::app_config::ConfigRepository;
 use crate::usecase::app_config::AppConfigUsecase;
@@ -41,11 +41,22 @@ pub(crate) fn get_app_settings_shared(
 
 pub(crate) async fn update_app_settings_shared(
     state: &Arc<dyn ConfigRepository>,
-    app: AppSection,
+    close_to_tray: bool,
+    start_minimized: bool,
 ) -> Result<(), String> {
     let usecase = build_usecase(state.clone());
-    let app = app_to_domain(&app);
-    tokio::task::spawn_blocking(move || usecase.update_app_settings(app))
+    tokio::task::spawn_blocking(move || usecase.update_app_settings(close_to_tray, start_minimized))
+        .await
+        .map_err(map_join_error)?
+        .map_err(String::from)
+}
+
+pub(crate) async fn update_login_item_preference_shared(
+    state: &Arc<dyn ConfigRepository>,
+    requested: bool,
+) -> Result<(), String> {
+    let usecase = build_usecase(state.clone());
+    tokio::task::spawn_blocking(move || usecase.update_login_item_preference(requested))
         .await
         .map_err(map_join_error)?
         .map_err(String::from)

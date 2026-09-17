@@ -156,6 +156,7 @@ message CommandRequest {
     TakeTerminalInputPerformanceSamplesRequest take_terminal_input_performance_samples = 138;
     TakeTerminalLaunchPerformanceSamplesRequest take_terminal_launch_performance_samples = 139;
     UpdateAppSettingsRequest update_app_settings = 140;
+    UpdateLoginItemPreferenceRequest update_login_item_preference = 184;
     UpdateCrashReportingRequest update_crash_reporting = 141;
     UpdateExternalEditorRequest update_external_editor = 142;
     UpdatePerformanceTelemetryRequest update_performance_telemetry = 143;
@@ -335,6 +336,7 @@ message CommandResult {
     ListTerminalInputPerformanceSampleV1 take_terminal_input_performance_samples = 138;
     ListTerminalLaunchPerformanceSampleV1 take_terminal_launch_performance_samples = 139;
     Unit update_app_settings = 140;
+    Unit update_login_item_preference = 184;
     Unit update_crash_reporting = 141;
     Unit update_external_editor = 142;
     Unit update_performance_telemetry = 143;
@@ -2935,7 +2937,16 @@ message ListTerminalLaunchPerformanceSampleV1 {
 }
 
 message UpdateAppSettingsRequest {
-  optional AppSection app = 1 [json_name = "app", (json_required) = true];
+  optional WindowSettings app = 1 [json_name = "app", (json_required) = true];
+}
+
+message WindowSettings {
+  optional bool close_to_tray = 1 [json_name = "close_to_tray", (json_required) = true];
+  optional bool start_minimized = 3 [json_name = "start_minimized", (json_required) = true];
+}
+
+message UpdateLoginItemPreferenceRequest {
+  optional bool requested = 1 [json_name = "requested", (json_required) = true];
 }
 
 message UpdateCrashReportingRequest {
@@ -3735,6 +3746,8 @@ message ClientHello {
   map<string, uint64> deadlines_ms = 8;
   map<string, CommandPolicy> policies = 9;
   DesktopSettings desktop_settings = 10;
+  string launch_id = 11;
+  string release = 12;
 }
 
 message CommandPolicy {

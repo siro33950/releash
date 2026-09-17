@@ -31,60 +31,23 @@ impl fmt::Display for CliInstallStatus {
     }
 }
 
-pub(crate) fn ensure_cli_symlink_installed() {
+#[cfg(feature = "desktop")]
+pub(crate) fn install_cli() -> Result<String, String> {
+    #[cfg(feature = "performance")]
+    probe_install_attempt()?;
     #[cfg(target_os = "macos")]
     {
-        if !should_install_cli_symlink_for_startup(
-            cfg!(debug_assertions),
-            cfg!(feature = "performance"),
-        ) {
-            log::info!("Skipping Releash CLI install for this startup profile");
-            return;
+        if cfg!(debug_assertions) || cfg!(feature = "performance") {
+            return Err("Install the CLI from a release build of Releash.app.".into());
         }
-        let exe = match std::env::current_exe() {
-            Ok(path) => path,
-            Err(e) => {
-                log::warn!("Failed to resolve Releash executable for CLI install: {e}");
-                return;
-            }
-        };
-        match install_cli_symlink_for_startup(
-            cfg!(debug_assertions),
-            cfg!(feature = "performance"),
-            &exe,
-            Path::new(CLI_LINK_PATH),
-        ) {
-            Ok(()) => {}
-            Err(e) => log::warn!("Failed to install Releash CLI: {e}"),
-        }
+        let executable = std::env::current_exe()
+            .map_err(|e| e.to_string())?
+            .with_file_name("releash-backend");
+        let status = install_cli_symlink(&executable, Path::new(CLI_LINK_PATH))?;
+        Ok(format!("Releash CLI {status}"))
     }
-}
-
-#[cfg(all(unix, any(target_os = "macos", test, debug_assertions)))]
-pub(crate) fn install_cli_symlink_for_startup(
-    is_debug: bool,
-    is_performance: bool,
-    executable: &Path,
-    link: &Path,
-) -> Result<(), String> {
-    if should_install_cli_symlink_for_startup(is_debug, is_performance) {
-        let status = install_cli_symlink(executable, link)?;
-        log::info!("Releash CLI {status}");
-    }
-    Ok(())
-}
-
-/// `/usr/local/bin/releash` を install してよいかをビルド種別から判定する純粋関数。
-///
-/// dev ビルドは本番 CLI 名 `releash` を所有しない（spec [01]「dev 起動による本番 CLI の不変性」）。
-/// `/usr/local/bin/releash` を debug binary に張り替えると本番 CLI を破壊するため、
-/// dev 起動はこの install 経路に関与しない。
-#[cfg(any(target_os = "macos", test, debug_assertions))]
-pub(crate) fn should_install_cli_symlink_for_startup(
-    is_debug_build: bool,
-    is_performance_harness: bool,
-) -> bool {
-    !is_debug_build && !is_performance_harness
+    #[cfg(not(target_os = "macos"))]
+    Err("CLI installation requires macOS.".into())
 }
 
 #[cfg(all(unix, any(target_os = "macos", test, debug_assertions)))]
@@ -101,6 +64,8 @@ fn install_cli_symlink_with_runner<F>(
 where
     F: FnMut(&str) -> Result<(), String>,
 {
+    #[cfg(feature = "performance")]
+    probe_install_attempt()?;
     if is_app_translocated(exe_path) {
         return Ok(CliInstallStatus::SkippedTranslocated(
             exe_path.to_path_buf(),
@@ -339,22 +304,13 @@ mod tests {
     fn applescript_string_escapes_backslashes_and_quotes() {
         assert_eq!(applescript_string(r#"echo "a\b""#), r#""echo \"a\\b\"""#);
     }
+}
 
-    #[test]
-    fn should_install_cli_symlink_skips_dev_build() {
-        // dev (debug) ビルドは本番 CLI を所有しないため install しない
-        // （spec [01]「dev 起動による本番 CLI の不変性」）。
-        assert!(!should_install_cli_symlink_for_startup(true, false));
+#[cfg(feature = "performance")]
+fn probe_install_attempt() -> Result<(), String> {
+    if let Some(path) = std::env::var_os("RELEASH_TEST_CLI_INSTALL_ATTEMPT") {
+        std::fs::write(path, b"CLI installation attempted").map_err(|e| e.to_string())?;
+        return Err("CLI installation intercepted by acceptance probe".into());
     }
-
-    #[test]
-    fn should_install_cli_symlink_allows_release_build() {
-        // 本番 (release) ビルドは `/usr/local/bin/releash` を更新する。
-        assert!(should_install_cli_symlink_for_startup(false, false));
-    }
-
-    #[test]
-    fn test_should_install_cli_symlink_skips_performance_harness() {
-        assert!(!should_install_cli_symlink_for_startup(false, true));
-    }
+    Ok(())
 }

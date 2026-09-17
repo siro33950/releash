@@ -1,8 +1,8 @@
-use super::*;
 use crate::adaptor::controller::client::ClientCommandDispatch;
 use crate::usecase::application_startup::ApplicationStartupAuthority;
 use serde_json::Value;
 use std::sync::Arc;
+use tauri::Manager;
 
 #[tokio::test]
 async fn test_クライアントdispatch_startup失敗時はusecase実行前に拒否する() {
@@ -26,56 +26,6 @@ async fn test_クライアントdispatch_startup失敗時はusecase実行前に�
     assert_eq!(
         wire::from_value(error).unwrap()["code"],
         "APPLICATION_UNAVAILABLE"
-    );
-}
-
-#[test]
-fn test_クライアント接続情報_terminalと同じ非master_tokenを返す() {
-    // Given
-    let app = tauri::test::mock_builder()
-        .build(tauri::test::mock_context(tauri::test::noop_assets()))
-        .unwrap();
-    assert!(client_endpoint(app.handle()).is_err());
-    let directory = tempfile::tempdir().unwrap();
-    let discovery = crate::infrastructure::local_api::LocalApiDiscovery {
-        port: 12345,
-        token: "master-only".into(),
-        instance_id: "instance".into(),
-        pid: std::process::id(),
-        process_started_at:
-            crate::infrastructure::local_api::process_start_time(std::process::id()).unwrap(),
-    };
-    crate::infrastructure::local_api::LocalApiDiscoveryFile::create(
-        directory.path(),
-        discovery.clone(),
-    )
-    .unwrap();
-    crate::infrastructure::local_api::LocalApiDiscoveryFile::create_client(
-        directory.path(),
-        crate::infrastructure::local_api::LocalApiDiscovery {
-            token: "client-only".into(),
-            ..discovery
-        },
-    )
-    .unwrap();
-    app.manage(crate::usecase::client_connection::ClientConnectionUsecase(
-        Box::new(
-            crate::adaptor::gateway::local_api::ClientConnectionFileQuery(
-                directory.path().to_path_buf(),
-            ),
-        ),
-    ));
-    // When
-    let endpoint = client_endpoint(app.handle()).unwrap();
-    // Then
-    assert_eq!(endpoint.url, "ws://127.0.0.1:12345/v1/client");
-    assert_eq!(endpoint.auth_subprotocol, "releash-bearer.client-only");
-    assert_eq!(
-        serde_json::to_value(endpoint).unwrap(),
-        serde_json::json!({
-            "url": "ws://127.0.0.1:12345/v1/client",
-            "authSubprotocol": "releash-bearer.client-only"
-        })
     );
 }
 
@@ -381,14 +331,11 @@ async fn test_クライアントdispatch_proto全commandの登録と引数検証
     // Given
     let (_app, dispatch) = parity_app();
     // When / Then
-    assert_eq!(wire::COMMAND_NAMES.len(), 174);
+    assert_eq!(wire::COMMAND_NAMES.len(), 175);
     for command in commands::tests::registered_command_names() {
-        if ![
-            "set_menu_items_enabled",
-            "get_client_endpoint",
-            "apply_desktop_settings",
-        ]
-        .contains(&command)
+        if command != "set_menu_items_enabled"
+            && !commands::client::COMMAND_NAMES.contains(&command)
+            && !commands::desktop_lifecycle::COMMAND_NAMES.contains(&command)
         {
             assert!(wire::COMMAND_NAMES.contains(&command), "{command}");
         }
@@ -403,10 +350,12 @@ async fn test_クライアントdispatch_proto全commandの登録と引数検証
     for command in [
         "menu",
         "set_menu_items_enabled",
-        "get_client_endpoint",
         "apply_desktop_settings",
         "get_terminal_stream_endpoint",
-    ] {
+    ]
+    .into_iter()
+    .chain(commands::desktop_lifecycle::COMMAND_NAMES.iter().copied())
+    {
         assert!(!wire::COMMAND_NAMES.contains(&command), "{command}");
     }
     for args in [json!({}), json!({"filePath":9})] {
@@ -1443,4 +1392,75 @@ async fn test_生成要求_必須fieldと非有限数をusecase実行前に拒�
         crate::adaptor::controller::client::finite(1.5).unwrap(),
         1.5
     );
+}
+
+#[tokio::test]
+async fn test_登録希望_proto経由の一般設定保存から独立して永続化する() {
+    // Given
+    let (app, dispatch) = parity_app();
+    let repository = app.state::<Arc<dyn crate::domain::app_config::ConfigRepository>>();
+    let original = repository.load().unwrap();
+    for requested in [true, false] {
+        // When
+        assert_parity(
+            &dispatch,
+            "update_login_item_preference",
+            json!({"requested": requested}),
+            Ok(Value::Null),
+        )
+        .await;
+        assert_parity(
+            &dispatch,
+            "update_app_settings",
+            json!({"app": {"close_to_tray": false, "start_minimized": true}}),
+            Ok(Value::Null),
+        )
+        .await;
+        // Then
+        let mut expected = original.clone();
+        expected.app.auto_launch = requested;
+        expected.app.close_to_tray = false;
+        expected.app.start_minimized = true;
+        assert_eq!(repository.load().unwrap(), expected);
+    }
+    // When
+    let error = dispatch
+        .dispatch(wire::command_request::Command::UpdateLoginItemPreference(
+            wire::UpdateLoginItemPreferenceRequest { requested: None },
+        ))
+        .await
+        .unwrap_err();
+    // Then
+    assert_eq!(wire::from_value(error).unwrap()["code"], "INVALID_REQUEST");
+    assert!(!repository.load().unwrap().app.auto_launch);
+}
+
+#[tokio::test]
+async fn test_一般設定保存_必須入力の欠落ではどの設定も変更しない() {
+    // Given
+    let (app, dispatch) = parity_app();
+    let repository = app.state::<Arc<dyn crate::domain::app_config::ConfigRepository>>();
+    let original = repository.load().unwrap();
+    for app in [
+        None,
+        Some(wire::WindowSettings {
+            close_to_tray: None,
+            start_minimized: Some(true),
+        }),
+        Some(wire::WindowSettings {
+            close_to_tray: Some(false),
+            start_minimized: None,
+        }),
+    ] {
+        // When
+        let error = dispatch
+            .dispatch(wire::command_request::Command::UpdateAppSettings(
+                wire::UpdateAppSettingsRequest { app },
+            ))
+            .await
+            .unwrap_err();
+        // Then
+        assert_eq!(wire::from_value(error).unwrap()["code"], "INVALID_REQUEST");
+        assert_eq!(repository.load().unwrap(), original);
+    }
 }

@@ -10,7 +10,7 @@
     "windows": [
       {
         "label": "main",
-        "create": true,
+        "create": false,
         "title": "Releash Performance",
         "width": 1440,
         "height": 900,

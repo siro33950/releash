@@ -135,6 +135,8 @@ async fn serve(
     let hello = Envelope {
         body: Some(Body::Hello(wire::ClientHello {
             instance_id: deps.operations.instance_id.to_string(),
+            launch_id: std::env::var("RELEASH_DAEMON_LAUNCH_ID").unwrap_or_default(),
+            release: env!("CARGO_PKG_VERSION").into(),
             desktop_settings: None,
             heartbeat_interval_ms: policy::HEARTBEAT_INTERVAL_MS,
             heartbeat_timeout_ms: policy::HEARTBEAT_TIMEOUT_MS,

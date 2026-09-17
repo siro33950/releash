@@ -24,30 +24,39 @@ impl Drop for Daemon {
 }
 
 fn start(directory: &Path) -> (Daemon, Value) {
-    let mut child = Daemon(
-        Command::new(env!("CARGO_BIN_EXE_releash-backend"))
-            .arg("--internal-daemon")
-            .arg(directory)
-            .env(
-                "RELEASH_DATA_DIR",
-                directory.join(if cfg!(target_os = "macos") {
-                    "Library/Application Support/com.releash.app.performance"
-                } else {
-                    ".local/share/com.releash.app.performance"
-                }),
-            )
-            .env("SHELL", "/bin/sh")
-            .env("XDG_CONFIG_HOME", directory.join("config"))
-            .env("HOME", directory)
-            .env("CLAUDE_CONFIG_DIR", directory.join(".claude"))
-            .env("CODEX_HOME", directory.join(".codex"))
-            .current_dir(directory)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .unwrap(),
-    );
+    start_with_parent(directory, false)
+}
+fn start_with_parent(directory: &Path, parent_pipe: bool) -> (Daemon, Value) {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_releash-backend"));
+    command
+        .arg("--internal-daemon")
+        .arg(directory)
+        .env(
+            "RELEASH_DATA_DIR",
+            directory.join(if cfg!(target_os = "macos") {
+                "Library/Application Support/com.releash.app.performance"
+            } else {
+                ".local/share/com.releash.app.performance"
+            }),
+        )
+        .env("SHELL", "/bin/sh")
+        .env("XDG_CONFIG_HOME", directory.join("config"))
+        .env("HOME", directory)
+        .env("CLAUDE_CONFIG_DIR", directory.join(".claude"))
+        .env("CODEX_HOME", directory.join(".codex"))
+        .current_dir(directory)
+        .env("RELEASH_DAEMON_LAUNCH_ID", uuid::Uuid::new_v4().to_string())
+        .stdin(if parent_pipe {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit());
+    if parent_pipe {
+        command.env("RELEASH_DAEMON_PARENT_PIPE", "1");
+    }
+    let mut child = Daemon(command.spawn().unwrap());
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         assert!(
@@ -56,7 +65,9 @@ fn start(directory: &Path) -> (Daemon, Value) {
         );
         if let Ok(bytes) = std::fs::read(directory.join("client-api.json")) {
             if let Ok(discovery) = serde_json::from_slice::<Value>(&bytes) {
-                return (child, discovery);
+                if discovery["pid"].as_u64() == Some(child.0.id() as u64) {
+                    return (child, discovery);
+                }
             }
         }
         assert!(Instant::now() < deadline, "daemon discovery timed out");
@@ -108,6 +119,8 @@ async fn connect(discovery: &Value) -> (Socket, String) {
     let wire::envelope::Body::Hello(hello) = receive(&mut socket).await else {
         panic!("hello")
     };
+    assert!(!hello.launch_id.is_empty());
+    assert_eq!(hello.release, env!("CARGO_PKG_VERSION"));
     (socket, hello.instance_id)
 }
 
@@ -166,6 +179,12 @@ async fn quit(daemon: &mut Daemon, socket: &mut Socket, restart: bool) {
     loop {
         if let Some(status) = daemon.0.try_wait().unwrap() {
             assert!(status.success(), "{status}");
+            let mut proof = String::new();
+            std::io::Read::read_to_string(&mut daemon.0.stdout.take().unwrap(), &mut proof)
+                .unwrap();
+            assert!(proof
+                .lines()
+                .any(|line| line == "releash-shutdown-complete"));
             return;
         }
         assert!(
@@ -674,76 +693,71 @@ async fn test_daemon本番配線_各通知元からwsへpushを届ける() {
     quit(&mut daemon, &mut socket, false).await;
 }
 
-#[cfg(all(debug_assertions, unix))]
-#[test]
-#[ignore = "subprocess entry for the startup installation test"]
-fn test_daemon_cli_install_child() {
-    let directory = std::env::var_os("RELEASH_TEST_CLI_INSTALL_DIR").expect("test directory");
-    let directory = std::path::PathBuf::from(directory);
-    assert_eq!(
-        releash_lib::daemon_cli_install_acceptance(
-            directory.clone(),
-            env!("CARGO_BIN_EXE_releash-backend").into(),
-            directory.join("usr/local/bin/releash"),
-        ),
-        0
-    );
-}
-
-#[cfg(all(debug_assertions, unix))]
 #[tokio::test(flavor = "multi_thread")]
-async fn test_daemon起動_releaseの設置経路がbackendへのcliリンクを作る() {
-    // Given
+async fn test_親ui終了_daemonとterminal子孫が一括停止なしで終了する() {
     let directory = tempfile::tempdir().unwrap();
-    let mut daemon = Daemon(
-        Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "test_daemon_cli_install_child",
-                "--ignored",
-                "--nocapture",
-            ])
-            .env("RELEASH_TEST_CLI_INSTALL_DIR", directory.path())
-            .env("HOME", directory.path())
-            .env("XDG_CONFIG_HOME", directory.path().join("config"))
-            .env("CLAUDE_CONFIG_DIR", directory.path().join(".claude"))
-            .env("CODEX_HOME", directory.path().join(".codex"))
-            .env("SHELL", "/bin/sh")
-            .env_remove("RELEASH_DATA_DIR")
-            .current_dir(directory.path())
-            .spawn()
-            .unwrap(),
-    );
-    // When
-    let discovery = tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
+    let (mut daemon, discovery) = start_with_parent(directory.path(), true);
+    let (mut socket, _) = connect(&discovery).await;
+    request(
+        &mut socket,
+        "terminal-parent",
+        wire::command_request::Command::GetOrSpawnTerminalSurface(
+            wire::GetOrSpawnTerminalSurfaceRequest {
+                rows: Some(24),
+                cols: Some(80),
+                cwd: Some(directory.path().to_string_lossy().into_owned()),
+                owner: Some(wire::TerminalSurfaceOwnerV1 {
+                    variant: Some(wire::terminal_surface_owner_v1::Variant::Workspace(
+                        wire::TerminalSurfaceOwnerV1Workspace {
+                            workspace_path: Some(directory.path().to_string_lossy().into_owned()),
+                        },
+                    )),
+                }),
+                startup_command: Some(
+                    "sleep 100 & echo $! > grandchild-pid; printf '%s' \"$$\" > child-pid".into(),
+                ),
+                ..Default::default()
+            },
+        ),
+    )
+    .await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !directory.path().join("child-pid").exists() {
+        assert!(Instant::now() < deadline);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let pids: Vec<i32> = ["child-pid", "grandchild-pid"]
+        .iter()
+        .map(|name| {
+            std::fs::read_to_string(directory.path().join(name))
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap()
+        })
+        .collect();
+    drop(daemon.0.stdin.take());
+    loop {
+        if let Some(status) = daemon.0.try_wait().unwrap() {
+            assert!(!status.success());
+            break;
+        }
+        assert!(Instant::now() < deadline, "daemon survived parent EOF");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    for pid in pids {
+        while unsafe { libc::kill(pid, 0) } == 0 {
             assert!(
-                daemon.0.try_wait().unwrap().is_none(),
-                "daemon startup failed"
+                Instant::now() < deadline,
+                "daemon descendant survived: {pid}"
             );
-            if let Ok(bytes) = std::fs::read(directory.path().join("client-api.json")) {
-                break serde_json::from_slice::<Value>(&bytes).unwrap();
-            }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-    })
-    .await
-    .unwrap();
-    // Then
-    let link = directory.path().join("usr/local/bin/releash");
-    assert_eq!(
-        std::fs::read_link(&link).unwrap(),
-        Path::new(env!("CARGO_BIN_EXE_releash-backend"))
-    );
-    let status = Command::new(&link)
-        .args(["workflow", "status", "550e8400-e29b-41d4-a716-446655440000"])
-        .env("RELEASH_DATA_DIR", directory.path())
-        .output()
-        .unwrap();
-    assert_eq!(status.status.code(), Some(4), "{:?}", status);
-    let help = Command::new(&link).arg("--help").output().unwrap();
-    assert!(help.status.success());
-    assert!(String::from_utf8(help.stdout).unwrap().contains("workflow"));
+    }
+    let mut output = String::new();
+    std::io::Read::read_to_string(&mut daemon.0.stdout.take().unwrap(), &mut output).unwrap();
+    assert!(!output.contains("releash-shutdown-complete"));
+    let (mut restarted, discovery) = start(directory.path());
     let (mut socket, _) = connect(&discovery).await;
-    quit(&mut daemon, &mut socket, false).await;
+    quit(&mut restarted, &mut socket, false).await;
 }

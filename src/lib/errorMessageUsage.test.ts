@@ -10,6 +10,7 @@ const TYPESCRIPT_SOURCES = import.meta.glob(
 );
 
 const TARGET_FILES = [
+	"src/components/DaemonBoundary.tsx",
 	"src/components/workspace/WorkspaceList.tsx",
 	"src/hooks/useProviderAvailabilitySettings.ts",
 	"src/components/panels/AgentSessionPanel/AgentSessionPanel.tsx",
@@ -17,6 +18,7 @@ const TARGET_FILES = [
 	"src/hooks/useReviewFileView.ts",
 	"src/hooks/useDiffComments.ts",
 	"src/lib/telemetry.ts",
+	"src/lib/clientSocket.ts",
 	"src/hooks/useTerminal.ts",
 	"src/components/panels/NodeContentView/NodeContentView.tsx",
 	"src/hooks/useWorkspaceNodeDetail.ts",
@@ -29,6 +31,8 @@ const TARGET_FILES = [
 	"src/screens/useWorktreeGitActions.ts",
 	"src/hooks/useWorkflowConfig.ts",
 	"src/hooks/useAppSettings.ts",
+	"src/hooks/useSettings.ts",
+	"src/hooks/useRepoList.ts",
 	"src/components/workspace/DeleteWorktreeDialog.tsx",
 	"src/components/panels/DiffToolbar.tsx",
 	"src/hooks/useWorkspaceTreeNodes.ts",

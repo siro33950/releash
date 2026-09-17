@@ -6,6 +6,7 @@ import {
 	useState,
 } from "react";
 import { invokeClient as invoke } from "@/lib/clientSocket";
+import { getErrorMessage } from "@/lib/errorMessage";
 import {
 	type AppSettings,
 	DEFAULT_SETTINGS,
@@ -63,6 +64,8 @@ function applyTheme(theme: Theme): void {
 }
 
 export function useSettings() {
+	const [loaded, setLoaded] = useState(false);
+	const [loadError, setLoadError] = useState<string | null>(null);
 	const [settings, setSettings] = useState<AppSettings>(loadSettings);
 
 	useLayoutEffect(() => {
@@ -74,13 +77,16 @@ export function useSettings() {
 		invoke("get_performance_telemetry_enabled")
 			.then((enabled) => {
 				if (cancelled || typeof enabled !== "boolean") return;
+				setLoaded(true);
 				setSettings((prev) =>
 					prev.performanceTelemetry === enabled
 						? prev
 						: { ...prev, performanceTelemetry: enabled },
 				);
 			})
-			.catch(() => {});
+			.catch((error) => {
+				if (!cancelled) setLoadError(getErrorMessage(error));
+			});
 		return () => {
 			cancelled = true;
 		};
@@ -140,6 +146,8 @@ export function useSettings() {
 	}, []);
 
 	return {
+		loaded,
+		loadError,
 		settings,
 		updateTheme,
 		updateFontSize,

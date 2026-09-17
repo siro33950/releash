@@ -36,16 +36,7 @@ use desktop::application_context;
 pub use desktop::run;
 
 pub fn run_daemon(data_dir: Option<std::path::PathBuf>) -> i32 {
-    run_daemon_with_cli_install(
-        data_dir,
-        infrastructure::platform::cli_install::ensure_cli_symlink_installed,
-    )
-}
-
-fn run_daemon_with_cli_install(
-    data_dir: Option<std::path::PathBuf>,
-    install_cli: impl FnOnce(),
-) -> i32 {
+    infrastructure::process::parent_lifetime::watch_parent_pipe();
     let result = (|| -> Result<i32, Box<dyn std::error::Error>> {
         let data_dir = match data_dir {
             Some(path) => path,
@@ -75,7 +66,6 @@ fn run_daemon_with_cli_install(
                 data_dir,
                 #[cfg(any(target_os = "macos", target_os = "linux"))]
                 provider_initial_search_path,
-                install_cli,
             )?;
             daemon.wait().await.map_err(Into::into)
         })
@@ -92,20 +82,3 @@ fn run_daemon_with_cli_install(
 
 #[cfg(all(debug_assertions, feature = "desktop"))]
 mod desktop_test_support;
-
-#[cfg(all(debug_assertions, unix))]
-pub fn daemon_cli_install_acceptance(
-    data_dir: std::path::PathBuf,
-    executable: std::path::PathBuf,
-    link: std::path::PathBuf,
-) -> i32 {
-    run_daemon_with_cli_install(Some(data_dir), move || {
-        infrastructure::platform::cli_install::install_cli_symlink_for_startup(
-            false,
-            false,
-            &executable,
-            &link,
-        )
-        .unwrap();
-    })
-}

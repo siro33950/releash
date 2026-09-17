@@ -7,6 +7,8 @@ pub(crate) mod client;
 #[cfg(feature = "desktop")]
 pub(crate) mod command;
 pub(crate) mod daemon;
+#[cfg(feature = "desktop")]
+pub(crate) mod desktop_lifecycle;
 pub(crate) mod state;
 pub(crate) mod terminal_surface_runtime;
 pub(crate) mod wiring;

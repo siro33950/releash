@@ -985,7 +985,7 @@ async fn test_確定後続操作_削除を受領した後の別世代復旧で�
     original.recover = true;
     let remove =
         wire::CommandRequest::from_value("remove_repo_path", json!({"path":"/repo"})).unwrap();
-    let identity = super::super::client_operation::identity(&remove).unwrap();
+    let identity = crate::adaptor::controller::api::client_operation::identity(&remove).unwrap();
     original.successors.push(wire::OperationReference {
         request_id: "remove".into(),
         command: "remove_repo_path".into(),
@@ -1285,7 +1285,8 @@ async fn test_監視の保持期限_遅延受領を拒否して新しい購読�
     assert_eq!(*stopped.lock().unwrap(), [1]);
     let mut replacement =
         wire::CommandRequest::from_value("start_watching", json!({"path":"/repo"})).unwrap();
-    let identity = super::super::client_operation::identity(&replacement).unwrap();
+    let identity =
+        crate::adaptor::controller::api::client_operation::identity(&replacement).unwrap();
     replacement.request_id = "replacement".into();
     replacement.instance_id = "current".into();
     replacement.predecessors.push(wire::OperationReference {

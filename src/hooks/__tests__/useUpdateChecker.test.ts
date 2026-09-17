@@ -1,17 +1,14 @@
-import { relaunch } from "@tauri-apps/plugin-process";
-import { check } from "@tauri-apps/plugin-updater";
+import { invoke } from "@tauri-apps/api/core";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useUpdateChecker } from "../useUpdateChecker";
 
-const mockCheck = vi.mocked(check);
-const mockRelaunch = vi.mocked(relaunch);
+const mockCheck = vi.mocked(invoke);
 
 describe("useUpdateChecker", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		mockCheck.mockResolvedValue(null);
-		mockRelaunch.mockResolvedValue(undefined);
 	});
 
 	it("should not check when enabled=false", () => {
@@ -42,13 +39,11 @@ describe("useUpdateChecker", () => {
 	it("should set status to available when update found", async () => {
 		const mockUpdate = {
 			version: "1.2.0",
-			body: "Bug fixes and improvements",
+			notes: "Bug fixes and improvements",
 			date: "2025-01-01",
 			downloadAndInstall: vi.fn(),
 		};
-		mockCheck.mockResolvedValue(
-			mockUpdate as unknown as Awaited<ReturnType<typeof check>>,
-		);
+		mockCheck.mockResolvedValue(mockUpdate);
 
 		const { result } = renderHook(() => useUpdateChecker(true));
 
@@ -91,13 +86,11 @@ describe("useUpdateChecker", () => {
 	it("should return to idle on dismiss", async () => {
 		const mockUpdate = {
 			version: "1.2.0",
-			body: "Notes",
+			notes: "Notes",
 			date: "2025-01-01",
 			downloadAndInstall: vi.fn(),
 		};
-		mockCheck.mockResolvedValue(
-			mockUpdate as unknown as Awaited<ReturnType<typeof check>>,
-		);
+		mockCheck.mockResolvedValue(mockUpdate);
 
 		const { result } = renderHook(() => useUpdateChecker(true));
 
@@ -117,13 +110,11 @@ describe("useUpdateChecker", () => {
 		const mockDownloadAndInstall = vi.fn().mockResolvedValue(undefined);
 		const mockUpdate = {
 			version: "1.2.0",
-			body: "Notes",
+			notes: "Notes",
 			date: "2025-01-01",
 			downloadAndInstall: mockDownloadAndInstall,
 		};
-		mockCheck.mockResolvedValue(
-			mockUpdate as unknown as Awaited<ReturnType<typeof check>>,
-		);
+		mockCheck.mockResolvedValue(mockUpdate);
 
 		const { result } = renderHook(() => useUpdateChecker(true));
 
@@ -138,11 +129,7 @@ describe("useUpdateChecker", () => {
 		expect(result.current.status).toBe("downloading");
 
 		await waitFor(() => {
-			expect(mockDownloadAndInstall).toHaveBeenCalled();
-		});
-
-		await waitFor(() => {
-			expect(mockRelaunch).toHaveBeenCalled();
+			expect(invoke).toHaveBeenCalledWith("install_desktop_update");
 		});
 	});
 });

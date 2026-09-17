@@ -1,9 +1,7 @@
 import type { Options } from "@wdio/types";
-import { resolve, join } from "node:path";
-import { homedir } from "node:os";
+import { resolve } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { startPerformanceDaemon } from "./tests/helpers/performance-daemon.mjs";
 
 export const appBinaryPath = "./src-tauri/target/release/releash";
 const launchProvider = process.env.RELEASH_PERFORMANCE_LAUNCH_PROVIDER;
@@ -37,7 +35,6 @@ if (realAppMode) {
 	appEnvironment.RELEASH_PERF_REAL_APP = "1";
 }
 
-let stopDaemon: (() => Promise<void>) | undefined;
 export const config: Options.Testrunner = {
 	async onPrepare() {
 		await promisify(execFile)(
@@ -54,18 +51,6 @@ export const config: Options.Testrunner = {
 			],
 			{ cwd: "src-tauri" },
 		);
-		const dataRoot =
-			process.platform === "darwin"
-				? join(homedir(), "Library", "Application Support")
-				: process.env.XDG_DATA_HOME || join(homedir(), ".local", "share");
-		stopDaemon = await startPerformanceDaemon(
-			"src-tauri/target/release/releash-backend",
-			join(dataRoot, "com.releash.app.performance"),
-			appEnvironment,
-		);
-	},
-	async onComplete() {
-		await stopDaemon?.();
 	},
 	runner: "local",
 	specs: realAppMode

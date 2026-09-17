@@ -47,6 +47,8 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
 }));
 vi.mock("@/hooks/useSettings", () => ({
 	useSettings: () => ({
+		loaded: true,
+		loadError: null,
 		settings: { autoUpdate: false, theme: "dark" },
 		updateSettings: mocks.updateSettings,
 		updateTheme: mocks.updateTheme,
@@ -64,6 +66,8 @@ vi.mock("@/hooks/useWorkspaceNavigation", () => ({
 }));
 vi.mock("@/hooks/useRepoList", () => ({
 	useRepoList: () => ({
+		loaded: true,
+		loadError: null,
 		repoPaths: ["/repo"],
 		addRepo: mocks.addRepo,
 		removeRepo: mocks.removeRepo,
@@ -239,7 +243,9 @@ beforeEach(() => {
 	mocks.postArchiveSnapshot = fallbackSnapshot;
 	mocks.reconciliationFailuresRemaining = 0;
 	mocks.workspaceSelectionInvalidated = null;
-	vi.mocked(invoke).mockResolvedValue({ type: "ready" });
+	vi.mocked(invoke).mockImplementation(async (command) =>
+		command === "get_daemon_status" ? { phase: "ready" } : { type: "ready" },
+	);
 	mocks.invoke.mockImplementation((command: string, args?: unknown) => {
 		if (command === "get_application_startup_outcome") {
 			return Promise.resolve({ type: "ready" });

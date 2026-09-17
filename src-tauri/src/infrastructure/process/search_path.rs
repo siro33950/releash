@@ -64,7 +64,10 @@ fn capture_login_shell_path_from(
         .stdout(Stdio::from(child_output))
         .stderr(Stdio::null())
         .process_group(0);
-    let mut child = command.spawn().map_err(|_| LoginShellPathError::Spawn)?;
+    let mut child = {
+        let _spawn = super::parent_lifetime::spawn_guard();
+        command.spawn().map_err(|_| LoginShellPathError::Spawn)?
+    };
     let started = Instant::now();
     let status = loop {
         match child.try_wait() {

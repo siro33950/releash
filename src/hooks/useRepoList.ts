@@ -3,21 +3,36 @@ import {
 	invokeClient as invoke,
 	listenClient as listen,
 } from "@/lib/clientSocket";
+import { getErrorMessage } from "@/lib/errorMessage";
 
 export interface UseRepoListReturn {
 	repoPaths: string[];
+	loaded: boolean;
+	loadError: string | null;
 	addRepo: (path: string) => void;
 	removeRepo: (path: string) => void;
 	initFromCwd: (cwdRepoPath: string) => void;
 }
 
 export function useRepoList(): UseRepoListReturn {
+	const [loaded, setLoaded] = useState(false);
+	const [loadError, setLoadError] = useState<string | null>(null);
 	const [repoPaths, setRepoPaths] = useState<string[]>([]);
 
 	useEffect(() => {
+		let cancelled = false;
 		invoke("get_repo_paths")
-			.then(setRepoPaths)
-			.catch((err) => console.warn("[useRepoList] get_repo_paths failed", err));
+			.then((paths) => {
+				if (cancelled) return;
+				setRepoPaths(paths);
+				setLoaded(true);
+			})
+			.catch((error) => {
+				if (!cancelled) setLoadError(getErrorMessage(error));
+			});
+		return () => {
+			cancelled = true;
+		};
 	}, []);
 
 	useEffect(() => {
@@ -55,5 +70,5 @@ export function useRepoList(): UseRepoListReturn {
 		);
 	}, []);
 
-	return { repoPaths, addRepo, removeRepo, initFromCwd };
+	return { repoPaths, loaded, loadError, addRepo, removeRepo, initFromCwd };
 }

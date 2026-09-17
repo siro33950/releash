@@ -43,11 +43,22 @@ impl AppConfigUsecase {
         Ok(())
     }
 
-    pub fn update_app_settings(&self, app: AppSettings) -> Result<(), UsecaseError> {
+    pub fn update_app_settings(
+        &self,
+        close_to_tray: bool,
+        start_minimized: bool,
+    ) -> Result<(), UsecaseError> {
         self.repository.update(Box::new(move |config| {
-            config.app.close_to_tray = app.close_to_tray;
-            config.app.auto_launch = app.auto_launch;
-            config.app.start_minimized = app.start_minimized;
+            config.app.close_to_tray = close_to_tray;
+            config.app.start_minimized = start_minimized;
+            Ok(())
+        }))?;
+        Ok(())
+    }
+
+    pub fn update_login_item_preference(&self, requested: bool) -> Result<(), UsecaseError> {
+        self.repository.update(Box::new(move |config| {
+            config.app.auto_launch = requested;
             Ok(())
         }))?;
         Ok(())
@@ -69,3 +80,7 @@ impl AppConfigUsecase {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "usecase_test.rs"]
+mod usecase_tests;

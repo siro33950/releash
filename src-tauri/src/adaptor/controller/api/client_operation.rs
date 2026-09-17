@@ -1,9 +1,8 @@
-use sha2::{Digest, Sha256};
 use std::{sync::Weak, time::Duration};
 
 use super::protocol::client::{self as wire, envelope::Body};
 use crate::domain::client_operation::{
-    policy::{self, OrderingScope, Recovery},
+    policy,
     registry::{OperationDecision, OperationIdentity, OperationReference},
 };
 use crate::usecase::client_operation::ClientOperationUsecase;
@@ -23,56 +22,13 @@ pub(super) async fn maintain<R: Clone + Send + 'static>(
 pub(super) fn identity(
     request: &wire::CommandRequest,
 ) -> Result<OperationIdentity, wire::CommandError> {
-    let (command, mut args) = request
+    let (command, args) = request
         .clone()
         .into_value()
         .map_err(super::client_stream::invalid)?;
-    if policy::recovery(command) == Recovery::CallerAttempt {
-        if let Some(args) = args.as_object_mut() {
-            args.remove("callerRequestId");
-            if command == "request_application_quit" {
-                if let Some(quit) = args
-                    .get_mut("request")
-                    .and_then(serde_json::Value::as_object_mut)
-                {
-                    quit.remove("request_id");
-                }
-            }
-        }
-    }
-    let fingerprint =
-        Sha256::digest(serde_json::to_vec(&(command, &args)).expect("command identity")).into();
-    let target = policy::ordering_scope(command).map(|scope| {
-        use OrderingScope::*;
-        let fields: &[&str] = match scope {
-            RepositoryMembership => &["path"],
-            WorkspaceState => &["worktreeName"],
-            NotionConfiguration | RepositoryBase => &["repoPath"],
-            BranchBase => &["repoPath", "branchName"],
-            TerminalSize => &["owner"],
-            TerminalOutput => &["attachmentId"],
-            Watch => &["watcherId"],
-            ApplicationSettings
-            | ExternalEditor
-            | WorkflowConfiguration
-            | CrashReporting
-            | PerformanceTelemetry
-            | MountedTerminals => &[],
-        };
-        let values: Vec<_> = fields.iter().map(|key| &args[*key]).collect();
-        (
-            scope,
-            Sha256::digest(
-                serde_json::to_vec(&(format!("{scope:?}"), values)).expect("operation target"),
-            )
-            .into(),
-        )
-    });
-    Ok(OperationIdentity {
-        command: command.into(),
-        fingerprint,
-        target,
-    })
+    Ok(crate::adaptor::gateway::shared::client_operation::identity(
+        command, args,
+    ))
 }
 
 pub(super) fn input(
@@ -168,7 +124,7 @@ pub(super) fn decision(
 #[path = "client_operation_test.rs"]
 mod client_operation_tests;
 
-pub(super) fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("system clock")

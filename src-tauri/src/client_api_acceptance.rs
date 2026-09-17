@@ -5,12 +5,10 @@ use tauri::Manager;
 
 use crate::adaptor::controller::api::{ClientApiDeps, TerminalApiDeps};
 use crate::adaptor::controller::client::ClientCommandDispatch;
-use crate::adaptor::controller::command::client::client_endpoint;
 use crate::adaptor::controller::command::CommandRouter;
 use crate::adaptor::controller::terminal_surface_runtime::TerminalSurfaceRuntime;
 use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
 use crate::adaptor::gateway::push::ClientPushGateway;
-use crate::adaptor::protocol::client::ClientEndpoint;
 use crate::infrastructure::local_api::{LocalApiServer, LocalApiServerBinding};
 use crate::infrastructure::push::PushSink;
 use crate::usecase::application_startup::ApplicationStartupAuthority;
@@ -27,20 +25,61 @@ use crate::domain::workflow::{ExecutionOrigin, RuntimeExecutionState, WorkflowRu
 pub use crate::infrastructure::comment::watcher::spawn_review_comments_watcher;
 pub use crate::usecase::repository_state::snapshot::RepositorySnapshotChangedEvent;
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientEndpoint {
+    pub url: String,
+    pub auth_subprotocol: String,
+}
+
 pub fn desktop_connection_app<R: tauri::Runtime>(
     builder: tauri::Builder<R>,
     data_dir: &Path,
+    executable: &Path,
 ) -> tauri::App<R> {
     let mut router: CommandRouter<Box<dyn Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync>> =
         CommandRouter::new(Box::new(|_| false));
     crate::adaptor::controller::command::client::register(&mut router);
-    let app = builder
+    crate::adaptor::controller::command::desktop_lifecycle::register(&mut router);
+    let handoff = desktop_handoff(data_dir);
+    let supervisor = crate::usecase::daemon_supervision::DaemonSupervisionUsecase::start(Arc::new(
+        crate::adaptor::gateway::daemon_supervision::DaemonProcessGateway::new(
+            executable.into(),
+            data_dir.into(),
+            handoff.clone(),
+        ),
+    ));
+    builder
         .manage(Arc::new(ApplicationStartupAuthority::ready()))
+        .manage(crate::usecase::client_connection::ClientConnectionUsecase(
+            Box::new(supervisor.clone()),
+        ))
+        .manage(handoff)
+        .manage(supervisor)
         .invoke_handler(move |invoke| router.handle(invoke))
         .build(crate::application_context())
+        .unwrap()
+}
+
+pub fn desktop_supervision_status<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> serde_json::Value {
+    serde_json::to_value(
+        app.state::<Arc<crate::usecase::daemon_supervision::DaemonSupervisionUsecase>>()
+            .status(),
+    )
+    .unwrap()
+}
+
+pub fn stop_desktop_daemon<R: tauri::Runtime>(app: &tauri::AppHandle<R>, restart: bool) {
+    use crate::domain::daemon_supervision::StopIntent;
+    app.state::<Arc<crate::usecase::daemon_supervision::DaemonSupervisionUsecase>>()
+        .stop(if restart {
+            StopIntent::Restart
+        } else {
+            StopIntent::Quit(0)
+        })
         .unwrap();
-    crate::desktop::configure_client_connection(app.handle(), data_dir.to_path_buf()).unwrap();
-    app
 }
 
 pub struct ClientApiAcceptanceHost<R: tauri::Runtime> {
@@ -124,7 +163,15 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
     }
 
     pub fn endpoint(&self) -> ClientEndpoint {
-        client_endpoint(self.app.handle()).unwrap()
+        let endpoint = self
+            .app
+            .state::<crate::usecase::client_connection::ClientConnectionUsecase>()
+            .endpoint()
+            .unwrap();
+        ClientEndpoint {
+            url: endpoint.url,
+            auth_subprotocol: endpoint.auth_subprotocol,
+        }
     }
 
     pub fn review_comment_notifier(&self) -> Arc<dyn Fn() + Send + Sync> {
@@ -305,10 +352,111 @@ pub async fn initialize_desktop_settings<R: tauri::Runtime>(app: &tauri::AppHand
     crate::desktop::apply_desktop_settings(app, settings);
 }
 
-pub fn desktop_window_preferences<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> (bool, bool) {
+pub fn desktop_window_preferences<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> bool {
     use tauri::Manager;
     let settings = app
         .state::<crate::infrastructure::platform::window_lifecycle::WindowPreferencesState>()
         .read();
-    (settings.close_to_tray, settings.start_minimized)
+    settings.close_to_tray
+}
+
+pub fn spawn_desktop_successor() -> Result<(), String> {
+    crate::infrastructure::platform::desktop_restart::spawn_successor()
+}
+
+pub fn wait_for_desktop_predecessor() -> Result<bool, String> {
+    crate::infrastructure::platform::desktop_restart::wait_for_predecessor()
+}
+
+pub async fn terminate_daemon_for_acceptance(
+    executable: std::path::PathBuf,
+    data_dir: std::path::PathBuf,
+) -> Result<std::time::Duration, String> {
+    use crate::domain::daemon_supervision::DaemonProcessPort;
+    let gateway = crate::adaptor::gateway::daemon_supervision::DaemonProcessGateway::new(
+        executable,
+        data_dir.clone(),
+        desktop_handoff(&data_dir),
+    );
+    gateway.spawn().await?;
+    let ready = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        while !data_dir.join("ready").exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    let duplicate_rejected = gateway.spawn().await.is_err();
+    let start = std::time::Instant::now();
+    gateway.terminate_and_wait().await?;
+    ready.map_err(|e| e.to_string())?;
+    if !duplicate_rejected {
+        return Err("A second daemon was spawned before the previous one exited".into());
+    }
+    Ok(start.elapsed())
+}
+
+fn desktop_handoff(data_dir: &Path) -> Arc<crate::usecase::client_handoff::ClientHandoffUsecase> {
+    let files = Arc::new(
+        crate::adaptor::gateway::client_handoff::ClientHandoffFiles::new(
+            data_dir.join("desktop-client-operations"),
+        ),
+    );
+    Arc::new(crate::usecase::client_handoff::ClientHandoffUsecase::new(
+        files.clone(),
+        files,
+    ))
+}
+
+pub fn attach_desktop_client<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    id: String,
+) -> (Vec<u8>, tokio::sync::broadcast::Receiver<Option<Vec<u8>>>) {
+    let attachment = app
+        .state::<Arc<crate::usecase::daemon_supervision::DaemonSupervisionUsecase>>()
+        .attach(id)
+        .unwrap();
+    (attachment.hello, attachment.frames)
+}
+
+#[cfg(feature = "performance")]
+pub fn probe_cli_installation() -> Result<String, String> {
+    crate::infrastructure::platform::cli_install::install_cli()
+}
+
+pub type DesktopUpdateAction = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
+
+pub async fn apply_desktop_update<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    action: DesktopUpdateAction,
+) -> Result<(), String> {
+    struct Installer(DesktopUpdateAction);
+    #[async_trait::async_trait]
+    impl crate::usecase::desktop_update::DesktopUpdateGateway for Installer {
+        async fn check(
+            &self,
+        ) -> Result<Option<crate::usecase::desktop_update::UpdateInfo>, String> {
+            Ok(None)
+        }
+    }
+    #[async_trait::async_trait]
+    impl crate::domain::daemon_supervision::DesktopUpdateInstaller for Installer {
+        async fn download(&self) -> Result<(), String> {
+            (self.0)("download")
+        }
+        async fn install(&self) -> Result<(), String> {
+            (self.0)("install")
+        }
+        fn restart(&self) -> Result<(), String> {
+            (self.0)("restart")
+        }
+    }
+    crate::usecase::desktop_update::DesktopUpdateUsecase::new(
+        Arc::new(Installer(action)),
+        app.state::<Arc<crate::usecase::daemon_supervision::DaemonSupervisionUsecase>>()
+            .inner()
+            .clone(),
+    )
+    .apply()
+    .await
+    .map_err(|e| e.to_string())
 }

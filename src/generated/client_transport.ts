@@ -10,6 +10,7 @@ export const CLIENT_TRANSPORT = {
 		get_review_blob: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -18,6 +19,7 @@ export const CLIENT_TRANSPORT = {
 		abort_workflow: {
 			recovery: "atMostOnce",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -26,6 +28,7 @@ export const CLIENT_TRANSPORT = {
 		ack_terminal_surface_output: {
 			recovery: "idempotent",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -34,6 +37,7 @@ export const CLIENT_TRANSPORT = {
 		acknowledge_application_attempt: {
 			recovery: "atMostOnce",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -42,6 +46,7 @@ export const CLIENT_TRANSPORT = {
 		add_repo_path: {
 			recovery: "idempotent",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -50,6 +55,7 @@ export const CLIENT_TRANSPORT = {
 		append_review_comment: {
 			recovery: "atMostOnce",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -58,6 +64,7 @@ export const CLIENT_TRANSPORT = {
 		approve_workspace_node: {
 			recovery: "atMostOnce",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -66,6 +73,7 @@ export const CLIENT_TRANSPORT = {
 		archive_agent_session: {
 			recovery: "callerAttempt",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -74,6 +82,7 @@ export const CLIENT_TRANSPORT = {
 		archive_workspace_workflow_execution: {
 			recovery: "atMostOnce",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -82,6 +91,7 @@ export const CLIENT_TRANSPORT = {
 		attach_terminal_surface: {
 			recovery: "connection",
 			deadlineMs: 30000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: true,
@@ -90,6 +100,7 @@ export const CLIENT_TRANSPORT = {
 		build_review_thread_handoff: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -98,6 +109,7 @@ export const CLIENT_TRANSPORT = {
 		compute_hidden_ranges_from_content: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -106,6 +118,7 @@ export const CLIENT_TRANSPORT = {
 		compute_markdown_diff_ranges: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -114,6 +127,7 @@ export const CLIENT_TRANSPORT = {
 		compute_markdown_inline_chunks: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -122,6 +136,7 @@ export const CLIENT_TRANSPORT = {
 		compute_markdown_split_rows: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -130,6 +145,7 @@ export const CLIENT_TRANSPORT = {
 		compute_visible_markdown_blocks: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -138,6 +154,7 @@ export const CLIENT_TRANSPORT = {
 		confirm_agent_session_archive_delete: {
 			recovery: "callerAttempt",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -146,6 +163,7 @@ export const CLIENT_TRANSPORT = {
 		create_agent_session: {
 			recovery: "callerAttempt",
 			deadlineMs: 120000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -154,6 +172,7 @@ export const CLIENT_TRANSPORT = {
 		create_review_thread: {
 			recovery: "atMostOnce",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -162,6 +181,7 @@ export const CLIENT_TRANSPORT = {
 		create_worktree: {
 			recovery: "atMostOnce",
 			deadlineMs: 120000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -170,6 +190,7 @@ export const CLIENT_TRANSPORT = {
 		delete_agent_session: {
 			recovery: "callerAttempt",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -178,6 +199,7 @@ export const CLIENT_TRANSPORT = {
 		delete_branch: {
 			recovery: "atMostOnce",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -186,6 +208,7 @@ export const CLIENT_TRANSPORT = {
 		delete_facet: {
 			recovery: "atMostOnce",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -194,6 +217,7 @@ export const CLIENT_TRANSPORT = {
 		delete_notion_config: {
 			recovery: "idempotent",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -202,6 +226,7 @@ export const CLIENT_TRANSPORT = {
 		delete_review_thread: {
 			recovery: "atMostOnce",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -210,6 +235,7 @@ export const CLIENT_TRANSPORT = {
 		delete_workflow: {
 			recovery: "atMostOnce",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -218,6 +244,7 @@ export const CLIENT_TRANSPORT = {
 		detach_terminal_surface: {
 			recovery: "connection",
 			deadlineMs: 30000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: true,
@@ -226,6 +253,7 @@ export const CLIENT_TRANSPORT = {
 		detect_editors: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -234,6 +262,7 @@ export const CLIENT_TRANSPORT = {
 		diagnose_all_cmd: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -242,6 +271,7 @@ export const CLIENT_TRANSPORT = {
 		duplicate_facet: {
 			recovery: "atMostOnce",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -250,6 +280,7 @@ export const CLIENT_TRANSPORT = {
 		duplicate_workflow: {
 			recovery: "atMostOnce",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -258,6 +289,7 @@ export const CLIENT_TRANSPORT = {
 		fetch_issues: {
 			recovery: "read",
 			deadlineMs: 120000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -266,6 +298,7 @@ export const CLIENT_TRANSPORT = {
 		fetch_notion_label_options: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -274,6 +307,7 @@ export const CLIENT_TRANSPORT = {
 		get_agent_session: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -282,6 +316,7 @@ export const CLIENT_TRANSPORT = {
 		get_app_settings: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -290,6 +325,7 @@ export const CLIENT_TRANSPORT = {
 		get_application_quit_operation: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -298,6 +334,7 @@ export const CLIENT_TRANSPORT = {
 		get_application_shutdown: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -306,6 +343,7 @@ export const CLIENT_TRANSPORT = {
 		get_application_startup_outcome: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -314,6 +352,7 @@ export const CLIENT_TRANSPORT = {
 		get_automation_config_dir: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -322,6 +361,7 @@ export const CLIENT_TRANSPORT = {
 		get_branch_base: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -330,6 +370,7 @@ export const CLIENT_TRANSPORT = {
 		get_cached_issues: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -338,6 +379,7 @@ export const CLIENT_TRANSPORT = {
 		get_cached_pr_status: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -346,6 +388,7 @@ export const CLIENT_TRANSPORT = {
 		get_current_branch: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -354,6 +397,7 @@ export const CLIENT_TRANSPORT = {
 		get_cwd: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -362,6 +406,7 @@ export const CLIENT_TRANSPORT = {
 		get_external_editor: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -370,6 +415,7 @@ export const CLIENT_TRANSPORT = {
 		get_facet: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -378,6 +424,7 @@ export const CLIENT_TRANSPORT = {
 		get_file_navigation: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -386,6 +433,7 @@ export const CLIENT_TRANSPORT = {
 		get_language_from_path: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -394,6 +442,7 @@ export const CLIENT_TRANSPORT = {
 		get_main_repo_path: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -402,6 +451,7 @@ export const CLIENT_TRANSPORT = {
 		get_notion_config: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -410,6 +460,7 @@ export const CLIENT_TRANSPORT = {
 		get_or_spawn_terminal_surface: {
 			recovery: "atMostOnce",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -418,6 +469,7 @@ export const CLIENT_TRANSPORT = {
 		get_performance_real_app_mode: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -426,6 +478,7 @@ export const CLIENT_TRANSPORT = {
 		get_performance_telemetry_enabled: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -434,6 +487,7 @@ export const CLIENT_TRANSPORT = {
 		get_provider_availability: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -442,6 +496,7 @@ export const CLIENT_TRANSPORT = {
 		get_releash_base: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -450,6 +505,7 @@ export const CLIENT_TRANSPORT = {
 		get_repo_paths: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -458,6 +514,7 @@ export const CLIENT_TRANSPORT = {
 		get_review_file_view: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -466,6 +523,7 @@ export const CLIENT_TRANSPORT = {
 		get_review_snapshot: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -474,6 +532,7 @@ export const CLIENT_TRANSPORT = {
 		get_shutdown_plan: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -482,6 +541,7 @@ export const CLIENT_TRANSPORT = {
 		get_terminal_performance_switches: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -490,6 +550,7 @@ export const CLIENT_TRANSPORT = {
 		get_terminal_surface: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -498,6 +559,7 @@ export const CLIENT_TRANSPORT = {
 		get_workflow: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -506,6 +568,7 @@ export const CLIENT_TRANSPORT = {
 		get_workflow_config: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -514,6 +577,7 @@ export const CLIENT_TRANSPORT = {
 		get_workflow_execution_state: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -522,6 +586,7 @@ export const CLIENT_TRANSPORT = {
 		get_workflow_source: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -530,6 +595,7 @@ export const CLIENT_TRANSPORT = {
 		get_workspace_node_detail: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -538,6 +604,7 @@ export const CLIENT_TRANSPORT = {
 		get_workspace_session_node_id: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -546,6 +613,7 @@ export const CLIENT_TRANSPORT = {
 		get_workspace_tree_selection_reconciliation: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -554,6 +622,7 @@ export const CLIENT_TRANSPORT = {
 		git_create_branch: {
 			recovery: "atMostOnce",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -562,6 +631,7 @@ export const CLIENT_TRANSPORT = {
 		git_stage: {
 			recovery: "atMostOnce",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -570,6 +640,7 @@ export const CLIENT_TRANSPORT = {
 		git_stage_review_group: {
 			recovery: "atMostOnce",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -578,6 +649,7 @@ export const CLIENT_TRANSPORT = {
 		git_unstage: {
 			recovery: "atMostOnce",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -586,6 +658,7 @@ export const CLIENT_TRANSPORT = {
 		git_unstage_review_group: {
 			recovery: "atMostOnce",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -594,6 +667,7 @@ export const CLIENT_TRANSPORT = {
 		kill_terminal_surface: {
 			recovery: "atMostOnce",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -602,6 +676,7 @@ export const CLIENT_TRANSPORT = {
 		list_agent_session_history: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -610,6 +685,7 @@ export const CLIENT_TRANSPORT = {
 		list_available_agent_session_providers: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -618,6 +694,7 @@ export const CLIENT_TRANSPORT = {
 		list_branches: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -626,6 +703,7 @@ export const CLIENT_TRANSPORT = {
 		list_branches_with_status: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -634,6 +712,7 @@ export const CLIENT_TRANSPORT = {
 		list_branches_with_status_snapshot: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -642,6 +721,7 @@ export const CLIENT_TRANSPORT = {
 		list_facet_summaries: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -650,6 +730,7 @@ export const CLIENT_TRANSPORT = {
 		list_pending_application_attempts: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -658,6 +739,7 @@ export const CLIENT_TRANSPORT = {
 		list_provider_hook_health_warnings: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -666,6 +748,7 @@ export const CLIENT_TRANSPORT = {
 		list_review_threads: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -674,6 +757,7 @@ export const CLIENT_TRANSPORT = {
 		list_workflows: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -682,6 +766,7 @@ export const CLIENT_TRANSPORT = {
 		list_workspace_workflow_history: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -690,6 +775,7 @@ export const CLIENT_TRANSPORT = {
 		list_workspace_worktree_nodes: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -698,6 +784,7 @@ export const CLIENT_TRANSPORT = {
 		list_worktrees: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -706,6 +793,7 @@ export const CLIENT_TRANSPORT = {
 		load_workspace_state: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -714,6 +802,7 @@ export const CLIENT_TRANSPORT = {
 		open_agent_session: {
 			recovery: "callerAttempt",
 			deadlineMs: 120000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -722,6 +811,7 @@ export const CLIENT_TRANSPORT = {
 		open_facet_in_editor: {
 			recovery: "atMostOnce",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -730,6 +820,7 @@ export const CLIENT_TRANSPORT = {
 		open_folder_in_editor: {
 			recovery: "atMostOnce",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -738,6 +829,7 @@ export const CLIENT_TRANSPORT = {
 		open_in_editor: {
 			recovery: "atMostOnce",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -746,6 +838,7 @@ export const CLIENT_TRANSPORT = {
 		open_workflow_in_editor: {
 			recovery: "atMostOnce",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -754,6 +847,7 @@ export const CLIENT_TRANSPORT = {
 		query_notion_tasks: {
 			recovery: "read",
 			deadlineMs: 120000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -762,6 +856,7 @@ export const CLIENT_TRANSPORT = {
 		quit_after_startup_failure: {
 			recovery: "atMostOnce",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -770,6 +865,7 @@ export const CLIENT_TRANSPORT = {
 		record_terminal_launch_renderer_phase: {
 			recovery: "atMostOnce",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -778,6 +874,7 @@ export const CLIENT_TRANSPORT = {
 		refresh_provider_availability: {
 			recovery: "atMostOnce",
 			deadlineMs: 120000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -786,6 +883,7 @@ export const CLIENT_TRANSPORT = {
 		remove_repo_path: {
 			recovery: "idempotent",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -794,6 +892,7 @@ export const CLIENT_TRANSPORT = {
 		remove_worktree: {
 			recovery: "atMostOnce",
 			deadlineMs: 120000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -802,6 +901,7 @@ export const CLIENT_TRANSPORT = {
 		rename_workspace_session_node: {
 			recovery: "atMostOnce",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -810,6 +910,7 @@ export const CLIENT_TRANSPORT = {
 		render_facet_preview: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -818,6 +919,7 @@ export const CLIENT_TRANSPORT = {
 		report_frontend_error: {
 			recovery: "atMostOnce",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -826,6 +928,7 @@ export const CLIENT_TRANSPORT = {
 		report_mounted_xterm_count: {
 			recovery: "idempotent",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -834,6 +937,7 @@ export const CLIENT_TRANSPORT = {
 		report_usage_event: {
 			recovery: "atMostOnce",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -842,6 +946,7 @@ export const CLIENT_TRANSPORT = {
 		request_application_quit: {
 			recovery: "callerAttempt",
 			deadlineMs: 120000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -850,6 +955,7 @@ export const CLIENT_TRANSPORT = {
 		reset_provider_executable: {
 			recovery: "atMostOnce",
 			deadlineMs: 120000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -858,6 +964,7 @@ export const CLIENT_TRANSPORT = {
 		resize_terminal_surface: {
 			recovery: "idempotent",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -866,6 +973,7 @@ export const CLIENT_TRANSPORT = {
 		resolve_active_execution_by_worktree: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -874,6 +982,7 @@ export const CLIENT_TRANSPORT = {
 		resolve_review_thread: {
 			recovery: "atMostOnce",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -882,6 +991,7 @@ export const CLIENT_TRANSPORT = {
 		resolve_shutdown_target_action: {
 			recovery: "atMostOnce",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -890,6 +1000,7 @@ export const CLIENT_TRANSPORT = {
 		restore_agent_session: {
 			recovery: "callerAttempt",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -898,6 +1009,7 @@ export const CLIENT_TRANSPORT = {
 		restore_workspace_workflow_execution: {
 			recovery: "atMostOnce",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -906,6 +1018,7 @@ export const CLIENT_TRANSPORT = {
 		resume_agent_session: {
 			recovery: "callerAttempt",
 			deadlineMs: 120000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -914,6 +1027,7 @@ export const CLIENT_TRANSPORT = {
 		resume_agent_session_history_candidate: {
 			recovery: "callerAttempt",
 			deadlineMs: 120000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -922,6 +1036,7 @@ export const CLIENT_TRANSPORT = {
 		resume_workflow: {
 			recovery: "atMostOnce",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -930,6 +1045,7 @@ export const CLIENT_TRANSPORT = {
 		retry_workspace_node: {
 			recovery: "atMostOnce",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -938,6 +1054,7 @@ export const CLIENT_TRANSPORT = {
 		save_facet: {
 			recovery: "atMostOnce",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -946,6 +1063,7 @@ export const CLIENT_TRANSPORT = {
 		save_notion_config: {
 			recovery: "idempotent",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -954,6 +1072,7 @@ export const CLIENT_TRANSPORT = {
 		save_workflow_source: {
 			recovery: "atMostOnce",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -962,6 +1081,7 @@ export const CLIENT_TRANSPORT = {
 		save_workspace_state: {
 			recovery: "idempotent",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -970,6 +1090,7 @@ export const CLIENT_TRANSPORT = {
 		set_branch_base: {
 			recovery: "idempotent",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -978,6 +1099,7 @@ export const CLIENT_TRANSPORT = {
 		set_releash_base: {
 			recovery: "idempotent",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -986,6 +1108,7 @@ export const CLIENT_TRANSPORT = {
 		start_git_dir_watching: {
 			recovery: "connection",
 			deadlineMs: 30000,
+			persistsForRestart: false,
 			watch: true,
 			waitsForResult: true,
 			pollsResult: true,
@@ -994,6 +1117,7 @@ export const CLIENT_TRANSPORT = {
 		start_terminal_input_performance_collection: {
 			recovery: "atMostOnce",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -1002,6 +1126,7 @@ export const CLIENT_TRANSPORT = {
 		start_terminal_launch_performance_collection: {
 			recovery: "atMostOnce",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -1010,6 +1135,7 @@ export const CLIENT_TRANSPORT = {
 		start_watching: {
 			recovery: "connection",
 			deadlineMs: 30000,
+			persistsForRestart: false,
 			watch: true,
 			waitsForResult: true,
 			pollsResult: true,
@@ -1018,6 +1144,7 @@ export const CLIENT_TRANSPORT = {
 		start_workflow: {
 			recovery: "atMostOnce",
 			deadlineMs: 120000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -1026,6 +1153,7 @@ export const CLIENT_TRANSPORT = {
 		stop_watching: {
 			recovery: "idempotent",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -1034,6 +1162,7 @@ export const CLIENT_TRANSPORT = {
 		stop_workflow: {
 			recovery: "atMostOnce",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -1042,6 +1171,7 @@ export const CLIENT_TRANSPORT = {
 		take_terminal_input_performance_samples: {
 			recovery: "atMostOnce",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -1050,6 +1180,7 @@ export const CLIENT_TRANSPORT = {
 		take_terminal_launch_performance_samples: {
 			recovery: "atMostOnce",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -1058,6 +1189,16 @@ export const CLIENT_TRANSPORT = {
 		update_app_settings: {
 			recovery: "idempotent",
 			deadlineMs: 30000,
+			persistsForRestart: true,
+			watch: false,
+			waitsForResult: true,
+			pollsResult: true,
+			disconnect: ["query", "query"],
+		},
+		update_login_item_preference: {
+			recovery: "idempotent",
+			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -1066,6 +1207,7 @@ export const CLIENT_TRANSPORT = {
 		update_crash_reporting: {
 			recovery: "idempotent",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -1074,6 +1216,7 @@ export const CLIENT_TRANSPORT = {
 		update_external_editor: {
 			recovery: "idempotent",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -1082,6 +1225,7 @@ export const CLIENT_TRANSPORT = {
 		update_performance_telemetry: {
 			recovery: "idempotent",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -1090,6 +1234,7 @@ export const CLIENT_TRANSPORT = {
 		update_provider_executable: {
 			recovery: "atMostOnce",
 			deadlineMs: 120000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -1098,6 +1243,7 @@ export const CLIENT_TRANSPORT = {
 		update_workflow_config: {
 			recovery: "idempotent",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -1106,6 +1252,7 @@ export const CLIENT_TRANSPORT = {
 		validate_notion_config: {
 			recovery: "read",
 			deadlineMs: 120000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -1114,6 +1261,7 @@ export const CLIENT_TRANSPORT = {
 		write_paths_to_terminal_surface: {
 			recovery: "atMostOnce",
 			deadlineMs: 3000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -1122,6 +1270,7 @@ export const CLIENT_TRANSPORT = {
 		write_terminal_surface: {
 			recovery: "atMostOnce",
 			deadlineMs: 3000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -1130,6 +1279,7 @@ export const CLIENT_TRANSPORT = {
 		get_crash_reporting_enabled: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -1138,6 +1288,7 @@ export const CLIENT_TRANSPORT = {
 		get_file_at_ref: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -1146,6 +1297,7 @@ export const CLIENT_TRANSPORT = {
 		get_staged_content: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -1154,6 +1306,7 @@ export const CLIENT_TRANSPORT = {
 		get_binary_staged_content: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -1162,6 +1315,7 @@ export const CLIENT_TRANSPORT = {
 		get_file_at_branch_base: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -1170,6 +1324,7 @@ export const CLIENT_TRANSPORT = {
 		get_binary_file_at_branch_base: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -1178,6 +1333,7 @@ export const CLIENT_TRANSPORT = {
 		get_binary_file_at_ref: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -1186,6 +1342,7 @@ export const CLIENT_TRANSPORT = {
 		get_branch_diff_summary: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -1194,6 +1351,7 @@ export const CLIENT_TRANSPORT = {
 		build_diff_file_tree: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -1202,6 +1360,7 @@ export const CLIENT_TRANSPORT = {
 		get_head_diff_file_tree_snapshot: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -1210,6 +1369,7 @@ export const CLIENT_TRANSPORT = {
 		compute_hidden_ranges: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -1218,6 +1378,7 @@ export const CLIENT_TRANSPORT = {
 		get_relative_path: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -1226,6 +1387,7 @@ export const CLIENT_TRANSPORT = {
 		get_review_thread: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -1234,6 +1396,7 @@ export const CLIENT_TRANSPORT = {
 		get_review_thread_history: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -1242,6 +1405,7 @@ export const CLIENT_TRANSPORT = {
 		fetch_pr_status: {
 			recovery: "read",
 			deadlineMs: 120000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -1250,6 +1414,7 @@ export const CLIENT_TRANSPORT = {
 		get_default_branch: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -1258,6 +1423,7 @@ export const CLIENT_TRANSPORT = {
 		get_git_status: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -1266,6 +1432,7 @@ export const CLIENT_TRANSPORT = {
 		get_git_status_snapshot: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -1274,6 +1441,7 @@ export const CLIENT_TRANSPORT = {
 		get_status_diff_stats: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -1282,6 +1450,7 @@ export const CLIENT_TRANSPORT = {
 		get_status_diff_stats_snapshot: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -1290,6 +1459,7 @@ export const CLIENT_TRANSPORT = {
 		get_git_log: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -1298,6 +1468,7 @@ export const CLIENT_TRANSPORT = {
 		get_worktree_dirty_count: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -1306,6 +1477,7 @@ export const CLIENT_TRANSPORT = {
 		get_repo_git_dir: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -1314,6 +1486,7 @@ export const CLIENT_TRANSPORT = {
 		approve_workflow_node: {
 			recovery: "atMostOnce",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -1322,6 +1495,7 @@ export const CLIENT_TRANSPORT = {
 		list_workflow_executions: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -1330,6 +1504,7 @@ export const CLIENT_TRANSPORT = {
 		get_workflow_execution: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -1338,6 +1513,7 @@ export const CLIENT_TRANSPORT = {
 		get_workflow_execution_log: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -1346,6 +1522,7 @@ export const CLIENT_TRANSPORT = {
 		get_workflow_node_detail: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -1354,6 +1531,7 @@ export const CLIENT_TRANSPORT = {
 		resolve_worktree_by_execution: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -1362,6 +1540,7 @@ export const CLIENT_TRANSPORT = {
 		list_facets: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -1370,6 +1549,7 @@ export const CLIENT_TRANSPORT = {
 		workflow_submit_output: {
 			recovery: "atMostOnce",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,
@@ -1378,6 +1558,7 @@ export const CLIENT_TRANSPORT = {
 		workflow_validate_output: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -1386,6 +1567,7 @@ export const CLIENT_TRANSPORT = {
 		workflow_get_output: {
 			recovery: "read",
 			deadlineMs: 10000,
+			persistsForRestart: false,
 			watch: false,
 			waitsForResult: false,
 			pollsResult: false,
@@ -1394,6 +1576,7 @@ export const CLIENT_TRANSPORT = {
 		compact_application_shutdown_details: {
 			recovery: "atMostOnce",
 			deadlineMs: 30000,
+			persistsForRestart: true,
 			watch: false,
 			waitsForResult: true,
 			pollsResult: true,

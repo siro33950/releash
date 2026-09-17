@@ -1,6 +1,6 @@
 mod auth;
 pub(crate) mod client;
-mod client_operation;
+pub(crate) mod client_operation;
 pub(crate) mod client_stream;
 pub(crate) use client::ClientApiDeps;
 mod error;

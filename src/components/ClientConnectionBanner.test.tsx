@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { ClientConnectionBanner } from "./ClientConnectionBanner";
 
@@ -11,6 +11,8 @@ const model = vi.hoisted(() => ({
 			command: string;
 			state: string;
 			expired?: boolean;
+			canQuery?: boolean;
+			canDismiss?: boolean;
 		}>,
 	},
 	retry: vi.fn(),
@@ -76,4 +78,38 @@ describe("ClientConnectionBanner", () => {
 		);
 		expect(screen.getByRole("button")).toBeDisabled();
 	});
+});
+
+it("復元した結果不明は照会を提示せず確認済み失敗を表示する", async () => {
+	model.status = {
+		connected: true,
+		message: null,
+		operations: [
+			{
+				id: "restored",
+				command: "add_repo_path",
+				state: "unknown",
+				expired: true,
+				canQuery: false,
+				canDismiss: true,
+			},
+		],
+	};
+	model.dismiss.mockRejectedValueOnce(new Error("disk full"));
+	render(<ClientConnectionBanner />);
+	expect(
+		screen.queryByRole("button", { name: "元の操作の結果を確認" }),
+	).not.toBeInTheDocument();
+	fireEvent.click(screen.getByRole("button", { name: "確認済み" }));
+	await waitFor(() =>
+		expect(screen.getByRole("alert")).toHaveTextContent("保存できませんでした"),
+	);
+	expect(screen.getByRole("status")).toHaveTextContent(
+		"操作結果を確認できません",
+	);
+	fireEvent.click(screen.getByRole("button", { name: "確認済み" }));
+	await waitFor(() =>
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument(),
+	);
+	expect(model.dismiss).toHaveBeenLastCalledWith("restored");
 });
