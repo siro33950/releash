@@ -1,12 +1,12 @@
-#[cfg(any(target_os = "macos", test, debug_assertions))]
+#[cfg(all(unix, any(target_os = "macos", test)))]
 use std::fmt;
-#[cfg(any(target_os = "macos", test, debug_assertions))]
+#[cfg(all(unix, any(target_os = "macos", test)))]
 use std::path::{Path, PathBuf};
 
 #[cfg(target_os = "macos")]
 const CLI_LINK_PATH: &str = "/usr/local/bin/releash";
 
-#[cfg(any(target_os = "macos", test, debug_assertions))]
+#[cfg(all(unix, any(target_os = "macos", test)))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CliInstallStatus {
     AlreadyInstalled(PathBuf),
@@ -14,7 +14,7 @@ pub(crate) enum CliInstallStatus {
     SkippedTranslocated(PathBuf),
 }
 
-#[cfg(any(target_os = "macos", test, debug_assertions))]
+#[cfg(all(unix, any(target_os = "macos", test)))]
 impl fmt::Display for CliInstallStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -50,12 +50,12 @@ pub(crate) fn install_cli() -> Result<String, String> {
     Err("CLI installation requires macOS.".into())
 }
 
-#[cfg(all(unix, any(target_os = "macos", test, debug_assertions)))]
+#[cfg(all(unix, any(target_os = "macos", test)))]
 fn install_cli_symlink(exe_path: &Path, link_path: &Path) -> Result<CliInstallStatus, String> {
     install_cli_symlink_with_runner(exe_path, link_path, run_admin_script)
 }
 
-#[cfg(all(unix, any(target_os = "macos", test, debug_assertions)))]
+#[cfg(all(unix, any(target_os = "macos", test)))]
 fn install_cli_symlink_with_runner<F>(
     exe_path: &Path,
     link_path: &Path,
@@ -110,7 +110,7 @@ where
     }
 }
 
-#[cfg(all(unix, any(target_os = "macos", test, debug_assertions)))]
+#[cfg(all(unix, any(target_os = "macos", test)))]
 fn existing_symlink_target(path: &Path) -> Result<Option<PathBuf>, String> {
     match std::fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
@@ -127,7 +127,7 @@ fn existing_symlink_target(path: &Path) -> Result<Option<PathBuf>, String> {
     }
 }
 
-#[cfg(all(unix, any(target_os = "macos", test, debug_assertions)))]
+#[cfg(all(unix, any(target_os = "macos", test)))]
 fn try_install_cli_symlink(exe_path: &Path, link_path: &Path) -> Result<(), std::io::Error> {
     let parent = link_path
         .parent()
@@ -139,7 +139,7 @@ fn try_install_cli_symlink(exe_path: &Path, link_path: &Path) -> Result<(), std:
     std::os::unix::fs::symlink(exe_path, link_path)
 }
 
-#[cfg(all(unix, any(target_os = "macos", test, debug_assertions)))]
+#[cfg(all(unix, any(target_os = "macos", test)))]
 fn build_admin_install_script(exe_path: &Path, link_path: &Path) -> Result<String, String> {
     let parent = link_path
         .parent()
@@ -153,7 +153,7 @@ fn build_admin_install_script(exe_path: &Path, link_path: &Path) -> Result<Strin
     ))
 }
 
-#[cfg(all(unix, any(target_os = "macos", test, debug_assertions)))]
+#[cfg(all(unix, any(target_os = "macos", test)))]
 fn run_admin_script(script: &str) -> Result<(), String> {
     let expression = format!(
         "do shell script {} with administrator privileges",
@@ -170,18 +170,18 @@ fn run_admin_script(script: &str) -> Result<(), String> {
     }
 }
 
-#[cfg(any(target_os = "macos", test, debug_assertions))]
+#[cfg(all(unix, any(target_os = "macos", test)))]
 fn is_app_translocated(path: &Path) -> bool {
     path.to_string_lossy().contains("/AppTranslocation/")
 }
 
-#[cfg(all(unix, any(target_os = "macos", test, debug_assertions)))]
+#[cfg(all(unix, any(target_os = "macos", test)))]
 fn shell_quote(path: &Path) -> String {
     let value = path.to_string_lossy();
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-#[cfg(all(unix, any(target_os = "macos", test, debug_assertions)))]
+#[cfg(all(unix, any(target_os = "macos", test)))]
 fn applescript_string(value: &str) -> String {
     format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
