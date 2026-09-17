@@ -39,7 +39,7 @@ pub(crate) fn terminate_descendants(root: u32) {
         system.refresh_processes_specifics(
             ProcessesToUpdate::All,
             true,
-            ProcessRefreshKind::nothing(),
+            ProcessRefreshKind::nothing().without_tasks(),
         );
         let children: Vec<_> = system
             .processes()
