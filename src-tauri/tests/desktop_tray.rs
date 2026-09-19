@@ -4,7 +4,28 @@ mod tray;
 
 #[cfg(target_os = "macos")]
 fn main() {
+    test_メニューバーアイコン_犬の模様を透明な抜きで表す();
     test_メニューバーアイコン_外観と色付けと選択状態に追従する();
+}
+
+#[cfg(target_os = "macos")]
+fn test_メニューバーアイコン_犬の模様を透明な抜きで表す() {
+    // Given: the image used by the production tray.
+    let icon = tauri::image::Image::from_bytes(tray::ICON).unwrap();
+    assert_eq!((icon.width(), icon.height()), (36, 36));
+
+    // When: inspect the template's color and alpha channels.
+    let alpha = |x, y| icon.rgba()[((y * icon.width() + x) * 4 + 3) as usize];
+
+    // Then: background, eyes, forehead and chest are cut out, while the nose remains visible.
+    assert!(icon
+        .rgba()
+        .chunks_exact(4)
+        .all(|pixel| pixel[..3] == [0, 0, 0]));
+    for (x, y) in [(0, 0), (13, 13), (22, 13), (17, 9), (17, 33)] {
+        assert!(alpha(x, y) < 32, "({x}, {y}) must be transparent");
+    }
+    assert_eq!(alpha(18, 17), 255);
 }
 
 #[cfg(target_os = "macos")]

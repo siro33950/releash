@@ -14,6 +14,9 @@ fi
 
 echo "==> Generating icons from $SRC"
 
+(cd "$PROJECT_DIR" && pnpm exec tauri icon "$ICONS_DIR/tray-template.svg" --output "$TMP_DIR/tray" --png 36)
+cp "$TMP_DIR/tray/36x36.png" "$ICONS_DIR/tray-template.png"
+
 # PNG sizes
 node -e "
 const sharp = require('sharp');
