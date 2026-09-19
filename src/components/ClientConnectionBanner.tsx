@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from "react";
+import { useState, useSyncExternalStore } from "react";
 import { Button } from "@/components/ui/button";
 import {
 	dismissClientOperation,
@@ -8,6 +8,17 @@ import {
 } from "@/lib/clientSocket";
 
 export function ClientConnectionBanner() {
+	const [error, setError] = useState<string | null>(null);
+	const dismiss = async (id: string) => {
+		try {
+			await dismissClientOperation(id);
+			setError(null);
+		} catch {
+			setError(
+				"確認済みの記録を保存できませんでした。もう一度お試しください。",
+			);
+		}
+	};
 	const status = useSyncExternalStore(subscribeClientStatus, getClientStatus);
 	if (!status.message && status.operations.length === 0) return null;
 	return (
@@ -16,6 +27,7 @@ export function ClientConnectionBanner() {
 			className="border-b border-border bg-muted px-4 py-2 text-sm"
 		>
 			{status.message && <p>{status.message}</p>}
+			{error && <p role="alert">{error}</p>}
 			{status.operations.map((operation) => (
 				<div key={operation.id} className="flex items-center gap-2">
 					{operation.state === "not_sent" ? (
@@ -30,7 +42,7 @@ export function ClientConnectionBanner() {
 								<Button
 									variant="outline"
 									size="sm"
-									onClick={() => dismissClientOperation(operation.id)}
+									onClick={() => void dismiss(operation.id)}
 								>
 									確認済み
 								</Button>
@@ -39,14 +51,25 @@ export function ClientConnectionBanner() {
 					) : (
 						<>
 							<span>{operation.command}: 操作結果を確認できません。</span>
-							<Button
-								variant="outline"
-								size="sm"
-								disabled={!status.connected}
-								onClick={() => retryClientOperation(operation.id)}
-							>
-								元の操作の結果を確認
-							</Button>
+							{operation.canQuery !== false && (
+								<Button
+									variant="outline"
+									size="sm"
+									disabled={!status.connected}
+									onClick={() => retryClientOperation(operation.id)}
+								>
+									元の操作の結果を確認
+								</Button>
+							)}
+							{operation.canDismiss && (
+								<Button
+									variant="outline"
+									size="sm"
+									onClick={() => void dismiss(operation.id)}
+								>
+									確認済み
+								</Button>
+							)}
 						</>
 					)}
 				</div>

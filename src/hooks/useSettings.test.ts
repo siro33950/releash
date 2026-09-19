@@ -15,9 +15,32 @@ describe("useSettings", () => {
 		vi.restoreAllMocks();
 	});
 
+	it("Rustの状態を表示へ反映するまで読み込み完了にしない", async () => {
+		let complete!: (enabled: boolean) => void;
+		vi.mocked(invoke).mockReturnValueOnce(
+			new Promise<boolean>((resolve) => {
+				complete = resolve;
+			}),
+		);
+		const { result } = renderHook(() => useSettings());
+		expect(result.current.loaded).toBe(false);
+		await act(async () => complete(true));
+		expect(result.current.loaded).toBe(true);
+		expect(result.current.settings.performanceTelemetry).toBe(true);
+	});
+
 	it("should return default settings when localStorage is empty", () => {
 		const { result } = renderHook(() => useSettings());
 		expect(result.current.settings).toEqual(DEFAULT_SETTINGS);
+	});
+
+	it("初回取得の失敗理由を返し読み込み完了にしない", async () => {
+		vi.mocked(invoke).mockRejectedValueOnce(new Error("settings unavailable"));
+		const { result } = renderHook(() => useSettings());
+		await waitFor(() =>
+			expect(result.current.loadError).toBe("settings unavailable"),
+		);
+		expect(result.current.loaded).toBe(false);
 	});
 
 	it("should load settings from localStorage", () => {

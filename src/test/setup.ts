@@ -23,6 +23,9 @@ Object.defineProperty(window, "matchMedia", {
 
 vi.mock("@tauri-apps/api/core", () => ({
 	invoke: vi.fn().mockResolvedValue(1),
+	Channel: class {
+		onmessage: ((message: unknown) => void) | undefined;
+	},
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -66,14 +69,6 @@ vi.mock("@xterm/addon-web-links", () => {
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({
 	open: vi.fn().mockResolvedValue(null),
-}));
-
-vi.mock("@tauri-apps/plugin-updater", () => ({
-	check: vi.fn().mockResolvedValue(null),
-}));
-
-vi.mock("@tauri-apps/plugin-process", () => ({
-	relaunch: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("@/lib/clientSocket", async (importOriginal) => {

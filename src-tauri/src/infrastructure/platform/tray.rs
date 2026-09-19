@@ -5,7 +5,7 @@ use tauri::{
     image::Image,
     menu::{MenuBuilder, MenuItemBuilder},
     tray::TrayIconBuilder,
-    App, Manager,
+    App,
 };
 
 pub static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -26,8 +26,11 @@ type QuitHandler = Arc<dyn Fn(tauri::AppHandle) + Send + Sync + 'static>;
 pub fn setup_tray(
     app: &App,
     on_quit_requested: impl Fn(tauri::AppHandle) + Send + Sync + 'static,
+    on_show: impl Fn(tauri::AppHandle) + Send + Sync + 'static,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let handle = app.handle();
+    let on_show: QuitHandler = Arc::new(on_show);
+    let menu_show = on_show.clone();
     let on_quit_requested: QuitHandler = Arc::new(on_quit_requested);
 
     let show_window = MenuItemBuilder::with_id(ids::SHOW_WINDOW, "Show Releash").build(handle)?;
@@ -43,18 +46,19 @@ pub fn setup_tray(
 
     TrayIconBuilder::new()
         .icon(icon)
+        .icon_as_template(true)
         .menu(&menu)
         .tooltip("Releash")
         .on_menu_event(move |app, event| {
-            handle_menu_event(app, event, Arc::clone(&on_quit_requested));
+            dispatch_menu_event(
+                event.id().as_ref(),
+                || menu_show(app.clone()),
+                || on_quit_requested(app.clone()),
+            );
         })
-        .on_tray_icon_event(|tray, event| {
+        .on_tray_icon_event(move |tray, event| {
             if let tauri::tray::TrayIconEvent::DoubleClick { .. } = event {
-                let app = tray.app_handle();
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                }
+                on_show(tray.app_handle().clone());
             }
         })
         .build(app)?;
@@ -62,21 +66,10 @@ pub fn setup_tray(
     Ok(())
 }
 
-fn handle_menu_event(
-    app: &tauri::AppHandle,
-    event: tauri::menu::MenuEvent,
-    on_quit_requested: QuitHandler,
-) {
-    match event.id().as_ref() {
-        ids::SHOW_WINDOW => {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
-        }
-        ids::QUIT => {
-            on_quit_requested(app.clone());
-        }
+pub(crate) fn dispatch_menu_event(id: &str, show: impl FnOnce(), quit: impl FnOnce()) {
+    match id {
+        ids::SHOW_WINDOW => show(),
+        ids::QUIT => quit(),
         _ => {}
     }
 }

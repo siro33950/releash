@@ -2,7 +2,10 @@ import { invoke as invokeTauri } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ClientConnectionBanner } from "@/components/ClientConnectionBanner";
-import { ApplicationShutdownBanner } from "@/components/layout/ApplicationShutdownBanner";
+import {
+	DaemonBoundary,
+	useDesktopRestoration,
+} from "@/components/DaemonBoundary";
 import { ProviderHookHealthBanner } from "@/components/layout/ProviderHookHealthBanner";
 import { SettingsModal } from "@/components/panels/SettingsModal";
 import { UpdateDialog } from "@/components/UpdateDialog";
@@ -94,11 +97,37 @@ function StartupFailureScreen({
 }
 
 function WorkbenchApp() {
-	const { settings, updateSettings, updateTheme } = useSettings();
-	const updateChecker = useUpdateChecker(settings.autoUpdate);
+	const {
+		settings,
+		updateSettings,
+		updateTheme,
+		loaded: settingsLoaded,
+		loadError: settingsError,
+	} = useSettings();
+	const restoration = useDesktopRestoration();
+	const updateChecker = useUpdateChecker(
+		settings.autoUpdate && restoration.ready,
+	);
 	const { worktrees, selectedWorktreeId, openWorktreeTab } =
 		useWorkspaceNavigation();
-	const { repoPaths, addRepo, removeRepo, initFromCwd } = useRepoList();
+	const {
+		repoPaths,
+		addRepo,
+		removeRepo,
+		initFromCwd,
+		loaded: repositoriesLoaded,
+		loadError: repositoriesError,
+	} = useRepoList();
+
+	useEffect(() => {
+		if (!restoration.ready && settingsLoaded && repositoriesLoaded)
+			void restoration.complete();
+	}, [restoration, settingsLoaded, repositoriesLoaded]);
+	useEffect(() => {
+		if (settingsError) void restoration.fail(`Settings: ${settingsError}`);
+		if (repositoriesError)
+			void restoration.fail(`Repositories: ${repositoriesError}`);
+	}, [restoration, settingsError, repositoriesError]);
 
 	const [showAppSettings, setShowAppSettings] = useState(false);
 	const [centerStateByWorktree, setCenterStateByWorktree] = useState<
@@ -132,6 +161,7 @@ function WorkbenchApp() {
 	}, []);
 
 	useEffect(() => {
+		if (!restoration.ready) return;
 		(async () => {
 			try {
 				const cwd = await invoke("get_cwd");
@@ -155,7 +185,7 @@ function WorkbenchApp() {
 				// git リポジトリ外
 			}
 		})();
-	}, [openWorktreeTab, initFromCwd]);
+	}, [openWorktreeTab, initFromCwd, restoration.ready]);
 
 	const handleAddRepo = useCallback(async () => {
 		const selected = await open({ directory: true, multiple: false });
@@ -289,7 +319,7 @@ function WorkbenchApp() {
 				topBanner={
 					<>
 						<ClientConnectionBanner />
-						<ApplicationShutdownBanner />
+						<div id="application-shutdown-banner" />
 						<ProviderHookHealthBanner />
 					</>
 				}
@@ -364,7 +394,11 @@ function App() {
 	if (outcome.type === "failed") {
 		return <StartupFailureScreen failure={outcome} />;
 	}
-	return <WorkbenchApp />;
+	return (
+		<DaemonBoundary>
+			<WorkbenchApp />
+		</DaemonBoundary>
+	);
 }
 
 export default App;

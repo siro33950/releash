@@ -19,6 +19,7 @@ impl Daemon {
             .shutdown_and_wait()
             .await
             .map_err(|error| error.to_string())?;
+        println!("releash-shutdown-complete");
         Ok(code)
     }
 }
@@ -29,7 +30,6 @@ pub(crate) fn compose(
         std::ffi::OsString,
         infrastructure::process::search_path::LoginShellPathError,
     >,
-    install_cli: impl FnOnce(),
 ) -> Result<Daemon, Box<dyn std::error::Error>> {
     other::telemetry::set_startup_origin(std::time::Instant::now());
     let (exit_sender, exit_receiver) = tokio::sync::mpsc::unbounded_channel();
@@ -65,7 +65,6 @@ pub(crate) fn compose(
         adaptor::gateway::workspace_state::WorkspaceStateStore::new(data_dir.clone()),
     );
 
-    install_cli();
     let config_path = data_dir.join("releash.toml");
     let config = load_or_create_config(&config_path)
         .map_err(|e| format!("設定ファイルの読み込みに失敗: {e}"))?;

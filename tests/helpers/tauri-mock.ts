@@ -78,7 +78,7 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 	};
 	config = {
 		...config,
-		responses: { get_client_endpoint: endpoint, ...config.responses },
+		responses: { __clientEndpoint: endpoint, __clientHello: Array.from(toBinary(EnvelopeSchema, fromJson(EnvelopeSchema, { hello: {} }))), ...config.responses },
 	};
 	const clientRequests: Array<{
 		request_id: string;
@@ -263,6 +263,8 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 			{ cb: (data: unknown) => void; once: boolean }
 		>();
 		let nextId = 1;
+        let desktopSocket: WebSocket | null = null;
+        let desktopAttachment = "";
 
 		function transformCallback(
 			cb: (data: unknown) => void,
@@ -317,7 +319,37 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 			cmd: string,
 			args: Record<string, unknown> = {},
 		): Promise<unknown> {
-			invocations.push({ cmd, args });
+            invocations.push({ cmd, args });
+            if (cmd === "admit_client_command") return null;
+            if (cmd === "attach_desktop_client") {
+                desktopSocket?.close();
+                desktopAttachment = String(args.attachmentId);
+                const endpoint = cfg.responses.__clientEndpoint as {url: string; authSubprotocol: string};
+                const channel = args.channel as { onmessage: (bytes: number[] | null) => void };
+                return new Promise<number[]>((resolve, reject) => {
+                    const socket = new WebSocket(endpoint.url, [endpoint.authSubprotocol]);
+                    desktopSocket = socket;
+                    socket.binaryType = "arraybuffer";
+                    let hello = true;
+                    socket.onopen = () => socket.send(new Uint8Array(cfg.responses.__clientHello as number[]));
+                    socket.onerror = () => reject(new Error("Fixture client connection failed"));
+                    socket.onclose = () => channel.onmessage(null);
+                    socket.onmessage = event => {
+                        const bytes = Array.from(new Uint8Array(event.data));
+                        if (hello) { hello = false; resolve(bytes); }
+                        else channel.onmessage(bytes);
+                    };
+                });
+            }
+            if (cmd === "send_desktop_client_frame") {
+                if (!desktopSocket || desktopSocket.readyState !== WebSocket.OPEN) throw { state: "not_sent", reason: "Fixture client disconnected" };
+                desktopSocket.send(new Uint8Array(args.bytes as number[]));
+                return null;
+            }
+            if (cmd === "detach_desktop_client") {
+                if (args.attachmentId === desktopAttachment) { desktopSocket?.close(); desktopSocket = null; }
+                return null;
+            }
 			// plugin:event 系のハンドリング
 			if (cmd === "plugin:event|listen") {
 				const event = args.event as string;
@@ -667,6 +699,11 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 				return value;
 			}
 
+			if (cmd === "get_daemon_status") return { phase: "ready" };
+			if (cmd === "list_client_handoff") return [];
+			if (["validate_daemon_connection", "forget_client_operation"].includes(cmd)) return null;
+			if (cmd === "get_login_item_status") return { enabled: false, requiresApproval: false, reason: null };
+			if (cmd === "check_desktop_update") return null;
 			if (cmd === "get_application_startup_outcome") {
 				return { type: "ready" };
 			}
@@ -694,7 +731,8 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 				if (
 					!cmd.startsWith("plugin:") &&
 					![
-						"get_client_endpoint",
+						"get_daemon_status", "retry_daemon", "quit_desktop", "restart_desktop", "validate_daemon_connection", "get_login_item_status", "open_login_item_settings", "install_cli", "set_login_item_enabled", "check_desktop_update", "install_desktop_update", "forget_client_operation", "list_client_handoff", "apply_desktop_settings",
+						"complete_desktop_restoration", "fail_desktop_restoration", "admit_client_command", "attach_desktop_client", "detach_desktop_client", "send_desktop_client_frame",
 						"get_application_startup_outcome",
 						"quit_after_startup_failure",
 						"set_menu_items_enabled",

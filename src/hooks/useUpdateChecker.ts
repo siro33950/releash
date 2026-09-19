@@ -1,6 +1,6 @@
-import { relaunch } from "@tauri-apps/plugin-process";
-import { check } from "@tauri-apps/plugin-updater";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { useCallback, useEffect, useState } from "react";
 import { getErrorMessage } from "@/lib/errorMessage";
 
 type UpdateStatus = "idle" | "checking" | "available" | "downloading" | "error";
@@ -24,7 +24,6 @@ export function useUpdateChecker(enabled: boolean): UpdateCheckResult {
 	const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
 	const [progress, setProgress] = useState(0);
 	const [error, setError] = useState<string | null>(null);
-	const updateRef = useRef<Awaited<ReturnType<typeof check>> | null>(null);
 
 	useEffect(() => {
 		if (!enabled) return;
@@ -34,14 +33,13 @@ export function useUpdateChecker(enabled: boolean): UpdateCheckResult {
 		(async () => {
 			setStatus("checking");
 			try {
-				const update = await check();
+				const update = await invoke<UpdateInfo | null>("check_desktop_update");
 				if (cancelled) return;
 
 				if (update) {
-					updateRef.current = update;
 					setUpdateInfo({
 						version: update.version,
-						notes: update.body ?? "",
+						notes: update.notes,
 					});
 					setStatus("available");
 				} else {
@@ -58,32 +56,25 @@ export function useUpdateChecker(enabled: boolean): UpdateCheckResult {
 	}, [enabled]);
 
 	const downloadAndInstall = useCallback(() => {
-		const update = updateRef.current;
-		if (!update) return;
+		if (!updateInfo) return;
 
 		(async () => {
 			setStatus("downloading");
 			setProgress(0);
+			let unlisten: UnlistenFn | undefined;
 			try {
-				let totalLength = 0;
-				let downloaded = 0;
-				await update.downloadAndInstall((event) => {
-					if (event.event === "Started" && event.data.contentLength) {
-						totalLength = event.data.contentLength;
-					} else if (event.event === "Progress") {
-						downloaded += event.data.chunkLength;
-						if (totalLength > 0) {
-							setProgress(Math.round((downloaded / totalLength) * 100));
-						}
-					}
-				});
-				await relaunch();
+				unlisten = await listen<number>("desktop-update-progress", (event) =>
+					setProgress(event.payload),
+				);
+				await invoke("install_desktop_update");
 			} catch (e) {
 				setError(getErrorMessage(e));
 				setStatus("error");
+			} finally {
+				unlisten?.();
 			}
 		})();
-	}, []);
+	}, [updateInfo]);
 
 	const dismiss = useCallback(() => {
 		setStatus("idle");

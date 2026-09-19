@@ -1,0 +1,233 @@
+use super::*;
+use std::{cell::Cell, time::Duration};
+
+#[tokio::test]
+async fn test_daemon接続_認証と検証が完了した呼び出しで接続情報を返す() {
+    use crate::infrastructure::local_api::{
+        process_start_time, LocalApiDiscovery, LocalApiDiscoveryFile,
+    };
+    use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
+
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let files = Arc::new(super::super::client_handoff::ClientHandoffFiles::new(
+        directory.path().into(),
+    ));
+    let handoff = Arc::new(crate::usecase::client_handoff::ClientHandoffUsecase::new(
+        files.clone(),
+        files,
+    ));
+    let gateway = DaemonProcessGateway::new(PathBuf::new(), directory.path().into(), handoff);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let discovery = LocalApiDiscovery {
+        port: listener.local_addr().unwrap().port(),
+        token: "master-token".into(),
+        instance_id: "instance".into(),
+        pid: std::process::id(),
+        process_started_at: process_start_time(std::process::id()).unwrap(),
+    };
+    LocalApiDiscoveryFile::create(directory.path(), discovery.clone()).unwrap();
+    LocalApiDiscoveryFile::create_client(
+        directory.path(),
+        LocalApiDiscovery {
+            token: "client-token".into(),
+            ..discovery
+        },
+    )
+    .unwrap();
+    let peer = async {
+        let mut socket = tokio_tungstenite::accept_hdr_async(
+            listener.accept().await.unwrap().0,
+            |request: &Request, mut response: Response| {
+                let protocol = &request.headers()["sec-websocket-protocol"];
+                assert_eq!(protocol, "releash-bearer.client-token");
+                response
+                    .headers_mut()
+                    .insert("sec-websocket-protocol", protocol.clone());
+                Ok(response)
+            },
+        )
+        .await
+        .unwrap();
+        let Frame::Binary(bytes) = socket.next().await.unwrap().unwrap() else {
+            panic!("expected client hello");
+        };
+        assert!(matches!(
+            wire::Envelope::decode(bytes).unwrap().body,
+            Some(wire::envelope::Body::Hello(_))
+        ));
+        socket
+            .send(Frame::Binary(
+                wire::Envelope {
+                    body: Some(wire::envelope::Body::Hello(wire::ClientHello {
+                        instance_id: "instance".into(),
+                        launch_id: "launch".into(),
+                        release: env!("CARGO_PKG_VERSION").into(),
+                        desktop_settings: Some(Default::default()),
+                        ..Default::default()
+                    })),
+                }
+                .encode_to_vec()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        socket
+    };
+    // When
+    let started_at_ms = gateway.monotonic_ms();
+    let (connection, _peer) = tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::join!(gateway.connect_client("launch"), peer)
+    })
+    .await
+    .unwrap();
+    // Then
+    let connection = connection
+        .unwrap()
+        .expect("connection must be reported immediately");
+    assert_eq!(connection.launch_id, "launch");
+    assert_eq!(connection.release, env!("CARGO_PKG_VERSION"));
+    assert!((started_at_ms..=gateway.monotonic_ms()).contains(&connection.connected_at_ms));
+    assert!(gateway.connected());
+    let cached = gateway.connection().await.unwrap().unwrap();
+    assert_eq!(cached.launch_id, connection.launch_id);
+    assert_eq!(cached.connected_at_ms, connection.connected_at_ms);
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_daemon停止_自然終了なら強制終了しない() {
+    // Given
+    let start = tokio::time::Instant::now();
+    // When
+    wait_for_termination(
+        || std::future::ready(Ok(start.elapsed() >= Duration::from_secs(1))),
+        || panic!("a stopped daemon must not be killed"),
+    )
+    .await
+    .unwrap();
+    // Then
+    assert_eq!(start.elapsed(), Duration::from_secs(1));
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_daemon停止_五秒後に一度強制終了して終了確認まで待つ() {
+    // Given
+    let start = tokio::time::Instant::now();
+    let killed = Cell::new(false);
+    // When
+    wait_for_termination(
+        || std::future::ready(Ok(start.elapsed() >= Duration::from_secs(6))),
+        || {
+            assert_eq!(start.elapsed(), Duration::from_secs(5));
+            assert!(!killed.replace(true));
+            Ok(())
+        },
+    )
+    .await
+    .unwrap();
+    // Then
+    assert!(killed.get());
+    assert_eq!(start.elapsed(), Duration::from_secs(6));
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_daemon停止_強制終了後も終了未確認なら十秒で失敗する() {
+    // Given
+    let start = tokio::time::Instant::now();
+    let kills = Cell::new(0);
+    // When
+    let error = wait_for_termination(
+        || std::future::ready(Ok(false)),
+        || {
+            kills.set(kills.get() + 1);
+            Ok(())
+        },
+    )
+    .await
+    .unwrap_err();
+    // Then
+    assert_eq!(
+        error,
+        "Daemon exit could not be confirmed after termination."
+    );
+    assert_eq!(start.elapsed(), Duration::from_secs(10));
+    assert_eq!(kills.get(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_daemon停止_終了観測とkillのエラーを伝播する() {
+    // Given / When / Then
+    assert_eq!(
+        wait_for_termination(
+            || std::future::ready(Err("wait failed".into())),
+            || panic!("must not kill after an observation error"),
+        )
+        .await
+        .unwrap_err(),
+        "wait failed"
+    );
+    assert_eq!(
+        wait_for_termination(
+            || std::future::ready(Ok(false)),
+            || Err("kill failed".into()),
+        )
+        .await
+        .unwrap_err(),
+        "kill failed"
+    );
+}
+
+#[tokio::test]
+async fn test_daemon停止_子がない場合は即座に完了する() {
+    // Given
+    let files = Arc::new(super::super::client_handoff::ClientHandoffFiles::new(
+        PathBuf::new(),
+    ));
+    let handoff = Arc::new(crate::usecase::client_handoff::ClientHandoffUsecase::new(
+        files.clone(),
+        files,
+    ));
+    let gateway = DaemonProcessGateway::new(PathBuf::new(), PathBuf::new(), handoff);
+    // When / Then
+    gateway.terminate_and_wait().await.unwrap();
+}
+
+#[test]
+fn test_停止応答_acceptedは受付であり他の応答と利用者判断を区別する() {
+    // Given
+    use wire::{application_quit_outcome_dto_v1 as outcome, command_result::Command};
+    let response = |variant| {
+        wire::response(
+            "quit".into(),
+            Ok(Command::RequestApplicationQuit(
+                wire::ApplicationQuitOutcomeDtoV1 {
+                    variant: Some(variant),
+                },
+            )),
+        )
+    };
+    // When / Then
+    assert_eq!(
+        shutdown_response(response(outcome::Variant::Accepted(Default::default()))).unwrap(),
+        ShutdownResponse::Accepted
+    );
+    assert!(matches!(
+        shutdown_response(response(
+            outcome::Variant::PreviousShutdownReconciliationRequired(Default::default())
+        ))
+        .unwrap(),
+        ShutdownResponse::DecisionRequired(_)
+    ));
+    for variant in [
+        outcome::Variant::RejectedBeforeCommit(Default::default()),
+        outcome::Variant::OutcomeUnknown(Default::default()),
+    ] {
+        assert!(shutdown_response(response(variant))
+            .unwrap_err()
+            .contains("Shutdown requires confirmation"));
+    }
+    assert_eq!(
+        shutdown_response(wire::Envelope::default()).unwrap_err(),
+        "Unexpected shutdown response."
+    );
+}

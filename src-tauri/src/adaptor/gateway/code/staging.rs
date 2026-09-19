@@ -107,6 +107,7 @@ pub(crate) fn git_unstage(repo_path: &str, paths: Vec<String>) -> Result<(), Cod
 pub(crate) fn git_stage_hunk(repo_path: &str, patch: &str) -> Result<(), CodeError> {
     Repository::open(repo_path)?;
 
+    let spawn_guard = crate::infrastructure::process::parent_lifetime::spawn_guard();
     let mut child = Command::new("git")
         .args(["apply", "--cached"])
         .current_dir(repo_path)
@@ -115,6 +116,7 @@ pub(crate) fn git_stage_hunk(repo_path: &str, patch: &str) -> Result<(), CodeErr
         .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| CodeError::Rule(format!("Failed to execute git apply: {e}")))?;
+    drop(spawn_guard);
 
     {
         use std::io::Write;
@@ -142,6 +144,7 @@ pub(crate) fn git_stage_hunk(repo_path: &str, patch: &str) -> Result<(), CodeErr
 pub(crate) fn git_unstage_hunk(repo_path: &str, patch: &str) -> Result<(), CodeError> {
     Repository::open(repo_path)?;
 
+    let spawn_guard = crate::infrastructure::process::parent_lifetime::spawn_guard();
     let mut child = Command::new("git")
         .args(["apply", "--cached", "--reverse"])
         .current_dir(repo_path)
@@ -150,6 +153,7 @@ pub(crate) fn git_unstage_hunk(repo_path: &str, patch: &str) -> Result<(), CodeE
         .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| CodeError::Rule(format!("Failed to execute git apply: {e}")))?;
+    drop(spawn_guard);
 
     {
         use std::io::Write;

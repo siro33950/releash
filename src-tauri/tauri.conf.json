@@ -4,9 +4,10 @@
   "version": "0.4.13",
   "identifier": "com.releash.app",
   "build": {
-    "beforeDevCommand": "pnpm dev",
+    "beforeDevCommand": "node scripts/build-desktop-backend.mjs --dev && pnpm dev",
     "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "pnpm build",
+    "beforeBundleCommand": "node scripts/build-desktop-backend.mjs",
     "frontendDist": "../dist"
   },
   "app": {
@@ -55,8 +56,10 @@
     ],
     "macOS": {
       "files": {
+        "Library/LaunchAgents/com.releash.app.plist": "launchagents/com.releash.app.plist",
         "Resources/Assets.car": "icons/Assets.car"
-      }
+      },
+      "minimumSystemVersion": "13.0"
     }
   }
 }

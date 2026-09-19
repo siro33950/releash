@@ -1,8 +1,14 @@
 pub(crate) mod agent_session;
 pub(crate) mod app_config;
 pub(crate) mod app_data_gc;
+#[cfg(feature = "desktop")]
+pub(crate) mod client_handoff;
 pub(crate) mod code;
 pub(crate) mod comment;
+#[cfg(feature = "desktop")]
+pub(crate) mod daemon_supervision;
+#[cfg(feature = "desktop")]
+pub(crate) mod desktop_update;
 pub(crate) mod external_editor;
 pub(crate) mod git_host;
 pub(crate) mod local_api;
@@ -19,3 +25,12 @@ pub(crate) mod workspace_tree;
 pub(crate) mod push;
 
 pub(crate) mod telemetry;
+
+#[cfg(feature = "desktop")]
+pub(crate) mod login_item;
+
+#[cfg(feature = "desktop")]
+pub(crate) mod desktop_client;
+
+#[cfg(feature = "desktop")]
+pub(crate) mod cli_install;

@@ -20,7 +20,9 @@ const mockInvoke = vi.mocked(invokeClient);
 
 beforeEach(() => {
 	localStorage.clear();
-	vi.mocked(invoke).mockResolvedValue({ type: "ready" });
+	vi.mocked(invoke).mockImplementation(async (command) =>
+		command === "get_daemon_status" ? { phase: "ready" } : { type: "ready" },
+	);
 	mockInvoke.mockImplementation((cmd: string) => {
 		if (cmd === "get_application_startup_outcome") {
 			return Promise.resolve({ type: "ready" });

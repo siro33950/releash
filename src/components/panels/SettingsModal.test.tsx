@@ -1,3 +1,4 @@
+import { invoke as invokeTauri } from "@tauri-apps/api/core";
 import {
 	act,
 	fireEvent,
@@ -42,11 +43,6 @@ const monacoMock = vi.hoisted(() => {
 });
 
 vi.mock("monaco-editor", () => monacoMock.module);
-vi.mock("@tauri-apps/plugin-autostart", () => ({
-	isEnabled: vi.fn().mockResolvedValue(true),
-	enable: vi.fn().mockResolvedValue(undefined),
-	disable: vi.fn().mockResolvedValue(undefined),
-}));
 
 // Radix UI uses pointer events; jsdom doesn't implement them
 beforeAll(() => {
@@ -60,6 +56,11 @@ describe("SettingsModal", () => {
 	afterEach(() => vi.restoreAllMocks());
 
 	beforeEach(async () => {
+		vi.mocked(invokeTauri).mockResolvedValue({
+			enabled: false,
+			requiresApproval: false,
+			reason: null,
+		});
 		const { invokeClient: invoke } = await import("@/lib/clientSocket");
 		vi.mocked(invoke).mockImplementation((cmd: string) => {
 			switch (cmd) {
@@ -122,6 +123,145 @@ describe("SettingsModal", () => {
 		onSave: vi.fn(),
 		repoPaths: ["/repos/my-app"],
 	};
+
+	it("ログイン項目の初期取得失敗後の保存を成功として記録しない", async () => {
+		vi.mocked(invokeTauri).mockRejectedValueOnce(
+			new Error("login unavailable"),
+		);
+		const { invokeClient } = await import("@/lib/clientSocket");
+		const client = vi.mocked(invokeClient).getMockImplementation();
+		if (!client) throw new Error("Missing settings fixture");
+		vi.mocked(invokeClient).mockImplementation((command, args) =>
+			command === "get_app_settings"
+				? Promise.resolve({
+						auto_launch: false,
+						close_to_tray: true,
+						start_minimized: false,
+						last_root_path: "",
+						last_repo_paths: [],
+						external_editor: "",
+					})
+				: client(command, args),
+		);
+		const user = userEvent.setup();
+		render(<SettingsModal {...defaultProps} />);
+		await user.click(screen.getByText("Background"));
+		expect(await screen.findByRole("alert")).toHaveTextContent(
+			"login unavailable",
+		);
+		const closeToTray = screen.getByRole("checkbox", {
+			name: "Minimize to tray on close",
+		});
+		await user.click(closeToTray);
+		await user.click(screen.getByRole("button", { name: "Save" }));
+
+		expect(screen.getByRole("alert")).toHaveTextContent(
+			"Background settings are not loaded.",
+		);
+		expect(closeToTray).not.toBeChecked();
+		expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+		expect(invokeClient).not.toHaveBeenCalledWith("report_usage_event", {
+			name: "settings_saved",
+		});
+	});
+
+	it("承認待ちのログイン項目は無効と案内を表示し承認先を開く", async () => {
+		vi.mocked(invokeTauri).mockResolvedValue({
+			enabled: false,
+			requiresApproval: true,
+			reason: null,
+		});
+		const { invokeClient } = await import("@/lib/clientSocket");
+		const client = vi.mocked(invokeClient).getMockImplementation();
+		if (!client) throw new Error("Missing settings fixture");
+		vi.mocked(invokeClient).mockImplementation((command, args) =>
+			command === "get_app_settings"
+				? Promise.resolve({
+						auto_launch: true,
+						close_to_tray: true,
+						start_minimized: false,
+						last_root_path: "",
+						last_repo_paths: [],
+						external_editor: "",
+					})
+				: client(command, args),
+		);
+		const user = userEvent.setup();
+		render(<SettingsModal {...defaultProps} />);
+		await user.click(screen.getByText("Background"));
+		expect(await screen.findByRole("status")).toHaveTextContent(
+			"Allow Releash in System Settings → General → Login Items.",
+		);
+		expect(
+			screen.getByRole("checkbox", { name: "Launch at login" }),
+		).not.toBeChecked();
+		await user.click(screen.getByRole("button", { name: "Open Login Items" }));
+		expect(invokeTauri).toHaveBeenCalledWith("open_login_item_settings");
+	});
+
+	it("ログイン項目を登録できない理由をalertで表示する", async () => {
+		const reason =
+			"Move Releash out of the read-only disk image before registering login items.";
+		vi.mocked(invokeTauri).mockResolvedValue({
+			enabled: false,
+			requiresApproval: false,
+			reason,
+		});
+		const { invokeClient } = await import("@/lib/clientSocket");
+		const client = vi.mocked(invokeClient).getMockImplementation();
+		if (!client) throw new Error("Missing settings fixture");
+		vi.mocked(invokeClient).mockImplementation((command, args) =>
+			command === "get_app_settings"
+				? Promise.resolve({
+						auto_launch: false,
+						close_to_tray: true,
+						start_minimized: false,
+						last_root_path: "",
+						last_repo_paths: [],
+						external_editor: "",
+					})
+				: client(command, args),
+		);
+		render(<SettingsModal {...defaultProps} />);
+		fireEvent.click(screen.getByText("Background"));
+		expect(await screen.findByRole("alert")).toHaveTextContent(reason);
+		expect(
+			screen.queryByRole("button", { name: "Open Login Items" }),
+		).not.toBeInTheDocument();
+	});
+
+	it("明示したCLI設置ボタンの操作後に設置結果を表示する", async () => {
+		const message = "Installed /usr/local/bin/releash";
+		const delegate = vi.mocked(invokeTauri).getMockImplementation();
+		vi.mocked(invokeTauri).mockImplementation(async (command, args, options) =>
+			command === "install_cli" ? message : delegate?.(command, args, options),
+		);
+		const { invokeClient } = await import("@/lib/clientSocket");
+		const client = vi.mocked(invokeClient).getMockImplementation();
+		if (!client) throw new Error("Missing settings fixture");
+		vi.mocked(invokeClient).mockImplementation((command, args) =>
+			command === "get_app_settings"
+				? Promise.resolve({
+						auto_launch: false,
+						close_to_tray: true,
+						start_minimized: false,
+						last_root_path: "",
+						last_repo_paths: [],
+						external_editor: "",
+					})
+				: client(command, args),
+		);
+		const user = userEvent.setup();
+		render(<SettingsModal {...defaultProps} />);
+		await user.click(screen.getByText("Background"));
+		expect(screen.queryByRole("status")).not.toBeInTheDocument();
+		expect(invokeTauri).not.toHaveBeenCalledWith("install_cli");
+		await user.click(
+			screen.getByRole("button", { name: "Install CLI command" }),
+		);
+		expect(invokeTauri).toHaveBeenCalledWith("install_cli");
+		expect(await screen.findByRole("status")).toHaveTextContent(message);
+	});
 
 	it.each(["期限後の応答", "接続回復"])(
 		"%sの通知でpushを購読しない設定も取得し直す",
@@ -255,6 +395,11 @@ describe("SettingsModal", () => {
 	it.each(["editor", "workflow", "base", "background", "notion", "provider"])(
 		"再取得しても%sの未保存入力と保存可能な状態を保持する",
 		async (form) => {
+			vi.mocked(invokeTauri).mockResolvedValue({
+				enabled: true,
+				requiresApproval: false,
+				reason: null,
+			});
 			const { invokeClient, onClientRefresh } = await import(
 				"@/lib/clientSocket"
 			);

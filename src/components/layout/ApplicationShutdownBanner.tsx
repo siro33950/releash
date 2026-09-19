@@ -1,10 +1,15 @@
+import { createPortal } from "react-dom";
 import { useApplicationShutdownSupervision } from "@/hooks/useApplicationShutdownSupervision";
 
 /**
  * S10: the single application quit flight. It is rendered at application scope
  * so a Session surface never presents another scope's failure or action.
  */
-export function ApplicationShutdownBanner() {
+export function ApplicationShutdownBanner({
+	container,
+}: {
+	container: HTMLElement | null;
+}) {
 	const supervision = useApplicationShutdownSupervision();
 	const retryableTargets = supervision.state.shutdownTargets.filter((target) =>
 		target.actions.includes("retry_same_effect"),
@@ -16,7 +21,7 @@ export function ApplicationShutdownBanner() {
 	) {
 		return null;
 	}
-	return (
+	const banner = (
 		<div
 			className="border-b border-border bg-muted/40 px-3 py-2 text-xs"
 			data-testid="application-shutdown"
@@ -57,4 +62,5 @@ export function ApplicationShutdownBanner() {
 			))}
 		</div>
 	);
+	return container ? createPortal(banner, container) : null;
 }

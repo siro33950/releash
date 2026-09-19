@@ -6,7 +6,7 @@
 
 ### インストール
 
-- release ビルドの Releash アプリを起動すると、`/usr/local/bin/releash` にアプリ本体への symlink が張られます。
+- Releash の Settings を開き、Background の「Install CLI command」を選ぶと、`/usr/local/bin/releash` に同梱の `releash-backend` への symlink を設置します。起動時には設置しません。
   - 書き込み権限が無い場合は、管理者権限を求めるダイアログが出ます。
   - アプリが translocate された状態（ダウンロード直後の隔離状態など）で起動した場合は張りません。
   - `/usr/local/bin/releash` に symlink ではないファイルがある場合は上書きしません。

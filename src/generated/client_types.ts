@@ -771,16 +771,16 @@ export type InputTakeTerminalLaunchPerformanceSamplesRequest = Record<
 >;
 
 export type InputUpdateAppSettingsRequest = {
-	app: InputAppSection;
+	app: InputWindowSettings;
 };
 
-export type InputAppSection = {
-	close_to_tray?: boolean;
-	auto_launch?: boolean;
-	start_minimized?: boolean;
-	last_root_path?: string;
-	last_repo_paths?: InputListstring;
-	external_editor?: string;
+export type InputWindowSettings = {
+	close_to_tray: boolean;
+	start_minimized: boolean;
+};
+
+export type InputUpdateLoginItemPreferenceRequest = {
+	requested: boolean;
 };
 
 export type InputUpdateCrashReportingRequest = {
@@ -2830,6 +2830,7 @@ export interface ClientCommandArgs {
 	take_terminal_input_performance_samples: InputTakeTerminalInputPerformanceSamplesRequest;
 	take_terminal_launch_performance_samples: InputTakeTerminalLaunchPerformanceSamplesRequest;
 	update_app_settings: InputUpdateAppSettingsRequest;
+	update_login_item_preference: InputUpdateLoginItemPreferenceRequest;
 	update_crash_reporting: InputUpdateCrashReportingRequest;
 	update_external_editor: InputUpdateExternalEditorRequest;
 	update_performance_telemetry: InputUpdatePerformanceTelemetryRequest;
@@ -3232,6 +3233,9 @@ export interface ClientCommands {
 	): Promise<ListTerminalLaunchPerformanceSampleV1>;
 	update_app_settings(
 		args: ClientCommandArgs["update_app_settings"],
+	): Promise<void>;
+	update_login_item_preference(
+		args: ClientCommandArgs["update_login_item_preference"],
 	): Promise<void>;
 	update_crash_reporting(
 		args: ClientCommandArgs["update_crash_reporting"],

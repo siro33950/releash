@@ -53,6 +53,7 @@ struct SystemGhCommandRunner;
 
 impl GhCommandRunner for SystemGhCommandRunner {
     fn output(&self, args: &[&str], repo_path: &str) -> GhCommandOutput {
+        let spawn_guard = crate::infrastructure::process::parent_lifetime::spawn_guard();
         let mut child = match Command::new("gh")
             .args(args)
             .current_dir(repo_path)
@@ -64,6 +65,7 @@ impl GhCommandRunner for SystemGhCommandRunner {
             Err(e) => return GhCommandOutput::SpawnFailed(e.to_string()),
         };
 
+        drop(spawn_guard);
         let Some(stdout) = child.stdout.take() else {
             let _ = child.kill();
             let _ = child.wait();

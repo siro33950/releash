@@ -122,7 +122,10 @@ pub(crate) fn spawn_shell_command(
         .kill_on_drop(true);
     child_process::configure_process_group(&mut command);
 
-    let mut child = command.spawn().map_err(CommandRunnerError::Spawn)?;
+    let mut child = {
+        let _spawn = super::parent_lifetime::spawn_guard();
+        command.spawn().map_err(CommandRunnerError::Spawn)?
+    };
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let (shutdown_tx, shutdown_rx) = watch::channel(false);

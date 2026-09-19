@@ -5,13 +5,21 @@ import { fromBinary } from "@bufbuild/protobuf";
 
 const bundle = await build({
     stdin: { contents: 'export * from "./src/lib/clientSocket.ts"; export { EnvelopeSchema } from "./src/generated/client_pb.ts";', resolveDir: process.cwd() },
+    plugins: [{ name: "protocol-client-socket", setup(build) {
+        build.onResolve({filter: /\/desktopClientSocket$/}, () => ({path: "fixture-socket", namespace: "fixture"}));
+        build.onLoad({filter: /.*/, namespace: "fixture"}, () => ({contents: 'export class DesktopClientSocket { constructor() { return new globalThis.WebSocket(globalThis.__clientEndpoint.url, [globalThis.__clientEndpoint.authSubprotocol]); } }', loader: "js"}));
+    }}],
     bundle: true, platform: "node", format: "esm", write: false,
 });
-let endpoint = process.argv[2];
+globalThis.__clientEndpoint = { url: process.argv[2], authSubprotocol: "releash-bearer.acceptance" };
+const unresolved = new Map();
 globalThis.window = Object.assign(new EventTarget(), {
-    __TAURI_INTERNALS__: { invoke: async (command) => {
-        assert.equal(command, "get_client_endpoint");
-        return { url: endpoint, authSubprotocol: "releash-bearer.acceptance" };
+    __TAURI_INTERNALS__: { invoke: async (command, args) => {
+        if (command === "list_client_handoff") return [...unresolved.values()];
+        if (command === "admit_client_command") return;
+        if (command === "forget_client_operation") { unresolved.delete(args.id); return; }
+        if (command === "validate_daemon_connection") return;
+        throw new Error(`Unexpected shell command: ${command}`);
     } },
 });
 const { invokeClient, getClientStatus, retryClientOperation, EnvelopeSchema } = await import(
@@ -63,7 +71,7 @@ try {
     await waitFor(() => getClientStatus().operations.some(op => op.id === originalId && op.state === "unknown"));
     await invokeClient("update_crash_reporting", { enabled: false });
     await invokeClient("report_mounted_xterm_count", { count: 3 });
-    endpoint = process.argv[3];
+    globalThis.__clientEndpoint.url = process.argv[3];
     socket.close();
     await waitFor(() => unknownCount > 0);
     assert.equal(generations.size, 2);

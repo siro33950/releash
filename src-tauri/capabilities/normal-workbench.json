@@ -43,13 +43,8 @@
       "identifier": "fs:allow-exists",
       "allow": [{ "path": "**" }]
     },
-    "autostart:allow-enable",
-    "autostart:allow-disable",
-    "autostart:allow-is-enabled",
     "dialog:default",
     "dialog:allow-open",
-    "updater:default",
-    "process:allow-restart",
     "core:window:allow-start-dragging"
   ]
 }

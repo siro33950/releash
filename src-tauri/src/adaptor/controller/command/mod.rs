@@ -1,5 +1,6 @@
 pub(crate) mod application_lifecycle;
 pub(crate) mod client;
+pub(crate) mod desktop_lifecycle;
 pub(crate) mod menu;
 
 type InvokeHandler<R = tauri::Wry> = Box<dyn Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync>;
@@ -18,6 +19,29 @@ use super::client::command_admitted;
 #[cfg(test)]
 use super::client::dispatch::STARTUP_COMMANDS;
 
+fn shell_operation(command: &str) -> crate::domain::daemon_supervision::ShellOperation {
+    use crate::domain::daemon_supervision::ShellOperation;
+    match command {
+        "get_daemon_status"
+        | "retry_daemon"
+        | "quit_desktop"
+        | "get_application_startup_outcome"
+        | "quit_after_startup_failure"
+        | "validate_daemon_connection"
+        | "list_client_handoff"
+        | "forget_client_operation"
+        | "attach_desktop_client"
+        | "detach_desktop_client"
+        | "send_desktop_client_frame"
+        | "admit_client_command"
+        | "fail_desktop_restoration"
+        | "complete_desktop_restoration" => ShellOperation::Supervision,
+        "get_login_item_status" => ShellOperation::RestoreState,
+        "apply_desktop_settings" => ShellOperation::ApplySettings,
+        _ => ShellOperation::Normal,
+    }
+}
+
 pub(crate) fn gate_invoke_before_domain_routing<R: tauri::Runtime>(
     invoke: tauri::ipc::Invoke<R>,
 ) -> Result<tauri::ipc::Invoke<R>, bool> {
@@ -25,7 +49,10 @@ pub(crate) fn gate_invoke_before_domain_routing<R: tauri::Runtime>(
         let authority = invoke.message.state_ref().try_get::<std::sync::Arc<
             crate::usecase::application_startup::ApplicationStartupAuthority,
         >>();
-        command_admitted(
+        let supervisor = invoke.message.state_ref().try_get::<std::sync::Arc<crate::usecase::daemon_supervision::DaemonSupervisionUsecase>>();
+        supervisor.is_none_or(|supervisor| {
+            supervisor.command_admitted(shell_operation(invoke.message.command()))
+        }) && command_admitted(
             invoke.message.command(),
             authority.map(|authority| authority.inner().as_ref()),
         )
@@ -86,6 +113,7 @@ pub(crate) fn register_all(builder: tauri::Builder<tauri::Wry>) -> tauri::Builde
 }
 
 fn register_shell_commands(router: &mut CommandRouter) {
+    desktop_lifecycle::register(router);
     client::register(router);
     application_lifecycle::register(router);
     menu::register(router);
@@ -116,13 +144,16 @@ mod tests {
             .collect();
         assert_eq!(
             registered,
-            [
-                "get_client_endpoint",
-                "apply_desktop_settings",
-                "get_application_startup_outcome",
-                "quit_after_startup_failure",
-                "set_menu_items_enabled",
-            ]
+            desktop_lifecycle::COMMAND_NAMES
+                .iter()
+                .copied()
+                .chain(client::COMMAND_NAMES.iter().copied())
+                .chain([
+                    "get_application_startup_outcome",
+                    "quit_after_startup_failure",
+                    "set_menu_items_enabled",
+                ])
+                .collect::<Vec<_>>()
         );
         for command in crate::adaptor::controller::api::protocol::client::COMMAND_NAMES {
             if !STARTUP_COMMANDS.contains(command) {
@@ -204,6 +235,11 @@ mod tests {
 
     fn command_domains() -> Vec<(&'static str, &'static [&'static str], RegisterFn)> {
         vec![
+            (
+                "desktop_lifecycle",
+                desktop_lifecycle::COMMAND_NAMES,
+                desktop_lifecycle::register,
+            ),
             ("client", client::COMMAND_NAMES, client::register),
             (
                 "application_lifecycle",
@@ -218,6 +254,7 @@ mod tests {
         crate::adaptor::controller::api::protocol::client::COMMAND_NAMES
             .iter()
             .copied()
+            .chain(desktop_lifecycle::COMMAND_NAMES.iter().copied())
             .chain(client::COMMAND_NAMES.iter().copied())
             .chain(menu::COMMAND_NAMES.iter().copied())
             .collect()
@@ -361,6 +398,47 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_起動中ipc_通常handlerの副作用をrust入口で拒否する() {
+        // Given
+        let gateway = Arc::new(crate::usecase::test_helpers::FakeDaemon::default());
+        let supervisor =
+            crate::usecase::daemon_supervision::DaemonSupervisionUsecase::start(gateway.clone());
+        let (app, effects) = command_gate_test_app(Some(Arc::new(
+            crate::usecase::application_startup::ApplicationStartupAuthority::ready(),
+        )));
+        app.manage(supervisor.clone());
+        let window = tauri::WebviewWindowBuilder::new(&app, "startup-failure", Default::default())
+            .build()
+            .unwrap();
+        // When / Then
+        for command in [
+            "record_normal_command_effect",
+            "set_login_item_enabled",
+            "install_cli",
+            "apply_desktop_settings",
+        ] {
+            let error =
+                tauri::test::get_ipc_response(&window, invoke_request(command)).unwrap_err();
+            assert_eq!(
+                error,
+                serde_json::json!({ "type": "application_unavailable" })
+            );
+        }
+        assert_eq!(effects.load(Ordering::SeqCst), 0);
+        // When
+        gateway.ready.store(true, Ordering::SeqCst);
+        crate::usecase::test_helpers::tick(200).await;
+        crate::usecase::test_helpers::restore_desktop(&supervisor).await;
+        // Then
+        assert!(tauri::test::get_ipc_response(
+            &window,
+            invoke_request("record_normal_command_effect")
+        )
+        .is_ok());
+        assert_eq!(effects.load(Ordering::SeqCst), 1);
     }
 
     #[test]

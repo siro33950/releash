@@ -36,8 +36,6 @@ tauri-plugin-opener = { version = "2", optional = true }
 tauri-plugin-fs = { version = "2", optional = true }
 tauri-plugin-dialog = { version = "2", optional = true }
 tauri-plugin-updater = { version = "2", optional = true }
-tauri-plugin-process = { version = "2", optional = true }
-tauri-plugin-autostart = { version = "2", optional = true }
 tauri-plugin-wdio = { version = "1", optional = true }
 tauri-plugin-wdio-webdriver = { version = "1", optional = true }
 tokio-tungstenite = { version = "0.30", optional = true }
@@ -89,12 +87,12 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { version = "0.6", optional = true }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString", "NSObject", "NSURL", "NSGeometry"], optional = true }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString", "NSObject", "NSURL", "NSGeometry", "NSError"], optional = true }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSDragging", "NSPasteboard", "NSPasteboardItem", "NSView", "NSWindow", "NSResponder"], optional = true }
 
 [features]
 default = ["desktop"]
-desktop = ["dep:tokio-tungstenite", "dep:tauri", "dep:tauri-build", "dep:tauri-plugin-opener", "dep:tauri-plugin-fs", "dep:tauri-plugin-dialog", "dep:tauri-plugin-updater", "dep:tauri-plugin-process", "dep:tauri-plugin-autostart", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit"]
+desktop = ["dep:tokio-tungstenite", "dep:tauri", "dep:tauri-build", "dep:tauri-plugin-opener", "dep:tauri-plugin-fs", "dep:tauri-plugin-dialog", "dep:tauri-plugin-updater", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit"]
 vendored-openssl = ["git2/vendored-openssl"]
 performance = []
 performance-wdio = ["desktop", "performance", "dep:tauri-plugin-wdio", "dep:tauri-plugin-wdio-webdriver"]
@@ -113,3 +111,15 @@ tauri = { version = "2.11", features = ["tray-icon", "image-png", "test"] }
 [[test]]
 name = "client_api"
 path = "tests/client_api/mod.rs"
+
+[[test]]
+name = "desktop_restart"
+path = "tests/desktop_restart.rs"
+harness = false
+required-features = ["desktop"]
+
+[[test]]
+name = "desktop_tray"
+path = "tests/desktop_tray.rs"
+harness = false
+required-features = ["desktop"]

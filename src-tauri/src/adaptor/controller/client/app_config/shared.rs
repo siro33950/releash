@@ -110,16 +110,45 @@ pub(crate) fn register_shared(
                     let result = async move {
                         let state = state
                             .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
+                        let app = required(args.app, "app")?;
                         outcome(
                             commands::update_app_settings_shared(
                                 &state,
-                                convert(required(args.app, "app")?)?,
+                                required(app.close_to_tray, "close_to_tray")?,
+                                required(app.start_minimized, "start_minimized")?,
                             )
                             .await,
                         )
                     }
                     .await?;
                     Ok(wire::command_result::Command::UpdateAppSettings(result))
+                })
+            }),
+        );
+    }
+    {
+        let state = deps.config_repository.clone();
+        router.register_domain(
+            &["update_login_item_preference"],
+            Box::new(move |command| {
+                let state = state.clone();
+                Box::pin(async move {
+                    let wire::command_request::Command::UpdateLoginItemPreference(args) = command
+                    else {
+                        return Err(invalid_request("Mismatched command"));
+                    };
+                    let state =
+                        state.ok_or_else(|| invalid_request("Command dependency unavailable"))?;
+                    let result = outcome(
+                        commands::update_login_item_preference_shared(
+                            &state,
+                            required(args.requested, "requested")?,
+                        )
+                        .await,
+                    )?;
+                    Ok(wire::command_result::Command::UpdateLoginItemPreference(
+                        result,
+                    ))
                 })
             }),
         );

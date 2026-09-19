@@ -761,6 +761,32 @@ function BackgroundSection({
 						</label>
 					</div>
 
+					{background.loginItem?.requiresApproval && (
+						<div role="status" className="text-xs">
+							<p>Allow Releash in System Settings → General → Login Items.</p>
+							<Button
+								variant="outline"
+								size="sm"
+								onClick={() => void background.openLoginSettings()}
+							>
+								Open Login Items
+							</Button>
+						</div>
+					)}
+					{background.loginItem?.reason && (
+						<p role="alert">{background.loginItem.reason}</p>
+					)}
+					<Button
+						variant="outline"
+						size="sm"
+						onClick={() => void background.installCli()}
+					>
+						Install CLI command
+					</Button>
+					{background.cliMessage && (
+						<p role="status">{background.cliMessage}</p>
+					)}
+
 					<div
 						className={`flex items-center gap-2 ml-4 ${background.draft.auto_launch ? "" : "cursor-not-allowed opacity-50"}`}
 					>

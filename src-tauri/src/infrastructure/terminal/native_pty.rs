@@ -224,10 +224,12 @@ impl NativePtySystem {
             command.cwd(cwd);
         }
 
-        let child = pair
-            .slave
-            .spawn_command(command)
-            .map_err(|error| format!("Failed to spawn shell: {error}"))?;
+        let child = {
+            let _spawn = crate::infrastructure::process::parent_lifetime::spawn_guard();
+            pair.slave
+                .spawn_command(command)
+                .map_err(|error| format!("Failed to spawn shell: {error}"))?
+        };
         drop(pair.slave);
 
         let master = pair.master;

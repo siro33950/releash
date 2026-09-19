@@ -65,3 +65,17 @@ fn test_通信方針_更新順序の対象をドメインの種類で識別す�
     assert!(!may_replay("get_repo_paths", true, true));
     assert!(!may_replay("start_workflow", true, false));
 }
+
+#[test]
+fn test_登録希望保存_同じ設定の更新順序を守りdaemon再起動後には再送しない() {
+    // Given / When / Then
+    let command = "update_login_item_preference";
+    assert_eq!(recovery(command), Recovery::Idempotent);
+    assert_eq!(
+        ordering_scope(command),
+        ordering_scope("update_app_settings")
+    );
+    assert!(may_replay(command, true, false));
+    assert!(!may_replay(command, false, false));
+    assert!(persists_for_restart(command));
+}
