@@ -10,7 +10,7 @@ const mocks = vi.hoisted(() => ({
 	writeText: vi.fn(),
 }));
 
-vi.mock("@/lib/clientSocket", () => ({
+vi.mock("@/lib/client", () => ({
 	invokeClient: (...args: unknown[]) => mocks.invoke(...args),
 }));
 

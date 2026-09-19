@@ -29,7 +29,8 @@ pub use crate::usecase::repository_state::snapshot::RepositorySnapshotChangedEve
 #[serde(rename_all = "camelCase")]
 pub struct ClientEndpoint {
     pub url: String,
-    pub auth_subprotocol: String,
+    pub token: String,
+    pub launch_id: String,
 }
 
 pub fn desktop_connection_app<R: tauri::Runtime>(
@@ -41,12 +42,10 @@ pub fn desktop_connection_app<R: tauri::Runtime>(
         CommandRouter::new(Box::new(|_| false));
     crate::adaptor::controller::command::client::register(&mut router);
     crate::adaptor::controller::command::desktop_lifecycle::register(&mut router);
-    let handoff = desktop_handoff(data_dir);
     let supervisor = crate::usecase::daemon_supervision::DaemonSupervisionUsecase::start(Arc::new(
         crate::adaptor::gateway::daemon_supervision::DaemonProcessGateway::new(
             executable.into(),
             data_dir.into(),
-            handoff.clone(),
         ),
     ));
     builder
@@ -54,7 +53,6 @@ pub fn desktop_connection_app<R: tauri::Runtime>(
         .manage(crate::usecase::client_connection::ClientConnectionUsecase(
             Box::new(supervisor.clone()),
         ))
-        .manage(handoff)
         .manage(supervisor)
         .invoke_handler(move |invoke| router.handle(invoke))
         .build(crate::application_context())
@@ -150,9 +148,13 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
             Arc::new(workflow),
             Arc::new(runtime),
             binding.bearer_token(),
-            binding.terminal_bearer_token(),
+            binding.client_bearer_token(),
             Some(TerminalApiDeps::new(terminal.application())),
-            Some(ClientApiDeps::new(dispatch, ClientPushGateway::new(sink))),
+            Some(ClientApiDeps::new(
+                dispatch,
+                ClientPushGateway::new(sink),
+                crate::client_api_acceptance::watcher(),
+            )),
             None,
         );
         Self {
@@ -170,7 +172,8 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
             .unwrap();
         ClientEndpoint {
             url: endpoint.url,
-            auth_subprotocol: endpoint.auth_subprotocol,
+            token: endpoint.token,
+            launch_id: String::new(),
         }
     }
 
@@ -181,6 +184,10 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
 
     pub fn emit(&self, push: BackendPush<'_>) {
         push.emit(&crate::desktop_test_support::push_sink(self.app.handle()));
+    }
+
+    pub fn push_subscription_count(&self) -> usize {
+        self.app.state::<Arc<PushSink>>().subscriber_count()
     }
 
     pub fn subscribe_push(&self) -> tokio::sync::broadcast::Receiver<Arc<[u8]>> {
@@ -226,18 +233,40 @@ impl<R: tauri::Runtime> Drop for ClientApiAcceptanceHost<R> {
     }
 }
 
-pub use crate::adaptor::controller::api::protocol::client::{
-    command_request, command_response, envelope, Ack, CommandRequest, Envelope, RequestAck,
-};
+pub use crate::adaptor::protocol::connect::rpc;
+pub type NativeClient = rpc::ClientServiceClient<connectrpc::client::HttpClient>;
 
-pub fn encode_client_request(id: &str, name: &str, args: serde_json::Value) -> Vec<u8> {
-    use prost::Message;
-    let mut request = CommandRequest::from_value(name, args).expect("command arguments");
-    request.request_id = id.into();
-    Envelope {
-        body: Some(envelope::Body::Request(Box::new(request))),
+pub fn connect_client(endpoint: &ClientEndpoint) -> NativeClient {
+    crate::adaptor::gateway::desktop_client::client(
+        &crate::usecase::client_connection::ClientConnectionDto {
+            url: endpoint.url.clone(),
+            token: endpoint.token.clone(),
+        },
+    )
+    .unwrap()
+}
+
+pub async fn request_client(
+    client: &NativeClient,
+    name: &str,
+    args: serde_json::Value,
+) -> Result<serde_json::Value, connectrpc::ConnectError> {
+    use crate::adaptor::protocol::client as wire;
+    let command = wire::CommandRequest::from_value(name, args)
+        .unwrap()
+        .command
+        .unwrap();
+    let result = crate::adaptor::gateway::desktop_client::call(client, command).await?;
+    Ok(wire::CommandResult {
+        command: Some(result),
     }
-    .encode_to_vec()
+    .into_value()
+    .unwrap()
+    .1)
+}
+
+pub fn decode_rpc_push(push: rpc::Push) -> (&'static str, serde_json::Value) {
+    decode_client_push(crate::adaptor::controller::api::protocol::connect::to_wire(&push).unwrap())
 }
 
 pub fn decode_client_value(
@@ -314,9 +343,10 @@ impl ClientRecoveryAcceptanceHost {
             let deps = ClientApiDeps::new(
                 dispatch.clone(),
                 ClientPushGateway::new(Arc::new(PushSink::new())),
+                crate::client_api_acceptance::watcher(),
             );
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            urls.push(format!("ws://{}/v1/client", listener.local_addr().unwrap()));
+            urls.push(format!("http://{}", listener.local_addr().unwrap()));
             servers.push(tokio::spawn(async move {
                 axum::serve(
                     listener,
@@ -376,7 +406,6 @@ pub async fn terminate_daemon_for_acceptance(
     let gateway = crate::adaptor::gateway::daemon_supervision::DaemonProcessGateway::new(
         executable,
         data_dir.clone(),
-        desktop_handoff(&data_dir),
     );
     gateway.spawn().await?;
     let ready = tokio::time::timeout(std::time::Duration::from_secs(3), async {
@@ -395,27 +424,18 @@ pub async fn terminate_daemon_for_acceptance(
     Ok(start.elapsed())
 }
 
-fn desktop_handoff(data_dir: &Path) -> Arc<crate::usecase::client_handoff::ClientHandoffUsecase> {
-    let files = Arc::new(
-        crate::adaptor::gateway::client_handoff::ClientHandoffFiles::new(
-            data_dir.join("desktop-client-operations"),
-        ),
-    );
-    Arc::new(crate::usecase::client_handoff::ClientHandoffUsecase::new(
-        files.clone(),
-        files,
-    ))
-}
-
-pub fn attach_desktop_client<R: tauri::Runtime>(
+pub async fn desktop_client_endpoint<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     id: String,
-) -> (Vec<u8>, tokio::sync::broadcast::Receiver<Option<Vec<u8>>>) {
-    let attachment = app
-        .state::<Arc<crate::usecase::daemon_supervision::DaemonSupervisionUsecase>>()
-        .attach(id)
-        .unwrap();
-    (attachment.hello, attachment.frames)
+) -> ClientEndpoint {
+    let supervisor =
+        app.state::<Arc<crate::usecase::daemon_supervision::DaemonSupervisionUsecase>>();
+    let connection = supervisor.attach(id).await.unwrap();
+    ClientEndpoint {
+        url: connection.endpoint.url,
+        token: connection.endpoint.token,
+        launch_id: connection.launch_id,
+    }
 }
 
 #[cfg(feature = "performance")]
@@ -459,4 +479,16 @@ pub async fn apply_desktop_update<R: tauri::Runtime>(
     .apply()
     .await
     .map_err(|e| e.to_string())
+}
+
+pub(crate) fn watcher() -> Arc<crate::usecase::watcher::WatcherUsecase> {
+    Arc::new(crate::usecase::watcher::WatcherUsecase::new(
+        None,
+        Arc::new(
+            crate::adaptor::gateway::repository::file_watcher::FileWatcherGateway::new(
+                Arc::new(crate::infrastructure::file_watcher::FileWatcherManager::default()),
+                Arc::new(PushSink::new()),
+            ),
+        ),
+    ))
 }

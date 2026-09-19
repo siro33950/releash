@@ -1,5 +1,24 @@
 // Generated from proto/client.proto. Run pnpm generate:protocol.
 
+export type InputAttachTerminalSurfaceRequest = {
+	attachmentId: string;
+	owner: InputTerminalSurfaceOwnerV1;
+	recovery: boolean;
+};
+
+export type InputTerminalSurfaceOwnerV1 =
+	| ({ kind: "workspace" } & InputTerminalSurfaceOwnerV1Workspace)
+	| ({ kind: "session" } & InputTerminalSurfaceOwnerV1Session);
+
+export type InputTerminalSurfaceOwnerV1Workspace = {
+	workspacePath: string;
+};
+
+export type InputTerminalSurfaceOwnerV1Session = {
+	workspacePath: string;
+	sessionId: string;
+};
+
 export type InputGetReviewBlobRequest = {
 	reference: string;
 };
@@ -40,25 +59,6 @@ export type InputArchiveAgentSessionRequest = {
 export type InputArchiveWorkspaceWorkflowExecutionRequest = {
 	worktreePath: string;
 	executionId: string;
-};
-
-export type InputAttachTerminalSurfaceRequest = {
-	attachmentId: string;
-	owner: InputTerminalSurfaceOwnerV1;
-	recovery: boolean;
-};
-
-export type InputTerminalSurfaceOwnerV1 =
-	| ({ kind: "workspace" } & InputTerminalSurfaceOwnerV1Workspace)
-	| ({ kind: "session" } & InputTerminalSurfaceOwnerV1Session);
-
-export type InputTerminalSurfaceOwnerV1Workspace = {
-	workspacePath: string;
-};
-
-export type InputTerminalSurfaceOwnerV1Session = {
-	workspacePath: string;
-	sessionId: string;
 };
 
 export type InputBuildReviewThreadHandoffRequest = {
@@ -727,10 +727,6 @@ export type InputSetReleashBaseRequest = {
 	base?: string | null;
 };
 
-export type InputStartGitDirWatchingRequest = {
-	repoPath: string;
-};
-
 export type InputStartTerminalInputPerformanceCollectionRequest = Record<
 	string,
 	never
@@ -740,10 +736,6 @@ export type InputStartTerminalLaunchPerformanceCollectionRequest = Record<
 	string,
 	never
 >;
-
-export type InputStartWatchingRequest = {
-	path: string;
-};
 
 export type InputStartWorkflowRequest = {
 	workflowName: string;
@@ -2698,6 +2690,7 @@ export type WorkflowExecutionChangedPayloadView = {
 };
 
 export interface ClientCommandArgs {
+	attach_terminal_surface: InputAttachTerminalSurfaceRequest;
 	get_review_blob: InputGetReviewBlobRequest;
 	abort_workflow: InputAbortWorkflowRequest;
 	ack_terminal_surface_output: InputAckTerminalSurfaceOutputRequest;
@@ -2707,7 +2700,6 @@ export interface ClientCommandArgs {
 	approve_workspace_node: InputApproveWorkspaceNodeRequest;
 	archive_agent_session: InputArchiveAgentSessionRequest;
 	archive_workspace_workflow_execution: InputArchiveWorkspaceWorkflowExecutionRequest;
-	attach_terminal_surface: InputAttachTerminalSurfaceRequest;
 	build_review_thread_handoff: InputBuildReviewThreadHandoffRequest;
 	compute_hidden_ranges_from_content: InputComputeHiddenRangesFromContentRequest;
 	compute_markdown_diff_ranges: InputComputeMarkdownDiffRangesRequest;
@@ -2820,10 +2812,8 @@ export interface ClientCommandArgs {
 	save_workspace_state: InputSaveWorkspaceStateRequest;
 	set_branch_base: InputSetBranchBaseRequest;
 	set_releash_base: InputSetReleashBaseRequest;
-	start_git_dir_watching: InputStartGitDirWatchingRequest;
 	start_terminal_input_performance_collection: InputStartTerminalInputPerformanceCollectionRequest;
 	start_terminal_launch_performance_collection: InputStartTerminalLaunchPerformanceCollectionRequest;
-	start_watching: InputStartWatchingRequest;
 	start_workflow: InputStartWorkflowRequest;
 	stop_watching: InputStopWatchingRequest;
 	stop_workflow: InputStopWorkflowRequest;
@@ -2898,9 +2888,6 @@ export interface ClientCommands {
 	): Promise<AgentSessionArchiveResponse>;
 	archive_workspace_workflow_execution(
 		args: ClientCommandArgs["archive_workspace_workflow_execution"],
-	): Promise<void>;
-	attach_terminal_surface(
-		args: ClientCommandArgs["attach_terminal_surface"],
 	): Promise<void>;
 	build_review_thread_handoff(
 		args: ClientCommandArgs["build_review_thread_handoff"],
@@ -3208,18 +3195,12 @@ export interface ClientCommands {
 	): Promise<void>;
 	set_branch_base(args: ClientCommandArgs["set_branch_base"]): Promise<void>;
 	set_releash_base(args: ClientCommandArgs["set_releash_base"]): Promise<void>;
-	start_git_dir_watching(
-		args: ClientCommandArgs["start_git_dir_watching"],
-	): Promise<ResultUint64>;
 	start_terminal_input_performance_collection(
 		args: ClientCommandArgs["start_terminal_input_performance_collection"],
 	): Promise<void>;
 	start_terminal_launch_performance_collection(
 		args: ClientCommandArgs["start_terminal_launch_performance_collection"],
 	): Promise<void>;
-	start_watching(
-		args: ClientCommandArgs["start_watching"],
-	): Promise<ResultUint64>;
 	start_workflow(
 		args: ClientCommandArgs["start_workflow"],
 	): Promise<ResultString>;
@@ -3373,4 +3354,5 @@ export interface ClientPushPayloads {
 	"repository-snapshot-changed": RepositorySnapshotChangedEvent;
 	"review-comments-changed": ResultString;
 	"workflow-execution-changed": WorkflowExecutionChangedPayloadView;
+	resync: null;
 }

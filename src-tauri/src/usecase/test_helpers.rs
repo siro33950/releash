@@ -22,8 +22,6 @@ pub(crate) struct FakeDaemon {
     pub(crate) wrong_identity: AtomicBool,
     pub(crate) exit: parking_lot::Mutex<Option<DaemonExit>>,
     pub(crate) calls: parking_lot::Mutex<Vec<&'static str>>,
-    pub(crate) restoration_error: parking_lot::Mutex<Option<String>>,
-    pub(crate) restoration_wait: parking_lot::Mutex<Option<std::sync::Arc<tokio::sync::Notify>>>,
 }
 #[async_trait::async_trait]
 impl DaemonProcessPort for FakeDaemon {
@@ -62,24 +60,6 @@ impl DaemonProcessPort for FakeDaemon {
 }
 #[async_trait::async_trait]
 impl DaemonGateway for FakeDaemon {
-    fn attach(&self, _: String) -> Result<super::daemon_supervision::DesktopAttachment, String> {
-        Err("No fake desktop attachment".into())
-    }
-    fn detach(&self, _: &str) {}
-    async fn forward(&self, _: Vec<u8>) -> Result<(), super::daemon_supervision::DesktopSendError> {
-        self.calls.lock().push("forward");
-        Ok(())
-    }
-    fn restored(&self) -> bool {
-        self.connected()
-    }
-    async fn finish_restoration(&self, _: &str) -> Result<(), String> {
-        let wait = self.restoration_wait.lock().clone();
-        if let Some(wait) = wait {
-            wait.notified().await;
-        }
-        self.restoration_error.lock().clone().map_or(Ok(()), Err)
-    }
     fn connected(&self) -> bool {
         self.ready.load(Ordering::SeqCst)
     }
@@ -94,8 +74,8 @@ impl DaemonGateway for FakeDaemon {
         let connection = DaemonConnection {
             connected_at_ms: self.monotonic_ms(),
             endpoint: ClientConnectionDto {
-                url: "ws://127.0.0.1:1".into(),
-                auth_subprotocol: "client-only".into(),
+                url: "http://127.0.0.1:1".into(),
+                token: "client-only".into(),
             },
             settings: DesktopSettingsDto {
                 close_to_tray: true,
@@ -121,6 +101,7 @@ impl DaemonGateway for FakeDaemon {
 pub(crate) async fn restore_desktop(
     supervisor: &super::daemon_supervision::DaemonSupervisionUsecase,
 ) {
+    supervisor.attach("desktop".into()).await.unwrap();
     supervisor
         .finish_restoration(
             "launch",

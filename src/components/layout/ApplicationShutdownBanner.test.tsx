@@ -4,7 +4,7 @@ import { ApplicationShutdownBanner } from "./ApplicationShutdownBanner";
 
 const { mockInvoke } = vi.hoisted(() => ({ mockInvoke: vi.fn() }));
 
-vi.mock("@/lib/clientSocket", () => ({
+vi.mock("@/lib/client", () => ({
 	invokeClient: (...args: unknown[]) => mockInvoke(...args),
 }));
 

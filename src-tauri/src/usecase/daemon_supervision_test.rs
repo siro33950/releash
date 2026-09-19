@@ -322,50 +322,6 @@ async fn test_起動失敗_停止未確認は一度だけ停止を試み終了�
 }
 
 #[tokio::test(start_paused = true)]
-async fn test_通常要求_接続検証と状態復元の完了前および切替中は送信しない() {
-    // Given
-    let gateway = Arc::new(FakeDaemon::default());
-    let supervisor = DaemonSupervisionUsecase::start(gateway.clone());
-    tick(200).await;
-    // When
-    let admission =
-        supervisor.admit_client_command(crate::domain::daemon_supervision::ClientOperation::Normal);
-    let send = supervisor
-        .send_frame("launch", Some(ClientOperation::Normal), vec![])
-        .await;
-    // Then
-    assert!(admission.is_err());
-    assert_eq!(
-        send.unwrap_err().state,
-        crate::domain::client_operation::transmission::TransmissionFailure::NotSent
-    );
-    assert_eq!(*gateway.calls.lock(), ["spawn"]);
-    // When
-    gateway.ready.store(true, Ordering::SeqCst);
-    tick(200).await;
-    restore_desktop(&supervisor).await;
-    supervisor
-        .send_frame("launch", Some(ClientOperation::Normal), vec![])
-        .await
-        .unwrap();
-    // Then
-    assert_eq!(*gateway.calls.lock(), ["spawn", "forward"]);
-    // When
-    supervisor.stop(StopIntent::Update).unwrap();
-    // Then
-    assert!(supervisor
-        .send_frame("launch", Some(ClientOperation::Normal), vec![])
-        .await
-        .is_err());
-    assert_eq!(*gateway.calls.lock(), ["spawn", "forward"]);
-    supervisor
-        .send_frame("launch", Some(ClientOperation::Shutdown), vec![])
-        .await
-        .unwrap();
-    assert_eq!(*gateway.calls.lock(), ["spawn", "forward", "forward"]);
-}
-
-#[tokio::test(start_paused = true)]
 async fn test_通常quit_終了確認不能でも完了扱いにせず期限後にui終了を選ぶ() {
     // Given
     let gateway = Arc::new(FakeDaemon::default());
@@ -402,8 +358,7 @@ async fn test_旧renderer要求_古いlaunchを拒否して検証済みdaemonを
     restore_desktop(&supervisor).await;
     // When
     assert!(supervisor
-        .send_frame("old", Some(ClientOperation::Normal), vec![])
-        .await
+        .validate_connection("old", env!("CARGO_PKG_VERSION"))
         .is_err());
     tick(200).await;
     // Then
@@ -424,9 +379,6 @@ async fn test_ws切断_生存中の子へ再接続し期限超過時だけ終了
     tick(200).await;
     // Then
     assert_eq!(supervisor.status().phase, "starting");
-    assert!(supervisor
-        .admit_client_command(ClientOperation::Normal)
-        .is_err());
     assert_eq!(*gateway.calls.lock(), ["spawn"]);
     // When
     gateway.ready.store(true, Ordering::SeqCst);
@@ -445,18 +397,6 @@ async fn test_ws切断_生存中の子へ再接続し期限超過時だけ終了
     assert_eq!(
         *gateway.calls.lock(),
         ["spawn", "terminate_and_wait", "spawn"]
-    );
-}
-
-#[test]
-fn test_送信失敗dto_未送信と結果不明の区別をクライアントへ渡す() {
-    assert_eq!(
-        serde_json::to_value(DesktopSendError::not_sent("before")).unwrap(),
-        serde_json::json!({"state":"not_sent","message":"before"})
-    );
-    assert_eq!(
-        serde_json::to_value(DesktopSendError::write_attempted("during")).unwrap(),
-        serde_json::json!({"state":"unknown","message":"during"})
     );
 }
 
@@ -479,9 +419,6 @@ async fn test_状態復元_取得失敗後は同じdaemonで再取得の完了�
         Some("Settings: read failed")
     );
     assert!(supervisor.status().retry_available);
-    assert!(supervisor
-        .admit_client_command(ClientOperation::Normal)
-        .is_err());
     // When
     supervisor.retry().unwrap();
     tick(200).await;
@@ -489,12 +426,6 @@ async fn test_状態復元_取得失敗後は同じdaemonで再取得の完了�
     // Then
     assert_eq!(supervisor.status().phase, "restoring");
     assert_eq!(supervisor.status().connection_generation, first + 1);
-    assert!(supervisor
-        .admit_client_command(ClientOperation::RestoreState)
-        .is_ok());
-    assert!(supervisor
-        .admit_client_command(ClientOperation::Normal)
-        .is_err());
     assert!(supervisor
         .finish_restoration("launch", "desktop", first)
         .await
@@ -504,9 +435,6 @@ async fn test_状態復元_取得失敗後は同じdaemonで再取得の完了�
     // Then
     assert_eq!(supervisor.status().phase, "ready");
     assert!(supervisor.status().reason.is_none());
-    assert!(supervisor
-        .admit_client_command(ClientOperation::Normal)
-        .is_ok());
     assert_eq!(*gateway.calls.lock(), ["spawn"]);
 }
 
@@ -515,7 +443,6 @@ async fn test_状態復元_完了確認の失敗も表示しquitで一括停止�
     // Given
     let gateway = Arc::new(FakeDaemon::default());
     gateway.ready.store(true, Ordering::SeqCst);
-    *gateway.restoration_error.lock() = Some("Required state has not been restored".into());
     let supervisor = DaemonSupervisionUsecase::start(gateway.clone());
     tick(200).await;
     // When
@@ -531,7 +458,7 @@ async fn test_状態復元_完了確認の失敗も表示しquitで一括停止�
     assert_eq!(supervisor.status().phase, "failed");
     assert_eq!(
         supervisor.status().reason,
-        gateway.restoration_error.lock().clone()
+        Some("Desktop attachment changed during restoration".into())
     );
     // When
     supervisor.stop(StopIntent::Quit(0)).unwrap();
@@ -550,15 +477,16 @@ async fn test_状態復元_期限超過後に戻った古い完了は再試行�
     // Given
     let wait = Arc::new(tokio::sync::Notify::new());
     let gateway = Arc::new(FakeDaemon::default());
-    *gateway.restoration_wait.lock() = Some(wait.clone());
     gateway.ready.store(true, Ordering::SeqCst);
     let supervisor = DaemonSupervisionUsecase::start(gateway.clone());
     tick(200).await;
-    let _ = supervisor.attach("desktop".into());
+    let _ = supervisor.attach("desktop".into()).await;
     let completion = {
         let supervisor = supervisor.clone();
         let generation = supervisor.status().connection_generation;
+        let wait = wait.clone();
         tokio::spawn(async move {
+            wait.notified().await;
             supervisor
                 .finish_restoration("launch", "desktop", generation)
                 .await
@@ -577,13 +505,54 @@ async fn test_状態復元_期限超過後に戻った古い完了は再試行�
     tick(200).await;
     // Then
     assert_eq!(supervisor.status().phase, "restoring");
-    assert!(supervisor
-        .admit_client_command(ClientOperation::Normal)
-        .is_err());
     // When
     wait.notify_one();
     restore_desktop(&supervisor).await;
     // Then
     assert_eq!(supervisor.status().phase, "ready");
     assert_eq!(*gateway.calls.lock(), ["spawn"]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_接続情報要求_起動中と切替中は拒否せず接続確立を待つ() {
+    // Given
+    let gateway = Arc::new(FakeDaemon::default());
+    let supervisor = DaemonSupervisionUsecase::start(gateway.clone());
+    for reconnect in [false, true] {
+        if reconnect {
+            gateway.ready.store(false, Ordering::SeqCst);
+            tick(200).await;
+        }
+        let requesting = supervisor.clone();
+        let request = tokio::spawn(async move { requesting.attach("desktop".into()).await });
+        // When
+        tick(200).await;
+        // Then
+        assert!(!request.is_finished());
+        gateway.ready.store(true, Ordering::SeqCst);
+        tick(200).await;
+        let endpoint = request.await.unwrap().unwrap();
+        assert_eq!(endpoint.launch_id, "launch");
+        assert_eq!(endpoint.endpoint.token, "client-only");
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_接続情報要求_同一性不一致のdaemonを返さず確定した起動失敗を返す() {
+    // Given
+    let gateway = Arc::new(FakeDaemon::default());
+    gateway.wrong_identity.store(true, Ordering::SeqCst);
+    let supervisor = DaemonSupervisionUsecase::start(gateway.clone());
+    let requesting = supervisor.clone();
+    let request = tokio::spawn(async move { requesting.attach("desktop".into()).await });
+    // When
+    tick(200).await;
+    // Then
+    assert!(!request.is_finished());
+    gateway.ready.store(true, Ordering::SeqCst);
+    tick(200).await;
+    let error = request.await.unwrap().err().unwrap();
+    assert!(error.to_string().contains("different daemon instance"));
+    assert_eq!(supervisor.status().stage, Some("connection_identity"));
+    assert_eq!(supervisor.status().phase, "failed");
 }

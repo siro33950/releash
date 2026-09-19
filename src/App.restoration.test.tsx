@@ -2,12 +2,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { completeClientRestoration, invokeClient } from "@/lib/clientSocket";
+import { completeClientRestoration, invokeClient } from "@/lib/client";
 import type { AppSettings } from "@/types/settings";
 import App from "./App";
 
-vi.mock("@/lib/clientSocket", async (importOriginal) => ({
-	...(await importOriginal<typeof import("@/lib/clientSocket")>()),
+vi.mock("@/lib/client", async (importOriginal) => ({
+	...(await importOriginal<typeof import("@/lib/client")>()),
 	invokeClient: vi.fn(),
 	listenClient: vi.fn().mockResolvedValue(() => {}),
 	completeClientRestoration: vi.fn(),

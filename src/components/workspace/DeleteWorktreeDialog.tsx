@@ -10,18 +10,13 @@ import {
 	AlertDialogHeader,
 	AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import type { ClientTransportError } from "@/lib/clientSocket";
 import { getErrorMessage } from "@/lib/errorMessage";
 import type { WorktreeBranch } from "@/types/git";
 
 interface DeleteWorktreeDialogProps {
 	open: boolean;
 	branch: WorktreeBranch | null;
-	onConfirm: (
-		branch: WorktreeBranch,
-		force: boolean,
-		onUncertain: (error: ClientTransportError) => void,
-	) => Promise<void>;
+	onConfirm: (branch: WorktreeBranch, force: boolean) => Promise<void>;
 	onCancel: () => void;
 }
 
@@ -32,7 +27,6 @@ export function DeleteWorktreeDialog({
 	onCancel,
 }: DeleteWorktreeDialogProps) {
 	const [deleting, setDeleting] = useState(false);
-	const [uncertain, setUncertain] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const deletingRef = useRef(false);
 
@@ -42,20 +36,15 @@ export function DeleteWorktreeDialog({
 		async (force: boolean) => {
 			if (!branch || (!branch.worktree_path && !branch.is_merged)) return;
 			setDeleting(true);
-			setUncertain(false);
 			deletingRef.current = true;
 			setError(null);
 			try {
-				await onConfirm(branch, force, (cause) => {
-					setUncertain(true);
-					setError(cause.message);
-				});
+				await onConfirm(branch, force);
 				setError(null);
 			} catch (e) {
 				setError(getErrorMessage(e));
 			} finally {
 				setDeleting(false);
-				setUncertain(false);
 				deletingRef.current = false;
 			}
 		},
@@ -112,10 +101,7 @@ export function DeleteWorktreeDialog({
 					)}
 				</div>
 				<AlertDialogFooter>
-					<AlertDialogCancel
-						onClick={onCancel}
-						disabled={deleting && !uncertain}
-					>
+					<AlertDialogCancel onClick={onCancel} disabled={deleting}>
 						Cancel
 					</AlertDialogCancel>
 					{hasDirty ? (
@@ -124,10 +110,8 @@ export function DeleteWorktreeDialog({
 							onClick={() => handleDelete(true)}
 							disabled={deleting}
 						>
-							{deleting && !uncertain && (
-								<Loader2 className="size-3.5 mr-1 animate-spin" />
-							)}
-							{deleting && !uncertain ? "Deleting..." : "Force Delete"}
+							{deleting && <Loader2 className="size-3.5 mr-1 animate-spin" />}
+							{deleting ? "Deleting..." : "Force Delete"}
 						</AlertDialogAction>
 					) : (
 						<AlertDialogAction
@@ -135,10 +119,8 @@ export function DeleteWorktreeDialog({
 							onClick={() => handleDelete(false)}
 							disabled={deleting}
 						>
-							{deleting && !uncertain && (
-								<Loader2 className="size-3.5 mr-1 animate-spin" />
-							)}
-							{deleting && !uncertain ? "Deleting..." : "Delete"}
+							{deleting && <Loader2 className="size-3.5 mr-1 animate-spin" />}
+							{deleting ? "Deleting..." : "Delete"}
 						</AlertDialogAction>
 					)}
 				</AlertDialogFooter>

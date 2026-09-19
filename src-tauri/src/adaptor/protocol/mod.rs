@@ -13,3 +13,4 @@ pub(crate) mod terminal;
 pub(crate) mod workflow;
 
 pub(crate) mod client;
+pub(crate) mod connect;

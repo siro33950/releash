@@ -12,7 +12,7 @@ import type {
 	ClientCommandArgs,
 	ClientCommandResults,
 } from "@/generated/client_types";
-import { invokeClient as invoke } from "@/lib/clientSocket";
+import { invokeClient as invoke } from "@/lib/client";
 import { getErrorMessage } from "@/lib/errorMessage";
 import { rehypeSourceLines } from "@/lib/rehypeSourceLines";
 import type { DiffRange, InlineChunk, SplitRow } from "@/types/markdown-diff";

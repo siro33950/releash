@@ -93,3 +93,24 @@ fn test_ターミナル画面接続終了_閉じた接続を画面写像で再�
         TerminalSurfaceSequenceDecision::Closed
     );
 }
+
+#[test]
+fn test_再同期判断_終了済みsnapshotとexitの完了では再同期せず途中完了では再同期する() {
+    // Given / When / Then
+    let mut snapshot = attachment(4);
+    assert!(snapshot.apply_snapshot(4, None, true));
+    snapshot.close();
+    assert!(!snapshot.should_resynchronize());
+    let mut exited = attachment(4);
+    assert_eq!(
+        exited.observe(5, true),
+        TerminalSurfaceSequenceDecision::Deliver
+    );
+    assert!(!exited.should_resynchronize());
+    let mut disconnected = attachment(4);
+    disconnected.close();
+    assert!(disconnected.should_resynchronize());
+    let mut gap = attachment(4);
+    assert!(!gap.apply_snapshot(4, Some(6), false));
+    assert!(gap.should_resynchronize());
+}

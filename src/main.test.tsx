@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { invokeClient } from "./lib/clientSocket";
+import { invokeClient } from "./lib/client";
 import { installPerformanceCollector } from "./test/performance/performanceCollector";
 
 vi.mock("@wdio/tauri-plugin", () => ({}));

@@ -1,16 +1,23 @@
 use super::*;
 use crate::domain::terminal_surface::entities::{
-    TerminalSurface, TerminalSurfaceSpawnReservation, TerminalSurfaceSpawnReservationError,
+    TerminalSurface, TerminalSurfaceInputIngressError, TerminalSurfaceInputIngressRegistry,
+    TerminalSurfaceSpawnReservation, TerminalSurfaceSpawnReservationError,
 };
 use crate::domain::terminal_surface::gateway::{
-    TerminalRuntimeSpawnRequest, TerminalSurfaceGatewayError, TerminalSurfaceRepository,
+    TerminalRuntimeSpawnRequest, TerminalSurfaceGatewayError, TerminalSurfaceInputUnavailableCause,
+    TerminalSurfaceRepository,
 };
 use crate::domain::workspace_tree::WorkspaceIdentity;
 use parking_lot::Mutex;
 
 pub(crate) struct FakePtyGateway {
     pub(crate) resizes: Mutex<Vec<(String, u16, u16)>>,
-    writes: Mutex<Vec<(String, String)>>,
+    pub(crate) writes: Mutex<Vec<(String, String)>>,
+    input_ingress: Mutex<TerminalSurfaceInputIngressRegistry>,
+    pub(crate) surface: Option<TerminalSurface>,
+    pub(crate) snapshot_gate:
+        Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
+    pub(crate) deactivated: Mutex<Vec<String>>,
 }
 
 impl FakePtyGateway {
@@ -18,6 +25,10 @@ impl FakePtyGateway {
         Self {
             resizes: Mutex::new(Vec::new()),
             writes: Mutex::new(Vec::new()),
+            input_ingress: Mutex::new(TerminalSurfaceInputIngressRegistry::default()),
+            surface: None,
+            snapshot_gate: Mutex::new(None),
+            deactivated: Mutex::new(Vec::new()),
         }
     }
 }
@@ -27,7 +38,7 @@ impl TerminalSurfaceRepository for FakePtyGateway {
         &self,
         _session_key: &str,
     ) -> Option<crate::domain::terminal_surface::entities::TerminalSurfaceSummary> {
-        None
+        self.surface.as_ref().map(TerminalSurface::summary)
     }
 
     fn list_summaries(
@@ -59,7 +70,14 @@ impl TerminalSurfaceGateway for FakePtyGateway {
     }
 
     fn snapshot(&self, _runtime_generation: u64) -> Option<TerminalSurface> {
-        None
+        let gate = self.snapshot_gate.lock().take();
+        if let Some((started, release)) = gate {
+            started.send(()).unwrap();
+            release
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+        }
+        self.surface.clone()
     }
 
     fn select_kill_targets_by_worktree(&self, _worktree_path: &str) -> Vec<u64> {
@@ -83,18 +101,44 @@ impl TerminalSurfaceGateway for FakePtyGateway {
 
     fn rollback_spawn_slot(&self, _reservation: &TerminalSurfaceSpawnReservation) {}
 
-    fn activate_input_attachment(&self, _session_key: &str, _attachment_id: &str) {}
+    fn activate_input_attachment(&self, session_key: &str, attachment_id: &str) {
+        self.input_ingress
+            .lock()
+            .activate(session_key, attachment_id);
+    }
 
-    fn deactivate_input_attachment(&self, _session_key: &str, _attachment_id: &str) {}
+    fn deactivate_input_attachment(&self, session_key: &str, attachment_id: &str) {
+        self.input_ingress
+            .lock()
+            .deactivate(session_key, attachment_id);
+        self.deactivated.lock().push(attachment_id.into());
+    }
 
     fn write_attached(
         &self,
         session_key: &str,
-        _attachment_id: &str,
-        _sequence: u64,
+        attachment_id: &str,
+        sequence: u64,
         data: &str,
     ) -> Result<(), TerminalSurfaceGatewayError> {
-        self.write(session_key, data)
+        let mut ingress = self.input_ingress.lock();
+        let ready = ingress
+            .admit(session_key, attachment_id, sequence, data.to_string())
+            .map_err(|error| {
+                let cause = match error {
+                    TerminalSurfaceInputIngressError::StaleAttachment => {
+                        TerminalSurfaceInputUnavailableCause::StaleAttachment
+                    }
+                    TerminalSurfaceInputIngressError::PendingCapacityExceeded => {
+                        TerminalSurfaceInputUnavailableCause::PendingCapacityExceeded
+                    }
+                };
+                TerminalSurfaceGatewayError::new(cause.internal_cause())
+            })?;
+        for input in ready {
+            self.write(session_key, &input.data)?;
+        }
+        Ok(())
     }
 
     fn write(&self, session_key: &str, data: &str) -> Result<(), TerminalSurfaceGatewayError> {

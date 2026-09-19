@@ -1,9 +1,9 @@
 import { act, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { invokeClient as invoke } from "@/lib/clientSocket";
+import { invokeClient as invoke } from "@/lib/client";
 import { ProviderHookHealthBanner } from "./ProviderHookHealthBanner";
 
-vi.mock("@/lib/clientSocket", () => ({ invokeClient: vi.fn() }));
+vi.mock("@/lib/client", () => ({ invokeClient: vi.fn() }));
 
 const mockInvoke = vi.mocked(invoke);
 

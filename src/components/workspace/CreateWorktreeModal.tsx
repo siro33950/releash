@@ -42,10 +42,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useIssues } from "@/hooks/useIssues";
 import { useNotionLabelOptions } from "@/hooks/useNotionLabelOptions";
 import { useNotionTasks } from "@/hooks/useNotionTasks";
-import {
-	ClientTransportError,
-	invokeClient as invoke,
-} from "@/lib/clientSocket";
+import { invokeClient as invoke } from "@/lib/client";
 import { trackEvent } from "@/lib/telemetry";
 import { cn } from "@/lib/utils";
 import type {
@@ -78,7 +75,6 @@ export function CreateWorktreeModal({
 	const [localBranches, setLocalBranches] = useState<BranchInfo[]>([]);
 	const [allBranches, setAllBranches] = useState<WorktreeBranch[]>([]);
 	const [creating, setCreating] = useState(false);
-	const [uncertain, setUncertain] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [filter, setFilter] = useState("");
 
@@ -163,7 +159,6 @@ export function CreateWorktreeModal({
 	const handleCreate = useCallback(async () => {
 		if (selectedBranches.length === 0 || !selectedRepoPath) return;
 		setCreating(true);
-		setUncertain(false);
 		setError(null);
 		const existingNames = allBranches.map((b) => b.name);
 
@@ -174,30 +169,16 @@ export function CreateWorktreeModal({
 			for (const branch of selectedBranches) {
 				const isNewBranch = !existingNames.includes(branch);
 				try {
-					const entry = await invoke(
-						"create_worktree",
-						{
-							repoPath: selectedRepoPath,
-							branch,
-							createBranch: isNewBranch,
-							baseBranch: isNewBranch ? baseBranch || "HEAD" : null,
-						},
-						{
-							onUncertain: (cause) => {
-								setUncertain(true);
-								setError(`${branch}: ${cause.message}`);
-							},
-						},
-					);
-					setUncertain(false);
+					const entry = await invoke("create_worktree", {
+						repoPath: selectedRepoPath,
+						branch,
+						createBranch: isNewBranch,
+						baseBranch: isNewBranch ? baseBranch || "HEAD" : null,
+					});
 					setError(null);
 					createdEntries.push(entry);
-				} catch (error) {
-					failures.push(
-						error instanceof ClientTransportError
-							? `${branch}: ${error.message}`
-							: `Failed to create: ${branch}`,
-					);
+				} catch {
+					failures.push(`Failed to create: ${branch}`);
 				}
 			}
 
@@ -349,11 +330,7 @@ export function CreateWorktreeModal({
 						</div>
 					</div>
 					<div className="flex gap-2 shrink-0">
-						<Button
-							variant="outline"
-							onClick={onClose}
-							disabled={creating && !uncertain}
-						>
+						<Button variant="outline" onClick={onClose} disabled={creating}>
 							Cancel
 						</Button>
 						<Button
@@ -362,10 +339,8 @@ export function CreateWorktreeModal({
 								selectedBranches.length === 0 || !selectedRepoPath || creating
 							}
 						>
-							{creating && !uncertain && (
-								<Loader2 className="size-3.5 mr-1 animate-spin" />
-							)}
-							{creating && !uncertain
+							{creating && <Loader2 className="size-3.5 mr-1 animate-spin" />}
+							{creating
 								? "Creating..."
 								: selectedBranches.length > 1
 									? `Create ${selectedBranches.length}`

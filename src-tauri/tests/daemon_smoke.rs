@@ -4,17 +4,33 @@ use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use futures_util::{SinkExt, StreamExt};
-use prost::Message;
+use futures_util::StreamExt;
 use serde_json::Value;
-use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as Frame};
 
 pub mod wire {
     include!(concat!(env!("OUT_DIR"), "/releash.client.v1.rs"));
 }
 
-type Socket =
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+mod generated {
+    include!(concat!(env!("OUT_DIR"), "/connect/mod.rs"));
+}
+use generated::releash::client::v1 as rpc;
+fn to_wire<T: prost::Message + Default>(
+    value: &impl buffa::Message,
+) -> Result<T, connectrpc::ConnectError> {
+    T::decode(buffa::Message::encode_to_vec(value).as_slice())
+        .map_err(|e| connectrpc::ConnectError::internal(e.to_string()))
+}
+fn to_rpc<T: buffa::Message>(value: &impl prost::Message) -> Result<T, connectrpc::ConnectError> {
+    T::decode_from_slice(&prost::Message::encode_to_vec(value))
+        .map_err(|e| connectrpc::ConnectError::internal(e.to_string()))
+}
+include!(concat!(env!("OUT_DIR"), "/client_calls.rs"));
+struct Socket {
+    client: rpc::ClientServiceClient<connectrpc::client::HttpClient>,
+    push: std::pin::Pin<Box<dyn futures_util::Stream<Item = wire::Push> + Send>>,
+    subscription_id: String,
+}
 struct Daemon(Child);
 impl Drop for Daemon {
     fn drop(&mut self) {
@@ -75,104 +91,89 @@ fn start_with_parent(directory: &Path, parent_pipe: bool) -> (Daemon, Value) {
     }
 }
 
-async fn receive(socket: &mut Socket) -> wire::envelope::Body {
-    loop {
-        let frame = tokio::time::timeout(Duration::from_secs(10), socket.next())
-            .await
-            .unwrap()
-            .expect("socket closed")
-            .unwrap();
-        if let Frame::Binary(bytes) = frame {
-            let body = wire::Envelope::decode(bytes).unwrap().body.unwrap();
-            if !matches!(body, wire::envelope::Body::Push(_)) {
-                return body;
-            }
-        }
-    }
-}
-
-async fn send(socket: &mut Socket, body: wire::envelope::Body) {
-    socket
-        .send(Frame::Binary(
-            wire::Envelope { body: Some(body) }.encode_to_vec().into(),
-        ))
-        .await
-        .unwrap();
-}
-
 async fn connect(discovery: &Value) -> (Socket, String) {
-    let mut request = format!("ws://127.0.0.1:{}/v1/client", discovery["port"])
-        .into_client_request()
-        .unwrap();
-    request.headers_mut().insert(
-        "sec-websocket-protocol",
-        format!("releash-bearer.{}", discovery["token"].as_str().unwrap())
+    use connectrpc::client::{ClientConfig, HttpClient};
+    let config = ClientConfig::new(
+        format!("http://127.0.0.1:{}", discovery["port"])
             .parse()
             .unwrap(),
-    );
-    let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
-    send(
-        &mut socket,
-        wire::envelope::Body::Hello(wire::ClientHello::default()),
     )
-    .await;
-    let wire::envelope::Body::Hello(hello) = receive(&mut socket).await else {
-        panic!("hello")
-    };
-    assert!(!hello.launch_id.is_empty());
-    assert_eq!(hello.release, env!("CARGO_PKG_VERSION"));
-    (socket, hello.instance_id)
+    .with_default_header(
+        "authorization",
+        format!("Bearer {}", discovery["token"].as_str().unwrap()),
+    )
+    .with_default_header("origin", "tauri://localhost");
+    let client = rpc::ClientServiceClient::new(HttpClient::plaintext(), config);
+    let info = client
+        .get_server_info(rpc::Unit::default())
+        .await
+        .unwrap()
+        .into_owned();
+    assert!(!info.launch_id.is_empty());
+    assert_eq!(info.release, env!("CARGO_PKG_VERSION"));
+    let subscription_id = uuid::Uuid::new_v4().to_string();
+    let mut stream = client
+        .subscribe_push(rpc::SubscribePushRequest {
+            subscription_id: subscription_id.clone(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let initial = stream
+        .message::<rpc::Push>()
+        .await
+        .unwrap()
+        .unwrap()
+        .to_owned_message();
+    assert!(matches!(initial.event, Some(rpc::push::Event::Resync(_))));
+    let push = Box::pin(futures_util::stream::unfold(
+        stream,
+        |mut stream| async move {
+            stream
+                .message::<rpc::Push>()
+                .await
+                .unwrap()
+                .map(|message| (to_wire(&message.to_owned_message()).unwrap(), stream))
+        },
+    ));
+    (
+        Socket {
+            client,
+            push,
+            subscription_id,
+        },
+        info.launch_id,
+    )
 }
-
 async fn request(
     socket: &mut Socket,
-    id: &str,
+    _id: &str,
     command: wire::command_request::Command,
 ) -> wire::command_result::Command {
-    send(
-        socket,
-        wire::envelope::Body::Request(Box::new(wire::CommandRequest {
-            request_id: id.into(),
-            command: Some(command),
-            ..Default::default()
-        })),
-    )
-    .await;
-    let wire::envelope::Body::Response(response) = receive(socket).await else {
-        panic!("response")
-    };
-    assert_eq!(response.request_id, id);
-    let Some(wire::command_response::Outcome::Result(result)) = response.outcome else {
-        panic!("command failed: {response:?}")
-    };
-    result.command.unwrap()
+    call(&socket.client, command).await.unwrap()
 }
 
 async fn quit(daemon: &mut Daemon, socket: &mut Socket, restart: bool) {
-    send(
-        socket,
-        wire::envelope::Body::Request(Box::new(wire::CommandRequest {
-            request_id: "quit".into(),
-            command: Some(wire::command_request::Command::RequestApplicationQuit(
-                wire::RequestApplicationQuitRequest {
-                    request: Some(wire::ApplicationQuitRequestDtoV1 {
-                        request_id: Some(uuid::Uuid::new_v4().to_string()),
-                        intent: Some(wire::ApplicationQuitIntentDtoV1 {
-                            variant: Some(if restart {
-                                wire::application_quit_intent_dto_v1::Variant::Restart(
-                                    wire::ApplicationQuitIntentDtoV1Restart { code: Some(0) },
-                                )
-                            } else {
-                                wire::application_quit_intent_dto_v1::Variant::Exit(
-                                    wire::ApplicationQuitIntentDtoV1Exit { code: Some(0) },
-                                )
-                            }),
+    let _ = call(
+        &socket.client,
+        wire::command_request::Command::RequestApplicationQuit(
+            wire::RequestApplicationQuitRequest {
+                request: Some(wire::ApplicationQuitRequestDtoV1 {
+                    request_id: Some(uuid::Uuid::new_v4().to_string()),
+                    intent: Some(wire::ApplicationQuitIntentDtoV1 {
+                        variant: Some(if restart {
+                            wire::application_quit_intent_dto_v1::Variant::Restart(
+                                wire::ApplicationQuitIntentDtoV1Restart { code: Some(0) },
+                            )
+                        } else {
+                            wire::application_quit_intent_dto_v1::Variant::Exit(
+                                wire::ApplicationQuitIntentDtoV1Exit { code: Some(0) },
+                            )
                         }),
                     }),
-                },
-            )),
-            ..Default::default()
-        })),
+                }),
+            },
+        ),
     )
     .await;
     let deadline = Instant::now() + Duration::from_secs(15);
@@ -333,27 +334,6 @@ async fn test_headless単独起動_commandと永続化と再起動とexitを実p
         panic!("settings")
     };
     assert_eq!(settings.external_editor.as_deref(), Some("daemon-smoke"));
-    send(
-        &mut socket,
-        wire::envelope::Body::OperationQuery(wire::OperationQuery {
-            request_id: "save".into(),
-            instance_id: instance,
-            sent: true,
-            request: Some(wire::CommandRequest {
-                request_id: "save".into(),
-                command: Some(C::UpdateExternalEditor(wire::UpdateExternalEditorRequest {
-                    editor: Some("must-not-replay".into()),
-                })),
-                ..Default::default()
-            }),
-            ..Default::default()
-        }),
-    )
-    .await;
-    let wire::envelope::Body::OperationStatus(status) = receive(&mut socket).await else {
-        panic!("operation status")
-    };
-    assert_eq!(status.state, "unknown");
     let settings = request(
         &mut socket,
         "no-replay",
@@ -390,7 +370,7 @@ async fn test_daemon起動_ログ作成失敗でも従来どおりstoreとapiを
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_daemon本番配線_repository変更が同じwsへpushされる() {
+async fn test_daemon本番配線_repository変更がconnectへpushされる() {
     // Given
     let directory = tempfile::tempdir().unwrap();
     let (mut daemon, discovery) = start(directory.path());
@@ -401,53 +381,11 @@ async fn test_daemon本番配線_repository変更が同じwsへpushされる() {
         .to_string_lossy()
         .into_owned();
     // When
-    send(
-        &mut socket,
-        wire::envelope::Body::Request(Box::new(wire::CommandRequest {
-            request_id: "add-repo".into(),
-            command: Some(wire::command_request::Command::AddRepoPath(
-                wire::AddRepoPathRequest {
-                    path: Some(repository.clone()),
-                },
-            )),
-            ..Default::default()
-        })),
-    )
-    .await;
-    // Then
-    let mut response_received = false;
-    let mut push_received = false;
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while !response_received || !push_received {
-            let Frame::Binary(bytes) = socket.next().await.unwrap().unwrap() else {
-                continue;
-            };
-            match wire::Envelope::decode(bytes).unwrap().body.unwrap() {
-                wire::envelope::Body::Response(response) => {
-                    assert_eq!(response.request_id, "add-repo");
-                    let Some(wire::command_response::Outcome::Result(result)) = response.outcome
-                    else {
-                        panic!("command failed")
-                    };
-                    let Some(wire::command_result::Command::AddRepoPath(added)) = result.command
-                    else {
-                        panic!("add repo result")
-                    };
-                    assert_eq!(added.value, Some(true));
-                    response_received = true;
-                }
-                wire::envelope::Body::Push(wire::Push {
-                    event: Some(wire::push::Event::RepoPathsChanged(paths)),
-                }) => {
-                    assert_eq!(paths.items, vec![repository.clone()]);
-                    push_received = true;
-                }
-                _ => {}
-            }
-        }
-    })
-    .await
-    .expect("production composition must connect notifier and websocket to the same sink");
+    let result = request_with_push(&mut socket,"add-repo",wire::command_request::Command::AddRepoPath(wire::AddRepoPathRequest {path:Some(repository.clone())}), |event| matches!(event,wire::push::Event::RepoPathsChanged(paths) if paths.items == [repository.clone()])).await;
+    let wire::command_result::Command::AddRepoPath(added) = result else {
+        panic!("add repo result");
+    };
+    assert_eq!(added.value, Some(true));
     let workflows = if cfg!(target_os = "macos") {
         directory
             .path()
@@ -462,68 +400,25 @@ async fn test_daemon本番配線_repository変更が同じwsへpushされる() {
 
 async fn expect_push(socket: &mut Socket, matches: impl Fn(&wire::push::Event) -> bool) {
     tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            let Frame::Binary(bytes) = socket.next().await.unwrap().unwrap() else {
-                continue;
-            };
-            if let Some(wire::envelope::Body::Push(wire::Push { event: Some(event) })) =
-                wire::Envelope::decode(bytes).unwrap().body
-            {
-                if matches(&event) {
-                    break;
-                }
+        while let Some(push) = socket.push.next().await {
+            if push.event.as_ref().is_some_and(&matches) {
+                return;
             }
         }
+        panic!("push stream closed");
     })
     .await
-    .expect("production notifier must reach the websocket sink");
+    .expect("production notifier must reach the Connect subscription");
 }
-
 async fn request_with_push(
     socket: &mut Socket,
     id: &str,
     command: wire::command_request::Command,
     matches: impl Fn(&wire::push::Event) -> bool,
 ) -> wire::command_result::Command {
-    send(
-        socket,
-        wire::envelope::Body::Request(Box::new(wire::CommandRequest {
-            request_id: id.into(),
-            command: Some(command),
-            ..Default::default()
-        })),
-    )
-    .await;
-    tokio::time::timeout(Duration::from_secs(15), async {
-        let mut result = None;
-        let mut pushed = false;
-        loop {
-            let Frame::Binary(bytes) = socket.next().await.unwrap().unwrap() else {
-                continue;
-            };
-            match wire::Envelope::decode(bytes).unwrap().body.unwrap() {
-                wire::envelope::Body::Response(response) => {
-                    assert_eq!(response.request_id, id);
-                    let Some(wire::command_response::Outcome::Result(value)) = response.outcome
-                    else {
-                        panic!("{response:?}")
-                    };
-                    result = value.command;
-                }
-                wire::envelope::Body::Push(wire::Push { event: Some(event) }) => {
-                    pushed |= matches(&event)
-                }
-                _ => {}
-            }
-            if pushed && result.is_some() {
-                return result.unwrap();
-            }
-        }
-    })
-    .await
-    .unwrap_or_else(|_| {
-        panic!("production command and its notifier must share the websocket sink: {id}")
-    })
+    let result = request(socket, id, command).await;
+    expect_push(socket, matches).await;
+    result
 }
 
 #[cfg(unix)]
@@ -634,29 +529,37 @@ async fn test_daemon本番配線_各通知元からwsへpushを届ける() {
     // When / Then: fallback file watcher, outside a git repository
     let files = root.join("files");
     std::fs::create_dir(&files).unwrap();
-    let wire::command_result::Command::StartWatching(watch) = request(
-        &mut socket,
-        "files",
-        C::StartWatching(wire::StartWatchingRequest {
-            path: Some(files.to_str().unwrap().into()),
-        }),
-    )
-    .await
-    else {
-        panic!("file watch")
-    };
+    let watch = socket
+        .client
+        .watch_files(rpc::WatchFilesRequest {
+            subscription_id: socket.subscription_id.clone(),
+            request: rpc::StartWatchingRequest {
+                path: Some(files.to_str().unwrap().into()),
+                ..Default::default()
+            }
+            .into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_owned();
     let watched_file = files.join("changed.txt");
     std::fs::write(&watched_file, "changed").unwrap();
     expect_push(&mut socket, |event| matches!(event, E::FileChange(value) if value.watcher_id == watch.value && value.path.as_deref() == watched_file.to_str())).await;
     // When / Then: repository state notifier, including all of its state push types
-    request(
-        &mut socket,
-        "git-watch",
-        C::StartGitDirWatching(wire::StartGitDirWatchingRequest {
-            repo_path: Some(worktree.into()),
-        }),
-    )
-    .await;
+    socket
+        .client
+        .watch_git_directory(rpc::WatchGitDirectoryRequest {
+            subscription_id: socket.subscription_id.clone(),
+            request: rpc::StartGitDirWatchingRequest {
+                repo_path: Some(worktree.into()),
+                ..Default::default()
+            }
+            .into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
     repository
         .branch(
             "pushed-branch",
@@ -667,12 +570,7 @@ async fn test_daemon本番配線_各通知元からwsへpushを届ける() {
     let mut seen = [false; 3];
     tokio::time::timeout(Duration::from_secs(10), async {
         while !seen.iter().all(|seen| *seen) {
-            let Frame::Binary(bytes) = socket.next().await.unwrap().unwrap() else {
-                continue;
-            };
-            if let Some(wire::envelope::Body::Push(wire::Push { event: Some(event) })) =
-                wire::Envelope::decode(bytes).unwrap().body
-            {
+            if let Some(event) = socket.push.next().await.unwrap().event {
                 match event {
                     E::RepositorySnapshotChanged(value)
                         if value.worktree_path.as_deref() == Some(worktree) =>

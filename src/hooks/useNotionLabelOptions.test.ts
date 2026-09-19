@@ -4,7 +4,7 @@ import { useNotionLabelOptions } from "./useNotionLabelOptions";
 
 describe("useNotionLabelOptions", () => {
 	it("should invoke fetch_notion_label_options on mount", async () => {
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		vi.mocked(invoke).mockResolvedValue([]);
 
 		const { result } = renderHook(() => useNotionLabelOptions("/test/repo"));
@@ -19,7 +19,7 @@ describe("useNotionLabelOptions", () => {
 	});
 
 	it("should set labelOptions from result", async () => {
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		const mockOptions = [
 			{
 				property_name: "Status",
@@ -51,7 +51,7 @@ describe("useNotionLabelOptions", () => {
 	});
 
 	it("should set labelOptions with option_ids for people type", async () => {
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		const mockOptions = [
 			{
 				property_name: "Assignee",
@@ -78,7 +78,7 @@ describe("useNotionLabelOptions", () => {
 	});
 
 	it("should set empty options on error", async () => {
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		vi.mocked(invoke).mockRejectedValue(new Error("not configured"));
 
 		const { result } = renderHook(() => useNotionLabelOptions("/test/repo"));

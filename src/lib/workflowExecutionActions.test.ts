@@ -6,7 +6,7 @@ import {
 
 const invokeMock = vi.hoisted(() => vi.fn());
 
-vi.mock("@/lib/clientSocket", () => ({
+vi.mock("@/lib/client", () => ({
 	invokeClient: invokeMock,
 }));
 

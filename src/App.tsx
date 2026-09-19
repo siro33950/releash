@@ -1,7 +1,6 @@
 import { invoke as invokeTauri } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ClientConnectionBanner } from "@/components/ClientConnectionBanner";
 import {
 	DaemonBoundary,
 	useDesktopRestoration,
@@ -16,7 +15,7 @@ import { useRepoList } from "@/hooks/useRepoList";
 import { useSettings } from "@/hooks/useSettings";
 import { useUpdateChecker } from "@/hooks/useUpdateChecker";
 import { useWorkspaceNavigation } from "@/hooks/useWorkspaceNavigation";
-import { invokeClient as invoke } from "@/lib/clientSocket";
+import { invokeClient as invoke } from "@/lib/client";
 import { MainLayout } from "@/screens/MainLayout";
 import type { CenterSelection } from "@/types/workspace-tree";
 
@@ -318,7 +317,6 @@ function WorkbenchApp() {
 				leftNav={leftNav}
 				topBanner={
 					<>
-						<ClientConnectionBanner />
 						<div id="application-shutdown-banner" />
 						<ProviderHookHealthBanner />
 					</>

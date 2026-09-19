@@ -2,14 +2,12 @@ import { Loader2, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import type { useProviderAvailabilitySettings } from "@/hooks/useProviderAvailabilitySettings";
-import { retryClientOperation } from "@/lib/clientSocket";
 
 export function ProviderAvailabilitySettings({
 	settings,
 }: {
 	settings: ReturnType<typeof useProviderAvailabilitySettings>;
 }) {
-	const { refreshUncertain } = settings;
 	return (
 		<div className="flex flex-col gap-3 rounded border p-3">
 			<div className="flex items-center justify-between gap-2">
@@ -23,25 +21,16 @@ export function ProviderAvailabilitySettings({
 					type="button"
 					variant="outline"
 					size="sm"
-					disabled={
-						!refreshUncertain &&
-						(settings.loading || settings.refreshing || settings.saving)
-					}
-					onClick={
-						refreshUncertain
-							? () => retryClientOperation(refreshUncertain.requestId)
-							: settings.refresh
-					}
-					aria-label={
-						refreshUncertain ? undefined : "Refresh Provider CLI availability"
-					}
+					disabled={settings.loading || settings.refreshing || settings.saving}
+					onClick={settings.refresh}
+					aria-label="Refresh Provider CLI availability"
 				>
 					{settings.refreshing ? (
 						<Loader2 className="size-3.5 animate-spin" />
 					) : (
 						<RefreshCw className="size-3.5" />
 					)}
-					{refreshUncertain ? "元の操作の結果を確認" : "Refresh"}
+					Refresh
 				</Button>
 			</div>
 
@@ -51,7 +40,6 @@ export function ProviderAvailabilitySettings({
 				</div>
 			) : (
 				settings.providers.map((provider) => {
-					const uncertain = settings.resetUncertain[provider.provider];
 					return (
 						<div
 							key={provider.provider}
@@ -116,21 +104,12 @@ export function ProviderAvailabilitySettings({
 									variant="outline"
 									size="sm"
 									disabled={
-										!uncertain &&
-										(settings.saving || provider.configuredExecutable === null)
+										settings.saving || provider.configuredExecutable === null
 									}
-									onClick={
-										uncertain
-											? () => retryClientOperation(uncertain.requestId)
-											: () => settings.reset(provider.provider)
-									}
-									aria-label={
-										uncertain
-											? undefined
-											: `Reset ${provider.displayName} executable`
-									}
+									onClick={() => settings.reset(provider.provider)}
+									aria-label={`Reset ${provider.displayName} executable`}
 								>
-									{uncertain ? "元の操作の結果を確認" : "Reset"}
+									Reset
 								</Button>
 							</div>
 						</div>

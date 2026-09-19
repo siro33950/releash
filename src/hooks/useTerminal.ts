@@ -8,10 +8,11 @@ import type {
 } from "@/generated/client_types";
 import {
 	acknowledgeClientStream,
+	attachClientStream,
+	type ClientCommand,
 	invokeClient as invoke,
-	listenClientStream,
 	onClientConnection,
-} from "@/lib/clientSocket";
+} from "@/lib/client";
 import { getErrorMessage } from "@/lib/errorMessage";
 import {
 	reportMountedXtermMounted,
@@ -47,7 +48,7 @@ export type { TerminalSurfaceOwner } from "@/lib/terminalSurfaceStream";
 
 class TerminalBackendCommandError extends Error {}
 
-async function invokeTerminalBackendCommand<K extends keyof ClientCommandArgs>(
+async function invokeTerminalBackendCommand<K extends ClientCommand>(
 	command: K,
 	args: ClientCommandArgs[K],
 ): Promise<ClientCommandResults[K]> {
@@ -266,21 +267,17 @@ export function useTerminal(
 			);
 		});
 		let deliverInput: (data: string) => void = () => {};
-		let releaseStream: (() => void) | null = null;
+		let releaseStream: (() => Promise<void>) | null = null;
+		const releaseAttachment = async (release: (() => Promise<void>) | null) => {
+			await release?.().catch((error) => {
+				const message = getErrorMessage(error);
+				console.error("Terminal cleanup failed", error);
+				onTerminalErrorRef.current?.(message);
+			});
+		};
 		const releaseCurrentAttachment = () => {
-			releaseStream?.();
+			void releaseAttachment(releaseStream);
 			releaseStream = null;
-			if (attachmentId) {
-				const releasedAttachmentId = attachmentId;
-				invoke("detach_terminal_surface", {
-					attachmentId: releasedAttachmentId,
-				}).catch((error) => {
-					console.error(
-						`Failed to detach terminal attachment ${releasedAttachmentId}:`,
-						error,
-					);
-				});
-			}
 		};
 		let resolveUnmount!: () => void;
 		const unmounted = new Promise<void>((resolve) => {
@@ -433,19 +430,22 @@ export function useTerminal(
 			let recoveringSinceEpoch: number | null = null;
 			let firstChannelReceived = false;
 			const attachStream = async (recovery: boolean) => {
-				const previousAttachmentId = attachmentId;
 				const previousReleaseStream = releaseStream;
 				const epoch = ++attachmentEpoch;
 				const nextAttachmentId = crypto.randomUUID();
+				let markAttached!: () => void;
+				const attached = new Promise<void>((resolve) => {
+					markAttached = resolve;
+				});
 				const acknowledgeOutput = (sequence: number) => {
 					if (epoch !== attachmentEpoch) return;
-					try {
-						acknowledgeClientStream(nextAttachmentId, sequence);
-					} catch (error) {
-						const message = `Failed to acknowledge terminal output: ${getErrorMessage(error)}`;
-						onTerminalErrorRef.current?.(message);
-						recoverAttachment?.();
-					}
+					void acknowledgeClientStream(nextAttachmentId, sequence).catch(
+						(error) => {
+							if (!isMounted || epoch !== attachmentEpoch) return;
+							console.debug("Terminal output acknowledgement failed", error);
+							recoverAttachment?.(epoch);
+						},
+					);
 				};
 				const applyContext: TerminalStreamApplyContext = {
 					isCurrent: () => isMounted && epoch === attachmentEpoch,
@@ -508,40 +508,34 @@ export function useTerminal(
 							performance.now() - requestStartedAt,
 						);
 					}
-					streamProcessing = streamProcessing.then(() =>
-						applyTerminalStreamItem(item, applyContext).catch((error) => {
-							if (!isMounted || epoch !== attachmentEpoch) return;
-							const message = `Failed to apply terminal stream item: ${getErrorMessage(error)}`;
-							console.error(message);
-							onTerminalErrorRef.current?.(message);
-							recoverAttachment?.();
-						}),
-					);
+					streamProcessing = streamProcessing
+						.then(() => (item.type === "snapshot" ? attached : undefined))
+						.then(() =>
+							applyTerminalStreamItem(item, applyContext).catch((error) => {
+								if (!isMounted || epoch !== attachmentEpoch) return;
+								const message = `Failed to apply terminal stream item: ${getErrorMessage(error)}`;
+								console.error(message);
+								onTerminalErrorRef.current?.(message);
+								recoverAttachment?.();
+							}),
+						);
 				};
-				const nextReleaseStream = listenClientStream(
-					nextAttachmentId,
+				const nextReleaseStream = await attachClientStream(
+					{ owner: terminalOwner, attachmentId: nextAttachmentId, recovery },
 					handleStreamItem,
 					() => {
 						if (!isMounted || epoch !== attachmentEpoch) return;
 						attachmentId = null;
 						recoverAttachment?.(epoch);
 					},
-				);
-				try {
-					await invokeTerminalBackendCommand("attach_terminal_surface", {
-						owner: terminalOwner,
-						attachmentId: nextAttachmentId,
-						recovery,
-					});
-				} catch (error) {
-					nextReleaseStream();
-					throw error;
-				}
+				).catch((error: unknown) => {
+					markAttached();
+					if (error instanceof Error) throw error;
+					throw new TerminalBackendCommandError(getErrorMessage(error));
+				});
 				if (!isMounted || epoch !== attachmentEpoch) {
-					nextReleaseStream();
-					await invoke("detach_terminal_surface", {
-						attachmentId: nextAttachmentId,
-					});
+					markAttached();
+					await releaseAttachment(nextReleaseStream);
 					return;
 				}
 				releaseStream = nextReleaseStream;
@@ -550,14 +544,10 @@ export function useTerminal(
 				// sequence 0..Nで送られて棄却され、以後の入力sequenceが恒久的に
 				// 欠番となり全打鍵が無音でバッファされ続ける。
 				attachmentId = nextAttachmentId;
+				markAttached();
 				inputSequence = 0;
 				pendingPerformanceInputSequences = [];
-				previousReleaseStream?.();
-				if (previousAttachmentId) {
-					await invokeTerminalBackendCommand("detach_terminal_surface", {
-						attachmentId: previousAttachmentId,
-					});
-				}
+				await releaseAttachment(previousReleaseStream);
 			};
 			recoverAttachment = (failedEpoch) => {
 				if (!isMounted) return;
@@ -645,7 +635,7 @@ export function useTerminal(
 			if (!connected) {
 				attachmentEpoch += 1;
 				attachmentId = null;
-				releaseStream?.();
+				void releaseAttachment(releaseStream);
 				releaseStream = null;
 			} else if (recoverAttachment) {
 				recoverAttachment(attachmentEpoch);

@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutomation } from "./useAutomation";
 
 const mockInvoke = vi.fn();
-vi.mock("@/lib/clientSocket", async () => ({
+vi.mock("@/lib/client", async () => ({
 	watchClient: (await import("@/test/watchClient")).mockWatchClient((...args) =>
 		mockInvoke(...args),
 	),

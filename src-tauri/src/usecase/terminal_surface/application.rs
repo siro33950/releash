@@ -18,6 +18,7 @@ use crate::usecase::terminal_surface::spawn_usecase::GetOrSpawnTerminalOutcome;
 pub(crate) struct TerminalSurfaceApplication {
     gateway: Arc<dyn TerminalSurfaceGateway + Send + Sync>,
     event_source: Arc<dyn TerminalSurfaceEventSource>,
+    attach_lock: Arc<Mutex<()>>,
     attachment_cancellations: Arc<Mutex<HashMap<String, TerminalSurfaceAttachmentRegistration>>>,
     runtime_lifecycle: Arc<RwLock<TerminalSurfaceRuntimeLifecycle>>,
     resize_tails: Arc<Mutex<HashMap<String, std::sync::mpsc::Receiver<()>>>>,
@@ -56,6 +57,7 @@ pub(crate) struct TerminalSurfaceAttachmentStream {
     attachment: TerminalSurfaceAttachment,
     pending_snapshot: Option<TerminalSurface>,
     subscription: Box<dyn TerminalSurfaceEventSubscription>,
+    cancellation: Arc<dyn TerminalSurfaceEventCancellation>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -90,7 +92,33 @@ pub(crate) enum TerminalSurfaceStreamItem {
     },
 }
 
+impl Drop for TerminalSurfaceAttachmentStream {
+    fn drop(&mut self) {
+        let mut registrations = self
+            .application
+            .attachment_cancellations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let id = self.attachment.attachment_id();
+        if registrations
+            .get(id)
+            .is_some_and(|current| Arc::ptr_eq(&current.cancellation, &self.cancellation))
+        {
+            if let Some(registration) = registrations.remove(id) {
+                registration.cancellation.cancel();
+                self.application
+                    .gateway
+                    .deactivate_input_attachment(&registration.session_key, id);
+            }
+        }
+    }
+}
+
 impl TerminalSurfaceAttachmentStream {
+    pub(crate) fn should_resynchronize(&self) -> bool {
+        self.attachment.should_resynchronize()
+    }
+
     fn resynchronize(
         &mut self,
         minimum_covered_sequence: Option<u64>,
@@ -224,6 +252,7 @@ impl TerminalSurfaceApplication {
         Self {
             gateway,
             event_source,
+            attach_lock: Arc::new(Mutex::new(())),
             resize_tails: Arc::new(Mutex::new(HashMap::new())),
             attachment_cancellations: Arc::new(Mutex::new(HashMap::new())),
             runtime_lifecycle: Arc::new(RwLock::new(TerminalSurfaceRuntimeLifecycle::new(
@@ -320,24 +349,28 @@ impl TerminalSurfaceApplication {
                 "Terminal Surface attachment id must not be empty".to_string(),
             ));
         }
+        // ponytail: attach全体は直列化する。並列snapshotが必要になればattachment単位へ分割する。
+        let _attach = self
+            .attach_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let event_stream = self
             .event_source
             .subscribe_owner(&owner.stable_key(), attachment_id);
         let surface = self.get(owner)?;
-        self.gateway
-            .activate_input_attachment(&surface.session_key, attachment_id);
-        if let Some(previous) = self
+        let mut registrations = self
             .attachment_cancellations
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(
-                attachment_id.to_string(),
-                TerminalSurfaceAttachmentRegistration {
-                    session_key: surface.session_key.clone(),
-                    cancellation: event_stream.cancellation,
-                },
-            )
-        {
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.gateway
+            .activate_input_attachment(&surface.session_key, attachment_id);
+        if let Some(previous) = registrations.insert(
+            attachment_id.to_string(),
+            TerminalSurfaceAttachmentRegistration {
+                session_key: surface.session_key.clone(),
+                cancellation: event_stream.cancellation.clone(),
+            },
+        ) {
             previous.cancellation.cancel();
             if previous.session_key != surface.session_key {
                 self.gateway
@@ -354,6 +387,7 @@ impl TerminalSurfaceApplication {
             ),
             pending_snapshot: Some(surface),
             subscription: event_stream.subscription,
+            cancellation: event_stream.cancellation,
         })
     }
 

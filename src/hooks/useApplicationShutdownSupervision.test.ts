@@ -4,7 +4,7 @@ import { useApplicationShutdownSupervision } from "./useApplicationShutdownSuper
 
 const mockInvoke = vi.fn();
 
-vi.mock("@/lib/clientSocket", () => ({
+vi.mock("@/lib/client", () => ({
 	invokeClient: (...args: unknown[]) => mockInvoke(...args),
 }));
 

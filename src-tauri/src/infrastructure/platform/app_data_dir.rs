@@ -3,7 +3,12 @@ use std::path::PathBuf;
 use super::path_aliases::{default_data_dir_for_profile, BuildProfile};
 
 pub(crate) fn resolve_data_dir() -> Result<PathBuf, String> {
-    resolve_for_profile(BuildProfile::application(), None)
+    let override_path = if cfg!(feature = "performance") {
+        std::env::var("RELEASH_PERFORMANCE_DATA_DIR").ok()
+    } else {
+        None
+    };
+    resolve_for_profile(BuildProfile::application(), override_path)
 }
 
 pub(crate) fn resolve_for_profile(

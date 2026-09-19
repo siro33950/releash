@@ -1,5 +1,5 @@
 import { useCallback } from "react";
-import { invokeClient as invoke } from "@/lib/clientSocket";
+import { invokeClient as invoke } from "@/lib/client";
 
 export function useGitActions() {
 	const stage = useCallback(async (repoPath: string, paths: string[]) => {

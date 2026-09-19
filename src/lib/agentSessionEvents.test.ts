@@ -12,7 +12,7 @@ const clientEvents = vi.hoisted(() => ({
 	unlisten: vi.fn(),
 }));
 
-vi.mock("@/lib/clientSocket", () => ({
+vi.mock("@/lib/client", () => ({
 	listenClient: (
 		eventName: string,
 		handler: (event: { payload: { worktreePath?: string } | null }) => void,

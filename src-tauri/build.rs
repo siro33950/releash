@@ -17,13 +17,17 @@ fn generate_client_protocol() {
     println!("cargo:rerun-if-changed=../proto/client_options.proto");
     let directory = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let mut config = prost_build::Config::new();
+    for message in ["CommandRequest", "CommandResult"] {
+        config.message_attribute(
+            format!(".releash.client.v1.{message}"),
+            "#[cfg(any(test, all(debug_assertions, feature = \"desktop\")))]",
+        );
+    }
     for field in [
         "Push.event.workflow_execution_changed",
         "CommandError.variant.application",
         "CurrentShutdownResultDtoV1.variant.current",
         "ApplicationQuitOutcomeDtoV1.variant.previous_shutdown_reconciliation_required",
-        "CommandResponse.outcome.result",
-        "Envelope.body.request",
     ] {
         config.boxed(format!(".releash.client.v1.{field}"));
     }
@@ -57,7 +61,7 @@ fn generate_client_protocol() {
         };
         let harness_only = "#[cfg(any(test, all(debug_assertions, feature = \"desktop\")))] ";
         let decode_test = if message == "CommandRequest" {
-            ""
+            "#[cfg(test)] "
         } else {
             harness_only
         };
@@ -66,8 +70,8 @@ fn generate_client_protocol() {
         } else {
             "#[cfg(test)] "
         };
-        let mut decode = format!("impl {message} {{ {decode_test}pub(crate) fn into_value(self) -> Result<(&'static str, serde_json::Value), String> {{ match self.{oneof}.ok_or(\"Missing {oneof}\")? {{\n");
-        let mut encode = format!("impl {message} {{ {encode_test}pub(crate) fn from_value(name: &str, value: serde_json::Value) -> Result<Self, String> {{ Ok(Self {{ {oneof}: Some(match name {{\n");
+        let mut decode = format!("{harness_only}impl {message} {{ {decode_test}pub(crate) fn into_value(self) -> Result<(&'static str, serde_json::Value), String> {{ match self.{oneof}.ok_or(\"Missing {oneof}\")? {{\n");
+        let mut encode = format!("{harness_only}impl {message} {{ {encode_test}pub(crate) fn from_value(name: &str, value: serde_json::Value) -> Result<Self, String> {{ Ok(Self {{ {oneof}: Some(match name {{\n");
         let mut command_names = format!("impl {module}::{enum_name} {{ pub(crate) fn name(&self) -> &'static str {{ match self {{\n");
         let mut names = String::from("#[cfg(test)] pub const COMMAND_NAMES: &[&str] = &[\n");
         for field in descriptor
@@ -96,11 +100,6 @@ fn generate_client_protocol() {
         }
         decode.push_str("} } }\n");
         encode.push_str("_ => return Err(format!(\"Unknown protocol name: {name}\")), })");
-        if message == "CommandRequest" {
-            encode.push_str(
-                ", request_id: String::new(), instance_id: String::new(), recover: false, predecessors: Vec::new(), deadline_unix_ms: 0, user_retry: false, successors: Vec::new()",
-            );
-        }
         encode.push_str("}) } }\n");
         command_names.push_str("} } }\n");
         if message == "CommandRequest" {
@@ -113,9 +112,52 @@ fn generate_client_protocol() {
             code.push_str(&names);
         }
     }
+    let service = descriptors
+        .file
+        .iter()
+        .flat_map(|file| &file.service)
+        .find(|service| service.name() == "ClientService")
+        .expect("ClientService");
+    let mut handlers = String::from("impl rpc::ClientService for ClientApiDeps {\n");
+    let mut calls = String::from("pub(crate) fn call(client: &rpc::ClientServiceClient<connectrpc::client::HttpClient>, command: wire::command_request::Command) -> futures_util::future::BoxFuture<'_ , Result<wire::command_result::Command, connectrpc::ConnectError>> { match command {\n");
+    let commands = messages
+        .iter()
+        .find(|message| message.name() == "CommandRequest")
+        .unwrap();
+    for method in &service.method {
+        let Some(field) = commands
+            .field
+            .iter()
+            .find(|field| field.type_name() == method.input_type() && field.oneof_index.is_some())
+        else {
+            continue;
+        };
+        if method.server_streaming() {
+            continue;
+        }
+        let name = field.name();
+        let variant = method.name();
+        let input = method.input_type().rsplit('.').next().unwrap();
+        let output = method.output_type().rsplit('.').next().unwrap();
+        handlers.push_str(&format!("async fn {name}<'a>(&'a self, _ctx: connectrpc::RequestContext, request: connectrpc::ServiceRequest<'_, rpc::{input}>) -> connectrpc::ServiceResult<impl connectrpc::Encodable<rpc::{output}> + Send + use<'a>> {{ let args = to_wire(&request.to_owned_message())?; let result = self.execute(wire::command_request::Command::{variant}(args)).await?; let headers = response_headers(&result); match result {{ wire::command_result::Command::{variant}(result) => {{ let mut response = connectrpc::Response::new(to_rpc::<rpc::{output}>(&result)?); response.headers = headers; Ok(response) }}, _ => Err(connectrpc::ConnectError::internal(\"Mismatched command result\")) }} }}\n"));
+        calls.push_str(&format!("wire::command_request::Command::{variant}(args) => Box::pin(async move {{ let result = client.{name}(to_rpc(&args)?).await?; Ok(wire::command_result::Command::{variant}(to_wire(&result.into_owned())?)) }}),\n"));
+    }
+    handlers.push_str(include_str!("src/adaptor/controller/api/client_service.rs"));
+    handlers.push_str("}\n");
+    calls.push_str("} }\n");
+    std::fs::write(directory.join("client_service.rs"), handlers).expect("write service handlers");
+    std::fs::write(directory.join("client_calls.rs"), calls).expect("write native calls");
+    println!("cargo:rerun-if-changed=src/adaptor/controller/api/client_service.rs");
     config
         .compile_fds(descriptors)
         .expect("generate client protocol");
+    connectrpc_build::Config::new()
+        .files(&["client.proto"])
+        .descriptor_set(directory.join("client_descriptor.bin"))
+        .out_dir(directory.join("connect"))
+        .include_file("mod.rs")
+        .compile()
+        .expect("generate Connect services");
     std::fs::write(directory.join("client_commands.rs"), code)
         .expect("write client command codecs");
 }

@@ -7,7 +7,7 @@ const mockInvoke = vi.fn();
 type ListenCallback = (event: { payload: string[] }) => void;
 let capturedListeners: Map<string, ListenCallback>;
 
-vi.mock("@/lib/clientSocket", () => ({
+vi.mock("@/lib/client", () => ({
 	invokeClient: (...args: unknown[]) => mockInvoke(...args),
 	listenClient: vi.fn((eventName: string, callback: ListenCallback) => {
 		capturedListeners.set(eventName, callback);

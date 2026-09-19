@@ -22,7 +22,7 @@ async function bootstrap() {
 		await import("@wdio/tauri-plugin");
 		const [{ invokeClient: invoke }, { installPerformanceCollector }] =
 			await Promise.all([
-				import("./lib/clientSocket"),
+				import("./lib/client"),
 				import("./test/performance/performanceCollector"),
 			]);
 		window.__RELEASH_INVOKE_CLIENT__ = invoke;

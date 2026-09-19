@@ -358,7 +358,7 @@ describe("DiffInlineComment", () => {
 		});
 
 		it("shows clipboard success visibly in the product component", async () => {
-			const { invokeClient: invoke } = await import("@/lib/clientSocket");
+			const { invokeClient: invoke } = await import("@/lib/client");
 			vi.mocked(invoke).mockResolvedValue("review instruction");
 			Object.defineProperty(navigator, "clipboard", {
 				configurable: true,
@@ -380,7 +380,7 @@ describe("DiffInlineComment", () => {
 		});
 
 		it("shows clipboard failure visibly in the product component", async () => {
-			const { invokeClient: invoke } = await import("@/lib/clientSocket");
+			const { invokeClient: invoke } = await import("@/lib/client");
 			vi.mocked(invoke).mockResolvedValue("review instruction");
 			Object.defineProperty(navigator, "clipboard", {
 				configurable: true,

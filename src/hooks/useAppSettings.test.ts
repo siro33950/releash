@@ -1,7 +1,7 @@
 import { invoke as invokeTauri } from "@tauri-apps/api/core";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { invokeClient, onClientRefresh } from "@/lib/clientSocket";
+import { invokeClient, onClientRefresh } from "@/lib/client";
 import { useBackgroundConfig } from "./useAppSettings";
 
 const settings = {
@@ -50,13 +50,9 @@ describe("window preferences", () => {
 		).toBe(true);
 		act(() => result.current.setDraft({ ...settings, close_to_tray: false }));
 		await act(() => result.current.save());
-		expect(invokeClient).toHaveBeenCalledWith(
-			"update_app_settings",
-			{
-				app: { close_to_tray: false, start_minimized: true },
-			},
-			expect.anything(),
-		);
+		expect(invokeClient).toHaveBeenCalledWith("update_app_settings", {
+			app: { close_to_tray: false, start_minimized: true },
+		});
 		expect(invokeTauri).toHaveBeenCalledWith("get_login_item_status");
 		expect(invokeTauri).not.toHaveBeenCalledWith(
 			"apply_desktop_settings",
@@ -135,7 +131,6 @@ describe("window preferences", () => {
 			expect(result.current.draft).toEqual(draft);
 			expect(result.current.isDirty).toBe(true);
 			expect(result.current.saving).toBe(false);
-			expect(result.current.uncertain).toBeNull();
 			expect(invokeClient).not.toHaveBeenCalled();
 			expect(invokeTauri).not.toHaveBeenCalled();
 		},
@@ -255,11 +250,9 @@ it("承認待ちの間に別項目を保存してもログイン登録の希望�
 		}),
 	);
 	await act(() => result.current.save());
-	expect(invokeClient).toHaveBeenCalledWith(
-		"update_app_settings",
-		{ app: { close_to_tray: true, start_minimized: false } },
-		expect.anything(),
-	);
+	expect(invokeClient).toHaveBeenCalledWith("update_app_settings", {
+		app: { close_to_tray: true, start_minimized: false },
+	});
 	expect(result.current.draft.auto_launch).toBe(false);
 	expect(invokeTauri).not.toHaveBeenCalledWith(
 		"set_login_item_enabled",

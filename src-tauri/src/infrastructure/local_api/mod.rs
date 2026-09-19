@@ -1,3 +1,5 @@
+mod client_token;
+pub(crate) use client_token::ClientBearerToken;
 mod client;
 mod discovery;
 mod server;

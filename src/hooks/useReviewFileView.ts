@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { invokeClient as invoke } from "@/lib/clientSocket";
+import { invokeClient as invoke } from "@/lib/client";
 import { getErrorMessage } from "@/lib/errorMessage";
 import type { ReviewFileView, ReviewViewport } from "@/types/review";
 import type { DiffBase, DiffSection } from "@/types/settings";

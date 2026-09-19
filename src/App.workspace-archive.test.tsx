@@ -28,11 +28,10 @@ const mocks = vi.hoisted(() => ({
 		| null,
 }));
 
-vi.mock("@/lib/clientSocket", async (importOriginal) => ({
-	...(await importOriginal<typeof import("@/lib/clientSocket")>()),
+vi.mock("@/lib/client", async (importOriginal) => ({
+	...(await importOriginal<typeof import("@/lib/client")>()),
 	invokeClient: mocks.invoke,
 	listenClient: mocks.listen,
-	subscribeClientStatus: vi.fn(() => () => {}),
 }));
 
 import { invoke } from "@tauri-apps/api/core";

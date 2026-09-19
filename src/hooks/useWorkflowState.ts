@@ -1,6 +1,6 @@
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { useEffect, useState } from "react";
-import { invokeClient as invoke, listenClient } from "@/lib/clientSocket";
+import { invokeClient as invoke, listenClient } from "@/lib/client";
 import type { WorkflowExecution } from "@/types/workflow";
 
 export function useWorkflowState(worktreePath: string | undefined) {

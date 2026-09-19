@@ -21,7 +21,7 @@ import {
 	type TerminalSurfaceOwner,
 	useTerminal,
 } from "@/hooks/useTerminal";
-import { invokeClient as invoke } from "@/lib/clientSocket";
+import { invokeClient as invoke } from "@/lib/client";
 import type { Theme } from "@/types/settings";
 import "@xterm/xterm/css/xterm.css";
 

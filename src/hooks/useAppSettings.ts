@@ -1,9 +1,6 @@
 import { invoke as invokeTauri } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-	type ClientTransportError,
-	invokeClient as invoke,
-} from "@/lib/clientSocket";
+import { invokeClient as invoke } from "@/lib/client";
 import { getErrorMessage } from "@/lib/errorMessage";
 import { useClientRefresh } from "./useClientRefresh";
 
@@ -36,7 +33,6 @@ export function useBackgroundConfig() {
 	const [cliMessage, setCliMessage] = useState<string | null>(null);
 	const [loading, setLoading] = useState(true);
 	const [saving, setSaving] = useState(false);
-	const [uncertain, setUncertain] = useState<ClientTransportError | null>(null);
 	const [error, setError] = useState<string | null>(null);
 
 	useEffect(() => {
@@ -85,16 +81,12 @@ export function useBackgroundConfig() {
 				setDraft((draft) => ({ ...draft, auto_launch: next.enabled }));
 			}
 
-			await invoke(
-				"update_app_settings",
-				{
-					app: {
-						close_to_tray: draft.close_to_tray,
-						start_minimized: draft.start_minimized,
-					},
+			await invoke("update_app_settings", {
+				app: {
+					close_to_tray: draft.close_to_tray,
+					start_minimized: draft.start_minimized,
 				},
-				{ onUncertain: setUncertain },
-			);
+			});
 
 			setError(null);
 			const saved = {
@@ -108,7 +100,6 @@ export function useBackgroundConfig() {
 			throw e;
 		} finally {
 			setSaving(false);
-			setUncertain(null);
 		}
 	}, [draft, config, loginItem]);
 
@@ -137,8 +128,7 @@ export function useBackgroundConfig() {
 		isDirty,
 		loading,
 		saving,
-		uncertain,
-		error: uncertain?.message ?? error,
+		error,
 		save,
 	};
 }

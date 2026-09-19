@@ -6,18 +6,10 @@ async fn test_daemon接続_認証と検証が完了した呼び出しで接続�
     use crate::infrastructure::local_api::{
         process_start_time, LocalApiDiscovery, LocalApiDiscoveryFile,
     };
-    use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
-
+    use prost::Message;
     // Given
     let directory = tempfile::tempdir().unwrap();
-    let files = Arc::new(super::super::client_handoff::ClientHandoffFiles::new(
-        directory.path().into(),
-    ));
-    let handoff = Arc::new(crate::usecase::client_handoff::ClientHandoffUsecase::new(
-        files.clone(),
-        files,
-    ));
-    let gateway = DaemonProcessGateway::new(PathBuf::new(), directory.path().into(), handoff);
+    let gateway = DaemonProcessGateway::new(PathBuf::new(), directory.path().into());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let discovery = LocalApiDiscovery {
         port: listener.local_addr().unwrap().port(),
@@ -35,52 +27,30 @@ async fn test_daemon接続_認証と検証が完了した呼び出しで接続�
         },
     )
     .unwrap();
-    let peer = async {
-        let mut socket = tokio_tungstenite::accept_hdr_async(
-            listener.accept().await.unwrap().0,
-            |request: &Request, mut response: Response| {
-                let protocol = &request.headers()["sec-websocket-protocol"];
-                assert_eq!(protocol, "releash-bearer.client-token");
-                response
-                    .headers_mut()
-                    .insert("sec-websocket-protocol", protocol.clone());
-                Ok(response)
-            },
-        )
-        .await
-        .unwrap();
-        let Frame::Binary(bytes) = socket.next().await.unwrap().unwrap() else {
-            panic!("expected client hello");
-        };
-        assert!(matches!(
-            wire::Envelope::decode(bytes).unwrap().body,
-            Some(wire::envelope::Body::Hello(_))
-        ));
-        socket
-            .send(Frame::Binary(
-                wire::Envelope {
-                    body: Some(wire::envelope::Body::Hello(wire::ClientHello {
-                        instance_id: "instance".into(),
-                        launch_id: "launch".into(),
-                        release: env!("CARGO_PKG_VERSION").into(),
-                        desktop_settings: Some(Default::default()),
-                        ..Default::default()
-                    })),
-                }
-                .encode_to_vec()
-                .into(),
-            ))
-            .await
-            .unwrap();
-        socket
-    };
+    let router = axum::Router::new().route(
+        "/releash.client.v1.ClientService/GetServerInfo",
+        axum::routing::post(|headers: axum::http::HeaderMap| async move {
+            assert_eq!(headers["authorization"], "Bearer client-token");
+            assert_eq!(headers["origin"], "tauri://localhost");
+            let info = wire::ServerInfo {
+                launch_id: "launch".into(),
+                release: env!("CARGO_PKG_VERSION").into(),
+                desktop_settings: Some(Default::default()),
+            };
+            (
+                [("content-type", "application/proto")],
+                info.encode_to_vec(),
+            )
+        }),
+    );
+    let peer = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
     // When
     let started_at_ms = gateway.monotonic_ms();
-    let (connection, _peer) = tokio::time::timeout(Duration::from_secs(2), async {
-        tokio::join!(gateway.connect_client("launch"), peer)
-    })
-    .await
-    .unwrap();
+    let connection = tokio::time::timeout(Duration::from_secs(2), gateway.connect_client("launch"))
+        .await
+        .unwrap();
     // Then
     let connection = connection
         .unwrap()
@@ -92,6 +62,7 @@ async fn test_daemon接続_認証と検証が完了した呼び出しで接続�
     let cached = gateway.connection().await.unwrap().unwrap();
     assert_eq!(cached.launch_id, connection.launch_id);
     assert_eq!(cached.connected_at_ms, connection.connected_at_ms);
+    peer.abort();
 }
 
 #[tokio::test(start_paused = true)]
@@ -180,14 +151,7 @@ async fn test_daemon停止_終了観測とkillのエラーを伝播する() {
 #[tokio::test]
 async fn test_daemon停止_子がない場合は即座に完了する() {
     // Given
-    let files = Arc::new(super::super::client_handoff::ClientHandoffFiles::new(
-        PathBuf::new(),
-    ));
-    let handoff = Arc::new(crate::usecase::client_handoff::ClientHandoffUsecase::new(
-        files.clone(),
-        files,
-    ));
-    let gateway = DaemonProcessGateway::new(PathBuf::new(), PathBuf::new(), handoff);
+    let gateway = DaemonProcessGateway::new(PathBuf::new(), PathBuf::new());
     // When / Then
     gateway.terminate_and_wait().await.unwrap();
 }
@@ -197,14 +161,9 @@ fn test_停止応答_acceptedは受付であり他の応答と利用者判断を
     // Given
     use wire::{application_quit_outcome_dto_v1 as outcome, command_result::Command};
     let response = |variant| {
-        wire::response(
-            "quit".into(),
-            Ok(Command::RequestApplicationQuit(
-                wire::ApplicationQuitOutcomeDtoV1 {
-                    variant: Some(variant),
-                },
-            )),
-        )
+        Command::RequestApplicationQuit(wire::ApplicationQuitOutcomeDtoV1 {
+            variant: Some(variant),
+        })
     };
     // When / Then
     assert_eq!(
@@ -227,7 +186,7 @@ fn test_停止応答_acceptedは受付であり他の応答と利用者判断を
             .contains("Shutdown requires confirmation"));
     }
     assert_eq!(
-        shutdown_response(wire::Envelope::default()).unwrap_err(),
+        shutdown_response(Command::GetRepoPaths(Default::default())).unwrap_err(),
         "Unexpected shutdown response."
     );
 }

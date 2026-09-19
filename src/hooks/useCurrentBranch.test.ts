@@ -1,10 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { invokeClient } from "@/lib/clientSocket";
+import { invokeClient } from "@/lib/client";
 import { useCurrentBranch } from "./useCurrentBranch";
 
-vi.mock("@/lib/clientSocket", () => ({ invokeClient: vi.fn() }));
+vi.mock("@/lib/client", () => ({ invokeClient: vi.fn() }));
 
 describe("useCurrentBranch", () => {
 	beforeEach(() => vi.clearAllMocks());

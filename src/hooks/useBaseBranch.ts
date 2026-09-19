@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { invokeClient as invoke } from "@/lib/clientSocket";
+import { invokeClient as invoke } from "@/lib/client";
 
 export function useBaseBranch(
 	rootPath: string | null,

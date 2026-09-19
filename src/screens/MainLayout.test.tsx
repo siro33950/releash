@@ -1,8 +1,8 @@
+import { Code, ConnectError } from "@connectrpc/connect";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { ClientTransportError } from "@/lib/clientSocket";
 
 Element.prototype.scrollIntoView = vi.fn();
 
@@ -279,7 +279,7 @@ describe("MainLayout node-centered workspace", () => {
 	});
 
 	it("Session作成の結果不明はOpening表示を置き換える", () => {
-		const error = new ClientTransportError("original-create", "unknown");
+		const error = new ConnectError("Request failed", Code.Unavailable);
 		renderMainLayout({
 			centerSelectionByWorktree: {
 				"/managed/wt": {

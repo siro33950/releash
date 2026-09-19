@@ -5,7 +5,7 @@ import {
 	notifyAgentSessionChanged,
 	subscribeAgentSessionChanged,
 } from "@/lib/agentSessionEvents";
-import { invokeClient as invoke } from "@/lib/clientSocket";
+import { invokeClient as invoke } from "@/lib/client";
 import { getErrorMessage } from "@/lib/errorMessage";
 import type {
 	AgentSessionItem,

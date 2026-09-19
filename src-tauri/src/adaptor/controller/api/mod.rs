@@ -1,6 +1,5 @@
 mod auth;
 pub(crate) mod client;
-pub(crate) mod client_operation;
 pub(crate) mod client_stream;
 pub(crate) use client::ClientApiDeps;
 mod error;
@@ -29,7 +28,7 @@ pub(crate) fn build_router(
     workflow: Arc<WorkflowReadUsecase>,
     runtime: Arc<WorkflowRuntimeUsecase>,
     token: Arc<str>,
-    terminal_token: Arc<str>,
+    terminal_token: impl Into<crate::infrastructure::local_api::ClientBearerToken>,
     terminal: Option<TerminalApiDeps>,
     client: Option<ClientApiDeps>,
     provider_lifecycle: Option<
@@ -42,12 +41,10 @@ pub(crate) fn build_router(
             error::ApiError::not_found("local API endpoint was not found").into_response()
         })
         .with_state(state.clone());
-    // renderer向けのws routeは共通の非master tokenでも認証できる。
-    // masterのdiscovery tokenはrenderer JSに露出させない。
-    let terminal_router = authenticated_with_tokens(
-        client::router(client.map(|client| client.with_terminal(terminal))),
-        auth::AcceptedBearerTokens::new([token.clone(), terminal_token]),
-    );
+    let terminal_router =
+        client::router(client.map(|client| client.with_terminal(terminal))).layer(
+            middleware::from_fn_with_state(terminal_token.into(), auth::require_client),
+        );
     authenticated(
         application_router.merge(provider_lifecycle::router(provider_lifecycle)),
         token,
@@ -56,11 +53,7 @@ pub(crate) fn build_router(
 }
 
 pub(crate) fn authenticated(router: Router, token: Arc<str>) -> Router {
-    authenticated_with_tokens(router, auth::AcceptedBearerTokens::new([token]))
-}
-
-fn authenticated_with_tokens(router: Router, tokens: auth::AcceptedBearerTokens) -> Router {
-    router.layer(middleware::from_fn_with_state(tokens, auth::require_bearer))
+    router.layer(middleware::from_fn_with_state(token, auth::require_bearer))
 }
 
 #[cfg(test)]

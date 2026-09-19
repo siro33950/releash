@@ -1,8 +1,6 @@
 pub(crate) mod agent_session;
 pub(crate) mod app_config;
 pub(crate) mod app_data_gc;
-#[cfg(feature = "desktop")]
-pub(crate) mod client_handoff;
 pub(crate) mod code;
 pub(crate) mod comment;
 #[cfg(feature = "desktop")]

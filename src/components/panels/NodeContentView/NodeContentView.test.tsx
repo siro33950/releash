@@ -431,13 +431,10 @@ describe("NodeContentView", () => {
 		renderView("approval");
 
 		await user.click(screen.getByRole("button", { name: "Approve" }));
-		expect(mocks.approveWorkspaceNode).toHaveBeenCalledWith(
-			{
-				worktreePath: "/repo",
-				nodeId: "approval",
-			},
-			{ onUncertain: expect.any(Function) },
-		);
+		expect(mocks.approveWorkspaceNode).toHaveBeenCalledWith({
+			worktreePath: "/repo",
+			nodeId: "approval",
+		});
 	});
 
 	it("shows the backend-owned signal wait and executes Retry only from backend capability", async () => {
@@ -462,13 +459,10 @@ describe("NodeContentView", () => {
 		expect(screen.queryByText("Attempt 2")).not.toBeInTheDocument();
 		expect(screen.getByText("Artifact submitted")).toBeVisible();
 		await user.click(screen.getByRole("button", { name: "Retry" }));
-		expect(mocks.retryWorkspaceNode).toHaveBeenCalledWith(
-			{
-				worktreePath: "/repo",
-				nodeId: "waiting-stop",
-			},
-			{ onUncertain: expect.any(Function) },
-		);
+		expect(mocks.retryWorkspaceNode).toHaveBeenCalledWith({
+			worktreePath: "/repo",
+			nodeId: "waiting-stop",
+		});
 	});
 });
 
@@ -492,17 +486,12 @@ it.each(["running", "failed", "aborted"] as const)(
 );
 
 it.each(["success", "failure"])(
-	"承認の結果不明から遅延%sを表示する",
+	"承認は通信状態を表示せず応答の%sを反映する",
 	async (outcome) => {
-		const { ClientTransportError } = await import("@/lib/clientSocket");
 		const { act } = await import("@testing-library/react");
-		let onUncertain!: (
-			error: InstanceType<typeof ClientTransportError>,
-		) => void;
 		let complete!: () => void;
 		let fail!: (error: Error) => void;
-		mocks.approveWorkspaceNode.mockImplementationOnce((_args, options) => {
-			onUncertain = options.onUncertain;
+		mocks.approveWorkspaceNode.mockImplementationOnce(() => {
 			return new Promise<void>((resolve, reject) => {
 				complete = resolve;
 				fail = reject;
@@ -515,10 +504,9 @@ it.each(["success", "failure"])(
 		renderView("approval");
 		await userEvent.click(screen.getByRole("button", { name: "Approve" }));
 		expect(screen.getByText("Approving...")).toBeInTheDocument();
-		act(() => onUncertain(new ClientTransportError("approval", "unknown")));
-		expect(screen.queryByText("Approving...")).not.toBeInTheDocument();
-		expect(screen.getByText(/操作結果を確認できません/)).toBeInTheDocument();
-		await userEvent.click(screen.getByRole("button", { name: "Approve" }));
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Approving..." })).toBeDisabled();
+		await userEvent.click(screen.getByRole("button", { name: "Approving..." }));
 		expect(mocks.approveWorkspaceNode).toHaveBeenCalledTimes(1);
 		await act(async () => {
 			if (outcome === "success") complete();
@@ -533,20 +521,12 @@ it.each(["success", "failure"])(
 );
 
 it.each(["success", "failure"])(
-	"Retryの結果不明を表示し元の操作の遅延%sを反映する",
+	"Retryは通信状態を表示せず応答の%sを反映する",
 	async (outcome) => {
-		const client = await import("@/lib/clientSocket");
 		const { act } = await import("@testing-library/react");
-		const retry = vi
-			.spyOn(client, "retryClientOperation")
-			.mockImplementation(() => {});
-		let onUncertain!: (
-			error: InstanceType<typeof client.ClientTransportError>,
-		) => void;
 		let complete!: () => void;
 		let fail!: (error: Error) => void;
-		mocks.retryWorkspaceNode.mockImplementationOnce((_args, options) => {
-			onUncertain = options.onUncertain;
+		mocks.retryWorkspaceNode.mockImplementationOnce(() => {
 			return new Promise<void>((resolve, reject) => {
 				complete = resolve;
 				fail = reject;
@@ -559,19 +539,13 @@ it.each(["success", "failure"])(
 		renderView("retry");
 		await userEvent.click(screen.getByRole("button", { name: "Retry" }));
 		expect(screen.getByText("Retrying...")).toBeInTheDocument();
-		act(() =>
-			onUncertain(new client.ClientTransportError("retry-original", "unknown")),
-		);
-		expect(screen.queryByText("Retrying...")).not.toBeInTheDocument();
-		expect(screen.getByRole("alert")).toHaveTextContent(
-			"操作結果を確認できません",
-		);
-		const confirm = screen.getByRole("button", {
-			name: "元の操作の結果を確認",
-		});
-		expect(confirm).toBeEnabled();
-		await userEvent.click(confirm);
-		expect(retry).toHaveBeenCalledExactlyOnceWith("retry-original");
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: "元の操作の結果を確認" }),
+		).not.toBeInTheDocument();
+		const button = screen.getByRole("button", { name: "Retrying..." });
+		expect(button).toBeDisabled();
+		await userEvent.click(button);
 		expect(mocks.retryWorkspaceNode).toHaveBeenCalledTimes(1);
 		await act(async () => {
 			if (outcome === "success") complete();
@@ -586,6 +560,5 @@ it.each(["success", "failure"])(
 			);
 		else expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
-		retry.mockRestore();
 	},
 );

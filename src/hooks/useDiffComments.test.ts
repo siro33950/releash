@@ -6,7 +6,7 @@ import { useDiffComments } from "./useDiffComments";
 const mockInvoke = vi.fn();
 const mockListen = vi.fn();
 
-vi.mock("@/lib/clientSocket", () => ({
+vi.mock("@/lib/client", () => ({
 	listenClient: (...args: unknown[]) => mockListen(...args),
 	invokeClient: (...args: unknown[]) => mockInvoke(...args),
 }));

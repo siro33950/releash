@@ -420,7 +420,7 @@ pub(crate) fn compose(
         Arc::new(workflow_query_usecase.read_usecase()),
         workflow_runtime_usecase.clone(),
         local_api_binding.bearer_token(),
-        local_api_binding.terminal_bearer_token(),
+        local_api_binding.client_bearer_token(),
         Some(adaptor::controller::api::TerminalApiDeps::new(
             terminal_surface.clone(),
         )),
@@ -428,6 +428,7 @@ pub(crate) fn compose(
             adaptor::controller::api::ClientApiDeps::new(
                 client_dispatch.clone(),
                 adaptor::gateway::push::ClientPushGateway::new(push_sink.clone()),
+                dependencies.watcher.clone(),
             )
             .with_desktop_settings(usecase::app_config::AppConfigUsecase::new(
                 config_repository,

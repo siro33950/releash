@@ -26,7 +26,7 @@ async fn test_push購読_frameと欠落と終了をgateway境界で返す() {
 
 #[tokio::test]
 async fn test_agent_session通知_gatewayが共有sinkへprotoの変更通知を送る() {
-    use crate::adaptor::controller::api::protocol::client as wire;
+    use crate::adaptor::protocol::client as wire;
     use crate::usecase::agent_session::AgentSessionChangeNotifier;
     use prost::Message;
     // Given
@@ -37,11 +37,7 @@ async fn test_agent_session通知_gatewayが共有sinkへprotoの変更通知を
     notifier.agent_session_changed("/repo");
     let frame = subscription.recv().await.unwrap();
     // Then
-    let Some(wire::envelope::Body::Push(push)) =
-        wire::Envelope::decode(frame.as_ref()).unwrap().body
-    else {
-        panic!("push")
-    };
+    let push = wire::Push::decode(frame.as_ref()).unwrap();
     let Some(wire::push::Event::AgentSessionChanged(event)) = push.event else {
         panic!("agent session push")
     };

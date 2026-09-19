@@ -275,15 +275,10 @@ async fn test_ターミナル画面接続_画面写像後は新しい出力と�
     let sent = Arc::new(Mutex::new(Vec::new()));
     let captured = sent.clone();
 
-    forward_terminal_surface_attachment(
-        application,
-        "attachment-1".to_string(),
-        attachment,
-        move |item| {
-            captured.lock().unwrap().push(item);
-            Ok(())
-        },
-    )
+    forward_terminal_surface_attachment(attachment, move |item| {
+        captured.lock().unwrap().push(item);
+        Ok(())
+    })
     .await;
 
     let sent = sent.lock().unwrap();

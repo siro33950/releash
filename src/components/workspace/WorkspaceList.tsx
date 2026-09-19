@@ -48,10 +48,7 @@ import { useWorkflowConfig } from "@/hooks/useWorkflowConfig";
 import { useWorkspaceTreeNodes } from "@/hooks/useWorkspaceTreeNodes";
 import { useWorktreeList } from "@/hooks/useWorktreeList";
 import { notifyAgentSessionChanged } from "@/lib/agentSessionEvents";
-import {
-	type ClientTransportError,
-	invokeClient as invoke,
-} from "@/lib/clientSocket";
+import { invokeClient as invoke } from "@/lib/client";
 import { getErrorMessage } from "@/lib/errorMessage";
 import { trackEvent } from "@/lib/telemetry";
 import {
@@ -1122,23 +1119,14 @@ function WorktreeTreeItem({
 				}
 			};
 			try {
-				const agentSessionId = await invoke(
-					"create_agent_session",
-					{
-						workspaceIdentity: branch.worktree_path,
-						worktreePath: branch.worktree_path,
-						provider,
-						rows: 24,
-						cols: 80,
-						callerRequestId: `create.${launchToken}`,
-					},
-					{
-						onUncertain: (error) => {
-							setProviderCreating(null);
-							showLaunchError(error);
-						},
-					},
-				);
+				const agentSessionId = await invoke("create_agent_session", {
+					workspaceIdentity: branch.worktree_path,
+					worktreePath: branch.worktree_path,
+					provider,
+					rows: 24,
+					cols: 80,
+					callerRequestId: `create.${launchToken}`,
+				});
 				setProviderActionError(null);
 				if (isLaunchSelectionCurrent()) {
 					const nodeId = await invoke("get_workspace_session_node_id", {
@@ -1188,20 +1176,11 @@ function WorktreeTreeItem({
 		setWorkflowStarting(true);
 		setWorkflowStartError(null);
 		try {
-			await invoke(
-				"start_workflow",
-				{
-					workflowName: selectedWorkflowName,
-					worktreePath: branch.worktree_path,
-					request: workflowRequestInput.trim(),
-				},
-				{
-					onUncertain: (error) => {
-						setWorkflowStarting(false);
-						setWorkflowStartError(error.message);
-					},
-				},
-			);
+			await invoke("start_workflow", {
+				workflowName: selectedWorkflowName,
+				worktreePath: branch.worktree_path,
+				request: workflowRequestInput.trim(),
+			});
 			setSelectedWorkflowName(null);
 			setWorkflowRequestInput("");
 			await refreshTree();
@@ -1730,32 +1709,20 @@ function RepoTreeSectionView({
 	}, [refresh]);
 
 	const handleDeleteConfirm = useCallback(
-		async (
-			branch: WorktreeBranch,
-			force: boolean,
-			onUncertain: (error: ClientTransportError) => void,
-		) => {
+		async (branch: WorktreeBranch, force: boolean) => {
 			if (branch.worktree_path) {
-				await invoke(
-					"remove_worktree",
-					{
-						repoPath,
-						worktreePath: branch.worktree_path,
-						force,
-					},
-					{ onUncertain },
-				);
+				await invoke("remove_worktree", {
+					repoPath,
+					worktreePath: branch.worktree_path,
+					force,
+				});
 				trackEvent("worktree_removed");
 			} else if (branch.is_merged) {
-				await invoke(
-					"delete_branch",
-					{
-						repoPath,
-						branchName: branch.name,
-						force,
-					},
-					{ onUncertain },
-				);
+				await invoke("delete_branch", {
+					repoPath,
+					branchName: branch.name,
+					force,
+				});
 			}
 			await refresh();
 			setDeletingBranch((current) => (current === branch ? null : current));

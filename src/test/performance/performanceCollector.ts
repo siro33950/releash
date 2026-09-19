@@ -27,7 +27,7 @@ export interface TerminalPerformanceWindowState {
 
 declare global {
 	interface Window {
-		__RELEASH_INVOKE_CLIENT__?: typeof import("@/lib/clientSocket").invokeClient;
+		__RELEASH_INVOKE_CLIENT__?: typeof import("@/lib/client").invokeClient;
 		__RELEASH_TERMINAL_PERFORMANCE_STATE__?: TerminalPerformanceWindowState;
 	}
 }

@@ -1,22 +1,12 @@
+import { createServer } from "node:http";
+import { once } from "node:events";
 import { clientJson } from "../../src/lib/clientJson";
-import {
-	create,
-	fromBinary,
-	fromJson,
-	toBinary,
-	toJson,
-} from "@bufbuild/protobuf";
-import {
-	EnvelopeSchema,
-	CommandRequestSchema,
-	CommandResultSchema,
-	CommandErrorSchema,
-	PushSchema,
-	TerminalEventSchema,
-} from "../../src/generated/client_pb";
+import { create, fromJson, toJson, type Message } from "@bufbuild/protobuf";
+import { Code, ConnectError, createConnectRouter } from "@connectrpc/connect";
+import { createFetchHandler } from "@connectrpc/connect/protocol";
+import { ClientService, CommandRequestSchema, CommandErrorSchema, PushSchema, TerminalEventSchema, TerminalSubscriptionEventSchema, AttachTerminalSurfaceRequestSchema } from "../../src/generated/client_pb";
 import type { TerminalSurfaceStreamItem } from "../../src/lib/terminalSurfaceStream";
-import type { Page, WebSocketRoute } from "@playwright/test";
-
+import type { Page } from "@playwright/test";
 export interface MockConfig {
 	/**
 	 * cmd → 返り値のマッピング。関数はシリアライズできないため使用不可。
@@ -67,204 +57,151 @@ declare global {
 }
 
 /**
- * WS backend fixture と UI shell の Tauri IPC mock を設定する。
+ * Connect backend fixture と UI shell の Tauri IPC mock を設定する。
  *
  * ページナビゲーション前に呼ぶこと。
  */
 export async function setupTauriMock(page: Page, config: MockConfig) {
-	const endpoint = {
-		url: "ws://127.0.0.1:19799/v1/client",
-		authSubprotocol: "releash-bearer.test-client",
-	};
-	config = {
-		...config,
-		responses: { __clientEndpoint: endpoint, __clientHello: Array.from(toBinary(EnvelopeSchema, fromJson(EnvelopeSchema, { hello: {} }))), ...config.responses },
-	};
-	const clientRequests: Array<{
-		request_id: string;
-		command: string;
-		args: Record<string, unknown>;
-	}> = [];
-	const clients = new Set<WebSocketRoute>();
-	const attachments = new Map<
-		string,
-		{ socket: WebSocketRoute; sequence: bigint }
-	>();
-	const send = (
-		socket: WebSocketRoute,
-		body: Parameters<typeof fromJson<typeof EnvelopeSchema>>[1],
-	) => {
-		socket.send(
-			Buffer.from(toBinary(EnvelopeSchema, fromJson(EnvelopeSchema, body))),
-		);
-	};
-	await page.exposeFunction(
-		"__releashTerminalEvent",
-		(attachmentId: string, item: TerminalSurfaceStreamItem) => {
-			const attachment = attachments.get(attachmentId);
-			if (!attachment) return;
-			const event =
-				item.type === "snapshot"
-					? {
-							snapshot: {
-								sessionKey: item.surface.session_key,
-								...item.surface.terminal_surface,
-								sequence: String(item.surface.terminal_surface.sequence),
-								isExited: item.surface.is_exited,
-								exitCode: item.surface.exit_code,
-							},
-						}
-					: {
-							[item.type === "input_unavailable"
-								? "inputUnavailable"
-								: item.type]: {
-								...item,
-								type: undefined,
-								sequence:
-									"sequence" in item ? String(item.sequence) : undefined,
-							},
-						};
-			const data = toBinary(
-				TerminalEventSchema,
-				fromJson(TerminalEventSchema, JSON.parse(JSON.stringify(event))),
-			);
-			for (let offset = 0; offset < data.length; offset += 60 * 1024) {
-				attachment.sequence += 1n;
-				const end = offset + 60 * 1024 >= data.length;
-				const envelope = create(EnvelopeSchema, {
-					body: {
-						case: "stream",
-						value: {
-							attachmentId,
-							sequence: attachment.sequence,
-							data: data.slice(offset, offset + 60 * 1024),
-							end,
-						},
-					},
-				});
-				attachment.socket.send(Buffer.from(toBinary(EnvelopeSchema, envelope)));
-			}
-		},
-	);
-	await page.exposeFunction(
-		"__releashPush",
-		(event: string, payload: unknown) => {
-			const field = PushSchema.fields.find(
-				(field) => field.name.replaceAll("_", "-") === event,
-			);
-			if (!field?.message) throw new Error(`Unknown client event: ${event}`);
-			for (const socket of clients)
-				send(socket, {
-					push: { [field.jsonName]: clientJson(field.message, payload, true) },
-				});
-		},
-	);
-	await page.routeWebSocket(endpoint.url, (socket) => {
-		clients.add(socket);
-		socket.onClose(() => {
-			clients.delete(socket);
-			for (const [id, attachment] of attachments)
-				if (attachment.socket === socket) attachments.delete(id);
-		});
-		socket.onMessage(async (message) => {
-			if (typeof message === "string")
-				throw new Error("Client requests must be binary");
-			const { body } = fromBinary(EnvelopeSchema, message);
-			if (body.case === "hello") {
-				send(socket, { hello: { instanceId: "fixture-backend" } });
-				return;
-			}
-			if (body.case === "heartbeat") {
-				send(socket, { heartbeat: { nonce: body.value.nonce } });
-				return;
-			}
-			if (body.case === "operationQuery") {
-				send(socket, { operationStatus: { requestId: body.value.requestId, queryId: body.value.queryId, state: body.value.sent ? "unknown" : "ready" } });
-				return;
-			}
-			if (body.case === "requestAck") {
-                if (body.value.confirmWatch) send(socket, { operationStatus: { requestId: body.value.requestId, state: "watch_active" } });
-                return;
-            }
-			if (body.case === "ack") {
-				const attachment = attachments.get(body.value.attachmentId);
-				if (!attachment) return;
-				if (body.value.outputSequence !== undefined) {
-					await page.evaluate(
-						({ attachmentId, sequence }) =>
-							window.__RELEASH_BACKEND__?.execute(
-								"ack_terminal_surface_output",
-								{ attachmentId, sequence },
-							),
-						{
-							attachmentId: body.value.attachmentId,
-							sequence: Number(body.value.outputSequence),
-						},
-					);
-				}
-				return;
-			}
-			if (body.case !== "request")
-				throw new Error("Client request envelope required");
-			const selection = body.value.command;
-			if (!selection.case) throw new Error("Client command required");
-			const field = CommandRequestSchema.field[selection.case];
-			const command = field.name;
-			const args = clientJson(
-				field.message,
-				toJson(field.message, selection.value),
-				false,
-			) as Record<string, unknown>;
-			const request = { request_id: body.value.requestId, command, args };
-			clientRequests.push(request);
-			if (command === "attach_terminal_surface")
-				attachments.set(String(args.attachmentId), { socket, sequence: 0n });
-			if (command === "detach_terminal_surface")
-				attachments.delete(String(args.attachmentId));
-			const result = await page.evaluate(
-				async ({ command, args }) => {
-					try {
-						return {
-							result: await window.__RELEASH_BACKEND__!.execute(command, args),
-						};
-					} catch (error) {
-						return { error: error instanceof Error ? error.message : error };
-					}
-				},
-				{ command, args },
-			);
-			const outcome =
-				"error" in result
-					? { error: clientJson(CommandErrorSchema, result.error, true) }
-					: (() => {
-							const field = CommandResultSchema.fields.find(
-								(field) => field.name === command,
-							)!;
-							try {
-								return {
-									result: {
-										[field.jsonName]: clientJson(
-											field.message!,
-											result.result ?? null,
-											true,
-										),
-									},
-								};
-							} catch (error) {
-								throw new Error(`Invalid ${command} fixture: ${error}`);
-							}
-						})();
-			send(socket, { response: { requestId: request.request_id, ...outcome } });
-		});
-	});
+    const clientRequests: Array<{ request_id: string; command: string; args: Record<string, unknown> }> = [];
+    const pushes = new Set<ReadableStreamDefaultController<Message>>();
+    const attachments = new Map<string, { output: ReadableStreamDefaultController<Message>; streamId: string }>();
+    const terminalSubscriptions = new Map<string, ReadableStreamDefaultController<Message>>();
+    const push = (event: string, payload: unknown) => {
+        const field = PushSchema.fields.find(field => field.name.replaceAll("_", "-") === event);
+        if (!field?.message) throw new Error(`Unknown client event: ${event}`);
+        const message = fromJson(PushSchema, { [field.jsonName]: clientJson(field.message, payload, true) });
+        for (const stream of pushes) stream.enqueue(message);
+    };
+    await page.exposeFunction("__releashPush", push);
+    await page.exposeFunction("__releashTerminalEvent", (attachmentId: string, item: TerminalSurfaceStreamItem) => {
+        const attachment = attachments.get(attachmentId);
+        if (!attachment) return;
+        const { output: stream, streamId } = attachment;
+        const event = item.type === "snapshot"
+            ? { snapshot: { sessionKey: item.surface.session_key, ...item.surface.terminal_surface, sequence: String(item.surface.terminal_surface.sequence), isExited: item.surface.is_exited, exitCode: item.surface.exit_code } }
+            : { [item.type === "input_unavailable" ? "inputUnavailable" : item.type]: { ...item, sessionKey: item.session_key, type: undefined, session_key: undefined, exitCode: "exit_code" in item ? item.exit_code : undefined, exit_code: undefined, sequence: "sequence" in item ? String(item.sequence) : undefined } };
+        stream.enqueue(create(TerminalSubscriptionEventSchema, { attachmentId, streamId, event: { case: "item", value: fromJson(TerminalEventSchema, JSON.parse(JSON.stringify(event))) } }));
+        if (item.type === "exit" || (item.type === "snapshot" && item.surface.is_exited)) {
+            attachments.delete(attachmentId);
+            stream.enqueue(create(TerminalSubscriptionEventSchema, { attachmentId, streamId, event: { case: "closed", value: { resynchronize: false } } }));
+        }
+    });
+    const execute = async (command: string, args: Record<string, unknown>) => {
+        clientRequests.push({ request_id: crypto.randomUUID(), command, args });
+        const outcome = await page.evaluate(async ({command, args}) => {
+            try { return { result: await window.__RELEASH_BACKEND__!.execute(command, args) }; }
+            catch (error) { return { error: error instanceof Error ? error.message : error }; }
+        }, {command, args});
+        if ("error" in outcome) throw new ConnectError("Command failed", Code.FailedPrecondition, undefined, [{ desc: CommandErrorSchema, value: fromJson(CommandErrorSchema, clientJson(CommandErrorSchema, outcome.error, true)) }]);
+        return outcome.result;
+    };
+    const router = createConnectRouter();
+    for (const method of ClientService.methods) {
+        if (method.name === "GetServerInfo") { router.rpc(method, () => ({ launchId: "fixture" })); continue; }
+        if (method.name === "SubscribePush") {
+            router.rpc(method, async function* (_, context) {
+                let controller: ReadableStreamDefaultController<Message>;
+                const stream = new ReadableStream<Message>({ start(value) { controller = value; pushes.add(value); } });
+                const stop = () => { pushes.delete(controller); controller.close(); };
+                context.signal.addEventListener("abort", stop, { once: true });
+                try { yield create(PushSchema, {event: {case: "resync", value: {}}}); yield* stream; }
+                finally { pushes.delete(controller!); context.signal.removeEventListener("abort", stop); }
+            });
+            continue;
+        }
+        if (method.name === "WatchFiles" || method.name === "WatchGitDirectory") {
+            const command = method.name === "WatchFiles" ? "start_watching" : "start_git_dir_watching";
+            const schema = method.input.fields.find(field => field.name === "request")?.message;
+            if (!schema) throw new Error(`Missing watch request schema: ${method.name}`);
+            router.rpc(method, async request => {
+                const args = clientJson(schema, toJson(schema, request.request!), false) as Record<string, unknown>;
+                return fromJson(method.output, clientJson(method.output, await execute(command, args), true));
+            });
+            continue;
+        }
+        if (method.name === "SubscribeTerminalSurfaces") {
+            router.rpc(method, async function* (request, context) {
+                let controller: ReadableStreamDefaultController<Message>;
+                const stream = new ReadableStream<Message>({ start(value) { controller = value; terminalSubscriptions.set(request.subscriptionId, value); } });
+                const stop = () => controller.close();
+                context.signal.addEventListener("abort", stop, { once: true });
+                try { yield create(TerminalSubscriptionEventSchema, { event: { case: "ready", value: {} } }); yield* stream; }
+                finally {
+                    terminalSubscriptions.delete(request.subscriptionId);
+                    for (const [id, output] of attachments) if (output.output === controller!) attachments.delete(id);
+                    context.signal.removeEventListener("abort", stop);
+                }
+            });
+            continue;
+        }
+        if (method.name === "AttachTerminalSurface") {
+            router.rpc(method, async request => {
+                const output = terminalSubscriptions.get(request.subscriptionId);
+                if (!output || !request.request) throw new ConnectError("Terminal subscription ended", Code.NotFound);
+                const args = clientJson(AttachTerminalSurfaceRequestSchema, toJson(AttachTerminalSurfaceRequestSchema, request.request), false) as Record<string, unknown>;
+                const id = String(args.attachmentId);
+                attachments.set(id, { output, streamId: request.streamId });
+                try { await execute("attach_terminal_surface", args); }
+                catch (error) { attachments.delete(id); throw error; }
+                return {};
+            });
+            continue;
+        }
+        const command = CommandRequestSchema.fields.find(field => field.message?.typeName === method.input.typeName)!.name;
+        const argsFor = (request: Message) => clientJson(method.input, toJson(method.input, request), false) as Record<string, unknown>;
+        if (method.name === "DetachTerminalSurface") {
+            router.rpc(method, async request => {
+                const id = request.attachmentId ?? "";
+                const output = attachments.get(id);
+                attachments.delete(id);
+                output?.output.enqueue(create(TerminalSubscriptionEventSchema, { attachmentId: id, streamId: output.streamId, event: { case: "closed", value: { resynchronize: true } } }));
+                await execute(command, argsFor(request));
+                return {};
+            });
+        } else if (method.methodKind === "server_streaming") {
+            router.rpc(method, async function* (request, context) {
+                const result = await execute(command, argsFor(request));
+                yield fromJson(method.output, clientJson(method.output, result ?? null, true));
+                if (!context.signal.aborted) await new Promise<void>(resolve => context.signal.addEventListener("abort", () => resolve(), {once:true}));
+            });
+        } else {
+            router.rpc(method, async request => fromJson(method.output, clientJson(method.output, (await execute(command, argsFor(request))) ?? null, true)));
+        }
+    }
+    const server = createServer(async (req, res) => {
+        const origin = req.headers.origin;
+        if (origin) res.setHeader("access-control-allow-origin", origin);
+        res.setHeader("access-control-allow-headers", "authorization,content-type,connect-protocol-version,connect-timeout-ms,x-user-agent");
+        res.setHeader("access-control-allow-methods", "POST,OPTIONS");
+        if (req.method === "OPTIONS") { res.writeHead(204).end(); return; }
+        const abort = new AbortController();
+        res.on("close", () => abort.abort());
+        try {
+            const chunks: Buffer[] = [];
+            for await (const chunk of req) chunks.push(chunk);
+            const handler = router.handlers.find(handler => handler.requestPath === req.url);
+            if (!handler) { res.writeHead(404).end(); return; }
+            const headers = new Headers();
+            for (const [name, value] of Object.entries(req.headers)) if (value) headers.set(name, Array.isArray(value) ? value.join(", ") : value);
+            const response = await createFetchHandler(handler)(new Request(`http://127.0.0.1${req.url}`, {method:"POST", headers, body: Buffer.concat(chunks), signal:abort.signal}));
+            res.writeHead(response.status, Object.fromEntries(response.headers));
+            if (response.body) for await (const chunk of response.body) { if (!res.write(chunk)) await once(res,"drain",{signal:abort.signal}); }
+            res.end();
+        } catch (error) { if (!abort.signal.aborted) res.destroy(error instanceof Error ? error : new Error(String(error))); }
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Missing test server address");
+    const endpoint = {url:`http://127.0.0.1:${address.port}`,token:"test-client",launchId:"fixture"};
+    config = {...config, responses: {__clientEndpoint: endpoint, ...config.responses}};
+    page.once("close", () => { server.closeAllConnections(); server.close(); });
 	await page.addInitScript((cfg: MockConfig) => {
 		const callbacks = new Map<
 			number,
 			{ cb: (data: unknown) => void; once: boolean }
 		>();
 		let nextId = 1;
-        let desktopSocket: WebSocket | null = null;
-        let desktopAttachment = "";
 
 		function transformCallback(
 			cb: (data: unknown) => void,
@@ -320,36 +257,7 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 			args: Record<string, unknown> = {},
 		): Promise<unknown> {
             invocations.push({ cmd, args });
-            if (cmd === "admit_client_command") return null;
-            if (cmd === "attach_desktop_client") {
-                desktopSocket?.close();
-                desktopAttachment = String(args.attachmentId);
-                const endpoint = cfg.responses.__clientEndpoint as {url: string; authSubprotocol: string};
-                const channel = args.channel as { onmessage: (bytes: number[] | null) => void };
-                return new Promise<number[]>((resolve, reject) => {
-                    const socket = new WebSocket(endpoint.url, [endpoint.authSubprotocol]);
-                    desktopSocket = socket;
-                    socket.binaryType = "arraybuffer";
-                    let hello = true;
-                    socket.onopen = () => socket.send(new Uint8Array(cfg.responses.__clientHello as number[]));
-                    socket.onerror = () => reject(new Error("Fixture client connection failed"));
-                    socket.onclose = () => channel.onmessage(null);
-                    socket.onmessage = event => {
-                        const bytes = Array.from(new Uint8Array(event.data));
-                        if (hello) { hello = false; resolve(bytes); }
-                        else channel.onmessage(bytes);
-                    };
-                });
-            }
-            if (cmd === "send_desktop_client_frame") {
-                if (!desktopSocket || desktopSocket.readyState !== WebSocket.OPEN) throw { state: "not_sent", reason: "Fixture client disconnected" };
-                desktopSocket.send(new Uint8Array(args.bytes as number[]));
-                return null;
-            }
-            if (cmd === "detach_desktop_client") {
-                if (args.attachmentId === desktopAttachment) { desktopSocket?.close(); desktopSocket = null; }
-                return null;
-            }
+            if (cmd === "get_client_endpoint") return cfg.responses.__clientEndpoint;
 			// plugin:event 系のハンドリング
 			if (cmd === "plugin:event|listen") {
 				const event = args.event as string;
@@ -700,8 +608,7 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 			}
 
 			if (cmd === "get_daemon_status") return { phase: "ready" };
-			if (cmd === "list_client_handoff") return [];
-			if (["validate_daemon_connection", "forget_client_operation"].includes(cmd)) return null;
+			if (cmd === "validate_daemon_connection") return null;
 			if (cmd === "get_login_item_status") return { enabled: false, requiresApproval: false, reason: null };
 			if (cmd === "check_desktop_update") return null;
 			if (cmd === "get_application_startup_outcome") {
@@ -731,8 +638,8 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 				if (
 					!cmd.startsWith("plugin:") &&
 					![
-						"get_daemon_status", "retry_daemon", "quit_desktop", "restart_desktop", "validate_daemon_connection", "get_login_item_status", "open_login_item_settings", "install_cli", "set_login_item_enabled", "check_desktop_update", "install_desktop_update", "forget_client_operation", "list_client_handoff", "apply_desktop_settings",
-						"complete_desktop_restoration", "fail_desktop_restoration", "admit_client_command", "attach_desktop_client", "detach_desktop_client", "send_desktop_client_frame",
+						"get_daemon_status", "retry_daemon", "quit_desktop", "restart_desktop", "validate_daemon_connection", "get_login_item_status", "open_login_item_settings", "install_cli", "set_login_item_enabled", "check_desktop_update", "install_desktop_update", "apply_desktop_settings",
+						"complete_desktop_restoration", "fail_desktop_restoration", "get_client_endpoint",
 						"get_application_startup_outcome",
 						"quit_after_startup_failure",
 						"set_menu_items_enabled",
@@ -758,19 +665,7 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 				unregisterCallback(id),
 		};
 	}, config);
-	return {
-		clientRequests,
-		push: (event: string, payload: unknown) => {
-			const field = PushSchema.fields.find(
-				(field) => field.name.replaceAll("_", "-") === event,
-			);
-			if (!field) throw new Error(`Unknown client event: ${event}`);
-			const push = {
-				[field.jsonName]: clientJson(field.message!, payload, true),
-			};
-			for (const socket of clients) send(socket, { push });
-		},
-	};
+	return { clientRequests, push };
 }
 
 /**

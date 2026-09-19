@@ -1,9 +1,9 @@
-import { listenClient as listen } from "@/lib/clientSocket";
+import { listenClient as listen } from "@/lib/client";
 
 type UnlistenFn = () => void;
 
 import { useCallback, useEffect, useRef } from "react";
-import { watchClient } from "@/lib/clientSocket";
+import { watchClient } from "@/lib/client";
 
 export function useGitEventRefresh(
 	rootPath: string | null,

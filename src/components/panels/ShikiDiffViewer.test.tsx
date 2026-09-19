@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { ShikiDiffViewer } from "./ShikiDiffViewer";
 
-vi.mock("@/lib/clientSocket", () => ({
+vi.mock("@/lib/client", () => ({
 	invokeClient: vi.fn().mockResolvedValue([]),
 }));
 
@@ -427,7 +427,7 @@ describe("ShikiDiffViewer", () => {
 				lines: ["-line5", "+changed"],
 			},
 		];
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		vi.mocked(invoke).mockResolvedValue([
 			{ startLine: 1, endLine: 2, hiddenCount: 2 },
 		]);

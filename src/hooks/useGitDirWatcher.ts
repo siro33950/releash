@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { watchClient } from "@/lib/clientSocket";
+import { watchClient } from "@/lib/client";
 
 export function useGitDirWatcher(repoPath: string | null): void {
 	useEffect(() => {

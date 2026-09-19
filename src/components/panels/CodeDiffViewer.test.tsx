@@ -1,6 +1,6 @@
 import { render } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { invokeClient as invoke } from "@/lib/clientSocket";
+import { invokeClient as invoke } from "@/lib/client";
 import type { Hunk } from "@/lib/computeHunks";
 import { CodeDiffViewer } from "./CodeDiffViewer";
 
@@ -8,7 +8,7 @@ const mocks = vi.hoisted(() => ({
 	shikiDiffViewer: vi.fn((_props: unknown) => null),
 }));
 
-vi.mock("@/lib/clientSocket", () => ({
+vi.mock("@/lib/client", () => ({
 	invokeClient: vi.fn(),
 }));
 

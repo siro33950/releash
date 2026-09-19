@@ -1,3 +1,4 @@
+import { Code, ConnectError } from "@connectrpc/connect";
 import { invoke as invokeTauri } from "@tauri-apps/api/core";
 import {
 	act,
@@ -17,7 +18,6 @@ import {
 	it,
 	vi,
 } from "vitest";
-import { ClientTransportError } from "@/lib/clientSocket";
 import { type AppSettings, DEFAULT_SETTINGS } from "@/types/settings";
 import { SettingsModal } from "./SettingsModal";
 
@@ -61,7 +61,7 @@ describe("SettingsModal", () => {
 			requiresApproval: false,
 			reason: null,
 		});
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		vi.mocked(invoke).mockImplementation((cmd: string) => {
 			switch (cmd) {
 				case "get_workflow_config":
@@ -128,7 +128,7 @@ describe("SettingsModal", () => {
 		vi.mocked(invokeTauri).mockRejectedValueOnce(
 			new Error("login unavailable"),
 		);
-		const { invokeClient } = await import("@/lib/clientSocket");
+		const { invokeClient } = await import("@/lib/client");
 		const client = vi.mocked(invokeClient).getMockImplementation();
 		if (!client) throw new Error("Missing settings fixture");
 		vi.mocked(invokeClient).mockImplementation((command, args) =>
@@ -171,7 +171,7 @@ describe("SettingsModal", () => {
 			requiresApproval: true,
 			reason: null,
 		});
-		const { invokeClient } = await import("@/lib/clientSocket");
+		const { invokeClient } = await import("@/lib/client");
 		const client = vi.mocked(invokeClient).getMockImplementation();
 		if (!client) throw new Error("Missing settings fixture");
 		vi.mocked(invokeClient).mockImplementation((command, args) =>
@@ -207,7 +207,7 @@ describe("SettingsModal", () => {
 			requiresApproval: false,
 			reason,
 		});
-		const { invokeClient } = await import("@/lib/clientSocket");
+		const { invokeClient } = await import("@/lib/client");
 		const client = vi.mocked(invokeClient).getMockImplementation();
 		if (!client) throw new Error("Missing settings fixture");
 		vi.mocked(invokeClient).mockImplementation((command, args) =>
@@ -236,7 +236,7 @@ describe("SettingsModal", () => {
 		vi.mocked(invokeTauri).mockImplementation(async (command, args, options) =>
 			command === "install_cli" ? message : delegate?.(command, args, options),
 		);
-		const { invokeClient } = await import("@/lib/clientSocket");
+		const { invokeClient } = await import("@/lib/client");
 		const client = vi.mocked(invokeClient).getMockImplementation();
 		if (!client) throw new Error("Missing settings fixture");
 		vi.mocked(invokeClient).mockImplementation((command, args) =>
@@ -266,8 +266,7 @@ describe("SettingsModal", () => {
 	it.each(["期限後の応答", "接続回復"])(
 		"%sの通知でpushを購読しない設定も取得し直す",
 		async () => {
-			const { invokeClient, onClientRefresh, ClientTransportError } =
-				await import("@/lib/clientSocket");
+			const { invokeClient, onClientRefresh } = await import("@/lib/client");
 			const commands = [
 				"get_workflow_config",
 				"get_external_editor",
@@ -288,7 +287,9 @@ describe("SettingsModal", () => {
 			let recovered = false;
 			vi.mocked(invokeClient).mockImplementation((command, args) => {
 				if (commands.includes(command) && !recovered)
-					return Promise.reject(new ClientTransportError(command, "unknown"));
+					return Promise.reject(
+						new ConnectError("Request failed", Code.Unavailable),
+					);
 				if (command === "get_notion_config")
 					return Promise.resolve({
 						api_token: "recovered-token",
@@ -337,7 +338,7 @@ describe("SettingsModal", () => {
 				fireEvent.click(screen.getByText(section));
 				await waitFor(() =>
 					expect(
-						screen.getAllByText(/操作結果を確認できません/).length,
+						screen.getAllByText(/処理中にエラーが発生しました/).length,
 					).toBeGreaterThan(0),
 				);
 				if (section === "Notion") {
@@ -400,9 +401,7 @@ describe("SettingsModal", () => {
 				requiresApproval: false,
 				reason: null,
 			});
-			const { invokeClient, onClientRefresh } = await import(
-				"@/lib/clientSocket"
-			);
+			const { invokeClient, onClientRefresh } = await import("@/lib/client");
 			const initial = vi.mocked(invokeClient).getMockImplementation();
 			if (!initial) throw new Error("Missing invoke fixture");
 			const callbacks = new Set<() => void>();
@@ -526,7 +525,7 @@ describe("SettingsModal", () => {
 	});
 
 	it("does not expose the retired agent command palette settings", async () => {
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		render(<SettingsModal {...defaultProps} />);
 		fireEvent.click(screen.getByText("Agent"));
 
@@ -542,7 +541,7 @@ describe("SettingsModal", () => {
 	});
 
 	it("does not expose or invoke the legacy Claude Hook configuration", async () => {
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		render(<SettingsModal {...defaultProps} />);
 		fireEvent.click(screen.getByText("Agent"));
 
@@ -583,7 +582,7 @@ describe("SettingsModal", () => {
 
 	it("Provider CLI path変更をglobal Saveからbackendへ保存する", async () => {
 		const user = userEvent.setup();
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		vi.mocked(invoke).mockImplementation((cmd: string) => {
 			if (cmd === "get_provider_availability") {
 				return Promise.resolve({
@@ -613,19 +612,15 @@ describe("SettingsModal", () => {
 		await user.type(input, "/custom/bin/claude");
 		await user.click(screen.getByRole("button", { name: "Save" }));
 
-		expect(invoke).toHaveBeenCalledWith(
-			"update_provider_executable",
-			{
-				provider: "claude",
-				executable: "/custom/bin/claude",
-			},
-			{ onUncertain: expect.any(Function) },
-		);
+		expect(invoke).toHaveBeenCalledWith("update_provider_executable", {
+			provider: "claude",
+			executable: "/custom/bin/claude",
+		});
 	});
 
 	it("Provider CLIのresetとrefreshをbackend操作へ転送する", async () => {
 		const user = userEvent.setup();
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		render(<SettingsModal {...defaultProps} />);
 		fireEvent.click(screen.getByText("Agent"));
 		await user.click(
@@ -635,23 +630,15 @@ describe("SettingsModal", () => {
 			screen.getByRole("button", { name: "Refresh Provider CLI availability" }),
 		);
 
-		expect(invoke).toHaveBeenCalledWith(
-			"reset_provider_executable",
-			{
-				provider: "claude",
-			},
-			{ onUncertain: expect.any(Function) },
-		);
-		expect(invoke).toHaveBeenCalledWith(
-			"refresh_provider_availability",
-			undefined,
-			{ onUncertain: expect.any(Function) },
-		);
+		expect(invoke).toHaveBeenCalledWith("reset_provider_executable", {
+			provider: "claude",
+		});
+		expect(invoke).toHaveBeenCalledWith("refresh_provider_availability");
 	});
 
 	it("一方のProvider CLIをresetしても他方の未保存draftを維持する", async () => {
 		const user = userEvent.setup();
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		const provider = (id: string, configuredExecutable: string | null) => ({
 			provider: id,
 			displayName: id === "claude" ? "Claude" : "Codex",
@@ -692,7 +679,7 @@ describe("SettingsModal", () => {
 
 	it("Provider CLI refresh失敗時は直前snapshotを維持してerrorを表示する", async () => {
 		const user = userEvent.setup();
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		vi.mocked(invoke).mockImplementation((cmd: string) => {
 			if (cmd === "get_provider_availability") {
 				return Promise.resolve({
@@ -845,7 +832,7 @@ describe("SettingsModal", () => {
 	it("should toggle performance telemetry off and call onSave", async () => {
 		const user = userEvent.setup();
 		const onSave = vi.fn();
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		render(<SettingsModal {...defaultProps} onSave={onSave} />);
 		fireEvent.click(screen.getByText("Privacy & Updates"));
 		const checkbox = screen.getByRole("checkbox", {
@@ -864,7 +851,7 @@ describe("SettingsModal", () => {
 	it("should re-enable performance telemetry and call onSave", async () => {
 		const user = userEvent.setup();
 		const onSave = vi.fn();
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		render(
 			<SettingsModal
 				{...defaultProps}
@@ -889,7 +876,7 @@ describe("SettingsModal", () => {
 	it("should call settings_saved after performance telemetry update completes", async () => {
 		const user = userEvent.setup();
 		const onSave = vi.fn();
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		const callOrder: string[] = [];
 		let resolveTelemetryUpdate: (() => void) | undefined;
 
@@ -979,7 +966,7 @@ describe("SettingsModal", () => {
 	});
 
 	it("should display Repositories section in nav and switch to it", async () => {
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		vi.mocked(invoke).mockImplementation((cmd: string) => {
 			switch (cmd) {
 				case "list_branches":
@@ -1002,7 +989,7 @@ describe("SettingsModal", () => {
 
 	it("should load and save approval auto-approve independently from agent auto-approve", async () => {
 		const user = userEvent.setup();
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		vi.mocked(invoke).mockImplementation((cmd: string) => {
 			switch (cmd) {
 				case "get_workflow_config":
@@ -1034,18 +1021,14 @@ describe("SettingsModal", () => {
 		await user.click(workflowCheckbox);
 		await user.click(screen.getByRole("button", { name: "Save" }));
 
-		expect(invoke).toHaveBeenCalledWith(
-			"update_workflow_config",
-			{
-				workflow: { approval_auto_approve: false },
-			},
-			{ onUncertain: expect.any(Function) },
-		);
+		expect(invoke).toHaveBeenCalledWith("update_workflow_config", {
+			workflow: { approval_auto_approve: false },
+		});
 	});
 
 	it("should save external editor selection via Save button", async () => {
 		const user = userEvent.setup();
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		vi.mocked(invoke).mockImplementation((cmd: string) => {
 			switch (cmd) {
 				case "get_external_editor":
@@ -1079,18 +1062,14 @@ describe("SettingsModal", () => {
 		expect(saveBtn).toBeEnabled();
 		await user.click(saveBtn);
 
-		expect(vi.mocked(invoke)).toHaveBeenCalledWith(
-			"update_external_editor",
-			{
-				editor: "/Applications/Cursor.app",
-			},
-			{ onUncertain: expect.any(Function) },
-		);
+		expect(vi.mocked(invoke)).toHaveBeenCalledWith("update_external_editor", {
+			editor: "/Applications/Cursor.app",
+		});
 	});
 
 	it("should save base branch via Apply button", async () => {
 		const user = userEvent.setup();
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		vi.mocked(invoke).mockImplementation((cmd: string) => {
 			switch (cmd) {
 				case "list_branches":
@@ -1121,18 +1100,14 @@ describe("SettingsModal", () => {
 		expect(saveBtn).toBeEnabled();
 		await user.click(saveBtn);
 
-		expect(vi.mocked(invoke)).toHaveBeenCalledWith(
-			"set_releash_base",
-			{
-				repoPath: "/repos/my-app",
-				base: "develop",
-			},
-			{ onUncertain: expect.any(Function) },
-		);
+		expect(vi.mocked(invoke)).toHaveBeenCalledWith("set_releash_base", {
+			repoPath: "/repos/my-app",
+			base: "develop",
+		});
 	});
 
 	it("should show workflow list in Automation section", async () => {
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		const emptyReport = {
 			items: [],
 			workflow_summaries: {},
@@ -1191,7 +1166,7 @@ describe("SettingsModal", () => {
 
 	it("should open custom workflow in the panel editor", async () => {
 		const user = userEvent.setup();
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		const emptyReport = {
 			items: [],
 			workflow_summaries: {},
@@ -1250,7 +1225,7 @@ describe("SettingsModal", () => {
 
 	it("should call delete_workflow when Delete button is clicked", async () => {
 		const user = userEvent.setup();
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		const emptyReport = {
 			items: [],
 			workflow_summaries: {},
@@ -1296,7 +1271,7 @@ describe("SettingsModal", () => {
 	});
 
 	it("should not show delete button for builtin workflows", async () => {
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		const emptyReport = {
 			items: [],
 			workflow_summaries: {},
@@ -1334,7 +1309,7 @@ describe("SettingsModal", () => {
 
 	describe("Repository removal", () => {
 		const repoMockSetup = async () => {
-			const { invokeClient: invoke } = await import("@/lib/clientSocket");
+			const { invokeClient: invoke } = await import("@/lib/client");
 			vi.mocked(invoke).mockImplementation((cmd: string) => {
 				switch (cmd) {
 					case "list_branches":
@@ -1419,7 +1394,7 @@ describe("SettingsModal", () => {
 	it("回復時には未保存入力を保ち、閉じて開き直すと各設定の現在値に戻す", async () => {
 		const user = userEvent.setup();
 		const { invokeClient: invoke, onClientRefresh } = await import(
-			"@/lib/clientSocket"
+			"@/lib/client"
 		);
 		const base = vi.mocked(invoke).getMockImplementation();
 		if (!base) throw new Error("Missing invoke fixture");
@@ -1473,49 +1448,41 @@ describe("SettingsModal", () => {
 			await screen.findByRole("combobox", { name: "External Editor" }),
 		).toHaveTextContent("Code");
 	});
-	it.each(["success", "failure"])(
-		"workflow保存の結果不明を表示し遅延%sを反映する",
+	it.each(["success", "failure", "timeout"])(
+		"workflow保存は通信状態を表示せず応答の%sを反映する",
 		async (outcome) => {
-			const client = await import("@/lib/clientSocket");
+			const client = await import("@/lib/client");
 			const { invokeClient: invoke } = client;
-			const retry = vi
-				.spyOn(client, "retryClientOperation")
-				.mockImplementation(() => {});
 			const base = vi.mocked(invoke).getMockImplementation();
 			if (!base) throw new Error("Missing invoke fixture");
 			vi.mocked(invoke).mockClear();
-			let options: Parameters<typeof invoke>[2];
+			let options: unknown;
 			let complete!: () => void;
 			let fail!: (error: Error) => void;
-			vi.mocked(invoke).mockImplementation((command, args, nextOptions) => {
-				if (command !== "update_workflow_config") return base(command, args);
-				options = nextOptions;
-				return new Promise<void>((resolve, reject) => {
-					complete = resolve;
-					fail = reject;
-				});
-			});
+			vi.mocked(invoke).mockImplementation(
+				(command, args, ...extra: unknown[]) => {
+					if (command !== "update_workflow_config") return base(command, args);
+					options = extra[0];
+					return new Promise<void>((resolve, reject) => {
+						complete = resolve;
+						fail = reject;
+					});
+				},
+			);
 			render(<SettingsModal {...defaultProps} />);
 			fireEvent.click(screen.getByText("Agent"));
 			const checkbox = await screen.findByRole("checkbox", {
 				name: "Approval auto-approve",
 			});
 			await userEvent.click(checkbox);
-			await userEvent.click(screen.getByRole("button", { name: "Save" }));
-			expect(options?.onUncertain).toEqual(expect.any(Function));
-			act(() =>
-				options?.onUncertain?.(new ClientTransportError("save", "unknown")),
-			);
-			expect(screen.getByRole("alert")).toHaveTextContent(
-				"操作結果を確認できません",
-			);
-			const save = screen.getByRole("button", {
-				name: "元の操作の結果を確認",
-			});
-			expect(save).toBeEnabled();
-			expect(save.querySelector(".animate-spin")).toBeNull();
+			const save = screen.getByRole("button", { name: "Save" });
 			await userEvent.click(save);
-			expect(retry).toHaveBeenCalledExactlyOnceWith("save");
+			expect(options).toBeUndefined();
+			expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+			expect(save).toBeDisabled();
+			expect(
+				screen.queryByRole("button", { name: "元の操作の結果を確認" }),
+			).not.toBeInTheDocument();
 			expect(
 				vi
 					.mocked(invoke)
@@ -1525,7 +1492,12 @@ describe("SettingsModal", () => {
 			).toHaveLength(1);
 			await act(async () => {
 				if (outcome === "success") complete();
-				else fail(new Error("保存が拒否されました"));
+				else
+					fail(
+						outcome === "timeout"
+							? new ConnectError("deadline exceeded", Code.DeadlineExceeded)
+							: new Error("保存が拒否されました"),
+					);
 			});
 			if (outcome === "success") {
 				expect(screen.queryByRole("alert")).not.toBeInTheDocument();
@@ -1533,7 +1505,9 @@ describe("SettingsModal", () => {
 				expect(checkbox).toBeChecked();
 			} else {
 				expect(screen.getByRole("alert")).toHaveTextContent(
-					"保存が拒否されました",
+					outcome === "timeout"
+						? "処理中にエラーが発生しました"
+						: "保存が拒否されました",
 				);
 				expect(save).toBeEnabled();
 			}
@@ -1541,36 +1515,35 @@ describe("SettingsModal", () => {
 	);
 
 	it.each(["success", "failure"])(
-		"背景設定保存の結果不明を表示し遅延%sを反映する",
+		"背景設定保存は通信状態を表示せず応答の%sを反映する",
 		async (outcome) => {
-			const client = await import("@/lib/clientSocket");
+			const client = await import("@/lib/client");
 			const { invokeClient: invoke, onClientRefresh } = client;
-			const retry = vi
-				.spyOn(client, "retryClientOperation")
-				.mockImplementation(() => {});
 			const base = vi.mocked(invoke).getMockImplementation();
 			if (!base) throw new Error("Missing invoke fixture");
 			vi.mocked(invoke).mockClear();
-			let options: Parameters<typeof invoke>[2];
+			let options: unknown;
 			let complete!: () => void;
 			let fail!: (error: Error) => void;
-			vi.mocked(invoke).mockImplementation((command, args, nextOptions) => {
-				if (command === "get_app_settings")
-					return Promise.resolve({
-						close_to_tray: true,
-						auto_launch: true,
-						start_minimized: false,
-						last_root_path: "",
-						last_repo_paths: [],
-						external_editor: "",
+			vi.mocked(invoke).mockImplementation(
+				(command, args, ...extra: unknown[]) => {
+					if (command === "get_app_settings")
+						return Promise.resolve({
+							close_to_tray: true,
+							auto_launch: true,
+							start_minimized: false,
+							last_root_path: "",
+							last_repo_paths: [],
+							external_editor: "",
+						});
+					if (command !== "update_app_settings") return base(command, args);
+					options = extra[0];
+					return new Promise<void>((resolve, reject) => {
+						complete = resolve;
+						fail = reject;
 					});
-				if (command !== "update_app_settings") return base(command, args);
-				options = nextOptions;
-				return new Promise<void>((resolve, reject) => {
-					complete = resolve;
-					fail = reject;
-				});
-			});
+				},
+			);
 			render(<SettingsModal {...defaultProps} />);
 			fireEvent.click(screen.getByText("Background"));
 			const checkbox = await screen.findByRole("checkbox", {
@@ -1580,33 +1553,21 @@ describe("SettingsModal", () => {
 			const save = screen.getByRole("button", { name: "Save" });
 			await userEvent.click(save);
 			expect(save.querySelector(".animate-spin")).not.toBeNull();
-			expect(options?.onUncertain).toEqual(expect.any(Function));
-			act(() =>
-				options?.onUncertain?.(new ClientTransportError("save", "unknown")),
-			);
-			expect(screen.getByRole("alert")).toHaveTextContent(
-				"操作結果を確認できません",
-			);
-			expect(save).toHaveTextContent("元の操作の結果を確認");
-			expect(save.querySelector(".animate-spin")).toBeNull();
-			expect(save).toBeEnabled();
+			expect(options).toBeUndefined();
+			expect(save).toBeDisabled();
+			expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 			fireEvent.click(screen.getByText("Appearance"));
-			expect(screen.getByRole("alert")).toHaveTextContent(
-				"操作結果を確認できません",
-			);
+			expect(
+				screen.queryByRole("button", { name: "元の操作の結果を確認" }),
+			).not.toBeInTheDocument();
 			fireEvent.click(screen.getByText("Background"));
 			await act(async () => {
 				for (const [refresh] of vi.mocked(onClientRefresh).mock.calls)
 					refresh();
 			});
-			expect(screen.getByRole("alert")).toHaveTextContent(
-				"操作結果を確認できません",
-			);
 			expect(
 				screen.getByRole("checkbox", { name: "Minimize to tray on close" }),
 			).not.toBeChecked();
-			await userEvent.click(save);
-			expect(retry).toHaveBeenCalledExactlyOnceWith("save");
 			expect(
 				vi
 					.mocked(invoke)
@@ -1644,17 +1605,14 @@ describe("SettingsModal", () => {
 			[false, true].map((failure) => [command, failure] as const),
 		),
 	)(
-		"%sの結果不明で待機を解除し元の操作の遅延結果を表示する: failure=%s",
+		"%sは通信状態を表示せず応答結果を反映する: failure=%s",
 		async (command, failure) => {
-			const client = await import("@/lib/clientSocket");
+			const client = await import("@/lib/client");
 			const invoke = vi.mocked(client.invokeClient);
 			const base = invoke.getMockImplementation();
 			invoke.mockClear();
 			if (!base) throw new Error("Missing settings fixture");
-			const retry = vi
-				.spyOn(client, "retryClientOperation")
-				.mockImplementation(() => {});
-			let options: Parameters<typeof client.invokeClient>[2];
+			let options: unknown;
 			let complete!: (
 				value: Awaited<ReturnType<typeof client.invokeClient>>,
 			) => void;
@@ -1692,9 +1650,9 @@ describe("SettingsModal", () => {
 					branch_prefix: "",
 				},
 			};
-			invoke.mockImplementation((name, args, requestOptions) => {
+			invoke.mockImplementation((name, args, ...extra: unknown[]) => {
 				if (name === command) {
-					options = requestOptions;
+					options = extra[0];
 					return new Promise((resolve, reject) => {
 						complete = resolve;
 						fail = reject;
@@ -1724,7 +1682,7 @@ describe("SettingsModal", () => {
 					);
 				if (name === "get_provider_availability")
 					return Promise.resolve(confirmed ? nextProviders : providerSnapshot);
-				return base(name, args, requestOptions);
+				return base(name, args);
 			});
 			render(<SettingsModal {...defaultProps} />);
 			const section =
@@ -1778,35 +1736,12 @@ describe("SettingsModal", () => {
 			const button = await screen.findByRole("button", { name: action });
 			await userEvent.click(button);
 			expect(button).toBeDisabled();
-			expect(options?.onUncertain).toEqual(expect.any(Function));
-			act(() =>
-				options?.onUncertain?.(
-					new client.ClientTransportError("original", "unknown"),
-				),
-			);
-			expect(screen.getByRole("alert")).toHaveTextContent(
-				"操作結果を確認できません",
-			);
-			expect(button).toBeEnabled();
-			expect(button.querySelector(".animate-spin")).toBeNull();
-			expect(button).toHaveTextContent("元の操作の結果を確認");
+			expect(options).toBeUndefined();
+			expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+			expect(
+				screen.queryByRole("button", { name: "元の操作の結果を確認" }),
+			).not.toBeInTheDocument();
 			await userEvent.click(button);
-			expect(retry).toHaveBeenCalledExactlyOnceWith("original");
-			if (section === "Agent")
-				expect(
-					screen.getByLabelText("Claude executable override"),
-				).toBeEnabled();
-			fireEvent.click(screen.getByText("Appearance"));
-			expect(screen.getByRole("alert")).toHaveTextContent(
-				"操作結果を確認できません",
-			);
-			fireEvent.click(screen.getByText(section));
-			const confirms = screen.getAllByRole("button", {
-				name: "元の操作の結果を確認",
-			});
-			await userEvent.click(confirms[confirms.length - 1]);
-			expect(retry).toHaveBeenCalledTimes(2);
-			expect(retry).toHaveBeenLastCalledWith("original");
 			expect(
 				invoke.mock.calls.filter(([name]) => name === command),
 			).toHaveLength(1);
@@ -1849,54 +1784,26 @@ describe("SettingsModal", () => {
 		"reset_provider_executable",
 		"refresh_provider_availability",
 	] as const)(
-		"%sの結果不明と別providerのReset・Refreshを操作ごとに表示する",
+		"%sの応答待ちで通信状態や結果照会を表示しない",
 		async (command) => {
-			const client = await import("@/lib/clientSocket");
+			const client = await import("@/lib/client");
 			const invoke = vi.mocked(client.invokeClient);
 			const base = invoke.getMockImplementation();
 			if (!base) throw new Error("Missing settings fixture");
-			const snapshot = (await base("get_provider_availability")) as Awaited<
-				ReturnType<typeof client.invokeClient<"get_provider_availability">>
-			>;
-			for (const provider of snapshot.providers)
-				provider.configuredExecutable = `/custom/${provider.provider}`;
-			const pending = new Map<
-				string,
-				{
-					options: Parameters<typeof client.invokeClient>[2];
-					resolve: (value: typeof snapshot) => void;
-				}
-			>();
-			const retry = vi
-				.spyOn(client, "retryClientOperation")
-				.mockImplementation(() => {});
-			invoke.mockImplementation((name, args, options) => {
-				if (name === "get_provider_availability")
-					return Promise.resolve(snapshot);
-				if (
-					[
-						"update_provider_executable",
-						"reset_provider_executable",
-						"refresh_provider_availability",
-					].includes(name)
-				) {
-					const provider = args && "provider" in args ? args.provider : "";
-					return new Promise((resolve) =>
-						pending.set(`${name}:${provider}`, { options, resolve }),
-					);
-				}
-				return base(name, args, options);
+			const snapshot = await base("get_provider_availability");
+			let complete!: () => void;
+			invoke.mockImplementation((name, args) => {
+				if (name !== command) return base(name, args);
+				return new Promise((resolve) => {
+					complete = () => resolve(snapshot);
+				});
 			});
 			render(<SettingsModal {...defaultProps} />);
 			fireEvent.click(screen.getByText("Agent"));
-			await screen.findByDisplayValue("/custom/claude");
-			if (command === "update_provider_executable") {
-				fireEvent.change(screen.getByLabelText("Claude executable override"), {
-					target: { value: "/saved/claude" },
-				});
-			}
-			const originalId = `${command}:${command === "refresh_provider_availability" ? "" : "claude"}`;
-			const original = screen.getByRole("button", {
+			const input = await screen.findByLabelText("Claude executable override");
+			if (command === "update_provider_executable")
+				fireEvent.change(input, { target: { value: "/saved/claude" } });
+			const button = screen.getByRole("button", {
 				name:
 					command === "update_provider_executable"
 						? "Save"
@@ -1904,61 +1811,19 @@ describe("SettingsModal", () => {
 							? "Reset Claude executable"
 							: "Refresh Provider CLI availability",
 			});
-			await userEvent.click(original);
-			act(() =>
-				pending
-					.get(originalId)
-					?.options?.onUncertain?.(
-						new ClientTransportError(originalId, "unknown"),
-					),
-			);
-			const codex = screen.getByRole("button", {
-				name: "Reset Codex executable",
-			});
-			await userEvent.click(codex);
-			const codexId = "reset_provider_executable:codex";
-			expect(pending.has(codexId)).toBe(true);
-			act(() =>
-				pending
-					.get(codexId)
-					?.options?.onUncertain?.(
-						new ClientTransportError(codexId, "unknown"),
-					),
-			);
-			await userEvent.click(codex);
-			expect(retry).toHaveBeenLastCalledWith(codexId);
-			const otherId =
-				command === "refresh_provider_availability"
-					? "reset_provider_executable:claude"
-					: "refresh_provider_availability:";
-			await userEvent.click(
-				screen.getByRole("button", {
-					name:
-						command === "refresh_provider_availability"
-							? "Reset Claude executable"
-							: "Refresh Provider CLI availability",
-				}),
-			);
-			expect(pending.has(otherId)).toBe(true);
-			await act(async () => pending.get(otherId)?.resolve(snapshot));
-			expect(codex).toHaveTextContent("元の操作の結果を確認");
-			await userEvent.click(codex);
-			expect(retry).toHaveBeenLastCalledWith(codexId);
-			await act(async () => pending.get(codexId)?.resolve(snapshot));
-			expect(codex).toHaveTextContent("Reset");
-			expect(original).toHaveTextContent("元の操作の結果を確認");
-			await userEvent.click(original);
-			expect(retry).toHaveBeenLastCalledWith(originalId);
-			expect(pending.size).toBe(3);
-			await act(async () => pending.get(originalId)?.resolve(snapshot));
+			await userEvent.click(button);
+			expect(button).toBeDisabled();
+			expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 			expect(
-				screen.queryByText(/操作結果を確認できません/),
+				screen.queryByRole("button", { name: "元の操作の結果を確認" }),
 			).not.toBeInTheDocument();
+			await act(async () => complete());
+			expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 		},
 	);
 
 	it("providerフォームを開き直すと取得中と取得失敗時にも以前のdraftを保存しない", async () => {
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		const base = vi.mocked(invoke).getMockImplementation();
 		if (!base) throw new Error("Missing invoke fixture");
 		vi.mocked(invoke).mockClear();

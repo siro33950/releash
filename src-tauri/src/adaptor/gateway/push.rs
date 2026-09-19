@@ -24,20 +24,13 @@ pub enum BackendPush<'a> {
 
 impl BackendPush<'_> {
     pub(crate) fn emit(self, sink: &PushSink) {
-        use crate::adaptor::controller::api::protocol::client as wire;
+        use crate::adaptor::protocol::client as wire;
         use prost::Message;
         macro_rules! publish {
             ($name:literal, $variant:ident, $value:expr) => {{
                 let event = $value.map(wire::push::Event::$variant);
                 match event {
-                    Ok(event) => sink.send(
-                        wire::Envelope {
-                            body: Some(wire::envelope::Body::Push(wire::Push {
-                                event: Some(event),
-                            })),
-                        }
-                        .encode_to_vec(),
-                    ),
+                    Ok(event) => sink.send(wire::Push { event: Some(event) }.encode_to_vec()),
                     Err(error) => {
                         log::error!("Client push conversion failed for {}: {error}", $name)
                     }

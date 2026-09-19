@@ -107,11 +107,7 @@ struct ProviderAvailabilityItem {
 
 struct AgentSessionTuiAcceptanceHost {
     composition: AgentSessionTuiAcceptanceComposition<tauri::test::MockRuntime>,
-    client: std::sync::Mutex<
-        tokio_tungstenite::tungstenite::WebSocket<
-            tokio_tungstenite::tungstenite::stream::MaybeTlsStream<std::net::TcpStream>,
-        >,
-    >,
+    client: releash_lib::client_api_acceptance::NativeClient,
 }
 
 impl AgentSessionTuiAcceptanceHost {
@@ -119,33 +115,12 @@ impl AgentSessionTuiAcceptanceHost {
         let app = tauri::test::mock_builder()
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .map_err(|error| error.to_string())?;
-        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
         let composition = AgentSessionTuiAcceptanceComposition::start(config, app)?;
-        let endpoint = composition.client_endpoint();
-        let mut request = endpoint
-            .url
-            .as_str()
-            .into_client_request()
-            .map_err(|error| error.to_string())?;
-        request.headers_mut().insert(
-            "Sec-WebSocket-Protocol",
-            endpoint
-                .auth_subprotocol
-                .parse()
-                .map_err(|error| format!("{error}"))?,
-        );
-        let (client, _) =
-            tokio_tungstenite::tungstenite::connect(request).map_err(|error| error.to_string())?;
-        if let tokio_tungstenite::tungstenite::stream::MaybeTlsStream::Plain(socket) =
-            client.get_ref()
-        {
-            socket
-                .set_read_timeout(Some(Duration::from_secs(130)))
-                .map_err(|error| error.to_string())?;
-        }
+        let client =
+            releash_lib::client_api_acceptance::connect_client(composition.client_endpoint());
         Ok(Self {
             composition,
-            client: std::sync::Mutex::new(client),
+            client,
         })
     }
 
@@ -154,55 +129,13 @@ impl AgentSessionTuiAcceptanceHost {
         command: &str,
         body: serde_json::Value,
     ) -> Result<T, String> {
-        use prost::Message;
-        use releash_lib::client_api_acceptance::{
-            command_response, decode_client_value, encode_client_request, envelope, Envelope,
-        };
-        use tokio_tungstenite::tungstenite::Message as WsMessage;
-        let id = uuid::Uuid::new_v4().to_string();
-        let mut client = self.client.lock().map_err(|error| error.to_string())?;
-        client
-            .send(WsMessage::Binary(
-                encode_client_request(&id, command, body).into(),
-            ))
-            .map_err(|error| error.to_string())?;
-        loop {
-            let message = client.read().map_err(|error| error.to_string())?;
-            let WsMessage::Binary(bytes) = message else {
-                continue;
-            };
-            let envelope = Envelope::decode(bytes).map_err(|error| error.to_string())?;
-            if let Some(envelope::Body::Response(response)) = envelope.body {
-                if response.request_id != id {
-                    return Err("uncorrelated command response".into());
-                }
-                client
-                    .send(WsMessage::Binary(
-                        Envelope {
-                            body: Some(envelope::Body::RequestAck(
-                                releash_lib::client_api_acceptance::RequestAck {
-                                    request_id: id,
-                                    release_watch: false,
-                                    confirm_watch: false,
-                                },
-                            )),
-                        }
-                        .encode_to_vec()
-                        .into(),
-                    ))
-                    .map_err(|error| error.to_string())?;
-                match response.outcome {
-                    Some(command_response::Outcome::Result(result)) => {
-                        return serde_json::from_value(decode_client_value(result))
-                            .map_err(|error| error.to_string());
-                    }
-                    Some(command_response::Outcome::Error(error)) => {
-                        return Err(decode_client_value(error).to_string())
-                    }
-                    None => return Err("missing command result".into()),
-                }
-            }
-        }
+        let value = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(
+                releash_lib::client_api_acceptance::request_client(&self.client, command, body),
+            )
+        })
+        .map_err(|error| error.to_string())?;
+        serde_json::from_value(value).map_err(|error| error.to_string())
     }
 
     fn terminal(&self) -> &releash_lib::terminal_surface::TerminalSurfaceRuntime {
@@ -519,11 +452,7 @@ impl AgentSessionTuiAcceptanceHost {
     }
 
     async fn shutdown(self) -> Result<(), String> {
-        self.client
-            .into_inner()
-            .map_err(|error| error.to_string())?
-            .close(None)
-            .map_err(|error| error.to_string())?;
+        drop(self.client);
         self.composition.shutdown().await
     }
 }

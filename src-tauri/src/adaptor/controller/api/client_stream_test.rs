@@ -1,13 +1,11 @@
 use super::*;
 use crate::adaptor::gateway::terminal_surface::event_hub::TerminalSurfaceEventHub;
-use crate::adaptor::gateway::terminal_surface::output_flow_control::TERMINAL_OUTPUT_CREDIT_CODE_UNITS;
 use crate::domain::terminal_surface::entities::TerminalSurface;
 use crate::domain::terminal_surface::gateway::{
     TerminalSurfaceEvent, TerminalSurfaceEventSink, TerminalSurfaceRepository,
 };
 use crate::domain::terminal_surface::TerminalSurfaceOwner;
 use crate::domain::workspace_tree::WorkspaceIdentity;
-use serde_json::{json, Value};
 use std::time::Duration;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -21,6 +19,7 @@ struct AttachedWrite {
 #[derive(Default)]
 struct BackendOwnedSurface {
     replay: Option<String>,
+    exited: std::sync::atomic::AtomicBool,
     missing_snapshot: std::sync::atomic::AtomicBool,
     attached_writes: std::sync::Mutex<Vec<AttachedWrite>>,
     resizes: std::sync::Mutex<Vec<(String, u16, u16)>>,
@@ -102,6 +101,12 @@ impl crate::domain::terminal_surface::gateway::TerminalSurfaceGateway for Backen
             let mut surface = Self::surface();
             if let Some(replay) = &self.replay {
                 surface.checkpoint.replay = replay.clone();
+            }
+            if self.exited.load(std::sync::atomic::Ordering::SeqCst) {
+                surface.process_state =
+                    crate::domain::terminal_surface::TerminalProcessState::Exited {
+                        exit_code: Some(0),
+                    };
             }
             surface
         })
@@ -216,22 +221,6 @@ impl crate::domain::terminal_surface::gateway::TerminalSurfaceGateway for Backen
     fn remove_runtime(&self, _runtime_generation: u64) {}
 }
 
-fn fixture(
-    replay: Option<String>,
-    flow_control: bool,
-) -> (TerminalConnection, Arc<TerminalSurfaceEventHub>) {
-    let gateway = Arc::new(BackendOwnedSurface {
-        replay,
-        ..Default::default()
-    });
-    let hub = Arc::new(TerminalSurfaceEventHub::with_flags(256, flow_control));
-    let application = Arc::new(TerminalSurfaceApplication::new(gateway, hub.clone()));
-    (
-        TerminalConnection::new(Some(TerminalApiDeps::new(application))),
-        hub,
-    )
-}
-
 fn attach_args(id: &str) -> wire::AttachTerminalSurfaceRequest {
     wire::AttachTerminalSurfaceRequest {
         attachment_id: Some(id.into()),
@@ -246,1115 +235,623 @@ fn attach_args(id: &str) -> wire::AttachTerminalSurfaceRequest {
     }
 }
 
-async fn next_frame(connection: &mut TerminalConnection) -> wire::Stream {
-    let frame = tokio::time::timeout(Duration::from_secs(5), connection.receiver.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    let bytes = connection.receive(frame).unwrap();
-    assert!(bytes.len() <= wire::MAX_STREAM_FRAME_BYTES);
-    let wire::envelope::Body::Stream(frame) = wire::Envelope::decode(bytes.as_slice())
-        .unwrap()
-        .body
-        .unwrap()
-    else {
-        panic!("stream");
-    };
-    frame
-}
-
-async fn next_event(connection: &mut TerminalConnection) -> (String, u64, TerminalEvent) {
-    let mut bytes = Vec::new();
-    loop {
-        let frame = next_frame(connection).await;
-        bytes.extend(frame.data);
-        if frame.end {
-            return (
-                frame.attachment_id,
-                frame.sequence,
-                TerminalEvent::decode(bytes.as_slice()).unwrap(),
-            );
-        }
-        connection
-            .acknowledge(&frame.attachment_id, frame.sequence)
-            .unwrap();
-    }
-}
-
-#[tokio::test]
-async fn test_terminal_stream_単一接続でもattachmentは16個まででdetach後に枠を再利用する() {
-    // Given
-    let (mut connection, _) = fixture(None, false);
-    for index in 0..16 {
-        connection
-            .attach(attach_args(&format!("a-{index}")))
-            .unwrap();
-    }
-    // When / Then
-    assert_eq!(
-        connection
-            .attach(attach_args("overflow"))
-            .unwrap_err()
-            .variant
-            .and_then(|error| match error {
-                wire::command_error::Variant::Coded(error) => error.code,
-                _ => None,
-            })
-            .unwrap(),
-        "ATTACHMENT_LIMIT"
-    );
-    connection.detach("a-0");
-    connection.attach(attach_args("replacement")).unwrap();
-    assert_eq!(
-        connection
-            .attach(attach_args("overflow"))
-            .unwrap_err()
-            .variant
-            .and_then(|error| match error {
-                wire::command_error::Variant::Coded(error) => error.code,
-                _ => None,
-            })
-            .unwrap(),
-        "ATTACHMENT_LIMIT"
-    );
-}
-
-#[tokio::test]
-async fn test_terminal_stream_全接続でattachment枠を共有し切断後に再利用する() {
-    // Given
-    let (mut first, _) = fixture(None, false);
-    let mut second = TerminalConnection::new(first.deps.clone());
-    for index in 0..8 {
-        first.attach(attach_args(&format!("a-{index}"))).unwrap();
-        second.attach(attach_args(&format!("b-{index}"))).unwrap();
-    }
-    // When / Then
-    for connection in [&mut first, &mut second] {
-        assert_eq!(
-            connection
-                .attach(attach_args("overflow"))
-                .unwrap_err()
-                .variant
-                .and_then(|error| match error {
-                    wire::command_error::Variant::Coded(error) => error.code,
-                    _ => None,
-                })
-                .unwrap(),
-            "ATTACHMENT_LIMIT"
-        );
-    }
-    drop(first);
-    for index in 0..8 {
-        second.attach(attach_args(&format!("c-{index}"))).unwrap();
-    }
-    assert_eq!(
-        second
-            .attach(attach_args("overflow"))
-            .unwrap_err()
-            .variant
-            .and_then(|error| match error {
-                wire::command_error::Variant::Coded(error) => error.code,
-                _ => None,
-            })
-            .unwrap(),
-        "ATTACHMENT_LIMIT"
-    );
-}
-
-#[tokio::test]
-async fn test_terminal_stream_接続破棄でbackend_attachmentと保留creditを解放する() {
-    // Given
+fn fixture() -> (
+    TerminalApiDeps,
+    Arc<TerminalSurfaceEventHub>,
+    Arc<BackendOwnedSurface>,
+    Arc<TerminalSurfaceApplication>,
+) {
     let gateway = Arc::new(BackendOwnedSurface::default());
     let hub = Arc::new(TerminalSurfaceEventHub::with_flags(256, true));
     let application = Arc::new(TerminalSurfaceApplication::new(
         gateway.clone(),
         hub.clone(),
     ));
-    let mut connection = TerminalConnection::new(Some(TerminalApiDeps::new(application.clone())));
-    connection.attach(attach_args("disconnected")).unwrap();
-    next_event(&mut connection).await;
-    let publish = |sequence, data: String| {
-        let hub = hub.clone();
-        tokio::task::spawn_blocking(move || {
-            hub.publish(TerminalSurfaceEvent::Output {
-                session_key: workspace_owner().stable_key(),
-                data: data.into(),
-                sequence,
-            })
-        })
-    };
-    publish(42, "x".repeat(TERMINAL_OUTPUT_CREDIT_CODE_UNITS))
-        .await
-        .unwrap();
-    next_event(&mut connection).await;
-    let mut blocked = publish(43, "pending".into());
-    tokio::time::sleep(Duration::from_millis(30)).await;
-    assert!(!blocked.is_finished());
-    assert_eq!(hub.owner_stream_count(), 1);
-    // When
-    drop(connection);
-    let completed = tokio::time::timeout(Duration::from_secs(5), &mut blocked).await;
-    if completed.is_err() {
-        application.detach("disconnected");
-    }
-    // Then
-    completed
-        .expect("接続破棄は保留output creditを解放する")
-        .unwrap();
-    assert_eq!(*gateway.deactivated.lock().unwrap(), vec!["disconnected"]);
-    assert_eq!(hub.owner_stream_count(), 0);
+    (
+        TerminalApiDeps::new(application.clone()),
+        hub,
+        gateway,
+        application,
+    )
 }
 
 #[tokio::test]
-async fn test_terminal_stream_attach失敗でattachment枠を消費しない() {
+async fn test_terminal_stream_snapshotと出力を配信しdropでattachmentと枠を解放する() {
+    use futures_util::StreamExt;
     // Given
-    let (mut connection, _) = fixture(None, false);
-    let mut missing_surface = attach_args("missing");
-    missing_surface.owner.as_mut().unwrap().variant =
-        Some(wire::terminal_surface_owner_v1::Variant::Workspace(
-            wire::TerminalSurfaceOwnerV1Workspace {
-                workspace_path: Some("/missing".into()),
-            },
-        ));
-    // When
-    assert_eq!(
-        connection
-            .attach(missing_surface)
-            .unwrap_err()
-            .variant
-            .and_then(|error| match error {
-                wire::command_error::Variant::Coded(error) => error.code,
-                _ => None,
-            })
-            .unwrap(),
-        "PTY_ERROR"
-    );
-    // Then
-    for index in 0..16 {
-        connection
-            .attach(attach_args(&format!("a-{index}")))
-            .unwrap();
-    }
-    assert_eq!(
-        connection
-            .attach(attach_args("overflow"))
-            .unwrap_err()
-            .variant
-            .and_then(|error| match error {
-                wire::command_error::Variant::Coded(error) => error.code,
-                _ => None,
-            })
-            .unwrap(),
-        "ATTACHMENT_LIMIT"
-    );
-}
-
-#[tokio::test]
-async fn test_terminal_stream_巨大snapshotとoutputを上限内で分割し完全復元する() {
-    // Given
-    let replay = "日本語🙂\u{1b}[2J".repeat(120000);
-    let (mut connection, hub) = fixture(Some(replay.clone()), false);
-    // When
-    connection.attach(attach_args("a")).unwrap();
-    let (id, sequence, snapshot) = next_event(&mut connection).await;
-    // Then
-    assert_eq!(id, "a");
-    assert!(sequence > 16, "windowより大きなsnapshotも中間ackで進む");
-    let wire::terminal_event::Item::Snapshot(snapshot) = snapshot.item.unwrap() else {
+    let (deps, hub, gateway, _) = fixture();
+    let mut stream = stream(&deps, attach_args("terminal")).unwrap();
+    // When / Then
+    let first = stream.next().await.unwrap().unwrap();
+    let Some(wire::terminal_event::Item::Snapshot(snapshot)) = first.item else {
         panic!("snapshot");
     };
-    assert_eq!(snapshot.replay, replay);
     assert_eq!(snapshot.sequence, 41);
-    connection.acknowledge(&id, sequence).unwrap();
+    assert_eq!(snapshot.replay, "\u{1b}[2Jshared backend screen");
     hub.publish(TerminalSurfaceEvent::Output {
         session_key: workspace_owner().stable_key(),
-        data: replay.clone().into(),
+        data: "next".into(),
         sequence: 42,
     });
-    let (_, output_sequence, output) = next_event(&mut connection).await;
-    assert!(output_sequence > sequence);
-    let wire::terminal_event::Item::Output(output) = output.item.unwrap() else {
-        panic!("output");
-    };
-    assert_eq!(output.data, replay);
-    assert_eq!(output.sequence, 42);
+    let next = stream.next().await.unwrap().unwrap();
+    assert!(
+        matches!(next.item, Some(wire::terminal_event::Item::Output(output)) if output.data == "next" && output.sequence == 42)
+    );
+    drop(stream);
+    assert_eq!(*gateway.deactivated.lock().unwrap(), ["terminal"]);
 }
 
 #[tokio::test]
-async fn test_terminal_stream_ack停止はそのattachmentだけを止め再開できる() {
+async fn test_terminal_stream_全streamで枠を共有し不正入力では消費しない() {
     // Given
-    let (mut connection, _) = fixture(Some("x".repeat(2 * 1024 * 1024)), false);
-    connection.attach(attach_args("a")).unwrap();
+    let (deps, _, _, _) = fixture();
+    let mut invalid = attach_args("invalid");
+    invalid.owner = None;
+    assert!(stream(&deps, invalid).is_err());
     // When
-    for sequence in 1..=16 {
-        let frame = next_frame(&mut connection).await;
-        assert_eq!(
-            (frame.attachment_id.as_str(), frame.sequence),
-            ("a", sequence)
-        );
+    let mut output = deps.subscribe("limit".into()).unwrap();
+    output.next().await.unwrap().unwrap();
+    for index in 0..16 {
+        deps.attach("limit", String::new(), attach_args(&format!("id-{index}")))
+            .unwrap();
+        output.next().await.unwrap().unwrap();
     }
     // Then
+    let error = deps
+        .attach("limit", String::new(), attach_args("overflow"))
+        .unwrap_err();
+    assert_eq!(error.code, connectrpc::ErrorCode::ResourceExhausted);
+    assert_eq!(error.details.len(), 1);
+    assert_eq!(error.details[0].type_url, "releash.client.v1.CommandError");
+    use base64::Engine;
+    use prost::Message;
+    let bytes = base64::engine::general_purpose::STANDARD_NO_PAD
+        .decode(error.details[0].value.as_ref().unwrap())
+        .unwrap();
+    let detail = wire::CommandError::decode(bytes.as_slice()).unwrap();
+    let Some(wire::command_error::Variant::Coded(detail)) = detail.variant else {
+        panic!("coded error");
+    };
+    assert_eq!(detail.code.as_deref(), Some("TERMINAL_ATTACHMENT_LIMIT"));
+    assert_eq!(
+        detail.message.as_deref(),
+        Some("Too many terminal attachments")
+    );
+    drop(output);
+    assert!(stream(&deps, attach_args("reused")).is_ok());
+}
+
+#[tokio::test]
+async fn test_terminal_connectは同じattachmentの出力streamと入力unaryを共有する() {
+    use super::super::protocol::connect::{to_rpc, to_wire};
+    use crate::adaptor::controller::client::{convert, required, ClientCommandDispatch};
+    // Given
+    let (terminal, hub, gateway, terminal_application) = fixture();
+    let mut dispatch = ClientCommandDispatch::new(
+        Arc::new(crate::adaptor::controller::wiring::build_repository_usecase()),
+        Arc::new(crate::usecase::application_startup::ApplicationStartupAuthority::ready()),
+    );
+    let application = terminal_application.clone();
+    dispatch.register_domain(
+        &["write_terminal_surface"],
+        Box::new(move |command| {
+            let application = application.clone();
+            Box::pin(async move {
+                let wire::command_request::Command::WriteTerminalSurface(args) = command else {
+                    unreachable!()
+                };
+                let owner: crate::adaptor::protocol::terminal::TerminalSurfaceOwnerV1 =
+                    convert(required(args.owner, "owner")?)?;
+                let owner = owner.try_into().map_err(wire::CommandError::from)?;
+                application
+                    .write_attached(
+                        &owner,
+                        &required(args.attachment_id, "attachmentId")?,
+                        required(args.sequence, "sequence")?,
+                        None,
+                        &required(args.data, "data")?,
+                    )
+                    .map_err(|error| wire::CommandError::from(error.to_string()))?;
+                Ok(wire::command_result::Command::WriteTerminalSurface(
+                    wire::Unit {},
+                ))
+            })
+        }),
+    );
+    let application = terminal_application.clone();
+    dispatch.register_domain(
+        &["ack_terminal_surface_output"],
+        Box::new(move |command| {
+            let application = application.clone();
+            Box::pin(async move {
+                let wire::command_request::Command::AckTerminalSurfaceOutput(args) = command else {
+                    unreachable!()
+                };
+                application.acknowledge_output(
+                    &required(args.attachment_id, "attachmentId")?,
+                    required(args.sequence, "sequence")?,
+                );
+                Ok(wire::command_result::Command::AckTerminalSurfaceOutput(
+                    wire::Unit {},
+                ))
+            })
+        }),
+    );
+    let deps = super::super::client::ClientApiDeps::new(
+        Arc::new(dispatch),
+        crate::adaptor::gateway::push::ClientPushGateway::new(Arc::new(
+            crate::infrastructure::push::PushSink::new(),
+        )),
+        crate::client_api_acceptance::watcher(),
+    )
+    .with_terminal(Some(terminal));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let config = connectrpc::client::ClientConfig::new(
+        format!("http://{}", listener.local_addr().unwrap())
+            .parse()
+            .unwrap(),
+    );
+    let server = tokio::spawn(async move {
+        axum::serve(listener, super::super::client::router(Some(deps)))
+            .await
+            .unwrap();
+    });
+    let client = rpc::ClientServiceClient::new(connectrpc::client::HttpClient::plaintext(), config);
+    // When
+    let mut output = client
+        .subscribe_terminal_surfaces(rpc::SubscribeTerminalSurfacesRequest {
+            subscription_id: "terminals".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let ready = output
+        .message::<rpc::TerminalSubscriptionEvent>()
+        .await
+        .unwrap()
+        .unwrap()
+        .to_owned_message();
+    assert!(matches!(
+        to_wire::<wire::TerminalSubscriptionEvent>(&ready)
+            .unwrap()
+            .event,
+        Some(wire::terminal_subscription_event::Event::Ready(_))
+    ));
+    client
+        .attach_terminal_surface(
+            to_rpc::<rpc::AttachSubscribedTerminalSurfaceRequest>(
+                &wire::AttachSubscribedTerminalSurfaceRequest {
+                    subscription_id: "terminals".into(),
+                    stream_id: "rpc-stream".into(),
+                    request: Some(attach_args("rpc-terminal")),
+                },
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        terminal_item(
+            &output
+                .message::<rpc::TerminalSubscriptionEvent>()
+                .await
+                .unwrap()
+                .unwrap()
+                .to_owned_message(),
+            "rpc-terminal",
+            "rpc-stream",
+        )
+        .unwrap()
+        .item,
+        Some(wire::terminal_event::Item::Snapshot(_))
+    ));
+    client
+        .write_terminal_surface(
+            to_rpc::<rpc::WriteTerminalSurfaceRequest>(&wire::WriteTerminalSurfaceRequest {
+                owner: attach_args("rpc-terminal").owner,
+                attachment_id: Some("rpc-terminal".into()),
+                sequence: Some(0),
+                data: Some("日本語\n".into()),
+                client_started_at_unix_ms: None,
+            })
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let data = "a".repeat(256 * 1024);
+    hub.publish(TerminalSurfaceEvent::Output {
+        session_key: workspace_owner().stable_key(),
+        data: data.clone().into(),
+        sequence: 42,
+    });
+    // Then
+    let event = terminal_item(
+        &output
+            .message::<rpc::TerminalSubscriptionEvent>()
+            .await
+            .unwrap()
+            .unwrap()
+            .to_owned_message(),
+        "rpc-terminal",
+        "rpc-stream",
+    )
+    .unwrap();
     assert!(
-        tokio::time::timeout(Duration::from_millis(30), connection.receiver.recv())
+        matches!(event.item, Some(wire::terminal_event::Item::Output(item)) if item.data == data)
+    );
+    assert_eq!(
+        *gateway.attached_writes.lock().unwrap(),
+        [AttachedWrite {
+            session_key: workspace_owner().stable_key(),
+            attachment_id: "rpc-terminal".into(),
+            sequence: 0,
+            data: "日本語\n".into()
+        }]
+    );
+    // When: producer cannot publish more output until the unary ack returns credit.
+    let producer_hub = hub.clone();
+    let (published, mut resumed) = tokio::sync::oneshot::channel();
+    let producer = tokio::task::spawn_blocking(move || {
+        producer_hub.publish(TerminalSurfaceEvent::Output {
+            session_key: workspace_owner().stable_key(),
+            data: "resumed".into(),
+            sequence: 43,
+        });
+        published.send(()).unwrap();
+    });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), &mut resumed)
             .await
             .is_err()
     );
-    connection.attach(attach_args("b")).unwrap();
-    let frame = next_frame(&mut connection).await;
-    assert_eq!((frame.attachment_id.as_str(), frame.sequence), ("b", 1));
-    connection.detach("b");
-    connection.acknowledge("a", 16).unwrap();
-    loop {
-        let raw = connection.receiver.recv().await.unwrap();
-        if let Some(bytes) = connection.receive(raw) {
-            let wire::envelope::Body::Stream(frame) = wire::Envelope::decode(bytes.as_slice())
-                .unwrap()
-                .body
-                .unwrap()
-            else {
-                panic!("stream");
-            };
-            assert_eq!((frame.attachment_id.as_str(), frame.sequence), ("a", 17));
-            break;
-        }
-    }
-}
-
-#[tokio::test]
-async fn test_terminal_stream_出力の終端ackだけがbackend_creditを解放する() {
-    // Given
-    let (mut connection, hub) = fixture(None, true);
-    connection.attach(attach_args("a")).unwrap();
-    let (_, snapshot_sequence, _) = next_event(&mut connection).await;
-    connection.acknowledge("a", snapshot_sequence).unwrap();
-    hub.publish(TerminalSurfaceEvent::Output {
-        session_key: workspace_owner().stable_key(),
-        data: "a".repeat(TERMINAL_OUTPUT_CREDIT_CODE_UNITS).into(),
-        sequence: 42,
-    });
-    let (_, sequence, _) = next_event(&mut connection).await;
-    let blocked = tokio::task::spawn_blocking(move || {
-        hub.publish(TerminalSurfaceEvent::Output {
-            session_key: workspace_owner().stable_key(),
-            data: "tail".into(),
-            sequence: 43,
+    client
+        .ack_terminal_surface_output(rpc::AckTerminalSurfaceOutputRequest {
+            attachment_id: Some("rpc-terminal".into()),
+            sequence: Some(42),
+            ..Default::default()
         })
-    });
-    // When / Then
-    tokio::time::sleep(Duration::from_millis(30)).await;
-    assert!(!blocked.is_finished());
-    connection.acknowledge("a", sequence).unwrap();
-    tokio::time::sleep(Duration::from_millis(30)).await;
-    assert!(!blocked.is_finished(), "受信ackは描画完了ではない");
-    connection.acknowledge_output("a", 42);
-    tokio::time::timeout(Duration::from_secs(5), blocked)
+        .await
+        .unwrap();
+    // Then
+    tokio::time::timeout(Duration::from_secs(1), resumed)
         .await
         .unwrap()
         .unwrap();
-    let (_, _, output) = next_event(&mut connection).await;
-    let wire::terminal_event::Item::Output(output) = output.item.unwrap() else {
-        panic!("output");
-    };
-    assert_eq!(output.data, "tail");
-}
-
-#[tokio::test]
-async fn test_terminal_stream_attachのid長境界を検証しtauri入口を拒否する() {
-    use crate::adaptor::controller::{command, state::AppState};
-    use tauri::Manager;
-
-    // Given
-    let (mut connection, _) = fixture(None, false);
-    let application = connection.deps.as_ref().unwrap().application.clone();
-    let (fixture_app, _, _store) =
-        crate::adaptor::controller::client::workflow::tests::make_read_only_app_with_terminal(
-            application.clone(),
-        );
-    let router: command::CommandRouter<
-        Box<dyn Fn(tauri::ipc::Invoke<tauri::test::MockRuntime>) -> bool + Send + Sync>,
-    > = command::CommandRouter::new(Box::new(|_| false));
-    let app = tauri::test::mock_builder()
-        .manage(Arc::new(
-            crate::usecase::application_startup::ApplicationStartupAuthority::ready(),
-        ))
-        .invoke_handler(move |invoke| router.handle(invoke))
-        .manage(fixture_app.state::<AppState>().inner().clone())
-        .build(tauri::test::mock_context(tauri::test::noop_assets()))
-        .unwrap();
-    for recovery in [false, true] {
-        for (id, valid) in [
-            (String::new(), false),
-            ("a".repeat(129), false),
-            ("é".repeat(65), false),
-            ("a".repeat(128), true),
-            ("é".repeat(64), true),
-        ] {
-            let args = json!({
-                "attachmentId": id,
-                "owner": {"kind": "workspace", "workspacePath": "/repo"},
-                "recovery": recovery,
-            });
-            let request =
-                wire::CommandRequest::from_value("attach_terminal_surface", args.clone()).unwrap();
-            let request = wire::CommandRequest::decode(request.encode_to_vec().as_slice()).unwrap();
-            let mut tauri_args = args;
-            tauri_args["onEvent"] = json!("__CHANNEL__:2");
-
-            // When
-            let tauri_result = command::client::client_tests::invoke_tauri(
-                &app,
-                "attach_terminal_surface",
-                tauri_args,
-            )
-            .await;
-            application.detach(&id);
-            let ws_result = connection
-                .dispatch(request.command.unwrap())
-                .map(|command| {
-                    wire::from_value(wire::CommandResult {
-                        command: Some(command),
-                    })
-                    .unwrap()
-                })
-                .map_err(|error| wire::from_value(error).unwrap());
-            connection.detach(&id);
-
-            // Then
-            let expected = if valid {
-                Ok(Value::Null)
-            } else {
-                Err(json!({"code": "INVALID_REQUEST", "message": "Invalid attachment ID"}))
-            };
-            assert!(tauri_result.is_err());
-            assert_eq!(
-                ws_result,
-                expected,
-                "ws: bytes={}, recovery={recovery}",
-                id.len()
-            );
-        }
-    }
-}
-
-#[tokio::test]
-async fn test_terminal_stream_不正attachと未来ackを拒否しdetach後のframeを破棄する() {
-    // Given
-    let (mut connection, _) = fixture(None, false);
-    for id in ["", &"a".repeat(129)] {
-        assert_eq!(
-            connection
-                .attach(attach_args(id))
-                .unwrap_err()
-                .variant
-                .and_then(|error| match error {
-                    wire::command_error::Variant::Coded(error) => error.code,
-                    _ => None,
-                })
-                .unwrap(),
-            "INVALID_REQUEST"
-        );
-    }
-    connection.attach(attach_args("a")).unwrap();
-    assert_eq!(
-        connection
-            .attach(attach_args("a"))
-            .unwrap_err()
-            .variant
-            .and_then(|error| match error {
-                wire::command_error::Variant::Coded(error) => error.code,
-                _ => None,
-            })
-            .unwrap(),
-        "INVALID_REQUEST"
-    );
-    assert!(connection.acknowledge("unknown", 1).is_ok());
-    assert!(connection.acknowledge("a", 1).is_err());
-    let stale = connection.receiver.recv().await.unwrap();
-    // When
-    connection.detach("a");
-    connection.attach(attach_args("a")).unwrap();
-    // Then
-    assert!(connection.receive(stale).is_none());
-    assert_eq!(next_frame(&mut connection).await.sequence, 1);
-    connection.acknowledge("a", 1).unwrap();
-    connection.acknowledge("a", 0).unwrap();
-}
-
-#[tokio::test]
-async fn test_terminal_stream_resize待機中も入力と出力とpushと通常応答を多重化する() {
-    use crate::adaptor::controller::{api, client::ClientCommandDispatch, state::AppState};
-    use futures_util::{SinkExt, StreamExt};
-    use tauri::Manager;
-    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message};
-    // Given
-    let (resize_done, resize_gate) = std::sync::mpsc::channel();
-    let gateway = Arc::new(BackendOwnedSurface {
-        replay: Some("x".repeat(2 * 1024 * 1024)),
-        resize_gate: Some(std::sync::Mutex::new(resize_gate)),
-        ..Default::default()
-    });
-    let hub = Arc::new(TerminalSurfaceEventHub::new());
-    let application = Arc::new(TerminalSurfaceApplication::new(gateway.clone(), hub));
-    let (app, data_dir, _store) =
-        crate::adaptor::controller::client::workflow::tests::make_read_only_app_with_terminal(
-            application.clone(),
-        );
-    let repository = app.state::<AppState>().repository_usecase.clone();
-    let mut dispatch = ClientCommandDispatch::new(
-        repository,
-        Arc::new(crate::usecase::application_startup::ApplicationStartupAuthority::ready()),
-    );
-    app.manage(Arc::new(
-        crate::infrastructure::file_watcher::FileWatcherManager::default(),
-    ));
-    dispatch.register_dependencies(&crate::desktop_test_support::build_client_dependencies(
-        app.handle(),
-    ));
-    let sink = app
-        .state::<Arc<crate::infrastructure::push::PushSink>>()
-        .inner()
-        .clone();
-    let router = api::test_support::test_router_with_optional_deps(
-        &data_dir,
-        "master",
-        "client",
-        Some(TerminalApiDeps::new(application)),
-        Some(api::ClientApiDeps::new(
-            Arc::new(dispatch),
-            crate::adaptor::gateway::push::ClientPushGateway::new(sink.clone()),
-        )),
-        None,
+    producer.await.unwrap();
+    let event = terminal_item(
+        &output
+            .message::<rpc::TerminalSubscriptionEvent>()
+            .await
+            .unwrap()
+            .unwrap()
+            .to_owned_message(),
+        "rpc-terminal",
+        "rpc-stream",
     )
-    .0;
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move {
-        axum::serve(listener, router).await.unwrap();
-    });
-    let mut request = format!("ws://{address}/v1/client")
-        .into_client_request()
-        .unwrap();
-    request
-        .headers_mut()
-        .insert("authorization", "Bearer client".parse().unwrap());
-    let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
-    let send = |id: &str, command: &str, args: Value| {
-        Message::Binary(
-            crate::client_api_acceptance::encode_client_request(id, command, args).into(),
-        )
-    };
-    // When
-    socket
-        .send(send("attach", "attach_terminal_surface", json!({"attachmentId":"a","owner":{"kind":"workspace","workspacePath":"/repo"},"recovery":false})))
-        .await
-        .unwrap();
-    for index in 0..=16 {
-        let message = tokio::time::timeout(Duration::from_secs(5), socket.next())
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-        let Message::Binary(bytes) = message else {
-            panic!("binary");
-        };
-        let body = wire::Envelope::decode(bytes.clone()).unwrap().body.unwrap();
-        if index == 0 {
-            assert!(matches!(body, wire::envelope::Body::Response(_)));
-        } else {
-            assert!(bytes.len() <= wire::MAX_STREAM_FRAME_BYTES);
-            let wire::envelope::Body::Stream(frame) = body else {
-                panic!("stream");
-            };
-            assert_eq!(frame.sequence, index);
-        }
-    }
-    for rows in 40..45 {
-        socket.send(send(&format!("resize-{rows}"), "resize_terminal_surface",
-            json!({"owner":{"kind":"workspace","workspacePath":"/repo"},"rows":rows,"cols":rows * 3})
-        )).await.unwrap();
-    }
-    gateway.resize_started.notified().await;
-    socket.send(send("write", "write_terminal_surface", json!({"owner":{"kind":"workspace","workspacePath":"/repo"},"attachmentId":"a","sequence":0,"data":"echo hi\n"}))).await.unwrap();
-    socket
-        .send(Message::Binary(
-            wire::Envelope {
-                body: Some(wire::envelope::Body::Ack(wire::Ack {
-                    attachment_id: "detached".into(),
-                    sequence: 99,
-                    output_sequence: Some(99),
-                })),
-            }
-            .encode_to_vec()
-            .into(),
-        ))
-        .await
-        .unwrap();
-    socket
-        .send(send(
-            "query",
-            "get_language_from_path",
-            json!({"filePath":"main.rs"}),
-        ))
-        .await
-        .unwrap();
-    for _ in 0..128 {
-        crate::adaptor::gateway::push::BackendPush::BranchListSync
-            .emit(&crate::desktop_test_support::push_sink(app.handle()));
-    }
-    socket
-        .send(Message::Binary(
-            wire::Envelope {
-                body: Some(wire::envelope::Body::Ack(wire::Ack {
-                    attachment_id: "a".into(),
-                    sequence: 16,
-                    output_sequence: None,
-                })),
-            }
-            .encode_to_vec()
-            .into(),
-        ))
-        .await
-        .unwrap();
-    socket
-        .send(Message::Binary(
-            wire::Envelope {
-                body: Some(wire::envelope::Body::Heartbeat(wire::Heartbeat {
-                    nonce: "alive".into(),
-                })),
-            }
-            .encode_to_vec()
-            .into(),
-        ))
+    .unwrap();
+    assert!(
+        matches!(event.item, Some(wire::terminal_event::Item::Output(item)) if item.data == "resumed" && item.sequence == 43)
+    );
+    // When: explicit detach must release the attachment before the client drops its stream.
+    client
+        .detach_terminal_surface(rpc::DetachTerminalSurfaceRequest {
+            attachment_id: Some("rpc-terminal".into()),
+            ..Default::default()
+        })
         .await
         .unwrap();
     // Then
-    let mut ids = std::collections::HashSet::new();
-    let mut pushed = false;
-    let mut resynced = false;
-    let mut streamed = false;
-    let mut alive = false;
-    let mut released = false;
-    while ids.len() < 7 || !pushed || !resynced || !streamed || !alive {
-        let frame = tokio::time::timeout(Duration::from_secs(5), socket.next())
+    assert_eq!(*gateway.deactivated.lock().unwrap(), ["rpc-terminal"]);
+    let closed = tokio::time::timeout(
+        Duration::from_secs(1),
+        output.message::<rpc::TerminalSubscriptionEvent>(),
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .unwrap()
+    .to_owned_message();
+    let closed = to_wire::<wire::TerminalSubscriptionEvent>(&closed).unwrap();
+    assert_eq!(closed.attachment_id, "rpc-terminal");
+    assert_eq!(closed.stream_id, "rpc-stream");
+    assert!(matches!(
+        closed.event,
+        Some(wire::terminal_subscription_event::Event::Closed(closed)) if closed.resynchronize
+    ));
+    for ending in ["exit", "snapshot"] {
+        // Given
+        gateway
+            .exited
+            .store(ending == "snapshot", std::sync::atomic::Ordering::SeqCst);
+        client
+            .attach_terminal_surface(
+                to_rpc::<rpc::AttachSubscribedTerminalSurfaceRequest>(
+                    &wire::AttachSubscribedTerminalSurfaceRequest {
+                        subscription_id: "terminals".into(),
+                        stream_id: ending.into(),
+                        request: Some(attach_args("rpc-terminal")),
+                    },
+                )
+                .unwrap(),
+            )
             .await
-            .unwrap()
-            .unwrap()
             .unwrap();
-        let Message::Binary(bytes) = frame else {
-            panic!("binary");
-        };
-        match wire::Envelope::decode(bytes).unwrap().body.unwrap() {
-            wire::envelope::Body::Response(response) => {
-                if !released {
-                    assert!(response.request_id == "write" || response.request_id == "query");
-                }
-                let wire::command_response::Outcome::Result(result) = response.outcome.unwrap()
-                else {
-                    panic!("success");
-                };
-                let result = wire::from_value(result).unwrap();
-                if response.request_id == "query" {
-                    assert_eq!(result, "rust");
-                } else {
-                    assert_eq!(result, Value::Null);
-                }
-                ids.insert(response.request_id);
-            }
-            wire::envelope::Body::Push(_) => pushed = true,
-            wire::envelope::Body::PushResync(_) => {
-                resynced = true;
-                crate::adaptor::gateway::push::BackendPush::BranchListSync
-                    .emit(&crate::desktop_test_support::push_sink(app.handle()));
-            }
-            wire::envelope::Body::Stream(frame) => {
-                if !streamed {
-                    assert_eq!(frame.sequence, 17);
-                }
-                streamed = true;
-            }
-            wire::envelope::Body::Heartbeat(heartbeat) => {
-                assert_eq!(heartbeat.nonce, "alive");
-                alive = true;
-            }
-            _ => panic!("unexpected frame"),
-        }
-        if !released && ids.len() == 2 && pushed && resynced && streamed && alive {
-            assert!(gateway.resizes.lock().unwrap().is_empty());
-            resize_done.send(()).unwrap();
-            released = true;
-        }
-    }
-    assert!(released);
-    assert!(pushed);
-    assert_eq!(ids.len(), 7);
-    assert_eq!(
-        *gateway.attached_writes.lock().unwrap(),
-        vec![AttachedWrite {
-            session_key: workspace_owner().stable_key(),
-            attachment_id: "a".into(),
-            sequence: 0,
-            data: "echo hi\n".into()
-        }]
-    );
-    assert_eq!(
-        *gateway.resizes.lock().unwrap(),
-        (40..45)
-            .map(|rows| (workspace_owner().stable_key(), rows, rows * 3))
-            .collect::<Vec<_>>()
-    );
-    gateway
-        .panic_resize
-        .store(true, std::sync::atomic::Ordering::SeqCst);
-    socket
-        .send(send(
-            "resize-error",
-            "resize_terminal_surface",
-            json!({
-                "owner":{"kind":"workspace","workspacePath":"/repo"},"rows":45,"cols":135
-            }),
-        ))
-        .await
-        .unwrap();
-    loop {
-        let Message::Binary(bytes) = tokio::time::timeout(Duration::from_secs(5), socket.next())
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap()
-        else {
-            panic!("binary");
-        };
-        if let Some(wire::envelope::Body::Response(response)) =
-            wire::Envelope::decode(bytes).unwrap().body
-        {
-            assert_eq!(response.request_id, "resize-error");
-            let Some(wire::command_response::Outcome::Error(error)) = response.outcome else {
-                panic!("resize error");
-            };
-            assert!(wire::from_value(error)
+        let snapshot = terminal_item(
+            &output
+                .message::<rpc::TerminalSubscriptionEvent>()
+                .await
                 .unwrap()
-                .as_str()
                 .unwrap()
-                .contains("Terminal resize task failed"));
-            break;
-        }
-    }
-    socket
-        .send(send(
-            "after-error",
-            "get_language_from_path",
-            json!({"filePath":"main.rs"}),
-        ))
-        .await
+                .to_owned_message(),
+            "rpc-terminal",
+            ending,
+        )
         .unwrap();
-    loop {
-        let Message::Binary(bytes) = tokio::time::timeout(Duration::from_secs(5), socket.next())
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap()
-        else {
-            panic!("binary");
-        };
-        if let Some(wire::envelope::Body::Response(response)) =
-            wire::Envelope::decode(bytes).unwrap().body
-        {
-            assert_eq!(response.request_id, "after-error");
-            let Some(wire::command_response::Outcome::Result(result)) = response.outcome else {
-                panic!("success");
-            };
-            assert_eq!(wire::from_value(result).unwrap(), "rust");
-            break;
+        assert!(
+            matches!(snapshot.item, Some(wire::terminal_event::Item::Snapshot(snapshot)) if snapshot.is_exited == (ending == "snapshot"))
+        );
+        // When
+        if ending == "exit" {
+            hub.publish(TerminalSurfaceEvent::Exit {
+                session_key: workspace_owner().stable_key(),
+                runtime_generation: 7,
+                exit_code: Some(0),
+                sequence: 42,
+            });
+            let exit = terminal_item(
+                &output
+                    .message::<rpc::TerminalSubscriptionEvent>()
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .to_owned_message(),
+                "rpc-terminal",
+                ending,
+            )
+            .unwrap();
+            assert!(matches!(
+                exit.item,
+                Some(wire::terminal_event::Item::Exit(_))
+            ));
         }
+        // Then
+        let closed = tokio::time::timeout(
+            Duration::from_secs(1),
+            output.message::<rpc::TerminalSubscriptionEvent>(),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap()
+        .to_owned_message();
+        let closed = to_wire::<wire::TerminalSubscriptionEvent>(&closed).unwrap();
+        assert_eq!(closed.attachment_id, "rpc-terminal");
+        assert_eq!(closed.stream_id, ending);
+        assert!(
+            matches!(closed.event, Some(wire::terminal_subscription_event::Event::Closed(closed)) if !closed.resynchronize)
+        );
     }
-    socket.close(None).await.unwrap();
+    drop(output);
     server.abort();
 }
 
+fn terminal_item(
+    event: &rpc::TerminalSubscriptionEvent,
+    attachment_id: &str,
+    stream_id: &str,
+) -> Result<wire::TerminalEvent, ConnectError> {
+    let event = super::super::protocol::connect::to_wire::<wire::TerminalSubscriptionEvent>(event)?;
+    assert_eq!(event.attachment_id, attachment_id);
+    assert_eq!(event.stream_id, stream_id);
+    let Some(wire::terminal_subscription_event::Event::Item(item)) = event.event else {
+        panic!("terminal item")
+    };
+    Ok(item)
+}
+
 #[tokio::test]
-async fn test_terminal_stream_自然終了は最後のframeの後に全attachment枠を解放する() {
+async fn test_terminal購読_最大attachment数を一本で配信し個別解除と購読終了で解放する() {
     // Given
-    let gateway = Arc::new(BackendOwnedSurface::default());
-    let hub = Arc::new(TerminalSurfaceEventHub::new());
-    let application = Arc::new(TerminalSurfaceApplication::new(
-        gateway.clone(),
-        hub.clone(),
+    let (deps, hub, gateway, _) = fixture();
+    let mut stream = deps.subscribe("renderer".into()).unwrap();
+    let ready = stream.next().await.unwrap().unwrap();
+    assert!(matches!(
+        super::super::protocol::connect::to_wire::<wire::TerminalSubscriptionEvent>(&ready)
+            .unwrap()
+            .event,
+        Some(wire::terminal_subscription_event::Event::Ready(_))
     ));
-    let mut connection = TerminalConnection::new(Some(TerminalApiDeps::new(application)));
-    // When / Then
-    for index in 0..20 {
-        let id = format!("a-{index}");
-        connection.attach(attach_args(&id)).unwrap();
-        next_event(&mut connection).await;
-        hub.publish(TerminalSurfaceEvent::Exit {
-            session_key: workspace_owner().stable_key(),
-            runtime_generation: 7,
-            exit_code: Some(0),
-            sequence: 42,
-        });
-        let (_, _, event) = next_event(&mut connection).await;
-        assert!(matches!(
-            event.item,
-            Some(wire::terminal_event::Item::Exit(_))
-        ));
-        let finished = tokio::time::timeout(Duration::from_secs(5), connection.receiver.recv())
+    // When
+    for index in 0..16 {
+        deps.attach(
+            "renderer",
+            String::new(),
+            attach_args(&format!("pane-{index}")),
+        )
+        .unwrap();
+    }
+    // Then
+    assert_eq!(
+        deps.attach("renderer", String::new(), attach_args("queued-overflow"))
+            .unwrap_err()
+            .code,
+        connectrpc::ErrorCode::ResourceExhausted
+    );
+    let mut received = std::collections::HashSet::new();
+    for _ in 0..16 {
+        let event = tokio::time::timeout(Duration::from_secs(1), stream.next())
             .await
             .unwrap()
+            .unwrap()
             .unwrap();
-        assert!(connection.receive(finished).is_none());
-        assert!(connection.attachments.is_empty());
-        assert_eq!(
-            connection
-                .deps
-                .as_ref()
-                .unwrap()
-                .attachment_limit
-                .available_permits(),
-            16
-        );
-        assert_eq!(gateway.deactivated.lock().unwrap().last(), Some(&id));
-        connection.acknowledge(&id, 100).unwrap();
+        let event =
+            super::super::protocol::connect::to_wire::<wire::TerminalSubscriptionEvent>(&event)
+                .unwrap();
+        assert!(matches!(
+            event.event,
+            Some(wire::terminal_subscription_event::Event::Item(
+                wire::TerminalEvent {
+                    item: Some(wire::terminal_event::Item::Snapshot(_))
+                }
+            ))
+        ));
+        received.insert(event.attachment_id);
     }
-}
-
-type ClientSocket =
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
-
-async fn next_ws_body(socket: &mut ClientSocket) -> wire::envelope::Body {
-    use futures_util::StreamExt;
-    let message = tokio::time::timeout(Duration::from_secs(5), socket.next())
+    assert_eq!(received.len(), 16);
+    assert_eq!(
+        deps.attach("renderer", String::new(), attach_args("overflow"))
+            .unwrap_err()
+            .code,
+        connectrpc::ErrorCode::ResourceExhausted
+    );
+    // When / Then
+    hub.publish(TerminalSurfaceEvent::Output {
+        session_key: workspace_owner().stable_key(),
+        data: "live".into(),
+        sequence: 42,
+    });
+    for _ in 0..16 {
+        let event = tokio::time::timeout(Duration::from_secs(1), stream.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let event =
+            super::super::protocol::connect::to_wire::<wire::TerminalSubscriptionEvent>(&event)
+                .unwrap();
+        assert!(received.remove(&event.attachment_id));
+        assert!(
+            matches!(event.event, Some(wire::terminal_subscription_event::Event::Item(wire::TerminalEvent {
+            item: Some(wire::terminal_event::Item::Output(output))
+        })) if output.data == "live")
+        );
+    }
+    deps.detach("pane-0");
+    let event = tokio::time::timeout(Duration::from_secs(1), stream.next())
         .await
         .unwrap()
         .unwrap()
         .unwrap();
-    let tokio_tungstenite::tungstenite::Message::Binary(bytes) = message else {
-        panic!("binary");
-    };
-    wire::Envelope::decode(bytes).unwrap().body.unwrap()
-}
-
-fn assert_ws_result(body: wire::envelope::Body, id: &str, expected: &Value) {
-    let wire::envelope::Body::Response(response) = body else {
-        panic!("response");
-    };
-    assert_eq!(response.request_id, id);
-    let wire::command_response::Outcome::Result(result) = response.outcome.unwrap() else {
-        panic!("success");
-    };
-    assert_eq!(&wire::from_value(result).unwrap(), expected);
-}
-
-async fn next_ws_event(
-    socket: &mut ClientSocket,
-    mut response: Option<(&str, &Value)>,
-) -> (u64, TerminalEvent) {
-    let mut bytes = Vec::new();
-    let mut last_sequence = None;
-    while last_sequence.is_none() || response.is_some() {
-        match next_ws_body(socket).await {
-            wire::envelope::Body::Stream(frame) => {
-                assert_eq!(frame.attachment_id, "a");
-                bytes.extend(frame.data);
-                if frame.end {
-                    last_sequence = Some(frame.sequence);
-                }
-            }
-            body => {
-                let (id, expected) = response.take().expect("pending response");
-                assert_ws_result(body, id, expected);
-            }
-        }
-    }
-    (
-        last_sequence.unwrap(),
-        TerminalEvent::decode(bytes.as_slice()).unwrap(),
-    )
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn test_terminal_stream_実wsのackとdetachはtauriと結果とbackend作用が一致する() {
-    use crate::adaptor::controller::{api, client::ClientCommandDispatch, state::AppState};
-    use futures_util::SinkExt;
-    use tauri::Manager;
-    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message};
-
-    let mut tauri_ack = None;
-    let mut tauri_detach = None;
-    for transport in ["tauri", "command", "envelope"] {
-        // Given
-        let gateway = Arc::new(BackendOwnedSurface::default());
-        let hub = Arc::new(TerminalSurfaceEventHub::with_flags(256, true));
-        let application = Arc::new(TerminalSurfaceApplication::new(
-            gateway.clone(),
-            hub.clone(),
-        ));
-        let (app, data_dir, _store) =
-            crate::adaptor::controller::client::workflow::tests::make_read_only_app_with_terminal(
-                application.clone(),
-            );
-        let mut dispatch = ClientCommandDispatch::new(
-            app.state::<AppState>().repository_usecase.clone(),
-            Arc::new(crate::usecase::application_startup::ApplicationStartupAuthority::ready()),
-        );
-        app.manage(Arc::new(
-            crate::infrastructure::file_watcher::FileWatcherManager::default(),
-        ));
-        dispatch.register_dependencies(&crate::desktop_test_support::build_client_dependencies(
-            app.handle(),
-        ));
-        let dispatch = Arc::new(dispatch);
-        app.manage(dispatch.clone());
-        let router = api::test_support::test_router_with_optional_deps(
-            &data_dir,
-            "master",
-            "client",
-            Some(TerminalApiDeps::new(application.clone())),
-            Some(api::ClientApiDeps::new(
-                dispatch.clone(),
-                crate::adaptor::gateway::push::ClientPushGateway::new(
-                    app.state::<Arc<crate::infrastructure::push::PushSink>>()
-                        .inner()
-                        .clone(),
-                ),
-            )),
-            None,
-        )
-        .0;
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = tokio::spawn(async move {
-            axum::serve(listener, router).await.unwrap();
-        });
-        let mut request = format!("ws://{address}/v1/client")
-            .into_client_request()
-            .unwrap();
-        request
-            .headers_mut()
-            .insert("authorization", "Bearer client".parse().unwrap());
-        let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
-        let send = |id: &str, command: &str, args: Value| {
-            Message::Binary(
-                crate::client_api_acceptance::encode_client_request(id, command, args).into(),
-            )
-        };
-        let ack = |sequence, output_sequence| {
-            Message::Binary(
-                wire::Envelope {
-                    body: Some(wire::envelope::Body::Ack(wire::Ack {
-                        attachment_id: "a".into(),
-                        sequence,
-                        output_sequence,
-                    })),
-                }
-                .encode_to_vec()
-                .into(),
-            )
-        };
-        socket
-            .send(send("attach", "attach_terminal_surface", json!({"attachmentId":"a","owner":{"kind":"workspace","workspacePath":"/repo"},"recovery":false})))
-            .await
-            .unwrap();
-        assert_ws_result(next_ws_body(&mut socket).await, "attach", &Value::Null);
-        let (_, snapshot) = next_ws_event(&mut socket, None).await;
-        assert!(matches!(
-            snapshot.item,
-            Some(wire::terminal_event::Item::Snapshot(_))
-        ));
-        for command in ["ack_terminal_surface_output", "detach_terminal_surface"] {
-            let mut args = json!({"attachmentId":"unknown"});
-            let expected = if command == "ack_terminal_surface_output" {
-                args["sequence"] = json!(99);
-                crate::adaptor::controller::command::client::client_tests::invoke_tauri(
-                    &app,
-                    "ack_terminal_surface_output",
-                    json!({"attachmentId":"unknown", "sequence":99}),
-                )
-                .await
-                .unwrap()
-            } else {
-                crate::adaptor::controller::command::client::client_tests::invoke_tauri(
-                    &app,
-                    "detach_terminal_surface",
-                    json!({"attachmentId":"unknown"}),
-                )
-                .await
-                .unwrap()
-            };
-            socket.send(send(command, command, args)).await.unwrap();
-            assert_ws_result(next_ws_body(&mut socket).await, command, &expected);
-        }
-        assert!(gateway.deactivated.lock().unwrap().is_empty());
-        assert_eq!(hub.owner_stream_count(), 1);
-        let publish = |sequence, data: String| {
-            let hub = hub.clone();
-            tokio::task::spawn_blocking(move || {
-                hub.publish(TerminalSurfaceEvent::Output {
-                    session_key: workspace_owner().stable_key(),
-                    data: data.into(),
-                    sequence,
-                })
-            })
-        };
-        publish(42, "x".repeat(TERMINAL_OUTPUT_CREDIT_CODE_UNITS))
-            .await
-            .unwrap();
-        let (sequence, output) = next_ws_event(&mut socket, None).await;
-        assert!(
-            matches!(output.item, Some(wire::terminal_event::Item::Output(ref output)) if output.sequence == 42)
-        );
-        let mut blocked = publish(43, "y".repeat(TERMINAL_OUTPUT_CREDIT_CODE_UNITS));
-        // When / Then
-        socket.send(ack(sequence, None)).await.unwrap();
-        socket
-            .send(send(
-                "barrier",
-                "get_language_from_path",
-                json!({"filePath":"main.rs"}),
-            ))
-            .await
-            .unwrap();
-        assert_ws_result(next_ws_body(&mut socket).await, "barrier", &json!("rust"));
-        tokio::time::sleep(Duration::from_millis(30)).await;
-        assert!(
-            !blocked.is_finished(),
-            "{transport}: 受信ackだけではbackend creditを解放しない"
-        );
-        let response = match transport {
-            "tauri" => {
-                tauri_ack = Some(
-                    crate::adaptor::controller::command::client::client_tests::invoke_tauri(
-                        &app,
-                        "ack_terminal_surface_output",
-                        json!({"attachmentId":"a", "sequence":42}),
-                    )
-                    .await
-                    .unwrap(),
-                );
-                None
-            }
-            "command" => {
-                socket
-                    .send(send(
-                        "ack",
-                        "ack_terminal_surface_output",
-                        json!({"attachmentId":"a","sequence":42}),
-                    ))
-                    .await
-                    .unwrap();
-                Some(("ack", tauri_ack.as_ref().unwrap()))
-            }
-            "envelope" => {
-                socket.send(ack(sequence, Some(42))).await.unwrap();
-                None
-            }
-            _ => unreachable!(),
-        };
-        let completed = tokio::time::timeout(Duration::from_secs(5), &mut blocked).await;
-        if completed.is_err() {
-            application.detach("a");
-        }
-        completed
-            .expect("output ackはbackend creditを解放する")
-            .unwrap();
-        let (_, output) = next_ws_event(&mut socket, response).await;
-        let Some(wire::terminal_event::Item::Output(output)) = output.item else {
-            panic!("output");
-        };
-        assert_eq!(output.sequence, 43);
-        assert_eq!(output.data, "y".repeat(TERMINAL_OUTPUT_CREDIT_CODE_UNITS));
-        let mut blocked = publish(44, "tail".into());
-        tokio::time::sleep(Duration::from_millis(30)).await;
-        assert!(!blocked.is_finished());
-        if transport == "tauri" {
-            tauri_detach = Some(
-                crate::adaptor::controller::command::client::client_tests::invoke_tauri(
-                    &app,
-                    "detach_terminal_surface",
-                    json!({"attachmentId":"a"}),
-                )
-                .await
-                .unwrap(),
-            );
-        } else {
-            socket
-                .send(send(
-                    "detach",
-                    "detach_terminal_surface",
-                    json!({"attachmentId":"a"}),
-                ))
-                .await
-                .unwrap();
-            assert_ws_result(
-                next_ws_body(&mut socket).await,
-                "detach",
-                tauri_detach.as_ref().unwrap(),
-            );
-        }
-        let completed = tokio::time::timeout(Duration::from_secs(5), &mut blocked).await;
-        if completed.is_err() {
-            application.detach("a");
-        }
-        completed
-            .expect("detachはbackend creditを解放する")
-            .unwrap();
-        assert_eq!(*gateway.deactivated.lock().unwrap(), vec!["a"]);
-        assert_eq!(hub.owner_stream_count(), 0);
-        socket.close(None).await.unwrap();
-        server.abort();
+    let event = super::super::protocol::connect::to_wire::<wire::TerminalSubscriptionEvent>(&event)
+        .unwrap();
+    assert_eq!(event.attachment_id, "pane-0");
+    assert!(matches!(
+        event.event,
+        Some(wire::terminal_subscription_event::Event::Closed(_))
+    ));
+    deps.attach("renderer", String::new(), attach_args("replacement"))
+        .unwrap();
+    drop(stream);
+    let deactivated = gateway.deactivated.lock().unwrap();
+    for id in (0..16)
+        .map(|index| format!("pane-{index}"))
+        .chain(["replacement".into()])
+    {
+        assert!(deactivated.contains(&id));
     }
 }
 
 #[tokio::test]
-async fn test_terminal_stream_exitなしの終了はattachmentだけ通知し他streamを継続する() {
+async fn test_terminal購読_未登録と重複と上限を拒否し別購読の出力を混ぜない() {
     // Given
-    let gateway = Arc::new(BackendOwnedSurface::default());
-    let hub = Arc::new(TerminalSurfaceEventHub::new());
-    let application = Arc::new(TerminalSurfaceApplication::new(
-        gateway.clone(),
-        hub.clone(),
-    ));
-    let mut connection = TerminalConnection::new(Some(TerminalApiDeps::new(application)));
-    connection.attach(attach_args("a")).unwrap();
-    next_event(&mut connection).await;
-    // When
-    gateway
-        .missing_snapshot
-        .store(true, std::sync::atomic::Ordering::SeqCst);
-    hub.publish(TerminalSurfaceEvent::Output {
-        session_key: workspace_owner().stable_key(),
-        data: "gap".into(),
-        sequence: 43,
-    });
-    let raw = tokio::time::timeout(Duration::from_secs(5), connection.receiver.recv())
-        .await
-        .unwrap()
+    let (deps, _, _, _) = fixture();
+    assert_eq!(
+        deps.subscribe(" ".into()).err().unwrap().code,
+        connectrpc::ErrorCode::InvalidArgument
+    );
+    assert_eq!(
+        deps.attach("missing", String::new(), attach_args("missing"))
+            .unwrap_err()
+            .code,
+        connectrpc::ErrorCode::NotFound
+    );
+    let mut first = deps.subscribe("first".into()).unwrap();
+    let mut second = deps.subscribe("second".into()).unwrap();
+    first.next().await.unwrap().unwrap();
+    second.next().await.unwrap().unwrap();
+    // When / Then
+    assert_eq!(
+        deps.subscribe("first".into()).err().unwrap().code,
+        connectrpc::ErrorCode::AlreadyExists
+    );
+    deps.attach("first", String::new(), attach_args("first-terminal"))
         .unwrap();
-    let bytes = connection
-        .receive(raw)
-        .expect("stream closure must reach the client");
-    // Then
-    let wire::envelope::Body::StreamClosed(closed) = wire::Envelope::decode(bytes.as_slice())
-        .unwrap()
-        .body
-        .unwrap()
-    else {
-        panic!("closed");
-    };
-    assert_eq!(closed.attachment_id, "a");
-    assert!(connection.attachments.is_empty());
-    assert_eq!(*gateway.deactivated.lock().unwrap(), ["a"]);
-    gateway
-        .missing_snapshot
-        .store(false, std::sync::atomic::Ordering::SeqCst);
-    connection.attach(attach_args("b")).unwrap();
-    assert_eq!(next_event(&mut connection).await.0, "b");
-    hub.publish(TerminalSurfaceEvent::Output {
-        session_key: workspace_owner().stable_key(),
-        data: "continued".into(),
-        sequence: 42,
-    });
-    assert!(matches!(
-        next_event(&mut connection).await.2.item,
-        Some(wire::terminal_event::Item::Output(_))
-    ));
+    first.next().await.unwrap().unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), second.next())
+            .await
+            .is_err()
+    );
+    let others: Vec<_> = (0..14)
+        .map(|index| deps.subscribe(format!("client-{index}")).unwrap())
+        .collect();
+    assert_eq!(
+        deps.subscribe("overflow".into()).err().unwrap().code,
+        connectrpc::ErrorCode::ResourceExhausted
+    );
+    drop(others);
+    drop(first);
+    assert_eq!(
+        deps.attach("first", String::new(), attach_args("closed"))
+            .unwrap_err()
+            .code,
+        connectrpc::ErrorCode::NotFound
+    );
+    assert!(deps.subscribe("first".into()).is_ok());
+}
+
+fn stream(
+    deps: &TerminalApiDeps,
+    args: wire::AttachTerminalSurfaceRequest,
+) -> Result<ServiceStream<wire::TerminalEvent>, ConnectError> {
+    let subscription_id = uuid::Uuid::new_v4().to_string();
+    let output = deps.subscribe(subscription_id.clone())?;
+    deps.attach(&subscription_id, String::new(), args)?;
+    Ok(Box::pin(output.filter_map(|event| async move {
+        let event = match event.and_then(|event| {
+            super::super::protocol::connect::to_wire::<wire::TerminalSubscriptionEvent>(&event)
+        }) {
+            Ok(event) => event,
+            Err(error) => return Some(Err(error)),
+        };
+        match event.event {
+            Some(wire::terminal_subscription_event::Event::Item(item)) => Some(Ok(item)),
+            _ => None,
+        }
+    })))
+}
+
+#[tokio::test]
+async fn test_terminal購読_識別子は128byteまで受理し超過時はattachmentを保持しない() {
+    // Given
+    let (deps, hub, _, _) = fixture();
+    for id in ["x".repeat(129), "あ".repeat(43)] {
+        // When / Then
+        assert_eq!(
+            deps.subscribe(id.clone()).err().unwrap().code,
+            connectrpc::ErrorCode::InvalidArgument
+        );
+        let subscription = deps.subscribe("valid".into()).unwrap();
+        assert_eq!(
+            deps.attach("valid", id, attach_args("invalid"))
+                .unwrap_err()
+                .code,
+            connectrpc::ErrorCode::InvalidArgument
+        );
+        assert_eq!(hub.owner_stream_count(), 0);
+        drop(subscription);
+    }
+    for id in ["x".repeat(128), uuid::Uuid::new_v4().to_string()] {
+        let mut subscription = deps.subscribe(id.clone()).unwrap();
+        subscription.next().await.unwrap().unwrap();
+        deps.attach(&id, id.clone(), attach_args("valid")).unwrap();
+        let event = subscription.next().await.unwrap().unwrap();
+        let event: wire::TerminalSubscriptionEvent =
+            super::super::protocol::connect::to_wire(&event).unwrap();
+        assert_eq!(event.stream_id, id);
+        assert!(matches!(
+            event.event,
+            Some(wire::terminal_subscription_event::Event::Item(_))
+        ));
+    }
 }

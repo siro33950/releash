@@ -1,7 +1,13 @@
+import { Code, ConnectError } from "@connectrpc/connect";
 import { describe, expect, it } from "vitest";
 import { getErrorMessage } from "./errorMessage";
 
 describe("getErrorMessage", () => {
+	it("通信の内部状態を表示しない", () => {
+		expect(
+			getErrorMessage(new ConnectError("reconnecting", Code.Unavailable)),
+		).toBe("処理中にエラーが発生しました");
+	});
 	it("Errorのmessageを返す", () => {
 		expect(getErrorMessage(new Error("error message"))).toBe("error message");
 	});

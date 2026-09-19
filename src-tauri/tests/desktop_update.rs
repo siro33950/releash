@@ -1,6 +1,5 @@
 #![cfg(all(debug_assertions, feature = "desktop", unix))]
 
-use prost::Message;
 use releash_lib::client_api_acceptance as host;
 use serde_json::{json, Value};
 use std::{
@@ -45,86 +44,36 @@ fn discovery(path: &Path) -> Value {
 }
 struct Renderer {
     window: Window,
-    frames: tokio::sync::broadcast::Receiver<Option<Vec<u8>>>,
+    client: host::NativeClient,
     launch: String,
-    instance: String,
 }
 impl Renderer {
-    fn attach(app: &App) -> Self {
+    async fn attach(app: &App) -> Self {
         let window = tauri::WebviewWindowBuilder::new(app, "main", Default::default())
             .build()
             .unwrap();
-        let (hello, frames) = host::attach_desktop_client(app.handle(), "view".into());
-        let Some(host::envelope::Body::Hello(hello)) =
-            host::Envelope::decode(hello.as_slice()).unwrap().body
-        else {
-            panic!("authenticated hello");
-        };
+        let endpoint = host::desktop_client_endpoint(app.handle(), "view".into()).await;
+        let client = host::connect_client(&endpoint);
+        let hello = client
+            .get_server_info(host::rpc::Unit::default())
+            .await
+            .unwrap()
+            .into_owned();
         assert_eq!(hello.release, env!("CARGO_PKG_VERSION"));
         Self {
             window,
-            frames,
+            client,
             launch: hello.launch_id,
-            instance: hello.instance_id,
         }
     }
     async fn request(&mut self, command: &str, args: Value) -> Value {
-        let id = uuid::Uuid::new_v4().to_string();
-        let mut frame =
-            host::Envelope::decode(host::encode_client_request(&id, command, args).as_slice())
-                .unwrap();
-        if let Some(host::envelope::Body::Request(request)) = &mut frame.body {
-            request.instance_id = self.instance.clone();
-        }
-        ipc(
-            &self.window,
-            "send_desktop_client_frame",
-            json!({"launchId": self.launch, "bytes": frame.encode_to_vec()}),
-        )
-        .unwrap();
-        tokio::time::timeout(Duration::from_secs(10), async {
-            loop {
-                let bytes = self.frames.recv().await.unwrap().unwrap();
-                if let Some(host::envelope::Body::Response(response)) =
-                    host::Envelope::decode(bytes.as_slice()).unwrap().body
-                {
-                    if response.request_id != id {
-                        continue;
-                    }
-                    let value = match response.outcome.unwrap() {
-                        host::command_response::Outcome::Result(value) => {
-                            host::decode_client_value(value)
-                        }
-                        host::command_response::Outcome::Error(error) => {
-                            panic!("{command}: {error:?}")
-                        }
-                    };
-                    let ack = host::Envelope {
-                        body: Some(host::envelope::Body::RequestAck(host::RequestAck {
-                            request_id: id,
-                            ..Default::default()
-                        })),
-                    };
-                    ipc(
-                        &self.window,
-                        "send_desktop_client_frame",
-                        json!({"launchId": self.launch, "bytes": ack.encode_to_vec()}),
-                    )
-                    .unwrap();
-                    return value;
-                }
-            }
-        })
-        .await
-        .unwrap()
+        host::request_client(&self.client, command, args)
+            .await
+            .unwrap()
     }
     async fn restore(&mut self, app: &App, expected_repos: Value) {
-        assert!(ipc(
-            &self.window,
-            "admit_client_command",
-            json!({"command":"update_external_editor"})
-        )
-        .is_err());
+        self.request("update_external_editor", json!({"editor":"vim"}))
+            .await;
         let repos = self.request("get_repo_paths", json!({})).await;
         let telemetry = self
             .request("get_performance_telemetry_enabled", json!({}))
@@ -135,12 +84,8 @@ impl Renderer {
             host::desktop_supervision_status(app.handle())["phase"],
             "restoring"
         );
-        assert!(ipc(
-            &self.window,
-            "admit_client_command",
-            json!({"command":"update_external_editor"})
-        )
-        .is_err());
+        self.request("update_external_editor", json!({"editor":"vim"}))
+            .await;
         ipc(
             &self.window,
             "complete_desktop_restoration",
@@ -148,12 +93,8 @@ impl Renderer {
         )
         .unwrap();
         wait_phase(app, "ready").await;
-        ipc(
-            &self.window,
-            "admit_client_command",
-            json!({"command":"update_external_editor"}),
-        )
-        .unwrap();
+        self.request("update_external_editor", json!({"editor":"vim"}))
+            .await;
     }
 }
 
@@ -177,7 +118,7 @@ async fn test_実workflow更新_一括停止と旧daemon終了から適用と新
     let app = host::desktop_connection_app(tauri::test::mock_builder(), root, backend);
     wait_phase(&app, "restoring").await;
     let old = discovery(root);
-    let mut renderer = Renderer::attach(&app);
+    let mut renderer = Renderer::attach(&app).await;
     renderer.restore(&app, json!([])).await;
     renderer
         .request("add_repo_path", json!({"path":root}))
@@ -204,7 +145,7 @@ async fn test_実workflow更新_一括停止と旧daemon終了から適用と新
     .unwrap();
     let pid = old["pid"].as_i64().unwrap() as i32;
     let old_launch = renderer.launch.clone();
-    let old_instance = renderer.instance.clone();
+    let old_launch = renderer.launch.clone();
     let next_binary = root.join("updated-backend");
     let steps = Arc::new(Mutex::new(Vec::new()));
     // When
@@ -236,9 +177,9 @@ async fn test_実workflow更新_一括停止と旧daemon終了から適用と新
     let current = discovery(root);
     assert_ne!(current["pid"], old["pid"]);
     assert_ne!(current["instance_id"], old["instance_id"]);
-    let mut renderer = Renderer::attach(&next);
+    let mut renderer = Renderer::attach(&next).await;
     assert_ne!(renderer.launch, old_launch);
-    assert_ne!(renderer.instance, old_instance);
+    assert_ne!(renderer.launch, old_launch);
     ipc(
         &renderer.window,
         "validate_daemon_connection",
@@ -269,12 +210,9 @@ async fn test_実workflow更新_一括停止と旧daemon終了から適用と新
     assert_eq!(failed["phase"], "failed");
     assert_eq!(failed["stage"], "state_restoration");
     assert_eq!(failed["reason"], "Repositories: temporary read failure");
-    assert!(ipc(
-        &renderer.window,
-        "admit_client_command",
-        json!({"command":"update_external_editor"})
-    )
-    .is_err());
+    renderer
+        .request("update_external_editor", json!({"editor":"vim"}))
+        .await;
     ipc(&renderer.window, "retry_daemon", json!({})).unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
         while host::desktop_supervision_status(next.handle())["connectionGeneration"] == generation

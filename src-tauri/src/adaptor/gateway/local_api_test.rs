@@ -499,12 +499,9 @@ fn test_クライアント接続情報_再起動したinstanceを再読込しmas
         };
         LocalApiDiscoveryFile::create_client(directory.path(), client).unwrap();
         let endpoint = query.read().unwrap();
-        assert_eq!(endpoint.url, format!("ws://127.0.0.1:{port}/v1/client"));
-        assert_eq!(
-            endpoint.auth_subprotocol,
-            format!("releash-bearer.client-{instance}")
-        );
-        assert!(!endpoint.auth_subprotocol.contains(&master.token));
+        assert_eq!(endpoint.url, format!("http://127.0.0.1:{port}"));
+        assert_eq!(endpoint.token, format!("client-{instance}"));
+        assert!(!endpoint.token.contains(&master.token));
     }
     std::fs::write(directory.path().join("client-api.json"), b"invalid").unwrap();
     assert!(query.read().is_err());
@@ -565,19 +562,12 @@ fn test_クライアント接続情報_停止済みとpid再利用と参照不�
 #[cfg(feature = "desktop")]
 #[tokio::test]
 async fn test_desktop設定_wsの欠落不正切断を設定値へ置き換えない() {
-    use crate::adaptor::controller::api::protocol::client as wire;
+    use crate::adaptor::protocol::client as wire;
     use crate::infrastructure::local_api::{LocalApiDiscovery, LocalApiDiscoveryFile};
     use crate::usecase::client_connection::ClientConnectionQueryService;
-    use futures_util::{SinkExt, StreamExt};
     use prost::Message;
-    use tokio_tungstenite::tungstenite::Message as Frame;
     for response in [
-        Some(
-            wire::Envelope {
-                body: Some(wire::envelope::Body::Hello(wire::ClientHello::default())),
-            }
-            .encode_to_vec(),
-        ),
+        Some(wire::ServerInfo::default().encode_to_vec()),
         Some(vec![255]),
         None,
     ] {
@@ -601,21 +591,31 @@ async fn test_desktop設定_wsの欠落不正切断を設定値へ置き換え�
         )
         .unwrap();
         let server = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.unwrap();
-            let mut socket = tokio_tungstenite::accept_hdr_async(stream, |request: &tokio_tungstenite::tungstenite::handshake::server::Request, mut response: tokio_tungstenite::tungstenite::handshake::server::Response| {
-                response.headers_mut().insert("sec-websocket-protocol", request.headers()["sec-websocket-protocol"].clone());
-                Ok(response)
-            }).await.unwrap();
-            socket.next().await.unwrap().unwrap();
-            if let Some(response) = response {
-                socket.send(Frame::Binary(response.into())).await.unwrap();
-            }
+            let router = axum::Router::new().route(
+                "/releash.client.v1.ClientService/GetServerInfo",
+                axum::routing::post(move || {
+                    let response = response.clone();
+                    async move {
+                        match response {
+                            Some(bytes) => axum::response::Response::builder()
+                                .header("content-type", "application/proto")
+                                .body(axum::body::Body::from(bytes))
+                                .unwrap(),
+                            None => axum::response::Response::builder()
+                                .status(503)
+                                .body(axum::body::Body::empty())
+                                .unwrap(),
+                        }
+                    }
+                }),
+            );
+            axum::serve(listener, router).await.unwrap();
         });
         // When / Then
         let result = ClientConnectionFileQuery(directory.path().into())
             .desktop_settings()
             .await;
         assert!(result.is_err());
-        server.await.unwrap();
+        server.abort();
     }
 }

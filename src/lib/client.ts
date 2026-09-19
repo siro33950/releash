@@ -1,0 +1,541 @@
+import { fromJson, toJson } from "@bufbuild/protobuf";
+import {
+	type Client,
+	Code,
+	ConnectError,
+	createClient,
+} from "@connectrpc/connect";
+import { createLinkedAbortController } from "@connectrpc/connect/protocol";
+import { createConnectTransport } from "@connectrpc/connect-web";
+import { invoke } from "@tauri-apps/api/core";
+import {
+	AttachTerminalSurfaceRequestSchema,
+	ClientService,
+	CommandErrorSchema,
+	StartGitDirWatchingRequestSchema,
+	StartWatchingRequestSchema,
+	type TerminalEvent,
+} from "@/generated/client_pb";
+import type {
+	ClientCommandArgs,
+	ClientPushPayloads,
+} from "@/generated/client_types";
+import { clientJson } from "./clientJson";
+import { decodeClientPush, decodeTerminalEvent } from "./clientProtocol";
+import type { TerminalSurfaceStreamItem } from "./terminalSurfaceStream";
+
+export {
+	type ClientCommand,
+	type EmptyClientCommand,
+	invokeClient,
+} from "@/generated/client_commands";
+
+type Endpoint = { url: string; token: string; launchId: string };
+type Session = {
+	client: Client<typeof ClientService>;
+	endpoint: Endpoint;
+	attachmentId: string;
+};
+let session: Promise<Session> | null = null;
+let current: Session | null = null;
+let connectionAbort = new AbortController();
+let pushTask: Promise<void> | null = null;
+let stopped = false;
+type PushSubscription = { client: Client<typeof ClientService>; id: string };
+let activeSubscription: PushSubscription | null = null;
+const watchers = new Set<
+	(subscription: PushSubscription, refreshOnReady?: boolean) => Promise<void>
+>();
+const refreshListeners = new Set<() => void>();
+const connectionListeners = new Set<(connected: boolean) => void>();
+const listeners = new Set<{
+	event: keyof ClientPushPayloads;
+	listener: (payload: never) => void;
+	onReconnect: () => void;
+}>();
+
+async function open(abort: AbortController): Promise<Session> {
+	const attachmentId = crypto.randomUUID();
+	const endpoint = await invoke<Endpoint>("get_client_endpoint", {
+		attachmentId,
+	});
+	abort.signal.throwIfAborted();
+	const client = createClient(
+		ClientService,
+		createConnectTransport({
+			baseUrl: endpoint.url,
+			useBinaryFormat: true,
+			defaultTimeoutMs: 120_000,
+			interceptors: [
+				(next) => async (request) => {
+					request.header.set("Authorization", `Bearer ${endpoint.token}`);
+					const response = await next(request);
+					if (
+						response.header.get("releash-desktop-settings-changed") === "true"
+					)
+						await applyClientDesktopSettings(client).catch((error) => {
+							console.error("Failed to synchronize desktop settings", error);
+						});
+					return response;
+				},
+			],
+			fetch: (input, init) => {
+				const request = new Request(input, init);
+				return fetch(request, {
+					signal: createLinkedAbortController(request.signal, abort.signal)
+						.signal,
+				});
+			},
+		}),
+	);
+	const info = await client.getServerInfo({});
+	await invoke("validate_daemon_connection", {
+		launchId: info.launchId,
+		release: info.release,
+	});
+	if (info.desktopSettings)
+		await invoke("apply_desktop_settings", { settings: info.desktopSettings });
+	abort.signal.throwIfAborted();
+	const result = { client, endpoint, attachmentId };
+	current = result;
+	for (const listener of connectionListeners) listener(true);
+	return result;
+}
+
+export async function getClient(): Promise<Client<typeof ClientService>> {
+	stopped = false;
+	if (connectionAbort.signal.aborted) connectionAbort = new AbortController();
+	if (!session) {
+		const pending = open(connectionAbort);
+		session = pending;
+		void pending.catch(() => {
+			if (session === pending) session = null;
+		});
+	}
+	return (await session).client;
+}
+
+export function refreshClient(failedClient?: Client<typeof ClientService>) {
+	if (failedClient && current?.client !== failedClient) return;
+	const previous = current;
+	activeSubscription = null;
+	current = null;
+	session = null;
+	connectionAbort.abort();
+	connectionAbort = new AbortController();
+	if (previous) for (const listener of connectionListeners) listener(false);
+	ensurePush();
+}
+
+export function refreshClientOnDisconnect(
+	client: Client<typeof ClientService>,
+	error: unknown,
+) {
+	if (
+		error instanceof ConnectError &&
+		!error.findDetails(CommandErrorSchema).length &&
+		(error.code === Code.Unavailable ||
+			(error.code === Code.Unknown && error.cause instanceof TypeError))
+	)
+		refreshClient(client);
+}
+
+function refreshState() {
+	for (const listener of refreshListeners) listener();
+	for (const entry of listeners) entry.onReconnect();
+}
+
+function ensurePush() {
+	if (pushTask || stopped) return;
+	pushTask = (async () => {
+		while (!stopped) {
+			let client: Client<typeof ClientService> | undefined;
+			try {
+				client = await getClient();
+				const subscription = { client, id: crypto.randomUUID() };
+				let initial = true;
+				for await (const push of client.subscribePush(
+					{ subscriptionId: subscription.id },
+					{ timeoutMs: 0 },
+				)) {
+					if (push.event.case === "resync") {
+						if (initial) {
+							initial = false;
+							activeSubscription = subscription;
+							void Promise.all(
+								[...watchers].map((watcher) => watcher(subscription, false)),
+							)
+								.then(() => {
+									if (activeSubscription === subscription) refreshState();
+								})
+								.catch((error) => {
+									console.debug("Client watcher restoration failed", error);
+									refreshClient(subscription.client);
+								});
+							continue;
+						}
+						if (activeSubscription === subscription) refreshState();
+						continue;
+					}
+					const matching = [...listeners].filter(
+						(entry) =>
+							push.event.case ===
+							entry.event.replace(/-([a-z])/g, (_, letter: string) =>
+								letter.toUpperCase(),
+							),
+					);
+					if (matching.length) {
+						const payload = decodeClientPush(push, matching[0].event);
+						for (const entry of matching) entry.listener(payload as never);
+					}
+				}
+			} catch (error) {
+				if (stopped) break;
+				console.debug("Client subscription ended", error);
+			}
+			if (!stopped) {
+				refreshClient(client);
+				await new Promise((resolve) => setTimeout(resolve, 1000));
+			}
+		}
+	})().finally(() => {
+		pushTask = null;
+	});
+}
+
+export function onClientRefresh(listener: () => void) {
+	stopped = false;
+	refreshListeners.add(listener);
+	ensurePush();
+	return () => {
+		refreshListeners.delete(listener);
+	};
+}
+
+export async function listenClient<K extends keyof ClientPushPayloads>(
+	event: K,
+	listener: (event: { payload: ClientPushPayloads[K] }) => void,
+	onReconnect = () => {},
+) {
+	const entry = {
+		event,
+		listener: (payload: never) => listener({ payload }),
+		onReconnect,
+	};
+	stopped = false;
+	listeners.add(entry);
+	ensurePush();
+	return () => {
+		listeners.delete(entry);
+	};
+}
+
+export function onClientConnection(listener: (connected: boolean) => void) {
+	stopped = false;
+	connectionListeners.add(listener);
+	ensurePush();
+	return () => {
+		connectionListeners.delete(listener);
+	};
+}
+
+export function watchClient(
+	command: "start_watching" | "start_git_dir_watching",
+	args: Record<string, unknown>,
+	onReady: (id: number) => void,
+	onError: (error: unknown) => void = console.error,
+) {
+	let abort = new AbortController();
+	let release: (() => void) | undefined;
+	let retry: ReturnType<typeof setTimeout> | undefined;
+	let closed = false;
+	const start = (subscription: PushSubscription, refreshOnReady = true) => {
+		clearTimeout(retry);
+		abort.abort();
+		release?.();
+		release = undefined;
+		abort = new AbortController();
+		const signal = abort.signal;
+		const { client, id: subscriptionId } = subscription;
+		const request =
+			command === "start_watching"
+				? client.watchFiles(
+						{
+							subscriptionId,
+							request: fromJson(
+								StartWatchingRequestSchema,
+								clientJson(
+									StartWatchingRequestSchema,
+									JSON.parse(JSON.stringify(args)),
+									true,
+								),
+							),
+						},
+						{ signal },
+					)
+				: client.watchGitDirectory(
+						{
+							subscriptionId,
+							request: fromJson(
+								StartGitDirWatchingRequestSchema,
+								clientJson(
+									StartGitDirWatchingRequestSchema,
+									JSON.parse(JSON.stringify(args)),
+									true,
+								),
+							),
+						},
+						{ signal },
+					);
+		return request
+			.then((ready) => {
+				const stop = () => {
+					if (activeSubscription?.client !== client) return;
+					void client
+						.stopWatching({ watcherId: ready.value })
+						.catch((error) => console.debug("Watcher cleanup failed", error));
+				};
+				if (closed || signal.aborted) {
+					stop();
+					return;
+				}
+				release = stop;
+				onReady(Number(ready.value));
+				if (refreshOnReady) refreshState();
+			})
+			.catch((error) => {
+				if (signal.aborted || closed) return;
+				onError(error);
+				if (
+					error instanceof ConnectError &&
+					error.code === Code.ResourceExhausted
+				) {
+					retry = setTimeout(() => {
+						if (!closed && activeSubscription === subscription)
+							start(subscription);
+					}, 1000);
+				}
+				refreshClientOnDisconnect(client, error);
+			});
+	};
+	watchers.add(start);
+	if (activeSubscription) void start(activeSubscription, false);
+	else {
+		stopped = false;
+		ensurePush();
+	}
+	return () => {
+		closed = true;
+		clearTimeout(retry);
+		watchers.delete(start);
+		release?.();
+	};
+}
+
+type TerminalListener = {
+	streamId: string;
+	receive: (event: TerminalEvent) => void;
+	close: (resynchronize: boolean, error?: unknown) => void;
+};
+type TerminalSubscription = {
+	id: string;
+	listeners: Map<string, TerminalListener>;
+};
+const terminalSubscriptions = new WeakMap<
+	Client<typeof ClientService>,
+	Promise<TerminalSubscription>
+>();
+
+function getTerminalSubscription(client: Client<typeof ClientService>) {
+	const existing = terminalSubscriptions.get(client);
+	if (existing) return existing;
+	const abort = new AbortController();
+	const pending = (async () => {
+		const subscription: TerminalSubscription = {
+			id: crypto.randomUUID(),
+			listeners: new Map(),
+		};
+		const stream = client
+			.subscribeTerminalSurfaces(
+				{ subscriptionId: subscription.id },
+				{ signal: abort.signal, timeoutMs: 0 },
+			)
+			[Symbol.asyncIterator]();
+		const initial = await stream.next();
+		if (initial.done || initial.value.event.case !== "ready")
+			throw new Error("Terminal subscription closed before ready");
+		void (async () => {
+			let failure: unknown;
+			try {
+				for (;;) {
+					const next = await stream.next();
+					if (next.done) break;
+					const { attachmentId, streamId, event } = next.value;
+					const listener = subscription.listeners.get(attachmentId);
+					if (listener?.streamId !== streamId) continue;
+					if (event.case === "item") listener?.receive(event.value);
+					else if (event.case === "closed") {
+						subscription.listeners.delete(attachmentId);
+						listener?.close(event.value.resynchronize);
+					}
+				}
+			} catch (error) {
+				failure = error;
+			} finally {
+				abort.abort();
+				terminalSubscriptions.delete(client);
+				for (const listener of subscription.listeners.values())
+					listener.close(true, failure);
+				subscription.listeners.clear();
+			}
+		})();
+		return subscription;
+	})();
+	terminalSubscriptions.set(client, pending);
+	void pending.catch(() => {
+		abort.abort();
+		terminalSubscriptions.delete(client);
+	});
+	return pending;
+}
+
+export async function attachClientStream(
+	args: ClientCommandArgs["attach_terminal_surface"],
+	listener: (item: TerminalSurfaceStreamItem) => void,
+	onClosed: () => void,
+): Promise<() => Promise<void>> {
+	const client = await getClient();
+	let subscription: TerminalSubscription | undefined;
+	let active = true;
+	const streamId = crypto.randomUUID();
+	let released: Promise<void> | undefined;
+	const release = () => {
+		active = false;
+		if (released) return released;
+		const registered = subscription?.listeners.get(args.attachmentId);
+		if (registered && registered.streamId !== streamId) {
+			released = Promise.resolve();
+			return released;
+		}
+		subscription?.listeners.delete(args.attachmentId);
+		if (current?.client !== client) {
+			released = Promise.resolve();
+			return released;
+		}
+		released = client
+			.detachTerminalSurface({ attachmentId: args.attachmentId })
+			.then(() => {})
+			.catch((error) => {
+				if (
+					current?.client !== client &&
+					error instanceof ConnectError &&
+					error.code === Code.Canceled &&
+					!error.findDetails(CommandErrorSchema).length
+				)
+					return;
+				throw terminalError(error);
+			});
+		return released;
+	};
+	try {
+		subscription = await getTerminalSubscription(client);
+		let initialized = false;
+		let resolveInitial!: () => void;
+		let rejectInitial!: (error: unknown) => void;
+		const initial = new Promise<void>((resolve, reject) => {
+			resolveInitial = resolve;
+			rejectInitial = reject;
+		});
+		const attached = client.attachTerminalSurface({
+			subscriptionId: subscription.id,
+			streamId,
+			request: fromJson(
+				AttachTerminalSurfaceRequestSchema,
+				clientJson(
+					AttachTerminalSurfaceRequestSchema,
+					JSON.parse(JSON.stringify(args)),
+					true,
+				),
+			),
+		});
+		subscription.listeners.set(args.attachmentId, {
+			streamId,
+			receive: (event) => {
+				const item = decodeTerminalEvent(event);
+				listener(item);
+				initialized = true;
+				resolveInitial();
+			},
+			close: (resynchronize, error) => {
+				if (!initialized)
+					rejectInitial(
+						error ?? new Error("Terminal stream closed before snapshot"),
+					);
+				if (active && resynchronize) onClosed();
+			},
+		});
+		await Promise.all([attached, initial]);
+		return release;
+	} catch (error) {
+		void release().catch((cleanupError) =>
+			console.error("Terminal cleanup failed", cleanupError),
+		);
+		refreshClientOnDisconnect(client, error);
+		throw terminalError(error);
+	}
+}
+
+function terminalError(error: unknown) {
+	if (error instanceof ConnectError) {
+		const detail = error.findDetails(CommandErrorSchema)[0];
+		if (detail)
+			return clientJson(
+				CommandErrorSchema,
+				toJson(CommandErrorSchema, detail),
+				false,
+			);
+	}
+	return error;
+}
+
+export async function acknowledgeClientStream(
+	attachmentId: string,
+	sequence: number,
+) {
+	const client = await getClient();
+	await client.ackTerminalSurfaceOutput({
+		attachmentId,
+		sequence: BigInt(sequence),
+	});
+}
+
+export async function completeClientRestoration(generation: number) {
+	await getClient();
+	const active = current;
+	if (!active) throw new Error("Daemon connection is unavailable");
+	await invoke("complete_desktop_restoration", {
+		launchId: active.endpoint.launchId,
+		attachmentId: active.attachmentId,
+		generation,
+	});
+}
+
+async function applyClientDesktopSettings(
+	client: Client<typeof ClientService>,
+) {
+	const info = await client.getServerInfo({});
+	if (info.desktopSettings)
+		await invoke("apply_desktop_settings", { settings: info.desktopSettings });
+}
+
+window.addEventListener("pagehide", () => {
+	stopped = true;
+	connectionAbort.abort();
+	session = null;
+	current = null;
+	listeners.clear();
+	refreshListeners.clear();
+	connectionListeners.clear();
+	activeSubscription = null;
+	watchers.clear();
+});

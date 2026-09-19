@@ -4,7 +4,7 @@ import type { WorkspaceState } from "@/types/workspace-state";
 import { useWorkspaceStateCache } from "./useWorkspaceStateCache";
 
 const mockInvoke = vi.fn();
-vi.mock("@/lib/clientSocket", () => ({
+vi.mock("@/lib/client", () => ({
 	invokeClient: (...args: unknown[]) => mockInvoke(...args),
 }));
 

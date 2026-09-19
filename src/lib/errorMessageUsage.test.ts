@@ -18,7 +18,6 @@ const TARGET_FILES = [
 	"src/hooks/useReviewFileView.ts",
 	"src/hooks/useDiffComments.ts",
 	"src/lib/telemetry.ts",
-	"src/lib/clientSocket.ts",
 	"src/hooks/useTerminal.ts",
 	"src/components/panels/NodeContentView/NodeContentView.tsx",
 	"src/hooks/useWorkspaceNodeDetail.ts",
