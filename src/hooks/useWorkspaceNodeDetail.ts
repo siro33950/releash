@@ -1,7 +1,7 @@
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { useEffect, useRef, useState } from "react";
 import { subscribeAgentSessionChanged } from "@/lib/agentSessionEvents";
-import { invokeClient as invoke, listenClient } from "@/lib/clientSocket";
+import { invokeClient as invoke, listenClient } from "@/lib/client";
 import { getErrorMessage } from "@/lib/errorMessage";
 import type { WorkspaceNodeDetail } from "@/types/workspace-tree";
 
@@ -155,17 +155,14 @@ export function useWorkspaceNodeDetail({
 	return state;
 }
 
-export async function approveWorkspaceNode(
-	{
-		worktreePath,
-		nodeId,
-	}: {
-		worktreePath: string;
-		nodeId: string;
-	},
-	options?: Parameters<typeof invoke>[2],
-): Promise<WorkspaceNodeDetail | null> {
-	await invoke("approve_workspace_node", { worktreePath, nodeId }, options);
+export async function approveWorkspaceNode({
+	worktreePath,
+	nodeId,
+}: {
+	worktreePath: string;
+	nodeId: string;
+}): Promise<WorkspaceNodeDetail | null> {
+	await invoke("approve_workspace_node", { worktreePath, nodeId });
 	window.dispatchEvent(
 		new CustomEvent("workspace-tree-refresh", { detail: { worktreePath } }),
 	);
@@ -175,11 +172,14 @@ export async function approveWorkspaceNode(
 	});
 }
 
-export async function retryWorkspaceNode(
-	{ worktreePath, nodeId }: { worktreePath: string; nodeId: string },
-	options?: Parameters<typeof invoke>[2],
-): Promise<WorkspaceNodeDetail | null> {
-	await invoke("retry_workspace_node", { worktreePath, nodeId }, options);
+export async function retryWorkspaceNode({
+	worktreePath,
+	nodeId,
+}: {
+	worktreePath: string;
+	nodeId: string;
+}): Promise<WorkspaceNodeDetail | null> {
+	await invoke("retry_workspace_node", { worktreePath, nodeId });
 	window.dispatchEvent(
 		new CustomEvent("workspace-tree-refresh", { detail: { worktreePath } }),
 	);

@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { invokeClient } from "@/lib/clientSocket";
+import { invokeClient } from "@/lib/client";
 import App from "./App";
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));

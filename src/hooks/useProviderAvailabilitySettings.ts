@@ -1,8 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-	type ClientTransportError,
-	invokeClient as invoke,
-} from "@/lib/clientSocket";
+import { invokeClient as invoke } from "@/lib/client";
 import { getErrorMessage } from "@/lib/errorMessage";
 import { useClientRefresh } from "./useClientRefresh";
 
@@ -61,14 +58,7 @@ export function useProviderAvailabilitySettings(open: boolean) {
 	const [loading, setLoading] = useState(false);
 	const [saving, setSaving] = useState(false);
 	const [refreshing, setRefreshing] = useState(false);
-	const [saveUncertain, setSaveUncertain] =
-		useState<ClientTransportError | null>(null);
 	const [resetting, setResetting] = useState<Record<string, boolean>>({});
-	const [resetUncertain, setResetUncertain] = useState<
-		Record<string, ClientTransportError | undefined>
-	>({});
-	const [refreshUncertain, setRefreshUncertain] =
-		useState<ClientTransportError | null>(null);
 	const [error, setError] = useState<string | null>(null);
 
 	const acceptSnapshot = useCallback((next: ProviderAvailabilitySnapshot) => {
@@ -132,14 +122,10 @@ export function useProviderAvailabilitySettings(open: boolean) {
 			for (const provider of snapshot.providers) {
 				const executable = drafts[provider.provider] ?? "";
 				if (executable === (provider.configuredExecutable ?? "")) continue;
-				latest = await invoke(
-					"update_provider_executable",
-					{
-						provider: provider.provider,
-						executable,
-					},
-					{ onUncertain: setSaveUncertain },
-				);
+				latest = await invoke("update_provider_executable", {
+					provider: provider.provider,
+					executable,
+				});
 				setSnapshot(latest);
 			}
 			acceptSnapshot(latest);
@@ -148,7 +134,6 @@ export function useProviderAvailabilitySettings(open: boolean) {
 			throw cause;
 		} finally {
 			setSaving(false);
-			setSaveUncertain(null);
 		}
 	}, [snapshot, drafts, acceptSnapshot]);
 
@@ -158,17 +143,7 @@ export function useProviderAvailabilitySettings(open: boolean) {
 			setResetting((current) => ({ ...current, [provider]: true }));
 			setError(null);
 			try {
-				const next = await invoke(
-					"reset_provider_executable",
-					{ provider },
-					{
-						onUncertain: (cause) =>
-							setResetUncertain((current) => ({
-								...current,
-								[provider]: cause,
-							})),
-					},
-				);
+				const next = await invoke("reset_provider_executable", { provider });
 				setSnapshot(next);
 				const current = form.current;
 				setDrafts(
@@ -183,11 +158,6 @@ export function useProviderAvailabilitySettings(open: boolean) {
 				setError(getErrorMessage(cause));
 			} finally {
 				setResetting((current) => ({ ...current, [provider]: false }));
-				setResetUncertain((current) => {
-					const next = { ...current };
-					delete next[provider];
-					return next;
-				});
 			}
 		},
 		[snapshot],
@@ -197,16 +167,11 @@ export function useProviderAvailabilitySettings(open: boolean) {
 		setRefreshing(true);
 		setError(null);
 		try {
-			acceptSnapshot(
-				await invoke("refresh_provider_availability", undefined, {
-					onUncertain: setRefreshUncertain,
-				}),
-			);
+			acceptSnapshot(await invoke("refresh_provider_availability"));
 		} catch (cause) {
 			setError(getErrorMessage(cause));
 		} finally {
 			setRefreshing(false);
-			setRefreshUncertain(null);
 		}
 	}, [acceptSnapshot]);
 
@@ -214,19 +179,8 @@ export function useProviderAvailabilitySettings(open: boolean) {
 		providers: snapshot?.providers ?? [],
 		drafts,
 		loading,
-		saving:
-			(saving && !saveUncertain) ||
-			Object.entries(resetting).some(
-				([provider, pending]) => pending && !resetUncertain[provider],
-			),
-		refreshing: refreshing && !refreshUncertain,
-		uncertain:
-			saveUncertain ??
-			refreshUncertain ??
-			Object.values(resetUncertain).find(Boolean) ??
-			null,
-		resetUncertain,
-		refreshUncertain,
+		saving: saving || Object.values(resetting).some(Boolean),
+		refreshing,
 		error,
 		isDirty,
 		setExecutable,

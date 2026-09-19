@@ -4,7 +4,7 @@ import {
 	listenClient as listen,
 	onClientRefresh,
 	watchClient,
-} from "@/lib/clientSocket";
+} from "@/lib/client";
 import { getErrorMessage } from "@/lib/errorMessage";
 import type {
 	DiagnosticReport,

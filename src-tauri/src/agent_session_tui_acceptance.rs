@@ -322,8 +322,9 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
         )
         .map_err(|error| error.to_string())?;
         let client_endpoint = crate::client_api_acceptance::ClientEndpoint {
-            url: format!("ws://127.0.0.1:{}/v1/client", client_binding.port()),
-            auth_subprotocol: format!("releash-bearer.{}", client_binding.terminal_bearer_token()),
+            url: format!("http://127.0.0.1:{}", client_binding.port()),
+            token: client_binding.terminal_bearer_token().to_string(),
+            launch_id: String::new(),
         };
         let client_router = crate::adaptor::controller::api::authenticated(
             crate::adaptor::controller::api::client::router(Some(
@@ -334,6 +335,7 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
                             .inner()
                             .clone(),
                     ),
+                    crate::desktop_test_support::build_watcher_usecase(app.handle()),
                 ),
             )),
             client_binding.terminal_bearer_token(),

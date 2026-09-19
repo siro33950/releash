@@ -11,6 +11,7 @@ pub struct TerminalSurfaceAttachment {
     attachment_id: String,
     last_sequence: u64,
     closed: bool,
+    process_exited: bool,
 }
 
 impl TerminalSurfaceAttachment {
@@ -19,10 +20,10 @@ impl TerminalSurfaceAttachment {
             attachment_id,
             last_sequence: snapshot_sequence,
             closed: false,
+            process_exited: false,
         }
     }
 
-    #[cfg(test)]
     pub fn attachment_id(&self) -> &str {
         &self.attachment_id
     }
@@ -47,6 +48,7 @@ impl TerminalSurfaceAttachment {
         }
         self.last_sequence = sequence;
         self.closed = closes_surface;
+        self.process_exited = closes_surface;
         TerminalSurfaceSequenceDecision::Deliver
     }
 
@@ -65,7 +67,12 @@ impl TerminalSurfaceAttachment {
         }
         self.last_sequence = snapshot_sequence;
         self.closed = process_exited;
+        self.process_exited = process_exited;
         true
+    }
+
+    pub fn should_resynchronize(&self) -> bool {
+        !self.process_exited
     }
 
     pub fn close(&mut self) {

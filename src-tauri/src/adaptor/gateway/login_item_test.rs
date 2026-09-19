@@ -33,7 +33,7 @@ fn test_登録結果_承認待ちだけを登録済みとして扱い他の失�
 
 #[test]
 fn test_登録希望変換_登録希望だけを読み書きし不正な応答は拒否する() {
-    use crate::adaptor::controller::api::protocol::client as wire;
+    use crate::adaptor::protocol::client as wire;
     // Given / When / Then
     for requested in [true, false] {
         assert_eq!(

@@ -1,10 +1,8 @@
-use crate::adaptor::controller::api::protocol::client as wire;
+use crate::adaptor::protocol::client as wire;
 use crate::domain::daemon_supervision::{verify_identity, Failure, FailureStage, StopIntent};
 use crate::domain::daemon_supervision::{DaemonExit, DaemonProcessPort, ShutdownResponse};
 use crate::usecase::client_connection::ClientConnectionQueryService;
 use crate::usecase::daemon_supervision::{DaemonConnection, DaemonGateway};
-use futures_util::{SinkExt, StreamExt};
-use prost::Message;
 use std::io::{BufRead, Read};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -12,10 +10,6 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
-use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as Frame};
-
-type Socket =
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 struct Process {
     child: Child,
@@ -32,18 +26,12 @@ pub(crate) struct DaemonProcessGateway {
     process: parking_lot::Mutex<Option<Process>>,
     connection: parking_lot::Mutex<Option<DaemonConnection>>,
     client: parking_lot::Mutex<Option<Arc<super::desktop_client::DesktopClient>>>,
-    handoff: Arc<crate::usecase::client_handoff::ClientHandoffUsecase>,
 }
 
 impl DaemonProcessGateway {
-    pub fn new(
-        executable: PathBuf,
-        data_dir: PathBuf,
-        handoff: Arc<crate::usecase::client_handoff::ClientHandoffUsecase>,
-    ) -> Self {
+    pub fn new(executable: PathBuf, data_dir: PathBuf) -> Self {
         Self {
             client: parking_lot::Mutex::new(None),
-            handoff,
             origin: std::time::Instant::now(),
             executable,
             data_dir,
@@ -62,60 +50,24 @@ impl DaemonProcessGateway {
         &self,
     ) -> Result<
         (
-            Socket,
-            wire::ClientHello,
+            super::desktop_client::DesktopClient,
+            wire::ServerInfo,
             crate::usecase::client_connection::ClientConnectionDto,
         ),
         String,
     > {
         let endpoint = super::local_api::ClientConnectionFileQuery(self.data_dir.clone())
             .read()
-            .map_err(|e| e.to_string())?;
-        let mut request = endpoint
-            .url
-            .clone()
-            .into_client_request()
-            .map_err(|e| e.to_string())?;
-        request.headers_mut().insert(
-            "sec-websocket-protocol",
-            endpoint
-                .auth_subprotocol
-                .parse()
-                .map_err(|e| format!("invalid client token: {e}"))?,
-        );
-        let (mut socket, _) = tokio_tungstenite::connect_async(request)
-            .await
-            .map_err(|e| e.to_string())?;
-        socket
-            .send(Frame::Binary(
-                wire::Envelope {
-                    body: Some(wire::envelope::Body::Hello(wire::ClientHello::default())),
-                }
-                .encode_to_vec()
-                .into(),
-            ))
-            .await
-            .map_err(|e| e.to_string())?;
-        loop {
-            let frame = socket
-                .next()
-                .await
-                .ok_or("Daemon connection closed")?
-                .map_err(|e| e.to_string())?;
-            if let Frame::Binary(bytes) = frame {
-                if let Some(wire::envelope::Body::Hello(hello)) = wire::Envelope::decode(bytes)
-                    .map_err(|e| e.to_string())?
-                    .body
-                {
-                    return Ok((socket, hello, endpoint));
-                }
-            }
-        }
+            .map_err(|error| error.to_string())?;
+        let info = super::desktop_client::server_info(&endpoint).await?;
+        let client =
+            super::desktop_client::DesktopClient::start(super::desktop_client::client(&endpoint)?);
+        Ok((client, info, endpoint))
     }
     async fn connect_client(&self, launch_id: &str) -> Result<Option<DaemonConnection>, Failure> {
         let result =
             tokio::time::timeout(std::time::Duration::from_millis(500), self.connect()).await;
-        let (socket, hello, endpoint) = match result {
+        let (client, hello, endpoint) = match result {
             Ok(Ok(value)) => value,
             Ok(Err(reason)) => {
                 return Err(Failure {
@@ -137,11 +89,7 @@ impl DaemonProcessGateway {
             launch_id: hello.launch_id.clone(),
             release: hello.release.clone(),
         };
-        *self.client.lock() = Some(Arc::new(super::desktop_client::DesktopClient::start(
-            socket,
-            hello,
-            self.handoff.clone(),
-        )));
+        *self.client.lock() = Some(Arc::new(client));
         *self.connection.lock() = Some(connection.clone());
         Ok(Some(connection))
     }
@@ -282,36 +230,27 @@ impl DaemonProcessPort for DaemonProcessGateway {
             _ => 0,
         };
         let response = client
-            .request(wire::CommandRequest {
-                request_id: id.clone(),
-                deadline_unix_ms: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_err(|e| e.to_string())?
-                    .as_millis() as u64
-                    + 30_000,
-                command: Some(wire::command_request::Command::RequestApplicationQuit(
-                    wire::RequestApplicationQuitRequest {
-                        request: Some(wire::ApplicationQuitRequestDtoV1 {
-                            request_id: Some(id),
-                            intent: Some(wire::ApplicationQuitIntentDtoV1 {
-                                variant: Some(match intent {
-                                    StopIntent::Restart => {
-                                        wire::application_quit_intent_dto_v1::Variant::Restart(
-                                            wire::ApplicationQuitIntentDtoV1Restart {
-                                                code: Some(code),
-                                            },
-                                        )
-                                    }
-                                    _ => wire::application_quit_intent_dto_v1::Variant::Exit(
-                                        wire::ApplicationQuitIntentDtoV1Exit { code: Some(code) },
-                                    ),
-                                }),
+            .request(wire::command_request::Command::RequestApplicationQuit(
+                wire::RequestApplicationQuitRequest {
+                    request: Some(wire::ApplicationQuitRequestDtoV1 {
+                        request_id: Some(id),
+                        intent: Some(wire::ApplicationQuitIntentDtoV1 {
+                            variant: Some(match intent {
+                                StopIntent::Restart => {
+                                    wire::application_quit_intent_dto_v1::Variant::Restart(
+                                        wire::ApplicationQuitIntentDtoV1Restart {
+                                            code: Some(code),
+                                        },
+                                    )
+                                }
+                                _ => wire::application_quit_intent_dto_v1::Variant::Exit(
+                                    wire::ApplicationQuitIntentDtoV1Exit { code: Some(code) },
+                                ),
                             }),
                         }),
-                    },
-                )),
-                ..Default::default()
-            })
+                    }),
+                },
+            ))
             .await?;
         shutdown_response(response)
     }
@@ -319,35 +258,6 @@ impl DaemonProcessPort for DaemonProcessGateway {
 
 #[async_trait::async_trait]
 impl DaemonGateway for DaemonProcessGateway {
-    fn attach(
-        &self,
-        id: String,
-    ) -> Result<crate::usecase::daemon_supervision::DesktopAttachment, String> {
-        let client = self.client()?;
-        let (frames, cancelled) = client.attach(id);
-        Ok(crate::usecase::daemon_supervision::DesktopAttachment {
-            hello: client.hello(),
-            frames,
-            cancelled,
-        })
-    }
-    fn detach(&self, id: &str) {
-        if let Ok(client) = self.client() {
-            client.detach(id);
-        }
-    }
-    async fn forward(
-        &self,
-        bytes: Vec<u8>,
-    ) -> Result<(), crate::usecase::daemon_supervision::DesktopSendError> {
-        use crate::usecase::daemon_supervision::DesktopSendError;
-        let envelope =
-            wire::Envelope::decode(bytes.as_slice()).map_err(DesktopSendError::not_sent)?;
-        self.client()
-            .map_err(DesktopSendError::not_sent)?
-            .forward(envelope)
-            .await
-    }
     async fn connection(&self) -> Result<Option<DaemonConnection>, Failure> {
         if let Ok(client) = self.client() {
             return Ok(if client.connected() {
@@ -393,12 +303,6 @@ impl DaemonGateway for DaemonProcessGateway {
         }
         self.connect_client(&launch_id).await
     }
-    fn restored(&self) -> bool {
-        self.client().is_ok_and(|client| client.restored())
-    }
-    async fn finish_restoration(&self, attachment_id: &str) -> Result<(), String> {
-        self.client()?.finish_restoration(attachment_id).await
-    }
     fn connected(&self) -> bool {
         self.client().is_ok_and(|client| client.connected())
     }
@@ -429,18 +333,12 @@ async fn wait_for_termination<F: std::future::Future<Output = Result<bool, Strin
 #[path = "daemon_supervision_test.rs"]
 mod daemon_supervision_tests;
 
-fn shutdown_response(response: wire::Envelope) -> Result<ShutdownResponse, String> {
-    match response.body {
-        Some(wire::envelope::Body::Response(response)) => match response.outcome {
-            Some(wire::command_response::Outcome::Result(result)) => match result.command {
-                Some(wire::command_result::Command::RequestApplicationQuit(outcome)) => match outcome.variant {
-                    Some(wire::application_quit_outcome_dto_v1::Variant::Accepted(_)) => Ok(ShutdownResponse::Accepted),
-                    Some(wire::application_quit_outcome_dto_v1::Variant::PreviousShutdownReconciliationRequired(_)) => Ok(ShutdownResponse::DecisionRequired("Previous shutdown requires a decision before switching.".into())),
-                    other => Err(format!("Shutdown requires confirmation: {other:?}")),
-                },
-                _ => Err("Unexpected shutdown response.".into()),
-            },
-            other => Err(format!("Shutdown request was not accepted: {other:?}")),
+fn shutdown_response(response: wire::command_result::Command) -> Result<ShutdownResponse, String> {
+    match response {
+        wire::command_result::Command::RequestApplicationQuit(outcome) => match outcome.variant {
+            Some(wire::application_quit_outcome_dto_v1::Variant::Accepted(_)) => Ok(ShutdownResponse::Accepted),
+            Some(wire::application_quit_outcome_dto_v1::Variant::PreviousShutdownReconciliationRequired(_)) => Ok(ShutdownResponse::DecisionRequired("Previous shutdown requires a decision before switching.".into())),
+            other => Err(format!("Shutdown requires confirmation: {other:?}")),
         },
         _ => Err("Unexpected shutdown response.".into()),
     }

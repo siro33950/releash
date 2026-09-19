@@ -18,7 +18,7 @@ describe("useWorkflowConfig", () => {
 			},
 		];
 
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		vi.mocked(invoke).mockResolvedValue(mockWorkflows);
 
 		const { result } = renderHook(() => useWorkflowConfig(true));
@@ -33,7 +33,7 @@ describe("useWorkflowConfig", () => {
 	});
 
 	it("should not fetch workflows when open is false", async () => {
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		vi.mocked(invoke).mockResolvedValue([]);
 
 		renderHook(() => useWorkflowConfig(false));
@@ -42,7 +42,7 @@ describe("useWorkflowConfig", () => {
 	});
 
 	it("should call delete_workflow and refresh list", async () => {
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		vi.mocked(invoke).mockImplementation((cmd: string) => {
 			switch (cmd) {
 				case "list_workflows":
@@ -70,7 +70,7 @@ describe("useWorkflowConfig", () => {
 	});
 
 	it("should call open_workflow_in_editor", async () => {
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		vi.mocked(invoke).mockImplementation((cmd: string) => {
 			switch (cmd) {
 				case "list_workflows":
@@ -98,7 +98,7 @@ describe("useWorkflowConfig", () => {
 	});
 
 	it("should set error when fetch fails", async () => {
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		vi.mocked(invoke).mockRejectedValue("fetch error");
 
 		const { result } = renderHook(() => useWorkflowConfig(true));
@@ -112,7 +112,7 @@ describe("useWorkflowConfig", () => {
 	});
 
 	it("should set error when deleteWorkflow fails", async () => {
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		vi.mocked(invoke).mockImplementation((cmd: string) => {
 			switch (cmd) {
 				case "list_workflows":
@@ -138,7 +138,7 @@ describe("useWorkflowConfig", () => {
 	});
 
 	it("should set error when openInEditor fails", async () => {
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		vi.mocked(invoke).mockImplementation((cmd: string) => {
 			switch (cmd) {
 				case "list_workflows":

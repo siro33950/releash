@@ -9,7 +9,7 @@ import {
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { invokeClient, listenClient } from "@/lib/clientSocket";
+import { invokeClient, listenClient } from "@/lib/client";
 import type { GitFileStatus } from "@/types/git";
 import type { DiffTreeNode, ReviewFileView } from "@/types/review";
 import { ReviewPanel } from "./ReviewPanel";
@@ -118,7 +118,7 @@ vi.mock("@/hooks/useFileNavigation", () => ({
 	}),
 }));
 
-vi.mock("@/lib/clientSocket", () => ({
+vi.mock("@/lib/client", () => ({
 	listenClient: vi.fn().mockResolvedValue(() => {}),
 	invokeClient: vi.fn().mockResolvedValue(null),
 }));

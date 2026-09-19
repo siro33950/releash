@@ -13,17 +13,13 @@ async fn test_変更監視_startの返却idが実際の変更通知へ渡る() {
     let id = gateway.start(directory.path().to_str().unwrap()).unwrap();
     let path = directory.path().join("changed.txt");
     std::fs::write(&path, "changed").unwrap();
-    use crate::adaptor::controller::api::protocol::client as wire;
+    use crate::adaptor::protocol::client as wire;
     use prost::Message;
     let frame = tokio::time::timeout(std::time::Duration::from_secs(5), receiver.recv())
         .await
         .unwrap()
         .unwrap();
-    let Some(wire::envelope::Body::Push(push)) =
-        wire::Envelope::decode(frame.as_ref()).unwrap().body
-    else {
-        panic!("push frame");
-    };
+    let push = wire::Push::decode(frame.as_ref()).unwrap();
     let (name, event) = push.into_value().unwrap();
     assert_eq!(name, "file-change");
     gateway.stop(id).unwrap();

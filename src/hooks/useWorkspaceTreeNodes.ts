@@ -1,7 +1,7 @@
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { subscribeAgentSessionChanged } from "@/lib/agentSessionEvents";
-import { invokeClient as invoke, listenClient } from "@/lib/clientSocket";
+import { invokeClient as invoke, listenClient } from "@/lib/client";
 import { getErrorMessage } from "@/lib/errorMessage";
 import type {
 	WorkspaceTreeItem,

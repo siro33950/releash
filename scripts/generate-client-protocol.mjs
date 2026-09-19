@@ -7,9 +7,6 @@ import { FileDescriptorSetSchema } from "@bufbuild/protobuf/wkt";
 
 const temporary = mkdtempSync(join(tmpdir(), "releash-protocol-"));
 try {
-  const transport = join(temporary, "client-transport");
-  execFileSync("rustc", ["--edition=2021", "scripts/generate-client-transport.rs", "-o", transport]);
-  writeFileSync("src/generated/client_transport.ts", execFileSync(transport));
   const descriptor = join(temporary, "client.bin");
   execFileSync("protoc", ["--proto_path=proto", "--include_imports", `--descriptor_set_out=${descriptor}`, "proto/client.proto"]);
   const registry = createFileRegistry(fromBinary(FileDescriptorSetSchema, readFileSync(descriptor)));
@@ -43,10 +40,20 @@ try {
     types.set(name, shape);
     return name;
   }
+  const terminalArgs = messageType(registry.getMessage("releash.client.v1.AttachTerminalSurfaceRequest"), true);
   const mappings = [["ClientCommandArgs", "CommandRequest"], ["ClientCommandResults", "CommandResult"], ["ClientPushPayloads", "Push"]].map(([name, proto]) => {
     const fields = registry.getMessage(`releash.client.v1.${proto}`).fields.filter(field => field.message && field.oneof);
     if (name === "ClientCommandResults") return `export interface ClientCommands {\n${fields.map(field => `${JSON.stringify(field.name)}(args: ClientCommandArgs[${JSON.stringify(field.name)}]): Promise<${option(field.message, "json_unit") ? "void" : messageType(field.message)}>;`).join("\n")}\n}\nexport type ClientCommandResults = { [K in keyof ClientCommands]: Awaited<ReturnType<ClientCommands[K]>> };`;
-    return `export interface ${name} {\n${fields.map(field => `${JSON.stringify(proto === "Push" ? field.name.replaceAll("_", "-") : field.name)}: ${name === "ClientCommandResults" && option(field.message, "json_unit") ? "void" : messageType(field.message, name === "ClientCommandArgs")};`).join("\n")}\n}`;
+    return `export interface ${name} {\n${name === "ClientCommandArgs" ? `"attach_terminal_surface": ${terminalArgs};\n` : ""}${fields.map(field => `${JSON.stringify(proto === "Push" ? field.name.replaceAll("_", "-") : field.name)}: ${name === "ClientCommandResults" && option(field.message, "json_unit") ? "void" : messageType(field.message, name === "ClientCommandArgs")};`).join("\n")}\n}`;
   });
+  const service = registry.getService("releash.client.v1.ClientService");
+  const commands = registry.getMessage("releash.client.v1.CommandRequest").fields.filter(field => field.message && field.oneof);
+  const invocations = commands.map(field => {
+    const method = service.methods.find(method => method.input.typeName === field.message.typeName && method.methodKind === "unary");
+    if (!method) throw new Error(`Missing RPC for ${field.name}`);
+    return `${JSON.stringify(field.name)}: async (client: Client<typeof ClientService>, args: ClientCommandArgs[${JSON.stringify(field.name)}]) => { const result = decode(${method.output.name}Schema, await client.${method.localName}(fromJson(${method.input.name}Schema, clientJson(${method.input.name}Schema, JSON.parse(JSON.stringify(args ?? {})), true)))); return result; }`;
+  });
+  const schemas = new Set(service.methods.filter(method => method.methodKind === "unary" && commands.some(field => field.message?.typeName === method.input.typeName)).flatMap(method => [method.input.name, method.output.name]));
+  writeFileSync("src/generated/client_commands.ts", `// Generated from proto/client.proto. Run pnpm generate:protocol.\nimport { type DescMessage, type Message, fromJson, toJson } from "@bufbuild/protobuf";\nimport { type Client, ConnectError } from "@connectrpc/connect";\nimport { ${[...schemas].map(name => name + "Schema").join(", ")}, ClientService, CommandErrorSchema } from "./client_pb";\nimport type { ClientCommandArgs, ClientCommandResults } from "./client_types";\nimport { clientJson } from "@/lib/clientJson";\nimport { getClient, refreshClientOnDisconnect } from "@/lib/client";\nconst decode = (schema: DescMessage, message: Message) => clientJson(schema, toJson(schema, message), false);\nconst commands = {\n${invocations.join(",\n")}\n};\nexport type ClientCommand = keyof typeof commands;\nexport type EmptyClientCommand = { [K in ClientCommand]: ClientCommandArgs[K] extends Record<string, never> ? K : never }[ClientCommand];\nexport async function invokeClient<K extends ClientCommand>(command: K, args?: ClientCommandArgs[K]): Promise<ClientCommandResults[K]> {\nconst client = await getClient();\ntry { return await (commands[command] as (client: Client<typeof ClientService>, args: ClientCommandArgs[K]) => Promise<unknown>)(client, args ?? {} as ClientCommandArgs[K]) as ClientCommandResults[K]; } catch (error) {\nif (error instanceof ConnectError) { const detail = error.findDetails(CommandErrorSchema)[0]; if (detail) throw decode(CommandErrorSchema, detail); refreshClientOnDisconnect(client, error); }\nthrow error;\n}\n}\n`);
   writeFileSync("src/generated/client_types.ts", `// Generated from proto/client.proto. Run pnpm generate:protocol.\n\n${[...types].map(([name, type]) => `export type ${name} = ${type};`).join("\n\n")}\n\n${mappings.join("\n\n")}\n`);
 } finally { rmSync(temporary, { recursive: true, force: true }); }

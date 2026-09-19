@@ -5,7 +5,7 @@ import {
 	useMemo,
 	useState,
 } from "react";
-import { invokeClient as invoke } from "@/lib/clientSocket";
+import { invokeClient as invoke } from "@/lib/client";
 import { getErrorMessage } from "@/lib/errorMessage";
 
 export interface ReviewThreadHandoffFeedback {

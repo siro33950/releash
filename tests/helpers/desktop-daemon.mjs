@@ -1,31 +1,18 @@
 import assert from "node:assert/strict";
 import { createInterface } from "node:readline";
 import { setTimeout } from "node:timers/promises";
-import { fromBinary } from "@bufbuild/protobuf";
 import { build } from "esbuild";
 
+console.debug = (...args) => console.error(...args.map(value => value instanceof Error ? value.message : value));
 const input = createInterface({ input: process.stdin });
 const pending = new Map();
 let nextId = 0;
-let channel;
-let originalId;
 let originalSends = 0;
 let dropped = false;
-let unknownCount = 0;
 const generations = new Set();
 const restored = process.argv.includes("--restored");
-let EnvelopeSchema;
 input.on("line", (line) => {
     const message = JSON.parse(line);
-    if ("frame" in message) {
-        if (message.frame) {
-            const { body } = fromBinary(EnvelopeSchema, new Uint8Array(message.frame));
-            if (!restored && body.case === "response" && body.value.requestId === originalId) { dropped = true; return; }
-            if (body.case === "operationStatus" && body.value.requestId === originalId && body.value.state === "restored_unknown") unknownCount++;
-        }
-        channel?.onmessage(message.frame);
-        return;
-    }
     assert.ok(pending.has(message.id));
     const {resolve, reject} = pending.get(message.id);
     pending.delete(message.id);
@@ -40,32 +27,32 @@ function invokeHost(command, args = {}) {
     });
 }
 globalThis.window = Object.assign(new EventTarget(), {
-    __TAURI_INTERNALS__: {
-        transformCallback: () => ++nextId,
-        unregisterCallback: () => {},
-        invoke: async (command, args) => {
-            if (command === "attach_desktop_client") {
-                channel = args.channel;
-                const hello = await invokeHost(command, {attachmentId: args.attachmentId});
-                generations.add(fromBinary(EnvelopeSchema, new Uint8Array(hello)).body.value.instanceId);
-                return hello;
-            }
-            if (command === "send_desktop_client_frame") {
-                const {body} = fromBinary(EnvelopeSchema, new Uint8Array(args.bytes));
-                if (body.case === "request" && body.value.command.case === "updateExternalEditor") { originalId ??= body.value.requestId; originalSends++; }
-            }
-            const result = await invokeHost(command, args);
-            return result;
-        },
-    },
+    __TAURI_INTERNALS__: { invoke: async (command, args) => {
+        const result = await invokeHost(command, args);
+        if (command === "get_client_endpoint") generations.add(result.launchId);
+        return result;
+    } },
 });
+const nativeFetch = globalThis.fetch;
+globalThis.fetch = async (input, init) => {
+    const request = new Request(input, init);
+    request.headers.set("origin", "tauri://localhost");
+    const response = await nativeFetch(request);
+    if (request.url.endsWith("/UpdateExternalEditor")) {
+        originalSends++;
+        if (!restored && !dropped) {
+            dropped = true;
+            await response.arrayBuffer();
+            throw new TypeError("response lost");
+        }
+    }
+    return response;
+};
 const bundle = await build({
-    stdin: { contents: 'export * from "./src/lib/clientSocket.ts"; export { EnvelopeSchema } from "./src/generated/client_pb.ts";', resolveDir: process.cwd() },
+    stdin: { contents: 'export * from "./src/lib/client.ts";', resolveDir: process.cwd() },
     bundle: true, platform: "node", format: "esm", write: false,
 });
-const client = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].contents).toString("base64")}`);
-EnvelopeSchema = client.EnvelopeSchema;
-const {invokeClient, getClientStatus, onClientRefresh, retryClientOperation, dismissClientOperation, completeClientRestoration} = client;
+const {invokeClient, onClientRefresh, completeClientRestoration, refreshClient} = await import(`data:text/javascript;base64,${Buffer.from(`${bundle.outputFiles[0].text}\n//# sourceURL=releash-client-fixture.mjs`).toString("base64")}`);
 async function waitFor(predicate) {
     const deadline = Date.now() + 15_000;
     while (!(await predicate())) { assert.ok(Date.now() < deadline, "desktop recovery deadline"); await setTimeout(10); }
@@ -77,23 +64,14 @@ const restore = async () => {
     await waitFor(async () => (await invokeHost("get_daemon_status")).phase === "ready");
 };
 const stopRefresh = onClientRefresh(() => {
-    void restore().then(() => invokeClient("get_app_settings")).then(settings => { refreshedSettings = settings; }).catch(error => { console.error(error); });
+    void invokeClient("get_app_settings").then(settings => { refreshedSettings = settings; }).catch(error => { console.error(error instanceof Error ? error.message : error); });
 });
 try {
     await restore();
     if (restored) {
         const settings = await invokeClient("get_app_settings");
         assert.equal(settings.external_editor, "desktop-recovery");
-        const unresolved = getClientStatus().operations.find(op => op.command === "update_external_editor");
-        assert.equal(unresolved?.state, "unknown");
-        assert.equal(unresolved.canQuery, false);
-        assert.equal(unresolved.canDismiss, true);
-        retryClientOperation(unresolved.id);
-        await setTimeout(50);
         assert.equal(originalSends, 0);
-        assert.equal(getClientStatus().operations.find(op => op.id === unresolved.id)?.state, "unknown");
-        await dismissClientOperation(unresolved.id);
-        assert.equal(getClientStatus().operations.length, 0);
         await invokeClient("update_external_editor", {editor: "confirmed-after-restart"});
         assert.equal((await invokeClient("get_app_settings")).external_editor, "confirmed-after-restart");
     } else {
@@ -113,18 +91,15 @@ try {
         const cached = await invokeClient("get_app_settings");
         assert.equal(cached.close_to_tray, false);
         assert.equal(cached.start_minimized, true);
-        void invokeClient("update_external_editor", { editor: "desktop-recovery" }).catch(() => {});
+        await assert.rejects(invokeClient("update_external_editor", { editor: "desktop-recovery" }));
         await waitFor(() => dropped);
         // When
         await invokeHost("restart");
-        await waitFor(() => generations.size === 2 && unknownCount > 0 && refreshedSettings);
-        // Then
+        refreshedSettings = undefined;
+        refreshClient();
+        await waitFor(() => generations.size === 2 && refreshedSettings);
+        await restore();
         assert.equal(refreshedSettings.external_editor, "desktop-recovery");
-        assert.equal(getClientStatus().connected, true);
-        await waitFor(() => getClientStatus().operations.some(op => op.id === originalId && op.canDismiss));
-        retryClientOperation(originalId);
-        await setTimeout(50);
-        assert.ok(getClientStatus().operations.some(op => op.id === originalId && op.state === "unknown"));
         assert.equal(originalSends, 1);
     }
 } finally {

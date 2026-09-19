@@ -2,9 +2,8 @@ use super::app_config::query_service::DesktopSettingsDto;
 use super::client_connection::{
     ClientConnectionDto, ClientConnectionError, ClientConnectionQueryService,
 };
-use crate::domain::client_operation::transmission::{TransmissionFailure, WriteProgress};
 use crate::domain::daemon_supervision::{
-    ClientOperation, DaemonSupervision, Failure, FailureStage, Phase, ShellOperation, StopIntent,
+    DaemonSupervision, Failure, FailureStage, Phase, ShellOperation, StopIntent,
 };
 use std::sync::Arc;
 
@@ -36,54 +35,12 @@ pub(crate) struct DaemonConnection {
     pub release: String,
 }
 
-#[derive(Clone, Debug, serde::Serialize)]
-pub(crate) struct DesktopSendError {
-    #[serde(serialize_with = "serialize_transmission_failure")]
-    pub state: TransmissionFailure,
-    #[serde(rename = "message")]
-    pub reason: String,
-}
-impl DesktopSendError {
-    pub fn not_sent(reason: impl ToString) -> Self {
-        Self {
-            state: WriteProgress::NotStarted.failure(),
-            reason: reason.to_string(),
-        }
-    }
-    pub fn write_attempted(reason: impl ToString) -> Self {
-        Self {
-            state: WriteProgress::Attempted.failure(),
-            reason: reason.to_string(),
-        }
-    }
-}
-fn serialize_transmission_failure<S: serde::Serializer>(
-    state: &TransmissionFailure,
-    serializer: S,
-) -> Result<S::Ok, S::Error> {
-    serializer.serialize_str(match state {
-        TransmissionFailure::NotSent => "not_sent",
-        TransmissionFailure::Unknown => "unknown",
-    })
-}
-
-pub(crate) struct DesktopAttachment {
-    pub hello: Vec<u8>,
-    pub frames: tokio::sync::broadcast::Receiver<Option<Vec<u8>>>,
-    pub cancelled: tokio::sync::oneshot::Receiver<()>,
-}
-
 #[async_trait::async_trait]
 pub(crate) trait DaemonGateway:
     crate::domain::daemon_supervision::DaemonProcessPort
 {
     async fn connection(&self) -> Result<Option<DaemonConnection>, Failure>;
     fn connected(&self) -> bool;
-    fn restored(&self) -> bool;
-    async fn finish_restoration(&self, attachment_id: &str) -> Result<(), String>;
-    fn attach(&self, id: String) -> Result<DesktopAttachment, String>;
-    fn detach(&self, id: &str);
-    async fn forward(&self, bytes: Vec<u8>) -> Result<(), DesktopSendError>;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
@@ -193,12 +150,11 @@ impl DaemonSupervisionUsecase {
     }
     pub fn connection(&self) -> Result<DaemonConnection, ClientConnectionError> {
         let state = self.state.lock();
-        if !state.supervision.connection_admitted() {
-            return Err(ClientConnectionError("Daemon is not ready.".into()));
-        }
         state
             .connection
-            .clone()
+            .as_ref()
+            .filter(|_| self.gateway.connected())
+            .cloned()
             .ok_or_else(|| ClientConnectionError("Daemon connection is unavailable.".into()))
     }
     pub fn desktop_action(
@@ -212,30 +168,36 @@ impl DaemonSupervisionUsecase {
             .supervision
             .desktop_action(hidden, first_ready, has_failure_window)
     }
-    pub fn admit_client_command(
-        &self,
-        operation: ClientOperation,
-    ) -> Result<(), DaemonSupervisionError> {
-        if self.gateway.connected()
-            && self
-                .state
-                .lock()
-                .supervision
-                .client_command_admitted(operation)
-        {
-            Ok(())
-        } else {
-            Err("Releash is starting or switching; this request was not accepted.".into())
+    pub async fn attach(&self, id: String) -> Result<DaemonConnection, DaemonSupervisionError> {
+        let mut changes = self.subscribe();
+        loop {
+            {
+                let mut state = self.state.lock();
+                if let Some(connection) = state
+                    .connection
+                    .as_ref()
+                    .filter(|_| self.gateway.connected())
+                {
+                    let connection = connection.clone();
+                    state
+                        .supervision
+                        .begin_restoration(id, self.gateway.monotonic_ms());
+                    return Ok(connection);
+                }
+                if !state.supervision.connection_pending() {
+                    return Err(state
+                        .supervision
+                        .failure()
+                        .map(|failure| failure.reason.clone())
+                        .unwrap_or_else(|| "Daemon is stopped.".into())
+                        .into());
+                }
+            }
+            changes
+                .changed()
+                .await
+                .map_err(|error| DaemonSupervisionError(error.to_string()))?;
         }
-    }
-    pub fn attach(&self, id: String) -> Result<DesktopAttachment, DaemonSupervisionError> {
-        self.connection()
-            .map_err(|e| DaemonSupervisionError(e.to_string()))?;
-        self.state
-            .lock()
-            .supervision
-            .begin_restoration(self.gateway.monotonic_ms());
-        self.gateway.attach(id).map_err(DaemonSupervisionError)
     }
     pub async fn finish_restoration(
         &self,
@@ -244,30 +206,14 @@ impl DaemonSupervisionUsecase {
         generation: u64,
     ) -> Result<(), DaemonSupervisionError> {
         self.validate_connection(launch_id, env!("CARGO_PKG_VERSION"))?;
-        if !self
-            .state
-            .lock()
-            .supervision
-            .restoration_current(generation)
-        {
-            return Err("Desktop restoration attempt is no longer current.".into());
-        }
-        if let Err(reason) = self.gateway.finish_restoration(attachment_id).await {
-            self.fail_restoration(generation, reason.clone());
-            return Err(reason.into());
-        }
-        let completed = self.gateway.restored()
-            && self
-                .state
-                .lock()
-                .supervision
-                .finish_restoration(generation, self.gateway.monotonic_ms());
+        let result = self.state.lock().supervision.finish_restoration(
+            generation,
+            attachment_id,
+            self.gateway.connected(),
+            self.gateway.monotonic_ms(),
+        );
         self.publish();
-        if completed {
-            Ok(())
-        } else {
-            Err("Desktop restoration attempt is no longer current.".into())
-        }
+        result.map_err(DaemonSupervisionError)
     }
     pub fn fail_restoration(&self, generation: u64, reason: String) {
         self.state
@@ -275,23 +221,6 @@ impl DaemonSupervisionUsecase {
             .supervision
             .fail_restoration(generation, reason);
         self.publish();
-    }
-    pub fn detach(&self, id: &str) {
-        self.gateway.detach(id);
-    }
-    pub async fn send_frame(
-        &self,
-        launch_id: &str,
-        operation: Option<ClientOperation>,
-        bytes: Vec<u8>,
-    ) -> Result<(), DesktopSendError> {
-        self.validate_connection(launch_id, env!("CARGO_PKG_VERSION"))
-            .map_err(DesktopSendError::not_sent)?;
-        if let Some(operation) = operation {
-            self.admit_client_command(operation)
-                .map_err(DesktopSendError::not_sent)?;
-        }
-        self.gateway.forward(bytes).await
     }
     pub fn command_admitted(&self, operation: ShellOperation) -> bool {
         self.state

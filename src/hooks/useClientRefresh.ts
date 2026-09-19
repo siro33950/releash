@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { onClientRefresh } from "@/lib/clientSocket";
+import { onClientRefresh } from "@/lib/client";
 
 export function useClientRefresh(enabled = true) {
 	const [controller, setController] = useState(() => new AbortController());

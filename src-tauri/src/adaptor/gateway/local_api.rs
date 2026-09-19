@@ -214,67 +214,14 @@ impl crate::usecase::client_connection::ClientConnectionQueryService for ClientC
         crate::usecase::app_config::query_service::DesktopSettingsDto,
         crate::usecase::client_connection::ClientConnectionError,
     > {
-        use crate::adaptor::controller::api::protocol::client as wire;
-        use crate::usecase::client_connection::ClientConnectionError;
-        use futures_util::{SinkExt, StreamExt};
-        use prost::Message;
-        use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as Frame};
-
-        let endpoint = self.read()?;
-        let read = async {
-            let mut request = endpoint
-                .url
-                .into_client_request()
-                .map_err(|e| e.to_string())?;
-            request.headers_mut().insert(
-                "sec-websocket-protocol",
-                endpoint
-                    .auth_subprotocol
-                    .parse()
-                    .map_err(|e| format!("invalid client subprotocol: {e}"))?,
-            );
-            let (mut socket, _) = tokio_tungstenite::connect_async(request)
-                .await
-                .map_err(|e| e.to_string())?;
-            socket
-                .send(Frame::Binary(
-                    wire::Envelope {
-                        body: Some(wire::envelope::Body::Hello(wire::ClientHello::default())),
-                    }
-                    .encode_to_vec()
-                    .into(),
-                ))
-                .await
-                .map_err(|e| e.to_string())?;
-            loop {
-                let frame = socket
-                    .next()
-                    .await
-                    .ok_or("desktop settings connection closed")?
-                    .map_err(|e| e.to_string())?;
-                if let Frame::Binary(bytes) = frame {
-                    if let Some(wire::envelope::Body::Hello(hello)) = wire::Envelope::decode(bytes)
-                        .map_err(|e| e.to_string())?
-                        .body
-                    {
-                        let settings = hello
-                            .desktop_settings
-                            .ok_or("daemon desktop settings are unavailable")?;
-                        socket.close(None).await.map_err(|e| e.to_string())?;
-                        return Ok::<_, String>(settings.into());
-                    }
-                }
-            }
-        };
-        tokio::time::timeout(
-            std::time::Duration::from_millis(
-                crate::domain::client_operation::policy::CONNECT_TIMEOUT_MS,
-            ),
-            read,
-        )
-        .await
-        .map_err(|_| ClientConnectionError("desktop settings connection timed out".into()))?
-        .map_err(ClientConnectionError)
+        let info = super::desktop_client::server_info(&self.read()?)
+            .await
+            .map_err(crate::usecase::client_connection::ClientConnectionError)?;
+        info.desktop_settings.map(Into::into).ok_or_else(|| {
+            crate::usecase::client_connection::ClientConnectionError(
+                "Daemon settings are unavailable".into(),
+            )
+        })
     }
 
     fn read(
@@ -330,16 +277,8 @@ impl ClientConnectionFileQuery {
             )
         })?;
         Ok(ClientConnectionDto {
-            url: format!(
-                "ws://127.0.0.1:{}{}",
-                client.port,
-                crate::adaptor::protocol::client::CLIENT_WS_PATH
-            ),
-            auth_subprotocol: format!(
-                "{}{}",
-                crate::adaptor::protocol::terminal::TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX,
-                client.token
-            ),
+            url: format!("http://127.0.0.1:{}", client.port),
+            token: client.token,
         })
     }
 }

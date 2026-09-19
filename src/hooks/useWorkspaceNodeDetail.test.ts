@@ -11,7 +11,7 @@ import {
 const mockInvoke = vi.fn();
 const mockListen = vi.fn();
 
-vi.mock("@/lib/clientSocket", () => ({
+vi.mock("@/lib/client", () => ({
 	invokeClient: (...args: unknown[]) => mockInvoke(...args),
 	listenClient: (...args: unknown[]) => mockListen(...args),
 }));
@@ -439,24 +439,15 @@ describe("useWorkspaceNodeDetail", () => {
 			return Promise.resolve(null);
 		});
 
-		const onUncertain = vi.fn();
-		const result = await approveWorkspaceNode(
-			{
-				worktreePath: "/repo",
-				nodeId: "node",
-			},
-			{ onUncertain },
-		);
+		const result = await approveWorkspaceNode({
+			worktreePath: "/repo",
+			nodeId: "node",
+		});
 
-		expect(mockInvoke).toHaveBeenNthCalledWith(
-			1,
-			"approve_workspace_node",
-			{
-				worktreePath: "/repo",
-				nodeId: "node",
-			},
-			{ onUncertain },
-		);
+		expect(mockInvoke).toHaveBeenNthCalledWith(1, "approve_workspace_node", {
+			worktreePath: "/repo",
+			nodeId: "node",
+		});
 		expect(mockInvoke).toHaveBeenNthCalledWith(2, "get_workspace_node_detail", {
 			worktreePath: "/repo",
 			nodeId: "node",
@@ -473,21 +464,15 @@ describe("useWorkspaceNodeDetail", () => {
 			return Promise.resolve(null);
 		});
 
-		const onUncertain = vi.fn();
-		const result = await retryWorkspaceNode(
-			{ worktreePath: "/repo", nodeId: "node" },
-			{ onUncertain },
-		);
+		const result = await retryWorkspaceNode({
+			worktreePath: "/repo",
+			nodeId: "node",
+		});
 
-		expect(mockInvoke).toHaveBeenNthCalledWith(
-			1,
-			"retry_workspace_node",
-			{
-				worktreePath: "/repo",
-				nodeId: "node",
-			},
-			{ onUncertain },
-		);
+		expect(mockInvoke).toHaveBeenNthCalledWith(1, "retry_workspace_node", {
+			worktreePath: "/repo",
+			nodeId: "node",
+		});
 		expect(mockInvoke).toHaveBeenNthCalledWith(2, "get_workspace_node_detail", {
 			worktreePath: "/repo",
 			nodeId: "node",

@@ -9,6 +9,7 @@ use tauri::{
 };
 
 pub static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
+pub(crate) const ICON: &[u8] = include_bytes!("../../../icons/tray-template.png");
 #[cfg(test)]
 pub(crate) static QUIT_REQUESTED_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -42,7 +43,7 @@ pub fn setup_tray(
         .item(&quit)
         .build()?;
 
-    let icon = Image::from_bytes(include_bytes!("../../../icons/32x32.png"))?;
+    let icon = Image::from_bytes(ICON)?;
 
     TrayIconBuilder::new()
         .icon(icon)

@@ -16,7 +16,7 @@ pub(crate) struct LocalApiServerBinding {
     listener: std::net::TcpListener,
     port: u16,
     token: Arc<str>,
-    terminal_token: Arc<str>,
+    terminal_token: super::ClientBearerToken,
     instance_id: String,
     discovery: LocalApiDiscoveryFile,
     client_discovery: LocalApiDiscoveryFile,
@@ -85,7 +85,7 @@ impl LocalApiServerBinding {
             listener,
             port: address.port(),
             token,
-            terminal_token,
+            terminal_token: terminal_token.into(),
             instance_id,
             discovery,
             client_discovery,
@@ -96,7 +96,12 @@ impl LocalApiServerBinding {
         self.token.clone()
     }
 
+    #[cfg(any(test, all(debug_assertions, feature = "desktop")))]
     pub(crate) fn terminal_bearer_token(&self) -> Arc<str> {
+        self.terminal_token.token()
+    }
+
+    pub(crate) fn client_bearer_token(&self) -> super::ClientBearerToken {
         self.terminal_token.clone()
     }
 
@@ -116,6 +121,7 @@ impl LocalApiServerBinding {
             instance_id,
             discovery,
             client_discovery,
+            terminal_token,
             ..
         } = self;
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
@@ -159,6 +165,7 @@ impl LocalApiServerBinding {
         Arc::new(LocalApiServer {
             shutdown: parking_lot::Mutex::new(Some(shutdown_tx)),
             task: parking_lot::Mutex::new(Some(task)),
+            terminal_token,
             discovery,
             client_discovery,
         })
@@ -166,6 +173,7 @@ impl LocalApiServerBinding {
 }
 
 pub(crate) struct LocalApiServer {
+    terminal_token: super::ClientBearerToken,
     shutdown: parking_lot::Mutex<Option<oneshot::Sender<()>>>,
     task: parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>,
     discovery: LocalApiDiscoveryFile,
@@ -174,6 +182,7 @@ pub(crate) struct LocalApiServer {
 
 impl LocalApiServer {
     pub(crate) fn shutdown(&self) {
+        self.terminal_token.revoke();
         if let Some(sender) = self.shutdown.lock().take() {
             let _ = sender.send(());
         }

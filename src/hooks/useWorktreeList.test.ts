@@ -6,7 +6,7 @@ import { useWorktreeList } from "./useWorktreeList";
 const mockInvoke = vi.fn();
 const mockListen = vi.fn();
 
-vi.mock("@/lib/clientSocket", async () => ({
+vi.mock("@/lib/client", async () => ({
 	watchClient: (await import("@/test/watchClient")).mockWatchClient((...args) =>
 		mockInvoke(...args),
 	),

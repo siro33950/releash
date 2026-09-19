@@ -75,68 +75,109 @@ async fn test_desktop接続_discoveryとtauri経由で外部daemonの初回接�
     let mut input = client.stdin.take().unwrap();
     let mut output = BufReader::new(client.stdout.take().unwrap()).lines();
     let mut tokens = Vec::new();
-    let mut frames: Option<tokio::sync::broadcast::Receiver<Option<Vec<u8>>>> = None;
     let mut restarted = false;
     // When
     tokio::time::timeout(Duration::from_secs(60), async {
         loop {
-            let line = tokio::select! {
-                line = output.next_line() => { let Some(line) = line.unwrap() else { break }; line }
-                frame = async { match frames.as_mut() { Some(frames) => frames.recv().await, None => std::future::pending().await } } => {
-                    let frame = frame.unwrap_or(None);
-                    if frame.is_none() { frames = None; }
-                    input.write_all(format!("{}\n", json!({"frame": frame})).as_bytes()).await.unwrap();
-                    continue;
-                }
+            let Some(line) = output.next_line().await.unwrap() else {
+                break;
             };
             let request: Value = serde_json::from_str(&line).expect("client bridge request");
             let result = match request["command"].as_str().unwrap() {
-                "attach_desktop_client" => {
-                    let (hello, receiver) = releash_lib::client_api_acceptance::attach_desktop_client(app.handle(), request["args"]["attachmentId"].as_str().unwrap().into());
-                    frames = Some(receiver);
+                "get_client_endpoint" => {
+                    let endpoint = releash_lib::client_api_acceptance::desktop_client_endpoint(
+                        app.handle(),
+                        request["args"]["attachmentId"].as_str().unwrap().into(),
+                    )
+                    .await;
                     let current = discovery(directory.path(), "client-api.json");
-                    assert_ne!(current["token"], discovery(directory.path(), "local-api.json")["token"]);
+                    assert_ne!(
+                        current["token"],
+                        discovery(directory.path(), "local-api.json")["token"]
+                    );
                     tokens.push(current["token"].clone());
-                    json!(hello)
+                    serde_json::to_value(endpoint).unwrap()
                 }
                 "apply_desktop_settings" => {
-                    tauri::test::get_ipc_response(&window, tauri::webview::InvokeRequest {
-                        cmd: "apply_desktop_settings".into(),
-                        callback: tauri::ipc::CallbackFn(0), error: tauri::ipc::CallbackFn(1),
-                        url: "tauri://localhost".parse().unwrap(),
-                        body: tauri::ipc::InvokeBody::Json(request["args"].clone()),
-                        headers: Default::default(), invoke_key: tauri::test::INVOKE_KEY.to_string(),
-                    }).unwrap();
+                    tauri::test::get_ipc_response(
+                        &window,
+                        tauri::webview::InvokeRequest {
+                            cmd: "apply_desktop_settings".into(),
+                            callback: tauri::ipc::CallbackFn(0),
+                            error: tauri::ipc::CallbackFn(1),
+                            url: "tauri://localhost".parse().unwrap(),
+                            body: tauri::ipc::InvokeBody::Json(request["args"].clone()),
+                            headers: Default::default(),
+                            invoke_key: tauri::test::INVOKE_KEY.to_string(),
+                        },
+                    )
+                    .unwrap();
                     let settings = &request["args"]["settings"];
-                    assert_eq!(releash_lib::client_api_acceptance::desktop_window_preferences(app.handle()),
-                        settings["closeToTray"].as_bool().unwrap());
+                    assert_eq!(
+                        releash_lib::client_api_acceptance::desktop_window_preferences(
+                            app.handle()
+                        ),
+                        settings["closeToTray"].as_bool().unwrap()
+                    );
                     Value::Null
                 }
-                command @ ("get_daemon_status" | "complete_desktop_restoration" | "validate_daemon_connection" | "admit_client_command" | "send_desktop_client_frame" | "detach_desktop_client" | "forget_client_operation" | "list_client_handoff") => {
-                    tauri::test::get_ipc_response(&window, tauri::webview::InvokeRequest {
-                        cmd: command.into(), callback: tauri::ipc::CallbackFn(0), error: tauri::ipc::CallbackFn(1), url: "tauri://localhost".parse().unwrap(),
-                        body: tauri::ipc::InvokeBody::Json(request["args"].clone()), headers: Default::default(), invoke_key: tauri::test::INVOKE_KEY.to_string(),
-                    }).unwrap().deserialize::<Value>().unwrap()
-                }
+                command @ ("get_daemon_status"
+                | "complete_desktop_restoration"
+                | "validate_daemon_connection") => tauri::test::get_ipc_response(
+                    &window,
+                    tauri::webview::InvokeRequest {
+                        cmd: command.into(),
+                        callback: tauri::ipc::CallbackFn(0),
+                        error: tauri::ipc::CallbackFn(1),
+                        url: "tauri://localhost".parse().unwrap(),
+                        body: tauri::ipc::InvokeBody::Json(request["args"].clone()),
+                        headers: Default::default(),
+                        invoke_key: tauri::test::INVOKE_KEY.to_string(),
+                    },
+                )
+                .unwrap()
+                .deserialize::<Value>()
+                .unwrap(),
                 "damage_settings" => {
-                    for content in [Some("[app]\nclose_to_tray = true\n"), Some("[invalid"), None] {
+                    for content in [
+                        Some("[app]\nclose_to_tray = true\n"),
+                        Some("[invalid"),
+                        None,
+                    ] {
                         let path = directory.path().join("releash.toml");
                         match content {
                             Some(content) => std::fs::write(&path, content).unwrap(),
                             None => std::fs::remove_file(&path).unwrap(),
                         }
-                        releash_lib::client_api_acceptance::initialize_desktop_settings(app.handle()).await;
-                        assert_eq!(releash_lib::client_api_acceptance::desktop_window_preferences(app.handle()), false);
+                        releash_lib::client_api_acceptance::initialize_desktop_settings(
+                            app.handle(),
+                        )
+                        .await;
+                        assert_eq!(
+                            releash_lib::client_api_acceptance::desktop_window_preferences(
+                                app.handle()
+                            ),
+                            false
+                        );
                     }
                     std::fs::create_dir(directory.path().join("releash.toml")).unwrap();
-                    releash_lib::client_api_acceptance::initialize_desktop_settings(app.handle()).await;
-                    assert_eq!(releash_lib::client_api_acceptance::desktop_window_preferences(app.handle()), false);
+                    releash_lib::client_api_acceptance::initialize_desktop_settings(app.handle())
+                        .await;
+                    assert_eq!(
+                        releash_lib::client_api_acceptance::desktop_window_preferences(
+                            app.handle()
+                        ),
+                        false
+                    );
                     std::fs::remove_dir(directory.path().join("releash.toml")).unwrap();
                     Value::Null
                 }
                 "restart" => {
                     assert!(!restarted);
-                    assert_eq!(unsafe { libc::kill(first["pid"].as_i64().unwrap() as i32, libc::SIGKILL) }, 0);
+                    assert_eq!(
+                        unsafe { libc::kill(first["pid"].as_i64().unwrap() as i32, libc::SIGKILL) },
+                        0
+                    );
                     tokio::time::sleep(Duration::from_millis(250)).await;
                     wait_phase(app.handle(), "restoring").await;
                     let current = discovery(directory.path(), "client-api.json");
@@ -153,7 +194,10 @@ async fn test_desktop接続_discoveryとtauri経由で外部daemonの初回接�
                 .await
                 .unwrap();
         }
-        assert!(client.wait().await.unwrap().success(), "desktop client failed");
+        assert!(
+            client.wait().await.unwrap().success(),
+            "desktop client failed"
+        );
     })
     .await
     .expect("desktop recovery deadline");
@@ -179,12 +223,7 @@ async fn test_desktop接続_discoveryとtauri経由で外部daemonの初回接�
         discovery(directory.path(), "client-api.json")["pid"].as_i64(),
         Some(old_pid as i64)
     );
-    assert_eq!(
-        std::fs::read_dir(directory.path().join("desktop-client-operations"))
-            .unwrap()
-            .count(),
-        1
-    );
+    assert!(!directory.path().join("desktop-client-operations").exists());
     let next_window = tauri::WebviewWindowBuilder::new(&next, "main", Default::default())
         .build()
         .unwrap();
@@ -199,38 +238,36 @@ async fn test_desktop接続_discoveryとtauri経由で外部daemonの初回接�
         .unwrap();
     let mut input = restored.stdin.take().unwrap();
     let mut lines = BufReader::new(restored.stdout.take().unwrap()).lines();
-    let mut frames: Option<tokio::sync::broadcast::Receiver<Option<Vec<u8>>>> = None;
     tokio::time::timeout(Duration::from_secs(15), async {
         loop {
-            let line = tokio::select! {
-                line = lines.next_line() => { let Some(line) = line.unwrap() else { break }; line }
-                frame = async { match frames.as_mut() { Some(frames) => frames.recv().await, None => std::future::pending().await } } => {
-                    let frame = frame.unwrap_or(None);
-                    if frame.is_none() { frames = None; }
-                    input.write_all(format!("{}\n", json!({"frame": frame})).as_bytes()).await.unwrap();
-                    continue;
-                }
+            let Some(line) = lines.next_line().await.unwrap() else {
+                break;
             };
             let request: Value = serde_json::from_str(&line).unwrap();
-            let result = if request["command"] == "attach_desktop_client" {
-                let (hello, receiver) = releash_lib::client_api_acceptance::attach_desktop_client(next.handle(), request["args"]["attachmentId"].as_str().unwrap().into());
-                frames = Some(receiver);
-                json!(hello)
-            } else { tauri::test::get_ipc_response(
-                &next_window,
-                tauri::webview::InvokeRequest {
-                    cmd: request["command"].as_str().unwrap().into(),
-                    callback: tauri::ipc::CallbackFn(0),
-                    error: tauri::ipc::CallbackFn(1),
-                    url: "tauri://localhost".parse().unwrap(),
-                    body: tauri::ipc::InvokeBody::Json(request["args"].clone()),
-                    headers: Default::default(),
-                    invoke_key: tauri::test::INVOKE_KEY.to_string(),
-                },
-            )
-            .unwrap()
-            .deserialize::<Value>()
-            .unwrap() };
+            let result = if request["command"] == "get_client_endpoint" {
+                let endpoint = releash_lib::client_api_acceptance::desktop_client_endpoint(
+                    next.handle(),
+                    request["args"]["attachmentId"].as_str().unwrap().into(),
+                )
+                .await;
+                serde_json::to_value(endpoint).unwrap()
+            } else {
+                tauri::test::get_ipc_response(
+                    &next_window,
+                    tauri::webview::InvokeRequest {
+                        cmd: request["command"].as_str().unwrap().into(),
+                        callback: tauri::ipc::CallbackFn(0),
+                        error: tauri::ipc::CallbackFn(1),
+                        url: "tauri://localhost".parse().unwrap(),
+                        body: tauri::ipc::InvokeBody::Json(request["args"].clone()),
+                        headers: Default::default(),
+                        invoke_key: tauri::test::INVOKE_KEY.to_string(),
+                    },
+                )
+                .unwrap()
+                .deserialize::<Value>()
+                .unwrap()
+            };
             input
                 .write_all(
                     format!("{}\n", json!({"id": request["id"], "result": result})).as_bytes(),

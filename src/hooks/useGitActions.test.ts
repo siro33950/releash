@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { useGitActions } from "./useGitActions";
 
 const mockInvoke = vi.fn();
-vi.mock("@/lib/clientSocket", () => ({
+vi.mock("@/lib/client", () => ({
 	invokeClient: (...args: unknown[]) => mockInvoke(...args),
 }));
 

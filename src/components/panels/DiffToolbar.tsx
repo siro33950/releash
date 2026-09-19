@@ -15,7 +15,7 @@ import {
 	TooltipTrigger,
 } from "@/components/ui/tooltip";
 import type { FileNavigationResult } from "@/hooks/useFileNavigation";
-import { invokeClient as invoke } from "@/lib/clientSocket";
+import { invokeClient as invoke } from "@/lib/client";
 import { getErrorMessage } from "@/lib/errorMessage";
 import { cn } from "@/lib/utils";
 import type { DiffMode } from "@/types/settings";

@@ -58,31 +58,12 @@ pub(crate) struct DaemonLoginPreference(
 impl DaemonLoginPreference {
     async fn request(
         &self,
-        command: crate::adaptor::controller::api::protocol::client::command_request::Command,
-    ) -> Result<crate::adaptor::controller::api::protocol::client::command_result::Command, String>
-    {
-        use crate::adaptor::controller::api::protocol::client as wire;
-        let response = self
-            .0
-            .client()?
-            .request(wire::CommandRequest {
-                request_id: uuid::Uuid::new_v4().to_string(),
-                command: Some(command),
-                ..Default::default()
-            })
-            .await?;
-        match response.body {
-            Some(wire::envelope::Body::Response(response)) => match response.outcome {
-                Some(wire::command_response::Outcome::Result(result)) => result
-                    .command
-                    .ok_or_else(|| "Missing login preference result".into()),
-                other => Err(format!("Login preference failed: {other:?}")),
-            },
-            other => Err(format!("Invalid login preference response: {other:?}")),
-        }
+        command: crate::adaptor::protocol::client::command_request::Command,
+    ) -> Result<crate::adaptor::protocol::client::command_result::Command, String> {
+        self.0.client()?.request(command).await
     }
     async fn settings(&self) -> Result<bool, String> {
-        use crate::adaptor::controller::api::protocol::client as wire;
+        use crate::adaptor::protocol::client as wire;
         preference_result(
             self.request(wire::command_request::Command::GetAppSettings(
                 wire::GetAppSettingsRequest {},
@@ -98,7 +79,7 @@ impl crate::domain::login_item::LoginPreferencePort for DaemonLoginPreference {
     }
 
     async fn save(&self, requested: bool) -> Result<(), String> {
-        use crate::adaptor::controller::api::protocol::client as wire;
+        use crate::adaptor::protocol::client as wire;
         match self.request(preference_request(requested)).await? {
             wire::command_result::Command::UpdateLoginItemPreference(_) => Ok(()),
             _ => Err("Unexpected login preference update result".into()),
@@ -107,9 +88,9 @@ impl crate::domain::login_item::LoginPreferencePort for DaemonLoginPreference {
 }
 
 fn preference_result(
-    result: crate::adaptor::controller::api::protocol::client::command_result::Command,
+    result: crate::adaptor::protocol::client::command_result::Command,
 ) -> Result<bool, String> {
-    use crate::adaptor::controller::api::protocol::client as wire;
+    use crate::adaptor::protocol::client as wire;
     match result {
         wire::command_result::Command::GetAppSettings(settings) => settings
             .auto_launch
@@ -120,8 +101,8 @@ fn preference_result(
 
 fn preference_request(
     requested: bool,
-) -> crate::adaptor::controller::api::protocol::client::command_request::Command {
-    use crate::adaptor::controller::api::protocol::client as wire;
+) -> crate::adaptor::protocol::client::command_request::Command {
+    use crate::adaptor::protocol::client as wire;
     wire::command_request::Command::UpdateLoginItemPreference(
         wire::UpdateLoginItemPreferenceRequest {
             requested: Some(requested),

@@ -6,9 +6,7 @@ use crate::adaptor::protocol::terminal::{
     TerminalPerformanceSwitchesV1, TerminalSurfaceOwnerV1, TerminalSurfaceStreamItemV1,
     TerminalSurfaceSummaryV1,
 };
-use crate::usecase::terminal_surface::application::{
-    TerminalSurfaceApplication, TerminalSurfaceAttachmentStream,
-};
+use crate::usecase::terminal_surface::application::TerminalSurfaceAttachmentStream;
 use crate::usecase::terminal_surface::error::UsecaseError;
 
 #[derive(Clone, Copy)]
@@ -156,7 +154,7 @@ pub(crate) enum TerminalCommandOperation {
 }
 
 impl TerminalCommandOperation {
-    fn attachment(recovery: bool) -> Self {
+    pub(crate) fn attachment(recovery: bool) -> Self {
         if recovery {
             Self::Resynchronize
         } else {
@@ -198,7 +196,7 @@ impl TerminalCommandOperation {
 }
 
 impl TerminalCommandError {
-    fn from_usecase(error: UsecaseError, operation: TerminalCommandOperation) -> Self {
+    pub(crate) fn from_usecase(error: UsecaseError, operation: TerminalCommandOperation) -> Self {
         let internal_cause = error.to_string();
         let code = match error {
             UsecaseError::Gateway(_)
@@ -289,8 +287,6 @@ pub(crate) fn get_terminal_surface_shared(
 }
 
 pub(crate) async fn forward_terminal_surface_attachment<F>(
-    application: std::sync::Arc<TerminalSurfaceApplication>,
-    attachment_id: String,
     mut attachment: TerminalSurfaceAttachmentStream,
     mut send: F,
 ) where
@@ -301,11 +297,6 @@ pub(crate) async fn forward_terminal_surface_attachment<F>(
             break;
         }
     }
-    application.detach(&attachment_id);
-}
-
-pub(crate) fn detach_terminal_surface_shared(state: &AppState, attachment_id: String) {
-    state.terminal_surface.detach(&attachment_id);
 }
 
 pub(crate) fn ack_terminal_surface_output_shared(
@@ -348,27 +339,6 @@ pub(crate) fn get_or_spawn_terminal_surface_shared(
         .map_err(|error| {
             TerminalCommandError::from_usecase(error, TerminalCommandOperation::Initialize)
         })
-}
-
-pub(crate) fn attach(
-    application: &TerminalSurfaceApplication,
-    attachment_id: &str,
-    owner: TerminalSurfaceOwnerV1,
-    recovery: bool,
-) -> Result<TerminalSurfaceAttachmentStream, TerminalCommandError> {
-    if attachment_id.is_empty() || attachment_id.len() > 128 {
-        return Err(TerminalCommandError {
-            code: TerminalCommandErrorCode::InvalidRequest.code().to_string(),
-            message: "Invalid attachment ID".to_string(),
-        });
-    }
-    let operation = TerminalCommandOperation::attachment(recovery);
-    let owner = owner
-        .try_into()
-        .map_err(|cause| invalid_owner_error(operation, cause))?;
-    application
-        .attach(attachment_id, &owner)
-        .map_err(|error| TerminalCommandError::from_usecase(error, operation))
 }
 
 #[cfg(test)]

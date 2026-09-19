@@ -1,5 +1,5 @@
 import { useCallback } from "react";
-import { invokeClient as invoke } from "@/lib/clientSocket";
+import { invokeClient as invoke } from "@/lib/client";
 import type { DiffBase, DiffSection } from "@/types/settings";
 
 export interface UseDiffOperationsParams {

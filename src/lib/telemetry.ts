@@ -1,5 +1,5 @@
 import type { ClientCommandArgs } from "@/generated/client_types";
-import { invokeClient as invoke } from "@/lib/clientSocket";
+import { type ClientCommand, invokeClient as invoke } from "@/lib/client";
 import { getErrorMessage } from "@/lib/errorMessage";
 
 let mountedXtermCount = 0;
@@ -7,7 +7,7 @@ let errorHandlersInstalled = false;
 let errorHandler: ((event: ErrorEvent) => void) | null = null;
 let rejectionHandler: ((event: PromiseRejectionEvent) => void) | null = null;
 
-function invokeTelemetry<K extends keyof ClientCommandArgs>(
+function invokeTelemetry<K extends ClientCommand>(
 	command: K,
 	args: ClientCommandArgs[K],
 ): Promise<void> {

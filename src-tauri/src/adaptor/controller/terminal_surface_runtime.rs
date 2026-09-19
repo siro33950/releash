@@ -189,8 +189,6 @@ impl TerminalSurfaceRuntime {
         let (sender, receiver) = tokio::sync::mpsc::channel(256);
         tokio::spawn(
             crate::adaptor::controller::terminal_surface::forward_terminal_surface_attachment(
-                Arc::clone(&self.application),
-                attachment_id,
                 attachment,
                 move |item| sender.try_send(item).map_err(|error| error.to_string()),
             ),

@@ -1,4 +1,4 @@
-import { listenClient as listen } from "@/lib/clientSocket";
+import { listenClient as listen } from "@/lib/client";
 
 const AGENT_SESSION_REFRESH_EVENT = "agent-session-refresh";
 const AGENT_SESSION_CHANGED_BACKEND_EVENT = "agent-session-changed";

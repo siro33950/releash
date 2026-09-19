@@ -42,11 +42,7 @@ import { useAutomation } from "@/hooks/useAutomation";
 import { useClientRefresh } from "@/hooks/useClientRefresh";
 import { useNotionSettings } from "@/hooks/useNotionSettings";
 import { useProviderAvailabilitySettings } from "@/hooks/useProviderAvailabilitySettings";
-import {
-	type ClientTransportError,
-	invokeClient as invoke,
-	retryClientOperation,
-} from "@/lib/clientSocket";
+import { invokeClient as invoke } from "@/lib/client";
 import { getErrorMessage } from "@/lib/errorMessage";
 import { setPerformanceTelemetryEnabled, trackEvent } from "@/lib/telemetry";
 import { cn } from "@/lib/utils";
@@ -75,7 +71,6 @@ function useWorkflowSettings(open: boolean) {
 	dirty.current = isDirty;
 	const [loading, setLoading] = useState(false);
 	const [saving, setSaving] = useState(false);
-	const [uncertain, setUncertain] = useState<ClientTransportError | null>(null);
 	const [error, setError] = useState<string | null>(null);
 
 	useEffect(() => {
@@ -109,11 +104,7 @@ function useWorkflowSettings(open: boolean) {
 		setSaving(true);
 		setError(null);
 		try {
-			await invoke(
-				"update_workflow_config",
-				{ workflow: draft },
-				{ onUncertain: setUncertain },
-			);
+			await invoke("update_workflow_config", { workflow: draft });
 			setError(null);
 			setConfig({ ...draft });
 		} catch (e) {
@@ -121,11 +112,10 @@ function useWorkflowSettings(open: boolean) {
 			throw e;
 		} finally {
 			setSaving(false);
-			setUncertain(null);
 		}
 	}, [draft]);
 
-	return { draft, setDraft, isDirty, loading, saving, uncertain, error, save };
+	return { draft, setDraft, isDirty, loading, saving, error, save };
 }
 
 type SettingsSection =
@@ -211,7 +201,6 @@ interface EditorInfo {
 }
 
 function useExternalEditorConfig(open: boolean) {
-	const [uncertain, setUncertain] = useState<ClientTransportError | null>(null);
 	const refresh = useClientRefresh(open);
 	const wasOpen = useRef(false);
 	const [editor, setEditor] = useState("");
@@ -254,17 +243,11 @@ function useExternalEditorConfig(open: boolean) {
 	const save = useCallback(async () => {
 		setError(null);
 		try {
-			await invoke(
-				"update_external_editor",
-				{ editor },
-				{ onUncertain: setUncertain },
-			);
+			await invoke("update_external_editor", { editor });
 			setInitialEditor(editor);
 		} catch (e) {
 			setError(getErrorMessage(e));
 			throw e;
-		} finally {
-			setUncertain(null);
 		}
 	}, [editor]);
 
@@ -275,7 +258,6 @@ function useExternalEditorConfig(open: boolean) {
 		isDirty,
 		loading,
 		error,
-		uncertain,
 		save,
 	};
 }
@@ -501,7 +483,6 @@ interface RepoChanges {
 }
 
 function useRepoChanges() {
-	const [uncertain, setUncertain] = useState<ClientTransportError | null>(null);
 	const [state, setState] = useState<RepoChanges>({
 		pendingBases: new Map(),
 		isDirty: false,
@@ -530,11 +511,7 @@ function useRepoChanges() {
 		try {
 			await Promise.all(
 				entries.map(([repoPath, base]) =>
-					invoke(
-						"set_releash_base",
-						{ repoPath, base: base || null },
-						{ onUncertain: setUncertain },
-					),
+					invoke("set_releash_base", { repoPath, base: base || null }),
 				),
 			);
 			setState((prev) => ({
@@ -546,8 +523,6 @@ function useRepoChanges() {
 		} catch (e) {
 			setState((prev) => ({ ...prev, error: getErrorMessage(e) }));
 			throw e;
-		} finally {
-			setUncertain(null);
 		}
 	}, [state.pendingBases]);
 
@@ -560,7 +535,7 @@ function useRepoChanges() {
 		}));
 	}, []);
 
-	return { ...state, uncertain, handleDirtyChange, save, reset };
+	return { ...state, handleDirtyChange, save, reset };
 }
 
 function RepositoriesSection({
@@ -809,7 +784,7 @@ function BackgroundSection({
 						</label>
 					</div>
 
-					{background.error && !background.uncertain && (
+					{background.error && (
 						<p role="alert" className="text-xs text-destructive">
 							{background.error}
 						</p>
@@ -965,13 +940,6 @@ export function SettingsModal({
 	const automation = useAutomation(open);
 	const workflow = useWorkflowSettings(open);
 	const providerAvailability = useProviderAvailabilitySettings(open);
-	const uncertain =
-		background.uncertain ??
-		workflow.uncertain ??
-		externalEditor.uncertain ??
-		repos.uncertain ??
-		notion.uncertain ??
-		providerAvailability.uncertain;
 
 	// Reset draft when dialog opens
 	if (open !== state.prevOpen) {
@@ -1165,30 +1133,13 @@ export function SettingsModal({
 				</div>
 
 				<DialogFooter className="px-6 py-4 border-t border-border shrink-0">
-					{uncertain && (
-						<p role="alert" className="text-xs text-muted-foreground">
-							{uncertain.message}
-						</p>
-					)}
 					<Button
 						type="button"
 						size="sm"
-						onClick={
-							uncertain
-								? () => retryClientOperation(uncertain.requestId)
-								: handleSave
-						}
-						disabled={
-							!uncertain && (!isDirty || saving || providerAvailability.loading)
-						}
+						onClick={handleSave}
+						disabled={!isDirty || saving || providerAvailability.loading}
 					>
-						{uncertain ? (
-							"元の操作の結果を確認"
-						) : saving ? (
-							<Loader2 className="size-3.5 animate-spin" />
-						) : (
-							"Save"
-						)}
+						{saving ? <Loader2 className="size-3.5 animate-spin" /> : "Save"}
 					</Button>
 				</DialogFooter>
 			</DialogContent>

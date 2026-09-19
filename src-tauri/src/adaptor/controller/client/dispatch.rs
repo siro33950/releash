@@ -64,7 +64,6 @@ impl ClientCommandDispatch {
         super::git_host::register_shared(self, deps);
         super::external_editor::register_shared(self, deps);
         super::telemetry::register_shared(self, deps);
-        super::watcher::register_shared(self, deps);
         super::application_lifecycle::register_shared(self, deps);
     }
     pub(crate) fn register_domain(
@@ -74,9 +73,6 @@ impl ClientCommandDispatch {
     ) {
         assert_eq!(names.len(), 1);
         assert!(self.handlers.insert(names[0], handler).is_none());
-    }
-    pub(crate) fn command_names(&self) -> impl Iterator<Item = &'static str> + '_ {
-        self.handlers.keys().copied()
     }
     #[cfg(test)]
     pub(crate) fn contains(&self, name: &str) -> bool {
@@ -92,6 +88,7 @@ impl ClientCommandDispatch {
         }
         Ok(())
     }
+    #[cfg(test)]
     pub(crate) fn dispatch(
         &self,
         command: wire::command_request::Command,

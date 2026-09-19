@@ -14,8 +14,6 @@ pub(crate) const COMMAND_NAMES: &[&str] = &[
     "set_login_item_enabled",
     "check_desktop_update",
     "install_desktop_update",
-    "forget_client_operation",
-    "list_client_handoff",
 ];
 pub(crate) fn register<R: tauri::Runtime>(
     router: &mut super::CommandRouter<super::InvokeHandler<R>>,
@@ -33,9 +31,7 @@ pub(crate) fn register<R: tauri::Runtime>(
             install_cli,
             set_login_item_enabled,
             check_desktop_update,
-            install_desktop_update,
-            forget_client_operation,
-            list_client_handoff
+            install_desktop_update
         ]),
     );
 }
@@ -104,18 +100,4 @@ async fn install_desktop_update(
     update: tauri::State<'_, crate::usecase::desktop_update::DesktopUpdateUsecase>,
 ) -> Result<(), String> {
     update.apply().await.map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-fn forget_client_operation(
-    handoff: tauri::State<'_, Arc<crate::usecase::client_handoff::ClientHandoffUsecase>>,
-    id: String,
-) -> Result<(), String> {
-    handoff.forget(&id).map_err(|error| error.to_string())
-}
-#[tauri::command]
-fn list_client_handoff(
-    handoff: tauri::State<'_, Arc<crate::usecase::client_handoff::ClientHandoffUsecase>>,
-) -> Result<Vec<crate::usecase::client_handoff_query::ClientHandoffSummary>, String> {
-    handoff.list().map_err(|error| error.to_string())
 }

@@ -5,7 +5,7 @@ import {
 	useRef,
 	useState,
 } from "react";
-import { invokeClient as invoke } from "@/lib/clientSocket";
+import { invokeClient as invoke } from "@/lib/client";
 import { getErrorMessage } from "@/lib/errorMessage";
 import {
 	type AppSettings,

@@ -93,34 +93,14 @@ async fn assert_parity(
     args: Value,
     expected: Result<Value, Value>,
 ) {
-    let mut payload = wire::CommandRequest::from_value(command, args).unwrap();
-    payload.request_id = "parity".into();
-    let request = wire::Envelope {
-        body: Some(wire::envelope::Body::Request(Box::new(payload))),
-    };
-    let wire::envelope::Body::Request(request) =
-        wire::Envelope::decode(request.encode_to_vec().as_slice())
-            .unwrap()
-            .body
-            .unwrap()
-    else {
-        panic!("request");
-    };
-    let result = dispatch.dispatch(request.command.unwrap()).await;
-    let wire::envelope::Body::Response(response) = wire::Envelope::decode(
-        wire::response("parity".into(), result)
-            .encode_to_vec()
-            .as_slice(),
-    )
-    .unwrap()
-    .body
-    .unwrap() else {
-        panic!("response");
-    };
-    assert_eq!(response.request_id, "parity");
-    let actual = match response.outcome.unwrap() {
-        wire::command_response::Outcome::Result(value) => Ok(wire::from_value(value).unwrap()),
-        wire::command_response::Outcome::Error(value) => Err(wire::from_value(value).unwrap()),
+    let payload = wire::CommandRequest::from_value(command, args).unwrap();
+    let request = wire::CommandRequest::decode(payload.encode_to_vec().as_slice()).unwrap();
+    let actual = match dispatch.dispatch(request.command.unwrap()).await {
+        Ok(result) => Ok(wire::from_value(wire::CommandResult {
+            command: Some(result),
+        })
+        .unwrap()),
+        Err(error) => Err(wire::from_value(error).unwrap()),
     };
     assert_eq!(actual, expected, "{command}");
 }
@@ -264,13 +244,45 @@ parity!(
     json!({}),
     outcome(invoke_tauri(&app, "get_external_editor", json!({})).await)
 );
-parity!(
-    test_watcher_protoはusecase結果と一致する,
-    app,
-    "stop_watching",
-    json!({"watcherId":999}),
-    outcome(invoke_tauri(&app, "stop_watching", json!({"watcherId": 999})).await)
-);
+#[tokio::test]
+async fn test_watcher_protoはusecase結果と一致する() {
+    use crate::adaptor::controller::api;
+    // Given
+    let (app, dispatch) = parity_app();
+    let watcher = crate::desktop_test_support::build_watcher_usecase(app.handle());
+    let expected =
+        api::protocol::connect::command_error(watcher.stop(999).unwrap_err().to_string().into());
+    let router = api::client::router(Some(api::ClientApiDeps::new(
+        dispatch,
+        crate::adaptor::gateway::push::ClientPushGateway::new(Arc::new(
+            crate::infrastructure::push::PushSink::new(),
+        )),
+        watcher,
+    )));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let client = crate::client_api_acceptance::connect_client(
+        &crate::client_api_acceptance::ClientEndpoint {
+            url: format!("http://{}", listener.local_addr().unwrap()),
+            token: "client".into(),
+            launch_id: String::new(),
+        },
+    );
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    // When
+    let actual = crate::client_api_acceptance::request_client(
+        &client,
+        "stop_watching",
+        json!({"watcherId": 999}),
+    )
+    .await
+    .unwrap_err();
+    // Then
+    assert_eq!(actual.code, expected.code);
+    assert_eq!(value(actual.details), value(expected.details));
+    server.abort();
+}
 #[tokio::test]
 async fn test_application起動結果_protoは本番shell入口の成功と失敗に一致する() {
     for authority in [
@@ -331,7 +343,8 @@ async fn test_クライアントdispatch_proto全commandの登録と引数検証
     // Given
     let (_app, dispatch) = parity_app();
     // When / Then
-    assert_eq!(wire::COMMAND_NAMES.len(), 175);
+    assert_eq!(wire::COMMAND_NAMES.len(), 172);
+    assert!(!wire::COMMAND_NAMES.contains(&"attach_terminal_surface"));
     for command in commands::tests::registered_command_names() {
         if command != "set_menu_items_enabled"
             && !commands::client::COMMAND_NAMES.contains(&command)
@@ -342,8 +355,9 @@ async fn test_クライアントdispatch_proto全commandの登録と引数検証
     }
     assert!(!commands::tests::registered_command_names().contains(&"get_terminal_stream_endpoint"));
     for command in wire::COMMAND_NAMES {
-        assert!(
-            dispatch.contains(command) || *command == "attach_terminal_surface",
+        assert_eq!(
+            dispatch.contains(command),
+            !["stop_watching", "detach_terminal_surface"].contains(command),
             "{command}"
         );
     }
@@ -352,6 +366,8 @@ async fn test_クライアントdispatch_proto全commandの登録と引数検証
         "set_menu_items_enabled",
         "apply_desktop_settings",
         "get_terminal_stream_endpoint",
+        "start_watching",
+        "start_git_dir_watching",
     ]
     .into_iter()
     .chain(commands::desktop_lifecycle::COMMAND_NAMES.iter().copied())
@@ -387,8 +403,6 @@ async fn test_クライアントdispatch_startup失敗時はstreamも拒否す�
 #[tokio::test]
 async fn test_クライアントws_切断しても受理済みcommandを途中で破棄しない() {
     use crate::adaptor::controller::api;
-    use futures_util::{SinkExt, StreamExt};
-    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message};
     // Given
     let mut dispatch = ClientCommandDispatch::new(
         Arc::new(crate::adaptor::controller::wiring::build_repository_usecase()),
@@ -425,6 +439,7 @@ async fn test_クライアントws_切断しても受理済みcommandを途中�
             crate::adaptor::gateway::push::ClientPushGateway::new(Arc::new(
                 crate::infrastructure::push::PushSink::new(),
             )),
+            crate::client_api_acceptance::watcher(),
         )),
         None,
     )
@@ -434,66 +449,35 @@ async fn test_クライアントws_切断しても受理済みcommandを途中�
     let server = tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });
-    let mut request = format!("ws://{address}/v1/client")
-        .into_client_request()
-        .unwrap();
-    request
-        .headers_mut()
-        .insert("authorization", "Bearer client".parse().unwrap());
-    // When
-    for index in 0..64 {
-        let (mut socket, _) = tokio_tungstenite::connect_async(request.clone())
-            .await
-            .unwrap();
-        socket
-            .send(Message::Binary(
-                crate::client_api_acceptance::encode_client_request(
-                    &format!("work-{index}"),
-                    "get_language_from_path",
-                    json!({"filePath":"/repo"}),
-                )
-                .into(),
-            ))
-            .await
-            .unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(5), started.notified())
-            .await
-            .unwrap();
-        socket.close(None).await.unwrap();
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), socket.next())
-            .await
-            .unwrap();
+    let client = crate::client_api_acceptance::connect_client(
+        &crate::client_api_acceptance::ClientEndpoint {
+            url: format!("http://{address}"),
+            token: "client".into(),
+            launch_id: String::new(),
+        },
+    );
+    for _ in 0..64 {
+        let request = client.get_language_from_path_with_options(
+            crate::client_api_acceptance::rpc::GetLanguageFromPathRequest {
+                file_path: Some("/repo".into()),
+                ..Default::default()
+            },
+            connectrpc::client::CallOptions::default()
+                .with_timeout(std::time::Duration::from_millis(20)),
+        );
+        let (_, result) = tokio::join!(started.notified(), request);
+        assert!(result.is_err());
     }
-    let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
-    socket
-        .send(Message::Binary(
-            crate::client_api_acceptance::encode_client_request(
-                "overflow",
-                "get_language_from_path",
-                json!({"filePath":"/repo"}),
-            )
-            .into(),
-        ))
+    let error = client
+        .get_language_from_path(
+            crate::client_api_acceptance::rpc::GetLanguageFromPathRequest {
+                file_path: Some("/repo".into()),
+                ..Default::default()
+            },
+        )
         .await
-        .unwrap();
-    let frame = tokio::time::timeout(std::time::Duration::from_secs(5), socket.next())
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap();
-    let Message::Binary(bytes) = frame else {
-        panic!("binary");
-    };
-    let wire::envelope::Body::Response(response) =
-        wire::Envelope::decode(bytes).unwrap().body.unwrap()
-    else {
-        panic!("response");
-    };
-    let wire::command_response::Outcome::Error(error) = response.outcome.unwrap() else {
-        panic!("limit");
-    };
-    assert_eq!(response.request_id, "overflow");
-    assert_eq!(wire::from_value(error).unwrap()["code"], "REQUEST_LIMIT");
+        .unwrap_err();
+    assert_eq!(error.code, connectrpc::ErrorCode::ResourceExhausted);
     resume.add_permits(64);
     // Then
     tokio::time::timeout(
@@ -504,7 +488,6 @@ async fn test_クライアントws_切断しても受理済みcommandを途中�
     .expect("受理済み操作は接続の寿命から独立して完了する")
     .unwrap()
     .forget();
-    socket.close(None).await.unwrap();
     server.abort();
 }
 
@@ -529,14 +512,12 @@ fn mutation_repository() -> (tempfile::TempDir, String) {
 }
 
 #[tokio::test]
-async fn test_未呼出34command_wsの実行結果とエラーがtauriと一致する() {
+async fn test_未呼出34command_connectの実行結果とエラーがtauriと一致する() {
     use crate::adaptor::controller::{api, application_lifecycle, state::AppState};
     use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
     use crate::usecase::shutdown_coordinator::{
         ApplicationQuitIntent, ApplicationQuitOutcome, ApplicationQuitRequest, ApplicationQuitState,
     };
-    use futures_util::{SinkExt, StreamExt};
-    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message};
 
     // Given
     let (temp, path) = mutation_repository();
@@ -637,6 +618,7 @@ async fn test_未呼出34command_wsの実行結果とエラーがtauriと一致�
             crate::adaptor::gateway::push::ClientPushGateway::new(Arc::new(
                 crate::infrastructure::push::PushSink::new(),
             )),
+            crate::desktop_test_support::build_watcher_usecase(app.handle()),
         )),
         None,
     )
@@ -646,13 +628,14 @@ async fn test_未呼出34command_wsの実行結果とエラーがtauriと一致�
     let server = tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });
-    let mut request = format!("ws://{address}/v1/client")
-        .into_client_request()
-        .unwrap();
-    request
-        .headers_mut()
-        .insert("authorization", "Bearer client".parse().unwrap());
-    let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+    let client = crate::client_api_acceptance::connect_client(
+        &crate::client_api_acceptance::ClientEndpoint {
+            url: format!("http://{address}"),
+            token: "client".into(),
+            launch_id: String::new(),
+        },
+    );
+
     let execution = "00000000-0000-4000-8000-000000000123";
     let cases = [
         ("get_crash_reporting_enabled", json!({}), true),
@@ -797,33 +780,17 @@ async fn test_未呼出34command_wsの実行結果とエラーがtauriと一致�
         if let Err(error) = &expected {
             assert!(error.is_string(), "usecase error: {command}: {error}");
         }
-        socket
-            .send(Message::Binary(
-                crate::client_api_acceptance::encode_client_request(command, command, args).into(),
-            ))
+        let actual = crate::client_api_acceptance::request_client(&client, command, args)
             .await
-            .unwrap();
-        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), socket.next())
-            .await
-            .expect(command)
-            .unwrap()
-            .unwrap();
-        let Message::Binary(bytes) = frame else {
-            panic!("{command}: binary response");
-        };
-        let wire::envelope::Body::Response(response) =
-            wire::Envelope::decode(bytes).unwrap().body.unwrap()
-        else {
-            panic!("{command}: response");
-        };
-        assert_eq!(response.request_id, command);
-        let actual = match response.outcome.unwrap() {
-            wire::command_response::Outcome::Result(value) => Ok(wire::from_value(value).unwrap()),
-            wire::command_response::Outcome::Error(value) => Err(wire::from_value(value).unwrap()),
-        };
+            .map_err(|error| {
+                use base64::Engine;
+                let bytes = base64::engine::general_purpose::STANDARD_NO_PAD
+                    .decode(error.details[0].value.as_ref().unwrap())
+                    .unwrap();
+                wire::from_value(wire::CommandError::decode(bytes.as_slice()).unwrap()).unwrap()
+            });
         assert_eq!(actual, expected, "{command}");
     }
-    socket.close(None).await.unwrap();
     server.abort();
     let approvals = &gateway.commands.lock().unwrap().approvals;
     assert_eq!(approvals.len(), 2);
@@ -1258,11 +1225,9 @@ pub(crate) async fn invoke_tauri(
 }
 
 #[tokio::test]
-async fn test_workspace保存_wsがui追加fieldを受理し既存項目を再起動後に復元する() {
+async fn test_workspace保存_connectがui追加fieldを受理し既存項目を再起動後に復元する() {
     use crate::adaptor::controller::api;
     use crate::adaptor::gateway::workspace_state::WorkspaceStateStore;
-    use futures_util::{SinkExt, StreamExt};
-    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message};
     // Given
     let data = tempfile::tempdir().unwrap();
     let worktree = data.path().join("worktree");
@@ -1287,6 +1252,7 @@ async fn test_workspace保存_wsがui追加fieldを受理し既存項目を再�
             crate::adaptor::gateway::push::ClientPushGateway::new(Arc::new(
                 crate::infrastructure::push::PushSink::new(),
             )),
+            crate::desktop_test_support::build_watcher_usecase(app.handle()),
         )),
         None,
     )
@@ -1296,39 +1262,23 @@ async fn test_workspace保存_wsがui追加fieldを受理し既存項目を再�
     let server = tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });
-    let mut request = format!("ws://{address}/v1/client")
-        .into_client_request()
-        .unwrap();
-    request
-        .headers_mut()
-        .insert("authorization", "Bearer client".parse().unwrap());
-    let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
-    // When
-    socket
-        .send(Message::Binary(
-            crate::client_api_acceptance::encode_client_request(
-                "save",
-                "save_workspace_state",
-                json!({"worktreeName":"workspace","state":state}),
-            )
-            .into(),
-        ))
+    let client = crate::client_api_acceptance::connect_client(
+        &crate::client_api_acceptance::ClientEndpoint {
+            url: format!("http://{address}"),
+            token: "client".into(),
+            launch_id: String::new(),
+        },
+    );
+    assert_eq!(
+        crate::client_api_acceptance::request_client(
+            &client,
+            "save_workspace_state",
+            json!({"worktreeName":"workspace","state":state})
+        )
         .await
-        .unwrap();
-    let Message::Binary(bytes) = socket.next().await.unwrap().unwrap() else {
-        panic!("binary response");
-    };
-    let wire::envelope::Body::Response(response) =
-        wire::Envelope::decode(bytes).unwrap().body.unwrap()
-    else {
-        panic!("response");
-    };
-    assert_eq!(response.request_id, "save");
-    let wire::command_response::Outcome::Result(result) = response.outcome.unwrap() else {
-        panic!("save succeeded");
-    };
-    assert_eq!(wire::from_value(result).unwrap(), Value::Null);
-    socket.close(None).await.unwrap();
+        .unwrap(),
+        Value::Null
+    );
     server.abort();
     deps.workspace_state_store = Some(Arc::new(WorkspaceStateStore::new(data.path().to_owned())));
     let mut restarted = ClientCommandDispatch::new(
@@ -1462,5 +1412,51 @@ async fn test_一般設定保存_必須入力の欠落ではどの設定も変�
         // Then
         assert_eq!(wire::from_value(error).unwrap()["code"], "INVALID_REQUEST");
         assert_eq!(repository.load().unwrap(), original);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_接続情報command_起動中の要求を拒否せず検証済みendpointを返す() {
+    use crate::usecase::test_helpers::{tick, FakeDaemon};
+    use std::sync::atomic::Ordering;
+    // Given
+    let (app, _) = parity_app();
+    let gateway = Arc::new(FakeDaemon::default());
+    let supervisor =
+        crate::usecase::daemon_supervision::DaemonSupervisionUsecase::start(gateway.clone());
+    app.manage(supervisor);
+    for reconnect in [false, true] {
+        if reconnect {
+            gateway.ready.store(false, Ordering::SeqCst);
+            tick(200).await;
+        }
+        // When
+        let request = super::get_client_endpoint(app.state(), "desktop".into());
+        tokio::pin!(request);
+        assert!(futures_util::poll!(&mut request).is_pending());
+        tick(200).await;
+        assert!(futures_util::poll!(&mut request).is_pending());
+        gateway.ready.store(true, Ordering::SeqCst);
+        tick(200).await;
+        // Then
+        let endpoint = request.await.unwrap();
+        assert_eq!(endpoint.endpoint.token, "client-only");
+        assert_eq!(endpoint.launch_id, "launch");
+    }
+}
+
+#[test]
+fn test_通常要求_connect入口にはsupervisorの受付制御を登録しない() {
+    // Given / When
+    let commands = super::COMMAND_NAMES;
+    // Then
+    assert!(commands.contains(&"get_client_endpoint"));
+    for removed in [
+        "admit_client_command",
+        "attach_desktop_client",
+        "send_desktop_client_frame",
+        "detach_desktop_client",
+    ] {
+        assert!(!commands.contains(&removed));
     }
 }

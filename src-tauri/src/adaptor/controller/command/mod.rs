@@ -28,12 +28,7 @@ fn shell_operation(command: &str) -> crate::domain::daemon_supervision::ShellOpe
         | "get_application_startup_outcome"
         | "quit_after_startup_failure"
         | "validate_daemon_connection"
-        | "list_client_handoff"
-        | "forget_client_operation"
-        | "attach_desktop_client"
-        | "detach_desktop_client"
-        | "send_desktop_client_frame"
-        | "admit_client_command"
+        | "get_client_endpoint"
         | "fail_desktop_restoration"
         | "complete_desktop_restoration" => ShellOperation::Supervision,
         "get_login_item_status" => ShellOperation::RestoreState,

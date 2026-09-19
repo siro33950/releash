@@ -10,10 +10,6 @@ import {
 	retryWorkspaceNode,
 	useWorkspaceNodeDetail,
 } from "@/hooks/useWorkspaceNodeDetail";
-import {
-	type ClientTransportError,
-	retryClientOperation,
-} from "@/lib/clientSocket";
 import { getErrorMessage } from "@/lib/errorMessage";
 import type { AgentSessionLaunchAttachment } from "@/types/agent-session";
 import type { Theme } from "@/types/settings";
@@ -111,27 +107,15 @@ function NodeHeader({
 	worktreePath: string;
 }) {
 	const [approving, setApproving] = useState(false);
-	const [approvalUncertain, setApprovalUncertain] = useState(false);
 	const [retrying, setRetrying] = useState(false);
-	const [retryUncertain, setRetryUncertain] =
-		useState<ClientTransportError | null>(null);
 	const [actionError, setActionError] = useState<string | null>(null);
 
 	const approve = useCallback(async () => {
 		if (approving || !detail.capabilities.canApprove) return;
 		setApproving(true);
-		setApprovalUncertain(false);
 		setActionError(null);
 		try {
-			await approveWorkspaceNode(
-				{ worktreePath, nodeId: detail.id },
-				{
-					onUncertain: (error) => {
-						setApprovalUncertain(true);
-						setActionError(error.message);
-					},
-				},
-			);
+			await approveWorkspaceNode({ worktreePath, nodeId: detail.id });
 			setActionError(null);
 		} catch (error) {
 			setActionError(getErrorMessage(error));
@@ -143,19 +127,14 @@ function NodeHeader({
 	const retry = useCallback(async () => {
 		if (retrying || !detail.capabilities.canRetry) return;
 		setRetrying(true);
-		setRetryUncertain(null);
 		setActionError(null);
 		try {
-			await retryWorkspaceNode(
-				{ worktreePath, nodeId: detail.id },
-				{ onUncertain: setRetryUncertain },
-			);
+			await retryWorkspaceNode({ worktreePath, nodeId: detail.id });
 			setActionError(null);
 		} catch (error) {
 			setActionError(getErrorMessage(error));
 		} finally {
 			setRetrying(false);
-			setRetryUncertain(null);
 		}
 	}, [detail.capabilities.canRetry, detail.id, retrying, worktreePath]);
 
@@ -223,32 +202,14 @@ function NodeHeader({
 					<span className="truncate">{actionError}</span>
 				</span>
 			)}
-			{retryUncertain && (
-				<span role="alert" className="text-xs text-muted-foreground">
-					{retryUncertain.message}
-				</span>
-			)}
 			{detail.capabilities.canApprove && (
 				<Button type="button" size="xs" disabled={approving} onClick={approve}>
-					{approving && !approvalUncertain ? "Approving..." : "Approve"}
+					{approving ? "Approving..." : "Approve"}
 				</Button>
 			)}
 			{detail.capabilities.canRetry && (
-				<Button
-					type="button"
-					size="xs"
-					disabled={retrying && !retryUncertain}
-					onClick={
-						retryUncertain
-							? () => retryClientOperation(retryUncertain.requestId)
-							: retry
-					}
-				>
-					{retryUncertain
-						? "元の操作の結果を確認"
-						: retrying
-							? "Retrying..."
-							: "Retry"}
+				<Button type="button" size="xs" disabled={retrying} onClick={retry}>
+					{retrying ? "Retrying..." : "Retry"}
 				</Button>
 			)}
 		</div>

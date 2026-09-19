@@ -604,3 +604,87 @@ fn test_サイズ更新_予約の破棄と受付失敗でも待機列を解放�
     assert!(application.resize_tails.lock().unwrap().is_empty());
     assert!(gateway.resizes.lock().is_empty());
 }
+
+#[tokio::test]
+async fn test_ターミナル接続_snapshot構築中も別attachmentのackとdetachと解放が完了する() {
+    use super::super::io_usecase::io_usecase_tests::FakePtyGateway;
+    use std::time::Duration;
+
+    for operation in ["ack", "detach", "drop", "replace"] {
+        // Given
+        let owner = TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/repo")).unwrap();
+        let mut gateway = FakePtyGateway::new();
+        gateway.surface = Some(TerminalSurface::with_checkpoint(
+            1,
+            owner.clone(),
+            None,
+            TerminalSurfaceCheckpoint::empty(80, 24),
+        ));
+        let gateway = Arc::new(gateway);
+        let hub = Arc::new(TerminalSurfaceEventHub::new());
+        let application = super::TerminalSurfaceApplication::new(gateway.clone(), hub.clone());
+        let previous = application.attach("previous", &owner).unwrap();
+        let (started, waiting) = std::sync::mpsc::channel();
+        let (release, gate) = std::sync::mpsc::channel();
+        *gateway.snapshot_gate.lock() = Some((started, gate));
+        let next_id = if operation == "replace" {
+            "previous"
+        } else {
+            "next"
+        };
+        let attach = std::thread::spawn({
+            let application = application.clone();
+            let owner = owner.clone();
+            move || application.attach(next_id, &owner).unwrap()
+        });
+        waiting.recv_timeout(Duration::from_secs(2)).unwrap();
+
+        // When
+        let (done, completed) = std::sync::mpsc::channel();
+        let action = std::thread::spawn({
+            let application = application.clone();
+            move || {
+                match operation {
+                    "ack" => application.acknowledge_output("previous", 0),
+                    "detach" => application.detach("previous"),
+                    _ => drop(previous),
+                }
+                done.send(()).unwrap();
+            }
+        });
+        let result = completed.recv_timeout(Duration::from_secs(2));
+        release.send(()).unwrap();
+        action.join().unwrap();
+        let mut next = attach.join().unwrap();
+
+        // Then
+        assert!(result.is_ok(), "{operation} waited for snapshot");
+        assert!(matches!(
+            next.next().await,
+            Some(super::TerminalSurfaceStreamItem::Snapshot(_))
+        ));
+        hub.publish(TerminalSurfaceEvent::Output {
+            session_key: owner.stable_key(),
+            data: "live".into(),
+            sequence: 1,
+        });
+        assert!(
+            matches!(tokio::time::timeout(Duration::from_secs(1), next.next()).await.unwrap(), Some(super::TerminalSurfaceStreamItem::Output { data, .. }) if data.as_ref() == "live")
+        );
+        application
+            .write_attached(&owner, next_id, 0, None, "input")
+            .unwrap();
+        assert_eq!(
+            *gateway.writes.lock(),
+            [(owner.stable_key(), "input".into())]
+        );
+        drop(next);
+        assert_eq!(
+            application.write_attached(&owner, next_id, 1, None, "stale"),
+            Err(super::UsecaseError::Gateway(
+                "Terminal input attachment is no longer active".into()
+            ))
+        );
+        assert_eq!(gateway.writes.lock().len(), 1);
+    }
+}

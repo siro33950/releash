@@ -1,8 +1,5 @@
-pub(crate) mod client;
-mod conversions;
-mod errors;
-mod json;
-mod workflow_values;
+pub(crate) use crate::adaptor::protocol::client;
+pub(crate) mod connect;
 
 use serde::{Deserialize, Serialize};
 

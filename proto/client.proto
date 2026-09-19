@@ -13,16 +13,12 @@ message Push {
     RepositorySnapshotChangedEvent repository_snapshot_changed = 6;
     ResultString review_comments_changed = 7;
     WorkflowExecutionChangedPayloadView workflow_execution_changed = 8;
+    Unit resync = 9;
   }
 }
 message CommandRequest {
-  string request_id = 1;
-  string instance_id = 2;
-  bool recover = 3;
-  repeated OperationReference predecessors = 4;
-  uint64 deadline_unix_ms = 5;
-  bool user_retry = 6;
-  repeated OperationReference successors = 7;
+  reserved 131, 134;
+  reserved "start_git_dir_watching", "start_watching";
   oneof command {
     GetReviewBlobRequest get_review_blob = 183;
     AbortWorkflowRequest abort_workflow = 10;
@@ -33,7 +29,6 @@ message CommandRequest {
     ApproveWorkspaceNodeRequest approve_workspace_node = 15;
     ArchiveAgentSessionRequest archive_agent_session = 16;
     ArchiveWorkspaceWorkflowExecutionRequest archive_workspace_workflow_execution = 17;
-    AttachTerminalSurfaceRequest attach_terminal_surface = 18;
     BuildReviewThreadHandoffRequest build_review_thread_handoff = 19;
     ComputeHiddenRangesFromContentRequest compute_hidden_ranges_from_content = 20;
     ComputeMarkdownDiffRangesRequest compute_markdown_diff_ranges = 21;
@@ -146,10 +141,8 @@ message CommandRequest {
     SaveWorkspaceStateRequest save_workspace_state = 128;
     SetBranchBaseRequest set_branch_base = 129;
     SetReleashBaseRequest set_releash_base = 130;
-    StartGitDirWatchingRequest start_git_dir_watching = 131;
     StartTerminalInputPerformanceCollectionRequest start_terminal_input_performance_collection = 132;
     StartTerminalLaunchPerformanceCollectionRequest start_terminal_launch_performance_collection = 133;
-    StartWatchingRequest start_watching = 134;
     StartWorkflowRequest start_workflow = 135;
     StopWatchingRequest stop_watching = 136;
     StopWorkflowRequest stop_workflow = 137;
@@ -203,6 +196,8 @@ message CommandRequest {
 }
 
 message CommandResult {
+  reserved 131, 134;
+  reserved "start_git_dir_watching", "start_watching";
   oneof command {
     ResultString get_review_blob = 183;
     Unit abort_workflow = 10;
@@ -213,7 +208,6 @@ message CommandResult {
     Unit approve_workspace_node = 15;
     AgentSessionArchiveResponse archive_agent_session = 16;
     Unit archive_workspace_workflow_execution = 17;
-    Unit attach_terminal_surface = 18;
     ResultString build_review_thread_handoff = 19;
     ListHiddenRangeDto compute_hidden_ranges_from_content = 20;
     ListDiffRangeDto compute_markdown_diff_ranges = 21;
@@ -326,10 +320,8 @@ message CommandResult {
     Unit save_workspace_state = 128;
     Unit set_branch_base = 129;
     Unit set_releash_base = 130;
-    ResultUint64 start_git_dir_watching = 131;
     Unit start_terminal_input_performance_collection = 132;
     Unit start_terminal_launch_performance_collection = 133;
-    ResultUint64 start_watching = 134;
     ResultString start_workflow = 135;
     Unit stop_watching = 136;
     Unit stop_workflow = 137;
@@ -3464,31 +3456,9 @@ message WorkflowExecutionChangedPayloadView {
   optional WorkflowExecutionView workflow_execution = 2 [json_name = "workflowExecution", (json_required) = true];
 }
 
-message Envelope {
-  oneof body {
-    CommandRequest request = 1;
-    CommandResponse response = 2;
-    Push push = 3;
-    Stream stream = 4;
-    Ack ack = 5;
-    RequestAck request_ack = 6;
-    Unit push_resync = 7;
-    StreamClosed stream_closed = 8;
-    ClientHello hello = 9;
-    Heartbeat heartbeat = 10;
-    OperationQuery operation_query = 11;
-    OperationStatus operation_status = 12;
-  }
-}
 
-message CommandResponse {
-  string request_id = 1;
-  DesktopSettings desktop_settings = 4;
-  oneof outcome {
-    CommandResult result = 2;
-    CommandError error = 3;
-  }
-}
+
+
 message CommandError {
   option (json_untagged) = true;
   oneof variant {
@@ -3507,28 +3477,13 @@ message ApplicationError {
   optional string correlation_id = 3 [json_name = "correlation_id"];
   optional SafeOperationFailureDtoV1 failure = 4;
 }
-message Stream {
-  string attachment_id = 1;
-  uint64 sequence = 2;
-  bytes data = 3;
-  bool end = 4;
-}
 
-message RequestAck {
-  string request_id = 1;
-  bool release_watch = 2;
-  bool confirm_watch = 3;
-}
 
-message StreamClosed {
-  string attachment_id = 1;
-}
 
-message Ack {
-  string attachment_id = 1;
-  uint64 sequence = 2;
-  optional uint64 output_sequence = 3;
-}
+
+
+
+
 
 message TerminalEvent {
   oneof item {
@@ -3735,49 +3690,228 @@ message GetReviewBlobRequest {
   optional string reference = 1 [(json_required) = true];
 }
 
-message ClientHello {
-  string instance_id = 1;
-  uint64 heartbeat_interval_ms = 2;
-  uint64 heartbeat_timeout_ms = 3;
-  uint64 connect_timeout_ms = 4;
-  uint64 reconnect_interval_ms = 5;
-  uint64 sleep_gap_ms = 6;
-  uint64 tick_interval_ms = 7;
-  map<string, uint64> deadlines_ms = 8;
-  map<string, CommandPolicy> policies = 9;
-  DesktopSettings desktop_settings = 10;
-  string launch_id = 11;
-  string release = 12;
-}
 
-message CommandPolicy {
-  bool waits_for_result = 1;
-  bool polls_result = 2;
-  string disconnect = 3;
-  string expired_disconnect = 4;
-}
 
-message Heartbeat { string nonce = 1; }
-message OperationReference {
-  string request_id = 1;
-  string command = 3;
-  bool uncertain = 4;
-  bytes fingerprint = 5;
-  bytes ordering_target = 6;
-}
-message OperationQuery {
-  string request_id = 1;
-  string instance_id = 2;
-  CommandRequest request = 3;
-  bool sent = 4;
-  bool expired = 5;
-  string query_id = 6;
-}
-message OperationStatus { string request_id = 1; string state = 2; string operation_id = 3; bytes fingerprint = 4; bytes ordering_target = 5; string query_id = 6; }
+
+
+
+
+
+
 
 message DesktopSettings {
   bool close_to_tray = 1;
   bool start_minimized = 2;
   bool crash_reporting = 3;
   bool performance_telemetry = 4;
+}
+
+service ClientService {
+  rpc GetReviewBlob(GetReviewBlobRequest) returns (ResultString);
+  rpc AbortWorkflow(AbortWorkflowRequest) returns (Unit);
+  rpc AckTerminalSurfaceOutput(AckTerminalSurfaceOutputRequest) returns (Unit);
+  rpc AcknowledgeApplicationAttempt(AcknowledgeApplicationAttemptRequest) returns (Unit);
+  rpc AddRepoPath(AddRepoPathRequest) returns (ResultBool);
+  rpc AppendReviewComment(AppendReviewCommentRequest) returns (ReviewThreadDto);
+  rpc ApproveWorkspaceNode(ApproveWorkspaceNodeRequest) returns (Unit);
+  rpc ArchiveAgentSession(ArchiveAgentSessionRequest) returns (AgentSessionArchiveResponse);
+  rpc ArchiveWorkspaceWorkflowExecution(ArchiveWorkspaceWorkflowExecutionRequest) returns (Unit);
+  rpc AttachTerminalSurface(AttachSubscribedTerminalSurfaceRequest) returns (Unit);
+  rpc SubscribeTerminalSurfaces(SubscribeTerminalSurfacesRequest) returns (stream TerminalSubscriptionEvent);
+  rpc BuildReviewThreadHandoff(BuildReviewThreadHandoffRequest) returns (ResultString);
+  rpc ComputeHiddenRangesFromContent(ComputeHiddenRangesFromContentRequest) returns (ListHiddenRangeDto);
+  rpc ComputeMarkdownDiffRanges(ComputeMarkdownDiffRangesRequest) returns (ListDiffRangeDto);
+  rpc ComputeMarkdownInlineChunks(ComputeMarkdownInlineChunksRequest) returns (ListInlineChunkDto);
+  rpc ComputeMarkdownSplitRows(ComputeMarkdownSplitRowsRequest) returns (ListSplitRowDto);
+  rpc ComputeVisibleMarkdownBlocks(ComputeVisibleMarkdownBlocksRequest) returns (ListVisibleBlockDto);
+  rpc ConfirmAgentSessionArchiveDelete(ConfirmAgentSessionArchiveDeleteRequest) returns (Unit);
+  rpc CreateAgentSession(CreateAgentSessionRequest) returns (ResultString);
+  rpc CreateReviewThread(CreateReviewThreadRequest) returns (ReviewThreadDto);
+  rpc CreateWorktree(CreateWorktreeRequest) returns (WorktreeEntryDto);
+  rpc DeleteAgentSession(DeleteAgentSessionRequest) returns (Unit);
+  rpc DeleteBranch(DeleteBranchRequest) returns (Unit);
+  rpc DeleteFacet(DeleteFacetRequest) returns (Unit);
+  rpc DeleteNotionConfig(DeleteNotionConfigRequest) returns (Unit);
+  rpc DeleteReviewThread(DeleteReviewThreadRequest) returns (Unit);
+  rpc DeleteWorkflow(DeleteWorkflowRequest) returns (Unit);
+  rpc DetachTerminalSurface(DetachTerminalSurfaceRequest) returns (Unit);
+  rpc DetectEditors(DetectEditorsRequest) returns (ListEditorInfoDto);
+  rpc DiagnoseAllCmd(DiagnoseAllCmdRequest) returns (DiagnosticReport);
+  rpc DuplicateFacet(DuplicateFacetRequest) returns (Unit);
+  rpc DuplicateWorkflow(DuplicateWorkflowRequest) returns (Unit);
+  rpc FetchIssues(FetchIssuesRequest) returns (ListIssueInfoDto);
+  rpc FetchNotionLabelOptions(FetchNotionLabelOptionsRequest) returns (ListNotionLabelOptionView);
+  rpc GetAgentSession(GetAgentSessionRequest) returns (NullableAgentSessionItemDto);
+  rpc GetAppSettings(GetAppSettingsRequest) returns (AppSection);
+  rpc GetApplicationQuitOperation(GetApplicationQuitOperationRequest) returns (ApplicationQuitLookupDtoV1);
+  rpc GetApplicationShutdown(GetApplicationShutdownRequest) returns (CurrentShutdownResultDtoV1);
+  rpc GetApplicationStartupOutcome(GetApplicationStartupOutcomeRequest) returns (ApplicationStartupOutcomeDtoV1);
+  rpc GetAutomationConfigDir(GetAutomationConfigDirRequest) returns (ResultString);
+  rpc GetBranchBase(GetBranchBaseRequest) returns (Nullablestring);
+  rpc GetCachedIssues(GetCachedIssuesRequest) returns (ListIssueInfoDto);
+  rpc GetCachedPrStatus(GetCachedPrStatusRequest) returns (PrStatusDto);
+  rpc GetCurrentBranch(GetCurrentBranchRequest) returns (ResultString);
+  rpc GetCwd(GetCwdRequest) returns (ResultString);
+  rpc GetExternalEditor(GetExternalEditorRequest) returns (ResultString);
+  rpc GetFacet(GetFacetRequest) returns (ResultString);
+  rpc GetFileNavigation(GetFileNavigationRequest) returns (FileNavigationResultDto);
+  rpc GetLanguageFromPath(GetLanguageFromPathRequest) returns (ResultString);
+  rpc GetMainRepoPath(GetMainRepoPathRequest) returns (ResultString);
+  rpc GetNotionConfig(GetNotionConfigRequest) returns (NullableNotionRepoConfigView);
+  rpc GetOrSpawnTerminalSurface(GetOrSpawnTerminalSurfaceRequest) returns (GetOrSpawnTerminalV1);
+  rpc GetPerformanceRealAppMode(GetPerformanceRealAppModeRequest) returns (ResultBool);
+  rpc GetPerformanceTelemetryEnabled(GetPerformanceTelemetryEnabledRequest) returns (ResultBool);
+  rpc GetProviderAvailability(GetProviderAvailabilityRequest) returns (ProviderAvailabilitySnapshotResponse);
+  rpc GetReleashBase(GetReleashBaseRequest) returns (Nullablestring);
+  rpc GetRepoPaths(GetRepoPathsRequest) returns (Liststring);
+  rpc GetReviewFileView(GetReviewFileViewRequest) returns (ReviewFileViewDto);
+  rpc GetReviewSnapshot(GetReviewSnapshotRequest) returns (ReviewSnapshotDto);
+  rpc GetShutdownPlan(GetShutdownPlanRequest) returns (ShutdownPlanPageDtoV1);
+  rpc GetTerminalPerformanceSwitches(GetTerminalPerformanceSwitchesRequest) returns (TerminalPerformanceSwitchesV1);
+  rpc GetTerminalSurface(GetTerminalSurfaceRequest) returns (TerminalSurfaceSummaryV1);
+  rpc GetWorkflow(GetWorkflowRequest) returns (WorkflowDto);
+  rpc GetWorkflowConfig(GetWorkflowConfigRequest) returns (WorkflowSection);
+  rpc GetWorkflowExecutionState(GetWorkflowExecutionStateRequest) returns (NullableWorkflowExecutionView);
+  rpc GetWorkflowSource(GetWorkflowSourceRequest) returns (ResultString);
+  rpc GetWorkspaceNodeDetail(GetWorkspaceNodeDetailRequest) returns (NullableWorkspaceNodeDetailDto);
+  rpc GetWorkspaceSessionNodeId(GetWorkspaceSessionNodeIdRequest) returns (Nullablestring);
+  rpc GetWorkspaceTreeSelectionReconciliation(GetWorkspaceTreeSelectionReconciliationRequest) returns (WorkspaceTreeSelectionSnapshotDto);
+  rpc GitCreateBranch(GitCreateBranchRequest) returns (Unit);
+  rpc GitStage(GitStageRequest) returns (Unit);
+  rpc GitStageReviewGroup(GitStageReviewGroupRequest) returns (Unit);
+  rpc GitUnstage(GitUnstageRequest) returns (Unit);
+  rpc GitUnstageReviewGroup(GitUnstageReviewGroupRequest) returns (Unit);
+  rpc KillTerminalSurface(KillTerminalSurfaceRequest) returns (Unit);
+  rpc ListAgentSessionHistory(ListAgentSessionHistoryRequest) returns (AgentSessionHistoryPageDto);
+  rpc ListAvailableAgentSessionProviders(ListAvailableAgentSessionProvidersRequest) returns (ListAgentSessionProviderDto);
+  rpc ListBranches(ListBranchesRequest) returns (ListBranchDto);
+  rpc ListBranchesWithStatus(ListBranchesWithStatusRequest) returns (ListBranchCardDto);
+  rpc ListBranchesWithStatusSnapshot(ListBranchesWithStatusSnapshotRequest) returns (RepositoryBranchCardsSnapshotDto);
+  rpc ListFacetSummaries(ListFacetSummariesRequest) returns (ListFacetSummaryDto);
+  rpc ListPendingApplicationAttempts(ListPendingApplicationAttemptsRequest) returns (PendingCallerAttemptPageDtoV1);
+  rpc ListProviderHookHealthWarnings(ListProviderHookHealthWarningsRequest) returns (ListProviderHookHealthWarningResponse);
+  rpc ListReviewThreads(ListReviewThreadsRequest) returns (ListReviewThreadDto);
+  rpc ListWorkflows(ListWorkflowsRequest) returns (ListWorkflowSummaryDto);
+  rpc ListWorkspaceWorkflowHistory(ListWorkspaceWorkflowHistoryRequest) returns (ListWorkspaceWorkflowHistoryItemDto);
+  rpc ListWorkspaceWorktreeNodes(ListWorkspaceWorktreeNodesRequest) returns (WorkspaceTreeSnapshotDto);
+  rpc ListWorktrees(ListWorktreesRequest) returns (ListWorktreeEntryDto);
+  rpc LoadWorkspaceState(LoadWorkspaceStateRequest) returns (NullableWorkspaceStateDto);
+  rpc OpenAgentSession(OpenAgentSessionRequest) returns (AgentSessionOpenResponse);
+  rpc OpenFacetInEditor(OpenFacetInEditorRequest) returns (Unit);
+  rpc OpenFolderInEditor(OpenFolderInEditorRequest) returns (Unit);
+  rpc OpenInEditor(OpenInEditorRequest) returns (Unit);
+  rpc OpenWorkflowInEditor(OpenWorkflowInEditorRequest) returns (Unit);
+  rpc QueryNotionTasks(QueryNotionTasksRequest) returns (NotionTaskPageView);
+  rpc QuitAfterStartupFailure(QuitAfterStartupFailureRequest) returns (StartupFailureQuitOutcomeDtoV1);
+  rpc RecordTerminalLaunchRendererPhase(RecordTerminalLaunchRendererPhaseRequest) returns (Unit);
+  rpc RefreshProviderAvailability(RefreshProviderAvailabilityRequest) returns (ProviderAvailabilitySnapshotResponse);
+  rpc RemoveRepoPath(RemoveRepoPathRequest) returns (ResultBool);
+  rpc RemoveWorktree(RemoveWorktreeRequest) returns (Unit);
+  rpc RenameWorkspaceSessionNode(RenameWorkspaceSessionNodeRequest) returns (Unit);
+  rpc RenderFacetPreview(RenderFacetPreviewRequest) returns (ResultString);
+  rpc ReportFrontendError(ReportFrontendErrorRequest) returns (Unit);
+  rpc ReportMountedXtermCount(ReportMountedXtermCountRequest) returns (Unit);
+  rpc ReportUsageEvent(ReportUsageEventRequest) returns (Unit);
+  rpc RequestApplicationQuit(RequestApplicationQuitRequest) returns (ApplicationQuitOutcomeDtoV1);
+  rpc ResetProviderExecutable(ResetProviderExecutableRequest) returns (ProviderAvailabilitySnapshotResponse);
+  rpc ResizeTerminalSurface(ResizeTerminalSurfaceRequest) returns (Unit);
+  rpc ResolveActiveExecutionByWorktree(ResolveActiveExecutionByWorktreeRequest) returns (Nullablestring);
+  rpc ResolveReviewThread(ResolveReviewThreadRequest) returns (ReviewThreadDto);
+  rpc ResolveShutdownTargetAction(ResolveShutdownTargetActionRequest) returns (RecoveryActionOutcomeDtoV1);
+  rpc RestoreAgentSession(RestoreAgentSessionRequest) returns (AgentSessionOpenResponse);
+  rpc RestoreWorkspaceWorkflowExecution(RestoreWorkspaceWorkflowExecutionRequest) returns (Unit);
+  rpc ResumeAgentSession(ResumeAgentSessionRequest) returns (AgentSessionOpenResponse);
+  rpc ResumeAgentSessionHistoryCandidate(ResumeAgentSessionHistoryCandidateRequest) returns (ResultString);
+  rpc ResumeWorkflow(ResumeWorkflowRequest) returns (Unit);
+  rpc RetryWorkspaceNode(RetryWorkspaceNodeRequest) returns (Unit);
+  rpc SaveFacet(SaveFacetRequest) returns (Unit);
+  rpc SaveNotionConfig(SaveNotionConfigRequest) returns (Unit);
+  rpc SaveWorkflowSource(SaveWorkflowSourceRequest) returns (SaveWorkflowSourceResultDto);
+  rpc SaveWorkspaceState(SaveWorkspaceStateRequest) returns (Unit);
+  rpc SetBranchBase(SetBranchBaseRequest) returns (Unit);
+  rpc SetReleashBase(SetReleashBaseRequest) returns (Unit);
+  rpc StartTerminalInputPerformanceCollection(StartTerminalInputPerformanceCollectionRequest) returns (Unit);
+  rpc StartTerminalLaunchPerformanceCollection(StartTerminalLaunchPerformanceCollectionRequest) returns (Unit);
+  rpc StartWorkflow(StartWorkflowRequest) returns (ResultString);
+  rpc StopWatching(StopWatchingRequest) returns (Unit);
+  rpc StopWorkflow(StopWorkflowRequest) returns (Unit);
+  rpc TakeTerminalInputPerformanceSamples(TakeTerminalInputPerformanceSamplesRequest) returns (ListTerminalInputPerformanceSampleV1);
+  rpc TakeTerminalLaunchPerformanceSamples(TakeTerminalLaunchPerformanceSamplesRequest) returns (ListTerminalLaunchPerformanceSampleV1);
+  rpc UpdateAppSettings(UpdateAppSettingsRequest) returns (Unit);
+  rpc UpdateLoginItemPreference(UpdateLoginItemPreferenceRequest) returns (Unit);
+  rpc UpdateCrashReporting(UpdateCrashReportingRequest) returns (Unit);
+  rpc UpdateExternalEditor(UpdateExternalEditorRequest) returns (Unit);
+  rpc UpdatePerformanceTelemetry(UpdatePerformanceTelemetryRequest) returns (Unit);
+  rpc UpdateProviderExecutable(UpdateProviderExecutableRequest) returns (ProviderAvailabilitySnapshotResponse);
+  rpc UpdateWorkflowConfig(UpdateWorkflowConfigRequest) returns (Unit);
+  rpc ValidateNotionConfig(ValidateNotionConfigRequest) returns (NotionValidationResultView);
+  rpc WritePathsToTerminalSurface(WritePathsToTerminalSurfaceRequest) returns (Unit);
+  rpc WriteTerminalSurface(WriteTerminalSurfaceRequest) returns (Unit);
+  rpc GetCrashReportingEnabled(GetCrashReportingEnabledRequest) returns (ResultBool);
+  rpc GetFileAtRef(GetFileAtRefRequest) returns (ResultString);
+  rpc GetStagedContent(GetStagedContentRequest) returns (ResultString);
+  rpc GetBinaryStagedContent(GetBinaryStagedContentRequest) returns (ResultString);
+  rpc GetFileAtBranchBase(GetFileAtBranchBaseRequest) returns (ResultString);
+  rpc GetBinaryFileAtBranchBase(GetBinaryFileAtBranchBaseRequest) returns (ResultString);
+  rpc GetBinaryFileAtRef(GetBinaryFileAtRefRequest) returns (ResultString);
+  rpc GetBranchDiffSummary(GetBranchDiffSummaryRequest) returns (BranchDiffSummaryDto);
+  rpc BuildDiffFileTree(BuildDiffFileTreeRequest) returns (ListDiffTreeNodeDto);
+  rpc GetHeadDiffFileTreeSnapshot(GetHeadDiffFileTreeSnapshotRequest) returns (RepositoryHeadDiffFileTreeSnapshotDto);
+  rpc ComputeHiddenRanges(ComputeHiddenRangesRequest) returns (ListHiddenRangeDto);
+  rpc GetRelativePath(GetRelativePathRequest) returns (Nullablestring);
+  rpc GetReviewThread(GetReviewThreadRequest) returns (ReviewThreadDto);
+  rpc GetReviewThreadHistory(GetReviewThreadHistoryRequest) returns (ListReviewHistoryEntryDto);
+  rpc FetchPrStatus(FetchPrStatusRequest) returns (PrStatusDto);
+  rpc GetDefaultBranch(GetDefaultBranchRequest) returns (ResultString);
+  rpc GetGitStatus(GetGitStatusRequest) returns (ListFileStatusDto);
+  rpc GetGitStatusSnapshot(GetGitStatusSnapshotRequest) returns (RepositoryStatusSnapshotDto);
+  rpc GetStatusDiffStats(GetStatusDiffStatsRequest) returns (ListFileDiffStatDto);
+  rpc GetStatusDiffStatsSnapshot(GetStatusDiffStatsSnapshotRequest) returns (RepositoryDiffStatsSnapshotDto);
+  rpc GetGitLog(GetGitLogRequest) returns (ListCommitDto);
+  rpc GetWorktreeDirtyCount(GetWorktreeDirtyCountRequest) returns (ResultUint32);
+  rpc GetRepoGitDir(GetRepoGitDirRequest) returns (ResultString);
+  rpc ApproveWorkflowNode(ApproveWorkflowNodeRequest) returns (Unit);
+  rpc ListWorkflowExecutions(ListWorkflowExecutionsRequest) returns (ListWorkflowExecutionSummaryDto);
+  rpc GetWorkflowExecution(GetWorkflowExecutionRequest) returns (NullableWorkflowExecutionSummaryDto);
+  rpc GetWorkflowExecutionLog(GetWorkflowExecutionLogRequest) returns (NullableListDurableWorkflowFactLogEntry);
+  rpc GetWorkflowNodeDetail(GetWorkflowNodeDetailRequest) returns (NullableNodeExecutionView);
+  rpc ResolveWorktreeByExecution(ResolveWorktreeByExecutionRequest) returns (Nullablestring);
+  rpc ListFacets(ListFacetsRequest) returns (Liststring);
+  rpc WorkflowSubmitOutput(WorkflowSubmitOutputRequest) returns (Unit);
+  rpc WorkflowValidateOutput(WorkflowValidateOutputRequest) returns (WorkflowValidateOutputResponse);
+  rpc WorkflowGetOutput(WorkflowGetOutputRequest) returns (WorkflowGetOutputResponse);
+  rpc CompactApplicationShutdownDetails(CompactApplicationShutdownDetailsRequest) returns (ShutdownPlanDtoV1);
+  rpc GetServerInfo(Unit) returns (ServerInfo);
+  rpc SubscribePush(SubscribePushRequest) returns (stream Push);
+  rpc WatchFiles(WatchFilesRequest) returns (ResultUint64);
+  rpc WatchGitDirectory(WatchGitDirectoryRequest) returns (ResultUint64);
+}
+
+message ServerInfo {
+  reserved 1;
+  reserved "instance_id";
+  string launch_id = 2;
+  string release = 3;
+  DesktopSettings desktop_settings = 4;
+}
+
+message SubscribePushRequest { string subscription_id = 1; }
+message WatchFilesRequest { string subscription_id = 1; StartWatchingRequest request = 2; }
+message WatchGitDirectoryRequest { string subscription_id = 1; StartGitDirWatchingRequest request = 2; }
+
+message SubscribeTerminalSurfacesRequest { string subscription_id = 1; }
+message AttachSubscribedTerminalSurfaceRequest {
+  string subscription_id = 1;
+  AttachTerminalSurfaceRequest request = 2;
+  string stream_id = 3;
+}
+message TerminalStreamClosed { bool resynchronize = 1; }
+message TerminalSubscriptionEvent {
+  string attachment_id = 1;
+  string stream_id = 5;
+  oneof event {
+    Unit ready = 2;
+    TerminalEvent item = 3;
+    TerminalStreamClosed closed = 4;
+  }
 }

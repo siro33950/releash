@@ -7,7 +7,7 @@ const DEBOUNCE_MS = 300;
 
 describe("useNotionTasks", () => {
 	it("should invoke query_notion_tasks on mount", async () => {
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		vi.mocked(invoke).mockResolvedValue({
 			tasks: [],
 			has_more: false,
@@ -31,7 +31,7 @@ describe("useNotionTasks", () => {
 	});
 
 	it("should set tasks from query result", async () => {
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		const mockPage = {
 			tasks: [
 				{
@@ -60,7 +60,7 @@ describe("useNotionTasks", () => {
 	});
 
 	it("should append tasks on loadMore", async () => {
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		const page1 = {
 			tasks: [
 				{
@@ -114,7 +114,7 @@ describe("useNotionTasks", () => {
 	});
 
 	it("should set empty tasks on error", async () => {
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		vi.mocked(invoke).mockRejectedValue(new Error("not configured"));
 
 		const { result } = renderHook(() => useNotionTasks("/test/repo"));
@@ -127,7 +127,7 @@ describe("useNotionTasks", () => {
 	});
 
 	it("should reset and refetch on refresh", async () => {
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		vi.mocked(invoke).mockResolvedValue({
 			tasks: [],
 			has_more: false,
@@ -162,7 +162,7 @@ describe("useNotionTasks", () => {
 	});
 
 	it("should use initialFilters on mount", async () => {
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		vi.mocked(invoke).mockResolvedValue({
 			tasks: [],
 			has_more: false,
@@ -195,7 +195,7 @@ describe("useNotionTasks", () => {
 	it("should debounce search calls", async () => {
 		vi.useFakeTimers();
 		try {
-			const { invokeClient: invoke } = await import("@/lib/clientSocket");
+			const { invokeClient: invoke } = await import("@/lib/client");
 			vi.mocked(invoke).mockResolvedValue({
 				tasks: [],
 				has_more: false,

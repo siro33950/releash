@@ -1171,7 +1171,7 @@ test("worktree作成完了のfrontend通知で一覧を再取得し新しいwork
 });
 
 
-test("期限後に確定したArchive結果が元の操作の削除確認画面を開く", async ({page}) => {
+test("通信状態を表示せず期限後に確定したArchive結果が削除確認画面を開く", async ({page}) => {
     const branch = kanbanBranches.find(branch => branch.name === "feat/wip")!;
     await setupTauriMock(page, buildMockConfig({
         list_branches_with_status: [branch],
@@ -1193,7 +1193,8 @@ test("期限後に確定したArchive結果が元の操作の削除確認画面�
     await page.getByRole("button", {name: "Archive Late Archive", exact: true}).click();
     await expect.poll(() => page.evaluate(() => window.__RELEASH_BACKEND__!.invocations.filter(({cmd}) => cmd === "archive_agent_session").length)).toBe(1);
     await page.clock.fastForward(31_000);
-    await expect(page.getByText("archive_agent_session: 操作結果を確認できません。", {exact: true})).toBeVisible();
+    await expect(page.getByText(/操作結果を確認できません|再接続|未送信/)).toHaveCount(0);
+    await expect(page.getByRole("button", {name: "元の操作の結果を確認", exact: true})).toHaveCount(0);
     await page.evaluate(() => window.dispatchEvent(new Event("finish-archive")));
     await expect(page.getByText(/This AgentSession has no Provider session ID and cannot be archived/)).toBeVisible();
     await expect(page.getByText(/操作結果を確認できません/)).toHaveCount(0);

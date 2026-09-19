@@ -4,7 +4,7 @@ import { useNotionSettings } from "./useNotionSettings";
 
 describe("useNotionSettings", () => {
 	it("取得失敗を未設定と区別し失敗した設定を編集や保存の対象にしない", async () => {
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		vi.mocked(invoke).mockImplementation(async (command, args) => {
 			if (
 				command === "get_notion_config" &&
@@ -56,7 +56,6 @@ describe("useNotionSettings", () => {
 						branch_prefix: "",
 					},
 				},
-				{ onUncertain: expect.any(Function) },
 			],
 		]);
 		expect(result.current.drafts.has("/repo/a")).toBe(false);
@@ -65,7 +64,7 @@ describe("useNotionSettings", () => {
 	});
 
 	it("should load configs for each repo path", async () => {
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		vi.mocked(invoke).mockImplementation(async (cmd, args) => {
 			if (cmd === "get_notion_config") {
 				const { repoPath } = args as { repoPath: string };
@@ -100,7 +99,7 @@ describe("useNotionSettings", () => {
 	});
 
 	it("should report isDirty when draft changes", async () => {
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		vi.mocked(invoke).mockResolvedValue(null);
 
 		const { result } = renderHook(() => useNotionSettings(["/repo/a"]));
@@ -122,7 +121,7 @@ describe("useNotionSettings", () => {
 	});
 
 	it("should report isDirty when marked for delete", async () => {
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		vi.mocked(invoke).mockResolvedValue({
 			api_token: "token-a",
 			database_id: "db-a",
@@ -150,7 +149,7 @@ describe("useNotionSettings", () => {
 	});
 
 	it("should save changed configs and delete marked ones", async () => {
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		vi.mocked(invoke).mockImplementation(async (cmd, args) => {
 			if (cmd === "get_notion_config") {
 				const { repoPath } = args as { repoPath: string };
@@ -206,33 +205,25 @@ describe("useNotionSettings", () => {
 			await result.current.save();
 		});
 
-		expect(invoke).toHaveBeenCalledWith(
-			"save_notion_config",
-			{
-				repoPath: "/repo/a",
-				apiToken: "new-token-a",
-				databaseId: "db-a",
-				propertyMapping: {
-					title: "Name",
-					labels: [],
-					branch_name: "",
-					branch_prefix: "",
-				},
+		expect(invoke).toHaveBeenCalledWith("save_notion_config", {
+			repoPath: "/repo/a",
+			apiToken: "new-token-a",
+			databaseId: "db-a",
+			propertyMapping: {
+				title: "Name",
+				labels: [],
+				branch_name: "",
+				branch_prefix: "",
 			},
-			{ onUncertain: expect.any(Function) },
-		);
+		});
 
-		expect(invoke).toHaveBeenCalledWith(
-			"delete_notion_config",
-			{
-				repoPath: "/repo/b",
-			},
-			{ onUncertain: expect.any(Function) },
-		);
+		expect(invoke).toHaveBeenCalledWith("delete_notion_config", {
+			repoPath: "/repo/b",
+		});
 	});
 
 	it("should reset drafts to configs", async () => {
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		vi.mocked(invoke).mockResolvedValue({
 			api_token: "token-a",
 			database_id: "db-a",
@@ -268,7 +259,7 @@ describe("useNotionSettings", () => {
 	});
 
 	it("should validate a repo config", async () => {
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		vi.mocked(invoke).mockImplementation(async (cmd) => {
 			if (cmd === "get_notion_config") return null;
 			if (cmd === "validate_notion_config") {
@@ -316,7 +307,7 @@ describe("useNotionSettings", () => {
 	});
 
 	it("should set validationStatus for invalid_token", async () => {
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		vi.mocked(invoke).mockImplementation(async (cmd) => {
 			if (cmd === "get_notion_config") return null;
 			if (cmd === "validate_notion_config") {
@@ -347,7 +338,7 @@ describe("useNotionSettings", () => {
 	});
 
 	it("should set validationStatus for invalid_database", async () => {
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		vi.mocked(invoke).mockImplementation(async (cmd) => {
 			if (cmd === "get_notion_config") return null;
 			if (cmd === "validate_notion_config") {
@@ -377,7 +368,7 @@ describe("useNotionSettings", () => {
 	});
 
 	it("should set validationStatus for network_error", async () => {
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		vi.mocked(invoke).mockImplementation(async (cmd) => {
 			if (cmd === "get_notion_config") return null;
 			if (cmd === "validate_notion_config") {
@@ -407,7 +398,7 @@ describe("useNotionSettings", () => {
 	});
 
 	it("should handle validate exception without leaving validating stuck", async () => {
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		vi.mocked(invoke).mockImplementation(async (cmd) => {
 			if (cmd === "get_notion_config") return null;
 			if (cmd === "validate_notion_config") {
@@ -437,7 +428,7 @@ describe("useNotionSettings", () => {
 	});
 
 	it("should not call save_notion_config when apiToken is empty", async () => {
-		const { invokeClient: invoke } = await import("@/lib/clientSocket");
+		const { invokeClient: invoke } = await import("@/lib/client");
 		vi.mocked(invoke).mockResolvedValue(null);
 
 		const { result } = renderHook(() => useNotionSettings(["/repo/a"]));
@@ -469,7 +460,7 @@ describe("useNotionSettings", () => {
 		"保存後の古い取得signalで回復後のロードを無効にしない: error=%s",
 		async (failure) => {
 			const { invokeClient: invoke, onClientRefresh } = await import(
-				"@/lib/clientSocket"
+				"@/lib/client"
 			);
 			const config = {
 				api_token: "old",

@@ -16,7 +16,7 @@ if (typeof Element.prototype.releasePointerCapture !== "function") {
 	Element.prototype.releasePointerCapture = () => {};
 }
 
-vi.mock("@/lib/clientSocket", () => ({
+vi.mock("@/lib/client", () => ({
 	invokeClient: vi.fn().mockResolvedValue(null),
 }));
 
@@ -125,7 +125,7 @@ describe("DiffToolbar", () => {
 		});
 
 		it("should invoke open_in_editor with filePath when clicked", async () => {
-			const { invokeClient: invoke } = await import("@/lib/clientSocket");
+			const { invokeClient: invoke } = await import("@/lib/client");
 			const user = userEvent.setup();
 			renderToolbar({ filePath: "/repo/src/main.ts" });
 			const button = screen.getByRole("button", { name: "Open in Editor" });

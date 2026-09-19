@@ -18,7 +18,7 @@ vi.mock("@/hooks/useWorkspaceStateCache", () => ({
 	}),
 }));
 
-vi.mock("@/lib/clientSocket", () => ({
+vi.mock("@/lib/client", () => ({
 	invokeClient: vi.fn(),
 }));
 

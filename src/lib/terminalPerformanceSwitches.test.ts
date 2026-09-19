@@ -1,12 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { invokeClient as invoke } from "@/lib/clientSocket";
+import { invokeClient as invoke } from "@/lib/client";
 import {
 	DEFAULT_TERMINAL_PERFORMANCE_SWITCHES,
 	getTerminalPerformanceSwitches,
 	resetTerminalPerformanceSwitchesCache,
 } from "./terminalPerformanceSwitches";
 
-vi.mock("@/lib/clientSocket", () => ({
+vi.mock("@/lib/client", () => ({
 	invokeClient: vi.fn(),
 }));
 

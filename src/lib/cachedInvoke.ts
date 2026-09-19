@@ -1,8 +1,5 @@
 import type { ClientCommandResults } from "@/generated/client_types";
-import {
-	type EmptyClientCommand,
-	invokeClient as invoke,
-} from "@/lib/clientSocket";
+import { type EmptyClientCommand, invokeClient as invoke } from "@/lib/client";
 
 export interface CachedInvoke<TValue> {
 	get(): Promise<TValue>;

@@ -19,7 +19,7 @@ impl ClientConnectionQueryService for ChangingConnection {
         }
         Ok(ClientConnectionDto {
             url: format!("instance-{count}"),
-            auth_subprotocol: format!("client-{count}"),
+            token: format!("client-{count}"),
         })
     }
 }
@@ -31,7 +31,7 @@ fn test_再接続_毎回接続情報を取得し失敗を返す() {
         ClientConnectionUsecase(Box::new(ChangingConnection(std::sync::Mutex::new(0))));
     // When / Then
     assert_eq!(connection.endpoint().unwrap().url, "instance-1");
-    assert_eq!(connection.endpoint().unwrap().auth_subprotocol, "client-2");
+    assert_eq!(connection.endpoint().unwrap().token, "client-2");
     assert_eq!(
         connection.endpoint().unwrap_err().to_string(),
         "unavailable"

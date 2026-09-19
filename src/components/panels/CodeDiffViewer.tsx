@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { invokeClient as invoke } from "@/lib/clientSocket";
+import { invokeClient as invoke } from "@/lib/client";
 import type { ChangeGroup, Hunk } from "@/lib/computeHunks";
 import type { ReviewDiscussionThread } from "@/types/diffComment";
 import type { DiffMode } from "@/types/settings";

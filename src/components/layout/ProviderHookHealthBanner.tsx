@@ -1,6 +1,6 @@
 import { AlertTriangle } from "lucide-react";
 import { useEffect, useState } from "react";
-import { invokeClient as invoke } from "@/lib/clientSocket";
+import { invokeClient as invoke } from "@/lib/client";
 
 interface ProviderHookHealthWarning {
 	provider: string;

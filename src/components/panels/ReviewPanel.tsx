@@ -27,7 +27,7 @@ import { useGitEventRefresh } from "@/hooks/useGitEventRefresh";
 import { useReviewFileView } from "@/hooks/useReviewFileView";
 import { useReviewPanel } from "@/hooks/useReviewPanel";
 import { useReviewSnapshot } from "@/hooks/useReviewSnapshot";
-import { invokeClient as invoke } from "@/lib/clientSocket";
+import { invokeClient as invoke } from "@/lib/client";
 import { isMarkdownFile } from "@/lib/markdownUtils";
 import { cn } from "@/lib/utils";
 import type { ThreadNavigationTarget } from "@/types/diffComment";

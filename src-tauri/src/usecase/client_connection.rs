@@ -1,7 +1,8 @@
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct ClientConnectionDto {
     pub(crate) url: String,
-    pub(crate) auth_subprotocol: String,
+    pub(crate) token: String,
 }
 
 #[derive(Debug, thiserror::Error)]

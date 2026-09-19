@@ -8,13 +8,10 @@ import {
 import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useWorkspaceNodeDetail } from "@/hooks/useWorkspaceNodeDetail";
-import {
-	invokeClient as invoke,
-	listenClient as listen,
-} from "@/lib/clientSocket";
+import { invokeClient as invoke, listenClient as listen } from "@/lib/client";
 import { AgentSessionPanel, AgentSessionRoute } from "./AgentSessionPanel";
 
-vi.mock("@/lib/clientSocket", () => ({
+vi.mock("@/lib/client", () => ({
 	invokeClient: vi.fn(),
 	listenClient: vi.fn().mockResolvedValue(() => {}),
 }));

@@ -71,10 +71,7 @@ pub fn run() {
         let hidden = std::env::args().any(|arg| arg == "--hidden") && startup_config.as_ref().is_ok_and(|config| config.as_ref().is_some_and(|config| config.app.start_minimized));
         app.manage(usecase::cli_install::CliInstallUsecase(Arc::new(adaptor::gateway::cli_install::MacCliInstall)));
         let executable = std::env::current_exe()?.with_file_name("releash-backend");
-        let files = Arc::new(adaptor::gateway::client_handoff::ClientHandoffFiles::new(data_dir.join("desktop-client-operations")));
-        let handoff = Arc::new(usecase::client_handoff::ClientHandoffUsecase::new(files.clone(), files));
-        app.manage(handoff.clone());
-        let gateway = Arc::new(adaptor::gateway::daemon_supervision::DaemonProcessGateway::new(executable, data_dir, handoff));
+        let gateway = Arc::new(adaptor::gateway::daemon_supervision::DaemonProcessGateway::new(executable, data_dir));
         let login = usecase::login_item::LoginItemUsecase::new(Arc::new(adaptor::gateway::login_item::MacLoginItem), Arc::new(adaptor::gateway::login_item::DaemonLoginPreference(gateway.clone())));
         if let Ok(Some(config)) = &startup_config { if let Err(error) = login.restore(config.app.auto_launch) { log::error!("{error}"); } }
         app.manage(login);

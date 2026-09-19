@@ -12,7 +12,7 @@ import { useWorkspaceTreeNodes } from "./useWorkspaceTreeNodes";
 const mockInvoke = vi.fn();
 const mockListen = vi.fn();
 
-vi.mock("@/lib/clientSocket", () => ({
+vi.mock("@/lib/client", () => ({
 	invokeClient: (...args: unknown[]) => mockInvoke(...args),
 	listenClient: (...args: unknown[]) => mockListen(...args),
 }));

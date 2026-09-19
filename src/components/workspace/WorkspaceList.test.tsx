@@ -4,7 +4,6 @@ import userEvent from "@testing-library/user-event";
 import { useEffect, useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkspaceTreeReconciliationEvent } from "@/hooks/useWorkspaceTreeNodes";
-import { ClientTransportError, type invokeClient } from "@/lib/clientSocket";
 import type { AgentSessionItem } from "@/types/agent-session";
 import type { WorktreeBranch } from "@/types/git";
 import type {
@@ -49,8 +48,8 @@ vi.mock("react-resizable-panels", () => ({
 	),
 	Separator: () => <div />,
 }));
-vi.mock("@/lib/clientSocket", async (importOriginal) => ({
-	...(await importOriginal<typeof import("@/lib/clientSocket")>()),
+vi.mock("@/lib/client", async (importOriginal) => ({
+	...(await importOriginal<typeof import("@/lib/client")>()),
 	invokeClient: mocks.invoke,
 	listenClient: mocks.listen,
 }));
@@ -298,33 +297,25 @@ function mockDeferredProviderCreate() {
 	const deferred: {
 		resolve?: (agentSessionId: string) => void;
 		reject?: (error: unknown) => void;
-		onUncertain?: (error: ClientTransportError) => void;
 	} = {};
-	mocks.invoke.mockImplementation(
-		(
-			command: string,
-			_args: unknown,
-			options: Parameters<typeof invokeClient>[2],
-		) => {
-			if (command === "list_workspace_worktree_nodes") {
-				return Promise.resolve({ nodes: [], archivedSessions: [] });
-			}
-			if (command === "list_available_agent_session_providers") {
-				return Promise.resolve(["codex"]);
-			}
-			if (command === "create_agent_session") {
-				deferred.onUncertain = options?.onUncertain;
-				return new Promise<string>((resolve, reject) => {
-					deferred.resolve = resolve;
-					deferred.reject = reject;
-				});
-			}
-			if (command === "get_workspace_session_node_id") {
-				return Promise.resolve("agent-session-node-1");
-			}
-			return Promise.resolve(null);
-		},
-	);
+	mocks.invoke.mockImplementation((command: string) => {
+		if (command === "list_workspace_worktree_nodes") {
+			return Promise.resolve({ nodes: [], archivedSessions: [] });
+		}
+		if (command === "list_available_agent_session_providers") {
+			return Promise.resolve(["codex"]);
+		}
+		if (command === "create_agent_session") {
+			return new Promise<string>((resolve, reject) => {
+				deferred.resolve = resolve;
+				deferred.reject = reject;
+			});
+		}
+		if (command === "get_workspace_session_node_id") {
+			return Promise.resolve("agent-session-node-1");
+		}
+		return Promise.resolve(null);
+	});
 	return deferred;
 }
 
@@ -1668,7 +1659,6 @@ describe("WorkspaceList", () => {
 					cols: 80,
 					callerRequestId: expect.any(String),
 				}),
-				{ onUncertain: expect.any(Function) },
 			);
 			expect(onSelectWorktree).toHaveBeenCalledWith(
 				"/repo/wt",
@@ -1690,29 +1680,13 @@ describe("WorkspaceList", () => {
 		});
 	});
 
-	it("AgentSession作成の結果不明で待機を終え、同じ起動選択へ遅延成功を反映する", async () => {
+	it("AgentSession作成は通信状態を表示せず同じ起動選択へ成功を反映する", async () => {
 		const user = userEvent.setup();
 		const createCall = mockDeferredProviderCreate();
 		const { onSelectWorktree, rerenderWorkspaceList } = renderWorkspaceList();
 		wireSelectionRoundTrip({ onSelectWorktree, rerenderWorkspaceList });
 		await launchProviderCreate(user, onSelectWorktree);
-		const launching = onSelectWorktree.mock.lastCall?.[3];
-		const error = new ClientTransportError("original-create", "unknown");
-		expect(createCall.onUncertain).toEqual(expect.any(Function));
-		act(() => createCall.onUncertain?.(error));
-		expect(onSelectWorktree).toHaveBeenLastCalledWith(
-			"/repo/wt",
-			"feature",
-			"repo",
-			{ ...launching, error: error.message },
-		);
-		expect(screen.getByRole("alert")).toHaveTextContent(error.message);
-		await user.click(screen.getByRole("button", { name: "Create in feature" }));
-		await user.hover(screen.getByRole("menuitem", { name: "NewSession" }));
-		expect(
-			await screen.findByRole("menuitem", { name: "codex" }),
-		).not.toHaveAttribute("aria-disabled", "true");
-		await user.keyboard("{Escape}{Escape}");
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 		await act(async () => createCall.resolve?.("agent-session-1"));
 		expect(onSelectWorktree).toHaveBeenLastCalledWith(
 			"/repo/wt",
@@ -1736,58 +1710,38 @@ describe("WorkspaceList", () => {
 		).not.toBeInTheDocument();
 	});
 
-	it.each([false, true])(
-		"AgentSession作成のpending中に別Nodeへ移動した場合は選択を奪わない（結果不明: %s）",
-		async (uncertain) => {
-			const user = userEvent.setup();
-			const createCall = mockDeferredProviderCreate();
-			const { onSelectWorktree, rerenderWorkspaceList } = renderWorkspaceList();
-			wireSelectionRoundTrip({ onSelectWorktree, rerenderWorkspaceList });
+	it("AgentSession作成のpending中に別Nodeへ移動した場合は選択を奪わない", async () => {
+		const user = userEvent.setup();
+		const createCall = mockDeferredProviderCreate();
+		const { onSelectWorktree, rerenderWorkspaceList } = renderWorkspaceList();
+		wireSelectionRoundTrip({ onSelectWorktree, rerenderWorkspaceList });
 
-			await launchProviderCreate(user, onSelectWorktree);
-			onSelectWorktree.mockClear();
-			rerenderWorkspaceList({
-				centerSelection: {
-					kind: "node",
-					worktreePath: "/repo/wt",
-					nodeId: directNode.id,
-				},
-			});
+		await launchProviderCreate(user, onSelectWorktree);
+		onSelectWorktree.mockClear();
+		rerenderWorkspaceList({
+			centerSelection: {
+				kind: "node",
+				worktreePath: "/repo/wt",
+				nodeId: directNode.id,
+			},
+		});
 
-			if (uncertain) {
-				expect(createCall.onUncertain).toEqual(expect.any(Function));
-				act(() =>
-					createCall.onUncertain?.(
-						new ClientTransportError("original-create", "unknown"),
-					),
-				);
-				expect(onSelectWorktree).not.toHaveBeenCalled();
-				expect(screen.getByRole("alert")).toHaveTextContent(
-					/操作結果を確認できません/,
-				);
-			}
+		await act(async () => {
+			createCall.resolve?.("agent-session-1");
+		});
 
-			await act(async () => {
-				createCall.resolve?.("agent-session-1");
-			});
-
-			expect(onSelectWorktree).not.toHaveBeenCalled();
-		},
-	);
+		expect(onSelectWorktree).not.toHaveBeenCalled();
+	});
 
 	it.each(["success", "error"])(
-		"workflow開始の結果不明で待機を終え、遅延%sを反映する",
+		"workflow開始は通信状態を表示せず応答の%sを反映する",
 		async (outcome) => {
 			const user = userEvent.setup();
 			let complete!: (value: string) => void;
 			let reject!: (error: unknown) => void;
-			let onUncertain: Parameters<typeof invokeClient>[2];
+			let onUncertain: unknown;
 			mocks.invoke.mockImplementation(
-				(
-					command: string,
-					_args: unknown,
-					options: Parameters<typeof invokeClient>[2],
-				) => {
+				(command: string, _args: unknown, options: unknown) => {
 					if (command !== "start_workflow") return Promise.resolve(null);
 					onUncertain = options;
 					return new Promise<string>((resolve, fail) => {
@@ -1816,21 +1770,8 @@ describe("WorkspaceList", () => {
 			expect(
 				screen.getByRole("textbox", { name: "Workflow request" }),
 			).toBeDisabled();
-			expect(onUncertain?.onUncertain).toEqual(expect.any(Function));
-			act(() =>
-				onUncertain?.onUncertain?.(
-					new ClientTransportError("original-workflow", "unknown"),
-				),
-			);
-			expect(screen.queryByText("Starting...")).not.toBeInTheDocument();
-			expect(screen.getByRole("button", { name: "Start" })).toBeEnabled();
-			expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
-			expect(
-				screen.getByRole("textbox", { name: "Workflow request" }),
-			).toBeEnabled();
-			expect(screen.getByRole("alert")).toHaveTextContent(
-				/操作結果を確認できません/,
-			);
+			expect(onUncertain).toBeUndefined();
+			expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 			expect(
 				mocks.invoke.mock.calls.filter(
 					([command]) => command === "start_workflow",
@@ -1843,7 +1784,6 @@ describe("WorkspaceList", () => {
 						worktreePath: "/repo/wt",
 						request: "release request",
 					},
-					{ onUncertain: expect.any(Function) },
 				],
 			]);
 			mocks.refreshTree.mockClear();
@@ -2344,7 +2284,7 @@ it.each([
 	["delete_branch", "success"],
 	["delete_branch", "failure"],
 ] as const)(
-	"%sの結果不明で待機を終え遅延%sを反映する",
+	"%sは通信状態を表示せず応答の%sを反映する",
 	async (command, outcome) => {
 		const branch = {
 			...makeBranch(),
@@ -2352,7 +2292,7 @@ it.each([
 			worktree_path: command === "remove_worktree" ? "/repo/wt" : null,
 		};
 		mocks.worktreeBranches = [branch];
-		let options: Parameters<typeof invokeClient>[2];
+		let options: unknown;
 		let complete!: () => void;
 		let fail!: (error: Error) => void;
 		mocks.invoke.mockImplementation((name, _args, nextOptions) => {
@@ -2371,16 +2311,10 @@ it.each([
 		await user.click(screen.getByRole("menuitem", { name: "Delete" }));
 		await user.click(screen.getByRole("button", { name: "Delete" }));
 		expect(screen.getByText("Deleting...")).toBeInTheDocument();
-		expect(options?.onUncertain).toEqual(expect.any(Function));
-		act(() =>
-			options?.onUncertain?.(new ClientTransportError("delete", "unknown")),
-		);
-		expect(screen.queryByText("Deleting...")).not.toBeInTheDocument();
-		expect(screen.getByRole("alert")).toHaveTextContent(
-			"操作結果を確認できません",
-		);
-		expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
-		await user.click(screen.getByRole("button", { name: "Delete" }));
+		expect(options).toBeUndefined();
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+		await user.click(screen.getByRole("button", { name: "Deleting..." }));
 		expect(
 			mocks.invoke.mock.calls.filter(([name]) => name === command),
 		).toHaveLength(1);
@@ -2400,11 +2334,11 @@ it.each([
 	},
 );
 
-it("結果不明の削除を閉じて別の対象を開いても元の完了で閉じない", async () => {
+it("削除の応答待ちは閉じず完了後に別の対象を開く", async () => {
 	const first = makeBranch();
 	const next = { ...first, name: "other", worktree_path: "/repo/other" };
 	mocks.worktreeBranches = [first, next];
-	let options: Parameters<typeof invokeClient>[2];
+	let options: unknown;
 	let complete!: () => void;
 	mocks.invoke.mockImplementation((command, _args, nextOptions) => {
 		if (command !== "remove_worktree") return Promise.resolve(null);
@@ -2420,14 +2354,17 @@ it("結果不明の削除を閉じて別の対象を開いても元の完了で�
 	);
 	await user.click(screen.getByRole("menuitem", { name: "Delete" }));
 	await user.click(screen.getByRole("button", { name: "Delete" }));
-	act(() =>
-		options?.onUncertain?.(new ClientTransportError("first", "unknown")),
-	);
+	expect(options).toBeUndefined();
+	expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
 	await user.click(screen.getByRole("button", { name: "Cancel" }));
+	expect(screen.getByRole("alertdialog")).toHaveTextContent(
+		'Delete workspace for branch "feature"?',
+	);
+	await act(async () => complete());
+	expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
 	await user.click(screen.getByRole("button", { name: "Open menu for other" }));
 	await user.click(screen.getByRole("menuitem", { name: "Delete" }));
 	expect(screen.getByRole("button", { name: "Delete" })).toBeEnabled();
-	await act(async () => complete());
 	expect(screen.getByRole("alertdialog")).toHaveTextContent(
 		'Delete workspace for branch "other"?',
 	);

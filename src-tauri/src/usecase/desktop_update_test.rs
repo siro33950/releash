@@ -201,12 +201,6 @@ async fn test_更新停止_受付以外の応答と利用者判断を挟む完�
                 supervisor.status().reason.as_deref(),
                 Some("approval required")
             );
-            assert!(supervisor
-                .admit_client_command(crate::domain::daemon_supervision::ClientOperation::Shutdown)
-                .is_ok());
-            assert!(supervisor
-                .admit_client_command(crate::domain::daemon_supervision::ClientOperation::Normal)
-                .is_err());
             // When: the existing shutdown coordinator confirms the user's decision and exits.
             *daemon.exit.lock() = Some(DaemonExit {
                 success: true,

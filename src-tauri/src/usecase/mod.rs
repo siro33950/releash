@@ -3,7 +3,6 @@ pub(crate) mod app_config;
 pub(crate) mod app_data_gc;
 pub(crate) mod application_lifecycle;
 pub(crate) mod application_startup;
-pub(crate) mod client_operation;
 pub(crate) mod code_dto;
 pub(crate) mod code_error;
 pub(crate) mod code_query_service;
@@ -33,10 +32,6 @@ pub(crate) mod telemetry;
 #[cfg(any(test, feature = "desktop"))]
 pub(crate) mod client_connection;
 #[cfg(feature = "desktop")]
-pub(crate) mod client_handoff;
-#[cfg(feature = "desktop")]
-pub(crate) mod client_handoff_query;
-#[cfg(feature = "desktop")]
 pub(crate) mod daemon_supervision;
 #[cfg(feature = "desktop")]
 pub(crate) mod desktop_update;
@@ -49,6 +44,3 @@ pub(crate) mod login_item;
 
 #[cfg(feature = "desktop")]
 pub(crate) mod cli_install;
-
-#[cfg(feature = "desktop")]
-pub(crate) mod desktop_client;

@@ -1,8 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-	type ClientTransportError,
-	invokeClient as invoke,
-} from "@/lib/clientSocket";
+import { invokeClient as invoke } from "@/lib/client";
 import { getErrorMessage } from "@/lib/errorMessage";
 import type {
 	NotionPropertyInfo,
@@ -57,7 +54,6 @@ export interface UseNotionSettingsReturn {
 	saveError: string | null;
 	loading: boolean;
 	isDirty: boolean;
-	uncertain: ClientTransportError | null;
 	updateDraft: (
 		repoPath: string,
 		updater: (d: NotionRepoDraft) => NotionRepoDraft,
@@ -72,7 +68,6 @@ export function useNotionSettings(
 	repoPaths: string[],
 ): UseNotionSettingsReturn {
 	const clientRefresh = useClientRefresh();
-	const [uncertain, setUncertain] = useState<ClientTransportError | null>(null);
 	const [saveError, setSaveError] = useState<string | null>(null);
 	const [configs, setConfigs] = useState<Map<string, NotionRepoConfig | null>>(
 		new Map(),
@@ -224,11 +219,7 @@ export function useNotionSettings(
 		for (const [path, draft] of currentDrafts) {
 			if (draft.markedForDelete) {
 				promises.push(
-					invoke(
-						"delete_notion_config",
-						{ repoPath: path },
-						{ onUncertain: setUncertain },
-					).then(() => {
+					invoke("delete_notion_config", { repoPath: path }).then(() => {
 						configsRef.current = new Map(configsRef.current).set(path, null);
 						setConfigs(configsRef.current);
 						if (draftsRef.current.get(path) === draft) {
@@ -251,16 +242,12 @@ export function useNotionSettings(
 					JSON.stringify(original.propertyMapping);
 			if (changed && draft.apiToken && draft.databaseId) {
 				promises.push(
-					invoke(
-						"save_notion_config",
-						{
-							repoPath: path,
-							apiToken: draft.apiToken,
-							databaseId: draft.databaseId,
-							propertyMapping: draft.propertyMapping,
-						},
-						{ onUncertain: setUncertain },
-					).then(() => {
+					invoke("save_notion_config", {
+						repoPath: path,
+						apiToken: draft.apiToken,
+						databaseId: draft.databaseId,
+						propertyMapping: draft.propertyMapping,
+					}).then(() => {
 						const config = {
 							api_token: draft.apiToken,
 							database_id: draft.databaseId,
@@ -279,7 +266,6 @@ export function useNotionSettings(
 			setSaveError(getErrorMessage(error));
 			throw error;
 		} finally {
-			setUncertain(null);
 			await load(repoPathsRef.current, clientRefresh);
 		}
 	}, [load, clientRefresh]);
@@ -298,7 +284,6 @@ export function useNotionSettings(
 		saveError,
 		loading,
 		isDirty,
-		uncertain,
 		updateDraft,
 		validate,
 		markForDelete,

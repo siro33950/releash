@@ -15,7 +15,7 @@ import {
 	type DiffLine,
 } from "@/hooks/useDiffTokens";
 import { useShikiHighlighter } from "@/hooks/useShikiHighlighter";
-import { invokeClient as invoke } from "@/lib/clientSocket";
+import { invokeClient as invoke } from "@/lib/client";
 import type { ChangeGroup, Hunk } from "@/lib/computeHunks";
 import {
 	getThreadEndLine,

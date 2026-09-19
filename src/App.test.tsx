@@ -2,7 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { invokeClient } from "@/lib/clientSocket";
+import * as client from "@/lib/client";
+import { invokeClient } from "@/lib/client";
 import App from "./App";
 
 vi.mock("react-resizable-panels", () => {
@@ -35,6 +36,30 @@ beforeEach(() => {
 });
 
 describe("App", () => {
+	it.each(["not_sent", "unknown"] as const)(
+		"通信状態%sと再接続メッセージを画面に表示しない",
+		async (state) => {
+			const status = vi
+				.spyOn(client, "invokeClient")
+				.mockRejectedValue(new Error(state));
+			render(
+				<TooltipProvider>
+					<App />
+				</TooltipProvider>,
+			);
+			await screen.findByText(
+				"Select a worktree from the sidebar to start working",
+			);
+			expect(
+				screen.queryByText(/通信状態を確認|再接続|操作結果を確認|未実行/),
+			).not.toBeInTheDocument();
+			expect(
+				screen.queryByRole("button", { name: "元の操作の結果を確認" }),
+			).not.toBeInTheDocument();
+			status.mockRestore();
+		},
+	);
+
 	it("renders layout with empty state message", async () => {
 		render(
 			<TooltipProvider>

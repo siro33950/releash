@@ -8,7 +8,7 @@ import {
 	useMemo,
 	useState,
 } from "react";
-import { completeClientRestoration } from "@/lib/clientSocket";
+import { completeClientRestoration } from "@/lib/client";
 import { getErrorMessage } from "@/lib/errorMessage";
 import { ApplicationShutdownBanner } from "./layout/ApplicationShutdownBanner";
 

@@ -9,23 +9,8 @@ use subtle::ConstantTimeEq;
 use super::error::ApiError;
 use crate::adaptor::protocol::terminal::TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX;
 
-#[derive(Clone)]
-pub(super) struct AcceptedBearerTokens(Arc<[Arc<str>]>);
-
-impl AcceptedBearerTokens {
-    pub(super) fn new(tokens: impl IntoIterator<Item = Arc<str>>) -> Self {
-        Self(tokens.into_iter().collect())
-    }
-
-    fn accepts(&self, candidate: &str) -> bool {
-        self.0
-            .iter()
-            .any(|token| bool::from(candidate.as_bytes().ct_eq(token.as_ref().as_bytes())))
-    }
-}
-
 pub(super) async fn require_bearer(
-    State(accepted): State<AcceptedBearerTokens>,
+    State(accepted): State<Arc<str>>,
     request: Request,
     next: Next,
 ) -> Response {
@@ -34,12 +19,15 @@ pub(super) async fn require_bearer(
         .get(AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "))
-        .is_some_and(|token| accepted.accepts(token));
+        .is_some_and(|token| bool::from(token.as_bytes().ct_eq(accepted.as_bytes())));
     // ブラウザのWebSocketはheaderを設定できないため、WS handshakeに限り
     // Sec-WebSocket-Protocol経由のbearerも受理する（terminal streamが使用）
     let subprotocol_authorized = is_websocket_handshake(&request)
         && bearer_subprotocols(request.headers()).any(|candidate| {
-            accepted.accepts(&candidate[TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX.len()..])
+            bool::from(
+                candidate.as_bytes()[TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX.len()..]
+                    .ct_eq(accepted.as_bytes()),
+            )
         });
     let authorized = header_authorized || subprotocol_authorized;
     if !authorized {
@@ -56,13 +44,6 @@ fn bearer_subprotocols(headers: &axum::http::HeaderMap) -> impl Iterator<Item = 
         .flat_map(|value| value.split(','))
         .map(str::trim)
         .filter(|value| value.starts_with(TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX))
-}
-
-pub(super) fn echo_bearer_subprotocol(
-    ws: axum::extract::ws::WebSocketUpgrade,
-    headers: &axum::http::HeaderMap,
-) -> axum::extract::ws::WebSocketUpgrade {
-    ws.protocols(bearer_subprotocols(headers).take(1).map(str::to_owned))
 }
 
 fn is_websocket_handshake(request: &Request) -> bool {
@@ -93,7 +74,7 @@ mod tests {
         Router::new()
             .route("/", get(|| async { "ok" }))
             .layer(middleware::from_fn_with_state(
-                AcceptedBearerTokens::new([Arc::<str>::from("secret")]),
+                Arc::<str>::from("secret"),
                 require_bearer,
             ))
     }
@@ -195,3 +176,90 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
     }
 }
+
+pub(super) async fn require_client(
+    State(token): State<crate::infrastructure::local_api::ClientBearerToken>,
+    request: Request,
+    next: Next,
+) -> Response {
+    use axum::http::{header, Method, StatusCode};
+    let origin = request
+        .headers()
+        .get(header::ORIGIN)
+        .and_then(|value| value.to_str().ok());
+    let allowed = matches!(origin, Some("tauri://localhost" | "http://tauri.localhost"))
+        || (cfg!(debug_assertions)
+            && matches!(
+                origin,
+                Some("http://localhost:1420" | "http://127.0.0.1:1420")
+            ));
+    if !allowed {
+        return (StatusCode::FORBIDDEN, "Origin is not allowed").into_response();
+    }
+    let origin = request.headers()[header::ORIGIN].clone();
+    let mut response = if request.method() == Method::OPTIONS {
+        let method = request
+            .headers()
+            .get(header::ACCESS_CONTROL_REQUEST_METHOD)
+            .and_then(|value| value.to_str().ok());
+        let headers = request
+            .headers()
+            .get(header::ACCESS_CONTROL_REQUEST_HEADERS)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        if method != Some("POST")
+            || headers
+                .split(',')
+                .map(str::trim)
+                .filter(|header| !header.is_empty())
+                .any(|header| {
+                    !matches!(
+                        header.to_ascii_lowercase().as_str(),
+                        "authorization"
+                            | "content-type"
+                            | "connect-protocol-version"
+                            | "connect-timeout-ms"
+                            | "x-user-agent"
+                            | "grpc-timeout"
+                            | "x-grpc-web"
+                    )
+                })
+        {
+            return (StatusCode::FORBIDDEN, "Preflight is not allowed").into_response();
+        }
+        let mut response = StatusCode::NO_CONTENT.into_response();
+        response.headers_mut().insert(
+            header::ACCESS_CONTROL_ALLOW_METHODS,
+            "POST".parse().unwrap(),
+        );
+        response.headers_mut().insert(header::ACCESS_CONTROL_ALLOW_HEADERS, "authorization, content-type, connect-protocol-version, connect-timeout-ms, x-user-agent, grpc-timeout, x-grpc-web".parse().unwrap());
+        response
+    } else if request
+        .headers()
+        .get(AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .is_some_and(|candidate| token.accepts(candidate))
+    {
+        next.run(request).await
+    } else {
+        ApiError::unauthorized().into_response()
+    };
+    response
+        .headers_mut()
+        .insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin);
+    response
+        .headers_mut()
+        .insert(header::VARY, "Origin".parse().unwrap());
+    response.headers_mut().insert(
+        header::ACCESS_CONTROL_EXPOSE_HEADERS,
+        "grpc-status, grpc-message, grpc-status-details-bin, releash-desktop-settings-changed"
+            .parse()
+            .unwrap(),
+    );
+    response
+}
+
+#[cfg(test)]
+#[path = "client_auth_test.rs"]
+mod client_auth_tests;

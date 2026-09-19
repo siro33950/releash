@@ -2,7 +2,8 @@ import { spawn } from "node:child_process";
 import { mkdir, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { setTimeout } from "node:timers/promises";
-import { fromBinary, fromJson, toBinary } from "@bufbuild/protobuf";
+import { createClient } from "@connectrpc/connect";
+import { createConnectTransport } from "@connectrpc/connect-web";
 import { build } from "esbuild";
 
 export async function startPerformanceDaemon(binary, directory, environment) {
@@ -51,40 +52,30 @@ export async function startPerformanceDaemon(binary, directory, environment) {
     }
     return async () => {
         if (child.exitCode !== null || child.signalCode !== null) return;
-        let socket;
         try {
-            const bundle = await build({
-                entryPoints: ["src/generated/client_pb.ts"], bundle: true,
-                platform: "node", format: "esm", write: false,
-            });
-            const { EnvelopeSchema } = await import(
-                `data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].contents).toString("base64")}`
-            );
-            socket = new WebSocket(`ws://127.0.0.1:${discovery.port}/v1/client`, `releash-bearer.${discovery.token}`);
-            socket.binaryType = "arraybuffer";
-            const send = (body) => socket.send(toBinary(EnvelopeSchema, fromJson(EnvelopeSchema, body)));
-            socket.onopen = () => send({ hello: {} });
-            socket.onmessage = ({ data }) => {
-                if (fromBinary(EnvelopeSchema, new Uint8Array(data)).body.case === "hello") {
-                    send({ request: {
-                        requestId: crypto.randomUUID(),
-                        requestApplicationQuit: { request: {
-                            request_id: crypto.randomUUID(), intent: { exit: { code: 0 } },
-                        } },
-                    } });
-                }
-            };
+            const client = await connectPerformanceClient(discovery);
+            const shutdown = client.requestApplicationQuit({ request: {requestId:crypto.randomUUID(),intent:{variant:{case:"exit",value:{code:0}}}} });
+            await Promise.race([shutdown, exited]);
             const timeout = setTimeout(15_000, "timeout", { ref: false });
             if (await Promise.race([exited, timeout]) === "timeout") {
                 throw new Error("performance daemon did not finish coordinated shutdown");
             }
             if (child.exitCode !== 0) throw new Error(`performance daemon failed: ${child.exitCode ?? child.signalCode}`);
         } finally {
-            socket?.close();
             if (child.exitCode === null && child.signalCode === null) {
                 child.kill();
                 await exited;
             }
         }
     };
+}
+
+export async function connectPerformanceClient(discovery) {
+    const bundle = await build({ entryPoints:["src/generated/client_pb.ts"],bundle:true,platform:"node",format:"esm",write:false });
+    const { ClientService } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].contents).toString("base64")}`);
+    return createClient(ClientService,createConnectTransport({baseUrl:`http://127.0.0.1:${discovery.port}`,useBinaryFormat:true,defaultTimeoutMs:15_000,interceptors:[next=>request=>{
+        request.header.set("authorization",`Bearer ${discovery.token}`);
+        request.header.set("origin","tauri://localhost");
+        return next(request);
+    }]}));
 }

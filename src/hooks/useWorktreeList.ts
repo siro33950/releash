@@ -3,7 +3,7 @@ import {
 	invokeClient as invoke,
 	listenClient as listen,
 	watchClient,
-} from "@/lib/clientSocket";
+} from "@/lib/client";
 import type { WorktreeBranch } from "@/types/git";
 
 const POLL_INTERVAL = 120_000;
