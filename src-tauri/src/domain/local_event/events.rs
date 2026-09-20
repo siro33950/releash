@@ -2,7 +2,6 @@
 //!
 //! `LocalDomainEvent` wraps the whole agent-session and workflow domain event
 //! enums so variant additions in those modules never require changes here.
-//! The application stream owns its own minimal event vocabulary below.
 
 use crate::domain::agent_session::ProviderSessionOwnershipEvent;
 use crate::domain::local_event::identifiers::{
@@ -10,62 +9,16 @@ use crate::domain::local_event::identifiers::{
 };
 use crate::domain::provider_lifecycle::{ProviderHookHealthEvent, ProviderLifecycleEvent};
 
-/// Shutdown / quit intent fixed by the first accepted quit request.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum QuitIntent {
-    Exit { code: i64 },
-    Restart { code: i64 },
-}
-
-/// Closed shutdown phases from the issues-1499 design "Public closed types".
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ApplicationShutdownPhase {
-    Prepared,
-    Activated,
-    Quiescing,
-    Completed,
-    Failed,
-    Cancelled,
-    ReconciliationRequired,
-}
-
-impl ApplicationShutdownPhase {
-    /// A terminal plan no longer closes store admission.
-    /// `ReconciliationRequired` is not terminal: its plan still owns admission
-    /// until recovery drives it to a terminal phase.
-    pub fn is_terminal(self) -> bool {
-        matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
-    }
-}
-
-/// Minimal application-stream event vocabulary owned by this module.
-/// The shutdown coordinator appends here; it must not invent a parallel
-/// event enum.
-#[derive(Debug, Clone, PartialEq)]
-pub enum ApplicationDomainEvent {
-    ApplicationQuitAccepted {
-        quit_operation_id: String,
-        intent: QuitIntent,
-        at_ms: i64,
-    },
-    ShutdownPhaseAdvanced {
-        shutdown_id: String,
-        phase: ApplicationShutdownPhase,
-        at_ms: i64,
-    },
-    ShutdownDetailsCompacted {
-        shutdown_id: String,
-        at_ms: i64,
-    },
-}
-
 /// Closed sum of every domain event the store can persist.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(
+    clippy::enum_variant_names,
+    reason = "Spec #1835 preserves the Provider-prefixed domain event names."
+)]
 pub enum LocalDomainEvent {
     ProviderSessionOwnership(ProviderSessionOwnershipEvent),
     ProviderLifecycle(ProviderLifecycleEvent),
     ProviderHookHealth(ProviderHookHealthEvent),
-    Application(ApplicationDomainEvent),
 }
 
 /// One event a batch wants to append to a stream, before commit assigns

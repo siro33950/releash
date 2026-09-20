@@ -11,7 +11,6 @@ use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStor
 use crate::adaptor::gateway::workflow::workflow_host::WorkflowRuntimeHost;
 use crate::adaptor::gateway::workflow::WorkflowRuntimeCommandGateway;
 use crate::domain::agent_session::aggregates::AgentSessionLifecycle;
-use crate::domain::local_event::LocalEventTransactionRepository;
 use crate::domain::provider_lifecycle::{ProviderKind, ProviderLifecycleScope};
 use crate::domain::workflow::{
     ChildEntry, FacetRefs, FanoutSpec, NodeCompletion, NodeCompletionSignalState, NodeDefinition,
@@ -461,8 +460,6 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
         let store =
             LocalEventStore::open(LocalEventStoreConfig::production(config.data_dir.clone()))
                 .map_err(|error| error.to_string())?;
-        let repository: Arc<dyn LocalEventTransactionRepository> = store.clone();
-        let installation_id = store.installation_id().to_string();
         app.manage(Arc::new(crate::infrastructure::push::PushSink::new()));
         app.manage(store.clone());
         app.manage(crate::desktop_test_support::TestDataDir(
@@ -524,8 +521,6 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
         let gateway = Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(
             crate::desktop_test_support::workflow_dependencies(app.handle()),
             driver.clone(),
-            repository,
-            installation_id,
         ));
         let runtime = Arc::new(WorkflowRuntimeUsecase::new(gateway));
         let workspace_node_commands = Arc::new(WorkspaceNodeCommandUsecase::new(

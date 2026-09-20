@@ -1,6 +1,4 @@
-use crate::domain::daemon_supervision::{
-    DaemonExit, DaemonProcessPort, Failure, ShutdownResponse, StopIntent,
-};
+use crate::domain::daemon_supervision::{DaemonExit, DaemonProcessPort, Failure, StopIntent};
 use crate::usecase::{
     app_config::query_service::DesktopSettingsDto,
     client_connection::ClientConnectionDto,
@@ -16,7 +14,7 @@ pub(crate) struct FakeDaemon {
     pub(crate) connection_delay_ms: AtomicUsize,
     pub(crate) connection_delivery_delay_ms: AtomicUsize,
     pub(crate) start_minimized: AtomicBool,
-    pub(crate) shutdown_response: parking_lot::Mutex<Option<Result<ShutdownResponse, String>>>,
+    pub(crate) shutdown_response: parking_lot::Mutex<Option<Result<(), String>>>,
     pub(crate) termination_error: parking_lot::Mutex<Option<String>>,
     pub(crate) spawn_failure: AtomicBool,
     pub(crate) wrong_identity: AtomicBool,
@@ -50,12 +48,9 @@ impl DaemonProcessPort for FakeDaemon {
         self.calls.lock().push("terminate_and_wait");
         self.termination_error.lock().clone().map_or(Ok(()), Err)
     }
-    async fn request_shutdown(&self, _intent: StopIntent) -> Result<ShutdownResponse, String> {
+    async fn request_shutdown(&self, _intent: StopIntent) -> Result<(), String> {
         self.calls.lock().push("shutdown");
-        self.shutdown_response
-            .lock()
-            .clone()
-            .unwrap_or(Ok(ShutdownResponse::Accepted))
+        self.shutdown_response.lock().clone().unwrap_or(Ok(()))
     }
 }
 #[async_trait::async_trait]

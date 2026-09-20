@@ -84,8 +84,6 @@ schemas:
             WorkflowRuntimeCommandGateway::new_with_driver(
                 fixture.app.clone(),
                 Arc::new(fixture.host.clone()),
-                fixture.store.clone(),
-                fixture.store.installation_id().to_string(),
             ),
         ));
 

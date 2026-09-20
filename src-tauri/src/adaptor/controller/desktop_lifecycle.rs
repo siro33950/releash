@@ -127,7 +127,7 @@ pub(crate) fn handle_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
         event,
         |code| {
             app.state::<Arc<super::application_lifecycle::ApplicationQuitIngress>>()
-                .request(crate::usecase::shutdown_coordinator::ApplicationQuitIntent::Exit { code })
+                .request(crate::domain::application_lifecycle::ApplicationQuitIntent::Exit { code })
         },
         || {
             if let Err(error) = show(app) {

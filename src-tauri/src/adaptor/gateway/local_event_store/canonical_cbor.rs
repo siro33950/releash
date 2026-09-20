@@ -69,24 +69,6 @@ pub enum CborValue {
     Null,
 }
 
-impl CborValue {
-    pub fn int(value: i64) -> Self {
-        if value >= 0 {
-            Self::Unsigned(value as u64)
-        } else {
-            Self::Negative((-1 - value) as u64)
-        }
-    }
-
-    pub fn as_i64(&self) -> Option<i64> {
-        match self {
-            Self::Unsigned(n) => i64::try_from(*n).ok(),
-            Self::Negative(n) => i64::try_from(*n).ok().and_then(|n| (-1i64).checked_sub(n)),
-            _ => None,
-        }
-    }
-}
-
 fn write_head(out: &mut Vec<u8>, major: u8, value: u64) {
     let major = major << 5;
     if value < 24 {
@@ -337,9 +319,12 @@ mod tests {
             encode_canonical(&CborValue::Unsigned(256)).unwrap(),
             vec![0x19, 0x01, 0x00]
         );
-        assert_eq!(encode_canonical(&CborValue::int(-1)).unwrap(), vec![0x20]);
         assert_eq!(
-            encode_canonical(&CborValue::int(i64::MAX)).unwrap(),
+            encode_canonical(&CborValue::Negative(0)).unwrap(),
+            vec![0x20]
+        );
+        assert_eq!(
+            encode_canonical(&CborValue::Unsigned(i64::MAX as u64)).unwrap(),
             vec![0x1b, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]
         );
     }
@@ -427,7 +412,7 @@ mod tests {
     fn round_trip_is_identity_on_canonical_bytes() {
         let value = map(vec![
             ("id", CborValue::Text("s-1".to_string())),
-            ("n", CborValue::int(-42)),
+            ("n", CborValue::Negative(41)),
             (
                 "flags",
                 CborValue::Array(vec![CborValue::Bool(true), CborValue::Null]),

@@ -4385,7 +4385,6 @@ dependencies = [
  "protoc-bin-vendored",
  "regex",
  "reqwest",
- "ring",
  "rusqlite",
  "serde",
  "serde-saphyr",

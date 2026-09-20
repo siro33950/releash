@@ -4,9 +4,6 @@ import { useEffect } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { DaemonBoundary } from "./DaemonBoundary";
 
-vi.mock("./layout/ApplicationShutdownBanner", () => ({
-	ApplicationShutdownBanner: () => <div>Shutdown decisions</div>,
-}));
 let status: Record<string, unknown>;
 beforeEach(() => {
 	vi.useFakeTimers();
@@ -36,7 +33,10 @@ it("Readyまで通常画面を作らず切替中は操作を停止する", async
 	status = { phase: "stopping" };
 	await act(() => vi.advanceTimersByTimeAsync(250));
 	expect(screen.queryByText("Workflows")).toBeNull();
-	expect(screen.getByText("Shutdown decisions")).toBeVisible();
+	expect(screen.getByText("Stopping Releash…")).toBeVisible();
+	expect(
+		screen.queryByRole("button", { name: /Retry (quit|same effect)/ }),
+	).toBeNull();
 	status = { phase: "installing" };
 	await act(() => vi.advanceTimersByTimeAsync(250));
 	expect(screen.queryByText("Workflows")).toBeNull();
@@ -67,7 +67,7 @@ it("失敗段階と理由を示してRustへ再試行と終了を渡す", async 
 	expect(invoke).toHaveBeenCalledWith("quit_desktop");
 });
 
-it("ウィンドウ未作成でQuitした場合も終了の判断操作を表示する", async () => {
+it("ウィンドウ未作成でQuitしても終了の判断操作は表示しない", async () => {
 	status = { phase: "stopping" };
 	render(
 		<DaemonBoundary>
@@ -76,7 +76,10 @@ it("ウィンドウ未作成でQuitした場合も終了の判断操作を表示
 	);
 	await act(() => vi.advanceTimersByTimeAsync(0));
 	expect(screen.queryByText("workbench")).toBeNull();
-	expect(screen.getByText("Shutdown decisions")).toBeVisible();
+	expect(screen.getByText("Stopping Releash…")).toBeVisible();
+	expect(
+		screen.queryByRole("button", { name: /Retry (quit|same effect)/ }),
+	).toBeNull();
 });
 
 it("状態復元中は画面を操作不可にし再接続では状態を読み直す", async () => {

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { setTimeout } from "node:timers/promises";
 import test from "node:test";
-import { accessibility, alive, connect, dataDir, discovery, launchctl, pair, processes, quit, requireDisposableAccount, service, shutdownCount, start, tray, waitFor } from "./helpers/desktop-bundle.mjs";
+import { accessibility, alive, connect, dataDir, discovery, launchctl, pair, processes, quit, requireDisposableAccount, service, start, tray, waitFor } from "./helpers/desktop-bundle.mjs";
 
 // Run after `pnpm build:desktop:acceptance` in a disposable macOS account.
 // The copied .app is the only test input; no CARGO_BIN_EXE path is injected.
@@ -44,7 +44,6 @@ test("配布.appの起動・最小化・閉鎖後のworkflow継続・本番Resta
         const executionId = await client.call("client", "start_workflow", { workflowName, worktreePath });
         await waitFor(() => existsSync(join(worktreePath, "window-close-running")), "workflow did not start");
         assert.equal((await client.call("client", "get_workflow_execution", { executionId })).status, "running");
-        const shutdownsBeforeClose = shutdownCount();
         // When: click the native close button, delivering CloseRequested.
         accessibility(first.ui, 'click (first button of window 1 whose subrole is "AXCloseButton")');
         await waitFor(() => accessibility(first.ui, "count windows") === "0", "close did not hide the window");
@@ -53,7 +52,6 @@ test("配布.appの起動・最小化・閉鎖後のworkflow継続・本番Resta
         assert.deepEqual(discovery(), initial);
         assert.equal(accessibility(first.ui, "count menu bar items of menu bar 2"), "1");
         assert.equal((await client.call("shell", "get_daemon_status")).phase, "ready");
-        assert.equal(shutdownCount(), shutdownsBeforeClose);
         assert.equal((await client.call("client", "get_workflow_execution", { executionId })).status, "running");
         tray(first.ui, "Show Releash");
         await waitFor(() => accessibility(first.ui, "count windows") === "1", "closed window did not reopen");
@@ -80,17 +78,17 @@ test("配布.appの起動・最小化・閉鎖後のworkflow継続・本番Resta
         assert.notEqual(discovery().instance_id, initial.instance_id);
         assert.equal((await client.call("client", "get_app_settings")).external_editor, "bundle-restart-marker");
         // Then: both menu routes terminate the real UI and its coordinated daemon.
-        await quit(bundle, "tray");
+        await quit(bundle, client, "tray");
         start(bundle);
         await waitFor(() => pair(bundle), "relaunch after Quit failed");
         client = await connect();
         assert.equal((await client.call("client", "get_app_settings")).external_editor, "bundle-restart-marker");
-        await quit(bundle, "menu");
+        await quit(bundle, client, "menu");
         for (const route of ["cmd-q", "dock", "applescript", "logout", "system-restart", "shutdown"]) {
             start(bundle);
             await waitFor(() => pair(bundle), "native Quit relaunch failed");
-            await connect();
-            await quit(bundle, route);
+            client = await connect();
+            await quit(bundle, client, route);
         }
         start(bundle);
         const crashing = await waitFor(() => pair(bundle), "UI crash fixture did not start");
@@ -99,10 +97,8 @@ test("配布.appの起動・最小化・閉鎖後のworkflow継続・本番Resta
         await waitFor(() => existsSync(join(directory, "grandchild-pid")) && existsSync(join(directory, "child-pid")), "terminal descendants did not start");
         descendants = ["child-pid", "grandchild-pid"].map(file => Number(readFileSync(join(directory, file), "utf8").trim()));
         assert.ok(descendants.every(pid => pid > 0 && alive(pid)));
-        const shutdowns = shutdownCount();
         process.kill(crashing.ui, "SIGKILL");
         await waitFor(() => [crashing.ui, crashing.daemon, ...descendants].every(pid => !alive(pid)), "UI crash left daemon descendants running");
-        assert.equal(shutdownCount(), shutdowns, "parent loss must bypass ShutdownCoordinator");
         await setTimeout(8_000);
         assert.deepEqual(processes().filter(p => p.executable.startsWith(`${bundle}/`)), [], "UI or daemon restarted without opening the app");
         assert.equal(existsSync(join(dataDir, "cli-install-attempt")), false);

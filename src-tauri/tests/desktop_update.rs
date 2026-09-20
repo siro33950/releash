@@ -42,6 +42,17 @@ async fn wait_phase(app: &App, phase: &str) {
 fn discovery(path: &Path) -> Value {
     serde_json::from_slice(&std::fs::read(path.join("client-api.json")).unwrap()).unwrap()
 }
+fn workflow_facts(path: &Path, execution_id: &str) -> Vec<(String, String, String)> {
+    let db = rusqlite::Connection::open_with_flags(
+        path.join("local-event-store.sqlite3"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    let facts = db.prepare("SELECT node_execution_id, event_type, detail FROM node_events WHERE tree_id = ? ORDER BY seq")
+        .unwrap().query_map([execution_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap().collect::<Result<Vec<_>, _>>().unwrap();
+    facts
+}
 struct Renderer {
     window: Window,
     client: host::NativeClient,
@@ -129,20 +140,43 @@ async fn test_実workflow更新_一括停止と旧daemon終了から適用と新
         root.join("config/releash/workflows")
     };
     let marker = root.join("workflow-running");
-    std::fs::write(workflows.join("update-acceptance.yml"), format!("name: update-acceptance\ndescription: update acceptance\nnodes:\n  main:\n    command: touch '{}' && sleep 120\n", marker.display())).unwrap();
-    renderer
+    std::fs::write(workflows.join("update-acceptance.yml"), format!("name: update-acceptance\ndescription: update acceptance\nnodes:\n  main:\n    command: echo $$ > '{}' && exec sleep 120\n", marker.display())).unwrap();
+    let execution_id = renderer
         .request(
             "start_workflow",
             json!({"workflowName":"update-acceptance", "worktreePath":root}),
         )
-        .await;
+        .await
+        .as_str()
+        .unwrap()
+        .to_string();
     tokio::time::timeout(Duration::from_secs(10), async {
-        while !marker.exists() {
+        while std::fs::read_to_string(&marker)
+            .ok()
+            .and_then(|pid| pid.trim().parse::<i32>().ok())
+            .is_none()
+        {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await
     .unwrap();
+    let command_pid: i32 = std::fs::read_to_string(&marker)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert_eq!(unsafe { libc::kill(command_pid, 0) }, 0);
+    let facts_before = workflow_facts(root, &execution_id);
+    let command_node_id = facts_before
+        .iter()
+        .find(|(_, event, _)| event == "command_spawned")
+        .expect("the running command must have a durable spawn fact")
+        .0
+        .clone();
+    assert!(!facts_before
+        .iter()
+        .any(|(_, event, _)| event == "process_exited"));
     let pid = old["pid"].as_i64().unwrap() as i32;
     let old_launch = renderer.launch.clone();
     let old_launch = renderer.launch.clone();
@@ -150,16 +184,17 @@ async fn test_実workflow更新_一括停止と旧daemon終了から適用と新
     let steps = Arc::new(Mutex::new(Vec::new()));
     // When
     host::apply_desktop_update(app.handle(), Arc::new({
+        let execution_id = execution_id.clone();
         let root = root.to_path_buf(); let next_binary = next_binary.clone(); let steps = steps.clone();
         move |stage| {
             if stage == "download" { assert_eq!(unsafe { libc::kill(pid,0) },0); }
             if stage == "install" {
                 assert_eq!(unsafe { libc::kill(pid,0) },-1,"old daemon must exit before installation");
+                assert_eq!(unsafe { libc::kill(command_pid,0) },-1,"workflow command must stop before installation");
+                assert_eq!(workflow_facts(&root, &execution_id), facts_before, "shutdown must not append workflow facts");
                 let db = rusqlite::Connection::open_with_flags(root.join("local-event-store.sqlite3"),rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
-                let completed: i64 = db.query_row("SELECT COUNT(*) FROM shutdown_plans WHERE phase = 'completed'",[],|row| row.get(0)).unwrap();
-                assert_eq!(completed,1,"ShutdownCoordinator must complete before installation");
-                let targets: i64 = db.query_row("SELECT COUNT(*) FROM shutdown_targets WHERE detail LIKE '%workflow_execution%'",[],|row| row.get(0)).unwrap();
-                assert!(targets>0,"running workflow must participate in shutdown");
+                let retired: i64 = db.query_row("SELECT COUNT(*) FROM sqlite_master WHERE name IN ('shutdown_plans', 'shutdown_targets', 'caller_attempts')",[],|row| row.get(0)).unwrap();
+                assert_eq!(retired,0,"shutdown must not persist procedure records");
                 std::fs::copy(backend,&next_binary).unwrap();
             }
             steps.lock().unwrap().push(stage.to_string());
@@ -174,6 +209,27 @@ async fn test_実workflow更新_一括停止と旧daemon終了から適用と新
     );
     let next = host::desktop_connection_app(tauri::test::mock_builder(), root, &next_binary);
     wait_phase(&next, "restoring").await;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let facts = workflow_facts(root, &execution_id);
+            let lost = facts
+                .iter()
+                .filter(|(node, event, _)| node == &command_node_id && event == "process_exited")
+                .collect::<Vec<_>>();
+            if !lost.is_empty() {
+                assert_eq!(lost.len(), 1);
+                let detail: Value = serde_json::from_str(&lost[0].2).unwrap();
+                assert_eq!(
+                    detail["failureReason"],
+                    "process lost across application restart"
+                );
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
     let current = discovery(root);
     assert_ne!(current["pid"], old["pid"]);
     assert_ne!(current["instance_id"], old["instance_id"]);

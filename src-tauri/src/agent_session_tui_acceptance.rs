@@ -16,7 +16,6 @@ use crate::adaptor::gateway::workflow::test_support::{
 };
 use crate::adaptor::gateway::workflow::workflow_host::WorkflowRuntimeHost;
 use crate::adaptor::gateway::workflow::WorkflowRuntimeCommandGateway;
-use crate::domain::local_event::LocalEventTransactionRepository;
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::workflow::WorkflowDefinition;
 use crate::infrastructure::local_api::LocalApiServer;
@@ -263,8 +262,6 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
                     ),
                 ),
             );
-        let repository: Arc<dyn LocalEventTransactionRepository> = store.clone();
-        let installation_id = store.installation_id().to_string();
         let driver = Arc::new(WorkflowRuntimeHost::new_canonical(
             Arc::new(AcceptanceUnusedWorkflowDefinitionResolver),
             Arc::new(AcceptanceManagedWorktreeResolver),
@@ -280,8 +277,6 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
         let gateway = Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(
             crate::desktop_test_support::workflow_dependencies(app.handle()),
             driver,
-            repository,
-            installation_id,
         ));
         let runtime = Arc::new(WorkflowRuntimeUsecase::new(gateway));
         composition.execution_tree_stops.bind(runtime.clone());

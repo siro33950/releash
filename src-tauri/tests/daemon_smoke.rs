@@ -159,7 +159,6 @@ async fn quit(daemon: &mut Daemon, socket: &mut Socket, restart: bool) {
         wire::command_request::Command::RequestApplicationQuit(
             wire::RequestApplicationQuitRequest {
                 request: Some(wire::ApplicationQuitRequestDtoV1 {
-                    request_id: Some(uuid::Uuid::new_v4().to_string()),
                     intent: Some(wire::ApplicationQuitIntentDtoV1 {
                         variant: Some(if restart {
                             wire::application_quit_intent_dto_v1::Variant::Restart(
@@ -503,7 +502,7 @@ async fn test_daemon本番配線_各通知元からwsへpushを届ける() {
         })
         .expect("standalone session node");
     request_with_push(&mut socket, "rename-session", C::RenameWorkspaceSessionNode(wire::RenameWorkspaceSessionNodeRequest {
-        worktree_path: Some(worktree.into()), node_id: Some(node_id), name: Some("push verification".into()),
+        worktree_path: Some(worktree.into()), node_id: Some(node_id.clone()), name: Some("push verification".into()),
     }), |event| matches!(event, E::AgentSessionChanged(value) if value.worktree_path.as_deref() == Some(worktree))).await;
     // When / Then: workflow notifier
     let workflows = if cfg!(target_os = "macos") {
@@ -588,7 +587,36 @@ async fn test_daemon本番配線_各通知元からwsへpushを届ける() {
     })
     .await
     .expect("repository state notifier must send snapshot, git status, and branch pushes");
+    let db = rusqlite::Connection::open_with_flags(
+        root.join("local-event-store.sqlite3"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    let sessions = || {
+        db.prepare(
+            "SELECT event_type, detail FROM node_events WHERE node_execution_id = ? ORDER BY seq",
+        )
+        .unwrap()
+        .query_map([&node_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+    };
+    let before_quit = sessions();
+    assert!(before_quit
+        .iter()
+        .any(|(event, _)| event == "session_attached"));
+    assert!(!before_quit
+        .iter()
+        .any(|(event, _)| event == "process_exited"));
     quit(&mut daemon, &mut socket, false).await;
+    assert_eq!(
+        sessions(),
+        before_quit,
+        "terminal shutdown must preserve AgentSession state"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

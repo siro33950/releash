@@ -4,23 +4,18 @@ use domain::app_config::{ConfigRepository, ConfigSecretRepository, NotionConfigR
 use std::path::PathBuf;
 use std::sync::Arc;
 
-type LocalApiShutdownTarget = Arc<parking_lot::RwLock<Option<Arc<dyn Fn() + Send + Sync>>>>;
-
 pub(crate) struct Daemon {
-    server: Arc<infrastructure::local_api::LocalApiServer>,
-    exit: tokio::sync::mpsc::UnboundedReceiver<i32>,
-    _telemetry: Option<infrastructure::telemetry::TelemetryGuard>,
+    shutdown: Arc<dyn domain::application_lifecycle::ApplicationShutdownGateway>,
+    exit: tokio::sync::mpsc::Receiver<i32>,
 }
 
 impl Daemon {
-    pub(crate) async fn wait(mut self) -> Result<i32, String> {
+    pub(crate) async fn wait(mut self) -> Result<std::convert::Infallible, String> {
         let code = self.exit.recv().await.ok_or("daemon exit channel closed")?;
-        self.server
-            .shutdown_and_wait()
-            .await
-            .map_err(|error| error.to_string())?;
+        self.exit.close();
+        usecase::application_lifecycle::shutdown(self.shutdown.as_ref()).await;
         println!("releash-shutdown-complete");
-        Ok(code)
+        std::process::exit(code)
     }
 }
 
@@ -32,7 +27,7 @@ pub(crate) fn compose(
     >,
 ) -> Result<Daemon, Box<dyn std::error::Error>> {
     other::telemetry::set_startup_origin(std::time::Instant::now());
-    let (exit_sender, exit_receiver) = tokio::sync::mpsc::unbounded_channel();
+    let (exit_sender, exit_receiver) = tokio::sync::mpsc::channel(1);
     let app_data = super::app_data_composition::ProductionAppDataComposition::new(data_dir.clone());
     let local_event_store = app_data.open_local_event_store().map_err(|error| {
         let failure =
@@ -266,14 +261,6 @@ pub(crate) fn compose(
         terminal_surface: terminal_surface.clone(),
         git_host_usecase,
     };
-    let caller_journal = Arc::new(
-        usecase::application_lifecycle::operation::CallerAttemptJournal::new(
-            projected_local_event_repository.clone(),
-            local_event_store.clone(),
-            local_event_store.installation_id().to_string(),
-        ),
-    );
-
     let workflow_runtime_usecase = Arc::new(
         adaptor::controller::wiring::build_workflow_runtime_usecase(
             adaptor::gateway::workflow::workflow_host::WorkflowRuntimeDependencies {
@@ -287,8 +274,6 @@ pub(crate) fn compose(
                 app_config: config_repository.clone(),
                 data_dir: Some(data_dir.clone()),
                 workspace_query: workspace_query_service.clone(),
-                local_event_repository: projected_local_event_repository.clone(),
-                local_event_installation_id: local_event_store.installation_id().to_string(),
                 agent_session_launch: agent_session_launch.clone(),
                 agent_session_initial_instruction: agent_session_initial_instruction.clone(),
                 agent_session_interrupt: agent_session_interrupt.clone(),
@@ -333,31 +318,6 @@ pub(crate) fn compose(
     });
 
     let workflow_query_usecase = workflow_usecase.clone();
-    let local_api_shutdown_target: LocalApiShutdownTarget =
-        Arc::new(parking_lot::RwLock::new(None));
-    let shutdown_local_api: Arc<dyn Fn() + Send + Sync> = Arc::new({
-        let target = local_api_shutdown_target.clone();
-        move || {
-            if let Some(shutdown) = target.read().clone() {
-                shutdown();
-            }
-        }
-    });
-    let shutdown_coordinator =
-        adaptor::controller::application_lifecycle::build_shutdown_coordinator(
-            local_event_store.clone(),
-            projected_local_event_repository.clone(),
-            adaptor::controller::application_lifecycle::RuntimeShutdownDependencies::new(
-                workflow_runtime_usecase.clone(),
-                terminal_surface.clone(),
-                shutdown_provider_exit_observer,
-                shutdown_local_api,
-            ),
-        );
-    let process_actions = Arc::new(
-        adaptor::controller::application_lifecycle::ApplicationProcessActionDispatcher::default(),
-    );
-
     infrastructure::comment::watcher::spawn_review_comments_watcher(
         adaptor::gateway::comment::state_dir(&data_dir),
         Arc::new({
@@ -379,10 +339,7 @@ pub(crate) fn compose(
         startup_authority.clone(),
     );
     let dependencies = super::client::ClientDependencies {
-        caller_attempt_journal: Some(caller_journal),
-        shutdown_coordinator: Some(shutdown_coordinator),
         application_startup_authority: Some(startup_authority),
-        application_process_action_dispatcher: Some(process_actions),
         workspace_node_command_usecase: Some(workspace_node_command_usecase),
         app_state: Some(app_state),
         workspace_state_store: Some(workspace_state_store),
@@ -409,9 +366,9 @@ pub(crate) fn compose(
         comment_notify: Arc::new(adaptor::gateway::push::CommentChangeGateway::new(
             push_sink.clone(),
         )),
-        process_port: Arc::new(super::application_lifecycle::DaemonProcessActionPort(
-            exit_sender,
-        )),
+        process_port: Arc::new(
+            adaptor::gateway::application_lifecycle::DaemonProcessActionPort(exit_sender),
+        ),
     };
     client_dispatch.register_dependencies(&dependencies);
     let client_dispatch = Arc::new(client_dispatch);
@@ -437,15 +394,18 @@ pub(crate) fn compose(
         Some(provider_lifecycle_ingress.clone()),
     );
     let local_api = local_api_binding.start(local_api_router, &tokio::runtime::Handle::current());
-    *local_api_shutdown_target.write() = Some(Arc::new({
-        let local_api = local_api.clone();
-        move || local_api.shutdown()
-    }));
 
     Ok(Daemon {
-        server: local_api,
+        shutdown: Arc::new(
+            adaptor::gateway::application_lifecycle::DaemonShutdownGateway {
+                server: local_api,
+                workflow: workflow_runtime_usecase,
+                terminal: terminal_surface,
+                stop_observer: shutdown_provider_exit_observer,
+                telemetry: parking_lot::Mutex::new(telemetry),
+            },
+        ),
         exit: exit_receiver,
-        _telemetry: telemetry,
     })
 }
 

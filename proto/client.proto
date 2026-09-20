@@ -17,13 +17,13 @@ message Push {
   }
 }
 message CommandRequest {
+  reserved 12, 44, 45, 67, 89, 118, 182;
   reserved 131, 134;
   reserved "start_git_dir_watching", "start_watching";
   oneof command {
     GetReviewBlobRequest get_review_blob = 183;
     AbortWorkflowRequest abort_workflow = 10;
     AckTerminalSurfaceOutputRequest ack_terminal_surface_output = 11;
-    AcknowledgeApplicationAttemptRequest acknowledge_application_attempt = 12;
     AddRepoPathRequest add_repo_path = 13;
     AppendReviewCommentRequest append_review_comment = 14;
     ApproveWorkspaceNodeRequest approve_workspace_node = 15;
@@ -54,8 +54,6 @@ message CommandRequest {
     FetchNotionLabelOptionsRequest fetch_notion_label_options = 41;
     GetAgentSessionRequest get_agent_session = 42;
     GetAppSettingsRequest get_app_settings = 43;
-    GetApplicationQuitOperationRequest get_application_quit_operation = 44;
-    GetApplicationShutdownRequest get_application_shutdown = 45;
     GetApplicationStartupOutcomeRequest get_application_startup_outcome = 46;
     GetAutomationConfigDirRequest get_automation_config_dir = 47;
     GetBranchBaseRequest get_branch_base = 48;
@@ -77,7 +75,6 @@ message CommandRequest {
     GetRepoPathsRequest get_repo_paths = 64;
     GetReviewFileViewRequest get_review_file_view = 65;
     GetReviewSnapshotRequest get_review_snapshot = 66;
-    GetShutdownPlanRequest get_shutdown_plan = 67;
     GetTerminalPerformanceSwitchesRequest get_terminal_performance_switches = 68;
     GetTerminalSurfaceRequest get_terminal_surface = 69;
     GetWorkflowRequest get_workflow = 70;
@@ -99,7 +96,6 @@ message CommandRequest {
     ListBranchesWithStatusRequest list_branches_with_status = 86;
     ListBranchesWithStatusSnapshotRequest list_branches_with_status_snapshot = 87;
     ListFacetSummariesRequest list_facet_summaries = 88;
-    ListPendingApplicationAttemptsRequest list_pending_application_attempts = 89;
     ListProviderHookHealthWarningsRequest list_provider_hook_health_warnings = 90;
     ListReviewThreadsRequest list_review_threads = 91;
     ListWorkflowsRequest list_workflows = 92;
@@ -128,7 +124,6 @@ message CommandRequest {
     ResizeTerminalSurfaceRequest resize_terminal_surface = 115;
     ResolveActiveExecutionByWorktreeRequest resolve_active_execution_by_worktree = 116;
     ResolveReviewThreadRequest resolve_review_thread = 117;
-    ResolveShutdownTargetActionRequest resolve_shutdown_target_action = 118;
     RestoreAgentSessionRequest restore_agent_session = 119;
     RestoreWorkspaceWorkflowExecutionRequest restore_workspace_workflow_execution = 120;
     ResumeAgentSessionRequest resume_agent_session = 121;
@@ -191,18 +186,17 @@ message CommandRequest {
     WorkflowSubmitOutputRequest workflow_submit_output = 179;
     WorkflowValidateOutputRequest workflow_validate_output = 180;
     WorkflowGetOutputRequest workflow_get_output = 181;
-    CompactApplicationShutdownDetailsRequest compact_application_shutdown_details = 182;
   }
 }
 
 message CommandResult {
+  reserved 12, 44, 45, 67, 89, 118, 182;
   reserved 131, 134;
   reserved "start_git_dir_watching", "start_watching";
   oneof command {
     ResultString get_review_blob = 183;
     Unit abort_workflow = 10;
     Unit ack_terminal_surface_output = 11;
-    Unit acknowledge_application_attempt = 12;
     ResultBool add_repo_path = 13;
     ReviewThreadDto append_review_comment = 14;
     Unit approve_workspace_node = 15;
@@ -233,8 +227,6 @@ message CommandResult {
     ListNotionLabelOptionView fetch_notion_label_options = 41;
     NullableAgentSessionItemDto get_agent_session = 42;
     AppSection get_app_settings = 43;
-    ApplicationQuitLookupDtoV1 get_application_quit_operation = 44;
-    CurrentShutdownResultDtoV1 get_application_shutdown = 45;
     ApplicationStartupOutcomeDtoV1 get_application_startup_outcome = 46;
     ResultString get_automation_config_dir = 47;
     Nullablestring get_branch_base = 48;
@@ -256,7 +248,6 @@ message CommandResult {
     Liststring get_repo_paths = 64;
     ReviewFileViewDto get_review_file_view = 65;
     ReviewSnapshotDto get_review_snapshot = 66;
-    ShutdownPlanPageDtoV1 get_shutdown_plan = 67;
     TerminalPerformanceSwitchesV1 get_terminal_performance_switches = 68;
     TerminalSurfaceSummaryV1 get_terminal_surface = 69;
     WorkflowDto get_workflow = 70;
@@ -278,7 +269,6 @@ message CommandResult {
     ListBranchCardDto list_branches_with_status = 86;
     RepositoryBranchCardsSnapshotDto list_branches_with_status_snapshot = 87;
     ListFacetSummaryDto list_facet_summaries = 88;
-    PendingCallerAttemptPageDtoV1 list_pending_application_attempts = 89;
     ListProviderHookHealthWarningResponse list_provider_hook_health_warnings = 90;
     ListReviewThreadDto list_review_threads = 91;
     ListWorkflowSummaryDto list_workflows = 92;
@@ -307,7 +297,6 @@ message CommandResult {
     Unit resize_terminal_surface = 115;
     Nullablestring resolve_active_execution_by_worktree = 116;
     ReviewThreadDto resolve_review_thread = 117;
-    RecoveryActionOutcomeDtoV1 resolve_shutdown_target_action = 118;
     AgentSessionOpenResponse restore_agent_session = 119;
     Unit restore_workspace_workflow_execution = 120;
     AgentSessionOpenResponse resume_agent_session = 121;
@@ -370,7 +359,6 @@ message CommandResult {
     Unit workflow_submit_output = 179;
     WorkflowValidateOutputResponse workflow_validate_output = 180;
     WorkflowGetOutputResponse workflow_get_output = 181;
-    ShutdownPlanDtoV1 compact_application_shutdown_details = 182;
   }
 }
 
@@ -385,10 +373,6 @@ message Unit {
 message AckTerminalSurfaceOutputRequest {
   optional string attachment_id = 1 [json_name = "attachmentId", (json_required) = true];
   optional uint64 sequence = 2 [json_name = "sequence", (json_required) = true];
-}
-
-message AcknowledgeApplicationAttemptRequest {
-  optional string caller_request_id = 1 [json_name = "callerRequestId", (json_required) = true];
 }
 
 message AddRepoPathRequest {
@@ -967,63 +951,6 @@ message AppSection {
   optional string external_editor = 6 [json_name = "external_editor", (json_default) = true];
 }
 
-message GetApplicationQuitOperationRequest {
-  optional string operation_id = 1 [json_name = "operationId", (json_required) = true];
-}
-
-message ApplicationQuitLookupDtoV1 {
-  option (json_tag) = "type";
-  oneof variant {
-    ApplicationQuitLookupDtoV1Found found = 1 [json_name = "found"];
-    ApplicationQuitLookupDtoV1OutcomeUnknown outcome_unknown = 2 [json_name = "outcome_unknown"];
-  }
-}
-
-message ApplicationQuitLookupDtoV1Found {
-  optional ApplicationQuitReceiptDtoV1 receipt = 1 [json_name = "receipt", (json_required) = true];
-  optional ApplicationQuitStateDtoV1 state = 2 [json_name = "state", (json_required) = true];
-}
-
-message ApplicationQuitReceiptDtoV1 {
-  optional string operation_id = 1 [json_name = "operation_id", (json_required) = true];
-  optional string shutdown_id = 2 [json_name = "shutdown_id", (json_required) = true];
-  optional string intent = 3 [json_name = "intent", (json_required) = true];
-  optional int32 exit_code = 4 [json_name = "exit_code", (json_required) = true];
-  optional string t0_ms = 5 [json_name = "t0_ms", (json_required) = true];
-  optional string deadline_ms = 6 [json_name = "deadline_ms", (json_required) = true];
-}
-
-message ApplicationQuitStateDtoV1 {
-  option (json_tag) = "type";
-  oneof variant {
-    Unit preparing = 1 [json_name = "preparing"];
-    Unit activated = 2 [json_name = "activated"];
-    Unit completed = 3 [json_name = "completed"];
-    ApplicationQuitStateDtoV1OutcomeUnknown outcome_unknown = 4 [json_name = "outcome_unknown"];
-    ApplicationQuitStateDtoV1FailedBeforeActivation failed_before_activation = 5 [json_name = "failed_before_activation"];
-    ApplicationQuitStateDtoV1ReconciliationRequired reconciliation_required = 6 [json_name = "reconciliation_required"];
-  }
-}
-
-message ApplicationQuitStateDtoV1OutcomeUnknown {
-  optional string operation_id = 1 [json_name = "operation_id", (json_required) = true];
-  optional string shutdown_id = 2 [json_name = "shutdown_id", (json_required) = true];
-  optional string activation_commit_id = 3 [json_name = "activation_commit_id", (json_required) = true];
-}
-
-message ApplicationQuitStateDtoV1FailedBeforeActivation {
-  optional string correlation_id = 1 [json_name = "correlation_id", (json_required) = true];
-}
-
-message ApplicationQuitStateDtoV1ReconciliationRequired {
-  optional string correlation_id = 1 [json_name = "correlation_id", (json_required) = true];
-}
-
-message ApplicationQuitLookupDtoV1OutcomeUnknown {
-  optional string operation_id = 1 [json_name = "operation_id", (json_required) = true];
-  optional ApplicationQuitIntentDtoV1 intent = 2 [json_name = "intent", (json_required) = true];
-}
-
 message ApplicationQuitIntentDtoV1 {
   option (json_tag) = "type";
   oneof variant {
@@ -1038,59 +965,6 @@ message ApplicationQuitIntentDtoV1Exit {
 
 message ApplicationQuitIntentDtoV1Restart {
   optional int32 code = 1 [json_name = "code", (json_required) = true];
-}
-
-message GetApplicationShutdownRequest {
-
-}
-
-message CurrentShutdownResultDtoV1 {
-  option (json_tag) = "type";
-  oneof variant {
-    CurrentShutdownResultDtoV1Current current = 1 [json_name = "current"];
-    CurrentShutdownResultDtoV1OutcomeUnknown outcome_unknown = 2 [json_name = "outcome_unknown"];
-  }
-}
-
-message CurrentShutdownResultDtoV1Current {
-  optional ShutdownPlanDtoV1 plan = 1 [json_name = "plan", (json_nullable) = true];
-}
-
-message ShutdownPlanDtoV1 {
-  optional string shutdown_id = 1 [json_name = "shutdown_id", (json_required) = true];
-  optional string phase = 2 [json_name = "phase", (json_required) = true];
-  optional string revision = 3 [json_name = "revision", (json_required) = true];
-  optional string details_state = 4 [json_name = "details_state", (json_required) = true];
-  optional string operation_id = 5 [json_name = "operation_id", (json_required) = true];
-  optional string intent = 6 [json_name = "intent", (json_required) = true];
-  optional int32 exit_code = 7 [json_name = "exit_code", (json_required) = true];
-  optional string t0_ms = 8 [json_name = "t0_ms", (json_required) = true];
-  optional string preparation_cutoff_ms = 9 [json_name = "preparation_cutoff_ms", (json_required) = true];
-  optional string deadline_ms = 10 [json_name = "deadline_ms", (json_required) = true];
-  optional string target_count = 11 [json_name = "target_count", (json_nullable) = true];
-  optional string prepared_count = 12 [json_name = "prepared_count", (json_nullable) = true];
-  optional string effect_reserved_count = 13 [json_name = "effect_reserved_count", (json_nullable) = true];
-  optional string terminal_count = 14 [json_name = "terminal_count", (json_nullable) = true];
-  optional string completed_count = 15 [json_name = "completed_count", (json_nullable) = true];
-  optional string unresolved_count = 16 [json_name = "unresolved_count", (json_nullable) = true];
-  optional string recovery_snapshot_count = 17 [json_name = "recovery_snapshot_count", (json_nullable) = true];
-  optional string recovery_snapshot_id = 18 [json_name = "recovery_snapshot_id", (json_nullable) = true];
-  optional string outcome = 19 [json_name = "outcome", (json_nullable) = true];
-  optional SafeOperationFailureDtoV1 safe_failure = 20 [json_name = "safe_failure", (json_nullable) = true];
-  optional Liststring actions = 21 [json_name = "actions", (json_required) = true];
-}
-
-message SafeOperationFailureDtoV1 {
-  optional string kind = 1 [json_name = "kind", (json_required) = true];
-  optional bool retryable = 2 [json_name = "retryable", (json_required) = true];
-  optional string label = 3 [json_name = "label", (json_required) = true];
-  optional string detail = 4 [json_name = "detail", (json_nullable) = true];
-  optional string correlation_id = 5 [json_name = "correlation_id", (json_required) = true];
-}
-
-message CurrentShutdownResultDtoV1OutcomeUnknown {
-  optional string operation_id = 1 [json_name = "operation_id", (json_required) = true];
-  optional ApplicationQuitIntentDtoV1 intent = 2 [json_name = "intent", (json_required) = true];
 }
 
 message GetApplicationStartupOutcomeRequest {
@@ -1539,70 +1413,6 @@ message DiffTreeNodeDto {
 message ListDiffTreeNodeDto {
   option (json_wrapper) = "items";
   repeated DiffTreeNodeDto items = 1;
-}
-
-message GetShutdownPlanRequest {
-  optional string shutdown_id = 1 [json_name = "shutdownId", (json_required) = true];
-  optional uint64 limit = 2 [json_name = "limit", (json_nullable) = true];
-  optional string cursor = 3 [json_name = "cursor", (json_nullable) = true];
-}
-
-message ShutdownPlanPageDtoV1 {
-  optional ShutdownPlanDtoV1 plan = 1 [json_name = "plan", (json_required) = true];
-  optional ListShutdownTargetDtoV1 targets = 2 [json_name = "targets", (json_required) = true];
-  optional string next_cursor = 3 [json_name = "next_cursor", (json_nullable) = true];
-}
-
-message ShutdownTargetDtoV1 {
-  optional string ordinal = 1 [json_name = "ordinal", (json_required) = true];
-  optional string target_key = 2 [json_name = "target_key", (json_required) = true];
-  optional string target_id = 3 [json_name = "target_id", (json_required) = true];
-  optional string kind = 4 [json_name = "kind", (json_required) = true];
-  optional string effect_identity = 5 [json_name = "effect_identity", (json_required) = true];
-  optional string state = 6 [json_name = "state", (json_required) = true];
-  optional SafeEffectObservationDtoV1 observation = 7 [json_name = "observation", (json_nullable) = true];
-  optional string revision = 8 [json_name = "revision", (json_required) = true];
-  optional Liststring actions = 9 [json_name = "actions", (json_required) = true];
-  optional ListRecoveryActionIdentityDtoV1 action_identities = 10 [json_name = "action_identities", (json_required) = true];
-}
-
-message SafeEffectObservationDtoV1 {
-  option (json_tag) = "type";
-  oneof variant {
-    SafeEffectObservationDtoV1ExitCoupledOutcomeUnknown exit_coupled_outcome_unknown = 1 [json_name = "exit_coupled_outcome_unknown"];
-  }
-}
-
-message SafeEffectObservationDtoV1ExitCoupledOutcomeUnknown {
-  optional string shutdown_id = 1 [json_name = "shutdown_id", (json_required) = true];
-}
-
-message RecoveryActionIdentityDtoV1 {
-  optional string action_id = 1 [json_name = "action_id", (json_required) = true];
-  optional RecoveryActionKindDtoV1 action = 2 [json_name = "action", (json_required) = true];
-  optional string origin_revision = 3 [json_name = "origin_revision", (json_required) = true];
-}
-
-message RecoveryActionKindDtoV1 {
-  option (json_wrapper) = "value";
-  enum Value {
-    read_again = 0 [(json_enum_name) = "read_again"];
-    retry_same_effect = 1 [(json_enum_name) = "retry_same_effect"];
-    use_observed_result = 2 [(json_enum_name) = "use_observed_result"];
-    cancel_if_safe = 3 [(json_enum_name) = "cancel_if_safe"];
-    keep_for_manual_resolution = 4 [(json_enum_name) = "keep_for_manual_resolution"];
-  }
-  optional Value value = 1 [json_name = "value", (json_required) = true];
-}
-
-message ListRecoveryActionIdentityDtoV1 {
-  option (json_wrapper) = "items";
-  repeated RecoveryActionIdentityDtoV1 items = 1;
-}
-
-message ListShutdownTargetDtoV1 {
-  option (json_wrapper) = "items";
-  repeated ShutdownTargetDtoV1 items = 1;
 }
 
 message GetTerminalPerformanceSwitchesRequest {
@@ -2344,28 +2154,6 @@ message ListFacetSummaryDto {
   repeated FacetSummaryDto items = 1;
 }
 
-message ListPendingApplicationAttemptsRequest {
-  optional uint64 limit = 1 [json_name = "limit", (json_nullable) = true];
-  optional string cursor = 2 [json_name = "cursor", (json_nullable) = true];
-}
-
-message PendingCallerAttemptPageDtoV1 {
-  optional ListPendingCallerAttemptDtoV1 entries = 1 [json_name = "entries", (json_required) = true];
-  optional string next_cursor = 2 [json_name = "next_cursor", (json_nullable) = true];
-}
-
-message PendingCallerAttemptDtoV1 {
-  optional string kind = 1 [json_name = "kind", (json_required) = true, (json_literal) = "\"application_quit\""];
-  optional string caller_request_id = 2 [json_name = "caller_request_id", (json_required) = true];
-  optional string operation_id = 3 [json_name = "operation_id", (json_nullable) = true];
-  optional PendingAttemptResolution resolution = 4 [json_name = "resolution", (json_required) = true];
-}
-
-message ListPendingCallerAttemptDtoV1 {
-  option (json_wrapper) = "items";
-  repeated PendingCallerAttemptDtoV1 items = 1;
-}
-
 message ListProviderHookHealthWarningsRequest {
 
 }
@@ -2648,7 +2436,7 @@ message ReportUsageEventRequest {
 }
 
 message ApplicationQuitRequestDtoV1 {
-  optional string request_id = 1 [json_name = "request_id", (json_required) = true];
+  reserved 1;
   optional ApplicationQuitIntentDtoV1 intent = 2 [json_name = "intent", (json_required) = true];
 }
 
@@ -2658,31 +2446,10 @@ message RequestApplicationQuitRequest {
 
 message ApplicationQuitOutcomeDtoV1 {
   option (json_tag) = "type";
+  reserved 2, 3, 4;
   oneof variant {
-    ApplicationQuitOutcomeDtoV1Accepted accepted = 1 [json_name = "accepted"];
-    ApplicationQuitOutcomeDtoV1RejectedBeforeCommit rejected_before_commit = 2 [json_name = "rejected_before_commit"];
-    ApplicationQuitOutcomeDtoV1OutcomeUnknown outcome_unknown = 3 [json_name = "outcome_unknown"];
-    ApplicationQuitOutcomeDtoV1PreviousShutdownReconciliationRequired previous_shutdown_reconciliation_required = 4 [json_name = "previous_shutdown_reconciliation_required"];
+    Unit accepted = 1 [json_name = "accepted"];
   }
-}
-
-message ApplicationQuitOutcomeDtoV1Accepted {
-  optional ApplicationQuitReceiptDtoV1 receipt = 1 [json_name = "receipt", (json_required) = true];
-  optional ApplicationQuitStateDtoV1 state = 2 [json_name = "state", (json_required) = true];
-}
-
-message ApplicationQuitOutcomeDtoV1RejectedBeforeCommit {
-  optional string correlation_id = 1 [json_name = "correlation_id", (json_required) = true];
-}
-
-message ApplicationQuitOutcomeDtoV1OutcomeUnknown {
-  optional string request_id = 1 [json_name = "request_id", (json_required) = true];
-  optional string operation_id = 2 [json_name = "operation_id", (json_required) = true];
-  optional ApplicationQuitIntentDtoV1 intent = 3 [json_name = "intent", (json_required) = true];
-}
-
-message ApplicationQuitOutcomeDtoV1PreviousShutdownReconciliationRequired {
-  optional ShutdownPlanDtoV1 blocking = 1 [json_name = "blocking", (json_required) = true];
 }
 
 message ResetProviderExecutableRequest {
@@ -2704,68 +2471,6 @@ message ResolveReviewThreadRequest {
   optional string thread_id = 2 [json_name = "threadId", (json_required) = true];
   optional string outcome = 3 [json_name = "outcome", (json_required) = true];
   optional string summary = 4 [json_name = "summary", (json_required) = true];
-}
-
-message ShutdownTargetActionRequestDtoV1 {
-  optional string action_id = 1 [json_name = "action_id", (json_required) = true];
-  optional string shutdown_id = 2 [json_name = "shutdown_id", (json_required) = true];
-  optional string ordinal = 3 [json_name = "ordinal", (json_required) = true];
-  optional string target_key = 4 [json_name = "target_key", (json_required) = true];
-  optional string origin_revision = 5 [json_name = "origin_revision", (json_required) = true];
-  optional RecoveryActionKindDtoV1 action = 6 [json_name = "action", (json_required) = true];
-}
-
-message ResolveShutdownTargetActionRequest {
-  optional ShutdownTargetActionRequestDtoV1 request = 1 [json_name = "request", (json_required) = true];
-}
-
-message RecoveryActionOutcomeDtoV1 {
-  option (json_tag) = "type";
-  oneof variant {
-    RecoveryActionOutcomeDtoV1Completed completed = 1 [json_name = "completed"];
-    RecoveryActionOutcomeDtoV1InProgress in_progress = 2 [json_name = "in_progress"];
-    RecoveryActionOutcomeDtoV1Rejected rejected = 3 [json_name = "rejected"];
-    RecoveryActionOutcomeDtoV1ActionOutcomeUnknown action_outcome_unknown = 4 [json_name = "action_outcome_unknown"];
-  }
-}
-
-message RecoveryActionOutcomeDtoV1Completed {
-  optional string action_id = 1 [json_name = "action_id", (json_required) = true];
-  optional RecoveryActionCompletedResultDtoV1 result = 2 [json_name = "result", (json_required) = true];
-}
-
-message RecoveryActionCompletedResultDtoV1 {
-  optional string outcome = 1 [json_name = "outcome", (json_required) = true];
-  optional string classification = 2 [json_name = "classification", (json_required) = true];
-  optional string resource_revision = 3 [json_name = "resource_revision", (json_required) = true];
-  optional string canonical_result_sha256 = 4 [json_name = "canonical_result_sha256", (json_required) = true];
-  optional string resource_view = 5 [json_name = "resource_view", (json_required) = true];
-}
-
-message RecoveryActionOutcomeDtoV1InProgress {
-  optional string action_id = 1 [json_name = "action_id", (json_required) = true];
-}
-
-message RecoveryActionOutcomeDtoV1Rejected {
-  optional string action_id = 1 [json_name = "action_id", (json_required) = true];
-  optional RecoveryActionRejectionDtoV1 rejection = 2 [json_name = "rejection", (json_required) = true];
-}
-
-message RecoveryActionRejectionDtoV1 {
-  option (json_tag) = "type";
-  oneof variant {
-    RecoveryActionRejectionDtoV1RevisionConflict revision_conflict = 1 [json_name = "revision_conflict"];
-    Unit action_unavailable = 2 [json_name = "action_unavailable"];
-    Unit target_revision_changed = 3 [json_name = "target_revision_changed"];
-  }
-}
-
-message RecoveryActionRejectionDtoV1RevisionConflict {
-  optional string current_revision = 1 [json_name = "current_revision", (json_required) = true];
-}
-
-message RecoveryActionOutcomeDtoV1ActionOutcomeUnknown {
-  optional string action_id = 1 [json_name = "action_id", (json_required) = true];
 }
 
 message RestoreAgentSessionRequest {
@@ -3425,10 +3130,6 @@ message WorkflowGetOutputResponseSubmitted {
   optional double timestamp = 5 [json_name = "timestamp", (json_required) = true];
 }
 
-message CompactApplicationShutdownDetailsRequest {
-  optional string shutdown_id = 1 [json_name = "shutdownId", (json_required) = true];
-}
-
 message AgentSessionChangedPayload {
   optional string worktree_path = 1 [json_name = "worktreePath", (json_required) = true];
 }
@@ -3475,7 +3176,7 @@ message ApplicationError {
   optional string type = 1 [(json_required) = true];
   optional string message = 2;
   optional string correlation_id = 3 [json_name = "correlation_id"];
-  optional SafeOperationFailureDtoV1 failure = 4;
+  reserved 4;
 }
 
 
@@ -3602,16 +3303,6 @@ message DiffBase {
   optional Value value = 1 [(json_required) = true];
 }
 
-message PendingAttemptResolution {
-  option (json_wrapper) = "value";
-  enum Value {
-    pending = 0 [(json_enum_name) = "pending"];
-    accepted = 1 [(json_enum_name) = "accepted"];
-    rejected_before_commit = 2 [(json_enum_name) = "rejected_before_commit"];
-  }
-  optional Value value = 1 [(json_required) = true];
-}
-
 message GitIndexStatus {
   option (json_wrapper) = "value";
   enum Value {
@@ -3710,7 +3401,6 @@ service ClientService {
   rpc GetReviewBlob(GetReviewBlobRequest) returns (ResultString);
   rpc AbortWorkflow(AbortWorkflowRequest) returns (Unit);
   rpc AckTerminalSurfaceOutput(AckTerminalSurfaceOutputRequest) returns (Unit);
-  rpc AcknowledgeApplicationAttempt(AcknowledgeApplicationAttemptRequest) returns (Unit);
   rpc AddRepoPath(AddRepoPathRequest) returns (ResultBool);
   rpc AppendReviewComment(AppendReviewCommentRequest) returns (ReviewThreadDto);
   rpc ApproveWorkspaceNode(ApproveWorkspaceNodeRequest) returns (Unit);
@@ -3743,8 +3433,6 @@ service ClientService {
   rpc FetchNotionLabelOptions(FetchNotionLabelOptionsRequest) returns (ListNotionLabelOptionView);
   rpc GetAgentSession(GetAgentSessionRequest) returns (NullableAgentSessionItemDto);
   rpc GetAppSettings(GetAppSettingsRequest) returns (AppSection);
-  rpc GetApplicationQuitOperation(GetApplicationQuitOperationRequest) returns (ApplicationQuitLookupDtoV1);
-  rpc GetApplicationShutdown(GetApplicationShutdownRequest) returns (CurrentShutdownResultDtoV1);
   rpc GetApplicationStartupOutcome(GetApplicationStartupOutcomeRequest) returns (ApplicationStartupOutcomeDtoV1);
   rpc GetAutomationConfigDir(GetAutomationConfigDirRequest) returns (ResultString);
   rpc GetBranchBase(GetBranchBaseRequest) returns (Nullablestring);
@@ -3766,7 +3454,6 @@ service ClientService {
   rpc GetRepoPaths(GetRepoPathsRequest) returns (Liststring);
   rpc GetReviewFileView(GetReviewFileViewRequest) returns (ReviewFileViewDto);
   rpc GetReviewSnapshot(GetReviewSnapshotRequest) returns (ReviewSnapshotDto);
-  rpc GetShutdownPlan(GetShutdownPlanRequest) returns (ShutdownPlanPageDtoV1);
   rpc GetTerminalPerformanceSwitches(GetTerminalPerformanceSwitchesRequest) returns (TerminalPerformanceSwitchesV1);
   rpc GetTerminalSurface(GetTerminalSurfaceRequest) returns (TerminalSurfaceSummaryV1);
   rpc GetWorkflow(GetWorkflowRequest) returns (WorkflowDto);
@@ -3788,7 +3475,6 @@ service ClientService {
   rpc ListBranchesWithStatus(ListBranchesWithStatusRequest) returns (ListBranchCardDto);
   rpc ListBranchesWithStatusSnapshot(ListBranchesWithStatusSnapshotRequest) returns (RepositoryBranchCardsSnapshotDto);
   rpc ListFacetSummaries(ListFacetSummariesRequest) returns (ListFacetSummaryDto);
-  rpc ListPendingApplicationAttempts(ListPendingApplicationAttemptsRequest) returns (PendingCallerAttemptPageDtoV1);
   rpc ListProviderHookHealthWarnings(ListProviderHookHealthWarningsRequest) returns (ListProviderHookHealthWarningResponse);
   rpc ListReviewThreads(ListReviewThreadsRequest) returns (ListReviewThreadDto);
   rpc ListWorkflows(ListWorkflowsRequest) returns (ListWorkflowSummaryDto);
@@ -3817,7 +3503,6 @@ service ClientService {
   rpc ResizeTerminalSurface(ResizeTerminalSurfaceRequest) returns (Unit);
   rpc ResolveActiveExecutionByWorktree(ResolveActiveExecutionByWorktreeRequest) returns (Nullablestring);
   rpc ResolveReviewThread(ResolveReviewThreadRequest) returns (ReviewThreadDto);
-  rpc ResolveShutdownTargetAction(ResolveShutdownTargetActionRequest) returns (RecoveryActionOutcomeDtoV1);
   rpc RestoreAgentSession(RestoreAgentSessionRequest) returns (AgentSessionOpenResponse);
   rpc RestoreWorkspaceWorkflowExecution(RestoreWorkspaceWorkflowExecutionRequest) returns (Unit);
   rpc ResumeAgentSession(ResumeAgentSessionRequest) returns (AgentSessionOpenResponse);
@@ -3880,7 +3565,6 @@ service ClientService {
   rpc WorkflowSubmitOutput(WorkflowSubmitOutputRequest) returns (Unit);
   rpc WorkflowValidateOutput(WorkflowValidateOutputRequest) returns (WorkflowValidateOutputResponse);
   rpc WorkflowGetOutput(WorkflowGetOutputRequest) returns (WorkflowGetOutputResponse);
-  rpc CompactApplicationShutdownDetails(CompactApplicationShutdownDetailsRequest) returns (ShutdownPlanDtoV1);
   rpc GetServerInfo(Unit) returns (ServerInfo);
   rpc SubscribePush(SubscribePushRequest) returns (stream Push);
   rpc WatchFiles(WatchFilesRequest) returns (ResultUint64);

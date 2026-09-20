@@ -29,8 +29,6 @@ const baseIpcHandler: Record<string, unknown> = {
 	// App.tsx 初期化
 	get_cwd: "/test/repo",
 	get_application_startup_outcome: { type: "ready" },
-	get_application_shutdown: { type: "current", plan: null },
-	list_pending_application_attempts: { entries: [], next_cursor: null },
 	list_provider_hook_health_warnings: [],
 	get_main_repo_path: "/test/repo",
 	list_worktrees: [],

@@ -273,37 +273,6 @@ async fn test_通常終了_停止要求のないready後の終了でも再spawn�
 }
 
 #[tokio::test(start_paused = true)]
-async fn test_通常quit_判断待ちでも有限期限後に子を回収して終了する() {
-    // Given
-    let gateway = Arc::new(FakeDaemon::default());
-    gateway.ready.store(true, Ordering::SeqCst);
-    *gateway.shutdown_response.lock() = Some(Ok(
-        crate::domain::daemon_supervision::ShutdownResponse::DecisionRequired(
-            "approval required".into(),
-        ),
-    ));
-    let supervisor = DaemonSupervisionUsecase::start(gateway.clone());
-    tick(200).await;
-    // When
-    supervisor.stop(StopIntent::Quit(0)).unwrap();
-    tick(1_000).await;
-    // Then
-    assert_eq!(supervisor.status().phase, "stopping");
-    assert_eq!(
-        supervisor.status().reason.as_deref(),
-        Some("approval required")
-    );
-    // When
-    tick(20_000).await;
-    // Then
-    assert_eq!(supervisor.status().phase, "stopped");
-    assert_eq!(
-        *gateway.calls.lock(),
-        ["spawn", "shutdown", "terminate_and_wait"]
-    );
-}
-
-#[tokio::test(start_paused = true)]
 async fn test_起動失敗_停止未確認は一度だけ停止を試み終了操作を提示する() {
     // Given
     let gateway = Arc::new(FakeDaemon::default());

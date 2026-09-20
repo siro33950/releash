@@ -388,12 +388,7 @@ pub(crate) fn build_workflow_runtime_usecase(
     );
     let driver = wire_delegate_continuation(app.clone(), driver);
     Ok(WorkflowRuntimeUsecase::new(Arc::new(
-        WorkflowRuntimeCommandGateway::new_with_driver(
-            app,
-            Arc::new(driver),
-            deps.local_event_repository,
-            deps.local_event_installation_id,
-        ),
+        WorkflowRuntimeCommandGateway::new_with_driver(app, Arc::new(driver)),
     )))
 }
 

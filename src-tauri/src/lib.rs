@@ -37,7 +37,7 @@ pub use desktop::run;
 
 pub fn run_daemon(data_dir: Option<std::path::PathBuf>) -> i32 {
     infrastructure::process::parent_lifetime::watch_parent_pipe();
-    let result = (|| -> Result<i32, Box<dyn std::error::Error>> {
+    let result = (|| -> Result<std::convert::Infallible, Box<dyn std::error::Error>> {
         let data_dir = match data_dir {
             Some(path) => path,
             None => infrastructure::platform::app_data_dir::resolve_data_dir()?,
@@ -70,14 +70,10 @@ pub fn run_daemon(data_dir: Option<std::path::PathBuf>) -> i32 {
             daemon.wait().await.map_err(Into::into)
         })
     })();
+    let error = result.unwrap_err();
     log::logger().flush();
-    match result {
-        Ok(code) => code,
-        Err(error) => {
-            eprintln!("{error}");
-            1
-        }
-    }
+    eprintln!("{error}");
+    1
 }
 
 #[cfg(all(debug_assertions, feature = "desktop"))]

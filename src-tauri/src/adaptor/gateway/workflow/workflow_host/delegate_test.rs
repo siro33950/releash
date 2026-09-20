@@ -10,8 +10,6 @@ fn control(fixture: &Fixture, host: &WorkflowRuntimeHost) -> WorkflowControlPlan
     let gateway = crate::adaptor::gateway::workflow::WorkflowRuntimeCommandGateway::new_with_driver(
         fixture.app.clone(),
         Arc::new(host.clone()),
-        fixture.store.clone(),
-        fixture.store.installation_id().to_string(),
     );
     WorkflowControlPlaneUsecase::new(Arc::new(gateway))
 }

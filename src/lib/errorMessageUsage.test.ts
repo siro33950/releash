@@ -37,7 +37,6 @@ const TARGET_FILES = [
 	"src/hooks/useWorkspaceTreeNodes.ts",
 	"src/contexts/ReviewThreadHandoffContext.tsx",
 	"src/hooks/useNotionSettings.ts",
-	"src/hooks/useApplicationShutdownSupervision.ts",
 ] as const;
 
 const LOCAL_STRING_EXTRACTION =

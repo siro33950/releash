@@ -66,7 +66,7 @@ if (phase === "prepare") {
     assert.equal(registered.enabled, true);
     assert.equal((await client.call("client", "get_app_settings")).auto_launch, true);
     singleRegistration();
-    await quit(bundle);
+    await quit(bundle, client);
     save("enabled", bundle);
 } else {
     const state = JSON.parse(readFileSync(statePath, "utf8"));
@@ -87,7 +87,7 @@ if (phase === "prepare") {
         await client.call("shell", "set_login_item_enabled", { enabled: false });
         assert.equal((await client.call("client", "get_app_settings")).auto_launch, false);
         assert.equal((await client.call("shell", "get_login_item_status")).enabled, false);
-        await quit(bundle);
+        await quit(bundle, client);
         save("disabled", bundle);
     } else if (phase === "disabled") {
         await absent(bundle);
@@ -98,7 +98,7 @@ if (phase === "prepare") {
         await client.call("shell", "set_login_item_enabled", { enabled: true });
         assert.equal((await client.call("shell", "get_login_item_status")).enabled, true);
         singleRegistration();
-        await quit(bundle);
+        await quit(bundle, client);
         // Delete only this test's copied .app; do not unregister to mask OS behavior.
         assert.equal(bundle, join(realpathSync(directory), "Releash.app"));
         rmSync(bundle, { recursive: true });

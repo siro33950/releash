@@ -25,9 +25,6 @@ vi.mock("@/components/UpdateDialog", () => ({ UpdateDialog: () => null }));
 vi.mock("@/components/panels/SettingsModal", () => ({
 	SettingsModal: () => null,
 }));
-vi.mock("@/components/layout/ApplicationShutdownBanner", () => ({
-	ApplicationShutdownBanner: () => null,
-}));
 vi.mock("@/screens/MainLayout", () => ({
 	MainLayout: ({
 		settings,

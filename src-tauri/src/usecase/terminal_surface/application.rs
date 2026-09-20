@@ -574,16 +574,23 @@ impl TerminalSurfaceApplication {
             match self.gateway.request_runtime_stop(runtime_generation) {
                 Ok(()) => drain_targets.push(runtime_generation),
                 Err(error) => {
+                    log::error!(
+                        "application shutdown: terminal {runtime_generation} stop failed: {error}"
+                    );
                     first_error.get_or_insert_with(|| error.to_string());
                 }
             }
         }
         for runtime_generation in drain_targets {
             if let Err(error) = self.gateway.wait_runtime_output_drain(runtime_generation) {
+                log::error!(
+                    "application shutdown: terminal {runtime_generation} drain failed: {error}"
+                );
                 first_error.get_or_insert_with(|| error.to_string());
             }
         }
         if let Err(error) = self.gateway.flush_checkpoints() {
+            log::error!("application shutdown: terminal checkpoint flush failed: {error}");
             first_error.get_or_insert_with(|| error.to_string());
         }
         match first_error {

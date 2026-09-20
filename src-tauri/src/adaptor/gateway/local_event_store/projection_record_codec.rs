@@ -13,8 +13,6 @@ use crate::domain::local_event::{
     ProviderSessionOwnershipProjectionRecord, RevisionGuard, SessionProjectionRecord,
 };
 
-use super::state_record_codec::{StoredOperationReceiptV1, StoredOperationStatusV1};
-
 pub(crate) const PROJECTION_RECORD_MAX_BYTES: usize = 16 * 1024 * 1024;
 pub(crate) const PROVIDER_SESSION_OWNERSHIP_STORAGE_PREFIX: &str = "provider-session-ownership:";
 pub(crate) const PROVIDER_HOOK_HEALTH_STORAGE_PREFIX: &str = "provider-hook-health:";
@@ -179,24 +177,6 @@ pub(crate) fn canonical_mutation_identity_v1(
             text(
                 &mut bytes,
                 &encode_session_projection_record_v1(&mutation.projection)?,
-            );
-            revision_guard(&mut bytes, mutation.expected);
-            bytes.extend_from_slice(&mutation.revision.value().to_be_bytes());
-            Ok(bytes)
-        }
-        LocalStateMutation::OperationRecord(mutation) => {
-            text(&mut bytes, "operation_record");
-            text(&mut bytes, mutation.kind.label());
-            text(&mut bytes, &mutation.operation_id);
-            text(
-                &mut bytes,
-                &StoredOperationReceiptV1::encode_new(&mutation.receipt)
-                    .map_err(|error| format!("operation receipt identity failed: {error:?}"))?,
-            );
-            text(
-                &mut bytes,
-                &StoredOperationStatusV1::encode_new(&mutation.latest_status)
-                    .map_err(|error| format!("operation status identity failed: {error:?}"))?,
             );
             revision_guard(&mut bytes, mutation.expected);
             bytes.extend_from_slice(&mutation.revision.value().to_be_bytes());

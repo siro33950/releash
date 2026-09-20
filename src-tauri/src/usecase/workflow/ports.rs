@@ -174,42 +174,6 @@ pub trait WorkflowRuntimeStateGateway: Send + Sync {
 #[async_trait::async_trait]
 pub trait WorkflowRuntimeShutdownGateway: Send + Sync {
     async fn shutdown_active_commands(&self);
-
-    async fn shutdown_execution_commands(&self, execution_id: &str) {
-        let _ = execution_id;
-        self.shutdown_active_commands().await;
-    }
-
-    async fn application_shutdown_target_execution_ids(&self) -> Result<Vec<String>, String>;
-
-    async fn execute_shutdown_effect(
-        &self,
-        operation_id: &str,
-        effect_identity: &str,
-        owner_revision: i64,
-        execution_id: &str,
-    ) -> WorkflowShutdownEffectReadback {
-        let _ = (operation_id, effect_identity, owner_revision);
-        self.shutdown_execution_commands(execution_id).await;
-        WorkflowShutdownEffectReadback::Ambiguous
-    }
-
-    async fn read_shutdown_effect(
-        &self,
-        _operation_id: &str,
-        _effect_identity: &str,
-        _owner_revision: i64,
-        _execution_id: &str,
-    ) -> WorkflowShutdownEffectReadback {
-        WorkflowShutdownEffectReadback::Ambiguous
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WorkflowShutdownEffectReadback {
-    Completed,
-    ConfirmedNotStarted,
-    Ambiguous,
 }
 
 pub trait WorkflowRuntimeCommandGateway:

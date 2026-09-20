@@ -12,10 +12,7 @@ use std::sync::Arc;
 use crate::adaptor::gateway::local_event_store::canonical_cbor::{
     decode_canonical, encode_canonical, CanonicalCborError, CborValue,
 };
-use crate::domain::local_event::{
-    ApplicationDomainEvent, ApplicationShutdownPhase, LocalDomainEvent, QuitIntent,
-    UncommittedDomainEvent,
-};
+use crate::domain::local_event::{LocalDomainEvent, UncommittedDomainEvent};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EventCodecError {
@@ -100,7 +97,6 @@ impl EventCodecRegistry {
             codecs: Vec::new(),
             by_type: HashMap::new(),
         };
-        registry.register(Arc::new(ApplicationEventCodec));
         registry.register(Arc::new(
             crate::adaptor::gateway::local_event_store::provider_lifecycle_codec::ProviderLifecycleEventCodec,
         ));
@@ -135,7 +131,6 @@ impl EventCodecRegistry {
                     }
                     LocalDomainEvent::ProviderLifecycle(_) => "provider-lifecycle".to_string(),
                     LocalDomainEvent::ProviderHookHealth(_) => "provider-hook-health".to_string(),
-                    LocalDomainEvent::Application(_) => "application".to_string(),
                 },
             })?;
         let value = codec.encode(event)?;
@@ -199,236 +194,9 @@ pub(crate) fn canonical_event_batch_identity_v1(
 
 // --- Application-stream codec (owned by this module) ---
 
-const APPLICATION_EVENT_TYPE: &str = "application.lifecycle";
-const APPLICATION_PAYLOAD_VERSION: i64 = 1;
-
-struct ApplicationEventCodec;
-
-fn text_entry(key: &str, value: &str) -> (CborValue, CborValue) {
-    (
-        CborValue::Text(key.to_string()),
-        CborValue::Text(value.to_string()),
-    )
-}
-
-fn int_entry(key: &str, value: i64) -> (CborValue, CborValue) {
-    (CborValue::Text(key.to_string()), CborValue::int(value))
-}
-
-fn shutdown_phase_label(phase: ApplicationShutdownPhase) -> &'static str {
-    match phase {
-        ApplicationShutdownPhase::Prepared => "prepared",
-        ApplicationShutdownPhase::Activated => "activated",
-        ApplicationShutdownPhase::Quiescing => "quiescing",
-        ApplicationShutdownPhase::Completed => "completed",
-        ApplicationShutdownPhase::Failed => "failed",
-        ApplicationShutdownPhase::Cancelled => "cancelled",
-        ApplicationShutdownPhase::ReconciliationRequired => "reconciliation_required",
-    }
-}
-
-fn parse_shutdown_phase(raw: &str) -> Option<ApplicationShutdownPhase> {
-    match raw {
-        "prepared" => Some(ApplicationShutdownPhase::Prepared),
-        "activated" => Some(ApplicationShutdownPhase::Activated),
-        "quiescing" => Some(ApplicationShutdownPhase::Quiescing),
-        "completed" => Some(ApplicationShutdownPhase::Completed),
-        "failed" => Some(ApplicationShutdownPhase::Failed),
-        "cancelled" => Some(ApplicationShutdownPhase::Cancelled),
-        "reconciliation_required" => Some(ApplicationShutdownPhase::ReconciliationRequired),
-        _ => None,
-    }
-}
-
-pub(crate) fn shutdown_phase_to_label(phase: ApplicationShutdownPhase) -> &'static str {
-    shutdown_phase_label(phase)
-}
-
-pub(crate) fn label_to_shutdown_phase(raw: &str) -> Option<ApplicationShutdownPhase> {
-    parse_shutdown_phase(raw)
-}
-
-fn map_get<'a>(entries: &'a [(CborValue, CborValue)], key: &str) -> Option<&'a CborValue> {
-    entries
-        .iter()
-        .find_map(|(entry_key, value)| match entry_key {
-            CborValue::Text(text) if text == key => Some(value),
-            _ => None,
-        })
-}
-
-fn map_text(entries: &[(CborValue, CborValue)], key: &str) -> Option<String> {
-    match map_get(entries, key)? {
-        CborValue::Text(text) => Some(text.clone()),
-        _ => None,
-    }
-}
-
-fn map_i64(entries: &[(CborValue, CborValue)], key: &str) -> Option<i64> {
-    map_get(entries, key)?.as_i64()
-}
-
-impl LocalEventPayloadCodec for ApplicationEventCodec {
-    fn event_type(&self) -> &'static str {
-        APPLICATION_EVENT_TYPE
-    }
-
-    fn payload_version(&self) -> i64 {
-        APPLICATION_PAYLOAD_VERSION
-    }
-
-    fn handles(&self, event: &LocalDomainEvent) -> bool {
-        matches!(event, LocalDomainEvent::Application(_))
-    }
-
-    fn encode(&self, event: &LocalDomainEvent) -> Result<CborValue, EventCodecError> {
-        let LocalDomainEvent::Application(event) = event else {
-            return Err(EventCodecError::UnregisteredEvent {
-                description: "non-application event given to application codec".to_string(),
-            });
-        };
-        let entries = match event {
-            ApplicationDomainEvent::ApplicationQuitAccepted {
-                quit_operation_id,
-                intent,
-                at_ms,
-            } => {
-                let mut entries = vec![
-                    text_entry("kind", "application_quit_accepted"),
-                    text_entry("quit_operation_id", quit_operation_id),
-                    int_entry("at_ms", *at_ms),
-                ];
-                match intent {
-                    QuitIntent::Exit { code } => {
-                        entries.push(text_entry("intent", "exit"));
-                        entries.push(int_entry("exit_code", *code));
-                    }
-                    QuitIntent::Restart { code } => {
-                        entries.push(text_entry("intent", "restart"));
-                        entries.push(int_entry("exit_code", *code));
-                    }
-                }
-                entries
-            }
-            ApplicationDomainEvent::ShutdownPhaseAdvanced {
-                shutdown_id,
-                phase,
-                at_ms,
-            } => vec![
-                text_entry("kind", "shutdown_phase_advanced"),
-                text_entry("shutdown_id", shutdown_id),
-                text_entry("phase", shutdown_phase_label(*phase)),
-                int_entry("at_ms", *at_ms),
-            ],
-            ApplicationDomainEvent::ShutdownDetailsCompacted { shutdown_id, at_ms } => vec![
-                text_entry("kind", "shutdown_details_compacted"),
-                text_entry("shutdown_id", shutdown_id),
-                int_entry("at_ms", *at_ms),
-            ],
-        };
-        Ok(CborValue::Map(entries))
-    }
-
-    fn decode(
-        &self,
-        payload_version: i64,
-        value: &CborValue,
-    ) -> Result<Option<LocalDomainEvent>, EventCodecError> {
-        if payload_version != APPLICATION_PAYLOAD_VERSION {
-            return Ok(None);
-        }
-        let malformed = || EventCodecError::MalformedPayload {
-            event_type: APPLICATION_EVENT_TYPE.to_string(),
-        };
-        let CborValue::Map(entries) = value else {
-            return Err(malformed());
-        };
-        let kind = map_text(entries, "kind").ok_or_else(malformed)?;
-        let at_ms = map_i64(entries, "at_ms").ok_or_else(malformed)?;
-        let event = match kind.as_str() {
-            "application_quit_accepted" => {
-                let intent = match map_text(entries, "intent").ok_or_else(malformed)?.as_str() {
-                    "exit" => QuitIntent::Exit {
-                        code: map_i64(entries, "exit_code").ok_or_else(malformed)?,
-                    },
-                    "restart" => QuitIntent::Restart {
-                        code: map_i64(entries, "exit_code").ok_or_else(malformed)?,
-                    },
-                    _ => return Err(malformed()),
-                };
-                ApplicationDomainEvent::ApplicationQuitAccepted {
-                    quit_operation_id: map_text(entries, "quit_operation_id")
-                        .ok_or_else(malformed)?,
-                    intent,
-                    at_ms,
-                }
-            }
-            "shutdown_phase_advanced" => ApplicationDomainEvent::ShutdownPhaseAdvanced {
-                // Schema v1 events are immutable commit evidence. During the
-                // supported v1 -> v2 schema step the aggregate identity is
-                // unchanged (`plan_id == operation_id`), so decoding accepts
-                // that prior field without retaining a second identity.
-                shutdown_id: map_text(entries, "shutdown_id")
-                    .or_else(|| map_text(entries, "plan_id"))
-                    .ok_or_else(malformed)?,
-                phase: parse_shutdown_phase(&map_text(entries, "phase").ok_or_else(malformed)?)
-                    .ok_or_else(malformed)?,
-                at_ms,
-            },
-            "shutdown_details_compacted" => ApplicationDomainEvent::ShutdownDetailsCompacted {
-                shutdown_id: map_text(entries, "shutdown_id")
-                    .or_else(|| map_text(entries, "plan_id"))
-                    .ok_or_else(malformed)?,
-                at_ms,
-            },
-            _ => return Ok(None),
-        };
-        Ok(Some(LocalDomainEvent::Application(event)))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn application_events_round_trip_canonically() {
-        let registry = EventCodecRegistry::new();
-        let events = vec![
-            ApplicationDomainEvent::ApplicationQuitAccepted {
-                quit_operation_id: "quit-1".to_string(),
-                intent: QuitIntent::Exit { code: 0 },
-                at_ms: 1_700_000_000_000,
-            },
-            ApplicationDomainEvent::ApplicationQuitAccepted {
-                quit_operation_id: "restart-1".to_string(),
-                intent: QuitIntent::Restart { code: i64::MIN },
-                at_ms: 1_700_000_000_001,
-            },
-            ApplicationDomainEvent::ShutdownPhaseAdvanced {
-                shutdown_id: "plan-1".to_string(),
-                phase: ApplicationShutdownPhase::Activated,
-                at_ms: 5,
-            },
-            ApplicationDomainEvent::ShutdownDetailsCompacted {
-                shutdown_id: "plan-1".to_string(),
-                at_ms: 6,
-            },
-        ];
-        for event in events {
-            let domain = LocalDomainEvent::Application(event);
-            let encoded = registry.encode(&domain).unwrap();
-            assert_eq!(encoded.event_type, "application.lifecycle");
-            let decoded = registry
-                .decode(
-                    &encoded.event_type,
-                    encoded.payload_version,
-                    &encoded.payload,
-                )
-                .unwrap();
-            assert_eq!(decoded, DecodedStoredEvent::Known(Box::new(domain)));
-        }
-    }
 
     #[test]
     fn unknown_type_and_version_are_preserved_raw() {

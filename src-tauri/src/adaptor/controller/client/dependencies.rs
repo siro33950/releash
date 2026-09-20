@@ -1,18 +1,8 @@
 use std::sync::Arc;
 
 pub(crate) struct ClientDependencies {
-    pub(crate) caller_attempt_journal: Option<
-        std::sync::Arc<crate::usecase::application_lifecycle::operation::CallerAttemptJournal>,
-    >,
-    pub(crate) shutdown_coordinator:
-        Option<std::sync::Arc<crate::usecase::shutdown_coordinator::ShutdownCoordinator>>,
     pub(crate) application_startup_authority:
         Option<std::sync::Arc<crate::usecase::application_startup::ApplicationStartupAuthority>>,
-    pub(crate) application_process_action_dispatcher: Option<
-        std::sync::Arc<
-            crate::adaptor::controller::application_lifecycle::ApplicationProcessActionDispatcher,
-        >,
-    >,
     pub(crate) workspace_node_command_usecase:
         Option<std::sync::Arc<crate::usecase::workflow::WorkspaceNodeCommandUsecase>>,
     pub(crate) app_state: Option<crate::adaptor::controller::state::AppState>,
@@ -41,5 +31,5 @@ pub(crate) struct ClientDependencies {
     pub(crate) data_dir: Result<std::path::PathBuf, String>,
     pub(crate) comment_notify: Arc<crate::adaptor::gateway::push::CommentChangeGateway>,
     pub(crate) process_port:
-        Arc<dyn crate::adaptor::controller::application_lifecycle::ApplicationProcessActionPort>,
+        Arc<dyn crate::domain::application_lifecycle::ApplicationQuitIntentPort>,
 }

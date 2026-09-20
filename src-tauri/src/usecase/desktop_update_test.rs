@@ -167,53 +167,25 @@ async fn test_更新排他_適用中の二つ目の要求は副作用なしで�
 }
 
 #[tokio::test(start_paused = true)]
-async fn test_更新停止_受付以外の応答と利用者判断を挟む完了を区別する() {
-    for response in [
-        Err("shutdown rejected".to_string()),
-        Ok(
-            crate::domain::daemon_supervision::ShutdownResponse::DecisionRequired(
-                "approval required".into(),
-            ),
-        ),
-    ] {
-        // Given
-        let daemon = Arc::new(FakeDaemon::default());
-        daemon.ready.store(true, Ordering::SeqCst);
-        *daemon.shutdown_response.lock() = Some(response.clone());
-        let supervisor = DaemonSupervisionUsecase::start(daemon.clone());
-        tick(200).await;
-        let update = Arc::new(FakeUpdate::default());
-        let service = DesktopUpdateUsecase::new(update.clone(), supervisor.clone());
-        // When
-        let applying = tokio::spawn(async move { service.apply().await });
-        tick(200).await;
-        // Then
-        assert_eq!(*update.calls.lock(), ["download"]);
-        if response.is_err() {
-            assert_eq!(
-                applying.await.unwrap().unwrap_err().to_string(),
-                "shutdown rejected"
-            );
-            assert_eq!(supervisor.status().phase, "failed");
-        } else {
-            assert!(!applying.is_finished());
-            assert_eq!(
-                supervisor.status().reason.as_deref(),
-                Some("approval required")
-            );
-            // When: the existing shutdown coordinator confirms the user's decision and exits.
-            *daemon.exit.lock() = Some(DaemonExit {
-                success: true,
-                shutdown_complete: true,
-                reason: "done".into(),
-            });
-            tick(200).await;
-            applying.await.unwrap().unwrap();
-            // Then
-            assert_eq!(*update.calls.lock(), ["download", "install", "restart"]);
-        }
-        assert_eq!(daemon.starts.load(Ordering::SeqCst), 1);
-    }
+async fn test_更新停止_要求が失敗した場合はインストールしない() {
+    // Given
+    let daemon = Arc::new(FakeDaemon::default());
+    daemon.ready.store(true, Ordering::SeqCst);
+    *daemon.shutdown_response.lock() = Some(Err("shutdown rejected".to_string()));
+    let supervisor = DaemonSupervisionUsecase::start(daemon.clone());
+    tick(200).await;
+    let update = Arc::new(FakeUpdate::default());
+    let service = DesktopUpdateUsecase::new(update.clone(), supervisor.clone());
+    // When
+    let applying = tokio::spawn(async move { service.apply().await });
+    tick(200).await;
+    // Then
+    assert_eq!(*update.calls.lock(), ["download"]);
+    assert_eq!(
+        applying.await.unwrap().unwrap_err().to_string(),
+        "shutdown rejected"
+    );
+    assert_eq!(supervisor.status().phase, "failed");
 }
 
 #[tokio::test(start_paused = true)]

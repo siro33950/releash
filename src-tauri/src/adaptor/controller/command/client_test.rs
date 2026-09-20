@@ -343,7 +343,19 @@ async fn test_クライアントdispatch_proto全commandの登録と引数検証
     // Given
     let (_app, dispatch) = parity_app();
     // When / Then
-    assert_eq!(wire::COMMAND_NAMES.len(), 172);
+    assert_eq!(wire::COMMAND_NAMES.len(), 165);
+    for removed in [
+        "get_application_quit_operation",
+        "get_application_shutdown",
+        "get_shutdown_plan",
+        "resolve_shutdown_target_action",
+        "list_pending_application_attempts",
+        "acknowledge_application_attempt",
+        "compact_application_shutdown_details",
+    ] {
+        assert!(!wire::COMMAND_NAMES.contains(&removed));
+        assert!(!dispatch.contains(removed));
+    }
     assert!(!wire::COMMAND_NAMES.contains(&"attach_terminal_surface"));
     for command in commands::tests::registered_command_names() {
         if command != "set_menu_items_enabled"
@@ -512,12 +524,8 @@ fn mutation_repository() -> (tempfile::TempDir, String) {
 }
 
 #[tokio::test]
-async fn test_未呼出34command_connectの実行結果とエラーがtauriと一致する() {
-    use crate::adaptor::controller::{api, application_lifecycle, state::AppState};
-    use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
-    use crate::usecase::shutdown_coordinator::{
-        ApplicationQuitIntent, ApplicationQuitOutcome, ApplicationQuitRequest, ApplicationQuitState,
-    };
+async fn test_未呼出33command_connectの実行結果とエラーがtauriと一致する() {
+    use crate::adaptor::controller::{api, state::AppState};
 
     // Given
     let (temp, path) = mutation_repository();
@@ -572,31 +580,6 @@ async fn test_未呼出34command_connectの実行結果とエラーがtauriと�
     settings.app.last_repo_paths = vec![path.clone()];
     config.save(settings).unwrap();
     let data = tempfile::tempdir().unwrap();
-    let store =
-        LocalEventStore::open(LocalEventStoreConfig::production(data.path().to_owned())).unwrap();
-    let coordinator = application_lifecycle::build_shutdown_coordinator(
-        store.clone(),
-        store,
-        application_lifecycle::RuntimeShutdownDependencies::new(
-            runtime,
-            app.state::<AppState>().terminal_surface.clone(),
-            Arc::new(|| {}),
-            Arc::new(|| {}),
-        ),
-    );
-    let ApplicationQuitOutcome::Accepted { receipt, state } = coordinator.request(ApplicationQuitRequest {
-        principal: crate::usecase::application_lifecycle::operation::LOCAL_INSTALLATION_OPERATION_PRINCIPAL.into(),
-        request_id: "protocol-parity".into(),
-        intent: ApplicationQuitIntent::Exit { code: 0 },
-    }).await.unwrap() else { panic!("accepted shutdown"); };
-    assert_eq!(state, ApplicationQuitState::Completed);
-    coordinator
-        .compact_shutdown_details(crate::domain::local_event::ShutdownPlanKey {
-            shutdown_id: receipt.shutdown_id.clone(),
-        })
-        .await
-        .unwrap();
-    app.manage(coordinator);
     let mut dispatch = ClientCommandDispatch::new(
         app.state::<AppState>().repository_usecase.clone(),
         app.state::<Arc<ApplicationStartupAuthority>>()
@@ -759,11 +742,6 @@ async fn test_未呼出34command_connectの実行結果とエラーがtauriと�
             json!({"worktreePath":worktree,"executionId":execution,"nodeName":"review"}),
             false,
         ),
-        (
-            "compact_application_shutdown_details",
-            json!({"shutdownId":receipt.shutdown_id}),
-            true,
-        ),
     ];
     assert_eq!(
         cases
@@ -771,7 +749,7 @@ async fn test_未呼出34command_connectの実行結果とエラーがtauriと�
             .map(|(name, _, _)| *name)
             .collect::<std::collections::HashSet<_>>()
             .len(),
-        34
+        33
     );
     // When / Then
     for (command, args, succeeds) in cases {

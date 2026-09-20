@@ -1,5 +1,6 @@
+use crate::test_support::{captured_error_messages, install_capturing_logger};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{mpsc, Arc, Mutex, Once};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
 use super::{
@@ -117,44 +118,8 @@ struct FailingSaveRepository {
     remove_failure: Mutex<Option<AgentSessionRepositoryError>>,
 }
 
-struct CapturingLogger {
-    messages: Mutex<Vec<String>>,
-}
-
-impl log::Log for CapturingLogger {
-    fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
-        metadata.level() <= log::Level::Error
-    }
-
-    fn log(&self, record: &log::Record<'_>) {
-        if self.enabled(record.metadata()) {
-            self.messages
-                .lock()
-                .unwrap()
-                .push(record.args().to_string());
-        }
-    }
-
-    fn flush(&self) {}
-}
-
-static CAPTURING_LOGGER: CapturingLogger = CapturingLogger {
-    messages: Mutex::new(Vec::new()),
-};
-static CAPTURING_LOGGER_INIT: Once = Once::new();
-
-fn install_capturing_logger() {
-    CAPTURING_LOGGER_INIT.call_once(|| {
-        log::set_logger(&CAPTURING_LOGGER).unwrap();
-        log::set_max_level(log::LevelFilter::Trace);
-    });
-}
-
 fn captured_terminal_spawn_failure(agent_session_id: &str) -> Option<String> {
-    CAPTURING_LOGGER
-        .messages
-        .lock()
-        .unwrap()
+    captured_error_messages()
         .iter()
         .rev()
         .find(|message| {

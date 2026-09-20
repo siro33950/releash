@@ -185,17 +185,17 @@ impl WorkflowAgentSessionPort for TestSessions {
     }
 }
 
-pub(super) struct Fixture {
-    pub(super) _directory: tempfile::TempDir,
-    pub(super) app: WorkflowRuntimeDependencies,
+pub(crate) struct Fixture {
+    pub(crate) _directory: tempfile::TempDir,
+    pub(crate) app: WorkflowRuntimeDependencies,
     pub(super) store: Arc<LocalEventStore>,
-    pub(super) host: WorkflowRuntimeHost,
+    pub(crate) host: WorkflowRuntimeHost,
     pub(super) worktrees: Arc<TestWorktrees>,
     pub(super) sessions: Arc<TestSessions>,
 }
 
 impl Fixture {
-    pub(super) fn new(failures: usize) -> Self {
+    pub(crate) fn new(failures: usize) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let store =
             LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into()))

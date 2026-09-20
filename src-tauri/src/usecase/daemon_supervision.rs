@@ -71,7 +71,6 @@ enum Control {
     Retry,
     Stop(StopIntent),
     StopFailed(String),
-    ShutdownResponse(crate::domain::daemon_supervision::ShutdownResponse),
     SwitchFailed(FailureStage, String),
 }
 
@@ -303,16 +302,13 @@ impl DaemonSupervisionUsecase {
                                 let gateway = gateway.clone();
                                 let sender = self.commands.clone();
                                 tokio::spawn(async move {
-                                    let response = match gateway.request_shutdown(intent).await {
-                                        Ok(response) => Control::ShutdownResponse(response),
-                                        Err(reason) => Control::StopFailed(reason),
-                                    };
-                                    let _ = sender.send(response);
+                                    if let Err(reason) = gateway.request_shutdown(intent).await {
+                                        let _ = sender.send(Control::StopFailed(reason));
+                                    }
                                 });
                             }
                         }
                     }
-                    Some(Control::ShutdownResponse(response)) => self.state.lock().supervision.shutdown_response(response),
                     Some(Control::StopFailed(reason)) => {
                         let mut state = self.state.lock();
                         state.supervision.stop_failed(FailureStage::Shutdown, reason);

@@ -117,10 +117,10 @@ pub fn run() {
             adaptor::controller::application_lifecycle::ApplicationQuitIngress::new(
                 move |intent| {
                     let intent = match intent {
-                        usecase::shutdown_coordinator::ApplicationQuitIntent::Exit { code } => {
+                        crate::domain::application_lifecycle::ApplicationQuitIntent::Exit { code } => {
                             crate::domain::daemon_supervision::StopIntent::Quit(code)
                         }
-                        usecase::shutdown_coordinator::ApplicationQuitIntent::Restart {
+                        crate::domain::application_lifecycle::ApplicationQuitIntent::Restart {
                             ..
                         } => crate::domain::daemon_supervision::StopIntent::Restart,
                     };

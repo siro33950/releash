@@ -32,10 +32,6 @@ export type InputAckTerminalSurfaceOutputRequest = {
 	sequence: number;
 };
 
-export type InputAcknowledgeApplicationAttemptRequest = {
-	callerRequestId: string;
-};
-
 export type InputAddRepoPathRequest = {
 	path: string;
 };
@@ -189,12 +185,6 @@ export type InputGetAgentSessionRequest = {
 
 export type InputGetAppSettingsRequest = Record<string, never>;
 
-export type InputGetApplicationQuitOperationRequest = {
-	operationId: string;
-};
-
-export type InputGetApplicationShutdownRequest = Record<string, never>;
-
 export type InputGetApplicationStartupOutcomeRequest = Record<string, never>;
 
 export type InputGetAutomationConfigDirRequest = Record<string, never>;
@@ -309,12 +299,6 @@ export type InputReviewSnapshotInput = {
 	base: string;
 };
 
-export type InputGetShutdownPlanRequest = {
-	shutdownId: string;
-	limit?: number | null;
-	cursor?: string | null;
-};
-
 export type InputGetTerminalPerformanceSwitchesRequest = Record<string, never>;
 
 export type InputGetTerminalSurfaceRequest = {
@@ -413,11 +397,6 @@ export type InputListBranchesWithStatusSnapshotRequest = {
 
 export type InputListFacetSummariesRequest = {
 	kind: string;
-};
-
-export type InputListPendingApplicationAttemptsRequest = {
-	limit?: number | null;
-	cursor?: string | null;
 };
 
 export type InputListProviderHookHealthWarningsRequest = Record<string, never>;
@@ -551,7 +530,6 @@ export type InputRequestApplicationQuitRequest = {
 };
 
 export type InputApplicationQuitRequestDtoV1 = {
-	request_id: string;
 	intent: InputApplicationQuitIntentDtoV1;
 };
 
@@ -587,26 +565,6 @@ export type InputResolveReviewThreadRequest = {
 	outcome: string;
 	summary: string;
 };
-
-export type InputResolveShutdownTargetActionRequest = {
-	request: InputShutdownTargetActionRequestDtoV1;
-};
-
-export type InputShutdownTargetActionRequestDtoV1 = {
-	action_id: string;
-	shutdown_id: string;
-	ordinal: string;
-	target_key: string;
-	origin_revision: string;
-	action: InputRecoveryActionKindDtoV1;
-};
-
-export type InputRecoveryActionKindDtoV1 =
-	| "read_again"
-	| "retry_same_effect"
-	| "use_observed_result"
-	| "cancel_if_safe"
-	| "keep_for_manual_resolution";
 
 export type InputRestoreAgentSessionRequest = {
 	agentSessionId: string;
@@ -1026,10 +984,6 @@ export type InputWorkflowGetOutputRequest = {
 	nodeName: string;
 };
 
-export type InputCompactApplicationShutdownDetailsRequest = {
-	shutdownId: string;
-};
-
 export type ResultString = string;
 
 export type ResultBool = boolean;
@@ -1289,112 +1243,6 @@ export type AppSection = {
 	last_root_path: string;
 	last_repo_paths: Liststring;
 	external_editor: string;
-};
-
-export type ApplicationQuitLookupDtoV1 =
-	| ({ type: "found" } & ApplicationQuitLookupDtoV1Found)
-	| ({ type: "outcome_unknown" } & ApplicationQuitLookupDtoV1OutcomeUnknown);
-
-export type ApplicationQuitLookupDtoV1Found = {
-	receipt: ApplicationQuitReceiptDtoV1;
-	state: ApplicationQuitStateDtoV1;
-};
-
-export type ApplicationQuitReceiptDtoV1 = {
-	operation_id: string;
-	shutdown_id: string;
-	intent: string;
-	exit_code: number;
-	t0_ms: string;
-	deadline_ms: string;
-};
-
-export type ApplicationQuitStateDtoV1 =
-	| { type: "preparing" }
-	| { type: "activated" }
-	| { type: "completed" }
-	| ({ type: "outcome_unknown" } & ApplicationQuitStateDtoV1OutcomeUnknown)
-	| ({
-			type: "failed_before_activation";
-	  } & ApplicationQuitStateDtoV1FailedBeforeActivation)
-	| ({
-			type: "reconciliation_required";
-	  } & ApplicationQuitStateDtoV1ReconciliationRequired);
-
-export type ApplicationQuitStateDtoV1OutcomeUnknown = {
-	operation_id: string;
-	shutdown_id: string;
-	activation_commit_id: string;
-};
-
-export type ApplicationQuitStateDtoV1FailedBeforeActivation = {
-	correlation_id: string;
-};
-
-export type ApplicationQuitStateDtoV1ReconciliationRequired = {
-	correlation_id: string;
-};
-
-export type ApplicationQuitLookupDtoV1OutcomeUnknown = {
-	operation_id: string;
-	intent: ApplicationQuitIntentDtoV1;
-};
-
-export type ApplicationQuitIntentDtoV1 =
-	| ({ type: "exit" } & ApplicationQuitIntentDtoV1Exit)
-	| ({ type: "restart" } & ApplicationQuitIntentDtoV1Restart);
-
-export type ApplicationQuitIntentDtoV1Exit = {
-	code: number;
-};
-
-export type ApplicationQuitIntentDtoV1Restart = {
-	code: number;
-};
-
-export type CurrentShutdownResultDtoV1 =
-	| ({ type: "current" } & CurrentShutdownResultDtoV1Current)
-	| ({ type: "outcome_unknown" } & CurrentShutdownResultDtoV1OutcomeUnknown);
-
-export type CurrentShutdownResultDtoV1Current = {
-	plan: ShutdownPlanDtoV1 | null;
-};
-
-export type ShutdownPlanDtoV1 = {
-	shutdown_id: string;
-	phase: string;
-	revision: string;
-	details_state: string;
-	operation_id: string;
-	intent: string;
-	exit_code: number;
-	t0_ms: string;
-	preparation_cutoff_ms: string;
-	deadline_ms: string;
-	target_count: string | null;
-	prepared_count: string | null;
-	effect_reserved_count: string | null;
-	terminal_count: string | null;
-	completed_count: string | null;
-	unresolved_count: string | null;
-	recovery_snapshot_count: string | null;
-	recovery_snapshot_id: string | null;
-	outcome: string | null;
-	safe_failure: SafeOperationFailureDtoV1 | null;
-	actions: Liststring;
-};
-
-export type SafeOperationFailureDtoV1 = {
-	kind: string;
-	retryable: boolean;
-	label: string;
-	detail: string | null;
-	correlation_id: string;
-};
-
-export type CurrentShutdownResultDtoV1OutcomeUnknown = {
-	operation_id: string;
-	intent: ApplicationQuitIntentDtoV1;
 };
 
 export type ApplicationStartupOutcomeDtoV1 =
@@ -1659,51 +1507,6 @@ export type DiffTreeNodeDto = {
 };
 
 export type DiffTreeNodeType = "file" | "folder";
-
-export type ShutdownPlanPageDtoV1 = {
-	plan: ShutdownPlanDtoV1;
-	targets: ListShutdownTargetDtoV1;
-	next_cursor: string | null;
-};
-
-export type ListShutdownTargetDtoV1 = Array<ShutdownTargetDtoV1>;
-
-export type ShutdownTargetDtoV1 = {
-	ordinal: string;
-	target_key: string;
-	target_id: string;
-	kind: string;
-	effect_identity: string;
-	state: string;
-	observation: SafeEffectObservationDtoV1 | null;
-	revision: string;
-	actions: Liststring;
-	action_identities: ListRecoveryActionIdentityDtoV1;
-};
-
-export type SafeEffectObservationDtoV1 = {
-	type: "exit_coupled_outcome_unknown";
-} & SafeEffectObservationDtoV1ExitCoupledOutcomeUnknown;
-
-export type SafeEffectObservationDtoV1ExitCoupledOutcomeUnknown = {
-	shutdown_id: string;
-};
-
-export type ListRecoveryActionIdentityDtoV1 =
-	Array<RecoveryActionIdentityDtoV1>;
-
-export type RecoveryActionIdentityDtoV1 = {
-	action_id: string;
-	action: RecoveryActionKindDtoV1;
-	origin_revision: string;
-};
-
-export type RecoveryActionKindDtoV1 =
-	| "read_again"
-	| "retry_same_effect"
-	| "use_observed_result"
-	| "cancel_if_safe"
-	| "keep_for_manual_resolution";
 
 export type TerminalPerformanceSwitchesV1 = {
 	disableOutputFlowControl: boolean;
@@ -2210,25 +2013,6 @@ export type FacetSummaryDto = {
 	builtin: boolean;
 };
 
-export type PendingCallerAttemptPageDtoV1 = {
-	entries: ListPendingCallerAttemptDtoV1;
-	next_cursor: string | null;
-};
-
-export type ListPendingCallerAttemptDtoV1 = Array<PendingCallerAttemptDtoV1>;
-
-export type PendingCallerAttemptDtoV1 = {
-	kind: "application_quit";
-	caller_request_id: string;
-	operation_id: string | null;
-	resolution: PendingAttemptResolution;
-};
-
-export type PendingAttemptResolution =
-	| "pending"
-	| "accepted"
-	| "rejected_before_commit";
-
 export type ListProviderHookHealthWarningResponse =
 	Array<ProviderHookHealthWarningResponse>;
 
@@ -2348,80 +2132,7 @@ export type StartupFailureQuitOutcomeDtoV1Accepted = {
 	correlationId: string;
 };
 
-export type ApplicationQuitOutcomeDtoV1 =
-	| ({ type: "accepted" } & ApplicationQuitOutcomeDtoV1Accepted)
-	| ({
-			type: "rejected_before_commit";
-	  } & ApplicationQuitOutcomeDtoV1RejectedBeforeCommit)
-	| ({ type: "outcome_unknown" } & ApplicationQuitOutcomeDtoV1OutcomeUnknown)
-	| ({
-			type: "previous_shutdown_reconciliation_required";
-	  } & ApplicationQuitOutcomeDtoV1PreviousShutdownReconciliationRequired);
-
-export type ApplicationQuitOutcomeDtoV1Accepted = {
-	receipt: ApplicationQuitReceiptDtoV1;
-	state: ApplicationQuitStateDtoV1;
-};
-
-export type ApplicationQuitOutcomeDtoV1RejectedBeforeCommit = {
-	correlation_id: string;
-};
-
-export type ApplicationQuitOutcomeDtoV1OutcomeUnknown = {
-	request_id: string;
-	operation_id: string;
-	intent: ApplicationQuitIntentDtoV1;
-};
-
-export type ApplicationQuitOutcomeDtoV1PreviousShutdownReconciliationRequired =
-	{
-		blocking: ShutdownPlanDtoV1;
-	};
-
-export type RecoveryActionOutcomeDtoV1 =
-	| ({ type: "completed" } & RecoveryActionOutcomeDtoV1Completed)
-	| ({ type: "in_progress" } & RecoveryActionOutcomeDtoV1InProgress)
-	| ({ type: "rejected" } & RecoveryActionOutcomeDtoV1Rejected)
-	| ({
-			type: "action_outcome_unknown";
-	  } & RecoveryActionOutcomeDtoV1ActionOutcomeUnknown);
-
-export type RecoveryActionOutcomeDtoV1Completed = {
-	action_id: string;
-	result: RecoveryActionCompletedResultDtoV1;
-};
-
-export type RecoveryActionCompletedResultDtoV1 = {
-	outcome: string;
-	classification: string;
-	resource_revision: string;
-	canonical_result_sha256: string;
-	resource_view: string;
-};
-
-export type RecoveryActionOutcomeDtoV1InProgress = {
-	action_id: string;
-};
-
-export type RecoveryActionOutcomeDtoV1Rejected = {
-	action_id: string;
-	rejection: RecoveryActionRejectionDtoV1;
-};
-
-export type RecoveryActionRejectionDtoV1 =
-	| ({
-			type: "revision_conflict";
-	  } & RecoveryActionRejectionDtoV1RevisionConflict)
-	| { type: "action_unavailable" }
-	| { type: "target_revision_changed" };
-
-export type RecoveryActionRejectionDtoV1RevisionConflict = {
-	current_revision: string;
-};
-
-export type RecoveryActionOutcomeDtoV1ActionOutcomeUnknown = {
-	action_id: string;
-};
+export type ApplicationQuitOutcomeDtoV1 = { type: "accepted" };
 
 export type SaveWorkflowSourceResultDto =
 	| SaveWorkflowSuccess
@@ -2694,7 +2405,6 @@ export interface ClientCommandArgs {
 	get_review_blob: InputGetReviewBlobRequest;
 	abort_workflow: InputAbortWorkflowRequest;
 	ack_terminal_surface_output: InputAckTerminalSurfaceOutputRequest;
-	acknowledge_application_attempt: InputAcknowledgeApplicationAttemptRequest;
 	add_repo_path: InputAddRepoPathRequest;
 	append_review_comment: InputAppendReviewCommentRequest;
 	approve_workspace_node: InputApproveWorkspaceNodeRequest;
@@ -2725,8 +2435,6 @@ export interface ClientCommandArgs {
 	fetch_notion_label_options: InputFetchNotionLabelOptionsRequest;
 	get_agent_session: InputGetAgentSessionRequest;
 	get_app_settings: InputGetAppSettingsRequest;
-	get_application_quit_operation: InputGetApplicationQuitOperationRequest;
-	get_application_shutdown: InputGetApplicationShutdownRequest;
 	get_application_startup_outcome: InputGetApplicationStartupOutcomeRequest;
 	get_automation_config_dir: InputGetAutomationConfigDirRequest;
 	get_branch_base: InputGetBranchBaseRequest;
@@ -2748,7 +2456,6 @@ export interface ClientCommandArgs {
 	get_repo_paths: InputGetRepoPathsRequest;
 	get_review_file_view: InputGetReviewFileViewRequest;
 	get_review_snapshot: InputGetReviewSnapshotRequest;
-	get_shutdown_plan: InputGetShutdownPlanRequest;
 	get_terminal_performance_switches: InputGetTerminalPerformanceSwitchesRequest;
 	get_terminal_surface: InputGetTerminalSurfaceRequest;
 	get_workflow: InputGetWorkflowRequest;
@@ -2770,7 +2477,6 @@ export interface ClientCommandArgs {
 	list_branches_with_status: InputListBranchesWithStatusRequest;
 	list_branches_with_status_snapshot: InputListBranchesWithStatusSnapshotRequest;
 	list_facet_summaries: InputListFacetSummariesRequest;
-	list_pending_application_attempts: InputListPendingApplicationAttemptsRequest;
 	list_provider_hook_health_warnings: InputListProviderHookHealthWarningsRequest;
 	list_review_threads: InputListReviewThreadsRequest;
 	list_workflows: InputListWorkflowsRequest;
@@ -2799,7 +2505,6 @@ export interface ClientCommandArgs {
 	resize_terminal_surface: InputResizeTerminalSurfaceRequest;
 	resolve_active_execution_by_worktree: InputResolveActiveExecutionByWorktreeRequest;
 	resolve_review_thread: InputResolveReviewThreadRequest;
-	resolve_shutdown_target_action: InputResolveShutdownTargetActionRequest;
 	restore_agent_session: InputRestoreAgentSessionRequest;
 	restore_workspace_workflow_execution: InputRestoreWorkspaceWorkflowExecutionRequest;
 	resume_agent_session: InputResumeAgentSessionRequest;
@@ -2862,7 +2567,6 @@ export interface ClientCommandArgs {
 	workflow_submit_output: InputWorkflowSubmitOutputRequest;
 	workflow_validate_output: InputWorkflowValidateOutputRequest;
 	workflow_get_output: InputWorkflowGetOutputRequest;
-	compact_application_shutdown_details: InputCompactApplicationShutdownDetailsRequest;
 }
 
 export interface ClientCommands {
@@ -2872,9 +2576,6 @@ export interface ClientCommands {
 	abort_workflow(args: ClientCommandArgs["abort_workflow"]): Promise<void>;
 	ack_terminal_surface_output(
 		args: ClientCommandArgs["ack_terminal_surface_output"],
-	): Promise<void>;
-	acknowledge_application_attempt(
-		args: ClientCommandArgs["acknowledge_application_attempt"],
 	): Promise<void>;
 	add_repo_path(args: ClientCommandArgs["add_repo_path"]): Promise<ResultBool>;
 	append_review_comment(
@@ -2956,12 +2657,6 @@ export interface ClientCommands {
 	get_app_settings(
 		args: ClientCommandArgs["get_app_settings"],
 	): Promise<AppSection>;
-	get_application_quit_operation(
-		args: ClientCommandArgs["get_application_quit_operation"],
-	): Promise<ApplicationQuitLookupDtoV1>;
-	get_application_shutdown(
-		args: ClientCommandArgs["get_application_shutdown"],
-	): Promise<CurrentShutdownResultDtoV1>;
 	get_application_startup_outcome(
 		args: ClientCommandArgs["get_application_startup_outcome"],
 	): Promise<ApplicationStartupOutcomeDtoV1>;
@@ -3021,9 +2716,6 @@ export interface ClientCommands {
 	get_review_snapshot(
 		args: ClientCommandArgs["get_review_snapshot"],
 	): Promise<ReviewSnapshotDto>;
-	get_shutdown_plan(
-		args: ClientCommandArgs["get_shutdown_plan"],
-	): Promise<ShutdownPlanPageDtoV1>;
 	get_terminal_performance_switches(
 		args: ClientCommandArgs["get_terminal_performance_switches"],
 	): Promise<TerminalPerformanceSwitchesV1>;
@@ -3081,9 +2773,6 @@ export interface ClientCommands {
 	list_facet_summaries(
 		args: ClientCommandArgs["list_facet_summaries"],
 	): Promise<ListFacetSummaryDto>;
-	list_pending_application_attempts(
-		args: ClientCommandArgs["list_pending_application_attempts"],
-	): Promise<PendingCallerAttemptPageDtoV1>;
 	list_provider_hook_health_warnings(
 		args: ClientCommandArgs["list_provider_hook_health_warnings"],
 	): Promise<ListProviderHookHealthWarningResponse>;
@@ -3164,9 +2853,6 @@ export interface ClientCommands {
 	resolve_review_thread(
 		args: ClientCommandArgs["resolve_review_thread"],
 	): Promise<ReviewThreadDto>;
-	resolve_shutdown_target_action(
-		args: ClientCommandArgs["resolve_shutdown_target_action"],
-	): Promise<RecoveryActionOutcomeDtoV1>;
 	restore_agent_session(
 		args: ClientCommandArgs["restore_agent_session"],
 	): Promise<AgentSessionOpenResponse>;
@@ -3337,9 +3023,6 @@ export interface ClientCommands {
 	workflow_get_output(
 		args: ClientCommandArgs["workflow_get_output"],
 	): Promise<WorkflowGetOutputResponse>;
-	compact_application_shutdown_details(
-		args: ClientCommandArgs["compact_application_shutdown_details"],
-	): Promise<ShutdownPlanDtoV1>;
 }
 export type ClientCommandResults = {
 	[K in keyof ClientCommands]: Awaited<ReturnType<ClientCommands[K]>>;

@@ -523,10 +523,6 @@ pub(crate) mod test_support {
     #[async_trait::async_trait]
     impl WorkflowRuntimeShutdownGateway for RecordingRuntimeGateway {
         async fn shutdown_active_commands(&self) {}
-
-        async fn application_shutdown_target_execution_ids(&self) -> Result<Vec<String>, String> {
-            Ok(Vec::new())
-        }
     }
 
     pub(crate) fn usecases(

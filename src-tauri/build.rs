@@ -26,8 +26,6 @@ fn generate_client_protocol() {
     for field in [
         "Push.event.workflow_execution_changed",
         "CommandError.variant.application",
-        "CurrentShutdownResultDtoV1.variant.current",
-        "ApplicationQuitOutcomeDtoV1.variant.previous_shutdown_reconciliation_required",
     ] {
         config.boxed(format!(".releash.client.v1.{field}"));
     }
