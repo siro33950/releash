@@ -11,6 +11,10 @@ use crate::domain::provider_lifecycle::{ProviderHookHealthEvent, ProviderLifecyc
 
 /// Closed sum of every domain event the store can persist.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(
+    clippy::enum_variant_names,
+    reason = "Spec #1835 preserves the Provider-prefixed domain event names."
+)]
 pub enum LocalDomainEvent {
     ProviderSessionOwnership(ProviderSessionOwnershipEvent),
     ProviderLifecycle(ProviderLifecycleEvent),
