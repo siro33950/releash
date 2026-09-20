@@ -126,21 +126,18 @@ impl LocalEventReadStore {
         let database_identity =
             DatabaseFileIdentity::read(&database_path).map_err(|_| STORE_NOT_READY)?;
         validate_current_schema(&connection).map_err(|_| STORE_NOT_READY.to_string())?;
-        let metadata: (String, Vec<u8>, String) = connection
+        let installation_id: String = connection
             .query_row(
-                "SELECT installation_id, cursor_hmac_key, process_instance_id
+                "SELECT installation_id
                  FROM store_metadata WHERE id = 1",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| row.get(0),
             )
             .map_err(|_| STORE_NOT_READY.to_string())?;
         let clock: Arc<dyn crate::adaptor::gateway::local_event_store::clock::StoreClock> =
             Arc::new(SystemStoreClock);
         let query_context = Arc::new(QueryContext {
             registry: Arc::new(EventCodecRegistry::new()),
-            cursor_key: metadata.1,
-            process_instance_id: metadata.2,
-            clock: Arc::clone(&clock),
         });
         let readers = ReaderPool::new(clock);
         let mut connections = Vec::with_capacity(READER_POOL_SIZE);
@@ -170,7 +167,7 @@ impl LocalEventReadStore {
         Ok(Arc::new(Self {
             database_path,
             database_identity,
-            installation_id: metadata.0,
+            installation_id,
             query_context,
             readers,
             reader_workers,
@@ -350,7 +347,7 @@ impl LocalEventTransactionRepository for LocalEventReadStore {
         &self,
         request: LocalEventQuery,
     ) -> Result<LocalEventQueryResult, LocalEventQueryError> {
-        self.read(move |connection, context| run_query(connection, context, &request))
+        self.read(move |connection, _| run_query(connection, &request))
             .await
     }
 }

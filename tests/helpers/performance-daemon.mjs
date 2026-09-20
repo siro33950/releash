@@ -54,7 +54,7 @@ export async function startPerformanceDaemon(binary, directory, environment) {
         if (child.exitCode !== null || child.signalCode !== null) return;
         try {
             const client = await connectPerformanceClient(discovery);
-            const shutdown = client.requestApplicationQuit({ request: {requestId:crypto.randomUUID(),intent:{variant:{case:"exit",value:{code:0}}}} });
+            const shutdown = client.requestApplicationQuit({ request: {intent:{variant:{case:"exit",value:{code:0}}}} });
             await Promise.race([shutdown, exited]);
             const timeout = setTimeout(15_000, "timeout", { ref: false });
             if (await Promise.race([exited, timeout]) === "timeout") {

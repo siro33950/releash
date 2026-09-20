@@ -88,6 +88,17 @@ fn add_retired_schema_and_data(connection: &Connection, identity_column: &str) {
         .unwrap();
 }
 
+pub(super) fn restore_v7_schema(connection: &Connection) {
+    connection
+        .execute_batch(include_str!("schema_v7_test.sql"))
+        .unwrap();
+    connection.execute_batch("ALTER TABLE store_metadata ADD COLUMN current_shutdown_id TEXT; ALTER TABLE store_metadata ADD COLUMN shutdown_pointer_revision INTEGER NOT NULL DEFAULT 0;").unwrap();
+    connection.execute_batch("ALTER TABLE store_metadata ADD COLUMN cursor_hmac_key BLOB NOT NULL DEFAULT X'0000000000000000000000000000000000000000000000000000000000000000';
+        ALTER TABLE store_metadata ADD COLUMN operation_binding_hmac_key BLOB NOT NULL DEFAULT X'0000000000000000000000000000000000000000000000000000000000000000';
+        ALTER TABLE store_metadata ADD COLUMN process_instance_id TEXT NOT NULL DEFAULT '00000000-0000-4000-8000-000000000002';").unwrap();
+    rewrite_metadata_version(connection, 7);
+}
+
 fn rewrite_metadata_version(connection: &Connection, version: i64) {
     connection
         .execute_batch(&format!(
@@ -213,6 +224,7 @@ fn rewrite_as_supported_v1(connection: &Connection) {
 fn create_supported_store(root: &Path, version: i64) {
     drop(open_store(root));
     let connection = open_existing_writer(&database_path(root)).unwrap();
+    restore_v7_schema(&connection);
     if version == 1 {
         rewrite_as_supported_v1(&connection);
         add_retired_schema_and_data(&connection, "generation_id");
@@ -274,6 +286,7 @@ fn test_schema_v7_v6からevent_type索引を追加してversionを更新する(
     connection
         .execute_batch("DROP INDEX idx_node_events_event_type;")
         .unwrap();
+    restore_v7_schema(&connection);
     rewrite_metadata_version(&connection, 6);
     drop(connection);
 
@@ -362,4 +375,199 @@ fn test_schema_v5_移行commit前の失敗ではv4と廃止dataを原子的に�
         )
         .unwrap();
     assert_eq!(retired_data_count, 3);
+}
+
+#[tokio::test]
+async fn test_schema_v8_未完了の終了記録があってもsession作成と読み書きができる() {
+    use crate::adaptor::gateway::agent_session::LocalAgentSessionRepository;
+    use crate::domain::agent_session::aggregates::{AgentSession, AgentSessionTreeLocation};
+    use crate::domain::agent_session::repository::AgentSessionRepository;
+    use crate::domain::provider_lifecycle::ProviderKind;
+    use crate::domain::workspace_tree::WorkspaceIdentity;
+
+    for phase in [
+        "prepared",
+        "activated",
+        "quiescing",
+        "reconciliation_required",
+        "completed",
+        "failed",
+        "cancelled",
+    ] {
+        // Given
+        let directory = tempfile::tempdir().unwrap();
+        let store = open_store(directory.path());
+        let session = |id| {
+            AgentSession::create(
+                id,
+                WorkspaceIdentity::new("/repo"),
+                "/repo",
+                ProviderKind::Codex,
+                AgentSessionTreeLocation::session_tree_root(id).unwrap(),
+            )
+            .unwrap()
+        };
+        LocalAgentSessionRepository::new(store.clone())
+            .create(session("existing"), "create-existing")
+            .await
+            .unwrap();
+        drop(store);
+        let connection = open_existing_writer(&database_path(directory.path())).unwrap();
+        restore_v7_schema(&connection);
+        let commit_id: String = connection
+            .query_row("SELECT commit_id FROM logical_commits LIMIT 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO shutdown_plans VALUES ('old-quit', ?1, '{}', 'available', 0, ?2)",
+                rusqlite::params![phase, commit_id],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO shutdown_targets VALUES ('old-quit', 0, '{}', 0, ?1)",
+                [&commit_id],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO shutdown_recovery_snapshots VALUES ('old-quit', 'owner', 0, '{}', ?1)",
+                [&commit_id],
+            )
+            .unwrap();
+        connection.execute("INSERT INTO operation_bindings VALUES ('local', (SELECT installation_id FROM store_metadata), 'application_quit', 'request', 'application', 'old-quit', zeroblob(32), ?1)", [&commit_id]).unwrap();
+        connection.execute("INSERT INTO caller_attempts VALUES ('local', (SELECT installation_id FROM store_metadata), 'application_quit', 'request', 'application', zeroblob(32), X'01', 'pending', 0, ?1)", [&commit_id]).unwrap();
+        connection.execute("INSERT INTO operation_records VALUES ('application_quit', 'old-quit', '{}', '{}', 0, ?1)", [&commit_id]).unwrap();
+        connection
+            .execute(
+                "INSERT INTO obligations VALUES ('effect', '{}', 1, 0, ?1)",
+                [&commit_id],
+            )
+            .unwrap();
+        connection.execute("INSERT INTO pending_obligations VALUES ('effect', 'effect', 'existing', 'owner', 'old-quit', ?1)", [&commit_id]).unwrap();
+        connection.execute("INSERT INTO recovery_action_attempts VALUES ('retry', zeroblob(32), '{}', NULL, 0, ?1)", [&commit_id]).unwrap();
+        connection.execute("UPDATE store_metadata SET current_shutdown_id = 'old-quit', shutdown_pointer_revision = 1", []).unwrap();
+        drop(connection);
+        // When
+        let store = open_store(directory.path());
+        let repository = LocalAgentSessionRepository::new(store.clone());
+        let mut saved = repository.find("existing").await.unwrap().unwrap();
+        saved
+            .session_mut()
+            .associate_provider_session("provider-existing", None)
+            .unwrap();
+        repository.save(saved, "open-existing").await.unwrap();
+        repository
+            .create(session("new"), "create-new")
+            .await
+            .unwrap();
+        // Then
+        assert!(repository.find("new").await.unwrap().is_some());
+        let connection = open_existing_writer(&database_path(directory.path())).unwrap();
+        super::validate_current_schema(&connection).unwrap();
+        assert_eq!(
+            connection
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            8
+        );
+        for table in [
+            "operation_bindings",
+            "caller_attempts",
+            "operation_records",
+            "obligations",
+            "pending_obligations",
+            "recovery_action_attempts",
+            "shutdown_plans",
+            "shutdown_targets",
+            "shutdown_recovery_snapshots",
+        ] {
+            super::require_schema_object_absent(&connection, "table", table).unwrap();
+        }
+        let columns = super::table_columns(&connection, "store_metadata").unwrap();
+        for removed in [
+            "current_shutdown_id",
+            "shutdown_pointer_revision",
+            "cursor_hmac_key",
+            "operation_binding_hmac_key",
+            "process_instance_id",
+        ] {
+            assert!(
+                !columns.contains(&removed.to_string()),
+                "{removed} must be removed"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_schema_v8_新規storeと再起動で用途を失ったmetadataを持たない() {
+    // Given
+    let root = tempfile::tempdir().unwrap();
+    // When / Then
+    for _ in 0..2 {
+        drop(open_store(root.path()));
+        let connection = open_existing_writer(&database_path(root.path())).unwrap();
+        assert_eq!(
+            super::table_columns(&connection, "store_metadata").unwrap(),
+            [
+                "id",
+                "schema_version",
+                "installation_id",
+                "created_at_ms",
+                "next_global_sequence",
+                "health",
+            ]
+        );
+        super::validate_current_schema(&connection).unwrap();
+    }
+}
+
+#[test]
+fn test_schema_v8_移行失敗では旧metadataを残し再起動で必要な値だけ引き継ぐ() {
+    // Given
+    let root = tempfile::tempdir().unwrap();
+    drop(open_store(root.path()));
+    let connection = open_existing_writer(&database_path(root.path())).unwrap();
+    restore_v7_schema(&connection);
+    let metadata = |connection: &Connection| -> (String, i64, i64, String) {
+        connection.query_row("SELECT installation_id, created_at_ms, next_global_sequence, health FROM store_metadata", [], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        }).unwrap()
+    };
+    let before = metadata(&connection);
+    drop(connection);
+    let fault = Arc::new(FaultInjector::new());
+    fault.arm_schema_fail_before_commit();
+    let mut config = LocalEventStoreConfig::production(root.path().to_path_buf());
+    config.fault = fault;
+    // When
+    assert!(matches!(
+        LocalEventStore::open(config),
+        Err(LocalEventStoreOpenError::SchemaEvolutionFailed)
+    ));
+    // Then
+    let connection = open_existing_writer(&database_path(root.path())).unwrap();
+    assert_eq!(
+        connection
+            .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+            .unwrap(),
+        7
+    );
+    assert_eq!(metadata(&connection), before);
+    let columns = super::table_columns(&connection, "store_metadata").unwrap();
+    for old in [
+        "cursor_hmac_key",
+        "operation_binding_hmac_key",
+        "process_instance_id",
+    ] {
+        assert!(columns.contains(&old.to_string()));
+    }
+    drop(connection);
+    drop(open_store(root.path()));
+    let connection = open_existing_writer(&database_path(root.path())).unwrap();
+    assert_eq!(metadata(&connection), before);
+    super::validate_current_schema(&connection).unwrap();
 }

@@ -128,8 +128,6 @@ async fn test_隔離起動_on_failure省略のleafは生成失敗後に手動ret
             crate::adaptor::gateway::workflow::WorkflowRuntimeCommandGateway::new_with_driver(
                 fixture.app.clone(),
                 Arc::new(fixture.host.clone()),
-                fixture.store.clone(),
-                fixture.store.installation_id().to_string(),
             );
         let control = crate::usecase::workflow::control_plane::WorkflowControlPlaneUsecase::new(
             Arc::new(gateway),
@@ -318,8 +316,6 @@ async fn test_隔離再開_実体喪失によるprovider起動失敗をnode失�
     let gateway = crate::adaptor::gateway::workflow::WorkflowRuntimeCommandGateway::new_with_driver(
         fixture.app.clone(),
         Arc::new(fixture.host.clone()),
-        fixture.store.clone(),
-        fixture.store.installation_id().to_string(),
     );
     let control = crate::usecase::workflow::control_plane::WorkflowControlPlaneUsecase::new(
         Arc::new(gateway),

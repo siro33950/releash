@@ -248,7 +248,7 @@ impl WriteQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::local_event::{CommitIdentity, IdempotencyBinding, OperationKind};
+    use crate::domain::local_event::{CommitIdentity, CommitOperationKind, IdempotencyBinding};
 
     fn request(critical: bool, bytes: usize) -> WriteRequest {
         let (reply, receiver) = oneshot::channel();
@@ -259,7 +259,7 @@ mod tests {
                     commit_id: CommitIdentity::parse("c-1").unwrap(),
                     idempotency: IdempotencyBinding {
                         installation_id: "g".to_string(),
-                        operation_kind: OperationKind::ApplicationQuit.into(),
+                        operation_kind: CommitOperationKind::Workflow,
                         idempotency_key: "k".to_string(),
                         payload_hash: [0; 32],
                     },

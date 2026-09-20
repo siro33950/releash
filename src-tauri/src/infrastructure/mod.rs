@@ -3,6 +3,7 @@ pub(crate) mod comment;
 pub(crate) mod file_watcher;
 pub mod git;
 pub(crate) mod local_api;
+pub(crate) mod local_event_store_schema;
 pub(crate) mod local_log;
 pub(crate) mod lua;
 pub(crate) mod platform;

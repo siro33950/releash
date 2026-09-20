@@ -198,10 +198,6 @@ impl Revision {
     pub fn value(self) -> i64 {
         self.0
     }
-
-    pub fn next(self) -> Option<Self> {
-        self.0.checked_add(1).map(Self)
-    }
 }
 
 /// The exact head version the batch expects for one stream it changes.
@@ -245,8 +241,5 @@ mod tests {
         assert!(GlobalSequence::new(1).is_ok());
         assert!(StreamVersion::new(-1).is_err());
         assert_eq!(StreamVersion::zero().value(), 0);
-        let max = Revision::new(i64::MAX).unwrap();
-        assert!(max.next().is_none());
-        assert_eq!(Revision::new(1).unwrap().next().unwrap().value(), 2);
     }
 }

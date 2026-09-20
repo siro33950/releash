@@ -13,9 +13,6 @@ fn connection() -> Connection {
         &connection,
         &InitialStoreMetadata {
             installation_id: "00000000-0000-4000-8000-000000000001",
-            cursor_hmac_key: &[1; 32],
-            operation_binding_hmac_key: &[2; 32],
-            process_instance_id: "00000000-0000-4000-8000-000000000002",
             created_at_ms: 1,
         },
         &FaultInjector::new(),

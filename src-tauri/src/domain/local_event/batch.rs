@@ -7,24 +7,11 @@ use crate::domain::local_event::failure::SafeOperationFailure;
 use crate::domain::local_event::identifiers::{
     CommitIdentity, ExpectedStreamHead, GlobalSequence, StreamId, StreamVersion,
 };
-use crate::domain::local_event::mutation::{LocalStateMutation, OperationKind};
+use crate::domain::local_event::mutation::LocalStateMutation;
 
-/// Closed classification of a logical commit. Caller-addressable operation
-/// records deliberately use the smaller [`OperationKind`] set; system
-/// recovery, projection and workflow commits never masquerade as
-/// a caller command merely to obtain an idempotency lane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CommitOperationKind {
-    ApplicationQuit,
-    Recovery,
-    /// A caller-initiated mutation that is not one of the durable operation
-    /// families above. Unlike internal projection progress, this lane closes
-    /// atomically when an application shutdown becomes current.
     UserMutation,
-    /// State advancement for work that already owns a durable operation or
-    /// obligation. The writer validates its mutation shape before this lane
-    /// may drain through an active application shutdown.
-    OperationProgress,
     Projection,
     Workflow,
 }
@@ -32,28 +19,14 @@ pub enum CommitOperationKind {
 impl CommitOperationKind {
     pub fn label(self) -> &'static str {
         match self {
-            Self::ApplicationQuit => "application_quit",
-            Self::Recovery => "recovery",
             Self::UserMutation => "user_mutation",
-            Self::OperationProgress => "operation_progress",
             Self::Projection => "projection",
             Self::Workflow => "workflow",
         }
     }
 
     pub fn is_critical(self) -> bool {
-        matches!(
-            self,
-            Self::ApplicationQuit | Self::Recovery | Self::OperationProgress | Self::Workflow
-        )
-    }
-}
-
-impl From<OperationKind> for CommitOperationKind {
-    fn from(value: OperationKind) -> Self {
-        match value {
-            OperationKind::ApplicationQuit => Self::ApplicationQuit,
-        }
+        matches!(self, Self::Workflow)
     }
 }
 

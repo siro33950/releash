@@ -88,3 +88,33 @@ async fn test_agent_session_exit_observer_frontendなしでexitをusecaseへ渡�
 
     assert_eq!(exits.calls.lock().unwrap().as_slice(), &["agent-1"]);
 }
+
+#[tokio::test]
+async fn test_終了処理_observer停止後のterminal終了をsessionへ記録しない() {
+    // Given
+    let hub = TerminalSurfaceEventHub::new();
+    let stream = hub.subscribe();
+    let exits = Arc::new(RecordingExitPort::default());
+    let usecase = Arc::new(AgentSessionExitUsecase::new(
+        Arc::new(FixedTerminalObservation),
+        exits.clone(),
+    ));
+
+    // When
+    stream.cancellation.cancel();
+    hub.publish(TerminalSurfaceEvent::Exit {
+        session_key: "agent-surface".into(),
+        runtime_generation: 3,
+        exit_code: Some(0),
+        sequence: 7,
+    });
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        super::run_agent_session_exit_observer(stream, usecase),
+    )
+    .await
+    .unwrap();
+
+    // Then
+    assert!(exits.calls.lock().unwrap().is_empty());
+}

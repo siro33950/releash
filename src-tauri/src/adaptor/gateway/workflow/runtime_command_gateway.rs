@@ -16,8 +16,7 @@ use crate::usecase::workflow::control_plane::{
 };
 use crate::usecase::workflow::ports::{
     WorkflowAbortExecutionGateway, WorkflowResumeExecutionGateway, WorkflowRuntimeShutdownGateway,
-    WorkflowRuntimeStateGateway, WorkflowShutdownEffectReadback, WorkflowStartExecutionGateway,
-    WorkflowStopExecutionGateway,
+    WorkflowRuntimeStateGateway, WorkflowStartExecutionGateway, WorkflowStopExecutionGateway,
 };
 
 use crate::adaptor::gateway::workflow::workflow_host::WorkflowRuntimeHost;
@@ -27,8 +26,6 @@ use crate::usecase::workflow::runtime_error::WorkflowRuntimeError;
 pub(crate) struct WorkflowRuntimeCommandGateway {
     app: WorkflowRuntimeDependencies,
     driver: Arc<WorkflowRuntimeHost>,
-    local_event_repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository>,
-    local_event_installation_id: String,
 }
 
 pub(crate) struct WorkflowRuntimeCommandGatewayDeps {
@@ -37,9 +34,6 @@ pub(crate) struct WorkflowRuntimeCommandGatewayDeps {
     pub(crate) app_config: Arc<dyn ConfigRepository>,
     pub(crate) data_dir: Option<PathBuf>,
     pub(crate) workspace_query: Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
-    pub(crate) local_event_repository:
-        Arc<dyn crate::domain::local_event::LocalEventTransactionRepository>,
-    pub(crate) local_event_installation_id: String,
     pub(crate) agent_session_launch: Arc<crate::usecase::agent_session::AgentSessionLaunchUsecase>,
     pub(crate) agent_session_initial_instruction:
         Arc<crate::usecase::agent_session::AgentSessionInitialInstructionUsecase>,
@@ -51,130 +45,12 @@ pub(crate) struct WorkflowRuntimeCommandGatewayDeps {
         Arc<dyn crate::domain::agent_session::ProviderAvailabilityReader>,
 }
 
-struct WorkflowShutdownRecord<'a> {
-    operation_id: &'a str,
-    effect_identity: &'a str,
-    owner_revision: i64,
-    execution_id: &'a str,
-    state: crate::domain::local_event::ObligationStateRecord,
-    expected: crate::domain::local_event::RevisionGuard,
-    revision: crate::domain::local_event::Revision,
-}
-
 impl WorkflowRuntimeCommandGateway {
-    fn shutdown_obligation_id(effect_identity: &str) -> String {
-        use sha2::Digest;
-        let digest = sha2::Sha256::digest(effect_identity.as_bytes());
-        format!("workflow-shutdown-{}", &hex::encode(digest)[..32])
-    }
-
-    async fn shutdown_effect_record(
-        &self,
-        effect_identity: &str,
-    ) -> Result<Option<crate::domain::local_event::ObligationView>, ()> {
-        let result = self
-            .local_event_repository
-            .query(
-                crate::domain::local_event::LocalEventQuery::ObligationByIdentity {
-                    obligation_id: Self::shutdown_obligation_id(effect_identity),
-                },
-            )
-            .await
-            .map_err(|_| ())?;
-        match result {
-            crate::domain::local_event::LocalEventQueryResult::ObligationByIdentity(value) => {
-                Ok(value)
-            }
-            _ => Err(()),
-        }
-    }
-
-    async fn commit_workflow_shutdown_record(&self, record: WorkflowShutdownRecord<'_>) -> bool {
-        use sha2::Digest;
-        let WorkflowShutdownRecord {
-            operation_id,
-            effect_identity,
-            owner_revision,
-            execution_id,
-            state,
-            expected,
-            revision,
-        } = record;
-        let repository = &self.local_event_repository;
-        let installation_id = &self.local_event_installation_id;
-        let obligation_id = Self::shutdown_obligation_id(effect_identity);
-        let record = crate::domain::local_event::ObligationRecord::WorkflowShutdown {
-            operation_id: operation_id.to_string(),
-            effect_identity: effect_identity.to_string(),
-            owner_revision,
-            execution_id: execution_id.to_string(),
-            state,
-        };
-        let digest = sha2::Sha256::digest(
-            format!("workflow-shutdown\0{effect_identity}\0{}", revision.value()).as_bytes(),
-        );
-        let Ok(commit_id) = crate::domain::local_event::CommitIdentity::parse(&hex::encode(digest))
-        else {
-            return false;
-        };
-        let pending =
-            (state != crate::domain::local_event::ObligationStateRecord::Completed).then(|| {
-                crate::domain::local_event::PendingIndexEntry {
-                    ordered_key: format!("workflow-shutdown-{effect_identity}"),
-                    owner: execution_id.to_string(),
-                    partition: crate::domain::local_event::PendingPartition::Owner,
-                    shutdown_plan: None,
-                }
-            });
-        let state_code = match state {
-            crate::domain::local_event::ObligationStateRecord::EffectReserved => "effect_reserved",
-            crate::domain::local_event::ObligationStateRecord::Completed => "completed",
-            _ => return false,
-        };
-        let payload_hash: [u8; 32] = sha2::Sha256::digest(
-			format!(
-				"workflow-shutdown-record/v1\0{operation_id}\0{effect_identity}\0{owner_revision}\0{execution_id}\0{state_code}"
-			)
-			.as_bytes(),
-		)
-		.into();
-        let batch = crate::domain::local_event::LocalAtomicBatch {
-            commit_id,
-            idempotency: crate::domain::local_event::IdempotencyBinding {
-                installation_id: installation_id.clone(),
-                operation_kind: crate::domain::local_event::OperationKind::ApplicationQuit.into(),
-                idempotency_key: format!("{obligation_id}.{}", revision.value()),
-                payload_hash,
-            },
-            expected_heads: Vec::new(),
-            events: Vec::new(),
-            state_mutations: vec![crate::domain::local_event::LocalStateMutation::Obligation(
-                crate::domain::local_event::ObligationMutation {
-                    obligation_id,
-                    record,
-                    pending,
-                    expected,
-                    revision,
-                },
-            )],
-        };
-        repository.commit_batch(batch).await.is_ok()
-    }
-
     pub(crate) fn new_with_driver(
         app: WorkflowRuntimeDependencies,
         driver: Arc<WorkflowRuntimeHost>,
-        local_event_repository: Arc<
-            dyn crate::domain::local_event::LocalEventTransactionRepository,
-        >,
-        local_event_installation_id: String,
     ) -> Self {
-        Self {
-            app,
-            driver,
-            local_event_repository,
-            local_event_installation_id,
-        }
+        Self { app, driver }
     }
 }
 
@@ -429,125 +305,6 @@ impl WorkflowRuntimeStateGateway for WorkflowRuntimeCommandGateway {
 impl WorkflowRuntimeShutdownGateway for WorkflowRuntimeCommandGateway {
     async fn shutdown_active_commands(&self) {
         self.driver.shutdown_all_active_commands().await;
-    }
-
-    async fn shutdown_execution_commands(&self, execution_id: &str) {
-        self.driver
-            .shutdown_active_commands_for_execution(execution_id)
-            .await;
-    }
-
-    async fn application_shutdown_target_execution_ids(&self) -> Result<Vec<String>, String> {
-        self.driver
-            .application_shutdown_target_execution_ids()
-            .await
-    }
-
-    async fn execute_shutdown_effect(
-        &self,
-        operation_id: &str,
-        effect_identity: &str,
-        owner_revision: i64,
-        execution_id: &str,
-    ) -> WorkflowShutdownEffectReadback {
-        use crate::domain::local_event::workflow_shutdown::{
-            self, WorkflowShutdownReservationStep,
-        };
-        let Ok(record) = self.shutdown_effect_record(effect_identity).await else {
-            return WorkflowShutdownEffectReadback::Ambiguous;
-        };
-        let reservation = match workflow_shutdown::reservation_step(
-            record.as_ref(),
-            operation_id,
-            effect_identity,
-            execution_id,
-            owner_revision,
-        ) {
-            WorkflowShutdownReservationStep::AlreadyCompleted => {
-                return WorkflowShutdownEffectReadback::Completed
-            }
-            WorkflowShutdownReservationStep::ContinueOwn { reservation } => reservation,
-            WorkflowShutdownReservationStep::Reserve {
-                expected,
-                reservation,
-            } => {
-                if !self
-                    .commit_workflow_shutdown_record(WorkflowShutdownRecord {
-                        operation_id,
-                        effect_identity,
-                        owner_revision,
-                        execution_id,
-                        state: crate::domain::local_event::ObligationStateRecord::EffectReserved,
-                        expected,
-                        revision: reservation,
-                    })
-                    .await
-                {
-                    return WorkflowShutdownEffectReadback::Ambiguous;
-                }
-                reservation
-            }
-            WorkflowShutdownReservationStep::Reject => {
-                return WorkflowShutdownEffectReadback::Ambiguous
-            }
-        };
-        // An execution with no owned command has nothing left to quiesce in
-        // this process, so the effect is satisfied whether or not a command
-        // was observed. Commands a dead process left behind are crash
-        // recovery's responsibility, not this effect's.
-        self.driver
-            .shutdown_active_commands_for_execution(execution_id)
-            .await;
-        let Some(completed) = reservation.next() else {
-            return WorkflowShutdownEffectReadback::Ambiguous;
-        };
-        if self
-            .commit_workflow_shutdown_record(WorkflowShutdownRecord {
-                operation_id,
-                effect_identity,
-                owner_revision,
-                execution_id,
-                state: crate::domain::local_event::ObligationStateRecord::Completed,
-                expected: crate::domain::local_event::RevisionGuard::Expected(reservation),
-                revision: completed,
-            })
-            .await
-        {
-            WorkflowShutdownEffectReadback::Completed
-        } else {
-            WorkflowShutdownEffectReadback::Ambiguous
-        }
-    }
-
-    async fn read_shutdown_effect(
-        &self,
-        operation_id: &str,
-        effect_identity: &str,
-        _owner_revision: i64,
-        execution_id: &str,
-    ) -> WorkflowShutdownEffectReadback {
-        use crate::domain::local_event::workflow_shutdown::{
-            self, WorkflowShutdownEffectResolution,
-        };
-        let Ok(record) = self.shutdown_effect_record(effect_identity).await else {
-            return WorkflowShutdownEffectReadback::Ambiguous;
-        };
-        match workflow_shutdown::read_resolution(
-            record.as_ref(),
-            operation_id,
-            effect_identity,
-            execution_id,
-        ) {
-            WorkflowShutdownEffectResolution::Completed => {
-                WorkflowShutdownEffectReadback::Completed
-            }
-            WorkflowShutdownEffectResolution::NotStarted => {
-                WorkflowShutdownEffectReadback::ConfirmedNotStarted
-            }
-            WorkflowShutdownEffectResolution::Unresolved => {
-                WorkflowShutdownEffectReadback::Ambiguous
-            }
-        }
     }
 }
 

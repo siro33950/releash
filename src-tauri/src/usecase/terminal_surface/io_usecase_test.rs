@@ -18,6 +18,17 @@ pub(crate) struct FakePtyGateway {
     pub(crate) snapshot_gate:
         Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
     pub(crate) deactivated: Mutex<Vec<String>>,
+    pub(crate) shutdown_surfaces: Vec<TerminalSurface>,
+    pub(crate) shutdown_failures: Vec<(&'static str, u64)>,
+    pub(crate) shutdown_gate: Mutex<
+        Option<(
+            &'static str,
+            tokio::sync::oneshot::Sender<()>,
+            std::sync::mpsc::Receiver<()>,
+        )>,
+    >,
+    pub(crate) shutdown_failure_id: String,
+    pub(crate) shutdown_calls: Mutex<Vec<(&'static str, u64)>>,
 }
 
 impl FakePtyGateway {
@@ -29,6 +40,40 @@ impl FakePtyGateway {
             surface: None,
             snapshot_gate: Mutex::new(None),
             deactivated: Mutex::new(Vec::new()),
+            shutdown_surfaces: Vec::new(),
+            shutdown_failures: Vec::new(),
+            shutdown_gate: Mutex::new(None),
+            shutdown_failure_id: uuid::Uuid::new_v4().to_string(),
+            shutdown_calls: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl FakePtyGateway {
+    fn shutdown_step(
+        &self,
+        stage: &'static str,
+        generation: u64,
+    ) -> Result<(), TerminalSurfaceGatewayError> {
+        self.shutdown_calls.lock().push((stage, generation));
+        let mut gate = self.shutdown_gate.lock();
+        if gate
+            .as_ref()
+            .is_some_and(|(blocked, _, _)| *blocked == stage)
+        {
+            let (_, started, release) = gate.take().unwrap();
+            println!("terminal-blocked:{stage}");
+            started.send(()).unwrap();
+            release.recv().unwrap();
+        }
+        drop(gate);
+        if self.shutdown_failures.contains(&(stage, generation)) {
+            Err(TerminalSurfaceGatewayError::new(format!(
+                "{stage} failed {}",
+                self.shutdown_failure_id
+            )))
+        } else {
+            Ok(())
         }
     }
 }
@@ -44,7 +89,10 @@ impl TerminalSurfaceRepository for FakePtyGateway {
     fn list_summaries(
         &self,
     ) -> Vec<crate::domain::terminal_surface::entities::TerminalSurfaceSummary> {
-        Vec::new()
+        self.shutdown_surfaces
+            .iter()
+            .map(TerminalSurface::summary)
+            .collect()
     }
 }
 
@@ -160,9 +208,20 @@ impl TerminalSurfaceGateway for FakePtyGateway {
 
     fn request_runtime_stop(
         &self,
-        _runtime_generation: u64,
+        runtime_generation: u64,
     ) -> Result<(), TerminalSurfaceGatewayError> {
-        Ok(())
+        self.shutdown_step("stop", runtime_generation)
+    }
+
+    fn wait_runtime_output_drain(
+        &self,
+        runtime_generation: u64,
+    ) -> Result<(), TerminalSurfaceGatewayError> {
+        self.shutdown_step("drain", runtime_generation)
+    }
+
+    fn flush_checkpoints(&self) -> Result<(), TerminalSurfaceGatewayError> {
+        self.shutdown_step("flush", 0)
     }
 
     fn remove_runtime(&self, _runtime_generation: u64) {}

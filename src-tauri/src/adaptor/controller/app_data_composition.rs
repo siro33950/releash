@@ -277,7 +277,7 @@ mod tests {
                             });
                         }
                         OwnerQueryAction::ReturnWrongShape => {
-                            return Ok(LocalEventQueryResult::OperationByIdentity(None));
+                            return Ok(LocalEventQueryResult::SessionProjectionByIdentity(None));
                         }
                         OwnerQueryAction::ReturnOversizeSnapshot(snapshot) => {
                             return Ok(LocalEventQueryResult::CanonicalRuntimeOwnerSnapshot(

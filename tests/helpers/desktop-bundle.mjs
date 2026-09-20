@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -103,13 +103,28 @@ export function tray(pid, item) {
     accessibility(pid, `click menu bar item 1 of menu bar 2
         click menu item "${item}" of menu 1 of menu bar item 1 of menu bar 2`);
 }
-export async function quit(bundle, from = "tray") {
+export async function quit(bundle, client, from = "tray") {
     const current = pair(bundle);
     assert.ok(current);
+    const worktreePath = join(dataDir, "quit-workflow");
+    mkdirSync(worktreePath, { recursive: true });
+    execFileSync("/usr/bin/git", ["init", worktreePath]);
+    await client.call("client", "add_repo_path", { path: worktreePath });
+    const workflowName = `releash-quit-${current.daemon}`;
+    const workflowFile = join(await client.call("client", "get_automation_config_dir"), `${workflowName}.yml`);
+    const marker = join(worktreePath, "command-pid");
+    const stopped = join(worktreePath, "command-stopped");
+    rmSync(marker, { force: true });
+    rmSync(stopped, { force: true });
+    writeFileSync(workflowFile, `name: ${workflowName}\ndescription: native quit acceptance\nnodes:\n  main:\n    command: trap 'printf stopped > command-stopped; exit 0' TERM; echo $$ > command-pid; while :; do sleep 1; done\n`, { flag: "wx" });
+    let commandPid;
     const database = new DatabaseSync(join(dataDir, "local-event-store.sqlite3"), { readOnly: true });
-    const completed = () => database.prepare("SELECT shutdown_id FROM shutdown_plans WHERE phase = 'completed'").all().map(row => row.shutdown_id);
-    const previous = new Set(completed());
     try {
+        await client.call("client", "start_workflow", { workflowName, worktreePath });
+        commandPid = await waitFor(() => {
+            const pid = existsSync(marker) ? Number(readFileSync(marker, "utf8").trim()) : 0;
+            return Number.isInteger(pid) && pid > 0 && alive(pid) ? pid : false;
+        }, "quit fixture command did not start");
         if (from === "tray") tray(current.ui, "Quit");
         else if (["logout", "system-restart", "shutdown"].includes(from)) execFileSync("/usr/bin/xcrun", ["swift", "-module-cache-path", join(dataDir, "swift-cache"), resolve("tests/helpers/os-termination.swift"), String(current.ui), from], { timeout: 60_000 });
         else if (from === "cmd-q") accessibility(current.ui, 'set frontmost to true\nkeystroke "q" using command down');
@@ -121,19 +136,16 @@ export async function quit(bundle, from = "tray") {
         end tell`], { timeout: 30_000 });
         else accessibility(current.ui, 'click (last menu item of menu 1 of menu bar item 1 of menu bar 1)');
         await waitFor(() => !alive(current.ui) && !alive(current.daemon), "Quit must stop daemon and UI");
-        assert.equal(completed().filter(id => !previous.has(id)).length, 1,
-            `${from}: Quit must complete a new coordinated shutdown, not merely exit after losing its parent`);
+        assert.equal(existsSync(stopped), true, `${from} must request graceful command shutdown before exiting`);
+        assert.equal(alive(commandPid), false, `${from} must execute workflow command shutdown`);
+        assert.equal(database.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE name IN ('shutdown_plans', 'shutdown_targets', 'caller_attempts')").get().count, 0);
         return current;
     } finally {
         database.close();
+        if (commandPid && alive(commandPid)) process.kill(-commandPid, "SIGKILL");
+        rmSync(workflowFile, { force: true });
     }
 }
 export function launchctl(...args) {
     return spawnSync("/bin/launchctl", args, { encoding: "utf8" });
-}
-
-export function shutdownCount() {
-    const database = new DatabaseSync(join(dataDir, "local-event-store.sqlite3"), { readOnly: true });
-    try { return database.prepare("SELECT COUNT(*) AS count FROM shutdown_plans").get().count; }
-    finally { database.close(); }
 }

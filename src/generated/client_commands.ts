@@ -10,14 +10,12 @@ import { getClient, refreshClientOnDisconnect } from "@/lib/client";
 import { clientJson } from "@/lib/clientJson";
 import {
 	AbortWorkflowRequestSchema,
-	AcknowledgeApplicationAttemptRequestSchema,
 	AckTerminalSurfaceOutputRequestSchema,
 	AddRepoPathRequestSchema,
 	AgentSessionArchiveResponseSchema,
 	AgentSessionHistoryPageDtoSchema,
 	AgentSessionOpenResponseSchema,
 	AppendReviewCommentRequestSchema,
-	ApplicationQuitLookupDtoV1Schema,
 	ApplicationQuitOutcomeDtoV1Schema,
 	ApplicationStartupOutcomeDtoV1Schema,
 	ApproveWorkflowNodeRequestSchema,
@@ -30,7 +28,6 @@ import {
 	BuildReviewThreadHandoffRequestSchema,
 	type ClientService,
 	CommandErrorSchema,
-	CompactApplicationShutdownDetailsRequestSchema,
 	ComputeHiddenRangesFromContentRequestSchema,
 	ComputeHiddenRangesRequestSchema,
 	ComputeMarkdownDiffRangesRequestSchema,
@@ -41,7 +38,6 @@ import {
 	CreateAgentSessionRequestSchema,
 	CreateReviewThreadRequestSchema,
 	CreateWorktreeRequestSchema,
-	CurrentShutdownResultDtoV1Schema,
 	DeleteAgentSessionRequestSchema,
 	DeleteBranchRequestSchema,
 	DeleteFacetRequestSchema,
@@ -59,8 +55,6 @@ import {
 	FetchPrStatusRequestSchema,
 	FileNavigationResultDtoSchema,
 	GetAgentSessionRequestSchema,
-	GetApplicationQuitOperationRequestSchema,
-	GetApplicationShutdownRequestSchema,
 	GetApplicationStartupOutcomeRequestSchema,
 	GetAppSettingsRequestSchema,
 	GetAutomationConfigDirRequestSchema,
@@ -101,7 +95,6 @@ import {
 	GetReviewSnapshotRequestSchema,
 	GetReviewThreadHistoryRequestSchema,
 	GetReviewThreadRequestSchema,
-	GetShutdownPlanRequestSchema,
 	GetStagedContentRequestSchema,
 	GetStatusDiffStatsRequestSchema,
 	GetStatusDiffStatsSnapshotRequestSchema,
@@ -145,7 +138,6 @@ import {
 	ListInlineChunkDtoSchema,
 	ListIssueInfoDtoSchema,
 	ListNotionLabelOptionViewSchema,
-	ListPendingApplicationAttemptsRequestSchema,
 	ListProviderHookHealthWarningResponseSchema,
 	ListProviderHookHealthWarningsRequestSchema,
 	ListReviewHistoryEntryDtoSchema,
@@ -182,13 +174,11 @@ import {
 	OpenFolderInEditorRequestSchema,
 	OpenInEditorRequestSchema,
 	OpenWorkflowInEditorRequestSchema,
-	PendingCallerAttemptPageDtoV1Schema,
 	ProviderAvailabilitySnapshotResponseSchema,
 	PrStatusDtoSchema,
 	QueryNotionTasksRequestSchema,
 	QuitAfterStartupFailureRequestSchema,
 	RecordTerminalLaunchRendererPhaseRequestSchema,
-	RecoveryActionOutcomeDtoV1Schema,
 	RefreshProviderAvailabilityRequestSchema,
 	RemoveRepoPathRequestSchema,
 	RemoveWorktreeRequestSchema,
@@ -206,7 +196,6 @@ import {
 	ResizeTerminalSurfaceRequestSchema,
 	ResolveActiveExecutionByWorktreeRequestSchema,
 	ResolveReviewThreadRequestSchema,
-	ResolveShutdownTargetActionRequestSchema,
 	ResolveWorktreeByExecutionRequestSchema,
 	RestoreAgentSessionRequestSchema,
 	RestoreWorkspaceWorkflowExecutionRequestSchema,
@@ -227,8 +216,6 @@ import {
 	SaveWorkspaceStateRequestSchema,
 	SetBranchBaseRequestSchema,
 	SetReleashBaseRequestSchema,
-	ShutdownPlanDtoV1Schema,
-	ShutdownPlanPageDtoV1Schema,
 	StartTerminalInputPerformanceCollectionRequestSchema,
 	StartTerminalLaunchPerformanceCollectionRequestSchema,
 	StartupFailureQuitOutcomeDtoV1Schema,
@@ -315,25 +302,6 @@ const commands = {
 					AckTerminalSurfaceOutputRequestSchema,
 					clientJson(
 						AckTerminalSurfaceOutputRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	acknowledge_application_attempt: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["acknowledge_application_attempt"],
-	) => {
-		const result = decode(
-			UnitSchema,
-			await client.acknowledgeApplicationAttempt(
-				fromJson(
-					AcknowledgeApplicationAttemptRequestSchema,
-					clientJson(
-						AcknowledgeApplicationAttemptRequestSchema,
 						JSON.parse(JSON.stringify(args ?? {})),
 						true,
 					),
@@ -912,44 +880,6 @@ const commands = {
 		);
 		return result;
 	},
-	get_application_quit_operation: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_application_quit_operation"],
-	) => {
-		const result = decode(
-			ApplicationQuitLookupDtoV1Schema,
-			await client.getApplicationQuitOperation(
-				fromJson(
-					GetApplicationQuitOperationRequestSchema,
-					clientJson(
-						GetApplicationQuitOperationRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	get_application_shutdown: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_application_shutdown"],
-	) => {
-		const result = decode(
-			CurrentShutdownResultDtoV1Schema,
-			await client.getApplicationShutdown(
-				fromJson(
-					GetApplicationShutdownRequestSchema,
-					clientJson(
-						GetApplicationShutdownRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
 	get_application_startup_outcome: async (
 		client: Client<typeof ClientService>,
 		args: ClientCommandArgs["get_application_startup_outcome"],
@@ -1349,25 +1279,6 @@ const commands = {
 		);
 		return result;
 	},
-	get_shutdown_plan: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_shutdown_plan"],
-	) => {
-		const result = decode(
-			ShutdownPlanPageDtoV1Schema,
-			await client.getShutdownPlan(
-				fromJson(
-					GetShutdownPlanRequestSchema,
-					clientJson(
-						GetShutdownPlanRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
 	get_terminal_performance_switches: async (
 		client: Client<typeof ClientService>,
 		args: ClientCommandArgs["get_terminal_performance_switches"],
@@ -1759,25 +1670,6 @@ const commands = {
 					ListFacetSummariesRequestSchema,
 					clientJson(
 						ListFacetSummariesRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	list_pending_application_attempts: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["list_pending_application_attempts"],
-	) => {
-		const result = decode(
-			PendingCallerAttemptPageDtoV1Schema,
-			await client.listPendingApplicationAttempts(
-				fromJson(
-					ListPendingApplicationAttemptsRequestSchema,
-					clientJson(
-						ListPendingApplicationAttemptsRequestSchema,
 						JSON.parse(JSON.stringify(args ?? {})),
 						true,
 					),
@@ -2310,25 +2202,6 @@ const commands = {
 					ResolveReviewThreadRequestSchema,
 					clientJson(
 						ResolveReviewThreadRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	resolve_shutdown_target_action: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["resolve_shutdown_target_action"],
-	) => {
-		const result = decode(
-			RecoveryActionOutcomeDtoV1Schema,
-			await client.resolveShutdownTargetAction(
-				fromJson(
-					ResolveShutdownTargetActionRequestSchema,
-					clientJson(
-						ResolveShutdownTargetActionRequestSchema,
 						JSON.parse(JSON.stringify(args ?? {})),
 						true,
 					),
@@ -3507,25 +3380,6 @@ const commands = {
 					WorkflowGetOutputRequestSchema,
 					clientJson(
 						WorkflowGetOutputRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	compact_application_shutdown_details: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["compact_application_shutdown_details"],
-	) => {
-		const result = decode(
-			ShutdownPlanDtoV1Schema,
-			await client.compactApplicationShutdownDetails(
-				fromJson(
-					CompactApplicationShutdownDetailsRequestSchema,
-					clientJson(
-						CompactApplicationShutdownDetailsRequestSchema,
 						JSON.parse(JSON.stringify(args ?? {})),
 						true,
 					),

@@ -438,70 +438,10 @@ mod tests {
                      1, 'maintenance-event', 'maintenance-preserved', 'maintenance-stream', 1,
                      'maintenance.event', 1, '2026-01-01T00:00:00Z', X'01', zeroblob(32)
                  );
-                 INSERT INTO operation_bindings (
-                     principal, installation_id, kind, caller_request_id, scope_id,
-                     operation_id, binding_hmac, commit_id
-                 ) VALUES (
-                     'maintenance-principal',
-                     (SELECT installation_id FROM store_metadata WHERE id = 1),
-                     'send', 'maintenance-request', 'maintenance-scope',
-                     'maintenance-operation', zeroblob(32), 'maintenance-preserved'
-                 );
-                 INSERT INTO caller_attempts (
-                     principal, installation_id, kind, caller_request_id, scope_id,
-                     command_hash, sealed_command, resolution, revision, commit_id
-                 ) VALUES (
-                     'maintenance-principal',
-                     (SELECT installation_id FROM store_metadata WHERE id = 1),
-                     'send', 'maintenance-request', 'maintenance-scope',
-                     zeroblob(32), X'01', 'accepted', 1, 'maintenance-preserved'
-                 );
-                 INSERT INTO operation_records (
-                     kind, operation_id, receipt, latest_status, revision, commit_id
-                 ) VALUES (
-                     'send', 'maintenance-operation', '{}', '{}', 1,
-                     'maintenance-preserved'
-                 );
                  INSERT INTO session_projection (
                      session_id, projection, revision, commit_id
                  ) VALUES (
                      'maintenance-session', '{}', 1, 'maintenance-preserved'
-                 );
-                 INSERT INTO obligations (
-                     obligation_id, record, pending, revision, commit_id
-                 ) VALUES (
-                     'maintenance-obligation', '{}', 1, 1, 'maintenance-preserved'
-                 );
-                 INSERT INTO pending_obligations (
-                     ordered_key, obligation_id, owner, partition, shutdown_id, commit_id
-                 ) VALUES (
-                     'maintenance-ordered', 'maintenance-obligation', 'maintenance-owner',
-                     'owner', NULL, 'maintenance-preserved'
-                 );
-                 INSERT INTO recovery_action_attempts (
-                     action_id, binding_hash, attempt, completed, revision, commit_id
-                 ) VALUES (
-                     'maintenance-action', zeroblob(32), '{}', '{}', 1,
-                     'maintenance-preserved'
-                 );
-                 INSERT INTO shutdown_plans (
-                     shutdown_id, phase, summary, details_state, revision, commit_id
-                 ) VALUES (
-                     'maintenance-shutdown', 'prepared', 'maintenance', 'available', 1,
-                     'maintenance-preserved'
-                 );
-                 UPDATE pending_obligations
-                    SET shutdown_id = 'maintenance-shutdown'
-                  WHERE ordered_key = 'maintenance-ordered';
-                 INSERT INTO shutdown_targets (
-                     shutdown_id, ordinal, detail, revision, commit_id
-                 ) VALUES (
-                     'maintenance-shutdown', 0, '{}', 1, 'maintenance-preserved'
-                 );
-                 INSERT INTO shutdown_recovery_snapshots (
-                     shutdown_id, partition, ordinal, detail, commit_id
-                 ) VALUES (
-                     'maintenance-shutdown', 'owner', 0, '{}', 'maintenance-preserved'
                  );
                  INSERT INTO node_events (
                      tree_id, seq, node_execution_id, parent_id, node_name, kind,
@@ -511,8 +451,7 @@ mod tests {
                      'main', 'session', 1, 'started', '{}', 1
                  );
                  UPDATE store_metadata
-                    SET next_global_sequence = 2,
-                        shutdown_pointer_revision = 1
+                    SET next_global_sequence = 2
                   WHERE id = 1;",
             )
             .unwrap();
@@ -541,20 +480,11 @@ mod tests {
     }
 
     fn snapshot_store(connection: &Connection) -> StoreSnapshot {
-        const TABLES: [&str; 14] = [
+        const TABLES: [&str; 5] = [
             "logical_commits",
             "stream_heads",
             "events",
-            "operation_bindings",
-            "caller_attempts",
-            "operation_records",
             "session_projection",
-            "obligations",
-            "pending_obligations",
-            "recovery_action_attempts",
-            "shutdown_plans",
-            "shutdown_targets",
-            "shutdown_recovery_snapshots",
             "node_events",
         ];
 
@@ -580,13 +510,11 @@ mod tests {
         let metadata = connection
             .query_row(
                 "SELECT id, schema_version, installation_id, created_at_ms,
-                        cursor_hmac_key, operation_binding_hmac_key,
-                        next_global_sequence, health, current_shutdown_id,
-                        shutdown_pointer_revision
+                        next_global_sequence, health
                  FROM store_metadata WHERE id = 1",
                 [],
                 |row| {
-                    (0..10)
+                    (0..6)
                         .map(|index| row.get(index))
                         .collect::<Result<Vec<rusqlite::types::Value>, _>>()
                 },

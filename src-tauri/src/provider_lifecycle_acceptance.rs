@@ -315,10 +315,6 @@ impl WorkflowRuntimeStateGateway for AcceptanceWorkflowRuntimeGateway {
 #[async_trait::async_trait]
 impl WorkflowRuntimeShutdownGateway for AcceptanceWorkflowRuntimeGateway {
     async fn shutdown_active_commands(&self) {}
-
-    async fn application_shutdown_target_execution_ids(&self) -> Result<Vec<String>, String> {
-        Ok(Vec::new())
-    }
 }
 
 impl ProviderLifecycleAcceptanceHost {

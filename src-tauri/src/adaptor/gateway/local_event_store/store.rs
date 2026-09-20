@@ -32,7 +32,7 @@ use crate::adaptor::gateway::local_event_store::maintenance::{
 use crate::adaptor::gateway::local_event_store::node_events::{self, NewNodeEventRow};
 use crate::adaptor::gateway::local_event_store::projection_record_codec::canonical_mutation_identity_v1 as canonical_projection_mutation_identity_v1;
 use crate::adaptor::gateway::local_event_store::reader::{
-    load_stream_page, run_query, QueryContext, ReaderPool, RecoverySnapshotPager, READER_POOL_SIZE,
+    load_stream_page, run_query, QueryContext, ReaderPool, READER_POOL_SIZE,
 };
 use crate::adaptor::gateway::local_event_store::schema::{
     evolve_schema, initialize_schema, validate_current_schema, validate_supported_schema_v1,
@@ -52,13 +52,6 @@ use crate::domain::local_event::{
 
 fn correlation_id() -> String {
     uuid::Uuid::new_v4().to_string()
-}
-
-fn random_key_32() -> [u8; 32] {
-    let mut key = [0u8; 32];
-    key[..16].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
-    key[16..].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
-    key
 }
 
 fn sqlite_error_is_storage_unavailable(error: &rusqlite::Error) -> bool {
@@ -279,6 +272,7 @@ enum ExistingDatabaseKind {
     SupportedV4,
     SupportedV5,
     SupportedV6,
+    SupportedV7,
 }
 
 fn classify_existing_database(
@@ -343,7 +337,7 @@ fn classify_existing_database(
         return Ok(ExistingDatabaseKind::SupportedV1);
     }
     if application_id == i64::from(APPLICATION_ID) {
-        if matches!(user_version, 2..=6)
+        if matches!(user_version, 2..=7)
             && columns.iter().any(|column| column == "installation_id")
             && !columns.iter().any(|column| column == "store_id")
         {
@@ -353,6 +347,7 @@ fn classify_existing_database(
                 4 => ExistingDatabaseKind::SupportedV4,
                 5 => ExistingDatabaseKind::SupportedV5,
                 6 => ExistingDatabaseKind::SupportedV6,
+                7 => ExistingDatabaseKind::SupportedV7,
                 _ => unreachable!("supported schema version was matched above"),
             });
         }
@@ -435,10 +430,8 @@ pub struct LocalEventStore {
     fault: Arc<FaultInjector>,
     queue: Arc<WriteQueue>,
     readers: Arc<ReaderPool>,
-    recovery_snapshots: Arc<RecoverySnapshotPager>,
     query_context: Arc<QueryContext>,
     installation_id: String,
-    operation_binding_key: [u8; 32],
     writer_worker: Option<std::thread::JoinHandle<()>>,
     reader_workers: Vec<std::thread::JoinHandle<()>>,
     // Held for the lifetime of the store: exclusive app-data writer lock.
@@ -452,7 +445,6 @@ impl LocalEventStore {
     pub(crate) fn drain_and_close(mut self) {
         self.queue.close_after_drain();
         self.readers.close();
-        self.recovery_snapshots.close();
         for worker in self.reader_workers.drain(..) {
             let _ = worker.join();
         }
@@ -496,7 +488,6 @@ impl LocalEventStore {
         let database_exists = database_path
             .try_exists()
             .map_err(|_| LocalEventStoreOpenError::StorageUnavailable)?;
-        let process_instance_id = uuid::Uuid::new_v4().to_string();
         let now_ms = config.clock.now_ms().max(0);
 
         let writer_connection = if !database_exists {
@@ -535,15 +526,11 @@ impl LocalEventStore {
                 .fault
                 .initial_installation_id()
                 .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-            let cursor_key = random_key_32();
-            let operation_binding_key = random_key_32();
+
             initialize_schema(
                 &connection,
                 &InitialStoreMetadata {
                     installation_id: &installation_id,
-                    cursor_hmac_key: &cursor_key,
-                    operation_binding_hmac_key: &operation_binding_key,
-                    process_instance_id: &process_instance_id,
                     created_at_ms: now_ms,
                 },
                 config.fault.as_ref(),
@@ -582,15 +569,11 @@ impl LocalEventStore {
                     .fault
                     .initial_installation_id()
                     .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-                let cursor_key = random_key_32();
-                let operation_binding_key = random_key_32();
+
                 initialize_schema(
                     &connection,
                     &InitialStoreMetadata {
                         installation_id: &installation_id,
-                        cursor_hmac_key: &cursor_key,
-                        operation_binding_hmac_key: &operation_binding_key,
-                        process_instance_id: &process_instance_id,
                         created_at_ms: now_ms,
                     },
                     config.fault.as_ref(),
@@ -617,6 +600,7 @@ impl LocalEventStore {
                         | ExistingDatabaseKind::SupportedV4
                         | ExistingDatabaseKind::SupportedV5
                         | ExistingDatabaseKind::SupportedV6
+                        | ExistingDatabaseKind::SupportedV7
                 ) {
                     evolve_schema(&connection, config.fault.as_ref()).map_err(|error| {
                         classify_sqlite_error(
@@ -632,14 +616,6 @@ impl LocalEventStore {
         validate_current_schema(&writer_connection).map_err(|error| {
             classify_sqlite_error(&error, LocalEventStoreOpenError::StoreValidationFailed)
         })?;
-        writer_connection
-            .execute(
-                "UPDATE store_metadata SET process_instance_id = ?1 WHERE id = 1",
-                rusqlite::params![process_instance_id],
-            )
-            .map_err(|error| {
-                classify_sqlite_error(&error, LocalEventStoreOpenError::StoreValidationFailed)
-            })?;
         let checkpoint = truncate_wal_checkpoint(&writer_connection).map_err(|error| {
             classify_sqlite_error(&error, LocalEventStoreOpenError::StoreValidationFailed)
         })?;
@@ -702,31 +678,20 @@ impl LocalEventStore {
             )?
         };
 
-        let (installation_id, cursor_key, operation_binding_key): (String, Vec<u8>, Vec<u8>) =
-            writer_connection
-                .query_row(
-                    "SELECT installation_id, cursor_hmac_key, operation_binding_hmac_key
-                     FROM store_metadata WHERE id = 1",
-                    [],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-                )
-                .map_err(|error| {
-                    classify_sqlite_error(&error, LocalEventStoreOpenError::StoreValidationFailed)
-                })?;
-        let operation_binding_key: [u8; 32] = operation_binding_key
-            .try_into()
-            .map_err(|_| LocalEventStoreOpenError::StoreValidationFailed)?;
-
+        let installation_id: String = writer_connection
+            .query_row(
+                "SELECT installation_id FROM store_metadata WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|error| {
+                classify_sqlite_error(&error, LocalEventStoreOpenError::StoreValidationFailed)
+            })?;
         let queue = WriteQueue::new();
         let readers = ReaderPool::new(Arc::clone(&config.clock));
         let query_context = Arc::new(QueryContext {
             registry: Arc::clone(&config.registry),
-            cursor_key,
-            process_instance_id: process_instance_id.clone(),
-            clock: Arc::clone(&config.clock),
         });
-        let recovery_snapshots =
-            RecoverySnapshotPager::new(database_path.clone(), Arc::clone(&query_context));
 
         let mut reader_connections = Vec::with_capacity(READER_POOL_SIZE);
         for index in 0..READER_POOL_SIZE {
@@ -822,10 +787,8 @@ impl LocalEventStore {
             fault: config.fault,
             queue,
             readers,
-            recovery_snapshots,
             query_context,
             installation_id,
-            operation_binding_key,
             writer_worker,
             reader_workers,
             _writer_lock: writer_lock,
@@ -834,10 +797,6 @@ impl LocalEventStore {
 
     pub fn installation_id(&self) -> &str {
         &self.installation_id
-    }
-
-    pub fn process_instance_id(&self) -> &str {
-        &self.query_context.process_instance_id
     }
 
     #[cfg(test)]
@@ -913,11 +872,7 @@ impl LocalEventStore {
             return Err(CommitBatchError::CapacityExceeded);
         }
 
-        let critical = batch.idempotency.operation_kind.is_critical()
-            || batch
-                .state_mutations
-                .iter()
-                .any(LocalStateMutation::is_critical);
+        let critical = batch.idempotency.operation_kind.is_critical();
         Ok(PreparedBatch {
             batch,
             events: prepared_events,
@@ -1033,96 +988,6 @@ impl LocalEventStore {
     }
 }
 
-impl crate::usecase::application_lifecycle::operation::RecoveryResultCanonicalizer
-    for LocalEventStore
-{
-    fn canonicalize_recovery_result(
-        &self,
-        outcome: crate::domain::local_event::RecoveryResultOutcomeRecord,
-        classification: crate::domain::local_event::RecoveryResultClassification,
-        resource_revision: u64,
-        resource_view: crate::domain::local_event::RecoveryResourceViewRecord,
-    ) -> Result<crate::domain::local_event::RecoveryResultRecord, ()> {
-        super::state_record_codec::canonicalize_recovery_result_record(
-            outcome,
-            classification,
-            resource_revision,
-            resource_view,
-        )
-        .map_err(|_| ())
-    }
-}
-
-impl crate::usecase::application_lifecycle::operation::OperationBindingAuthority
-    for LocalEventStore
-{
-    fn mac(&self, message: &[u8]) -> [u8; 32] {
-        crate::adaptor::gateway::local_event_store::hmac_sha256::hmac_sha256(
-            &self.operation_binding_key,
-            message,
-        )
-    }
-
-    fn digest(&self, message: &[u8]) -> [u8; 32] {
-        Sha256::digest(message).into()
-    }
-
-    fn seal_command(&self, context: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, ()> {
-        use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, CHACHA20_POLY1305};
-        use ring::rand::{SecureRandom, SystemRandom};
-
-        const MAGIC: &[u8; 5] = b"RLSA1";
-        let key_bytes = crate::adaptor::gateway::local_event_store::hmac_sha256::hmac_sha256(
-            &self.operation_binding_key,
-            b"caller-attempt-command-aead/v1",
-        );
-        let key =
-            LessSafeKey::new(UnboundKey::new(&CHACHA20_POLY1305, &key_bytes).map_err(|_| ())?);
-        let mut nonce_bytes = [0u8; 12];
-        SystemRandom::new().fill(&mut nonce_bytes).map_err(|_| ())?;
-        let mut ciphertext = plaintext.to_vec();
-        key.seal_in_place_append_tag(
-            Nonce::assume_unique_for_key(nonce_bytes),
-            Aad::from(context),
-            &mut ciphertext,
-        )
-        .map_err(|_| ())?;
-        let mut envelope = Vec::with_capacity(MAGIC.len() + nonce_bytes.len() + ciphertext.len());
-        envelope.extend_from_slice(MAGIC);
-        envelope.extend_from_slice(&nonce_bytes);
-        envelope.extend_from_slice(&ciphertext);
-        Ok(envelope)
-    }
-
-    fn open_command(&self, context: &[u8], envelope: &[u8]) -> Result<Vec<u8>, ()> {
-        use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, CHACHA20_POLY1305};
-
-        const MAGIC: &[u8; 5] = b"RLSA1";
-        if envelope.len() < MAGIC.len() + 12 + CHACHA20_POLY1305.tag_len()
-            || &envelope[..MAGIC.len()] != MAGIC
-        {
-            return Err(());
-        }
-        let key_bytes = crate::adaptor::gateway::local_event_store::hmac_sha256::hmac_sha256(
-            &self.operation_binding_key,
-            b"caller-attempt-command-aead/v1",
-        );
-        let key =
-            LessSafeKey::new(UnboundKey::new(&CHACHA20_POLY1305, &key_bytes).map_err(|_| ())?);
-        let mut nonce_bytes = [0u8; 12];
-        nonce_bytes.copy_from_slice(&envelope[MAGIC.len()..MAGIC.len() + 12]);
-        let mut ciphertext = envelope[MAGIC.len() + 12..].to_vec();
-        let plaintext = key
-            .open_in_place(
-                Nonce::assume_unique_for_key(nonce_bytes),
-                Aad::from(context),
-                &mut ciphertext,
-            )
-            .map_err(|_| ())?;
-        Ok(plaintext.to_vec())
-    }
-}
-
 #[async_trait::async_trait]
 impl LocalEventTransactionRepository for LocalEventStore {
     fn canonical_mutation_identity_v1(
@@ -1188,15 +1053,7 @@ impl LocalEventTransactionRepository for LocalEventStore {
         &self,
         request: LocalEventQuery,
     ) -> Result<LocalEventQueryResult, LocalEventQueryError> {
-        if matches!(
-            &request,
-            LocalEventQuery::PendingRecoveryPage { .. }
-                | LocalEventQuery::PendingRecoverySnapshotPage { .. }
-        ) {
-            return self.recovery_snapshots.query(request).await;
-        }
-        let context = Arc::clone(&self.query_context);
-        self.submit_query(move |connection| run_query(connection, &context, &request))
+        self.submit_query(move |connection| run_query(connection, &request))
             .await
     }
 }
@@ -1205,7 +1062,6 @@ impl Drop for LocalEventStore {
     fn drop(&mut self) {
         self.queue.close();
         self.readers.close();
-        self.recovery_snapshots.close();
         for worker in self.reader_workers.drain(..) {
             let _ = worker.join();
         }

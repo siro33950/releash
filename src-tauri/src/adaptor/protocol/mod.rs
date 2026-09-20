@@ -5,7 +5,6 @@
 
 pub(crate) mod agent_session;
 pub(crate) mod application_lifecycle_v1;
-pub(crate) mod application_operation_v1;
 pub(crate) mod code;
 pub(crate) mod notion;
 pub(crate) mod provider_lifecycle;

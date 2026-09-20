@@ -7,37 +7,13 @@
 use std::fmt;
 
 pub const NOTICE_LABEL_MAX_BYTES: usize = 160;
-pub const NOTICE_DETAIL_MAX_BYTES: usize = 2048;
 
 /// Closed failure kinds from the issues-1499 design "Public closed types".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionOperationFailureKind {
     StorageUnavailable,
-    StorageCorrupt,
     PersistFailure,
-    ProtocolIncompatible,
-    ProviderUnavailable,
-    ExternalEffectFailed,
     OutcomeUnknown,
-    DeadlineExceeded,
-    CapacityExceeded,
-    StopCapacityExceeded,
-    ShutdownAuthorityMismatch,
-    TargetRevisionChanged,
-    OwnerRevisionChanged,
-    RuntimeGenerationChanged,
-    InvalidEffectIntent,
-    PreviousShutdownReconciliationRequired,
-    Internal,
-}
-
-/// Content-safe evidence about an external effect. This is deliberately
-/// separate from both `SessionOperationFailureKind` and resource state: an
-/// observation narrows what is known about an effect without claiming that
-/// the effect failed, succeeded, or never started.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SafeEffectObservation {
-    ExitCoupledOutcomeUnknown { shutdown_id: String },
 }
 
 /// UTF-8 text truncated to a byte bound; keeps a digest of the original when
@@ -69,11 +45,6 @@ impl BoundedNoticeText {
         Self::bounded(raw, NOTICE_LABEL_MAX_BYTES)
     }
 
-    /// Bounded detail text (2048 bytes).
-    pub fn detail(raw: &str) -> Self {
-        Self::bounded(raw, NOTICE_DETAIL_MAX_BYTES)
-    }
-
     pub fn value(&self) -> &str {
         &self.value
     }
@@ -85,7 +56,6 @@ pub struct SafeOperationFailure {
     pub kind: SessionOperationFailureKind,
     pub retryable: bool,
     pub label: Box<BoundedNoticeText>,
-    pub detail: Option<Box<BoundedNoticeText>>,
     pub correlation_id: String,
 }
 
@@ -100,22 +70,8 @@ impl SafeOperationFailure {
             kind,
             retryable,
             label: Box::new(BoundedNoticeText::label(label)),
-            detail: None,
             correlation_id: correlation_id.into(),
         }
-    }
-
-    pub fn with_detail(mut self, detail: &str) -> Self {
-        self.detail = Some(Box::new(BoundedNoticeText::detail(detail)));
-        self
-    }
-
-    /// Private repository marker used when the SQLite writer observes that
-    /// a current shutdown closed mutation admission. Public adapters map this
-    /// marker to their endpoint-specific `ShutdownInProgress` variant rather
-    /// than exposing it as storage unavailability.
-    pub fn is_shutdown_in_progress(&self) -> bool {
-        self.kind == SessionOperationFailureKind::PreviousShutdownReconciliationRequired
     }
 }
 
@@ -151,20 +107,7 @@ mod tests {
 
     #[test]
     fn short_text_is_not_truncated() {
-        let text = BoundedNoticeText::detail("ok");
+        let text = BoundedNoticeText::label("ok");
         assert_eq!(text.value(), "ok");
-    }
-
-    #[test]
-    fn detail_truncates_to_2048_bytes_on_a_utf8_boundary() {
-        let raw = "詳".repeat(1_000); // 3,000 bytes
-        let text = BoundedNoticeText::detail(&raw);
-        assert!(text.value().len() <= NOTICE_DETAIL_MAX_BYTES);
-        assert!(text.value().ends_with('…'));
-        assert!(text
-            .value()
-            .trim_end_matches('…')
-            .chars()
-            .all(|character| character == '詳'));
     }
 }

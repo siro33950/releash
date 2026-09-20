@@ -9,7 +9,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Weak};
 
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 
 mod activation;
 pub(crate) mod approval_runtime;
@@ -115,6 +115,7 @@ pub struct WorkflowRuntimeHost {
     runtime_activation_locks: Arc<Mutex<HashMap<String, Weak<RuntimeActivationGate>>>>,
     /// node_execution_id → active command process shutdown handle.
     active_commands: Arc<Mutex<HashMap<String, ActiveCommandHandle>>>,
+    command_admission: Arc<RwLock<crate::domain::application_lifecycle::CommandAdmission>>,
     /// node_execution_id → owning workflow execution_id.
     active_command_executions: Arc<Mutex<HashMap<String, String>>>,
     /// node_execution_id → command completion observer task owned by this workflow runtime.
@@ -446,6 +447,7 @@ impl WorkflowRuntimeHost {
             execution_facet_contents: Arc::new(Mutex::new(HashMap::new())),
             runtime_activation_locks: Arc::new(Mutex::new(HashMap::new())),
             active_commands: Arc::new(Mutex::new(HashMap::new())),
+            command_admission: Arc::new(RwLock::new(Default::default())),
             active_command_executions: Arc::new(Mutex::new(HashMap::new())),
             command_completion_observers: Arc::new(Mutex::new(HashMap::new())),
             command_shutdown_intents: Arc::new(Mutex::new(HashMap::new())),
@@ -626,22 +628,6 @@ impl WorkflowRuntimeHost {
         execs.insert(execution_id.clone(), execution);
         let snapshot = RuntimeCommitSnapshot::from_execution(execs.get(&execution_id).unwrap())?;
         Ok((snapshot, applied))
-    }
-
-    pub(crate) async fn application_shutdown_target_execution_ids(
-        &self,
-    ) -> Result<Vec<String>, String> {
-        let mut ids = self
-            .execution_store
-            .list_active()
-            .await
-            .map_err(|error| error.to_string())?
-            .into_iter()
-            .map(|summary| summary.execution_id)
-            .collect::<Vec<_>>();
-        ids.sort();
-        ids.dedup();
-        Ok(ids)
     }
 
     /// 冪等 reconciliation の1周: 事実ログの fold で導出された状態を見て、
@@ -1614,6 +1600,10 @@ impl WorkflowRuntimeHost {
         app: &WorkflowRuntimeDependencies,
         mut input: CommandExecutionInput,
     ) -> Result<(), WorkflowRuntimeError> {
+        let command_admission = self.command_admission.read().await;
+        if !command_admission.accepts_start() {
+            return Ok(());
+        }
         let raw_command = input.raw_command.take().ok_or_else(|| {
             WorkflowRuntimeError::InvalidState(format!(
                 "raw command for node execution '{}' is unavailable",
@@ -1729,6 +1719,7 @@ impl WorkflowRuntimeHost {
             .lock()
             .await
             .insert(node_execution_id.clone(), observer);
+        drop(command_admission);
         if !still_current {
             self.shutdown_active_command_execution(&node_execution_id)
                 .await;
@@ -1743,6 +1734,15 @@ impl WorkflowRuntimeHost {
         running: workflow_command_runner::RunningCommand,
     ) {
         let output = running.wait().await;
+        self.finish_command_execution(app, input, output).await;
+    }
+
+    async fn finish_command_execution(
+        &self,
+        app: &WorkflowRuntimeDependencies,
+        input: CommandExecutionInput,
+        output: Result<CommandRunOutput, CommandRunnerError>,
+    ) {
         self.active_commands
             .lock()
             .await
@@ -1814,6 +1814,10 @@ impl WorkflowRuntimeHost {
         input: CommandExecutionInput,
         output: CommandRunOutput,
     ) -> Result<(), WorkflowRuntimeError> {
+        let command_admission = self.command_admission.read().await;
+        if !command_admission.accepts_completion() {
+            return Ok(());
+        }
         let secrets = secret_source::collect_configured_secret_values(app);
         let artifact =
             build_command_artifact(&input.schemas, input.contract.as_deref(), output, &secrets);
@@ -1919,6 +1923,7 @@ impl WorkflowRuntimeHost {
             },
         )
         .await?;
+        drop(command_admission);
         self.finalize_after_commit(app, &snapshot_for_commit, &worktree_path)
             .await;
         if let Some(outcome) = outcome {
@@ -2008,6 +2013,8 @@ impl WorkflowRuntimeHost {
 
     pub(crate) async fn shutdown_all_active_commands(&self) {
         let commands = {
+            let mut command_admission = self.command_admission.write().await;
+            command_admission.stop();
             let active_commands = self.active_commands.lock().await;
             active_commands
                 .iter()
@@ -2284,6 +2291,7 @@ impl WorkflowRuntimeHost {
         reason: String,
         failure_kind: NodeExecutionFailureKind,
     ) -> Result<(), WorkflowRuntimeError> {
+        let command_admission = self.command_admission.read().await;
         let timestamp = current_timestamp();
         let (snapshot_before, mut candidate, node_name, attempt, session_id, is_fanout_child) = {
             let executions = self.executions.lock().await;
@@ -2302,6 +2310,9 @@ impl WorkflowRuntimeHost {
                         "workflow '{execution_id}' has no active NodeExecution '{node_execution_id}' to fail"
                     ))
                 })?;
+            if node.kind == NodeKindName::Command && !command_admission.accepts_completion() {
+                return Ok(());
+            }
             (
                 execution.clone(),
                 execution.clone(),
@@ -2395,6 +2406,7 @@ impl WorkflowRuntimeHost {
         } else {
             None
         };
+        drop(command_admission);
         self.finish_control_plane_commit(app, &snapshot.worktree_path, &snapshot, outcome)
             .await?;
         Ok(())
@@ -2685,8 +2697,6 @@ mod workflow_host_tests {
                     let gateway = Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(
                         app.clone(),
                         host.clone(),
-                        store.clone(),
-                        store.installation_id().to_string(),
                     ));
                     WorkflowControlPlaneUsecase::new(gateway)
                         .resolve_approval(ApprovalCommand {
@@ -4032,12 +4042,9 @@ nodes:
                 node.failure
             );
             assert_eq!(node.session_id.as_deref(), Some(EFFECT_AGENT_SESSION_ID));
-            let repository: Arc<dyn LocalEventTransactionRepository> = store.clone();
             let gateway = Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(
                 app.clone(),
                 host.clone(),
-                repository,
-                store.installation_id().to_string(),
             ));
             let control_plane = WorkflowControlPlaneUsecase::new(gateway);
             RuntimeEffectFixture {
@@ -4221,12 +4228,9 @@ nodes:
             assert_eq!(first.status, NodeExecutionStatus::Running);
             let first_node_execution_id = first.id.clone();
             let first_agent_session_id = first.session_id.clone().unwrap();
-            let repository: Arc<dyn LocalEventTransactionRepository> = store.clone();
             let gateway = Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(
                 app.clone(),
                 host.clone(),
-                repository,
-                store.installation_id().to_string(),
             ));
             let control_plane = WorkflowControlPlaneUsecase::new(gateway);
             SequentialRuntimeEffectFixture {
@@ -4734,12 +4738,9 @@ nodes:
                 sessions.clone(),
                 Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
             ));
-            let repository: Arc<dyn LocalEventTransactionRepository> = store.clone();
             let gateway = Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(
                 app.clone(),
                 host.clone(),
-                repository,
-                store.installation_id().to_string(),
             ));
             *sessions.control_plane.lock().await =
                 Some(Arc::new(WorkflowControlPlaneUsecase::new(gateway)));
@@ -6153,12 +6154,9 @@ nodes:
                 })
                 .await
                 .unwrap();
-            let repository: Arc<dyn LocalEventTransactionRepository> = store.clone();
             let gateway = Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(
                 app.clone(),
                 host.clone(),
-                repository,
-                store.installation_id().to_string(),
             ));
             let control_plane = WorkflowControlPlaneUsecase::new(gateway);
             control_plane
@@ -6691,8 +6689,12 @@ mod isolated_worktree_tests;
 
 #[cfg(test)]
 #[path = "workflow_host/test_helpers.rs"]
-mod test_helpers;
+pub(crate) mod test_helpers;
 
 #[cfg(test)]
 #[path = "workflow_host/secret_redaction_test.rs"]
 mod secret_redaction_tests;
+
+#[cfg(test)]
+#[path = "workflow_host/shutdown_test.rs"]
+mod shutdown_tests;

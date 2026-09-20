@@ -1,6 +1,6 @@
 use crate::adaptor::protocol::client as wire;
 use crate::domain::daemon_supervision::{verify_identity, Failure, FailureStage, StopIntent};
-use crate::domain::daemon_supervision::{DaemonExit, DaemonProcessPort, ShutdownResponse};
+use crate::domain::daemon_supervision::{DaemonExit, DaemonProcessPort};
 use crate::usecase::client_connection::ClientConnectionQueryService;
 use crate::usecase::daemon_supervision::{DaemonConnection, DaemonGateway};
 use std::io::{BufRead, Read};
@@ -222,9 +222,8 @@ impl DaemonProcessPort for DaemonProcessGateway {
         .await
     }
 
-    async fn request_shutdown(&self, intent: StopIntent) -> Result<ShutdownResponse, String> {
+    async fn request_shutdown(&self, intent: StopIntent) -> Result<(), String> {
         let client = self.client()?;
-        let id = uuid::Uuid::new_v4().to_string();
         let code = match intent {
             StopIntent::Quit(code) => code,
             _ => 0,
@@ -233,7 +232,6 @@ impl DaemonProcessPort for DaemonProcessGateway {
             .request(wire::command_request::Command::RequestApplicationQuit(
                 wire::RequestApplicationQuitRequest {
                     request: Some(wire::ApplicationQuitRequestDtoV1 {
-                        request_id: Some(id),
                         intent: Some(wire::ApplicationQuitIntentDtoV1 {
                             variant: Some(match intent {
                                 StopIntent::Restart => {
@@ -333,12 +331,11 @@ async fn wait_for_termination<F: std::future::Future<Output = Result<bool, Strin
 #[path = "daemon_supervision_test.rs"]
 mod daemon_supervision_tests;
 
-fn shutdown_response(response: wire::command_result::Command) -> Result<ShutdownResponse, String> {
+fn shutdown_response(response: wire::command_result::Command) -> Result<(), String> {
     match response {
         wire::command_result::Command::RequestApplicationQuit(outcome) => match outcome.variant {
-            Some(wire::application_quit_outcome_dto_v1::Variant::Accepted(_)) => Ok(ShutdownResponse::Accepted),
-            Some(wire::application_quit_outcome_dto_v1::Variant::PreviousShutdownReconciliationRequired(_)) => Ok(ShutdownResponse::DecisionRequired("Previous shutdown requires a decision before switching.".into())),
-            other => Err(format!("Shutdown requires confirmation: {other:?}")),
+            Some(wire::application_quit_outcome_dto_v1::Variant::Accepted(_)) => Ok(()),
+            other => Err(format!("Invalid shutdown response: {other:?}")),
         },
         _ => Err("Unexpected shutdown response.".into()),
     }

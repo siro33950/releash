@@ -113,39 +113,8 @@ impl WorkflowRuntimeUsecase {
         self.runtime.get_state_by_execution_id(execution_id).await
     }
 
-    #[cfg(test)]
     pub async fn shutdown_active_commands(&self) {
         self.runtime.shutdown_active_commands().await;
-    }
-
-    pub async fn shutdown_execution_commands_for_effect(
-        &self,
-        operation_id: &str,
-        effect_identity: &str,
-        owner_revision: i64,
-        execution_id: &str,
-    ) -> crate::usecase::workflow::ports::WorkflowShutdownEffectReadback {
-        self.runtime
-            .execute_shutdown_effect(operation_id, effect_identity, owner_revision, execution_id)
-            .await
-    }
-
-    pub async fn read_shutdown_execution_effect(
-        &self,
-        operation_id: &str,
-        effect_identity: &str,
-        owner_revision: i64,
-        execution_id: &str,
-    ) -> crate::usecase::workflow::ports::WorkflowShutdownEffectReadback {
-        self.runtime
-            .read_shutdown_effect(operation_id, effect_identity, owner_revision, execution_id)
-            .await
-    }
-
-    pub async fn application_shutdown_target_execution_ids(&self) -> Result<Vec<String>, String> {
-        self.runtime
-            .application_shutdown_target_execution_ids()
-            .await
     }
 }
 
@@ -439,10 +408,6 @@ mod tests {
     impl WorkflowRuntimeShutdownGateway for FakeRuntimeGateway {
         async fn shutdown_active_commands(&self) {
             self.calls.lock().unwrap().push("shutdown_active_commands");
-        }
-
-        async fn application_shutdown_target_execution_ids(&self) -> Result<Vec<String>, String> {
-            Ok(Vec::new())
         }
     }
 

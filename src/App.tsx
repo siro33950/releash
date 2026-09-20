@@ -315,12 +315,7 @@ function WorkbenchApp() {
 				settings={settings}
 				onSettingsSave={updateSettings}
 				leftNav={leftNav}
-				topBanner={
-					<>
-						<div id="application-shutdown-banner" />
-						<ProviderHookHealthBanner />
-					</>
-				}
+				topBanner={<ProviderHookHealthBanner />}
 				centerSelectionByWorktree={centerSelectionByWorktree}
 				onCenterNodeMissing={handleCenterSelectionInvalidated}
 				onCenterSessionAttachmentConsumed={

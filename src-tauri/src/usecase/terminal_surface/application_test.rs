@@ -688,3 +688,73 @@ async fn test_ターミナル接続_snapshot構築中も別attachmentのackとde
         assert_eq!(gateway.writes.lock().len(), 1);
     }
 }
+
+#[test]
+fn test_終了保存_停止と出力排出の失敗後も別terminalと保存へ進む() {
+    crate::test_support::install_capturing_logger();
+    for failures in [
+        vec![],
+        vec![("stop", 1)],
+        vec![("drain", 1)],
+        vec![("flush", 0)],
+        vec![("stop", 1), ("drain", 2), ("flush", 0)],
+    ] {
+        // Given
+        let mut gateway = super::super::io_usecase::io_usecase_tests::FakePtyGateway::new();
+        gateway.shutdown_failures = failures.clone();
+        gateway.shutdown_surfaces = (1..=3)
+            .map(|generation| {
+                let owner = TerminalSurfaceOwner::session(
+                    WorkspaceIdentity::new("/repo"),
+                    format!("session-{generation}"),
+                )
+                .unwrap();
+                TerminalSurface {
+                    session_key: owner.stable_key(),
+                    owner,
+                    worktree_path: Some("/repo".into()),
+                    label: None,
+                    runtime_generation: generation.into(),
+                    process_state: TerminalProcessState::Running,
+                    checkpoint: TerminalSurfaceCheckpoint::empty(80, 24),
+                    latest_sequence: 0,
+                    last_output_at: None,
+                }
+            })
+            .collect();
+        let gateway = Arc::new(gateway);
+        let application = super::TerminalSurfaceApplication::new(
+            gateway.clone(),
+            Arc::new(TerminalSurfaceEventHub::new()),
+        );
+        // When
+        let result = application.shutdown();
+        // Then
+        assert_eq!(result.is_err(), !failures.is_empty());
+        let messages = crate::test_support::captured_error_messages()
+            .into_iter()
+            .filter(|message| message.contains(&gateway.shutdown_failure_id))
+            .collect::<Vec<_>>();
+        let expected_messages = failures
+            .iter()
+            .map(|(stage, generation)| {
+                let context = match *stage {
+                    "stop" | "drain" => format!("terminal {generation} {stage}"),
+                    "flush" => "terminal checkpoint flush".into(),
+                    _ => unreachable!(),
+                };
+                format!(
+                    "application shutdown: {context} failed: {stage} failed {}",
+                    gateway.shutdown_failure_id
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(messages, expected_messages);
+        let mut expected = vec![("stop", 1), ("stop", 2), ("stop", 3)];
+        if !failures.contains(&("stop", 1)) {
+            expected.push(("drain", 1));
+        }
+        expected.extend([("drain", 2), ("drain", 3), ("flush", 0)]);
+        assert_eq!(*gateway.shutdown_calls.lock(), expected);
+    }
+}

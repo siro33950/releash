@@ -21,7 +21,35 @@ pub(crate) fn configure_process_group(command: &mut Command) {
     let _ = command;
 }
 
+trait ShutdownChild {
+    fn id(&self) -> Option<u32>;
+    async fn wait(&mut self) -> std::io::Result<()>;
+    fn start_kill(&mut self) -> std::io::Result<()>;
+    #[cfg(unix)]
+    fn signal_group(&mut self, pgid: i32, signal: i32) -> std::io::Result<()>;
+}
+
+impl ShutdownChild for Child {
+    fn id(&self) -> Option<u32> {
+        self.id()
+    }
+    async fn wait(&mut self) -> std::io::Result<()> {
+        self.wait().await.map(|_| ())
+    }
+    fn start_kill(&mut self) -> std::io::Result<()> {
+        self.start_kill()
+    }
+    #[cfg(unix)]
+    fn signal_group(&mut self, pgid: i32, signal: i32) -> std::io::Result<()> {
+        signal_process_group(pgid, signal)
+    }
+}
+
 pub(crate) async fn staged_shutdown(child: &mut Child, label: &str) {
+    staged_shutdown_child(child, label).await;
+}
+
+async fn staged_shutdown_child(child: &mut impl ShutdownChild, label: &str) {
     if wait_child(child, FIRST_SHUTDOWN_GRACE, label).await {
         return;
     }
@@ -30,14 +58,16 @@ pub(crate) async fn staged_shutdown(child: &mut Child, label: &str) {
         return;
     }
     kill_child_group(child);
-    let _ = child.wait().await;
+    if let Err(error) = child.wait().await {
+        log::error!("failed to reap {label} during shutdown: {error}");
+    }
 }
 
-async fn wait_child(child: &mut Child, duration: Duration, label: &str) -> bool {
+async fn wait_child(child: &mut impl ShutdownChild, duration: Duration, label: &str) -> bool {
     match tokio::time::timeout(duration, child.wait()).await {
         Ok(Ok(_)) => true,
         Ok(Err(error)) => {
-            log::debug!("failed to wait for {label} child: {error}");
+            log::error!("failed to wait for {label} child: {error}");
             false
         }
         Err(_) => false,
@@ -45,30 +75,42 @@ async fn wait_child(child: &mut Child, duration: Duration, label: &str) -> bool 
 }
 
 #[cfg(unix)]
-pub(crate) fn terminate_child_group(child: &mut Child) {
+fn terminate_child_group(child: &mut impl ShutdownChild) {
     if let Some(pid) = child.id() {
-        let _ = signal_process_group(pid as i32, libc::SIGTERM);
+        if let Err(error) = child.signal_group(pid as i32, libc::SIGTERM) {
+            log::error!("failed to terminate command process group {pid}: {error}");
+        }
     } else {
-        let _ = child.start_kill();
+        if let Err(error) = child.start_kill() {
+            log::error!("failed to kill command child: {error}");
+        }
     }
 }
 
 #[cfg(not(unix))]
-pub(crate) fn terminate_child_group(child: &mut Child) {
-    let _ = child.start_kill();
+fn terminate_child_group(child: &mut impl ShutdownChild) {
+    if let Err(error) = child.start_kill() {
+        log::error!("failed to kill command child: {error}");
+    }
 }
 
 #[cfg(unix)]
-pub(crate) fn kill_child_group(child: &mut Child) {
+fn kill_child_group(child: &mut impl ShutdownChild) {
     if let Some(pid) = child.id() {
-        let _ = signal_process_group(pid as i32, libc::SIGKILL);
+        if let Err(error) = child.signal_group(pid as i32, libc::SIGKILL) {
+            log::error!("failed to kill command process group {pid}: {error}");
+        }
     }
-    let _ = child.start_kill();
+    if let Err(error) = child.start_kill() {
+        log::error!("failed to kill command child: {error}");
+    }
 }
 
 #[cfg(not(unix))]
-pub(crate) fn kill_child_group(child: &mut Child) {
-    let _ = child.start_kill();
+fn kill_child_group(child: &mut impl ShutdownChild) {
+    if let Err(error) = child.start_kill() {
+        log::error!("failed to kill command child: {error}");
+    }
 }
 
 #[cfg(unix)]
@@ -91,20 +133,6 @@ pub(crate) fn signal_process_group(pgid: i32, signal: i32) -> std::io::Result<()
     Ok(())
 }
 
-#[cfg(all(test, unix))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn signal_process_group_rejects_unsafe_pgid_values() {
-        for pgid in [-1, 0, 1] {
-            let error = signal_process_group(pgid, libc::SIGTERM).unwrap_err();
-            assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
-        }
-    }
-
-    #[test]
-    fn signal_process_group_allows_safe_pgid_values_through_guard() {
-        signal_process_group(i32::MAX, 0).unwrap();
-    }
-}
+#[cfg(test)]
+#[path = "child_process_test.rs"]
+mod child_process_tests;

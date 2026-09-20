@@ -19,7 +19,6 @@ pub(crate) mod repository_query_service;
 pub(crate) mod repository_state;
 pub(crate) mod repository_usecase;
 pub(crate) mod review_usecase;
-pub(crate) mod shutdown_coordinator;
 pub(crate) mod terminal_surface;
 pub(crate) mod workflow;
 pub(crate) mod workspace_state;

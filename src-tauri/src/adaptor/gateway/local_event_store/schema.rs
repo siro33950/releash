@@ -1,5 +1,6 @@
 //! Versioned schema for the fixed-path permanent local event store.
 
+use crate::infrastructure::local_event_store_schema;
 use rusqlite::Connection;
 
 use super::fault::{FaultInjector, InitialCreateFaultPoint};
@@ -11,7 +12,7 @@ mod schema_test;
 /// Minimum SQLite version containing the WAL-reset corruption fix.
 pub const MIN_SQLITE_VERSION_NUMBER: i32 = 3_051_003;
 pub const APPLICATION_ID: i32 = 0x524C_5348;
-pub const CURRENT_SCHEMA_VERSION: i64 = 7;
+pub const CURRENT_SCHEMA_VERSION: i64 = 8;
 
 pub const CURRENT_SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS logical_commits (
@@ -57,46 +58,6 @@ CREATE TABLE IF NOT EXISTS events (
     UNIQUE (stream_id, stream_sequence)
 );
 
-CREATE TABLE IF NOT EXISTS operation_bindings (
-    principal TEXT NOT NULL,
-    installation_id TEXT NOT NULL,
-    kind TEXT NOT NULL
-        CHECK (kind IN ('send', 'permission_response', 'stop', 'session_lifecycle', 'application_quit')),
-    caller_request_id TEXT NOT NULL,
-    scope_id TEXT,
-    operation_id TEXT NOT NULL,
-    binding_hmac BLOB NOT NULL CHECK (length(binding_hmac) = 32),
-    commit_id TEXT NOT NULL REFERENCES logical_commits (commit_id),
-    PRIMARY KEY (principal, installation_id, kind, caller_request_id)
-);
-
-CREATE TABLE IF NOT EXISTS caller_attempts (
-    principal TEXT NOT NULL,
-    installation_id TEXT NOT NULL,
-    kind TEXT NOT NULL
-        CHECK (kind IN ('send', 'permission_response', 'stop', 'session_lifecycle', 'application_quit')),
-    caller_request_id TEXT NOT NULL,
-    scope_id TEXT,
-    command_hash BLOB NOT NULL CHECK (length(command_hash) = 32),
-    sealed_command BLOB NOT NULL,
-    resolution TEXT NOT NULL
-        CHECK (resolution IN ('pending', 'accepted', 'rejected_before_commit', 'cleared')),
-    revision INTEGER NOT NULL CHECK (revision >= 0),
-    commit_id TEXT NOT NULL REFERENCES logical_commits (commit_id),
-    PRIMARY KEY (principal, installation_id, kind, caller_request_id)
-);
-
-CREATE TABLE IF NOT EXISTS operation_records (
-    kind TEXT NOT NULL
-        CHECK (kind IN ('send', 'permission_response', 'stop', 'session_lifecycle', 'application_quit')),
-    operation_id TEXT NOT NULL,
-    receipt TEXT NOT NULL,
-    latest_status TEXT NOT NULL,
-    revision INTEGER NOT NULL CHECK (revision >= 0),
-    commit_id TEXT NOT NULL REFERENCES logical_commits (commit_id),
-    PRIMARY KEY (kind, operation_id)
-);
-
 CREATE TABLE IF NOT EXISTS session_projection (
     session_id TEXT PRIMARY KEY,
     projection TEXT NOT NULL,
@@ -115,80 +76,6 @@ CREATE TABLE IF NOT EXISTS session_projection (
     )
 );
 
-CREATE TABLE IF NOT EXISTS obligations (
-    obligation_id TEXT PRIMARY KEY,
-    record TEXT NOT NULL,
-    pending INTEGER NOT NULL CHECK (pending IN (0, 1)),
-    revision INTEGER NOT NULL CHECK (revision >= 0),
-    commit_id TEXT NOT NULL REFERENCES logical_commits (commit_id)
-);
-
-CREATE TABLE IF NOT EXISTS pending_obligations (
-    ordered_key TEXT PRIMARY KEY,
-    obligation_id TEXT NOT NULL UNIQUE REFERENCES obligations (obligation_id),
-    owner TEXT NOT NULL,
-    partition TEXT NOT NULL
-        CHECK (partition IN ('owner', 'closed_session', 'archived_session', 'unowned_runtime')),
-    shutdown_id TEXT,
-    commit_id TEXT NOT NULL REFERENCES logical_commits (commit_id)
-);
-
-CREATE TABLE IF NOT EXISTS recovery_action_attempts (
-    action_id TEXT PRIMARY KEY,
-    binding_hash BLOB NOT NULL CHECK (length(binding_hash) = 32),
-    attempt TEXT NOT NULL,
-    completed TEXT,
-    revision INTEGER NOT NULL CHECK (revision >= 0),
-    commit_id TEXT NOT NULL REFERENCES logical_commits (commit_id)
-);
-
-CREATE TABLE IF NOT EXISTS shutdown_plans (
-    shutdown_id TEXT PRIMARY KEY,
-    phase TEXT NOT NULL CHECK (phase IN (
-        'prepared', 'activated', 'quiescing',
-        'completed', 'failed', 'cancelled', 'reconciliation_required'
-    )),
-    summary TEXT NOT NULL,
-    details_state TEXT NOT NULL CHECK (details_state IN ('available', 'compacted')),
-    revision INTEGER NOT NULL CHECK (revision >= 0),
-    commit_id TEXT NOT NULL REFERENCES logical_commits (commit_id)
-);
-
-CREATE TABLE IF NOT EXISTS shutdown_targets (
-    shutdown_id TEXT NOT NULL,
-    ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
-    detail TEXT NOT NULL,
-    revision INTEGER NOT NULL CHECK (revision >= 0),
-    commit_id TEXT NOT NULL REFERENCES logical_commits (commit_id),
-    PRIMARY KEY (shutdown_id, ordinal),
-    FOREIGN KEY (shutdown_id) REFERENCES shutdown_plans (shutdown_id)
-);
-
-CREATE TABLE IF NOT EXISTS shutdown_recovery_snapshots (
-    shutdown_id TEXT NOT NULL,
-    partition TEXT NOT NULL
-        CHECK (partition IN ('owner', 'closed_session', 'archived_session', 'unowned_runtime')),
-    ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
-    detail TEXT NOT NULL,
-    commit_id TEXT NOT NULL REFERENCES logical_commits (commit_id),
-    PRIMARY KEY (shutdown_id, ordinal),
-    FOREIGN KEY (shutdown_id) REFERENCES shutdown_plans (shutdown_id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_pending_obligations_partition
-    ON pending_obligations (partition, ordered_key);
-CREATE INDEX IF NOT EXISTS idx_pending_obligations_owner
-    ON pending_obligations (owner, ordered_key);
-CREATE INDEX IF NOT EXISTS idx_pending_obligations_shutdown
-    ON pending_obligations (shutdown_id, ordered_key);
-CREATE INDEX IF NOT EXISTS idx_shutdown_plans_details_state
-    ON shutdown_plans (details_state);
-CREATE INDEX IF NOT EXISTS idx_caller_attempts_scope
-    ON caller_attempts (principal, installation_id, scope_id, kind, caller_request_id);
-CREATE INDEX IF NOT EXISTS idx_caller_attempts_pending_kind
-    ON caller_attempts (installation_id, kind, resolution, principal, caller_request_id);
-CREATE INDEX IF NOT EXISTS idx_operation_bindings_operation
-    ON operation_bindings (installation_id, kind, operation_id, principal, caller_request_id);
 "#;
 
 /// The unified-node fact log: one normalized table, one row per pure fact.
@@ -294,9 +181,6 @@ fn create_store_metadata(
 
 pub struct InitialStoreMetadata<'a> {
     pub installation_id: &'a str,
-    pub cursor_hmac_key: &'a [u8; 32],
-    pub operation_binding_hmac_key: &'a [u8; 32],
-    pub process_instance_id: &'a str,
     pub created_at_ms: i64,
 }
 
@@ -305,44 +189,29 @@ pub fn initialize_schema(
     metadata: &InitialStoreMetadata<'_>,
     fault: &FaultInjector,
 ) -> Result<(), rusqlite::Error> {
-    connection.execute_batch("BEGIN IMMEDIATE;")?;
-    if let Err(error) = (|| {
+    local_event_store_schema::transaction(connection, |connection| {
         connection.execute_batch(CURRENT_SCHEMA)?;
         connection.execute_batch(SESSION_PROJECTION_TABLE_V3)?;
-        create_store_metadata(connection, "store_metadata", "shutdown_plans", 7)?;
+        local_event_store_schema::create_store_metadata_v8(connection)?;
         connection.execute_batch(NODE_EVENTS_SCHEMA_V7)?;
         connection.execute(
             "INSERT INTO store_metadata (
                 id, schema_version, installation_id, created_at_ms,
-                cursor_hmac_key, operation_binding_hmac_key, process_instance_id,
-                next_global_sequence, health, current_shutdown_id,
-                shutdown_pointer_revision
-             ) VALUES (1, 7, ?1, ?2, ?3, ?4, ?5, 1, 'ok',
-                       NULL, 0)",
-            rusqlite::params![
-                metadata.installation_id,
-                metadata.created_at_ms,
-                metadata.cursor_hmac_key.as_slice(),
-                metadata.operation_binding_hmac_key.as_slice(),
-                metadata.process_instance_id,
-            ],
+                next_global_sequence, health
+             ) VALUES (1, 8, ?1, ?2, 1, 'ok')",
+            rusqlite::params![metadata.installation_id, metadata.created_at_ms,],
         )?;
         connection.pragma_update(None, "application_id", APPLICATION_ID)?;
         connection.pragma_update(None, "user_version", CURRENT_SCHEMA_VERSION)?;
-        Ok::<(), rusqlite::Error>(())
-    })() {
-        let _ = connection.execute_batch("ROLLBACK;");
-        return Err(error);
-    }
-    if fault.take_initial_create_fault(InitialCreateFaultPoint::BeforeInitializationCommit) {
-        #[cfg(test)]
-        fault.crash_initial_create_process_if_armed(
-            InitialCreateFaultPoint::BeforeInitializationCommit,
-        );
-        let _ = connection.execute_batch("ROLLBACK;");
-        return Err(rusqlite::Error::InvalidQuery);
-    }
-    connection.execute_batch("COMMIT;")?;
+        if fault.take_initial_create_fault(InitialCreateFaultPoint::BeforeInitializationCommit) {
+            #[cfg(test)]
+            fault.crash_initial_create_process_if_armed(
+                InitialCreateFaultPoint::BeforeInitializationCommit,
+            );
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        Ok(())
+    })?;
     if fault.take_initial_create_fault(InitialCreateFaultPoint::AfterInitializationCommitReplyLoss)
     {
         #[cfg(test)]
@@ -402,19 +271,21 @@ fn evolve_schema_transaction(
     if fault.take_schema_fail_before_begin() {
         return Err(rusqlite::Error::InvalidQuery);
     }
-    connection.execute_batch("PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE;")?;
-    let result = evolution(connection).and_then(|()| {
-        connection.pragma_update(None, "user_version", CURRENT_SCHEMA_VERSION)?;
+    local_event_store_schema::migration(connection, |connection| {
+        evolution(connection)?;
+        local_event_store_schema::evolve_v8(connection, |connection| {
+            connection.execute_batch(
+                "INSERT INTO store_metadata (
+                    id, schema_version, installation_id, created_at_ms, next_global_sequence, health
+                 ) SELECT id, 8, installation_id, created_at_ms, next_global_sequence, health
+                   FROM store_metadata_v7;",
+            )
+        })?;
         if fault.take_schema_fail_before_commit() {
             return Err(rusqlite::Error::InvalidQuery);
         }
         Ok(())
-    });
-    if let Err(error) = result {
-        let _ = connection.execute_batch("ROLLBACK; PRAGMA foreign_keys = ON;");
-        return Err(error);
-    }
-    connection.execute_batch("COMMIT; PRAGMA foreign_keys = ON;")?;
+    })?;
     if fault.take_schema_commit_reply_loss() {
         return Err(rusqlite::Error::InvalidQuery);
     }
@@ -446,6 +317,10 @@ pub fn evolve_schema(
         validate_current_schema(connection)?;
         finish_schema_admission(connection)?;
         return Ok(false);
+    }
+
+    if application_id == i64::from(APPLICATION_ID) && user_version == 7 {
+        return evolve_schema_transaction(connection, fault, |_| Ok(()));
     }
 
     let is_supported_v6 = application_id == i64::from(APPLICATION_ID)
@@ -819,27 +694,12 @@ pub fn validate_current_schema(connection: &Connection) -> Result<(), rusqlite::
     if metadata_count != 1 {
         return Err(rusqlite::Error::InvalidQuery);
     }
-    let metadata: (i64, String, Vec<u8>, Vec<u8>, String) = connection.query_row(
-        "SELECT schema_version, installation_id, cursor_hmac_key,
-                operation_binding_hmac_key, process_instance_id
-         FROM store_metadata WHERE id = 1",
+    let metadata: (i64, String) = connection.query_row(
+        "SELECT schema_version, installation_id FROM store_metadata WHERE id = 1",
         [],
-        |row| {
-            Ok((
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                row.get(3)?,
-                row.get(4)?,
-            ))
-        },
+        |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
-    if metadata.0 != CURRENT_SCHEMA_VERSION
-        || uuid::Uuid::parse_str(&metadata.1).is_err()
-        || metadata.2.len() != 32
-        || metadata.3.len() != 32
-        || uuid::Uuid::parse_str(&metadata.4).is_err()
-    {
+    if metadata.0 != CURRENT_SCHEMA_VERSION || uuid::Uuid::parse_str(&metadata.1).is_err() {
         return Err(rusqlite::Error::InvalidQuery);
     }
     require_exact_columns(
@@ -850,13 +710,8 @@ pub fn validate_current_schema(connection: &Connection) -> Result<(), rusqlite::
             "schema_version",
             "installation_id",
             "created_at_ms",
-            "cursor_hmac_key",
-            "operation_binding_hmac_key",
-            "process_instance_id",
             "next_global_sequence",
             "health",
-            "current_shutdown_id",
-            "shutdown_pointer_revision",
         ],
     )?;
     require_exact_columns(
@@ -877,70 +732,6 @@ pub fn validate_current_schema(connection: &Connection) -> Result<(), rusqlite::
             "result_hash",
             "committed_at_ms",
         ],
-    )?;
-    require_exact_columns(
-        connection,
-        "operation_bindings",
-        &[
-            "principal",
-            "installation_id",
-            "kind",
-            "caller_request_id",
-            "scope_id",
-            "operation_id",
-            "binding_hmac",
-            "commit_id",
-        ],
-    )?;
-    require_exact_columns(
-        connection,
-        "caller_attempts",
-        &[
-            "principal",
-            "installation_id",
-            "kind",
-            "caller_request_id",
-            "scope_id",
-            "command_hash",
-            "sealed_command",
-            "resolution",
-            "revision",
-            "commit_id",
-        ],
-    )?;
-    require_exact_columns(
-        connection,
-        "pending_obligations",
-        &[
-            "ordered_key",
-            "obligation_id",
-            "owner",
-            "partition",
-            "shutdown_id",
-            "commit_id",
-        ],
-    )?;
-    require_exact_columns(
-        connection,
-        "shutdown_plans",
-        &[
-            "shutdown_id",
-            "phase",
-            "summary",
-            "details_state",
-            "revision",
-            "commit_id",
-        ],
-    )?;
-    require_exact_columns(
-        connection,
-        "shutdown_targets",
-        &["shutdown_id", "ordinal", "detail", "revision", "commit_id"],
-    )?;
-    require_exact_columns(
-        connection,
-        "shutdown_recovery_snapshots",
-        &["shutdown_id", "partition", "ordinal", "detail", "commit_id"],
     )?;
     require_exact_columns(
         connection,
@@ -974,13 +765,6 @@ pub fn validate_current_schema(connection: &Connection) -> Result<(), rusqlite::
         ],
     )?;
     for index in [
-        "idx_pending_obligations_partition",
-        "idx_pending_obligations_owner",
-        "idx_pending_obligations_shutdown",
-        "idx_shutdown_plans_details_state",
-        "idx_caller_attempts_scope",
-        "idx_caller_attempts_pending_kind",
-        "idx_operation_bindings_operation",
         "idx_node_events_node",
         "idx_node_events_kind",
         "idx_node_events_session",
@@ -989,6 +773,15 @@ pub fn validate_current_schema(connection: &Connection) -> Result<(), rusqlite::
         require_index(connection, index)?;
     }
     for table in [
+        "operation_bindings",
+        "caller_attempts",
+        "operation_records",
+        "pending_obligations",
+        "obligations",
+        "recovery_action_attempts",
+        "shutdown_targets",
+        "shutdown_recovery_snapshots",
+        "shutdown_plans",
         "message_projection",
         "terminal_records",
         "stop_resolutions",
@@ -1000,20 +793,14 @@ pub fn validate_current_schema(connection: &Connection) -> Result<(), rusqlite::
     require_schema_object_absent(connection, "index", "idx_message_projection_ordinal")?;
     require_schema_object_absent(connection, "index", "idx_session_projection_public_list")?;
     require_schema_object_absent(connection, "index", "idx_session_projection_public_node")?;
-    for table in ["logical_commits", "operation_bindings", "caller_attempts"] {
-        let divergent_identity_count: i64 = connection.query_row(
-            &format!(
-                "SELECT COUNT(*) FROM {table}
-                 WHERE installation_id <> (
-                     SELECT installation_id FROM store_metadata WHERE id = 1
-                 )"
-            ),
-            [],
-            |row| row.get(0),
-        )?;
-        if divergent_identity_count != 0 {
-            return Err(rusqlite::Error::InvalidQuery);
-        }
+    let divergent_identity_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM logical_commits
+         WHERE installation_id <> (SELECT installation_id FROM store_metadata WHERE id = 1)",
+        [],
+        |row| row.get(0),
+    )?;
+    if divergent_identity_count != 0 {
+        return Err(rusqlite::Error::InvalidQuery);
     }
     require_foreign_key_integrity(connection)?;
     let integrity: String =
@@ -1231,9 +1018,6 @@ mod tests {
     fn metadata() -> InitialStoreMetadata<'static> {
         InitialStoreMetadata {
             installation_id: "00000000-0000-4000-8000-000000000001",
-            cursor_hmac_key: &[1; 32],
-            operation_binding_hmac_key: &[2; 32],
-            process_instance_id: "00000000-0000-4000-8000-000000000002",
             created_at_ms: 1,
         }
     }
@@ -1246,6 +1030,7 @@ mod tests {
     fn schema_v5_evolves_to_node_events() {
         let connection = Connection::open_in_memory().unwrap();
         initialize(&connection);
+        super::schema_test::restore_v7_schema(&connection);
         connection
             .execute_batch(
                 "BEGIN IMMEDIATE;

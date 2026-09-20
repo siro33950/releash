@@ -18,7 +18,7 @@ pub(crate) trait DaemonProcessPort: Send + Sync {
     async fn spawn(&self) -> Result<String, String>;
     async fn exited(&self) -> Result<Option<DaemonExit>, String>;
     async fn terminate_and_wait(&self) -> Result<(), String>;
-    async fn request_shutdown(&self, intent: StopIntent) -> Result<ShutdownResponse, String>;
+    async fn request_shutdown(&self, intent: StopIntent) -> Result<(), String>;
 }
 
 #[cfg(feature = "desktop")]
@@ -27,12 +27,6 @@ pub(crate) trait DesktopUpdateInstaller: Send + Sync {
     async fn download(&self) -> Result<(), String>;
     async fn install(&self) -> Result<(), String>;
     fn restart(&self) -> Result<(), String>;
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum ShutdownResponse {
-    Accepted,
-    DecisionRequired(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -408,20 +402,6 @@ impl DaemonSupervision {
     pub fn reject_connection(&mut self, failure: Failure) {
         self.phase = Phase::Stopping;
         self.failure = Some(failure);
-    }
-    pub fn shutdown_response(&mut self, response: ShutdownResponse) {
-        if self.phase == Phase::Stopped {
-            return;
-        }
-        match response {
-            ShutdownResponse::Accepted => {}
-            ShutdownResponse::DecisionRequired(reason) => {
-                self.failure = Some(Failure {
-                    stage: FailureStage::Shutdown,
-                    reason,
-                });
-            }
-        }
     }
     pub fn stop_failed(&mut self, stage: FailureStage, reason: String) {
         if self.phase == Phase::Stopped && stage == FailureStage::Shutdown {

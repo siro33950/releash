@@ -157,7 +157,7 @@ async fn test_daemon停止_子がない場合は即座に完了する() {
 }
 
 #[test]
-fn test_停止応答_acceptedは受付であり他の応答と利用者判断を区別する() {
+fn test_停止応答_acceptedを受理し異なる応答を拒否する() {
     // Given
     use wire::{application_quit_outcome_dto_v1 as outcome, command_result::Command};
     let response = |variant| {
@@ -166,25 +166,11 @@ fn test_停止応答_acceptedは受付であり他の応答と利用者判断を
         })
     };
     // When / Then
-    assert_eq!(
-        shutdown_response(response(outcome::Variant::Accepted(Default::default()))).unwrap(),
-        ShutdownResponse::Accepted
-    );
-    assert!(matches!(
-        shutdown_response(response(
-            outcome::Variant::PreviousShutdownReconciliationRequired(Default::default())
-        ))
-        .unwrap(),
-        ShutdownResponse::DecisionRequired(_)
-    ));
-    for variant in [
-        outcome::Variant::RejectedBeforeCommit(Default::default()),
-        outcome::Variant::OutcomeUnknown(Default::default()),
-    ] {
-        assert!(shutdown_response(response(variant))
-            .unwrap_err()
-            .contains("Shutdown requires confirmation"));
-    }
+    shutdown_response(response(outcome::Variant::Accepted(Default::default()))).unwrap();
+    assert!(shutdown_response(Command::RequestApplicationQuit(
+        wire::ApplicationQuitOutcomeDtoV1 { variant: None },
+    ))
+    .is_err());
     assert_eq!(
         shutdown_response(Command::GetRepoPaths(Default::default())).unwrap_err(),
         "Unexpected shutdown response."

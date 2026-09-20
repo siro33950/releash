@@ -10,7 +10,6 @@ import {
 } from "react";
 import { completeClientRestoration } from "@/lib/client";
 import { getErrorMessage } from "@/lib/errorMessage";
-import { ApplicationShutdownBanner } from "./layout/ApplicationShutdownBanner";
 
 interface DaemonStatus {
 	phase: string;
@@ -30,20 +29,9 @@ export const useDesktopRestoration = () => useContext(RestorationContext);
 
 export function DaemonBoundary({ children }: { children: ReactNode }) {
 	const [status, setStatus] = useState<DaemonStatus | null>(null);
-	const [started, setStarted] = useState(false);
 	const ready = status?.phase === "ready";
 	const restoring = status?.phase === "restoring";
 	const generation = status?.connectionGeneration;
-	const [mainShutdownContainer, setMainShutdownContainer] =
-		useState<HTMLElement | null>(null);
-	const [shutdownContainer, setShutdownContainer] =
-		useState<HTMLElement | null>(null);
-	useEffect(() => {
-		if (ready)
-			setMainShutdownContainer(
-				document.getElementById("application-shutdown-banner"),
-			);
-	}, [ready]);
 	const [error, setError] = useState<string | null>(null);
 	useEffect(() => {
 		let active = true;
@@ -53,7 +41,6 @@ export function DaemonBoundary({ children }: { children: ReactNode }) {
 				if (!active) return;
 
 				setStatus(next);
-				if (next.phase === "ready") setStarted(true);
 			} catch (error) {
 				if (active) setError(getErrorMessage(error));
 			}
@@ -130,7 +117,6 @@ export function DaemonBoundary({ children }: { children: ReactNode }) {
 						{status?.phase === "backoff" && (
 							<p>Restart attempt {status.retries} / 3</p>
 						)}
-						{status?.phase === "stopping" && <div ref={setShutdownContainer} />}
 						{error && <p role="alert">{error}</p>}
 						<div className="flex gap-3">
 							{status?.retryAvailable && (
@@ -152,15 +138,6 @@ export function DaemonBoundary({ children }: { children: ReactNode }) {
 						</div>
 					</section>
 				</div>
-			)}
-			{(started || status?.phase === "stopping") && (
-				<ApplicationShutdownBanner
-					container={
-						status?.phase === "stopping"
-							? shutdownContainer
-							: mainShutdownContainer
-					}
-				/>
 			)}
 		</>
 	);

@@ -19,9 +19,15 @@ pub(crate) struct TelemetryGuard {
 
 impl Drop for TelemetryGuard {
     fn drop(&mut self) {
-        let _ = self.tracer_provider.shutdown();
-        let _ = self.meter_provider.shutdown();
-        let _ = self.logger_provider.shutdown();
+        if let Err(error) = self.tracer_provider.shutdown() {
+            log::error!("OTLP tracer provider shutdown failed: {error}");
+        }
+        if let Err(error) = self.meter_provider.shutdown() {
+            log::error!("OTLP meter provider shutdown failed: {error}");
+        }
+        if let Err(error) = self.logger_provider.shutdown() {
+            log::error!("OTLP logger provider shutdown failed: {error}");
+        }
     }
 }
 
@@ -126,6 +132,10 @@ pub(crate) fn build_resource(build_type: config::BuildType) -> Resource {
         ])
         .build()
 }
+
+#[cfg(test)]
+#[path = "telemetry_test.rs"]
+mod telemetry_tests;
 
 #[cfg(test)]
 mod tests {

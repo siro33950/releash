@@ -1422,6 +1422,7 @@ impl ExecutionStore {
     ///
     /// in-memory の active registry が唯一の情報源（engine の作業状態）。
     /// 起動時は fold ベースの reconciliation が registry を再構築する。
+    #[cfg(test)]
     pub async fn list_active(&self) -> Result<Vec<WorkflowExecutionSummary>, ExecutionStoreError> {
         let inner = self.inner.lock().await;
         let mut executions: Vec<WorkflowExecutionSummary> = inner
