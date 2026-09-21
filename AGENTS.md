@@ -71,7 +71,7 @@ Releash は、特定の作業単位や特定の道具を主語にしない。コ
 
 ## ビルド・テスト・Lint
 
-CI と同じコマンドを使う。`.github/workflows/ci.yml` を参照。
+CI と同じコマンドを使う。PR・main push の検証は `.github/workflows/ci.yml`、main の重い検証・計測は日次・手動起動の `.github/workflows/nightly.yml` を参照。
 
 - 調査・提案のみでファイルを変更しない場合、ビルドやテストは実行しない。
 - 文書のみの変更では、差分・参照先・指示の整合性を確認する。アプリケーションのビルドやテストは実行しない。
@@ -80,30 +80,59 @@ CI と同じコマンドを使う。`.github/workflows/ci.yml` を参照。
 - 実行できないチェックは理由と未検証範囲を報告し、成功扱いにしない。
 - lint が失敗した場合は、今回の変更に起因する問題を対象ファイルに限定して修正する。既存の問題は別途報告し、`pnpm lint:fix` による一括修正で範囲外の変更を混ぜない。
 
-プロジェクトルート:
+PR 層（プロジェクトルート）:
 
 ```bash
 pnpm lint
 pnpm test
 pnpm build
 pnpm test:integration
+node --test .github/scripts/workflows-test.mjs
 ```
 
-`src-tauri/`:
+PR 層（`src-tauri/`。CI では `CARGO_PROFILE_DEV_DEBUG="0"`）:
 
 ```bash
 cargo fmt --check
 cargo clippy --locked -- -D warnings
 cargo deny --locked check
-cargo build --locked
-cargo test --locked --test agent_tui_harness
+cargo clippy --locked --no-default-features --bin releash-backend -- -D warnings
 cargo test --locked
+cargo test --locked --no-default-features --lib
+cargo test --locked --no-default-features --test daemon_smoke
 ```
 
 品質ゲート（プロジェクトルート。clippy と biome を横断で走らせる）:
 
 ```bash
 qlty check --no-progress --all
+```
+
+nightly 層（プロジェクトルート。daemon の自己検証は release ビルド）:
+
+```bash
+pnpm test:performance:daemon
+pnpm exec vitest run --coverage
+```
+
+nightly 層（`src-tauri/`）:
+
+```bash
+cargo test --locked --no-default-features --features performance --lib
+cargo test --locked --features performance --test desktop_cli_install
+```
+
+Rust coverage は `llvm-tools-preview` と `cargo-llvm-cov` が必要。Linux で強制終了する子プロセスの profile を保持し、短い RPC deadline を使うテストの負荷干渉を避けるため、coverage 計測だけに環境変数を適用する（プロジェクトルート）:
+
+```bash
+(
+  export RUSTFLAGS="-C llvm-args=-runtime-counter-relocation"
+  export LLVM_PROFILE_FILE_NAME="releash-%m%c.profraw"
+  export RUST_TEST_THREADS="2"
+  python3 .github/scripts/coverage.test.py
+  cd src-tauri
+  cargo llvm-cov --locked --codecov --output-path rust-codecov.json
+)
 ```
 
 ## テスト方針

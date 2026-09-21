@@ -1,0 +1,132 @@
+name: Nightly
+
+on:
+  schedule:
+    - cron: '23 18 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.changes.outputs.run }}
+    steps:
+      - id: changes
+        uses: actions/github-script@v9
+        with:
+          script: |
+            if (context.eventName === 'workflow_dispatch') {
+              core.setOutput('run', true);
+              return;
+            }
+            const { data } = await github.rest.actions.listWorkflowRuns({
+              ...context.repo,
+              workflow_id: 'nightly.yml',
+              branch: 'main',
+              status: 'success',
+              per_page: 1,
+            });
+            core.setOutput('run', data.workflow_runs[0]?.head_sha !== context.sha);
+
+  performance:
+    needs: check
+    if: needs.check.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: src-tauri
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+      - name: Install Tauri dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+        working-directory: .
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: nightly-performance
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Performance headless unit tests
+        run: cargo test --locked --no-default-features --features performance --lib
+      - name: Performance daemon helper self-test
+        working-directory: .
+        run: pnpm test:performance:daemon
+      - name: Desktop CLI installation test
+        run: cargo test --locked --features performance --test desktop_cli_install
+
+  coverage:
+    needs: check
+    if: needs.check.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      RUSTFLAGS: -C llvm-args=-runtime-counter-relocation
+      # 親子で初期化済み profile を共有し、子の起動直後の強制終了でも破損させない。
+      LLVM_PROFILE_FILE_NAME: releash-%m%c.profraw
+      # 1並列では子テストの行出力が変わるため、計測負荷を抑える最小の2並列にする。
+      RUST_TEST_THREADS: "2"
+    steps:
+      - uses: actions/checkout@v7
+        id: checkout
+        with:
+          ref: main
+      - name: Install Tauri dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec vitest run --coverage
+      - uses: codecov/codecov-action@v7
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          override_branch: main
+          override_commit: ${{ steps.checkout.outputs.commit }}
+          files: coverage/coverage-final.json
+          flags: typescript
+          fail_ci_if_error: true
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: nightly-coverage
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Coverage process termination regression test
+        run: python3 .github/scripts/coverage.test.py
+      - run: cargo llvm-cov --locked --codecov --output-path rust-codecov.json
+        working-directory: src-tauri
+      - uses: codecov/codecov-action@v7
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          override_branch: main
+          override_commit: ${{ steps.checkout.outputs.commit }}
+          files: src-tauri/rust-codecov.json
+          flags: rust
+          fail_ci_if_error: true
