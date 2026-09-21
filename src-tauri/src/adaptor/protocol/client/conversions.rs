@@ -3075,7 +3075,6 @@ impl TryFrom<crate::usecase::repository_state::snapshot::RepositoryBranchCardsSn
             version: Some(cv(value.version)?),
             stale: Some(cv(value.stale)?),
             loading: Some(cv(value.loading)?),
-            limited: Some(cv(value.limited)?),
             branches: Some(cv(value.branches)?),
             worktree_display_groups: Some(cv(value.worktree_display_groups)?),
         })
@@ -3093,7 +3092,6 @@ impl TryFrom<crate::usecase::repository_state::snapshot::RepositoryDiffStatsSnap
             version: Some(cv(value.version)?),
             stale: Some(cv(value.stale)?),
             loading: Some(cv(value.loading)?),
-            limited: Some(cv(value.limited)?),
             diff_stats: Some(cv(value.diff_stats)?),
         })
     }
@@ -3110,29 +3108,11 @@ impl TryFrom<crate::usecase::repository_state::snapshot::RepositoryHeadDiffFileT
             version: Some(cv(value.version)?),
             stale: Some(cv(value.stale)?),
             loading: Some(cv(value.loading)?),
-            limited: Some(cv(value.limited)?),
             combined_tree: Some(cv(value.combined_tree)?),
             staged_tree: Some(cv(value.staged_tree)?),
             changes_tree: Some(cv(value.changes_tree)?),
             staged_file_count: Some(cv(value.staged_file_count)?),
             changes_file_count: Some(cv(value.changes_file_count)?),
-        })
-    }
-}
-
-impl TryFrom<crate::usecase::repository_state::snapshot::RepositorySnapshotChangedEvent>
-    for wire::RepositorySnapshotChangedEvent
-{
-    type Error = String;
-    fn try_from(
-        value: crate::usecase::repository_state::snapshot::RepositorySnapshotChangedEvent,
-    ) -> Result<Self, String> {
-        Ok(Self {
-            worktree_path: Some(cv(value.worktree_path)?),
-            version: Some(cv(value.version)?),
-            stale: Some(cv(value.stale)?),
-            loading: Some(cv(value.loading)?),
-            limited: Some(cv(value.limited)?),
         })
     }
 }
@@ -3148,7 +3128,6 @@ impl TryFrom<crate::usecase::repository_state::snapshot::RepositoryStatusSnapsho
             version: Some(cv(value.version)?),
             stale: Some(cv(value.stale)?),
             loading: Some(cv(value.loading)?),
-            limited: Some(cv(value.limited)?),
             status: Some(cv(value.status)?),
         })
     }
@@ -3522,7 +3501,6 @@ impl TryFrom<crate::usecase::code_dto::ReviewSnapshotDto> for wire::ReviewSnapsh
             version: Some(cv(value.version)?),
             stale: Some(cv(value.stale)?),
             loading: Some(cv(value.loading)?),
-            limited: Some(cv(value.limited)?),
             base: Some(cv(value.base)?),
             files: Some(cv(value.files)?),
             staged_files: Some(cv(value.staged_files)?),

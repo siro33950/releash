@@ -1435,7 +1435,6 @@ export type ReviewSnapshotDto = {
 	version: number;
 	stale: boolean;
 	loading: boolean;
-	limited: boolean;
 	base: DiffBase;
 	files: ListReviewFileEntryDto;
 	stagedFiles: ListFileStatusDto;
@@ -1982,7 +1981,6 @@ export type RepositoryBranchCardsSnapshotDto = {
 	version: number;
 	stale: boolean;
 	loading: boolean;
-	limited: boolean;
 	branches: ListBranchCardDto;
 	worktree_display_groups: WorktreeDisplayGroupsDto;
 };
@@ -2201,7 +2199,6 @@ export type RepositoryHeadDiffFileTreeSnapshotDto = {
 	version: number;
 	stale: boolean;
 	loading: boolean;
-	limited: boolean;
 	combined_tree: ListDiffTreeNodeDto;
 	staged_tree: ListDiffTreeNodeDto;
 	changes_tree: ListDiffTreeNodeDto;
@@ -2256,7 +2253,6 @@ export type RepositoryStatusSnapshotDto = {
 	version: number;
 	stale: boolean;
 	loading: boolean;
-	limited: boolean;
 	status: ListFileStatusDto;
 };
 
@@ -2264,7 +2260,6 @@ export type RepositoryDiffStatsSnapshotDto = {
 	version: number;
 	stale: boolean;
 	loading: boolean;
-	limited: boolean;
 	diff_stats: ListFileDiffStatDto;
 };
 
@@ -2357,14 +2352,6 @@ export type FileChangeEvent = {
 
 export type GitStatusChangedEvent = {
 	repo_path: string;
-};
-
-export type RepositorySnapshotChangedEvent = {
-	worktree_path: string;
-	version: number;
-	stale: boolean;
-	loading: boolean;
-	limited: boolean;
 };
 
 export type WorkflowExecutionChangedPayloadView = {
@@ -3006,7 +2993,6 @@ export interface ClientPushPayloads {
 	"file-change": FileChangeEvent;
 	"git-status-changed": GitStatusChangedEvent;
 	"repo-paths-changed": Liststring;
-	"repository-snapshot-changed": RepositorySnapshotChangedEvent;
 	"review-comments-changed": ResultString;
 	"workflow-execution-changed": WorkflowExecutionChangedPayloadView;
 	resync: null;

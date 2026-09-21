@@ -7,7 +7,6 @@ const EMPTY_SNAPSHOT: ReviewSnapshot = {
 	version: 0,
 	stale: false,
 	loading: false,
-	limited: false,
 	base: "head",
 	files: [],
 	stagedFiles: [],
@@ -27,7 +26,6 @@ export function useReviewSnapshot(
 ) {
 	const [snapshot, setSnapshot] = useState<ReviewSnapshot>(EMPTY_SNAPSHOT);
 	const [loading, setLoading] = useState(false);
-	const acceptedVersionRef = useRef<number | null>(null);
 	const activeInputKeyRef = useRef("");
 	const requestIdRef = useRef(0);
 	const snapshotInputKeyRef = useRef<string | null>(null);
@@ -36,7 +34,6 @@ export function useReviewSnapshot(
 	activeInputKeyRef.current = inputKey;
 
 	useEffect(() => {
-		acceptedVersionRef.current = null;
 		requestIdRef.current += 1;
 		snapshotInputKeyRef.current = inputKey;
 		setSnapshot({ ...EMPTY_SNAPSHOT, base: diffBase });
@@ -47,7 +44,6 @@ export function useReviewSnapshot(
 		const requestId = ++requestIdRef.current;
 		const requestInputKey = inputKey;
 		if (!rootPath) {
-			acceptedVersionRef.current = null;
 			snapshotInputKeyRef.current = requestInputKey;
 			setSnapshot({ ...EMPTY_SNAPSHOT, base: diffBase });
 			setLoading(false);
@@ -65,13 +61,6 @@ export function useReviewSnapshot(
 			) {
 				return;
 			}
-			if (
-				acceptedVersionRef.current != null &&
-				result.version < acceptedVersionRef.current
-			) {
-				return;
-			}
-			acceptedVersionRef.current = result.version;
 			snapshotInputKeyRef.current = requestInputKey;
 			setSnapshot(result);
 		} catch {
@@ -81,7 +70,6 @@ export function useReviewSnapshot(
 			) {
 				return;
 			}
-			acceptedVersionRef.current = null;
 			snapshotInputKeyRef.current = requestInputKey;
 			setSnapshot({ ...EMPTY_SNAPSHOT, base: diffBase });
 		} finally {
@@ -121,7 +109,6 @@ export function useReviewSnapshot(
 		changesFileCount: visibleSnapshot.changesFileCount,
 		branchBaseFileCount: visibleSnapshot.files.length,
 		version: visibleSnapshot.version,
-		limited: visibleSnapshot.limited,
 		loading,
 		refresh: fetchSnapshot,
 	};

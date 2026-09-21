@@ -318,7 +318,6 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 					version: 1,
 					stale: false,
 					loading: false,
-					limited: false,
 					branches: cards,
 					// backend が確定する表示グループ。fixture は作業の場だけを持つ。
 					worktree_display_groups: {

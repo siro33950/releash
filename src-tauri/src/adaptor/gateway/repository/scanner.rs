@@ -47,9 +47,6 @@ impl RepositoryScanner for DefaultRepositoryScanner {
             diff_file_tree,
             staged_diff_file_tree,
             changes_diff_file_tree,
-            // Thresholds are defined by the later review snapshot work. This issue
-            // only carries the flag through the snapshot contract.
-            limited: false,
         })
     }
 

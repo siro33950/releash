@@ -3,7 +3,6 @@ use std::sync::Arc;
 use crate::adaptor::gateway::repository::watch::{FileChangeEvent, GitStatusChangedEvent};
 use crate::adaptor::protocol::workflow::WorkflowExecutionChangedPayloadView;
 use crate::infrastructure::push::PushSink;
-use crate::usecase::repository_state::snapshot::RepositorySnapshotChangedEvent;
 
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -17,7 +16,6 @@ pub enum BackendPush<'a> {
     FileChange(FileChangeEvent),
     GitStatusChanged(GitStatusChangedEvent),
     RepoPathsChanged(&'a [String]),
-    RepositorySnapshotChanged(RepositorySnapshotChangedEvent),
     ReviewCommentsChanged(&'a str),
     WorkflowExecutionChanged(Box<WorkflowExecutionChangedPayloadView>),
 }
@@ -66,11 +64,6 @@ impl BackendPush<'_> {
                 Ok::<_, String>(wire::Liststring {
                     items: payload.to_vec()
                 })
-            ),
-            Self::RepositorySnapshotChanged(payload) => publish!(
-                "repository-snapshot-changed",
-                RepositorySnapshotChanged,
-                wire::RepositorySnapshotChangedEvent::try_from(payload)
             ),
             Self::ReviewCommentsChanged(payload) => publish!(
                 "review-comments-changed",

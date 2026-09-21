@@ -46,7 +46,6 @@ function setupMockInvoke(branches: WorktreeBranch[]) {
 				version: 1,
 				stale: false,
 				loading: false,
-				limited: false,
 				branches,
 				worktree_display_groups: displayGroups(branches),
 			});
@@ -111,7 +110,6 @@ describe("useWorktreeList", () => {
 					version: 1,
 					stale: false,
 					loading: false,
-					limited: false,
 					branches: [],
 				});
 			if (cmd === "get_cached_pr_status")
@@ -143,7 +141,6 @@ describe("useWorktreeList", () => {
 					version: 1,
 					stale: false,
 					loading: false,
-					limited: false,
 					branches: [],
 				});
 			if (cmd === "get_cached_pr_status")
@@ -220,7 +217,6 @@ describe("useWorktreeList", () => {
 					version: 1,
 					stale: false,
 					loading: false,
-					limited: false,
 					branches: [],
 				});
 			if (cmd === "get_cached_pr_status")

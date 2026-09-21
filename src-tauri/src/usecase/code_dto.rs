@@ -177,7 +177,6 @@ pub struct ReviewSnapshotDto {
     pub version: u64,
     pub stale: bool,
     pub loading: bool,
-    pub limited: bool,
     pub base: String,
     pub files: Vec<ReviewFileEntryDto>,
     pub staged_files: Vec<FileStatusDto>,
@@ -599,7 +598,6 @@ mod code_dto_serialize_tests {
             version: 4,
             stale: false,
             loading: false,
-            limited: false,
             base: "head".to_string(),
             files: vec![ReviewFileEntryDto {
                 file_id: "a.rs".to_string(),
@@ -633,6 +631,7 @@ mod code_dto_serialize_tests {
         };
         let v = serde_json::to_value(&dto).unwrap();
 
+        assert!(v.get("limited").is_none());
         assert_eq!(v["fileId"], json!(null));
         assert_eq!(v["files"][0]["fileId"], json!("a.rs"));
         assert_eq!(v["stagedFiles"][0]["path"], json!("a.rs"));

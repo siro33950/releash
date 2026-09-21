@@ -529,7 +529,6 @@ impl ReviewUsecase {
             version: snapshot.version,
             stale: snapshot.flags.stale,
             loading: snapshot.flags.loading,
-            limited: snapshot.flags.limited,
             base: base.as_str().to_string(),
             files,
             staged_files,
@@ -894,7 +893,6 @@ fn head_review_snapshot(base: ReviewBase, snapshot: &RepositorySnapshot) -> Revi
         version: snapshot.version,
         stale: snapshot.flags.stale,
         loading: snapshot.flags.loading,
-        limited: snapshot.flags.limited,
         base: base.as_str().to_string(),
         files,
         staged_files,
@@ -1265,7 +1263,6 @@ pub(crate) mod tests_support {
                     flags: SnapshotFlags {
                         stale: false,
                         loading: false,
-                        limited: false,
                     },
                     status: Vec::new(),
                     diff_stats: Vec::new(),
@@ -1730,7 +1727,6 @@ mod tests {
             flags: SnapshotFlags {
                 stale,
                 loading: false,
-                limited: false,
             },
             status: Vec::new(),
             diff_stats: Vec::new(),
@@ -1917,7 +1913,6 @@ mod tests {
             SnapshotFlags {
                 stale: false,
                 loading: false,
-                limited: false,
             },
             status,
             vec![diff_stat(path, 1, 0, 1, 0)],
@@ -2033,7 +2028,6 @@ mod tests {
                 SnapshotFlags {
                     stale: true,
                     loading: true,
-                    limited: true,
                 },
                 vec![
                     file_status("src/lib.rs", "modified", "none"),
@@ -2055,7 +2049,7 @@ mod tests {
         assert_eq!(dto.version, 42);
         assert!(dto.stale);
         assert!(dto.loading);
-        assert!(dto.limited);
+        assert!(serde_json::to_value(&dto).unwrap().get("limited").is_none());
         assert_eq!(dto.files.len(), 2);
         assert_eq!(dto.files[0].file_id, "src/lib.rs");
         assert_eq!(dto.files[0].additions, 2);
@@ -2077,7 +2071,6 @@ mod tests {
             SnapshotFlags {
                 stale: false,
                 loading: false,
-                limited: false,
             },
             vec![
                 file_status("staged.rs", "modified", "none"),
@@ -2117,7 +2110,6 @@ mod tests {
                 SnapshotFlags {
                     stale: true,
                     loading: false,
-                    limited: true,
                 },
                 Vec::new(),
                 Vec::new(),
@@ -2155,7 +2147,7 @@ mod tests {
         assert_eq!(dto.version, 55);
         assert!(dto.stale);
         assert!(!dto.loading);
-        assert!(dto.limited);
+        assert!(serde_json::to_value(&dto).unwrap().get("limited").is_none());
         assert_eq!(dto.base, "branch-base");
         assert_eq!(dto.files.len(), 2);
         assert_eq!(dto.files[0].file_id, "src/feature.rs");
@@ -2270,6 +2262,60 @@ mod tests {
         assert_eq!(staged.original, "head\n");
         assert_eq!(staged.modified, "staged\n");
         assert_eq!(staged.source, ReviewTextSource::Diff);
+    }
+
+    #[test]
+    fn test_差分取得_一覧がstaleでなくても番号不一致ならstaleを返す() {
+        for section in ["changes", "staged"] {
+            for (snapshot_version, expected_stale) in [
+                (Some(10), true),
+                (Some(0), true),
+                (Some(1), false),
+                (None, false),
+            ] {
+                // Given
+                let snapshot = snapshot_with_single_status(1, "file.txt", "modified", "modified");
+                assert!(!snapshot.flags.stale);
+                let code = FakeReviewCode::new()
+                    .with_source_bytes(
+                        "/repo/file.txt",
+                        ReviewContentSource::Head,
+                        present_text("head\n"),
+                    )
+                    .with_source_bytes(
+                        "/repo/file.txt",
+                        ReviewContentSource::Staged,
+                        present_text("staged\n"),
+                    )
+                    .with_source_bytes(
+                        "/repo/file.txt",
+                        ReviewContentSource::WorkingTree,
+                        present_text("working\n"),
+                    );
+                let usecase = usecase_with_code(vec![snapshot], code);
+
+                // When
+                let view = text_view(
+                    usecase
+                        .get_review_file_view(
+                            "/repo",
+                            ReviewTarget::Path("file.txt".to_string()),
+                            section,
+                            "head",
+                            None,
+                            snapshot_version,
+                        )
+                        .unwrap(),
+                );
+
+                // Then
+                assert_eq!(view.version, 1);
+                assert_eq!(
+                    view.stale, expected_stale,
+                    "{section}: {snapshot_version:?}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -3574,7 +3620,6 @@ mod tests {
             version: 1,
             stale: false,
             loading: false,
-            limited: false,
             base: "branch-base".to_string(),
             files: vec![ReviewFileEntryDto {
                 file_id: "src/app.rs".to_string(),
@@ -3611,7 +3656,6 @@ mod tests {
                 SnapshotFlags {
                     stale: false,
                     loading: false,
-                    limited: false,
                 },
                 vec![
                     file_status("ignored.txt", "none", "ignored"),

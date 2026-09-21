@@ -292,7 +292,7 @@ fn workflow_payload() -> WorkflowExecutionChangedPayloadView {
 }
 
 #[tokio::test]
-async fn test_backend通知_8イベントがconnectだけへ届く() {
+async fn test_backend通知_7イベントがconnectだけへ届く() {
     // Given
     let fixture = Fixture::new().await;
     let mut socket = fixture.connect().await;
@@ -303,7 +303,6 @@ async fn test_backend通知_8イベントがconnectだけへ届く() {
         "file-change",
         "git-status-changed",
         "repo-paths-changed",
-        "repository-snapshot-changed",
         "review-comments-changed",
         "workflow-execution-changed",
     ];
@@ -324,13 +323,6 @@ async fn test_backend通知_8イベントがconnectだけへ届く() {
     let git = GitStatusChangedEvent {
         repo_path: "/repo".into(),
     };
-    let snapshot = RepositorySnapshotChangedEvent {
-        worktree_path: "/repo".into(),
-        version: 2,
-        stale: false,
-        loading: false,
-        limited: false,
-    };
     let paths = vec!["/repo".into()];
     let workflow = workflow_payload();
     // When
@@ -342,7 +334,6 @@ async fn test_backend通知_8イベントがconnectだけへ届く() {
         BackendPush::FileChange(file),
         BackendPush::GitStatusChanged(git),
         BackendPush::RepoPathsChanged(&paths),
-        BackendPush::RepositorySnapshotChanged(snapshot),
         BackendPush::ReviewCommentsChanged("*"),
         BackendPush::WorkflowExecutionChanged(Box::new(workflow.clone())),
     ];
@@ -358,7 +349,6 @@ async fn test_backend通知_8イベントがconnectだけへ届く() {
             json!({"watcher_id":1,"path":"/repo/file","kind":"change"}),
             json!({"repo_path":"/repo"}),
             json!(["/repo"]),
-            json!({"worktree_path":"/repo","version":2,"stale":false,"loading":false,"limited":false}),
             json!("*"),
             serde_json::to_value(&workflow).unwrap(),
         ];

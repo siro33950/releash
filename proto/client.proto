@@ -4,13 +4,14 @@ import "client_options.proto";
 
 
 message Push {
+  reserved 6;
+  reserved "repository_snapshot_changed";
   oneof event {
     AgentSessionChangedPayload agent_session_changed = 1;
     Unit branch_list_sync = 2;
     FileChangeEvent file_change = 3;
     GitStatusChangedEvent git_status_changed = 4;
     Liststring repo_paths_changed = 5;
-    RepositorySnapshotChangedEvent repository_snapshot_changed = 6;
     ResultString review_comments_changed = 7;
     WorkflowExecutionChangedPayloadView workflow_execution_changed = 8;
     Unit resync = 9;
@@ -1345,10 +1346,11 @@ message GetReviewSnapshotRequest {
 }
 
 message ReviewSnapshotDto {
+  reserved 4;
+  reserved "limited";
   optional uint64 version = 1 [json_name = "version", (json_required) = true];
   optional bool stale = 2 [json_name = "stale", (json_required) = true];
   optional bool loading = 3 [json_name = "loading", (json_required) = true];
-  optional bool limited = 4 [json_name = "limited", (json_required) = true];
   optional DiffBase base = 5 [json_name = "base", (json_required) = true];
   optional ListReviewFileEntryDto files = 6 [json_name = "files", (json_required) = true];
   optional ListFileStatusDto staged_files = 7 [json_name = "stagedFiles", (json_required) = true];
@@ -2115,10 +2117,11 @@ message ListBranchesWithStatusSnapshotRequest {
 }
 
 message RepositoryBranchCardsSnapshotDto {
+  reserved 4;
+  reserved "limited";
   optional uint64 version = 1 [json_name = "version", (json_required) = true];
   optional bool stale = 2 [json_name = "stale", (json_required) = true];
   optional bool loading = 3 [json_name = "loading", (json_required) = true];
-  optional bool limited = 4 [json_name = "limited", (json_required) = true];
   optional ListBranchCardDto branches = 5 [json_name = "branches", (json_required) = true];
   optional WorktreeDisplayGroupsDto worktree_display_groups = 6 [json_name = "worktree_display_groups", (json_required) = true];
 }
@@ -2782,10 +2785,11 @@ message GetHeadDiffFileTreeSnapshotRequest {
 }
 
 message RepositoryHeadDiffFileTreeSnapshotDto {
+  reserved 4;
+  reserved "limited";
   optional uint64 version = 1 [json_name = "version", (json_required) = true];
   optional bool stale = 2 [json_name = "stale", (json_required) = true];
   optional bool loading = 3 [json_name = "loading", (json_required) = true];
-  optional bool limited = 4 [json_name = "limited", (json_required) = true];
   optional ListDiffTreeNodeDto combined_tree = 5 [json_name = "combined_tree", (json_required) = true];
   optional ListDiffTreeNodeDto staged_tree = 6 [json_name = "staged_tree", (json_required) = true];
   optional ListDiffTreeNodeDto changes_tree = 7 [json_name = "changes_tree", (json_required) = true];
@@ -2897,10 +2901,11 @@ message GetGitStatusSnapshotRequest {
 }
 
 message RepositoryStatusSnapshotDto {
+  reserved 4;
+  reserved "limited";
   optional uint64 version = 1 [json_name = "version", (json_required) = true];
   optional bool stale = 2 [json_name = "stale", (json_required) = true];
   optional bool loading = 3 [json_name = "loading", (json_required) = true];
-  optional bool limited = 4 [json_name = "limited", (json_required) = true];
   optional ListFileStatusDto status = 5 [json_name = "status", (json_required) = true];
 }
 
@@ -2913,10 +2918,11 @@ message GetStatusDiffStatsSnapshotRequest {
 }
 
 message RepositoryDiffStatsSnapshotDto {
+  reserved 4;
+  reserved "limited";
   optional uint64 version = 1 [json_name = "version", (json_required) = true];
   optional bool stale = 2 [json_name = "stale", (json_required) = true];
   optional bool loading = 3 [json_name = "loading", (json_required) = true];
-  optional bool limited = 4 [json_name = "limited", (json_required) = true];
   optional ListFileDiffStatDto diff_stats = 5 [json_name = "diff_stats", (json_required) = true];
 }
 
@@ -3120,14 +3126,6 @@ message FileChangeEvent {
 
 message GitStatusChangedEvent {
   optional string repo_path = 1 [json_name = "repo_path", (json_required) = true];
-}
-
-message RepositorySnapshotChangedEvent {
-  optional string worktree_path = 1 [json_name = "worktree_path", (json_required) = true];
-  optional uint64 version = 2 [json_name = "version", (json_required) = true];
-  optional bool stale = 3 [json_name = "stale", (json_required) = true];
-  optional bool loading = 4 [json_name = "loading", (json_required) = true];
-  optional bool limited = 5 [json_name = "limited", (json_required) = true];
 }
 
 message WorkflowExecutionChangedPayloadView {
