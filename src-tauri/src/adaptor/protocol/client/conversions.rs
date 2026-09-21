@@ -809,102 +809,6 @@ impl TryFrom<crate::usecase::external_editor::dto::EditorInfoDto> for wire::Edit
     }
 }
 
-impl TryFrom<crate::usecase::workflow::dto::ExecutionInterruptionReasonDto>
-    for wire::ExecutionInterruptionReasonDto
-{
-    type Error = String;
-    fn try_from(
-        value: crate::usecase::workflow::dto::ExecutionInterruptionReasonDto,
-    ) -> Result<Self, String> {
-        Ok(Self {
-            value: Some(match value {
-                crate::usecase::workflow::dto::ExecutionInterruptionReasonDto::Crash => {
-                    wire::execution_interruption_reason_dto::Value::Crash as i32
-                }
-                crate::usecase::workflow::dto::ExecutionInterruptionReasonDto::Stale => {
-                    wire::execution_interruption_reason_dto::Value::Stale as i32
-                }
-                crate::usecase::workflow::dto::ExecutionInterruptionReasonDto::Stop => {
-                    wire::execution_interruption_reason_dto::Value::Stop as i32
-                }
-                crate::usecase::workflow::dto::ExecutionInterruptionReasonDto::Orphan => {
-                    wire::execution_interruption_reason_dto::Value::Orphan as i32
-                }
-            }),
-        })
-    }
-}
-
-impl TryFrom<String> for wire::ExecutionInterruptionReasonDto {
-    type Error = String;
-    fn try_from(value: String) -> Result<Self, String> {
-        Ok(Self {
-            value: Some(match value.as_str() {
-                "crash" => wire::execution_interruption_reason_dto::Value::Crash as i32,
-                "stale" => wire::execution_interruption_reason_dto::Value::Stale as i32,
-                "stop" => wire::execution_interruption_reason_dto::Value::Stop as i32,
-                "orphan" => wire::execution_interruption_reason_dto::Value::Orphan as i32,
-                _ => return Err(format!("Invalid ExecutionInterruptionReasonDto: {value}")),
-            }),
-        })
-    }
-}
-
-impl TryFrom<&str> for wire::ExecutionInterruptionReasonDto {
-    type Error = String;
-    fn try_from(value: &str) -> Result<Self, String> {
-        cv(value.to_owned())
-    }
-}
-
-impl TryFrom<crate::adaptor::protocol::workflow::ExecutionInterruptionReasonView>
-    for wire::ExecutionInterruptionReasonView
-{
-    type Error = String;
-    fn try_from(
-        value: crate::adaptor::protocol::workflow::ExecutionInterruptionReasonView,
-    ) -> Result<Self, String> {
-        Ok(Self {
-            value: Some(match value {
-                crate::adaptor::protocol::workflow::ExecutionInterruptionReasonView::Crash => {
-                    wire::execution_interruption_reason_view::Value::Crash as i32
-                }
-                crate::adaptor::protocol::workflow::ExecutionInterruptionReasonView::Stale => {
-                    wire::execution_interruption_reason_view::Value::Stale as i32
-                }
-                crate::adaptor::protocol::workflow::ExecutionInterruptionReasonView::Stop => {
-                    wire::execution_interruption_reason_view::Value::Stop as i32
-                }
-                crate::adaptor::protocol::workflow::ExecutionInterruptionReasonView::Orphan => {
-                    wire::execution_interruption_reason_view::Value::Orphan as i32
-                }
-            }),
-        })
-    }
-}
-
-impl TryFrom<String> for wire::ExecutionInterruptionReasonView {
-    type Error = String;
-    fn try_from(value: String) -> Result<Self, String> {
-        Ok(Self {
-            value: Some(match value.as_str() {
-                "crash" => wire::execution_interruption_reason_view::Value::Crash as i32,
-                "stale" => wire::execution_interruption_reason_view::Value::Stale as i32,
-                "stop" => wire::execution_interruption_reason_view::Value::Stop as i32,
-                "orphan" => wire::execution_interruption_reason_view::Value::Orphan as i32,
-                _ => return Err(format!("Invalid ExecutionInterruptionReasonView: {value}")),
-            }),
-        })
-    }
-}
-
-impl TryFrom<&str> for wire::ExecutionInterruptionReasonView {
-    type Error = String;
-    fn try_from(value: &str) -> Result<Self, String> {
-        cv(value.to_owned())
-    }
-}
-
 impl TryFrom<crate::usecase::workflow::dto::ExecutionOriginDto> for wire::ExecutionOriginDto {
     type Error = String;
     fn try_from(value: crate::usecase::workflow::dto::ExecutionOriginDto) -> Result<Self, String> {
@@ -1020,17 +924,11 @@ impl TryFrom<crate::usecase::workflow::dto::ExecutionStatusDto> for wire::Execut
                 crate::usecase::workflow::dto::ExecutionStatusDto::Running => {
                     wire::execution_status_dto::Value::Running as i32
                 }
-                crate::usecase::workflow::dto::ExecutionStatusDto::WaitingApproval => {
-                    wire::execution_status_dto::Value::WaitingApproval as i32
-                }
                 crate::usecase::workflow::dto::ExecutionStatusDto::Completed => {
                     wire::execution_status_dto::Value::Completed as i32
                 }
                 crate::usecase::workflow::dto::ExecutionStatusDto::Aborted => {
                     wire::execution_status_dto::Value::Aborted as i32
-                }
-                crate::usecase::workflow::dto::ExecutionStatusDto::Interrupted => {
-                    wire::execution_status_dto::Value::Interrupted as i32
                 }
             }),
         })
@@ -1043,10 +941,8 @@ impl TryFrom<String> for wire::ExecutionStatusDto {
         Ok(Self {
             value: Some(match value.as_str() {
                 "running" => wire::execution_status_dto::Value::Running as i32,
-                "waiting_approval" => wire::execution_status_dto::Value::WaitingApproval as i32,
                 "completed" => wire::execution_status_dto::Value::Completed as i32,
                 "aborted" => wire::execution_status_dto::Value::Aborted as i32,
-                "interrupted" => wire::execution_status_dto::Value::Interrupted as i32,
                 _ => return Err(format!("Invalid ExecutionStatusDto: {value}")),
             }),
         })
@@ -1072,17 +968,11 @@ impl TryFrom<crate::adaptor::protocol::workflow::ExecutionStatusView>
                 crate::adaptor::protocol::workflow::ExecutionStatusView::Running => {
                     wire::execution_status_view::Value::Running as i32
                 }
-                crate::adaptor::protocol::workflow::ExecutionStatusView::WaitingApproval => {
-                    wire::execution_status_view::Value::WaitingApproval as i32
-                }
                 crate::adaptor::protocol::workflow::ExecutionStatusView::Completed => {
                     wire::execution_status_view::Value::Completed as i32
                 }
                 crate::adaptor::protocol::workflow::ExecutionStatusView::Aborted => {
                     wire::execution_status_view::Value::Aborted as i32
-                }
-                crate::adaptor::protocol::workflow::ExecutionStatusView::Interrupted => {
-                    wire::execution_status_view::Value::Interrupted as i32
                 }
             }),
         })
@@ -1095,10 +985,8 @@ impl TryFrom<String> for wire::ExecutionStatusView {
         Ok(Self {
             value: Some(match value.as_str() {
                 "running" => wire::execution_status_view::Value::Running as i32,
-                "waiting_approval" => wire::execution_status_view::Value::WaitingApproval as i32,
                 "completed" => wire::execution_status_view::Value::Completed as i32,
                 "aborted" => wire::execution_status_view::Value::Aborted as i32,
-                "interrupted" => wire::execution_status_view::Value::Interrupted as i32,
                 _ => return Err(format!("Invalid ExecutionStatusView: {value}")),
             }),
         })
@@ -4327,8 +4215,6 @@ impl TryFrom<crate::usecase::workflow::dto::WorkflowExecutionSummaryDto>
             updated_at: Some(cv(value.updated_at)?),
             completed_at: value.completed_at.map(cv).transpose()?,
             error_reason: value.error_reason.map(cv).transpose()?,
-            interruption_reason: value.interruption_reason.map(cv).transpose()?,
-            resume_from_node: value.resume_from_node.map(cv).transpose()?,
             total_token_usage: Some(cv(value.total_token_usage)?),
         })
     }
@@ -4352,8 +4238,6 @@ impl TryFrom<crate::adaptor::protocol::workflow::WorkflowExecutionView>
             updated_at: Some(cv(value.updated_at)?),
             completed_at: value.completed_at.map(cv).transpose()?,
             error_reason: value.error_reason.map(cv).transpose()?,
-            interruption_reason: value.interruption_reason.map(cv).transpose()?,
-            resume_from_node: value.resume_from_node.map(cv).transpose()?,
             total_token_usage: Some(cv(value.total_token_usage)?),
             node_executions: Some(cv(value.node_executions)?),
             artifacts: Some(cv(value.artifacts)?),
@@ -4724,8 +4608,6 @@ impl TryFrom<String> for wire::WorkspaceHistoryStatus {
                 "waiting" => wire::workspace_history_status::Value::Waiting as i32,
                 "aborted" => wire::workspace_history_status::Value::Aborted as i32,
                 "completed" => wire::workspace_history_status::Value::Completed as i32,
-                "waiting_approval" => wire::workspace_history_status::Value::WaitingApproval as i32,
-                "interrupted" => wire::workspace_history_status::Value::Interrupted as i32,
                 _ => return Err(format!("Invalid WorkspaceHistoryStatus: {value}")),
             }),
         })

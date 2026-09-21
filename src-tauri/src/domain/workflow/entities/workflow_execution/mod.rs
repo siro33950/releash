@@ -23,9 +23,9 @@ use crate::domain::workflow::services::{
     reference as workflow_reference, routing as workflow_routing, transition as workflow_transition,
 };
 use crate::domain::workflow::value_objects::{
-    ExecutionInterruptionReason, ExecutionOrigin, ExecutionParentRef, ExecutionTreeLaunch,
-    NodeCompletionSignal, NodeCompletionSignalState, NodeDefinition, NodeExecutionFailureKind,
-    NodeHistoryEntry, NodeKindName, OnFailure, RuntimeArtifact, RuntimeExecutionState, TokenUsage,
+    ExecutionOrigin, ExecutionParentRef, ExecutionTreeLaunch, NodeCompletionSignal,
+    NodeCompletionSignalState, NodeDefinition, NodeExecutionFailureKind, NodeHistoryEntry,
+    NodeKindName, OnFailure, RuntimeArtifact, RuntimeExecutionState, TokenUsage,
     WorkflowDefinition,
 };
 use crate::domain::workflow::FailureDisposition;
@@ -456,7 +456,7 @@ impl RuntimeNodeExecution {
 pub struct WorkflowExecutionRestore {
     pub id: String,
     pub workflow: WorkflowDefinition,
-    pub lifecycle: WorkflowExecutionLifecycleRestore,
+    pub state: RuntimeExecutionState,
     pub node_history: Vec<NodeHistoryEntry>,
     pub workflow_defaults: WorkflowDefaults,
     pub worktree_path: String,
@@ -473,21 +473,12 @@ pub struct WorkflowExecutionRestore {
     pub current_stall_observations: Vec<NodeStallObservation>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct WorkflowExecutionLifecycleRestore {
-    state: RuntimeExecutionState,
-    interruption_reason: Option<ExecutionInterruptionReason>,
-}
-
 impl Default for WorkflowExecutionRestore {
     fn default() -> Self {
         Self {
             id: String::new(),
             workflow: WorkflowDefinition::default(),
-            lifecycle: WorkflowExecutionLifecycleRestore {
-                state: RuntimeExecutionState::Running,
-                interruption_reason: None,
-            },
+            state: RuntimeExecutionState::Running,
             node_history: Vec::new(),
             workflow_defaults: WorkflowDefaults,
             worktree_path: String::new(),
@@ -506,12 +497,9 @@ impl Default for WorkflowExecutionRestore {
     }
 }
 
-/// The three lifecycle state sets used by the workflow lifecycle specification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecutionStateSet {
     Active,
-    #[cfg(test)]
-    Resumable,
     Finished,
 }
 
@@ -578,13 +566,7 @@ pub enum ProviderStopRejection {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransitionRejection {
     MissingRepositoryRoot,
-    #[cfg(test)]
-    AlreadyStopped,
     NotActive,
-    #[cfg(test)]
-    NotResumable,
-    #[cfg(test)]
-    NotWaitingApproval,
     ArtifactNotAccepted,
 }
 
@@ -601,8 +583,6 @@ pub enum CanonicalNodeFact {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TurnCompletionApplication {
     Live,
-    #[cfg(test)]
-    RecordOnly,
     Superseded,
 }
 
@@ -776,7 +756,6 @@ struct PendingRestart {
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorkflowExecution {
     state: RuntimeExecutionState,
-    interruption_reason: Option<ExecutionInterruptionReason>,
     runtime: WorkflowExecutionView,
     pending_restart: Option<PendingRestart>,
     delegates: HashMap<String, DelegateRuntime>,
@@ -831,36 +810,17 @@ impl std::ops::DerefMut for WorkflowExecution {
 impl WorkflowExecution {
     /// Restores a lifecycle snapshot before replaying subsequent durable facts.
     #[cfg(test)]
-    pub fn restore(
-        state: RuntimeExecutionState,
-        interruption_reason: Option<ExecutionInterruptionReason>,
-    ) -> Self {
+    pub fn restore(state: RuntimeExecutionState) -> Self {
         Self::restore_runtime(WorkflowExecutionRestore {
-            lifecycle: WorkflowExecutionLifecycleRestore {
-                state,
-                interruption_reason,
-            },
+            state,
             ..WorkflowExecutionRestore::default()
         })
-    }
-
-    pub fn lifecycle_from_state(state: RuntimeExecutionState) -> WorkflowExecutionLifecycleRestore {
-        #[cfg(test)]
-        let interruption_reason = matches!(state, RuntimeExecutionState::Interrupted)
-            .then_some(ExecutionInterruptionReason::Crash);
-        #[cfg(not(test))]
-        let interruption_reason = None;
-        WorkflowExecutionLifecycleRestore {
-            state,
-            interruption_reason,
-        }
     }
 
     /// Restores the entire execution aggregate from a durable projection.
     pub fn restore_runtime(restore: WorkflowExecutionRestore) -> Self {
         Self {
-            state: restore.lifecycle.state,
-            interruption_reason: restore.lifecycle.interruption_reason,
+            state: restore.state,
             pending_restart: None,
             delegates: HashMap::new(),
             pending_empty_fanout: None,
@@ -2145,7 +2105,7 @@ impl WorkflowExecution {
             return None;
         }
         self.state = RuntimeExecutionState::Running;
-        self.interruption_reason = None;
+
         let parent_scope_id = target
             .parent
             .as_ref()
@@ -4212,10 +4172,6 @@ impl WorkflowExecution {
     pub fn state_set(&self) -> ExecutionStateSet {
         match self.state {
             RuntimeExecutionState::Running => ExecutionStateSet::Active,
-            #[cfg(test)]
-            RuntimeExecutionState::WaitingApproval => ExecutionStateSet::Active,
-            #[cfg(test)]
-            RuntimeExecutionState::Interrupted => ExecutionStateSet::Resumable,
             RuntimeExecutionState::Completed | RuntimeExecutionState::Aborted => {
                 ExecutionStateSet::Finished
             }
@@ -4230,107 +4186,20 @@ impl WorkflowExecution {
         self.state_set() == ExecutionStateSet::Finished
     }
 
-    #[cfg(test)]
-    pub fn stop(&mut self) -> TransitionOutcome {
-        match self.state_set() {
-            ExecutionStateSet::Active => {
-                self.set_interrupted(ExecutionInterruptionReason::Stop);
-                TransitionOutcome::Applied
-            }
-            ExecutionStateSet::Resumable => {
-                TransitionOutcome::Rejected(TransitionRejection::AlreadyStopped)
-            }
-            ExecutionStateSet::Finished => {
-                TransitionOutcome::Rejected(TransitionRejection::NotActive)
-            }
-        }
-    }
-
-    #[cfg(test)]
-    pub fn interrupt(&mut self, reason: ExecutionInterruptionReason) -> TransitionOutcome {
-        match self.state_set() {
-            ExecutionStateSet::Active => {
-                self.set_interrupted(reason);
-                TransitionOutcome::Applied
-            }
-            ExecutionStateSet::Resumable if self.interruption_reason == Some(reason) => {
-                TransitionOutcome::AlreadyApplied
-            }
-            ExecutionStateSet::Resumable => {
-                self.interruption_reason = Some(reason);
-                TransitionOutcome::Applied
-            }
-            ExecutionStateSet::Finished => TransitionOutcome::NotApplicable,
-        }
-    }
-
-    #[cfg(test)]
-    pub fn resume(&mut self) -> TransitionOutcome {
-        match self.state_set() {
-            ExecutionStateSet::Resumable => {
-                self.state = RuntimeExecutionState::Running;
-                self.interruption_reason = None;
-                TransitionOutcome::Applied
-            }
-            ExecutionStateSet::Active => {
-                TransitionOutcome::Rejected(TransitionRejection::NotResumable)
-            }
-            ExecutionStateSet::Finished => {
-                TransitionOutcome::Rejected(TransitionRejection::NotResumable)
-            }
-        }
-    }
-
     pub fn abort(&mut self) -> TransitionOutcome {
         match self.state_set() {
             ExecutionStateSet::Active => {
                 self.state = RuntimeExecutionState::Aborted;
-                self.interruption_reason = None;
-                TransitionOutcome::Applied
-            }
-            #[cfg(test)]
-            ExecutionStateSet::Resumable => {
-                self.state = RuntimeExecutionState::Aborted;
-                self.interruption_reason = None;
+
                 TransitionOutcome::Applied
             }
             ExecutionStateSet::Finished => TransitionOutcome::NotApplicable,
         }
-    }
-
-    #[cfg(test)]
-    pub fn request_approval(&mut self) -> TransitionOutcome {
-        match &self.state {
-            RuntimeExecutionState::Running => {
-                self.state = RuntimeExecutionState::WaitingApproval;
-                TransitionOutcome::Applied
-            }
-            RuntimeExecutionState::WaitingApproval => TransitionOutcome::AlreadyApplied,
-            _ => TransitionOutcome::Rejected(TransitionRejection::NotActive),
-        }
-    }
-
-    #[cfg(test)]
-    pub fn approve(&mut self) -> TransitionOutcome {
-        match &self.state {
-            RuntimeExecutionState::WaitingApproval => {
-                self.state = RuntimeExecutionState::Running;
-                TransitionOutcome::Applied
-            }
-            _ => TransitionOutcome::Rejected(TransitionRejection::NotWaitingApproval),
-        }
-    }
-
-    #[cfg(test)]
-    pub fn reject(&mut self) -> TransitionOutcome {
-        self.approve()
     }
 
     pub fn apply_turn_completion(&self, fact: CanonicalNodeFact) -> TurnCompletionDecision {
         let application = match self.state_set() {
             ExecutionStateSet::Active => TurnCompletionApplication::Live,
-            #[cfg(test)]
-            ExecutionStateSet::Resumable => TurnCompletionApplication::RecordOnly,
             ExecutionStateSet::Finished => TurnCompletionApplication::Superseded,
         };
         TurnCompletionDecision { application, fact }
@@ -4340,13 +4209,7 @@ impl WorkflowExecution {
         match &self.state {
             RuntimeExecutionState::Running => {
                 self.state = RuntimeExecutionState::Completed;
-                self.interruption_reason = None;
-                TransitionOutcome::Applied
-            }
-            #[cfg(test)]
-            RuntimeExecutionState::WaitingApproval => {
-                self.state = RuntimeExecutionState::Completed;
-                self.interruption_reason = None;
+
                 TransitionOutcome::Applied
             }
             RuntimeExecutionState::Completed => TransitionOutcome::AlreadyApplied,
@@ -4379,12 +4242,6 @@ impl WorkflowExecution {
         }
         outcome
     }
-
-    #[cfg(test)]
-    fn set_interrupted(&mut self, reason: ExecutionInterruptionReason) {
-        self.state = RuntimeExecutionState::Interrupted;
-        self.interruption_reason = Some(reason);
-    }
 }
 
 fn transition_to_replay(outcome: TransitionOutcome) -> ReplayOutcome {
@@ -4401,16 +4258,13 @@ mod tests {
     use super::*;
 
     fn aggregate(state: RuntimeExecutionState) -> WorkflowExecution {
-        WorkflowExecution::restore(state, None)
+        WorkflowExecution::restore(state)
     }
 
     fn states() -> [(ExecutionStateSet, RuntimeExecutionState); 3] {
         [
             (ExecutionStateSet::Active, RuntimeExecutionState::Running),
-            (
-                ExecutionStateSet::Resumable,
-                RuntimeExecutionState::Interrupted,
-            ),
+            (ExecutionStateSet::Finished, RuntimeExecutionState::Aborted),
             (
                 ExecutionStateSet::Finished,
                 RuntimeExecutionState::Completed,
@@ -4418,11 +4272,8 @@ mod tests {
         ]
     }
 
-    fn active_states() -> [RuntimeExecutionState; 2] {
-        [
-            RuntimeExecutionState::Running,
-            RuntimeExecutionState::WaitingApproval,
-        ]
+    fn active_states() -> [RuntimeExecutionState; 1] {
+        [RuntimeExecutionState::Running]
     }
 
     fn finished_states() -> [RuntimeExecutionState; 2] {
@@ -4500,98 +4351,48 @@ mod tests {
             assert_eq!(aggregate(state).state_set(), expected);
         }
         assert_eq!(
-            aggregate(RuntimeExecutionState::WaitingApproval).state_set(),
-            ExecutionStateSet::Active
-        );
-        assert_eq!(
             aggregate(RuntimeExecutionState::Aborted).state_set(),
             ExecutionStateSet::Finished
         );
     }
 
     #[test]
-    fn operation_state_matrix_stop_resume_and_abort() {
-        for state in active_states() {
-            let mut active = aggregate(state);
-            assert_eq!(active.stop(), TransitionOutcome::Applied);
-            assert_eq!(
-                active.stop(),
-                TransitionOutcome::Rejected(TransitionRejection::AlreadyStopped)
-            );
-        }
-        assert_eq!(
-            aggregate(RuntimeExecutionState::Interrupted).stop(),
-            TransitionOutcome::Rejected(TransitionRejection::AlreadyStopped)
-        );
-        for state in finished_states() {
-            let mut finished = aggregate(state);
-            assert_eq!(
-                finished.stop(),
-                TransitionOutcome::Rejected(TransitionRejection::NotActive)
-            );
-        }
-
-        for state in active_states() {
-            let mut active = aggregate(state);
-            assert_eq!(
-                active.resume(),
-                TransitionOutcome::Rejected(TransitionRejection::NotResumable)
-            );
-        }
-        let mut resumable = aggregate(RuntimeExecutionState::Interrupted);
-        assert_eq!(resumable.resume(), TransitionOutcome::Applied);
-        assert_eq!(
-            resumable.resume(),
-            TransitionOutcome::Rejected(TransitionRejection::NotResumable)
-        );
-        for state in finished_states() {
-            assert_eq!(
-                aggregate(state).resume(),
-                TransitionOutcome::Rejected(TransitionRejection::NotResumable)
-            );
-        }
-
-        for state in active_states()
-            .into_iter()
-            .chain([RuntimeExecutionState::Interrupted])
-        {
-            let mut execution = aggregate(state);
-            assert_eq!(execution.abort(), TransitionOutcome::Applied);
-            assert_eq!(execution.abort(), TransitionOutcome::NotApplicable);
-        }
-        for state in finished_states() {
-            assert_eq!(aggregate(state).abort(), TransitionOutcome::NotApplicable);
-        }
-    }
-
-    #[test]
-    fn operation_state_matrix_approval() {
-        for operation in [
-            WorkflowExecution::approve as fn(&mut WorkflowExecution) -> TransitionOutcome,
-            WorkflowExecution::reject,
-        ] {
-            let mut waiting = aggregate(RuntimeExecutionState::WaitingApproval);
-            assert_eq!(operation(&mut waiting), TransitionOutcome::Applied);
-            for state in [
+    fn test_workflow状態遷移_実行中だけ完了とabortへ遷移する() {
+        // Given / When / Then
+        for (state, complete, abort) in [
+            (
                 RuntimeExecutionState::Running,
-                RuntimeExecutionState::Interrupted,
-            ]
-            .into_iter()
-            .chain(finished_states())
-            {
-                assert_eq!(
-                    operation(&mut aggregate(state)),
-                    TransitionOutcome::Rejected(TransitionRejection::NotWaitingApproval)
-                );
-            }
+                TransitionOutcome::Applied,
+                TransitionOutcome::Applied,
+            ),
+            (
+                RuntimeExecutionState::Completed,
+                TransitionOutcome::AlreadyApplied,
+                TransitionOutcome::NotApplicable,
+            ),
+            (
+                RuntimeExecutionState::Aborted,
+                TransitionOutcome::NotApplicable,
+                TransitionOutcome::NotApplicable,
+            ),
+        ] {
+            let mut completed = aggregate(state.clone());
+            assert_eq!(completed.complete(), complete);
+            let expected = if state == RuntimeExecutionState::Aborted {
+                &state
+            } else {
+                &RuntimeExecutionState::Completed
+            };
+            assert_eq!(completed.state(), expected);
+            let mut aborted = aggregate(state.clone());
+            assert_eq!(aborted.abort(), abort);
+            let expected = if state == RuntimeExecutionState::Completed {
+                &state
+            } else {
+                &RuntimeExecutionState::Aborted
+            };
+            assert_eq!(aborted.state(), expected);
         }
-
-        let mut approval = aggregate(RuntimeExecutionState::Running);
-        assert_eq!(approval.request_approval(), TransitionOutcome::Applied);
-        assert_eq!(
-            approval.request_approval(),
-            TransitionOutcome::AlreadyApplied
-        );
     }
 
     #[test]
@@ -4599,10 +4400,6 @@ mod tests {
         for (state, application) in active_states()
             .into_iter()
             .map(|state| (state, TurnCompletionApplication::Live))
-            .chain([(
-                RuntimeExecutionState::Interrupted,
-                TurnCompletionApplication::RecordOnly,
-            )])
             .chain(
                 finished_states()
                     .into_iter()
@@ -4620,24 +4417,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn interrupt_cells_are_closed() {
-        let mut running = aggregate(RuntimeExecutionState::Running);
-        assert_eq!(
-            running.interrupt(ExecutionInterruptionReason::Crash),
-            TransitionOutcome::Applied
-        );
-        assert_eq!(
-            running.interrupt(ExecutionInterruptionReason::Crash),
-            TransitionOutcome::AlreadyApplied
-        );
-        assert_eq!(
-            aggregate(RuntimeExecutionState::Completed)
-                .interrupt(ExecutionInterruptionReason::Crash),
-            TransitionOutcome::NotApplicable
-        );
-    }
-
     fn restored_execution(state: RuntimeExecutionState) -> WorkflowExecution {
         WorkflowExecution::restore_runtime(WorkflowExecutionRestore {
             id: "execution-1".to_string(),
@@ -4650,7 +4429,7 @@ mod tests {
                 entry: "implement".to_string(),
                 ..Default::default()
             },
-            lifecycle: WorkflowExecution::lifecycle_from_state(state),
+            state,
             ..WorkflowExecutionRestore::default()
         })
     }
@@ -5756,40 +5535,6 @@ mod tests {
             TransitionOutcome::AlreadyApplied
         );
         assert_eq!(execution.node_executions.len(), 2);
-    }
-
-    #[test]
-    fn interrupted_turn_completion_records_canonical_fact_without_resuming() {
-        let mut execution = restored_execution(RuntimeExecutionState::Running);
-        let node_execution_id = execution
-            .begin_node_attempt(
-                "implement".to_string(),
-                NodeKindName::Session,
-                1,
-                None,
-                "node-execution-1".to_string(),
-                10.0,
-            )
-            .unwrap();
-        assert_eq!(
-            execution.interrupt(ExecutionInterruptionReason::Crash),
-            TransitionOutcome::Applied
-        );
-
-        execution
-            .derive_leaf_failed(
-                &node_execution_id,
-                "exit 1".to_string(),
-                NodeExecutionFailureKind::ValidationFailure,
-                12.0,
-            )
-            .unwrap();
-
-        assert_eq!(execution.state(), &RuntimeExecutionState::Interrupted);
-        assert_eq!(
-            execution.node_executions()[0].status,
-            RuntimeNodeExecutionStatus::Failed
-        );
     }
 
     #[test]

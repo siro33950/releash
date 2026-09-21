@@ -544,8 +544,6 @@ fn execution_summary(
         updated_at,
         completed_at,
         error_reason: record.error_reason,
-        interruption_reason: record.interruption_reason,
-        resume_from_node: record.resume_from_node,
         total_token_usage: record.total_token_usage,
     })
 }

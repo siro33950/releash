@@ -1694,8 +1694,6 @@ export type WorkflowExecutionView = {
 	updatedAt: number;
 	completedAt: number | null;
 	errorReason: string | null;
-	interruptionReason: ExecutionInterruptionReasonView | null;
-	resumeFromNode: string | null;
 	totalTokenUsage: TokenUsageView;
 	nodeExecutions: ListNodeExecutionView;
 	artifacts: ListArtifactView;
@@ -1703,20 +1701,9 @@ export type WorkflowExecutionView = {
 	approvalTarget: ApprovalTargetView | null;
 };
 
-export type ExecutionStatusView =
-	| "running"
-	| "waiting_approval"
-	| "completed"
-	| "aborted"
-	| "interrupted";
+export type ExecutionStatusView = "running" | "completed" | "aborted";
 
 export type ExecutionOriginView = "desktop_ui" | "cli" | "agent" | "api";
-
-export type ExecutionInterruptionReasonView =
-	| "crash"
-	| "stale"
-	| "stop"
-	| "orphan";
 
 export type TokenUsageView = {
 	inputTokens: number;
@@ -2056,9 +2043,7 @@ export type WorkspaceHistoryStatus =
 	| "failed"
 	| "waiting"
 	| "aborted"
-	| "completed"
-	| "waiting_approval"
-	| "interrupted";
+	| "completed";
 
 export type ListWorktreeEntryDto = Array<WorktreeEntryDto>;
 
@@ -2310,25 +2295,12 @@ export type WorkflowExecutionSummaryDto = {
 	updatedAt: number;
 	completedAt?: number;
 	errorReason?: string;
-	interruptionReason?: ExecutionInterruptionReasonDto;
-	resumeFromNode?: string;
 	totalTokenUsage: TokenUsageDto;
 };
 
-export type ExecutionStatusDto =
-	| "running"
-	| "waiting_approval"
-	| "completed"
-	| "aborted"
-	| "interrupted";
+export type ExecutionStatusDto = "running" | "completed" | "aborted";
 
 export type ExecutionOriginDto = "desktop_ui" | "cli" | "agent" | "api";
-
-export type ExecutionInterruptionReasonDto =
-	| "crash"
-	| "stale"
-	| "stop"
-	| "orphan";
 
 export type TokenUsageDto = {
 	inputTokens: number;

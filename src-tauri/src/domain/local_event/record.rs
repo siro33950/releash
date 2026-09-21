@@ -1,6 +1,4 @@
-use crate::domain::workflow::{
-    ExecutionInterruptionReason, ExecutionOrigin, ExecutionStatus, TokenUsage as WorkflowTokenUsage,
-};
+use crate::domain::workflow::{ExecutionOrigin, ExecutionStatus, TokenUsage as WorkflowTokenUsage};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentSessionProviderRecord {
@@ -60,7 +58,5 @@ pub struct WorkflowExecutionMetadataRecord {
     pub updated_at_bits: u64,
     pub completed_at_bits: Option<u64>,
     pub error_reason: Option<String>,
-    pub interruption_reason: Option<ExecutionInterruptionReason>,
-    pub resume_from_node: Option<String>,
     pub total_token_usage: WorkflowTokenUsage,
 }

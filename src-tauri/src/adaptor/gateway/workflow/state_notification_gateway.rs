@@ -47,8 +47,6 @@ pub(crate) fn workflow_execution_from_runtime_snapshot(
         updated_at: state.updated_at,
         completed_at: derived.status.is_terminal().then_some(state.updated_at),
         error_reason: state.error_reason.clone(),
-        interruption_reason: None,
-        resume_from_node: None,
         total_token_usage: state.total_token_usage,
         node_executions,
         artifacts: derived.artifacts,
@@ -60,12 +58,8 @@ pub(crate) fn workflow_execution_from_runtime_snapshot(
 fn execution_status(state: &RuntimeExecutionState) -> ExecutionStatus {
     match state {
         RuntimeExecutionState::Running => ExecutionStatus::Running,
-        #[cfg(test)]
-        RuntimeExecutionState::WaitingApproval => ExecutionStatus::WaitingApproval,
         RuntimeExecutionState::Completed => ExecutionStatus::Completed,
         RuntimeExecutionState::Aborted => ExecutionStatus::Aborted,
-        #[cfg(test)]
-        RuntimeExecutionState::Interrupted => ExecutionStatus::Interrupted,
     }
 }
 

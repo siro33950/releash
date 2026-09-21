@@ -231,8 +231,6 @@ pub fn derive_read_model(tree: &FoldedTree) -> WorkflowExecutionReadModel {
         updated_at: aggregate.updated_at,
         completed_at: status.is_finished().then_some(aggregate.updated_at),
         error_reason: aggregate.error_reason.clone(),
-        interruption_reason: None,
-        resume_from_node: None,
         total_token_usage: event_replay::derive_total_token_usage(&nodes),
         node_executions: nodes,
         artifacts: fields.artifacts,

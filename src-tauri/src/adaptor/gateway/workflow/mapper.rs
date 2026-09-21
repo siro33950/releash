@@ -1,32 +1,9 @@
 #[cfg(test)]
 use crate::adaptor::gateway::workflow::event as workflow_event;
-#[cfg(test)]
-use crate::adaptor::gateway::workflow::execution_store::WorkflowExecutionMetadata;
 use crate::adaptor::gateway::workflow::facet as gateway_facet;
 use crate::domain::workflow as domain;
 #[cfg(test)]
 use crate::usecase::workflow::ports::WorkflowEventDraft;
-
-#[cfg(test)]
-pub(crate) fn workflow_execution_record_to_metadata(
-    execution: &domain::WorkflowExecutionRecord,
-) -> WorkflowExecutionMetadata {
-    WorkflowExecutionMetadata {
-        execution_id: execution.execution_id.clone(),
-        workflow_name: execution.workflow_name.clone(),
-        status: execution.status,
-        worktree_path: execution.worktree_path.clone(),
-        current_node: execution.current_node.clone(),
-        created_from: execution.created_from,
-        started_at: execution.started_at,
-        updated_at: execution.updated_at,
-        completed_at: execution.completed_at,
-        error_reason: execution.error_reason.clone(),
-        interruption_reason: execution.interruption_reason,
-        resume_from_node: execution.resume_from_node.clone(),
-        total_token_usage: execution.total_token_usage.clone(),
-    }
-}
 
 pub(crate) fn domain_workflow_to_schema(
     definition: &domain::WorkflowDefinition,
@@ -251,51 +228,8 @@ fn domain_schema_to_schema(
 mod tests {
     use super::*;
     use crate::domain::workflow::{
-        ExecutionOrigin, ExecutionStatus, FacetRefs, FanoutSpec, InputParam, ItemsSource,
-        NodeDefinition, NodeKind, SessionSpec, TokenUsage,
+        FacetRefs, FanoutSpec, InputParam, ItemsSource, NodeDefinition, NodeKind, SessionSpec,
     };
-
-    #[test]
-    fn execution_metadata_serializes_with_canonical_vocabulary() {
-        let execution = domain::WorkflowExecutionRecord {
-            execution_id: "00000000-0000-4000-8000-000000000001".to_string(),
-            workflow_name: "wf".to_string(),
-            status: ExecutionStatus::Running,
-            worktree_path: "/repo".to_string(),
-            current_node: None,
-            created_from: ExecutionOrigin::DesktopUi,
-            started_at: 1.0,
-            updated_at: 2.0,
-            completed_at: None,
-            error_reason: None,
-            interruption_reason: None,
-            resume_from_node: None,
-            total_token_usage: TokenUsage {
-                input_tokens: 3,
-                output_tokens: 5,
-            },
-        };
-        let metadata = workflow_execution_record_to_metadata(&execution);
-        let value = serde_json::to_value(metadata).unwrap();
-
-        assert_eq!(
-            value,
-            serde_json::json!({
-                "executionId": "00000000-0000-4000-8000-000000000001",
-                "workflowName": "wf",
-                "status": "running",
-                "worktreePath": "/repo",
-                "createdFrom": "desktop_ui",
-                "startedAt": 1.0,
-                "updatedAt": 2.0,
-                "totalTokenUsage": {
-                    "inputTokens": 3,
-                    "outputTokens": 5
-                }
-            })
-        );
-        assert!(value.get("task").is_none());
-    }
 
     #[test]
     fn workflow_summary_serializes_like_existing_wire_shape() {

@@ -1,4 +1,4 @@
-use super::{ExecutionInterruptionReason, ExecutionOrigin, ExecutionStatus, TokenUsage};
+use super::{ExecutionOrigin, ExecutionStatus, TokenUsage};
 use crate::domain::workflow::error::WorkflowError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,13 +20,6 @@ impl ExecutionStatusFilter {
     }
 }
 
-#[cfg(test)]
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ExecutionListFilter {
-    pub status: Option<ExecutionStatusFilter>,
-    pub worktree_path: Option<String>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WorkflowPageRequest {
     pub offset: usize,
@@ -37,24 +30,6 @@ impl WorkflowPageRequest {
     pub const fn new(offset: usize, limit: usize) -> Self {
         Self { offset, limit }
     }
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, PartialEq)]
-pub struct WorkflowExecutionRecord {
-    pub execution_id: String,
-    pub workflow_name: String,
-    pub status: ExecutionStatus,
-    pub worktree_path: String,
-    pub current_node: Option<String>,
-    pub created_from: ExecutionOrigin,
-    pub started_at: f64,
-    pub updated_at: f64,
-    pub completed_at: Option<f64>,
-    pub error_reason: Option<String>,
-    pub interruption_reason: Option<ExecutionInterruptionReason>,
-    pub resume_from_node: Option<String>,
-    pub total_token_usage: TokenUsage,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -69,8 +44,6 @@ pub struct WorkflowExecutionSummary {
     pub updated_at: f64,
     pub completed_at: Option<f64>,
     pub error_reason: Option<String>,
-    pub interruption_reason: Option<ExecutionInterruptionReason>,
-    pub resume_from_node: Option<String>,
     pub total_token_usage: TokenUsage,
 }
 

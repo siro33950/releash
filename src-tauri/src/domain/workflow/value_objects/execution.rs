@@ -5,34 +5,21 @@ use std::collections::HashSet;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecutionStatus {
     Running,
-    #[cfg(test)]
-    WaitingApproval,
     Completed,
     Aborted,
-    #[cfg(test)]
-    Interrupted,
 }
 
 impl ExecutionStatus {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Running => "running",
-            #[cfg(test)]
-            Self::WaitingApproval => "waiting_approval",
             Self::Completed => "completed",
             Self::Aborted => "aborted",
-            #[cfg(test)]
-            Self::Interrupted => "interrupted",
         }
     }
 
     pub fn is_active(self) -> bool {
-        match self {
-            Self::Running => true,
-            #[cfg(test)]
-            Self::WaitingApproval => true,
-            _ => false,
-        }
+        self == Self::Running
     }
 
     /// 実行を再開できない最終状態かどうか。
@@ -45,54 +32,16 @@ impl ExecutionStatus {
         self.is_finished()
     }
 
-    pub fn is_resumable(self) -> bool {
-        #[cfg(test)]
-        if self == Self::Interrupted {
-            return true;
-        }
-        false
-    }
-
     pub fn can_stop(self) -> bool {
         self.is_active()
     }
 
     pub fn can_resume(self) -> bool {
-        self == Self::Running || self.is_resumable()
+        self.is_active()
     }
 
     pub fn can_abort(self) -> bool {
-        self.is_active() || self.is_resumable()
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExecutionInterruptionReason {
-    Crash,
-    Stale,
-    Stop,
-    Orphan,
-}
-
-impl ExecutionInterruptionReason {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Crash => "crash",
-            Self::Stale => "stale",
-            Self::Stop => "stop",
-            Self::Orphan => "orphan",
-        }
-    }
-
-    #[cfg(test)]
-    pub fn from_reason(reason: &str) -> Option<Self> {
-        match reason {
-            "crash" => Some(Self::Crash),
-            "stale" => Some(Self::Stale),
-            "stop" => Some(Self::Stop),
-            "orphan" => Some(Self::Orphan),
-            _ => None,
-        }
+        self.is_active()
     }
 }
 
@@ -162,8 +111,6 @@ pub struct WorkflowExecution {
     pub updated_at: f64,
     pub completed_at: Option<f64>,
     pub error_reason: Option<String>,
-    pub interruption_reason: Option<ExecutionInterruptionReason>,
-    pub resume_from_node: Option<String>,
     pub total_token_usage: TokenUsage,
     pub node_executions: Vec<NodeExecution>,
     pub artifacts: Vec<Artifact>,
@@ -193,14 +140,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn execution_status_reports_active_states() {
-        assert!(ExecutionStatus::Running.is_active());
-        assert!(ExecutionStatus::WaitingApproval.is_active());
-        assert!(!ExecutionStatus::Completed.is_active());
-        assert!(!ExecutionStatus::Interrupted.is_finished());
-        assert!(ExecutionStatus::Interrupted.is_resumable());
-        assert!(ExecutionStatus::Completed.is_finished());
-        assert_eq!(ExecutionStatus::Interrupted.as_str(), "interrupted");
+    fn test_workflow状態_実行中と完了とabortの語彙と操作可否を保つ() {
+        // Given / When / Then
+        for (status, name, active) in [
+            (ExecutionStatus::Running, "running", true),
+            (ExecutionStatus::Completed, "completed", false),
+            (ExecutionStatus::Aborted, "aborted", false),
+        ] {
+            assert_eq!(status.as_str(), name);
+            assert_eq!(status.is_active(), active);
+            assert_eq!(status.is_finished(), !active);
+            assert_eq!(status.is_terminal(), !active);
+            assert_eq!(status.can_stop(), active);
+            assert_eq!(status.can_resume(), active);
+            assert_eq!(status.can_abort(), active);
+        }
     }
 
     #[test]
@@ -219,37 +173,6 @@ mod tests {
             );
         }
         assert!(ExecutionOrigin::from_public_value("remote").is_err());
-    }
-
-    #[test]
-    fn execution_command_permission_matrix_matches_the_typed_contract() {
-        let cases = [
-            (ExecutionStatus::Running, true, true, true),
-            (ExecutionStatus::Completed, false, false, false),
-            (ExecutionStatus::Aborted, false, false, false),
-        ];
-
-        for (status, can_stop, can_resume, can_abort) in cases {
-            assert_eq!(status.can_stop(), can_stop, "stop from {status:?}");
-            assert_eq!(status.can_resume(), can_resume, "resume from {status:?}");
-            assert_eq!(status.can_abort(), can_abort, "abort from {status:?}");
-        }
-    }
-
-    #[test]
-    fn interruption_reason_uses_canonical_event_vocabulary() {
-        for reason in [
-            ExecutionInterruptionReason::Crash,
-            ExecutionInterruptionReason::Stale,
-            ExecutionInterruptionReason::Stop,
-            ExecutionInterruptionReason::Orphan,
-        ] {
-            assert_eq!(
-                ExecutionInterruptionReason::from_reason(reason.as_str()),
-                Some(reason)
-            );
-        }
-        assert_eq!(ExecutionInterruptionReason::from_reason("legacy"), None);
     }
 
     #[test]
@@ -285,8 +208,6 @@ mod tests {
             updated_at: 2.0,
             completed_at: None,
             error_reason: None,
-            interruption_reason: None,
-            resume_from_node: None,
             total_token_usage: TokenUsage::default(),
             node_executions: vec![
                 node("review-1", "review", 1),

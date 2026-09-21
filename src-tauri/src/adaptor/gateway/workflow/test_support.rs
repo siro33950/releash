@@ -213,7 +213,6 @@ fn synthesized_metadata_events(execution: &WorkflowExecutionMetadata) -> Vec<Wor
             });
         }
         ExecutionStatus::Running => {}
-        unsupported => panic!("unsupported synthesized terminal status: {unsupported:?}"),
     }
     events
 }

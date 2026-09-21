@@ -40,10 +40,8 @@ pub enum WorkflowGetOutputResponse {
 #[serde(rename_all = "snake_case")]
 pub enum ExecutionStatusView {
     Running,
-    WaitingApproval,
     Completed,
     Aborted,
-    Interrupted,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -53,15 +51,6 @@ pub enum ExecutionOriginView {
     Cli,
     Agent,
     Api,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ExecutionInterruptionReasonView {
-    Crash,
-    Stale,
-    Stop,
-    Orphan,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -208,8 +197,6 @@ pub struct WorkflowExecutionView {
     pub updated_at: f64,
     pub completed_at: Option<f64>,
     pub error_reason: Option<String>,
-    pub interruption_reason: Option<ExecutionInterruptionReasonView>,
-    pub resume_from_node: Option<String>,
     pub total_token_usage: TokenUsageView,
     pub node_executions: Vec<NodeExecutionView>,
     pub artifacts: Vec<ArtifactView>,
@@ -232,7 +219,7 @@ mod tests {
         WorkflowExecutionView {
             id: "execution-1".to_string(),
             workflow_name: "review".to_string(),
-            status: ExecutionStatusView::Interrupted,
+            status: ExecutionStatusView::Running,
             current_node: Some("review".to_string()),
             worktree_path: "/repo".to_string(),
             created_from: ExecutionOriginView::Cli,
@@ -240,8 +227,6 @@ mod tests {
             updated_at: 2.0,
             completed_at: None,
             error_reason: None,
-            interruption_reason: Some(ExecutionInterruptionReasonView::Stop),
-            resume_from_node: Some("review".to_string()),
             total_token_usage: TokenUsageView::default(),
             node_executions: Vec::new(),
             artifacts: vec![ArtifactView {
@@ -259,10 +244,10 @@ mod tests {
     fn workflow_execution_uses_canonical_camel_case_boundary() {
         let value = serde_json::to_value(execution()).unwrap();
         assert_eq!(value["id"], "execution-1");
-        assert_eq!(value["status"], "interrupted");
+        assert_eq!(value["status"], "running");
         assert_eq!(value["createdFrom"], "cli");
-        assert_eq!(value["interruptionReason"], "stop");
-        assert_eq!(value["resumeFromNode"], "review");
+        assert!(value.get("interruptionReason").is_none());
+        assert!(value.get("resumeFromNode").is_none());
         assert_eq!(value["artifacts"][0]["nodeName"], "request");
         let keys = value
             .as_object()
@@ -281,9 +266,7 @@ mod tests {
                 "errorReason",
                 "fanouts",
                 "id",
-                "interruptionReason",
                 "nodeExecutions",
-                "resumeFromNode",
                 "startedAt",
                 "status",
                 "totalTokenUsage",

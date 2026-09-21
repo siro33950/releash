@@ -29,9 +29,7 @@ impl WorkflowEvent {
             | Self::StallObserved { execution_id, .. }
             | Self::StallCleared { execution_id, .. }
             | Self::ExecutionCompleted { execution_id, .. }
-            | Self::ExecutionAborted { execution_id, .. }
-            | Self::ExecutionInterrupted { execution_id, .. }
-            | Self::ExecutionResumed { execution_id, .. } => execution_id,
+            | Self::ExecutionAborted { execution_id, .. } => execution_id,
         }
     }
 
@@ -57,9 +55,7 @@ impl WorkflowEvent {
             | Self::StallObserved { timestamp, .. }
             | Self::StallCleared { timestamp, .. }
             | Self::ExecutionCompleted { timestamp, .. }
-            | Self::ExecutionAborted { timestamp, .. }
-            | Self::ExecutionInterrupted { timestamp, .. }
-            | Self::ExecutionResumed { timestamp, .. } => *timestamp,
+            | Self::ExecutionAborted { timestamp, .. } => *timestamp,
         }
     }
 }

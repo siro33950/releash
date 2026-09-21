@@ -122,11 +122,8 @@ pub struct WorkflowRuntimeHost {
     command_completion_observers: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
     /// node_execution_id → shutdown reason consumed by the completion observer.
     command_shutdown_intents: Arc<Mutex<HashMap<String, ActiveCommandShutdownIntent>>>,
-    /// Startup handoff replay may advance canonical workflow state but must
-    /// never activate the next provider/command node in the recovery pass.
-    recovery_effect_suppression: Arc<Mutex<HashSet<String>>>,
     startup_recovery_lock: Arc<Mutex<()>>,
-    /// active な WorkflowExecutionMetadata の管理および execution metadata の永続化を担う Execution Store。
+    /// active な WorkflowExecutionMetadata を管理する Execution Store。
     /// worktree_path → active execution_id の secondary index は Execution Store 内で保持する。
     execution_store: Arc<ExecutionStore>,
     workflow_resolver: Arc<dyn WorkflowDefinitionResolver>,
@@ -359,8 +356,6 @@ impl WorkflowRuntimeHost {
                 updated_at: model.updated_at,
                 completed_at: model.completed_at,
                 error_reason: model.error_reason.clone(),
-                interruption_reason: model.interruption_reason,
-                resume_from_node: model.resume_from_node.clone(),
                 total_token_usage: model.total_token_usage.clone(),
             };
             self.execution_store
@@ -410,7 +405,6 @@ impl WorkflowRuntimeHost {
     pub(crate) fn new_canonical(
         workflow_resolver: Arc<dyn WorkflowDefinitionResolver>,
         worktree_resolver: Arc<dyn ManagedWorktreeResolver>,
-        data_dir: Option<std::path::PathBuf>,
         workspace_query: Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
         agent_session_launch: Arc<AgentSessionLaunchUsecase>,
         agent_session_initial_instruction: Arc<AgentSessionInitialInstructionUsecase>,
@@ -422,7 +416,7 @@ impl WorkflowRuntimeHost {
         Self::with_execution_store(
             workflow_resolver,
             worktree_resolver,
-            Arc::new(ExecutionStore::new_canonical(data_dir, workspace_query)),
+            Arc::new(ExecutionStore::new_canonical(workspace_query)),
             Arc::new(ProviderWorkflowAgentSessionPort::new(
                 agent_session_launch,
                 agent_session_initial_instruction,
@@ -451,7 +445,6 @@ impl WorkflowRuntimeHost {
             active_command_executions: Arc::new(Mutex::new(HashMap::new())),
             command_completion_observers: Arc::new(Mutex::new(HashMap::new())),
             command_shutdown_intents: Arc::new(Mutex::new(HashMap::new())),
-            recovery_effect_suppression: Arc::new(Mutex::new(HashSet::new())),
             startup_recovery_lock: Arc::new(Mutex::new(())),
             execution_store,
             workflow_resolver,
@@ -521,8 +514,6 @@ impl WorkflowRuntimeHost {
                 updated_at: now,
                 completed_at: None,
                 error_reason: None,
-                interruption_reason: None,
-                resume_from_node: None,
                 total_token_usage: crate::domain::workflow::TokenUsage::default(),
             })
             .await
@@ -598,7 +589,7 @@ impl WorkflowRuntimeHost {
         let mut execution = crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
             id: execution_id.clone(),
             workflow: workflow.clone(),
-            lifecycle: DomainWorkflowExecution::lifecycle_from_state(RuntimeExecutionState::Running),
+            state: RuntimeExecutionState::Running,
             node_history: Vec::new(),
             workflow_defaults,
             created_from,
@@ -698,8 +689,6 @@ impl WorkflowRuntimeHost {
                     updated_at: model.updated_at,
                     completed_at: model.completed_at,
                     error_reason: model.error_reason.clone(),
-                    interruption_reason: model.interruption_reason,
-                    resume_from_node: model.resume_from_node.clone(),
                     total_token_usage: model.total_token_usage.clone(),
                 };
                 let metadata = match self
@@ -802,12 +791,7 @@ impl WorkflowRuntimeHost {
             .await
             .insert(execution_id.clone(), facet_contents);
 
-        // 以降の副作用で失敗した場合は Execution Store reservation を確実に撤回する helper。
-        // Spec issues-1011 finding 9: reservation 撤回専用 API (`cancel_reservation`) を使い、
-        // 失敗した起動を completed 一覧（terminal entry）に残さない。撤回自体の失敗は
-        // warn を出した上で reservation を completed_at=now の Failed として最低限 metadata に
-        // 残し、Execution Store と driver の状態スキューを抑える。
-        // 撤回 helper は最終的な Result を返し、呼出側で start_workflow の Err に伝播させる。
+        // 起動失敗時に reservation を撤回する。撤回自体の失敗は warn に記録する。
         let rollback_execution_id = execution_id.clone();
         let rollback_reservation = |reason: String| async move {
             if let Err(rs_err) = self
@@ -1008,7 +992,7 @@ impl WorkflowRuntimeHost {
             &worktree_path,
             &snapshot,
             Some(NodeOutcome::StartNodes(
-                snapshot.clone(),
+                Box::new(snapshot.clone()),
                 vec![NodeStart::Leaf(restarted.leaf)],
             )),
         )
@@ -1209,13 +1193,6 @@ impl WorkflowRuntimeHost {
         self.executions.lock().await.remove(execution_id);
         self.release_execution_facet_contents(execution_id).await;
         Ok(())
-    }
-
-    async fn recovery_effects_suppressed(&self, execution_id: &str) -> bool {
-        self.recovery_effect_suppression
-            .lock()
-            .await
-            .contains(execution_id)
     }
 
     /// `execution_id` から `RuntimeCommitSnapshot` を取得する。
@@ -2070,10 +2047,10 @@ impl WorkflowRuntimeHost {
         }
     }
 
-    /// [04] post-commit projection phase: required event append 後に Execution Store の
-    /// active projection / terminal metadata を snapshot に揃える。
+    /// [04] post-commit projection phase: required event append 後に snapshot の状態を反映する。
+    /// Running は Execution Store の active projection を更新し、Completed / Aborted は active から除外する。
     /// append-only event fact が command の最初の不可逆な可視 commit point であり、
-    /// Execution Store metadata はその projection として同期する。
+    /// Execution Store は active な execution の projection を保持する。
     async fn sync_state_after_required_event_commit(
         &self,
         launched_as: ExecutionTreeLaunch,
@@ -2185,7 +2162,7 @@ impl WorkflowRuntimeHost {
             .await
         {
             // Required events are the SQLite commit authority.  The
-            // ExecutionStore/JSON view is a rebuildable post-commit
+            // ExecutionStore in-memory view is a rebuildable post-commit
             // projection; its failure must not reverse an accepted command.
             log::warn!(
                 "workflow {execution_id}: derived execution projection refresh failed after canonical commit: {e}"
@@ -2399,10 +2376,10 @@ impl WorkflowRuntimeHost {
             )
             .await?;
         let outcome = if !leaves.is_empty() {
-            Some(NodeOutcome::StartNodes(snapshot.clone(), leaves))
+            Some(NodeOutcome::StartNodes(Box::new(snapshot.clone()), leaves))
         } else if treatment_applied {
             // ignore 前進が leaf 起動なしで完了へ到達した場合も finalize を通す。
-            Some(NodeOutcome::Persist(snapshot.clone()))
+            Some(NodeOutcome::Persist)
         } else {
             None
         };
@@ -2426,14 +2403,8 @@ impl WorkflowRuntimeHost {
         worktree_path: &str,
         outcome: NodeOutcome,
     ) -> Result<(), WorkflowRuntimeError> {
-        if self
-            .recovery_effects_suppressed(&outcome.snapshot().execution_id)
-            .await
-        {
-            return Ok(());
-        }
         match outcome {
-            NodeOutcome::Persist(_) => Ok(()),
+            NodeOutcome::Persist => Ok(()),
             NodeOutcome::StartNodes(snapshot, leaves) => {
                 if let Err(e) =
                     Box::pin(self.start_nodes(app, &snapshot.execution_id, worktree_path, leaves))
@@ -2715,6 +2686,11 @@ mod workflow_host_tests {
                             && matches!(record.fact, NodeFact::ApprovalGranted(_))));
                 }
                 observed.extend(take_workflow_execution_broadcasts(&mut broadcasts));
+                assert!(host
+                    .execution_store
+                    .active_execution_snapshot(&execution_id)
+                    .await
+                    .is_none());
                 let completed = &observed.last().unwrap().workflow_execution;
                 assert_eq!(
                     completed.status,
@@ -4973,7 +4949,16 @@ nodes:
             // Then: cache は両方を保持し、workflow registry は workflow だけを保持する
             assert!(host.get_state_by_execution_id(session_id).await.is_some());
             assert!(host.get_state_by_execution_id(&workflow_id).await.is_some());
-            assert_eq!(host.execution_store.list_active().await.unwrap().len(), 1);
+            assert!(host
+                .execution_store
+                .active_execution_snapshot(&workflow_id)
+                .await
+                .is_some());
+            assert!(host
+                .execution_store
+                .active_execution_snapshot(session_id)
+                .await
+                .is_none());
             let second = host
                 .start_resolved_workflow(
                     &app,
@@ -6148,8 +6133,6 @@ nodes:
                     updated_at: model.updated_at,
                     completed_at: model.completed_at,
                     error_reason: model.error_reason,
-                    interruption_reason: model.interruption_reason,
-                    resume_from_node: model.resume_from_node,
                     total_token_usage: model.total_token_usage,
                 })
                 .await
@@ -6240,6 +6223,12 @@ nodes:
                 persisted_node_status(&fixture),
                 NodeExecutionStatus::Aborted
             );
+            assert!(fixture
+                .host
+                .execution_store
+                .active_execution_snapshot(&fixture.execution_id)
+                .await
+                .is_none());
             wait_for_single_terminal_stop(&fixture).await;
         }
 
@@ -6347,7 +6336,11 @@ nodes:
                     .len(),
                 before
             );
-            assert!(host.execution_store.list_active().await.unwrap().is_empty());
+            assert!(host
+                .execution_store
+                .active_execution_snapshot(session_id)
+                .await
+                .is_none());
         }
 
         fn append_started_session_tree(
@@ -6485,11 +6478,9 @@ nodes:
             assert!(matches!(error, WorkflowRuntimeError::SessionStore(_)));
             assert!(host
                 .execution_store
-                .list_active()
+                .active_execution_snapshot(VALID_TREE_ID)
                 .await
-                .unwrap()
-                .iter()
-                .any(|execution| execution.execution_id == VALID_TREE_ID));
+                .is_some());
             assert_eq!(
                 workflow_fact_log::read_tree_records(&store, VALID_TREE_ID)
                     .unwrap()
@@ -6698,3 +6689,7 @@ mod secret_redaction_tests;
 #[cfg(test)]
 #[path = "workflow_host/shutdown_test.rs"]
 mod shutdown_tests;
+
+#[cfg(test)]
+#[path = "workflow_host_test.rs"]
+mod workflow_host_persistence_tests;

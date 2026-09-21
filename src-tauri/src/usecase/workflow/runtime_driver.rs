@@ -20,27 +20,21 @@ use crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot;
 
 pub(crate) enum NodeOutcome {
     /// 起動すべき runtime は無い（完了・承認待ち・並走子待ち）。
-    Persist(RuntimeCommitSnapshot),
+    Persist,
     /// 合成子の準備要求と葉 runtime の起動要求。
-    StartNodes(RuntimeCommitSnapshot, Vec<NodeStart>),
-}
-
-impl NodeOutcome {
-    pub(crate) fn snapshot(&self) -> &RuntimeCommitSnapshot {
-        match self {
-            Self::Persist(snapshot) | Self::StartNodes(snapshot, _) => snapshot,
-        }
-    }
+    StartNodes(Box<RuntimeCommitSnapshot>, Vec<NodeStart>),
 }
 
 pub(crate) fn node_outcome_from_advance(
     execution: &WorkflowExecution,
     decision: ExecutionAdvanceDecision,
 ) -> Result<NodeOutcome, crate::usecase::workflow::runtime_error::WorkflowRuntimeError> {
-    let snapshot = RuntimeCommitSnapshot::from_execution(execution)?;
     Ok(match decision {
-        ExecutionAdvanceDecision::Persist => NodeOutcome::Persist(snapshot),
-        ExecutionAdvanceDecision::StartNodes(leaves) => NodeOutcome::StartNodes(snapshot, leaves),
+        ExecutionAdvanceDecision::Persist => NodeOutcome::Persist,
+        ExecutionAdvanceDecision::StartNodes(leaves) => NodeOutcome::StartNodes(
+            Box::new(RuntimeCommitSnapshot::from_execution(execution)?),
+            leaves,
+        ),
     })
 }
 
@@ -244,12 +238,10 @@ impl DurableWorkflowTransaction {
 mod tests {
     use super::*;
     use crate::domain::workflow::entities::workflow_execution::TransitionRejection;
-    use crate::domain::workflow::{
-        ExecutionInterruptionReason, NodeExecutionFailureKind, NodeKindName, RuntimeExecutionState,
-    };
+    use crate::domain::workflow::{NodeExecutionFailureKind, NodeKindName, RuntimeExecutionState};
 
     fn execution_with_attached_session() -> WorkflowExecution {
-        let mut execution = WorkflowExecution::restore(RuntimeExecutionState::Running, None);
+        let mut execution = WorkflowExecution::restore(RuntimeExecutionState::Running);
         execution
             .begin_node_attempt(
                 "session".to_string(),
@@ -264,23 +256,23 @@ mod tests {
         execution
     }
 
-    fn interrupted_event() -> WorkflowEvent {
-        WorkflowEvent::ExecutionInterrupted {
+    fn aborted_event() -> WorkflowEvent {
+        WorkflowEvent::ExecutionAborted {
             execution_id: "execution".into(),
-            reason: ExecutionInterruptionReason::Stop,
+            aborted_node: None,
             timestamp: 1.0,
         }
     }
 
     #[test]
     fn persistence_failure_keeps_exact_pre_commit_aggregate_and_releases_no_effects() {
-        let mut live = WorkflowExecution::restore(RuntimeExecutionState::Running, None);
+        let mut live = WorkflowExecution::restore(RuntimeExecutionState::Running);
         let before = live.clone();
         let prepared = PreparedWorkflowTransaction::observe(&live, |candidate| {
-            let outcome = candidate.stop();
+            let outcome = candidate.abort();
             Ok(WorkflowRuntimeDecision {
                 outcome,
-                events: vec![interrupted_event()],
+                events: vec![aborted_event()],
                 effects: vec![WorkflowRuntimeEffect::BroadcastState],
             })
         })
@@ -296,12 +288,12 @@ mod tests {
 
     #[test]
     fn effects_become_available_only_after_durable_persistence() {
-        let mut live = WorkflowExecution::restore(RuntimeExecutionState::Running, None);
+        let mut live = WorkflowExecution::restore(RuntimeExecutionState::Running);
         let prepared = PreparedWorkflowTransaction::observe(&live, |candidate| {
-            let outcome = candidate.stop();
+            let outcome = candidate.abort();
             Ok(WorkflowRuntimeDecision {
                 outcome,
-                events: vec![interrupted_event()],
+                events: vec![aborted_event()],
                 effects: vec![WorkflowRuntimeEffect::BroadcastState],
             })
         })
@@ -313,14 +305,14 @@ mod tests {
             durable.into_effects(),
             vec![WorkflowRuntimeEffect::BroadcastState]
         );
-        assert_eq!(live.state(), &RuntimeExecutionState::Interrupted);
+        assert_eq!(live.state(), &RuntimeExecutionState::Aborted);
     }
 
     #[test]
     fn already_applied_observation_persists_event_without_changing_aggregate() {
-        let mut live = WorkflowExecution::restore(RuntimeExecutionState::Running, None);
+        let mut live = WorkflowExecution::restore(RuntimeExecutionState::Running);
         let before = live.clone();
-        let event = interrupted_event();
+        let event = aborted_event();
         let prepared = PreparedWorkflowTransaction::capture_with_outcome(
             before.clone(),
             before.clone(),
@@ -355,7 +347,7 @@ mod tests {
             );
             Ok(WorkflowRuntimeDecision {
                 outcome,
-                events: vec![interrupted_event()],
+                events: vec![aborted_event()],
                 effects: vec![WorkflowRuntimeEffect::BroadcastState],
             })
         })
@@ -387,7 +379,7 @@ mod tests {
             );
             Ok(WorkflowRuntimeDecision {
                 outcome,
-                events: vec![interrupted_event()],
+                events: vec![aborted_event()],
                 effects: vec![WorkflowRuntimeEffect::BroadcastState],
             })
         })
@@ -408,17 +400,17 @@ mod tests {
 
     #[test]
     fn stale_candidate_is_rejected_without_persistence() {
-        let live = WorkflowExecution::restore(RuntimeExecutionState::Running, None);
+        let live = WorkflowExecution::restore(RuntimeExecutionState::Running);
         let prepared = PreparedWorkflowTransaction::observe(&live, |candidate| {
-            let outcome = candidate.stop();
+            let outcome = candidate.abort();
             Ok(WorkflowRuntimeDecision {
                 outcome,
-                events: vec![interrupted_event()],
+                events: vec![aborted_event()],
                 effects: Vec::new(),
             })
         })
         .unwrap();
-        let mut stale = WorkflowExecution::restore(RuntimeExecutionState::Running, None);
+        let mut stale = WorkflowExecution::restore(RuntimeExecutionState::Running);
         stale.abort();
         let mut persisted = false;
 
@@ -436,12 +428,12 @@ mod tests {
 
     #[tokio::test]
     async fn persist_async_updates_current_only_after_persistence_succeeds() {
-        let mut live = WorkflowExecution::restore(RuntimeExecutionState::Running, None);
+        let mut live = WorkflowExecution::restore(RuntimeExecutionState::Running);
         let prepared = PreparedWorkflowTransaction::observe(&live, |candidate| {
-            let outcome = candidate.stop();
+            let outcome = candidate.abort();
             Ok(WorkflowRuntimeDecision {
                 outcome,
-                events: vec![interrupted_event()],
+                events: vec![aborted_event()],
                 effects: vec![WorkflowRuntimeEffect::BroadcastState],
             })
         })
@@ -452,7 +444,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(live.state(), &RuntimeExecutionState::Interrupted);
+        assert_eq!(live.state(), &RuntimeExecutionState::Aborted);
         assert_eq!(durable.outcome(), TransitionOutcome::Applied);
         assert_eq!(
             durable.into_effects(),
@@ -462,17 +454,17 @@ mod tests {
 
     #[tokio::test]
     async fn persist_async_rejects_stale_candidate_without_persistence() {
-        let live = WorkflowExecution::restore(RuntimeExecutionState::Running, None);
+        let live = WorkflowExecution::restore(RuntimeExecutionState::Running);
         let prepared = PreparedWorkflowTransaction::observe(&live, |candidate| {
-            let outcome = candidate.stop();
+            let outcome = candidate.abort();
             Ok(WorkflowRuntimeDecision {
                 outcome,
-                events: vec![interrupted_event()],
+                events: vec![aborted_event()],
                 effects: Vec::new(),
             })
         })
         .unwrap();
-        let mut stale = WorkflowExecution::restore(RuntimeExecutionState::Running, None);
+        let mut stale = WorkflowExecution::restore(RuntimeExecutionState::Running);
         stale.abort();
         let persisted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let observed = persisted.clone();
@@ -493,13 +485,13 @@ mod tests {
 
     #[tokio::test]
     async fn persist_async_propagates_persistence_failure_without_updating_current() {
-        let mut live = WorkflowExecution::restore(RuntimeExecutionState::Running, None);
+        let mut live = WorkflowExecution::restore(RuntimeExecutionState::Running);
         let before = live.clone();
         let prepared = PreparedWorkflowTransaction::observe(&live, |candidate| {
-            let outcome = candidate.stop();
+            let outcome = candidate.abort();
             Ok(WorkflowRuntimeDecision {
                 outcome,
-                events: vec![interrupted_event()],
+                events: vec![aborted_event()],
                 effects: vec![WorkflowRuntimeEffect::BroadcastState],
             })
         })
@@ -518,10 +510,16 @@ mod tests {
 
     #[test]
     fn aggregate_rejection_is_preserved_as_a_typed_decision() {
-        let live = WorkflowExecution::restore(RuntimeExecutionState::Running, None);
-        let prepared = PreparedWorkflowTransaction::observe(&live, |candidate| {
+        let mut live = WorkflowExecution::restore(RuntimeExecutionState::Completed);
+        let rejection = match live.replay_started() {
+            crate::domain::workflow::entities::workflow_execution::ReplayOutcome::Rejected(
+                reason,
+            ) => reason,
+            outcome => panic!("unexpected replay outcome: {outcome:?}"),
+        };
+        let prepared = PreparedWorkflowTransaction::observe(&live, |_candidate| {
             Ok(WorkflowRuntimeDecision {
-                outcome: candidate.resume(),
+                outcome: TransitionOutcome::Rejected(rejection),
                 events: Vec::new(),
                 effects: Vec::new(),
             })
@@ -535,7 +533,7 @@ mod tests {
 
         assert_eq!(
             durable.outcome(),
-            TransitionOutcome::Rejected(TransitionRejection::NotResumable)
+            TransitionOutcome::Rejected(TransitionRejection::NotActive)
         );
     }
 }

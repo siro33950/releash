@@ -1,6 +1,6 @@
 use super::super::common::test_support::{
     append_workflow_events, execution_started_event, initialize_canonical_store, make_execution,
-    root_node_started_event, test_uuid, write_execution_file,
+    root_node_started_event, test_uuid, write_canonical_execution,
 };
 use super::super::Cli;
 use super::*;
@@ -9,7 +9,7 @@ use clap::Parser;
 use tempfile::TempDir;
 
 fn seed_execution(data_dir: &Path, execution_id: &str) {
-    write_execution_file(
+    write_canonical_execution(
         data_dir,
         &make_execution(execution_id, "/repo", ExecutionStatus::Running, 100.0),
     );
@@ -94,4 +94,42 @@ fn test_workflow_status_存在しないexecutionを状態作成せずに報告�
         error,
         CliError::NotFound(format!("Workflow execution not found: {execution_id}"))
     );
+}
+
+#[test]
+fn test_workflow_status_jsonは三状態の値を保ち中断理由と再開位置を含まない() {
+    // Given / When / Then
+    for state in [
+        ExecutionStatus::Running,
+        ExecutionStatus::Completed,
+        ExecutionStatus::Aborted,
+    ] {
+        let temp = TempDir::new().unwrap();
+        let execution_id = test_uuid(4);
+        let initial = if state == ExecutionStatus::Aborted {
+            ExecutionStatus::Running
+        } else {
+            state
+        };
+        write_canonical_execution(
+            temp.path(),
+            &make_execution(&execution_id, "/repo", initial, 100.0),
+        );
+        if state == ExecutionStatus::Aborted {
+            append_workflow_events(
+                temp.path(),
+                &[crate::domain::workflow::WorkflowEvent::ExecutionAborted {
+                    execution_id: execution_id.clone(),
+                    aborted_node: None,
+                    timestamp: 101.0,
+                }],
+            );
+        }
+        let output = cmd_status(temp.path(), &execution_id, true).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(value["id"], execution_id);
+        assert_eq!(value["status"], state.as_str());
+        assert!(value.get("interruptionReason").is_none());
+        assert!(value.get("resumeFromNode").is_none());
+    }
 }

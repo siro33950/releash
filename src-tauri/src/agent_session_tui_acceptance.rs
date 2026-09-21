@@ -265,7 +265,6 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
         let driver = Arc::new(WorkflowRuntimeHost::new_canonical(
             Arc::new(AcceptanceUnusedWorkflowDefinitionResolver),
             Arc::new(AcceptanceManagedWorktreeResolver),
-            Some(data_dir.clone()),
             workspace_query,
             composition.launch.clone(),
             composition.initial_instruction.clone(),

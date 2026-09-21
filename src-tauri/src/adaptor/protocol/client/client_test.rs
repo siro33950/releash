@@ -198,3 +198,115 @@ fn test_workflowログ_固定metadataを型付きで生成messageへ渡す() {
         expected
     );
 }
+
+#[test]
+fn test_workflow状態_protoは削除した番号と名前を予約し残る三状態を保持する() {
+    // Given
+    let pool = prost_reflect::DescriptorPool::decode(
+        include_bytes!(concat!(env!("OUT_DIR"), "/client_descriptor.bin")).as_slice(),
+    )
+    .unwrap();
+    // When / Then
+    for (name, numbers) in [
+        ("ExecutionStatusView", [1, 4]),
+        ("ExecutionStatusDto", [1, 4]),
+        ("WorkspaceHistoryStatus", [7, 8]),
+    ] {
+        let status = pool
+            .get_enum_by_name(&format!("releash.client.v1.{name}.Value"))
+            .unwrap();
+        assert_eq!(
+            status.reserved_names().collect::<Vec<_>>(),
+            ["waiting_approval", "interrupted"]
+        );
+        for number in numbers {
+            assert!(status
+                .reserved_ranges()
+                .any(|range| range.contains(&number)));
+            assert!(status.get_value(number).is_none());
+        }
+        if name != "WorkspaceHistoryStatus" {
+            assert_eq!(
+                status
+                    .values()
+                    .map(|value| (value.name().to_string(), value.number()))
+                    .collect::<Vec<_>>(),
+                [
+                    ("running".into(), 0),
+                    ("completed".into(), 2),
+                    ("aborted".into(), 3)
+                ]
+            );
+        }
+    }
+    for name in ["WorkflowExecutionView", "WorkflowExecutionSummaryDto"] {
+        let message = pool
+            .get_message_by_name(&format!("releash.client.v1.{name}"))
+            .unwrap();
+        assert_eq!(
+            message.reserved_names().collect::<Vec<_>>(),
+            ["interruption_reason", "resume_from_node"]
+        );
+        for number in [11, 12] {
+            assert!(message
+                .reserved_ranges()
+                .any(|range| range.contains(&number)));
+            assert!(message.get_field(number).is_none());
+        }
+    }
+    for value in ["waiting_approval", "interrupted"] {
+        assert!(ExecutionStatusView::try_from(value).is_err());
+        assert!(ExecutionStatusDto::try_from(value).is_err());
+        assert!(WorkspaceHistoryStatus::try_from(value).is_err());
+        assert!(
+            serde_json::from_value::<crate::adaptor::protocol::workflow::ExecutionStatusView>(
+                json!(value)
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<crate::usecase::workflow::dto::ExecutionStatusDto>(json!(
+                value
+            ))
+            .is_err()
+        );
+    }
+    assert!(NodeExecutionStatusView::try_from("waiting_approval").is_ok());
+}
+
+#[test]
+fn test_workflow応答_connectの詳細と一覧は三状態の値を保ち削除項目を含まない() {
+    // Given / When / Then
+    for status in ["running", "completed", "aborted"] {
+        let value = json!({
+            "id": "execution-1", "workflowName": "review", "status": status,
+            "currentNode": "review", "worktreePath": "/repo", "createdFrom": "cli",
+            "startedAt": 1.0, "updatedAt": 2.0, "completedAt": null, "errorReason": null,
+            "totalTokenUsage": {"inputTokens": 13, "outputTokens": 8},
+            "nodeExecutions": [], "artifacts": [], "fanouts": [], "approvalTarget": null
+        });
+        let view: crate::adaptor::protocol::workflow::WorkflowExecutionView =
+            serde_json::from_value(value.clone()).unwrap();
+        let wire = WorkflowExecutionView::try_from(view).unwrap();
+        let decoded = WorkflowExecutionView::decode(wire.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(
+            from_message("releash.client.v1.WorkflowExecutionView", &decoded).unwrap(),
+            value
+        );
+
+        let value = json!({
+            "executionId": "execution-1", "workflowName": "review", "status": status,
+            "currentNode": "review", "worktreePath": "/repo", "createdFrom": "cli",
+            "startedAt": 1.0, "updatedAt": 2.0,
+            "totalTokenUsage": {"inputTokens": 13, "outputTokens": 8}
+        });
+        let summary: crate::usecase::workflow::dto::WorkflowExecutionSummaryDto =
+            serde_json::from_value(value.clone()).unwrap();
+        let wire = WorkflowExecutionSummaryDto::try_from(summary).unwrap();
+        let decoded = WorkflowExecutionSummaryDto::decode(wire.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(
+            from_message("releash.client.v1.WorkflowExecutionSummaryDto", &decoded).unwrap(),
+            value
+        );
+    }
+}

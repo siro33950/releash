@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use crate::adaptor::gateway::workflow::execution_store::{
-    ExecutionStore, TerminalExecutionStatus, WorkflowExecutionMetadata,
+    ExecutionStore, WorkflowExecutionMetadata,
 };
 use crate::adaptor::gateway::workflow::workflow_host::execution_state::DomainWorkflowExecution;
 use crate::domain::workflow::ExecutionStatus;
@@ -60,27 +60,8 @@ pub(crate) async fn sync_execution_store_from_snapshot(
         output_tokens: snapshot.total_token_usage.output_tokens,
     };
     let result = match &snapshot.state {
-        RuntimeExecutionState::Completed => {
-            execution_store
-                .complete_execution_with_usage(
-                    execution_id,
-                    TerminalExecutionStatus::Completed,
-                    now,
-                    None,
-                    Some(total_token_usage),
-                )
-                .await
-        }
-        RuntimeExecutionState::Aborted => {
-            execution_store
-                .complete_execution_with_usage(
-                    execution_id,
-                    TerminalExecutionStatus::Aborted,
-                    now,
-                    None,
-                    Some(total_token_usage),
-                )
-                .await
+        RuntimeExecutionState::Completed | RuntimeExecutionState::Aborted => {
+            execution_store.cancel_reservation(execution_id).await
         }
         RuntimeExecutionState::Running => {
             let current_node = snapshot.current_node_name.clone();
@@ -94,26 +75,6 @@ pub(crate) async fn sync_execution_store_from_snapshot(
                 )
                 .await
         }
-        #[cfg(test)]
-        RuntimeExecutionState::WaitingApproval => {
-            execution_store
-                .sync_active_projection_with_usage(
-                    execution_id,
-                    ExecutionStatus::WaitingApproval,
-                    snapshot.current_node_name.clone(),
-                    now,
-                    Some(total_token_usage),
-                )
-                .await
-        }
-        #[cfg(test)]
-        RuntimeExecutionState::Interrupted => Err(
-            crate::adaptor::gateway::workflow::execution_store::ExecutionStoreError::InvalidStatusTransition {
-                execution_id: execution_id.to_string(),
-                actual: ExecutionStatus::Interrupted,
-                expected: "running|completed|aborted",
-            },
-        ),
     };
     result.map_err(|e| {
         WorkflowRuntimeError::SessionStore(format!(

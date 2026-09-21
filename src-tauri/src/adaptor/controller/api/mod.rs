@@ -701,8 +701,6 @@ pub(crate) mod test_support {
             updated_at: 101.0,
             completed_at: None,
             error_reason: None,
-            interruption_reason: None,
-            resume_from_node: None,
             total_token_usage: TokenUsage::default(),
         };
         let started = WorkflowEventDraft {
