@@ -76,7 +76,7 @@ pub(crate) async fn run_worker(
                 return;
             }
             let start_generation = state.requested_generation();
-            state.mark_refresh_started(&reason);
+            state.set_refreshing(true);
 
             let repo_path = state.worktree_path().to_string();
             let scanner = scanner.clone();
@@ -114,7 +114,7 @@ pub(crate) async fn run_worker(
                             state.worktree_path()
                         );
                     }
-                    state.notify_snapshot_changed(snapshot, reason);
+                    state.notify_snapshot_changed(reason);
                 }
                 Err(err) => {
                     log::warn!(

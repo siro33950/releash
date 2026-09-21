@@ -111,7 +111,6 @@ describe("CreateWorktreeModal", () => {
 					version: 1,
 					stale: false,
 					loading: false,
-					limited: false,
 					branches: branchCards,
 					worktree_display_groups: { working_areas: branchCards },
 				});

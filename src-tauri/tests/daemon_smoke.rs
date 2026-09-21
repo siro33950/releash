@@ -566,27 +566,22 @@ async fn test_daemon本番配線_各通知元からwsへpushを届ける() {
             false,
         )
         .unwrap();
-    let mut seen = [false; 3];
+    let mut seen = [false; 2];
     tokio::time::timeout(Duration::from_secs(10), async {
         while !seen.iter().all(|seen| *seen) {
             if let Some(event) = socket.push.next().await.unwrap().event {
                 match event {
-                    E::RepositorySnapshotChanged(value)
-                        if value.worktree_path.as_deref() == Some(worktree) =>
-                    {
+                    E::GitStatusChanged(value) if value.repo_path.as_deref() == Some(worktree) => {
                         seen[0] = true
                     }
-                    E::GitStatusChanged(value) if value.repo_path.as_deref() == Some(worktree) => {
-                        seen[1] = true
-                    }
-                    E::BranchListSync(_) => seen[2] = true,
+                    E::BranchListSync(_) => seen[1] = true,
                     _ => {}
                 }
             }
         }
     })
     .await
-    .expect("repository state notifier must send snapshot, git status, and branch pushes");
+    .expect("repository state notifier must send git status and branch pushes");
     let db = rusqlite::Connection::open_with_flags(
         root.join("local-event-store.sqlite3"),
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,

@@ -12,6 +12,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { invokeClient, listenClient } from "@/lib/client";
 import type { GitFileStatus } from "@/types/git";
 import type { DiffTreeNode, ReviewFileView } from "@/types/review";
+import type { DiffViewerSectionProps } from "./DiffViewerSection";
 import { ReviewPanel } from "./ReviewPanel";
 
 // Radix UI Tooltip require pointer capture APIs not available in jsdom
@@ -74,7 +75,6 @@ vi.mock("@/hooks/useReviewSnapshot", () => ({
 		branchBaseTree: [],
 		branchBaseFileCount: 0,
 		version: 0,
-		limited: false,
 		loading: false,
 		refresh: vi.fn(),
 	}),
@@ -128,17 +128,27 @@ vi.mock("./DiffViewerSection", () => ({
 		error,
 		isMarkdown,
 		showPreview,
-	}: {
-		error?: string | null;
-		isMarkdown?: boolean;
-		showPreview?: boolean;
-	}) => (
+		changeGroups,
+		onStageGroup,
+		groupActionLabel,
+	}: DiffViewerSectionProps) => (
 		<div
 			data-testid="diff-viewer-section"
 			data-error={error ?? ""}
 			data-is-markdown={String(Boolean(isMarkdown))}
 			data-show-preview={String(Boolean(showPreview))}
-		/>
+		>
+			{changeGroups?.map((group) => (
+				<button
+					type="button"
+					key={group.groupId}
+					disabled={!onStageGroup}
+					onClick={() => onStageGroup?.(group.groupId)}
+				>
+					{groupActionLabel} hunk
+				</button>
+			))}
+		</div>
 	),
 }));
 
@@ -168,14 +178,12 @@ function mockReviewSnapshot(
 		branchBaseTree: [],
 		branchBaseFileCount: 0,
 		version: 0,
-		limited: false,
 		loading: false,
 		refresh: vi.fn(),
 		snapshot: {
 			version: 0,
 			stale: false,
 			loading: false,
-			limited: false,
 			base: "head",
 			files: [],
 			stagedFiles: [],
@@ -191,7 +199,9 @@ function mockReviewSnapshot(
 	});
 }
 
-function makeTextDiffView(path: string): ReviewFileView {
+function makeTextDiffView(
+	path: string,
+): Extract<ReviewFileView, { kind: "textDiff" }> {
 	return {
 		kind: "textDiff",
 		version: 0,
@@ -1104,4 +1114,172 @@ describe("ReviewPanel", () => {
 			expect(refreshKeys[refreshKeys.length - 1]).toBe(2);
 		});
 	});
+	it.each(["changes", "staged"] as const)(
+		"staleな差分では%sのhunk操作を表示しない",
+		(section) => {
+			mockSelectedReviewFile("both.ts", {
+				...makeTextDiffView("both.ts"),
+				version: 1,
+				stale: true,
+				changeGroups: [
+					{
+						groupIndex: 0,
+						groupId: "group:both.ts:0",
+						hunkIndex: 0,
+						newStart: 1,
+						newEnd: 1,
+						lineOffsetStart: 0,
+						lineOffsetEnd: 1,
+					},
+				],
+			});
+			mockNonEmptyHeadSnapshot({ version: 10 });
+			vi.mocked(useReviewPanel).mockReturnValue({
+				diffBase: "head",
+				diffMode: "gutter",
+				selectedFile: "both.ts",
+				selectedSection: section,
+				setDiffBase: vi.fn(),
+				setDiffMode: vi.fn(),
+				selectFile: vi.fn(),
+			});
+
+			render(
+				<TooltipProvider>
+					<ReviewPanel
+						rootPath="/repo"
+						diffOnlyMode={false}
+						onDiffOnlyModeChange={vi.fn()}
+					/>
+				</TooltipProvider>,
+			);
+
+			expect(
+				within(screen.getByTestId("diff-viewer-section")).queryByRole(
+					"button",
+					{ name: /hunk/ },
+				),
+			).not.toBeInTheDocument();
+		},
+	);
+	it.each(["changes", "staged"] as const)(
+		"番号の振り直し後に%sのhunk操作を実行できる",
+		async (section) => {
+			const actualSnapshot = await vi.importActual<
+				typeof import("@/hooks/useReviewSnapshot")
+			>("@/hooks/useReviewSnapshot");
+			const actualFileView = await vi.importActual<
+				typeof import("@/hooks/useReviewFileView")
+			>("@/hooks/useReviewFileView");
+			mockSelectedReviewFile("file.ts", makeTextDiffView("file.ts"));
+			const panelState = vi.mocked(useReviewPanel).getMockImplementation()?.(
+				{},
+			);
+			if (!panelState) throw new Error("missing panel state");
+			vi.mocked(useReviewPanel).mockReturnValue({
+				...panelState,
+				selectedSection: section,
+			});
+			const initialSnapshot = vi
+				.mocked(useReviewSnapshot)
+				.getMockImplementation()?.("/repo", "head").snapshot;
+			if (!initialSnapshot) throw new Error("missing snapshot");
+			vi.mocked(useReviewSnapshot).mockImplementation(
+				actualSnapshot.useReviewSnapshot,
+			);
+			vi.mocked(useReviewFileView).mockImplementation(
+				actualFileView.useReviewFileView,
+			);
+			let version = 10;
+			const groupId = "group:file.ts:0";
+			vi.mocked(invokeClient).mockClear();
+			vi.mocked(invokeClient).mockImplementation(async (command, args) => {
+				if (command === "get_review_snapshot")
+					return {
+						...initialSnapshot,
+						version,
+						changesTree: [treeFile("file.ts", "modified")],
+						changesFileCount: 1,
+					};
+				if (command === "get_review_file_view")
+					return {
+						...makeTextDiffView("file.ts"),
+						version,
+						stale:
+							(args as { input: { snapshotVersion: number } }).input
+								.snapshotVersion !== version,
+						changeGroups: [
+							{
+								groupIndex: 0,
+								groupId,
+								hunkIndex: 0,
+								newStart: 1,
+								newEnd: 1,
+								lineOffsetStart: 0,
+								lineOffsetEnd: 1,
+							},
+						],
+					};
+				return null;
+			});
+			const { unmount } = render(
+				<TooltipProvider>
+					<ReviewPanel
+						rootPath="/repo"
+						diffOnlyMode={false}
+						onDiffOnlyModeChange={vi.fn()}
+					/>
+				</TooltipProvider>,
+			);
+			const label = section === "staged" ? "Unstage" : "Stage";
+			await waitFor(() =>
+				expect(
+					screen.getByRole("button", { name: `${label} hunk` }),
+				).toBeEnabled(),
+			);
+
+			version = 1;
+			const refresh = vi.mocked(useGitEventRefresh).mock.lastCall?.[1];
+			expect(refresh).toBeDefined();
+			await act(async () => refresh?.());
+
+			await waitFor(() =>
+				expect(invokeClient).toHaveBeenCalledWith("get_review_file_view", {
+					input: {
+						worktreePath: "/repo",
+						target: { by: "path", value: "file.ts" },
+						section,
+						base: "head",
+						snapshotVersion: 1,
+						viewport: null,
+					},
+				}),
+			);
+			await waitFor(() =>
+				expect(
+					screen.getByRole("button", { name: `${label} hunk` }),
+				).toBeEnabled(),
+			);
+			fireEvent.click(screen.getByRole("button", { name: `${label} hunk` }));
+			await waitFor(() =>
+				expect(invokeClient).toHaveBeenCalledWith(
+					section === "staged"
+						? "git_unstage_review_group"
+						: "git_stage_review_group",
+					{
+						input: {
+							worktreePath: "/repo",
+							path: "file.ts",
+							section,
+							base: "head",
+							groupId,
+						},
+					},
+				),
+			);
+			unmount();
+			mockReviewSnapshot({});
+			vi.mocked(invokeClient).mockReset().mockResolvedValue(null);
+		},
+	);
 });

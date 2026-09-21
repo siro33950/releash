@@ -34,7 +34,6 @@ export interface ReviewSnapshot {
 	version: number;
 	stale: boolean;
 	loading: boolean;
-	limited: boolean;
 	base: DiffBase;
 	files: ReviewFileEntry[];
 	stagedFiles: GitFileStatus[];

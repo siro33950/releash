@@ -23,7 +23,6 @@ pub use crate::adaptor::protocol::workflow::*;
 pub use crate::domain::repository::{Branch, BranchRepository, RepositoryError};
 use crate::domain::workflow::{ExecutionOrigin, RuntimeExecutionState, WorkflowRuntimeSnapshot};
 pub use crate::infrastructure::comment::watcher::spawn_review_comments_watcher;
-pub use crate::usecase::repository_state::snapshot::RepositorySnapshotChangedEvent;
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]

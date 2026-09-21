@@ -342,7 +342,6 @@ pub(crate) mod tests {
                 diff_file_tree: Vec::new(),
                 staged_diff_file_tree: Vec::new(),
                 changes_diff_file_tree: Vec::new(),
-                limited: false,
             })
         }
 
@@ -407,7 +406,6 @@ pub(crate) mod tests {
                 diff_file_tree: Vec::new(),
                 staged_diff_file_tree: Vec::new(),
                 changes_diff_file_tree: Vec::new(),
-                limited: false,
             })
         }
 
@@ -707,7 +705,6 @@ pub(crate) mod tests {
                 diff_file_tree: Vec::new(),
                 staged_diff_file_tree: Vec::new(),
                 changes_diff_file_tree: Vec::new(),
-                limited: false,
             },
             0,
         );
@@ -719,7 +716,6 @@ pub(crate) mod tests {
                 diff_file_tree: Vec::new(),
                 staged_diff_file_tree: Vec::new(),
                 changes_diff_file_tree: Vec::new(),
-                limited: false,
             },
             0,
         );
@@ -942,9 +938,7 @@ pub(crate) mod tests {
 
         for _ in 0..100 {
             let notifications = notifier.take();
-            if let Some(committed) = notifications.iter().find(|n| {
-                n.phase == super::super::worktree::SnapshotNotificationPhase::SnapshotCommitted
-            }) {
+            if let Some(committed) = notifications.first() {
                 assert!(committed
                     .worktree_paths
                     .iter()

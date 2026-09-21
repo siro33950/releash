@@ -44,7 +44,6 @@ const baseIpcHandler: Record<string, unknown> = {
 		version: 1,
 		stale: false,
 		loading: false,
-		limited: false,
 		base: "head",
 		files: [],
 		stagedFiles: [],

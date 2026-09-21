@@ -27,16 +27,8 @@ pub trait RepositoryStateWatcher: Send + Sync {
 #[derive(Clone)]
 pub struct SnapshotNotification {
     pub worktree_paths: Vec<String>,
-    pub snapshot: Arc<RepositorySnapshot>,
     pub file_watcher_ids: Vec<u64>,
     pub reason: InvalidateReason,
-    pub phase: SnapshotNotificationPhase,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SnapshotNotificationPhase {
-    RefreshStarted,
-    SnapshotCommitted,
 }
 
 pub trait RepositoryStateNotifier: Send + Sync {
@@ -217,19 +209,6 @@ impl WorktreeState {
         snapshot
     }
 
-    pub(crate) fn mark_refresh_started(&self, reason: &InvalidateReason) {
-        self.refreshing.store(true, Ordering::SeqCst);
-        let snapshot = self.snapshot_for_read();
-        let targets = self.notification_targets();
-        self.notifier.snapshot_changed(SnapshotNotification {
-            worktree_paths: targets.worktree_paths,
-            snapshot,
-            file_watcher_ids: targets.file_watcher_ids,
-            reason: reason.clone(),
-            phase: SnapshotNotificationPhase::RefreshStarted,
-        });
-    }
-
     pub(crate) fn commit_snapshot(
         &self,
         parts: RepositorySnapshotParts,
@@ -242,18 +221,12 @@ impl WorktreeState {
         snapshot
     }
 
-    pub(crate) fn notify_snapshot_changed(
-        &self,
-        snapshot: Arc<RepositorySnapshot>,
-        reason: InvalidateReason,
-    ) {
+    pub(crate) fn notify_snapshot_changed(&self, reason: InvalidateReason) {
         let targets = self.notification_targets();
         self.notifier.snapshot_changed(SnapshotNotification {
             worktree_paths: targets.worktree_paths,
-            snapshot,
             file_watcher_ids: targets.file_watcher_ids,
             reason,
-            phase: SnapshotNotificationPhase::SnapshotCommitted,
         });
     }
 
@@ -409,7 +382,6 @@ mod tests {
                 diff_file_tree: Vec::new(),
                 staged_diff_file_tree: Vec::new(),
                 changes_diff_file_tree: Vec::new(),
-                limited: false,
             })
         }
 
@@ -510,33 +482,54 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refresh_start_notification_exposes_loading_and_stale_flags() {
-        let scanner = Arc::new(FakeScanner::new("first.txt").with_sleep(Duration::from_millis(80)));
+    async fn test_スキャン通知_開始時はstaleとloadingにして通知せず正常完了時だけ通知する() {
+        // Given
+        let scanner = Arc::new(FakeScanner::new("first.txt"));
         let notifier = Arc::new(CapturingNotifier::default());
         let state = test_state_with_notifier(scanner.clone(), notifier.clone());
-
         state.invalidate(InvalidateReason::initial());
         wait_for_version(&state, 1).await;
-        notifier.take();
+        assert_eq!(notifier.take().len(), 1);
 
+        let (started_tx, started_rx) = std_mpsc::channel();
+        let (resume_tx, resume_rx) = std_mpsc::channel();
+        let resume_rx = Mutex::new(resume_rx);
+        scanner.set_on_scan(move |_| {
+            started_tx.send(()).unwrap();
+            resume_rx
+                .lock()
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap();
+        });
         scanner.set_value("second.txt");
+
+        // When
         state.invalidate(InvalidateReason::git(false));
+        tokio::task::spawn_blocking(move || started_rx.recv_timeout(Duration::from_secs(5)))
+            .await
+            .unwrap()
+            .unwrap();
 
-        for _ in 0..100 {
-            let notifications = notifier.take();
-            if let Some(started) = notifications
-                .iter()
-                .find(|n| n.phase == SnapshotNotificationPhase::RefreshStarted)
-            {
-                assert_eq!(started.snapshot.version, 1);
-                assert!(started.snapshot.flags.loading);
-                assert!(started.snapshot.flags.stale);
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        // Then
+        let snapshot = state.snapshot_for_read();
+        assert_eq!(snapshot.version, 1);
+        assert!(snapshot.flags.loading);
+        assert!(snapshot.flags.stale);
+        assert!(notifier.take().is_empty());
 
-        panic!("timed out waiting for refresh start notification");
+        // When
+        resume_tx.send(()).unwrap();
+        let snapshot = wait_for_version(&state, 2).await;
+
+        // Then
+        assert_eq!(snapshot.version, 2);
+        assert_eq!(snapshot.status[0].path, "second.txt");
+        assert!(!snapshot.flags.loading);
+        assert!(!snapshot.flags.stale);
+        let notifications = notifier.take();
+        assert_eq!(notifications.len(), 1);
+        assert_eq!(notifications[0].reason, InvalidateReason::git(false));
+        state.shutdown();
     }
 
     #[tokio::test]
