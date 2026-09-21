@@ -120,6 +120,7 @@ vi.mock("@/hooks/useWorktreeList", () => ({
 
 const directNode: WorkspaceTreeItem = {
 	kind: "node",
+	processPresence: "unknown",
 	id: "4f168b74-f9cf-4d51-9970-81ea281bc983",
 	title: "Direct session",
 	status: "active",
@@ -128,6 +129,7 @@ const directNode: WorkspaceTreeItem = {
 		canRename: false,
 		canApprove: false,
 		canRetry: false,
+		canResumeSession: false,
 	},
 	pastAttempts: [],
 	pastAttemptsCollapsed: false,
@@ -153,6 +155,7 @@ function standaloneSessionNode({
 }): WorkspaceNode {
 	return {
 		kind: "node",
+		processPresence: "unknown",
 		id,
 		title,
 		status,
@@ -161,6 +164,7 @@ function standaloneSessionNode({
 			canRename,
 			canApprove: false,
 			canRetry: false,
+			canResumeSession: false,
 		},
 		sessionCapabilities: {
 			sessionRef,
@@ -181,8 +185,6 @@ const recursiveTree: WorkspaceTreeItem[] = [
 		title: "Release workflow",
 		status: "active",
 		workflowCapabilities: {
-			canStop: true,
-			canResume: false,
 			canAbort: true,
 			canArchive: false,
 		},
@@ -190,6 +192,7 @@ const recursiveTree: WorkspaceTreeItem[] = [
 		children: [
 			{
 				kind: "node",
+				processPresence: "unknown",
 				id: "workflow-session-internal-uuid",
 				title: "Prepare",
 				status: "idle",
@@ -198,6 +201,7 @@ const recursiveTree: WorkspaceTreeItem[] = [
 					canRename: false,
 					canApprove: false,
 					canRetry: false,
+					canResumeSession: false,
 				},
 				pastAttempts: [],
 				pastAttemptsCollapsed: false,
@@ -220,6 +224,7 @@ const recursiveTree: WorkspaceTreeItem[] = [
 						children: [
 							{
 								kind: "node",
+								processPresence: "unknown",
 								id: "fanout-child-internal-uuid",
 								title: "Architecture review",
 								status: "active",
@@ -228,6 +233,7 @@ const recursiveTree: WorkspaceTreeItem[] = [
 									canRename: false,
 									canApprove: false,
 									canRetry: false,
+									canResumeSession: false,
 								},
 								pastAttempts: [],
 								pastAttemptsCollapsed: false,
@@ -957,8 +963,6 @@ describe("WorkspaceList", () => {
 					title: "Empty workflow",
 					status: "active",
 					workflowCapabilities: {
-						canStop: true,
-						canResume: false,
 						canAbort: true,
 						canArchive: false,
 					},
@@ -1319,6 +1323,7 @@ describe("WorkspaceList", () => {
 		const user = userEvent.setup();
 		const occurrenceA1: WorkspaceTreeItem = {
 			kind: "node",
+			processPresence: "unknown",
 			id: "occurrence-a-1",
 			title: "A",
 			status: "idle",
@@ -1327,6 +1332,7 @@ describe("WorkspaceList", () => {
 				canRename: false,
 				canApprove: false,
 				canRetry: false,
+				canResumeSession: false,
 			},
 			pastAttempts: [],
 			pastAttemptsCollapsed: false,
@@ -1356,8 +1362,6 @@ describe("WorkspaceList", () => {
 			title: "Loop workflow",
 			status: "active",
 			workflowCapabilities: {
-				canStop: true,
-				canResume: false,
 				canAbort: true,
 				canArchive: false,
 			},
@@ -2172,11 +2176,12 @@ describe("WorkspaceList", () => {
 		await user.click(
 			screen.getByRole("button", { name: "Open menu for Release workflow" }),
 		);
-		expect(screen.getByRole("menuitem", { name: "Stop" })).toBeEnabled();
-		expect(screen.getByRole("menuitem", { name: "Resume" })).toHaveAttribute(
-			"aria-disabled",
-			"true",
-		);
+		expect(
+			screen.queryByRole("menuitem", { name: "Stop" }),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole("menuitem", { name: "Resume" }),
+		).not.toBeInTheDocument();
 		expect(screen.getByRole("menuitem", { name: "Abort" })).toBeEnabled();
 	});
 
@@ -2192,8 +2197,6 @@ describe("WorkspaceList", () => {
 					}),
 					sessionCapabilities: null,
 					workflowCapabilities: {
-						canStop: true,
-						canResume: false,
 						canAbort: true,
 						canArchive: false,
 					},
@@ -2206,9 +2209,9 @@ describe("WorkspaceList", () => {
 		await user.click(
 			screen.getByRole("button", { name: "Open menu for Leaf workflow" }),
 		);
-		await user.click(screen.getByRole("menuitem", { name: "Stop" }));
+		await user.click(screen.getByRole("menuitem", { name: "Abort" }));
 
-		expect(mocks.invoke).toHaveBeenCalledWith("stop_workflow", {
+		expect(mocks.invoke).toHaveBeenCalledWith("abort_workflow", {
 			executionId: "leaf-workflow-execution",
 		});
 	});

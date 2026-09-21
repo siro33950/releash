@@ -261,8 +261,6 @@ fn public_node_id(tree: &WorkspaceTree, node_id: &str) -> String {
 
 fn workflow_capabilities(node: &WorkspaceTreeNode) -> WorkspaceWorkflowCapabilitiesDto {
     WorkspaceWorkflowCapabilitiesDto {
-        can_stop: node.can_stop,
-        can_resume: node.can_resume,
         can_abort: node.can_abort,
         can_archive: node.can_archive,
     }
@@ -310,6 +308,7 @@ fn project_tree(
             .map(|past| node_dto(past, past.id.clone(), past.title.clone(), None, None, by_id))
             .collect::<Vec<_>>();
         WorkspaceNodeDto {
+            process_presence: node.process_presence.as_str(),
             id: public_id,
             title: public_title,
             status: node.status_classification.as_public_str().to_string(),
@@ -323,6 +322,7 @@ fn project_tree(
                 can_rename: node.can_rename,
                 can_approve: node.can_approve,
                 can_retry: node.can_retry,
+                can_resume_session: node.can_resume_session,
             },
             workflow_capabilities,
             session_capabilities,
@@ -480,6 +480,7 @@ fn node_detail(node: WorkspaceTreeNode) -> WorkspaceNodeDetailDto {
         }),
     };
     WorkspaceNodeDetailDto {
+        process_presence: node.process_presence.as_str(),
         worktree: node
             .worktree
             .map(|worktree| crate::usecase::workflow::NodeWorktreeDto {
@@ -503,6 +504,7 @@ fn node_detail(node: WorkspaceTreeNode) -> WorkspaceNodeDetailDto {
             can_rename: node.can_rename,
             can_approve: node.can_approve,
             can_retry: node.can_retry,
+            can_resume_session: node.can_resume_session,
         },
         updated_at,
         content,

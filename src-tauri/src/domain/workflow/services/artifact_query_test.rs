@@ -207,10 +207,10 @@ fn test_隔離合成子の成果_失敗したslotの再試行では旧attemptの
     log.fact(
         "old",
         NodeFact::ProcessExited(ProcessExitedFact {
+            failure_kind: None,
             exit_code: Some(1),
             result_summary: None,
             failure_reason: None,
-            failure_kind: None,
         }),
     );
     assert!(log.output("main").is_none());
@@ -221,10 +221,10 @@ fn test_隔離合成子の成果_失敗したslotの再試行では旧attemptの
     log.fact(
         "new",
         NodeFact::ProcessExited(ProcessExitedFact {
+            failure_kind: None,
             exit_code: Some(0),
             result_summary: None,
             failure_reason: None,
-            failure_kind: None,
         }),
     );
     let output = log.output("main").unwrap();
@@ -259,38 +259,7 @@ fn test_隔離合成子の成果_途中の中止と欠損したrepository_root�
 }
 
 #[test]
-fn test_隔離合成子の成果_失敗した合成子のignoreを反映する() {
-    for kind in ["sequence", "fanout"] {
-        // Given
-        let mut log = Log::new(&format!("  main: {{worktree: isolated, {kind}: {{children: [{{part: {{on_failure: ignore}}}}]}}}}\n  part: {{worktree: isolated, sequence: {{children: [work]}}}}\n  work: {{session: {{provider: codex}}}}"));
-        log.start("main-id", "main", None, 1);
-        let parent = if kind == "sequence" {
-            ExecutionParentRef::sequence_child("main-id")
-        } else {
-            ExecutionParentRef::fanout_child("main-id", None, 0)
-        };
-        log.start("part-id", "part", Some(parent), 1);
-        log.fact(
-            "part-id",
-            NodeFact::RuntimeFailureObserved(crate::domain::workflow::RuntimeFailureObservedFact {
-                reason: "worktree creation failed".into(),
-                failure_kind:
-                    crate::domain::workflow::NodeExecutionFailureKind::InfrastructureCrash,
-            }),
-        );
-        // When / Then
-        assert!(log.output("part").is_none());
-        let output = log.output("main").unwrap();
-        assert_eq!(output.value.as_object().unwrap().len(), 1);
-        assert_eq!(
-            output.value["worktree"]["branch"],
-            "releash/isolated/main-id-a1"
-        );
-    }
-}
-
-#[test]
-fn test_隔離合成子の成果_fanoutの失敗slotはignore以外をnullで残す() {
+fn test_隔離合成子の成果_fanoutのprocess終了だけでは成果を生成しない() {
     // Given
     let mut log = Log::new("  main: {worktree: isolated, fanout: {children: [failed, done]}}\n  failed: {command: 'true'}\n  done: {session: {provider: codex}}");
     log.start("main-id", "main", None, 1);
@@ -309,18 +278,16 @@ fn test_隔離合成子の成果_fanoutの失敗slotはignore以外をnullで残
     log.fact(
         "failed-id",
         NodeFact::ProcessExited(ProcessExitedFact {
+            failure_kind: None,
             exit_code: Some(1),
             result_summary: None,
             failure_reason: None,
-            failure_kind: None,
         }),
     );
     log.submit("done-id", None);
     log.stop("done-id");
     // When / Then
-    let output = log.output("main").unwrap();
-    assert_eq!(output.value["failed"], serde_json::Value::Null);
-    assert_eq!(output.value["done"], serde_json::Value::Null);
+    assert!(log.output("main").is_none());
 }
 
 #[test]
@@ -436,11 +403,19 @@ fn test_隔離合成子の成果_同じtimestampの遅延事実で完了順を�
     );
     log.fact(
         "failed-id",
+        NodeFact::ArtifactProduced(ArtifactProducedFact {
+            contract: None,
+            value: serde_json::json!({"ok": false, "exit_code": 1}),
+            request_id: None,
+        }),
+    );
+    log.fact(
+        "failed-id",
         NodeFact::ProcessExited(ProcessExitedFact {
-            exit_code: Some(1),
+            failure_kind: None,
+            exit_code: Some(0),
             result_summary: None,
             failure_reason: None,
-            failure_kind: None,
         }),
     );
     log.submit("done-id", None);
@@ -448,10 +423,10 @@ fn test_隔離合成子の成果_同じtimestampの遅延事実で完了順を�
     log.fact(
         "failed-id",
         NodeFact::ProcessExited(ProcessExitedFact {
-            exit_code: Some(1),
+            failure_kind: None,
+            exit_code: Some(0),
             result_summary: None,
             failure_reason: None,
-            failure_kind: None,
         }),
     );
     for record in &mut log.records {

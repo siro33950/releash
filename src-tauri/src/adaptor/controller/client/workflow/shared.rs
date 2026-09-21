@@ -665,33 +665,6 @@ pub(crate) fn register_shared(
         );
     }
     {
-        let runtime = deps.workflow_runtime_usecase.clone();
-        router.register_domain(
-            &["resume_workflow"],
-            Box::new(move |command| {
-                let runtime = runtime.clone();
-                Box::pin(async move {
-                    let wire::command_request::Command::ResumeWorkflow(args) = command else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move {
-                        let runtime = runtime
-                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        outcome(
-                            runtime::resume_workflow_shared(
-                                &runtime,
-                                convert(required(args.execution_id, "executionId")?)?,
-                            )
-                            .await,
-                        )
-                    }
-                    .await?;
-                    Ok(wire::command_result::Command::ResumeWorkflow(result))
-                })
-            }),
-        );
-    }
-    {
         let state = deps.app_state.clone();
         router.register_domain(
             &["save_facet"],
@@ -775,33 +748,6 @@ pub(crate) fn register_shared(
                     }
                     .await?;
                     Ok(wire::command_result::Command::StartWorkflow(result))
-                })
-            }),
-        );
-    }
-    {
-        let runtime = deps.workflow_runtime_usecase.clone();
-        router.register_domain(
-            &["stop_workflow"],
-            Box::new(move |command| {
-                let runtime = runtime.clone();
-                Box::pin(async move {
-                    let wire::command_request::Command::StopWorkflow(args) = command else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move {
-                        let runtime = runtime
-                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        outcome(
-                            runtime::stop_workflow_shared(
-                                &runtime,
-                                convert(required(args.execution_id, "executionId")?)?,
-                            )
-                            .await,
-                        )
-                    }
-                    .await?;
-                    Ok(wire::command_result::Command::StopWorkflow(result))
                 })
             }),
         );

@@ -47,6 +47,175 @@ fn definition(child_worktree: &str) -> String {
 }
 
 #[tokio::test]
+async fn test_delegate_child実行中の親再開とchild再開をまたいで継続先と再生が一致する() {
+    for lost_worktree in [false, true] {
+        let (fixture, root) = Fixture::with_repository();
+        let tree = fixture
+            .start_at(
+                &definition(if lost_worktree {
+                    "worktree: isolated, "
+                } else {
+                    ""
+                }),
+                &root,
+            )
+            .await;
+        let control = control(&fixture, &fixture.host);
+        let original_parent =
+            fixture.host.executions.lock().await[&tree].node_executions[0].clone();
+        submit(
+            &control,
+            &original_parent.id,
+            serde_json::json!({"passed": false}),
+        )
+        .await;
+        stop(&control, &tree, &original_parent).await;
+        let child = fixture.host.executions.lock().await[&tree]
+            .node_executions
+            .last()
+            .unwrap()
+            .clone();
+        let child_path = fixture.host.executions.lock().await[&tree]
+            .execution_worktree_path(&child.id)
+            .unwrap()
+            .to_string();
+        let mut parent = original_parent.clone();
+        for _ in 0..2 {
+            fixture
+                .sessions
+                .live_sessions
+                .lock()
+                .unwrap()
+                .remove(parent.session_id.as_ref().unwrap());
+            if lost_worktree {
+                std::fs::remove_dir_all(&parent.worktree.as_ref().unwrap().path).unwrap();
+            } else {
+                fixture
+                    .sessions
+                    .conversation_missing
+                    .store(true, Ordering::SeqCst);
+            }
+            control
+                .resume_session_node(
+                    crate::usecase::workflow::command::ResumeSessionNodeCommand {
+                        execution_id: tree.clone(),
+                        node_execution_id: parent.id.clone(),
+                    },
+                )
+                .await
+                .unwrap();
+            parent = fixture.host.executions.lock().await[&tree]
+                .node_executions
+                .last()
+                .unwrap()
+                .clone();
+        }
+        assert_eq!(parent.attempt, 3);
+        assert_eq!(
+            fixture.host.executions.lock().await[&tree].execution_worktree_path(&child.id),
+            Some(child_path.as_str())
+        );
+        let child = if lost_worktree {
+            child
+        } else {
+            fixture
+                .sessions
+                .live_sessions
+                .lock()
+                .unwrap()
+                .remove(child.session_id.as_ref().unwrap());
+            fixture
+                .sessions
+                .conversation_missing
+                .store(true, Ordering::SeqCst);
+            control
+                .resume_session_node(
+                    crate::usecase::workflow::command::ResumeSessionNodeCommand {
+                        execution_id: tree.clone(),
+                        node_execution_id: child.id.clone(),
+                    },
+                )
+                .await
+                .unwrap();
+            fixture.host.executions.lock().await[&tree]
+                .node_executions
+                .last()
+                .unwrap()
+                .clone()
+        };
+        fixture
+            .sessions
+            .conversation_missing
+            .store(false, Ordering::SeqCst);
+        submit(&control, &child.id, serde_json::json!({"passed": false})).await;
+        stop(&control, &tree, &child).await;
+        let live = fixture.host.executions.lock().await[&tree].clone();
+        assert_eq!(
+            live.node_execution(&child.id).unwrap().status,
+            NodeExecutionStatus::Succeeded
+        );
+        assert_eq!(child.parent.as_ref().unwrap().parent_id, original_parent.id);
+        assert!(live.pending_delegate_injections().is_empty());
+        let deliveries = fixture.sessions.continuations.lock().unwrap();
+        assert_eq!(deliveries.len(), 1);
+        assert_eq!(Some(&deliveries[0].0), parent.session_id.as_ref());
+        let delivered: serde_json::Value =
+            serde_json::from_str(deliveries[0].1.split_once("\n\n").unwrap().1).unwrap();
+        assert_eq!(
+            delivered["worktree"]["path"],
+            parent.worktree.as_ref().unwrap().path
+        );
+        drop(deliveries);
+        let folded = workflow_fact_log::fold_tree_from(
+            &workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone()),
+            &tree,
+        )
+        .unwrap()
+        .unwrap();
+        for id in [&original_parent.id, &parent.id, &child.id] {
+            let actual = folded.aggregate.node_execution(id).unwrap();
+            let expected = live.node_execution(id).unwrap();
+            assert_eq!(actual.status, expected.status);
+            assert_eq!(actual.artifact, expected.artifact);
+            assert_eq!(actual.completion_signals, expected.completion_signals);
+        }
+        assert!(folded.aggregate.pending_delegate_injections().is_empty());
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_submit受付_child起動の自動再試行待機より前に応答する() {
+    let fixture = Fixture::new(0);
+    let tree = fixture.start(&definition("")).await;
+    let control = control(&fixture, &fixture.host);
+    let parent = fixture.host.executions.lock().await[&tree].node_executions[0].clone();
+    stop(&control, &tree, &parent).await;
+    fixture
+        .sessions
+        .preparation_fails
+        .store(true, Ordering::SeqCst);
+    let before = tokio::time::Instant::now();
+    submit(&control, &parent.id, serde_json::json!({"passed": false})).await;
+    assert!(before.elapsed() < std::time::Duration::from_secs(1));
+    assert_eq!(
+        fixture.host.executions.lock().await[&tree]
+            .node_executions
+            .len(),
+        2
+    );
+    assert_eq!(fixture.host.startup_retries.lock().await.len(), 1);
+    fixture.wait_startup_retries().await;
+    let live = fixture.host.executions.lock().await[&tree].clone();
+    assert_eq!(
+        live.node_executions
+            .iter()
+            .filter(|node| node.node_name == "check")
+            .count(),
+        5
+    );
+}
+
+#[tokio::test]
 async fn test_delegate_注入を永続化して同じsessionへ戻しchildのworktreeを親から継承する() {
     for isolated in [false, true] {
         // Given
@@ -154,7 +323,7 @@ async fn test_delegate_注入を永続化して同じsessionへ戻しchildのwor
 }
 
 #[tokio::test]
-async fn test_delegate_結果注入の失敗は親の既存失敗経路へ進み注入済み事実を残さない() {
+async fn test_delegate_結果注入の失敗は親をrunningに保ち注入済み事実を残さない() {
     // Given
     let fixture = Fixture::new(0);
     let tree = fixture.start(&definition("")).await;
@@ -186,8 +355,8 @@ async fn test_delegate_結果注入の失敗は親の既存失敗経路へ進み
     .unwrap()
     .unwrap();
     let failed = folded.aggregate.node_execution(&parent.id).unwrap();
-    assert_eq!(failed.status, NodeExecutionStatus::Failed);
-    assert!(failed.can_retry());
+    assert_eq!(failed.status, NodeExecutionStatus::Running);
+    assert!(!failed.can_retry(crate::domain::workflow::NodeProcessPresence::ConfirmedAbsent));
 }
 
 #[tokio::test]
@@ -218,11 +387,7 @@ async fn test_delegate_再起動後のresumeは完了childを再実行せず未�
         .await;
         if injected_before {
             stop(&initial_control, &tree, &child).await;
-            fixture
-                .host
-                .stop_workflow_execution(&fixture.app, &tree)
-                .await
-                .unwrap();
+            fixture.sessions.live_sessions.lock().unwrap().clear();
         } else {
             workflow_fact_log::append_facts_for_events(
                 &fixture.store,
@@ -234,11 +399,17 @@ async fn test_delegate_再起動後のresumeは完了childを再実行せず未�
             )
             .unwrap();
         }
+        fixture.sessions.live_sessions.lock().unwrap().clear();
         let restored = fixture.restarted_host();
         restored.reconcile_startup(&fixture.app).await.unwrap();
         // When
         restored
-            .resume_workflow_execution(&fixture.app, &tree)
+            .resume_session_process(
+                &fixture.app,
+                &tree,
+                &parent.id,
+                parent.session_id.as_deref().unwrap(),
+            )
             .await
             .unwrap();
         // Then
@@ -355,12 +526,18 @@ async fn test_delegate_送信成功後の注入済み事実保存失敗からres
     connection
         .execute_batch("DROP TRIGGER fail_delegate_injected;")
         .unwrap();
+    fixture.sessions.live_sessions.lock().unwrap().clear();
     let restored = fixture.restarted_host();
     restored.reconcile_startup(&fixture.app).await.unwrap();
 
     // When
     restored
-        .resume_workflow_execution(&fixture.app, &tree)
+        .resume_session_process(
+            &fixture.app,
+            &tree,
+            &parent.id,
+            parent.session_id.as_deref().unwrap(),
+        )
         .await
         .unwrap();
 
@@ -392,19 +569,14 @@ async fn test_delegate_送信成功後の注入済み事実保存失敗からres
 }
 
 #[tokio::test]
-async fn test_delegate_共有worktreeでもresume時のprovider復元失敗は親をretry可能な失敗にする() {
+async fn test_delegate_共有worktreeでもresume時のprovider復元失敗は親のattemptを維持する() {
     // Given
     let fixture = Fixture::new(0);
     let tree = fixture
         .start(&definition("").replace("worktree: isolated, ", ""))
         .await;
-    let control = control(&fixture, &fixture.host);
     let parent = fixture.host.executions.lock().await[&tree].node_executions[0].clone();
-    fixture
-        .host
-        .stop_workflow_execution(&fixture.app, &tree)
-        .await
-        .unwrap();
+    fixture.sessions.live_sessions.lock().unwrap().clear();
     fixture
         .sessions
         .recovery_fails
@@ -412,7 +584,12 @@ async fn test_delegate_共有worktreeでもresume時のprovider復元失敗は�
     // When
     let result = fixture
         .host
-        .resume_workflow_execution(&fixture.app, &tree)
+        .resume_session_process(
+            &fixture.app,
+            &tree,
+            &parent.id,
+            parent.session_id.as_deref().unwrap(),
+        )
         .await;
     // Then
     assert!(result.is_err());
@@ -423,168 +600,10 @@ async fn test_delegate_共有worktreeでもresume時のprovider復元失敗は�
     .unwrap()
     .unwrap();
     let failed = folded.aggregate.node_execution(&parent.id).unwrap();
-    assert_eq!(failed.status, NodeExecutionStatus::Failed);
-    assert!(failed.can_retry());
+    assert_eq!(failed.status, NodeExecutionStatus::Running);
+    assert!(!failed.can_retry(crate::domain::workflow::NodeProcessPresence::ConfirmedAbsent));
     assert!(fixture.sessions.continuations.lock().unwrap().is_empty());
-    assert!(control
-        .submit_output(SubmitOutputCommand {
-            node_execution_id: parent.id,
-            artifact: None
-        })
-        .await
-        .is_err());
-}
-
-#[tokio::test]
-async fn test_delegate_注入時とresume時の復元と送信の失敗はon_failureと手動retryで新attemptを始める(
-) {
-    for resume in [false, true] {
-        for restore_fails in [false, true] {
-            for automatic_retry in [false, true] {
-                // Given
-                let fixture = Fixture::new(0);
-                let on_failure = if automatic_retry {
-                    "{on_failure: {retry: 1}}"
-                } else {
-                    "{}"
-                };
-                let nodes = format!(
-                    "  main: {{sequence: {{children: [{{implement: {on_failure}}}]}}}}\n{}",
-                    definition("").replacen("  main:", "  implement:", 1)
-                );
-                let tree = fixture.start(&nodes).await;
-                let initial_control = control(&fixture, &fixture.host);
-                let parent = fixture.host.executions.lock().await[&tree]
-                    .node_executions
-                    .iter()
-                    .find(|node| node.node_name == "implement")
-                    .unwrap()
-                    .clone();
-                submit(
-                    &initial_control,
-                    &parent.id,
-                    serde_json::json!({"passed": false}),
-                )
-                .await;
-                let child = fixture.host.executions.lock().await[&tree]
-                    .node_executions
-                    .last()
-                    .unwrap()
-                    .clone();
-                stop(&initial_control, &tree, &parent).await;
-                submit(
-                    &initial_control,
-                    &child.id,
-                    serde_json::json!({"passed": false}),
-                )
-                .await;
-                fixture
-                    .sessions
-                    .recovery_fails
-                    .store(restore_fails, Ordering::SeqCst);
-                fixture
-                    .sessions
-                    .continuation_fails
-                    .store(!restore_fails, Ordering::SeqCst);
-
-                // When
-                let host = if resume {
-                    workflow_fact_log::append_facts_for_events(
-                        &fixture.store,
-                        &[WorkflowEvent::NodeStopReceived {
-                            execution_id: tree.clone(),
-                            node_execution_id: child.id.clone(),
-                            timestamp: current_timestamp(),
-                        }],
-                    )
-                    .unwrap();
-                    let host = fixture.restarted_host();
-                    host.reconcile_startup(&fixture.app).await.unwrap();
-                    assert!(host
-                        .resume_workflow_execution(&fixture.app, &tree)
-                        .await
-                        .is_err());
-                    host
-                } else {
-                    stop(&initial_control, &tree, &child).await;
-                    fixture.host.clone()
-                };
-
-                // Then
-                let folded = workflow_fact_log::fold_tree_from(
-                    &workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone()),
-                    &tree,
-                )
-                .unwrap()
-                .unwrap();
-                let failed = folded.aggregate.node_execution(&parent.id).unwrap();
-                assert_eq!(failed.status, NodeExecutionStatus::Failed);
-                assert_eq!(failed.failure.as_ref().unwrap().origin, crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecutionFailureOrigin::Runtime);
-                assert_eq!(
-                    folded.aggregate.node_execution(&child.id).unwrap().status,
-                    NodeExecutionStatus::Succeeded
-                );
-                assert!(fixture.sessions.continuations.lock().unwrap().is_empty());
-                let records = workflow_fact_log::read_tree_records(&fixture.store, &tree).unwrap();
-                assert!(!records
-                    .iter()
-                    .any(|record| matches!(record.fact, NodeFact::DelegateResultInjected(_))));
-                fixture
-                    .sessions
-                    .recovery_fails
-                    .store(false, Ordering::SeqCst);
-                fixture
-                    .sessions
-                    .continuation_fails
-                    .store(false, Ordering::SeqCst);
-                if !automatic_retry {
-                    assert!(failed.can_retry());
-                    assert_eq!(
-                        folded
-                            .aggregate
-                            .node_executions
-                            .iter()
-                            .filter(|node| node.node_name == "implement")
-                            .count(),
-                        1
-                    );
-                    control(&fixture, &host)
-                        .retry_node(crate::usecase::workflow::command::RetryNodeCommand {
-                            execution_id: tree.clone(),
-                            node_execution_id: parent.id.clone(),
-                        })
-                        .await
-                        .unwrap();
-                }
-                let folded = workflow_fact_log::fold_tree_from(
-                    &workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone()),
-                    &tree,
-                )
-                .unwrap()
-                .unwrap();
-                let attempts: Vec<_> = folded
-                    .aggregate
-                    .node_executions
-                    .iter()
-                    .filter(|node| node.node_name == "implement")
-                    .collect();
-                assert_eq!(attempts.len(), 2);
-                assert_eq!(attempts[1].status, NodeExecutionStatus::Running);
-                assert_eq!(attempts[1].attempt, 2);
-                assert_ne!(attempts[1].id, parent.id);
-                assert_ne!(attempts[1].session_id, parent.session_id);
-                assert_ne!(attempts[1].worktree, parent.worktree);
-                assert!(attempts[1].artifact.is_none());
-                assert_eq!(fixture.sessions.prepared.lock().unwrap().len(), 3);
-                assert!(fixture
-                    .sessions
-                    .activated
-                    .lock()
-                    .unwrap()
-                    .contains(&attempts[1].id));
-            }
-        }
-    }
+    assert_eq!(failed.attempt, parent.attempt);
 }
 
 #[tokio::test]
@@ -729,16 +748,18 @@ async fn test_delegate_未完了childを持つ再起動resumeは既存childだ�
         .last()
         .unwrap()
         .clone();
-    fixture
-        .host
-        .stop_workflow_execution(&fixture.app, &tree)
-        .await
-        .unwrap();
+    fixture.sessions.live_sessions.lock().unwrap().clear();
+    fixture.sessions.live_sessions.lock().unwrap().clear();
     let restored = fixture.restarted_host();
     restored.reconcile_startup(&fixture.app).await.unwrap();
     // When
     restored
-        .resume_workflow_execution(&fixture.app, &tree)
+        .resume_session_process(
+            &fixture.app,
+            &tree,
+            &child.id,
+            child.session_id.as_deref().unwrap(),
+        )
         .await
         .unwrap();
     // Then
@@ -977,7 +998,7 @@ async fn test_delegate_child待ち中の再submitは状態拒否となり保存�
 }
 
 #[tokio::test]
-async fn test_delegate_child失敗の手動retryは親を待機させ注入と次の発火を再生と一致させる() {
+async fn test_delegate_childの新attemptへのresumeは親を待機させ注入と次の発火を再生と一致させる() {
     // Given
     let fixture = Fixture::new(0);
     let tree = fixture.start(&definition("")).await;
@@ -1000,12 +1021,15 @@ async fn test_delegate_child失敗の手動retryは親を待機させ注入と�
         )
         .await
         .unwrap();
+    fixture.sessions.live_sessions.lock().unwrap().clear();
     // When
     control
-        .retry_node(crate::usecase::workflow::command::RetryNodeCommand {
-            execution_id: tree.clone(),
-            node_execution_id: first.id.clone(),
-        })
+        .resume_session_node(
+            crate::usecase::workflow::command::ResumeSessionNodeCommand {
+                execution_id: tree.clone(),
+                node_execution_id: first.id.clone(),
+            },
+        )
         .await
         .unwrap();
     let retry = fixture.host.executions.lock().await[&tree]
@@ -1292,11 +1316,17 @@ schemas:
             .inputs,
         expected_inputs
     );
+    fixture.sessions.live_sessions.lock().unwrap().clear();
     let restored = fixture.restarted_host();
     restored.reconcile_startup(&fixture.app).await.unwrap();
     // When
     restored
-        .resume_workflow_execution(&fixture.app, &tree)
+        .resume_session_process(
+            &fixture.app,
+            &tree,
+            &parent.id,
+            parent.session_id.as_deref().unwrap(),
+        )
         .await
         .unwrap();
     submit(
@@ -1382,10 +1412,16 @@ async fn test_delegate_false_childが親stopより先に完了しても再開後
             .pending_delegate_injections()
             .is_empty());
         let restored = if interrupted {
+            fixture.sessions.live_sessions.lock().unwrap().clear();
             let restored = fixture.restarted_host();
             restored.reconcile_startup(&fixture.app).await.unwrap();
             restored
-                .resume_workflow_execution(&fixture.app, &tree)
+                .resume_session_process(
+                    &fixture.app,
+                    &tree,
+                    &parent.id,
+                    parent.session_id.as_deref().unwrap(),
+                )
                 .await
                 .unwrap();
             restored
@@ -1446,5 +1482,94 @@ async fn test_delegate_false_childが親stopより先に完了しても再開後
         let value: serde_json::Value =
             serde_json::from_str(delivered[0].1.split_once("\n\n").unwrap().1).unwrap();
         assert_eq!(value["child"]["passed"], false);
+    }
+}
+
+#[tokio::test]
+async fn test_delegate_新attemptのresumeでも未注入結果を送り再生後も注入済みになる() {
+    for lost_worktree in [false, true] {
+        // Given
+        let (fixture, root) = Fixture::with_repository();
+        let tree = fixture.start_at(&definition(""), &root).await;
+        let control = control(&fixture, &fixture.host);
+        let parent = fixture.host.executions.lock().await[&tree].node_executions[0].clone();
+        submit(&control, &parent.id, serde_json::json!({"passed": false})).await;
+        stop(&control, &tree, &parent).await;
+        let child = fixture.host.executions.lock().await[&tree]
+            .node_executions
+            .last()
+            .unwrap()
+            .clone();
+        submit(&control, &child.id, serde_json::json!({"passed": false})).await;
+        fixture
+            .sessions
+            .continuation_fails
+            .store(true, Ordering::SeqCst);
+        stop(&control, &tree, &child).await;
+        fixture.sessions.live_sessions.lock().unwrap().clear();
+        if lost_worktree {
+            std::fs::remove_dir_all(&parent.worktree.as_ref().unwrap().path).unwrap();
+        } else {
+            fixture
+                .sessions
+                .conversation_missing
+                .store(true, Ordering::SeqCst);
+        }
+        fixture
+            .sessions
+            .continuation_fails
+            .store(false, Ordering::SeqCst);
+        // When
+        control
+            .resume_session_node(
+                crate::usecase::workflow::command::ResumeSessionNodeCommand {
+                    execution_id: tree.clone(),
+                    node_execution_id: parent.id.clone(),
+                },
+            )
+            .await
+            .unwrap();
+        // Then
+        let live = fixture.host.executions.lock().await[&tree].clone();
+        let next = live.node_executions.last().unwrap();
+        assert_ne!(next.id, parent.id);
+        assert_eq!(next.attempt, 2);
+        assert_eq!(next.status, NodeExecutionStatus::Running);
+        assert!(live.pending_delegate_injections().is_empty());
+        let deliveries = fixture.sessions.continuations.lock().unwrap();
+        assert_eq!(deliveries.len(), 1);
+        assert_eq!(Some(&deliveries[0].0), next.session_id.as_ref());
+        let artifact: serde_json::Value =
+            serde_json::from_str(deliveries[0].1.split_once("\n\n").unwrap().1).unwrap();
+        assert_eq!(artifact["child"]["passed"], false);
+        drop(deliveries);
+        assert_eq!(
+            fixture.sessions.initial_instructions.lock().unwrap().len(),
+            3
+        );
+        let folded = workflow_fact_log::fold_tree_from(
+            &workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone()),
+            &tree,
+        )
+        .unwrap()
+        .unwrap();
+        let replayed = folded.aggregate.node_execution(&next.id).unwrap();
+        assert_eq!(replayed.status, next.status);
+        assert_eq!(replayed.session_id, next.session_id);
+        assert_eq!(replayed.attempt, next.attempt);
+        assert_eq!(replayed.worktree, next.worktree);
+        assert_eq!(replayed.artifact, next.artifact);
+        assert_eq!(replayed.completion_signals, next.completion_signals);
+        assert!(folded.aggregate.pending_delegate_injections().is_empty());
+        let records = workflow_fact_log::read_tree_records(&fixture.store, &tree).unwrap();
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| record.meta.node_name == "check"
+                    && matches!(record.fact, NodeFact::Started(_)))
+                .count(),
+            1
+        );
+        assert_eq!(records.iter().filter(|record| record.meta.node_execution_id == next.id && matches!(&record.fact, NodeFact::DelegateResultInjected(id) if id == &child.id)).count(), 1);
     }
 }

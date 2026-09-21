@@ -11,6 +11,12 @@ pub struct RetryNodeCommand {
     pub node_execution_id: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResumeSessionNodeCommand {
+    pub execution_id: String,
+    pub node_execution_id: String,
+}
+
 #[derive(Clone)]
 pub(crate) struct WorkflowRetryNodeUsecase {
     control_plane: WorkflowControlPlaneUsecase,

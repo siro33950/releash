@@ -14,10 +14,10 @@ use crate::domain::agent_session::{
 };
 use crate::usecase::agent_session::{
     AgentSessionChangeNotifier, AgentSessionExitUsecase, AgentSessionHistoryReadUsecase,
-    AgentSessionInitialInstructionUsecase, AgentSessionInterruptUsecase, AgentSessionLaunchUsecase,
-    AgentSessionLifecycleUsecase, AgentSessionQueryService, AgentSessionReadUsecase,
-    AgentSessionRenameUsecase, AgentSessionUsecase, ExecutionTreeCacheReleaseError,
-    ProviderAgentRuntime, ProviderAvailabilityUsecase, ProviderAvailabilityUsecaseError,
+    AgentSessionInitialInstructionUsecase, AgentSessionLaunchUsecase, AgentSessionLifecycleUsecase,
+    AgentSessionQueryService, AgentSessionReadUsecase, AgentSessionRenameUsecase,
+    AgentSessionUsecase, ExecutionTreeCacheReleaseError, ProviderAgentRuntime,
+    ProviderAvailabilityUsecase, ProviderAvailabilityUsecaseError,
     ProviderSessionTitleIngestionUsecase, StartedExecutionTreeRegistrar,
     StartedExecutionTreeRegistrationError,
 };
@@ -52,7 +52,6 @@ pub(crate) struct AgentSessionComposition {
     pub(crate) lifecycle_ingress: Arc<ProviderLifecycleIngressUsecase>,
     pub(crate) launch: Arc<AgentSessionLaunchUsecase>,
     pub(crate) initial_instruction: Arc<AgentSessionInitialInstructionUsecase>,
-    pub(crate) interrupt: Arc<AgentSessionInterruptUsecase>,
     pub(crate) lifecycle: Arc<AgentSessionLifecycleUsecase>,
     pub(crate) exit: Arc<AgentSessionExitUsecase>,
     pub(crate) read: Arc<AgentSessionReadUsecase>,
@@ -268,10 +267,6 @@ pub(crate) fn compose_agent_sessions(
         sessions.clone(),
         input.terminal.clone(),
     ));
-    let interrupt = Arc::new(AgentSessionInterruptUsecase::new(
-        sessions.clone(),
-        input.terminal.clone(),
-    ));
     let exit = Arc::new(AgentSessionExitUsecase::new(
         input.terminal,
         lifecycle.clone(),
@@ -289,7 +284,6 @@ pub(crate) fn compose_agent_sessions(
         lifecycle_ingress,
         launch,
         initial_instruction,
-        interrupt,
         lifecycle,
         exit,
         read,

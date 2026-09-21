@@ -188,3 +188,20 @@ export async function retryWorkspaceNode({
 		nodeId,
 	});
 }
+
+export async function resumeWorkspaceSessionNode({
+	worktreePath,
+	nodeId,
+}: {
+	worktreePath: string;
+	nodeId: string;
+}): Promise<WorkspaceNodeDetail | null> {
+	await invoke("resume_workspace_session_node", { worktreePath, nodeId });
+	window.dispatchEvent(
+		new CustomEvent("workspace-tree-refresh", { detail: { worktreePath } }),
+	);
+	return invoke("get_workspace_node_detail", {
+		worktreePath,
+		nodeId,
+	});
+}

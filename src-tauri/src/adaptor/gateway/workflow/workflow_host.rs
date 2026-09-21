@@ -20,6 +20,7 @@ pub(crate) mod execution_state;
 mod isolated_worktree;
 mod lifecycle_commands;
 pub(crate) mod node_settings;
+mod node_startup;
 pub(crate) mod output_limit;
 pub(crate) mod prompt_rendering;
 pub(crate) mod runtime_commit;
@@ -40,8 +41,7 @@ use crate::adaptor::gateway::workflow::node_session_boundary::{
 use crate::adaptor::gateway::workflow::secret_source;
 use crate::domain::workflow::entities::workflow_execution::{
     AppliedAdvance, LeafKind, LeafStart, NodeStart,
-    RuntimeNodeExecutionStatus as NodeExecutionStatus, RuntimeNodeResumePreviousState,
-    TransitionOutcome,
+    RuntimeNodeExecutionStatus as NodeExecutionStatus, TransitionOutcome,
 };
 use crate::domain::workflow::services::contract as workflow_contract;
 use crate::domain::workflow::services::reference as workflow_reference;
@@ -51,16 +51,15 @@ use crate::domain::workflow::RuntimeExecutionState;
 use crate::domain::workflow::WorkflowEvent;
 use crate::domain::workflow::WorkflowFacetContents;
 use crate::domain::workflow::{
-    ContractValidationResult, FailureClassification, FailureDisposition, NodeExecutionFailureKind,
+    ContractValidationResult, FailureClassification, NodeExecutionFailureKind,
     SchemaDef as DomainSchemaDef,
 };
 use crate::domain::workflow::{ExecutionTreeLaunch, NodeKindName, WorkflowDefinition};
 use crate::infrastructure::process::command_runner::{
-    self as workflow_command_runner, ActiveCommandHandle, CommandRunOutput, CommandRunnerError,
+    self as workflow_command_runner, CommandRunOutput, CommandRunnerError,
 };
 use crate::usecase::agent_session::{
-    AgentSessionInitialInstructionUsecase, AgentSessionInterruptUsecase, AgentSessionLaunchUsecase,
-    AgentSessionLifecycleUsecase,
+    AgentSessionInitialInstructionUsecase, AgentSessionLaunchUsecase, AgentSessionLifecycleUsecase,
 };
 use crate::usecase::workflow::runtime_driver::{
     self as workflow_runtime_driver, NodeOutcome, PreparedWorkflowTransaction,
@@ -84,6 +83,7 @@ use runtime_session as workflow_runtime_session;
 
 #[derive(Clone)]
 pub(crate) struct WorkflowRuntimeDependencies {
+    pub(crate) processes: Arc<dyn crate::domain::workflow::NodeProcessReader>,
     pub(crate) store: Option<Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>>,
     pub(crate) config: Option<Arc<dyn crate::domain::app_config::ConfigRepository>>,
     pub(crate) secrets: Option<Arc<dyn crate::domain::app_config::ConfigSecretRepository>>,
@@ -113,8 +113,9 @@ pub struct WorkflowRuntimeHost {
     /// Weak references keep session/fanout startup and stop/abort mutually exclusive without
     /// retaining one lock for every historical execution.
     runtime_activation_locks: Arc<Mutex<HashMap<String, Weak<RuntimeActivationGate>>>>,
+    startup_retries: Arc<Mutex<HashMap<String, node_startup::NodeStartupTask>>>,
     /// node_execution_id → active command process shutdown handle.
-    active_commands: Arc<Mutex<HashMap<String, ActiveCommandHandle>>>,
+    pub(crate) node_processes: Arc<super::node_process::WorkflowNodeProcesses>,
     command_admission: Arc<RwLock<crate::domain::application_lifecycle::CommandAdmission>>,
     /// node_execution_id → owning workflow execution_id.
     active_command_executions: Arc<Mutex<HashMap<String, String>>>,
@@ -376,6 +377,19 @@ impl WorkflowRuntimeHost {
         app: &WorkflowRuntimeDependencies,
         commit: crate::usecase::workflow::control_plane::WorkflowControlPlaneCommit,
     ) -> Result<RuntimeCommitSnapshot, WorkflowRuntimeError> {
+        let activation_gate = if commit
+            .workflow_events
+            .iter()
+            .any(|event| matches!(event, WorkflowEvent::NodeRetryRequested { .. }))
+        {
+            Some(self.runtime_activation_gate(&commit.execution_id).await)
+        } else {
+            None
+        };
+        let _activation_guard = match &activation_gate {
+            Some(gate) => Some(gate.lock.lock().await),
+            None => None,
+        };
         self.commit_control_plane_candidate(
             app,
             ControlPlaneCommitCandidate {
@@ -408,7 +422,6 @@ impl WorkflowRuntimeHost {
         workspace_query: Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
         agent_session_launch: Arc<AgentSessionLaunchUsecase>,
         agent_session_initial_instruction: Arc<AgentSessionInitialInstructionUsecase>,
-        agent_session_interrupt: Arc<AgentSessionInterruptUsecase>,
         agent_session_lifecycle: Arc<AgentSessionLifecycleUsecase>,
         provider_availability: Arc<dyn crate::domain::agent_session::ProviderAvailabilityReader>,
         isolated_worktrees: Arc<dyn crate::domain::workflow::IsolatedWorktreeGateway>,
@@ -420,7 +433,6 @@ impl WorkflowRuntimeHost {
             Arc::new(ProviderWorkflowAgentSessionPort::new(
                 agent_session_launch,
                 agent_session_initial_instruction,
-                agent_session_interrupt,
                 agent_session_lifecycle,
                 provider_availability,
             )),
@@ -440,7 +452,8 @@ impl WorkflowRuntimeHost {
             execution_tree_reservations: Arc::new(Mutex::new(HashSet::new())),
             execution_facet_contents: Arc::new(Mutex::new(HashMap::new())),
             runtime_activation_locks: Arc::new(Mutex::new(HashMap::new())),
-            active_commands: Arc::new(Mutex::new(HashMap::new())),
+            startup_retries: Arc::new(Mutex::new(HashMap::new())),
+            node_processes: Arc::new(Default::default()),
             command_admission: Arc::new(RwLock::new(Default::default())),
             active_command_executions: Arc::new(Mutex::new(HashMap::new())),
             command_completion_observers: Arc::new(Mutex::new(HashMap::new())),
@@ -859,7 +872,7 @@ impl WorkflowRuntimeHost {
         workflow_runtime_session::broadcast_state(app, &worktree_path, snapshot.clone()).await;
 
         // [04] post-commit: ExecutionStarted append 済みのため start primitive は既に受理。
-        //    初回 runtime 起動失敗は Failed 状態遷移として観測し、
+        //    初回 runtime 起動失敗は事実として記録し、
         //    start primitive は Ok(execution_id) を返す（spec [04]『command 受理境界』Rule）。
         if let crate::domain::workflow::entities::workflow_execution::ExecutionAdvanceDecision::StartNodes(leaves) =
             applied.decision
@@ -916,90 +929,6 @@ impl WorkflowRuntimeHost {
             .await
     }
 
-    async fn restart_paused_command_node(
-        &self,
-        app: &WorkflowRuntimeDependencies,
-        execution_id: &str,
-        node_execution_id: &str,
-    ) -> Result<(), WorkflowRuntimeError> {
-        self.restart_workflow_command_node(app, execution_id, node_execution_id)
-            .await
-    }
-
-    async fn restart_workflow_command_node(
-        &self,
-        app: &WorkflowRuntimeDependencies,
-        execution_id: &str,
-        node_execution_id: &str,
-    ) -> Result<(), WorkflowRuntimeError> {
-        let timestamp = current_timestamp();
-        let new_node_execution_id = new_node_execution_id();
-        let (snapshot_before, mut candidate, worktree_path) = {
-            let executions = self.executions.lock().await;
-            let current = executions
-                .get(execution_id)
-                .ok_or_else(|| WorkflowRuntimeError::ExecutionNotFound(execution_id.to_string()))?;
-            (
-                current.clone(),
-                current.clone(),
-                current.worktree_path.clone(),
-            )
-        };
-        let restarted = candidate
-            .restart_node_attempt_at(
-                node_execution_id,
-                new_node_execution_id,
-                timestamp,
-                crate::domain::workflow::entities::workflow_execution::NodeRestartMode::CommandResume,
-            )
-            .ok_or_else(|| {
-                WorkflowRuntimeError::InvalidState(format!(
-                    "node execution '{node_execution_id}' is not a paused Command retry target"
-                ))
-            })?;
-        let new_attempt = restarted.attempt;
-        let events = vec![
-            WorkflowEvent::NodeRetryRequested {
-                execution_id: execution_id.to_string(),
-                node_execution_id: node_execution_id.to_string(),
-                timestamp,
-            },
-            WorkflowEvent::NodeStarted {
-                execution_id: execution_id.to_string(),
-                node_execution_id: new_attempt.id.clone(),
-                node_name: new_attempt.node_name.clone(),
-                kind: new_attempt.kind,
-                attempt: new_attempt.attempt,
-                parent: new_attempt.parent.clone(),
-                timestamp,
-            },
-        ];
-        let snapshot = self
-            .commit_control_plane_candidate(
-                app,
-                ControlPlaneCommitCandidate {
-                    execution_id,
-                    snapshot_before,
-                    candidate,
-                    transition_outcome: TransitionOutcome::Applied,
-                    events: &events,
-                    provider_events: Vec::new(),
-                },
-            )
-            .await?;
-        self.finish_control_plane_commit(
-            app,
-            &worktree_path,
-            &snapshot,
-            Some(NodeOutcome::StartNodes(
-                Box::new(snapshot.clone()),
-                vec![NodeStart::Leaf(restarted.leaf)],
-            )),
-        )
-        .await?;
-        Ok(())
-    }
-
     async fn commit_control_plane_candidate(
         &self,
         app: &WorkflowRuntimeDependencies,
@@ -1030,6 +959,29 @@ impl WorkflowRuntimeHost {
         let current = executions
             .get_mut(execution_id)
             .ok_or_else(|| WorkflowRuntimeError::ExecutionNotFound(execution_id.to_string()))?;
+        for event in events {
+            if let WorkflowEvent::NodeRetryRequested {
+                node_execution_id, ..
+            } = event
+            {
+                let node = current.node_execution(node_execution_id).ok_or_else(|| {
+                    WorkflowRuntimeError::Conflict("Node attempt no longer exists".into())
+                })?;
+                let presence = crate::domain::workflow::NodeProcessReader::presence(
+                    self.node_processes.as_ref(),
+                    &current.worktree_path,
+                    node_execution_id,
+                    node.kind,
+                    node.session_id.as_deref(),
+                )
+                .map_err(|error| WorkflowRuntimeError::InvalidState(error.to_string()))?;
+                if presence != crate::domain::workflow::NodeProcessPresence::ConfirmedAbsent {
+                    return Err(WorkflowRuntimeError::InvalidState(
+                        "Node process must be absent before a new attempt can be committed".into(),
+                    ));
+                }
+            }
+        }
         let launched_as = current.launched_as;
         let persisted = transaction
             .persist_async(current, |events| async move {
@@ -1256,13 +1208,29 @@ impl WorkflowRuntimeHost {
         worktree_path: &str,
         starts: Vec<NodeStart>,
     ) -> Result<(), WorkflowRuntimeError> {
+        let failed = self
+            .start_nodes_once(app, execution_id, worktree_path, starts)
+            .await?;
+        self.schedule_startup_retries(app, execution_id, worktree_path, failed)
+            .await;
+        Ok(())
+    }
+
+    async fn start_nodes_once(
+        &self,
+        app: &WorkflowRuntimeDependencies,
+        execution_id: &str,
+        worktree_path: &str,
+        starts: Vec<NodeStart>,
+    ) -> Result<Vec<String>, WorkflowRuntimeError> {
         if starts.is_empty() {
-            return Ok(());
+            return Ok(Vec::new());
         }
         let (preparations, mut injections) = isolated_worktree::partition_actions(starts);
         let prepared = self
             .prepare_isolated_starts(app, execution_id, worktree_path, preparations)
             .await?;
+        let mut failed = prepared.failed;
         injections.extend(prepared.injections);
         for injection in injections {
             if let Err(error) = self
@@ -1280,7 +1248,7 @@ impl WorkflowRuntimeHost {
         }
         let leaves = prepared.leaves;
         if leaves.is_empty() {
-            return Ok(());
+            return Ok(failed);
         }
         let (workflow, attempts_by_id) = {
             let executions = self.executions.lock().await;
@@ -1315,11 +1283,17 @@ impl WorkflowRuntimeHost {
                 })?;
             let execution_worktree_path = {
                 let executions = self.executions.lock().await;
-                executions
-                    .get(&execution_id)
-                    .and_then(|execution| {
-                        execution.execution_worktree_path(&leaf.node_execution_id)
-                    })
+                let Some(execution) = executions.get(&execution_id) else {
+                    continue;
+                };
+                if !execution
+                    .node_execution(&leaf.node_execution_id)
+                    .is_some_and(|node| node.status == NodeExecutionStatus::Running)
+                {
+                    continue;
+                }
+                execution
+                    .execution_worktree_path(&leaf.node_execution_id)
                     .map(str::to_string)
                     .ok_or_else(|| {
                         WorkflowRuntimeError::InvalidState(
@@ -1521,7 +1495,30 @@ impl WorkflowRuntimeHost {
         }
         drop(activation_guard);
         drop(activation_gate);
+        for (node_execution_id, _) in activated_sessions {
+            let injection = self
+                .executions
+                .lock()
+                .await
+                .get(&execution_id)
+                .and_then(|execution| execution.pending_delegate_injection(&node_execution_id));
+            if let Some(injection) = injection {
+                if let Err(error) = self
+                    .inject_delegate_result(app, &execution_id, &injection)
+                    .await
+                {
+                    self.settle_runtime_failure_for_node(
+                        app,
+                        &execution_id,
+                        &node_execution_id,
+                        &error,
+                    )
+                    .await?;
+                }
+            }
+        }
         for (node_execution_id, error) in session_failures {
+            failed.push(node_execution_id.clone());
             self.settle_runtime_failure_for_node(app, &execution_id, &node_execution_id, &error)
                 .await?;
         }
@@ -1540,6 +1537,7 @@ impl WorkflowRuntimeHost {
                 ),
             };
             if let Err(error) = result {
+                failed.push(node_execution_id.clone());
                 self.settle_runtime_failure_for_node(
                     app,
                     &execution_id,
@@ -1552,7 +1550,7 @@ impl WorkflowRuntimeHost {
                 );
             }
         }
-        Ok(())
+        Ok(failed)
     }
 
     async fn rollback_prepared_sessions(
@@ -1615,9 +1613,10 @@ impl WorkflowRuntimeHost {
                 },
             );
             if let Ok(running) = &spawn_result {
-                self.active_commands
+                self.node_processes
+                    .active_commands
                     .lock()
-                    .await
+                    .expect("command process registry poisoned")
                     .insert(input.node_execution_id.clone(), running.handle());
                 self.active_command_executions
                     .lock()
@@ -1651,9 +1650,10 @@ impl WorkflowRuntimeHost {
             Ok(true) => {}
             Ok(false) => {
                 running.handle().request_shutdown();
-                self.active_commands
+                self.node_processes
+                    .active_commands
                     .lock()
-                    .await
+                    .expect("command process registry poisoned")
                     .remove(&input.node_execution_id);
                 self.active_command_executions
                     .lock()
@@ -1663,9 +1663,10 @@ impl WorkflowRuntimeHost {
             }
             Err(error) => {
                 running.handle().request_shutdown();
-                self.active_commands
+                self.node_processes
+                    .active_commands
                     .lock()
-                    .await
+                    .expect("command process registry poisoned")
                     .remove(&input.node_execution_id);
                 self.active_command_executions
                     .lock()
@@ -1720,9 +1721,10 @@ impl WorkflowRuntimeHost {
         input: CommandExecutionInput,
         output: Result<CommandRunOutput, CommandRunnerError>,
     ) {
-        self.active_commands
+        self.node_processes
+            .active_commands
             .lock()
-            .await
+            .expect("command process registry poisoned")
             .remove(&input.node_execution_id);
         self.active_command_executions
             .lock()
@@ -1945,7 +1947,13 @@ impl WorkflowRuntimeHost {
     }
 
     async fn shutdown_active_command_execution(&self, node_execution_id: &str) {
-        if let Some(handle) = self.active_commands.lock().await.remove(node_execution_id) {
+        if let Some(handle) = self
+            .node_processes
+            .active_commands
+            .lock()
+            .expect("command process registry poisoned")
+            .remove(node_execution_id)
+        {
             handle.request_shutdown();
         }
         let observer = self
@@ -1989,10 +1997,14 @@ impl WorkflowRuntimeHost {
     }
 
     pub(crate) async fn shutdown_all_active_commands(&self) {
+        self.command_admission.write().await.stop();
+        self.shutdown_startup_retries().await;
         let commands = {
-            let mut command_admission = self.command_admission.write().await;
-            command_admission.stop();
-            let active_commands = self.active_commands.lock().await;
+            let active_commands = self
+                .node_processes
+                .active_commands
+                .lock()
+                .expect("command process registry poisoned");
             active_commands
                 .iter()
                 .map(|(node_execution_id, handle)| (node_execution_id.clone(), handle.clone()))
@@ -2030,7 +2042,11 @@ impl WorkflowRuntimeHost {
             .map(|(node_execution_id, _)| node_execution_id)
             .collect::<Vec<_>>();
         {
-            let mut active_commands = self.active_commands.lock().await;
+            let mut active_commands = self
+                .node_processes
+                .active_commands
+                .lock()
+                .expect("command process registry poisoned");
             for node_execution_id in &node_execution_ids {
                 active_commands.remove(node_execution_id);
             }
@@ -2270,7 +2286,7 @@ impl WorkflowRuntimeHost {
     ) -> Result<(), WorkflowRuntimeError> {
         let command_admission = self.command_admission.read().await;
         let timestamp = current_timestamp();
-        let (snapshot_before, mut candidate, node_name, attempt, session_id, is_fanout_child) = {
+        let (snapshot_before, candidate, node_name, attempt) = {
             let executions = self.executions.lock().await;
             let execution = executions
                 .get(execution_id)
@@ -2295,39 +2311,9 @@ impl WorkflowRuntimeHost {
                 execution.clone(),
                 node.node_name.clone(),
                 node.attempt,
-                node.session_id.clone(),
-                node.is_fanout_child(),
             )
         };
-        let transition = candidate.fail_leaf_execution(
-            node_execution_id,
-            reason.clone(),
-            failure_kind,
-            FailureDisposition::Terminal,
-            timestamp,
-        );
-        if transition
-            != crate::domain::workflow::entities::workflow_execution::TransitionOutcome::Applied
-        {
-            return Ok(());
-        }
-        if !is_fanout_child {
-            candidate.record_history_entry(
-                crate::domain::workflow::NodeHistoryEntry {
-                    node_name: node_name.clone(),
-                    completed_at: timestamp,
-                    result: Some(reason.clone()),
-                    session_id,
-                    token_usage: None,
-                    artifact: None,
-                    attempt,
-                    fanout_children: None,
-                    state: crate::domain::workflow::NODE_STATUS_FAILED.to_string(),
-                },
-                timestamp,
-            );
-        }
-        let mut events = vec![WorkflowEvent::NodeFailed {
+        let events = vec![WorkflowEvent::NodeFailed {
             execution_id: execution_id.to_string(),
             node_execution_id: node_execution_id.to_string(),
             node_name,
@@ -2337,31 +2323,6 @@ impl WorkflowRuntimeHost {
             retry_count: None,
             timestamp,
         }];
-        // children エントリの on_failure（自動 retry / ignore）。決定と適用は
-        // domain が所有し、NodeFailed と同一バッチで事実を追記する。
-        let candidate_before_treatment = candidate.clone();
-        let mut new_id = new_node_execution_id;
-        let treatment =
-            match candidate.apply_on_failure_treatment(node_execution_id, &mut new_id, timestamp) {
-                Ok(treatment) => treatment,
-                Err(error) => {
-                    log::warn!(
-                        "workflow {execution_id}: on_failure treatment was not applied: {error}"
-                    );
-                    None
-                }
-            };
-        let treatment_applied = treatment.is_some();
-        if !treatment_applied {
-            // 処遇が得られなかった場合（Err / 防御分岐の None）は、途中まで適用された
-            // 状態変化が対応イベントなしで commit されないよう処遇前へ戻す。
-            candidate = candidate_before_treatment;
-        }
-        let mut leaves = Vec::new();
-        if let Some(treatment) = treatment {
-            events.extend(treatment.events);
-            leaves = treatment.starts;
-        }
         let snapshot = self
             .commit_control_plane_candidate(
                 app,
@@ -2369,22 +2330,14 @@ impl WorkflowRuntimeHost {
                     execution_id,
                     snapshot_before,
                     candidate,
-                    transition_outcome: TransitionOutcome::Applied,
+                    transition_outcome: TransitionOutcome::AlreadyApplied,
                     events: &events,
                     provider_events: Vec::new(),
                 },
             )
             .await?;
-        let outcome = if !leaves.is_empty() {
-            Some(NodeOutcome::StartNodes(Box::new(snapshot.clone()), leaves))
-        } else if treatment_applied {
-            // ignore 前進が leaf 起動なしで完了へ到達した場合も finalize を通す。
-            Some(NodeOutcome::Persist)
-        } else {
-            None
-        };
         drop(command_admission);
-        self.finish_control_plane_commit(app, &snapshot.worktree_path, &snapshot, outcome)
+        self.finish_control_plane_commit(app, &snapshot.worktree_path, &snapshot, None)
             .await?;
         Ok(())
     }
@@ -2461,8 +2414,8 @@ mod workflow_host_tests {
         ProviderKind, ProviderLifecycleEvent, ProviderLifecycleScope, ScopedProviderLifecycleEvent,
     };
     use crate::domain::workflow::{
-        ChildEntry, CommandSpec, ExecutionParentRef, ExecutionTreeLaunch, FacetRefs, FanoutSpec,
-        NodeCompletion, NodeDefinition, NodeFact, NodeFactMeta, NodeKind, SequenceSpec,
+        ChildEntry, ExecutionParentRef, ExecutionTreeLaunch, FacetRefs, NodeCompletion,
+        NodeDefinition, NodeFact, NodeFactMeta, NodeKind, SequenceSpec,
         SessionExecutionTreeRootFacts, SessionPermission, SessionSpec, StartedFact, TreeRootFact,
         WorkflowDefinition,
     };
@@ -2527,7 +2480,6 @@ mod workflow_host_tests {
         prepare_calls: Arc<std::sync::Mutex<Vec<(String, String, WorkflowSessionLaunchConfig)>>>,
         provider_running_checks: Arc<std::sync::Mutex<Vec<(String, String)>>>,
         recovery_fails: Arc<std::sync::atomic::AtomicBool>,
-        dispatch_fails: Arc<std::sync::atomic::AtomicBool>,
         failing_agent_session_id: String,
     }
 
@@ -2535,7 +2487,12 @@ mod workflow_host_tests {
     async fn test_command完了_承認要求ありなら承認後に完了し省略時は自動完了する() {
         // Given
         for parent in ["", "  main:\n    sequence: {children: [run]}\n"] {
-            for completion in ["", "    completion: {require: approval}\n"] {
+            for (completion, exit_code) in [
+                ("", 0),
+                ("", 7),
+                ("    completion: {require: approval}\n", 0),
+                ("    completion: {require: approval}\n", 7),
+            ] {
                 let require_approval = !completion.is_empty();
                 let directory = tempfile::tempdir().unwrap();
                 let store = LocalEventStore::open(LocalEventStoreConfig::production(
@@ -2617,7 +2574,7 @@ mod workflow_host_tests {
                     &app,
                     input,
                     CommandRunOutput {
-                        exit_code: 0,
+                        exit_code,
                         stdout: "command finished".to_string(),
                         stderr: String::new(),
                         duration_ms: 10,
@@ -2630,7 +2587,7 @@ mod workflow_host_tests {
                 let records = workflow_fact_log::read_tree_records(&store, &execution_id).unwrap();
                 assert!(records.iter().any(|record| matches!(
                     &record.fact,
-                    NodeFact::ArtifactProduced(fact) if record.meta.node_execution_id == node_execution_id && fact.value["stdout"] == "command finished" && fact.value["ok"] == true
+                    NodeFact::ArtifactProduced(fact) if record.meta.node_execution_id == node_execution_id && fact.value["stdout"] == "command finished" && fact.value["ok"] == (exit_code == 0)
                 )));
                 assert!(!records
                     .iter()
@@ -2700,11 +2657,22 @@ mod workflow_host_tests {
                     .node_executions
                     .iter()
                     .all(|node| node.status == NodeExecutionStatusView::Succeeded));
+                let folded = workflow_fact_log::fold_tree_from(
+                    &workflow_fact_log::FactLogReadBackend::Live(store.clone()),
+                    &execution_id,
+                )
+                .unwrap()
+                .unwrap();
+                let replayed = folded.aggregate.node_execution(&node_execution_id).unwrap();
+                assert_eq!(replayed.status, NodeExecutionStatus::Succeeded);
+                assert_eq!(replayed.artifact.as_ref().unwrap()["ok"], exit_code == 0);
+                assert_eq!(replayed.artifact.as_ref().unwrap()["exit_code"], exit_code);
+                assert_eq!(*folded.aggregate.state(), RuntimeExecutionState::Completed);
             }
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn test_command_env_未束縛inputではprocessを起動せずnode_failureにする() {
         let directory = tempfile::tempdir().unwrap();
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
@@ -2745,11 +2713,12 @@ nodes:
             .unwrap();
 
         assert!(!directory.path().join("command-spawned.marker").exists());
+        test_helpers::wait_startup_retries(&host).await;
         let snapshot = host.get_state_by_execution_id(&execution_id).await.unwrap();
-        assert_eq!(snapshot.node_executions.len(), 1);
+        assert_eq!(snapshot.node_executions.len(), 5);
         assert_eq!(
-            snapshot.node_executions[0].status,
-            NodeExecutionStatus::Failed
+            snapshot.node_executions.last().unwrap().status,
+            NodeExecutionStatus::Running
         );
         let records = workflow_fact_log::read_tree_records(&store, &execution_id).unwrap();
         assert!(records.iter().any(|record| matches!(
@@ -2766,13 +2735,18 @@ nodes:
         .unwrap()
         .unwrap();
         assert_eq!(
-            restored.aggregate.node_executions[0].status,
-            NodeExecutionStatus::Failed
+            restored.aggregate.node_executions.last().unwrap().status,
+            NodeExecutionStatus::Running
         );
-        assert!(restored.aggregate.node_executions[0].can_retry());
+        assert!(restored
+            .aggregate
+            .node_executions
+            .last()
+            .unwrap()
+            .can_retry(crate::domain::workflow::NodeProcessPresence::ConfirmedAbsent));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn test_command_env_nulによるspawn失敗を既存node_failureにする() {
         let directory = tempfile::tempdir().unwrap();
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
@@ -2824,9 +2798,10 @@ nodes:
             snapshot
                 .node_executions
                 .iter()
+                .rev()
                 .find(|node| node.node_name == "run")
                 .map(|node| node.status),
-            Some(NodeExecutionStatus::Failed)
+            Some(NodeExecutionStatus::Running)
         );
         let records = workflow_fact_log::read_tree_records(&store, &execution_id).unwrap();
         assert!(records.iter().any(|record| matches!(
@@ -2846,14 +2821,22 @@ nodes:
             .aggregate
             .node_executions
             .iter()
+            .rev()
             .find(|node| node.node_name == "run")
             .unwrap();
-        assert_eq!(failed.status, NodeExecutionStatus::Failed);
-        assert!(failed.can_retry());
+        assert_eq!(failed.status, NodeExecutionStatus::Running);
+        assert!(failed.can_retry(crate::domain::workflow::NodeProcessPresence::ConfirmedAbsent));
     }
 
     #[async_trait::async_trait]
     impl WorkflowAgentSessionPort for FailingWorkflowAgentSessions {
+        async fn has_recoverable_conversation(
+            &self,
+            _id: &str,
+        ) -> Result<bool, WorkflowRuntimeError> {
+            Ok(true)
+        }
+
         fn is_provider_available(&self, _provider: ProviderKind) -> bool {
             true
         }
@@ -2887,15 +2870,6 @@ nodes:
             unreachable!()
         }
 
-        async fn dispatch_initial_instruction(
-            &self,
-            _node_session_id: &str,
-            _node_execution_id: &str,
-            _instruction: &str,
-        ) -> Result<(), WorkflowRuntimeError> {
-            unreachable!()
-        }
-
         async fn dispatch_continuation(
             &self,
             _node_session_id: &str,
@@ -2909,13 +2883,6 @@ nodes:
             &self,
             _node_session_id: &str,
             _node_execution_id: &str,
-        ) -> Result<(), WorkflowRuntimeError> {
-            unreachable!()
-        }
-
-        async fn interrupt_workflow_agent_session(
-            &self,
-            _node_session_id: &str,
         ) -> Result<(), WorkflowRuntimeError> {
             unreachable!()
         }
@@ -2944,7 +2911,6 @@ nodes:
             stop_calls: Arc<std::sync::Mutex<Vec<(String, String)>>>,
             provider_running_checks: Arc<std::sync::Mutex<Vec<(String, String)>>>,
             recovery_fails: Arc<std::sync::atomic::AtomicBool>,
-            dispatch_fails: Arc<std::sync::atomic::AtomicBool>,
             failing_agent_session_id: String,
         ) -> Arc<dyn WorkflowAgentSessionPort> {
             Arc::new(RecordingWorkflowAgentSessions {
@@ -2952,502 +2918,19 @@ nodes:
                 prepare_calls: Arc::new(std::sync::Mutex::new(Vec::new())),
                 provider_running_checks,
                 recovery_fails,
-                dispatch_fails,
                 failing_agent_session_id,
             })
         }
 
-        const RESUME_PAUSED_SIBLING_NODES: [(&str, NodeKindName); 3] = [
-            ("resume-paused-sequence", NodeKindName::Sequence),
-            ("resume-paused-fanout", NodeKindName::Fanout),
-            ("resume-paused-command", NodeKindName::Command),
-        ];
-
-        fn resume_paused_sibling_definitions(child_node_name: &str) -> Vec<NodeDefinition> {
-            vec![
-                NodeDefinition {
-                    name: RESUME_PAUSED_SIBLING_NODES[0].0.to_string(),
-                    kind: NodeKind::Sequence(SequenceSpec {
-                        entry: None,
-                        children: vec![ChildEntry::reference(child_node_name)],
-                    }),
-                    artifact: None,
-                    input: Vec::new(),
-                    completion: NodeCompletion::default(),
-                    worktree: None,
-                },
-                NodeDefinition {
-                    name: RESUME_PAUSED_SIBLING_NODES[1].0.to_string(),
-                    kind: NodeKind::Fanout(FanoutSpec {
-                        children: vec![ChildEntry::reference(child_node_name)],
-                        items: None,
-                    }),
-                    artifact: None,
-                    input: Vec::new(),
-                    completion: NodeCompletion::default(),
-                    worktree: None,
-                },
-                NodeDefinition {
-                    name: RESUME_PAUSED_SIBLING_NODES[2].0.to_string(),
-                    kind: NodeKind::Command(CommandSpec {
-                        command: "unused".to_string(),
-                        env: Default::default(),
-                    }),
-                    artifact: None,
-                    input: Vec::new(),
-                    completion: NodeCompletion::default(),
-                    worktree: None,
-                },
-            ]
-        }
-
-        #[derive(Debug, Clone, Copy)]
-        enum ResumeCommitFailureMode {
-            StaleCandidate,
-            Persistence,
-            PersistenceWithCompensationFailure,
-        }
-
-        #[derive(Clone)]
-        struct ResumeCommitFailureBinding {
-            host: std::sync::Weak<WorkflowRuntimeHost>,
-            store: Arc<LocalEventStore>,
-            execution_id: String,
-            database_path: std::path::PathBuf,
-        }
-
-        struct ResumeCommitFailureWorkflowAgentSessions {
-            mode: ResumeCommitFailureMode,
-            binding: std::sync::Mutex<Option<ResumeCommitFailureBinding>>,
-            provider_launches: std::sync::atomic::AtomicUsize,
-            recovery_calls: std::sync::atomic::AtomicUsize,
-        }
-
-        #[derive(Clone)]
-        struct PartialRecoveryBinding {
-            store: Arc<LocalEventStore>,
-            execution_id: String,
-            database_path: std::path::PathBuf,
-        }
-
-        struct PartialRecoveryWorkflowAgentSessions {
-            binding: std::sync::Mutex<Option<PartialRecoveryBinding>>,
-            open_sessions: std::sync::Mutex<HashSet<String>>,
-            failing_node_execution_id: std::sync::Mutex<Option<String>>,
-            failure_enabled: std::sync::atomic::AtomicBool,
-            compensation_fails: std::sync::atomic::AtomicBool,
-            persist_resumes: std::sync::atomic::AtomicBool,
-            provider_launches: std::sync::Mutex<HashMap<String, usize>>,
-            recovery_calls: std::sync::Mutex<Vec<(String, String)>>,
-        }
-
-        impl PartialRecoveryWorkflowAgentSessions {
-            fn new() -> Self {
-                Self {
-                    binding: std::sync::Mutex::new(None),
-                    open_sessions: std::sync::Mutex::new(HashSet::new()),
-                    failing_node_execution_id: std::sync::Mutex::new(None),
-                    failure_enabled: std::sync::atomic::AtomicBool::new(true),
-                    compensation_fails: std::sync::atomic::AtomicBool::new(false),
-                    persist_resumes: std::sync::atomic::AtomicBool::new(true),
-                    provider_launches: std::sync::Mutex::new(HashMap::new()),
-                    recovery_calls: std::sync::Mutex::new(Vec::new()),
-                }
-            }
-
-            fn bind(
-                &self,
-                store: Arc<LocalEventStore>,
-                execution_id: &str,
-                database_path: std::path::PathBuf,
-            ) {
-                *self.binding.lock().unwrap() = Some(PartialRecoveryBinding {
-                    store,
-                    execution_id: execution_id.to_string(),
-                    database_path,
-                });
-            }
-
-            fn close_all(&self) {
-                self.open_sessions.lock().unwrap().clear();
-            }
-
-            fn fail_on(&self, node_execution_id: &str) {
-                *self.failing_node_execution_id.lock().unwrap() =
-                    Some(node_execution_id.to_string());
-            }
-
-            fn allow_recovery(&self) {
-                self.failure_enabled
-                    .store(false, std::sync::atomic::Ordering::SeqCst);
-            }
-
-            fn fail_compensation(&self) {
-                self.compensation_fails
-                    .store(true, std::sync::atomic::Ordering::SeqCst);
-            }
-
-            fn skip_persisted_resume(&self) {
-                self.persist_resumes
-                    .store(false, std::sync::atomic::Ordering::SeqCst);
-            }
-
-            fn is_open(&self, session_id: &str) -> bool {
-                self.open_sessions.lock().unwrap().contains(session_id)
-            }
-
-            fn provider_launch_count(&self, session_id: &str) -> usize {
-                self.provider_launches
-                    .lock()
-                    .unwrap()
-                    .get(session_id)
-                    .copied()
-                    .unwrap_or(0)
-            }
-
-            fn append_provider_resume(&self, node_execution_id: &str) {
-                let binding = self.binding.lock().unwrap().clone().unwrap();
-                let records =
-                    workflow_fact_log::read_tree_records(&binding.store, &binding.execution_id)
-                        .unwrap();
-                let meta = records
-                    .iter()
-                    .find(|record| record.meta.node_execution_id == node_execution_id)
-                    .unwrap()
-                    .meta
-                    .clone();
-                workflow_fact_log::append_single_fact(
-                    &binding.store,
-                    &meta,
-                    &NodeFact::ResumeRequested,
-                    records.last().unwrap().timestamp_ms + 1,
-                )
-                .unwrap();
-            }
-        }
-
-        impl ResumeCommitFailureWorkflowAgentSessions {
-            fn new(mode: ResumeCommitFailureMode) -> Self {
-                Self {
-                    mode,
-                    binding: std::sync::Mutex::new(None),
-                    provider_launches: std::sync::atomic::AtomicUsize::new(0),
-                    recovery_calls: std::sync::atomic::AtomicUsize::new(0),
-                }
-            }
-
-            fn bind(&self, fixture: &RuntimeEffectFixture) {
-                *self.binding.lock().unwrap() = Some(ResumeCommitFailureBinding {
-                    host: Arc::downgrade(&fixture.host),
-                    store: fixture.store.clone(),
-                    execution_id: fixture.execution_id.clone(),
-                    database_path: fixture._directory.path().join("local-event-store.sqlite3"),
-                });
-            }
-
-            fn clear_persistence_failure(&self) {
-                let binding = self.binding.lock().unwrap().clone().unwrap();
-                rusqlite::Connection::open(binding.database_path)
-                    .unwrap()
-                    .execute_batch("DROP TRIGGER IF EXISTS fail_resume_control_commit")
-                    .unwrap();
-            }
-        }
-
-        #[async_trait::async_trait]
-        impl WorkflowAgentSessionPort for ResumeCommitFailureWorkflowAgentSessions {
-            fn is_provider_available(&self, _provider: ProviderKind) -> bool {
-                true
-            }
-
-            async fn prepare_workflow_agent_session(
-                &self,
-                _workspace_worktree_path: &str,
-                _worktree_path: &str,
-                _config: WorkflowSessionLaunchConfig,
-                _workflow_execution_id: &str,
-                _node_execution_id: &str,
-                _initial_instruction: &str,
-            ) -> Result<NodeSessionInfo, WorkflowRuntimeError> {
-                Ok(NodeSessionInfo {
-                    id: EFFECT_AGENT_SESSION_ID.to_string(),
-                })
-            }
-
-            async fn activate_workflow_agent_session(
-                &self,
-                _node_session_id: &str,
-                _node_execution_id: &str,
-            ) -> Result<(), WorkflowRuntimeError> {
-                Ok(())
-            }
-
-            async fn confirm_workflow_agent_session_attachment(
-                &self,
-                _node_session_id: &str,
-            ) -> Result<(), WorkflowRuntimeError> {
-                Ok(())
-            }
-
-            async fn dispatch_initial_instruction(
-                &self,
-                _node_session_id: &str,
-                _node_execution_id: &str,
-                _instruction: &str,
-            ) -> Result<(), WorkflowRuntimeError> {
-                Ok(())
-            }
-
-            async fn dispatch_continuation(
-                &self,
-                _node_session_id: &str,
-                _child_execution_id: &str,
-                _instruction: &str,
-            ) -> Result<(), WorkflowRuntimeError> {
-                panic!("unexpected delegate continuation")
-            }
-
-            async fn recover_workflow_agent_session_provider(
-                &self,
-                node_session_id: &str,
-                node_execution_id: &str,
-            ) -> Result<(), WorkflowRuntimeError> {
-                self.recovery_calls
-                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                let binding = self
-                    .binding
-                    .lock()
-                    .unwrap()
-                    .clone()
-                    .expect("resume failure fixture is bound before recovery");
-                let repository = LocalAgentSessionRepository::new(binding.store.clone());
-                let session = repository.find(node_session_id).await.unwrap().unwrap();
-                if session.session().lifecycle()
-                    == crate::domain::agent_session::aggregates::AgentSessionLifecycle::Open
-                {
-                    return Ok(());
-                }
-                self.provider_launches
-                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                let records =
-                    workflow_fact_log::read_tree_records(&binding.store, &binding.execution_id)
-                        .unwrap();
-                let meta = records
-                    .iter()
-                    .find(|record| record.meta.node_execution_id == node_execution_id)
-                    .unwrap()
-                    .meta
-                    .clone();
-                workflow_fact_log::append_single_fact(
-                    &binding.store,
-                    &meta,
-                    &NodeFact::ResumeRequested,
-                    records.last().unwrap().timestamp_ms + 1,
-                )
-                .unwrap();
-                match self.mode {
-                    ResumeCommitFailureMode::StaleCandidate => {
-                        let host = binding.host.upgrade().unwrap();
-                        let mut executions = host.executions.lock().await;
-                        executions
-                            .get_mut(&binding.execution_id)
-                            .unwrap()
-                            .updated_at += 1.0;
-                    }
-                    ResumeCommitFailureMode::Persistence => {
-                        rusqlite::Connection::open(&binding.database_path)
-                            .unwrap()
-                            .execute_batch(
-                                "CREATE TRIGGER fail_resume_control_commit
-                                 BEFORE INSERT ON node_events
-                                 WHEN NEW.event_type = 'resume_requested'
-                                 BEGIN
-                                   SELECT RAISE(ABORT, 'injected resume persistence failure');
-                                 END;",
-                            )
-                            .unwrap();
-                    }
-                    ResumeCommitFailureMode::PersistenceWithCompensationFailure => {
-                        rusqlite::Connection::open(&binding.database_path)
-                            .unwrap()
-                            .execute_batch(
-                                "CREATE TRIGGER fail_resume_control_commit
-                                 BEFORE INSERT ON node_events
-                                 WHEN NEW.event_type IN ('resume_requested', 'process_exited')
-                                 BEGIN
-                                   SELECT RAISE(ABORT, 'injected resume persistence failure');
-                                 END;",
-                            )
-                            .unwrap();
-                    }
-                }
-                Ok(())
-            }
-
-            async fn interrupt_workflow_agent_session(
-                &self,
-                _node_session_id: &str,
-            ) -> Result<(), WorkflowRuntimeError> {
-                Ok(())
-            }
-
-            async fn stop_agent_session_for_terminal_node_preserving_checkpoint(
-                &self,
-                _node_session_id: &str,
-                _node_execution_id: &str,
-            ) -> Result<(), WorkflowRuntimeError> {
-                Ok(())
-            }
-
-            async fn rollback_workflow_agent_session(
-                &self,
-                _node_session_id: &str,
-                _node_execution_id: &str,
-            ) -> Result<(), WorkflowRuntimeError> {
-                Ok(())
-            }
-        }
-
-        #[async_trait::async_trait]
-        impl WorkflowAgentSessionPort for PartialRecoveryWorkflowAgentSessions {
-            fn is_provider_available(&self, _provider: ProviderKind) -> bool {
-                true
-            }
-
-            async fn prepare_workflow_agent_session(
-                &self,
-                _workspace_worktree_path: &str,
-                _worktree_path: &str,
-                _config: WorkflowSessionLaunchConfig,
-                _workflow_execution_id: &str,
-                node_execution_id: &str,
-                _initial_instruction: &str,
-            ) -> Result<NodeSessionInfo, WorkflowRuntimeError> {
-                let session_id = format!("agent-session-{node_execution_id}");
-                self.open_sessions
-                    .lock()
-                    .unwrap()
-                    .insert(session_id.clone());
-                Ok(NodeSessionInfo { id: session_id })
-            }
-
-            async fn activate_workflow_agent_session(
-                &self,
-                _node_session_id: &str,
-                _node_execution_id: &str,
-            ) -> Result<(), WorkflowRuntimeError> {
-                Ok(())
-            }
-
-            async fn confirm_workflow_agent_session_attachment(
-                &self,
-                _node_session_id: &str,
-            ) -> Result<(), WorkflowRuntimeError> {
-                Ok(())
-            }
-
-            async fn dispatch_initial_instruction(
-                &self,
-                _node_session_id: &str,
-                _node_execution_id: &str,
-                _instruction: &str,
-            ) -> Result<(), WorkflowRuntimeError> {
-                Ok(())
-            }
-
-            async fn dispatch_continuation(
-                &self,
-                _node_session_id: &str,
-                _child_execution_id: &str,
-                _instruction: &str,
-            ) -> Result<(), WorkflowRuntimeError> {
-                panic!("unexpected delegate continuation")
-            }
-
-            async fn recover_workflow_agent_session_provider(
-                &self,
-                node_session_id: &str,
-                node_execution_id: &str,
-            ) -> Result<(), WorkflowRuntimeError> {
-                self.recovery_calls
-                    .lock()
-                    .unwrap()
-                    .push((node_execution_id.to_string(), node_session_id.to_string()));
-                if self.is_open(node_session_id) {
-                    return Ok(());
-                }
-                if self
-                    .failure_enabled
-                    .load(std::sync::atomic::Ordering::SeqCst)
-                    && self.failing_node_execution_id.lock().unwrap().as_deref()
-                        == Some(node_execution_id)
-                {
-                    if self
-                        .compensation_fails
-                        .load(std::sync::atomic::Ordering::SeqCst)
-                    {
-                        let binding = self.binding.lock().unwrap().clone().unwrap();
-                        rusqlite::Connection::open(binding.database_path)
-                            .unwrap()
-                            .execute_batch(
-                                "CREATE TRIGGER fail_partial_recovery_compensation
-                                 BEFORE INSERT ON node_events
-                                 WHEN NEW.event_type = 'process_exited'
-                                 BEGIN
-                                   SELECT RAISE(ABORT, 'injected partial recovery compensation failure');
-                                 END;",
-                            )
-                            .unwrap();
-                    }
-                    return Err(WorkflowRuntimeError::AgentSession(
-                        "intentional partial provider recovery failure".to_string(),
-                    ));
-                }
-                if self
-                    .persist_resumes
-                    .load(std::sync::atomic::Ordering::SeqCst)
-                {
-                    self.append_provider_resume(node_execution_id);
-                }
-                self.open_sessions
-                    .lock()
-                    .unwrap()
-                    .insert(node_session_id.to_string());
-                *self
-                    .provider_launches
-                    .lock()
-                    .unwrap()
-                    .entry(node_session_id.to_string())
-                    .or_default() += 1;
-                Ok(())
-            }
-
-            async fn interrupt_workflow_agent_session(
-                &self,
-                _node_session_id: &str,
-            ) -> Result<(), WorkflowRuntimeError> {
-                Ok(())
-            }
-
-            async fn stop_agent_session_for_terminal_node_preserving_checkpoint(
-                &self,
-                _node_session_id: &str,
-                _node_execution_id: &str,
-            ) -> Result<(), WorkflowRuntimeError> {
-                Ok(())
-            }
-
-            async fn rollback_workflow_agent_session(
-                &self,
-                _node_session_id: &str,
-                _node_execution_id: &str,
-            ) -> Result<(), WorkflowRuntimeError> {
-                Ok(())
-            }
-        }
-
         #[async_trait::async_trait]
         impl WorkflowAgentSessionPort for RecordingWorkflowAgentSessions {
+            async fn has_recoverable_conversation(
+                &self,
+                _id: &str,
+            ) -> Result<bool, WorkflowRuntimeError> {
+                Ok(true)
+            }
+
             fn is_provider_available(&self, _provider: ProviderKind) -> bool {
                 true
             }
@@ -3486,23 +2969,6 @@ nodes:
                 Ok(())
             }
 
-            async fn dispatch_initial_instruction(
-                &self,
-                _node_session_id: &str,
-                _node_execution_id: &str,
-                _instruction: &str,
-            ) -> Result<(), WorkflowRuntimeError> {
-                if self
-                    .dispatch_fails
-                    .load(std::sync::atomic::Ordering::SeqCst)
-                {
-                    return Err(WorkflowRuntimeError::AgentSession(
-                        "intentional instruction dispatch failure".to_string(),
-                    ));
-                }
-                Ok(())
-            }
-
             async fn dispatch_continuation(
                 &self,
                 _node_session_id: &str,
@@ -3529,13 +2995,6 @@ nodes:
                         "intentional provider recovery failure".to_string(),
                     ));
                 }
-                Ok(())
-            }
-
-            async fn interrupt_workflow_agent_session(
-                &self,
-                _node_session_id: &str,
-            ) -> Result<(), WorkflowRuntimeError> {
                 Ok(())
             }
 
@@ -3574,6 +3033,13 @@ nodes:
 
         #[async_trait::async_trait]
         impl WorkflowAgentSessionPort for StopDuringActivationWorkflowAgentSessions {
+            async fn has_recoverable_conversation(
+                &self,
+                _id: &str,
+            ) -> Result<bool, WorkflowRuntimeError> {
+                Ok(true)
+            }
+
             fn is_provider_available(&self, _provider: ProviderKind) -> bool {
                 true
             }
@@ -3644,15 +3110,6 @@ nodes:
                 Ok(())
             }
 
-            async fn dispatch_initial_instruction(
-                &self,
-                _node_session_id: &str,
-                _node_execution_id: &str,
-                _instruction: &str,
-            ) -> Result<(), WorkflowRuntimeError> {
-                Ok(())
-            }
-
             async fn dispatch_continuation(
                 &self,
                 _node_session_id: &str,
@@ -3666,13 +3123,6 @@ nodes:
                 &self,
                 _node_session_id: &str,
                 _node_execution_id: &str,
-            ) -> Result<(), WorkflowRuntimeError> {
-                Ok(())
-            }
-
-            async fn interrupt_workflow_agent_session(
-                &self,
-                _node_session_id: &str,
             ) -> Result<(), WorkflowRuntimeError> {
                 Ok(())
             }
@@ -3712,6 +3162,13 @@ nodes:
 
         #[async_trait::async_trait]
         impl WorkflowAgentSessionPort for OrderedWorkflowAgentSessions {
+            async fn has_recoverable_conversation(
+                &self,
+                _id: &str,
+            ) -> Result<bool, WorkflowRuntimeError> {
+                Ok(true)
+            }
+
             fn is_provider_available(&self, _provider: ProviderKind) -> bool {
                 true
             }
@@ -3752,15 +3209,6 @@ nodes:
                 Ok(())
             }
 
-            async fn dispatch_initial_instruction(
-                &self,
-                _node_session_id: &str,
-                _node_execution_id: &str,
-                _instruction: &str,
-            ) -> Result<(), WorkflowRuntimeError> {
-                Ok(())
-            }
-
             async fn dispatch_continuation(
                 &self,
                 _node_session_id: &str,
@@ -3774,13 +3222,6 @@ nodes:
                 &self,
                 _node_session_id: &str,
                 _node_execution_id: &str,
-            ) -> Result<(), WorkflowRuntimeError> {
-                Ok(())
-            }
-
-            async fn interrupt_workflow_agent_session(
-                &self,
-                _node_session_id: &str,
             ) -> Result<(), WorkflowRuntimeError> {
                 Ok(())
             }
@@ -3810,6 +3251,13 @@ nodes:
 
         #[async_trait::async_trait]
         impl WorkflowAgentSessionPort for NeverResolvingStopWorkflowAgentSessions {
+            async fn has_recoverable_conversation(
+                &self,
+                _id: &str,
+            ) -> Result<bool, WorkflowRuntimeError> {
+                Ok(true)
+            }
+
             fn is_provider_available(&self, _provider: ProviderKind) -> bool {
                 true
             }
@@ -3843,15 +3291,6 @@ nodes:
                 Ok(())
             }
 
-            async fn dispatch_initial_instruction(
-                &self,
-                _node_session_id: &str,
-                _node_execution_id: &str,
-                _instruction: &str,
-            ) -> Result<(), WorkflowRuntimeError> {
-                Ok(())
-            }
-
             async fn dispatch_continuation(
                 &self,
                 _node_session_id: &str,
@@ -3865,13 +3304,6 @@ nodes:
                 &self,
                 _node_session_id: &str,
                 _node_execution_id: &str,
-            ) -> Result<(), WorkflowRuntimeError> {
-                Ok(())
-            }
-
-            async fn interrupt_workflow_agent_session(
-                &self,
-                _node_session_id: &str,
             ) -> Result<(), WorkflowRuntimeError> {
                 Ok(())
             }
@@ -3917,15 +3349,6 @@ nodes:
             _directory: tempfile::TempDir,
         }
 
-        struct MultiResumeFixture {
-            app: WorkflowRuntimeDependencies,
-            store: Arc<LocalEventStore>,
-            host: Arc<WorkflowRuntimeHost>,
-            execution_id: String,
-            sessions: Vec<(String, String)>,
-            _directory: tempfile::TempDir,
-        }
-
         async fn runtime_effect_fixture(
             completion: NodeCompletion,
             stop_fails: bool,
@@ -3934,7 +3357,6 @@ nodes:
             let sessions = recording_agent_sessions(
                 stop_calls.clone(),
                 Arc::new(std::sync::Mutex::new(Vec::new())),
-                Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 if stop_fails {
                     EFFECT_AGENT_SESSION_ID.to_string()
@@ -3963,7 +3385,7 @@ nodes:
                 sessions,
                 Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
             ));
-            let mut nodes = vec![NodeDefinition {
+            let nodes = vec![NodeDefinition {
                 name: EFFECT_NODE_NAME.to_string(),
                 kind: NodeKind::Session(SessionSpec {
                     provider: ProviderKind::Codex,
@@ -3979,7 +3401,6 @@ nodes:
                 completion,
                 worktree: None,
             }];
-            nodes.extend(resume_paused_sibling_definitions(EFFECT_NODE_NAME));
             let workflow = WorkflowDefinition {
                 name: "runtime-effect-test".to_string(),
                 description: String::new(),
@@ -4014,8 +3435,7 @@ nodes:
             assert_eq!(
                 node.status,
                 NodeExecutionStatus::Running,
-                "unexpected activation failure: {:?}",
-                node.failure
+                "unexpected activation state"
             );
             assert_eq!(node.session_id.as_deref(), Some(EFFECT_AGENT_SESSION_ID));
             let gateway = Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(
@@ -4032,97 +3452,6 @@ nodes:
                 stop_calls,
                 execution_id,
                 node_execution_id,
-                _directory: directory,
-            }
-        }
-
-        async fn multi_resume_fixture(
-            sessions: Arc<dyn WorkflowAgentSessionPort>,
-        ) -> MultiResumeFixture {
-            let directory = tempfile::tempdir().unwrap();
-            let store = LocalEventStore::open(LocalEventStoreConfig::production(
-                directory.path().to_path_buf(),
-            ))
-            .unwrap();
-            let app = test_helpers::dependencies(Some(store.clone()));
-            let host = Arc::new(WorkflowRuntimeHost::with_execution_store(
-                Arc::new(UnusedWorkflowResolver),
-                Arc::new(AcceptingWorktreeResolver),
-                Arc::new(ExecutionStore::new_in_memory_for_tests()),
-                sessions,
-                Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
-            ));
-            let session_node = |name: &str| NodeDefinition {
-                name: name.to_string(),
-                kind: NodeKind::Session(SessionSpec {
-                    provider: ProviderKind::Codex,
-                    model: None,
-                    permission: None,
-                    facets: FacetRefs {
-                        instruction: Some("policy-confirmation".to_string()),
-                        ..FacetRefs::default()
-                    },
-                }),
-                artifact: None,
-                input: Vec::new(),
-                completion: NodeCompletion::default(),
-                worktree: None,
-            };
-            let mut nodes = vec![
-                NodeDefinition {
-                    name: "main".to_string(),
-                    kind: NodeKind::Fanout(FanoutSpec {
-                        children: vec![
-                            ChildEntry::reference("agent-first"),
-                            ChildEntry::reference("agent-second"),
-                        ],
-                        items: None,
-                    }),
-                    artifact: None,
-                    input: Vec::new(),
-                    completion: NodeCompletion::default(),
-                    worktree: None,
-                },
-                session_node("agent-first"),
-                session_node("agent-second"),
-            ];
-            nodes.extend(resume_paused_sibling_definitions("agent-first"));
-            let workflow = WorkflowDefinition {
-                name: "partial-provider-recovery".to_string(),
-                description: String::new(),
-                builtin: false,
-                schemas: Default::default(),
-                nodes,
-                entry: "main".to_string(),
-            };
-            let execution_id = host
-                .start_resolved_workflow(
-                    &app,
-                    workflow,
-                    EFFECT_WORKTREE_PATH.to_string(),
-                    None,
-                    ExecutionOrigin::DesktopUi,
-                )
-                .await
-                .unwrap();
-            let snapshot = host.get_state_by_execution_id(&execution_id).await.unwrap();
-            let mut session_nodes = snapshot
-                .node_executions
-                .iter()
-                .filter(|node| node.kind == NodeKindName::Session)
-                .collect::<Vec<_>>();
-            session_nodes.sort_by(|left, right| left.node_name.cmp(&right.node_name));
-            let sessions = session_nodes
-                .into_iter()
-                .map(|node| (node.id.clone(), node.session_id.clone().unwrap()))
-                .collect::<Vec<_>>();
-            assert_eq!(sessions.len(), 2);
-            MultiResumeFixture {
-                app,
-                store,
-                host,
-                execution_id,
-                sessions,
                 _directory: directory,
             }
         }
@@ -4261,150 +3590,6 @@ nodes:
                 .find(|node| node.id == node_execution_id)
                 .unwrap()
                 .clone()
-        }
-
-        fn append_process_exit(fixture: &RuntimeEffectFixture, exit_code: Option<i32>) {
-            append_process_exit_for_node(
-                &fixture.store,
-                &fixture.execution_id,
-                &fixture.node_execution_id,
-                exit_code,
-            );
-        }
-
-        fn append_process_exit_for_node(
-            store: &Arc<LocalEventStore>,
-            execution_id: &str,
-            node_execution_id: &str,
-            exit_code: Option<i32>,
-        ) {
-            let records = workflow_fact_log::read_tree_records(store, execution_id).unwrap();
-            let meta = records
-                .iter()
-                .find(|record| record.meta.node_execution_id == node_execution_id)
-                .unwrap()
-                .meta
-                .clone();
-            workflow_fact_log::append_single_fact(
-                store,
-                &meta,
-                &NodeFact::ProcessExited(crate::domain::workflow::ProcessExitedFact {
-                    exit_code,
-                    result_summary: None,
-                    failure_reason: None,
-                    failure_kind: None,
-                }),
-                records.last().unwrap().timestamp_ms + 1,
-            )
-            .unwrap();
-        }
-
-        async fn stop_with_resume_paused_siblings(
-            app: &WorkflowRuntimeDependencies,
-            store: &Arc<LocalEventStore>,
-            host: &Arc<WorkflowRuntimeHost>,
-            execution_id: &str,
-        ) -> Vec<String> {
-            let mut timestamp_ms = workflow_fact_log::read_tree_records(store, execution_id)
-                .unwrap()
-                .last()
-                .unwrap()
-                .timestamp_ms
-                + 1;
-            let node_execution_ids = RESUME_PAUSED_SIBLING_NODES
-                .iter()
-                .map(|(node_name, kind)| {
-                    let node_execution_id = format!("{execution_id}-{node_name}");
-                    workflow_fact_log::append_single_fact(
-                        store,
-                        &NodeFactMeta {
-                            tree_id: execution_id.to_string(),
-                            node_execution_id: node_execution_id.clone(),
-                            parent_id: None,
-                            node_name: (*node_name).to_string(),
-                            kind: *kind,
-                            attempt: 1,
-                        },
-                        &NodeFact::Started(StartedFact {
-                            parent: None,
-                            root: None,
-                        }),
-                        timestamp_ms,
-                    )
-                    .unwrap();
-                    timestamp_ms += 1;
-                    node_execution_id
-                })
-                .collect::<Vec<_>>();
-            let durable = workflow_fact_log::fold_tree_from(
-                &workflow_fact_log::FactLogReadBackend::Live(store.clone()),
-                execution_id,
-            )
-            .unwrap()
-            .unwrap()
-            .aggregate;
-            host.executions
-                .lock()
-                .await
-                .insert(execution_id.to_string(), durable);
-
-            host.stop_workflow_execution(&app, execution_id)
-                .await
-                .unwrap();
-            let snapshot = host.get_state_by_execution_id(execution_id).await.unwrap();
-            for node_execution_id in &node_execution_ids {
-                assert_eq!(
-                    snapshot
-                        .node_executions
-                        .iter()
-                        .find(|node| node.id == *node_execution_id)
-                        .unwrap()
-                        .status,
-                    NodeExecutionStatus::Paused
-                );
-            }
-            node_execution_ids
-        }
-
-        async fn assert_resume_paused_siblings_in_memory(
-            host: &Arc<WorkflowRuntimeHost>,
-            execution_id: &str,
-            node_execution_ids: &[String],
-        ) {
-            let snapshot = host.get_state_by_execution_id(execution_id).await.unwrap();
-            for node_execution_id in node_execution_ids {
-                assert_eq!(
-                    snapshot
-                        .node_executions
-                        .iter()
-                        .find(|node| node.id == *node_execution_id)
-                        .unwrap()
-                        .status,
-                    NodeExecutionStatus::Paused
-                );
-            }
-        }
-
-        fn assert_resume_paused_siblings_in_latest_broadcast(
-            broadcasts: &mut tokio::sync::broadcast::Receiver<Arc<[u8]>>,
-            node_execution_ids: &[String],
-        ) {
-            let broadcasts = take_workflow_execution_broadcasts(broadcasts);
-            let snapshot = &broadcasts
-                .last()
-                .expect("resume compensation broadcasts its restored snapshot")
-                .workflow_execution;
-            for node_execution_id in node_execution_ids {
-                assert_eq!(
-                    snapshot
-                        .node_executions
-                        .iter()
-                        .find(|node| node.id == *node_execution_id)
-                        .unwrap()
-                        .status,
-                    NodeExecutionStatusView::Paused
-                );
-            }
         }
 
         #[tokio::test]
@@ -4766,8 +3951,7 @@ nodes:
             assert_eq!(
                 node.status,
                 NodeExecutionStatus::Running,
-                "unexpected activation failure: {:?}",
-                node.failure
+                "unexpected activation state"
             );
             assert_eq!(
                 node.completion_signals,
@@ -4902,7 +4086,6 @@ nodes:
                     prepare_calls: Arc::new(std::sync::Mutex::new(Vec::new())),
                     provider_running_checks: Arc::new(std::sync::Mutex::new(Vec::new())),
                     recovery_fails: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                    dispatch_fails: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                     failing_agent_session_id: String::new(),
                 }),
                 Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
@@ -5266,7 +4449,7 @@ nodes:
         }
 
         #[tokio::test]
-        async fn test_failure_settlement_agent_session停止失敗でも成功とfailedを維持する() {
+        async fn test_failure_settlement_異常の記録はsessionをrunningのまま維持する() {
             // Given
             let fixture = runtime_effect_fixture(NodeCompletion::default(), true).await;
             let runtime_error = WorkflowRuntimeError::AgentSession("runtime failed".to_string());
@@ -5299,911 +4482,9 @@ nodes:
                     .find(|node| node.id == fixture.node_execution_id)
                     .unwrap()
                     .status,
-                NodeExecutionStatus::Failed
-            );
-            wait_for_single_terminal_stop(&fixture).await;
-        }
-
-        #[tokio::test]
-        async fn test_workflow起動木_runtime失敗sessionをresume対象にしない() {
-            let fixture = runtime_effect_fixture(NodeCompletion::default(), false).await;
-            let runtime_error = WorkflowRuntimeError::AgentSession("runtime failed".to_string());
-            fixture
-                .host
-                .settle_runtime_failure_for_node(
-                    &fixture.app,
-                    &fixture.execution_id,
-                    &fixture.node_execution_id,
-                    &runtime_error,
-                )
-                .await
-                .unwrap();
-            assert_eq!(persisted_node_status(&fixture), NodeExecutionStatus::Failed);
-
-            fixture
-                .host
-                .resume_workflow_execution(&fixture.app, &fixture.execution_id)
-                .await
-                .unwrap();
-
-            assert_eq!(persisted_node_status(&fixture), NodeExecutionStatus::Failed);
-            let records =
-                workflow_fact_log::read_tree_records(&fixture.store, &fixture.execution_id)
-                    .unwrap();
-            assert!(!records.iter().any(|record| {
-                record.meta.node_execution_id == fixture.node_execution_id
-                    && matches!(record.fact, NodeFact::ResumeRequested)
-            }));
-        }
-
-        #[tokio::test]
-        async fn test_process_exited事実からresume対象を再構成してresume_requestedを記録する() {
-            for (exit_code, expected_before_resume) in [
-                (Some(1), NodeExecutionStatus::Failed),
-                (Some(0), NodeExecutionStatus::Paused),
-            ] {
-                let stop_calls = Arc::new(std::sync::Mutex::new(Vec::new()));
-                let provider_running_checks = Arc::new(std::sync::Mutex::new(Vec::new()));
-                let sessions = recording_agent_sessions(
-                    stop_calls.clone(),
-                    provider_running_checks.clone(),
-                    Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                    Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                    String::new(),
-                );
-                let fixture = runtime_effect_fixture_with_sessions(
-                    NodeCompletion::default(),
-                    sessions,
-                    stop_calls,
-                )
-                .await;
-                append_process_exit(&fixture, exit_code);
-
-                assert_eq!(persisted_node_status(&fixture), expected_before_resume);
-                assert_eq!(
-                    fixture
-                        .host
-                        .get_state_by_execution_id(&fixture.execution_id)
-                        .await
-                        .unwrap()
-                        .node_executions
-                        .iter()
-                        .find(|node| node.id == fixture.node_execution_id)
-                        .unwrap()
-                        .status,
-                    NodeExecutionStatus::Running
-                );
-
-                fixture
-                    .host
-                    .resume_workflow_execution(&fixture.app, &fixture.execution_id)
-                    .await
-                    .unwrap();
-
-                assert_eq!(
-                    persisted_node_status(&fixture),
-                    NodeExecutionStatus::Running
-                );
-                assert_eq!(
-                    provider_running_checks.lock().unwrap().as_slice(),
-                    &[(
-                        fixture.node_execution_id.clone(),
-                        EFFECT_AGENT_SESSION_ID.to_string(),
-                    )]
-                );
-                let records =
-                    workflow_fact_log::read_tree_records(&fixture.store, &fixture.execution_id)
-                        .unwrap();
-                assert!(records.iter().any(|record| {
-                    record.meta.node_execution_id == fixture.node_execution_id
-                        && matches!(record.fact, NodeFact::ResumeRequested)
-                }));
-            }
-        }
-
-        #[tokio::test]
-        async fn test_provider復旧失敗ではresumeを失敗させnodeをfailedに維持する() {
-            let stop_calls = Arc::new(std::sync::Mutex::new(Vec::new()));
-            let provider_running_checks = Arc::new(std::sync::Mutex::new(Vec::new()));
-            let recovery_fails = Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let sessions = recording_agent_sessions(
-                stop_calls.clone(),
-                provider_running_checks.clone(),
-                recovery_fails.clone(),
-                Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                String::new(),
-            );
-            let fixture = runtime_effect_fixture_with_sessions(
-                NodeCompletion::default(),
-                sessions,
-                stop_calls,
-            )
-            .await;
-            append_process_exit(&fixture, Some(1));
-            recovery_fails.store(true, std::sync::atomic::Ordering::SeqCst);
-
-            let error = fixture
-                .host
-                .resume_workflow_execution(&fixture.app, &fixture.execution_id)
-                .await
-                .unwrap_err();
-
-            assert!(error.to_string().contains("provider recovery failure"));
-            assert_eq!(persisted_node_status(&fixture), NodeExecutionStatus::Failed);
-            assert_eq!(provider_running_checks.lock().unwrap().len(), 1);
-            let records =
-                workflow_fact_log::read_tree_records(&fixture.store, &fixture.execution_id)
-                    .unwrap();
-            assert!(!records.iter().any(|record| {
-                record.meta.node_execution_id == fixture.node_execution_id
-                    && matches!(record.fact, NodeFact::ResumeRequested)
-            }));
-        }
-
-        #[tokio::test]
-        async fn test_複数sessionのprovider復旧部分失敗は先行nodeを元状態へ補償し再試行できる() {
-            let sessions = Arc::new(PartialRecoveryWorkflowAgentSessions::new());
-            let fixture = multi_resume_fixture(sessions.clone()).await;
-            sessions.bind(
-                fixture.store.clone(),
-                &fixture.execution_id,
-                fixture._directory.path().join("local-event-store.sqlite3"),
-            );
-            let (first_node_execution_id, first_session_id) = fixture.sessions[0].clone();
-            let (second_node_execution_id, second_session_id) = fixture.sessions[1].clone();
-            append_process_exit_for_node(
-                &fixture.store,
-                &fixture.execution_id,
-                &first_node_execution_id,
-                Some(7),
-            );
-            append_process_exit_for_node(
-                &fixture.store,
-                &fixture.execution_id,
-                &second_node_execution_id,
-                Some(0),
-            );
-            let first_before = persisted_node_for(
-                &fixture.store,
-                &fixture.execution_id,
-                &first_node_execution_id,
-            );
-            let second_before = persisted_node_for(
-                &fixture.store,
-                &fixture.execution_id,
-                &second_node_execution_id,
-            );
-            assert_eq!(first_before.status, NodeExecutionStatus::Failed);
-            assert_eq!(second_before.status, NodeExecutionStatus::Paused);
-            sessions.close_all();
-            sessions.fail_on(&second_node_execution_id);
-
-            let error = fixture
-                .host
-                .resume_workflow_execution(&fixture.app, &fixture.execution_id)
-                .await
-                .unwrap_err();
-
-            assert!(error
-                .to_string()
-                .contains("partial provider recovery failure"));
-            let first_restored = persisted_node_for(
-                &fixture.store,
-                &fixture.execution_id,
-                &first_node_execution_id,
-            );
-            let second_restored = persisted_node_for(
-                &fixture.store,
-                &fixture.execution_id,
-                &second_node_execution_id,
-            );
-            assert_eq!(first_restored.status, NodeExecutionStatus::Failed);
-            assert_eq!(first_restored.failure, first_before.failure);
-            assert!(first_restored.can_resume());
-            assert_eq!(second_restored.status, NodeExecutionStatus::Paused);
-            assert!(second_restored.can_resume());
-            assert!(sessions.is_open(&first_session_id));
-            assert!(!sessions.is_open(&second_session_id));
-            assert_eq!(sessions.provider_launch_count(&first_session_id), 1);
-            assert_eq!(sessions.provider_launch_count(&second_session_id), 0);
-            assert_eq!(
-                sessions.recovery_calls.lock().unwrap().as_slice(),
-                &[
-                    (first_node_execution_id.clone(), first_session_id.clone()),
-                    (second_node_execution_id.clone(), second_session_id.clone()),
-                ]
-            );
-
-            sessions.allow_recovery();
-            fixture
-                .host
-                .resume_workflow_execution(&fixture.app, &fixture.execution_id)
-                .await
-                .unwrap();
-
-            assert_eq!(
-                persisted_node_for(
-                    &fixture.store,
-                    &fixture.execution_id,
-                    &first_node_execution_id,
-                )
-                .status,
                 NodeExecutionStatus::Running
             );
-            assert_eq!(
-                persisted_node_for(
-                    &fixture.store,
-                    &fixture.execution_id,
-                    &second_node_execution_id,
-                )
-                .status,
-                NodeExecutionStatus::Running
-            );
-            assert_eq!(sessions.provider_launch_count(&first_session_id), 1);
-            assert_eq!(sessions.provider_launch_count(&second_session_id), 1);
-            assert_eq!(
-                sessions.recovery_calls.lock().unwrap().as_slice(),
-                &[
-                    (first_node_execution_id.clone(), first_session_id.clone()),
-                    (second_node_execution_id.clone(), second_session_id.clone()),
-                    (first_node_execution_id, first_session_id),
-                    (second_node_execution_id, second_session_id),
-                ]
-            );
-        }
-
-        #[tokio::test]
-        async fn test_resume_provider復旧失敗の補償は対象外のpaused兄弟nodeを維持する() {
-            let sessions = Arc::new(PartialRecoveryWorkflowAgentSessions::new());
-            let fixture = multi_resume_fixture(sessions.clone()).await;
-            sessions.bind(
-                fixture.store.clone(),
-                &fixture.execution_id,
-                fixture._directory.path().join("local-event-store.sqlite3"),
-            );
-            let paused_sibling_ids = stop_with_resume_paused_siblings(
-                &fixture.app,
-                &fixture.store,
-                &fixture.host,
-                &fixture.execution_id,
-            )
-            .await;
-            let first_node_execution_id = fixture.sessions[0].0.clone();
-            let second_node_execution_id = fixture.sessions[1].0.clone();
-            append_process_exit_for_node(
-                &fixture.store,
-                &fixture.execution_id,
-                &first_node_execution_id,
-                Some(7),
-            );
-            append_process_exit_for_node(
-                &fixture.store,
-                &fixture.execution_id,
-                &second_node_execution_id,
-                Some(0),
-            );
-            sessions.close_all();
-            sessions.fail_on(&second_node_execution_id);
-            let mut broadcasts = record_workflow_execution_broadcasts(&fixture.app);
-
-            let error = fixture
-                .host
-                .resume_workflow_execution(&fixture.app, &fixture.execution_id)
-                .await
-                .unwrap_err();
-
-            assert!(error
-                .to_string()
-                .contains("partial provider recovery failure"));
-            assert_resume_paused_siblings_in_memory(
-                &fixture.host,
-                &fixture.execution_id,
-                &paused_sibling_ids,
-            )
-            .await;
-            assert_resume_paused_siblings_in_latest_broadcast(&mut broadcasts, &paused_sibling_ids);
-        }
-
-        #[tokio::test]
-        async fn test_resume_control_plane_commit失敗の補償は対象外のpaused兄弟nodeを維持する() {
-            let sessions = Arc::new(ResumeCommitFailureWorkflowAgentSessions::new(
-                ResumeCommitFailureMode::Persistence,
-            ));
-            let fixture = runtime_effect_fixture_with_sessions(
-                NodeCompletion::default(),
-                sessions.clone(),
-                Arc::new(std::sync::Mutex::new(Vec::new())),
-            )
-            .await;
-            sessions.bind(&fixture);
-            let paused_sibling_ids = stop_with_resume_paused_siblings(
-                &fixture.app,
-                &fixture.store,
-                &fixture.host,
-                &fixture.execution_id,
-            )
-            .await;
-            append_process_exit(&fixture, Some(7));
-            let mut broadcasts = record_workflow_execution_broadcasts(&fixture.app);
-
-            let error = fixture
-                .host
-                .resume_workflow_execution(&fixture.app, &fixture.execution_id)
-                .await
-                .unwrap_err();
-
-            assert!(matches!(error, WorkflowRuntimeError::SessionStore(_)));
-            assert_resume_paused_siblings_in_memory(
-                &fixture.host,
-                &fixture.execution_id,
-                &paused_sibling_ids,
-            )
-            .await;
-            assert_resume_paused_siblings_in_latest_broadcast(&mut broadcasts, &paused_sibling_ids);
-        }
-
-        #[tokio::test]
-        async fn test_resume_instruction配送失敗の補償は対象外のpaused兄弟nodeを維持する() {
-            let dispatch_fails = Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let sessions = recording_agent_sessions(
-                Arc::new(std::sync::Mutex::new(Vec::new())),
-                Arc::new(std::sync::Mutex::new(Vec::new())),
-                Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                dispatch_fails.clone(),
-                String::new(),
-            );
-            let fixture = runtime_effect_fixture_with_sessions(
-                NodeCompletion::default(),
-                sessions,
-                Arc::new(std::sync::Mutex::new(Vec::new())),
-            )
-            .await;
-            let paused_sibling_ids = stop_with_resume_paused_siblings(
-                &fixture.app,
-                &fixture.store,
-                &fixture.host,
-                &fixture.execution_id,
-            )
-            .await;
-            append_process_exit(&fixture, Some(7));
-            dispatch_fails.store(true, std::sync::atomic::Ordering::SeqCst);
-            let mut broadcasts = record_workflow_execution_broadcasts(&fixture.app);
-
-            let error = fixture
-                .host
-                .resume_workflow_execution(&fixture.app, &fixture.execution_id)
-                .await
-                .unwrap_err();
-
-            assert!(error.to_string().contains("instruction dispatch failure"));
-            assert_resume_paused_siblings_in_memory(
-                &fixture.host,
-                &fixture.execution_id,
-                &paused_sibling_ids,
-            )
-            .await;
-            assert_resume_paused_siblings_in_latest_broadcast(&mut broadcasts, &paused_sibling_ids);
-        }
-
-        #[tokio::test]
-        async fn test_resume補償eventなしのearly_returnでも対象外のpaused兄弟nodeを維持する() {
-            let sessions = Arc::new(PartialRecoveryWorkflowAgentSessions::new());
-            let fixture = multi_resume_fixture(sessions.clone()).await;
-            sessions.bind(
-                fixture.store.clone(),
-                &fixture.execution_id,
-                fixture._directory.path().join("local-event-store.sqlite3"),
-            );
-            let paused_sibling_ids = stop_with_resume_paused_siblings(
-                &fixture.app,
-                &fixture.store,
-                &fixture.host,
-                &fixture.execution_id,
-            )
-            .await;
-            let first_node_execution_id = fixture.sessions[0].0.clone();
-            let second_node_execution_id = fixture.sessions[1].0.clone();
-            append_process_exit_for_node(
-                &fixture.store,
-                &fixture.execution_id,
-                &first_node_execution_id,
-                Some(7),
-            );
-            append_process_exit_for_node(
-                &fixture.store,
-                &fixture.execution_id,
-                &second_node_execution_id,
-                Some(0),
-            );
-            sessions.close_all();
-            sessions.skip_persisted_resume();
-            sessions.fail_on(&second_node_execution_id);
-            let mut broadcasts = record_workflow_execution_broadcasts(&fixture.app);
-
-            let error = fixture
-                .host
-                .resume_workflow_execution(&fixture.app, &fixture.execution_id)
-                .await
-                .unwrap_err();
-
-            assert!(error
-                .to_string()
-                .contains("partial provider recovery failure"));
-            assert_resume_paused_siblings_in_memory(
-                &fixture.host,
-                &fixture.execution_id,
-                &paused_sibling_ids,
-            )
-            .await;
-            assert!(take_workflow_execution_broadcasts(&mut broadcasts).is_empty());
-        }
-
-        #[tokio::test]
-        async fn test_複数sessionのprovider復旧部分失敗後の補償失敗は両errorを合成する() {
-            let sessions = Arc::new(PartialRecoveryWorkflowAgentSessions::new());
-            let fixture = multi_resume_fixture(sessions.clone()).await;
-            sessions.bind(
-                fixture.store.clone(),
-                &fixture.execution_id,
-                fixture._directory.path().join("local-event-store.sqlite3"),
-            );
-            let first_node_execution_id = fixture.sessions[0].0.clone();
-            let second_node_execution_id = fixture.sessions[1].0.clone();
-            append_process_exit_for_node(
-                &fixture.store,
-                &fixture.execution_id,
-                &first_node_execution_id,
-                Some(1),
-            );
-            append_process_exit_for_node(
-                &fixture.store,
-                &fixture.execution_id,
-                &second_node_execution_id,
-                Some(0),
-            );
-            sessions.close_all();
-            sessions.fail_on(&second_node_execution_id);
-            sessions.fail_compensation();
-
-            let error = fixture
-                .host
-                .resume_workflow_execution(&fixture.app, &fixture.execution_id)
-                .await
-                .unwrap_err();
-
-            assert!(matches!(
-                error,
-                WorkflowRuntimeError::InvalidState(ref message)
-                    if message.contains("partial provider recovery failure")
-                        && message.contains("failed to restore unactivated resumed nodes")
-                        && message.contains("node event storage is unavailable")
-            ));
-        }
-
-        #[tokio::test]
-        async fn test_resume_control_plane_commit失敗は元状態へ補償しproviderを再起動せず再試行できる(
-        ) {
-            for mode in [
-                ResumeCommitFailureMode::StaleCandidate,
-                ResumeCommitFailureMode::Persistence,
-            ] {
-                for exit_code in [Some(1), Some(0)] {
-                    let sessions = Arc::new(ResumeCommitFailureWorkflowAgentSessions::new(mode));
-                    let fixture = runtime_effect_fixture_with_sessions(
-                        NodeCompletion::default(),
-                        sessions.clone(),
-                        Arc::new(std::sync::Mutex::new(Vec::new())),
-                    )
-                    .await;
-                    sessions.bind(&fixture);
-                    append_process_exit(&fixture, exit_code);
-                    let before = persisted_node(&fixture);
-
-                    let result = fixture
-                        .host
-                        .resume_workflow_execution(&fixture.app, &fixture.execution_id)
-                        .await;
-                    assert!(
-                        result.is_err(),
-                        "resume commit must fail for {mode:?} with exit code {exit_code:?}; recovery calls: {}",
-                        sessions
-                            .recovery_calls
-                            .load(std::sync::atomic::Ordering::SeqCst)
-                    );
-                    let error = result.unwrap_err();
-
-                    match mode {
-                        ResumeCommitFailureMode::StaleCandidate => {
-                            assert!(matches!(error, WorkflowRuntimeError::Conflict(_)));
-                        }
-                        ResumeCommitFailureMode::Persistence => {
-                            assert!(matches!(error, WorkflowRuntimeError::SessionStore(_)));
-                        }
-                        ResumeCommitFailureMode::PersistenceWithCompensationFailure => {
-                            unreachable!()
-                        }
-                    }
-                    let restored = persisted_node(&fixture);
-                    assert_eq!(restored.status, before.status);
-                    assert_eq!(restored.failure, before.failure);
-                    assert!(restored.can_resume());
-                    let repository = LocalAgentSessionRepository::new(fixture.store.clone());
-                    let restored_session = repository
-                        .find(EFFECT_AGENT_SESSION_ID)
-                        .await
-                        .unwrap()
-                        .unwrap();
-                    assert_eq!(
-                        restored_session.session().lifecycle(),
-                        crate::domain::agent_session::aggregates::AgentSessionLifecycle::Open
-                    );
-                    assert_eq!(
-                        sessions
-                            .provider_launches
-                            .load(std::sync::atomic::Ordering::SeqCst),
-                        1
-                    );
-                    sessions.clear_persistence_failure();
-
-                    fixture
-                        .host
-                        .resume_workflow_execution(&fixture.app, &fixture.execution_id)
-                        .await
-                        .unwrap();
-
-                    assert_eq!(
-                        persisted_node_status(&fixture),
-                        NodeExecutionStatus::Running
-                    );
-                    assert_eq!(
-                        sessions
-                            .provider_launches
-                            .load(std::sync::atomic::Ordering::SeqCst),
-                        1
-                    );
-                    assert_eq!(
-                        sessions
-                            .recovery_calls
-                            .load(std::sync::atomic::Ordering::SeqCst),
-                        2
-                    );
-                }
-            }
-        }
-
-        #[tokio::test]
-        async fn test_resume_commit失敗後の補償失敗は元errorと補償errorをinvalid_stateへ合成する() {
-            let sessions = Arc::new(ResumeCommitFailureWorkflowAgentSessions::new(
-                ResumeCommitFailureMode::PersistenceWithCompensationFailure,
-            ));
-            let fixture = runtime_effect_fixture_with_sessions(
-                NodeCompletion::default(),
-                sessions.clone(),
-                Arc::new(std::sync::Mutex::new(Vec::new())),
-            )
-            .await;
-            sessions.bind(&fixture);
-            append_process_exit(&fixture, Some(1));
-
-            let error = fixture
-                .host
-                .resume_workflow_execution(&fixture.app, &fixture.execution_id)
-                .await
-                .unwrap_err();
-
-            assert!(matches!(
-                error,
-                WorkflowRuntimeError::InvalidState(ref message)
-                    if message.contains("failed to restore unactivated resumed nodes")
-                        && message.matches("node fact append failed").count() == 2
-            ));
-            assert_eq!(
-                sessions
-                    .provider_launches
-                    .load(std::sync::atomic::Ordering::SeqCst),
-                1
-            );
-        }
-
-        #[tokio::test]
-        async fn test_provider動作中のpaused_sessionは再起動せずrunningへ戻す() {
-            let stop_calls = Arc::new(std::sync::Mutex::new(Vec::new()));
-            let provider_running_checks = Arc::new(std::sync::Mutex::new(Vec::new()));
-            let sessions = recording_agent_sessions(
-                stop_calls.clone(),
-                provider_running_checks.clone(),
-                Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                String::new(),
-            );
-            let fixture = runtime_effect_fixture_with_sessions(
-                NodeCompletion::default(),
-                sessions,
-                stop_calls,
-            )
-            .await;
-            fixture
-                .host
-                .stop_workflow_execution(&fixture.app, &fixture.execution_id)
-                .await
-                .unwrap();
-            assert_eq!(
-                fixture
-                    .host
-                    .get_state_by_execution_id(&fixture.execution_id)
-                    .await
-                    .unwrap()
-                    .node_executions
-                    .iter()
-                    .find(|node| node.id == fixture.node_execution_id)
-                    .unwrap()
-                    .status,
-                NodeExecutionStatus::Paused
-            );
-
-            fixture
-                .host
-                .resume_workflow_execution(&fixture.app, &fixture.execution_id)
-                .await
-                .unwrap();
-
-            assert_eq!(
-                fixture
-                    .host
-                    .get_state_by_execution_id(&fixture.execution_id)
-                    .await
-                    .unwrap()
-                    .node_executions
-                    .iter()
-                    .find(|node| node.id == fixture.node_execution_id)
-                    .unwrap()
-                    .status,
-                NodeExecutionStatus::Running
-            );
-            assert_eq!(
-                provider_running_checks.lock().unwrap().as_slice(),
-                &[(
-                    fixture.node_execution_id.clone(),
-                    EFFECT_AGENT_SESSION_ID.to_string(),
-                )]
-            );
-            let records =
-                workflow_fact_log::read_tree_records(&fixture.store, &fixture.execution_id)
-                    .unwrap();
-            assert!(records.iter().any(|record| {
-                record.meta.node_execution_id == fixture.node_execution_id
-                    && matches!(record.fact, NodeFact::ResumeRequested)
-            }));
-        }
-
-        #[tokio::test]
-        async fn test_resume後の指示配送失敗はnodeをresume前の状態へ戻す() {
-            for (exit_code, expected_status) in [
-                (Some(1), NodeExecutionStatus::Failed),
-                (Some(0), NodeExecutionStatus::Paused),
-            ] {
-                let stop_calls = Arc::new(std::sync::Mutex::new(Vec::new()));
-                let dispatch_fails = Arc::new(std::sync::atomic::AtomicBool::new(false));
-                let sessions = recording_agent_sessions(
-                    stop_calls.clone(),
-                    Arc::new(std::sync::Mutex::new(Vec::new())),
-                    Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                    dispatch_fails.clone(),
-                    String::new(),
-                );
-                let fixture = runtime_effect_fixture_with_sessions(
-                    NodeCompletion::default(),
-                    sessions,
-                    stop_calls,
-                )
-                .await;
-                append_process_exit(&fixture, exit_code);
-                dispatch_fails.store(true, std::sync::atomic::Ordering::SeqCst);
-
-                let error = fixture
-                    .host
-                    .resume_workflow_execution(&fixture.app, &fixture.execution_id)
-                    .await
-                    .unwrap_err();
-
-                assert!(error.to_string().contains("instruction dispatch failure"));
-                assert_eq!(persisted_node_status(&fixture), expected_status);
-                assert_eq!(
-                    fixture
-                        .host
-                        .get_state_by_execution_id(&fixture.execution_id)
-                        .await
-                        .unwrap()
-                        .node_executions
-                        .iter()
-                        .find(|node| node.id == fixture.node_execution_id)
-                        .unwrap()
-                        .status,
-                    expected_status
-                );
-            }
-        }
-
-        #[tokio::test]
-        async fn test_resume後の指示配送失敗後の補償失敗は元errorと補償errorをinvalid_stateへ合成する(
-        ) {
-            let stop_calls = Arc::new(std::sync::Mutex::new(Vec::new()));
-            let dispatch_fails = Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let sessions = recording_agent_sessions(
-                stop_calls.clone(),
-                Arc::new(std::sync::Mutex::new(Vec::new())),
-                Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                dispatch_fails.clone(),
-                String::new(),
-            );
-            let fixture = runtime_effect_fixture_with_sessions(
-                NodeCompletion::default(),
-                sessions,
-                stop_calls,
-            )
-            .await;
-            append_process_exit(&fixture, Some(1));
-            rusqlite::Connection::open(fixture._directory.path().join("local-event-store.sqlite3"))
-                .unwrap()
-                .execute_batch(
-                    "CREATE TRIGGER fail_resume_dispatch_compensation
-                 BEFORE INSERT ON node_events
-                 WHEN NEW.event_type = 'process_exited'
-                 BEGIN
-                   SELECT RAISE(ABORT, 'injected dispatch compensation failure');
-                 END;",
-                )
-                .unwrap();
-            dispatch_fails.store(true, std::sync::atomic::Ordering::SeqCst);
-
-            let error = fixture
-                .host
-                .resume_workflow_execution(&fixture.app, &fixture.execution_id)
-                .await
-                .unwrap_err();
-
-            assert!(matches!(
-                error,
-                WorkflowRuntimeError::InvalidState(ref message)
-                    if message.contains("intentional instruction dispatch failure")
-                        && message.contains("failed to restore unactivated resumed nodes")
-                        && message.contains("node fact append failed")
-            ));
-        }
-
-        #[tokio::test]
-        async fn test_stop受領後にpausedとなったnodeのresume指示配送失敗は正常終了事実で補償する() {
-            const SESSION_ID: &str = "00000000-0000-4000-8000-000000000005";
-            let directory = tempfile::tempdir().unwrap();
-            let store = LocalEventStore::open(LocalEventStoreConfig::production(
-                directory.path().to_path_buf(),
-            ))
-            .unwrap();
-            let app = test_helpers::dependencies(Some(store.clone()));
-            let stop_calls = Arc::new(std::sync::Mutex::new(Vec::new()));
-            let dispatch_fails = Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let sessions = recording_agent_sessions(
-                stop_calls,
-                Arc::new(std::sync::Mutex::new(Vec::new())),
-                Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                dispatch_fails.clone(),
-                String::new(),
-            );
-            let execution_store = Arc::new(ExecutionStore::new_in_memory_for_tests());
-            let host = Arc::new(WorkflowRuntimeHost::with_execution_store(
-                Arc::new(UnusedWorkflowResolver),
-                Arc::new(AcceptingWorktreeResolver),
-                execution_store.clone(),
-                sessions,
-                Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
-            ));
-
-            // Given: Session 起動由来の単独実行木で Stop 後の正常終了が Paused を導出している
-            LocalAgentSessionRepository::new(store.clone())
-                .create(
-                    AgentSession::create(
-                        SESSION_ID,
-                        WorkspaceIdentity::new(EFFECT_WORKTREE_PATH),
-                        EFFECT_WORKTREE_PATH,
-                        ProviderKind::Codex,
-                        AgentSessionTreeLocation::session_tree_root(SESSION_ID).unwrap(),
-                    )
-                    .unwrap(),
-                    "create-standalone-resume-rollback-session",
-                )
-                .await
-                .unwrap();
-            host.register_started_execution_tree(&app, SESSION_ID)
-                .await
-                .unwrap();
-            let backend = workflow_fact_log::FactLogReadBackend::Live(store.clone());
-            let folded = workflow_fact_log::fold_tree_from(&backend, SESSION_ID)
-                .unwrap()
-                .unwrap();
-            let model = crate::domain::workflow::services::fact_replay::derive_read_model(&folded);
-            execution_store
-                .register_active_execution(WorkflowExecutionMetadata {
-                    execution_id: model.id,
-                    workflow_name: model.workflow_name,
-                    status: model.status,
-                    worktree_path: model.worktree_path,
-                    current_node: model.current_node,
-                    created_from: model.created_from,
-                    started_at: model.started_at,
-                    updated_at: model.updated_at,
-                    completed_at: model.completed_at,
-                    error_reason: model.error_reason,
-                    total_token_usage: model.total_token_usage,
-                })
-                .await
-                .unwrap();
-            let gateway = Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(
-                app.clone(),
-                host.clone(),
-            ));
-            let control_plane = WorkflowControlPlaneUsecase::new(gateway);
-            control_plane
-                .record_provider_stop(
-                    ProviderExecutionTreeStopCommand {
-                        agent_session_id: SESSION_ID.to_string(),
-                        tree_id: SESSION_ID.to_string(),
-                        node_execution_id: SESSION_ID.to_string(),
-                        binding_id: "binding-standalone-resume-rollback".to_string(),
-                    },
-                    Vec::new(),
-                )
-                .await
-                .unwrap();
-            append_process_exit_for_node(&store, SESSION_ID, SESSION_ID, Some(0));
-            let before = persisted_node_for(&store, SESSION_ID, SESSION_ID);
-            assert_eq!(before.status, NodeExecutionStatus::Paused);
-            assert_eq!(
-                before.completion_signals,
-                crate::domain::workflow::NodeCompletionSignalState::StopReceived
-            );
-            let records_before = workflow_fact_log::read_tree_records(&store, SESSION_ID)
-                .unwrap()
-                .len();
-            dispatch_fails.store(true, std::sync::atomic::Ordering::SeqCst);
-
-            // When: provider 復旧後の initial instruction 配送が失敗する
-            let error = host
-                .resume_workflow_execution(&app, SESSION_ID)
-                .await
-                .unwrap_err();
-
-            // Then: resume は失敗し、事実列の再 fold でも StopReceived を保った Paused に戻る
-            assert!(error.to_string().contains("instruction dispatch failure"));
-            let restored = persisted_node_for(&store, SESSION_ID, SESSION_ID);
-            assert_eq!(restored.status, NodeExecutionStatus::Paused);
-            assert_eq!(
-                restored.completion_signals,
-                crate::domain::workflow::NodeCompletionSignalState::StopReceived
-            );
-            assert!(restored.can_resume());
-            let appended = workflow_fact_log::read_tree_records(&store, SESSION_ID)
-                .unwrap()
-                .into_iter()
-                .skip(records_before)
-                .collect::<Vec<_>>();
-            assert!(appended.iter().any(|record| matches!(
-                &record.fact,
-                NodeFact::ProcessExited(fact) if fact.exit_code == Some(0)
-                    && fact.failure_reason.is_none()
-                    && fact.failure_kind.is_none()
-            )));
-            assert!(appended
-                .iter()
-                .any(|record| matches!(record.fact, NodeFact::SessionAttached(_))));
-
-            dispatch_fails.store(false, std::sync::atomic::Ordering::SeqCst);
-            host.resume_workflow_execution(&app, SESSION_ID)
-                .await
-                .unwrap();
-            assert_eq!(
-                persisted_node_for(&store, SESSION_ID, SESSION_ID).status,
-                NodeExecutionStatus::Running
-            );
+            assert_eq!(fixture.stop_calls.lock().unwrap().len(), 0);
         }
 
         #[tokio::test]
@@ -6241,7 +4522,6 @@ nodes:
                     prepare_calls: Arc::new(std::sync::Mutex::new(Vec::new())),
                     provider_running_checks: Arc::new(std::sync::Mutex::new(Vec::new())),
                     recovery_fails: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                    dispatch_fails: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                     failing_agent_session_id: "agent-session-1".to_string(),
                 });
 
@@ -6546,7 +4826,7 @@ nodes:
                 .as_ref()
                 .unwrap()
                 .contains("bypassPermissions"));
-            assert!(!node.can_retry());
+            assert!(!node.can_retry(crate::domain::workflow::NodeProcessPresence::ConfirmedAbsent));
 
             let app = test_helpers::dependencies(Some(store));
             let host = WorkflowRuntimeHost::with_execution_store(

@@ -802,6 +802,8 @@ fn test_workspaceノード詳細_public_rootと子nodeの名前はnodeのtitle�
 
 fn node() -> WorkspaceTreeNode {
     WorkspaceTreeNode {
+        process_presence: Default::default(),
+        can_resume_session: false,
         worktree: None,
         id: "node".to_string(),
         parent_id: None,
@@ -826,9 +828,6 @@ fn node() -> WorkspaceTreeNode {
         can_rename: false,
         can_approve: true,
         can_retry: false,
-        can_stop: false,
-        can_resume: false,
-        resume_eligible: false,
         can_abort: false,
         can_archive: false,
         display_command: None,
@@ -849,7 +848,6 @@ fn tree_owner(execution_id: &str) -> WorkspaceTreeNode {
     owner.node_name = None;
     owner.attempt = None;
     owner.can_approve = false;
-    owner.can_stop = true;
     owner.can_abort = true;
     owner
 }
@@ -897,10 +895,10 @@ fn open_session(id: &str) -> AgentSessionItemDto {
         provider_session_id: None,
         transcript_ref: None,
         operations: AgentSessionOperationsDto {
+            can_resume: false,
             can_archive: true,
             can_restore: false,
             can_delete: false,
-            can_resume: false,
         },
         last_exit_abnormal: false,
     }
@@ -944,7 +942,9 @@ fn sequence_and_fanout_are_distinct_recursive_branches_under_the_public_root() {
     assert_eq!(json[0]["kind"], "sequence");
     assert_eq!(json[0]["id"], execution_id);
     assert_eq!(json[0]["status"], "active");
-    assert_eq!(json[0]["workflowCapabilities"]["canStop"], true);
+    assert!(json[0]["workflowCapabilities"].get("canStop").is_none());
+    assert!(json[0]["workflowCapabilities"].get("canResume").is_none());
+    assert_eq!(json[0]["workflowCapabilities"]["canAbort"], true);
     assert_eq!(json[0]["children"][0]["kind"], "fanout");
     assert_eq!(json[0]["children"][0]["status"], "active");
     assert_eq!(json[0]["children"][0]["children"][0]["kind"], "node");
@@ -1005,7 +1005,9 @@ fn leaf_workflow_root_keeps_workflow_capabilities_on_the_node() {
 
     assert_eq!(json[0]["kind"], "node");
     assert_eq!(json[0]["id"], execution_id);
-    assert_eq!(json[0]["workflowCapabilities"]["canStop"], true);
+    assert!(json[0]["workflowCapabilities"].get("canStop").is_none());
+    assert!(json[0]["workflowCapabilities"].get("canResume").is_none());
+    assert_eq!(json[0]["workflowCapabilities"]["canAbort"], true);
 }
 
 fn assert_public_root_title(kind: WorkspaceNodeKind) {
@@ -1239,7 +1241,7 @@ fn test_workspaceツリー契約_nodeとsequenceとfanoutは4分類だけを返�
         WorkspaceNodeKind::WorkflowCommand,
         "lint",
     );
-    failed.status = WorkspaceNodeStatus::Failed;
+    failed.status = WorkspaceNodeStatus::Unresolved;
     let tree = WorkspaceTree::restore("/repo", vec![owner, sequence, fanout, failed]).unwrap();
 
     // When
@@ -1280,18 +1282,6 @@ fn test_workspaceノード詳細契約_詳細状態と5分類を同時に返す(
             WorkspaceNodeStatusClassification::Active,
             "running",
             "active",
-        ),
-        (
-            WorkspaceNodeStatus::Paused,
-            WorkspaceNodeStatusClassification::Idle,
-            "paused",
-            "idle",
-        ),
-        (
-            WorkspaceNodeStatus::Failed,
-            WorkspaceNodeStatusClassification::Failure,
-            "failed",
-            "failure",
         ),
         (
             WorkspaceNodeStatus::Waiting,
@@ -1361,47 +1351,11 @@ fn test_workspaceツリー契約_can_renameとunboundをdomain_nodeからその�
 }
 
 #[test]
-fn test_workspaceツリー契約_pausedでもresume可否とresume不能理由を維持する() {
-    // Given
-    let execution_id = "paused-workflow-execution";
-    let owner = tree_owner(execution_id);
-    let mut paused = child_node(
-        "paused",
-        execution_id,
-        execution_id,
-        WorkspaceNodeKind::WorkflowSession,
-        "paused",
-    );
-    paused.status = WorkspaceNodeStatus::Paused;
-    paused.session_id = Some("paused-agent-session".to_string());
-    paused.resume_eligible = true;
-    let tree = WorkspaceTree::restore("/repo", vec![owner, paused]).unwrap();
-
-    // When
-    let json = serde_json::to_value(project_tree(
-        &tree,
-        &HashSet::new(),
-        &HashSet::from([execution_id.to_string()]),
-        &[],
-    ))
-    .unwrap();
-
-    // Then
-    assert_eq!(json[0]["status"], "idle");
-    assert_eq!(json[0]["workflowCapabilities"]["canStop"], false);
-    assert_eq!(json[0]["workflowCapabilities"]["canResume"], true);
-    assert!(json[0]["workflowCapabilities"]
-        .get("resumeUnavailableReason")
-        .is_none());
-}
-
-#[test]
 fn test_workspaceツリー契約_completedでも終了時capabilityを維持する() {
     // Given
     let execution_id = "completed-workflow-execution";
     let mut owner = tree_owner(execution_id);
     owner.status = WorkspaceNodeStatus::Completed;
-    owner.can_stop = false;
     owner.can_abort = false;
     owner.can_archive = true;
     let mut completed = child_node(
@@ -1425,8 +1379,8 @@ fn test_workspaceツリー契約_completedでも終了時capabilityを維持す�
 
     // Then
     assert_eq!(json[0]["status"], "idle");
-    assert_eq!(json[0]["workflowCapabilities"]["canStop"], false);
-    assert_eq!(json[0]["workflowCapabilities"]["canResume"], false);
+    assert!(json[0]["workflowCapabilities"].get("canStop").is_none());
+    assert!(json[0]["workflowCapabilities"].get("canResume").is_none());
     assert_eq!(json[0]["workflowCapabilities"]["canAbort"], false);
     assert_eq!(json[0]["workflowCapabilities"]["canArchive"], true);
 }
@@ -1554,11 +1508,7 @@ fn test_workspace読取_未対応の親または自身の定義があってもco
 fn test_隔離node詳細_実行中と成果物なし終端でもbranchとpathを公開する() {
     // Given
     let expected = crate::domain::workflow::IsolatedWorktree::for_attempt("/repo", "isolated", 2);
-    for status in [
-        WorkspaceNodeStatus::Running,
-        WorkspaceNodeStatus::Failed,
-        WorkspaceNodeStatus::Aborted,
-    ] {
+    for status in [WorkspaceNodeStatus::Running, WorkspaceNodeStatus::Aborted] {
         let mut node = child_node(
             "isolated",
             "execution",
@@ -1585,7 +1535,6 @@ fn test_隔離合成子の表示_空のchildrenや終端でもそのattemptのbr
         for status in [
             WorkspaceNodeStatus::Running,
             WorkspaceNodeStatus::Completed,
-            WorkspaceNodeStatus::Failed,
             WorkspaceNodeStatus::Aborted,
         ] {
             // Given
@@ -1676,7 +1625,7 @@ fn test_delegate_親の過去attemptに当該attemptのchild部分木を投影�
         "implement",
     );
     past.attempt = Some(1);
-    past.status = WorkspaceNodeStatus::Failed;
+    past.status = WorkspaceNodeStatus::Aborted;
     let mut current = child_node(
         "current",
         "tree",
@@ -1747,7 +1696,7 @@ fn test_過去attempt_子のないsessionとcommandも通常行と同じkindを�
         let owner = tree_owner("tree");
         let mut past = child_node("past", "tree", "tree", kind, "work");
         past.attempt = Some(1);
-        past.status = WorkspaceNodeStatus::Failed;
+        past.status = WorkspaceNodeStatus::Aborted;
         let mut current = child_node("current", "tree", "tree", kind, "work");
         current.attempt = Some(2);
         current.sibling_order = 1;

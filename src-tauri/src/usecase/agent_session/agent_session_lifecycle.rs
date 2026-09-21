@@ -170,6 +170,19 @@ impl AgentSessionLifecycleUsecase {
             .await
     }
 
+    pub(crate) async fn has_recoverable_conversation(
+        &self,
+        agent_session_id: &str,
+    ) -> Result<bool, AgentSessionLifecycleUsecaseError> {
+        let session = self
+            .sessions
+            .find(agent_session_id)
+            .await
+            .map_err(map_session_error)?;
+        Ok(session
+            .is_some_and(|session| session.session().provider_session_id_for_recovery().is_ok()))
+    }
+
     pub(crate) async fn ensure_provider_running(
         &self,
         agent_session_id: &str,
@@ -184,7 +197,10 @@ impl AgentSessionLifecycleUsecase {
             .map_err(map_session_error)?;
         let session = self.required(agent_session_id).await?;
         match session.session().lifecycle() {
-            AgentSessionLifecycle::Open => Ok(AgentSessionOpenOutcome::Attached),
+            AgentSessionLifecycle::Open => {
+                self.open_locked(agent_session_id, rows, cols, caller_request_id)
+                    .await
+            }
             AgentSessionLifecycle::Paused => {
                 self.resume_locked(agent_session_id, rows, cols, caller_request_id)
                     .await

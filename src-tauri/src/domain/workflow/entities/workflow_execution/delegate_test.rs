@@ -122,6 +122,68 @@ fn finish_child(
 }
 
 #[test]
+fn test_delegate_親の複数回再開とchild再試行後も最新の親へ一度だけ結果を渡す() {
+    let (mut execution, mut ids, parent) = fixture("child.passed", 2, false);
+    submit(&mut execution, &parent, json!({"round": 1}), &mut ids);
+    stop(&mut execution, &parent, &mut ids);
+    let child = child_id(&execution, &parent);
+    let original_path = execution
+        .execution_worktree_path(&child)
+        .unwrap()
+        .to_string();
+    let mut current = parent.clone();
+    for timestamp in [5.0, 6.0] {
+        current = execution
+            .restart_node_attempt_at(&current, ids(), timestamp)
+            .unwrap()
+            .attempt
+            .id;
+    }
+    let retried = execution
+        .restart_node_attempt_at(&child, ids(), 7.0)
+        .unwrap()
+        .attempt
+        .id;
+    assert_eq!(
+        execution
+            .node_execution(&retried)
+            .unwrap()
+            .parent
+            .as_ref()
+            .unwrap()
+            .parent_id,
+        parent
+    );
+    assert_eq!(
+        execution.execution_worktree_path(&retried),
+        Some(original_path.as_str())
+    );
+    execution.record_pending_result(
+        &retried,
+        None,
+        Some(json!({"passed": false})),
+        None,
+        None,
+        8.0,
+    );
+    execution
+        .complete_leaf_and_advance(&retried, &mut ids, 8.0)
+        .unwrap();
+    let injection = execution.pending_delegate_injection(&current).unwrap();
+    assert_eq!(injection.child_execution_id, retried);
+    assert_eq!(execution.delegates[&current].iterations, 1);
+    assert!(execution.pending_delegate_injection(&parent).is_none());
+    assert_eq!(
+        execution.record_delegate_injected(&injection, 9.0),
+        TransitionOutcome::Applied
+    );
+    assert_eq!(
+        execution.record_delegate_injected(&injection, 9.0),
+        TransitionOutcome::NotApplicable
+    );
+}
+
+#[test]
 fn test_delegate_親の述語が真ならchildを起こさず二信号で完了する() {
     // Given
     let (mut execution, mut ids, parent) = fixture("done", 2, false);
@@ -139,6 +201,28 @@ fn test_delegate_親の述語が真ならchildを起こさず二信号で完了�
         execution.node_execution(&parent).unwrap().status,
         RuntimeNodeExecutionStatus::Succeeded
     );
+}
+
+#[test]
+fn test_delegate_再開後のchild完了は最新の親を承認待ちにする() {
+    let (mut execution, mut ids, parent) = fixture("child.passed", 2, true);
+    submit(&mut execution, &parent, json!({"round": 1}), &mut ids);
+    stop(&mut execution, &parent, &mut ids);
+    let next = execution
+        .restart_node_attempt_at(&parent, ids(), 5.0)
+        .unwrap()
+        .attempt
+        .id;
+    finish_child(&mut execution, &parent, json!({"passed": true}), &mut ids);
+    assert_eq!(
+        execution.node_execution(&next).unwrap().status,
+        RuntimeNodeExecutionStatus::WaitingApproval
+    );
+    assert_eq!(
+        execution.node_execution(&parent).unwrap().status,
+        RuntimeNodeExecutionStatus::Aborted
+    );
+    assert!(execution.pending_delegate_injections().is_empty());
 }
 
 #[test]
@@ -336,13 +420,10 @@ fn test_delegate_注入前の中断は結果を再利用し注入後の中断は
     stop(&mut execution, &parent, &mut ids);
     finish_child(&mut execution, &parent, json!({"passed": false}), &mut ids);
     // When
-    execution.pause_node_execution(&parent, 5.0);
-    assert!(execution.pending_delegate_injection(&parent).is_none());
-    execution.resume_node_execution(&parent, 6.0);
+    assert!(execution.pending_delegate_injection(&parent).is_some());
     let injection = execution.pending_delegate_injection(&parent).unwrap();
     execution.record_delegate_injected(&injection, 7.0);
-    execution.pause_node_execution(&parent, 8.0);
-    execution.resume_node_execution(&parent, 9.0);
+
     // Then
     assert!(execution.pending_delegate_injection(&parent).is_none());
     assert_eq!(execution.node_executions.len(), 2);
@@ -628,8 +709,10 @@ fn test_delegate_falseのchildがstop前に完了してもstop後に一度だけ
         );
         // When
         if interrupted {
-            execution.pause_node_execution(&parent, 5.0);
-            execution.resume_node_execution(&parent, 6.0);
+            assert_eq!(
+                execution.node_execution(&parent).unwrap().status,
+                RuntimeNodeExecutionStatus::Running
+            );
             assert!(execution.pending_delegate_injection(&parent).is_none());
         }
         stop(&mut execution, &parent, &mut ids);
@@ -725,5 +808,50 @@ fn test_delegate_提出の受理と再生はchild合成と述語と上限で同�
                 json!(null)
             }
         );
+    }
+}
+
+#[test]
+fn test_delegate_親の新attemptは未注入結果だけを引き継ぐ() {
+    for injected in [false, true] {
+        // Given
+        let (mut execution, mut ids, parent) = fixture("child.passed", 2, false);
+        submit(&mut execution, &parent, json!({"passed": false}), &mut ids);
+        stop(&mut execution, &parent, &mut ids);
+        finish_child(&mut execution, &parent, json!({"passed": false}), &mut ids);
+        let pending = execution.pending_delegate_injection(&parent).unwrap();
+        if injected {
+            execution.record_delegate_injected(&pending, 5.0);
+        }
+        // When
+        let next = execution
+            .restart_node_attempt_at(&parent, ids(), 6.0)
+            .unwrap();
+        // Then
+        assert!(execution.pending_delegate_injection(&parent).is_none());
+        let inherited = execution.pending_delegate_injection(&next.attempt.id);
+        if injected {
+            assert!(inherited.is_none());
+            assert!(next.attempt.artifact.is_none());
+        } else {
+            assert_eq!(
+                inherited,
+                Some(DelegateInjection {
+                    node_execution_id: next.attempt.id.clone(),
+                    child_execution_id: pending.child_execution_id,
+                })
+            );
+            assert_eq!(
+                next.attempt.artifact.as_ref().unwrap()["child"]["passed"],
+                false
+            );
+            assert_eq!(
+                execution.record_delegate_injected(&inherited.unwrap(), 7.0),
+                TransitionOutcome::Applied
+            );
+            assert!(execution
+                .pending_delegate_injection(&next.attempt.id)
+                .is_none());
+        }
     }
 }

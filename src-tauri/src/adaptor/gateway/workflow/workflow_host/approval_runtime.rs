@@ -97,7 +97,7 @@ mod tests {
                     artifact: None,
                     result_summary: None,
                     token_usage: None,
-                    failure: None,
+
                     parent: None,
                     completion_signals: Default::default(),
                     started_at: 1.0,

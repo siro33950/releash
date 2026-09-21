@@ -326,8 +326,8 @@ pub(crate) mod tests {
         }
 
         assert!(handles_command("start_workflow"));
-        assert!(handles_command("stop_workflow"));
-        assert!(handles_command("resume_workflow"));
+        assert!(!handles_command("stop_workflow"));
+        assert!(!handles_command("resume_workflow"));
         assert!(handles_command("workflow_submit_output"));
         assert!(handles_command("workflow_get_output"));
         assert!(!handles_command("get_git_status"));
@@ -1310,6 +1310,10 @@ pub(crate) mod tests {
                 config_repository,
                 config_secret_repository,
                 local_event_store.clone(),
+                Arc::new(
+                    crate::adaptor::gateway::workflow::node_process::WorkflowNodeProcesses::default(
+                    ),
+                ),
             );
         app.manage(AppState {
             repository_usecase: repository_usecase.clone(),

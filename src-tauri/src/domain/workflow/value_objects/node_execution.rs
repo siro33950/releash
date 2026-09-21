@@ -1,4 +1,8 @@
-use super::{Artifact, NodeExecutionFailureKind, NodeKindName, TokenUsage};
+use super::{Artifact, NodeKindName, TokenUsage};
+
+pub fn startup_restart_delay(restarts: u32) -> Option<std::time::Duration> {
+    (restarts < 4).then(|| std::time::Duration::from_secs(1 << restarts))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum NodeCompletionSignalState {
@@ -12,10 +16,6 @@ pub enum NodeCompletionSignalState {
 impl NodeCompletionSignalState {
     pub fn is_ready(self) -> bool {
         self == Self::Ready
-    }
-
-    pub fn is_partial(self) -> bool {
-        matches!(self, Self::SubmitReceived | Self::StopReceived)
     }
 }
 
@@ -100,23 +100,31 @@ pub struct FanoutSlot {
 pub enum NodeExecutionStatus {
     Unresolved,
     Running,
-    Paused,
     WaitingApproval,
     Succeeded,
-    Failed,
     Aborted,
 }
 
 impl NodeExecutionStatus {
+    pub fn can_retry(self, kind: NodeKindName, presence: NodeProcessPresence) -> bool {
+        self == Self::Running
+            && kind == NodeKindName::Command
+            && presence == NodeProcessPresence::ConfirmedAbsent
+    }
+
+    pub fn can_resume_session(self, kind: NodeKindName, presence: NodeProcessPresence) -> bool {
+        matches!(self, Self::Running | Self::WaitingApproval)
+            && kind == NodeKindName::Session
+            && presence == NodeProcessPresence::ConfirmedAbsent
+    }
+
     #[cfg(test)]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Unresolved => "unresolved",
             Self::Running => "running",
-            Self::Paused => "paused",
             Self::WaitingApproval => "waiting_approval",
             Self::Succeeded => "succeeded",
-            Self::Failed => "failed",
             Self::Aborted => "aborted",
         }
     }
@@ -124,15 +132,9 @@ impl NodeExecutionStatus {
     pub fn is_active(self) -> bool {
         matches!(
             self,
-            Self::Running | Self::Paused | Self::WaitingApproval | Self::Unresolved
+            Self::Running | Self::WaitingApproval | Self::Unresolved
         )
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeExecutionFailure {
-    pub reason: String,
-    pub kind: NodeExecutionFailureKind,
 }
 
 /// event replay から構築する node 実行 1 回分の read model。
@@ -146,34 +148,52 @@ pub struct NodeExecution {
     pub kind: NodeKindName,
     pub attempt: u32,
     pub status: NodeExecutionStatus,
+    pub process_presence: NodeProcessPresence,
     pub session_id: Option<String>,
     pub display_command: Option<String>,
     pub result_summary: Option<String>,
     pub artifact: Option<Artifact>,
     pub token_usage: Option<TokenUsage>,
-    pub failure: Option<NodeExecutionFailure>,
     pub parent: Option<ExecutionParentRef>,
     pub completion_signals: NodeCompletionSignalState,
     pub started_at: f64,
     pub completed_at: Option<f64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NodeProcessPresence {
+    Live,
+    ConfirmedAbsent,
+    #[default]
+    Unknown,
+}
+
+impl NodeProcessPresence {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Live => "live",
+            Self::ConfirmedAbsent => "confirmed_absent",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 impl NodeExecution {
+    pub fn can_retry(&self) -> bool {
+        self.recovery_reason.is_none() && self.status.can_retry(self.kind, self.process_presence)
+    }
+
+    pub fn can_resume_session(&self) -> bool {
+        self.recovery_reason.is_none()
+            && self
+                .status
+                .can_resume_session(self.kind, self.process_presence)
+    }
+
     pub fn is_fanout_child(&self) -> bool {
         self.parent
             .as_ref()
             .is_some_and(ExecutionParentRef::is_fanout_child)
-    }
-
-    pub fn can_retry(&self) -> bool {
-        if self.recovery_reason.is_some() || self.kind.is_composite_kind() {
-            return false;
-        }
-        self.status == NodeExecutionStatus::Failed
-            || (matches!(
-                self.status,
-                NodeExecutionStatus::Running | NodeExecutionStatus::Paused
-            ) && self.completion_signals.is_partial())
     }
 }
 
@@ -187,36 +207,6 @@ mod tests {
         assert!(NodeExecutionStatus::WaitingApproval.is_active());
         assert!(!NodeExecutionStatus::Succeeded.is_active());
         assert_eq!(NodeExecutionStatus::Succeeded.as_str(), "succeeded");
-    }
-
-    #[test]
-    fn retry_admission_belongs_to_the_node_execution() {
-        let mut node = NodeExecution {
-            worktree: None,
-            recovery_reason: None,
-            id: "node-1".to_string(),
-            execution_id: "execution-1".to_string(),
-            node_name: "review".to_string(),
-            kind: NodeKindName::Session,
-            attempt: 1,
-            status: NodeExecutionStatus::Running,
-            session_id: None,
-            display_command: None,
-            result_summary: None,
-            artifact: None,
-            token_usage: None,
-            failure: None,
-            parent: None,
-            completion_signals: NodeCompletionSignalState::StopReceived,
-            started_at: 1.0,
-            completed_at: None,
-        };
-
-        assert!(node.can_retry());
-        node.completion_signals = NodeCompletionSignalState::Pending;
-        assert!(!node.can_retry());
-        node.status = NodeExecutionStatus::Failed;
-        assert!(node.can_retry());
     }
 
     #[test]
@@ -249,5 +239,35 @@ mod tests {
                 child_index: 0,
             })
         );
+    }
+    #[test]
+    fn manual_node_actions_require_confirmed_absence_and_the_matching_leaf_kind() {
+        use NodeExecutionStatus as S;
+        use NodeProcessPresence as P;
+        for (status, retry_command, resume_session) in [
+            (S::Running, true, true),
+            (S::WaitingApproval, false, true),
+            (S::Unresolved, false, false),
+            (S::Succeeded, false, false),
+            (S::Aborted, false, false),
+        ] {
+            for presence in [P::Live, P::Unknown, P::ConfirmedAbsent] {
+                let absent = presence == P::ConfirmedAbsent;
+                assert_eq!(
+                    status.can_retry(NodeKindName::Command, presence),
+                    absent && retry_command
+                );
+                assert!(!status.can_retry(NodeKindName::Session, presence));
+                assert_eq!(
+                    status.can_resume_session(NodeKindName::Session, presence),
+                    absent && resume_session
+                );
+                assert!(!status.can_resume_session(NodeKindName::Command, presence));
+                for kind in [NodeKindName::Sequence, NodeKindName::Fanout] {
+                    assert!(!status.can_retry(kind, presence));
+                    assert!(!status.can_resume_session(kind, presence));
+                }
+            }
+        }
     }
 }

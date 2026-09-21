@@ -42,7 +42,7 @@ fn test_workflow_status_アプリ停止中はfile直接読取へfallbackする()
 }
 
 #[test]
-fn test_隔離worktree_statusのfile直接読取で実行中と失敗とabortと完了後のbranchとpathを返す() {
+fn test_隔離worktree_statusのfile直接読取で実行中とabortと完了後のbranchとpathを返す() {
     use crate::adaptor::controller::api::test_support::{
         assert_isolated_execution_json, seed_isolated_query_execution,
     };
@@ -50,7 +50,6 @@ fn test_隔離worktree_statusのfile直接読取で実行中と失敗とabortと
 
     for status in [
         NodeExecutionStatus::Running,
-        NodeExecutionStatus::Failed,
         NodeExecutionStatus::Aborted,
         NodeExecutionStatus::Succeeded,
     ] {

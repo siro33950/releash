@@ -1,6 +1,6 @@
 use crate::domain::workflow::{
     AgentSessionActivity, ExecutionParentRef, ExecutionStatus, NodeCompletionSignalState,
-    NodeExecutionFailureKind, NodeKindName,
+    NodeExecutionFailureKind, NodeKindName, NodeProcessPresence,
 };
 
 pub(super) const INTERNAL_SIBLING_ORDER: u64 = i64::MAX as u64;
@@ -35,8 +35,6 @@ pub enum WorkspaceNodeKind {
 pub enum WorkspaceNodeStatus {
     Unresolved,
     Running,
-    Paused,
-    Failed,
     Waiting,
     Aborted,
     Completed,
@@ -47,8 +45,6 @@ impl WorkspaceNodeStatus {
         match self {
             Self::Unresolved => "unresolved",
             Self::Running => "running",
-            Self::Paused => "paused",
-            Self::Failed => "failed",
             Self::Waiting => "waiting",
             Self::Aborted => "aborted",
             Self::Completed => "completed",
@@ -112,6 +108,7 @@ pub struct WorkspaceTreeNode {
     pub kind: WorkspaceNodeKind,
     pub title: String,
     pub status: WorkspaceNodeStatus,
+    pub process_presence: NodeProcessPresence,
     pub status_classification: WorkspaceNodeStatusClassification,
     pub activity: Option<AgentSessionActivity>,
     pub error_reason: Option<String>,
@@ -129,11 +126,7 @@ pub struct WorkspaceTreeNode {
     pub can_rename: bool,
     pub can_approve: bool,
     pub can_retry: bool,
-    pub can_stop: bool,
-    pub can_resume: bool,
-    /// Runtime aggregate が resume を受理する leaf。公開 capability は workflow root の
-    /// `can_resume` だけであり、この値は root 集約の入力にだけ使う。
-    pub(crate) resume_eligible: bool,
+    pub can_resume_session: bool,
     pub can_abort: bool,
     pub can_archive: bool,
     pub display_command: Option<String>,
@@ -172,19 +165,21 @@ impl WorkspaceTreeNode {
         status: WorkspaceNodeStatus,
         activity: Option<AgentSessionActivity>,
         session_bound: bool,
+        process_presence: NodeProcessPresence,
     ) -> WorkspaceNodeStatusClassification {
-        if matches!(
-            status,
-            WorkspaceNodeStatus::Failed | WorkspaceNodeStatus::Unresolved
-        ) {
+        if matches!(status, WorkspaceNodeStatus::Unresolved) {
             WorkspaceNodeStatusClassification::Failure
         } else if matches!(
             status,
-            WorkspaceNodeStatus::Completed
-                | WorkspaceNodeStatus::Aborted
-                | WorkspaceNodeStatus::Paused
+            WorkspaceNodeStatus::Completed | WorkspaceNodeStatus::Aborted
         ) {
             WorkspaceNodeStatusClassification::Idle
+        } else if matches!(
+            kind,
+            WorkspaceNodeKind::WorkflowSession | WorkspaceNodeKind::WorkflowCommand
+        ) && process_presence == NodeProcessPresence::ConfirmedAbsent
+        {
+            WorkspaceNodeStatusClassification::Attention
         } else if kind == WorkspaceNodeKind::WorkflowSession && !session_bound {
             WorkspaceNodeStatusClassification::Unbound
         } else if kind == WorkspaceNodeKind::WorkflowSession {
@@ -208,6 +203,7 @@ impl WorkspaceTreeNode {
             self.status,
             self.activity,
             self.session_id.is_some(),
+            self.process_presence,
         )
     }
 }
@@ -343,6 +339,8 @@ mod tests {
         completion_signals: NodeCompletionSignalState,
     ) -> WorkspaceTreeNode {
         WorkspaceTreeNode {
+            process_presence: Default::default(),
+            can_resume_session: false,
             worktree: None,
             id: "node".to_string(),
             parent_id: Some("workflow".to_string()),
@@ -368,9 +366,6 @@ mod tests {
             can_rename: false,
             can_approve: false,
             can_retry: false,
-            can_stop: false,
-            can_resume: false,
-            resume_eligible: false,
             can_abort: false,
             can_archive: false,
             display_command: None,
@@ -448,20 +443,6 @@ mod tests {
             ),
             (
                 WorkspaceNodeKind::WorkflowSession,
-                WorkspaceNodeStatus::Failed,
-                NodeCompletionSignalState::Pending,
-                Some(AgentSessionActivity::Working),
-                WorkspaceNodeStatusClassification::Failure,
-            ),
-            (
-                WorkspaceNodeKind::WorkflowSession,
-                WorkspaceNodeStatus::Paused,
-                NodeCompletionSignalState::StopReceived,
-                Some(AgentSessionActivity::Working),
-                WorkspaceNodeStatusClassification::Idle,
-            ),
-            (
-                WorkspaceNodeKind::WorkflowSession,
                 WorkspaceNodeStatus::Completed,
                 NodeCompletionSignalState::Ready,
                 Some(AgentSessionActivity::Working),
@@ -535,16 +516,10 @@ mod tests {
 
     #[test]
     fn test_詳細状態分類_bind前sessionの終了状態をunboundより先に分類する() {
-        let cases = [
-            (
-                WorkspaceNodeStatus::Failed,
-                WorkspaceNodeStatusClassification::Failure,
-            ),
-            (
-                WorkspaceNodeStatus::Aborted,
-                WorkspaceNodeStatusClassification::Idle,
-            ),
-        ];
+        let cases = [(
+            WorkspaceNodeStatus::Aborted,
+            WorkspaceNodeStatusClassification::Idle,
+        )];
 
         for (status, expected) in cases {
             let mut session = node(

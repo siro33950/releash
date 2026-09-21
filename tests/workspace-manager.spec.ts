@@ -85,6 +85,7 @@ test.describe("Workspace Manager", () => {
 				nodes: [
 					{
 						kind: "node",
+						processPresence: "unknown",
 						id: "node-session-1",
 						title: "Direct session",
 						status: "active",
@@ -92,7 +93,7 @@ test.describe("Workspace Manager", () => {
 						capabilities: {
 							canRename: false,
 							canApprove: false,
-							canRetry: false,
+							canRetry: false, canResumeSession: false,
 						},
 						pastAttempts: [],
 						pastAttemptsCollapsed: false,
@@ -128,8 +129,6 @@ test.describe("Workspace Manager", () => {
 						title: "Release workflow",
 						status: "active",
 						workflowCapabilities: {
-							canStop: true,
-							canResume: false,
 							canAbort: true,
 							canArchive: false,
 						},
@@ -137,6 +136,7 @@ test.describe("Workspace Manager", () => {
 						children: [
 							{
 								kind: "node",
+								processPresence: "unknown",
 								id: "node-build-opaque",
 								title: "build",
 								status: "active",
@@ -144,7 +144,7 @@ test.describe("Workspace Manager", () => {
 								capabilities: {
 									canRename: false,
 									canApprove: false,
-									canRetry: false,
+									canRetry: false, canResumeSession: false,
 								},
 								pastAttempts: [],
 								pastAttemptsCollapsed: false,
@@ -169,7 +169,7 @@ test.describe("Workspace Manager", () => {
 		expect(triggerBox).not.toBeNull();
 		await trigger.click();
 
-		const menu = page.getByRole("menu").filter({ hasText: "Stop" });
+		const menu = page.getByRole("menu").filter({ hasText: "Abort" });
 		await expect(menu).toBeVisible();
 		await waitForAnimations(menu);
 		const menuBox = await menu.boundingBox();
@@ -210,6 +210,7 @@ test.describe("Workspace Manager", () => {
 			create_agent_session: agentSessionId,
 			get_workspace_session_node_id: agentSessionId,
 			get_workspace_node_detail: {
+				processPresence: "unknown",
 				statusClassification: "active",
 				id: agentSessionId,
 				title: "New Session",
@@ -217,7 +218,7 @@ test.describe("Workspace Manager", () => {
 				capabilities: {
 					canRename: false,
 					canApprove: false,
-					canRetry: false,
+					canRetry: false, canResumeSession: false,
 				},
 				updatedAt: 1000,
 				submitReceived: false,
@@ -288,6 +289,7 @@ test.describe("Workspace Manager", () => {
 		const worktreePath = "/test/repo-worktrees/feat-wip";
 		const workflowNode = {
 			kind: "node",
+			processPresence: "unknown",
 			id: "node-first-workflow-opaque",
 			title: "First workflow Session",
 			status: "active",
@@ -295,7 +297,7 @@ test.describe("Workspace Manager", () => {
 			capabilities: {
 				canRename: false,
 				canApprove: false,
-				canRetry: false,
+				canRetry: false, canResumeSession: false,
 			},
 			pastAttempts: [],
 			pastAttemptsCollapsed: false,
@@ -342,8 +344,6 @@ test.describe("Workspace Manager", () => {
 								title: "First workflow",
 								status: "active",
 								workflowCapabilities: {
-									canStop: true,
-									canResume: false,
 									canAbort: true,
 									canArchive: false,
 								},
@@ -358,6 +358,7 @@ test.describe("Workspace Manager", () => {
 				window.__RELEASH_BACKEND__?.setMockResponse(
 					"get_workspace_node_detail",
 					{
+						processPresence: "unknown",
 						statusClassification: "active",
 						id: workflowNode.id,
 						title: workflowNode.title,
@@ -432,8 +433,6 @@ test.describe("Workspace Manager", () => {
 						title: "Review workflow",
 						status: "attention",
 						workflowCapabilities: {
-							canStop: false,
-							canResume: false,
 							canAbort: true,
 							canArchive: false,
 						},
@@ -441,6 +440,7 @@ test.describe("Workspace Manager", () => {
 						children: [
 							{
 								kind: "node",
+								processPresence: "unknown",
 								id: "node-workflow-session",
 								title: "Review changes",
 								status: "attention",
@@ -448,7 +448,7 @@ test.describe("Workspace Manager", () => {
 								capabilities: {
 									canRename: false,
 									canApprove: false,
-									canRetry: false,
+									canRetry: false, canResumeSession: false,
 								},
 								pastAttempts: [],
 								pastAttemptsCollapsed: false,
@@ -461,6 +461,7 @@ test.describe("Workspace Manager", () => {
 				preferredNodeId: null,
 			},
 			get_workspace_node_detail: {
+				processPresence: "unknown",
 				statusClassification: "attention",
 				id: "node-workflow-session",
 				title: "Review changes",
@@ -468,7 +469,7 @@ test.describe("Workspace Manager", () => {
 				capabilities: {
 					canRename: false,
 					canApprove: false,
-					canRetry: false,
+					canRetry: false, canResumeSession: false,
 				},
 				updatedAt: 1000,
 				submitReceived: false,
@@ -533,8 +534,6 @@ test.describe("Workspace Manager", () => {
 						title: "Fanout workflow",
 						status: "active",
 						workflowCapabilities: {
-							canStop: true,
-							canResume: false,
 							canAbort: true,
 							canArchive: false,
 						},
@@ -549,6 +548,7 @@ test.describe("Workspace Manager", () => {
 								children: [
 									{
 										kind: "node",
+										processPresence: "unknown",
 										id: "fanout-child-a",
 										title: "Linux job",
 										status: "active",
@@ -556,7 +556,7 @@ test.describe("Workspace Manager", () => {
 										capabilities: {
 											canRename: false,
 											canApprove: false,
-											canRetry: false,
+											canRetry: false, canResumeSession: false,
 										},
 										pastAttempts: [],
 										pastAttemptsCollapsed: false,
@@ -606,8 +606,6 @@ test.describe("Workspace Manager", () => {
 						title: "Deploy workflow",
 						status: "idle",
 						workflowCapabilities: {
-							canStop: false,
-							canResume: false,
 							canAbort: false,
 							canArchive: true,
 						},
@@ -622,6 +620,7 @@ test.describe("Workspace Manager", () => {
 								children: [
 									{
 										kind: "node",
+										processPresence: "unknown",
 										id: "node-command-opaque",
 										title: "Deploy",
 										status: "idle",
@@ -629,7 +628,7 @@ test.describe("Workspace Manager", () => {
 										capabilities: {
 											canRename: false,
 											canApprove: false,
-											canRetry: false,
+											canRetry: false, canResumeSession: false,
 										},
 										pastAttempts: [],
 										pastAttemptsCollapsed: false,
@@ -644,6 +643,7 @@ test.describe("Workspace Manager", () => {
 				preferredNodeId: null,
 			},
 			get_workspace_node_detail: {
+				processPresence: "unknown",
 				statusClassification: "idle",
 				id: "node-command-opaque",
 				title: "Deploy",
@@ -651,7 +651,7 @@ test.describe("Workspace Manager", () => {
 				capabilities: {
 					canRename: false,
 					canApprove: false,
-					canRetry: false,
+					canRetry: false, canResumeSession: false,
 				},
 				updatedAt: 1000,
 				submitReceived: false,
@@ -712,6 +712,7 @@ test.describe("Workspace Manager", () => {
 			nodes: [
 				{
 					kind: "node",
+					processPresence: "unknown",
 					id: fallbackNodeId,
 					title: "Archive fallback",
 					status: "active",
@@ -719,7 +720,7 @@ test.describe("Workspace Manager", () => {
 					capabilities: {
 						canRename: false,
 						canApprove: false,
-						canRetry: false,
+						canRetry: false, canResumeSession: false,
 					},
 					pastAttempts: [],
 					pastAttemptsCollapsed: false,
@@ -731,8 +732,6 @@ test.describe("Workspace Manager", () => {
 					title: "Archivable integration workflow",
 					status: "idle",
 					workflowCapabilities: {
-						canStop: false,
-						canResume: false,
 						canAbort: false,
 						canArchive: true,
 					},
@@ -740,6 +739,7 @@ test.describe("Workspace Manager", () => {
 					children: [
 						{
 							kind: "node",
+							processPresence: "unknown",
 							id: selectedNodeId,
 							title: "Archive selected",
 							status: "idle",
@@ -747,7 +747,7 @@ test.describe("Workspace Manager", () => {
 							capabilities: {
 								canRename: false,
 								canApprove: false,
-								canRetry: false,
+								canRetry: false, canResumeSession: false,
 							},
 							pastAttempts: [],
 							pastAttemptsCollapsed: false,
@@ -773,6 +773,7 @@ test.describe("Workspace Manager", () => {
 				workspaceTreeReconciliation(reconciledSnapshot),
 			archive_workspace_workflow_execution: null,
 			get_workspace_node_detail: {
+				processPresence: "unknown",
 				statusClassification: "idle",
 				id: selectedNodeId,
 				title: "Archive selected",
@@ -780,7 +781,7 @@ test.describe("Workspace Manager", () => {
 				capabilities: {
 					canRename: false,
 					canApprove: false,
-					canRetry: false,
+					canRetry: false, canResumeSession: false,
 				},
 				updatedAt: 2000,
 				submitReceived: false,
@@ -838,6 +839,7 @@ test.describe("Workspace Manager", () => {
 		const worktreePath = "/test/repo-worktrees/feat-wip";
 		const firstOccurrence = {
 			kind: "node",
+			processPresence: "unknown",
 			id: "occurrence-a-1",
 			title: "Loop step",
 			status: "active",
@@ -845,7 +847,7 @@ test.describe("Workspace Manager", () => {
 			capabilities: {
 				canRename: false,
 				canApprove: false,
-				canRetry: false,
+				canRetry: false, canResumeSession: false,
 			},
 			pastAttempts: [],
 			pastAttemptsCollapsed: false,
@@ -857,8 +859,6 @@ test.describe("Workspace Manager", () => {
 			title: "Loop workflow",
 			status: "active",
 			workflowCapabilities: {
-				canStop: true,
-				canResume: false,
 				canAbort: true,
 				canArchive: false,
 			},
@@ -875,6 +875,7 @@ test.describe("Workspace Manager", () => {
 				preferredNodeId: null,
 			},
 			get_workspace_node_detail: {
+				processPresence: "unknown",
 				statusClassification: "active",
 				id: "occurrence-a-1",
 				title: "Loop step",
@@ -882,7 +883,7 @@ test.describe("Workspace Manager", () => {
 				capabilities: {
 					canRename: false,
 					canApprove: false,
-					canRetry: false,
+					canRetry: false, canResumeSession: false,
 				},
 				updatedAt: 1000,
 				submitReceived: false,
@@ -951,6 +952,7 @@ test.describe("Workspace Manager", () => {
 					preferredNodeId: "occurrence-a-2",
 				});
 				internals.setMockResponse("get_workspace_node_detail", {
+					processPresence: "unknown",
 					statusClassification: "idle",
 					id: "occurrence-a-1",
 					title: "Loop step",
@@ -958,7 +960,7 @@ test.describe("Workspace Manager", () => {
 					capabilities: {
 						canRename: false,
 						canApprove: false,
-						canRetry: false,
+						canRetry: false, canResumeSession: false,
 					},
 					updatedAt: 2000,
 					submitReceived: false,
@@ -1003,6 +1005,7 @@ test.describe("Workspace Manager", () => {
 				const internals = window.__RELEASH_BACKEND__;
 				if (!internals) throw new Error("Tauri mock not initialized");
 				internals.setMockResponse("get_workspace_node_detail", {
+					processPresence: "unknown",
 					statusClassification: "active",
 					id: "occurrence-a-2",
 					title: "Loop step",
@@ -1010,7 +1013,7 @@ test.describe("Workspace Manager", () => {
 					capabilities: {
 						canRename: false,
 						canApprove: false,
-						canRetry: false,
+						canRetry: false, canResumeSession: false,
 					},
 					updatedAt: 3000,
 					submitReceived: false,
@@ -1175,7 +1178,7 @@ test("通信状態を表示せず期限後に確定したArchive結果が削除�
     const branch = kanbanBranches.find(branch => branch.name === "feat/wip")!;
     await setupTauriMock(page, buildMockConfig({
         list_branches_with_status: [branch],
-        list_workspace_worktree_nodes: {nodes: [{kind: "node", id: "archive-session", title: "Late Archive", status: "idle", contentKind: "session", capabilities: {canRename: false, canApprove: false, canRetry: false}, sessionCapabilities: {sessionRef: "archive-session", canArchive: true, canDelete: false}, pastAttempts: [], pastAttemptsCollapsed: false, updatedAt: 1}], archivedSessions: [], preferredNodeId: null},
+        list_workspace_worktree_nodes: {nodes: [{kind: "node", processPresence: "unknown", id: "archive-session", title: "Late Archive", status: "idle", contentKind: "session", capabilities: {canRename: false, canApprove: false, canRetry: false, canResumeSession: false}, sessionCapabilities: {sessionRef: "archive-session", canArchive: true, canDelete: false}, pastAttempts: [], pastAttemptsCollapsed: false, updatedAt: 1}], archivedSessions: [], preferredNodeId: null},
         archive_agent_session: "delete_confirmation_required",
     }));
     await waitForApp(page);

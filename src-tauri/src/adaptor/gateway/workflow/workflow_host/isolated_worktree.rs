@@ -22,6 +22,7 @@ impl NodePreparation {
 #[derive(Default)]
 pub(super) struct PreparedNodes {
     pub(super) leaves: Vec<LeafStart>,
+    pub(super) failed: Vec<String>,
     pub(super) injections: Vec<DelegateInjection>,
 }
 
@@ -156,6 +157,7 @@ impl WorkflowRuntimeHost {
                 .await;
         }
         for (node_execution_id, error) in failures {
+            prepared.failed.push(node_execution_id.clone());
             Box::pin(self.settle_runtime_failure_for_node(
                 app,
                 execution_id,

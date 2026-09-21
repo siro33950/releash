@@ -6,16 +6,13 @@ use crate::domain::app_config::ConfigRepository;
 use crate::domain::workflow::WorkflowRuntimeSnapshot;
 use crate::domain::workflow::{WorkflowDefinition, WorkflowError};
 use crate::usecase::repository_usecase::RepositoryUsecase;
-use crate::usecase::workflow::command::{
-    AbortExecutionCommand, ResolvedStartExecutionCommand, ResumeExecutionCommand,
-    StopExecutionCommand,
-};
+use crate::usecase::workflow::command::{AbortExecutionCommand, ResolvedStartExecutionCommand};
 use crate::usecase::workflow::control_plane::{
     WorkflowControlPlaneCommit, WorkflowControlPlaneGateway,
 };
 use crate::usecase::workflow::ports::{
-    WorkflowAbortExecutionGateway, WorkflowResumeExecutionGateway, WorkflowRuntimeShutdownGateway,
-    WorkflowRuntimeStateGateway, WorkflowStartExecutionGateway, WorkflowStopExecutionGateway,
+    WorkflowAbortExecutionGateway, WorkflowRuntimeShutdownGateway, WorkflowRuntimeStateGateway,
+    WorkflowStartExecutionGateway,
 };
 
 use crate::adaptor::gateway::workflow::workflow_host::WorkflowRuntimeHost;
@@ -28,6 +25,7 @@ pub(crate) struct WorkflowRuntimeCommandGateway {
 }
 
 pub(crate) struct WorkflowRuntimeCommandGatewayDeps {
+    pub(crate) node_processes: Arc<super::node_process::WorkflowNodeProcesses>,
     pub(crate) isolated_worktrees: Arc<dyn crate::domain::workflow::IsolatedWorktreeGateway>,
     pub(crate) repository_usecase: Arc<RepositoryUsecase>,
     pub(crate) app_config: Arc<dyn ConfigRepository>,
@@ -35,8 +33,6 @@ pub(crate) struct WorkflowRuntimeCommandGatewayDeps {
     pub(crate) agent_session_launch: Arc<crate::usecase::agent_session::AgentSessionLaunchUsecase>,
     pub(crate) agent_session_initial_instruction:
         Arc<crate::usecase::agent_session::AgentSessionInitialInstructionUsecase>,
-    pub(crate) agent_session_interrupt:
-        Arc<crate::usecase::agent_session::AgentSessionInterruptUsecase>,
     pub(crate) agent_session_lifecycle:
         Arc<crate::usecase::agent_session::AgentSessionLifecycleUsecase>,
     pub(crate) provider_availability:
@@ -131,26 +127,6 @@ impl WorkflowAbortExecutionGateway for WorkflowRuntimeCommandGateway {
 }
 
 #[async_trait::async_trait]
-impl WorkflowStopExecutionGateway for WorkflowRuntimeCommandGateway {
-    async fn stop_execution(&self, command: StopExecutionCommand) -> Result<(), WorkflowError> {
-        self.driver
-            .stop_workflow_execution(&self.app, &command.execution_id)
-            .await
-            .map_err(workflow_runtime_error_to_workflow_error)
-    }
-}
-
-#[async_trait::async_trait]
-impl WorkflowResumeExecutionGateway for WorkflowRuntimeCommandGateway {
-    async fn resume_execution(&self, command: ResumeExecutionCommand) -> Result<(), WorkflowError> {
-        self.driver
-            .resume_workflow_execution(&self.app, &command.execution_id)
-            .await
-            .map_err(workflow_runtime_error_to_workflow_error)
-    }
-}
-
-#[async_trait::async_trait]
 impl WorkflowControlPlaneGateway for WorkflowRuntimeCommandGateway {
     fn current_timestamp(&self) -> f64 {
         std::time::SystemTime::now()
@@ -182,6 +158,52 @@ impl WorkflowControlPlaneGateway for WorkflowRuntimeCommandGateway {
         WorkflowError,
     > {
         Ok(self.driver.load_control_plane_execution(execution_id).await)
+    }
+
+    fn node_process_presence(
+        &self,
+        execution: &crate::domain::workflow::entities::workflow_execution::WorkflowExecution,
+        node_execution_id: &str,
+    ) -> Result<crate::domain::workflow::NodeProcessPresence, WorkflowError> {
+        use crate::domain::workflow::NodeProcessReader;
+        let node = execution
+            .node_execution(node_execution_id)
+            .ok_or_else(|| WorkflowError::NotFound(node_execution_id.into()))?;
+        self.driver.node_processes.presence(
+            &execution.worktree_path,
+            node_execution_id,
+            node.kind,
+            node.session_id.as_deref(),
+        )
+    }
+
+    fn worktree_exists(&self, worktree_path: &str) -> Result<bool, WorkflowError> {
+        match std::fs::metadata(worktree_path) {
+            Ok(metadata) => Ok(metadata.is_dir()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(WorkflowError::external(format!(
+                "read execution worktree: {error}"
+            ))),
+        }
+    }
+
+    async fn session_conversation_exists(&self, session_id: &str) -> Result<bool, WorkflowError> {
+        self.driver
+            .session_conversation_exists(session_id)
+            .await
+            .map_err(workflow_runtime_error_to_workflow_error)
+    }
+
+    async fn resume_session_process(
+        &self,
+        execution_id: &str,
+        node_execution_id: &str,
+        session_id: &str,
+    ) -> Result<(), WorkflowError> {
+        self.driver
+            .resume_session_process(&self.app, execution_id, node_execution_id, session_id)
+            .await
+            .map_err(workflow_runtime_error_to_workflow_error)
     }
 
     async fn recover_active_executions(&self) -> Result<(), WorkflowError> {

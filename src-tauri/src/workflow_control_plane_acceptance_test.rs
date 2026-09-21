@@ -6,13 +6,11 @@ fn test_実行状態受信_unresolvedを含むnode状態を変換できる() {
     for (status, expected) in [
         ("unresolved", AcceptanceNodeExecutionStatus::Unresolved),
         ("running", AcceptanceNodeExecutionStatus::Running),
-        ("paused", AcceptanceNodeExecutionStatus::Paused),
         (
             "waiting_approval",
             AcceptanceNodeExecutionStatus::WaitingApproval,
         ),
         ("succeeded", AcceptanceNodeExecutionStatus::Succeeded),
-        ("failed", AcceptanceNodeExecutionStatus::Failed),
         ("aborted", AcceptanceNodeExecutionStatus::Aborted),
     ] {
         let body = serde_json::json!({

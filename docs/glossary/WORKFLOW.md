@@ -1,6 +1,6 @@
 # Workflow 定義構文
 
-この文書は Releash が受理する workflow 定義の正本である。YAML と Lua は load 後に同じ `WorkflowDefinition` になり、実行・事実ログ・read model・resume に定義形式の違いは残らない。語彙と実行モデルは [`DOMAIN.md`](./DOMAIN.md) を正とする。完成形の唯一の例は [`../../workflows/examples/full-cycle-development.yml`](../../workflows/examples/full-cycle-development.yml) である。
+この文書は Releash が受理する workflow 定義の正本である。YAML と Lua は load 後に同じ `WorkflowDefinition` になり、実行・事実ログ・read model・Session の Resume に定義形式の違いは残らない。語彙と実行モデルは [`DOMAIN.md`](./DOMAIN.md) を正とする。完成形の唯一の例は [`../../workflows/examples/full-cycle-development.yml`](../../workflows/examples/full-cycle-development.yml) である。
 
 ## 境界
 
@@ -8,7 +8,7 @@
 | --- | --- |
 | definition grammar | root、Contract、Node、children、rule の受理形 |
 | load-time validation | Diagnostic、名前解決、型検査、control-flow 検査 |
-| runtime | Node の実行、Artifact、辺の進行、stop / resume / abort |
+| runtime | Node の実行、Artifact、辺の進行、実行木の Abort、Session の Resume、Command の Retry |
 | execution trigger | UI / CLI / API からの WorkflowExecution 起動 |
 
 定義は起動時刻、周期、外部イベント購読を持たない。未知 field、旧形式、互換 alias は受理せず、Error Diagnostic が一つでもある定義は実行できない。
@@ -125,7 +125,7 @@ children:
 ```
 
 1. 文字列: カタログ Node の参照。
-2. kind block を持たない単一名 map: カタログ参照と、その children エントリでの `inputs` / `rules` / `on_failure`。
+2. kind block を持たない単一名 map: カタログ参照と、その children エントリでの `inputs` / `rules`。
 3. kind block を持つ単一名 map: 名前付きインライン Node。load 時に同じカタログへ正規化される。
 4. kind または Node 共通 field から始まる map: 無名インライン Node。`<合成子名>#<index>` の内部名へ正規化される。
 
@@ -144,8 +144,6 @@ main:
       - fix_tests:
           inputs:
             test_result: run_tests
-          on_failure:
-            retry: 2
           rules:
             - loop_guard:
                 max_iterations: 3
@@ -155,7 +153,7 @@ main:
 ```
 
 - `entry`: 開始する children エントリ名。省略時は先頭。
-- `children`: 実行対象と、各 child の配線・辺・失敗時の扱い。
+- `children`: 実行対象と、各 child の配線・辺。
 - `rules` を省略したエントリには、リストの次のエントリへ進む隣接辺がある。末尾では終端になる。
 - `rules: []` は明示的な終端である。
 
@@ -165,10 +163,7 @@ Sequence の Artifact は、宣言なしに常に engine が産出する JSON ob
 { "run_tests": { "ok": true }, "publish": { "version": "1.0.0" } }
 ```
 
-`on_failure` は children エントリが所有する。省略時は中断し、resume または手動 Retry を待つ。`ignore` は失敗を除外して続行し、`retry: n` は新しい attempt を最大 n 回自動実行した後、省略時と同じ中断へ移る。
-
-- `on_failure: retry` は attempt 機構の対象である Session / Command child だけに宣言できる。Sequence / Fanout child への宣言は `WFC010` になる。
-- `on_failure: ignore` の child は、失敗時に Artifact を産出しない可能性がある。そのため、同じ Sequence の兄弟 `inputs`、その child 自身の `when` / `switch`、または兄弟 Fanout の `items` がその Artifact に依存する定義は `WFC009` になる。
+Session / Command の起動が失敗した場合は、新しい attempt を作りながら最大 4 回自動で起動し直す。待機は 1、2、4、8 秒と長くなる。使い切っても Node は Running のままとし、プロセス在否を別に示す。プロセスが居ない Session は Resume、Command は Retry で利用者の介入を受け付ける。Session の Resume は会話と作業場所が残っていれば同じ attempt の会話を復旧し、いずれかが無ければ新しい attempt を起動する。既存会話の復旧時に会話の続きを促す指示は送らない。
 
 ### Fanout
 
@@ -194,9 +189,8 @@ fix_each:
 - children の Artifact は slot をキーで引ける map として Fanout の Artifact になる。各キーの値は、その slot の Artifact そのものである。
 - `items` なしのキーは children エントリ名、`items` ありのキーは0から始まる展開順の添字の文字列である。
 - `items` と複数 children を同時に宣言した場合は、item を外側・children エントリを内側とするフラットな並びに展開する。キーは `item_index * children.len() + child_index` で決まり、item ごとや child ごとの階層は作らない。
-- `on_failure: ignore` の失敗 slot はキーの欠番になる。他の slot のキーはずれない。
-- Artifact を産出しなかった slot（`on_failure` 宣言なしの失敗、`artifact` を宣言せず `shared` で動く Session child）はキーとして残り、値が `null` になる。宣言なしの失敗で中断する規則は変わらない。
-- `items` が空配列で slot が展開されない場合、または全 slot が `on_failure: ignore` の失敗になった場合は空の object `{}` になる。
+- 完了した slot が Artifact を産出しなかった場合（`artifact` を宣言せず `shared` で動く Session child など）はキーとして残り、値が `null` になる。
+- `items` が空配列で slot が展開されない場合は空の object `{}` になる。
 
 ```json
 { "run_lint": { "ok": true }, "run_test": { "ok": true } }
@@ -231,7 +225,7 @@ record_revision:
   artifact: revision_info
 ```
 
-`command` は worktree を cwd として shell で一度実行する非空文字列である。結果は `ok`、`exit_code`、`stdout`、`stderr`、`duration` を持つ。`artifact` があれば stdout 全体を JSON として parse・Contract 検証し、予約 field と同じ Object Artifact に合成する。process 起動不能は Node failure、非ゼロ exit codeまたは stdout 検証失敗は `ok: false` の確定結果になる。
+`command` は worktree を cwd として shell で一度実行する非空文字列である。結果は `ok`、`exit_code`、`stdout`、`stderr`、`duration` を持つ。`artifact` があれば stdout 全体を JSON として parse・Contract 検証し、予約 field と同じ Object Artifact に合成する。process 起動不能は起動失敗の事実として記録し、非ゼロ exit codeまたは stdout 検証失敗は `ok: false` の確定結果になる。
 
 `env` は任意の map で、`<環境変数名>: <input パラメータ名>` または `<環境変数名>: <input パラメータ名>.<field>...` を宣言する。参照先は同じ Command が `input` で宣言したパラメータと、その Contract の Object を各段に沿って辿った field である。map 以外の値、受理形でない参照、未宣言パラメータ、型ありパラメータから解決できない field path は load 時に Error Diagnostic になる。`env` は Command だけに宣言でき、ほかの Node 種別での宣言は load 時に Error Diagnostic になる。
 
@@ -322,7 +316,7 @@ implement:
 
 engine は親の Artifact に予約キー `child` を合成する。未実行・実行中は `null`、完了後は child の Artifact そのものである。Session / Command の child は `implement.child.complete` のように直接参照する。Sequence は `implement.child.check.complete`、Fanout は items なしなら `implement.child.check.complete`、items ありなら `implement.child.0.complete` のように統合 map を辿る。配線・`when.on`・`switch.on` の参照と型検査はこの合成された形を使う。
 
-child の NodeExecution は親 Session の部分木に発火ごとの行として載り、attempt が増える。中断後は完了済み child の Artifact を再利用し、未確定の child だけを再実行する。注入前の中断では resume 時に未注入の結果を返す。親 Session は child ごとに結果の送付を一度だけ受理するため、注入済みの事実が残っていなくても再送しない。受理の後・provider に届く前の中断も再送せず、初回指示と同じく人間の介入に委ねる。親の provider session を復元できない場合は既存の失敗経路と手動 Retry に委ねる。
+child の NodeExecution は親 Session の部分木に発火ごとの行として載り、attempt が増える。プロセスが終了しても完了済み child の Artifact は再利用する。結果が未注入なら、親 Session Node の Resume 時にその結果を返す。親 Session は child ごとに結果の送付を一度だけ受理するため、注入済みの事実が残っていなくても再送しない。受理の後・provider に届く前の中断も再送せず、初回指示と同じく人間の介入に委ねる。再開できる会話または作業場所が無い場合は、Session Node の Resume で新しい attempt を起動する。
 
 child の worktree も共通規則に従う。省略または `shared` なら親 Session の実行 worktree を引き継ぐ。`isolated` なら発火ごとの attempt が親 Session の worktree の HEAD から新しい隔離 worktree を作り、child Artifact に `worktree` を合成する。
 
@@ -430,7 +424,7 @@ delegate を宣言した Session の Artifact Contract の直下には `child` �
 
 ```text
 command session fanout sequence input artifact completion env worktree
-inputs rules on_failure items entry children
+inputs rules items entry children
 ```
 
 `child` は delegate を宣言した Session の Artifact の直下だけで予約する。Node 名や input パラメータ名全体を予約するものではない。
@@ -441,7 +435,7 @@ inputs rules on_failure items entry children
 
 engine は隔離 Node の Artifact に `worktree: { branch, path }` を合成する。`artifact` 宣言のない隔離 Session もこのキーだけを持つ Artifact を産出するため、Sequence の map に現れ、Fanout の slot は `null` にならない。合成子自身の `worktree` は children の map と同じ階層に入る。配線・env・テンプレート・fanout.items の参照は `worktree.branch` / `worktree.path` を string として解決できる。たとえば `seq.work.worktree.path` で隔離 child の pathを参照できる。
 
-`worktree` は Artifact の予約キーでもあり、全 Node で Artifact Contract の直下への再宣言を拒否する。Node の `worktree` 宣言の有無によらない。branch/path は Artifact 産出前から Node の詳細、API、CLI に表示され、失敗後にも保持される。生成失敗は Node failure となり、children エントリの `on_failure` が適用される。engine は成果の統合や worktree・branch の削除を行わない。
+`worktree` は Artifact の予約キーでもあり、全 Node で Artifact Contract の直下への再宣言を拒否する。Node の `worktree` 宣言の有無によらない。branch/path は Artifact 産出前から Node の詳細、API、CLI に表示され、失敗後にも保持される。生成失敗は事実として記録し、Node の状態は Running のまま保つ。Session / Command の起動失敗には上記の自動再起動を適用する。engine は成果の統合や worktree・branch の削除を行わない。
 
 ## Lua
 
@@ -484,14 +478,13 @@ return r.workflow{
 | `r.fanout{ name?, children, items?, input?, completion?: { require = r.completion.approval }, worktree? }` | Node |
 | `r.sequence{ name?, entry?, children, input?, completion?: { require = r.completion.approval }, worktree? }` | Node |
 | `work.delegate{ child, inputs?, when, max_iterations }`（Session handle のメソッド） | なし |
-| `r.child{ node, inputs?, rules?, on_failure? }` | Child |
+| `r.child{ node, inputs?, rules? }` | Child |
 | `r.next(node)` | Rule |
 | `r.when{ on, on_true, next }`（`on` は Source または Predicate） | Rule |
 | `r.all{ ... }`（要素は Source または Predicate） | Predicate（and） |
 | `r.any{ ... }`（要素は Source または Predicate） | Predicate（or） |
 | `r.switch{ on, cases, next? }` | Rule |
 | `r.loop_guard{ max_iterations, on_exhausted }` | Rule |
-| `r.retry(n)` / `r.ignore` | OnFailure |
 | `r.input(name, contract?)` | Input |
 | `r.request` / `r.items` | Source |
 | `r.worktree.shared` / `r.worktree.isolated` | Worktree（各 Node builder の `worktree` 値。文字列は受理しない） |

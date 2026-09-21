@@ -46,7 +46,7 @@ Releash には builtin の workflow と facet が組み込まれています。
 
 ```text
 command session fanout sequence input artifact completion env worktree
-inputs rules on_failure items entry children
+inputs rules items entry children
 ```
 
 - `request` と `items` は input のパラメータ名に使えません（`WFR008`）。`request` は Contract 名にも使えません。
@@ -133,7 +133,7 @@ severity は `error` と `info` の2つです。
 | `WFS003` | error | Node の種類を決める field がちょうど一つでない、一つの rule に `when` / `switch` / `loop_guard` を複数書いた |
 | `WFS006` | error | 名前の誤り（文字種、重複、Lua の `name` とファイル名の不一致、`main` に付けた名前）、`nodes` が空、`command` が空、Node 数や Fanout の children 数の上限超過 |
 | `WFS007` | error | Node の直下に `rules` / `inputs` を書いた |
-| `WFS008` | error | children のエントリの形の誤り、`children` が空、Sequence に `artifact` を書いた、`inputs` / `on_failure` の形の誤り |
+| `WFS008` | error | children のエントリの形の誤り、`children` が空、Sequence に `artifact` を書いた、`inputs` の形の誤り |
 | `WFS009` | error | Lua の構文誤り |
 | `WFS010` | error | Lua の評価エラー（実行時エラー、上限超過、`r.workflow{}` を返さない、facet の一覧を読めない） |
 | `WFS011` | error | Lua の `require` を解決できない |
@@ -179,8 +179,6 @@ severity は `error` と `info` の2つです。
 | `WFC006` | error | 同じ Node を複数の Sequence / Fanout や delegate の子にした、`main` を子にした、別の Sequence の子へ外から遷移した |
 | `WFC007` | error | 同じ Sequence / Fanout に同じ Node を複数回置いた、Fanout のエントリに `rules` を書いた、Lua で同じ Node の値を複数の `r.child{}` に置いた |
 | `WFC008` | error | Sequence / Fanout が children を通じて自分自身を含む |
-| `WFC009` | error | `on_failure` が `ignore` のエントリの Artifact に依存している |
-| `WFC010` | error | Sequence / Fanout のエントリに `on_failure` の `retry` を書いた |
 | `WFC011` | error | Session 以外の Node に delegate を指定した |
 
 ## Lua 補完ファイル

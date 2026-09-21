@@ -340,7 +340,6 @@ mod tests {
                     kind: NodeKind::Sequence(domain::SequenceSpec {
                         entry: None,
                         children: vec![domain::ChildEntry {
-                            on_failure: None,
                             name: "fix".to_string(),
                             inputs: Vec::new(),
                             rules: Some(vec![domain::Rule::LoopGuard {

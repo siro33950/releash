@@ -127,7 +127,7 @@ async fn test_終了処理_commandの保存中は待ち後続commandの起動前
     ] {
         // Given
         let fixture = Fixture::new(0);
-        let input = started_command(&fixture, "  main: {sequence: {children: [{work: {on_failure: ignore}}, next]}}\n  work: {command: true}\n  next: {command: true}").await;
+        let input = started_command(&fixture, "  main: {sequence: {children: [work, next]}}\n  work: {command: true}\n  next: {command: true}").await;
         let execution_id = input.execution_id.clone();
         let node_execution_id = input.node_execution_id.clone();
         let succeeded = output.is_ok();
@@ -229,9 +229,10 @@ async fn test_終了処理_command起動の完了を待ち以降の起動を止�
     spawn.await.unwrap();
     assert!(fixture
         .host
+        .node_processes
         .active_commands
         .lock()
-        .await
+        .unwrap()
         .contains_key(&node.id));
     assert!(fixture
         .host
@@ -249,7 +250,13 @@ async fn test_終了処理_command起動の完了を待ち以降の起動を止�
         .spawn_command_execution(&fixture.app, input)
         .await
         .unwrap();
-    assert!(fixture.host.active_commands.lock().await.is_empty());
+    assert!(fixture
+        .host
+        .node_processes
+        .active_commands
+        .lock()
+        .unwrap()
+        .is_empty());
     assert!(fixture
         .host
         .command_completion_observers
@@ -320,9 +327,10 @@ async fn test_command起動_別executionのobserver登録を待たずプロセ�
     assert!(futures_util::poll!(first.as_mut()).is_pending());
     assert!(fixture
         .host
+        .node_processes
         .active_commands
         .lock()
-        .await
+        .unwrap()
         .contains_key(&inputs[0].node_execution_id));
     // When
     let mut second = Box::pin(
@@ -333,9 +341,10 @@ async fn test_command起動_別executionのobserver登録を待たずプロセ�
     assert!(futures_util::poll!(second.as_mut()).is_pending());
     let second_registered = fixture
         .host
+        .node_processes
         .active_commands
         .lock()
-        .await
+        .unwrap()
         .contains_key(&inputs[1].node_execution_id);
     let mut shutdown = Box::pin(fixture.host.shutdown_all_active_commands());
     assert!(futures_util::poll!(shutdown.as_mut()).is_pending());
@@ -351,7 +360,13 @@ async fn test_command起動_別executionのobserver登録を待たずプロセ�
         second_registered,
         "independent execution waited for another command's observer registration"
     );
-    assert!(fixture.host.active_commands.lock().await.is_empty());
+    assert!(fixture
+        .host
+        .node_processes
+        .active_commands
+        .lock()
+        .unwrap()
+        .is_empty());
     assert!(fixture
         .host
         .command_completion_observers

@@ -327,20 +327,6 @@ impl AgentSessionUsecase {
             .map_err(map_repository_error)
     }
 
-    pub(crate) async fn admit_initial_instruction(
-        &self,
-        agent_session_id: &str,
-        caller_request_id: &str,
-    ) -> Result<AgentSessionInitialInstructionOutcome, AgentSessionUsecaseError> {
-        let mut session = self.required(agent_session_id).await?;
-        let outcome = session
-            .session_mut()
-            .admit_initial_instruction()
-            .map_err(|_| AgentSessionUsecaseError::InvalidOperation)?;
-        self.save_if_changed(session, caller_request_id).await?;
-        Ok(outcome)
-    }
-
     pub(crate) async fn admit_continuation(
         &self,
         agent_session_id: &str,

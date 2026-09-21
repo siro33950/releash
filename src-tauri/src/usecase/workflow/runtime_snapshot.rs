@@ -101,6 +101,7 @@ fn runtime_node_execution_to_domain(
         node_name: execution.node_name,
         kind: execution.kind,
         attempt: execution.attempt,
+        process_presence: Default::default(),
         status: match execution.status {
             RuntimeNodeExecutionStatus::Unresolved => {
                 crate::domain::workflow::NodeExecutionStatus::Unresolved
@@ -108,17 +109,11 @@ fn runtime_node_execution_to_domain(
             RuntimeNodeExecutionStatus::Running => {
                 crate::domain::workflow::NodeExecutionStatus::Running
             }
-            RuntimeNodeExecutionStatus::Paused => {
-                crate::domain::workflow::NodeExecutionStatus::Paused
-            }
             RuntimeNodeExecutionStatus::WaitingApproval => {
                 crate::domain::workflow::NodeExecutionStatus::WaitingApproval
             }
             RuntimeNodeExecutionStatus::Succeeded => {
                 crate::domain::workflow::NodeExecutionStatus::Succeeded
-            }
-            RuntimeNodeExecutionStatus::Failed => {
-                crate::domain::workflow::NodeExecutionStatus::Failed
             }
             RuntimeNodeExecutionStatus::Aborted => {
                 crate::domain::workflow::NodeExecutionStatus::Aborted
@@ -136,12 +131,6 @@ fn runtime_node_execution_to_domain(
                 produced_at: artifact_produced_at,
             }),
         token_usage: execution.token_usage,
-        failure: execution
-            .failure
-            .map(|failure| crate::domain::workflow::NodeExecutionFailure {
-                reason: failure.reason,
-                kind: failure.kind,
-            }),
         parent: execution.parent,
         completion_signals: execution.completion_signals,
         started_at: execution.started_at,

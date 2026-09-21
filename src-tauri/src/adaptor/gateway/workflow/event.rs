@@ -16,9 +16,6 @@ impl WorkflowEvent {
             | Self::NodeSubmitReceived { execution_id, .. }
             | Self::NodeStopReceived { execution_id, .. }
             | Self::NodeRetryRequested { execution_id, .. }
-            | Self::NodePaused { execution_id, .. }
-            | Self::NodeResumed { execution_id, .. }
-            | Self::NodeProcessExitObserved { execution_id, .. }
             | Self::CommandSpawned { execution_id, .. }
             | Self::ArtifactProduced { execution_id, .. }
             | Self::NodeCompleted { execution_id, .. }
@@ -42,9 +39,6 @@ impl WorkflowEvent {
             | Self::NodeSubmitReceived { timestamp, .. }
             | Self::NodeStopReceived { timestamp, .. }
             | Self::NodeRetryRequested { timestamp, .. }
-            | Self::NodePaused { timestamp, .. }
-            | Self::NodeResumed { timestamp, .. }
-            | Self::NodeProcessExitObserved { timestamp, .. }
             | Self::CommandSpawned { timestamp, .. }
             | Self::ArtifactProduced { timestamp, .. }
             | Self::NodeCompleted { timestamp, .. }

@@ -1,0 +1,10 @@
+name: removed-on-failure-ignore
+description: on_failure is no longer supported
+nodes:
+  main:
+    sequence:
+      children:
+        - work:
+            on_failure: ignore
+  work:
+    command: true

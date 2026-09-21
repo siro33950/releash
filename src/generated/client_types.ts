@@ -595,11 +595,12 @@ export type InputResumeAgentSessionHistoryCandidateRequest = {
 	callerRequestId: string;
 };
 
-export type InputResumeWorkflowRequest = {
-	executionId: string;
+export type InputRetryWorkspaceNodeRequest = {
+	worktreePath: string;
+	nodeId: string;
 };
 
-export type InputRetryWorkspaceNodeRequest = {
+export type InputResumeWorkspaceSessionNodeRequest = {
 	worktreePath: string;
 	nodeId: string;
 };
@@ -704,10 +705,6 @@ export type InputStartWorkflowRequest = {
 
 export type InputStopWatchingRequest = {
 	watcherId: number;
-};
-
-export type InputStopWorkflowRequest = {
-	executionId: string;
 };
 
 export type InputTakeTerminalInputPerformanceSamplesRequest = Record<
@@ -1712,6 +1709,8 @@ export type TokenUsageView = {
 export type ListNodeExecutionView = Array<NodeExecutionView>;
 
 export type NodeExecutionView = {
+	canResumeSession: boolean;
+	processPresence: NodeProcessPresence;
 	worktree?: NodeWorktreeDto;
 	recoveryReason?: string;
 	id: string;
@@ -1731,11 +1730,12 @@ export type NodeExecutionView = {
 	resultSummary?: string;
 	artifact?: ArtifactView;
 	tokenUsage?: TokenUsageView;
-	failure?: NodeExecutionFailureView;
 	parent?: ExecutionParentRefView;
 	startedAt: number;
 	completedAt?: number;
 };
+
+export type NodeProcessPresence = "unknown" | "live" | "confirmed_absent";
 
 export type NodeWorktreeDto = {
 	branch: string;
@@ -1747,10 +1747,8 @@ export type NodeKindView = "command" | "session" | "fanout" | "sequence";
 export type NodeExecutionStatusView =
 	| "unresolved"
 	| "running"
-	| "paused"
 	| "waiting_approval"
 	| "succeeded"
-	| "failed"
 	| "aborted";
 
 export type NodeCompletionSignalView = "submit" | "stop";
@@ -1761,20 +1759,6 @@ export type ArtifactView = {
 	value: WorkflowValue;
 	producedAt: number;
 };
-
-export type NodeExecutionFailureView = {
-	reason: string;
-	kind: NodeExecutionFailureKindView;
-};
-
-export type NodeExecutionFailureKindView =
-	| "startup_timeout"
-	| "stale_runtime_timeout"
-	| "model_refusal"
-	| "structured_output_mismatch"
-	| "validation_failure"
-	| "user_abort"
-	| "infrastructure_crash";
 
 export type ExecutionParentRefView = {
 	parentId: string;
@@ -1801,6 +1785,7 @@ export type ApprovalTargetView = {
 export type NullableWorkspaceNodeDetailDto = WorkspaceNodeDetailDto | null;
 
 export type WorkspaceNodeDetailDto = {
+	processPresence: NodeProcessPresence;
 	worktree?: NodeWorktreeDto;
 	id: string;
 	title: string;
@@ -1820,8 +1805,6 @@ export type WorkspaceNodeDetailDto = {
 export type WorkspaceNodeStatus =
 	| "unresolved"
 	| "running"
-	| "paused"
-	| "failed"
 	| "waiting"
 	| "aborted"
 	| "completed";
@@ -1836,6 +1819,7 @@ export type WorkspaceStatusClassification =
 export type WorkspaceWaitingFor = "submit" | "stop";
 
 export type WorkspaceNodeCapabilitiesDto = {
+	canResumeSession: boolean;
 	canRename: boolean;
 	canApprove: boolean;
 	canRetry: boolean;
@@ -1880,6 +1864,7 @@ export type WorkspaceTreeItemDto =
 	| ({ kind: "fanout" } & WorkspaceFanoutDto);
 
 export type WorkspaceNodeDto = {
+	processPresence: NodeProcessPresence;
 	id: string;
 	title: string;
 	status: WorkspaceStatusClassification;
@@ -1897,8 +1882,6 @@ export type WorkspaceNodeDto = {
 export type WorkspaceContentKind = "session" | "command";
 
 export type WorkspaceWorkflowCapabilitiesDto = {
-	canStop: boolean;
-	canResume: boolean;
 	canAbort: boolean;
 	canArchive: boolean;
 };
@@ -2037,8 +2020,6 @@ export type WorkspaceWorkflowHistoryItemDto = {
 export type WorkspaceHistoryStatus =
 	| "unresolved"
 	| "running"
-	| "paused"
-	| "failed"
 	| "waiting"
 	| "aborted"
 	| "completed";
@@ -2468,8 +2449,8 @@ export interface ClientCommandArgs {
 	restore_workspace_workflow_execution: InputRestoreWorkspaceWorkflowExecutionRequest;
 	resume_agent_session: InputResumeAgentSessionRequest;
 	resume_agent_session_history_candidate: InputResumeAgentSessionHistoryCandidateRequest;
-	resume_workflow: InputResumeWorkflowRequest;
 	retry_workspace_node: InputRetryWorkspaceNodeRequest;
+	resume_workspace_session_node: InputResumeWorkspaceSessionNodeRequest;
 	save_facet: InputSaveFacetRequest;
 	save_notion_config: InputSaveNotionConfigRequest;
 	save_workflow_source: InputSaveWorkflowSourceRequest;
@@ -2480,7 +2461,6 @@ export interface ClientCommandArgs {
 	start_terminal_launch_performance_collection: InputStartTerminalLaunchPerformanceCollectionRequest;
 	start_workflow: InputStartWorkflowRequest;
 	stop_watching: InputStopWatchingRequest;
-	stop_workflow: InputStopWorkflowRequest;
 	take_terminal_input_performance_samples: InputTakeTerminalInputPerformanceSamplesRequest;
 	take_terminal_launch_performance_samples: InputTakeTerminalLaunchPerformanceSamplesRequest;
 	update_app_settings: InputUpdateAppSettingsRequest;
@@ -2824,9 +2804,11 @@ export interface ClientCommands {
 	resume_agent_session_history_candidate(
 		args: ClientCommandArgs["resume_agent_session_history_candidate"],
 	): Promise<ResultString>;
-	resume_workflow(args: ClientCommandArgs["resume_workflow"]): Promise<void>;
 	retry_workspace_node(
 		args: ClientCommandArgs["retry_workspace_node"],
+	): Promise<void>;
+	resume_workspace_session_node(
+		args: ClientCommandArgs["resume_workspace_session_node"],
 	): Promise<void>;
 	save_facet(args: ClientCommandArgs["save_facet"]): Promise<void>;
 	save_notion_config(
@@ -2850,7 +2832,6 @@ export interface ClientCommands {
 		args: ClientCommandArgs["start_workflow"],
 	): Promise<ResultString>;
 	stop_watching(args: ClientCommandArgs["stop_watching"]): Promise<void>;
-	stop_workflow(args: ClientCommandArgs["stop_workflow"]): Promise<void>;
 	take_terminal_input_performance_samples(
 		args: ClientCommandArgs["take_terminal_input_performance_samples"],
 	): Promise<ListTerminalInputPerformanceSampleV1>;

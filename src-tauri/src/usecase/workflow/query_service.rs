@@ -576,6 +576,7 @@ mod tests {
             error_reason: None,
             total_token_usage: TokenUsage::default(),
             node_executions: vec![NodeExecution {
+                process_presence: Default::default(),
                 worktree: None,
                 recovery_reason: None,
                 id: "ne-review-1".to_string(),
@@ -589,7 +590,7 @@ mod tests {
                 result_summary: None,
                 artifact: None,
                 token_usage: None,
-                failure: None,
+
                 parent: None,
                 completion_signals: Default::default(),
                 started_at: 1.0,

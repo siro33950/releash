@@ -270,6 +270,7 @@ impl WorkspaceTree {
                 status,
                 None,
                 false,
+                Default::default(),
             ),
             activity: None,
             error_reason: None,
@@ -287,9 +288,8 @@ impl WorkspaceTree {
             can_rename: false,
             can_approve: false,
             can_retry: false,
-            can_stop: true,
-            can_resume: false,
-            resume_eligible: false,
+            can_resume_session: false,
+            process_presence: Default::default(),
             can_abort: true,
             can_archive: false,
             display_command: None,
@@ -316,6 +316,7 @@ impl WorkspaceTree {
                     status,
                     None,
                     false,
+                    Default::default(),
                 ),
                 activity: None,
                 error_reason: None,
@@ -333,9 +334,8 @@ impl WorkspaceTree {
                 can_rename: false,
                 can_approve: false,
                 can_retry: false,
-                can_stop: false,
-                can_resume: false,
-                resume_eligible: false,
+                can_resume_session: false,
+                process_presence: Default::default(),
                 can_abort: false,
                 can_archive: false,
                 display_command: None,
@@ -457,6 +457,7 @@ impl WorkspaceTree {
                 status,
                 activity,
                 false,
+                Default::default(),
             ),
             activity,
             error_reason: None,
@@ -474,9 +475,8 @@ impl WorkspaceTree {
             can_rename: false,
             can_approve: false,
             can_retry: false,
-            can_stop: false,
-            can_resume: false,
-            resume_eligible: false,
+            can_resume_session: false,
+            process_presence: Default::default(),
             can_abort: false,
             can_archive: false,
             display_command: None,
@@ -555,7 +555,6 @@ impl WorkspaceTree {
             }
         }
         self.recompute_status_classifications();
-        self.recompute_workflow_recovery_capabilities();
     }
 
     pub(super) fn recompute_status_classifications(&mut self) {
@@ -614,9 +613,7 @@ impl WorkspaceTree {
                 };
                 if !matches!(
                     predecessor.status,
-                    WorkspaceNodeStatus::Completed
-                        | WorkspaceNodeStatus::Failed
-                        | WorkspaceNodeStatus::Aborted
+                    WorkspaceNodeStatus::Completed | WorkspaceNodeStatus::Aborted
                 ) {
                     break;
                 }
@@ -631,58 +628,6 @@ impl WorkspaceTree {
             self.nodes[head_index].past_attempt_ids = past_attempt_ids;
             for index in chain {
                 self.nodes[index].is_retry_history = true;
-            }
-        }
-    }
-
-    fn workflow_resume_capability(&self, execution_id: &str) -> bool {
-        if self.workflow_node(execution_id).is_none() {
-            return false;
-        }
-        let waiting_approval = self
-            .nodes
-            .iter()
-            .any(|node| node.execution_id.as_deref() == Some(execution_id) && node.can_approve);
-        let resumable_leaf = self.nodes.iter().any(|node| {
-            node.execution_id.as_deref() == Some(execution_id)
-                && node.is_leaf()
-                && node.resume_eligible
-        });
-        resumable_leaf && !waiting_approval
-    }
-
-    pub(super) fn recompute_workflow_resume_capabilities(&mut self) {
-        let execution_ids = self
-            .nodes
-            .iter()
-            .filter(|node| node.kind == WorkspaceNodeKind::Workflow)
-            .filter_map(|node| node.execution_id.clone())
-            .collect::<Vec<_>>();
-        for execution_id in &execution_ids {
-            let can_resume = self.workflow_resume_capability(execution_id);
-            if let Some(workflow) = self.workflow_node_mut(execution_id) {
-                workflow.can_resume = can_resume;
-            }
-        }
-    }
-
-    fn recompute_workflow_recovery_capabilities(&mut self) {
-        self.recompute_workflow_resume_capabilities();
-        let execution_ids = self
-            .nodes
-            .iter()
-            .filter(|node| node.kind == WorkspaceNodeKind::Workflow)
-            .filter_map(|node| node.execution_id.clone())
-            .collect::<Vec<_>>();
-        for execution_id in execution_ids {
-            let can_stop = self.nodes.iter().any(|node| {
-                node.execution_id.as_deref() == Some(execution_id.as_str())
-                    && node.is_leaf()
-                    && node.status == WorkspaceNodeStatus::Running
-                    && node.completion_signals != NodeCompletionSignalState::StopReceived
-            });
-            if let Some(workflow) = self.workflow_node_mut(&execution_id) {
-                workflow.can_stop = can_stop;
             }
         }
     }
@@ -745,8 +690,6 @@ impl WorkspaceTreeProjector {
                         workflow.title = non_empty_or(workflow_name, DEFAULT_WORKFLOW_TITLE);
                         workflow.status = workflow_status(status);
                         workflow.updated_at_bits = updated_at.to_bits();
-                        workflow.can_stop = status.can_stop();
-                        workflow.can_resume = status.can_resume();
                         workflow.can_abort = status.can_abort();
                         workflow.can_archive = matches!(
                             status,
@@ -892,24 +835,24 @@ impl WorkspaceTreeProjector {
                     failure_kind,
                     timestamp,
                 } => {
-                    let (status, public_reason) =
-                        if failure_kind == NodeExecutionFailureKind::UserAbort {
-                            (WorkspaceNodeStatus::Aborted, "Workflow node aborted")
-                        } else {
-                            (WorkspaceNodeStatus::Failed, "Workflow node failed")
-                        };
-                    update_node_state(
-                        tree,
-                        &execution_id,
-                        &node_execution_id,
-                        status,
-                        Some(public_reason.to_string()),
-                        timestamp,
-                    )?;
-                    let node = tree
-                        .execution_node_mut(&execution_id, &node_execution_id)
-                        .expect("failed Node was resolved before state update");
-                    node.can_retry = failure_kind != NodeExecutionFailureKind::UserAbort;
+                    if failure_kind == NodeExecutionFailureKind::UserAbort {
+                        update_node_state(
+                            tree,
+                            &execution_id,
+                            &node_execution_id,
+                            WorkspaceNodeStatus::Aborted,
+                            Some("Workflow node aborted".into()),
+                            timestamp,
+                        )?;
+                    } else {
+                        let node = tree
+                            .execution_node_mut(&execution_id, &node_execution_id)
+                            .ok_or_else(|| {
+                                WorkspaceTreeError::MissingNodeExecution(node_execution_id.clone())
+                            })?;
+                        node.updated_at_bits =
+                            max_f64_bits(node.updated_at_bits, timestamp.to_bits());
+                    }
                 }
                 WorkspaceStructureFact::NodeApprovalRequested {
                     execution_id,

@@ -1,14 +1,13 @@
 use super::*;
 use crate::domain::provider_lifecycle::ProviderKind;
-use crate::domain::workflow::entities::workflow_execution::{
-    RuntimeNodeExecutionFailureOrigin, RuntimeNodeExecutionStatus,
-};
+use crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecutionStatus;
 use crate::domain::workflow::{
     AgentActivityObservedFact, AgentSessionActivity, ApprovalGrantedFact, ArtifactProducedFact,
     ChildEntry, CommandSpec, ExecutionOrigin, ExecutionParentRef, ExecutionTreeLaunch, FanoutSpec,
-    NodeCompletion, NodeDefinition, NodeFactMeta, NodeKind, OnFailure, RuntimeExecutionState,
-    RuntimeFailureObservedFact, SequenceSpec, SessionAttachedFact, SessionExecutionTreeRootFacts,
-    StartedFact, StopReceivedFact, SubmitReceivedFact, WorkflowDefinition,
+    NodeCompletion, NodeDefinition, NodeExecutionFailureKind, NodeFactMeta, NodeKind,
+    RuntimeExecutionState, RuntimeFailureObservedFact, SequenceSpec, SessionAttachedFact,
+    SessionExecutionTreeRootFacts, StartedFact, StopReceivedFact, SubmitReceivedFact,
+    WorkflowDefinition,
 };
 
 const TREE: &str = "root-exec";
@@ -181,19 +180,19 @@ fn stop_with_summary(summary: &str) -> NodeFact {
 
 fn exited(code: i32) -> NodeFact {
     NodeFact::ProcessExited(crate::domain::workflow::ProcessExitedFact {
+        failure_kind: None,
         exit_code: Some(code),
         result_summary: None,
         failure_reason: None,
-        failure_kind: None,
     })
 }
 
 fn process_lost() -> NodeFact {
     NodeFact::ProcessExited(crate::domain::workflow::ProcessExitedFact {
+        failure_kind: None,
         exit_code: None,
         result_summary: None,
         failure_reason: None,
-        failure_kind: None,
     })
 }
 
@@ -331,8 +330,8 @@ mod standalone_session_tests {
     #[test]
     fn test_単独session_stop後のprocess_exitは未決着nodeに正常と異常を適用する() {
         for (fact, expected) in [
-            (exited(0), RuntimeNodeExecutionStatus::Paused),
-            (process_lost(), RuntimeNodeExecutionStatus::Failed),
+            (exited(0), RuntimeNodeExecutionStatus::Running),
+            (process_lost(), RuntimeNodeExecutionStatus::Running),
         ] {
             let mut log = FactLog::new();
             let root_meta = meta("root-exec", None, "session", NodeKindName::Session, 1);
@@ -353,7 +352,7 @@ mod standalone_session_tests {
     }
 
     #[test]
-    fn test_単独session_異常process_exit後のstopはfailedへ決着済みのため無視する() {
+    fn test_単独session_異常process_exit後もstopを受理する() {
         let mut log = FactLog::new();
         let root_meta = meta("root-exec", None, "session", NodeKindName::Session, 1);
         log.push(root_meta.clone(), started_root(session_root()));
@@ -364,10 +363,10 @@ mod standalone_session_tests {
         let tree = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
         let node = tree.aggregate.node_execution("root-exec").unwrap();
 
-        assert_eq!(node.status, RuntimeNodeExecutionStatus::Failed);
+        assert_eq!(node.status, RuntimeNodeExecutionStatus::Running);
         assert_eq!(
             node.completion_signals,
-            crate::domain::workflow::NodeCompletionSignalState::Pending
+            crate::domain::workflow::NodeCompletionSignalState::StopReceived
         );
     }
 
@@ -456,10 +455,10 @@ mod standalone_session_tests {
         log.push(
             root_meta,
             NodeFact::ProcessExited(crate::domain::workflow::ProcessExitedFact {
+                failure_kind: None,
                 exit_code: Some(0),
                 result_summary: None,
                 failure_reason: Some("provider failure".to_string()),
-                failure_kind: None,
             }),
         );
         let failed = super::derive_session_facts(&log.records, "root-exec", "session-1");
@@ -538,19 +537,19 @@ mod standalone_session_tests {
     }
 
     #[test]
-    fn test_単独session_process_exitの正常終了はpausedで異常終了はfailedになる() {
+    fn test_単独session_process_exitの正常終了も異常終了もrunningを維持する() {
         for (fact, expected) in [
-            (exited(0), RuntimeNodeExecutionStatus::Paused),
-            (exited(1), RuntimeNodeExecutionStatus::Failed),
-            (process_lost(), RuntimeNodeExecutionStatus::Failed),
+            (exited(0), RuntimeNodeExecutionStatus::Running),
+            (exited(1), RuntimeNodeExecutionStatus::Running),
+            (process_lost(), RuntimeNodeExecutionStatus::Running),
             (
                 NodeFact::ProcessExited(crate::domain::workflow::ProcessExitedFact {
+                    failure_kind: None,
                     exit_code: Some(0),
                     result_summary: None,
                     failure_reason: Some("provider failure".to_string()),
-                    failure_kind: None,
                 }),
-                RuntimeNodeExecutionStatus::Failed,
+                RuntimeNodeExecutionStatus::Running,
             ),
         ] {
             let mut log = FactLog::new();
@@ -913,7 +912,6 @@ mod sequence_tests {
         // Then: 子の Artifact を Sequence の統合 map に含めて成功する
         assert_eq!(make_plan.status, RuntimeNodeExecutionStatus::Succeeded);
         assert_eq!(make_plan.artifact.as_ref(), Some(&artifact));
-        assert_eq!(main.failure, None);
         assert_eq!(main.status, RuntimeNodeExecutionStatus::Succeeded);
         assert_eq!(
             main.artifact,
@@ -997,7 +995,6 @@ mod sequence_tests {
                         crate::domain::workflow::value_objects::InputSourceRef::new("make_plan"),
                     )],
                     rules: None,
-                    on_failure: None,
                 },
             ],
         );
@@ -1061,8 +1058,7 @@ mod sequence_tests {
             Some(serde_json::json!({"make_plan": produced}))
         );
         assert_eq!(sequence.status, RuntimeNodeExecutionStatus::Succeeded);
-        assert_eq!(sequence.failure, None);
-        assert!(!sequence.can_retry());
+        assert!(!sequence.can_retry(crate::domain::workflow::NodeProcessPresence::ConfirmedAbsent));
     }
 
     #[test]
@@ -1096,7 +1092,6 @@ mod sequence_tests {
         let tree = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
         let sequence = tree.aggregate.node_execution("main-exec").unwrap();
         assert_eq!(sequence.status, RuntimeNodeExecutionStatus::Succeeded);
-        assert_eq!(sequence.failure, None);
         assert_eq!(sequence.artifact, Some(serde_json::json!({})));
         assert_eq!(*tree.aggregate.state(), RuntimeExecutionState::Completed);
     }
@@ -1397,7 +1392,7 @@ mod approval_tests {
     }
 
     #[test]
-    fn test_approval_承認待ちの異常process_exitはfailedになる() {
+    fn test_approval_承認待ちの異常process_exitでも承認待ちを維持する() {
         for process_exit in [exited(1), process_lost()] {
             // Given: completion: approval の Session Node が承認待ちに到達した事実列
             let mut log = FactLog::new();
@@ -1431,10 +1426,10 @@ mod approval_tests {
             log.push(node, process_exit);
             let tree = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
 
-            // Then: 承認待ちも異常終了では Failed になる
+            // Then: プロセス在否と承認待ちの状態を混同しない
             assert_eq!(
                 node_status(&tree, "r-exec"),
-                RuntimeNodeExecutionStatus::Failed
+                RuntimeNodeExecutionStatus::WaitingApproval
             );
         }
     }
@@ -1444,177 +1439,7 @@ mod failure_tests {
     use super::*;
 
     #[test]
-    fn test_on_failure_retry_失敗とretry事実の再実行で完了に到達する() {
-        // Given: command が失敗 → retry → 成功した事実列
-        let document = "document body";
-        let mut retried_command = command_leaf("c");
-        retried_command
-            .input
-            .push(crate::domain::workflow::InputParam {
-                name: "document".to_string(),
-                contract: None,
-            });
-        let NodeKind::Command(command) = &mut retried_command.kind else {
-            unreachable!();
-        };
-        command.env = [(
-            crate::domain::workflow::EnvironmentVariableName::new("DOC").unwrap(),
-            crate::domain::workflow::InputParameterRef::new("document").unwrap(),
-        )]
-        .into_iter()
-        .collect();
-        let expected_env = command.env.clone();
-        let definition = workflow_definition(
-            vec![
-                retried_command,
-                session_leaf("b"),
-                sequence_node(
-                    "main",
-                    vec![
-                        ChildEntry {
-                            name: "c".to_string(),
-                            inputs: vec![(
-                                "document".to_string(),
-                                crate::domain::workflow::value_objects::InputSourceRef::new(
-                                    "request",
-                                ),
-                            )],
-                            rules: None,
-                            on_failure: Some(OnFailure::Retry(1)),
-                        },
-                        ChildEntry::reference("b"),
-                    ],
-                ),
-            ],
-            "main",
-        );
-        let mut log = FactLog::new();
-        let mut root = workflow_root(definition);
-        root.request = document.to_string();
-        log.push(
-            meta("main-exec", None, "main", NodeKindName::Sequence, 1),
-            started_root(root),
-        );
-        let first = meta("c-exec-1", Some("main-exec"), "c", NodeKindName::Command, 1);
-        log.push(
-            first.clone(),
-            started_child(ExecutionParentRef::sequence_child("main-exec")),
-        );
-        log.push(first.clone(), exited(1));
-        log.push(first, NodeFact::RetryRequested);
-        let second = meta("c-exec-2", Some("main-exec"), "c", NodeKindName::Command, 2);
-        log.push(
-            second.clone(),
-            started_child(ExecutionParentRef::sequence_child("main-exec")),
-        );
-
-        // When: retry attempt の Started までを fold する
-        let retried_tree = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
-        let retried_leaf = retried_tree.aggregate.leaf_start_for("c-exec-2").unwrap();
-
-        // Then: 保存済み定義と再構築 binding から元の env 値を再解決できる
-        assert_eq!(
-            retried_leaf.bindings,
-            vec![(
-                "document".to_string(),
-                serde_json::Value::String(document.to_string()),
-            )]
-        );
-        let root = &retried_tree.root;
-        let command = root
-            .definition
-            .node_by_name("c")
-            .and_then(NodeDefinition::command_spec)
-            .unwrap();
-        assert_eq!(&command.env, &expected_env);
-        assert_eq!(
-            crate::domain::workflow::services::reference::resolve_command_environment(
-                &command.env,
-                &retried_leaf.bindings,
-            )
-            .unwrap(),
-            vec![("DOC".to_string(), document.to_string())]
-        );
-
-        // Given: retry attempt が成功し、後続 session も完了した事実列
-        log.push(second, exited(0));
-        let b = meta("b-exec", Some("main-exec"), "b", NodeKindName::Session, 1);
-        log.push(
-            b.clone(),
-            started_child(ExecutionParentRef::sequence_child("main-exec")),
-        );
-        log.push(b.clone(), submit());
-        log.push(b, stop());
-
-        // When
-        let tree = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
-
-        // Then: attempt 1 は失敗のまま行として残り、attempt 2 の完了で前進した
-        assert_eq!(
-            node_status(&tree, "c-exec-1"),
-            RuntimeNodeExecutionStatus::Failed
-        );
-        assert_eq!(
-            node_status(&tree, "c-exec-2"),
-            RuntimeNodeExecutionStatus::Succeeded
-        );
-        assert_eq!(*tree.aggregate.state(), RuntimeExecutionState::Completed);
-    }
-
-    #[test]
-    fn test_on_failure_ignore_失敗のまま親の前進が導出される() {
-        // Given: on_failure: ignore の command が失敗し、次の子が完了した事実列
-        let definition = workflow_definition(
-            vec![
-                command_leaf("c"),
-                session_leaf("b"),
-                sequence_node(
-                    "main",
-                    vec![
-                        ChildEntry {
-                            name: "c".to_string(),
-                            inputs: Vec::new(),
-                            rules: None,
-                            on_failure: Some(OnFailure::Ignore),
-                        },
-                        ChildEntry::reference("b"),
-                    ],
-                ),
-            ],
-            "main",
-        );
-        let mut log = FactLog::new();
-        log.push(
-            meta("main-exec", None, "main", NodeKindName::Sequence, 1),
-            started_root(workflow_root(definition)),
-        );
-        let c = meta("c-exec", Some("main-exec"), "c", NodeKindName::Command, 1);
-        log.push(
-            c.clone(),
-            started_child(ExecutionParentRef::sequence_child("main-exec")),
-        );
-        log.push(c, exited(1));
-        let b = meta("b-exec", Some("main-exec"), "b", NodeKindName::Session, 1);
-        log.push(
-            b.clone(),
-            started_child(ExecutionParentRef::sequence_child("main-exec")),
-        );
-        log.push(b.clone(), submit());
-        log.push(b, stop());
-
-        // When
-        let tree = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
-
-        // Then: c は失敗のまま、b の完了で木全体は完了
-        assert_eq!(
-            node_status(&tree, "c-exec"),
-            RuntimeNodeExecutionStatus::Failed
-        );
-        assert_eq!(*tree.aggregate.state(), RuntimeExecutionState::Completed);
-    }
-
-    #[test]
-    fn test_失敗既定_on_failure宣言なしは失敗で停止したままになる() {
+    fn test_commandの異常process_exitだけでは成果を導出せずrunningを保つ() {
         let definition = workflow_definition(
             vec![
                 command_leaf("c"),
@@ -1637,102 +1462,69 @@ mod failure_tests {
         let tree = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
         assert_eq!(
             node_status(&tree, "c-exec"),
-            RuntimeNodeExecutionStatus::Failed
+            RuntimeNodeExecutionStatus::Running
         );
         assert_eq!(*tree.aggregate.state(), RuntimeExecutionState::Running);
     }
 }
 
-mod paused_tests {
+mod process_observation_tests {
     use super::*;
 
     #[test]
-    fn test_paused_正常終了は導出でありpause事実は存在しない() {
-        // Given: 二信号未揃いのままプロセスが正常終了した session
-        let mut log = FactLog::new();
-        let root_meta = meta("root-exec", None, "session", NodeKindName::Session, 1);
-        log.push(root_meta.clone(), started_root(session_root()));
-        log.push(root_meta.clone(), attached("session-1"));
-        log.push(root_meta.clone(), exited(0));
-
-        // When / Then: Paused は process_exited と二信号未揃いからの純導出
-        let paused = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
-        assert_eq!(
-            node_status(&paused, "root-exec"),
-            RuntimeNodeExecutionStatus::Paused
-        );
-        assert_eq!(*paused.aggregate.state(), RuntimeExecutionState::Running);
-
-        // When: resume の指示と再 attach
-        log.push(root_meta.clone(), NodeFact::ResumeRequested);
-        log.push(root_meta, attached("session-2"));
-        let resumed = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
-
-        // Then: Running へ戻る
-        assert_eq!(
-            node_status(&resumed, "root-exec"),
-            RuntimeNodeExecutionStatus::Running
-        );
+    fn runtime_failure_facts_do_not_settle_session_or_command_attempts() {
+        for kind in [NodeKindName::Session, NodeKindName::Command] {
+            let mut log = FactLog::new();
+            let root_meta = meta("root-exec", None, "work", kind, 1);
+            let definition = if kind == NodeKindName::Session {
+                session_leaf("work")
+            } else {
+                command_leaf("work")
+            };
+            log.push(
+                root_meta.clone(),
+                started_root(workflow_root(workflow_definition(vec![definition], "work"))),
+            );
+            log.push(
+                root_meta.clone(),
+                NodeFact::RuntimeFailureObserved(RuntimeFailureObservedFact {
+                    reason: "activation failed".into(),
+                    failure_kind: NodeExecutionFailureKind::InfrastructureCrash,
+                }),
+            );
+            let tree = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+            let node = tree.aggregate.node_execution("root-exec").unwrap();
+            assert_eq!(node.status, RuntimeNodeExecutionStatus::Running);
+            assert_eq!(node.attempt, 1);
+            assert_eq!(node.completed_at, None);
+            assert_eq!(node.session_id, None);
+            assert!(matches!(
+                log.records.last().unwrap().fact,
+                NodeFact::RuntimeFailureObserved(_)
+            ));
+        }
     }
 
     #[test]
-    fn test_failed_session_resume_requestedで同じattemptをrunningへ戻す() {
-        let mut log = FactLog::new();
-        let root_meta = meta("root-exec", None, "session", NodeKindName::Session, 1);
-        log.push(root_meta.clone(), started_root(session_root()));
-        log.push(root_meta.clone(), attached("session-1"));
-        log.push(root_meta.clone(), process_lost());
-
-        let failed = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
-        assert_eq!(
-            node_status(&failed, "root-exec"),
-            RuntimeNodeExecutionStatus::Failed
-        );
-        let failed_node = failed.aggregate.node_execution("root-exec").unwrap();
-        assert!(failed_node.can_resume());
-        assert_eq!(
-            failed_node.failure.as_ref().map(|failure| failure.origin),
-            Some(RuntimeNodeExecutionFailureOrigin::ProviderProcessExit)
-        );
-
-        log.push(root_meta, NodeFact::ResumeRequested);
-        let resumed = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
-        let node = resumed.aggregate.node_execution("root-exec").unwrap();
-
-        assert_eq!(node.status, RuntimeNodeExecutionStatus::Running);
-        assert_eq!(node.attempt, 1);
-        assert_eq!(node.failure, None);
-    }
-
-    #[test]
-    fn test_runtime失敗のsessionはfailedでもresume対象にならずsession参照を要求しない() {
-        let mut log = FactLog::new();
-        let root_meta = meta("root-exec", None, "session", NodeKindName::Session, 1);
-        log.push(root_meta.clone(), started_root(session_root()));
-        log.push(
-            root_meta.clone(),
-            NodeFact::RuntimeFailureObserved(RuntimeFailureObservedFact {
-                reason: "activation failed".to_string(),
-                failure_kind: NodeExecutionFailureKind::InfrastructureCrash,
-            }),
-        );
-
-        let failed = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
-        let node = failed.aggregate.node_execution("root-exec").unwrap();
-        assert_eq!(node.status, RuntimeNodeExecutionStatus::Failed);
-        assert_eq!(node.session_id, None);
-        assert_eq!(
-            node.failure.as_ref().map(|failure| failure.origin),
-            Some(RuntimeNodeExecutionFailureOrigin::Runtime)
-        );
-        assert!(!node.can_resume());
-
-        log.push(root_meta, NodeFact::ResumeRequested);
-        let resumed = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
-        assert_eq!(
-            node_status(&resumed, "root-exec"),
-            RuntimeNodeExecutionStatus::Failed
-        );
+    fn session_process_exit_and_resume_facts_preserve_the_same_unfinished_attempt() {
+        for process_exit in [exited(0), exited(1), process_lost()] {
+            let mut log = FactLog::new();
+            let root_meta = meta("root-exec", None, "session", NodeKindName::Session, 1);
+            log.push(root_meta.clone(), started_root(session_root()));
+            log.push(root_meta.clone(), attached("session-1"));
+            log.push(root_meta.clone(), submit());
+            log.push(root_meta.clone(), process_exit);
+            log.push(root_meta, NodeFact::ResumeRequested);
+            let tree = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+            let node = tree.aggregate.node_execution("root-exec").unwrap();
+            assert_eq!(node.status, RuntimeNodeExecutionStatus::Running);
+            assert_eq!(node.attempt, 1);
+            assert_eq!(node.session_id.as_deref(), Some("session-1"));
+            assert_eq!(
+                node.completion_signals,
+                crate::domain::workflow::NodeCompletionSignalState::SubmitReceived
+            );
+        }
     }
 }
 
@@ -1740,11 +1532,11 @@ mod command_process_exit_tests {
     use super::*;
 
     #[test]
-    fn test_command_process_exit_exit_codeで完了失敗中断を導出する() {
+    fn test_command_process_exitは正常結果のみ完了させ未決着はrunningを維持する() {
         for (fact, expected) in [
             (exited(0), RuntimeNodeExecutionStatus::Succeeded),
-            (exited(1), RuntimeNodeExecutionStatus::Failed),
-            (process_lost(), RuntimeNodeExecutionStatus::Paused),
+            (exited(1), RuntimeNodeExecutionStatus::Running),
+            (process_lost(), RuntimeNodeExecutionStatus::Running),
         ] {
             let mut log = FactLog::new();
             let root_meta = meta("root-exec", None, "command", NodeKindName::Command, 1);
@@ -1764,7 +1556,7 @@ mod command_process_exit_tests {
     }
 
     #[test]
-    fn test_failed_command_resume_requestedではfailedのままにする() {
+    fn test_commandはresume_requestedでもrunningを維持する() {
         let mut log = FactLog::new();
         let root_meta = meta("root-exec", None, "command", NodeKindName::Command, 1);
         log.push(
@@ -1781,7 +1573,7 @@ mod command_process_exit_tests {
 
         assert_eq!(
             node_status(&tree, "root-exec"),
-            RuntimeNodeExecutionStatus::Failed
+            RuntimeNodeExecutionStatus::Running
         );
     }
 }

@@ -27,10 +27,10 @@ mod vocabulary_tests {
                 display_command: "true".to_string(),
             }),
             NodeFact::ProcessExited(ProcessExitedFact {
+                failure_kind: None,
                 exit_code: Some(0),
                 result_summary: None,
                 failure_reason: None,
-                failure_kind: None,
             }),
             NodeFact::RuntimeFailureObserved(RuntimeFailureObservedFact {
                 reason: "activation failed".to_string(),
@@ -159,10 +159,10 @@ mod vocabulary_tests {
             token_usage: None,
         });
         let process_exit = NodeFact::ProcessExited(ProcessExitedFact {
+            failure_kind: None,
             exit_code: Some(0),
             result_summary: None,
             failure_reason: None,
-            failure_kind: None,
         });
 
         for fact in [stop, process_exit] {

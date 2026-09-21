@@ -1,23 +1,14 @@
 import { invokeClient as invoke } from "@/lib/client";
 import { getErrorMessage } from "@/lib/errorMessage";
 
-export type WorkflowExecutionAction = "stop" | "resume" | "abort";
-
-const actionCommand: Record<
-	WorkflowExecutionAction,
-	"stop_workflow" | "resume_workflow" | "abort_workflow"
-> = {
-	stop: "stop_workflow",
-	resume: "resume_workflow",
-	abort: "abort_workflow",
-};
+export type WorkflowExecutionAction = "abort";
 
 export async function executeWorkflowAction(
-	action: WorkflowExecutionAction,
+	_action: WorkflowExecutionAction,
 	executionId: string,
 ): Promise<void> {
 	try {
-		await invoke(actionCommand[action], { executionId });
+		await invoke("abort_workflow", { executionId });
 	} catch (error) {
 		throw new Error(getErrorMessage(error));
 	}

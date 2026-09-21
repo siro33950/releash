@@ -40,6 +40,13 @@ pub(crate) struct ActiveCommandHandle {
 }
 
 impl ActiveCommandHandle {
+    #[cfg(test)]
+    pub(crate) fn for_test() -> Self {
+        Self {
+            shutdown_tx: watch::channel(false).0,
+        }
+    }
+
     pub(crate) fn request_shutdown(&self) {
         let _ = self.shutdown_tx.send(true);
     }

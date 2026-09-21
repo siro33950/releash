@@ -239,7 +239,7 @@ fn test_隔離実行_隔離sessionの成果を配線し後続はrootで実行す
 #[test]
 fn test_隔離実行_自動retryは異なる識別子とattemptでworktreeを導出する() {
     // Given
-    let mut execution = execution("  main: {sequence: {children: [{work: {on_failure: {retry: 1}}}]}}\n  work: {worktree: isolated, session: {provider: codex}}");
+    let mut execution = execution("  main: {sequence: {children: [work]}}\n  work: {worktree: isolated, session: {provider: codex}}");
     let mut ids = ids();
     let first = leaves(execution.start_root(&mut ids, 1.0).unwrap()).remove(0);
     let previous = execution
@@ -250,22 +250,12 @@ fn test_隔離実行_自動retryは異なる識別子とattemptでworktreeを導
         .unwrap();
 
     // When
-    assert_eq!(
-        execution.fail_leaf_execution(
-            first.node_execution_id(),
-            "creation failed".into(),
-            NodeExecutionFailureKind::InfrastructureCrash,
-            FailureDisposition::Terminal,
-            2.0
-        ),
-        TransitionOutcome::Applied
+    let retry = NodeStart::Leaf(
+        execution
+            .restart_node_attempt_at(first.node_execution_id(), ids(), 2.0)
+            .unwrap()
+            .leaf,
     );
-    let retry = execution
-        .apply_on_failure_treatment(first.node_execution_id(), &mut ids, 2.0)
-        .unwrap()
-        .unwrap()
-        .starts
-        .remove(0);
 
     // Then
     let node = execution.node_execution(retry.node_execution_id()).unwrap();

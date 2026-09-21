@@ -454,10 +454,9 @@ fn test_部分復元_fanoutの未対応nodeが開始済みでも他のslotを展
 }
 
 #[test]
-fn test_部分復元_未対応nodeをignoreで成功扱いにせず保存成果は保持する() {
+fn test_部分復元_未対応nodeは未解決のまま保存成果を保持する() {
     // Given
-    let mut unknown = ChildEntry::reference("unknown");
-    unknown.on_failure = Some(OnFailure::Ignore);
+    let unknown = ChildEntry::reference("unknown");
     let root = recovery_root(
         vec![
             fanout_node("main", vec![unknown, ChildEntry::reference("cmd")]),
@@ -497,7 +496,7 @@ fn test_部分復元_未対応nodeをignoreで成功扱いにせず保存成果�
         .aggregate
         .node_execution("unknown-1")
         .unwrap()
-        .can_retry());
+        .can_retry(crate::domain::workflow::NodeProcessPresence::ConfirmedAbsent));
     assert_eq!(
         folded
             .aggregate
@@ -806,7 +805,6 @@ fn test_部分復元_未対応nodeの成果を展開元にするfanoutは起動�
 
 #[test]
 fn test_部分復元_未対応の親からinputを復元できないcommandのretryはattemptを増やさない() {
-    use crate::domain::workflow::entities::workflow_execution::NodeRestartMode;
     use crate::domain::workflow::InputParam;
     // Given
     let mut command = command_leaf("cmd");
@@ -828,12 +826,9 @@ fn test_部分復元_未対応の親からinputを復元できないcommandのre
     let original = folded.aggregate.node_executions.clone();
 
     // When
-    let retry = folded.aggregate.restart_node_attempt_at(
-        "cmd-1",
-        "cmd-2".into(),
-        10.0,
-        NodeRestartMode::ExplicitRetry,
-    );
+    let retry = folded
+        .aggregate
+        .restart_node_attempt_at("cmd-1", "cmd-2".into(), 10.0);
 
     // Then
     assert!(retry.is_none());

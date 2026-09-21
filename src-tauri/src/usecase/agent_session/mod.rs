@@ -2,7 +2,6 @@ mod agent_session_change_notifier;
 mod agent_session_exit;
 mod agent_session_history;
 mod agent_session_initial_instruction;
-mod agent_session_interrupt;
 mod agent_session_launch;
 mod agent_session_lifecycle;
 mod agent_session_query;
@@ -21,7 +20,6 @@ pub(crate) use agent_session_history::{
     AgentSessionHistoryQueryService, AgentSessionHistoryReadUsecase, AgentSessionHistoryRequest,
 };
 pub(crate) use agent_session_initial_instruction::AgentSessionInitialInstructionUsecase;
-pub(crate) use agent_session_interrupt::AgentSessionInterruptUsecase;
 pub(crate) use agent_session_launch::AgentSessionLaunchUsecaseError;
 pub(crate) use agent_session_launch::{
     AgentSessionHistoryResumeOutcome, AgentSessionHistoryResumeRequest, AgentSessionLaunchRequest,

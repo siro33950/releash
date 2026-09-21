@@ -314,4 +314,35 @@ pub(crate) fn register_shared(
             }),
         );
     }
+    {
+        let usecase = deps.workspace_node_command_usecase.clone();
+        router.register_domain(
+            &["resume_workspace_session_node"],
+            Box::new(move |command| {
+                let usecase = usecase.clone();
+                Box::pin(async move {
+                    let wire::command_request::Command::ResumeWorkspaceSessionNode(args) = command
+                    else {
+                        return Err(invalid_request("Mismatched command"));
+                    };
+                    let result = async move {
+                        let usecase = usecase
+                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
+                        outcome(
+                            resume_workspace_session_node_shared(
+                                &usecase,
+                                convert(required(args.worktree_path, "worktreePath")?)?,
+                                convert(required(args.node_id, "nodeId")?)?,
+                            )
+                            .await,
+                        )
+                    }
+                    .await?;
+                    Ok(wire::command_result::Command::ResumeWorkspaceSessionNode(
+                        result,
+                    ))
+                })
+            }),
+        );
+    }
 }

@@ -1,6 +1,6 @@
 use super::test_helpers::*;
 use super::*;
-use crate::domain::workflow::{NodeFact, ProcessExitedFact};
+use crate::domain::workflow::{NodeFact, NodeProcessPresence};
 use std::sync::atomic::Ordering;
 
 #[tokio::test]
@@ -77,84 +77,8 @@ async fn test_隔離復旧_生成後かつ起動記録前のleafと合成子を�
         assert_eq!(attempts[0].id, node.id);
         assert_eq!(attempts[0].attempt, 1);
         assert_eq!(attempts[0].worktree.as_ref(), Some(worktree));
-        assert!(attempts.iter().all(|attempt| attempt.status != NodeExecutionStatus::Failed));
+        assert!(attempts.iter().all(|attempt| matches!(attempt.status, NodeExecutionStatus::Running | NodeExecutionStatus::Succeeded)));
         assert_eq!(std::fs::read_to_string(format!("{}/keep", worktree.path)).unwrap(), "uncommitted");
-    }
-}
-
-#[tokio::test]
-async fn test_隔離起動_on_failure省略のleafは生成失敗後に手動retryを待つ() {
-    for kind in [
-        "session: {provider: codex, facets: {instruction: policy-confirmation}}",
-        "command: 'this-process-must-not-start'",
-    ] {
-        // Given
-        let fixture = Fixture::new(1);
-
-        // When
-        let execution_id = fixture.start(&format!("  main: {{sequence: {{children: [work]}}}}\n  work: {{worktree: isolated, {kind}}}")).await;
-
-        // Then
-        let folded = workflow_fact_log::fold_tree_from(
-            &workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone()),
-            &execution_id,
-        )
-        .unwrap()
-        .unwrap();
-        let attempts = folded
-            .aggregate
-            .node_executions
-            .iter()
-            .filter(|node| node.node_name == "work")
-            .collect::<Vec<_>>();
-        assert_eq!(attempts.len(), 1);
-        let failed = attempts[0];
-        assert_eq!(failed.attempt, 1);
-        assert_eq!(failed.status, NodeExecutionStatus::Failed);
-        assert!(failed.can_retry());
-        assert_eq!(fixture.worktrees.calls.lock().unwrap().len(), 1);
-        assert!(fixture.sessions.prepared.lock().unwrap().is_empty());
-        assert!(fixture.sessions.activated.lock().unwrap().is_empty());
-        assert!(fixture.host.active_commands.lock().await.is_empty());
-        let records = workflow_fact_log::read_tree_records(&fixture.store, &execution_id).unwrap();
-        assert!(!records.iter().any(|record| matches!(
-            record.fact,
-            NodeFact::SessionAttached(_) | NodeFact::CommandSpawned(_)
-        )));
-
-        // When
-        fixture.worktrees.failures.store(1, Ordering::SeqCst);
-        let gateway =
-            crate::adaptor::gateway::workflow::WorkflowRuntimeCommandGateway::new_with_driver(
-                fixture.app.clone(),
-                Arc::new(fixture.host.clone()),
-            );
-        let control = crate::usecase::workflow::control_plane::WorkflowControlPlaneUsecase::new(
-            Arc::new(gateway),
-        );
-        control
-            .retry_node(crate::usecase::workflow::command::RetryNodeCommand {
-                execution_id: execution_id.clone(),
-                node_execution_id: failed.id.clone(),
-            })
-            .await
-            .unwrap();
-
-        // Then
-        let snapshot = fixture
-            .host
-            .get_state_by_execution_id(&execution_id)
-            .await
-            .unwrap();
-        let attempts = snapshot
-            .node_executions
-            .iter()
-            .filter(|node| node.node_name == "work")
-            .collect::<Vec<_>>();
-        assert_eq!(attempts.len(), 2);
-        assert_eq!(attempts[1].attempt, 2);
-        assert_ne!(attempts[0].worktree, attempts[1].worktree);
-        assert_eq!(fixture.worktrees.calls.lock().unwrap().len(), 2);
     }
 }
 
@@ -183,13 +107,14 @@ async fn test_隔離起動_合成子の生成後に同じcwdとroot所属でsess
         .all(|record| !record.fact.event_type().starts_with("isolated_worktree")));
 }
 
-#[tokio::test]
-async fn test_隔離起動_生成失敗をnode失敗にして新しいattemptだけを起動する() {
+#[tokio::test(start_paused = true)]
+async fn test_隔離起動_生成失敗後は自動で新しいattemptだけを起動する() {
     // Given
     let fixture = Fixture::new(1);
 
     // When
-    let execution_id = fixture.start("  main: {sequence: {children: [{work: {on_failure: {retry: 1}}}]}}\n  work: {worktree: isolated, session: {provider: codex, facets: {instruction: policy-confirmation}}}").await;
+    let execution_id = fixture.start("  main: {sequence: {children: [work]}}\n  work: {worktree: isolated, session: {provider: codex, facets: {instruction: policy-confirmation}}}").await;
+    fixture.wait_startup_retries().await;
 
     // Then
     let snapshot = fixture
@@ -203,7 +128,7 @@ async fn test_隔離起動_生成失敗をnode失敗にして新しいattemptだ
         .filter(|node| node.node_name == "work")
         .collect::<Vec<_>>();
     assert_eq!(attempts.len(), 2);
-    assert_eq!(attempts[0].status, NodeExecutionStatus::Failed);
+    assert_eq!(attempts[0].status, NodeExecutionStatus::Aborted);
     assert_eq!(attempts[1].status, NodeExecutionStatus::Running);
     assert_eq!(attempts[1].attempt, 2);
     assert_ne!(attempts[0].worktree, attempts[1].worktree);
@@ -225,112 +150,8 @@ async fn test_隔離起動_生成失敗をnode失敗にして新しいattemptだ
             .node_execution(&attempts[0].id)
             .unwrap()
             .status,
-        NodeExecutionStatus::Failed
+        NodeExecutionStatus::Aborted
     );
-}
-
-#[tokio::test]
-async fn test_隔離起動_commandの生成失敗はprocessを起動せずretry予算を使う() {
-    // Given
-    let fixture = Fixture::new(2);
-
-    // When
-    let execution_id = fixture.start("  main: {sequence: {children: [{work: {on_failure: {retry: 1}}}]}}\n  work: {worktree: isolated, command: 'this-process-must-not-start'}").await;
-
-    // Then
-    let snapshot = fixture
-        .host
-        .get_state_by_execution_id(&execution_id)
-        .await
-        .unwrap();
-    let attempts = snapshot
-        .node_executions
-        .iter()
-        .filter(|node| node.node_name == "work")
-        .collect::<Vec<_>>();
-    assert_eq!(attempts.len(), 2);
-    assert!(attempts
-        .iter()
-        .all(|node| node.status == NodeExecutionStatus::Failed));
-    let facts = workflow_fact_log::read_tree_records(&fixture.store, &execution_id).unwrap();
-    assert!(!facts
-        .iter()
-        .any(|record| matches!(record.fact, NodeFact::CommandSpawned(_))));
-    assert_eq!(fixture.worktrees.calls.lock().unwrap().len(), 2);
-}
-
-#[tokio::test]
-async fn test_隔離再開_実体喪失によるprovider起動失敗をnode失敗にし手動retryで新規生成する() {
-    // Given
-    let fixture = Fixture::new(0);
-    let execution_id = fixture.start("  main: {worktree: isolated, session: {provider: codex, facets: {instruction: policy-confirmation}}}").await;
-    let snapshot = fixture
-        .host
-        .get_state_by_execution_id(&execution_id)
-        .await
-        .unwrap();
-    let node = &snapshot.node_executions[0];
-    let facts = workflow_fact_log::read_tree_records(&fixture.store, &execution_id).unwrap();
-    let meta = &facts
-        .iter()
-        .find(|record| record.meta.node_execution_id == node.id)
-        .unwrap()
-        .meta;
-    workflow_fact_log::append_single_fact(
-        &fixture.store,
-        meta,
-        &NodeFact::ProcessExited(ProcessExitedFact {
-            exit_code: Some(1),
-            result_summary: None,
-            failure_reason: Some("provider exited".into()),
-            failure_kind: Some(NodeExecutionFailureKind::InfrastructureCrash),
-        }),
-        9999,
-    )
-    .unwrap();
-    fixture
-        .sessions
-        .recovery_fails
-        .store(true, Ordering::SeqCst);
-
-    // When
-    let result = fixture
-        .host
-        .resume_workflow_execution(&fixture.app, &execution_id)
-        .await;
-
-    // Then
-    assert!(result.is_err());
-    let restored = workflow_fact_log::fold_tree_from(
-        &workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone()),
-        &execution_id,
-    )
-    .unwrap()
-    .unwrap();
-    let failed = restored.aggregate.node_execution(&node.id).unwrap();
-    assert_eq!(failed.status, NodeExecutionStatus::Failed);
-    assert_eq!(failed.failure.as_ref().unwrap().origin, crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecutionFailureOrigin::Runtime);
-    assert!(failed.recovery_reason.is_none());
-    assert!(failed.can_retry());
-    assert!(failed.resume_previous_state().is_none());
-    let gateway = crate::adaptor::gateway::workflow::WorkflowRuntimeCommandGateway::new_with_driver(
-        fixture.app.clone(),
-        Arc::new(fixture.host.clone()),
-    );
-    let control = crate::usecase::workflow::control_plane::WorkflowControlPlaneUsecase::new(
-        Arc::new(gateway),
-    );
-    control
-        .retry_node(crate::usecase::workflow::command::RetryNodeCommand {
-            execution_id: execution_id.clone(),
-            node_execution_id: node.id.clone(),
-        })
-        .await
-        .unwrap();
-    let calls = fixture.worktrees.calls.lock().unwrap();
-    assert_eq!(calls.len(), 2);
-    assert_ne!(calls[0].1, calls[1].1);
-    assert!(calls[1].1.branch.ends_with("-a2"));
 }
 
 #[tokio::test]
@@ -350,10 +171,10 @@ async fn test_隔離起動_合成子の生成失敗では子を起動せず復�
     assert_eq!(snapshot.node_executions.len(), 1);
     assert_eq!(
         snapshot.node_executions[0].status,
-        NodeExecutionStatus::Failed
+        NodeExecutionStatus::Running
     );
     assert!(snapshot.node_executions[0].recovery_reason.is_none());
-    assert!(!snapshot.node_executions[0].can_retry());
+    assert!(!snapshot.node_executions[0].can_retry(NodeProcessPresence::ConfirmedAbsent));
     assert!(fixture.sessions.prepared.lock().unwrap().is_empty());
     let restored = workflow_fact_log::fold_tree_from(
         &workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone()),
@@ -363,34 +184,8 @@ async fn test_隔離起動_合成子の生成失敗では子を起動せず復�
     .unwrap();
     assert_eq!(
         restored.aggregate.node_executions[0].status,
-        NodeExecutionStatus::Failed
+        NodeExecutionStatus::Running
     );
-}
-
-#[tokio::test]
-async fn test_隔離起動_session準備の失敗でもnode失敗として記録する() {
-    // Given
-    let fixture = Fixture::new(0);
-    fixture
-        .sessions
-        .preparation_fails
-        .store(true, Ordering::SeqCst);
-
-    // When
-    let execution_id = fixture.start("  main: {worktree: isolated, session: {provider: codex, facets: {instruction: policy-confirmation}}}").await;
-
-    // Then
-    let snapshot = fixture
-        .host
-        .get_state_by_execution_id(&execution_id)
-        .await
-        .unwrap();
-    assert_eq!(
-        snapshot.node_executions[0].status,
-        NodeExecutionStatus::Failed
-    );
-    assert!(snapshot.node_executions[0].can_retry());
-    assert!(fixture.sessions.activated.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -422,13 +217,10 @@ async fn test_隔離合成子_子開始のappend失敗はrootと入れ子の対�
                 .iter()
                 .find(|node| node.node_name == target_name)
                 .unwrap();
-            assert_eq!(target.status, NodeExecutionStatus::Failed);
-            assert!(target
-                .failure
-                .as_ref()
-                .unwrap()
-                .reason
-                .contains("isolated composite child start append failed"));
+            assert_eq!(target.status, NodeExecutionStatus::Running);
+            let records =
+                workflow_fact_log::read_tree_records(&fixture.store, &execution_id).unwrap();
+            assert!(records.iter().any(|record| matches!(&record.fact, NodeFact::RuntimeFailureObserved(failure) if failure.reason.contains("isolated composite child start append failed"))));
             assert!(!folded
                 .aggregate
                 .node_executions
@@ -451,76 +243,6 @@ async fn test_隔離合成子_子開始のappend失敗はrootと入れ子の対�
             }
         }
     }
-}
-
-#[tokio::test]
-async fn test_隔離再開_dispatch失敗は対象だけを失敗にし他の未dispatch状態を復元する() {
-    // Given
-    let fixture = Fixture::new(0);
-    let execution_id = fixture.start("  main: {fanout: {items: [w, x, y, z], children: [work]}}\n  work: {worktree: isolated, session: {provider: codex, facets: {instruction: policy-confirmation}}}").await;
-    let records = workflow_fact_log::read_tree_records(&fixture.store, &execution_id).unwrap();
-    let nodes = fixture.sessions.activated.lock().unwrap().clone();
-    assert_eq!(nodes.len(), 4);
-    for (index, id) in nodes.iter().enumerate() {
-        let meta = &records
-            .iter()
-            .find(|record| record.meta.node_execution_id == *id)
-            .unwrap()
-            .meta;
-        workflow_fact_log::append_single_fact(
-            &fixture.store,
-            meta,
-            &NodeFact::ProcessExited(ProcessExitedFact {
-                exit_code: Some(if index == 3 { 1 } else { 0 }),
-                result_summary: None,
-                failure_reason: (index == 3).then(|| "previous failure".into()),
-                failure_kind: (index == 3).then_some(NodeExecutionFailureKind::InfrastructureCrash),
-            }),
-            records.last().unwrap().timestamp_ms + 1,
-        )
-        .unwrap();
-    }
-    *fixture.sessions.dispatch_fails_on.lock().unwrap() = Some(nodes[1].clone());
-    // When
-    let result = fixture
-        .host
-        .resume_workflow_execution(&fixture.app, &execution_id)
-        .await;
-    // Then
-    assert!(
-        matches!(result, Err(WorkflowRuntimeError::AgentSession(reason)) if reason == "dispatch failed")
-    );
-    assert_eq!(*fixture.sessions.recovered.lock().unwrap(), nodes);
-    assert_eq!(*fixture.sessions.dispatched.lock().unwrap(), nodes[..2]);
-    let folded = workflow_fact_log::fold_tree_from(
-        &workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone()),
-        &execution_id,
-    )
-    .unwrap()
-    .unwrap();
-    let first = folded.aggregate.node_execution(&nodes[0]).unwrap();
-    let failed = folded.aggregate.node_execution(&nodes[1]).unwrap();
-    let paused = folded.aggregate.node_execution(&nodes[2]).unwrap();
-    let restored = folded.aggregate.node_execution(&nodes[3]).unwrap();
-    assert_eq!(first.status, NodeExecutionStatus::Running);
-    assert_eq!(failed.status, NodeExecutionStatus::Failed);
-    assert!(failed
-        .failure
-        .as_ref()
-        .unwrap()
-        .reason
-        .contains("dispatch failed"));
-    assert!(failed.resume_previous_state().is_none());
-    assert!(failed.recovery_reason.is_none());
-    assert_eq!(paused.status, NodeExecutionStatus::Paused);
-    assert!(paused.resume_previous_state().is_some());
-    assert_eq!(restored.status, NodeExecutionStatus::Failed);
-    assert_eq!(
-        restored.failure.as_ref().unwrap().reason,
-        "previous failure"
-    );
-    assert!(restored.resume_previous_state().is_some());
-    assert_eq!(fixture.worktrees.calls.lock().unwrap().len(), 4);
 }
 
 #[tokio::test]
@@ -586,4 +308,820 @@ async fn test_空の隔離fanout_liveと再読取で同じworktree成果を持�
         live.node_executions[0].artifact.as_ref().unwrap().value,
         read.node_executions[0].artifact.as_ref().unwrap().value
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn startup_exhaustion_leaves_five_distinct_attempts_with_only_the_latest_running() {
+    for kind in ["session: {provider: codex}", "command: 'must-not-start'"] {
+        let fixture = Fixture::new(usize::MAX);
+        let id = fixture
+            .start(&format!("  main: {{worktree: isolated, {kind}}}"))
+            .await;
+        fixture.wait_startup_retries().await;
+        let folded = workflow_fact_log::fold_tree_from(
+            &workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone()),
+            &id,
+        )
+        .unwrap()
+        .unwrap();
+        let attempts = folded.aggregate.node_executions();
+        assert_eq!(attempts.len(), 5);
+        assert!(attempts[..4]
+            .iter()
+            .all(|node| node.status == NodeExecutionStatus::Aborted));
+        let last = &attempts[4];
+        assert_eq!(last.status, NodeExecutionStatus::Running);
+        assert_eq!(last.attempt, 5);
+        assert_eq!(
+            last.can_retry(NodeProcessPresence::ConfirmedAbsent),
+            last.kind == NodeKindName::Command
+        );
+        assert_eq!(
+            last.can_resume_session(NodeProcessPresence::ConfirmedAbsent),
+            last.kind == NodeKindName::Session
+        );
+        assert_eq!(fixture.worktrees.calls.lock().unwrap().len(), 5);
+        let worktrees = attempts
+            .iter()
+            .map(|node| node.worktree.as_ref().unwrap().path.clone())
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(worktrees.len(), 5);
+        assert!(fixture.sessions.prepared.lock().unwrap().is_empty());
+        assert!(fixture
+            .host
+            .node_processes
+            .active_commands
+            .lock()
+            .unwrap()
+            .is_empty());
+        let records = workflow_fact_log::read_tree_records(&fixture.store, &id).unwrap();
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| matches!(record.fact, NodeFact::RuntimeFailureObserved(_)))
+                .count(),
+            5
+        );
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| matches!(record.fact, NodeFact::RetryRequested))
+                .count(),
+            4
+        );
+        let restored = fixture.restarted_host();
+        restored.reconcile_startup(&fixture.app).await.unwrap();
+        let after = restored.executions.lock().await[&id].clone();
+        assert_eq!(after.node_executions(), attempts);
+        assert_eq!(fixture.worktrees.calls.lock().unwrap().len(), 5);
+        assert_eq!(
+            workflow_fact_log::read_tree_records(&fixture.store, &id).unwrap(),
+            records
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_自動再試行_abortとshutdownは待機を終了し追加起動しない() {
+    for abort in [true, false] {
+        let fixture = Fixture::new(usize::MAX);
+        let tree = fixture
+            .start("  main: {worktree: isolated, session: {provider: codex}}")
+            .await;
+        assert_eq!(fixture.host.startup_retries.lock().await.len(), 1);
+        if abort {
+            fixture
+                .host
+                .abort_workflow_execution(&fixture.app, &tree, None)
+                .await
+                .unwrap();
+        } else {
+            fixture.host.shutdown_all_active_commands().await;
+        }
+        fixture.wait_startup_retries().await;
+        tokio::time::advance(std::time::Duration::from_secs(20)).await;
+        assert_eq!(fixture.worktrees.calls.lock().unwrap().len(), 1);
+        assert!(!workflow_fact_log::read_tree_records(&fixture.store, &tree)
+            .unwrap()
+            .iter()
+            .any(|record| matches!(record.fact, NodeFact::RetryRequested)));
+        assert!(fixture.sessions.activated.lock().unwrap().is_empty());
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_自動再試行_待機中の手動resume後に旧attemptを再起動しない() {
+    let fixture = Fixture::new(0);
+    fixture
+        .sessions
+        .preparation_fails
+        .store(true, Ordering::SeqCst);
+    let tree = fixture
+        .start("  main: {session: {provider: codex, facets: {instruction: policy-confirmation}}}")
+        .await;
+    let previous = fixture.host.executions.lock().await[&tree].node_executions[0].clone();
+    fixture
+        .sessions
+        .preparation_fails
+        .store(false, Ordering::SeqCst);
+    control(&fixture)
+        .resume_session_node(
+            crate::usecase::workflow::command::ResumeSessionNodeCommand {
+                execution_id: tree.clone(),
+                node_execution_id: previous.id,
+            },
+        )
+        .await
+        .unwrap();
+    fixture.wait_startup_retries().await;
+    assert_eq!(
+        fixture.host.executions.lock().await[&tree]
+            .node_executions
+            .len(),
+        2
+    );
+    assert_eq!(fixture.sessions.activated.lock().unwrap().len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_自動再試行_shutdownは進行中の準備の終了を待つ() {
+    let fixture = Fixture::new(0);
+    fixture
+        .sessions
+        .preparation_fails
+        .store(true, Ordering::SeqCst);
+    let tree = fixture
+        .start("  main: {session: {provider: codex, facets: {instruction: policy-confirmation}}}")
+        .await;
+    fixture
+        .sessions
+        .block_preparation
+        .store(true, Ordering::SeqCst);
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        fixture.sessions.preparation_entered.notified(),
+    )
+    .await
+    .unwrap();
+    let mut shutdown = Box::pin(fixture.host.shutdown_all_active_commands());
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(1), &mut shutdown)
+            .await
+            .is_err()
+    );
+    fixture.sessions.preparation_release.notify_one();
+    shutdown.await;
+    assert!(fixture.host.startup_retries.lock().await.is_empty());
+    assert_eq!(
+        fixture.host.executions.lock().await[&tree]
+            .node_executions
+            .len(),
+        2
+    );
+    assert_eq!(fixture.sessions.prepared.lock().unwrap().len(), 2);
+    assert!(fixture.sessions.activated.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_session起動_準備済みの旧attemptを除外して兄弟だけを起動する() {
+    let (fixture, root) = Fixture::with_repository();
+    let snapshot = fixture.persist_started(
+        "  main: {fanout: {children: [one, two]}}\n  one: {session: {provider: codex, facets: {instruction: policy-confirmation}}}\n  two: {session: {provider: codex, facets: {instruction: policy-confirmation}}}", &root,
+    ).await;
+    let before = fixture.host.executions.lock().await[&snapshot.execution_id].clone();
+    let first = before
+        .node_executions
+        .iter()
+        .find(|node| node.node_name == "one")
+        .unwrap();
+    let leaves = before
+        .node_executions
+        .iter()
+        .filter(|node| node.kind == NodeKindName::Session)
+        .map(|node| NodeStart::Leaf(before.leaf_start_for(&node.id).unwrap()))
+        .collect();
+    control(&fixture)
+        .resume_session_node(
+            crate::usecase::workflow::command::ResumeSessionNodeCommand {
+                execution_id: snapshot.execution_id.clone(),
+                node_execution_id: first.id.clone(),
+            },
+        )
+        .await
+        .unwrap();
+    fixture
+        .host
+        .start_nodes(&fixture.app, &snapshot.execution_id, &root, leaves)
+        .await
+        .unwrap();
+    let after = fixture.host.executions.lock().await[&snapshot.execution_id].clone();
+    assert_eq!(after.node_executions.len(), 4);
+    assert_eq!(
+        after.node_execution(&first.id).unwrap().status,
+        NodeExecutionStatus::Aborted
+    );
+    assert_eq!(fixture.sessions.activated.lock().unwrap().len(), 2);
+    assert!(!fixture
+        .sessions
+        .activated
+        .lock()
+        .unwrap()
+        .contains(&first.id));
+    assert!(after
+        .node_executions
+        .iter()
+        .filter(|node| node.kind == NodeKindName::Session
+            && node.status == NodeExecutionStatus::Running)
+        .all(|node| node.session_id.is_some()));
+}
+
+fn control(
+    fixture: &Fixture,
+) -> crate::usecase::workflow::control_plane::WorkflowControlPlaneUsecase {
+    crate::usecase::workflow::control_plane::WorkflowControlPlaneUsecase::new(Arc::new(
+        crate::adaptor::gateway::workflow::WorkflowRuntimeCommandGateway::new_with_driver(
+            fixture.app.clone(),
+            Arc::new(fixture.host.clone()),
+        ),
+    ))
+}
+
+#[tokio::test(start_paused = true)]
+async fn resume_after_never_successful_session_launch_creates_a_new_attempt_with_initial_instruction(
+) {
+    let fixture = Fixture::new(0);
+    fixture
+        .sessions
+        .preparation_fails
+        .store(true, Ordering::SeqCst);
+    let id = fixture.start("  main: {worktree: isolated, session: {provider: codex, facets: {instruction: policy-confirmation}}}").await;
+    fixture.wait_startup_retries().await;
+    let current = fixture.host.executions.lock().await[&id]
+        .node_executions
+        .last()
+        .unwrap()
+        .clone();
+    assert_eq!(current.attempt, 5);
+    assert_eq!(current.status, NodeExecutionStatus::Running);
+    assert!(current.session_id.is_none());
+    fixture
+        .sessions
+        .preparation_fails
+        .store(false, Ordering::SeqCst);
+    control(&fixture)
+        .resume_session_node(
+            crate::usecase::workflow::command::ResumeSessionNodeCommand {
+                execution_id: id.clone(),
+                node_execution_id: current.id,
+            },
+        )
+        .await
+        .unwrap();
+    let executions = fixture.host.executions.lock().await;
+    let next = executions[&id].node_executions.last().unwrap();
+    assert_eq!(next.attempt, 6);
+    assert_eq!(next.status, NodeExecutionStatus::Running);
+    assert!(next.session_id.is_some());
+    assert_eq!(
+        fixture.sessions.initial_instructions.lock().unwrap().len(),
+        1
+    );
+    assert!(!fixture.sessions.initial_instructions.lock().unwrap()[0].is_empty());
+    assert!(fixture.sessions.recovered.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn resume_recreates_a_lost_isolated_worktree_but_recovers_an_existing_conversation_in_place()
+{
+    for lost_worktree in [false, true] {
+        let (fixture, root) = Fixture::with_repository();
+        let id = fixture.start_at("  main: {worktree: isolated, session: {provider: codex, facets: {instruction: policy-confirmation}}}", &root).await;
+        let previous = fixture.host.executions.lock().await[&id].node_executions[0].clone();
+        fixture.sessions.live_sessions.lock().unwrap().clear();
+        if lost_worktree {
+            std::fs::remove_dir_all(&previous.worktree.as_ref().unwrap().path).unwrap();
+        }
+        control(&fixture)
+            .resume_session_node(
+                crate::usecase::workflow::command::ResumeSessionNodeCommand {
+                    execution_id: id.clone(),
+                    node_execution_id: previous.id.clone(),
+                },
+            )
+            .await
+            .unwrap();
+        let executions = fixture.host.executions.lock().await;
+        let nodes = &executions[&id].node_executions;
+        let current = nodes.last().unwrap();
+        assert_eq!(current.status, NodeExecutionStatus::Running);
+        assert!(std::path::Path::new(&current.worktree.as_ref().unwrap().path).is_dir());
+        if lost_worktree {
+            assert_eq!(nodes.len(), 2);
+            assert_eq!(current.attempt, 2);
+            assert_ne!(current.worktree, previous.worktree);
+            assert_eq!(
+                fixture.sessions.initial_instructions.lock().unwrap().len(),
+                2
+            );
+            assert!(fixture.sessions.recovered.lock().unwrap().is_empty());
+        } else {
+            assert_eq!(nodes.len(), 1);
+            assert_eq!(current.id, previous.id);
+            assert_eq!(current.session_id, previous.session_id);
+            assert_eq!(
+                fixture.sessions.initial_instructions.lock().unwrap().len(),
+                1
+            );
+            assert_eq!(
+                *fixture.sessions.recovered.lock().unwrap(),
+                vec![previous.id]
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn session_resume_requires_confirmed_absence_and_manual_retry_is_rejected() {
+    let (fixture, root) = Fixture::with_repository();
+    let id = fixture
+        .start_at(
+            "  main: {session: {provider: codex, facets: {instruction: policy-confirmation}}}",
+            &root,
+        )
+        .await;
+    let previous = fixture.host.executions.lock().await[&id].node_executions[0].clone();
+    for unknown in [false, true] {
+        fixture
+            .sessions
+            .presence_unknown
+            .store(unknown, Ordering::SeqCst);
+        assert!(control(&fixture)
+            .resume_session_node(
+                crate::usecase::workflow::command::ResumeSessionNodeCommand {
+                    execution_id: id.clone(),
+                    node_execution_id: previous.id.clone()
+                }
+            )
+            .await
+            .is_err());
+    }
+    fixture
+        .sessions
+        .presence_unknown
+        .store(false, Ordering::SeqCst);
+    fixture.sessions.live_sessions.lock().unwrap().clear();
+    assert!(control(&fixture)
+        .retry_node(crate::usecase::workflow::command::RetryNodeCommand {
+            execution_id: id.clone(),
+            node_execution_id: previous.id.clone()
+        })
+        .await
+        .is_err());
+    assert_eq!(
+        fixture.host.executions.lock().await[&id]
+            .node_executions
+            .len(),
+        1
+    );
+    assert!(fixture.sessions.recovered.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn resume_without_a_conversation_starts_a_new_attempt_even_when_the_worktree_exists() {
+    let (fixture, root) = Fixture::with_repository();
+    let id = fixture
+        .start_at(
+            "  main: {session: {provider: codex, facets: {instruction: policy-confirmation}}}",
+            &root,
+        )
+        .await;
+    let previous = fixture.host.executions.lock().await[&id].node_executions[0].clone();
+    fixture.sessions.live_sessions.lock().unwrap().clear();
+    fixture
+        .sessions
+        .conversation_missing
+        .store(true, Ordering::SeqCst);
+    control(&fixture)
+        .resume_session_node(
+            crate::usecase::workflow::command::ResumeSessionNodeCommand {
+                execution_id: id.clone(),
+                node_execution_id: previous.id.clone(),
+            },
+        )
+        .await
+        .unwrap();
+    let executions = fixture.host.executions.lock().await;
+    let nodes = &executions[&id].node_executions;
+    assert_eq!(nodes.len(), 2);
+    assert_eq!(nodes[0].status, NodeExecutionStatus::Aborted);
+    assert_eq!(nodes[1].attempt, 2);
+    assert_ne!(nodes[1].session_id, previous.session_id);
+    let instructions = fixture.sessions.initial_instructions.lock().unwrap();
+    assert_eq!(instructions.len(), 2);
+    assert!(!instructions[1].is_empty());
+    assert!(fixture.sessions.recovered.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn missing_worktree_rejects_command_retry_but_does_not_prevent_abort() {
+    let mut fixture = Fixture::new(0);
+    fixture.host.worktree_resolver = Arc::new(CanonicalizingWorktreeResolver);
+    let missing = fixture._directory.path().join("missing");
+    let missing = missing.to_str().unwrap();
+    let snapshot = fixture
+        .persist_started("  main: {command: 'must-not-start'}", missing)
+        .await;
+    let id = snapshot.execution_id;
+    fixture.host.executions.lock().await.remove(&id);
+    fixture
+        .host
+        .register_started_execution_tree(&fixture.app, &id)
+        .await
+        .unwrap();
+    let node = &snapshot.node_executions[0];
+    assert!(fixture
+        .host
+        .worktree_resolver
+        .resolve(missing.into())
+        .await
+        .is_err());
+    let error = control(&fixture)
+        .retry_node(crate::usecase::workflow::command::RetryNodeCommand {
+            execution_id: id.clone(),
+            node_execution_id: node.id.clone(),
+        })
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("execution worktree does not exist"),
+        "{error}"
+    );
+    fixture
+        .host
+        .abort_workflow_execution(&fixture.app, &id, None)
+        .await
+        .unwrap();
+    let folded = workflow_fact_log::fold_tree_from(
+        &workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone()),
+        &id,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        folded.aggregate.node_executions[0].status,
+        NodeExecutionStatus::Aborted
+    );
+    assert!(fixture
+        .host
+        .node_processes
+        .active_commands
+        .lock()
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn new_attempt_commit_rechecks_process_presence_before_recording_retry() {
+    let fixture = Fixture::new(0);
+    let id = fixture
+        .start("  main: {session: {provider: codex, facets: {instruction: policy-confirmation}}}")
+        .await;
+    let before = fixture.host.executions.lock().await[&id].clone();
+    let node_id = before.node_executions[0].id.clone();
+    let mut candidate = before.clone();
+    let restarted = candidate
+        .restart_node_attempt_at(&node_id, "next-attempt".into(), current_timestamp())
+        .unwrap();
+    let events = [
+        WorkflowEvent::NodeRetryRequested {
+            execution_id: id.clone(),
+            node_execution_id: node_id.clone(),
+            timestamp: current_timestamp(),
+        },
+        WorkflowEvent::NodeStarted {
+            execution_id: id.clone(),
+            node_execution_id: restarted.attempt.id,
+            node_name: restarted.attempt.node_name,
+            kind: restarted.attempt.kind,
+            attempt: restarted.attempt.attempt,
+            parent: restarted.attempt.parent,
+            timestamp: current_timestamp(),
+        },
+    ];
+    let result = fixture
+        .host
+        .commit_control_plane_candidate(
+            &fixture.app,
+            ControlPlaneCommitCandidate {
+                execution_id: &id,
+                snapshot_before: before.clone(),
+                candidate,
+                transition_outcome: TransitionOutcome::Applied,
+                events: &events,
+                provider_events: Vec::new(),
+            },
+        )
+        .await;
+    assert!(result.is_err());
+    assert_eq!(fixture.host.executions.lock().await[&id], before);
+    assert!(!workflow_fact_log::read_tree_records(&fixture.store, &id)
+        .unwrap()
+        .iter()
+        .any(|record| matches!(record.fact, NodeFact::RetryRequested)));
+}
+
+#[tokio::test]
+async fn test_session再開_fanoutの準備中は起動を待ち兄弟を取り消さない() {
+    let (fixture, root) = Fixture::with_repository();
+    fixture
+        .sessions
+        .block_preparation
+        .store(true, Ordering::SeqCst);
+    let mut start = Box::pin(fixture.start_at(
+        "  main: {fanout: {children: [one, two]}}\n  one: {session: {provider: codex, facets: {instruction: policy-confirmation}}}\n  two: {session: {provider: codex, facets: {instruction: policy-confirmation}}}",
+        &root,
+    ));
+    tokio::select! {
+        _ = fixture.sessions.preparation_entered.notified() => {}
+        _ = &mut start => panic!("preparation must wait"),
+    }
+    let before = fixture
+        .host
+        .executions
+        .lock()
+        .await
+        .values()
+        .next()
+        .unwrap()
+        .clone();
+    let target = before
+        .node_executions
+        .iter()
+        .find(|node| node.node_name == "one")
+        .unwrap();
+    let control = control(&fixture);
+    let mut resume = Box::pin(control.resume_session_node(
+        crate::usecase::workflow::command::ResumeSessionNodeCommand {
+            execution_id: before.id.clone(),
+            node_execution_id: target.id.clone(),
+        },
+    ));
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(20), &mut resume)
+            .await
+            .is_err()
+    );
+    assert_eq!(fixture.host.executions.lock().await[&before.id], before);
+    fixture.sessions.preparation_release.notify_one();
+    let (_, result) = tokio::join!(start, resume);
+    assert!(result.is_err());
+    let after = fixture.host.executions.lock().await[&before.id].clone();
+    assert_eq!(after.node_executions.len(), 3);
+    assert!(after
+        .node_executions
+        .iter()
+        .all(|node| node.status == NodeExecutionStatus::Running));
+    assert_eq!(fixture.sessions.activated.lock().unwrap().len(), 2);
+    assert!(
+        !workflow_fact_log::read_tree_records(&fixture.store, &before.id)
+            .unwrap()
+            .iter()
+            .any(|record| matches!(record.fact, NodeFact::RetryRequested))
+    );
+}
+
+struct CanonicalizingWorktreeResolver;
+
+#[async_trait::async_trait]
+impl ManagedWorktreeResolver for CanonicalizingWorktreeResolver {
+    async fn resolve(
+        &self,
+        path: String,
+    ) -> Result<String, crate::usecase::workflow::runtime_resolver::ManagedWorktreeResolverError>
+    {
+        crate::adaptor::gateway::workflow::worktree_gateway::normalize_worktree_filter_path(&path)
+            .map_err(
+            crate::usecase::workflow::runtime_resolver::ManagedWorktreeResolverError::Validation,
+        )
+    }
+}
+
+#[tokio::test]
+async fn test_command再試行_プロセス無しでフォルダがあれば新attemptを起動して完了する() {
+    // Given
+    let fixture = Fixture::new(0);
+    let root = fixture._directory.path().to_str().unwrap();
+    let snapshot = fixture
+        .persist_started("  main: {command: 'printf retried'}", root)
+        .await;
+    let old = &snapshot.node_executions[0];
+    // When
+    control(&fixture)
+        .retry_node(crate::usecase::workflow::command::RetryNodeCommand {
+            execution_id: snapshot.execution_id.clone(),
+            node_execution_id: old.id.clone(),
+        })
+        .await
+        .unwrap();
+    // Then
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let current = workflow_fact_log::fold_tree_from(
+                &workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone()),
+                &snapshot.execution_id,
+            )
+            .unwrap()
+            .unwrap();
+            if current.aggregate.node_executions.last().unwrap().status
+                == NodeExecutionStatus::Succeeded
+            {
+                assert_eq!(
+                    current
+                        .aggregate
+                        .node_executions
+                        .last()
+                        .unwrap()
+                        .artifact
+                        .as_ref()
+                        .unwrap()["stdout"],
+                    "retried"
+                );
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let folded = workflow_fact_log::fold_tree_from(
+        &workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone()),
+        &snapshot.execution_id,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(folded.aggregate.node_executions.len(), 2);
+    assert_eq!(
+        folded.aggregate.node_executions[0].status,
+        NodeExecutionStatus::Aborted
+    );
+    let next = &folded.aggregate.node_executions[1];
+    assert_ne!(next.id, old.id);
+    assert_eq!(next.attempt, 2);
+    assert_eq!(next.status, NodeExecutionStatus::Succeeded);
+    assert!(
+        workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id)
+            .unwrap()
+            .iter()
+            .any(|record| record.meta.node_execution_id == next.id
+                && matches!(record.fact, NodeFact::CommandSpawned(_)))
+    );
+}
+
+#[tokio::test]
+async fn test_プロセス在否_実供給元の変化が読取と通知と操作可否に反映される() {
+    use crate::domain::workflow::NodeProcessReader;
+    use crate::domain::workspace_tree::{
+        WorkspaceNodeStatusClassification, WorkspaceTreeRepository,
+    };
+    use crate::usecase::workflow::ports::WorkflowExecutionProjectionRepository;
+    // Given
+    for kind in [NodeKindName::Command, NodeKindName::Session] {
+        let fixture = Fixture::new(0);
+        let tree = if kind == NodeKindName::Session {
+            fixture.start("  main: {session: {provider: codex, facets: {instruction: policy-confirmation}}}").await
+        } else {
+            fixture
+                .persist_started(
+                    "  main: {command: 'must-not-start'}",
+                    "/repo-worktrees/development",
+                )
+                .await
+                .execution_id
+        };
+        let current = fixture.host.executions.lock().await[&tree].clone();
+        let node = &current.node_executions[0];
+        if kind == NodeKindName::Session {
+            let records = workflow_fact_log::read_tree_records(&fixture.store, &tree).unwrap();
+            let meta = &records
+                .iter()
+                .find(|record| record.meta.node_execution_id == node.id)
+                .unwrap()
+                .meta;
+            workflow_fact_log::append_single_fact(
+                &fixture.store,
+                meta,
+                &NodeFact::AgentActivityObserved(
+                    crate::domain::workflow::AgentActivityObservedFact {
+                        activity: crate::domain::workflow::AgentSessionActivity::Working,
+                    },
+                ),
+                (current_timestamp() * 1000.0) as i64,
+            )
+            .unwrap();
+        }
+        let mut projection = crate::adaptor::gateway::workflow::execution_projection_repository::WorkflowExecutionProjectionLogRepository::new(fixture.store.clone());
+        projection.processes = Some(fixture.host.node_processes.clone());
+        let mut workspace =
+            crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::new(
+                fixture.store.clone(),
+            );
+        Arc::get_mut(&mut workspace).unwrap().processes = Some(fixture.host.node_processes.clone());
+        for expected in [
+            NodeProcessPresence::Live,
+            NodeProcessPresence::ConfirmedAbsent,
+            NodeProcessPresence::Unknown,
+        ] {
+            if kind == NodeKindName::Command && expected == NodeProcessPresence::Unknown {
+                continue;
+            }
+            // When
+            if kind == NodeKindName::Command {
+                let mut commands = fixture.host.node_processes.active_commands.lock().unwrap();
+                if expected == NodeProcessPresence::Live {
+                    commands.insert(node.id.clone(), crate::infrastructure::process::command_runner::ActiveCommandHandle::for_test());
+                } else {
+                    commands.remove(&node.id);
+                }
+            } else {
+                fixture
+                    .sessions
+                    .presence_unknown
+                    .store(expected == NodeProcessPresence::Unknown, Ordering::SeqCst);
+                let mut sessions = fixture.sessions.live_sessions.lock().unwrap();
+                if expected == NodeProcessPresence::Live {
+                    sessions.insert(node.session_id.clone().unwrap());
+                } else {
+                    sessions.clear();
+                }
+            }
+            // Then
+            assert_eq!(
+                fixture
+                    .host
+                    .node_processes
+                    .presence(
+                        &current.worktree_path,
+                        &node.id,
+                        kind,
+                        node.session_id.as_deref()
+                    )
+                    .unwrap(),
+                expected
+            );
+            let retry =
+                kind == NodeKindName::Command && expected == NodeProcessPresence::ConfirmedAbsent;
+            let resume =
+                kind == NodeKindName::Session && expected == NodeProcessPresence::ConfirmedAbsent;
+            let model = projection
+                .get_execution(
+                    &crate::domain::workflow::WorkflowExecutionId::new(tree.clone()).unwrap(),
+                )
+                .unwrap()
+                .unwrap();
+            let read = model
+                .node_executions
+                .iter()
+                .find(|read| read.id == node.id)
+                .unwrap();
+            assert_eq!(read.process_presence, expected);
+            assert_eq!(read.can_retry(), retry);
+            assert_eq!(read.can_resume_session(), resume);
+            let read = workspace
+                .load_node_by_node_execution_id(&node.id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(read.process_presence, expected);
+            assert_eq!(read.can_retry, retry);
+            assert_eq!(read.can_resume_session, resume);
+            assert_eq!(
+                read.status_classification,
+                if expected == NodeProcessPresence::ConfirmedAbsent {
+                    WorkspaceNodeStatusClassification::Attention
+                } else {
+                    WorkspaceNodeStatusClassification::Active
+                }
+            );
+            let mut receiver = record_workflow_execution_broadcasts(&fixture.app);
+            workflow_runtime_session::broadcast_state(
+                &fixture.app,
+                &current.worktree_path,
+                RuntimeCommitSnapshot::from_execution(&current).unwrap(),
+            )
+            .await;
+            let broadcasts = take_workflow_execution_broadcasts(&mut receiver);
+            let pushed = broadcasts
+                .last()
+                .unwrap()
+                .workflow_execution
+                .node_executions
+                .iter()
+                .find(|read| read.id == node.id)
+                .unwrap();
+            assert_eq!(pushed.process_presence, expected.as_str());
+            assert_eq!(pushed.can_retry, retry);
+            assert_eq!(pushed.can_resume_session, resume);
+        }
+    }
 }

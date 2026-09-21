@@ -22,6 +22,7 @@ type ListenerMap = Record<string, Array<(event: { payload: never }) => void>>;
 function makeNode(id: string): WorkspaceTreeItem {
 	return {
 		kind: "node",
+		processPresence: "unknown",
 		id,
 		title: id,
 		status: "active",
@@ -30,6 +31,7 @@ function makeNode(id: string): WorkspaceTreeItem {
 			canRename: false,
 			canApprove: false,
 			canRetry: false,
+			canResumeSession: false,
 		},
 		pastAttempts: [],
 		pastAttemptsCollapsed: false,
@@ -412,8 +414,6 @@ describe("useWorkspaceTreeNodes", () => {
 			title: "Empty workflow",
 			status: "active",
 			workflowCapabilities: {
-				canStop: true,
-				canResume: false,
 				canAbort: true,
 				canArchive: false,
 			},

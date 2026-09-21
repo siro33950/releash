@@ -23,6 +23,9 @@ pub(crate) fn workflow_dependencies<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> crate::adaptor::gateway::workflow::workflow_host::WorkflowRuntimeDependencies {
     crate::adaptor::gateway::workflow::workflow_host::WorkflowRuntimeDependencies {
+        processes: Arc::new(
+            crate::adaptor::gateway::workflow::node_process::WorkflowNodeProcesses::default(),
+        ),
         store: app
             .try_state::<Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>>()
             .map(|state| state.inner().clone()),

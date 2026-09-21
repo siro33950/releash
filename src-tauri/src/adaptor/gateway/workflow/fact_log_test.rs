@@ -551,8 +551,8 @@ mod mapping_tests {
     }
 
     #[test]
-    fn test_写像_commandの完了と失敗はprocess_exitedになる() {
-        // Given: command node の完了と（別 attempt の）失敗
+    fn test_写像_commandの完了はprocess_exitedになる() {
+        // Given: command node の完了
         let events = vec![
             node_started("c-exec", "run", NodeKindName::Command, None, 1.0),
             WorkflowEvent::NodeCompleted {
@@ -564,28 +564,15 @@ mod mapping_tests {
                 token_usage: None,
                 timestamp: 2.0,
             },
-            WorkflowEvent::NodeProcessExitObserved {
-                execution_id: TREE.to_string(),
-                node_execution_id: "c-exec".to_string(),
-                exit_code: Some(1),
-                failure_reason: Some("exit 1".to_string()),
-                failure_kind: Some(
-                    crate::domain::workflow::NodeExecutionFailureKind::ValidationFailure,
-                ),
-                timestamp: 3.0,
-            },
         ];
 
         // When
         let rows = fact_rows_for_events(&events, no_lookup, no_lookup).unwrap();
 
-        // Then: process_exited が2行（成功は exit 0、失敗は failure 情報つき）
-        assert_eq!(rows.len(), 3);
+        // Then
+        assert_eq!(rows.len(), 2);
         assert_eq!(rows[1].row.event_type, "process_exited");
         assert!(rows[1].row.detail.contains("\"exitCode\":0"));
-        assert_eq!(rows[2].row.event_type, "process_exited");
-        assert!(rows[2].row.detail.contains("\"exitCode\":1"));
-        assert!(rows[2].row.detail.contains("validation_failure"));
     }
 
     #[test]
@@ -775,6 +762,82 @@ mod reconciliation_tests {
             counter += 1;
             format!("reconciled-{counter}")
         }
+    }
+
+    #[test]
+    fn test_復旧_起動失敗済みleafは再起動せず後の起動済みprocessの喪失は記録する() {
+        // Given
+        let (_root, store) = open_store();
+        append_facts_for_events(
+            &store,
+            &[
+                started_event(),
+                node_started("main-exec", "main", NodeKindName::Sequence, None, 1.0),
+                node_started(
+                    "a-exec",
+                    "a",
+                    NodeKindName::Session,
+                    Some(ExecutionParentRef::sequence_child("main-exec")),
+                    1.0,
+                ),
+                WorkflowEvent::NodeFailed {
+                    execution_id: TREE.into(),
+                    node_execution_id: "a-exec".into(),
+                    node_name: "a".into(),
+                    attempt: 1,
+                    reason: "prepare failed".into(),
+                    retry_count: None,
+                    failure_kind:
+                        crate::domain::workflow::NodeExecutionFailureKind::InfrastructureCrash,
+                    timestamp: 2.0,
+                },
+            ],
+        )
+        .unwrap();
+        // When
+        let recovered = reconcile_tree_pass(&store, TREE, 3.0, &mut test_id_source())
+            .unwrap()
+            .unwrap();
+        // Then
+        assert!(recovered.starts.is_empty());
+        assert_eq!(
+            recovered
+                .folded
+                .aggregate
+                .node_execution("a-exec")
+                .unwrap()
+                .status,
+            RuntimeNodeExecutionStatus::Running
+        );
+        assert!(!read_tree_records(&store, TREE)
+            .unwrap()
+            .iter()
+            .any(|record| matches!(record.fact, NodeFact::ProcessExited(_))));
+        // Given
+        append_facts_for_events(
+            &store,
+            &[WorkflowEvent::SessionAttached {
+                execution_id: TREE.into(),
+                node_execution_id: "a-exec".into(),
+                session_id: "agent".into(),
+                timestamp: 4.0,
+            }],
+        )
+        .unwrap();
+        // When
+        let recovered = reconcile_tree_pass(&store, TREE, 5.0, &mut test_id_source())
+            .unwrap()
+            .unwrap();
+        // Then
+        assert!(recovered.starts.is_empty());
+        let records = read_tree_records(&store, TREE).unwrap();
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| matches!(record.fact, NodeFact::ProcessExited(_)))
+                .count(),
+            1
+        );
     }
 
     fn row_count(store: &std::sync::Arc<LocalEventStore>) -> usize {
@@ -1098,10 +1161,10 @@ mod reconciliation_tests {
         assert_eq!(row_count(&store), count_after_third);
     }
 
-    /// kill 点: 実行中プロセスごと落ちた場合。喪失の観測が追記され Failed が
-    /// 導出される（復旧専用の遷移イベントは書かれない）。
+    /// kill 点: 実行中プロセスごと落ちた場合。喪失の観測が追記され Running が
+    /// 維持される（復旧専用の遷移イベントは書かれない）。
     #[test]
-    fn test_再入_実行中プロセスの喪失を観測として追記しfailedを導出する() {
+    fn test_再入_実行中プロセスの喪失を観測として追記しrunningを維持する() {
         let (_root, store) = open_store();
         append_facts_for_events(
             &store,
@@ -1130,7 +1193,7 @@ mod reconciliation_tests {
             .unwrap()
             .unwrap();
 
-        // Then: process_exited（喪失）が追記され、node は Failed・木は Running
+        // Then: process_exited（喪失）が追記され、node と木は Running
         assert!(outcome.starts.is_empty());
         let records = read_tree_records(&store, TREE).unwrap();
         assert_eq!(records.last().unwrap().fact.event_type(), "process_exited");
@@ -1140,14 +1203,14 @@ mod reconciliation_tests {
                 .aggregate
                 .node_execution("a-exec")
                 .map(|node| node.status),
-            Some(RuntimeNodeExecutionStatus::Failed)
+            Some(RuntimeNodeExecutionStatus::Running)
         );
         assert_eq!(
             *outcome.folded.aggregate.state(),
             RuntimeExecutionState::Running
         );
 
-        // 冪等: Failed は喪失対象でないため2周目は何も追記しない
+        // 冪等: 喪失記録済みの process は2周目に再記録しない
         let count = row_count(&store);
         let mut new_id = test_id_source();
         reconcile_tree_pass(&store, TREE, 11.0, &mut new_id)

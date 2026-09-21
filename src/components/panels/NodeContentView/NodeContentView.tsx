@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { WorkflowNodeStatusIcon } from "@/components/workspace/WorkflowNodeStatusIcon";
 import {
 	approveWorkspaceNode,
+	resumeWorkspaceSessionNode,
 	retryWorkspaceNode,
 	useWorkspaceNodeDetail,
 } from "@/hooks/useWorkspaceNodeDetail";
@@ -63,7 +64,8 @@ export function NodeContentView({
 					detail.content.kind === "session" ? (
 						detail.content.sessionId ? (
 							<AgentSessionRoute
-								key={detail.content.sessionId}
+								key={`${detail.content.sessionId}:${detail.processPresence}`}
+								showResumeAction={false}
 								agentSessionId={detail.content.sessionId}
 								theme={theme}
 								initialAttachment={
@@ -108,6 +110,7 @@ function NodeHeader({
 }) {
 	const [approving, setApproving] = useState(false);
 	const [retrying, setRetrying] = useState(false);
+	const [resuming, setResuming] = useState(false);
 	const [actionError, setActionError] = useState<string | null>(null);
 
 	const approve = useCallback(async () => {
@@ -137,6 +140,19 @@ function NodeHeader({
 			setRetrying(false);
 		}
 	}, [detail.capabilities.canRetry, detail.id, retrying, worktreePath]);
+	const resume = useCallback(async () => {
+		if (resuming || !detail.capabilities.canResumeSession) return;
+		setResuming(true);
+		setActionError(null);
+		try {
+			await resumeWorkspaceSessionNode({ worktreePath, nodeId: detail.id });
+			setActionError(null);
+		} catch (error) {
+			setActionError(getErrorMessage(error));
+		} finally {
+			setResuming(false);
+		}
+	}, [detail.capabilities.canResumeSession, detail.id, resuming, worktreePath]);
 
 	const waitingMessage =
 		detail.waitingFor === "stop"
@@ -144,10 +160,6 @@ function NodeHeader({
 			: detail.waitingFor === "submit"
 				? "Stop received · waiting for Submit"
 				: null;
-	const visibleErrorReason =
-		detail.status === "failed" || detail.status === "paused"
-			? detail.errorReason
-			: null;
 
 	return (
 		<div className="flex min-w-0 items-center gap-2 pl-2">
@@ -160,6 +172,13 @@ function NodeHeader({
 			<span className="min-w-0 flex-1 truncate text-sm font-medium">
 				{detail.title}
 			</span>
+			<span className="shrink-0 text-xs text-muted-foreground">
+				{detail.processPresence === "live"
+					? "Process running"
+					: detail.processPresence === "confirmed_absent"
+						? "No process"
+						: "Process unknown"}
+			</span>
 			{waitingMessage && (
 				<span className="min-w-0 truncate text-xs text-yellow-600 dark:text-yellow-300">
 					{waitingMessage}
@@ -168,11 +187,6 @@ function NodeHeader({
 			{detail.hasArtifact && (
 				<span className="shrink-0 text-xs text-muted-foreground">
 					Artifact submitted
-				</span>
-			)}
-			{visibleErrorReason && (
-				<span className="min-w-0 truncate text-xs text-destructive">
-					{visibleErrorReason}
 				</span>
 			)}
 			{detail.worktree && (
@@ -205,6 +219,11 @@ function NodeHeader({
 			{detail.capabilities.canApprove && (
 				<Button type="button" size="xs" disabled={approving} onClick={approve}>
 					{approving ? "Approving..." : "Approve"}
+				</Button>
+			)}
+			{detail.capabilities.canResumeSession && (
+				<Button type="button" size="xs" disabled={resuming} onClick={resume}>
+					{resuming ? "Resuming..." : "Resume"}
 				</Button>
 			)}
 			{detail.capabilities.canRetry && (

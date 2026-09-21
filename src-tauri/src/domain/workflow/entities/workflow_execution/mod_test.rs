@@ -413,88 +413,7 @@ fn test_fanoutの成果_itemsの有無と複数childrenでキーが決まり空�
 }
 
 #[test]
-fn test_fanoutの成果_ignore失敗はキー欠番となり他のslotをずらさない() {
-    // Given
-    for items in ["", "items: [x, y]"] {
-        for fail in [false, true] {
-            let mut execution = fanout_execution("[{a: {on_failure: ignore}}, b]", items);
-            let mut new_id = id_source();
-            let leaves = start_fanout(&mut execution, &mut new_id);
-
-            // When
-            for (index, leaf) in leaves.iter().enumerate() {
-                if fail && index == 0 {
-                    assert_eq!(
-                        execution.fail_leaf_execution(
-                            &leaf.node_execution_id,
-                            "failed".to_string(),
-                            NodeExecutionFailureKind::ValidationFailure,
-                            FailureDisposition::Terminal,
-                            2.0
-                        ),
-                        TransitionOutcome::Applied
-                    );
-                    execution
-                        .apply_on_failure_treatment(&leaf.node_execution_id, &mut new_id, 3.0)
-                        .unwrap()
-                        .unwrap();
-                } else {
-                    finish_leaf(
-                        &mut execution,
-                        leaf,
-                        Some(json!({"slot": index})),
-                        &mut new_id,
-                    );
-                }
-            }
-
-            // Then
-            let mut expected = if items.is_empty() {
-                json!({"a": {"slot": 0}, "b": {"slot": 1}})
-            } else {
-                json!({"0": {"slot": 0}, "1": {"slot": 1}, "2": {"slot": 2}, "3": {"slot": 3}})
-            };
-            if fail {
-                expected
-                    .as_object_mut()
-                    .unwrap()
-                    .remove(if items.is_empty() { "a" } else { "0" });
-            }
-            assert_eq!(execution.node_executions()[0].artifact, Some(expected));
-            assert_eq!(*execution.state(), RuntimeExecutionState::Completed);
-        }
-    }
-}
-
-#[test]
-fn test_fanoutの成果_全slotがignore失敗なら空mapになる() {
-    // Given
-    let mut execution = fanout_execution("[{a: {on_failure: ignore}}]", "items: [x, y]");
-    let mut new_id = id_source();
-    let leaves = start_fanout(&mut execution, &mut new_id);
-
-    // When
-    for leaf in leaves {
-        execution.fail_leaf_execution(
-            &leaf.node_execution_id,
-            "failed".to_string(),
-            NodeExecutionFailureKind::ValidationFailure,
-            FailureDisposition::Terminal,
-            2.0,
-        );
-        execution
-            .apply_on_failure_treatment(&leaf.node_execution_id, &mut new_id, 3.0)
-            .unwrap()
-            .unwrap();
-    }
-
-    // Then
-    assert_eq!(execution.node_executions()[0].artifact, Some(json!({})));
-    assert_eq!(*execution.state(), RuntimeExecutionState::Completed);
-}
-
-#[test]
-fn test_fanoutの成果_artifact未宣言とignore未宣言の失敗はnullで残す() {
+fn test_fanoutの成果_artifact未宣言の完了slotをnullで残す() {
     // Given
     let mut execution = execution(
         r#"
@@ -509,28 +428,17 @@ nodes:
     let mut new_id = id_source();
     let leaves = start_fanout(&mut execution, &mut new_id);
     finish_leaf(&mut execution, &leaves[0], None, &mut new_id);
-    execution.fail_leaf_execution(
-        &leaves[1].node_execution_id,
-        "failed".to_string(),
-        NodeExecutionFailureKind::ValidationFailure,
-        FailureDisposition::Terminal,
-        2.0,
+    finish_leaf(
+        &mut execution,
+        &leaves[1],
+        Some(json!({"ok": false})),
+        &mut new_id,
     );
-    assert!(execution
-        .apply_on_failure_treatment(&leaves[1].node_execution_id, &mut new_id, 3.0)
-        .unwrap()
-        .is_none());
-    let scope_id = execution.node_executions()[0].id.clone();
-
-    // When
-    execution
-        .complete_scope(&scope_id, false, &mut AdvanceEffects::Derive, 4.0)
-        .unwrap();
 
     // Then
     assert_eq!(
         execution.node_executions()[0].artifact,
-        Some(json!({"silent": null, "failed": null}))
+        Some(json!({"silent": null, "failed": {"ok": false}}))
     );
 }
 

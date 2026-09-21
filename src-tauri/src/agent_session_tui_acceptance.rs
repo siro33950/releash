@@ -246,7 +246,6 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
             Arc::new(ProviderWorkflowAgentSessionPort::new(
                 composition.launch.clone(),
                 composition.initial_instruction.clone(),
-                composition.interrupt.clone(),
                 composition.lifecycle.clone(),
                 composition.availability_reader.clone(),
             ));
@@ -268,7 +267,6 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
             workspace_query,
             composition.launch.clone(),
             composition.initial_instruction.clone(),
-            composition.interrupt.clone(),
             composition.lifecycle.clone(),
             composition.availability_reader.clone(),
             Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
@@ -463,18 +461,6 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
             .await
             .map_err(|error| format!("{error:?}"))?;
         Ok(session.id)
-    }
-
-    pub async fn dispatch_initial_instruction(
-        &self,
-        agent_session_id: &str,
-        node_execution_id: &str,
-        instruction: &str,
-    ) -> Result<(), String> {
-        self.workflow_agent_sessions
-            .dispatch_initial_instruction(agent_session_id, node_execution_id, instruction)
-            .await
-            .map_err(|error| format!("{error:?}"))
     }
 
     pub async fn wait_until_exited(

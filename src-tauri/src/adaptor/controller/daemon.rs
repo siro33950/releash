@@ -132,7 +132,6 @@ pub(crate) fn compose(
                 .map_err(|error| format!("Provider availability初期化失敗: {error:?}"))?;
     let agent_session_launch = agent_sessions.launch.clone();
     let agent_session_initial_instruction = agent_sessions.initial_instruction.clone();
-    let agent_session_interrupt = agent_sessions.interrupt.clone();
     let agent_session_lifecycle = agent_sessions.lifecycle.clone();
     let agent_session_exit = agent_sessions.exit.clone();
     let provider_availability = agent_sessions.availability_reader.clone();
@@ -234,6 +233,11 @@ pub(crate) fn compose(
     if let Err(error) = adaptor::gateway::workflow::lua::generate_editor_support(&workflows_dir) {
         log::warn!("Lua editor support generation failed at startup: {error}");
     }
+    let node_processes = Arc::new(
+        adaptor::gateway::workflow::node_process::WorkflowNodeProcesses::new(
+            terminal_surface.clone(),
+        ),
+    );
     let (workflow_usecase, workspace_query_service) =
         adaptor::controller::wiring::build_workflow_services_with_repository_worktrees(
             data_dir.clone(),
@@ -241,6 +245,7 @@ pub(crate) fn compose(
             config_repository.clone(),
             config_secret_repository.clone(),
             local_event_store.clone(),
+            node_processes.clone(),
         );
     let workflow_usecase = Arc::new(workflow_usecase);
 
@@ -264,18 +269,19 @@ pub(crate) fn compose(
     let workflow_runtime_usecase = Arc::new(
         adaptor::controller::wiring::build_workflow_runtime_usecase(
             adaptor::gateway::workflow::workflow_host::WorkflowRuntimeDependencies {
+                processes: node_processes.clone(),
                 store: Some(local_event_store.clone()),
                 config: Some(config_repository.clone()),
                 secrets: Some(config_secret_repository.clone()),
                 push: push_sink.clone(),
             },
             adaptor::gateway::workflow::WorkflowRuntimeCommandGatewayDeps {
+                node_processes,
                 repository_usecase: repository_usecase.clone(),
                 app_config: config_repository.clone(),
                 workspace_query: workspace_query_service.clone(),
                 agent_session_launch: agent_session_launch.clone(),
                 agent_session_initial_instruction: agent_session_initial_instruction.clone(),
-                agent_session_interrupt: agent_session_interrupt.clone(),
                 agent_session_lifecycle: agent_session_lifecycle.clone(),
                 provider_availability: provider_availability.clone(),
                 isolated_worktrees: Arc::new(

@@ -2692,3 +2692,282 @@ async fn test_隔離通知_session削除とgcとarchive代替削除の成功後�
         );
     }
 }
+
+#[tokio::test]
+async fn test_session会話の回復可否_provider識別子がある場合だけ回復できる() {
+    // Given
+    let context = setup();
+    assert!(!context
+        .lifecycle
+        .has_recoverable_conversation("missing")
+        .await
+        .unwrap());
+    context
+        .sessions
+        .create(
+            "agent",
+            WorkspaceIdentity::new("/repo"),
+            "/repo/worktree",
+            ProviderKind::Claude,
+            session_location("agent"),
+            "create",
+        )
+        .await
+        .unwrap();
+    assert!(!context
+        .lifecycle
+        .has_recoverable_conversation("agent")
+        .await
+        .unwrap());
+    // When
+    context
+        .sessions
+        .associate_provider_session("agent", "provider-1", None, "associate")
+        .await
+        .unwrap();
+    // Then
+    assert!(context
+        .lifecycle
+        .has_recoverable_conversation("agent")
+        .await
+        .unwrap());
+}
+
+#[tokio::test]
+async fn test_provider回復_openでも在否不明なら待機し不在なら既存会話を起動する() {
+    for (presence, expected) in [
+        (
+            ManagedPtyPresence::Unknown,
+            AgentSessionOpenOutcome::Indeterminate,
+        ),
+        (
+            ManagedPtyPresence::ConfirmedAbsent,
+            AgentSessionOpenOutcome::Resumed,
+        ),
+    ] {
+        // Given
+        let context = setup();
+        context
+            .sessions
+            .create(
+                "agent",
+                WorkspaceIdentity::new("/repo"),
+                "/repo/worktree",
+                ProviderKind::Claude,
+                session_location("agent"),
+                "create",
+            )
+            .await
+            .unwrap();
+        context
+            .sessions
+            .associate_provider_session("agent", "provider-1", None, "associate")
+            .await
+            .unwrap();
+        *context.terminal.presence.lock().unwrap() = presence;
+        // When
+        let outcome = context
+            .lifecycle
+            .ensure_provider_running("agent", 24, 80, "recover")
+            .await
+            .unwrap();
+        // Then
+        assert_eq!(outcome, expected);
+        let launches = context.launches.launches.lock().unwrap();
+        if presence == ManagedPtyPresence::ConfirmedAbsent {
+            assert_eq!(
+                launches.as_slice(),
+                &[ProviderSessionLaunch::resume("provider-1").unwrap()]
+            );
+        } else {
+            assert!(launches.is_empty());
+        }
+    }
+}
+
+#[derive(Default)]
+struct RecordingContinuationInput(Mutex<Vec<String>>);
+
+impl crate::domain::agent_session::ProviderAgentTerminalInputGateway
+    for RecordingContinuationInput
+{
+    fn write(
+        &self,
+        _owner: &TerminalSurfaceOwner,
+        input: &str,
+    ) -> Result<(), ProviderAgentTerminalGatewayError> {
+        self.0.lock().unwrap().push(input.into());
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn test_workflowのprovider回復_同じnodeを繰り返し再開し永続化と結果配送ができる() {
+    use crate::adaptor::gateway::workflow::node_session_boundary::{
+        ProviderWorkflowAgentSessionPort, WorkflowAgentSessionPort,
+    };
+    // Given
+    let context = setup();
+    seed_workflow_session_facts(
+        &context.store,
+        WorkflowSessionFactSeed {
+            workflow_execution_id: "workflow-tree",
+            node_execution_id: "node-1",
+            worktree_path: "/repo",
+            workflow_name: "workflow",
+            request: "test",
+            initial_instruction_admitted: true,
+            session_id: "workflow-agent",
+            provider: ProviderKind::Claude,
+        },
+    )
+    .unwrap();
+    context
+        .sessions
+        .create(
+            "workflow-agent",
+            WorkspaceIdentity::new("/repo"),
+            "/repo/worktree",
+            ProviderKind::Claude,
+            workflow_location("workflow-tree", "node-1"),
+            "create",
+        )
+        .await
+        .unwrap();
+    context
+        .sessions
+        .associate_provider_session("workflow-agent", "provider-1", None, "associate")
+        .await
+        .unwrap();
+    let input = Arc::new(RecordingContinuationInput::default());
+    let port = ProviderWorkflowAgentSessionPort::new(
+        Arc::new(super::AgentSessionLaunchUsecase::new(
+            context.sessions.clone(),
+            context.provider_lifecycle.clone(),
+            ProviderAgentRuntime::new(
+                Arc::new(AlwaysProviderAvailable),
+                context.launches.clone(),
+                context.terminal.clone(),
+            ),
+            Arc::new(
+                crate::adaptor::gateway::agent_session::LocalAgentSessionHistoryGateway::new(
+                    context._directory.path().join("claude"),
+                    context._directory.path().join("codex"),
+                ),
+            ),
+            context.hook_health.clone(),
+            context.execution_trees.clone(),
+        )),
+        Arc::new(super::AgentSessionInitialInstructionUsecase::new(
+            context.sessions.clone(),
+            input.clone(),
+        )),
+        Arc::new(context.lifecycle),
+        Arc::new(AlwaysProviderAvailable),
+    );
+    assert!(port
+        .has_recoverable_conversation("workflow-agent")
+        .await
+        .unwrap());
+    port.recover_workflow_agent_session_provider("workflow-agent", "node-1")
+        .await
+        .unwrap();
+    assert!(context.launches.launches.lock().unwrap().is_empty());
+    *context.terminal.presence.lock().unwrap() = ManagedPtyPresence::Unknown;
+    assert!(port
+        .recover_workflow_agent_session_provider("workflow-agent", "node-1")
+        .await
+        .is_err());
+    // When / Then
+    for round in 1..=2 {
+        context
+            .sessions
+            .observe_process_exit("workflow-agent", Some(1), &format!("exit-{round}"))
+            .await
+            .unwrap();
+        *context.terminal.presence.lock().unwrap() = ManagedPtyPresence::ConfirmedAbsent;
+        assert_eq!(
+            context
+                .sessions
+                .find("workflow-agent")
+                .await
+                .unwrap()
+                .unwrap()
+                .session()
+                .lifecycle(),
+            AgentSessionLifecycle::Paused
+        );
+        port.recover_workflow_agent_session_provider("workflow-agent", "node-1")
+            .await
+            .unwrap();
+        let persisted = context
+            .sessions
+            .find("workflow-agent")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(persisted.session().lifecycle(), AgentSessionLifecycle::Open);
+        assert_eq!(
+            persisted.session().provider_session_id(),
+            Some("provider-1")
+        );
+        port.dispatch_continuation("workflow-agent", &format!("child-{round}"), "child result")
+            .await
+            .unwrap();
+    }
+    assert_eq!(context.launches.launches.lock().unwrap().len(), 2);
+    assert_eq!(input.0.lock().unwrap().len(), 2);
+    seed_workflow_session_facts(
+        &context.store,
+        WorkflowSessionFactSeed {
+            workflow_name: "workflow",
+            request: "test",
+            worktree_path: "/repo",
+            provider: ProviderKind::Claude,
+            workflow_execution_id: "next-tree",
+            node_execution_id: "next-node",
+            session_id: "next-agent",
+            initial_instruction_admitted: true,
+        },
+    )
+    .unwrap();
+    context
+        .sessions
+        .create(
+            "next-agent",
+            WorkspaceIdentity::new("/repo"),
+            "/repo/worktree",
+            ProviderKind::Claude,
+            workflow_location("next-tree", "next-node"),
+            "create-next",
+        )
+        .await
+        .unwrap();
+    port.dispatch_continuation("next-agent", "child-1", "child result")
+        .await
+        .unwrap();
+    port.dispatch_continuation("next-agent", "child-1", "child result")
+        .await
+        .unwrap();
+    port.dispatch_continuation("workflow-agent", "child-1", "child result")
+        .await
+        .unwrap();
+    assert_eq!(input.0.lock().unwrap().len(), 3);
+    *context.terminal.presence.lock().unwrap() = ManagedPtyPresence::ConfirmedAbsent;
+    *context.terminal.fail_spawn.lock().unwrap() = true;
+    assert!(port
+        .recover_workflow_agent_session_provider("workflow-agent", "node-1")
+        .await
+        .is_err());
+    assert_eq!(
+        context
+            .sessions
+            .find("workflow-agent")
+            .await
+            .unwrap()
+            .unwrap()
+            .session()
+            .lifecycle(),
+        AgentSessionLifecycle::Paused
+    );
+}

@@ -228,39 +228,6 @@ fn fact_rows_for_events(
                     timestamp,
                 )?);
             }
-            WorkflowEvent::NodeResumed {
-                node_execution_id, ..
-            } => {
-                let meta = resolve(&batch_meta, node_execution_id)?;
-                rows.push(pending_row(
-                    &meta,
-                    tree_id,
-                    &NodeFact::ResumeRequested,
-                    timestamp,
-                )?);
-            }
-            WorkflowEvent::NodeProcessExitObserved {
-                node_execution_id,
-                exit_code,
-                failure_reason,
-                failure_kind,
-                ..
-            } => {
-                let meta = resolve(&batch_meta, node_execution_id)?;
-                rows.push(pending_row(
-                    &meta,
-                    tree_id,
-                    &NodeFact::ProcessExited(ProcessExitedFact {
-                        exit_code: *exit_code,
-                        result_summary: None,
-                        failure_reason: failure_reason.clone(),
-                        failure_kind: *failure_kind,
-                    }),
-                    timestamp,
-                )?);
-            }
-            // Paused は導出（プロセス事実 + 未揃いの完了信号）であり記録しない。
-            WorkflowEvent::NodePaused { .. } => {}
             WorkflowEvent::CommandSpawned {
                 node_execution_id,
                 display_command,
@@ -303,10 +270,10 @@ fn fact_rows_for_events(
                 // 導出（記録しない）。
                 if meta.kind == NodeKindName::Command {
                     let fact = NodeFact::ProcessExited(ProcessExitedFact {
+                        failure_kind: None,
                         exit_code: Some(0),
                         result_summary: result_summary.clone(),
                         failure_reason: None,
-                        failure_kind: None,
                     });
                     rows.push(pending_row(&meta, tree_id, &fact, timestamp)?);
                 } else if meta.kind == NodeKindName::Session {
@@ -816,6 +783,25 @@ pub(crate) fn reconcile_tree_pass(
             _ => None,
         })
         .collect::<std::collections::HashSet<_>>();
+    let failed = records
+        .iter()
+        .filter(|record| matches!(record.fact, NodeFact::RuntimeFailureObserved(_)))
+        .map(|record| record.meta.node_execution_id.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    let mut exited = std::collections::HashSet::new();
+    for record in &records {
+        match &record.fact {
+            NodeFact::ProcessExited(_) => {
+                exited.insert(record.meta.node_execution_id.as_str());
+            }
+            NodeFact::SessionAttached(_)
+            | NodeFact::CommandSpawned(_)
+            | NodeFact::ResumeRequested => {
+                exited.remove(record.meta.node_execution_id.as_str());
+            }
+            _ => {}
+        }
+    }
     let mut pending_leaf_ids = Vec::new();
 
     // 1) started だけが永続化された leaf は未起動なので再実行対象に戻す。
@@ -824,13 +810,16 @@ pub(crate) fn reconcile_tree_pass(
     for node in &folded.aggregate.node_executions {
         let is_leaf = matches!(node.kind, NodeKindName::Session | NodeKindName::Command);
         if !is_leaf
+            || exited.contains(node.id.as_str())
             || node.status != RuntimeNodeExecutionStatus::Running
             || node.completion_signals == NodeCompletionSignalState::StopReceived
         {
             continue;
         }
         if !activated.contains(node.id.as_str()) {
-            pending_leaf_ids.push(node.id.clone());
+            if !failed.contains(node.id.as_str()) {
+                pending_leaf_ids.push(node.id.clone());
+            }
             continue;
         }
         let meta = NodeFactMeta {
@@ -845,10 +834,10 @@ pub(crate) fn reconcile_tree_pass(
             store,
             &meta,
             &NodeFact::ProcessExited(ProcessExitedFact {
+                failure_kind: None,
                 exit_code: None,
                 result_summary: None,
                 failure_reason: Some("process lost across application restart".to_string()),
-                failure_kind: None,
             }),
             (now * 1000.0) as i64,
         )?;

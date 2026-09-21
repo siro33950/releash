@@ -92,6 +92,8 @@ fn node_execution_to_view_with_retry(
     let can_approve = node.status == workflow::NodeExecutionStatus::WaitingApproval;
     let has_artifact = node.artifact.is_some();
     workflow_wire::NodeExecutionView {
+        can_resume_session: node.can_resume_session(),
+        process_presence: node.process_presence.as_str().to_string(),
         worktree: node
             .worktree
             .map(|worktree| crate::usecase::workflow::NodeWorktreeDto {
@@ -116,12 +118,6 @@ fn node_execution_to_view_with_retry(
         result_summary: node.result_summary,
         artifact: node.artifact.map(artifact_to_view),
         token_usage: node.token_usage.map(token_usage_to_view),
-        failure: node
-            .failure
-            .map(|failure| workflow_wire::NodeExecutionFailureView {
-                reason: failure.reason,
-                kind: failure_kind_to_view(failure.kind),
-            }),
         parent: node
             .parent
             .map(|parent| workflow_wire::ExecutionParentRefView {
@@ -199,43 +195,13 @@ fn node_status_to_view(
             workflow_wire::NodeExecutionStatusView::Unresolved
         }
         workflow::NodeExecutionStatus::Running => workflow_wire::NodeExecutionStatusView::Running,
-        workflow::NodeExecutionStatus::Paused => workflow_wire::NodeExecutionStatusView::Paused,
         workflow::NodeExecutionStatus::WaitingApproval => {
             workflow_wire::NodeExecutionStatusView::WaitingApproval
         }
         workflow::NodeExecutionStatus::Succeeded => {
             workflow_wire::NodeExecutionStatusView::Succeeded
         }
-        workflow::NodeExecutionStatus::Failed => workflow_wire::NodeExecutionStatusView::Failed,
         workflow::NodeExecutionStatus::Aborted => workflow_wire::NodeExecutionStatusView::Aborted,
-    }
-}
-
-fn failure_kind_to_view(
-    kind: workflow::NodeExecutionFailureKind,
-) -> workflow_wire::NodeExecutionFailureKindView {
-    match kind {
-        workflow::NodeExecutionFailureKind::StartupTimeout => {
-            workflow_wire::NodeExecutionFailureKindView::StartupTimeout
-        }
-        workflow::NodeExecutionFailureKind::StaleRuntimeTimeout => {
-            workflow_wire::NodeExecutionFailureKindView::StaleRuntimeTimeout
-        }
-        workflow::NodeExecutionFailureKind::ModelRefusal => {
-            workflow_wire::NodeExecutionFailureKindView::ModelRefusal
-        }
-        workflow::NodeExecutionFailureKind::StructuredOutputMismatch => {
-            workflow_wire::NodeExecutionFailureKindView::StructuredOutputMismatch
-        }
-        workflow::NodeExecutionFailureKind::ValidationFailure => {
-            workflow_wire::NodeExecutionFailureKindView::ValidationFailure
-        }
-        workflow::NodeExecutionFailureKind::UserAbort => {
-            workflow_wire::NodeExecutionFailureKindView::UserAbort
-        }
-        workflow::NodeExecutionFailureKind::InfrastructureCrash => {
-            workflow_wire::NodeExecutionFailureKindView::InfrastructureCrash
-        }
     }
 }
 
@@ -254,6 +220,7 @@ mod tests {
 
     fn node() -> workflow::NodeExecution {
         workflow::NodeExecution {
+            process_presence: Default::default(),
             worktree: None,
             recovery_reason: None,
             id: "node-1".to_string(),
@@ -270,7 +237,7 @@ mod tests {
                 input_tokens: 3,
                 output_tokens: 2,
             }),
-            failure: None,
+
             parent: None,
             completion_signals: workflow::NodeCompletionSignalState::StopReceived,
             started_at: 1.5,

@@ -4,10 +4,7 @@ use crate::domain::workflow::{
     WorkflowDefinition, WorkflowError, WorkflowExecution, WorkflowExecutionId, WorkflowPageRequest,
 };
 
-use super::command::{
-    AbortExecutionCommand, ResolvedStartExecutionCommand, ResumeExecutionCommand,
-    StopExecutionCommand,
-};
+use super::command::{AbortExecutionCommand, ResolvedStartExecutionCommand};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorkflowEventDraft {
@@ -148,16 +145,6 @@ pub trait WorkflowAbortExecutionGateway: Send + Sync {
 }
 
 #[async_trait::async_trait]
-pub trait WorkflowStopExecutionGateway: Send + Sync {
-    async fn stop_execution(&self, command: StopExecutionCommand) -> Result<(), WorkflowError>;
-}
-
-#[async_trait::async_trait]
-pub trait WorkflowResumeExecutionGateway: Send + Sync {
-    async fn resume_execution(&self, command: ResumeExecutionCommand) -> Result<(), WorkflowError>;
-}
-
-#[async_trait::async_trait]
 pub trait WorkflowRuntimeStateGateway: Send + Sync {
     /// Explicit startup recovery hook. Construction must never invoke this:
     /// composition calls it once only after the fixed local store is verified and
@@ -179,8 +166,6 @@ pub trait WorkflowRuntimeShutdownGateway: Send + Sync {
 pub trait WorkflowRuntimeCommandGateway:
     WorkflowStartExecutionGateway
     + WorkflowAbortExecutionGateway
-    + WorkflowStopExecutionGateway
-    + WorkflowResumeExecutionGateway
     + crate::usecase::workflow::control_plane::WorkflowControlPlaneGateway
     + WorkflowRuntimeStateGateway
     + WorkflowRuntimeShutdownGateway
@@ -190,8 +175,6 @@ pub trait WorkflowRuntimeCommandGateway:
 impl<T> WorkflowRuntimeCommandGateway for T where
     T: WorkflowStartExecutionGateway
         + WorkflowAbortExecutionGateway
-        + WorkflowStopExecutionGateway
-        + WorkflowResumeExecutionGateway
         + crate::usecase::workflow::control_plane::WorkflowControlPlaneGateway
         + WorkflowRuntimeStateGateway
         + WorkflowRuntimeShutdownGateway

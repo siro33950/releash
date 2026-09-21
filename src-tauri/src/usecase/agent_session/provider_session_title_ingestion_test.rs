@@ -230,6 +230,7 @@ fn standalone_session_title(tree_id: &str, records: &[NodeFactRecord]) -> String
         total_token_usage: model.total_token_usage,
     };
     runtime_snapshot_nodes(RuntimeSnapshotNodeProjection {
+        process_presences: &std::collections::HashMap::new(),
         execution_id: &folded.aggregate.id,
         workflow_name: &folded.aggregate.workflow.name,
         workspace_identity: &folded.root.workspace_identity,
@@ -237,7 +238,7 @@ fn standalone_session_title(tree_id: &str, records: &[NodeFactRecord]) -> String
         workflow_definition: &folded.aggregate.workflow,
         node_executions: &folded.aggregate.node_executions,
         retry_predecessors: &folded.aggregate.retry_predecessors,
-        accepts_explicit_retry: folded.aggregate.accepts_explicit_retry(),
+        execution_active: folded.aggregate.is_active(),
         started_at: folded.aggregate.started_at,
         updated_at: folded.aggregate.updated_at,
         execution: &execution,

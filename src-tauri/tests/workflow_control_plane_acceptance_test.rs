@@ -410,9 +410,12 @@ async fn test_fanout_受理した33個sessionは同一worktreeで全て起動す
         loop {
             let execution = host.execution(&execution_id).await.unwrap().unwrap();
             let leaves = leaf_nodes(&execution);
-            let has_failed = leaves
+            let has_failed = host
+                .workflow_log(&execution_id)
+                .await
+                .unwrap()
                 .iter()
-                .any(|leaf| leaf.status == AcceptanceNodeExecutionStatus::Failed);
+                .any(|event| event["event"] == "runtime_failure_observed");
             let all_started = leaves.len() == 33
                 && leaves.iter().all(|leaf| {
                     leaf.agent_session_id.as_deref().is_some_and(|session_id| {
@@ -436,15 +439,10 @@ async fn test_fanout_受理した33個sessionは同一worktreeで全て起動す
             .as_deref()
             .is_some_and(|session_id| host.terminal().get(owner(&worktree, session_id)).is_ok())
     }));
-    let failed = leaves
-        .iter()
-        .filter(|leaf| leaf.status == AcceptanceNodeExecutionStatus::Failed)
-        .collect::<Vec<_>>();
-    assert!(
-        failed.is_empty(),
-        "validation accepted fanout capacity that runtime cannot execute: {failed:?}"
-    );
     let log = host.workflow_log(&execution_id).await.unwrap();
+    assert!(!log
+        .iter()
+        .any(|event| event["event"] == "runtime_failure_observed"));
     let serialized_log = serde_json::to_string(&log).unwrap();
     assert!(!serialized_log.contains("kind=per_worktree_cap"));
     assert!(!serialized_log.contains("kind=total_cap"));
@@ -888,10 +886,7 @@ async fn test_atui_042_片側signalは再起動後も同じattemptへ復元さ�
         );
         assert_eq!(
             recovered.node_executions[0].status,
-            match signal {
-                SignalOrder::SubmitThenStop => AcceptanceNodeExecutionStatus::Failed,
-                SignalOrder::StopThenSubmit => AcceptanceNodeExecutionStatus::Running,
-            }
+            AcceptanceNodeExecutionStatus::Running
         );
         let duplicate_start = host_after
             .start_auto_workflow(&worktree, AcceptanceProvider::Claude)
@@ -903,95 +898,6 @@ async fn test_atui_042_片側signalは再起動後も同じattemptへ復元さ�
         );
         host_after.shutdown().await.unwrap();
     }
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn test_atui_042_retryは旧attemptを停止し新attemptのterminalを維持する() {
-    let root = tempfile::TempDir::new().unwrap();
-    let worktree = root.path().join("retry-worktree");
-    std::fs::create_dir_all(&worktree).unwrap();
-    let worktree = worktree.to_string_lossy().into_owned();
-    let host = host(root.path(), 8);
-    let execution_id = host
-        .start_auto_workflow(&worktree, AcceptanceProvider::Claude)
-        .await
-        .unwrap();
-    let initial = wait_for_node_count(&host, &execution_id, 1).await;
-    let old_attempt = initial.node_executions[0].clone();
-    let old_session_id = old_attempt.agent_session_id.clone().unwrap();
-    let old_owner = owner(&worktree, &old_session_id);
-    let mut old_terminal = host
-        .terminal()
-        .attach("atui-042-retry-old".to_string(), old_owner.clone())
-        .unwrap();
-    receive_until(&mut old_terminal, "releash-fixture-input-complete-0").await;
-    associate_provider_session(&host, &mut old_terminal, &old_owner, "provider-retry-old").await;
-    host.submit(&old_attempt.id).await.unwrap();
-    let retryable = host.execution(&execution_id).await.unwrap().unwrap();
-    assert!(retryable.node_executions[0].can_retry);
-
-    host.retry(&execution_id, &old_attempt.id).await.unwrap();
-    wait_for_agent_session_lifecycle(
-        &host,
-        &old_session_id,
-        AcceptanceAgentSessionLifecycle::Paused,
-    )
-    .await;
-    let retried = wait_for_node_count(&host, &execution_id, 2).await;
-    let old_history = retried
-        .node_executions
-        .iter()
-        .find(|node| node.id == old_attempt.id)
-        .unwrap();
-    let new_attempt = retried
-        .node_executions
-        .iter()
-        .find(|node| node.id != old_attempt.id)
-        .unwrap()
-        .clone();
-    assert_eq!(old_history.attempt, 1);
-    assert_eq!(old_history.status, AcceptanceNodeExecutionStatus::Aborted);
-    assert!(old_history.submit_received);
-    assert!(!old_history.stop_received);
-    assert_eq!(
-        host.agent_session_lifecycle(&old_session_id).await.unwrap(),
-        Some(AcceptanceAgentSessionLifecycle::Paused)
-    );
-    assert!(host.terminal().get(old_owner).is_err());
-
-    assert_eq!(new_attempt.attempt, 2);
-    assert_eq!(new_attempt.status, AcceptanceNodeExecutionStatus::Running);
-    assert!(!new_attempt.submit_received);
-    assert!(!new_attempt.stop_received);
-    assert_ne!(new_attempt.agent_session_id, old_attempt.agent_session_id);
-
-    let new_session_id = new_attempt.agent_session_id.as_deref().unwrap();
-    assert_eq!(
-        host.agent_session_lifecycle(new_session_id).await.unwrap(),
-        Some(AcceptanceAgentSessionLifecycle::Open)
-    );
-    let new_owner = owner(&worktree, new_session_id);
-    let mut new_terminal = host
-        .terminal()
-        .attach("atui-042-retry-new".to_string(), new_owner.clone())
-        .unwrap();
-    receive_until(&mut new_terminal, "releash-fixture-input-complete-0").await;
-    host.terminal()
-        .write(new_owner.clone(), "follow-up-after-retry\r")
-        .unwrap();
-    receive_until(&mut new_terminal, "follow-up-after-retry").await;
-    assert!(!host.terminal().get(new_owner).unwrap().is_exited);
-
-    let after_terminal_input = host.execution(&execution_id).await.unwrap().unwrap();
-    let current = after_terminal_input
-        .node_executions
-        .iter()
-        .find(|node| node.id == new_attempt.id)
-        .unwrap();
-    assert_eq!(current.status, AcceptanceNodeExecutionStatus::Running);
-    assert!(!current.submit_received);
-    assert!(!current.stop_received);
-    host.shutdown().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1769,78 +1675,6 @@ async fn test_issue_1654_workflow完了時にproviderを停止しcheckpointか�
         AcceptanceNodeExecutionStatus::Succeeded
     );
     assert!(!host.terminal().get(terminal_owner).unwrap().is_exited);
-    host.shutdown().await.unwrap();
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn test_issue_1654_execution_stop中はproviderを残して同じagent_sessionでresumeする() {
-    let root = tempfile::TempDir::new().unwrap();
-    let worktree = root.path().join("stop-resume-worktree");
-    std::fs::create_dir_all(&worktree).unwrap();
-    let worktree = worktree.to_string_lossy().into_owned();
-    let host = host(root.path(), 4);
-    let execution_id = host
-        .start_auto_workflow(&worktree, AcceptanceProvider::Claude)
-        .await
-        .unwrap();
-    let running = wait_for_node_count(&host, &execution_id, 1).await;
-    let node = running.node_executions[0].clone();
-    let session_id = node.agent_session_id.clone().unwrap();
-    let terminal_owner = owner(&worktree, &session_id);
-    let mut terminal = host
-        .terminal()
-        .attach("issue-1654-stop-resume".to_string(), terminal_owner.clone())
-        .unwrap();
-    receive_until(&mut terminal, "releash-fixture-input-complete-0").await;
-
-    host.stop(&execution_id).await.unwrap();
-    let stopped = host.execution(&execution_id).await.unwrap().unwrap();
-    assert_eq!(stopped.status, AcceptanceWorkflowExecutionStatus::Running);
-    assert_eq!(
-        stopped.node_executions[0].agent_session_id.as_deref(),
-        Some(session_id.as_str())
-    );
-    assert_eq!(
-        host.agent_session_lifecycle(&session_id).await.unwrap(),
-        Some(AcceptanceAgentSessionLifecycle::Open)
-    );
-    assert!(
-        !host
-            .terminal()
-            .get(terminal_owner.clone())
-            .unwrap()
-            .is_exited
-    );
-
-    host.resume(&execution_id).await.unwrap();
-    let resumed = host.execution(&execution_id).await.unwrap().unwrap();
-    assert_eq!(
-        resumed.node_executions[0].status,
-        AcceptanceNodeExecutionStatus::Running
-    );
-    assert_eq!(
-        resumed.node_executions[0].agent_session_id.as_deref(),
-        Some(session_id.as_str())
-    );
-    host.terminal()
-        .write(terminal_owner.clone(), "follow-up-after-workflow-resume\r")
-        .unwrap();
-    receive_until(&mut terminal, "follow-up-after-workflow-resume").await;
-
-    host.abort(&execution_id).await.unwrap();
-    wait_for_execution_status(
-        &host,
-        &execution_id,
-        AcceptanceWorkflowExecutionStatus::Aborted,
-    )
-    .await;
-    wait_for_agent_session_lifecycle(&host, &session_id, AcceptanceAgentSessionLifecycle::Paused)
-        .await;
-    let aborted = host.execution(&execution_id).await.unwrap().unwrap();
-    assert_eq!(
-        aborted.node_executions[0].status,
-        AcceptanceNodeExecutionStatus::Aborted
-    );
     host.shutdown().await.unwrap();
 }
 

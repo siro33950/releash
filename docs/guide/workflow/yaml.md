@@ -175,8 +175,6 @@ main:
     entry: run_tests
     children:
       - run_tests:
-          on_failure:
-            retry: 2
           rules:
             - when:
                 on: passed
@@ -269,7 +267,6 @@ rework:
             provider: claude
             facets:
               instruction: rework
-          on_failure: ignore
 ```
 
 | 書き方 | 例 | 意味 |
@@ -285,7 +282,6 @@ rework:
 | --- | --- | --- | --- |
 | `inputs` | map | すべて | `<パラメータ名>: <供給元>`。[input](#input) を参照 |
 | `rules` | list | Sequence の子 | 次に進む先。[rules](#rules) を参照 |
-| `on_failure` | string / map | すべて | `ignore` / `retry: <回数>` |
 
 - 同じ Node を2つの Sequence / Fanout の子にすると `WFC006`、同じ Sequence / Fanout に2回置くと `WFC007` になります。
 - `main` は子にできません。
@@ -358,18 +354,6 @@ input:
 - 前のエントリへ戻るループには、ループのどこかに `loop_guard` が必要です（`WFC005`）。
 - `next` / `then` / `cases` / `on_exhausted` の Node は、同じ Sequence の子か、どの Sequence / Fanout の子でもない Node です。別の Sequence の子へは進めません（`WFC006`）。
 - すべての Node は `main` から到達できなければなりません（`WFC001`）。
-
-## on_failure
-
-| 値 | 振る舞い |
-| --- | --- |
-| 省略 | 実行を止め、再開かやり直しを待つ |
-| `retry` に回数（1以上） | その回数まで自動でやり直す。Session / Command のエントリにだけ書ける（`WFC010`） |
-| `ignore` | 失敗を無視して先へ進む |
-
-例は [sequence](#sequence) の `run_tests`（retry）と [children](#children) の `apply_rework`（ignore）を参照してください。
-
-- `ignore` のエントリの Artifact に、兄弟の `inputs`、自分の分岐、兄弟の Fanout の `items` が依存すると `WFC009` になります。
 
 ## completion
 
@@ -485,7 +469,7 @@ schemas:
 
 ### エントリの field の階層
 
-名前と Node を書くエントリでは、`on_failure` などのエントリの field を Node の field と同じ階層に書きます。
+名前と Node を書くエントリでは、`rules` などのエントリの field を Node の field と同じ階層に書きます。
 
 誤り:
 
@@ -495,14 +479,14 @@ schemas:
       provider: claude
       facets:
         instruction: rework
-  on_failure: ignore
+  rules: []
 ```
 
 ```text
 error WFS008 42:11 [workflow=triage, node=rework, field=children]: children entry 'apply_rework' must be the only key in its mapping
 ```
 
-正しい書き方は [children](#children) の `apply_rework` です。
+`rules: []` は `apply_rework` の下に置き、`session` と同じ階層に揃えます。
 
 ### delegate の when の起点
 

@@ -106,6 +106,8 @@ mod tests {
         execution_id: Option<&str>,
     ) -> WorkspaceTreeNode {
         WorkspaceTreeNode {
+            process_presence: Default::default(),
+            can_resume_session: false,
             worktree: None,
             id: id.to_string(),
             parent_id: parent_id.map(str::to_string),
@@ -131,9 +133,6 @@ mod tests {
             can_rename: false,
             can_approve: false,
             can_retry: false,
-            can_stop: false,
-            can_resume: false,
-            resume_eligible: false,
             can_abort: false,
             can_archive: false,
             display_command: None,

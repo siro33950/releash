@@ -66,7 +66,6 @@ fn reported_fanout_definition() -> WorkflowDefinition {
                             name: "fix_round".to_string(),
                             inputs: Vec::new(),
                             rules: Some(vec![Rule::Next("review_scan".to_string())]),
-                            on_failure: None,
                         },
                         ChildEntry::reference("implementation_confirmation"),
                     ],

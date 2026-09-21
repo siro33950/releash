@@ -170,59 +170,6 @@ fn test_子エントリ本体は空リスト後の重複inputキーを拒否す�
 }
 
 #[test]
-fn test_onfailure_ignoreとretryが子エントリの扱いとしてパースされる() {
-    let body = serde_json::from_str::<RawChildBody>(r#"{"on_failure":"ignore"}"#).unwrap();
-    assert_eq!(body.on_failure, Some(OnFailure::Ignore));
-
-    let body = serde_json::from_str::<RawChildBody>(r#"{"on_failure":{"retry":3}}"#).unwrap();
-    assert_eq!(body.on_failure, Some(OnFailure::Retry(3)));
-}
-
-#[test]
-fn test_onfailure_不正な値を拒否する() {
-    let error = serde_json::from_str::<OnFailure>(r#""abort""#).unwrap_err();
-    assert!(error.to_string().contains("on_failure must be"));
-
-    let error = serde_json::from_str::<OnFailure>(r#"{"retry":0}"#).unwrap_err();
-    assert!(error.to_string().contains("at least 1"));
-
-    let error = serde_json::from_str::<OnFailure>(r#"{"retry":1,"backoff":true}"#).unwrap_err();
-    assert!(error.to_string().contains("only field"));
-
-    let error =
-        serde_json::from_str::<RawChildBody>(r#"{"on_failure":"ignore","on_failure":"ignore"}"#)
-            .unwrap_err();
-    assert!(error.to_string().contains("duplicate field `on_failure`"));
-}
-
-#[test]
-fn test_onfailure_子エントリのserializeで往復する() {
-    let ignore = ChildEntry {
-        on_failure: Some(OnFailure::Ignore),
-        ..ChildEntry::reference("flaky")
-    };
-    assert_eq!(
-        serde_json::to_value(&ignore).unwrap(),
-        serde_json::json!({"flaky": {"on_failure": "ignore"}})
-    );
-
-    let retry = ChildEntry {
-        on_failure: Some(OnFailure::Retry(2)),
-        ..ChildEntry::reference("flaky")
-    };
-    assert_eq!(
-        serde_json::to_value(&retry).unwrap(),
-        serde_json::json!({"flaky": {"on_failure": {"retry": 2}}})
-    );
-
-    // 扱いなしは文字列参照へ畳まれる（現行のまま）。
-    assert_eq!(
-        serde_json::to_value(ChildEntry::reference("plain")).unwrap(),
-        serde_json::json!("plain")
-    );
-}
-
-#[test]
 fn test_node_definition_facet参照を検出する() {
     let mut node = NodeDefinition::default();
     assert!(!node.has_facet_refs());
@@ -288,13 +235,11 @@ fn test_実効辺_明示rulesが隣接辺より優先され空rulesは終端() {
         entry: None,
         children: vec![
             ChildEntry {
-                on_failure: None,
                 name: "first".to_string(),
                 inputs: Vec::new(),
                 rules: Some(vec![Rule::Next("third".to_string())]),
             },
             ChildEntry {
-                on_failure: None,
                 name: "second".to_string(),
                 inputs: Vec::new(),
                 rules: Some(Vec::new()),
@@ -692,5 +637,15 @@ fn test_子実行の分類_合成子とdelegateを持つsessionだけが子を�
             };
             assert_eq!(owns_children, expected);
         }
+    }
+}
+
+#[test]
+fn test_子エントリは廃止したon_failureを拒否する() {
+    for value in [serde_json::json!("ignore"), serde_json::json!({"retry": 2})] {
+        let error =
+            serde_json::from_value::<RawChildBody>(serde_json::json!({"on_failure": value}))
+                .unwrap_err();
+        assert!(error.to_string().contains("on_failure"), "{error}");
     }
 }

@@ -123,12 +123,14 @@ fn test_workspace過去試行_両commandでnodeタグとchildren省略を保持�
     use crate::usecase::workflow as dto;
     // Given
     let node = |id: &str| dto::WorkspaceNodeDto {
+        process_presence: "unknown",
         id: id.into(),
         title: id.into(),
         status: "active".into(),
         error_reason: None,
         content_kind: "command",
         capabilities: dto::WorkspaceNodeCapabilitiesDto {
+            can_resume_session: false,
             can_rename: false,
             can_approve: false,
             can_retry: true,
@@ -217,7 +219,11 @@ fn test_workflow状態_protoは削除した番号と名前を予約し残る三�
             .unwrap();
         assert_eq!(
             status.reserved_names().collect::<Vec<_>>(),
-            ["waiting_approval", "interrupted"]
+            if name == "WorkspaceHistoryStatus" {
+                vec!["paused", "failed", "waiting_approval", "interrupted"]
+            } else {
+                vec!["waiting_approval", "interrupted"]
+            }
         );
         for number in numbers {
             assert!(status
@@ -308,5 +314,67 @@ fn test_workflow応答_connectの詳細と一覧は三状態の値を保ち削�
             from_message("releash.client.v1.WorkflowExecutionSummaryDto", &decoded).unwrap(),
             value
         );
+    }
+}
+
+#[test]
+fn removed_workflow_commands_and_node_fields_cannot_reuse_their_wire_tags() {
+    let pool = prost_reflect::DescriptorPool::decode(
+        include_bytes!(concat!(env!("OUT_DIR"), "/client_descriptor.bin")).as_slice(),
+    )
+    .unwrap();
+    for name in ["CommandRequest", "CommandResult"] {
+        let message = pool
+            .get_message_by_name(&format!("releash.client.v1.{name}"))
+            .unwrap();
+        for (number, field) in [(123, "stop_workflow"), (137, "resume_workflow")] {
+            assert!(message
+                .reserved_ranges()
+                .any(|range| range.contains(&number)));
+            assert!(message.reserved_names().any(|name| name == field));
+            assert!(message.get_field(number).is_none());
+        }
+    }
+    let node = pool
+        .get_message_by_name("releash.client.v1.NodeExecutionView")
+        .unwrap();
+    assert!(node.reserved_names().any(|name| name == "failure"));
+    assert!(node.get_field(20).is_none());
+    assert!(node.reserved_ranges().any(|range| range.contains(&20)));
+    let capabilities = pool
+        .get_message_by_name("releash.client.v1.WorkspaceWorkflowCapabilitiesDto")
+        .unwrap();
+    for (number, name) in [(1, "can_stop"), (2, "can_resume")] {
+        assert!(capabilities
+            .reserved_ranges()
+            .any(|range| range.contains(&number)));
+        assert!(capabilities
+            .reserved_names()
+            .any(|reserved| reserved == name));
+        assert!(capabilities.get_field(number).is_none());
+    }
+    for name in [
+        "NodeExecutionStatusView",
+        "WorkspaceNodeStatus",
+        "WorkspaceHistoryStatus",
+    ] {
+        let status = pool
+            .get_enum_by_name(&format!("releash.client.v1.{name}.Value"))
+            .unwrap();
+        let numbers = if name == "NodeExecutionStatusView" {
+            [2, 5]
+        } else {
+            [2, 3]
+        };
+        for number in numbers {
+            assert!(status
+                .reserved_ranges()
+                .any(|range| range.contains(&number)));
+            assert!(status.get_value(number).is_none());
+        }
+        for removed in ["paused", "failed"] {
+            assert!(status.reserved_names().any(|name| name == removed));
+            assert!(status.get_value_by_name(removed).is_none());
+        }
     }
 }

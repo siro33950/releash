@@ -145,6 +145,31 @@ describe("AgentSessionPanel", () => {
 		},
 	);
 
+	it("Node内では再開可能なPausedでもAgentSessionのResumeを表示しない", async () => {
+		mockInvoke.mockResolvedValueOnce("paused");
+		render(
+			<AgentSessionPanel
+				session={{
+					...session,
+					lifecycle: "paused",
+					operations: { ...session.operations, canResume: true },
+				}}
+				showResumeAction={false}
+			/>,
+		);
+		expect(await screen.findByRole("alert")).toHaveTextContent(
+			"Provider session is not running",
+		);
+		expect(
+			screen.queryByRole("button", { name: "Resume" }),
+		).not.toBeInTheDocument();
+		expect(
+			mockInvoke.mock.calls.some(
+				([command]) => command === "resume_agent_session",
+			),
+		).toBe(false);
+	});
+
 	it("Pausedは明示Resumeが成功するまでTerminalをattachしない", async () => {
 		mockInvoke.mockResolvedValueOnce("paused").mockResolvedValueOnce("resumed");
 

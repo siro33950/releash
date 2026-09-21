@@ -50,6 +50,7 @@ pub(crate) enum WorkspaceTreeItemDto {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WorkspaceNodeDto {
+    pub process_presence: &'static str,
     pub id: String,
     pub title: String,
     pub status: String,
@@ -95,6 +96,7 @@ pub(crate) struct WorkspaceNodeCapabilitiesDto {
     pub can_rename: bool,
     pub can_approve: bool,
     pub can_retry: bool,
+    pub can_resume_session: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -114,8 +116,6 @@ pub(crate) struct WorkspaceSequenceDto {
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WorkspaceWorkflowCapabilitiesDto {
-    pub can_stop: bool,
-    pub can_resume: bool,
     pub can_abort: bool,
     pub can_archive: bool,
 }
@@ -143,6 +143,7 @@ pub struct NodeWorktreeDto {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WorkspaceNodeDetailDto {
+    pub process_presence: &'static str,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree: Option<NodeWorktreeDto>,
     pub id: String,
@@ -359,6 +360,34 @@ impl WorkspaceNodeActionResolver for WorkflowUsecase {
         })
     }
 
+    fn resolve_session_resume_target(
+        &self,
+        worktree_path: &str,
+        node_id: &str,
+    ) -> Result<super::command::ResumeSessionNodeCommand, WorkflowError> {
+        let workspace = crate::domain::workspace_tree::WorkspaceIdentity::new(
+            self.resolve_worktree_path(worktree_path)?,
+        );
+        let node = self
+            .workspace_nodes
+            .load_node(&workspace, node_id)
+            .map_err(|error| WorkflowError::external(error.to_string()))?
+            .ok_or_else(|| {
+                WorkflowError::NotFound(format!("Workspace node not found: {node_id}"))
+            })?;
+        let (Some(execution_id), Some(node_execution_id)) =
+            (node.execution_id, node.node_execution_id)
+        else {
+            return Err(WorkflowError::invalid_state(
+                "Workspace node is not a Workflow Node",
+            ));
+        };
+        Ok(super::command::ResumeSessionNodeCommand {
+            execution_id,
+            node_execution_id,
+        })
+    }
+
     fn resolve_session_rename_target(
         &self,
         worktree_path: &str,
@@ -429,8 +458,6 @@ mod tests {
                 title: "main".to_string(),
                 status: "active".to_string(),
                 workflow_capabilities: Some(WorkspaceWorkflowCapabilitiesDto {
-                    can_stop: true,
-                    can_resume: false,
                     can_abort: true,
                     can_archive: false,
                 }),
@@ -441,12 +468,14 @@ mod tests {
                     status: "active".to_string(),
                     workflow_capabilities: None,
                     children: vec![WorkspaceTreeItemDto::Node(WorkspaceNodeDto {
+                        process_presence: "unknown",
                         id: "selected-node".to_string(),
                         title: "Child".to_string(),
                         status: "active".to_string(),
                         error_reason: None,
                         content_kind: "session",
                         capabilities: WorkspaceNodeCapabilitiesDto {
+                            can_resume_session: false,
                             can_rename: false,
                             can_approve: false,
                             can_retry: false,

@@ -156,9 +156,9 @@ mod command_preparation_tests {
         let input = input_for(&node_execution_id);
         assert!(command_execution_input_is_current(&execution, &input));
 
-        // stop で Paused になった stale command は受理しない。
+        // Abort 後の command は起動しない。
         assert_eq!(
-            execution.pause_node_execution(&node_execution_id, 2.0),
+            execution.abort_node_execution(&node_execution_id, 2.0),
             crate::domain::workflow::entities::workflow_execution::TransitionOutcome::Applied
         );
         assert!(!command_execution_input_is_current(&execution, &input));

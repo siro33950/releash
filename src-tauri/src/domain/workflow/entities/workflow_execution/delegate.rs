@@ -31,6 +31,7 @@ impl WorkflowExecution {
             .is_some_and(|node| node.completion.delegate.is_some())
     }
 
+    #[cfg(test)]
     pub fn delegate_waits_for_child(&self, id: &str) -> bool {
         self.delegates.get(id).is_some_and(|state| {
             matches!(
@@ -185,6 +186,8 @@ impl WorkflowExecution {
         effects: &mut AdvanceEffects<'_>,
         timestamp: f64,
     ) -> Result<(), crate::domain::workflow::WorkflowError> {
+        let parent_id = self.delegate_continuation_parent(parent_id).to_string();
+        let parent_id = parent_id.as_str();
         let child = self
             .node_execution(child_id)
             .and_then(|child| child.artifact.clone())
@@ -239,6 +242,52 @@ impl WorkflowExecution {
         }
     }
 
+    pub(super) fn delegate_continuation_parent<'a>(&'a self, parent_id: &'a str) -> &'a str {
+        let mut current = parent_id;
+        for node in &self.runtime.node_executions {
+            if self
+                .runtime
+                .retry_predecessors
+                .get(&node.id)
+                .map(String::as_str)
+                == Some(current)
+            {
+                current = &node.id;
+            }
+        }
+        current
+    }
+
+    pub(super) fn inherit_pending_delegate_result(&mut self, previous_id: &str, next_id: &str) {
+        let Some(state) = self
+            .delegates
+            .get(previous_id)
+            .filter(|state| {
+                matches!(
+                    state.phase,
+                    DelegatePhase::StartChild
+                        | DelegatePhase::WaitingChild
+                        | DelegatePhase::InjectResult
+                )
+            })
+            .cloned()
+        else {
+            return;
+        };
+        let previous = self.node_execution(previous_id).unwrap();
+        let artifact = self.with_worktree_artifact(next_id, previous.artifact.clone());
+        let completion_signals = previous.completion_signals;
+        let next = self
+            .runtime
+            .node_executions
+            .iter_mut()
+            .find(|node| node.id == next_id)
+            .unwrap();
+        next.artifact = artifact;
+        next.completion_signals = completion_signals;
+        self.delegates.insert(next_id.to_string(), state);
+    }
+
     pub fn pending_delegate_injection(&self, parent_id: &str) -> Option<DelegateInjection> {
         let state = self.delegates.get(parent_id)?;
         let parent = self.node_execution(parent_id)?;
@@ -251,6 +300,7 @@ impl WorkflowExecution {
             })
     }
 
+    #[cfg(test)]
     pub fn pending_delegate_injections(&self) -> Vec<DelegateInjection> {
         self.delegates
             .keys()

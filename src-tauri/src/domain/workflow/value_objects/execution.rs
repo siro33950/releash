@@ -32,14 +32,6 @@ impl ExecutionStatus {
         self.is_finished()
     }
 
-    pub fn can_stop(self) -> bool {
-        self.is_active()
-    }
-
-    pub fn can_resume(self) -> bool {
-        self.is_active()
-    }
-
     pub fn can_abort(self) -> bool {
         self.is_active()
     }
@@ -151,8 +143,6 @@ mod tests {
             assert_eq!(status.is_active(), active);
             assert_eq!(status.is_finished(), !active);
             assert_eq!(status.is_terminal(), !active);
-            assert_eq!(status.can_stop(), active);
-            assert_eq!(status.can_resume(), active);
             assert_eq!(status.can_abort(), active);
         }
     }
@@ -183,19 +173,19 @@ mod tests {
             id: id.to_string(),
             execution_id: "execution-1".to_string(),
             node_name: node_name.to_string(),
-            kind: super::super::NodeKindName::Session,
+            kind: super::super::NodeKindName::Command,
             attempt,
-            status: super::super::NodeExecutionStatus::Failed,
+            status: super::super::NodeExecutionStatus::Running,
             session_id: None,
             display_command: None,
             result_summary: None,
             artifact: None,
             token_usage: None,
-            failure: None,
+            process_presence: super::super::NodeProcessPresence::ConfirmedAbsent,
             parent: None,
             completion_signals: super::super::NodeCompletionSignalState::Pending,
             started_at: 1.0,
-            completed_at: Some(2.0),
+            completed_at: None,
         };
         let execution = WorkflowExecution {
             id: "execution-1".to_string(),

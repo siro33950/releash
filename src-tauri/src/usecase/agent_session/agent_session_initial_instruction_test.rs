@@ -67,7 +67,7 @@ impl ProviderAgentTerminalInputGateway for FailingTerminalInput {
 }
 
 #[tokio::test]
-async fn test_agent_session_initial_instruction_session操作lock解放後に送る() {
+async fn test_agent_session_continuation_session操作lock解放後に送る() {
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
@@ -107,7 +107,7 @@ async fn test_agent_session_initial_instruction_session操作lock解放後に送
         let usecase = usecase.clone();
         async move {
             usecase
-                .dispatch(
+                .dispatch_continuation(
                     "agent-workflow-locked",
                     "initial instruction",
                     "dispatch-locked",
@@ -131,78 +131,6 @@ async fn test_agent_session_initial_instruction_session操作lock解放後に送
         dispatch.await.unwrap().unwrap(),
         AgentSessionInitialInstructionDeliveryOutcome::DeliveryUnknown
     );
-}
-
-#[tokio::test]
-async fn test_agent_session_initial_instruction_delivery不明でも永続化後に一度だけ送る() {
-    let directory = tempfile::tempdir().unwrap();
-    let store = LocalEventStore::open(LocalEventStoreConfig::production(
-        directory.path().to_path_buf(),
-    ))
-    .unwrap();
-    let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
-        LocalAgentSessionRepository::new(store.clone()),
-    )));
-    seed_workflow_tree(
-        &store,
-        "workflow-execution-1",
-        "node-execution-1",
-        "agent-workflow",
-        ProviderKind::Codex,
-    );
-    sessions
-        .create(
-            "agent-workflow",
-            WorkspaceIdentity::new("/repo"),
-            "/repo/worktree",
-            ProviderKind::Codex,
-            workflow_location("workflow-execution-1", "node-execution-1"),
-            "create-workflow",
-        )
-        .await
-        .unwrap();
-    let terminal = Arc::new(FailingTerminalInput::default());
-    let usecase = AgentSessionInitialInstructionUsecase::new(sessions.clone(), terminal.clone());
-
-    assert_eq!(
-        usecase
-            .dispatch(
-                "agent-workflow",
-                "system policy\n\ninitial instruction",
-                "dispatch-1",
-            )
-            .await
-            .unwrap(),
-        AgentSessionInitialInstructionDeliveryOutcome::DeliveryUnknown
-    );
-    assert_eq!(
-        usecase
-            .dispatch(
-                "agent-workflow",
-                "system policy\n\ninitial instruction",
-                "dispatch-2",
-            )
-            .await
-            .unwrap(),
-        AgentSessionInitialInstructionDeliveryOutcome::AlreadyDispatched
-    );
-    assert_eq!(
-        terminal.writes.lock().unwrap().as_slice(),
-        &[(
-            {
-                TerminalSurfaceOwner::session(WorkspaceIdentity::new("/repo"), "agent-workflow")
-                    .unwrap()
-            },
-            "\u{1b}[200~system policy\n\ninitial instruction\u{1b}[201~\r".to_string()
-        )]
-    );
-    assert!(sessions
-        .find("agent-workflow")
-        .await
-        .unwrap()
-        .unwrap()
-        .session()
-        .initial_instruction_admitted());
 }
 
 #[derive(Default)]
@@ -251,10 +179,6 @@ async fn test_delegate_続行指示は識別子ごとに一度だけ送り再送
                 workflow_location("tree", "node"),
                 "create",
             )
-            .await
-            .unwrap();
-        sessions
-            .admit_initial_instruction("agent", "initial")
             .await
             .unwrap();
         let terminal = Arc::new(ContinuationTerminalInput {
@@ -341,7 +265,7 @@ async fn test_delegate_続行指示は識別子ごとに一度だけ送り再送
 }
 
 #[tokio::test]
-async fn test_terminal投入_初期指示と継続指示は同じ末尾改行処理とpaste形式を使う() {
+async fn test_terminal投入_継続指示は同じ末尾改行処理とpaste形式を使う() {
     // Given
     let directory = tempfile::tempdir().unwrap();
     let store =
@@ -366,7 +290,7 @@ async fn test_terminal投入_初期指示と継続指示は同じ末尾改行処
     // When
     assert_eq!(
         usecase
-            .dispatch("agent", "first\nsecond \r\n\r", "initial")
+            .dispatch_continuation("agent", "first\nsecond \r\n\r", "initial")
             .await
             .unwrap(),
         AgentSessionInitialInstructionDeliveryOutcome::Delivered

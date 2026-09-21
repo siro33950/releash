@@ -10,6 +10,8 @@ fn command_result_from_value(
 }
 
 pub struct RuntimeSnapshotNodeProjection<'a> {
+    pub process_presences:
+        &'a std::collections::HashMap<String, crate::domain::workflow::NodeProcessPresence>,
     pub execution_id: &'a str,
     pub workflow_name: &'a str,
     pub workspace_identity: &'a str,
@@ -18,7 +20,7 @@ pub struct RuntimeSnapshotNodeProjection<'a> {
     pub node_executions:
         &'a [crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecution],
     pub retry_predecessors: &'a std::collections::HashMap<String, String>,
-    pub accepts_explicit_retry: bool,
+    pub execution_active: bool,
     pub started_at: f64,
     pub updated_at: f64,
     pub execution: &'a crate::domain::local_event::WorkflowExecutionMetadataRecord,
@@ -40,6 +42,7 @@ pub fn runtime_snapshot_nodes(
         WorkspaceStructureFact as F, WorkspaceTree, WorkspaceTreeProjector,
     };
     let RuntimeSnapshotNodeProjection {
+        process_presences,
         execution_id,
         workflow_name,
         workspace_identity,
@@ -47,7 +50,7 @@ pub fn runtime_snapshot_nodes(
         recorded_dynamic_fanout_names,
         node_executions,
         retry_predecessors,
-        accepts_explicit_retry,
+        execution_active,
         started_at,
         updated_at,
         execution,
@@ -131,7 +134,7 @@ pub fn runtime_snapshot_nodes(
             });
         }
         match node.status {
-            S::Running | S::Paused | S::Unresolved => {}
+            S::Running | S::Unresolved => {}
             S::WaitingApproval => facts.push(F::NodeApprovalRequested {
                 execution_id: execution_id.to_string(),
                 node_execution_id: node.id.clone(),
@@ -142,27 +145,11 @@ pub fn runtime_snapshot_nodes(
                 node_execution_id: node.id.clone(),
                 timestamp: node.completed_at.unwrap_or(updated_at),
             }),
-            S::Failed | S::Aborted => facts.push(F::NodeFailed {
+            S::Aborted => facts.push(F::NodeFailed {
                 execution_id: execution_id.to_string(),
                 node_execution_id: node.id.clone(),
-                reason: node
-                    .failure
-                    .as_ref()
-                    .map(|failure| failure.reason.clone())
-                    .unwrap_or_else(|| {
-                        if node.status == S::Aborted {
-                            "Workflow node aborted".to_string()
-                        } else {
-                            "Workflow node failed".to_string()
-                        }
-                    }),
-                failure_kind: node.failure.as_ref().map(|failure| failure.kind).unwrap_or(
-                    if node.status == S::Aborted {
-                        NodeExecutionFailureKind::UserAbort
-                    } else {
-                        NodeExecutionFailureKind::InfrastructureCrash
-                    },
-                ),
+                reason: "Workflow node aborted".to_string(),
+                failure_kind: NodeExecutionFailureKind::UserAbort,
                 timestamp: node.completed_at.unwrap_or(updated_at),
             }),
         }
@@ -184,20 +171,22 @@ pub fn runtime_snapshot_nodes(
         };
         node.completion_signals = runtime.completion_signals;
         node.has_artifact = runtime.artifact.is_some();
-        node.can_retry = accepts_explicit_retry
-            && runtime.can_retry()
+        node.process_presence = process_presences
+            .get(&runtime.id)
+            .copied()
+            .unwrap_or_default();
+        node.can_retry = execution_active
+            && runtime.can_retry(node.process_presence)
             && node_executions.iter().all(|candidate| {
                 !same_retry_target(runtime, candidate) || candidate.attempt <= runtime.attempt
             });
         node.worktree = runtime.worktree.clone();
-        node.resume_eligible = runtime.can_resume();
+        node.can_resume_session =
+            execution_active && runtime.can_resume_session(node.process_presence);
         if let Some(reason) = &runtime.recovery_reason {
             node.status = crate::domain::workspace_tree::WorkspaceNodeStatus::Unresolved;
             node.error_reason = Some(reason.clone());
             node.can_approve = false;
-        }
-        if runtime.status == S::Paused && runtime.recovery_reason.is_none() {
-            node.status = crate::domain::workspace_tree::WorkspaceNodeStatus::Paused;
         }
     }
     tree.recompute_status_classifications();
@@ -221,12 +210,11 @@ mod tests {
     use super::*;
     use crate::domain::local_event::WorkflowExecutionMetadataRecord;
     use crate::domain::workflow::entities::workflow_execution::{
-        RuntimeNodeExecution, RuntimeNodeExecutionFailure, RuntimeNodeExecutionFailureOrigin,
-        RuntimeNodeExecutionStatus,
+        RuntimeNodeExecution, RuntimeNodeExecutionStatus,
     };
     use crate::domain::workflow::{
-        ExecutionOrigin, ExecutionStatus, NodeCompletionSignalState, NodeDefinition,
-        NodeExecutionFailureKind, NodeKindName, TokenUsage, WorkflowDefinition,
+        ExecutionOrigin, ExecutionStatus, NodeCompletionSignalState, NodeDefinition, NodeKindName,
+        TokenUsage, WorkflowDefinition,
     };
     use crate::domain::workspace_tree::{
         WorkspaceCommandResult, WorkspaceNodeStatus, WorkspaceNodeStatusClassification,
@@ -255,7 +243,7 @@ mod tests {
             artifact: None,
             result_summary: None,
             token_usage: None,
-            failure: None,
+
             parent: None,
             completion_signals: NodeCompletionSignalState::Pending,
             started_at: 2.0,
@@ -282,6 +270,7 @@ mod tests {
     fn project_artifact_node(runtime: RuntimeNodeExecution) -> WorkspaceTreeNode {
         let node_execution_id = runtime.id.clone();
         runtime_snapshot_nodes(RuntimeSnapshotNodeProjection {
+            process_presences: &std::collections::HashMap::new(),
             execution_id: EXECUTION_ID,
             workflow_name: "workflow",
             workspace_identity: "/repo",
@@ -289,7 +278,7 @@ mod tests {
             workflow_definition: &WorkflowDefinition::default(),
             node_executions: &[runtime],
             retry_predecessors: &std::collections::HashMap::new(),
-            accepts_explicit_retry: true,
+            execution_active: true,
             started_at: 1.0,
             updated_at: 10.0,
             execution: &execution(),
@@ -309,7 +298,6 @@ mod tests {
             crate::domain::workflow::IsolatedWorktree::for_attempt("/repo", "isolated", 2);
         for status in [
             RuntimeNodeExecutionStatus::Running,
-            RuntimeNodeExecutionStatus::Failed,
             RuntimeNodeExecutionStatus::Aborted,
         ] {
             let mut runtime = node("isolated", EXECUTION_ID, status);
@@ -323,7 +311,6 @@ mod tests {
                 projected.status,
                 match status {
                     RuntimeNodeExecutionStatus::Running => WorkspaceNodeStatus::Running,
-                    RuntimeNodeExecutionStatus::Failed => WorkspaceNodeStatus::Failed,
                     RuntimeNodeExecutionStatus::Aborted => WorkspaceNodeStatus::Aborted,
                     _ => unreachable!(),
                 }
@@ -420,12 +407,11 @@ mod tests {
         }
     }
 
-    fn capability_state(node: &WorkspaceTreeNode) -> (bool, bool, bool, bool, bool, bool) {
+    fn capability_state(node: &WorkspaceTreeNode) -> (bool, bool, bool, bool, bool) {
         (
             node.can_approve,
             node.can_retry,
-            node.can_stop,
-            node.can_resume,
+            node.can_resume_session,
             node.can_abort,
             node.can_archive,
         )
@@ -435,7 +421,7 @@ mod tests {
     fn same_retry_target_requires_matching_name_and_parent_scope() {
         use crate::domain::workflow::ExecutionParentRef;
 
-        let base = node("left", EXECUTION_ID, RuntimeNodeExecutionStatus::Failed);
+        let base = node("left", EXECUTION_ID, RuntimeNodeExecutionStatus::Running);
         let mut same_lane = node("right", EXECUTION_ID, RuntimeNodeExecutionStatus::Running);
         assert!(same_retry_target(&base, &same_lane));
 
@@ -457,7 +443,7 @@ mod tests {
 
     #[test]
     fn runtime_snapshot_nodes_uses_bounded_defaults_and_filters_other_executions() {
-        let mut failed = node("failed", EXECUTION_ID, RuntimeNodeExecutionStatus::Failed);
+        let mut failed = node("failed", EXECUTION_ID, RuntimeNodeExecutionStatus::Running);
         failed.artifact = Some(serde_json::json!({"unexpected": true}));
         let completed = node(
             "completed",
@@ -481,6 +467,7 @@ mod tests {
         let execution = execution();
         let node_executions = [failed, completed, unrelated];
         let nodes = runtime_snapshot_nodes(RuntimeSnapshotNodeProjection {
+            process_presences: &std::collections::HashMap::new(),
             execution_id: EXECUTION_ID,
             workflow_name: "workflow",
             workspace_identity: "/repo",
@@ -488,7 +475,7 @@ mod tests {
             workflow_definition: &definition,
             node_executions: &node_executions,
             retry_predecessors: &std::collections::HashMap::new(),
-            accepts_explicit_retry: true,
+            execution_active: true,
             started_at: 1.0,
             updated_at: 10.0,
             execution: &execution,
@@ -507,7 +494,7 @@ mod tests {
             .iter()
             .find(|node| node.node_execution_id.as_deref() == Some("failed"))
             .unwrap();
-        assert_eq!(failed.error_reason.as_deref(), Some("Workflow node failed"));
+        assert_eq!(failed.error_reason, None);
         assert_eq!(failed.command_result, None);
         assert_eq!(failed.updated_at_bits, 10.0f64.to_bits());
         let completed = nodes
@@ -540,6 +527,7 @@ mod tests {
         )]);
 
         let nodes = runtime_snapshot_nodes(RuntimeSnapshotNodeProjection {
+            process_presences: &std::collections::HashMap::new(),
             execution_id: EXECUTION_ID,
             workflow_name: "session",
             workspace_identity: "/repo",
@@ -547,7 +535,7 @@ mod tests {
             workflow_definition: &WorkflowDefinition::default(),
             node_executions: &[session],
             retry_predecessors: &std::collections::HashMap::new(),
-            accepts_explicit_retry: true,
+            execution_active: true,
             started_at: 1.0,
             updated_at: 10.0,
             execution: &execution,
@@ -587,6 +575,7 @@ mod tests {
         let execution = execution();
 
         let nodes = runtime_snapshot_nodes(RuntimeSnapshotNodeProjection {
+            process_presences: &std::collections::HashMap::new(),
             execution_id: EXECUTION_ID,
             workflow_name: "workflow",
             workspace_identity: "/repo",
@@ -594,7 +583,7 @@ mod tests {
             workflow_definition: &definition,
             node_executions: &[waiting.clone()],
             retry_predecessors: &std::collections::HashMap::new(),
-            accepts_explicit_retry: true,
+            execution_active: true,
             started_at: 1.0,
             updated_at: 10.0,
             execution: &execution,
@@ -612,9 +601,11 @@ mod tests {
             NodeCompletionSignalState::SubmitReceived
         );
         assert!(waiting_node.has_artifact);
-        assert!(waiting_node.can_retry);
+        assert!(!waiting_node.can_retry);
+        assert!(!waiting_node.can_resume_session);
 
         let nodes = runtime_snapshot_nodes(RuntimeSnapshotNodeProjection {
+            process_presences: &std::collections::HashMap::new(),
             execution_id: EXECUTION_ID,
             workflow_name: "session",
             workspace_identity: "/repo",
@@ -622,7 +613,7 @@ mod tests {
             workflow_definition: &definition,
             node_executions: &[waiting.clone()],
             retry_predecessors: &std::collections::HashMap::new(),
-            accepts_explicit_retry: false,
+            execution_active: false,
             started_at: 1.0,
             updated_at: 10.0,
             execution: &execution,
@@ -635,10 +626,10 @@ mod tests {
 
     #[test]
     fn explicit_retry_links_group_only_the_retry_chain_in_execution_order() {
-        let mut first = node("first", EXECUTION_ID, RuntimeNodeExecutionStatus::Failed);
+        let mut first = node("first", EXECUTION_ID, RuntimeNodeExecutionStatus::Aborted);
         first.attempt = 1;
         first.completed_at = Some(3.0);
-        let mut second = node("second", EXECUTION_ID, RuntimeNodeExecutionStatus::Failed);
+        let mut second = node("second", EXECUTION_ID, RuntimeNodeExecutionStatus::Aborted);
         second.attempt = 2;
         second.started_at = 4.0;
         second.completed_at = Some(5.0);
@@ -660,6 +651,7 @@ mod tests {
         let execution = execution();
 
         let nodes = runtime_snapshot_nodes(RuntimeSnapshotNodeProjection {
+            process_presences: &std::collections::HashMap::new(),
             execution_id: EXECUTION_ID,
             workflow_name: "workflow",
             workspace_identity: "/repo",
@@ -667,7 +659,7 @@ mod tests {
             workflow_definition: &WorkflowDefinition::default(),
             node_executions: &[first, second, latest, loop_visit],
             retry_predecessors: &retry_predecessors,
-            accepts_explicit_retry: true,
+            execution_active: true,
             started_at: 1.0,
             updated_at: 10.0,
             execution: &execution,
@@ -706,11 +698,6 @@ mod tests {
                 WorkspaceNodeStatus::Running,
             ),
             (
-                "paused",
-                RuntimeNodeExecutionStatus::Paused,
-                WorkspaceNodeStatus::Paused,
-            ),
-            (
                 "waiting",
                 RuntimeNodeExecutionStatus::WaitingApproval,
                 WorkspaceNodeStatus::Waiting,
@@ -719,11 +706,6 @@ mod tests {
                 "completed",
                 RuntimeNodeExecutionStatus::Succeeded,
                 WorkspaceNodeStatus::Completed,
-            ),
-            (
-                "failed",
-                RuntimeNodeExecutionStatus::Failed,
-                WorkspaceNodeStatus::Failed,
             ),
             (
                 "aborted",
@@ -737,6 +719,7 @@ mod tests {
             .collect::<Vec<_>>();
         let execution = execution();
         let nodes = runtime_snapshot_nodes(RuntimeSnapshotNodeProjection {
+            process_presences: &std::collections::HashMap::new(),
             execution_id: EXECUTION_ID,
             workflow_name: "workflow",
             workspace_identity: "/repo",
@@ -744,7 +727,7 @@ mod tests {
             workflow_definition: &WorkflowDefinition::default(),
             node_executions: &runtime_nodes,
             retry_predecessors: &std::collections::HashMap::new(),
-            accepts_explicit_retry: true,
+            execution_active: true,
             started_at: 1.0,
             updated_at: 10.0,
             execution: &execution,
@@ -763,47 +746,6 @@ mod tests {
                 expected
             );
         }
-    }
-
-    #[test]
-    fn failure_metadata_never_enters_workspace_summary_or_detail() {
-        let mut failed = node(
-            "internal-node-id",
-            EXECUTION_ID,
-            RuntimeNodeExecutionStatus::Failed,
-        );
-        failed.failure = Some(RuntimeNodeExecutionFailure {
-            reason: "raw internal failure".to_string(),
-            kind: NodeExecutionFailureKind::InfrastructureCrash,
-            origin: RuntimeNodeExecutionFailureOrigin::Runtime,
-        });
-        let execution = execution();
-        let nodes = runtime_snapshot_nodes(RuntimeSnapshotNodeProjection {
-            execution_id: EXECUTION_ID,
-            workflow_name: "workflow",
-            workspace_identity: "/repo",
-            recorded_dynamic_fanout_names: &Default::default(),
-            workflow_definition: &WorkflowDefinition::default(),
-            node_executions: &[failed],
-            retry_predecessors: &std::collections::HashMap::new(),
-            accepts_explicit_retry: true,
-            started_at: 1.0,
-            updated_at: 10.0,
-            execution: &execution,
-            session_activities: &std::collections::HashMap::new(),
-            session_display_names: &std::collections::HashMap::new(),
-        })
-        .unwrap();
-        let failed = nodes
-            .iter()
-            .find(|node| node.node_execution_id.as_deref() == Some("internal-node-id"))
-            .unwrap();
-        assert_eq!(failed.error_reason.as_deref(), Some("Workflow node failed"));
-        assert!(!failed
-            .error_reason
-            .as_deref()
-            .unwrap()
-            .contains("raw internal failure"));
     }
 
     #[test]
@@ -841,6 +783,7 @@ mod tests {
 
         // When
         let nodes = runtime_snapshot_nodes(RuntimeSnapshotNodeProjection {
+            process_presences: &std::collections::HashMap::new(),
             execution_id: EXECUTION_ID,
             workflow_name: "workflow",
             workspace_identity: "/repo",
@@ -848,7 +791,7 @@ mod tests {
             workflow_definition: &WorkflowDefinition::default(),
             node_executions: &runtime_nodes,
             retry_predecessors: &std::collections::HashMap::new(),
-            accepts_explicit_retry: true,
+            execution_active: true,
             started_at: 1.0,
             updated_at: 10.0,
             execution: &execution,
@@ -876,11 +819,11 @@ mod tests {
         );
         assert_eq!(
             capability_state(by_execution_id["stopped-child"]),
-            (false, true, false, false, false, false)
+            (false, false, false, false, false)
         );
         assert_eq!(
             capability_state(workflow),
-            (false, false, true, false, true, false)
+            (false, false, false, true, false)
         );
     }
 
@@ -901,6 +844,7 @@ mod tests {
         )]);
 
         let nodes = runtime_snapshot_nodes(RuntimeSnapshotNodeProjection {
+            process_presences: &std::collections::HashMap::new(),
             execution_id: EXECUTION_ID,
             workflow_name: "workflow",
             workspace_identity: "/repo",
@@ -908,7 +852,7 @@ mod tests {
             workflow_definition: &WorkflowDefinition::default(),
             node_executions: &[waiting],
             retry_predecessors: &std::collections::HashMap::new(),
-            accepts_explicit_retry: true,
+            execution_active: true,
             started_at: 1.0,
             updated_at: 10.0,
             execution: &execution,
@@ -968,6 +912,7 @@ mod tests {
                 let session_activities =
                     std::collections::HashMap::from([(node_execution_id.to_string(), activity)]);
                 runtime_snapshot_nodes(RuntimeSnapshotNodeProjection {
+                    process_presences: &std::collections::HashMap::new(),
                     execution_id: EXECUTION_ID,
                     workflow_name: "workflow",
                     workspace_identity: "/repo",
@@ -975,7 +920,7 @@ mod tests {
                     workflow_definition: &definition,
                     node_executions: &runtime_nodes,
                     retry_predecessors: &std::collections::HashMap::new(),
-                    accepts_explicit_retry: true,
+                    execution_active: true,
                     started_at: 1.0,
                     updated_at: 10.0,
                     execution: &execution,
@@ -1011,161 +956,6 @@ mod tests {
     }
 
     #[test]
-    fn test_runtime_snapshot復旧_異常終了したsessionにresumeを提示する() {
-        let mut failed = node(
-            "failed-session",
-            EXECUTION_ID,
-            RuntimeNodeExecutionStatus::Failed,
-        );
-        failed.kind = NodeKindName::Session;
-        failed.session_id = Some("agent-session".to_string());
-        failed.display_command = None;
-        failed.failure = Some(RuntimeNodeExecutionFailure {
-            reason: "provider process exited abnormally".to_string(),
-            kind: NodeExecutionFailureKind::InfrastructureCrash,
-            origin: RuntimeNodeExecutionFailureOrigin::ProviderProcessExit,
-        });
-        let execution = execution();
-
-        let nodes = runtime_snapshot_nodes(RuntimeSnapshotNodeProjection {
-            execution_id: EXECUTION_ID,
-            workflow_name: "workflow",
-            workspace_identity: "/repo",
-            recorded_dynamic_fanout_names: &Default::default(),
-            workflow_definition: &WorkflowDefinition::default(),
-            node_executions: &[failed],
-            retry_predecessors: &std::collections::HashMap::new(),
-            accepts_explicit_retry: true,
-            started_at: 1.0,
-            updated_at: 10.0,
-            execution: &execution,
-            session_activities: &std::collections::HashMap::new(),
-            session_display_names: &std::collections::HashMap::new(),
-        })
-        .unwrap();
-        let tree = WorkspaceTree::restore("/repo", nodes).unwrap();
-        let failed = tree
-            .nodes()
-            .iter()
-            .find(|node| node.node_execution_id.as_deref() == Some("failed-session"))
-            .unwrap();
-        let workflow = tree
-            .nodes()
-            .iter()
-            .find(|node| node.node_execution_id.is_none())
-            .unwrap();
-
-        assert_eq!(
-            failed.status_classification,
-            WorkspaceNodeStatusClassification::Failure
-        );
-        assert!(failed.can_retry);
-        assert!(workflow.can_resume);
-    }
-
-    #[test]
-    fn test_runtime_snapshot復旧_runtime失敗sessionにresumeを提示しない() {
-        let mut failed = node(
-            "runtime-failed-session",
-            EXECUTION_ID,
-            RuntimeNodeExecutionStatus::Failed,
-        );
-        failed.kind = NodeKindName::Session;
-        failed.session_id = Some("agent-session".to_string());
-        failed.display_command = None;
-        failed.failure = Some(RuntimeNodeExecutionFailure {
-            reason: "activation failed".to_string(),
-            kind: NodeExecutionFailureKind::InfrastructureCrash,
-            origin: RuntimeNodeExecutionFailureOrigin::Runtime,
-        });
-        let execution = execution();
-
-        let nodes = runtime_snapshot_nodes(RuntimeSnapshotNodeProjection {
-            execution_id: EXECUTION_ID,
-            workflow_name: "workflow",
-            workspace_identity: "/repo",
-            recorded_dynamic_fanout_names: &Default::default(),
-            workflow_definition: &WorkflowDefinition::default(),
-            node_executions: &[failed],
-            retry_predecessors: &std::collections::HashMap::new(),
-            accepts_explicit_retry: true,
-            started_at: 1.0,
-            updated_at: 10.0,
-            execution: &execution,
-            session_activities: &std::collections::HashMap::new(),
-            session_display_names: &std::collections::HashMap::new(),
-        })
-        .unwrap();
-        let tree = WorkspaceTree::restore("/repo", nodes).unwrap();
-        let failed = tree
-            .nodes()
-            .iter()
-            .find(|node| node.node_execution_id.as_deref() == Some("runtime-failed-session"))
-            .unwrap();
-        let workflow = tree
-            .nodes()
-            .iter()
-            .find(|node| node.node_execution_id.is_none())
-            .unwrap();
-
-        assert!(failed.can_retry);
-        assert!(!failed.can_resume);
-        assert!(!workflow.can_resume);
-    }
-
-    #[test]
-    fn test_runtime_snapshot分類_pausedのstop_receivedをidleにしてcapabilityを維持する() {
-        // Given
-        let mut paused = node("paused", EXECUTION_ID, RuntimeNodeExecutionStatus::Paused);
-        paused.node_name = "paused".to_string();
-        paused.kind = NodeKindName::Session;
-        paused.session_id = Some("agent-session".to_string());
-        paused.display_command = None;
-        paused.completion_signals = NodeCompletionSignalState::StopReceived;
-        let execution = execution();
-
-        // When
-        let nodes = runtime_snapshot_nodes(RuntimeSnapshotNodeProjection {
-            execution_id: EXECUTION_ID,
-            workflow_name: "workflow",
-            workspace_identity: "/repo",
-            recorded_dynamic_fanout_names: &Default::default(),
-            workflow_definition: &WorkflowDefinition::default(),
-            node_executions: &[paused],
-            retry_predecessors: &std::collections::HashMap::new(),
-            accepts_explicit_retry: true,
-            started_at: 1.0,
-            updated_at: 10.0,
-            execution: &execution,
-            session_activities: &std::collections::HashMap::new(),
-            session_display_names: &std::collections::HashMap::new(),
-        })
-        .unwrap();
-        let paused = nodes
-            .iter()
-            .find(|node| node.node_execution_id.as_deref() == Some("paused"))
-            .unwrap();
-        let workflow = nodes
-            .iter()
-            .find(|node| node.node_execution_id.is_none())
-            .unwrap();
-
-        // Then
-        assert_eq!(
-            paused.status_classification,
-            WorkspaceNodeStatusClassification::Idle
-        );
-        assert_eq!(
-            capability_state(paused),
-            (false, true, false, false, false, false)
-        );
-        assert_eq!(
-            capability_state(workflow),
-            (false, false, true, false, true, false)
-        );
-    }
-
-    #[test]
     fn test_runtime_snapshot復旧_未対応nodeがあっても正常なleafの再開を提示する() {
         // Given
         let mut unresolved = node(
@@ -1175,11 +965,17 @@ mod tests {
         );
         unresolved.node_name = "old".into();
         unresolved.recovery_reason = Some("unsupported definition".into());
-        let paused = node("healthy", EXECUTION_ID, RuntimeNodeExecutionStatus::Paused);
+        let mut paused = node("healthy", EXECUTION_ID, RuntimeNodeExecutionStatus::Running);
+        paused.kind = NodeKindName::Session;
+        paused.display_command = None;
         let execution = execution();
 
         // When
         let nodes = runtime_snapshot_nodes(RuntimeSnapshotNodeProjection {
+            process_presences: &std::collections::HashMap::from([(
+                "healthy".to_string(),
+                crate::domain::workflow::NodeProcessPresence::ConfirmedAbsent,
+            )]),
             execution_id: EXECUTION_ID,
             workflow_name: "workflow",
             workspace_identity: "/repo",
@@ -1187,7 +983,7 @@ mod tests {
             workflow_definition: &WorkflowDefinition::default(),
             node_executions: &[unresolved, paused],
             retry_predecessors: &Default::default(),
-            accepts_explicit_retry: true,
+            execution_active: true,
             started_at: 1.0,
             updated_at: 10.0,
             execution: &execution,
@@ -1203,7 +999,14 @@ mod tests {
             .iter()
             .find(|node| node.kind == crate::domain::workspace_tree::WorkspaceNodeKind::Workflow)
             .unwrap();
-        assert!(workflow.can_resume);
+        assert!(workflow.can_abort);
+        assert!(
+            nodes
+                .iter()
+                .find(|node| node.node_execution_id.as_deref() == Some("healthy"))
+                .unwrap()
+                .can_resume_session
+        );
         let old = nodes
             .iter()
             .find(|node| node.node_execution_id.as_deref() == Some("unresolved"))
@@ -1244,6 +1047,7 @@ mod tests {
         let project = |definition: &WorkflowDefinition,
                        names: &std::collections::BTreeSet<String>| {
             runtime_snapshot_nodes(RuntimeSnapshotNodeProjection {
+                process_presences: &std::collections::HashMap::new(),
                 execution_id: EXECUTION_ID,
                 workflow_name: "workflow",
                 workspace_identity: "/repo",
@@ -1251,7 +1055,7 @@ mod tests {
                 workflow_definition: definition,
                 node_executions: &runtime_nodes,
                 retry_predecessors: &Default::default(),
-                accepts_explicit_retry: true,
+                execution_active: true,
                 started_at: 1.0,
                 updated_at: 10.0,
                 execution: &execution,
@@ -1270,5 +1074,63 @@ mod tests {
 
         // Then
         assert_eq!(full, partial);
+    }
+    #[test]
+    fn process_presence_controls_leaf_actions_and_attention_without_changing_node_status() {
+        use crate::domain::workflow::NodeProcessPresence as P;
+        for kind in [NodeKindName::Session, NodeKindName::Command] {
+            for presence in [P::Live, P::ConfirmedAbsent, P::Unknown] {
+                for signals in [
+                    NodeCompletionSignalState::Pending,
+                    NodeCompletionSignalState::SubmitReceived,
+                    NodeCompletionSignalState::StopReceived,
+                ] {
+                    let mut runtime =
+                        node("leaf", EXECUTION_ID, RuntimeNodeExecutionStatus::Running);
+                    runtime.kind = kind;
+                    runtime.display_command =
+                        (kind == NodeKindName::Command).then(|| "true".into());
+                    runtime.session_id = (kind == NodeKindName::Session).then(|| "session".into());
+                    runtime.completion_signals = signals;
+                    let nodes = runtime_snapshot_nodes(RuntimeSnapshotNodeProjection {
+                        process_presences: &[("leaf".into(), presence)].into_iter().collect(),
+                        execution_id: EXECUTION_ID,
+                        workflow_name: "workflow",
+                        workspace_identity: "/repo",
+                        recorded_dynamic_fanout_names: &Default::default(),
+                        workflow_definition: &WorkflowDefinition::default(),
+                        node_executions: &[runtime],
+                        retry_predecessors: &Default::default(),
+                        execution_active: true,
+                        started_at: 1.0,
+                        updated_at: 2.0,
+                        execution: &execution(),
+                        session_activities: &Default::default(),
+                        session_display_names: &Default::default(),
+                    })
+                    .unwrap();
+                    let leaf = nodes
+                        .iter()
+                        .find(|node| node.node_execution_id.as_deref() == Some("leaf"))
+                        .unwrap();
+                    assert_eq!(leaf.status, WorkspaceNodeStatus::Running);
+                    assert_eq!(leaf.process_presence, presence);
+                    assert_eq!(
+                        leaf.can_retry,
+                        kind == NodeKindName::Command && presence == P::ConfirmedAbsent
+                    );
+                    assert_eq!(
+                        leaf.can_resume_session,
+                        kind == NodeKindName::Session && presence == P::ConfirmedAbsent
+                    );
+                    if presence == P::ConfirmedAbsent {
+                        assert_eq!(
+                            leaf.status_classification,
+                            WorkspaceNodeStatusClassification::Attention
+                        );
+                    }
+                }
+            }
+        }
     }
 }

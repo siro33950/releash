@@ -82,13 +82,6 @@ impl WorkflowExecution {
                 );
                 self.derive_leaf_completed(&child.id, timestamp)
             }
-            RuntimeNodeExecutionStatus::Failed => {
-                let failure = child
-                    .failure
-                    .as_ref()
-                    .ok_or("failed composite has no failure")?;
-                self.derive_leaf_failed(&child.id, failure.reason.clone(), failure.kind, timestamp)
-            }
             _ => Ok(()),
         }
     }
