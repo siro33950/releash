@@ -561,11 +561,26 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
             client_api,
             app,
         ));
-        let store = Arc::try_unwrap(store)
-            .map_err(|_| "local event store is still referenced during shutdown".to_string())?;
-        store.drain_and_close();
-        Ok(())
+        drain_and_close_store(store).await
     }
+}
+
+async fn drain_and_close_store(mut store: Arc<LocalEventStore>) -> Result<(), String> {
+    let store = tokio::time::timeout(Duration::from_secs(10), async move {
+        loop {
+            match Arc::try_unwrap(store) {
+                Ok(store) => return store,
+                Err(shared) => store = shared,
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .map_err(|_| {
+        "timed out waiting for local event store references during shutdown".to_string()
+    })?;
+    store.drain_and_close();
+    Ok(())
 }
 
 fn provider_kind(provider: AcceptanceProvider) -> ProviderKind {
@@ -574,3 +589,7 @@ fn provider_kind(provider: AcceptanceProvider) -> ProviderKind {
         AcceptanceProvider::Codex => ProviderKind::Codex,
     }
 }
+
+#[cfg(test)]
+#[path = "agent_session_tui_acceptance_test.rs"]
+mod agent_session_tui_acceptance_tests;
