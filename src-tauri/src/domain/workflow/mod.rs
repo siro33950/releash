@@ -23,24 +23,20 @@ pub use repository::{
 pub use services::{contract, secret_masker, validation};
 #[cfg(test)]
 pub use services::{TimeoutContext, TimeoutPolicy};
-#[cfg(test)]
-pub use value_objects::ExecutionListFilter;
-#[cfg(test)]
-pub use value_objects::WorkflowExecutionRecord;
 pub use value_objects::{
     is_reserved_node_name, isolated_worktree_owner, AgentActivityObservedFact,
     AgentSessionActivity, ApprovalGrantedFact, ApprovalTarget, Artifact, ArtifactProducedFact,
     ChildEntry, CommandSpawnedFact, CommandSpec, CompletionRequirement, ContractType,
     ContractValidationResult, DefinitionResolution, EnvironmentVariableName,
-    EnvironmentVariableNameError, ExecutionInterruptionReason, ExecutionOrigin, ExecutionParentRef,
-    ExecutionStatus, ExecutionStatusFilter, ExecutionTreeLaunch, FacetContents, FacetKey,
-    FacetKind, FacetRefs, FacetSummary, FailureClassification, FailureDisposition, Fanout,
-    FanoutSlot, FanoutSpec, FieldPath, InputParam, InputParameterRef, IsolatedWorktree,
-    ItemsSource, NodeCompletion, NodeCompletionSignal, NodeCompletionSignalState, NodeDefinition,
-    NodeDefinitionName, NodeExecution, NodeExecutionFailure, NodeExecutionFailureKind,
-    NodeExecutionStatus, NodeFact, NodeFactMeta, NodeFactRecord, NodeHistoryEntry, NodeKind,
-    NodeKindName, OnFailure, Predicate, ProcessExitedFact, ProviderSessionTitleObservedFact, Rule,
-    RuntimeArtifact, RuntimeExecutionState, RuntimeFailureObservedFact, SchemaDef, SequenceSpec,
+    EnvironmentVariableNameError, ExecutionOrigin, ExecutionParentRef, ExecutionStatus,
+    ExecutionStatusFilter, ExecutionTreeLaunch, FacetContents, FacetKey, FacetKind, FacetRefs,
+    FacetSummary, FailureClassification, FailureDisposition, Fanout, FanoutSlot, FanoutSpec,
+    FieldPath, InputParam, InputParameterRef, IsolatedWorktree, ItemsSource, NodeCompletion,
+    NodeCompletionSignal, NodeCompletionSignalState, NodeDefinition, NodeDefinitionName,
+    NodeExecution, NodeExecutionFailure, NodeExecutionFailureKind, NodeExecutionStatus, NodeFact,
+    NodeFactMeta, NodeFactRecord, NodeHistoryEntry, NodeKind, NodeKindName, OnFailure, Predicate,
+    ProcessExitedFact, ProviderSessionTitleObservedFact, Rule, RuntimeArtifact,
+    RuntimeExecutionState, RuntimeFailureObservedFact, SchemaDef, SequenceSpec,
     SessionAttachedFact, SessionContinuationAdmittedFact, SessionDelegate,
     SessionExecutionTreeRootFacts, SessionNodeRenamedFact, SessionPermission, SessionSpec,
     StartedFact, StopReceivedFact, SubmitReceivedFact, SubmitRejectedFact, TimeoutKind, TokenUsage,

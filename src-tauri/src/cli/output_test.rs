@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::super::common::test_support::{
-    append_workflow_event, append_workflow_events, make_execution, test_uuid, write_execution_file,
+    append_workflow_event, append_workflow_events, make_execution, test_uuid,
+    write_canonical_execution,
 };
 use super::super::Cli;
 use super::*;
@@ -62,7 +63,7 @@ fn seed_artifact_node(data_dir: &Path, execution_id: &str) {
             },
         ],
     );
-    write_execution_file(
+    write_canonical_execution(
         data_dir,
         &make_execution(execution_id, "/repo", ExecutionStatus::Running, 1.0),
     );

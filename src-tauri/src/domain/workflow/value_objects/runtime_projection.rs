@@ -17,11 +17,7 @@ impl TokenUsage {
 pub const NODE_STATUS_ABORTED: &str = "aborted";
 pub const NODE_STATUS_COMPLETED: &str = "completed";
 pub const NODE_STATUS_FAILED: &str = "failed";
-#[cfg(test)]
-pub const NODE_STATUS_INTERRUPTED: &str = "interrupted";
 pub const NODE_STATUS_RUNNING: &str = "running";
-#[cfg(test)]
-pub const NODE_STATUS_WAITING_APPROVAL: &str = "waiting_approval";
 
 /// Private runtime transition history. Public history is `NodeExecution`.
 #[derive(Debug, Clone, PartialEq)]

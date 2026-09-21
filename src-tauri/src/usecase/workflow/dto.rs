@@ -197,10 +197,8 @@ pub(crate) struct FacetSummaryDto {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ExecutionStatusDto {
     Running,
-    WaitingApproval,
     Completed,
     Aborted,
-    Interrupted,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -210,15 +208,6 @@ pub(crate) enum ExecutionOriginDto {
     Cli,
     Agent,
     Api,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum ExecutionInterruptionReasonDto {
-    Crash,
-    Stale,
-    Stop,
-    Orphan,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -244,10 +233,6 @@ pub(crate) struct WorkflowExecutionSummaryDto {
     pub completed_at: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_reason: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub interruption_reason: Option<ExecutionInterruptionReasonDto>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resume_from_node: Option<String>,
     pub total_token_usage: TokenUsageDto,
 }
 
@@ -311,10 +296,6 @@ pub(crate) fn workflow_execution_summary_to_dto(
         updated_at: summary.updated_at,
         completed_at: summary.completed_at,
         error_reason: summary.error_reason,
-        interruption_reason: summary
-            .interruption_reason
-            .map(execution_interruption_reason_to_dto),
-        resume_from_node: summary.resume_from_node,
         total_token_usage: TokenUsageDto {
             input_tokens: summary.total_token_usage.input_tokens,
             output_tokens: summary.total_token_usage.output_tokens,
@@ -488,12 +469,8 @@ fn rule_to_dto(rule: &domain::Rule) -> RuleDto {
 fn execution_status_to_dto(status: domain::ExecutionStatus) -> ExecutionStatusDto {
     match status {
         domain::ExecutionStatus::Running => ExecutionStatusDto::Running,
-        #[cfg(test)]
-        domain::ExecutionStatus::WaitingApproval => ExecutionStatusDto::WaitingApproval,
         domain::ExecutionStatus::Completed => ExecutionStatusDto::Completed,
         domain::ExecutionStatus::Aborted => ExecutionStatusDto::Aborted,
-        #[cfg(test)]
-        domain::ExecutionStatus::Interrupted => ExecutionStatusDto::Interrupted,
     }
 }
 
@@ -503,17 +480,6 @@ fn execution_origin_to_dto(source: domain::ExecutionOrigin) -> ExecutionOriginDt
         domain::ExecutionOrigin::Api => ExecutionOriginDto::Api,
         domain::ExecutionOrigin::Cli => ExecutionOriginDto::Cli,
         domain::ExecutionOrigin::Agent => ExecutionOriginDto::Agent,
-    }
-}
-
-fn execution_interruption_reason_to_dto(
-    reason: domain::ExecutionInterruptionReason,
-) -> ExecutionInterruptionReasonDto {
-    match reason {
-        domain::ExecutionInterruptionReason::Crash => ExecutionInterruptionReasonDto::Crash,
-        domain::ExecutionInterruptionReason::Stale => ExecutionInterruptionReasonDto::Stale,
-        domain::ExecutionInterruptionReason::Stop => ExecutionInterruptionReasonDto::Stop,
-        domain::ExecutionInterruptionReason::Orphan => ExecutionInterruptionReasonDto::Orphan,
     }
 }
 
@@ -746,7 +712,7 @@ mod tests {
         let summary = workflow_execution_summary_to_dto(domain::WorkflowExecutionSummary {
             execution_id: "00000000-0000-4000-8000-000000000001".to_string(),
             workflow_name: "wf".to_string(),
-            status: domain::ExecutionStatus::Interrupted,
+            status: domain::ExecutionStatus::Running,
             worktree_path: "/repo".to_string(),
             current_node: None,
             created_from: domain::ExecutionOrigin::DesktopUi,
@@ -754,8 +720,6 @@ mod tests {
             updated_at: 2.0,
             completed_at: None,
             error_reason: None,
-            interruption_reason: Some(domain::ExecutionInterruptionReason::Stop),
-            resume_from_node: Some("review".to_string()),
             total_token_usage: domain::TokenUsage {
                 input_tokens: 13,
                 output_tokens: 8,
@@ -767,13 +731,11 @@ mod tests {
             serde_json::json!({
                 "executionId": "00000000-0000-4000-8000-000000000001",
                 "workflowName": "wf",
-                "status": "interrupted",
+                "status": "running",
                 "worktreePath": "/repo",
                 "createdFrom": "desktop_ui",
                 "startedAt": 1.0,
                 "updatedAt": 2.0,
-                "interruptionReason": "stop",
-                "resumeFromNode": "review",
                 "totalTokenUsage": {
                     "inputTokens": 13,
                     "outputTokens": 8

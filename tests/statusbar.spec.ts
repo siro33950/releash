@@ -83,8 +83,6 @@ test.describe("StatusBar", () => {
 				updatedAt: 2,
 				completedAt: null,
 				errorReason: null,
-				interruptionReason: null,
-				resumeFromNode: null,
 				totalTokenUsage: { inputTokens: 0, outputTokens: 0 },
 				nodeExecutions: [],
 				artifacts: [],

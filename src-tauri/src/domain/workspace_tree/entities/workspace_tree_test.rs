@@ -1350,7 +1350,7 @@ fn branch_status_capabilities_and_session_activity_are_backend_aggregated() {
             WorkspaceStructureFact::WorkflowSummaryProjected {
                 execution_id: execution_id.to_string(),
                 workflow_name: "review".to_string(),
-                status: ExecutionStatus::WaitingApproval,
+                status: ExecutionStatus::Running,
                 updated_at: 10.0,
             },
         ],
@@ -1358,10 +1358,10 @@ fn branch_status_capabilities_and_session_activity_are_backend_aggregated() {
     .unwrap();
 
     let workflow = tree.workflow_node(execution_id).unwrap();
-    assert_eq!(workflow.status, WorkspaceNodeStatus::Waiting);
+    assert_eq!(workflow.status, WorkspaceNodeStatus::Running);
     assert_eq!(
         workflow.status_classification,
-        WorkspaceNodeStatusClassification::Attention
+        WorkspaceNodeStatusClassification::Active
     );
     assert!(!workflow.can_stop);
     assert!(!workflow.can_resume);

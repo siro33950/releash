@@ -1040,10 +1040,6 @@ fn node_shape_is_valid(node: &WorkspaceTreeNode) -> bool {
 pub(super) fn workflow_status(status: ExecutionStatus) -> WorkspaceNodeStatus {
     match status {
         ExecutionStatus::Running => WorkspaceNodeStatus::Running,
-        #[cfg(test)]
-        ExecutionStatus::WaitingApproval => WorkspaceNodeStatus::Waiting,
-        #[cfg(test)]
-        ExecutionStatus::Interrupted => WorkspaceNodeStatus::Paused,
         ExecutionStatus::Completed => WorkspaceNodeStatus::Completed,
         ExecutionStatus::Aborted => WorkspaceNodeStatus::Aborted,
     }

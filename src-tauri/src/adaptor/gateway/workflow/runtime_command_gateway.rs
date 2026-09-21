@@ -1,5 +1,4 @@
 use super::workflow_host::WorkflowRuntimeDependencies;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::domain::app_config::ConfigRepository;
@@ -32,7 +31,6 @@ pub(crate) struct WorkflowRuntimeCommandGatewayDeps {
     pub(crate) isolated_worktrees: Arc<dyn crate::domain::workflow::IsolatedWorktreeGateway>,
     pub(crate) repository_usecase: Arc<RepositoryUsecase>,
     pub(crate) app_config: Arc<dyn ConfigRepository>,
-    pub(crate) data_dir: Option<PathBuf>,
     pub(crate) workspace_query: Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
     pub(crate) agent_session_launch: Arc<crate::usecase::agent_session::AgentSessionLaunchUsecase>,
     pub(crate) agent_session_initial_instruction:

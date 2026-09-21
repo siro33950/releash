@@ -1,6 +1,27 @@
 use super::*;
 use serde_json::{json, Value};
 
+#[test]
+fn test_workflow状態復元_三状態をそのまま復元する() {
+    for state in [
+        RuntimeExecutionState::Running,
+        RuntimeExecutionState::Completed,
+        RuntimeExecutionState::Aborted,
+    ] {
+        // Given
+        let restore = WorkflowExecutionRestore {
+            state: state.clone(),
+            ..Default::default()
+        };
+
+        // When
+        let execution = WorkflowExecution::restore_runtime(restore);
+
+        // Then
+        assert_eq!(execution.state(), &state);
+    }
+}
+
 fn execution(yaml: &str) -> WorkflowExecution {
     WorkflowExecution::restore_runtime(WorkflowExecutionRestore {
         id: "execution".to_string(),

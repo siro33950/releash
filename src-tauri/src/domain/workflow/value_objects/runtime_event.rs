@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use super::{
-    ExecutionInterruptionReason, ExecutionOrigin, ExecutionParentRef, NodeExecutionFailureKind,
-    NodeKindName, TokenUsage, WorkflowDefinition,
+    ExecutionOrigin, ExecutionParentRef, NodeExecutionFailureKind, NodeKindName, TokenUsage,
+    WorkflowDefinition,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -182,17 +182,6 @@ pub enum WorkflowEvent {
         aborted_node: Option<String>,
         timestamp: f64,
     },
-    ExecutionInterrupted {
-        execution_id: String,
-        #[serde(with = "execution_interruption_reason_serde")]
-        reason: ExecutionInterruptionReason,
-        timestamp: f64,
-    },
-    ExecutionResumed {
-        execution_id: String,
-        resume_from_node: String,
-        timestamp: f64,
-    },
 }
 
 mod execution_origin_serde {
@@ -213,39 +202,5 @@ mod execution_origin_serde {
     {
         let value = String::deserialize(deserializer)?;
         ExecutionOrigin::from_public_value(&value).map_err(serde::de::Error::custom)
-    }
-}
-
-mod execution_interruption_reason_serde {
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    use super::ExecutionInterruptionReason;
-
-    pub(super) fn serialize<S>(
-        value: &ExecutionInterruptionReason,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(value.as_str())
-    }
-
-    pub(super) fn deserialize<'de, D>(
-        deserializer: D,
-    ) -> Result<ExecutionInterruptionReason, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        match String::deserialize(deserializer)?.as_str() {
-            "crash" => Ok(ExecutionInterruptionReason::Crash),
-            "stale" => Ok(ExecutionInterruptionReason::Stale),
-            "stop" => Ok(ExecutionInterruptionReason::Stop),
-            "orphan" => Ok(ExecutionInterruptionReason::Orphan),
-            value => Err(serde::de::Error::unknown_variant(
-                value,
-                &["crash", "stale", "stop", "orphan"],
-            )),
-        }
     }
 }

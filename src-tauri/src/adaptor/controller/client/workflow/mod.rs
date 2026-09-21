@@ -172,8 +172,7 @@ fn parse_execution_origin(
 }
 
 /// `execution_id` の形式検証（path traversal / 不正文字対策）。
-/// UUID（RFC 4122）形式のみ許容する。Execution Store 内部でも canonicalize 後の
-/// `workflow_executions/` 配下チェックを行うが、command 入口でも形式不正を弾く。
+/// UUID（RFC 4122）形式のみ許容する。
 fn validate_execution_id(execution_id: &str) -> Result<(), String> {
     uuid::Uuid::parse_str(execution_id)
         .map(|_| ())
@@ -1202,8 +1201,6 @@ pub(crate) mod tests {
                 None
             },
             error_reason: None,
-            interruption_reason: None,
-            resume_from_node: None,
             total_token_usage: Default::default(),
         }
     }
@@ -1385,10 +1382,6 @@ pub(crate) mod tests {
     ///
     /// 観測経路の認可境界（spec [05] L104-108 / L182）として `worktree_path` は必須で、
     /// caller の認可済み managed worktree のみを対象にする。
-    ///
-    /// active execution は in-memory map + metadata file の両方に存在する境界状態であるため、
-    /// `ExecutionStore::register_active_execution` 経由で投入する。terminal execution はメタデータファイル
-    /// のみに投入し、`list_completed` が拾い上げることを検証する。
     #[tokio::test]
     async fn list_workflow_executions_command_returns_active_first_filtered_by_status() {
         let (app, _data_dir, local_event_store, worktree_path, _r, _w) =
@@ -1662,9 +1655,9 @@ pub(crate) mod tests {
     }
 
     /// Spec [05] Rule: 指定 execution の event log を観測する。
-    /// `get_workflow_execution_log` Tauri command が NDJSON から読み込んだ event 列を返す。
+    /// `get_workflow_execution_log` Tauri command が LocalEventStore から読み込んだ event 列を返す。
     #[tokio::test]
-    async fn get_workflow_execution_log_command_reads_persisted_ndjson() {
+    async fn get_workflow_execution_log_command_reads_persisted_events() {
         let (app, _data_dir, local_event_store, worktree_path, _r, _w) =
             make_read_only_app_with_managed_worktree();
         let execution_id = read_only_test_uuid(4);

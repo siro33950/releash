@@ -275,8 +275,6 @@ mod tests {
             updated_at_bits: 10.0f64.to_bits(),
             completed_at_bits: None,
             error_reason: None,
-            interruption_reason: None,
-            resume_from_node: None,
             total_token_usage: TokenUsage::default(),
         }
     }

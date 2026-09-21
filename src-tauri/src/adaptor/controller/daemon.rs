@@ -272,7 +272,6 @@ pub(crate) fn compose(
             adaptor::gateway::workflow::WorkflowRuntimeCommandGatewayDeps {
                 repository_usecase: repository_usecase.clone(),
                 app_config: config_repository.clone(),
-                data_dir: Some(data_dir.clone()),
                 workspace_query: workspace_query_service.clone(),
                 agent_session_launch: agent_session_launch.clone(),
                 agent_session_initial_instruction: agent_session_initial_instruction.clone(),

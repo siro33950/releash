@@ -235,22 +235,8 @@ pub(in crate::cli) mod test_support {
                 None
             },
             error_reason: None,
-            interruption_reason: None,
-            resume_from_node: None,
             total_token_usage: TokenUsage::default(),
         }
-    }
-
-    pub(in crate::cli) fn write_execution_file(
-        data_dir: &Path,
-        execution: &WorkflowExecutionMetadata,
-    ) {
-        let executions_dir = data_dir.join("workflow_executions");
-        fs::create_dir_all(&executions_dir).unwrap();
-        let path = executions_dir.join(format!("{}.json", execution.execution_id));
-        let json = serde_json::to_string_pretty(execution).unwrap();
-        fs::write(path, json).unwrap();
-        write_canonical_execution(data_dir, execution);
     }
 
     pub(in crate::cli) fn initialize_canonical_store(data_dir: &Path) {
@@ -272,7 +258,10 @@ pub(in crate::cli) mod test_support {
             .expect("append canonical node fact fixture");
     }
 
-    fn write_canonical_execution(data_dir: &Path, execution: &WorkflowExecutionMetadata) {
+    pub(in crate::cli) fn write_canonical_execution(
+        data_dir: &Path,
+        execution: &WorkflowExecutionMetadata,
+    ) {
         let store =
             LocalEventStore::open(LocalEventStoreConfig::production(data_dir.to_path_buf()))
                 .expect("open canonical local event store");

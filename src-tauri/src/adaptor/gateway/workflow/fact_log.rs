@@ -388,18 +388,6 @@ fn fact_rows_for_events(
             | WorkflowEvent::ExecutionCompleted { .. }
             | WorkflowEvent::StallObserved { .. }
             | WorkflowEvent::StallCleared { .. } => {}
-            WorkflowEvent::ExecutionInterrupted { .. } => {
-                log::warn!(
-                    "workflow event ExecutionInterrupted for {} is not representable as a node fact and was dropped",
-                    event.execution_id()
-                );
-            }
-            WorkflowEvent::ExecutionResumed { .. } => {
-                log::warn!(
-                    "workflow event ExecutionResumed for {} is not representable as a node fact and was dropped",
-                    event.execution_id()
-                );
-            }
         }
     }
     Ok(rows)
@@ -988,8 +976,6 @@ pub(crate) fn metadata_record_from_read_model(
         updated_at_bits: model.updated_at.to_bits(),
         completed_at_bits: model.completed_at.map(f64::to_bits),
         error_reason: model.error_reason.clone(),
-        interruption_reason: model.interruption_reason,
-        resume_from_node: model.resume_from_node.clone(),
         total_token_usage: model.total_token_usage.clone(),
     }
 }

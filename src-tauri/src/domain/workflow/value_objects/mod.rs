@@ -28,13 +28,8 @@ pub use definition::{
 };
 pub use definition_resolution::DefinitionResolution;
 pub use execution::{
-    ApprovalTarget, Artifact, ExecutionInterruptionReason, ExecutionOrigin, ExecutionStatus,
-    Fanout, WorkflowExecution,
+    ApprovalTarget, Artifact, ExecutionOrigin, ExecutionStatus, Fanout, WorkflowExecution,
 };
-#[cfg(test)]
-pub use execution_metadata::ExecutionListFilter;
-#[cfg(test)]
-pub use execution_metadata::WorkflowExecutionRecord;
 pub use execution_metadata::{
     ExecutionStatusFilter, WorkflowExecutionSummary, WorkflowPageRequest,
 };

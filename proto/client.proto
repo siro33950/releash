@@ -1665,6 +1665,8 @@ message GetWorkflowExecutionStateRequest {
 }
 
 message WorkflowExecutionView {
+  reserved 11, 12;
+  reserved "interruption_reason", "resume_from_node";
   optional string id = 1 [json_name = "id", (json_required) = true];
   optional string workflow_name = 2 [json_name = "workflowName", (json_required) = true];
   optional ExecutionStatusView status = 3 [json_name = "status", (json_required) = true];
@@ -1675,8 +1677,6 @@ message WorkflowExecutionView {
   optional double updated_at = 8 [json_name = "updatedAt", (json_required) = true];
   optional double completed_at = 9 [json_name = "completedAt", (json_nullable) = true];
   optional string error_reason = 10 [json_name = "errorReason", (json_nullable) = true];
-  optional ExecutionInterruptionReasonView interruption_reason = 11 [json_name = "interruptionReason", (json_nullable) = true];
-  optional string resume_from_node = 12 [json_name = "resumeFromNode", (json_nullable) = true];
   optional TokenUsageView total_token_usage = 13 [json_name = "totalTokenUsage", (json_required) = true];
   optional ListNodeExecutionView node_executions = 14 [json_name = "nodeExecutions", (json_required) = true];
   optional ListArtifactView artifacts = 15 [json_name = "artifacts", (json_required) = true];
@@ -1687,11 +1687,11 @@ message WorkflowExecutionView {
 message ExecutionStatusView {
   option (json_wrapper) = "value";
   enum Value {
+    reserved 1, 4;
+    reserved "waiting_approval", "interrupted";
     running = 0 [(json_enum_name) = "running"];
-    waiting_approval = 1 [(json_enum_name) = "waiting_approval"];
     completed = 2 [(json_enum_name) = "completed"];
     aborted = 3 [(json_enum_name) = "aborted"];
-    interrupted = 4 [(json_enum_name) = "interrupted"];
   }
   optional Value value = 1 [json_name = "value", (json_required) = true];
 }
@@ -1703,17 +1703,6 @@ message ExecutionOriginView {
     cli = 1 [(json_enum_name) = "cli"];
     agent = 2 [(json_enum_name) = "agent"];
     api = 3 [(json_enum_name) = "api"];
-  }
-  optional Value value = 1 [json_name = "value", (json_required) = true];
-}
-
-message ExecutionInterruptionReasonView {
-  option (json_wrapper) = "value";
-  enum Value {
-    crash = 0 [(json_enum_name) = "crash"];
-    stale = 1 [(json_enum_name) = "stale"];
-    stop = 2 [(json_enum_name) = "stop"];
-    orphan = 3 [(json_enum_name) = "orphan"];
   }
   optional Value value = 1 [json_name = "value", (json_required) = true];
 }
@@ -2980,6 +2969,8 @@ message ListWorkflowExecutionsRequest {
 }
 
 message WorkflowExecutionSummaryDto {
+  reserved 11, 12;
+  reserved "interruption_reason", "resume_from_node";
   optional string execution_id = 1 [json_name = "executionId", (json_required) = true];
   optional string workflow_name = 2 [json_name = "workflowName", (json_required) = true];
   optional ExecutionStatusDto status = 3 [json_name = "status", (json_required) = true];
@@ -2990,19 +2981,17 @@ message WorkflowExecutionSummaryDto {
   optional double updated_at = 8 [json_name = "updatedAt", (json_required) = true];
   optional double completed_at = 9 [json_name = "completedAt", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
   optional string error_reason = 10 [json_name = "errorReason", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
-  optional ExecutionInterruptionReasonDto interruption_reason = 11 [json_name = "interruptionReason", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
-  optional string resume_from_node = 12 [json_name = "resumeFromNode", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
   optional TokenUsageDto total_token_usage = 13 [json_name = "totalTokenUsage", (json_required) = true];
 }
 
 message ExecutionStatusDto {
   option (json_wrapper) = "value";
   enum Value {
+    reserved 1, 4;
+    reserved "waiting_approval", "interrupted";
     running = 0 [(json_enum_name) = "running"];
-    waiting_approval = 1 [(json_enum_name) = "waiting_approval"];
     completed = 2 [(json_enum_name) = "completed"];
     aborted = 3 [(json_enum_name) = "aborted"];
-    interrupted = 4 [(json_enum_name) = "interrupted"];
   }
   optional Value value = 1 [json_name = "value", (json_required) = true];
 }
@@ -3014,17 +3003,6 @@ message ExecutionOriginDto {
     cli = 1 [(json_enum_name) = "cli"];
     agent = 2 [(json_enum_name) = "agent"];
     api = 3 [(json_enum_name) = "api"];
-  }
-  optional Value value = 1 [json_name = "value", (json_required) = true];
-}
-
-message ExecutionInterruptionReasonDto {
-  option (json_wrapper) = "value";
-  enum Value {
-    crash = 0 [(json_enum_name) = "crash"];
-    stale = 1 [(json_enum_name) = "stale"];
-    stop = 2 [(json_enum_name) = "stop"];
-    orphan = 3 [(json_enum_name) = "orphan"];
   }
   optional Value value = 1 [json_name = "value", (json_required) = true];
 }
@@ -3254,6 +3232,8 @@ message WorkspaceStatusClassification {
 message WorkspaceHistoryStatus {
   option (json_wrapper) = "value";
   enum Value {
+    reserved 7, 8;
+    reserved "waiting_approval", "interrupted";
     unresolved = 0 [(json_enum_name) = "unresolved"];
     running = 1 [(json_enum_name) = "running"];
     paused = 2 [(json_enum_name) = "paused"];
@@ -3261,8 +3241,6 @@ message WorkspaceHistoryStatus {
     waiting = 4 [(json_enum_name) = "waiting"];
     aborted = 5 [(json_enum_name) = "aborted"];
     completed = 6 [(json_enum_name) = "completed"];
-    waiting_approval = 7 [(json_enum_name) = "waiting_approval"];
-    interrupted = 8 [(json_enum_name) = "interrupted"];
   }
   optional Value value = 1 [(json_required) = true];
 }

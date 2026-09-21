@@ -227,8 +227,6 @@ fn standalone_session_title(tree_id: &str, records: &[NodeFactRecord]) -> String
         updated_at_bits: model.updated_at.to_bits(),
         completed_at_bits: model.completed_at.map(f64::to_bits),
         error_reason: model.error_reason,
-        interruption_reason: model.interruption_reason,
-        resume_from_node: model.resume_from_node,
         total_token_usage: model.total_token_usage,
     };
     runtime_snapshot_nodes(RuntimeSnapshotNodeProjection {

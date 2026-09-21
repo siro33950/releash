@@ -88,7 +88,7 @@ releash workflow status <EXECUTION_ID> [--json]
 ```text
 execution_id:  <id>
 workflow:      <workflow 名>
-status:        <running | waiting_approval | interrupted | completed | aborted>
+status:        <running | completed | aborted>
 current_node:  <node 名。無ければ空>
 updated_at:    <時刻>
 input_tokens:  <数>
@@ -101,14 +101,12 @@ output_tokens: <数>
 |---|---|
 | `id` | WorkflowExecution の id |
 | `workflowName` | workflow 名 |
-| `status` | `running` / `waiting_approval` / `interrupted` / `completed` / `aborted` |
+| `status` | `running` / `completed` / `aborted` |
 | `currentNode` | 現在の node 名、または `null` |
 | `worktreePath` | 実行対象の worktree path |
 | `createdFrom` | `desktop_ui` / `cli` / `agent` / `api` |
 | `startedAt` / `updatedAt` / `completedAt` | 時刻（`completedAt` は未完了なら `null`） |
 | `errorReason` | 失敗理由、または `null` |
-| `interruptionReason` | `crash` / `stale` / `stop` / `orphan`、または `null` |
-| `resumeFromNode` | 再開対象の node 名、または `null` |
 | `totalTokenUsage` | `{ "inputTokens", "outputTokens" }` |
 | `nodeExecutions` | NodeExecution の一覧。id、node 名、kind、attempt、status、Session id、Artifact、失敗情報などを持つ |
 | `artifacts` | 提出済み Artifact の一覧 |

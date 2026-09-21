@@ -428,7 +428,7 @@ impl WorkflowControlPlaneUsecase {
                 &worktree_path,
                 &snapshot,
                 Some(NodeOutcome::StartNodes(
-                    snapshot.clone(),
+                    Box::new(snapshot.clone()),
                     vec![
                         crate::domain::workflow::entities::workflow_execution::NodeStart::Leaf(
                             restarted.leaf,

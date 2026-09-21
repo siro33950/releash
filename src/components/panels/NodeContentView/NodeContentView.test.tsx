@@ -285,7 +285,6 @@ describe("NodeContentView", () => {
 			nodeExecutionId: "node-execution-internal-uuid",
 			attempt: 3,
 			fanoutParent: "item 2 child 1",
-			resumeFromNode: "checkpoint-internal",
 		} as WorkspaceNodeDetail;
 		renderView("public-title");
 
@@ -298,7 +297,6 @@ describe("NodeContentView", () => {
 		).not.toBeInTheDocument();
 		expect(screen.queryByText(/attempt 3/i)).not.toBeInTheDocument();
 		expect(screen.queryByText(/item 2 child 1/i)).not.toBeInTheDocument();
-		expect(screen.queryByText("checkpoint-internal")).not.toBeInTheDocument();
 	});
 
 	it("uses the backend status as the Node status tooltip", () => {

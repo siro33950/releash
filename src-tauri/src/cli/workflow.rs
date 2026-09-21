@@ -88,8 +88,6 @@ fn format_execution_status(
 fn execution_status_name(status: ExecutionStatusView) -> &'static str {
     match status {
         ExecutionStatusView::Running => "running",
-        ExecutionStatusView::WaitingApproval => "waiting_approval",
-        ExecutionStatusView::Interrupted => "interrupted",
         ExecutionStatusView::Completed => "completed",
         ExecutionStatusView::Aborted => "aborted",
     }

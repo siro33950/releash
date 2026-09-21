@@ -282,8 +282,6 @@ fn workflow_payload() -> WorkflowExecutionChangedPayloadView {
             updated_at: 2.0,
             completed_at: None,
             error_reason: None,
-            interruption_reason: None,
-            resume_from_node: None,
             total_token_usage: Default::default(),
             node_executions: vec![],
             artifacts: vec![],

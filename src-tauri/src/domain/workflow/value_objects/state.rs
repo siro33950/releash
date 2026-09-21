@@ -7,42 +7,27 @@ use super::runtime_projection::{
     NodeHistoryEntry, RuntimeArtifact, TokenUsage, NODE_STATUS_ABORTED, NODE_STATUS_COMPLETED,
     NODE_STATUS_RUNNING,
 };
-#[cfg(test)]
-use super::runtime_projection::{NODE_STATUS_INTERRUPTED, NODE_STATUS_WAITING_APPROVAL};
 
 /// Private runtime transition state. Public lifecycle state is `ExecutionStatus`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RuntimeExecutionState {
     Running,
-    #[cfg(test)]
-    WaitingApproval,
     Completed,
     Aborted,
-    #[cfg(test)]
-    Interrupted,
 }
 
 impl RuntimeExecutionState {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Running => NODE_STATUS_RUNNING,
-            #[cfg(test)]
-            Self::WaitingApproval => NODE_STATUS_WAITING_APPROVAL,
             Self::Completed => NODE_STATUS_COMPLETED,
             Self::Aborted => NODE_STATUS_ABORTED,
-            #[cfg(test)]
-            Self::Interrupted => NODE_STATUS_INTERRUPTED,
         }
     }
 
     #[cfg(test)]
     pub fn is_active(&self) -> bool {
-        match self {
-            Self::Running => true,
-            #[cfg(test)]
-            Self::WaitingApproval => true,
-            _ => false,
-        }
+        matches!(self, Self::Running)
     }
 }
 

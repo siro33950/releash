@@ -20,14 +20,7 @@ export type NodeExecutionFailureKind =
 	| "user_abort"
 	| "infrastructure_crash";
 
-export type WorkflowExecutionStatus =
-	| "running"
-	| "waiting_approval"
-	| "completed"
-	| "aborted"
-	| "interrupted";
-
-export type ExecutionInterruptionReason = "crash" | "stale" | "stop" | "orphan";
+export type WorkflowExecutionStatus = "running" | "completed" | "aborted";
 
 export type Predicate = string | { and: Predicate[] } | { or: Predicate[] };
 
@@ -205,8 +198,6 @@ export interface WorkflowExecution {
 	updatedAt: number;
 	completedAt?: number | null;
 	errorReason?: string | null;
-	interruptionReason?: ExecutionInterruptionReason | null;
-	resumeFromNode?: string | null;
 	totalTokenUsage: TokenUsage;
 	nodeExecutions: NodeExecution[];
 	artifacts: Artifact[];
@@ -225,8 +216,6 @@ export interface WorkflowExecutionSummary {
 	updatedAt: number;
 	completedAt?: number | null;
 	errorReason?: string | null;
-	interruptionReason?: ExecutionInterruptionReason | null;
-	resumeFromNode?: string | null;
 	totalTokenUsage: TokenUsage;
 }
 

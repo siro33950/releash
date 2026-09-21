@@ -57,10 +57,8 @@ const APPROVAL_ARTIFACT_CODEX_WORKFLOW: &str = "acceptance-approval-artifact-cod
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AcceptanceWorkflowExecutionStatus {
     Running,
-    WaitingApproval,
     Completed,
     Aborted,
-    Interrupted,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,10 +130,8 @@ struct ExecutionResponse {
 #[serde(rename_all = "snake_case")]
 enum ExecutionStatusResponse {
     Running,
-    WaitingApproval,
     Completed,
     Aborted,
-    Interrupted,
 }
 
 #[derive(Deserialize)]
@@ -509,7 +505,6 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
         let driver = Arc::new(WorkflowRuntimeHost::new_canonical(
             Arc::new(AcceptanceWorkflowDefinitionResolver),
             Arc::new(AcceptanceManagedWorktreeResolver),
-            Some(config.data_dir.clone()),
             workspace_query,
             composition.launch.clone(),
             composition.initial_instruction.clone(),
@@ -1162,14 +1157,8 @@ fn acceptance_execution_from_runtime(
         id: snapshot.execution_id,
         status: match snapshot.state {
             RuntimeExecutionState::Running => AcceptanceWorkflowExecutionStatus::Running,
-            #[cfg(test)]
-            RuntimeExecutionState::WaitingApproval => {
-                AcceptanceWorkflowExecutionStatus::WaitingApproval
-            }
             RuntimeExecutionState::Completed => AcceptanceWorkflowExecutionStatus::Completed,
             RuntimeExecutionState::Aborted => AcceptanceWorkflowExecutionStatus::Aborted,
-            #[cfg(test)]
-            RuntimeExecutionState::Interrupted => AcceptanceWorkflowExecutionStatus::Interrupted,
         },
         node_executions: snapshot
             .node_executions
@@ -1226,14 +1215,8 @@ impl From<ExecutionResponse> for AcceptanceWorkflowExecution {
             id: value.id,
             status: match value.status {
                 ExecutionStatusResponse::Running => AcceptanceWorkflowExecutionStatus::Running,
-                ExecutionStatusResponse::WaitingApproval => {
-                    AcceptanceWorkflowExecutionStatus::WaitingApproval
-                }
                 ExecutionStatusResponse::Completed => AcceptanceWorkflowExecutionStatus::Completed,
                 ExecutionStatusResponse::Aborted => AcceptanceWorkflowExecutionStatus::Aborted,
-                ExecutionStatusResponse::Interrupted => {
-                    AcceptanceWorkflowExecutionStatus::Interrupted
-                }
             },
             node_executions: value
                 .node_executions
