@@ -10,8 +10,8 @@ use crate::domain::workflow::{
     ExecutionOrigin, ExecutionStatusFilter, WorkflowError, WorkflowPageRequest,
 };
 use crate::usecase::workflow::command::{
-    AbortExecutionCommand, ApprovalCommand, ResumeExecutionCommand, RetryNodeCommand,
-    StartExecutionCommand, StopExecutionCommand, SubmitOutputArtifact, SubmitOutputCommand,
+    AbortExecutionCommand, ApprovalCommand, RetryNodeCommand, StartExecutionCommand,
+    SubmitOutputArtifact, SubmitOutputCommand,
 };
 use crate::usecase::workflow::dto::{WorkflowExecutionSummaryDto, WorkflowSummaryDto};
 use crate::usecase::workflow::ports::WorkflowDiagnosticsTarget;
@@ -77,16 +77,12 @@ pub(super) fn router() -> Router<LocalApiState> {
             post(abort_execution),
         )
         .route(
-            "/v1/workflow/executions/{execution_id}/stop",
-            post(stop_execution),
-        )
-        .route(
-            "/v1/workflow/executions/{execution_id}/resume",
-            post(resume_execution),
-        )
-        .route(
             "/v1/workflow/executions/{execution_id}/retry",
             post(retry_node),
+        )
+        .route(
+            "/v1/workflow/node-executions/{node_execution_id}/resume",
+            post(resume_session_node),
         )
         .route(
             "/v1/workflow/node-executions/{node_execution_id}/submit",
@@ -213,24 +209,13 @@ async fn abort_execution(
     Ok(Json(MutationResponse::ok()))
 }
 
-async fn stop_execution(
+async fn resume_session_node(
     State(state): State<LocalApiState>,
-    Path(execution_id): Path<String>,
+    Path(node_execution_id): Path<String>,
 ) -> Result<Json<MutationResponse>, ApiError> {
     state
         .runtime
-        .stop_execution(StopExecutionCommand { execution_id })
-        .await?;
-    Ok(Json(MutationResponse::ok()))
-}
-
-async fn resume_execution(
-    State(state): State<LocalApiState>,
-    Path(execution_id): Path<String>,
-) -> Result<Json<MutationResponse>, ApiError> {
-    state
-        .runtime
-        .resume_execution(ResumeExecutionCommand { execution_id })
+        .resume_session_node_by_id(node_execution_id)
         .await?;
     Ok(Json(MutationResponse::ok()))
 }

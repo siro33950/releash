@@ -109,9 +109,11 @@ Operation Surface は domain state を所有しない。同じ backend usecase �
 
 ### 実行木
 
-WorkflowExecution は木全体の `Running` / `Completed` / `Aborted` を所有する。WaitingApproval、Paused、Failed、Interrupted と completion signal は NodeExecution が所有する。workflow aggregate だけが transition を決める。
+WorkflowExecution は木全体の `Running` / `Completed` / `Aborted` を所有する。NodeExecution は `Running` / `WaitingApproval` / `Succeeded` / `Aborted` / `Unresolved` と completion signal を所有する。プロセスの在否は状態と別に読み取り、終わっていない Node のプロセスが居ない場合は介入待ちとして分類する。workflow aggregate だけが transition を決める。
 
 Session の delegate は、親 Session が所有する同一 session 継続機構である。Artifact の提出を起点に child を実行し、結果により親の続行・完了を決める。child の NodeExecution は親 Session の部分木であり、発火ごとに新しい NodeExecution と attempt を持つ。親の NodeExecution・attempt・AgentSession は維持する。child の結果、発火回数、注入済みの事実から続行状態を導出し、親 Artifact の `child` は engine が管理する。
+
+親 Session の Resume に新しい attempt が必要な場合、未完了の委任ラウンドを新しい親 attempt が引き継ぐ。既存 child の親IDと worktree の継承先は履歴として保持し、child の完了・再試行は attempt 間の対応から最新の親の継続状態へ反映する。
 
 ### AgentSession
 
@@ -123,7 +125,7 @@ AgentSession は provider、provider session identity、opaque transcript refere
 
 branch は `releash/isolated/<node_execution_id>-a<attempt>`、path は `<repository root の親>/<repository 名>-worktrees/.releash-isolated/<node_execution_id>-a<attempt>` である。命名に埋め込まれた NodeExecution と attempt、および実行木の状態だけで識別する。Worktree 管理の一覧には、実行中も終了後も再起動後も現れない。branch/path は Node 詳細と Artifact から観測できる。Thread は読み側で所有実行木の Workspaceへ結び付ける。
 
-隔離 worktree 内の Code / Diff と Git 履歴は外部状態である。engine は成果の統合も worktree・branch の削除も行わない。統合は人間または親 Sessionが判断して通常の Git 操作として行う。逐次 Nodeで `isolated` を使った成果は隔離 branchに残り、親 worktree で動く後続 Nodeには見えない。実体が失われた場合の再開は process の起動失敗として扱い、Retry は新しい attempt の worktree を作る。
+隔離 worktree 内の Code / Diff と Git 履歴は外部状態である。engine は成果の統合も worktree・branch の削除も行わない。統合は人間または親 Sessionが判断して通常の Git 操作として行う。逐次 Nodeで `isolated` を使った成果は隔離 branchに残り、親 worktree で動く後続 Nodeには見えない。Session の隔離 worktree の実体が失われた場合、Resume は新しい attempt の worktree と provider session を作り、最初の指示を送る。Command の Retry は実行 worktree のフォルダを必要とする。Abort はフォルダの存在を確かめずに実行を中止する。
 
 ## 使用禁止語
 

@@ -4,7 +4,7 @@ use crate::domain::agent_session::ProviderAvailabilityReader;
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::workspace_tree::WorkspaceIdentity;
 use crate::usecase::agent_session::{
-    AgentSessionInitialInstructionUsecase, AgentSessionInterruptUsecase, AgentSessionLaunchUsecase,
+    AgentSessionInitialInstructionUsecase, AgentSessionLaunchUsecase,
     AgentSessionLaunchUsecaseError, AgentSessionLifecycleUsecase,
     WorkflowAgentSessionLaunchRequest,
 };
@@ -57,13 +57,6 @@ pub(crate) trait WorkflowAgentSessionPort: Send + Sync {
         node_session_id: &str,
     ) -> Result<(), WorkflowRuntimeError>;
 
-    async fn dispatch_initial_instruction(
-        &self,
-        node_session_id: &str,
-        node_execution_id: &str,
-        instruction: &str,
-    ) -> Result<(), WorkflowRuntimeError>;
-
     /// `child_execution_id` ごとに一度だけ届く。同じ child の再送は session 側が拒む。
     async fn dispatch_continuation(
         &self,
@@ -72,15 +65,15 @@ pub(crate) trait WorkflowAgentSessionPort: Send + Sync {
         instruction: &str,
     ) -> Result<(), WorkflowRuntimeError>;
 
+    async fn has_recoverable_conversation(
+        &self,
+        node_session_id: &str,
+    ) -> Result<bool, WorkflowRuntimeError>;
+
     async fn recover_workflow_agent_session_provider(
         &self,
         node_session_id: &str,
         node_execution_id: &str,
-    ) -> Result<(), WorkflowRuntimeError>;
-
-    async fn interrupt_workflow_agent_session(
-        &self,
-        node_session_id: &str,
     ) -> Result<(), WorkflowRuntimeError>;
 
     async fn stop_agent_session_for_terminal_node_preserving_checkpoint(
@@ -99,7 +92,6 @@ pub(crate) trait WorkflowAgentSessionPort: Send + Sync {
 pub(crate) struct ProviderWorkflowAgentSessionPort {
     launch: Arc<AgentSessionLaunchUsecase>,
     initial_instruction: Arc<AgentSessionInitialInstructionUsecase>,
-    interrupt: Arc<AgentSessionInterruptUsecase>,
     lifecycle: Arc<AgentSessionLifecycleUsecase>,
     availability: Arc<dyn ProviderAvailabilityReader>,
 }
@@ -117,14 +109,12 @@ impl ProviderWorkflowAgentSessionPort {
     pub(crate) fn new(
         launch: Arc<AgentSessionLaunchUsecase>,
         initial_instruction: Arc<AgentSessionInitialInstructionUsecase>,
-        interrupt: Arc<AgentSessionInterruptUsecase>,
         lifecycle: Arc<AgentSessionLifecycleUsecase>,
         availability: Arc<dyn ProviderAvailabilityReader>,
     ) -> Self {
         Self {
             launch,
             initial_instruction,
-            interrupt,
             lifecycle,
             availability,
         }
@@ -216,27 +206,6 @@ impl WorkflowAgentSessionPort for ProviderWorkflowAgentSessionPort {
             })
     }
 
-    async fn dispatch_initial_instruction(
-        &self,
-        node_session_id: &str,
-        node_execution_id: &str,
-        instruction: &str,
-    ) -> Result<(), WorkflowRuntimeError> {
-        self.initial_instruction
-            .dispatch(
-                node_session_id,
-                instruction,
-                &format!("workflow-node-initial-instruction-{node_execution_id}"),
-            )
-            .await
-            .map_err(|error| {
-                WorkflowRuntimeError::AgentSession(format!(
-                    "dispatch initial instruction for AgentSession '{node_session_id}': {error:?}"
-                ))
-            })?;
-        Ok(())
-    }
-
     async fn dispatch_continuation(
         &self,
         node_session_id: &str,
@@ -247,7 +216,7 @@ impl WorkflowAgentSessionPort for ProviderWorkflowAgentSessionPort {
             .dispatch_continuation(
                 node_session_id,
                 instruction,
-                &format!("workflow-delegate-continuation-{child_execution_id}"),
+                &format!("workflow-delegate-continuation-{node_session_id}-{child_execution_id}"),
             )
             .await
             .map(|_| ())
@@ -258,17 +227,35 @@ impl WorkflowAgentSessionPort for ProviderWorkflowAgentSessionPort {
             })
     }
 
+    async fn has_recoverable_conversation(
+        &self,
+        node_session_id: &str,
+    ) -> Result<bool, WorkflowRuntimeError> {
+        self.lifecycle
+            .has_recoverable_conversation(node_session_id)
+            .await
+            .map_err(|error| {
+                WorkflowRuntimeError::AgentSession(format!(
+                    "read provider conversation for '{node_session_id}': {error:?}"
+                ))
+            })
+    }
+
     async fn recover_workflow_agent_session_provider(
         &self,
         node_session_id: &str,
         node_execution_id: &str,
     ) -> Result<(), WorkflowRuntimeError> {
-        self.lifecycle
+        let outcome = self
+            .lifecycle
             .ensure_provider_running(
                 node_session_id,
                 24,
                 80,
-                &format!("workflow-node-provider-recovery-{node_execution_id}"),
+                &format!(
+                    "workflow-node-provider-recovery-{node_execution_id}-{}",
+                    uuid::Uuid::new_v4()
+                ),
             )
             .await
             .map_err(|error| {
@@ -276,21 +263,13 @@ impl WorkflowAgentSessionPort for ProviderWorkflowAgentSessionPort {
                     "recover provider for Workflow AgentSession '{node_session_id}': {error:?}"
                 ))
             })?;
-        Ok(())
-    }
-
-    async fn interrupt_workflow_agent_session(
-        &self,
-        node_session_id: &str,
-    ) -> Result<(), WorkflowRuntimeError> {
-        self.interrupt
-            .interrupt(node_session_id)
-            .await
-            .map_err(|error| {
-                WorkflowRuntimeError::AgentSession(format!(
-                    "interrupt Workflow AgentSession '{node_session_id}': {error:?}"
-                ))
-            })
+        match outcome {
+            crate::usecase::agent_session::AgentSessionOpenOutcome::Attached
+            | crate::usecase::agent_session::AgentSessionOpenOutcome::Resumed => Ok(()),
+            _ => Err(WorkflowRuntimeError::AgentSession(format!(
+                "provider for Workflow AgentSession '{node_session_id}' did not resume"
+            ))),
+        }
     }
 
     async fn stop_agent_session_for_terminal_node_preserving_checkpoint(

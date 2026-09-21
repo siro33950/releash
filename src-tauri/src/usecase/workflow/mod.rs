@@ -11,6 +11,7 @@ pub(crate) mod delegate;
 pub(crate) mod dto;
 pub(crate) mod event_draft;
 mod facet;
+pub(crate) mod node_startup;
 pub(crate) mod output;
 pub(crate) mod output_submission;
 pub(crate) mod ports;
@@ -49,8 +50,9 @@ use query_service::WorkflowQueryService;
 pub use query_service::{WorkflowEventView, WorkflowGetOutputResult};
 pub use runtime_command::WorkflowRuntimeUsecase;
 pub(crate) use workspace_node_command::{
-    ApproveWorkspaceNodeCommand, RenameWorkspaceSessionNodeCommand, RetryWorkspaceNodeCommand,
-    WorkspaceNodeActionResolver, WorkspaceNodeCommandUsecase, WorkspaceNodeWorkflowCommandExecutor,
+    ApproveWorkspaceNodeCommand, RenameWorkspaceSessionNodeCommand,
+    ResumeWorkspaceSessionNodeCommand, RetryWorkspaceNodeCommand, WorkspaceNodeActionResolver,
+    WorkspaceNodeCommandUsecase, WorkspaceNodeWorkflowCommandExecutor,
 };
 pub(crate) use workspace_tree::{
     NodeWorktreeDto, WorkspaceCommandNodeContentDto, WorkspaceCommandResultDto, WorkspaceFanoutDto,
@@ -968,6 +970,8 @@ mod tests {
         execution_id: Option<&str>,
     ) -> crate::domain::workspace_tree::WorkspaceTreeNode {
         crate::domain::workspace_tree::WorkspaceTreeNode {
+            process_presence: Default::default(),
+            can_resume_session: false,
             worktree: None,
             id: format!("node:{node_execution_id}"),
             parent_id: execution_id.map(str::to_string),
@@ -993,9 +997,6 @@ mod tests {
             can_rename: false,
             can_approve: false,
             can_retry: false,
-            can_stop: false,
-            can_resume: false,
-            resume_eligible: false,
             can_abort: false,
             can_archive: false,
             display_command: None,

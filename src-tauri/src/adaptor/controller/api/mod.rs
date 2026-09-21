@@ -79,17 +79,15 @@ pub(crate) mod test_support {
         WorkflowRuntimeSnapshot,
     };
     use crate::usecase::workflow::command::{
-        AbortExecutionCommand, ApprovalCommand, ResolvedStartExecutionCommand,
-        ResumeExecutionCommand, RetryNodeCommand, StopExecutionCommand, SubmitOutputArtifact,
-        SubmitOutputCommand,
+        AbortExecutionCommand, ApprovalCommand, ResolvedStartExecutionCommand, RetryNodeCommand,
+        SubmitOutputArtifact, SubmitOutputCommand,
     };
     use crate::usecase::workflow::control_plane::{
         WorkflowControlPlaneCommit, WorkflowControlPlaneGateway,
     };
     use crate::usecase::workflow::ports::{
-        WorkflowAbortExecutionGateway, WorkflowEventDraft, WorkflowResumeExecutionGateway,
-        WorkflowRuntimeShutdownGateway, WorkflowRuntimeStateGateway, WorkflowStartExecutionGateway,
-        WorkflowStopExecutionGateway,
+        WorkflowAbortExecutionGateway, WorkflowEventDraft, WorkflowRuntimeShutdownGateway,
+        WorkflowRuntimeStateGateway, WorkflowStartExecutionGateway,
     };
     use crate::usecase::workflow::WorkflowUsecase;
 
@@ -100,8 +98,6 @@ pub(crate) mod test_support {
         pub(crate) starts: Vec<ResolvedStartExecutionCommand>,
         pub(crate) approvals: Vec<ApprovalCommand>,
         pub(crate) aborts: Vec<AbortExecutionCommand>,
-        pub(crate) stops: Vec<StopExecutionCommand>,
-        pub(crate) resumes: Vec<ResumeExecutionCommand>,
         pub(crate) retries: Vec<RetryNodeCommand>,
         pub(crate) outputs: Vec<SubmitOutputCommand>,
     }
@@ -110,8 +106,6 @@ pub(crate) mod test_support {
     pub(crate) struct RecordedRuntimeErrors {
         pub(crate) start: Option<WorkflowError>,
         pub(crate) abort: Option<WorkflowError>,
-        pub(crate) stop: Option<WorkflowError>,
-        pub(crate) resume: Option<WorkflowError>,
         approval: Option<WorkflowError>,
         output: Option<WorkflowError>,
     }
@@ -205,31 +199,6 @@ pub(crate) mod test_support {
         }
     }
 
-    #[async_trait::async_trait]
-    impl WorkflowStopExecutionGateway for RecordingRuntimeGateway {
-        async fn stop_execution(&self, command: StopExecutionCommand) -> Result<(), WorkflowError> {
-            if let Some(error) = self.errors.lock().unwrap().stop.clone() {
-                return Err(error);
-            }
-            self.commands.lock().unwrap().stops.push(command);
-            Ok(())
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl WorkflowResumeExecutionGateway for RecordingRuntimeGateway {
-        async fn resume_execution(
-            &self,
-            command: ResumeExecutionCommand,
-        ) -> Result<(), WorkflowError> {
-            if let Some(error) = self.errors.lock().unwrap().resume.clone() {
-                return Err(error);
-            }
-            self.commands.lock().unwrap().resumes.push(command);
-            Ok(())
-        }
-    }
-
     fn control_plane_execution_fixture(
         execution_id: &str,
     ) -> crate::domain::workflow::entities::workflow_execution::WorkflowExecution {
@@ -260,9 +229,20 @@ pub(crate) mod test_support {
             )]),
             nodes: vec![
                 DomainNode {
+                    name: "command".into(),
+                    kind: DomainNodeKind::Command(crate::domain::workflow::CommandSpec {
+                        command: "true".into(),
+                        env: Default::default(),
+                    }),
+                    ..Default::default()
+                },
+                DomainNode {
                     name: "fanout".to_string(),
                     kind: DomainNodeKind::Fanout(FanoutSpec {
-                        children: vec![crate::domain::workflow::ChildEntry::reference("review")],
+                        children: vec![
+                            crate::domain::workflow::ChildEntry::reference("review"),
+                            crate::domain::workflow::ChildEntry::reference("command"),
+                        ],
                         items: None,
                     }),
                     ..Default::default()
@@ -329,10 +309,51 @@ pub(crate) mod test_support {
             }
         }
         execution
+            .replay_node_started(
+                "ne-command-1",
+                "command",
+                NodeKindName::Command,
+                1,
+                Some(ExecutionParentRef::fanout_child("fanout-parent", None, 1)),
+                100.0,
+            )
+            .unwrap();
+        execution
     }
 
     #[async_trait::async_trait]
     impl WorkflowControlPlaneGateway for RecordingRuntimeGateway {
+        fn node_process_presence(
+            &self,
+            _execution: &crate::domain::workflow::entities::workflow_execution::WorkflowExecution,
+            _id: &str,
+        ) -> Result<
+            crate::domain::workflow::NodeProcessPresence,
+            crate::domain::workflow::WorkflowError,
+        > {
+            Ok(crate::domain::workflow::NodeProcessPresence::ConfirmedAbsent)
+        }
+        fn worktree_exists(
+            &self,
+            _path: &str,
+        ) -> Result<bool, crate::domain::workflow::WorkflowError> {
+            Ok(true)
+        }
+        async fn session_conversation_exists(
+            &self,
+            _session_id: &str,
+        ) -> Result<bool, crate::domain::workflow::WorkflowError> {
+            Ok(true)
+        }
+        async fn resume_session_process(
+            &self,
+            _execution_id: &str,
+            _node_id: &str,
+            _session_id: &str,
+        ) -> Result<(), crate::domain::workflow::WorkflowError> {
+            Ok(())
+        }
+
         fn current_timestamp(&self) -> f64 {
             110.0
         }
@@ -780,10 +801,9 @@ pub(crate) mod test_support {
     ) {
         use crate::adaptor::gateway::workflow::fact_log::append_single_fact;
         use crate::domain::workflow::{
-            ArtifactProducedFact, ExecutionParentRef, ExecutionTreeLaunch,
-            NodeExecutionFailureKind, NodeExecutionStatus, NodeFact, NodeFactMeta, NodeKindName,
-            RuntimeFailureObservedFact, StartedFact, StopReceivedFact, SubmitReceivedFact,
-            TreeRootFact,
+            ArtifactProducedFact, ExecutionParentRef, ExecutionTreeLaunch, NodeExecutionStatus,
+            NodeFact, NodeFactMeta, NodeKindName, StartedFact, StopReceivedFact,
+            SubmitReceivedFact, TreeRootFact,
         };
 
         let store = canonical_local_event_store(data_dir);
@@ -838,12 +858,6 @@ pub(crate) mod test_support {
         .unwrap();
         let facts = match status {
             NodeExecutionStatus::Running => Vec::new(),
-            NodeExecutionStatus::Failed => vec![NodeFact::RuntimeFailureObserved(
-                RuntimeFailureObservedFact {
-                    reason: "provider failed".into(),
-                    failure_kind: NodeExecutionFailureKind::InfrastructureCrash,
-                },
-            )],
             NodeExecutionStatus::Aborted => vec![NodeFact::AbortRequested],
             NodeExecutionStatus::Succeeded => vec![
                 NodeFact::ArtifactProduced(ArtifactProducedFact {
@@ -1134,7 +1148,7 @@ pub(crate) mod test_support {
             )
             .await
             .unwrap();
-        assert_eq!(stop.status(), StatusCode::OK);
+        assert_eq!(stop.status(), StatusCode::NOT_FOUND);
 
         let resume = router
             .clone()
@@ -1148,13 +1162,13 @@ pub(crate) mod test_support {
             )
             .await
             .unwrap();
-        assert_eq!(resume.status(), StatusCode::OK);
+        assert_eq!(resume.status(), StatusCode::NOT_FOUND);
 
         let retry = send_json(
             &router,
             &format!("/v1/workflow/executions/{execution_id}/retry"),
             serde_json::json!({
-                "node_execution_id": "ne-review-2"
+                "node_execution_id": "ne-command-1"
             }),
         )
         .await;
@@ -1199,15 +1213,9 @@ pub(crate) mod test_support {
         assert_eq!(commands.aborts[0].execution_id, execution_id);
         assert_eq!(commands.aborts[0].expected_node_name, None);
 
-        assert_eq!(commands.stops.len(), 1);
-        assert_eq!(commands.stops[0].execution_id, execution_id);
-
-        assert_eq!(commands.resumes.len(), 1);
-        assert_eq!(commands.resumes[0].execution_id, execution_id);
-
         assert_eq!(commands.retries.len(), 1);
         assert_eq!(commands.retries[0].execution_id, execution_id);
-        assert_eq!(commands.retries[0].node_execution_id, "ne-review-2");
+        assert_eq!(commands.retries[0].node_execution_id, "ne-command-1");
 
         assert_eq!(commands.outputs.len(), 1);
         assert_eq!(commands.outputs[0].node_execution_id, "ne-review-2");
@@ -1246,28 +1254,6 @@ pub(crate) mod test_support {
         .await;
         assert_eq!(abort.0, StatusCode::CONFLICT);
         assert_eq!(abort.1["code"], "invalid_state");
-
-        gateway.errors.lock().unwrap().stop =
-            Some(WorkflowError::invalid_state("execution cannot be stopped"));
-        let stop = send_json(
-            &router,
-            &format!("/v1/workflow/executions/{execution_id}/stop"),
-            serde_json::json!({}),
-        )
-        .await;
-        assert_eq!(stop.0, StatusCode::CONFLICT);
-        assert_eq!(stop.1["code"], "invalid_state");
-
-        gateway.errors.lock().unwrap().resume =
-            Some(WorkflowError::NotFound("execution not found".to_string()));
-        let resume = send_json(
-            &router,
-            &format!("/v1/workflow/executions/{execution_id}/resume"),
-            serde_json::json!({}),
-        )
-        .await;
-        assert_eq!(resume.0, StatusCode::NOT_FOUND);
-        assert_eq!(resume.1["code"], "not_found");
 
         gateway.errors.lock().unwrap().approval = Some(WorkflowError::UnauthorizedApprovalTarget(
             "wrong approval target".to_string(),
@@ -1333,24 +1319,28 @@ pub(crate) mod test_support {
     }
 
     #[tokio::test]
-    async fn stop_and_resume_reject_invalid_execution_ids_before_the_runtime_gateway() {
+    async fn session_node_resume_resolves_its_execution_and_rejects_missing_nodes() {
         let directory = tempfile::tempdir().unwrap();
         let (router, _, gateway) = test_router(directory.path(), "secret");
-
-        for action in ["stop", "resume"] {
-            let response = send_json(
-                &router,
-                &format!("/v1/workflow/executions/not-a-uuid/{action}"),
-                serde_json::json!({}),
-            )
-            .await;
-            assert_eq!(response.0, StatusCode::BAD_REQUEST);
-            assert_eq!(response.1["code"], "validation_error");
-        }
-
+        let execution_id = "00000000-0000-4000-8000-000000000123";
+        gateway.bind_node_execution("ne-review-2", execution_id);
+        let response = send_json(
+            &router,
+            "/v1/workflow/node-executions/ne-review-2/resume",
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(response, (StatusCode::OK, serde_json::json!({"ok": true})));
+        let response = send_json(
+            &router,
+            "/v1/workflow/node-executions/missing/resume",
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(response.0, StatusCode::NOT_FOUND);
         let commands = gateway.commands.lock().unwrap();
-        assert!(commands.stops.is_empty());
-        assert!(commands.resumes.is_empty());
+        assert_eq!(commands.retries.len(), 1);
+        assert_eq!(commands.retries[0].node_execution_id, "ne-review-2");
     }
 
     #[tokio::test]
@@ -1424,12 +1414,11 @@ pub(crate) mod test_support {
     }
 
     #[tokio::test]
-    async fn test_隔離worktree_apiで実行中と失敗とabortと完了後のbranchとpathを返す() {
+    async fn test_隔離worktree_apiで実行中とabortと完了後のbranchとpathを返す() {
         use crate::domain::workflow::NodeExecutionStatus;
 
         for status in [
             NodeExecutionStatus::Running,
-            NodeExecutionStatus::Failed,
             NodeExecutionStatus::Aborted,
             NodeExecutionStatus::Succeeded,
         ] {

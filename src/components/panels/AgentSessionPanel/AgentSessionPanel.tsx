@@ -30,6 +30,7 @@ type PanelState =
 	| "gone";
 
 interface AgentSessionPanelProps {
+	showResumeAction?: boolean;
 	session: AgentSessionItem | null;
 	initialAttachment?: AgentSessionLaunchAttachment | null;
 	theme?: Theme;
@@ -38,6 +39,7 @@ interface AgentSessionPanelProps {
 }
 
 interface AgentSessionRouteProps {
+	showResumeAction?: boolean;
 	agentSessionId: string;
 	theme?: Theme;
 	initialAttachment?: AgentSessionLaunchAttachment;
@@ -49,6 +51,7 @@ function operationId(prefix: string): string {
 }
 
 export function AgentSessionPanel({
+	showResumeAction = true,
 	session,
 	initialAttachment,
 	theme,
@@ -227,7 +230,7 @@ export function AgentSessionPanel({
 			{state === "paused" && (
 				<>
 					<div className="text-muted-foreground">AgentSession is paused.</div>
-					{canResume && (
+					{showResumeAction && canResume && (
 						<Button
 							type="button"
 							onClick={() => void runLifecycleOperation("resume_agent_session")}
@@ -280,6 +283,7 @@ export function AgentSessionPanel({
 }
 
 export function AgentSessionRoute({
+	showResumeAction = true,
 	agentSessionId,
 	theme,
 	initialAttachment,
@@ -352,6 +356,7 @@ export function AgentSessionRoute({
 	) {
 		return (
 			<AgentSessionPanel
+				showResumeAction={showResumeAction}
 				session={session?.id === agentSessionId ? session : null}
 				initialAttachment={launchAttachment}
 				theme={theme}

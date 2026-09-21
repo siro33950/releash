@@ -162,13 +162,12 @@ fn test_保持対象cli_discoveryとlive_httpを通る() {
 }
 
 #[test]
-fn test_隔離worktree_cliのlive_httpで実行中と失敗とabortと完了後のbranchとpathを返す() {
+fn test_隔離worktree_cliのlive_httpで実行中とabortと完了後のbranchとpathを返す() {
     use crate::cli::test_helpers::start_local_api_test_host;
     use crate::domain::workflow::NodeExecutionStatus;
 
     for status in [
         NodeExecutionStatus::Running,
-        NodeExecutionStatus::Failed,
         NodeExecutionStatus::Aborted,
         NodeExecutionStatus::Succeeded,
     ] {

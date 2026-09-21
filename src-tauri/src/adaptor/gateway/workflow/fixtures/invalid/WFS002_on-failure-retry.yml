@@ -1,0 +1,10 @@
+name: removed-on-failure-retry
+description: on_failure is no longer supported
+nodes:
+  main:
+    sequence:
+      children:
+        - work:
+            on_failure: {retry: 1}
+  work:
+    command: true

@@ -9,17 +9,16 @@ use super::command::ResolvedStartExecutionCommand;
 #[cfg(test)]
 use super::command::WorkflowRuntimeCommandPreflight;
 use super::command::{
-    AbortExecutionCommand, ApprovalCommand, ResumeExecutionCommand, RetryNodeCommand,
-    StartExecutionCommand, StopExecutionCommand, SubmitOutputCommand,
-    WorkflowAbortExecutionUsecase, WorkflowResumeExecutionUsecase, WorkflowRetryNodeUsecase,
-    WorkflowStartExecutionUsecase, WorkflowStopExecutionUsecase, WorkflowSubmitOutputUsecase,
+    AbortExecutionCommand, ApprovalCommand, ResumeSessionNodeCommand, RetryNodeCommand,
+    StartExecutionCommand, SubmitOutputCommand, WorkflowAbortExecutionUsecase,
+    WorkflowRetryNodeUsecase, WorkflowStartExecutionUsecase, WorkflowSubmitOutputUsecase,
 };
 use super::control_plane::{WorkflowControlPlaneGateway, WorkflowControlPlaneUsecase};
 use super::ports::WorkflowRuntimeCommandGateway;
 #[cfg(test)]
 use super::ports::{
-    WorkflowAbortExecutionGateway, WorkflowResumeExecutionGateway, WorkflowRuntimeShutdownGateway,
-    WorkflowRuntimeStateGateway, WorkflowStartExecutionGateway, WorkflowStopExecutionGateway,
+    WorkflowAbortExecutionGateway, WorkflowRuntimeShutdownGateway, WorkflowRuntimeStateGateway,
+    WorkflowStartExecutionGateway,
 };
 
 #[derive(Clone)]
@@ -27,8 +26,6 @@ pub struct WorkflowRuntimeUsecase {
     runtime: Arc<dyn WorkflowRuntimeCommandGateway>,
     start_execution: WorkflowStartExecutionUsecase,
     abort_execution: WorkflowAbortExecutionUsecase,
-    stop_execution: WorkflowStopExecutionUsecase,
-    resume_execution: WorkflowResumeExecutionUsecase,
     retry_node: WorkflowRetryNodeUsecase,
     submit_output: WorkflowSubmitOutputUsecase,
     control_plane: WorkflowControlPlaneUsecase,
@@ -43,8 +40,6 @@ impl WorkflowRuntimeUsecase {
             runtime: runtime.clone(),
             start_execution: WorkflowStartExecutionUsecase::new(runtime.clone()),
             abort_execution: WorkflowAbortExecutionUsecase::new(runtime.clone()),
-            stop_execution: WorkflowStopExecutionUsecase::new(runtime.clone()),
-            resume_execution: WorkflowResumeExecutionUsecase::new(runtime.clone()),
             retry_node: WorkflowRetryNodeUsecase::new(control_plane_runtime.clone()),
             submit_output: WorkflowSubmitOutputUsecase::new(control_plane_runtime.clone()),
             control_plane: WorkflowControlPlaneUsecase::new(control_plane_runtime),
@@ -71,19 +66,33 @@ impl WorkflowRuntimeUsecase {
         self.abort_execution.execute(command).await
     }
 
-    pub async fn stop_execution(&self, command: StopExecutionCommand) -> Result<(), WorkflowError> {
-        self.stop_execution.execute(command).await
-    }
-
-    pub async fn resume_execution(
-        &self,
-        command: ResumeExecutionCommand,
-    ) -> Result<(), WorkflowError> {
-        self.resume_execution.execute(command).await
-    }
-
     pub async fn retry_node(&self, command: RetryNodeCommand) -> Result<(), WorkflowError> {
         self.retry_node.execute(command).await
+    }
+
+    pub async fn resume_session_node_by_id(
+        &self,
+        node_execution_id: String,
+    ) -> Result<(), WorkflowError> {
+        let execution_id = self
+            .runtime
+            .resolve_workflow_execution_id(&node_execution_id)
+            .await?
+            .ok_or_else(|| {
+                WorkflowError::NotFound(format!("Node execution not found: {node_execution_id}"))
+            })?;
+        self.resume_session_node(ResumeSessionNodeCommand {
+            execution_id,
+            node_execution_id,
+        })
+        .await
+    }
+
+    pub async fn resume_session_node(
+        &self,
+        command: ResumeSessionNodeCommand,
+    ) -> Result<(), WorkflowError> {
+        self.control_plane.resume_session_node(command).await
     }
 
     pub async fn resolve_approval(&self, command: ApprovalCommand) -> Result<(), WorkflowError> {
@@ -126,6 +135,12 @@ impl super::WorkspaceNodeWorkflowCommandExecutor for WorkflowRuntimeUsecase {
 
     async fn retry_node(&self, command: RetryNodeCommand) -> Result<(), WorkflowError> {
         self.retry_node(command).await
+    }
+    async fn resume_session_node(
+        &self,
+        command: ResumeSessionNodeCommand,
+    ) -> Result<(), WorkflowError> {
+        self.resume_session_node(command).await
     }
 }
 
@@ -286,29 +301,38 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl WorkflowStopExecutionGateway for FakeRuntimeGateway {
-        async fn stop_execution(
-            &self,
-            _command: StopExecutionCommand,
-        ) -> Result<(), WorkflowError> {
-            self.calls.lock().unwrap().push("stop");
-            Ok(())
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl WorkflowResumeExecutionGateway for FakeRuntimeGateway {
-        async fn resume_execution(
-            &self,
-            _command: ResumeExecutionCommand,
-        ) -> Result<(), WorkflowError> {
-            self.calls.lock().unwrap().push("resume");
-            Ok(())
-        }
-    }
-
-    #[async_trait::async_trait]
     impl WorkflowControlPlaneGateway for FakeRuntimeGateway {
+        fn node_process_presence(
+            &self,
+            _execution: &crate::domain::workflow::entities::workflow_execution::WorkflowExecution,
+            _id: &str,
+        ) -> Result<
+            crate::domain::workflow::NodeProcessPresence,
+            crate::domain::workflow::WorkflowError,
+        > {
+            Ok(crate::domain::workflow::NodeProcessPresence::ConfirmedAbsent)
+        }
+        fn worktree_exists(
+            &self,
+            _path: &str,
+        ) -> Result<bool, crate::domain::workflow::WorkflowError> {
+            Ok(true)
+        }
+        async fn session_conversation_exists(
+            &self,
+            _session_id: &str,
+        ) -> Result<bool, crate::domain::workflow::WorkflowError> {
+            Ok(true)
+        }
+        async fn resume_session_process(
+            &self,
+            _execution_id: &str,
+            _node_id: &str,
+            _session_id: &str,
+        ) -> Result<(), crate::domain::workflow::WorkflowError> {
+            Ok(())
+        }
+
         fn current_timestamp(&self) -> f64 {
             100.0
         }
@@ -432,18 +456,6 @@ mod tests {
             })
             .await
             .unwrap();
-        usecase
-            .stop_execution(StopExecutionCommand {
-                execution_id: "00000000-0000-0000-0000-000000000001".to_string(),
-            })
-            .await
-            .unwrap();
-        usecase
-            .resume_execution(ResumeExecutionCommand {
-                execution_id: "00000000-0000-0000-0000-000000000001".to_string(),
-            })
-            .await
-            .unwrap();
         let _ = usecase
             .get_state_by_execution_id("00000000-0000-0000-0000-000000000001")
             .await
@@ -455,8 +467,6 @@ mod tests {
                 "resolve_workflow",
                 "start",
                 "abort",
-                "stop",
-                "resume",
                 "state_by_execution"
             ]
         );
@@ -507,22 +517,6 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(abort_err, WorkflowError::Validation(_)));
-
-        let stop_err = usecase
-            .stop_execution(StopExecutionCommand {
-                execution_id: "not-a-uuid".to_string(),
-            })
-            .await
-            .unwrap_err();
-        assert!(matches!(stop_err, WorkflowError::Validation(_)));
-
-        let resume_err = usecase
-            .resume_execution(ResumeExecutionCommand {
-                execution_id: "not-a-uuid".to_string(),
-            })
-            .await
-            .unwrap_err();
-        assert!(matches!(resume_err, WorkflowError::Validation(_)));
 
         let approval_err = usecase
             .resolve_approval(ApprovalCommand {

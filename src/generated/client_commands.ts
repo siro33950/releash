@@ -204,7 +204,7 @@ import {
 	ResultUint32Schema,
 	ResumeAgentSessionHistoryCandidateRequestSchema,
 	ResumeAgentSessionRequestSchema,
-	ResumeWorkflowRequestSchema,
+	ResumeWorkspaceSessionNodeRequestSchema,
 	RetryWorkspaceNodeRequestSchema,
 	ReviewFileViewDtoSchema,
 	ReviewSnapshotDtoSchema,
@@ -221,7 +221,6 @@ import {
 	StartupFailureQuitOutcomeDtoV1Schema,
 	StartWorkflowRequestSchema,
 	StopWatchingRequestSchema,
-	StopWorkflowRequestSchema,
 	TakeTerminalInputPerformanceSamplesRequestSchema,
 	TakeTerminalLaunchPerformanceSamplesRequestSchema,
 	TerminalPerformanceSwitchesV1Schema,
@@ -2286,25 +2285,6 @@ const commands = {
 		);
 		return result;
 	},
-	resume_workflow: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["resume_workflow"],
-	) => {
-		const result = decode(
-			UnitSchema,
-			await client.resumeWorkflow(
-				fromJson(
-					ResumeWorkflowRequestSchema,
-					clientJson(
-						ResumeWorkflowRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
 	retry_workspace_node: async (
 		client: Client<typeof ClientService>,
 		args: ClientCommandArgs["retry_workspace_node"],
@@ -2316,6 +2296,25 @@ const commands = {
 					RetryWorkspaceNodeRequestSchema,
 					clientJson(
 						RetryWorkspaceNodeRequestSchema,
+						JSON.parse(JSON.stringify(args ?? {})),
+						true,
+					),
+				),
+			),
+		);
+		return result;
+	},
+	resume_workspace_session_node: async (
+		client: Client<typeof ClientService>,
+		args: ClientCommandArgs["resume_workspace_session_node"],
+	) => {
+		const result = decode(
+			UnitSchema,
+			await client.resumeWorkspaceSessionNode(
+				fromJson(
+					ResumeWorkspaceSessionNodeRequestSchema,
+					clientJson(
+						ResumeWorkspaceSessionNodeRequestSchema,
 						JSON.parse(JSON.stringify(args ?? {})),
 						true,
 					),
@@ -2506,25 +2505,6 @@ const commands = {
 					StopWatchingRequestSchema,
 					clientJson(
 						StopWatchingRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	stop_workflow: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["stop_workflow"],
-	) => {
-		const result = decode(
-			UnitSchema,
-			await client.stopWorkflow(
-				fromJson(
-					StopWorkflowRequestSchema,
-					clientJson(
-						StopWorkflowRequestSchema,
 						JSON.parse(JSON.stringify(args ?? {})),
 						true,
 					),

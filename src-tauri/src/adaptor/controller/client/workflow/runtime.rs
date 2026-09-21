@@ -2,8 +2,7 @@ use std::sync::Arc;
 
 use crate::adaptor::controller::client::workflow::validate_execution_id;
 use crate::usecase::workflow::command::{
-    AbortExecutionCommand, ApprovalCommand, ResumeExecutionCommand, StartExecutionCommand,
-    StopExecutionCommand,
+    AbortExecutionCommand, ApprovalCommand, StartExecutionCommand,
 };
 use crate::usecase::workflow::WorkflowRuntimeUsecase;
 
@@ -50,36 +49,6 @@ pub(crate) async fn abort_workflow_shared(
         .map_err(|e| {
             let msg = e.to_string();
             log::error!("abort_workflow failed: code=ABORT_WORKFLOW_FAILED");
-            msg
-        })
-}
-
-pub(crate) async fn stop_workflow_shared(
-    runtime: &Arc<WorkflowRuntimeUsecase>,
-    execution_id: String,
-) -> Result<(), String> {
-    validate_execution_id(&execution_id)?;
-    runtime
-        .stop_execution(StopExecutionCommand { execution_id })
-        .await
-        .map_err(|e| {
-            let msg = e.to_string();
-            log::error!("stop_workflow failed: code=STOP_WORKFLOW_FAILED");
-            msg
-        })
-}
-
-pub(crate) async fn resume_workflow_shared(
-    runtime: &Arc<WorkflowRuntimeUsecase>,
-    execution_id: String,
-) -> Result<(), String> {
-    validate_execution_id(&execution_id)?;
-    runtime
-        .resume_execution(ResumeExecutionCommand { execution_id })
-        .await
-        .map_err(|e| {
-            let msg = e.to_string();
-            log::error!("resume_workflow failed: code=RESUME_WORKFLOW_FAILED");
             msg
         })
 }

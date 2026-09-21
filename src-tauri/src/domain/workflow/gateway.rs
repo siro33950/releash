@@ -23,3 +23,13 @@ pub trait IsolatedWorktreeGateway: Send + Sync {
 pub trait SecretSourceGateway: Send + Sync {
     fn configured_secret_values(&self) -> Result<Vec<String>, WorkflowError>;
 }
+
+pub trait NodeProcessReader: Send + Sync {
+    fn presence(
+        &self,
+        workspace: &str,
+        node_execution_id: &str,
+        kind: crate::domain::workflow::NodeKindName,
+        session_id: Option<&str>,
+    ) -> Result<crate::domain::workflow::NodeProcessPresence, crate::domain::workflow::WorkflowError>;
+}

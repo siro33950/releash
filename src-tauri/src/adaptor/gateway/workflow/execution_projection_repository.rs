@@ -11,18 +11,21 @@ use crate::usecase::workflow::ports::{WorkflowEventDraft, WorkflowExecutionProje
 #[derive(Clone)]
 pub(crate) struct WorkflowExecutionProjectionLogRepository {
     backend: FactLogReadBackend,
+    pub(crate) processes: Option<Arc<dyn crate::domain::workflow::NodeProcessReader>>,
 }
 
 impl WorkflowExecutionProjectionLogRepository {
     pub(crate) fn new(store: Arc<LocalEventStore>) -> Self {
         Self {
             backend: FactLogReadBackend::Live(store),
+            processes: None,
         }
     }
 
     pub(crate) fn new_read_only(store: Arc<LocalEventReadStore>) -> Self {
         Self {
             backend: FactLogReadBackend::ReadOnly(store),
+            processes: None,
         }
     }
 }
@@ -54,7 +57,18 @@ impl WorkflowExecutionProjectionRepository for WorkflowExecutionProjectionLogRep
         else {
             return Ok(None);
         };
-        Ok(Some(fact_replay::derive_read_model(&tree)))
+        let mut model = fact_replay::derive_read_model(&tree);
+        if let Some(processes) = &self.processes {
+            for node in &mut model.node_executions {
+                node.process_presence = processes.presence(
+                    &model.worktree_path,
+                    &node.id,
+                    node.kind,
+                    node.session_id.as_deref(),
+                )?;
+            }
+        }
+        Ok(Some(model))
     }
 }
 

@@ -11,15 +11,6 @@ export interface TokenUsage {
 	outputTokens: number;
 }
 
-export type NodeExecutionFailureKind =
-	| "startup_timeout"
-	| "stale_runtime_timeout"
-	| "model_refusal"
-	| "structured_output_mismatch"
-	| "validation_failure"
-	| "user_abort"
-	| "infrastructure_crash";
-
 export type WorkflowExecutionStatus = "running" | "completed" | "aborted";
 
 export type Predicate = string | { and: Predicate[] } | { or: Predicate[] };
@@ -127,21 +118,14 @@ export interface WorkflowDefinition {
 export type NodeExecutionStatus =
 	| "unresolved"
 	| "running"
-	| "paused"
 	| "waiting_approval"
 	| "succeeded"
-	| "failed"
 	| "aborted";
 
 export interface ExecutionParentRef {
 	parentId: string;
 	itemIndex?: number;
 	childIndex?: number;
-}
-
-export interface NodeExecutionFailure {
-	reason: string;
-	kind: NodeExecutionFailureKind;
 }
 
 export interface NodeExecution {
@@ -158,11 +142,12 @@ export interface NodeExecution {
 	waitingFor?: "submit" | "stop";
 	canApprove: boolean;
 	canRetry: boolean;
+	canResumeSession: boolean;
+	processPresence: "live" | "confirmed_absent" | "unknown";
 	hasArtifact: boolean;
 	sessionId?: string;
 	artifact?: Artifact;
 	tokenUsage?: TokenUsage;
-	failure?: NodeExecutionFailure;
 	parent?: ExecutionParentRef;
 	startedAt: number;
 	completedAt?: number;

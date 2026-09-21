@@ -52,23 +52,32 @@ impl IsolatedWorktreeGateway for TestWorktrees {
 
 #[derive(Default)]
 pub(super) struct TestSessions {
+    pub(super) initial_instructions: StdMutex<Vec<String>>,
+    pub(super) presence_unknown: AtomicBool,
+    pub(super) live_sessions: StdMutex<std::collections::HashSet<String>>,
+    pub(super) conversation_missing: AtomicBool,
     pub(super) prepared: StdMutex<Vec<(String, String, String)>>,
     pub(super) activated: StdMutex<Vec<String>>,
     pub(super) recovered: StdMutex<Vec<String>>,
-    pub(super) dispatched: StdMutex<Vec<String>>,
-    pub(super) dispatch_fails_on: StdMutex<Option<String>>,
     pub(super) continuations: StdMutex<Vec<(String, String)>>,
-    pub(super) admitted_continuations: StdMutex<std::collections::BTreeSet<String>>,
+    pub(super) admitted_continuations: StdMutex<std::collections::BTreeSet<(String, String)>>,
     pub(super) continuation_fails: AtomicBool,
     pub(super) block_continuation: AtomicBool,
     pub(super) continuation_entered: tokio::sync::Notify,
     pub(super) continuation_release: tokio::sync::Notify,
     pub(super) recovery_fails: AtomicBool,
     pub(super) preparation_fails: AtomicBool,
+    pub(super) block_preparation: AtomicBool,
+    pub(super) preparation_entered: tokio::sync::Notify,
+    pub(super) preparation_release: tokio::sync::Notify,
 }
 
 #[async_trait::async_trait]
 impl WorkflowAgentSessionPort for TestSessions {
+    async fn has_recoverable_conversation(&self, _id: &str) -> Result<bool, WorkflowRuntimeError> {
+        Ok(!self.conversation_missing.load(Ordering::SeqCst))
+    }
+
     fn is_provider_available(&self, _provider: ProviderKind) -> bool {
         true
     }
@@ -79,8 +88,12 @@ impl WorkflowAgentSessionPort for TestSessions {
         _config: WorkflowSessionLaunchConfig,
         _execution_id: &str,
         node_id: &str,
-        _instruction: &str,
+        instruction: &str,
     ) -> Result<NodeSessionInfo, WorkflowRuntimeError> {
+        if self.block_preparation.swap(false, Ordering::SeqCst) {
+            self.preparation_entered.notify_one();
+            self.preparation_release.notified().await;
+        }
         self.prepared
             .lock()
             .unwrap()
@@ -88,34 +101,27 @@ impl WorkflowAgentSessionPort for TestSessions {
         if self.preparation_fails.load(Ordering::SeqCst) {
             return Err(WorkflowRuntimeError::AgentSession("prepare failed".into()));
         }
+        self.initial_instructions
+            .lock()
+            .unwrap()
+            .push(instruction.into());
         Ok(NodeSessionInfo {
             id: format!("agent-{node_id}"),
         })
     }
     async fn activate_workflow_agent_session(
         &self,
-        _session_id: &str,
+        session_id: &str,
         node_id: &str,
     ) -> Result<(), WorkflowRuntimeError> {
         self.activated.lock().unwrap().push(node_id.into());
+        self.live_sessions.lock().unwrap().insert(session_id.into());
         Ok(())
     }
     async fn confirm_workflow_agent_session_attachment(
         &self,
         _session_id: &str,
     ) -> Result<(), WorkflowRuntimeError> {
-        Ok(())
-    }
-    async fn dispatch_initial_instruction(
-        &self,
-        _session_id: &str,
-        node_id: &str,
-        _instruction: &str,
-    ) -> Result<(), WorkflowRuntimeError> {
-        self.dispatched.lock().unwrap().push(node_id.into());
-        if self.dispatch_fails_on.lock().unwrap().as_deref() == Some(node_id) {
-            return Err(WorkflowRuntimeError::AgentSession("dispatch failed".into()));
-        }
         Ok(())
     }
     async fn dispatch_continuation(
@@ -138,7 +144,7 @@ impl WorkflowAgentSessionPort for TestSessions {
             .admitted_continuations
             .lock()
             .unwrap()
-            .insert(child_execution_id.to_string())
+            .insert((session_id.to_string(), child_execution_id.to_string()))
         {
             return Ok(());
         }
@@ -151,7 +157,7 @@ impl WorkflowAgentSessionPort for TestSessions {
 
     async fn recover_workflow_agent_session_provider(
         &self,
-        _session_id: &str,
+        session_id: &str,
         node_id: &str,
     ) -> Result<(), WorkflowRuntimeError> {
         self.recovered.lock().unwrap().push(node_id.into());
@@ -160,28 +166,79 @@ impl WorkflowAgentSessionPort for TestSessions {
                 "worktree is missing".into(),
             ))
         } else {
+            self.live_sessions.lock().unwrap().insert(session_id.into());
             Ok(())
         }
     }
-    async fn interrupt_workflow_agent_session(
-        &self,
-        _session_id: &str,
-    ) -> Result<(), WorkflowRuntimeError> {
-        Ok(())
-    }
     async fn stop_agent_session_for_terminal_node_preserving_checkpoint(
         &self,
-        _session_id: &str,
+        session_id: &str,
         _node_id: &str,
     ) -> Result<(), WorkflowRuntimeError> {
+        self.live_sessions.lock().unwrap().remove(session_id);
         Ok(())
     }
     async fn rollback_workflow_agent_session(
         &self,
-        _session_id: &str,
+        session_id: &str,
         _node_id: &str,
     ) -> Result<(), WorkflowRuntimeError> {
+        self.live_sessions.lock().unwrap().remove(session_id);
         Ok(())
+    }
+}
+
+impl crate::domain::agent_session::ProviderAgentTerminalGateway for TestSessions {
+    fn spawn(
+        &self,
+        _owner: crate::domain::terminal_surface::TerminalSurfaceOwner,
+        _path: &str,
+        _process: crate::domain::terminal_surface::TerminalProcessLaunch,
+        _rows: u16,
+        _cols: u16,
+    ) -> Result<(), crate::domain::agent_session::ProviderAgentTerminalSpawnError> {
+        panic!("test session launch uses WorkflowAgentSessionPort")
+    }
+    fn presence(
+        &self,
+        owner: &crate::domain::terminal_surface::TerminalSurfaceOwner,
+    ) -> Result<
+        crate::domain::agent_session::aggregates::ManagedPtyPresence,
+        crate::domain::agent_session::ProviderAgentTerminalGatewayError,
+    > {
+        use crate::domain::agent_session::aggregates::ManagedPtyPresence;
+        let crate::domain::terminal_surface::TerminalSurfaceOwner::Session { session_id, .. } =
+            owner
+        else {
+            panic!("expected Session owner")
+        };
+        if self.presence_unknown.load(Ordering::SeqCst) {
+            return Ok(crate::domain::agent_session::aggregates::ManagedPtyPresence::Unknown);
+        }
+        Ok(if self.live_sessions.lock().unwrap().contains(session_id) {
+            ManagedPtyPresence::Live
+        } else {
+            ManagedPtyPresence::ConfirmedAbsent
+        })
+    }
+    fn stop_preserving_checkpoint(
+        &self,
+        _owner: &crate::domain::terminal_surface::TerminalSurfaceOwner,
+    ) -> Result<(), crate::domain::agent_session::ProviderAgentTerminalGatewayError> {
+        panic!("unexpected terminal stop")
+    }
+    fn delete(
+        &self,
+        _owner: &crate::domain::terminal_surface::TerminalSurfaceOwner,
+    ) -> Result<(), crate::domain::agent_session::ProviderAgentTerminalGatewayError> {
+        panic!("unexpected terminal deletion")
+    }
+    fn is_current_runtime_generation(
+        &self,
+        _owner: &crate::domain::terminal_surface::TerminalSurfaceOwner,
+        _generation: u64,
+    ) -> Result<bool, crate::domain::agent_session::ProviderAgentTerminalGatewayError> {
+        panic!("unexpected generation lookup")
     }
 }
 
@@ -200,19 +257,26 @@ impl Fixture {
         let store =
             LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into()))
                 .unwrap();
-        let app = test_helpers::dependencies(Some(store.clone()));
+        let mut app = test_helpers::dependencies(Some(store.clone()));
         let worktrees = Arc::new(TestWorktrees {
             failures: AtomicUsize::new(failures),
             ..Default::default()
         });
         let sessions = Arc::new(TestSessions::default());
-        let host = WorkflowRuntimeHost::with_execution_store(
+        let mut host = WorkflowRuntimeHost::with_execution_store(
             Arc::new(super::workflow_host_tests::UnusedWorkflowResolver),
             Arc::new(super::workflow_host_tests::AcceptingWorktreeResolver),
             Arc::new(ExecutionStore::new_in_memory_for_tests()),
             sessions.clone(),
             worktrees.clone(),
         );
+        let processes = Arc::new(
+            crate::adaptor::gateway::workflow::node_process::WorkflowNodeProcesses::new(
+                sessions.clone(),
+            ),
+        );
+        host.node_processes = processes.clone();
+        app.processes = processes;
         let host =
             crate::adaptor::controller::wiring::wire_delegate_continuation(app.clone(), host);
         Self {
@@ -227,6 +291,10 @@ impl Fixture {
 
     pub(super) async fn start(&self, nodes: &str) -> String {
         self.start_at(nodes, "/repo-worktrees/development").await
+    }
+
+    pub(super) async fn wait_startup_retries(&self) {
+        wait_startup_retries(&self.host).await;
     }
 
     pub(super) async fn start_at(&self, nodes: &str, root: &str) -> String {
@@ -296,13 +364,14 @@ impl Fixture {
     }
 
     pub(super) fn restarted_host(&self) -> WorkflowRuntimeHost {
-        let host = WorkflowRuntimeHost::with_execution_store(
+        let mut host = WorkflowRuntimeHost::with_execution_store(
             Arc::new(super::workflow_host_tests::UnusedWorkflowResolver),
             Arc::new(super::workflow_host_tests::AcceptingWorktreeResolver),
             Arc::new(ExecutionStore::new_in_memory_for_tests()),
             self.sessions.clone(),
             self.host.isolated_worktrees.clone(),
         );
+        host.node_processes = self.host.node_processes.clone();
         crate::adaptor::controller::wiring::wire_delegate_continuation(self.app.clone(), host)
     }
 
@@ -330,6 +399,28 @@ impl Fixture {
         .await
         .expect("command must complete")
     }
+}
+
+pub(super) async fn wait_startup_retries(host: &WorkflowRuntimeHost) {
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            let pending = host
+                .startup_retries
+                .lock()
+                .await
+                .values()
+                .map(|task| task.cancel.subscribe())
+                .collect::<Vec<_>>();
+            if pending.is_empty() {
+                break;
+            }
+            for mut completion in pending {
+                let _ = completion.changed().await;
+            }
+        }
+    })
+    .await
+    .expect("startup retries must finish");
 }
 
 pub(super) fn record_workflow_execution_broadcasts(
@@ -361,6 +452,9 @@ pub(super) fn take_workflow_execution_broadcasts(
 
 pub(super) fn dependencies(store: Option<Arc<LocalEventStore>>) -> WorkflowRuntimeDependencies {
     WorkflowRuntimeDependencies {
+        processes: Arc::new(
+            crate::adaptor::gateway::workflow::node_process::WorkflowNodeProcesses::default(),
+        ),
         store,
         config: None,
         secrets: None,

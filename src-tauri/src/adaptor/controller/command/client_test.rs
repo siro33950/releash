@@ -343,8 +343,10 @@ async fn test_クライアントdispatch_proto全commandの登録と引数検証
     // Given
     let (_app, dispatch) = parity_app();
     // When / Then
-    assert_eq!(wire::COMMAND_NAMES.len(), 165);
+    assert_eq!(wire::COMMAND_NAMES.len(), 164);
     for removed in [
+        "stop_workflow",
+        "resume_workflow",
         "get_application_quit_operation",
         "get_application_shutdown",
         "get_shutdown_plan",
@@ -1080,12 +1082,6 @@ async fn test_workflow変更_protoは実引数とruntime結果を保持する() 
             errors.abort = Some(crate::domain::workflow::WorkflowError::external(
                 "abort failed",
             ));
-            errors.stop = Some(crate::domain::workflow::WorkflowError::external(
-                "stop failed",
-            ));
-            errors.resume = Some(crate::domain::workflow::WorkflowError::external(
-                "resume failed",
-            ));
         }
         // When / Then
         let expected = outcome(
@@ -1104,26 +1100,6 @@ async fn test_workflow変更_protoは実引数とruntime結果を保持する() 
             expected,
         )
         .await;
-        let expected =
-            outcome(invoke_tauri(&app, "stop_workflow", json!({"executionId": id})).await);
-        assert_eq!(expected.is_err(), failure);
-        assert_parity(
-            &dispatch,
-            "stop_workflow",
-            json!({"executionId":id}),
-            expected,
-        )
-        .await;
-        let expected =
-            outcome(invoke_tauri(&app, "resume_workflow", json!({"executionId": id})).await);
-        assert_eq!(expected.is_err(), failure);
-        assert_parity(
-            &dispatch,
-            "resume_workflow",
-            json!({"executionId":id}),
-            expected,
-        )
-        .await;
     }
     let commands = gateway.commands.lock().unwrap();
     assert_eq!(commands.starts.len(), 2);
@@ -1137,10 +1113,6 @@ async fn test_workflow変更_protoは実引数とruntime結果を保持する() 
     );
     assert_eq!(commands.aborts.len(), 2);
     assert_eq!(commands.aborts[0], commands.aborts[1]);
-    assert_eq!(commands.stops.len(), 2);
-    assert_eq!(commands.stops[0], commands.stops[1]);
-    assert_eq!(commands.resumes.len(), 2);
-    assert_eq!(commands.resumes[0], commands.resumes[1]);
 }
 
 fn value(result: impl serde::Serialize) -> Result<Value, Value> {

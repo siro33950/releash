@@ -28,6 +28,7 @@ pub(crate) mod failure_policy_config;
 pub(crate) mod failure_wire;
 pub(crate) mod lua;
 pub(crate) mod mapper;
+pub(crate) mod node_process;
 pub(crate) mod node_session_boundary;
 mod runtime_command_gateway;
 pub(crate) mod runtime_resolver;

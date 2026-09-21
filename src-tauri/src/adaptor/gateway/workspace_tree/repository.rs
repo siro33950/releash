@@ -21,18 +21,21 @@ enum WorkspaceSqliteBackend {
 /// The only concrete `WorkspaceTreeRepository` implementation.
 pub(crate) struct SqliteWorkspaceTreeRepository {
     backend: WorkspaceSqliteBackend,
+    pub(crate) processes: Option<Arc<dyn crate::domain::workflow::NodeProcessReader>>,
 }
 
 impl SqliteWorkspaceTreeRepository {
     pub(crate) fn new(store: Arc<LocalEventStore>) -> Arc<Self> {
         Arc::new(Self {
             backend: WorkspaceSqliteBackend::Live(store),
+            processes: None,
         })
     }
 
     pub(crate) fn new_read_only(store: Arc<LocalEventReadStore>) -> Arc<Self> {
         Arc::new(Self {
             backend: WorkspaceSqliteBackend::ReadOnly(store),
+            processes: None,
         })
     }
 
@@ -85,11 +88,24 @@ impl SqliteWorkspaceTreeRepository {
     }
 
     fn tree_nodes(
+        &self,
         workspace: &str,
         folded: &FoldedTree,
         record: &WorkflowExecutionMetadataRecord,
     ) -> Result<Vec<WorkspaceTreeNode>, LocalEventQueryError> {
+        let mut process_presences = std::collections::HashMap::new();
+        if let Some(processes) = &self.processes {
+            for node in &folded.aggregate.node_executions {
+                process_presences.insert(
+                    node.id.clone(),
+                    processes
+                        .presence(workspace, &node.id, node.kind, node.session_id.as_deref())
+                        .map_err(|error| invariant_query_error(error.to_string()))?,
+                );
+            }
+        }
         crate::domain::workspace_tree::runtime_snapshot_nodes(RuntimeSnapshotNodeProjection {
+            process_presences: &process_presences,
             execution_id: &folded.aggregate.id,
             workflow_name: &folded.aggregate.workflow.name,
             workspace_identity: workspace,
@@ -97,7 +113,7 @@ impl SqliteWorkspaceTreeRepository {
             workflow_definition: &folded.aggregate.workflow,
             node_executions: &folded.aggregate.node_executions,
             retry_predecessors: &folded.aggregate.retry_predecessors,
-            accepts_explicit_retry: folded.aggregate.accepts_explicit_retry(),
+            execution_active: folded.aggregate.is_active(),
             started_at: folded.aggregate.started_at,
             updated_at: folded.aggregate.updated_at,
             execution: record,
@@ -119,7 +135,7 @@ impl SqliteWorkspaceTreeRepository {
         let mut nodes = Vec::new();
         let mut facts = Vec::new();
         for (folded, record) in trees {
-            nodes.extend(Self::tree_nodes(workspace, folded, record)?);
+            nodes.extend(self.tree_nodes(workspace, folded, record)?);
             facts.push(execution_summary_fact(record));
         }
         let mut tree =
@@ -138,7 +154,7 @@ impl WorkspaceTreeRepository for SqliteWorkspaceTreeRepository {
         let workspace = workspace_identity.as_str().to_string();
         let trees = self.folded_workspace_trees(&workspace)?;
         for (folded, record) in &trees {
-            let nodes = Self::tree_nodes(&workspace, folded, record)?;
+            let nodes = self.tree_nodes(&workspace, folded, record)?;
             if folded.aggregate.id == node_id {
                 if let Some(mut node) =
                     WorkspacePublicRoot::for_execution(&nodes, &folded.aggregate.id)
@@ -170,7 +186,8 @@ impl WorkspaceTreeRepository for SqliteWorkspaceTreeRepository {
             return Ok(None);
         };
         let workspace = folded.root.workspace_identity.clone();
-        Ok(Self::tree_nodes(&workspace, &folded, &record)?
+        Ok(self
+            .tree_nodes(&workspace, &folded, &record)?
             .into_iter()
             .find(|node| node.node_execution_id.as_deref() == Some(node_execution_id)))
     }
@@ -193,7 +210,7 @@ impl WorkspaceTreeRepository for SqliteWorkspaceTreeRepository {
         if folded.root.workspace_identity != workspace {
             return Ok(None);
         }
-        let nodes = Self::tree_nodes(&workspace, &folded, &record)?;
+        let nodes = self.tree_nodes(&workspace, &folded, &record)?;
         Ok(nodes
             .iter()
             .find(|node| node.node_execution_id.as_deref() == Some(node_execution_id.as_str()))

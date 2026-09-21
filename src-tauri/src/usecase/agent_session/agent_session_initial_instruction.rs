@@ -79,42 +79,6 @@ impl AgentSessionInitialInstructionUsecase {
         }
     }
 
-    pub(crate) async fn dispatch(
-        &self,
-        agent_session_id: &str,
-        instruction: &str,
-        caller_request_id: &str,
-    ) -> Result<AgentSessionInitialInstructionDeliveryOutcome, AgentSessionInitialInstructionError>
-    {
-        if instruction.trim().is_empty() || caller_request_id.trim().is_empty() {
-            return Err(AgentSessionInitialInstructionError::InvalidInput);
-        }
-        let _operation = self
-            .sessions
-            .lock_operation(agent_session_id)
-            .await
-            .map_err(map_session_error)?;
-        let admission = self
-            .sessions
-            .admit_initial_instruction(agent_session_id, caller_request_id)
-            .await
-            .map_err(map_session_error)?;
-        if admission == AgentSessionInitialInstructionOutcome::AlreadyAdmitted {
-            return Ok(AgentSessionInitialInstructionDeliveryOutcome::AlreadyDispatched);
-        }
-        let session = self
-            .sessions
-            .find(agent_session_id)
-            .await
-            .map_err(map_session_error)?
-            .ok_or(AgentSessionInitialInstructionError::NotFound)?;
-        match self.write_instruction(&session.session().terminal_surface_owner(), instruction) {
-            Ok(()) => Ok(AgentSessionInitialInstructionDeliveryOutcome::Delivered),
-            Err(ProviderAgentTerminalGatewayError::Unavailable) => {
-                Ok(AgentSessionInitialInstructionDeliveryOutcome::DeliveryUnknown)
-            }
-        }
-    }
     fn write_instruction(
         &self,
         owner: &crate::domain::terminal_surface::TerminalSurfaceOwner,

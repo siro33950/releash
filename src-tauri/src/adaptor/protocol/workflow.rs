@@ -67,23 +67,9 @@ pub enum NodeKindView {
 pub enum NodeExecutionStatusView {
     Unresolved,
     Running,
-    Paused,
     WaitingApproval,
     Succeeded,
-    Failed,
     Aborted,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum NodeExecutionFailureKindView {
-    StartupTimeout,
-    StaleRuntimeTimeout,
-    ModelRefusal,
-    StructuredOutputMismatch,
-    ValidationFailure,
-    UserAbort,
-    InfrastructureCrash,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -120,16 +106,11 @@ pub struct ExecutionParentRefView {
     pub child_index: Option<usize>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct NodeExecutionFailureView {
-    pub reason: String,
-    pub kind: NodeExecutionFailureKindView,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct NodeExecutionView {
+    pub process_presence: String,
+    pub can_resume_session: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree: Option<crate::usecase::workflow::NodeWorktreeDto>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -157,8 +138,6 @@ pub struct NodeExecutionView {
     pub artifact: Option<ArtifactView>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub token_usage: Option<TokenUsageView>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub failure: Option<NodeExecutionFailureView>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub parent: Option<ExecutionParentRefView>,
     pub started_at: f64,

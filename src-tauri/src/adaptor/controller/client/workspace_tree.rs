@@ -6,9 +6,10 @@ use std::sync::Arc;
 
 use crate::adaptor::controller::state::AppState;
 use crate::usecase::workflow::{
-    ApproveWorkspaceNodeCommand, RenameWorkspaceSessionNodeCommand, RetryWorkspaceNodeCommand,
-    WorkspaceNodeCommandUsecase, WorkspaceNodeDetailDto, WorkspaceTreeSelectionSnapshotDto,
-    WorkspaceTreeSnapshotDto, WorkspaceWorkflowHistoryItemDto,
+    ApproveWorkspaceNodeCommand, RenameWorkspaceSessionNodeCommand,
+    ResumeWorkspaceSessionNodeCommand, RetryWorkspaceNodeCommand, WorkspaceNodeCommandUsecase,
+    WorkspaceNodeDetailDto, WorkspaceTreeSelectionSnapshotDto, WorkspaceTreeSnapshotDto,
+    WorkspaceWorkflowHistoryItemDto,
 };
 
 pub(crate) async fn list_workspace_worktree_nodes_shared(
@@ -106,6 +107,20 @@ pub(crate) async fn retry_workspace_node_shared(
 ) -> Result<(), String> {
     usecase
         .retry_workspace_node(RetryWorkspaceNodeCommand {
+            worktree_path,
+            node_id,
+        })
+        .await
+        .map_err(|error| error.to_string())
+}
+
+pub(crate) async fn resume_workspace_session_node_shared(
+    usecase: &Arc<WorkspaceNodeCommandUsecase>,
+    worktree_path: String,
+    node_id: String,
+) -> Result<(), String> {
+    usecase
+        .resume_workspace_session_node(ResumeWorkspaceSessionNodeCommand {
             worktree_path,
             node_id,
         })

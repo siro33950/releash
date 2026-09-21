@@ -378,7 +378,7 @@ return {expression}
             assert_eq!(index, if value == "source" { 2 } else { 3 });
             assert_eq!(host.sources.len(), 3 + added_sources);
             assert_eq!(host.predicate_entries, 0);
-            assert_eq!(host.arena_entries(), 7 + added_sources);
+            assert_eq!(host.arena_entries(), 6 + added_sources);
             let (root, path, location) = match &host.sources[index] {
                 SourceDraft::Node {
                     node,
@@ -1669,5 +1669,23 @@ fn test_completion_delegate_非sessionのhandleからの宣言を受理しない
             "{:?}",
             result.diagnostics
         );
+    }
+}
+
+#[test]
+fn removed_failure_policy_fields_and_helpers_are_rejected() {
+    for option in [
+        "on_failure = 'ignore'",
+        "on_failure = { retry = 1 }",
+        "on_failure = r.retry(1)",
+        "on_failure = r.ignore()",
+    ] {
+        let source = format!(
+            r#"local r = require('releash')
+local work = r.command{{ name = 'work', command = 'true' }}
+return r.workflow{{name = 'removed-policy', description = 'test', main = r.sequence{{children = {{r.child{{node = work, {option}}}}}}}}}
+"#
+        );
+        assert!(load_unconsumed_source(&source).is_err(), "{option}");
     }
 }

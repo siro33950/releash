@@ -52,7 +52,6 @@ fn test_実行時path解決_段0個と1段の値を従来通り返す() {
 fn test_実行時path解決_多段の配線とenvを解決する() {
     // Given
     let entry = ChildEntry {
-        on_failure: None,
         name: "consume".to_string(),
         inputs: vec![(
             "value".to_string(),
@@ -92,7 +91,6 @@ fn test_実行時path解決_多段の配線とenvを解決する() {
 fn test_実行時path解決_多段の未解決配線は束縛から除く() {
     // Given
     let entry = ChildEntry {
-        on_failure: None,
         name: "consume".to_string(),
         inputs: vec![(
             "value".to_string(),
@@ -121,7 +119,6 @@ fn test_実行時path解決_fanout子とtemplateで多段を解決する() {
         ..Default::default()
     };
     let entry = ChildEntry {
-        on_failure: None,
         name: "worker".to_string(),
         inputs: vec![(
             "value".to_string(),

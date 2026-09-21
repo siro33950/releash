@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
 	agentSessionRoute: vi.fn(),
 	approveWorkspaceNode: vi.fn().mockResolvedValue(null),
 	retryWorkspaceNode: vi.fn().mockResolvedValue(null),
+	resumeWorkspaceSessionNode: vi.fn().mockResolvedValue(null),
 }));
 
 vi.mock("@/hooks/useWorkspaceNodeDetail", () => ({
@@ -25,6 +26,8 @@ vi.mock("@/hooks/useWorkspaceNodeDetail", () => ({
 	approveWorkspaceNode: (...args: unknown[]) =>
 		mocks.approveWorkspaceNode(...args),
 	retryWorkspaceNode: (...args: unknown[]) => mocks.retryWorkspaceNode(...args),
+	resumeWorkspaceSessionNode: (...args: unknown[]) =>
+		mocks.resumeWorkspaceSessionNode(...args),
 }));
 vi.mock("@/components/panels/AgentSessionPanel", async () => {
 	const { useState } = await import("react");
@@ -48,6 +51,7 @@ function sessionDetail(
 		title: `Session ${id}`,
 		status: "running",
 		statusClassification: "active",
+		processPresence: "unknown",
 		submitReceived: false,
 		stopReceived: false,
 		hasArtifact: false,
@@ -55,6 +59,7 @@ function sessionDetail(
 			canRename: false,
 			canApprove: false,
 			canRetry: false,
+			canResumeSession: false,
 		},
 		updatedAt: 1,
 		content: { kind: "session", sessionId },
@@ -75,6 +80,7 @@ beforeEach(() => {
 	mocks.agentSessionRoute.mockClear();
 	mocks.approveWorkspaceNode.mockClear();
 	mocks.retryWorkspaceNode.mockClear();
+	mocks.resumeWorkspaceSessionNode.mockClear();
 });
 
 describe("NodeContentView", () => {
@@ -118,6 +124,7 @@ describe("NodeContentView", () => {
 			expect.objectContaining({
 				agentSessionId: "agent-session-1",
 				theme: "light",
+				showResumeAction: false,
 			}),
 		);
 	});
@@ -226,8 +233,8 @@ describe("NodeContentView", () => {
 	it("reports a missing Session as unavailable", () => {
 		mocks.detailState.detail = {
 			...sessionDetail("missing", null),
-			status: "failed",
-			statusClassification: "failure",
+			status: "running",
+			statusClassification: "attention",
 		};
 		renderView("missing");
 
@@ -239,8 +246,9 @@ describe("NodeContentView", () => {
 		mocks.detailState.detail = {
 			id: "command-node",
 			title: "Run checks",
-			status: "failed",
-			statusClassification: "failure",
+			status: "completed",
+			statusClassification: "idle",
+			processPresence: "unknown",
 			submitReceived: false,
 			stopReceived: false,
 			hasArtifact: false,
@@ -248,6 +256,7 @@ describe("NodeContentView", () => {
 				canRename: false,
 				canApprove: false,
 				canRetry: false,
+				canResumeSession: false,
 			},
 			updatedAt: 2,
 			content: {
@@ -266,7 +275,7 @@ describe("NodeContentView", () => {
 		expect(screen.getByTestId("workspace-command")).toHaveTextContent(
 			"token: ********",
 		);
-		expect(screen.getByText("failed")).toBeVisible();
+		expect(screen.getByText("completed")).toBeVisible();
 		expect(screen.getByText("7")).toBeVisible();
 		expect(screen.getByText("145 ms")).toBeVisible();
 		expect(screen.getByTestId("workspace-command-stdout")).toHaveTextContent(
@@ -301,14 +310,14 @@ describe("NodeContentView", () => {
 
 	it("uses the backend status as the Node status tooltip", () => {
 		mocks.detailState.detail = {
-			...sessionDetail("failed-session"),
-			status: "failed",
-			statusClassification: "failure",
+			...sessionDetail("absent-session"),
+			status: "running",
+			statusClassification: "attention",
 			errorReason: "Agent process exited unexpectedly",
 		};
-		renderView("failed-session");
+		renderView("absent-session");
 
-		expect(screen.getByTitle("failed")).toBeVisible();
+		expect(screen.getByTitle("running")).toBeVisible();
 	});
 
 	it("falls back to the status as the Node status tooltip", () => {
@@ -325,8 +334,6 @@ describe("NodeContentView", () => {
 	it.each<[WorkspaceNodeStatus, WorkspaceNodeStatusClassification, string]>([
 		["running", "active", "lucide-loader-circle"],
 		["waiting", "attention", "lucide-clock"],
-		["failed", "failure", "lucide-triangle-alert"],
-		["paused", "idle", "lucide-circle"],
 		["completed", "idle", "lucide-circle-check"],
 		["aborted", "idle", "lucide-ban"],
 	])(
@@ -370,16 +377,16 @@ describe("NodeContentView", () => {
 			"dark:text-yellow-300",
 		],
 		[
-			"failed",
+			"unresolved",
 			"failure",
-			"lucide-triangle-alert",
+			"lucide-circle-question-mark",
 			"text-red-600",
 			"dark:text-red-300",
 		],
 		[
-			"paused",
+			"completed",
 			"idle",
-			"lucide-circle",
+			"lucide-circle-check",
 			"text-green-600",
 			"dark:text-green-300",
 		],
@@ -400,17 +407,15 @@ describe("NodeContentView", () => {
 		},
 	);
 
-	it("shows backend-owned error and recovery reasons without deriving them in the TUI", () => {
+	it("shows the backend-owned recovery reason without deriving it in the TUI", () => {
 		mocks.detailState.detail = {
-			...sessionDetail("paused-session"),
-			status: "paused",
+			...sessionDetail("unresolved-session"),
+			status: "unresolved",
 			statusClassification: "failure",
-			errorReason: "Node activation failed",
 			recoveryReason: "Provider session must be recovered",
 		};
-		renderView("paused-session");
+		renderView("unresolved-session");
 
-		expect(screen.getByText("Node activation failed")).toBeVisible();
 		expect(
 			screen.getByText("Provider session must be recovered"),
 		).toBeVisible();
@@ -424,6 +429,7 @@ describe("NodeContentView", () => {
 				canRename: false,
 				canApprove: true,
 				canRetry: false,
+				canResumeSession: false,
 			},
 		};
 		renderView("approval");
@@ -435,8 +441,7 @@ describe("NodeContentView", () => {
 		});
 	});
 
-	it("shows the backend-owned signal wait and executes Retry only from backend capability", async () => {
-		const user = userEvent.setup();
+	it("shows the backend-owned signal wait without making Session Retry available", async () => {
 		mocks.detailState.detail = {
 			...sessionDetail("waiting-stop"),
 			submitReceived: true,
@@ -446,7 +451,8 @@ describe("NodeContentView", () => {
 			capabilities: {
 				canRename: false,
 				canApprove: false,
-				canRetry: true,
+				canRetry: false,
+				canResumeSession: false,
 			},
 		};
 		renderView("waiting-stop");
@@ -456,15 +462,16 @@ describe("NodeContentView", () => {
 		).toBeVisible();
 		expect(screen.queryByText("Attempt 2")).not.toBeInTheDocument();
 		expect(screen.getByText("Artifact submitted")).toBeVisible();
-		await user.click(screen.getByRole("button", { name: "Retry" }));
-		expect(mocks.retryWorkspaceNode).toHaveBeenCalledWith({
-			worktreePath: "/repo",
-			nodeId: "waiting-stop",
-		});
+		expect(
+			screen.queryByRole("button", { name: "Retry" }),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: "Resume" }),
+		).not.toBeInTheDocument();
 	});
 });
 
-it.each(["running", "failed", "aborted"] as const)(
+it.each(["running", "completed", "aborted"] as const)(
 	"%sのNodeでArtifactなしでも隔離branchとpathを表示する",
 	(status) => {
 		mocks.detailState.detail = {
@@ -497,7 +504,12 @@ it.each(["success", "failure"])(
 		});
 		mocks.detailState.detail = {
 			...sessionDetail("approval"),
-			capabilities: { canRename: false, canApprove: true, canRetry: false },
+			capabilities: {
+				canRename: false,
+				canApprove: true,
+				canRetry: false,
+				canResumeSession: false,
+			},
 		};
 		renderView("approval");
 		await userEvent.click(screen.getByRole("button", { name: "Approve" }));
@@ -532,7 +544,14 @@ it.each(["success", "failure"])(
 		});
 		mocks.detailState.detail = {
 			...sessionDetail("retry"),
-			capabilities: { canRename: false, canApprove: false, canRetry: true },
+			processPresence: "confirmed_absent",
+			content: { kind: "command", displayCommand: "echo ok", result: null },
+			capabilities: {
+				canRename: false,
+				canApprove: false,
+				canRetry: true,
+				canResumeSession: false,
+			},
 		};
 		renderView("retry");
 		await userEvent.click(screen.getByRole("button", { name: "Retry" }));
@@ -560,3 +579,67 @@ it.each(["success", "failure"])(
 		expect(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
 	},
 );
+
+it.each(["live", "confirmed_absent", "unknown"] as const)(
+	"プロセス在否 %s をNode状態と別に表示する",
+	(presence) => {
+		mocks.detailState.detail = {
+			...sessionDetail("presence"),
+			processPresence: presence,
+		};
+		renderView("presence");
+		expect(screen.getByTitle("running")).toBeVisible();
+		expect(
+			screen.getByText(
+				presence === "live"
+					? "Process running"
+					: presence === "confirmed_absent"
+						? "No process"
+						: "Process unknown",
+			),
+		).toBeVisible();
+	},
+);
+
+it("Session Resume をbackend capabilityから表示し新しい入口へ送る", async () => {
+	const user = userEvent.setup();
+	const detail = sessionDetail("resume", null);
+	mocks.detailState.detail = {
+		...detail,
+		processPresence: "confirmed_absent",
+		capabilities: { ...detail.capabilities, canResumeSession: true },
+	};
+	renderView("resume");
+	expect(
+		screen.queryByRole("button", { name: "Retry" }),
+	).not.toBeInTheDocument();
+	await user.click(screen.getByRole("button", { name: "Resume" }));
+	expect(mocks.resumeWorkspaceSessionNode).toHaveBeenCalledWith({
+		worktreePath: "/repo",
+		nodeId: "resume",
+	});
+});
+
+it("Session Resume 中は二重送信を防ぎ失敗理由を表示する", async () => {
+	const user = userEvent.setup();
+	const detail = sessionDetail("resume-error", null);
+	mocks.detailState.detail = {
+		...detail,
+		capabilities: { ...detail.capabilities, canResumeSession: true },
+	};
+	let reject!: (error: Error) => void;
+	mocks.resumeWorkspaceSessionNode.mockReturnValueOnce(
+		new Promise((_, fail) => {
+			reject = fail;
+		}),
+	);
+	renderView("resume-error");
+	await user.click(screen.getByRole("button", { name: "Resume" }));
+	expect(screen.getByRole("button", { name: "Resuming..." })).toBeDisabled();
+	expect(mocks.resumeWorkspaceSessionNode).toHaveBeenCalledTimes(1);
+	await act(async () => {
+		reject(new Error("provider recovery failed"));
+	});
+	expect(screen.getByText("provider recovery failed")).toBeVisible();
+	expect(screen.getByRole("button", { name: "Resume" })).toBeEnabled();
+});

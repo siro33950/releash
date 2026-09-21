@@ -238,7 +238,7 @@ impl DurableWorkflowTransaction {
 mod tests {
     use super::*;
     use crate::domain::workflow::entities::workflow_execution::TransitionRejection;
-    use crate::domain::workflow::{NodeExecutionFailureKind, NodeKindName, RuntimeExecutionState};
+    use crate::domain::workflow::{NodeKindName, RuntimeExecutionState};
 
     fn execution_with_attached_session() -> WorkflowExecution {
         let mut execution = WorkflowExecution::restore(RuntimeExecutionState::Running);
@@ -339,12 +339,7 @@ mod tests {
     fn newly_terminal_session_stop_effect_becomes_available_after_persistence() {
         let mut live = execution_with_attached_session();
         let prepared = PreparedWorkflowTransaction::observe(&live, |candidate| {
-            let outcome = candidate.fail_node_execution(
-                "node-execution",
-                "provider failed".to_string(),
-                NodeExecutionFailureKind::InfrastructureCrash,
-                2.0,
-            );
+            let outcome = candidate.abort_node_execution("node-execution", 2.0);
             Ok(WorkflowRuntimeDecision {
                 outcome,
                 events: vec![aborted_event()],
@@ -371,12 +366,7 @@ mod tests {
     fn newly_terminal_session_persistence_failure_keeps_active_aggregate() {
         let mut live = execution_with_attached_session();
         let prepared = PreparedWorkflowTransaction::observe(&live, |candidate| {
-            let outcome = candidate.fail_node_execution(
-                "node-execution",
-                "provider failed".to_string(),
-                NodeExecutionFailureKind::InfrastructureCrash,
-                2.0,
-            );
+            let outcome = candidate.abort_node_execution("node-execution", 2.0);
             Ok(WorkflowRuntimeDecision {
                 outcome,
                 events: vec![aborted_event()],

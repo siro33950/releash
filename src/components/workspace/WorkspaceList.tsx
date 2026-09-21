@@ -14,9 +14,7 @@ import {
 	Pencil,
 	Plus,
 	RefreshCw,
-	RotateCcw,
 	Settings,
-	Square,
 	Terminal,
 	Trash2,
 	Waypoints,
@@ -382,24 +380,6 @@ function WorkflowControls({
 					</Button>
 				</DropdownMenuTrigger>
 				<DropdownMenuContent align="end">
-					<DropdownMenuItem
-						disabled={!capabilities.canStop}
-						onSelect={() => {
-							if (capabilities.canStop) onWorkflowAction("stop", item);
-						}}
-					>
-						<Square className="size-3.5" />
-						Stop
-					</DropdownMenuItem>
-					<DropdownMenuItem
-						disabled={!capabilities.canResume}
-						onSelect={() => {
-							if (capabilities.canResume) onWorkflowAction("resume", item);
-						}}
-					>
-						<RotateCcw className="size-3.5" />
-						Resume
-					</DropdownMenuItem>
 					<DropdownMenuItem
 						variant="destructive"
 						disabled={!capabilities.canAbort}

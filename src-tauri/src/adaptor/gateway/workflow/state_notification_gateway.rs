@@ -140,9 +140,8 @@ mod tests {
     };
     use crate::domain::workflow::TokenUsage as EventTokenUsage;
     use crate::domain::workflow::{
-        ExecutionParentRef, NodeDefinition, NodeExecutionFailure, NodeExecutionFailureKind,
-        NodeExecutionStatus, NodeHistoryEntry, NodeKindName, RuntimeArtifact, TokenUsage,
-        WorkflowDefinition,
+        ExecutionParentRef, NodeDefinition, NodeExecutionFailureKind, NodeExecutionStatus,
+        NodeHistoryEntry, NodeKindName, RuntimeArtifact, TokenUsage, WorkflowDefinition,
     };
 
     /// event 列を事実ログへ写像し、fold で読み model を導出する
@@ -305,6 +304,7 @@ mod tests {
                     },
                 )]),
                 node_executions: vec![NodeExecution {
+                    process_presence: Default::default(),
                     worktree: None,
                     recovery_reason: None,
                     id: node_execution_id.to_string(),
@@ -321,7 +321,7 @@ mod tests {
                         input_tokens: 3,
                         output_tokens: 2,
                     }),
-                    failure: None,
+
                     parent: None,
                     completion_signals: crate::domain::workflow::NodeCompletionSignalState::Ready,
                     started_at: 1.0,
@@ -410,17 +410,12 @@ mod tests {
             },
         ];
         let event_projection = fold_projection(execution_id, &events);
-        let failure = || NodeExecutionFailure {
-            reason: "review failed".to_string(),
-            kind: NodeExecutionFailureKind::ValidationFailure,
-        };
         let domain_parent =
             |item_index| ExecutionParentRef::fanout_child("parent", Some(item_index), 0);
         let node = |id: &str,
                     node_name: &str,
                     kind: NodeKindName,
                     status: NodeExecutionStatus,
-                    failure: Option<NodeExecutionFailure>,
                     parent: Option<ExecutionParentRef>,
                     started_at: f64,
                     completed_at: Option<f64>| NodeExecution {
@@ -437,7 +432,7 @@ mod tests {
             result_summary: None,
             artifact: None,
             token_usage: None,
-            failure,
+            process_presence: Default::default(),
             parent,
             completion_signals: Default::default(),
             started_at,
@@ -468,7 +463,6 @@ mod tests {
                         NodeKindName::Fanout,
                         NodeExecutionStatus::Running,
                         None,
-                        None,
                         2.0,
                         None,
                     ),
@@ -476,18 +470,16 @@ mod tests {
                         "child-1",
                         "review",
                         NodeKindName::Session,
-                        NodeExecutionStatus::Failed,
-                        Some(failure()),
+                        NodeExecutionStatus::Running,
                         Some(domain_parent(0)),
                         2.1,
-                        Some(3.0),
+                        None,
                     ),
                     node(
                         "child-2",
                         "review",
                         NodeKindName::Session,
                         NodeExecutionStatus::Running,
-                        None,
                         Some(domain_parent(1)),
                         2.2,
                         None,
@@ -498,17 +490,16 @@ mod tests {
             });
 
         // 主張: node の失敗は workflow を terminal にしない。
-        // live（runtime snapshot）は engine の観測どおり Failed を示す。
+        // live と fold はプロセスの終了を Node の終端状態に変えない。
         assert_eq!(runtime_projection.status, ExecutionStatus::Running);
         assert_eq!(
             runtime_projection.node_executions[1].status,
-            NodeExecutionStatus::Failed
+            NodeExecutionStatus::Running
         );
-        // fold（事実ログ）も異常終了を Failed として導出する。
         assert_eq!(event_projection.status, ExecutionStatus::Running);
         assert_eq!(
             event_projection.node_executions[1].status,
-            NodeExecutionStatus::Failed
+            NodeExecutionStatus::Running
         );
         assert_eq!(event_projection.completed_at, None);
         assert_eq!(runtime_projection.completed_at, None);

@@ -136,20 +136,18 @@ fn status_fact(
             node_execution_id: node_execution_id.to_string(),
             timestamp,
         }),
-        WorkspaceNodeStatus::Failed | WorkspaceNodeStatus::Aborted => {
-            Some(WorkspaceStructureFact::NodeFailed {
-                execution_id: execution_id.to_string(),
-                node_execution_id: node_execution_id.to_string(),
-                reason: "test failure".to_string(),
-                failure_kind: if status == WorkspaceNodeStatus::Aborted {
-                    NodeExecutionFailureKind::UserAbort
-                } else {
-                    NodeExecutionFailureKind::ValidationFailure
-                },
-                timestamp,
-            })
-        }
-        WorkspaceNodeStatus::Paused | WorkspaceNodeStatus::Unresolved => None,
+        WorkspaceNodeStatus::Aborted => Some(WorkspaceStructureFact::NodeFailed {
+            execution_id: execution_id.to_string(),
+            node_execution_id: node_execution_id.to_string(),
+            reason: "test failure".to_string(),
+            failure_kind: if status == WorkspaceNodeStatus::Aborted {
+                NodeExecutionFailureKind::UserAbort
+            } else {
+                NodeExecutionFailureKind::ValidationFailure
+            },
+            timestamp,
+        }),
+        WorkspaceNodeStatus::Unresolved => None,
     }
 }
 
@@ -216,7 +214,7 @@ fn test_親分類集約_sequenceとfanoutが同じ重大度順を使う() {
         WorkspaceNodeStatus,
         &[WorkspaceNodeStatus],
         WorkspaceNodeStatusClassification,
-    ); 4] = [
+    ); 3] = [
         (
             WorkspaceNodeStatus::Completed,
             &[WorkspaceNodeStatus::Completed],
@@ -231,15 +229,6 @@ fn test_親分類集約_sequenceとfanoutが同じ重大度順を使う() {
             WorkspaceNodeStatus::Completed,
             &[WorkspaceNodeStatus::Running, WorkspaceNodeStatus::Waiting],
             WorkspaceNodeStatusClassification::Attention,
-        ),
-        (
-            WorkspaceNodeStatus::Completed,
-            &[
-                WorkspaceNodeStatus::Running,
-                WorkspaceNodeStatus::Waiting,
-                WorkspaceNodeStatus::Failed,
-            ],
-            WorkspaceNodeStatusClassification::Failure,
         ),
     ];
 
@@ -256,7 +245,7 @@ fn test_親分類集約_sequenceとfanoutが同じ重大度順を使う() {
 }
 
 #[test]
-fn test_親分類集約_子孫のfailureをsequenceとfanoutの祖先まで反映する() {
+fn test_親分類集約_異常の観測だけでは子孫を終端にしない() {
     // Given
     let execution_id = "00000000-0000-4000-8000-0000000000d2";
     let mut tree = WorkspaceTree::empty("/repo");
@@ -325,7 +314,7 @@ fn test_親分類集約_子孫のfailureをsequenceとfanoutの祖先まで反�
                 .find(|node| { node.node_execution_id.as_deref() == Some(node_execution_id) })
                 .unwrap()
                 .status_classification,
-            WorkspaceNodeStatusClassification::Failure
+            WorkspaceNodeStatusClassification::Active
         );
     }
 }
@@ -1363,8 +1352,6 @@ fn branch_status_capabilities_and_session_activity_are_backend_aggregated() {
         workflow.status_classification,
         WorkspaceNodeStatusClassification::Active
     );
-    assert!(!workflow.can_stop);
-    assert!(!workflow.can_resume);
     assert!(workflow.can_abort);
     assert!(!workflow.can_archive);
     assert_eq!(
@@ -1379,7 +1366,7 @@ fn branch_status_capabilities_and_session_activity_are_backend_aggregated() {
     assert_eq!(fanout.status, WorkspaceNodeStatus::Completed);
     assert_eq!(
         fanout.status_classification,
-        WorkspaceNodeStatusClassification::Failure
+        WorkspaceNodeStatusClassification::Attention
     );
     let waiting = tree
         .nodes()
@@ -1929,20 +1916,12 @@ fn test_親分類集約_bind前sessionだけならunboundで他の子があれ�
 
 #[test]
 fn test_親分類集約_bind前sessionの終了状態をsequenceとfanoutへ反映する() {
-    let cases = [
-        (
-            NodeExecutionFailureKind::ValidationFailure,
-            WorkspaceNodeStatus::Failed,
-            WorkspaceNodeStatusClassification::Failure,
-            WorkspaceNodeStatusClassification::Failure,
-        ),
-        (
-            NodeExecutionFailureKind::UserAbort,
-            WorkspaceNodeStatus::Aborted,
-            WorkspaceNodeStatusClassification::Idle,
-            WorkspaceNodeStatusClassification::Active,
-        ),
-    ];
+    let cases = [(
+        NodeExecutionFailureKind::UserAbort,
+        WorkspaceNodeStatus::Aborted,
+        WorkspaceNodeStatusClassification::Idle,
+        WorkspaceNodeStatusClassification::Active,
+    )];
     for kind in [NodeKindName::Sequence, NodeKindName::Fanout] {
         for (failure_kind, child_status, child_expected, parent_expected) in cases {
             let execution_id = format!(
@@ -2197,5 +2176,59 @@ fn test_初回選択_childが完了済みまたは全て非表示なら実行中
             assert_eq!(preferred.as_deref(), Some(parent_id.as_str()));
             assert_eq!(restored.preferred_node_id(&hidden), preferred);
         }
+    }
+}
+
+#[test]
+fn runtime_failure_observation_preserves_running_approval_terminal_and_unresolved_states() {
+    let execution_id = "00000000-0000-4000-8000-000000000743";
+    for status in [
+        WorkspaceNodeStatus::Running,
+        WorkspaceNodeStatus::Waiting,
+        WorkspaceNodeStatus::Completed,
+        WorkspaceNodeStatus::Aborted,
+        WorkspaceNodeStatus::Unresolved,
+    ] {
+        let mut tree = WorkspaceTree::empty("/repo");
+        WorkspaceTreeProjector::project(
+            &mut tree,
+            [
+                WorkspaceStructureFact::WorkflowStarted {
+                    execution_id: execution_id.into(),
+                    workflow_name: "review".into(),
+                    worktree_path: "/repo".into(),
+                    dynamic_fanout_names: Default::default(),
+                    timestamp: 1.0,
+                },
+                WorkspaceStructureFact::NodeStarted {
+                    execution_id: execution_id.into(),
+                    node_execution_id: "node".into(),
+                    node_name: "work".into(),
+                    kind: NodeKindName::Session,
+                    attempt: 1,
+                    parent: None,
+                    timestamp: 2.0,
+                },
+            ],
+        )
+        .unwrap();
+        let node = tree.execution_node_mut(execution_id, "node").unwrap();
+        node.status = status;
+        node.can_approve = status == WorkspaceNodeStatus::Waiting;
+        WorkspaceTreeProjector::project(
+            &mut tree,
+            [WorkspaceStructureFact::NodeFailed {
+                execution_id: execution_id.into(),
+                node_execution_id: "node".into(),
+                reason: "provider failed".into(),
+                failure_kind: NodeExecutionFailureKind::InfrastructureCrash,
+                timestamp: 3.0,
+            }],
+        )
+        .unwrap();
+        let node = tree.execution_node_mut(execution_id, "node").unwrap();
+        assert_eq!(node.status, status);
+        assert_eq!(node.can_approve, status == WorkspaceNodeStatus::Waiting);
+        assert_eq!(node.error_reason, None);
     }
 }

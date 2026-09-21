@@ -19,7 +19,8 @@ message Push {
 }
 message CommandRequest {
   reserved 12, 44, 45, 67, 89, 118, 182;
-  reserved 131, 134;
+  reserved 123, 131, 134, 137;
+  reserved "stop_workflow", "resume_workflow";
   reserved "start_git_dir_watching", "start_watching";
   oneof command {
     GetReviewBlobRequest get_review_blob = 183;
@@ -129,8 +130,8 @@ message CommandRequest {
     RestoreWorkspaceWorkflowExecutionRequest restore_workspace_workflow_execution = 120;
     ResumeAgentSessionRequest resume_agent_session = 121;
     ResumeAgentSessionHistoryCandidateRequest resume_agent_session_history_candidate = 122;
-    ResumeWorkflowRequest resume_workflow = 123;
     RetryWorkspaceNodeRequest retry_workspace_node = 124;
+    ResumeWorkspaceSessionNodeRequest resume_workspace_session_node = 185;
     SaveFacetRequest save_facet = 125;
     SaveNotionConfigRequest save_notion_config = 126;
     SaveWorkflowSourceRequest save_workflow_source = 127;
@@ -141,7 +142,6 @@ message CommandRequest {
     StartTerminalLaunchPerformanceCollectionRequest start_terminal_launch_performance_collection = 133;
     StartWorkflowRequest start_workflow = 135;
     StopWatchingRequest stop_watching = 136;
-    StopWorkflowRequest stop_workflow = 137;
     TakeTerminalInputPerformanceSamplesRequest take_terminal_input_performance_samples = 138;
     TakeTerminalLaunchPerformanceSamplesRequest take_terminal_launch_performance_samples = 139;
     UpdateAppSettingsRequest update_app_settings = 140;
@@ -192,7 +192,8 @@ message CommandRequest {
 
 message CommandResult {
   reserved 12, 44, 45, 67, 89, 118, 182;
-  reserved 131, 134;
+  reserved 123, 131, 134, 137;
+  reserved "stop_workflow", "resume_workflow";
   reserved "start_git_dir_watching", "start_watching";
   oneof command {
     ResultString get_review_blob = 183;
@@ -302,8 +303,8 @@ message CommandResult {
     Unit restore_workspace_workflow_execution = 120;
     AgentSessionOpenResponse resume_agent_session = 121;
     ResultString resume_agent_session_history_candidate = 122;
-    Unit resume_workflow = 123;
     Unit retry_workspace_node = 124;
+    Unit resume_workspace_session_node = 185;
     Unit save_facet = 125;
     Unit save_notion_config = 126;
     SaveWorkflowSourceResultDto save_workflow_source = 127;
@@ -314,7 +315,6 @@ message CommandResult {
     Unit start_terminal_launch_performance_collection = 133;
     ResultString start_workflow = 135;
     Unit stop_watching = 136;
-    Unit stop_workflow = 137;
     ListTerminalInputPerformanceSampleV1 take_terminal_input_performance_samples = 138;
     ListTerminalLaunchPerformanceSampleV1 take_terminal_launch_performance_samples = 139;
     Unit update_app_settings = 140;
@@ -1715,6 +1715,10 @@ message TokenUsageView {
 }
 
 message NodeExecutionView {
+  optional bool can_resume_session = 25 [json_name = "canResumeSession", (json_required) = true];
+  optional NodeProcessPresence process_presence = 24 [json_name = "processPresence", (json_required) = true];
+  reserved 20;
+  reserved "failure";
   optional NodeWorktreeDto worktree = 1 [json_name = "worktree", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
   optional string recovery_reason = 2 [json_name = "recoveryReason", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
   optional string id = 3 [json_name = "id", (json_required) = true];
@@ -1734,7 +1738,6 @@ message NodeExecutionView {
   optional string result_summary = 17 [json_name = "resultSummary", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
   optional ArtifactView artifact = 18 [json_name = "artifact", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
   optional TokenUsageView token_usage = 19 [json_name = "tokenUsage", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
-  optional NodeExecutionFailureView failure = 20 [json_name = "failure", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
   optional ExecutionParentRefView parent = 21 [json_name = "parent", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
   optional double started_at = 22 [json_name = "startedAt", (json_required) = true];
   optional double completed_at = 23 [json_name = "completedAt", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
@@ -1756,15 +1759,25 @@ message NodeKindView {
   optional Value value = 1 [json_name = "value", (json_required) = true];
 }
 
+message NodeProcessPresence {
+  option (json_wrapper) = "value";
+  enum Value {
+    unknown = 0 [(json_enum_name) = "unknown"];
+    live = 1 [(json_enum_name) = "live"];
+    confirmed_absent = 2 [(json_enum_name) = "confirmed_absent"];
+  }
+  optional Value value = 1 [json_name = "value", (json_required) = true];
+}
+
 message NodeExecutionStatusView {
   option (json_wrapper) = "value";
   enum Value {
+    reserved 2, 5;
+    reserved "paused", "failed";
     unresolved = 0 [(json_enum_name) = "unresolved"];
     running = 1 [(json_enum_name) = "running"];
-    paused = 2 [(json_enum_name) = "paused"];
     waiting_approval = 3 [(json_enum_name) = "waiting_approval"];
     succeeded = 4 [(json_enum_name) = "succeeded"];
-    failed = 5 [(json_enum_name) = "failed"];
     aborted = 6 [(json_enum_name) = "aborted"];
   }
   optional Value value = 1 [json_name = "value", (json_required) = true];
@@ -1786,24 +1799,7 @@ message ArtifactView {
   optional double produced_at = 4 [json_name = "producedAt", (json_required) = true];
 }
 
-message NodeExecutionFailureView {
-  optional string reason = 1 [json_name = "reason", (json_required) = true];
-  optional NodeExecutionFailureKindView kind = 2 [json_name = "kind", (json_required) = true];
-}
 
-message NodeExecutionFailureKindView {
-  option (json_wrapper) = "value";
-  enum Value {
-    startup_timeout = 0 [(json_enum_name) = "startup_timeout"];
-    stale_runtime_timeout = 1 [(json_enum_name) = "stale_runtime_timeout"];
-    model_refusal = 2 [(json_enum_name) = "model_refusal"];
-    structured_output_mismatch = 3 [(json_enum_name) = "structured_output_mismatch"];
-    validation_failure = 4 [(json_enum_name) = "validation_failure"];
-    user_abort = 5 [(json_enum_name) = "user_abort"];
-    infrastructure_crash = 6 [(json_enum_name) = "infrastructure_crash"];
-  }
-  optional Value value = 1 [json_name = "value", (json_required) = true];
-}
 
 message ExecutionParentRefView {
   optional string parent_id = 1 [json_name = "parentId", (json_required) = true];
@@ -1853,6 +1849,7 @@ message GetWorkspaceNodeDetailRequest {
 }
 
 message WorkspaceNodeDetailDto {
+  optional NodeProcessPresence process_presence = 15 [json_name = "processPresence", (json_required) = true];
   optional NodeWorktreeDto worktree = 1 [json_name = "worktree", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
   optional string id = 2 [json_name = "id", (json_required) = true];
   optional string title = 3 [json_name = "title", (json_required) = true];
@@ -1870,6 +1867,7 @@ message WorkspaceNodeDetailDto {
 }
 
 message WorkspaceNodeCapabilitiesDto {
+  optional bool can_resume_session = 5 [json_name = "canResumeSession", (json_required) = true];
   optional bool can_rename = 1 [json_name = "canRename", (json_required) = true];
   optional bool can_approve = 2 [json_name = "canApprove", (json_required) = true];
   optional bool can_retry = 3 [json_name = "canRetry", (json_required) = true];
@@ -1937,6 +1935,7 @@ message WorkspaceTreeItemDto {
 }
 
 message WorkspaceNodeDto {
+  optional NodeProcessPresence process_presence = 13 [json_name = "processPresence", (json_required) = true];
   optional string id = 1 [json_name = "id", (json_required) = true];
   optional string title = 2 [json_name = "title", (json_required) = true];
   optional WorkspaceStatusClassification status = 3 [json_name = "status", (json_required) = true];
@@ -1952,8 +1951,8 @@ message WorkspaceNodeDto {
 }
 
 message WorkspaceWorkflowCapabilitiesDto {
-  optional bool can_stop = 1 [json_name = "canStop", (json_required) = true];
-  optional bool can_resume = 2 [json_name = "canResume", (json_required) = true];
+  reserved 1, 2;
+  reserved "can_stop", "can_resume";
   optional bool can_abort = 3 [json_name = "canAbort", (json_required) = true];
   optional bool can_archive = 4 [json_name = "canArchive", (json_required) = true];
 }
@@ -2494,11 +2493,13 @@ message ResumeAgentSessionHistoryCandidateRequest {
   optional string caller_request_id = 7 [json_name = "callerRequestId", (json_required) = true];
 }
 
-message ResumeWorkflowRequest {
-  optional string execution_id = 1 [json_name = "executionId", (json_required) = true];
-}
 
 message RetryWorkspaceNodeRequest {
+  optional string worktree_path = 1 [json_name = "worktreePath", (json_required) = true];
+  optional string node_id = 2 [json_name = "nodeId", (json_required) = true];
+}
+
+message ResumeWorkspaceSessionNodeRequest {
   optional string worktree_path = 1 [json_name = "worktreePath", (json_required) = true];
   optional string node_id = 2 [json_name = "nodeId", (json_required) = true];
 }
@@ -2587,9 +2588,6 @@ message StopWatchingRequest {
   optional uint64 watcher_id = 1 [json_name = "watcherId", (json_required) = true];
 }
 
-message StopWorkflowRequest {
-  optional string execution_id = 1 [json_name = "executionId", (json_required) = true];
-}
 
 message TakeTerminalInputPerformanceSamplesRequest {
 
@@ -3204,10 +3202,10 @@ message TerminalInputUnavailable {
 message WorkspaceNodeStatus {
   option (json_wrapper) = "value";
   enum Value {
+    reserved 2, 3;
+    reserved "paused", "failed";
     unresolved = 0 [(json_enum_name) = "unresolved"];
     running = 1 [(json_enum_name) = "running"];
-    paused = 2 [(json_enum_name) = "paused"];
-    failed = 3 [(json_enum_name) = "failed"];
     waiting = 4 [(json_enum_name) = "waiting"];
     aborted = 5 [(json_enum_name) = "aborted"];
     completed = 6 [(json_enum_name) = "completed"];
@@ -3230,12 +3228,12 @@ message WorkspaceStatusClassification {
 message WorkspaceHistoryStatus {
   option (json_wrapper) = "value";
   enum Value {
+    reserved 2, 3;
+    reserved "paused", "failed";
     reserved 7, 8;
     reserved "waiting_approval", "interrupted";
     unresolved = 0 [(json_enum_name) = "unresolved"];
     running = 1 [(json_enum_name) = "running"];
-    paused = 2 [(json_enum_name) = "paused"];
-    failed = 3 [(json_enum_name) = "failed"];
     waiting = 4 [(json_enum_name) = "waiting"];
     aborted = 5 [(json_enum_name) = "aborted"];
     completed = 6 [(json_enum_name) = "completed"];
@@ -3483,8 +3481,8 @@ service ClientService {
   rpc RestoreWorkspaceWorkflowExecution(RestoreWorkspaceWorkflowExecutionRequest) returns (Unit);
   rpc ResumeAgentSession(ResumeAgentSessionRequest) returns (AgentSessionOpenResponse);
   rpc ResumeAgentSessionHistoryCandidate(ResumeAgentSessionHistoryCandidateRequest) returns (ResultString);
-  rpc ResumeWorkflow(ResumeWorkflowRequest) returns (Unit);
   rpc RetryWorkspaceNode(RetryWorkspaceNodeRequest) returns (Unit);
+  rpc ResumeWorkspaceSessionNode(ResumeWorkspaceSessionNodeRequest) returns (Unit);
   rpc SaveFacet(SaveFacetRequest) returns (Unit);
   rpc SaveNotionConfig(SaveNotionConfigRequest) returns (Unit);
   rpc SaveWorkflowSource(SaveWorkflowSourceRequest) returns (SaveWorkflowSourceResultDto);
@@ -3495,7 +3493,6 @@ service ClientService {
   rpc StartTerminalLaunchPerformanceCollection(StartTerminalLaunchPerformanceCollectionRequest) returns (Unit);
   rpc StartWorkflow(StartWorkflowRequest) returns (ResultString);
   rpc StopWatching(StopWatchingRequest) returns (Unit);
-  rpc StopWorkflow(StopWorkflowRequest) returns (Unit);
   rpc TakeTerminalInputPerformanceSamples(TakeTerminalInputPerformanceSamplesRequest) returns (ListTerminalInputPerformanceSampleV1);
   rpc TakeTerminalLaunchPerformanceSamples(TakeTerminalLaunchPerformanceSamplesRequest) returns (ListTerminalLaunchPerformanceSampleV1);
   rpc UpdateAppSettings(UpdateAppSettingsRequest) returns (Unit);

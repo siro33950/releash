@@ -68,7 +68,6 @@ const RELEASH_STUB: &str = r#"---@meta
 ---@field child ReleashSource Only on a Session with delegate. Session/Command fields are direct; Sequence/Fanout fields traverse the merged map.
 ---@class ReleashChild
 ---@class ReleashRule
----@class ReleashOnFailure
 ---@class ReleashInput: ReleashSource
 ---@class ReleashSchema
 ---@class ReleashFacet
@@ -119,7 +118,6 @@ const RELEASH_STUB: &str = r#"---@meta
 ---@field node ReleashNode
 ---@field inputs? table<string, ReleashSource>
 ---@field rules? ReleashRule[]
----@field on_failure? ReleashOnFailure
 
 ---@class ReleashFanoutOptions
 ---@field name? string
@@ -196,8 +194,6 @@ const RELEASH_STUB: &str = r#"---@meta
 ---@field any fun(elements: (ReleashSource|ReleashPredicate)[]): ReleashPredicate
 ---@field switch fun(options: ReleashSwitchOptions): ReleashRule
 ---@field loop_guard fun(options: ReleashLoopGuardOptions): ReleashRule
----@field retry fun(count: integer): ReleashOnFailure
----@field ignore ReleashOnFailure
 ---@field input fun(name: string, contract?: ReleashSchema): ReleashInput
 ---@field request ReleashSource
 ---@field items ReleashSource

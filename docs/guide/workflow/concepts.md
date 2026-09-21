@@ -58,7 +58,7 @@ Command に Contract を宣言すると、stdout 全体を JSON として読み�
 ```
 
 - 終了コードが 0 以外、または stdout が Contract に合わない場合、Command は `ok: false` で完了します。Node の失敗にはなりません。
-- command を起動できなかった場合は、Node の失敗です。
+- command を起動できなかった場合は、新しい attempt で最大 4 回、自動で起動し直します。使い切った Node は実行中のまま、プロセス無しで利用者の Retry を待ちます。
 
 ### Sequence の Artifact
 
@@ -87,7 +87,6 @@ Fanout の Artifact は、子の Artifact を集めた object です。キーの
 { "0": { "approved": true }, "1": { "approved": false } }
 ```
 
-- 失敗を無視する指定の子が失敗した場合、そのキーは欠番になります。他のキーはずれません。
 - Artifact を持たない子のキーは残り、値が `null` になります。
 
 ## Contract
@@ -172,29 +171,20 @@ Session に delegate を指定すると、agent が成果を提出するたび�
 - 親の Artifact には、直近の child の Artifact が `child` として入ります。child を実行する前は `null` です。
 - 承認も要求している場合は、delegate の条件が揃った後に承認待ちになります。
 
-## 失敗・停止・再開
+## 起動の失敗と利用者の操作
 
-### Node の失敗
+Session / Command の起動に失敗すると、1、2、4、8 秒の間隔で最大 4 回、新しい attempt を作って起動し直します。使い切った Node は実行中のまま利用者の操作を待ちます。プロセスが居るかは Node の状態とは別に表示され、プロセスが居ない Node は介入待ちとして分類されます。Session の異常終了も Node の失敗状態にはしません。
 
-Node が失敗したときの扱いは、その Node を子に持つ Sequence / Fanout の側で指定します。
+Command が 0 以外で終了した場合は、`ok: false` の Artifact を出して完了します。次の操作は workflow 定義の分岐で決めます。
 
-| 指定 | 振る舞い |
+| 操作 | 対象と振る舞い |
 | --- | --- |
-| 指定なし | 実行を止め、利用者が再開するか、その Node をやり直すまで待つ |
-| やり直し（回数） | 指定した回数まで自動でやり直し、それでも失敗したら止まる。Session と Command にだけ指定できる |
-| 無視 | 失敗を無視して先へ進む。その子の Artifact に依存する配線や分岐は書けない |
-
-### 利用者の操作
-
-実行中の workflow に対して、利用者は次の操作ができます。
-
-| 操作 | 振る舞い |
-| --- | --- |
-| Stop | 実行中の Node を止め、再開できる状態で残す |
-| Resume | 止まった実行を再開する |
-| Abort | 実行を中止する。中止した実行は再開できない |
-| Retry | 失敗した Session / Command をやり直す |
+| Abort | 実行木を中止する。worktree のフォルダが無くても実行でき、中止した実行は再開できない |
+| Resume | プロセスが居ない、未完了の Session Node の会話を再開する。会話または作業場所が無ければ新しい attempt で起動し、最初の指示を送る |
+| Retry | プロセスが居ない、未完了の Command Node を新しい attempt で起動する。実行 worktree のフォルダが必要 |
 | Approve | 承認待ちの Node を完了させる |
+
+既存の会話を Resume するとき、会話の続きを促す指示は自動送信しません。まだ親 Session に渡していない child の結果があれば、その Resume 時に渡します。Submit と provider Stop の片方だけ届いていることは Retry の理由になりません。
 
 ## worktree
 

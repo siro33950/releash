@@ -252,17 +252,6 @@ impl AgentSessionTuiAcceptanceHost {
             .await
     }
 
-    async fn dispatch_initial_instruction(
-        &self,
-        agent_session_id: &str,
-        node_execution_id: &str,
-        instruction: &str,
-    ) -> Result<(), String> {
-        self.composition
-            .dispatch_initial_instruction(agent_session_id, node_execution_id, instruction)
-            .await
-    }
-
     async fn get(
         &self,
         agent_session_id: &str,
@@ -1117,9 +1106,6 @@ async fn test_atui_030_workflow初期指示は一度だけで追加質問もterm
         "received-0:system policy\\n\\nimplement once",
     )
     .await;
-    host.dispatch_initial_instruction(&session_id, "node-execution-1", "must not repeat")
-        .await
-        .unwrap();
 
     assert_eq!(
         host.get(&session_id).await.unwrap().unwrap().tree_location,

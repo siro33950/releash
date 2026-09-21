@@ -24,16 +24,13 @@ use crate::domain::provider_lifecycle::{
 use crate::domain::workflow::{WorkflowDefinition, WorkflowError};
 use crate::infrastructure::local_api::{LocalApiServer, LocalApiServerBinding};
 use crate::usecase::provider_lifecycle::ProviderLifecycleUsecase;
-use crate::usecase::workflow::command::{
-    AbortExecutionCommand, ResolvedStartExecutionCommand, ResumeExecutionCommand,
-    StopExecutionCommand,
-};
+use crate::usecase::workflow::command::{AbortExecutionCommand, ResolvedStartExecutionCommand};
 use crate::usecase::workflow::control_plane::{
     WorkflowControlPlaneCommit, WorkflowControlPlaneGateway,
 };
 use crate::usecase::workflow::ports::{
-    WorkflowAbortExecutionGateway, WorkflowResumeExecutionGateway, WorkflowRuntimeShutdownGateway,
-    WorkflowRuntimeStateGateway, WorkflowStartExecutionGateway, WorkflowStopExecutionGateway,
+    WorkflowAbortExecutionGateway, WorkflowRuntimeShutdownGateway, WorkflowRuntimeStateGateway,
+    WorkflowStartExecutionGateway,
 };
 use crate::usecase::workflow::WorkflowRuntimeUsecase;
 
@@ -203,26 +200,33 @@ impl WorkflowAbortExecutionGateway for AcceptanceWorkflowRuntimeGateway {
 }
 
 #[async_trait::async_trait]
-impl WorkflowStopExecutionGateway for AcceptanceWorkflowRuntimeGateway {
-    async fn stop_execution(&self, _command: StopExecutionCommand) -> Result<(), WorkflowError> {
-        self.record_command();
-        Err(unavailable_workflow_runtime())
-    }
-}
-
-#[async_trait::async_trait]
-impl WorkflowResumeExecutionGateway for AcceptanceWorkflowRuntimeGateway {
-    async fn resume_execution(
-        &self,
-        _command: ResumeExecutionCommand,
-    ) -> Result<(), WorkflowError> {
-        self.record_command();
-        Err(unavailable_workflow_runtime())
-    }
-}
-
-#[async_trait::async_trait]
 impl WorkflowControlPlaneGateway for AcceptanceWorkflowRuntimeGateway {
+    fn node_process_presence(
+        &self,
+        _execution: &crate::domain::workflow::entities::workflow_execution::WorkflowExecution,
+        _id: &str,
+    ) -> Result<crate::domain::workflow::NodeProcessPresence, crate::domain::workflow::WorkflowError>
+    {
+        Ok(crate::domain::workflow::NodeProcessPresence::ConfirmedAbsent)
+    }
+    fn worktree_exists(&self, _path: &str) -> Result<bool, crate::domain::workflow::WorkflowError> {
+        Ok(true)
+    }
+    async fn session_conversation_exists(
+        &self,
+        _session_id: &str,
+    ) -> Result<bool, crate::domain::workflow::WorkflowError> {
+        Ok(true)
+    }
+    async fn resume_session_process(
+        &self,
+        _execution_id: &str,
+        _node_id: &str,
+        _session_id: &str,
+    ) -> Result<(), crate::domain::workflow::WorkflowError> {
+        Ok(())
+    }
+
     fn current_timestamp(&self) -> f64 {
         100.0
     }

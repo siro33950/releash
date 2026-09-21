@@ -2385,68 +2385,6 @@ impl TryFrom<crate::usecase::workflow::dto::NodeDefinitionDto> for wire::NodeDef
     }
 }
 
-impl TryFrom<crate::adaptor::protocol::workflow::NodeExecutionFailureKindView>
-    for wire::NodeExecutionFailureKindView
-{
-    type Error = String;
-    fn try_from(
-        value: crate::adaptor::protocol::workflow::NodeExecutionFailureKindView,
-    ) -> Result<Self, String> {
-        Ok(Self { value: Some(match value { crate::adaptor::protocol::workflow::NodeExecutionFailureKindView::StartupTimeout => wire::node_execution_failure_kind_view::Value::StartupTimeout as i32, crate::adaptor::protocol::workflow::NodeExecutionFailureKindView::StaleRuntimeTimeout => wire::node_execution_failure_kind_view::Value::StaleRuntimeTimeout as i32, crate::adaptor::protocol::workflow::NodeExecutionFailureKindView::ModelRefusal => wire::node_execution_failure_kind_view::Value::ModelRefusal as i32, crate::adaptor::protocol::workflow::NodeExecutionFailureKindView::StructuredOutputMismatch => wire::node_execution_failure_kind_view::Value::StructuredOutputMismatch as i32, crate::adaptor::protocol::workflow::NodeExecutionFailureKindView::ValidationFailure => wire::node_execution_failure_kind_view::Value::ValidationFailure as i32, crate::adaptor::protocol::workflow::NodeExecutionFailureKindView::UserAbort => wire::node_execution_failure_kind_view::Value::UserAbort as i32, crate::adaptor::protocol::workflow::NodeExecutionFailureKindView::InfrastructureCrash => wire::node_execution_failure_kind_view::Value::InfrastructureCrash as i32 }) })
-    }
-}
-
-impl TryFrom<String> for wire::NodeExecutionFailureKindView {
-    type Error = String;
-    fn try_from(value: String) -> Result<Self, String> {
-        Ok(Self {
-            value: Some(match value.as_str() {
-                "startup_timeout" => {
-                    wire::node_execution_failure_kind_view::Value::StartupTimeout as i32
-                }
-                "stale_runtime_timeout" => {
-                    wire::node_execution_failure_kind_view::Value::StaleRuntimeTimeout as i32
-                }
-                "model_refusal" => {
-                    wire::node_execution_failure_kind_view::Value::ModelRefusal as i32
-                }
-                "structured_output_mismatch" => {
-                    wire::node_execution_failure_kind_view::Value::StructuredOutputMismatch as i32
-                }
-                "validation_failure" => {
-                    wire::node_execution_failure_kind_view::Value::ValidationFailure as i32
-                }
-                "user_abort" => wire::node_execution_failure_kind_view::Value::UserAbort as i32,
-                "infrastructure_crash" => {
-                    wire::node_execution_failure_kind_view::Value::InfrastructureCrash as i32
-                }
-                _ => return Err(format!("Invalid NodeExecutionFailureKindView: {value}")),
-            }),
-        })
-    }
-}
-
-impl TryFrom<&str> for wire::NodeExecutionFailureKindView {
-    type Error = String;
-    fn try_from(value: &str) -> Result<Self, String> {
-        cv(value.to_owned())
-    }
-}
-
-impl TryFrom<crate::adaptor::protocol::workflow::NodeExecutionFailureView>
-    for wire::NodeExecutionFailureView
-{
-    type Error = String;
-    fn try_from(
-        value: crate::adaptor::protocol::workflow::NodeExecutionFailureView,
-    ) -> Result<Self, String> {
-        Ok(Self {
-            reason: Some(cv(value.reason)?),
-            kind: Some(cv(value.kind)?),
-        })
-    }
-}
-
 impl TryFrom<crate::adaptor::protocol::workflow::NodeExecutionStatusView>
     for wire::NodeExecutionStatusView
 {
@@ -2462,17 +2400,11 @@ impl TryFrom<crate::adaptor::protocol::workflow::NodeExecutionStatusView>
                 crate::adaptor::protocol::workflow::NodeExecutionStatusView::Running => {
                     wire::node_execution_status_view::Value::Running as i32
                 }
-                crate::adaptor::protocol::workflow::NodeExecutionStatusView::Paused => {
-                    wire::node_execution_status_view::Value::Paused as i32
-                }
                 crate::adaptor::protocol::workflow::NodeExecutionStatusView::WaitingApproval => {
                     wire::node_execution_status_view::Value::WaitingApproval as i32
                 }
                 crate::adaptor::protocol::workflow::NodeExecutionStatusView::Succeeded => {
                     wire::node_execution_status_view::Value::Succeeded as i32
-                }
-                crate::adaptor::protocol::workflow::NodeExecutionStatusView::Failed => {
-                    wire::node_execution_status_view::Value::Failed as i32
                 }
                 crate::adaptor::protocol::workflow::NodeExecutionStatusView::Aborted => {
                     wire::node_execution_status_view::Value::Aborted as i32
@@ -2489,12 +2421,10 @@ impl TryFrom<String> for wire::NodeExecutionStatusView {
             value: Some(match value.as_str() {
                 "unresolved" => wire::node_execution_status_view::Value::Unresolved as i32,
                 "running" => wire::node_execution_status_view::Value::Running as i32,
-                "paused" => wire::node_execution_status_view::Value::Paused as i32,
                 "waiting_approval" => {
                     wire::node_execution_status_view::Value::WaitingApproval as i32
                 }
                 "succeeded" => wire::node_execution_status_view::Value::Succeeded as i32,
-                "failed" => wire::node_execution_status_view::Value::Failed as i32,
                 "aborted" => wire::node_execution_status_view::Value::Aborted as i32,
                 _ => return Err(format!("Invalid NodeExecutionStatusView: {value}")),
             }),
@@ -2515,6 +2445,7 @@ impl TryFrom<crate::adaptor::protocol::workflow::NodeExecutionView> for wire::No
         value: crate::adaptor::protocol::workflow::NodeExecutionView,
     ) -> Result<Self, String> {
         Ok(Self {
+            process_presence: Some(cv(value.process_presence)?),
             worktree: value.worktree.map(cv).transpose()?,
             recovery_reason: value.recovery_reason.map(cv).transpose()?,
             id: Some(cv(value.id)?),
@@ -2528,13 +2459,13 @@ impl TryFrom<crate::adaptor::protocol::workflow::NodeExecutionView> for wire::No
             waiting_for: value.waiting_for.map(cv).transpose()?,
             can_approve: Some(cv(value.can_approve)?),
             can_retry: Some(cv(value.can_retry)?),
+            can_resume_session: Some(value.can_resume_session),
             has_artifact: Some(cv(value.has_artifact)?),
             session_id: value.session_id.map(cv).transpose()?,
             display_command: value.display_command.map(cv).transpose()?,
             result_summary: value.result_summary.map(cv).transpose()?,
             artifact: value.artifact.map(cv).transpose()?,
             token_usage: value.token_usage.map(cv).transpose()?,
-            failure: value.failure.map(cv).transpose()?,
             parent: value.parent.map(cv).transpose()?,
             started_at: Some(cv(value.started_at)?),
             completed_at: value.completed_at.map(cv).transpose()?,
@@ -4581,8 +4512,6 @@ impl TryFrom<String> for wire::WorkspaceHistoryStatus {
             value: Some(match value.as_str() {
                 "unresolved" => wire::workspace_history_status::Value::Unresolved as i32,
                 "running" => wire::workspace_history_status::Value::Running as i32,
-                "paused" => wire::workspace_history_status::Value::Paused as i32,
-                "failed" => wire::workspace_history_status::Value::Failed as i32,
                 "waiting" => wire::workspace_history_status::Value::Waiting as i32,
                 "aborted" => wire::workspace_history_status::Value::Aborted as i32,
                 "completed" => wire::workspace_history_status::Value::Completed as i32,
@@ -4648,6 +4577,7 @@ impl TryFrom<crate::usecase::workflow::WorkspaceNodeCapabilitiesDto>
             can_rename: Some(cv(value.can_rename)?),
             can_approve: Some(cv(value.can_approve)?),
             can_retry: Some(cv(value.can_retry)?),
+            can_resume_session: Some(value.can_resume_session),
         })
     }
 }
@@ -4672,6 +4602,7 @@ impl TryFrom<crate::usecase::workflow::WorkspaceNodeDetailDto> for wire::Workspa
     type Error = String;
     fn try_from(value: crate::usecase::workflow::WorkspaceNodeDetailDto) -> Result<Self, String> {
         Ok(Self {
+            process_presence: Some(cv(value.process_presence)?),
             worktree: value.worktree.map(cv).transpose()?,
             id: Some(cv(value.id)?),
             title: Some(cv(value.title)?),
@@ -4694,6 +4625,7 @@ impl TryFrom<crate::usecase::workflow::WorkspaceNodeDto> for wire::WorkspaceNode
     type Error = String;
     fn try_from(value: crate::usecase::workflow::WorkspaceNodeDto) -> Result<Self, String> {
         Ok(Self {
+            process_presence: Some(cv(value.process_presence)?),
             id: Some(cv(value.id)?),
             title: Some(cv(value.title)?),
             status: Some(cv(value.status)?),
@@ -4721,12 +4653,6 @@ impl TryFrom<crate::domain::workspace_tree::WorkspaceNodeStatus> for wire::Works
                 crate::domain::workspace_tree::WorkspaceNodeStatus::Running => {
                     wire::workspace_node_status::Value::Running as i32
                 }
-                crate::domain::workspace_tree::WorkspaceNodeStatus::Paused => {
-                    wire::workspace_node_status::Value::Paused as i32
-                }
-                crate::domain::workspace_tree::WorkspaceNodeStatus::Failed => {
-                    wire::workspace_node_status::Value::Failed as i32
-                }
                 crate::domain::workspace_tree::WorkspaceNodeStatus::Waiting => {
                     wire::workspace_node_status::Value::Waiting as i32
                 }
@@ -4748,8 +4674,6 @@ impl TryFrom<String> for wire::WorkspaceNodeStatus {
             value: Some(match value.as_str() {
                 "unresolved" => wire::workspace_node_status::Value::Unresolved as i32,
                 "running" => wire::workspace_node_status::Value::Running as i32,
-                "paused" => wire::workspace_node_status::Value::Paused as i32,
-                "failed" => wire::workspace_node_status::Value::Failed as i32,
                 "waiting" => wire::workspace_node_status::Value::Waiting as i32,
                 "aborted" => wire::workspace_node_status::Value::Aborted as i32,
                 "completed" => wire::workspace_node_status::Value::Completed as i32,
@@ -4998,8 +4922,6 @@ impl TryFrom<crate::usecase::workflow::WorkspaceWorkflowCapabilitiesDto>
         value: crate::usecase::workflow::WorkspaceWorkflowCapabilitiesDto,
     ) -> Result<Self, String> {
         Ok(Self {
-            can_stop: Some(cv(value.can_stop)?),
-            can_resume: Some(cv(value.can_resume)?),
             can_abort: Some(cv(value.can_abort)?),
             can_archive: Some(cv(value.can_archive)?),
         })
@@ -5101,5 +5023,26 @@ impl TryFrom<crate::adaptor::protocol::application_lifecycle_v1::ApplicationQuit
                 wire::Unit {},
             )),
         })
+    }
+}
+
+impl TryFrom<String> for wire::NodeProcessPresence {
+    type Error = String;
+    fn try_from(value: String) -> Result<Self, String> {
+        Ok(Self {
+            value: Some(match value.as_str() {
+                "unknown" => wire::node_process_presence::Value::Unknown as i32,
+                "live" => wire::node_process_presence::Value::Live as i32,
+                "confirmed_absent" => wire::node_process_presence::Value::ConfirmedAbsent as i32,
+                _ => return Err(format!("Invalid NodeProcessPresence: {value}")),
+            }),
+        })
+    }
+}
+
+impl TryFrom<&str> for wire::NodeProcessPresence {
+    type Error = String;
+    fn try_from(value: &str) -> Result<Self, String> {
+        cv(value.to_owned())
     }
 }

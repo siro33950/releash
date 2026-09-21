@@ -65,10 +65,8 @@ pub enum AcceptanceWorkflowExecutionStatus {
 pub enum AcceptanceNodeExecutionStatus {
     Unresolved,
     Running,
-    Paused,
     WaitingApproval,
     Succeeded,
-    Failed,
     Aborted,
 }
 
@@ -103,7 +101,6 @@ pub struct AcceptanceNodeExecution {
     pub can_retry: bool,
     pub has_artifact: bool,
     pub artifact: Option<serde_json::Value>,
-    pub failure_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -158,7 +155,6 @@ struct NodeExecutionResponse {
     can_retry: bool,
     has_artifact: bool,
     artifact: Option<ArtifactResponse>,
-    failure: Option<NodeExecutionFailureResponse>,
 }
 
 #[derive(Deserialize)]
@@ -167,19 +163,12 @@ struct ArtifactResponse {
 }
 
 #[derive(Deserialize)]
-struct NodeExecutionFailureResponse {
-    reason: String,
-}
-
-#[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum NodeExecutionStatusResponse {
     Unresolved,
     Running,
-    Paused,
     WaitingApproval,
     Succeeded,
-    Failed,
     Aborted,
 }
 
@@ -411,6 +400,19 @@ impl WorkspaceNodeActionResolver for AcceptanceWorkspaceNodeActionResolver {
         })
     }
 
+    fn resolve_session_resume_target(
+        &self,
+        _worktree_path: &str,
+        node_id: &str,
+    ) -> Result<crate::usecase::workflow::command::ResumeSessionNodeCommand, WorkflowError> {
+        Ok(
+            crate::usecase::workflow::command::ResumeSessionNodeCommand {
+                execution_id: node_id.to_string(),
+                node_execution_id: node_id.to_string(),
+            },
+        )
+    }
+
     fn resolve_session_rename_target(
         &self,
         _worktree_path: &str,
@@ -502,19 +504,27 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
                 ),
             );
 
-        let driver = Arc::new(WorkflowRuntimeHost::new_canonical(
+        let mut driver = WorkflowRuntimeHost::new_canonical(
             Arc::new(AcceptanceWorkflowDefinitionResolver),
             Arc::new(AcceptanceManagedWorktreeResolver),
             workspace_query,
             composition.launch.clone(),
             composition.initial_instruction.clone(),
-            composition.interrupt.clone(),
             composition.lifecycle.clone(),
             composition.availability_reader.clone(),
             Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
-        ));
+        );
+        let node_processes = Arc::new(
+            crate::adaptor::gateway::workflow::node_process::WorkflowNodeProcesses::new(
+                terminal.application(),
+            ),
+        );
+        driver.node_processes = node_processes.clone();
+        let driver = Arc::new(driver);
+        let mut dependencies = crate::desktop_test_support::workflow_dependencies(app.handle());
+        dependencies.processes = node_processes;
         let gateway = Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(
-            crate::desktop_test_support::workflow_dependencies(app.handle()),
+            dependencies,
             driver.clone(),
         ));
         let runtime = Arc::new(WorkflowRuntimeUsecase::new(gateway));
@@ -828,32 +838,6 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             .ok_or_else(|| "Abort response was not successful".to_string())
     }
 
-    pub async fn stop(&self, execution_id: &str) -> Result<(), String> {
-        let response: MutationResponse = self
-            .post(
-                &format!("/v1/workflow/executions/{execution_id}/stop"),
-                &serde_json::json!({}),
-            )
-            .await?;
-        response
-            .ok
-            .then_some(())
-            .ok_or_else(|| "Stop response was not successful".to_string())
-    }
-
-    pub async fn resume(&self, execution_id: &str) -> Result<(), String> {
-        let response: MutationResponse = self
-            .post(
-                &format!("/v1/workflow/executions/{execution_id}/resume"),
-                &serde_json::json!({}),
-            )
-            .await?;
-        response
-            .ok
-            .then_some(())
-            .ok_or_else(|| "Resume response was not successful".to_string())
-    }
-
     pub async fn launch_manual_agent_session(
         &self,
         worktree_path: &str,
@@ -1109,6 +1093,7 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             local_api_base_url: _,
             local_api_token: _,
         } = self;
+        _runtime.shutdown_active_commands().await;
         exit_observer_cancellation.cancel();
         exit_observer
             .await
@@ -1180,12 +1165,10 @@ fn acceptance_execution_from_runtime(
                             AcceptanceNodeExecutionStatus::Unresolved
                         }
                         NodeExecutionStatus::Running => AcceptanceNodeExecutionStatus::Running,
-                        NodeExecutionStatus::Paused => AcceptanceNodeExecutionStatus::Paused,
                         NodeExecutionStatus::WaitingApproval => {
                             AcceptanceNodeExecutionStatus::WaitingApproval
                         }
                         NodeExecutionStatus::Succeeded => AcceptanceNodeExecutionStatus::Succeeded,
-                        NodeExecutionStatus::Failed => AcceptanceNodeExecutionStatus::Failed,
                         NodeExecutionStatus::Aborted => AcceptanceNodeExecutionStatus::Aborted,
                     },
                     agent_session_id: node.session_id,
@@ -1202,7 +1185,6 @@ fn acceptance_execution_from_runtime(
                     can_retry,
                     has_artifact: node.artifact.is_some(),
                     artifact: node.artifact.map(|artifact| artifact.value),
-                    failure_reason: node.failure.map(|failure| failure.reason),
                 }
             })
             .collect(),
@@ -1244,12 +1226,10 @@ impl From<NodeExecutionResponse> for AcceptanceNodeExecution {
                     AcceptanceNodeExecutionStatus::Unresolved
                 }
                 NodeExecutionStatusResponse::Running => AcceptanceNodeExecutionStatus::Running,
-                NodeExecutionStatusResponse::Paused => AcceptanceNodeExecutionStatus::Paused,
                 NodeExecutionStatusResponse::WaitingApproval => {
                     AcceptanceNodeExecutionStatus::WaitingApproval
                 }
                 NodeExecutionStatusResponse::Succeeded => AcceptanceNodeExecutionStatus::Succeeded,
-                NodeExecutionStatusResponse::Failed => AcceptanceNodeExecutionStatus::Failed,
                 NodeExecutionStatusResponse::Aborted => AcceptanceNodeExecutionStatus::Aborted,
             },
             agent_session_id: value.session_id,
@@ -1259,7 +1239,6 @@ impl From<NodeExecutionResponse> for AcceptanceNodeExecution {
             can_retry: value.can_retry,
             has_artifact: value.has_artifact,
             artifact: value.artifact.map(|artifact| artifact.value),
-            failure_reason: value.failure.map(|failure| failure.reason),
         }
     }
 }

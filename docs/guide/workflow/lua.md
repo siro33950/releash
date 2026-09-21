@@ -115,7 +115,7 @@ Lua では、builder が返す値を変数に入れ、その値で Node や Cont
 | `r.command{ name?, command, env?, artifact?, input?, completion?, worktree? }` | Node |
 | `r.sequence{ name?, entry?, children, input?, completion?, worktree? }` | Node |
 | `r.fanout{ name?, children, items?, input?, completion?, worktree? }` | Node |
-| `r.child{ node, inputs?, rules?, on_failure? }` | エントリ |
+| `r.child{ node, inputs?, rules? }` | エントリ |
 | `r.input(name, contract?)` | input |
 | `r.request` / `r.items` | 供給元 |
 | `r.next(node)` | rule |
@@ -123,7 +123,6 @@ Lua では、builder が返す値を変数に入れ、その値で Node や Cont
 | `r.all{ ... }` / `r.any{ ... }` | 条件 |
 | `r.switch{ on, cases, next? }` | rule |
 | `r.loop_guard{ max_iterations, on_exhausted }` | rule |
-| `r.retry(n)` / `r.ignore` | 失敗時の扱い |
 | `r.completion.approval` | 承認の要求 |
 | `r.worktree.shared` / `r.worktree.isolated` | worktree |
 | `r.provider.claude` / `r.provider.codex` | provider |
@@ -232,7 +231,6 @@ main = r.sequence{
   children = {
     r.child{
       node = run_tests,
-      on_failure = r.retry(2),
       rules = {
         r.when{ on = run_tests.passed, on_true = report, next = fix },
       },
@@ -330,7 +328,6 @@ local rework = r.sequence{
         provider = r.provider.claude,
         facets = { instruction = f.instruction.rework },
       },
-      on_failure = r.ignore,
     },
   },
 }
@@ -343,7 +340,6 @@ local rework = r.sequence{
 | `node` | Node | 必須 | 子にする Node。builder をその場で呼んでもよい |
 | `inputs` | table | 任意 | `<パラメータ名> = <供給元>` |
 | `rules` | rule のリスト | 任意 | Sequence の子だけ。次に進む先 |
-| `on_failure` | 失敗時の扱い | 任意 | `r.retry(n)` / `r.ignore` |
 
 `inputs` の供給元には次を渡せます。
 
@@ -357,7 +353,6 @@ local rework = r.sequence{
 
 - Contract を付けていない input の field を渡すと `WFR003` です。
 - 配線先は、子が `input` で宣言したパラメータでなければなりません（`WFR007`）。
-- `on_failure = r.retry(n)` は Session / Command の子にだけ書けます（`WFC010`）。
 
 ## rules
 

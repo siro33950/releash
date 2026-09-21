@@ -22,8 +22,6 @@ export type CenterSelection =
 export type WorkspaceNodeStatus =
 	| "unresolved"
 	| "running"
-	| "paused"
-	| "failed"
 	| "waiting"
 	| "aborted"
 	| "completed";
@@ -39,11 +37,10 @@ export interface WorkspaceNodeCapabilities {
 	canRename: boolean;
 	canApprove: boolean;
 	canRetry: boolean;
+	canResumeSession: boolean;
 }
 
 export interface WorkspaceWorkflowCapabilities {
-	canStop: boolean;
-	canResume: boolean;
 	canAbort: boolean;
 	canArchive: boolean;
 }
@@ -55,6 +52,7 @@ export interface WorkspaceSessionCapabilities {
 }
 
 export interface WorkspaceNode {
+	processPresence: "live" | "confirmed_absent" | "unknown";
 	kind: "node";
 	id: string;
 	title: string;
@@ -135,6 +133,7 @@ export type WorkspaceNodeContent =
 	| WorkspaceCommandNodeContent;
 
 export interface WorkspaceNodeDetail {
+	processPresence: "live" | "confirmed_absent" | "unknown";
 	worktree?: { branch: string; path: string } | null;
 	id: string;
 	title: string;

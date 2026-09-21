@@ -59,19 +59,18 @@ fn node_execution_to_domain(execution: NodeExecution) -> crate::domain::workflow
             NodeKindName::Sequence => crate::domain::workflow::NodeKindName::Sequence,
         },
         attempt: execution.attempt,
+        process_presence: Default::default(),
         status: match execution.status {
             NodeExecutionStatus::Unresolved => {
                 crate::domain::workflow::NodeExecutionStatus::Unresolved
             }
             NodeExecutionStatus::Running => crate::domain::workflow::NodeExecutionStatus::Running,
-            NodeExecutionStatus::Paused => crate::domain::workflow::NodeExecutionStatus::Paused,
             NodeExecutionStatus::WaitingApproval => {
                 crate::domain::workflow::NodeExecutionStatus::WaitingApproval
             }
             NodeExecutionStatus::Succeeded => {
                 crate::domain::workflow::NodeExecutionStatus::Succeeded
             }
-            NodeExecutionStatus::Failed => crate::domain::workflow::NodeExecutionStatus::Failed,
             NodeExecutionStatus::Aborted => crate::domain::workflow::NodeExecutionStatus::Aborted,
         },
         session_id: execution.session_id,
@@ -86,12 +85,6 @@ fn node_execution_to_domain(execution: NodeExecution) -> crate::domain::workflow
                 produced_at: artifact_produced_at,
             }),
         token_usage: execution.token_usage.as_ref().map(token_usage_to_domain),
-        failure: execution
-            .failure
-            .map(|failure| crate::domain::workflow::NodeExecutionFailure {
-                reason: failure.reason,
-                kind: failure.kind,
-            }),
         parent: execution.parent,
         completion_signals: execution.completion_signals,
         started_at: execution.started_at,

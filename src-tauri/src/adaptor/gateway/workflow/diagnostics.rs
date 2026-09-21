@@ -650,7 +650,6 @@ const CHILD_ENTRY_BODY_FIELDS: &[&str] = &[
     "worktree",
     "inputs",
     "rules",
-    "on_failure",
 ];
 
 fn check_children_shape(
@@ -854,22 +853,6 @@ fn check_child_body_shape(
             );
         }
     }
-    if let Some(on_failure) = body.get("on_failure") {
-        if !on_failure_shape_is_valid(on_failure) {
-            diagnostics.push(
-                DiagnosticItem::new(
-                    "WFS008",
-                    Severity::Error,
-                    DiagnosticStage::ParseShape,
-                    span_map.field_span(&format!("{body_path}.on_failure")),
-                    "on_failure must be `ignore` or a mapping with a single `retry: <n>` (n >= 1)",
-                )
-                .workflow(workflow_name)
-                .node(node_name)
-                .field("on_failure"),
-            );
-        }
-    }
     if let Some(session) = body.get("session").and_then(serde_json::Value::as_object) {
         let session_path = format!("{body_path}.session");
         check_session_permission(
@@ -1057,20 +1040,6 @@ fn check_command_env_shape(
     }
 }
 
-fn on_failure_shape_is_valid(value: &serde_json::Value) -> bool {
-    match value {
-        serde_json::Value::String(text) => text == "ignore",
-        serde_json::Value::Object(map) => {
-            map.len() == 1
-                && map
-                    .get("retry")
-                    .and_then(serde_json::Value::as_u64)
-                    .is_some_and(|count| (1..=u64::from(u32::MAX)).contains(&count))
-        }
-        _ => false,
-    }
-}
-
 fn check_rules_shape(
     rules: &[serde_json::Value],
     base_path: &str,
@@ -1252,8 +1221,6 @@ fn validation_error_code_stage(
         ValidationError::DuplicateChildReference { .. }
         | ValidationError::RulesOnFanoutChildEntry { .. } => "WFC007",
         ValidationError::CompositeInclusionCycle { .. } => "WFC008",
-        ValidationError::IgnoredChildDependency { .. } => "WFC009",
-        ValidationError::RetryOnCompositeChild { .. } => "WFC010",
         ValidationError::InvalidInputWiring(violation) => match violation.kind {
             validation::InputWiringKind::AmbiguousSource => "WFR008",
             _ => "WFR007",
@@ -1328,14 +1295,6 @@ fn span_for_validation_error(
         }
         ValidationError::UnreachableNode { node } => {
             node_base_path(wf, node).and_then(|path| span_map.nearest_span(&path))
-        }
-        ValidationError::IgnoredChildDependency { child, .. }
-        | ValidationError::RetryOnCompositeChild { child, .. } => {
-            let bases = child_entry_base_paths(wf, child);
-            bases
-                .iter()
-                .find_map(|base| span_map.field_span(&format!("{base}.on_failure")))
-                .or_else(|| bases.first().and_then(|base| span_map.nearest_span(base)))
         }
         _ => {
             let (node_name, field) = validation_error_context(error);
@@ -1864,10 +1823,6 @@ fn validation_error_context(e: &validation::ValidationError) -> (Option<String>,
         | ValidationError::ChildReferenceViolation { node, .. }
         | ValidationError::CompositeInclusionCycle { node, .. } => {
             (Some(node.clone()), Some("children".to_string()))
-        }
-        ValidationError::IgnoredChildDependency { node, .. }
-        | ValidationError::RetryOnCompositeChild { node, .. } => {
-            (Some(node.clone()), Some("on_failure".to_string()))
         }
         ValidationError::SequenceEntryNotChild { node, .. } => {
             (Some(node.clone()), Some("sequence.entry".to_string()))
@@ -3735,23 +3690,6 @@ nodes:
                 DiagnosticStage::ControlFlow,
             ),
             (
-                validation::ValidationError::IgnoredChildDependency {
-                    node: "main".to_string(),
-                    child: "flaky".to_string(),
-                    kind: validation::IgnoredChildDependencyKind::RulesEvaluation,
-                },
-                "WFC009",
-                DiagnosticStage::ControlFlow,
-            ),
-            (
-                validation::ValidationError::RetryOnCompositeChild {
-                    node: "main".to_string(),
-                    child: "part".to_string(),
-                },
-                "WFC010",
-                DiagnosticStage::ControlFlow,
-            ),
-            (
                 validation::ValidationError::InvalidInputWiring(Box::new(
                     validation::InputWiringViolation {
                         node: "main".to_string(),
@@ -4206,7 +4144,6 @@ nodes:
                         crate::adaptor::gateway::workflow::schema::SequenceSpec {
                             entry: None,
                             children: vec![crate::domain::workflow::ChildEntry {
-                                on_failure: None,
                                 name: "work".to_string(),
                                 inputs: Vec::new(),
                                 rules: Some(vec![Rule::Next("nonexistent".to_string())]),
@@ -4784,7 +4721,6 @@ nodes:
                             children: vec![
                                 crate::domain::workflow::ChildEntry::reference("produce"),
                                 crate::domain::workflow::ChildEntry {
-                                    on_failure: None,
                                     name: "consume".to_string(),
                                     inputs: vec![(
                                         "doc".to_string(),

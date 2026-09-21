@@ -16,11 +16,10 @@ describe("executeWorkflowAction", () => {
 		invokeMock.mockResolvedValue(undefined);
 	});
 
-	it.each([
-		["stop", "stop_workflow"],
-		["resume", "resume_workflow"],
-		["abort", "abort_workflow"],
-	] satisfies [WorkflowExecutionAction, string][])(
+	it.each([["abort", "abort_workflow"]] satisfies [
+		WorkflowExecutionAction,
+		string,
+	][])(
 		"invokes the %s command through the shared mapping",
 		async (action, command) => {
 			await executeWorkflowAction(action, "execution-1");
@@ -38,7 +37,7 @@ describe("executeWorkflowAction", () => {
 		invokeMock.mockRejectedValueOnce(rejection);
 
 		try {
-			await executeWorkflowAction("resume", "execution-1");
+			await executeWorkflowAction("abort", "execution-1");
 			expect.unreachable("workflow action should reject");
 		} catch (error) {
 			expect(error).toBeInstanceOf(Error);

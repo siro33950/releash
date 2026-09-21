@@ -1,24 +1,18 @@
 mod abort_execution;
 mod approval;
 mod preflight;
-mod resume_execution;
 mod retry_node;
 mod start_execution;
-mod stop_execution;
 mod submit_output;
 
 pub use abort_execution::AbortExecutionCommand;
 pub(crate) use abort_execution::WorkflowAbortExecutionUsecase;
 pub use approval::ApprovalCommand;
 pub(crate) use preflight::WorkflowRuntimeCommandPreflight;
-pub use resume_execution::ResumeExecutionCommand;
-pub(crate) use resume_execution::WorkflowResumeExecutionUsecase;
-pub use retry_node::RetryNodeCommand;
 pub(crate) use retry_node::WorkflowRetryNodeUsecase;
+pub use retry_node::{ResumeSessionNodeCommand, RetryNodeCommand};
 pub(crate) use start_execution::WorkflowStartExecutionUsecase;
 pub use start_execution::{ResolvedStartExecutionCommand, StartExecutionCommand};
-pub use stop_execution::StopExecutionCommand;
-pub(crate) use stop_execution::WorkflowStopExecutionUsecase;
 pub(crate) use submit_output::WorkflowSubmitOutputUsecase;
 pub use submit_output::{SubmitOutputArtifact, SubmitOutputCommand};
 
@@ -49,8 +43,7 @@ mod tests {
         WorkflowControlPlaneCommit, WorkflowControlPlaneGateway,
     };
     use crate::usecase::workflow::ports::{
-        WorkflowAbortExecutionGateway, WorkflowResumeExecutionGateway,
-        WorkflowStartExecutionGateway, WorkflowStopExecutionGateway,
+        WorkflowAbortExecutionGateway, WorkflowStartExecutionGateway,
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
@@ -99,29 +92,38 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl WorkflowStopExecutionGateway for FakeRuntimeGateway {
-        async fn stop_execution(
-            &self,
-            _command: StopExecutionCommand,
-        ) -> Result<(), WorkflowError> {
-            self.calls.lock().unwrap().push("stop");
-            Ok(())
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl WorkflowResumeExecutionGateway for FakeRuntimeGateway {
-        async fn resume_execution(
-            &self,
-            _command: ResumeExecutionCommand,
-        ) -> Result<(), WorkflowError> {
-            self.calls.lock().unwrap().push("resume");
-            Ok(())
-        }
-    }
-
-    #[async_trait::async_trait]
     impl WorkflowControlPlaneGateway for FakeRuntimeGateway {
+        fn node_process_presence(
+            &self,
+            _execution: &crate::domain::workflow::entities::workflow_execution::WorkflowExecution,
+            _id: &str,
+        ) -> Result<
+            crate::domain::workflow::NodeProcessPresence,
+            crate::domain::workflow::WorkflowError,
+        > {
+            Ok(crate::domain::workflow::NodeProcessPresence::ConfirmedAbsent)
+        }
+        fn worktree_exists(
+            &self,
+            _path: &str,
+        ) -> Result<bool, crate::domain::workflow::WorkflowError> {
+            Ok(true)
+        }
+        async fn session_conversation_exists(
+            &self,
+            _session_id: &str,
+        ) -> Result<bool, crate::domain::workflow::WorkflowError> {
+            Ok(true)
+        }
+        async fn resume_session_process(
+            &self,
+            _execution_id: &str,
+            _node_id: &str,
+            _session_id: &str,
+        ) -> Result<(), crate::domain::workflow::WorkflowError> {
+            Ok(())
+        }
+
         fn current_timestamp(&self) -> f64 {
             100.0
         }
@@ -259,28 +261,9 @@ mod tests {
             })
             .await
             .unwrap();
-        WorkflowStopExecutionUsecase::new(gateway.clone())
-            .execute(StopExecutionCommand {
-                execution_id: valid_execution_id(),
-            })
-            .await
-            .unwrap();
-        WorkflowResumeExecutionUsecase::new(gateway.clone())
-            .execute(ResumeExecutionCommand {
-                execution_id: valid_execution_id(),
-            })
-            .await
-            .unwrap();
         assert_eq!(
             gateway.calls.lock().unwrap().as_slice(),
-            [
-                "resolve_worktree",
-                "resolve_workflow",
-                "start",
-                "abort",
-                "stop",
-                "resume"
-            ]
+            ["resolve_worktree", "resolve_workflow", "start", "abort",]
         );
     }
 
@@ -301,18 +284,6 @@ mod tests {
             .execute(AbortExecutionCommand {
                 execution_id: "not-a-uuid".to_string(),
                 expected_node_name: None,
-            })
-            .await
-            .is_err());
-        assert!(WorkflowStopExecutionUsecase::new(gateway.clone())
-            .execute(StopExecutionCommand {
-                execution_id: "not-a-uuid".to_string(),
-            })
-            .await
-            .is_err());
-        assert!(WorkflowResumeExecutionUsecase::new(gateway.clone())
-            .execute(ResumeExecutionCommand {
-                execution_id: "not-a-uuid".to_string(),
             })
             .await
             .is_err());

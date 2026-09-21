@@ -4,10 +4,7 @@ use crate::domain::workflow::{
     WorkspaceWorktreePath,
 };
 
-use super::{
-    AbortExecutionCommand, ApprovalCommand, ResumeExecutionCommand, StartExecutionCommand,
-    StopExecutionCommand, SubmitOutputCommand,
-};
+use super::{AbortExecutionCommand, ApprovalCommand, StartExecutionCommand, SubmitOutputCommand};
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct WorkflowRuntimeCommandPreflight;
@@ -29,20 +26,6 @@ impl WorkflowRuntimeCommandPreflight {
         WorkflowExecutionId::new(command.execution_id.clone())?;
         validate_optional_node_name(command.expected_node_name.as_deref())?;
         Ok(())
-    }
-
-    pub(crate) fn validate_stop_execution(
-        &self,
-        command: &StopExecutionCommand,
-    ) -> Result<(), WorkflowError> {
-        WorkflowExecutionId::new(command.execution_id.clone()).map(|_| ())
-    }
-
-    pub(crate) fn validate_resume_execution(
-        &self,
-        command: &ResumeExecutionCommand,
-    ) -> Result<(), WorkflowError> {
-        WorkflowExecutionId::new(command.execution_id.clone()).map(|_| ())
     }
 
     pub(crate) fn validate_approval(&self, command: &ApprovalCommand) -> Result<(), WorkflowError> {

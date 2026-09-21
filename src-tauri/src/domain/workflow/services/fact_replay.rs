@@ -2,7 +2,7 @@
 //!
 //! 入力は 1 tree 分の事実行列のみ。遷移イベントは存在せず、完了・進行の
 //! 規則（Submit + Stop 揃いで完了・fanout 全子完了・sequence 前進・
-//! approval・on_failure）はこの fold と live 経路が共有する aggregate の
+//! approval）はこの fold と live 経路が共有する aggregate の
 //! derive 系メソッドだけが知る。規則の変更は過去ログの解釈に遡及する
 //! （「当時完了と判定した」という記録は持たない。許容済みトレードオフ）。
 
@@ -15,9 +15,8 @@ use crate::domain::workflow::entities::workflow_execution::{
 use crate::domain::workflow::services::event_replay;
 use crate::domain::workflow::{
     AgentSessionActivity, Artifact, ExecutionStatus, NodeCompletionSignal, NodeExecution,
-    NodeExecutionFailure, NodeExecutionFailureKind, NodeExecutionStatus, NodeFact, NodeFactRecord,
-    NodeKindName, RuntimeExecutionState, TreeRootFact,
-    WorkflowExecution as WorkflowExecutionReadModel,
+    NodeExecutionStatus, NodeFact, NodeFactRecord, NodeKindName, RuntimeExecutionState,
+    TreeRootFact, WorkflowExecution as WorkflowExecutionReadModel,
 };
 
 #[cfg(test)]
@@ -290,10 +289,8 @@ fn read_model_node(
     let status = match node.status {
         RuntimeNodeExecutionStatus::Unresolved => NodeExecutionStatus::Unresolved,
         RuntimeNodeExecutionStatus::Running => NodeExecutionStatus::Running,
-        RuntimeNodeExecutionStatus::Paused => NodeExecutionStatus::Paused,
         RuntimeNodeExecutionStatus::WaitingApproval => NodeExecutionStatus::WaitingApproval,
         RuntimeNodeExecutionStatus::Succeeded => NodeExecutionStatus::Succeeded,
-        RuntimeNodeExecutionStatus::Failed => NodeExecutionStatus::Failed,
         RuntimeNodeExecutionStatus::Aborted => NodeExecutionStatus::Aborted,
     };
     let result_summary = node.result_summary.clone();
@@ -310,6 +307,7 @@ fn read_model_node(
         kind: node.kind,
         attempt: node.attempt,
         status,
+        process_presence: Default::default(),
         session_id: node.session_id.clone(),
         display_command: node.display_command.clone(),
         result_summary,
@@ -320,10 +318,6 @@ fn read_model_node(
             produced_at: node.completed_at.unwrap_or(node.started_at),
         }),
         token_usage: node.token_usage.clone(),
-        failure: node.failure.as_ref().map(|failure| NodeExecutionFailure {
-            reason: failure.reason.clone(),
-            kind: failure.kind,
-        }),
         parent: node.parent.clone(),
         completion_signals: node.completion_signals,
         started_at: node.started_at,
@@ -404,53 +398,11 @@ pub(super) fn apply_record(
                     }
                     aggregate.derive_leaf_completed(id, timestamp)
                 }
-                Some(code) => aggregate.derive_leaf_process_exit_failed(
-                    id,
-                    fact.failure_reason
-                        .clone()
-                        .unwrap_or_else(|| format!("command exited with status {code}")),
-                    fact.failure_kind
-                        .unwrap_or(NodeExecutionFailureKind::InfrastructureCrash),
-                    timestamp,
-                ),
-                None => {
-                    // プロセス喪失: 完了せず、再開可能な中断として導出する。
-                    let _ = aggregate.pause_node_execution(id, timestamp);
-                    Ok(())
-                }
+                Some(_) | None => Ok(()),
             },
-            NodeKindName::Session => {
-                // プロセスが消えた session は正常終了なら中断、異常終了なら失敗。
-                // 決着済み node への遅延事実だけを無視する。
-                let should_apply = aggregate
-                    .node_execution(id)
-                    .is_some_and(|node| node.status.is_active());
-                if should_apply {
-                    if fact.is_abnormal() {
-                        let reason = fact.failure_reason.clone().unwrap_or_else(|| {
-                            fact.exit_code.map_or_else(
-                                || "provider process was lost".to_string(),
-                                |code| format!("provider process exited with status {code}"),
-                            )
-                        });
-                        aggregate.derive_leaf_process_exit_failed(
-                            id,
-                            reason,
-                            fact.failure_kind
-                                .unwrap_or(NodeExecutionFailureKind::InfrastructureCrash),
-                            timestamp,
-                        )?;
-                    } else {
-                        let _ = aggregate.derive_session_process_exit(id, timestamp);
-                    }
-                }
-                Ok(())
-            }
-            NodeKindName::Fanout | NodeKindName::Sequence => Ok(()),
+            NodeKindName::Session | NodeKindName::Fanout | NodeKindName::Sequence => Ok(()),
         },
-        NodeFact::RuntimeFailureObserved(fact) => {
-            aggregate.derive_leaf_failed(id, fact.reason.clone(), fact.failure_kind, timestamp)
-        }
+        NodeFact::RuntimeFailureObserved(_) => Ok(()),
         NodeFact::SubmitReceived(_) => {
             let _ = aggregate.record_node_completion_signal(
                 id,
@@ -503,10 +455,7 @@ pub(super) fn apply_record(
             let _ = aggregate.request_node_retry(id, timestamp);
             Ok(())
         }
-        NodeFact::ResumeRequested => {
-            let _ = aggregate.resume_node_execution(id, timestamp);
-            Ok(())
-        }
+        NodeFact::ResumeRequested => Ok(()),
         NodeFact::AbortRequested => {
             let _ = aggregate.replay_aborted_at(timestamp);
             Ok(())

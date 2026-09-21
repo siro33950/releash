@@ -197,6 +197,7 @@ pub(crate) fn build_workflow_usecase_and_store(
         Arc::new(NoopWorkflowExternalEditorGateway),
         Arc::new(EmptySecretSourceGateway),
         local_event_store.clone(),
+        None,
     )
     .0;
     (workflow_usecase, local_event_store)
@@ -208,6 +209,7 @@ pub(crate) fn build_workflow_services_with_repository_worktrees(
     app_config: Arc<dyn ConfigRepository>,
     config_secrets: Arc<dyn ConfigSecretRepository>,
     local_event_store: Arc<LocalEventStore>,
+    processes: Arc<dyn crate::domain::workflow::NodeProcessReader>,
 ) -> (
     WorkflowUsecase,
     Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
@@ -222,6 +224,7 @@ pub(crate) fn build_workflow_services_with_repository_worktrees(
         Arc::new(WorkflowExternalEditorGateway::new(app_config)),
         Arc::new(WorkflowSecretSourceConfigGateway::new(config_secrets)),
         local_event_store,
+        Some(processes),
     )
 }
 
@@ -308,6 +311,7 @@ pub(crate) fn build_workflow_services_with_gateways(
     editors: Arc<dyn ExternalEditorGateway>,
     secrets: Arc<dyn SecretSourceGateway>,
     store: Arc<LocalEventStore>,
+    processes: Option<Arc<dyn crate::domain::workflow::NodeProcessReader>>,
 ) -> (WorkflowUsecase, Arc<dyn WorkspaceQueryService>) {
     let data_dir = data_dir.into();
     let workflows_dir = WorkflowDefinitionFileRepository::default_workflows_dir();
@@ -315,8 +319,11 @@ pub(crate) fn build_workflow_services_with_gateways(
     let execution_archives = Arc::new(WorkflowExecutionArchiveFileRepository::new(
         data_dir.clone(),
     ));
-    let workspace_nodes =
+    let mut workspace_nodes =
         crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::new(store.clone());
+    Arc::get_mut(&mut workspace_nodes)
+        .expect("new workspace repository")
+        .processes = processes.clone();
     let workspace_query: Arc<dyn WorkspaceQueryService> =
         crate::adaptor::gateway::workspace_tree::SqliteWorkspaceQueryService::with_repository(
             workspace_nodes.clone(),
@@ -332,8 +339,9 @@ pub(crate) fn build_workflow_services_with_gateways(
     ));
     let facets = Arc::new(WorkflowFacetFileRepository::new(facets_base_dir.clone()));
     let events = Arc::new(WorkflowEventLogRepository::with_store(store.clone()));
-    let execution_projection =
-        Arc::new(WorkflowExecutionProjectionLogRepository::new(store.clone()));
+    let mut projection = WorkflowExecutionProjectionLogRepository::new(store.clone());
+    projection.processes = processes;
+    let execution_projection = Arc::new(projection);
     let diagnostics = Arc::new(WorkflowDiagnosticsFileGateway::new(
         workflows_dir.clone(),
         facets_base_dir,
@@ -371,7 +379,7 @@ pub(crate) fn build_workflow_runtime_usecase(
         runtime_resolver::{AppConfigManagedWorktreeResolver, DefaultWorkflowDefinitionResolver},
         workflow_host::WorkflowRuntimeHost,
     };
-    let driver = WorkflowRuntimeHost::new_canonical(
+    let mut driver = WorkflowRuntimeHost::new_canonical(
         Arc::new(DefaultWorkflowDefinitionResolver),
         Arc::new(AppConfigManagedWorktreeResolver::new(
             deps.repository_usecase,
@@ -380,11 +388,11 @@ pub(crate) fn build_workflow_runtime_usecase(
         deps.workspace_query,
         deps.agent_session_launch,
         deps.agent_session_initial_instruction,
-        deps.agent_session_interrupt,
         deps.agent_session_lifecycle,
         deps.provider_availability,
         deps.isolated_worktrees,
     );
+    driver.node_processes = deps.node_processes;
     let driver = wire_delegate_continuation(app.clone(), driver);
     Ok(WorkflowRuntimeUsecase::new(Arc::new(
         WorkflowRuntimeCommandGateway::new_with_driver(app, Arc::new(driver)),
@@ -511,6 +519,7 @@ mod tests {
             Arc::new(NoopWorkflowExternalEditorGateway),
             Arc::new(EmptySecretSourceGateway),
             store.clone(),
+            None,
         );
         let standalone =
             build_canonical_workflow_read_usecase(root.path(), Some(root.path().join("workflows")))

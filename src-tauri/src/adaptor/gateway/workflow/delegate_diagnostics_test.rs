@@ -350,7 +350,7 @@ fn test_delegate配線_親inputと親artifactとrequestを受理し名前と参�
 }
 
 #[test]
-fn test_delegate定義_親sessionの自動retryを受理し合成子との包含循環を拒否する() {
+fn test_delegate定義_親sessionと合成子との包含循環を拒否する() {
     // Given
     let mut value = definition();
     let parent = value["nodes"]
@@ -359,8 +359,7 @@ fn test_delegate定義_親sessionの自動retryを受理し合成子との包含
         .remove("main")
         .unwrap();
     value["nodes"]["worker"] = parent;
-    value["nodes"]["main"] =
-        json!({"sequence": {"children": [{"worker": {"on_failure": {"retry": 1}}}]}});
+    value["nodes"]["main"] = json!({"sequence": {"children": ["worker"]}});
     // When / Then
     assert!(
         check(&value).diagnostics.is_empty(),

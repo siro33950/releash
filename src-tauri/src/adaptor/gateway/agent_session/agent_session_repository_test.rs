@@ -1074,7 +1074,7 @@ async fn test_agent_session_repository_異常終了したsession起動木をresu
             .node_execution("agent-session-abnormal-resume")
             .unwrap()
             .status,
-        crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecutionStatus::Failed
+        crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecutionStatus::Running
     );
 
     saved

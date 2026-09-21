@@ -51,6 +51,7 @@ test.describe("StatusBar", () => {
 					nodes: [
 						{
 							kind: "node",
+							processPresence: "unknown",
 							id: "ws-node",
 							title: "From ws push",
 							status: "active",
@@ -59,6 +60,7 @@ test.describe("StatusBar", () => {
 								canRename: false,
 								canApprove: false,
 								canRetry: false,
+								canResumeSession: false,
 							},
 							pastAttempts: [],
 							pastAttemptsCollapsed: false,

@@ -2,13 +2,14 @@ use std::sync::Arc;
 
 use crate::domain::provider_lifecycle::ScopedProviderLifecycleEvent;
 use crate::domain::workflow::entities::workflow_execution::{
-    NodeRestartMode, ProviderStopRejection, TransitionOutcome,
-    WorkflowExecution as DomainWorkflowExecution,
+    ProviderStopRejection, TransitionOutcome, WorkflowExecution as DomainWorkflowExecution,
 };
 use crate::domain::workflow::services::secret_masker as workflow_secret_masker;
 use crate::domain::workflow::{NodeCompletionSignal, WorkflowError, WorkflowEvent};
 
-use super::command::{ApprovalCommand, RetryNodeCommand, SubmitOutputCommand};
+use super::command::{
+    ApprovalCommand, ResumeSessionNodeCommand, RetryNodeCommand, SubmitOutputCommand,
+};
 use super::output_submission as submission;
 use super::runtime_driver::{self, NodeOutcome};
 use super::runtime_error::WorkflowRuntimeError;
@@ -40,6 +41,23 @@ pub(crate) trait WorkflowControlPlaneGateway: Send + Sync {
     ) -> Result<Option<DomainWorkflowExecution>, WorkflowError>;
 
     async fn recover_active_executions(&self) -> Result<(), WorkflowError>;
+
+    fn node_process_presence(
+        &self,
+        execution: &DomainWorkflowExecution,
+        node_execution_id: &str,
+    ) -> Result<crate::domain::workflow::NodeProcessPresence, WorkflowError>;
+
+    fn worktree_exists(&self, worktree_path: &str) -> Result<bool, WorkflowError>;
+
+    async fn session_conversation_exists(&self, session_id: &str) -> Result<bool, WorkflowError>;
+
+    async fn resume_session_process(
+        &self,
+        execution_id: &str,
+        node_execution_id: &str,
+        session_id: &str,
+    ) -> Result<(), WorkflowError>;
 
     async fn reserve_started_execution_tree(&self, tree_id: &str) -> Result<(), WorkflowError> {
         let _ = tree_id;
@@ -380,29 +398,132 @@ impl WorkflowControlPlaneUsecase {
                     command.execution_id
                 ))
             })?;
+        let node = current
+            .node_execution(&command.node_execution_id)
+            .ok_or_else(|| {
+                WorkflowError::NotFound(format!(
+                    "Node execution not found: {}",
+                    command.node_execution_id
+                ))
+            })?;
+        let presence = self
+            .runtime
+            .node_process_presence(&current, &command.node_execution_id)?;
+        if !node.can_retry(presence) {
+            return Err(WorkflowError::invalid_state(
+                "Only an unfinished Command without a process can be retried",
+            ));
+        }
+        let path = current
+            .execution_worktree_path(&command.node_execution_id)
+            .ok_or_else(|| WorkflowError::invalid_state("execution worktree is unavailable"))?;
+        if !self.runtime.worktree_exists(path)? {
+            return Err(WorkflowError::invalid_state(
+                "execution worktree does not exist",
+            ));
+        }
+        self.restart_node_attempt(current, command.execution_id, command.node_execution_id)
+            .await
+    }
+
+    pub(crate) async fn resume_session_node(
+        &self,
+        command: ResumeSessionNodeCommand,
+    ) -> Result<(), WorkflowError> {
+        crate::domain::workflow::WorkflowExecutionId::new(command.execution_id.clone())?;
+        if command.node_execution_id.trim().is_empty() {
+            return Err(WorkflowError::validation(
+                "node_execution_id must not be empty",
+            ));
+        }
+        super::command::retry_control_plane_conflicts(|| {
+            self.resume_session_node_once(command.clone())
+        })
+        .await
+    }
+
+    async fn resume_session_node_once(
+        &self,
+        command: ResumeSessionNodeCommand,
+    ) -> Result<(), WorkflowError> {
+        let current = self
+            .runtime
+            .load_active_execution(&command.execution_id)
+            .await?
+            .ok_or_else(|| {
+                WorkflowError::NotFound(format!(
+                    "Workflow execution not found: {}",
+                    command.execution_id
+                ))
+            })?;
+        let node = current
+            .node_execution(&command.node_execution_id)
+            .ok_or_else(|| {
+                WorkflowError::NotFound(format!(
+                    "Node execution not found: {}",
+                    command.node_execution_id
+                ))
+            })?;
+        let presence = self
+            .runtime
+            .node_process_presence(&current, &command.node_execution_id)?;
+        if !current.is_active() || !node.can_resume_session(presence) {
+            return Err(WorkflowError::invalid_state(
+                "Only an unfinished Session without a process can be resumed",
+            ));
+        }
+        let path = current
+            .execution_worktree_path(&command.node_execution_id)
+            .ok_or_else(|| WorkflowError::invalid_state("execution worktree is unavailable"))?;
+        let worktree_exists = self.runtime.worktree_exists(path)?;
+        let conversation_exists = match node.session_id.as_deref() {
+            Some(id) => self.runtime.session_conversation_exists(id).await?,
+            None => false,
+        };
+        if node.requires_new_session_attempt(conversation_exists, worktree_exists) {
+            self.restart_node_attempt(current, command.execution_id, command.node_execution_id)
+                .await
+        } else {
+            self.runtime
+                .resume_session_process(
+                    &command.execution_id,
+                    &command.node_execution_id,
+                    node.session_id.as_deref().ok_or_else(|| {
+                        WorkflowError::invalid_state("Session conversation has no owner")
+                    })?,
+                )
+                .await
+        }
+    }
+
+    async fn restart_node_attempt(
+        &self,
+        current: DomainWorkflowExecution,
+        execution_id: String,
+        node_execution_id: String,
+    ) -> Result<(), WorkflowError> {
         let timestamp = self.runtime.current_timestamp();
         let mut candidate = current.clone();
         let restarted = candidate
             .restart_node_attempt_at(
-                &command.node_execution_id,
+                &node_execution_id,
                 self.runtime.new_node_execution_id(),
                 timestamp,
-                NodeRestartMode::ExplicitRetry,
             )
             .ok_or_else(|| {
                 WorkflowError::invalid_state(format!(
                     "node execution '{}' is not retryable",
-                    command.node_execution_id
+                    node_execution_id
                 ))
             })?;
         let events = vec![
             WorkflowEvent::NodeRetryRequested {
-                execution_id: command.execution_id.clone(),
-                node_execution_id: command.node_execution_id,
+                execution_id: execution_id.clone(),
+                node_execution_id,
                 timestamp,
             },
             WorkflowEvent::NodeStarted {
-                execution_id: command.execution_id.clone(),
+                execution_id: execution_id.clone(),
                 node_execution_id: restarted.attempt.id.clone(),
                 node_name: restarted.attempt.node_name.clone(),
                 kind: restarted.attempt.kind,
@@ -415,7 +536,7 @@ impl WorkflowControlPlaneUsecase {
         let snapshot = self
             .runtime
             .commit_control_plane(WorkflowControlPlaneCommit {
-                execution_id: command.execution_id,
+                execution_id,
                 before: current,
                 after: candidate,
                 transition_outcome: TransitionOutcome::Applied,

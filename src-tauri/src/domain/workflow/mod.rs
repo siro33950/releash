@@ -14,7 +14,9 @@ pub mod services;
 pub mod value_objects;
 
 pub use error::WorkflowError;
-pub use gateway::{IsolatedWorktreeGateway, ManagedWorktreeGateway, SecretSourceGateway};
+pub use gateway::{
+    IsolatedWorktreeGateway, ManagedWorktreeGateway, NodeProcessReader, SecretSourceGateway,
+};
 pub use repository::{
     FacetRepository, WorkflowDefinitionRepository, WorkflowExecutionArchiveRepository,
     WorkflowExecutionArchiveSnapshot, WorkflowExecutionManualArchiveRecord,
@@ -24,17 +26,17 @@ pub use services::{contract, secret_masker, validation};
 #[cfg(test)]
 pub use services::{TimeoutContext, TimeoutPolicy};
 pub use value_objects::{
-    is_reserved_node_name, isolated_worktree_owner, AgentActivityObservedFact,
-    AgentSessionActivity, ApprovalGrantedFact, ApprovalTarget, Artifact, ArtifactProducedFact,
-    ChildEntry, CommandSpawnedFact, CommandSpec, CompletionRequirement, ContractType,
-    ContractValidationResult, DefinitionResolution, EnvironmentVariableName,
+    is_reserved_node_name, isolated_worktree_owner, startup_restart_delay,
+    AgentActivityObservedFact, AgentSessionActivity, ApprovalGrantedFact, ApprovalTarget, Artifact,
+    ArtifactProducedFact, ChildEntry, CommandSpawnedFact, CommandSpec, CompletionRequirement,
+    ContractType, ContractValidationResult, DefinitionResolution, EnvironmentVariableName,
     EnvironmentVariableNameError, ExecutionOrigin, ExecutionParentRef, ExecutionStatus,
     ExecutionStatusFilter, ExecutionTreeLaunch, FacetContents, FacetKey, FacetKind, FacetRefs,
     FacetSummary, FailureClassification, FailureDisposition, Fanout, FanoutSlot, FanoutSpec,
     FieldPath, InputParam, InputParameterRef, IsolatedWorktree, ItemsSource, NodeCompletion,
     NodeCompletionSignal, NodeCompletionSignalState, NodeDefinition, NodeDefinitionName,
-    NodeExecution, NodeExecutionFailure, NodeExecutionFailureKind, NodeExecutionStatus, NodeFact,
-    NodeFactMeta, NodeFactRecord, NodeHistoryEntry, NodeKind, NodeKindName, OnFailure, Predicate,
+    NodeExecution, NodeExecutionFailureKind, NodeExecutionStatus, NodeFact, NodeFactMeta,
+    NodeFactRecord, NodeHistoryEntry, NodeKind, NodeKindName, NodeProcessPresence, Predicate,
     ProcessExitedFact, ProviderSessionTitleObservedFact, Rule, RuntimeArtifact,
     RuntimeExecutionState, RuntimeFailureObservedFact, SchemaDef, SequenceSpec,
     SessionAttachedFact, SessionContinuationAdmittedFact, SessionDelegate,
@@ -44,5 +46,4 @@ pub use value_objects::{
     WorkflowExecutionId, WorkflowExecutionSummary, WorkflowFacetContents, WorkflowPageRequest,
     WorkflowRuntimeSnapshot, WorkflowSourceFormat, WorkflowSummary, WorkspaceWorktreePath,
     WorktreeInheritance, WorktreeInventoryEntry, WorktreeMode, NODE_STATUS_COMPLETED,
-    NODE_STATUS_FAILED,
 };

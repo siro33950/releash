@@ -5,17 +5,14 @@ use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStor
 use crate::domain::workflow::entities::workflow_execution::WorkflowExecution;
 use crate::domain::workflow::{ManagedWorktreeGateway, SecretSourceGateway, WorkflowError};
 use crate::infrastructure::local_api::{LocalApiServer, LocalApiServerBinding};
-use crate::usecase::workflow::command::{
-    AbortExecutionCommand, ResolvedStartExecutionCommand, ResumeExecutionCommand,
-    StopExecutionCommand,
-};
+use crate::usecase::workflow::command::{AbortExecutionCommand, ResolvedStartExecutionCommand};
 use crate::usecase::workflow::control_plane::{
     WorkflowControlPlaneCommit, WorkflowControlPlaneGateway,
 };
 use crate::usecase::workflow::ports::ExternalEditorGateway;
 use crate::usecase::workflow::ports::{
-    WorkflowAbortExecutionGateway, WorkflowResumeExecutionGateway, WorkflowRuntimeShutdownGateway,
-    WorkflowRuntimeStateGateway, WorkflowStartExecutionGateway, WorkflowStopExecutionGateway,
+    WorkflowAbortExecutionGateway, WorkflowRuntimeShutdownGateway, WorkflowRuntimeStateGateway,
+    WorkflowStartExecutionGateway,
 };
 use crate::usecase::workflow::runtime_driver::NodeOutcome;
 use crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot;
@@ -97,23 +94,6 @@ impl WorkflowAbortExecutionGateway for DiagnosticsAcceptanceRuntimeGateway {
 }
 
 #[async_trait::async_trait]
-impl WorkflowStopExecutionGateway for DiagnosticsAcceptanceRuntimeGateway {
-    async fn stop_execution(&self, _command: StopExecutionCommand) -> Result<(), WorkflowError> {
-        Err(unsupported_runtime_operation())
-    }
-}
-
-#[async_trait::async_trait]
-impl WorkflowResumeExecutionGateway for DiagnosticsAcceptanceRuntimeGateway {
-    async fn resume_execution(
-        &self,
-        _command: ResumeExecutionCommand,
-    ) -> Result<(), WorkflowError> {
-        Err(unsupported_runtime_operation())
-    }
-}
-
-#[async_trait::async_trait]
 impl WorkflowRuntimeStateGateway for DiagnosticsAcceptanceRuntimeGateway {
     async fn recover_startup(&self) -> Result<(), WorkflowError> {
         Ok(())
@@ -135,6 +115,32 @@ impl WorkflowRuntimeShutdownGateway for DiagnosticsAcceptanceRuntimeGateway {
 
 #[async_trait::async_trait]
 impl WorkflowControlPlaneGateway for DiagnosticsAcceptanceRuntimeGateway {
+    fn node_process_presence(
+        &self,
+        _execution: &crate::domain::workflow::entities::workflow_execution::WorkflowExecution,
+        _id: &str,
+    ) -> Result<crate::domain::workflow::NodeProcessPresence, crate::domain::workflow::WorkflowError>
+    {
+        Ok(crate::domain::workflow::NodeProcessPresence::ConfirmedAbsent)
+    }
+    fn worktree_exists(&self, _path: &str) -> Result<bool, crate::domain::workflow::WorkflowError> {
+        Ok(true)
+    }
+    async fn session_conversation_exists(
+        &self,
+        _session_id: &str,
+    ) -> Result<bool, crate::domain::workflow::WorkflowError> {
+        Ok(true)
+    }
+    async fn resume_session_process(
+        &self,
+        _execution_id: &str,
+        _node_id: &str,
+        _session_id: &str,
+    ) -> Result<(), crate::domain::workflow::WorkflowError> {
+        Ok(())
+    }
+
     fn current_timestamp(&self) -> f64 {
         0.0
     }
@@ -213,6 +219,7 @@ impl WorkflowDiagnosticsAcceptanceHost {
             Arc::new(DiagnosticsAcceptanceExternalEditorGateway),
             Arc::new(DiagnosticsAcceptanceSecretSourceGateway),
             store.clone(),
+            None,
         )
         .0;
         let workflow = Arc::new(

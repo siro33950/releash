@@ -10,8 +10,8 @@ use crate::domain::workflow::services::{contract_schema, reference};
 use crate::domain::workflow::value_objects::{
     ChildEntry, CommandSpec, EnvironmentVariableName, EnvironmentVariableNameError, FacetRefs,
     FanoutSpec, InputParam, InputParameterRef, InputSourceRef, ItemsSource, NodeCompletion,
-    NodeDefinition, NodeKind, NodeNamespace, NodeNamespaceError, OnFailure, Predicate, Rule,
-    SchemaDef, SequenceSpec, SessionDelegate, SessionPermission, SessionSpec, WorkflowDefinition,
+    NodeDefinition, NodeKind, NodeNamespace, NodeNamespaceError, Predicate, Rule, SchemaDef,
+    SequenceSpec, SessionDelegate, SessionPermission, SessionSpec, WorkflowDefinition,
     MAIN_ENTRY_NODE_NAME,
 };
 use crate::infrastructure::lua::{
@@ -35,7 +35,6 @@ const HANDLE_NODE: &str = "node";
 const HANDLE_CHILD: &str = "child";
 const HANDLE_RULE: &str = "rule";
 const HANDLE_PREDICATE: &str = "predicate";
-const HANDLE_FAILURE: &str = "on_failure";
 const HANDLE_INPUT: &str = "input";
 const HANDLE_SOURCE: &str = "source";
 const HANDLE_SCHEMA: &str = "schema";
@@ -55,7 +54,6 @@ const FN_NEXT: u32 = 6;
 const FN_WHEN: u32 = 7;
 const FN_SWITCH: u32 = 8;
 const FN_LOOP_GUARD: u32 = 9;
-const FN_RETRY: u32 = 10;
 const FN_INPUT: u32 = 11;
 const FN_SCHEMA_OBJECT: u32 = 12;
 const FN_SCHEMA_ARRAY: u32 = 13;
@@ -229,7 +227,6 @@ struct ChildDraft {
     node: usize,
     inputs: Vec<(String, usize)>,
     rules: Option<Vec<usize>>,
-    on_failure: Option<OnFailure>,
     location: LuaSourceLocation,
 }
 
@@ -417,7 +414,6 @@ struct WorkflowLuaHost {
     rules: Vec<RuleDraft>,
     predicates: Vec<(Predicate<usize>, usize)>,
     predicate_entries: usize,
-    failures: Vec<OnFailure>,
     inputs: Vec<InputDraft>,
     sources: Vec<SourceDraft>,
     source_paths: SourcePaths,
@@ -439,7 +435,6 @@ impl WorkflowLuaHost {
             rules: Vec::new(),
             predicates: Vec::new(),
             predicate_entries: 0,
-            failures: vec![OnFailure::Ignore],
             inputs: Vec::new(),
             sources: vec![SourceDraft::Request, SourceDraft::Items],
             source_paths: SourcePaths::new(),
@@ -491,7 +486,6 @@ impl WorkflowLuaHost {
             ("any", FN_ANY),
             ("switch", FN_SWITCH),
             ("loop_guard", FN_LOOP_GUARD),
-            ("retry", FN_RETRY),
             ("input", FN_INPUT),
             ("workflow", FN_WORKFLOW),
         ];
@@ -499,10 +493,6 @@ impl WorkflowLuaHost {
         for (name, function) in functions {
             members.insert(name.to_string(), LuaModuleValue::Function(function));
         }
-        members.insert(
-            "ignore".to_string(),
-            LuaModuleValue::Data(handle(HANDLE_FAILURE, 0)),
-        );
         members.insert(
             "request".to_string(),
             LuaModuleValue::Data(handle(HANDLE_SOURCE, self.request_source)),
@@ -602,7 +592,6 @@ impl WorkflowLuaHost {
             + self.children.len()
             + self.rules.len()
             + self.predicate_entries
-            + self.failures.len()
             + self.inputs.len()
             + self.sources.len()
             + self.schemas.len()
@@ -667,7 +656,6 @@ impl LuaHost for WorkflowLuaHost {
             FN_ALL | FN_ANY => self.call_predicate(function == FN_ALL, arguments, location),
             FN_SWITCH => self.call_switch(arguments, location),
             FN_LOOP_GUARD => self.call_loop_guard(arguments, location),
-            FN_RETRY => self.call_retry(arguments, location),
             FN_INPUT => self.call_input(arguments, location),
             FN_SCHEMA_OBJECT => self.call_schema_object(arguments, location),
             FN_SCHEMA_ARRAY => self.call_schema_array(arguments, location),
@@ -1083,32 +1071,14 @@ impl WorkflowLuaHost {
         location: LuaSourceLocation,
     ) -> Result<LuaData, LuaHostError> {
         let table = one_table(arguments, &location)?;
-        reject_unknown(
-            &table,
-            &["node", "inputs", "rules", "on_failure"],
-            &location,
-        )?;
+        reject_unknown(&table, &["node", "inputs", "rules"], &location)?;
         let inputs = self.parse_inputs(&table, &location)?;
         let rules = optional_handle_array(&table, "rules", HANDLE_RULE, &location)?;
-        let on_failure = match table.get_string("on_failure") {
-            None | Some(LuaData::Nil) => None,
-            Some(value) => {
-                let index = expect_handle(value, HANDLE_FAILURE)
-                    .map_err(|_| type_error("on_failure", "OnFailure", &location))?;
-                Some(
-                    *self
-                        .failures
-                        .get(index)
-                        .ok_or_else(|| type_error("on_failure", "OnFailure", &location))?,
-                )
-            }
-        };
         let index = self.children.len();
         self.children.push(ChildDraft {
             node: required_handle(&table, "node", HANDLE_NODE, &location)?,
             inputs,
             rules,
-            on_failure,
             location,
         });
         Ok(handle(HANDLE_CHILD, index))
@@ -1367,24 +1337,6 @@ impl WorkflowLuaHost {
             on_exhausted: required_handle(&table, "on_exhausted", HANDLE_NODE, &location)?,
         };
         Ok(push_rule(&mut self.rules, draft))
-    }
-
-    fn call_retry(
-        &mut self,
-        arguments: Vec<LuaData>,
-        location: LuaSourceLocation,
-    ) -> Result<LuaData, LuaHostError> {
-        let count = one_u32(arguments, &location)?;
-        if count == 0 {
-            return Err(host_error(
-                "WFS002",
-                "retry count must be at least 1",
-                location,
-            ));
-        }
-        let index = self.failures.len();
-        self.failures.push(OnFailure::Retry(count));
-        Ok(handle(HANDLE_FAILURE, index))
     }
 
     fn call_input(
@@ -1997,7 +1949,6 @@ impl WorkflowGraphBuilder {
                     name: self.names[&child.node].clone(),
                     inputs,
                     rules,
-                    on_failure: child.on_failure,
                 })
             })
             .collect()
@@ -2378,15 +2329,6 @@ fn one_handle(
             "builder expects exactly one argument",
             location.clone(),
         )),
-    }
-}
-
-fn one_u32(arguments: Vec<LuaData>, location: &LuaSourceLocation) -> Result<u32, LuaHostError> {
-    match arguments.as_slice() {
-        [LuaData::Integer(value)] => {
-            u32::try_from(*value).map_err(|_| type_error("argument", "u32", location))
-        }
-        _ => Err(type_error("argument", "u32", location)),
     }
 }
 
@@ -3620,7 +3562,7 @@ nodes:
     }
 
     #[test]
-    fn builds_all_rule_completion_and_failure_variants() {
+    fn builds_all_rule_and_completion_variants() {
         let loaded = load(
             r#"
 local r = require("releash")
@@ -3643,7 +3585,6 @@ return r.workflow{
     r.child{
       node = check,
       rules = { r.when{ on = check.ok, on_true = classify, next = retry } },
-      on_failure = r.retry(2),
     },
     r.child{
       node = classify,
@@ -3659,7 +3600,7 @@ return r.workflow{
         r.next(check),
       },
     },
-    r.child{ node = done, rules = {}, on_failure = r.ignore },
+    r.child{ node = done, rules = {} },
   } },
 }
 "#,
@@ -3671,7 +3612,6 @@ return r.workflow{
             main.children[0].rules.as_deref(),
             Some([Rule::When { .. }])
         ));
-        assert_eq!(main.children[0].on_failure, Some(OnFailure::Retry(2)));
         assert!(matches!(
             main.children[1].rules.as_deref(),
             Some([Rule::Switch { .. }])
@@ -3681,7 +3621,6 @@ return r.workflow{
             Some([Rule::LoopGuard { .. }, Rule::Next(_)])
         ));
         assert_eq!(main.children[3].rules.as_deref(), Some(&[][..]));
-        assert_eq!(main.children[3].on_failure, Some(OnFailure::Ignore));
         assert_eq!(
             loaded.workflow.node_by_name("main#1").unwrap().completion,
             NodeCompletion::require_approval()

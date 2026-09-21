@@ -21,7 +21,7 @@ pub use definition::{
     is_reserved_node_name, ChildEntry, CommandSpec, CompletionRequirement, EffectiveRules,
     EnvironmentVariableName, EnvironmentVariableNameError, FacetRefs, FanoutSpec, InputParam,
     InputParameterRef, InputSourceRef, ItemsSource, NodeCompletion, NodeDefinition, NodeKind,
-    NodeKindName, NodeNamespace, NodeNamespaceError, OnFailure, Rule, SchemaDef, SequenceSpec,
+    NodeKindName, NodeNamespace, NodeNamespaceError, Rule, SchemaDef, SequenceSpec,
     SessionDelegate, SessionPermission, SessionSpec, WorkflowDefinition, WorkflowSourceFormat,
     WorkflowSummary, WorktreeMode, MAIN_ENTRY_NODE_NAME, MAX_FANOUT_CHILDREN,
     MAX_NODES_PER_WORKFLOW,
@@ -42,8 +42,8 @@ pub use ids::{
     NodeDefinitionName, WorkflowDefinitionName, WorkflowExecutionId, WorkspaceWorktreePath,
 };
 pub use node_execution::{
-    ExecutionParentRef, FanoutSlot, NodeCompletionSignal, NodeCompletionSignalState, NodeExecution,
-    NodeExecutionFailure, NodeExecutionStatus,
+    startup_restart_delay, ExecutionParentRef, FanoutSlot, NodeCompletionSignal,
+    NodeCompletionSignalState, NodeExecution, NodeExecutionStatus, NodeProcessPresence,
 };
 pub use node_fact::{
     AgentActivityObservedFact, AgentSessionActivity, ApprovalGrantedFact, ArtifactProducedFact,
@@ -59,7 +59,6 @@ pub use runtime_event::{ContractViolationRecord, WorkflowEvent};
 pub use runtime_projection::FanoutChildSnapshot;
 pub use runtime_projection::{
     NodeHistoryEntry, RuntimeArtifact, TokenUsage, NODE_STATUS_ABORTED, NODE_STATUS_COMPLETED,
-    NODE_STATUS_FAILED,
 };
 pub use state::{RuntimeExecutionState, WorkflowRuntimeSnapshot};
 pub use worktree_origin::{

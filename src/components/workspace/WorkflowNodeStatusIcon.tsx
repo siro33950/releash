@@ -1,5 +1,4 @@
 import {
-	AlertTriangle,
 	Ban,
 	CheckCircle2,
 	Circle,
@@ -55,8 +54,6 @@ export function WorkflowNodeStatusIcon({
 			<Loader2 className={cn(baseIconClassName, "animate-spin")} />
 		) : status === "completed" ? (
 			<CheckCircle2 className={baseIconClassName} />
-		) : status === "failed" ? (
-			<AlertTriangle className={baseIconClassName} />
 		) : status === "waiting" ? (
 			<Clock className={baseIconClassName} />
 		) : status === "aborted" ? (
