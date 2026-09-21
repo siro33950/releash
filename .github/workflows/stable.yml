@@ -1,0 +1,209 @@
+name: Stable
+
+on:
+  workflow_dispatch:
+    inputs:
+      nightly:
+        description: "Published nightly tag"
+        required: true
+        type: string
+
+concurrency:
+  group: stable-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.nightly.outputs.sha }}
+    steps:
+      - id: nightly
+        uses: actions/github-script@v9
+        env:
+          NIGHTLY_TAG: ${{ inputs.nightly }}
+        with:
+          script: |
+            const tag = process.env.NIGHTLY_TAG;
+            if (!/^v\d+\.\d+\.\d+-nightly\.\d{8}\.[1-9]\d*$/.test(tag)) throw new Error('Expected a nightly tag');
+            const { data: release } = await github.rest.repos.getReleaseByTag({ ...context.repo, tag });
+            if (release.draft || !release.prerelease) throw new Error('Expected a published nightly prerelease');
+            const { data: commit } = await github.rest.repos.getCommit({ ...context.repo, ref: `tags/${tag}` });
+            core.setOutput('sha', commit.sha);
+
+  create-release:
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    outputs:
+      release-id: ${{ steps.create.outputs.release-id }}
+      sha: ${{ needs.resolve.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+      - id: create
+        uses: actions/github-script@v9
+        env:
+          RELEASE_SHA: ${{ needs.resolve.outputs.sha }}
+          NIGHTLY_TAG: ${{ inputs.nightly }}
+        with:
+          script: |
+            const { version } = require('./package.json');
+            if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error('Expected an X.Y.Z version');
+            if (!process.env.NIGHTLY_TAG.startsWith(`v${version}-nightly.`)) throw new Error('Nightly tag and repository version differ');
+            const tag = `v${version}`;
+            const commit = await github.rest.repos.getCommit({
+              ...context.repo, ref: `tags/${tag}`,
+            }).then(response => response.data).catch(error => {
+              if (error.status !== 404) throw error;
+              return null;
+            });
+            if (commit && commit.sha !== process.env.RELEASE_SHA) throw new Error('Stable tag points to a different commit');
+            const releases = await github.paginate(github.rest.repos.listReleases, {
+              ...context.repo, per_page: 100,
+            });
+            const existing = releases.find(release => release.tag_name === tag);
+            if (existing && (!commit || !existing.draft || existing.prerelease)) throw new Error('Expected an unpublished stable release at the selected commit');
+            if (!commit) {
+              await github.rest.git.createRef({
+                ...context.repo, ref: `refs/tags/${tag}`, sha: process.env.RELEASE_SHA,
+              });
+            }
+            if (existing) {
+              core.setOutput('release-id', existing.id);
+              return;
+            }
+            const { data } = await github.rest.repos.createRelease({
+              ...context.repo, tag_name: tag, target_commitish: process.env.RELEASE_SHA,
+              name: tag, draft: true, prerelease: false, make_latest: 'false', generate_release_notes: true,
+            });
+            core.setOutput('release-id', data.id);
+
+  build:
+    needs: create-release
+    runs-on: macos-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.create-release.outputs.sha }}
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: macos-universal
+
+      - uses: 1password/load-secrets-action@70062d7a876d3eb6334754fa26efd2fbd90c32f2 # v5
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          APPLE_CERTIFICATE: op://releash/apple-signing/certificate
+          APPLE_CERTIFICATE_PASSWORD: op://releash/apple-signing/certificate-password
+          APPLE_SIGNING_IDENTITY: op://releash/apple-signing/signing-identity
+          APPLE_ID: op://releash/apple-signing/apple-id
+          APPLE_PASSWORD: op://releash/apple-signing/app-password
+          APPLE_TEAM_ID: op://releash/apple-signing/team-id
+          TAURI_SIGNING_PRIVATE_KEY: op://releash/tauri-updater/private-key
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: op://releash/tauri-updater/password
+          OTLP_ENDPOINT: op://releash/new-relic/otlp-endpoint
+          NEW_RELIC_LICENSE_KEY: op://releash/new-relic/license-key
+        with:
+          version: "2.38.1"
+          export-env: true
+
+      - uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OTLP_ENDPOINT: ${{ env.OTLP_ENDPOINT }}
+          NEW_RELIC_LICENSE_KEY: ${{ env.NEW_RELIC_LICENSE_KEY }}
+        with:
+          uploadUpdaterJson: true
+          releaseId: ${{ needs.create-release.outputs.release-id }}
+          tauriScript: pnpm tauri
+          args: --target universal-apple-darwin -- --features vendored-openssl
+
+  publish:
+    needs: [create-release, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Publish stable as latest
+        uses: actions/github-script@v9
+        env:
+          RELEASE_ID: ${{ needs.create-release.outputs.release-id }}
+        with:
+          script: |
+            const release_id = Number(process.env.RELEASE_ID);
+            const assets = await github.paginate(github.rest.repos.listReleaseAssets, {
+              ...context.repo, release_id, per_page: 100,
+            });
+            if (!assets.some(asset => asset.name === 'latest.json' && asset.size > 0)) throw new Error('Missing updater manifest');
+            await github.rest.repos.updateRelease({
+              ...context.repo, release_id,
+              draft: false, prerelease: false, make_latest: 'true',
+            });
+
+  bump:
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+
+      - name: Calculate next patch version
+        run: |
+          CURRENT=$(jq -r '.version' src-tauri/tauri.conf.json)
+          [[ "$CURRENT" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+          echo "VERSION=${MAJOR}.${MINOR}.$((PATCH + 1))" >> "$GITHUB_ENV"
+
+      - name: Bump version in files
+        run: |
+          jq --tab --arg v "$VERSION" '.version = $v' package.json > tmp.json && mv tmp.json package.json
+          jq --arg v "$VERSION" '.version = $v' src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
+          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" src-tauri/Cargo.toml
+          sed -i '/^name = "releash"$/{n;s/^version = ".*"/version = "'"$VERSION"'"/}' src-tauri/Cargo.lock
+
+      - name: Create PR
+        uses: peter-evans/create-pull-request@v8
+        with:
+          base: main
+          add-paths: |
+            package.json
+            src-tauri/tauri.conf.json
+            src-tauri/Cargo.toml
+            src-tauri/Cargo.lock
+          commit-message: "release: v${{ env.VERSION }}"
+          branch: release/v${{ env.VERSION }}
+          title: "release: v${{ env.VERSION }}"
+          body: "Bump version to ${{ env.VERSION }} (patch after stable)"
