@@ -166,15 +166,17 @@ Rust テストの配置、命名、レイヤー別の必須／柔軟、モック
 - Conventional Commits。`type(scope): 日本語要約 (#PR番号)` の形にする。
 - type は `feat` / `fix` / `docs` / `refactor` / `chore` / `perf`。
 - main へ直接 push しない。PR 経由で入れる。
-- リリースコミットは `release: vX.Y.Z`。
+- 版を上げるコミットは `release: vX.Y.Z`。このコミットの merge 自体ではリリースしない。
 
 ## リリース
 
 対応プラットフォームは macOS。
 
-1. `Bump Version` を workflow_dispatch で実行する（patch / minor / major）。version 更新 PR ができる。
-2. main へ merge すると `Auto Tag` が `package.json` の version 変更を検知して `vX.Y.Z` タグを作る。
-3. タグ push で `Release` が tauri-action により macOS ビルドと GitHub Release 作成を行う。署名鍵は 1Password から取得する。
+1. `Nightly` は毎日（UTC 18:23 / JST 03:23）と `workflow_dispatch` で起動する。main の HEAD を対象とし、日次は直近の公開済み nightly のタグが指す commit と同じならスキップする。手動起動は常に実行する。
+2. PR 層の検証一式と `performance` がすべて成功したら、tauri-action で署名・公証済みの macOS universal ビルドを作り、prerelease を公開する。`coverage` は関門に含めない。署名・公証、updater の署名、telemetry の値は 1Password から取得する。
+3. nightly のタグは `v{X.Y.Z}-nightly.{YYYYMMDD}.{N}`（UTC のビルド日、日ごとに 1 から採番）。リポジトリとアプリの版は `X.Y.Z` のまま。nightly の Release は直近 14 件を残す。nightly は GitHub Release から手動で取得する。
+4. `Stable` を `workflow_dispatch` で起動し、`nightly` に公開済み nightly のタグを指定する。その commit からビルド・署名・公証をやり直し、`vX.Y.Z` を stable の latest Release として公開する。`latest.json` により既存の Tauri updater で更新できる。
+5. stable 公開後、main の版の patch を 1 つ上げ、`package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock` を揃える PR を作る。別の上げ幅が必要なら、`Bump Version` を `workflow_dispatch`（patch / minor / major）で実行して版更新 PR を作る。
 
 ## セキュリティ
 

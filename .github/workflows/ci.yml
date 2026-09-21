@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_call:
+    inputs:
+      ref:
+        required: true
+        type: string
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
@@ -23,6 +28,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.sha }}
       - uses: pnpm/action-setup@v6
         with:
           version: 10
@@ -40,6 +47,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.sha }}
       - uses: pnpm/action-setup@v6
         with:
           version: 10
@@ -111,6 +120,8 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.sha }}
       - uses: actions/setup-node@v7
         with:
           node-version: 24
@@ -126,6 +137,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ inputs.ref || github.sha }}
           fetch-depth: 0
       - &rust-changes
         name: Detect Rust-relevant changes
@@ -133,6 +145,10 @@ jobs:
         uses: actions/github-script@v9
         with:
           script: |
+            if (['schedule', 'workflow_dispatch'].includes(context.eventName)) {
+              core.setOutput('rust', true);
+              return;
+            }
             const { execFileSync } = require('node:child_process');
             const pr = context.payload.pull_request;
             const base = pr ? pr.base.sha : context.payload.before;
@@ -196,6 +212,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ inputs.ref || github.sha }}
           fetch-depth: 0
       - *rust-changes
       - name: Install Tauri dependencies
@@ -237,6 +254,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ inputs.ref || github.sha }}
           fetch-depth: 0
       - *rust-changes
       - name: Install Tauri dependencies
@@ -286,6 +304,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ inputs.ref || github.sha }}
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
         with:
