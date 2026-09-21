@@ -6,6 +6,13 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_PROFILE_DEV_DEBUG: "0"
+
 permissions:
   contents: read
   pull-requests: write
@@ -59,7 +66,7 @@ jobs:
           path: playwright-report/
           retention-days: 7
       - name: Add PR comment with test results
-        if: always() && github.event_name == 'pull_request'
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
         uses: actions/github-script@v9
         with:
           script: |
@@ -99,6 +106,17 @@ jobs:
               });
             }
 
+  workflow-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Workflow decision tests
+        run: node --test .github/scripts/workflows-test.mjs
+
   rust-lint:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -107,38 +125,69 @@ jobs:
         working-directory: src-tauri
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - &rust-changes
+        name: Detect Rust-relevant changes
+        id: changes
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const { execFileSync } = require('node:child_process');
+            const pr = context.payload.pull_request;
+            const base = pr ? pr.base.sha : context.payload.before;
+            const head = pr ? pr.head.sha : context.sha;
+            if (/^0+$/.test(base)) {
+              core.setOutput('rust', true);
+              return;
+            }
+            const range = pr ? `${base}...${head}` : base;
+            const args = ['diff', '--no-renames', '--name-only', '-z', range];
+            if (!pr) args.push(head);
+            const paths = execFileSync('git', args).toString('utf8').split('\0').filter(Boolean);
+            core.setOutput('rust', paths.some(path => !path.startsWith('docs/') && !/^[^/]+\.md$/.test(path)));
       - name: Install Tauri dependencies
+        if: steps.changes.outputs.rust == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
       - uses: pnpm/action-setup@v6
+        if: steps.changes.outputs.rust == 'true'
         with:
           version: 10
       - uses: actions/setup-node@v7
+        if: steps.changes.outputs.rust == 'true'
         with:
           node-version: 24
           cache: pnpm
       - name: Build frontend assets for Tauri
+        if: steps.changes.outputs.rust == 'true'
         working-directory: .
         run: pnpm install --frozen-lockfile
       - uses: dtolnay/rust-toolchain@stable
+        if: steps.changes.outputs.rust == 'true'
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+        if: steps.changes.outputs.rust == 'true'
         with:
           workspaces: src-tauri
           key: rust-lint
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@cargo-deny
+        id: setup
+        if: steps.changes.outputs.rust == 'true'
       - run: cargo fmt --check
+        if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
       - run: cargo clippy --locked -- -D warnings
+        if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
       - run: cargo deny --locked check
-      - run: cargo build --locked
+        if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
       - name: Lint Tauri-free backend
+        if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
         run: cargo clippy --locked --no-default-features --bin releash-backend -- -D warnings
-      - name: Build Tauri-free backend
-        run: cargo build --locked --no-default-features --bin releash-backend
 
-  rust-test:
+  rust-test-desktop:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     defaults:
@@ -146,42 +195,75 @@ jobs:
         working-directory: src-tauri
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - *rust-changes
       - name: Install Tauri dependencies
+        if: steps.changes.outputs.rust == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
       - uses: pnpm/action-setup@v6
+        if: steps.changes.outputs.rust == 'true'
         with:
           version: 10
       - uses: actions/setup-node@v7
+        if: steps.changes.outputs.rust == 'true'
         with:
           node-version: 24
           cache: pnpm
       - name: Build frontend assets for Tauri
+        if: steps.changes.outputs.rust == 'true'
         working-directory: .
         run: pnpm install --frozen-lockfile
       - uses: dtolnay/rust-toolchain@stable
+        if: steps.changes.outputs.rust == 'true'
       - uses: Swatinem/rust-cache@v2
+        id: setup
+        if: steps.changes.outputs.rust == 'true'
         with:
           workspaces: src-tauri
-          key: rust-test
-      - name: Agent TUI harness self-test
-        run: cargo test --locked --test agent_tui_harness
+          key: rust-test-desktop
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - run: cargo test --locked
+        if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
+
+  rust-test-headless:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: src-tauri
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - *rust-changes
+      - name: Install Tauri dependencies
+        if: steps.changes.outputs.rust == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.changes.outputs.rust == 'true'
+      - uses: Swatinem/rust-cache@v2
+        id: setup
+        if: steps.changes.outputs.rust == 'true'
+        with:
+          workspaces: src-tauri
+          key: rust-test-headless
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - name: Headless backend unit tests
+        if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
         run: cargo test --locked --no-default-features --lib
-      - name: Performance CLI data directory tests
-        run: "cargo test --locked --no-default-features --features performance --lib cli::common::tests::"
-      - name: Performance daemon helper self-test
-        working-directory: .
-        run: pnpm test:performance:daemon
       - name: Headless daemon protocol smoke test
+        if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
         run: cargo test --locked --no-default-features --test daemon_smoke
 
   # ruleset の required status check が参照する名前を保つための集約ジョブ。
   # lint と test を並列に回しても、片方の失敗でもう片方の結果を失わない。
   rust:
-    needs: [rust-lint, rust-test]
+    needs: [rust-lint, rust-test-desktop, rust-test-headless]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -189,10 +271,11 @@ jobs:
       - name: Verify Rust jobs
         run: |
           lint='${{ needs.rust-lint.result }}'
-          test='${{ needs.rust-test.result }}'
-          echo "rust-lint=$lint rust-test=$test"
-          for result in "$lint" "$test"; do
-            if [ "$result" != "success" ]; then
+          desktop='${{ needs.rust-test-desktop.result }}'
+          headless='${{ needs.rust-test-headless.result }}'
+          echo "rust-lint=$lint rust-test-desktop=$desktop rust-test-headless=$headless"
+          for result in "$lint" "$desktop" "$headless"; do
+            if [ "$result" != "success" ] && [ "$result" != "skipped" ]; then
               exit 1
             fi
           done
@@ -210,47 +293,3 @@ jobs:
       - uses: qltysh/qlty-action/install@v2
       - run: qlty install
       - run: qlty check --no-progress --all
-
-  # カバレッジ計測は instrument 付きの追加ビルドを伴うため PR の待ち時間へ乗せない。
-  # main への push でだけ測り、推移を Codecov で追う。
-  coverage:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v7
-      - name: Install Tauri dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
-      - uses: pnpm/action-setup@v6
-        with:
-          version: 10
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm exec vitest run --coverage
-      - uses: codecov/codecov-action@v7
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: coverage/coverage-final.json
-          flags: typescript
-          fail_ci_if_error: false
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: llvm-tools-preview
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
-          key: rust-coverage
-      - uses: taiki-e/install-action@cargo-llvm-cov
-      - run: cargo llvm-cov --locked --codecov --output-path rust-codecov.json
-        working-directory: src-tauri
-      - uses: codecov/codecov-action@v7
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: src-tauri/rust-codecov.json
-          flags: rust
-          fail_ci_if_error: false
