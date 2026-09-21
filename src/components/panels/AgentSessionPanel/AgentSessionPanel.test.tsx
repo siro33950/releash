@@ -461,7 +461,7 @@ describe("AgentSessionRoute", () => {
 
 		expect(await screen.findByTestId("provider-terminal")).toBeVisible();
 		expect(screen.queryByRole("button", { name: "Archive" })).toBeNull();
-		expect(getReads).toBe(2);
+		await waitFor(() => expect(getReads).toBe(2));
 	});
 
 	it("同じworktreeの一覧変更後にbackend read modelを再取得する", async () => {

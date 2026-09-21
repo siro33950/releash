@@ -435,7 +435,7 @@ pub struct LocalEventStore {
     writer_worker: Option<std::thread::JoinHandle<()>>,
     reader_workers: Vec<std::thread::JoinHandle<()>>,
     // Held for the lifetime of the store: exclusive app-data writer lock.
-    _writer_lock: std::fs::File,
+    writer_lock: std::fs::File,
 }
 
 impl LocalEventStore {
@@ -791,7 +791,7 @@ impl LocalEventStore {
             installation_id,
             writer_worker,
             reader_workers,
-            _writer_lock: writer_lock,
+            writer_lock,
         }))
     }
 
@@ -1068,8 +1068,15 @@ impl Drop for LocalEventStore {
         if let Some(worker) = self.writer_worker.take() {
             let _ = worker.join();
         }
+        if let Err(error) = fs2::FileExt::unlock(&self.writer_lock) {
+            log::warn!("local event store writer lock release failed: {error}");
+        }
     }
 }
+
+#[cfg(test)]
+#[path = "store_test.rs"]
+mod store_tests;
 
 #[cfg(test)]
 mod startup_error_classification_tests {
