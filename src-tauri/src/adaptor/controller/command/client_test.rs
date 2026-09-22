@@ -47,11 +47,22 @@ fn parity_app_with_runtime(
     tauri::App<tauri::test::MockRuntime>,
     Arc<ClientCommandDispatch>,
 ) {
-    let (app, data_dir, _store) =
+    let (app, data_dir, store) =
         crate::adaptor::controller::client::workflow::tests::make_read_only_app();
-    if let Some(runtime) = runtime {
-        app.manage(runtime);
-    }
+    let runtime = runtime.unwrap_or_else(|| {
+        let gateway =
+            crate::adaptor::controller::api::test_support::RecordingRuntimeGateway::default();
+        Arc::new(crate::usecase::workflow::WorkflowRuntimeUsecase::new(
+            Arc::new(gateway),
+            Arc::new(
+                crate::adaptor::gateway::workflow::ExecutionTreeArchiveFactRepository::new(
+                    store,
+                    data_dir.clone(),
+                ),
+            ),
+        ))
+    });
+    app.manage(runtime);
     let authority = Arc::new(ApplicationStartupAuthority::ready());
     app.manage(authority.clone());
     app.manage(Arc::new(
@@ -343,8 +354,9 @@ async fn test_クライアントdispatch_proto全commandの登録と引数検証
     // Given
     let (_app, dispatch) = parity_app();
     // When / Then
-    assert_eq!(wire::COMMAND_NAMES.len(), 164);
+    assert_eq!(wire::COMMAND_NAMES.len(), 163);
     for removed in [
+        "confirm_agent_session_archive_delete",
         "stop_workflow",
         "resume_workflow",
         "get_application_quit_operation",
@@ -566,6 +578,7 @@ async fn test_未呼出33command_connectの実行結果とエラーがtauriと�
     let gateway = Arc::new(api::test_support::RecordingRuntimeGateway::default());
     let runtime = Arc::new(crate::usecase::workflow::WorkflowRuntimeUsecase::new(
         gateway.clone(),
+        Arc::new(crate::usecase::workflow::NoopArchiveRepository),
     ));
     let (app, _data_dir, _store) =
         crate::adaptor::controller::client::workflow::tests::make_read_only_app();
@@ -792,8 +805,13 @@ async fn test_worktree変更_protoは実引数の成功とusecaseエラーを保
     .await
     .unwrap();
     let worktree_path = expected["path"].as_str().unwrap().to_owned();
-    uc.remove_worktree(&path, &worktree_path, true).unwrap();
-    uc.delete_branch(&path, branch, true).unwrap();
+    let runtime = app.state::<Arc<crate::usecase::workflow::WorkflowRuntimeUsecase>>();
+    uc.remove_worktree(runtime.inner().as_ref(), &path, &worktree_path, true)
+        .await
+        .unwrap();
+    uc.delete_branch(runtime.inner().as_ref(), &path, branch, true)
+        .await
+        .unwrap();
     // When / Then
     assert_parity(
         &dispatch,
@@ -1070,7 +1088,10 @@ async fn test_workflow変更_protoは実引数とruntime結果を保持する() 
     use crate::adaptor::controller::api::test_support::RecordingRuntimeGateway;
     use crate::usecase::workflow::WorkflowRuntimeUsecase;
     let gateway = Arc::new(RecordingRuntimeGateway::default());
-    let runtime = Arc::new(WorkflowRuntimeUsecase::new(gateway.clone()));
+    let runtime = Arc::new(WorkflowRuntimeUsecase::new(
+        gateway.clone(),
+        Arc::new(crate::usecase::workflow::NoopArchiveRepository),
+    ));
     let (app, dispatch) = parity_app_with_runtime(Some(runtime));
     let id = "00000000-0000-4000-8000-000000000001";
     for failure in [false, true] {

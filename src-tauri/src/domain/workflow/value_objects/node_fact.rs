@@ -48,6 +48,7 @@ pub struct NodeFactRecord {
 pub enum NodeFact {
     /// 副作用: node 実行（attempt）を開始した。
     Started(StartedFact),
+    RepositoryRootObserved(String),
     /// 副作用: provider session を起動して node に attach した。
     SessionAttached(SessionAttachedFact),
     /// 副作用: command プロセスを起動した。
@@ -82,9 +83,15 @@ pub enum NodeFact {
     /// 人間の行動: 中止の指示。
     AbortRequested,
     /// 人間の行動: 木の archive（root にのみ受理される）。
-    ArchiveRequested,
+    ArchiveRequested(ArchiveRequestedFact),
     /// 人間の行動: 木の restore（root にのみ受理される）。
     RestoreRequested,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ArchiveRequestedFact {
+    pub reason: String,
+    pub archived_at: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -147,6 +154,7 @@ impl SessionExecutionTreeRootFacts {
         workspace_identity: impl Into<String>,
         worktree_path: impl Into<String>,
         provider: ProviderKind,
+        repository_root: Option<String>,
     ) -> Result<Self, SessionExecutionTreeRootFactsError> {
         let session_id = session_id.into();
         let session_id = session_id.trim();
@@ -175,7 +183,7 @@ impl SessionExecutionTreeRootFacts {
             started: NodeFact::Started(StartedFact {
                 parent: None,
                 root: Some(Box::new(TreeRootFact {
-                    repository_root: None,
+                    repository_root,
                     definition_resolution: Default::default(),
                     workspace_identity,
                     worktree_path,
@@ -291,7 +299,10 @@ impl AgentSessionActivity {
     pub fn after_fact(self, fact: &NodeFact) -> Self {
         match fact {
             NodeFact::AgentActivityObserved(fact) => fact.activity,
-            NodeFact::ProcessExited(_) | NodeFact::StopReceived(_) => Self::AwaitingInstruction,
+            NodeFact::ProcessExited(_)
+            | NodeFact::StopReceived(_)
+            | NodeFact::AbortRequested
+            | NodeFact::RestoreRequested => Self::AwaitingInstruction,
             _ => self,
         }
     }
@@ -364,9 +375,9 @@ pub enum NodeFactDecodeError {
 }
 
 impl NodeFact {
-    const PROCESS_EXITED_EVENT_TYPE: &'static str = "process_exited";
-    const AGENT_ACTIVITY_OBSERVED_EVENT_TYPE: &'static str = "agent_activity_observed";
-    const STOP_RECEIVED_EVENT_TYPE: &'static str = "stop_received";
+    pub(crate) const PROCESS_EXITED_EVENT_TYPE: &'static str = "process_exited";
+    pub(crate) const AGENT_ACTIVITY_OBSERVED_EVENT_TYPE: &'static str = "agent_activity_observed";
+    pub(crate) const STOP_RECEIVED_EVENT_TYPE: &'static str = "stop_received";
 
     pub(crate) fn activity_replay_event_types() -> &'static [&'static str] {
         &[
@@ -380,6 +391,7 @@ impl NodeFact {
     pub fn event_type(&self) -> &'static str {
         match self {
             Self::Started(_) => "started",
+            Self::RepositoryRootObserved(_) => "repository_root_observed",
             Self::SessionAttached(_) => "session_attached",
             Self::CommandSpawned(_) => "command_spawned",
             Self::ProcessExited(_) => Self::PROCESS_EXITED_EVENT_TYPE,
@@ -397,100 +409,8 @@ impl NodeFact {
             Self::RetryRequested => "retry_requested",
             Self::ResumeRequested => "resume_requested",
             Self::AbortRequested => "abort_requested",
-            Self::ArchiveRequested => "archive_requested",
+            Self::ArchiveRequested(_) => "archive_requested",
             Self::RestoreRequested => "restore_requested",
-        }
-    }
-
-    /// detail カラムの JSON。payload を持たない事実は空 object。
-    pub fn encode_detail(&self) -> Result<String, serde_json::Error> {
-        match self {
-            Self::Started(fact) => serde_json::to_string(fact),
-            Self::SessionAttached(fact) => serde_json::to_string(fact),
-            Self::CommandSpawned(fact) => serde_json::to_string(fact),
-            Self::ProcessExited(fact) => serde_json::to_string(fact),
-            Self::RuntimeFailureObserved(fact) => serde_json::to_string(fact),
-            Self::AgentActivityObserved(fact) => serde_json::to_string(fact),
-            Self::SessionNodeRenamed(fact) => serde_json::to_string(fact),
-            Self::ProviderSessionTitleObserved(fact) => serde_json::to_string(fact),
-            Self::SubmitReceived(fact) => serde_json::to_string(fact),
-            Self::SubmitRejected(fact) => serde_json::to_string(fact),
-            Self::StopReceived(fact) => serde_json::to_string(fact),
-            Self::DelegateResultInjected(child) => {
-                serde_json::to_string(&serde_json::json!({"childExecutionId": child}))
-            }
-            Self::SessionContinuationAdmitted(fact) => serde_json::to_string(fact),
-            Self::ArtifactProduced(fact) => serde_json::to_string(fact),
-            Self::ApprovalGranted(fact) => serde_json::to_string(fact),
-            Self::RetryRequested
-            | Self::ResumeRequested
-            | Self::AbortRequested
-            | Self::ArchiveRequested
-            | Self::RestoreRequested => Ok("{}".to_string()),
-        }
-    }
-
-    /// (event_type, detail) からの復元。
-    pub fn decode(event_type: &str, detail: &str) -> Result<Self, NodeFactDecodeError> {
-        fn parse<T: serde::de::DeserializeOwned>(
-            event_type: &str,
-            detail: &str,
-        ) -> Result<T, NodeFactDecodeError> {
-            serde_json::from_str(detail).map_err(|error| NodeFactDecodeError::DetailMismatch {
-                event_type: event_type.to_string(),
-                reason: error.to_string(),
-            })
-        }
-
-        /// payload を持たない事実の `detail` 契約は JSON object である
-        /// （`encode_detail` は `{}` を書く）。object 以外は破損として拒否する。
-        fn empty(event_type: &str, detail: &str) -> Result<(), NodeFactDecodeError> {
-            parse::<serde_json::Map<String, serde_json::Value>>(event_type, detail).map(|_| ())
-        }
-
-        match event_type {
-            "started" => parse(event_type, detail).map(Self::Started),
-            "session_attached" => parse(event_type, detail).map(Self::SessionAttached),
-            "command_spawned" => parse(event_type, detail).map(Self::CommandSpawned),
-            Self::PROCESS_EXITED_EVENT_TYPE => parse(event_type, detail).map(Self::ProcessExited),
-            "runtime_failure_observed" => {
-                parse(event_type, detail).map(Self::RuntimeFailureObserved)
-            }
-            Self::AGENT_ACTIVITY_OBSERVED_EVENT_TYPE => {
-                parse(event_type, detail).map(Self::AgentActivityObserved)
-            }
-            "session_node_renamed" => parse(event_type, detail).map(Self::SessionNodeRenamed),
-            "provider_session_title_observed" => {
-                parse(event_type, detail).map(Self::ProviderSessionTitleObserved)
-            }
-            "submit_received" => parse(event_type, detail).map(Self::SubmitReceived),
-            "submit_rejected" => parse(event_type, detail).map(Self::SubmitRejected),
-            Self::STOP_RECEIVED_EVENT_TYPE => parse(event_type, detail).map(Self::StopReceived),
-            "delegate_result_injected" => {
-                #[derive(Deserialize)]
-                #[serde(rename_all = "camelCase")]
-                struct Detail {
-                    child_execution_id: String,
-                }
-                let detail: Detail = parse(event_type, detail)?;
-                (!detail.child_execution_id.is_empty())
-                    .then_some(Self::DelegateResultInjected(detail.child_execution_id))
-                    .ok_or_else(|| NodeFactDecodeError::DetailMismatch {
-                        event_type: event_type.into(),
-                        reason: "childExecutionId is required".into(),
-                    })
-            }
-            "session_continuation_admitted" => {
-                parse(event_type, detail).map(Self::SessionContinuationAdmitted)
-            }
-            "artifact_produced" => parse(event_type, detail).map(Self::ArtifactProduced),
-            "approval_granted" => parse(event_type, detail).map(Self::ApprovalGranted),
-            "retry_requested" => empty(event_type, detail).map(|()| Self::RetryRequested),
-            "resume_requested" => empty(event_type, detail).map(|()| Self::ResumeRequested),
-            "abort_requested" => empty(event_type, detail).map(|()| Self::AbortRequested),
-            "archive_requested" => empty(event_type, detail).map(|()| Self::ArchiveRequested),
-            "restore_requested" => empty(event_type, detail).map(|()| Self::RestoreRequested),
-            other => Err(NodeFactDecodeError::UnknownEventType(other.to_string())),
         }
     }
 }

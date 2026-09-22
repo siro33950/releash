@@ -17,7 +17,7 @@ pub(super) struct CommandExecutionInput {
 }
 
 pub(super) fn command_execution_input_is_current(
-    execution: &DomainWorkflowExecution,
+    execution: &DomainExecutionTree,
     input: &CommandExecutionInput,
 ) -> bool {
     // Running のみ受理する。stop は対象 node を Paused にするため、is_active
@@ -104,7 +104,7 @@ impl WorkflowRuntimeHost {
 mod command_preparation_tests {
     use super::*;
     use crate::domain::workflow::entities::workflow_execution::{
-        WorkflowExecution, WorkflowExecutionRestore,
+        ExecutionTree, ExecutionTreeRestore,
     };
     use crate::domain::workflow::{NodeDefinition, NodeKindName, WorkflowDefinition};
 
@@ -123,8 +123,8 @@ mod command_preparation_tests {
         }
     }
 
-    fn execution_with_running_command() -> (WorkflowExecution, String) {
-        let mut execution = WorkflowExecution::restore_runtime(WorkflowExecutionRestore {
+    fn execution_with_running_command() -> (ExecutionTree, String) {
+        let mut execution = ExecutionTree::restore_runtime(ExecutionTreeRestore {
             id: "execution-1".to_string(),
             workflow: WorkflowDefinition {
                 name: "wf".to_string(),
@@ -135,7 +135,7 @@ mod command_preparation_tests {
                 }],
                 ..Default::default()
             },
-            ..WorkflowExecutionRestore::default()
+            ..ExecutionTreeRestore::default()
         });
         let node_execution_id = execution
             .begin_node_attempt(

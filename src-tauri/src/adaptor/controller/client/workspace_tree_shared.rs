@@ -38,10 +38,12 @@ pub(crate) fn register_shared(
     }
     {
         let app_state = deps.app_state.clone();
+        let runtime = deps.workflow_runtime_usecase.clone();
         router.register_domain(
             &["archive_workspace_workflow_execution"],
             Box::new(move |command| {
                 let app_state = app_state.clone();
+                let runtime = runtime.clone();
                 Box::pin(async move {
                     let wire::command_request::Command::ArchiveWorkspaceWorkflowExecution(args) =
                         command
@@ -51,9 +53,12 @@ pub(crate) fn register_shared(
                     let result = async move {
                         let app_state = app_state
                             .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
+                        let runtime = runtime
+                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
                         outcome(
                             archive_workspace_workflow_execution_shared(
                                 &app_state,
+                                &runtime,
                                 convert(required(args.worktree_path, "worktreePath")?)?,
                                 convert(required(args.execution_id, "executionId")?)?,
                             )
@@ -258,10 +263,12 @@ pub(crate) fn register_shared(
     }
     {
         let app_state = deps.app_state.clone();
+        let runtime = deps.workflow_runtime_usecase.clone();
         router.register_domain(
             &["restore_workspace_workflow_execution"],
             Box::new(move |command| {
                 let app_state = app_state.clone();
+                let runtime = runtime.clone();
                 Box::pin(async move {
                     let wire::command_request::Command::RestoreWorkspaceWorkflowExecution(args) =
                         command
@@ -271,9 +278,12 @@ pub(crate) fn register_shared(
                     let result = async move {
                         let app_state = app_state
                             .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
+                        let runtime = runtime
+                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
                         outcome(
                             restore_workspace_workflow_execution_shared(
                                 &app_state,
+                                &runtime,
                                 convert(required(args.worktree_path, "worktreePath")?)?,
                                 convert(required(args.execution_id, "executionId")?)?,
                             )

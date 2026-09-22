@@ -15,8 +15,8 @@ use crate::usecase::provider_lifecycle::ProviderHookHealthUsecase;
 use crate::usecase::provider_lifecycle::{ProviderLifecycleUsecase, ProviderLifecycleUsecaseError};
 
 use super::{
-    AgentSessionChangeNotifier, AgentSessionUsecase, AgentSessionUsecaseError,
-    ProviderAgentRuntime, StartedExecutionTreeRegistrar,
+    AgentSessionChangeNotifier, AgentSessionExecutionTreeLifecycle, AgentSessionUsecase,
+    AgentSessionUsecaseError, ProviderAgentRuntime,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,7 +54,7 @@ pub(crate) struct AgentSessionLifecycleUsecase {
     terminal: Arc<dyn ProviderAgentTerminalGateway>,
     hook_health: Arc<ProviderHookHealthUsecase>,
     change_notifier: Arc<dyn AgentSessionChangeNotifier>,
-    execution_trees: Arc<dyn StartedExecutionTreeRegistrar>,
+    execution_trees: Arc<dyn AgentSessionExecutionTreeLifecycle>,
 }
 
 impl AgentSessionLifecycleUsecase {
@@ -64,7 +64,7 @@ impl AgentSessionLifecycleUsecase {
         provider_runtime: ProviderAgentRuntime,
         hook_health: Arc<ProviderHookHealthUsecase>,
         change_notifier: Arc<dyn AgentSessionChangeNotifier>,
-        execution_trees: Arc<dyn StartedExecutionTreeRegistrar>,
+        execution_trees: Arc<dyn AgentSessionExecutionTreeLifecycle>,
     ) -> Self {
         let ProviderAgentRuntime {
             availability,
@@ -90,6 +90,21 @@ impl AgentSessionLifecycleUsecase {
         cols: u16,
         caller_request_id: &str,
     ) -> Result<AgentSessionOpenOutcome, AgentSessionLifecycleUsecaseError> {
+        let session = self.required(agent_session_id).await?;
+        let _workspace_mutation = self
+            .execution_trees
+            .begin_worktree_mutation(session.session().workspace().as_str())
+            .map_err(map_workflow_error)?;
+        let _worktree_mutation = self
+            .execution_trees
+            .begin_worktree_mutation(session.session().worktree_path())
+            .map_err(map_workflow_error)?;
+        let session = self.required(agent_session_id).await?;
+        let _tree_operation = self
+            .execution_trees
+            .lock_execution_tree(session.session().tree_location().tree_id())
+            .await
+            .map_err(map_workflow_error)?;
         let _operation = self
             .sessions
             .lock_operation(agent_session_id)
@@ -161,6 +176,21 @@ impl AgentSessionLifecycleUsecase {
         cols: u16,
         caller_request_id: &str,
     ) -> Result<AgentSessionOpenOutcome, AgentSessionLifecycleUsecaseError> {
+        let session = self.required(agent_session_id).await?;
+        let _workspace_mutation = self
+            .execution_trees
+            .begin_worktree_mutation(session.session().workspace().as_str())
+            .map_err(map_workflow_error)?;
+        let _worktree_mutation = self
+            .execution_trees
+            .begin_worktree_mutation(session.session().worktree_path())
+            .map_err(map_workflow_error)?;
+        let session = self.required(agent_session_id).await?;
+        let _tree_operation = self
+            .execution_trees
+            .lock_execution_tree(session.session().tree_location().tree_id())
+            .await
+            .map_err(map_workflow_error)?;
         let _operation = self
             .sessions
             .lock_operation(agent_session_id)
@@ -262,6 +292,20 @@ impl AgentSessionLifecycleUsecase {
         cols: u16,
         caller_request_id: &str,
     ) -> Result<AgentSessionOpenOutcome, AgentSessionLifecycleUsecaseError> {
+        let session = self.required(agent_session_id).await?;
+        let _workspace_mutation = self
+            .execution_trees
+            .begin_worktree_mutation(session.session().workspace().as_str())
+            .map_err(map_workflow_error)?;
+        let _worktree_mutation = self
+            .execution_trees
+            .begin_worktree_mutation(session.session().worktree_path())
+            .map_err(map_workflow_error)?;
+        let _tree_operation = self
+            .execution_trees
+            .lock_execution_tree(session.session().tree_location().tree_id())
+            .await
+            .map_err(map_workflow_error)?;
         let _operation = self
             .sessions
             .lock_operation(agent_session_id)
@@ -274,76 +318,41 @@ impl AgentSessionLifecycleUsecase {
     async fn restore_locked(
         &self,
         agent_session_id: &str,
-        rows: u16,
-        cols: u16,
-        caller_request_id: &str,
+        _rows: u16,
+        _cols: u16,
+        _caller_request_id: &str,
     ) -> Result<AgentSessionOpenOutcome, AgentSessionLifecycleUsecaseError> {
         let session = self.required(agent_session_id).await?;
         session
             .session()
             .authorize_restore()
             .map_err(|_| AgentSessionLifecycleUsecaseError::InvalidOperation)?;
-        let owner = session.session().terminal_surface_owner();
-        if let Err(error) = self
-            .spawn_resume(agent_session_id, rows, cols, caller_request_id)
+        self.execution_trees
+            .restore_execution_tree(session.session().tree_location().tree_id())
             .await
-        {
-            self.sessions
-                .complete_restore(
-                    agent_session_id,
-                    AgentSessionRecoveryResult::Failed,
-                    &format!("{caller_request_id}.failed"),
-                )
-                .await
-                .map_err(map_session_error)?;
-            return Err(error);
-        }
-        if let Err(error) = self
-            .sessions
-            .complete_restore(
-                agent_session_id,
-                AgentSessionRecoveryResult::Succeeded,
-                caller_request_id,
-            )
-            .await
-            .map_err(map_session_error)
-        {
-            self.rollback_spawned_resume(owner, agent_session_id)
-                .await?;
-            return Err(error);
-        }
+            .map_err(map_workflow_error)?;
+        self.change_notifier
+            .agent_session_changed(session.session().workspace().as_str());
         Ok(AgentSessionOpenOutcome::Restored)
     }
 
     pub(crate) async fn archive(
         &self,
         agent_session_id: &str,
-        caller_request_id: &str,
+        _caller_request_id: &str,
     ) -> Result<AgentSessionArchiveOutcome, AgentSessionLifecycleUsecaseError> {
-        let _operation = self
-            .sessions
-            .lock_operation(agent_session_id)
-            .await
-            .map_err(map_session_error)?;
         let session = self.required(agent_session_id).await?;
-        let mut candidate = session.session().clone();
-        let outcome = candidate
-            .archive()
+        let outcome = session
+            .session()
+            .authorize_archive()
             .map_err(|_| AgentSessionLifecycleUsecaseError::InvalidOperation)?;
-        if outcome != AgentSessionArchiveOutcome::Archived {
-            return Ok(outcome);
-        }
-        self.terminal
-            .stop_preserving_checkpoint(&session.session().terminal_surface_owner())
-            .map_err(|_| AgentSessionLifecycleUsecaseError::TerminalUnavailable)?;
-        self.release_launch_binding(agent_session_id).await?;
-        self.launch_gateway
-            .cleanup(agent_session_id)
-            .map_err(|_| AgentSessionLifecycleUsecaseError::LaunchUnavailable)?;
-        self.sessions
-            .archive(agent_session_id, caller_request_id)
+        self.execution_trees
+            .archive_execution_tree(session.session().tree_location().tree_id())
             .await
-            .map_err(map_session_error)
+            .map_err(map_workflow_error)?;
+        self.change_notifier
+            .agent_session_changed(session.session().workspace().as_str());
+        Ok(outcome)
     }
 
     pub(crate) async fn stop_for_terminal_execution_tree_node_preserving_checkpoint(
@@ -389,6 +398,15 @@ impl AgentSessionLifecycleUsecase {
         agent_session_id: &str,
         caller_request_id: &str,
     ) -> Result<(), AgentSessionLifecycleUsecaseError> {
+        let session = self.required(agent_session_id).await?;
+        let _workspace_mutation = self
+            .execution_trees
+            .begin_worktree_mutation(session.session().workspace().as_str())
+            .map_err(map_workflow_error)?;
+        let _worktree_mutation = self
+            .execution_trees
+            .begin_worktree_mutation(session.session().worktree_path())
+            .map_err(map_workflow_error)?;
         let _operation = self
             .sessions
             .lock_operation(agent_session_id)
@@ -405,40 +423,6 @@ impl AgentSessionLifecycleUsecase {
             .await
     }
 
-    pub(crate) async fn confirm_archive_fallback_delete(
-        &self,
-        agent_session_id: &str,
-        caller_request_id: &str,
-    ) -> Result<(), AgentSessionLifecycleUsecaseError> {
-        let _operation = self
-            .sessions
-            .lock_operation(agent_session_id)
-            .await
-            .map_err(map_session_error)?;
-        let session = self.required(agent_session_id).await?;
-        let owner = session.session().terminal_surface_owner();
-        let tree_id = session.session().tree_location().tree_id().to_string();
-        session
-            .session()
-            .authorize_archive_fallback_delete()
-            .map_err(|_| AgentSessionLifecycleUsecaseError::InvalidOperation)?;
-        self.terminal
-            .delete(&owner)
-            .map_err(|_| AgentSessionLifecycleUsecaseError::TerminalUnavailable)?;
-        self.release_launch_binding(agent_session_id).await?;
-        self.launch_gateway
-            .cleanup(agent_session_id)
-            .map_err(|_| AgentSessionLifecycleUsecaseError::LaunchUnavailable)?;
-        self.sessions
-            .confirm_archive_fallback_delete(agent_session_id, caller_request_id)
-            .await
-            .map_err(map_session_error)?;
-        self.change_notifier
-            .agent_session_changed(owner.workspace_identity().as_str());
-        self.release_deleted_execution_tree(&tree_id).await;
-        Ok(())
-    }
-
     pub(crate) async fn observe_process_exit(
         &self,
         agent_session_id: &str,
@@ -446,6 +430,12 @@ impl AgentSessionLifecycleUsecase {
         exit_code: Option<i32>,
         caller_request_id: &str,
     ) -> Result<(), AgentSessionLifecycleUsecaseError> {
+        let session = self.required(agent_session_id).await?;
+        let _tree_operation = self
+            .execution_trees
+            .lock_execution_tree(session.session().tree_location().tree_id())
+            .await
+            .map_err(map_workflow_error)?;
         let _operation = self
             .sessions
             .lock_operation(agent_session_id)
@@ -525,6 +515,12 @@ impl AgentSessionLifecycleUsecase {
         agent_session_id: &str,
         caller_request_id: &str,
     ) -> Result<AgentSessionGarbageCollectionOutcome, AgentSessionLifecycleUsecaseError> {
+        let session = self.required(agent_session_id).await?;
+        let _tree_operation = self
+            .execution_trees
+            .lock_execution_tree(session.session().tree_location().tree_id())
+            .await
+            .map_err(map_workflow_error)?;
         let _operation = self
             .sessions
             .lock_operation(agent_session_id)
@@ -785,5 +781,26 @@ fn map_lifecycle_error(error: ProviderLifecycleUsecaseError) -> AgentSessionLife
             AgentSessionLifecycleUsecaseError::StorageUnavailable
         }
         ProviderLifecycleUsecaseError::Corrupt => AgentSessionLifecycleUsecaseError::Corrupt,
+    }
+}
+
+fn map_workflow_error(
+    error: crate::domain::workflow::WorkflowError,
+) -> AgentSessionLifecycleUsecaseError {
+    use crate::domain::workflow::WorkflowError;
+    match error {
+        WorkflowError::Conflict(_) => AgentSessionLifecycleUsecaseError::Conflict,
+        WorkflowError::InvalidState(_)
+        | WorkflowError::Validation(_)
+        | WorkflowError::UnauthorizedApprovalTarget(_) => {
+            AgentSessionLifecycleUsecaseError::InvalidOperation
+        }
+        WorkflowError::NotFound(_) => AgentSessionLifecycleUsecaseError::NotFound,
+        WorkflowError::CorruptStoredState(_) | WorkflowError::IncompatibleStoredEvent(_) => {
+            AgentSessionLifecycleUsecaseError::Corrupt
+        }
+        WorkflowError::StorageUnavailable { .. } | WorkflowError::External(_) => {
+            AgentSessionLifecycleUsecaseError::StorageUnavailable
+        }
     }
 }

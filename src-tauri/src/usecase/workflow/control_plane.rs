@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::domain::provider_lifecycle::ScopedProviderLifecycleEvent;
 use crate::domain::workflow::entities::workflow_execution::{
-    ProviderStopRejection, TransitionOutcome, WorkflowExecution as DomainWorkflowExecution,
+    ExecutionTree as DomainExecutionTree, ProviderStopRejection, TransitionOutcome,
 };
 use crate::domain::workflow::services::secret_masker as workflow_secret_masker;
 use crate::domain::workflow::{NodeCompletionSignal, WorkflowError, WorkflowEvent};
@@ -17,8 +17,8 @@ use super::runtime_snapshot::RuntimeCommitSnapshot;
 
 pub(crate) struct WorkflowControlPlaneCommit {
     pub(crate) execution_id: String,
-    pub(crate) before: DomainWorkflowExecution,
-    pub(crate) after: DomainWorkflowExecution,
+    pub(crate) before: DomainExecutionTree,
+    pub(crate) after: DomainExecutionTree,
     pub(crate) transition_outcome: TransitionOutcome,
     pub(crate) workflow_events: Vec<WorkflowEvent>,
     pub(crate) provider_events: Vec<ScopedProviderLifecycleEvent>,
@@ -38,13 +38,13 @@ pub(crate) trait WorkflowControlPlaneGateway: Send + Sync {
     async fn load_active_execution(
         &self,
         execution_id: &str,
-    ) -> Result<Option<DomainWorkflowExecution>, WorkflowError>;
+    ) -> Result<Option<DomainExecutionTree>, WorkflowError>;
 
     async fn recover_active_executions(&self) -> Result<(), WorkflowError>;
 
     fn node_process_presence(
         &self,
-        execution: &DomainWorkflowExecution,
+        execution: &DomainExecutionTree,
         node_execution_id: &str,
     ) -> Result<crate::domain::workflow::NodeProcessPresence, WorkflowError>;
 
@@ -430,7 +430,7 @@ impl WorkflowControlPlaneUsecase {
         &self,
         command: ResumeSessionNodeCommand,
     ) -> Result<(), WorkflowError> {
-        crate::domain::workflow::WorkflowExecutionId::new(command.execution_id.clone())?;
+        crate::domain::workflow::ExecutionTreeId::new(command.execution_id.clone())?;
         if command.node_execution_id.trim().is_empty() {
             return Err(WorkflowError::validation(
                 "node_execution_id must not be empty",
@@ -498,7 +498,7 @@ impl WorkflowControlPlaneUsecase {
 
     async fn restart_node_attempt(
         &self,
-        current: DomainWorkflowExecution,
+        current: DomainExecutionTree,
         execution_id: String,
         node_execution_id: String,
     ) -> Result<(), WorkflowError> {
@@ -676,7 +676,7 @@ impl WorkflowControlPlaneUsecase {
 }
 
 fn apply_completion_handshake(
-    execution: &mut DomainWorkflowExecution,
+    execution: &mut DomainExecutionTree,
     node_execution_id: &str,
     new_id: &mut dyn FnMut() -> String,
     timestamp: f64,

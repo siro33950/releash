@@ -4,7 +4,7 @@ use crate::domain::workflow;
 use std::collections::HashSet;
 
 pub fn workflow_execution_to_view(
-    execution: workflow::WorkflowExecution,
+    execution: workflow::ExecutionTree,
 ) -> workflow_wire::WorkflowExecutionView {
     let retryable_node_ids = execution.retryable_node_execution_ids();
     workflow_wire::WorkflowExecutionView {
@@ -248,7 +248,7 @@ mod tests {
     #[test]
     fn maps_complete_public_read_model_without_legacy_wrapper() {
         let node = node();
-        let execution = workflow::WorkflowExecution {
+        let execution = workflow::ExecutionTree {
             id: "execution-1".to_string(),
             workflow_name: "review".to_string(),
             status: workflow::ExecutionStatus::Running,

@@ -69,7 +69,10 @@ mod vocabulary_tests {
             NodeFact::RetryRequested,
             NodeFact::ResumeRequested,
             NodeFact::AbortRequested,
-            NodeFact::ArchiveRequested,
+            NodeFact::ArchiveRequested(crate::domain::workflow::ArchiveRequestedFact {
+                reason: "manual".into(),
+                archived_at: 0.0,
+            }),
             NodeFact::RestoreRequested,
         ];
 
@@ -221,7 +224,6 @@ mod vocabulary_tests {
             "retry_requested",
             "resume_requested",
             "abort_requested",
-            "archive_requested",
             "restore_requested",
         ] {
             assert!(NodeFact::decode(event_type, "{}").is_ok());
@@ -290,10 +292,15 @@ mod detail_round_trip_tests {
 
     #[test]
     fn test_rootのstarted_単独session構成が往復する() {
-        let fact =
-            SessionExecutionTreeRootFacts::new("session-1", "/repo", "/repo", ProviderKind::Codex)
-                .unwrap()
-                .started;
+        let fact = SessionExecutionTreeRootFacts::new(
+            "session-1",
+            "/repo",
+            "/repo",
+            ProviderKind::Codex,
+            None,
+        )
+        .unwrap()
+        .started;
         let detail = fact.encode_detail().unwrap();
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&detail).unwrap()["root"]["definition"]
@@ -305,10 +312,15 @@ mod detail_round_trip_tests {
 
     #[test]
     fn test_rootのstarted_provider固有permission値はdetail不一致として拒否する() {
-        let mut fact =
-            SessionExecutionTreeRootFacts::new("session-1", "/repo", "/repo", ProviderKind::Codex)
-                .unwrap()
-                .started;
+        let mut fact = SessionExecutionTreeRootFacts::new(
+            "session-1",
+            "/repo",
+            "/repo",
+            ProviderKind::Codex,
+            None,
+        )
+        .unwrap()
+        .started;
         let NodeFact::Started(StartedFact {
             root: Some(root), ..
         }) = &mut fact
@@ -392,6 +404,7 @@ mod session_execution_tree_root_facts_tests {
             "workspace-1",
             "/repo",
             ProviderKind::Claude,
+            Some("/main-repo".into()),
         )
         .unwrap();
 
@@ -409,6 +422,7 @@ mod session_execution_tree_root_facts_tests {
             panic!("started root fact expected");
         };
         assert_eq!(root.launched_as, ExecutionTreeLaunch::Session);
+        assert_eq!(root.repository_root.as_deref(), Some("/main-repo"));
         assert_eq!(root.definition.nodes.len(), 1);
         assert_eq!(root.definition.entry, "session");
         assert_eq!(root.definition.nodes[0].name, "session");
@@ -438,23 +452,47 @@ mod session_execution_tree_root_facts_tests {
     fn test_session実行木root構築_空入力と空白だけの入力を各項目で拒否する() {
         // When / Then
         assert_eq!(
-            SessionExecutionTreeRootFacts::new("", "workspace-1", "/repo", ProviderKind::Claude)
-                .unwrap_err(),
+            SessionExecutionTreeRootFacts::new(
+                "",
+                "workspace-1",
+                "/repo",
+                ProviderKind::Claude,
+                None
+            )
+            .unwrap_err(),
             SessionExecutionTreeRootFactsError::SessionId
         );
         assert_eq!(
-            SessionExecutionTreeRootFacts::new(" \t", "workspace-1", "/repo", ProviderKind::Claude)
-                .unwrap_err(),
+            SessionExecutionTreeRootFacts::new(
+                " \t",
+                "workspace-1",
+                "/repo",
+                ProviderKind::Claude,
+                None
+            )
+            .unwrap_err(),
             SessionExecutionTreeRootFactsError::SessionId
         );
         assert_eq!(
-            SessionExecutionTreeRootFacts::new("session-1", "", "/repo", ProviderKind::Claude)
-                .unwrap_err(),
+            SessionExecutionTreeRootFacts::new(
+                "session-1",
+                "",
+                "/repo",
+                ProviderKind::Claude,
+                None
+            )
+            .unwrap_err(),
             SessionExecutionTreeRootFactsError::WorkspaceIdentity
         );
         assert_eq!(
-            SessionExecutionTreeRootFacts::new("session-1", " \t", "/repo", ProviderKind::Claude)
-                .unwrap_err(),
+            SessionExecutionTreeRootFacts::new(
+                "session-1",
+                " \t",
+                "/repo",
+                ProviderKind::Claude,
+                None
+            )
+            .unwrap_err(),
             SessionExecutionTreeRootFactsError::WorkspaceIdentity
         );
         assert_eq!(
@@ -463,6 +501,7 @@ mod session_execution_tree_root_facts_tests {
                 "workspace-1",
                 "",
                 ProviderKind::Claude,
+                None,
             )
             .unwrap_err(),
             SessionExecutionTreeRootFactsError::WorktreePath
@@ -473,6 +512,7 @@ mod session_execution_tree_root_facts_tests {
                 "workspace-1",
                 " \t",
                 ProviderKind::Claude,
+                None,
             )
             .unwrap_err(),
             SessionExecutionTreeRootFactsError::WorktreePath

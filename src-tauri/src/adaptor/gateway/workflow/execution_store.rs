@@ -13,7 +13,7 @@ use tokio::sync::Mutex;
 
 pub use crate::domain::workflow::WorkflowExecutionSummary as WorkflowExecutionMetadata;
 pub(crate) use crate::domain::workflow::{ExecutionOrigin, ExecutionStatus};
-use crate::domain::workflow::{TokenUsage, WorkflowExecution as DomainWorkflowExecution};
+use crate::domain::workflow::{ExecutionTree as DomainExecutionTree, TokenUsage};
 
 /// Workflow 実行の Abort に伴う、同一 execution / worktree の直列化のための予約。
 /// Abort の event commit 前に取得し、runtime cleanup 完了または Abort 不成立時に解放する。
@@ -23,9 +23,8 @@ pub(crate) struct ActiveInterruptionReservation {
     pub(crate) worktree_path: String,
 }
 
-/// Execution Store の入力境界で `execution_id` を UUID として検証する。
 fn is_valid_execution_id(execution_id: &str) -> bool {
-    uuid::Uuid::parse_str(execution_id).is_ok()
+    crate::domain::workflow::ExecutionTreeId::new(execution_id).is_ok()
 }
 
 /// Execution Store の in-memory state。`active` と `by_worktree` を単一 Mutex で保護することで、
@@ -338,7 +337,7 @@ impl ExecutionStore {
     pub async fn reconcile_orphan_from_projection(
         &self,
         mut metadata: WorkflowExecutionMetadata,
-        projection: &DomainWorkflowExecution,
+        projection: &DomainExecutionTree,
     ) -> Result<WorkflowExecutionMetadata, ExecutionStoreError> {
         if !is_valid_execution_id(&metadata.execution_id) {
             return Err(ExecutionStoreError::InvalidExecutionId {
@@ -440,7 +439,7 @@ pub enum ExecutionStoreError {
         existing_worktree_path: String,
         new_worktree_path: String,
     },
-    #[error("invalid execution_id format (must be UUID): {execution_id}")]
+    #[error("invalid execution_id format: {execution_id}")]
     InvalidExecutionId { execution_id: String },
     #[error(
         "cannot register execution {execution_id} into active set with non-active status: {status:?}"

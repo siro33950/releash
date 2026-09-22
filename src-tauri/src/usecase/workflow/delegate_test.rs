@@ -1,10 +1,10 @@
 use super::*;
-use crate::domain::workflow::entities::workflow_execution::WorkflowExecutionRestore;
+use crate::domain::workflow::entities::workflow_execution::ExecutionTreeRestore;
 use crate::domain::workflow::{NodeCompletionSignal, WorkflowDefinition};
 use std::sync::Mutex;
 
 struct Gateway {
-    execution: Mutex<WorkflowExecution>,
+    execution: Mutex<ExecutionTree>,
     calls: Mutex<Vec<&'static str>>,
     fail: Option<&'static str>,
 }
@@ -14,7 +14,7 @@ impl DelegateContinuationGateway for Gateway {
     fn current_timestamp(&self) -> f64 {
         9.0
     }
-    async fn load_execution(&self, _: &str) -> Result<WorkflowExecution, WorkflowRuntimeError> {
+    async fn load_execution(&self, _: &str) -> Result<ExecutionTree, WorkflowRuntimeError> {
         Ok(self.execution.lock().unwrap().clone())
     }
     async fn restore_provider(&self, session: &str, _: &str) -> Result<(), WorkflowRuntimeError> {
@@ -62,7 +62,7 @@ impl DelegateContinuationGateway for Gateway {
 
 fn fixture(fail: Option<&'static str>) -> (std::sync::Arc<Gateway>, DelegateInjection) {
     let workflow: WorkflowDefinition = serde_saphyr::from_str("name: test\ndescription: test\nnodes:\n  main: {session: {provider: codex}, artifact: result, completion: {delegate: {child: check, when: child.ok, max_iterations: 2}}}\n  check: {command: check}").unwrap();
-    let mut execution = WorkflowExecution::restore_runtime(WorkflowExecutionRestore {
+    let mut execution = ExecutionTree::restore_runtime(ExecutionTreeRestore {
         id: "tree".into(),
         workflow,
         ..Default::default()

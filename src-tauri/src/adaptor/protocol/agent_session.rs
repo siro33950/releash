@@ -16,7 +16,6 @@ pub(crate) enum AgentSessionOpenResponse {
 pub(crate) enum AgentSessionArchiveResponse {
     Archived,
     AlreadyArchived,
-    DeleteConfirmationRequired,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

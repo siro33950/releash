@@ -512,12 +512,16 @@ async fn test_daemon本番配線_各通知元からwsへpushを届ける() {
     };
     std::fs::write(
         workflows.join("push-smoke.yml"),
-        "name: push-smoke\ndescription: push smoke\nnodes:\n  main:\n    command: printf done\n",
+        "name: push-smoke\ndescription: push smoke\nnodes:\n  main:\n    command: printf done\n    completion:\n      require: approval\n",
     )
     .unwrap();
-    request_with_push(&mut socket, "workflow", C::StartWorkflow(wire::StartWorkflowRequest {
+    let workflow_result = request_with_push(&mut socket, "workflow", C::StartWorkflow(wire::StartWorkflowRequest {
         workflow_name: Some("push-smoke".into()), worktree_path: Some(worktree.into()), ..Default::default()
     }), |event| matches!(event, E::WorkflowExecutionChanged(value) if value.worktree_path.as_deref() == Some(worktree))).await;
+    let wire::command_result::Command::StartWorkflow(workflow) = workflow_result else {
+        panic!("workflow start result");
+    };
+    let execution_id = workflow.value.unwrap();
     // When / Then: comment command notifier (the watcher wildcard cannot satisfy this assertion)
     request_with_push(&mut socket, "comment", C::CreateReviewThread(wire::CreateReviewThreadRequest {
         worktree_name: Some("repository".into()), content: Some("production comment".into()), ..Default::default()
@@ -612,6 +616,54 @@ async fn test_daemon本番配線_各通知元からwsへpushを届ける() {
         before_quit,
         "terminal shutdown must preserve AgentSession state"
     );
+    // Given: an unfinished workflow and its legacy archive file survive daemon shutdown.
+    let read_workflow_facts = || {
+        db.prepare("SELECT event_type, detail FROM node_events WHERE tree_id = ? AND parent_id IS NULL ORDER BY seq")
+            .unwrap()
+            .query_map([&execution_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    };
+    assert!(!read_workflow_facts()
+        .iter()
+        .any(|(event, _)| event == "abort_requested" || event == "archive_requested"));
+    let legacy_path = root.join("workflow_execution_archives.json");
+    std::fs::write(&legacy_path, serde_json::json!({"executions": {execution_id.clone(): {"archivedAt": 12.345678, "archiveReason": "manual"}}}).to_string()).unwrap();
+    // When: the production daemon startup invokes archive migration.
+    let (mut restarted, discovery) = start(&root);
+    let (mut socket, _) = connect(&discovery).await;
+    // Then
+    assert!(!legacy_path.exists());
+    let facts = read_workflow_facts();
+    let aborted = facts
+        .iter()
+        .position(|(event, _)| event == "abort_requested")
+        .unwrap();
+    let archived = facts
+        .iter()
+        .position(|(event, _)| event == "archive_requested")
+        .unwrap();
+    assert!(aborted < archived);
+    let archive: Value = serde_json::from_str(&facts[archived].1).unwrap();
+    assert_eq!(archive["archivedAt"], 12.345678);
+    assert_eq!(archive["reason"], "manual");
+    let wire::command_result::Command::GetWorkflowExecution(summary) = request(
+        &mut socket,
+        "migrated-workflow",
+        C::GetWorkflowExecution(wire::GetWorkflowExecutionRequest {
+            execution_id: Some(execution_id),
+        }),
+    )
+    .await
+    else {
+        panic!("workflow summary");
+    };
+    assert_eq!(
+        summary.value.unwrap().status.unwrap().value,
+        Some(wire::execution_status_dto::Value::Aborted as i32)
+    );
+    quit(&mut restarted, &mut socket, false).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

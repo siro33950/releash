@@ -91,6 +91,24 @@ pub(crate) enum ExecutionTreeCacheReleaseError {
     Corrupt,
 }
 
+pub(crate) trait WorktreeMutationAdmission: Send + Sync {
+    fn begin_worktree_mutation(
+        &self,
+        path: &str,
+    ) -> Result<
+        crate::usecase::worktree_operation::WorktreeMutationGuard,
+        crate::domain::workflow::WorkflowError,
+    >;
+}
+
+#[async_trait::async_trait]
+pub(crate) trait ExecutionTreeCache: Send + Sync {
+    async fn release_deleted_execution_tree(
+        &self,
+        tree_id: &str,
+    ) -> Result<(), ExecutionTreeCacheReleaseError>;
+}
+
 #[async_trait::async_trait]
 pub(crate) trait StartedExecutionTreeRegistrar: Send + Sync {
     /// これから起こす実行木の識別子を engine に予約し、reconciliation の対象外にする。
@@ -115,14 +133,34 @@ pub(crate) trait StartedExecutionTreeRegistrar: Send + Sync {
         let _ = tree_id;
         Ok(())
     }
+}
 
-    async fn release_deleted_execution_tree(
+pub(crate) trait AgentSessionLaunchExecutionTrees:
+    StartedExecutionTreeRegistrar + WorktreeMutationAdmission + ExecutionTreeCache
+{
+}
+impl<T: StartedExecutionTreeRegistrar + WorktreeMutationAdmission + ExecutionTreeCache>
+    AgentSessionLaunchExecutionTrees for T
+{
+}
+
+#[async_trait::async_trait]
+pub(crate) trait AgentSessionExecutionTreeLifecycle:
+    WorktreeMutationAdmission + ExecutionTreeCache
+{
+    async fn lock_execution_tree(
         &self,
         tree_id: &str,
-    ) -> Result<(), ExecutionTreeCacheReleaseError> {
-        let _ = tree_id;
-        Ok(())
-    }
+    ) -> Result<tokio::sync::OwnedMutexGuard<()>, crate::domain::workflow::WorkflowError>;
+
+    async fn archive_execution_tree(
+        &self,
+        tree_id: &str,
+    ) -> Result<(), crate::domain::workflow::WorkflowError>;
+    async fn restore_execution_tree(
+        &self,
+        tree_id: &str,
+    ) -> Result<(), crate::domain::workflow::WorkflowError>;
 }
 
 #[derive(Clone)]
@@ -236,7 +274,7 @@ pub(crate) struct AgentSessionLaunchUsecase {
     terminal: Arc<dyn ProviderAgentTerminalGateway>,
     history: Arc<dyn AgentSessionHistoryGateway>,
     hook_health: Arc<ProviderHookHealthUsecase>,
-    execution_trees: Arc<dyn StartedExecutionTreeRegistrar>,
+    execution_trees: Arc<dyn AgentSessionLaunchExecutionTrees>,
     standalone_requests: Mutex<StandaloneLaunchRequestRegistry>,
     pending_workflow_launches: Mutex<HashMap<String, PreparedAgentSessionLaunch>>,
     activated_workflow_launches: Arc<Mutex<HashMap<String, WorkflowLaunchActivation>>>,
@@ -271,7 +309,7 @@ impl AgentSessionLaunchUsecase {
         provider_runtime: ProviderAgentRuntime,
         history: Arc<dyn AgentSessionHistoryGateway>,
         hook_health: Arc<ProviderHookHealthUsecase>,
-        execution_trees: Arc<dyn StartedExecutionTreeRegistrar>,
+        execution_trees: Arc<dyn AgentSessionLaunchExecutionTrees>,
     ) -> Self {
         let ProviderAgentRuntime {
             availability,
@@ -342,6 +380,14 @@ impl AgentSessionLaunchUsecase {
         &self,
         request: AgentSessionLaunchRequest,
     ) -> Result<VersionedAgentSession, AgentSessionLaunchUsecaseError> {
+        let _workspace = self
+            .execution_trees
+            .begin_worktree_mutation(request.workspace.as_str())
+            .map_err(|_| AgentSessionLaunchUsecaseError::Conflict)?;
+        let _worktree = self
+            .execution_trees
+            .begin_worktree_mutation(&request.worktree_path)
+            .map_err(|_| AgentSessionLaunchUsecaseError::Conflict)?;
         let agent_session_id = issue_agent_session_id(&request.caller_request_id)?;
         let tree_location = AgentSessionTreeLocation::session_tree_root(&agent_session_id)
             .map_err(|_| AgentSessionLaunchUsecaseError::InvalidInput)?;
@@ -782,6 +828,14 @@ impl AgentSessionLaunchUsecase {
         &self,
         request: AgentSessionHistoryResumeRequest,
     ) -> Result<AgentSessionHistoryResumeOutcome, AgentSessionLaunchUsecaseError> {
+        let _workspace = self
+            .execution_trees
+            .begin_worktree_mutation(request.workspace.as_str())
+            .map_err(|_| AgentSessionLaunchUsecaseError::Conflict)?;
+        let _worktree = self
+            .execution_trees
+            .begin_worktree_mutation(&request.worktree_path)
+            .map_err(|_| AgentSessionLaunchUsecaseError::Conflict)?;
         if request.provider_session_id.trim().is_empty() {
             return Err(AgentSessionLaunchUsecaseError::InvalidInput);
         }

@@ -142,10 +142,19 @@ pub(crate) fn read_session_records(
             .map_err(|_| crate::domain::local_event::LocalEventQueryError::InvalidRequest)
         })
         .map_err(|error| format!("session facts read failed: {error:?}"))?;
-    rows.iter()
+    let mut records = rows
+        .iter()
         .filter(|row| row.event_type != "started")
         .filter_map(|row| fact_log::record_from_row(row).transpose())
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    if location.parent_id.is_some() {
+        records.extend(fact_log::read_tree_archive_records(
+            backend,
+            &location.tree_id,
+        )?);
+        records.sort_by_key(|record| record.seq);
+    }
+    Ok(records)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

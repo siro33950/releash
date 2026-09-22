@@ -19,7 +19,7 @@ impl Daemon {
     }
 }
 
-pub(crate) fn compose(
+pub(crate) async fn compose(
     data_dir: PathBuf,
     #[cfg(any(target_os = "macos", target_os = "linux"))] provider_initial_search_path: Result<
         std::ffi::OsString,
@@ -268,6 +268,7 @@ pub(crate) fn compose(
     };
     let workflow_runtime_usecase = Arc::new(
         adaptor::controller::wiring::build_workflow_runtime_usecase(
+            &data_dir,
             adaptor::gateway::workflow::workflow_host::WorkflowRuntimeDependencies {
                 processes: node_processes.clone(),
                 store: Some(local_event_store.clone()),
@@ -302,6 +303,12 @@ pub(crate) fn compose(
     );
     provider_execution_tree_stops.bind(workflow_runtime_usecase.clone());
     started_execution_tree_registrations.bind(workflow_runtime_usecase.clone());
+    migrate_legacy_execution_archives(
+        &data_dir,
+        local_event_store.clone(),
+        &workflow_runtime_usecase,
+    )
+    .await?;
     let pending_workflow_recovery = workflow_runtime_usecase.clone();
     tokio::spawn(async move {
         run_startup_recovery(
@@ -335,6 +342,7 @@ pub(crate) fn compose(
         app_data.clone(),
         shared_repo_paths.clone(),
         projected_local_event_repository.clone(),
+        workflow_runtime_usecase.clone(),
     );
     let local_api_binding =
         infrastructure::local_api::LocalApiServerBinding::bind(data_dir.clone())
@@ -412,6 +420,19 @@ pub(crate) fn compose(
         ),
         exit: exit_receiver,
     })
+}
+
+async fn migrate_legacy_execution_archives(
+    data_dir: &std::path::Path,
+    store: Arc<adaptor::gateway::local_event_store::LocalEventStore>,
+    runtime: &usecase::workflow::WorkflowRuntimeUsecase,
+) -> Result<(), String> {
+    let repository =
+        adaptor::gateway::workflow::ExecutionTreeArchiveFactRepository::new(store, data_dir);
+    runtime
+        .migrate_execution_archives(&repository)
+        .await
+        .map_err(|error| format!("execution archive migration failed: {error}"))
 }
 
 fn select_provider_agent_executables(

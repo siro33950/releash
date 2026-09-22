@@ -1076,7 +1076,7 @@ async fn test_プロセス在否_実供給元の変化が読取と通知と操�
                 kind == NodeKindName::Session && expected == NodeProcessPresence::ConfirmedAbsent;
             let model = projection
                 .get_execution(
-                    &crate::domain::workflow::WorkflowExecutionId::new(tree.clone()).unwrap(),
+                    &crate::domain::workflow::ExecutionTreeId::new(tree.clone()).unwrap(),
                 )
                 .unwrap()
                 .unwrap();

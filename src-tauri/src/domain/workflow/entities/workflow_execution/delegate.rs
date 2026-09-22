@@ -24,7 +24,7 @@ pub struct DelegateInjection {
     pub child_execution_id: String,
 }
 
-impl WorkflowExecution {
+impl ExecutionTree {
     pub fn is_delegate_parent(&self, id: &str) -> bool {
         self.node_execution(id)
             .and_then(|execution| self.workflow.node_by_name(&execution.node_name))

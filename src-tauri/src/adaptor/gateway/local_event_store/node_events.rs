@@ -234,3 +234,33 @@ pub(crate) fn latest_session_attachment(
     let mut rows = statement.query_map([session_id], row_from_sql)?;
     rows.next().transpose()
 }
+
+pub(crate) fn latest_root_rows_for_trees(
+    connection: &Connection,
+    tree_ids: &[String],
+    event_types: &[&str],
+) -> Result<Vec<NodeEventRow>, rusqlite::Error> {
+    let transaction = connection.unchecked_transaction()?;
+    let mut result = Vec::new();
+    for chunk in tree_ids.chunks(128) {
+        let ids = vec!["?"; chunk.len()].join(",");
+        let types = vec!["?"; event_types.len()].join(",");
+        let mut statement = transaction.prepare(&format!(
+            "SELECT {ROW_COLUMNS} FROM node_events WHERE (tree_id, seq) IN (
+                SELECT tree_id, MAX(seq) FROM node_events
+                WHERE tree_id IN ({ids}) AND parent_id IS NULL AND event_type IN ({types})
+                GROUP BY tree_id) ORDER BY tree_id"
+        ))?;
+        let parameters = chunk
+            .iter()
+            .map(String::as_str)
+            .chain(event_types.iter().copied());
+        result.extend(
+            statement
+                .query_map(rusqlite::params_from_iter(parameters), row_from_sql)?
+                .collect::<Result<Vec<_>, _>>()?,
+        );
+    }
+    transaction.commit()?;
+    Ok(result)
+}

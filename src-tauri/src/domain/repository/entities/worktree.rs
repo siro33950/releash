@@ -11,3 +11,31 @@ pub struct Worktree {
     pub is_main: bool,
     pub is_locked: bool,
 }
+
+impl Worktree {
+    pub fn authorize_removal(
+        &self,
+        force: bool,
+        dirty_count: u32,
+    ) -> Result<(), crate::domain::repository::RepositoryError> {
+        use crate::domain::repository::RepositoryError;
+        if self.is_main {
+            return Err(RepositoryError::rule("cannot remove the main worktree"));
+        }
+        if !force {
+            if self.is_locked {
+                return Err(RepositoryError::rule("worktree is locked"));
+            }
+            if dirty_count > 0 {
+                return Err(RepositoryError::rule(format!(
+                    "worktree has {dirty_count} uncommitted change(s). Use force to remove."
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+#[path = "worktree_test.rs"]
+mod worktree_tests;

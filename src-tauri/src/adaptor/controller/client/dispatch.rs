@@ -19,6 +19,7 @@ pub(crate) type CommandHandler = Box<
 pub(crate) struct ClientCommandDispatch {
     handlers: HashMap<&'static str, CommandHandler>,
     authority: Arc<ApplicationStartupAuthority>,
+    mutations: Option<Arc<crate::usecase::workflow::WorkflowRuntimeUsecase>>,
 }
 
 impl ClientCommandDispatch {
@@ -28,6 +29,7 @@ impl ClientCommandDispatch {
     ) -> Self {
         let mut dispatch = Self {
             handlers: HashMap::new(),
+            mutations: None,
             authority,
         };
         dispatch.register_domain(
@@ -51,6 +53,7 @@ impl ClientCommandDispatch {
     }
 
     pub(crate) fn register_dependencies(&mut self, deps: &super::ClientDependencies) {
+        self.mutations = deps.workflow_runtime_usecase.clone();
         super::repository::register_shared(self, deps);
         super::code::register_shared(self, deps);
         super::comment::register_shared(self, deps);
@@ -65,6 +68,14 @@ impl ClientCommandDispatch {
         super::external_editor::register_shared(self, deps);
         super::telemetry::register_shared(self, deps);
         super::application_lifecycle::register_shared(self, deps);
+    }
+    #[cfg(test)]
+    pub(crate) fn with_worktree_mutations(
+        mut self,
+        runtime: Arc<crate::usecase::workflow::WorkflowRuntimeUsecase>,
+    ) -> Self {
+        self.mutations = Some(runtime);
+        self
     }
     pub(crate) fn register_domain(
         &mut self,
@@ -106,8 +117,27 @@ impl ClientCommandDispatch {
     ) -> Pin<
         Box<dyn Future<Output = Result<wire::command_result::Command, wire::CommandError>> + Send>,
     > {
+        let guards = match super::worktree_mutation::admit(self.mutations.as_deref(), &command) {
+            Ok(guards) => guards,
+            Err(error) => return Box::pin(std::future::ready(Err(error))),
+        };
         match self.handlers.get(command.name()) {
-            Some(handler) => handler(command),
+            Some(handler) => {
+                let future = handler(command);
+                if guards.is_empty() {
+                    return future;
+                }
+                Box::pin(async move {
+                    tokio::spawn(async move {
+                        let _guards = guards;
+                        future.await
+                    })
+                    .await
+                    .map_err(|error| {
+                        crate::other::AppError::coded("COMMAND_FAILED", error.to_string())
+                    })?
+                })
+            }
             None => Box::pin(std::future::ready(Err(crate::other::AppError::coded(
                 "UNKNOWN_COMMAND",
                 "Command was not found",

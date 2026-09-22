@@ -203,7 +203,7 @@ impl WorkflowAbortExecutionGateway for AcceptanceWorkflowRuntimeGateway {
 impl WorkflowControlPlaneGateway for AcceptanceWorkflowRuntimeGateway {
     fn node_process_presence(
         &self,
-        _execution: &crate::domain::workflow::entities::workflow_execution::WorkflowExecution,
+        _execution: &crate::domain::workflow::entities::workflow_execution::ExecutionTree,
         _id: &str,
     ) -> Result<crate::domain::workflow::NodeProcessPresence, crate::domain::workflow::WorkflowError>
     {
@@ -247,7 +247,7 @@ impl WorkflowControlPlaneGateway for AcceptanceWorkflowRuntimeGateway {
         &self,
         _execution_id: &str,
     ) -> Result<
-        Option<crate::domain::workflow::entities::workflow_execution::WorkflowExecution>,
+        Option<crate::domain::workflow::entities::workflow_execution::ExecutionTree>,
         WorkflowError,
     > {
         self.record_command();
@@ -302,6 +302,15 @@ impl WorkflowControlPlaneGateway for AcceptanceWorkflowRuntimeGateway {
 }
 
 #[async_trait::async_trait]
+impl crate::usecase::workflow::ports::ExecutionTreeProcessGateway
+    for AcceptanceWorkflowRuntimeGateway
+{
+    async fn stop_execution_tree_processes(&self, _: &str) -> Result<(), WorkflowError> {
+        unreachable!("process cleanup is not used by this fixture")
+    }
+}
+
+#[async_trait::async_trait]
 impl WorkflowRuntimeStateGateway for AcceptanceWorkflowRuntimeGateway {
     async fn recover_startup(&self) -> Result<(), WorkflowError> {
         Ok(())
@@ -341,11 +350,20 @@ impl ProviderLifecycleAcceptanceHost {
         )
         .map_err(|error| error.to_string())?;
         let workflow_runtime_command_count = Arc::new(AtomicUsize::new(0));
-        let runtime = Arc::new(WorkflowRuntimeUsecase::new(Arc::new(
-            AcceptanceWorkflowRuntimeGateway {
+        let runtime = Arc::new(WorkflowRuntimeUsecase::new_with_worktree_operations(
+            Arc::new(AcceptanceWorkflowRuntimeGateway {
                 command_count: workflow_runtime_command_count.clone(),
-            },
-        )));
+            }),
+            Arc::new(
+                crate::adaptor::gateway::workflow::ExecutionTreeArchiveFactRepository::new(
+                    store.clone(),
+                    data_dir,
+                ),
+            ),
+            Arc::new(crate::usecase::worktree_operation::WorktreeOperations::new(Arc::new(
+                crate::adaptor::gateway::repository::worktree_operation::FileWorktreeOperationLocks::new(data_dir),
+            ))),
+        ));
         let router = crate::adaptor::controller::api::build_router(
             Arc::new(workflow),
             runtime,

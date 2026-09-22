@@ -7,8 +7,7 @@ use super::{
     AgentSessionHistoryResumeOutcome, AgentSessionHistoryResumeRequest, AgentSessionLaunchRequest,
     AgentSessionLaunchUsecase, AgentSessionLaunchUsecaseError, AgentSessionLifecycleUsecase,
     AgentSessionUsecase, AgentSessionUsecaseError, ExecutionTreeCacheReleaseError,
-    ProviderAgentRuntime, StartedExecutionTreeRegistrar, StartedExecutionTreeRegistrationError,
-    WorkflowAgentSessionLaunchRequest,
+    ProviderAgentRuntime, StartedExecutionTreeRegistrationError, WorkflowAgentSessionLaunchRequest,
 };
 use crate::domain::agent_session::aggregates::{AgentSession, AgentSessionTreeLocation};
 use crate::domain::agent_session::aggregates::{
@@ -53,6 +52,7 @@ fn workflow_location(tree_id: &str, node_execution_id: &str) -> AgentSessionTree
 
 #[derive(Default)]
 struct RecordingStartedExecutionTrees {
+    operation_lock: Arc<tokio::sync::Mutex<()>>,
     reservations: Mutex<Vec<String>>,
     tree_ids: Mutex<Vec<String>>,
     failure: Option<StartedExecutionTreeRegistrationError>,
@@ -61,8 +61,40 @@ struct RecordingStartedExecutionTrees {
     release_failure: Mutex<Option<ExecutionTreeCacheReleaseError>>,
 }
 
+impl crate::usecase::agent_session::WorktreeMutationAdmission for RecordingStartedExecutionTrees {
+    fn begin_worktree_mutation(
+        &self,
+        path: &str,
+    ) -> Result<
+        crate::usecase::worktree_operation::WorktreeMutationGuard,
+        crate::domain::workflow::WorkflowError,
+    > {
+        crate::usecase::worktree_operation::WorktreeOperations::default()
+            .mutate(path)
+            .map_err(|error| {
+                crate::domain::workflow::WorkflowError::invalid_state(error.to_string())
+            })
+    }
+}
+
 #[async_trait::async_trait]
-impl StartedExecutionTreeRegistrar for RecordingStartedExecutionTrees {
+impl crate::usecase::agent_session::ExecutionTreeCache for RecordingStartedExecutionTrees {
+    async fn release_deleted_execution_tree(
+        &self,
+        tree_id: &str,
+    ) -> Result<(), ExecutionTreeCacheReleaseError> {
+        self.releases.lock().unwrap().push(tree_id.to_string());
+        match *self.release_failure.lock().unwrap() {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::usecase::agent_session::StartedExecutionTreeRegistrar
+    for RecordingStartedExecutionTrees
+{
     async fn reserve_started_execution_tree(
         &self,
         tree_id: &str,
@@ -92,16 +124,31 @@ impl StartedExecutionTreeRegistrar for RecordingStartedExecutionTrees {
             .push(tree_id.to_string());
         Ok(())
     }
+}
 
-    async fn release_deleted_execution_tree(
+#[async_trait::async_trait]
+impl crate::usecase::agent_session::AgentSessionExecutionTreeLifecycle
+    for RecordingStartedExecutionTrees
+{
+    async fn lock_execution_tree(
         &self,
-        tree_id: &str,
-    ) -> Result<(), ExecutionTreeCacheReleaseError> {
-        self.releases.lock().unwrap().push(tree_id.to_string());
-        match *self.release_failure.lock().unwrap() {
-            Some(error) => Err(error),
-            None => Ok(()),
-        }
+        _: &str,
+    ) -> Result<tokio::sync::OwnedMutexGuard<()>, crate::domain::workflow::WorkflowError> {
+        Ok(self.operation_lock.clone().lock_owned().await)
+    }
+
+    async fn archive_execution_tree(
+        &self,
+        _: &str,
+    ) -> Result<(), crate::domain::workflow::WorkflowError> {
+        unreachable!()
+    }
+
+    async fn restore_execution_tree(
+        &self,
+        _: &str,
+    ) -> Result<(), crate::domain::workflow::WorkflowError> {
+        unreachable!()
     }
 }
 
@@ -682,7 +729,7 @@ fn launch_usecase_with_tree_registrar(
     launch_gateway: Arc<RecordingLaunchGateway>,
     terminal: Arc<RecordingTerminal>,
     hook_health: Arc<ProviderHookHealthUsecase>,
-    execution_trees: Arc<dyn StartedExecutionTreeRegistrar>,
+    execution_trees: Arc<dyn crate::usecase::agent_session::AgentSessionLaunchExecutionTrees>,
 ) -> AgentSessionLaunchUsecase {
     let lifecycle = Arc::new(ProviderLifecycleUsecase::new(
         Arc::new(
@@ -1887,7 +1934,7 @@ async fn test_agent_session_usecase_process_exit_resume_archive_deleteを永続�
 }
 
 #[tokio::test]
-async fn test_agent_session_usecase_id不明archiveは確認後deleteへ縮退する() {
+async fn test_agent_session_usecase_id不明archiveも確認なしで記録する() {
     let directory = tempfile::tempdir().unwrap();
     let (_store, usecase) = durable_usecase(&directory);
     usecase
@@ -1907,22 +1954,13 @@ async fn test_agent_session_usecase_id不明archiveは確認後deleteへ縮退�
             .archive("agent-session-unknown", "archive-unknown")
             .await
             .unwrap(),
-        AgentSessionArchiveOutcome::DeleteConfirmationRequired
+        AgentSessionArchiveOutcome::Archived
     );
     assert!(usecase
         .find("agent-session-unknown")
         .await
         .unwrap()
         .is_some());
-    usecase
-        .confirm_archive_fallback_delete("agent-session-unknown", "fallback-delete-1")
-        .await
-        .unwrap();
-    assert!(usecase
-        .find("agent-session-unknown")
-        .await
-        .unwrap()
-        .is_none());
 }
 
 #[tokio::test]

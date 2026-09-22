@@ -18,9 +18,9 @@ message Push {
   }
 }
 message CommandRequest {
-  reserved 12, 44, 45, 67, 89, 118, 182;
+  reserved 12, 25, 44, 45, 67, 89, 118, 182;
   reserved 123, 131, 134, 137;
-  reserved "stop_workflow", "resume_workflow";
+  reserved "stop_workflow", "resume_workflow", "confirm_agent_session_archive_delete";
   reserved "start_git_dir_watching", "start_watching";
   oneof command {
     GetReviewBlobRequest get_review_blob = 183;
@@ -37,7 +37,6 @@ message CommandRequest {
     ComputeMarkdownInlineChunksRequest compute_markdown_inline_chunks = 22;
     ComputeMarkdownSplitRowsRequest compute_markdown_split_rows = 23;
     ComputeVisibleMarkdownBlocksRequest compute_visible_markdown_blocks = 24;
-    ConfirmAgentSessionArchiveDeleteRequest confirm_agent_session_archive_delete = 25;
     CreateAgentSessionRequest create_agent_session = 26;
     CreateReviewThreadRequest create_review_thread = 27;
     CreateWorktreeRequest create_worktree = 28;
@@ -191,9 +190,9 @@ message CommandRequest {
 }
 
 message CommandResult {
-  reserved 12, 44, 45, 67, 89, 118, 182;
+  reserved 12, 25, 44, 45, 67, 89, 118, 182;
   reserved 123, 131, 134, 137;
-  reserved "stop_workflow", "resume_workflow";
+  reserved "stop_workflow", "resume_workflow", "confirm_agent_session_archive_delete";
   reserved "start_git_dir_watching", "start_watching";
   oneof command {
     ResultString get_review_blob = 183;
@@ -210,7 +209,6 @@ message CommandResult {
     ListInlineChunkDto compute_markdown_inline_chunks = 22;
     ListSplitRowDto compute_markdown_split_rows = 23;
     ListVisibleBlockDto compute_visible_markdown_blocks = 24;
-    Unit confirm_agent_session_archive_delete = 25;
     ResultString create_agent_session = 26;
     ReviewThreadDto create_review_thread = 27;
     WorktreeEntryDto create_worktree = 28;
@@ -469,9 +467,10 @@ message ArchiveAgentSessionRequest {
 message AgentSessionArchiveResponse {
   option (json_wrapper) = "value";
   enum Value {
+    reserved 2;
+    reserved "delete_confirmation_required";
     archived = 0 [(json_enum_name) = "archived"];
     already_archived = 1 [(json_enum_name) = "already_archived"];
-    delete_confirmation_required = 2 [(json_enum_name) = "delete_confirmation_required"];
   }
   optional Value value = 1 [json_name = "value", (json_required) = true];
 }
@@ -637,10 +636,6 @@ message ListVisibleBlockDto {
   repeated VisibleBlockDto items = 1;
 }
 
-message ConfirmAgentSessionArchiveDeleteRequest {
-  optional string agent_session_id = 1 [json_name = "agentSessionId", (json_required) = true];
-  optional string caller_request_id = 2 [json_name = "callerRequestId", (json_required) = true];
-}
 
 message CreateAgentSessionRequest {
   optional string workspace_identity = 1 [json_name = "workspaceIdentity", (json_required) = true];
@@ -3388,7 +3383,6 @@ service ClientService {
   rpc ComputeMarkdownInlineChunks(ComputeMarkdownInlineChunksRequest) returns (ListInlineChunkDto);
   rpc ComputeMarkdownSplitRows(ComputeMarkdownSplitRowsRequest) returns (ListSplitRowDto);
   rpc ComputeVisibleMarkdownBlocks(ComputeVisibleMarkdownBlocksRequest) returns (ListVisibleBlockDto);
-  rpc ConfirmAgentSessionArchiveDelete(ConfirmAgentSessionArchiveDeleteRequest) returns (Unit);
   rpc CreateAgentSession(CreateAgentSessionRequest) returns (ResultString);
   rpc CreateReviewThread(CreateReviewThreadRequest) returns (ReviewThreadDto);
   rpc CreateWorktree(CreateWorktreeRequest) returns (WorktreeEntryDto);

@@ -27,6 +27,36 @@ impl std::fmt::Display for WorkflowExecutionId {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ExecutionTreeId(String);
+
+impl ExecutionTreeId {
+    pub fn new(value: impl Into<String>) -> Result<Self, WorkflowError> {
+        let value = value.into();
+        if is_uuid_like(&value)
+            || value.strip_prefix("agent-session-").is_some_and(|suffix| {
+                suffix.len() == 32 && suffix.bytes().all(|byte| byte.is_ascii_hexdigit())
+            })
+        {
+            Ok(Self(value))
+        } else {
+            Err(WorkflowError::validation(format!(
+                "invalid execution_id: {value}"
+            )))
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for ExecutionTreeId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct WorkflowDefinitionName(String);
 
 impl WorkflowDefinitionName {
@@ -118,10 +148,24 @@ mod ids_tests {
     use super::*;
 
     #[test]
-    fn test_workflow_execution_id_uuid形式のみ受理する() {
-        assert!(WorkflowExecutionId::new("00000000-0000-4000-8000-000000000001").is_ok());
-        assert!(WorkflowExecutionId::new("../bad").is_err());
-        assert!(WorkflowExecutionId::new("not-a-uuid").is_err());
+    fn test_実行木id_workflowと単独sessionの既存形式だけを受理する() {
+        assert!(ExecutionTreeId::new("00000000-0000-4000-8000-000000000001").is_ok());
+        let session_id =
+            crate::domain::agent_session::launch_resource_id("agent-session", "archive-test")
+                .unwrap();
+        assert!(ExecutionTreeId::new(session_id.clone()).is_ok());
+        assert!(WorkflowExecutionId::new(session_id).is_err());
+        for invalid in [
+            "agent-session-",
+            "agent-session-123",
+            "agent-session-0000000000000000000000000000000/",
+            "agent-session-0000000000000000000000000000000g",
+            "provider-slot-00000000000000000000000000000000",
+        ] {
+            assert!(ExecutionTreeId::new(invalid).is_err());
+        }
+        assert!(ExecutionTreeId::new("../bad").is_err());
+        assert!(ExecutionTreeId::new("not-a-uuid").is_err());
     }
 
     #[test]

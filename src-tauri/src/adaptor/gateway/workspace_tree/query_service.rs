@@ -4,8 +4,8 @@ use std::sync::Arc;
 use super::SqliteWorkspaceTreeRepository;
 use crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore;
 use crate::domain::workflow::{
-    ExecutionStatusFilter, ExecutionTreeLaunch, WorkflowError, WorkflowExecutionArchiveRepository,
-    WorkflowExecutionSummary, WorkflowPageRequest, WORKFLOW_ARCHIVE_REASON_MANUAL,
+    ExecutionStatusFilter, ExecutionTreeArchiveRepository, ExecutionTreeLaunch, WorkflowError,
+    WorkflowExecutionSummary, WorkflowPageRequest,
 };
 use crate::domain::workspace_tree::{
     WorkspaceIdentity, WorkspaceNodeKind, WorkspacePublicRoot, WorkspaceTree, WorkspaceTreeNode,
@@ -23,13 +23,13 @@ use crate::usecase::workspace_tree::WorkspaceQueryService;
 
 pub(crate) struct SqliteWorkspaceQueryService {
     repository: Arc<SqliteWorkspaceTreeRepository>,
-    archives: Arc<dyn WorkflowExecutionArchiveRepository>,
+    archives: Arc<dyn ExecutionTreeArchiveRepository>,
 }
 
 impl SqliteWorkspaceQueryService {
     pub(crate) fn with_repository(
         repository: Arc<SqliteWorkspaceTreeRepository>,
-        archives: Arc<dyn WorkflowExecutionArchiveRepository>,
+        archives: Arc<dyn ExecutionTreeArchiveRepository>,
     ) -> Arc<Self> {
         Arc::new(Self {
             repository,
@@ -39,7 +39,7 @@ impl SqliteWorkspaceQueryService {
 
     pub(crate) fn new_read_only(
         store: Arc<LocalEventReadStore>,
-        archives: Arc<dyn WorkflowExecutionArchiveRepository>,
+        archives: Arc<dyn ExecutionTreeArchiveRepository>,
     ) -> Arc<Self> {
         Arc::new(Self {
             repository: SqliteWorkspaceTreeRepository::new_read_only(store),
@@ -135,9 +135,12 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
             .filter(|(tree, _)| tree.root.launched_as == ExecutionTreeLaunch::Workflow)
             .map(|(tree, _)| tree.aggregate.id.clone())
             .collect::<HashSet<_>>();
-        let execution_ids = workflow_execution_ids.iter().cloned().collect::<Vec<_>>();
-        let archive = self.archives.manual_archive_snapshot_for(&execution_ids)?;
-        let mut hidden = WorkspaceTreeVisibilityPolicy::hidden_branch_ids(
+        let execution_ids = folded
+            .iter()
+            .map(|(tree, _)| tree.aggregate.id.clone())
+            .collect::<Vec<_>>();
+        let archive = self.archives.archive_snapshot_for(&execution_ids)?;
+        let hidden = WorkspaceTreeVisibilityPolicy::hidden_branch_ids(
             &tree,
             archive
                 .records
@@ -149,16 +152,6 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
             .filter(|session| session.lifecycle == AgentSessionLifecycleDto::Archived)
             .cloned()
             .collect::<Vec<_>>();
-        for session in &archived_sessions {
-            if let Some(execution_id) = tree
-                .nodes()
-                .iter()
-                .find(|node| node.session_id.as_deref() == Some(session.id.as_str()))
-                .and_then(|node| node.execution_id.clone())
-            {
-                hidden.insert(execution_id);
-            }
-        }
         let preferred_node_id = tree
             .preferred_node_id(&hidden)
             .map(|node_id| public_node_id(&tree, &node_id));
@@ -210,7 +203,7 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
         self.repository
             .folded_tree(execution_id)
             .map_err(query_error)?
-            .filter(|(folded, _)| folded.root.launched_as == ExecutionTreeLaunch::Workflow)
+            .filter(|(tree, _)| tree.root.launched_as == ExecutionTreeLaunch::Workflow)
             .map(|(_, record)| execution_summary(record))
             .transpose()
     }
@@ -226,7 +219,7 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
             .collect::<HashMap<_, _>>();
         let archive = self
             .archives
-            .manual_archive_snapshot_for(&summaries.keys().cloned().collect::<Vec<_>>())?;
+            .archive_snapshot_for(&summaries.keys().cloned().collect::<Vec<_>>())?;
         let mut history = archive
             .records
             .into_iter()
@@ -240,7 +233,7 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
                         status: summary.status.as_str().to_string(),
                         updated_at: f64::from_bits(summary.updated_at_bits),
                         archived_at: record.archived_at,
-                        archive_reason: WORKFLOW_ARCHIVE_REASON_MANUAL.to_string(),
+                        archive_reason: record.archive_reason,
                     })
             })
             .collect::<Vec<_>>();
@@ -354,7 +347,7 @@ fn project_tree(
                 RootProjection {
                     public_id: root.public_id().to_string(),
                     public_title: root.public_title().to_string(),
-                    workflow_capabilities: is_workflow.then(|| workflow_capabilities(root.owner())),
+                    workflow_capabilities: Some(workflow_capabilities(root.owner())),
                     session_capabilities: root_session.map(|session| {
                         WorkspaceSessionCapabilitiesDto {
                             session_ref: session.id.clone(),

@@ -10,6 +10,7 @@ mod definition;
 pub(crate) mod delegate;
 pub(crate) mod dto;
 pub(crate) mod event_draft;
+mod execution_archive;
 mod facet;
 pub(crate) mod node_startup;
 pub(crate) mod output;
@@ -32,10 +33,9 @@ pub mod diagnostic_dto;
 use serde_json::Value;
 
 use crate::domain::workflow::{
-    ExecutionStatusFilter, FacetKind, FacetRepository, FacetSummary, ManagedWorktreeGateway,
-    SecretSourceGateway, WorkflowDefinition, WorkflowDefinitionRepository, WorkflowError,
-    WorkflowExecution, WorkflowExecutionArchiveRepository, WorkflowExecutionSummary,
-    WorkflowPageRequest,
+    ExecutionStatusFilter, ExecutionTree, ExecutionTreeArchiveRepository, FacetKind,
+    FacetRepository, FacetSummary, ManagedWorktreeGateway, SecretSourceGateway, WorkflowDefinition,
+    WorkflowDefinitionRepository, WorkflowError, WorkflowExecutionSummary, WorkflowPageRequest,
 };
 use crate::usecase::workflow::ports::{
     ExternalEditorGateway, WorkflowConfigPathGateway, WorkflowDefinitionSourceGateway,
@@ -157,7 +157,7 @@ impl WorkflowReadUsecase {
     pub(crate) fn get_execution_state(
         &self,
         execution_id: &str,
-    ) -> Result<Option<WorkflowExecution>, WorkflowError> {
+    ) -> Result<Option<ExecutionTree>, WorkflowError> {
         self.query.get_execution_state(execution_id)
     }
 
@@ -194,7 +194,7 @@ pub struct WorkflowUsecase {
     worktrees: std::sync::Arc<dyn ManagedWorktreeGateway>,
     editors: std::sync::Arc<dyn ExternalEditorGateway>,
     config_paths: std::sync::Arc<dyn WorkflowConfigPathGateway>,
-    execution_archives: std::sync::Arc<dyn WorkflowExecutionArchiveRepository>,
+    execution_archives: std::sync::Arc<dyn ExecutionTreeArchiveRepository>,
     workspace_nodes: std::sync::Arc<dyn crate::domain::workspace_tree::WorkspaceTreeRepository>,
     workspace_query: std::sync::Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
     read: WorkflowReadUsecase,
@@ -212,7 +212,7 @@ impl WorkflowUsecase {
         diagnostics: std::sync::Arc<dyn WorkflowDiagnosticsGateway>,
         config_paths: std::sync::Arc<dyn WorkflowConfigPathGateway>,
         secrets: std::sync::Arc<dyn SecretSourceGateway>,
-        execution_archives: std::sync::Arc<dyn WorkflowExecutionArchiveRepository>,
+        execution_archives: std::sync::Arc<dyn ExecutionTreeArchiveRepository>,
         workspace_nodes: std::sync::Arc<dyn crate::domain::workspace_tree::WorkspaceTreeRepository>,
         workspace_query: std::sync::Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
     ) -> Self {
@@ -298,8 +298,7 @@ impl WorkflowUsecase {
         execution_id: &str,
         worktree_path: &str,
     ) -> Result<(), WorkflowError> {
-        let execution_id =
-            crate::domain::workflow::WorkflowExecutionId::new(execution_id.to_string())?;
+        let execution_id = crate::domain::workflow::ExecutionTreeId::new(execution_id.to_string())?;
         if self
             .authorize_execution_summary_for_worktree(execution_id.as_str(), worktree_path)?
             .is_some()
@@ -382,7 +381,7 @@ impl WorkflowUsecase {
     pub fn get_execution_state(
         &self,
         execution_id: &str,
-    ) -> Result<Option<WorkflowExecution>, WorkflowError> {
+    ) -> Result<Option<ExecutionTree>, WorkflowError> {
         self.query.get_execution_state(execution_id)
     }
 
@@ -516,8 +515,8 @@ impl WorkflowUsecase {
 mod tests {
     use super::*;
     use crate::domain::workflow::{
-        ExecutionOrigin, ExecutionStatus, ExecutionStatusFilter, WorkflowExecution,
-        WorkflowExecutionId, WorkflowSummary,
+        ExecutionOrigin, ExecutionStatus, ExecutionStatusFilter, ExecutionTree, ExecutionTreeId,
+        WorkflowSummary,
     };
     use crate::usecase::workflow::ports::{
         ExternalEditorGateway, WorkflowConfigPathGateway, WorkflowDiagnosticsGateway,
@@ -702,7 +701,7 @@ mod tests {
 
         fn read(
             &self,
-            _execution_id: &WorkflowExecutionId,
+            _execution_id: &ExecutionTreeId,
         ) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
             Ok(self.events.lock().unwrap().clone())
         }
@@ -713,7 +712,7 @@ mod tests {
     impl WorkflowExecutionProjectionRepository for NoopExecutionProjectionRepository {
         fn get_node_artifact_from_events(
             &self,
-            execution_id: &WorkflowExecutionId,
+            execution_id: &ExecutionTreeId,
             node_name: &str,
             _events: &[WorkflowEventDraft],
         ) -> Result<Option<crate::domain::workflow::Artifact>, WorkflowError> {
@@ -729,39 +728,9 @@ mod tests {
 
         fn get_execution(
             &self,
-            _execution_id: &WorkflowExecutionId,
-        ) -> Result<Option<WorkflowExecution>, WorkflowError> {
+            _execution_id: &ExecutionTreeId,
+        ) -> Result<Option<ExecutionTree>, WorkflowError> {
             Ok(None)
-        }
-    }
-
-    struct NoopArchiveRepository;
-
-    impl WorkflowExecutionArchiveRepository for NoopArchiveRepository {
-        fn archive_manual(
-            &self,
-            _execution_id: &WorkflowExecutionId,
-            _archived_at: f64,
-        ) -> Result<(), WorkflowError> {
-            Ok(())
-        }
-
-        fn restore_manual(
-            &self,
-            _execution_id: &WorkflowExecutionId,
-            _restored_at: f64,
-        ) -> Result<(), WorkflowError> {
-            Ok(())
-        }
-
-        fn manual_archive_snapshot_for(
-            &self,
-            _execution_ids: &[String],
-        ) -> Result<crate::domain::workflow::WorkflowExecutionArchiveSnapshot, WorkflowError>
-        {
-            Ok(crate::domain::workflow::WorkflowExecutionArchiveSnapshot {
-                records: Vec::new(),
-            })
         }
     }
 
@@ -1345,3 +1314,95 @@ mod tests {
 pub(crate) use workspace_node_command::{
     WorkspaceNodeApprovalTarget, WorkspaceNodeRetryTarget, WorkspaceSessionNodeRenameTarget,
 };
+
+#[cfg(test)]
+pub(crate) use archive_test_repository::NoopArchiveRepository;
+#[cfg(test)]
+mod archive_test_repository {
+    use super::*;
+    pub(crate) struct NoopArchiveRepository;
+
+    impl ExecutionTreeArchiveRepository for NoopArchiveRepository {
+        fn location(
+            &self,
+            id: &str,
+        ) -> Result<crate::domain::workflow::ExecutionTreeArchiveCandidate, WorkflowError> {
+            Ok(crate::domain::workflow::ExecutionTreeArchiveCandidate {
+                execution_id: id.into(),
+                worktree_path: "/tmp/wt".into(),
+                workspace_identity: "/tmp/wt".into(),
+                repository_root: None,
+            })
+        }
+        fn worktree_identity(&self, path: &str) -> Result<String, WorkflowError> {
+            Ok(crate::domain::repository::normalize_repo_path(path))
+        }
+        fn record_repository_root(&self, _: &str, _: &str, _: f64) -> Result<(), WorkflowError> {
+            unreachable!()
+        }
+        fn candidate_page(
+            &self,
+            _: Option<&str>,
+        ) -> Result<Vec<crate::domain::workflow::ExecutionTreeArchiveCandidate>, WorkflowError>
+        {
+            unreachable!()
+        }
+        fn legacy_session_archive_page(
+            &self,
+            _: Option<&str>,
+        ) -> Result<Vec<crate::domain::workflow::ExecutionTreeArchiveRecord>, WorkflowError>
+        {
+            Ok(Vec::new())
+        }
+
+        fn worktree_target_page(
+            &self,
+            _: &str,
+            _: Option<&str>,
+        ) -> Result<Vec<crate::domain::workflow::ExecutionTreeArchiveCandidate>, WorkflowError>
+        {
+            unreachable!()
+        }
+        fn target(
+            &self,
+            _: &str,
+        ) -> Result<crate::domain::workflow::ExecutionTreeArchiveTarget, WorkflowError> {
+            unreachable!()
+        }
+        fn legacy_archives(
+            &self,
+        ) -> Result<Vec<crate::domain::workflow::ExecutionTreeArchiveRecord>, WorkflowError>
+        {
+            Ok(Vec::new())
+        }
+        fn finish_legacy_migration(&self) -> Result<(), WorkflowError> {
+            Ok(())
+        }
+
+        fn archive(
+            &self,
+            _execution_id: &crate::domain::workflow::ExecutionTreeId,
+            _archived_at: f64,
+            _reason: &str,
+        ) -> Result<(), WorkflowError> {
+            Ok(())
+        }
+
+        fn restore(
+            &self,
+            _execution_id: &crate::domain::workflow::ExecutionTreeId,
+            _restored_at: f64,
+        ) -> Result<(), WorkflowError> {
+            Ok(())
+        }
+
+        fn archive_snapshot_for(
+            &self,
+            _execution_ids: &[String],
+        ) -> Result<crate::domain::workflow::ExecutionTreeArchiveSnapshot, WorkflowError> {
+            Ok(crate::domain::workflow::ExecutionTreeArchiveSnapshot {
+                records: Vec::new(),
+            })
+        }
+    }
+}

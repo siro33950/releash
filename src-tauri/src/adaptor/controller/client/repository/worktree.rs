@@ -60,10 +60,15 @@ pub(crate) async fn create_worktree_shared(
 
 pub(crate) async fn remove_worktree_shared(
     state: &AppState,
+    runtime: std::sync::Arc<crate::usecase::workflow::WorkflowRuntimeUsecase>,
     repo_path: String,
     worktree_path: String,
     force: bool,
 ) -> Result<(), AppError> {
     let uc = state.repository_usecase.clone();
-    run_blocking(move || uc.remove_worktree(&repo_path, &worktree_path, force)).await
+    let handle = tokio::runtime::Handle::current();
+    run_blocking(move || {
+        handle.block_on(uc.remove_worktree(runtime.as_ref(), &repo_path, &worktree_path, force))
+    })
+    .await
 }

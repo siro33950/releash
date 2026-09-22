@@ -5,18 +5,24 @@ use crate::domain::workflow::{
 };
 
 fn session_records() -> Vec<NodeFactRecord> {
-    SessionExecutionTreeRootFacts::new("session-1", "workspace-1", "/repo", ProviderKind::Claude)
-        .unwrap()
-        .into_facts()
-        .into_iter()
-        .enumerate()
-        .map(|(index, (meta, fact))| NodeFactRecord {
-            meta,
-            seq: i64::try_from(index + 1).unwrap(),
-            timestamp_ms: i64::try_from(index + 1).unwrap() * 1_000,
-            fact,
-        })
-        .collect()
+    SessionExecutionTreeRootFacts::new(
+        "session-1",
+        "workspace-1",
+        "/repo",
+        ProviderKind::Claude,
+        None,
+    )
+    .unwrap()
+    .into_facts()
+    .into_iter()
+    .enumerate()
+    .map(|(index, (meta, fact))| NodeFactRecord {
+        meta,
+        seq: i64::try_from(index + 1).unwrap(),
+        timestamp_ms: i64::try_from(index + 1).unwrap() * 1_000,
+        fact,
+    })
+    .collect()
 }
 
 fn push_fact(records: &mut Vec<NodeFactRecord>, meta: NodeFactMeta, fact: NodeFact) {
@@ -90,7 +96,14 @@ fn test_agent_session事実導出_session起動木の属性と3種lifecycleを�
         AgentSessionActivity::AwaitingInstruction
     );
 
-    push_fact(&mut records, meta, NodeFact::ArchiveRequested);
+    push_fact(
+        &mut records,
+        meta,
+        NodeFact::ArchiveRequested(crate::domain::workflow::ArchiveRequestedFact {
+            reason: "manual".into(),
+            archived_at: 0.0,
+        }),
+    );
     let archived =
         derive_session_fields(&records, &context(), "session-1", "session-1", "session-1").unwrap();
     assert_eq!(archived.lifecycle, AgentSessionLifecycle::Archived);
@@ -142,7 +155,14 @@ fn test_agent_session事実導出_workflow定義を渡さずsession自身の事�
     // Given
     let mut records = session_records();
     let meta = records[0].meta.clone();
-    push_fact(&mut records, meta, NodeFact::ArchiveRequested);
+    push_fact(
+        &mut records,
+        meta,
+        NodeFact::ArchiveRequested(crate::domain::workflow::ArchiveRequestedFact {
+            reason: "manual".into(),
+            archived_at: 0.0,
+        }),
+    );
     records.retain(|record| !matches!(record.fact, NodeFact::Started(_)));
 
     // When

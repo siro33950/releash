@@ -28,7 +28,7 @@ pub use definition::{
 };
 pub use definition_resolution::DefinitionResolution;
 pub use execution::{
-    ApprovalTarget, Artifact, ExecutionOrigin, ExecutionStatus, Fanout, WorkflowExecution,
+    ApprovalTarget, Artifact, ExecutionOrigin, ExecutionStatus, ExecutionTree, Fanout,
 };
 pub use execution_metadata::{
     ExecutionStatusFilter, WorkflowExecutionSummary, WorkflowPageRequest,
@@ -39,19 +39,20 @@ pub use failure::{
 };
 pub use field_path::FieldPath;
 pub use ids::{
-    NodeDefinitionName, WorkflowDefinitionName, WorkflowExecutionId, WorkspaceWorktreePath,
+    ExecutionTreeId, NodeDefinitionName, WorkflowDefinitionName, WorkflowExecutionId,
+    WorkspaceWorktreePath,
 };
 pub use node_execution::{
     startup_restart_delay, ExecutionParentRef, FanoutSlot, NodeCompletionSignal,
     NodeCompletionSignalState, NodeExecution, NodeExecutionStatus, NodeProcessPresence,
 };
 pub use node_fact::{
-    AgentActivityObservedFact, AgentSessionActivity, ApprovalGrantedFact, ArtifactProducedFact,
-    CommandSpawnedFact, ExecutionTreeLaunch, NodeFact, NodeFactMeta, NodeFactRecord,
-    ProcessExitedFact, ProviderSessionTitleObservedFact, RuntimeFailureObservedFact,
-    SessionAttachedFact, SessionContinuationAdmittedFact, SessionExecutionTreeRootFacts,
-    SessionNodeRenamedFact, StartedFact, StopReceivedFact, SubmitReceivedFact, SubmitRejectedFact,
-    TreeRootFact,
+    AgentActivityObservedFact, AgentSessionActivity, ApprovalGrantedFact, ArchiveRequestedFact,
+    ArtifactProducedFact, CommandSpawnedFact, ExecutionTreeLaunch, NodeFact, NodeFactDecodeError,
+    NodeFactMeta, NodeFactRecord, ProcessExitedFact, ProviderSessionTitleObservedFact,
+    RuntimeFailureObservedFact, SessionAttachedFact, SessionContinuationAdmittedFact,
+    SessionExecutionTreeRootFacts, SessionNodeRenamedFact, StartedFact, StopReceivedFact,
+    SubmitReceivedFact, SubmitRejectedFact, TreeRootFact,
 };
 pub use predicate::{Predicate, PredicateError};
 pub use runtime_event::{ContractViolationRecord, WorkflowEvent};

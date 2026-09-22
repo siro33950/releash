@@ -166,7 +166,6 @@ const baseIpcHandler: Record<string, unknown> = {
 	restore_agent_session: "restored",
 	archive_agent_session: "archived",
 	delete_agent_session: null,
-	confirm_agent_session_archive_delete: null,
 	list_agent_session_history: { items: [], nextAfter: null },
 	resume_agent_session_history_candidate: "mock-agent-session-1",
 	get_provider_availability: {

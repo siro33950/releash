@@ -1,7 +1,7 @@
 use super::*;
 use crate::adaptor::gateway::workflow::workflow_host::runtime_commit::sync_execution_store_from_snapshot;
 use crate::domain::workflow::entities::workflow_execution::{
-    WorkflowExecution as Aggregate, WorkflowExecutionRestore,
+    ExecutionTree as Aggregate, ExecutionTreeRestore,
 };
 use crate::domain::workflow::RuntimeExecutionState;
 use crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot;
@@ -189,7 +189,7 @@ async fn test_workflow実行ストア_完了とabortで予約を解放し遅延�
     ] {
         let store = Arc::new(ExecutionStore::new_in_memory_for_tests());
         let execution_id = uuid::Uuid::new_v4().to_string();
-        let aggregate = Aggregate::restore_runtime(WorkflowExecutionRestore {
+        let aggregate = Aggregate::restore_runtime(ExecutionTreeRestore {
             id: execution_id.clone(),
             worktree_path: "/repo".into(),
             ..Default::default()

@@ -1,7 +1,7 @@
 #[cfg(test)]
 use crate::domain::workflow::WorkflowRuntimeSnapshot;
 use crate::domain::workflow::{
-    WorkflowDefinition, WorkflowError, WorkflowExecution, WorkflowExecutionId, WorkflowPageRequest,
+    ExecutionTree, ExecutionTreeId, WorkflowDefinition, WorkflowError, WorkflowPageRequest,
 };
 
 use super::command::{AbortExecutionCommand, ResolvedStartExecutionCommand};
@@ -19,11 +19,11 @@ pub trait WorkflowEventRepository: Send + Sync {
     fn append(&self, event: &WorkflowEventDraft) -> Result<(), WorkflowError>;
     fn read(
         &self,
-        execution_id: &WorkflowExecutionId,
+        execution_id: &ExecutionTreeId,
     ) -> Result<Vec<WorkflowEventDraft>, WorkflowError>;
     fn read_page(
         &self,
-        execution_id: &WorkflowExecutionId,
+        execution_id: &ExecutionTreeId,
         page: WorkflowPageRequest,
     ) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
         self.read(execution_id).map(|events| {
@@ -39,14 +39,14 @@ pub trait WorkflowEventRepository: Send + Sync {
 pub trait WorkflowExecutionProjectionRepository: Send + Sync {
     fn get_node_artifact_from_events(
         &self,
-        execution_id: &WorkflowExecutionId,
+        execution_id: &ExecutionTreeId,
         node_name: &str,
         events: &[WorkflowEventDraft],
     ) -> Result<Option<crate::domain::workflow::Artifact>, WorkflowError>;
     fn get_execution(
         &self,
-        execution_id: &WorkflowExecutionId,
-    ) -> Result<Option<WorkflowExecution>, WorkflowError>;
+        execution_id: &ExecutionTreeId,
+    ) -> Result<Option<ExecutionTree>, WorkflowError>;
 }
 
 pub trait WorkflowDefinitionSourceGateway: Send + Sync {
@@ -145,6 +145,11 @@ pub trait WorkflowAbortExecutionGateway: Send + Sync {
 }
 
 #[async_trait::async_trait]
+pub trait ExecutionTreeProcessGateway: Send + Sync {
+    async fn stop_execution_tree_processes(&self, execution_id: &str) -> Result<(), WorkflowError>;
+}
+
+#[async_trait::async_trait]
 pub trait WorkflowRuntimeStateGateway: Send + Sync {
     /// Explicit startup recovery hook. Construction must never invoke this:
     /// composition calls it once only after the fixed local store is verified and
@@ -165,6 +170,7 @@ pub trait WorkflowRuntimeShutdownGateway: Send + Sync {
 
 pub trait WorkflowRuntimeCommandGateway:
     WorkflowStartExecutionGateway
+    + ExecutionTreeProcessGateway
     + WorkflowAbortExecutionGateway
     + crate::usecase::workflow::control_plane::WorkflowControlPlaneGateway
     + WorkflowRuntimeStateGateway
@@ -174,6 +180,7 @@ pub trait WorkflowRuntimeCommandGateway:
 
 impl<T> WorkflowRuntimeCommandGateway for T where
     T: WorkflowStartExecutionGateway
+        + ExecutionTreeProcessGateway
         + WorkflowAbortExecutionGateway
         + crate::usecase::workflow::control_plane::WorkflowControlPlaneGateway
         + WorkflowRuntimeStateGateway

@@ -1,14 +1,14 @@
 use std::collections::HashMap;
 
+use crate::domain::workflow::entities::workflow_execution::ExecutionTree as ExecutionTreeAggregate;
 use crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecution;
-use crate::domain::workflow::entities::workflow_execution::WorkflowExecution as WorkflowExecutionAggregate;
 use crate::domain::workflow::services::projection as workflow_projection;
 use crate::domain::workflow::{
     ExecutionOrigin, NodeHistoryEntry, RuntimeArtifact, RuntimeExecutionState, TokenUsage,
     WorkflowDefinition,
 };
 
-/// Immutable usecase commit material derived from a `WorkflowExecution`
+/// Immutable usecase commit material derived from a `ExecutionTree`
 /// aggregate.
 #[derive(Debug, Clone)]
 pub(crate) struct RuntimeCommitSnapshot {
@@ -35,7 +35,7 @@ pub(crate) struct RuntimeCommitSnapshot {
 
 impl RuntimeCommitSnapshot {
     pub(crate) fn from_execution(
-        execution: &WorkflowExecutionAggregate,
+        execution: &ExecutionTreeAggregate,
     ) -> Result<Self, crate::usecase::workflow::runtime_error::WorkflowRuntimeError> {
         Ok(Self {
             execution_id: execution.id.clone(),

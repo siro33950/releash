@@ -823,7 +823,7 @@ mod tests {
         );
         assert_eq!(
             capability_state(workflow),
-            (false, false, false, true, false)
+            (false, false, false, true, true)
         );
     }
 

@@ -51,10 +51,10 @@ impl IsolatedWorktreeGateway for TestWorktrees {
 }
 
 #[derive(Default)]
-pub(super) struct TestSessions {
+pub(crate) struct TestSessions {
     pub(super) initial_instructions: StdMutex<Vec<String>>,
     pub(super) presence_unknown: AtomicBool,
-    pub(super) live_sessions: StdMutex<std::collections::HashSet<String>>,
+    pub(crate) live_sessions: StdMutex<std::collections::HashSet<String>>,
     pub(super) conversation_missing: AtomicBool,
     pub(super) prepared: StdMutex<Vec<(String, String, String)>>,
     pub(super) activated: StdMutex<Vec<String>>,
@@ -66,6 +66,7 @@ pub(super) struct TestSessions {
     pub(super) continuation_entered: tokio::sync::Notify,
     pub(super) continuation_release: tokio::sync::Notify,
     pub(super) recovery_fails: AtomicBool,
+    pub(super) stop_fails: AtomicBool,
     pub(super) preparation_fails: AtomicBool,
     pub(super) block_preparation: AtomicBool,
     pub(super) preparation_entered: tokio::sync::Notify,
@@ -175,6 +176,9 @@ impl WorkflowAgentSessionPort for TestSessions {
         session_id: &str,
         _node_id: &str,
     ) -> Result<(), WorkflowRuntimeError> {
+        if self.stop_fails.load(Ordering::SeqCst) {
+            return Err(WorkflowRuntimeError::AgentSession("stop failed".into()));
+        }
         self.live_sessions.lock().unwrap().remove(session_id);
         Ok(())
     }
@@ -460,4 +464,83 @@ pub(super) fn dependencies(store: Option<Arc<LocalEventStore>>) -> WorkflowRunti
         secrets: None,
         push: Arc::new(crate::infrastructure::push::PushSink::new()),
     }
+}
+
+use super::workflow_host_tests::{AcceptingWorktreeResolver, UnusedWorkflowResolver};
+use crate::adaptor::gateway::workflow::{
+    ExecutionTreeArchiveFactRepository, WorkflowRuntimeCommandGateway,
+};
+use crate::adaptor::gateway::workspace_tree::{
+    SqliteWorkspaceQueryService, SqliteWorkspaceTreeRepository,
+};
+pub(crate) struct ArchiveFixture {
+    pub(crate) directory: tempfile::TempDir,
+    pub(crate) store: Arc<LocalEventStore>,
+    pub(crate) repository: Arc<ExecutionTreeArchiveFactRepository>,
+    pub(crate) host: Arc<WorkflowRuntimeHost>,
+    pub(crate) runtime: crate::usecase::workflow::WorkflowRuntimeUsecase,
+    pub(crate) app: WorkflowRuntimeDependencies,
+    pub(crate) sessions: Arc<TestSessions>,
+    pub(crate) query: Arc<SqliteWorkspaceQueryService>,
+}
+
+pub(crate) fn archive_fixture() -> ArchiveFixture {
+    archive_fixture_with_resolver(Arc::new(AcceptingWorktreeResolver))
+}
+
+pub(crate) fn archive_fixture_with_resolver(
+    resolver: Arc<dyn ManagedWorktreeResolver>,
+) -> ArchiveFixture {
+    let directory = tempfile::tempdir().unwrap();
+    let store =
+        LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into())).unwrap();
+    let repository = Arc::new(ExecutionTreeArchiveFactRepository::new(
+        store.clone(),
+        directory.path(),
+    ));
+    let query = SqliteWorkspaceQueryService::with_repository(
+        SqliteWorkspaceTreeRepository::new(store.clone()),
+        repository.clone(),
+    );
+    let app = test_helpers::dependencies(Some(store.clone()));
+    let sessions = Arc::new(TestSessions::default());
+    let host = Arc::new(WorkflowRuntimeHost::with_execution_store(
+        Arc::new(UnusedWorkflowResolver),
+        resolver,
+        Arc::new(ExecutionStore::new_canonical(query.clone())),
+        sessions.clone(),
+        Arc::new(TestWorktrees::default()),
+    ));
+    let runtime = crate::usecase::workflow::WorkflowRuntimeUsecase::new(
+        Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(
+            app.clone(),
+            host.clone(),
+        )),
+        repository.clone(),
+    );
+    ArchiveFixture {
+        directory,
+        store,
+        repository,
+        host,
+        runtime,
+        app,
+        sessions,
+        query,
+    }
+}
+
+pub(crate) async fn archive_workflow(fixture: &ArchiveFixture) -> String {
+    let workflow = serde_saphyr::from_str("name: archive\ndescription: test\nnodes:\n  main: {session: {provider: codex, facets: {instruction: policy-confirmation}}}").unwrap();
+    fixture
+        .host
+        .start_resolved_workflow(
+            &fixture.app,
+            workflow,
+            "/missing/worktree".into(),
+            None,
+            ExecutionOrigin::Cli,
+        )
+        .await
+        .unwrap()
 }

@@ -17,7 +17,7 @@ impl DelegateContinuationGateway for HostDelegateContinuation {
     async fn load_execution(
         &self,
         execution_id: &str,
-    ) -> Result<DomainWorkflowExecution, WorkflowRuntimeError> {
+    ) -> Result<DomainExecutionTree, WorkflowRuntimeError> {
         self.host
             .load_control_plane_execution(execution_id)
             .await

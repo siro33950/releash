@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::domain::workflow::{WorkflowError, WorkflowExecutionId};
+use crate::domain::workflow::{ExecutionTreeId, WorkflowError};
 use crate::usecase::workflow::control_plane::{
     WorkflowControlPlaneGateway, WorkflowControlPlaneUsecase,
 };
@@ -30,7 +30,7 @@ impl WorkflowRetryNodeUsecase {
     }
 
     pub(crate) async fn execute(&self, command: RetryNodeCommand) -> Result<(), WorkflowError> {
-        WorkflowExecutionId::new(command.execution_id.clone())?;
+        ExecutionTreeId::new(command.execution_id.clone())?;
         if command.node_execution_id.trim().is_empty() {
             return Err(WorkflowError::validation(
                 "node_execution_id must not be empty",

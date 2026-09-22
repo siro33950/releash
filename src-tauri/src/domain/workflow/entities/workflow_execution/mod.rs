@@ -283,7 +283,7 @@ impl RuntimeNodeExecution {
 /// Gateways may construct this DTO from durable events or snapshots, but must
 /// not retain it as mutable execution state.
 #[derive(Debug, Clone, PartialEq)]
-pub struct WorkflowExecutionRestore {
+pub struct ExecutionTreeRestore {
     pub id: String,
     pub workflow: WorkflowDefinition,
     pub state: RuntimeExecutionState,
@@ -303,7 +303,7 @@ pub struct WorkflowExecutionRestore {
     pub current_stall_observations: Vec<NodeStallObservation>,
 }
 
-impl Default for WorkflowExecutionRestore {
+impl Default for ExecutionTreeRestore {
     fn default() -> Self {
         Self {
             id: String::new(),
@@ -546,9 +546,10 @@ struct PendingRestart {
 
 /// Aggregate that owns the workflow execution lifecycle state.
 #[derive(Debug, Clone, PartialEq)]
-pub struct WorkflowExecution {
+pub struct ExecutionTree {
     state: RuntimeExecutionState,
-    runtime: WorkflowExecutionView,
+    runtime: ExecutionTreeView,
+    archive: Option<crate::domain::workflow::ArchiveRequestedFact>,
     pending_restart: Option<PendingRestart>,
     delegates: HashMap<String, DelegateRuntime>,
     pending_empty_fanout: Option<String>,
@@ -557,11 +558,11 @@ pub struct WorkflowExecution {
 
 /// Read-only runtime view exposed by the aggregate.
 ///
-/// `WorkflowExecution` implements `Deref` but deliberately not `DerefMut`.
+/// `ExecutionTree` implements `Deref` but deliberately not `DerefMut`.
 /// Adapters can inspect this projection while every mutation remains an
 /// aggregate method.
 #[derive(Debug, Clone, PartialEq)]
-pub struct WorkflowExecutionView {
+pub struct ExecutionTreeView {
     pub id: String,
     pub workflow: WorkflowDefinition,
     pub node_history: Vec<NodeHistoryEntry>,
@@ -584,8 +585,8 @@ pub struct WorkflowExecutionView {
     pub current_stall_observations: Vec<NodeStallObservation>,
 }
 
-impl std::ops::Deref for WorkflowExecution {
-    type Target = WorkflowExecutionView;
+impl std::ops::Deref for ExecutionTree {
+    type Target = ExecutionTreeView;
 
     fn deref(&self) -> &Self::Target {
         &self.runtime
@@ -593,31 +594,32 @@ impl std::ops::Deref for WorkflowExecution {
 }
 
 #[cfg(test)]
-impl std::ops::DerefMut for WorkflowExecution {
+impl std::ops::DerefMut for ExecutionTree {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.runtime
     }
 }
 
-impl WorkflowExecution {
+impl ExecutionTree {
     /// Restores a lifecycle snapshot before replaying subsequent durable facts.
     #[cfg(test)]
     pub fn restore(state: RuntimeExecutionState) -> Self {
-        Self::restore_runtime(WorkflowExecutionRestore {
+        Self::restore_runtime(ExecutionTreeRestore {
             state,
-            ..WorkflowExecutionRestore::default()
+            ..ExecutionTreeRestore::default()
         })
     }
 
     /// Restores the entire execution aggregate from a durable projection.
-    pub fn restore_runtime(restore: WorkflowExecutionRestore) -> Self {
+    pub fn restore_runtime(restore: ExecutionTreeRestore) -> Self {
         Self {
             state: restore.state,
+            archive: None,
             pending_restart: None,
             delegates: HashMap::new(),
             pending_empty_fanout: None,
             definition_resolution: Default::default(),
-            runtime: WorkflowExecutionView {
+            runtime: ExecutionTreeView {
                 id: restore.id,
                 workflow: restore.workflow,
                 node_history: restore.node_history,
@@ -637,6 +639,43 @@ impl WorkflowExecution {
                 current_stall_observations: restore.current_stall_observations,
             },
         }
+    }
+
+    pub fn archive(
+        &mut self,
+        archived_at: f64,
+        reason: &str,
+    ) -> Result<Option<crate::domain::workflow::NodeFact>, crate::domain::workflow::WorkflowError>
+    {
+        if !self.is_finished() {
+            return Err(crate::domain::workflow::WorkflowError::invalid_state(
+                "execution tree must be terminal before archive",
+            ));
+        }
+        if self.archive.is_some() {
+            return Ok(None);
+        }
+        let fact = crate::domain::workflow::ArchiveRequestedFact {
+            archived_at,
+            reason: reason.into(),
+        };
+        self.archive = Some(fact.clone());
+        Ok(Some(crate::domain::workflow::NodeFact::ArchiveRequested(
+            fact,
+        )))
+    }
+
+    pub fn restore_archive(&mut self) -> Option<crate::domain::workflow::NodeFact> {
+        self.archive
+            .take()
+            .map(|_| crate::domain::workflow::NodeFact::RestoreRequested)
+    }
+
+    pub fn replay_archive(
+        &mut self,
+        archive: Option<crate::domain::workflow::ArchiveRequestedFact>,
+    ) {
+        self.archive = archive;
     }
 
     pub fn state(&self) -> &RuntimeExecutionState {
@@ -671,7 +710,7 @@ impl WorkflowExecution {
 
     pub fn newly_terminal_sessions_since(
         &self,
-        before: &WorkflowExecution,
+        before: &ExecutionTree,
     ) -> Vec<NewlyTerminalSession> {
         if self.id != before.id {
             return Vec::new();
@@ -3579,8 +3618,8 @@ fn transition_to_replay(outcome: TransitionOutcome) -> ReplayOutcome {
 mod tests {
     use super::*;
 
-    fn aggregate(state: RuntimeExecutionState) -> WorkflowExecution {
-        WorkflowExecution::restore(state)
+    fn aggregate(state: RuntimeExecutionState) -> ExecutionTree {
+        ExecutionTree::restore(state)
     }
 
     fn states() -> [(ExecutionStateSet, RuntimeExecutionState); 3] {
@@ -3628,7 +3667,7 @@ mod tests {
             parameters: Vec::new(),
             kind: ScopeRuntimeKind::Fanout(FanoutScopeRuntime::default()),
         };
-        let execution = WorkflowExecution::restore_runtime(WorkflowExecutionRestore {
+        let execution = ExecutionTree::restore_runtime(ExecutionTreeRestore {
             scopes: vec![parent_scope, fanout_scope],
             ..Default::default()
         });
@@ -3706,8 +3745,8 @@ mod tests {
         }
     }
 
-    fn restored_execution(state: RuntimeExecutionState) -> WorkflowExecution {
-        WorkflowExecution::restore_runtime(WorkflowExecutionRestore {
+    fn restored_execution(state: RuntimeExecutionState) -> ExecutionTree {
+        ExecutionTree::restore_runtime(ExecutionTreeRestore {
             id: "execution-1".to_string(),
             workflow: WorkflowDefinition {
                 name: "workflow".to_string(),
@@ -3719,7 +3758,7 @@ mod tests {
                 ..Default::default()
             },
             state,
-            ..WorkflowExecutionRestore::default()
+            ..ExecutionTreeRestore::default()
         })
     }
 
@@ -4673,8 +4712,8 @@ mod tests {
         }
     }
 
-    fn tree_execution(nodes: Vec<NodeDefinition>) -> WorkflowExecution {
-        WorkflowExecution::restore_runtime(WorkflowExecutionRestore {
+    fn tree_execution(nodes: Vec<NodeDefinition>) -> ExecutionTree {
+        ExecutionTree::restore_runtime(ExecutionTreeRestore {
             id: "execution-1".to_string(),
             workflow: WorkflowDefinition {
                 name: "tree".to_string(),
@@ -4682,7 +4721,7 @@ mod tests {
                 nodes,
                 ..Default::default()
             },
-            ..WorkflowExecutionRestore::default()
+            ..ExecutionTreeRestore::default()
         })
     }
 
@@ -4754,7 +4793,7 @@ mod tests {
             .collect()
     }
 
-    pub(super) fn execution_id_of(execution: &WorkflowExecution, node_name: &str) -> String {
+    pub(super) fn execution_id_of(execution: &ExecutionTree, node_name: &str) -> String {
         execution
             .node_executions()
             .iter()
@@ -4767,7 +4806,7 @@ mod tests {
     /// 起動済み leaf 群を先入れ先出しで完了させ続け、実行を終端まで進める。
     /// 完了させた leaf の (node_name, node_execution_id) を完了順で返す。
     fn drive_leaves_to_end(
-        execution: &mut WorkflowExecution,
+        execution: &mut ExecutionTree,
         initial: Vec<NodeStart>,
         new_id: &mut dyn FnMut() -> String,
     ) -> Vec<(String, String)> {
@@ -4791,7 +4830,7 @@ mod tests {
     }
 
     pub(super) fn settle_session_leaf(
-        execution: &mut WorkflowExecution,
+        execution: &mut ExecutionTree,
         node_execution_id: &str,
         new_id: &mut dyn FnMut() -> String,
         timestamp: f64,

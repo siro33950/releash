@@ -27,7 +27,7 @@ impl WorkflowEventRepository for CountingEvents {
         panic!("output get is read-only")
     }
 
-    fn read(&self, id: &WorkflowExecutionId) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
+    fn read(&self, id: &ExecutionTreeId) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
         self.reads.fetch_add(1, Ordering::SeqCst);
         self.repository.read(id)
     }

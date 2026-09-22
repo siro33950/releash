@@ -209,7 +209,7 @@ fn test_daemon終了_subprocess() {
                     adaptor::gateway::workflow::WorkflowRuntimeCommandGateway::new_with_driver(
                         fixture.app.clone(), Arc::new(fixture.host.clone()),
                     ),
-                ))),
+                ), Arc::new(crate::adaptor::gateway::workflow::ExecutionTreeArchiveFactRepository::from_backend(crate::adaptor::gateway::workflow::fact_log::FactLogReadBackend::Live(fixture.app.store.clone().unwrap()))))),
                 terminal,
                 server,
                 stop_observer: Arc::new(|| {}),
@@ -229,4 +229,42 @@ fn test_daemon終了_subprocess() {
         }
     }).unwrap_err();
     panic!("daemon wait returned: {error}");
+}
+
+#[tokio::test]
+async fn test_daemon起動のarchive移行結線_未終了対象をabortし事実保存後に旧ファイルを削除する() {
+    use crate::adaptor::gateway::workflow::workflow_host::test_helpers::{
+        archive_fixture, archive_workflow,
+    };
+    use crate::domain::workflow::{ExecutionStatus, ExecutionTreeArchiveRepository};
+    // Given
+    let fixture = archive_fixture();
+    let id = archive_workflow(&fixture).await;
+    let path = fixture
+        .directory
+        .path()
+        .join("workflow_execution_archives.json");
+    std::fs::write(&path, serde_json::json!({"executions": {id.clone(): {"archivedAt": 12.345678, "archiveReason": "manual"}}}).to_string()).unwrap();
+    // When
+    migrate_legacy_execution_archives(
+        fixture.directory.path(),
+        fixture.store.clone(),
+        &fixture.runtime,
+    )
+    .await
+    .unwrap();
+    // Then
+    assert!(!path.exists());
+    assert_eq!(
+        fixture.repository.target(&id).unwrap().status,
+        ExecutionStatus::Aborted
+    );
+    let archived = fixture
+        .repository
+        .archive_snapshot_for(&[id])
+        .unwrap()
+        .records
+        .remove(0);
+    assert_eq!(archived.archived_at, 12.345678);
+    assert_eq!(archived.archive_reason, "manual");
 }

@@ -1,12 +1,13 @@
+#[cfg(test)]
+use crate::domain::agent_session::aggregates::AgentSessionArchiveOutcome;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
 
 use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 
 use crate::domain::agent_session::aggregates::{
-    AgentSession, AgentSessionArchiveOutcome, AgentSessionInitialInstructionOutcome,
-    AgentSessionMutationOutcome, AgentSessionProcessExitOutcome, AgentSessionRecoveryResult,
-    ManagedPtyPresence,
+    AgentSession, AgentSessionInitialInstructionOutcome, AgentSessionMutationOutcome,
+    AgentSessionProcessExitOutcome, AgentSessionRecoveryResult, ManagedPtyPresence,
 };
 use crate::domain::agent_session::repository::{
     AgentSessionRepository, AgentSessionRepositoryError, VersionedAgentSession,
@@ -249,21 +250,7 @@ impl AgentSessionUsecase {
         Ok(outcome)
     }
 
-    pub(crate) async fn complete_restore(
-        &self,
-        agent_session_id: &str,
-        result: AgentSessionRecoveryResult,
-        caller_request_id: &str,
-    ) -> Result<AgentSessionMutationOutcome, AgentSessionUsecaseError> {
-        let mut session = self.required(agent_session_id).await?;
-        let outcome = session
-            .session_mut()
-            .complete_restore(result)
-            .map_err(|_| AgentSessionUsecaseError::InvalidOperation)?;
-        self.save_if_changed(session, caller_request_id).await?;
-        Ok(outcome)
-    }
-
+    #[cfg(test)]
     pub(crate) async fn archive(
         &self,
         agent_session_id: &str,
@@ -287,22 +274,6 @@ impl AgentSessionUsecase {
         let authorization = session
             .session()
             .authorize_delete()
-            .map_err(|_| AgentSessionUsecaseError::InvalidOperation)?;
-        self.repository
-            .remove(session, authorization, caller_request_id)
-            .await
-            .map_err(map_repository_error)
-    }
-
-    pub(crate) async fn confirm_archive_fallback_delete(
-        &self,
-        agent_session_id: &str,
-        caller_request_id: &str,
-    ) -> Result<(), AgentSessionUsecaseError> {
-        let session = self.required(agent_session_id).await?;
-        let authorization = session
-            .session()
-            .authorize_archive_fallback_delete()
             .map_err(|_| AgentSessionUsecaseError::InvalidOperation)?;
         self.repository
             .remove(session, authorization, caller_request_id)

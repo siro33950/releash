@@ -385,6 +385,7 @@ async fn test_provider_session_title_ingestion_タイトル事実から単独ses
         "workspace",
         format!("/repo/{session_id}"),
         ProviderKind::Claude,
+        None,
     )
     .unwrap();
     let meta = root.meta.clone();

@@ -11,8 +11,8 @@ use crate::domain::agent_session::repository::AgentSessionRepository;
 use crate::domain::local_event::WorkflowExecutionMetadataRecord;
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::workflow::{
-    AgentSessionActivity, ExecutionOrigin, ExecutionStatus, NodeFact, StopReceivedFact, TokenUsage,
-    WorkflowExecutionArchiveSnapshot, WorkflowExecutionId, WorkflowExecutionManualArchiveRecord,
+    AgentSessionActivity, ExecutionOrigin, ExecutionStatus, ExecutionTreeArchiveRecord,
+    ExecutionTreeArchiveSnapshot, NodeFact, StopReceivedFact, TokenUsage,
 };
 use crate::domain::workspace_tree::{
     WorkspaceNodeStatus, WorkspaceNodeStatusClassification, WorkspaceTreeNode,
@@ -23,28 +23,81 @@ use crate::usecase::agent_session::{
 
 struct EmptyArchives;
 
-impl WorkflowExecutionArchiveRepository for EmptyArchives {
-    fn archive_manual(
+impl ExecutionTreeArchiveRepository for EmptyArchives {
+    fn location(
         &self,
-        _execution_id: &WorkflowExecutionId,
+        id: &str,
+    ) -> Result<crate::domain::workflow::ExecutionTreeArchiveCandidate, WorkflowError> {
+        Ok(crate::domain::workflow::ExecutionTreeArchiveCandidate {
+            execution_id: id.into(),
+            worktree_path: "/tmp/wt".into(),
+            workspace_identity: "/tmp/wt".into(),
+            repository_root: None,
+        })
+    }
+    fn worktree_identity(&self, path: &str) -> Result<String, WorkflowError> {
+        Ok(crate::domain::repository::normalize_repo_path(path))
+    }
+    fn record_repository_root(&self, _: &str, _: &str, _: f64) -> Result<(), WorkflowError> {
+        unreachable!()
+    }
+    fn candidate_page(
+        &self,
+        _: Option<&str>,
+    ) -> Result<Vec<crate::domain::workflow::ExecutionTreeArchiveCandidate>, WorkflowError> {
+        unreachable!()
+    }
+    fn legacy_session_archive_page(
+        &self,
+        _: Option<&str>,
+    ) -> Result<Vec<crate::domain::workflow::ExecutionTreeArchiveRecord>, WorkflowError> {
+        Ok(Vec::new())
+    }
+
+    fn worktree_target_page(
+        &self,
+        _: &str,
+        _: Option<&str>,
+    ) -> Result<Vec<crate::domain::workflow::ExecutionTreeArchiveCandidate>, WorkflowError> {
+        unreachable!()
+    }
+    fn target(
+        &self,
+        _: &str,
+    ) -> Result<crate::domain::workflow::ExecutionTreeArchiveTarget, WorkflowError> {
+        unreachable!()
+    }
+    fn legacy_archives(
+        &self,
+    ) -> Result<Vec<crate::domain::workflow::ExecutionTreeArchiveRecord>, WorkflowError> {
+        Ok(Vec::new())
+    }
+    fn finish_legacy_migration(&self) -> Result<(), WorkflowError> {
+        Ok(())
+    }
+
+    fn archive(
+        &self,
+        _execution_id: &crate::domain::workflow::ExecutionTreeId,
         _archived_at: f64,
+        _reason: &str,
     ) -> Result<(), WorkflowError> {
         Ok(())
     }
 
-    fn restore_manual(
+    fn restore(
         &self,
-        _execution_id: &WorkflowExecutionId,
+        _execution_id: &crate::domain::workflow::ExecutionTreeId,
         _restored_at: f64,
     ) -> Result<(), WorkflowError> {
         Ok(())
     }
 
-    fn manual_archive_snapshot_for(
+    fn archive_snapshot_for(
         &self,
         _execution_ids: &[String],
-    ) -> Result<WorkflowExecutionArchiveSnapshot, WorkflowError> {
-        Ok(WorkflowExecutionArchiveSnapshot {
+    ) -> Result<ExecutionTreeArchiveSnapshot, WorkflowError> {
+        Ok(ExecutionTreeArchiveSnapshot {
             records: Vec::new(),
         })
     }
@@ -55,36 +108,90 @@ struct ArchivedExecution {
     archived_at: f64,
 }
 
-impl WorkflowExecutionArchiveRepository for ArchivedExecution {
-    fn archive_manual(
+impl ExecutionTreeArchiveRepository for ArchivedExecution {
+    fn location(
         &self,
-        _execution_id: &WorkflowExecutionId,
+        id: &str,
+    ) -> Result<crate::domain::workflow::ExecutionTreeArchiveCandidate, WorkflowError> {
+        Ok(crate::domain::workflow::ExecutionTreeArchiveCandidate {
+            execution_id: id.into(),
+            worktree_path: "/tmp/wt".into(),
+            workspace_identity: "/tmp/wt".into(),
+            repository_root: None,
+        })
+    }
+    fn worktree_identity(&self, path: &str) -> Result<String, WorkflowError> {
+        Ok(crate::domain::repository::normalize_repo_path(path))
+    }
+    fn record_repository_root(&self, _: &str, _: &str, _: f64) -> Result<(), WorkflowError> {
+        unreachable!()
+    }
+    fn candidate_page(
+        &self,
+        _: Option<&str>,
+    ) -> Result<Vec<crate::domain::workflow::ExecutionTreeArchiveCandidate>, WorkflowError> {
+        unreachable!()
+    }
+    fn legacy_session_archive_page(
+        &self,
+        _: Option<&str>,
+    ) -> Result<Vec<crate::domain::workflow::ExecutionTreeArchiveRecord>, WorkflowError> {
+        Ok(Vec::new())
+    }
+
+    fn worktree_target_page(
+        &self,
+        _: &str,
+        _: Option<&str>,
+    ) -> Result<Vec<crate::domain::workflow::ExecutionTreeArchiveCandidate>, WorkflowError> {
+        unreachable!()
+    }
+    fn target(
+        &self,
+        _: &str,
+    ) -> Result<crate::domain::workflow::ExecutionTreeArchiveTarget, WorkflowError> {
+        unreachable!()
+    }
+    fn legacy_archives(
+        &self,
+    ) -> Result<Vec<crate::domain::workflow::ExecutionTreeArchiveRecord>, WorkflowError> {
+        Ok(Vec::new())
+    }
+    fn finish_legacy_migration(&self) -> Result<(), WorkflowError> {
+        Ok(())
+    }
+
+    fn archive(
+        &self,
+        _execution_id: &crate::domain::workflow::ExecutionTreeId,
         _archived_at: f64,
+        _reason: &str,
     ) -> Result<(), WorkflowError> {
         Ok(())
     }
 
-    fn restore_manual(
+    fn restore(
         &self,
-        _execution_id: &WorkflowExecutionId,
+        _execution_id: &crate::domain::workflow::ExecutionTreeId,
         _restored_at: f64,
     ) -> Result<(), WorkflowError> {
         Ok(())
     }
 
-    fn manual_archive_snapshot_for(
+    fn archive_snapshot_for(
         &self,
         execution_ids: &[String],
-    ) -> Result<WorkflowExecutionArchiveSnapshot, WorkflowError> {
+    ) -> Result<ExecutionTreeArchiveSnapshot, WorkflowError> {
         let records = execution_ids
             .contains(&self.execution_id)
-            .then(|| WorkflowExecutionManualArchiveRecord {
+            .then(|| ExecutionTreeArchiveRecord {
                 execution_id: self.execution_id.clone(),
                 archived_at: self.archived_at,
+                archive_reason: "manual".to_string(),
             })
             .into_iter()
             .collect();
-        Ok(WorkflowExecutionArchiveSnapshot { records })
+        Ok(ExecutionTreeArchiveSnapshot { records })
     }
 }
 
@@ -849,6 +956,7 @@ fn tree_owner(execution_id: &str) -> WorkspaceTreeNode {
     owner.attempt = None;
     owner.can_approve = false;
     owner.can_abort = true;
+    owner.can_archive = true;
     owner
 }
 
@@ -979,7 +1087,8 @@ fn standalone_session_is_a_public_node_root_with_backend_lifecycle_capabilities(
     assert_eq!(json[0]["sessionCapabilities"]["sessionRef"], "session-ref");
     assert_eq!(json[0]["sessionCapabilities"]["canArchive"], true);
     assert_eq!(json[0]["sessionCapabilities"]["canDelete"], false);
-    assert!(json[0]["workflowCapabilities"].is_null());
+    assert_eq!(json[0]["workflowCapabilities"]["canArchive"], true);
+    assert_eq!(json[0]["workflowCapabilities"]["canAbort"], true);
 }
 
 #[test]
@@ -1718,4 +1827,116 @@ fn test_過去attempt_子のないsessionとcommandも通常行と同じkindを�
         assert!(past.get("children").is_none());
         assert_eq!(past["pastAttempts"], serde_json::json!([]));
     }
+}
+
+#[test]
+fn test_archive履歴_手動とworktree消失の事実の時刻と理由をそのまま投影する() {
+    use crate::adaptor::gateway::workflow::{fact_log, ExecutionTreeArchiveFactRepository};
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let store =
+        LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into())).unwrap();
+    let archives = Arc::new(ExecutionTreeArchiveFactRepository::new(
+        store.clone(),
+        directory.path(),
+    ));
+    let query = SqliteWorkspaceQueryService::with_repository(
+        SqliteWorkspaceTreeRepository::new(store.clone()),
+        archives.clone(),
+    );
+    let fixtures = [
+        ("00000000-0000-4000-8000-000000000901", 12.345678, "manual"),
+        (
+            "00000000-0000-4000-8000-000000000902",
+            98.765432,
+            "worktree_removed",
+        ),
+    ];
+    for (id, at, reason) in fixtures {
+        seed_workflow_session_facts(
+            &store,
+            WorkflowSessionFactSeed {
+                workflow_name: "history",
+                request: "test",
+                worktree_path: "/repo",
+                provider: ProviderKind::Codex,
+                workflow_execution_id: id,
+                node_execution_id: &format!("node-{id}"),
+                session_id: &format!("session-{id}"),
+                initial_instruction_admitted: true,
+            },
+        )
+        .unwrap();
+        let root = fact_log::read_tree_records(&store, id).unwrap().remove(0);
+        fact_log::append_single_fact(&store, &root.meta, &NodeFact::AbortRequested, 2).unwrap();
+        archives
+            .archive(
+                &crate::domain::workflow::ExecutionTreeId::new(id).unwrap(),
+                at,
+                reason,
+            )
+            .unwrap();
+    }
+    // When
+    let history = query
+        .workflow_history(&WorkspaceIdentity::new("/repo"))
+        .unwrap();
+    // Then
+    assert_eq!(history.len(), 2);
+    for (id, at, reason) in fixtures {
+        let item = history.iter().find(|item| item.execution_id == id).unwrap();
+        assert_eq!(item.archived_at, at);
+        assert_eq!(item.archive_reason, reason);
+        assert_eq!(item.status, "aborted");
+    }
+    assert_eq!(history[0].execution_id, fixtures[1].0);
+}
+
+#[test]
+fn test_workflow単一取得_単独sessionをworkflow_summaryとして返さない() {
+    use crate::domain::workflow::SessionExecutionTreeRootFacts;
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let store =
+        LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into())).unwrap();
+    let session = "00000000-0000-4000-8000-000000000991";
+    let workflow = "00000000-0000-4000-8000-000000000992";
+    let facts =
+        SessionExecutionTreeRootFacts::new(session, "/repo", "/repo", ProviderKind::Codex, None)
+            .unwrap();
+    crate::adaptor::gateway::workflow::fact_log::append_fact_batch_for_seed(
+        &store,
+        &facts.into_facts(),
+        1,
+        session,
+    )
+    .unwrap();
+    seed_workflow_session_facts(
+        &store,
+        WorkflowSessionFactSeed {
+            workflow_name: "workflow",
+            request: "test",
+            worktree_path: "/repo",
+            provider: ProviderKind::Codex,
+            workflow_execution_id: workflow,
+            node_execution_id: "node",
+            session_id: "workflow-session",
+            initial_instruction_admitted: true,
+        },
+    )
+    .unwrap();
+    let query = SqliteWorkspaceQueryService::with_repository(
+        SqliteWorkspaceTreeRepository::new(store),
+        Arc::new(EmptyArchives),
+    );
+    // When / Then
+    assert!(query.execution_summary(session).unwrap().is_none());
+    assert_eq!(
+        query
+            .execution_summary(workflow)
+            .unwrap()
+            .unwrap()
+            .execution_id,
+        workflow
+    );
 }

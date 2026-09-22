@@ -72,7 +72,7 @@ use crate::usecase::workflow::runtime_resolver::{
 use crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot;
 use crate::usecase::workflow::runtime_start_guard as workflow_runtime_start_guard;
 use execution_registry::find_any_by_worktree;
-use execution_state::DomainWorkflowExecution;
+use execution_state::DomainExecutionTree;
 use node_settings::WorkflowDefaults;
 use output_limit as workflow_output_limit;
 use prompt_rendering as workflow_prompt;
@@ -99,11 +99,11 @@ fn current_timestamp() -> f64 {
 /// Workflow 集約を保持し、usecase の駆動手順を外界へ接続する gateway host。
 #[derive(Clone)]
 pub struct WorkflowRuntimeHost {
-    /// `execution_id` → `DomainWorkflowExecution` の in-memory マッピング。
-    /// HashMap キーは `DomainWorkflowExecution.id`（= `execution_id`）と一致する。
-    /// `worktree_path` は `DomainWorkflowExecution.worktree_path` 属性として保持し、
+    /// `execution_id` → `DomainExecutionTree` の in-memory マッピング。
+    /// HashMap キーは `DomainExecutionTree.id`（= `execution_id`）と一致する。
+    /// `worktree_path` は `DomainExecutionTree.worktree_path` 属性として保持し、
     /// `worktree_path → execution_id` の補助解決は Execution Store の secondary index 経由で行う。
-    executions: Arc<Mutex<HashMap<String, DomainWorkflowExecution>>>,
+    executions: Arc<Mutex<HashMap<String, DomainExecutionTree>>>,
     /// create commit 前の Session 実行木を startup reconciliation から保護する予約。
     execution_tree_reservations: Arc<Mutex<HashSet<String>>>,
     /// execution_id → 解決済み facet 本文。workflow state / event には含めない runtime-local read model。
@@ -149,8 +149,8 @@ impl RequiredEventCommitFailure {
 
 struct ControlPlaneCommitCandidate<'a> {
     execution_id: &'a str,
-    snapshot_before: DomainWorkflowExecution,
-    candidate: DomainWorkflowExecution,
+    snapshot_before: DomainExecutionTree,
+    candidate: DomainExecutionTree,
     transition_outcome: TransitionOutcome,
     events: &'a [WorkflowEvent],
     provider_events: Vec<crate::domain::provider_lifecycle::ScopedProviderLifecycleEvent>,
@@ -273,7 +273,7 @@ fn build_command_artifact(
 }
 
 fn commit_snapshot_is_current(
-    exec: &DomainWorkflowExecution,
+    exec: &DomainExecutionTree,
     snapshot: &RuntimeCommitSnapshot,
 ) -> bool {
     exec.id == snapshot.execution_id
@@ -290,7 +290,7 @@ impl WorkflowRuntimeHost {
     pub(crate) async fn load_control_plane_execution(
         &self,
         execution_id: &str,
-    ) -> Option<DomainWorkflowExecution> {
+    ) -> Option<DomainExecutionTree> {
         self.executions.lock().await.get(execution_id).cloned()
     }
 
@@ -586,19 +586,15 @@ impl WorkflowRuntimeHost {
             workflow_defaults,
             now,
         } = input;
-        let repository_root = if workflow
-            .nodes
-            .iter()
-            .any(crate::domain::workflow::NodeDefinition::is_isolated)
-        {
-            Some(
-                self.isolated_worktrees
-                    .repository_root(&worktree_path)
-                    .map_err(|error| WorkflowRuntimeError::SessionStore(error.to_string()))?,
-            )
-        } else {
-            None
-        };
+        let execution_id = crate::domain::workflow::WorkflowExecutionId::new(execution_id)
+            .map_err(|error| WorkflowRuntimeError::ValidationError(error.to_string()))?
+            .as_str()
+            .to_string();
+        let repository_root = Some(
+            self.isolated_worktrees
+                .repository_root(&worktree_path)
+                .map_err(|error| WorkflowRuntimeError::SessionStore(error.to_string()))?,
+        );
         let mut execution = crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
             id: execution_id.clone(),
             workflow: workflow.clone(),
@@ -620,7 +616,7 @@ impl WorkflowRuntimeHost {
         };
 
         let mut execs = self.executions.lock().await;
-        DomainWorkflowExecution::validate_start(
+        DomainExecutionTree::validate_start(
             &workflow,
             find_any_by_worktree(&execs, &worktree_path),
         )?;
@@ -660,6 +656,14 @@ impl WorkflowRuntimeHost {
             .map_err(WorkflowRuntimeError::SessionStore)?;
         let mut first_recovery_error = None;
         for tree_id in tree_ids {
+            if self
+                .execution_tree_is_registered_or_reserved(&tree_id)
+                .await
+            {
+                continue;
+            }
+            let activation_gate = self.runtime_activation_gate(&tree_id).await;
+            let activation_guard = activation_gate.lock.lock().await;
             if self
                 .execution_tree_is_registered_or_reserved(&tree_id)
                 .await
@@ -736,6 +740,7 @@ impl WorkflowRuntimeHost {
                 let mut executions = self.executions.lock().await;
                 executions.insert(tree_id.clone(), folded.aggregate.clone());
             }
+            drop(activation_guard);
             // 4) 未起動または前進で生まれた leaf を起動する。失敗した tree は
             //    registry から戻し、次の reconciliation 呼び出しで再試行できるようにする。
             if !pending_leaves.is_empty() {
@@ -2505,7 +2510,7 @@ mod workflow_host_tests {
                     Arc::new(AcceptingWorktreeResolver),
                     Arc::new(ExecutionStore::new_in_memory_for_tests()),
                     Arc::new(FailingWorkflowAgentSessions),
-                    Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
+                    Arc::new(test_helpers::TestWorktrees::default()),
                 ));
                 let node_name = if parent.is_empty() { "main" } else { "run" };
                 let workflow = serde_saphyr::from_str::<WorkflowDefinition>(&format!(
@@ -2685,7 +2690,7 @@ mod workflow_host_tests {
             Arc::new(AcceptingWorktreeResolver),
             Arc::new(ExecutionStore::new_in_memory_for_tests()),
             Arc::new(FailingWorkflowAgentSessions),
-            Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
+            Arc::new(test_helpers::TestWorktrees::default()),
         );
         let workflow = serde_saphyr::from_str::<WorkflowDefinition>(
             r#"name: missing-command-env
@@ -2759,7 +2764,7 @@ nodes:
             Arc::new(AcceptingWorktreeResolver),
             Arc::new(ExecutionStore::new_in_memory_for_tests()),
             Arc::new(FailingWorkflowAgentSessions),
-            Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
+            Arc::new(test_helpers::TestWorktrees::default()),
         );
         let workflow = serde_saphyr::from_str::<WorkflowDefinition>(
             r#"name: nul-command-env
@@ -3383,7 +3388,7 @@ nodes:
                 Arc::new(AcceptingWorktreeResolver),
                 Arc::new(ExecutionStore::new_in_memory_for_tests()),
                 sessions,
-                Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
+                Arc::new(test_helpers::TestWorktrees::default()),
             ));
             let nodes = vec![NodeDefinition {
                 name: EFFECT_NODE_NAME.to_string(),
@@ -3471,7 +3476,7 @@ nodes:
                 Arc::new(OrderedWorkflowAgentSessions {
                     calls: calls.clone(),
                 }),
-                Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
+                Arc::new(test_helpers::TestWorktrees::default()),
             ));
             let session_node = |name: &str| NodeDefinition {
                 name: name.to_string(),
@@ -3897,7 +3902,7 @@ nodes:
                 Arc::new(AcceptingWorktreeResolver),
                 Arc::new(ExecutionStore::new_in_memory_for_tests()),
                 sessions.clone(),
-                Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
+                Arc::new(test_helpers::TestWorktrees::default()),
             ));
             let gateway = Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(
                 app.clone(),
@@ -4088,7 +4093,7 @@ nodes:
                     recovery_fails: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                     failing_agent_session_id: String::new(),
                 }),
-                Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
+                Arc::new(test_helpers::TestWorktrees::default()),
             ));
             host.register_started_execution_tree(&app, session_id)
                 .await
@@ -4778,10 +4783,15 @@ nodes:
                 directory.path().to_path_buf(),
             ))
             .unwrap();
-            let mut fact =
-                SessionExecutionTreeRootFacts::new(TREE_ID, "/repo", "/repo", ProviderKind::Claude)
-                    .unwrap()
-                    .started;
+            let mut fact = SessionExecutionTreeRootFacts::new(
+                TREE_ID,
+                "/repo",
+                "/repo",
+                ProviderKind::Claude,
+                None,
+            )
+            .unwrap()
+            .started;
             let NodeFact::Started(StartedFact {
                 root: Some(root), ..
             }) = &mut fact

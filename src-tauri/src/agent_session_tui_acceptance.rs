@@ -115,7 +115,6 @@ pub struct AcceptanceTerminalLaunchPerformanceSample {
 pub enum AcceptanceArchiveOutcome {
     Archived,
     AlreadyArchived,
-    DeleteConfirmationRequired,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
@@ -256,7 +255,8 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
                     store.clone(),
                 ),
                 Arc::new(
-                    crate::adaptor::gateway::workflow::WorkflowExecutionArchiveFileRepository::new(
+                    crate::adaptor::gateway::workflow::ExecutionTreeArchiveFactRepository::new(
+                        store.clone(),
                         data_dir.clone(),
                     ),
                 ),
@@ -275,7 +275,18 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
             crate::desktop_test_support::workflow_dependencies(app.handle()),
             driver,
         ));
-        let runtime = Arc::new(WorkflowRuntimeUsecase::new(gateway));
+        let runtime = Arc::new(WorkflowRuntimeUsecase::new_with_worktree_operations(
+            gateway,
+            Arc::new(
+                crate::adaptor::gateway::workflow::ExecutionTreeArchiveFactRepository::new(
+                    store.clone(),
+                    data_dir.clone(),
+                ),
+            ),
+            Arc::new(crate::usecase::worktree_operation::WorktreeOperations::new(Arc::new(
+                crate::adaptor::gateway::repository::worktree_operation::FileWorktreeOperationLocks::new(&data_dir),
+            ))),
+        ));
         composition.execution_tree_stops.bind(runtime.clone());
         composition
             .execution_tree_registrations

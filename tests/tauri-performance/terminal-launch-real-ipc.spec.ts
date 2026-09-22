@@ -127,17 +127,10 @@ launchDescribe("Provider AgentSession real Tauri launch performance", () => {
 		});
 		await browser.pause(10);
 		await browser.execute(async (sessionId) => {
-			const outcome = await window.__RELEASH_INVOKE_CLIENT__!("archive_agent_session", {
+			await window.__RELEASH_INVOKE_CLIENT__!("archive_agent_session", {
 				agentSessionId: sessionId,
 				callerRequestId: `performance-archive.${crypto.randomUUID()}`,
 			});
-			if (outcome === "delete_confirmation_required") {
-				await window.__RELEASH_INVOKE_CLIENT__!("confirm_agent_session_archive_delete", {
-					agentSessionId: sessionId,
-					callerRequestId: `performance-confirm-delete.${crypto.randomUUID()}`,
-				});
-				return;
-			}
 			await window.__RELEASH_INVOKE_CLIENT__!("delete_agent_session", {
 				agentSessionId: sessionId,
 				callerRequestId: `performance-delete.${crypto.randomUUID()}`,

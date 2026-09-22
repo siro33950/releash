@@ -1,4 +1,4 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::io;
 use std::path::{Component, Path, PathBuf};
@@ -9,6 +9,87 @@ use crate::domain::local_event::{
     CanonicalRuntimeOwnerView, LocalEventQuery, LocalEventQueryResult,
     LocalEventTransactionRepository,
 };
+
+#[async_trait::async_trait]
+pub(crate) trait ExecutionTreeGc: Send + Sync {
+    fn execution_trees(
+        &self,
+        after: Option<&str>,
+    ) -> Result<
+        Vec<crate::domain::workflow::ExecutionTreeArchiveCandidate>,
+        crate::domain::workflow::WorkflowError,
+    >;
+    fn record_repository_root(
+        &self,
+        execution_id: &str,
+        root: &str,
+    ) -> Result<(), crate::domain::workflow::WorkflowError>;
+    async fn archive_removed_tree(
+        &self,
+        execution_id: &str,
+    ) -> Result<(), crate::domain::workflow::WorkflowError>;
+}
+
+pub(crate) async fn archive_removed_execution_trees(
+    resolution: Option<&LiveWorktreeResolution>,
+    trees: &dyn ExecutionTreeGc,
+) -> Result<u64, crate::domain::workflow::WorkflowError> {
+    let Some(resolution) = resolution else {
+        return Ok(0);
+    };
+    let mut errors = 0;
+    let mut after = None;
+    loop {
+        let page = trees.execution_trees(after.as_deref())?;
+        let Some(last) = page.last() else { break };
+        after = Some(last.execution_id.clone());
+        for tree in page {
+            let repository_root = tree
+                .repository_root
+                .as_deref()
+                .map(worktree_path_key)
+                .or_else(|| {
+                    resolution
+                        .worktree_repositories
+                        .get(&worktree_path_key(&tree.worktree_path))
+                        .cloned()
+                })
+                .or_else(|| {
+                    crate::domain::app_data_gc::repository_for_worktree(
+                        &worktree_path_key(&tree.workspace_identity),
+                        &worktree_path_key(&tree.worktree_path),
+                        &resolution.repository_paths,
+                    )
+                    .map(str::to_string)
+                });
+            if let Some(root) = &repository_root {
+                if let Err(error) = trees.record_repository_root(&tree.execution_id, root) {
+                    errors += 1;
+                    log::warn!(
+                        "execution tree GC failed to record repository for {}: {error}",
+                        tree.execution_id
+                    );
+                    continue;
+                }
+            }
+            if crate::domain::app_data_gc::worktree_removed(
+                &worktree_path_key(&tree.worktree_path),
+                repository_root.as_deref(),
+                &resolution.live_worktrees.paths,
+                &resolution.unresolved_repo_paths,
+            ) {
+                if let Err(error) = trees.archive_removed_tree(&tree.execution_id).await {
+                    errors += 1;
+                    log::warn!(
+                        "execution tree GC failed to archive {}: {error}",
+                        tree.execution_id
+                    );
+                }
+            }
+        }
+    }
+    Ok(errors)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GcFileType {
@@ -122,6 +203,8 @@ impl LiveWorktreeSet {
 pub(crate) struct LiveWorktreeResolution {
     live_worktrees: LiveWorktreeSet,
     unresolved_repo_paths: Vec<String>,
+    repository_paths: Vec<String>,
+    worktree_repositories: HashMap<String, String>,
     unresolved_workspace_state_key_prefixes: HashSet<String>,
 }
 
@@ -132,6 +215,8 @@ impl LiveWorktreeResolution {
         unresolved_workspace_state_key_prefixes: HashSet<String>,
     ) -> Self {
         Self {
+            repository_paths: Vec::new(),
+            worktree_repositories: HashMap::new(),
             live_worktrees,
             unresolved_repo_paths: unresolved_repo_paths
                 .into_iter()
@@ -139,6 +224,19 @@ impl LiveWorktreeResolution {
                 .collect(),
             unresolved_workspace_state_key_prefixes,
         }
+    }
+
+    pub(crate) fn with_repository_paths(mut self, paths: Vec<String>) -> Self {
+        self.repository_paths = paths
+            .into_iter()
+            .map(|path| worktree_path_key(&path))
+            .collect();
+        self
+    }
+
+    pub(crate) fn with_worktree_repositories(mut self, owners: HashMap<String, String>) -> Self {
+        self.worktree_repositories = owners;
+        self
     }
 
     fn contains_workspace_state_key(&self, key: &str) -> bool {
@@ -623,3 +721,7 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+#[path = "execution_tree_gc_test.rs"]
+mod execution_tree_gc_tests;

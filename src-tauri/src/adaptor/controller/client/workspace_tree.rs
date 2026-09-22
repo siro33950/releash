@@ -146,30 +146,26 @@ pub(crate) async fn rename_workspace_session_node_shared(
 
 pub(crate) async fn archive_workspace_workflow_execution_shared(
     app_state: &AppState,
+    runtime: &crate::usecase::workflow::WorkflowRuntimeUsecase,
     worktree_path: String,
     execution_id: String,
 ) -> Result<(), String> {
-    let workflow_usecase = app_state.workflow_usecase.clone();
-    tokio::task::spawn_blocking(move || {
-        workflow_usecase
-            .archive_workspace_workflow_execution(&worktree_path, &execution_id)
-            .map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| format!("task join error: {e}"))?
+    app_state
+        .workflow_usecase
+        .archive_workspace_workflow_execution(runtime, &worktree_path, &execution_id)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 pub(crate) async fn restore_workspace_workflow_execution_shared(
     app_state: &AppState,
+    runtime: &crate::usecase::workflow::WorkflowRuntimeUsecase,
     worktree_path: String,
     execution_id: String,
 ) -> Result<(), String> {
-    let workflow_usecase = app_state.workflow_usecase.clone();
-    tokio::task::spawn_blocking(move || {
-        workflow_usecase
-            .restore_workspace_workflow_execution(&worktree_path, &execution_id)
-            .map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| format!("task join error: {e}"))?
+    app_state
+        .workflow_usecase
+        .restore_workspace_workflow_execution(runtime, &worktree_path, &execution_id)
+        .await
+        .map_err(|error| error.to_string())
 }

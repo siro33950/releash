@@ -132,6 +132,7 @@ impl ProviderSessionStartTransaction for MemoryAgentSessions {
 
 #[derive(Default)]
 struct MemoryWorkflowStops {
+    operations: crate::usecase::worktree_operation::WorktreeOperations,
     commits: Mutex<
         Vec<(
             ProviderExecutionTreeStopCommand,
@@ -142,6 +143,18 @@ struct MemoryWorkflowStops {
 
 #[async_trait::async_trait]
 impl ProviderExecutionTreeStopTransaction for MemoryWorkflowStops {
+    fn begin_worktree_mutation(
+        &self,
+        path: &str,
+    ) -> Result<
+        crate::usecase::worktree_operation::WorktreeMutationGuard,
+        super::ProviderLifecycleIngressUsecaseError,
+    > {
+        self.operations
+            .mutate(path)
+            .map_err(|_| super::ProviderLifecycleIngressUsecaseError::Conflict)
+    }
+
     async fn commit_provider_stop(
         &self,
         command: ProviderExecutionTreeStopCommand,
@@ -388,6 +401,102 @@ async fn workflow_origin_stop_uses_the_atomic_provider_workflow_commit_boundary(
         .unwrap();
     assert_eq!(stop_failure, ProviderLifecycleIngressResult::Applied);
     assert_eq!(transaction.commits.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn test_worktree削除中_provider_hookの状態変更を保存前に拒否する() {
+    // Given
+    let id = "agent-deleting-hook";
+    let mut session = AgentSession::create(
+        id,
+        WorkspaceIdentity::new("/repo/worktree"),
+        "/repo/worktree",
+        ProviderKind::Codex,
+        session_location(id),
+    )
+    .unwrap();
+    session.take_uncommitted_events();
+    let repository = Arc::new(MemoryAgentSessions {
+        stored: Mutex::new(VersionedAgentSession::restored(session, 1)),
+        fail_save: false,
+        fail_activity_save: false,
+        save_observed: None,
+    });
+    let before = repository.stored.lock().unwrap().clone();
+    let transaction = Arc::new(MemoryWorkflowStops::default());
+    let health = Arc::new(MemoryHookHealth::default());
+    let lifecycle = Arc::new(ProviderLifecycleUsecase::new(
+        Arc::new(LocalProviderLifecycleCredentialGateway),
+        Arc::new(MemoryLifecycleEvents),
+    ));
+    let ingress = ProviderLifecycleIngressUsecase::new(
+        lifecycle.clone(),
+        Arc::new(AgentSessionUsecase::new(repository.clone())),
+        Arc::new(ProviderHookHealthUsecase::new(health.clone())),
+        repository.clone(),
+        transaction.clone(),
+        Arc::new(RecordingChangeNotifier::default()),
+    );
+    let slot = ProviderLifecycleSlotId::new("slot-deleting-hook").unwrap();
+    let scope = ProviderLifecycleScope::new(id).unwrap();
+    let armed = lifecycle
+        .arm(slot.clone(), ProviderKind::Codex, scope.clone())
+        .await
+        .unwrap();
+    let _deletion = transaction
+        .operations
+        .delete("/repo/worktree")
+        .await
+        .unwrap();
+    // When / Then
+    for signal in [
+        ProviderLifecycleSignal::session_started(
+            armed.binding_id(),
+            ProviderKind::Codex,
+            scope.clone(),
+            "provider",
+            None,
+        )
+        .unwrap(),
+        ProviderLifecycleSignal::stop_observed(
+            armed.binding_id(),
+            ProviderKind::Codex,
+            scope.clone(),
+            "provider",
+            None,
+        )
+        .unwrap(),
+        ProviderLifecycleSignal::activity_observed(
+            armed.binding_id(),
+            ProviderKind::Codex,
+            scope.clone(),
+            "provider",
+            None,
+            AgentSessionActivity::Working,
+        )
+        .unwrap(),
+    ] {
+        assert_eq!(
+            ingress.receive(&slot, armed.capability(), signal).await,
+            Err(ProviderLifecycleIngressUsecaseError::Conflict)
+        );
+    }
+    let unavailable = ProviderLifecycleUnavailableObservation::new(
+        armed.binding_id(),
+        ProviderKind::Codex,
+        scope,
+        ProviderLifecycleUnavailableReason::LocalApiUnavailable,
+    )
+    .unwrap();
+    assert_eq!(
+        ingress
+            .report_unavailable(&slot, armed.capability(), unavailable)
+            .await,
+        Err(ProviderLifecycleIngressUsecaseError::Conflict)
+    );
+    assert_eq!(*repository.stored.lock().unwrap(), before);
+    assert!(transaction.commits.lock().unwrap().is_empty());
+    assert!(health.stored.lock().unwrap().is_empty());
 }
 
 async fn assert_activity_ingress_for_location(

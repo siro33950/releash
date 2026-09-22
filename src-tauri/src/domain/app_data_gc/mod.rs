@@ -90,9 +90,91 @@ pub(crate) fn is_expired(now_secs: f64, updated_at_secs: f64, threshold_secs: u6
         && now_secs - updated_at_secs > threshold_secs as f64
 }
 
+pub(crate) fn repository_for_worktree<'a>(
+    workspace: &str,
+    worktree: &str,
+    repositories: &'a [String],
+) -> Option<&'a str> {
+    repositories
+        .iter()
+        .find(|repository| {
+            let directory = crate::domain::repository::worktree_dir(repository);
+            [workspace, worktree].iter().any(|path| {
+                *path == repository.as_str()
+                    || path
+                        .strip_prefix(&directory)
+                        .is_some_and(|suffix| suffix.starts_with('/'))
+            })
+        })
+        .map(String::as_str)
+}
+
+pub(crate) fn worktree_removed(
+    worktree_path: &str,
+    repository_root: Option<&str>,
+    live_paths: &std::collections::HashSet<String>,
+    unresolved_repositories: &[String],
+) -> bool {
+    !live_paths.contains(worktree_path)
+        && match repository_root {
+            Some(root) => !unresolved_repositories
+                .iter()
+                .any(|unresolved| unresolved == root),
+            None => unresolved_repositories.is_empty(),
+        }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_旧実行木の所属repo_標準worktree配置から対象だけを特定する() {
+        // Given
+        let repositories = vec!["/repos/a".to_string(), "/repos/b".to_string()];
+        let live = std::collections::HashSet::new();
+        // When
+        let owner =
+            repository_for_worktree("/repos/a-worktrees/feature", "/isolated", &repositories);
+        // Then
+        assert_eq!(owner, Some("/repos/a"));
+        assert!(worktree_removed(
+            "/repos/a-worktrees/feature",
+            owner,
+            &live,
+            &["/repos/b".into()]
+        ));
+        assert!(!worktree_removed(
+            "/repos/a-worktrees/feature",
+            owner,
+            &live,
+            &["/repos/a".into()]
+        ));
+        assert_eq!(
+            repository_for_worktree(
+                "/repos/a-worktrees-other/feature",
+                "/unknown",
+                &repositories
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn test_worktree消失判定_登録済みと読めないリポジトリを保持する() {
+        let live = std::collections::HashSet::from(["/live".to_string()]);
+        let unresolved = vec!["/unreadable".to_string()];
+        assert!(!worktree_removed("/live", Some("/repo"), &live, &[]));
+        assert!(worktree_removed("/gone", Some("/repo"), &live, &unresolved));
+        assert!(!worktree_removed(
+            "/gone",
+            Some("/unreadable"),
+            &live,
+            &unresolved
+        ));
+        assert!(!worktree_removed("/gone", None, &live, &unresolved));
+        assert!(worktree_removed("/gone", None, &live, &[]));
+    }
 
     #[test]
     fn retention_uses_the_strict_seven_day_boundary() {

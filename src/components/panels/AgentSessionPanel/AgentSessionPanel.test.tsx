@@ -348,7 +348,8 @@ describe("AgentSessionPanel", () => {
 				expect.objectContaining({ agentSessionId: "agent-session-1" }),
 			);
 		});
-		expect(await screen.findByTestId("provider-terminal")).toBeVisible();
+		expect(await screen.findByText("AgentSession is paused.")).toBeVisible();
+		expect(screen.queryByTestId("provider-terminal")).toBeNull();
 	});
 });
 
@@ -425,7 +426,7 @@ describe("AgentSessionRoute", () => {
 		expect(screen.queryByText("Loading AgentSession...")).toBeNull();
 	});
 
-	it("Restore後にbackend read modelを再取得してOpen操作を表示する", async () => {
+	it("Restore後にbackend read modelを再取得してPausedのResume操作を表示する", async () => {
 		const archived = {
 			...session,
 			lifecycle: "archived" as const,
@@ -441,7 +442,15 @@ describe("AgentSessionRoute", () => {
 		mockInvoke.mockImplementation((command) => {
 			if (command === "get_agent_session") {
 				getReads += 1;
-				return Promise.resolve(getReads === 1 ? archived : session);
+				return Promise.resolve(
+					getReads === 1
+						? archived
+						: {
+								...session,
+								lifecycle: "paused",
+								operations: { ...session.operations, canResume: true },
+							},
+				);
 			}
 			if (command === "open_agent_session") {
 				openCalls += 1;
@@ -459,7 +468,9 @@ describe("AgentSessionRoute", () => {
 
 		fireEvent.click(await screen.findByRole("button", { name: "Restore" }));
 
-		expect(await screen.findByTestId("provider-terminal")).toBeVisible();
+		expect(await screen.findByRole("button", { name: "Resume" })).toBeVisible();
+		expect(screen.queryByTestId("provider-terminal")).toBeNull();
+		expect(openCalls).toBe(1);
 		expect(screen.queryByRole("button", { name: "Archive" })).toBeNull();
 		await waitFor(() => expect(getReads).toBe(2));
 	});
@@ -630,9 +641,6 @@ describe("隔離SessionのWorkspace通知", () => {
 		await waitFor(() => expect(detailReads).toBe(1));
 		fireEvent.click(restore);
 		await waitFor(() => expect(detailReads).toBe(2));
-		expect(await screen.findByTestId("provider-terminal")).toHaveAttribute(
-			"data-cwd",
-			session.worktreePath,
-		);
+		expect(screen.queryByTestId("provider-terminal")).toBeNull();
 	});
 });

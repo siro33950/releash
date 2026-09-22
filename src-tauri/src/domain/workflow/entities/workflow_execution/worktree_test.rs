@@ -1,8 +1,8 @@
 use super::*;
 use serde_json::{json, Value};
 
-fn execution(nodes: &str) -> WorkflowExecution {
-    WorkflowExecution::restore_runtime(WorkflowExecutionRestore {
+fn execution(nodes: &str) -> ExecutionTree {
+    ExecutionTree::restore_runtime(ExecutionTreeRestore {
         id: "execution".into(),
         workflow: serde_saphyr::from_str(&format!(
             "name: isolated\ndescription: test\nnodes:\n{nodes}"
@@ -30,7 +30,7 @@ fn leaves(advance: AppliedAdvance) -> Vec<NodeStart> {
 }
 
 fn complete(
-    execution: &mut WorkflowExecution,
+    execution: &mut ExecutionTree,
     start: &NodeStart,
     artifact: Option<Value>,
     ids: &mut dyn FnMut() -> String,
@@ -376,7 +376,7 @@ fn test_隔離実行_正本のfix_allはfix_and_verifyをslotごとに隔離し�
         "../../../../../../workflows/examples/full-cycle-development.yml"
     ))
     .unwrap();
-    let mut execution = WorkflowExecution::restore_runtime(WorkflowExecutionRestore {
+    let mut execution = ExecutionTree::restore_runtime(ExecutionTreeRestore {
         id: "canonical-fix-execution".into(),
         workflow,
         worktree_path: "/repo".into(),

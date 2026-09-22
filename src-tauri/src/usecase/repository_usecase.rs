@@ -19,6 +19,21 @@ use super::repository_dto::{BranchCardDto, WorktreeEntryDto};
 use super::repository_error::UsecaseError;
 use super::repository_query_service::RepositoryQueryService;
 
+#[async_trait::async_trait]
+pub trait WorktreeExecutionArchiver: Send + Sync {
+    async fn begin_worktree_deletion(
+        &self,
+        worktree_path: &str,
+    ) -> Result<
+        crate::usecase::worktree_operation::WorktreeDeletionGuard,
+        crate::domain::workflow::WorkflowError,
+    >;
+    async fn archive_worktree(
+        &self,
+        worktree_path: &str,
+    ) -> Result<(), crate::domain::workflow::WorkflowError>;
+}
+
 #[derive(Clone)]
 pub struct RepositoryUsecase {
     branch: Arc<dyn BranchRepository>,
@@ -83,11 +98,83 @@ impl RepositoryUsecase {
     /// (4) ブランチ本体を削除、(5) releash-base config を後始末する。
     /// 複数集約（branch / worktree / git_config）をまたぐオーケストレーションは
     /// usecase の責務であり、gateway は単一集約のプリミティブに分解する。
-    pub fn delete_branch(
+    pub async fn delete_branch(
         &self,
+        archives: &dyn WorktreeExecutionArchiver,
         repo_path: &str,
         branch_name: &str,
         force: bool,
+    ) -> Result<(), UsecaseError> {
+        self.validate_branch_deletion(repo_path, branch_name)?;
+
+        // (3) 紐づく worktree を先に削除（checkout 中ブランチは削除不可のため）。
+        //     先に壊れた linked worktree を prune してリカバリーする（旧実装の
+        //     削除前リカバリーと同順）。削除した worktree の releash-base 後始末は
+        //     ブランチ単位で (5) がまとめて行うため、ここでは戻り値を無視する。
+        let targets = self
+            .worktree
+            .list(repo_path)?
+            .into_iter()
+            .filter(|wt| !wt.is_main && wt.branch == branch_name)
+            .map(|wt| self.worktree.validate_removal(repo_path, &wt.path, force))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut deletions = Vec::new();
+        for path in &targets {
+            deletions.push(
+                archives
+                    .begin_worktree_deletion(path)
+                    .await
+                    .map_err(|error| UsecaseError::Rule(error.to_string()))?,
+            );
+        }
+        let invalid_paths = self.worktree.invalid_worktree_paths(repo_path)?;
+        for path in &invalid_paths {
+            deletions.push(
+                archives
+                    .begin_worktree_deletion(path)
+                    .await
+                    .map_err(|error| UsecaseError::Rule(error.to_string()))?,
+            );
+        }
+        self.validate_branch_deletion(repo_path, branch_name)?;
+        for path in &targets {
+            self.worktree.validate_removal(repo_path, path, force)?;
+        }
+        for path in &invalid_paths {
+            archives
+                .archive_worktree(path)
+                .await
+                .map_err(|error| UsecaseError::Rule(error.to_string()))?;
+        }
+        for path in &targets {
+            archives
+                .archive_worktree(path)
+                .await
+                .map_err(|error| UsecaseError::Rule(error.to_string()))?;
+        }
+        self.worktree.prune_invalid(repo_path)?;
+        for path in &targets {
+            self.worktree_terminals.kill_by_worktree(path);
+            self.worktree.remove(repo_path, path, force)?;
+        }
+
+        // (4) ブランチ本体を削除。
+        self.branch.delete(repo_path, branch_name)?;
+
+        // (5) releash-base config を後始末する（best-effort）。ブランチ本体削除
+        //     という主目的の成功後に config 掃除が失敗しても全体を失敗にしない
+        //     （旧実装と等価。リトライ時の branch not found 化を防ぐ）。
+        let _ = self
+            .git_config
+            .set_branch_base_override(repo_path, branch_name, None);
+
+        Ok(())
+    }
+
+    fn validate_branch_deletion(
+        &self,
+        repo_path: &str,
+        branch_name: &str,
     ) -> Result<(), UsecaseError> {
         // (1) 既定ブランチの削除を拒否（既定が検出できない場合は拒否しない）。
         if let Ok(default) = self.branch.default(repo_path) {
@@ -104,27 +191,6 @@ impl RepositoryUsecase {
                 "cannot delete the branch currently checked out in the main worktree".to_string(),
             ));
         }
-
-        // (3) 紐づく worktree を先に削除（checkout 中ブランチは削除不可のため）。
-        //     先に壊れた linked worktree を prune してリカバリーする（旧実装の
-        //     削除前リカバリーと同順）。削除した worktree の releash-base 後始末は
-        //     ブランチ単位で (5) がまとめて行うため、ここでは戻り値を無視する。
-        self.worktree.prune_invalid(repo_path)?;
-        for wt in self.worktree.list(repo_path)? {
-            if !wt.is_main && wt.branch == branch_name {
-                self.worktree.remove(repo_path, &wt.path, force)?;
-            }
-        }
-
-        // (4) ブランチ本体を削除。
-        self.branch.delete(repo_path, branch_name)?;
-
-        // (5) releash-base config を後始末する（best-effort）。ブランチ本体削除
-        //     という主目的の成功後に config 掃除が失敗しても全体を失敗にしない
-        //     （旧実装と等価。リトライ時の branch not found 化を防ぐ）。
-        let _ = self
-            .git_config
-            .set_branch_base_override(repo_path, branch_name, None);
 
         Ok(())
     }
@@ -231,12 +297,27 @@ impl RepositoryUsecase {
     /// 失敗は terminal surface 側で吸収され、削除は続行する）、(2) worktree 本体を
     /// 削除、(3) releash-base config を後始末する。複数集約（terminal surface /
     /// worktree / git_config）をまたぐオーケストレーションは usecase の責務。
-    pub fn remove_worktree(
+    pub async fn remove_worktree(
         &self,
+        archives: &dyn WorktreeExecutionArchiver,
         repo_path: &str,
         worktree_path: &str,
         force: bool,
     ) -> Result<(), UsecaseError> {
+        let worktree_path = self
+            .worktree
+            .validate_removal(repo_path, worktree_path, force)?;
+        let worktree_path = worktree_path.as_str();
+        let _deletion = archives
+            .begin_worktree_deletion(worktree_path)
+            .await
+            .map_err(|error| UsecaseError::Rule(error.to_string()))?;
+        self.worktree
+            .validate_removal(repo_path, worktree_path, force)?;
+        archives
+            .archive_worktree(worktree_path)
+            .await
+            .map_err(|error| UsecaseError::Rule(error.to_string()))?;
         // (1) 紐づく terminal surface を停止する。
         self.worktree_terminals.kill_by_worktree(worktree_path);
 
@@ -352,10 +433,15 @@ mod repository_usecase_tests {
         default_branch: Option<String>,
         current_branch: String,
         worktrees: Vec<Worktree>,
+        invalid_worktrees: Vec<String>,
         dirty: u32,
         branch_base: Option<String>,
         fail_create_worktree: bool,
         fail_remove_worktree: bool,
+        fail_validate_removal: bool,
+        operations: crate::usecase::worktree_operation::WorktreeOperations,
+        fail_archive: bool,
+        archived_worktrees: Mutex<Vec<(String, usize)>>,
         created_branches: Mutex<Vec<String>>,
         deleted_branches: Mutex<Vec<String>>,
         removed_worktrees: Mutex<Vec<(String, bool)>>,
@@ -370,6 +456,35 @@ mod repository_usecase_tests {
         fail_main_repo_path: bool,
         listed_worktree_paths: Mutex<Vec<String>>,
         branch_card_paths: Mutex<Vec<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl WorktreeExecutionArchiver for FakeRepo {
+        async fn begin_worktree_deletion(
+            &self,
+            path: &str,
+        ) -> Result<
+            crate::usecase::worktree_operation::WorktreeDeletionGuard,
+            crate::domain::workflow::WorkflowError,
+        > {
+            self.operations.delete(path).await.map_err(|error| {
+                crate::domain::workflow::WorkflowError::invalid_state(error.to_string())
+            })
+        }
+        async fn archive_worktree(
+            &self,
+            path: &str,
+        ) -> Result<(), crate::domain::workflow::WorkflowError> {
+            self.archived_worktrees
+                .lock()
+                .push((path.to_string(), self.removed_worktrees.lock().len()));
+            if self.fail_archive {
+                return Err(crate::domain::workflow::WorkflowError::external(
+                    "archive failed",
+                ));
+            }
+            Ok(())
+        }
     }
 
     impl BranchRepository for FakeRepo {
@@ -459,6 +574,24 @@ mod repository_usecase_tests {
                 is_locked: false,
             })
         }
+        fn validate_removal(
+            &self,
+            _: &str,
+            path: &str,
+            force: bool,
+        ) -> Result<String, RepositoryError> {
+            if self.fail_validate_removal {
+                return Err(RepositoryError::rule("worktree not found"));
+            }
+            let worktree = self
+                .worktrees
+                .iter()
+                .find(|wt| wt.path == path)
+                .cloned()
+                .unwrap_or_else(|| wt(path, "feat", false));
+            worktree.authorize_removal(force, self.dirty)?;
+            Ok(path.to_string())
+        }
         fn remove(
             &self,
             _repo_path: &str,
@@ -472,6 +605,9 @@ mod repository_usecase_tests {
                 .lock()
                 .push((worktree_path.to_string(), force));
             Ok(self.removed_branch.clone())
+        }
+        fn invalid_worktree_paths(&self, _repo_path: &str) -> Result<Vec<String>, RepositoryError> {
+            Ok(self.invalid_worktrees.clone())
         }
         fn prune_invalid(&self, _repo_path: &str) -> Result<(), RepositoryError> {
             *self.prune_invalid_calls.lock() += 1;
@@ -629,15 +765,16 @@ mod repository_usecase_tests {
         assert!(fake.set_branch_base_override_calls.lock().is_empty());
     }
 
-    #[test]
-    fn test_worktree削除_対応ブランチのbaseを後始末する() {
+    #[tokio::test]
+    async fn test_worktree削除_対応ブランチのbaseを後始末する() {
         // remove が返したブランチ名で releash-base を best-effort 削除する。
         let fake = Arc::new(FakeRepo {
             removed_branch: Some("feat".to_string()),
             ..<FakeRepo as Default>::default()
         });
         usecase(fake.clone())
-            .remove_worktree("/r", "/wt", false)
+            .remove_worktree(fake.as_ref(), "/r", "/wt", false)
+            .await
             .unwrap();
         assert_eq!(
             *fake.set_branch_base_override_calls.lock(),
@@ -758,49 +895,52 @@ mod repository_usecase_tests {
         assert_eq!(err.to_string(), "boom");
     }
 
-    #[test]
-    fn test_ブランチ削除_既定ブランチ拒否() {
+    #[tokio::test]
+    async fn test_ブランチ削除_既定ブランチ拒否() {
         let fake = Arc::new(FakeRepo {
             default_branch: Some("main".to_string()),
             ..<FakeRepo as Default>::default()
         });
         let err = usecase(fake.clone())
-            .delete_branch("/r", "main", false)
+            .delete_branch(fake.as_ref(), "/r", "main", false)
+            .await
             .unwrap_err();
         assert!(matches!(err, UsecaseError::Rule(_)));
         assert!(err.to_string().contains("default branch"));
         assert!(fake.deleted_branches.lock().is_empty());
     }
 
-    #[test]
-    fn test_ブランチ削除_チェックアウト中拒否() {
+    #[tokio::test]
+    async fn test_ブランチ削除_チェックアウト中拒否() {
         let fake = Arc::new(FakeRepo {
             default_branch: Some("main".to_string()),
             current_branch: "feat".to_string(),
             ..<FakeRepo as Default>::default()
         });
         let err = usecase(fake.clone())
-            .delete_branch("/r", "feat", false)
+            .delete_branch(fake.as_ref(), "/r", "feat", false)
+            .await
             .unwrap_err();
         assert!(err.to_string().contains("currently checked out"));
         assert!(fake.deleted_branches.lock().is_empty());
     }
 
-    #[test]
-    fn test_ブランチ削除_既定未検出でも削除可() {
+    #[tokio::test]
+    async fn test_ブランチ削除_既定未検出でも削除可() {
         // default() が Err（既定未検出）でも拒否せず削除する
         let fake = Arc::new(FakeRepo {
             current_branch: "main".to_string(),
             ..<FakeRepo as Default>::default()
         });
         usecase(fake.clone())
-            .delete_branch("/r", "feat", false)
+            .delete_branch(fake.as_ref(), "/r", "feat", false)
+            .await
             .unwrap();
         assert_eq!(*fake.deleted_branches.lock(), vec!["feat".to_string()]);
     }
 
-    #[test]
-    fn test_ブランチ削除_紐づくworktreeを先に削除し後始末する() {
+    #[tokio::test]
+    async fn test_ブランチ削除_紐づくworktreeを先に削除し後始末する() {
         let fake = Arc::new(FakeRepo {
             default_branch: Some("main".to_string()),
             current_branch: "main".to_string(),
@@ -808,7 +948,8 @@ mod repository_usecase_tests {
             ..<FakeRepo as Default>::default()
         });
         usecase(fake.clone())
-            .delete_branch("/r", "feat", true)
+            .delete_branch(fake.as_ref(), "/r", "feat", true)
+            .await
             .unwrap();
         // 削除前に壊れた worktree の prune（リカバリー）を実行する
         assert_eq!(*fake.prune_invalid_calls.lock(), 1);
@@ -824,6 +965,22 @@ mod repository_usecase_tests {
             *fake.set_branch_base_override_calls.lock(),
             vec![("feat".to_string(), None)]
         );
+    }
+
+    #[tokio::test]
+    async fn test_ブランチ削除_invalid_worktreeもarchive失敗ならpruneしない() {
+        let fake = Arc::new(FakeRepo {
+            current_branch: "main".into(),
+            invalid_worktrees: vec!["/gone".into()],
+            fail_archive: true,
+            ..Default::default()
+        });
+        assert!(usecase(fake.clone())
+            .delete_branch(fake.as_ref(), "/r", "feat", false)
+            .await
+            .is_err());
+        assert_eq!(*fake.prune_invalid_calls.lock(), 0);
+        assert!(fake.deleted_branches.lock().is_empty());
     }
 
     #[test]
@@ -855,11 +1012,12 @@ mod repository_usecase_tests {
         );
     }
 
-    #[test]
-    fn test_worktree削除を委譲する() {
+    #[tokio::test]
+    async fn test_worktree削除を委譲する() {
         let fake = Arc::new(<FakeRepo as Default>::default());
         usecase(fake.clone())
-            .remove_worktree("/r", "/wt", false)
+            .remove_worktree(fake.as_ref(), "/r", "/wt", false)
+            .await
             .unwrap();
         assert_eq!(
             *fake.removed_worktrees.lock(),
@@ -867,11 +1025,12 @@ mod repository_usecase_tests {
         );
     }
 
-    #[test]
-    fn test_worktree削除_紐づくterminal_surfaceを先に停止する() {
+    #[tokio::test]
+    async fn test_worktree削除_紐づくterminal_surfaceを先に停止する() {
         let fake = Arc::new(<FakeRepo as Default>::default());
         usecase(fake.clone())
-            .remove_worktree("/r", "/wt", false)
+            .remove_worktree(fake.as_ref(), "/r", "/wt", false)
+            .await
             .unwrap();
         // worktree 本体の削除（removed 0 件時点）より前に停止が呼ばれる。
         assert_eq!(
@@ -884,14 +1043,15 @@ mod repository_usecase_tests {
         );
     }
 
-    #[test]
-    fn test_worktree削除_削除失敗でもterminal停止は実行されエラーを伝播する() {
+    #[tokio::test]
+    async fn test_worktree削除_削除失敗でもterminal停止は実行されエラーを伝播する() {
         let fake = Arc::new(FakeRepo {
             fail_remove_worktree: true,
             ..<FakeRepo as Default>::default()
         });
         let err = usecase(fake.clone())
-            .remove_worktree("/r", "/wt", false)
+            .remove_worktree(fake.as_ref(), "/r", "/wt", false)
+            .await
             .unwrap_err();
         assert_eq!(err.to_string(), "remove failed");
         assert_eq!(
@@ -909,5 +1069,335 @@ mod repository_usecase_tests {
             .list_branches_with_status_read_only("/r")
             .unwrap();
         assert!(fake.prune_calls.lock().is_empty());
+    }
+    #[tokio::test]
+    async fn test_worktree削除_archive失敗ではterminalとフォルダを削除しない() {
+        // Given
+        let fake = Arc::new(FakeRepo {
+            fail_archive: true,
+            ..Default::default()
+        });
+        // When
+        let error = usecase(fake.clone())
+            .remove_worktree(fake.as_ref(), "/repo", "/wt", false)
+            .await
+            .unwrap_err();
+        // Then
+        assert_eq!(error.to_string(), "archive failed");
+        assert!(fake.removed_worktrees.lock().is_empty());
+        assert!(fake.killed_worktree_terminals.lock().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_worktree削除_archiveがフォルダ削除に先行する() {
+        // Given
+        let fake = Arc::new(<FakeRepo as Default>::default());
+        // When
+        usecase(fake.clone())
+            .remove_worktree(fake.as_ref(), "/repo", "/wt", false)
+            .await
+            .unwrap();
+        // Then
+        assert_eq!(
+            *fake.archived_worktrees.lock(),
+            vec![("/wt".to_string(), 0)]
+        );
+        assert_eq!(fake.removed_worktrees.lock().len(), 1);
+    }
+    #[tokio::test]
+    async fn test_worktree削除_所属不一致とlockedとdirtyではarchiveしない() {
+        for (invalid, locked, dirty) in [(true, false, 0), (false, true, 0), (false, false, 1)] {
+            // Given
+            let mut worktree = wt("/wt", "feature", false);
+            worktree.is_locked = locked;
+            let fake = Arc::new(FakeRepo {
+                fail_validate_removal: invalid,
+                dirty,
+                worktrees: vec![worktree],
+                ..Default::default()
+            });
+            // When
+            let result = usecase(fake.clone())
+                .remove_worktree(fake.as_ref(), "/repo", "/wt", false)
+                .await;
+            // Then
+            assert!(result.is_err());
+            assert!(fake.archived_worktrees.lock().is_empty());
+            assert!(fake.killed_worktree_terminals.lock().is_empty());
+            assert!(fake.removed_worktrees.lock().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_linked_worktreeブランチ削除_archiveがremoveに先行し失敗時はどちらも削除しない() {
+        for fail_archive in [false, true] {
+            // Given
+            let fake = Arc::new(FakeRepo {
+                current_branch: "main".into(),
+                worktrees: vec![wt("/wt", "feature", false)],
+                fail_archive,
+                ..Default::default()
+            });
+            // When
+            let result = usecase(fake.clone())
+                .delete_branch(fake.as_ref(), "/repo", "feature", false)
+                .await;
+            // Then
+            assert_eq!(*fake.archived_worktrees.lock(), vec![("/wt".into(), 0)]);
+            assert_eq!(result.is_err(), fail_archive);
+            assert_eq!(
+                fake.removed_worktrees.lock().len(),
+                usize::from(!fail_archive)
+            );
+            assert_eq!(
+                fake.deleted_branches.lock().len(),
+                usize::from(!fail_archive)
+            );
+            assert_eq!(*fake.prune_invalid_calls.lock(), u32::from(!fail_archive));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_linked_worktreeブランチ削除_dirtyとlockedでは付随pruneもarchiveもしない() {
+        for (locked, dirty) in [(true, 0), (false, 1)] {
+            // Given
+            let mut worktree = wt("/wt", "feature", false);
+            worktree.is_locked = locked;
+            let fake = Arc::new(FakeRepo {
+                current_branch: "main".into(),
+                worktrees: vec![worktree],
+                invalid_worktrees: vec!["/invalid".into()],
+                dirty,
+                ..Default::default()
+            });
+            // When
+            assert!(usecase(fake.clone())
+                .delete_branch(fake.as_ref(), "/repo", "feature", false)
+                .await
+                .is_err());
+            // Then
+            assert!(fake.archived_worktrees.lock().is_empty());
+            assert_eq!(*fake.prune_invalid_calls.lock(), 0);
+            assert!(fake.removed_worktrees.lock().is_empty());
+            assert!(fake.deleted_branches.lock().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_worktree削除_実gitの拒否条件では実行木を変更しない() {
+        use crate::adaptor::gateway::repository::worktree::WorktreeGateway;
+        use crate::test_support::git::{create_initial_commit, create_test_repo};
+        for condition in ["wrong-repo", "locked", "dirty", "valid", "archive-failure"] {
+            // Given
+            let (repo_dir, repo) = create_test_repo();
+            create_initial_commit(&repo);
+            let worktrees = tempfile::tempdir().unwrap();
+            let path = worktrees.path().join("feature");
+            let worktree = repo.worktree("feature", &path, None).unwrap();
+            let (other_dir, _other) = create_test_repo();
+            if condition == "locked" {
+                worktree.lock(None).unwrap();
+            }
+            if condition == "dirty" {
+                std::fs::write(path.join("dirty"), "change").unwrap();
+            }
+            let fake = Arc::new(FakeRepo {
+                fail_archive: condition == "archive-failure",
+                ..Default::default()
+            });
+            let mut usecase = usecase(fake.clone());
+            usecase.worktree = Arc::new(WorktreeGateway);
+            let root = if condition == "wrong-repo" {
+                other_dir.path()
+            } else {
+                repo_dir.path()
+            };
+            // When
+            let result = usecase
+                .remove_worktree(
+                    fake.as_ref(),
+                    root.to_str().unwrap(),
+                    path.to_str().unwrap(),
+                    false,
+                )
+                .await;
+            // Then
+            assert_eq!(result.is_ok(), condition == "valid");
+            assert_eq!(
+                fake.archived_worktrees.lock().len(),
+                usize::from(matches!(condition, "valid" | "archive-failure"))
+            );
+            assert_eq!(path.exists(), condition != "valid");
+            assert_eq!(repo.find_worktree("feature").is_ok(), condition != "valid");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_worktree削除_先行変更の待機後に削除条件を再検証する() {
+        use crate::adaptor::gateway::repository::worktree::WorktreeGateway;
+        use crate::test_support::git::{create_initial_commit, create_test_repo};
+
+        for delete_branch in [false, true] {
+            for condition in ["dirty", "locked", "unregistered", "valid", "force-dirty"] {
+                // Given
+                let (repo_dir, repo) = create_test_repo();
+                create_initial_commit(&repo);
+                let worktrees = tempfile::tempdir().unwrap();
+                let path = worktrees.path().canonicalize().unwrap().join("feature");
+                let worktree = repo.worktree("feature", &path, None).unwrap();
+                let root = repo_dir.path().to_str().unwrap();
+                let path_str = path.to_str().unwrap();
+                let fake = Arc::new(FakeRepo {
+                    current_branch: "main".into(),
+                    ..Default::default()
+                });
+                let mut repository = usecase(fake.clone());
+                repository.worktree = Arc::new(WorktreeGateway);
+                let mutation = fake.operations.mutate(path_str).unwrap();
+                let force = condition == "force-dirty";
+                let deletion = async {
+                    if delete_branch {
+                        repository
+                            .delete_branch(fake.as_ref(), root, "feature", force)
+                            .await
+                    } else {
+                        repository
+                            .remove_worktree(fake.as_ref(), root, path_str, force)
+                            .await
+                    }
+                };
+                tokio::pin!(deletion);
+
+                // When
+                assert!(futures_util::poll!(&mut deletion).is_pending());
+                assert!(fake.archived_worktrees.lock().is_empty());
+                assert!(fake.operations.mutate(path_str).is_err());
+                match condition {
+                    "dirty" | "force-dirty" => {
+                        std::fs::write(path.join("dirty"), "change").unwrap();
+                    }
+                    "locked" => worktree.lock(None).unwrap(),
+                    "unregistered" => {
+                        std::fs::remove_dir_all(repo.path().join("worktrees/feature")).unwrap();
+                    }
+                    _ => {}
+                }
+                drop(mutation);
+                let result = deletion.await;
+
+                // Then
+                let accepted = matches!(condition, "valid" | "force-dirty");
+                assert_eq!(result.is_ok(), accepted, "{delete_branch}: {condition}");
+                assert_eq!(fake.archived_worktrees.lock().len(), usize::from(accepted));
+                assert_eq!(
+                    fake.killed_worktree_terminals.lock().len(),
+                    usize::from(accepted)
+                );
+                assert_eq!(
+                    fake.deleted_branches.lock().len(),
+                    usize::from(delete_branch && accepted)
+                );
+                assert_eq!(path.exists(), !accepted);
+                assert!(fake.operations.mutate(path_str).is_ok());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_ブランチ削除_prune対象の待機中にdirtyになった場合もarchiveしない() {
+        use crate::adaptor::gateway::repository::worktree::WorktreeGateway;
+        use crate::test_support::git::{create_initial_commit, create_test_repo};
+
+        // Given
+        let (repo_dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+        let worktrees = tempfile::tempdir().unwrap();
+        let path = worktrees.path().canonicalize().unwrap().join("feature");
+        repo.worktree("feature", &path, None).unwrap();
+        let invalid_path = worktrees.path().canonicalize().unwrap().join("invalid");
+        repo.worktree("invalid", &invalid_path, None).unwrap();
+        std::fs::remove_dir_all(&invalid_path).unwrap();
+        let fake = Arc::new(FakeRepo {
+            current_branch: "main".into(),
+            ..Default::default()
+        });
+        let mut repository = usecase(fake.clone());
+        repository.worktree = Arc::new(WorktreeGateway);
+        let mutation = fake
+            .operations
+            .mutate(invalid_path.to_str().unwrap())
+            .unwrap();
+        let deletion = repository.delete_branch(
+            fake.as_ref(),
+            repo_dir.path().to_str().unwrap(),
+            "feature",
+            false,
+        );
+        tokio::pin!(deletion);
+
+        // When
+        assert!(futures_util::poll!(&mut deletion).is_pending());
+        std::fs::write(path.join("dirty"), "change").unwrap();
+        drop(mutation);
+        let result = deletion.await;
+
+        // Then
+        assert!(result.is_err());
+        assert!(fake.archived_worktrees.lock().is_empty());
+        assert!(fake.killed_worktree_terminals.lock().is_empty());
+        assert!(fake.deleted_branches.lock().is_empty());
+        assert!(repo.find_worktree("invalid").is_ok());
+        assert!(path.exists());
+        assert!(fake.operations.mutate(path.to_str().unwrap()).is_ok());
+        assert!(fake
+            .operations
+            .mutate(invalid_path.to_str().unwrap())
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_ブランチ削除_待機中にmainでcheckoutされたらarchiveしない() {
+        use crate::adaptor::gateway::repository::{
+            branch::BranchGateway, worktree::WorktreeGateway,
+        };
+        use crate::test_support::git::{create_initial_commit, create_test_repo};
+
+        // Given
+        let (repo_dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+        let worktrees = tempfile::tempdir().unwrap();
+        let path = worktrees.path().canonicalize().unwrap().join("feature");
+        repo.worktree("feature", &path, None).unwrap();
+        let fake = Arc::new(<FakeRepo as Default>::default());
+        let mut repository = usecase(fake.clone());
+        repository.worktree = Arc::new(WorktreeGateway);
+        repository.branch = Arc::new(BranchGateway);
+        let mutation = fake.operations.mutate(path.to_str().unwrap()).unwrap();
+        let deletion = repository.delete_branch(
+            fake.as_ref(),
+            repo_dir.path().to_str().unwrap(),
+            "feature",
+            false,
+        );
+        tokio::pin!(deletion);
+
+        // When
+        assert!(futures_util::poll!(&mut deletion).is_pending());
+        git2::Repository::open(&path)
+            .unwrap()
+            .set_head_detached(repo.head().unwrap().target().unwrap())
+            .unwrap();
+        repo.set_head("refs/heads/feature").unwrap();
+        drop(mutation);
+        let error = deletion.await.unwrap_err();
+
+        // Then
+        assert!(error.to_string().contains("currently checked out"));
+        assert!(fake.archived_worktrees.lock().is_empty());
+        assert!(fake.killed_worktree_terminals.lock().is_empty());
+        assert!(repo.find_worktree("feature").is_ok());
+        assert!(repo.find_branch("feature", git2::BranchType::Local).is_ok());
+        assert!(path.exists());
+        assert!(fake.operations.mutate(path.to_str().unwrap()).is_ok());
     }
 }

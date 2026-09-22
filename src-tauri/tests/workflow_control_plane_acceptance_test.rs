@@ -79,6 +79,7 @@ fn configured_host(
     root: &Path,
     input_lines: usize,
 ) -> WorkflowControlPlaneAcceptanceHost<tauri::test::MockRuntime> {
+    git2::Repository::init(root).unwrap();
     let bin = root.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     let claude = install_fixture_executable(
@@ -944,7 +945,7 @@ async fn test_issue_1696_session起動木はretryを拒否しsubmitとstopで資
 
     let local_api_error = host.retry(&session_id, &session_id).await.unwrap_err();
     assert!(
-        local_api_error.starts_with("HTTP 400:"),
+        local_api_error.starts_with("HTTP 409:"),
         "{local_api_error}"
     );
     assert_eq!(
@@ -961,7 +962,7 @@ async fn test_issue_1696_session起動木はretryを拒否しsubmitとstopで資
         .await
         .unwrap_err();
     assert!(
-        tauri_error.contains("invalid execution_id"),
+        tauri_error.contains("Only an unfinished Command without a process can be retried"),
         "{tauri_error}"
     );
     assert_eq!(
@@ -1017,7 +1018,7 @@ async fn test_issue_1696_session起動木はretryを拒否しsubmitとstopで資
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_issue_1696_archive_restore後のstopはcache上のsession木へ届きattentionになる() {
+async fn test_issue_1826_session木のarchiveはabortしrestoreでは手動resumeを待つ() {
     let root = tempfile::TempDir::new().unwrap();
     let worktree = root.path().join("standalone-archive-restore");
     std::fs::create_dir_all(&worktree).unwrap();
@@ -1057,92 +1058,81 @@ async fn test_issue_1696_archive_restore後のstopはcache上のsession木へ届
         host.agent_session_lifecycle(&session_id).await.unwrap(),
         Some(AcceptanceAgentSessionLifecycle::Archived)
     );
-    assert!(host.execution_direct(&session_id).await.unwrap().is_some());
+    assert!(host.execution_direct(&session_id).await.unwrap().is_none());
+    assert_eq!(host.active_provider_process_count(), 0);
+    assert!(!host
+        .agent_session_has_active_launch_binding(&session_id)
+        .await
+        .unwrap());
+    let archived = host.execution(&session_id).await.unwrap().unwrap();
+    assert_eq!(archived.status, AcceptanceWorkflowExecutionStatus::Aborted);
+    assert_eq!(
+        archived.node_executions[0].status,
+        AcceptanceNodeExecutionStatus::Aborted
+    );
+
     host.restore_agent_session(&session_id).await.unwrap();
+    assert_eq!(
+        host.agent_session_lifecycle(&session_id).await.unwrap(),
+        Some(AcceptanceAgentSessionLifecycle::Paused)
+    );
+    assert_eq!(host.active_provider_process_count(), 0);
+    assert!(host.terminal().get(terminal_owner.clone()).is_err());
+    assert_eq!(
+        host.execution(&session_id).await.unwrap().unwrap(),
+        archived
+    );
+    assert!(!host
+        .execution_fact_event_types(&session_id)
+        .unwrap()
+        .iter()
+        .any(|event| event == "resume_requested"));
+
+    host.resume_agent_session(&session_id).await.unwrap();
     assert_eq!(
         host.agent_session_lifecycle(&session_id).await.unwrap(),
         Some(AcceptanceAgentSessionLifecycle::Open)
     );
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            let replay = host
-                .terminal()
-                .get(terminal_owner.clone())
-                .unwrap()
-                .terminal_surface
-                .replay;
-            if replay.contains("codex-workflow-fixture 日本語")
-                && !replay.contains("releash-fixture-input-complete-0")
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("復元したfixtureが古い画面を描き直す");
-    let mut restored_terminal = host
+    assert_eq!(host.active_provider_process_count(), 1);
+    let mut resumed_terminal = host
         .terminal()
         .attach(
-            "issue-1696-archive-restore-restored".to_string(),
+            "issue-1826-manual-resume".to_string(),
             terminal_owner.clone(),
         )
         .unwrap();
+    receive_until(&mut resumed_terminal, "codex-workflow-fixture 日本語").await;
     host.terminal()
-        .write(terminal_owner.clone(), "restored-session-input\r")
+        .write(terminal_owner.clone(), "resumed-session-input\r")
         .unwrap();
     receive_until_all(
-        &mut restored_terminal,
+        &mut resumed_terminal,
         &[
-            "received-0:restored-session-input",
+            "received-0:resumed-session-input",
             "releash-fixture-input-complete-0",
         ],
     )
     .await;
-    associate_provider_session(
-        &host,
-        &mut restored_terminal,
-        &terminal_owner,
-        "provider-issue-1696-archive-restore",
-    )
-    .await;
-    let process_exited_count = host
-        .execution_fact_event_types(&session_id)
-        .unwrap()
+    let events = host.execution_fact_event_types(&session_id).unwrap();
+    let abort = events
         .iter()
-        .filter(|event| event.as_str() == "process_exited")
-        .count();
-
-    emit_provider_stop(
-        &host,
-        &mut restored_terminal,
-        &terminal_owner,
-        "provider-issue-1696-archive-restore",
-    )
-    .await;
-
-    let execution = host.execution_direct(&session_id).await.unwrap().unwrap();
-    assert_eq!(
-        execution.node_executions[0].status,
-        AcceptanceNodeExecutionStatus::Running
-    );
-    assert!(
-        execution.node_executions[0].stop_received,
-        "facts after restored Stop: {:?}",
-        host.execution_fact_event_types(&session_id).unwrap()
-    );
-    assert_eq!(
-        host.workspace_node_status(&session_id).unwrap(),
-        Some(AcceptanceWorkspaceNodeStatus::Attention)
-    );
-    assert_eq!(
-        host.execution_fact_event_types(&session_id)
-            .unwrap()
-            .iter()
-            .filter(|event| event.as_str() == "process_exited")
-            .count(),
-        process_exited_count
-    );
+        .position(|event| event == "abort_requested")
+        .unwrap();
+    let archive = events
+        .iter()
+        .position(|event| event == "archive_requested")
+        .unwrap();
+    let restore = events
+        .iter()
+        .position(|event| event == "restore_requested")
+        .unwrap();
+    let resume = events
+        .iter()
+        .position(|event| event == "resume_requested")
+        .unwrap();
+    assert!(abort < archive && archive < restore && restore < resume);
+    host.archive_agent_session(&session_id).await.unwrap();
+    assert_eq!(host.active_provider_process_count(), 0);
 
     host.shutdown().await.unwrap();
 }

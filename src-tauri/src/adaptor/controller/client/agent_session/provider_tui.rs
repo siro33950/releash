@@ -413,17 +413,6 @@ pub(crate) async fn delete_agent_session_shared(
         .map_err(lifecycle_error)
 }
 
-pub(crate) async fn confirm_agent_session_archive_delete_shared(
-    lifecycle: &Arc<AgentSessionLifecycleUsecase>,
-    agent_session_id: String,
-    caller_request_id: String,
-) -> Result<(), AppError> {
-    lifecycle
-        .confirm_archive_fallback_delete(&agent_session_id, &caller_request_id)
-        .await
-        .map_err(lifecycle_error)
-}
-
 pub(crate) async fn list_agent_session_history_shared(
     query: &Arc<AgentSessionHistoryReadUsecase>,
     worktree_path: String,
@@ -468,9 +457,6 @@ impl From<AgentSessionArchiveOutcome> for AgentSessionArchiveResponse {
         match value {
             AgentSessionArchiveOutcome::Archived => Self::Archived,
             AgentSessionArchiveOutcome::AlreadyArchived => Self::AlreadyArchived,
-            AgentSessionArchiveOutcome::DeleteConfirmationRequired => {
-                Self::DeleteConfirmationRequired
-            }
         }
     }
 }

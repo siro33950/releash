@@ -259,83 +259,8 @@ fn test_agent_session生成_空のworktreeを拒否する() {
 }
 
 #[test]
-fn test_agent_session_restore_失敗時はarchivedを維持する() {
-    let mut session = AgentSession::create(
-        "agent-session-1",
-        WorkspaceIdentity::new("/repo"),
-        "/repo/.worktrees/feature",
-        ProviderKind::Claude,
-        standalone_location("agent-session-1"),
-    )
-    .unwrap();
-    session
-        .associate_provider_session("provider-session-1", None)
-        .unwrap();
-    session.archive().unwrap();
-
-    let outcome = session
-        .complete_restore(AgentSessionRecoveryResult::Failed)
-        .unwrap();
-
-    assert_eq!(outcome, AgentSessionMutationOutcome::AlreadyApplied);
-    assert_eq!(session.lifecycle(), AgentSessionLifecycle::Archived);
-}
-
-#[test]
-fn test_agent_session_restore_成功時はopenへ遷移する() {
-    let mut session = AgentSession::create(
-        "agent-session-1",
-        WorkspaceIdentity::new("/repo"),
-        "/repo/.worktrees/feature",
-        ProviderKind::Claude,
-        standalone_location("agent-session-1"),
-    )
-    .unwrap();
-    session
-        .associate_provider_session("provider-session-1", None)
-        .unwrap();
-    session.archive().unwrap();
-
-    let outcome = session
-        .complete_restore(AgentSessionRecoveryResult::Succeeded)
-        .unwrap();
-
-    assert_eq!(outcome, AgentSessionMutationOutcome::Applied);
-    assert_eq!(session.lifecycle(), AgentSessionLifecycle::Open);
-}
-
-#[test]
-fn test_agent_session_restore_成功時にopen_eventを発生させる() {
-    let mut session = AgentSession::create(
-        "agent-session-1",
-        WorkspaceIdentity::new("/repo"),
-        "/repo/.worktrees/feature",
-        ProviderKind::Claude,
-        standalone_location("agent-session-1"),
-    )
-    .unwrap();
-    session
-        .associate_provider_session("provider-session-1", None)
-        .unwrap();
-    session.archive().unwrap();
-    session.take_uncommitted_events();
-
-    session
-        .complete_restore(AgentSessionRecoveryResult::Succeeded)
-        .unwrap();
-
-    assert_eq!(
-        session.uncommitted_events(),
-        &[AgentSessionLifecycleEvent::LifecycleChanged {
-            lifecycle: AgentSessionLifecycle::Open,
-            last_exit_abnormal: false,
-        }]
-    );
-}
-
-#[test]
 fn test_agent_session_restore_archived以外では拒否する() {
-    let mut session = AgentSession::create(
+    let session = AgentSession::create(
         "agent-session-1",
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
@@ -344,9 +269,7 @@ fn test_agent_session_restore_archived以外では拒否する() {
     )
     .unwrap();
 
-    let error = session
-        .complete_restore(AgentSessionRecoveryResult::Succeeded)
-        .unwrap_err();
+    let error = session.authorize_restore().unwrap_err();
 
     assert_eq!(error, AgentSessionRecoveryError::NotArchived);
     assert_eq!(session.lifecycle(), AgentSessionLifecycle::Open);
@@ -535,7 +458,7 @@ fn test_agent_sessionアーカイブ_pausedからarchivedへ遷移する() {
 }
 
 #[test]
-fn test_agent_sessionアーカイブ_provider_session_id不明ならdelete確認を要求する() {
+fn test_agent_sessionアーカイブ_provider_session_id不明でもarchiveできる() {
     let mut session = AgentSession::create(
         "agent-session-1",
         WorkspaceIdentity::new("/repo"),
@@ -547,65 +470,8 @@ fn test_agent_sessionアーカイブ_provider_session_id不明ならdelete確認
 
     let outcome = session.archive().unwrap();
 
-    assert_eq!(
-        outcome,
-        AgentSessionArchiveOutcome::DeleteConfirmationRequired
-    );
-    assert_eq!(session.lifecycle(), AgentSessionLifecycle::Open);
-}
-
-#[test]
-fn test_agent_sessionアーカイブ縮退_provider_session_id不明なら確認後deleteを許可する() {
-    let session = AgentSession::create(
-        "agent-session-1",
-        WorkspaceIdentity::new("/repo"),
-        "/repo/.worktrees/feature",
-        ProviderKind::Claude,
-        standalone_location("agent-session-1"),
-    )
-    .unwrap();
-
-    let authorization = session.authorize_archive_fallback_delete().unwrap();
-
-    assert_eq!(
-        authorization,
-        AgentSessionRemovalAuthorization::ArchiveFallbackDelete
-    );
-}
-
-#[test]
-fn test_agent_sessionアーカイブ縮退_provider_session_id既知なら拒否する() {
-    let mut session = AgentSession::create(
-        "agent-session-1",
-        WorkspaceIdentity::new("/repo"),
-        "/repo/.worktrees/feature",
-        ProviderKind::Claude,
-        standalone_location("agent-session-1"),
-    )
-    .unwrap();
-    session
-        .associate_provider_session("provider-session-1", None)
-        .unwrap();
-
-    let error = session.authorize_archive_fallback_delete().unwrap_err();
-
-    assert_eq!(error, AgentSessionRemovalError::ProviderSessionKnown);
-}
-
-#[test]
-fn test_agent_sessionアーカイブ縮退_workflow起動由来では拒否する() {
-    let session = AgentSession::create(
-        "agent-session-1",
-        WorkspaceIdentity::new("/repo"),
-        "/repo/.worktrees/feature",
-        ProviderKind::Claude,
-        workflow_location("workflow-execution-1", "node-execution-1"),
-    )
-    .unwrap();
-
-    let error = session.authorize_archive_fallback_delete().unwrap_err();
-
-    assert_eq!(error, AgentSessionRemovalError::WorkflowOwned);
+    assert_eq!(outcome, AgentSessionArchiveOutcome::Archived);
+    assert_eq!(session.lifecycle(), AgentSessionLifecycle::Archived);
 }
 
 #[test]
@@ -867,9 +733,7 @@ fn test_workflow起動由来のroot_sessionも利用者操作とgcを拒否し�
         AgentSessionRecoveryError::WorkflowOwned
     );
     assert_eq!(
-        session
-            .complete_restore(AgentSessionRecoveryResult::Succeeded)
-            .unwrap_err(),
+        session.authorize_restore().unwrap_err(),
         AgentSessionRecoveryError::WorkflowOwned
     );
     assert_eq!(session.lifecycle(), AgentSessionLifecycle::Archived);
@@ -1680,8 +1544,14 @@ fn test_agent_session活動状態_lifecycleとは独立しprocess終了で指示
     assert_eq!(session.lifecycle(), AgentSessionLifecycle::Archived);
     assert_eq!(session.activity(), AgentSessionActivity::Working);
 
+    session.take_uncommitted_events();
+    session.restore_derived_lifecycle(
+        AgentSessionLifecycle::Paused,
+        false,
+        AgentSessionActivity::AwaitingInstruction,
+    );
     session
-        .complete_restore(AgentSessionRecoveryResult::Succeeded)
+        .complete_resume(AgentSessionRecoveryResult::Succeeded)
         .unwrap();
     assert_eq!(
         session.activity(),
@@ -1698,31 +1568,6 @@ fn test_agent_session活動状態_lifecycleとは独立しprocess終了で指示
 }
 
 #[test]
-fn test_agent_session_restore_活動状態が変わると指示待ちeventを積む() {
-    let mut session = paused_candidate();
-    session.observe_activity(AgentSessionActivity::Working);
-    session.archive().unwrap();
-    session.take_uncommitted_events();
-
-    session
-        .complete_restore(AgentSessionRecoveryResult::Succeeded)
-        .unwrap();
-
-    assert_eq!(
-        session.uncommitted_events(),
-        &[
-            AgentSessionLifecycleEvent::LifecycleChanged {
-                lifecycle: AgentSessionLifecycle::Open,
-                last_exit_abnormal: false,
-            },
-            AgentSessionLifecycleEvent::ActivityObserved {
-                activity: AgentSessionActivity::AwaitingInstruction,
-            },
-        ]
-    );
-}
-
-#[test]
 fn test_agent_session_resume成功時にlast_exit_abnormalを解除する() {
     let mut session = paused_candidate();
     session.observe_provider_process_exit(Some(137));
@@ -1730,20 +1575,6 @@ fn test_agent_session_resume成功時にlast_exit_abnormalを解除する() {
 
     session
         .complete_resume(AgentSessionRecoveryResult::Succeeded)
-        .unwrap();
-
-    assert!(!session.last_exit_abnormal());
-}
-
-#[test]
-fn test_agent_session_restore成功時にlast_exit_abnormalを解除する() {
-    let mut session = paused_candidate();
-    session.observe_provider_process_exit(Some(137));
-    session.archive().unwrap();
-    assert!(session.last_exit_abnormal());
-
-    session
-        .complete_restore(AgentSessionRecoveryResult::Succeeded)
         .unwrap();
 
     assert!(!session.last_exit_abnormal());
@@ -1772,5 +1603,39 @@ fn test_delegate_追加入力は開いているworkflow_sessionだけが受け�
             session.observe_provider_process_exit(Some(0));
             assert!(!session.can_receive_workflow_instruction());
         }
+    }
+}
+
+#[test]
+fn test_agent_session_gc_archiveとrestore後の未知provider記録を削除しない() {
+    let mut session = AgentSession::create(
+        "retained",
+        WorkspaceIdentity::new("/repo"),
+        "/repo/worktree",
+        ProviderKind::Codex,
+        standalone_location("retained"),
+    )
+    .unwrap();
+    session.take_uncommitted_events();
+    for lifecycle in [
+        AgentSessionLifecycle::Archived,
+        AgentSessionLifecycle::Paused,
+    ] {
+        session.restore_derived_lifecycle(
+            lifecycle,
+            false,
+            AgentSessionActivity::AwaitingInstruction,
+        );
+        assert_eq!(
+            session.authorize_gc(ManagedPtyPresence::ConfirmedAbsent),
+            Err(AgentSessionRemovalError::NotOpen)
+        );
+        assert!(matches!(
+            session.observe_provider_process_exit(Some(0)),
+            AgentSessionProcessExitOutcome::AlreadyArchived
+                | AgentSessionProcessExitOutcome::AlreadyPaused
+        ));
+        assert_eq!(session.lifecycle(), lifecycle);
+        assert!(session.uncommitted_events().is_empty());
     }
 }

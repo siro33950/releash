@@ -97,7 +97,6 @@ impl LocalAgentSessionRepository {
         session_id: &str,
         session: &AgentSession,
         events: &[AgentSessionLifecycleEvent],
-        persisted_lifecycle: Option<AgentSessionLifecycle>,
     ) -> Result<Vec<PreparedNodeEvent>, AgentSessionRepositoryError> {
         let meta = location.meta();
         let timestamp_ms = now_ms();
@@ -146,10 +145,13 @@ impl LocalAgentSessionRepository {
                             .then(|| "provider process exited abnormally".to_string()),
                         failure_kind: None,
                     }),
-                    AgentSessionLifecycle::Open => Self::lifecycle_open_fact(
-                        persisted_lifecycle.unwrap_or(AgentSessionLifecycle::Paused),
-                    ),
-                    AgentSessionLifecycle::Archived => NodeFact::ArchiveRequested,
+                    AgentSessionLifecycle::Open => NodeFact::ResumeRequested,
+                    AgentSessionLifecycle::Archived => {
+                        NodeFact::ArchiveRequested(crate::domain::workflow::ArchiveRequestedFact {
+                            reason: "manual".into(),
+                            archived_at: timestamp_ms as f64 / 1000.0,
+                        })
+                    }
                 },
                 AgentSessionLifecycleEvent::ActivityObserved { activity } => {
                     NodeFact::AgentActivityObserved(AgentActivityObservedFact {
@@ -192,13 +194,6 @@ impl LocalAgentSessionRepository {
 
     /// archive からの復帰は restore_requested として記録する（LifecycleChanged
     /// Open の既定は resume_requested のため、呼び出し前の lifecycle で分岐する）。
-    fn lifecycle_open_fact(previous: AgentSessionLifecycle) -> NodeFact {
-        match previous {
-            AgentSessionLifecycle::Archived => NodeFact::RestoreRequested,
-            _ => NodeFact::ResumeRequested,
-        }
-    }
-
     async fn commit_provider_batch(
         &self,
         session_id: &str,
@@ -532,6 +527,10 @@ impl AgentSessionRepository for LocalAgentSessionRepository {
                 session.workspace().as_str(),
                 session.worktree_path(),
                 session.provider(),
+                crate::adaptor::gateway::repository::worktree::find_main_repo_path(
+                    session.worktree_path(),
+                )
+                .map_err(|_| AgentSessionRepositoryError::Unavailable)?,
             )
             .map_err(|_| AgentSessionRepositoryError::Corrupt)?;
             for (index, (meta, fact)) in root_facts.into_facts().into_iter().enumerate() {
@@ -659,7 +658,7 @@ impl AgentSessionRepository for LocalAgentSessionRepository {
             .map_err(|_| AgentSessionRepositoryError::Unavailable)?
             .ok_or(AgentSessionRepositoryError::Conflict)?;
         let location = SessionLocation::from_meta(&attachment.meta);
-        let rows = self.session_event_rows(&location, session.id(), &session, &pending, None)?;
+        let rows = self.session_event_rows(&location, session.id(), &session, &pending)?;
         self.commit_provider_batch(
             session.id(),
             Vec::new(),
@@ -697,7 +696,7 @@ impl AgentSessionRepository for LocalAgentSessionRepository {
             .map_err(|_| AgentSessionRepositoryError::Unavailable)?
             .ok_or(AgentSessionRepositoryError::Conflict)?;
         let location = SessionLocation::from_meta(&attachment.meta);
-        let rows = self.session_event_rows(&location, session.id(), &session, &pending, None)?;
+        let rows = self.session_event_rows(&location, session.id(), &session, &pending)?;
         self.commit_provider_batch(
             session.id(),
             Vec::new(),
@@ -799,30 +798,6 @@ impl ProviderSessionStartTransaction for LocalAgentSessionRepository {
         let Some(location) = self.locate(session.id())? else {
             return Err(AgentSessionRepositoryError::Conflict);
         };
-        // Open への遷移は archive からの復帰かどうかで restore / resume を書き分ける。
-        // 直前状態は永続化済みの事実列から導出する（集約はすでに遷移後）。
-        let persisted_lifecycle = if pending.iter().any(|event| {
-            matches!(
-                event,
-                AgentSessionLifecycleEvent::LifecycleChanged {
-                    lifecycle: AgentSessionLifecycle::Open,
-                    ..
-                }
-            )
-        }) {
-            let records = read_session_records(
-                &fact_log::FactLogReadBackend::Live(self.store.clone()),
-                &location,
-            )
-            .map_err(|_| AgentSessionRepositoryError::Unavailable)?;
-            Some(
-                self.derive_session(session.id(), &location, &records)?
-                    .session()
-                    .lifecycle(),
-            )
-        } else {
-            None
-        };
         // provider session の新規関連付けは所有権の CAS を先に通す。
         let claimed_provider_session_id = pending.iter().find_map(|event| match event {
             AgentSessionLifecycleEvent::ProviderSessionAssociated {
@@ -842,13 +817,7 @@ impl ProviderSessionStartTransaction for LocalAgentSessionRepository {
                 session.id(),
                 lifecycle_events,
                 ownership,
-                self.session_event_rows(
-                    &location,
-                    session.id(),
-                    &session,
-                    &pending,
-                    persisted_lifecycle,
-                )?,
+                self.session_event_rows(&location, session.id(), &session, &pending)?,
                 caller_request_id,
                 "save",
             )

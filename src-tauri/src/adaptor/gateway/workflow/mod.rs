@@ -58,7 +58,7 @@ pub(crate) use diagnostics_gateway::WorkflowDiagnosticsFileGateway;
 pub(crate) use editor_gateway::NoopWorkflowExternalEditorGateway;
 pub(crate) use editor_gateway::WorkflowExternalEditorGateway;
 pub(crate) use event_repository::WorkflowEventLogRepository;
-pub(crate) use execution_archive_repository::WorkflowExecutionArchiveFileRepository;
+pub(crate) use execution_archive_repository::ExecutionTreeArchiveFactRepository;
 pub(crate) use execution_projection_repository::WorkflowExecutionProjectionLogRepository;
 pub(crate) use facet_repository::WorkflowFacetFileRepository;
 pub(crate) use runtime_command_gateway::{
@@ -76,3 +76,5 @@ pub(crate) use worktree_gateway::RepoPathsManagedWorktreeGateway;
 pub(crate) use worktree_gateway::RepositoryManagedWorktreeGateway;
 
 pub(crate) use worktree_gateway::RepositoryIsolatedWorktreeGateway;
+
+mod stored_node_fact;

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use crate::adaptor::gateway::workflow::execution_store::{
     ExecutionStore, WorkflowExecutionMetadata,
 };
-use crate::adaptor::gateway::workflow::workflow_host::execution_state::DomainWorkflowExecution;
+use crate::adaptor::gateway::workflow::workflow_host::execution_state::DomainExecutionTree;
 use crate::domain::workflow::ExecutionStatus;
 use crate::domain::workflow::RuntimeExecutionState;
 use crate::domain::workflow::WorkflowEvent;
@@ -42,7 +42,7 @@ pub(crate) enum AbortOutcome {
 pub(crate) struct RequiredEventCommit<'a> {
     pub(crate) execution_id: &'a str,
     pub(crate) snapshot_for_commit: &'a RuntimeCommitSnapshot,
-    pub(crate) snapshot_before: DomainWorkflowExecution,
+    pub(crate) snapshot_before: DomainExecutionTree,
     pub(crate) execution_store_snapshot_before: Option<WorkflowExecutionMetadata>,
     pub(crate) required_events: Vec<WorkflowEvent>,
     pub(crate) append_error_context: &'a str,
