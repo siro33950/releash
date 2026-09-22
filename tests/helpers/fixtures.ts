@@ -7,6 +7,7 @@ import type { MockConfig } from "./tauri-mock";
 interface WorktreeBranch {
 	name: string;
 	is_main_worktree: boolean;
+	is_deleting: boolean;
 	worktree_path: string | null;
 	dirty_count: number;
 	is_merged: boolean;
@@ -242,6 +243,7 @@ export const kanbanBranches: WorktreeBranch[] = [
 	{
 		name: "feat/todo",
 		is_main_worktree: false,
+		is_deleting: false,
 		worktree_path: null,
 		dirty_count: 0,
 		is_merged: false,
@@ -253,6 +255,7 @@ export const kanbanBranches: WorktreeBranch[] = [
 	{
 		name: "feat/wip",
 		is_main_worktree: false,
+		is_deleting: false,
 		worktree_path: "/test/repo-worktrees/feat-wip",
 		dirty_count: 2,
 		is_merged: false,
@@ -264,6 +267,7 @@ export const kanbanBranches: WorktreeBranch[] = [
 	{
 		name: "feat/review",
 		is_main_worktree: false,
+		is_deleting: false,
 		worktree_path: "/test/repo-worktrees/feat-review",
 		dirty_count: 0,
 		is_merged: false,
@@ -275,6 +279,7 @@ export const kanbanBranches: WorktreeBranch[] = [
 	{
 		name: "feat/done",
 		is_main_worktree: false,
+		is_deleting: false,
 		worktree_path: null,
 		dirty_count: 0,
 		is_merged: true,

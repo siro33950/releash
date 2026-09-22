@@ -5,7 +5,7 @@ use parking_lot::Mutex;
 use tokio::sync::Notify;
 
 use crate::domain::repository::worktree_operation::{
-    WorktreeOperationLease, WorktreeOperationLocks, WorktreeOperationState,
+    WorktreeDeletionTarget, WorktreeOperationLease, WorktreeOperationLocks, WorktreeOperationState,
 };
 use crate::domain::repository::RepositoryError;
 
@@ -29,7 +29,24 @@ pub struct WorktreeDeletionGuard(
     Vec<Box<dyn WorktreeOperationLease>>,
 );
 
+impl WorktreeDeletionGuard {
+    pub(crate) fn accept(&mut self, target: WorktreeDeletionTarget) -> Result<(), RepositoryError> {
+        self.0[0].state.lock().accept_deletion(target)
+    }
+}
+
 impl WorktreeOperations {
+    pub(crate) fn for_each_deleting_worktree(
+        &self,
+        mut visit: impl FnMut(&WorktreeDeletionTarget),
+    ) {
+        for slot in self.worktrees.lock().values().filter_map(Weak::upgrade) {
+            if let Some(target) = slot.state.lock().deletion_target() {
+                visit(target);
+            }
+        }
+    }
+
     pub(crate) fn new(locks: Arc<dyn WorktreeOperationLocks>) -> Self {
         Self {
             worktrees: Mutex::default(),
@@ -101,8 +118,10 @@ impl Drop for WorktreeMutationGuard {
 
 impl Drop for WorktreeDeletionGuard {
     fn drop(&mut self) {
-        for slot in &self.0 {
-            slot.state.lock().finish_deletion();
+        self.1.clear();
+        let mut states: Vec<_> = self.0.iter().map(|slot| slot.state.lock()).collect();
+        for state in &mut states {
+            state.finish_deletion();
         }
     }
 }

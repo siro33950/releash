@@ -22,6 +22,11 @@ const DEFAULT_DEBOUNCE: Duration = Duration::from_millis(300);
 
 pub trait RepositoryStateRepository: Send + Sync {
     fn main_repo_path(&self, path: &str) -> Result<String, RepositoryStateError>;
+    fn include_deleting_worktrees(
+        &self,
+        repository_root: &str,
+        cards: &mut Vec<BranchCardDto>,
+    ) -> Result<(), RepositoryStateError>;
 }
 
 pub struct RepositoryStateService {
@@ -158,6 +163,8 @@ impl RepositoryStateService {
     ) -> Result<Vec<BranchCardDto>, RepositoryStateError> {
         let repository_root = self.repository.main_repo_path(repo_path)?;
         let mut cards = self.get_snapshot(repo_path)?.branch_cards.clone();
+        self.repository
+            .include_deleting_worktrees(&repository_root, &mut cards)?;
         let _ = classify_branch_cards(&repository_root, &mut cards);
         Ok(cards)
     }
@@ -169,6 +176,8 @@ impl RepositoryStateService {
         let snapshot = self.get_snapshot(repo_path)?;
         let repository_root = self.repository.main_repo_path(repo_path)?;
         let mut dto = RepositoryBranchCardsSnapshotDto::from_snapshot(snapshot.as_ref());
+        self.repository
+            .include_deleting_worktrees(&repository_root, &mut dto.branches)?;
         dto.worktree_display_groups = classify_branch_cards(&repository_root, &mut dto.branches);
         Ok(dto)
     }
@@ -324,6 +333,13 @@ pub(crate) mod tests {
     struct TestRepositoryStateRepository;
 
     impl RepositoryStateRepository for TestRepositoryStateRepository {
+        fn include_deleting_worktrees(
+            &self,
+            _: &str,
+            _: &mut Vec<BranchCardDto>,
+        ) -> Result<(), RepositoryStateError> {
+            Ok(())
+        }
         fn main_repo_path(&self, path: &str) -> Result<String, RepositoryStateError> {
             Ok(path.to_string())
         }
@@ -627,6 +643,7 @@ pub(crate) mod tests {
         scanner.set_branch_cards(vec![BranchCardDto {
             name: "main".to_string(),
             is_main_worktree: true,
+            is_deleting: false,
             worktree_path: Some("/repo".to_string()),
             dirty_count: 1,
             is_merged: false,
@@ -802,6 +819,7 @@ pub(crate) mod tests {
         scanner.set_branch_cards(vec![BranchCardDto {
             name: "main".to_string(),
             is_main_worktree: true,
+            is_deleting: false,
             worktree_path: Some("/repo".to_string()),
             dirty_count: 0,
             is_merged: false,
@@ -824,6 +842,7 @@ pub(crate) mod tests {
         scanner.set_branch_cards(vec![BranchCardDto {
             name: "releash/isolated/orphan-a1".to_string(),
             is_main_worktree: false,
+            is_deleting: false,
             worktree_path: Some("/repo-worktrees/.releash-isolated/orphan-a1".to_string()),
             dirty_count: 0,
             is_merged: false,

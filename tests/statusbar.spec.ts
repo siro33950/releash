@@ -159,6 +159,7 @@ test.describe("StatusBar", () => {
 				{
 					name: "feat/test",
 					is_main_worktree: false,
+					is_deleting: false,
 					worktree_path: "/test/repo",
 					dirty_count: 0,
 					is_merged: false,

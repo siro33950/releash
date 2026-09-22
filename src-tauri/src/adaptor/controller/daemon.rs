@@ -176,6 +176,9 @@ pub(crate) async fn compose(
     let repository_usecase = Arc::new(
         adaptor::controller::wiring::build_repository_usecase_with_worktree_terminals(
             terminal_surface.clone(),
+            Arc::new(usecase::worktree_operation::WorktreeOperations::new(Arc::new(
+                adaptor::gateway::repository::worktree_operation::FileWorktreeOperationLocks::new(&data_dir),
+            ))),
         ),
     );
 
@@ -268,7 +271,6 @@ pub(crate) async fn compose(
     };
     let workflow_runtime_usecase = Arc::new(
         adaptor::controller::wiring::build_workflow_runtime_usecase(
-            &data_dir,
             adaptor::gateway::workflow::workflow_host::WorkflowRuntimeDependencies {
                 processes: node_processes.clone(),
                 store: Some(local_event_store.clone()),

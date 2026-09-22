@@ -280,6 +280,9 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
             dependencies,
             driver,
         ));
+        let operations = Arc::new(crate::usecase::worktree_operation::WorktreeOperations::new(Arc::new(
+            crate::adaptor::gateway::repository::worktree_operation::FileWorktreeOperationLocks::new(&data_dir),
+        )));
         let runtime = Arc::new(
             WorkflowRuntimeUsecase::new_with_worktree_operations(
                 gateway,
@@ -289,9 +292,7 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
                         data_dir.clone(),
                     ),
                 ),
-                Arc::new(crate::usecase::worktree_operation::WorktreeOperations::new(Arc::new(
-                    crate::adaptor::gateway::repository::worktree_operation::FileWorktreeOperationLocks::new(&data_dir),
-                ))),
+                operations.clone(),
             )
             .with_startup(startup),
         );
@@ -321,7 +322,7 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
             crate::infrastructure::file_watcher::FileWatcherManager::default(),
         ));
         let mut dispatch = crate::adaptor::controller::client::ClientCommandDispatch::new(
-            Arc::new(crate::adaptor::controller::wiring::build_repository_usecase_with_worktree_terminals(terminal.application())),
+            Arc::new(crate::adaptor::controller::wiring::build_repository_usecase_with_worktree_terminals(terminal.application(), operations)),
             authority,
         );
         dispatch.register_dependencies(&crate::desktop_test_support::build_client_dependencies(

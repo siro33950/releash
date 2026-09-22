@@ -22,6 +22,7 @@ export interface BranchInfo {
 export interface WorktreeBranch {
 	name: string;
 	is_main_worktree: boolean;
+	is_deleting: boolean;
 	worktree_path: string | null;
 	dirty_count: number;
 	is_merged: boolean;

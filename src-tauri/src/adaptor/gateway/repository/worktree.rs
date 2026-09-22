@@ -53,14 +53,14 @@ fn main_repo_path(repo: &Repository) -> Result<String, RepositoryError> {
             let main_workdir = commondir
                 .parent()
                 .ok_or_else(|| RepositoryError::rule("cannot determine main repo path"))?;
-            return path_to_normalized_repo_string(main_workdir);
+            return path_to_worktree_identity(main_workdir);
         }
     }
 
     let workdir = repo
         .workdir()
         .ok_or_else(|| RepositoryError::rule("bare repository"))?;
-    path_to_normalized_repo_string(workdir)
+    path_to_worktree_identity(workdir)
 }
 
 fn path_to_normalized_repo_string(path: &Path) -> Result<String, RepositoryError> {
@@ -68,6 +68,12 @@ fn path_to_normalized_repo_string(path: &Path) -> Result<String, RepositoryError
         .to_str()
         .ok_or_else(|| RepositoryError::rule("invalid path encoding"))?;
     Ok(normalize_repo_path(path))
+}
+
+fn path_to_worktree_identity(path: &Path) -> Result<String, RepositoryError> {
+    let path = path_to_normalized_repo_string(path)?;
+    let identity = super::worktree_operation::worktree_identity(&path)?;
+    path_to_normalized_repo_string(&identity)
 }
 
 /// worktree の dirty 件数を算出する共通ロジック。
@@ -181,7 +187,7 @@ pub(crate) fn list_worktrees(repo_path: &str) -> Result<Vec<Worktree>, Repositor
 
     entries.push(Worktree {
         name: main_name,
-        path: path_to_normalized_repo_string(&main_workdir)?,
+        path: path_to_worktree_identity(&main_workdir)?,
         branch: main_branch,
         is_main: true,
         is_locked: false,
@@ -204,7 +210,7 @@ pub(crate) fn list_worktrees(repo_path: &str) -> Result<Vec<Worktree>, Repositor
 
         entries.push(Worktree {
             name: wt_name,
-            path: path_to_normalized_repo_string(wt_path)?,
+            path: path_to_worktree_identity(wt_path)?,
             branch,
             is_main: false,
             is_locked,
@@ -262,7 +268,7 @@ pub(crate) fn create_worktree(
 
     Ok(Worktree {
         name: wt_name.to_string(),
-        path: path_to_normalized_repo_string(wt_path)?,
+        path: path_to_worktree_identity(wt_path)?,
         branch: branch.to_string(),
         is_main: false,
         is_locked: false,
@@ -394,6 +400,10 @@ impl WorktreeRepository for WorktreeGateway {
         prune_invalid(repo_path)
     }
 }
+
+#[cfg(test)]
+#[path = "worktree_test.rs"]
+mod worktree_tests;
 
 #[cfg(test)]
 mod worktree_gateway_tests {

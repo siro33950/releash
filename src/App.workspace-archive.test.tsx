@@ -93,6 +93,7 @@ vi.mock("@/hooks/useWorktreeList", () => ({
 			{
 				name: "feature",
 				is_main_worktree: false,
+				is_deleting: false,
 				worktree_path: "/repo/wt",
 				dirty_count: 0,
 				is_merged: false,

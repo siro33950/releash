@@ -400,6 +400,7 @@ impl TryFrom<crate::usecase::repository_dto::BranchCardDto> for wire::BranchCard
         Ok(Self {
             name: Some(cv(value.name)?),
             is_main_worktree: Some(cv(value.is_main_worktree)?),
+            is_deleting: Some(cv(value.is_deleting)?),
             worktree_path: value.worktree_path.map(cv).transpose()?,
             dirty_count: Some(cv(value.dirty_count)?),
             is_merged: Some(cv(value.is_merged)?),

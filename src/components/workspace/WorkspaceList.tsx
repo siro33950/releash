@@ -1138,6 +1138,14 @@ function WorktreeTreeItem({
 						/>
 					)}
 					<span className="min-w-0 truncate">{branch.name}</span>
+					{branch.is_deleting && (
+						<span
+							role="status"
+							className="shrink-0 text-xs text-muted-foreground"
+						>
+							Deleting...
+						</span>
+					)}
 					{expanded ? (
 						<ChevronDown className="hidden size-3.5 shrink-0 text-muted-foreground group-hover:block" />
 					) : (
@@ -1614,6 +1622,9 @@ function RepoTreeSectionView({
 					force,
 				});
 				trackEvent("worktree_removed");
+				setDeletingBranch((current) => (current === branch ? null : current));
+				void refresh({ silent: true });
+				return;
 			} else if (branch.is_merged) {
 				await invoke("delete_branch", {
 					repoPath,

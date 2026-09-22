@@ -55,6 +55,7 @@ function makeBranch(overrides: Partial<WorktreeBranch> = {}): WorktreeBranch {
 	return {
 		name: "main",
 		is_main_worktree: true,
+		is_deleting: false,
 		worktree_path: "/repo",
 		dirty_count: 0,
 		is_merged: false,
@@ -239,6 +240,7 @@ describe("CreateWorktreeModal", () => {
 			makeBranch({
 				name: "backend/issue-1302",
 				is_main_worktree: false,
+				is_deleting: false,
 				worktree_path: "/repo-worktrees/backend-issue-1302",
 			}),
 		];

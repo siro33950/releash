@@ -793,6 +793,18 @@ async fn test_未呼出33command_connectの実行結果とエラーがtauriと�
 
 #[tokio::test]
 async fn test_worktree変更_protoは実引数の成功とusecaseエラーを保持する() {
+    async fn wait_for_deletion(
+        runtime: &crate::usecase::workflow::WorkflowRuntimeUsecase,
+        path: &str,
+    ) {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while runtime.begin_worktree_mutation(path).is_err() {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
     // Given
     let (_temp, path) = mutation_repository();
     let (app, dispatch) = parity_app();
@@ -809,6 +821,7 @@ async fn test_worktree変更_protoは実引数の成功とusecaseエラーを保
     uc.remove_worktree(runtime.inner().as_ref(), &path, &worktree_path, true)
         .await
         .unwrap();
+    wait_for_deletion(runtime.inner().as_ref(), &worktree_path).await;
     uc.delete_branch(runtime.inner().as_ref(), &path, branch, true)
         .await
         .unwrap();
@@ -857,6 +870,7 @@ async fn test_worktree変更_protoは実引数の成功とusecaseエラーを保
         .await,
     );
     assert!(expected.is_ok());
+    wait_for_deletion(runtime.inner().as_ref(), &worktree_path).await;
     uc.create_worktree(&path, branch, false, Some("base"))
         .unwrap();
     std::fs::write(
@@ -871,6 +885,7 @@ async fn test_worktree変更_protoは実引数の成功とusecaseエラーを保
         expected,
     )
     .await;
+    wait_for_deletion(runtime.inner().as_ref(), &worktree_path).await;
     assert!(!std::path::Path::new(&worktree_path).exists());
 }
 

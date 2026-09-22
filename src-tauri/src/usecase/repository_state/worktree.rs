@@ -371,6 +371,7 @@ mod tests {
                 branch_cards: vec![BranchCardDto {
                     name: "main".to_string(),
                     is_main_worktree: true,
+                    is_deleting: false,
                     worktree_path: Some("/repo".to_string()),
                     dirty_count: 1,
                     is_merged: false,

@@ -12,7 +12,7 @@ export function useWorktreeList(repoPath: string) {
 	const [branches, setBranches] = useState<WorktreeBranch[]>([]);
 	const [loading, setLoading] = useState(true);
 	const refreshSeqRef = useRef(0);
-	const prevBranchesRef = useRef("");
+	const prevBranchesRef = useRef({ repoPath, cards: branches });
 
 	const enrichWithPrStatus = useCallback(
 		async (cards: WorktreeBranch[]): Promise<WorktreeBranch[]> => {
@@ -47,20 +47,40 @@ export function useWorktreeList(repoPath: string) {
 		async (options?: { silent?: boolean }) => {
 			const seq = ++refreshSeqRef.current;
 			if (!options?.silent) setLoading(true);
+			const applyBranches = (
+				cards: WorktreeBranch[],
+				preservePrDisplay = false,
+			) => {
+				if (seq !== refreshSeqRef.current) return;
+				const previous = prevBranchesRef.current;
+				if (preservePrDisplay && previous.repoPath === repoPath) {
+					const displayed = new Map(previous.cards.map((b) => [b.name, b]));
+					cards = cards.map((card) => {
+						const prior = displayed.get(card.name);
+						if (!prior || prior.worktree_path !== card.worktree_path)
+							return card;
+						return {
+							...card,
+							has_pr: prior.has_pr,
+							pr_number: prior.pr_number,
+							pr_url: prior.pr_url,
+						};
+					});
+				}
+				prevBranchesRef.current = { repoPath, cards };
+				if (JSON.stringify(cards) !== JSON.stringify(previous.cards)) {
+					setBranches(cards);
+				}
+				setLoading(false);
+			};
 			try {
 				const snapshot = await invoke("list_branches_with_status_snapshot", {
 					repoPath,
 				});
 				// 表示先の振り分けは backend が確定済み。ここでは PR 情報を重ねるだけ。
 				const groups = snapshot.worktree_display_groups;
-				const filtered = await enrichWithPrStatus(groups.working_areas);
-				if (seq === refreshSeqRef.current) {
-					const serialized = JSON.stringify(filtered);
-					if (serialized !== prevBranchesRef.current) {
-						prevBranchesRef.current = serialized;
-						setBranches(filtered);
-					}
-				}
+				applyBranches(groups.working_areas, true);
+				applyBranches(await enrichWithPrStatus(groups.working_areas));
 			} catch (e) {
 				console.error("Failed to list worktrees:", e);
 			} finally {
@@ -99,14 +119,17 @@ export function useWorktreeList(repoPath: string) {
 		};
 	}, [refresh]);
 
+	const pollInterval = branches.some((branch) => branch.is_deleting)
+		? 1_000
+		: POLL_INTERVAL;
 	useEffect(() => {
 		const id = setInterval(() => {
 			if (document.visibilityState === "visible") {
 				refresh({ silent: true });
 			}
-		}, POLL_INTERVAL);
+		}, pollInterval);
 		return () => clearInterval(id);
-	}, [refresh]);
+	}, [refresh, pollInterval]);
 
 	return { branches, loading, refresh };
 }
