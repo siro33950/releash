@@ -377,13 +377,6 @@ describe("NodeContentView", () => {
 			"dark:text-yellow-300",
 		],
 		[
-			"unresolved",
-			"failure",
-			"lucide-circle-question-mark",
-			"text-red-600",
-			"dark:text-red-300",
-		],
-		[
 			"completed",
 			"idle",
 			"lucide-circle-check",
@@ -406,20 +399,6 @@ describe("NodeContentView", () => {
 			expect(icon).not.toHaveClass("animate-pulse");
 		},
 	);
-
-	it("shows the backend-owned recovery reason without deriving it in the TUI", () => {
-		mocks.detailState.detail = {
-			...sessionDetail("unresolved-session"),
-			status: "unresolved",
-			statusClassification: "failure",
-			recoveryReason: "Provider session must be recovered",
-		};
-		renderView("unresolved-session");
-
-		expect(
-			screen.getByText("Provider session must be recovered"),
-		).toBeVisible();
-	});
 
 	it("shows and executes Approve only from backend capability", async () => {
 		const user = userEvent.setup();

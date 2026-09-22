@@ -23,6 +23,7 @@ pub(crate) mod runtime_error;
 pub(crate) mod runtime_resolver;
 pub(crate) mod runtime_snapshot;
 pub(crate) mod runtime_start_guard;
+pub(crate) mod startup;
 #[cfg(test)]
 pub(crate) mod test_support;
 mod workspace_node_command;

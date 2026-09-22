@@ -65,7 +65,6 @@ pub enum NodeKindView {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum NodeExecutionStatusView {
-    Unresolved,
     Running,
     WaitingApproval,
     Succeeded,
@@ -113,8 +112,6 @@ pub struct NodeExecutionView {
     pub can_resume_session: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree: Option<crate::usecase::workflow::NodeWorktreeDto>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub recovery_reason: Option<String>,
     pub id: String,
     pub execution_id: String,
     pub node_name: String,

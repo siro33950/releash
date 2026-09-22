@@ -20,7 +20,6 @@ export type CenterSelection =
 	  };
 
 export type WorkspaceNodeStatus =
-	| "unresolved"
 	| "running"
 	| "waiting"
 	| "aborted"
@@ -29,7 +28,6 @@ export type WorkspaceNodeStatus =
 export type WorkspaceNodeStatusClassification =
 	| "active"
 	| "attention"
-	| "failure"
 	| "idle"
 	| "unbound";
 
@@ -144,7 +142,6 @@ export interface WorkspaceNodeDetail {
 	waitingFor?: "submit" | "stop";
 	hasArtifact: boolean;
 	errorReason?: string | null;
-	recoveryReason?: string | null;
 	capabilities: WorkspaceNodeCapabilities;
 	updatedAt: number;
 	content: WorkspaceNodeContent;

@@ -39,7 +39,7 @@ impl RuntimeCommitSnapshot {
     ) -> Result<Self, crate::usecase::workflow::runtime_error::WorkflowRuntimeError> {
         Ok(Self {
             execution_id: execution.id.clone(),
-            workflow_name: execution.workflow.name.clone(),
+            workflow_name: execution.workflow_name.clone(),
             worktree_path: execution.worktree_path.clone(),
             repository_root: execution.repository_root.clone(),
             created_from: execution.created_from,
@@ -49,7 +49,14 @@ impl RuntimeCommitSnapshot {
             current_node_name: execution.display_current_node(),
             current_session_id: execution.current_session_id.clone(),
             node_history: execution.node_history.clone(),
-            workflow_definition: execution.workflow.clone(),
+            workflow_definition: execution
+                .workflow_definition()
+                .map_err(|error| {
+                    crate::usecase::workflow::runtime_error::WorkflowRuntimeError::InvalidState(
+                        error.to_string(),
+                    )
+                })?
+                .clone(),
             total_token_usage: workflow_projection::total_token_usage(&execution.node_history),
             artifacts: execution.flattened_artifacts(),
             node_executions: execution.node_executions.clone(),
@@ -95,7 +102,6 @@ fn runtime_node_execution_to_domain(
     let artifact_produced_at = execution.completed_at.unwrap_or(execution.started_at);
     crate::domain::workflow::NodeExecution {
         worktree: execution.worktree.clone(),
-        recovery_reason: execution.recovery_reason.clone(),
         id: execution.id,
         execution_id: execution.execution_id,
         node_name: execution.node_name,
@@ -103,9 +109,6 @@ fn runtime_node_execution_to_domain(
         attempt: execution.attempt,
         process_presence: Default::default(),
         status: match execution.status {
-            RuntimeNodeExecutionStatus::Unresolved => {
-                crate::domain::workflow::NodeExecutionStatus::Unresolved
-            }
             RuntimeNodeExecutionStatus::Running => {
                 crate::domain::workflow::NodeExecutionStatus::Running
             }

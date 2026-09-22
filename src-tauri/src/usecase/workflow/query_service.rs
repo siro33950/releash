@@ -578,7 +578,6 @@ mod tests {
             node_executions: vec![NodeExecution {
                 process_presence: Default::default(),
                 worktree: None,
-                recovery_reason: None,
                 id: "ne-review-1".to_string(),
                 execution_id: execution_id.to_string(),
                 node_name: "review".to_string(),

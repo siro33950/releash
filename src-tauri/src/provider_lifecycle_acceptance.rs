@@ -254,11 +254,6 @@ impl WorkflowControlPlaneGateway for AcceptanceWorkflowRuntimeGateway {
         Err(unavailable_workflow_runtime())
     }
 
-    async fn recover_active_executions(&self) -> Result<(), WorkflowError> {
-        self.record_command();
-        Err(unavailable_workflow_runtime())
-    }
-
     async fn register_started_execution_tree(&self, _tree_id: &str) -> Result<(), WorkflowError> {
         self.record_command();
         Err(unavailable_workflow_runtime())
@@ -312,10 +307,6 @@ impl crate::usecase::workflow::ports::ExecutionTreeProcessGateway
 
 #[async_trait::async_trait]
 impl WorkflowRuntimeStateGateway for AcceptanceWorkflowRuntimeGateway {
-    async fn recover_startup(&self) -> Result<(), WorkflowError> {
-        Ok(())
-    }
-
     #[cfg(test)]
     async fn get_state_by_execution_id(
         &self,

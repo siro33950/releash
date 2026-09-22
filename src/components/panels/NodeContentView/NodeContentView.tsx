@@ -201,11 +201,7 @@ function NodeHeader({
 					</div>
 				</dl>
 			)}
-			{detail.recoveryReason && (
-				<span className="min-w-0 truncate text-xs text-orange-600 dark:text-orange-300">
-					{detail.recoveryReason}
-				</span>
-			)}
+
 			{actionError && (
 				<span
 					role="alert"

@@ -438,12 +438,6 @@ describe("WorkspaceList", () => {
 				pulses: true,
 			},
 			{
-				title: "Failure sequence",
-				status: "failure",
-				colorClasses: ["text-red-600", "dark:text-red-300"],
-				pulses: false,
-			},
-			{
 				title: "Idle sequence",
 				status: "idle",
 				colorClasses: ["text-green-600", "dark:text-green-300"],
@@ -598,7 +592,7 @@ describe("WorkspaceList", () => {
 		window.removeEventListener("agent-session-refresh", changed);
 	});
 
-	it("Standalone Session Nodeの4分類は色とpulseで表現する", () => {
+	it("Standalone Session Nodeの3分類は色とpulseで表現する", () => {
 		mocks.treeStateOverrides.set("/repo/wt", {
 			nodes: [
 				standaloneSessionNode({
@@ -610,11 +604,6 @@ describe("WorkspaceList", () => {
 					id: "provider-agent-attention",
 					title: "Attention Session",
 					status: "attention",
-				}),
-				standaloneSessionNode({
-					id: "provider-agent-failure",
-					title: "Failure Session",
-					status: "failure",
 				}),
 				standaloneSessionNode({
 					id: "provider-agent-idle",
@@ -632,16 +621,12 @@ describe("WorkspaceList", () => {
 		const attentionRow = screen.getByRole("button", {
 			name: "Attention Session, attention",
 		});
-		const failureRow = screen.getByRole("button", {
-			name: "Failure Session, failure",
-		});
 		const idleRow = screen.getByRole("button", {
 			name: "Idle Session, idle",
 		});
 
 		expect(within(activeRow).queryByText("active")).toBeNull();
 		expect(within(attentionRow).queryByText("attention")).toBeNull();
-		expect(within(failureRow).queryByText("failure")).toBeNull();
 		expect(within(idleRow).queryByText("idle")).toBeNull();
 		expect(
 			within(activeRow).getByTitle("session, active").firstChild,
@@ -649,16 +634,10 @@ describe("WorkspaceList", () => {
 		expect(
 			within(attentionRow).getByTitle("session, attention").firstChild,
 		).toHaveClass("text-yellow-600", "dark:text-yellow-300", "animate-pulse");
-		expect(
-			within(failureRow).getByTitle("session, failure").firstChild,
-		).toHaveClass("text-red-600", "dark:text-red-300");
 		expect(within(idleRow).getByTitle("session, idle").firstChild).toHaveClass(
 			"text-green-600",
 			"dark:text-green-300",
 		);
-		expect(
-			within(failureRow).getByTitle("session, failure").firstChild,
-		).not.toHaveClass("animate-pulse");
 		expect(
 			within(idleRow).getByTitle("session, idle").firstChild,
 		).not.toHaveClass("animate-pulse");
@@ -1054,22 +1033,6 @@ describe("WorkspaceList", () => {
 			"text-blue-600",
 			"animate-pulse",
 		);
-	});
-
-	it("shows the backend failure classification on a failed session badge", () => {
-		mocks.treeStateOverrides.set("/repo/wt", {
-			nodes: [
-				{
-					...directNode,
-					status: "failure",
-					errorReason: "app server stopped",
-				},
-			],
-		});
-
-		renderWorkspaceList();
-
-		expect(screen.getByTitle("session, failure")).toBeInTheDocument();
 	});
 
 	it("toggles Workflow and Fanout branches without changing selection", async () => {
@@ -1475,7 +1438,7 @@ describe("WorkspaceList", () => {
 		const first = standaloneSessionNode({
 			id: "retry-attempt-first",
 			title: "Review",
-			status: "failure",
+			status: "attention",
 			canArchive: false,
 		});
 		const second = standaloneSessionNode({
@@ -1510,7 +1473,7 @@ describe("WorkspaceList", () => {
 
 		const executions = screen.getAllByRole("button", { name: /^Review,/ });
 		expect(executions.map((row) => row.getAttribute("aria-label"))).toEqual([
-			"Review, failure",
+			"Review, attention",
 			"Review, idle",
 			"Review, active",
 		]);
@@ -1548,7 +1511,7 @@ describe("WorkspaceList", () => {
 			...standaloneSessionNode({
 				id: "past-delegate-parent",
 				title: "Implement",
-				status: "failure",
+				status: "attention",
 				canArchive: false,
 			}),
 			children: [child],
@@ -1588,7 +1551,7 @@ describe("WorkspaceList", () => {
 			name: /^(Implement|Past verify|Past judge|Current verify),/,
 		});
 		expect(rows.map((row) => row.getAttribute("aria-label"))).toEqual([
-			"Implement, failure",
+			"Implement, attention",
 			"Past verify, idle",
 			"Past judge, idle",
 			"Implement, active",

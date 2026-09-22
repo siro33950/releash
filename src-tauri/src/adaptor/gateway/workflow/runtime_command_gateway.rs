@@ -206,13 +206,6 @@ impl WorkflowControlPlaneGateway for WorkflowRuntimeCommandGateway {
             .map_err(workflow_runtime_error_to_workflow_error)
     }
 
-    async fn recover_active_executions(&self) -> Result<(), WorkflowError> {
-        self.driver
-            .reconcile_startup(&self.app)
-            .await
-            .map_err(workflow_runtime_error_to_workflow_error)
-    }
-
     async fn reserve_started_execution_tree(&self, tree_id: &str) -> Result<(), WorkflowError> {
         self.driver
             .reserve_started_execution_tree(tree_id)
@@ -311,13 +304,6 @@ impl crate::usecase::workflow::ports::ExecutionTreeProcessGateway
 
 #[async_trait::async_trait]
 impl WorkflowRuntimeStateGateway for WorkflowRuntimeCommandGateway {
-    async fn recover_startup(&self) -> Result<(), WorkflowError> {
-        self.driver
-            .reconcile_startup(&self.app)
-            .await
-            .map_err(workflow_runtime_error_to_workflow_error)
-    }
-
     #[cfg(test)]
     async fn get_state_by_execution_id(
         &self,

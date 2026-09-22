@@ -107,19 +107,21 @@ fn workflow_definition(nodes: Vec<NodeDefinition>, entry: &str) -> WorkflowDefin
 fn workflow_root(definition: WorkflowDefinition) -> TreeRootFact {
     TreeRootFact {
         repository_root: None,
-        definition_resolution: Default::default(),
         workspace_identity: "/repo".to_string(),
         worktree_path: "/repo".to_string(),
         created_from: ExecutionOrigin::Cli,
         request: "please work".to_string(),
-        definition,
+        workflow_name: definition.name.clone(),
+        definition: Some(definition),
         launched_as: ExecutionTreeLaunch::Workflow,
     }
 }
 
 fn session_root() -> TreeRootFact {
     let NodeFact::Started(StartedFact {
-        root: Some(root), ..
+        worktree: None,
+        root: Some(root),
+        ..
     }) = SessionExecutionTreeRootFacts::new(TREE, "/repo", "/repo", ProviderKind::Codex, None)
         .unwrap()
         .started
@@ -131,6 +133,7 @@ fn session_root() -> TreeRootFact {
 
 fn started_root(root: TreeRootFact) -> NodeFact {
     NodeFact::Started(StartedFact {
+        worktree: None,
         parent: None,
         root: Some(Box::new(root)),
     })
@@ -138,6 +141,7 @@ fn started_root(root: TreeRootFact) -> NodeFact {
 
 fn started_child(parent: ExecutionParentRef) -> NodeFact {
     NodeFact::Started(StartedFact {
+        worktree: None,
         parent: Some(parent),
         root: None,
     })
@@ -1124,11 +1128,124 @@ mod sequence_tests {
         assert_eq!(sequence.status, RuntimeNodeExecutionStatus::Succeeded);
         assert_eq!(sequence.artifact, Some(serde_json::json!({})));
         assert_eq!(*tree.aggregate.state(), RuntimeExecutionState::Completed);
+        log.push(
+            meta("main-exec", None, "main", NodeKindName::Sequence, 1),
+            NodeFact::ExecutionCompleted,
+        );
+        let terminal = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+        assert_eq!(
+            terminal
+                .aggregate
+                .node_execution("main-exec")
+                .unwrap()
+                .artifact,
+            sequence.artifact
+        );
     }
 }
 
 mod fanout_tests {
     use super::*;
+
+    #[test]
+    fn test_終端復元_fanoutのusageを空と入れ子とdynamicも通常foldと同じにする() {
+        use crate::domain::workflow::TokenUsage;
+
+        // Given
+        for (items, slots, usage_count) in [
+            ("", 2, 2),
+            ("items: [a, b],", 4, 3),
+            ("items: [],", 0, 0),
+            ("", 2, 0),
+        ] {
+            let definition: WorkflowDefinition = serde_saphyr::from_str(&format!(
+                "name: usage\ndescription: test\nnodes:\n  main: {{fanout: {{children: [fan]}}}}\n  fan: {{worktree: isolated, fanout: {{{items} children: [first, second]}}}}\n  first: {{session: {{provider: codex}}}}\n  second: {{session: {{provider: codex}}}}"
+            ))
+            .unwrap();
+            let mut log = FactLog::new();
+            let root = meta("root", None, "main", NodeKindName::Fanout, 1);
+            let mut root_fact = workflow_root(definition);
+            root_fact.repository_root = Some("/repo".into());
+            log.push(root.clone(), started_root(root_fact));
+            log.push(
+                meta("fan", Some("root"), "fan", NodeKindName::Fanout, 1),
+                NodeFact::Started(StartedFact {
+                    worktree: Some(crate::domain::workflow::IsolatedWorktree::for_attempt(
+                        "/repo", "fan", 1,
+                    )),
+                    parent: Some(ExecutionParentRef::fanout_child("root", None, 0)),
+                    root: None,
+                }),
+            );
+            let mut leaves = Vec::new();
+            for index in 0..slots {
+                let leaf = meta(
+                    &format!("leaf-{index}"),
+                    Some("fan"),
+                    if index % 2 == 0 { "first" } else { "second" },
+                    NodeKindName::Session,
+                    1,
+                );
+                log.push(
+                    leaf.clone(),
+                    started_child(ExecutionParentRef::fanout_child(
+                        "fan",
+                        (!items.is_empty()).then_some(index / 2),
+                        index % 2,
+                    )),
+                );
+                leaves.push(leaf);
+            }
+            for (index, leaf) in leaves.into_iter().enumerate() {
+                log.push(leaf.clone(), submit());
+                log.push(
+                    leaf,
+                    NodeFact::StopReceived(StopReceivedFact {
+                        result_summary: None,
+                        token_usage: (index < usage_count).then_some(TokenUsage {
+                            input_tokens: index as u64 + 1,
+                            output_tokens: (index as u64 + 1) * 10,
+                        }),
+                    }),
+                );
+            }
+            let expected = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+            assert_eq!(
+                *expected.aggregate.state(),
+                RuntimeExecutionState::Completed
+            );
+            log.push(root, NodeFact::ExecutionCompleted);
+            if let NodeFact::Started(started) = &mut log.records[0].fact {
+                started.root.as_mut().unwrap().definition = None;
+            }
+
+            // When
+            let actual = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+            let model = derive_read_model(&actual);
+
+            // Then
+            let total = (usage_count * (usage_count + 1) / 2) as u64;
+            for id in ["root", "fan"] {
+                let node = model
+                    .node_executions
+                    .iter()
+                    .find(|node| node.id == id)
+                    .unwrap();
+                assert_eq!(node.status, NodeExecutionStatus::Succeeded);
+                assert_eq!(
+                    node.token_usage,
+                    Some(TokenUsage {
+                        input_tokens: total,
+                        output_tokens: total * 10,
+                    })
+                );
+                assert_eq!(
+                    node.token_usage,
+                    expected.aggregate.node_execution(id).unwrap().token_usage
+                );
+            }
+        }
+    }
 
     #[test]
     fn test_fanout_全子完了で合成子と木全体の完了が導出される() {
@@ -1617,7 +1734,7 @@ mod abort_tests {
         let root_meta = meta("root-exec", None, "session", NodeKindName::Session, 1);
         log.push(root_meta.clone(), started_root(session_root()));
         log.push(root_meta.clone(), attached("session-1"));
-        log.push(root_meta, NodeFact::AbortRequested);
+        log.push(root_meta, NodeFact::AbortRequested(Default::default()));
 
         let tree = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
         assert_eq!(*tree.aggregate.state(), RuntimeExecutionState::Aborted);
@@ -1646,8 +1763,8 @@ mod retroactive_interpretation_tests {
         // 入力の事実語彙に遷移（completed 等）は存在しない
         for record in &log.records {
             assert!(matches!(
-                record.fact.event_type(),
-                "started" | "submit_received" | "stop_received"
+                record.fact,
+                NodeFact::Started(_) | NodeFact::SubmitReceived(_) | NodeFact::StopReceived(_)
             ));
         }
 
@@ -1692,6 +1809,7 @@ mod input_validation_tests {
         log.push(
             meta("root-exec", None, "session", NodeKindName::Session, 1),
             NodeFact::Started(StartedFact {
+                worktree: None,
                 parent: None,
                 root: None,
             }),
@@ -1700,9 +1818,6 @@ mod input_validation_tests {
         assert!(fold_execution_tree(TREE, &log.records).is_err());
     }
 }
-
-#[path = "fact_replay_recovery_test.rs"]
-mod recovery_tests;
 
 #[test]
 fn test_隔離成果選択_同名slotは開始順と完了順によらず最後に提出した成果を選ぶ() {
@@ -1811,31 +1926,640 @@ fn test_delegate復旧_提出保存後の未開始childは前進しstarted追記
 }
 
 #[test]
-fn test_delegate復旧_child定義が復元不能なら親を未解決にして起動しない() {
+fn test_終端事実_定義の変更や後続の事実に依存せず最初の終端と時刻を維持する() {
     // Given
-    let mut log = delegate_submission_log();
-    let NodeFact::Started(started) = &mut log.records[0].fact else {
-        panic!()
-    };
-    started
-        .root
-        .as_mut()
-        .unwrap()
-        .definition_resolution
-        .node_errors
-        .insert("verify".into(), "child definition unavailable".into());
+    for terminal in [
+        NodeFact::ExecutionCompleted,
+        NodeFact::AbortRequested(crate::domain::workflow::AbortRequestedFact {
+            reason: Some("definition unavailable".into()),
+        }),
+    ] {
+        let mut log = FactLog::new();
+        let root_meta = meta("main", None, "main", NodeKindName::Sequence, 1);
+        log.push(
+            root_meta.clone(),
+            started_root(workflow_root(WorkflowDefinition::default())),
+        );
+        log.push(
+            meta("child", Some("main"), "missing", NodeKindName::Command, 1),
+            started_child(ExecutionParentRef::sequence_child("main")),
+        );
+        log.push(root_meta.clone(), terminal.clone());
+        log.push(
+            root_meta.clone(),
+            NodeFact::ArchiveRequested(crate::domain::workflow::ArchiveRequestedFact {
+                reason: "manual".into(),
+                archived_at: 1.0,
+            }),
+        );
+        log.push(root_meta.clone(), NodeFact::RestoreRequested);
+        log.push(
+            root_meta,
+            if matches!(terminal, NodeFact::ExecutionCompleted) {
+                NodeFact::AbortRequested(Default::default())
+            } else {
+                NodeFact::ExecutionCompleted
+            },
+        );
+        // When
+        let tree = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+        let model = derive_read_model(&tree);
+        // Then
+        assert_eq!(tree.aggregate.state(), &terminal.terminal_state().unwrap());
+        assert_eq!(model.completed_at, Some(3.0));
+        assert!(model
+            .node_executions
+            .iter()
+            .all(|node| !node.status.is_active()));
+        assert!(tree.aggregate.derive_pending_advances().is_empty());
+        assert_eq!(
+            model.error_reason.as_deref(),
+            if matches!(terminal, NodeFact::AbortRequested(_)) {
+                Some("definition unavailable")
+            } else {
+                None
+            }
+        );
+    }
+}
+
+#[test]
+fn test_終端復元_定義がなくても再試行関係と記録済みの表示属性を保持する() {
+    // Given
+    let mut log = FactLog::new();
+    let root = meta("root", None, "main", NodeKindName::Sequence, 1);
+    let old = meta("old", Some("root"), "work", NodeKindName::Session, 1);
+    let new = meta("new", Some("root"), "work", NodeKindName::Session, 2);
+    log.push(
+        root.clone(),
+        started_root(workflow_root(WorkflowDefinition::default())),
+    );
+    log.push(
+        old.clone(),
+        started_child(ExecutionParentRef::sequence_child("root")),
+    );
+    log.push(old.clone(), NodeFact::RetryRequested);
+    log.push(
+        new.clone(),
+        started_child(ExecutionParentRef::sequence_child("root")),
+    );
+    log.push(new.clone(), attached("agent"));
+    log.push(new.clone(), submit());
+    log.push(
+        new.clone(),
+        artifact("result", serde_json::json!({"result": true})),
+    );
+    log.push(
+        new.clone(),
+        NodeFact::StopReceived(StopReceivedFact {
+            result_summary: Some("done".into()),
+            token_usage: Some(crate::domain::workflow::TokenUsage {
+                input_tokens: 1,
+                output_tokens: 2,
+            }),
+        }),
+    );
+    log.push(root.clone(), NodeFact::ExecutionCompleted);
+    log.push(new, NodeFact::RetryRequested);
     // When
-    let folded = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+    let tree = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
     // Then
-    let parent = folded.aggregate.node_execution("parent").unwrap();
-    assert_eq!(parent.status, RuntimeNodeExecutionStatus::Unresolved);
-    assert!(parent
-        .recovery_reason
-        .as_ref()
-        .unwrap()
-        .contains("child definition unavailable"));
-    assert!(folded.aggregate.derive_pending_advances().is_empty());
-    assert_eq!(folded.aggregate.node_executions.len(), 1);
+    assert_eq!(tree.aggregate.state(), &RuntimeExecutionState::Completed);
+    assert_eq!(
+        tree.aggregate.node_execution("old").unwrap().status,
+        RuntimeNodeExecutionStatus::Aborted
+    );
+    assert_eq!(
+        tree.aggregate
+            .retry_predecessors
+            .get("new")
+            .map(String::as_str),
+        Some("old")
+    );
+    let node = tree.aggregate.node_execution("new").unwrap();
+    assert_eq!(node.status, RuntimeNodeExecutionStatus::Succeeded);
+    assert_eq!(node.session_id.as_deref(), Some("agent"));
+    assert!(node.completion_signals.is_ready());
+    assert_eq!(node.artifact, Some(serde_json::json!({"result": true})));
+    assert_eq!(node.result_summary.as_deref(), Some("done"));
+    assert_eq!(node.token_usage.as_ref().unwrap().output_tokens, 2);
+    assert_eq!(tree.aggregate.updated_at, 9.0);
+}
+
+#[test]
+fn test_終端復元_読める定義ではabort前に完了した葉の状態と完了時刻を保つ() {
+    // Given
+    for stop_first in [false, true] {
+        let mut log = FactLog::new();
+        let root = meta("root", None, "main", NodeKindName::Fanout, 1);
+        log.push(
+            root.clone(),
+            started_root(workflow_root(workflow_definition(
+                vec![
+                    fanout_node(
+                        "main",
+                        vec![
+                            ChildEntry::reference("command"),
+                            ChildEntry::reference("session"),
+                            ChildEntry::reference("pending"),
+                        ],
+                    ),
+                    command_leaf("command"),
+                    session_leaf("session"),
+                    session_leaf("pending"),
+                ],
+                "main",
+            ))),
+        );
+        for (index, (name, kind)) in [
+            ("command", NodeKindName::Command),
+            ("session", NodeKindName::Session),
+            ("pending", NodeKindName::Session),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            log.push(
+                meta(name, Some("root"), name, kind, 1),
+                started_child(ExecutionParentRef::fanout_child("root", None, index)),
+            );
+        }
+        let command = meta("command", Some("root"), "command", NodeKindName::Command, 1);
+        log.push(
+            command,
+            NodeFact::ProcessExited(crate::domain::workflow::ProcessExitedFact {
+                exit_code: Some(0),
+                result_summary: Some("done".into()),
+                failure_kind: None,
+                failure_reason: None,
+            }),
+        );
+        let session = meta("session", Some("root"), "session", NodeKindName::Session, 1);
+        if stop_first {
+            log.push(session.clone(), stop());
+        }
+        log.push(session.clone(), submit());
+        log.push(
+            session.clone(),
+            artifact("result", serde_json::json!({"ok": true})),
+        );
+        if !stop_first {
+            log.push(session, stop());
+        }
+        log.push(
+            meta("pending", Some("root"), "pending", NodeKindName::Session, 1),
+            stop(),
+        );
+        let mut expected = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+        log.push(root, NodeFact::AbortRequested(Default::default()));
+        expected.aggregate.replay_aborted_at(log.seq as f64, None);
+
+        // When
+        let actual = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+
+        // Then
+        assert_eq!(derive_read_model(&actual), derive_read_model(&expected));
+        for name in ["command", "session"] {
+            assert_eq!(
+                actual.aggregate.node_execution(name).unwrap().status,
+                RuntimeNodeExecutionStatus::Succeeded
+            );
+        }
+        assert_eq!(
+            actual.aggregate.node_execution("pending").unwrap().status,
+            RuntimeNodeExecutionStatus::Aborted
+        );
+    }
+}
+
+#[test]
+fn test_終端復元_abort済み隔離nodeの提出artifactにworktreeを保持する() {
+    // Given
+    let mut log = FactLog::new();
+    let root = meta("session", None, "session", NodeKindName::Session, 1);
+    let worktree = crate::domain::workflow::IsolatedWorktree::for_attempt("/repo", "session", 1);
+    let mut started = started_root(session_root());
+    if let NodeFact::Started(started) = &mut started {
+        started.worktree = Some(worktree.clone());
+    }
+    log.push(root.clone(), started);
+    log.push(root.clone(), submit());
+    log.push(
+        root.clone(),
+        artifact("result", serde_json::json!({"ok": true})),
+    );
+    log.push(root, NodeFact::AbortRequested(Default::default()));
+
+    // When
+    let tree = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+    let model = derive_read_model(&tree);
+
+    // Then
+    let node = &model.node_executions[0];
+    assert_eq!(node.status, NodeExecutionStatus::Aborted);
+    assert_eq!(node.worktree.as_ref(), Some(&worktree));
+    assert_eq!(
+        node.artifact.as_ref().unwrap().value,
+        worktree.with_artifact(Some(serde_json::json!({"ok": true})))
+    );
+}
+
+#[test]
+fn test_終端復元_読める定義と定義なしで同じ状態と記録属性を復元する() {
+    // Given
+    let mut log = FactLog::new();
+    let root = meta("root", None, "main", NodeKindName::Command, 1);
+    log.push(
+        root.clone(),
+        started_root(workflow_root(workflow_definition(
+            vec![NodeDefinition {
+                name: "main".into(),
+                kind: NodeKind::Command(crate::domain::workflow::CommandSpec {
+                    command: "true".into(),
+                    env: Default::default(),
+                }),
+                ..Default::default()
+            }],
+            "main",
+        ))),
+    );
+    log.push(
+        root.clone(),
+        NodeFact::CommandSpawned(crate::domain::workflow::CommandSpawnedFact {
+            display_command: "true".into(),
+        }),
+    );
+    log.push(root, NodeFact::ExecutionCompleted);
+    let expected = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+    if let NodeFact::Started(started) = &mut log.records[0].fact {
+        started.root.as_mut().unwrap().definition = None;
+    }
+    // When
+    let actual = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+    // Then
+    assert!(expected.root.definition.is_some());
+    assert!(expected.aggregate.workflow.is_some());
+    assert!(actual.root.definition.is_none());
+    assert!(actual.aggregate.workflow.is_none());
+    assert_eq!(derive_read_model(&actual), derive_read_model(&expected));
+}
+#[test]
+fn test_事実再生_定義以外の事実が同じでも承認要求によってabort後の状態が異なる() {
+    // Given
+    let mut observations = Vec::new();
+    for approval in [false, true] {
+        let mut leaf = session_leaf("work");
+        if approval {
+            leaf.completion = NodeCompletion::require_approval();
+        }
+        let mut log = FactLog::new();
+        let root = meta("root", None, "main", NodeKindName::Fanout, 1);
+        let work = meta("work", Some("root"), "work", NodeKindName::Session, 1);
+        log.push(
+            root.clone(),
+            started_root(workflow_root(workflow_definition(
+                vec![
+                    fanout_node(
+                        "main",
+                        vec![
+                            ChildEntry::reference("work"),
+                            ChildEntry::reference("pending"),
+                        ],
+                    ),
+                    leaf,
+                    session_leaf("pending"),
+                ],
+                "main",
+            ))),
+        );
+        log.push(
+            work.clone(),
+            started_child(ExecutionParentRef::fanout_child("root", None, 0)),
+        );
+        log.push(
+            meta("pending", Some("root"), "pending", NodeKindName::Session, 1),
+            started_child(ExecutionParentRef::fanout_child("root", None, 1)),
+        );
+        log.push(work.clone(), submit());
+        log.push(work, stop());
+        // When
+        let mut expected = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+        expected.aggregate.replay_aborted_at(6.0, None);
+        log.push(root, NodeFact::AbortRequested(Default::default()));
+        if let NodeFact::Started(started) = &mut log.records[0].fact {
+            started.root.as_mut().unwrap().definition = None;
+        }
+        observations.push((log.records, derive_read_model(&expected)));
+    }
+    // Then
+    assert_eq!(observations[0].0, observations[1].0);
+    assert_ne!(observations[0].1, observations[1].1);
+    assert_eq!(
+        observations[0].1.node_executions[1].status,
+        NodeExecutionStatus::Succeeded
+    );
+    assert_eq!(
+        observations[1].1.node_executions[1].status,
+        NodeExecutionStatus::Aborted
+    );
+    for (records, _) in observations {
+        let actual = fold_execution_tree(TREE, &records).unwrap().unwrap();
+        assert_eq!(actual.aggregate.state(), &RuntimeExecutionState::Aborted);
+        let node = actual.aggregate.node_execution("work").unwrap();
+        assert_eq!(node.status, RuntimeNodeExecutionStatus::Aborted);
+        assert_eq!(node.completed_at, Some(6.0));
+    }
+}
+
+#[test]
+fn test_終端復元_定義なしworkflowの葉は完了条件を推定せず終端事実で決着する() {
+    // Given
+    for stop_first in [false, true] {
+        for terminal in [
+            NodeFact::AbortRequested(Default::default()),
+            NodeFact::ExecutionCompleted,
+        ] {
+            let mut log = FactLog::new();
+            let root = meta("root", None, "main", NodeKindName::Fanout, 1);
+            let session = meta("session", Some("root"), "session", NodeKindName::Session, 1);
+            let command = meta("command", Some("root"), "command", NodeKindName::Command, 1);
+            log.push(
+                root.clone(),
+                started_root(workflow_root(WorkflowDefinition::default()).without_definition()),
+            );
+            log.push(
+                session.clone(),
+                started_child(ExecutionParentRef::fanout_child("root", None, 0)),
+            );
+            log.push(
+                command.clone(),
+                started_child(ExecutionParentRef::fanout_child("root", None, 1)),
+            );
+            if stop_first {
+                log.push(session.clone(), stop());
+            }
+            log.push(session.clone(), submit());
+            log.push(
+                session.clone(),
+                artifact("result", serde_json::json!({"ok": true})),
+            );
+            if !stop_first {
+                log.push(session, stop());
+            }
+            log.push(
+                command,
+                NodeFact::ProcessExited(crate::domain::workflow::ProcessExitedFact {
+                    exit_code: Some(0),
+                    result_summary: Some("done".into()),
+                    failure_kind: None,
+                    failure_reason: None,
+                }),
+            );
+            log.push(root, terminal.clone());
+
+            // When
+            let tree = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+            let model = derive_read_model(&tree);
+
+            // Then
+            assert_eq!(tree.aggregate.state(), &terminal.terminal_state().unwrap());
+            let expected = if matches!(terminal, NodeFact::ExecutionCompleted) {
+                NodeExecutionStatus::Succeeded
+            } else {
+                NodeExecutionStatus::Aborted
+            };
+            for node in &model.node_executions {
+                assert_eq!(node.status, expected);
+                assert_eq!(node.completed_at, Some(log.seq as f64));
+            }
+            let session = &model.node_executions[1];
+            assert!(session.completion_signals.is_ready());
+            assert_eq!(
+                session.artifact.as_ref().unwrap().value,
+                serde_json::json!({"ok": true})
+            );
+            assert_eq!(
+                model.node_executions[2].result_summary.as_deref(),
+                Some("done")
+            );
+        }
+    }
+}
+
+#[test]
+fn test_終端復元_単独sessionは定義なしでも二信号による完了時刻を保つ() {
+    // Given
+    let mut log = FactLog::new();
+    let root = meta("session", None, "session", NodeKindName::Session, 1);
+    log.push(
+        root.clone(),
+        started_root(session_root().without_definition()),
+    );
+    log.push(root.clone(), submit());
+    log.push(root.clone(), stop());
+    log.push(root, NodeFact::AbortRequested(Default::default()));
+
+    // When
+    let tree = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+
+    // Then
+    assert_eq!(tree.aggregate.state(), &RuntimeExecutionState::Aborted);
+    let node = tree.aggregate.node_execution("session").unwrap();
+    assert_eq!(node.status, RuntimeNodeExecutionStatus::Succeeded);
+    assert_eq!(node.completed_at, Some(3.0));
+}
+
+#[test]
+fn test_事実復元_定義なしでも承認事実の完了時刻と提出属性を保持する() {
+    // Given
+    for terminal in [
+        NodeFact::ExecutionCompleted,
+        NodeFact::AbortRequested(Default::default()),
+    ] {
+        let mut log = FactLog::new();
+        let root = meta("root", None, "main", NodeKindName::Session, 1);
+        let mut definition = session_leaf("main");
+        definition.completion = NodeCompletion::require_approval();
+        log.push(
+            root.clone(),
+            started_root(workflow_root(workflow_definition(vec![definition], "main"))),
+        );
+        log.push(root.clone(), attached("agent"));
+        log.push(root.clone(), submit());
+        log.push(
+            root.clone(),
+            artifact("result", serde_json::json!({"ok": true})),
+        );
+        log.push(
+            root.clone(),
+            NodeFact::StopReceived(StopReceivedFact {
+                result_summary: Some("done".into()),
+                token_usage: Some(crate::domain::workflow::TokenUsage {
+                    input_tokens: 1,
+                    output_tokens: 2,
+                }),
+            }),
+        );
+        log.push(
+            root.clone(),
+            NodeFact::ApprovalGranted(ApprovalGrantedFact { comment: None }),
+        );
+        log.push(root, terminal.clone());
+        if let NodeFact::Started(started) = &mut log.records[0].fact {
+            started.root.as_mut().unwrap().definition = None;
+        }
+        // When
+        let tree = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+        let model = derive_read_model(&tree);
+        // Then
+        assert!(tree.aggregate.workflow.is_none());
+        assert!(tree.aggregate.node_history.is_empty());
+        assert_eq!(tree.aggregate.state(), &terminal.terminal_state().unwrap());
+        let node = &model.node_executions[0];
+        assert_eq!(node.status, NodeExecutionStatus::Succeeded);
+        assert_eq!(node.completed_at, Some(6.0));
+        assert_eq!(node.session_id.as_deref(), Some("agent"));
+        assert_eq!(node.result_summary.as_deref(), Some("done"));
+        assert_eq!(node.token_usage.as_ref().unwrap().output_tokens, 2);
+        assert_eq!(
+            node.artifact.as_ref().unwrap().contract.as_deref(),
+            Some("result")
+        );
+        assert_eq!(
+            node.artifact.as_ref().unwrap().value,
+            serde_json::json!({"ok": true})
+        );
+    }
+}
+
+#[test]
+fn test_事実復元_承認待ちからのretry事実で旧attemptを終了する() {
+    // Given
+    let mut log = FactLog::new();
+    let root = meta("root", None, "main", NodeKindName::Sequence, 1);
+    let old = meta("old", Some("root"), "work", NodeKindName::Session, 1);
+    let new = meta("new", Some("root"), "work", NodeKindName::Session, 2);
+    log.push(
+        root.clone(),
+        started_root(workflow_root(WorkflowDefinition::default())),
+    );
+    log.push(
+        old.clone(),
+        started_child(ExecutionParentRef::sequence_child("root")),
+    );
+    log.push(old.clone(), submit());
+    log.push(old.clone(), stop());
+    log.push(old, NodeFact::RetryRequested);
+    log.push(
+        new.clone(),
+        started_child(ExecutionParentRef::sequence_child("root")),
+    );
+    log.push(new.clone(), submit());
+    log.push(new, stop());
+    log.push(root, NodeFact::ExecutionCompleted);
+    // When
+    let tree = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+    // Then
+    assert!(tree.aggregate.workflow.is_none());
+    let old = tree.aggregate.node_execution("old").unwrap();
+    assert_eq!(old.status, RuntimeNodeExecutionStatus::Aborted);
+    assert_eq!(old.completed_at, Some(5.0));
+    let new = tree.aggregate.node_execution("new").unwrap();
+    assert_eq!(new.status, RuntimeNodeExecutionStatus::Succeeded);
+    assert_eq!(new.completed_at, Some(9.0));
+    assert_eq!(
+        tree.aggregate
+            .retry_predecessors
+            .get("new")
+            .map(String::as_str),
+        Some("old")
+    );
+}
+
+#[test]
+fn test_終端復元_読める定義の承認条件と全node公開情報を維持する() {
+    // Given
+    for approval in [false, true] {
+        for completed in [false, true] {
+            let mut work = session_leaf("work");
+            if approval {
+                work.completion = NodeCompletion::require_approval();
+            }
+            let mut log = FactLog::new();
+            let root = meta("root", None, "main", NodeKindName::Fanout, 1);
+            let child = meta("child", Some("root"), "work", NodeKindName::Session, 1);
+            log.push(
+                root.clone(),
+                started_root(workflow_root(workflow_definition(
+                    vec![
+                        fanout_node("main", vec![ChildEntry::reference("work")]),
+                        work,
+                    ],
+                    "main",
+                ))),
+            );
+            log.push(
+                child.clone(),
+                started_child(ExecutionParentRef::fanout_child("root", None, 0)),
+            );
+            log.push(child.clone(), attached("agent"));
+            log.push(child.clone(), submit());
+            log.push(
+                child.clone(),
+                artifact("result", serde_json::json!({"ok": true})),
+            );
+            log.push(
+                child.clone(),
+                NodeFact::StopReceived(StopReceivedFact {
+                    result_summary: Some("done".into()),
+                    token_usage: Some(crate::domain::workflow::TokenUsage {
+                        input_tokens: 3,
+                        output_tokens: 5,
+                    }),
+                }),
+            );
+            if completed && approval {
+                log.push(
+                    child,
+                    NodeFact::ApprovalGranted(ApprovalGrantedFact { comment: None }),
+                );
+            }
+            let mut expected = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+            let terminal_time = log.seq as f64 + 1.0;
+            let terminal = if completed {
+                NodeFact::ExecutionCompleted
+            } else {
+                expected.aggregate.replay_aborted_at(terminal_time, None);
+                NodeFact::AbortRequested(Default::default())
+            };
+            let expected_nodes = derive_read_model(&expected).node_executions;
+            log.push(root, terminal.clone());
+
+            // When
+            let actual = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+            let model = derive_read_model(&actual);
+
+            // Then
+            assert_eq!(
+                actual.aggregate.state(),
+                &terminal.terminal_state().unwrap()
+            );
+            assert_eq!(model.completed_at, Some(terminal_time));
+            assert_eq!(model.node_executions, expected_nodes);
+            assert_eq!(
+                model.node_executions[1].completed_at,
+                Some(if approval { 7.0 } else { 6.0 })
+            );
+            assert_eq!(
+                model.node_executions[1].status,
+                if approval && !completed {
+                    NodeExecutionStatus::Aborted
+                } else {
+                    NodeExecutionStatus::Succeeded
+                }
+            );
+        }
+    }
 }
 
 #[test]

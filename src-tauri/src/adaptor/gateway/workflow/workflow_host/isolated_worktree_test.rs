@@ -1,5 +1,6 @@
 use super::test_helpers::*;
 use super::*;
+use crate::adaptor::gateway::workflow::fact_codec;
 use crate::domain::workflow::{NodeFact, NodeProcessPresence};
 use std::sync::atomic::Ordering;
 
@@ -52,7 +53,7 @@ async fn test_隔離復旧_生成後かつ起動記録前のleafと合成子を�
         let restored = fixture.restarted_host();
 
         // When
-        restored.reconcile_startup(&fixture.app).await.unwrap();
+        reconcile_startup(&restored, &fixture.app).await.unwrap();
 
         // Then
         if node.kind == NodeKindName::Command {
@@ -104,7 +105,7 @@ async fn test_隔離起動_合成子の生成後に同じcwdとroot所属でsess
     let records = workflow_fact_log::read_tree_records(&fixture.store, &execution_id).unwrap();
     assert!(records
         .iter()
-        .all(|record| !record.fact.event_type().starts_with("isolated_worktree")));
+        .all(|record| !fact_codec::event_type(&record.fact).starts_with("isolated_worktree")));
 }
 
 #[tokio::test(start_paused = true)]
@@ -173,7 +174,6 @@ async fn test_隔離起動_合成子の生成失敗では子を起動せず復�
         snapshot.node_executions[0].status,
         NodeExecutionStatus::Running
     );
-    assert!(snapshot.node_executions[0].recovery_reason.is_none());
     assert!(!snapshot.node_executions[0].can_retry(NodeProcessPresence::ConfirmedAbsent));
     assert!(fixture.sessions.prepared.lock().unwrap().is_empty());
     let restored = workflow_fact_log::fold_tree_from(
@@ -370,7 +370,7 @@ async fn startup_exhaustion_leaves_five_distinct_attempts_with_only_the_latest_r
             4
         );
         let restored = fixture.restarted_host();
-        restored.reconcile_startup(&fixture.app).await.unwrap();
+        reconcile_startup(&restored, &fixture.app).await.unwrap();
         let after = restored.executions.lock().await[&id].clone();
         assert_eq!(after.node_executions(), attempts);
         assert_eq!(fixture.worktrees.calls.lock().unwrap().len(), 5);
@@ -801,6 +801,7 @@ async fn new_attempt_commit_rechecks_process_presence_before_recording_retry() {
             timestamp: current_timestamp(),
         },
         WorkflowEvent::NodeStarted {
+            worktree: None,
             execution_id: id.clone(),
             node_execution_id: restarted.attempt.id,
             node_name: restarted.attempt.node_name,

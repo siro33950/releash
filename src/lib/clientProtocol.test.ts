@@ -8,6 +8,7 @@ import {
 import { describe, expect, it } from "vitest";
 import {
 	AckTerminalSurfaceOutputRequestSchema,
+	NodeExecutionStatusViewSchema,
 	PushSchema,
 	TerminalEventSchema,
 	UpdateCrashReportingRequestSchema,
@@ -192,4 +193,16 @@ describe("Connect message codecs", () => {
 			42n,
 		);
 	});
+});
+
+it("削除した未解決状態をwireとJSONのどちらからも受け入れない", () => {
+	expect(() =>
+		clientJson(NodeExecutionStatusViewSchema, { value: "unspecified" }, false),
+	).toThrow("Invalid enum value");
+	expect(() =>
+		clientJson(NodeExecutionStatusViewSchema, "unresolved", true),
+	).toThrow("Invalid enum value");
+	expect(() => clientJson(NodeExecutionStatusViewSchema, "", true)).toThrow(
+		"Invalid enum value",
+	);
 });

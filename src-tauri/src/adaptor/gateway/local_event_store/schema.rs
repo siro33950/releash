@@ -671,6 +671,10 @@ fn discard_retired_event_sourcing_v6(connection: &Connection) -> Result<(), rusq
 }
 
 fn finish_schema_admission(connection: &Connection) -> Result<(), rusqlite::Error> {
+    connection.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_node_events_tree_event_type
+         ON node_events (tree_id, event_type, seq);",
+    )?;
     connection.execute_batch("PRAGMA secure_delete = ON;")?;
     connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
     Ok(())

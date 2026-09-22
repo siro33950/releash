@@ -22,8 +22,8 @@ impl Log {
                 worktree_path: "/repo".into(),
                 created_from: ExecutionOrigin::Cli,
                 request: String::new(),
-                definition,
-                definition_resolution: Default::default(),
+                workflow_name: definition.name.clone(),
+                definition: Some(definition),
                 launched_as: ExecutionTreeLaunch::Workflow,
             },
             records: Vec::new(),
@@ -35,12 +35,36 @@ impl Log {
             tree_id: "tree".into(),
             node_execution_id: id.into(),
             node_name: name.into(),
-            kind: self.root.definition.node_by_name(name).unwrap().kind_name(),
+            kind: self
+                .root
+                .definition
+                .as_ref()
+                .unwrap()
+                .node_by_name(name)
+                .unwrap()
+                .kind_name(),
             parent_id: parent.as_ref().map(|parent| parent.parent_id.clone()),
             attempt,
         };
         let root = parent.is_none().then(|| Box::new(self.root.clone()));
-        self.push(meta, NodeFact::Started(StartedFact { parent, root }));
+        self.push(
+            meta,
+            NodeFact::Started(StartedFact {
+                worktree: crate::domain::workflow::WorktreeInheritance::new(
+                    self.root
+                        .definition
+                        .as_ref()
+                        .unwrap()
+                        .node_by_name(name)
+                        .unwrap()
+                        .worktree,
+                )
+                .for_attempt(self.root.repository_root.as_deref(), id, attempt)
+                .unwrap(),
+                parent,
+                root,
+            }),
+        );
     }
 
     fn push(&mut self, meta: NodeFactMeta, fact: NodeFact) {
@@ -104,6 +128,91 @@ impl Log {
         );
         result
     }
+}
+
+#[test]
+fn test_終端の成果_定義なしで子孫を復元し終端後の事実を無視する() {
+    for terminal in [
+        NodeFact::ExecutionCompleted,
+        NodeFact::AbortRequested(Default::default()),
+    ] {
+        for keep_definition in [false, true] {
+            // Given
+            let mut log = Log::new("  main: {sequence: {children: [group, other]}}\n  group: {worktree: isolated, fanout: {children: [work]}}\n  work: {worktree: isolated, session: {provider: codex}}\n  other: {command: true}");
+            log.start("main-id", "main", None, 1);
+            log.start(
+                "group-id",
+                "group",
+                Some(ExecutionParentRef::sequence_child("main-id")),
+                1,
+            );
+            log.start(
+                "work-id",
+                "work",
+                Some(ExecutionParentRef::fanout_child("group-id", None, 0)),
+                1,
+            );
+            log.submit("work-id", Some(serde_json::json!({"answer": "kept"})));
+            log.stop("work-id");
+            log.start(
+                "other-id",
+                "other",
+                Some(ExecutionParentRef::sequence_child("main-id")),
+                1,
+            );
+            log.fact("main-id", terminal.clone());
+            if !keep_definition {
+                let NodeFact::Started(started) = &mut log.records[0].fact else {
+                    panic!()
+                };
+                started.root.as_mut().unwrap().definition = None;
+            }
+            // When / Then
+            let group = log.output("group");
+            if keep_definition || matches!(terminal, NodeFact::ExecutionCompleted) {
+                let group = group.unwrap();
+                assert_eq!(group.value["work"]["answer"], "kept");
+                assert_eq!(group.produced_at, if keep_definition { 6.0 } else { 8.0 });
+            } else {
+                assert!(group.is_none());
+            }
+            let output = log.output("work").unwrap();
+            assert_eq!(output.value["answer"], "kept");
+            assert_eq!(
+                output.value["worktree"]["branch"],
+                "releash/isolated/work-id-a1"
+            );
+            log.submit("work-id", Some(serde_json::json!({"answer": "late"})));
+            assert_eq!(log.output("work").unwrap(), output);
+            assert!(log.output("missing").is_none());
+        }
+    }
+}
+
+#[test]
+fn test_終端の成果_保存されたcontractを定義なしで保持する() {
+    // Given
+    let mut log = Log::new("  main: {worktree: isolated, session: {provider: codex}}");
+    log.start("main-id", "main", None, 1);
+    log.submit("main-id", Some(serde_json::json!({"answer": "kept"})));
+    let NodeFact::ArtifactProduced(fact) = &mut log.records[2].fact else {
+        panic!()
+    };
+    fact.contract = Some("stored-result".into());
+    log.stop("main-id");
+    log.fact("main-id", NodeFact::ExecutionCompleted);
+    let NodeFact::Started(started) = &mut log.records[0].fact else {
+        panic!()
+    };
+    started.root.as_mut().unwrap().definition = None;
+    // When
+    let output =
+        fact_replay::without_tree_fold(|| derive_node_artifact("tree", &log.records, "main"))
+            .unwrap()
+            .unwrap();
+    // Then
+    assert_eq!(output.contract.as_deref(), Some("stored-result"));
+    assert_eq!(output.value["answer"], "kept");
 }
 
 #[test]
@@ -193,7 +302,7 @@ fn test_隔離合成子の成果_承認までは未提出で中止後も確定�
     );
     let output = log.output("main").unwrap();
     assert_eq!(output.produced_at, 5.0);
-    log.fact("main-id", NodeFact::AbortRequested);
+    log.fact("main-id", NodeFact::AbortRequested(Default::default()));
     assert_eq!(log.output("main"), Some(output));
 }
 
@@ -246,7 +355,7 @@ fn test_隔離合成子の成果_途中の中止と欠損したrepository_root�
         1,
     );
     log.submit("work-id", None);
-    log.fact("main-id", NodeFact::AbortRequested);
+    log.fact("main-id", NodeFact::AbortRequested(Default::default()));
     // When / Then
     assert!(log.output("main").is_none());
     log.records.pop();
@@ -353,7 +462,7 @@ fn test_隔離合成子の成果_sequenceは未実行のchildを含めず明示�
 }
 
 #[test]
-fn test_隔離合成子の成果_破損した実行木と未対応の定義を成果に置き換えない() {
+fn test_隔離合成子の成果_破損した実行木を成果に置き換えない() {
     // Given
     let mut log = Log::new("  main: {worktree: isolated, sequence: {children: [work]}}\n  work: {session: {provider: codex}}");
     assert!(derive_node_artifact("tree", &[], "main").unwrap().is_none());
@@ -371,17 +480,6 @@ fn test_隔離合成子の成果_破損した実行木と未対応の定義を�
     assert!(derive_node_artifact("tree", &log.records[1..], "main").is_err());
     assert!(derive_node_artifact("tree", &log.records[2..], "main").is_err());
     assert!(log.output("missing").is_none());
-    let NodeFact::Started(started) = &mut log.records[0].fact else {
-        unreachable!()
-    };
-    started
-        .root
-        .as_mut()
-        .unwrap()
-        .definition_resolution
-        .node_errors
-        .insert("main".into(), "unsupported definition".into());
-    assert!(log.output("main").is_none());
 }
 
 #[test]
@@ -578,7 +676,7 @@ fn test_空の隔離fanout_承認待ちと生成失敗と中止を完了へ置�
                     },
                 ),
             ),
-            "abort" => log.fact("main-id", NodeFact::AbortRequested),
+            "abort" => log.fact("main-id", NodeFact::AbortRequested(Default::default())),
             _ => {}
         }
         // Then
@@ -645,7 +743,7 @@ fn test_空の隔離fanout_承認なしでも保存済みabortと後続failure�
             log.start("main-id", "main", parent, 1);
             log.fact(
                 if parent_abort { "root-id" } else { "main-id" },
-                NodeFact::AbortRequested,
+                NodeFact::AbortRequested(Default::default()),
             );
             if failure_after_abort {
                 log.fact("main-id", NodeFact::RuntimeFailureObserved(crate::domain::workflow::RuntimeFailureObservedFact {

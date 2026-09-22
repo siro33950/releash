@@ -232,10 +232,9 @@ fn standalone_session_title(tree_id: &str, records: &[NodeFactRecord]) -> String
     runtime_snapshot_nodes(RuntimeSnapshotNodeProjection {
         process_presences: &std::collections::HashMap::new(),
         execution_id: &folded.aggregate.id,
-        workflow_name: &folded.aggregate.workflow.name,
+        workflow_name: &folded.aggregate.workflow_name,
         workspace_identity: &folded.root.workspace_identity,
-        recorded_dynamic_fanout_names: &Default::default(),
-        workflow_definition: &folded.aggregate.workflow,
+        workflow_definition: folded.aggregate.workflow.as_ref(),
         node_executions: &folded.aggregate.node_executions,
         retry_predecessors: &folded.aggregate.retry_predecessors,
         execution_active: folded.aggregate.is_active(),

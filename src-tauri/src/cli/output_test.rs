@@ -53,6 +53,7 @@ fn seed_artifact_node(data_dir: &Path, execution_id: &str) {
                 timestamp: 1.0,
             },
             WorkflowEvent::NodeStarted {
+                worktree: None,
                 execution_id: execution_id.to_string(),
                 node_execution_id: "node-0".to_string(),
                 node_name: "review".to_string(),
@@ -244,6 +245,7 @@ fn test_workflow_output_get_file直接読取で最新artifactを返す() {
                 timestamp: 2.75,
             },
             WorkflowEvent::NodeStarted {
+                worktree: None,
                 execution_id: execution_id.clone(),
                 node_execution_id: "node-1".to_string(),
                 node_name: "review".to_string(),

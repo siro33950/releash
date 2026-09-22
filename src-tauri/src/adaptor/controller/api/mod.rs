@@ -390,10 +390,6 @@ pub(crate) mod test_support {
             Ok(Some(control_plane_execution_fixture(execution_id)))
         }
 
-        async fn recover_active_executions(&self) -> Result<(), WorkflowError> {
-            Ok(())
-        }
-
         async fn register_started_execution_tree(
             &self,
             _tree_id: &str,
@@ -536,10 +532,6 @@ pub(crate) mod test_support {
 
     #[async_trait::async_trait]
     impl WorkflowRuntimeStateGateway for RecordingRuntimeGateway {
-        async fn recover_startup(&self) -> Result<(), WorkflowError> {
-            Ok(())
-        }
-
         async fn get_state_by_execution_id(
             &self,
             _execution_id: &str,
@@ -828,7 +820,7 @@ pub(crate) mod test_support {
             kind: NodeKindName::Sequence,
             attempt: 1,
         };
-        let definition = serde_saphyr::from_str(
+        let definition: crate::domain::workflow::WorkflowDefinition = serde_saphyr::from_str(
             "name: review\ndescription: isolated output fixture\nschemas:\n  review-result:\n    type: object\n    properties:\n      status: {type: string}\n    required: [status]\nnodes:\n  main: {sequence: {children: [review]}}\n  review: {session: {provider: codex}, worktree: isolated, artifact: review-result}",
         )
         .unwrap();
@@ -836,15 +828,16 @@ pub(crate) mod test_support {
             &store,
             &root,
             &NodeFact::Started(StartedFact {
+                worktree: None,
                 parent: None,
                 root: Some(Box::new(TreeRootFact {
                     repository_root: Some("/repo".into()),
-                    definition_resolution: Default::default(),
                     workspace_identity: "/repo-worktrees/development".into(),
                     worktree_path: "/repo-worktrees/development".into(),
                     created_from: ExecutionOrigin::Cli,
                     request: String::new(),
-                    definition,
+                    workflow_name: definition.name.clone(),
+                    definition: Some(definition),
                     launched_as: ExecutionTreeLaunch::Workflow,
                 })),
             }),
@@ -863,6 +856,11 @@ pub(crate) mod test_support {
             &store,
             &node,
             &NodeFact::Started(StartedFact {
+                worktree: Some(crate::domain::workflow::IsolatedWorktree::for_attempt(
+                    "/repo",
+                    "isolated-review-2",
+                    2,
+                )),
                 parent: Some(ExecutionParentRef::sequence_child(execution_id)),
                 root: None,
             }),
@@ -871,7 +869,7 @@ pub(crate) mod test_support {
         .unwrap();
         let facts = match status {
             NodeExecutionStatus::Running => Vec::new(),
-            NodeExecutionStatus::Aborted => vec![NodeFact::AbortRequested],
+            NodeExecutionStatus::Aborted => vec![NodeFact::AbortRequested(Default::default())],
             NodeExecutionStatus::Succeeded => vec![
                 NodeFact::ArtifactProduced(ArtifactProducedFact {
                     contract: Some("review-result".into()),

@@ -109,7 +109,7 @@ Operation Surface は domain state を所有しない。同じ backend usecase �
 
 ### 実行木
 
-WorkflowExecution は木全体の `Running` / `Completed` / `Aborted` を所有する。NodeExecution は `Running` / `WaitingApproval` / `Succeeded` / `Aborted` / `Unresolved` と completion signal を所有する。プロセスの在否は状態と別に読み取り、終わっていない Node のプロセスが居ない場合は介入待ちとして分類する。workflow aggregate だけが transition を決める。
+WorkflowExecution は木全体の `Running` / `Completed` / `Aborted` を所有する。NodeExecution は `Running` / `WaitingApproval` / `Succeeded` / `Aborted` と completion signal を所有する。プロセスの在否は状態と別に読み取り、終わっていない Node のプロセスが居ない場合は介入待ちとして分類する。workflow aggregate だけが transition を決める。
 
 Session の delegate は、親 Session が所有する同一 session 継続機構である。Artifact の提出を起点に child を実行し、結果により親の続行・完了を決める。child の NodeExecution は親 Session の部分木であり、発火ごとに新しい NodeExecution と attempt を持つ。親の NodeExecution・attempt・AgentSession は維持する。child の結果、発火回数、注入済みの事実から続行状態を導出し、親 Artifact の `child` は engine が管理する。
 

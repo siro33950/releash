@@ -1,10 +1,9 @@
 use super::*;
 
 #[test]
-fn test_実行状態受信_unresolvedを含むnode状態を変換できる() {
+fn test_実行状態受信_node状態を変換できる() {
     // Given
     for (status, expected) in [
-        ("unresolved", AcceptanceNodeExecutionStatus::Unresolved),
         ("running", AcceptanceNodeExecutionStatus::Running),
         (
             "waiting_approval",

@@ -213,6 +213,8 @@ fn test_隔離実行_隔離sessionの成果を配線し後続はrootで実行す
     );
     let command = execution
         .workflow
+        .as_ref()
+        .unwrap()
         .node_by_name("report")
         .unwrap()
         .command_spec()
@@ -385,6 +387,8 @@ fn test_隔離実行_正本のfix_allはfix_and_verifyをslotごとに隔離し�
     });
     assert!(execution
         .workflow
+        .as_ref()
+        .unwrap()
         .node_by_name("fix_and_verify")
         .unwrap()
         .is_isolated());

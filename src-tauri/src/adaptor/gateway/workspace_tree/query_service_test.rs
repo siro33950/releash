@@ -1350,7 +1350,7 @@ fn test_workspaceツリー契約_nodeとsequenceとfanoutは4分類だけを返�
         WorkspaceNodeKind::WorkflowCommand,
         "lint",
     );
-    failed.status = WorkspaceNodeStatus::Unresolved;
+    failed.process_presence = crate::domain::workflow::NodeProcessPresence::ConfirmedAbsent;
     let tree = WorkspaceTree::restore("/repo", vec![owner, sequence, fanout, failed]).unwrap();
 
     // When
@@ -1368,7 +1368,7 @@ fn test_workspaceツリー契約_nodeとsequenceとfanoutは4分類だけを返�
         &json[0]["children"][0]["status"],
         &json[0]["children"][0]["children"][0]["status"],
     ] {
-        assert_eq!(status, "failure");
+        assert_eq!(status, "attention");
         assert!(![
             "running",
             "paused",
@@ -1544,7 +1544,7 @@ fn unrepresentable_page_offset_falls_back_to_the_first_record() {
 }
 
 #[test]
-fn test_workspace読取_未対応の親または自身の定義があってもcommand出力とsession参照を取得できる() {
+fn test_workspace読取_未対応定義を起動時abortした後もcommand出力とsession参照を取得できる() {
     use crate::domain::workspace_tree::WorkspaceTreeRepository;
     // Given
     for unavailable in ["main", "command", "session", "unused"] {
@@ -1564,6 +1564,17 @@ fn test_workspace読取_未対応の親または自身の定義があってもco
             "/other",
             "main",
         );
+        for tree in [
+            "00000000-0000-4000-8000-000000001744",
+            "00000000-0000-4000-8000-000000001745",
+        ] {
+            crate::usecase::workflow::startup::abort_unavailable_definition(
+                &crate::adaptor::gateway::workflow::startup_repository::StoredWorkflowStartupRepository(store.clone()),
+                tree,
+                10.0,
+            )
+            .unwrap();
+        }
         let read_store =
             crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore::open(
                 directory.path(),
@@ -1604,11 +1615,9 @@ fn test_workspace読取_未対応の親または自身の定義があってもco
                 content.session_id.as_deref(),
                 Some("00000000-0000-4000-8000-000000001744-session")
             );
-            if unavailable == "command" {
-                assert_eq!(command_detail.status, "unresolved");
-                assert!(!command_detail.capabilities.can_retry);
-                assert!(command_detail.recovery_reason.is_some());
-            }
+            assert_eq!(session_detail.status, "aborted");
+            assert!(!command_detail.capabilities.can_retry);
+            assert!(!session_detail.capabilities.can_resume_session);
         }
     }
 }
@@ -1868,7 +1877,13 @@ fn test_archive履歴_手動とworktree消失の事実の時刻と理由をそ�
         )
         .unwrap();
         let root = fact_log::read_tree_records(&store, id).unwrap().remove(0);
-        fact_log::append_single_fact(&store, &root.meta, &NodeFact::AbortRequested, 2).unwrap();
+        fact_log::append_single_fact(
+            &store,
+            &root.meta,
+            &NodeFact::AbortRequested(Default::default()),
+            2,
+        )
+        .unwrap();
         archives
             .archive(
                 &crate::domain::workflow::ExecutionTreeId::new(id).unwrap(),

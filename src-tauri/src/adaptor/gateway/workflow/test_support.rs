@@ -84,10 +84,10 @@ pub(crate) fn seed_workflow_session_facts(
         store,
         &root_meta,
         &NodeFact::Started(StartedFact {
+            worktree: None,
             parent: None,
             root: Some(Box::new(TreeRootFact {
                 repository_root: None,
-                definition_resolution: Default::default(),
                 workspace_identity: crate::domain::workspace_tree::WorkspaceIdentity::new(
                     seed.worktree_path,
                 )
@@ -96,7 +96,8 @@ pub(crate) fn seed_workflow_session_facts(
                 worktree_path: seed.worktree_path.to_string(),
                 created_from: ExecutionOrigin::DesktopUi,
                 request: seed.request.to_string(),
-                definition,
+                workflow_name: definition.name.clone(),
+                definition: Some(definition),
                 launched_as: ExecutionTreeLaunch::Workflow,
             })),
         }),
@@ -106,6 +107,7 @@ pub(crate) fn seed_workflow_session_facts(
         store,
         &node_meta,
         &NodeFact::Started(StartedFact {
+            worktree: None,
             parent: Some(ExecutionParentRef::sequence_child(
                 seed.workflow_execution_id,
             )),
@@ -182,6 +184,7 @@ fn synthesized_metadata_events(execution: &WorkflowExecutionMetadata) -> Vec<Wor
             timestamp: execution.started_at,
         },
         WorkflowEvent::NodeStarted {
+            worktree: None,
             execution_id: execution.execution_id.clone(),
             node_execution_id: root_node_execution_id.clone(),
             node_name: "main".to_string(),
@@ -202,6 +205,11 @@ fn synthesized_metadata_events(execution: &WorkflowExecutionMetadata) -> Vec<Wor
             events.push(WorkflowEvent::NodeStopReceived {
                 execution_id: execution.execution_id.clone(),
                 node_execution_id: root_node_execution_id,
+                timestamp: settled_at,
+            });
+            events.push(WorkflowEvent::ExecutionCompleted {
+                execution_id: execution.execution_id.clone(),
+                total_token_usage: execution.total_token_usage.clone(),
                 timestamp: settled_at,
             });
         }
@@ -284,6 +292,7 @@ pub(crate) fn seed_unavailable_definition(
         ..command.clone()
     };
     let started = NodeFact::Started(StartedFact {
+        worktree: None,
         root: None,
         parent: Some(ExecutionParentRef::sequence_child(tree_id)),
     });

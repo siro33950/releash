@@ -100,7 +100,7 @@ fn node_execution_to_view_with_retry(
                 branch: worktree.branch,
                 path: worktree.path,
             }),
-        recovery_reason: node.recovery_reason.clone(),
+
         id: node.id,
         execution_id: node.execution_id,
         node_name: node.node_name,
@@ -191,9 +191,6 @@ fn node_status_to_view(
     status: workflow::NodeExecutionStatus,
 ) -> workflow_wire::NodeExecutionStatusView {
     match status {
-        workflow::NodeExecutionStatus::Unresolved => {
-            workflow_wire::NodeExecutionStatusView::Unresolved
-        }
         workflow::NodeExecutionStatus::Running => workflow_wire::NodeExecutionStatusView::Running,
         workflow::NodeExecutionStatus::WaitingApproval => {
             workflow_wire::NodeExecutionStatusView::WaitingApproval
@@ -222,7 +219,6 @@ mod tests {
         workflow::NodeExecution {
             process_presence: Default::default(),
             worktree: None,
-            recovery_reason: None,
             id: "node-1".to_string(),
             execution_id: "execution-1".to_string(),
             node_name: "review".to_string(),

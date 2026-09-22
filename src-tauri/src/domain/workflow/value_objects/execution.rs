@@ -169,7 +169,6 @@ mod tests {
     fn retryable_node_ids_only_include_the_latest_current_attempt() {
         let node = |id: &str, node_name: &str, attempt: u32| NodeExecution {
             worktree: None,
-            recovery_reason: None,
             id: id.to_string(),
             execution_id: "execution-1".to_string(),
             node_name: node_name.to_string(),

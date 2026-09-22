@@ -144,8 +144,9 @@ function fieldJson(
 		if (field.enum) {
 			const variant = field.enum.values.find(
 				(variant) =>
+					getOption(variant, json_enum_name) &&
 					(encode ? getOption(variant, json_enum_name) : variant.name) ===
-					value,
+						value,
 			);
 			if (!variant) throw new Error("Invalid enum value");
 			return encode ? variant.name : getOption(variant, json_enum_name);

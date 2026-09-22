@@ -271,22 +271,30 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
             composition.availability_reader.clone(),
             Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
         ));
+        let dependencies = crate::desktop_test_support::workflow_dependencies(app.handle());
+        let startup = crate::adaptor::controller::wiring::wire_workflow_startup(
+            dependencies.clone(),
+            driver.clone(),
+        );
         let gateway = Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(
-            crate::desktop_test_support::workflow_dependencies(app.handle()),
+            dependencies,
             driver,
         ));
-        let runtime = Arc::new(WorkflowRuntimeUsecase::new_with_worktree_operations(
-            gateway,
-            Arc::new(
-                crate::adaptor::gateway::workflow::ExecutionTreeArchiveFactRepository::new(
-                    store.clone(),
-                    data_dir.clone(),
+        let runtime = Arc::new(
+            WorkflowRuntimeUsecase::new_with_worktree_operations(
+                gateway,
+                Arc::new(
+                    crate::adaptor::gateway::workflow::ExecutionTreeArchiveFactRepository::new(
+                        store.clone(),
+                        data_dir.clone(),
+                    ),
                 ),
-            ),
-            Arc::new(crate::usecase::worktree_operation::WorktreeOperations::new(Arc::new(
-                crate::adaptor::gateway::repository::worktree_operation::FileWorktreeOperationLocks::new(&data_dir),
-            ))),
-        ));
+                Arc::new(crate::usecase::worktree_operation::WorktreeOperations::new(Arc::new(
+                    crate::adaptor::gateway::repository::worktree_operation::FileWorktreeOperationLocks::new(&data_dir),
+                ))),
+            )
+            .with_startup(startup),
+        );
         composition.execution_tree_stops.bind(runtime.clone());
         composition
             .execution_tree_registrations

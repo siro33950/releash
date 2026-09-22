@@ -1,3 +1,4 @@
+use crate::adaptor::gateway::workflow::fact_codec;
 use std::sync::Arc;
 
 use serde::de::DeserializeOwned;
@@ -63,7 +64,6 @@ pub enum AcceptanceWorkflowExecutionStatus {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AcceptanceNodeExecutionStatus {
-    Unresolved,
     Running,
     WaitingApproval,
     Succeeded,
@@ -82,7 +82,6 @@ pub enum AcceptanceNodeKind {
 pub enum AcceptanceWorkspaceNodeStatus {
     Active,
     Attention,
-    Failure,
     Idle,
     Unbound,
 }
@@ -165,7 +164,6 @@ struct ArtifactResponse {
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum NodeExecutionStatusResponse {
-    Unresolved,
     Running,
     WaitingApproval,
     Succeeded,
@@ -521,25 +519,32 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             ),
         );
         driver.node_processes = node_processes.clone();
-        let driver = Arc::new(driver);
         let mut dependencies = crate::desktop_test_support::workflow_dependencies(app.handle());
         dependencies.processes = node_processes;
+        let driver = Arc::new(driver);
+        let startup = crate::adaptor::controller::wiring::wire_workflow_startup(
+            dependencies.clone(),
+            driver.clone(),
+        );
         let gateway = Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(
             dependencies,
             driver.clone(),
         ));
-        let runtime = Arc::new(WorkflowRuntimeUsecase::new_with_worktree_operations(
-            gateway,
-            Arc::new(
-                crate::adaptor::gateway::workflow::ExecutionTreeArchiveFactRepository::new(
-                    store.clone(),
-                    config.data_dir.clone(),
+        let runtime = Arc::new(
+            WorkflowRuntimeUsecase::new_with_worktree_operations(
+                gateway,
+                Arc::new(
+                    crate::adaptor::gateway::workflow::ExecutionTreeArchiveFactRepository::new(
+                        store.clone(),
+                        config.data_dir.clone(),
+                    ),
                 ),
-            ),
-            Arc::new(crate::usecase::worktree_operation::WorktreeOperations::new(Arc::new(
-                crate::adaptor::gateway::repository::worktree_operation::FileWorktreeOperationLocks::new(&config.data_dir),
-            ))),
-        ));
+                Arc::new(crate::usecase::worktree_operation::WorktreeOperations::new(Arc::new(
+                    crate::adaptor::gateway::repository::worktree_operation::FileWorktreeOperationLocks::new(&config.data_dir),
+                ))),
+            )
+            .with_startup(startup),
+        );
         let workspace_node_commands = Arc::new(WorkspaceNodeCommandUsecase::new(
             Arc::new(AcceptanceWorkspaceNodeActionResolver),
             runtime.clone(),
@@ -934,9 +939,6 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
                     WorkspaceNodeStatusClassification::Attention => {
                         AcceptanceWorkspaceNodeStatus::Attention
                     }
-                    WorkspaceNodeStatusClassification::Failure => {
-                        AcceptanceWorkspaceNodeStatus::Failure
-                    }
                     WorkspaceNodeStatusClassification::Idle => AcceptanceWorkspaceNodeStatus::Idle,
                     WorkspaceNodeStatusClassification::Unbound => {
                         AcceptanceWorkspaceNodeStatus::Unbound
@@ -995,7 +997,7 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             .map(|records| {
                 records
                     .into_iter()
-                    .map(|record| record.fact.event_type().to_string())
+                    .map(|record| fact_codec::event_type(&record.fact).to_string())
                     .collect()
             })
             .map_err(|error| error.to_string())
@@ -1178,9 +1180,6 @@ fn acceptance_execution_from_runtime(
                     },
                     attempt: node.attempt,
                     status: match node.status {
-                        NodeExecutionStatus::Unresolved => {
-                            AcceptanceNodeExecutionStatus::Unresolved
-                        }
                         NodeExecutionStatus::Running => AcceptanceNodeExecutionStatus::Running,
                         NodeExecutionStatus::WaitingApproval => {
                             AcceptanceNodeExecutionStatus::WaitingApproval
@@ -1239,9 +1238,6 @@ impl From<NodeExecutionResponse> for AcceptanceNodeExecution {
             },
             attempt: value.attempt,
             status: match value.status {
-                NodeExecutionStatusResponse::Unresolved => {
-                    AcceptanceNodeExecutionStatus::Unresolved
-                }
                 NodeExecutionStatusResponse::Running => AcceptanceNodeExecutionStatus::Running,
                 NodeExecutionStatusResponse::WaitingApproval => {
                     AcceptanceNodeExecutionStatus::WaitingApproval

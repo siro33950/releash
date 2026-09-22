@@ -105,3 +105,20 @@ pub trait FacetRepository: Send + Sync {
     fn delete(&self, kind: FacetKind, key: &str) -> Result<(), WorkflowError>;
     fn list_summaries(&self, kind: FacetKind) -> Result<Vec<FacetSummary>, WorkflowError>;
 }
+
+pub struct WorkflowStartupRecord {
+    pub execution: crate::domain::workflow::entities::workflow_execution::ExecutionTree,
+    pub root: crate::domain::workflow::NodeFactMeta,
+    pub definition_error: Option<String>,
+}
+
+pub trait WorkflowStartupRepository: Send + Sync {
+    fn list_tree_ids(&self) -> Result<Vec<String>, WorkflowError>;
+    fn load(&self, tree_id: &str) -> Result<Option<WorkflowStartupRecord>, WorkflowError>;
+    fn append(
+        &self,
+        root: &crate::domain::workflow::NodeFactMeta,
+        fact: &crate::domain::workflow::NodeFact,
+        timestamp: f64,
+    ) -> Result<(), WorkflowError>;
+}

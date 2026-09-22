@@ -1,5 +1,6 @@
 use super::super::test_helpers::*;
 use super::*;
+use crate::adaptor::gateway::workflow::fact_codec;
 use crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecution;
 use crate::domain::workflow::NodeFact;
 use crate::usecase::workflow::command::{SubmitOutputArtifact, SubmitOutputCommand};
@@ -401,7 +402,7 @@ async fn test_delegate_再起動後のresumeは完了childを再実行せず未�
         }
         fixture.sessions.live_sessions.lock().unwrap().clear();
         let restored = fixture.restarted_host();
-        restored.reconcile_startup(&fixture.app).await.unwrap();
+        reconcile_startup(&restored, &fixture.app).await.unwrap();
         // When
         restored
             .resume_session_process(
@@ -528,7 +529,7 @@ async fn test_delegate_送信成功後の注入済み事実保存失敗からres
         .unwrap();
     fixture.sessions.live_sessions.lock().unwrap().clear();
     let restored = fixture.restarted_host();
-    restored.reconcile_startup(&fixture.app).await.unwrap();
+    reconcile_startup(&restored, &fixture.app).await.unwrap();
 
     // When
     restored
@@ -751,7 +752,7 @@ async fn test_delegate_未完了childを持つ再起動resumeは既存childだ�
     fixture.sessions.live_sessions.lock().unwrap().clear();
     fixture.sessions.live_sessions.lock().unwrap().clear();
     let restored = fixture.restarted_host();
-    restored.reconcile_startup(&fixture.app).await.unwrap();
+    reconcile_startup(&restored, &fixture.app).await.unwrap();
     // When
     restored
         .resume_session_process(
@@ -1294,9 +1295,9 @@ schemas:
     )
     .unwrap();
     let records = workflow_fact_log::read_tree_records(&fixture.store, &tree).unwrap();
-    let root = NodeFact::decode(
-        records[0].fact.event_type(),
-        &records[0].fact.encode_detail().unwrap(),
+    let root = fact_codec::decode(
+        fact_codec::event_type(&records[0].fact),
+        &fact_codec::encode_detail(&records[0].fact).unwrap(),
     )
     .unwrap();
     let NodeFact::Started(started) = root else {
@@ -1307,6 +1308,8 @@ schemas:
             .root
             .unwrap()
             .definition
+            .as_ref()
+            .unwrap()
             .node_by_name("worker")
             .unwrap()
             .completion
@@ -1318,7 +1321,7 @@ schemas:
     );
     fixture.sessions.live_sessions.lock().unwrap().clear();
     let restored = fixture.restarted_host();
-    restored.reconcile_startup(&fixture.app).await.unwrap();
+    reconcile_startup(&restored, &fixture.app).await.unwrap();
     // When
     restored
         .resume_session_process(
@@ -1343,6 +1346,8 @@ schemas:
     assert_eq!(
         execution
             .workflow
+            .as_ref()
+            .unwrap()
             .node_by_name("worker")
             .unwrap()
             .completion
@@ -1414,7 +1419,7 @@ async fn test_delegate_false_childが親stopより先に完了しても再開後
         let restored = if interrupted {
             fixture.sessions.live_sessions.lock().unwrap().clear();
             let restored = fixture.restarted_host();
-            restored.reconcile_startup(&fixture.app).await.unwrap();
+            reconcile_startup(&restored, &fixture.app).await.unwrap();
             restored
                 .resume_session_process(
                     &fixture.app,

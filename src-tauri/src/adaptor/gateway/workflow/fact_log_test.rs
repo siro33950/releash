@@ -1,3 +1,4 @@
+use crate::adaptor::gateway::workflow::fact_codec;
 use std::collections::HashMap;
 
 use super::*;
@@ -73,6 +74,7 @@ fn node_started(
     timestamp: f64,
 ) -> WorkflowEvent {
     WorkflowEvent::NodeStarted {
+        worktree: None,
         execution_id: TREE.to_string(),
         node_execution_id: node_execution_id.to_string(),
         node_name: node_name.to_string(),
@@ -316,7 +318,7 @@ mod append_contract_tests {
     use super::*;
     use crate::adaptor::gateway::local_event_store::writer::NORMAL_LANE_MAX_BYTES;
 
-    fn read_raw_rows(
+    pub(super) fn read_raw_rows(
         store: &Arc<LocalEventStore>,
         tree_id: &str,
     ) -> Vec<crate::adaptor::gateway::local_event_store::node_events::NodeEventRow> {
@@ -432,8 +434,13 @@ mod append_contract_tests {
         let meta = test_fact_meta("unavailable-tree", "unavailable-node");
 
         // When: 事実行を追記する
-        let error =
-            append_single_fact(&store, &meta, &NodeFact::AbortRequested, 1_000).unwrap_err();
+        let error = append_single_fact(
+            &store,
+            &meta,
+            &NodeFact::AbortRequested(Default::default()),
+            1_000,
+        )
+        .unwrap_err();
 
         // Then: 失敗が握りつぶされず呼び出し元へ返り、行は記録されない
         assert_eq!(
@@ -516,7 +523,7 @@ mod mapping_tests {
     }
 
     #[test]
-    fn test_写像_遷移イベントは行にならない() {
+    fn test_写像_実行完了だけ終端事実として記録する() {
         // Given: 完了・承認要求・実行完了などの遷移イベント（session の完了含む）
         let mut batch_meta_events = vec![
             node_started("s-exec", "a", NodeKindName::Session, None, 1.0),
@@ -545,8 +552,10 @@ mod mapping_tests {
         // When
         let rows = fact_rows_for_events(&batch_meta_events, no_lookup, no_lookup).unwrap();
 
-        // Then: started の1行だけが残る
-        assert_eq!(rows.len(), 1);
+        // Then: 実行木の完了をrootに記録する
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1].row.event_type, "execution_completed");
+        assert_eq!(rows[1].row.node_execution_id, "s-exec");
         assert_eq!(rows[0].row.event_type, "started");
     }
 
@@ -624,7 +633,7 @@ mod mapping_tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[1].row.event_type, "runtime_failure_observed");
         assert_eq!(
-            NodeFact::decode(&rows[1].row.event_type, &rows[1].row.detail).unwrap(),
+            fact_codec::decode(&rows[1].row.event_type, &rows[1].row.detail).unwrap(),
             NodeFact::RuntimeFailureObserved(RuntimeFailureObservedFact {
                 reason: "worktree creation failed".to_string(),
                 failure_kind:
@@ -859,12 +868,14 @@ mod reconciliation_tests {
             worktree_path: "/repo".into(),
             created_from: ExecutionOrigin::Cli,
             request: "please".into(),
-            definition,
-            definition_resolution: Default::default(),
+            workflow_name: definition.name.clone(),
+            definition: Some(definition),
+
             launched_as: ExecutionTreeLaunch::Workflow,
         };
         for (index, fact) in [
             NodeFact::Started(StartedFact {
+                worktree: None,
                 parent: None,
                 root: Some(Box::new(root)),
             }),
@@ -1034,7 +1045,7 @@ mod reconciliation_tests {
         let records = read_tree_records(&store, TREE).unwrap();
         assert_eq!(records.len(), before + 1);
         let last = records.last().unwrap();
-        assert_eq!(last.fact.event_type(), "started");
+        assert_eq!(fact_codec::event_type(&last.fact), "started");
         assert_eq!(last.meta.node_name, "run");
 
         // Then: started だけが永続化された kill 点では同じ leaf を再び起動対象に返し、
@@ -1047,7 +1058,7 @@ mod reconciliation_tests {
         let started_rows = |records: &[crate::domain::workflow::NodeFactRecord]| {
             records
                 .iter()
-                .filter(|record| record.fact.event_type() == "started")
+                .filter(|record| fact_codec::event_type(&record.fact) == "started")
                 .count()
         };
         let after_second = read_tree_records(&store, TREE).unwrap();
@@ -1072,7 +1083,7 @@ mod reconciliation_tests {
         assert!(third.starts.is_empty());
         let after_third = read_tree_records(&store, TREE).unwrap();
         assert_eq!(
-            after_third.last().unwrap().fact.event_type(),
+            fact_codec::event_type(&after_third.last().unwrap().fact),
             "process_exited"
         );
 
@@ -1115,7 +1126,7 @@ mod reconciliation_tests {
         let expected_record_count = before_second.len();
         let started_count = before_second
             .iter()
-            .filter(|record| record.fact.event_type() == "started")
+            .filter(|record| fact_codec::event_type(&record.fact) == "started")
             .count();
         let mut new_id = test_id_source();
         let second = reconcile_tree_pass(&store, TREE, 11.0, &mut new_id)
@@ -1127,7 +1138,7 @@ mod reconciliation_tests {
         assert_eq!(
             after_second
                 .iter()
-                .filter(|record| record.fact.event_type() == "started")
+                .filter(|record| fact_codec::event_type(&record.fact) == "started")
                 .count(),
             started_count
         );
@@ -1149,7 +1160,7 @@ mod reconciliation_tests {
         assert!(third.starts.is_empty());
         let after_third = read_tree_records(&store, TREE).unwrap();
         assert_eq!(
-            after_third.last().unwrap().fact.event_type(),
+            fact_codec::event_type(&after_third.last().unwrap().fact),
             "process_exited"
         );
 
@@ -1196,7 +1207,10 @@ mod reconciliation_tests {
         // Then: process_exited（喪失）が追記され、node と木は Running
         assert!(outcome.starts.is_empty());
         let records = read_tree_records(&store, TREE).unwrap();
-        assert_eq!(records.last().unwrap().fact.event_type(), "process_exited");
+        assert_eq!(
+            fact_codec::event_type(&records.last().unwrap().fact),
+            "process_exited"
+        );
         assert_eq!(
             outcome
                 .folded
@@ -1251,8 +1265,8 @@ mod round_trip_tests {
         append_fact_batch_for_seed(&store, &facts, 1, "session-seed-atomic").unwrap();
         let records = read_tree_records(&store, session_id).unwrap();
         assert_eq!(records.len(), 2);
-        assert_eq!(records[0].fact.event_type(), "started");
-        assert_eq!(records[1].fact.event_type(), "session_attached");
+        assert_eq!(fact_codec::event_type(&records[0].fact), "started");
+        assert_eq!(fact_codec::event_type(&records[1].fact), "session_attached");
     }
 
     /// エンジンが発するイベント列を写像して append した事実ログが、
@@ -1357,9 +1371,19 @@ mod round_trip_tests {
                 .map(|node| node.status),
             Some(RuntimeNodeExecutionStatus::Succeeded)
         );
-        let root = &tree.root;
+        assert!(tree.root.definition.is_some());
+        let NodeFact::Started(started) = fact_codec::decode(
+            "started",
+            &super::append_contract_tests::read_raw_rows(&store, TREE)[0].detail,
+        )
+        .unwrap() else {
+            panic!()
+        };
+        let root = started.root.unwrap();
         assert_eq!(
             root.definition
+                .as_ref()
+                .unwrap()
                 .node_by_name("run")
                 .and_then(NodeDefinition::command_spec)
                 .and_then(|command| {
@@ -1380,7 +1404,7 @@ mod round_trip_tests {
         // Then: ログの event_type はすべて純粋事実の語彙
         for record in &records {
             assert!(matches!(
-                record.fact.event_type(),
+                fact_codec::event_type(&record.fact),
                 "started"
                     | "session_attached"
                     | "command_spawned"
@@ -1392,6 +1416,7 @@ mod round_trip_tests {
                     | "approval_granted"
                     | "retry_requested"
                     | "resume_requested"
+                    | "execution_completed"
                     | "abort_requested"
                     | "archive_requested"
                     | "restore_requested"
@@ -1495,7 +1520,6 @@ async fn test_旧隔離事実の読取_状態導出と再起動復元からだ�
         let tree = fold_tree_from(&backend, TREE).unwrap().unwrap();
         let node = tree.aggregate.node_execution("a-exec").unwrap();
         assert!(node.worktree.is_none());
-        assert!(node.recovery_reason.is_none());
         assert_eq!(tree.aggregate.state(), &RuntimeExecutionState::Running);
     }
     use crate::domain::agent_session::repository::AgentSessionRepository;
@@ -1522,13 +1546,10 @@ async fn test_旧隔離事実の読取_状態導出と再起動復元からだ�
     let restored = reconcile_tree_pass(&store, TREE, 5.0, &mut || "next-exec".into())
         .unwrap()
         .unwrap();
-    assert!(restored
-        .folded
-        .aggregate
-        .node_execution("a-exec")
-        .unwrap()
-        .recovery_reason
-        .is_none());
+    assert_eq!(
+        restored.folded.aggregate.state(),
+        &RuntimeExecutionState::Running
+    );
     let rows = FactLogReadBackend::Live(store)
         .run_indexed(|connection| {
             node_events::read_tree(connection, TREE)
@@ -1541,6 +1562,74 @@ async fn test_旧隔離事実の読取_状態導出と再起動復元からだ�
             .count(),
         3
     );
+}
+
+#[test]
+fn test_終端復元_旧worktreeは同じnodeのattemptの欠落だけを補い終端後を無視する() {
+    // Given
+    let legacy = crate::domain::workflow::IsolatedWorktree {
+        branch: "old-branch".into(),
+        path: "/old-isolated".into(),
+    };
+    let current = crate::domain::workflow::IsolatedWorktree::for_attempt("/repo", "node", 1);
+    for (node_id, attempt, after_terminal, recorded, expected) in [
+        ("node", 1, false, None, Some(legacy.clone())),
+        ("other", 1, false, None, None),
+        ("node", 2, false, None, None),
+        ("node", 1, true, None, None),
+        ("node", 1, false, Some(current.clone()), Some(current)),
+    ] {
+        let started = NodeEventRow {
+            tree_id: TREE.into(),
+            seq: 1,
+            node_execution_id: "node".into(),
+            parent_id: None,
+            node_name: "main".into(),
+            kind: "session".into(),
+            attempt: 1,
+            event_type: "started".into(),
+            session_id: None,
+            detail: fact_codec::encode_detail(&NodeFact::Started(StartedFact {
+                worktree: recorded,
+                parent: None,
+                root: None,
+            }))
+            .unwrap(),
+            timestamp_ms: 1_000,
+        };
+        let worktree = NodeEventRow {
+            seq: if after_terminal { 4 } else { 2 },
+            node_execution_id: node_id.into(),
+            attempt,
+            event_type: "isolated_worktree_created".into(),
+            detail: serde_json::json!({
+                "repositoryRoot": "/repo", "worktreePath": legacy.path, "branch": legacy.branch,
+            })
+            .to_string(),
+            ..started.clone()
+        };
+        let terminal = NodeEventRow {
+            seq: 3,
+            event_type: "abort_requested".into(),
+            detail: "{}".into(),
+            ..started.clone()
+        };
+        let rows = if after_terminal {
+            vec![started, terminal, worktree]
+        } else {
+            vec![started, worktree, terminal]
+        };
+
+        // When
+        let records = records_from_tree_rows(&rows).unwrap();
+
+        // Then
+        let NodeFact::Started(started) = &records[0].fact else {
+            panic!("started")
+        };
+        assert_eq!(started.worktree, expected);
+        assert_eq!(records.len(), 2);
+    }
 }
 
 #[test]
@@ -1560,6 +1649,560 @@ fn test_旧隔離事実の読取_破損payloadと未知の事実を拒否する(
         assert!(
             decode_stored_fact(event_type, detail, 0).is_err(),
             "{event_type}: {detail}"
+        );
+    }
+}
+
+#[test]
+fn test_終端復元_定義本文を入れ替えても名前と実行状態と公開属性が変わらない() {
+    // Given
+    let started = NodeEventRow {
+        tree_id: TREE.into(),
+        seq: 1,
+        node_execution_id: "node".into(),
+        parent_id: None,
+        node_name: "main".into(),
+        kind: "command".into(),
+        attempt: 1,
+        event_type: "started".into(),
+        session_id: None,
+        detail: String::new(),
+        timestamp_ms: 1_000,
+    };
+    for event_type in ["execution_completed", "abort_requested"] {
+        let terminal = NodeEventRow {
+            seq: 2,
+            event_type: event_type.into(),
+            detail: "{}".into(),
+            timestamp_ms: 2_000,
+            ..started.clone()
+        };
+        let mut expected = None;
+        for definition in [
+            serde_json::json!({"name": "different-name", "entry": "main", "nodes": {"main": {"command": "true"}}}),
+            serde_json::json!({"name": 42, "nodes": {"main": {"completion": "approval"}}}),
+            serde_json::Value::Null,
+        ] {
+            let mut started = started.clone();
+            started.detail = serde_json::json!({"root": {
+                "repositoryRoot": "/repo", "workspaceIdentity": "/repo", "worktreePath": "/repo",
+                "createdFrom": "cli", "request": "please", "launchedAs": "workflow",
+                "workflowName": "recorded-name", "definition": definition
+            }})
+            .to_string();
+            // When
+            let records = records_from_tree_rows(&[started, terminal.clone()]).unwrap();
+            let tree = fold_execution_tree(TREE, &records).unwrap().unwrap();
+            let model = crate::domain::workflow::services::fact_replay::derive_read_model(&tree);
+            // Then
+            assert!(tree.root.definition.is_none());
+            assert!(tree.aggregate.workflow.is_none());
+            assert_eq!(model.workflow_name, "recorded-name");
+            assert_eq!(model.completed_at, Some(2.0));
+            assert_eq!(model.node_executions.len(), 1);
+            if let Some(expected) = &expected {
+                assert_eq!(&model, expected);
+            } else {
+                expected = Some(model);
+            }
+        }
+    }
+}
+
+mod terminal_fact_tests {
+    use super::append_contract_tests::read_raw_rows;
+    use super::*;
+    use crate::adaptor::gateway::local_event_store::layout::StoreLayout;
+    use crate::domain::workflow::{AbortRequestedFact, ExecutionStatus};
+
+    #[test]
+    fn test_完了記録_終端行の保存失敗で完了信号も巻き戻り再試行で両方が残る() {
+        use crate::adaptor::gateway::local_event_store::layout::StoreLayout;
+
+        // Given
+        let dir = tempfile::tempdir().unwrap();
+        let store =
+            LocalEventStore::open(LocalEventStoreConfig::production(dir.path().into())).unwrap();
+        let mut started = started_event();
+        if let WorkflowEvent::ExecutionStarted { definition, .. } = &mut started {
+            *definition = serde_saphyr::from_str(
+                "name: command\ndescription: test\nnodes:\n  main: {command: 'true'}\n",
+            )
+            .unwrap();
+        }
+        append_facts_for_events(
+            &store,
+            &[
+                started,
+                node_started("root", "main", NodeKindName::Command, None, 1.0),
+            ],
+        )
+        .unwrap();
+        let mut folded = fold_tree_from(&FactLogReadBackend::Live(store.clone()), TREE)
+            .unwrap()
+            .unwrap();
+        let completed = folded
+            .aggregate
+            .complete_leaf_and_advance("root", &mut || panic!("must not start"), 2.0)
+            .unwrap();
+        let before = read_raw_rows(&store, TREE);
+        let connection =
+            rusqlite::Connection::open(StoreLayout::new(dir.path()).database_path()).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TRIGGER fail_completion BEFORE INSERT ON node_events
+                 WHEN NEW.event_type = 'execution_completed'
+                 BEGIN SELECT RAISE(ABORT, 'injected completion failure'); END;",
+            )
+            .unwrap();
+
+        // When
+        assert!(append_facts_for_events(&store, &completed.events).is_err());
+        assert_eq!(read_raw_rows(&store, TREE), before);
+        drop(store);
+        let store =
+            LocalEventStore::open(LocalEventStoreConfig::production(dir.path().into())).unwrap();
+
+        // Then
+        let folded = fold_tree_from(&FactLogReadBackend::Live(store.clone()), TREE)
+            .unwrap()
+            .unwrap();
+        assert!(folded.aggregate.is_active());
+        connection
+            .execute_batch("DROP TRIGGER fail_completion;")
+            .unwrap();
+        append_facts_for_events(&store, &completed.events).unwrap();
+        drop(store);
+        let store =
+            LocalEventStore::open(LocalEventStoreConfig::production(dir.path().into())).unwrap();
+        let rows = read_raw_rows(&store, TREE);
+        assert_eq!(rows.len(), before.len() + 2);
+        assert_eq!(rows[before.len()].event_type, "process_exited");
+        assert_eq!(rows[before.len() + 1].event_type, "execution_completed");
+        assert_eq!(rows[before.len()].timestamp_ms, 2_000);
+        assert_eq!(rows[before.len() + 1].timestamp_ms, 2_000);
+        let recovered = reconcile_tree_pass(&store, TREE, 3.0, &mut || panic!("must not start"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            recovered.folded.aggregate.state(),
+            &RuntimeExecutionState::Completed
+        );
+        assert_eq!(read_raw_rows(&store, TREE), rows);
+    }
+
+    #[test]
+    fn test_完了seed_完了事実を保存して再seedでも重複しない() {
+        use crate::adaptor::gateway::workflow::execution_store::WorkflowExecutionMetadata;
+        use crate::adaptor::gateway::workflow::test_support::seed_canonical_execution;
+
+        // Given
+        let dir = tempfile::tempdir().unwrap();
+        let store =
+            LocalEventStore::open(LocalEventStoreConfig::production(dir.path().into())).unwrap();
+        let execution = WorkflowExecutionMetadata {
+            execution_id: TREE.into(),
+            workflow_name: "completed-seed".into(),
+            status: ExecutionStatus::Completed,
+            worktree_path: "/repo".into(),
+            current_node: None,
+            created_from: ExecutionOrigin::Cli,
+            started_at: 1.0,
+            updated_at: 2.0,
+            completed_at: Some(2.0),
+            error_reason: None,
+            total_token_usage: Default::default(),
+        };
+
+        // When
+        seed_canonical_execution(&store, &execution, &[]);
+        seed_canonical_execution(&store, &execution, &[]);
+
+        // Then
+        let rows = read_raw_rows(&store, TREE);
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.event_type.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "started",
+                "submit_received",
+                "stop_received",
+                "execution_completed"
+            ]
+        );
+        assert_eq!(rows.last().unwrap().timestamp_ms, 2_000);
+        let folded = fold_tree_from(&FactLogReadBackend::Live(store), TREE)
+            .unwrap()
+            .unwrap();
+        assert_eq!(folded.aggregate.state(), &RuntimeExecutionState::Completed);
+    }
+
+    #[test]
+    fn test_終端復元_保存定義の承認待ちnodeをwriterとreadonlyで同じに復元する() {
+        // Given
+        let dir = tempfile::tempdir().unwrap();
+        let store =
+            LocalEventStore::open(LocalEventStoreConfig::production(dir.path().into())).unwrap();
+        let mut started = started_event();
+        if let WorkflowEvent::ExecutionStarted { definition, .. } = &mut started {
+            *definition = serde_saphyr::from_str(
+                "name: wf\ndescription: test\nnodes:\n  main:\n    session: {provider: codex}\n    completion: {require: approval}\n",
+            ).unwrap();
+        }
+        append_facts_for_events(
+            &store,
+            &[
+                started,
+                node_started("root", "main", NodeKindName::Session, None, 1.0),
+            ],
+        )
+        .unwrap();
+        let root = read_tree_records(&store, TREE).unwrap()[0].meta.clone();
+        for (timestamp, fact) in [
+            (
+                2_000,
+                NodeFact::SubmitReceived(SubmitReceivedFact { request_id: None }),
+            ),
+            (
+                3_000,
+                NodeFact::StopReceived(StopReceivedFact {
+                    result_summary: Some("done".into()),
+                    token_usage: None,
+                }),
+            ),
+        ] {
+            append_single_fact(&store, &root, &fact, timestamp).unwrap();
+        }
+        let mut expected = fold_tree_from(&FactLogReadBackend::Live(store.clone()), TREE)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            expected.aggregate.node_execution("root").unwrap().status,
+            crate::domain::workflow::NodeExecutionStatus::WaitingApproval
+        );
+        expected.aggregate.replay_aborted_at(4.0, None);
+        let expected = crate::domain::workflow::services::fact_replay::derive_read_model(&expected);
+        append_single_fact(
+            &store,
+            &root,
+            &NodeFact::AbortRequested(Default::default()),
+            4_000,
+        )
+        .unwrap();
+        let before = read_raw_rows(&store, TREE);
+        let readonly =
+            crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore::open(
+                dir.path(),
+            )
+            .unwrap();
+
+        // When / Then
+        for backend in [
+            FactLogReadBackend::Live(store.clone()),
+            FactLogReadBackend::ReadOnly(readonly),
+        ] {
+            let tree = fold_tree_from(&backend, TREE).unwrap().unwrap();
+            assert!(tree.root.definition.is_some());
+            assert_eq!(
+                crate::domain::workflow::services::fact_replay::derive_read_model(&tree),
+                expected
+            );
+        }
+        assert_eq!(read_raw_rows(&store, TREE), before);
+    }
+
+    fn legacy_tree(store: &Arc<LocalEventStore>, completed_signals: bool) -> NodeFactMeta {
+        let meta = NodeFactMeta {
+            tree_id: TREE.into(),
+            node_execution_id: TREE.into(),
+            parent_id: None,
+            node_name: "main".into(),
+            kind: NodeKindName::Command,
+            attempt: 1,
+        };
+        store
+            .append_node_event_blocking(
+                NewNodeEventRow {
+                    tree_id: TREE.into(),
+                    node_execution_id: TREE.into(),
+                    parent_id: None,
+                    node_name: "main".into(),
+                    kind: "command".into(),
+                    attempt: 1,
+                    event_type: "started".into(),
+                    session_id: None,
+                    detail: serde_json::json!({"root": {
+                        "workspaceIdentity": "/repo", "worktreePath": "/repo", "createdFrom": "cli",
+                        "request": "", "launchedAs": "workflow",
+                        "definition": {"name": "old", "description": "", "entry": "main", "nodes": {
+                            "main": {"command": "true", "completion": "auto"}
+                        }}
+                    }})
+                    .to_string(),
+                },
+                Some(1_000),
+            )
+            .unwrap();
+        if completed_signals {
+            append_single_fact(
+                store,
+                &meta,
+                &NodeFact::ProcessExited(ProcessExitedFact {
+                    exit_code: Some(0),
+                    result_summary: Some("done".into()),
+                    failure_reason: None,
+                    failure_kind: None,
+                }),
+                2_000,
+            )
+            .unwrap();
+        }
+        meta
+    }
+
+    #[test]
+    fn test_起動時abort_永続化失敗を返し再試行で一度だけ記録する() {
+        // Given
+        let dir = tempfile::tempdir().unwrap();
+        let store =
+            LocalEventStore::open(LocalEventStoreConfig::production(dir.path().into())).unwrap();
+        legacy_tree(&store, true);
+        let connection =
+            rusqlite::Connection::open(StoreLayout::new(dir.path()).database_path()).unwrap();
+        connection.execute_batch("CREATE TRIGGER fail_startup_abort BEFORE INSERT ON node_events WHEN NEW.event_type = 'abort_requested' BEGIN SELECT RAISE(ABORT, 'injected abort failure'); END;").unwrap();
+        let repository =
+            crate::adaptor::gateway::workflow::startup_repository::StoredWorkflowStartupRepository(
+                store.clone(),
+            );
+        let before = read_raw_rows(&store, TREE);
+        // When / Then
+        assert!(
+            crate::usecase::workflow::startup::abort_unavailable_definition(&repository, TREE, 3.0)
+                .is_err()
+        );
+        assert_eq!(read_raw_rows(&store, TREE), before);
+        connection
+            .execute_batch("DROP TRIGGER fail_startup_abort")
+            .unwrap();
+        crate::usecase::workflow::startup::abort_unavailable_definition(&repository, TREE, 4.0)
+            .unwrap();
+        crate::usecase::workflow::startup::abort_unavailable_definition(&repository, TREE, 5.0)
+            .unwrap();
+        let rows = read_raw_rows(&store, TREE);
+        assert_eq!(rows.len(), before.len() + 1);
+        assert_eq!(rows.last().unwrap().timestamp_ms, 4_000);
+        assert_eq!(rows.last().unwrap().event_type, "abort_requested");
+    }
+
+    #[test]
+    fn test_起動時abort_旧定義の未完了と完了事実のない過去完了を同じ理由付きabortにする() {
+        // Given
+        for completed_signals in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let store = LocalEventStore::open(LocalEventStoreConfig::production(dir.path().into()))
+                .unwrap();
+            legacy_tree(&store, completed_signals);
+            let backend = FactLogReadBackend::Live(store.clone());
+            let before = read_raw_rows(&store, TREE).len();
+            assert!(fold_tree_from(&backend, TREE).is_err());
+            assert_eq!(read_raw_rows(&store, TREE).len(), before);
+            // When
+            crate::usecase::workflow::startup::abort_unavailable_definition(
+                &crate::adaptor::gateway::workflow::startup_repository::StoredWorkflowStartupRepository(store.clone()), TREE, 3.0,
+            ).unwrap();
+            let first = reconcile_tree_pass(&store, TREE, 3.0, &mut || panic!("must not start"))
+                .unwrap()
+                .unwrap();
+            let second = reconcile_tree_pass(&store, TREE, 4.0, &mut || panic!("must not start"))
+                .unwrap()
+                .unwrap();
+            // Then
+            for result in [first, second] {
+                assert!(result.starts.is_empty());
+                let model = crate::domain::workflow::services::fact_replay::derive_read_model(
+                    &result.folded,
+                );
+                assert_eq!(model.status, ExecutionStatus::Aborted);
+                assert_eq!(model.completed_at, Some(3.0));
+                assert!(model.error_reason.unwrap().contains("completion"));
+            }
+            let records = read_tree_records(&store, TREE).unwrap();
+            assert_eq!(records.len(), before + 1);
+            assert!(
+                matches!(&records.last().unwrap().fact, NodeFact::AbortRequested(AbortRequestedFact { reason: Some(reason) }) if reason.contains("Workflow definition is unavailable"))
+            );
+            assert!(!records
+                .iter()
+                .any(|record| matches!(record.fact, NodeFact::ExecutionCompleted)));
+        }
+    }
+
+    #[test]
+    fn test_終端復元_旧隔離worktreeをabort済みnodeと提出artifactに保持する() {
+        // Given
+        let dir = tempfile::tempdir().unwrap();
+        let store =
+            LocalEventStore::open(LocalEventStoreConfig::production(dir.path().into())).unwrap();
+        let meta = legacy_tree(&store, false);
+        for (event_type, detail) in [
+            (
+                "isolated_worktree_created",
+                serde_json::json!({
+                    "repositoryRoot": "/repo", "worktreePath": "/old-isolated", "branch": "old-branch"
+                }),
+            ),
+            ("isolated_worktree_released", serde_json::json!({})),
+            ("isolated_worktree_lost", serde_json::json!({})),
+        ] {
+            store
+                .append_node_event_blocking(
+                    NewNodeEventRow {
+                        tree_id: TREE.into(),
+                        node_execution_id: TREE.into(),
+                        parent_id: None,
+                        node_name: "main".into(),
+                        kind: "command".into(),
+                        attempt: 1,
+                        event_type: event_type.into(),
+                        session_id: None,
+                        detail: detail.to_string(),
+                    },
+                    Some(2_000),
+                )
+                .unwrap();
+        }
+        append_single_fact(
+            &store,
+            &meta,
+            &NodeFact::ArtifactProduced(ArtifactProducedFact {
+                contract: Some("result".into()),
+                value: serde_json::json!({"ok": true}),
+                request_id: None,
+            }),
+            3_000,
+        )
+        .unwrap();
+        append_single_fact(
+            &store,
+            &meta,
+            &NodeFact::AbortRequested(Default::default()),
+            4_000,
+        )
+        .unwrap();
+        let before = read_raw_rows(&store, TREE);
+        drop(store);
+
+        // When
+        let store =
+            LocalEventStore::open(LocalEventStoreConfig::production(dir.path().into())).unwrap();
+        let readonly =
+            crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore::open(
+                dir.path(),
+            )
+            .unwrap();
+        for backend in [
+            FactLogReadBackend::Live(store.clone()),
+            FactLogReadBackend::ReadOnly(readonly),
+        ] {
+            let tree = fold_tree_from(&backend, TREE).unwrap().unwrap();
+            let model = crate::domain::workflow::services::fact_replay::derive_read_model(&tree);
+
+            // Then
+            assert_eq!(model.status, ExecutionStatus::Aborted);
+            let node = &model.node_executions[0];
+            assert_eq!(
+                node.status,
+                crate::domain::workflow::NodeExecutionStatus::Aborted
+            );
+            assert_eq!(
+                node.worktree,
+                Some(crate::domain::workflow::IsolatedWorktree {
+                    path: "/old-isolated".into(),
+                    branch: "old-branch".into(),
+                })
+            );
+            assert_eq!(
+                node.artifact.as_ref().unwrap().value,
+                serde_json::json!({
+                    "ok": true, "worktree": {"path": "/old-isolated", "branch": "old-branch"}
+                })
+            );
+        }
+        assert_eq!(read_raw_rows(&store, TREE), before);
+    }
+
+    #[test]
+    fn test_終端復元_旧定義でも完了とabortを保持し起動時に事実を追加しない() {
+        // Given
+        for terminal in [
+            NodeFact::ExecutionCompleted,
+            NodeFact::AbortRequested(Default::default()),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let store = LocalEventStore::open(LocalEventStoreConfig::production(dir.path().into()))
+                .unwrap();
+            let meta = legacy_tree(&store, true);
+            append_single_fact(&store, &meta, &terminal, 3_000).unwrap();
+            let before = read_raw_rows(&store, TREE).len();
+            let readonly =
+                crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore::open(
+                    dir.path(),
+                )
+                .unwrap();
+            // When / Then
+            for backend in [
+                FactLogReadBackend::Live(store.clone()),
+                FactLogReadBackend::ReadOnly(readonly),
+            ] {
+                let folded = fold_tree_from(&backend, TREE).unwrap().unwrap();
+                assert_eq!(
+                    folded.aggregate.state(),
+                    &terminal.terminal_state().unwrap()
+                );
+                assert_eq!(folded.aggregate.updated_at, 3.0);
+            }
+            let recovered =
+                reconcile_tree_pass(&store, TREE, 4.0, &mut || panic!("must not start"))
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(
+                recovered.folded.aggregate.state(),
+                &terminal.terminal_state().unwrap()
+            );
+            assert_eq!(read_raw_rows(&store, TREE).len(), before);
+        }
+    }
+
+    #[test]
+    fn test_終端復元_現行形式の定義でも再生規則が一致しなければ完了事実を優先する() {
+        // Given
+        let dir = tempfile::tempdir().unwrap();
+        let store =
+            LocalEventStore::open(LocalEventStoreConfig::production(dir.path().into())).unwrap();
+        let mut events = vec![
+            started_event(),
+            node_started("root", "renamed", NodeKindName::Command, None, 1.0),
+        ];
+        events.push(WorkflowEvent::ExecutionCompleted {
+            execution_id: TREE.into(),
+            total_token_usage: Default::default(),
+            timestamp: 2.0,
+        });
+        // When
+        append_facts_for_events(&store, &events).unwrap();
+        let folded = fold_tree_from(&FactLogReadBackend::Live(store.clone()), TREE)
+            .unwrap()
+            .unwrap();
+        // Then
+        assert_eq!(folded.aggregate.state(), &RuntimeExecutionState::Completed);
+        assert_eq!(
+            read_raw_rows(&store, TREE).last().unwrap().event_type,
+            "execution_completed"
+        );
+        assert_eq!(
+            folded.aggregate.node_execution("root").unwrap().status,
+            crate::domain::workflow::NodeExecutionStatus::Succeeded
         );
     }
 }

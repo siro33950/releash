@@ -14,6 +14,7 @@ struct NodeArtifact {
 
 struct ArtifactQuery<'a> {
     root: &'a TreeRootFact,
+    terminal: Option<&'a NodeFactRecord>,
     starts: Vec<&'a NodeFactRecord>,
     by_node: HashMap<&'a str, Vec<&'a NodeFactRecord>>,
     children: HashMap<&'a str, Vec<&'a NodeFactRecord>>,
@@ -27,9 +28,6 @@ pub fn derive_node_artifact(
     node_name: &str,
 ) -> Result<Option<Artifact>, String> {
     let Some(query) = ArtifactQuery::new(tree_id, records)? else {
-        return Ok(None);
-    };
-    let Some(definition) = query.root.definition.node_by_name(node_name) else {
         return Ok(None);
     };
     let mut selected = None;
@@ -53,21 +51,36 @@ pub fn derive_node_artifact(
                     .map(|record| record.seq);
                 if selected
                     .as_ref()
-                    .is_none_or(|(previous, previous_timestamp, _)| {
+                    .is_none_or(|(previous, previous_timestamp, _, _)| {
                         submitted
                             .cmp(previous)
                             .then_with(|| timestamp.total_cmp(previous_timestamp))
                             .is_ge()
                     })
                 {
-                    selected = Some((submitted, timestamp, value));
+                    let contract = query.by_node[start.meta.node_execution_id.as_str()]
+                        .iter()
+                        .rev()
+                        .find_map(|record| match &record.fact {
+                            NodeFact::ArtifactProduced(fact) => fact.contract.clone(),
+                            _ => None,
+                        })
+                        .or_else(|| {
+                            query
+                                .root
+                                .definition
+                                .as_ref()
+                                .and_then(|definition| definition.node_by_name(node_name))
+                                .and_then(|definition| definition.artifact.clone())
+                        });
+                    selected = Some((submitted, timestamp, value, contract));
                 }
             }
         }
     }
-    Ok(selected.map(|(_, produced_at, value)| Artifact {
+    Ok(selected.map(|(_, produced_at, value, contract)| Artifact {
         node_name: node_name.to_string(),
-        contract: definition.artifact.clone(),
+        contract,
         value,
         produced_at,
     }))
@@ -86,8 +99,12 @@ impl<'a> ArtifactQuery<'a> {
                 "tree {tree_id} root started carries no tree root fact"
             ));
         };
+        let terminal = records
+            .iter()
+            .find(|record| record.fact.terminal_state().is_some());
         let mut query = Self {
             root,
+            terminal,
             starts: Vec::new(),
             by_node: HashMap::new(),
             children: HashMap::new(),
@@ -105,6 +122,9 @@ impl<'a> ArtifactQuery<'a> {
                     record.meta.tree_id
                 ));
             }
+            if terminal.is_some_and(|terminal| record.seq > terminal.seq) {
+                continue;
+            }
             if let NodeFact::Started(started) = &record.fact {
                 if let Some(parent) = &started.parent {
                     if !query
@@ -112,12 +132,16 @@ impl<'a> ArtifactQuery<'a> {
                         .get(parent.parent_id.as_str())
                         .and_then(|records| records.first())
                         .is_some_and(|record| {
-                            query
-                                .root
-                                .definition
-                                .node_by_name(&record.meta.node_name)
-                                .is_some_and(NodeDefinition::has_child_executions)
-                                && matches!(record.fact, NodeFact::Started(_))
+                            matches!(record.fact, NodeFact::Started(_))
+                                && (query.terminal.is_some()
+                                    || query
+                                        .root
+                                        .definition
+                                        .as_ref()
+                                        .and_then(|definition| {
+                                            definition.node_by_name(&record.meta.node_name)
+                                        })
+                                        .is_some_and(NodeDefinition::has_child_executions))
                         })
                     {
                         return Err(format!(
@@ -133,7 +157,7 @@ impl<'a> ArtifactQuery<'a> {
                 }
                 query.starts.push(record);
             }
-            if matches!(record.fact, NodeFact::AbortRequested) {
+            if matches!(record.fact, NodeFact::AbortRequested(_)) {
                 query.aborts.push(record);
             }
             query
@@ -150,16 +174,38 @@ impl<'a> ArtifactQuery<'a> {
         start: &NodeFactRecord,
         before: i64,
     ) -> Result<Option<NodeArtifact>, String> {
-        let Some(definition) = self.root.definition.node_by_name(&start.meta.node_name) else {
+        if let Some(terminal) = self.terminal.filter(|_| self.root.definition.is_none()) {
+            let mut pending = vec![start.meta.node_execution_id.as_str()];
+            let mut records = vec![terminal];
+            while let Some(id) = pending.pop() {
+                records.extend(self.by_node[id].iter().copied());
+                pending.extend(
+                    self.children
+                        .get(id)
+                        .into_iter()
+                        .flatten()
+                        .map(|child| child.meta.node_execution_id.as_str()),
+                );
+            }
+            records.retain(|record| record.seq < before);
+            records.sort_by_key(|record| record.seq);
+            records.dedup_by_key(|record| record.seq);
+            return Ok(fact_replay::fold_leaf_artifact(
+                self.root,
+                &records,
+                &self.submitted_artifact_sequences,
+            )?
+            .map(|(node, settled_seq)| NodeArtifact { node, settled_seq }));
+        }
+        let Some(definition) = self
+            .root
+            .definition
+            .as_ref()
+            .and_then(|definition| definition.node_by_name(&start.meta.node_name))
+        else {
             return Ok(None);
         };
-        if self
-            .root
-            .definition_resolution
-            .node_error(&self.root.definition, &start.meta.node_name)
-            .is_some()
-            || definition.kind_name() != start.meta.kind
-        {
+        if definition.kind_name() != start.meta.kind {
             return Ok(None);
         }
         if definition.has_child_executions() {
@@ -221,7 +267,8 @@ impl<'a> ArtifactQuery<'a> {
             if self
                 .root
                 .definition
-                .node_by_name(&child.meta.node_name)
+                .as_ref()
+                .and_then(|definition| definition.node_by_name(&child.meta.node_name))
                 .is_some_and(NodeDefinition::has_child_executions)
             {
                 observations.push(Observation::Fact(child));
@@ -245,7 +292,15 @@ impl<'a> ArtifactQuery<'a> {
             .map(|spec| self.fanout_items(start, spec))
             .transpose()?
             .flatten();
-        let mut aggregate = fact_replay::restore_artifact_scope(self.root, start, definition);
+        let mut aggregate = fact_replay::restore_artifact_scope(
+            self.root,
+            start,
+            definition,
+            self.root
+                .definition
+                .as_ref()
+                .ok_or_else(|| "artifact derivation requires a workflow definition".to_string())?,
+        );
         aggregate.replay_artifact_scope(start, items)?;
         let mut settled_seq = start.seq;
         for (index, observation) in observations.iter().enumerate() {

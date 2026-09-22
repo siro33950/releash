@@ -40,8 +40,6 @@ pub(crate) trait WorkflowControlPlaneGateway: Send + Sync {
         execution_id: &str,
     ) -> Result<Option<DomainExecutionTree>, WorkflowError>;
 
-    async fn recover_active_executions(&self) -> Result<(), WorkflowError>;
-
     fn node_process_presence(
         &self,
         execution: &DomainExecutionTree,
@@ -109,6 +107,7 @@ pub(crate) trait WorkflowControlPlaneGateway: Send + Sync {
 #[derive(Clone)]
 pub(crate) struct WorkflowControlPlaneUsecase {
     runtime: Arc<dyn WorkflowControlPlaneGateway>,
+    startup: Option<Arc<super::startup::WorkflowStartupUsecase>>,
 }
 
 impl WorkflowControlPlaneUsecase {
@@ -118,7 +117,25 @@ impl WorkflowControlPlaneUsecase {
     }
 
     pub(crate) fn new(runtime: Arc<dyn WorkflowControlPlaneGateway>) -> Self {
-        Self { runtime }
+        Self {
+            runtime,
+            startup: None,
+        }
+    }
+
+    pub(crate) fn with_startup(
+        mut self,
+        startup: Option<Arc<super::startup::WorkflowStartupUsecase>>,
+    ) -> Self {
+        self.startup = startup;
+        self
+    }
+
+    pub(crate) async fn recover_startup(&self) -> Result<(), WorkflowError> {
+        match &self.startup {
+            Some(startup) => startup.execute().await,
+            None => Ok(()),
+        }
     }
 
     pub(crate) async fn resolve_approval(
@@ -270,13 +287,13 @@ impl WorkflowControlPlaneUsecase {
         .map_err(runtime_error_to_workflow_error)?;
         let validated_artifact = if let Some(artifact) = command.artifact {
             submission::validate_artifact_contract_for_workflow(
-                &current.workflow,
+                current.workflow_definition()?,
                 &target.node_name,
                 &artifact.contract,
             )
             .map_err(runtime_error_to_workflow_error)?;
             let validated = submission::validate_submission_output_with_secrets(
-                &current.workflow,
+                current.workflow_definition()?,
                 &artifact.contract,
                 artifact.value,
                 &self.runtime.configured_secret_values(),
@@ -523,6 +540,7 @@ impl WorkflowControlPlaneUsecase {
                 timestamp,
             },
             WorkflowEvent::NodeStarted {
+                worktree: restarted.attempt.worktree.clone(),
                 execution_id: execution_id.clone(),
                 node_execution_id: restarted.attempt.id.clone(),
                 node_name: restarted.attempt.node_name.clone(),
@@ -579,7 +597,7 @@ impl WorkflowControlPlaneUsecase {
     ) -> Result<(), WorkflowError> {
         let mut active = self.runtime.load_active_execution(&command.tree_id).await?;
         if active.is_none() {
-            self.runtime.recover_active_executions().await?;
+            self.recover_startup().await?;
             active = self.runtime.load_active_execution(&command.tree_id).await?;
         }
         let Some(current) = active else {

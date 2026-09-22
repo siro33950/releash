@@ -66,15 +66,16 @@ impl Fixture {
             &store,
             &root,
             &NodeFact::Started(StartedFact {
+                worktree: Some(IsolatedWorktree::for_attempt("/repo", TREE, 1)),
                 parent: None,
                 root: Some(Box::new(TreeRootFact {
                     repository_root: Some("/repo".into()),
-                    definition_resolution: Default::default(),
                     workspace_identity: ROOT.into(),
                     worktree_path: ROOT.into(),
                     created_from: ExecutionOrigin::Cli,
                     request: String::new(),
-                    definition,
+                    workflow_name: definition.name.clone(),
+                    definition: Some(definition),
                     launched_as: ExecutionTreeLaunch::Workflow,
                 })),
             }),
@@ -93,6 +94,8 @@ impl Fixture {
             &store,
             &child,
             &NodeFact::Started(StartedFact {
+                worktree: isolated_child
+                    .then(|| IsolatedWorktree::for_attempt("/repo", &child.node_execution_id, 2)),
                 parent: Some(if fanout {
                     ExecutionParentRef::fanout_child(TREE, Some(0), 0)
                 } else {
@@ -179,7 +182,7 @@ fn test_隔離読み取り_実体なしでも実行中と失敗後とabort後の
                 failure_kind: NodeExecutionFailureKind::InfrastructureCrash,
             },
         )),
-        Some(NodeFact::AbortRequested),
+        Some(NodeFact::AbortRequested(Default::default())),
     ] {
         let fixture = Fixture::new(true);
         let expected = IsolatedWorktree::for_attempt("/repo", &fixture.child.node_execution_id, 2);
@@ -198,7 +201,6 @@ fn test_隔離読み取り_実体なしでも実行中と失敗後とabort後の
 
         // Then
         assert_eq!(node.worktree.as_ref(), Some(&expected));
-        assert!(node.recovery_reason.is_none());
         assert!(node.artifact.is_none());
         let value = serde_json::to_value(dto).unwrap();
         let nodes = value["nodeExecutions"].as_array().unwrap();
@@ -329,6 +331,7 @@ fn test_隔離出力_同名slotの開始順と提出順が異なっても提出�
         &fixture.store,
         &second,
         &NodeFact::Started(StartedFact {
+            worktree: None,
             parent: Some(ExecutionParentRef::fanout_child(TREE, Some(1), 0)),
             root: None,
         }),
@@ -382,6 +385,7 @@ fn test_隔離出力_contractなしslotも最後に提出した所有者の成�
         &fixture.store,
         &second,
         &NodeFact::Started(StartedFact {
+            worktree: None,
             parent: Some(ExecutionParentRef::fanout_child(TREE, Some(1), 0)),
             root: None,
         }),
@@ -495,6 +499,7 @@ fn test_実効cwd_自身か直近の隔離祖先で確定したら上位行と�
             &fixture.store,
             &ancestor,
             &NodeFact::Started(StartedFact {
+                worktree: None,
                 parent: Some(ExecutionParentRef::sequence_child("missing-parent")),
                 root: None,
             }),

@@ -726,15 +726,24 @@ impl LocalEventStore {
                             }
                             WriteRequest::NodeEventAppend(request) => {
                                 fault.wait_before_node_event_append_if_armed();
-                                let timestamp_ms = request
-                                    .timestamp_ms
-                                    .unwrap_or_else(|| clock.now_ms())
-                                    .max(0);
-                                let result = node_events::append_node_event(
-                                    &writer_connection,
-                                    &request.row,
-                                    timestamp_ms,
-                                )
+                                let result = (|| -> Result<_, rusqlite::Error> {
+                                    let transaction = writer_connection.unchecked_transaction()?;
+                                    let sequences = request
+                                        .rows
+                                        .iter()
+                                        .map(|(row, timestamp_ms)| {
+                                            node_events::append_node_event(
+                                                &transaction,
+                                                row,
+                                                timestamp_ms
+                                                    .unwrap_or_else(|| clock.now_ms())
+                                                    .max(0),
+                                            )
+                                        })
+                                        .collect::<Result<Vec<_>, _>>()?;
+                                    transaction.commit()?;
+                                    Ok(sequences)
+                                })()
                                 .map_err(|error| {
                                     let correlation = correlation_id();
                                     log::error!(
@@ -904,8 +913,10 @@ impl LocalEventStore {
         let (reply, receiver) = oneshot::channel();
         match self
             .queue
-            .admit(WriteRequest::Commit(CommitWriteRequest { prepared, reply }))
-        {
+            .admit(WriteRequest::Commit(Box::new(CommitWriteRequest {
+                prepared,
+                reply,
+            }))) {
             Ok(()) => {}
             Err(AdmitRejection::Capacity) => return Err(CommitBatchError::CapacityExceeded),
             Err(AdmitRejection::Closed) => {
@@ -944,9 +955,7 @@ impl LocalEventStore {
             })?
     }
 
-    /// Append one fact row to the unified-node fact log. The write is a
-    /// single-row INSERT serialized on the writer thread; atomicity never
-    /// spans more than this one row.
+    /// Append one fact row to the unified-node fact log on the writer thread.
     ///
     /// `timestamp_ms` は事実の発生時刻。None なら store の clock で刻む。
     pub(crate) fn append_node_event_blocking(
@@ -954,12 +963,19 @@ impl LocalEventStore {
         row: NewNodeEventRow,
         timestamp_ms: Option<i64>,
     ) -> Result<i64, NodeEventWriteError> {
+        self.append_node_events_blocking(vec![(row, timestamp_ms)])
+            .map(|sequences| sequences[0])
+    }
+
+    pub(crate) fn append_node_events_blocking(
+        &self,
+        rows: Vec<(NewNodeEventRow, Option<i64>)>,
+    ) -> Result<Vec<i64>, NodeEventWriteError> {
         let (reply, receiver) = mpsc::sync_channel(1);
         match self
             .queue
             .admit(WriteRequest::NodeEventAppend(NodeEventAppendRequest {
-                row,
-                timestamp_ms,
+                rows,
                 reply,
             })) {
             Ok(()) => {}
@@ -1016,8 +1032,10 @@ impl LocalEventTransactionRepository for LocalEventStore {
         let (reply, receiver) = oneshot::channel();
         match self
             .queue
-            .admit(WriteRequest::Commit(CommitWriteRequest { prepared, reply }))
-        {
+            .admit(WriteRequest::Commit(Box::new(CommitWriteRequest {
+                prepared,
+                reply,
+            }))) {
             Ok(()) => {}
             Err(AdmitRejection::Capacity) => return Err(CommitBatchError::CapacityExceeded),
             Err(AdmitRejection::Closed) => {

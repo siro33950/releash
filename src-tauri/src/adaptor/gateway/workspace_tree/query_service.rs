@@ -488,10 +488,6 @@ fn node_detail(node: WorkspaceTreeNode) -> WorkspaceNodeDetailDto {
         stop_received,
         waiting_for,
         has_artifact: node.has_artifact,
-        recovery_reason: (node.status
-            == crate::domain::workspace_tree::WorkspaceNodeStatus::Unresolved)
-            .then(|| node.error_reason.clone())
-            .flatten(),
         error_reason: node.error_reason,
         capabilities: WorkspaceNodeCapabilitiesDto {
             can_rename: node.can_rename,

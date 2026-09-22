@@ -104,10 +104,6 @@ impl crate::usecase::workflow::ports::ExecutionTreeProcessGateway
 
 #[async_trait::async_trait]
 impl WorkflowRuntimeStateGateway for DiagnosticsAcceptanceRuntimeGateway {
-    async fn recover_startup(&self) -> Result<(), WorkflowError> {
-        Ok(())
-    }
-
     #[cfg(test)]
     async fn get_state_by_execution_id(
         &self,
@@ -170,10 +166,6 @@ impl WorkflowControlPlaneGateway for DiagnosticsAcceptanceRuntimeGateway {
         _execution_id: &str,
     ) -> Result<Option<ExecutionTree>, WorkflowError> {
         Err(unsupported_runtime_operation())
-    }
-
-    async fn recover_active_executions(&self) -> Result<(), WorkflowError> {
-        Ok(())
     }
 
     async fn register_started_execution_tree(&self, _tree_id: &str) -> Result<(), WorkflowError> {

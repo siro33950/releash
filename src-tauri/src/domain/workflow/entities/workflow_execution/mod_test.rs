@@ -266,7 +266,10 @@ fn test_sequenceの多段参照_配線と辺とfanout展開へ統合mapの値を
     ));
     for (has_open_threads, status) in [(false, "READY"), (true, "HOLD"), (true, "READY")] {
         let mut execution = execution(source);
-        crate::domain::workflow::services::validation::validate(&execution.workflow).unwrap();
+        crate::domain::workflow::services::validation::validate(
+            execution.workflow_definition().unwrap(),
+        )
+        .unwrap();
         let mut new_id = id_source();
         let leaf = next_leaf(execution.start_root(&mut new_id, 1.0).unwrap().decision);
         let scan = json!({"ok": true, "has_open_threads": has_open_threads, "status": status, "tasks": ["first", "second"]});
@@ -529,7 +532,10 @@ fn test_fanoutの多段参照_名前と添字とsequence経由で入力束縛と
         env!("CARGO_MANIFEST_DIR"),
         "/src/adaptor/gateway/workflow/fixtures/valid/fanout-map-references.yml"
     )));
-    crate::domain::workflow::services::validation::validate(&execution.workflow).unwrap();
+    crate::domain::workflow::services::validation::validate(
+        execution.workflow_definition().unwrap(),
+    )
+    .unwrap();
     let mut new_id = id_source();
     let leaf = next_leaf(execution.start_root(&mut new_id, 1.0).unwrap().decision);
     let named = json!({"passed": true, "tasks": ["first", "second"]});
@@ -605,7 +611,10 @@ fn test_fanoutの辺_確定したmapのwhenとswitchとsequence経由で次のle
             env!("CARGO_MANIFEST_DIR"),
             "/src/adaptor/gateway/workflow/fixtures/valid/fanout-map-routing.yml"
         )));
-        crate::domain::workflow::services::validation::validate(&execution.workflow).unwrap();
+        crate::domain::workflow::services::validation::validate(
+            execution.workflow_definition().unwrap(),
+        )
+        .unwrap();
         let mut new_id = id_source();
         let mut leaf = next_leaf(execution.start_root(&mut new_id, 1.0).unwrap().decision);
 
@@ -675,7 +684,10 @@ fn test_fanout集約node_commandとsessionが同じslot集合のmapを型なしi
     ] {
         for all_lgtm in [true, false] {
             let mut execution = execution(source);
-            crate::domain::workflow::services::validation::validate(&execution.workflow).unwrap();
+            crate::domain::workflow::services::validation::validate(
+                execution.workflow_definition().unwrap(),
+            )
+            .unwrap();
             let mut new_id = id_source();
             let leaves = start_fanout(&mut execution, &mut new_id);
             let review_a = json!({"lgtm": true});
@@ -809,7 +821,12 @@ fn test_completion要求_全node種別で本来の完了条件後に承認を待
                 applied.events
             } else if leaf.node_name == "main" {
                 let disposition = workflow_transition::decide_completion_disposition(
-                    execution.workflow.node_by_name("main").unwrap(),
+                    execution
+                        .workflow
+                        .as_ref()
+                        .unwrap()
+                        .node_by_name("main")
+                        .unwrap(),
                 );
                 if require_approval {
                     assert_eq!(
@@ -1078,7 +1095,7 @@ fn test_実行木archive遷移_未終了を拒否し終了状態を変えずarch
     // When / Then
     assert!(execution.archive(1.0, "manual").is_err());
     assert!(execution.restore_archive().is_none());
-    execution.replay_aborted_at(2.0);
+    execution.replay_aborted_at(2.0, None);
     let before = execution.state().clone();
     assert_eq!(
         execution.archive(3.125, "worktree_removed").unwrap(),

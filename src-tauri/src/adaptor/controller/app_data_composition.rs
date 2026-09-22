@@ -368,15 +368,16 @@ mod tests {
                 attempt: 1,
             },
             NodeFact::Started(StartedFact {
+                worktree: None,
                 parent: None,
                 root: Some(Box::new(TreeRootFact {
                     repository_root: None,
-                    definition_resolution: Default::default(),
                     workspace_identity: worktree_path.to_string(),
                     worktree_path: worktree_path.to_string(),
                     created_from: ExecutionOrigin::Cli,
                     request: String::new(),
-                    definition: WorkflowDefinition {
+                    workflow_name: "wf".to_string(),
+                    definition: Some(WorkflowDefinition {
                         name: "wf".to_string(),
                         description: String::new(),
                         builtin: false,
@@ -390,7 +391,7 @@ mod tests {
                             worktree: None,
                         }],
                         entry: "main".to_string(),
-                    },
+                    }),
                     launched_as: ExecutionTreeLaunch::Workflow,
                 })),
             }),

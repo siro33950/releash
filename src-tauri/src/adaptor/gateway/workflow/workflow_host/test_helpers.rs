@@ -544,3 +544,18 @@ pub(crate) async fn archive_workflow(fixture: &ArchiveFixture) -> String {
         .await
         .unwrap()
 }
+pub(crate) async fn reconcile_startup(
+    host: &WorkflowRuntimeHost,
+    app: &WorkflowRuntimeDependencies,
+) -> Result<(), WorkflowRuntimeError> {
+    match crate::adaptor::controller::wiring::wire_workflow_startup(
+        app.clone(),
+        Arc::new(host.clone()),
+    ) {
+        Some(startup) => startup
+            .execute()
+            .await
+            .map_err(|error| WorkflowRuntimeError::SessionStore(error.to_string())),
+        None => Ok(()),
+    }
+}

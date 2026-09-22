@@ -107,10 +107,9 @@ impl SqliteWorkspaceTreeRepository {
         crate::domain::workspace_tree::runtime_snapshot_nodes(RuntimeSnapshotNodeProjection {
             process_presences: &process_presences,
             execution_id: &folded.aggregate.id,
-            workflow_name: &folded.aggregate.workflow.name,
+            workflow_name: &folded.aggregate.workflow_name,
             workspace_identity: workspace,
-            recorded_dynamic_fanout_names: &folded.root.definition_resolution.dynamic_fanout_names,
-            workflow_definition: &folded.aggregate.workflow,
+            workflow_definition: folded.aggregate.workflow.as_ref(),
             node_executions: &folded.aggregate.node_executions,
             retry_predecessors: &folded.aggregate.retry_predecessors,
             execution_active: folded.aggregate.is_active(),

@@ -1,11 +1,12 @@
 //! 統一 Node 事実ログ（node_events）への gateway。
 //!
 //! 書き込み: エンジンが発するイベント列から純粋事実のみを行へ写像して
-//! 単一行 append する。遷移イベント（NodeCompleted / ExecutionCompleted /
-//! ApprovalRequested 等）と合成子の導出成果はここで捨てられ、永続化されない。
+//! append する。実行木の完了は同じイベント列の事実と原子的に記録し、
+//! Node の承認要求や合成子の導出成果は永続化しない。
 //! 読み出し: tree 単位の行列を [`NodeFactRecord`] へ復元し、状態導出は
 //! domain の fold（`fact_replay`）に委ねる。
 
+use crate::adaptor::gateway::workflow::fact_codec;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -65,8 +66,7 @@ fn pending_row(
         NodeFact::SessionAttached(fact) => Some(fact.session_id.clone()),
         _ => None,
     };
-    let detail = fact
-        .encode_detail()
+    let detail = fact_codec::encode_detail(fact)
         .map_err(|error| format!("node fact encode failed: {error}"))?;
     Ok(PendingFactRow {
         row: NewNodeEventRow {
@@ -76,7 +76,7 @@ fn pending_row(
             node_name: meta.node_name.clone(),
             kind: kind_column(meta.kind).to_string(),
             attempt: i64::from(meta.attempt),
-            event_type: fact.event_type().to_string(),
+            event_type: fact_codec::event_type(fact).to_string(),
             session_id,
             detail,
         },
@@ -109,6 +109,7 @@ fn fact_rows_for_events(
     let mut rows: Vec<PendingFactRow> = Vec::new();
     let mut batch_meta: HashMap<String, FactRowMeta> = HashMap::new();
     let mut pending_root: Option<TreeRootFact> = None;
+    let mut batch_roots: HashMap<String, FactRowMeta> = HashMap::new();
 
     let mut resolve = |batch_meta: &HashMap<String, FactRowMeta>,
                        node_execution_id: &str|
@@ -135,16 +136,17 @@ fn fact_rows_for_events(
             } => {
                 pending_root = Some(TreeRootFact {
                     repository_root: repository_root.clone(),
-                    definition_resolution: Default::default(),
                     workspace_identity: WorkspaceIdentity::new(worktree_path).as_str().to_string(),
                     worktree_path: worktree_path.clone(),
                     created_from: *created_from,
                     request: request.clone(),
-                    definition: definition.clone(),
+                    workflow_name: definition.name.clone(),
+                    definition: Some(definition.clone()),
                     launched_as: ExecutionTreeLaunch::Workflow,
                 });
             }
             WorkflowEvent::NodeStarted {
+                worktree,
                 node_execution_id,
                 node_name,
                 kind,
@@ -160,11 +162,15 @@ fn fact_rows_for_events(
                     attempt: *attempt,
                 };
                 let root = if parent.is_none() {
+                    batch_roots
+                        .entry(tree_id.to_string())
+                        .or_insert_with(|| meta.clone());
                     pending_root.take().map(Box::new)
                 } else {
                     None
                 };
                 let fact = NodeFact::Started(StartedFact {
+                    worktree: worktree.clone(),
                     parent: parent.clone(),
                     root,
                 });
@@ -294,9 +300,10 @@ fn fact_rows_for_events(
                         if stop.token_usage.is_none() {
                             stop.token_usage = token_usage.clone();
                         }
-                        pending.row.detail = NodeFact::StopReceived(stop)
-                            .encode_detail()
-                            .map_err(|error| format!("stop_received re-encode failed: {error}"))?;
+                        pending.row.detail = fact_codec::encode_detail(&NodeFact::StopReceived(
+                            stop,
+                        ))
+                        .map_err(|error| format!("stop_received re-encode failed: {error}"))?;
                     }
                 }
             }
@@ -339,20 +346,23 @@ fn fact_rows_for_events(
                 });
                 rows.push(pending_row(&meta, tree_id, &fact, timestamp)?);
             }
-            WorkflowEvent::ExecutionAborted { .. } => {
-                let meta = root_lookup(tree_id)?.ok_or_else(|| {
-                    format!("abort references tree {tree_id} without a root started fact")
-                })?;
-                rows.push(pending_row(
-                    &meta,
-                    tree_id,
-                    &NodeFact::AbortRequested,
-                    timestamp,
-                )?);
+            WorkflowEvent::ExecutionCompleted { .. } | WorkflowEvent::ExecutionAborted { .. } => {
+                let meta = match batch_roots.get(tree_id) {
+                    Some(meta) => meta.clone(),
+                    None => root_lookup(tree_id)?.ok_or_else(|| {
+                        format!(
+                            "terminal fact references tree {tree_id} without a root started fact"
+                        )
+                    })?,
+                };
+                let fact = match event {
+                    WorkflowEvent::ExecutionCompleted { .. } => NodeFact::ExecutionCompleted,
+                    _ => NodeFact::AbortRequested(Default::default()),
+                };
+                rows.push(pending_row(&meta, tree_id, &fact, timestamp)?);
             }
             // 遷移・観測の導出はログに書かない。
             WorkflowEvent::ApprovalRequested { .. }
-            | WorkflowEvent::ExecutionCompleted { .. }
             | WorkflowEvent::StallObserved { .. }
             | WorkflowEvent::StallCleared { .. } => {}
         }
@@ -383,7 +393,7 @@ pub(crate) fn node_meta_from_row(row: &NodeEventRow) -> Result<NodeFactMeta, Str
     })
 }
 
-/// イベント列を事実行へ写像して node_events に追記する（単一行 append の列）。
+/// イベント列を事実行へ写像して node_events に追記する。
 pub(crate) fn append_facts_for_events(
     store: &Arc<LocalEventStore>,
     events: &[WorkflowEvent],
@@ -421,13 +431,26 @@ pub(crate) fn append_facts_for_events(
     append_pending_rows_blocking(store, rows)
 }
 
-/// 事実行の列を順に append する（それぞれ独立した単一行 append）。
+/// 完了事実を含む行列は原子的に、それ以外は単一行ずつ append する。
 pub(crate) fn append_pending_rows_blocking(
     store: &Arc<LocalEventStore>,
     rows: Vec<PendingFactRow>,
 ) -> Result<(), String> {
     if rows.is_empty() {
         return Ok(());
+    }
+    if rows
+        .iter()
+        .any(|pending| pending.row.event_type == "execution_completed")
+    {
+        return store
+            .append_node_events_blocking(
+                rows.into_iter()
+                    .map(|pending| (pending.row, Some(pending.timestamp_ms)))
+                    .collect(),
+            )
+            .map(|_| ())
+            .map_err(|error| format!("node fact append failed: {error}"));
     }
     for pending in rows {
         store
@@ -572,8 +595,67 @@ pub(crate) fn read_tree_records_from(
                 .map_err(|_| LocalEventQueryError::InvalidRequest)
         })
         .map_err(|error| format!("node fact tree read failed: {error:?}"))?;
+    records_from_tree_rows(&rows)
+}
+
+fn terminal_fact_in_rows(rows: &[NodeEventRow]) -> Result<bool, String> {
+    for row in rows {
+        if fact_codec::terminal_event_types().contains(&row.event_type.as_str()) {
+            return fact_codec::decode(&row.event_type, &row.detail)
+                .map(|fact| fact.terminal_state().is_some())
+                .map_err(|error| error.to_string());
+        }
+    }
+    Ok(false)
+}
+
+pub(crate) fn records_from_tree_rows(rows: &[NodeEventRow]) -> Result<Vec<NodeFactRecord>, String> {
+    let terminal = terminal_fact_in_rows(rows)?;
+    let mut legacy_worktrees = HashMap::new();
+    if terminal {
+        for row in rows.iter().take_while(|row| {
+            !fact_codec::terminal_event_types().contains(&row.event_type.as_str())
+        }) {
+            if row.event_type == "isolated_worktree_created" {
+                legacy_worktrees.insert(
+                    (row.node_execution_id.as_str(), row.attempt),
+                    decode_legacy_worktree(&row.detail)?,
+                );
+            }
+        }
+    }
     rows.iter()
-        .filter_map(|row| record_from_row(row).transpose())
+        .filter_map(|row| {
+            if terminal && row.event_type == "started" {
+                Some(
+                    super::stored_definition::decode_terminal_started(&row.detail).and_then(
+                        |mut fact| {
+                            if let NodeFact::Started(started) = &mut fact {
+                                if let (Some(root), Ok(NodeFact::Started(decoded))) = (
+                                    started.root.as_mut(),
+                                    super::stored_definition::decode_started(&row.detail),
+                                ) {
+                                    root.definition = decoded.root.and_then(|root| root.definition);
+                                }
+                                if started.worktree.is_none() {
+                                    started.worktree = legacy_worktrees
+                                        .get(&(row.node_execution_id.as_str(), row.attempt))
+                                        .cloned();
+                                }
+                            }
+                            Ok(NodeFactRecord {
+                                meta: node_meta_from_row(row)?,
+                                seq: row.seq,
+                                timestamp_ms: row.timestamp_ms,
+                                fact,
+                            })
+                        },
+                    ),
+                )
+            } else {
+                record_from_row(row).transpose()
+            }
+        })
         .collect()
 }
 
@@ -582,7 +664,7 @@ pub(crate) fn read_latest_activity_record_for_node(
     node_execution_id: &str,
 ) -> Result<Option<NodeFactRecord>, String> {
     let requested = node_execution_id.to_string();
-    let event_types = NodeFact::activity_replay_event_types();
+    let event_types = fact_codec::activity_replay_event_types();
     backend
         .run_indexed(move |connection| {
             node_events::latest_row_for_node_with_event_types(connection, &requested, event_types)
@@ -677,26 +759,32 @@ pub(crate) fn read_tree_records(
     read_tree_records_from(&FactLogReadBackend::Live(Arc::clone(store)), tree_id)
 }
 
+fn decode_legacy_worktree(
+    detail: &str,
+) -> Result<crate::domain::workflow::IsolatedWorktree, String> {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct RetiredWorktreeCreated {
+        #[serde(rename = "repositoryRoot")]
+        _repository_root: String,
+        worktree_path: String,
+        branch: String,
+    }
+    serde_json::from_str::<RetiredWorktreeCreated>(detail)
+        .map(|worktree| crate::domain::workflow::IsolatedWorktree {
+            path: worktree.worktree_path,
+            branch: worktree.branch,
+        })
+        .map_err(|error| format!("node fact decode failed: {error}"))
+}
+
 pub(crate) fn decode_stored_fact(
     event_type: &str,
     detail: &str,
     timestamp_ms: i64,
 ) -> Result<Option<NodeFact>, String> {
     match event_type {
-        "isolated_worktree_created" => {
-            #[derive(serde::Deserialize)]
-            struct RetiredWorktreeCreated {
-                #[serde(rename = "repositoryRoot")]
-                _repository_root: String,
-                #[serde(rename = "worktreePath")]
-                _worktree_path: String,
-                #[serde(rename = "branch")]
-                _branch: String,
-            }
-            serde_json::from_str::<RetiredWorktreeCreated>(detail)
-                .map(|_| None)
-                .map_err(|error| error.to_string())
-        }
+        "isolated_worktree_created" => decode_legacy_worktree(detail).map(|_| None),
         "isolated_worktree_released" | "isolated_worktree_lost" => {
             serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(detail)
                 .map(|_| None)
@@ -714,12 +802,12 @@ pub(crate) fn decode_stored_fact(
                     serde_json::json!(timestamp_ms as f64 / 1000.0),
                 );
             }
-            NodeFact::decode(event_type, &serde_json::Value::Object(detail).to_string())
+            fact_codec::decode(event_type, &serde_json::Value::Object(detail).to_string())
                 .map(Some)
                 .map_err(|error| error.to_string())
         }
         "started" => super::stored_definition::decode_started(detail).map(Some),
-        _ => NodeFact::decode(event_type, detail)
+        _ => fact_codec::decode(event_type, detail)
             .map(Some)
             .map_err(|error| error.to_string()),
     }
@@ -763,8 +851,7 @@ pub(crate) fn pending_single_fact(
     fact: &NodeFact,
     timestamp_ms: i64,
 ) -> Result<PendingFactRow, String> {
-    let detail = fact
-        .encode_detail()
+    let detail = fact_codec::encode_detail(fact)
         .map_err(|error| format!("node fact encode failed: {error}"))?;
     let row = NewNodeEventRow {
         tree_id: meta.tree_id.clone(),
@@ -773,7 +860,7 @@ pub(crate) fn pending_single_fact(
         node_name: meta.node_name.clone(),
         kind: kind_column(meta.kind).to_string(),
         attempt: i64::from(meta.attempt),
-        event_type: fact.event_type().to_string(),
+        event_type: fact_codec::event_type(fact).to_string(),
         session_id: match fact {
             NodeFact::SessionAttached(fact) => Some(fact.session_id.clone()),
             _ => None,
@@ -808,7 +895,10 @@ pub(crate) fn reconcile_tree_pass(
     use crate::domain::workflow::{NodeCompletionSignalState, ProcessExitedFact};
 
     let backend = FactLogReadBackend::Live(Arc::clone(store));
-    let Some(folded) = fold_tree_from(&backend, tree_id)? else {
+    let records = read_tree_records_from(&backend, tree_id)?;
+    let Some(folded) =
+        crate::domain::workflow::services::fact_replay::fold_execution_tree(tree_id, &records)?
+    else {
         return Ok(None);
     };
     if !folded.aggregate.is_active() {
@@ -817,7 +907,6 @@ pub(crate) fn reconcile_tree_pass(
             starts: Vec::new(),
         }));
     }
-    let records = read_tree_records_from(&backend, tree_id)?;
     let activated = records
         .iter()
         .filter_map(|record| match record.fact {

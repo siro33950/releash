@@ -1,10 +1,7 @@
 //! 純粋事実ログ（node_events）からの実行木の導出（tree fold）。
 //!
-//! 入力は 1 tree 分の事実行列のみ。遷移イベントは存在せず、完了・進行の
-//! 規則（Submit + Stop 揃いで完了・fanout 全子完了・sequence 前進・
-//! approval）はこの fold と live 経路が共有する aggregate の
-//! derive 系メソッドだけが知る。規則の変更は過去ログの解釈に遡及する
-//! （「当時完了と判定した」という記録は持たない。許容済みトレードオフ）。
+//! 終端状態は事実から復元し、Node の公開情報には解釈可能な保存定義を使う。
+//! 進行規則は live 経路と aggregate の derive 系メソッドを共有する。
 
 use std::collections::HashMap;
 
@@ -29,6 +26,7 @@ pub struct FoldedTree {
     pub aggregate: ExecutionTreeAggregate,
     /// root started に記録された木の実行構成。
     pub root: TreeRootFact,
+    pub artifact_contracts: HashMap<String, String>,
     /// Session Node ごとに、同じ事実走査から導出した最新の provider 活動状態。
     pub session_activities: HashMap<String, AgentSessionActivity>,
     /// Session Node ごとに、同じ事実走査から導出した表示名の入力。
@@ -105,11 +103,12 @@ pub fn fold_execution_tree(
     let NodeFact::Started(started) = &first.fact else {
         return Err(format!("tree {tree_id} does not begin with a started fact"));
     };
-    let Some(mut root) = started.root.clone() else {
+    let Some(root) = started.root.as_deref() else {
         return Err(format!(
             "tree {tree_id} root started carries no tree root fact"
         ));
     };
+    let mut root = root.clone();
 
     for record in records {
         if record.meta.parent_id.is_none() {
@@ -124,23 +123,59 @@ pub fn fold_execution_tree(
         }
     }
 
-    let started_at = timestamp_of(first);
+    let terminal = records
+        .iter()
+        .find(|record| record.fact.terminal_state().is_some());
+    match fold_records(tree_id, records, root.clone(), terminal) {
+        Err(_) if terminal.is_some() && root.definition.is_some() => {
+            fold_records(tree_id, records, root.without_definition(), terminal)
+        }
+        result => result,
+    }
+}
+
+fn fold_records(
+    tree_id: &str,
+    records: &[NodeFactRecord],
+    root: TreeRootFact,
+    terminal: Option<&NodeFactRecord>,
+) -> Result<Option<FoldedTree>, String> {
+    let started_at = timestamp_of(&records[0]);
+    if terminal.is_none() && root.definition.is_none() {
+        return Err("non-terminal execution requires a workflow definition".into());
+    }
     let mut aggregate = restore_aggregate(tree_id, &root, started_at);
     let mut session_activities: HashMap<String, AgentSessionActivity> = HashMap::new();
     let mut session_display_names: HashMap<String, SessionDisplayNameInputs> = HashMap::new();
     let mut session_title_observation_states: HashMap<String, SessionTitleObservationState> =
         HashMap::new();
 
+    let mut artifact_contracts = HashMap::new();
     for (index, record) in records.iter().enumerate() {
         let defer_submit_settlement = records
             .get(index + 1)
             .is_some_and(|next| is_submitted_artifact_pair(record, next));
-        apply_record(&mut aggregate, record, defer_submit_settlement)
-            .map_err(|reason| format!("tree {tree_id} seq {}: {reason}", record.seq))?;
-        if index
-            .checked_sub(1)
-            .and_then(|previous| records.get(previous))
-            .is_some_and(|previous| is_submitted_artifact_pair(previous, record))
+        let before_terminal = terminal.is_none_or(|terminal| record.seq <= terminal.seq);
+        // archive / restore は木の終端後にだけ起きる事実なので終端の打ち切りから外す。
+        let tree_archive = matches!(
+            record.fact,
+            NodeFact::ArchiveRequested(_) | NodeFact::RestoreRequested
+        );
+        if before_terminal || tree_archive {
+            if let NodeFact::ArtifactProduced(fact) = &record.fact {
+                if let Some(contract) = &fact.contract {
+                    artifact_contracts
+                        .insert(record.meta.node_execution_id.clone(), contract.clone());
+                }
+            }
+            apply_record(&mut aggregate, record, defer_submit_settlement)
+                .map_err(|reason| format!("tree {tree_id} seq {}: {reason}", record.seq))?;
+        }
+        if before_terminal
+            && index
+                .checked_sub(1)
+                .and_then(|previous| records.get(previous))
+                .is_some_and(|previous| is_submitted_artifact_pair(previous, record))
         {
             aggregate
                 .derive_session_settlement(&record.meta.node_execution_id, timestamp_of(record))
@@ -172,11 +207,13 @@ pub fn fold_execution_tree(
         }
     }
 
-    aggregate.derive_empty_isolated_fanouts(None)?;
-    aggregate.resolve_recovery_dependencies();
+    if terminal.is_none() {
+        aggregate.derive_empty_isolated_fanouts(None)?;
+    }
     Ok(Some(FoldedTree {
         aggregate,
-        root: *root,
+        root,
+        artifact_contracts,
         session_activities,
         session_display_names,
     }))
@@ -224,7 +261,13 @@ pub fn derive_read_model(tree: &FoldedTree) -> ExecutionTreeReadModel {
     let nodes: Vec<NodeExecution> = aggregate
         .node_executions
         .iter()
-        .map(|node| read_model_node(aggregate, node))
+        .map(|node| {
+            read_model_node(
+                aggregate,
+                node,
+                tree.artifact_contracts.get(&node.id).cloned(),
+            )
+        })
         .collect();
     let fields = event_replay::derive_workflow_execution_fields(
         &request,
@@ -234,7 +277,7 @@ pub fn derive_read_model(tree: &FoldedTree) -> ExecutionTreeReadModel {
     );
     ExecutionTreeReadModel {
         id: aggregate.id.clone(),
-        workflow_name: aggregate.workflow.name.clone(),
+        workflow_name: aggregate.workflow_name.clone(),
         status: fields.status,
         current_node: fields.current_node,
         created_from: aggregate.created_from,
@@ -287,8 +330,7 @@ pub fn derive_node_artifact(
         node_name: node_name.to_string(),
         contract: tree
             .aggregate
-            .workflow
-            .node_by_name(node_name)
+            .node_definition(node_name)
             .and_then(|definition| definition.artifact.clone()),
         value: node.artifact.clone()?,
         produced_at: node.completed_at.unwrap_or(node.started_at),
@@ -298,22 +340,22 @@ pub fn derive_node_artifact(
 fn read_model_node(
     aggregate: &ExecutionTreeAggregate,
     node: &RuntimeNodeExecution,
+    recorded_contract: Option<String>,
 ) -> NodeExecution {
     let status = match node.status {
-        RuntimeNodeExecutionStatus::Unresolved => NodeExecutionStatus::Unresolved,
         RuntimeNodeExecutionStatus::Running => NodeExecutionStatus::Running,
         RuntimeNodeExecutionStatus::WaitingApproval => NodeExecutionStatus::WaitingApproval,
         RuntimeNodeExecutionStatus::Succeeded => NodeExecutionStatus::Succeeded,
         RuntimeNodeExecutionStatus::Aborted => NodeExecutionStatus::Aborted,
     };
     let result_summary = node.result_summary.clone();
-    let contract = aggregate
-        .workflow
-        .node_by_name(&node.node_name)
-        .and_then(|definition| definition.artifact.clone());
+    let contract = recorded_contract.or_else(|| {
+        aggregate
+            .node_definition(&node.node_name)
+            .and_then(|definition| definition.artifact.clone())
+    });
     NodeExecution {
         worktree: node.worktree.clone(),
-        recovery_reason: node.recovery_reason.clone(),
         id: node.id.clone(),
         execution_id: node.execution_id.clone(),
         node_name: node.node_name.clone(),
@@ -343,9 +385,12 @@ fn restore_aggregate(
     root: &TreeRootFact,
     started_at: f64,
 ) -> ExecutionTreeAggregate {
-    let mut aggregate = ExecutionTreeAggregate::restore_runtime(ExecutionTreeRestore {
+    let Some(workflow) = &root.definition else {
+        return ExecutionTreeAggregate::restore_without_definition(tree_id, root, started_at);
+    };
+    ExecutionTreeAggregate::restore_runtime(ExecutionTreeRestore {
         id: tree_id.to_string(),
-        workflow: root.definition.clone(),
+        workflow: workflow.clone(),
         workflow_defaults: WorkflowDefaults,
         worktree_path: root.worktree_path.clone(),
         repository_root: root.repository_root.clone(),
@@ -355,9 +400,7 @@ fn restore_aggregate(
         updated_at: started_at,
         request: (!root.request.is_empty()).then(|| root.request.clone()),
         ..ExecutionTreeRestore::default()
-    });
-    aggregate.restore_definition_resolution((*root.definition_resolution).clone());
-    aggregate
+    })
 }
 
 pub(super) fn apply_record(
@@ -365,7 +408,7 @@ pub(super) fn apply_record(
     record: &NodeFactRecord,
     defer_submit_settlement: bool,
 ) -> Result<(), String> {
-    if !matches!(record.fact, NodeFact::AbortRequested) {
+    if !matches!(record.fact, NodeFact::AbortRequested(_)) {
         aggregate.derive_empty_isolated_fanouts(
             matches!(record.fact, NodeFact::RuntimeFailureObserved(_))
                 .then_some(record.meta.node_execution_id.as_str()),
@@ -375,17 +418,7 @@ pub(super) fn apply_record(
     let timestamp = timestamp_of(record);
     match &record.fact {
         NodeFact::Started(started) => {
-            if started.root.is_some() {
-                let _ = aggregate.replay_started();
-            }
-            aggregate.replay_node_started(
-                id,
-                &record.meta.node_name,
-                record.meta.kind,
-                record.meta.attempt,
-                started.parent.clone(),
-                timestamp,
-            )
+            aggregate.replay_started_fact(&record.meta, started, timestamp)
         }
         NodeFact::SessionAttached(fact) => {
             let _ = aggregate.attach_node_session(id, fact.session_id.clone(), timestamp);
@@ -469,8 +502,8 @@ pub(super) fn apply_record(
             Ok(())
         }
         NodeFact::ResumeRequested => Ok(()),
-        NodeFact::AbortRequested => {
-            let _ = aggregate.replay_aborted_at(timestamp);
+        NodeFact::AbortRequested(_) | NodeFact::ExecutionCompleted => {
+            aggregate.replay_terminal_fact(&record.fact, timestamp);
             Ok(())
         }
         NodeFact::AgentActivityObserved(_)
@@ -496,16 +529,17 @@ pub(super) fn restore_artifact_scope(
     root: &TreeRootFact,
     first: &NodeFactRecord,
     definition: &crate::domain::workflow::NodeDefinition,
+    workflow: &crate::domain::workflow::WorkflowDefinition,
 ) -> ExecutionTreeAggregate {
     let mut aggregate = ExecutionTreeAggregate::restore_runtime(ExecutionTreeRestore {
         id: first.meta.tree_id.clone(),
         workflow: crate::domain::workflow::WorkflowDefinition {
-            name: root.definition.name.clone(),
+            name: root.workflow_name.clone(),
             description: String::new(),
             builtin: false,
-            schemas: root.definition.schemas.clone(),
+            schemas: workflow.schemas.clone(),
             nodes: std::iter::once(definition)
-                .chain(root.definition.nodes.iter().filter(|candidate| {
+                .chain(workflow.nodes.iter().filter(|candidate| {
                     match &definition.kind {
                         crate::domain::workflow::NodeKind::Sequence(spec) => spec
                             .children
@@ -533,7 +567,6 @@ pub(super) fn restore_artifact_scope(
         started_at: timestamp_of(first),
         ..ExecutionTreeRestore::default()
     });
-    aggregate.restore_definition_resolution((*root.definition_resolution).clone());
     let _ = aggregate.replay_started();
     aggregate
 }
@@ -546,17 +579,21 @@ pub(super) fn fold_leaf_artifact(
     let Some(first) = records.first() else {
         return Ok(None);
     };
-    let Some(definition) = root.definition.node_by_name(&first.meta.node_name) else {
-        return Ok(None);
+    let mut aggregate = if let Some(workflow) = root.definition.as_ref() {
+        let Some(definition) = workflow.node_by_name(&first.meta.node_name) else {
+            return Ok(None);
+        };
+        restore_artifact_scope(root, first, definition, workflow)
+    } else {
+        restore_aggregate(&first.meta.tree_id, root, timestamp_of(first))
     };
-    let mut aggregate = restore_artifact_scope(root, first, definition);
     let mut settled_seq = first.seq;
     for (index, record) in records.iter().enumerate() {
         let previous = aggregate
             .node_executions
             .first()
             .map(|node| (node.status, node.completed_at));
-        if matches!(record.fact, NodeFact::Started(_)) {
+        if root.definition.is_some() && matches!(record.fact, NodeFact::Started(_)) {
             aggregate.replay_node_started(
                 &record.meta.node_execution_id,
                 &record.meta.node_name,
@@ -667,7 +704,7 @@ pub fn derive_session_facts(
                 view.exited = true;
                 view.archived = false;
             }
-            NodeFact::AbortRequested => view.exited = true,
+            NodeFact::AbortRequested(_) => view.exited = true,
             NodeFact::ArchiveRequested(_) => view.archived = true,
             _ => {}
         }

@@ -2391,9 +2391,6 @@ impl TryFrom<crate::adaptor::protocol::workflow::NodeExecutionStatusView>
     ) -> Result<Self, String> {
         Ok(Self {
             value: Some(match value {
-                crate::adaptor::protocol::workflow::NodeExecutionStatusView::Unresolved => {
-                    wire::node_execution_status_view::Value::Unresolved as i32
-                }
                 crate::adaptor::protocol::workflow::NodeExecutionStatusView::Running => {
                     wire::node_execution_status_view::Value::Running as i32
                 }
@@ -2416,7 +2413,6 @@ impl TryFrom<String> for wire::NodeExecutionStatusView {
     fn try_from(value: String) -> Result<Self, String> {
         Ok(Self {
             value: Some(match value.as_str() {
-                "unresolved" => wire::node_execution_status_view::Value::Unresolved as i32,
                 "running" => wire::node_execution_status_view::Value::Running as i32,
                 "waiting_approval" => {
                     wire::node_execution_status_view::Value::WaitingApproval as i32
@@ -2444,7 +2440,6 @@ impl TryFrom<crate::adaptor::protocol::workflow::NodeExecutionView> for wire::No
         Ok(Self {
             process_presence: Some(cv(value.process_presence)?),
             worktree: value.worktree.map(cv).transpose()?,
-            recovery_reason: value.recovery_reason.map(cv).transpose()?,
             id: Some(cv(value.id)?),
             execution_id: Some(cv(value.execution_id)?),
             node_name: Some(cv(value.node_name)?),
@@ -4507,7 +4502,6 @@ impl TryFrom<String> for wire::WorkspaceHistoryStatus {
     fn try_from(value: String) -> Result<Self, String> {
         Ok(Self {
             value: Some(match value.as_str() {
-                "unresolved" => wire::workspace_history_status::Value::Unresolved as i32,
                 "running" => wire::workspace_history_status::Value::Running as i32,
                 "waiting" => wire::workspace_history_status::Value::Waiting as i32,
                 "aborted" => wire::workspace_history_status::Value::Aborted as i32,
@@ -4610,7 +4604,6 @@ impl TryFrom<crate::usecase::workflow::WorkspaceNodeDetailDto> for wire::Workspa
             waiting_for: value.waiting_for.map(cv).transpose()?,
             has_artifact: Some(cv(value.has_artifact)?),
             error_reason: value.error_reason.map(cv).transpose()?,
-            recovery_reason: value.recovery_reason.map(cv).transpose()?,
             capabilities: Some(cv(value.capabilities)?),
             updated_at: Some(cv(value.updated_at)?),
             content: Some(cv(value.content)?),
@@ -4644,9 +4637,6 @@ impl TryFrom<crate::domain::workspace_tree::WorkspaceNodeStatus> for wire::Works
     fn try_from(value: crate::domain::workspace_tree::WorkspaceNodeStatus) -> Result<Self, String> {
         Ok(Self {
             value: Some(match value {
-                crate::domain::workspace_tree::WorkspaceNodeStatus::Unresolved => {
-                    wire::workspace_node_status::Value::Unresolved as i32
-                }
                 crate::domain::workspace_tree::WorkspaceNodeStatus::Running => {
                     wire::workspace_node_status::Value::Running as i32
                 }
@@ -4669,7 +4659,6 @@ impl TryFrom<String> for wire::WorkspaceNodeStatus {
     fn try_from(value: String) -> Result<Self, String> {
         Ok(Self {
             value: Some(match value.as_str() {
-                "unresolved" => wire::workspace_node_status::Value::Unresolved as i32,
                 "running" => wire::workspace_node_status::Value::Running as i32,
                 "waiting" => wire::workspace_node_status::Value::Waiting as i32,
                 "aborted" => wire::workspace_node_status::Value::Aborted as i32,
@@ -4777,7 +4766,6 @@ impl TryFrom<String> for wire::WorkspaceStatusClassification {
             value: Some(match value.as_str() {
                 "active" => wire::workspace_status_classification::Value::Active as i32,
                 "attention" => wire::workspace_status_classification::Value::Attention as i32,
-                "failure" => wire::workspace_status_classification::Value::Failure as i32,
                 "idle" => wire::workspace_status_classification::Value::Idle as i32,
                 "unbound" => wire::workspace_status_classification::Value::Unbound as i32,
                 _ => return Err(format!("Invalid WorkspaceStatusClassification: {value}")),

@@ -192,6 +192,7 @@ mod tests {
                 timestamp: 1.0,
             },
             WorkflowEvent::NodeStarted {
+                worktree: None,
                 execution_id: execution_id.to_string(),
                 node_execution_id: node_execution_id.to_string(),
                 node_name: "review".to_string(),
@@ -306,7 +307,6 @@ mod tests {
                 node_executions: vec![NodeExecution {
                     process_presence: Default::default(),
                     worktree: None,
-                    recovery_reason: None,
                     id: node_execution_id.to_string(),
                     execution_id: execution_id.to_string(),
                     node_name: "review".to_string(),
@@ -372,6 +372,7 @@ mod tests {
                 timestamp: 1.0,
             },
             WorkflowEvent::NodeStarted {
+                worktree: None,
                 execution_id: execution_id.to_string(),
                 node_execution_id: "parent".to_string(),
                 node_name: "reviews".to_string(),
@@ -381,6 +382,7 @@ mod tests {
                 timestamp: 2.0,
             },
             WorkflowEvent::NodeStarted {
+                worktree: None,
                 execution_id: execution_id.to_string(),
                 node_execution_id: "child-1".to_string(),
                 node_name: "review".to_string(),
@@ -390,6 +392,7 @@ mod tests {
                 timestamp: 2.1,
             },
             WorkflowEvent::NodeStarted {
+                worktree: None,
                 execution_id: execution_id.to_string(),
                 node_execution_id: "child-2".to_string(),
                 node_name: "review".to_string(),
@@ -420,7 +423,6 @@ mod tests {
                     started_at: f64,
                     completed_at: Option<f64>| NodeExecution {
             worktree: None,
-            recovery_reason: None,
             id: id.to_string(),
             execution_id: execution_id.to_string(),
             node_name: node_name.to_string(),
