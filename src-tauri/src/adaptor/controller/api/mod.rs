@@ -68,12 +68,12 @@ pub(crate) mod test_support {
     use tower::ServiceExt;
 
     use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
-    use crate::adaptor::gateway::workflow::execution_store::WorkflowExecutionMetadata;
     use crate::adaptor::gateway::workflow::schema::{
         CommandSpec, NodeDefinition, NodeKind,
         WorkflowDefinitionYaml as GatewayWorkflowDefinitionYaml,
     };
     use crate::adaptor::gateway::workflow::storage;
+    use crate::domain::workflow::WorkflowExecutionSummary as WorkflowExecutionMetadata;
     use crate::domain::workflow::{
         ExecutionOrigin, ExecutionStatus, TokenUsage, WorkflowDefinition, WorkflowError,
         WorkflowRuntimeSnapshot,

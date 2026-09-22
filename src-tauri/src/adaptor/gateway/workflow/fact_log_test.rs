@@ -774,7 +774,7 @@ mod reconciliation_tests {
     }
 
     #[test]
-    fn test_復旧_起動失敗済みleafは再起動せず後の起動済みprocessの喪失は記録する() {
+    fn test_復旧_起動失敗済みleafは再起動せず起動済みprocessの喪失も記録しない() {
         // Given
         let (_root, store) = open_store();
         append_facts_for_events(
@@ -845,7 +845,7 @@ mod reconciliation_tests {
                 .iter()
                 .filter(|record| matches!(record.fact, NodeFact::ProcessExited(_)))
                 .count(),
-            1
+            0
         );
     }
 
@@ -1065,7 +1065,7 @@ mod reconciliation_tests {
         assert_eq!(after_second.len(), records.len());
         assert_eq!(started_rows(&after_second), started_rows(&records));
 
-        // 実プロセスの spawn 事実まで存在する場合だけ、次回起動時に喪失として扱う。
+        // spawn 済みなら、次回起動でも喪失を追記せず再起動しない。
         append_facts_for_events(
             &store,
             &[WorkflowEvent::CommandSpawned {
@@ -1084,10 +1084,10 @@ mod reconciliation_tests {
         let after_third = read_tree_records(&store, TREE).unwrap();
         assert_eq!(
             fact_codec::event_type(&after_third.last().unwrap().fact),
-            "process_exited"
+            "command_spawned"
         );
 
-        // 喪失記録後は安定点に達する。
+        // 以後の読み取りでも記録は変わらない。
         let count_after_third = after_third.len();
         let mut new_id = test_id_source();
         reconcile_tree_pass(&store, TREE, 13.0, &mut new_id)
@@ -1161,7 +1161,7 @@ mod reconciliation_tests {
         let after_third = read_tree_records(&store, TREE).unwrap();
         assert_eq!(
             fact_codec::event_type(&after_third.last().unwrap().fact),
-            "process_exited"
+            "session_attached"
         );
 
         let count_after_third = after_third.len();
@@ -1172,10 +1172,9 @@ mod reconciliation_tests {
         assert_eq!(row_count(&store), count_after_third);
     }
 
-    /// kill 点: 実行中プロセスごと落ちた場合。喪失の観測が追記され Running が
-    /// 維持される（復旧専用の遷移イベントは書かれない）。
+    /// kill 点: 実行中プロセスごと落ちた場合。記録と Running を維持する。
     #[test]
-    fn test_再入_実行中プロセスの喪失を観測として追記しrunningを維持する() {
+    fn test_再入_実行中プロセスの喪失を追記せずrunningを維持する() {
         let (_root, store) = open_store();
         append_facts_for_events(
             &store,
@@ -1204,12 +1203,12 @@ mod reconciliation_tests {
             .unwrap()
             .unwrap();
 
-        // Then: process_exited（喪失）が追記され、node と木は Running
+        // Then: 起動時にはプロセス喪失を記録せず、node と木は Running
         assert!(outcome.starts.is_empty());
         let records = read_tree_records(&store, TREE).unwrap();
         assert_eq!(
             fact_codec::event_type(&records.last().unwrap().fact),
-            "process_exited"
+            "session_attached"
         );
         assert_eq!(
             outcome
@@ -1224,7 +1223,7 @@ mod reconciliation_tests {
             RuntimeExecutionState::Running
         );
 
-        // 冪等: 喪失記録済みの process は2周目に再記録しない
+        // 冪等: 2周目にも追記しない
         let count = row_count(&store);
         let mut new_id = test_id_source();
         reconcile_tree_pass(&store, TREE, 11.0, &mut new_id)
@@ -1793,8 +1792,8 @@ mod terminal_fact_tests {
 
     #[test]
     fn test_完了seed_完了事実を保存して再seedでも重複しない() {
-        use crate::adaptor::gateway::workflow::execution_store::WorkflowExecutionMetadata;
         use crate::adaptor::gateway::workflow::test_support::seed_canonical_execution;
+        use crate::domain::workflow::WorkflowExecutionSummary as WorkflowExecutionMetadata;
 
         // Given
         let dir = tempfile::tempdir().unwrap();
@@ -2204,5 +2203,60 @@ mod terminal_fact_tests {
             folded.aggregate.node_execution("root").unwrap().status,
             crate::domain::workflow::NodeExecutionStatus::Succeeded
         );
+    }
+}
+
+#[test]
+fn test_起動時前進_head競合を失敗と区別し最新記録から再評価できる() {
+    for (abort, drop_reply) in [(false, false), (true, false), (false, true), (true, true)] {
+        // Given
+        let directory = tempfile::tempdir().unwrap();
+        let store =
+            LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into()))
+                .unwrap();
+        append_facts_for_events(
+            &store,
+            &[
+                started_event(),
+                node_started("main-exec", "main", NodeKindName::Sequence, None, 1.0),
+            ],
+        )
+        .unwrap();
+        let meta = read_tree_records(&store, TREE).unwrap()[0].meta.clone();
+        let mut injected = false;
+        // When
+        let result = reconcile_tree_pass(&store, TREE, 2.0, &mut || {
+            assert!(!injected);
+            injected = true;
+            append_single_fact(
+                &store,
+                &meta,
+                &if abort {
+                    NodeFact::AbortRequested(Default::default())
+                } else {
+                    NodeFact::ResumeRequested
+                },
+                2000,
+            )
+            .unwrap();
+            if drop_reply {
+                store.fault_injector().arm_drop_reply();
+            }
+            "conflicting-child".into()
+        });
+        // Then
+        assert!(matches!(
+            result,
+            Err(crate::domain::workflow::WorkflowError::Conflict(_))
+        ));
+        assert!(!read_tree_records(&store, TREE)
+            .unwrap()
+            .iter()
+            .any(|record| record.meta.node_execution_id == "conflicting-child"));
+        let recovered = reconcile_tree_pass(&store, TREE, 3.0, &mut || "fresh-child".into())
+            .unwrap()
+            .unwrap();
+        assert_eq!(recovered.starts.len(), usize::from(!abort));
+        assert_eq!(recovered.folded.aggregate.is_active(), !abort);
     }
 }

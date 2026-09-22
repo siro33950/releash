@@ -13,7 +13,7 @@ pub enum WorkflowRuntimeError {
     /// ワークフロー定義エラー（ステップなし、ステップ未発見等）
     InvalidWorkflow(String),
     /// ワークフローが既にアクティブ
-    AlreadyActive(String),
+    AlreadyActive(crate::domain::workflow::services::start_admission::WorktreeActiveExecution),
     /// 不正な状態遷移（WaitingApprovalでない時にapproval等）
     InvalidState(String),
     /// Workflow stream head が候補作成後に進んだため再評価が必要
@@ -38,9 +38,11 @@ impl std::fmt::Display for WorkflowRuntimeError {
             }
             Self::SessionNotFound(id) => write!(f, "AgentSession not found: {id}"),
             Self::InvalidWorkflow(msg) => write!(f, "{msg}"),
-            Self::AlreadyActive(name) => {
-                write!(f, "Workflow '{name}' is already running for this session")
-            }
+            Self::AlreadyActive(active) => write!(
+                f,
+                "Worktree '{}' already has running workflow '{}' (execution '{}')",
+                active.worktree_path, active.workflow_name, active.execution_id
+            ),
             Self::InvalidState(msg) => write!(f, "invalid_state: {msg}"),
             Self::Conflict(msg) => write!(f, "conflict: {msg}"),
             Self::ValidationError(msg) => write!(f, "validation_error: {msg}"),

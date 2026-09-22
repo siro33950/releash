@@ -110,6 +110,7 @@ pub struct WorkflowStartupRecord {
     pub execution: crate::domain::workflow::entities::workflow_execution::ExecutionTree,
     pub root: crate::domain::workflow::NodeFactMeta,
     pub definition_error: Option<String>,
+    pub head: i64,
 }
 
 pub trait WorkflowStartupRepository: Send + Sync {
@@ -120,5 +121,6 @@ pub trait WorkflowStartupRepository: Send + Sync {
         root: &crate::domain::workflow::NodeFactMeta,
         fact: &crate::domain::workflow::NodeFact,
         timestamp: f64,
+        expected_head: Option<i64>,
     ) -> Result<(), WorkflowError>;
 }

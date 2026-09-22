@@ -19,7 +19,6 @@ pub(crate) mod event_log_writer;
 mod event_repository;
 mod execution_archive_repository;
 mod execution_projection_repository;
-pub(crate) mod execution_store;
 pub(crate) mod facet;
 mod facet_repository;
 pub(crate) mod fact_codec;

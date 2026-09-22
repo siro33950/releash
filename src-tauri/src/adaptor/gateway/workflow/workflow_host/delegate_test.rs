@@ -62,8 +62,13 @@ async fn test_delegate_child実行中の親再開とchild再開をまたいで�
             )
             .await;
         let control = control(&fixture, &fixture.host);
-        let original_parent =
-            fixture.host.executions.lock().await[&tree].node_executions[0].clone();
+        let original_parent = fixture
+            .host
+            .load_executions(&fixture.app, &tree)
+            .await
+            .unwrap()[&tree]
+            .node_executions[0]
+            .clone();
         submit(
             &control,
             &original_parent.id,
@@ -71,12 +76,20 @@ async fn test_delegate_child実行中の親再開とchild再開をまたいで�
         )
         .await;
         stop(&control, &tree, &original_parent).await;
-        let child = fixture.host.executions.lock().await[&tree]
+        let child = fixture
+            .host
+            .load_executions(&fixture.app, &tree)
+            .await
+            .unwrap()[&tree]
             .node_executions
             .last()
             .unwrap()
             .clone();
-        let child_path = fixture.host.executions.lock().await[&tree]
+        let child_path = fixture
+            .host
+            .load_executions(&fixture.app, &tree)
+            .await
+            .unwrap()[&tree]
             .execution_worktree_path(&child.id)
             .unwrap()
             .to_string();
@@ -105,7 +118,11 @@ async fn test_delegate_child実行中の親再開とchild再開をまたいで�
                 )
                 .await
                 .unwrap();
-            parent = fixture.host.executions.lock().await[&tree]
+            parent = fixture
+                .host
+                .load_executions(&fixture.app, &tree)
+                .await
+                .unwrap()[&tree]
                 .node_executions
                 .last()
                 .unwrap()
@@ -113,7 +130,12 @@ async fn test_delegate_child実行中の親再開とchild再開をまたいで�
         }
         assert_eq!(parent.attempt, 3);
         assert_eq!(
-            fixture.host.executions.lock().await[&tree].execution_worktree_path(&child.id),
+            fixture
+                .host
+                .load_executions(&fixture.app, &tree)
+                .await
+                .unwrap()[&tree]
+                .execution_worktree_path(&child.id),
             Some(child_path.as_str())
         );
         let child = if lost_worktree {
@@ -138,7 +160,11 @@ async fn test_delegate_child実行中の親再開とchild再開をまたいで�
                 )
                 .await
                 .unwrap();
-            fixture.host.executions.lock().await[&tree]
+            fixture
+                .host
+                .load_executions(&fixture.app, &tree)
+                .await
+                .unwrap()[&tree]
                 .node_executions
                 .last()
                 .unwrap()
@@ -150,7 +176,12 @@ async fn test_delegate_child実行中の親再開とchild再開をまたいで�
             .store(false, Ordering::SeqCst);
         submit(&control, &child.id, serde_json::json!({"passed": false})).await;
         stop(&control, &tree, &child).await;
-        let live = fixture.host.executions.lock().await[&tree].clone();
+        let live = fixture
+            .host
+            .load_executions(&fixture.app, &tree)
+            .await
+            .unwrap()[&tree]
+            .clone();
         assert_eq!(
             live.node_execution(&child.id).unwrap().status,
             NodeExecutionStatus::Succeeded
@@ -189,7 +220,13 @@ async fn test_submit受付_child起動の自動再試行待機より前に応答
     let fixture = Fixture::new(0);
     let tree = fixture.start(&definition("")).await;
     let control = control(&fixture, &fixture.host);
-    let parent = fixture.host.executions.lock().await[&tree].node_executions[0].clone();
+    let parent = fixture
+        .host
+        .load_executions(&fixture.app, &tree)
+        .await
+        .unwrap()[&tree]
+        .node_executions[0]
+        .clone();
     stop(&control, &tree, &parent).await;
     fixture
         .sessions
@@ -199,14 +236,23 @@ async fn test_submit受付_child起動の自動再試行待機より前に応答
     submit(&control, &parent.id, serde_json::json!({"passed": false})).await;
     assert!(before.elapsed() < std::time::Duration::from_secs(1));
     assert_eq!(
-        fixture.host.executions.lock().await[&tree]
+        fixture
+            .host
+            .load_executions(&fixture.app, &tree)
+            .await
+            .unwrap()[&tree]
             .node_executions
             .len(),
         2
     );
     assert_eq!(fixture.host.startup_retries.lock().await.len(), 1);
     fixture.wait_startup_retries().await;
-    let live = fixture.host.executions.lock().await[&tree].clone();
+    let live = fixture
+        .host
+        .load_executions(&fixture.app, &tree)
+        .await
+        .unwrap()[&tree]
+        .clone();
     assert_eq!(
         live.node_executions
             .iter()
@@ -229,11 +275,21 @@ async fn test_delegate_注入を永続化して同じsessionへ戻しchildのwor
             }))
             .await;
         let control = control(&fixture, &fixture.host);
-        let parent = fixture.host.executions.lock().await[&tree].node_executions[0].clone();
+        let parent = fixture
+            .host
+            .load_executions(&fixture.app, &tree)
+            .await
+            .unwrap()[&tree]
+            .node_executions[0]
+            .clone();
         for round in 1..=2 {
             // When
             submit(&control, &parent.id, serde_json::json!({"passed": false})).await;
-            let child = fixture.host.executions.lock().await[&tree]
+            let child = fixture
+                .host
+                .load_executions(&fixture.app, &tree)
+                .await
+                .unwrap()[&tree]
                 .node_executions
                 .last()
                 .unwrap()
@@ -262,7 +318,11 @@ async fn test_delegate_注入を永続化して同じsessionへ戻しchildのwor
             .unwrap();
             assert_eq!(injected["child"]["passed"], false);
             drop(continuations);
-            let execution = fixture.host.executions.lock().await;
+            let execution = fixture
+                .host
+                .load_executions(&fixture.app, &tree)
+                .await
+                .unwrap();
             let execution = &execution[&tree];
             let current_parent = execution.node_execution(&parent.id).unwrap();
             assert_eq!(current_parent.attempt, 1);
@@ -329,9 +389,19 @@ async fn test_delegate_結果注入の失敗は親をrunningに保ち注入済�
     let fixture = Fixture::new(0);
     let tree = fixture.start(&definition("")).await;
     let control = control(&fixture, &fixture.host);
-    let parent = fixture.host.executions.lock().await[&tree].node_executions[0].clone();
+    let parent = fixture
+        .host
+        .load_executions(&fixture.app, &tree)
+        .await
+        .unwrap()[&tree]
+        .node_executions[0]
+        .clone();
     submit(&control, &parent.id, serde_json::json!({"passed": false})).await;
-    let child = fixture.host.executions.lock().await[&tree]
+    let child = fixture
+        .host
+        .load_executions(&fixture.app, &tree)
+        .await
+        .unwrap()[&tree]
         .node_executions
         .last()
         .unwrap()
@@ -367,14 +437,24 @@ async fn test_delegate_再起動後のresumeは完了childを再実行せず未�
         let fixture = Fixture::new(0);
         let tree = fixture.start(&definition("")).await;
         let initial_control = control(&fixture, &fixture.host);
-        let parent = fixture.host.executions.lock().await[&tree].node_executions[0].clone();
+        let parent = fixture
+            .host
+            .load_executions(&fixture.app, &tree)
+            .await
+            .unwrap()[&tree]
+            .node_executions[0]
+            .clone();
         submit(
             &initial_control,
             &parent.id,
             serde_json::json!({"passed": false}),
         )
         .await;
-        let child = fixture.host.executions.lock().await[&tree]
+        let child = fixture
+            .host
+            .load_executions(&fixture.app, &tree)
+            .await
+            .unwrap()[&tree]
             .node_executions
             .last()
             .unwrap()
@@ -450,7 +530,7 @@ async fn test_delegate_再起動後のresumeは完了childを再実行せず未�
         )
         .await;
         assert_eq!(
-            restored.executions.lock().await[&tree]
+            restored.load_executions(&fixture.app, &tree).await.unwrap()[&tree]
                 .node_executions
                 .last()
                 .unwrap()
@@ -466,7 +546,13 @@ async fn test_delegate_送信成功後の注入済み事実保存失敗からres
     let fixture = Fixture::new(0);
     let tree = fixture.start(&definition("")).await;
     let initial_control = control(&fixture, &fixture.host);
-    let parent = fixture.host.executions.lock().await[&tree].node_executions[0].clone();
+    let parent = fixture
+        .host
+        .load_executions(&fixture.app, &tree)
+        .await
+        .unwrap()[&tree]
+        .node_executions[0]
+        .clone();
     submit(
         &initial_control,
         &parent.id,
@@ -474,7 +560,11 @@ async fn test_delegate_送信成功後の注入済み事実保存失敗からres
     )
     .await;
     stop(&initial_control, &tree, &parent).await;
-    let child = fixture.host.executions.lock().await[&tree]
+    let child = fixture
+        .host
+        .load_executions(&fixture.app, &tree)
+        .await
+        .unwrap()[&tree]
         .node_executions
         .last()
         .unwrap()
@@ -504,12 +594,6 @@ async fn test_delegate_送信成功後の注入済み事実保存失敗からres
         .aggregate
         .pending_delegate_injection(&parent.id)
         .unwrap();
-    fixture
-        .host
-        .executions
-        .lock()
-        .await
-        .insert(tree.clone(), folded.aggregate);
     let connection =
         rusqlite::Connection::open(fixture._directory.path().join("local-event-store.sqlite3"))
             .unwrap();
@@ -559,7 +643,7 @@ async fn test_delegate_送信成功後の注入済み事実保存失敗からres
             .count(),
         1
     );
-    let executions = restored.executions.lock().await;
+    let executions = restored.load_executions(&fixture.app, &tree).await.unwrap();
     let execution = &executions[&tree];
     let resumed_parent = execution.node_execution(&parent.id).unwrap();
     assert_eq!(resumed_parent.status, NodeExecutionStatus::Running);
@@ -576,7 +660,13 @@ async fn test_delegate_共有worktreeでもresume時のprovider復元失敗は�
     let tree = fixture
         .start(&definition("").replace("worktree: isolated, ", ""))
         .await;
-    let parent = fixture.host.executions.lock().await[&tree].node_executions[0].clone();
+    let parent = fixture
+        .host
+        .load_executions(&fixture.app, &tree)
+        .await
+        .unwrap()[&tree]
+        .node_executions[0]
+        .clone();
     fixture.sessions.live_sessions.lock().unwrap().clear();
     fixture
         .sessions
@@ -613,7 +703,13 @@ async fn test_delegate_完了信号が先に届いてもartifact提出まで完�
     let fixture = Fixture::new(0);
     let tree = fixture.start(&definition("")).await;
     let control = control(&fixture, &fixture.host);
-    let parent = fixture.host.executions.lock().await[&tree].node_executions[0].clone();
+    let parent = fixture
+        .host
+        .load_executions(&fixture.app, &tree)
+        .await
+        .unwrap()[&tree]
+        .node_executions[0]
+        .clone();
     // When
     control
         .submit_output(SubmitOutputCommand {
@@ -625,7 +721,11 @@ async fn test_delegate_完了信号が先に届いてもartifact提出まで完�
     stop(&control, &tree, &parent).await;
     // Then
     {
-        let executions = fixture.host.executions.lock().await;
+        let executions = fixture
+            .host
+            .load_executions(&fixture.app, &tree)
+            .await
+            .unwrap();
         assert_eq!(executions[&tree].node_executions.len(), 1);
         assert_eq!(
             executions[&tree].node_execution(&parent.id).unwrap().status,
@@ -634,7 +734,11 @@ async fn test_delegate_完了信号が先に届いてもartifact提出まで完�
     }
     submit(&control, &parent.id, serde_json::json!({"passed": false})).await;
     assert_eq!(
-        fixture.host.executions.lock().await[&tree]
+        fixture
+            .host
+            .load_executions(&fixture.app, &tree)
+            .await
+            .unwrap()[&tree]
             .node_executions
             .last()
             .unwrap()
@@ -660,13 +764,23 @@ async fn test_delegate_sequenceとfanoutのchildを提出から起動して統�
         );
         let tree = fixture.start(&nodes).await;
         let control = control(&fixture, &fixture.host);
-        let parent = fixture.host.executions.lock().await[&tree].node_executions[0].clone();
+        let parent = fixture
+            .host
+            .load_executions(&fixture.app, &tree)
+            .await
+            .unwrap()[&tree]
+            .node_executions[0]
+            .clone();
         for (round, passed) in [(1, false), (2, true)] {
             // When
             submit(&control, &parent.id, serde_json::json!({"passed": false})).await;
             stop(&control, &tree, &parent).await;
             let (composite, judge) = {
-                let executions = fixture.host.executions.lock().await;
+                let executions = fixture
+                    .host
+                    .load_executions(&fixture.app, &tree)
+                    .await
+                    .unwrap();
                 let execution = &executions[&tree];
                 (
                     execution
@@ -736,7 +850,13 @@ async fn test_delegate_未完了childを持つ再起動resumeは既存childだ�
     let fixture = Fixture::new(0);
     let tree = fixture.start(&definition("")).await;
     let initial_control = control(&fixture, &fixture.host);
-    let parent = fixture.host.executions.lock().await[&tree].node_executions[0].clone();
+    let parent = fixture
+        .host
+        .load_executions(&fixture.app, &tree)
+        .await
+        .unwrap()[&tree]
+        .node_executions[0]
+        .clone();
     submit(
         &initial_control,
         &parent.id,
@@ -744,7 +864,11 @@ async fn test_delegate_未完了childを持つ再起動resumeは既存childだ�
     )
     .await;
     stop(&initial_control, &tree, &parent).await;
-    let child = fixture.host.executions.lock().await[&tree]
+    let child = fixture
+        .host
+        .load_executions(&fixture.app, &tree)
+        .await
+        .unwrap()[&tree]
         .node_executions
         .last()
         .unwrap()
@@ -765,7 +889,7 @@ async fn test_delegate_未完了childを持つ再起動resumeは既存childだ�
         .unwrap();
     // Then
     {
-        let executions = restored.executions.lock().await;
+        let executions = restored.load_executions(&fixture.app, &tree).await.unwrap();
         let execution = &executions[&tree];
         assert_eq!(execution.node_executions.len(), 2);
         assert!(execution.delegate_waits_for_child(&parent.id));
@@ -819,10 +943,20 @@ async fn test_delegate_同じpendingを並行注入しても送信とcommitは�
     let fixture = Fixture::new(0);
     let tree = fixture.start(&definition("")).await;
     let control = control(&fixture, &fixture.host);
-    let parent = fixture.host.executions.lock().await[&tree].node_executions[0].clone();
+    let parent = fixture
+        .host
+        .load_executions(&fixture.app, &tree)
+        .await
+        .unwrap()[&tree]
+        .node_executions[0]
+        .clone();
     submit(&control, &parent.id, serde_json::json!({"passed": false})).await;
     stop(&control, &tree, &parent).await;
-    let child = fixture.host.executions.lock().await[&tree]
+    let child = fixture
+        .host
+        .load_executions(&fixture.app, &tree)
+        .await
+        .unwrap()[&tree]
         .node_executions
         .last()
         .unwrap()
@@ -847,12 +981,6 @@ async fn test_delegate_同じpendingを並行注入しても送信とcommitは�
         .aggregate
         .pending_delegate_injection(&parent.id)
         .unwrap();
-    fixture
-        .host
-        .executions
-        .lock()
-        .await
-        .insert(tree.clone(), folded.aggregate);
     fixture
         .sessions
         .block_continuation
@@ -902,12 +1030,22 @@ async fn test_delegate_隔離合成子の準備中に空のchildが完了した�
     let fixture = Fixture::new(0);
     let tree = fixture.start("  main: {artifact: result, session: {provider: codex, facets: {instruction: policy-confirmation}}, completion: {delegate: {child: checks, when: passed, max_iterations: 1}}}\n  checks: {worktree: isolated, fanout: {items: [], children: [{judge: {inputs: {item: items}}}]}}\n  judge: {input: [item], artifact: result, session: {provider: codex, facets: {instruction: policy-confirmation}}}\nschemas:\n  result: {type: object, properties: {passed: {type: boolean}}, required: [passed]}").await;
     let control = control(&fixture, &fixture.host);
-    let parent = fixture.host.executions.lock().await[&tree].node_executions[0].clone();
+    let parent = fixture
+        .host
+        .load_executions(&fixture.app, &tree)
+        .await
+        .unwrap()[&tree]
+        .node_executions[0]
+        .clone();
     stop(&control, &tree, &parent).await;
     // When
     submit(&control, &parent.id, serde_json::json!({"passed": false})).await;
     // Then
-    let executions = fixture.host.executions.lock().await;
+    let executions = fixture
+        .host
+        .load_executions(&fixture.app, &tree)
+        .await
+        .unwrap();
     let execution = &executions[&tree];
     assert_eq!(execution.node_executions.len(), 2);
     assert_eq!(
@@ -954,7 +1092,13 @@ async fn test_delegate_child待ち中の再submitは状態拒否となり保存�
     let fixture = Fixture::new(0);
     let tree = fixture.start(&definition("")).await;
     let control = control(&fixture, &fixture.host);
-    let parent = fixture.host.executions.lock().await[&tree].node_executions[0].clone();
+    let parent = fixture
+        .host
+        .load_executions(&fixture.app, &tree)
+        .await
+        .unwrap()[&tree]
+        .node_executions[0]
+        .clone();
     submit(&control, &parent.id, serde_json::json!({"passed": false})).await;
     let before = workflow_fact_log::read_tree_records(&fixture.store, &tree).unwrap();
     // When
@@ -980,7 +1124,11 @@ async fn test_delegate_child待ち中の再submitは状態拒否となり保存�
         workflow_fact_log::read_tree_records(&fixture.store, &tree).unwrap(),
         before
     );
-    let executions = fixture.host.executions.lock().await;
+    let executions = fixture
+        .host
+        .load_executions(&fixture.app, &tree)
+        .await
+        .unwrap();
     let execution = &executions[&tree];
     assert_eq!(
         execution.node_execution(&parent.id).unwrap().status,
@@ -1004,10 +1152,20 @@ async fn test_delegate_childの新attemptへのresumeは親を待機させ注入
     let fixture = Fixture::new(0);
     let tree = fixture.start(&definition("")).await;
     let control = control(&fixture, &fixture.host);
-    let parent = fixture.host.executions.lock().await[&tree].node_executions[0].clone();
+    let parent = fixture
+        .host
+        .load_executions(&fixture.app, &tree)
+        .await
+        .unwrap()[&tree]
+        .node_executions[0]
+        .clone();
     submit(&control, &parent.id, serde_json::json!({"passed": false})).await;
     stop(&control, &tree, &parent).await;
-    let first = fixture.host.executions.lock().await[&tree]
+    let first = fixture
+        .host
+        .load_executions(&fixture.app, &tree)
+        .await
+        .unwrap()[&tree]
         .node_executions
         .last()
         .unwrap()
@@ -1033,7 +1191,11 @@ async fn test_delegate_childの新attemptへのresumeは親を待機させ注入
         )
         .await
         .unwrap();
-    let retry = fixture.host.executions.lock().await[&tree]
+    let retry = fixture
+        .host
+        .load_executions(&fixture.app, &tree)
+        .await
+        .unwrap()[&tree]
         .node_executions
         .last()
         .unwrap()
@@ -1113,7 +1275,11 @@ async fn test_delegate_childの新attemptへのresumeは親を待機させ注入
     assert!(matches!(advance.advance, Some(crate::domain::workflow::entities::workflow_execution::ExecutionAdvanceDecision::StartNodes(_))));
     assert_eq!(replayed.node_execution("next-child").unwrap().attempt, 3);
     submit(&control, &parent.id, serde_json::json!({"passed": false})).await;
-    let second = fixture.host.executions.lock().await[&tree]
+    let second = fixture
+        .host
+        .load_executions(&fixture.app, &tree)
+        .await
+        .unwrap()[&tree]
         .node_executions
         .last()
         .unwrap()
@@ -1127,7 +1293,11 @@ async fn test_delegate_childの新attemptへのresumeは親を待機させ注入
     )
     .unwrap()
     .unwrap();
-    let executions = fixture.host.executions.lock().await;
+    let executions = fixture
+        .host
+        .load_executions(&fixture.app, &tree)
+        .await
+        .unwrap();
     let live = &executions[&tree];
     assert!(live.delegate_waits_for_child(&parent.id));
     assert!(folded.aggregate.delegate_waits_for_child(&parent.id));
@@ -1146,7 +1316,13 @@ async fn test_delegate_childの新attemptへのresumeは親を待機させ注入
     )
     .unwrap()
     .unwrap();
-    assert!(!fixture.host.executions.lock().await.contains_key(&tree));
+    assert!(!fixture
+        .host
+        .load_control_plane_execution(&fixture.app, &tree)
+        .await
+        .unwrap()
+        .unwrap()
+        .is_active());
     assert_eq!(
         folded.aggregate.node_execution(&parent.id).unwrap().status,
         NodeExecutionStatus::Succeeded
@@ -1166,10 +1342,20 @@ async fn test_delegate_artifactを省略したisolated_session_childのworktree�
         );
     let tree = fixture.start(&nodes).await;
     let control = control(&fixture, &fixture.host);
-    let parent = fixture.host.executions.lock().await[&tree].node_executions[0].clone();
+    let parent = fixture
+        .host
+        .load_executions(&fixture.app, &tree)
+        .await
+        .unwrap()[&tree]
+        .node_executions[0]
+        .clone();
     submit(&control, &parent.id, serde_json::json!({"passed": false})).await;
     stop(&control, &tree, &parent).await;
-    let child = fixture.host.executions.lock().await[&tree]
+    let child = fixture
+        .host
+        .load_executions(&fixture.app, &tree)
+        .await
+        .unwrap()[&tree]
         .node_executions
         .last()
         .unwrap()
@@ -1261,7 +1447,11 @@ schemas:
         .await
         .unwrap();
     let initial_control = control(&fixture, &fixture.host);
-    let parent = fixture.host.executions.lock().await[&tree]
+    let parent = fixture
+        .host
+        .load_executions(&fixture.app, &tree)
+        .await
+        .unwrap()[&tree]
         .node_executions
         .iter()
         .find(|node| node.node_name == "worker")
@@ -1274,7 +1464,11 @@ schemas:
     )
     .await;
     stop(&initial_control, &tree, &parent).await;
-    let child = fixture.host.executions.lock().await[&tree]
+    let child = fixture
+        .host
+        .load_executions(&fixture.app, &tree)
+        .await
+        .unwrap()[&tree]
         .node_executions
         .last()
         .unwrap()
@@ -1339,7 +1533,7 @@ schemas:
     )
     .await;
     // Then
-    let executions = restored.executions.lock().await;
+    let executions = restored.load_executions(&fixture.app, &tree).await.unwrap();
     let execution = &executions[&tree];
     let child = execution.node_executions.last().unwrap();
     assert_eq!(child.attempt, 2);
@@ -1393,14 +1587,24 @@ async fn test_delegate_false_childが親stopより先に完了しても再開後
         let fixture = Fixture::new(0);
         let tree = fixture.start(&definition("")).await;
         let initial_control = control(&fixture, &fixture.host);
-        let parent = fixture.host.executions.lock().await[&tree].node_executions[0].clone();
+        let parent = fixture
+            .host
+            .load_executions(&fixture.app, &tree)
+            .await
+            .unwrap()[&tree]
+            .node_executions[0]
+            .clone();
         submit(
             &initial_control,
             &parent.id,
             serde_json::json!({"passed": false}),
         )
         .await;
-        let child = fixture.host.executions.lock().await[&tree]
+        let child = fixture
+            .host
+            .load_executions(&fixture.app, &tree)
+            .await
+            .unwrap()[&tree]
             .node_executions
             .last()
             .unwrap()
@@ -1413,7 +1617,11 @@ async fn test_delegate_false_childが親stopより先に完了しても再開後
         .await;
         stop(&initial_control, &tree, &child).await;
         assert!(fixture.sessions.continuations.lock().unwrap().is_empty());
-        assert!(fixture.host.executions.lock().await[&tree]
+        assert!(fixture
+            .host
+            .load_executions(&fixture.app, &tree)
+            .await
+            .unwrap()[&tree]
             .pending_delegate_injections()
             .is_empty());
         let restored = if interrupted {
@@ -1433,9 +1641,11 @@ async fn test_delegate_false_childが親stopより先に完了しても再開後
         } else {
             fixture.host.clone()
         };
-        assert!(restored.executions.lock().await[&tree]
-            .pending_delegate_injections()
-            .is_empty());
+        assert!(
+            restored.load_executions(&fixture.app, &tree).await.unwrap()[&tree]
+                .pending_delegate_injections()
+                .is_empty()
+        );
         assert!(fixture
             .sessions
             .continuations
@@ -1464,7 +1674,7 @@ async fn test_delegate_false_childが親stopより先に完了しても再開後
                 .count(),
             1
         );
-        let executions = restored.executions.lock().await;
+        let executions = restored.load_executions(&fixture.app, &tree).await.unwrap();
         let execution = &executions[&tree];
         assert_eq!(
             execution.node_execution(&child.id).unwrap().status,
@@ -1497,10 +1707,20 @@ async fn test_delegate_新attemptのresumeでも未注入結果を送り再生�
         let (fixture, root) = Fixture::with_repository();
         let tree = fixture.start_at(&definition(""), &root).await;
         let control = control(&fixture, &fixture.host);
-        let parent = fixture.host.executions.lock().await[&tree].node_executions[0].clone();
+        let parent = fixture
+            .host
+            .load_executions(&fixture.app, &tree)
+            .await
+            .unwrap()[&tree]
+            .node_executions[0]
+            .clone();
         submit(&control, &parent.id, serde_json::json!({"passed": false})).await;
         stop(&control, &tree, &parent).await;
-        let child = fixture.host.executions.lock().await[&tree]
+        let child = fixture
+            .host
+            .load_executions(&fixture.app, &tree)
+            .await
+            .unwrap()[&tree]
             .node_executions
             .last()
             .unwrap()
@@ -1535,7 +1755,12 @@ async fn test_delegate_新attemptのresumeでも未注入結果を送り再生�
             .await
             .unwrap();
         // Then
-        let live = fixture.host.executions.lock().await[&tree].clone();
+        let live = fixture
+            .host
+            .load_executions(&fixture.app, &tree)
+            .await
+            .unwrap()[&tree]
+            .clone();
         let next = live.node_executions.last().unwrap();
         assert_ne!(next.id, parent.id);
         assert_eq!(next.attempt, 2);

@@ -111,28 +111,10 @@ pub(crate) trait ExecutionTreeCache: Send + Sync {
 
 #[async_trait::async_trait]
 pub(crate) trait StartedExecutionTreeRegistrar: Send + Sync {
-    /// これから起こす実行木の識別子を engine に予約し、reconciliation の対象外にする。
-    async fn reserve_started_execution_tree(
-        &self,
-        tree_id: &str,
-    ) -> Result<(), StartedExecutionTreeRegistrationError> {
-        let _ = tree_id;
-        Ok(())
-    }
-
     async fn register_started_execution_tree(
         &self,
         tree_id: &str,
     ) -> Result<(), StartedExecutionTreeRegistrationError>;
-
-    /// 本登録または launch 失敗後に、reconciliation からの除外を終了する。
-    async fn release_started_execution_tree_reservation(
-        &self,
-        tree_id: &str,
-    ) -> Result<(), StartedExecutionTreeRegistrationError> {
-        let _ = tree_id;
-        Ok(())
-    }
 }
 
 pub(crate) trait AgentSessionLaunchExecutionTrees:
@@ -560,8 +542,6 @@ impl AgentSessionLaunchUsecase {
         let slot_id = issue_lifecycle_slot_id(&request.caller_request_id)?;
         let scope = ProviderLifecycleScope::new(&agent_session_id)
             .map_err(|_| AgentSessionLaunchUsecaseError::Corrupt)?;
-        let tree_id = tree_location.tree_id().to_string();
-        self.reserve_created_tree(&tree_id).await?;
         let durable_create = crate::other::telemetry::start_terminal_launch_phase(
             crate::other::telemetry::TerminalLaunch::DurableCreateCommit,
         );
@@ -586,14 +566,7 @@ impl AgentSessionLaunchUsecase {
             })
             .await;
         durable_create.finish();
-        let (armed, created) = match create_result {
-            Ok(created) => created,
-            Err(error) => {
-                self.release_created_tree_reservation_preserving_cause(&tree_id)
-                    .await;
-                return Err(error);
-            }
-        };
+        let (armed, created) = create_result?;
         if let Err(error) = self.register_created_tree(&created).await {
             self.rollback_failed_new_launch_preserving_cause(
                 &created,
@@ -623,49 +596,10 @@ impl AgentSessionLaunchUsecase {
         &self,
         created: &VersionedAgentSession,
     ) -> Result<(), AgentSessionLaunchUsecaseError> {
-        let tree_id = created.session().tree_location().tree_id();
-        let registration = self
-            .execution_trees
+        self.execution_trees
             .register_started_execution_tree(created.session().tree_location().tree_id())
             .await
-            .map_err(map_execution_tree_registration_error);
-        let release = self
-            .execution_trees
-            .release_started_execution_tree_reservation(tree_id)
-            .await
-            .map_err(map_execution_tree_registration_error);
-        match (registration, release) {
-            (Ok(()), release) => release,
-            (Err(error), Ok(())) => Err(error),
-            (Err(error), Err(release_error)) => {
-                log::warn!(
-                    "failed to release AgentSession execution tree reservation without masking registration failure: {release_error:?}"
-                );
-                Err(error)
-            }
-        }
-    }
-
-    async fn reserve_created_tree(
-        &self,
-        tree_id: &str,
-    ) -> Result<(), AgentSessionLaunchUsecaseError> {
-        self.execution_trees
-            .reserve_started_execution_tree(tree_id)
-            .await
             .map_err(map_execution_tree_registration_error)
-    }
-
-    async fn release_created_tree_reservation_preserving_cause(&self, tree_id: &str) {
-        if let Err(error) = self
-            .execution_trees
-            .release_started_execution_tree_reservation(tree_id)
-            .await
-        {
-            log::warn!(
-                "failed to release AgentSession execution tree reservation without masking launch failure: {error:?}"
-            );
-        }
     }
 
     pub(crate) async fn rollback_workflow_node(
@@ -870,8 +804,6 @@ impl AgentSessionLaunchUsecase {
             .map_err(map_session_error)?;
         let tree_location = AgentSessionTreeLocation::session_tree_root(&agent_session_id)
             .map_err(|_| AgentSessionLaunchUsecaseError::InvalidInput)?;
-        let tree_id = tree_location.tree_id().to_string();
-        self.reserve_created_tree(&tree_id).await?;
         let create_result = self
             .sessions
             .create(
@@ -884,14 +816,7 @@ impl AgentSessionLaunchUsecase {
             )
             .await
             .map_err(map_session_error);
-        let created = match create_result {
-            Ok(created) => created,
-            Err(error) => {
-                self.release_created_tree_reservation_preserving_cause(&tree_id)
-                    .await;
-                return Err(error);
-            }
-        };
+        let created = create_result?;
         if let Err(error) = self.register_created_tree(&created).await {
             self.rollback_failed_history_registration_preserving_cause(
                 &created,

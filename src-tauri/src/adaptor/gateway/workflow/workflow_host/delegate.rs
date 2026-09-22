@@ -19,8 +19,8 @@ impl DelegateContinuationGateway for HostDelegateContinuation {
         execution_id: &str,
     ) -> Result<DomainExecutionTree, WorkflowRuntimeError> {
         self.host
-            .load_control_plane_execution(execution_id)
-            .await
+            .load_control_plane_execution(&self.app, execution_id)
+            .await?
             .ok_or_else(|| WorkflowRuntimeError::ExecutionNotFound(execution_id.into()))
     }
 

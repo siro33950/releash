@@ -20,18 +20,55 @@ pub(super) fn command_execution_input_is_current(
     execution: &DomainExecutionTree,
     input: &CommandExecutionInput,
 ) -> bool {
-    // Running のみ受理する。stop は対象 node を Paused にするため、is_active
-    //（Paused 含む）で判定すると停止後の stale command を準備・起動してしまう。
-    // resume は新しい attempt（Running で開始）を作るので Paused を通す必要はない。
-    execution.is_active()
-        && execution.node_executions.iter().any(|node_execution| {
-            node_execution.id == input.node_execution_id
-                && node_execution.status
-                    == crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecutionStatus::Running
-        })
+    match execution.validate_command_attempt(
+        &input.node_execution_id,
+        &input.node_name,
+        input.attempt,
+    ) {
+        Ok(()) => true,
+        Err(reason) => {
+            log::warn!(
+                "workflow {}: command {} was not applied: {reason}",
+                input.execution_id,
+                input.node_execution_id
+            );
+            false
+        }
+    }
 }
 
 impl WorkflowRuntimeHost {
+    pub(super) async fn load_current_command(
+        &self,
+        app: &WorkflowRuntimeDependencies,
+        input: &CommandExecutionInput,
+    ) -> Result<Option<DomainExecutionTree>, WorkflowRuntimeError> {
+        let execution = self
+            .load_control_plane_execution(app, &input.execution_id)
+            .await
+            .inspect_err(|error| {
+                log::warn!(
+                    "workflow {}: command {} was not applied: {error}",
+                    input.execution_id,
+                    input.node_execution_id
+                )
+            })?;
+        match execution {
+            Some(execution) if command_execution_input_is_current(&execution, input) => {
+                Ok(Some(execution))
+            }
+            Some(_) => Ok(None),
+            None => {
+                log::warn!(
+                    "workflow {}: command {} was not applied: execution tree was not found",
+                    input.execution_id,
+                    input.node_execution_id
+                );
+                Ok(None)
+            }
+        }
+    }
+
     pub(super) async fn commit_command_spawned(
         &self,
         app: &WorkflowRuntimeDependencies,
@@ -40,60 +77,54 @@ impl WorkflowRuntimeHost {
     ) -> Result<bool, WorkflowRuntimeError> {
         let timestamp = current_timestamp();
 
-        // spawn 成功後の実在する副作用だけを事実として追記する。
-        let (snapshot, worktree_path, launched_as) = {
-            let mut executions = self.executions.lock().await;
-            let Some(execution) = executions.get_mut(&input.execution_id) else {
+        let mut attempts = 0;
+        let snapshot = loop {
+            attempts += 1;
+            let Some(before) = self.load_current_command(app, input).await? else {
                 return Ok(false);
             };
-            if !command_execution_input_is_current(execution, input) {
-                return Ok(false);
-            }
-
-            let snapshot_before = execution.clone();
-            let node_execution = execution
-                .node_executions
-                .iter()
-                .find(|node_execution| node_execution.id == input.node_execution_id)
-                .ok_or_else(|| {
-                    WorkflowRuntimeError::InvalidState(format!(
-                        "active command node execution '{}' disappeared before preparation",
-                        input.node_execution_id
-                    ))
-                })?;
-            if node_execution.kind != NodeKindName::Command {
-                return Err(WorkflowRuntimeError::InvalidState(format!(
-                    "node execution '{}' is not a command",
-                    input.node_execution_id
-                )));
-            }
-            let _ = execution.record_node_display_command(
+            let mut candidate = before.clone();
+            candidate.record_node_display_command(
                 &input.node_execution_id,
                 display_command.clone(),
                 timestamp,
             );
-            let snapshot = RuntimeCommitSnapshot::from_execution(execution)?;
-            let event = WorkflowEvent::CommandSpawned {
-                execution_id: input.execution_id.clone(),
-                node_execution_id: input.node_execution_id.clone(),
-                display_command,
-                timestamp,
-            };
-            if let Err(error) = self.write_log_required_batch(app, &[event]) {
-                *execution = snapshot_before;
-                return Err(WorkflowRuntimeError::SessionStore(format!(
-                    "command spawned event append failed: {error}"
-                )));
+            match self
+                .commit_control_plane_candidate(
+                    app,
+                    ControlPlaneCommitCandidate {
+                        execution_id: &input.execution_id,
+                        snapshot_before: before,
+                        candidate,
+                        transition_outcome: TransitionOutcome::Applied,
+                        events: &[WorkflowEvent::CommandSpawned {
+                            execution_id: input.execution_id.clone(),
+                            node_execution_id: input.node_execution_id.clone(),
+                            display_command: display_command.clone(),
+                            timestamp,
+                        }],
+                        provider_events: Vec::new(),
+                    },
+                )
+                .await
+            {
+                Err(WorkflowRuntimeError::Conflict(_))
+                    if attempts < crate::usecase::workflow::command::CONTROL_PLANE_MAX_ATTEMPTS =>
+                {
+                    continue
+                }
+                Err(error @ WorkflowRuntimeError::Conflict(_)) => {
+                    log::warn!(
+                        "workflow {}: command {} start was not applied: {error}",
+                        input.execution_id,
+                        input.node_execution_id
+                    );
+                    return Ok(false);
+                }
+                result => break result?,
             }
-            (
-                snapshot,
-                execution.worktree_path.clone(),
-                execution.launched_as,
-            )
         };
-
-        self.sync_state_after_required_event_commit(launched_as, &snapshot)
-            .await?;
+        let worktree_path = snapshot.worktree_path.clone();
         self.finalize_after_commit(app, &snapshot, &worktree_path)
             .await;
         Ok(true)

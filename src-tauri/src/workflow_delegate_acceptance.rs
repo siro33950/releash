@@ -9,7 +9,6 @@ use crate::adaptor::gateway::provider_lifecycle::{
     LocalProviderHookHealthRepository, LocalProviderLifecycleCredentialGateway,
     LocalProviderLifecycleEventRepository,
 };
-use crate::adaptor::gateway::workflow::execution_store::ExecutionStore;
 use crate::adaptor::gateway::workflow::fact_log::{self, FactLogReadBackend};
 use crate::adaptor::gateway::workflow::node_session_boundary::{
     NodeSessionInfo, WorkflowAgentSessionPort, WorkflowSessionLaunchConfig,
@@ -73,10 +72,10 @@ impl WorkflowDelegateAcceptanceHost {
             archives.clone(),
         );
         let sessions = Arc::new(AcceptanceSessions::default());
-        let host = WorkflowRuntimeHost::with_execution_store(
+        let host = WorkflowRuntimeHost::with_runtime_ports(
             Arc::new(UnusedWorkflowResolver),
             Arc::new(AcceptanceWorktrees),
-            Arc::new(ExecutionStore::new_canonical(workspace_query)),
+            workspace_query,
             sessions.clone(),
             Arc::new(AcceptanceWorktrees),
         );

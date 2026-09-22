@@ -58,6 +58,7 @@ pub(crate) struct TestSessions {
     pub(super) conversation_missing: AtomicBool,
     pub(super) prepared: StdMutex<Vec<(String, String, String)>>,
     pub(super) activated: StdMutex<Vec<String>>,
+    pub(super) rolled_back: StdMutex<Vec<String>>,
     pub(super) recovered: StdMutex<Vec<String>>,
     pub(super) continuations: StdMutex<Vec<(String, String)>>,
     pub(super) admitted_continuations: StdMutex<std::collections::BTreeSet<(String, String)>>,
@@ -185,8 +186,9 @@ impl WorkflowAgentSessionPort for TestSessions {
     async fn rollback_workflow_agent_session(
         &self,
         session_id: &str,
-        _node_id: &str,
+        node_id: &str,
     ) -> Result<(), WorkflowRuntimeError> {
+        self.rolled_back.lock().unwrap().push(node_id.into());
         self.live_sessions.lock().unwrap().remove(session_id);
         Ok(())
     }
@@ -267,10 +269,10 @@ impl Fixture {
             ..Default::default()
         });
         let sessions = Arc::new(TestSessions::default());
-        let mut host = WorkflowRuntimeHost::with_execution_store(
+        let mut host = WorkflowRuntimeHost::with_runtime_ports(
             Arc::new(super::workflow_host_tests::UnusedWorkflowResolver),
             Arc::new(super::workflow_host_tests::AcceptingWorktreeResolver),
-            Arc::new(ExecutionStore::new_in_memory_for_tests()),
+            workspace_query(store.clone()),
             sessions.clone(),
             worktrees.clone(),
         );
@@ -368,10 +370,10 @@ impl Fixture {
     }
 
     pub(super) fn restarted_host(&self) -> WorkflowRuntimeHost {
-        let mut host = WorkflowRuntimeHost::with_execution_store(
+        let mut host = WorkflowRuntimeHost::with_runtime_ports(
             Arc::new(super::workflow_host_tests::UnusedWorkflowResolver),
             Arc::new(super::workflow_host_tests::AcceptingWorktreeResolver),
-            Arc::new(ExecutionStore::new_in_memory_for_tests()),
+            self.host.workspace_query.clone(),
             self.sessions.clone(),
             self.host.isolated_worktrees.clone(),
         );
@@ -454,6 +456,15 @@ pub(super) fn take_workflow_execution_broadcasts(
     broadcasts
 }
 
+pub(super) fn workspace_query(store: Arc<LocalEventStore>) -> Arc<SqliteWorkspaceQueryService> {
+    SqliteWorkspaceQueryService::with_repository(
+        SqliteWorkspaceTreeRepository::new(store.clone()),
+        Arc::new(ExecutionTreeArchiveFactRepository::from_backend(
+            workflow_fact_log::FactLogReadBackend::Live(store),
+        )),
+    )
+}
+
 pub(super) fn dependencies(store: Option<Arc<LocalEventStore>>) -> WorkflowRuntimeDependencies {
     WorkflowRuntimeDependencies {
         processes: Arc::new(
@@ -504,10 +515,10 @@ pub(crate) fn archive_fixture_with_resolver(
     );
     let app = test_helpers::dependencies(Some(store.clone()));
     let sessions = Arc::new(TestSessions::default());
-    let host = Arc::new(WorkflowRuntimeHost::with_execution_store(
+    let host = Arc::new(WorkflowRuntimeHost::with_runtime_ports(
         Arc::new(UnusedWorkflowResolver),
         resolver,
-        Arc::new(ExecutionStore::new_canonical(query.clone())),
+        query.clone(),
         sessions.clone(),
         Arc::new(TestWorktrees::default()),
     ));

@@ -150,6 +150,13 @@ pub struct RuntimeNodeExecution {
 }
 
 impl RuntimeNodeExecution {
+    pub fn can_start_process(&self) -> bool {
+        self.status == RuntimeNodeExecutionStatus::Running
+            && !self.kind.is_composite_kind()
+            && self.session_id.is_none()
+            && self.display_command.is_none()
+    }
+
     pub fn is_fanout_child(&self) -> bool {
         self.parent
             .as_ref()
@@ -599,6 +606,30 @@ impl std::ops::DerefMut for ExecutionTree {
 }
 
 impl ExecutionTree {
+    pub fn validate_command_attempt(
+        &self,
+        node_execution_id: &str,
+        node_name: &str,
+        attempt: u32,
+    ) -> Result<(), &'static str> {
+        if !self.is_active() {
+            return Err("execution tree is terminal");
+        }
+        let node = self
+            .node_execution(node_execution_id)
+            .ok_or("command NodeExecution was not found")?;
+        if node.kind != NodeKindName::Command
+            || node.node_name != node_name
+            || node.attempt != attempt
+        {
+            return Err("command attempt does not match");
+        }
+        if node.status != RuntimeNodeExecutionStatus::Running {
+            return Err("command NodeExecution is no longer running");
+        }
+        Ok(())
+    }
+
     pub fn workflow_definition(
         &self,
     ) -> Result<&WorkflowDefinition, crate::domain::workflow::WorkflowError> {

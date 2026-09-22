@@ -1,6 +1,19 @@
 use super::*;
 
 impl ExecutionTree {
+    pub fn can_prepare_node_worktree(&self, node_execution_id: &str) -> bool {
+        self.state() != &RuntimeExecutionState::Aborted
+            && self.node_execution(node_execution_id).is_some_and(|node| {
+                node.can_start_process()
+                    || node.kind.is_composite_kind()
+                        && matches!(
+                            node.status,
+                            RuntimeNodeExecutionStatus::Running
+                                | RuntimeNodeExecutionStatus::Succeeded
+                        )
+            })
+    }
+
     pub fn execution_worktree_path(&self, node_execution_id: &str) -> Option<&str> {
         let node = self.node_execution(node_execution_id)?;
         let ancestors = std::iter::successors(Some(node), |node| {
@@ -64,6 +77,34 @@ impl ExecutionTree {
         let node = self.node_execution(scope_id).ok_or_else(|| {
             crate::domain::workflow::WorkflowError::invalid_state("composite execution is missing")
         })?;
+        if node.status == RuntimeNodeExecutionStatus::Succeeded {
+            let ancestors = std::iter::successors(Some(node), |node| {
+                node.parent
+                    .as_ref()
+                    .and_then(|parent| self.node_execution(&parent.parent_id))
+            })
+            .map(|node| node.id.clone())
+            .collect::<Vec<_>>();
+            if let Some(advance) = self.derive_pending_advances().into_iter().find(|advance| {
+                matches!(advance, PendingAdvance::AfterChild { scope_id, .. } if ancestors.contains(scope_id))
+            }) {
+                return self.apply_pending_advance(&advance, new_id, timestamp);
+            }
+            let starts = ancestors
+                .iter()
+                .filter_map(|id| self.pending_delegate_injection(id))
+                .filter(|injection| ancestors.contains(&injection.child_execution_id))
+                .map(NodeStart::InjectDelegate)
+                .collect::<Vec<_>>();
+            return Ok(AppliedAdvance {
+                decision: if starts.is_empty() {
+                    ExecutionAdvanceDecision::Persist
+                } else {
+                    ExecutionAdvanceDecision::StartNodes(starts)
+                },
+                events: Vec::new(),
+            });
+        }
         let advance = match node.kind {
             NodeKindName::Sequence => PendingAdvance::StartEntry {
                 scope_id: scope_id.to_string(),

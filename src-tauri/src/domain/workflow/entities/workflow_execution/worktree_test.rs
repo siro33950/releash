@@ -509,3 +509,26 @@ fn test_起動契約_隔離合成子は準備要求だけを返し葉runtimeと�
         assert_eq!(leaf.node_name, "work");
     }
 }
+
+#[test]
+fn test_worktree準備判定_実行中と導出で完了済みの合成子を許可しabort後を拒否する() {
+    // Given
+    let mut execution = execution("  main: {worktree: isolated, fanout: {items: [], children: [work]}}\n  work: {command: true}");
+    let mut ids = ids();
+    let root = leaves(execution.start_root(&mut ids, 1.0).unwrap()).remove(0);
+    let id = root.node_execution_id();
+    // When / Then
+    assert!(execution.can_prepare_node_worktree(id));
+    let mut aborted = execution.clone();
+    aborted.transition_aborted();
+    assert!(!aborted.can_prepare_node_worktree(id));
+    execution
+        .start_prepared_composite(id, &mut ids, 2.0)
+        .unwrap();
+    assert_eq!(
+        execution.node_execution(id).unwrap().status,
+        RuntimeNodeExecutionStatus::Succeeded
+    );
+    assert!(execution.can_prepare_node_worktree(id));
+    assert!(!execution.can_prepare_node_worktree("missing"));
+}

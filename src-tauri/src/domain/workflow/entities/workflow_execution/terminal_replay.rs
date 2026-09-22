@@ -41,10 +41,13 @@ impl ExecutionTree {
         reason: Option<String>,
         timestamp: f64,
     ) -> Option<NodeFact> {
+        self.abort_with_reason(reason?, timestamp)
+    }
+
+    pub fn abort_with_reason(&mut self, reason: String, timestamp: f64) -> Option<NodeFact> {
         if !self.is_active() {
             return None;
         }
-        let reason = reason?;
         self.replay_aborted_at(timestamp, Some(reason.clone()));
         Some(NodeFact::AbortRequested(
             crate::domain::workflow::AbortRequestedFact {

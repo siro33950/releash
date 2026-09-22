@@ -69,14 +69,13 @@ impl WorkflowRuntimeHost {
                 return;
             }
             let mut tasks = self.startup_retries.lock().await;
-            if !self
-                .executions
-                .lock()
-                .await
-                .get(execution_id)
-                .is_some_and(|execution| execution.is_active())
-            {
-                return;
+            match self.load_control_plane_execution(app, execution_id).await {
+                Ok(Some(execution)) if execution.is_active() => {}
+                Ok(_) => return,
+                Err(error) => {
+                    log::warn!("workflow {execution_id}: startup retries could not read execution: {error}");
+                    return;
+                }
             }
             let task_id = uuid::Uuid::new_v4().to_string();
             let (cancel, cancelled) = tokio::sync::watch::channel(false);
@@ -161,8 +160,8 @@ impl WorkflowRuntimeHost {
         let gate = self.runtime_activation_gate(execution_id).await;
         let guard = gate.lock.lock().await;
         let current = self
-            .load_control_plane_execution(execution_id)
-            .await
+            .load_control_plane_execution(app, execution_id)
+            .await?
             .ok_or_else(|| WorkflowRuntimeError::ExecutionNotFound(execution_id.into()))?;
         let node = current.node_execution(node_execution_id).ok_or_else(|| {
             WorkflowRuntimeError::InvalidState("Session attempt no longer exists".into())
@@ -201,8 +200,8 @@ impl WorkflowRuntimeHost {
                 .await?;
         }
         let current = self
-            .load_control_plane_execution(execution_id)
-            .await
+            .load_control_plane_execution(app, execution_id)
+            .await?
             .ok_or_else(|| WorkflowRuntimeError::ExecutionNotFound(execution_id.into()))?;
         let snapshot = RuntimeCommitSnapshot::from_execution(&current)?;
         workflow_runtime_session::broadcast_state(app, &current.worktree_path, snapshot).await;
@@ -218,10 +217,10 @@ impl WorkflowRuntimeHost {
         let gate = self.runtime_activation_gate(execution_id).await;
         let _guard = gate.lock.lock().await;
         let (before, mut candidate) = {
-            let executions = self.executions.lock().await;
-            let Some(current) = executions.get(execution_id) else {
+            let Some(loaded) = self.load_control_plane_execution(app, execution_id).await? else {
                 return Ok(None);
             };
+            let current = &loaded;
             (current.clone(), current.clone())
         };
         let Some(node) = before.node_execution(node_execution_id) else {

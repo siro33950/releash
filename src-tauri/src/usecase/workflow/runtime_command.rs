@@ -267,32 +267,12 @@ impl crate::usecase::agent_session::ExecutionTreeCache for WorkflowRuntimeUsecas
 
 #[async_trait::async_trait]
 impl crate::usecase::agent_session::StartedExecutionTreeRegistrar for WorkflowRuntimeUsecase {
-    async fn reserve_started_execution_tree(
-        &self,
-        tree_id: &str,
-    ) -> Result<(), crate::usecase::agent_session::StartedExecutionTreeRegistrationError> {
-        self.runtime
-            .reserve_started_execution_tree(tree_id)
-            .await
-            .map_err(map_started_execution_tree_error)
-    }
-
     async fn register_started_execution_tree(
         &self,
         tree_id: &str,
     ) -> Result<(), crate::usecase::agent_session::StartedExecutionTreeRegistrationError> {
         self.runtime
             .register_started_execution_tree(tree_id)
-            .await
-            .map_err(map_started_execution_tree_error)
-    }
-
-    async fn release_started_execution_tree_reservation(
-        &self,
-        tree_id: &str,
-    ) -> Result<(), crate::usecase::agent_session::StartedExecutionTreeRegistrationError> {
-        self.runtime
-            .release_started_execution_tree_reservation(tree_id)
             .await
             .map_err(map_started_execution_tree_error)
     }
@@ -538,6 +518,7 @@ mod tests {
             _root: &crate::domain::workflow::NodeFactMeta,
             _fact: &crate::domain::workflow::NodeFact,
             _timestamp: f64,
+            _expected_head: Option<i64>,
         ) -> Result<(), WorkflowError> {
             unreachable!("empty startup inventory")
         }
@@ -547,9 +528,6 @@ mod tests {
     impl super::super::startup::WorkflowStartupGateway for FakeRuntimeGateway {
         fn current_timestamp(&self) -> f64 {
             100.0
-        }
-        async fn is_registered_or_reserved(&self, _tree_id: &str) -> bool {
-            unreachable!("empty startup inventory")
         }
         async fn reconcile_tree(
             &self,
@@ -583,7 +561,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_起動時復旧_通常起動とstop受理で同じusecaseのエラーを伝播する() {
+    async fn test_起動時復旧_失敗してもstop受理は復旧を再実行しない() {
         for fail_startup in [false, true] {
             // Given
             let gateway = Arc::new(FakeRuntimeGateway {
@@ -610,22 +588,14 @@ mod tests {
                     .unwrap_err()
                     .to_string()
                     .contains("startup read failed"));
-                assert!(stop
-                    .unwrap_err()
-                    .to_string()
-                    .contains("startup read failed"));
-                assert_eq!(
-                    *gateway.calls.lock().unwrap(),
-                    ["startup_list", "load_active", "startup_list"]
-                );
             } else {
                 startup.unwrap();
-                stop.unwrap();
-                assert_eq!(
-                    *gateway.calls.lock().unwrap(),
-                    ["startup_list", "load_active", "startup_list", "load_active"]
-                );
             }
+            stop.unwrap();
+            assert_eq!(
+                *gateway.calls.lock().unwrap(),
+                ["startup_list", "load_active"]
+            );
         }
     }
 

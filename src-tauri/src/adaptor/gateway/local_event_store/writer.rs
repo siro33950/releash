@@ -58,11 +58,14 @@ pub struct CommitWriteRequest {
 pub struct NodeEventAppendRequest {
     /// 各事実の行と発生時刻。None なら store の clock で刻む。
     pub rows: Vec<(NewNodeEventRow, Option<i64>)>,
+    pub expected_tree_head: Option<(String, i64)>,
     pub reply: mpsc::SyncSender<Result<Vec<i64>, NodeEventWriteError>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum NodeEventWriteError {
+    #[error("node event tree changed before append")]
+    Conflict,
     #[error("node event storage is unavailable")]
     StorageUnavailable,
     /// Admission failed or the reply was lost: the write may or may not be

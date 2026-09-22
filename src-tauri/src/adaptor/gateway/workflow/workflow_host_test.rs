@@ -21,7 +21,7 @@ async fn test_実行木archive_状態確認後の自然完了で再登録でき�
     let id = archive_workflow(&fixture).await;
     let records = workflow_fact_log::read_tree_records(&fixture.store, &id).unwrap();
     let meta = &records[0].meta;
-    let mut executions = fixture.host.executions.lock().await;
+    let commit_guard = fixture.host.commit_lock.lock().await;
     let mut archive = Box::pin(fixture.runtime.archive_execution_tree(&id, "manual"));
     assert!(futures_util::poll!(archive.as_mut()).is_pending());
     // When
@@ -34,8 +34,7 @@ async fn test_実行木archive_状態確認後の自然完了で再登録でき�
         )
         .unwrap();
     }
-    executions.remove(&id);
-    drop(executions);
+    drop(commit_guard);
     archive.await.unwrap();
     // Then
     assert_eq!(
@@ -122,13 +121,6 @@ async fn test_起動時recovery_gcのabortと直列化しarchive後に実行木�
         let activation_guard = activation_gate.lock.lock().await;
         let mut recovery = Box::pin(test_helpers::reconcile_startup(&fixture.host, &fixture.app));
         assert!(futures_util::poll!(recovery.as_mut()).is_pending());
-        assert!(fixture.host.executions.lock().await.is_empty());
-        assert!(fixture
-            .host
-            .execution_store
-            .active_execution_snapshot(id)
-            .await
-            .is_none());
 
         // When
         let mut archive = Box::pin(fixture.runtime.archive_removed_tree(id));
@@ -166,13 +158,6 @@ async fn test_起動時recovery_gcのabortと直列化しarchive後に実行木�
                 .archive_reason,
             "worktree_removed"
         );
-        assert!(fixture.host.executions.lock().await.is_empty());
-        assert!(fixture
-            .host
-            .execution_store
-            .active_execution_snapshot(id)
-            .await
-            .is_none());
         assert!(fixture.sessions.prepared.lock().unwrap().is_empty());
         assert!(fixture.sessions.activated.lock().unwrap().is_empty());
         assert!(fixture.sessions.recovered.lock().unwrap().is_empty());
@@ -192,22 +177,140 @@ async fn test_起動時recovery_gcのabortと直列化しarchive後に実行木�
 }
 
 #[tokio::test]
-async fn test_起動時recovery_登録済みの実行木のプロセス起動を待たない() {
+async fn test_起動時recovery_起動済みの実行木のプロセスを再起動しない() {
     // Given
     let fixture = archive_fixture();
     let id = archive_workflow(&fixture).await;
-    let activation_gate = fixture.host.runtime_activation_gate(&id).await;
-    let _activation_guard = activation_gate.lock.lock().await;
     let before = workflow_fact_log::read_tree_records(&fixture.store, &id).unwrap();
     // When
-    let mut recovery = Box::pin(test_helpers::reconcile_startup(&fixture.host, &fixture.app));
-    assert!(matches!(
-        futures_util::poll!(recovery.as_mut()),
-        std::task::Poll::Ready(Ok(()))
-    ));
+    test_helpers::reconcile_startup(&fixture.host, &fixture.app)
+        .await
+        .unwrap();
     // Then
     assert_eq!(
         workflow_fact_log::read_tree_records(&fixture.store, &id).unwrap(),
+        before
+    );
+}
+
+#[tokio::test]
+async fn test_起動時recovery_通常起動と同じsessionを一度だけ起動する() {
+    use crate::domain::workflow::NodeFact;
+    // Given
+    let fixture = archive_fixture();
+    let runtime = fixture.runtime.clone().with_startup(
+        crate::adaptor::controller::wiring::wire_workflow_startup(
+            fixture.app.clone(),
+            fixture.host.clone(),
+        ),
+    );
+    let mut gates = fixture.host.runtime_activation_locks.lock().await;
+    let mut start = Box::pin(archive_workflow(&fixture));
+    assert!(futures_util::poll!(start.as_mut()).is_pending());
+    let id = workflow_fact_log::list_tree_ids(
+        &workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone()),
+        None,
+    )
+    .unwrap()
+    .remove(0);
+    let gate = Arc::new(RuntimeActivationGate::new());
+    let guard = gate.lock.lock().await;
+    gates.insert(id.clone(), Arc::downgrade(&gate));
+    drop(gates);
+    assert!(futures_util::poll!(start.as_mut()).is_pending());
+    let mut recovery = Box::pin(runtime.recover_startup());
+    assert!(futures_util::poll!(recovery.as_mut()).is_pending());
+
+    // When
+    drop(guard);
+    let (started, recovered) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::join!(start, recovery)
+    })
+    .await
+    .unwrap();
+    assert_eq!(started, id);
+    recovered.unwrap();
+
+    // Then
+    assert_eq!(fixture.sessions.prepared.lock().unwrap().len(), 1);
+    assert_eq!(fixture.sessions.activated.lock().unwrap().len(), 1);
+    assert_eq!(fixture.sessions.live_sessions.lock().unwrap().len(), 1);
+    assert!(fixture
+        .host
+        .load_execution(&fixture.app, &id)
+        .await
+        .unwrap()
+        .is_active());
+    let records = workflow_fact_log::read_tree_records(&fixture.store, &id).unwrap();
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| matches!(record.fact, NodeFact::SessionAttached(_)))
+            .count(),
+        1
+    );
+    assert!(!records.iter().any(|record| matches!(
+        record.fact,
+        NodeFact::RuntimeFailureObserved(_) | NodeFact::AbortRequested(_)
+    )));
+}
+
+#[tokio::test]
+async fn test_起動時recovery_回復が先に起動したsessionへの古い起動要求を無視する() {
+    // Given
+    let fixture = test_helpers::Fixture::new(0);
+    let snapshot = fixture
+        .persist_started(
+            "  main: {session: {provider: codex, facets: {instruction: policy-confirmation}}}",
+            "/repo",
+        )
+        .await;
+    let execution = fixture
+        .host
+        .load_execution(&fixture.app, &snapshot.execution_id)
+        .await
+        .unwrap();
+    let leaf = execution
+        .leaf_start_for(&execution.node_executions[0].id)
+        .unwrap();
+    fixture
+        .sessions
+        .block_preparation
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let mut recovery = Box::pin(test_helpers::reconcile_startup(&fixture.host, &fixture.app));
+    assert!(futures_util::poll!(recovery.as_mut()).is_pending());
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        fixture.sessions.preparation_entered.notified(),
+    )
+    .await
+    .unwrap();
+
+    // When
+    let mut start = Box::pin(fixture.host.start_nodes(
+        &fixture.app,
+        &snapshot.execution_id,
+        "/repo",
+        vec![NodeStart::Leaf(leaf)],
+    ));
+    assert!(futures_util::poll!(start.as_mut()).is_pending());
+    fixture.sessions.preparation_release.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(5), recovery)
+        .await
+        .unwrap()
+        .unwrap();
+    let before =
+        workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), start)
+        .await
+        .unwrap()
+        .unwrap();
+
+    // Then
+    assert_eq!(fixture.sessions.prepared.lock().unwrap().len(), 1);
+    assert_eq!(fixture.sessions.activated.lock().unwrap().len(), 1);
+    assert_eq!(
+        workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap(),
         before
     );
 }
@@ -228,11 +331,10 @@ async fn test_workflow永続化_本番構成で起動から完了とabortまで�
                 directory.path(),
             )),
         );
-        let execution_store = Arc::new(ExecutionStore::new_canonical(query.clone()));
-        let host = Arc::new(WorkflowRuntimeHost::with_execution_store(
+        let host = Arc::new(WorkflowRuntimeHost::with_runtime_ports(
             Arc::new(UnusedWorkflowResolver),
             Arc::new(AcceptingWorktreeResolver),
-            execution_store.clone(),
+            query.clone(),
             Arc::new(TestSessions::default()),
             Arc::new(TestWorktrees::default()),
         ));
@@ -251,14 +353,13 @@ async fn test_workflow永続化_本番構成で起動から完了とabortまで�
             )
             .await
             .unwrap();
-        let snapshot = host.get_state_by_execution_id(&execution_id).await.unwrap();
+        let snapshot = host
+            .get_state_by_execution_id(&app, &execution_id)
+            .await
+            .unwrap();
 
         // Then
         assert_eq!(snapshot.state, RuntimeExecutionState::Running);
-        assert!(execution_store
-            .active_execution_snapshot(&execution_id)
-            .await
-            .is_some());
         assert!(!directory.path().join("workflow_executions").exists());
 
         // When
@@ -293,21 +394,19 @@ async fn test_workflow永続化_本番構成で起動から完了とabortまで�
         }
 
         // Then
-        assert!(execution_store
-            .active_execution_snapshot(&execution_id)
-            .await
-            .is_none());
-        let record = execution_store
-            .get_execution_record(&execution_id)
-            .await
-            .unwrap()
-            .unwrap();
+        let record = crate::usecase::workspace_tree::WorkspaceQueryService::execution_summary(
+            query.as_ref(),
+            &execution_id,
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(record.status, status);
-        let reloaded = ExecutionStore::new_canonical(query)
-            .get_execution_record(&execution_id)
-            .await
-            .unwrap()
-            .unwrap();
+        let reloaded = crate::usecase::workspace_tree::WorkspaceQueryService::execution_summary(
+            query.as_ref(),
+            &execution_id,
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(reloaded, record);
         assert!(!directory.path().join("workflow_executions").exists());
     }
@@ -339,7 +438,6 @@ async fn test_workflow定義の起動_session木のidをworkflow専用境界で�
         result,
         Err(WorkflowRuntimeError::ValidationError(_))
     ));
-    assert!(fixture.host.executions.lock().await.is_empty());
     assert!(fixture.sessions.live_sessions.lock().unwrap().is_empty());
 }
 
@@ -760,7 +858,11 @@ async fn test_実行木archive_終了済みは状態を保持しrestoreでも再
                 .await
                 .unwrap();
         } else {
-            let state = fixture.host.get_state_by_execution_id(&id).await.unwrap();
+            let state = fixture
+                .host
+                .get_state_by_execution_id(&fixture.app, &id)
+                .await
+                .unwrap();
             let node = &state.node_executions[0];
             fixture
                 .runtime
@@ -1205,7 +1307,7 @@ async fn test_worktree削除中_外部変更を拒否して読み取りと内部
     let id = archive_workflow(&fixture).await;
     let node = fixture
         .host
-        .get_state_by_execution_id(&id)
+        .get_state_by_execution_id(&fixture.app, &id)
         .await
         .unwrap()
         .node_executions[0]
@@ -1447,4 +1549,1589 @@ async fn assert_legacy_linked_worktree_gc(remove_directory: bool, remove_before_
         "worktree_removed"
     );
     assert_eq!(path.exists(), !remove_directory);
+}
+
+#[tokio::test]
+async fn test_記録からの操作_agent_sessionが再開を保存した後にsubmitとstopを記録する() {
+    use crate::adaptor::gateway::agent_session::LocalAgentSessionRepository;
+    use crate::domain::agent_session::aggregates::{
+        AgentSession, AgentSessionRecoveryResult, AgentSessionTreeLocation,
+    };
+    use crate::domain::agent_session::repository::AgentSessionRepository;
+    use crate::domain::provider_lifecycle::ProviderKind;
+    use crate::domain::workspace_tree::WorkspaceIdentity;
+    // Given
+    let fixture = test_helpers::Fixture::new(0);
+    let id = "resumed-session-without-runtime-registration";
+    let repository = LocalAgentSessionRepository::new(fixture.store.clone());
+    let mut saved = repository
+        .create(
+            AgentSession::create(
+                id,
+                WorkspaceIdentity::new("/repo"),
+                "/repo",
+                ProviderKind::Codex,
+                AgentSessionTreeLocation::session_tree_root(id).unwrap(),
+            )
+            .unwrap(),
+            "create-record-only-session",
+        )
+        .await
+        .unwrap();
+    fixture
+        .host
+        .load_control_plane_execution(&fixture.app, id)
+        .await
+        .unwrap()
+        .unwrap();
+    saved
+        .session_mut()
+        .associate_provider_session("provider-session", None)
+        .unwrap();
+    saved.session_mut().observe_provider_process_exit(Some(1));
+    let mut saved = repository.save(saved, "record-only-exit").await.unwrap();
+    saved
+        .session_mut()
+        .complete_resume(AgentSessionRecoveryResult::Succeeded)
+        .unwrap();
+    repository.save(saved, "record-only-resume").await.unwrap();
+    let control =
+        WorkflowControlPlaneUsecase::new(Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(
+            fixture.app.clone(),
+            Arc::new(fixture.restarted_host()),
+        )));
+    // When
+    control
+        .submit_output(SubmitOutputCommand {
+            node_execution_id: id.into(),
+            artifact: None,
+        })
+        .await
+        .unwrap();
+    control
+        .record_provider_stop(
+            ProviderExecutionTreeStopCommand {
+                agent_session_id: id.into(),
+                tree_id: id.into(),
+                node_execution_id: id.into(),
+                binding_id: "binding-resumed".into(),
+            },
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    // Then
+    let records = workflow_fact_log::read_tree_records(&fixture.store, id).unwrap();
+    assert!(records.iter().any(|record| matches!(
+        record.fact,
+        crate::domain::workflow::NodeFact::ResumeRequested
+    )));
+    assert!(records.iter().any(|record| matches!(
+        record.fact,
+        crate::domain::workflow::NodeFact::SubmitReceived(_)
+    )));
+    assert!(records.iter().any(|record| matches!(
+        record.fact,
+        crate::domain::workflow::NodeFact::StopReceived(_)
+    )));
+}
+
+#[tokio::test]
+async fn test_起動時前進_失敗を理由付きabortにし他の木を進め再試行しない() {
+    // Given
+    let fixture = test_helpers::Fixture::new(0);
+    let failed = fixture.persist_started("  main: {session: {provider: codex, facets: {instruction: missing-startup-facet-1840}}}\n", "/failed").await;
+    let healthy = fixture
+        .persist_started(
+            "  main: {session: {provider: codex, facets: {instruction: policy-confirmation}}}\n",
+            "/healthy",
+        )
+        .await;
+    let host = Arc::new(fixture.restarted_host());
+    let startup = crate::adaptor::controller::wiring::wire_workflow_startup(
+        fixture.app.clone(),
+        host.clone(),
+    )
+    .unwrap();
+    // When
+    assert!(startup.execute().await.is_err());
+    let failed_records =
+        workflow_fact_log::read_tree_records(&fixture.store, &failed.execution_id).unwrap();
+    let healthy_records =
+        workflow_fact_log::read_tree_records(&fixture.store, &healthy.execution_id).unwrap();
+    startup.execute().await.unwrap();
+    // Then
+    assert!(failed_records.iter().any(|record| matches!(&record.fact,
+        crate::domain::workflow::NodeFact::AbortRequested(fact) if fact.reason.as_ref().is_some_and(|reason| reason.contains("missing-startup-facet-1840")))));
+    assert_eq!(
+        host.load_execution(&fixture.app, &failed.execution_id)
+            .await
+            .unwrap()
+            .state(),
+        &RuntimeExecutionState::Aborted
+    );
+    assert!(healthy_records.iter().any(|record| matches!(
+        record.fact,
+        crate::domain::workflow::NodeFact::SessionAttached(_)
+    )));
+    assert_eq!(fixture.sessions.activated.lock().unwrap().len(), 1);
+    assert_eq!(
+        workflow_fact_log::read_tree_records(&fixture.store, &failed.execution_id).unwrap(),
+        failed_records
+    );
+    assert_eq!(
+        workflow_fact_log::read_tree_records(&fixture.store, &healthy.execution_id).unwrap(),
+        healthy_records
+    );
+    assert!(host.startup_retries.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn test_起動時前進_reply喪失後は保存済みなら続行し未保存なら理由付きabortする() {
+    use crate::adaptor::gateway::local_event_store::layout::StoreLayout;
+    use crate::domain::workflow::NodeFact;
+
+    for persisted in [true, false] {
+        // Given
+        let fixture = test_helpers::Fixture::new(0);
+        let interrupted = fixture
+            .persist_started(
+                "  main: {sequence: {children: [first, nested]}}\n  nested: {sequence: {children: [next]}}\n  first: {session: {provider: codex}}\n  next: {session: {provider: codex, facets: {instruction: policy-confirmation}}}\n",
+                "/interrupted",
+            )
+            .await;
+        let records =
+            workflow_fact_log::read_tree_records(&fixture.store, &interrupted.execution_id)
+                .unwrap();
+        let first = &records
+            .iter()
+            .find(|record| record.meta.node_name == "first")
+            .unwrap()
+            .meta;
+        for fact in [
+            NodeFact::SubmitReceived(crate::domain::workflow::SubmitReceivedFact {
+                request_id: None,
+            }),
+            NodeFact::StopReceived(crate::domain::workflow::StopReceivedFact {
+                result_summary: None,
+                token_usage: None,
+            }),
+        ] {
+            workflow_fact_log::append_single_fact(&fixture.store, first, &fact, 2000).unwrap();
+        }
+        let healthy = fixture
+            .persist_started(
+                "  main: {session: {provider: codex, facets: {instruction: policy-confirmation}}}\n",
+                "/healthy",
+            )
+            .await;
+        if !persisted {
+            let connection = rusqlite::Connection::open(
+                StoreLayout::new(fixture._directory.path()).database_path(),
+            )
+            .unwrap();
+            connection.execute_batch("CREATE TRIGGER fail_startup_advance BEFORE INSERT ON node_events WHEN NEW.event_type = 'started' AND NEW.node_name = 'next' BEGIN SELECT RAISE(ABORT, 'injected advancement failure'); END;").unwrap();
+        }
+        let host = Arc::new(fixture.restarted_host());
+        let startup = crate::adaptor::controller::wiring::wire_workflow_startup(
+            fixture.app.clone(),
+            host.clone(),
+        )
+        .unwrap();
+        fixture.store.fault_injector().arm_drop_reply();
+
+        // When
+        let result = startup.execute().await;
+        let records =
+            workflow_fact_log::read_tree_records(&fixture.store, &interrupted.execution_id)
+                .unwrap();
+        let healthy_records =
+            workflow_fact_log::read_tree_records(&fixture.store, &healthy.execution_id).unwrap();
+        startup.execute().await.unwrap();
+
+        // Then
+        assert_eq!(result.is_ok(), persisted, "{result:?}");
+        for name in ["nested", "next"] {
+            assert_eq!(
+                records
+                    .iter()
+                    .filter(|record| record.meta.node_name == name
+                        && matches!(record.fact, NodeFact::Started(_)))
+                    .count(),
+                usize::from(persisted)
+            );
+        }
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| record.meta.node_name == "next"
+                    && matches!(record.fact, NodeFact::SessionAttached(_)))
+                .count(),
+            usize::from(persisted)
+        );
+        assert_eq!(
+            records.iter().filter(|record| matches!(&record.fact, NodeFact::AbortRequested(fact) if fact.reason.as_ref().is_some_and(|reason| reason.contains("startup advancement commit failed")))).count(),
+            usize::from(!persisted)
+        );
+        assert_eq!(
+            host.load_execution(&fixture.app, &interrupted.execution_id)
+                .await
+                .unwrap()
+                .state(),
+            if persisted {
+                &RuntimeExecutionState::Running
+            } else {
+                &RuntimeExecutionState::Aborted
+            }
+        );
+        assert!(healthy_records
+            .iter()
+            .any(|record| matches!(record.fact, NodeFact::SessionAttached(_))));
+        assert_eq!(
+            fixture.sessions.activated.lock().unwrap().len(),
+            1 + usize::from(persisted)
+        );
+        assert_eq!(
+            workflow_fact_log::read_tree_records(&fixture.store, &interrupted.execution_id)
+                .unwrap(),
+            records
+        );
+        assert_eq!(
+            workflow_fact_log::read_tree_records(&fixture.store, &healthy.execution_id).unwrap(),
+            healthy_records
+        );
+        assert!(host.startup_retries.lock().await.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn test_起動時session紐付け_reply喪失後は保存済みなら起動し未保存ならabortする() {
+    use crate::adaptor::gateway::local_event_store::layout::StoreLayout;
+    use crate::domain::workflow::NodeFact;
+
+    for persisted in [true, false] {
+        // Given
+        let fixture = test_helpers::Fixture::new(0);
+        let interrupted = fixture
+            .persist_started(
+                "  main: {fanout: {children: [one, two]}}\n  one: {session: {provider: codex, facets: {instruction: policy-confirmation}}}\n  two: {session: {provider: codex, facets: {instruction: policy-confirmation}}}\n",
+                "/interrupted",
+            )
+            .await;
+        let healthy = fixture
+            .persist_started(
+                "  main: {session: {provider: codex, facets: {instruction: policy-confirmation}}}\n",
+                "/healthy",
+            )
+            .await;
+        if !persisted {
+            let connection = rusqlite::Connection::open(
+                StoreLayout::new(fixture._directory.path()).database_path(),
+            )
+            .unwrap();
+            connection.execute_batch("CREATE TRIGGER fail_session_attachment BEFORE INSERT ON node_events WHEN NEW.event_type = 'session_attached' AND NEW.node_name = 'two' BEGIN SELECT RAISE(ABORT, 'injected attachment failure'); END;").unwrap();
+        }
+        let host = Arc::new(fixture.restarted_host());
+        let startup = crate::adaptor::controller::wiring::wire_workflow_startup(
+            fixture.app.clone(),
+            host.clone(),
+        )
+        .unwrap();
+        fixture.store.fault_injector().arm_drop_reply();
+
+        // When
+        let result = startup.execute().await;
+        let records =
+            workflow_fact_log::read_tree_records(&fixture.store, &interrupted.execution_id)
+                .unwrap();
+        let healthy_records =
+            workflow_fact_log::read_tree_records(&fixture.store, &healthy.execution_id).unwrap();
+        startup.execute().await.unwrap();
+
+        // Then
+        assert_eq!(result.is_ok(), persisted, "{result:?}");
+        for name in ["one", "two"] {
+            assert_eq!(
+                records
+                    .iter()
+                    .filter(|record| record.meta.node_name == name
+                        && matches!(record.fact, NodeFact::SessionAttached(_)))
+                    .count(),
+                usize::from(persisted)
+            );
+        }
+        let aborts = records
+            .iter()
+            .filter_map(|record| match &record.fact {
+                NodeFact::AbortRequested(fact) => Some(fact),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(aborts.len(), usize::from(!persisted));
+        if let Some(abort) = aborts.first() {
+            assert!(abort
+                .reason
+                .as_ref()
+                .unwrap()
+                .contains("session attachment event append failed"));
+        }
+        assert_eq!(
+            host.load_execution(&fixture.app, &interrupted.execution_id)
+                .await
+                .unwrap()
+                .is_active(),
+            persisted
+        );
+        assert!(healthy_records
+            .iter()
+            .any(|record| matches!(record.fact, NodeFact::SessionAttached(_))));
+        assert_eq!(fixture.sessions.prepared.lock().unwrap().len(), 3);
+        assert_eq!(
+            fixture.sessions.activated.lock().unwrap().len(),
+            1 + 2 * usize::from(persisted)
+        );
+        assert_eq!(
+            fixture.sessions.live_sessions.lock().unwrap().len(),
+            1 + 2 * usize::from(persisted)
+        );
+        assert_eq!(
+            workflow_fact_log::read_tree_records(&fixture.store, &interrupted.execution_id)
+                .unwrap(),
+            records
+        );
+        assert_eq!(
+            workflow_fact_log::read_tree_records(&fixture.store, &healthy.execution_id).unwrap(),
+            healthy_records
+        );
+        assert!(host.startup_retries.lock().await.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn test_worktree排他_再起動直後の記録を使い占有実行をエラーに含む() {
+    // Given
+    let fixture = test_helpers::Fixture::new(0);
+    let active = fixture
+        .persist_started("  main: {session: {provider: codex}}\n", "/repo")
+        .await;
+    let host = fixture.restarted_host();
+    let attempted: WorkflowDefinition = serde_saphyr::from_str("name: attempted\ndescription: test\nnodes:\n  main: {session: {provider: codex, facets: {instruction: policy-confirmation}}}\n").unwrap();
+    // When
+    let error = host
+        .start_resolved_workflow(
+            &fixture.app,
+            attempted,
+            "/repo".into(),
+            None,
+            ExecutionOrigin::Cli,
+        )
+        .await
+        .unwrap_err();
+    // Then
+    let message = error.to_string();
+    assert!(message.contains("Worktree '/repo'"));
+    assert!(message.contains(&active.execution_id));
+    assert!(message.contains("isolated"));
+    assert!(!message.contains("attempted"));
+    assert!(fixture.sessions.prepared.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_worktree排他_同時起動は一件だけ成功し外部abort後は起動できる() {
+    // Given
+    let fixture = test_helpers::Fixture::new(0);
+    let workflow: WorkflowDefinition = serde_saphyr::from_str("name: concurrent\ndescription: test\nnodes:\n  main: {session: {provider: codex, facets: {instruction: policy-confirmation}}}\n").unwrap();
+    let facet_guard = fixture.host.execution_facet_contents.lock().await;
+    // When
+    let mut first = Box::pin(fixture.host.start_resolved_workflow(
+        &fixture.app,
+        workflow.clone(),
+        "/repo".into(),
+        None,
+        ExecutionOrigin::Cli,
+    ));
+    assert!(futures_util::poll!(first.as_mut()).is_pending());
+    let mut second = Box::pin(fixture.host.start_resolved_workflow(
+        &fixture.app,
+        workflow.clone(),
+        "/repo".into(),
+        None,
+        ExecutionOrigin::Cli,
+    ));
+    assert!(futures_util::poll!(second.as_mut()).is_pending());
+    drop(facet_guard);
+    let (first, second) = tokio::join!(first, second);
+    // Then
+    assert_eq!(usize::from(first.is_ok()) + usize::from(second.is_ok()), 1);
+    let (id, error) = match (first, second) {
+        (Ok(id), Err(error)) | (Err(error), Ok(id)) => (id, error),
+        _ => unreachable!(),
+    };
+    assert!(error.to_string().contains(&id));
+    workflow_fact_log::append_facts_for_events(
+        &fixture.store,
+        &[WorkflowEvent::ExecutionAborted {
+            execution_id: id,
+            aborted_node: None,
+            timestamp: current_timestamp(),
+        }],
+    )
+    .unwrap();
+    assert!(fixture
+        .host
+        .start_resolved_workflow(
+            &fixture.app,
+            workflow,
+            "/repo".into(),
+            None,
+            ExecutionOrigin::Cli
+        )
+        .await
+        .is_ok());
+}
+
+#[tokio::test]
+async fn test_worktree排他_abort待機中も別worktreeは起動し同一worktreeだけ待つ() {
+    for (abort_succeeds, before_commit) in [(true, true), (false, true), (true, false)] {
+        // Given
+        let fixture = test_helpers::Fixture::new(0);
+        let active = fixture
+            .persist_started("  main: {session: {provider: codex}}\n", "/repo")
+            .await;
+        let workflow: WorkflowDefinition = serde_saphyr::from_str("name: concurrent\ndescription: test\nnodes:\n  main: {session: {provider: codex, facets: {instruction: policy-confirmation}}}\n").unwrap();
+        let gate = fixture
+            .host
+            .runtime_activation_gate(&active.execution_id)
+            .await;
+        let activation_guard = if before_commit {
+            Some(gate.lock.lock().await)
+        } else {
+            None
+        };
+        let shutdown_guard = if before_commit {
+            None
+        } else {
+            Some(fixture.host.active_command_executions.lock().await)
+        };
+        let mut abort = Box::pin(fixture.host.abort_workflow_execution(
+            &fixture.app,
+            &active.execution_id,
+            if abort_succeeds {
+                None
+            } else {
+                Some("other-node")
+            },
+        ));
+        assert!(futures_util::poll!(abort.as_mut()).is_pending());
+
+        // When
+        let mut same = Box::pin(fixture.host.start_resolved_workflow(
+            &fixture.app,
+            workflow.clone(),
+            "/repo/".into(),
+            None,
+            ExecutionOrigin::Cli,
+        ));
+        assert!(futures_util::poll!(same.as_mut()).is_pending());
+        let other_id = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            fixture.host.start_resolved_workflow(
+                &fixture.app,
+                workflow,
+                "/other".into(),
+                None,
+                ExecutionOrigin::Cli,
+            ),
+        )
+        .await
+        .expect("別worktreeの起動はAbortの終了を待たない")
+        .unwrap();
+
+        // Then
+        assert_eq!(
+            fixture
+                .host
+                .load_execution(&fixture.app, &active.execution_id)
+                .await
+                .unwrap()
+                .is_active(),
+            before_commit
+        );
+        assert!(
+            !workflow_fact_log::read_tree_records(&fixture.store, &other_id)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(futures_util::poll!(same.as_mut()).is_pending());
+        drop(activation_guard);
+        drop(shutdown_guard);
+        assert_eq!(abort.await.is_ok(), abort_succeeds);
+        let result = same.await;
+        if abort_succeeds {
+            assert_ne!(result.unwrap(), active.execution_id);
+        } else {
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains(&active.execution_id));
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_worktree排他_待機者と共有し不要なlockを保持し続けない() {
+    // Given
+    let fixture = test_helpers::Fixture::new(0);
+    let lock = fixture.host.workflow_start_lock("/repo/").await;
+    let guard = lock.lock().await;
+    let waiter = fixture.host.workflow_start_lock("/repo").await;
+
+    // When / Then
+    assert!(Arc::ptr_eq(&lock, &waiter));
+    assert!(waiter.try_lock().is_err());
+    let weak = Arc::downgrade(&lock);
+    drop(guard);
+    drop(lock);
+    assert!(weak.upgrade().is_some());
+    drop(waiter);
+    assert!(weak.upgrade().is_none());
+    let _next = fixture.host.workflow_start_lock("/other").await;
+    let locks = fixture.host.workflow_start_locks.lock().await;
+    assert_eq!(locks.len(), 1);
+    assert!(locks.contains_key("/other"));
+}
+
+#[tokio::test]
+async fn test_worktree排他_abort対象の所在地を読めなければ記録を変更せずエラーにする() {
+    // Given
+    let fixture = test_helpers::Fixture::new(0);
+    let active = fixture
+        .persist_started("  main: {session: {provider: codex}}\n", "/repo")
+        .await;
+    let records =
+        workflow_fact_log::read_tree_records(&fixture.store, &active.execution_id).unwrap();
+    let mut broken =
+        workflow_fact_log::pending_single_fact(&records[0].meta, &records[0].fact, 1_000).unwrap();
+    broken.row.tree_id = "broken".into();
+    broken.row.detail = "{".into();
+    fixture
+        .store
+        .append_node_event_blocking(broken.row, Some(1_000))
+        .unwrap();
+    let mut unavailable = fixture.app.clone();
+    unavailable.store = None;
+
+    // When / Then
+    assert!(matches!(
+        fixture
+            .host
+            .abort_workflow_execution(&unavailable, &active.execution_id, None)
+            .await,
+        Err(WorkflowRuntimeError::SessionStore(_))
+    ));
+    assert!(
+        matches!(fixture.host.abort_workflow_execution(&fixture.app, "missing", None).await,
+        Err(WorkflowRuntimeError::ExecutionNotFound(id)) if id == "missing")
+    );
+    assert!(matches!(
+        fixture
+            .host
+            .abort_workflow_execution(&fixture.app, "broken", None)
+            .await,
+        Err(WorkflowRuntimeError::SessionStore(_))
+    ));
+    assert_eq!(
+        workflow_fact_log::read_tree_records(&fixture.store, &active.execution_id).unwrap(),
+        records
+    );
+    assert!(fixture.host.workflow_start_locks.lock().await.is_empty());
+}
+
+fn command_input(snapshot: &RuntimeCommitSnapshot) -> CommandExecutionInput {
+    let node = &snapshot.node_executions[0];
+    CommandExecutionInput {
+        execution_id: snapshot.execution_id.clone(),
+        node_execution_id: node.id.clone(),
+        node_name: node.node_name.clone(),
+        attempt: node.attempt,
+        worktree_path: snapshot.worktree_path.clone(),
+        raw_command: Some("true".into()),
+        definition_env: Vec::new(),
+        contract: None,
+        schemas: Default::default(),
+        session_id: None,
+    }
+}
+
+fn command_output() -> CommandRunOutput {
+    CommandRunOutput {
+        exit_code: 0,
+        stdout: "done".into(),
+        stderr: String::new(),
+        duration_ms: 1,
+    }
+}
+
+#[tokio::test]
+async fn test_command反映_登録なしの起動と結果を保存し確定後は理由をログに残す() {
+    // Given
+    crate::test_support::install_capturing_logger();
+    let fixture = test_helpers::Fixture::new(0);
+    let snapshot = fixture
+        .persist_started("  main: {command: true}\n", "/repo")
+        .await;
+    let host = fixture.restarted_host();
+    let input = command_input(&snapshot);
+    // When
+    assert!(host
+        .commit_command_spawned(&fixture.app, &input, "true".into())
+        .await
+        .unwrap());
+    host.commit_command_output(&fixture.app, input.clone(), command_output())
+        .await
+        .unwrap();
+    let completed =
+        workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap();
+    host.commit_command_output(&fixture.app, input.clone(), command_output())
+        .await
+        .unwrap();
+    assert!(!host
+        .commit_command_spawned(&fixture.app, &input, "late".into())
+        .await
+        .unwrap());
+    host.fail_current_command_node(&fixture.app, &input, "late failure".into())
+        .await
+        .unwrap();
+    // Then
+    assert!(completed.iter().any(|record| matches!(
+        record.fact,
+        crate::domain::workflow::NodeFact::CommandSpawned(_)
+    )));
+    assert!(completed.iter().any(|record| matches!(
+        record.fact,
+        crate::domain::workflow::NodeFact::ExecutionCompleted
+    )));
+    assert_eq!(
+        workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap(),
+        completed
+    );
+    let warnings = crate::test_support::captured_warning_messages();
+    assert_eq!(
+        warnings
+            .iter()
+            .filter(|message| message.contains(&input.node_execution_id)
+                && message.contains("was not applied: execution tree is terminal"))
+            .count(),
+        3
+    );
+}
+
+#[tokio::test]
+async fn test_command失敗_登録なしの最新attemptに保存し別attemptは反映しない() {
+    // Given
+    let fixture = test_helpers::Fixture::new(0);
+    let snapshot = fixture
+        .persist_started("  main: {command: true}\n", "/repo")
+        .await;
+    let host = fixture.restarted_host();
+    let input = command_input(&snapshot);
+    // When
+    host.fail_current_command_node(&fixture.app, &input, "process wait failed".into())
+        .await
+        .unwrap();
+    let before =
+        workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap();
+    let mut stale = input.clone();
+    stale.attempt += 1;
+    host.fail_current_command_node(&fixture.app, &stale, "wrong attempt".into())
+        .await
+        .unwrap();
+    // Then
+    assert!(before.iter().any(|record| matches!(
+        record.fact,
+        crate::domain::workflow::NodeFact::RuntimeFailureObserved(_)
+    )));
+    assert_eq!(
+        workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap(),
+        before
+    );
+}
+
+#[tokio::test]
+async fn test_commit結果不明_一部や別内容は競合とし保存済みbatchは再追記しない() {
+    for change in ["partial", "session", "timestamp", "complete"] {
+        // Given
+        let fixture = test_helpers::Fixture::new(0);
+        let snapshot = fixture
+            .persist_started("  main: {session: {provider: codex}}\n", "/repo")
+            .await;
+        let records =
+            workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap();
+        let head = records.last().unwrap().seq;
+        let events = [
+            WorkflowEvent::SessionAttached {
+                execution_id: snapshot.execution_id.clone(),
+                node_execution_id: records[0].meta.node_execution_id.clone(),
+                session_id: "expected-session".into(),
+                timestamp: 2.0,
+            },
+            WorkflowEvent::NodeStopReceived {
+                execution_id: snapshot.execution_id.clone(),
+                node_execution_id: records[0].meta.node_execution_id.clone(),
+                timestamp: 3.0,
+            },
+        ];
+        let mut concurrent = events.to_vec();
+        match change {
+            "partial" => concurrent.truncate(1),
+            "session" | "timestamp" => {
+                let WorkflowEvent::SessionAttached {
+                    session_id,
+                    timestamp,
+                    ..
+                } = &mut concurrent[0]
+                else {
+                    unreachable!()
+                };
+                if change == "session" {
+                    *session_id = "other-session".into();
+                } else {
+                    *timestamp += 1.0;
+                }
+            }
+            "complete" => concurrent.push(WorkflowEvent::ExecutionAborted {
+                execution_id: snapshot.execution_id.clone(),
+                aborted_node: None,
+                timestamp: 4.0,
+            }),
+            _ => unreachable!(),
+        }
+        workflow_fact_log::append_facts_for_events(&fixture.store, &concurrent).unwrap();
+        let before =
+            workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap();
+        fixture.store.fault_injector().arm_drop_reply();
+
+        // When
+        let result = WorkflowRuntimeHost::append_events_at_head(
+            &fixture.app,
+            &snapshot.execution_id,
+            head,
+            &events,
+        );
+
+        // Then
+        if change == "complete" {
+            result.unwrap();
+        } else {
+            assert!(
+                matches!(result, Err(WorkflowRuntimeError::Conflict(_))),
+                "{result:?}"
+            );
+        }
+        assert_eq!(
+            workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap(),
+            before
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_commit結果不明_記録を読み直せなければ保存成功にしない() {
+    use crate::adaptor::gateway::local_event_store::layout::StoreLayout;
+
+    // Given
+    let fixture = test_helpers::Fixture::new(0);
+    let snapshot = fixture
+        .persist_started("  main: {session: {provider: codex}}\n", "/repo")
+        .await;
+    let records =
+        workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap();
+    let head = records.last().unwrap().seq;
+    let event = WorkflowEvent::SessionAttached {
+        execution_id: snapshot.execution_id.clone(),
+        node_execution_id: records[0].meta.node_execution_id.clone(),
+        session_id: "expected-session".into(),
+        timestamp: 2.0,
+    };
+    let stall = fixture.store.fault_injector().arm_node_event_append_stall();
+    fixture.store.fault_injector().arm_drop_reply();
+    let app = fixture.app.clone();
+    let commit = std::thread::spawn(move || {
+        WorkflowRuntimeHost::append_events_at_head(&app, &snapshot.execution_id, head, &[event])
+    });
+    stall.wait_until_arrived();
+
+    // When
+    let connection =
+        rusqlite::Connection::open(StoreLayout::new(fixture._directory.path()).database_path())
+            .unwrap();
+    connection
+        .execute_batch("ALTER TABLE node_events RENAME TO unavailable_node_events;")
+        .unwrap();
+    stall.release();
+    let error = commit.join().unwrap().unwrap_err();
+
+    // Then
+    assert!(
+        matches!(error, WorkflowRuntimeError::SessionStore(reason) if reason.contains("control-plane commit readback failed"))
+    );
+}
+
+#[tokio::test]
+async fn test_commit競合_候補作成後に外部が保存した事実を上書きしない() {
+    // Given
+    let fixture = test_helpers::Fixture::new(0);
+    let snapshot = fixture
+        .persist_started("  main: {session: {provider: codex}}\n", "/repo")
+        .await;
+    let before = fixture
+        .host
+        .load_execution(&fixture.app, &snapshot.execution_id)
+        .await
+        .unwrap();
+    let mut candidate = before.clone();
+    candidate.transition_aborted();
+    let records =
+        workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap();
+    workflow_fact_log::append_facts_for_events(
+        &fixture.store,
+        &[WorkflowEvent::NodeStopReceived {
+            execution_id: snapshot.execution_id.clone(),
+            node_execution_id: records[0].meta.node_execution_id.clone(),
+            timestamp: current_timestamp() + 0.001,
+        }],
+    )
+    .unwrap();
+    let advanced =
+        workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap();
+    // When
+    let error = fixture
+        .host
+        .commit_control_plane_candidate(
+            &fixture.app,
+            ControlPlaneCommitCandidate {
+                execution_id: &snapshot.execution_id,
+                snapshot_before: before,
+                candidate,
+                transition_outcome: TransitionOutcome::Applied,
+                events: &[WorkflowEvent::ExecutionAborted {
+                    execution_id: snapshot.execution_id.clone(),
+                    aborted_node: None,
+                    timestamp: current_timestamp(),
+                }],
+                provider_events: Vec::new(),
+            },
+        )
+        .await
+        .unwrap_err();
+    // Then
+    assert!(matches!(error, WorkflowRuntimeError::Conflict(_)));
+    assert_eq!(
+        workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap(),
+        advanced
+    );
+}
+
+#[tokio::test]
+async fn test_command反映_実行木がない場合は起動と結果と失敗の不反映理由を残す() {
+    // Given
+    crate::test_support::install_capturing_logger();
+    let fixture = test_helpers::Fixture::new(0);
+    let snapshot = fixture
+        .persist_started("  main: {command: true}\n", "/repo")
+        .await;
+    let mut input = command_input(&snapshot);
+    input.execution_id = format!("missing-{}", snapshot.execution_id);
+    // When
+    assert!(!fixture
+        .host
+        .commit_command_spawned(&fixture.app, &input, "true".into())
+        .await
+        .unwrap());
+    fixture
+        .host
+        .commit_command_output(&fixture.app, input.clone(), command_output())
+        .await
+        .unwrap();
+    fixture
+        .host
+        .fail_current_command_node(&fixture.app, &input, "missing".into())
+        .await
+        .unwrap();
+    // Then
+    let warnings = crate::test_support::captured_warning_messages();
+    assert_eq!(
+        warnings
+            .iter()
+            .filter(|message| message.contains(&input.execution_id)
+                && message.contains("was not applied: execution tree was not found"))
+            .count(),
+        3
+    );
+    assert!(
+        workflow_fact_log::read_tree_records(&fixture.store, &input.execution_id)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn test_記録からの承認_外部writerの完了信号で承認待ちになったnodeを承認する() {
+    use crate::domain::workflow::NodeFact;
+    use crate::usecase::workflow::command::ApprovalCommand;
+    // Given
+    let fixture = test_helpers::Fixture::new(0);
+    let snapshot = fixture
+        .persist_started(
+            "  main:\n    session: {provider: codex}\n    completion: {require: approval}\n",
+            "/repo",
+        )
+        .await;
+    let before = fixture
+        .host
+        .load_execution(&fixture.app, &snapshot.execution_id)
+        .await
+        .unwrap();
+    let node = &before.node_executions[0];
+    workflow_fact_log::append_facts_for_events(
+        &fixture.store,
+        &[
+            WorkflowEvent::NodeSubmitReceived {
+                execution_id: before.id.clone(),
+                node_execution_id: node.id.clone(),
+                timestamp: current_timestamp(),
+            },
+            WorkflowEvent::NodeStopReceived {
+                execution_id: before.id.clone(),
+                node_execution_id: node.id.clone(),
+                timestamp: current_timestamp(),
+            },
+        ],
+    )
+    .unwrap();
+    let control =
+        WorkflowControlPlaneUsecase::new(Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(
+            fixture.app.clone(),
+            Arc::new(fixture.host.clone()),
+        )));
+    // When
+    control
+        .resolve_approval(ApprovalCommand {
+            execution_id: before.id.clone(),
+            node_name: node.node_name.clone(),
+            node_execution_id: Some(node.id.clone()),
+            comment: None,
+        })
+        .await
+        .unwrap();
+    // Then
+    let records = workflow_fact_log::read_tree_records(&fixture.store, &before.id).unwrap();
+    assert!(records
+        .iter()
+        .any(|record| matches!(record.fact, NodeFact::ApprovalGranted(_))));
+    assert!(records
+        .iter()
+        .any(|record| matches!(record.fact, NodeFact::ExecutionCompleted)));
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_記録からのretry_外部writerが作った最新attemptを再試行する() {
+    use crate::domain::workflow::NodeFact;
+    use crate::usecase::workflow::command::RetryNodeCommand;
+    // Given
+    let fixture = test_helpers::Fixture::new(0);
+    let snapshot = fixture
+        .persist_started(
+            "  main:\n    command: true\n    input: [document]\n    env: {DOC: document}\n",
+            fixture._directory.path().to_str().unwrap(),
+        )
+        .await;
+    let before = fixture
+        .host
+        .load_execution(&fixture.app, &snapshot.execution_id)
+        .await
+        .unwrap();
+    let node = &before.node_executions[0];
+    let next_id = uuid::Uuid::new_v4().to_string();
+    workflow_fact_log::append_facts_for_events(
+        &fixture.store,
+        &[
+            WorkflowEvent::NodeRetryRequested {
+                execution_id: before.id.clone(),
+                node_execution_id: node.id.clone(),
+                timestamp: current_timestamp(),
+            },
+            WorkflowEvent::NodeStarted {
+                execution_id: before.id.clone(),
+                node_execution_id: next_id.clone(),
+                node_name: node.node_name.clone(),
+                kind: node.kind,
+                attempt: 2,
+                parent: node.parent.clone(),
+                worktree: None,
+                timestamp: current_timestamp(),
+            },
+        ],
+    )
+    .unwrap();
+    let control =
+        WorkflowControlPlaneUsecase::new(Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(
+            fixture.app.clone(),
+            Arc::new(fixture.host.clone()),
+        )));
+    // When
+    control
+        .retry_node(RetryNodeCommand {
+            execution_id: before.id.clone(),
+            node_execution_id: next_id.clone(),
+        })
+        .await
+        .unwrap();
+    fixture.wait_startup_retries().await;
+    // Then
+    let records = workflow_fact_log::read_tree_records(&fixture.store, &before.id).unwrap();
+    assert!(records
+        .iter()
+        .any(|record| record.meta.node_execution_id == next_id
+            && matches!(record.fact, NodeFact::RetryRequested)));
+    assert!(records
+        .iter()
+        .any(|record| record.meta.attempt == 3 && matches!(record.fact, NodeFact::Started(_))));
+    assert!(fixture
+        .host
+        .node_processes
+        .active_commands
+        .lock()
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn test_abort競合_外部writerの追記後も最新記録を中止する() {
+    use crate::domain::workflow::NodeFact;
+    // Given
+    let fixture = test_helpers::Fixture::new(0);
+    let snapshot = fixture
+        .persist_started("  main: {command: true}\n", "/repo")
+        .await;
+    let meta = workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id)
+        .unwrap()[0]
+        .meta
+        .clone();
+    let guard = fixture.host.commit_lock.lock().await;
+    let mut abort = Box::pin(fixture.host.abort_workflow_execution(
+        &fixture.app,
+        &snapshot.execution_id,
+        None,
+    ));
+    assert!(futures_util::poll!(abort.as_mut()).is_pending());
+    // When
+    workflow_fact_log::append_single_fact(
+        &fixture.store,
+        &meta,
+        &NodeFact::CommandSpawned(crate::domain::workflow::CommandSpawnedFact {
+            display_command: "external".into(),
+        }),
+        2000,
+    )
+    .unwrap();
+    drop(guard);
+    abort.await.unwrap();
+    // Then
+    let records =
+        workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap();
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| matches!(record.fact, NodeFact::AbortRequested(_)))
+            .count(),
+        1
+    );
+    assert!(records
+        .iter()
+        .any(|record| matches!(record.fact, NodeFact::CommandSpawned(_))));
+}
+
+#[tokio::test]
+async fn test_command結果競合_最新記録で成功を保存し終端なら理由付きで反映しない() {
+    use crate::domain::workflow::NodeFact;
+    for abort in [false, true] {
+        // Given
+        crate::test_support::install_capturing_logger();
+        let fixture = test_helpers::Fixture::new(0);
+        let snapshot = fixture
+            .persist_started("  main: {command: true}\n", "/repo")
+            .await;
+        let input = command_input(&snapshot);
+        let meta = workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id)
+            .unwrap()[0]
+            .meta
+            .clone();
+        let guard = fixture.host.commit_lock.lock().await;
+        let mut completion = Box::pin(fixture.host.finish_command_execution(
+            &fixture.app,
+            input.clone(),
+            Ok(command_output()),
+        ));
+        assert!(futures_util::poll!(completion.as_mut()).is_pending());
+        // When
+        workflow_fact_log::append_single_fact(
+            &fixture.store,
+            &meta,
+            &if abort {
+                NodeFact::AbortRequested(Default::default())
+            } else {
+                NodeFact::CommandSpawned(crate::domain::workflow::CommandSpawnedFact {
+                    display_command: "external".into(),
+                })
+            },
+            2000,
+        )
+        .unwrap();
+        let before =
+            workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap();
+        drop(guard);
+        completion.await;
+        // Then
+        let records =
+            workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap();
+        assert!(!records
+            .iter()
+            .any(|record| matches!(record.fact, NodeFact::RuntimeFailureObserved(_))));
+        if abort {
+            assert_eq!(records, before);
+            assert!(crate::test_support::captured_warning_messages()
+                .iter()
+                .any(|message| message.contains(&input.node_execution_id)
+                    && message.contains("was not applied: execution tree is terminal")));
+        } else {
+            assert_eq!(
+                records
+                    .iter()
+                    .filter(|record| matches!(record.fact, NodeFact::ArtifactProduced(_)))
+                    .count(),
+                1
+            );
+            assert_eq!(
+                records
+                    .iter()
+                    .filter(|record| matches!(record.fact, NodeFact::ExecutionCompleted))
+                    .count(),
+                1
+            );
+            let execution = fixture
+                .host
+                .load_execution(&fixture.app, &snapshot.execution_id)
+                .await
+                .unwrap();
+            assert_eq!(
+                execution.node_executions[0].artifact.as_ref().unwrap()["ok"],
+                true
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_操作競合_abortとcommand結果は上限で止まり障害事実を追加しない() {
+    use crate::domain::workflow::NodeFact;
+    use crate::usecase::workflow::command::CONTROL_PLANE_MAX_ATTEMPTS;
+    for command in [false, true] {
+        // Given
+        crate::test_support::install_capturing_logger();
+        let fixture = test_helpers::Fixture::new(0);
+        let snapshot = fixture
+            .persist_started("  main: {command: true}\n", "/repo")
+            .await;
+        let input = command_input(&snapshot);
+        let meta = workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id)
+            .unwrap()[0]
+            .meta
+            .clone();
+        let mut guard = fixture.host.commit_lock.lock().await;
+        let mut operation = Box::pin(async {
+            if command {
+                fixture
+                    .host
+                    .finish_command_execution(&fixture.app, input.clone(), Ok(command_output()))
+                    .await;
+                Ok(())
+            } else {
+                fixture
+                    .host
+                    .abort_workflow_execution(&fixture.app, &snapshot.execution_id, None)
+                    .await
+            }
+        });
+        // When
+        for attempt in 0..CONTROL_PLANE_MAX_ATTEMPTS {
+            assert!(futures_util::poll!(operation.as_mut()).is_pending());
+            workflow_fact_log::append_single_fact(
+                &fixture.store,
+                &meta,
+                &NodeFact::CommandSpawned(crate::domain::workflow::CommandSpawnedFact {
+                    display_command: format!("external-{attempt}"),
+                }),
+                2000 + attempt as i64 * 1000,
+            )
+            .unwrap();
+            if attempt + 1 == CONTROL_PLANE_MAX_ATTEMPTS {
+                drop(guard);
+                break;
+            }
+            let mut next_guard = Box::pin(fixture.host.commit_lock.lock());
+            assert!(futures_util::poll!(next_guard.as_mut()).is_pending());
+            drop(guard);
+            assert!(futures_util::poll!(operation.as_mut()).is_pending());
+            guard = next_guard.await;
+        }
+        let result = operation.await;
+        // Then
+        if command {
+            result.unwrap();
+            assert!(crate::test_support::captured_warning_messages()
+                .iter()
+                .any(|message| message.contains(&input.node_execution_id)
+                    && message.contains("result was not applied")
+                    && message.contains("conflict")));
+        } else {
+            assert!(matches!(result, Err(WorkflowRuntimeError::Conflict(_))));
+        }
+        let records =
+            workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap();
+        assert_eq!(records.len(), CONTROL_PLANE_MAX_ATTEMPTS + 1);
+        assert!(records.iter().all(|record| matches!(
+            record.fact,
+            NodeFact::Started(_) | NodeFact::CommandSpawned(_)
+        )));
+        fixture
+            .host
+            .abort_workflow_execution(&fixture.app, &snapshot.execution_id, None)
+            .await
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn test_command起動失敗競合_最新attemptへ保存し終端や更新済みattemptは理由付きで反映しない() {
+    use crate::domain::workflow::NodeFact;
+    for spawned in [true, false] {
+        for change in ["current", "abort", "retry"] {
+            // Given
+            crate::test_support::install_capturing_logger();
+            let fixture = test_helpers::Fixture::new(0);
+            let snapshot = fixture
+                .persist_started("  main: {command: true}\n", "/repo")
+                .await;
+            let input = command_input(&snapshot);
+            let guard = fixture.host.commit_lock.lock().await;
+            let mut operation = Box::pin(async {
+                if spawned {
+                    fixture
+                        .host
+                        .commit_command_spawned(&fixture.app, &input, "true".into())
+                        .await
+                } else {
+                    fixture
+                        .host
+                        .fail_current_command_node(
+                            &fixture.app,
+                            &input,
+                            "process wait failed".into(),
+                        )
+                        .await
+                        .map(|()| true)
+                }
+            });
+            assert!(futures_util::poll!(operation.as_mut()).is_pending());
+            // When
+            let timestamp = current_timestamp();
+            let events = match change {
+                "abort" => vec![WorkflowEvent::ExecutionAborted {
+                    execution_id: input.execution_id.clone(),
+                    aborted_node: None,
+                    timestamp,
+                }],
+                "retry" => vec![
+                    WorkflowEvent::NodeRetryRequested {
+                        execution_id: input.execution_id.clone(),
+                        node_execution_id: input.node_execution_id.clone(),
+                        timestamp,
+                    },
+                    WorkflowEvent::NodeStarted {
+                        execution_id: input.execution_id.clone(),
+                        node_execution_id: uuid::Uuid::new_v4().to_string(),
+                        node_name: input.node_name.clone(),
+                        kind: NodeKindName::Command,
+                        attempt: input.attempt + 1,
+                        parent: None,
+                        worktree: None,
+                        timestamp,
+                    },
+                ],
+                _ => vec![WorkflowEvent::CommandSpawned {
+                    execution_id: input.execution_id.clone(),
+                    node_execution_id: input.node_execution_id.clone(),
+                    display_command: "external".into(),
+                    timestamp,
+                }],
+            };
+            workflow_fact_log::append_facts_for_events(&fixture.store, &events).unwrap();
+            let before =
+                workflow_fact_log::read_tree_records(&fixture.store, &input.execution_id).unwrap();
+            drop(guard);
+            let applied = operation.await.unwrap();
+            // Then
+            let records =
+                workflow_fact_log::read_tree_records(&fixture.store, &input.execution_id).unwrap();
+            if change == "current" {
+                assert!(applied);
+                assert_eq!(records.len(), before.len() + 1);
+                assert_eq!(&records[..before.len()], before);
+                let record = records.last().unwrap();
+                assert_eq!(record.meta.node_execution_id, input.node_execution_id);
+                assert_eq!(record.meta.attempt, input.attempt);
+                if spawned {
+                    assert!(
+                        matches!(&record.fact, NodeFact::CommandSpawned(fact) if fact.display_command == "true")
+                    );
+                } else {
+                    assert!(
+                        matches!(&record.fact, NodeFact::RuntimeFailureObserved(fact) if fact.reason == "process wait failed" && fact.failure_kind == NodeExecutionFailureKind::InfrastructureCrash)
+                    );
+                }
+            } else {
+                if spawned {
+                    assert!(!applied);
+                }
+                assert_eq!(records, before);
+                let reason = if change == "abort" {
+                    "execution tree is terminal"
+                } else {
+                    "command NodeExecution is no longer running"
+                };
+                assert!(crate::test_support::captured_warning_messages()
+                    .iter()
+                    .any(|message| message.contains(&input.node_execution_id)
+                        && message.contains("was not applied")
+                        && message.contains(reason)));
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_command起動失敗競合_上限で不反映理由を残し競合を障害事実にしない() {
+    use crate::domain::workflow::NodeFact;
+    use crate::usecase::workflow::command::CONTROL_PLANE_MAX_ATTEMPTS;
+    for spawned in [true, false] {
+        // Given
+        crate::test_support::install_capturing_logger();
+        let fixture = test_helpers::Fixture::new(0);
+        let snapshot = fixture
+            .persist_started("  main: {command: true}\n", "/repo")
+            .await;
+        let input = command_input(&snapshot);
+        let mut guard = fixture.host.commit_lock.lock().await;
+        let mut operation = Box::pin(async {
+            if spawned {
+                assert!(!fixture
+                    .host
+                    .commit_command_spawned(&fixture.app, &input, "true".into())
+                    .await
+                    .unwrap());
+            } else {
+                fixture
+                    .host
+                    .finish_command_execution(
+                        &fixture.app,
+                        input.clone(),
+                        Err(CommandRunnerError::Wait(std::io::Error::other(
+                            "process wait failed",
+                        ))),
+                    )
+                    .await;
+            }
+        });
+        // When
+        for attempt in 0..CONTROL_PLANE_MAX_ATTEMPTS {
+            assert!(futures_util::poll!(operation.as_mut()).is_pending());
+            workflow_fact_log::append_facts_for_events(
+                &fixture.store,
+                &[WorkflowEvent::CommandSpawned {
+                    execution_id: input.execution_id.clone(),
+                    node_execution_id: input.node_execution_id.clone(),
+                    display_command: format!("external-{attempt}"),
+                    timestamp: current_timestamp(),
+                }],
+            )
+            .unwrap();
+            if attempt + 1 == CONTROL_PLANE_MAX_ATTEMPTS {
+                drop(guard);
+                break;
+            }
+            let mut next_guard = Box::pin(fixture.host.commit_lock.lock());
+            assert!(futures_util::poll!(next_guard.as_mut()).is_pending());
+            drop(guard);
+            assert!(futures_util::poll!(operation.as_mut()).is_pending());
+            guard = next_guard.await;
+        }
+        operation.await;
+        // Then
+        let records =
+            workflow_fact_log::read_tree_records(&fixture.store, &input.execution_id).unwrap();
+        assert_eq!(records.len(), CONTROL_PLANE_MAX_ATTEMPTS + 1);
+        assert!(records.iter().all(|record| matches!(
+            record.fact,
+            NodeFact::Started(_) | NodeFact::CommandSpawned(_)
+        )));
+        let expected = if spawned {
+            "start was not applied"
+        } else {
+            "failure was not applied"
+        };
+        assert!(crate::test_support::captured_warning_messages()
+            .iter()
+            .any(|message| message.contains(&input.node_execution_id)
+                && message.contains(expected)
+                && message.contains("conflict")));
+    }
+}
+
+#[tokio::test]
+async fn test_session準備競合_最新記録で紐付けを再評価し準備を繰り返さない() {
+    use crate::domain::workflow::NodeFact;
+    use crate::usecase::workflow::command::CONTROL_PLANE_MAX_ATTEMPTS;
+    for change in ["sibling", "abort", "attached", "exhausted"] {
+        // Given
+        let fixture = test_helpers::Fixture::new(0);
+        let snapshot = fixture.persist_started(
+            "  main: {fanout: {children: [work, other]}}\n  work: {session: {provider: codex, facets: {instruction: policy-confirmation}}}\n  other: {command: 'must-not-start'}",
+            "/repo",
+        ).await;
+        let execution = fixture
+            .host
+            .load_execution(&fixture.app, &snapshot.execution_id)
+            .await
+            .unwrap();
+        let target = execution
+            .node_executions
+            .iter()
+            .find(|node| node.node_name == "work")
+            .unwrap();
+        let sibling = execution
+            .node_executions
+            .iter()
+            .find(|node| node.node_name == "other")
+            .unwrap();
+        let starts = vec![NodeStart::Leaf(
+            execution.leaf_start_for(&target.id).unwrap(),
+        )];
+        let mut guard = fixture.host.commit_lock.lock().await;
+        let mut operation = Box::pin(fixture.host.start_nodes(
+            &fixture.app,
+            &snapshot.execution_id,
+            "/repo",
+            starts,
+        ));
+        let attempts = if change == "exhausted" {
+            CONTROL_PLANE_MAX_ATTEMPTS
+        } else {
+            1
+        };
+
+        // When
+        for attempt in 0..attempts {
+            assert!(futures_util::poll!(operation.as_mut()).is_pending());
+            workflow_fact_log::append_facts_for_events(
+                &fixture.store,
+                &[match change {
+                    "abort" => WorkflowEvent::ExecutionAborted {
+                        execution_id: snapshot.execution_id.clone(),
+                        aborted_node: None,
+                        timestamp: current_timestamp(),
+                    },
+                    "attached" => WorkflowEvent::SessionAttached {
+                        execution_id: snapshot.execution_id.clone(),
+                        node_execution_id: target.id.clone(),
+                        session_id: "external-session".into(),
+                        timestamp: current_timestamp(),
+                    },
+                    _ => WorkflowEvent::CommandSpawned {
+                        execution_id: snapshot.execution_id.clone(),
+                        node_execution_id: sibling.id.clone(),
+                        display_command: format!("external-{attempt}"),
+                        timestamp: current_timestamp(),
+                    },
+                }],
+            )
+            .unwrap();
+            if attempt + 1 == attempts {
+                drop(guard);
+                break;
+            }
+            let mut next_guard = Box::pin(fixture.host.commit_lock.lock());
+            assert!(futures_util::poll!(next_guard.as_mut()).is_pending());
+            drop(guard);
+            assert!(futures_util::poll!(operation.as_mut()).is_pending());
+            guard = next_guard.await;
+        }
+        let result = operation.await;
+
+        // Then
+        if change == "sibling" {
+            result.unwrap();
+            assert!(fixture.sessions.rolled_back.lock().unwrap().is_empty());
+            assert_eq!(
+                *fixture.sessions.activated.lock().unwrap(),
+                [target.id.clone()]
+            );
+        } else {
+            let error = result.unwrap_err();
+            if change == "exhausted" {
+                assert!(matches!(error, WorkflowRuntimeError::Conflict(_)));
+                assert!(matches!(
+                    fixture
+                        .host
+                        .settle_runtime_failure(&fixture.app, &snapshot.execution_id, &error,)
+                        .await,
+                    Err(WorkflowRuntimeError::Conflict(_))
+                ));
+            } else {
+                assert!(matches!(error, WorkflowRuntimeError::InvalidState(_)));
+            }
+            assert_eq!(
+                *fixture.sessions.rolled_back.lock().unwrap(),
+                [target.id.clone()]
+            );
+            assert!(fixture.sessions.activated.lock().unwrap().is_empty());
+        }
+        assert_eq!(fixture.sessions.prepared.lock().unwrap().len(), 1);
+        let records =
+            workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap();
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| matches!(record.fact, NodeFact::SessionAttached(_)))
+                .count(),
+            usize::from(matches!(change, "sibling" | "attached"))
+        );
+        assert!(!records
+            .iter()
+            .any(|record| matches!(record.fact, NodeFact::RuntimeFailureObserved(_))));
+        let latest = fixture
+            .host
+            .load_execution(&fixture.app, &snapshot.execution_id)
+            .await
+            .unwrap();
+        let expected = match change {
+            "sibling" => Some(format!("agent-{}", target.id)),
+            "attached" => Some("external-session".into()),
+            _ => None,
+        };
+        assert_eq!(
+            latest.node_execution(&target.id).unwrap().session_id,
+            expected
+        );
+    }
 }

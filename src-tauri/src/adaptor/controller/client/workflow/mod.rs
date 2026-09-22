@@ -163,7 +163,7 @@ fn validation_error_string(
 #[cfg(all(test, feature = "desktop"))]
 fn parse_execution_origin(
     value: Option<String>,
-) -> Result<crate::adaptor::gateway::workflow::execution_store::ExecutionOrigin, String> {
+) -> Result<crate::domain::workflow::ExecutionOrigin, String> {
     value
         .as_deref()
         .map(crate::domain::workflow::ExecutionOrigin::from_public_value)
@@ -209,10 +209,10 @@ pub(crate) mod tests {
     };
     use super::*;
     use crate::adaptor::gateway::workflow::event::WorkflowEvent;
-    use crate::adaptor::gateway::workflow::execution_store::{ExecutionOrigin, ExecutionStatus};
     use crate::adaptor::gateway::workflow::schema::{
         FacetRefs, NodeDefinition, NodeKind, NodeKindName, SessionSpec,
     };
+    use crate::domain::workflow::{ExecutionOrigin, ExecutionStatus};
     use std::path::Path;
     use tempfile::TempDir;
 
@@ -393,7 +393,7 @@ pub(crate) mod tests {
     fn parse_execution_origin_rejects_unknown_values() {
         assert!(matches!(
             parse_execution_origin(None).unwrap(),
-            crate::adaptor::gateway::workflow::execution_store::ExecutionOrigin::DesktopUi
+            crate::domain::workflow::ExecutionOrigin::DesktopUi
         ));
         for invalid in ["remote", "unknown"] {
             let err = parse_execution_origin(Some(invalid.to_string()))
@@ -1185,8 +1185,8 @@ pub(crate) mod tests {
         worktree: &str,
         status: ExecutionStatus,
         started_at: f64,
-    ) -> crate::adaptor::gateway::workflow::execution_store::WorkflowExecutionMetadata {
-        crate::adaptor::gateway::workflow::execution_store::WorkflowExecutionMetadata {
+    ) -> crate::domain::workflow::WorkflowExecutionSummary {
+        crate::domain::workflow::WorkflowExecutionSummary {
             execution_id: execution_id.to_string(),
             workflow_name: workflow_name.to_string(),
             status,
@@ -1207,7 +1207,7 @@ pub(crate) mod tests {
 
     fn write_read_only_execution(
         store: &Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>,
-        execution: &crate::adaptor::gateway::workflow::execution_store::WorkflowExecutionMetadata,
+        execution: &crate::domain::workflow::WorkflowExecutionSummary,
     ) {
         crate::adaptor::gateway::workflow::test_support::seed_canonical_execution(
             store,

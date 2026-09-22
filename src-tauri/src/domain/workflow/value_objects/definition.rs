@@ -290,6 +290,7 @@ impl WorkflowDefinition {
 
     /// 実行開始 node。root が sequence なら実効 entry（entry 指定 or children
     /// 先頭）の子、それ以外は root 自身。
+    #[cfg(test)]
     pub fn initial_execution_node_index(&self) -> Option<usize> {
         let entry_index = self.entry_index()?;
         match self.nodes[entry_index].sequence() {
@@ -301,6 +302,7 @@ impl WorkflowDefinition {
         }
     }
 
+    #[cfg(test)]
     pub fn initial_execution_node(&self) -> Option<&NodeDefinition> {
         self.initial_execution_node_index()
             .map(|index| &self.nodes[index])

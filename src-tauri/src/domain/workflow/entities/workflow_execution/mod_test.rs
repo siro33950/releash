@@ -87,6 +87,63 @@ fn next_leaf(decision: ExecutionAdvanceDecision) -> LeafStart {
 }
 
 #[test]
+fn test_node起動_起動済みのleafと終了したleafは再起動しない() {
+    for kind in ["session: {provider: codex}", "command: true"] {
+        // Given
+        let mut execution = execution(&format!(
+            "name: launch\ndescription: test\nnodes:\n  main: {{{kind}}}"
+        ));
+        let leaf = next_leaf(
+            execution
+                .start_root(&mut id_source(), 1.0)
+                .unwrap()
+                .decision,
+        );
+        assert!(execution
+            .node_execution(&leaf.node_execution_id)
+            .unwrap()
+            .can_start_process());
+        assert!(execution.can_prepare_node_worktree(&leaf.node_execution_id));
+
+        // When
+        match leaf.kind {
+            LeafKind::Session => {
+                execution.attach_node_session(&leaf.node_execution_id, "agent".into(), 2.0);
+            }
+            LeafKind::Command => {
+                execution.record_node_display_command(&leaf.node_execution_id, "true".into(), 2.0);
+            }
+        }
+
+        // Then
+        assert!(!execution
+            .node_execution(&leaf.node_execution_id)
+            .unwrap()
+            .can_start_process());
+        assert!(!execution.can_prepare_node_worktree(&leaf.node_execution_id));
+        let mut node = execution
+            .node_execution(&leaf.node_execution_id)
+            .unwrap()
+            .clone();
+        node.session_id = None;
+        node.display_command = None;
+        for status in [
+            RuntimeNodeExecutionStatus::WaitingApproval,
+            RuntimeNodeExecutionStatus::Succeeded,
+            RuntimeNodeExecutionStatus::Aborted,
+        ] {
+            node.status = status;
+            assert!(!node.can_start_process());
+        }
+        node.status = RuntimeNodeExecutionStatus::Running;
+        for kind in [NodeKindName::Sequence, NodeKindName::Fanout] {
+            node.kind = kind;
+            assert!(!node.can_start_process());
+        }
+    }
+}
+
+#[test]
 fn test_sequenceの成果_通って成果を産出した子だけをmapに統合する() {
     // Given
     let mut execution = execution(
@@ -1112,4 +1169,27 @@ fn test_実行木archive遷移_未終了を拒否し終了状態を変えずarch
     assert!(execution.restore_archive().is_none());
     assert_eq!(execution.state(), &before);
     assert!(execution.archive(5.0, "manual").unwrap().is_some());
+}
+
+#[test]
+fn test_command反映判定_実行木とnodeとattemptが一致するrunningだけを受理する() {
+    // Given
+    let mut tree = execution("name: wf\ndescription: test\nnodes:\n  main:\n    command: true\n");
+    let leaf = next_leaf(tree.start_root(&mut id_source(), 1.0).unwrap().decision);
+    let id = &leaf.node_execution_id;
+    // When / Then
+    assert!(tree.validate_command_attempt(id, "main", 1).is_ok());
+    assert!(tree.validate_command_attempt("missing", "main", 1).is_err());
+    assert!(tree.validate_command_attempt(id, "other", 1).is_err());
+    assert!(tree.validate_command_attempt(id, "main", 2).is_err());
+    tree.mark_node_waiting_approval(id, 2.0);
+    assert_eq!(
+        tree.validate_command_attempt(id, "main", 1),
+        Err("command NodeExecution is no longer running")
+    );
+    tree.transition_aborted();
+    assert_eq!(
+        tree.validate_command_attempt(id, "main", 1),
+        Err("execution tree is terminal")
+    );
 }

@@ -522,7 +522,7 @@ mod tests {
         let execution_id = "00000000-0000-4000-8000-000000001491";
         crate::adaptor::gateway::workflow::test_support::seed_canonical_execution(
             store,
-            &crate::adaptor::gateway::workflow::execution_store::WorkflowExecutionMetadata {
+            &crate::domain::workflow::WorkflowExecutionSummary {
                 execution_id: execution_id.to_string(),
                 workflow_name: "B006 workflow".to_string(),
                 status: ExecutionStatus::Running,

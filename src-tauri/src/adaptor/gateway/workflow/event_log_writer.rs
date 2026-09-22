@@ -1,10 +1,5 @@
 use crate::adaptor::gateway::workflow::event::WorkflowEvent;
 
-pub(crate) enum ProviderStopCommitOutcome {
-    Committed,
-    CanonicalFactsCommittedWithProviderLifecycleFailure(String),
-}
-
 fn managed_store(
     app: &super::workflow_host::WorkflowRuntimeDependencies,
 ) -> Result<std::sync::Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>, String> {
@@ -30,33 +25,14 @@ pub(crate) fn append_required_events_for_app(
 /// provider Stop の受理: 事実（stop_received 等）を先に追記し、provider lifecycle
 /// event を provider ストリームへ commit する。
 ///
-/// canonical facts の追記後に provider lifecycle commit が失敗した場合は post-commit
-/// outcome として返す。呼び出し側は warning を記録するが、確定済みの Stop 受理は
-/// 失敗へ戻さない。retry と診断情報の永続化はこの境界では行わない。
-pub(crate) async fn append_provider_stop_for_app(
+/// workflow facts の確定後に provider lifecycle を確定する。
+pub(crate) async fn commit_provider_stop_for_app(
     app: &super::workflow_host::WorkflowRuntimeDependencies,
-    events: &[WorkflowEvent],
     provider_events: Vec<crate::domain::provider_lifecycle::ScopedProviderLifecycleEvent>,
-) -> Result<ProviderStopCommitOutcome, String> {
+) -> Result<(), String> {
     let store = managed_store(app)?;
-    crate::adaptor::gateway::workflow::fact_log::append_facts_for_events(&store, events)?;
-    if provider_events.is_empty() {
-        return Ok(ProviderStopCommitOutcome::Committed);
-    }
-    let repository: std::sync::Arc<
-        dyn crate::domain::local_event::LocalEventTransactionRepository,
-    > = store.clone();
     let installation_id = store.installation_id().to_string();
-    Ok(
-        match commit_provider_lifecycle_events(repository, installation_id, provider_events).await {
-            Ok(()) => ProviderStopCommitOutcome::Committed,
-            Err(error) => {
-                ProviderStopCommitOutcome::CanonicalFactsCommittedWithProviderLifecycleFailure(
-                    error,
-                )
-            }
-        },
-    )
+    commit_provider_lifecycle_events(store, installation_id, provider_events).await
 }
 
 async fn commit_provider_lifecycle_events(

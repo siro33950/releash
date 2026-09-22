@@ -141,11 +141,11 @@ pub(in crate::cli) mod test_support {
 
     use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
     use crate::adaptor::gateway::workflow::event::WorkflowEvent;
-    use crate::adaptor::gateway::workflow::execution_store::WorkflowExecutionMetadata;
     use crate::domain::comment::{
         ReviewActor, ReviewComment, ReviewHistoryEntry, ReviewResolveInfo, ReviewTarget,
         ReviewThread, ReviewThreadState,
     };
+    use crate::domain::workflow::WorkflowExecutionSummary as WorkflowExecutionMetadata;
     use crate::domain::workflow::{ExecutionOrigin, ExecutionStatus, TokenUsage};
 
     pub(in crate::cli) fn write_review_config(data_dir: &Path) {

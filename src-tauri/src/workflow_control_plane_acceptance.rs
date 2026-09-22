@@ -747,11 +747,14 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
         &self,
         execution_id: &str,
     ) -> Result<Option<AcceptanceWorkflowExecution>, String> {
-        Ok(self
-            .runtime_driver
-            .acceptance_state_by_execution_id(execution_id)
+        self.runtime_driver
+            .acceptance_state_by_execution_id(
+                &crate::desktop_test_support::workflow_dependencies(self._app.handle()),
+                execution_id,
+            )
             .await
-            .map(acceptance_execution_from_runtime))
+            .map(|snapshot| snapshot.map(acceptance_execution_from_runtime))
+            .map_err(|error| error.to_string())
     }
 
     pub async fn submit(&self, node_execution_id: &str) -> Result<(), String> {

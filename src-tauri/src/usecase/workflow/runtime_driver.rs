@@ -54,16 +54,6 @@ pub(crate) struct WorkflowRuntimeDecision {
     pub(crate) effects: Vec<WorkflowRuntimeEffect>,
 }
 
-impl WorkflowRuntimeDecision {
-    pub(crate) fn applied(events: Vec<WorkflowEvent>, effects: Vec<WorkflowRuntimeEffect>) -> Self {
-        Self {
-            outcome: TransitionOutcome::Applied,
-            events,
-            effects,
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum WorkflowTransactionPreparationError {
     EventWithoutStateChange,
@@ -101,24 +91,6 @@ impl PreparedWorkflowTransaction {
         let mut after = before.clone();
         let decision = observe(&mut after)?;
         Self::from_candidate(before, after, decision)
-    }
-
-    /// Captures a candidate already produced under the runtime registry lock.
-    ///
-    /// This is used during migration of legacy callers: mutation validity still
-    /// comes exclusively from aggregate methods, while this use-case takes over
-    /// the durable commit and publication boundary.
-    pub(crate) fn capture_applied(
-        before: ExecutionTree,
-        after: ExecutionTree,
-        events: Vec<WorkflowEvent>,
-        effects: Vec<WorkflowRuntimeEffect>,
-    ) -> Result<Self, WorkflowTransactionPreparationError> {
-        Self::from_candidate(
-            before,
-            after,
-            WorkflowRuntimeDecision::applied(events, effects),
-        )
     }
 
     pub(crate) fn capture_with_outcome(
@@ -184,29 +156,6 @@ impl PreparedWorkflowTransaction {
             return Err(WorkflowTransactionCommitError::StaleCandidate);
         }
         persist(self.events()).map_err(WorkflowTransactionCommitError::Persistence)?;
-        *current = self.after;
-        Ok(DurableWorkflowTransaction {
-            #[cfg(test)]
-            outcome: self.decision.outcome,
-            effects: self.decision.effects,
-        })
-    }
-
-    pub(crate) async fn persist_async<E, P, Fut>(
-        self,
-        current: &mut ExecutionTree,
-        persist: P,
-    ) -> Result<DurableWorkflowTransaction, WorkflowTransactionCommitError<E>>
-    where
-        P: FnOnce(Vec<WorkflowEvent>) -> Fut,
-        Fut: std::future::Future<Output = Result<(), E>>,
-    {
-        if current != &self.before {
-            return Err(WorkflowTransactionCommitError::StaleCandidate);
-        }
-        persist(self.decision.events.clone())
-            .await
-            .map_err(WorkflowTransactionCommitError::Persistence)?;
         *current = self.after;
         Ok(DurableWorkflowTransaction {
             #[cfg(test)]
@@ -414,88 +363,6 @@ mod tests {
             Err(WorkflowTransactionCommitError::StaleCandidate)
         ));
         assert!(!persisted);
-    }
-
-    #[tokio::test]
-    async fn persist_async_updates_current_only_after_persistence_succeeds() {
-        let mut live = ExecutionTree::restore(RuntimeExecutionState::Running);
-        let prepared = PreparedWorkflowTransaction::observe(&live, |candidate| {
-            let outcome = candidate.abort();
-            Ok(WorkflowRuntimeDecision {
-                outcome,
-                events: vec![aborted_event()],
-                effects: vec![WorkflowRuntimeEffect::BroadcastState],
-            })
-        })
-        .unwrap();
-
-        let durable = prepared
-            .persist_async(&mut live, |_| async { Ok::<_, ()>(()) })
-            .await
-            .unwrap();
-
-        assert_eq!(live.state(), &RuntimeExecutionState::Aborted);
-        assert_eq!(durable.outcome(), TransitionOutcome::Applied);
-        assert_eq!(
-            durable.into_effects(),
-            vec![WorkflowRuntimeEffect::BroadcastState]
-        );
-    }
-
-    #[tokio::test]
-    async fn persist_async_rejects_stale_candidate_without_persistence() {
-        let live = ExecutionTree::restore(RuntimeExecutionState::Running);
-        let prepared = PreparedWorkflowTransaction::observe(&live, |candidate| {
-            let outcome = candidate.abort();
-            Ok(WorkflowRuntimeDecision {
-                outcome,
-                events: vec![aborted_event()],
-                effects: Vec::new(),
-            })
-        })
-        .unwrap();
-        let mut stale = ExecutionTree::restore(RuntimeExecutionState::Running);
-        stale.abort();
-        let persisted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let observed = persisted.clone();
-
-        let result = prepared
-            .persist_async(&mut stale, move |_| async move {
-                observed.store(true, std::sync::atomic::Ordering::SeqCst);
-                Ok::<_, ()>(())
-            })
-            .await;
-
-        assert!(matches!(
-            result,
-            Err(WorkflowTransactionCommitError::StaleCandidate)
-        ));
-        assert!(!persisted.load(std::sync::atomic::Ordering::SeqCst));
-    }
-
-    #[tokio::test]
-    async fn persist_async_propagates_persistence_failure_without_updating_current() {
-        let mut live = ExecutionTree::restore(RuntimeExecutionState::Running);
-        let before = live.clone();
-        let prepared = PreparedWorkflowTransaction::observe(&live, |candidate| {
-            let outcome = candidate.abort();
-            Ok(WorkflowRuntimeDecision {
-                outcome,
-                events: vec![aborted_event()],
-                effects: vec![WorkflowRuntimeEffect::BroadcastState],
-            })
-        })
-        .unwrap();
-
-        let result = prepared
-            .persist_async(&mut live, |_| async { Err("disk") })
-            .await;
-
-        assert!(matches!(
-            result,
-            Err(WorkflowTransactionCommitError::Persistence("disk"))
-        ));
-        assert_eq!(live, before);
     }
 
     #[test]
