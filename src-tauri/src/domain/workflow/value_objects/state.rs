@@ -33,7 +33,7 @@ impl RuntimeExecutionState {
 
 /// Internal transition snapshot used by the runtime and restore path.
 ///
-/// This is deliberately separate from the public `WorkflowExecution` read model.
+/// This is deliberately separate from the public `ExecutionTree` read model.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorkflowRuntimeSnapshot {
     pub execution_id: String,

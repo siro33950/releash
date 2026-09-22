@@ -1,5 +1,3 @@
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use serde::Serialize;
 
 use super::workspace_node_command::{
@@ -7,15 +5,8 @@ use super::workspace_node_command::{
     WorkspaceSessionNodeRenameTarget,
 };
 use super::WorkflowUsecase;
-use crate::domain::workflow::{WorkflowError, WorkflowExecutionId};
+use crate::domain::workflow::WorkflowError;
 use crate::usecase::agent_session::AgentSessionItemDto;
-
-fn unix_timestamp_seconds() -> f64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs_f64()
-}
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -265,40 +256,42 @@ impl WorkflowUsecase {
             .map(|snapshot| reconcile_workspace_tree_selection(snapshot, selected_node_id))
     }
 
-    pub(crate) fn archive_workspace_workflow_execution(
+    pub(crate) async fn archive_workspace_workflow_execution(
         &self,
+        runtime: &super::WorkflowRuntimeUsecase,
         worktree_path: &str,
         execution_id: &str,
     ) -> Result<(), WorkflowError> {
-        let execution_id = WorkflowExecutionId::new(execution_id.to_string())?;
-        if self
-            .authorize_execution_summary_for_worktree(execution_id.as_str(), worktree_path)?
-            .is_none()
-        {
-            return Err(WorkflowError::external(format!(
-                "Workflow execution not found: {execution_id}"
-            )));
-        }
-        self.execution_archives
-            .archive_manual(&execution_id, unix_timestamp_seconds())
+        self.authorize_archive_target(worktree_path, execution_id)?;
+        runtime.archive_execution_tree(execution_id, "manual").await
     }
 
-    pub(crate) fn restore_workspace_workflow_execution(
+    pub(crate) async fn restore_workspace_workflow_execution(
+        &self,
+        runtime: &super::WorkflowRuntimeUsecase,
+        worktree_path: &str,
+        execution_id: &str,
+    ) -> Result<(), WorkflowError> {
+        self.authorize_archive_target(worktree_path, execution_id)?;
+        runtime.restore_execution_tree(execution_id).await
+    }
+
+    fn authorize_archive_target(
         &self,
         worktree_path: &str,
         execution_id: &str,
     ) -> Result<(), WorkflowError> {
-        let execution_id = WorkflowExecutionId::new(execution_id.to_string())?;
-        if self
-            .authorize_execution_summary_for_worktree(execution_id.as_str(), worktree_path)?
-            .is_none()
+        crate::domain::workflow::ExecutionTreeId::new(execution_id.to_string())?;
+        let target = self.execution_archives.target(execution_id)?;
+        if crate::domain::workspace_tree::WorkspaceIdentity::new(
+            self.resolve_worktree_path(worktree_path)?,
+        ) != crate::domain::workspace_tree::WorkspaceIdentity::new(&target.workspace_identity)
         {
-            return Err(WorkflowError::external(format!(
-                "Workflow execution not found: {execution_id}"
-            )));
+            return Err(WorkflowError::validation(
+                "execution tree worktree does not match",
+            ));
         }
-        self.execution_archives
-            .restore_manual(&execution_id, unix_timestamp_seconds())
+        Ok(())
     }
 }
 
@@ -445,6 +438,10 @@ fn workspace_tree_contains_node(nodes: &[WorkspaceTreeItemDto], node_id: &str) -
         }
     })
 }
+
+#[cfg(test)]
+#[path = "workspace_tree_test.rs"]
+mod workspace_tree_tests;
 
 #[cfg(test)]
 mod tests {

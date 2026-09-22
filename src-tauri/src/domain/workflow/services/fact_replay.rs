@@ -9,14 +9,14 @@
 use std::collections::HashMap;
 
 use crate::domain::workflow::entities::workflow_execution::{
-    RuntimeNodeExecution, RuntimeNodeExecutionStatus, WorkflowDefaults,
-    WorkflowExecution as WorkflowExecutionAggregate, WorkflowExecutionRestore,
+    ExecutionTree as ExecutionTreeAggregate, ExecutionTreeRestore, RuntimeNodeExecution,
+    RuntimeNodeExecutionStatus, WorkflowDefaults,
 };
 use crate::domain::workflow::services::event_replay;
 use crate::domain::workflow::{
-    AgentSessionActivity, Artifact, ExecutionStatus, NodeCompletionSignal, NodeExecution,
-    NodeExecutionStatus, NodeFact, NodeFactRecord, NodeKindName, RuntimeExecutionState,
-    TreeRootFact, WorkflowExecution as WorkflowExecutionReadModel,
+    AgentSessionActivity, Artifact, ExecutionStatus, ExecutionTree as ExecutionTreeReadModel,
+    NodeCompletionSignal, NodeExecution, NodeExecutionStatus, NodeFact, NodeFactRecord,
+    NodeKindName, RuntimeExecutionState, TreeRootFact,
 };
 
 #[cfg(test)]
@@ -26,7 +26,7 @@ mod fact_replay_test;
 /// fold の結果: 導出された実行木の状態。
 #[derive(Debug)]
 pub struct FoldedTree {
-    pub aggregate: WorkflowExecutionAggregate,
+    pub aggregate: ExecutionTreeAggregate,
     /// root started に記録された木の実行構成。
     pub root: TreeRootFact,
     /// Session Node ごとに、同じ事実走査から導出した最新の provider 活動状態。
@@ -68,9 +68,9 @@ impl SessionTitleObservationState {
             },
             NodeFact::ProcessExited(_) => self.exited = true,
             NodeFact::ResumeRequested => self.exited = false,
-            NodeFact::ArchiveRequested => self.archived = true,
+            NodeFact::ArchiveRequested(_) => self.archived = true,
             NodeFact::RestoreRequested => {
-                self.exited = false;
+                self.exited = true;
                 self.archived = false;
             }
             _ => {}
@@ -105,11 +105,24 @@ pub fn fold_execution_tree(
     let NodeFact::Started(started) = &first.fact else {
         return Err(format!("tree {tree_id} does not begin with a started fact"));
     };
-    let Some(root) = started.root.clone() else {
+    let Some(mut root) = started.root.clone() else {
         return Err(format!(
             "tree {tree_id} root started carries no tree root fact"
         ));
     };
+
+    for record in records {
+        if record.meta.parent_id.is_none() {
+            if let NodeFact::RepositoryRootObserved(repository_root) = &record.fact {
+                match &root.repository_root {
+                    Some(existing) if existing != repository_root => {
+                        return Err(format!("tree {tree_id} has conflicting repository roots"));
+                    }
+                    _ => root.repository_root = Some(repository_root.clone()),
+                }
+            }
+        }
+    }
 
     let started_at = timestamp_of(first);
     let mut aggregate = restore_aggregate(tree_id, &root, started_at);
@@ -200,7 +213,7 @@ fn timestamp_of(record: &NodeFactRecord) -> f64 {
 }
 
 /// fold 済みの実行木から公開 read model を導出する。
-pub fn derive_read_model(tree: &FoldedTree) -> WorkflowExecutionReadModel {
+pub fn derive_read_model(tree: &FoldedTree) -> ExecutionTreeReadModel {
     let aggregate = &tree.aggregate;
     let status = match aggregate.state() {
         RuntimeExecutionState::Completed => ExecutionStatus::Completed,
@@ -219,7 +232,7 @@ pub fn derive_read_model(tree: &FoldedTree) -> WorkflowExecutionReadModel {
         status,
         &nodes,
     );
-    WorkflowExecutionReadModel {
+    ExecutionTreeReadModel {
         id: aggregate.id.clone(),
         workflow_name: aggregate.workflow.name.clone(),
         status: fields.status,
@@ -283,7 +296,7 @@ pub fn derive_node_artifact(
 }
 
 fn read_model_node(
-    aggregate: &WorkflowExecutionAggregate,
+    aggregate: &ExecutionTreeAggregate,
     node: &RuntimeNodeExecution,
 ) -> NodeExecution {
     let status = match node.status {
@@ -329,8 +342,8 @@ fn restore_aggregate(
     tree_id: &str,
     root: &TreeRootFact,
     started_at: f64,
-) -> WorkflowExecutionAggregate {
-    let mut aggregate = WorkflowExecutionAggregate::restore_runtime(WorkflowExecutionRestore {
+) -> ExecutionTreeAggregate {
+    let mut aggregate = ExecutionTreeAggregate::restore_runtime(ExecutionTreeRestore {
         id: tree_id.to_string(),
         workflow: root.definition.clone(),
         workflow_defaults: WorkflowDefaults,
@@ -341,14 +354,14 @@ fn restore_aggregate(
         started_at,
         updated_at: started_at,
         request: (!root.request.is_empty()).then(|| root.request.clone()),
-        ..WorkflowExecutionRestore::default()
+        ..ExecutionTreeRestore::default()
     });
     aggregate.restore_definition_resolution((*root.definition_resolution).clone());
     aggregate
 }
 
 pub(super) fn apply_record(
-    aggregate: &mut WorkflowExecutionAggregate,
+    aggregate: &mut ExecutionTreeAggregate,
     record: &NodeFactRecord,
     defer_submit_settlement: bool,
 ) -> Result<(), String> {
@@ -402,7 +415,7 @@ pub(super) fn apply_record(
             },
             NodeKindName::Session | NodeKindName::Fanout | NodeKindName::Sequence => Ok(()),
         },
-        NodeFact::RuntimeFailureObserved(_) => Ok(()),
+        NodeFact::RuntimeFailureObserved(_) | NodeFact::RepositoryRootObserved(_) => Ok(()),
         NodeFact::SubmitReceived(_) => {
             let _ = aggregate.record_node_completion_signal(
                 id,
@@ -463,9 +476,19 @@ pub(super) fn apply_record(
         NodeFact::AgentActivityObserved(_)
         | NodeFact::SessionContinuationAdmitted(_)
         | NodeFact::SessionNodeRenamed(_)
-        | NodeFact::ProviderSessionTitleObserved(_)
-        | NodeFact::ArchiveRequested
-        | NodeFact::RestoreRequested => Ok(()),
+        | NodeFact::ProviderSessionTitleObserved(_) => Ok(()),
+        NodeFact::ArchiveRequested(fact) => {
+            if record.meta.parent_id.is_none() {
+                aggregate.replay_archive(Some(fact.clone()));
+            }
+            Ok(())
+        }
+        NodeFact::RestoreRequested => {
+            if record.meta.parent_id.is_none() {
+                aggregate.replay_archive(None);
+            }
+            Ok(())
+        }
     }
 }
 
@@ -473,8 +496,8 @@ pub(super) fn restore_artifact_scope(
     root: &TreeRootFact,
     first: &NodeFactRecord,
     definition: &crate::domain::workflow::NodeDefinition,
-) -> WorkflowExecutionAggregate {
-    let mut aggregate = WorkflowExecutionAggregate::restore_runtime(WorkflowExecutionRestore {
+) -> ExecutionTreeAggregate {
+    let mut aggregate = ExecutionTreeAggregate::restore_runtime(ExecutionTreeRestore {
         id: first.meta.tree_id.clone(),
         workflow: crate::domain::workflow::WorkflowDefinition {
             name: root.definition.name.clone(),
@@ -508,7 +531,7 @@ pub(super) fn restore_artifact_scope(
         launched_as: root.launched_as,
         created_from: root.created_from,
         started_at: timestamp_of(first),
-        ..WorkflowExecutionRestore::default()
+        ..ExecutionTreeRestore::default()
     });
     aggregate.restore_definition_resolution((*root.definition_resolution).clone());
     let _ = aggregate.replay_started();
@@ -606,7 +629,12 @@ pub fn derive_session_facts(
     let mut exited: Option<&crate::domain::workflow::ProcessExitedFact> = None;
     let mut title_observation_state = SessionTitleObservationState::for_session(session_id);
     for record in records {
-        if record.meta.node_execution_id != node_execution_id {
+        let root_archive = record.meta.parent_id.is_none()
+            && matches!(
+                record.fact,
+                NodeFact::ArchiveRequested(_) | NodeFact::RestoreRequested
+            );
+        if record.meta.node_execution_id != node_execution_id && !root_archive {
             continue;
         }
         title_observation_state.apply(&record.fact);
@@ -619,6 +647,7 @@ pub fn derive_session_facts(
                 }
                 view.initial_instruction_admitted |= fact.initial_instruction_admitted;
                 exited = None;
+                view.exited = false;
             }
             NodeFact::SessionContinuationAdmitted(fact) if fact.session_id == session_id => {
                 view.admitted_continuations.push(fact.request_id.clone());
@@ -630,15 +659,41 @@ pub fn derive_session_facts(
                 view.provider_session_title = Some(fact.title.clone());
             }
             NodeFact::ProcessExited(fact) => exited = Some(fact),
-            NodeFact::ResumeRequested | NodeFact::RestoreRequested => {
+            NodeFact::ResumeRequested => {
                 exited = None;
+                view.exited = false;
+            }
+            NodeFact::RestoreRequested => {
+                view.exited = true;
                 view.archived = false;
             }
-            NodeFact::ArchiveRequested => view.archived = true,
+            NodeFact::AbortRequested => view.exited = true,
+            NodeFact::ArchiveRequested(_) => view.archived = true,
             _ => {}
         }
     }
-    view.exited = exited.is_some();
+    view.exited |= exited.is_some();
     view.last_exit_abnormal = exited.is_some_and(|fact| fact.is_abnormal());
     view
+}
+
+pub fn derive_tree_archive(
+    records: &[NodeFactRecord],
+) -> Option<crate::domain::workflow::ExecutionTreeArchiveRecord> {
+    records
+        .iter()
+        .rev()
+        .filter(|record| record.meta.parent_id.is_none())
+        .find_map(|record| match &record.fact {
+            NodeFact::ArchiveRequested(fact) => {
+                Some(Some(crate::domain::workflow::ExecutionTreeArchiveRecord {
+                    execution_id: record.meta.tree_id.clone(),
+                    archived_at: fact.archived_at,
+                    archive_reason: fact.reason.clone(),
+                }))
+            }
+            NodeFact::RestoreRequested => Some(None),
+            _ => None,
+        })
+        .flatten()
 }

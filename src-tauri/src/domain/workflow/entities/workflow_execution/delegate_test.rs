@@ -8,7 +8,7 @@ fn fixture(
     when: &str,
     max_iterations: u32,
     approval: bool,
-) -> (WorkflowExecution, impl FnMut() -> String, String) {
+) -> (ExecutionTree, impl FnMut() -> String, String) {
     let parent = NodeDefinition {
         name: "main".into(),
         kind: NodeKind::Session(SessionSpec::default()),
@@ -32,7 +32,7 @@ fn fixture(
         }),
         ..Default::default()
     };
-    let mut execution = WorkflowExecution::restore_runtime(WorkflowExecutionRestore {
+    let mut execution = ExecutionTree::restore_runtime(ExecutionTreeRestore {
         id: "tree".into(),
         workflow: WorkflowDefinition {
             name: "delegate".into(),
@@ -54,7 +54,7 @@ fn fixture(
 }
 
 fn submit(
-    execution: &mut WorkflowExecution,
+    execution: &mut ExecutionTree,
     parent: &str,
     value: serde_json::Value,
     ids: &mut dyn FnMut() -> String,
@@ -82,7 +82,7 @@ fn submit(
 }
 
 fn stop(
-    execution: &mut WorkflowExecution,
+    execution: &mut ExecutionTree,
     parent: &str,
     ids: &mut dyn FnMut() -> String,
 ) -> AppliedNodeCompletionHandshake {
@@ -92,7 +92,7 @@ fn stop(
         .unwrap()
 }
 
-fn child_id(execution: &WorkflowExecution, parent: &str) -> String {
+fn child_id(execution: &ExecutionTree, parent: &str) -> String {
     execution
         .node_executions
         .iter()
@@ -108,7 +108,7 @@ fn child_id(execution: &WorkflowExecution, parent: &str) -> String {
 }
 
 fn finish_child(
-    execution: &mut WorkflowExecution,
+    execution: &mut ExecutionTree,
     parent: &str,
     value: serde_json::Value,
     ids: &mut dyn FnMut() -> String,
@@ -317,7 +317,7 @@ nodes:
 "#,
     )
     .unwrap();
-    let mut execution = WorkflowExecution::restore_runtime(WorkflowExecutionRestore {
+    let mut execution = ExecutionTree::restore_runtime(ExecutionTreeRestore {
         id: "tree".into(),
         workflow,
         ..Default::default()
@@ -524,11 +524,11 @@ fn test_delegate_承認だけではchild待ちと未成立の続行を完了で�
     assert_eq!(execution.node_executions.len(), 2);
 }
 
-fn execution_from_source(source: &str) -> (WorkflowExecution, impl FnMut() -> String) {
+fn execution_from_source(source: &str) -> (ExecutionTree, impl FnMut() -> String) {
     let workflow: WorkflowDefinition = serde_saphyr::from_str(source).unwrap();
     let errors = crate::domain::workflow::services::validation::validate_all(&workflow);
     assert!(errors.is_empty(), "{errors:?}");
-    let mut execution = WorkflowExecution::restore_runtime(WorkflowExecutionRestore {
+    let mut execution = ExecutionTree::restore_runtime(ExecutionTreeRestore {
         id: "tree".into(),
         workflow,
         request: Some("specification".into()),

@@ -34,7 +34,6 @@ import {
 	ComputeMarkdownInlineChunksRequestSchema,
 	ComputeMarkdownSplitRowsRequestSchema,
 	ComputeVisibleMarkdownBlocksRequestSchema,
-	ConfirmAgentSessionArchiveDeleteRequestSchema,
 	CreateAgentSessionRequestSchema,
 	CreateReviewThreadRequestSchema,
 	CreateWorktreeRequestSchema,
@@ -510,25 +509,6 @@ const commands = {
 					ComputeVisibleMarkdownBlocksRequestSchema,
 					clientJson(
 						ComputeVisibleMarkdownBlocksRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	confirm_agent_session_archive_delete: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["confirm_agent_session_archive_delete"],
-	) => {
-		const result = decode(
-			UnitSchema,
-			await client.confirmAgentSessionArchiveDelete(
-				fromJson(
-					ConfirmAgentSessionArchiveDeleteRequestSchema,
-					clientJson(
-						ConfirmAgentSessionArchiveDeleteRequestSchema,
 						JSON.parse(JSON.stringify(args ?? {})),
 						true,
 					),

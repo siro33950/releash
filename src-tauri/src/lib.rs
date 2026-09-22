@@ -66,7 +66,8 @@ pub fn run_daemon(data_dir: Option<std::path::PathBuf>) -> i32 {
                 data_dir,
                 #[cfg(any(target_os = "macos", target_os = "linux"))]
                 provider_initial_search_path,
-            )?;
+            )
+            .await?;
             daemon.wait().await.map_err(Into::into)
         })
     })();

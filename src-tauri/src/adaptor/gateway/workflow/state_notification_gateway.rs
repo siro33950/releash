@@ -5,7 +5,7 @@ use crate::adaptor::protocol::workflow::{
 };
 use crate::domain::workflow::services::event_replay::derive_workflow_execution_fields;
 use crate::domain::workflow::{
-    Artifact, ExecutionStatus, NodeExecution, RuntimeExecutionState, WorkflowExecution,
+    Artifact, ExecutionStatus, ExecutionTree, NodeExecution, RuntimeExecutionState,
     WorkflowRuntimeSnapshot,
 };
 
@@ -26,7 +26,7 @@ fn emit_workflow_execution_view(
 /// Historical/file-direct queries use the event-log projection repository instead.
 pub(crate) fn workflow_execution_from_runtime_snapshot(
     state: WorkflowRuntimeSnapshot,
-) -> WorkflowExecution {
+) -> ExecutionTree {
     let status = execution_status(&state.state);
     let mut node_executions = state.node_executions.clone();
     enrich_node_executions(&mut node_executions, &state);
@@ -36,7 +36,7 @@ pub(crate) fn workflow_execution_from_runtime_snapshot(
         status,
         &node_executions,
     );
-    WorkflowExecution {
+    ExecutionTree {
         id: state.execution_id,
         workflow_name: state.workflow_name,
         status: derived.status,
@@ -149,7 +149,7 @@ mod tests {
     fn fold_projection(
         execution_id: &str,
         events: &[WorkflowEvent],
-    ) -> crate::domain::workflow::WorkflowExecution {
+    ) -> crate::domain::workflow::ExecutionTree {
         let tmp = tempfile::TempDir::new().unwrap();
         let store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
             crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(

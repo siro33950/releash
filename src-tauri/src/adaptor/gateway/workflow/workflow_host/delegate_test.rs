@@ -1370,7 +1370,7 @@ schemas:
     assert_eq!(fixture.sessions.continuations.lock().unwrap().len(), 1);
 }
 
-fn assert_replayed_nodes(live: &DomainWorkflowExecution, replayed: &DomainWorkflowExecution) {
+fn assert_replayed_nodes(live: &DomainExecutionTree, replayed: &DomainExecutionTree) {
     let mut persisted_nodes = live.node_executions.clone();
     for node in &mut persisted_nodes {
         node.started_at = (node.started_at * 1000.0) as i64 as f64 / 1000.0;

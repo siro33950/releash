@@ -10,7 +10,39 @@ use std::path::{Path, PathBuf};
 
 pub(crate) fn get_main_repo_path(any_path: &str) -> Result<String, RepositoryError> {
     let repo = client::discover(any_path)?;
+    main_repo_path(&repo)
+}
 
+pub(crate) fn find_main_repo_path(any_path: &str) -> Result<Option<String>, RepositoryError> {
+    match client::discover(any_path) {
+        Ok(repo) => main_repo_path(&repo).map(Some),
+        Err(error) if error.code() == git2::ErrorCode::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+pub(crate) fn recorded_main_repo_path(path: &str) -> Option<String> {
+    if let Ok(repository) = client::open(path) {
+        if let Ok(path) = main_repo_path(&repository) {
+            return Some(path);
+        }
+    }
+    let git_file = std::fs::read_to_string(Path::new(path).join(".git")).ok()?;
+    let git_dir = Path::new(path).join(git_file.trim().strip_prefix("gitdir: ")?);
+    let worktrees = git_dir.parent()?;
+    if worktrees.file_name()? != "worktrees" {
+        return None;
+    }
+    let common_dir = worktrees.parent()?;
+    if common_dir.file_name()? != ".git" {
+        return None;
+    }
+    super::worktree_operation::worktree_identity(common_dir.parent()?.to_str()?)
+        .ok()
+        .map(|path| path.to_string_lossy().into_owned())
+}
+
+fn main_repo_path(repo: &Repository) -> Result<String, RepositoryError> {
     if repo.is_worktree() {
         let git_dir = repo.path();
         let commondir_file = git_dir.join("commondir");
@@ -108,6 +140,31 @@ pub(crate) fn prune_invalid(repo_path: &str) -> Result<(), RepositoryError> {
     let repo = client::open(repo_path)?;
     prune_invalid_worktrees(&repo);
     Ok(())
+}
+
+pub(crate) fn registered_worktree_paths(
+    repo_path: &str,
+) -> Result<Vec<(String, String)>, RepositoryError> {
+    let repo = client::open(repo_path)?;
+    let main = resolve_main_repo_path(&repo)?;
+    let name = main
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("main")
+        .to_string();
+    let mut entries = vec![(name, path_to_normalized_repo_string(&main)?)];
+    let names = repo.worktrees()?;
+    for index in 0..names.len() {
+        let Some(name) = names.get(index)? else {
+            continue;
+        };
+        let worktree = repo.find_worktree(name)?;
+        entries.push((
+            name.to_string(),
+            path_to_normalized_repo_string(worktree.path())?,
+        ));
+    }
+    Ok(entries)
 }
 
 pub(crate) fn list_worktrees(repo_path: &str) -> Result<Vec<Worktree>, RepositoryError> {
@@ -212,11 +269,11 @@ pub(crate) fn create_worktree(
     })
 }
 
-pub(crate) fn remove_worktree(
+fn removal_target(
     repo_path: &str,
     worktree_path: &str,
     force: bool,
-) -> Result<Option<String>, RepositoryError> {
+) -> Result<(git2::Worktree, PathBuf, Option<String>, bool), RepositoryError> {
     let repo = client::open(repo_path)?;
 
     let target_path = Path::new(worktree_path)
@@ -243,21 +300,31 @@ pub(crate) fn remove_worktree(
         .ok()
         .map(|wt_repo| get_branch_name_for_repo(&wt_repo));
 
-    let is_locked =
-        matches!(wt.is_locked(), Ok(s) if !matches!(s, git2::WorktreeLockStatus::Unlocked));
-
-    if !force {
-        if is_locked {
-            return Err(RepositoryError::rule("worktree is locked"));
-        }
-        let dirty = get_dirty_count_for_path(wt.path());
-        if dirty > 0 {
-            return Err(RepositoryError::rule(format!(
-                "worktree has {dirty} uncommitted change(s). Use force to remove."
-            )));
-        }
+    let is_locked = !matches!(wt.is_locked()?, git2::WorktreeLockStatus::Unlocked);
+    Worktree {
+        name: wt_name,
+        path: target_path.to_string_lossy().into_owned(),
+        branch: wt_branch.clone().unwrap_or_default(),
+        is_main: false,
+        is_locked,
     }
+    .authorize_removal(
+        force,
+        if force {
+            0
+        } else {
+            get_worktree_dirty_count(worktree_path)?
+        },
+    )?;
+    Ok((wt, target_path, wt_branch, is_locked))
+}
 
+pub(crate) fn remove_worktree(
+    repo_path: &str,
+    worktree_path: &str,
+    force: bool,
+) -> Result<Option<String>, RepositoryError> {
+    let (wt, target_path, wt_branch, is_locked) = removal_target(repo_path, worktree_path, force)?;
     let mut prune_opts = WorktreePruneOptions::new();
     prune_opts.valid(true).working_tree(true);
     if is_locked {
@@ -298,6 +365,15 @@ impl WorktreeRepository for WorktreeGateway {
     ) -> Result<Worktree, RepositoryError> {
         create_worktree(repo_path, worktree_path, branch, create_branch, base_branch)
     }
+    fn validate_removal(
+        &self,
+        repo_path: &str,
+        worktree_path: &str,
+        force: bool,
+    ) -> Result<String, RepositoryError> {
+        let (_, path, _, _) = removal_target(repo_path, worktree_path, force)?;
+        path_to_normalized_repo_string(&path)
+    }
     fn remove(
         &self,
         repo_path: &str,
@@ -305,6 +381,14 @@ impl WorktreeRepository for WorktreeGateway {
         force: bool,
     ) -> Result<Option<String>, RepositoryError> {
         remove_worktree(repo_path, worktree_path, force)
+    }
+    fn invalid_worktree_paths(&self, repo_path: &str) -> Result<Vec<String>, RepositoryError> {
+        let repo = client::open(repo_path)?;
+        let names = repo.worktrees()?;
+        each_worktree(&repo, &names)
+            .filter(|(_, worktree)| worktree.validate().is_err())
+            .map(|(_, worktree)| path_to_normalized_repo_string(worktree.path()))
+            .collect()
     }
     fn prune_invalid(&self, repo_path: &str) -> Result<(), RepositoryError> {
         prune_invalid(repo_path)
@@ -356,6 +440,10 @@ mod worktree_gateway_tests {
         let expected = dir.path().canonicalize().unwrap();
         let result_canon = PathBuf::from(&result).canonicalize().unwrap();
         assert_eq!(result_canon, expected);
+        assert_eq!(
+            find_main_repo_path(dir.path().to_str().unwrap()).unwrap(),
+            Some(result)
+        );
     }
 
     #[test]
@@ -369,6 +457,55 @@ mod worktree_gateway_tests {
         let expected = repo_dir.canonicalize().unwrap();
         let result_canon = PathBuf::from(&result).canonicalize().unwrap();
         assert_eq!(result_canon, expected);
+        assert_eq!(
+            find_main_repo_path(wt_path.to_str().unwrap()).unwrap(),
+            Some(result)
+        );
+    }
+
+    #[test]
+    fn test_旧worktreeの所属repo_git管理情報がなければ親repoを所属と推定しない() {
+        // Given
+        let (directory, _) = create_test_repo();
+        let path = directory.path().join("removed-linked-worktree");
+        std::fs::create_dir(&path).unwrap();
+        // When / Then
+        assert_eq!(recorded_main_repo_path(path.to_str().unwrap()), None);
+        std::fs::remove_dir(&path).unwrap();
+        assert_eq!(recorded_main_repo_path(path.to_str().unwrap()), None);
+    }
+
+    #[test]
+    fn test_旧worktreeの所属repo_相対gitdirでも登録消失後の正規パスを返す() {
+        // Given
+        let (parent, repo_dir, repo) = create_test_repo_with_parent();
+        create_initial_commit(&repo);
+        let path = create_worktree_helper(&repo, parent.path(), "linked", "feature");
+        std::fs::write(
+            path.join(".git"),
+            format!(
+                "gitdir: ../{}/.git/worktrees/linked\n",
+                repo_dir.file_name().unwrap().to_str().unwrap()
+            ),
+        )
+        .unwrap();
+        let mut options = WorktreePruneOptions::new();
+        options.valid(true).working_tree(false);
+        repo.find_worktree("linked")
+            .unwrap()
+            .prune(Some(&mut options))
+            .unwrap();
+        // When / Then
+        assert_eq!(
+            recorded_main_repo_path(path.to_str().unwrap()),
+            Some(
+                repo_dir
+                    .canonicalize()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            )
+        );
     }
 
     #[test]
@@ -384,6 +521,11 @@ mod worktree_gateway_tests {
     fn test_メインリポジトリパス取得_不正パス() {
         let result = get_main_repo_path("/nonexistent/invalid/path");
         assert!(result.is_err());
+        assert_eq!(
+            find_main_repo_path("/nonexistent/invalid/path").unwrap(),
+            None
+        );
+        assert!(find_main_repo_path("\0").is_err());
     }
 
     #[test]
@@ -404,6 +546,29 @@ mod worktree_gateway_tests {
 
         let count = get_worktree_dirty_count(dir.path().to_str().unwrap()).unwrap();
         assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn test_gc用一覧_フォルダ消失後もgit登録を保持し登録削除後は除外する() {
+        let (parent, repo_dir, repo) = create_test_repo_with_parent();
+        create_initial_commit(&repo);
+        let path = create_worktree_helper(&repo, parent.path(), "gc", "gc")
+            .canonicalize()
+            .unwrap();
+        fs::remove_dir_all(&path).unwrap();
+        let listed = registered_worktree_paths(repo_dir.to_str().unwrap()).unwrap();
+        assert!(listed
+            .iter()
+            .any(|(_, found)| found == path.to_str().unwrap()));
+        repo.find_worktree("gc").unwrap().prune(None).unwrap();
+        fs::create_dir(&path).unwrap();
+        let listed = registered_worktree_paths(repo_dir.to_str().unwrap()).unwrap();
+        assert!(!listed
+            .iter()
+            .any(|(_, found)| found == path.to_str().unwrap()));
+        assert!(
+            registered_worktree_paths(parent.path().join("missing").to_str().unwrap()).is_err()
+        );
     }
 
     #[test]

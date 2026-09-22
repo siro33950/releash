@@ -28,10 +28,6 @@ fn test_agent_session_controller_domain結果をwire語彙へ変換する() {
         AgentSessionOpenResponse::from(AgentSessionOpenOutcome::Indeterminate),
         AgentSessionOpenResponse::Indeterminate
     );
-    assert_eq!(
-        AgentSessionArchiveResponse::from(AgentSessionArchiveOutcome::DeleteConfirmationRequired),
-        AgentSessionArchiveResponse::DeleteConfirmationRequired
-    );
 }
 
 #[test]

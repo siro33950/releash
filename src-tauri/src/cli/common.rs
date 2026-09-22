@@ -179,7 +179,7 @@ pub(in crate::cli) mod test_support {
             _ => crate::domain::provider_lifecycle::ProviderKind::Codex,
         };
         let root_facts = crate::domain::workflow::SessionExecutionTreeRootFacts::new(
-            session_id, "/repo", "/repo", provider,
+            session_id, "/repo", "/repo", provider, None,
         )
         .unwrap();
         let meta = root_facts.meta.clone();
@@ -203,7 +203,12 @@ pub(in crate::cli) mod test_support {
                 ))
             }
             crate::domain::agent_session::aggregates::AgentSessionLifecycle::Archived => {
-                Some(crate::domain::workflow::NodeFact::ArchiveRequested)
+                Some(crate::domain::workflow::NodeFact::ArchiveRequested(
+                    crate::domain::workflow::ArchiveRequestedFact {
+                        reason: "manual".into(),
+                        archived_at: 0.0,
+                    },
+                ))
             }
         };
         if let Some(fact) = lifecycle_fact {

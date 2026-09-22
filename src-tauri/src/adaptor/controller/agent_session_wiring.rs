@@ -18,8 +18,7 @@ use crate::usecase::agent_session::{
     AgentSessionQueryService, AgentSessionReadUsecase, AgentSessionRenameUsecase,
     AgentSessionUsecase, ExecutionTreeCacheReleaseError, ProviderAgentRuntime,
     ProviderAvailabilityUsecase, ProviderAvailabilityUsecaseError,
-    ProviderSessionTitleIngestionUsecase, StartedExecutionTreeRegistrar,
-    StartedExecutionTreeRegistrationError,
+    ProviderSessionTitleIngestionUsecase, StartedExecutionTreeRegistrationError,
 };
 use crate::usecase::provider_lifecycle::{
     ProviderExecutionTreeStopCommand, ProviderExecutionTreeStopTransaction,
@@ -62,7 +61,9 @@ pub(crate) struct AgentSessionComposition {
 }
 
 pub(crate) struct DeferredStartedExecutionTreeRegistrar {
-    target: std::sync::RwLock<Option<std::sync::Weak<dyn StartedExecutionTreeRegistrar>>>,
+    target: std::sync::RwLock<
+        Option<std::sync::Weak<crate::usecase::workflow::WorkflowRuntimeUsecase>>,
+    >,
 }
 
 impl DeferredStartedExecutionTreeRegistrar {
@@ -72,7 +73,7 @@ impl DeferredStartedExecutionTreeRegistrar {
         }
     }
 
-    pub(crate) fn bind(&self, target: Arc<dyn StartedExecutionTreeRegistrar>) {
+    pub(crate) fn bind(&self, target: Arc<crate::usecase::workflow::WorkflowRuntimeUsecase>) {
         *self
             .target
             .write()
@@ -80,8 +81,56 @@ impl DeferredStartedExecutionTreeRegistrar {
     }
 }
 
+impl crate::usecase::agent_session::WorktreeMutationAdmission
+    for DeferredStartedExecutionTreeRegistrar
+{
+    fn begin_worktree_mutation(
+        &self,
+        path: &str,
+    ) -> Result<
+        crate::usecase::worktree_operation::WorktreeMutationGuard,
+        crate::domain::workflow::WorkflowError,
+    > {
+        let target = self
+            .target
+            .read()
+            .map_err(|_| {
+                crate::domain::workflow::WorkflowError::external(
+                    "execution tree registrar lock poisoned",
+                )
+            })?
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade)
+            .ok_or_else(|| {
+                crate::domain::workflow::WorkflowError::external(
+                    "execution tree registrar unavailable",
+                )
+            })?;
+        target.begin_worktree_mutation(path)
+    }
+}
+
 #[async_trait::async_trait]
-impl StartedExecutionTreeRegistrar for DeferredStartedExecutionTreeRegistrar {
+impl crate::usecase::agent_session::ExecutionTreeCache for DeferredStartedExecutionTreeRegistrar {
+    async fn release_deleted_execution_tree(
+        &self,
+        tree_id: &str,
+    ) -> Result<(), ExecutionTreeCacheReleaseError> {
+        let target = self
+            .target
+            .read()
+            .map_err(|_| ExecutionTreeCacheReleaseError::Corrupt)?
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade)
+            .ok_or(ExecutionTreeCacheReleaseError::Unavailable)?;
+        target.release_deleted_execution_tree(tree_id).await
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::usecase::agent_session::StartedExecutionTreeRegistrar
+    for DeferredStartedExecutionTreeRegistrar
+{
     async fn reserve_started_execution_tree(
         &self,
         tree_id: &str,
@@ -125,19 +174,76 @@ impl StartedExecutionTreeRegistrar for DeferredStartedExecutionTreeRegistrar {
             .release_started_execution_tree_reservation(tree_id)
             .await
     }
+}
 
-    async fn release_deleted_execution_tree(
+#[async_trait::async_trait]
+impl crate::usecase::agent_session::AgentSessionExecutionTreeLifecycle
+    for DeferredStartedExecutionTreeRegistrar
+{
+    async fn lock_execution_tree(
         &self,
         tree_id: &str,
-    ) -> Result<(), ExecutionTreeCacheReleaseError> {
+    ) -> Result<tokio::sync::OwnedMutexGuard<()>, crate::domain::workflow::WorkflowError> {
         let target = self
             .target
             .read()
-            .map_err(|_| ExecutionTreeCacheReleaseError::Corrupt)?
+            .map_err(|_| {
+                crate::domain::workflow::WorkflowError::external(
+                    "execution tree registrar poisoned",
+                )
+            })?
             .as_ref()
             .and_then(std::sync::Weak::upgrade)
-            .ok_or(ExecutionTreeCacheReleaseError::Unavailable)?;
-        target.release_deleted_execution_tree(tree_id).await
+            .ok_or_else(|| {
+                crate::domain::workflow::WorkflowError::external(
+                    "execution tree runtime unavailable",
+                )
+            })?;
+        target.lock_execution_tree(tree_id).await
+    }
+
+    async fn archive_execution_tree(
+        &self,
+        tree_id: &str,
+    ) -> Result<(), crate::domain::workflow::WorkflowError> {
+        let target = self
+            .target
+            .read()
+            .map_err(|_| {
+                crate::domain::workflow::WorkflowError::external(
+                    "execution tree registrar poisoned",
+                )
+            })?
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade)
+            .ok_or_else(|| {
+                crate::domain::workflow::WorkflowError::external(
+                    "execution tree runtime unavailable",
+                )
+            })?;
+        target.archive_execution_tree(tree_id, "manual").await
+    }
+
+    async fn restore_execution_tree(
+        &self,
+        tree_id: &str,
+    ) -> Result<(), crate::domain::workflow::WorkflowError> {
+        let target = self
+            .target
+            .read()
+            .map_err(|_| {
+                crate::domain::workflow::WorkflowError::external(
+                    "execution tree registrar poisoned",
+                )
+            })?
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade)
+            .ok_or_else(|| {
+                crate::domain::workflow::WorkflowError::external(
+                    "execution tree runtime unavailable",
+                )
+            })?;
+        target.restore_execution_tree_locked(tree_id).await
     }
 }
 
@@ -162,6 +268,22 @@ impl DeferredProviderExecutionTreeStopTransaction {
 
 #[async_trait::async_trait]
 impl ProviderExecutionTreeStopTransaction for DeferredProviderExecutionTreeStopTransaction {
+    fn begin_worktree_mutation(
+        &self,
+        path: &str,
+    ) -> Result<
+        crate::usecase::worktree_operation::WorktreeMutationGuard,
+        ProviderLifecycleIngressUsecaseError,
+    > {
+        let target = self
+            .target
+            .read()
+            .map_err(|_| ProviderLifecycleIngressUsecaseError::Corrupt)?
+            .clone()
+            .ok_or(ProviderLifecycleIngressUsecaseError::StorageUnavailable)?;
+        target.begin_worktree_mutation(path)
+    }
+
     async fn commit_provider_stop(
         &self,
         command: ProviderExecutionTreeStopCommand,

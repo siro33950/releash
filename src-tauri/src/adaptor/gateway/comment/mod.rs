@@ -346,6 +346,18 @@ impl ReviewEventStore for FileReviewEventStore {
         worktree_name: &str,
         mutation: ReviewEventMutation<'_>,
     ) -> Result<Vec<ReviewEvent>, ReviewError> {
+        use crate::domain::repository::worktree_operation::WorktreeOperationLocks;
+        let _mutation =
+            super::repository::worktree_operation::FileWorktreeOperationLocks::new(app_data_dir)
+                .mutation(worktree_name)
+                .map_err(|error| match error {
+                    crate::domain::repository::RepositoryError::Rule(message) => {
+                        ReviewError::PermissionDenied(message)
+                    }
+                    crate::domain::repository::RepositoryError::External(message) => {
+                        ReviewError::Io(message)
+                    }
+                })?;
         let _guard = self.file_lock.lock();
         let _process_guard = acquire_worktree_file_lock(app_data_dir, worktree_name)?;
         let mut events = self.load_events(app_data_dir, worktree_name)?;

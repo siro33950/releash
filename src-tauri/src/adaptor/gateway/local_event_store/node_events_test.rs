@@ -387,3 +387,53 @@ mod delete_tree_tests {
         assert_eq!(read_tree(&connection, "tree-2").unwrap().len(), 1);
     }
 }
+
+#[test]
+fn test_archive一括読取_複数chunkでも各treeの最新root事実だけを返す() {
+    // Given
+    let connection = connection();
+    let ids = (0..260)
+        .map(|index| format!("tree-{index:03}"))
+        .collect::<Vec<_>>();
+    for (index, id) in ids.iter().enumerate() {
+        let mut root = row(id, "root", None);
+        root.event_type = "archive_requested".into();
+        append_node_event(&connection, &root, 1).unwrap();
+        if index % 2 == 0 {
+            root.event_type = "restore_requested".into();
+            append_node_event(&connection, &root, 2).unwrap();
+        }
+        let mut child = row(id, "child", Some("root"));
+        child.event_type = "archive_requested".into();
+        append_node_event(&connection, &child, 3).unwrap();
+    }
+    let mut unrelated = row("not-requested", "root", None);
+    unrelated.event_type = "archive_requested".into();
+    append_node_event(&connection, &unrelated, 4).unwrap();
+    // When
+    let rows = super::latest_root_rows_for_trees(
+        &connection,
+        &ids,
+        &["archive_requested", "restore_requested"],
+    )
+    .unwrap();
+    // Then
+    assert_eq!(rows.len(), ids.len());
+    for (index, fact) in rows.iter().enumerate() {
+        assert_eq!(fact.tree_id, ids[index]);
+        assert_eq!(fact.node_execution_id, "root");
+        assert_eq!(
+            fact.event_type,
+            if index % 2 == 0 {
+                "restore_requested"
+            } else {
+                "archive_requested"
+            }
+        );
+    }
+    assert!(
+        super::latest_root_rows_for_trees(&connection, &[], &["archive_requested"])
+            .unwrap()
+            .is_empty()
+    );
+}

@@ -46,6 +46,14 @@ pub(crate) struct ProviderExecutionTreeStopCommand {
 
 #[async_trait::async_trait]
 pub(crate) trait ProviderExecutionTreeStopTransaction: Send + Sync {
+    fn begin_worktree_mutation(
+        &self,
+        path: &str,
+    ) -> Result<
+        crate::usecase::worktree_operation::WorktreeMutationGuard,
+        ProviderLifecycleIngressUsecaseError,
+    >;
+
     async fn commit_provider_stop(
         &self,
         command: ProviderExecutionTreeStopCommand,
@@ -112,6 +120,7 @@ impl ProviderLifecycleIngressUsecase {
     ) -> Result<ProviderLifecycleIngressResult, ProviderLifecycleIngressUsecaseError> {
         let provider = signal.provider();
         let agent_session_id = signal.scope().agent_session_id().to_string();
+        let _mutation = self.begin_session_mutation(&agent_session_id).await?;
         let binding_id = signal.binding_id().to_string();
         let kind = signal.clone().into_kind();
         match kind {
@@ -281,6 +290,9 @@ impl ProviderLifecycleIngressUsecase {
         capability: &str,
         observation: ProviderLifecycleUnavailableObservation,
     ) -> Result<ProviderLifecycleIngressResult, ProviderLifecycleIngressUsecaseError> {
+        let _mutation = self
+            .begin_session_mutation(observation.scope().agent_session_id())
+            .await?;
         let provider = observation.provider();
         let reason = observation.reason();
         let binding_id = observation.binding_id().to_string();
@@ -303,6 +315,24 @@ impl ProviderLifecycleIngressUsecase {
                 .map_err(map_hook_health_error)?;
         }
         Ok(result)
+    }
+
+    async fn begin_session_mutation(
+        &self,
+        id: &str,
+    ) -> Result<
+        Vec<crate::usecase::worktree_operation::WorktreeMutationGuard>,
+        ProviderLifecycleIngressUsecaseError,
+    > {
+        let Some(session) = self.sessions.find(id).await.map_err(map_session_error)? else {
+            return Ok(Vec::new());
+        };
+        Ok(vec![
+            self.execution_tree_stop_transaction
+                .begin_worktree_mutation(session.session().workspace().as_str())?,
+            self.execution_tree_stop_transaction
+                .begin_worktree_mutation(session.session().worktree_path())?,
+        ])
     }
 }
 

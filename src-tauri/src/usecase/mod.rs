@@ -43,3 +43,5 @@ pub(crate) mod login_item;
 
 #[cfg(feature = "desktop")]
 pub(crate) mod cli_install;
+
+pub mod worktree_operation;

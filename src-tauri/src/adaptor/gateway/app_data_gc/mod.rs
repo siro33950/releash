@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
@@ -146,35 +146,40 @@ fn resolve_live_worktrees(shared_repo_paths: SharedRepoPaths) -> Option<LiveWork
         return None;
     }
     let mut live_worktrees = Vec::new();
+    let mut worktree_repositories = HashMap::new();
     let mut unresolved_repo_paths = Vec::new();
     let mut unresolved_workspace_state_key_prefixes = HashSet::new();
-    for repo_path in repo_paths {
-        let worktrees = match crate::adaptor::gateway::repository::worktree::list_worktrees(
-            &repo_path,
-        ) {
-            Ok(worktrees) => worktrees,
-            Err(error) => {
-                log::warn!(
+    for repo_path in &repo_paths {
+        let worktrees =
+            match crate::adaptor::gateway::repository::worktree::registered_worktree_paths(
+                repo_path,
+            ) {
+                Ok(worktrees) => worktrees,
+                Err(error) => {
+                    log::warn!(
                     "app data gc retained workspace-keyed data for unresolved repository {}: {error}",
                     repo_path
                 );
-                unresolved_workspace_state_key_prefixes
-                    .extend(workspace_state_key_prefixes(&repo_path));
-                unresolved_repo_paths.push(normalize_path(&repo_path));
-                continue;
-            }
-        };
-        live_worktrees.extend(
-            worktrees
-                .into_iter()
-                .map(|worktree| live_worktree(worktree.name, worktree.path)),
-        );
+                    unresolved_workspace_state_key_prefixes
+                        .extend(workspace_state_key_prefixes(repo_path));
+                    unresolved_repo_paths.push(normalize_path(repo_path));
+                    continue;
+                }
+            };
+        for (name, path) in worktrees {
+            worktree_repositories.insert(normalize_path(&path), normalize_path(repo_path));
+            live_worktrees.push(live_worktree(name, path));
+        }
     }
-    Some(LiveWorktreeResolution::new(
-        LiveWorktreeSet::from_worktrees(live_worktrees),
-        unresolved_repo_paths,
-        unresolved_workspace_state_key_prefixes,
-    ))
+    Some(
+        LiveWorktreeResolution::new(
+            LiveWorktreeSet::from_worktrees(live_worktrees),
+            unresolved_repo_paths,
+            unresolved_workspace_state_key_prefixes,
+        )
+        .with_repository_paths(repo_paths)
+        .with_worktree_repositories(worktree_repositories),
+    )
 }
 
 fn collect_workspace_state_records(

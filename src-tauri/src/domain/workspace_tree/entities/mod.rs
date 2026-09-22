@@ -291,7 +291,7 @@ impl WorkspaceTree {
             can_resume_session: false,
             process_presence: Default::default(),
             can_abort: true,
-            can_archive: false,
+            can_archive: true,
             display_command: None,
             command_result: None,
             dynamic_fanout: false,
@@ -691,10 +691,7 @@ impl WorkspaceTreeProjector {
                         workflow.status = workflow_status(status);
                         workflow.updated_at_bits = updated_at.to_bits();
                         workflow.can_abort = status.can_abort();
-                        workflow.can_archive = matches!(
-                            status,
-                            ExecutionStatus::Completed | ExecutionStatus::Aborted
-                        );
+                        workflow.can_archive = true;
                     }
                 }
                 WorkspaceStructureFact::NodeStarted {

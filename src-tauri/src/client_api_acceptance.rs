@@ -131,17 +131,26 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
             .invoke_handler(move |invoke| router.handle(invoke))
             .build(crate::application_context())
             .unwrap();
-        drop(
+        let store =
             LocalEventStore::open(LocalEventStoreConfig::production(data_dir.to_path_buf()))
-                .unwrap(),
-        );
+                .unwrap();
         let workflow = crate::adaptor::controller::wiring::build_canonical_workflow_read_usecase(
             data_dir, None,
         )
         .unwrap();
-        let runtime = WorkflowRuntimeUsecase::new(Arc::new(
-            crate::provider_lifecycle_acceptance::AcceptanceWorkflowRuntimeGateway::default(),
-        ));
+        let runtime = WorkflowRuntimeUsecase::new_with_worktree_operations(
+            Arc::new(
+                crate::provider_lifecycle_acceptance::AcceptanceWorkflowRuntimeGateway::default(),
+            ),
+            Arc::new(
+                crate::adaptor::gateway::workflow::ExecutionTreeArchiveFactRepository::new(
+                    store, data_dir,
+                ),
+            ),
+            Arc::new(crate::usecase::worktree_operation::WorktreeOperations::new(Arc::new(
+                crate::adaptor::gateway::repository::worktree_operation::FileWorktreeOperationLocks::new(data_dir),
+            ))),
+        );
         let terminal = TerminalSurfaceRuntime::new(data_dir.to_path_buf());
         let router = crate::adaptor::controller::api::build_router(
             Arc::new(workflow),

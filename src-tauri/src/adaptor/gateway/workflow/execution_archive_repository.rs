@@ -1,502 +1,361 @@
 use std::collections::BTreeMap;
-#[cfg(test)]
-use std::collections::HashSet;
-use std::fs::{self, OpenOptions};
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::path::PathBuf;
+use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
-
+use super::fact_log::{self, FactLogReadBackend};
+use crate::adaptor::gateway::local_event_store::LocalEventStore;
 use crate::domain::workflow::{
-    WorkflowError, WorkflowExecutionArchiveRepository, WorkflowExecutionArchiveSnapshot,
-    WorkflowExecutionId, WorkflowExecutionManualArchiveRecord, WORKFLOW_ARCHIVE_REASON_MANUAL,
+    ExecutionTreeArchiveCandidate, ExecutionTreeArchiveRecord, ExecutionTreeArchiveRepository,
+    ExecutionTreeArchiveSnapshot, ExecutionTreeArchiveTarget, ExecutionTreeId, NodeFact,
+    WorkflowError,
 };
 
-const WORKFLOW_EXECUTION_ARCHIVES_FILE: &str = "workflow_execution_archives.json";
-
-#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-struct WorkflowExecutionArchiveRecord {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    archived_at: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    archive_reason: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    restored_at: Option<f64>,
+pub(crate) struct ExecutionTreeArchiveFactRepository {
+    backend: FactLogReadBackend,
+    legacy_path: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-struct WorkflowExecutionArchiveIndex {
-    #[serde(default)]
-    executions: BTreeMap<String, WorkflowExecutionArchiveRecord>,
-}
-
-#[derive(Debug)]
-pub(crate) struct WorkflowExecutionArchiveFileRepository {
-    data_dir: PathBuf,
-    state: Mutex<Result<WorkflowExecutionArchiveState, String>>,
-}
-
-#[derive(Debug, Clone)]
-struct WorkflowExecutionArchiveState {
-    index: WorkflowExecutionArchiveIndex,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-#[cfg(test)]
-pub(crate) struct WorkflowExecutionArchivePruneResult {
-    pub(crate) records_removed: u64,
-    pub(crate) reclaimed_bytes: u64,
-}
-
-impl WorkflowExecutionArchiveFileRepository {
-    pub(crate) fn new(data_dir: impl Into<PathBuf>) -> Self {
-        let data_dir = data_dir.into();
-        let repository = Self {
-            data_dir,
-            state: Mutex::new(Ok(WorkflowExecutionArchiveState {
-                index: WorkflowExecutionArchiveIndex::default(),
-            })),
-        };
-        let initial = repository
-            .load_index_unlocked()
-            .map(|index| WorkflowExecutionArchiveState { index })
-            .map_err(|error| error.to_string());
-        *repository.state.lock().expect("archive state poisoned") = initial;
-        repository
-    }
-
-    fn archive_index_path(&self) -> PathBuf {
-        self.data_dir.join(WORKFLOW_EXECUTION_ARCHIVES_FILE)
-    }
-
-    fn load_index_unlocked(&self) -> Result<WorkflowExecutionArchiveIndex, WorkflowError> {
-        let path = self.archive_index_path();
-        match fs::read_to_string(&path) {
-            Ok(content) => serde_json::from_str(&content).map_err(|e| {
-                WorkflowError::external(format!("Failed to parse workflow execution archives: {e}"))
-            }),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                Ok(WorkflowExecutionArchiveIndex::default())
-            }
-            Err(e) => Err(WorkflowError::external(format!(
-                "Failed to read workflow execution archives: {e}"
-            ))),
+impl ExecutionTreeArchiveFactRepository {
+    pub(crate) fn new(store: Arc<LocalEventStore>, data_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            backend: FactLogReadBackend::Live(store),
+            legacy_path: Some(data_dir.into().join("workflow_execution_archives.json")),
         }
     }
 
-    fn save_index_unlocked(
+    pub(crate) fn from_backend(backend: FactLogReadBackend) -> Self {
+        Self {
+            backend,
+            legacy_path: None,
+        }
+    }
+
+    fn read_candidate_page(
         &self,
-        index: &WorkflowExecutionArchiveIndex,
+        after: Option<&str>,
+        include_archived: bool,
+    ) -> Result<Vec<ExecutionTreeArchiveCandidate>, WorkflowError> {
+        let after = after.unwrap_or("").to_string();
+        self.backend.run_indexed(move |connection| {
+            let mut statement = connection.prepare(
+                "SELECT tree_id, json_extract(detail, '$.root.worktreePath'),
+                        json_extract(detail, '$.root.workspaceIdentity'),
+                        COALESCE(json_extract(detail, '$.root.repositoryRoot'),
+                          (SELECT json_extract(owner.detail, '$.repositoryRoot')
+                           FROM node_events owner WHERE owner.tree_id = node_events.tree_id
+                             AND (owner.event_type = 'isolated_worktree_created'
+                               OR (owner.parent_id IS NULL AND owner.event_type = 'repository_root_observed'))
+                           ORDER BY owner.seq LIMIT 1))
+                 FROM node_events WHERE tree_id > ?1 AND parent_id IS NULL AND event_type = 'started'
+                   AND seq = (SELECT MIN(root.seq) FROM node_events root WHERE root.tree_id = node_events.tree_id)
+                   AND (?2 OR COALESCE((SELECT event_type FROM node_events archive
+                     WHERE archive.tree_id = node_events.tree_id AND archive.parent_id IS NULL
+                       AND archive.event_type IN ('archive_requested', 'restore_requested')
+                     ORDER BY seq DESC LIMIT 1), '') != 'archive_requested')
+                 ORDER BY tree_id LIMIT 128"
+            ).map_err(|_| crate::domain::local_event::LocalEventQueryError::InvalidRequest)?;
+            statement.query_map(rusqlite::params![after, include_archived], |row| Ok(ExecutionTreeArchiveCandidate {
+                execution_id: row.get(0)?, worktree_path: row.get(1)?, workspace_identity: row.get(2)?, repository_root: row.get(3)?,
+            })).and_then(|rows| rows.collect()).map_err(|_| crate::domain::local_event::LocalEventQueryError::InvalidRequest)
+        }).map_err(|error| WorkflowError::external(format!("archive candidate query failed: {error:?}")))
+    }
+
+    fn append(
+        &self,
+        execution_id: &str,
+        fact: NodeFact,
+        timestamp: f64,
     ) -> Result<(), WorkflowError> {
-        fs::create_dir_all(&self.data_dir).map_err(|e| {
-            WorkflowError::external(format!("Failed to create app data directory: {e}"))
-        })?;
-        let json = serde_json::to_string_pretty(index).map_err(|e| {
-            WorkflowError::external(format!(
-                "Failed to serialize workflow execution archives: {e}"
-            ))
-        })?;
-        atomic_write(&self.archive_index_path(), &json).map_err(|e| {
-            WorkflowError::external(format!("Failed to write workflow execution archives: {e}"))
+        let FactLogReadBackend::Live(store) = &self.backend else {
+            return Err(WorkflowError::external("archive repository is read only"));
+        };
+        let tree_id = execution_id.to_string();
+        let row = self
+            .backend
+            .run_indexed(move |connection| {
+                crate::adaptor::gateway::local_event_store::node_events::first_row_of_tree(
+                    connection, &tree_id,
+                )
+                .map_err(|_| crate::domain::local_event::LocalEventQueryError::InvalidRequest)
+            })
+            .map_err(|error| {
+                WorkflowError::external(format!("archive root query failed: {error:?}"))
+            })?
+            .ok_or_else(|| WorkflowError::NotFound(execution_id.to_string()))?;
+        let root = fact_log::record_from_row(&row)
+            .map_err(WorkflowError::external)?
+            .ok_or_else(|| WorkflowError::NotFound(execution_id.to_string()))?;
+        fact_log::append_single_fact(store, &root.meta, &fact, (timestamp * 1000.0) as i64)
+            .map_err(WorkflowError::external)
+    }
+}
+
+impl ExecutionTreeArchiveRepository for ExecutionTreeArchiveFactRepository {
+    fn location(&self, execution_id: &str) -> Result<ExecutionTreeArchiveCandidate, WorkflowError> {
+        let id = execution_id.to_string();
+        let row = self
+            .backend
+            .run_indexed(move |connection| {
+                crate::adaptor::gateway::local_event_store::node_events::first_row_of_tree(
+                    connection, &id,
+                )
+                .map_err(|_| crate::domain::local_event::LocalEventQueryError::InvalidRequest)
+            })
+            .map_err(|error| WorkflowError::external(format!("tree root query failed: {error:?}")))?
+            .ok_or_else(|| WorkflowError::NotFound(execution_id.into()))?;
+        let mut root = super::stored_definition::read_tree_header(&row.detail)
+            .map_err(WorkflowError::CorruptStoredState)?
+            .ok_or_else(|| WorkflowError::NotFound(execution_id.into()))?;
+        if root.repository_root.is_none() {
+            let id = execution_id.to_string();
+            root.repository_root = self.backend.run_indexed(move |connection| {
+                connection.query_row(
+                    "SELECT (SELECT json_extract(detail, '$.repositoryRoot') FROM node_events
+                     WHERE tree_id = ?1 AND parent_id IS NULL AND event_type = 'repository_root_observed'
+                     ORDER BY seq LIMIT 1)",
+                    [id], |row| row.get(0),
+                ).map_err(|_| crate::domain::local_event::LocalEventQueryError::InvalidRequest)
+            }).map_err(|error| WorkflowError::external(format!("tree repository query failed: {error:?}")))?;
+        }
+        Ok(ExecutionTreeArchiveCandidate {
+            execution_id: row.tree_id,
+            worktree_path: root.worktree_path,
+            workspace_identity: root.workspace_identity,
+            repository_root: root.repository_root,
         })
     }
 
-    fn resolve_state<'a>(
-        &self,
-        state: &'a mut Result<WorkflowExecutionArchiveState, String>,
-    ) -> Result<&'a WorkflowExecutionArchiveState, WorkflowError> {
-        if state.is_err() {
-            match self.load_index_unlocked() {
-                Ok(index) => *state = Ok(WorkflowExecutionArchiveState { index }),
-                Err(error) => {
-                    let error = error.to_string();
-                    *state = Err(error.clone());
-                    return Err(WorkflowError::external(error));
-                }
-            }
-        }
-        state
-            .as_ref()
-            .map_err(|error| WorkflowError::external(error.clone()))
+    fn worktree_identity(&self, path: &str) -> Result<String, WorkflowError> {
+        Ok(archive_path_key(path)?.to_string_lossy().into_owned())
     }
 
-    fn update_index(
+    fn worktree_target_page(
         &self,
-        update: impl FnOnce(&mut WorkflowExecutionArchiveIndex),
+        worktree_path: &str,
+        after: Option<&str>,
+    ) -> Result<Vec<ExecutionTreeArchiveCandidate>, WorkflowError> {
+        let worktree_path = archive_path_key(worktree_path)?;
+        let mut after = after.map(str::to_string);
+        loop {
+            let page = self.read_candidate_page(after.as_deref(), true)?;
+            let Some(last) = page.last() else {
+                return Ok(Vec::new());
+            };
+            after = Some(last.execution_id.clone());
+            let targets: Vec<_> = page
+                .into_iter()
+                .filter(|candidate| {
+                    [&candidate.worktree_path, &candidate.workspace_identity]
+                        .into_iter()
+                        .any(|path| archive_path_key(path).is_ok_and(|path| path == worktree_path))
+                })
+                .collect();
+            if !targets.is_empty() {
+                return Ok(targets);
+            }
+        }
+    }
+
+    fn candidate_page(
+        &self,
+        after: Option<&str>,
+    ) -> Result<Vec<ExecutionTreeArchiveCandidate>, WorkflowError> {
+        let mut page = self.read_candidate_page(after, false)?;
+        for candidate in &mut page {
+            if candidate.repository_root.is_none() {
+                candidate.repository_root =
+                    [&candidate.workspace_identity, &candidate.worktree_path]
+                        .into_iter()
+                        .find_map(|path| {
+                            super::super::repository::worktree::recorded_main_repo_path(path)
+                        });
+            }
+        }
+        Ok(page)
+    }
+
+    fn record_repository_root(
+        &self,
+        execution_id: &str,
+        repository_root: &str,
+        timestamp: f64,
     ) -> Result<(), WorkflowError> {
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| WorkflowError::external("workflow execution archive lock poisoned"))?;
-        let current = self.resolve_state(&mut state)?;
-        let mut index = current.index.clone();
-        update(&mut index);
-        self.save_index_unlocked(&index)?;
-        *state = Ok(WorkflowExecutionArchiveState { index });
+        match self.location(execution_id)?.repository_root {
+            Some(root) if root != repository_root => Err(WorkflowError::CorruptStoredState(
+                format!("tree {execution_id} has conflicting repository roots"),
+            )),
+            Some(_) => Ok(()),
+            None => self.append(
+                execution_id,
+                NodeFact::RepositoryRootObserved(repository_root.into()),
+                timestamp,
+            ),
+        }
+    }
+
+    fn legacy_session_archive_page(
+        &self,
+        after: Option<&str>,
+    ) -> Result<Vec<ExecutionTreeArchiveRecord>, WorkflowError> {
+        let after = after.unwrap_or("").to_string();
+        let ids = self.backend.run_indexed(move |connection| {
+            let mut statement = connection.prepare(
+                "SELECT tree_id FROM node_events archive
+                 WHERE tree_id > ?1 AND parent_id IS NULL AND event_type = 'archive_requested'
+                   AND json_extract(detail, '$.archivedAt') IS NULL
+                   AND seq = (SELECT MAX(seq) FROM node_events latest WHERE latest.tree_id = archive.tree_id
+                       AND latest.parent_id IS NULL AND latest.event_type IN ('archive_requested', 'restore_requested'))
+                 ORDER BY tree_id LIMIT 128"
+            ).map_err(|_| crate::domain::local_event::LocalEventQueryError::InvalidRequest)?;
+            statement.query_map([after], |row| row.get::<_, String>(0)).and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
+                .map_err(|_| crate::domain::local_event::LocalEventQueryError::InvalidRequest)
+        }).map_err(|error| WorkflowError::external(format!("legacy session archive query failed: {error:?}")))?;
+        Ok(self.archive_snapshot_for(&ids)?.records)
+    }
+
+    fn target(&self, execution_id: &str) -> Result<ExecutionTreeArchiveTarget, WorkflowError> {
+        let folded = fact_log::fold_tree_from(&self.backend, execution_id)
+            .map_err(WorkflowError::CorruptStoredState)?
+            .ok_or_else(|| WorkflowError::NotFound(execution_id.to_string()))?;
+        let status =
+            crate::domain::workflow::services::fact_replay::derive_read_model(&folded).status;
+        Ok(ExecutionTreeArchiveTarget {
+            execution_id: execution_id.to_string(),
+            worktree_path: folded.root.worktree_path,
+            workspace_identity: folded.root.workspace_identity,
+            repository_root: folded.root.repository_root,
+            status,
+        })
+    }
+
+    fn archive(
+        &self,
+        execution_id: &ExecutionTreeId,
+        archived_at: f64,
+        reason: &str,
+    ) -> Result<(), WorkflowError> {
+        let mut tree = fact_log::fold_tree_from(&self.backend, execution_id.as_str())
+            .map_err(WorkflowError::CorruptStoredState)?
+            .ok_or_else(|| WorkflowError::NotFound(execution_id.to_string()))?;
+        if let Some(fact) = tree.aggregate.archive(archived_at, reason)? {
+            return self.append(execution_id.as_str(), fact, archived_at);
+        }
+        let id = execution_id.to_string();
+        let legacy = self.backend.run_indexed(move |connection| {
+            connection.query_row(
+                "SELECT detail, timestamp FROM node_events WHERE tree_id = ?1 AND parent_id IS NULL
+                 AND event_type IN ('archive_requested', 'restore_requested') ORDER BY seq DESC LIMIT 1",
+                [id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            ).map_err(|_| crate::domain::local_event::LocalEventQueryError::InvalidRequest)
+        }).map_err(|error| WorkflowError::external(format!("legacy archive query failed: {error:?}")))?;
+        let detail: serde_json::Value = serde_json::from_str(&legacy.0)
+            .map_err(|error| WorkflowError::CorruptStoredState(error.to_string()))?;
+        if detail
+            .get("archivedAt")
+            .is_none_or(serde_json::Value::is_null)
+        {
+            let fact = fact_log::decode_stored_fact("archive_requested", &legacy.0, legacy.1)
+                .map_err(WorkflowError::CorruptStoredState)?
+                .ok_or_else(|| WorkflowError::CorruptStoredState("archive fact missing".into()))?;
+            return self.append(execution_id.as_str(), fact, legacy.1 as f64 / 1000.0);
+        }
         Ok(())
     }
 
-    #[cfg(test)]
-    pub(crate) fn prune_records(
+    fn restore(
         &self,
-        execution_ids: &HashSet<String>,
-    ) -> Result<WorkflowExecutionArchivePruneResult, WorkflowError> {
-        if execution_ids.is_empty() {
-            return Ok(WorkflowExecutionArchivePruneResult::default());
-        }
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| WorkflowError::external("workflow execution archive lock poisoned"))?;
-        let mut index = self.resolve_state(&mut state)?.index.clone();
-        let path = self.archive_index_path();
-        let before = match fs::symlink_metadata(&path) {
-            Ok(metadata) if metadata.file_type().is_file() => metadata.len(),
-            Ok(_) => 0,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
-            Err(error) => {
-                return Err(WorkflowError::external(format!(
-                    "Failed to read workflow execution archives metadata: {error}"
-                )));
-            }
-        };
-        let mut removed = 0;
-        for execution_id in execution_ids {
-            if index.executions.remove(execution_id).is_some() {
-                removed += 1;
-            }
-        }
-        if removed == 0 {
-            return Ok(WorkflowExecutionArchivePruneResult::default());
-        }
-        self.save_index_unlocked(&index)?;
-        *state = Ok(WorkflowExecutionArchiveState { index });
-        let after = fs::symlink_metadata(&path)
-            .map(|metadata| metadata.len())
-            .unwrap_or(0);
-        Ok(WorkflowExecutionArchivePruneResult {
-            records_removed: removed,
-            reclaimed_bytes: before.saturating_sub(after),
-        })
-    }
-}
-
-impl WorkflowExecutionArchiveRepository for WorkflowExecutionArchiveFileRepository {
-    fn archive_manual(
-        &self,
-        execution_id: &WorkflowExecutionId,
-        archived_at: f64,
-    ) -> Result<(), WorkflowError> {
-        self.update_index(|index| {
-            let record = index
-                .executions
-                .entry(execution_id.to_string())
-                .or_default();
-            record.archived_at = Some(archived_at);
-            record.archive_reason = Some(WORKFLOW_ARCHIVE_REASON_MANUAL.to_string());
-        })
-    }
-
-    fn restore_manual(
-        &self,
-        execution_id: &WorkflowExecutionId,
+        execution_id: &ExecutionTreeId,
         restored_at: f64,
     ) -> Result<(), WorkflowError> {
-        self.update_index(|index| {
-            let record = index
-                .executions
-                .entry(execution_id.to_string())
-                .or_default();
-            record.archived_at = None;
-            record.archive_reason = None;
-            record.restored_at = Some(restored_at);
-        })
+        let mut tree = fact_log::fold_tree_from(&self.backend, execution_id.as_str())
+            .map_err(WorkflowError::CorruptStoredState)?
+            .ok_or_else(|| WorkflowError::NotFound(execution_id.to_string()))?;
+        if let Some(fact) = tree.aggregate.restore_archive() {
+            self.append(execution_id.as_str(), fact, restored_at)?;
+        }
+        Ok(())
     }
 
-    fn manual_archive_snapshot_for(
+    fn archive_snapshot_for(
         &self,
         execution_ids: &[String],
-    ) -> Result<WorkflowExecutionArchiveSnapshot, WorkflowError> {
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| WorkflowError::external("workflow execution archive lock poisoned"))?;
-        let state = self.resolve_state(&mut state)?;
-        let mut records = execution_ids
+    ) -> Result<ExecutionTreeArchiveSnapshot, WorkflowError> {
+        let facts = fact_log::read_tree_archive_records_for(&self.backend, execution_ids)
+            .map_err(WorkflowError::external)?;
+        let mut records = facts
             .iter()
-            .filter_map(|execution_id| {
-                state
-                    .index
-                    .executions
-                    .get(execution_id)
-                    .filter(|record| is_manual_archive_record(record))
-                    .map(|record| WorkflowExecutionManualArchiveRecord {
-                        execution_id: execution_id.clone(),
-                        archived_at: record
-                            .archived_at
-                            .expect("manual archive predicate requires archived_at"),
-                    })
+            .filter_map(|fact| {
+                crate::domain::workflow::services::fact_replay::derive_tree_archive(
+                    std::slice::from_ref(fact),
+                )
             })
             .collect::<Vec<_>>();
         records.sort_by(|a, b| a.execution_id.cmp(&b.execution_id));
-        records.dedup_by(|left, right| left.execution_id == right.execution_id);
-        Ok(WorkflowExecutionArchiveSnapshot { records })
+        records.dedup_by(|a, b| a.execution_id == b.execution_id);
+        Ok(ExecutionTreeArchiveSnapshot { records })
+    }
+
+    fn legacy_archives(&self) -> Result<Vec<ExecutionTreeArchiveRecord>, WorkflowError> {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct LegacyRecord {
+            archived_at: Option<f64>,
+            archive_reason: Option<String>,
+        }
+        #[derive(serde::Deserialize)]
+        struct LegacyIndex {
+            #[serde(default)]
+            executions: BTreeMap<String, LegacyRecord>,
+        }
+        let Some(path) = &self.legacy_path else {
+            return Ok(Vec::new());
+        };
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(WorkflowError::external(error.to_string())),
+        };
+        let index: LegacyIndex = serde_json::from_slice(&bytes)
+            .map_err(|error| WorkflowError::external(error.to_string()))?;
+        Ok(index
+            .executions
+            .into_iter()
+            .filter_map(|(execution_id, record)| {
+                record
+                    .archived_at
+                    .map(|archived_at| ExecutionTreeArchiveRecord {
+                        execution_id,
+                        archived_at,
+                        archive_reason: record
+                            .archive_reason
+                            .unwrap_or_else(|| "manual".to_string()),
+                    })
+            })
+            .collect())
+    }
+
+    fn finish_legacy_migration(&self) -> Result<(), WorkflowError> {
+        let Some(path) = &self.legacy_path else {
+            return Ok(());
+        };
+        match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(WorkflowError::external(error.to_string())),
+        }
     }
 }
 
-fn is_manual_archive_record(record: &WorkflowExecutionArchiveRecord) -> bool {
-    record.archived_at.is_some()
-        && record.archive_reason.as_deref() == Some(WORKFLOW_ARCHIVE_REASON_MANUAL)
-}
-
-fn atomic_write(path: &Path, content: &str) -> std::io::Result<()> {
-    let parent = path.parent().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no parent")
-    })?;
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no file name")
-        })?;
-    let tmp = parent.join(format!(".{file_name}.{}.tmp", uuid::Uuid::new_v4()));
-    let result = (|| {
-        let mut file = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
-        file.write_all(content.as_bytes())?;
-        file.sync_all()?;
-        fs::rename(&tmp, path)
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&tmp);
-    }
-    result
+fn archive_path_key(path: &str) -> Result<PathBuf, WorkflowError> {
+    crate::adaptor::gateway::repository::worktree_operation::worktree_identity(path).map_err(
+        |error| {
+            WorkflowError::external(format!(
+                "archive worktree path {path} could not be resolved: {error}"
+            ))
+        },
+    )
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::{mpsc, Arc};
-    use std::time::Duration;
-
-    #[test]
-    fn missing_archive_index_loads_as_empty() {
-        let temp = tempfile::tempdir().unwrap();
-        let repo = WorkflowExecutionArchiveFileRepository::new(temp.path());
-
-        let index = repo.load_index_unlocked().unwrap();
-
-        assert!(index.executions.is_empty());
-        assert!(!repo.archive_index_path().exists());
-    }
-
-    #[test]
-    fn manual_archive_and_restore_persist_records() {
-        let temp = tempfile::tempdir().unwrap();
-        let repo = WorkflowExecutionArchiveFileRepository::new(temp.path());
-        let execution_id =
-            WorkflowExecutionId::new("11111111-1111-4111-8111-111111111111".to_string()).unwrap();
-
-        repo.archive_manual(&execution_id, 10.0).unwrap();
-        repo.restore_manual(&execution_id, 20.0).unwrap();
-
-        let index = repo.load_index_unlocked().unwrap();
-        let record = &index.executions["11111111-1111-4111-8111-111111111111"];
-        assert_eq!(record.archived_at, None);
-        assert_eq!(record.archive_reason, None);
-        assert_eq!(record.restored_at, Some(20.0));
-        assert!(repo
-            .manual_archive_snapshot_for(&[execution_id.to_string()])
-            .unwrap()
-            .records
-            .is_empty());
-    }
-
-    #[test]
-    fn b004_archive_queries_use_the_process_local_index_without_file_rereads() {
-        let temp = tempfile::tempdir().unwrap();
-        std::fs::write(
-            temp.path().join(WORKFLOW_EXECUTION_ARCHIVES_FILE),
-            r#"{"executions":{"11111111-1111-4111-8111-111111111111":{"archivedAt":10.0,"archiveReason":"manual"}}}"#,
-        )
-        .unwrap();
-        let repo = WorkflowExecutionArchiveFileRepository::new(temp.path());
-        let first = repo
-            .manual_archive_snapshot_for(&["11111111-1111-4111-8111-111111111111".to_string()])
-            .unwrap();
-
-        std::fs::write(
-            temp.path().join(WORKFLOW_EXECUTION_ARCHIVES_FILE),
-            b"not valid JSON",
-        )
-        .unwrap();
-        for _ in 0..20 {
-            assert_eq!(
-                repo.manual_archive_snapshot_for(&[
-                    "11111111-1111-4111-8111-111111111111".to_string()
-                ])
-                .unwrap(),
-                first
-            );
-        }
-    }
-
-    #[test]
-    fn archive_operations_recover_after_startup_io_failure() {
-        let temp = tempfile::tempdir().unwrap();
-        let blocked_data_dir = temp.path().join("blocked");
-        std::fs::write(&blocked_data_dir, b"not a directory").unwrap();
-        let repo = WorkflowExecutionArchiveFileRepository::new(&blocked_data_dir);
-        let execution_id =
-            WorkflowExecutionId::new("11111111-1111-4111-8111-111111111111".to_string()).unwrap();
-
-        std::fs::remove_file(&blocked_data_dir).unwrap();
-        std::fs::create_dir(&blocked_data_dir).unwrap();
-
-        repo.archive_manual(&execution_id, 10.0).unwrap();
-        assert_eq!(
-            repo.manual_archive_snapshot_for(&[execution_id.to_string()])
-                .unwrap()
-                .records
-                .len(),
-            1
-        );
-        repo.restore_manual(&execution_id, 20.0).unwrap();
-        assert!(repo
-            .manual_archive_snapshot_for(&[execution_id.to_string()])
-            .unwrap()
-            .records
-            .is_empty());
-    }
-
-    #[test]
-    fn archive_operations_keep_reporting_an_unrepaired_parse_error() {
-        let temp = tempfile::tempdir().unwrap();
-        std::fs::write(
-            temp.path().join(WORKFLOW_EXECUTION_ARCHIVES_FILE),
-            b"not valid JSON",
-        )
-        .unwrap();
-        let repo = WorkflowExecutionArchiveFileRepository::new(temp.path());
-        let execution_id =
-            WorkflowExecutionId::new("11111111-1111-4111-8111-111111111111".to_string()).unwrap();
-
-        for result in [
-            repo.archive_manual(&execution_id, 10.0),
-            repo.restore_manual(&execution_id, 20.0),
-            repo.manual_archive_snapshot_for(&[execution_id.to_string()])
-                .map(|_| ()),
-        ] {
-            assert!(result
-                .unwrap_err()
-                .to_string()
-                .contains("Failed to parse workflow execution archives"));
-        }
-    }
-
-    #[test]
-    fn archive_snapshot_recovers_after_parse_error_is_repaired() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join(WORKFLOW_EXECUTION_ARCHIVES_FILE);
-        std::fs::write(&path, b"not valid JSON").unwrap();
-        let repo = WorkflowExecutionArchiveFileRepository::new(temp.path());
-        let execution_id = "11111111-1111-4111-8111-111111111111".to_string();
-        assert!(repo
-            .manual_archive_snapshot_for(std::slice::from_ref(&execution_id))
-            .is_err());
-
-        std::fs::write(
-            &path,
-            r#"{"executions":{"11111111-1111-4111-8111-111111111111":{"archivedAt":10.0,"archiveReason":"manual"}}}"#,
-        )
-        .unwrap();
-
-        assert_eq!(
-            repo.manual_archive_snapshot_for(&[execution_id])
-                .unwrap()
-                .records
-                .len(),
-            1
-        );
-    }
-
-    #[test]
-    fn lock_preserves_concurrent_manual_archive_updates() {
-        let temp = tempfile::tempdir().unwrap();
-        let repo = Arc::new(WorkflowExecutionArchiveFileRepository::new(temp.path()));
-        let (loaded_tx, loaded_rx) = mpsc::channel();
-
-        let slow_repo = repo.clone();
-        let slow_archive = std::thread::spawn(move || {
-            slow_repo
-                .update_index(|index| {
-                    loaded_tx.send(()).expect("archive load signal");
-                    std::thread::sleep(Duration::from_millis(50));
-                    let record = index
-                        .executions
-                        .entry("slow-execution".to_string())
-                        .or_default();
-                    record.archived_at = Some(20.0);
-                    record.archive_reason = Some(WORKFLOW_ARCHIVE_REASON_MANUAL.to_string());
-                })
-                .unwrap();
-        });
-
-        loaded_rx.recv().expect("slow archive loaded index");
-        let manual_execution_id =
-            WorkflowExecutionId::new("22222222-2222-4222-8222-222222222222".to_string()).unwrap();
-        repo.archive_manual(&manual_execution_id, 30.0).unwrap();
-
-        slow_archive.join().unwrap();
-
-        let index = repo.load_index_unlocked().unwrap();
-        assert_eq!(
-            index.executions["slow-execution"].archive_reason.as_deref(),
-            Some(WORKFLOW_ARCHIVE_REASON_MANUAL)
-        );
-        assert_eq!(
-            index.executions["22222222-2222-4222-8222-222222222222"]
-                .archive_reason
-                .as_deref(),
-            Some(WORKFLOW_ARCHIVE_REASON_MANUAL)
-        );
-        let records = repo
-            .manual_archive_snapshot_for(&[
-                "22222222-2222-4222-8222-222222222222".to_string(),
-                "slow-execution".to_string(),
-            ])
-            .unwrap()
-            .records;
-        assert_eq!(
-            records
-                .iter()
-                .map(|record| record.execution_id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["22222222-2222-4222-8222-222222222222", "slow-execution"]
-        );
-    }
-
-    #[test]
-    fn prune_records_removes_selected_executions_with_atomic_index_update() {
-        let temp = tempfile::tempdir().unwrap();
-        let repo = WorkflowExecutionArchiveFileRepository::new(temp.path());
-        let keep_execution_id =
-            WorkflowExecutionId::new("11111111-1111-4111-8111-111111111111".to_string()).unwrap();
-        let prune_execution_id =
-            WorkflowExecutionId::new("22222222-2222-4222-8222-222222222222".to_string()).unwrap();
-        repo.archive_manual(&keep_execution_id, 10.0).unwrap();
-        repo.archive_manual(&prune_execution_id, 20.0).unwrap();
-
-        let result = repo
-            .prune_records(&HashSet::from([prune_execution_id.to_string()]))
-            .unwrap();
-
-        assert_eq!(result.records_removed, 1);
-        assert!(result.reclaimed_bytes > 0);
-        let index = repo.load_index_unlocked().unwrap();
-        assert!(index.executions.contains_key(keep_execution_id.as_str()));
-        assert!(!index.executions.contains_key(prune_execution_id.as_str()));
-    }
-}
+#[path = "execution_archive_repository_test.rs"]
+mod execution_archive_repository_tests;

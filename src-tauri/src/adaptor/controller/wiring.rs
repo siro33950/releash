@@ -40,10 +40,10 @@ use crate::adaptor::gateway::workflow::{
     EmptySecretSourceGateway, NoopWorkflowExternalEditorGateway, PassthroughManagedWorktreeGateway,
 };
 use crate::adaptor::gateway::workflow::{
-    RepoPathsManagedWorktreeGateway, RepositoryManagedWorktreeGateway,
-    WorkflowConfigPathFileGateway, WorkflowDefinitionFileRepository,
-    WorkflowDefinitionFileSourceGateway, WorkflowDiagnosticsFileGateway,
-    WorkflowEventLogRepository, WorkflowExecutionArchiveFileRepository,
+    ExecutionTreeArchiveFactRepository, RepoPathsManagedWorktreeGateway,
+    RepositoryManagedWorktreeGateway, WorkflowConfigPathFileGateway,
+    WorkflowDefinitionFileRepository, WorkflowDefinitionFileSourceGateway,
+    WorkflowDiagnosticsFileGateway, WorkflowEventLogRepository,
     WorkflowExecutionProjectionLogRepository, WorkflowExternalEditorGateway,
     WorkflowFacetFileRepository, WorkflowRuntimeCommandGateway, WorkflowRuntimeCommandGatewayDeps,
     WorkflowSecretSourceConfigGateway,
@@ -291,8 +291,12 @@ pub(crate) fn build_canonical_workflow_read_usecase(
     );
     let workspace_query: Arc<dyn WorkspaceQueryService> =
         crate::adaptor::gateway::workspace_tree::SqliteWorkspaceQueryService::new_read_only(
-            local_event_store,
-            Arc::new(WorkflowExecutionArchiveFileRepository::new(data_dir)),
+            local_event_store.clone(),
+            Arc::new(ExecutionTreeArchiveFactRepository::from_backend(
+                crate::adaptor::gateway::workflow::fact_log::FactLogReadBackend::ReadOnly(
+                    local_event_store,
+                ),
+            )),
         );
     Ok(WorkflowReadUsecase::new(
         query,
@@ -316,7 +320,8 @@ pub(crate) fn build_workflow_services_with_gateways(
     let data_dir = data_dir.into();
     let workflows_dir = WorkflowDefinitionFileRepository::default_workflows_dir();
     let facets_base_dir = workflows_dir.clone();
-    let execution_archives = Arc::new(WorkflowExecutionArchiveFileRepository::new(
+    let execution_archives = Arc::new(ExecutionTreeArchiveFactRepository::new(
+        store.clone(),
         data_dir.clone(),
     ));
     let mut workspace_nodes =
@@ -372,6 +377,7 @@ pub(crate) fn build_workflow_services_with_gateways(
 }
 
 pub(crate) fn build_workflow_runtime_usecase(
+    app_data_dir: &std::path::Path,
     app: crate::adaptor::gateway::workflow::workflow_host::WorkflowRuntimeDependencies,
     deps: WorkflowRuntimeCommandGatewayDeps,
 ) -> Result<WorkflowRuntimeUsecase, WorkflowRuntimeError> {
@@ -394,9 +400,23 @@ pub(crate) fn build_workflow_runtime_usecase(
     );
     driver.node_processes = deps.node_processes;
     let driver = wire_delegate_continuation(app.clone(), driver);
-    Ok(WorkflowRuntimeUsecase::new(Arc::new(
-        WorkflowRuntimeCommandGateway::new_with_driver(app, Arc::new(driver)),
-    )))
+    let archives = Arc::new(ExecutionTreeArchiveFactRepository::from_backend(
+        crate::adaptor::gateway::workflow::fact_log::FactLogReadBackend::Live(
+            app.store.clone().ok_or_else(|| {
+                WorkflowRuntimeError::SessionStore("fact store unavailable".into())
+            })?,
+        ),
+    ));
+    Ok(WorkflowRuntimeUsecase::new_with_worktree_operations(
+        Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(
+            app,
+            Arc::new(driver),
+        )),
+        archives,
+        Arc::new(crate::usecase::worktree_operation::WorktreeOperations::new(Arc::new(
+            crate::adaptor::gateway::repository::worktree_operation::FileWorktreeOperationLocks::new(app_data_dir),
+        ))),
+    ))
 }
 
 pub(crate) fn wire_delegate_continuation(
@@ -428,10 +448,11 @@ pub(crate) fn spawn_startup_app_data_gc(
     composition: crate::adaptor::controller::app_data_composition::ProductionAppDataComposition,
     shared_repo_paths: crate::adaptor::gateway::repository::repo_paths::SharedRepoPaths,
     repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository>,
+    execution_trees: Arc<dyn crate::usecase::app_data_gc::ExecutionTreeGc>,
 ) {
     tokio::spawn(async move {
         if let Err(error) = composition
-            .run_startup_gc_pass(shared_repo_paths, repository)
+            .run_startup_gc_pass(shared_repo_paths, repository, execution_trees)
             .await
         {
             log::error!("{error}");

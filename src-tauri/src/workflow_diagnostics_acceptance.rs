@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
-use crate::domain::workflow::entities::workflow_execution::WorkflowExecution;
+use crate::domain::workflow::entities::workflow_execution::ExecutionTree;
 use crate::domain::workflow::{ManagedWorktreeGateway, SecretSourceGateway, WorkflowError};
 use crate::infrastructure::local_api::{LocalApiServer, LocalApiServerBinding};
 use crate::usecase::workflow::command::{AbortExecutionCommand, ResolvedStartExecutionCommand};
@@ -94,6 +94,15 @@ impl WorkflowAbortExecutionGateway for DiagnosticsAcceptanceRuntimeGateway {
 }
 
 #[async_trait::async_trait]
+impl crate::usecase::workflow::ports::ExecutionTreeProcessGateway
+    for DiagnosticsAcceptanceRuntimeGateway
+{
+    async fn stop_execution_tree_processes(&self, _: &str) -> Result<(), WorkflowError> {
+        unreachable!("process cleanup is not used by this fixture")
+    }
+}
+
+#[async_trait::async_trait]
 impl WorkflowRuntimeStateGateway for DiagnosticsAcceptanceRuntimeGateway {
     async fn recover_startup(&self) -> Result<(), WorkflowError> {
         Ok(())
@@ -117,7 +126,7 @@ impl WorkflowRuntimeShutdownGateway for DiagnosticsAcceptanceRuntimeGateway {
 impl WorkflowControlPlaneGateway for DiagnosticsAcceptanceRuntimeGateway {
     fn node_process_presence(
         &self,
-        _execution: &crate::domain::workflow::entities::workflow_execution::WorkflowExecution,
+        _execution: &crate::domain::workflow::entities::workflow_execution::ExecutionTree,
         _id: &str,
     ) -> Result<crate::domain::workflow::NodeProcessPresence, crate::domain::workflow::WorkflowError>
     {
@@ -159,7 +168,7 @@ impl WorkflowControlPlaneGateway for DiagnosticsAcceptanceRuntimeGateway {
     async fn load_active_execution(
         &self,
         _execution_id: &str,
-    ) -> Result<Option<WorkflowExecution>, WorkflowError> {
+    ) -> Result<Option<ExecutionTree>, WorkflowError> {
         Err(unsupported_runtime_operation())
     }
 
@@ -229,9 +238,18 @@ impl WorkflowDiagnosticsAcceptanceHost {
             )
             .map_err(|error| error.to_string())?,
         );
-        let runtime = Arc::new(WorkflowRuntimeUsecase::new(Arc::new(
-            DiagnosticsAcceptanceRuntimeGateway,
-        )));
+        let runtime = Arc::new(WorkflowRuntimeUsecase::new_with_worktree_operations(
+            Arc::new(DiagnosticsAcceptanceRuntimeGateway),
+            Arc::new(
+                crate::adaptor::gateway::workflow::ExecutionTreeArchiveFactRepository::new(
+                    store.clone(),
+                    data_dir.clone(),
+                ),
+            ),
+            Arc::new(crate::usecase::worktree_operation::WorktreeOperations::new(Arc::new(
+                crate::adaptor::gateway::repository::worktree_operation::FileWorktreeOperationLocks::new(&data_dir),
+            ))),
+        ));
         let binding = LocalApiServerBinding::bind(data_dir).map_err(|error| error.to_string())?;
         let port = binding.port();
         let token = binding.bearer_token();

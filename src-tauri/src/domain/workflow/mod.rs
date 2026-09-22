@@ -18,22 +18,23 @@ pub use gateway::{
     IsolatedWorktreeGateway, ManagedWorktreeGateway, NodeProcessReader, SecretSourceGateway,
 };
 pub use repository::{
-    FacetRepository, WorkflowDefinitionRepository, WorkflowExecutionArchiveRepository,
-    WorkflowExecutionArchiveSnapshot, WorkflowExecutionManualArchiveRecord,
-    WORKFLOW_ARCHIVE_REASON_MANUAL,
+    ExecutionTreeArchiveCandidate, ExecutionTreeArchiveRecord, ExecutionTreeArchiveRepository,
+    ExecutionTreeArchiveSnapshot, ExecutionTreeArchiveTarget, FacetRepository,
+    WorkflowDefinitionRepository,
 };
 pub use services::{contract, secret_masker, validation};
 #[cfg(test)]
 pub use services::{TimeoutContext, TimeoutPolicy};
 pub use value_objects::{
     is_reserved_node_name, isolated_worktree_owner, startup_restart_delay,
-    AgentActivityObservedFact, AgentSessionActivity, ApprovalGrantedFact, ApprovalTarget, Artifact,
-    ArtifactProducedFact, ChildEntry, CommandSpawnedFact, CommandSpec, CompletionRequirement,
-    ContractType, ContractValidationResult, DefinitionResolution, EnvironmentVariableName,
-    EnvironmentVariableNameError, ExecutionOrigin, ExecutionParentRef, ExecutionStatus,
-    ExecutionStatusFilter, ExecutionTreeLaunch, FacetContents, FacetKey, FacetKind, FacetRefs,
-    FacetSummary, FailureClassification, FailureDisposition, Fanout, FanoutSlot, FanoutSpec,
-    FieldPath, InputParam, InputParameterRef, IsolatedWorktree, ItemsSource, NodeCompletion,
+    AgentActivityObservedFact, AgentSessionActivity, ApprovalGrantedFact, ApprovalTarget,
+    ArchiveRequestedFact, Artifact, ArtifactProducedFact, ChildEntry, CommandSpawnedFact,
+    CommandSpec, CompletionRequirement, ContractType, ContractValidationResult,
+    DefinitionResolution, EnvironmentVariableName, EnvironmentVariableNameError, ExecutionOrigin,
+    ExecutionParentRef, ExecutionStatus, ExecutionStatusFilter, ExecutionTree, ExecutionTreeId,
+    ExecutionTreeLaunch, FacetContents, FacetKey, FacetKind, FacetRefs, FacetSummary,
+    FailureClassification, FailureDisposition, Fanout, FanoutSlot, FanoutSpec, FieldPath,
+    InputParam, InputParameterRef, IsolatedWorktree, ItemsSource, NodeCompletion,
     NodeCompletionSignal, NodeCompletionSignalState, NodeDefinition, NodeDefinitionName,
     NodeExecution, NodeExecutionFailureKind, NodeExecutionStatus, NodeFact, NodeFactMeta,
     NodeFactRecord, NodeHistoryEntry, NodeKind, NodeKindName, NodeProcessPresence, Predicate,
@@ -42,8 +43,8 @@ pub use value_objects::{
     SessionAttachedFact, SessionContinuationAdmittedFact, SessionDelegate,
     SessionExecutionTreeRootFacts, SessionNodeRenamedFact, SessionPermission, SessionSpec,
     StartedFact, StopReceivedFact, SubmitReceivedFact, SubmitRejectedFact, TimeoutKind, TokenUsage,
-    TreeRootFact, WorkflowDefinition, WorkflowDefinitionName, WorkflowEvent, WorkflowExecution,
-    WorkflowExecutionId, WorkflowExecutionSummary, WorkflowFacetContents, WorkflowPageRequest,
-    WorkflowRuntimeSnapshot, WorkflowSourceFormat, WorkflowSummary, WorkspaceWorktreePath,
-    WorktreeInheritance, WorktreeInventoryEntry, WorktreeMode, NODE_STATUS_COMPLETED,
+    TreeRootFact, WorkflowDefinition, WorkflowDefinitionName, WorkflowEvent, WorkflowExecutionId,
+    WorkflowExecutionSummary, WorkflowFacetContents, WorkflowPageRequest, WorkflowRuntimeSnapshot,
+    WorkflowSourceFormat, WorkflowSummary, WorkspaceWorktreePath, WorktreeInheritance,
+    WorktreeInventoryEntry, WorktreeMode, NODE_STATUS_COMPLETED,
 };

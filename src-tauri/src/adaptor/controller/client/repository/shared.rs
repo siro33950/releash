@@ -67,10 +67,12 @@ pub(crate) fn register_shared(
     }
     {
         let state = deps.app_state.clone();
+        let runtime = deps.workflow_runtime_usecase.clone();
         router.register_domain(
             &["delete_branch"],
             Box::new(move |command| {
                 let state = state.clone();
+                let runtime = runtime.clone();
                 Box::pin(async move {
                     let wire::command_request::Command::DeleteBranch(args) = command else {
                         return Err(invalid_request("Mismatched command"));
@@ -78,9 +80,12 @@ pub(crate) fn register_shared(
                     let result = async move {
                         let state = state
                             .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
+                        let runtime = runtime
+                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
                         outcome(
                             branch::delete_branch_shared(
                                 &state,
+                                runtime,
                                 convert(required(args.repo_path, "repoPath")?)?,
                                 convert(required(args.branch_name, "branchName")?)?,
                                 convert(required(args.force, "force")?)?,
@@ -610,10 +615,12 @@ pub(crate) fn register_shared(
     }
     {
         let state = deps.app_state.clone();
+        let runtime = deps.workflow_runtime_usecase.clone();
         router.register_domain(
             &["remove_worktree"],
             Box::new(move |command| {
                 let state = state.clone();
+                let runtime = runtime.clone();
                 Box::pin(async move {
                     let wire::command_request::Command::RemoveWorktree(args) = command else {
                         return Err(invalid_request("Mismatched command"));
@@ -621,9 +628,12 @@ pub(crate) fn register_shared(
                     let result = async move {
                         let state = state
                             .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
+                        let runtime = runtime
+                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
                         outcome(
                             worktree::remove_worktree_shared(
                                 &state,
+                                runtime,
                                 convert(required(args.repo_path, "repoPath")?)?,
                                 convert(required(args.worktree_path, "worktreePath")?)?,
                                 convert(required(args.force, "force")?)?,

@@ -95,7 +95,7 @@ mod tests {
     impl WorkflowControlPlaneGateway for FakeRuntimeGateway {
         fn node_process_presence(
             &self,
-            _execution: &crate::domain::workflow::entities::workflow_execution::WorkflowExecution,
+            _execution: &crate::domain::workflow::entities::workflow_execution::ExecutionTree,
             _id: &str,
         ) -> Result<
             crate::domain::workflow::NodeProcessPresence,
@@ -145,7 +145,7 @@ mod tests {
             &self,
             _execution_id: &str,
         ) -> Result<
-            Option<crate::domain::workflow::entities::workflow_execution::WorkflowExecution>,
+            Option<crate::domain::workflow::entities::workflow_execution::ExecutionTree>,
             WorkflowError,
         > {
             Err(WorkflowError::external(

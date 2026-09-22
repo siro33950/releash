@@ -498,7 +498,8 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
                     store.clone(),
                 ),
                 Arc::new(
-                    crate::adaptor::gateway::workflow::WorkflowExecutionArchiveFileRepository::new(
+                    crate::adaptor::gateway::workflow::ExecutionTreeArchiveFactRepository::new(
+                        store.clone(),
                         config.data_dir.clone(),
                     ),
                 ),
@@ -527,7 +528,18 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             dependencies,
             driver.clone(),
         ));
-        let runtime = Arc::new(WorkflowRuntimeUsecase::new(gateway));
+        let runtime = Arc::new(WorkflowRuntimeUsecase::new_with_worktree_operations(
+            gateway,
+            Arc::new(
+                crate::adaptor::gateway::workflow::ExecutionTreeArchiveFactRepository::new(
+                    store.clone(),
+                    config.data_dir.clone(),
+                ),
+            ),
+            Arc::new(crate::usecase::worktree_operation::WorktreeOperations::new(Arc::new(
+                crate::adaptor::gateway::repository::worktree_operation::FileWorktreeOperationLocks::new(&config.data_dir),
+            ))),
+        ));
         let workspace_node_commands = Arc::new(WorkspaceNodeCommandUsecase::new(
             Arc::new(AcceptanceWorkspaceNodeActionResolver),
             runtime.clone(),
@@ -908,7 +920,9 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             .map(|store| store.inner().clone())
             .ok_or_else(|| "LocalEventStore is not managed".to_string())?;
         let repository =
-            crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::new(store);
+            crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::new(
+                store.clone(),
+            );
         repository
             .load_node_by_node_execution_id(node_execution_id)
             .map_err(|error| error.to_string())
@@ -942,7 +956,9 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             .map(|store| store.inner().clone())
             .ok_or_else(|| "LocalEventStore is not managed".to_string())?;
         let repository =
-            crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::new(store);
+            crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::new(
+                store.clone(),
+            );
         let Some(node) = repository
             .load_node_by_node_execution_id(node_execution_id)
             .map_err(|error| error.to_string())?
@@ -957,7 +973,8 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             crate::adaptor::gateway::workspace_tree::SqliteWorkspaceQueryService::with_repository(
                 repository,
                 Arc::new(
-                    crate::adaptor::gateway::workflow::WorkflowExecutionArchiveFileRepository::new(
+                    crate::adaptor::gateway::workflow::ExecutionTreeArchiveFactRepository::new(
+                        store.clone(),
                         data_dir.to_path_buf(),
                     ),
                 ),

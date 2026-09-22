@@ -23,9 +23,16 @@ use super::ports::{
 
 #[derive(Clone)]
 pub struct WorkflowRuntimeUsecase {
-    runtime: Arc<dyn WorkflowRuntimeCommandGateway>,
+    pub(super) worktree_operations: Arc<crate::usecase::worktree_operation::WorktreeOperations>,
+    pub(super) execution_archives: Arc<dyn crate::domain::workflow::ExecutionTreeArchiveRepository>,
+    pub(super) runtime: Arc<dyn WorkflowRuntimeCommandGateway>,
+    pub(super) archive_locks: Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>,
+        >,
+    >,
     start_execution: WorkflowStartExecutionUsecase,
-    abort_execution: WorkflowAbortExecutionUsecase,
+    pub(super) abort_execution: WorkflowAbortExecutionUsecase,
     retry_node: WorkflowRetryNodeUsecase,
     submit_output: WorkflowSubmitOutputUsecase,
     control_plane: WorkflowControlPlaneUsecase,
@@ -34,10 +41,25 @@ pub struct WorkflowRuntimeUsecase {
 }
 
 impl WorkflowRuntimeUsecase {
-    pub fn new(runtime: Arc<dyn WorkflowRuntimeCommandGateway>) -> Self {
+    #[cfg(test)]
+    pub fn new(
+        runtime: Arc<dyn WorkflowRuntimeCommandGateway>,
+        execution_archives: Arc<dyn crate::domain::workflow::ExecutionTreeArchiveRepository>,
+    ) -> Self {
+        Self::new_with_worktree_operations(runtime, execution_archives, Default::default())
+    }
+
+    pub(crate) fn new_with_worktree_operations(
+        runtime: Arc<dyn WorkflowRuntimeCommandGateway>,
+        execution_archives: Arc<dyn crate::domain::workflow::ExecutionTreeArchiveRepository>,
+        worktree_operations: Arc<crate::usecase::worktree_operation::WorktreeOperations>,
+    ) -> Self {
         let control_plane_runtime: Arc<dyn WorkflowControlPlaneGateway> = runtime.clone();
         Self {
+            execution_archives,
+            worktree_operations,
             runtime: runtime.clone(),
+            archive_locks: Default::default(),
             start_execution: WorkflowStartExecutionUsecase::new(runtime.clone()),
             abort_execution: WorkflowAbortExecutionUsecase::new(runtime.clone()),
             retry_node: WorkflowRetryNodeUsecase::new(control_plane_runtime.clone()),
@@ -52,6 +74,7 @@ impl WorkflowRuntimeUsecase {
         &self,
         command: StartExecutionCommand,
     ) -> Result<String, WorkflowError> {
+        let _mutation = self.begin_worktree_mutation(&command.worktree_path)?;
         self.start_execution.execute(command).await
     }
 
@@ -63,10 +86,12 @@ impl WorkflowRuntimeUsecase {
         &self,
         command: AbortExecutionCommand,
     ) -> Result<(), WorkflowError> {
+        let _mutation = self.begin_execution_tree_mutation(&command.execution_id)?;
         self.abort_execution.execute(command).await
     }
 
     pub async fn retry_node(&self, command: RetryNodeCommand) -> Result<(), WorkflowError> {
+        let _mutation = self.begin_execution_tree_mutation(&command.execution_id)?;
         self.retry_node.execute(command).await
     }
 
@@ -92,14 +117,23 @@ impl WorkflowRuntimeUsecase {
         &self,
         command: ResumeSessionNodeCommand,
     ) -> Result<(), WorkflowError> {
+        let _mutation = self.begin_execution_tree_mutation(&command.execution_id)?;
         self.control_plane.resume_session_node(command).await
     }
 
     pub async fn resolve_approval(&self, command: ApprovalCommand) -> Result<(), WorkflowError> {
+        let _mutation = self.begin_execution_tree_mutation(&command.execution_id)?;
         self.control_plane.resolve_approval(command).await
     }
 
     pub async fn submit_output(&self, command: SubmitOutputCommand) -> Result<(), WorkflowError> {
+        super::command::WorkflowRuntimeCommandPreflight.validate_submit_output(&command)?;
+        let id = self
+            .runtime
+            .resolve_workflow_execution_id(&command.node_execution_id)
+            .await?
+            .ok_or_else(|| WorkflowError::NotFound(command.node_execution_id.clone()))?;
+        let _mutation = self.begin_execution_tree_mutation(&id)?;
         self.submit_output.execute(command).await
     }
 
@@ -148,6 +182,18 @@ impl super::WorkspaceNodeWorkflowCommandExecutor for WorkflowRuntimeUsecase {
 impl crate::usecase::provider_lifecycle::ProviderExecutionTreeStopTransaction
     for WorkflowRuntimeUsecase
 {
+    fn begin_worktree_mutation(
+        &self,
+        path: &str,
+    ) -> Result<
+        crate::usecase::worktree_operation::WorktreeMutationGuard,
+        crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError,
+    > {
+        self.begin_worktree_mutation(path).map_err(|_| {
+            crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError::Conflict
+        })
+    }
+
     async fn commit_provider_stop(
         &self,
         command: crate::usecase::provider_lifecycle::ProviderExecutionTreeStopCommand,
@@ -171,6 +217,41 @@ impl crate::usecase::provider_lifecycle::ProviderExecutionTreeStopTransaction
                 WorkflowError::CorruptStoredState(_)
                 | WorkflowError::IncompatibleStoredEvent(_) => {
                     crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError::Corrupt
+                }
+            })
+    }
+}
+
+impl crate::usecase::agent_session::WorktreeMutationAdmission for WorkflowRuntimeUsecase {
+    fn begin_worktree_mutation(
+        &self,
+        path: &str,
+    ) -> Result<crate::usecase::worktree_operation::WorktreeMutationGuard, WorkflowError> {
+        self.begin_worktree_mutation(path)
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::usecase::agent_session::ExecutionTreeCache for WorkflowRuntimeUsecase {
+    async fn release_deleted_execution_tree(
+        &self,
+        tree_id: &str,
+    ) -> Result<(), crate::usecase::agent_session::ExecutionTreeCacheReleaseError> {
+        self.runtime
+            .release_deleted_execution_tree(tree_id)
+            .await
+            .map_err(|error| match error {
+                WorkflowError::StorageUnavailable { .. } | WorkflowError::External(_) => {
+                    crate::usecase::agent_session::ExecutionTreeCacheReleaseError::Unavailable
+                }
+                WorkflowError::Validation(_)
+                | WorkflowError::InvalidState(_)
+                | WorkflowError::NotFound(_)
+                | WorkflowError::UnauthorizedApprovalTarget(_)
+                | WorkflowError::Conflict(_)
+                | WorkflowError::CorruptStoredState(_)
+                | WorkflowError::IncompatibleStoredEvent(_) => {
+                    crate::usecase::agent_session::ExecutionTreeCacheReleaseError::Corrupt
                 }
             })
     }
@@ -207,28 +288,23 @@ impl crate::usecase::agent_session::StartedExecutionTreeRegistrar for WorkflowRu
             .await
             .map_err(map_started_execution_tree_error)
     }
+}
 
-    async fn release_deleted_execution_tree(
+#[async_trait::async_trait]
+impl crate::usecase::agent_session::AgentSessionExecutionTreeLifecycle for WorkflowRuntimeUsecase {
+    async fn lock_execution_tree(
         &self,
         tree_id: &str,
-    ) -> Result<(), crate::usecase::agent_session::ExecutionTreeCacheReleaseError> {
-        self.runtime
-            .release_deleted_execution_tree(tree_id)
-            .await
-            .map_err(|error| match error {
-                WorkflowError::StorageUnavailable { .. } | WorkflowError::External(_) => {
-                    crate::usecase::agent_session::ExecutionTreeCacheReleaseError::Unavailable
-                }
-                WorkflowError::Validation(_)
-                | WorkflowError::InvalidState(_)
-                | WorkflowError::NotFound(_)
-                | WorkflowError::UnauthorizedApprovalTarget(_)
-                | WorkflowError::Conflict(_)
-                | WorkflowError::CorruptStoredState(_)
-                | WorkflowError::IncompatibleStoredEvent(_) => {
-                    crate::usecase::agent_session::ExecutionTreeCacheReleaseError::Corrupt
-                }
-            })
+    ) -> Result<tokio::sync::OwnedMutexGuard<()>, WorkflowError> {
+        self.lock_execution_tree(tree_id).await
+    }
+
+    async fn archive_execution_tree(&self, tree_id: &str) -> Result<(), WorkflowError> {
+        self.archive_execution_tree(tree_id, "manual").await
+    }
+
+    async fn restore_execution_tree(&self, tree_id: &str) -> Result<(), WorkflowError> {
+        self.restore_execution_tree_locked(tree_id).await
     }
 }
 
@@ -304,7 +380,7 @@ mod tests {
     impl WorkflowControlPlaneGateway for FakeRuntimeGateway {
         fn node_process_presence(
             &self,
-            _execution: &crate::domain::workflow::entities::workflow_execution::WorkflowExecution,
+            _execution: &crate::domain::workflow::entities::workflow_execution::ExecutionTree,
             _id: &str,
         ) -> Result<
             crate::domain::workflow::NodeProcessPresence,
@@ -354,7 +430,7 @@ mod tests {
             &self,
             _execution_id: &str,
         ) -> Result<
-            Option<crate::domain::workflow::entities::workflow_execution::WorkflowExecution>,
+            Option<crate::domain::workflow::entities::workflow_execution::ExecutionTree>,
             WorkflowError,
         > {
             Err(WorkflowError::external(
@@ -413,6 +489,13 @@ mod tests {
     }
 
     #[async_trait::async_trait]
+    impl crate::usecase::workflow::ports::ExecutionTreeProcessGateway for FakeRuntimeGateway {
+        async fn stop_execution_tree_processes(&self, _: &str) -> Result<(), WorkflowError> {
+            unreachable!("process cleanup is not used by this fixture")
+        }
+    }
+
+    #[async_trait::async_trait]
     impl WorkflowRuntimeStateGateway for FakeRuntimeGateway {
         async fn recover_startup(&self) -> Result<(), WorkflowError> {
             self.calls.lock().unwrap().push("recover_startup");
@@ -438,7 +521,10 @@ mod tests {
     #[tokio::test]
     async fn runtime_usecase_delegates_runtime_commands() {
         let gateway = Arc::new(FakeRuntimeGateway::default());
-        let usecase = WorkflowRuntimeUsecase::new(gateway.clone());
+        let usecase = WorkflowRuntimeUsecase::new(
+            gateway.clone(),
+            Arc::new(crate::usecase::workflow::NoopArchiveRepository),
+        );
 
         let _ = usecase
             .start_execution(StartExecutionCommand {
@@ -475,7 +561,10 @@ mod tests {
     #[tokio::test]
     async fn runtime_usecase_delegates_active_command_shutdown() {
         let gateway = Arc::new(FakeRuntimeGateway::default());
-        let usecase = WorkflowRuntimeUsecase::new(gateway.clone());
+        let usecase = WorkflowRuntimeUsecase::new(
+            gateway.clone(),
+            Arc::new(crate::usecase::workflow::NoopArchiveRepository),
+        );
 
         usecase.shutdown_active_commands().await;
 
@@ -488,7 +577,10 @@ mod tests {
     #[tokio::test]
     async fn start_execution_rejects_invalid_workflow_name_before_gateway() {
         let gateway = Arc::new(FakeRuntimeGateway::default());
-        let usecase = WorkflowRuntimeUsecase::new(gateway.clone());
+        let usecase = WorkflowRuntimeUsecase::new(
+            gateway.clone(),
+            Arc::new(crate::usecase::workflow::NoopArchiveRepository),
+        );
 
         let err = usecase
             .start_execution(StartExecutionCommand {
@@ -507,7 +599,10 @@ mod tests {
     #[tokio::test]
     async fn runtime_preflight_rejects_invalid_mutations_before_gateway() {
         let gateway = Arc::new(FakeRuntimeGateway::default());
-        let usecase = WorkflowRuntimeUsecase::new(gateway.clone());
+        let usecase = WorkflowRuntimeUsecase::new(
+            gateway.clone(),
+            Arc::new(crate::usecase::workflow::NoopArchiveRepository),
+        );
 
         let abort_err = usecase
             .abort_execution(AbortExecutionCommand {
@@ -547,7 +642,10 @@ mod tests {
     #[tokio::test]
     async fn runtime_preflight_rejects_invalid_queries_before_gateway() {
         let gateway = Arc::new(FakeRuntimeGateway::default());
-        let usecase = WorkflowRuntimeUsecase::new(gateway.clone());
+        let usecase = WorkflowRuntimeUsecase::new(
+            gateway.clone(),
+            Arc::new(crate::usecase::workflow::NoopArchiveRepository),
+        );
 
         let execution_err = usecase
             .get_state_by_execution_id("not-a-uuid")

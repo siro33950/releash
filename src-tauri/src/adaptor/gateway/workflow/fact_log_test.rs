@@ -1236,6 +1236,7 @@ mod round_trip_tests {
             "workspace-1",
             "/repo/.worktrees/feature",
             crate::domain::provider_lifecycle::ProviderKind::Codex,
+            None,
         )
         .unwrap()
         .into_facts();
@@ -1505,7 +1506,7 @@ async fn test_旧隔離事実の読取_状態導出と再起動復元からだ�
             .unwrap();
     assert!(session.is_some());
     let status = super::super::execution_projection_repository::WorkflowExecutionProjectionLogRepository::new(store.clone())
-        .get_execution(&crate::domain::workflow::WorkflowExecutionId::new(TREE).unwrap()).unwrap().unwrap();
+        .get_execution(&crate::domain::workflow::ExecutionTreeId::new(TREE).unwrap()).unwrap().unwrap();
     assert_eq!(
         status.status,
         crate::domain::workflow::ExecutionStatus::Running
@@ -1557,7 +1558,7 @@ fn test_旧隔離事実の読取_破損payloadと未知の事実を拒否する(
     ] {
         // When / Then
         assert!(
-            decode_stored_fact(event_type, detail).is_err(),
+            decode_stored_fact(event_type, detail, 0).is_err(),
             "{event_type}: {detail}"
         );
     }

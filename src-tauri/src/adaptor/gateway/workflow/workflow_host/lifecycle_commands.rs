@@ -25,42 +25,83 @@ fn abort_outcome_to_command_result(
 
 /// Abort の execution ライフサイクル typed command。
 impl WorkflowRuntimeHost {
+    pub(crate) async fn stop_execution_tree_processes(
+        &self,
+        app: &WorkflowRuntimeDependencies,
+        execution_id: &str,
+    ) -> Result<(), WorkflowRuntimeError> {
+        self.shutdown_active_commands_for_execution(execution_id)
+            .await;
+        let store = app.store.clone().ok_or_else(|| {
+            WorkflowRuntimeError::SessionStore("fact store unavailable".to_string())
+        })?;
+        let folded = workflow_fact_log::fold_tree_from(
+            &workflow_fact_log::FactLogReadBackend::Live(store),
+            execution_id,
+        )
+        .map_err(WorkflowRuntimeError::SessionStore)?
+        .ok_or_else(|| WorkflowRuntimeError::ExecutionNotFound(execution_id.to_string()))?;
+        for node in &folded.aggregate.node_executions {
+            if let Some(session_id) = &node.session_id {
+                self.workflow_agent_sessions
+                    .stop_agent_session_for_terminal_node_preserving_checkpoint(
+                        session_id, &node.id,
+                    )
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) async fn abort_workflow_execution(
         &self,
         app: &WorkflowRuntimeDependencies,
         execution_id: &str,
         expected_node_name: Option<&str>,
     ) -> Result<(), WorkflowRuntimeError> {
-        let metadata = self.validate_execution_command_target(execution_id).await?;
+        let (current_node, status) = self
+            .validate_execution_command_target(app, execution_id)
+            .await?;
         if let Some(expected_node_name) = expected_node_name {
-            if metadata.current_node.as_deref() != Some(expected_node_name) {
+            if current_node.as_deref() != Some(expected_node_name) {
                 return Err(WorkflowRuntimeError::UnauthorizedApprovalTarget(
                     "node does not match".to_string(),
                 ));
             }
         }
-        if !metadata.status.is_active() {
+        if !status.is_active() {
             return Err(WorkflowRuntimeError::InvalidState(format!(
                 "execution {execution_id} cannot be aborted from status {}",
-                metadata.status.as_str()
+                status.as_str()
             )));
         }
-        let interruption_reservation = self
-            .execution_store
-            .reserve_active_interruption(execution_id)
+        let interruption_reservation = if self
+            .executions
+            .lock()
             .await
-            .map_err(|error| match error {
-                ExecutionStoreError::ExecutionNotFound { .. } => {
-                    WorkflowRuntimeError::ExecutionNotFound(execution_id.to_string())
-                }
-                ExecutionStoreError::InvalidStatusTransition { .. }
-                | ExecutionStoreError::TransitionInProgress { .. } => {
-                    WorkflowRuntimeError::InvalidState(error.to_string())
-                }
-                other => WorkflowRuntimeError::SessionStore(format!(
-                    "ExecutionStore abort reservation failed: {other}"
-                )),
-            })?;
+            .get(execution_id)
+            .is_some_and(|execution| execution.launched_as == ExecutionTreeLaunch::Session)
+        {
+            None
+        } else {
+            Some(
+                self.execution_store
+                    .reserve_active_interruption(execution_id)
+                    .await
+                    .map_err(|error| match error {
+                        ExecutionStoreError::ExecutionNotFound { .. } => {
+                            WorkflowRuntimeError::ExecutionNotFound(execution_id.to_string())
+                        }
+                        ExecutionStoreError::InvalidStatusTransition { .. }
+                        | ExecutionStoreError::TransitionInProgress { .. } => {
+                            WorkflowRuntimeError::InvalidState(error.to_string())
+                        }
+                        other => WorkflowRuntimeError::SessionStore(format!(
+                            "ExecutionStore abort reservation failed: {other}"
+                        )),
+                    })?,
+            )
+        };
         let activation_gate = self.runtime_activation_gate(execution_id).await;
         activation_gate.request_cancel();
         let mut activation_guard = None;
@@ -85,8 +126,7 @@ impl WorkflowRuntimeHost {
                 }
                 let _activation_guard = activation_guard;
                 self.finish_committed_abort(app, execution_id).await;
-                self.execution_store
-                    .finish_active_interruption(interruption_reservation)
+                self.finish_abort_interruption(interruption_reservation)
                     .await
                     .map_err(|error| {
                         WorkflowRuntimeError::SessionStore(format!(
@@ -96,8 +136,7 @@ impl WorkflowRuntimeHost {
                 abort_outcome_to_command_result(AbortOutcome::Aborted, execution_id)
             }
             Ok(AbortCommit::NotFound) => {
-                self.execution_store
-                    .finish_active_interruption(interruption_reservation)
+                self.finish_abort_interruption(interruption_reservation)
                     .await
                     .map_err(|error| {
                         WorkflowRuntimeError::SessionStore(format!(
@@ -112,8 +151,7 @@ impl WorkflowRuntimeHost {
                 abort_outcome_to_command_result(AbortOutcome::NotFound, execution_id)
             }
             Ok(AbortCommit::AlreadyTerminal) => {
-                self.execution_store
-                    .finish_active_interruption(interruption_reservation)
+                self.finish_abort_interruption(interruption_reservation)
                     .await
                     .map_err(|error| {
                         WorkflowRuntimeError::SessionStore(format!(
@@ -129,8 +167,7 @@ impl WorkflowRuntimeHost {
             }
             Err(error) => {
                 let reservation_result = self
-                    .execution_store
-                    .finish_active_interruption(interruption_reservation)
+                    .finish_abort_interruption(interruption_reservation)
                     .await;
                 if activation_was_paused {
                     activation_gate.rollback_cancel();
@@ -147,10 +184,25 @@ impl WorkflowRuntimeHost {
         }
     }
 
-    pub(super) async fn validate_execution_command_target(
+    async fn finish_abort_interruption(
         &self,
+        reservation: Option<
+            crate::adaptor::gateway::workflow::execution_store::ActiveInterruptionReservation,
+        >,
+    ) -> Result<(), ExecutionStoreError> {
+        if let Some(reservation) = reservation {
+            self.execution_store
+                .finish_active_interruption(reservation)
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn validate_execution_command_target(
+        &self,
+        app: &WorkflowRuntimeDependencies,
         execution_id: &str,
-    ) -> Result<WorkflowExecutionMetadata, WorkflowRuntimeError> {
+    ) -> Result<(Option<String>, ExecutionStatus), WorkflowRuntimeError> {
         if self
             .execution_store
             .interrupted_transition_pending(execution_id)
@@ -160,24 +212,40 @@ impl WorkflowRuntimeHost {
                 "execution {execution_id} already has a transition in progress"
             )));
         }
-        let metadata = self
-            .execution_store
-            .get_execution_record(execution_id)
-            .await
-            .map_err(|error| {
-                WorkflowRuntimeError::SessionStore(format!(
-                    "canonical workflow execution read failed: {error}"
-                ))
-            })?
-            .ok_or_else(|| WorkflowRuntimeError::ExecutionNotFound(execution_id.to_string()))?;
+        let (worktree_path, current_node, status) = if let Some(store) = &app.store {
+            let tree = workflow_fact_log::fold_tree_from(
+                &workflow_fact_log::FactLogReadBackend::Live(store.clone()),
+                execution_id,
+            )
+            .map_err(WorkflowRuntimeError::SessionStore)?
+            .ok_or_else(|| WorkflowRuntimeError::ExecutionNotFound(execution_id.into()))?;
+            let model = crate::domain::workflow::services::fact_replay::derive_read_model(&tree);
+            (model.worktree_path, model.current_node, model.status)
+        } else {
+            let metadata = self
+                .execution_store
+                .get_execution_record(execution_id)
+                .await
+                .map_err(|error| {
+                    WorkflowRuntimeError::SessionStore(format!(
+                        "canonical workflow execution read failed: {error}"
+                    ))
+                })?
+                .ok_or_else(|| WorkflowRuntimeError::ExecutionNotFound(execution_id.into()))?;
+            (
+                metadata.worktree_path,
+                metadata.current_node,
+                metadata.status,
+            )
+        };
         if let Some(in_memory) = self.executions.lock().await.get(execution_id) {
-            if in_memory.worktree_path != metadata.worktree_path {
+            if in_memory.worktree_path != worktree_path {
                 return Err(WorkflowRuntimeError::UnauthorizedWorktree(format!(
                     "execution {execution_id} worktree does not match persisted metadata"
                 )));
             }
         }
-        Ok(metadata)
+        Ok((current_node, status))
     }
 
     /// ワークフローを中断する。
@@ -194,7 +262,7 @@ impl WorkflowRuntimeHost {
     ///   `AbortOutcome::Aborted` を返す。
     ///
     /// ExecutionAborted event は `write_log_required` 経由で必須 append し、append 失敗時は
-    /// mutation 直前 snapshot で `DomainWorkflowExecution` 全体を一括復元する
+    /// mutation 直前 snapshot で `DomainExecutionTree` 全体を一括復元する
     /// （Spec atomic mutation 境界）。
     ///
     /// 外部から直接呼ばれることはなく、`abort_workflow_execution*` runtime primitive 経路のみが
@@ -262,7 +330,7 @@ impl WorkflowRuntimeHost {
         };
 
         // 3. [04] commit point: ExecutionAborted を必須 append。失敗時は
-        //    DomainWorkflowExecution / Execution Store / ChatSession を snapshot で一括復元する。
+        //    DomainExecutionTree / Execution Store / ChatSession を snapshot で一括復元する。
         //    interrupt_agent はこの時点ではまだ実行していないため、append 失敗時には
         //    rollback 不能な外部副作用が残らない。
         let aborted_event = WorkflowEvent::ExecutionAborted {

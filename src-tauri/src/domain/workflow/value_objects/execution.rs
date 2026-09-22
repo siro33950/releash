@@ -92,7 +92,7 @@ pub struct ApprovalTarget {
 
 /// Event replay から構築される backend-owned workflow read model。
 #[derive(Debug, Clone, PartialEq)]
-pub struct WorkflowExecution {
+pub struct ExecutionTree {
     pub id: String,
     pub workflow_name: String,
     pub status: ExecutionStatus,
@@ -110,7 +110,7 @@ pub struct WorkflowExecution {
     pub approval_target: Option<ApprovalTarget>,
 }
 
-impl WorkflowExecution {
+impl ExecutionTree {
     pub fn retryable_node_execution_ids(&self) -> HashSet<String> {
         self.node_executions
             .iter()
@@ -187,7 +187,7 @@ mod tests {
             started_at: 1.0,
             completed_at: None,
         };
-        let execution = WorkflowExecution {
+        let execution = ExecutionTree {
             id: "execution-1".to_string(),
             workflow_name: "review".to_string(),
             status: ExecutionStatus::Running,

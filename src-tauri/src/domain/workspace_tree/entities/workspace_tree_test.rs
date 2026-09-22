@@ -1353,7 +1353,7 @@ fn branch_status_capabilities_and_session_activity_are_backend_aggregated() {
         WorkspaceNodeStatusClassification::Active
     );
     assert!(workflow.can_abort);
-    assert!(!workflow.can_archive);
+    assert!(workflow.can_archive);
     assert_eq!(
         tree.session_node("plan-session").unwrap().status,
         WorkspaceNodeStatus::Completed

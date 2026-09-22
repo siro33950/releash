@@ -120,7 +120,7 @@ fn workflow_root(definition: WorkflowDefinition) -> TreeRootFact {
 fn session_root() -> TreeRootFact {
     let NodeFact::Started(StartedFact {
         root: Some(root), ..
-    }) = SessionExecutionTreeRootFacts::new(TREE, "/repo", "/repo", ProviderKind::Codex)
+    }) = SessionExecutionTreeRootFacts::new(TREE, "/repo", "/repo", ProviderKind::Codex, None)
         .unwrap()
         .started
     else {
@@ -425,7 +425,13 @@ mod standalone_session_tests {
         let mut log = FactLog::new();
         let root_meta = meta("root-exec", None, "session", NodeKindName::Session, 1);
         log.push(root_meta.clone(), started_root(session_root()));
-        log.push(root_meta.clone(), NodeFact::ArchiveRequested);
+        log.push(
+            root_meta.clone(),
+            NodeFact::ArchiveRequested(crate::domain::workflow::ArchiveRequestedFact {
+                reason: "manual".into(),
+                archived_at: 0.0,
+            }),
+        );
         assert!(super::derive_session_facts(&log.records, "root-exec", "root-exec").archived);
 
         log.push(root_meta, NodeFact::RestoreRequested);
@@ -696,7 +702,13 @@ mod session_display_name_fact_tests {
 
     #[test]
     fn test_providerタイトル_停止前の最終値を停止後の観測で上書きしない() {
-        for stop in [exited(0), NodeFact::ArchiveRequested] {
+        for stop in [
+            exited(0),
+            NodeFact::ArchiveRequested(crate::domain::workflow::ArchiveRequestedFact {
+                reason: "manual".into(),
+                archived_at: 0.0,
+            }),
+        ] {
             // Given
             let mut log = FactLog::new();
             let root_meta = meta("root-exec", None, "session", NodeKindName::Session, 1);
@@ -715,7 +727,13 @@ mod session_display_name_fact_tests {
 
     #[test]
     fn test_providerタイトル_未観測のまま停止した後の観測を採用しない() {
-        for stop in [exited(0), NodeFact::ArchiveRequested] {
+        for stop in [
+            exited(0),
+            NodeFact::ArchiveRequested(crate::domain::workflow::ArchiveRequestedFact {
+                reason: "manual".into(),
+                archived_at: 0.0,
+            }),
+        ] {
             // Given
             let mut log = FactLog::new();
             let root_meta = meta("root-exec", None, "session", NodeKindName::Session, 1);
@@ -736,7 +754,13 @@ mod session_display_name_fact_tests {
         for (stop, reactivate) in [
             (exited(0), NodeFact::ResumeRequested),
             (exited(0), attached("session-1")),
-            (NodeFact::ArchiveRequested, NodeFact::RestoreRequested),
+            (
+                NodeFact::ArchiveRequested(crate::domain::workflow::ArchiveRequestedFact {
+                    reason: "manual".into(),
+                    archived_at: 0.0,
+                }),
+                NodeFact::RestoreRequested,
+            ),
         ] {
             // Given
             let mut log = FactLog::new();
@@ -752,7 +776,13 @@ mod session_display_name_fact_tests {
             assert_provider_title(&log, Some("active title"));
 
             // When
+            let restored = matches!(reactivate, NodeFact::RestoreRequested);
             log.push(root_meta.clone(), reactivate);
+            if restored {
+                log.push(root_meta.clone(), provider_title("restored but stopped"));
+                assert_provider_title(&log, Some("active title"));
+                log.push(root_meta.clone(), NodeFact::ResumeRequested);
+            }
             log.push(root_meta, provider_title("reactivated title"));
 
             // Then
@@ -1806,4 +1836,73 @@ fn test_delegate復旧_child定義が復元不能なら親を未解決にして�
         .contains("child definition unavailable"));
     assert!(folded.aggregate.derive_pending_advances().is_empty());
     assert_eq!(folded.aggregate.node_executions.len(), 1);
+}
+
+#[test]
+fn test_実行木archive_rootの事実で子sessionもarchiveされrestoreではpausedを保つ() {
+    let mut log = FactLog::new();
+    let root = meta("root", None, "root", NodeKindName::Sequence, 1);
+    let child = meta("child", Some("root"), "child", NodeKindName::Session, 1);
+    log.push(
+        child,
+        NodeFact::SessionAttached(SessionAttachedFact {
+            session_id: "session".into(),
+            provider_session_id: Some("provider".into()),
+            transcript_ref: None,
+            initial_instruction_admitted: false,
+        }),
+    );
+    log.push(
+        root.clone(),
+        NodeFact::ArchiveRequested(crate::domain::workflow::ArchiveRequestedFact {
+            reason: "manual".into(),
+            archived_at: 0.0,
+        }),
+    );
+    assert!(derive_session_facts(&log.records, "child", "session").archived);
+    log.push(root, NodeFact::RestoreRequested);
+    let restored = derive_session_facts(&log.records, "child", "session");
+    assert!(!restored.archived);
+    assert!(restored.exited);
+    assert_eq!(restored.provider_session_id.as_deref(), Some("provider"));
+}
+
+#[test]
+fn test_repository所属の観測_旧実行木の不足だけを補い子の所属を混ぜない() {
+    // Given
+    let seed =
+        SessionExecutionTreeRootFacts::new(TREE, "/gone", "/gone", ProviderKind::Codex, None)
+            .unwrap();
+    let root_meta = seed.meta.clone();
+    let mut log = FactLog::new();
+    for (meta, fact) in seed.into_facts() {
+        log.push(meta, fact);
+    }
+    let mut child_meta = root_meta.clone();
+    child_meta.parent_id = Some(root_meta.node_execution_id.clone());
+    child_meta.node_execution_id = "child".into();
+    log.push(
+        child_meta,
+        NodeFact::RepositoryRootObserved("/child-repo".into()),
+    );
+    // When / Then
+    assert!(fold_execution_tree(TREE, &log.records)
+        .unwrap()
+        .unwrap()
+        .root
+        .repository_root
+        .is_none());
+    for _ in 0..2 {
+        log.push(
+            root_meta.clone(),
+            NodeFact::RepositoryRootObserved("/repo".into()),
+        );
+        let folded = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+        assert_eq!(folded.root.repository_root.as_deref(), Some("/repo"));
+        assert_eq!(derive_read_model(&folded).status, ExecutionStatus::Running);
+    }
+    log.push(root_meta, NodeFact::RepositoryRootObserved("/other".into()));
+    assert!(fold_execution_tree(TREE, &log.records)
+        .unwrap_err()
+        .contains("conflicting repository roots"));
 }

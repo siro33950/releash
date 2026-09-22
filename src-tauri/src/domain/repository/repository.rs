@@ -54,6 +54,12 @@ pub trait WorktreeRepository: Send + Sync {
     /// （導出できない場合は `None`）。`releash-base` の後始末は usecase が
     /// この戻り値を使ってオーケストレーションする（gateway は worktree 集約
     /// のみの純粋 I/O に徹する）。
+    fn validate_removal(
+        &self,
+        repo_path: &str,
+        worktree_path: &str,
+        force: bool,
+    ) -> Result<String, RepositoryError>;
     fn remove(
         &self,
         repo_path: &str,
@@ -62,6 +68,7 @@ pub trait WorktreeRepository: Send + Sync {
     ) -> Result<Option<String>, RepositoryError>;
     /// 壊れた（`validate()` 失敗）linked worktree を prune する。ブランチ削除
     /// 前のリカバリー等で用いる。個別エントリの prune 失敗は無視する。
+    fn invalid_worktree_paths(&self, repo_path: &str) -> Result<Vec<String>, RepositoryError>;
     fn prune_invalid(&self, repo_path: &str) -> Result<(), RepositoryError>;
 }
 

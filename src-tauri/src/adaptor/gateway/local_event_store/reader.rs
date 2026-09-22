@@ -534,6 +534,7 @@ mod canonical_runtime_owner_snapshot_tests {
             workspace_identity,
             worktree_path,
             ProviderKind::Codex,
+            None,
         )
         .unwrap()
         .started
@@ -653,7 +654,14 @@ mod canonical_runtime_owner_snapshot_tests {
                 &session_root(session_id, "/snapshot", &format!("/snapshot/{session_id}")),
             );
             insert_second_fact(&connection, session_id, &session_attached(session_id));
-            insert_third_fact(&connection, session_id, &NodeFact::ArchiveRequested);
+            insert_third_fact(
+                &connection,
+                session_id,
+                &NodeFact::ArchiveRequested(crate::domain::workflow::ArchiveRequestedFact {
+                    reason: "manual".into(),
+                    archived_at: 0.0,
+                }),
+            );
         }
 
         let owners = canonical_runtime_owner_snapshot(&connection, 1).unwrap();

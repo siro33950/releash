@@ -9,21 +9,21 @@ fn test_workflow状態復元_三状態をそのまま復元する() {
         RuntimeExecutionState::Aborted,
     ] {
         // Given
-        let restore = WorkflowExecutionRestore {
+        let restore = ExecutionTreeRestore {
             state: state.clone(),
             ..Default::default()
         };
 
         // When
-        let execution = WorkflowExecution::restore_runtime(restore);
+        let execution = ExecutionTree::restore_runtime(restore);
 
         // Then
         assert_eq!(execution.state(), &state);
     }
 }
 
-fn execution(yaml: &str) -> WorkflowExecution {
-    WorkflowExecution::restore_runtime(WorkflowExecutionRestore {
+fn execution(yaml: &str) -> ExecutionTree {
+    ExecutionTree::restore_runtime(ExecutionTreeRestore {
         id: "execution".to_string(),
         workflow: serde_saphyr::from_str(yaml).unwrap(),
         ..Default::default()
@@ -39,7 +39,7 @@ fn id_source() -> impl FnMut() -> String {
 }
 
 fn finish_leaf(
-    execution: &mut WorkflowExecution,
+    execution: &mut ExecutionTree,
     leaf: &LeafStart,
     artifact: Option<Value>,
     new_id: &mut dyn FnMut() -> String,
@@ -314,7 +314,7 @@ fn test_sequenceの多段参照_配線と辺とfanout展開へ統合mapの値を
     }
 }
 
-fn fanout_execution(children: &str, items: &str) -> WorkflowExecution {
+fn fanout_execution(children: &str, items: &str) -> ExecutionTree {
     execution(&format!(
         r#"
 name: fanout-map
@@ -331,7 +331,7 @@ nodes:
 }
 
 fn start_fanout(
-    execution: &mut WorkflowExecution,
+    execution: &mut ExecutionTree,
     new_id: &mut dyn FnMut() -> String,
 ) -> Vec<LeafStart> {
     let ExecutionAdvanceDecision::StartNodes(leaves) =
@@ -890,12 +890,12 @@ fn test_正本サンプル_fanout内の隔離sessionがdelegateを発火して�
         .join("../workflows/examples/full-cycle-development.yml");
     let source = std::fs::read_to_string(source_path).unwrap();
     let workflow: WorkflowDefinition = serde_saphyr::from_str(&source).unwrap();
-    let mut execution = WorkflowExecution::restore_runtime(WorkflowExecutionRestore {
+    let mut execution = ExecutionTree::restore_runtime(ExecutionTreeRestore {
         id: "canonical-example-execution".to_string(),
         repository_root: Some("/repo".into()),
         worktree_path: "/repo".into(),
         workflow,
-        ..WorkflowExecutionRestore::default()
+        ..ExecutionTreeRestore::default()
     });
 
     execution
@@ -1068,4 +1068,31 @@ fn test_正本サンプル_fanout内の隔離sessionがdelegateを発火して�
             .status,
         RuntimeNodeExecutionStatus::Succeeded
     );
+}
+
+#[test]
+fn test_実行木archive遷移_未終了を拒否し終了状態を変えずarchiveとrestoreを冪等に受理する() {
+    use crate::domain::workflow::{ArchiveRequestedFact, NodeFact};
+    // Given
+    let mut execution = ExecutionTree::restore(RuntimeExecutionState::Running);
+    // When / Then
+    assert!(execution.archive(1.0, "manual").is_err());
+    assert!(execution.restore_archive().is_none());
+    execution.replay_aborted_at(2.0);
+    let before = execution.state().clone();
+    assert_eq!(
+        execution.archive(3.125, "worktree_removed").unwrap(),
+        Some(NodeFact::ArchiveRequested(ArchiveRequestedFact {
+            archived_at: 3.125,
+            reason: "worktree_removed".into()
+        }))
+    );
+    assert!(execution.archive(4.0, "manual").unwrap().is_none());
+    assert_eq!(
+        execution.restore_archive(),
+        Some(NodeFact::RestoreRequested)
+    );
+    assert!(execution.restore_archive().is_none());
+    assert_eq!(execution.state(), &before);
+    assert!(execution.archive(5.0, "manual").unwrap().is_some());
 }

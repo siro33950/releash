@@ -13,7 +13,7 @@
 //! transports implement the closures/ports consumed here.
 
 use crate::domain::workflow::entities::workflow_execution::{
-    ExecutionAdvanceDecision, NodeStart, TransitionOutcome, WorkflowExecution,
+    ExecutionAdvanceDecision, ExecutionTree, NodeStart, TransitionOutcome,
 };
 use crate::domain::workflow::WorkflowEvent;
 use crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot;
@@ -26,7 +26,7 @@ pub(crate) enum NodeOutcome {
 }
 
 pub(crate) fn node_outcome_from_advance(
-    execution: &WorkflowExecution,
+    execution: &ExecutionTree,
     decision: ExecutionAdvanceDecision,
 ) -> Result<NodeOutcome, crate::usecase::workflow::runtime_error::WorkflowRuntimeError> {
     Ok(match decision {
@@ -80,8 +80,8 @@ pub(crate) enum WorkflowTransactionCommitError<E> {
 /// The before/after snapshots remain private so an outer layer cannot publish
 /// the candidate without crossing `persist`.
 pub(crate) struct PreparedWorkflowTransaction {
-    before: WorkflowExecution,
-    after: WorkflowExecution,
+    before: ExecutionTree,
+    after: ExecutionTree,
     decision: WorkflowRuntimeDecision,
 }
 
@@ -89,12 +89,12 @@ impl PreparedWorkflowTransaction {
     /// Applies a live observation to a clone of the aggregate.
     #[cfg(test)]
     pub(crate) fn observe<F>(
-        execution: &WorkflowExecution,
+        execution: &ExecutionTree,
         observe: F,
     ) -> Result<Self, WorkflowTransactionPreparationError>
     where
         F: FnOnce(
-            &mut WorkflowExecution,
+            &mut ExecutionTree,
         ) -> Result<WorkflowRuntimeDecision, WorkflowTransactionPreparationError>,
     {
         let before = execution.clone();
@@ -109,8 +109,8 @@ impl PreparedWorkflowTransaction {
     /// comes exclusively from aggregate methods, while this use-case takes over
     /// the durable commit and publication boundary.
     pub(crate) fn capture_applied(
-        before: WorkflowExecution,
-        after: WorkflowExecution,
+        before: ExecutionTree,
+        after: ExecutionTree,
         events: Vec<WorkflowEvent>,
         effects: Vec<WorkflowRuntimeEffect>,
     ) -> Result<Self, WorkflowTransactionPreparationError> {
@@ -122,8 +122,8 @@ impl PreparedWorkflowTransaction {
     }
 
     pub(crate) fn capture_with_outcome(
-        before: WorkflowExecution,
-        after: WorkflowExecution,
+        before: ExecutionTree,
+        after: ExecutionTree,
         outcome: TransitionOutcome,
         events: Vec<WorkflowEvent>,
         effects: Vec<WorkflowRuntimeEffect>,
@@ -140,8 +140,8 @@ impl PreparedWorkflowTransaction {
     }
 
     fn from_candidate(
-        before: WorkflowExecution,
-        after: WorkflowExecution,
+        before: ExecutionTree,
+        after: ExecutionTree,
         mut decision: WorkflowRuntimeDecision,
     ) -> Result<Self, WorkflowTransactionPreparationError> {
         if before == after
@@ -174,7 +174,7 @@ impl PreparedWorkflowTransaction {
     /// after persistence succeeds. Effects stay inaccessible until then.
     pub(crate) fn persist<E, P>(
         self,
-        current: &mut WorkflowExecution,
+        current: &mut ExecutionTree,
         persist: P,
     ) -> Result<DurableWorkflowTransaction, WorkflowTransactionCommitError<E>>
     where
@@ -194,7 +194,7 @@ impl PreparedWorkflowTransaction {
 
     pub(crate) async fn persist_async<E, P, Fut>(
         self,
-        current: &mut WorkflowExecution,
+        current: &mut ExecutionTree,
         persist: P,
     ) -> Result<DurableWorkflowTransaction, WorkflowTransactionCommitError<E>>
     where
@@ -240,8 +240,8 @@ mod tests {
     use crate::domain::workflow::entities::workflow_execution::TransitionRejection;
     use crate::domain::workflow::{NodeKindName, RuntimeExecutionState};
 
-    fn execution_with_attached_session() -> WorkflowExecution {
-        let mut execution = WorkflowExecution::restore(RuntimeExecutionState::Running);
+    fn execution_with_attached_session() -> ExecutionTree {
+        let mut execution = ExecutionTree::restore(RuntimeExecutionState::Running);
         execution
             .begin_node_attempt(
                 "session".to_string(),
@@ -266,7 +266,7 @@ mod tests {
 
     #[test]
     fn persistence_failure_keeps_exact_pre_commit_aggregate_and_releases_no_effects() {
-        let mut live = WorkflowExecution::restore(RuntimeExecutionState::Running);
+        let mut live = ExecutionTree::restore(RuntimeExecutionState::Running);
         let before = live.clone();
         let prepared = PreparedWorkflowTransaction::observe(&live, |candidate| {
             let outcome = candidate.abort();
@@ -288,7 +288,7 @@ mod tests {
 
     #[test]
     fn effects_become_available_only_after_durable_persistence() {
-        let mut live = WorkflowExecution::restore(RuntimeExecutionState::Running);
+        let mut live = ExecutionTree::restore(RuntimeExecutionState::Running);
         let prepared = PreparedWorkflowTransaction::observe(&live, |candidate| {
             let outcome = candidate.abort();
             Ok(WorkflowRuntimeDecision {
@@ -310,7 +310,7 @@ mod tests {
 
     #[test]
     fn already_applied_observation_persists_event_without_changing_aggregate() {
-        let mut live = WorkflowExecution::restore(RuntimeExecutionState::Running);
+        let mut live = ExecutionTree::restore(RuntimeExecutionState::Running);
         let before = live.clone();
         let event = aborted_event();
         let prepared = PreparedWorkflowTransaction::capture_with_outcome(
@@ -390,7 +390,7 @@ mod tests {
 
     #[test]
     fn stale_candidate_is_rejected_without_persistence() {
-        let live = WorkflowExecution::restore(RuntimeExecutionState::Running);
+        let live = ExecutionTree::restore(RuntimeExecutionState::Running);
         let prepared = PreparedWorkflowTransaction::observe(&live, |candidate| {
             let outcome = candidate.abort();
             Ok(WorkflowRuntimeDecision {
@@ -400,7 +400,7 @@ mod tests {
             })
         })
         .unwrap();
-        let mut stale = WorkflowExecution::restore(RuntimeExecutionState::Running);
+        let mut stale = ExecutionTree::restore(RuntimeExecutionState::Running);
         stale.abort();
         let mut persisted = false;
 
@@ -418,7 +418,7 @@ mod tests {
 
     #[tokio::test]
     async fn persist_async_updates_current_only_after_persistence_succeeds() {
-        let mut live = WorkflowExecution::restore(RuntimeExecutionState::Running);
+        let mut live = ExecutionTree::restore(RuntimeExecutionState::Running);
         let prepared = PreparedWorkflowTransaction::observe(&live, |candidate| {
             let outcome = candidate.abort();
             Ok(WorkflowRuntimeDecision {
@@ -444,7 +444,7 @@ mod tests {
 
     #[tokio::test]
     async fn persist_async_rejects_stale_candidate_without_persistence() {
-        let live = WorkflowExecution::restore(RuntimeExecutionState::Running);
+        let live = ExecutionTree::restore(RuntimeExecutionState::Running);
         let prepared = PreparedWorkflowTransaction::observe(&live, |candidate| {
             let outcome = candidate.abort();
             Ok(WorkflowRuntimeDecision {
@@ -454,7 +454,7 @@ mod tests {
             })
         })
         .unwrap();
-        let mut stale = WorkflowExecution::restore(RuntimeExecutionState::Running);
+        let mut stale = ExecutionTree::restore(RuntimeExecutionState::Running);
         stale.abort();
         let persisted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let observed = persisted.clone();
@@ -475,7 +475,7 @@ mod tests {
 
     #[tokio::test]
     async fn persist_async_propagates_persistence_failure_without_updating_current() {
-        let mut live = WorkflowExecution::restore(RuntimeExecutionState::Running);
+        let mut live = ExecutionTree::restore(RuntimeExecutionState::Running);
         let before = live.clone();
         let prepared = PreparedWorkflowTransaction::observe(&live, |candidate| {
             let outcome = candidate.abort();
@@ -500,7 +500,7 @@ mod tests {
 
     #[test]
     fn aggregate_rejection_is_preserved_as_a_typed_decision() {
-        let mut live = WorkflowExecution::restore(RuntimeExecutionState::Completed);
+        let mut live = ExecutionTree::restore(RuntimeExecutionState::Completed);
         let rejection = match live.replay_started() {
             crate::domain::workflow::entities::workflow_execution::ReplayOutcome::Rejected(
                 reason,

@@ -21,3 +21,5 @@ pub(crate) use dispatch::{
 
 #[cfg(feature = "desktop")]
 pub(crate) use dispatch::command_admitted;
+
+mod worktree_mutation;

@@ -1,6 +1,6 @@
 use super::*;
 
-impl WorkflowExecution {
+impl ExecutionTree {
     pub fn restore_definition_resolution(
         &mut self,
         resolution: crate::domain::workflow::DefinitionResolution,

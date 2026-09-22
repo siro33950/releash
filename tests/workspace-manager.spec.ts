@@ -1174,12 +1174,12 @@ test("worktree作成完了のfrontend通知で一覧を再取得し新しいwork
 });
 
 
-test("通信状態を表示せず期限後に確定したArchive結果が削除確認画面を開く", async ({page}) => {
+test("Archiveの画面確認後は期限を超えても共通操作の完了を一度だけ待つ", async ({page}) => {
     const branch = kanbanBranches.find(branch => branch.name === "feat/wip")!;
     await setupTauriMock(page, buildMockConfig({
         list_branches_with_status: [branch],
-        list_workspace_worktree_nodes: {nodes: [{kind: "node", processPresence: "unknown", id: "archive-session", title: "Late Archive", status: "idle", contentKind: "session", capabilities: {canRename: false, canApprove: false, canRetry: false, canResumeSession: false}, sessionCapabilities: {sessionRef: "archive-session", canArchive: true, canDelete: false}, pastAttempts: [], pastAttemptsCollapsed: false, updatedAt: 1}], archivedSessions: [], preferredNodeId: null},
-        archive_agent_session: "delete_confirmation_required",
+        list_workspace_worktree_nodes: {nodes: [{kind: "node", processPresence: "unknown", id: "archive-session", title: "Late Archive", status: "idle", contentKind: "session", capabilities: {canRename: false, canApprove: false, canRetry: false, canResumeSession: false}, workflowCapabilities: {canAbort: true, canArchive: true}, sessionCapabilities: {sessionRef: "archive-session", canArchive: true, canDelete: false}, pastAttempts: [], pastAttemptsCollapsed: false, updatedAt: 1}], archivedSessions: [], preferredNodeId: null},
+        archive_workspace_workflow_execution: null,
     }));
     await waitForApp(page);
     await page.clock.install();
@@ -1188,18 +1188,24 @@ test("通信状態を表示せず期限後に確定したArchive結果が削除�
         const execute = backend.execute;
         backend.execute = async (command, args) => {
             const result = await execute(command, args);
-            if (command === "archive_agent_session") await new Promise<void>(resolve => window.addEventListener("finish-archive", () => resolve(), {once: true}));
+            if (command === "archive_workspace_workflow_execution") {
+                await new Promise<void>(resolve => window.addEventListener("finish-archive", () => resolve(), {once: true}));
+                backend.setMockResponse("list_workspace_worktree_nodes", {nodes: [], archivedSessions: [], preferredNodeId: null});
+            }
             return result;
         };
     });
     await page.getByRole("button", {name: "Late Archive, idle", exact: true}).hover();
     await page.getByRole("button", {name: "Archive Late Archive", exact: true}).click();
-    await expect.poll(() => page.evaluate(() => window.__RELEASH_BACKEND__!.invocations.filter(({cmd}) => cmd === "archive_agent_session").length)).toBe(1);
+    await expect(page.getByText("Archiving will Abort this execution and stop its processes.")).toBeVisible();
+    expect(await page.evaluate(() => window.__RELEASH_BACKEND__!.invocations.filter(({cmd}) => cmd === "archive_workspace_workflow_execution").length)).toBe(0);
+    await page.getByRole("button", {name: "Abort and Archive", exact: true}).click();
+    await expect.poll(() => page.evaluate(() => window.__RELEASH_BACKEND__!.invocations.filter(({cmd}) => cmd === "archive_workspace_workflow_execution").length)).toBe(1);
     await page.clock.fastForward(31_000);
     await expect(page.getByText(/操作結果を確認できません|再接続|未送信/)).toHaveCount(0);
     await expect(page.getByRole("button", {name: "元の操作の結果を確認", exact: true})).toHaveCount(0);
     await page.evaluate(() => window.dispatchEvent(new Event("finish-archive")));
-    await expect(page.getByText(/This AgentSession has no Provider session ID and cannot be archived/)).toBeVisible();
+    await expect(page.getByRole("button", {name: "Late Archive, idle", exact: true})).toHaveCount(0);
     await expect(page.getByText(/操作結果を確認できません/)).toHaveCount(0);
-    expect(await page.evaluate(() => window.__RELEASH_BACKEND__!.invocations.filter(({cmd}) => cmd === "archive_agent_session").length)).toBe(1);
+    expect(await page.evaluate(() => window.__RELEASH_BACKEND__!.invocations.filter(({cmd}) => cmd === "archive_workspace_workflow_execution").length)).toBe(1);
 });

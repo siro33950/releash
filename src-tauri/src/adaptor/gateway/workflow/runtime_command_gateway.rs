@@ -154,7 +154,7 @@ impl WorkflowControlPlaneGateway for WorkflowRuntimeCommandGateway {
         &self,
         execution_id: &str,
     ) -> Result<
-        Option<crate::domain::workflow::entities::workflow_execution::WorkflowExecution>,
+        Option<crate::domain::workflow::entities::workflow_execution::ExecutionTree>,
         WorkflowError,
     > {
         Ok(self.driver.load_control_plane_execution(execution_id).await)
@@ -162,7 +162,7 @@ impl WorkflowControlPlaneGateway for WorkflowRuntimeCommandGateway {
 
     fn node_process_presence(
         &self,
-        execution: &crate::domain::workflow::entities::workflow_execution::WorkflowExecution,
+        execution: &crate::domain::workflow::entities::workflow_execution::ExecutionTree,
         node_execution_id: &str,
     ) -> Result<crate::domain::workflow::NodeProcessPresence, WorkflowError> {
         use crate::domain::workflow::NodeProcessReader;
@@ -292,6 +292,18 @@ impl WorkflowControlPlaneGateway for WorkflowRuntimeCommandGateway {
     ) -> Result<(), WorkflowError> {
         self.driver
             .finish_workflow_control_plane_commit(&self.app, worktree_path, snapshot, outcome)
+            .await
+            .map_err(workflow_runtime_error_to_workflow_error)
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::usecase::workflow::ports::ExecutionTreeProcessGateway
+    for WorkflowRuntimeCommandGateway
+{
+    async fn stop_execution_tree_processes(&self, execution_id: &str) -> Result<(), WorkflowError> {
+        self.driver
+            .stop_execution_tree_processes(&self.app, execution_id)
             .await
             .map_err(workflow_runtime_error_to_workflow_error)
     }

@@ -166,6 +166,7 @@ function standaloneSessionNode({
 			canRetry: false,
 			canResumeSession: false,
 		},
+		workflowCapabilities: { canAbort: status !== "idle", canArchive },
 		sessionCapabilities: {
 			sessionRef,
 			canArchive,
@@ -588,13 +589,6 @@ describe("WorkspaceList", () => {
 					kind: "node",
 					worktreePath: "/repo/wt",
 					nodeId: "restored-session-node",
-					initialSessionAttachment: {
-						agentSessionId: "provider-agent-archived",
-						workspaceIdentity: "/repo/wt",
-						worktreePath: "/repo-worktrees/.releash-isolated/restored-a1",
-						workspaceWorktreePath: "/repo/wt",
-						provider: "claude",
-					},
 				},
 			);
 		});
@@ -849,51 +843,103 @@ describe("WorkspaceList", () => {
 		).not.toBeInTheDocument();
 	});
 
-	it("Standalone AgentSessionのXはArchiveしID不明時はDelete確認を要求する", async () => {
+	it("canArchiveがfalseの単独Sessionも確認後に共通Archiveを呼び取消時は何もしない", async () => {
 		mocks.treeStateOverrides.set("/repo/wt", {
 			nodes: [
 				standaloneSessionNode({
 					id: "provider-agent-unknown",
 					title: "Claude AgentSession",
+					canArchive: false,
 				}),
 			],
 			archivedSessions: [],
 		});
-		mocks.invoke.mockImplementation((command: string) => {
-			if (command === "archive_agent_session") {
-				return Promise.resolve("delete_confirmation_required");
-			}
-			return Promise.resolve(undefined);
-		});
 		const user = userEvent.setup();
 		renderWorkspaceList();
-
-		await user.click(
-			await screen.findByRole("button", {
-				name: "Archive Claude AgentSession",
-			}),
+		const archive = screen.getByRole("button", {
+			name: "Archive Claude AgentSession",
+		});
+		expect(archive).toBeEnabled();
+		await user.click(archive);
+		expect(screen.getByText(/Archiving will Abort/)).toBeVisible();
+		expect(mocks.invoke).not.toHaveBeenCalledWith(
+			"archive_workspace_workflow_execution",
+			expect.anything(),
 		);
-
-		expect(
-			await screen.findByText(
-				/This AgentSession has no Provider session ID and cannot be archived/,
+		await user.click(screen.getByRole("button", { name: "Cancel" }));
+		expect(mocks.invoke).not.toHaveBeenCalledWith(
+			"archive_workspace_workflow_execution",
+			expect.anything(),
+		);
+		await user.click(
+			screen.getByRole("button", { name: "Archive Claude AgentSession" }),
+		);
+		await user.click(screen.getByRole("button", { name: "Abort and Archive" }));
+		await waitFor(() =>
+			expect(mocks.invoke).toHaveBeenCalledWith(
+				"archive_workspace_workflow_execution",
+				{ worktreePath: "/repo/wt", executionId: "provider-agent-unknown" },
 			),
-		).toBeVisible();
+		);
 		expect(mocks.invoke).not.toHaveBeenCalledWith(
 			"confirm_agent_session_archive_delete",
 			expect.anything(),
 		);
-
-		await user.click(screen.getByRole("button", { name: "Delete" }));
-		await waitFor(() => {
-			expect(mocks.invoke).toHaveBeenCalledWith(
-				"confirm_agent_session_archive_delete",
-				expect.objectContaining({
-					agentSessionId: "provider-agent-unknown",
-				}),
-			);
-		});
 	});
+
+	it.each([true, false])(
+		"canArchiveがfalseのWorkflowもArchiveでき実行中の場合だけ確認する（canAbort=%s）",
+		async (canAbort) => {
+			mocks.treeStateOverrides.set("/repo/wt", {
+				nodes: recursiveTree.map((item) =>
+					item.id === "workflow-internal-uuid"
+						? {
+								...item,
+								status: canAbort ? ("active" as const) : ("idle" as const),
+								workflowCapabilities: { canAbort, canArchive: false },
+							}
+						: item,
+				),
+			});
+			const user = userEvent.setup();
+			renderWorkspaceList();
+			const archive = screen.getByRole("button", {
+				name: "Archive Release workflow",
+			});
+			expect(archive).toBeEnabled();
+			await user.click(archive);
+			if (canAbort) {
+				expect(screen.getByText(/Archiving will Abort/)).toBeVisible();
+				expect(mocks.invoke).not.toHaveBeenCalledWith(
+					"archive_workspace_workflow_execution",
+					expect.anything(),
+				);
+				await user.click(screen.getByRole("button", { name: "Cancel" }));
+				expect(mocks.invoke).not.toHaveBeenCalledWith(
+					"archive_workspace_workflow_execution",
+					expect.anything(),
+				);
+				await user.click(archive);
+				await user.click(
+					screen.getByRole("button", { name: "Abort and Archive" }),
+				);
+			} else {
+				expect(
+					screen.queryByText(/Archiving will Abort/),
+				).not.toBeInTheDocument();
+			}
+			await waitFor(() =>
+				expect(mocks.invoke).toHaveBeenCalledWith(
+					"archive_workspace_workflow_execution",
+					{ worktreePath: "/repo/wt", executionId: "workflow-internal-uuid" },
+				),
+			);
+			expect(mocks.invoke).not.toHaveBeenCalledWith(
+				"abort_workflow",
+				expect.anything(),
+			);
+		},
+	);
 
 	it("Standalone AgentSessionのArchive成功を同じworktreeの表示へ通知する", async () => {
 		mocks.treeStateOverrides.set("/repo/wt", {
@@ -906,7 +952,7 @@ describe("WorkspaceList", () => {
 			archivedSessions: [],
 		});
 		mocks.invoke.mockImplementation((command: string) => {
-			if (command === "archive_agent_session") {
+			if (command === "archive_workspace_workflow_execution") {
 				return Promise.resolve("archived");
 			}
 			return Promise.resolve(undefined);
@@ -922,6 +968,7 @@ describe("WorkspaceList", () => {
 			}),
 		);
 
+		await user.click(screen.getByRole("button", { name: "Abort and Archive" }));
 		await waitFor(() => expect(refresh).toHaveBeenCalledOnce());
 		const event = refresh.mock.calls[0]?.[0];
 		expect((event as CustomEvent).detail).toEqual({
@@ -1891,6 +1938,7 @@ describe("WorkspaceList", () => {
 						status: "idle" as const,
 						workflowCapabilities: {
 							...item.workflowCapabilities,
+							canAbort: false,
 							canArchive: true,
 						},
 					}
@@ -1961,6 +2009,7 @@ describe("WorkspaceList", () => {
 						status: "idle" as const,
 						workflowCapabilities: {
 							...item.workflowCapabilities,
+							canAbort: false,
 							canArchive: true,
 						},
 					}

@@ -179,3 +179,38 @@ fn test_session読取_実効cwdの一時障害と破損をrepositoryとqueryへ�
         );
     }
 }
+
+#[test]
+fn test_session読取_子sessionにもrootのarchiveとrestoreを反映する() {
+    use crate::domain::workflow::services::fact_replay::derive_session_facts;
+    use crate::domain::workflow::{NodeFact, NodeFactMeta};
+    let directory = tempfile::tempdir().unwrap();
+    let store =
+        LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into())).unwrap();
+    seed_unavailable_definition(&store, "tree", "/repo", "unused");
+    let backend = FactLogReadBackend::Live(store.clone());
+    let location = locate_session(&backend, "tree-session").unwrap().unwrap();
+    let root = NodeFactMeta {
+        tree_id: "tree".into(),
+        node_execution_id: "tree".into(),
+        parent_id: None,
+        node_name: "main".into(),
+        kind: NodeKindName::Sequence,
+        attempt: 1,
+    };
+    for fact in [
+        NodeFact::ArchiveRequested(crate::domain::workflow::ArchiveRequestedFact {
+            reason: "manual".into(),
+            archived_at: 0.0,
+        }),
+        NodeFact::RestoreRequested,
+    ] {
+        fact_log::append_single_fact(&store, &root, &fact, 100).unwrap();
+        let records = read_session_records(&backend, &location).unwrap();
+        let view = derive_session_facts(&records, &location.node_execution_id, "tree-session");
+        assert_eq!(view.archived, matches!(fact, NodeFact::ArchiveRequested(_)));
+        if matches!(fact, NodeFact::RestoreRequested) {
+            assert!(view.exited);
+        }
+    }
+}

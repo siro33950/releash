@@ -148,9 +148,9 @@ fn contract_lookup_error_to_workflow_error(error: contract::ContractLookupError)
 mod tests {
     use super::*;
     use crate::domain::workflow::{
-        FacetKind, FacetRefs, FacetRepository, FacetSummary, NodeDefinition, NodeKind, SchemaDef,
-        SessionSpec, WorkflowDefinition, WorkflowDefinitionRepository, WorkflowExecution,
-        WorkflowExecutionId, WorkflowSummary,
+        ExecutionTree, ExecutionTreeId, FacetKind, FacetRefs, FacetRepository, FacetSummary,
+        NodeDefinition, NodeKind, SchemaDef, SessionSpec, WorkflowDefinition,
+        WorkflowDefinitionRepository, WorkflowSummary,
     };
     use crate::usecase::workflow::ports::{
         WorkflowEventRepository, WorkflowExecutionProjectionRepository,
@@ -203,7 +203,7 @@ mod tests {
 
         fn read(
             &self,
-            _execution_id: &WorkflowExecutionId,
+            _execution_id: &ExecutionTreeId,
         ) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
             self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(self.events.lock().unwrap().clone())
@@ -258,7 +258,7 @@ mod tests {
     impl WorkflowExecutionProjectionRepository for NoopExecutionProjectionRepository {
         fn get_node_artifact_from_events(
             &self,
-            _execution_id: &WorkflowExecutionId,
+            _execution_id: &ExecutionTreeId,
             _node_name: &str,
             _events: &[WorkflowEventDraft],
         ) -> Result<Option<crate::domain::workflow::Artifact>, WorkflowError> {
@@ -267,8 +267,8 @@ mod tests {
 
         fn get_execution(
             &self,
-            _execution_id: &WorkflowExecutionId,
-        ) -> Result<Option<WorkflowExecution>, WorkflowError> {
+            _execution_id: &ExecutionTreeId,
+        ) -> Result<Option<ExecutionTree>, WorkflowError> {
             Ok(None)
         }
     }

@@ -1,6 +1,6 @@
 use super::*;
 
-impl WorkflowExecution {
+impl ExecutionTree {
     pub fn execution_worktree_path(&self, node_execution_id: &str) -> Option<&str> {
         let node = self.node_execution(node_execution_id)?;
         let ancestors = std::iter::successors(Some(node), |node| {

@@ -380,20 +380,6 @@ impl AgentSessionTuiAcceptanceHost {
         )
     }
 
-    async fn confirm_archive_fallback_delete(
-        &self,
-        agent_session_id: &str,
-        caller_request_id: &str,
-    ) -> Result<(), String> {
-        self.invoke(
-            "confirm_agent_session_archive_delete",
-            serde_json::json!({
-                "agentSessionId": agent_session_id,
-                "callerRequestId": caller_request_id,
-            }),
-        )
-    }
-
     async fn wait_until_lifecycle(
         &self,
         agent_session_id: &str,
@@ -1061,6 +1047,17 @@ async fn test_atui_030_provider選択からarchive_restore_deleteまで旧messag
             host.restore(&session_id, 24, 80, "restore").await.unwrap(),
             AcceptanceOpenOutcome::Restored
         );
+        assert_eq!(
+            host.get(&session_id).await.unwrap().unwrap().lifecycle,
+            AcceptanceAgentSessionLifecycle::Paused
+        );
+        assert!(host.terminal().get(terminal_owner.clone()).is_err());
+        assert_eq!(
+            host.resume(&session_id, 24, 80, "manual-resume")
+                .await
+                .unwrap(),
+            AcceptanceOpenOutcome::Resumed
+        );
         assert!(
             !host
                 .terminal()
@@ -1611,7 +1608,7 @@ async fn test_atui_030_provider履歴はmetadataだけを列挙し新しいsessi
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_atui_030_provider_id不明のarchiveは確認まで保持し確認後に縮退deleteする() {
+async fn test_atui_030_provider_id不明でも確認なしで停止してarchiveし明示deleteできる() {
     let root = tempfile::TempDir::new().unwrap();
     let workspace = root.path().join("worktree");
     std::fs::create_dir_all(&workspace).unwrap();
@@ -1635,30 +1632,22 @@ async fn test_atui_030_provider_id不明のarchiveは確認まで保持し確認
         host.archive(&session_id, "unknown-id-archive")
             .await
             .unwrap(),
-        AcceptanceArchiveOutcome::DeleteConfirmationRequired
+        AcceptanceArchiveOutcome::Archived
     );
     assert_eq!(
         host.get(&session_id).await.unwrap().unwrap().lifecycle,
-        AcceptanceAgentSessionLifecycle::Open
+        AcceptanceAgentSessionLifecycle::Archived
     );
-    assert!(
-        !host
-            .terminal()
-            .get(terminal_owner.clone())
-            .unwrap()
-            .is_exited
-    );
+    assert!(host.terminal().get(terminal_owner.clone()).is_err());
 
-    host.confirm_archive_fallback_delete(&session_id, "unknown-id-confirm")
-        .await
-        .unwrap();
+    host.delete(&session_id, "unknown-id-delete").await.unwrap();
     assert!(host.get(&session_id).await.unwrap().is_none());
     assert!(host.terminal().get(terminal_owner).is_err());
     host.shutdown().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_atui_030_restore失敗はarchivedを維持する() {
+async fn test_atui_030_provider実行fileが無くてもrestoreできresumeだけ失敗する() {
     let root = tempfile::TempDir::new().unwrap();
     let workspace = root.path().join("worktree");
     std::fs::create_dir_all(&workspace).unwrap();
@@ -1697,13 +1686,20 @@ async fn test_atui_030_restore失敗はarchivedを維持する() {
     );
     std::fs::remove_file(root.path().join("bin/claude-fixture")).unwrap();
 
+    assert_eq!(
+        host.restore(&session_id, 24, 80, "restore-without-provider")
+            .await
+            .unwrap(),
+        AcceptanceOpenOutcome::Restored
+    );
+    assert!(host.terminal().get(terminal_owner).is_err());
     assert!(host
-        .restore(&session_id, 24, 80, "restore-failure")
+        .resume(&session_id, 24, 80, "resume-failure")
         .await
         .is_err());
     assert_eq!(
         host.get(&session_id).await.unwrap().unwrap().lifecycle,
-        AcceptanceAgentSessionLifecycle::Archived
+        AcceptanceAgentSessionLifecycle::Paused
     );
     host.shutdown().await.unwrap();
 }
@@ -1967,9 +1963,9 @@ async fn test_atui_030_実codexをproduction経路でtrustしroot_session_start�
         host.archive(&untrusted_session_id, "actual-codex-untrusted-archive")
             .await
             .unwrap(),
-        AcceptanceArchiveOutcome::DeleteConfirmationRequired
+        AcceptanceArchiveOutcome::Archived
     );
-    host.confirm_archive_fallback_delete(&untrusted_session_id, "actual-codex-untrusted-delete")
+    host.delete(&untrusted_session_id, "actual-codex-untrusted-delete")
         .await
         .unwrap();
 

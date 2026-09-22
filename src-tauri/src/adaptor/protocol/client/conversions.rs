@@ -17,7 +17,7 @@ impl TryFrom<crate::adaptor::protocol::agent_session::AgentSessionArchiveRespons
     fn try_from(
         value: crate::adaptor::protocol::agent_session::AgentSessionArchiveResponse,
     ) -> Result<Self, String> {
-        Ok(Self { value: Some(match value { crate::adaptor::protocol::agent_session::AgentSessionArchiveResponse::Archived => wire::agent_session_archive_response::Value::Archived as i32, crate::adaptor::protocol::agent_session::AgentSessionArchiveResponse::AlreadyArchived => wire::agent_session_archive_response::Value::AlreadyArchived as i32, crate::adaptor::protocol::agent_session::AgentSessionArchiveResponse::DeleteConfirmationRequired => wire::agent_session_archive_response::Value::DeleteConfirmationRequired as i32 }) })
+        Ok(Self { value: Some(match value { crate::adaptor::protocol::agent_session::AgentSessionArchiveResponse::Archived => wire::agent_session_archive_response::Value::Archived as i32, crate::adaptor::protocol::agent_session::AgentSessionArchiveResponse::AlreadyArchived => wire::agent_session_archive_response::Value::AlreadyArchived as i32 }) })
     }
 }
 
@@ -29,9 +29,6 @@ impl TryFrom<String> for wire::AgentSessionArchiveResponse {
                 "archived" => wire::agent_session_archive_response::Value::Archived as i32,
                 "already_archived" => {
                     wire::agent_session_archive_response::Value::AlreadyArchived as i32
-                }
-                "delete_confirmation_required" => {
-                    wire::agent_session_archive_response::Value::DeleteConfirmationRequired as i32
                 }
                 _ => return Err(format!("Invalid AgentSessionArchiveResponse: {value}")),
             }),

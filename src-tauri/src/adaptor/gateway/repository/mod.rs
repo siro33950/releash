@@ -17,6 +17,7 @@ pub(crate) mod status;
 pub(crate) mod util;
 pub(crate) mod watch;
 pub(crate) mod worktree;
+pub(crate) mod worktree_operation;
 pub(crate) mod worktree_terminal;
 
 pub(crate) mod file_watcher;

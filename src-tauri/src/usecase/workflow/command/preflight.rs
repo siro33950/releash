@@ -1,6 +1,6 @@
 use crate::domain::workflow::services::approval_rules;
 use crate::domain::workflow::{
-    ContractType, NodeDefinitionName, WorkflowDefinitionName, WorkflowError, WorkflowExecutionId,
+    ContractType, ExecutionTreeId, NodeDefinitionName, WorkflowDefinitionName, WorkflowError,
     WorkspaceWorktreePath,
 };
 
@@ -23,13 +23,13 @@ impl WorkflowRuntimeCommandPreflight {
         &self,
         command: &AbortExecutionCommand,
     ) -> Result<(), WorkflowError> {
-        WorkflowExecutionId::new(command.execution_id.clone())?;
+        crate::domain::workflow::ExecutionTreeId::new(command.execution_id.clone())?;
         validate_optional_node_name(command.expected_node_name.as_deref())?;
         Ok(())
     }
 
     pub(crate) fn validate_approval(&self, command: &ApprovalCommand) -> Result<(), WorkflowError> {
-        WorkflowExecutionId::new(command.execution_id.clone())?;
+        ExecutionTreeId::new(command.execution_id.clone())?;
         NodeDefinitionName::new(command.node_name.clone())?;
         approval_rules::validate_optional_comment_text(
             command.comment.as_deref(),
@@ -58,7 +58,7 @@ impl WorkflowRuntimeCommandPreflight {
         &self,
         execution_id: &str,
     ) -> Result<(), WorkflowError> {
-        WorkflowExecutionId::new(execution_id.to_string()).map(|_| ())
+        ExecutionTreeId::new(execution_id.to_string()).map(|_| ())
     }
 }
 

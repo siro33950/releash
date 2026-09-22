@@ -4,7 +4,7 @@ use crate::adaptor::gateway::local_event_store::node_events::{self, NodeEventRow
 use crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore;
 use crate::adaptor::gateway::local_event_store::LocalEventStore;
 use crate::adaptor::gateway::workflow::fact_log::FactLogReadBackend;
-use crate::domain::workflow::{WorkflowError, WorkflowExecutionId, WorkflowPageRequest};
+use crate::domain::workflow::{ExecutionTreeId, WorkflowError, WorkflowPageRequest};
 use crate::usecase::workflow::ports::{WorkflowEventDraft, WorkflowEventRepository};
 
 /// 事実ログ（node_events）を実行イベント一覧として読む repository。
@@ -36,7 +36,7 @@ impl WorkflowEventLogRepository {
 
     fn read_drafts(
         &self,
-        execution_id: &WorkflowExecutionId,
+        execution_id: &ExecutionTreeId,
     ) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
         match &self.source {
             WorkflowEventReadSource::Canonical(backend) => {
@@ -55,7 +55,7 @@ impl WorkflowEventLogRepository {
 
     fn read_draft_page(
         &self,
-        execution_id: &WorkflowExecutionId,
+        execution_id: &ExecutionTreeId,
         page: WorkflowPageRequest,
     ) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
         match &self.source {
@@ -108,14 +108,14 @@ impl WorkflowEventRepository for WorkflowEventLogRepository {
 
     fn read(
         &self,
-        execution_id: &WorkflowExecutionId,
+        execution_id: &ExecutionTreeId,
     ) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
         self.read_drafts(execution_id)
     }
 
     fn read_page(
         &self,
-        execution_id: &WorkflowExecutionId,
+        execution_id: &ExecutionTreeId,
         page: WorkflowPageRequest,
     ) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
         self.read_draft_page(execution_id, page)
@@ -182,8 +182,7 @@ mod tests {
         let store =
             LocalEventStore::open(LocalEventStoreConfig::production(tmp.path().to_path_buf()))
                 .unwrap();
-        let execution_id =
-            WorkflowExecutionId::new("00000000-0000-4000-8000-000000000001").unwrap();
+        let execution_id = ExecutionTreeId::new("00000000-0000-4000-8000-000000000001").unwrap();
         crate::adaptor::gateway::workflow::test_support::append_canonical_events(
             &store,
             &started_events(execution_id.as_str()),
@@ -205,8 +204,7 @@ mod tests {
         let store =
             LocalEventStore::open(LocalEventStoreConfig::production(tmp.path().to_path_buf()))
                 .unwrap();
-        let execution_id =
-            WorkflowExecutionId::new("00000000-0000-4000-8000-000000000002").unwrap();
+        let execution_id = ExecutionTreeId::new("00000000-0000-4000-8000-000000000002").unwrap();
         crate::adaptor::gateway::workflow::test_support::append_canonical_events(
             &store,
             &started_events(execution_id.as_str()),
@@ -242,7 +240,7 @@ mod tests {
         let store =
             LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into()))
                 .unwrap();
-        let id = WorkflowExecutionId::new("00000000-0000-4000-8000-000000001744").unwrap();
+        let id = ExecutionTreeId::new("00000000-0000-4000-8000-000000001744").unwrap();
         crate::adaptor::gateway::workflow::test_support::seed_unavailable_definition(
             &store,
             id.as_str(),

@@ -201,11 +201,11 @@ pub(crate) mod test_support {
 
     fn control_plane_execution_fixture(
         execution_id: &str,
-    ) -> crate::domain::workflow::entities::workflow_execution::WorkflowExecution {
+    ) -> crate::domain::workflow::entities::workflow_execution::ExecutionTree {
         use std::collections::{BTreeMap, BTreeSet};
 
         use crate::domain::workflow::entities::workflow_execution::{
-            WorkflowExecution, WorkflowExecutionRestore,
+            ExecutionTree, ExecutionTreeRestore,
         };
         use crate::domain::workflow::{
             ExecutionParentRef, FanoutSpec, NodeCompletion, NodeCompletionSignal,
@@ -257,13 +257,13 @@ pub(crate) mod test_support {
             ],
             entry: "fanout".to_string(),
         };
-        let mut execution = WorkflowExecution::restore_runtime(WorkflowExecutionRestore {
+        let mut execution = ExecutionTree::restore_runtime(ExecutionTreeRestore {
             id: execution_id.to_string(),
             workflow,
             worktree_path: "/repo".to_string(),
             started_at: 100.0,
             updated_at: 100.0,
-            ..WorkflowExecutionRestore::default()
+            ..ExecutionTreeRestore::default()
         });
         execution
             .replay_node_started(
@@ -325,7 +325,7 @@ pub(crate) mod test_support {
     impl WorkflowControlPlaneGateway for RecordingRuntimeGateway {
         fn node_process_presence(
             &self,
-            _execution: &crate::domain::workflow::entities::workflow_execution::WorkflowExecution,
+            _execution: &crate::domain::workflow::entities::workflow_execution::ExecutionTree,
             _id: &str,
         ) -> Result<
             crate::domain::workflow::NodeProcessPresence,
@@ -378,7 +378,7 @@ pub(crate) mod test_support {
             &self,
             execution_id: &str,
         ) -> Result<
-            Option<crate::domain::workflow::entities::workflow_execution::WorkflowExecution>,
+            Option<crate::domain::workflow::entities::workflow_execution::ExecutionTree>,
             WorkflowError,
         > {
             if let Some(error) = self.errors.lock().unwrap().approval.clone() {
@@ -528,6 +528,13 @@ pub(crate) mod test_support {
     }
 
     #[async_trait::async_trait]
+    impl crate::usecase::workflow::ports::ExecutionTreeProcessGateway for RecordingRuntimeGateway {
+        async fn stop_execution_tree_processes(&self, _: &str) -> Result<(), WorkflowError> {
+            unreachable!("process cleanup is not used by this fixture")
+        }
+    }
+
+    #[async_trait::async_trait]
     impl WorkflowRuntimeStateGateway for RecordingRuntimeGateway {
         async fn recover_startup(&self) -> Result<(), WorkflowError> {
             Ok(())
@@ -557,7 +564,10 @@ pub(crate) mod test_support {
             data_dir,
         ));
         let gateway = Arc::new(RecordingRuntimeGateway::default());
-        let runtime = Arc::new(WorkflowRuntimeUsecase::new(gateway.clone()));
+        let runtime = Arc::new(WorkflowRuntimeUsecase::new(
+            gateway.clone(),
+            Arc::new(crate::usecase::workflow::NoopArchiveRepository),
+        ));
         (workflow, runtime, gateway)
     }
 
@@ -610,7 +620,10 @@ pub(crate) mod test_support {
         Arc<RecordingRuntimeGateway>,
     ) {
         let gateway = Arc::new(RecordingRuntimeGateway::default());
-        let runtime = Arc::new(WorkflowRuntimeUsecase::new(gateway.clone()));
+        let runtime = Arc::new(WorkflowRuntimeUsecase::new(
+            gateway.clone(),
+            Arc::new(crate::usecase::workflow::NoopArchiveRepository),
+        ));
         let workflow = crate::adaptor::controller::wiring::build_canonical_workflow_read_usecase(
             data_dir, None,
         )

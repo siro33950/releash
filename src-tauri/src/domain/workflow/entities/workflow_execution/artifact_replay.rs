@@ -16,7 +16,7 @@ pub(super) enum ReplayScope {
     ArtifactChild,
 }
 
-impl WorkflowExecution {
+impl ExecutionTree {
     pub(crate) fn replay_artifact_scope(
         &mut self,
         start: &NodeFactRecord,

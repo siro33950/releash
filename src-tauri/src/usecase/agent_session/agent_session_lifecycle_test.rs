@@ -5,7 +5,7 @@ use std::time::Duration;
 use super::{
     AgentSessionLifecycleUsecase, AgentSessionLifecycleUsecaseError, AgentSessionOpenOutcome,
     AgentSessionUsecase, ExecutionTreeCacheReleaseError, ProviderAgentRuntime,
-    StartedExecutionTreeRegistrar, StartedExecutionTreeRegistrationError,
+    StartedExecutionTreeRegistrationError,
 };
 use crate::adaptor::gateway::agent_session::LocalAgentSessionRepository;
 use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
@@ -56,19 +56,39 @@ struct RecordingChangeNotifier {
 
 #[derive(Default)]
 struct RecordingExecutionTrees {
+    worktree_operations: crate::usecase::worktree_operation::WorktreeOperations,
+    operation_lock: Arc<tokio::sync::Mutex<()>>,
+    block_archive: AtomicBool,
+    archive_error: Mutex<Option<crate::domain::workflow::WorkflowError>>,
+    mutation_error: Mutex<Option<crate::domain::workflow::WorkflowError>>,
+    restore_error: Mutex<Option<crate::domain::workflow::WorkflowError>>,
+    archive_stopped: tokio::sync::Notify,
+    archive_release: tokio::sync::Notify,
+    store: Option<Arc<LocalEventStore>>,
+    lifecycle: Mutex<std::sync::Weak<AgentSessionLifecycleUsecase>>,
     releases: Mutex<Vec<String>>,
     release_error: Mutex<Option<ExecutionTreeCacheReleaseError>>,
 }
 
-#[async_trait::async_trait]
-impl StartedExecutionTreeRegistrar for RecordingExecutionTrees {
-    async fn register_started_execution_tree(
+impl crate::usecase::agent_session::WorktreeMutationAdmission for RecordingExecutionTrees {
+    fn begin_worktree_mutation(
         &self,
-        _tree_id: &str,
-    ) -> Result<(), StartedExecutionTreeRegistrationError> {
-        Ok(())
+        path: &str,
+    ) -> Result<
+        crate::usecase::worktree_operation::WorktreeMutationGuard,
+        crate::domain::workflow::WorkflowError,
+    > {
+        if let Some(error) = self.mutation_error.lock().unwrap().clone() {
+            return Err(error);
+        }
+        self.worktree_operations
+            .mutate(path)
+            .map_err(|error| crate::domain::workflow::WorkflowError::Conflict(error.to_string()))
     }
+}
 
+#[async_trait::async_trait]
+impl crate::usecase::agent_session::ExecutionTreeCache for RecordingExecutionTrees {
     async fn release_deleted_execution_tree(
         &self,
         tree_id: &str,
@@ -80,6 +100,96 @@ impl StartedExecutionTreeRegistrar for RecordingExecutionTrees {
             .as_ref()
             .copied()
             .map_or(Ok(()), Err)
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::usecase::agent_session::StartedExecutionTreeRegistrar for RecordingExecutionTrees {
+    async fn register_started_execution_tree(
+        &self,
+        _tree_id: &str,
+    ) -> Result<(), StartedExecutionTreeRegistrationError> {
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::usecase::agent_session::AgentSessionExecutionTreeLifecycle for RecordingExecutionTrees {
+    async fn lock_execution_tree(
+        &self,
+        _: &str,
+    ) -> Result<tokio::sync::OwnedMutexGuard<()>, crate::domain::workflow::WorkflowError> {
+        Ok(self.operation_lock.clone().lock_owned().await)
+    }
+
+    async fn archive_execution_tree(
+        &self,
+        tree_id: &str,
+    ) -> Result<(), crate::domain::workflow::WorkflowError> {
+        if let Some(error) = self.archive_error.lock().unwrap().clone() {
+            return Err(error);
+        }
+        let _operation = self.lock_execution_tree(tree_id).await?;
+        let store = self.store.as_ref().expect("archive fact store");
+        let records =
+            crate::adaptor::gateway::workflow::fact_log::read_tree_records(store, tree_id).unwrap();
+        let meta = &records[0].meta;
+        crate::adaptor::gateway::workflow::fact_log::append_single_fact(
+            store,
+            meta,
+            &NodeFact::AbortRequested,
+            100,
+        )
+        .unwrap();
+        let lifecycle = self
+            .lifecycle
+            .lock()
+            .unwrap()
+            .upgrade()
+            .expect("archive lifecycle");
+        lifecycle
+            .stop_for_terminal_execution_tree_node_preserving_checkpoint(
+                tree_id,
+                &meta.node_execution_id,
+                "archive-stop",
+            )
+            .await
+            .unwrap();
+        if self.block_archive.swap(false, Ordering::SeqCst) {
+            self.archive_stopped.notify_one();
+            self.archive_release.notified().await;
+        }
+        crate::adaptor::gateway::workflow::fact_log::append_single_fact(
+            store,
+            meta,
+            &NodeFact::ArchiveRequested(crate::domain::workflow::ArchiveRequestedFact {
+                reason: "manual".into(),
+                archived_at: 0.0,
+            }),
+            100,
+        )
+        .unwrap();
+        Ok(())
+    }
+
+    async fn restore_execution_tree(
+        &self,
+        tree_id: &str,
+    ) -> Result<(), crate::domain::workflow::WorkflowError> {
+        if let Some(error) = self.restore_error.lock().unwrap().clone() {
+            return Err(error);
+        }
+        let store = self.store.as_ref().expect("restore fact store");
+        let records =
+            crate::adaptor::gateway::workflow::fact_log::read_tree_records(store, tree_id).unwrap();
+        crate::adaptor::gateway::workflow::fact_log::append_single_fact(
+            store,
+            &records[0].meta,
+            &NodeFact::RestoreRequested,
+            101,
+        )
+        .unwrap();
+        Ok(())
     }
 }
 
@@ -180,6 +290,18 @@ struct NoopProviderExecutionTreeStops;
 
 #[async_trait::async_trait]
 impl ProviderExecutionTreeStopTransaction for NoopProviderExecutionTreeStops {
+    fn begin_worktree_mutation(
+        &self,
+        path: &str,
+    ) -> Result<
+        crate::usecase::worktree_operation::WorktreeMutationGuard,
+        ProviderLifecycleIngressUsecaseError,
+    > {
+        crate::usecase::worktree_operation::WorktreeOperations::default()
+            .mutate(path)
+            .map_err(|_| ProviderLifecycleIngressUsecaseError::Conflict)
+    }
+
     async fn commit_provider_stop(
         &self,
         _command: ProviderExecutionTreeStopCommand,
@@ -447,7 +569,7 @@ struct LifecycleTestContext {
     _directory: tempfile::TempDir,
     store: Arc<LocalEventStore>,
     sessions: Arc<AgentSessionUsecase>,
-    lifecycle: AgentSessionLifecycleUsecase,
+    lifecycle: Arc<AgentSessionLifecycleUsecase>,
     launches: Arc<RecordingResumeLaunches>,
     terminal: Arc<LifecycleTerminal>,
     provider_lifecycle: Arc<ProviderLifecycleUsecase>,
@@ -458,6 +580,52 @@ struct LifecycleTestContext {
 
 fn setup() -> LifecycleTestContext {
     setup_with_lifecycle_events(Arc::new(NoopLifecycleEvents))
+}
+
+#[tokio::test]
+async fn test_worktree削除中_sessionのopen_resume_restore_deleteを副作用前に拒否する() {
+    // Given
+    let context = setup();
+    let id = "deleting-session";
+    context
+        .sessions
+        .create(
+            id,
+            WorkspaceIdentity::new("/repo/worktree"),
+            "/repo/worktree",
+            ProviderKind::Codex,
+            session_location(id),
+            "create",
+        )
+        .await
+        .unwrap();
+    let before = context.sessions.find(id).await.unwrap().unwrap();
+    let _deletion = context
+        .execution_trees
+        .worktree_operations
+        .delete("/repo/worktree")
+        .await
+        .unwrap();
+    // When / Then
+    assert_eq!(
+        context.lifecycle.open(id, 24, 80, "open").await,
+        Err(AgentSessionLifecycleUsecaseError::Conflict)
+    );
+    assert_eq!(
+        context.lifecycle.resume(id, 24, 80, "resume").await,
+        Err(AgentSessionLifecycleUsecaseError::Conflict)
+    );
+    assert_eq!(
+        context.lifecycle.restore(id, 24, 80, "restore").await,
+        Err(AgentSessionLifecycleUsecaseError::Conflict)
+    );
+    assert_eq!(
+        context.lifecycle.delete(id, "delete").await,
+        Err(AgentSessionLifecycleUsecaseError::Conflict)
+    );
+    assert_eq!(context.sessions.find(id).await.unwrap().unwrap(), before);
+    assert_eq!(*context.terminal.spawn_count.lock().unwrap(), 0);
+    assert!(context.terminal.stops.lock().unwrap().is_empty());
 }
 
 fn setup_with_lifecycle_events(
@@ -481,8 +649,11 @@ fn setup_with_lifecycle_events(
         MemoryHookHealthRepository::default(),
     )));
     let change_notifier = Arc::new(RecordingChangeNotifier::default());
-    let execution_trees = Arc::new(RecordingExecutionTrees::default());
-    let usecase = AgentSessionLifecycleUsecase::new(
+    let execution_trees = Arc::new(RecordingExecutionTrees {
+        store: Some(store.clone()),
+        ..Default::default()
+    });
+    let usecase = Arc::new(AgentSessionLifecycleUsecase::new(
         sessions.clone(),
         lifecycle.clone(),
         ProviderAgentRuntime::new(
@@ -493,7 +664,8 @@ fn setup_with_lifecycle_events(
         hook_health.clone(),
         change_notifier.clone(),
         execution_trees.clone(),
-    );
+    ));
+    *execution_trees.lifecycle.lock().unwrap() = Arc::downgrade(&usecase);
     LifecycleTestContext {
         _directory: directory,
         store,
@@ -1372,10 +1544,13 @@ async fn test_agent_session_lifecycle_exit_resume_archive_restore_deleteを接�
         )
     );
     *terminal.fail_spawn.lock().unwrap() = true;
-    assert!(lifecycle
-        .restore("agent-1", 24, 80, "restore-fail")
-        .await
-        .is_err());
+    assert_eq!(
+        lifecycle
+            .restore("agent-1", 24, 80, "restore-1")
+            .await
+            .unwrap(),
+        AgentSessionOpenOutcome::Restored
+    );
     assert_eq!(
         sessions
             .find("agent-1")
@@ -1384,19 +1559,20 @@ async fn test_agent_session_lifecycle_exit_resume_archive_restore_deleteを接�
             .unwrap()
             .session()
             .lifecycle(),
-        AgentSessionLifecycle::Archived
+        AgentSessionLifecycle::Paused
     );
-    assert_eq!(
-        launches.cleanups.lock().unwrap().as_slice(),
-        &["agent-1", "agent-1", "agent-1"]
-    );
+    assert_eq!(*terminal.spawn_count.lock().unwrap(), 1);
+    assert!(lifecycle
+        .resume("agent-1", 24, 80, "resume-fail")
+        .await
+        .is_err());
     *terminal.fail_spawn.lock().unwrap() = false;
     assert_eq!(
         lifecycle
-            .restore("agent-1", 24, 80, "restore-1")
+            .resume("agent-1", 24, 80, "resume-2")
             .await
             .unwrap(),
-        AgentSessionOpenOutcome::Restored
+        AgentSessionOpenOutcome::Resumed
     );
     assert!(execution_trees.releases.lock().unwrap().is_empty());
     lifecycle.archive("agent-1", "archive-2").await.unwrap();
@@ -1911,7 +2087,10 @@ async fn test_agent_session_resume状態保存失敗時は起動済みprocessを
         ),
         hook_health,
         Arc::new(RecordingChangeNotifier::default()),
-        Arc::new(RecordingExecutionTrees::default()),
+        Arc::new(RecordingExecutionTrees {
+            store: Some(store.clone()),
+            ..Default::default()
+        }),
     );
 
     assert_eq!(
@@ -2048,7 +2227,10 @@ async fn test_agent_session_resume_同一sessionへの並行要求はptyを一�
             MemoryHookHealthRepository::default(),
         ))),
         Arc::new(RecordingChangeNotifier::default()),
-        Arc::new(RecordingExecutionTrees::default()),
+        Arc::new(RecordingExecutionTrees {
+            store: Some(store.clone()),
+            ..Default::default()
+        }),
     ));
 
     let first = tokio::spawn({
@@ -2139,6 +2321,10 @@ async fn test_agent_session_resume中のarchiveは同一sessionの操作完了�
     let (release_sender, release_receiver) = mpsc::channel();
     *terminal.first_spawn_entered.lock().unwrap() = Some(entered_sender);
     *terminal.first_spawn_release.lock().unwrap() = Some(release_receiver);
+    let execution_trees = Arc::new(RecordingExecutionTrees {
+        store: Some(store.clone()),
+        ..Default::default()
+    });
     let lifecycle = Arc::new(AgentSessionLifecycleUsecase::new(
         sessions.clone(),
         provider_lifecycle,
@@ -2151,8 +2337,10 @@ async fn test_agent_session_resume中のarchiveは同一sessionの操作完了�
             MemoryHookHealthRepository::default(),
         ))),
         Arc::new(RecordingChangeNotifier::default()),
-        Arc::new(RecordingExecutionTrees::default()),
+        execution_trees.clone(),
     ));
+
+    *execution_trees.lifecycle.lock().unwrap() = Arc::downgrade(&lifecycle);
 
     let resume = tokio::spawn({
         let lifecycle = lifecycle.clone();
@@ -2248,7 +2436,10 @@ async fn test_agent_session_open_同一sessionへの並行要求は一度だけ�
             MemoryHookHealthRepository::default(),
         ))),
         Arc::new(RecordingChangeNotifier::default()),
-        Arc::new(RecordingExecutionTrees::default()),
+        Arc::new(RecordingExecutionTrees {
+            store: Some(store.clone()),
+            ..Default::default()
+        }),
     ));
 
     let first = tokio::spawn({
@@ -2283,86 +2474,67 @@ async fn test_agent_session_open_同一sessionへの並行要求は一度だけ�
     assert!(terminal.stops.lock().unwrap().is_empty());
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_agent_session_restore中のdeleteは復帰完了後の状態で拒否する() {
-    let LifecycleTestContext {
-        _directory,
-        sessions,
-        lifecycle,
-        terminal,
-        ..
-    } = setup();
-    sessions
+#[tokio::test]
+async fn test_agent_session_restoreはprocessを起動せずpausedになり手動resumeできる() {
+    let context = setup();
+    context
+        .sessions
         .create(
-            "agent-restore-delete",
+            "restore-agent",
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Claude,
-            session_location("agent-restore-delete"),
-            "create-restore-delete",
+            session_location("restore-agent"),
+            "create",
         )
         .await
         .unwrap();
-    sessions
-        .associate_provider_session(
-            "agent-restore-delete",
-            "provider-restore-delete",
-            None,
-            "associate-restore-delete",
-        )
+    context
+        .sessions
+        .associate_provider_session("restore-agent", "provider", None, "associate")
         .await
         .unwrap();
-    lifecycle
-        .archive("agent-restore-delete", "archive-before-restore-delete")
+    context
+        .lifecycle
+        .archive("restore-agent", "archive")
         .await
         .unwrap();
-    let (entered_sender, entered_receiver) = mpsc::channel();
-    let (release_sender, release_receiver) = mpsc::channel();
-    *terminal.first_spawn_entered.lock().unwrap() = Some(entered_sender);
-    *terminal.first_spawn_release.lock().unwrap() = Some(release_receiver);
-    let lifecycle = Arc::new(lifecycle);
-
-    let restore = tokio::spawn({
-        let lifecycle = lifecycle.clone();
-        async move {
-            lifecycle
-                .restore("agent-restore-delete", 24, 80, "restore-before-delete")
-                .await
-        }
-    });
-    entered_receiver
-        .recv_timeout(Duration::from_secs(1))
-        .unwrap();
-    let delete = tokio::spawn({
-        let lifecycle = lifecycle.clone();
-        async move {
-            lifecycle
-                .delete("agent-restore-delete", "delete-during-restore")
-                .await
-        }
-    });
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    release_sender.send(()).unwrap();
-
+    *context.terminal.fail_spawn.lock().unwrap() = true;
     assert_eq!(
-        restore.await.unwrap().unwrap(),
+        context
+            .lifecycle
+            .restore("restore-agent", 24, 80, "restore")
+            .await
+            .unwrap(),
         AgentSessionOpenOutcome::Restored
     );
+    assert_eq!(*context.terminal.spawn_count.lock().unwrap(), 0);
     assert_eq!(
-        delete.await.unwrap().unwrap_err(),
-        super::AgentSessionLifecycleUsecaseError::InvalidOperation
-    );
-    assert!(terminal.deletes.lock().unwrap().is_empty());
-    assert_eq!(
-        sessions
-            .find("agent-restore-delete")
+        context
+            .sessions
+            .find("restore-agent")
             .await
             .unwrap()
             .unwrap()
             .session()
             .lifecycle(),
-        AgentSessionLifecycle::Open
+        AgentSessionLifecycle::Paused
     );
+    assert!(context
+        .lifecycle
+        .delete("restore-agent", "delete")
+        .await
+        .is_err());
+    *context.terminal.fail_spawn.lock().unwrap() = false;
+    assert_eq!(
+        context
+            .lifecycle
+            .resume("restore-agent", 24, 80, "resume")
+            .await
+            .unwrap(),
+        AgentSessionOpenOutcome::Resumed
+    );
+    assert_eq!(*context.terminal.spawn_count.lock().unwrap(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2444,81 +2616,6 @@ async fn test_agent_session_exit_open待機中に旧世代になったexitを反
             .lifecycle(),
         AgentSessionLifecycle::Open
     );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_agent_session_archive縮退delete中のopenはdelete完了後に評価する() {
-    let LifecycleTestContext {
-        _directory,
-        sessions,
-        lifecycle,
-        terminal,
-        execution_trees,
-        ..
-    } = setup();
-    sessions
-        .create(
-            "agent-fallback-delete-open",
-            WorkspaceIdentity::new("/repo"),
-            "/repo/worktree",
-            ProviderKind::Codex,
-            session_location("agent-fallback-delete-open"),
-            "create-fallback-delete-open",
-        )
-        .await
-        .unwrap();
-    let (entered_sender, entered_receiver) = mpsc::channel();
-    let (release_sender, release_receiver) = mpsc::channel();
-    *terminal.first_delete_entered.lock().unwrap() = Some(entered_sender);
-    *terminal.first_delete_release.lock().unwrap() = Some(release_receiver);
-    let lifecycle = Arc::new(lifecycle);
-
-    let fallback_delete = tokio::spawn({
-        let lifecycle = lifecycle.clone();
-        async move {
-            lifecycle
-                .confirm_archive_fallback_delete(
-                    "agent-fallback-delete-open",
-                    "fallback-delete-before-open",
-                )
-                .await
-        }
-    });
-    entered_receiver
-        .recv_timeout(Duration::from_secs(1))
-        .unwrap();
-    let mut open = tokio::spawn({
-        let lifecycle = lifecycle.clone();
-        async move {
-            lifecycle
-                .open(
-                    "agent-fallback-delete-open",
-                    24,
-                    80,
-                    "open-during-fallback-delete",
-                )
-                .await
-        }
-    });
-
-    assert!(tokio::time::timeout(Duration::from_millis(50), &mut open)
-        .await
-        .is_err());
-    release_sender.send(()).unwrap();
-    fallback_delete.await.unwrap().unwrap();
-    assert_eq!(
-        execution_trees.releases.lock().unwrap().as_slice(),
-        &["agent-fallback-delete-open"]
-    );
-    assert_eq!(
-        open.await.unwrap().unwrap_err(),
-        super::AgentSessionLifecycleUsecaseError::NotFound
-    );
-    assert!(sessions
-        .find("agent-fallback-delete-open")
-        .await
-        .unwrap()
-        .is_none());
 }
 
 #[tokio::test]
@@ -2629,8 +2726,8 @@ async fn test_agent_session_open_未対応の親または自身の定義があ�
 }
 
 #[tokio::test]
-async fn test_隔離通知_session削除とgcとarchive代替削除の成功後だけworkspaceを通知する() {
-    for action in ["delete", "gc", "archive-fallback"] {
+async fn test_隔離通知_session削除とgcの成功後だけworkspaceを通知する() {
+    for action in ["delete", "gc"] {
         // Given
         let LifecycleTestContext {
             _directory,
@@ -2667,18 +2764,13 @@ async fn test_隔離通知_session削除とgcとarchive代替削除の成功後�
                     .archive("isolated-notify", "archive")
                     .await
                     .unwrap();
+                change_notifier.notified.lock().unwrap().clear();
                 lifecycle.delete("isolated-notify", "delete").await.unwrap();
             }
             "gc" => {
                 *terminal.presence.lock().unwrap() = ManagedPtyPresence::ConfirmedAbsent;
                 lifecycle
                     .observe_process_exit("isolated-notify", 1, Some(0), "exit")
-                    .await
-                    .unwrap();
-            }
-            "archive-fallback" => {
-                lifecycle
-                    .confirm_archive_fallback_delete("isolated-notify", "archive-delete")
                     .await
                     .unwrap();
             }
@@ -2862,7 +2954,7 @@ async fn test_workflowのprovider回復_同じnodeを繰り返し再開し永続
             context.sessions.clone(),
             input.clone(),
         )),
-        Arc::new(context.lifecycle),
+        context.lifecycle,
         Arc::new(AlwaysProviderAvailable),
     );
     assert!(port
@@ -2970,4 +3062,165 @@ async fn test_workflowのprovider回復_同じnodeを繰り返し再開し永続
             .lifecycle(),
         AgentSessionLifecycle::Paused
     );
+}
+
+#[tokio::test]
+async fn test_agent_session_archive中のexitとgcはarchive確定後に評価して記録を保持する() {
+    let context = setup();
+    context
+        .sessions
+        .create(
+            "archive-exit",
+            WorkspaceIdentity::new("/repo"),
+            "/repo/worktree",
+            ProviderKind::Claude,
+            session_location("archive-exit"),
+            "create",
+        )
+        .await
+        .unwrap();
+    context
+        .execution_trees
+        .block_archive
+        .store(true, Ordering::SeqCst);
+    let archive = tokio::spawn({
+        let lifecycle = context.lifecycle.clone();
+        async move { lifecycle.archive("archive-exit", "archive").await }
+    });
+    context.execution_trees.archive_stopped.notified().await;
+    *context.terminal.presence.lock().unwrap() = ManagedPtyPresence::ConfirmedAbsent;
+    let exit = tokio::spawn({
+        let lifecycle = context.lifecycle.clone();
+        async move {
+            lifecycle
+                .observe_process_exit("archive-exit", 1, Some(0), "exit")
+                .await
+        }
+    });
+    let gc = tokio::spawn({
+        let lifecycle = context.lifecycle.clone();
+        async move {
+            lifecycle
+                .reconcile_garbage_collection("archive-exit", "gc")
+                .await
+        }
+    });
+    tokio::task::yield_now().await;
+    assert!(!exit.is_finished());
+    assert!(!gc.is_finished());
+    context.execution_trees.archive_release.notify_one();
+    archive.await.unwrap().unwrap();
+    exit.await.unwrap().unwrap();
+    assert_eq!(
+        gc.await.unwrap().unwrap(),
+        super::AgentSessionGarbageCollectionOutcome::Retained
+    );
+    assert_eq!(
+        context
+            .sessions
+            .find("archive-exit")
+            .await
+            .unwrap()
+            .unwrap()
+            .session()
+            .lifecycle(),
+        AgentSessionLifecycle::Archived
+    );
+}
+
+#[tokio::test]
+async fn test_sessionのarchiveとrestore_共通実行木操作のエラー分類を保持する() {
+    use crate::domain::workflow::WorkflowError as W;
+    use AgentSessionLifecycleUsecaseError as E;
+    for (error, expected) in [
+        (W::Conflict("deleting".into()), E::Conflict),
+        (W::InvalidState("invalid".into()), E::InvalidOperation),
+        (W::Validation("invalid".into()), E::InvalidOperation),
+        (
+            W::UnauthorizedApprovalTarget("invalid".into()),
+            E::InvalidOperation,
+        ),
+        (W::NotFound("missing".into()), E::NotFound),
+        (W::CorruptStoredState("corrupt".into()), E::Corrupt),
+        (
+            W::IncompatibleStoredEvent("incompatible".into()),
+            E::Corrupt,
+        ),
+        (
+            W::StorageUnavailable {
+                message: "unavailable".into(),
+                retryable: true,
+            },
+            E::StorageUnavailable,
+        ),
+        (W::External("unavailable".into()), E::StorageUnavailable),
+    ] {
+        // Given
+        let context = setup();
+        let id = "archive-errors";
+        context
+            .sessions
+            .create(
+                id,
+                WorkspaceIdentity::new("/repo"),
+                "/repo/worktree",
+                ProviderKind::Codex,
+                session_location(id),
+                "create",
+            )
+            .await
+            .unwrap();
+        *context.execution_trees.archive_error.lock().unwrap() = Some(error.clone());
+        // When / Then
+        assert_eq!(
+            context.lifecycle.archive(id, "archive").await,
+            Err(expected)
+        );
+        assert_eq!(
+            context
+                .sessions
+                .find(id)
+                .await
+                .unwrap()
+                .unwrap()
+                .session()
+                .lifecycle(),
+            AgentSessionLifecycle::Open
+        );
+        assert!(context.change_notifier.notified.lock().unwrap().is_empty());
+        *context.execution_trees.archive_error.lock().unwrap() = None;
+        context
+            .lifecycle
+            .archive(id, "archive-success")
+            .await
+            .unwrap();
+        context.change_notifier.notified.lock().unwrap().clear();
+        *context.execution_trees.mutation_error.lock().unwrap() = Some(error.clone());
+        assert_eq!(
+            context
+                .lifecycle
+                .restore(id, 24, 80, "restore-admission")
+                .await,
+            Err(expected)
+        );
+        assert!(context.change_notifier.notified.lock().unwrap().is_empty());
+        *context.execution_trees.mutation_error.lock().unwrap() = None;
+        *context.execution_trees.restore_error.lock().unwrap() = Some(error);
+        assert_eq!(
+            context.lifecycle.restore(id, 24, 80, "restore").await,
+            Err(expected)
+        );
+        assert_eq!(
+            context
+                .sessions
+                .find(id)
+                .await
+                .unwrap()
+                .unwrap()
+                .session()
+                .lifecycle(),
+            AgentSessionLifecycle::Archived
+        );
+        assert!(context.change_notifier.notified.lock().unwrap().is_empty());
+    }
 }

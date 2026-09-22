@@ -105,7 +105,7 @@ pub(crate) async fn get_workflow_execution_log_impl(
 }
 
 /// [05] read-only API: 指定 execution の現在 state を返す。
-/// 事実ログから canonical `WorkflowExecution` read model を投影する。
+/// 事実ログから canonical `ExecutionTree` read model を投影する。
 ///
 /// 観測結果の露出範囲境界（spec [05]）に従い、戻り値は engine が一次 owner として
 /// 保持している event log / state の純粋投影のみを含む。live runtime registry /

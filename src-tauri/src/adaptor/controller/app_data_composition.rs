@@ -67,6 +67,7 @@ impl ProductionAppDataComposition {
         &self,
         shared_repo_paths: SharedRepoPaths,
         repository: Arc<dyn LocalEventTransactionRepository>,
+        execution_trees: Arc<dyn crate::usecase::app_data_gc::ExecutionTreeGc>,
     ) -> Result<GcReport, String> {
         let file_system = StdGcFileSystem::with_observer(self.observer.clone());
         let inventory_file_system = file_system.clone();
@@ -77,6 +78,12 @@ impl ProductionAppDataComposition {
         .await
         .map_err(|error| format!("app data gc inventory task failed: {error}"))?;
         let mut request = inventory;
+        let archive_errors = crate::usecase::app_data_gc::archive_removed_execution_trees(
+            request.live_worktrees.as_ref(),
+            execution_trees.as_ref(),
+        )
+        .await
+        .map_err(|error| format!("execution tree GC failed: {error}"))?;
 
         match crate::usecase::app_data_gc::load_canonical_runtime_owners(repository.clone()).await {
             Ok(owners) => apply_canonical_runtime_owners(&mut request, owners),
@@ -100,11 +107,13 @@ impl ProductionAppDataComposition {
             };
 
         tokio::task::spawn_blocking(move || {
-            crate::usecase::app_data_gc::sweep_startup_gc(
+            let mut report = crate::usecase::app_data_gc::sweep_startup_gc(
                 plan,
                 revalidated_runtime_protection,
                 &file_system,
-            )
+            );
+            report.errors += archive_errors;
+            report
         })
         .await
         .map_err(|error| format!("app data gc sweep task failed: {error}"))
@@ -120,6 +129,32 @@ mod tests {
 
     use parking_lot::RwLock;
 
+    struct NoExecutionTrees;
+    #[async_trait::async_trait]
+    impl crate::usecase::app_data_gc::ExecutionTreeGc for NoExecutionTrees {
+        fn record_repository_root(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> Result<(), crate::domain::workflow::WorkflowError> {
+            unreachable!()
+        }
+        fn execution_trees(
+            &self,
+            _: Option<&str>,
+        ) -> Result<
+            Vec<crate::domain::workflow::ExecutionTreeArchiveCandidate>,
+            crate::domain::workflow::WorkflowError,
+        > {
+            Ok(Vec::new())
+        }
+        async fn archive_removed_tree(
+            &self,
+            _: &str,
+        ) -> Result<(), crate::domain::workflow::WorkflowError> {
+            unreachable!()
+        }
+    }
     use super::*;
     use crate::domain::local_event::{
         CanonicalRuntimeOwnerView, CommitBatchError, CommitBatchResult, CommitIdentity,
@@ -303,6 +338,7 @@ mod tests {
             worktree_path,
             worktree_path,
             crate::domain::provider_lifecycle::ProviderKind::Claude,
+            None,
         )
         .unwrap()
         .into_facts()
@@ -434,7 +470,7 @@ mod tests {
             .clear();
 
         let report = composition
-            .run_startup_gc_pass(repo_paths, repository.clone())
+            .run_startup_gc_pass(repo_paths, repository.clone(), Arc::new(NoExecutionTrees))
             .await
             .expect("run startup GC");
 
@@ -531,7 +567,7 @@ mod tests {
         let (_live_repo, repo_paths) = live_repo_paths();
 
         let report = composition
-            .run_startup_gc_pass(repo_paths, repository.clone())
+            .run_startup_gc_pass(repo_paths, repository.clone(), Arc::new(NoExecutionTrees))
             .await
             .expect("run startup GC");
 
@@ -592,7 +628,7 @@ mod tests {
             .clear();
 
         let report = composition
-            .run_startup_gc_pass(repo_paths, repository.clone())
+            .run_startup_gc_pass(repo_paths, repository.clone(), Arc::new(NoExecutionTrees))
             .await
             .expect("run startup GC");
 
@@ -638,7 +674,7 @@ mod tests {
             .clear();
 
         let report = composition
-            .run_startup_gc_pass(repo_paths, repository.clone())
+            .run_startup_gc_pass(repo_paths, repository.clone(), Arc::new(NoExecutionTrees))
             .await
             .expect("run startup GC");
 
@@ -660,4 +696,63 @@ mod tests {
             "initial wrong-shape canonical snapshot must prevent workspace planning"
         );
     }
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn test_startup_gc結線_消失候補の未終了実行木をabortしてarchiveする() {
+    use crate::adaptor::gateway::workflow::fact_log;
+    use crate::adaptor::gateway::workflow::workflow_host::test_helpers::archive_fixture;
+    use crate::domain::workflow::{
+        ExecutionStatus, ExecutionTreeArchiveRepository, NodeFact, SessionExecutionTreeRootFacts,
+    };
+    // Given
+    let fixture = archive_fixture();
+    let repo = tempfile::tempdir().unwrap();
+    git2::Repository::init(repo.path()).unwrap();
+    let path = repo.path().join("removed-worktree");
+    std::fs::create_dir(&path).unwrap();
+    let id = "00000000-0000-4000-8000-000000000995";
+    let mut facts = SessionExecutionTreeRootFacts::new(
+        id,
+        path.to_str().unwrap(),
+        path.to_str().unwrap(),
+        crate::domain::provider_lifecycle::ProviderKind::Codex,
+        None,
+    )
+    .unwrap();
+    if let NodeFact::Started(started) = &mut facts.started {
+        started.root.as_mut().unwrap().repository_root =
+            Some(repo.path().to_string_lossy().into_owned());
+    }
+    fact_log::append_fact_batch_for_seed(&fixture.store, &facts.into_facts(), 1, id).unwrap();
+    let composition = ProductionAppDataComposition::new(fixture.directory.path().into());
+    // When
+    let report = composition
+        .run_startup_gc_pass(
+            Arc::new(parking_lot::RwLock::new(vec![repo
+                .path()
+                .to_string_lossy()
+                .into_owned()])),
+            fixture.store.clone(),
+            Arc::new(fixture.runtime),
+        )
+        .await
+        .unwrap();
+    // Then
+    assert_eq!(report.errors, 0);
+    assert!(path.exists());
+    assert_eq!(
+        fixture.repository.target(id).unwrap().status,
+        ExecutionStatus::Aborted
+    );
+    assert_eq!(
+        fixture
+            .repository
+            .archive_snapshot_for(&[id.into()])
+            .unwrap()
+            .records[0]
+            .archive_reason,
+        "worktree_removed"
+    );
 }

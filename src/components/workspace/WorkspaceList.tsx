@@ -156,7 +156,6 @@ function WorkspaceNodeRow({
 	onSelect,
 	historyExpanded,
 	onToggleHistory,
-	onArchiveSession,
 	onDeleteSession,
 	onRename,
 	onWorkflowAction,
@@ -168,7 +167,6 @@ function WorkspaceNodeRow({
 	onSelect: () => void;
 	historyExpanded?: boolean;
 	onToggleHistory?: () => void;
-	onArchiveSession?: () => void;
 	onDeleteSession?: () => void;
 	onRename: (name: string) => Promise<boolean>;
 	onWorkflowAction: (
@@ -309,21 +307,6 @@ function WorkspaceNodeRow({
 					<Pencil className="size-3" />
 				</Button>
 			)}
-			{node.sessionCapabilities?.canArchive && (
-				<Button
-					size="icon-xs"
-					variant="ghost"
-					className="hidden size-5 shrink-0 text-muted-foreground group-hover:flex group-focus-within:flex"
-					onClick={(event) => {
-						event.stopPropagation();
-						onArchiveSession?.();
-					}}
-					aria-label={`Archive ${node.title}`}
-					title="Archive"
-				>
-					<X className="size-3" />
-				</Button>
-			)}
 			{node.sessionCapabilities?.canDelete && (
 				<Button
 					size="icon-xs"
@@ -396,10 +379,9 @@ function WorkflowControls({
 				size="icon-xs"
 				variant="ghost"
 				className="absolute top-0 right-0 size-5 text-muted-foreground"
-				disabled={!capabilities.canArchive}
 				onClick={(event) => {
 					event.stopPropagation();
-					if (capabilities.canArchive) onArchiveWorkflow(item);
+					onArchiveWorkflow(item);
 				}}
 				aria-label={`Archive ${item.title}`}
 				title="Archive"
@@ -415,7 +397,6 @@ function WorkspaceBranchRow({
 	indentPx,
 	centerSelection,
 	onSelectNode,
-	onArchiveSession,
 	onDeleteSession,
 	onRenameNode,
 	onWorkflowAction,
@@ -425,7 +406,6 @@ function WorkspaceBranchRow({
 	indentPx: number;
 	centerSelection: CenterSelection | null;
 	onSelectNode: (node: WorkspaceNode) => void;
-	onArchiveSession: (node: WorkspaceNode) => void | Promise<void>;
 	onDeleteSession: (node: WorkspaceNode) => void | Promise<void>;
 	onRenameNode: (node: WorkspaceNode, name: string) => Promise<boolean>;
 	onWorkflowAction: (
@@ -491,7 +471,6 @@ function WorkspaceBranchRow({
 						indentPx={indentPx + TREE_LEVEL_INDENT_PX}
 						centerSelection={centerSelection}
 						onSelectNode={onSelectNode}
-						onArchiveSession={onArchiveSession}
 						onDeleteSession={onDeleteSession}
 						onRenameNode={onRenameNode}
 						onWorkflowAction={onWorkflowAction}
@@ -507,7 +486,6 @@ function WorkspaceTreeItemRow({
 	indentPx,
 	centerSelection,
 	onSelectNode,
-	onArchiveSession,
 	onDeleteSession,
 	onRenameNode,
 	onWorkflowAction,
@@ -517,7 +495,6 @@ function WorkspaceTreeItemRow({
 	indentPx: number;
 	centerSelection: CenterSelection | null;
 	onSelectNode: (node: WorkspaceNode) => void;
-	onArchiveSession: (node: WorkspaceNode) => void | Promise<void>;
 	onDeleteSession: (node: WorkspaceNode) => void | Promise<void>;
 	onRenameNode: (node: WorkspaceNode, name: string) => Promise<boolean>;
 	onWorkflowAction: (
@@ -540,7 +517,6 @@ function WorkspaceTreeItemRow({
 							indentPx={indentPx}
 							centerSelection={centerSelection}
 							onSelectNode={onSelectNode}
-							onArchiveSession={onArchiveSession}
 							onDeleteSession={onDeleteSession}
 							onRenameNode={onRenameNode}
 							onWorkflowAction={onWorkflowAction}
@@ -554,7 +530,6 @@ function WorkspaceTreeItemRow({
 					onSelect={() => onSelectNode(item)}
 					historyExpanded={pastExpanded}
 					onToggleHistory={() => setPastExpanded((current) => !current)}
-					onArchiveSession={() => onArchiveSession(item)}
 					onDeleteSession={() => onDeleteSession(item)}
 					onRename={(name) => onRenameNode(item, name)}
 					onWorkflowAction={onWorkflowAction}
@@ -567,7 +542,6 @@ function WorkspaceTreeItemRow({
 						indentPx={indentPx + TREE_LEVEL_INDENT_PX}
 						centerSelection={centerSelection}
 						onSelectNode={onSelectNode}
-						onArchiveSession={onArchiveSession}
 						onDeleteSession={onDeleteSession}
 						onRenameNode={onRenameNode}
 						onWorkflowAction={onWorkflowAction}
@@ -583,7 +557,6 @@ function WorkspaceTreeItemRow({
 			indentPx={indentPx}
 			centerSelection={centerSelection}
 			onSelectNode={onSelectNode}
-			onArchiveSession={onArchiveSession}
 			onDeleteSession={onDeleteSession}
 			onRenameNode={onRenameNode}
 			onWorkflowAction={onWorkflowAction}
@@ -637,11 +610,8 @@ function WorktreeTreeItem({
 		string | null
 	>(null);
 	const [providerHistoryLoading, setProviderHistoryLoading] = useState(false);
-	const [archiveFallbackDelete, setArchiveFallbackDelete] = useState<{
-		id: string;
-		worktreePath: string;
-		selectedNodeId?: string;
-	} | null>(null);
+	const [archiveConfirmation, setArchiveConfirmation] =
+		useState<WorkspaceTreeItem | null>(null);
 	const [workflowStarting, setWorkflowStarting] = useState(false);
 	const notifiedReconciliationSeqRef = useRef<number | null>(null);
 	const preferredSelectionRequestRef = useRef<{
@@ -791,46 +761,6 @@ function WorktreeTreeItem({
 		},
 		[branch.worktree_path],
 	);
-	const handleArchiveAgentSession = useCallback(
-		async (node: WorkspaceNode) => {
-			if (!branch.worktree_path || !node.sessionCapabilities) return;
-			const target = {
-				id: node.sessionCapabilities.sessionRef,
-				worktreePath: branch.worktree_path,
-				selectedNodeId: node.id,
-			};
-			setProviderActionError(null);
-			try {
-				const outcome = await invoke("archive_agent_session", {
-					agentSessionId: target.id,
-					callerRequestId: `archive.${crypto.randomUUID()}`,
-				});
-				if (outcome === "delete_confirmation_required") {
-					setArchiveFallbackDelete(target);
-					return;
-				}
-				notifyAgentSessionChanged(target.worktreePath);
-				await refreshAgentSessions();
-				if (
-					scopedCenterSelection?.kind === "node" &&
-					scopedCenterSelection.nodeId === node.id &&
-					branch.worktree_path
-				) {
-					onSelectWorktree(branch.worktree_path, branch.name, repoName);
-				}
-			} catch (error) {
-				setProviderActionError(getErrorMessage(error));
-			}
-		},
-		[
-			branch.name,
-			branch.worktree_path,
-			onSelectWorktree,
-			refreshAgentSessions,
-			repoName,
-			scopedCenterSelection,
-		],
-	);
 	const handleDeleteAgentSession = useCallback(
 		async (
 			target: {
@@ -838,21 +768,14 @@ function WorktreeTreeItem({
 				worktreePath: string;
 				selectedNodeId?: string;
 			},
-			archiveFallback: boolean,
 			selectedNodeId?: string,
 		) => {
 			setProviderActionError(null);
 			try {
-				await invoke(
-					archiveFallback
-						? "confirm_agent_session_archive_delete"
-						: "delete_agent_session",
-					{
-						agentSessionId: target.id,
-						callerRequestId: `delete.${crypto.randomUUID()}`,
-					},
-				);
-				setArchiveFallbackDelete(null);
+				await invoke("delete_agent_session", {
+					agentSessionId: target.id,
+					callerRequestId: `delete.${crypto.randomUUID()}`,
+				});
 				notifyAgentSessionChanged(target.worktreePath);
 				await refreshAgentSessions();
 				if (
@@ -899,13 +822,6 @@ function WorktreeTreeItem({
 					kind: "node",
 					worktreePath: branch.worktree_path,
 					nodeId,
-					initialSessionAttachment: {
-						agentSessionId: session.id,
-						workspaceIdentity: session.workspaceIdentity,
-						worktreePath: session.worktreePath,
-						workspaceWorktreePath: session.workspaceWorktreePath,
-						provider: session.provider,
-					},
 				});
 			} catch (error) {
 				setProviderActionError(getErrorMessage(error));
@@ -1007,14 +923,22 @@ function WorktreeTreeItem({
 	);
 
 	const handleArchiveWorkflow = useCallback(
-		async (workflow: WorkspaceTreeItem) => {
+		async (workflow: WorkspaceTreeItem, confirmed = false) => {
 			if (!branch.worktree_path) return;
+			if (workflow.workflowCapabilities?.canAbort && !confirmed) {
+				setArchiveConfirmation(workflow);
+				return;
+			}
+			setArchiveConfirmation(null);
 			setWorkflowActionError(null);
 			try {
 				await invoke("archive_workspace_workflow_execution", {
 					worktreePath: branch.worktree_path,
 					executionId: workflow.id,
 				});
+				if (workflow.kind === "node" && workflow.sessionCapabilities) {
+					notifyAgentSessionChanged(branch.worktree_path);
+				}
 				if (scopedNodeSelection?.nodeId) {
 					await beginArchiveReconciliation(scopedNodeSelection.nodeId);
 				} else {
@@ -1296,7 +1220,7 @@ function WorktreeTreeItem({
 													onClick={(event) => {
 														event.preventDefault();
 														event.stopPropagation();
-														void handleDeleteAgentSession(session, false);
+														void handleDeleteAgentSession(session);
 													}}
 													aria-label={`Delete ${agentSessionLabel(session)}`}
 													title="Delete"
@@ -1524,7 +1448,6 @@ function WorktreeTreeItem({
 								indentPx={WORKTREE_NAME_INDENT_PX}
 								centerSelection={scopedCenterSelection}
 								onSelectNode={handleSelectNode}
-								onArchiveSession={handleArchiveAgentSession}
 								onDeleteSession={(node) => {
 									if (!branch.worktree_path || !node.sessionCapabilities)
 										return;
@@ -1533,7 +1456,6 @@ function WorktreeTreeItem({
 											id: node.sessionCapabilities.sessionRef,
 											worktreePath: branch.worktree_path,
 										},
-										false,
 										node.id,
 									);
 								}}
@@ -1564,38 +1486,33 @@ function WorktreeTreeItem({
 				</div>
 			)}
 			<Dialog
-				open={archiveFallbackDelete != null}
+				open={archiveConfirmation != null}
 				onOpenChange={(open) => {
-					if (!open) setArchiveFallbackDelete(null);
+					if (!open) setArchiveConfirmation(null);
 				}}
 			>
 				<DialogContent>
 					<DialogHeader>
-						<DialogTitle>Delete AgentSession?</DialogTitle>
+						<DialogTitle>Archive execution?</DialogTitle>
 						<DialogDescription>
-							This AgentSession has no Provider session ID and cannot be
-							archived. Deleting removes Releash-owned state. Provider history
-							may still offer a recovery candidate.
+							Archiving will Abort this execution and stop its processes.
 						</DialogDescription>
 					</DialogHeader>
 					<DialogFooter>
 						<Button
-							type="button"
 							variant="outline"
-							onClick={() => setArchiveFallbackDelete(null)}
+							onClick={() => setArchiveConfirmation(null)}
 						>
 							Cancel
 						</Button>
 						<Button
-							type="button"
 							variant="destructive"
 							onClick={() => {
-								if (archiveFallbackDelete) {
-									void handleDeleteAgentSession(archiveFallbackDelete, true);
-								}
+								if (archiveConfirmation)
+									void handleArchiveWorkflow(archiveConfirmation, true);
 							}}
 						>
-							Delete
+							Abort and Archive
 						</Button>
 					</DialogFooter>
 				</DialogContent>

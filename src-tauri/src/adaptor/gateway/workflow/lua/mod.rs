@@ -3524,17 +3524,17 @@ nodes:
         assert_eq!(loaded.workflow, yaml);
 
         use crate::domain::workflow::entities::workflow_execution::{
-            WorkflowExecution, WorkflowExecutionRestore,
+            ExecutionTree, ExecutionTreeRestore,
         };
-        let mut lua_execution = WorkflowExecution::restore_runtime(WorkflowExecutionRestore {
+        let mut lua_execution = ExecutionTree::restore_runtime(ExecutionTreeRestore {
             id: "execution".to_string(),
             workflow: loaded.workflow,
-            ..WorkflowExecutionRestore::default()
+            ..ExecutionTreeRestore::default()
         });
-        let mut yaml_execution = WorkflowExecution::restore_runtime(WorkflowExecutionRestore {
+        let mut yaml_execution = ExecutionTree::restore_runtime(ExecutionTreeRestore {
             id: "execution".to_string(),
             workflow: yaml,
-            ..WorkflowExecutionRestore::default()
+            ..ExecutionTreeRestore::default()
         });
         let mut lua_index = 0_u32;
         let mut yaml_index = 0_u32;

@@ -8,9 +8,9 @@ use std::sync::Arc;
 use serde_json::{Map, Value};
 
 use crate::domain::workflow::{
-    FacetKind, FacetRepository, FacetSummary, NodeExecution, WorkflowDefinition,
-    WorkflowDefinitionName, WorkflowDefinitionRepository, WorkflowError, WorkflowExecution,
-    WorkflowExecutionId, WorkflowPageRequest, WorkflowSummary,
+    ExecutionTree, ExecutionTreeId, FacetKind, FacetRepository, FacetSummary, NodeExecution,
+    WorkflowDefinition, WorkflowDefinitionName, WorkflowDefinitionRepository, WorkflowError,
+    WorkflowPageRequest, WorkflowSummary,
 };
 
 use super::event_draft;
@@ -99,7 +99,7 @@ impl WorkflowQueryService {
         &self,
         execution_id: &str,
     ) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
-        let execution_id = WorkflowExecutionId::new(execution_id.to_string())?;
+        let execution_id = ExecutionTreeId::new(execution_id.to_string())?;
         self.events.read(&execution_id)
     }
 
@@ -119,7 +119,7 @@ impl WorkflowQueryService {
         execution_id: &str,
         page: WorkflowPageRequest,
     ) -> Result<Vec<WorkflowEventView>, WorkflowError> {
-        let execution_id = WorkflowExecutionId::new(execution_id.to_string())?;
+        let execution_id = ExecutionTreeId::new(execution_id.to_string())?;
         Ok(self
             .events
             .read_page(&execution_id, page)?
@@ -142,7 +142,7 @@ impl WorkflowQueryService {
         node_name: &str,
         events: &[WorkflowEventDraft],
     ) -> Result<WorkflowGetOutputResult, WorkflowError> {
-        let execution_id = WorkflowExecutionId::new(execution_id.to_string())?;
+        let execution_id = ExecutionTreeId::new(execution_id.to_string())?;
         Ok(
             match self.execution_projection.get_node_artifact_from_events(
                 &execution_id,
@@ -164,8 +164,8 @@ impl WorkflowQueryService {
     pub fn get_execution_state(
         &self,
         execution_id: &str,
-    ) -> Result<Option<WorkflowExecution>, WorkflowError> {
-        let execution_id = WorkflowExecutionId::new(execution_id.to_string())?;
+    ) -> Result<Option<ExecutionTree>, WorkflowError> {
+        let execution_id = ExecutionTreeId::new(execution_id.to_string())?;
         self.execution_projection.get_execution(&execution_id)
     }
 
@@ -387,7 +387,7 @@ mod tests {
 
         fn read(
             &self,
-            _execution_id: &WorkflowExecutionId,
+            _execution_id: &ExecutionTreeId,
         ) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
             Ok(self.events.lock().unwrap().clone())
         }
@@ -395,11 +395,11 @@ mod tests {
 
     #[derive(Default)]
     struct FakeExecutionProjectionRepository {
-        executions: Mutex<HashMap<String, WorkflowExecution>>,
+        executions: Mutex<HashMap<String, ExecutionTree>>,
     }
 
     impl FakeExecutionProjectionRepository {
-        fn seed(&self, execution: WorkflowExecution) {
+        fn seed(&self, execution: ExecutionTree) {
             self.executions
                 .lock()
                 .unwrap()
@@ -410,7 +410,7 @@ mod tests {
     impl WorkflowExecutionProjectionRepository for FakeExecutionProjectionRepository {
         fn get_node_artifact_from_events(
             &self,
-            execution_id: &WorkflowExecutionId,
+            execution_id: &ExecutionTreeId,
             node_name: &str,
             _events: &[WorkflowEventDraft],
         ) -> Result<Option<crate::domain::workflow::Artifact>, WorkflowError> {
@@ -426,8 +426,8 @@ mod tests {
 
         fn get_execution(
             &self,
-            execution_id: &WorkflowExecutionId,
-        ) -> Result<Option<WorkflowExecution>, WorkflowError> {
+            execution_id: &ExecutionTreeId,
+        ) -> Result<Option<ExecutionTree>, WorkflowError> {
             Ok(self
                 .executions
                 .lock()
@@ -562,8 +562,8 @@ mod tests {
         }
     }
 
-    fn execution_projection(execution_id: &str) -> WorkflowExecution {
-        WorkflowExecution {
+    fn execution_projection(execution_id: &str) -> ExecutionTree {
+        ExecutionTree {
             id: execution_id.to_string(),
             workflow_name: "wf".to_string(),
             status: ExecutionStatus::Running,
@@ -640,6 +640,41 @@ mod tests {
         assert!(fixture.service.get_workflow("missing").unwrap().is_none());
         assert!(fixture.service.get_workflow("bad name!").is_err());
         assert!(fixture.service.get_workflow_source("bad name!").is_err());
+    }
+
+    #[test]
+    fn test_実行木query_単独sessionの状態と事実を共通idで読める() {
+        // Given
+        let fixture = Fixture::new();
+        let id = "agent-session-00000000000040008000000000000001";
+        let expected = execution_projection(id);
+        fixture.projections.seed(expected.clone());
+        fixture
+            .events
+            .append(&artifact_produced(
+                id,
+                "review",
+                "review-result",
+                serde_json::json!({"ok": true}),
+                2.0,
+                "request",
+            ))
+            .unwrap();
+        // When / Then
+        assert_eq!(
+            fixture.service.get_execution_state(id).unwrap(),
+            Some(expected)
+        );
+        assert_eq!(fixture.service.get_execution_log(id).unwrap().len(), 1);
+        assert!(fixture
+            .service
+            .get_node_detail(id, "ne-review-1")
+            .unwrap()
+            .is_some());
+        assert!(fixture
+            .service
+            .get_execution_state("agent-session-invalid")
+            .is_err());
     }
 
     #[test]

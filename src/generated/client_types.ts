@@ -92,11 +92,6 @@ export type InputComputeVisibleMarkdownBlocksRequest = {
 	contextLines: number;
 };
 
-export type InputConfirmAgentSessionArchiveDeleteRequest = {
-	agentSessionId: string;
-	callerRequestId: string;
-};
-
 export type InputCreateAgentSessionRequest = {
 	workspaceIdentity: string;
 	worktreePath: string;
@@ -1033,10 +1028,7 @@ export type ReviewResolveInfoDto = {
 	resolvedAt: number;
 };
 
-export type AgentSessionArchiveResponse =
-	| "archived"
-	| "already_archived"
-	| "delete_confirmation_required";
+export type AgentSessionArchiveResponse = "archived" | "already_archived";
 
 export type ListHiddenRangeDto = Array<HiddenRangeDto>;
 
@@ -2356,7 +2348,6 @@ export interface ClientCommandArgs {
 	compute_markdown_inline_chunks: InputComputeMarkdownInlineChunksRequest;
 	compute_markdown_split_rows: InputComputeMarkdownSplitRowsRequest;
 	compute_visible_markdown_blocks: InputComputeVisibleMarkdownBlocksRequest;
-	confirm_agent_session_archive_delete: InputConfirmAgentSessionArchiveDeleteRequest;
 	create_agent_session: InputCreateAgentSessionRequest;
 	create_review_thread: InputCreateReviewThreadRequest;
 	create_worktree: InputCreateWorktreeRequest;
@@ -2547,9 +2538,6 @@ export interface ClientCommands {
 	compute_visible_markdown_blocks(
 		args: ClientCommandArgs["compute_visible_markdown_blocks"],
 	): Promise<ListVisibleBlockDto>;
-	confirm_agent_session_archive_delete(
-		args: ClientCommandArgs["confirm_agent_session_archive_delete"],
-	): Promise<void>;
 	create_agent_session(
 		args: ClientCommandArgs["create_agent_session"],
 	): Promise<ResultString>;

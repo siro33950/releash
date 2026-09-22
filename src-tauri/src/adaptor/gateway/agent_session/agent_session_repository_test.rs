@@ -1132,22 +1132,14 @@ async fn test_agent_session_repository_restore後の指示待ちを事実から�
         .await
         .unwrap();
     saved.session_mut().archive().unwrap();
-    let mut saved = repository
+    repository
         .save(saved, "archive-working-session")
         .await
         .unwrap();
 
-    saved
-        .session_mut()
-        .complete_restore(
-            crate::domain::agent_session::aggregates::AgentSessionRecoveryResult::Succeeded,
-        )
+    let records = fact_log::read_tree_records(&store, "agent-session-restore-activity").unwrap();
+    fact_log::append_single_fact(&store, &records[0].meta, &NodeFact::RestoreRequested, 100)
         .unwrap();
-    repository
-        .save(saved, "restore-working-session")
-        .await
-        .unwrap();
-
     let restored = repository
         .find("agent-session-restore-activity")
         .await
@@ -1165,13 +1157,7 @@ async fn test_agent_session_repository_restore後の指示待ちを事実から�
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert_eq!(
-        activities,
-        [
-            AgentSessionActivity::Working,
-            AgentSessionActivity::AwaitingInstruction,
-        ]
-    );
+    assert_eq!(activities, [AgentSessionActivity::Working]);
 }
 
 #[tokio::test]
@@ -1209,7 +1195,7 @@ async fn test_agent_session_repository_resumeとarchiveとrestoreを行として
     assert!(!resumed.session().last_exit_abnormal());
 
     saved.session_mut().archive().unwrap();
-    let mut saved = repository.save(saved, "archive-request-1").await.unwrap();
+    repository.save(saved, "archive-request-1").await.unwrap();
     let archived = repository
         .find("agent-session-flow")
         .await
@@ -1220,19 +1206,18 @@ async fn test_agent_session_repository_resumeとarchiveとrestoreを行として
         AgentSessionLifecycle::Archived
     );
 
-    saved
-        .session_mut()
-        .complete_restore(
-            crate::domain::agent_session::aggregates::AgentSessionRecoveryResult::Succeeded,
-        )
+    let records = fact_log::read_tree_records(&store, "agent-session-flow").unwrap();
+    fact_log::append_single_fact(&store, &records[0].meta, &NodeFact::RestoreRequested, 100)
         .unwrap();
-    repository.save(saved, "restore-request-1").await.unwrap();
     let restored = repository
         .find("agent-session-flow")
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(restored.session().lifecycle(), AgentSessionLifecycle::Open);
+    assert_eq!(
+        restored.session().lifecycle(),
+        AgentSessionLifecycle::Paused
+    );
     assert_eq!(
         tree_event_types(&store, "agent-session-flow"),
         [
@@ -2318,4 +2303,22 @@ async fn test_agent_session読取_未対応node定義があってもqueryと操�
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].session(), session.session());
     }
+}
+
+#[tokio::test]
+async fn test_agent_session_repository_所属repoの取得失敗では作成事実を書かない() {
+    // Given
+    let directory = TempDir::new().unwrap();
+    let store = open_store(&directory);
+    let repository = new_repository(&store);
+    let bare = directory.path().join("bare");
+    git2::Repository::init_bare(&bare).unwrap();
+    let session = standalone_session("session-bare", bare.to_str().unwrap(), ProviderKind::Codex);
+    // When
+    let result = repository.create(session, "create-bare").await;
+    // Then
+    assert_eq!(result, Err(AgentSessionRepositoryError::Unavailable));
+    assert!(fact_log::read_tree_records(&store, "session-bare")
+        .unwrap()
+        .is_empty());
 }

@@ -215,7 +215,6 @@ pub(crate) enum AgentSessionProcessExitOutcome {
 pub(crate) enum AgentSessionArchiveOutcome {
     Archived,
     AlreadyArchived,
-    DeleteConfirmationRequired,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -238,7 +237,6 @@ pub(crate) enum AgentSessionExecutionTreeNodeStopError {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AgentSessionRemovalAuthorization {
-    ArchiveFallbackDelete,
     ExplicitDelete,
     GarbageCollection,
     WorkflowLaunchRollback,
@@ -290,6 +288,7 @@ pub(crate) enum AgentSessionRemovalError {
     NotWorkflowOwned,
     WorkflowOwned,
     NotArchived,
+    NotOpen,
     ProviderSessionKnown,
     PtyNotConfirmedAbsent,
 }
@@ -582,13 +581,13 @@ impl AgentSession {
         if self.lifecycle == AgentSessionLifecycle::Archived {
             return AgentSessionProcessExitOutcome::AlreadyArchived;
         }
+        if self.lifecycle == AgentSessionLifecycle::Paused {
+            return AgentSessionProcessExitOutcome::AlreadyPaused;
+        }
         if self.provider_session_id.is_none()
             && self.tree_location.launched_as == ExecutionTreeLaunch::Session
         {
             return AgentSessionProcessExitOutcome::GcRequired;
-        }
-        if self.lifecycle == AgentSessionLifecycle::Paused {
-            return AgentSessionProcessExitOutcome::AlreadyPaused;
         }
         self.lifecycle = AgentSessionLifecycle::Paused;
         self.activity = AgentSessionActivity::AwaitingInstruction;
@@ -608,47 +607,33 @@ impl AgentSession {
         AgentSessionProcessExitOutcome::Paused
     }
 
-    pub(crate) fn archive(
-        &mut self,
+    pub(crate) fn authorize_archive(
+        &self,
     ) -> Result<AgentSessionArchiveOutcome, AgentSessionArchiveError> {
         if self.tree_location.launched_as == ExecutionTreeLaunch::Workflow {
             return Err(AgentSessionArchiveError::WorkflowOwned);
         }
-        if self.lifecycle == AgentSessionLifecycle::Archived {
-            return Ok(AgentSessionArchiveOutcome::AlreadyArchived);
-        }
-        if self.provider_session_id.is_none() {
-            return Ok(AgentSessionArchiveOutcome::DeleteConfirmationRequired);
-        }
-        self.lifecycle = AgentSessionLifecycle::Archived;
-        self.uncommitted_events
-            .push(AgentSessionLifecycleEvent::LifecycleChanged {
-                lifecycle: AgentSessionLifecycle::Archived,
-                last_exit_abnormal: self.last_exit_abnormal,
-            });
-        Ok(AgentSessionArchiveOutcome::Archived)
+        Ok(if self.lifecycle == AgentSessionLifecycle::Archived {
+            AgentSessionArchiveOutcome::AlreadyArchived
+        } else {
+            AgentSessionArchiveOutcome::Archived
+        })
     }
 
-    pub(crate) fn complete_restore(
+    #[cfg(test)]
+    pub(crate) fn archive(
         &mut self,
-        result: AgentSessionRecoveryResult,
-    ) -> Result<AgentSessionMutationOutcome, AgentSessionRecoveryError> {
-        self.authorize_restore()?;
-        match result {
-            AgentSessionRecoveryResult::Succeeded => {
-                self.lifecycle = AgentSessionLifecycle::Open;
-                self.last_exit_abnormal = false;
-                self.last_exit_code = None;
-                self.uncommitted_events
-                    .push(AgentSessionLifecycleEvent::LifecycleChanged {
-                        lifecycle: AgentSessionLifecycle::Open,
-                        last_exit_abnormal: false,
-                    });
-                let _ = self.observe_activity(AgentSessionActivity::AwaitingInstruction);
-                Ok(AgentSessionMutationOutcome::Applied)
-            }
-            AgentSessionRecoveryResult::Failed => Ok(AgentSessionMutationOutcome::AlreadyApplied),
+    ) -> Result<AgentSessionArchiveOutcome, AgentSessionArchiveError> {
+        let outcome = self.authorize_archive()?;
+        if outcome == AgentSessionArchiveOutcome::Archived {
+            self.lifecycle = AgentSessionLifecycle::Archived;
+            self.uncommitted_events
+                .push(AgentSessionLifecycleEvent::LifecycleChanged {
+                    lifecycle: AgentSessionLifecycle::Archived,
+                    last_exit_abnormal: self.last_exit_abnormal,
+                });
         }
+        Ok(outcome)
     }
 
     pub(crate) fn complete_resume(
@@ -752,18 +737,6 @@ impl AgentSession {
         Ok(AgentSessionRemovalAuthorization::ExplicitDelete)
     }
 
-    pub(crate) fn authorize_archive_fallback_delete(
-        &self,
-    ) -> Result<AgentSessionRemovalAuthorization, AgentSessionRemovalError> {
-        if self.tree_location.launched_as == ExecutionTreeLaunch::Workflow {
-            return Err(AgentSessionRemovalError::WorkflowOwned);
-        }
-        if self.provider_session_id.is_some() {
-            return Err(AgentSessionRemovalError::ProviderSessionKnown);
-        }
-        Ok(AgentSessionRemovalAuthorization::ArchiveFallbackDelete)
-    }
-
     pub(crate) fn authorize_gc(
         &self,
         pty_presence: ManagedPtyPresence,
@@ -773,6 +746,9 @@ impl AgentSession {
         }
         if self.tree_location.launched_as == ExecutionTreeLaunch::Workflow {
             return Err(AgentSessionRemovalError::WorkflowOwned);
+        }
+        if self.lifecycle != AgentSessionLifecycle::Open {
+            return Err(AgentSessionRemovalError::NotOpen);
         }
         if self.provider_session_id.is_some() {
             return Err(AgentSessionRemovalError::ProviderSessionKnown);

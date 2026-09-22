@@ -2,7 +2,7 @@ use super::control_plane::WorkflowControlPlaneCommit;
 use super::runtime_error::WorkflowRuntimeError;
 use super::runtime_snapshot::RuntimeCommitSnapshot;
 use crate::domain::workflow::entities::workflow_execution::{
-    DelegateInjection, TransitionOutcome, WorkflowExecution,
+    DelegateInjection, ExecutionTree, TransitionOutcome,
 };
 use crate::domain::workflow::services::prompt_composition::delegate_continuation_instruction;
 use crate::domain::workflow::WorkflowEvent;
@@ -13,7 +13,7 @@ pub(crate) trait DelegateContinuationGateway: Send + Sync {
     async fn load_execution(
         &self,
         execution_id: &str,
-    ) -> Result<WorkflowExecution, WorkflowRuntimeError>;
+    ) -> Result<ExecutionTree, WorkflowRuntimeError>;
     async fn restore_provider(
         &self,
         session_id: &str,

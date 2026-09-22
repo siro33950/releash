@@ -98,8 +98,10 @@ export function AgentSessionPanel({
 			switch (outcome) {
 				case "attached":
 				case "resumed":
-				case "restored":
 					setState("terminal");
+					return;
+				case "restored":
+					setState("paused");
 					return;
 				case "paused":
 					onRefresh?.();

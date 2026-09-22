@@ -595,6 +595,33 @@ pub(crate) fn read_latest_activity_record_for_node(
         .map(Option::flatten)
 }
 
+pub(crate) fn read_tree_archive_records(
+    backend: &FactLogReadBackend,
+    tree_id: &str,
+) -> Result<Vec<NodeFactRecord>, String> {
+    read_tree_archive_records_for(backend, &[tree_id.to_string()])
+}
+
+pub(crate) fn read_tree_archive_records_for(
+    backend: &FactLogReadBackend,
+    tree_ids: &[String],
+) -> Result<Vec<NodeFactRecord>, String> {
+    let tree_ids = tree_ids.to_vec();
+    let rows = backend
+        .run_indexed(move |connection| {
+            node_events::latest_root_rows_for_trees(
+                connection,
+                &tree_ids,
+                &["archive_requested", "restore_requested"],
+            )
+            .map_err(|_| LocalEventQueryError::InvalidRequest)
+        })
+        .map_err(|error| format!("tree archive query failed: {error:?}"))?;
+    rows.iter()
+        .filter_map(|row| record_from_row(row).transpose())
+        .collect()
+}
+
 pub(crate) fn read_records_for_event_types(
     backend: &FactLogReadBackend,
     event_types: &[&str],
@@ -653,6 +680,7 @@ pub(crate) fn read_tree_records(
 pub(crate) fn decode_stored_fact(
     event_type: &str,
     detail: &str,
+    timestamp_ms: i64,
 ) -> Result<Option<NodeFact>, String> {
     match event_type {
         "isolated_worktree_created" => {
@@ -674,6 +702,22 @@ pub(crate) fn decode_stored_fact(
                 .map(|_| None)
                 .map_err(|error| error.to_string())
         }
+        "archive_requested" => {
+            let mut detail: serde_json::Map<String, serde_json::Value> =
+                serde_json::from_str(detail).map_err(|error| error.to_string())?;
+            if detail
+                .get("archivedAt")
+                .is_none_or(serde_json::Value::is_null)
+            {
+                detail.insert(
+                    "archivedAt".into(),
+                    serde_json::json!(timestamp_ms as f64 / 1000.0),
+                );
+            }
+            NodeFact::decode(event_type, &serde_json::Value::Object(detail).to_string())
+                .map(Some)
+                .map_err(|error| error.to_string())
+        }
         "started" => super::stored_definition::decode_started(detail).map(Some),
         _ => NodeFact::decode(event_type, detail)
             .map(Some)
@@ -686,7 +730,7 @@ pub(crate) fn record_from_row(row: &NodeEventRow) -> Result<Option<NodeFactRecor
     let kind = kind_from_column(&row.kind)?;
     let attempt = u32::try_from(row.attempt)
         .map_err(|_| format!("stored attempt {} is invalid", row.attempt))?;
-    let Some(fact) = decode_stored_fact(&row.event_type, &row.detail)? else {
+    let Some(fact) = decode_stored_fact(&row.event_type, &row.detail, row.timestamp_ms)? else {
         return Ok(None);
     };
     Ok(Some(NodeFactRecord {
@@ -952,7 +996,7 @@ pub(crate) fn fold_tree_from(
 
 /// fold 済み read model から実行 metadata record を導出する。
 pub(crate) fn metadata_record_from_read_model(
-    model: &crate::domain::workflow::WorkflowExecution,
+    model: &crate::domain::workflow::ExecutionTree,
 ) -> crate::domain::local_event::WorkflowExecutionMetadataRecord {
     crate::domain::local_event::WorkflowExecutionMetadataRecord {
         execution_id: model.id.clone(),

@@ -1,6 +1,6 @@
 //! Structured-output validation and transactional mutation preparation.
 
-use crate::domain::workflow::entities::workflow_execution::WorkflowExecution as DomainWorkflowExecution;
+use crate::domain::workflow::entities::workflow_execution::ExecutionTree as DomainExecutionTree;
 use crate::domain::workflow::services::{contract as workflow_contract, secret_masker};
 use crate::domain::workflow::WorkflowDefinition;
 use crate::domain::workflow::WorkflowEvent;
@@ -32,7 +32,7 @@ pub(crate) fn validate_submit_output_request(
 }
 
 pub(crate) fn validate_submit_target_context(
-    exec: &DomainWorkflowExecution,
+    exec: &DomainExecutionTree,
     execution_id: &str,
     node_execution_id: &str,
 ) -> Result<SubmissionTargetContext, WorkflowRuntimeError> {

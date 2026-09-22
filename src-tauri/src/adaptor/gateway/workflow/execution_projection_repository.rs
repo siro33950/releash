@@ -4,7 +4,7 @@ use crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore;
 use crate::adaptor::gateway::local_event_store::LocalEventStore;
 use crate::adaptor::gateway::workflow::fact_log::{self, FactLogReadBackend};
 use crate::domain::workflow::services::fact_replay;
-use crate::domain::workflow::{WorkflowError, WorkflowExecution, WorkflowExecutionId};
+use crate::domain::workflow::{ExecutionTree, ExecutionTreeId, WorkflowError};
 use crate::usecase::workflow::ports::{WorkflowEventDraft, WorkflowExecutionProjectionRepository};
 
 /// 事実ログ（node_events）の tree fold から実行 read model を導出する。
@@ -33,7 +33,7 @@ impl WorkflowExecutionProjectionLogRepository {
 impl WorkflowExecutionProjectionRepository for WorkflowExecutionProjectionLogRepository {
     fn get_node_artifact_from_events(
         &self,
-        execution_id: &WorkflowExecutionId,
+        execution_id: &ExecutionTreeId,
         node_name: &str,
         events: &[WorkflowEventDraft],
     ) -> Result<Option<crate::domain::workflow::Artifact>, WorkflowError> {
@@ -48,8 +48,8 @@ impl WorkflowExecutionProjectionRepository for WorkflowExecutionProjectionLogRep
 
     fn get_execution(
         &self,
-        execution_id: &WorkflowExecutionId,
-    ) -> Result<Option<WorkflowExecution>, WorkflowError> {
+        execution_id: &ExecutionTreeId,
+    ) -> Result<Option<ExecutionTree>, WorkflowError> {
         let records = fact_log::read_tree_records_from(&self.backend, execution_id.as_str())
             .map_err(WorkflowError::external)?;
         let Some(tree) = fact_replay::fold_execution_tree(execution_id.as_str(), &records)
@@ -92,8 +92,12 @@ fn records_from_drafts(
             let identity: Identity = serde_json::from_value(event.payload.clone())
                 .map_err(|error| WorkflowError::external(error.to_string()))?;
             let detail = event.payload.to_string();
-            let Some(fact) = fact_log::decode_stored_fact(&event.event_kind, &detail)
-                .map_err(WorkflowError::external)?
+            let Some(fact) = fact_log::decode_stored_fact(
+                &event.event_kind,
+                &detail,
+                (event.timestamp * 1000.0) as i64,
+            )
+            .map_err(WorkflowError::external)?
             else {
                 return Ok(None);
             };
