@@ -110,6 +110,7 @@ pub struct WorktreeEntryDto {
 pub struct BranchCardDto {
     pub name: String,
     pub is_main_worktree: bool,
+    pub is_deleting: bool,
     pub worktree_path: Option<String>,
     pub dirty_count: usize,
     pub is_merged: bool,

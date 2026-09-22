@@ -2102,6 +2102,7 @@ message BranchCardDto {
   optional uint64 behind = 7 [json_name = "behind", (json_required) = true];
   optional bool has_upstream = 8 [json_name = "has_upstream", (json_required) = true];
   optional uint64 base_ahead = 9 [json_name = "base_ahead", (json_required) = true];
+  optional bool is_deleting = 10 [json_name = "is_deleting", (json_required) = true];
 }
 
 message ListBranchCardDto {

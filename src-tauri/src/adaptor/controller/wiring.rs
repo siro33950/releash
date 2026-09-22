@@ -78,15 +78,19 @@ use crate::usecase::workspace_tree::WorkspaceQueryService;
 /// worktree terminal 停止は no-op とする。
 #[cfg(test)]
 pub(crate) fn build_repository_usecase() -> RepositoryUsecase {
-    build_repository_usecase_with_worktree_terminals(Arc::new(NoopWorktreeTerminalGateway))
+    build_repository_usecase_with_worktree_terminals(
+        Arc::new(NoopWorktreeTerminalGateway),
+        Default::default(),
+    )
 }
 
 /// worktree 削除時に紐づく terminal surface を停止できる repository usecase を構築する
 /// （Tauri アプリ本体の composition 用）。
 pub(crate) fn build_repository_usecase_with_worktree_terminals(
     worktree_terminals: Arc<dyn WorktreeTerminalGateway>,
+    operations: Arc<crate::usecase::worktree_operation::WorktreeOperations>,
 ) -> RepositoryUsecase {
-    let query = RepositoryQueryService::new(Arc::new(BranchCardGateway));
+    let query = RepositoryQueryService::new(Arc::new(BranchCardGateway), operations);
     build_repository_usecase_inner(worktree_terminals, query)
 }
 
@@ -246,7 +250,9 @@ pub(crate) fn build_canonical_workflow_read_usecase(
     let local_event_store = LocalEventReadStore::open(&data_dir)?;
     let repository_usecase = Arc::new(build_repository_usecase_with_worktree_terminals(Arc::new(
         NoopWorktreeTerminalGateway,
-    )));
+    ), Arc::new(crate::usecase::worktree_operation::WorktreeOperations::new(Arc::new(
+        crate::adaptor::gateway::repository::worktree_operation::FileWorktreeOperationLocks::new(&data_dir),
+    )))));
     let workflows_dir =
         workflows_dir.unwrap_or_else(WorkflowDefinitionFileRepository::default_workflows_dir);
     let config_path = data_dir.join("releash.toml");
@@ -377,7 +383,6 @@ pub(crate) fn build_workflow_services_with_gateways(
 }
 
 pub(crate) fn build_workflow_runtime_usecase(
-    app_data_dir: &std::path::Path,
     app: crate::adaptor::gateway::workflow::workflow_host::WorkflowRuntimeDependencies,
     deps: WorkflowRuntimeCommandGatewayDeps,
 ) -> Result<WorkflowRuntimeUsecase, WorkflowRuntimeError> {
@@ -385,6 +390,7 @@ pub(crate) fn build_workflow_runtime_usecase(
         runtime_resolver::{AppConfigManagedWorktreeResolver, DefaultWorkflowDefinitionResolver},
         workflow_host::WorkflowRuntimeHost,
     };
+    let operations = deps.repository_usecase.worktree_operations();
     let mut driver = WorkflowRuntimeHost::new_canonical(
         Arc::new(DefaultWorkflowDefinitionResolver),
         Arc::new(AppConfigManagedWorktreeResolver::new(
@@ -412,9 +418,7 @@ pub(crate) fn build_workflow_runtime_usecase(
     Ok(WorkflowRuntimeUsecase::new_with_worktree_operations(
         Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(app, driver)),
         archives,
-        Arc::new(crate::usecase::worktree_operation::WorktreeOperations::new(Arc::new(
-            crate::adaptor::gateway::repository::worktree_operation::FileWorktreeOperationLocks::new(app_data_dir),
-        ))),
+        operations,
     )
     .with_startup(startup))
 }
@@ -475,6 +479,10 @@ pub(crate) fn spawn_startup_app_data_gc(
         }
     });
 }
+
+#[cfg(test)]
+#[path = "wiring_test.rs"]
+mod wiring_tests;
 
 #[cfg(test)]
 mod tests {

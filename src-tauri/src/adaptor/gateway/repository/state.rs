@@ -41,7 +41,29 @@ impl RepositoryStateRepositoryGateway {
 
 impl RepositoryStateRepository for RepositoryStateRepositoryGateway {
     fn main_repo_path(&self, path: &str) -> Result<String, RepositoryStateError> {
-        Ok(self.repository.get_main_repo_path(path)?)
+        let root = self.repository.get_main_repo_path(path)?;
+        Ok(super::worktree_operation::worktree_identity(&root)
+            .map_err(crate::usecase::repository_error::UsecaseError::from)?
+            .to_string_lossy()
+            .into_owned())
+    }
+
+    fn include_deleting_worktrees(
+        &self,
+        repository_root: &str,
+        cards: &mut Vec<crate::usecase::repository_dto::BranchCardDto>,
+    ) -> Result<(), RepositoryStateError> {
+        for card in cards.iter_mut() {
+            if let Some(path) = &mut card.worktree_path {
+                *path = super::worktree_operation::worktree_identity(path)
+                    .map_err(crate::usecase::repository_error::UsecaseError::from)?
+                    .to_string_lossy()
+                    .into_owned();
+            }
+        }
+        self.repository
+            .include_deleting_worktrees(repository_root, cards);
+        Ok(())
     }
 }
 

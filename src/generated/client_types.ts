@@ -1945,6 +1945,7 @@ export type BranchCardDto = {
 	behind: number;
 	has_upstream: boolean;
 	base_ahead: number;
+	is_deleting: boolean;
 };
 
 export type RepositoryBranchCardsSnapshotDto = {

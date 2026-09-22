@@ -204,6 +204,7 @@ fn build_branch_card(
     BranchCardDto {
         name,
         is_main_worktree: is_main_wt,
+        is_deleting: false,
         worktree_path,
         dirty_count,
         is_merged,
@@ -226,6 +227,7 @@ fn build_unmatched_worktree_card(
     BranchCardDto {
         name: wt_branch_name.to_string(),
         is_main_worktree: is_main_wt,
+        is_deleting: false,
         worktree_path: Some(wt_path.to_string()),
         dirty_count,
         is_merged: false,

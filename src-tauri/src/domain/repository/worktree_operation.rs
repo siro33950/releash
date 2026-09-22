@@ -3,12 +3,45 @@ use super::RepositoryError;
 #[derive(Default)]
 pub(crate) struct WorktreeOperationState {
     mutations: usize,
-    deleting: bool,
+    deletion: Option<WorktreeDeletion>,
+}
+
+enum WorktreeDeletion {
+    Preparing,
+    Accepted(WorktreeDeletionTarget),
+}
+
+pub(crate) struct WorktreeDeletionTarget {
+    pub repository_root: String,
+    pub path: String,
+    pub branch: Option<String>,
 }
 
 impl WorktreeOperationState {
+    pub(crate) fn is_deleting(&self) -> bool {
+        self.deletion.is_some()
+    }
+
+    pub(crate) fn accept_deletion(
+        &mut self,
+        target: WorktreeDeletionTarget,
+    ) -> Result<(), RepositoryError> {
+        if !self.ready_to_delete() {
+            return Err(RepositoryError::rule("worktree deletion is not ready"));
+        }
+        self.deletion = Some(WorktreeDeletion::Accepted(target));
+        Ok(())
+    }
+
+    pub(crate) fn deletion_target(&self) -> Option<&WorktreeDeletionTarget> {
+        match &self.deletion {
+            Some(WorktreeDeletion::Accepted(target)) => Some(target),
+            _ => None,
+        }
+    }
+
     pub(crate) fn begin_mutation(&mut self) -> Result<(), RepositoryError> {
-        if self.deleting {
+        if self.is_deleting() {
             return Err(RepositoryError::rule("worktree deletion is in progress"));
         }
         self.mutations += 1;
@@ -20,19 +53,19 @@ impl WorktreeOperationState {
     }
 
     pub(crate) fn begin_deletion(&mut self) -> Result<(), RepositoryError> {
-        if self.deleting {
+        if self.is_deleting() {
             return Err(RepositoryError::rule("worktree deletion is in progress"));
         }
-        self.deleting = true;
+        self.deletion = Some(WorktreeDeletion::Preparing);
         Ok(())
     }
 
     pub(crate) fn ready_to_delete(&self) -> bool {
-        self.deleting && self.mutations == 0
+        self.is_deleting() && self.mutations == 0
     }
 
     pub(crate) fn finish_deletion(&mut self) {
-        self.deleting = false;
+        self.deletion = None;
     }
 }
 

@@ -92,6 +92,9 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
         branch: Arc<dyn BranchRepository>,
     ) -> Self {
         use crate::adaptor::gateway::repository;
+        let operations = Arc::new(crate::usecase::worktree_operation::WorktreeOperations::new(
+            Arc::new(repository::worktree_operation::FileWorktreeOperationLocks::new(data_dir)),
+        ));
         let repository = RepositoryUsecase::new(
             branch,
             Arc::new(repository::log::LogGateway),
@@ -100,9 +103,10 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
             Arc::new(repository::git_config::GitConfigGateway),
             Arc::new(repository::util::RepoLocatorGateway),
             Arc::new(repository::worktree_terminal::NoopWorktreeTerminalGateway),
-            crate::usecase::repository_query_service::RepositoryQueryService::new(Arc::new(
-                repository::branch_card::BranchCardGateway,
-            )),
+            crate::usecase::repository_query_service::RepositoryQueryService::new(
+                Arc::new(repository::branch_card::BranchCardGateway),
+                operations.clone(),
+            ),
         );
         let authority = Arc::new(ApplicationStartupAuthority::ready());
         let dispatch = Arc::new(ClientCommandDispatch::new(
@@ -147,9 +151,7 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
                     store, data_dir,
                 ),
             ),
-            Arc::new(crate::usecase::worktree_operation::WorktreeOperations::new(Arc::new(
-                crate::adaptor::gateway::repository::worktree_operation::FileWorktreeOperationLocks::new(data_dir),
-            ))),
+            operations,
         );
         let terminal = TerminalSurfaceRuntime::new(data_dir.to_path_buf());
         let router = crate::adaptor::controller::api::build_router(
@@ -309,6 +311,9 @@ impl ClientRecoveryAcceptanceHost {
         let mut dispatch = ClientCommandDispatch::new(
             Arc::new(crate::adaptor::controller::wiring::build_repository_usecase_with_worktree_terminals(
                 Arc::new(crate::adaptor::gateway::repository::worktree_terminal::NoopWorktreeTerminalGateway),
+                Arc::new(crate::usecase::worktree_operation::WorktreeOperations::new(Arc::new(
+                    crate::adaptor::gateway::repository::worktree_operation::FileWorktreeOperationLocks::new(&std::env::temp_dir()),
+                ))),
             )),
             Arc::new(ApplicationStartupAuthority::ready()),
         );

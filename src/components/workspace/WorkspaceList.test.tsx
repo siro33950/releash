@@ -252,6 +252,7 @@ function makeBranch(): WorktreeBranch {
 	return {
 		name: "feature",
 		is_main_worktree: false,
+		is_deleting: false,
 		worktree_path: "/repo/wt",
 		dirty_count: 0,
 		is_merged: false,
@@ -2333,6 +2334,9 @@ it.each([
 		expect(
 			mocks.invoke.mock.calls.filter(([name]) => name === command),
 		).toHaveLength(1);
+		expect(mocks.invoke).not.toHaveBeenCalledWith("report_usage_event", {
+			name: "worktree_removed",
+		});
 		await act(async () => {
 			if (outcome === "success") complete();
 			else fail(new Error("削除が拒否されました"));
@@ -2346,6 +2350,14 @@ it.each([
 			);
 			expect(screen.getByRole("button", { name: "Delete" })).toBeEnabled();
 		}
+		expect(
+			mocks.invoke.mock.calls.filter(
+				([name, args]) =>
+					name === "report_usage_event" && args.name === "worktree_removed",
+			),
+		).toHaveLength(
+			command === "remove_worktree" && outcome === "success" ? 1 : 0,
+		);
 	},
 );
 
@@ -2384,4 +2396,44 @@ it("削除の応答待ちは閉じず完了後に別の対象を開く", async (
 		'Delete workspace for branch "other"?',
 	);
 	expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
+
+it("worktree削除の受理後は一覧更新を待たずダイアログを閉じる", async () => {
+	const branch = makeBranch();
+	mocks.worktreeBranches = [branch];
+	let finishRefresh!: () => void;
+	mocks.refreshWorktrees.mockImplementationOnce(
+		() =>
+			new Promise<void>((resolve) => {
+				finishRefresh = resolve;
+			}),
+	);
+	renderWorkspaceList();
+	const user = userEvent.setup();
+	await user.click(
+		screen.getByRole("button", { name: "Open menu for feature" }),
+	);
+	await user.click(screen.getByRole("menuitem", { name: "Delete" }));
+	await user.click(screen.getByRole("button", { name: "Delete" }));
+	expect(mocks.invoke).toHaveBeenCalledWith("remove_worktree", {
+		repoPath: "/repo",
+		worktreePath: branch.worktree_path,
+		force: false,
+	});
+	expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+	expect(mocks.refreshWorktrees).toHaveBeenCalledWith({ silent: true });
+	expect(mocks.invoke).toHaveBeenCalledWith("report_usage_event", {
+		name: "worktree_removed",
+	});
+	expect(screen.getByRole("button", { name: "Refresh repo" })).toBeEnabled();
+	await act(async () => finishRefresh());
+});
+
+it("backendが返す削除中のworktreeを一覧に表示する", async () => {
+	mocks.worktreeBranches = [{ ...makeBranch(), is_deleting: true }];
+	await act(async () => {
+		renderWorkspaceList();
+	});
+	expect(screen.getByTestId("worktree-item-feature")).toBeVisible();
+	expect(screen.getByRole("status")).toHaveTextContent("Deleting...");
 });

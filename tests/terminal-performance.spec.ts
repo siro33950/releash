@@ -96,6 +96,7 @@ test("10MiB agent-TUI負荷でTerminal Surfaceのstrict performance budgetを守
 				{
 					name: "main",
 					is_main_worktree: true,
+					is_deleting: false,
 					worktree_path: "/test/repo",
 					dirty_count: 0,
 					is_merged: false,
