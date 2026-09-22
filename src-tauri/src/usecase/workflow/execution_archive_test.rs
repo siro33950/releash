@@ -34,7 +34,7 @@ async fn test_実行木archive_abortと自然完了の競合だけを終了状�
                     fact_log::append_single_fact(
                         &self.store,
                         meta,
-                        &NodeFact::decode(kind, "{}").unwrap(),
+                        &crate::adaptor::gateway::workflow::fact_codec::decode(kind, "{}").unwrap(),
                         2000,
                     )
                     .unwrap();
@@ -85,7 +85,7 @@ async fn test_実行木archive_abortと自然完了の競合だけを終了状�
             assert!(!fact_log::read_tree_records(&fixture.store, &id)
                 .unwrap()
                 .iter()
-                .any(|record| matches!(record.fact, NodeFact::AbortRequested)));
+                .any(|record| matches!(record.fact, NodeFact::AbortRequested(_))));
         }
     }
 }
@@ -238,8 +238,12 @@ async fn test_旧sessionarchive移行_128件を越えて時刻と理由と終了
         if completed {
             for kind in ["submit_received", "stop_received"] {
                 rows.push(
-                    fact_log::pending_single_fact(&meta, &NodeFact::decode(kind, "{}").unwrap(), 2)
-                        .unwrap(),
+                    fact_log::pending_single_fact(
+                        &meta,
+                        &crate::adaptor::gateway::workflow::fact_codec::decode(kind, "{}").unwrap(),
+                        2,
+                    )
+                    .unwrap(),
                 );
             }
         }
@@ -249,8 +253,12 @@ async fn test_旧sessionarchive移行_128件を越えて時刻と理由と終了
         } else {
             "manual"
         };
-        let mut legacy =
-            fact_log::pending_single_fact(&meta, &NodeFact::AbortRequested, timestamp).unwrap();
+        let mut legacy = fact_log::pending_single_fact(
+            &meta,
+            &NodeFact::AbortRequested(Default::default()),
+            timestamp,
+        )
+        .unwrap();
         legacy.row.event_type = "archive_requested".into();
         legacy.row.detail = serde_json::json!({"reason": reason}).to_string();
         rows.push(legacy);
@@ -305,7 +313,7 @@ async fn test_旧sessionarchive移行_128件を越えて時刻と理由と終了
         assert_eq!(
             facts
                 .iter()
-                .filter(|record| matches!(record.fact, NodeFact::AbortRequested))
+                .filter(|record| matches!(record.fact, NodeFact::AbortRequested(_)))
                 .count(),
             usize::from(!completed)
         );

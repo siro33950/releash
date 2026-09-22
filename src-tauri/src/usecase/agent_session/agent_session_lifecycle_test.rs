@@ -137,7 +137,7 @@ impl crate::usecase::agent_session::AgentSessionExecutionTreeLifecycle for Recor
         crate::adaptor::gateway::workflow::fact_log::append_single_fact(
             store,
             meta,
-            &NodeFact::AbortRequested,
+            &NodeFact::AbortRequested(Default::default()),
             100,
         )
         .unwrap();

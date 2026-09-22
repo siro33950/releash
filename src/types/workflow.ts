@@ -116,7 +116,6 @@ export interface WorkflowDefinition {
 }
 
 export type NodeExecutionStatus =
-	| "unresolved"
 	| "running"
 	| "waiting_approval"
 	| "succeeded"
@@ -130,7 +129,6 @@ export interface ExecutionParentRef {
 
 export interface NodeExecution {
 	worktree?: { branch: string; path: string } | null;
-	recoveryReason?: string;
 	id: string;
 	executionId: string;
 	nodeName: string;

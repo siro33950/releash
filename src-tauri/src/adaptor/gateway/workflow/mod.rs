@@ -22,6 +22,7 @@ mod execution_projection_repository;
 pub(crate) mod execution_store;
 pub(crate) mod facet;
 mod facet_repository;
+pub(crate) mod fact_codec;
 pub(crate) mod fact_log;
 #[cfg(test)]
 pub(crate) mod failure_policy_config;
@@ -38,6 +39,7 @@ mod schema_contract_tests;
 pub(crate) mod secret_source;
 mod secret_source_gateway;
 pub(crate) mod span_map;
+pub(crate) mod startup_repository;
 #[cfg(test)]
 pub(crate) mod state;
 mod state_notification_gateway;
@@ -76,5 +78,3 @@ pub(crate) use worktree_gateway::RepoPathsManagedWorktreeGateway;
 pub(crate) use worktree_gateway::RepositoryManagedWorktreeGateway;
 
 pub(crate) use worktree_gateway::RepositoryIsolatedWorktreeGateway;
-
-mod stored_node_fact;

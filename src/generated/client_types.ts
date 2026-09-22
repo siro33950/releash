@@ -1704,7 +1704,6 @@ export type NodeExecutionView = {
 	canResumeSession: boolean;
 	processPresence: NodeProcessPresence;
 	worktree?: NodeWorktreeDto;
-	recoveryReason?: string;
 	id: string;
 	executionId: string;
 	nodeName: string;
@@ -1737,7 +1736,6 @@ export type NodeWorktreeDto = {
 export type NodeKindView = "command" | "session" | "fanout" | "sequence";
 
 export type NodeExecutionStatusView =
-	| "unresolved"
 	| "running"
 	| "waiting_approval"
 	| "succeeded"
@@ -1788,14 +1786,12 @@ export type WorkspaceNodeDetailDto = {
 	waitingFor?: WorkspaceWaitingFor;
 	hasArtifact: boolean;
 	errorReason?: string;
-	recoveryReason?: string;
 	capabilities: WorkspaceNodeCapabilitiesDto;
 	updatedAt: number;
 	content: WorkspaceNodeContentDto;
 };
 
 export type WorkspaceNodeStatus =
-	| "unresolved"
 	| "running"
 	| "waiting"
 	| "aborted"
@@ -1804,7 +1800,6 @@ export type WorkspaceNodeStatus =
 export type WorkspaceStatusClassification =
 	| "active"
 	| "attention"
-	| "failure"
 	| "idle"
 	| "unbound";
 
@@ -2010,7 +2005,6 @@ export type WorkspaceWorkflowHistoryItemDto = {
 };
 
 export type WorkspaceHistoryStatus =
-	| "unresolved"
 	| "running"
 	| "waiting"
 	| "aborted"

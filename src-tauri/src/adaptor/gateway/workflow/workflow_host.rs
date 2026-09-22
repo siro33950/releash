@@ -6,6 +6,8 @@
 //! decisions to them, and connects event storage, agent sessions, processes,
 //! and notifications.
 
+#[cfg(test)]
+use crate::adaptor::gateway::workflow::fact_codec;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Weak};
 
@@ -123,7 +125,6 @@ pub struct WorkflowRuntimeHost {
     command_completion_observers: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
     /// node_execution_id → shutdown reason consumed by the completion observer.
     command_shutdown_intents: Arc<Mutex<HashMap<String, ActiveCommandShutdownIntent>>>,
-    startup_recovery_lock: Arc<Mutex<()>>,
     /// active な WorkflowExecutionMetadata を管理する Execution Store。
     /// worktree_path → active execution_id の secondary index は Execution Store 内で保持する。
     execution_store: Arc<ExecutionStore>,
@@ -133,18 +134,6 @@ pub struct WorkflowRuntimeHost {
     isolated_worktrees: Arc<dyn crate::domain::workflow::IsolatedWorktreeGateway>,
     pub(crate) delegate_continuation:
         Option<Arc<crate::usecase::workflow::delegate::DelegateContinuationUsecase>>,
-}
-
-enum RequiredEventCommitFailure {
-    /// No event fact became visible; rollbackable resources may be discarded.
-    BeforeDurableAppend(WorkflowRuntimeError),
-}
-
-impl RequiredEventCommitFailure {
-    fn into_workflow_error(self) -> WorkflowRuntimeError {
-        let Self::BeforeDurableAppend(error) = self;
-        error
-    }
 }
 
 struct ControlPlaneCommitCandidate<'a> {
@@ -317,7 +306,7 @@ impl WorkflowRuntimeHost {
         Ok(())
     }
 
-    async fn execution_tree_is_registered_or_reserved(&self, tree_id: &str) -> bool {
+    pub(crate) async fn execution_tree_is_registered_or_reserved(&self, tree_id: &str) -> bool {
         let reservations = self.execution_tree_reservations.lock().await;
         self.executions.lock().await.contains_key(tree_id) || reservations.contains(tree_id)
     }
@@ -458,7 +447,6 @@ impl WorkflowRuntimeHost {
             active_command_executions: Arc::new(Mutex::new(HashMap::new())),
             command_completion_observers: Arc::new(Mutex::new(HashMap::new())),
             command_shutdown_intents: Arc::new(Mutex::new(HashMap::new())),
-            startup_recovery_lock: Arc::new(Mutex::new(())),
             execution_store,
             workflow_resolver,
             worktree_resolver,
@@ -630,134 +618,80 @@ impl WorkflowRuntimeHost {
         Ok((snapshot, applied))
     }
 
-    /// 冪等 reconciliation の1周: 事実ログの fold で導出された状態を見て、
-    /// まだ実行していない行動を実行し、実行した事実を追記する。
-    ///
-    /// - 前プロセスと共に消えた実行中プロセスは、喪失の観測（process_exited）
-    ///   として追記される（Paused は fold の導出）。provider CLI はアプリ内
-    ///   Terminal Surface で動くため、再起動を跨いで生き残る実プロセスは無い。
-    /// - 前進の実行と事実の追記の間で落ちた場合の未実行の前進
-    ///   （次の子の起動・fanout 展開の続き）は、導出された差分として検出・実行
-    ///   される。既に事実が揃っている行動は差分に現れないため二重実行されない。
-    ///
-    /// 起動時復旧はこの1周目と同一であり、復旧専用経路は存在しない。
-    pub async fn reconcile_startup(
+    pub(crate) async fn reconcile_tree(
         &self,
         app: &WorkflowRuntimeDependencies,
+        tree_id: &str,
+        now: f64,
     ) -> Result<(), WorkflowRuntimeError> {
-        let _reconcile_guard = self.startup_recovery_lock.lock().await;
-        let Some(store) = app.store.as_ref() else {
-            // canonical store の無い（テスト）構成では対象の木が無い。
+        let store = app.store.as_ref().ok_or_else(|| {
+            WorkflowRuntimeError::SessionStore("canonical store is not configured".into())
+        })?;
+        let activation_gate = self.runtime_activation_gate(tree_id).await;
+        let activation_guard = activation_gate.lock.lock().await;
+        if self.execution_tree_is_registered_or_reserved(tree_id).await {
+            return Ok(());
+        }
+        let mut new_id = new_node_execution_id;
+        let Some(reconciliation) =
+            workflow_fact_log::reconcile_tree_pass(store, tree_id, now, &mut new_id)
+                .map_err(WorkflowRuntimeError::SessionStore)?
+        else {
             return Ok(());
         };
-        let store = store.clone();
-        let backend = workflow_fact_log::FactLogReadBackend::Live(store.clone());
-        let tree_ids = workflow_fact_log::list_tree_ids(&backend, None)
-            .map_err(WorkflowRuntimeError::SessionStore)?;
-        let mut first_recovery_error = None;
-        for tree_id in tree_ids {
-            if self
-                .execution_tree_is_registered_or_reserved(&tree_id)
+        let folded = reconciliation.folded;
+        if !folded.aggregate.is_active() {
+            return Ok(());
+        }
+        let worktree_path = folded.aggregate.worktree_path.clone();
+        if folded.aggregate.launched_as == ExecutionTreeLaunch::Workflow {
+            let model = crate::domain::workflow::services::fact_replay::derive_read_model(&folded);
+            let metadata = WorkflowExecutionMetadata {
+                execution_id: model.id.clone(),
+                workflow_name: model.workflow_name.clone(),
+                status: model.status,
+                worktree_path: model.worktree_path.clone(),
+                current_node: model.current_node.clone(),
+                created_from: model.created_from,
+                started_at: model.started_at,
+                updated_at: model.updated_at,
+                completed_at: model.completed_at,
+                error_reason: model.error_reason.clone(),
+                total_token_usage: model.total_token_usage.clone(),
+            };
+            let metadata = self
+                .execution_store
+                .reconcile_orphan_from_projection(metadata, &model)
+                .await
+                .map_err(|error| {
+                    WorkflowRuntimeError::SessionStore(format!(
+                        "reconciliation metadata refresh failed: {error}"
+                    ))
+                })?;
+            self.execution_store
+                .register_active_execution(metadata)
+                .await
+                .map_err(|error| {
+                    WorkflowRuntimeError::SessionStore(format!(
+                        "reconciliation active registry restore failed: {error}"
+                    ))
+                })?;
+        }
+        self.executions
+            .lock()
+            .await
+            .insert(tree_id.to_string(), folded.aggregate);
+        drop(activation_guard);
+        if !reconciliation.starts.is_empty() {
+            if let Err(error) = self
+                .start_nodes(app, tree_id, &worktree_path, reconciliation.starts)
                 .await
             {
-                continue;
-            }
-            let activation_gate = self.runtime_activation_gate(&tree_id).await;
-            let activation_guard = activation_gate.lock.lock().await;
-            if self
-                .execution_tree_is_registered_or_reserved(&tree_id)
-                .await
-            {
-                continue;
-            }
-            let now = current_timestamp();
-            let mut new_id = new_node_execution_id;
-            let reconciliation =
-                match workflow_fact_log::reconcile_tree_pass(&store, &tree_id, now, &mut new_id) {
-                    Ok(Some(reconciliation)) => reconciliation,
-                    Ok(None) => continue,
-                    Err(error) => {
-                        let error = WorkflowRuntimeError::SessionStore(format!(
-                            "workflow {tree_id}: reconciliation pass failed: {error}"
-                        ));
-                        log::warn!("{error}");
-                        first_recovery_error.get_or_insert(error);
-                        continue;
-                    }
-                };
-            let folded = reconciliation.folded;
-            let pending_leaves = reconciliation.starts;
-            if !folded.aggregate.is_active() {
-                continue;
-            }
-            // 導出状態を engine の作業状態（in-memory・非永続）として登録する。
-            let worktree_path = folded.aggregate.worktree_path.clone();
-            if folded.aggregate.launched_as == ExecutionTreeLaunch::Workflow {
-                let model =
-                    crate::domain::workflow::services::fact_replay::derive_read_model(&folded);
-                let metadata = WorkflowExecutionMetadata {
-                    execution_id: model.id.clone(),
-                    workflow_name: model.workflow_name.clone(),
-                    status: model.status,
-                    worktree_path: model.worktree_path.clone(),
-                    current_node: model.current_node.clone(),
-                    created_from: model.created_from,
-                    started_at: model.started_at,
-                    updated_at: model.updated_at,
-                    completed_at: model.completed_at,
-                    error_reason: model.error_reason.clone(),
-                    total_token_usage: model.total_token_usage.clone(),
-                };
-                let metadata = match self
-                    .execution_store
-                    .reconcile_orphan_from_projection(metadata, &model)
-                    .await
-                {
-                    Ok(metadata) => metadata,
-                    Err(error) => {
-                        let error = WorkflowRuntimeError::SessionStore(format!(
-                            "workflow {tree_id}: reconciliation metadata refresh failed: {error}"
-                        ));
-                        log::warn!("{error}");
-                        first_recovery_error.get_or_insert(error);
-                        continue;
-                    }
-                };
-                if let Err(error) = self
-                    .execution_store
-                    .register_active_execution(metadata)
-                    .await
-                {
-                    let error = WorkflowRuntimeError::SessionStore(format!(
-                        "workflow {tree_id}: reconciliation active registry restore failed: {error}"
-                    ));
-                    log::warn!("{error}");
-                    first_recovery_error.get_or_insert(error);
-                    continue;
-                }
-            }
-            {
-                let mut executions = self.executions.lock().await;
-                executions.insert(tree_id.clone(), folded.aggregate.clone());
-            }
-            drop(activation_guard);
-            // 4) 未起動または前進で生まれた leaf を起動する。失敗した tree は
-            //    registry から戻し、次の reconciliation 呼び出しで再試行できるようにする。
-            if !pending_leaves.is_empty() {
-                if let Err(error) = self
-                    .start_nodes(app, &tree_id, &worktree_path, pending_leaves)
-                    .await
-                {
-                    self.executions.lock().await.remove(&tree_id);
-                    first_recovery_error.get_or_insert(error);
-                    continue;
-                }
+                self.executions.lock().await.remove(tree_id);
+                return Err(error);
             }
         }
-        match first_recovery_error {
-            Some(error) => Err(error),
-            None => Ok(()),
-        }
+        Ok(())
     }
 }
 
@@ -1019,34 +953,14 @@ impl WorkflowRuntimeHost {
                 )));
             }
             Err(WorkflowTransactionCommitError::Persistence(error)) => {
-                let backend = workflow_fact_log::FactLogReadBackend::Live(
-                    app.store.clone().ok_or_else(|| {
-                        WorkflowRuntimeError::SessionStore(
-                            "workflow SQLite event authority is not managed".to_string(),
-                        )
-                    })?,
-                );
-                let refreshed_snapshot = match workflow_fact_log::fold_tree_from(
-                    &backend,
-                    execution_id,
-                ) {
-                    Ok(Some(folded)) => {
-                        *current = folded.aggregate;
-                        RuntimeCommitSnapshot::from_execution(current).ok()
-                    }
-                    Ok(None) => None,
-                    Err(refresh_error) => {
-                        log::error!(
-                            "workflow {execution_id}: failed to reconcile facts after partial persistence: {refresh_error}"
-                        );
-                        None
-                    }
-                };
+                let refreshed_snapshot = Self::reload_execution_after_append_failure(app, current);
                 drop(executions);
+                let refreshed_snapshot = refreshed_snapshot.map_err(|refresh_error| {
+                    WorkflowRuntimeError::SessionStore(format!(
+                        "{error}; canonical state refresh failed: {refresh_error}"
+                    ))
+                })?;
                 if launched_as == ExecutionTreeLaunch::Workflow {
-                    let Some(refreshed_snapshot) = refreshed_snapshot else {
-                        return Err(WorkflowRuntimeError::SessionStore(error));
-                    };
                     if let Err(refresh_error) = self
                         .sync_state_after_required_event_commit(launched_as, &refreshed_snapshot)
                         .await
@@ -1265,7 +1179,12 @@ impl WorkflowRuntimeHost {
                 .iter()
                 .map(|execution| (execution.id.clone(), execution.attempt))
                 .collect();
-            (exec.workflow.clone(), attempts_by_id)
+            (
+                exec.workflow_definition()
+                    .map_err(|error| WorkflowRuntimeError::InvalidState(error.to_string()))?
+                    .clone(),
+                attempts_by_id,
+            )
         };
         let execution_id = execution_id.to_string();
         let activation_gate = self.runtime_activation_gate(&execution_id).await;
@@ -1820,8 +1739,7 @@ impl WorkflowRuntimeHost {
             }
             let snapshot_before = exec.clone();
             let requires_approval = exec
-                .workflow
-                .node_by_name(&input.node_name)
+                .node_definition(&input.node_name)
                 .map(workflow_transition::decide_completion_disposition)
                 == Some(workflow_transition::CompletionDisposition::RequestApproval);
             let _ = exec.record_pending_result(
@@ -2089,21 +2007,30 @@ impl WorkflowRuntimeHost {
         .await
     }
 
+    fn reload_execution_after_append_failure(
+        app: &WorkflowRuntimeDependencies,
+        current: &mut DomainExecutionTree,
+    ) -> Result<RuntimeCommitSnapshot, WorkflowRuntimeError> {
+        let store = app.store.clone().ok_or_else(|| {
+            WorkflowRuntimeError::SessionStore(
+                "workflow SQLite event authority is not managed".into(),
+            )
+        })?;
+        let folded = workflow_fact_log::fold_tree_from(
+            &workflow_fact_log::FactLogReadBackend::Live(store),
+            &current.id,
+        )
+        .map_err(WorkflowRuntimeError::SessionStore)?
+        .ok_or_else(|| WorkflowRuntimeError::ExecutionNotFound(current.id.clone()))?;
+        *current = folded.aggregate;
+        RuntimeCommitSnapshot::from_execution(current)
+    }
+
     async fn commit_required_events(
         &self,
         app: &WorkflowRuntimeDependencies,
         commit: RequiredEventCommit<'_>,
     ) -> Result<(), WorkflowRuntimeError> {
-        self.commit_required_events_with_phase(app, commit)
-            .await
-            .map_err(RequiredEventCommitFailure::into_workflow_error)
-    }
-
-    async fn commit_required_events_with_phase(
-        &self,
-        app: &WorkflowRuntimeDependencies,
-        commit: RequiredEventCommit<'_>,
-    ) -> Result<(), RequiredEventCommitFailure> {
         let RequiredEventCommit {
             execution_id,
             snapshot_for_commit,
@@ -2116,23 +2043,18 @@ impl WorkflowRuntimeHost {
         // Reacquire the execution mutex and keep it through the synchronous append. Every runtime
         // mutation uses this mutex, so a newer stop/completion cannot overtake this event commit.
         // If another mutation already won, this stale commit emits no fact and performs no
-        // rollback. On append failure, restore the driver snapshot before releasing the mutex so
-        // no concurrent mutation can observe or overwrite the failed pre-commit state.
-        let (append_result, launched_as) = {
+        // rollback. On completion append failure, reload canonical facts before releasing the mutex.
+        let (append_result, launched_as, refreshed_snapshot) = {
             let mut executions = self.executions.lock().await;
             let Some(current) = executions.get_mut(execution_id) else {
-                return Err(RequiredEventCommitFailure::BeforeDurableAppend(
-                    WorkflowRuntimeError::InvalidState(format!(
-                        "execution {execution_id} disappeared before required event commit"
-                    )),
-                ));
+                return Err(WorkflowRuntimeError::InvalidState(format!(
+                    "execution {execution_id} disappeared before required event commit"
+                )));
             };
             if !commit_snapshot_is_current(current, snapshot_for_commit) {
-                return Err(RequiredEventCommitFailure::BeforeDurableAppend(
-                    WorkflowRuntimeError::InvalidState(format!(
-                        "execution {execution_id} changed before required event commit"
-                    )),
-                ));
+                return Err(WorkflowRuntimeError::InvalidState(format!(
+                    "execution {execution_id} changed before required event commit"
+                )));
             }
             let launched_as = current.launched_as;
             let transaction = match PreparedWorkflowTransaction::capture_applied(
@@ -2143,11 +2065,9 @@ impl WorkflowRuntimeHost {
             ) {
                 Ok(transaction) => transaction,
                 Err(error) => {
-                    return Err(RequiredEventCommitFailure::BeforeDurableAppend(
-                        WorkflowRuntimeError::InvalidState(format!(
-                            "invalid workflow transaction preparation: {error:?}"
-                        )),
-                    ));
+                    return Err(WorkflowRuntimeError::InvalidState(format!(
+                        "invalid workflow transaction preparation: {error:?}"
+                    )));
                 }
             };
             *current = snapshot_before;
@@ -2160,19 +2080,35 @@ impl WorkflowRuntimeHost {
                     }
                     WorkflowTransactionCommitError::Persistence(error) => error,
                 });
-            (append_result, launched_as)
+            let refreshed_snapshot = (append_result.is_err()
+                && snapshot_for_commit.state == RuntimeExecutionState::Completed)
+                .then(|| Self::reload_execution_after_append_failure(app, current));
+            (append_result, launched_as, refreshed_snapshot)
         };
         let effects = match append_result {
             Ok(effects) => effects,
             Err(e) => {
-                let _ = workflow_runtime_commit::restore_execution_store_active_snapshot(
-                    &self.execution_store,
-                    execution_store_snapshot_before,
-                )
-                .await;
-                return Err(RequiredEventCommitFailure::BeforeDurableAppend(
-                    WorkflowRuntimeError::SessionStore(format!("{append_error_context}: {e}")),
-                ));
+                let refresh_result = match refreshed_snapshot {
+                    Some(Ok(snapshot)) => {
+                        self.sync_state_after_required_event_commit(launched_as, &snapshot)
+                            .await
+                    }
+                    Some(Err(error)) => Err(error),
+                    None => {
+                        workflow_runtime_commit::restore_execution_store_active_snapshot(
+                            &self.execution_store,
+                            execution_store_snapshot_before,
+                        )
+                        .await
+                    }
+                };
+                let reason = match refresh_result {
+                    Ok(()) => e,
+                    Err(error) => format!("{e}; canonical state refresh failed: {error}"),
+                };
+                return Err(WorkflowRuntimeError::SessionStore(format!(
+                    "{append_error_context}: {reason}"
+                )));
             }
         };
 
@@ -2674,6 +2610,272 @@ mod workflow_host_tests {
                 assert_eq!(replayed.artifact.as_ref().unwrap()["exit_code"], exit_code);
                 assert_eq!(*folded.aggregate.state(), RuntimeExecutionState::Completed);
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_command完了_追記結果不明でもdurableな完了へliveとactiveを収束する() {
+        // Given
+        for durable in [false, true] {
+            let fixture = test_helpers::Fixture::new(0);
+            let started = fixture
+                .persist_started("  main: {command: 'true'}\n", "/repo")
+                .await;
+            let execution_id = &started.execution_id;
+            let node = &started.node_executions[0];
+            let workflow = {
+                let mut executions = fixture.host.executions.lock().await;
+                executions
+                    .remove(execution_id)
+                    .unwrap()
+                    .workflow
+                    .clone()
+                    .unwrap()
+            };
+            fixture
+                .host
+                .register_started_execution_tree(&fixture.app, execution_id)
+                .await
+                .unwrap();
+            let input = CommandExecutionInput {
+                execution_id: execution_id.clone(),
+                node_execution_id: node.id.clone(),
+                node_name: node.node_name.clone(),
+                attempt: node.attempt,
+                worktree_path: "/repo".into(),
+                raw_command: Some("true".into()),
+                definition_env: Vec::new(),
+                contract: None,
+                schemas: Default::default(),
+                session_id: None,
+            };
+            if durable {
+                fixture.store.fault_injector().arm_drop_reply();
+            } else {
+                fixture.store.close_write_queue_for_tests();
+            }
+
+            // When
+            let result = fixture
+                .host
+                .commit_command_output(
+                    &fixture.app,
+                    input.clone(),
+                    CommandRunOutput {
+                        exit_code: 0,
+                        stdout: "done".into(),
+                        stderr: String::new(),
+                        duration_ms: 1,
+                    },
+                )
+                .await;
+
+            // Then
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("outcome is unknown"));
+            let records =
+                workflow_fact_log::read_tree_records(&fixture.store, execution_id).unwrap();
+            assert_eq!(
+                records
+                    .iter()
+                    .filter(|record| matches!(record.fact, NodeFact::ExecutionCompleted))
+                    .count(),
+                usize::from(durable)
+            );
+            let expected_state = if durable {
+                RuntimeExecutionState::Completed
+            } else {
+                RuntimeExecutionState::Running
+            };
+            let current = fixture
+                .host
+                .get_state_by_execution_id(execution_id)
+                .await
+                .unwrap();
+            assert_eq!(current.state, expected_state);
+            let folded = workflow_fact_log::fold_tree_from(
+                &workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone()),
+                execution_id,
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(folded.aggregate.state(), &expected_state);
+            assert_eq!(
+                fixture
+                    .host
+                    .execution_store
+                    .active_execution_snapshot(execution_id)
+                    .await
+                    .is_none(),
+                durable
+            );
+            if durable {
+                assert!(!fixture.host.command_execution_still_current(&input).await);
+                fixture
+                    .host
+                    .commit_command_output(
+                        &fixture.app,
+                        input,
+                        CommandRunOutput {
+                            exit_code: 0,
+                            stdout: "duplicate".into(),
+                            stderr: String::new(),
+                            duration_ms: 1,
+                        },
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    workflow_fact_log::read_tree_records(&fixture.store, execution_id).unwrap(),
+                    records
+                );
+                fixture
+                    .host
+                    .reserve_workflow_execution(
+                        &workflow,
+                        "/repo",
+                        None,
+                        ExecutionOrigin::Cli,
+                        current_timestamp(),
+                    )
+                    .await
+                    .unwrap();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_承認完了_追記結果不明でもcanonicalな状態へliveとactiveを収束する() {
+        // Given
+        for durable in [false, true] {
+            let fixture = test_helpers::Fixture::new(0);
+            let started = fixture
+                .persist_started(
+                    "  main:\n    session: {provider: claude}\n    completion: {require: approval}\n",
+                    "/repo",
+                )
+                .await;
+            let execution_id = &started.execution_id;
+            let node = &started.node_executions[0];
+            let timestamp = current_timestamp();
+            fixture
+                .host
+                .write_log_required_batch(
+                    &fixture.app,
+                    &[
+                        WorkflowEvent::NodeSubmitReceived {
+                            execution_id: execution_id.clone(),
+                            node_execution_id: node.id.clone(),
+                            timestamp,
+                        },
+                        WorkflowEvent::NodeStopReceived {
+                            execution_id: execution_id.clone(),
+                            node_execution_id: node.id.clone(),
+                            timestamp,
+                        },
+                    ],
+                )
+                .unwrap();
+            fixture.host.executions.lock().await.remove(execution_id);
+            fixture
+                .host
+                .register_started_execution_tree(&fixture.app, execution_id)
+                .await
+                .unwrap();
+            let before = fixture
+                .host
+                .get_state_by_execution_id(execution_id)
+                .await
+                .unwrap();
+            assert_eq!(before.state, RuntimeExecutionState::Running);
+            assert_eq!(
+                before.node_executions[0].status,
+                NodeExecutionStatus::WaitingApproval
+            );
+            assert!(fixture
+                .host
+                .execution_store
+                .active_execution_snapshot(execution_id)
+                .await
+                .is_some());
+            let gateway = Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(
+                fixture.app.clone(),
+                Arc::new(fixture.host.clone()),
+            ));
+            if durable {
+                fixture.store.fault_injector().arm_drop_reply();
+            } else {
+                fixture.store.close_write_queue_for_tests();
+            }
+
+            // When
+            let result = WorkflowControlPlaneUsecase::new(gateway)
+                .resolve_approval(ApprovalCommand {
+                    execution_id: execution_id.clone(),
+                    node_name: node.node_name.clone(),
+                    node_execution_id: Some(node.id.clone()),
+                    comment: None,
+                })
+                .await;
+
+            // Then
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("outcome is unknown"));
+            let records =
+                workflow_fact_log::read_tree_records(&fixture.store, execution_id).unwrap();
+            assert_eq!(
+                records
+                    .iter()
+                    .filter(|record| matches!(record.fact, NodeFact::ApprovalGranted(_)))
+                    .count(),
+                usize::from(durable)
+            );
+            assert_eq!(
+                records
+                    .iter()
+                    .filter(|record| matches!(record.fact, NodeFact::ExecutionCompleted))
+                    .count(),
+                usize::from(durable)
+            );
+            let expected_state = if durable {
+                RuntimeExecutionState::Completed
+            } else {
+                RuntimeExecutionState::Running
+            };
+            let current = fixture
+                .host
+                .get_state_by_execution_id(execution_id)
+                .await
+                .unwrap();
+            assert_eq!(current.state, expected_state);
+            assert_eq!(
+                current.node_executions[0].status,
+                if durable {
+                    NodeExecutionStatus::Succeeded
+                } else {
+                    NodeExecutionStatus::WaitingApproval
+                }
+            );
+            let folded = workflow_fact_log::fold_tree_from(
+                &workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone()),
+                execution_id,
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(folded.aggregate.state(), &expected_state);
+            assert_eq!(
+                fixture
+                    .host
+                    .execution_store
+                    .active_execution_snapshot(execution_id)
+                    .await
+                    .is_none(),
+                durable
+            );
         }
     }
 
@@ -3447,7 +3649,12 @@ nodes:
                 app.clone(),
                 host.clone(),
             ));
-            let control_plane = WorkflowControlPlaneUsecase::new(gateway);
+            let control_plane = WorkflowControlPlaneUsecase::new(gateway).with_startup(
+                crate::adaptor::controller::wiring::wire_workflow_startup(
+                    app.clone(),
+                    host.clone(),
+                ),
+            );
             RuntimeEffectFixture {
                 app,
                 store,
@@ -3542,7 +3749,12 @@ nodes:
                 app.clone(),
                 host.clone(),
             ));
-            let control_plane = WorkflowControlPlaneUsecase::new(gateway);
+            let control_plane = WorkflowControlPlaneUsecase::new(gateway).with_startup(
+                crate::adaptor::controller::wiring::wire_workflow_startup(
+                    app.clone(),
+                    host.clone(),
+                ),
+            );
             SequentialRuntimeEffectFixture {
                 _app: app,
                 host,
@@ -3736,7 +3948,9 @@ nodes:
                 .await
                 .unwrap();
 
-            fixture.host.reconcile_startup(&fixture.app).await.unwrap();
+            test_helpers::reconcile_startup(&fixture.host, &fixture.app)
+                .await
+                .unwrap();
 
             let records = workflow_fact_log::read_tree_records(&fixture.store, session_id).unwrap();
             assert!(!records
@@ -3808,7 +4022,9 @@ nodes:
                 Arc::new(FailingWorkflowAgentSessions),
                 Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
             );
-            restarted.reconcile_startup(&fixture.app).await.unwrap();
+            test_helpers::reconcile_startup(&restarted, &fixture.app)
+                .await
+                .unwrap();
 
             let restarted_fold = workflow_fact_log::fold_tree_from(&backend, session_id)
                 .unwrap()
@@ -3874,7 +4090,9 @@ nodes:
                 .release_started_execution_tree_reservation(session_id)
                 .await
                 .unwrap();
-            fixture.host.reconcile_startup(&fixture.app).await.unwrap();
+            test_helpers::reconcile_startup(&fixture.host, &fixture.app)
+                .await
+                .unwrap();
 
             let records = workflow_fact_log::read_tree_records(&fixture.store, session_id).unwrap();
             assert!(records
@@ -4603,7 +4821,7 @@ nodes:
                 Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
             );
 
-            host.reconcile_startup(&app).await.unwrap();
+            test_helpers::reconcile_startup(&host, &app).await.unwrap();
 
             let snapshot = host.get_state_by_execution_id(session_id).await.unwrap();
             let node = snapshot
@@ -4679,15 +4897,16 @@ nodes:
                 store,
                 &root_meta,
                 &NodeFact::Started(StartedFact {
+                    worktree: None,
                     parent: None,
                     root: Some(Box::new(TreeRootFact {
                         repository_root: None,
-                        definition_resolution: Default::default(),
                         workspace_identity: worktree_path.to_string(),
                         worktree_path: worktree_path.to_string(),
                         created_from: ExecutionOrigin::DesktopUi,
                         request: String::new(),
-                        definition,
+                        workflow_name: definition.name.clone(),
+                        definition: Some(definition),
                         launched_as: ExecutionTreeLaunch::Workflow,
                     })),
                 }),
@@ -4706,6 +4925,7 @@ nodes:
                 store,
                 &child_meta,
                 &NodeFact::Started(StartedFact {
+                    worktree: None,
                     parent: Some(ExecutionParentRef::sequence_child(tree_id)),
                     root: None,
                 }),
@@ -4758,7 +4978,9 @@ nodes:
                 Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
             );
 
-            let error = host.reconcile_startup(&app).await.unwrap_err();
+            let error = test_helpers::reconcile_startup(&host, &app)
+                .await
+                .unwrap_err();
 
             assert!(matches!(error, WorkflowRuntimeError::SessionStore(_)));
             assert!(host
@@ -4775,8 +4997,7 @@ nodes:
         }
 
         #[tokio::test]
-        async fn test_startup_reconciliation_未対応permissionはnode単位で制限し木の読み取りを継続する(
-        ) {
+        async fn test_startup_reconciliation_未対応permissionは理由付きabortを記録する() {
             const TREE_ID: &str = "00000000-0000-4000-8000-000000000004";
             let directory = tempfile::tempdir().unwrap();
             let store = LocalEventStore::open(LocalEventStoreConfig::production(
@@ -4793,16 +5014,19 @@ nodes:
             .unwrap()
             .started;
             let NodeFact::Started(StartedFact {
-                root: Some(root), ..
+                worktree: None,
+                root: Some(root),
+                ..
             }) = &mut fact
             else {
                 unreachable!();
             };
-            let NodeKind::Session(spec) = &mut root.definition.nodes[0].kind else {
+            let NodeKind::Session(spec) = &mut root.definition.as_mut().unwrap().nodes[0].kind
+            else {
                 unreachable!();
             };
             spec.permission = Some(SessionPermission::Auto);
-            let legacy_detail = fact.encode_detail().unwrap().replace(
+            let legacy_detail = fact_codec::encode_detail(&fact).unwrap().replace(
                 r#""permission":"auto""#,
                 r#""permission":"bypassPermissions""#,
             );
@@ -4823,22 +5047,9 @@ nodes:
                 )
                 .unwrap();
 
-            let records = workflow_fact_log::read_tree_records(&store, TREE_ID).unwrap();
-            let folded = crate::domain::workflow::services::fact_replay::fold_execution_tree(
-                TREE_ID, &records,
-            )
-            .unwrap()
-            .unwrap();
-            let node = folded.aggregate.node_execution(TREE_ID).unwrap();
-            assert_eq!(node.status, crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecutionStatus::Unresolved);
-            assert!(node
-                .recovery_reason
-                .as_ref()
-                .unwrap()
-                .contains("bypassPermissions"));
-            assert!(!node.can_retry(crate::domain::workflow::NodeProcessPresence::ConfirmedAbsent));
+            assert!(workflow_fact_log::read_tree_records(&store, TREE_ID).is_err());
 
-            let app = test_helpers::dependencies(Some(store));
+            let app = test_helpers::dependencies(Some(store.clone()));
             let host = WorkflowRuntimeHost::with_execution_store(
                 Arc::new(UnusedWorkflowResolver),
                 Arc::new(UnusedWorktreeResolver),
@@ -4847,7 +5058,37 @@ nodes:
                 Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
             );
 
-            host.reconcile_startup(&app).await.unwrap();
+            test_helpers::reconcile_startup(&host, &app).await.unwrap();
+            let folded = workflow_fact_log::fold_tree_from(
+                &workflow_fact_log::FactLogReadBackend::Live(store.clone()),
+                TREE_ID,
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(
+                folded.aggregate.state(),
+                &crate::domain::workflow::RuntimeExecutionState::Aborted
+            );
+            assert!(folded
+                .aggregate
+                .error_reason
+                .as_ref()
+                .unwrap()
+                .contains("bypassPermissions"));
+            assert_eq!(
+                folded.aggregate.node_execution(TREE_ID).unwrap().status,
+                crate::domain::workflow::NodeExecutionStatus::Aborted
+            );
+            let count = workflow_fact_log::read_tree_records(&store, TREE_ID)
+                .unwrap()
+                .len();
+            test_helpers::reconcile_startup(&host, &app).await.unwrap();
+            assert_eq!(
+                workflow_fact_log::read_tree_records(&store, TREE_ID)
+                    .unwrap()
+                    .len(),
+                count
+            );
         }
     }
 }

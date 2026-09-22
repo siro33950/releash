@@ -174,6 +174,27 @@ pub(crate) fn latest_row_for_node_with_event_types(
     rows.next().transpose()
 }
 
+pub(crate) fn first_row_for_tree_with_event_types(
+    connection: &Connection,
+    tree_id: &str,
+    event_types: &[&str],
+) -> Result<Option<NodeEventRow>, rusqlite::Error> {
+    let mut statement = connection.prepare(&format!(
+        "SELECT {ROW_COLUMNS} FROM node_events
+         WHERE event_type = ?1 AND tree_id = ?2 ORDER BY seq LIMIT 1"
+    ))?;
+    let mut first: Option<NodeEventRow> = None;
+    for event_type in event_types {
+        let mut rows = statement.query_map([*event_type, tree_id], row_from_sql)?;
+        if let Some(row) = rows.next().transpose()? {
+            if first.as_ref().is_none_or(|first| row.seq < first.seq) {
+                first = Some(row);
+            }
+        }
+    }
+    Ok(first)
+}
+
 pub(crate) fn rows_for_event_types(
     connection: &Connection,
     event_types: &[&str],

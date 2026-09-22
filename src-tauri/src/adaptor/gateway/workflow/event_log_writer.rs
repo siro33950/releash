@@ -15,8 +15,7 @@ fn managed_store(
 
 /// engine の必須 event 列を統一 Node 事実ログ（node_events）へ追記する。
 ///
-/// 原子性依存は行単位の append のみ（純粋事実ログの規約）。導出表・遷移 event の
-/// 永続化は存在しない。
+/// 実行木の完了を含む列は原子的に保存する。
 pub(crate) fn append_required_events_for_app(
     app: &super::workflow_host::WorkflowRuntimeDependencies,
     events: &[WorkflowEvent],

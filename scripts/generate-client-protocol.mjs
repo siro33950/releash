@@ -13,7 +13,7 @@ try {
   const option = (desc, name) => getOption(desc, registry.getExtension(`releash.client.v1.${name}`));
   const types = new Map();
   const fieldType = (field, input = false) => {
-    let type = field.message ? messageType(field.message, input) : field.enum ? field.enum.values.map(value => JSON.stringify(option(value, "json_enum_name"))).join(" | ") : field.scalar === ScalarType.BOOL ? "boolean" : field.scalar === ScalarType.STRING ? "string" : "number";
+    let type = field.message ? messageType(field.message, input) : field.enum ? field.enum.values.filter(value => option(value, "json_enum_name")).map(value => JSON.stringify(option(value, "json_enum_name"))).join(" | ") : field.scalar === ScalarType.BOOL ? "boolean" : field.scalar === ScalarType.STRING ? "string" : "number";
     if (option(field, "json_literal")) type = option(field, "json_literal");
     if (field.fieldKind === "list") type = `Array<${type}>`;
     if (field.fieldKind === "map") type = `{ [key: string]: ${type} }`;

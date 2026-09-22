@@ -407,16 +407,16 @@ pub(crate) fn build_workflow_runtime_usecase(
             })?,
         ),
     ));
+    let driver = Arc::new(driver);
+    let startup = wire_workflow_startup(app.clone(), driver.clone());
     Ok(WorkflowRuntimeUsecase::new_with_worktree_operations(
-        Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(
-            app,
-            Arc::new(driver),
-        )),
+        Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(app, driver)),
         archives,
         Arc::new(crate::usecase::worktree_operation::WorktreeOperations::new(Arc::new(
             crate::adaptor::gateway::repository::worktree_operation::FileWorktreeOperationLocks::new(app_data_dir),
         ))),
-    ))
+    )
+    .with_startup(startup))
 }
 
 pub(crate) fn wire_delegate_continuation(
@@ -432,6 +432,22 @@ pub(crate) fn wire_delegate_continuation(
         }),
     }));
     host
+}
+
+pub(crate) fn wire_workflow_startup(
+    app: crate::adaptor::gateway::workflow::workflow_host::WorkflowRuntimeDependencies,
+    host: Arc<crate::adaptor::gateway::workflow::workflow_host::WorkflowRuntimeHost>,
+) -> Option<Arc<crate::usecase::workflow::startup::WorkflowStartupUsecase>> {
+    use crate::adaptor::gateway::workflow::startup_repository::{
+        HostWorkflowStartup, StoredWorkflowStartupRepository,
+    };
+    use crate::usecase::workflow::startup::WorkflowStartupUsecase;
+
+    let store = app.store.clone()?;
+    Some(Arc::new(WorkflowStartupUsecase::new(
+        Arc::new(StoredWorkflowStartupRepository(store)),
+        Arc::new(HostWorkflowStartup { host, app }),
+    )))
 }
 
 /// Runs issue #1372 maintenance only after the fixed SQLite authority is

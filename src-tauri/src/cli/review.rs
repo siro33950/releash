@@ -1559,13 +1559,15 @@ mod tests {
         )
         .unwrap();
         let NodeFact::Started(StartedFact {
-            root: Some(root), ..
+            worktree: None,
+            root: Some(root),
+            ..
         }) = &mut facts.started
         else {
             unreachable!();
         };
         root.repository_root = Some("/repo".into());
-        root.definition.nodes[0].worktree = Some(WorktreeMode::Isolated);
+        root.definition.as_mut().unwrap().nodes[0].worktree = Some(WorktreeMode::Isolated);
         for (meta, fact) in facts.into_facts() {
             fact_log::append_single_fact(&store, &meta, &fact, 1).unwrap();
         }

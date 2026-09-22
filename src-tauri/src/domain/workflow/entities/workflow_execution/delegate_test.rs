@@ -445,6 +445,8 @@ fn test_delegate_inputsは親の最新提出と前回childとrequestから起動
     let node = execution
         .runtime
         .workflow
+        .as_mut()
+        .unwrap()
         .nodes
         .iter_mut()
         .find(|node| node.name == "main")
@@ -460,6 +462,8 @@ fn test_delegate_inputsは親の最新提出と前回childとrequestから起動
     execution
         .runtime
         .workflow
+        .as_mut()
+        .unwrap()
         .nodes
         .iter_mut()
         .find(|node| node.name == "verify")

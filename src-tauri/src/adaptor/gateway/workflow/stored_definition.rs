@@ -1,11 +1,10 @@
-use std::collections::BTreeMap;
-
+use crate::adaptor::gateway::workflow::fact_codec;
 use serde::Deserialize;
 use serde_json::Value;
 
 use crate::domain::workflow::{
-    DefinitionResolution, ExecutionOrigin, ExecutionParentRef, ExecutionTreeLaunch, NodeFact,
-    StartedFact, TreeRootFact, WorkflowDefinition,
+    ExecutionOrigin, ExecutionParentRef, ExecutionTreeLaunch, NodeFact, StartedFact, TreeRootFact,
+    WorkflowDefinition,
 };
 
 #[derive(Debug, Deserialize)]
@@ -48,6 +47,7 @@ pub(crate) fn read_tree_context(detail: &str) -> Result<Option<TreeRootContext>,
 
 #[derive(Deserialize)]
 struct StartedRecord {
+    worktree: Option<crate::domain::workflow::IsolatedWorktree>,
     parent: Option<ExecutionParentRef>,
     root: Option<RootRecord>,
 }
@@ -61,125 +61,61 @@ struct RootRecord {
     worktree_path: String,
     created_from: String,
     request: String,
+    #[serde(default)]
+    workflow_name: String,
     definition: Box<serde_json::value::RawValue>,
     launched_as: ExecutionTreeLaunch,
 }
 
-#[derive(Deserialize)]
-struct DefinitionRecord {
-    name: String,
-    description: String,
-    #[serde(default)]
-    builtin: bool,
-    #[serde(default)]
-    schemas: BTreeMap<String, Value>,
-    nodes: BTreeMap<String, Box<serde_json::value::RawValue>>,
-    entry: String,
-    #[serde(flatten)]
-    extra: BTreeMap<String, Value>,
+pub(crate) fn decode_started(detail: &str) -> Result<NodeFact, String> {
+    fact_codec::decode("started", detail).map_err(|error| error.to_string())
 }
 
-pub(crate) fn decode_started(detail: &str) -> Result<NodeFact, String> {
+pub(crate) fn definition_error(detail: &str) -> Result<Option<String>, String> {
+    let record: StartedRecord = serde_json::from_str(detail).map_err(|error| error.to_string())?;
+    record
+        .root
+        .map(|root| {
+            ExecutionOrigin::from_public_value(&root.created_from)
+                .map_err(|error| error.to_string())?;
+            #[derive(Deserialize)]
+            struct Snapshot {
+                #[serde(rename = "entry")]
+                _entry: String,
+                #[serde(flatten)]
+                _definition: WorkflowDefinition,
+            }
+            Ok(serde_json::from_str::<Snapshot>(root.definition.get())
+                .err()
+                .map(|error| format!("Workflow definition is unavailable: {error}")))
+        })
+        .transpose()
+        .map(Option::flatten)
+}
+
+pub(crate) fn decode_terminal_started(detail: &str) -> Result<NodeFact, String> {
     let record: StartedRecord = serde_json::from_str(detail).map_err(|error| error.to_string())?;
     let root = record
         .root
         .map(|root| {
-            let (definition, definition_resolution) = read_definition(&root.definition);
-            Ok::<_, String>(TreeRootFact {
+            Ok::<_, String>(Box::new(TreeRootFact {
                 repository_root: root.repository_root,
                 workspace_identity: root.workspace_identity,
                 worktree_path: root.worktree_path,
                 created_from: ExecutionOrigin::from_public_value(&root.created_from)
                     .map_err(|error| error.to_string())?,
                 request: root.request,
-                definition,
-                definition_resolution: Box::new(definition_resolution),
+                workflow_name: root.workflow_name,
+                definition: None,
                 launched_as: root.launched_as,
-            })
+            }))
         })
         .transpose()?;
     Ok(NodeFact::Started(StartedFact {
+        worktree: record.worktree,
         parent: record.parent,
-        root: root.map(Box::new),
+        root,
     }))
-}
-
-fn read_definition(
-    value: &serde_json::value::RawValue,
-) -> (WorkflowDefinition, DefinitionResolution) {
-    let record = match serde_json::from_str::<DefinitionRecord>(value.get()) {
-        Ok(record) => record,
-        Err(error) => {
-            return (
-                WorkflowDefinition::default(),
-                DefinitionResolution {
-                    definition_error: Some(format!("Workflow definition is unavailable: {error}")),
-                    ..DefinitionResolution::default()
-                },
-            )
-        }
-    };
-    let mut definition = WorkflowDefinition {
-        name: record.name,
-        description: record.description,
-        builtin: record.builtin,
-        entry: record.entry,
-        ..WorkflowDefinition::default()
-    };
-    let mut resolution = DefinitionResolution::default();
-    if !record.extra.is_empty() {
-        resolution.definition_error = Some(format!(
-            "Workflow definition has unsupported fields: {}",
-            record.extra.keys().cloned().collect::<Vec<_>>().join(", ")
-        ));
-    }
-    for (name, value) in record.schemas {
-        match serde_json::from_value(value) {
-            Ok(schema) => {
-                definition.schemas.insert(name, schema);
-            }
-            Err(error) => {
-                resolution.schema_errors.insert(name, error.to_string());
-            }
-        }
-    }
-    for (name, value) in record.nodes {
-        #[derive(serde::Serialize)]
-        struct SingleNode<'a> {
-            name: &'static str,
-            description: &'static str,
-            nodes: BTreeMap<&'a str, &'a serde_json::value::RawValue>,
-        }
-        let single_node = SingleNode {
-            name: "",
-            description: "",
-            nodes: BTreeMap::from([(name.as_str(), value.as_ref())]),
-        };
-        let parsed = serde_json::to_string(&single_node)
-            .and_then(|source| serde_json::from_str::<WorkflowDefinition>(&source));
-        match parsed {
-            Ok(node_definition) => definition.nodes.extend(node_definition.nodes),
-            Err(error) => {
-                let dynamic_fanout = serde_json::from_str::<Value>(value.get())
-                    .ok()
-                    .and_then(|value| value.get("fanout")?.get("items").cloned())
-                    .and_then(|items| {
-                        serde_json::from_value::<crate::domain::workflow::ItemsSource>(items).ok()
-                    })
-                    .is_some_and(|items| {
-                        matches!(
-                            items,
-                            crate::domain::workflow::ItemsSource::ArtifactField { .. }
-                        )
-                    });
-                if dynamic_fanout {
-                    resolution.dynamic_fanout_names.insert(name.clone());
-                }
-                resolution.node_errors.insert(name, error.to_string());
-            }
-        }
-    }
-    (definition, resolution)
 }
 
 #[cfg(test)]

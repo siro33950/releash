@@ -98,7 +98,6 @@ pub struct FanoutSlot {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeExecutionStatus {
-    Unresolved,
     Running,
     WaitingApproval,
     Succeeded,
@@ -121,7 +120,6 @@ impl NodeExecutionStatus {
     #[cfg(test)]
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Unresolved => "unresolved",
             Self::Running => "running",
             Self::WaitingApproval => "waiting_approval",
             Self::Succeeded => "succeeded",
@@ -130,10 +128,7 @@ impl NodeExecutionStatus {
     }
 
     pub fn is_active(self) -> bool {
-        matches!(
-            self,
-            Self::Running | Self::WaitingApproval | Self::Unresolved
-        )
+        matches!(self, Self::Running | Self::WaitingApproval)
     }
 }
 
@@ -141,7 +136,6 @@ impl NodeExecutionStatus {
 #[derive(Debug, Clone, PartialEq)]
 pub struct NodeExecution {
     pub worktree: Option<crate::domain::workflow::IsolatedWorktree>,
-    pub recovery_reason: Option<String>,
     pub id: String,
     pub execution_id: String,
     pub node_name: String,
@@ -180,14 +174,12 @@ impl NodeProcessPresence {
 
 impl NodeExecution {
     pub fn can_retry(&self) -> bool {
-        self.recovery_reason.is_none() && self.status.can_retry(self.kind, self.process_presence)
+        self.status.can_retry(self.kind, self.process_presence)
     }
 
     pub fn can_resume_session(&self) -> bool {
-        self.recovery_reason.is_none()
-            && self
-                .status
-                .can_resume_session(self.kind, self.process_presence)
+        self.status
+            .can_resume_session(self.kind, self.process_presence)
     }
 
     pub fn is_fanout_child(&self) -> bool {
@@ -247,7 +239,6 @@ mod tests {
         for (status, retry_command, resume_session) in [
             (S::Running, true, true),
             (S::WaitingApproval, false, true),
-            (S::Unresolved, false, false),
             (S::Succeeded, false, false),
             (S::Aborted, false, false),
         ] {

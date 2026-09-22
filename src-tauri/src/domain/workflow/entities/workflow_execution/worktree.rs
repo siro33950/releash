@@ -14,9 +14,7 @@ impl ExecutionTree {
                 ancestors.map(|node| {
                     (
                         crate::domain::workflow::WorktreeInheritance::new(
-                            self.runtime
-                                .workflow
-                                .node_by_name(&node.node_name)
+                            self.node_definition(&node.node_name)
                                 .and_then(|definition| definition.worktree),
                         ),
                         node.worktree.as_ref(),

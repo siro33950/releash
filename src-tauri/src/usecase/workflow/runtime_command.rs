@@ -70,6 +70,14 @@ impl WorkflowRuntimeUsecase {
         }
     }
 
+    pub(crate) fn with_startup(
+        mut self,
+        startup: Option<Arc<super::startup::WorkflowStartupUsecase>>,
+    ) -> Self {
+        self.control_plane = self.control_plane.with_startup(startup);
+        self
+    }
+
     pub async fn start_execution(
         &self,
         command: StartExecutionCommand,
@@ -79,7 +87,7 @@ impl WorkflowRuntimeUsecase {
     }
 
     pub async fn recover_startup(&self) -> Result<(), WorkflowError> {
-        self.runtime.recover_startup().await
+        self.control_plane.recover_startup().await
     }
 
     pub async fn abort_execution(
@@ -336,6 +344,7 @@ mod tests {
     #[derive(Default)]
     struct FakeRuntimeGateway {
         calls: Mutex<Vec<&'static str>>,
+        fail_startup: bool,
     }
 
     #[async_trait::async_trait]
@@ -433,15 +442,8 @@ mod tests {
             Option<crate::domain::workflow::entities::workflow_execution::ExecutionTree>,
             WorkflowError,
         > {
-            Err(WorkflowError::external(
-                "control plane is not used by this test",
-            ))
-        }
-
-        async fn recover_active_executions(&self) -> Result<(), WorkflowError> {
-            Err(WorkflowError::external(
-                "control plane is not used by this test",
-            ))
+            self.calls.lock().unwrap().push("load_active");
+            Ok(None)
         }
 
         async fn register_started_execution_tree(
@@ -497,11 +499,6 @@ mod tests {
 
     #[async_trait::async_trait]
     impl WorkflowRuntimeStateGateway for FakeRuntimeGateway {
-        async fn recover_startup(&self) -> Result<(), WorkflowError> {
-            self.calls.lock().unwrap().push("recover_startup");
-            Ok(())
-        }
-
         async fn get_state_by_execution_id(
             &self,
             _execution_id: &str,
@@ -516,6 +513,134 @@ mod tests {
         async fn shutdown_active_commands(&self) {
             self.calls.lock().unwrap().push("shutdown_active_commands");
         }
+    }
+
+    impl crate::domain::workflow::repository::WorkflowStartupRepository for FakeRuntimeGateway {
+        fn list_tree_ids(&self) -> Result<Vec<String>, WorkflowError> {
+            self.calls.lock().unwrap().push("startup_list");
+            if self.fail_startup {
+                Err(WorkflowError::external("startup read failed"))
+            } else {
+                Ok(Vec::new())
+            }
+        }
+
+        fn load(
+            &self,
+            _tree_id: &str,
+        ) -> Result<Option<crate::domain::workflow::repository::WorkflowStartupRecord>, WorkflowError>
+        {
+            unreachable!("empty startup inventory")
+        }
+
+        fn append(
+            &self,
+            _root: &crate::domain::workflow::NodeFactMeta,
+            _fact: &crate::domain::workflow::NodeFact,
+            _timestamp: f64,
+        ) -> Result<(), WorkflowError> {
+            unreachable!("empty startup inventory")
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl super::super::startup::WorkflowStartupGateway for FakeRuntimeGateway {
+        fn current_timestamp(&self) -> f64 {
+            100.0
+        }
+        async fn is_registered_or_reserved(&self, _tree_id: &str) -> bool {
+            unreachable!("empty startup inventory")
+        }
+        async fn reconcile_tree(
+            &self,
+            _tree_id: &str,
+            _timestamp: f64,
+        ) -> Result<(), WorkflowError> {
+            unreachable!("empty startup inventory")
+        }
+    }
+
+    fn runtime_with_startup(gateway: Arc<FakeRuntimeGateway>) -> WorkflowRuntimeUsecase {
+        WorkflowRuntimeUsecase::new(
+            gateway.clone(),
+            Arc::new(crate::usecase::workflow::NoopArchiveRepository),
+        )
+        .with_startup(Some(Arc::new(
+            super::super::startup::WorkflowStartupUsecase::new(gateway.clone(), gateway),
+        )))
+    }
+
+    #[tokio::test]
+    async fn test_起動時復旧_構築時には実行せずusecaseの入口から直接呼び出す() {
+        // Given
+        let gateway = Arc::new(FakeRuntimeGateway::default());
+        let usecase = runtime_with_startup(gateway.clone());
+        assert!(gateway.calls.lock().unwrap().is_empty());
+        // When
+        usecase.recover_startup().await.unwrap();
+        // Then
+        assert_eq!(*gateway.calls.lock().unwrap(), ["startup_list"]);
+    }
+
+    #[tokio::test]
+    async fn test_起動時復旧_通常起動とstop受理で同じusecaseのエラーを伝播する() {
+        for fail_startup in [false, true] {
+            // Given
+            let gateway = Arc::new(FakeRuntimeGateway {
+                fail_startup,
+                ..Default::default()
+            });
+            let usecase = runtime_with_startup(gateway.clone());
+            // When
+            let startup = usecase.recover_startup().await;
+            let stop = usecase
+                .record_provider_stop(
+                    crate::usecase::provider_lifecycle::ProviderExecutionTreeStopCommand {
+                        tree_id: "tree".into(),
+                        node_execution_id: "node".into(),
+                        agent_session_id: "session".into(),
+                        binding_id: "binding".into(),
+                    },
+                    Vec::new(),
+                )
+                .await;
+            // Then
+            if fail_startup {
+                assert!(startup
+                    .unwrap_err()
+                    .to_string()
+                    .contains("startup read failed"));
+                assert!(stop
+                    .unwrap_err()
+                    .to_string()
+                    .contains("startup read failed"));
+                assert_eq!(
+                    *gateway.calls.lock().unwrap(),
+                    ["startup_list", "load_active", "startup_list"]
+                );
+            } else {
+                startup.unwrap();
+                stop.unwrap();
+                assert_eq!(
+                    *gateway.calls.lock().unwrap(),
+                    ["startup_list", "load_active", "startup_list", "load_active"]
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_起動時復旧_永続ストアのない構成は処理を呼ばない() {
+        // Given
+        let gateway = Arc::new(FakeRuntimeGateway::default());
+        let usecase = WorkflowRuntimeUsecase::new(
+            gateway.clone(),
+            Arc::new(crate::usecase::workflow::NoopArchiveRepository),
+        );
+        // When
+        usecase.recover_startup().await.unwrap();
+        // Then
+        assert!(gateway.calls.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

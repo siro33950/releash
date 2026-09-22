@@ -27,7 +27,7 @@ pub struct DelegateInjection {
 impl ExecutionTree {
     pub fn is_delegate_parent(&self, id: &str) -> bool {
         self.node_execution(id)
-            .and_then(|execution| self.workflow.node_by_name(&execution.node_name))
+            .and_then(|execution| self.node_definition(&execution.node_name))
             .is_some_and(|node| node.completion.delegate.is_some())
     }
 
@@ -46,8 +46,7 @@ impl ExecutionTree {
             return false;
         };
         let Some(delegate) = self
-            .workflow
-            .node_by_name(&execution.node_name)
+            .node_definition(&execution.node_name)
             .and_then(|node| node.completion.delegate.as_ref())
         else {
             return false;
@@ -94,8 +93,7 @@ impl ExecutionTree {
         let last_child = state.last_child.clone();
         let node = self.node_execution(id)?;
         let max = self
-            .workflow
-            .node_by_name(&node.node_name)?
+            .node_definition(&node.node_name)?
             .completion
             .delegate
             .as_ref()?
@@ -142,7 +140,7 @@ impl ExecutionTree {
         let Some(parent) = self.node_execution(parent_id) else {
             return Vec::new();
         };
-        let Some(node) = self.workflow.node_by_name(&parent.node_name) else {
+        let Some(node) = self.node_definition(&parent.node_name) else {
             return Vec::new();
         };
         let Some(delegate) = &node.completion.delegate else {

@@ -153,12 +153,6 @@ mod tests {
             ))
         }
 
-        async fn recover_active_executions(&self) -> Result<(), WorkflowError> {
-            Err(WorkflowError::external(
-                "control plane is not used by this test",
-            ))
-        }
-
         async fn register_started_execution_tree(
             &self,
             _tree_id: &str,

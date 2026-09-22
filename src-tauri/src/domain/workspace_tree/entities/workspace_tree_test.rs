@@ -147,7 +147,6 @@ fn status_fact(
             },
             timestamp,
         }),
-        WorkspaceNodeStatus::Unresolved => None,
     }
 }
 
@@ -2180,14 +2179,13 @@ fn test_初回選択_childが完了済みまたは全て非表示なら実行中
 }
 
 #[test]
-fn runtime_failure_observation_preserves_running_approval_terminal_and_unresolved_states() {
+fn runtime_failure_observation_preserves_running_approval_and_terminal_states() {
     let execution_id = "00000000-0000-4000-8000-000000000743";
     for status in [
         WorkspaceNodeStatus::Running,
         WorkspaceNodeStatus::Waiting,
         WorkspaceNodeStatus::Completed,
         WorkspaceNodeStatus::Aborted,
-        WorkspaceNodeStatus::Unresolved,
     ] {
         let mut tree = WorkspaceTree::empty("/repo");
         WorkspaceTreeProjector::project(

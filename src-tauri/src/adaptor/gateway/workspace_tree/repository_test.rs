@@ -138,6 +138,7 @@ fn reported_fanout_events(execution_id: &str, workspace: &str) -> Vec<WorkflowEv
             timestamp: 1.0,
         },
         WorkflowEvent::NodeStarted {
+            worktree: None,
             execution_id: execution_id.to_string(),
             node_execution_id: REPORTED_MAIN_ID.to_string(),
             node_name: "main".to_string(),
@@ -147,6 +148,7 @@ fn reported_fanout_events(execution_id: &str, workspace: &str) -> Vec<WorkflowEv
             timestamp: 2.0,
         },
         WorkflowEvent::NodeStarted {
+            worktree: None,
             execution_id: execution_id.to_string(),
             node_execution_id: REPORTED_REVIEW_ID.to_string(),
             node_name: "review".to_string(),
@@ -156,6 +158,7 @@ fn reported_fanout_events(execution_id: &str, workspace: &str) -> Vec<WorkflowEv
             timestamp: 2.0,
         },
         WorkflowEvent::NodeStarted {
+            worktree: None,
             execution_id: execution_id.to_string(),
             node_execution_id: REPORTED_REVIEW_SCAN_1_ID.to_string(),
             node_name: "review_scan".to_string(),
@@ -165,6 +168,7 @@ fn reported_fanout_events(execution_id: &str, workspace: &str) -> Vec<WorkflowEv
             timestamp: 2.0,
         },
         WorkflowEvent::NodeStarted {
+            worktree: None,
             execution_id: execution_id.to_string(),
             node_execution_id: REPORTED_FANOUT_1_ID.to_string(),
             node_name: "review_fanout".to_string(),
@@ -176,6 +180,7 @@ fn reported_fanout_events(execution_id: &str, workspace: &str) -> Vec<WorkflowEv
             timestamp: 2.0,
         },
         WorkflowEvent::NodeStarted {
+            worktree: None,
             execution_id: execution_id.to_string(),
             node_execution_id: REPORTED_FANOUT_CHILD_1_ID.to_string(),
             node_name: "review_acceptance_opus".to_string(),
@@ -275,6 +280,7 @@ fn reported_fanout_events(execution_id: &str, workspace: &str) -> Vec<WorkflowEv
             timestamp: 6.0,
         },
         WorkflowEvent::NodeStarted {
+            worktree: None,
             execution_id: execution_id.to_string(),
             node_execution_id: REPORTED_FIX_ROUND_ID.to_string(),
             node_name: "fix_round".to_string(),
@@ -284,6 +290,7 @@ fn reported_fanout_events(execution_id: &str, workspace: &str) -> Vec<WorkflowEv
             timestamp: 6.0,
         },
         WorkflowEvent::NodeStarted {
+            worktree: None,
             execution_id: execution_id.to_string(),
             node_execution_id: REPORTED_FIX_STEP_ID.to_string(),
             node_name: "fix_step".to_string(),
@@ -347,6 +354,7 @@ fn reported_fanout_events(execution_id: &str, workspace: &str) -> Vec<WorkflowEv
             timestamp: 9.0,
         },
         WorkflowEvent::NodeStarted {
+            worktree: None,
             execution_id: execution_id.to_string(),
             node_execution_id: REPORTED_REVIEW_SCAN_2_ID.to_string(),
             node_name: "review_scan".to_string(),
@@ -356,6 +364,7 @@ fn reported_fanout_events(execution_id: &str, workspace: &str) -> Vec<WorkflowEv
             timestamp: 9.0,
         },
         WorkflowEvent::NodeStarted {
+            worktree: None,
             execution_id: execution_id.to_string(),
             node_execution_id: REPORTED_FANOUT_2_ID.to_string(),
             node_name: "review_fanout".to_string(),
@@ -367,6 +376,7 @@ fn reported_fanout_events(execution_id: &str, workspace: &str) -> Vec<WorkflowEv
             timestamp: 9.0,
         },
         WorkflowEvent::NodeStarted {
+            worktree: None,
             execution_id: execution_id.to_string(),
             node_execution_id: REPORTED_FANOUT_CHILD_2_ID.to_string(),
             node_name: "review_acceptance_opus".to_string(),
@@ -482,6 +492,7 @@ fn duplicate_session_binding_events(execution_id: &str, workspace: &str) -> Vec<
             timestamp: 1.0,
         },
         WorkflowEvent::NodeStarted {
+            worktree: None,
             execution_id: execution_id.to_string(),
             node_execution_id: format!("{execution_id}-steps"),
             node_name: "steps".to_string(),
@@ -491,6 +502,7 @@ fn duplicate_session_binding_events(execution_id: &str, workspace: &str) -> Vec<
             timestamp: 2.0,
         },
         WorkflowEvent::NodeStarted {
+            worktree: None,
             execution_id: execution_id.to_string(),
             node_execution_id: format!("{execution_id}-plan"),
             node_name: "plan".to_string(),
@@ -508,6 +520,7 @@ fn duplicate_session_binding_events(execution_id: &str, workspace: &str) -> Vec<
             timestamp: 4.0,
         },
         WorkflowEvent::NodeStarted {
+            worktree: None,
             execution_id: execution_id.to_string(),
             node_execution_id: format!("{execution_id}-implement"),
             node_name: "implement".to_string(),
@@ -540,6 +553,7 @@ fn fanout_with_sequence_child_events(execution_id: &str, workspace: &str) -> Vec
             timestamp: 1.0,
         },
         WorkflowEvent::NodeStarted {
+            worktree: None,
             execution_id: execution_id.to_string(),
             node_execution_id: format!("{execution_id}-reviews"),
             node_name: "reviews".to_string(),
@@ -549,6 +563,7 @@ fn fanout_with_sequence_child_events(execution_id: &str, workspace: &str) -> Vec
             timestamp: 2.0,
         },
         WorkflowEvent::NodeStarted {
+            worktree: None,
             execution_id: execution_id.to_string(),
             node_execution_id: format!("{execution_id}-review-sequence"),
             node_name: "review-sequence".to_string(),
@@ -624,6 +639,7 @@ fn dynamic_fanout_with_sequence_child_events(
             timestamp: 1.0,
         },
         WorkflowEvent::NodeStarted {
+            worktree: None,
             execution_id: execution_id.to_string(),
             node_execution_id: format!("{execution_id}-main"),
             node_name: "main".to_string(),
@@ -633,6 +649,7 @@ fn dynamic_fanout_with_sequence_child_events(
             timestamp: 2.0,
         },
         WorkflowEvent::NodeStarted {
+            worktree: None,
             execution_id: execution_id.to_string(),
             node_execution_id: format!("{execution_id}-source"),
             node_name: "source".to_string(),
@@ -663,6 +680,7 @@ fn dynamic_fanout_with_sequence_child_events(
             timestamp: 4.0,
         },
         WorkflowEvent::NodeStarted {
+            worktree: None,
             execution_id: execution_id.to_string(),
             node_execution_id: format!("{execution_id}-reviews"),
             node_name: "reviews".to_string(),
@@ -674,6 +692,7 @@ fn dynamic_fanout_with_sequence_child_events(
             timestamp: 4.0,
         },
         WorkflowEvent::NodeStarted {
+            worktree: None,
             execution_id: execution_id.to_string(),
             node_execution_id: format!("{execution_id}-review-sequence"),
             node_name: "review-sequence".to_string(),
@@ -870,6 +889,7 @@ fn test_ツリー読み出し_command形のsession成果物を含む複数実行
                 timestamp: 1.0,
             },
             WorkflowEvent::NodeStarted {
+                worktree: None,
                 execution_id: execution_id.to_string(),
                 node_execution_id: node_execution_id.clone(),
                 node_name: "report".to_string(),

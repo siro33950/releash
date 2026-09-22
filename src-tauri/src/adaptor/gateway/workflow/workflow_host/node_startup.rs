@@ -255,6 +255,7 @@ impl WorkflowRuntimeHost {
                 timestamp,
             },
             WorkflowEvent::NodeStarted {
+                worktree: restarted.attempt.worktree.clone(),
                 execution_id: execution_id.into(),
                 node_execution_id: restarted.attempt.id,
                 node_name: restarted.attempt.node_name,

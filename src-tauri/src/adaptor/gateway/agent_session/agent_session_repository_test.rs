@@ -1,3 +1,4 @@
+use crate::adaptor::gateway::workflow::fact_codec;
 use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
@@ -85,7 +86,7 @@ fn tree_event_types(store: &Arc<LocalEventStore>, tree_id: &str) -> Vec<&'static
     fact_log::read_tree_records(store, tree_id)
         .unwrap()
         .iter()
-        .map(|record| record.fact.event_type())
+        .map(|record| fact_codec::event_type(&record.fact))
         .collect()
 }
 
@@ -142,6 +143,8 @@ async fn test_agent_session_repository_単独session作成をnode_eventsへ記�
     assert_eq!(root.created_from, ExecutionOrigin::DesktopUi);
     let session = root
         .definition
+        .as_ref()
+        .unwrap()
         .node_by_name("session")
         .and_then(crate::domain::workflow::NodeDefinition::session)
         .unwrap();
@@ -2158,22 +2161,23 @@ async fn test_agent_session_query_service_workflow木のsessionを一覧に出�
         attempt: 1,
     };
     let workflow_root = NodeFact::Started(crate::domain::workflow::StartedFact {
+        worktree: None,
         parent: None,
         root: Some(Box::new(TreeRootFact {
             repository_root: None,
-            definition_resolution: Default::default(),
             workspace_identity: "/repo".to_string(),
             worktree_path: "/repo".to_string(),
             created_from: ExecutionOrigin::DesktopUi,
             request: "please work".to_string(),
-            definition: crate::domain::workflow::WorkflowDefinition {
+            workflow_name: "wf".to_string(),
+            definition: Some(crate::domain::workflow::WorkflowDefinition {
                 name: "wf".to_string(),
                 description: String::new(),
                 builtin: false,
                 schemas: Default::default(),
                 nodes: Vec::new(),
                 entry: "main".to_string(),
-            },
+            }),
             launched_as: ExecutionTreeLaunch::Workflow,
         })),
     });
@@ -2202,15 +2206,16 @@ async fn test_agent_session_repository_workflow子sessionの事実は元nodeのa
         attempt: 3,
     };
     let root = NodeFact::Started(crate::domain::workflow::StartedFact {
+        worktree: None,
         parent: None,
         root: Some(Box::new(TreeRootFact {
             repository_root: None,
-            definition_resolution: Default::default(),
             workspace_identity: "/repo".to_string(),
             worktree_path: "/repo".to_string(),
             created_from: ExecutionOrigin::DesktopUi,
             request: String::new(),
-            definition: crate::domain::workflow::WorkflowDefinition {
+            workflow_name: "workflow".to_string(),
+            definition: Some(crate::domain::workflow::WorkflowDefinition {
                 name: "workflow".to_string(),
                 description: String::new(),
                 builtin: false,
@@ -2228,7 +2233,7 @@ async fn test_agent_session_repository_workflow子sessionの事実は元nodeのa
                     ..Default::default()
                 }],
                 entry: "session".to_string(),
-            },
+            }),
             launched_as: ExecutionTreeLaunch::Workflow,
         })),
     });

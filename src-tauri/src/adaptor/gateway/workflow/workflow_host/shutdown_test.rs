@@ -89,7 +89,9 @@ async fn test_終了処理_commandの終了結果を保存せず次回起動で�
                 NodeExecutionStatus::Running
             );
             let restarted = fixture.restarted_host();
-            restarted.reconcile_startup(&fixture.app).await.unwrap();
+            test_helpers::reconcile_startup(&restarted, &fixture.app)
+                .await
+                .unwrap();
             let records =
                 workflow_fact_log::read_tree_records(&fixture.store, &execution_id).unwrap();
             let exits = records

@@ -54,12 +54,11 @@ pub struct CommitWriteRequest {
     pub reply: oneshot::Sender<Result<CommitBatchResult, CommitBatchError>>,
 }
 
-/// Append one fact row to `node_events`. Never atomic with anything else.
+/// Append fact rows to `node_events` in one transaction.
 pub struct NodeEventAppendRequest {
-    pub row: NewNodeEventRow,
-    /// 事実の発生時刻。None なら store の clock で刻む。
-    pub timestamp_ms: Option<i64>,
-    pub reply: mpsc::SyncSender<Result<i64, NodeEventWriteError>>,
+    /// 各事実の行と発生時刻。None なら store の clock で刻む。
+    pub rows: Vec<(NewNodeEventRow, Option<i64>)>,
+    pub reply: mpsc::SyncSender<Result<Vec<i64>, NodeEventWriteError>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -73,7 +72,7 @@ pub enum NodeEventWriteError {
 }
 
 pub enum WriteRequest {
-    Commit(CommitWriteRequest),
+    Commit(Box<CommitWriteRequest>),
     NodeEventAppend(NodeEventAppendRequest),
 }
 
@@ -81,7 +80,9 @@ impl WriteRequest {
     fn decoded_bytes(&self) -> usize {
         match self {
             Self::Commit(request) => request.prepared.decoded_bytes,
-            Self::NodeEventAppend(request) => request.row.detail.len() + 256,
+            Self::NodeEventAppend(request) => request.rows.iter().fold(0usize, |size, (row, _)| {
+                size.saturating_add(row.detail.len().saturating_add(256))
+            }),
         }
     }
 
@@ -253,7 +254,7 @@ mod tests {
     fn request(critical: bool, bytes: usize) -> WriteRequest {
         let (reply, receiver) = oneshot::channel();
         drop(receiver);
-        WriteRequest::Commit(CommitWriteRequest {
+        WriteRequest::Commit(Box::new(CommitWriteRequest {
             prepared: PreparedBatch {
                 batch: LocalAtomicBatch {
                     commit_id: CommitIdentity::parse("c-1").unwrap(),
@@ -273,7 +274,7 @@ mod tests {
                 critical,
             },
             reply,
-        })
+        }))
     }
 
     #[test]

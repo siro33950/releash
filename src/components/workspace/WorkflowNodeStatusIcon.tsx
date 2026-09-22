@@ -1,11 +1,4 @@
-import {
-	Ban,
-	CheckCircle2,
-	Circle,
-	CircleHelp,
-	Clock,
-	Loader2,
-} from "lucide-react";
+import { Ban, CheckCircle2, Circle, Clock, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type {
 	WorkspaceNodeStatus,
@@ -18,7 +11,6 @@ export const workflowNodeIconClasses: Record<
 > = {
 	active: "text-blue-600 dark:text-blue-300",
 	attention: "text-yellow-600 dark:text-yellow-300",
-	failure: "text-red-600 dark:text-red-300",
 	idle: "text-green-600 dark:text-green-300",
 	unbound: "text-muted-foreground",
 };
@@ -48,9 +40,7 @@ export function WorkflowNodeStatusIcon({
 	const inheritedColor = containerClassName ? undefined : colorClassName;
 	const baseIconClassName = cn(iconClassName, inheritedColor);
 	const icon =
-		status === "unresolved" ? (
-			<CircleHelp className={baseIconClassName} />
-		) : status === "running" ? (
+		status === "running" ? (
 			<Loader2 className={cn(baseIconClassName, "animate-spin")} />
 		) : status === "completed" ? (
 			<CheckCircle2 className={baseIconClassName} />

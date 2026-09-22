@@ -1,7 +1,6 @@
 mod contract;
 mod definition;
 pub(crate) use definition::{InputsMap, InputsMapSeed};
-mod definition_resolution;
 mod execution;
 mod execution_metadata;
 mod facet;
@@ -26,7 +25,6 @@ pub use definition::{
     WorkflowSummary, WorktreeMode, MAIN_ENTRY_NODE_NAME, MAX_FANOUT_CHILDREN,
     MAX_NODES_PER_WORKFLOW,
 };
-pub use definition_resolution::DefinitionResolution;
 pub use execution::{
     ApprovalTarget, Artifact, ExecutionOrigin, ExecutionStatus, ExecutionTree, Fanout,
 };
@@ -47,8 +45,8 @@ pub use node_execution::{
     NodeCompletionSignalState, NodeExecution, NodeExecutionStatus, NodeProcessPresence,
 };
 pub use node_fact::{
-    AgentActivityObservedFact, AgentSessionActivity, ApprovalGrantedFact, ArchiveRequestedFact,
-    ArtifactProducedFact, CommandSpawnedFact, ExecutionTreeLaunch, NodeFact, NodeFactDecodeError,
+    AbortRequestedFact, AgentActivityObservedFact, AgentSessionActivity, ApprovalGrantedFact,
+    ArchiveRequestedFact, ArtifactProducedFact, CommandSpawnedFact, ExecutionTreeLaunch, NodeFact,
     NodeFactMeta, NodeFactRecord, ProcessExitedFact, ProviderSessionTitleObservedFact,
     RuntimeFailureObservedFact, SessionAttachedFact, SessionContinuationAdmittedFact,
     SessionExecutionTreeRootFacts, SessionNodeRenamedFact, StartedFact, StopReceivedFact,

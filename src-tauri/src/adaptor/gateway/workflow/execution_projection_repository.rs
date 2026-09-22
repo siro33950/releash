@@ -75,57 +75,46 @@ impl WorkflowExecutionProjectionRepository for WorkflowExecutionProjectionLogRep
 fn records_from_drafts(
     events: &[WorkflowEventDraft],
 ) -> Result<Vec<crate::domain::workflow::NodeFactRecord>, WorkflowError> {
-    use crate::domain::workflow::{NodeFact, NodeFactMeta, NodeFactRecord, NodeKindName};
+    use crate::adaptor::gateway::local_event_store::node_events::NodeEventRow;
+    use crate::domain::workflow::ExecutionParentRef;
     #[derive(serde::Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct Identity {
         node_execution_id: String,
         node_name: String,
-        kind: NodeKindName,
+        kind: String,
         attempt: u32,
+        parent: Option<ExecutionParentRef>,
     }
     let mut parents = std::collections::HashMap::new();
-    events
+    let rows = events
         .iter()
         .enumerate()
         .map(|(index, event)| {
             let identity: Identity = serde_json::from_value(event.payload.clone())
                 .map_err(|error| WorkflowError::external(error.to_string()))?;
-            let detail = event.payload.to_string();
-            let Some(fact) = fact_log::decode_stored_fact(
-                &event.event_kind,
-                &detail,
-                (event.timestamp * 1000.0) as i64,
-            )
-            .map_err(WorkflowError::external)?
-            else {
-                return Ok(None);
-            };
-            if let NodeFact::Started(started) = &fact {
+            if event.event_kind == "started" {
                 parents.insert(
                     identity.node_execution_id.clone(),
-                    started
-                        .parent
-                        .as_ref()
-                        .map(|parent| parent.parent_id.clone()),
+                    identity.parent.map(|parent| parent.parent_id),
                 );
             }
-            Ok(Some(NodeFactRecord {
-                meta: NodeFactMeta {
-                    tree_id: event.execution_id.clone(),
-                    parent_id: parents.get(&identity.node_execution_id).cloned().flatten(),
-                    node_execution_id: identity.node_execution_id,
-                    node_name: identity.node_name,
-                    kind: identity.kind,
-                    attempt: identity.attempt,
-                },
+            Ok(NodeEventRow {
+                tree_id: event.execution_id.clone(),
+                parent_id: parents.get(&identity.node_execution_id).cloned().flatten(),
+                node_execution_id: identity.node_execution_id,
+                node_name: identity.node_name,
+                kind: identity.kind,
+                attempt: i64::from(identity.attempt),
                 seq: index as i64 + 1,
                 timestamp_ms: (event.timestamp * 1000.0) as i64,
-                fact,
-            }))
+                event_type: event.event_kind.clone(),
+                session_id: None,
+                detail: event.payload.to_string(),
+            })
         })
-        .filter_map(Result::transpose)
-        .collect()
+        .collect::<Result<Vec<_>, WorkflowError>>()?;
+    fact_log::records_from_tree_rows(&rows).map_err(WorkflowError::external)
 }
 
 #[cfg(test)]

@@ -7,7 +7,6 @@ import { workflowNodeIconClasses } from "./WorkflowNodeStatusIcon";
 const classifications: WorkspaceNodeStatusClassification[] = [
 	"active",
 	"attention",
-	"failure",
 	"idle",
 	"unbound",
 ];

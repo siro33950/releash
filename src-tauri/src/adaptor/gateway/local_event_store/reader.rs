@@ -5,6 +5,8 @@
 //! lookup over a direct index or projection table — never a scan of
 //! `events` and never a full-history fold.
 
+#[cfg(test)]
+use crate::adaptor::gateway::workflow::fact_codec;
 use std::collections::VecDeque;
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 
@@ -240,7 +242,7 @@ fn canonical_runtime_owner_snapshot(
     connection: &Connection,
     limit: usize,
 ) -> Result<Vec<CanonicalRuntimeOwnerView>, LocalEventQueryError> {
-    use crate::adaptor::gateway::workflow::fact_log::record_from_row;
+    use crate::adaptor::gateway::workflow::fact_log::records_from_tree_rows;
     use crate::domain::workflow::services::fact_replay;
     use crate::domain::workflow::{ExecutionTreeLaunch, NodeFact};
 
@@ -252,12 +254,10 @@ fn canonical_runtime_owner_snapshot(
         .map_err(|error| storage_unavailable(&error))?;
     let mut owners = Vec::new();
     for root in roots {
-        let records = super::node_events::read_tree(connection, &root.tree_id)
-            .map_err(|error| storage_unavailable(&error))?
-            .iter()
-            .filter_map(|row| record_from_row(row).transpose())
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| LocalEventQueryError::InvalidRequest)?;
+        let rows = super::node_events::read_tree(connection, &root.tree_id)
+            .map_err(|error| storage_unavailable(&error))?;
+        let records =
+            records_from_tree_rows(&rows).map_err(|_| LocalEventQueryError::InvalidRequest)?;
         let Some(NodeFact::Started(started)) = records.first().map(|record| &record.fact) else {
             continue;
         };
@@ -484,8 +484,10 @@ mod canonical_runtime_owner_snapshot_tests {
     fn insert_root(connection: &Connection, tree_id: &str, fact: &NodeFact) {
         let node_name = match fact {
             NodeFact::Started(StartedFact {
-                root: Some(root), ..
-            }) => root.definition.entry.as_str(),
+                worktree: None,
+                root: Some(root),
+                ..
+            }) => root.definition.as_ref().unwrap().entry.as_str(),
             _ => panic!("root fact must contain a definition"),
         };
         connection
@@ -497,8 +499,8 @@ mod canonical_runtime_owner_snapshot_tests {
                 params![
                     tree_id,
                     node_name,
-                    fact.event_type(),
-                    fact.encode_detail().unwrap()
+                    fact_codec::event_type(&fact),
+                    fact_codec::encode_detail(&fact).unwrap()
                 ],
             )
             .expect("insert root fact");
@@ -511,7 +513,11 @@ mod canonical_runtime_owner_snapshot_tests {
                     tree_id, seq, node_execution_id, parent_id, node_name, kind,
                     attempt, event_type, detail, timestamp
                  ) VALUES (?1, 2, ?1, NULL, 'session', 'session', 1, ?2, ?3, 2)",
-                params![tree_id, fact.event_type(), fact.encode_detail().unwrap()],
+                params![
+                    tree_id,
+                    fact_codec::event_type(&fact),
+                    fact_codec::encode_detail(&fact).unwrap()
+                ],
             )
             .expect("insert second fact");
     }
@@ -523,7 +529,11 @@ mod canonical_runtime_owner_snapshot_tests {
                     tree_id, seq, node_execution_id, parent_id, node_name, kind,
                     attempt, event_type, detail, timestamp
                  ) VALUES (?1, 3, ?1, NULL, 'session', 'session', 1, ?2, ?3, 3)",
-                params![tree_id, fact.event_type(), fact.encode_detail().unwrap()],
+                params![
+                    tree_id,
+                    fact_codec::event_type(&fact),
+                    fact_codec::encode_detail(&fact).unwrap()
+                ],
             )
             .expect("insert third fact");
     }
@@ -551,15 +561,16 @@ mod canonical_runtime_owner_snapshot_tests {
 
     fn workflow_root(worktree_path: &str) -> NodeFact {
         NodeFact::Started(StartedFact {
+            worktree: None,
             parent: None,
             root: Some(Box::new(TreeRootFact {
                 repository_root: None,
-                definition_resolution: Default::default(),
                 workspace_identity: worktree_path.to_string(),
                 worktree_path: worktree_path.to_string(),
                 created_from: ExecutionOrigin::Cli,
                 request: String::new(),
-                definition: WorkflowDefinition {
+                workflow_name: "wf".to_string(),
+                definition: Some(WorkflowDefinition {
                     name: "wf".to_string(),
                     description: String::new(),
                     builtin: false,
@@ -573,7 +584,7 @@ mod canonical_runtime_owner_snapshot_tests {
                         worktree: None,
                     }],
                     entry: "main".to_string(),
-                },
+                }),
                 launched_as: ExecutionTreeLaunch::Workflow,
             })),
         })
@@ -602,6 +613,42 @@ mod canonical_runtime_owner_snapshot_tests {
         assert!(owners
             .iter()
             .all(|owner| matches!(owner, CanonicalRuntimeOwnerView::ActiveWorkflow { .. })));
+    }
+
+    #[test]
+    fn test_owner一覧_旧定義の完了とabortを除外してactiveだけを返す() {
+        // Given
+        let connection = connection_with_active_workflow_owners(1);
+        for (tree_id, terminal) in [
+            ("completed", NodeFact::ExecutionCompleted),
+            ("aborted", NodeFact::AbortRequested(Default::default())),
+        ] {
+            let fact = workflow_root("/snapshot/legacy");
+            insert_root(&connection, tree_id, &fact);
+            let mut detail: serde_json::Value =
+                serde_json::from_str(&fact_codec::encode_detail(&fact).unwrap()).unwrap();
+            detail["root"]["definition"]["nodes"]["main"]["completion"] =
+                serde_json::json!("approval");
+            assert!(fact_codec::decode("started", &detail.to_string()).is_err());
+            connection
+                .execute(
+                    "UPDATE node_events SET detail = ?1 WHERE tree_id = ?2 AND seq = 1",
+                    params![detail.to_string(), tree_id],
+                )
+                .unwrap();
+            insert_second_fact(&connection, tree_id, &terminal);
+        }
+
+        // When
+        let owners = canonical_runtime_owner_snapshot(&connection, 1).unwrap();
+
+        // Then
+        assert_eq!(
+            owners,
+            vec![CanonicalRuntimeOwnerView::ActiveWorkflow {
+                worktree_path: "/snapshot/worktree-0".into(),
+            }]
+        );
     }
 
     #[test]

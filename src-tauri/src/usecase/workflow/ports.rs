@@ -151,11 +151,6 @@ pub trait ExecutionTreeProcessGateway: Send + Sync {
 
 #[async_trait::async_trait]
 pub trait WorkflowRuntimeStateGateway: Send + Sync {
-    /// Explicit startup recovery hook. Construction must never invoke this:
-    /// composition calls it once only after the fixed local store is verified and
-    /// normal mutation admission.
-    async fn recover_startup(&self) -> Result<(), WorkflowError>;
-
     #[cfg(test)]
     async fn get_state_by_execution_id(
         &self,

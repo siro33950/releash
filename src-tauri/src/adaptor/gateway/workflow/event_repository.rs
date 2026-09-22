@@ -165,6 +165,7 @@ mod tests {
                 timestamp: 1.0,
             },
             WorkflowEvent::NodeStarted {
+                worktree: None,
                 execution_id: execution_id.to_string(),
                 node_execution_id: format!("{execution_id}-root"),
                 node_name: "main".to_string(),

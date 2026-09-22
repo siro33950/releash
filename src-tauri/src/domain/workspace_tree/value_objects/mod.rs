@@ -33,7 +33,6 @@ pub enum WorkspaceNodeKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkspaceNodeStatus {
-    Unresolved,
     Running,
     Waiting,
     Aborted,
@@ -43,7 +42,6 @@ pub enum WorkspaceNodeStatus {
 impl WorkspaceNodeStatus {
     pub fn as_public_str(self) -> &'static str {
         match self {
-            Self::Unresolved => "unresolved",
             Self::Running => "running",
             Self::Waiting => "waiting",
             Self::Aborted => "aborted",
@@ -56,7 +54,6 @@ impl WorkspaceNodeStatus {
 pub enum WorkspaceNodeStatusClassification {
     Active,
     Attention,
-    Failure,
     Idle,
     Unbound,
 }
@@ -66,7 +63,6 @@ impl WorkspaceNodeStatusClassification {
         match self {
             Self::Active => "active",
             Self::Attention => "attention",
-            Self::Failure => "failure",
             Self::Idle => "idle",
             Self::Unbound => "unbound",
         }
@@ -82,7 +78,6 @@ impl WorkspaceNodeStatusClassification {
 
     fn severity(self) -> u8 {
         match self {
-            Self::Failure => 4,
             Self::Attention => 3,
             Self::Active => 2,
             Self::Idle => 1,
@@ -167,9 +162,7 @@ impl WorkspaceTreeNode {
         session_bound: bool,
         process_presence: NodeProcessPresence,
     ) -> WorkspaceNodeStatusClassification {
-        if matches!(status, WorkspaceNodeStatus::Unresolved) {
-            WorkspaceNodeStatusClassification::Failure
-        } else if matches!(
+        if matches!(
             status,
             WorkspaceNodeStatus::Completed | WorkspaceNodeStatus::Aborted
         ) {
@@ -467,12 +460,11 @@ mod tests {
     }
 
     #[test]
-    fn test_状態分類_bind前は既存4分類より弱い固有の公開値を返す() {
+    fn test_状態分類_bind前は他の分類より弱い固有の公開値を返す() {
         // Given
         let cases = [
             (WorkspaceNodeStatusClassification::Active, "active"),
             (WorkspaceNodeStatusClassification::Attention, "attention"),
-            (WorkspaceNodeStatusClassification::Failure, "failure"),
             (WorkspaceNodeStatusClassification::Idle, "idle"),
             (WorkspaceNodeStatusClassification::Unbound, "unbound"),
         ];
@@ -482,7 +474,6 @@ mod tests {
             assert_eq!(classification.as_public_str(), expected);
         }
         for classification in [
-            WorkspaceNodeStatusClassification::Failure,
             WorkspaceNodeStatusClassification::Attention,
             WorkspaceNodeStatusClassification::Active,
             WorkspaceNodeStatusClassification::Idle,

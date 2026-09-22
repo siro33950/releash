@@ -38,7 +38,13 @@ fn test_実行木archive_終了前は拒否して終了後の理由と時刻を�
         .unwrap()
         .records
         .is_empty());
-    fact_log::append_single_fact(&store, &meta, &NodeFact::AbortRequested, 2).unwrap();
+    fact_log::append_single_fact(
+        &store,
+        &meta,
+        &NodeFact::AbortRequested(Default::default()),
+        2,
+    )
+    .unwrap();
     repository
         .archive(&id, 123.456789, "worktree_removed")
         .unwrap();
@@ -73,7 +79,13 @@ fn test_実行木restore_終了状態を保ちsessionはpausedになる() {
     // Given
     let (_directory, store, repository, meta) = fixture();
     let id = ExecutionTreeId::new(meta.tree_id.clone()).unwrap();
-    fact_log::append_single_fact(&store, &meta, &NodeFact::AbortRequested, 2).unwrap();
+    fact_log::append_single_fact(
+        &store,
+        &meta,
+        &NodeFact::AbortRequested(Default::default()),
+        2,
+    )
+    .unwrap();
     repository.archive(&id, 3.0, "manual").unwrap();
     // When
     repository.restore(&id, 4.0).unwrap();
@@ -110,8 +122,12 @@ fn test_完了済み旧archive_元の時刻を保って移行し次回候補か�
         ("stop_received", 2000),
         ("archive_requested", 42000),
     ] {
-        let mut pending =
-            fact_log::pending_single_fact(&meta, &NodeFact::AbortRequested, timestamp).unwrap();
+        let mut pending = fact_log::pending_single_fact(
+            &meta,
+            &NodeFact::AbortRequested(Default::default()),
+            timestamp,
+        )
+        .unwrap();
         pending.row.event_type = kind.into();
         pending.row.detail = "{}".into();
         fact_log::append_pending_rows_blocking(&store, vec![pending]).unwrap();
@@ -137,7 +153,7 @@ fn test_完了済み旧archive_元の時刻を保って移行し次回候補か�
     let facts = fact_log::read_tree_records(&store, id.as_str()).unwrap();
     assert!(!facts
         .iter()
-        .any(|record| matches!(record.fact, NodeFact::AbortRequested)));
+        .any(|record| matches!(record.fact, NodeFact::AbortRequested(_))));
     repository.archive(&id, 200.0, "manual").unwrap();
     assert_eq!(
         fact_log::read_tree_records(&store, id.as_str()).unwrap(),
@@ -287,13 +303,20 @@ fn test_archive候補_履歴や定義をfoldせずページングしgcではarch
             .detail
             .replace("\"definition\":{", "\"unreadableDefinition\":{");
         let mut corrupt =
-            fact_log::pending_single_fact(&meta, &NodeFact::AbortRequested, 2).unwrap();
+            fact_log::pending_single_fact(&meta, &NodeFact::AbortRequested(Default::default()), 2)
+                .unwrap();
         corrupt.row.event_type = "process_exited".into();
         corrupt.row.detail = "broken history".into();
         rows.push(corrupt);
         fact_log::append_pending_rows_blocking(&store, rows).unwrap();
     }
-    fact_log::append_single_fact(&store, &meta, &NodeFact::AbortRequested, 2).unwrap();
+    fact_log::append_single_fact(
+        &store,
+        &meta,
+        &NodeFact::AbortRequested(Default::default()),
+        2,
+    )
+    .unwrap();
     repository
         .archive(&ExecutionTreeId::new(&meta.tree_id).unwrap(), 3.0, "manual")
         .unwrap();
@@ -438,7 +461,9 @@ fn test_repository所属の記録_読取専用では保存失敗を返す() {
 fn test_repository所属の復元_フォルダ消失済みでも旧隔離worktreeの事実を参照する() {
     // Given
     let (_directory, store, repository, meta) = fixture();
-    let mut pending = fact_log::pending_single_fact(&meta, &NodeFact::AbortRequested, 2).unwrap();
+    let mut pending =
+        fact_log::pending_single_fact(&meta, &NodeFact::AbortRequested(Default::default()), 2)
+            .unwrap();
     pending.row.event_type = "isolated_worktree_created".into();
     pending.row.parent_id = Some(meta.node_execution_id.clone());
     pending.row.node_execution_id = "isolated-child".into();

@@ -183,7 +183,8 @@ fn to_kind(kind: Kind, value: Json) -> Result<Value, String> {
             let variant = descriptor
                 .values()
                 .find(|variant| {
-                    label(variant.options(), "json_enum_name") == value.as_str().unwrap_or_default()
+                    let name = label(variant.options(), "json_enum_name");
+                    !name.is_empty() && Some(name.as_str()) == value.as_str()
                 })
                 .ok_or("Invalid enum value")?;
             Value::EnumNumber(variant.number())
@@ -328,7 +329,11 @@ fn from_kind(kind: Kind, value: &Value) -> Result<Json, String> {
                 return Err("Unexpected enum".into());
             };
             let variant = descriptor.get_value(*number).ok_or("Unknown enum value")?;
-            Json::String(label(variant.options(), "json_enum_name"))
+            let name = label(variant.options(), "json_enum_name");
+            if name.is_empty() {
+                return Err("Unknown enum value".into());
+            }
+            Json::String(name)
         }
         Value::Bool(value) => Json::Bool(*value),
         Value::String(value) => Json::String(value.clone()),

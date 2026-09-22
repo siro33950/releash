@@ -11,10 +11,10 @@
 mod delegate;
 pub use delegate::DelegateInjection;
 use delegate::{DelegatePhase, DelegateRuntime};
-mod recovery;
 pub mod scope;
 
 mod artifact_replay;
+mod terminal_replay;
 mod worktree;
 
 use std::collections::HashMap;
@@ -129,7 +129,6 @@ pub struct ApprovalAttemptTarget {
 /// One node attempt held inside the execution aggregate.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RuntimeNodeExecution {
-    pub recovery_reason: Option<String>,
     pub worktree: Option<crate::domain::workflow::IsolatedWorktree>,
     pub id: String,
     pub execution_id: String,
@@ -158,15 +157,14 @@ impl RuntimeNodeExecution {
     }
 
     pub fn can_restart(&self) -> bool {
-        self.recovery_reason.is_none()
-            && !self.kind.is_composite_kind()
+        !self.kind.is_composite_kind()
             && (self.status == RuntimeNodeExecutionStatus::Running
                 || (self.kind == NodeKindName::Session
                     && self.status == RuntimeNodeExecutionStatus::WaitingApproval))
     }
 
     pub fn can_retry(&self, presence: crate::domain::workflow::NodeProcessPresence) -> bool {
-        self.recovery_reason.is_none() && self.status.can_retry(self.kind, presence)
+        self.status.can_retry(self.kind, presence)
     }
 
     pub fn requires_new_session_attempt(
@@ -181,7 +179,7 @@ impl RuntimeNodeExecution {
         &self,
         presence: crate::domain::workflow::NodeProcessPresence,
     ) -> bool {
-        self.recovery_reason.is_none() && self.status.can_resume_session(self.kind, presence)
+        self.status.can_resume_session(self.kind, presence)
     }
 
     pub fn prepare_command(&mut self, display_command: String) -> TransitionOutcome {
@@ -553,7 +551,6 @@ pub struct ExecutionTree {
     pending_restart: Option<PendingRestart>,
     delegates: HashMap<String, DelegateRuntime>,
     pending_empty_fanout: Option<String>,
-    definition_resolution: crate::domain::workflow::DefinitionResolution,
 }
 
 /// Read-only runtime view exposed by the aggregate.
@@ -564,7 +561,8 @@ pub struct ExecutionTree {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExecutionTreeView {
     pub id: String,
-    pub workflow: WorkflowDefinition,
+    pub workflow_name: String,
+    pub workflow: Option<WorkflowDefinition>,
     pub node_history: Vec<NodeHistoryEntry>,
     pub workflow_defaults: WorkflowDefaults,
     pub worktree_path: String,
@@ -601,6 +599,20 @@ impl std::ops::DerefMut for ExecutionTree {
 }
 
 impl ExecutionTree {
+    pub fn workflow_definition(
+        &self,
+    ) -> Result<&WorkflowDefinition, crate::domain::workflow::WorkflowError> {
+        self.runtime.workflow.as_ref().ok_or_else(|| {
+            crate::domain::workflow::WorkflowError::invalid_state(
+                "terminal execution has no workflow definition",
+            )
+        })
+    }
+
+    pub fn node_definition(&self, name: &str) -> Option<&NodeDefinition> {
+        self.runtime.workflow.as_ref()?.node_by_name(name)
+    }
+
     /// Restores a lifecycle snapshot before replaying subsequent durable facts.
     #[cfg(test)]
     pub fn restore(state: RuntimeExecutionState) -> Self {
@@ -618,10 +630,10 @@ impl ExecutionTree {
             pending_restart: None,
             delegates: HashMap::new(),
             pending_empty_fanout: None,
-            definition_resolution: Default::default(),
             runtime: ExecutionTreeView {
                 id: restore.id,
-                workflow: restore.workflow,
+                workflow_name: restore.workflow.name.clone(),
+                workflow: Some(restore.workflow),
                 node_history: restore.node_history,
                 workflow_defaults: restore.workflow_defaults,
                 worktree_path: restore.worktree_path,
@@ -746,7 +758,7 @@ impl ExecutionTree {
         new_id: &mut dyn FnMut() -> String,
         timestamp: f64,
     ) -> Result<AppliedAdvance, crate::domain::workflow::WorkflowError> {
-        let root_name = self.runtime.workflow.entry.clone();
+        let root_name = self.workflow_definition()?.entry.clone();
         let mut events = Vec::new();
         let mut starts = Vec::new();
         self.start_node_instance(
@@ -779,25 +791,11 @@ impl ExecutionTree {
         events: &mut Vec<WorkflowEvent>,
         starts: &mut Vec<NodeStart>,
     ) -> Result<(), crate::domain::workflow::WorkflowError> {
-        if let Some(reason) = self.start_unavailable_reason(parent_scope_id, node_name, None) {
-            if let Some(scope_id) = parent_scope_id {
-                self.record_recovery_block(scope_id, reason);
-                return Ok(());
-            }
-            return Err(crate::domain::workflow::WorkflowError::invalid_state(
-                reason,
-            ));
-        }
-        let node = self
-            .runtime
-            .workflow
-            .node_by_name(node_name)
-            .cloned()
-            .ok_or_else(|| {
-                crate::domain::workflow::WorkflowError::invalid_state(format!(
-                    "node '{node_name}' is undefined"
-                ))
-            })?;
+        let node = self.node_definition(node_name).cloned().ok_or_else(|| {
+            crate::domain::workflow::WorkflowError::invalid_state(format!(
+                "node '{node_name}' is undefined"
+            ))
+        })?;
         let delegate_parent = parent_scope_id.filter(|id| self.is_delegate_parent(id));
         let attempt = match parent_scope_id {
             Some(id) if delegate_parent.is_some() => {
@@ -933,9 +931,7 @@ impl ExecutionTree {
             ))
         })?;
         let node = self
-            .runtime
-            .workflow
-            .node_by_name(&scope.node_name)
+            .node_definition(&scope.node_name)
             .cloned()
             .ok_or_else(|| {
                 crate::domain::workflow::WorkflowError::invalid_state(format!(
@@ -1011,12 +1007,6 @@ impl ExecutionTree {
             if occupied.contains(&(item_index, child_index)) {
                 continue;
             }
-            if let Some(reason) =
-                self.start_unavailable_reason(Some(scope_id), &child_name, item.as_ref())
-            {
-                self.record_recovery_block(scope_id, reason);
-                continue;
-            }
             self.start_fanout_child_instance(
                 scope_id,
                 &child_name,
@@ -1046,16 +1036,11 @@ impl ExecutionTree {
         events: &mut Vec<WorkflowEvent>,
         starts: &mut Vec<NodeStart>,
     ) -> Result<String, crate::domain::workflow::WorkflowError> {
-        let node = self
-            .runtime
-            .workflow
-            .node_by_name(child_name)
-            .cloned()
-            .ok_or_else(|| {
-                crate::domain::workflow::WorkflowError::invalid_state(format!(
-                    "fanout child node '{child_name}' is undefined"
-                ))
-            })?;
+        let node = self.node_definition(child_name).cloned().ok_or_else(|| {
+            crate::domain::workflow::WorkflowError::invalid_state(format!(
+                "fanout child node '{child_name}' is undefined"
+            ))
+        })?;
         let scope = self.scope_mut(scope_id).ok_or_else(|| {
             crate::domain::workflow::WorkflowError::invalid_state(format!(
                 "fanout scope '{scope_id}' is not active"
@@ -1173,8 +1158,7 @@ impl ExecutionTree {
             )
             .map_err(crate::domain::workflow::WorkflowError::invalid_state)?;
         self.runtime.node_executions.push(RuntimeNodeExecution {
-            worktree,
-            recovery_reason: None,
+            worktree: worktree.clone(),
             id: node_execution_id.clone(),
             execution_id: self.runtime.id.clone(),
             node_name: node.name.clone(),
@@ -1192,6 +1176,7 @@ impl ExecutionTree {
             completed_at: None,
         });
         events.push(WorkflowEvent::NodeStarted {
+            worktree,
             execution_id: self.runtime.id.clone(),
             node_execution_id,
             node_name: node.name.clone(),
@@ -1222,7 +1207,7 @@ impl ExecutionTree {
         let Some(scope) = self.scope(scope_id) else {
             return Vec::new();
         };
-        let Some(parent_node) = self.runtime.workflow.node_by_name(&scope.node_name) else {
+        let Some(parent_node) = self.node_definition(&scope.node_name) else {
             return Vec::new();
         };
         match &scope.kind {
@@ -1325,19 +1310,13 @@ impl ExecutionTree {
         effects: &mut AdvanceEffects<'_>,
         timestamp: f64,
     ) -> Result<(), crate::domain::workflow::WorkflowError> {
-        if self
-            .node_execution(scope_id)
-            .is_some_and(|node| node.recovery_reason.is_some())
-        {
-            return Ok(());
-        }
         let Some(scope) = self.scope(scope_id) else {
             // スコープが既に確定している（例: 失敗停止後の遅延完了）。前進しない。
             return Ok(());
         };
         match &scope.kind {
             ScopeRuntimeKind::Sequence(sequence) => {
-                let workflow = self.runtime.workflow.clone();
+                let workflow = self.workflow_definition()?.clone();
                 let node = workflow.node_by_name(&scope.node_name).ok_or_else(|| {
                     crate::domain::workflow::WorkflowError::invalid_state(format!(
                         "sequence node '{}' is undefined",
@@ -1361,17 +1340,7 @@ impl ExecutionTree {
                     completed_child,
                     artifact.as_ref(),
                     &counts,
-                );
-                let route = match route {
-                    Ok(route) => route,
-                    Err(error) => {
-                        if let Some(reason) = self.route_recovery_reason(&error) {
-                            self.record_recovery_block(scope_id, reason);
-                            return Ok(());
-                        }
-                        return Err(error.into());
-                    }
-                };
+                )?;
                 match route {
                     workflow_routing::RouteDecision::TransitionTo(next) => match effects {
                         AdvanceEffects::Live {
@@ -1419,25 +1388,13 @@ impl ExecutionTree {
         effects: &mut AdvanceEffects<'_>,
         timestamp: f64,
     ) -> Result<(), crate::domain::workflow::WorkflowError> {
-        if self
-            .node_execution(scope_id)
-            .is_some_and(|node| node.recovery_reason.is_some())
-        {
-            return Ok(());
-        }
-        if let Some(reason) = self.unavailable_child_artifact(scope_id) {
-            self.record_recovery_block(scope_id, reason);
-            return Ok(());
-        }
         let scope = self.scope(scope_id).cloned().ok_or_else(|| {
             crate::domain::workflow::WorkflowError::invalid_state(format!(
                 "scope '{scope_id}' is not active"
             ))
         })?;
         let node = self
-            .runtime
-            .workflow
-            .node_by_name(&scope.node_name)
+            .node_definition(&scope.node_name)
             .cloned()
             .ok_or_else(|| {
                 crate::domain::workflow::WorkflowError::invalid_state(format!(
@@ -1658,12 +1615,6 @@ impl ExecutionTree {
         effects: &mut AdvanceEffects<'_>,
         timestamp: f64,
     ) -> Result<(), crate::domain::workflow::WorkflowError> {
-        if self
-            .node_execution(node_execution_id)
-            .is_some_and(|node| node.recovery_reason.is_some())
-        {
-            return Ok(());
-        }
         let node = self
             .node_execution(node_execution_id)
             .cloned()
@@ -1695,6 +1646,9 @@ impl ExecutionTree {
             return Err(crate::domain::workflow::WorkflowError::invalid_state(
                 format!("node execution '{node_execution_id}' cannot complete"),
             ));
+        }
+        if self.runtime.workflow.is_none() {
+            return Ok(());
         }
         effects.emit(WorkflowEvent::NodeCompleted {
             execution_id: self.runtime.id.clone(),
@@ -1842,9 +1796,7 @@ impl ExecutionTree {
             ))
         })?;
         let node = self
-            .runtime
-            .workflow
-            .node_by_name(&node_execution.node_name)
+            .node_definition(&node_execution.node_name)
             .cloned()
             .ok_or_else(|| {
                 crate::domain::workflow::WorkflowError::invalid_state(format!(
@@ -1867,13 +1819,6 @@ impl ExecutionTree {
                     .find(|slot| slot.node_execution_id == node_execution_id)
             })
             .and_then(|slot| slot.item.clone());
-        if let Some(reason) =
-            self.start_unavailable_reason(parent_scope_id.as_deref(), &node.name, item.as_ref())
-        {
-            return Err(crate::domain::workflow::WorkflowError::invalid_state(
-                reason,
-            ));
-        }
         let bindings =
             self.resolve_child_bindings(parent_scope_id.as_deref(), &node, item.as_ref());
         Ok(LeafStart {
@@ -1950,11 +1895,7 @@ impl ExecutionTree {
                 }
             }
         }
-        let node_def = self
-            .runtime
-            .workflow
-            .node_by_name(&target.node_name)
-            .cloned()?;
+        let node_def = self.node_definition(&target.node_name).cloned()?;
         let mut events = Vec::new();
         self.push_started_node(
             &node_def,
@@ -2045,15 +1986,11 @@ impl ExecutionTree {
                 )),
             );
         }
-        let node = self
-            .runtime
-            .workflow
-            .node_by_name(node_name)
-            .ok_or_else(|| {
-                crate::domain::workflow::WorkflowError::validation(format!(
-                    "Node '{node_name}' not found in workflow"
-                ))
-            })?;
+        let node = self.node_definition(node_name).ok_or_else(|| {
+            crate::domain::workflow::WorkflowError::validation(format!(
+                "Node '{node_name}' not found in workflow"
+            ))
+        })?;
         if !node.requires_approval_completion() {
             return Err(
                 crate::domain::workflow::WorkflowError::UnauthorizedApprovalTarget(
@@ -2152,16 +2089,13 @@ impl ExecutionTree {
             return Ok(id);
         }
         let mode = self
-            .runtime
-            .workflow
-            .node_by_name(&node_name)
+            .node_definition(&node_name)
             .and_then(|node| node.worktree);
         let worktree = crate::domain::workflow::WorktreeInheritance::new(mode)
             .for_attempt(self.runtime.repository_root.as_deref(), &id, attempt)
             .map_err(|_| TransitionRejection::MissingRepositoryRoot)?;
         self.runtime.node_executions.push(RuntimeNodeExecution {
             worktree,
-            recovery_reason: None,
             id: id.clone(),
             execution_id: self.runtime.id.clone(),
             node_name,
@@ -2495,6 +2429,20 @@ impl ExecutionTree {
                         .as_ref()
                         .map(|parent| parent.parent_id.clone()),
                 });
+        if self.runtime.workflow.is_none() {
+            let Some(node) = self
+                .runtime
+                .node_executions
+                .iter_mut()
+                .find(|node| node.id == node_execution_id)
+            else {
+                return TransitionOutcome::NotApplicable;
+            };
+            node.status = RuntimeNodeExecutionStatus::Aborted;
+            node.completed_at = Some(timestamp);
+            self.runtime.updated_at = timestamp;
+            return TransitionOutcome::Applied;
+        }
         self.request_node_restart_with(
             node_execution_id,
             timestamp,
@@ -2696,7 +2644,7 @@ impl ExecutionTree {
             RuntimeNodeExecutionStatus::WaitingApproval | RuntimeNodeExecutionStatus::Succeeded => {
                 return NodeCompletionHandshakeDecision::AlreadySettled;
             }
-            RuntimeNodeExecutionStatus::Aborted | RuntimeNodeExecutionStatus::Unresolved => {
+            RuntimeNodeExecutionStatus::Aborted => {
                 return NodeCompletionHandshakeDecision::NotApplicable;
             }
             RuntimeNodeExecutionStatus::Running => {}
@@ -2719,12 +2667,14 @@ impl ExecutionTree {
         if !execution.completion_signals.is_ready() {
             return NodeCompletionHandshakeDecision::AwaitingSignal;
         }
+        if self.runtime.workflow.is_none()
+            && self.runtime.launched_as == ExecutionTreeLaunch::Session
+            && execution.kind == NodeKindName::Session
+        {
+            return NodeCompletionHandshakeDecision::CompleteAuto;
+        }
         let Some(node) = self
-            .runtime
-            .workflow
-            .nodes
-            .iter()
-            .find(|node| node.name == execution.node_name)
+            .node_definition(&execution.node_name)
             .filter(|node| node.is_session())
         else {
             return NodeCompletionHandshakeDecision::NotApplicable;
@@ -2765,7 +2715,7 @@ impl ExecutionTree {
                 {
                     let child = self
                         .node_execution(node_execution_id)
-                        .and_then(|parent| self.workflow.node_by_name(&parent.node_name))
+                        .and_then(|parent| self.node_definition(&parent.node_name))
                         .and_then(|node| node.completion.delegate.as_ref())
                         .unwrap()
                         .child
@@ -2902,6 +2852,11 @@ impl ExecutionTree {
         node_execution_id: &str,
         timestamp: f64,
     ) -> Result<(), String> {
+        if self.runtime.workflow.is_none()
+            && self.runtime.launched_as == ExecutionTreeLaunch::Workflow
+        {
+            return Ok(());
+        }
         if !self
             .node_execution(node_execution_id)
             .is_some_and(|node| node.status.is_active())
@@ -2921,6 +2876,19 @@ impl ExecutionTree {
         let Some(target) = self.node_execution(node_execution_id).cloned() else {
             return Ok(());
         };
+        if self.runtime.workflow.is_none() {
+            if let Some(node) = self
+                .runtime
+                .node_executions
+                .iter_mut()
+                .find(|node| node.id == node_execution_id)
+            {
+                node.status = RuntimeNodeExecutionStatus::Succeeded;
+                node.completed_at = Some(timestamp);
+            }
+            self.runtime.updated_at = timestamp;
+            return Ok(());
+        }
         if target.status != RuntimeNodeExecutionStatus::WaitingApproval {
             return Ok(());
         }
@@ -3014,9 +2982,7 @@ impl ExecutionTree {
                     // 展開途中（宣言された座標より slot が少ない）は展開の続き。
                     // 全 slot 決着で未完のケースは fold が畳んでいるため残らない
                     let Some(expected) = self
-                        .runtime
-                        .workflow
-                        .node_by_name(&scope.node_name)
+                        .node_definition(&scope.node_name)
                         .and_then(|node| node.fanout())
                         .map(|spec| {
                             fanout
@@ -3087,7 +3053,7 @@ impl ExecutionTree {
             PendingAdvance::StartEntry { scope_id } => {
                 let entry_child = self
                     .scope(scope_id)
-                    .and_then(|scope| self.runtime.workflow.node_by_name(&scope.node_name))
+                    .and_then(|scope| self.node_definition(&scope.node_name))
                     .and_then(|node| node.sequence())
                     .and_then(|sequence| sequence.entry_child_name())
                     .map(str::to_string)
@@ -3124,6 +3090,33 @@ impl ExecutionTree {
     ///
     /// 合成子ならスコープを push（パラメータは開始時点のスコープ状態から
     /// 決定論的に再束縛）、子なら親スコープのカーソル・カウント・slot を進める。
+    pub(crate) fn replay_started_fact(
+        &mut self,
+        meta: &crate::domain::workflow::NodeFactMeta,
+        started: &crate::domain::workflow::StartedFact,
+        timestamp: f64,
+    ) -> Result<(), String> {
+        self.replay_node_started(
+            &meta.node_execution_id,
+            &meta.node_name,
+            meta.kind,
+            meta.attempt,
+            started.parent.clone(),
+            timestamp,
+        )?;
+        if let Some(worktree) = &started.worktree {
+            if let Some(node) = self
+                .runtime
+                .node_executions
+                .iter_mut()
+                .find(|node| node.id == meta.node_execution_id)
+            {
+                node.worktree = Some(worktree.clone());
+            }
+        }
+        Ok(())
+    }
+
     pub fn replay_node_started(
         &mut self,
         node_execution_id: &str,
@@ -3159,12 +3152,14 @@ impl ExecutionTree {
             parent,
             timestamp,
         } = start;
-        let node = self.runtime.workflow.node_by_name(node_name).cloned();
-        let definition_error = self.definition_error(node_name).or_else(|| {
-            node.as_ref()
-                .filter(|node| node.kind_name() != kind)
-                .map(|_| format!("Node definition '{node_name}' does not match the recorded kind"))
-        });
+        let node = self.node_definition(node_name).cloned();
+        if self.runtime.workflow.is_some()
+            && node.as_ref().is_none_or(|node| node.kind_name() != kind)
+        {
+            return Err(format!(
+                "Node definition '{node_name}' does not match the recorded kind"
+            ));
+        }
         // 直前の NodeRetryRequested に対応する restart の start か。
         let retry_predecessor = self.pending_restart.take().and_then(|pending| {
             (pending.node_name == node_name
@@ -3174,7 +3169,7 @@ impl ExecutionTree {
         });
         let is_restart = retry_predecessor.is_some();
         // 親スコープの進行を再現する。
-        if let Some(parent_ref) = &parent {
+        if let Some(parent_ref) = parent.as_ref().filter(|_| node.is_some()) {
             if parent_ref.is_delegate_child() {
                 if is_restart {
                     let parent_id = self
@@ -3277,11 +3272,9 @@ impl ExecutionTree {
                 .retry_predecessors
                 .insert(node_execution_id.to_string(), predecessor);
         }
-        if let Some(reason) = definition_error {
-            self.record_recovery_block(node_execution_id, reason);
-        }
         // 合成子ならスコープを生やす。
-        if kind.is_composite_kind()
+        if node.is_some()
+            && kind.is_composite_kind()
             && !matches!(replay_scope, artifact_replay::ReplayScope::ArtifactChild)
         {
             let parent_scope_id = parent.as_ref().map(|parent| parent.parent_id.clone());
@@ -3321,11 +3314,7 @@ impl ExecutionTree {
                 parameters,
                 kind: scope_kind,
             });
-            if kind == NodeKindName::Fanout
-                && self
-                    .node_execution(node_execution_id)
-                    .is_some_and(|node| node.recovery_reason.is_none())
-            {
+            if kind == NodeKindName::Fanout {
                 // items を開始時点のスコープ状態から再解決して保持する
                 // （子 slot の item 復元に使う）。
                 let items = match replay_scope {
@@ -3341,23 +3330,7 @@ impl ExecutionTree {
                         self.resolve_fanout_items_in_scope(scope, spec)
                     }
                 };
-                let items = match items {
-                    Ok(items) => items,
-                    Err(error) => {
-                        let reason = self.scope(node_execution_id).and_then(|scope| {
-                            self.fanout_items_recovery_reason(
-                                scope.parent_scope_id.as_deref(),
-                                node.as_ref()?.fanout()?,
-                            )
-                        });
-                        if let Some(reason) = reason {
-                            self.record_recovery_block(node_execution_id, reason);
-                            None
-                        } else {
-                            return Err(error.to_string());
-                        }
-                    }
-                };
+                let items = items.map_err(|error| error.to_string())?;
                 if items.as_ref().is_some_and(Vec::is_empty)
                     && self
                         .node_execution(node_execution_id)
@@ -3591,14 +3564,14 @@ impl ExecutionTree {
         transition_to_replay(self.abort())
     }
 
-    pub fn replay_aborted_at(&mut self, timestamp: f64) -> ReplayOutcome {
+    pub fn replay_aborted_at(&mut self, timestamp: f64, reason: Option<String>) -> ReplayOutcome {
         let outcome = self.replay_aborted();
         if matches!(
             outcome,
             ReplayOutcome::Applied | ReplayOutcome::AlreadyApplied
         ) {
             self.abort_active_node_executions(timestamp);
-            self.runtime.error_reason = None;
+            self.runtime.error_reason = reason;
             self.runtime.updated_at = timestamp;
         }
         outcome
@@ -3982,11 +3955,8 @@ mod tests {
     #[test]
     fn routing_failure_surfaces_an_error_without_workflow_terminal_transition() {
         let mut execution = restored_execution(RuntimeExecutionState::Running);
-        execution
-            .runtime
-            .workflow
-            .nodes
-            .push(crate::domain::workflow::NodeDefinition {
+        execution.runtime.workflow.as_mut().unwrap().nodes.push(
+            crate::domain::workflow::NodeDefinition {
                 name: "main".to_string(),
                 kind: crate::domain::workflow::NodeKind::Sequence(
                     crate::domain::workflow::SequenceSpec {
@@ -4001,8 +3971,9 @@ mod tests {
                     },
                 ),
                 ..Default::default()
-            });
-        execution.runtime.workflow.entry = "main".to_string();
+            },
+        );
+        execution.runtime.workflow.as_mut().unwrap().entry = "main".to_string();
         execution
             .replay_node_started("main-1", "main", NodeKindName::Sequence, 1, None, 9.0)
             .unwrap();
@@ -4114,7 +4085,7 @@ mod tests {
     #[test]
     fn test_fanout親_completion承認はauto子の完了経路でも承認待ちになる() {
         let mut execution = restored_execution(RuntimeExecutionState::Running);
-        execution.runtime.workflow.nodes = vec![
+        execution.runtime.workflow.as_mut().unwrap().nodes = vec![
             crate::domain::workflow::NodeDefinition {
                 name: "fanout".to_string(),
                 kind: crate::domain::workflow::NodeKind::Fanout(
@@ -4131,7 +4102,7 @@ mod tests {
                 ..Default::default()
             },
         ];
-        execution.runtime.workflow.entry = "fanout".to_string();
+        execution.runtime.workflow.as_mut().unwrap().entry = "fanout".to_string();
         execution
             .replay_node_started(
                 "parent-execution-1",
@@ -4205,11 +4176,8 @@ mod tests {
     #[test]
     fn completion_handshake_applies_the_domain_transition_and_uses_the_supplied_next_id() {
         let mut execution = restored_execution(RuntimeExecutionState::Running);
-        execution
-            .runtime
-            .workflow
-            .nodes
-            .push(crate::domain::workflow::NodeDefinition {
+        execution.runtime.workflow.as_mut().unwrap().nodes.push(
+            crate::domain::workflow::NodeDefinition {
                 name: "verify".to_string(),
                 kind: crate::domain::workflow::NodeKind::Command(
                     crate::domain::workflow::CommandSpec {
@@ -4218,12 +4186,10 @@ mod tests {
                     },
                 ),
                 ..Default::default()
-            });
-        execution
-            .runtime
-            .workflow
-            .nodes
-            .push(crate::domain::workflow::NodeDefinition {
+            },
+        );
+        execution.runtime.workflow.as_mut().unwrap().nodes.push(
+            crate::domain::workflow::NodeDefinition {
                 name: "main".to_string(),
                 kind: crate::domain::workflow::NodeKind::Sequence(
                     crate::domain::workflow::SequenceSpec {
@@ -4235,8 +4201,9 @@ mod tests {
                     },
                 ),
                 ..Default::default()
-            });
-        execution.runtime.workflow.entry = "main".to_string();
+            },
+        );
+        execution.runtime.workflow.as_mut().unwrap().entry = "main".to_string();
         execution
             .replay_node_started("main-1", "main", NodeKindName::Sequence, 1, None, 9.0)
             .unwrap();
@@ -4292,7 +4259,7 @@ mod tests {
     #[test]
     fn approval_target_requires_an_exact_attempt_when_fanout_names_are_ambiguous() {
         let mut execution = restored_execution(RuntimeExecutionState::Running);
-        execution.runtime.workflow.nodes[0].completion =
+        execution.runtime.workflow.as_mut().unwrap().nodes[0].completion =
             crate::domain::workflow::NodeCompletion::require_approval();
         for (id, child_index) in [("child-1", 0), ("child-2", 1)] {
             execution
@@ -4507,7 +4474,7 @@ mod tests {
     #[test]
     fn fanout_child_completion_updates_slot_and_node_as_one_transition() {
         let mut execution = restored_execution(RuntimeExecutionState::Running);
-        execution.runtime.workflow.nodes = vec![
+        execution.runtime.workflow.as_mut().unwrap().nodes = vec![
             crate::domain::workflow::NodeDefinition {
                 name: "fanout".to_string(),
                 kind: crate::domain::workflow::NodeKind::Fanout(
@@ -4530,7 +4497,7 @@ mod tests {
                 ..Default::default()
             },
         ];
-        execution.runtime.workflow.entry = "fanout".to_string();
+        execution.runtime.workflow.as_mut().unwrap().entry = "fanout".to_string();
         execution
             .replay_node_started(
                 "parent-execution-1",
@@ -4600,7 +4567,7 @@ mod tests {
     #[test]
     fn fanout_child_retry_replaces_only_the_current_logical_child_attempt() {
         let mut execution = restored_execution(RuntimeExecutionState::Running);
-        execution.runtime.workflow.nodes = vec![
+        execution.runtime.workflow.as_mut().unwrap().nodes = vec![
             crate::domain::workflow::NodeDefinition {
                 name: "fanout".to_string(),
                 kind: crate::domain::workflow::NodeKind::Fanout(
@@ -4616,7 +4583,7 @@ mod tests {
                 ..Default::default()
             },
         ];
-        execution.runtime.workflow.entry = "fanout".to_string();
+        execution.runtime.workflow.as_mut().unwrap().entry = "fanout".to_string();
         execution
             .replay_node_started(
                 "parent-execution-1",
@@ -4769,8 +4736,7 @@ mod tests {
 
         assert_eq!(restarted.leaf.bindings, expect_leaf(&leaves[0]).bindings);
         let command = execution
-            .workflow
-            .node_by_name("run")
+            .node_definition("run")
             .and_then(NodeDefinition::command_spec)
             .unwrap();
         assert_eq!(

@@ -31,7 +31,7 @@ impl ExecutionTreeAggregate {
     ) -> Result<(), WorkflowRuntimeError> {
         let existing_active_workflow_name = existing
             .filter(|existing| existing.is_active())
-            .map(|existing| existing.workflow.name.as_str());
+            .map(|existing| existing.workflow_name.as_str());
         runtime_start_guard::validate_start(workflow, existing_active_workflow_name)
     }
 }

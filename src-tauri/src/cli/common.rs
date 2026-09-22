@@ -375,6 +375,7 @@ pub(in crate::cli) mod test_support {
         timestamp: f64,
     ) -> WorkflowEvent {
         WorkflowEvent::NodeStarted {
+            worktree: None,
             execution_id: execution_id.to_string(),
             node_execution_id: node_execution_id.to_string(),
             node_name: node_name.to_string(),

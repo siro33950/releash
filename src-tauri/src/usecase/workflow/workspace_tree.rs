@@ -148,8 +148,6 @@ pub(crate) struct WorkspaceNodeDetailDto {
     pub has_artifact: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_reason: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub recovery_reason: Option<String>,
     pub capabilities: WorkspaceNodeCapabilitiesDto,
     pub updated_at: f64,
     pub content: WorkspaceNodeContentDto,
@@ -516,7 +514,7 @@ mod tests {
     }
 
     #[test]
-    fn test_選択整合契約_返却snapshotの全行が5分類だけを持つ() {
+    fn test_選択整合契約_返却snapshotの全行が4分類だけを持つ() {
         fn assert_classifications(items: &[WorkspaceTreeItemDto]) {
             for item in items {
                 let (status, children) = match item {
@@ -528,7 +526,7 @@ mod tests {
                         (fanout.status.as_str(), Some(fanout.children.as_slice()))
                     }
                 };
-                assert!(["active", "attention", "failure", "idle", "unbound"].contains(&status));
+                assert!(["active", "attention", "idle", "unbound"].contains(&status));
                 assert_ne!(status, "interrupted");
                 if let Some(children) = children {
                     assert_classifications(children);

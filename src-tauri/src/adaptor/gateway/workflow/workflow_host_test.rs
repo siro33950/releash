@@ -29,7 +29,7 @@ async fn test_実行木archive_状態確認後の自然完了で再登録でき�
         workflow_fact_log::append_single_fact(
             &fixture.store,
             meta,
-            &NodeFact::decode(kind, "{}").unwrap(),
+            &super::fact_codec::decode(kind, "{}").unwrap(),
             2000,
         )
         .unwrap();
@@ -55,7 +55,7 @@ async fn test_実行木archive_状態確認後の自然完了で再登録でき�
     assert!(!workflow_fact_log::read_tree_records(&fixture.store, &id)
         .unwrap()
         .iter()
-        .any(|record| matches!(record.fact, NodeFact::AbortRequested)));
+        .any(|record| matches!(record.fact, NodeFact::AbortRequested(_))));
 }
 
 #[tokio::test]
@@ -84,7 +84,11 @@ async fn test_起動時recovery_gcのabortと直列化しarchive後に実行木�
             "name: recovery\ndescription: test\nnodes:\n  main: {{{node}}}"
         ))
         .unwrap();
+        let definition =
+            crate::adaptor::gateway::workflow::mapper::schema_workflow_to_domain(definition)
+                .unwrap();
         let fact = NodeFact::Started(StartedFact {
+            worktree: None,
             parent: None,
             root: Some(Box::new(TreeRootFact {
                 repository_root: Some("/repo".into()),
@@ -92,11 +96,8 @@ async fn test_起動時recovery_gcのabortと直列化しarchive後に実行木�
                 worktree_path: "/missing/worktree".into(),
                 created_from: ExecutionOrigin::Cli,
                 request: String::new(),
-                definition: crate::adaptor::gateway::workflow::mapper::schema_workflow_to_domain(
-                    definition,
-                )
-                .unwrap(),
-                definition_resolution: Default::default(),
+                workflow_name: definition.name.clone(),
+                definition: Some(definition),
                 launched_as,
             })),
         });
@@ -119,7 +120,7 @@ async fn test_起動時recovery_gcのabortと直列化しarchive後に実行木�
         .unwrap();
         let activation_gate = fixture.host.runtime_activation_gate(id).await;
         let activation_guard = activation_gate.lock.lock().await;
-        let mut recovery = Box::pin(fixture.host.reconcile_startup(&fixture.app));
+        let mut recovery = Box::pin(test_helpers::reconcile_startup(&fixture.host, &fixture.app));
         assert!(futures_util::poll!(recovery.as_mut()).is_pending());
         assert!(fixture.host.executions.lock().await.is_empty());
         assert!(fixture
@@ -147,7 +148,9 @@ async fn test_起動時recovery_gcのabortと直列化しarchive後に実行木�
             .unwrap();
         recovered.unwrap();
         archived.unwrap();
-        fixture.host.reconcile_startup(&fixture.app).await.unwrap();
+        test_helpers::reconcile_startup(&fixture.host, &fixture.app)
+            .await
+            .unwrap();
 
         // Then
         assert_eq!(
@@ -197,7 +200,7 @@ async fn test_起動時recovery_登録済みの実行木のプロセス起動を
     let _activation_guard = activation_gate.lock.lock().await;
     let before = workflow_fact_log::read_tree_records(&fixture.store, &id).unwrap();
     // When
-    let mut recovery = Box::pin(fixture.host.reconcile_startup(&fixture.app));
+    let mut recovery = Box::pin(test_helpers::reconcile_startup(&fixture.host, &fixture.app));
     assert!(matches!(
         futures_util::poll!(recovery.as_mut()),
         std::task::Poll::Ready(Ok(()))
@@ -459,7 +462,7 @@ async fn test_実行木archive_workflowをabortして停止完了後に隠し起
         .position(|record| {
             matches!(
                 record.fact,
-                crate::domain::workflow::NodeFact::AbortRequested
+                crate::domain::workflow::NodeFact::AbortRequested(_)
             )
         })
         .unwrap();
@@ -801,7 +804,7 @@ async fn test_実行木archive_終了済みは状態を保持しrestoreでも再
         assert_eq!(
             facts
                 .iter()
-                .filter(|record| matches!(record.fact, NodeFact::AbortRequested))
+                .filter(|record| matches!(record.fact, NodeFact::AbortRequested(_)))
                 .count(),
             usize::from(status == ExecutionStatus::Aborted)
         );
@@ -830,7 +833,7 @@ async fn test_実行木archive_command停止完了まではarchiveを記録し�
     };
     let root = started.root.as_mut().unwrap();
     root.launched_as = crate::domain::workflow::ExecutionTreeLaunch::Workflow;
-    root.definition.nodes[0].kind = NodeKind::Command(CommandSpec {
+    root.definition.as_mut().unwrap().nodes[0].kind = NodeKind::Command(CommandSpec {
         command: "unused".into(),
         env: Default::default(),
     });
@@ -927,7 +930,7 @@ async fn test_実行木archive_旧sessionのarchive事実も終了状態へ移�
     .unwrap();
     let mut pending = crate::adaptor::gateway::workflow::fact_log::pending_single_fact(
         &meta,
-        &NodeFact::AbortRequested,
+        &NodeFact::AbortRequested(Default::default()),
         42000,
     )
     .unwrap();
@@ -1169,7 +1172,8 @@ async fn test_archive移行_旧ファイルも対象も無い起動では無関�
         })
         .collect::<Vec<_>>();
     let mut corrupt = rows[1].clone();
-    corrupt.row.event_type = NodeFact::AbortRequested.event_type().into();
+    corrupt.row.event_type =
+        super::fact_codec::event_type(&NodeFact::AbortRequested(Default::default())).into();
     corrupt.row.detail = "broken history".into();
     rows.push(corrupt);
     crate::adaptor::gateway::workflow::fact_log::append_pending_rows_blocking(&fixture.store, rows)

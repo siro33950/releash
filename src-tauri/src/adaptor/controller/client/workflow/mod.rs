@@ -1679,6 +1679,7 @@ pub(crate) mod tests {
                     timestamp: 400.0,
                 },
                 WorkflowEvent::NodeStarted {
+                    worktree: None,
                     execution_id: execution_id.clone(),
                     node_execution_id: "ne-main-1".to_string(),
                     node_name: "main".to_string(),
@@ -1738,6 +1739,7 @@ pub(crate) mod tests {
                     timestamp: 500.0,
                 },
                 WorkflowEvent::NodeStarted {
+                    worktree: None,
                     execution_id: execution_id.clone(),
                     node_execution_id: "ne-main-1".to_string(),
                     node_name: "main".to_string(),
@@ -1826,6 +1828,7 @@ pub(crate) mod tests {
                     timestamp: 100.0,
                 },
                 WorkflowEvent::NodeStarted {
+                    worktree: None,
                     execution_id: execution_id.clone(),
                     node_execution_id: "ne-main-1".to_string(),
                     node_name: "main".to_string(),
@@ -1835,6 +1838,7 @@ pub(crate) mod tests {
                     timestamp: 100.0,
                 },
                 WorkflowEvent::NodeStarted {
+                    worktree: None,
                     execution_id: execution_id.clone(),
                     node_execution_id: "ne-plan-1".to_string(),
                     node_name: "plan".to_string(),

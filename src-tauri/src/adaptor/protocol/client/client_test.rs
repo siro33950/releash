@@ -220,7 +220,13 @@ fn test_workflow状態_protoは削除した番号と名前を予約し残る三�
         assert_eq!(
             status.reserved_names().collect::<Vec<_>>(),
             if name == "WorkspaceHistoryStatus" {
-                vec!["paused", "failed", "waiting_approval", "interrupted"]
+                vec![
+                    "paused",
+                    "failed",
+                    "waiting_approval",
+                    "interrupted",
+                    "unresolved",
+                ]
             } else {
                 vec!["waiting_approval", "interrupted"]
             }
@@ -377,4 +383,37 @@ fn removed_workflow_commands_and_node_fields_cannot_reuse_their_wire_tags() {
             assert!(status.get_value_by_name(removed).is_none());
         }
     }
+}
+
+#[test]
+fn test_実行状態_削除した未解決状態のwire値を受け入れない() {
+    // Given / When / Then
+    assert!(NodeExecutionStatusView::try_from("unresolved").is_err());
+    assert!(json::from_message(
+        "releash.client.v1.NodeExecutionStatusView",
+        &NodeExecutionStatusView { value: Some(0) }
+    )
+    .is_err());
+    assert!(json::to_message::<NodeExecutionStatusView>(
+        "releash.client.v1.NodeExecutionStatusView",
+        serde_json::json!("unresolved")
+    )
+    .is_err());
+}
+
+#[test]
+fn test_状態分類_到達不能なfailureを公開せず番号と名前を予約する() {
+    // Given
+    let pool = prost_reflect::DescriptorPool::decode(
+        include_bytes!(concat!(env!("OUT_DIR"), "/client_descriptor.bin")).as_slice(),
+    )
+    .unwrap();
+    let status = pool
+        .get_enum_by_name("releash.client.v1.WorkspaceStatusClassification.Value")
+        .unwrap();
+    // When / Then
+    assert!(status.reserved_ranges().any(|range| range.contains(&2)));
+    assert!(status.reserved_names().any(|name| name == "failure"));
+    assert!(status.get_value(2).is_none());
+    assert!(status.get_value_by_name("failure").is_none());
 }

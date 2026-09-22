@@ -34,6 +34,8 @@ pub enum WorkflowEvent {
         timestamp: f64,
     },
     NodeStarted {
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        worktree: Option<super::IsolatedWorktree>,
         execution_id: String,
         node_execution_id: String,
         node_name: String,

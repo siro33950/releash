@@ -1715,7 +1715,8 @@ message NodeExecutionView {
   reserved 20;
   reserved "failure";
   optional NodeWorktreeDto worktree = 1 [json_name = "worktree", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
-  optional string recovery_reason = 2 [json_name = "recoveryReason", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
+  reserved 2;
+  reserved "recovery_reason";
   optional string id = 3 [json_name = "id", (json_required) = true];
   optional string execution_id = 4 [json_name = "executionId", (json_required) = true];
   optional string node_name = 5 [json_name = "nodeName", (json_required) = true];
@@ -1769,7 +1770,8 @@ message NodeExecutionStatusView {
   enum Value {
     reserved 2, 5;
     reserved "paused", "failed";
-    unresolved = 0 [(json_enum_name) = "unresolved"];
+    reserved "unresolved";
+    unspecified = 0;
     running = 1 [(json_enum_name) = "running"];
     waiting_approval = 3 [(json_enum_name) = "waiting_approval"];
     succeeded = 4 [(json_enum_name) = "succeeded"];
@@ -1855,7 +1857,8 @@ message WorkspaceNodeDetailDto {
   optional WorkspaceWaitingFor waiting_for = 8 [json_name = "waitingFor", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
   optional bool has_artifact = 9 [json_name = "hasArtifact", (json_required) = true];
   optional string error_reason = 10 [json_name = "errorReason", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
-  optional string recovery_reason = 11 [json_name = "recoveryReason", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
+  reserved 11;
+  reserved "recovery_reason";
   optional WorkspaceNodeCapabilitiesDto capabilities = 12 [json_name = "capabilities", (json_required) = true];
   optional double updated_at = 13 [json_name = "updatedAt", (json_required) = true];
   optional WorkspaceNodeContentDto content = 14 [json_name = "content", (json_required) = true];
@@ -3199,7 +3202,8 @@ message WorkspaceNodeStatus {
   enum Value {
     reserved 2, 3;
     reserved "paused", "failed";
-    unresolved = 0 [(json_enum_name) = "unresolved"];
+    reserved "unresolved";
+    unspecified = 0;
     running = 1 [(json_enum_name) = "running"];
     waiting = 4 [(json_enum_name) = "waiting"];
     aborted = 5 [(json_enum_name) = "aborted"];
@@ -3213,7 +3217,8 @@ message WorkspaceStatusClassification {
   enum Value {
     active = 0 [(json_enum_name) = "active"];
     attention = 1 [(json_enum_name) = "attention"];
-    failure = 2 [(json_enum_name) = "failure"];
+    reserved 2;
+    reserved "failure";
     idle = 3 [(json_enum_name) = "idle"];
     unbound = 4 [(json_enum_name) = "unbound"];
   }
@@ -3227,7 +3232,8 @@ message WorkspaceHistoryStatus {
     reserved "paused", "failed";
     reserved 7, 8;
     reserved "waiting_approval", "interrupted";
-    unresolved = 0 [(json_enum_name) = "unresolved"];
+    reserved "unresolved";
+    unspecified = 0;
     running = 1 [(json_enum_name) = "running"];
     waiting = 4 [(json_enum_name) = "waiting"];
     aborted = 5 [(json_enum_name) = "aborted"];

@@ -35,6 +35,69 @@ fn row(tree_id: &str, node_execution_id: &str, parent_id: Option<&str>) -> NewNo
     }
 }
 
+#[test]
+fn test_tree先頭事実取得_種別ごとの索引で最初の終端だけを返す() {
+    // Given
+    let connection = connection();
+    for _ in 0..1_000 {
+        append_node_event(&connection, &row("tree", "root", None), 1).unwrap();
+    }
+    for (tree, node, event_type) in [
+        ("other", "other-root", "execution_completed"),
+        ("tree", "retried-root", "abort_requested"),
+        ("tree", "root", "execution_completed"),
+        ("tree", "root", "abort_requested"),
+    ] {
+        let mut fact = row(tree, node, None);
+        fact.event_type = event_type.into();
+        append_node_event(&connection, &fact, 2).unwrap();
+    }
+    connection
+        .execute_batch("DROP INDEX idx_node_events_tree_event_type")
+        .unwrap();
+    assert!(
+        !crate::adaptor::gateway::local_event_store::schema::evolve_schema(
+            &connection,
+            &FaultInjector::new(),
+        )
+        .unwrap()
+    );
+
+    let plan: String = connection
+        .query_row(
+            "EXPLAIN QUERY PLAN SELECT seq FROM node_events
+         WHERE tree_id = 'tree' AND event_type = 'abort_requested' ORDER BY seq LIMIT 1",
+            [],
+            |row| row.get(3),
+        )
+        .unwrap();
+    assert!(plan.contains("idx_node_events_tree_event_type"), "{plan}");
+
+    // When / Then
+    let first = super::first_row_for_tree_with_event_types(
+        &connection,
+        "tree",
+        &["execution_completed", "abort_requested"],
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(first.event_type, "abort_requested");
+    assert_eq!(first.node_execution_id, "retried-root");
+    assert_eq!(first.seq, 1_001);
+    assert!(
+        super::first_row_for_tree_with_event_types(&connection, "tree", &[])
+            .unwrap()
+            .is_none()
+    );
+    assert!(super::first_row_for_tree_with_event_types(
+        &connection,
+        "missing",
+        &["abort_requested"]
+    )
+    .unwrap()
+    .is_none());
+}
+
 mod append_node_event_tests {
     use super::*;
 
