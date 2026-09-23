@@ -11,6 +11,24 @@ pub(crate) fn register_shared(
     {
         let app_state = deps.app_state.clone();
         router.register_domain(
+            &["get_workspaces"],
+            Box::new(move |command| {
+                let app_state = app_state.clone();
+                Box::pin(async move {
+                    let wire::command_request::Command::GetWorkspaces(_) = command else {
+                        return Err(invalid_request("Mismatched command"));
+                    };
+                    let app_state = app_state
+                        .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
+                    outcome(Ok::<_, String>(app_state.workspace_list.snapshot()))
+                        .map(wire::command_result::Command::GetWorkspaces)
+                })
+            }),
+        );
+    }
+    {
+        let app_state = deps.app_state.clone();
+        router.register_domain(
             &["refresh_workspaces"],
             Box::new(move |command| {
                 let app_state = app_state.clone();

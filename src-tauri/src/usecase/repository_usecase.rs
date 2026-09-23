@@ -1528,7 +1528,6 @@ mod repository_usecase_tests {
             assert!(snapshot.branches[0].is_deleting);
             assert_eq!(snapshot.worktree_display_groups.working_areas.len(), 1);
             assert!(snapshot.worktree_display_groups.working_areas[0].is_deleting);
-            assert!(state.list_branches_with_status("/repo").unwrap()[0].is_deleting);
             let wire: crate::adaptor::protocol::client::BranchCardDto =
                 cards.remove(0).try_into().unwrap();
             assert_eq!(wire.is_deleting, Some(true));

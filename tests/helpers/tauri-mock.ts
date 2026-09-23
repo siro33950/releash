@@ -304,6 +304,9 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 				};
 			}
 
+            if (cmd === "get_workspaces" && !(cmd in cfg.responses)) {
+                return workspaceSnapshot ?? { generation: 0, status: { loaded: false, error: null, state: "loading" }, repositories: [] };
+            }
             if (cmd === "refresh_workspaces" && !(cmd in cfg.responses)) {
                 if (args.worktreePath) {
                     const tree = workspaceSnapshot?.repositories.flatMap(repo => repo.worktrees).find(tree => tree.path === args.worktreePath);
@@ -311,6 +314,7 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
                         const worktreePath = tree.path;
                         tree.snapshot = await executeCommand("list_workspace_worktree_nodes", { worktreePath }) as typeof tree.snapshot;
                         tree.workflowHistory = await executeCommand("list_workspace_workflow_history", { worktreePath }) as typeof tree.workflowHistory;
+                        tree.status = { loaded: true, error: null, state: tree.snapshot?.nodes.length ? "ready" : "empty" };
                     }
                     return workspaceSnapshot;
                 }
@@ -324,11 +328,12 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
                     });
                     const worktrees = await Promise.all(branches.filter(branch => branch.worktree_path).map(async (branch) => {
                         const worktreePath = branch.worktree_path as string;
-                        return { path: worktreePath, status: { loaded: true, error: null }, snapshot: await executeCommand("list_workspace_worktree_nodes", { worktreePath }), workflowHistory: await executeCommand("list_workspace_workflow_history", { worktreePath }) };
+                        const snapshot = await executeCommand("list_workspace_worktree_nodes", { worktreePath }) as { nodes: unknown[] };
+                        return { path: worktreePath, status: { loaded: true, error: null, state: snapshot.nodes.length ? "ready" : "empty" }, snapshot, workflowHistory: await executeCommand("list_workspace_workflow_history", { worktreePath }) };
                     }));
-                    return { path, status: { loaded: true, error: null }, branches, worktrees };
+                    return { path, status: { loaded: true, error: null, state: branches.length ? "ready" : "empty" }, branches, worktrees };
                 }));
-                workspaceSnapshot = { generation: invocations.length, status: { loaded: true, error: null }, repositories } as WorkspaceListSnapshotDto;
+                workspaceSnapshot = { generation: invocations.length, status: { loaded: true, error: null, state: repositories.length ? "ready" : "empty" }, repositories } as WorkspaceListSnapshotDto;
                 return workspaceSnapshot;
             }
 

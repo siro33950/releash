@@ -215,7 +215,7 @@ it.each([
 		repositories: [
 			{
 				path: "/repo",
-				status: { loaded: true, error: null },
+				status: { loaded: true, error: null, state: "ready" },
 				branches: [],
 				worktrees: [],
 			},
@@ -224,7 +224,7 @@ it.each([
 ])("Workspacesの正常な空配列をprotobuf往復で保持する", ({ repositories }) => {
 	const value = {
 		generation: 1,
-		status: { loaded: true, error: null },
+		status: { loaded: true, error: null, state: "ready" },
 		repositories,
 	};
 	const message = fromJson(

@@ -294,7 +294,11 @@ it("設定とWorkspacesは更新中と失敗時も同じ登録一覧を保持し
 it("登録一覧の初回取得失敗snapshotでも復元を完了し再取得できる", async () => {
 	let next = {
 		...workspaceListSnapshot(),
-		status: { loaded: false, error: "read failed" as string | null },
+		status: {
+			loaded: false,
+			error: "read failed" as string | null,
+			state: "initialFailed",
+		},
 		repositories: [] as ReturnType<
 			typeof workspaceListSnapshot
 		>["repositories"],

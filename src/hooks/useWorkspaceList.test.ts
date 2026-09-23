@@ -58,14 +58,14 @@ describe("useWorkspaceList", () => {
 		});
 		expect(result.current).not.toBe(previous);
 		expect(result.current.snapshot).toBe(previous.snapshot);
-		expect(result.current.error).toBe("deadline exceeded");
+		expect(result.current.requestError?.message).toBe("deadline exceeded");
 		const failed = result.current;
 		mocks.invoke.mockResolvedValueOnce(previous.snapshot);
 		await act(async () => {
 			await result.current.refresh();
 		});
 		expect(result.current).not.toBe(failed);
-		expect(result.current.error).toBeNull();
+		expect(result.current.requestError).toBeNull();
 		const recovered = result.current;
 		const latest = workspaceListSnapshot();
 		latest.generation = 2;
@@ -83,94 +83,81 @@ describe("useWorkspaceList", () => {
 	});
 
 	it.each(["worktree", "repository", "all"])(
-		"WorktreeのRPC失敗は無関係な成功で消えず%sの再取得成功で解消する",
+		"Worktreeの取得失敗はRustの状態を表示し%sの再取得結果で解消する",
 		async (scope) => {
+			const failed = workspaceListSnapshot();
+			failed.repositories[0].worktrees[0].status = {
+				loaded: true,
+				state: "refreshFailed",
+				error: "offline",
+			};
+			mocks.invoke.mockResolvedValue(failed);
 			const { result } = renderHook(() => useWorkspaceList());
-			await waitFor(() => expect(result.current.snapshot).not.toBeNull());
-			const previous = result.current.snapshot;
-			mocks.invoke.mockRejectedValueOnce(new Error("offline"));
-			await act(async () => {
-				await result.current.refreshWorktree("/repo");
-			});
-			expect(result.current.snapshot).toBe(previous);
-			expect(result.current.error).toBeNull();
-			expect(result.current.worktreeErrors["/repo"]).toBe("offline");
+			await waitFor(() => expect(result.current.snapshot).toBe(failed));
 			await act(async () => {
 				await result.current.refreshWorktree("/other");
-			});
-			await act(async () => {
 				await result.current.refreshRepository("/other");
 			});
-			expect(result.current.worktreeErrors["/repo"]).toBe("offline");
-			const failed = workspaceListSnapshot();
-			failed.repositories[0].worktrees[0].status.error = "still offline";
-			mocks.invoke.mockResolvedValueOnce(failed);
-			await act(async () => {
-				await result.current.refresh();
-			});
-			expect(result.current.worktreeErrors["/repo"]).toBe("offline");
+			expect(
+				result.current.snapshot?.repositories[0].worktrees[0].status.error,
+			).toBe("offline");
+			const recovered = workspaceListSnapshot();
+			mocks.invoke.mockResolvedValueOnce(recovered);
 			await act(async () => {
 				if (scope === "worktree") await result.current.refreshWorktree("/repo");
 				else if (scope === "repository")
 					await result.current.refreshRepository("/repo");
 				else await result.current.refresh();
 			});
-			expect(result.current.worktreeErrors).toEqual({});
+			expect(result.current.snapshot).toBe(recovered);
+			expect(
+				result.current.snapshot?.repositories[0].worktrees[0].status.error,
+			).toBeNull();
 		},
 	);
 
 	it.each(["repository", "all"])(
-		"RepositoryのRPC失敗は対象だけに保持し%sの再取得成功で解消する",
+		"Repositoryの取得失敗は対象だけに表示し%sの再取得結果で解消する",
 		async (scope) => {
+			const failed = workspaceListSnapshot();
+			failed.repositories[0].status = {
+				loaded: true,
+				state: "refreshFailed",
+				error: "repository offline",
+			};
+			mocks.invoke.mockResolvedValue(failed);
 			const { result } = renderHook(() => useWorkspaceList());
-			await waitFor(() => expect(result.current.snapshot).not.toBeNull());
-			const previous = result.current.snapshot;
-			mocks.invoke.mockRejectedValueOnce(new Error("repository offline"));
-			await act(async () => {
-				await result.current.refreshRepository("/repo");
-			});
-			expect(result.current.snapshot).toBe(previous);
-			expect(result.current.error).toBeNull();
-			expect(result.current.repositoryErrors).toEqual({
-				"/repo": "repository offline",
-			});
+			await waitFor(() => expect(result.current.snapshot).toBe(failed));
 			await act(async () => {
 				await result.current.refreshRepository("/other");
 				await result.current.refreshWorktree("/repo");
 			});
-			expect(result.current.repositoryErrors["/repo"]).toBe(
+			expect(result.current.snapshot?.status.error).toBeNull();
+			expect(result.current.snapshot?.repositories[0].status.error).toBe(
 				"repository offline",
 			);
-			for (const status of [
-				{ loaded: false, error: null },
-				{ loaded: true, error: "scan failed" },
-			]) {
-				const failed = workspaceListSnapshot();
-				failed.repositories[0].status = status;
-				mocks.invoke.mockResolvedValueOnce(failed);
-				await act(async () => {
-					await result.current.refresh();
-				});
-				expect(result.current.repositoryErrors["/repo"]).toBe(
-					"repository offline",
-				);
-			}
+			const recovered = workspaceListSnapshot();
+			mocks.invoke.mockResolvedValueOnce(recovered);
 			await act(async () => {
 				if (scope === "repository")
 					await result.current.refreshRepository("/repo");
 				else await result.current.refresh();
 			});
-			expect(result.current.repositoryErrors).toEqual({});
+			expect(result.current.snapshot).toBe(recovered);
+			expect(result.current.snapshot?.repositories[0].status.error).toBeNull();
 		},
 	);
 
-	it("全体RPC失敗は局所成功や登録一覧の取得失敗では消えず全体の再取得成功で解消する", async () => {
+	it("全体の取得失敗は局所成功では消えずRustの全体再取得結果で解消する", async () => {
+		const failed = workspaceListSnapshot();
+		failed.status = {
+			loaded: true,
+			state: "refreshFailed",
+			error: "all offline",
+		};
+		mocks.invoke.mockResolvedValue(failed);
 		const { result } = renderHook(() => useWorkspaceList());
-		await waitFor(() => expect(result.current.snapshot).not.toBeNull());
-		mocks.invoke.mockRejectedValueOnce(new Error("all offline"));
-		await act(async () => {
-			await result.current.refresh();
-		});
+		await waitFor(() => expect(result.current.snapshot).toBe(failed));
 		for (const refresh of [
 			() => result.current.refreshWorktree("/repo"),
 			() => result.current.refreshRepository("/repo"),
@@ -178,25 +165,55 @@ describe("useWorkspaceList", () => {
 			await act(async () => {
 				await refresh();
 			});
-			expect(result.current.error).toBe("all offline");
+			expect(result.current.snapshot?.status.error).toBe("all offline");
 		}
-		for (const status of [
-			{ loaded: false, error: null },
-			{ loaded: true, error: "repositories failed" },
-		]) {
-			const failed = workspaceListSnapshot();
-			failed.status = status;
-			mocks.invoke.mockResolvedValueOnce(failed);
-			await act(async () => {
-				await result.current.refresh();
-			});
-			expect(result.current.error).toBe("all offline");
-		}
+		const recovered = workspaceListSnapshot();
+		mocks.invoke.mockResolvedValueOnce(recovered);
 		await act(async () => {
 			await result.current.refresh();
 		});
-		expect(result.current.error).toBeNull();
+		expect(result.current.snapshot?.status.error).toBeNull();
 	});
+
+	it.each(["worktree", "repository", "all"])(
+		"%sの通信失敗は一覧の状態を上書きせず対象付きの操作結果として通知する",
+		async (scope) => {
+			const failed = workspaceListSnapshot();
+			failed.repositories[0].status = {
+				loaded: true,
+				state: "refreshFailed",
+				error: "scan failed",
+			};
+			mocks.invoke.mockResolvedValue(failed);
+			const { result } = renderHook(() => useWorkspaceList());
+			await waitFor(() => expect(result.current.snapshot).toBe(failed));
+			mocks.invoke.mockRejectedValueOnce(new Error("offline"));
+			await act(async () => {
+				if (scope === "worktree") await result.current.refreshWorktree("/repo");
+				else if (scope === "repository")
+					await result.current.refreshRepository("/repo");
+				else await result.current.refresh();
+			});
+			expect(result.current.snapshot).toBe(failed);
+			expect(result.current.requestError).toEqual({
+				message: "offline",
+				path: scope === "all" ? undefined : "/repo",
+			});
+			await act(async () => {
+				mocks.listen.mock.calls.find(
+					([event]) => event === "workspace-list-changed",
+				)?.[1]();
+			});
+			expect(result.current.requestError?.message).toBe("offline");
+			await act(async () => {
+				await result.current.refresh();
+			});
+			expect(result.current.requestError).toBeNull();
+			expect(result.current.snapshot?.repositories[0].status.error).toBe(
+				"scan failed",
+			);
+		},
+	);
 
 	it("初回未取得と正常な空を区別する", async () => {
 		const pending = deferred<ReturnType<typeof workspaceListSnapshot>>();
@@ -206,7 +223,7 @@ describe("useWorkspaceList", () => {
 		await act(async () =>
 			pending.resolve({
 				generation: 1,
-				status: { loaded: true, error: null },
+				status: { loaded: true, error: null, state: "ready" },
 				repositories: [],
 			}),
 		);
@@ -230,11 +247,11 @@ describe("useWorkspaceList", () => {
 			await request;
 		});
 		expect(result.current.snapshot).toBe(previous);
-		expect(result.current.error).toBe("deadline exceeded");
+		expect(result.current.requestError?.message).toBe("deadline exceeded");
 		await act(async () => {
 			await result.current.refresh();
 		});
-		expect(result.current.error).toBeNull();
+		expect(result.current.requestError).toBeNull();
 	});
 
 	it("一覧RPCを直列に呼びRustから受け取った結果を順に表示する", async () => {
@@ -258,6 +275,75 @@ describe("useWorkspaceList", () => {
 		expect(result.current.snapshot).toBe(latest);
 	});
 
+	it("進行中に重なる未開始の全体更新を一回にまとめる", async () => {
+		const pending = deferred<ReturnType<typeof workspaceListSnapshot>>();
+		mocks.invoke.mockReturnValueOnce(pending.promise);
+		const { result } = renderHook(() => useWorkspaceList());
+		await waitFor(() => expect(mocks.invoke).toHaveBeenCalledTimes(1));
+		let queued!: Promise<unknown>[];
+		act(() => {
+			queued = [
+				result.current.refresh(),
+				result.current.refresh(),
+				result.current.refresh(),
+			];
+		});
+		expect(queued[0]).toBe(queued[1]);
+		await act(async () => {
+			pending.resolve(workspaceListSnapshot());
+			await Promise.all(queued);
+		});
+		expect(mocks.invoke).toHaveBeenCalledTimes(2);
+	});
+
+	it("PR通知のsnapshot読取も同じRPC列で更新の応答後に反映する", async () => {
+		const { result } = renderHook(() => useWorkspaceList());
+		await waitFor(() => expect(result.current.snapshot).not.toBeNull());
+		const pending = deferred<ReturnType<typeof workspaceListSnapshot>>();
+		const next = workspaceListSnapshot();
+		next.generation = 3;
+		next.repositories[0].branches[0].has_pr = true;
+		mocks.invoke
+			.mockReturnValueOnce(pending.promise)
+			.mockResolvedValueOnce(next);
+		let refresh!: Promise<unknown>;
+		act(() => {
+			refresh = result.current.refresh();
+		});
+		await waitFor(() => expect(mocks.invoke).toHaveBeenCalledTimes(2));
+		act(() => {
+			mocks.listen.mock.calls.find(
+				([event]) => event === "workspace-list-changed",
+			)?.[1]();
+		});
+		expect(mocks.invoke).toHaveBeenCalledTimes(2);
+		await act(async () => {
+			pending.resolve(workspaceListSnapshot());
+			await refresh;
+		});
+		expect(mocks.invoke).toHaveBeenLastCalledWith("get_workspaces", {});
+		expect(result.current.snapshot).toBe(next);
+	});
+
+	it("PR通知後の読取失敗は一覧と一覧の取得状態を変更しない", async () => {
+		const { result } = renderHook(() => useWorkspaceList());
+		await waitFor(() => expect(result.current.snapshot).not.toBeNull());
+		const previous = result.current;
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		mocks.invoke.mockRejectedValueOnce(new Error("offline"));
+		await act(async () => {
+			mocks.listen.mock.calls.find(
+				([event]) => event === "workspace-list-changed",
+			)?.[1]();
+		});
+		expect(result.current).toBe(previous);
+		expect(warn).toHaveBeenCalledWith(
+			"[useWorkspaceList] get_workspaces failed",
+			expect.any(Error),
+		);
+		warn.mockRestore();
+	});
+
 	it("登録済みRepositoryを監視し削除とunmountで解除する", async () => {
 		const { result, unmount } = renderHook(() => useWorkspaceList());
 		await waitFor(() =>
@@ -269,7 +355,7 @@ describe("useWorkspaceList", () => {
 		);
 		mocks.invoke.mockResolvedValueOnce({
 			generation: 2,
-			status: { loaded: true, error: null },
+			status: { loaded: true, error: null, state: "ready" },
 			repositories: [],
 		});
 		await act(async () => {
@@ -297,7 +383,7 @@ describe("useWorkspaceList", () => {
 			worktreePath: "/repo",
 		});
 		expect(result.current.snapshot).not.toBeNull();
-		expect(result.current.error).toBe("deadline exceeded");
+		expect(result.current.requestError).toBeNull();
 	});
 
 	it("Repository再読込は対象をRPCへ渡す", async () => {

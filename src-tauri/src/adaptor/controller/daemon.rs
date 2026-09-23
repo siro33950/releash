@@ -264,7 +264,11 @@ pub(crate) async fn compose(
             repository_state.clone(),
             workflow_usecase.clone(),
             git_host_usecase.clone(),
-        ),
+        )
+        .with_notifier({
+            let push = push_sink.clone();
+            move || crate::adaptor::gateway::push::BackendPush::WorkspaceListChanged.emit(&push)
+        }),
     );
     let app_state = AppState {
         workspace_list,

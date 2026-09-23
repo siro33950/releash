@@ -26,6 +26,11 @@
 - `RepoTreeSectionView` は `loading` の間、Repository 配下の一覧をスピナー1つへ差し替える（`src/components/workspace/WorkspaceList.tsx:1660-1684`）。配下の `WorktreeTreeItem` が unmount され、そこに紐づく展開状態と `useWorkspaceTreeNodes` が保持する Session・Workflow 一覧が失われる。
 - 再現手順は、Repository を展開し、配下の Worktree を展開して Session・Workflow を表示した状態で、その Repository 行の Refresh（`aria-label` は `Refresh <repoName>`、`src/components/workspace/WorkspaceList.tsx:1648-1658`）を押すことである。
 
+## PR 情報の取得が完了するまで一覧を表示しない
+
+- `useWorktreeList.refresh()` は snapshot を取得した後に `enrichWithPrStatus` の完了を待ってから `setBranches` を呼ぶ（`src/hooks/useWorktreeList.ts:46-73`）。PR 情報より先に一覧を表示する経路はない。
+- PR 情報の取得は Repository ごとの表示部品からそれぞれ呼ばれ、`run_blocking` で実行される（`src-tauri/src/adaptor/controller/client/git_host/pr.rs:14-20`）。ある Repository の PR 情報の取得は、他の Repository の PR 情報の反映を待たせない。
+
 ## 未取得を表す空の結果を一覧として反映しうる
 
 - 自動更新は `silent: true` で呼ばれ、スピナーへの差し替えは行わない（`src/hooks/useWorktreeList.ts:90-109`）。
@@ -65,6 +70,8 @@
 - 手動更新の進行表示と重複操作の抑止
 - 更新結果の新旧の判定
 - 登録 Repository 一覧を表示する画面が参照する一覧の、Workspaces の更新結果への一本化
+- 一覧の取得と PR 情報の取得の分離、および PR 情報の一覧への反映
+- 未開始の全体更新の要求の統合
 
 ## 変更しない対象
 
@@ -82,7 +89,7 @@
 - R-002: 更新の前後で存在し続ける対象について、更新をまたいで展開状態、選択、Workspaces 一覧のスクロール位置を維持し、表示中の Session を切り替えない。
 - R-003: Workspaces 行に更新の操作を一つ置く。Repository ごとの更新の操作はない。
 - R-004: 一覧の取得に失敗している状態でも、Workspaces 行の更新の操作を実行できる。
-- R-005: 手動更新と自動更新は、登録 Repository 一覧、各 Repository の Worktree 一覧、各 Worktree 配下の Session・Workflow の一覧情報を対象とする。折りたたまれている Repository も対象に含み、表示部品の再作成に依存せずに更新する。
+- R-005: 手動更新と自動更新は、登録 Repository 一覧、各 Repository の Worktree 一覧、各 Worktree 配下の Session・Workflow の一覧情報、および各 Repository の PR 情報を対象とする。折りたたまれている Repository も対象に含み、表示部品の再作成に依存せずに更新する。
 - R-006: 手動更新と自動更新は、Repository について走査を実際に再実行し、その結果を一覧へ反映する。保存済みの結果をそのまま反映しない。
 - R-007: 自動更新に失敗した後も、アプリを再起動せず Workspaces 行の更新の操作から再取得でき、取得に成功した対象は最新の内容で表示される。
 - R-008: 一部または全部の対象で取得に失敗しても、取得に成功した対象は更新し、失敗した対象は直前に取得できた一覧を表示し続ける。
@@ -94,6 +101,10 @@
 - R-014: 正常に取得した結果が空である場合、および正常な取得によって対象の削除が確認できた場合は、その結果を一覧へ反映する。
 - R-015: 更新中、更新の失敗中、失敗からの復旧後を通して、表示中の Session と実行中の Workflow の実行は継続する。
 - R-016: 登録 Repository 一覧を表示する画面は、Workspaces が表示している登録 Repository 一覧と同じ Repository を表示する。Workspaces の更新によって登録 Repository 一覧が変わった場合も一致する。
+- R-017: 一覧の表示は PR 情報の取得を待たない。PR 情報が未取得の対象でも、取得できた一覧をその時点で表示し、PR 情報は取得できた時点で一覧の表示へ反映する。
+- R-018: PR 情報の取得の失敗および遅延は、一覧の表示と一覧の更新結果に影響しない。
+- R-019: ある Repository の PR 情報の取得は、他の Repository の PR 情報の一覧への反映を待たせない。
+- R-020: 更新の処理中に同じ全体更新の契機が複数回生じても、まだ開始していない全体更新の要求は一つに統合される。
 
 # Assumptions / Open Questions
 

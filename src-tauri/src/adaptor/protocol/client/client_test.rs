@@ -428,12 +428,14 @@ fn test_workspaces一覧_保持した情報と取得状態がwireを往復する
     let snapshot = WorkspaceListSnapshotDto {
         generation: 3,
         status: WorkspaceListStatusDto {
+            state: "ready",
             loaded: true,
             error: None,
         },
         repositories: vec![WorkspaceRepositoryListDto {
             path: "/repo".into(),
             status: WorkspaceListStatusDto {
+                state: "refreshFailed",
                 loaded: true,
                 error: Some("scan failed".into()),
             },
@@ -457,6 +459,7 @@ fn test_workspaces一覧_保持した情報と取得状態がwireを往復する
             worktrees: vec![WorkspaceWorktreeListDto {
                 path: "/repo".into(),
                 status: WorkspaceListStatusDto {
+                    state: "initialFailed",
                     loaded: false,
                     error: Some("nodes failed".into()),
                 },

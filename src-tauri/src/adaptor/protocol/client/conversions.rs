@@ -5042,6 +5042,7 @@ impl TryFrom<crate::usecase::workspace_tree::WorkspaceListStatusDto>
     ) -> Result<Self, String> {
         Ok(Self {
             loaded: Some(value.loaded),
+            state: Some(value.state.to_owned()),
             error: value.error,
         })
     }

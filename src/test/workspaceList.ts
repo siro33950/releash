@@ -14,11 +14,11 @@ export function workspaceListSnapshot(
 ): WorkspaceListSnapshotDto {
 	return {
 		generation: 1,
-		status: { loaded: true, error: null },
+		status: { loaded: true, error: null, state: "ready" },
 		repositories: [
 			{
 				path: "/repo",
-				status: { loaded: true, error: null },
+				status: { loaded: true, error: null, state: "ready" },
 				branches: [
 					{
 						name: "feature",
@@ -39,7 +39,11 @@ export function workspaceListSnapshot(
 				worktrees: [
 					{
 						path: worktreePath,
-						status: { loaded: true, error: null },
+						status: {
+							loaded: true,
+							error: null,
+							state: snapshot.nodes.length === 0 ? "empty" : "ready",
+						},
 						snapshot: snapshot as WorkspaceTreeSnapshotDto,
 						workflowHistory: [],
 					},

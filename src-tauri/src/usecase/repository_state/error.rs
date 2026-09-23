@@ -3,6 +3,8 @@ use crate::usecase::repository_error::UsecaseError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RepositoryStateError {
+    #[error("Repository changed during rescan; retry the refresh")]
+    ScanInvalidated,
     #[error(transparent)]
     Repository(#[from] UsecaseError),
     #[error(transparent)]

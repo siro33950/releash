@@ -39,6 +39,7 @@ interface UseWorkspaceTreeNodesResult {
 	reconciliationEvent: WorkspaceTreeReconciliationEvent | null;
 	loading: boolean;
 	loaded: boolean;
+	state: string;
 	error: string | null;
 	refresh: () => Promise<WorkspaceTreeRefreshResult | null>;
 	beginArchiveReconciliation: (
@@ -93,6 +94,7 @@ export function useWorkspaceTreeNodes(
 		useRef<WorkspaceReconciliationRequestContext | null>(null);
 	const observedSelectedNodeIdRef = useRef<string | null>(null);
 	const acceptedReconciliationSeqRef = useRef<number | null>(null);
+	const pendingReconciliationSeqRef = useRef<number | null>(null);
 
 	const hasLoadedCurrentWorktree = useCallback(
 		() => loadedWorktreePathRef.current === worktreePath,
@@ -137,6 +139,7 @@ export function useWorkspaceTreeNodes(
 					? { snapshot: tree.snapshot, reconciliationEvent: null }
 					: null;
 			}
+			pendingReconciliationSeqRef.current = seq;
 			const selectionResult = await invoke(
 				"get_workspace_tree_selection_reconciliation",
 				{
@@ -144,7 +147,7 @@ export function useWorkspaceTreeNodes(
 					selectedNodeId: activeRequestContext.selectedNodeId,
 				},
 			);
-			if (
+			const isOutdated = () =>
 				seq !== refreshSeqRef.current ||
 				!sameReconciliationContext(
 					reconciliationContextRef.current,
@@ -154,9 +157,16 @@ export function useWorkspaceTreeNodes(
 				observedSelectedNodeIdRef.current !==
 					activeRequestContext.selectedNodeId ||
 				reconciliationGenerationRef.current !==
-					activeRequestContext.reconciliationGeneration
-			)
-				return null;
+					activeRequestContext.reconciliationGeneration;
+
+			if (isOutdated()) return null;
+			const result = await refreshWorktree(worktreePath);
+			if (isOutdated() || !result) return null;
+			const tree = result.repositories
+				.flatMap((repo) => repo.worktrees)
+				.find((tree) => tree.path === worktreePath);
+			if (tree?.status.error) throw new Error(tree.status.error);
+			if (!tree?.status.loaded || !tree.snapshot) return null;
 			const snapshot = selectionResult.snapshot;
 			reconciliationContextRef.current = null;
 			acceptedReconciliationSeqRef.current = seq;
@@ -171,6 +181,7 @@ export function useWorkspaceTreeNodes(
 			setTreeState((current) => ({
 				...current,
 				snapshot,
+				workflowHistory: tree.workflowHistory,
 				reconciliationEvent,
 			}));
 			setError(null);
@@ -188,6 +199,9 @@ export function useWorkspaceTreeNodes(
 			setError(getErrorMessage(e));
 			return null;
 		} finally {
+			if (pendingReconciliationSeqRef.current === seq) {
+				pendingReconciliationSeqRef.current = null;
+			}
 			if (seq === refreshSeqRef.current) {
 				setLoading(false);
 			}
@@ -280,18 +294,23 @@ export function useWorkspaceTreeNodes(
 		if (list.status.loaded) loadedWorktreePathRef.current = worktreePath;
 		errorWorktreePathRef.current = list.status.error ? worktreePath : null;
 		setError(list.status.error);
-		setLoading(!list.status.loaded && !list.status.error);
+		setLoading(list.status.state === "loading");
 		setTreeState((current) => ({
 			...current,
 			snapshot: list.snapshot ?? EMPTY_SNAPSHOT,
 			workflowHistory: list.workflowHistory,
 		}));
-		if (reconciliationContextRef.current) void refresh();
+		if (
+			reconciliationContextRef.current &&
+			list.status.loaded &&
+			!list.status.error &&
+			pendingReconciliationSeqRef.current === null
+		)
+			void refresh();
 	}, [list, refresh, worktreePath]);
 
 	const currentError =
-		(worktreePath ? workspaceList.worktreeErrors[worktreePath] : null) ??
-		(errorWorktreePathRef.current === worktreePath ? error : null);
+		errorWorktreePathRef.current === worktreePath ? error : null;
 	const currentLoading =
 		loading ||
 		Boolean(
@@ -308,6 +327,7 @@ export function useWorkspaceTreeNodes(
 		reconciliationEvent: treeState.reconciliationEvent,
 		loading: !currentError && currentLoading,
 		loaded: hasLoadedCurrentWorktree(),
+		state: list?.status.state ?? "loading",
 		error: currentError,
 		refresh,
 		beginArchiveReconciliation,

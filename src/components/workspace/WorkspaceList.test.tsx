@@ -109,6 +109,13 @@ vi.mock("@/hooks/useWorkspaceTreeNodes", () => ({
 			reconciliationEvent: state.reconciliationEvent ?? null,
 			loading: state.loading ?? false,
 			loaded: !(state.loading ?? false),
+			state: state.loading
+				? "loading"
+				: state.error
+					? "refreshFailed"
+					: state.nodes.length === 0
+						? "empty"
+						: "ready",
 			error: state.error ?? null,
 			refresh: mocks.refreshTree,
 			beginArchiveReconciliation: mocks.beginArchiveReconciliation,
@@ -125,20 +132,18 @@ vi.mock("@/hooks/useWorkspaceList", async (importOriginal) => ({
 	useWorkspaceList: () => ({
 		snapshot: {
 			generation: 1,
-			status: { loaded: true, error: null },
+			status: { loaded: true, error: null, state: "ready" },
 			repositories: ["/repo"].map((path) => ({
 				path,
-				status: { loaded: true, error: null },
+				status: { loaded: true, error: null, state: "ready" },
 				branches: mocks.worktreeBranches,
 				worktrees: [],
 			})),
 		},
-		error: null,
+		requestError: null,
 		refresh: mocks.refreshWorktrees,
 		refreshWorktree: mocks.refreshTree,
 		refreshRepository: mocks.refreshRepository,
-		repositoryErrors: {},
-		worktreeErrors: {},
 	}),
 }));
 

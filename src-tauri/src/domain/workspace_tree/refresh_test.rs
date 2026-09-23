@@ -182,3 +182,63 @@ fn test_repository更新_他repositoryと登録一覧の進行を妨げず対象
     assert!(lists.branches("/repo").is_none());
     assert!(lists.nodes("/tree").is_none());
 }
+
+#[test]
+fn test_一覧状態_初回と空と失敗と復旧を区別する() {
+    // Given
+    let mut list = WorkspaceListEntry::<Vec<String>>::default();
+    assert_eq!(list.state(true), WorkspaceListState::Loading);
+    // When
+    list.complete(0, Err("offline".into()));
+    // Then
+    assert_eq!(list.state(true), WorkspaceListState::InitialFailed);
+    list.complete(0, Ok(vec![]));
+    assert_eq!(list.state(true), WorkspaceListState::Empty);
+    list.complete(0, Err("offline".into()));
+    assert_eq!(list.state(true), WorkspaceListState::RefreshFailed);
+    list.complete(0, Ok(vec!["repo".into()]));
+    assert_eq!(list.state(false), WorkspaceListState::Ready);
+}
+
+#[test]
+fn test_pr反映_古い世代と削除されたrepositoryを反映しない() {
+    // Given
+    let mut lists = populated();
+    let generation = lists.begin_repository("/repo").unwrap();
+    // When
+    assert!(!lists.update_branches("/repo", generation - 1, |branches| branches.clear()));
+    assert!(lists.update_branches("/repo", generation, |branches| branches.push("pr".into())));
+    // Then
+    assert_eq!(
+        lists.branches("/repo").unwrap().value().unwrap().0,
+        ["main", "pr"]
+    );
+    let next = lists.begin();
+    lists.complete_repositories(next, Ok(vec![]));
+    assert!(!lists.update_branches("/repo", generation, |branches| branches.clear()));
+}
+
+#[test]
+fn test_全体更新要求_未開始を統合し実行中は次の一回を予約する() {
+    // Given
+    let mut lists = WorkspaceListRefresh::<(), ()>::default();
+    assert_eq!(lists.start_full(), None);
+    // When / Then
+    assert_eq!(lists.request_full(), 1);
+    assert_eq!(lists.request_full(), 1);
+    let (first, _) = lists.start_full().unwrap();
+    assert_eq!(first, 1);
+    for _ in 0..3 {
+        assert_eq!(lists.request_full(), 2);
+        assert_eq!(lists.start_full(), None);
+    }
+    lists.complete_full(first);
+    let (second, _) = lists.start_full().unwrap();
+    assert_eq!(second, 2);
+    assert_eq!(lists.request_full(), 3);
+    lists.complete_full(second);
+    let (third, _) = lists.start_full().unwrap();
+    assert_eq!(third, 3);
+    lists.complete_full(third);
+    assert_eq!(lists.start_full(), None);
+}

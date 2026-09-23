@@ -4,7 +4,9 @@ use parking_lot::Mutex;
 use serde::Serialize;
 
 use super::list_query_service::WorkspaceListQueryService;
-use crate::domain::workspace_tree::{WorkspaceListEntry, WorkspaceListRefresh};
+use crate::domain::workspace_tree::{
+    WorkspaceListEntry, WorkspaceListFailure, WorkspaceListRefresh, WorkspaceListState,
+};
 use crate::usecase::{
     repository_dto::BranchCardDto,
     workflow::{WorkspaceTreeSnapshotDto, WorkspaceWorkflowHistoryItemDto},
@@ -14,6 +16,7 @@ use crate::usecase::{
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WorkspaceListStatusDto {
     pub loaded: bool,
+    pub state: &'static str,
     pub error: Option<String>,
 }
 
@@ -60,29 +63,76 @@ type WorkspaceLists = WorkspaceListRefresh<
     ),
 >;
 
-fn status<T>(list: &WorkspaceListEntry<T>) -> WorkspaceListStatusDto {
+fn status<T>(list: &WorkspaceListEntry<T>, empty: bool) -> WorkspaceListStatusDto {
     WorkspaceListStatusDto {
         loaded: list.loaded(),
+        state: match list.state(empty) {
+            WorkspaceListState::Loading => "loading",
+            WorkspaceListState::InitialFailed => "initialFailed",
+            WorkspaceListState::Empty => "empty",
+            WorkspaceListState::Ready => "ready",
+            WorkspaceListState::RefreshFailed => "refreshFailed",
+        },
         error: list.error().map(str::to_owned),
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct WorkspaceListUsecase {
     query: Arc<dyn WorkspaceListQueryService>,
-    lists: Mutex<WorkspaceLists>,
+    lists: Arc<Mutex<WorkspaceLists>>,
+    notify: Arc<dyn Fn() + Send + Sync>,
+    completed: tokio::sync::watch::Sender<u64>,
 }
 
 impl WorkspaceListUsecase {
     pub fn new(query: Arc<dyn WorkspaceListQueryService>) -> Self {
         Self {
             query,
-            lists: Mutex::new(WorkspaceLists::default()),
+            lists: Arc::new(Mutex::new(WorkspaceLists::default())),
+            notify: Arc::new(|| {}),
+            completed: tokio::sync::watch::channel(0).0,
         }
     }
 
+    pub fn with_notifier(mut self, notify: impl Fn() + Send + Sync + 'static) -> Self {
+        self.notify = Arc::new(notify);
+        self
+    }
+
     pub async fn refresh(&self) -> WorkspaceListSnapshotDto {
-        let generation = self.lists.lock().begin();
-        let repositories = self.query.repositories().map_err(|error| error.to_string());
+        let mut completed = self.completed.subscribe();
+        let (request, start) = {
+            let mut lists = self.lists.lock();
+            (lists.request_full(), lists.start_full())
+        };
+        if let Some(mut current) = start {
+            let usecase = self.clone();
+            tokio::spawn(async move {
+                loop {
+                    usecase.refresh_full(current.1).await;
+                    let mut lists = usecase.lists.lock();
+                    lists.complete_full(current.0);
+                    usecase.completed.send_replace(current.0);
+                    match lists.start_full() {
+                        Some(next) => current = next,
+                        None => break,
+                    }
+                }
+            });
+        }
+        completed
+            .wait_for(|done| *done >= request)
+            .await
+            .expect("refresh completion sender is owned by this usecase");
+        self.snapshot()
+    }
+
+    async fn refresh_full(&self, generation: u64) {
+        let repositories = self
+            .query
+            .repositories()
+            .map_err(|error| WorkspaceListFailure::from(error.to_string()));
         let paths = self
             .lists
             .lock()
@@ -93,7 +143,6 @@ impl WorkspaceListUsecase {
                 .map(|path| self.refresh_branches(path, generation)),
         )
         .await;
-        self.snapshot()
     }
 
     pub async fn refresh_repository(&self, path: &str) -> WorkspaceListSnapshotDto {
@@ -106,18 +155,13 @@ impl WorkspaceListUsecase {
 
     async fn refresh_branches(&self, path: &str, generation: u64) {
         let branches = self.query.branches(path).await.map(|branches| {
-            let prs = self.query.pr_status(path);
             let branches: Vec<_> = branches
                 .into_iter()
-                .map(|mut branch| {
-                    let pr = prs.open_prs.get(&branch.name);
-                    branch.is_merged = prs.branch_is_merged(&branch.name, branch.is_merged);
-                    WorkspaceBranchDto {
-                        branch,
-                        has_pr: pr.is_some(),
-                        pr_number: pr.map(|pr| pr.number),
-                        pr_url: pr.map(|pr| pr.url.clone()),
-                    }
+                .map(|branch| WorkspaceBranchDto {
+                    branch,
+                    has_pr: false,
+                    pr_number: None,
+                    pr_url: None,
                 })
                 .collect();
             let paths = branches
@@ -129,8 +173,31 @@ impl WorkspaceListUsecase {
         let worktrees = self.lists.lock().complete_branches(
             path,
             generation,
-            branches.map_err(|error| error.to_string()),
+            branches.map_err(|error| WorkspaceListFailure::from(error.to_string())),
         );
+        (self.notify)();
+        let query = self.query.clone();
+        let lists = self.lists.clone();
+        let notify = self.notify.clone();
+        let repository = path.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let prs = query.pr_status(&repository);
+            let updated = lists
+                .lock()
+                .update_branches(&repository, generation, |branches| {
+                    for branch in branches {
+                        let pr = prs.open_prs.get(&branch.branch.name);
+                        branch.branch.is_merged =
+                            prs.branch_is_merged(&branch.branch.name, branch.branch.is_merged);
+                        branch.has_pr = pr.is_some();
+                        branch.pr_number = pr.map(|pr| pr.number);
+                        branch.pr_url = pr.map(|pr| pr.url.clone());
+                    }
+                });
+            if updated {
+                notify();
+            }
+        });
         for path in worktrees {
             if !self.lists.lock().is_worktree_current(&path, generation) {
                 continue;
@@ -155,17 +222,17 @@ impl WorkspaceListUsecase {
         self.lists.lock().complete_worktree(
             path,
             generation,
-            result.map_err(|error| error.to_string()),
+            result.map_err(|error| WorkspaceListFailure::from(error.to_string())),
         );
     }
 
-    fn snapshot(&self) -> WorkspaceListSnapshotDto {
+    pub fn snapshot(&self) -> WorkspaceListSnapshotDto {
         let mut lists = self.lists.lock();
         let generation = lists.next_snapshot_generation();
         let paths = lists.repositories().value().cloned().unwrap_or_default();
         WorkspaceListSnapshotDto {
             generation,
-            status: status(lists.repositories()),
+            status: status(lists.repositories(), paths.is_empty()),
             repositories: paths
                 .into_iter()
                 .map(|path| {
@@ -173,7 +240,10 @@ impl WorkspaceListUsecase {
                     let branches = lists.branches(&path).unwrap_or(&empty);
                     WorkspaceRepositoryListDto {
                         path,
-                        status: status(branches),
+                        status: status(
+                            branches,
+                            branches.value().is_none_or(|value| value.0.is_empty()),
+                        ),
                         branches: branches
                             .value()
                             .map(|value| value.0.clone())
@@ -188,7 +258,10 @@ impl WorkspaceListUsecase {
                                 let nodes = lists.nodes(path).unwrap_or(&empty);
                                 WorkspaceWorktreeListDto {
                                     path: path.clone(),
-                                    status: status(nodes),
+                                    status: status(
+                                        nodes,
+                                        nodes.value().is_none_or(|value| value.0.nodes.is_empty()),
+                                    ),
                                     snapshot: nodes.value().map(|value| value.0.clone()),
                                     workflow_history: nodes
                                         .value()

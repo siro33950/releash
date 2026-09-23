@@ -15,6 +15,7 @@ struct FakeQuery {
     prs: Mutex<HashMap<String, PrStatus>>,
     node_reads: Mutex<Vec<String>>,
     on_nodes: Mutex<Option<NodesHook>>,
+    on_pr: Mutex<Option<NodesHook>>,
     scans: AtomicUsize,
     delayed_scan: AtomicUsize,
     started: tokio::sync::Notify,
@@ -75,6 +76,7 @@ impl FakeQuery {
             prs: Mutex::new(HashMap::new()),
             node_reads: Mutex::new(Vec::new()),
             on_nodes: Mutex::new(None),
+            on_pr: Mutex::new(None),
             scans: AtomicUsize::new(0),
             delayed_scan: AtomicUsize::new(usize::MAX),
             started: tokio::sync::Notify::new(),
@@ -98,7 +100,12 @@ impl WorkspaceListQueryService for FakeQuery {
         result.map_err(WorkspaceListUsecaseError)
     }
     fn pr_status(&self, path: &str) -> PrStatus {
-        self.prs.lock().get(path).cloned().unwrap_or_default()
+        let result = self.prs.lock().get(path).cloned().unwrap_or_default();
+        let hook = self.on_pr.lock().clone();
+        if let Some(hook) = hook {
+            hook(path);
+        }
+        result
     }
     fn nodes(&self, path: &str) -> Result<WorkspaceTreeSnapshotDto, WorkspaceListUsecaseError> {
         self.node_reads.lock().push(path.into());
@@ -183,6 +190,12 @@ async fn test_部分失敗_成功範囲を更新し失敗範囲の一覧を残�
     let result = usecase.refresh().await;
     // Then
     assert_eq!(result.repositories[0].branches[0].branch.name, "a");
+    assert_eq!(result.repositories[0].status.state, "refreshFailed");
+    assert_eq!(result.repositories[1].status.state, "ready");
+    assert_eq!(
+        result.repositories[1].worktrees[0].status.state,
+        "refreshFailed"
+    );
     assert!(result.repositories[0].status.loaded);
     assert_eq!(
         result.repositories[0].status.error.as_deref(),
@@ -235,6 +248,7 @@ async fn test_全件失敗_登録一覧と各一覧を保持する() {
     // When
     let result = usecase.refresh().await;
     // Then
+    assert_eq!(result.status.state, "refreshFailed");
     assert_eq!(result.status.error.as_deref(), Some("paths failed"));
     assert!(result.status.loaded);
     assert_eq!(result.repositories.len(), 2);
@@ -252,10 +266,12 @@ async fn test_初回失敗_未取得と正常な空を区別する() {
     let query = FakeQuery::new();
     *query.paths.lock() = Err("offline".into());
     let usecase = WorkspaceListUsecase::new(query.clone());
+    assert_eq!(usecase.snapshot().status.state, "loading");
     assert!(!usecase.snapshot().status.loaded);
     assert!(usecase.snapshot().status.error.is_none());
     // When / Then
     let result = usecase.refresh().await;
+    assert_eq!(result.status.state, "initialFailed");
     assert!(!result.status.loaded);
     assert_eq!(result.status.error.as_deref(), Some("offline"));
     *query.paths.lock() = Ok(vec!["/a".into(), "/b".into()]);
@@ -268,6 +284,11 @@ async fn test_初回失敗_未取得と正常な空を区別する() {
         .lock()
         .insert("/b".into(), Err("first nodes".into()));
     let result = usecase.refresh().await;
+    assert_eq!(result.repositories[0].status.state, "initialFailed");
+    assert_eq!(
+        result.repositories[1].worktrees[0].status.state,
+        "initialFailed"
+    );
     assert!(!result.repositories[0].status.loaded);
     assert!(!result.repositories[1].worktrees[0].status.loaded);
     assert!(result.repositories[1].worktrees[0].snapshot.is_none());
@@ -276,6 +297,7 @@ async fn test_初回失敗_未取得と正常な空を区別する() {
     assert!(result.status.loaded);
     assert!(result.status.error.is_none());
     assert!(result.repositories.is_empty());
+    assert_eq!(result.status.state, "empty");
 }
 
 #[tokio::test]
@@ -297,6 +319,8 @@ async fn test_正常な空と削除_各階層へ反映して保持データを�
     let result = usecase.refresh().await;
     // Then
     assert!(result.repositories[0].branches.is_empty());
+    assert_eq!(result.repositories[0].status.state, "empty");
+    assert_eq!(result.repositories[1].worktrees[0].status.state, "empty");
     assert!(result.repositories[1].worktrees[0]
         .snapshot
         .as_ref()
@@ -330,7 +354,7 @@ async fn test_競合更新_古い走査結果で新しい一覧を上書きし�
         .lock()
         .insert("/a".into(), Ok(vec![branch("/a", "new")]));
     // When
-    let new = usecase.refresh().await;
+    let new = usecase.refresh_repository("/a").await;
     query.release.notify_one();
     let old = old.await.unwrap();
     // Then
@@ -424,7 +448,7 @@ async fn test_競合更新_古い失敗で新しい成功のエラーを復活�
         .lock()
         .insert("/a".into(), Ok(vec![branch("/a", "new")]));
     // When
-    usecase.refresh().await;
+    usecase.refresh_repository("/a").await;
     query.release.notify_one();
     let result = old.await.unwrap();
     // Then
@@ -469,8 +493,19 @@ async fn test_branch一覧合成_pr情報とworktreeの有無を反映する() {
     );
     let usecase = WorkspaceListUsecase::new(query.clone());
     // When
-    let snapshot = usecase.refresh().await;
+    usecase.refresh().await;
     // Then
+    let snapshot = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let snapshot = usecase.snapshot();
+            if snapshot.repositories[0].branches[0].has_pr {
+                break snapshot;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
     let repo = &snapshot.repositories[0];
     let open = &repo.branches[0];
     assert!(open.has_pr);
@@ -617,7 +652,7 @@ async fn test_複数worktreeの途中失効_先行結果を残りに適用せず
             .insert(path.into(), Ok(history(path, "new")));
     }
     // When
-    let new = usecase.refresh().await;
+    let new = usecase.refresh_repository("/a").await;
     release.send(()).unwrap();
     let old = old.await.unwrap();
     // Then
@@ -768,6 +803,7 @@ async fn test_repositoryと全体の競合_開始順によらず新しい結果�
         let result = old.await.unwrap();
         // Then
         assert!(result.repositories[0].branches.is_empty());
+        assert_eq!(result.repositories[0].status.state, "empty");
         assert!(result.repositories[0].worktrees.is_empty());
         assert_eq!(
             result.repositories[1].branches[0].branch.name,
@@ -775,4 +811,254 @@ async fn test_repositoryと全体の競合_開始順によらず新しい結果�
         );
         assert!(result.repositories[1].status.error.is_none());
     }
+}
+
+#[tokio::test]
+async fn test_pr取得_遅いrepositoryを待たず一覧と他repositoryのprを公開する() {
+    // Given
+    let query = FakeQuery::new();
+    query.prs.lock().insert(
+        "/b".into(),
+        PrStatus {
+            open_prs: HashMap::from([(
+                "b".into(),
+                PrInfo {
+                    number: 7,
+                    url: "pr-7".into(),
+                },
+            )]),
+            merged_branches: vec![],
+        },
+    );
+    let (release, receive) = std::sync::mpsc::channel();
+    let receive = Mutex::new(receive);
+    *query.on_pr.lock() = Some(Arc::new(move |path| {
+        if path == "/a" {
+            receive.lock().recv_timeout(Duration::from_secs(5)).unwrap();
+        }
+    }));
+    let usecase = WorkspaceListUsecase::new(query);
+    // When
+    let snapshot = tokio::time::timeout(Duration::from_secs(2), usecase.refresh())
+        .await
+        .unwrap();
+    // Then
+    assert_eq!(snapshot.repositories.len(), 2);
+    assert_eq!(snapshot.repositories[0].branches.len(), 1);
+    let result = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if usecase.snapshot().repositories[1].branches[0].has_pr {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    release.send(()).unwrap();
+    result.unwrap();
+}
+
+#[tokio::test]
+async fn test_pr反映通知_現行世代だけ通知し古い世代と削除済みrepositoryは通知しない() {
+    for outcome in ["current", "superseded", "removed"] {
+        // Given
+        let query = FakeQuery::new();
+        *query.paths.lock() = Ok(vec!["/a".into()]);
+        query.prs.lock().insert(
+            "/a".into(),
+            PrStatus {
+                open_prs: HashMap::from([(
+                    "a".into(),
+                    PrInfo {
+                        number: 7,
+                        url: "pr-7".into(),
+                    },
+                )]),
+                merged_branches: vec![],
+            },
+        );
+        let (release, receive) = std::sync::mpsc::channel();
+        let receive = Mutex::new(receive);
+        let started = Arc::new(tokio::sync::Notify::new());
+        let pr_started = started.clone();
+        *query.on_pr.lock() = Some(Arc::new(move |_| {
+            pr_started.notify_one();
+            receive.lock().recv_timeout(Duration::from_secs(5)).unwrap();
+        }));
+        let notifications = Arc::new(AtomicUsize::new(0));
+        let notified = notifications.clone();
+        let usecase = WorkspaceListUsecase::new(query).with_notifier(move || {
+            notified.fetch_add(1, Ordering::SeqCst);
+        });
+        usecase.refresh().await;
+        tokio::time::timeout(Duration::from_secs(2), started.notified())
+            .await
+            .unwrap();
+        assert_eq!(notifications.load(Ordering::SeqCst), 1);
+
+        // When
+        match outcome {
+            "superseded" => {
+                usecase.lists.lock().begin_repository("/a");
+            }
+            "removed" => {
+                let mut lists = usecase.lists.lock();
+                let generation = lists.begin();
+                lists.complete_repositories(generation, Ok(vec![]));
+            }
+            _ => {}
+        }
+        release.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while Arc::strong_count(&usecase.notify) != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        // Then
+        assert_eq!(
+            notifications.load(Ordering::SeqCst),
+            if outcome == "current" { 2 } else { 1 }
+        );
+        let snapshot = usecase.snapshot();
+        if outcome == "removed" {
+            assert!(snapshot.repositories.is_empty());
+        } else {
+            assert_eq!(
+                snapshot.repositories[0].branches[0].has_pr,
+                outcome == "current"
+            );
+            assert_eq!(
+                snapshot.repositories[0].branches[0].pr_number,
+                if outcome == "current" { Some(7) } else { None }
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_全体更新の統合_複数の直接要求は進行中の後に一回だけ再取得する() {
+    // Given
+    let query = FakeQuery::new();
+    *query.paths.lock() = Ok(vec!["/a".into()]);
+    query.delayed_scan.store(0, Ordering::SeqCst);
+    let usecase = WorkspaceListUsecase::new(query.clone());
+    let first = tokio::spawn({
+        let usecase = usecase.clone();
+        async move { usecase.refresh().await }
+    });
+    query.started.notified().await;
+    // When
+    let pending = async { futures_util::future::join_all((0..5).map(|_| usecase.refresh())).await };
+    let release = async {
+        tokio::task::yield_now().await;
+        assert_eq!(query.scans.load(Ordering::SeqCst), 1);
+        query
+            .branches
+            .lock()
+            .insert("/a".into(), Ok(vec![branch("/a", "new")]));
+        query.release.notify_one();
+    };
+    let (results, ()) = tokio::join!(pending, release);
+    first.await.unwrap();
+    // Then
+    assert_eq!(query.scans.load(Ordering::SeqCst), 2);
+    for result in results {
+        assert_eq!(result.repositories[0].branches[0].branch.name, "new");
+    }
+    usecase.refresh().await;
+    assert_eq!(query.scans.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn test_全体更新の統合_呼出元の中断後も待機要求を完了し失敗から再取得できる() {
+    // Given
+    let query = FakeQuery::new();
+    *query.paths.lock() = Ok(vec!["/a".into()]);
+    query.delayed_scan.store(0, Ordering::SeqCst);
+    query
+        .branches
+        .lock()
+        .insert("/a".into(), Err("offline".into()));
+    let usecase = WorkspaceListUsecase::new(query.clone());
+    let first = tokio::spawn({
+        let usecase = usecase.clone();
+        async move { usecase.refresh().await }
+    });
+    query.started.notified().await;
+    // When
+    first.abort();
+    let release = async {
+        tokio::task::yield_now().await;
+        query.release.notify_one();
+    };
+    let (failed, ()) = tokio::join!(usecase.refresh(), release);
+    // Then
+    assert_eq!(query.scans.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        failed.repositories[0].status.error.as_deref(),
+        Some("offline")
+    );
+    query.branches.lock().insert("/a".into(), Ok(vec![]));
+    let recovered = usecase.refresh().await;
+    assert!(recovered.repositories[0].status.error.is_none());
+    assert!(recovered.repositories[0].branches.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_一覧状態_各階層の初回取得中と取得済みを区別する() {
+    use crate::usecase::workflow::{WorkspaceSequenceDto, WorkspaceTreeItemDto};
+
+    // Given
+    let query = FakeQuery::new();
+    *query.paths.lock() = Ok(vec!["/a".into()]);
+    query.delayed_scan.store(0, Ordering::SeqCst);
+    let mut tree = nodes("workflow");
+    tree.nodes
+        .push(WorkspaceTreeItemDto::Sequence(WorkspaceSequenceDto {
+            worktree: None,
+            id: "workflow".into(),
+            title: "Workflow".into(),
+            status: "active".into(),
+            workflow_capabilities: None,
+            children: vec![],
+            updated_at: 1.0,
+        }));
+    query.nodes.lock().insert("/a".into(), Ok(tree));
+    let release_nodes = pause_nodes(&query, "/a");
+    let usecase = WorkspaceListUsecase::new(query.clone());
+    assert_eq!(usecase.snapshot().status.state, "loading");
+
+    // When
+    let pending = tokio::spawn({
+        let usecase = usecase.clone();
+        async move { usecase.refresh().await }
+    });
+    query.started.notified().await;
+    let scanning = usecase.snapshot();
+    // Then
+    assert_eq!(scanning.status.state, "ready");
+    assert_eq!(scanning.repositories[0].status.state, "loading");
+
+    // When
+    query.release.notify_one();
+    query.started.notified().await;
+    let reading = usecase.snapshot();
+    // Then
+    assert_eq!(reading.repositories[0].status.state, "ready");
+    assert_eq!(reading.repositories[0].worktrees[0].status.state, "loading");
+
+    // When
+    release_nodes.send(()).unwrap();
+    let completed = pending.await.unwrap();
+    // Then
+    assert_eq!(completed.repositories[0].worktrees[0].status.state, "ready");
+
+    // When
+    query.nodes.lock().insert("/a".into(), Ok(nodes("empty")));
+    let empty = usecase.refresh_worktree("/a");
+    // Then
+    assert_eq!(empty.repositories[0].worktrees[0].status.state, "empty");
 }

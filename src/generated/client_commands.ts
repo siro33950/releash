@@ -108,6 +108,7 @@ import {
 	GetWorkflowSourceRequestSchema,
 	GetWorkspaceNodeDetailRequestSchema,
 	GetWorkspaceSessionNodeIdRequestSchema,
+	GetWorkspacesRequestSchema,
 	GetWorkspaceTreeSelectionReconciliationRequestSchema,
 	GetWorktreeDirtyCountRequestSchema,
 	GitCreateBranchRequestSchema,
@@ -119,10 +120,8 @@ import {
 	ListAgentSessionHistoryRequestSchema,
 	ListAgentSessionProviderDtoSchema,
 	ListAvailableAgentSessionProvidersRequestSchema,
-	ListBranchCardDtoSchema,
 	ListBranchDtoSchema,
 	ListBranchesRequestSchema,
-	ListBranchesWithStatusRequestSchema,
 	ListBranchesWithStatusSnapshotRequestSchema,
 	ListCommitDtoSchema,
 	ListDiffRangeDtoSchema,
@@ -1594,25 +1593,6 @@ const commands = {
 					ListBranchesRequestSchema,
 					clientJson(
 						ListBranchesRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	list_branches_with_status: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["list_branches_with_status"],
-	) => {
-		const result = decode(
-			ListBranchCardDtoSchema,
-			await client.listBranchesWithStatus(
-				fromJson(
-					ListBranchesWithStatusRequestSchema,
-					clientJson(
-						ListBranchesWithStatusRequestSchema,
 						JSON.parse(JSON.stringify(args ?? {})),
 						true,
 					),
@@ -3361,6 +3341,25 @@ const commands = {
 					RefreshWorkspacesRequestSchema,
 					clientJson(
 						RefreshWorkspacesRequestSchema,
+						JSON.parse(JSON.stringify(args ?? {})),
+						true,
+					),
+				),
+			),
+		);
+		return result;
+	},
+	get_workspaces: async (
+		client: Client<typeof ClientService>,
+		args: ClientCommandArgs["get_workspaces"],
+	) => {
+		const result = decode(
+			WorkspaceListSnapshotDtoSchema,
+			await client.getWorkspaces(
+				fromJson(
+					GetWorkspacesRequestSchema,
+					clientJson(
+						GetWorkspacesRequestSchema,
 						JSON.parse(JSON.stringify(args ?? {})),
 						true,
 					),

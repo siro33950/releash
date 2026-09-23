@@ -34,15 +34,15 @@ THEN 更新の操作を実行できる
 ## B-006: 折りたたまれた Repository を含む全体の更新
 
 GIVEN 折りたたまれた Repository と、展開された Repository が登録されている
-WHEN Workspaces 行の更新の操作を実行し、更新が完了する
-THEN 登録 Repository 一覧、各 Repository の Worktree 一覧、各 Worktree 配下の Session・Workflow の一覧が更新される
+WHEN Workspaces 行の更新の操作を実行し、それぞれの取得が完了する
+THEN 登録 Repository 一覧、各 Repository の Worktree 一覧、各 Worktree 配下の Session・Workflow の一覧、および各 Repository の PR 情報が更新される
 AND 折りたたまれていた Repository を展開すると、更新後の Worktree 一覧と、その配下の Session・Workflow の一覧が表示される
 
 ## B-021: 自動更新の対象範囲
 
 GIVEN 折りたたまれた Repository と、展開された Repository が登録されている
-WHEN 自動更新が実行され、更新が完了する
-THEN 登録 Repository 一覧、各 Repository の Worktree 一覧、各 Worktree 配下の Session・Workflow の一覧が更新される
+WHEN 自動更新が実行され、それぞれの取得が完了する
+THEN 登録 Repository 一覧、各 Repository の Worktree 一覧、各 Worktree 配下の Session・Workflow の一覧、および各 Repository の PR 情報が更新される
 AND 折りたたまれていた Repository を展開すると、更新後の Worktree 一覧と、その配下の Session・Workflow の一覧が表示される
 
 ## B-007: 更新による走査の再実行
@@ -149,6 +149,31 @@ GIVEN 登録 Repository 一覧を表示する画面と Workspaces が同じ登�
 WHEN 更新が実行され、Workspaces に表示される登録 Repository 一覧が変わる
 THEN 登録 Repository 一覧を表示する画面に表示される登録 Repository は、更新後に Workspaces が表示している登録 Repository と一致する
 
+## B-024: PR 情報を待たない一覧の表示
+
+GIVEN 一覧をまだ表示していない対象がある
+WHEN その対象の一覧の取得に成功し、PR 情報の取得が完了していない
+THEN 取得できた一覧がその時点で表示される
+AND PR 情報は取得できた時点で一覧の表示へ反映される
+
+## B-025: PR 情報の取得失敗・遅延の一覧への非波及
+
+GIVEN 対象の一覧の取得に成功している
+WHEN PR 情報の取得に失敗する、または PR 情報の応答が遅れる
+THEN 一覧の表示と一覧の更新結果は変わらない
+
+## B-026: Repository ごとの PR 情報の独立
+
+GIVEN 複数の Repository が登録されている
+WHEN 更新を実行し、ある Repository の PR 情報の取得が完了しない
+THEN 他の Repository の PR 情報は、その Repository の取得の完了を待たずに一覧の表示へ反映される
+
+## B-027: 未開始の全体更新の要求の統合
+
+GIVEN 全体更新が進行中である
+WHEN 同じ全体更新の契機が複数回生じる
+THEN 進行中の更新が完了した後に実行される全体更新は一回であり、契機の回数だけ繰り返されない
+
 ## 要件IDとBehavior IDの対応表
 | Requirement ID | Behavior ID |
 | --- | --- |
@@ -168,3 +193,7 @@ THEN 登録 Repository 一覧を表示する画面に表示される登録 Repos
 | R-014 | B-014, B-018 |
 | R-015 | B-019 |
 | R-016 | B-022, B-023 |
+| R-017 | B-024 |
+| R-018 | B-025 |
+| R-019 | B-026 |
+| R-020 | B-027 |

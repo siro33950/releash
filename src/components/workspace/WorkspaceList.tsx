@@ -654,6 +654,7 @@ function WorktreeTreeItem({
 		reconciliationEvent,
 		loading: treeLoading,
 		loaded: treeLoaded,
+		state: treeListState,
 		error: treeError,
 		refresh: refreshTree,
 		beginArchiveReconciliation,
@@ -1433,7 +1434,7 @@ function WorktreeTreeItem({
 			{treeError && <ListRefreshError loaded={treeLoaded} error={treeError} />}
 			{expanded && hasWorktree && (
 				<div className="mt-0.5">
-					{treeLoading && nodes.length === 0 ? (
+					{treeListState === "loading" && !treeError ? (
 						<div
 							className="flex h-8 items-center text-muted-foreground"
 							role="status"
@@ -1442,7 +1443,7 @@ function WorktreeTreeItem({
 						>
 							<Loader2 className="size-3.5 animate-spin" />
 						</div>
-					) : !treeError && nodes.length === 0 ? (
+					) : treeListState === "empty" && !treeError ? (
 						<div
 							className="truncate py-1 text-xs text-muted-foreground"
 							style={{ paddingLeft: WORKTREE_NAME_INDENT_PX }}
@@ -1596,7 +1597,6 @@ function ListRefreshError({
 
 function RepoTreeSection({
 	repository,
-	rpcError,
 	refresh,
 	selectedRootPath,
 	centerSelection,
@@ -1605,7 +1605,6 @@ function RepoTreeSection({
 	onWorkspaceSelectionInvalidated,
 }: {
 	repository: WorkspaceRepositoryListDto;
-	rpcError: string | undefined;
 	refresh: (repoPath: string) => Promise<unknown>;
 	selectedRootPath: string | null;
 	centerSelection: CenterSelection | null;
@@ -1614,7 +1613,7 @@ function RepoTreeSection({
 	onWorkspaceSelectionInvalidated: WorkspaceListProps["onWorkspaceSelectionInvalidated"];
 }) {
 	const { path: repoPath, branches, status } = repository;
-	const error = rpcError ?? status.error;
+	const error = status.error;
 	const [collapsed, setCollapsed] = useState(false);
 	const [deletingBranch, setDeletingBranch] = useState<WorktreeBranch | null>(
 		null,
@@ -1668,7 +1667,7 @@ function RepoTreeSection({
 			</div>
 			{error && <ListRefreshError loaded={status.loaded} error={error} />}
 			<div className="space-y-1" hidden={collapsed}>
-				{!status.loaded && !error && (
+				{status.state === "loading" && (
 					<div
 						className="flex items-center justify-center py-4"
 						role="status"
@@ -1677,7 +1676,7 @@ function RepoTreeSection({
 						<Loader2 className="size-4 animate-spin text-muted-foreground" />
 					</div>
 				)}
-				{status.loaded && !error && branches.length === 0 && (
+				{status.state === "empty" && (
 					<div className="px-2 py-2 text-xs text-muted-foreground">
 						No worktrees
 					</div>
@@ -1733,7 +1732,8 @@ export function WorkspaceList({
 	const repositories = model.snapshot?.repositories ?? [];
 	const listedRepoPaths = repositories.map((repo) => repo.path);
 	const loaded = model.snapshot?.status.loaded ?? false;
-	const error = model.error ?? model.snapshot?.status.error;
+	const listState = model.snapshot?.status.state ?? "loading";
+	const error = model.snapshot?.status.error;
 
 	return (
 		<WorkspaceListContext.Provider value={model}>
@@ -1771,8 +1771,15 @@ export function WorkspaceList({
 				</div>
 
 				<div className="flex-1 space-y-2 overflow-y-auto px-2 py-1">
+					{model.requestError && (
+						<div role="alert" className="px-2 py-1 text-xs text-destructive">
+							Could not confirm the refresh result
+							{model.requestError.path ? ` for ${model.requestError.path}` : ""}
+							. {model.requestError.message}
+						</div>
+					)}
 					{error && <ListRefreshError loaded={loaded} error={error} />}
-					{!loaded && !error && (
+					{listState === "loading" && !model.requestError && (
 						<div
 							role="status"
 							className="px-2 py-4 text-xs text-muted-foreground"
@@ -1784,7 +1791,6 @@ export function WorkspaceList({
 						<RepoTreeSection
 							key={repository.path}
 							repository={repository}
-							rpcError={model.repositoryErrors[repository.path]}
 							refresh={model.refreshRepository}
 							selectedRootPath={selectedRootPath}
 							centerSelection={centerSelection ?? null}
@@ -1793,7 +1799,7 @@ export function WorkspaceList({
 							onWorkspaceSelectionInvalidated={onWorkspaceSelectionInvalidated}
 						/>
 					))}
-					{loaded && !error && repositories.length === 0 && (
+					{listState === "empty" && (
 						<div className="px-2 py-8 text-center text-xs text-muted-foreground">
 							No Repository
 						</div>

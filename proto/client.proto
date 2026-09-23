@@ -15,10 +15,12 @@ message Push {
     ResultString review_comments_changed = 7;
     WorkflowExecutionChangedPayloadView workflow_execution_changed = 8;
     Unit resync = 9;
+    Unit workspace_list_changed = 10;
   }
 }
 message CommandRequest {
-  reserved 12, 25, 44, 45, 67, 89, 118, 182;
+  reserved 12, 25, 44, 45, 67, 86, 89, 118, 182;
+  reserved "list_branches_with_status";
   reserved 123, 131, 134, 137;
   reserved "stop_workflow", "resume_workflow", "confirm_agent_session_archive_delete";
   reserved "start_git_dir_watching", "start_watching";
@@ -94,7 +96,6 @@ message CommandRequest {
     ListAgentSessionHistoryRequest list_agent_session_history = 83;
     ListAvailableAgentSessionProvidersRequest list_available_agent_session_providers = 84;
     ListBranchesRequest list_branches = 85;
-    ListBranchesWithStatusRequest list_branches_with_status = 86;
     ListBranchesWithStatusSnapshotRequest list_branches_with_status_snapshot = 87;
     ListFacetSummariesRequest list_facet_summaries = 88;
     ListProviderHookHealthWarningsRequest list_provider_hook_health_warnings = 90;
@@ -187,11 +188,13 @@ message CommandRequest {
     WorkflowValidateOutputRequest workflow_validate_output = 180;
     WorkflowGetOutputRequest workflow_get_output = 181;
     RefreshWorkspacesRequest refresh_workspaces = 186;
+    GetWorkspacesRequest get_workspaces = 187;
   }
 }
 
 message CommandResult {
-  reserved 12, 25, 44, 45, 67, 89, 118, 182;
+  reserved 12, 25, 44, 45, 67, 86, 89, 118, 182;
+  reserved "list_branches_with_status";
   reserved 123, 131, 134, 137;
   reserved "stop_workflow", "resume_workflow", "confirm_agent_session_archive_delete";
   reserved "start_git_dir_watching", "start_watching";
@@ -267,7 +270,6 @@ message CommandResult {
     AgentSessionHistoryPageDto list_agent_session_history = 83;
     ListAgentSessionProviderDto list_available_agent_session_providers = 84;
     ListBranchDto list_branches = 85;
-    ListBranchCardDto list_branches_with_status = 86;
     RepositoryBranchCardsSnapshotDto list_branches_with_status_snapshot = 87;
     ListFacetSummaryDto list_facet_summaries = 88;
     ListProviderHookHealthWarningResponse list_provider_hook_health_warnings = 90;
@@ -360,6 +362,7 @@ message CommandResult {
     WorkflowValidateOutputResponse workflow_validate_output = 180;
     WorkflowGetOutputResponse workflow_get_output = 181;
     WorkspaceListSnapshotDto refresh_workspaces = 186;
+    WorkspaceListSnapshotDto get_workspaces = 187;
   }
 }
 
@@ -2090,9 +2093,6 @@ message ListBranchDto {
   repeated BranchDto items = 1;
 }
 
-message ListBranchesWithStatusRequest {
-  optional string repo_path = 1 [json_name = "repoPath", (json_required) = true];
-}
 
 message BranchCardDto {
   optional string name = 1 [json_name = "name", (json_required) = true];
@@ -3377,6 +3377,7 @@ message DesktopSettings {
 
 service ClientService {
   rpc RefreshWorkspaces(RefreshWorkspacesRequest) returns (WorkspaceListSnapshotDto);
+  rpc GetWorkspaces(GetWorkspacesRequest) returns (WorkspaceListSnapshotDto);
   rpc GetReviewBlob(GetReviewBlobRequest) returns (ResultString);
   rpc AbortWorkflow(AbortWorkflowRequest) returns (Unit);
   rpc AckTerminalSurfaceOutput(AckTerminalSurfaceOutputRequest) returns (Unit);
@@ -3450,7 +3451,6 @@ service ClientService {
   rpc ListAgentSessionHistory(ListAgentSessionHistoryRequest) returns (AgentSessionHistoryPageDto);
   rpc ListAvailableAgentSessionProviders(ListAvailableAgentSessionProvidersRequest) returns (ListAgentSessionProviderDto);
   rpc ListBranches(ListBranchesRequest) returns (ListBranchDto);
-  rpc ListBranchesWithStatus(ListBranchesWithStatusRequest) returns (ListBranchCardDto);
   rpc ListBranchesWithStatusSnapshot(ListBranchesWithStatusSnapshotRequest) returns (RepositoryBranchCardsSnapshotDto);
   rpc ListFacetSummaries(ListFacetSummariesRequest) returns (ListFacetSummaryDto);
   rpc ListProviderHookHealthWarnings(ListProviderHookHealthWarningsRequest) returns (ListProviderHookHealthWarningResponse);
@@ -3577,11 +3577,14 @@ message TerminalSubscriptionEvent {
   }
 }
 
+message GetWorkspacesRequest {}
+
 message RefreshWorkspacesRequest {
   optional string repo_path = 2 [json_name = "repoPath", (json_nullable) = true];
   optional string worktree_path = 1 [json_name = "worktreePath", (json_nullable) = true];
 }
 message WorkspaceListStatusDto {
+  optional string state = 3 [json_name = "state", (json_required) = true];
   optional bool loaded = 1 [json_name = "loaded", (json_required) = true];
   optional string error = 2 [json_name = "error", (json_nullable) = true];
 }

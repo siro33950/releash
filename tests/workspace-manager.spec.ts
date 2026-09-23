@@ -811,6 +811,13 @@ test.describe("Workspace Manager", () => {
 				exact: true,
 			})
 			.hover();
+		await page.evaluate((snapshot) => {
+			window.__RELEASH_BACKEND__?.setMockResponse(
+				"list_workspace_worktree_nodes",
+				snapshot,
+			);
+		}, reconciledSnapshot);
+
 		await page
 			.getByRole("button", { name: "Archive Archivable integration workflow" })
 			.click();

@@ -106,7 +106,10 @@ async fn test_一覧の再走査_監視中も保存済みsnapshotを使わず毎
     let service = service(scanner.clone(), notifier.clone());
     service.start_git_dir_watching("/repo").unwrap();
     notifier.changed.notified().await;
-    let previous = service.list_branches_with_status("/repo").unwrap();
+    let previous = service
+        .list_branches_with_status_snapshot("/repo")
+        .unwrap()
+        .branches;
     // When
     let next = service.rescan_branches("/repo").await.unwrap();
     let next_snapshot = service.get_snapshot("/repo").unwrap();
@@ -128,7 +131,11 @@ async fn test_一覧の再走査_監視中も保存済みsnapshotを使わず毎
         snapshot.diff_stats
     );
     assert_eq!(
-        service.list_branches_with_status("/repo").unwrap()[0].name,
+        service
+            .list_branches_with_status_snapshot("/repo")
+            .unwrap()
+            .branches[0]
+            .name,
         latest[0].name
     );
     assert_eq!(snapshot.version, next_snapshot.version + 1);
@@ -281,4 +288,46 @@ async fn test_snapshot公開_失効世代はversionと前回情報を変更し�
         .unwrap();
     assert_eq!(current.version, previous.version + 1);
     assert_eq!(current.branch_cards[0].name, "scan-2");
+}
+
+#[tokio::test]
+async fn test_明示再走査_未購読の監視stateを登録しない() {
+    // Given
+    let scanner = Arc::new(Scanner::default());
+    let service = service(scanner.clone(), Arc::new(Notifier::default()));
+    // When
+    for path in ["/a", "/b", "/c"] {
+        service.rescan_branches(path).await.unwrap();
+    }
+    // Then
+    assert_eq!(service.worktree_count(), 0);
+    assert_eq!(scanner.calls.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn test_明示再走査_失効が続くと終了してscanロックを解放する() {
+    // Given
+    let scanner = Arc::new(Scanner::default());
+    let service = service(scanner.clone(), Arc::new(Notifier::default()));
+    let state = service.ensure_for_tests("/repo");
+    let previous = state
+        .commit_snapshot(scanner.scan("/repo").unwrap(), 0)
+        .unwrap();
+    *scanner.on_scan.lock() = Some(Box::new({
+        let state = state.clone();
+        move || state.invalidate(super::super::worker::InvalidateReason::git(false))
+    }));
+    // When
+    let result = tokio::time::timeout(Duration::from_secs(2), service.rescan_branches("/repo"))
+        .await
+        .unwrap();
+    // Then
+    assert!(matches!(result, Err(RepositoryStateError::ScanInvalidated)));
+    let scan = tokio::time::timeout(Duration::from_secs(2), state.scan_lock.lock())
+        .await
+        .unwrap();
+    assert_eq!(state.snapshot_for_read().version, previous.version);
+    *scanner.on_scan.lock() = None;
+    drop(scan);
+    assert!(service.rescan_branches("/repo").await.is_ok());
 }

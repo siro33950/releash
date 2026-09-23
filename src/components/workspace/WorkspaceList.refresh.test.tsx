@@ -88,7 +88,7 @@ describe("Workspaces refresh", () => {
 		mocks.listen.mockResolvedValue(vi.fn());
 	});
 
-	it("Repositoryの通信失敗はその行だけに表示し全体エラーは局所成功後も残す", async () => {
+	it("RepositoryのRustの取得失敗はその行だけに表示し全体エラーは局所成功後も残す", async () => {
 		const initial = workspaceListSnapshot(tree);
 		initial.repositories.push({
 			...workspaceListSnapshot().repositories[0],
@@ -103,7 +103,13 @@ describe("Workspaces refresh", () => {
 			.parentElement?.parentElement;
 		const otherSection = screen.getByRole("button", { name: "other0" })
 			.parentElement?.parentElement;
-		mocks.invoke.mockRejectedValueOnce(new Error("repository offline"));
+		const repositoryFailed = structuredClone(initial);
+		repositoryFailed.repositories[0].status = {
+			loaded: true,
+			state: "refreshFailed",
+			error: "repository offline",
+		};
+		mocks.invoke.mockResolvedValueOnce(repositoryFailed);
 		await act(async () => {
 			await currentModel.refreshRepository("/repo");
 		});
@@ -119,7 +125,13 @@ describe("Workspaces refresh", () => {
 			await currentModel.refreshRepository("/repo");
 		});
 		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-		mocks.invoke.mockRejectedValueOnce(new Error("all offline"));
+		const failed = structuredClone(initial);
+		failed.status = {
+			loaded: true,
+			state: "refreshFailed",
+			error: "all offline",
+		};
+		mocks.invoke.mockResolvedValue(failed);
 		await act(async () => {
 			await currentModel.refresh();
 		});
@@ -135,6 +147,7 @@ describe("Workspaces refresh", () => {
 				container.querySelector(".overflow-y-auto"),
 			);
 		}
+		mocks.invoke.mockResolvedValue(initial);
 		await userEvent
 			.setup()
 			.click(screen.getByRole("button", { name: "Refresh Workspaces" }));
@@ -144,7 +157,7 @@ describe("Workspaces refresh", () => {
 		expect(screen.getByText("Running session")).toBe(session);
 	});
 
-	it("局所RPC失敗をWorktree行に保持し別対象の成功では消さず全体更新で復旧する", async () => {
+	it("Rustの局所取得失敗をWorktree行に表示し別対象の成功では消さず全体更新で復旧する", async () => {
 		const user = userEvent.setup();
 		setup();
 		const session = await screen.findByText("Running session");
@@ -158,7 +171,13 @@ describe("Workspaces refresh", () => {
 				}),
 			);
 		};
-		mocks.invoke.mockRejectedValueOnce(new Error("worktree offline"));
+		const failed = workspaceListSnapshot(tree);
+		failed.repositories[0].worktrees[0].status = {
+			loaded: true,
+			state: "refreshFailed",
+			error: "worktree offline",
+		};
+		mocks.invoke.mockResolvedValue(failed);
 		await refreshTree("/repo");
 		const alert = await screen.findByRole("alert");
 		expect(alert).toHaveTextContent(
@@ -171,6 +190,7 @@ describe("Workspaces refresh", () => {
 		expect(screen.getByText("Running session")).toBe(session);
 		await refreshTree("/other");
 		expect(screen.getByRole("alert")).toHaveTextContent("worktree offline");
+		mocks.invoke.mockResolvedValue(workspaceListSnapshot(tree));
 		await user.click(
 			screen.getByRole("button", { name: "Refresh Workspaces" }),
 		);
@@ -283,7 +303,13 @@ describe("Workspaces refresh", () => {
 		expect(screen.getByText("Running session")).toBe(node);
 		expect(worktree).toHaveAttribute("aria-expanded", "true");
 		expect(scroll.scrollTop).toBe(42);
-		await act(async () => pending.reject(new Error("deadline exceeded")));
+		const failed = workspaceListSnapshot(tree);
+		failed.status = {
+			loaded: true,
+			state: "refreshFailed",
+			error: "deadline exceeded",
+		};
+		await act(async () => pending.resolve(failed));
 		expect(buttons[0]).toBeEnabled();
 		expect(screen.getByRole("alert")).toHaveTextContent(
 			"Showing previous information",
@@ -355,12 +381,18 @@ describe("Workspaces refresh", () => {
 		setup();
 		expect(screen.getByRole("status")).toHaveTextContent("Loading Workspaces");
 		expect(screen.queryByText("No Repository")).not.toBeInTheDocument();
-		await act(async () => pending.reject(new Error("offline")));
+		await act(async () =>
+			pending.resolve({
+				generation: 1,
+				repositories: [],
+				status: { loaded: false, state: "initialFailed", error: "offline" },
+			}),
+		);
 		expect(screen.getByRole("alert")).toHaveTextContent("Initial load failed");
 		expect(screen.queryByText("No Repository")).not.toBeInTheDocument();
 		mocks.invoke.mockResolvedValueOnce({
 			generation: 2,
-			status: { loaded: true, error: null },
+			status: { loaded: true, error: null, state: "empty" },
 			repositories: [],
 		});
 		await user.click(
@@ -375,12 +407,17 @@ describe("Workspaces refresh", () => {
 			const user = userEvent.setup();
 			const initial = workspaceListSnapshot();
 			if (level === "repository") {
-				initial.repositories[0].status = { loaded: false, error: null };
+				initial.repositories[0].status = {
+					loaded: false,
+					error: null,
+					state: "loading",
+				};
 				initial.repositories[0].branches = [];
 				initial.repositories[0].worktrees = [];
 			} else {
 				initial.repositories[0].worktrees[0].status = {
 					loaded: false,
+					state: "loading",
 					error: null,
 				};
 				initial.repositories[0].worktrees[0].snapshot = null;
@@ -404,6 +441,7 @@ describe("Workspaces refresh", () => {
 					? failed.repositories[0].status
 					: failed.repositories[0].worktrees[0].status;
 			status.error = "first load failed";
+			status.state = "initialFailed";
 			mocks.invoke.mockResolvedValueOnce(failed);
 			const button = screen.getByRole("button", { name: "Refresh Workspaces" });
 			await user.click(button);
@@ -420,6 +458,7 @@ describe("Workspaces refresh", () => {
 			const empty = workspaceListSnapshot();
 			if (level === "repository") {
 				empty.repositories[0].branches = [];
+				empty.repositories[0].status.state = "empty";
 				empty.repositories[0].worktrees = [];
 			}
 			mocks.invoke.mockResolvedValueOnce(empty);
@@ -445,6 +484,7 @@ describe("Workspaces refresh", () => {
 		expect(screen.queryByText("Running session")).not.toBeInTheDocument();
 		const empty = workspaceListSnapshot();
 		empty.repositories[0].branches = [];
+		empty.repositories[0].status.state = "empty";
 		empty.repositories[0].worktrees = [];
 		mocks.invoke.mockResolvedValueOnce(empty);
 		await user.click(
@@ -460,7 +500,11 @@ describe("Workspaces refresh", () => {
 		const user = userEvent.setup();
 		mocks.invoke.mockResolvedValueOnce({
 			generation: 1,
-			status: { loaded: false, error: "repositories offline" },
+			status: {
+				loaded: false,
+				error: "repositories offline",
+				state: "initialFailed",
+			},
 			repositories: [],
 		});
 		setup();
@@ -496,6 +540,63 @@ describe("Workspaces refresh", () => {
 		await user.click(button);
 		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 		expect(screen.getByText("Running session")).toBe(node);
+	});
+
+	it.each(["repository", "worktree", "all"])(
+		"%sの通信失敗は取得失敗と混ぜず対象を通知し一覧を保持する",
+		async (scope) => {
+			const user = userEvent.setup();
+			const initial = workspaceListSnapshot(tree);
+			initial.repositories[0].status = {
+				loaded: true,
+				state: "refreshFailed",
+				error: "scan failed",
+			};
+			mocks.invoke.mockResolvedValue(initial);
+			setup();
+			const session = await screen.findByText("Running session");
+			mocks.invoke.mockRejectedValueOnce(new Error("connection lost"));
+			await act(async () => {
+				if (scope === "repository")
+					await currentModel.refreshRepository("/repo");
+				else if (scope === "worktree")
+					await currentModel.refreshWorktree("/repo");
+				else await currentModel.refresh();
+			});
+			expect(screen.getAllByRole("alert")).toHaveLength(2);
+			expect(screen.getByText(/Could not confirm/)).toHaveTextContent(
+				scope === "all"
+					? "Could not confirm the refresh result."
+					: "Could not confirm the refresh result for /repo.",
+			);
+			expect(screen.getByText(/Could not confirm/)).toHaveTextContent(
+				"connection lost",
+			);
+			expect(screen.getByText(/scan failed/)).toHaveTextContent(
+				"Showing previous information",
+			);
+			expect(screen.getByText("Running session")).toBe(session);
+			await user.click(
+				screen.getByRole("button", { name: "Refresh Workspaces" }),
+			);
+			expect(screen.queryByText(/Could not confirm/)).not.toBeInTheDocument();
+			expect(screen.getByRole("alert")).toHaveTextContent("scan failed");
+		},
+	);
+
+	it("初回の通信失敗は取得済みや空に分類せず再試行できる", async () => {
+		mocks.invoke.mockRejectedValueOnce(new Error("offline"));
+		setup();
+		expect(await screen.findByRole("alert")).toHaveTextContent(
+			"Could not confirm the refresh result. offline",
+		);
+		expect(screen.queryByText("No Repository")).not.toBeInTheDocument();
+		expect(screen.queryByRole("status")).not.toBeInTheDocument();
+		await userEvent
+			.setup()
+			.click(screen.getByRole("button", { name: "Refresh Workspaces" }));
+		expect(await screen.findByText("Running session")).toBeVisible();
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 	});
 
 	it("利用者が折りたたんだWorktreeを更新中と失敗後と復旧後も維持する", async () => {

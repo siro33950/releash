@@ -1,10 +1,39 @@
 use std::collections::{HashMap, HashSet};
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct WorkspaceListFailure(String);
+
+impl From<String> for WorkspaceListFailure {
+    fn from(message: String) -> Self {
+        Self(message)
+    }
+}
+impl From<&str> for WorkspaceListFailure {
+    fn from(message: &str) -> Self {
+        Self(message.to_owned())
+    }
+}
+impl std::fmt::Display for WorkspaceListFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+impl std::error::Error for WorkspaceListFailure {}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WorkspaceListState {
+    Loading,
+    InitialFailed,
+    Empty,
+    Ready,
+    RefreshFailed,
+}
+
 #[derive(Debug)]
 pub(crate) struct WorkspaceListEntry<T> {
     generation: u64,
     value: Option<T>,
-    error: Option<String>,
+    error: Option<WorkspaceListFailure>,
 }
 
 impl<T> Default for WorkspaceListEntry<T> {
@@ -18,7 +47,7 @@ impl<T> Default for WorkspaceListEntry<T> {
 }
 
 impl<T> WorkspaceListEntry<T> {
-    fn complete(&mut self, generation: u64, result: Result<T, String>) -> bool {
+    fn complete(&mut self, generation: u64, result: Result<T, WorkspaceListFailure>) -> bool {
         if self.generation != generation {
             return false;
         }
@@ -32,6 +61,16 @@ impl<T> WorkspaceListEntry<T> {
         true
     }
 
+    pub fn state(&self, empty: bool) -> WorkspaceListState {
+        match (self.loaded(), self.error.is_some(), empty) {
+            (false, false, _) => WorkspaceListState::Loading,
+            (false, true, _) => WorkspaceListState::InitialFailed,
+            (true, true, _) => WorkspaceListState::RefreshFailed,
+            (true, false, true) => WorkspaceListState::Empty,
+            (true, false, false) => WorkspaceListState::Ready,
+        }
+    }
+
     pub fn value(&self) -> Option<&T> {
         self.value.as_ref()
     }
@@ -39,13 +78,16 @@ impl<T> WorkspaceListEntry<T> {
         self.value.is_some()
     }
     pub fn error(&self) -> Option<&str> {
-        self.error.as_deref()
+        self.error.as_ref().map(|error| error.0.as_str())
     }
 }
 
 pub(crate) struct WorkspaceListRefresh<B, N> {
     generation: u64,
     snapshot_generation: u64,
+    full_requested: u64,
+    full_started: u64,
+    full_completed: u64,
     repositories: WorkspaceListEntry<Vec<String>>,
     branches: HashMap<String, WorkspaceListEntry<(B, Vec<String>)>>,
     nodes: HashMap<String, WorkspaceListEntry<N>>,
@@ -56,6 +98,9 @@ impl<B, N> Default for WorkspaceListRefresh<B, N> {
         Self {
             generation: 0,
             snapshot_generation: 0,
+            full_requested: 0,
+            full_started: 0,
+            full_completed: 0,
             repositories: WorkspaceListEntry::default(),
             branches: HashMap::new(),
             nodes: HashMap::new(),
@@ -64,6 +109,23 @@ impl<B, N> Default for WorkspaceListRefresh<B, N> {
 }
 
 impl<B, N> WorkspaceListRefresh<B, N> {
+    pub fn request_full(&mut self) -> u64 {
+        self.full_requested = self.full_started + 1;
+        self.full_requested
+    }
+
+    pub fn start_full(&mut self) -> Option<(u64, u64)> {
+        if self.full_started != self.full_completed || self.full_requested == self.full_completed {
+            return None;
+        }
+        self.full_started = self.full_requested;
+        Some((self.full_started, self.begin()))
+    }
+
+    pub fn complete_full(&mut self, request: u64) {
+        self.full_completed = request;
+    }
+
     pub fn begin(&mut self) -> u64 {
         self.generation += 1;
         self.repositories.generation = self.generation;
@@ -83,7 +145,7 @@ impl<B, N> WorkspaceListRefresh<B, N> {
     pub fn complete_repositories(
         &mut self,
         generation: u64,
-        result: Result<Vec<String>, String>,
+        result: Result<Vec<String>, WorkspaceListFailure>,
     ) -> Vec<String> {
         if !self.is_current(generation) || !self.repositories.complete(generation, result) {
             return Vec::new();
@@ -102,7 +164,7 @@ impl<B, N> WorkspaceListRefresh<B, N> {
         &mut self,
         path: &str,
         generation: u64,
-        result: Result<(B, Vec<String>), String>,
+        result: Result<(B, Vec<String>), WorkspaceListFailure>,
     ) -> Vec<String> {
         let Some(list) = self.branches.get_mut(path) else {
             return Vec::new();
@@ -125,6 +187,25 @@ impl<B, N> WorkspaceListRefresh<B, N> {
         }
         self.release_removed_worktrees();
         paths
+    }
+
+    pub fn update_branches(
+        &mut self,
+        path: &str,
+        generation: u64,
+        update: impl FnOnce(&mut B),
+    ) -> bool {
+        let Some(list) = self.branches.get_mut(path) else {
+            return false;
+        };
+        if list.generation != generation {
+            return false;
+        }
+        let Some((branches, _)) = list.value.as_mut() else {
+            return false;
+        };
+        update(branches);
+        true
     }
 
     pub fn begin_repository(&mut self, path: &str) -> Option<u64> {
@@ -158,7 +239,7 @@ impl<B, N> WorkspaceListRefresh<B, N> {
         &mut self,
         path: &str,
         generation: u64,
-        result: Result<N, String>,
+        result: Result<N, WorkspaceListFailure>,
     ) -> bool {
         self.nodes
             .get_mut(path)

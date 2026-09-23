@@ -17,9 +17,7 @@ import { getErrorMessage } from "@/lib/errorMessage";
 
 export interface WorkspaceListModel {
 	snapshot: WorkspaceListSnapshotDto | null;
-	error: string | null;
-	repositoryErrors: Readonly<Record<string, string>>;
-	worktreeErrors: Readonly<Record<string, string>>;
+	requestError: { message: string; path?: string } | null;
 	refresh: () => Promise<WorkspaceListSnapshotDto | null>;
 	refreshRepository: (
 		repoPath: string,
@@ -37,80 +35,58 @@ export function useWorkspaceList(): WorkspaceListModel {
 	const [snapshot, setSnapshot] = useState<WorkspaceListSnapshotDto | null>(
 		null,
 	);
-	const [error, setError] = useState<string | null>(null);
-	const [repositoryErrors, setRepositoryErrors] = useState<
-		Record<string, string>
-	>({});
-	const [worktreeErrors, setWorktreeErrors] = useState<Record<string, string>>(
-		{},
-	);
+	const [requestError, setRequestError] =
+		useState<WorkspaceListModel["requestError"]>(null);
 	const requestsRef = useRef(
 		Promise.resolve<WorkspaceListSnapshotDto | null>(null),
 	);
-	const request = useCallback((worktreePath?: string, repoPath?: string) => {
-		const next = requestsRef.current.then(async () => {
-			try {
-				const result = await invoke("refresh_workspaces", {
-					worktreePath,
-					...(repoPath === undefined ? {} : { repoPath }),
-				});
-				setSnapshot(result);
-				if (worktreePath === undefined) {
-					setRepositoryErrors((current) => {
-						const next = { ...current };
-						for (const repo of result.repositories) {
-							if (repoPath !== undefined && repo.path !== repoPath) continue;
-							if (repo.status.loaded && !repo.status.error)
-								delete next[repo.path];
-						}
-						return Object.keys(current).length === Object.keys(next).length
-							? current
-							: next;
-					});
-				}
-				setWorktreeErrors((current) => {
-					const next = { ...current };
-					for (const repo of result.repositories) {
-						if (repoPath !== undefined && repo.path !== repoPath) continue;
-						for (const tree of repo.worktrees) {
-							if (worktreePath !== undefined && tree.path !== worktreePath)
-								continue;
-							if (tree.status.loaded && !tree.status.error)
-								delete next[tree.path];
-						}
+	const pendingFullRequestRef =
+		useRef<Promise<WorkspaceListSnapshotDto | null> | null>(null);
+	const pendingReadRequestRef =
+		useRef<Promise<WorkspaceListSnapshotDto | null> | null>(null);
+	const request = useCallback(
+		(worktreePath?: string, repoPath?: string, readOnly = false) => {
+			const full = worktreePath === undefined && repoPath === undefined;
+			const pending = readOnly
+				? pendingReadRequestRef
+				: full
+					? pendingFullRequestRef
+					: null;
+			if (pending?.current) return pending.current;
+			const next = requestsRef.current.then(async () => {
+				if (pending) pending.current = null;
+				try {
+					const result = readOnly
+						? await invoke("get_workspaces", {})
+						: await invoke("refresh_workspaces", {
+								worktreePath,
+								...(repoPath === undefined ? {} : { repoPath }),
+							});
+					setSnapshot(result);
+					if (!readOnly) setRequestError(null);
+					return result;
+				} catch (error) {
+					if (readOnly) {
+						console.warn("[useWorkspaceList] get_workspaces failed", error);
+						return null;
 					}
-					return Object.keys(current).length === Object.keys(next).length
-						? current
-						: next;
-				});
-				if (
-					worktreePath === undefined &&
-					repoPath === undefined &&
-					result.status.loaded &&
-					!result.status.error
-				)
-					setError(null);
-				return result;
-			} catch (error) {
-				if (worktreePath !== undefined) {
-					setWorktreeErrors((current) => ({
-						...current,
-						[worktreePath]: getErrorMessage(error),
-					}));
-				} else if (repoPath !== undefined) {
-					setRepositoryErrors((current) => ({
-						...current,
-						[repoPath]: getErrorMessage(error),
-					}));
-				} else {
-					setError(getErrorMessage(error));
+					setRequestError({
+						message: getErrorMessage(error),
+						path: worktreePath ?? repoPath,
+					});
+					return null;
 				}
-				return null;
-			}
-		});
-		requestsRef.current = next;
-		return next;
-	}, []);
+			});
+			if (pending) pending.current = next;
+			requestsRef.current = next;
+			return next;
+		},
+		[],
+	);
+	const readSnapshot = useCallback(() => {
+		void request(undefined, undefined, true);
+	}, [request]);
+
 	const refresh = useCallback(() => request(), [request]);
 	const refreshWorktree = useCallback(
 		(path: string) => request(path),
@@ -123,8 +99,20 @@ export function useWorkspaceList(): WorkspaceListModel {
 	);
 
 	useEffect(() => {
-		void refresh();
-	}, [refresh]);
+		let active = true;
+		const unlisten = listen(
+			"workspace-list-changed",
+			readSnapshot,
+			readSnapshot,
+		).then((fn) => {
+			if (active) void refresh();
+			return fn;
+		});
+		return () => {
+			active = false;
+			void unlisten.then((fn) => fn());
+		};
+	}, [readSnapshot, refresh]);
 
 	const pollInterval = snapshot?.repositories.some((repo) =>
 		repo.branches.some((branch) => branch.is_deleting),
@@ -181,21 +169,11 @@ export function useWorkspaceList(): WorkspaceListModel {
 	return useMemo(
 		() => ({
 			snapshot,
-			error,
-			repositoryErrors,
-			worktreeErrors,
+			requestError,
 			refresh,
 			refreshWorktree,
 			refreshRepository,
 		}),
-		[
-			snapshot,
-			error,
-			repositoryErrors,
-			worktreeErrors,
-			refresh,
-			refreshWorktree,
-			refreshRepository,
-		],
+		[snapshot, requestError, refresh, refreshWorktree, refreshRepository],
 	);
 }

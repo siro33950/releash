@@ -116,7 +116,7 @@ function WorkbenchApp() {
 		workspaceList.snapshot?.repositories.map((repo) => repo.path) ?? [];
 	const repositoriesLoaded = workspaceList.snapshot?.status.loaded;
 	const repositoriesError =
-		workspaceList.error ?? workspaceList.snapshot?.status.error;
+		workspaceList.requestError ?? workspaceList.snapshot?.status.error;
 
 	useEffect(() => {
 		if (
