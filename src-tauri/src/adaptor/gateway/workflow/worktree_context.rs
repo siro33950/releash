@@ -70,11 +70,6 @@ pub(crate) fn execution_worktree_path(
                         node = super::fact_log::node_meta_from_row(&row)
                             .map_err(WorktreeContextReadError::Corrupt)?;
                     }
-                    if !node.kind.is_composite_kind() {
-                        return Err(WorktreeContextReadError::Corrupt(
-                            "worktree ancestor is not a composite".into(),
-                        ));
-                    }
                 }
             })())
         })

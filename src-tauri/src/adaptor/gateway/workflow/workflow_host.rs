@@ -429,7 +429,7 @@ impl WorkflowRuntimeHost {
         )
     }
 
-    fn with_execution_store(
+    pub(crate) fn with_execution_store(
         workflow_resolver: Arc<dyn WorkflowDefinitionResolver>,
         worktree_resolver: Arc<dyn ManagedWorktreeResolver>,
         execution_store: Arc<ExecutionStore>,

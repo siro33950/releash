@@ -12,6 +12,8 @@ pub mod provider_lifecycle_acceptance;
 #[cfg(all(debug_assertions, feature = "desktop"))]
 pub mod workflow_control_plane_acceptance;
 #[cfg(all(debug_assertions, feature = "desktop"))]
+pub mod workflow_delegate_acceptance;
+#[cfg(all(debug_assertions, feature = "desktop"))]
 pub mod workflow_diagnostics_acceptance;
 pub mod terminal_surface {
     pub use crate::adaptor::controller::terminal_surface_runtime::{
