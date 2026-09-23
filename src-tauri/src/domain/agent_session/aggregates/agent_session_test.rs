@@ -698,7 +698,6 @@ fn test_workflow起動由来のroot_sessionも利用者操作とgcを拒否し�
             can_archive: false,
             can_restore: false,
             can_delete: false,
-            can_resume: false,
         }
     );
     assert_eq!(
@@ -1370,7 +1369,7 @@ fn test_agent_session_open判断_pty状態とlifecycleから唯一の操作を�
 }
 
 #[test]
-fn test_agent_session操作表示_resume可否を含む規則をdomainだけが決める() {
+fn test_agent_session操作表示_archiveとrestoreとdeleteの可否をdomainだけが決める() {
     let mut standalone = AgentSession::create(
         "agent-session-1",
         WorkspaceIdentity::new("/repo"),
@@ -1385,7 +1384,6 @@ fn test_agent_session操作表示_resume可否を含む規則をdomainだけが�
             can_archive: true,
             can_restore: false,
             can_delete: false,
-            can_resume: false,
         }
     );
 
@@ -1399,7 +1397,6 @@ fn test_agent_session操作表示_resume可否を含む規則をdomainだけが�
             can_archive: true,
             can_restore: false,
             can_delete: false,
-            can_resume: true,
         }
     );
 
@@ -1410,7 +1407,6 @@ fn test_agent_session操作表示_resume可否を含む規則をdomainだけが�
             can_archive: false,
             can_restore: true,
             can_delete: true,
-            can_resume: false,
         }
     );
 
@@ -1431,7 +1427,6 @@ fn test_agent_session操作表示_resume可否を含む規則をdomainだけが�
             can_archive: false,
             can_restore: false,
             can_delete: false,
-            can_resume: false,
         }
     );
 }

@@ -1088,7 +1088,7 @@ async fn test_issue_1826_session木のarchiveはabortしrestoreでは手動resum
         .iter()
         .any(|event| event == "resume_requested"));
 
-    host.resume_agent_session(&session_id).await.unwrap();
+    host.resume_session_node(&session_id).await.unwrap();
     assert_eq!(
         host.agent_session_lifecycle(&session_id).await.unwrap(),
         Some(AcceptanceAgentSessionLifecycle::Open)
@@ -1616,7 +1616,7 @@ async fn test_issue_1654_workflow完了時にproviderを停止しcheckpointか�
     );
     assert!(host.terminal().get(terminal_owner.clone()).is_err());
 
-    host.resume_agent_session(&session_id).await.unwrap();
+    host.resume_session_node(&node.id).await.unwrap();
     assert_eq!(
         host.agent_session_lifecycle(&session_id).await.unwrap(),
         Some(AcceptanceAgentSessionLifecycle::Open),

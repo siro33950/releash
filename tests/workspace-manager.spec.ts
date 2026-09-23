@@ -36,7 +36,6 @@ function agentSession(id: string, worktreePath: string) {
 			canArchive: true,
 			canRestore: false,
 			canDelete: false,
-			canResume: false,
 		},
 	};
 }

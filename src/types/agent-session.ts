@@ -14,7 +14,6 @@ export interface AgentSessionItem {
 		canArchive: boolean;
 		canRestore: boolean;
 		canDelete: boolean;
-		canResume: boolean;
 	};
 }
 

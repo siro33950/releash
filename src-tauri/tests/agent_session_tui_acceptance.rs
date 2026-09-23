@@ -335,20 +335,10 @@ impl AgentSessionTuiAcceptanceHost {
         )
     }
 
-    async fn resume(
-        &self,
-        agent_session_id: &str,
-        rows: u16,
-        cols: u16,
-        caller_request_id: &str,
-    ) -> Result<AcceptanceOpenOutcome, String> {
-        self.invoke_open_command(
-            "resume_agent_session",
-            agent_session_id,
-            rows,
-            cols,
-            caller_request_id,
-        )
+    async fn resume_session_node(&self, node_execution_id: &str) -> Result<(), String> {
+        self.composition
+            .resume_session_node(node_execution_id)
+            .await
     }
 
     fn invoke_open_command(
@@ -1052,12 +1042,7 @@ async fn test_atui_030_provider選択からarchive_restore_deleteまで旧messag
             AcceptanceAgentSessionLifecycle::Paused
         );
         assert!(host.terminal().get(terminal_owner.clone()).is_err());
-        assert_eq!(
-            host.resume(&session_id, 24, 80, "manual-resume")
-                .await
-                .unwrap(),
-            AcceptanceOpenOutcome::Resumed
-        );
+        host.resume_session_node(&session_id).await.unwrap();
         assert!(
             !host
                 .terminal()
@@ -1446,10 +1431,7 @@ async fn test_atui_030_process終了はprovider_idの有無に応じてpausedま
         host.get(&paused).await.unwrap().unwrap().lifecycle,
         AcceptanceAgentSessionLifecycle::Paused
     );
-    assert_eq!(
-        host.resume(&paused, 24, 80, "resume").await.unwrap(),
-        AcceptanceOpenOutcome::Resumed
-    );
+    host.resume_session_node(&paused).await.unwrap();
 
     let gc = host
         .launch_standalone(
@@ -1693,10 +1675,7 @@ async fn test_atui_030_provider実行fileが無くてもrestoreできresumeだ�
         AcceptanceOpenOutcome::Restored
     );
     assert!(host.terminal().get(terminal_owner).is_err());
-    assert!(host
-        .resume(&session_id, 24, 80, "resume-failure")
-        .await
-        .is_err());
+    assert!(host.resume_session_node(&session_id).await.is_err());
     assert_eq!(
         host.get(&session_id).await.unwrap().unwrap().lifecycle,
         AcceptanceAgentSessionLifecycle::Paused

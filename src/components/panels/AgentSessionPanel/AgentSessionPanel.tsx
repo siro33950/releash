@@ -29,8 +29,33 @@ type PanelState =
 	| "indeterminate"
 	| "gone";
 
+export interface SessionResumeAction {
+	pending: boolean;
+	error: string | null;
+	onResume: () => void;
+}
+
+export function SessionResumeButton({
+	action,
+}: {
+	action: SessionResumeAction;
+}) {
+	return (
+		<>
+			{action.error && (
+				<div role="alert" className="max-w-md break-words text-destructive">
+					{action.error}
+				</div>
+			)}
+			<Button type="button" disabled={action.pending} onClick={action.onResume}>
+				{action.pending ? "Resuming..." : "Resume"}
+			</Button>
+		</>
+	);
+}
+
 interface AgentSessionPanelProps {
-	showResumeAction?: boolean;
+	resumeAction?: SessionResumeAction | null;
 	session: AgentSessionItem | null;
 	initialAttachment?: AgentSessionLaunchAttachment | null;
 	theme?: Theme;
@@ -39,7 +64,7 @@ interface AgentSessionPanelProps {
 }
 
 interface AgentSessionRouteProps {
-	showResumeAction?: boolean;
+	resumeAction?: SessionResumeAction | null;
 	agentSessionId: string;
 	theme?: Theme;
 	initialAttachment?: AgentSessionLaunchAttachment;
@@ -51,7 +76,7 @@ function operationId(prefix: string): string {
 }
 
 export function AgentSessionPanel({
-	showResumeAction = true,
+	resumeAction = null,
 	session,
 	initialAttachment,
 	theme,
@@ -68,8 +93,7 @@ export function AgentSessionPanel({
 	const workspaceIdentity =
 		session?.workspaceIdentity ?? initialAttachment?.workspaceIdentity ?? "";
 	const provider = session?.provider ?? initialAttachment?.provider ?? "";
-	const canResume = session?.operations.canResume ?? false;
-	const pausedMessage = canResume
+	const pausedMessage = resumeAction
 		? "Provider session is not running. Resume to retry."
 		: "Provider session is not running.";
 	const [state, setState] = useState<PanelState>(
@@ -120,12 +144,7 @@ export function AgentSessionPanel({
 	);
 
 	const runLifecycleOperation = useCallback(
-		async (
-			command:
-				| "open_agent_session"
-				| "resume_agent_session"
-				| "restore_agent_session",
-		) => {
+		async (command: "open_agent_session" | "restore_agent_session") => {
 			if (!session) return;
 			setState("loading");
 			setError(null);
@@ -143,9 +162,7 @@ export function AgentSessionPanel({
 					command === "restore_agent_session" ||
 						(command === "open_agent_session" && session.operations.canRestore)
 						? "archived"
-						: command === "resume_agent_session"
-							? "paused"
-							: "indeterminate",
+						: "indeterminate",
 				);
 			}
 		},
@@ -232,14 +249,7 @@ export function AgentSessionPanel({
 			{state === "paused" && (
 				<>
 					<div className="text-muted-foreground">AgentSession is paused.</div>
-					{showResumeAction && canResume && (
-						<Button
-							type="button"
-							onClick={() => void runLifecycleOperation("resume_agent_session")}
-						>
-							Resume
-						</Button>
-					)}
+					{resumeAction && <SessionResumeButton action={resumeAction} />}
 				</>
 			)}
 			{state === "archived" && (
@@ -285,7 +295,7 @@ export function AgentSessionPanel({
 }
 
 export function AgentSessionRoute({
-	showResumeAction = true,
+	resumeAction = null,
 	agentSessionId,
 	theme,
 	initialAttachment,
@@ -358,7 +368,7 @@ export function AgentSessionRoute({
 	) {
 		return (
 			<AgentSessionPanel
-				showResumeAction={showResumeAction}
+				resumeAction={resumeAction}
 				session={session?.id === agentSessionId ? session : null}
 				initialAttachment={launchAttachment}
 				theme={theme}

@@ -1003,7 +1003,6 @@ fn open_session(id: &str) -> AgentSessionItemDto {
         provider_session_id: None,
         transcript_ref: None,
         operations: AgentSessionOperationsDto {
-            can_resume: false,
             can_archive: true,
             can_restore: false,
             can_delete: false,

@@ -349,36 +349,6 @@ pub(crate) fn register_shared(
         );
     }
     {
-        let lifecycle = deps.agent_session_lifecycle_usecase.clone();
-        router.register_domain(
-            &["resume_agent_session"],
-            Box::new(move |command| {
-                let lifecycle = lifecycle.clone();
-                Box::pin(async move {
-                    let wire::command_request::Command::ResumeAgentSession(args) = command else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move {
-                        let lifecycle = lifecycle
-                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        outcome(
-                            provider_tui::resume_agent_session_shared(
-                                &lifecycle,
-                                convert(required(args.agent_session_id, "agentSessionId")?)?,
-                                convert(required(args.rows, "rows")?)?,
-                                convert(required(args.cols, "cols")?)?,
-                                convert(required(args.caller_request_id, "callerRequestId")?)?,
-                            )
-                            .await,
-                        )
-                    }
-                    .await?;
-                    Ok(wire::command_result::Command::ResumeAgentSession(result))
-                })
-            }),
-        );
-    }
-    {
         let launch = deps.agent_session_launch_usecase.clone();
         router.register_domain(
             &["resume_agent_session_history_candidate"],

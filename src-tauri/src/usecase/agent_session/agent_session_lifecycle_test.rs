@@ -583,7 +583,7 @@ fn setup() -> LifecycleTestContext {
 }
 
 #[tokio::test]
-async fn test_worktree削除中_sessionのopen_resume_restore_deleteを副作用前に拒否する() {
+async fn test_worktree削除中_sessionのopen_restore_deleteを副作用前に拒否する() {
     // Given
     let context = setup();
     let id = "deleting-session";
@@ -609,10 +609,6 @@ async fn test_worktree削除中_sessionのopen_resume_restore_deleteを副作用
     // When / Then
     assert_eq!(
         context.lifecycle.open(id, 24, 80, "open").await,
-        Err(AgentSessionLifecycleUsecaseError::Conflict)
-    );
-    assert_eq!(
-        context.lifecycle.resume(id, 24, 80, "resume").await,
         Err(AgentSessionLifecycleUsecaseError::Conflict)
     );
     assert_eq!(
@@ -1502,7 +1498,7 @@ async fn test_agent_session_lifecycle_exit_resume_archive_restore_deleteを接�
     );
     assert_eq!(
         lifecycle
-            .resume("agent-1", 24, 80, "resume-1")
+            .ensure_provider_running("agent-1", 24, 80, "resume-1")
             .await
             .unwrap(),
         AgentSessionOpenOutcome::Resumed
@@ -1563,13 +1559,13 @@ async fn test_agent_session_lifecycle_exit_resume_archive_restore_deleteを接�
     );
     assert_eq!(*terminal.spawn_count.lock().unwrap(), 1);
     assert!(lifecycle
-        .resume("agent-1", 24, 80, "resume-fail")
+        .ensure_provider_running("agent-1", 24, 80, "resume-fail")
         .await
         .is_err());
     *terminal.fail_spawn.lock().unwrap() = false;
     assert_eq!(
         lifecycle
-            .resume("agent-1", 24, 80, "resume-2")
+            .ensure_provider_running("agent-1", 24, 80, "resume-2")
             .await
             .unwrap(),
         AgentSessionOpenOutcome::Resumed
@@ -1966,7 +1962,7 @@ async fn test_agent_session_resume_codexでも既知の配送失敗がなけれ�
 
     assert_eq!(
         lifecycle
-            .resume("agent-hook", 24, 80, "resume-hook")
+            .ensure_provider_running("agent-hook", 24, 80, "resume-hook")
             .await
             .unwrap(),
         AgentSessionOpenOutcome::Resumed
@@ -2022,7 +2018,7 @@ async fn test_agent_session_resume_spawn失敗時は未起動launchのhook警告
 
     assert_eq!(
         lifecycle
-            .resume(
+            .ensure_provider_running(
                 "agent-hook-spawn-failure",
                 24,
                 80,
@@ -2095,7 +2091,7 @@ async fn test_agent_session_resume状態保存失敗時は起動済みprocessを
 
     assert_eq!(
         lifecycle
-            .resume("agent-save-failure", 24, 80, "resume-save-failure")
+            .ensure_provider_running("agent-save-failure", 24, 80, "resume-save-failure")
             .await
             .unwrap_err(),
         super::AgentSessionLifecycleUsecaseError::StorageUnavailable
@@ -2153,7 +2149,7 @@ async fn test_agent_session_resume_残存bindingを解放して単一launchに�
 
     assert_eq!(
         lifecycle
-            .resume("agent-stale-binding", 24, 80, "resume-stale-binding")
+            .ensure_provider_running("agent-stale-binding", 24, 80, "resume-stale-binding")
             .await
             .unwrap(),
         AgentSessionOpenOutcome::Resumed
@@ -2237,7 +2233,7 @@ async fn test_agent_session_resume_同一sessionへの並行要求はptyを一�
         let lifecycle = lifecycle.clone();
         async move {
             lifecycle
-                .resume("agent-concurrent-resume", 24, 80, "resume-concurrent-1")
+                .ensure_provider_running("agent-concurrent-resume", 24, 80, "resume-concurrent-1")
                 .await
         }
     });
@@ -2248,7 +2244,7 @@ async fn test_agent_session_resume_同一sessionへの並行要求はptyを一�
         let lifecycle = lifecycle.clone();
         async move {
             lifecycle
-                .resume("agent-concurrent-resume", 24, 80, "resume-concurrent-2")
+                .ensure_provider_running("agent-concurrent-resume", 24, 80, "resume-concurrent-2")
                 .await
         }
     });
@@ -2266,9 +2262,7 @@ async fn test_agent_session_resume_同一sessionへの並行要求はptyを一�
     assert_eq!(
         outcomes
             .iter()
-            .filter(|outcome| {
-                **outcome == Err(super::AgentSessionLifecycleUsecaseError::InvalidOperation)
-            })
+            .filter(|outcome| { **outcome == Ok(AgentSessionOpenOutcome::Attached) })
             .count(),
         1
     );
@@ -2346,7 +2340,7 @@ async fn test_agent_session_resume中のarchiveは同一sessionの操作完了�
         let lifecycle = lifecycle.clone();
         async move {
             lifecycle
-                .resume("agent-resume-archive", 24, 80, "resume-before-archive")
+                .ensure_provider_running("agent-resume-archive", 24, 80, "resume-before-archive")
                 .await
         }
     });
@@ -2529,7 +2523,7 @@ async fn test_agent_session_restoreはprocessを起動せずpausedになり手�
     assert_eq!(
         context
             .lifecycle
-            .resume("restore-agent", 24, 80, "resume")
+            .ensure_provider_running("restore-agent", 24, 80, "resume")
             .await
             .unwrap(),
         AgentSessionOpenOutcome::Resumed

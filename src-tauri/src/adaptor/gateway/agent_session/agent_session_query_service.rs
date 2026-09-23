@@ -158,8 +158,6 @@ fn agent_session_item_from_facts(
     let operations: AgentSessionOperations = derive_agent_session_operations(
         derived.tree_location.launched_as(),
         derived.lifecycle == AgentSessionLifecycle::Archived,
-        derived.lifecycle == AgentSessionLifecycle::Paused,
-        view.provider_session_id.is_some(),
     );
     Ok(AgentSessionItemDto {
         id: session_id.to_string(),
@@ -185,7 +183,6 @@ fn agent_session_item_from_facts(
             can_archive: operations.can_archive,
             can_restore: operations.can_restore,
             can_delete: operations.can_delete,
-            can_resume: operations.can_resume,
         },
         last_exit_abnormal: view.last_exit_abnormal,
     })

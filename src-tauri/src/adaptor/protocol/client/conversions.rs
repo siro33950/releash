@@ -184,7 +184,6 @@ impl TryFrom<crate::usecase::agent_session::AgentSessionOperationsDto>
             can_archive: Some(cv(value.can_archive)?),
             can_restore: Some(cv(value.can_restore)?),
             can_delete: Some(cv(value.can_delete)?),
-            can_resume: Some(cv(value.can_resume)?),
         })
     }
 }

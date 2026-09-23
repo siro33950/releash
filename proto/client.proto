@@ -21,8 +21,8 @@ message Push {
 message CommandRequest {
   reserved 12, 25, 44, 45, 67, 86, 89, 118, 182;
   reserved "list_branches_with_status";
-  reserved 123, 131, 134, 137;
-  reserved "stop_workflow", "resume_workflow", "confirm_agent_session_archive_delete";
+  reserved 121, 123, 131, 134, 137;
+  reserved "resume_agent_session", "stop_workflow", "resume_workflow", "confirm_agent_session_archive_delete";
   reserved "start_git_dir_watching", "start_watching";
   oneof command {
     GetReviewBlobRequest get_review_blob = 183;
@@ -128,7 +128,6 @@ message CommandRequest {
     ResolveReviewThreadRequest resolve_review_thread = 117;
     RestoreAgentSessionRequest restore_agent_session = 119;
     RestoreWorkspaceWorkflowExecutionRequest restore_workspace_workflow_execution = 120;
-    ResumeAgentSessionRequest resume_agent_session = 121;
     ResumeAgentSessionHistoryCandidateRequest resume_agent_session_history_candidate = 122;
     RetryWorkspaceNodeRequest retry_workspace_node = 124;
     ResumeWorkspaceSessionNodeRequest resume_workspace_session_node = 185;
@@ -195,8 +194,8 @@ message CommandRequest {
 message CommandResult {
   reserved 12, 25, 44, 45, 67, 86, 89, 118, 182;
   reserved "list_branches_with_status";
-  reserved 123, 131, 134, 137;
-  reserved "stop_workflow", "resume_workflow", "confirm_agent_session_archive_delete";
+  reserved 121, 123, 131, 134, 137;
+  reserved "resume_agent_session", "stop_workflow", "resume_workflow", "confirm_agent_session_archive_delete";
   reserved "start_git_dir_watching", "start_watching";
   oneof command {
     ResultString get_review_blob = 183;
@@ -302,7 +301,6 @@ message CommandResult {
     ReviewThreadDto resolve_review_thread = 117;
     AgentSessionOpenResponse restore_agent_session = 119;
     Unit restore_workspace_workflow_execution = 120;
-    AgentSessionOpenResponse resume_agent_session = 121;
     ResultString resume_agent_session_history_candidate = 122;
     Unit retry_workspace_node = 124;
     Unit resume_workspace_session_node = 185;
@@ -930,8 +928,9 @@ message AgentSessionLifecycleDto {
 message AgentSessionOperationsDto {
   optional bool can_archive = 1 [json_name = "canArchive", (json_required) = true];
   optional bool can_restore = 2 [json_name = "canRestore", (json_required) = true];
+  reserved 4;
+  reserved "can_resume";
   optional bool can_delete = 3 [json_name = "canDelete", (json_required) = true];
-  optional bool can_resume = 4 [json_name = "canResume", (json_required) = true];
 }
 
 message NullableAgentSessionItemDto {
@@ -2477,13 +2476,6 @@ message RestoreWorkspaceWorkflowExecutionRequest {
   optional string execution_id = 2 [json_name = "executionId", (json_required) = true];
 }
 
-message ResumeAgentSessionRequest {
-  optional string agent_session_id = 1 [json_name = "agentSessionId", (json_required) = true];
-  optional uint32 rows = 2 [json_name = "rows", (json_required) = true];
-  optional uint32 cols = 3 [json_name = "cols", (json_required) = true];
-  optional string caller_request_id = 4 [json_name = "callerRequestId", (json_required) = true];
-}
-
 message ResumeAgentSessionHistoryCandidateRequest {
   optional string workspace_identity = 1 [json_name = "workspaceIdentity", (json_required) = true];
   optional string worktree_path = 2 [json_name = "worktreePath", (json_required) = true];
@@ -3483,7 +3475,6 @@ service ClientService {
   rpc ResolveReviewThread(ResolveReviewThreadRequest) returns (ReviewThreadDto);
   rpc RestoreAgentSession(RestoreAgentSessionRequest) returns (AgentSessionOpenResponse);
   rpc RestoreWorkspaceWorkflowExecution(RestoreWorkspaceWorkflowExecutionRequest) returns (Unit);
-  rpc ResumeAgentSession(ResumeAgentSessionRequest) returns (AgentSessionOpenResponse);
   rpc ResumeAgentSessionHistoryCandidate(ResumeAgentSessionHistoryCandidateRequest) returns (ResultString);
   rpc RetryWorkspaceNode(RetryWorkspaceNodeRequest) returns (Unit);
   rpc ResumeWorkspaceSessionNode(ResumeWorkspaceSessionNodeRequest) returns (Unit);

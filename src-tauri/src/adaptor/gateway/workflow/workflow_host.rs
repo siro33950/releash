@@ -608,6 +608,9 @@ impl WorkflowRuntimeHost {
             node_executions: Vec::new(),
             request,
             current_stall_observations: Vec::new(),
+            workspace_identity: crate::domain::workspace_tree::WorkspaceIdentity::new(&worktree_path)
+                .as_str()
+                .to_string(),
             worktree_path: worktree_path.clone(),
             launched_as: crate::domain::workflow::ExecutionTreeLaunch::Workflow,
             repository_root,

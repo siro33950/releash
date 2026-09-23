@@ -72,6 +72,7 @@ mod tests {
             execution_id: "execution-1".to_string(),
             workflow_name: "wf".to_string(),
             worktree_path: "/repo".to_string(),
+            workspace_identity: "/repo".to_string(),
             created_from: crate::domain::workflow::ExecutionOrigin::Cli,
             request: "ship it".to_string(),
             error_reason: None,

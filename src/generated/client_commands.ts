@@ -202,7 +202,6 @@ import {
 	ResultStringSchema,
 	ResultUint32Schema,
 	ResumeAgentSessionHistoryCandidateRequestSchema,
-	ResumeAgentSessionRequestSchema,
 	ResumeWorkspaceSessionNodeRequestSchema,
 	RetryWorkspaceNodeRequestSchema,
 	ReviewFileViewDtoSchema,
@@ -2201,25 +2200,6 @@ const commands = {
 					RestoreWorkspaceWorkflowExecutionRequestSchema,
 					clientJson(
 						RestoreWorkspaceWorkflowExecutionRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	resume_agent_session: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["resume_agent_session"],
-	) => {
-		const result = decode(
-			AgentSessionOpenResponseSchema,
-			await client.resumeAgentSession(
-				fromJson(
-					ResumeAgentSessionRequestSchema,
-					clientJson(
-						ResumeAgentSessionRequestSchema,
 						JSON.parse(JSON.stringify(args ?? {})),
 						true,
 					),

@@ -111,12 +111,6 @@ impl NodeExecutionStatus {
             && presence == NodeProcessPresence::ConfirmedAbsent
     }
 
-    pub fn can_resume_session(self, kind: NodeKindName, presence: NodeProcessPresence) -> bool {
-        matches!(self, Self::Running | Self::WaitingApproval)
-            && kind == NodeKindName::Session
-            && presence == NodeProcessPresence::ConfirmedAbsent
-    }
-
     #[cfg(test)]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -163,6 +157,10 @@ pub enum NodeProcessPresence {
 }
 
 impl NodeProcessPresence {
+    pub fn can_resume_session(self, kind: NodeKindName) -> bool {
+        kind == NodeKindName::Session && self == Self::ConfirmedAbsent
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Live => "live",
@@ -178,8 +176,7 @@ impl NodeExecution {
     }
 
     pub fn can_resume_session(&self) -> bool {
-        self.status
-            .can_resume_session(self.kind, self.process_presence)
+        self.process_presence.can_resume_session(self.kind)
     }
 
     pub fn is_fanout_child(&self) -> bool {
@@ -236,11 +233,11 @@ mod tests {
     fn manual_node_actions_require_confirmed_absence_and_the_matching_leaf_kind() {
         use NodeExecutionStatus as S;
         use NodeProcessPresence as P;
-        for (status, retry_command, resume_session) in [
-            (S::Running, true, true),
-            (S::WaitingApproval, false, true),
-            (S::Succeeded, false, false),
-            (S::Aborted, false, false),
+        for (status, retry_command) in [
+            (S::Running, true),
+            (S::WaitingApproval, false),
+            (S::Succeeded, false),
+            (S::Aborted, false),
         ] {
             for presence in [P::Live, P::Unknown, P::ConfirmedAbsent] {
                 let absent = presence == P::ConfirmedAbsent;
@@ -249,15 +246,28 @@ mod tests {
                     absent && retry_command
                 );
                 assert!(!status.can_retry(NodeKindName::Session, presence));
-                assert_eq!(
-                    status.can_resume_session(NodeKindName::Session, presence),
-                    absent && resume_session
-                );
-                assert!(!status.can_resume_session(NodeKindName::Command, presence));
                 for kind in [NodeKindName::Sequence, NodeKindName::Fanout] {
                     assert!(!status.can_retry(kind, presence));
-                    assert!(!status.can_resume_session(kind, presence));
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn test_session再開可否_nodeの状態に関係なくsessionのプロセス不在だけで決まる() {
+        use NodeProcessPresence as P;
+        for presence in [P::Live, P::Unknown, P::ConfirmedAbsent] {
+            // When / Then
+            assert_eq!(
+                presence.can_resume_session(NodeKindName::Session),
+                presence == P::ConfirmedAbsent
+            );
+            for kind in [
+                NodeKindName::Command,
+                NodeKindName::Sequence,
+                NodeKindName::Fanout,
+            ] {
+                assert!(!presence.can_resume_session(kind));
             }
         }
     }

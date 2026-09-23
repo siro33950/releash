@@ -1193,3 +1193,99 @@ fn test_command反映判定_実行木とnodeとattemptが一致するrunningだ�
         Err("execution tree is terminal")
     );
 }
+
+fn session_tree() -> (ExecutionTree, LeafStart) {
+    let mut tree = execution(
+        "name: wf\ndescription: test\nnodes:\n  main:\n    session:\n      provider: claude\n",
+    );
+    let leaf = next_leaf(tree.start_root(&mut id_source(), 1.0).unwrap().decision);
+    assert_eq!(
+        tree.attach_node_session(&leaf.node_execution_id, "session-1".to_string(), 1.5),
+        TransitionOutcome::Applied
+    );
+    (tree, leaf)
+}
+
+#[test]
+fn test_session再開_動いているnodeは会話が残れば再開し無ければ新しいattemptで起動し直す() {
+    use crate::domain::workflow::NodeProcessPresence as P;
+    // Given
+    let (tree, leaf) = session_tree();
+    let id = &leaf.node_execution_id;
+    // When / Then
+    assert_eq!(
+        tree.session_resume_action(id, P::ConfirmedAbsent, true, true),
+        Ok(SessionResumeAction::ResumeConversation {
+            session_id: "session-1".to_string(),
+            injection: None,
+        })
+    );
+    for (conversation, worktree) in [(false, true), (true, false), (false, false)] {
+        assert_eq!(
+            tree.session_resume_action(id, P::ConfirmedAbsent, conversation, worktree),
+            Ok(SessionResumeAction::RestartAttempt)
+        );
+    }
+}
+
+#[test]
+fn test_session再開_終わったnodeも会話が残れば再開し無ければ起動し直せず拒否する() {
+    use crate::domain::workflow::NodeProcessPresence as P;
+    // Given
+    let (mut tree, leaf) = session_tree();
+    let id = leaf.node_execution_id.clone();
+    finish_leaf(&mut tree, &leaf, None, &mut id_source());
+    assert_eq!(
+        tree.node_execution(&id).unwrap().status,
+        RuntimeNodeExecutionStatus::Succeeded
+    );
+    let (mut aborted, aborted_leaf) = session_tree();
+    aborted.transition_aborted();
+    for (tree, id) in [
+        (&tree, id.as_str()),
+        (&aborted, &aborted_leaf.node_execution_id),
+    ] {
+        // When / Then
+        assert_eq!(
+            tree.session_resume_action(id, P::ConfirmedAbsent, true, true),
+            Ok(SessionResumeAction::ResumeConversation {
+                session_id: "session-1".to_string(),
+                injection: None,
+            })
+        );
+        assert_eq!(
+            tree.session_resume_action(id, P::ConfirmedAbsent, false, true),
+            Err(SessionResumeRejection::Unrecoverable)
+        );
+    }
+}
+
+#[test]
+fn test_session再開_プロセスが居るか不明なnodeとsession以外と存在しないnodeは拒否する() {
+    use crate::domain::workflow::NodeProcessPresence as P;
+    // Given
+    let (tree, leaf) = session_tree();
+    let mut command =
+        execution("name: wf\ndescription: test\nnodes:\n  main:\n    command: 'true'\n");
+    let command_leaf = next_leaf(command.start_root(&mut id_source(), 1.0).unwrap().decision);
+    // When / Then
+    for presence in [P::Live, P::Unknown] {
+        assert_eq!(
+            tree.session_resume_action(&leaf.node_execution_id, presence, true, true),
+            Err(SessionResumeRejection::ProcessPresent)
+        );
+    }
+    assert_eq!(
+        command.session_resume_action(
+            &command_leaf.node_execution_id,
+            P::ConfirmedAbsent,
+            true,
+            true
+        ),
+        Err(SessionResumeRejection::NotSession)
+    );
+    assert_eq!(
+        tree.session_resume_action("missing", P::ConfirmedAbsent, true, true),
+        Err(SessionResumeRejection::NodeExecutionNotFound)
+    );
+}

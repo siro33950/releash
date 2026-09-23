@@ -126,6 +126,36 @@ pub struct ApprovalAttemptTarget {
     pub artifact: Option<serde_json::Value>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionResumeAction {
+    ResumeConversation {
+        session_id: String,
+        injection: Option<DelegateInjection>,
+    },
+    RestartAttempt,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionResumeRejection {
+    NodeExecutionNotFound,
+    NotSession,
+    ProcessPresent,
+    Unrecoverable,
+}
+
+impl std::fmt::Display for SessionResumeRejection {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::NodeExecutionNotFound => "Node execution not found",
+            Self::NotSession => "Only a Session Node can be resumed",
+            Self::ProcessPresent => "Session process is still running or its presence is unknown",
+            Self::Unrecoverable => {
+                "Session conversation or worktree is lost and the Node can no longer start a new attempt"
+            }
+        })
+    }
+}
+
 /// One node attempt held inside the execution aggregate.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RuntimeNodeExecution {
@@ -174,19 +204,11 @@ impl RuntimeNodeExecution {
         self.status.can_retry(self.kind, presence)
     }
 
-    pub fn requires_new_session_attempt(
-        &self,
-        conversation_exists: bool,
-        worktree_exists: bool,
-    ) -> bool {
-        !conversation_exists || !worktree_exists
-    }
-
     pub fn can_resume_session(
         &self,
         presence: crate::domain::workflow::NodeProcessPresence,
     ) -> bool {
-        self.status.can_resume_session(self.kind, presence)
+        presence.can_resume_session(self.kind)
     }
 
     pub fn prepare_command(&mut self, display_command: String) -> TransitionOutcome {
@@ -295,6 +317,7 @@ pub struct ExecutionTreeRestore {
     pub node_history: Vec<NodeHistoryEntry>,
     pub workflow_defaults: WorkflowDefaults,
     pub worktree_path: String,
+    pub workspace_identity: String,
     pub repository_root: Option<String>,
     pub launched_as: ExecutionTreeLaunch,
     pub created_from: ExecutionOrigin,
@@ -317,6 +340,7 @@ impl Default for ExecutionTreeRestore {
             node_history: Vec::new(),
             workflow_defaults: WorkflowDefaults,
             worktree_path: String::new(),
+            workspace_identity: String::new(),
             repository_root: None,
             launched_as: ExecutionTreeLaunch::Workflow,
             created_from: ExecutionOrigin::DesktopUi,
@@ -573,6 +597,8 @@ pub struct ExecutionTreeView {
     pub node_history: Vec<NodeHistoryEntry>,
     pub workflow_defaults: WorkflowDefaults,
     pub worktree_path: String,
+    /// terminal surface の owner 鍵。worktree_path から導出しない。
+    pub workspace_identity: String,
     pub repository_root: Option<String>,
     pub launched_as: ExecutionTreeLaunch,
     pub created_from: ExecutionOrigin,
@@ -668,6 +694,7 @@ impl ExecutionTree {
                 node_history: restore.node_history,
                 workflow_defaults: restore.workflow_defaults,
                 worktree_path: restore.worktree_path,
+                workspace_identity: restore.workspace_identity,
                 repository_root: restore.repository_root,
                 launched_as: restore.launched_as,
                 created_from: restore.created_from,
@@ -1860,6 +1887,37 @@ impl ExecutionTree {
             bindings,
             item,
         })
+    }
+
+    /// Session の Resume が何をするかを、Node の状態ではなく事実から決める。
+    pub fn session_resume_action(
+        &self,
+        node_execution_id: &str,
+        presence: crate::domain::workflow::NodeProcessPresence,
+        conversation_recoverable: bool,
+        worktree_exists: bool,
+    ) -> Result<SessionResumeAction, SessionResumeRejection> {
+        let node = self
+            .node_execution(node_execution_id)
+            .ok_or(SessionResumeRejection::NodeExecutionNotFound)?;
+        if node.kind != NodeKindName::Session {
+            return Err(SessionResumeRejection::NotSession);
+        }
+        if !node.can_resume_session(presence) {
+            return Err(SessionResumeRejection::ProcessPresent);
+        }
+        if conversation_recoverable && worktree_exists {
+            if let Some(session_id) = node.session_id.clone() {
+                return Ok(SessionResumeAction::ResumeConversation {
+                    session_id,
+                    injection: self.pending_delegate_injection(node_execution_id),
+                });
+            }
+        }
+        if self.is_active() && node.can_restart() {
+            return Ok(SessionResumeAction::RestartAttempt);
+        }
+        Err(SessionResumeRejection::Unrecoverable)
     }
 
     /// leaf attempt の再実行。

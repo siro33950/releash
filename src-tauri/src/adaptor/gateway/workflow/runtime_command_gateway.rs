@@ -173,7 +173,7 @@ impl WorkflowControlPlaneGateway for WorkflowRuntimeCommandGateway {
             .node_execution(node_execution_id)
             .ok_or_else(|| WorkflowError::NotFound(node_execution_id.into()))?;
         self.driver.node_processes.presence(
-            &execution.worktree_path,
+            &execution.workspace_identity,
             node_execution_id,
             node.kind,
             node.session_id.as_deref(),

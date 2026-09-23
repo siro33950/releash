@@ -163,7 +163,7 @@ Sequence の Artifact は、宣言なしに常に engine が産出する JSON ob
 { "run_tests": { "ok": true }, "publish": { "version": "1.0.0" } }
 ```
 
-Session / Command の起動が失敗した場合は、新しい attempt を作りながら最大 4 回自動で起動し直す。待機は 1、2、4、8 秒と長くなる。使い切っても Node は Running のままとし、プロセス在否を別に示す。プロセスが居ない Session は Resume、Command は Retry で利用者の介入を受け付ける。Session の Resume は会話と作業場所が残っていれば同じ attempt の会話を復旧し、いずれかが無ければ新しい attempt を起動する。既存会話の復旧時に会話の続きを促す指示は送らない。
+Session / Command の起動が失敗した場合は、新しい attempt を作りながら最大 4 回自動で起動し直す。待機は 1、2、4、8 秒と長くなる。使い切っても Node は Running のままとし、プロセス在否を別に示す。プロセスが居ない Session は Resume、Command は Retry で利用者の介入を受け付ける。Session の Resume は Node の状態を問わない。会話と作業場所が残っていれば同じ attempt の会話を復旧し、Node の状態は変えない。いずれかが無ければ、実行中の実行木では新しい attempt を起動し、終わった実行木では失敗する。既存会話の復旧時に会話の続きを促す指示は送らない。
 
 ### Fanout
 

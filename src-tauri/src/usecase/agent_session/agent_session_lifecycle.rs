@@ -169,37 +169,6 @@ impl AgentSessionLifecycleUsecase {
         }
     }
 
-    pub(crate) async fn resume(
-        &self,
-        agent_session_id: &str,
-        rows: u16,
-        cols: u16,
-        caller_request_id: &str,
-    ) -> Result<AgentSessionOpenOutcome, AgentSessionLifecycleUsecaseError> {
-        let session = self.required(agent_session_id).await?;
-        let _workspace_mutation = self
-            .execution_trees
-            .begin_worktree_mutation(session.session().workspace().as_str())
-            .map_err(map_workflow_error)?;
-        let _worktree_mutation = self
-            .execution_trees
-            .begin_worktree_mutation(session.session().worktree_path())
-            .map_err(map_workflow_error)?;
-        let session = self.required(agent_session_id).await?;
-        let _tree_operation = self
-            .execution_trees
-            .lock_execution_tree(session.session().tree_location().tree_id())
-            .await
-            .map_err(map_workflow_error)?;
-        let _operation = self
-            .sessions
-            .lock_operation(agent_session_id)
-            .await
-            .map_err(map_session_error)?;
-        self.resume_locked(agent_session_id, rows, cols, caller_request_id)
-            .await
-    }
-
     pub(crate) async fn has_recoverable_conversation(
         &self,
         agent_session_id: &str,

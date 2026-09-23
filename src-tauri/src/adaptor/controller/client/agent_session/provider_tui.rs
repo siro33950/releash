@@ -362,20 +362,6 @@ pub(crate) async fn open_agent_session_shared(
         .map_err(lifecycle_error)
 }
 
-pub(crate) async fn resume_agent_session_shared(
-    lifecycle: &Arc<AgentSessionLifecycleUsecase>,
-    agent_session_id: String,
-    rows: u16,
-    cols: u16,
-    caller_request_id: String,
-) -> Result<AgentSessionOpenResponse, AppError> {
-    lifecycle
-        .resume(&agent_session_id, rows, cols, &caller_request_id)
-        .await
-        .map(Into::into)
-        .map_err(lifecycle_error)
-}
-
 pub(crate) async fn restore_agent_session_shared(
     lifecycle: &Arc<AgentSessionLifecycleUsecase>,
     agent_session_id: String,
