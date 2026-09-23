@@ -201,21 +201,16 @@ fn test_一覧状態_初回と空と失敗と復旧を区別する() {
 }
 
 #[test]
-fn test_pr反映_古い世代と削除されたrepositoryを反映しない() {
+fn test_repository世代判定_古い世代と削除されたrepositoryを現行としない() {
     // Given
     let mut lists = populated();
     let generation = lists.begin_repository("/repo").unwrap();
-    // When
-    assert!(!lists.update_branches("/repo", generation - 1, |branches| branches.clear()));
-    assert!(lists.update_branches("/repo", generation, |branches| branches.push("pr".into())));
-    // Then
-    assert_eq!(
-        lists.branches("/repo").unwrap().value().unwrap().0,
-        ["main", "pr"]
-    );
+    // When / Then
+    assert!(!lists.is_repository_current("/repo", generation - 1));
+    assert!(lists.is_repository_current("/repo", generation));
     let next = lists.begin();
     lists.complete_repositories(next, Ok(vec![]));
-    assert!(!lists.update_branches("/repo", generation, |branches| branches.clear()));
+    assert!(!lists.is_repository_current("/repo", next));
 }
 
 #[test]

@@ -17,7 +17,7 @@ pub(crate) struct WorkspaceListUsecaseError(pub String);
 pub(crate) trait WorkspaceListQueryService: Send + Sync {
     fn repositories(&self) -> Result<Vec<String>, WorkspaceListUsecaseError>;
     async fn branches(&self, path: &str) -> Result<Vec<BranchCardDto>, WorkspaceListUsecaseError>;
-    fn pr_status(&self, path: &str) -> PrStatus;
+    fn pr_status(&self, path: &str) -> Result<PrStatus, WorkspaceListUsecaseError>;
     fn nodes(&self, path: &str) -> Result<WorkspaceTreeSnapshotDto, WorkspaceListUsecaseError>;
     fn history(
         &self,
@@ -45,8 +45,10 @@ impl WorkspaceListQueryService for WorkspaceListServices {
             .map_err(|error| WorkspaceListUsecaseError(error.to_string()))
     }
 
-    fn pr_status(&self, path: &str) -> PrStatus {
-        self.git_host.get_cached_pr_status(path)
+    fn pr_status(&self, path: &str) -> Result<PrStatus, WorkspaceListUsecaseError> {
+        self.git_host
+            .get_cached_pr_status(path)
+            .map_err(|error| WorkspaceListUsecaseError(error.to_string()))
     }
 
     fn nodes(&self, path: &str) -> Result<WorkspaceTreeSnapshotDto, WorkspaceListUsecaseError> {

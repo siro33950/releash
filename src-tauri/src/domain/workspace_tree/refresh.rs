@@ -189,23 +189,10 @@ impl<B, N> WorkspaceListRefresh<B, N> {
         paths
     }
 
-    pub fn update_branches(
-        &mut self,
-        path: &str,
-        generation: u64,
-        update: impl FnOnce(&mut B),
-    ) -> bool {
-        let Some(list) = self.branches.get_mut(path) else {
-            return false;
-        };
-        if list.generation != generation {
-            return false;
-        }
-        let Some((branches, _)) = list.value.as_mut() else {
-            return false;
-        };
-        update(branches);
-        true
+    pub fn is_repository_current(&self, path: &str, generation: u64) -> bool {
+        self.branches
+            .get(path)
+            .is_some_and(|list| list.generation == generation)
     }
 
     pub fn begin_repository(&mut self, path: &str) -> Option<u64> {

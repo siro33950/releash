@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use crate::domain::git_host::{GitHostProvider, IssueCache, IssueInfo, PrStatus, PrStatusCache};
+use crate::domain::git_host::{
+    GitHostError, GitHostProvider, IssueCache, IssueInfo, PrStatus, PrStatusCache,
+};
 
 #[derive(Clone)]
 pub struct GitHostUsecase {
@@ -22,18 +24,18 @@ impl GitHostUsecase {
         }
     }
 
-    pub fn fetch_pr_status(&self, repo_path: &str) -> PrStatus {
+    pub fn fetch_pr_status(&self, repo_path: &str) -> Result<PrStatus, GitHostError> {
         self.provider.fetch_pr_status(repo_path)
     }
 
-    pub fn get_cached_pr_status(&self, repo_path: &str) -> PrStatus {
+    pub fn get_cached_pr_status(&self, repo_path: &str) -> Result<PrStatus, GitHostError> {
         if let Some(status) = self.pr_cache.lookup(repo_path) {
-            return status;
+            return Ok(status);
         }
 
-        let status = self.provider.fetch_pr_status(repo_path);
+        let status = self.provider.fetch_pr_status(repo_path)?;
         self.pr_cache.store(repo_path, status.clone());
-        status
+        Ok(status)
     }
 
     pub fn fetch_issues(&self, repo_path: &str) -> Vec<IssueInfo> {
@@ -61,7 +63,7 @@ mod tests {
     use crate::domain::git_host::{PrInfo, PrStatus};
 
     struct FakeProvider {
-        pr_status: PrStatus,
+        pr_status: Result<PrStatus, GitHostError>,
         issues: Vec<IssueInfo>,
         pr_fetch_count: AtomicUsize,
         issue_fetch_count: AtomicUsize,
@@ -70,7 +72,7 @@ mod tests {
     impl FakeProvider {
         fn new(pr_status: PrStatus, issues: Vec<IssueInfo>) -> Self {
             Self {
-                pr_status,
+                pr_status: Ok(pr_status),
                 issues,
                 pr_fetch_count: AtomicUsize::new(0),
                 issue_fetch_count: AtomicUsize::new(0),
@@ -91,7 +93,7 @@ mod tests {
     }
 
     impl GitHostProvider for FakeProvider {
-        fn fetch_pr_status(&self, _repo_path: &str) -> PrStatus {
+        fn fetch_pr_status(&self, _repo_path: &str) -> Result<PrStatus, GitHostError> {
             self.pr_fetch_count.fetch_add(1, Ordering::SeqCst);
             self.pr_status.clone()
         }
@@ -208,7 +210,7 @@ mod tests {
             Arc::new(FakeIssueCache::default()),
         );
 
-        assert_eq!(uc.fetch_pr_status("/repo"), PrStatus::default());
+        assert_eq!(uc.fetch_pr_status("/repo"), Ok(PrStatus::default()));
         assert!(uc.fetch_issues("/repo").is_empty());
     }
 
@@ -222,7 +224,7 @@ mod tests {
             Arc::new(FakeIssueCache::default()),
         );
 
-        assert_eq!(uc.get_cached_pr_status("/repo"), cached);
+        assert_eq!(uc.get_cached_pr_status("/repo"), Ok(cached));
         assert_eq!(provider.pr_fetch_count(), 0);
     }
 
@@ -237,9 +239,29 @@ mod tests {
             Arc::new(FakeIssueCache::default()),
         );
 
-        assert_eq!(uc.get_cached_pr_status("/repo"), fetched);
+        assert_eq!(uc.get_cached_pr_status("/repo"), Ok(fetched.clone()));
         assert_eq!(provider.pr_fetch_count(), 1);
         assert_eq!(pr_cache.stored_values(), vec![fetched]);
+    }
+
+    #[test]
+    fn cached_pr_status_fetch_failure_returns_error_without_storing() {
+        let provider = Arc::new(FakeProvider {
+            pr_status: Err(GitHostError("gh timeout".to_string())),
+            ..FakeProvider::empty()
+        });
+        let pr_cache = Arc::new(FakePrCache::with_lookup(None));
+        let uc = usecase_with(
+            provider,
+            pr_cache.clone(),
+            Arc::new(FakeIssueCache::default()),
+        );
+
+        assert_eq!(
+            uc.get_cached_pr_status("/repo"),
+            Err(GitHostError("gh timeout".to_string()))
+        );
+        assert!(pr_cache.stored_values().is_empty());
     }
 
     #[test]
@@ -253,7 +275,7 @@ mod tests {
             Arc::new(FakeIssueCache::default()),
         );
 
-        assert_eq!(uc.get_cached_pr_status("/repo"), fetched);
+        assert_eq!(uc.get_cached_pr_status("/repo"), Ok(fetched.clone()));
         assert_eq!(provider.pr_fetch_count(), 1);
         assert_eq!(pr_cache.stored_values(), vec![fetched]);
     }

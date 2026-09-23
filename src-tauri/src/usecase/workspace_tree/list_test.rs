@@ -12,7 +12,7 @@ struct FakeQuery {
     branches: Mutex<HashMap<String, Result<Vec<BranchCardDto>, String>>>,
     nodes: Mutex<HashMap<String, Result<WorkspaceTreeSnapshotDto, String>>>,
     history: Mutex<HashMap<String, Result<Vec<WorkspaceWorkflowHistoryItemDto>, String>>>,
-    prs: Mutex<HashMap<String, PrStatus>>,
+    prs: Mutex<HashMap<String, Result<PrStatus, String>>>,
     node_reads: Mutex<Vec<String>>,
     on_nodes: Mutex<Option<NodesHook>>,
     on_pr: Mutex<Option<NodesHook>>,
@@ -99,13 +99,17 @@ impl WorkspaceListQueryService for FakeQuery {
         }
         result.map_err(WorkspaceListUsecaseError)
     }
-    fn pr_status(&self, path: &str) -> PrStatus {
-        let result = self.prs.lock().get(path).cloned().unwrap_or_default();
+    fn pr_status(&self, path: &str) -> Result<PrStatus, WorkspaceListUsecaseError> {
         let hook = self.on_pr.lock().clone();
         if let Some(hook) = hook {
             hook(path);
         }
-        result
+        self.prs
+            .lock()
+            .get(path)
+            .cloned()
+            .unwrap_or_else(|| Ok(PrStatus::default()))
+            .map_err(WorkspaceListUsecaseError)
     }
     fn nodes(&self, path: &str) -> Result<WorkspaceTreeSnapshotDto, WorkspaceListUsecaseError> {
         self.node_reads.lock().push(path.into());
@@ -480,7 +484,7 @@ async fn test_branch一覧合成_pr情報とworktreeの有無を反映する() {
     }
     query.prs.lock().insert(
         "/a".into(),
-        PrStatus {
+        Ok(PrStatus {
             open_prs: HashMap::from([(
                 "open".into(),
                 PrInfo {
@@ -489,7 +493,7 @@ async fn test_branch一覧合成_pr情報とworktreeの有無を反映する() {
                 },
             )]),
             merged_branches: vec!["open".into(), "merged".into()],
-        },
+        }),
     );
     let usecase = WorkspaceListUsecase::new(query.clone());
     // When
@@ -819,7 +823,7 @@ async fn test_pr取得_遅いrepositoryを待たず一覧と他repositoryのpr�
     let query = FakeQuery::new();
     query.prs.lock().insert(
         "/b".into(),
-        PrStatus {
+        Ok(PrStatus {
             open_prs: HashMap::from([(
                 "b".into(),
                 PrInfo {
@@ -828,7 +832,7 @@ async fn test_pr取得_遅いrepositoryを待たず一覧と他repositoryのpr�
                 },
             )]),
             merged_branches: vec![],
-        },
+        }),
     );
     let (release, receive) = std::sync::mpsc::channel();
     let receive = Mutex::new(receive);
@@ -859,6 +863,71 @@ async fn test_pr取得_遅いrepositoryを待たず一覧と他repositoryのpr�
 }
 
 #[tokio::test]
+async fn test_pr情報保持_取得中と取得失敗では既知のpr情報を表示し続ける() {
+    // Given
+    let query = FakeQuery::new();
+    *query.paths.lock() = Ok(vec!["/a".into()]);
+    let mut done = branch("/unused", "done");
+    done.worktree_path = None;
+    query
+        .branches
+        .lock()
+        .insert("/a".into(), Ok(vec![branch("/a", "a"), done]));
+    query.prs.lock().insert(
+        "/a".into(),
+        Ok(PrStatus {
+            open_prs: HashMap::from([(
+                "a".into(),
+                PrInfo {
+                    number: 7,
+                    url: "pr-7".into(),
+                },
+            )]),
+            merged_branches: vec!["done".into()],
+        }),
+    );
+    let usecase = WorkspaceListUsecase::new(query.clone());
+    usecase.refresh().await;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !usecase.snapshot().repositories[0].branches[0].has_pr {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    query
+        .prs
+        .lock()
+        .insert("/a".into(), Err("gh timeout".into()));
+    let (release, receive) = std::sync::mpsc::channel();
+    let receive = Mutex::new(receive);
+    *query.on_pr.lock() = Some(Arc::new(move |_| {
+        receive.lock().recv_timeout(Duration::from_secs(5)).unwrap();
+    }));
+    let assert_known = |snapshot: WorkspaceListSnapshotDto| {
+        let branches = &snapshot.repositories[0].branches;
+        assert_eq!(branches[0].pr_number, Some(7));
+        assert_eq!(branches[0].pr_url.as_deref(), Some("pr-7"));
+        assert!(branches[1].branch.is_merged);
+    };
+
+    // When
+    let fetching = usecase.refresh().await;
+    release.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while Arc::strong_count(&usecase.notify) != 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+
+    // Then
+    assert_known(fetching);
+    assert_known(usecase.snapshot());
+}
+
+#[tokio::test]
 async fn test_pr反映通知_現行世代だけ通知し古い世代と削除済みrepositoryは通知しない() {
     for outcome in ["current", "superseded", "removed"] {
         // Given
@@ -866,7 +935,7 @@ async fn test_pr反映通知_現行世代だけ通知し古い世代と削除済
         *query.paths.lock() = Ok(vec!["/a".into()]);
         query.prs.lock().insert(
             "/a".into(),
-            PrStatus {
+            Ok(PrStatus {
                 open_prs: HashMap::from([(
                     "a".into(),
                     PrInfo {
@@ -875,7 +944,7 @@ async fn test_pr反映通知_現行世代だけ通知し古い世代と削除済
                     },
                 )]),
                 merged_branches: vec![],
-            },
+            }),
         );
         let (release, receive) = std::sync::mpsc::channel();
         let receive = Mutex::new(receive);

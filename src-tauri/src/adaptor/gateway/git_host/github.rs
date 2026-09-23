@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use serde::Deserialize;
 
 use crate::domain::git_host::{
-    GitHostProvider, IssueInfo, IssueLabel, Milestone, PrAuthor, PrInfo, PrStatus,
+    GitHostError, GitHostProvider, IssueInfo, IssueLabel, Milestone, PrAuthor, PrInfo, PrStatus,
 };
 
 use super::discovery::is_github_repository;
@@ -138,15 +138,15 @@ fn join_pipe_reader(handle: JoinHandle<Option<Vec<u8>>>) -> Option<Vec<u8>> {
 }
 
 impl GitHostProvider for GitHubGitHostGateway {
-    fn fetch_pr_status(&self, repo_path: &str) -> PrStatus {
+    fn fetch_pr_status(&self, repo_path: &str) -> Result<PrStatus, GitHostError> {
         if !is_github_repository(repo_path) {
-            return PrStatus::default();
+            return Ok(PrStatus::default());
         }
 
-        PrStatus {
-            open_prs: detect_open_prs(self.runner.as_ref(), repo_path),
-            merged_branches: detect_merged_prs(self.runner.as_ref(), repo_path),
-        }
+        Ok(PrStatus {
+            open_prs: detect_open_prs(self.runner.as_ref(), repo_path)?,
+            merged_branches: detect_merged_prs(self.runner.as_ref(), repo_path)?,
+        })
     }
 
     fn list_issues(&self, repo_path: &str) -> Vec<IssueInfo> {
@@ -169,22 +169,25 @@ impl GitHostProvider for GitHubGitHostGateway {
             repo_path,
         );
         match output {
-            Some(stdout) => {
+            Ok(stdout) => {
                 let issues = parse_gh_issue_list_output(&stdout);
                 if issues.is_empty() && stdout.trim() != "[]" && !stdout.trim().is_empty() {
                     eprintln!("{}", list_issues_parse_empty_log_message(&stdout));
                 }
                 issues
             }
-            None => {
-                eprintln!("[list_issues] gh command returned no output for {repo_path}");
+            Err(error) => {
+                eprintln!("[list_issues] {error}");
                 Vec::new()
             }
         }
     }
 }
 
-fn detect_open_prs(runner: &dyn GhCommandRunner, repo_path: &str) -> HashMap<String, PrInfo> {
+fn detect_open_prs(
+    runner: &dyn GhCommandRunner,
+    repo_path: &str,
+) -> Result<HashMap<String, PrInfo>, GitHostError> {
     let output = run_gh_with_timeout(
         runner,
         &[
@@ -199,13 +202,13 @@ fn detect_open_prs(runner: &dyn GhCommandRunner, repo_path: &str) -> HashMap<Str
         ],
         repo_path,
     );
-    match output {
-        Some(stdout) => parse_gh_pr_list_output(&stdout),
-        None => HashMap::new(),
-    }
+    parse_gh_pr_list_output(&output.map_err(GitHostError)?)
 }
 
-fn detect_merged_prs(runner: &dyn GhCommandRunner, repo_path: &str) -> Vec<String> {
+fn detect_merged_prs(
+    runner: &dyn GhCommandRunner,
+    repo_path: &str,
+) -> Result<Vec<String>, GitHostError> {
     let output = run_gh_with_timeout(
         runner,
         &[
@@ -220,42 +223,25 @@ fn detect_merged_prs(runner: &dyn GhCommandRunner, repo_path: &str) -> Vec<Strin
         ],
         repo_path,
     );
-    match output {
-        Some(stdout) => parse_gh_merged_pr_output(&stdout),
-        None => Vec::new(),
-    }
+    parse_gh_merged_pr_output(&output.map_err(GitHostError)?)
 }
 
 fn run_gh_with_timeout(
     runner: &dyn GhCommandRunner,
     args: &[&str],
     repo_path: &str,
-) -> Option<String> {
+) -> Result<String, String> {
+    let command = args.join(" ");
     match runner.output(args, repo_path) {
-        GhCommandOutput::Success(stdout) => Some(stdout),
-        GhCommandOutput::SpawnFailed(error) => {
-            eprintln!("[run_gh] spawn failed: {error}");
-            None
-        }
-        GhCommandOutput::NonZero { status, stderr } => {
-            eprintln!(
-                "[run_gh] exit {status} for `gh {}` in {repo_path}: {stderr}",
-                args.join(" ")
-            );
-            None
-        }
-        GhCommandOutput::Timeout => {
-            eprintln!(
-                "[run_gh] timeout for `gh {}` in {repo_path}",
-                args.join(" ")
-            );
-            None
-        }
-        GhCommandOutput::TryWaitFailed(error) => {
-            eprintln!("[run_gh] try_wait error: {error}");
-            None
-        }
-        GhCommandOutput::ReadFailed | GhCommandOutput::InvalidUtf8 => None,
+        GhCommandOutput::Success(stdout) => Ok(stdout),
+        GhCommandOutput::SpawnFailed(error) => Err(format!("gh spawn failed: {error}")),
+        GhCommandOutput::NonZero { status, stderr } => Err(format!(
+            "gh exit {status} for `gh {command}` in {repo_path}: {stderr}"
+        )),
+        GhCommandOutput::Timeout => Err(format!("gh timeout for `gh {command}` in {repo_path}")),
+        GhCommandOutput::TryWaitFailed(error) => Err(format!("gh try_wait error: {error}")),
+        GhCommandOutput::ReadFailed => Err(format!("gh output read failed for `gh {command}`")),
+        GhCommandOutput::InvalidUtf8 => Err(format!("gh output is not UTF-8 for `gh {command}`")),
     }
 }
 
@@ -266,38 +252,36 @@ fn list_issues_parse_empty_log_message(stdout: &str) -> String {
     )
 }
 
-fn parse_gh_pr_list_output(json_str: &str) -> HashMap<String, PrInfo> {
-    let mut map = HashMap::new();
-    let parsed: Result<Vec<serde_json::Value>, _> = serde_json::from_str(json_str);
-    if let Ok(items) = parsed {
-        for item in items {
-            let head_ref = item.get("headRefName").and_then(|v| v.as_str());
-            let number = item.get("number").and_then(|v| v.as_u64());
-            let url = item.get("url").and_then(|v| v.as_str());
-            if let (Some(branch), Some(num), Some(u)) = (head_ref, number, url) {
-                map.insert(
-                    branch.to_string(),
-                    PrInfo {
-                        number: num,
-                        url: u.to_string(),
-                    },
-                );
-            }
-        }
-    }
-    map
+fn parse_gh_pr_items(json_str: &str) -> Result<Vec<serde_json::Value>, GitHostError> {
+    serde_json::from_str(json_str)
+        .map_err(|error| GitHostError(format!("gh pr list output is invalid: {error}")))
 }
 
-fn parse_gh_merged_pr_output(json_str: &str) -> Vec<String> {
-    let parsed: Result<Vec<serde_json::Value>, _> = serde_json::from_str(json_str);
-    match parsed {
-        Ok(items) => items
-            .iter()
-            .filter_map(|item| item.get("headRefName").and_then(|v| v.as_str()))
-            .map(|s| s.to_string())
-            .collect(),
-        Err(_) => Vec::new(),
+fn parse_gh_pr_list_output(json_str: &str) -> Result<HashMap<String, PrInfo>, GitHostError> {
+    let mut map = HashMap::new();
+    for item in parse_gh_pr_items(json_str)? {
+        let head_ref = item.get("headRefName").and_then(|v| v.as_str());
+        let number = item.get("number").and_then(|v| v.as_u64());
+        let url = item.get("url").and_then(|v| v.as_str());
+        if let (Some(branch), Some(num), Some(u)) = (head_ref, number, url) {
+            map.insert(
+                branch.to_string(),
+                PrInfo {
+                    number: num,
+                    url: u.to_string(),
+                },
+            );
+        }
     }
+    Ok(map)
+}
+
+fn parse_gh_merged_pr_output(json_str: &str) -> Result<Vec<String>, GitHostError> {
+    Ok(parse_gh_pr_items(json_str)?
+        .iter()
+        .filter_map(|item| item.get("headRefName").and_then(|v| v.as_str()))
+        .map(|s| s.to_string())
+        .collect())
 }
 
 fn parse_gh_issue_list_output(json_str: &str) -> Vec<IssueInfo> {
@@ -498,7 +482,7 @@ mod tests {
 
         let status = GitHubGitHostGateway::default().fetch_pr_status(dir.path().to_str().unwrap());
 
-        assert_eq!(status, PrStatus::default());
+        assert_eq!(status, Ok(PrStatus::default()));
     }
 
     #[test]
@@ -534,7 +518,8 @@ mod tests {
         );
 
         let status = GitHubGitHostGateway::with_runner(runner.clone())
-            .fetch_pr_status(dir.path().to_str().unwrap());
+            .fetch_pr_status(dir.path().to_str().unwrap())
+            .unwrap();
 
         assert_eq!(status.open_prs.len(), 1);
         assert_eq!(status.open_prs["feat/login"].number, 42);
@@ -602,7 +587,7 @@ mod tests {
     }
 
     #[test]
-    fn gh_output_failures_collapse_to_empty_results() {
+    fn gh_output_failures_fail_pr_status_and_empty_issues() {
         let failures = [
             GhCommandOutput::SpawnFailed("gh is missing".to_string()),
             GhCommandOutput::NonZero {
@@ -610,6 +595,7 @@ mod tests {
                 stderr: "x".repeat(70 * 1024),
             },
             GhCommandOutput::Timeout,
+            GhCommandOutput::Success("not json".to_string()),
         ];
 
         for failure in failures {
@@ -622,10 +608,9 @@ mod tests {
             );
             let gateway = GitHubGitHostGateway::with_runner(runner);
 
-            assert_eq!(
-                gateway.fetch_pr_status(dir.path().to_str().unwrap()),
-                PrStatus::default()
-            );
+            assert!(gateway
+                .fetch_pr_status(dir.path().to_str().unwrap())
+                .is_err());
             assert!(gateway.list_issues(dir.path().to_str().unwrap()).is_empty());
         }
     }
@@ -637,7 +622,7 @@ mod tests {
             {"headRefName":"fix/typo","number":7,"url":"https://github.com/owner/repo/pull/7"}
         ]"#;
 
-        let map = parse_gh_pr_list_output(json);
+        let map = parse_gh_pr_list_output(json).unwrap();
 
         assert_eq!(map.len(), 2);
         let pr = map.get("feat/login").unwrap();
@@ -647,23 +632,21 @@ mod tests {
 
     #[test]
     fn parse_open_prs_empty_array() {
-        let map = parse_gh_pr_list_output("[]");
+        let map = parse_gh_pr_list_output("[]").unwrap();
 
         assert!(map.is_empty());
     }
 
     #[test]
     fn parse_open_prs_invalid_json() {
-        let map = parse_gh_pr_list_output("not json");
-
-        assert!(map.is_empty());
+        assert!(parse_gh_pr_list_output("not json").is_err());
     }
 
     #[test]
     fn parse_open_prs_missing_fields() {
         let json = r#"[{"headRefName":"feat/x"}]"#;
 
-        let map = parse_gh_pr_list_output(json);
+        let map = parse_gh_pr_list_output(json).unwrap();
 
         assert!(map.is_empty());
     }
@@ -672,23 +655,21 @@ mod tests {
     fn parse_merged_prs_valid() {
         let json = r#"[{"headRefName":"feat/a"},{"headRefName":"feat/b"}]"#;
 
-        let branches = parse_gh_merged_pr_output(json);
+        let branches = parse_gh_merged_pr_output(json).unwrap();
 
         assert_eq!(branches, vec!["feat/a", "feat/b"]);
     }
 
     #[test]
     fn parse_merged_prs_empty() {
-        let branches = parse_gh_merged_pr_output("[]");
+        let branches = parse_gh_merged_pr_output("[]").unwrap();
 
         assert!(branches.is_empty());
     }
 
     #[test]
     fn parse_merged_prs_invalid() {
-        let branches = parse_gh_merged_pr_output("invalid");
-
-        assert!(branches.is_empty());
+        assert!(parse_gh_merged_pr_output("invalid").is_err());
     }
 
     #[test]

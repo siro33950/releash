@@ -35,8 +35,8 @@ impl WorkspaceListQueryService for Query {
         }])
     }
 
-    fn pr_status(&self, _: &str) -> PrStatus {
-        PrStatus::default()
+    fn pr_status(&self, _: &str) -> Result<PrStatus, WorkspaceListUsecaseError> {
+        Ok(PrStatus::default())
     }
 
     fn nodes(&self, path: &str) -> Result<WorkspaceTreeSnapshotDto, WorkspaceListUsecaseError> {
@@ -89,16 +89,18 @@ async fn test_一覧更新dispatch_省略時は全体を指定時は対象worktr
         result,
         wire::command_result::Command::RefreshWorkspaces(_)
     ));
+    let mut calls = query.calls.lock().clone();
+    assert_eq!(calls.remove(0), "repositories");
+    calls.sort();
     assert_eq!(
-        *query.calls.lock(),
+        calls,
         vec![
-            "repositories",
             "branches:/a",
-            "nodes:/a",
-            "history:/a",
             "branches:/b",
-            "nodes:/b",
-            "history:/b"
+            "history:/a",
+            "history:/b",
+            "nodes:/a",
+            "nodes:/b"
         ]
     );
     query.calls.lock().clear();
