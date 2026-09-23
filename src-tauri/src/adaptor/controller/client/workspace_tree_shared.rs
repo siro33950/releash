@@ -9,6 +9,53 @@ pub(crate) fn register_shared(
     deps: &crate::adaptor::controller::client::ClientDependencies,
 ) {
     {
+        let app_state = deps.app_state.clone();
+        router.register_domain(
+            &["get_workspaces"],
+            Box::new(move |command| {
+                let app_state = app_state.clone();
+                Box::pin(async move {
+                    let wire::command_request::Command::GetWorkspaces(_) = command else {
+                        return Err(invalid_request("Mismatched command"));
+                    };
+                    let app_state = app_state
+                        .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
+                    outcome(Ok::<_, String>(app_state.workspace_list.snapshot()))
+                        .map(wire::command_result::Command::GetWorkspaces)
+                })
+            }),
+        );
+    }
+    {
+        let app_state = deps.app_state.clone();
+        router.register_domain(
+            &["refresh_workspaces"],
+            Box::new(move |command| {
+                let app_state = app_state.clone();
+                Box::pin(async move {
+                    let wire::command_request::Command::RefreshWorkspaces(args) = command else {
+                        return Err(invalid_request("Mismatched command"));
+                    };
+                    let app_state = app_state
+                        .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
+                    let runtime = tokio::runtime::Handle::current();
+                    let result =
+                        tokio::task::spawn_blocking(move || match args.worktree_path.as_deref() {
+                            Some(path) => app_state.workspace_list.refresh_worktree(path),
+                            None => match args.repo_path.as_deref() {
+                                Some(path) => runtime
+                                    .block_on(app_state.workspace_list.refresh_repository(path)),
+                                None => runtime.block_on(app_state.workspace_list.refresh()),
+                            },
+                        })
+                        .await
+                        .map_err(|error| error.to_string());
+                    outcome(result).map(wire::command_result::Command::RefreshWorkspaces)
+                })
+            }),
+        );
+    }
+    {
         let usecase = deps.workspace_node_command_usecase.clone();
         router.register_domain(
             &["approve_workspace_node"],
@@ -356,3 +403,7 @@ pub(crate) fn register_shared(
         );
     }
 }
+
+#[cfg(all(test, feature = "desktop"))]
+#[path = "workspace_tree_shared_test.rs"]
+mod workspace_tree_shared_tests;

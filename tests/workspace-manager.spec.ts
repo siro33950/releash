@@ -69,7 +69,7 @@ test.describe("Workspace Manager", () => {
 		await setupTauriMock(page, config);
 		await waitForApp(page);
 
-		// useWorktreeList は worktree_path != null のブランチのみ表示する
+		// backend の一覧には worktree_path を持つブランチだけを含める
 		await expect(page.getByTestId("worktree-item-feat/wip")).toBeVisible();
 		await expect(page.getByTestId("worktree-item-feat/review")).toBeVisible();
 	});
@@ -811,6 +811,13 @@ test.describe("Workspace Manager", () => {
 				exact: true,
 			})
 			.hover();
+		await page.evaluate((snapshot) => {
+			window.__RELEASH_BACKEND__?.setMockResponse(
+				"list_workspace_worktree_nodes",
+				snapshot,
+			);
+		}, reconciledSnapshot);
+
 		await page
 			.getByRole("button", { name: "Archive Archivable integration workflow" })
 			.click();

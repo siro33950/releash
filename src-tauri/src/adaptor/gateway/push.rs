@@ -13,6 +13,7 @@ pub struct AgentSessionChangedPayload<'a> {
 pub enum BackendPush<'a> {
     AgentSessionChanged(AgentSessionChangedPayload<'a>),
     BranchListSync,
+    WorkspaceListChanged,
     FileChange(FileChangeEvent),
     GitStatusChanged(GitStatusChangedEvent),
     RepoPathsChanged(&'a [String]),
@@ -42,6 +43,11 @@ impl BackendPush<'_> {
                 Ok::<_, String>(wire::AgentSessionChangedPayload {
                     worktree_path: Some(payload.worktree_path.into())
                 })
+            ),
+            Self::WorkspaceListChanged => publish!(
+                "workspace-list-changed",
+                WorkspaceListChanged,
+                Ok::<_, String>(wire::Unit {})
             ),
             Self::BranchListSync => publish!(
                 "branch-list-sync",

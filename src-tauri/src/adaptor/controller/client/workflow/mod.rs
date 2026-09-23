@@ -1315,18 +1315,28 @@ pub(crate) mod tests {
                     ),
                 ),
             );
+        let workflow_usecase = Arc::new(workflow_usecase);
+        let git_host_usecase =
+            Arc::new(crate::adaptor::controller::wiring::build_git_host_usecase());
+        let workspace_list = Arc::new(
+            crate::adaptor::controller::wiring::build_workspace_list_usecase(
+                repo_paths_usecase.clone(),
+                repository_state.clone(),
+                workflow_usecase.clone(),
+                git_host_usecase.clone(),
+            ),
+        );
         app.manage(AppState {
+            workspace_list,
             repository_usecase: repository_usecase.clone(),
             repository_state,
             repo_paths_usecase,
             code_usecase,
             review_usecase,
             notion_usecase,
-            workflow_usecase: Arc::new(workflow_usecase),
+            workflow_usecase,
             terminal_surface,
-            git_host_usecase: Arc::new(
-                crate::adaptor::controller::wiring::build_git_host_usecase(),
-            ),
+            git_host_usecase,
         });
         (app, data_dir, local_event_store)
     }

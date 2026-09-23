@@ -354,7 +354,8 @@ async fn test_クライアントdispatch_proto全commandの登録と引数検証
     // Given
     let (_app, dispatch) = parity_app();
     // When / Then
-    assert_eq!(wire::COMMAND_NAMES.len(), 163);
+    assert_eq!(wire::COMMAND_NAMES.len(), 164);
+    assert!(wire::COMMAND_NAMES.contains(&"refresh_workspaces"));
     for removed in [
         "confirm_agent_session_archive_delete",
         "stop_workflow",

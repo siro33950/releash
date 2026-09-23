@@ -96,7 +96,7 @@ test.describe("StatusBar", () => {
 			.poll(
 				() =>
 					client.clientRequests.filter(
-						(request) => request.command === "list_workspace_worktree_nodes",
+						(request) => request.command === "refresh_workspaces",
 					).length,
 			)
 			.toBeGreaterThan(2);

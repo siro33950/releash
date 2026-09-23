@@ -417,3 +417,88 @@ fn test_状態分類_到達不能なfailureを公開せず番号と名前を予�
     assert!(status.get_value(2).is_none());
     assert!(status.get_value_by_name("failure").is_none());
 }
+
+#[test]
+fn test_workspaces一覧_保持した情報と取得状態がwireを往復する() {
+    // Given
+    use crate::usecase::workspace_tree::{
+        WorkspaceBranchDto, WorkspaceListSnapshotDto, WorkspaceListStatusDto,
+        WorkspaceRepositoryListDto, WorkspaceWorktreeListDto,
+    };
+    let snapshot = WorkspaceListSnapshotDto {
+        generation: 3,
+        status: WorkspaceListStatusDto {
+            state: "ready",
+            loaded: true,
+            error: None,
+        },
+        repositories: vec![WorkspaceRepositoryListDto {
+            path: "/repo".into(),
+            status: WorkspaceListStatusDto {
+                state: "refreshFailed",
+                loaded: true,
+                error: Some("scan failed".into()),
+            },
+            branches: vec![WorkspaceBranchDto {
+                branch: crate::usecase::repository_dto::BranchCardDto {
+                    name: "main".into(),
+                    is_main_worktree: true,
+                    is_deleting: false,
+                    worktree_path: Some("/repo".into()),
+                    dirty_count: 0,
+                    is_merged: false,
+                    ahead: 0,
+                    behind: 0,
+                    has_upstream: false,
+                    base_ahead: 0,
+                },
+                has_pr: true,
+                pr_number: Some(7),
+                pr_url: Some("https://example.com/pr/7".into()),
+            }],
+            worktrees: vec![WorkspaceWorktreeListDto {
+                path: "/repo".into(),
+                status: WorkspaceListStatusDto {
+                    state: "initialFailed",
+                    loaded: false,
+                    error: Some("nodes failed".into()),
+                },
+                snapshot: None,
+                workflow_history: vec![],
+            }],
+        }],
+    };
+    let expected = serde_json::to_value(&snapshot).unwrap();
+    // When
+    let result = CommandResult {
+        command: Some(command_result::Command::RefreshWorkspaces(
+            snapshot.try_into().unwrap(),
+        )),
+    };
+    let decoded = CommandResult::decode(result.encode_to_vec().as_slice()).unwrap();
+    // Then
+    let from_json = CommandResult::from_value("refresh_workspaces", expected.clone()).unwrap();
+    assert_eq!(from_json.encode_to_vec(), result.encode_to_vec());
+    assert_eq!(
+        decoded.into_value().unwrap(),
+        ("refresh_workspaces", expected)
+    );
+}
+
+#[test]
+fn test_一覧更新引数_全体とrepositoryとworktree指定をprotobuf往復で保持する() {
+    // Given / When / Then
+    for (worktree, repo) in [
+        (None, None),
+        (Some("/repo/worktree"), None),
+        (None, Some("/repo")),
+    ] {
+        let args = json!({"worktreePath": worktree, "repoPath": repo});
+        let request = CommandRequest::from_value("refresh_workspaces", args.clone()).unwrap();
+        let decoded = CommandRequest::decode(request.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(decoded.into_value().unwrap(), ("refresh_workspaces", args));
+    }
+    assert!(CommandRequest::from_value("refresh_workspaces", json!({})).is_ok());
+    assert!(CommandRequest::from_value("refresh_workspaces", json!({"worktreePath": 42})).is_err());
+    assert!(CommandRequest::from_value("refresh_workspaces", json!({"repoPath": 42})).is_err());
+}

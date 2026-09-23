@@ -42,9 +42,13 @@ import {
 	DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Textarea } from "@/components/ui/textarea";
+import type { WorkspaceRepositoryListDto } from "@/generated/client_types";
 import { useWorkflowConfig } from "@/hooks/useWorkflowConfig";
+import {
+	WorkspaceListContext,
+	type WorkspaceListModel,
+} from "@/hooks/useWorkspaceList";
 import { useWorkspaceTreeNodes } from "@/hooks/useWorkspaceTreeNodes";
-import { useWorktreeList } from "@/hooks/useWorktreeList";
 import { notifyAgentSessionChanged } from "@/lib/agentSessionEvents";
 import { invokeClient as invoke } from "@/lib/client";
 import { getErrorMessage } from "@/lib/errorMessage";
@@ -74,7 +78,7 @@ import {
 import { WorkspaceBranchStatusIcon } from "./WorkspaceBranchStatusIcon";
 
 interface WorkspaceListProps {
-	repoPaths: string[];
+	model: WorkspaceListModel;
 	selectedRootPath: string | null;
 	centerSelection?: CenterSelection | null;
 	autoSelectPreferredNode?: boolean;
@@ -649,6 +653,8 @@ function WorktreeTreeItem({
 		workflowHistory,
 		reconciliationEvent,
 		loading: treeLoading,
+		loaded: treeLoaded,
+		state: treeListState,
 		error: treeError,
 		refresh: refreshTree,
 		beginArchiveReconciliation,
@@ -1425,23 +1431,19 @@ function WorktreeTreeItem({
 					</div>
 				</div>
 			</div>
+			{treeError && <ListRefreshError loaded={treeLoaded} error={treeError} />}
 			{expanded && hasWorktree && (
 				<div className="mt-0.5">
-					{treeLoading ? (
+					{treeListState === "loading" && !treeError ? (
 						<div
 							className="flex h-8 items-center text-muted-foreground"
+							role="status"
+							aria-label="Loading sessions and workflows"
 							style={{ paddingLeft: WORKTREE_NAME_INDENT_PX }}
 						>
 							<Loader2 className="size-3.5 animate-spin" />
 						</div>
-					) : treeError && nodes.length === 0 ? (
-						<div
-							className="truncate py-1 text-xs text-destructive"
-							style={{ paddingLeft: WORKTREE_NAME_INDENT_PX }}
-						>
-							{treeError}
-						</div>
-					) : nodes.length === 0 ? (
+					) : treeListState === "empty" && !treeError ? (
 						<div
 							className="truncate py-1 text-xs text-muted-foreground"
 							style={{ paddingLeft: WORKTREE_NAME_INDENT_PX }}
@@ -1576,10 +1578,25 @@ function WorktreeTreeItem({
 	);
 }
 
-function RepoTreeSectionView({
-	repoPath,
-	branches,
-	loading,
+function ListRefreshError({
+	loaded,
+	error,
+}: {
+	loaded: boolean;
+	error: string;
+}) {
+	return (
+		<div role="alert" className="px-2 py-1 text-xs text-destructive">
+			{loaded
+				? "Refresh failed. Showing previous information."
+				: "Initial load failed."}{" "}
+			{error}
+		</div>
+	);
+}
+
+function RepoTreeSection({
+	repository,
 	refresh,
 	selectedRootPath,
 	centerSelection,
@@ -1587,31 +1604,21 @@ function RepoTreeSectionView({
 	onSelectWorktree,
 	onWorkspaceSelectionInvalidated,
 }: {
-	repoPath: string;
-	branches: WorktreeBranch[];
-	loading: boolean;
-	refresh: (options?: { silent?: boolean }) => Promise<void>;
+	repository: WorkspaceRepositoryListDto;
+	refresh: (repoPath: string) => Promise<unknown>;
 	selectedRootPath: string | null;
 	centerSelection: CenterSelection | null;
 	autoSelectPreferredNode: boolean;
 	onSelectWorktree: WorkspaceListProps["onSelectWorktree"];
 	onWorkspaceSelectionInvalidated: WorkspaceListProps["onWorkspaceSelectionInvalidated"];
 }) {
+	const { path: repoPath, branches, status } = repository;
+	const error = status.error;
 	const [collapsed, setCollapsed] = useState(false);
-	const [refreshing, setRefreshing] = useState(false);
 	const [deletingBranch, setDeletingBranch] = useState<WorktreeBranch | null>(
 		null,
 	);
 	const repoName = useMemo(() => repoNameFromPath(repoPath), [repoPath]);
-
-	const handleRefresh = useCallback(async () => {
-		setRefreshing(true);
-		try {
-			await refresh();
-		} finally {
-			setRefreshing(false);
-		}
-	}, [refresh]);
 
 	const handleDeleteConfirm = useCallback(
 		async (branch: WorktreeBranch, force: boolean) => {
@@ -1623,7 +1630,7 @@ function RepoTreeSectionView({
 				});
 				trackEvent("worktree_removed");
 				setDeletingBranch((current) => (current === branch ? null : current));
-				void refresh({ silent: true });
+				void refresh(repoPath);
 				return;
 			} else if (branch.is_merged) {
 				await invoke("delete_branch", {
@@ -1632,7 +1639,7 @@ function RepoTreeSectionView({
 					force,
 				});
 			}
-			await refresh();
+			await refresh(repoPath);
 			setDeletingBranch((current) => (current === branch ? null : current));
 		},
 		[repoPath, refresh],
@@ -1645,6 +1652,7 @@ function RepoTreeSectionView({
 					type="button"
 					className="flex min-w-0 flex-1 items-center gap-1.5 rounded text-left transition-colors hover:text-foreground"
 					onClick={() => setCollapsed((prev) => !prev)}
+					aria-expanded={!collapsed}
 				>
 					<span className="min-w-0 truncate">{repoName}</span>
 					{collapsed ? (
@@ -1656,43 +1664,37 @@ function RepoTreeSectionView({
 						{branches.length}
 					</span>
 				</button>
-				<Button
-					size="icon-xs"
-					variant="ghost"
-					className="size-5"
-					onClick={handleRefresh}
-					disabled={refreshing}
-					aria-label={`Refresh ${repoName}`}
-					title={`Refresh ${repoName}`}
-				>
-					<RefreshCw className={`size-3 ${refreshing ? "animate-spin" : ""}`} />
-				</Button>
 			</div>
-			{!collapsed && (
-				<div className="space-y-1">
-					{loading ? (
-						<div className="flex items-center justify-center py-4">
-							<Loader2 className="size-4 animate-spin text-muted-foreground" />
-						</div>
-					) : (
-						branches.map((branch) => (
-							<WorktreeTreeItem
-								key={branch.name}
-								branch={branch}
-								repoName={repoName}
-								selectedRootPath={selectedRootPath}
-								centerSelection={centerSelection}
-								autoSelectPreferredNode={autoSelectPreferredNode}
-								onSelectWorktree={onSelectWorktree}
-								onWorkspaceSelectionInvalidated={
-									onWorkspaceSelectionInvalidated
-								}
-								onDelete={setDeletingBranch}
-							/>
-						))
-					)}
-				</div>
-			)}
+			{error && <ListRefreshError loaded={status.loaded} error={error} />}
+			<div className="space-y-1" hidden={collapsed}>
+				{status.state === "loading" && (
+					<div
+						className="flex items-center justify-center py-4"
+						role="status"
+						aria-label="Loading worktrees"
+					>
+						<Loader2 className="size-4 animate-spin text-muted-foreground" />
+					</div>
+				)}
+				{status.state === "empty" && (
+					<div className="px-2 py-2 text-xs text-muted-foreground">
+						No worktrees
+					</div>
+				)}
+				{branches.map((branch) => (
+					<WorktreeTreeItem
+						key={branch.worktree_path ?? branch.name}
+						branch={branch}
+						repoName={repoName}
+						selectedRootPath={selectedRootPath}
+						centerSelection={centerSelection}
+						autoSelectPreferredNode={autoSelectPreferredNode}
+						onSelectWorktree={onSelectWorktree}
+						onWorkspaceSelectionInvalidated={onWorkspaceSelectionInvalidated}
+						onDelete={setDeletingBranch}
+					/>
+				))}
+			</div>
 			<DeleteWorktreeDialog
 				key={deletingBranch?.name}
 				open={!!deletingBranch}
@@ -1703,40 +1705,8 @@ function RepoTreeSectionView({
 		</div>
 	);
 }
-
-function RepoTreeSection({
-	repoPath,
-	selectedRootPath,
-	centerSelection,
-	autoSelectPreferredNode,
-	onSelectWorktree,
-	onWorkspaceSelectionInvalidated,
-}: {
-	repoPath: string;
-	selectedRootPath: string | null;
-	centerSelection: CenterSelection | null;
-	autoSelectPreferredNode: boolean;
-	onSelectWorktree: WorkspaceListProps["onSelectWorktree"];
-	onWorkspaceSelectionInvalidated: WorkspaceListProps["onWorkspaceSelectionInvalidated"];
-}) {
-	const { branches, loading, refresh } = useWorktreeList(repoPath);
-	return (
-		<RepoTreeSectionView
-			repoPath={repoPath}
-			branches={branches}
-			loading={loading}
-			refresh={refresh}
-			selectedRootPath={selectedRootPath}
-			centerSelection={centerSelection}
-			autoSelectPreferredNode={autoSelectPreferredNode}
-			onSelectWorktree={onSelectWorktree}
-			onWorkspaceSelectionInvalidated={onWorkspaceSelectionInvalidated}
-		/>
-	);
-}
-
 export function WorkspaceList({
-	repoPaths,
+	model,
 	selectedRootPath,
 	centerSelection,
 	autoSelectPreferredNode = false,
@@ -1746,79 +1716,130 @@ export function WorkspaceList({
 	onShowSettings,
 }: WorkspaceListProps) {
 	const [showCreate, setShowCreate] = useState(false);
+	const [refreshing, setRefreshing] = useState(false);
+	const refreshingRef = useRef(false);
+	const handleRefresh = async () => {
+		if (refreshingRef.current) return;
+		refreshingRef.current = true;
+		setRefreshing(true);
+		try {
+			await model.refresh();
+		} finally {
+			refreshingRef.current = false;
+			setRefreshing(false);
+		}
+	};
+	const repositories = model.snapshot?.repositories ?? [];
+	const listedRepoPaths = repositories.map((repo) => repo.path);
+	const loaded = model.snapshot?.status.loaded ?? false;
+	const listState = model.snapshot?.status.state ?? "loading";
+	const error = model.snapshot?.status.error;
 
 	return (
-		<div className="flex h-full flex-col">
-			<div className="flex h-9 shrink-0 items-center justify-between px-2">
-				<span className="text-xs font-semibold tracking-wide text-muted-foreground">
-					Workspaces
-				</span>
-				<div className="flex items-center gap-0.5">
+		<WorkspaceListContext.Provider value={model}>
+			<div className="flex h-full flex-col">
+				<div className="flex h-9 shrink-0 items-center justify-between px-2">
+					<span className="text-xs font-semibold tracking-wide text-muted-foreground">
+						Workspaces
+					</span>
+					<div className="flex items-center gap-0.5">
+						<Button
+							size="icon-xs"
+							variant="ghost"
+							className="size-5"
+							onClick={handleRefresh}
+							disabled={refreshing}
+							aria-label="Refresh Workspaces"
+							title="Refresh Workspaces"
+							aria-busy={refreshing}
+						>
+							<RefreshCw
+								className={`size-3 ${refreshing ? "animate-spin" : ""}`}
+							/>
+						</Button>
+						<Button
+							size="icon-xs"
+							variant="ghost"
+							className="size-5"
+							onClick={() => setShowCreate(true)}
+							title="Add worktree"
+							aria-label="Add Worktree"
+						>
+							<Plus className="size-3" />
+						</Button>
+					</div>
+				</div>
+
+				<div className="flex-1 space-y-2 overflow-y-auto px-2 py-1">
+					{model.requestError && (
+						<div role="alert" className="px-2 py-1 text-xs text-destructive">
+							Could not confirm the refresh result
+							{model.requestError.path ? ` for ${model.requestError.path}` : ""}
+							. {model.requestError.message}
+						</div>
+					)}
+					{error && <ListRefreshError loaded={loaded} error={error} />}
+					{listState === "loading" && !model.requestError && (
+						<div
+							role="status"
+							className="px-2 py-4 text-xs text-muted-foreground"
+						>
+							Loading Workspaces...
+						</div>
+					)}
+					{repositories.map((repository) => (
+						<RepoTreeSection
+							key={repository.path}
+							repository={repository}
+							refresh={model.refreshRepository}
+							selectedRootPath={selectedRootPath}
+							centerSelection={centerSelection ?? null}
+							autoSelectPreferredNode={autoSelectPreferredNode}
+							onSelectWorktree={onSelectWorktree}
+							onWorkspaceSelectionInvalidated={onWorkspaceSelectionInvalidated}
+						/>
+					))}
+					{listState === "empty" && (
+						<div className="px-2 py-8 text-center text-xs text-muted-foreground">
+							No Repository
+						</div>
+					)}
+				</div>
+
+				<div className="flex h-9 shrink-0 items-center justify-between border-t border-border px-2">
 					<Button
-						size="icon-xs"
+						size="sm"
 						variant="ghost"
-						className="size-5"
-						onClick={() => setShowCreate(true)}
-						title="Add worktree"
-						aria-label="Add Worktree"
+						className="h-7 px-2 text-xs"
+						onClick={onAddRepo}
 					>
-						<Plus className="size-3" />
+						<Plus className="mr-1 size-3.5" />
+						Add Repository
+					</Button>
+					<Button
+						size="icon"
+						variant="ghost"
+						className="size-7"
+						onClick={onShowSettings}
+						title="Settings"
+					>
+						<Settings className="size-3.5" />
 					</Button>
 				</div>
-			</div>
 
-			<div className="flex-1 space-y-2 overflow-y-auto px-2 py-1">
-				{repoPaths.map((repoPath) => (
-					<RepoTreeSection
-						key={repoPath}
-						repoPath={repoPath}
-						selectedRootPath={selectedRootPath}
-						centerSelection={centerSelection ?? null}
-						autoSelectPreferredNode={autoSelectPreferredNode}
-						onSelectWorktree={onSelectWorktree}
-						onWorkspaceSelectionInvalidated={onWorkspaceSelectionInvalidated}
+				{showCreate && listedRepoPaths.length > 0 && (
+					<CreateWorktreeModal
+						open={showCreate}
+						repoPaths={listedRepoPaths}
+						onCreated={(rootPath, branchName, repoName) => {
+							setShowCreate(false);
+							window.dispatchEvent(new Event("branch-list-refresh"));
+							onSelectWorktree(rootPath, branchName, repoName);
+						}}
+						onClose={() => setShowCreate(false)}
 					/>
-				))}
-				{repoPaths.length === 0 && (
-					<div className="px-2 py-8 text-center text-xs text-muted-foreground">
-						No Repository
-					</div>
 				)}
 			</div>
-
-			<div className="flex h-9 shrink-0 items-center justify-between border-t border-border px-2">
-				<Button
-					size="sm"
-					variant="ghost"
-					className="h-7 px-2 text-xs"
-					onClick={onAddRepo}
-				>
-					<Plus className="mr-1 size-3.5" />
-					Add Repository
-				</Button>
-				<Button
-					size="icon"
-					variant="ghost"
-					className="size-7"
-					onClick={onShowSettings}
-					title="Settings"
-				>
-					<Settings className="size-3.5" />
-				</Button>
-			</div>
-
-			{showCreate && repoPaths.length > 0 && (
-				<CreateWorktreeModal
-					open={showCreate}
-					repoPaths={repoPaths}
-					onCreated={(rootPath, branchName, repoName) => {
-						setShowCreate(false);
-						window.dispatchEvent(new Event("branch-list-refresh"));
-						onSelectWorktree(rootPath, branchName, repoName);
-					}}
-					onClose={() => setShowCreate(false)}
-				/>
-			)}
-		</div>
+		</WorkspaceListContext.Provider>
 	);
 }

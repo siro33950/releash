@@ -21,3 +21,6 @@ pub(crate) mod file_watcher;
 pub(crate) mod watch_subscriptions;
 
 pub(crate) mod worktree_operation;
+
+mod branch_inventory;
+pub use branch_inventory::classify_branch_cards;

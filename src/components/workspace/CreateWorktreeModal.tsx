@@ -91,6 +91,7 @@ export function CreateWorktreeModal({
 		);
 	}, []);
 
+	const repoPathsKey = JSON.stringify(repoPaths);
 	useEffect(() => {
 		if (!open) return;
 		setMode("plain");
@@ -98,8 +99,8 @@ export function CreateWorktreeModal({
 		setBaseBranch("");
 		setFilter("");
 		setError(null);
-		setSelectedRepoPath(repoPaths[0] ?? "");
-	}, [open, repoPaths]);
+		setSelectedRepoPath((JSON.parse(repoPathsKey) as string[])[0] ?? "");
+	}, [open, repoPathsKey]);
 
 	useEffect(() => {
 		if (!open || !selectedRepoPath) return;

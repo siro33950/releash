@@ -42,18 +42,12 @@ pub fn classify_branch_cards(
     repository_root: &str,
     cards: &mut Vec<BranchCardDto>,
 ) -> WorktreeDisplayGroupsDto {
-    cards.retain(|card| {
-        !card.worktree_path.as_ref().is_some_and(|path| {
-            WorktreeInventoryEntry::new(repository_root, path, &card.name)
-                .matches_isolated_identity_rule()
-        })
-    });
     WorktreeDisplayGroupsDto {
-        working_areas: cards
-            .iter()
-            .filter(|card| card.worktree_path.is_some())
-            .cloned()
-            .collect(),
+        working_areas: crate::domain::repository::classify_branch_cards(
+            repository_root,
+            cards,
+            |card| (&card.name, card.worktree_path.as_deref()),
+        ),
     }
 }
 

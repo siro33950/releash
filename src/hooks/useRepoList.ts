@@ -1,54 +1,13 @@
-import { useCallback, useEffect, useState } from "react";
-import { invokeClient as invoke, listenClient as listen } from "@/lib/client";
-import { getErrorMessage } from "@/lib/errorMessage";
+import { useCallback } from "react";
+import { invokeClient as invoke } from "@/lib/client";
 
 export interface UseRepoListReturn {
-	repoPaths: string[];
-	loaded: boolean;
-	loadError: string | null;
 	addRepo: (path: string) => void;
 	removeRepo: (path: string) => void;
 	initFromCwd: (cwdRepoPath: string) => void;
 }
 
 export function useRepoList(): UseRepoListReturn {
-	const [loaded, setLoaded] = useState(false);
-	const [loadError, setLoadError] = useState<string | null>(null);
-	const [repoPaths, setRepoPaths] = useState<string[]>([]);
-
-	useEffect(() => {
-		let cancelled = false;
-		invoke("get_repo_paths")
-			.then((paths) => {
-				if (cancelled) return;
-				setRepoPaths(paths);
-				setLoaded(true);
-			})
-			.catch((error) => {
-				if (!cancelled) setLoadError(getErrorMessage(error));
-			});
-		return () => {
-			cancelled = true;
-		};
-	}, []);
-
-	useEffect(() => {
-		const unlisten = listen(
-			"repo-paths-changed",
-			(event) => {
-				setRepoPaths(event.payload);
-			},
-			() => {
-				void invoke("get_repo_paths")
-					.then(setRepoPaths)
-					.catch((err) => console.warn("[useRepoList] refresh failed", err));
-			},
-		);
-		return () => {
-			unlisten.then((fn) => fn());
-		};
-	}, []);
-
 	const addRepo = useCallback((path: string) => {
 		invoke("add_repo_path", { path }).catch((err) =>
 			console.warn("[useRepoList] add_repo_path failed", err),
@@ -67,5 +26,5 @@ export function useRepoList(): UseRepoListReturn {
 		);
 	}, []);
 
-	return { repoPaths, loaded, loadError, addRepo, removeRepo, initFromCwd };
+	return { addRepo, removeRepo, initFromCwd };
 }

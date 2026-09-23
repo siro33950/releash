@@ -503,36 +503,6 @@ pub(crate) fn register_shared(
     {
         let state = deps.app_state.clone();
         router.register_domain(
-            &["list_branches_with_status"],
-            Box::new(move |command| {
-                let state = state.clone();
-                Box::pin(async move {
-                    let wire::command_request::Command::ListBranchesWithStatus(args) = command
-                    else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move {
-                        let state = state
-                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        outcome(
-                            worktree::list_branches_with_status_shared(
-                                &state,
-                                convert(required(args.repo_path, "repoPath")?)?,
-                            )
-                            .await,
-                        )
-                    }
-                    .await?;
-                    Ok(wire::command_result::Command::ListBranchesWithStatus(
-                        result,
-                    ))
-                })
-            }),
-        );
-    }
-    {
-        let state = deps.app_state.clone();
-        router.register_domain(
             &["list_branches_with_status_snapshot"],
             Box::new(move |command| {
                 let state = state.clone();

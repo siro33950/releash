@@ -43,3 +43,21 @@ async fn test_agent_session通知_gatewayが共有sinkへprotoの変更通知を
     };
     assert_eq!(event.worktree_path.as_deref(), Some("/repo"));
 }
+
+#[tokio::test]
+async fn test_一覧変更通知_gatewayがworkspace_list_changedを送る() {
+    use crate::adaptor::protocol::client as wire;
+    use prost::Message;
+    // Given
+    let sink = Arc::new(PushSink::new());
+    let mut subscription = ClientPushGateway::new(sink.clone()).subscribe();
+    // When
+    BackendPush::WorkspaceListChanged.emit(&sink);
+    let frame = subscription.recv().await.unwrap();
+    // Then
+    let push = wire::Push::decode(frame.as_ref()).unwrap();
+    assert_eq!(
+        push.event,
+        Some(wire::push::Event::WorkspaceListChanged(wire::Unit {}))
+    );
+}

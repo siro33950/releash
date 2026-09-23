@@ -26,8 +26,6 @@ export interface WorktreeBranch {
 	worktree_path: string | null;
 	dirty_count: number;
 	is_merged: boolean;
-	// PR 情報は backend の read model には含まれず、フロントが get_cached_pr_status で
-	// 後付け enrich する（未 enrich 時は undefined）。
 	has_pr?: boolean;
 	pr_number?: number | null;
 	pr_url?: string | null;

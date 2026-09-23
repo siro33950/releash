@@ -5,7 +5,9 @@ use std::time::Duration;
 
 use parking_lot::RwLock;
 
-use crate::usecase::repository_dto::{BranchCardDto, FileDiffStatDto, FileStatusDto};
+use crate::usecase::repository_dto::{
+    BranchCardDto, FileDiffStatDto, FileStatusDto, WorktreeDisplayGroupsDto,
+};
 use crate::usecase::repository_query_service::classify_branch_cards;
 
 use super::error::RepositoryStateError;
@@ -109,6 +111,53 @@ impl RepositoryStateService {
         Ok(Arc::new(snapshot))
     }
 
+    pub async fn rescan_branches(
+        &self,
+        repo_path: &str,
+    ) -> Result<Vec<BranchCardDto>, RepositoryStateError> {
+        let repository_root = self.repository.main_repo_path(repo_path)?;
+        let key = self.canonical_worktree_key(repo_path)?;
+        let state = self.worktrees.read().get(&key).cloned();
+        let Some(state) = state else {
+            let parts = self
+                .runtime
+                .scan(self.scanner.clone(), key.to_string_lossy().into_owned())
+                .await?;
+            let mut cards = parts.branch_cards;
+            return Ok(self
+                .branch_display_groups(&repository_root, &mut cards)?
+                .working_areas);
+        };
+        let _scan = state.scan_lock.lock().await;
+        for _ in 0..2 {
+            let generation = state.requested_generation();
+            let result = self
+                .runtime
+                .scan(self.scanner.clone(), state.worktree_path().to_owned())
+                .await;
+            if state.requested_generation() != generation {
+                continue;
+            }
+            if let Some(snapshot) = state.commit_snapshot(result?, generation) {
+                let mut cards = snapshot.branch_cards.clone();
+                return Ok(self
+                    .branch_display_groups(&repository_root, &mut cards)?
+                    .working_areas);
+            }
+        }
+        Err(RepositoryStateError::ScanInvalidated)
+    }
+
+    fn branch_display_groups(
+        &self,
+        repository_root: &str,
+        cards: &mut Vec<BranchCardDto>,
+    ) -> Result<WorktreeDisplayGroupsDto, RepositoryStateError> {
+        self.repository
+            .include_deleting_worktrees(repository_root, cards)?;
+        Ok(classify_branch_cards(repository_root, cards))
+    }
+
     pub fn get_status(
         &self,
         worktree_path: &str,
@@ -157,18 +206,6 @@ impl RepositoryStateService {
         ))
     }
 
-    pub fn list_branches_with_status(
-        &self,
-        repo_path: &str,
-    ) -> Result<Vec<BranchCardDto>, RepositoryStateError> {
-        let repository_root = self.repository.main_repo_path(repo_path)?;
-        let mut cards = self.get_snapshot(repo_path)?.branch_cards.clone();
-        self.repository
-            .include_deleting_worktrees(&repository_root, &mut cards)?;
-        let _ = classify_branch_cards(&repository_root, &mut cards);
-        Ok(cards)
-    }
-
     pub fn list_branches_with_status_snapshot(
         &self,
         repo_path: &str,
@@ -176,9 +213,8 @@ impl RepositoryStateService {
         let snapshot = self.get_snapshot(repo_path)?;
         let repository_root = self.repository.main_repo_path(repo_path)?;
         let mut dto = RepositoryBranchCardsSnapshotDto::from_snapshot(snapshot.as_ref());
-        self.repository
-            .include_deleting_worktrees(&repository_root, &mut dto.branches)?;
-        dto.worktree_display_groups = classify_branch_cards(&repository_root, &mut dto.branches);
+        dto.worktree_display_groups =
+            self.branch_display_groups(&repository_root, &mut dto.branches)?;
         Ok(dto)
     }
 
@@ -830,7 +866,10 @@ pub(crate) mod tests {
         }]);
         let service = counting_service(scanner.clone(), Arc::new(NoopRepositoryStateWatcher));
 
-        let cards = service.list_branches_with_status("/repo").unwrap();
+        let cards = service
+            .list_branches_with_status_snapshot("/repo")
+            .unwrap()
+            .branches;
 
         assert_eq!(cards.len(), 1);
         assert!(scanner.prune_calls().is_empty());
@@ -853,7 +892,10 @@ pub(crate) mod tests {
         }]);
         let service = counting_service(scanner, Arc::new(NoopRepositoryStateWatcher));
 
-        let cards = service.list_branches_with_status("/repo").unwrap();
+        let cards = service
+            .list_branches_with_status_snapshot("/repo")
+            .unwrap()
+            .branches;
         let snapshot = service.list_branches_with_status_snapshot("/repo").unwrap();
 
         assert!(cards.is_empty());
@@ -1233,3 +1275,7 @@ pub(crate) mod tests {
         assert_eq!(service.worktree_count(), 0);
     }
 }
+
+#[cfg(test)]
+#[path = "service_test.rs"]
+mod service_tests;

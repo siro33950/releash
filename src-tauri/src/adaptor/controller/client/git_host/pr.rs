@@ -8,7 +8,10 @@ pub(crate) async fn fetch_pr_status_shared(
     repo_path: String,
 ) -> Result<PrStatusDto, AppError> {
     let uc = state.git_host_usecase.clone();
-    run_blocking(move || PrStatusDto::from(uc.fetch_pr_status(&repo_path))).await
+    run_blocking(move || uc.fetch_pr_status(&repo_path))
+        .await?
+        .map(PrStatusDto::from)
+        .map_err(|error| AppError::new(error.to_string()))
 }
 
 pub(crate) async fn get_cached_pr_status_shared(
@@ -16,5 +19,8 @@ pub(crate) async fn get_cached_pr_status_shared(
     repo_path: String,
 ) -> Result<PrStatusDto, AppError> {
     let uc = state.git_host_usecase.clone();
-    run_blocking(move || PrStatusDto::from(uc.get_cached_pr_status(&repo_path))).await
+    run_blocking(move || uc.get_cached_pr_status(&repo_path))
+        .await?
+        .map(PrStatusDto::from)
+        .map_err(|error| AppError::new(error.to_string()))
 }

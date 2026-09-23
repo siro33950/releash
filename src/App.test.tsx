@@ -73,6 +73,39 @@ describe("App", () => {
 		});
 	});
 
+	it("Repository一覧の初回取得失敗でも画面の復元を完了し更新を操作できる", async () => {
+		vi.mocked(invoke).mockClear();
+		let restored = false;
+		vi.mocked(invoke).mockImplementation(async (command) => {
+			if (command === "get_daemon_status")
+				return {
+					phase: restored ? "ready" : "restoring",
+					connectionGeneration: 1,
+				};
+			return { type: "ready" };
+		});
+		const complete = vi
+			.spyOn(client, "completeClientRestoration")
+			.mockImplementation(async () => {
+				restored = true;
+			});
+		render(
+			<TooltipProvider>
+				<App />
+			</TooltipProvider>,
+		);
+		await waitFor(() => expect(complete).toHaveBeenCalledWith(1));
+		expect(
+			await screen.findByRole("button", { name: "Refresh Workspaces" }),
+		).toBeEnabled();
+		expect(
+			vi
+				.mocked(invoke)
+				.mock.calls.some(([command]) => command === "fail_desktop_restoration"),
+		).toBe(false);
+		complete.mockRestore();
+	});
+
 	it("reads performance telemetry from Rust without writing localStorage to Rust on startup", async () => {
 		localStorage.setItem(
 			"releash-settings",

@@ -3,6 +3,7 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useEffect, useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { useWorkspaceList } from "@/hooks/useWorkspaceList";
 import type { WorkspaceTreeReconciliationEvent } from "@/hooks/useWorkspaceTreeNodes";
 import type { AgentSessionItem } from "@/types/agent-session";
 import type { WorktreeBranch } from "@/types/git";
@@ -12,7 +13,14 @@ import type {
 	WorkspaceTreeItem,
 	WorkspaceWorkflowHistoryItem,
 } from "@/types/workspace-tree";
-import { WorkspaceList } from "./WorkspaceList";
+import { WorkspaceList as WorkspaceListView } from "./WorkspaceList";
+
+function WorkspaceList(
+	props: Omit<React.ComponentProps<typeof WorkspaceListView>, "model">,
+) {
+	const model = useWorkspaceList();
+	return <WorkspaceListView {...props} model={model} />;
+}
 
 type MockWorkspaceTreeState = {
 	nodes: WorkspaceTreeItem[];
@@ -34,6 +42,7 @@ const mocks = vi.hoisted(() => ({
 	synchronizeSelectedNodeId: vi.fn(),
 	isReconciliationEventCurrent: vi.fn().mockReturnValue(true),
 	refreshWorktrees: vi.fn().mockResolvedValue(undefined),
+	refreshRepository: vi.fn().mockResolvedValue(undefined),
 	treeStateOverrides: new Map<string, MockWorkspaceTreeState>(),
 	selectedNodeIds: new Map<string, string | null>(),
 	worktreeBranches: [] as WorktreeBranch[],
@@ -99,6 +108,14 @@ vi.mock("@/hooks/useWorkspaceTreeNodes", () => ({
 			workflowHistory: state.workflowHistory ?? [],
 			reconciliationEvent: state.reconciliationEvent ?? null,
 			loading: state.loading ?? false,
+			loaded: !(state.loading ?? false),
+			state: state.loading
+				? "loading"
+				: state.error
+					? "refreshFailed"
+					: state.nodes.length === 0
+						? "empty"
+						: "ready",
 			error: state.error ?? null,
 			refresh: mocks.refreshTree,
 			beginArchiveReconciliation: mocks.beginArchiveReconciliation,
@@ -110,11 +127,23 @@ vi.mock("@/hooks/useWorkspaceTreeNodes", () => ({
 		};
 	},
 }));
-vi.mock("@/hooks/useWorktreeList", () => ({
-	useWorktreeList: () => ({
-		branches: mocks.worktreeBranches,
-		loading: false,
+vi.mock("@/hooks/useWorkspaceList", async (importOriginal) => ({
+	...(await importOriginal<typeof import("@/hooks/useWorkspaceList")>()),
+	useWorkspaceList: () => ({
+		snapshot: {
+			generation: 1,
+			status: { loaded: true, error: null, state: "ready" },
+			repositories: ["/repo"].map((path) => ({
+				path,
+				status: { loaded: true, error: null, state: "ready" },
+				branches: mocks.worktreeBranches,
+				worktrees: [],
+			})),
+		},
+		requestError: null,
 		refresh: mocks.refreshWorktrees,
+		refreshWorktree: mocks.refreshTree,
+		refreshRepository: mocks.refreshRepository,
 	}),
 }));
 
@@ -269,7 +298,6 @@ function renderWorkspaceList(
 	const onSelectWorktree = vi.fn();
 	const result = render(
 		<WorkspaceList
-			repoPaths={["/repo"]}
 			selectedRootPath="/repo/wt"
 			centerSelection={null}
 			onSelectWorktree={onSelectWorktree}
@@ -283,7 +311,6 @@ function renderWorkspaceList(
 	) => {
 		result.rerender(
 			<WorkspaceList
-				repoPaths={["/repo"]}
 				selectedRootPath="/repo/wt"
 				centerSelection={null}
 				onSelectWorktree={onSelectWorktree}
@@ -1112,7 +1139,6 @@ describe("WorkspaceList", () => {
 		});
 		rerender(
 			<WorkspaceList
-				repoPaths={["/repo"]}
 				selectedRootPath="/repo/wt"
 				centerSelection={null}
 				autoSelectPreferredNode={true}
@@ -1140,7 +1166,6 @@ describe("WorkspaceList", () => {
 		});
 		rerender(
 			<WorkspaceList
-				repoPaths={["/repo"]}
 				selectedRootPath="/repo/wt"
 				centerSelection={{
 					kind: "node",
@@ -1157,7 +1182,6 @@ describe("WorkspaceList", () => {
 
 		rerender(
 			<WorkspaceList
-				repoPaths={["/repo"]}
 				selectedRootPath="/repo/wt"
 				centerSelection={null}
 				autoSelectPreferredNode={true}
@@ -1196,7 +1220,6 @@ describe("WorkspaceList", () => {
 		});
 		rerender(
 			<WorkspaceList
-				repoPaths={["/repo"]}
 				selectedRootPath="/repo/wt"
 				centerSelection={null}
 				autoSelectPreferredNode={true}
@@ -1232,7 +1255,6 @@ describe("WorkspaceList", () => {
 		mocks.worktreeBranches = [{ ...makeBranch(), worktree_path: null }];
 		rerender(
 			<WorkspaceList
-				repoPaths={["/repo"]}
 				selectedRootPath={null}
 				centerSelection={null}
 				autoSelectPreferredNode={true}
@@ -1252,7 +1274,6 @@ describe("WorkspaceList", () => {
 		});
 		rerender(
 			<WorkspaceList
-				repoPaths={["/repo"]}
 				selectedRootPath="/repo/wt-recreated"
 				centerSelection={null}
 				autoSelectPreferredNode={true}
@@ -1305,7 +1326,6 @@ describe("WorkspaceList", () => {
 		});
 		rerender(
 			<WorkspaceList
-				repoPaths={["/repo"]}
 				selectedRootPath="/repo/wt"
 				centerSelection={selection}
 				onSelectWorktree={vi.fn()}
@@ -1396,7 +1416,6 @@ describe("WorkspaceList", () => {
 		});
 		rerender(
 			<WorkspaceList
-				repoPaths={["/repo"]}
 				selectedRootPath="/repo/wt"
 				centerSelection={selection}
 				onSelectWorktree={onSelectWorktree}
@@ -2343,12 +2362,14 @@ it.each([
 		});
 		if (outcome === "success") {
 			expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
-			expect(mocks.refreshWorktrees).toHaveBeenCalled();
+			expect(mocks.refreshRepository).toHaveBeenCalledWith("/repo");
+			expect(mocks.refreshWorktrees).not.toHaveBeenCalled();
 		} else {
 			expect(screen.getByRole("alert")).toHaveTextContent(
 				"削除が拒否されました",
 			);
 			expect(screen.getByRole("button", { name: "Delete" })).toBeEnabled();
+			expect(mocks.refreshRepository).not.toHaveBeenCalled();
 		}
 		expect(
 			mocks.invoke.mock.calls.filter(
@@ -2402,7 +2423,7 @@ it("worktree削除の受理後は一覧更新を待たずダイアログを閉�
 	const branch = makeBranch();
 	mocks.worktreeBranches = [branch];
 	let finishRefresh!: () => void;
-	mocks.refreshWorktrees.mockImplementationOnce(
+	mocks.refreshRepository.mockImplementationOnce(
 		() =>
 			new Promise<void>((resolve) => {
 				finishRefresh = resolve;
@@ -2421,11 +2442,13 @@ it("worktree削除の受理後は一覧更新を待たずダイアログを閉�
 		force: false,
 	});
 	expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
-	expect(mocks.refreshWorktrees).toHaveBeenCalledWith({ silent: true });
+	expect(mocks.refreshRepository).toHaveBeenCalledWith("/repo");
 	expect(mocks.invoke).toHaveBeenCalledWith("report_usage_event", {
 		name: "worktree_removed",
 	});
-	expect(screen.getByRole("button", { name: "Refresh repo" })).toBeEnabled();
+	expect(
+		screen.getByRole("button", { name: "Refresh Workspaces" }),
+	).toBeEnabled();
 	await act(async () => finishRefresh());
 });
 

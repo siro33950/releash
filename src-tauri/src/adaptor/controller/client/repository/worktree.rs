@@ -1,7 +1,7 @@
 use super::{run_blocking, run_repository_state};
 use crate::adaptor::controller::state::AppState;
 use crate::other::AppError;
-use crate::usecase::repository_dto::{BranchCardDto, WorktreeEntryDto};
+use crate::usecase::repository_dto::WorktreeEntryDto;
 use crate::usecase::repository_state::snapshot::RepositoryBranchCardsSnapshotDto;
 
 pub(crate) async fn get_main_repo_path_shared(
@@ -26,14 +26,6 @@ pub(crate) async fn list_worktrees_shared(
 ) -> Result<Vec<WorktreeEntryDto>, AppError> {
     let uc = state.repository_usecase.clone();
     run_blocking(move || uc.list_worktrees(&repo_path)).await
-}
-
-pub(crate) async fn list_branches_with_status_shared(
-    state: &AppState,
-    repo_path: String,
-) -> Result<Vec<BranchCardDto>, AppError> {
-    let service = state.repository_state.clone();
-    run_repository_state(move || service.list_branches_with_status(&repo_path)).await
 }
 
 pub(crate) async fn list_branches_with_status_snapshot_shared(

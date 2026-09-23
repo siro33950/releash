@@ -132,6 +132,30 @@ describe("CreateWorktreeModal", () => {
 		});
 	});
 
+	it("同じRepository一覧の新しい配列でも入力と取得済み候補を保持する", async () => {
+		const user = userEvent.setup();
+		const props = { open: true, onCreated: vi.fn(), onClose: vi.fn() };
+		const { rerender } = render(
+			<CreateWorktreeModal {...props} repoPaths={["/repo"]} />,
+		);
+		await waitFor(() =>
+			expect(mockInvoke).toHaveBeenCalledWith(
+				"list_branches_with_status_snapshot",
+				{ repoPath: "/repo" },
+			),
+		);
+		await user.type(
+			screen.getByPlaceholderText("feat/my-feature"),
+			"feat/retained",
+		);
+		const reads = mockInvoke.mock.calls.length;
+		rerender(<CreateWorktreeModal {...props} repoPaths={["/repo"]} />);
+		expect(screen.getByPlaceholderText("feat/my-feature")).toHaveValue(
+			"feat/retained",
+		);
+		expect(mockInvoke.mock.calls).toHaveLength(reads);
+	});
+
 	it.each([
 		[
 			new ConnectError("Request failed", Code.Unavailable),

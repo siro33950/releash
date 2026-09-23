@@ -1,12 +1,19 @@
 import { listen } from "@tauri-apps/api/event";
-import { act, renderHook, waitFor } from "@testing-library/react";
+import {
+	act,
+	renderHook as baseRenderHook,
+	waitFor,
+} from "@testing-library/react";
+import { createElement, type PropsWithChildren } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { workspaceListSnapshot } from "@/test/workspaceList";
 import type { WorkflowExecutionChangedPayload } from "@/types/workflow";
 import type {
 	WorkspaceTreeItem,
 	WorkspaceTreeSelectionSnapshot,
 	WorkspaceTreeSnapshot,
 } from "@/types/workspace-tree";
+import { useWorkspaceList, WorkspaceListContext } from "./useWorkspaceList";
 import { useWorkspaceTreeNodes } from "./useWorkspaceTreeNodes";
 
 const mockInvoke = vi.fn();
@@ -15,7 +22,34 @@ const mockListen = vi.fn();
 vi.mock("@/lib/client", () => ({
 	invokeClient: (...args: unknown[]) => mockInvoke(...args),
 	listenClient: (...args: unknown[]) => mockListen(...args),
+	watchClient: () => () => {},
 }));
+
+let responsePath = "/repo";
+function renderHook<Result, Props = undefined>(
+	callback: (props: Props) => Result,
+	options?: { initialProps: Props },
+) {
+	let path =
+		(options?.initialProps as { path?: string } | undefined)?.path ?? "/repo";
+	function Wrapper({ children }: PropsWithChildren) {
+		responsePath = path;
+		const model = useWorkspaceList();
+		return createElement(
+			WorkspaceListContext.Provider,
+			{ value: model },
+			children,
+		);
+	}
+	const result = baseRenderHook(callback, { ...options, wrapper: Wrapper });
+	return {
+		...result,
+		rerender: (props: Props) => {
+			path = (props as { path?: string } | undefined)?.path ?? "/repo";
+			result.rerender(props);
+		},
+	};
+}
 
 type ListenerMap = Record<string, Array<(event: { payload: never }) => void>>;
 
@@ -96,8 +130,15 @@ describe("useWorkspaceTreeNodes", () => {
 			},
 		);
 		mockInvoke.mockImplementation((command: string) => {
-			if (command === "list_workspace_worktree_nodes") {
-				return Promise.resolve(treeResponses.shift() ?? makeSnapshot([], null));
+			if (command === "refresh_workspaces") {
+				const path = responsePath;
+				const generation = countInvocations("refresh_workspaces");
+				return Promise.resolve(
+					treeResponses.shift() ?? makeSnapshot([], null),
+				).then((snapshot) => ({
+					...workspaceListSnapshot(snapshot, path),
+					generation,
+				}));
 			}
 			if (command === "get_workspace_tree_selection_reconciliation") {
 				return Promise.resolve(
@@ -112,6 +153,53 @@ describe("useWorkspaceTreeNodes", () => {
 		});
 	});
 
+	it.each([false, true])(
+		"直接更新のRustの取得失敗を取得済み=%sの対象に表示し復旧する",
+		async (loaded) => {
+			const initial = workspaceListSnapshot(makeSnapshot([makeNode("before")]));
+			if (!loaded) {
+				initial.repositories[0].worktrees[0].status.loaded = false;
+				initial.repositories[0].worktrees[0].snapshot = null;
+			}
+			mockInvoke.mockResolvedValueOnce(initial);
+			const { result } = renderHook(() => useWorkspaceTreeNodes("/repo"));
+			await waitFor(() => expect(mockInvoke).toHaveBeenCalledTimes(1));
+			const previous = result.current.nodes;
+			mockInvoke.mockResolvedValueOnce({
+				...initial,
+				repositories: [
+					{
+						...initial.repositories[0],
+						worktrees: [
+							{
+								...initial.repositories[0].worktrees[0],
+								status: {
+									loaded,
+									state: loaded ? "refreshFailed" : "initialFailed",
+									error: "offline",
+								},
+							},
+						],
+					},
+				],
+			});
+			await act(async () => {
+				await result.current.refresh();
+			});
+			expect(result.current.error).toBe("offline");
+			expect(result.current.loading).toBe(false);
+			expect(result.current.loaded).toBe(loaded);
+			expect(result.current.nodes).toBe(previous);
+			treeResponses.push(makeSnapshot([makeNode("after")]));
+			await act(async () => {
+				await result.current.refresh();
+			});
+			expect(result.current.error).toBeNull();
+			expect(result.current.loaded).toBe(true);
+			expect(result.current.nodes).toEqual([makeNode("after")]);
+		},
+	);
+
 	it("loads a recursive snapshot and exposes preferredNodeId", async () => {
 		treeResponses.push(makeSnapshot([makeNode("node-1")], "node-1"));
 		const { result } = renderHook(() => useWorkspaceTreeNodes("/repo"));
@@ -120,7 +208,7 @@ describe("useWorkspaceTreeNodes", () => {
 		await waitFor(() => expect(result.current.loading).toBe(false));
 		expect(result.current.nodes).toEqual([makeNode("node-1")]);
 		expect(result.current.preferredNodeId).toBe("node-1");
-		expect(countInvocations("list_workspace_worktree_nodes")).toBe(1);
+		expect(countInvocations("refresh_workspaces")).toBe(1);
 		expect(
 			countInvocations("get_workspace_tree_selection_reconciliation"),
 		).toBe(0);
@@ -145,7 +233,7 @@ describe("useWorkspaceTreeNodes", () => {
 			await waitForScheduledRefresh();
 		});
 		expect(result.current.nodes).toEqual([makeNode("after")]);
-		expect(countInvocations("list_workspace_workflow_history")).toBe(2);
+		expect(countInvocations("refresh_workspaces")).toBe(2);
 		unmount();
 		mockInvoke.mockClear();
 		await act(async () => {
@@ -161,7 +249,7 @@ describe("useWorkspaceTreeNodes", () => {
 
 		await waitFor(() => expect(result.current.loading).toBe(false));
 
-		expect(countInvocations("list_workspace_worktree_nodes")).toBe(1);
+		expect(countInvocations("refresh_workspaces")).toBe(1);
 	});
 
 	it("does not refetch tree or history when only selection changes", async () => {
@@ -173,15 +261,149 @@ describe("useWorkspaceTreeNodes", () => {
 		act(() => result.current.synchronizeSelectedNodeId("node-b"));
 		act(() => result.current.synchronizeSelectedNodeId("node-a"));
 
-		expect(countInvocations("list_workspace_worktree_nodes")).toBe(1);
+		expect(countInvocations("refresh_workspaces")).toBe(1);
 		expect(
 			countInvocations("get_workspace_tree_selection_reconciliation"),
 		).toBe(0);
-		expect(countInvocations("list_workspace_workflow_history")).toBe(1);
+		expect(countInvocations("refresh_workspaces")).toBe(1);
 	});
 
+	it("選択中Workflowのアーカイブ後に一覧を再取得し履歴を更新する", async () => {
+		const initial = workspaceListSnapshot(makeSnapshot([makeNode("selected")]));
+		mockInvoke.mockResolvedValueOnce(initial);
+		const { result } = renderHook(() => useWorkspaceTreeNodes("/repo"));
+		await waitFor(() => expect(result.current.loading).toBe(false));
+		const archived = workspaceListSnapshot(makeSnapshot([]));
+		archived.repositories[0].worktrees[0].workflowHistory = [
+			{
+				executionId: "selected",
+				worktreePath: "/repo",
+				title: "Archived workflow",
+				status: "aborted",
+				updatedAt: 1,
+				archivedAt: 2,
+				archiveReason: "manual",
+			},
+		];
+		mockInvoke
+			.mockResolvedValueOnce(makeSelectionSnapshot(makeSnapshot([]), false))
+			.mockResolvedValueOnce(archived);
+		await act(async () => {
+			await result.current.beginArchiveReconciliation("selected");
+		});
+		expect(mockInvoke).toHaveBeenLastCalledWith("refresh_workspaces", {
+			worktreePath: "/repo",
+		});
+		expect(result.current.nodes).toEqual([]);
+		expect(result.current.workflowHistory).toEqual(
+			archived.repositories[0].worktrees[0].workflowHistory,
+		);
+		expect(result.current.reconciliationEvent?.selectionInSnapshot).toBe(false);
+	});
+
+	it.each(["transport", "worktree"])(
+		"アーカイブ後の一覧取得が%sで失敗したら再照合を確定せず再試行する",
+		async (failure) => {
+			const initial = workspaceListSnapshot(
+				makeSnapshot([makeNode("selected")]),
+			);
+			mockInvoke.mockResolvedValueOnce(initial);
+			const { result } = renderHook(() => useWorkspaceTreeNodes("/repo"));
+			await waitFor(() => expect(result.current.loaded).toBe(true));
+			const selection = makeSelectionSnapshot(makeSnapshot([]), false);
+			mockInvoke.mockResolvedValueOnce(selection);
+			if (failure === "transport") {
+				mockInvoke.mockRejectedValueOnce(new Error("offline"));
+			} else {
+				const failed = structuredClone(initial);
+				failed.repositories[0].worktrees[0].status = {
+					loaded: true,
+					state: "refreshFailed",
+					error: "offline",
+				};
+				mockInvoke.mockResolvedValueOnce(failed);
+			}
+			await act(async () => {
+				expect(
+					await result.current.beginArchiveReconciliation("selected"),
+				).toBeNull();
+			});
+			expect(result.current.nodes).toEqual([makeNode("selected")]);
+			expect(result.current.workflowHistory).toEqual([]);
+			expect(result.current.reconciliationEvent).toBeNull();
+			expect(countInvocations("refresh_workspaces")).toBe(2);
+			const archived = workspaceListSnapshot(makeSnapshot([]));
+			archived.repositories[0].worktrees[0].workflowHistory = [
+				{
+					executionId: "selected",
+					worktreePath: "/repo",
+					title: "Archived",
+					status: "aborted",
+					updatedAt: 1,
+					archivedAt: 2,
+					archiveReason: "manual",
+				},
+			];
+			mockInvoke
+				.mockResolvedValueOnce(selection)
+				.mockResolvedValueOnce(archived);
+			await act(async () => {
+				expect(await result.current.refresh()).not.toBeNull();
+			});
+			expect(result.current.nodes).toEqual([]);
+			expect(result.current.workflowHistory).toEqual(
+				archived.repositories[0].worktrees[0].workflowHistory,
+			);
+			expect(result.current.reconciliationEvent?.selectionInSnapshot).toBe(
+				false,
+			);
+			expect(result.current.error).toBeNull();
+		},
+	);
+
+	it.each([false, true])(
+		"履歴の取得中は再照合を確定せず選択変更=%sを反映する",
+		async (changeSelection) => {
+			treeResponses.push(makeSnapshot([makeNode("selected")]));
+			const { result } = renderHook(() => useWorkspaceTreeNodes("/repo"));
+			await waitFor(() => expect(result.current.loaded).toBe(true));
+			const pending = deferred<ReturnType<typeof workspaceListSnapshot>>();
+			mockInvoke
+				.mockResolvedValueOnce(makeSelectionSnapshot(makeSnapshot([]), false))
+				.mockReturnValueOnce(pending.promise);
+			let refresh!: ReturnType<
+				typeof result.current.beginArchiveReconciliation
+			>;
+			act(() => {
+				refresh = result.current.beginArchiveReconciliation("selected");
+			});
+			await waitFor(() =>
+				expect(countInvocations("refresh_workspaces")).toBe(2),
+			);
+			expect(result.current.nodes).toEqual([makeNode("selected")]);
+			expect(result.current.reconciliationEvent).toBeNull();
+			if (changeSelection) {
+				act(() => result.current.synchronizeSelectedNodeId("other"));
+			}
+			await act(async () => {
+				pending.resolve(workspaceListSnapshot(makeSnapshot([])));
+				if (changeSelection) expect(await refresh).toBeNull();
+				else expect(await refresh).not.toBeNull();
+			});
+			if (changeSelection)
+				expect(result.current.reconciliationEvent).toBeNull();
+			else
+				expect(result.current.reconciliationEvent?.selectionInSnapshot).toBe(
+					false,
+				);
+		},
+	);
+
 	it("starts Archive reconciliation explicitly and commits snapshot and membership together", async () => {
-		treeResponses.push(makeSnapshot([makeNode("selected")], "selected"));
+		treeResponses.push(
+			makeSnapshot([makeNode("selected")], "selected"),
+			makeSnapshot([makeNode("replacement")], "replacement"),
+		);
 		selectionResponses.push(
 			makeSelectionSnapshot(
 				makeSnapshot([makeNode("replacement")], "replacement"),
@@ -222,6 +444,7 @@ describe("useWorkspaceTreeNodes", () => {
 	it("retains the old snapshot after a failed Archive read and retries on the next refresh", async () => {
 		treeResponses.push(
 			makeSnapshot([makeNode("selected")], "selected"),
+			makeSnapshot([makeNode("fallback")], "fallback"),
 			makeSnapshot([makeNode("later")], "later"),
 		);
 		const failed = deferred<WorkspaceTreeSelectionSnapshot>();
@@ -263,12 +486,18 @@ describe("useWorkspaceTreeNodes", () => {
 		expect(
 			countInvocations("get_workspace_tree_selection_reconciliation"),
 		).toBe(2);
-		expect(countInvocations("list_workspace_worktree_nodes")).toBe(2);
+		expect(countInvocations("refresh_workspaces")).toBe(3);
+		expect(mockInvoke).toHaveBeenLastCalledWith("refresh_workspaces", {
+			worktreePath: "/repo",
+		});
 		expect(result.current.nodes).toEqual([makeNode("later")]);
 	});
 
 	it("keeps a selected Node when the successful Archive snapshot still contains it", async () => {
-		treeResponses.push(makeSnapshot([makeNode("selected")], "selected"));
+		treeResponses.push(
+			makeSnapshot([makeNode("selected")], "selected"),
+			makeSnapshot([makeNode("selected")], "selected"),
+		);
 		selectionResponses.push(
 			makeSelectionSnapshot(
 				makeSnapshot([makeNode("selected")], "selected"),
@@ -334,6 +563,7 @@ describe("useWorkspaceTreeNodes", () => {
 			pending = result.current.beginArchiveReconciliation("old-selected");
 		});
 		rerender({ path: "/new" });
+		act(() => window.dispatchEvent(new Event("workspace-tree-refresh")));
 		await waitFor(() =>
 			expect(result.current.nodes).toEqual([makeNode("new-worktree")]),
 		);
@@ -352,7 +582,10 @@ describe("useWorkspaceTreeNodes", () => {
 	});
 
 	it("discards an older reconciliation response after a later refresh starts", async () => {
-		treeResponses.push(makeSnapshot([makeNode("selected")], "selected"));
+		treeResponses.push(
+			makeSnapshot([makeNode("selected")], "selected"),
+			makeSnapshot([makeNode("latest")], "latest"),
+		);
 		const oldResponse = deferred<WorkspaceTreeSelectionSnapshot>();
 		selectionResponses.push(
 			oldResponse.promise,
@@ -395,11 +628,11 @@ describe("useWorkspaceTreeNodes", () => {
 			({ path }) => useWorkspaceTreeNodes(path),
 			{ initialProps: { path: "/old" as string | null } },
 		);
-
+		await waitFor(() => expect(countInvocations("refresh_workspaces")).toBe(1));
 		rerender({ path: "/new" });
-		await waitFor(() =>
-			expect(result.current.nodes).toEqual([makeNode("new")]),
-		);
+		act(() => window.dispatchEvent(new Event("workspace-tree-refresh")));
+		await waitForScheduledRefresh();
+		expect(result.current.nodes).toEqual([]);
 		await act(async () => {
 			oldResponse.resolve(makeSnapshot([makeNode("old")]));
 			await oldResponse.promise;
@@ -455,24 +688,27 @@ describe("useWorkspaceTreeNodes", () => {
 		);
 	});
 
-	it("ignores workflow events for another Worktree", async () => {
-		treeResponses.push(makeSnapshot([]));
-		renderHook(() => useWorkspaceTreeNodes("/repo"));
-		await waitFor(() =>
-			expect(countInvocations("list_workspace_worktree_nodes")).toBe(1),
-		);
+	it("別Worktreeの通知でも全体更新を要求し現在の一覧に結果を反映する", async () => {
+		treeResponses.push(makeSnapshot([makeNode("existing")]));
+		const { result } = renderHook(() => useWorkspaceTreeNodes("/repo"));
+		await waitFor(() => expect(countInvocations("refresh_workspaces")).toBe(1));
 		await waitFor(() =>
 			expect(listeners["workflow-execution-changed"]?.length).toBe(1),
 		);
 
-		act(() => {
+		treeResponses.push(makeSnapshot([makeNode("updated")]));
+		await act(async () => {
 			listeners["workflow-execution-changed"][0]({
 				payload: {
 					worktreePath: "/other",
 				} as WorkflowExecutionChangedPayload as never,
 			});
+			await waitForScheduledRefresh();
 		});
-		await waitForScheduledRefresh();
-		expect(countInvocations("list_workspace_worktree_nodes")).toBe(1);
+		expect(countInvocations("refresh_workspaces")).toBe(2);
+		expect(mockInvoke).toHaveBeenLastCalledWith("refresh_workspaces", {
+			worktreePath: undefined,
+		});
+		expect(result.current.nodes).toEqual([makeNode("updated")]);
 	});
 });

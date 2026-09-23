@@ -382,10 +382,6 @@ export type InputListBranchesRequest = {
 	repoPath: string;
 };
 
-export type InputListBranchesWithStatusRequest = {
-	repoPath: string;
-};
-
 export type InputListBranchesWithStatusSnapshotRequest = {
 	repoPath: string;
 };
@@ -975,6 +971,13 @@ export type InputWorkflowGetOutputRequest = {
 	executionId: string;
 	nodeName: string;
 };
+
+export type InputRefreshWorkspacesRequest = {
+	repoPath?: string | null;
+	worktreePath?: string | null;
+};
+
+export type InputGetWorkspacesRequest = Record<string, never>;
 
 export type ResultString = string;
 
@@ -1933,6 +1936,14 @@ export type BranchDto = {
 	is_remote: boolean;
 };
 
+export type RepositoryBranchCardsSnapshotDto = {
+	version: number;
+	stale: boolean;
+	loading: boolean;
+	branches: ListBranchCardDto;
+	worktree_display_groups: WorktreeDisplayGroupsDto;
+};
+
 export type ListBranchCardDto = Array<BranchCardDto>;
 
 export type BranchCardDto = {
@@ -1946,14 +1957,6 @@ export type BranchCardDto = {
 	has_upstream: boolean;
 	base_ahead: number;
 	is_deleting: boolean;
-};
-
-export type RepositoryBranchCardsSnapshotDto = {
-	version: number;
-	stale: boolean;
-	loading: boolean;
-	branches: ListBranchCardDto;
-	worktree_display_groups: WorktreeDisplayGroupsDto;
 };
 
 export type WorktreeDisplayGroupsDto = {
@@ -2308,6 +2311,44 @@ export type WorkflowGetOutputResponseSubmitted = {
 	timestamp: number;
 };
 
+export type WorkspaceListSnapshotDto = {
+	generation: number;
+	status: WorkspaceListStatusDto;
+	repositories: ListWorkspaceRepositoryListDto;
+};
+
+export type WorkspaceListStatusDto = {
+	state: string;
+	loaded: boolean;
+	error: string | null;
+};
+
+export type ListWorkspaceRepositoryListDto = Array<WorkspaceRepositoryListDto>;
+
+export type WorkspaceRepositoryListDto = {
+	path: string;
+	status: WorkspaceListStatusDto;
+	branches: ListWorkspaceBranchDto;
+	worktrees: ListWorkspaceWorktreeListDto;
+};
+
+export type ListWorkspaceBranchDto = Array<WorkspaceBranchDto>;
+
+export type WorkspaceBranchDto = {
+	has_pr: boolean;
+	pr_number: number | null;
+	pr_url: string | null;
+} & BranchCardDto;
+
+export type ListWorkspaceWorktreeListDto = Array<WorkspaceWorktreeListDto>;
+
+export type WorkspaceWorktreeListDto = {
+	path: string;
+	status: WorkspaceListStatusDto;
+	snapshot: WorkspaceTreeSnapshotDto | null;
+	workflowHistory: ListWorkspaceWorkflowHistoryItemDto;
+};
+
 export type AgentSessionChangedPayload = {
 	worktreePath: string;
 };
@@ -2400,7 +2441,6 @@ export interface ClientCommandArgs {
 	list_agent_session_history: InputListAgentSessionHistoryRequest;
 	list_available_agent_session_providers: InputListAvailableAgentSessionProvidersRequest;
 	list_branches: InputListBranchesRequest;
-	list_branches_with_status: InputListBranchesWithStatusRequest;
 	list_branches_with_status_snapshot: InputListBranchesWithStatusSnapshotRequest;
 	list_facet_summaries: InputListFacetSummariesRequest;
 	list_provider_hook_health_warnings: InputListProviderHookHealthWarningsRequest;
@@ -2492,6 +2532,8 @@ export interface ClientCommandArgs {
 	workflow_submit_output: InputWorkflowSubmitOutputRequest;
 	workflow_validate_output: InputWorkflowValidateOutputRequest;
 	workflow_get_output: InputWorkflowGetOutputRequest;
+	refresh_workspaces: InputRefreshWorkspacesRequest;
+	get_workspaces: InputGetWorkspacesRequest;
 }
 
 export interface ClientCommands {
@@ -2686,9 +2728,6 @@ export interface ClientCommands {
 	list_branches(
 		args: ClientCommandArgs["list_branches"],
 	): Promise<ListBranchDto>;
-	list_branches_with_status(
-		args: ClientCommandArgs["list_branches_with_status"],
-	): Promise<ListBranchCardDto>;
 	list_branches_with_status_snapshot(
 		args: ClientCommandArgs["list_branches_with_status_snapshot"],
 	): Promise<RepositoryBranchCardsSnapshotDto>;
@@ -2946,6 +2985,12 @@ export interface ClientCommands {
 	workflow_get_output(
 		args: ClientCommandArgs["workflow_get_output"],
 	): Promise<WorkflowGetOutputResponse>;
+	refresh_workspaces(
+		args: ClientCommandArgs["refresh_workspaces"],
+	): Promise<WorkspaceListSnapshotDto>;
+	get_workspaces(
+		args: ClientCommandArgs["get_workspaces"],
+	): Promise<WorkspaceListSnapshotDto>;
 }
 export type ClientCommandResults = {
 	[K in keyof ClientCommands]: Awaited<ReturnType<ClientCommands[K]>>;
@@ -2960,4 +3005,5 @@ export interface ClientPushPayloads {
 	"review-comments-changed": ResultString;
 	"workflow-execution-changed": WorkflowExecutionChangedPayloadView;
 	resync: null;
+	"workspace-list-changed": null;
 }

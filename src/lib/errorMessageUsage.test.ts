@@ -31,10 +31,10 @@ const TARGET_FILES = [
 	"src/hooks/useWorkflowConfig.ts",
 	"src/hooks/useAppSettings.ts",
 	"src/hooks/useSettings.ts",
-	"src/hooks/useRepoList.ts",
 	"src/components/workspace/DeleteWorktreeDialog.tsx",
 	"src/components/panels/DiffToolbar.tsx",
 	"src/hooks/useWorkspaceTreeNodes.ts",
+	"src/hooks/useWorkspaceList.ts",
 	"src/contexts/ReviewThreadHandoffContext.tsx",
 	"src/hooks/useNotionSettings.ts",
 ] as const;
