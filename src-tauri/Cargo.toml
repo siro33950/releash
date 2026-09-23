@@ -32,7 +32,7 @@ protoc-bin-vendored = "3"
 tauri-build = { version = "2", features = [], optional = true }
 
 [dependencies]
-connectrpc = { version = "=0.9.0", features = ["axum", "client"] }
+connectrpc = { version = "=0.9.1", features = ["axum", "client"] }
 buffa = { version = "0.9.1", features = ["json"] }
 tauri = { version = "2.11", features = ["tray-icon", "image-png"], optional = true }
 tauri-plugin-opener = { version = "2", optional = true }
