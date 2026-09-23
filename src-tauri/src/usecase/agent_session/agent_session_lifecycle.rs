@@ -189,6 +189,15 @@ impl AgentSessionLifecycleUsecase {
         cols: u16,
         caller_request_id: &str,
     ) -> Result<AgentSessionOpenOutcome, AgentSessionLifecycleUsecaseError> {
+        let session = self.required(agent_session_id).await?;
+        let _workspace_mutation = self
+            .execution_trees
+            .begin_worktree_mutation(session.session().workspace().as_str())
+            .map_err(map_workflow_error)?;
+        let _worktree_mutation = self
+            .execution_trees
+            .begin_worktree_mutation(session.session().worktree_path())
+            .map_err(map_workflow_error)?;
         let _operation = self
             .sessions
             .lock_operation(agent_session_id)

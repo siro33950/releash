@@ -286,9 +286,12 @@ export function AgentSessionPanel({
 				</>
 			)}
 			{state === "gone" && (
-				<div className="text-muted-foreground">
-					AgentSession is no longer available.
-				</div>
+				<>
+					<div className="text-muted-foreground">
+						AgentSession is no longer available.
+					</div>
+					{resumeAction && <SessionResumeButton action={resumeAction} />}
+				</>
 			)}
 		</div>
 	);
@@ -381,9 +384,12 @@ export function AgentSessionRoute({
 	return (
 		<div className="flex h-full flex-col items-center justify-center gap-3 bg-background p-4 text-sm">
 			{unavailable ? (
-				<div className="text-muted-foreground">
-					AgentSession is no longer available.
-				</div>
+				<>
+					<div className="text-muted-foreground">
+						AgentSession is no longer available.
+					</div>
+					{resumeAction && <SessionResumeButton action={resumeAction} />}
+				</>
 			) : error ? (
 				<>
 					<div role="alert" className="text-destructive">

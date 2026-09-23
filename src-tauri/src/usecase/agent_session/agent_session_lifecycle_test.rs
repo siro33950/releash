@@ -583,7 +583,7 @@ fn setup() -> LifecycleTestContext {
 }
 
 #[tokio::test]
-async fn test_worktree削除中_sessionのopen_restore_deleteを副作用前に拒否する() {
+async fn test_worktree削除中_sessionのopen_resume_restore_deleteを副作用前に拒否する() {
     // Given
     let context = setup();
     let id = "deleting-session";
@@ -609,6 +609,13 @@ async fn test_worktree削除中_sessionのopen_restore_deleteを副作用前に�
     // When / Then
     assert_eq!(
         context.lifecycle.open(id, 24, 80, "open").await,
+        Err(AgentSessionLifecycleUsecaseError::Conflict)
+    );
+    assert_eq!(
+        context
+            .lifecycle
+            .ensure_provider_running(id, 24, 80, "resume")
+            .await,
         Err(AgentSessionLifecycleUsecaseError::Conflict)
     );
     assert_eq!(

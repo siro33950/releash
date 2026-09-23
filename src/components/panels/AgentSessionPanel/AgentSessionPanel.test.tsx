@@ -411,6 +411,37 @@ describe("AgentSessionRoute", () => {
 		expect(screen.queryByText("Loading AgentSession...")).toBeNull();
 	});
 
+	it("AgentSessionが取得できなくても受け取ったResumeを表示する", async () => {
+		mockInvoke.mockResolvedValueOnce(null);
+		const action = resumeAction();
+
+		render(
+			<AgentSessionRoute
+				agentSessionId="missing-session"
+				resumeAction={action}
+			/>,
+		);
+
+		expect(
+			await screen.findByText("AgentSession is no longer available."),
+		).toBeVisible();
+		fireEvent.click(screen.getByRole("button", { name: "Resume" }));
+		expect(action.onResume).toHaveBeenCalledOnce();
+	});
+
+	it("GC済みで不在になったAgentSessionでも受け取ったResumeを表示する", async () => {
+		mockInvoke.mockResolvedValueOnce("garbage_collected");
+
+		render(
+			<AgentSessionPanel session={session} resumeAction={resumeAction()} />,
+		);
+
+		expect(
+			await screen.findByText("AgentSession is no longer available."),
+		).toBeVisible();
+		expect(screen.getByRole("button", { name: "Resume" })).toBeVisible();
+	});
+
 	it("Restore後にbackend read modelを再取得してPausedのResume操作を表示する", async () => {
 		const archived = {
 			...session,

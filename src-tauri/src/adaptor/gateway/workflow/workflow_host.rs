@@ -854,7 +854,7 @@ impl WorkflowRuntimeHost {
                 })?;
                 let presence = crate::domain::workflow::NodeProcessReader::presence(
                     self.node_processes.as_ref(),
-                    &current.worktree_path,
+                    &current.workspace_identity,
                     node_execution_id,
                     node.kind,
                     node.session_id.as_deref(),
