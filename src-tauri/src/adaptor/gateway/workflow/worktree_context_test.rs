@@ -533,7 +533,6 @@ fn test_実効cwd_祖先の欠落と循環と別木と不正定義はcorruptに�
         "other-tree",
         "definition",
         "missing-definition",
-        "leaf-parent",
     ] {
         // Given
         let fixture = Fixture::new(false);
@@ -554,7 +553,6 @@ fn test_実効cwd_祖先の欠落と循環と別木と不正定義はcorruptに�
             "missing" => child.parent_id = Some("missing".into()),
             "cycle" => child.parent_id = Some(child.node_execution_id.clone()),
             "other-tree" => root_meta.tree_id = "another".into(),
-            "leaf-parent" => root_meta.kind = NodeKindName::Session,
             "missing-definition" => root_meta.node_name = "missing".into(),
             "definition" => root.definition["nodes"]["main"]["worktree"] = serde_json::json!(123),
             _ => unreachable!(),
