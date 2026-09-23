@@ -119,21 +119,21 @@ fn test_起動失敗abort_読取後の追記を検出し最新の終端状態を
         // When
         fact_log::append_single_fact(&store, &root.meta, &concurrent, 2_000).unwrap();
         let before = fact_log::read_tree_records(&store, "tree").unwrap();
-        let result = repository.append(&stale.root, &fact, 3.0, Some(stale.head));
+        let result = repository.append(&stale.root, &fact, 3.0, Some(&stale.revision));
 
         // Then
-        assert_eq!(stale.head, 1);
+        assert_eq!(stale.revision, WorkflowRevision("1".into()));
         assert!(matches!(result, Err(WorkflowError::Conflict(_))));
         assert_eq!(fact_log::read_tree_records(&store, "tree").unwrap(), before);
         let mut latest = repository.load("tree").unwrap().unwrap();
-        assert_eq!(latest.head, 2);
+        assert_eq!(latest.revision, WorkflowRevision("2".into()));
         let abort = latest
             .execution
             .abort_with_reason("advancement failed".into(), 3.0);
         assert_eq!(abort.is_some(), concurrent.terminal_state().is_none());
         if let Some(fact) = abort {
             repository
-                .append(&latest.root, &fact, 3.0, Some(latest.head))
+                .append(&latest.root, &fact, 3.0, Some(&latest.revision))
                 .unwrap();
             assert_eq!(
                 fact_log::read_tree_records(&store, "tree")
@@ -151,7 +151,7 @@ fn test_起動失敗abort_読取後の追記を検出し最新の終端状態を
 
 #[test]
 fn test_起動時abort_結果不明でも保存済みなら成功し重複追記しない() {
-    for expected_head in [Some(1), None] {
+    for expected_head in [Some(WorkflowRevision("1".into())), None] {
         // Given
         let dir = tempfile::tempdir().unwrap();
         let store =
@@ -168,11 +168,11 @@ fn test_起動時abort_結果不明でも保存済みなら成功し重複追記
 
         // When
         repository
-            .append(&root.meta, &fact, 3.0, expected_head)
+            .append(&root.meta, &fact, 3.0, expected_head.as_ref())
             .unwrap();
         store.close_write_queue_for_tests();
         repository
-            .append(&root.meta, &fact, 3.0, expected_head)
+            .append(&root.meta, &fact, 3.0, expected_head.as_ref())
             .unwrap();
 
         // Then
@@ -188,7 +188,7 @@ fn test_起動時abort_結果不明でも保存済みなら成功し重複追記
 
 #[test]
 fn test_起動時abort_未保存や別内容の結果不明は再評価を要求する() {
-    for expected_head in [Some(1), None] {
+    for expected_head in [Some(WorkflowRevision("1".into())), None] {
         for change in ["missing", "reason", "timestamp", "node", "attempt"] {
             // Given
             let dir = tempfile::tempdir().unwrap();
@@ -228,7 +228,7 @@ fn test_起動時abort_未保存や別内容の結果不明は再評価を要求
                 &root.meta,
                 &fact,
                 3.0,
-                expected_head,
+                expected_head.as_ref(),
             );
 
             // Then
@@ -259,7 +259,7 @@ fn test_起動時abort_結果不明の読戻し失敗を成功や競合にしな
             &root.meta,
             &NodeFact::AbortRequested(Default::default()),
             3.0,
-            Some(1),
+            Some(&WorkflowRevision("1".into())),
         )
     });
     stall.wait_until_arrived();
@@ -276,4 +276,30 @@ fn test_起動時abort_結果不明の読戻し失敗を成功や競合にしな
     // Then
     assert!(!matches!(error, WorkflowError::Conflict(_)));
     assert!(error.to_string().contains("startup abort readback failed"));
+}
+
+#[test]
+fn test_起動時abort_不正なrevisionは追記前に拒否する() {
+    // Given
+    let dir = tempfile::tempdir().unwrap();
+    let store =
+        LocalEventStore::open(LocalEventStoreConfig::production(dir.path().into())).unwrap();
+    let root =
+        SessionExecutionTreeRootFacts::new("tree", "/repo", "/repo", ProviderKind::Codex, None)
+            .unwrap();
+    fact_log::append_single_fact(&store, &root.meta, &root.started, 1000).unwrap();
+    let repository = StoredWorkflowStartupRepository(store.clone());
+    // When
+    let result = repository.append(
+        &root.meta,
+        &NodeFact::AbortRequested(Default::default()),
+        2.0,
+        Some(&WorkflowRevision("invalid".into())),
+    );
+    // Then
+    assert!(result.is_err());
+    assert_eq!(
+        fact_log::read_tree_records(&store, "tree").unwrap().len(),
+        1
+    );
 }

@@ -10,6 +10,7 @@ use std::sync::Mutex as StdMutex;
 pub(super) struct TestWorktrees {
     pub(super) calls: StdMutex<Vec<(String, IsolatedWorktree)>>,
     pub(super) failures: AtomicUsize,
+    pub(super) creation_barrier: StdMutex<Option<Arc<std::sync::Barrier>>>,
 }
 
 impl IsolatedWorktreeGateway for TestWorktrees {
@@ -31,6 +32,10 @@ impl IsolatedWorktreeGateway for TestWorktrees {
         parent: &str,
         worktree: &IsolatedWorktree,
     ) -> Result<(), crate::domain::workflow::WorkflowError> {
+        let barrier = self.creation_barrier.lock().unwrap().clone();
+        if let Some(barrier) = barrier {
+            barrier.wait();
+        }
         self.calls
             .lock()
             .unwrap()
@@ -54,6 +59,7 @@ impl IsolatedWorktreeGateway for TestWorktrees {
 pub(crate) struct TestSessions {
     pub(super) initial_instructions: StdMutex<Vec<String>>,
     pub(super) presence_unknown: AtomicBool,
+    pub(super) presence_error_session: StdMutex<Option<String>>,
     pub(crate) live_sessions: StdMutex<std::collections::HashSet<String>>,
     pub(super) conversation_missing: AtomicBool,
     pub(super) prepared: StdMutex<Vec<(String, String, String)>>,
@@ -218,6 +224,11 @@ impl crate::domain::agent_session::ProviderAgentTerminalGateway for TestSessions
         else {
             panic!("expected Session owner")
         };
+        if self.presence_error_session.lock().unwrap().as_deref() == Some(session_id.as_str()) {
+            return Err(
+                crate::domain::agent_session::ProviderAgentTerminalGatewayError::Unavailable,
+            );
+        }
         if self.presence_unknown.load(Ordering::SeqCst) {
             return Ok(crate::domain::agent_session::aggregates::ManagedPtyPresence::Unknown);
         }

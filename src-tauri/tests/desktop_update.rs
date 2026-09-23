@@ -207,8 +207,30 @@ async fn test_実workflow更新_一括停止と旧daemon終了から適用と新
         host::desktop_supervision_status(app.handle())["phase"],
         "stopped"
     );
+    // 起動時処理は開始時刻順に直列実行される。後続の木のAbortで対象の処理完了を待つ。
+    let startup_probe = "startup-completion-probe";
+    {
+        let db = rusqlite::Connection::open(root.join("local-event-store.sqlite3")).unwrap();
+        assert_eq!(db.execute(
+            "INSERT INTO node_events (tree_id, seq, node_execution_id, parent_id, node_name, kind, attempt, event_type, session_id, detail, timestamp)
+             SELECT ?1, 1, ?1, NULL, node_name, kind, attempt, event_type, NULL,
+                    json_set(detail, '$.root.definition', json('{}')), timestamp + 1
+             FROM node_events WHERE tree_id = ?2 AND seq = 1",
+            [startup_probe, &execution_id],
+        ).unwrap(), 1);
+    }
     let next = host::desktop_connection_app(tauri::test::mock_builder(), root, &next_binary);
     wait_phase(&next, "restoring").await;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !workflow_facts(root, startup_probe)
+            .iter()
+            .any(|(_, event, _)| event == "abort_requested")
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("startup must finish processing the command tree before aborting the later probe");
     assert!(!workflow_facts(root, &execution_id)
         .iter()
         .any(|(node, event, _)| node == &command_node_id && event == "process_exited"));

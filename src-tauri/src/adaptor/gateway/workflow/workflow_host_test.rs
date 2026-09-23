@@ -21,7 +21,8 @@ async fn test_実行木archive_状態確認後の自然完了で再登録でき�
     let id = archive_workflow(&fixture).await;
     let records = workflow_fact_log::read_tree_records(&fixture.store, &id).unwrap();
     let meta = &records[0].meta;
-    let commit_guard = fixture.host.commit_lock.lock().await;
+    let commit_lock = fixture.host.commit_lock(&id).await;
+    let commit_guard = commit_lock.lock().await;
     let mut archive = Box::pin(fixture.runtime.archive_execution_tree(&id, "manual"));
     assert!(futures_util::poll!(archive.as_mut()).is_pending());
     // When
@@ -2079,6 +2080,89 @@ async fn test_worktree排他_abort待機中も別worktreeは起動し同一workt
 }
 
 #[tokio::test]
+async fn test_commit排他_同一実行木で共有し不要なlockを保持し続けない() {
+    // Given
+    let fixture = test_helpers::Fixture::new(0);
+    let lock = fixture.host.commit_lock("tree-a").await;
+    let guard = lock.lock().await;
+    let waiter = fixture.host.clone().commit_lock("tree-a").await;
+
+    // When / Then
+    assert!(Arc::ptr_eq(&lock, &waiter));
+    assert!(waiter.try_lock().is_err());
+    let other = fixture.host.commit_lock("tree-b").await;
+    assert!(other.try_lock().is_ok());
+    let weak = Arc::downgrade(&lock);
+    drop(guard);
+    drop(lock);
+    assert!(weak.upgrade().is_some());
+    drop(waiter);
+    assert!(weak.upgrade().is_none());
+    let _next = fixture.host.commit_lock("tree-b").await;
+    let locks = fixture.host.commit_locks.lock().await;
+    assert_eq!(locks.len(), 1);
+    assert!(locks.contains_key("tree-b"));
+}
+
+#[tokio::test]
+async fn test_commit排他_別実行木のcommitとcommand起動判定を妨げない() {
+    // Given
+    let fixture = test_helpers::Fixture::new(0);
+    let first = fixture
+        .persist_started("  main: {command: true}\n", "/repo")
+        .await;
+    let second = fixture
+        .persist_started("  main: {command: true}\n", "/other")
+        .await;
+    let lock = fixture.host.commit_lock(&first.execution_id).await;
+    let guard = lock.lock().await;
+    let first_input = command_input(&first);
+    let mut same = Box::pin(fixture.host.commit_command_spawned(
+        &fixture.app,
+        &first_input,
+        "true".into(),
+    ));
+    assert!(futures_util::poll!(same.as_mut()).is_pending());
+
+    // When / Then
+    let second_input = command_input(&second);
+    let mut other = Box::pin(fixture.host.commit_command_spawned(
+        &fixture.app,
+        &second_input,
+        "true".into(),
+    ));
+    assert!(matches!(
+        futures_util::poll!(other.as_mut()),
+        std::task::Poll::Ready(Ok(true))
+    ));
+    drop(other);
+    fixture
+        .host
+        .abort_workflow_execution(&fixture.app, &second.execution_id, None)
+        .await
+        .unwrap();
+    let mut spawn = Box::pin(
+        fixture
+            .host
+            .spawn_command_execution(&fixture.app, second_input),
+    );
+    assert!(matches!(
+        futures_util::poll!(spawn.as_mut()),
+        std::task::Poll::Ready(Ok(()))
+    ));
+    assert!(fixture
+        .host
+        .node_processes
+        .active_commands
+        .lock()
+        .unwrap()
+        .is_empty());
+    assert!(futures_util::poll!(same.as_mut()).is_pending());
+    drop(guard);
+    assert!(same.await.unwrap());
+}
+
+#[tokio::test]
 async fn test_worktree排他_待機者と共有し不要なlockを保持し続けない() {
     // Given
     let fixture = test_helpers::Fixture::new(0);
@@ -2618,7 +2702,8 @@ async fn test_abort競合_外部writerの追記後も最新記録を中止する
         .unwrap()[0]
         .meta
         .clone();
-    let guard = fixture.host.commit_lock.lock().await;
+    let commit_lock = fixture.host.commit_lock(&snapshot.execution_id).await;
+    let guard = commit_lock.lock().await;
     let mut abort = Box::pin(fixture.host.abort_workflow_execution(
         &fixture.app,
         &snapshot.execution_id,
@@ -2667,7 +2752,8 @@ async fn test_command結果競合_最新記録で成功を保存し終端なら�
             .unwrap()[0]
             .meta
             .clone();
-        let guard = fixture.host.commit_lock.lock().await;
+        let commit_lock = fixture.host.commit_lock(&snapshot.execution_id).await;
+        let guard = commit_lock.lock().await;
         let mut completion = Box::pin(fixture.host.finish_command_execution(
             &fixture.app,
             input.clone(),
@@ -2748,7 +2834,8 @@ async fn test_操作競合_abortとcommand結果は上限で止まり障害事�
             .unwrap()[0]
             .meta
             .clone();
-        let mut guard = fixture.host.commit_lock.lock().await;
+        let commit_lock = fixture.host.commit_lock(&snapshot.execution_id).await;
+        let mut guard = commit_lock.lock().await;
         let mut operation = Box::pin(async {
             if command {
                 fixture
@@ -2779,7 +2866,7 @@ async fn test_操作競合_abortとcommand結果は上限で止まり障害事�
                 drop(guard);
                 break;
             }
-            let mut next_guard = Box::pin(fixture.host.commit_lock.lock());
+            let mut next_guard = Box::pin(commit_lock.lock());
             assert!(futures_util::poll!(next_guard.as_mut()).is_pending());
             drop(guard);
             assert!(futures_util::poll!(operation.as_mut()).is_pending());
@@ -2824,7 +2911,8 @@ async fn test_command起動失敗競合_最新attemptへ保存し終端や更新
                 .persist_started("  main: {command: true}\n", "/repo")
                 .await;
             let input = command_input(&snapshot);
-            let guard = fixture.host.commit_lock.lock().await;
+            let commit_lock = fixture.host.commit_lock(&snapshot.execution_id).await;
+            let guard = commit_lock.lock().await;
             let mut operation = Box::pin(async {
                 if spawned {
                     fixture
@@ -2932,7 +3020,8 @@ async fn test_command起動失敗競合_上限で不反映理由を残し競合�
             .persist_started("  main: {command: true}\n", "/repo")
             .await;
         let input = command_input(&snapshot);
-        let mut guard = fixture.host.commit_lock.lock().await;
+        let commit_lock = fixture.host.commit_lock(&snapshot.execution_id).await;
+        let mut guard = commit_lock.lock().await;
         let mut operation = Box::pin(async {
             if spawned {
                 assert!(!fixture
@@ -2970,7 +3059,7 @@ async fn test_command起動失敗競合_上限で不反映理由を残し競合�
                 drop(guard);
                 break;
             }
-            let mut next_guard = Box::pin(fixture.host.commit_lock.lock());
+            let mut next_guard = Box::pin(commit_lock.lock());
             assert!(futures_util::poll!(next_guard.as_mut()).is_pending());
             drop(guard);
             assert!(futures_util::poll!(operation.as_mut()).is_pending());
@@ -3027,7 +3116,8 @@ async fn test_session準備競合_最新記録で紐付けを再評価し準備�
         let starts = vec![NodeStart::Leaf(
             execution.leaf_start_for(&target.id).unwrap(),
         )];
-        let mut guard = fixture.host.commit_lock.lock().await;
+        let commit_lock = fixture.host.commit_lock(&snapshot.execution_id).await;
+        let mut guard = commit_lock.lock().await;
         let mut operation = Box::pin(fixture.host.start_nodes(
             &fixture.app,
             &snapshot.execution_id,
@@ -3070,7 +3160,7 @@ async fn test_session準備競合_最新記録で紐付けを再評価し準備�
                 drop(guard);
                 break;
             }
-            let mut next_guard = Box::pin(fixture.host.commit_lock.lock());
+            let mut next_guard = Box::pin(commit_lock.lock());
             assert!(futures_util::poll!(next_guard.as_mut()).is_pending());
             drop(guard);
             assert!(futures_util::poll!(operation.as_mut()).is_pending());
@@ -3134,4 +3224,227 @@ async fn test_session準備競合_最新記録で紐付けを再評価し準備�
             expected
         );
     }
+}
+
+#[tokio::test]
+async fn test_runtime再試行_競合だけを上限まで再実行する() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    for (conflicts, storage_error) in [(0, false), (1, false), (4, false), (0, true)] {
+        // Given
+        let calls = AtomicUsize::new(0);
+        // When
+        let result = retry_runtime_conflicts(|| async {
+            let attempt = calls.fetch_add(1, Ordering::SeqCst);
+            if storage_error {
+                Err(WorkflowRuntimeError::SessionStore("unavailable".into()))
+            } else if attempt < conflicts {
+                Err(WorkflowRuntimeError::Conflict("advanced".into()))
+            } else {
+                Ok(())
+            }
+        })
+        .await;
+        // Then
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            (conflicts + 1).min(crate::usecase::workflow::command::CONTROL_PLANE_MAX_ATTEMPTS)
+        );
+        assert_eq!(result.is_ok(), !storage_error && conflicts < 4);
+    }
+}
+
+#[tokio::test]
+async fn test_自動再起動競合_最新記録で再評価し上限まで再試行する() {
+    use crate::domain::workflow::NodeFact;
+    use crate::usecase::workflow::command::CONTROL_PLANE_MAX_ATTEMPTS;
+    for change in ["sibling", "abort", "exhausted"] {
+        // Given
+        let fixture = test_helpers::Fixture::new(0);
+        let snapshot = fixture.persist_started(
+            "  main: {fanout: {children: [work, other]}}\n  work: {command: 'must-not-start'}\n  other: {command: 'must-not-start'}",
+            "/repo",
+        ).await;
+        let execution = fixture
+            .host
+            .load_execution(&fixture.app, &snapshot.execution_id)
+            .await
+            .unwrap();
+        let target = execution
+            .node_executions
+            .iter()
+            .find(|node| node.node_name == "work")
+            .unwrap();
+        let sibling = execution
+            .node_executions
+            .iter()
+            .find(|node| node.node_name == "other")
+            .unwrap();
+        let commit_lock = fixture.host.commit_lock(&snapshot.execution_id).await;
+        let mut guard = commit_lock.lock().await;
+        let mut operation = Box::pin(fixture.host.restart_node_attempt(
+            &fixture.app,
+            &snapshot.execution_id,
+            &target.id,
+        ));
+        let attempts = if change == "exhausted" {
+            CONTROL_PLANE_MAX_ATTEMPTS
+        } else {
+            1
+        };
+
+        // When
+        for attempt in 0..attempts {
+            assert!(futures_util::poll!(operation.as_mut()).is_pending());
+            workflow_fact_log::append_facts_for_events(
+                &fixture.store,
+                &[if change == "abort" {
+                    WorkflowEvent::ExecutionAborted {
+                        execution_id: snapshot.execution_id.clone(),
+                        aborted_node: None,
+                        timestamp: current_timestamp(),
+                    }
+                } else {
+                    WorkflowEvent::CommandSpawned {
+                        execution_id: snapshot.execution_id.clone(),
+                        node_execution_id: sibling.id.clone(),
+                        display_command: format!("external-{attempt}"),
+                        timestamp: current_timestamp(),
+                    }
+                }],
+            )
+            .unwrap();
+            if attempt + 1 == attempts {
+                drop(guard);
+                break;
+            }
+            let mut next_guard = Box::pin(commit_lock.lock());
+            assert!(futures_util::poll!(next_guard.as_mut()).is_pending());
+            drop(guard);
+            assert!(futures_util::poll!(operation.as_mut()).is_pending());
+            guard = next_guard.await;
+        }
+        let result = operation.await;
+
+        // Then
+        match change {
+            "sibling" => {
+                let start = result.unwrap().unwrap();
+                assert_ne!(start.node_execution_id(), target.id);
+                let latest = fixture
+                    .host
+                    .load_execution(&fixture.app, &snapshot.execution_id)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    latest
+                        .node_execution(start.node_execution_id())
+                        .unwrap()
+                        .attempt,
+                    target.attempt + 1
+                );
+                assert!(fixture
+                    .host
+                    .restart_node_attempt(&fixture.app, &snapshot.execution_id, &target.id)
+                    .await
+                    .unwrap()
+                    .is_none());
+            }
+            "abort" => assert!(result.unwrap().is_none()),
+            _ => assert!(matches!(result, Err(WorkflowRuntimeError::Conflict(_)))),
+        }
+        let records =
+            workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap();
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| matches!(record.fact, NodeFact::RetryRequested))
+                .count(),
+            usize::from(change == "sibling")
+        );
+        assert!(!records
+            .iter()
+            .any(|record| matches!(record.fact, NodeFact::RuntimeFailureObserved(_))));
+    }
+}
+
+#[tokio::test]
+async fn test_自動再起動_先行nodeのエラーを後続の起動成功nodeへ記録しない() {
+    use crate::domain::workflow::NodeFact;
+    // Given
+    let fixture = test_helpers::Fixture::new(0);
+    let snapshot = fixture.persist_started(
+        "  main: {fanout: {children: [work, other]}}\n  work: {session: {provider: codex, facets: {instruction: policy-confirmation}}}\n  other: {session: {provider: codex, facets: {instruction: policy-confirmation}}}",
+        "/repo",
+    ).await;
+    let execution = fixture
+        .host
+        .load_execution(&fixture.app, &snapshot.execution_id)
+        .await
+        .unwrap();
+    let target = execution
+        .node_executions
+        .iter()
+        .find(|node| node.node_name == "work")
+        .unwrap();
+    let sibling = execution
+        .node_executions
+        .iter()
+        .find(|node| node.node_name == "other")
+        .unwrap();
+    workflow_fact_log::append_facts_for_events(
+        &fixture.store,
+        &[WorkflowEvent::SessionAttached {
+            execution_id: snapshot.execution_id.clone(),
+            node_execution_id: target.id.clone(),
+            session_id: "unavailable-session".into(),
+            timestamp: current_timestamp(),
+        }],
+    )
+    .unwrap();
+    *fixture.sessions.presence_error_session.lock().unwrap() = Some("unavailable-session".into());
+
+    // When
+    fixture
+        .host
+        .schedule_startup_retries(
+            &fixture.app,
+            &snapshot.execution_id,
+            "/repo",
+            vec![target.id.clone(), sibling.id.clone()],
+        )
+        .await;
+    fixture.wait_startup_retries().await;
+
+    // Then
+    let records =
+        workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap();
+    let failures: Vec<_> = records
+        .iter()
+        .filter(|record| matches!(record.fact, NodeFact::RuntimeFailureObserved(_)))
+        .collect();
+    assert_eq!(failures.len(), 1);
+    assert_eq!(failures[0].meta.node_execution_id, target.id);
+    let latest = fixture
+        .host
+        .load_execution(&fixture.app, &snapshot.execution_id)
+        .await
+        .unwrap();
+    let restarted = latest
+        .node_executions
+        .iter()
+        .find(|node| node.node_name == "other" && node.attempt == sibling.attempt + 1)
+        .unwrap();
+    assert_eq!(
+        *fixture.sessions.activated.lock().unwrap(),
+        [restarted.id.clone()]
+    );
+    assert!(restarted.status.is_active());
+    assert!(records
+        .iter()
+        .any(|record| record.meta.node_execution_id == restarted.id
+            && matches!(record.fact, NodeFact::SessionAttached(_))));
+    assert!(!records
+        .iter()
+        .any(|record| record.meta.node_execution_id == restarted.id
+            && matches!(record.fact, NodeFact::RuntimeFailureObserved(_))));
 }

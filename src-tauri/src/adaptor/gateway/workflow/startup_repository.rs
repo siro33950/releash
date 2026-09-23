@@ -3,7 +3,9 @@ use crate::adaptor::gateway::local_event_store::writer::NodeEventWriteError;
 use crate::adaptor::gateway::local_event_store::{node_events, LocalEventStore};
 use crate::domain::local_event::LocalEventQueryError;
 use crate::domain::workflow::entities::workflow_execution::ExecutionTree;
-use crate::domain::workflow::repository::{WorkflowStartupRecord, WorkflowStartupRepository};
+use crate::domain::workflow::repository::{
+    WorkflowRevision, WorkflowStartupRecord, WorkflowStartupRepository,
+};
 use crate::domain::workflow::{NodeFact, NodeFactMeta, WorkflowError};
 use std::sync::Arc;
 
@@ -67,7 +69,7 @@ impl WorkflowStartupRepository for StoredWorkflowStartupRepository {
                     .query_row(
                         "SELECT COALESCE(MAX(seq), 0) FROM node_events WHERE tree_id = ?1",
                         [&requested],
-                        |row| row.get(0),
+                        |row| row.get::<_, i64>(0),
                     )
                     .map_err(|_| LocalEventQueryError::InvalidRequest)?;
                 Ok((first, terminal, head))
@@ -110,7 +112,7 @@ impl WorkflowStartupRepository for StoredWorkflowStartupRepository {
             execution,
             root: fact_log::node_meta_from_row(&first).map_err(WorkflowError::external)?,
             definition_error,
-            head,
+            revision: WorkflowRevision(head.to_string()),
         }))
     }
 
@@ -119,8 +121,12 @@ impl WorkflowStartupRepository for StoredWorkflowStartupRepository {
         root: &NodeFactMeta,
         fact: &NodeFact,
         timestamp: f64,
-        expected_head: Option<i64>,
+        expected_revision: Option<&WorkflowRevision>,
     ) -> Result<(), WorkflowError> {
+        let expected_head = expected_revision
+            .map(|revision| revision.0.parse::<i64>())
+            .transpose()
+            .map_err(|_| WorkflowError::invalid_state("invalid workflow revision"))?;
         let pending = fact_log::pending_single_fact(root, fact, (timestamp * 1000.0) as i64)
             .map_err(WorkflowError::external)?;
         let result = self.0.append_node_events_at_head_blocking(
@@ -129,44 +135,20 @@ impl WorkflowStartupRepository for StoredWorkflowStartupRepository {
         );
         match result {
             Err(NodeEventWriteError::OutcomeUnknown) => {
-                let persisted = self
-                    .0
-                    .submit_indexed_query_blocking(move |connection| {
-                        connection
-                            .query_row(
-                                "SELECT EXISTS(SELECT 1 FROM node_events
-                                 WHERE tree_id = ?1 AND node_execution_id = ?2
-                                   AND parent_id IS ?3 AND node_name = ?4 AND kind = ?5
-                                   AND attempt = ?6 AND event_type = ?7 AND session_id IS ?8
-                                   AND detail = ?9 AND timestamp = ?10
-                                   AND (?11 IS NULL OR seq = ?11 + 1))",
-                                rusqlite::params![
-                                    pending.row.tree_id,
-                                    pending.row.node_execution_id,
-                                    pending.row.parent_id,
-                                    pending.row.node_name,
-                                    pending.row.kind,
-                                    pending.row.attempt,
-                                    pending.row.event_type,
-                                    pending.row.session_id,
-                                    pending.row.detail,
-                                    pending.timestamp_ms.max(0),
-                                    expected_head,
-                                ],
-                                |row| row.get::<_, bool>(0),
-                            )
-                            .map_err(|_| LocalEventQueryError::InvalidRequest)
-                    })
+                match fact_log::resolve_unknown_append(&self.0, vec![pending], expected_head)
                     .map_err(|error| {
                         WorkflowError::external(format!("startup abort readback failed: {error:?}"))
-                    })?;
-                if persisted {
-                    Ok(())
-                } else {
-                    Err(WorkflowError::Conflict(format!(
-                        "tree {} startup abort was not found after an unknown append outcome",
-                        root.tree_id
-                    )))
+                    })? {
+                    Ok(_) => Ok(()),
+                    Err(NodeEventWriteError::Conflict | NodeEventWriteError::OutcomeUnknown) => {
+                        Err(WorkflowError::Conflict(format!(
+                            "tree {} startup abort was not found after an unknown append outcome",
+                            root.tree_id
+                        )))
+                    }
+                    Err(error) => Err(WorkflowError::external(format!(
+                        "startup abort append failed: {error}"
+                    ))),
                 }
             }
             result => result.map(|_| ()).map_err(|error| match error {

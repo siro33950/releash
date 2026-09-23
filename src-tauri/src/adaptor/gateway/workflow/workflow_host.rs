@@ -100,7 +100,7 @@ fn current_timestamp() -> f64 {
 #[derive(Clone)]
 pub struct WorkflowRuntimeHost {
     workflow_start_locks: Arc<Mutex<HashMap<String, Weak<Mutex<()>>>>>,
-    commit_lock: Arc<Mutex<()>>,
+    commit_locks: Arc<Mutex<HashMap<String, Weak<Mutex<()>>>>>,
     /// execution_id → 解決済み facet 本文。workflow state / event には含めない runtime-local read model。
     execution_facet_contents: Arc<Mutex<HashMap<String, WorkflowFacetContents>>>,
     /// execution_id → runtime activation serialization lock.
@@ -252,6 +252,17 @@ fn build_command_artifact(
     }
 }
 
+async fn retry_runtime_conflicts<T, F, Fut>(operation: F) -> Result<T, WorkflowRuntimeError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, WorkflowRuntimeError>>,
+{
+    crate::usecase::workflow::command::retry_control_plane_operation(operation, |error| {
+        matches!(error, WorkflowRuntimeError::Conflict(_))
+    })
+    .await
+}
+
 impl WorkflowRuntimeHost {
     pub(crate) async fn load_control_plane_execution(
         &self,
@@ -323,10 +334,7 @@ impl WorkflowRuntimeHost {
         head: i64,
         events: &[WorkflowEvent],
     ) -> Result<(), WorkflowRuntimeError> {
-        use crate::adaptor::gateway::local_event_store::{
-            node_events, writer::NodeEventWriteError,
-        };
-        use crate::domain::local_event::LocalEventQueryError;
+        use crate::adaptor::gateway::local_event_store::writer::NodeEventWriteError;
         let store = app.store.as_ref().ok_or_else(|| {
             WorkflowRuntimeError::SessionStore(
                 "workflow SQLite event authority is not managed".into(),
@@ -341,39 +349,14 @@ impl WorkflowRuntimeHost {
             Some((execution_id.into(), head)),
         );
         match result {
-            Err(error @ NodeEventWriteError::OutcomeUnknown) => {
-                let tree_id = execution_id.to_string();
-                let count = rows.len();
-                let stored = store
-                    .submit_indexed_query_blocking(move |connection| {
-                        node_events::read_tree_page(connection, &tree_id, head as usize, count)
-                            .map_err(|_| LocalEventQueryError::InvalidRequest)
-                    })
+            Err(NodeEventWriteError::OutcomeUnknown) => {
+                workflow_fact_log::resolve_unknown_append(store, rows, Some(head))
                     .map_err(|error| {
                         WorkflowRuntimeError::SessionStore(format!(
                             "control-plane commit readback failed: {error:?}"
                         ))
-                    })?;
-                let persisted = stored.len() == rows.len()
-                    && stored.iter().zip(&rows).all(|(stored, pending)| {
-                        stored.tree_id == pending.row.tree_id
-                            && stored.node_execution_id == pending.row.node_execution_id
-                            && stored.parent_id == pending.row.parent_id
-                            && stored.node_name == pending.row.node_name
-                            && stored.kind == pending.row.kind
-                            && stored.attempt == pending.row.attempt
-                            && stored.event_type == pending.row.event_type
-                            && stored.session_id == pending.row.session_id
-                            && stored.detail == pending.row.detail
-                            && stored.timestamp_ms == pending.timestamp_ms.max(0)
-                    });
-                if persisted {
-                    Ok(())
-                } else if stored.is_empty() {
-                    Err(error)
-                } else {
-                    Err(NodeEventWriteError::Conflict)
-                }
+                    })?
+                    .map(|_| ())
             }
             result => result.map(|_| ()),
         }
@@ -479,7 +462,7 @@ impl WorkflowRuntimeHost {
     ) -> Self {
         Self {
             workflow_start_locks: Arc::new(Mutex::new(HashMap::new())),
-            commit_lock: Arc::new(Mutex::new(())),
+            commit_locks: Arc::new(Mutex::new(HashMap::new())),
             execution_facet_contents: Arc::new(Mutex::new(HashMap::new())),
             runtime_activation_locks: Arc::new(Mutex::new(HashMap::new())),
             startup_retries: Arc::new(Mutex::new(HashMap::new())),
@@ -506,6 +489,17 @@ impl WorkflowRuntimeHost {
         }
         let lock = Arc::new(Mutex::new(()));
         locks.insert(identity.as_str().to_string(), Arc::downgrade(&lock));
+        lock
+    }
+
+    async fn commit_lock(&self, execution_id: &str) -> Arc<Mutex<()>> {
+        let mut locks = self.commit_locks.lock().await;
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        if let Some(lock) = locks.get(execution_id).and_then(Weak::upgrade) {
+            return lock;
+        }
+        let lock = Arc::new(Mutex::new(()));
+        locks.insert(execution_id.to_string(), Arc::downgrade(&lock));
         lock
     }
 
@@ -843,7 +837,8 @@ impl WorkflowRuntimeHost {
                 "invalid control-plane transaction preparation: {error:?}"
             ))
         })?;
-        let _commit_guard = self.commit_lock.lock().await;
+        let commit_lock = self.commit_lock(execution_id).await;
+        let _commit_guard = commit_lock.lock().await;
         let (mut current, head) = Self::load_execution_revision(app, execution_id)?
             .ok_or_else(|| WorkflowRuntimeError::ExecutionNotFound(execution_id.into()))?;
         for event in events {
@@ -1209,10 +1204,7 @@ impl WorkflowRuntimeHost {
         }
         if !session_setups.is_empty() {
             let timestamp = current_timestamp();
-            let commit_result: Result<RuntimeCommitSnapshot, WorkflowRuntimeError> = async {
-                let mut attempts = 0;
-                loop {
-                    attempts += 1;
+            let commit_result: Result<RuntimeCommitSnapshot, WorkflowRuntimeError> = retry_runtime_conflicts(|| async {
                     let snapshot_before = self.load_execution(app, &execution_id).await?;
                     let mut candidate = snapshot_before.clone();
                     let mut events = Vec::new();
@@ -1237,8 +1229,7 @@ impl WorkflowRuntimeHost {
                             timestamp,
                         });
                     }
-                    let snapshot = RuntimeCommitSnapshot::from_execution(&candidate)?;
-                    match self
+                    self
                         .commit_required_events(
                             app,
                             RequiredEventCommit {
@@ -1250,17 +1241,7 @@ impl WorkflowRuntimeHost {
                             },
                         )
                         .await
-                    {
-                        Err(WorkflowRuntimeError::Conflict(_))
-                            if attempts < crate::usecase::workflow::command::CONTROL_PLANE_MAX_ATTEMPTS =>
-                        {
-                            continue;
-                        }
-                        result => result?,
-                    }
-                    break Ok(snapshot);
-                }
-            }
+            })
             .await;
             let snapshot = match commit_result {
                 Ok(snapshot) => snapshot,
@@ -1410,7 +1391,8 @@ impl WorkflowRuntimeHost {
         // A concurrent stop therefore has only two observable orders: it wins first and no process
         // is spawned, or the process is registered first and stop can always find and kill it.
         let spawn_result = {
-            let _commit_guard = self.commit_lock.lock().await;
+            let commit_lock = self.commit_lock(&input.execution_id).await;
+            let _commit_guard = commit_lock.lock().await;
             let Some(execution) = self.load_current_command(app, &input).await? else {
                 return Ok(());
             };
@@ -1651,19 +1633,10 @@ impl WorkflowRuntimeHost {
         let result_summary = artifact.result_summary.clone();
         let timestamp = current_timestamp();
 
-        let mut attempts = 0;
-        let (outcome, snapshot_for_commit, worktree_path) = loop {
-            attempts += 1;
-            let (
-                outcome,
-                snapshot_before,
-                candidate,
-                snapshot_for_commit,
-                worktree_path,
-                required_events,
-            ) = {
+        let committed = retry_runtime_conflicts(|| async {
+            let (outcome, snapshot_before, candidate, worktree_path, required_events) = {
                 let Some(mut loaded) = self.load_current_command(app, &input).await? else {
-                    return Ok(());
+                    return Ok(None);
                 };
                 let exec = &mut loaded;
                 let snapshot_before = exec.clone();
@@ -1734,13 +1707,12 @@ impl WorkflowRuntimeHost {
                     outcome,
                     snapshot_before,
                     exec.clone(),
-                    RuntimeCommitSnapshot::from_execution(exec)?,
                     exec.worktree_path.clone(),
                     required_events,
                 )
             };
 
-            match self
+            let snapshot_for_commit = self
                 .commit_required_events(
                     app,
                     RequiredEventCommit {
@@ -1752,16 +1724,12 @@ impl WorkflowRuntimeHost {
                         append_error_context: "command completion event append failed",
                     },
                 )
-                .await
-            {
-                Err(WorkflowRuntimeError::Conflict(_))
-                    if attempts < crate::usecase::workflow::command::CONTROL_PLANE_MAX_ATTEMPTS =>
-                {
-                    continue
-                }
-                result => result?,
-            }
-            break (outcome, snapshot_for_commit, worktree_path);
+                .await?;
+            Ok(Some((outcome, snapshot_for_commit, worktree_path)))
+        })
+        .await?;
+        let Some((outcome, snapshot_for_commit, worktree_path)) = committed else {
+            return Ok(());
         };
         drop(command_admission);
         self.finalize_after_commit(app, &snapshot_for_commit, &worktree_path)
@@ -1797,41 +1765,34 @@ impl WorkflowRuntimeHost {
             retry_count: None,
             timestamp: current_timestamp(),
         }];
-        let mut attempts = 0;
-        let snapshot = loop {
-            attempts += 1;
+        let snapshot = retry_runtime_conflicts(|| async {
             let Some(before) = self.load_current_command(app, input).await? else {
-                return Ok(());
+                return Ok(None);
             };
-            match self
-                .commit_control_plane_candidate(
-                    app,
-                    ControlPlaneCommitCandidate {
-                        execution_id: &input.execution_id,
-                        snapshot_before: before.clone(),
-                        candidate: before,
-                        transition_outcome: TransitionOutcome::AlreadyApplied,
-                        events: &events,
-                        provider_events: Vec::new(),
-                    },
-                )
-                .await
-            {
-                Err(WorkflowRuntimeError::Conflict(_))
-                    if attempts < crate::usecase::workflow::command::CONTROL_PLANE_MAX_ATTEMPTS =>
-                {
-                    continue
-                }
-                result => {
-                    break result.inspect_err(|error| {
-                        log::warn!(
-                            "workflow {}: command {} failure was not applied: {error}",
-                            input.execution_id,
-                            input.node_execution_id
-                        );
-                    })?;
-                }
-            }
+            self.commit_control_plane_candidate(
+                app,
+                ControlPlaneCommitCandidate {
+                    execution_id: &input.execution_id,
+                    snapshot_before: before.clone(),
+                    candidate: before,
+                    transition_outcome: TransitionOutcome::AlreadyApplied,
+                    events: &events,
+                    provider_events: Vec::new(),
+                },
+            )
+            .await
+            .map(Some)
+        })
+        .await
+        .inspect_err(|error| {
+            log::warn!(
+                "workflow {}: command {} failure was not applied: {error}",
+                input.execution_id,
+                input.node_execution_id
+            );
+        })?;
+        let Some(snapshot) = snapshot else {
+            return Ok(());
         };
         drop(command_admission);
         self.finish_control_plane_commit(app, &snapshot.worktree_path, &snapshot, None)
@@ -1961,7 +1922,7 @@ impl WorkflowRuntimeHost {
         &self,
         app: &WorkflowRuntimeDependencies,
         commit: RequiredEventCommit<'_>,
-    ) -> Result<(), WorkflowRuntimeError> {
+    ) -> Result<RuntimeCommitSnapshot, WorkflowRuntimeError> {
         let RequiredEventCommit {
             execution_id,
             snapshot_before,
@@ -1981,7 +1942,6 @@ impl WorkflowRuntimeHost {
             },
         )
         .await
-        .map(|_| ())
         .map_err(|error| match error {
             WorkflowRuntimeError::SessionStore(reason) => {
                 WorkflowRuntimeError::SessionStore(format!("{append_error_context}: {reason}"))
@@ -2050,33 +2010,24 @@ impl WorkflowRuntimeHost {
         }
         let failure_kind = error.workflow_failure_kind();
         let reason = format!("workflow runtime activation failed: {error}");
-        let mut last_error = None;
-        for attempt in 1..=crate::usecase::workflow::command::CONTROL_PLANE_MAX_ATTEMPTS {
-            match self
-                .settle_node_failure_for_node(
+        crate::usecase::workflow::command::retry_control_plane_operation(
+            || {
+                self.settle_node_failure_for_node(
                     app,
                     execution_id,
                     node_execution_id,
                     reason.clone(),
                     failure_kind,
                 )
-                .await
-            {
-                Ok(()) => return Ok(()),
-                Err(
-                    error @ (WorkflowRuntimeError::Conflict(_)
-                    | WorkflowRuntimeError::SessionStore(_)),
-                ) if attempt < crate::usecase::workflow::command::CONTROL_PLANE_MAX_ATTEMPTS => {
-                    last_error = Some(error);
-                }
-                Err(error) => return Err(error),
-            }
-        }
-        Err(last_error.unwrap_or_else(|| {
-            WorkflowRuntimeError::InvalidState(
-                "bounded failure settlement retry ended without an error".to_string(),
-            )
-        }))
+            },
+            |error| {
+                matches!(
+                    error,
+                    WorkflowRuntimeError::Conflict(_) | WorkflowRuntimeError::SessionStore(_)
+                )
+            },
+        )
+        .await
     }
 
     async fn settle_node_failure_for_node(

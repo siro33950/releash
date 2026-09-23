@@ -518,7 +518,7 @@ mod tests {
             _root: &crate::domain::workflow::NodeFactMeta,
             _fact: &crate::domain::workflow::NodeFact,
             _timestamp: f64,
-            _expected_head: Option<i64>,
+            _expected_revision: Option<&crate::domain::workflow::repository::WorkflowRevision>,
         ) -> Result<(), WorkflowError> {
             unreachable!("empty startup inventory")
         }

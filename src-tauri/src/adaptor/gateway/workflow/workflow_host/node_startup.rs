@@ -93,15 +93,28 @@ impl WorkflowRuntimeHost {
                     worktree_path: &worktree_path,
                     cancelled,
                 };
-                if let Err(error) =
+                if let Err(failure) =
                     crate::usecase::workflow::node_startup::retry_failed_nodes(&gateway, failed)
                         .await
                 {
+                    let error = &failure.error;
                     log::warn!("workflow {execution_id}: startup retries failed: {error}");
-                    if let Err(settle_error) = host
-                        .settle_runtime_failure(&app, &execution_id, &error)
-                        .await
-                    {
+                    let settled = match failure.node_execution_id {
+                        Some(node_execution_id) => {
+                            host.settle_runtime_failure_for_node(
+                                &app,
+                                &execution_id,
+                                &node_execution_id,
+                                error,
+                            )
+                            .await
+                        }
+                        None => {
+                            host.settle_runtime_failure(&app, &execution_id, error)
+                                .await
+                        }
+                    };
+                    if let Err(settle_error) = settled {
                         log::warn!("workflow {execution_id}: startup failure settlement failed: {settle_error}");
                     }
                 }
@@ -216,69 +229,80 @@ impl WorkflowRuntimeHost {
     ) -> Result<Option<NodeStart>, WorkflowRuntimeError> {
         let gate = self.runtime_activation_gate(execution_id).await;
         let _guard = gate.lock.lock().await;
-        let (before, mut candidate) = {
-            let Some(loaded) = self.load_control_plane_execution(app, execution_id).await? else {
+        retry_runtime_conflicts(|| async {
+            let (before, mut candidate) = {
+                let Some(loaded) = self.load_control_plane_execution(app, execution_id).await?
+                else {
+                    return Ok(None);
+                };
+                let current = &loaded;
+                (current.clone(), current.clone())
+            };
+            if let Some(composite) = before.isolated_composite_start(node_execution_id) {
+                return Ok(Some(NodeStart::PrepareComposite(composite)));
+            }
+            let Some(node) = before.node_execution(node_execution_id) else {
                 return Ok(None);
             };
-            let current = &loaded;
-            (current.clone(), current.clone())
-        };
-        let Some(node) = before.node_execution(node_execution_id) else {
-            return Ok(None);
-        };
-        if self
-            .node_processes
-            .presence(
-                &before.worktree_path,
+            if self
+                .node_processes
+                .presence(
+                    &before.worktree_path,
+                    node_execution_id,
+                    node.kind,
+                    node.session_id.as_deref(),
+                )
+                .map_err(|error| WorkflowRuntimeError::InvalidState(error.to_string()))?
+                != NodeProcessPresence::ConfirmedAbsent
+            {
+                return Ok(None);
+            }
+            let timestamp = current_timestamp();
+            let Some(restarted) = candidate.restart_node_attempt_at(
                 node_execution_id,
-                node.kind,
-                node.session_id.as_deref(),
-            )
-            .map_err(|error| WorkflowRuntimeError::InvalidState(error.to_string()))?
-            != NodeProcessPresence::ConfirmedAbsent
-        {
-            return Ok(None);
-        }
-        let timestamp = current_timestamp();
-        let Some(restarted) = candidate.restart_node_attempt_at(
-            node_execution_id,
-            new_node_execution_id(),
-            timestamp,
-        ) else {
-            return Ok(None);
-        };
-        let events = [
-            WorkflowEvent::NodeRetryRequested {
-                execution_id: execution_id.into(),
-                node_execution_id: node_execution_id.into(),
+                new_node_execution_id(),
                 timestamp,
-            },
-            WorkflowEvent::NodeStarted {
-                worktree: restarted.attempt.worktree.clone(),
-                execution_id: execution_id.into(),
-                node_execution_id: restarted.attempt.id,
-                node_name: restarted.attempt.node_name,
-                kind: restarted.attempt.kind,
-                attempt: restarted.attempt.attempt,
-                parent: restarted.attempt.parent,
-                timestamp,
-            },
-        ];
-        let snapshot = self
-            .commit_control_plane_candidate(
-                app,
-                ControlPlaneCommitCandidate {
-                    execution_id,
-                    snapshot_before: before,
-                    candidate,
-                    transition_outcome: TransitionOutcome::Applied,
-                    events: &events,
-                    provider_events: Vec::new(),
+            ) else {
+                return Ok(None);
+            };
+            let events = [
+                WorkflowEvent::NodeRetryRequested {
+                    execution_id: execution_id.into(),
+                    node_execution_id: node_execution_id.into(),
+                    timestamp,
                 },
+                WorkflowEvent::NodeStarted {
+                    worktree: restarted.attempt.worktree.clone(),
+                    execution_id: execution_id.into(),
+                    node_execution_id: restarted.attempt.id,
+                    node_name: restarted.attempt.node_name,
+                    kind: restarted.attempt.kind,
+                    attempt: restarted.attempt.attempt,
+                    parent: restarted.attempt.parent,
+                    timestamp,
+                },
+            ];
+            let snapshot = self
+                .commit_control_plane_candidate(
+                    app,
+                    ControlPlaneCommitCandidate {
+                        execution_id,
+                        snapshot_before: before,
+                        candidate,
+                        transition_outcome: TransitionOutcome::Applied,
+                        events: &events,
+                        provider_events: Vec::new(),
+                    },
+                )
+                .await?;
+            workflow_runtime_session::broadcast_state(
+                app,
+                &snapshot.worktree_path,
+                snapshot.clone(),
             )
-            .await?;
-        workflow_runtime_session::broadcast_state(app, &snapshot.worktree_path, snapshot.clone())
             .await;
-        Ok(Some(NodeStart::Leaf(restarted.leaf)))
+            Ok(Some(NodeStart::Leaf(restarted.leaf)))
+        })
+        .await
     }
 }

@@ -12,31 +12,52 @@ pub(crate) trait NodeStartupGateway: Send + Sync {
     async fn wait(&self, duration: std::time::Duration) -> bool;
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("{error}")]
+pub(crate) struct NodeStartupError {
+    pub node_execution_id: Option<String>,
+    pub error: WorkflowRuntimeError,
+}
+
 pub(crate) async fn retry_failed_nodes(
     gateway: &impl NodeStartupGateway,
     mut failed: Vec<String>,
-) -> Result<(), WorkflowRuntimeError> {
+) -> Result<(), NodeStartupError> {
     let mut restarts = 0;
+    let mut first_error = None;
     while !failed.is_empty() {
         let Some(delay) = startup_restart_delay(restarts) else {
-            return Ok(());
+            break;
         };
         if !gateway.wait(delay).await {
-            return Ok(());
+            break;
         }
         let mut starts = Vec::new();
         for id in failed {
-            if let Some(start) = gateway.restart(&id).await? {
-                starts.push(start);
+            match gateway.restart(&id).await {
+                Ok(Some(start)) => starts.push(start),
+                Ok(None) => {}
+                Err(error) => {
+                    first_error.get_or_insert(NodeStartupError {
+                        node_execution_id: Some(id),
+                        error,
+                    });
+                }
             }
         }
         if starts.is_empty() {
-            return Ok(());
+            break;
         }
-        failed = gateway.start(starts).await?;
+        failed = gateway
+            .start(starts)
+            .await
+            .map_err(|error| NodeStartupError {
+                node_execution_id: None,
+                error,
+            })?;
         restarts += 1;
     }
-    Ok(())
+    first_error.map_or(Ok(()), Err)
 }
 
 #[cfg(test)]

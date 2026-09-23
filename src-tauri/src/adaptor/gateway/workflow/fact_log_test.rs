@@ -560,6 +560,38 @@ mod mapping_tests {
     }
 
     #[test]
+    fn test_写像_commandの承認要求は正常終了の事実として記録する() {
+        // Given
+        let events = vec![
+            node_started("c-exec", "run", NodeKindName::Command, None, 1.0),
+            WorkflowEvent::ApprovalRequested {
+                execution_id: TREE.to_string(),
+                node_execution_id: "c-exec".to_string(),
+                node_name: "run".to_string(),
+                timestamp: 2.0,
+            },
+        ];
+
+        // When
+        let rows = fact_rows_for_events(&events, no_lookup, no_lookup).unwrap();
+
+        // Then
+        assert_eq!(rows.len(), 2);
+        let row = &rows[1].row;
+        assert_eq!(row.node_execution_id, "c-exec");
+        assert_eq!(row.event_type, "process_exited");
+        assert_eq!(
+            fact_codec::decode(&row.event_type, &row.detail).unwrap(),
+            NodeFact::ProcessExited(ProcessExitedFact {
+                exit_code: Some(0),
+                result_summary: None,
+                failure_reason: None,
+                failure_kind: None,
+            })
+        );
+    }
+
+    #[test]
     fn test_写像_commandの完了はprocess_exitedになる() {
         // Given: command node の完了
         let events = vec![
@@ -2259,4 +2291,117 @@ fn test_起動時前進_head競合を失敗と区別し最新記録から再評�
         assert_eq!(recovered.starts.len(), usize::from(!abort));
         assert_eq!(recovered.folded.aggregate.is_active(), !abort);
     }
+}
+
+#[test]
+fn test_起動時前進_旧形式の末尾行を含むheadで追記と応答喪失の読戻しを行う() {
+    for event_type in [
+        "isolated_worktree_created",
+        "isolated_worktree_released",
+        "isolated_worktree_lost",
+    ] {
+        for drop_reply in [false, true] {
+            // Given
+            let directory = tempfile::tempdir().unwrap();
+            let store =
+                LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into()))
+                    .unwrap();
+            append_facts_for_events(
+                &store,
+                &[
+                    started_event(),
+                    node_started("main-exec", "main", NodeKindName::Sequence, None, 1.0),
+                ],
+            )
+            .unwrap();
+            append_pending_rows_blocking(&store, vec![PendingFactRow {
+                row: NewNodeEventRow {
+                    tree_id: TREE.into(), node_execution_id: "main-exec".into(),
+                    parent_id: None, node_name: "main".into(), kind: "sequence".into(), attempt: 1,
+                    event_type: event_type.into(), session_id: None,
+                    detail: serde_json::json!({"repositoryRoot": "/repo", "worktreePath": "/old", "branch": "old"}).to_string(),
+                }, timestamp_ms: 1500,
+            }]).unwrap();
+            if drop_reply {
+                store.fault_injector().arm_drop_reply();
+            }
+            // When
+            let result = reconcile_tree_pass(&store, TREE, 2.0, &mut || "next-child".into())
+                .unwrap()
+                .unwrap();
+            // Then
+            assert_eq!(result.starts.len(), 1);
+            assert_eq!(result.starts[0].node_execution_id(), "next-child");
+            let records = read_tree_records(&store, TREE).unwrap();
+            assert_eq!(
+                records
+                    .iter()
+                    .filter(|row| row.meta.node_execution_id == "next-child")
+                    .count(),
+                1
+            );
+            assert!(!records
+                .iter()
+                .any(|row| matches!(row.fact, NodeFact::AbortRequested(_))));
+        }
+    }
+}
+
+#[test]
+fn test_追記結果確認_全行一致と競合と未保存を共通の判定で区別する() {
+    use crate::adaptor::gateway::local_event_store::writer::NodeEventWriteError;
+    // Given
+    let dir = tempfile::tempdir().unwrap();
+    let store =
+        LocalEventStore::open(LocalEventStoreConfig::production(dir.path().into())).unwrap();
+    let root = SessionExecutionTreeRootFacts::new(
+        "tree",
+        "/repo",
+        "/repo",
+        crate::domain::provider_lifecycle::ProviderKind::Codex,
+        None,
+    )
+    .unwrap();
+    let first = pending_single_fact(&root.meta, &root.started, -1).unwrap();
+    let second = pending_single_fact(&root.meta, &NodeFact::ExecutionCompleted, 2000).unwrap();
+    let rows = vec![first, second];
+    // When / Then
+    assert_eq!(
+        resolve_unknown_append(&store, rows.clone(), Some(0)).unwrap(),
+        Err(NodeEventWriteError::OutcomeUnknown)
+    );
+    append_pending_rows_blocking(&store, rows.clone()).unwrap();
+    assert_eq!(
+        resolve_unknown_append(&store, rows.clone(), Some(0)).unwrap(),
+        Ok(vec![1, 2])
+    );
+    for field in 0..10 {
+        let mut changed = rows.clone();
+        let pending = &mut changed[1];
+        match field {
+            0 => pending.row.tree_id.push_str("other"),
+            1 => pending.row.node_execution_id.push_str("other"),
+            2 => pending.row.parent_id = Some("parent".into()),
+            3 => pending.row.node_name.push_str("other"),
+            4 => pending.row.kind = "command".into(),
+            5 => pending.row.attempt += 1,
+            6 => pending.row.event_type = "stop_received".into(),
+            7 => pending.row.session_id = Some("session".into()),
+            8 => pending.row.detail.push(' '),
+            9 => pending.timestamp_ms += 1,
+            _ => unreachable!(),
+        }
+        assert!(
+            resolve_unknown_append(&store, changed, Some(0))
+                .unwrap()
+                .is_err(),
+            "field {field}"
+        );
+    }
+    let mut partial = rows;
+    partial.push(partial[1].clone());
+    assert_eq!(
+        resolve_unknown_append(&store, partial, Some(0)).unwrap(),
+        Err(NodeEventWriteError::Conflict)
+    );
 }

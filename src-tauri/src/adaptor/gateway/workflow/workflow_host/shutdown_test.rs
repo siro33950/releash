@@ -202,7 +202,8 @@ async fn test_終了処理_commandの保存中は待ち後続commandの起動前
         let execution_id = input.execution_id.clone();
         let node_execution_id = input.node_execution_id.clone();
         let succeeded = output.is_ok();
-        let executions = fixture.host.commit_lock.lock().await;
+        let commit_lock = fixture.host.commit_lock(&execution_id).await;
+        let executions = commit_lock.lock().await;
         let mut completion = Box::pin(async {
             match output {
                 Ok(output) => {
@@ -285,7 +286,8 @@ async fn test_終了処理_command起動の完了を待ち以降の起動を止�
         schemas: BTreeMap::new(),
         session_id: None,
     };
-    let executions = fixture.host.commit_lock.lock().await;
+    let commit_lock = fixture.host.commit_lock(&input.execution_id).await;
+    let executions = commit_lock.lock().await;
     let mut spawn = Box::pin(
         fixture
             .host

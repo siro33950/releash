@@ -128,6 +128,12 @@ impl WorkflowRuntimeHost {
         }
         for (node_execution_id, error) in failures {
             prepared.failed.push(node_execution_id.clone());
+            if matches!(error, WorkflowRuntimeError::Conflict(_)) {
+                log::warn!(
+                    "workflow {execution_id}: isolated composite {node_execution_id} child start was not applied: {error}"
+                );
+                continue;
+            }
             Box::pin(self.settle_runtime_failure_for_node(
                 app,
                 execution_id,
@@ -146,9 +152,7 @@ impl WorkflowRuntimeHost {
         node_execution_id: &str,
     ) -> Result<Option<(RuntimeCommitSnapshot, ExecutionAdvanceDecision)>, WorkflowRuntimeError>
     {
-        let mut attempts = 0;
-        loop {
-            attempts += 1;
+        retry_runtime_conflicts(|| async {
             let before = self.load_execution(app, execution_id).await?;
             if !before.can_prepare_node_worktree(node_execution_id) {
                 return Ok(None);
@@ -161,8 +165,7 @@ impl WorkflowRuntimeHost {
                     current_timestamp(),
                 )
                 .map_err(|error| WorkflowRuntimeError::InvalidState(error.to_string()))?;
-            let snapshot = RuntimeCommitSnapshot::from_execution(&candidate)?;
-            match self
+            let snapshot = self
                 .commit_required_events(
                     app,
                     RequiredEventCommit {
@@ -173,16 +176,9 @@ impl WorkflowRuntimeHost {
                         append_error_context: "isolated composite child start append failed",
                     },
                 )
-                .await
-            {
-                Err(WorkflowRuntimeError::Conflict(_))
-                    if attempts < crate::usecase::workflow::command::CONTROL_PLANE_MAX_ATTEMPTS =>
-                {
-                    continue;
-                }
-                Err(error) => return Err(error),
-                Ok(()) => return Ok(Some((snapshot, applied.decision))),
-            }
-        }
+                .await?;
+            Ok(Some((snapshot, applied.decision)))
+        })
+        .await
     }
 }

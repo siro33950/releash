@@ -77,11 +77,9 @@ impl WorkflowRuntimeHost {
     ) -> Result<bool, WorkflowRuntimeError> {
         let timestamp = current_timestamp();
 
-        let mut attempts = 0;
-        let snapshot = loop {
-            attempts += 1;
+        let result = retry_runtime_conflicts(|| async {
             let Some(before) = self.load_current_command(app, input).await? else {
-                return Ok(false);
+                return Ok(None);
             };
             let mut candidate = before.clone();
             candidate.record_node_display_command(
@@ -89,40 +87,38 @@ impl WorkflowRuntimeHost {
                 display_command.clone(),
                 timestamp,
             );
-            match self
-                .commit_control_plane_candidate(
-                    app,
-                    ControlPlaneCommitCandidate {
-                        execution_id: &input.execution_id,
-                        snapshot_before: before,
-                        candidate,
-                        transition_outcome: TransitionOutcome::Applied,
-                        events: &[WorkflowEvent::CommandSpawned {
-                            execution_id: input.execution_id.clone(),
-                            node_execution_id: input.node_execution_id.clone(),
-                            display_command: display_command.clone(),
-                            timestamp,
-                        }],
-                        provider_events: Vec::new(),
-                    },
-                )
-                .await
-            {
-                Err(WorkflowRuntimeError::Conflict(_))
-                    if attempts < crate::usecase::workflow::command::CONTROL_PLANE_MAX_ATTEMPTS =>
-                {
-                    continue
-                }
-                Err(error @ WorkflowRuntimeError::Conflict(_)) => {
-                    log::warn!(
-                        "workflow {}: command {} start was not applied: {error}",
-                        input.execution_id,
-                        input.node_execution_id
-                    );
-                    return Ok(false);
-                }
-                result => break result?,
+            self.commit_control_plane_candidate(
+                app,
+                ControlPlaneCommitCandidate {
+                    execution_id: &input.execution_id,
+                    snapshot_before: before,
+                    candidate,
+                    transition_outcome: TransitionOutcome::Applied,
+                    events: &[WorkflowEvent::CommandSpawned {
+                        execution_id: input.execution_id.clone(),
+                        node_execution_id: input.node_execution_id.clone(),
+                        display_command: display_command.clone(),
+                        timestamp,
+                    }],
+                    provider_events: Vec::new(),
+                },
+            )
+            .await
+            .map(Some)
+        })
+        .await;
+        let snapshot = match result {
+            Ok(Some(snapshot)) => snapshot,
+            Ok(None) => return Ok(false),
+            Err(error @ WorkflowRuntimeError::Conflict(_)) => {
+                log::warn!(
+                    "workflow {}: command {} start was not applied: {error}",
+                    input.execution_id,
+                    input.node_execution_id
+                );
+                return Ok(false);
             }
+            Err(error) => return Err(error),
         };
         let worktree_path = snapshot.worktree_path.clone();
         self.finalize_after_commit(app, &snapshot, &worktree_path)

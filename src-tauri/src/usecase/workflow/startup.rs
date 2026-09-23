@@ -82,7 +82,7 @@ fn abort_startup_failure(
         return Ok(());
     };
     if let Some(fact) = record.execution.abort_with_reason(reason, timestamp) {
-        repository.append(&record.root, &fact, timestamp, Some(record.head))?;
+        repository.append(&record.root, &fact, timestamp, Some(&record.revision))?;
     }
     Ok(())
 }
@@ -99,7 +99,7 @@ pub fn abort_unavailable_definition(
         .execution
         .abort_unavailable_definition(record.definition_error, timestamp)
     {
-        repository.append(&record.root, &fact, timestamp, None)?;
+        repository.append(&record.root, &fact, timestamp, Some(&record.revision))?;
     }
     Ok(())
 }

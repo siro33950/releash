@@ -1259,7 +1259,8 @@ async fn test_隔離合成子競合_最新記録で子開始を再評価し競�
                 .iter()
                 .find(|node| node.node_name == "other")
                 .unwrap();
-            let mut guard = fixture.host.commit_lock.lock().await;
+            let commit_lock = fixture.host.commit_lock(&snapshot.execution_id).await;
+            let mut guard = commit_lock.lock().await;
             let mut operation = Box::pin(fixture.host.commit_prepared_composite(
                 &fixture.app,
                 &snapshot.execution_id,
@@ -1296,7 +1297,7 @@ async fn test_隔離合成子競合_最新記録で子開始を再評価し競�
                     drop(guard);
                     break;
                 }
-                let mut next_guard = Box::pin(fixture.host.commit_lock.lock());
+                let mut next_guard = Box::pin(commit_lock.lock());
                 assert!(futures_util::poll!(next_guard.as_mut()).is_pending());
                 drop(guard);
                 assert!(futures_util::poll!(operation.as_mut()).is_pending());
@@ -1358,4 +1359,142 @@ async fn test_隔離合成子競合_最新記録で子開始を再評価し競�
             );
         }
     }
+}
+
+#[tokio::test]
+async fn test_隔離合成子競合_上限後も兄弟と競合したchildを起動して生成失敗の自動再試行を続ける() {
+    use std::future::Future;
+    use std::task::{Context, Poll, Wake, Waker};
+    struct Notifier(tokio::sync::Notify);
+    impl Wake for Notifier {
+        fn wake(self: Arc<Self>) {
+            self.0.notify_one();
+        }
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.notify_one();
+        }
+    }
+    // Given
+    let fixture = Fixture::new(1);
+    let snapshot = fixture.persist_started(
+        "  main: {fanout: {children: [failed, other, isolated, writer]}}\n  failed: {worktree: isolated, session: {provider: codex, facets: {instruction: policy-confirmation}}}\n  other: {session: {provider: codex, facets: {instruction: policy-confirmation}}}\n  isolated: {worktree: isolated, sequence: {children: [work]}}\n  work: {session: {provider: codex, facets: {instruction: policy-confirmation}}}\n  writer: {command: must-not-start}", "/repo"
+    ).await;
+    let execution = fixture
+        .host
+        .load_execution(&fixture.app, &snapshot.execution_id)
+        .await
+        .unwrap();
+    let node = |name: &str| {
+        execution
+            .node_executions
+            .iter()
+            .find(|node| node.node_name == name)
+            .unwrap()
+            .id
+            .clone()
+    };
+    let failed = node("failed");
+    let other = node("other");
+    let isolated = node("isolated");
+    let writer = node("writer");
+    let starts = vec![
+        NodeStart::Leaf(execution.leaf_start_for(&failed).unwrap()),
+        NodeStart::Leaf(execution.leaf_start_for(&other).unwrap()),
+        NodeStart::PrepareComposite(execution.isolated_composite_start(&isolated).unwrap()),
+    ];
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    *fixture.worktrees.creation_barrier.lock().unwrap() = Some(barrier.clone());
+    let commit_lock = fixture.host.commit_lock(&snapshot.execution_id).await;
+    let mut guard = commit_lock.lock().await;
+    let mut operation = Box::pin(fixture.host.start_nodes(
+        &fixture.app,
+        &snapshot.execution_id,
+        "/repo",
+        starts,
+    ));
+    let notifier = Arc::new(Notifier(tokio::sync::Notify::new()));
+    let waker = Waker::from(notifier.clone());
+    // When
+    // 2件のworktree準備が完了してからchild commitを競合させる。
+    for _ in 0..2 {
+        assert!(matches!(
+            operation.as_mut().poll(&mut Context::from_waker(&waker)),
+            Poll::Pending
+        ));
+        barrier.wait();
+        tokio::time::timeout(std::time::Duration::from_secs(10), notifier.0.notified())
+            .await
+            .unwrap();
+    }
+    *fixture.worktrees.creation_barrier.lock().unwrap() = None;
+    for attempt in 0..crate::usecase::workflow::command::CONTROL_PLANE_MAX_ATTEMPTS {
+        assert!(futures_util::poll!(operation.as_mut()).is_pending());
+        workflow_fact_log::append_facts_for_events(
+            &fixture.store,
+            &[WorkflowEvent::CommandSpawned {
+                execution_id: snapshot.execution_id.clone(),
+                node_execution_id: writer.clone(),
+                display_command: format!("external-{attempt}"),
+                timestamp: current_timestamp(),
+            }],
+        )
+        .unwrap();
+        if attempt + 1 == crate::usecase::workflow::command::CONTROL_PLANE_MAX_ATTEMPTS {
+            drop(guard);
+            break;
+        }
+        let mut next_guard = Box::pin(commit_lock.lock());
+        assert!(futures_util::poll!(next_guard.as_mut()).is_pending());
+        drop(guard);
+        assert!(futures_util::poll!(operation.as_mut()).is_pending());
+        guard = next_guard.await;
+    }
+    operation.await.unwrap();
+    fixture.wait_startup_retries().await;
+    // Then
+    let records =
+        workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap();
+    assert!(!records
+        .iter()
+        .any(|record| record.meta.node_execution_id == isolated
+            && matches!(record.fact, NodeFact::RuntimeFailureObserved(_))));
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| record.meta.node_name == "work"
+                && matches!(record.fact, NodeFact::Started(_)))
+            .count(),
+        1
+    );
+    let child = records
+        .iter()
+        .find(|record| record.meta.node_name == "work")
+        .unwrap();
+    assert!(fixture
+        .sessions
+        .activated
+        .lock()
+        .unwrap()
+        .contains(&child.meta.node_execution_id));
+    assert!(!records
+        .iter()
+        .any(|record| record.meta.node_execution_id == isolated
+            && matches!(record.fact, NodeFact::RetryRequested)));
+    assert!(fixture.sessions.activated.lock().unwrap().contains(&other));
+    let execution = fixture
+        .host
+        .load_execution(&fixture.app, &snapshot.execution_id)
+        .await
+        .unwrap();
+    let retried = execution
+        .node_executions
+        .iter()
+        .find(|node| node.node_name == "failed" && node.attempt == 2)
+        .unwrap();
+    assert!(fixture
+        .sessions
+        .activated
+        .lock()
+        .unwrap()
+        .contains(&retried.id));
 }

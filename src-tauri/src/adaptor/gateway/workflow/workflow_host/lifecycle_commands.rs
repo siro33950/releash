@@ -63,19 +63,10 @@ impl WorkflowRuntimeHost {
             acquired = gate.lock.lock() => { guard = Some(acquired); }
         }
         let paused = guard.is_none();
-        let mut attempts = 0;
-        let result = loop {
-            attempts += 1;
-            let result = self
-                .commit_abort_workflow_by_execution_id(app, execution_id, expected_node_name)
-                .await;
-            match result {
-                Err(WorkflowRuntimeError::Conflict(_))
-                    if attempts < crate::usecase::workflow::command::CONTROL_PLANE_MAX_ATTEMPTS => {
-                }
-                result => break result,
-            }
-        };
+        let result = retry_runtime_conflicts(|| {
+            self.commit_abort_workflow_by_execution_id(app, execution_id, expected_node_name)
+        })
+        .await;
         match result {
             Ok(snapshot) => {
                 if paused {

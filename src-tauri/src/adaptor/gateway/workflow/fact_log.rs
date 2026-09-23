@@ -56,6 +56,68 @@ pub(crate) struct PendingFactRow {
     pub(crate) timestamp_ms: i64,
 }
 
+pub(crate) fn resolve_unknown_append(
+    store: &Arc<LocalEventStore>,
+    rows: Vec<PendingFactRow>,
+    expected_head: Option<i64>,
+) -> Result<
+    Result<Vec<i64>, crate::adaptor::gateway::local_event_store::writer::NodeEventWriteError>,
+    LocalEventQueryError,
+> {
+    use crate::adaptor::gateway::local_event_store::writer::NodeEventWriteError;
+    use rusqlite::OptionalExtension;
+    store.submit_indexed_query_blocking(move |connection| {
+        let transaction = connection
+            .unchecked_transaction()
+            .map_err(|_| LocalEventQueryError::InvalidRequest)?;
+        let mut sequences = Vec::with_capacity(rows.len());
+        for (index, pending) in rows.iter().enumerate() {
+            let sequence = transaction
+                .query_row(
+                    "SELECT seq FROM node_events
+                 WHERE tree_id = ?1 AND node_execution_id = ?2
+                   AND parent_id IS ?3 AND node_name = ?4 AND kind = ?5
+                   AND attempt = ?6 AND event_type = ?7 AND session_id IS ?8
+                   AND detail = ?9 AND timestamp = ?10
+                   AND (?11 IS NULL OR seq = ?11)
+                 ORDER BY seq LIMIT 1",
+                    rusqlite::params![
+                        pending.row.tree_id,
+                        pending.row.node_execution_id,
+                        pending.row.parent_id,
+                        pending.row.node_name,
+                        pending.row.kind,
+                        pending.row.attempt,
+                        pending.row.event_type,
+                        pending.row.session_id,
+                        pending.row.detail,
+                        pending.timestamp_ms.max(0),
+                        expected_head.map(|head| head + index as i64 + 1)
+                    ],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()
+                .map_err(|_| LocalEventQueryError::InvalidRequest)?;
+            let Some(sequence) = sequence else {
+                let advanced = transaction
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM node_events WHERE tree_id = ?1 AND seq > ?2)",
+                        rusqlite::params![pending.row.tree_id, expected_head.unwrap_or(0)],
+                        |row| row.get::<_, bool>(0),
+                    )
+                    .map_err(|_| LocalEventQueryError::InvalidRequest)?;
+                return Ok(Err(if advanced {
+                    NodeEventWriteError::Conflict
+                } else {
+                    NodeEventWriteError::OutcomeUnknown
+                }));
+            };
+            sequences.push(sequence);
+        }
+        Ok(Ok(sequences))
+    })
+}
+
 fn pending_row(
     meta: &FactRowMeta,
     tree_id: &str,
@@ -914,7 +976,18 @@ pub(crate) fn reconcile_tree_pass(
     use crate::domain::workflow::{NodeCompletionSignalState, WorkflowError};
 
     let backend = FactLogReadBackend::Live(Arc::clone(store));
-    let records = read_tree_records_from(&backend, tree_id).map_err(WorkflowError::external)?;
+    let requested = tree_id.to_string();
+    let rows = backend
+        .run_indexed(move |connection| {
+            node_events::read_tree(connection, &requested)
+                .map_err(|_| LocalEventQueryError::InvalidRequest)
+        })
+        .map_err(|error| {
+            WorkflowError::external(format!("node fact tree read failed: {error:?}"))
+        })?;
+    let mut head = rows.last().map_or(0, |row| row.seq);
+    let records = records_from_tree_rows(&rows).map_err(WorkflowError::external)?;
+    drop(rows);
     let Some(folded) =
         crate::domain::workflow::services::fact_replay::fold_execution_tree(tree_id, &records)
             .map_err(WorkflowError::external)?
@@ -968,7 +1041,6 @@ pub(crate) fn reconcile_tree_pass(
             pending_leaf_ids.push(node.id.clone());
         }
     }
-    let mut head = records.last().map_or(0, |record| record.seq);
     let mut folded = folded;
     let mut leaves = pending_leaf_ids
         .into_iter()
@@ -1023,44 +1095,12 @@ pub(crate) fn reconcile_tree_pass(
                     .collect(),
                 Some((tree_id.into(), head)),
             ) {
-                Err(error @ NodeEventWriteError::OutcomeUnknown) => {
-                    let requested = tree_id.to_string();
-                    let count = rows.len();
-                    let stored = backend
-                        .run_indexed(move |connection| {
-                            node_events::read_tree_page(
-                                connection,
-                                &requested,
-                                head as usize,
-                                count,
-                            )
-                            .map_err(|_| LocalEventQueryError::InvalidRequest)
-                        })
-                        .map_err(|error| {
-                            WorkflowError::external(format!(
-                                "startup advancement readback failed: {error:?}"
-                            ))
-                        })?;
-                    let persisted = stored.len() == rows.len()
-                        && stored.iter().zip(&rows).all(|(stored, pending)| {
-                            stored.tree_id == pending.row.tree_id
-                                && stored.node_execution_id == pending.row.node_execution_id
-                                && stored.parent_id == pending.row.parent_id
-                                && stored.node_name == pending.row.node_name
-                                && stored.kind == pending.row.kind
-                                && stored.attempt == pending.row.attempt
-                                && stored.event_type == pending.row.event_type
-                                && stored.session_id == pending.row.session_id
-                                && stored.detail == pending.row.detail
-                                && stored.timestamp_ms == pending.timestamp_ms.max(0)
-                        });
-                    if persisted {
-                        Ok(stored.iter().map(|row| row.seq).collect())
-                    } else if stored.is_empty() {
-                        Err(error)
-                    } else {
-                        Err(NodeEventWriteError::Conflict)
-                    }
+                Err(NodeEventWriteError::OutcomeUnknown) => {
+                    resolve_unknown_append(store, rows, Some(head)).map_err(|error| {
+                        WorkflowError::external(format!(
+                            "startup advancement readback failed: {error:?}"
+                        ))
+                    })?
                 }
                 result => result,
             }

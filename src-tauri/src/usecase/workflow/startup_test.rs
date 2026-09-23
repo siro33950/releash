@@ -1,6 +1,6 @@
 use super::*;
 use crate::domain::workflow::entities::workflow_execution::ExecutionTree;
-use crate::domain::workflow::repository::WorkflowStartupRecord;
+use crate::domain::workflow::repository::{WorkflowRevision, WorkflowStartupRecord};
 use crate::domain::workflow::{
     ExecutionOrigin, ExecutionTreeLaunch, NodeFact, NodeFactMeta, NodeKindName, TreeRootFact,
 };
@@ -54,7 +54,7 @@ impl WorkflowStartupRepository for Repository {
             definition_error: self
                 .unreadable
                 .then(|| "Workflow definition is unavailable: completion".into()),
-            head: *self.head.lock().unwrap(),
+            revision: WorkflowRevision(self.head.lock().unwrap().to_string()),
         }))
     }
     fn append(
@@ -62,8 +62,9 @@ impl WorkflowStartupRepository for Repository {
         root: &NodeFactMeta,
         fact: &NodeFact,
         timestamp: f64,
-        expected_head: Option<i64>,
+        expected_revision: Option<&WorkflowRevision>,
     ) -> Result<(), WorkflowError> {
+        let expected_head = expected_revision.map(|revision| revision.0.parse::<i64>().unwrap());
         assert_eq!(root.tree_id, "tree");
         assert_eq!(root.node_execution_id, "root");
         self.append_attempts.lock().unwrap().push(expected_head);
@@ -200,7 +201,7 @@ impl WorkflowStartupRepository for Startup {
         root: &NodeFactMeta,
         fact: &NodeFact,
         timestamp: f64,
-        _expected_head: Option<i64>,
+        _expected_revision: Option<&WorkflowRevision>,
     ) -> Result<(), WorkflowError> {
         assert!(matches!(fact, NodeFact::AbortRequested(_)));
         assert_eq!(timestamp, 3.0);
@@ -475,7 +476,7 @@ async fn test_起動時abort_未保存なら有界に再評価して保存し前
             let limit = super::super::command::CONTROL_PLANE_MAX_ATTEMPTS;
             assert_eq!(
                 *repository.append_attempts.lock().unwrap(),
-                vec![if unreadable { None } else { Some(1) }; (unpersisted + 1).min(limit)]
+                vec![Some(1); (unpersisted + 1).min(limit)]
             );
             let appended = repository.appended.lock().unwrap();
             assert_eq!(appended.len(), usize::from(unpersisted < limit));
@@ -493,5 +494,33 @@ async fn test_起動時abort_未保存なら有界に再評価して保存し前
                 usize::from(!unreadable || unpersisted < limit)
             );
         }
+    }
+}
+
+#[tokio::test]
+async fn test_定義不明abort_読取後の終端追記と競合したら再読取して重ねない() {
+    for terminal in [
+        NodeFact::ExecutionCompleted,
+        NodeFact::AbortRequested(Default::default()),
+    ] {
+        // Given
+        let repository = Arc::new(repository());
+        repository
+            .concurrent_facts
+            .lock()
+            .unwrap()
+            .push_back(Some(terminal.clone()));
+        let runtime = Arc::new(ConflictingStartup {
+            conflicts: 0,
+            calls: Default::default(),
+        });
+        let usecase = WorkflowStartupUsecase::new(repository.clone(), runtime.clone());
+        // When
+        usecase.execute().await.unwrap();
+        // Then
+        assert_eq!(*repository.terminal.lock().unwrap(), Some(terminal));
+        assert!(repository.appended.lock().unwrap().is_empty());
+        assert_eq!(*repository.append_attempts.lock().unwrap(), [Some(1)]);
+        assert_eq!(runtime.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 }

@@ -19,16 +19,29 @@ pub use submit_output::{SubmitOutputArtifact, SubmitOutputCommand};
 pub(crate) const CONTROL_PLANE_MAX_ATTEMPTS: usize = 4;
 
 pub(crate) async fn retry_control_plane_conflicts<T, F, Fut>(
-    mut operation: F,
+    operation: F,
 ) -> Result<T, crate::domain::workflow::WorkflowError>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<T, crate::domain::workflow::WorkflowError>>,
 {
+    retry_control_plane_operation(operation, |error| {
+        matches!(error, crate::domain::workflow::WorkflowError::Conflict(_))
+    })
+    .await
+}
+
+pub(crate) async fn retry_control_plane_operation<T, E, F, Fut>(
+    mut operation: F,
+    retryable: impl Fn(&E) -> bool,
+) -> Result<T, E>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, E>>,
+{
     for attempt in 1..=CONTROL_PLANE_MAX_ATTEMPTS {
         match operation().await {
-            Err(crate::domain::workflow::WorkflowError::Conflict(_))
-                if attempt < CONTROL_PLANE_MAX_ATTEMPTS => {}
+            Err(error) if attempt < CONTROL_PLANE_MAX_ATTEMPTS && retryable(&error) => {}
             result => return result,
         }
     }
