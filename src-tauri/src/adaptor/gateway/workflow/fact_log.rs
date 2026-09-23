@@ -361,10 +361,23 @@ fn fact_rows_for_events(
                 };
                 rows.push(pending_row(&meta, tree_id, &fact, timestamp)?);
             }
+            WorkflowEvent::ApprovalRequested {
+                node_execution_id, ..
+            } => {
+                let meta = resolve(&batch_meta, node_execution_id)?;
+                // command の承認待ち入りはプロセス終了の事実。承認待ちは導出。
+                if meta.kind == NodeKindName::Command {
+                    let fact = NodeFact::ProcessExited(ProcessExitedFact {
+                        failure_kind: None,
+                        exit_code: Some(0),
+                        result_summary: None,
+                        failure_reason: None,
+                    });
+                    rows.push(pending_row(&meta, tree_id, &fact, timestamp)?);
+                }
+            }
             // 遷移・観測の導出はログに書かない。
-            WorkflowEvent::ApprovalRequested { .. }
-            | WorkflowEvent::StallObserved { .. }
-            | WorkflowEvent::StallCleared { .. } => {}
+            WorkflowEvent::StallObserved { .. } | WorkflowEvent::StallCleared { .. } => {}
         }
     }
     Ok(rows)

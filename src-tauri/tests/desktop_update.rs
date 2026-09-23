@@ -209,27 +209,9 @@ async fn test_実workflow更新_一括停止と旧daemon終了から適用と新
     );
     let next = host::desktop_connection_app(tauri::test::mock_builder(), root, &next_binary);
     wait_phase(&next, "restoring").await;
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            let facts = workflow_facts(root, &execution_id);
-            let lost = facts
-                .iter()
-                .filter(|(node, event, _)| node == &command_node_id && event == "process_exited")
-                .collect::<Vec<_>>();
-            if !lost.is_empty() {
-                assert_eq!(lost.len(), 1);
-                let detail: Value = serde_json::from_str(&lost[0].2).unwrap();
-                assert_eq!(
-                    detail["failureReason"],
-                    "process lost across application restart"
-                );
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .unwrap();
+    assert!(!workflow_facts(root, &execution_id)
+        .iter()
+        .any(|(node, event, _)| node == &command_node_id && event == "process_exited"));
     let current = discovery(root);
     assert_ne!(current["pid"], old["pid"]);
     assert_ne!(current["instance_id"], old["instance_id"]);
