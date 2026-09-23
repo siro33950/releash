@@ -10,9 +10,11 @@ import {
 	AckTerminalSurfaceOutputRequestSchema,
 	NodeExecutionStatusViewSchema,
 	PushSchema,
+	RefreshWorkspacesRequestSchema,
 	TerminalEventSchema,
 	UpdateCrashReportingRequestSchema,
 	WorkflowValueSchema,
+	WorkspaceListSnapshotDtoSchema,
 } from "@/generated/client_pb";
 import { clientJson } from "./clientJson";
 import { decodeClientPush, decodeTerminalEvent } from "./clientProtocol";
@@ -205,4 +207,71 @@ it("削除した未解決状態をwireとJSONのどちらからも受け入れ�
 	expect(() => clientJson(NodeExecutionStatusViewSchema, "", true)).toThrow(
 		"Invalid enum value",
 	);
+});
+
+it.each([
+	{ repositories: [] },
+	{
+		repositories: [
+			{
+				path: "/repo",
+				status: { loaded: true, error: null },
+				branches: [],
+				worktrees: [],
+			},
+		],
+	},
+])("Workspacesの正常な空配列をprotobuf往復で保持する", ({ repositories }) => {
+	const value = {
+		generation: 1,
+		status: { loaded: true, error: null },
+		repositories,
+	};
+	const message = fromJson(
+		WorkspaceListSnapshotDtoSchema,
+		clientJson(WorkspaceListSnapshotDtoSchema, value, true),
+	);
+	const decoded = fromBinary(
+		WorkspaceListSnapshotDtoSchema,
+		toBinary(WorkspaceListSnapshotDtoSchema, message),
+	);
+	expect(
+		clientJson(
+			WorkspaceListSnapshotDtoSchema,
+			toJson(WorkspaceListSnapshotDtoSchema, decoded),
+			false,
+		),
+	).toEqual(value);
+});
+
+it.each([undefined, null, "/repo/worktree"])(
+	"Workspacesの更新範囲をprotobufで保持する: %s",
+	(worktreePath) => {
+		const message = fromJson(
+			RefreshWorkspacesRequestSchema,
+			clientJson(
+				RefreshWorkspacesRequestSchema,
+				worktreePath === undefined ? {} : { worktreePath },
+				true,
+			),
+		);
+		const decoded = fromBinary(
+			RefreshWorkspacesRequestSchema,
+			toBinary(RefreshWorkspacesRequestSchema, message),
+		);
+		expect(decoded.worktreePath).toBe(worktreePath ?? undefined);
+	},
+);
+
+it("Repositoryの更新範囲をprotobufで保持する", () => {
+	const message = fromJson(
+		RefreshWorkspacesRequestSchema,
+		clientJson(RefreshWorkspacesRequestSchema, { repoPath: "/repo" }, true),
+	);
+	const decoded = fromBinary(
+		RefreshWorkspacesRequestSchema,
+		toBinary(RefreshWorkspacesRequestSchema, message),
+	);
+	expect(decoded.repoPath).toBe("/repo");
+	expect(decoded.worktreePath).toBeUndefined();
 });

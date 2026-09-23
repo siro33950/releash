@@ -103,7 +103,15 @@ fn to_dynamic(descriptor: MessageDescriptor, value: Json) -> Result<DynamicMessa
     } else {
         value.as_object().ok_or("Expected object")?.clone()
     };
-    for field in descriptor.fields() {
+    for field in descriptor
+        .fields()
+        .filter(|field| !flag(field.options(), "json_flatten"))
+        .chain(
+            descriptor
+                .fields()
+                .filter(|field| flag(field.options(), "json_flatten")),
+        )
+    {
         let value = if flag(field.options(), "json_flatten") {
             Some(Json::Object(std::mem::take(&mut fields)))
         } else {

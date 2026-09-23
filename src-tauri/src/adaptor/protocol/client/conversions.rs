@@ -5032,3 +5032,115 @@ impl TryFrom<&str> for wire::NodeProcessPresence {
         cv(value.to_owned())
     }
 }
+
+impl TryFrom<crate::usecase::workspace_tree::WorkspaceListStatusDto>
+    for wire::WorkspaceListStatusDto
+{
+    type Error = String;
+    fn try_from(
+        value: crate::usecase::workspace_tree::WorkspaceListStatusDto,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            loaded: Some(value.loaded),
+            error: value.error,
+        })
+    }
+}
+
+impl TryFrom<crate::usecase::workspace_tree::WorkspaceBranchDto> for wire::WorkspaceBranchDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::workspace_tree::WorkspaceBranchDto) -> Result<Self, String> {
+        Ok(Self {
+            branch: Some(cv(value.branch)?),
+            has_pr: Some(value.has_pr),
+            pr_number: value.pr_number,
+            pr_url: value.pr_url,
+        })
+    }
+}
+
+impl TryFrom<crate::usecase::workspace_tree::WorkspaceWorktreeListDto>
+    for wire::WorkspaceWorktreeListDto
+{
+    type Error = String;
+    fn try_from(
+        value: crate::usecase::workspace_tree::WorkspaceWorktreeListDto,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            path: Some(value.path),
+            status: Some(cv(value.status)?),
+            snapshot: value.snapshot.map(cv).transpose()?,
+            workflow_history: Some(cv(value.workflow_history)?),
+        })
+    }
+}
+
+impl TryFrom<crate::usecase::workspace_tree::WorkspaceRepositoryListDto>
+    for wire::WorkspaceRepositoryListDto
+{
+    type Error = String;
+    fn try_from(
+        value: crate::usecase::workspace_tree::WorkspaceRepositoryListDto,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            path: Some(value.path),
+            status: Some(cv(value.status)?),
+            branches: Some(cv(value.branches)?),
+            worktrees: Some(cv(value.worktrees)?),
+        })
+    }
+}
+
+impl TryFrom<crate::usecase::workspace_tree::WorkspaceListSnapshotDto>
+    for wire::WorkspaceListSnapshotDto
+{
+    type Error = String;
+    fn try_from(
+        value: crate::usecase::workspace_tree::WorkspaceListSnapshotDto,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            generation: Some(value.generation),
+            status: Some(cv(value.status)?),
+            repositories: Some(cv(value.repositories)?),
+        })
+    }
+}
+
+impl TryFrom<Vec<crate::usecase::workspace_tree::WorkspaceBranchDto>>
+    for wire::ListWorkspaceBranchDto
+{
+    type Error = String;
+    fn try_from(
+        value: Vec<crate::usecase::workspace_tree::WorkspaceBranchDto>,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
+        })
+    }
+}
+
+impl TryFrom<Vec<crate::usecase::workspace_tree::WorkspaceWorktreeListDto>>
+    for wire::ListWorkspaceWorktreeListDto
+{
+    type Error = String;
+    fn try_from(
+        value: Vec<crate::usecase::workspace_tree::WorkspaceWorktreeListDto>,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
+        })
+    }
+}
+
+impl TryFrom<Vec<crate::usecase::workspace_tree::WorkspaceRepositoryListDto>>
+    for wire::ListWorkspaceRepositoryListDto
+{
+    type Error = String;
+    fn try_from(
+        value: Vec<crate::usecase::workspace_tree::WorkspaceRepositoryListDto>,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
+        })
+    }
+}

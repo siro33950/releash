@@ -14,6 +14,7 @@ import { type MenuHandlers, useMenuEvents } from "@/hooks/useMenuEvents";
 import { useRepoList } from "@/hooks/useRepoList";
 import { useSettings } from "@/hooks/useSettings";
 import { useUpdateChecker } from "@/hooks/useUpdateChecker";
+import { useWorkspaceList } from "@/hooks/useWorkspaceList";
 import { useWorkspaceNavigation } from "@/hooks/useWorkspaceNavigation";
 import { invokeClient as invoke } from "@/lib/client";
 import { MainLayout } from "@/screens/MainLayout";
@@ -109,24 +110,25 @@ function WorkbenchApp() {
 	);
 	const { worktrees, selectedWorktreeId, openWorktreeTab } =
 		useWorkspaceNavigation();
-	const {
-		repoPaths,
-		addRepo,
-		removeRepo,
-		initFromCwd,
-		loaded: repositoriesLoaded,
-		loadError: repositoriesError,
-	} = useRepoList();
+	const { addRepo, removeRepo, initFromCwd } = useRepoList();
+	const workspaceList = useWorkspaceList();
+	const repoPaths =
+		workspaceList.snapshot?.repositories.map((repo) => repo.path) ?? [];
+	const repositoriesLoaded = workspaceList.snapshot?.status.loaded;
+	const repositoriesError =
+		workspaceList.error ?? workspaceList.snapshot?.status.error;
 
 	useEffect(() => {
-		if (!restoration.ready && settingsLoaded && repositoriesLoaded)
+		if (
+			!restoration.ready &&
+			settingsLoaded &&
+			(repositoriesLoaded || repositoriesError)
+		)
 			void restoration.complete();
-	}, [restoration, settingsLoaded, repositoriesLoaded]);
+	}, [restoration, settingsLoaded, repositoriesLoaded, repositoriesError]);
 	useEffect(() => {
 		if (settingsError) void restoration.fail(`Settings: ${settingsError}`);
-		if (repositoriesError)
-			void restoration.fail(`Repositories: ${repositoriesError}`);
-	}, [restoration, settingsError, repositoriesError]);
+	}, [restoration, settingsError]);
 
 	const [showAppSettings, setShowAppSettings] = useState(false);
 	const [centerStateByWorktree, setCenterStateByWorktree] = useState<
@@ -286,7 +288,7 @@ function WorkbenchApp() {
 	const leftNav = useMemo(
 		() => (
 			<WorkspaceList
-				repoPaths={repoPaths}
+				model={workspaceList}
 				selectedRootPath={selectedRootPath}
 				centerSelection={centerSelection}
 				autoSelectPreferredNode={activeCenterState?.phase === "awaitingInitial"}
@@ -297,7 +299,7 @@ function WorkbenchApp() {
 			/>
 		),
 		[
-			repoPaths,
+			workspaceList,
 			selectedRootPath,
 			centerSelection,
 			activeCenterState?.phase,

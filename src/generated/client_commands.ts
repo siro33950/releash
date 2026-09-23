@@ -179,6 +179,7 @@ import {
 	QuitAfterStartupFailureRequestSchema,
 	RecordTerminalLaunchRendererPhaseRequestSchema,
 	RefreshProviderAvailabilityRequestSchema,
+	RefreshWorkspacesRequestSchema,
 	RemoveRepoPathRequestSchema,
 	RemoveWorktreeRequestSchema,
 	RenameWorkspaceSessionNodeRequestSchema,
@@ -240,6 +241,7 @@ import {
 	WorkflowSubmitOutputRequestSchema,
 	WorkflowValidateOutputRequestSchema,
 	WorkflowValidateOutputResponseSchema,
+	WorkspaceListSnapshotDtoSchema,
 	WorkspaceTreeSelectionSnapshotDtoSchema,
 	WorkspaceTreeSnapshotDtoSchema,
 	WorktreeEntryDtoSchema,
@@ -3340,6 +3342,25 @@ const commands = {
 					WorkflowGetOutputRequestSchema,
 					clientJson(
 						WorkflowGetOutputRequestSchema,
+						JSON.parse(JSON.stringify(args ?? {})),
+						true,
+					),
+				),
+			),
+		);
+		return result;
+	},
+	refresh_workspaces: async (
+		client: Client<typeof ClientService>,
+		args: ClientCommandArgs["refresh_workspaces"],
+	) => {
+		const result = decode(
+			WorkspaceListSnapshotDtoSchema,
+			await client.refreshWorkspaces(
+				fromJson(
+					RefreshWorkspacesRequestSchema,
+					clientJson(
+						RefreshWorkspacesRequestSchema,
 						JSON.parse(JSON.stringify(args ?? {})),
 						true,
 					),

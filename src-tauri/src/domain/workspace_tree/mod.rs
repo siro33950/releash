@@ -5,12 +5,14 @@
 
 mod entities;
 mod projection;
+mod refresh;
 mod repository;
 mod services;
 mod value_objects;
 
 pub use entities::{WorkspaceTree, WorkspaceTreeProjector};
 pub use projection::{runtime_snapshot_nodes, RuntimeSnapshotNodeProjection};
+pub(crate) use refresh::{WorkspaceListEntry, WorkspaceListRefresh};
 pub use repository::WorkspaceTreeRepository;
 pub use services::{WorkspacePublicRoot, WorkspaceTreeVisibilityPolicy};
 pub use value_objects::{

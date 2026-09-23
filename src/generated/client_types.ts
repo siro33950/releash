@@ -976,6 +976,11 @@ export type InputWorkflowGetOutputRequest = {
 	nodeName: string;
 };
 
+export type InputRefreshWorkspacesRequest = {
+	repoPath?: string | null;
+	worktreePath?: string | null;
+};
+
 export type ResultString = string;
 
 export type ResultBool = boolean;
@@ -2308,6 +2313,43 @@ export type WorkflowGetOutputResponseSubmitted = {
 	timestamp: number;
 };
 
+export type WorkspaceListSnapshotDto = {
+	generation: number;
+	status: WorkspaceListStatusDto;
+	repositories: ListWorkspaceRepositoryListDto;
+};
+
+export type WorkspaceListStatusDto = {
+	loaded: boolean;
+	error: string | null;
+};
+
+export type ListWorkspaceRepositoryListDto = Array<WorkspaceRepositoryListDto>;
+
+export type WorkspaceRepositoryListDto = {
+	path: string;
+	status: WorkspaceListStatusDto;
+	branches: ListWorkspaceBranchDto;
+	worktrees: ListWorkspaceWorktreeListDto;
+};
+
+export type ListWorkspaceBranchDto = Array<WorkspaceBranchDto>;
+
+export type WorkspaceBranchDto = {
+	has_pr: boolean;
+	pr_number: number | null;
+	pr_url: string | null;
+} & BranchCardDto;
+
+export type ListWorkspaceWorktreeListDto = Array<WorkspaceWorktreeListDto>;
+
+export type WorkspaceWorktreeListDto = {
+	path: string;
+	status: WorkspaceListStatusDto;
+	snapshot: WorkspaceTreeSnapshotDto | null;
+	workflowHistory: ListWorkspaceWorkflowHistoryItemDto;
+};
+
 export type AgentSessionChangedPayload = {
 	worktreePath: string;
 };
@@ -2492,6 +2534,7 @@ export interface ClientCommandArgs {
 	workflow_submit_output: InputWorkflowSubmitOutputRequest;
 	workflow_validate_output: InputWorkflowValidateOutputRequest;
 	workflow_get_output: InputWorkflowGetOutputRequest;
+	refresh_workspaces: InputRefreshWorkspacesRequest;
 }
 
 export interface ClientCommands {
@@ -2946,6 +2989,9 @@ export interface ClientCommands {
 	workflow_get_output(
 		args: ClientCommandArgs["workflow_get_output"],
 	): Promise<WorkflowGetOutputResponse>;
+	refresh_workspaces(
+		args: ClientCommandArgs["refresh_workspaces"],
+	): Promise<WorkspaceListSnapshotDto>;
 }
 export type ClientCommandResults = {
 	[K in keyof ClientCommands]: Awaited<ReturnType<ClientCommands[K]>>;

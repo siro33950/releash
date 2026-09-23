@@ -5,6 +5,7 @@ import { create, fromJson, toJson, type Message } from "@bufbuild/protobuf";
 import { Code, ConnectError, createConnectRouter } from "@connectrpc/connect";
 import { createFetchHandler } from "@connectrpc/connect/protocol";
 import { ClientService, CommandRequestSchema, CommandErrorSchema, PushSchema, TerminalEventSchema, TerminalSubscriptionEventSchema, AttachTerminalSurfaceRequestSchema } from "../../src/generated/client_pb";
+import type { WorkspaceListSnapshotDto } from "../../src/generated/client_types";
 import type { TerminalSurfaceStreamItem } from "../../src/lib/terminalSurfaceStream";
 import type { Page } from "@playwright/test";
 export interface MockConfig {
@@ -252,6 +253,8 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 			});
 		}
 
+        let workspaceSnapshot: WorkspaceListSnapshotDto | null = null;
+
 		async function executeCommand(
 			cmd: string,
 			args: Record<string, unknown> = {},
@@ -300,6 +303,34 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 					disableWebglRenderer: true,
 				};
 			}
+
+            if (cmd === "refresh_workspaces" && !(cmd in cfg.responses)) {
+                if (args.worktreePath) {
+                    const tree = workspaceSnapshot?.repositories.flatMap(repo => repo.worktrees).find(tree => tree.path === args.worktreePath);
+                    if (tree) {
+                        const worktreePath = tree.path;
+                        tree.snapshot = await executeCommand("list_workspace_worktree_nodes", { worktreePath }) as typeof tree.snapshot;
+                        tree.workflowHistory = await executeCommand("list_workspace_workflow_history", { worktreePath }) as typeof tree.workflowHistory;
+                    }
+                    return workspaceSnapshot;
+                }
+                const paths = await executeCommand("get_repo_paths") as string[];
+                const repositories = await Promise.all(paths.map(async (path) => {
+                    const result = await executeCommand("list_branches_with_status_snapshot", { repoPath: path }) as { worktree_display_groups: { working_areas: Record<string, unknown>[] } };
+                    const prs = await executeCommand("get_cached_pr_status", { repoPath: path }) as { open_prs: Record<string, { number: number; url: string }>; merged_branches: string[] };
+                    const branches = result.worktree_display_groups.working_areas.map((branch) => {
+                        const pr = prs.open_prs[branch.name as string];
+                        return { ...branch, is_merged: branch.is_merged || (!pr && prs.merged_branches.includes(branch.name as string)), has_pr: Boolean(pr), pr_number: pr?.number ?? null, pr_url: pr?.url ?? null };
+                    });
+                    const worktrees = await Promise.all(branches.filter(branch => branch.worktree_path).map(async (branch) => {
+                        const worktreePath = branch.worktree_path as string;
+                        return { path: worktreePath, status: { loaded: true, error: null }, snapshot: await executeCommand("list_workspace_worktree_nodes", { worktreePath }), workflowHistory: await executeCommand("list_workspace_workflow_history", { worktreePath }) };
+                    }));
+                    return { path, status: { loaded: true, error: null }, branches, worktrees };
+                }));
+                workspaceSnapshot = { generation: invocations.length, status: { loaded: true, error: null }, repositories } as WorkspaceListSnapshotDto;
+                return workspaceSnapshot;
+            }
 
 			// list_branches_with_status_snapshot は明示ハンドラが無い場合、
 			// list_branches_with_status の配列を BranchCardsSnapshot 形に

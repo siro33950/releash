@@ -1,6 +1,7 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { workspaceListSnapshot } from "@/test/workspaceList";
 import type {
 	WorkspaceTreeSelectionSnapshot,
 	WorkspaceTreeSnapshot,
@@ -46,8 +47,6 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
 }));
 vi.mock("@/hooks/useSettings", () => ({
 	useSettings: () => ({
-		loaded: true,
-		loadError: null,
 		settings: { autoUpdate: false, theme: "dark" },
 		updateSettings: mocks.updateSettings,
 		updateTheme: mocks.updateTheme,
@@ -65,9 +64,6 @@ vi.mock("@/hooks/useWorkspaceNavigation", () => ({
 }));
 vi.mock("@/hooks/useRepoList", () => ({
 	useRepoList: () => ({
-		loaded: true,
-		loadError: null,
-		repoPaths: ["/repo"],
 		addRepo: mocks.addRepo,
 		removeRepo: mocks.removeRepo,
 		initFromCwd: mocks.initFromCwd,
@@ -86,26 +82,6 @@ vi.mock("@/hooks/useSessionStore", () => ({
 }));
 vi.mock("@/hooks/useWorkflowConfig", () => ({
 	useWorkflowConfig: () => ({ workflows: [], loading: false, error: null }),
-}));
-vi.mock("@/hooks/useWorktreeList", () => ({
-	useWorktreeList: () => ({
-		branches: [
-			{
-				name: "feature",
-				is_main_worktree: false,
-				is_deleting: false,
-				worktree_path: "/repo/wt",
-				dirty_count: 0,
-				is_merged: false,
-				ahead: 0,
-				behind: 0,
-				has_upstream: false,
-				base_ahead: 0,
-			},
-		],
-		loading: false,
-		refresh: mocks.refreshWorktrees,
-	}),
 }));
 vi.mock("@/components/UpdateDialog", () => ({ UpdateDialog: () => null }));
 vi.mock("@/components/panels/SettingsModal", () => ({
@@ -258,11 +234,14 @@ beforeEach(() => {
 			return Promise.resolve("/repo");
 		}
 		if (command === "list_worktrees") return Promise.resolve([]);
-		if (command === "list_workspace_worktree_nodes") {
+		if (command === "refresh_workspaces") {
 			return Promise.resolve(
-				mocks.archiveCommitted
-					? (mocks.postArchiveSnapshot as WorkspaceTreeSnapshot)
-					: initialSnapshot,
+				workspaceListSnapshot(
+					mocks.archiveCommitted
+						? (mocks.postArchiveSnapshot as WorkspaceTreeSnapshot)
+						: initialSnapshot,
+					"/repo/wt",
+				),
 			);
 		}
 		if (command === "get_workspace_tree_selection_reconciliation") {
@@ -363,7 +342,7 @@ describe("App Workspace Archive selection reconciliation", () => {
 		).toHaveLength(2);
 
 		const listCallsAfterSuccess = mocks.invoke.mock.calls.filter(
-			([command]) => command === "list_workspace_worktree_nodes",
+			([command]) => command === "refresh_workspaces",
 		).length;
 		act(() => {
 			window.dispatchEvent(
@@ -375,7 +354,7 @@ describe("App Workspace Archive selection reconciliation", () => {
 		await waitFor(() =>
 			expect(
 				mocks.invoke.mock.calls.filter(
-					([command]) => command === "list_workspace_worktree_nodes",
+					([command]) => command === "refresh_workspaces",
 				).length,
 			).toBeGreaterThan(listCallsAfterSuccess),
 		);

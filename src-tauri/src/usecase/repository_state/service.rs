@@ -109,6 +109,31 @@ impl RepositoryStateService {
         Ok(Arc::new(snapshot))
     }
 
+    pub async fn rescan_branches(
+        &self,
+        repo_path: &str,
+    ) -> Result<Vec<BranchCardDto>, RepositoryStateError> {
+        let repository_root = self.repository.main_repo_path(repo_path)?;
+        let state = self.ensure_watching(repo_path)?;
+        let _scan = state.scan_lock.lock().await;
+        loop {
+            let generation = state.requested_generation();
+            let result = self
+                .runtime
+                .scan(self.scanner.clone(), state.worktree_path().to_owned())
+                .await;
+            if state.requested_generation() != generation {
+                continue;
+            }
+            if let Some(snapshot) = state.commit_snapshot(result?, generation) {
+                let mut cards = snapshot.branch_cards.clone();
+                self.repository
+                    .include_deleting_worktrees(&repository_root, &mut cards)?;
+                return Ok(classify_branch_cards(&repository_root, &mut cards).working_areas);
+            }
+        }
+    }
+
     pub fn get_status(
         &self,
         worktree_path: &str,
@@ -230,7 +255,6 @@ impl RepositoryStateService {
         Ok(subscription_id)
     }
 
-    #[cfg(test)]
     fn ensure_watching(
         &self,
         worktree_path: &str,
@@ -1233,3 +1257,7 @@ pub(crate) mod tests {
         assert_eq!(service.worktree_count(), 0);
     }
 }
+
+#[cfg(test)]
+#[path = "service_test.rs"]
+mod service_tests;

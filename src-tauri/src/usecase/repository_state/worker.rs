@@ -72,6 +72,7 @@ pub(crate) async fn run_worker(
             collect_debounced_reasons(first_reason, rx.as_mut(), runtime.as_ref(), debounce).await;
 
         loop {
+            let _scan = state.scan_lock.lock().await;
             if state.is_shutdown() || reason.shutdown {
                 return;
             }
@@ -100,7 +101,10 @@ pub(crate) async fn run_worker(
 
             match scan_result {
                 Ok(parts) => {
-                    let snapshot = state.commit_snapshot(parts, start_generation);
+                    let Some(snapshot) = state.commit_snapshot(parts, start_generation) else {
+                        reason.merge(collect_pending_reasons(rx.as_mut()));
+                        continue;
+                    };
                     let names: Vec<String> = snapshot
                         .branch_cards
                         .iter()
@@ -122,6 +126,7 @@ pub(crate) async fn run_worker(
                         state.worktree_path()
                     );
                     state.mark_scan_failed();
+                    state.notify_snapshot_changed(reason);
                 }
             }
             break;

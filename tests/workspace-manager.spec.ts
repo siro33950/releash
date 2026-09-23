@@ -69,7 +69,7 @@ test.describe("Workspace Manager", () => {
 		await setupTauriMock(page, config);
 		await waitForApp(page);
 
-		// useWorktreeList は worktree_path != null のブランチのみ表示する
+		// backend の一覧には worktree_path を持つブランチだけを含める
 		await expect(page.getByTestId("worktree-item-feat/wip")).toBeVisible();
 		await expect(page.getByTestId("worktree-item-feat/review")).toBeVisible();
 	});

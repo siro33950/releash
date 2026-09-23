@@ -2,7 +2,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import type { WorkspaceListModel } from "@/hooks/useWorkspaceList";
 import { completeClientRestoration, invokeClient } from "@/lib/client";
+import { workspaceListSnapshot } from "@/test/workspaceList";
 import type { AppSettings } from "@/types/settings";
 import App from "./App";
 
@@ -10,6 +12,7 @@ vi.mock("@/lib/client", async (importOriginal) => ({
 	...(await importOriginal<typeof import("@/lib/client")>()),
 	invokeClient: vi.fn(),
 	listenClient: vi.fn().mockResolvedValue(() => {}),
+	watchClient: vi.fn().mockReturnValue(() => {}),
 	completeClientRestoration: vi.fn(),
 }));
 vi.mock("@/hooks/useMenuEvents", () => ({ useMenuEvents: vi.fn() }));
@@ -23,7 +26,18 @@ vi.mock("@/hooks/useWorkspaceNavigation", () => ({
 }));
 vi.mock("@/components/UpdateDialog", () => ({ UpdateDialog: () => null }));
 vi.mock("@/components/panels/SettingsModal", () => ({
-	SettingsModal: () => null,
+	SettingsModal: ({
+		open,
+		repoPaths,
+	}: {
+		open: boolean;
+		repoPaths: string[];
+	}) =>
+		open ? (
+			<section aria-label="Registered repositories">
+				{repoPaths.join(",")}
+			</section>
+		) : null,
 }));
 vi.mock("@/screens/MainLayout", () => ({
 	MainLayout: ({
@@ -40,15 +54,29 @@ vi.mock("@/screens/MainLayout", () => ({
 	),
 }));
 vi.mock("@/components/workspace/WorkspaceList", () => ({
-	WorkspaceList: ({ repoPaths }: { repoPaths: string[] }) => (
-		<div>
-			{repoPaths.map((path) => (
-				<button type="button" key={path}>
-					{path}
+	WorkspaceList: ({
+		model,
+		onShowSettings,
+	}: {
+		model: WorkspaceListModel;
+		onShowSettings: () => void;
+	}) => {
+		return (
+			<div>
+				<button type="button" onClick={onShowSettings}>
+					Settings
 				</button>
-			))}
-		</div>
-	),
+				<button type="button" onClick={() => void model.refresh()}>
+					Refresh Workspaces
+				</button>
+				{model.snapshot?.repositories.map(({ path }) => (
+					<button type="button" key={path}>
+						{path}
+					</button>
+				))}
+			</div>
+		);
+	},
 }));
 
 let status: {
@@ -98,7 +126,7 @@ beforeEach(() => {
 });
 afterEach(() => vi.useRealTimers());
 
-it.each(["get_repo_paths", "get_performance_telemetry_enabled"] as const)(
+it.each(["get_performance_telemetry_enabled"] as const)(
 	"%s の初回失敗後に再取得した状態を反映してから操作を再開する",
 	async (failedCommand) => {
 		let resolveRepos!: (paths: string[]) => void;
@@ -110,18 +138,22 @@ it.each(["get_repo_paths", "get_performance_telemetry_enabled"] as const)(
 			resolveSettings = resolve;
 		});
 		vi.mocked(invokeClient).mockImplementation((command) => {
-			if (
-				command === "get_repo_paths" ||
-				command === "get_performance_telemetry_enabled"
-			) {
+			if (command === "refresh_workspaces") {
+				return repos.then((paths) => ({
+					...workspaceListSnapshot(),
+					repositories: paths.map((path) => ({
+						...workspaceListSnapshot().repositories[0],
+						path,
+					})),
+				}));
+			}
+			if (command === "get_performance_telemetry_enabled") {
 				if (status.connectionGeneration === 1) {
 					if (command === failedCommand)
 						return Promise.reject(new Error("temporary read failure"));
-					return Promise.resolve(
-						command === "get_repo_paths" ? ["/old"] : true,
-					);
+					return Promise.resolve(true);
 				}
-				return command === "get_repo_paths" ? repos : settings;
+				return settings;
 			}
 			return Promise.reject(new Error("not in a git repo"));
 		});
@@ -148,7 +180,7 @@ it.each(["get_repo_paths", "get_performance_telemetry_enabled"] as const)(
 		expect(screen.getByRole("button", { name: "/current" })).toBeVisible();
 		expect(screen.queryByText("/old")).toBeNull();
 		for (const command of [
-			"get_repo_paths",
+			"refresh_workspaces",
 			"get_performance_telemetry_enabled",
 		]) {
 			expect(
@@ -158,9 +190,9 @@ it.each(["get_repo_paths", "get_performance_telemetry_enabled"] as const)(
 	},
 );
 
-it("再取得も失敗した場合は理由と再試行と終了を表示し自動で繰り返さない", async () => {
+it("Repository一覧の失敗はWorkspacesの再取得へ委ねて画面全体の操作を再開する", async () => {
 	vi.mocked(invokeClient).mockImplementation((command) =>
-		command === "get_repo_paths"
+		command === "refresh_workspaces"
 			? Promise.reject(new Error("repository storage unavailable"))
 			: Promise.resolve(true),
 	);
@@ -168,31 +200,21 @@ it("再取得も失敗した場合は理由と再試行と終了を表示し自�
 		render(<App />);
 	});
 	await act(() => vi.advanceTimersByTimeAsync(250));
-	await act(async () => {
-		fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-	});
-	await act(() => vi.advanceTimersByTimeAsync(250));
-	await act(() => vi.advanceTimersByTimeAsync(60_000));
-	expect(screen.getByRole("status")).toHaveTextContent(
-		"Repositories: repository storage unavailable",
-	);
-	expect(screen.getByRole("button", { name: "Retry" })).toBeVisible();
-	expect(screen.queryByRole("main")).toBeNull();
-	expect(completeClientRestoration).not.toHaveBeenCalled();
+	expect(completeClientRestoration).toHaveBeenCalledExactlyOnceWith(1);
+	expect(screen.getByRole("main")).toBeVisible();
+	expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
 	expect(
 		vi
-			.mocked(invokeClient)
-			.mock.calls.filter(([name]) => name === "get_repo_paths"),
-	).toHaveLength(2);
-	await act(async () => {
-		fireEvent.click(screen.getByRole("button", { name: "Quit" }));
-	});
-	expect(invoke).toHaveBeenCalledWith("quit_desktop");
+			.mocked(invoke)
+			.mock.calls.some(([command]) => command === "fail_desktop_restoration"),
+	).toBe(false);
 });
 
 it("復元完了の通知が失敗した場合も理由を報告して再取得できる", async () => {
 	vi.mocked(invokeClient).mockImplementation((command) =>
-		Promise.resolve(command === "get_repo_paths" ? [] : true),
+		Promise.resolve(
+			command === "refresh_workspaces" ? workspaceListSnapshot() : true,
+		),
 	);
 	vi.mocked(completeClientRestoration).mockRejectedValueOnce(
 		new Error("restoration acknowledgement failed"),
@@ -211,4 +233,83 @@ it("復元完了の通知が失敗した場合も理由を報告して再取得�
 	await act(() => vi.advanceTimersByTimeAsync(250));
 	expect(screen.getByRole("main")).toBeVisible();
 	expect(completeClientRestoration).toHaveBeenLastCalledWith(2);
+});
+
+it("設定とWorkspacesは更新中と失敗時も同じ登録一覧を保持し復旧と削除を反映する", async () => {
+	const snapshot = (paths: string[]) => ({
+		...workspaceListSnapshot(),
+		repositories: paths.map((path) => ({
+			...workspaceListSnapshot().repositories[0],
+			path,
+		})),
+	});
+	let next = Promise.resolve(snapshot(["/old"]));
+	vi.mocked(invokeClient).mockImplementation((command) =>
+		command === "refresh_workspaces" ? next : Promise.resolve(true),
+	);
+	await act(async () => {
+		render(<App />);
+	});
+	await act(() => vi.advanceTimersByTimeAsync(250));
+	fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+	const settings = screen.getByRole("region", {
+		name: "Registered repositories",
+	});
+	expect(settings).toHaveTextContent("/old");
+	let reject!: (error: Error) => void;
+	next = new Promise((_, fail) => {
+		reject = fail;
+	});
+	await act(async () => {
+		fireEvent.click(screen.getByRole("button", { name: "Refresh Workspaces" }));
+	});
+	expect(settings).toHaveTextContent("/old");
+	expect(screen.getByRole("button", { name: "/old" })).toBeVisible();
+	await act(async () => {
+		reject(new Error("deadline exceeded"));
+	});
+	expect(settings).toHaveTextContent("/old");
+	expect(screen.getByRole("button", { name: "/old" })).toBeVisible();
+	next = Promise.resolve(snapshot(["/new", "/other"]));
+	await act(async () => {
+		fireEvent.click(screen.getByRole("button", { name: "Refresh Workspaces" }));
+	});
+	expect(settings).toHaveTextContent("/new,/other");
+	expect(screen.getByRole("button", { name: "/new" })).toBeVisible();
+	expect(screen.getByRole("button", { name: "/other" })).toBeVisible();
+	expect(screen.queryByRole("button", { name: "/old" })).toBeNull();
+	next = Promise.resolve(snapshot([]));
+	await act(async () => {
+		fireEvent.click(screen.getByRole("button", { name: "Refresh Workspaces" }));
+	});
+	expect(settings).toBeEmptyDOMElement();
+	expect(screen.queryByRole("button", { name: "/new" })).toBeNull();
+	expect(
+		vi
+			.mocked(invokeClient)
+			.mock.calls.some(([name]) => name === "get_repo_paths"),
+	).toBe(false);
+});
+
+it("登録一覧の初回取得失敗snapshotでも復元を完了し再取得できる", async () => {
+	let next = {
+		...workspaceListSnapshot(),
+		status: { loaded: false, error: "read failed" as string | null },
+		repositories: [] as ReturnType<
+			typeof workspaceListSnapshot
+		>["repositories"],
+	};
+	vi.mocked(invokeClient).mockImplementation((command) =>
+		Promise.resolve(command === "refresh_workspaces" ? next : true),
+	);
+	await act(async () => {
+		render(<App />);
+	});
+	await act(() => vi.advanceTimersByTimeAsync(250));
+	expect(completeClientRestoration).toHaveBeenCalledExactlyOnceWith(1);
+	next = workspaceListSnapshot();
+	await act(async () => {
+		fireEvent.click(screen.getByRole("button", { name: "Refresh Workspaces" }));
+	});
+	expect(screen.getByRole("button", { name: "/repo" })).toBeVisible();
 });

@@ -258,7 +258,16 @@ pub(crate) async fn compose(
     ));
 
     let repository_state_for_watcher = repository_state.clone();
+    let workspace_list = Arc::new(
+        crate::adaptor::controller::wiring::build_workspace_list_usecase(
+            repo_paths_usecase.clone(),
+            repository_state.clone(),
+            workflow_usecase.clone(),
+            git_host_usecase.clone(),
+        ),
+    );
     let app_state = AppState {
+        workspace_list,
         repository_usecase: repository_usecase.clone(),
         repository_state,
         repo_paths_usecase,

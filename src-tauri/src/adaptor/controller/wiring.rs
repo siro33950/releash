@@ -170,6 +170,22 @@ pub(crate) fn build_review_comment_usecase() -> ReviewCommentUsecase {
     ReviewCommentUsecase::new(store, clock, id_generator)
 }
 
+pub(crate) fn build_workspace_list_usecase(
+    repositories: Arc<crate::usecase::repo_paths_usecase::RepoPathsUsecase>,
+    repository_state: Arc<crate::usecase::repository_state::RepositoryStateService>,
+    workflow: Arc<WorkflowUsecase>,
+    git_host: Arc<GitHostUsecase>,
+) -> crate::usecase::workspace_tree::WorkspaceListUsecase {
+    crate::usecase::workspace_tree::WorkspaceListUsecase::new(Arc::new(
+        crate::usecase::workspace_tree::WorkspaceListServices {
+            repositories,
+            repository_state,
+            workflow,
+            git_host,
+        },
+    ))
+}
+
 pub(crate) fn build_workspace_node_command_usecase(
     resolver: Arc<dyn WorkspaceNodeActionResolver>,
     workflows: Arc<dyn crate::usecase::workflow::WorkspaceNodeWorkflowCommandExecutor>,

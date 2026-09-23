@@ -84,6 +84,7 @@ impl RepositoryStateWatcher for NoopRepositoryStateWatcher {
 
 pub struct WorktreeState {
     worktree_path: String,
+    pub(crate) scan_lock: tokio::sync::Mutex<()>,
     snapshot: RwLock<Arc<RepositorySnapshot>>,
     version: AtomicU64,
     requested_generation: AtomicU64,
@@ -107,6 +108,7 @@ impl WorktreeState {
         let (invalidate_tx, invalidate_rx) = runtime.invalidation_channel();
         let state = Arc::new(Self {
             worktree_path,
+            scan_lock: tokio::sync::Mutex::new(()),
             snapshot: RwLock::new(Arc::new(RepositorySnapshot::loading())),
             version: AtomicU64::new(0),
             requested_generation: AtomicU64::new(0),
@@ -191,7 +193,10 @@ impl WorktreeState {
         if self.is_shutdown() {
             return;
         }
-        self.requested_generation.fetch_add(1, Ordering::SeqCst);
+        {
+            let _snapshot = self.snapshot.write();
+            self.requested_generation.fetch_add(1, Ordering::SeqCst);
+        }
         if self.invalidate_tx.send(reason).is_err() {
             log::warn!(
                 "repository snapshot worker is stopped for {}",
@@ -213,12 +218,16 @@ impl WorktreeState {
         &self,
         parts: RepositorySnapshotParts,
         generation: u64,
-    ) -> Arc<RepositorySnapshot> {
+    ) -> Option<Arc<RepositorySnapshot>> {
+        let mut current = self.snapshot.write();
+        if self.requested_generation() != generation {
+            return None;
+        }
         let version = self.version.fetch_add(1, Ordering::SeqCst) + 1;
         let snapshot = Arc::new(parts.into_snapshot(version));
-        *self.snapshot.write() = snapshot.clone();
+        *current = snapshot.clone();
         self.applied_generation.store(generation, Ordering::SeqCst);
-        snapshot
+        Some(snapshot)
     }
 
     pub(crate) fn notify_snapshot_changed(&self, reason: InvalidateReason) {

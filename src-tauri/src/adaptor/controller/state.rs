@@ -17,6 +17,7 @@ use crate::usecase::workflow::WorkflowUsecase;
 
 #[derive(Clone)]
 pub struct AppState {
+    pub workspace_list: Arc<crate::usecase::workspace_tree::WorkspaceListUsecase>,
     pub repository_usecase: Arc<RepositoryUsecase>,
     pub repository_state: Arc<RepositoryStateService>,
     pub repo_paths_usecase: Arc<RepoPathsUsecase>,

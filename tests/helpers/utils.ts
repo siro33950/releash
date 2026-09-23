@@ -20,7 +20,7 @@ export async function waitForWorkspaceTreeQuiescence(page: Page) {
 		const current = await page.evaluate(
 			() =>
 				(window.__RELEASH_BACKEND__?.invocations ?? []).filter(
-					(entry) => entry.cmd === "list_workspace_worktree_nodes",
+					(entry) => entry.cmd === "refresh_workspaces",
 				).length,
 		);
 		if (current === previous) return;
