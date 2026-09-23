@@ -59,13 +59,11 @@ impl WorkflowRuntimeHost {
         let mut committed = None;
         while let Some(start) = pending.pop_front() {
             let context = {
-                let executions = self.executions.lock().await;
-                let execution = executions.get(execution_id).ok_or_else(|| {
-                    WorkflowRuntimeError::ExecutionNotFound(execution_id.to_string())
-                })?;
+                let loaded = self.load_execution(app, execution_id).await?;
+                let execution = &loaded;
                 let node = execution
                     .node_execution(start.node_execution_id())
-                    .filter(|node| node.status == NodeExecutionStatus::Running);
+                    .filter(|node| execution.can_prepare_node_worktree(&node.id));
                 node.map(|node| {
                     (
                         node.worktree.clone(),
@@ -104,46 +102,18 @@ impl WorkflowRuntimeHost {
                 }
                 NodePreparation::Composite(composite) => composite,
             };
-            let (before, snapshot, applied) = {
-                let mut executions = self.executions.lock().await;
-                let execution = executions.get_mut(execution_id).ok_or_else(|| {
-                    WorkflowRuntimeError::ExecutionNotFound(execution_id.to_string())
-                })?;
-                let before = execution.clone();
-                let applied = execution
-                    .start_prepared_composite(
-                        &composite.node_execution_id,
-                        &mut new_node_execution_id,
-                        current_timestamp(),
-                    )
-                    .map_err(|error| WorkflowRuntimeError::InvalidState(error.to_string()))?;
-                (
-                    before,
-                    RuntimeCommitSnapshot::from_execution(execution)?,
-                    applied,
-                )
+            let (snapshot, decision) = match self
+                .commit_prepared_composite(app, execution_id, &composite.node_execution_id)
+                .await
+            {
+                Ok(Some(committed)) => committed,
+                Ok(None) => continue,
+                Err(error) => {
+                    failures.push((composite.node_execution_id, error));
+                    continue;
+                }
             };
-            let result = self
-                .commit_required_events(
-                    app,
-                    RequiredEventCommit {
-                        execution_id,
-                        snapshot_for_commit: &snapshot,
-                        snapshot_before: before,
-                        execution_store_snapshot_before: self
-                            .execution_store
-                            .active_execution_snapshot(execution_id)
-                            .await,
-                        required_events: applied.events,
-                        append_error_context: "isolated composite child start append failed",
-                    },
-                )
-                .await;
-            if let Err(error) = result {
-                failures.push((composite.node_execution_id, error));
-                continue;
-            }
-            if let ExecutionAdvanceDecision::StartNodes(children) = applied.decision {
+            if let ExecutionAdvanceDecision::StartNodes(children) = decision {
                 let (children, injections) = partition_actions(children);
                 pending.extend(children);
                 prepared.injections.extend(injections);
@@ -158,6 +128,12 @@ impl WorkflowRuntimeHost {
         }
         for (node_execution_id, error) in failures {
             prepared.failed.push(node_execution_id.clone());
+            if matches!(error, WorkflowRuntimeError::Conflict(_)) {
+                log::warn!(
+                    "workflow {execution_id}: isolated composite {node_execution_id} child start was not applied: {error}"
+                );
+                continue;
+            }
             Box::pin(self.settle_runtime_failure_for_node(
                 app,
                 execution_id,
@@ -167,5 +143,42 @@ impl WorkflowRuntimeHost {
             .await?;
         }
         Ok(prepared)
+    }
+
+    pub(super) async fn commit_prepared_composite(
+        &self,
+        app: &WorkflowRuntimeDependencies,
+        execution_id: &str,
+        node_execution_id: &str,
+    ) -> Result<Option<(RuntimeCommitSnapshot, ExecutionAdvanceDecision)>, WorkflowRuntimeError>
+    {
+        retry_runtime_conflicts(|| async {
+            let before = self.load_execution(app, execution_id).await?;
+            if !before.can_prepare_node_worktree(node_execution_id) {
+                return Ok(None);
+            }
+            let mut candidate = before.clone();
+            let applied = candidate
+                .start_prepared_composite(
+                    node_execution_id,
+                    &mut new_node_execution_id,
+                    current_timestamp(),
+                )
+                .map_err(|error| WorkflowRuntimeError::InvalidState(error.to_string()))?;
+            let snapshot = self
+                .commit_required_events(
+                    app,
+                    RequiredEventCommit {
+                        execution_id,
+                        snapshot_before: before,
+                        candidate,
+                        required_events: applied.events,
+                        append_error_context: "isolated composite child start append failed",
+                    },
+                )
+                .await?;
+            Ok(Some((snapshot, applied.decision)))
+        })
+        .await
     }
 }

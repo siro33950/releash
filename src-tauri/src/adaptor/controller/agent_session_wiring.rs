@@ -131,20 +131,6 @@ impl crate::usecase::agent_session::ExecutionTreeCache for DeferredStartedExecut
 impl crate::usecase::agent_session::StartedExecutionTreeRegistrar
     for DeferredStartedExecutionTreeRegistrar
 {
-    async fn reserve_started_execution_tree(
-        &self,
-        tree_id: &str,
-    ) -> Result<(), StartedExecutionTreeRegistrationError> {
-        let target = self
-            .target
-            .read()
-            .map_err(|_| StartedExecutionTreeRegistrationError::Corrupt)?
-            .as_ref()
-            .and_then(std::sync::Weak::upgrade)
-            .ok_or(StartedExecutionTreeRegistrationError::Unavailable)?;
-        target.reserve_started_execution_tree(tree_id).await
-    }
-
     async fn register_started_execution_tree(
         &self,
         tree_id: &str,
@@ -157,22 +143,6 @@ impl crate::usecase::agent_session::StartedExecutionTreeRegistrar
             .and_then(std::sync::Weak::upgrade)
             .ok_or(StartedExecutionTreeRegistrationError::Unavailable)?;
         target.register_started_execution_tree(tree_id).await
-    }
-
-    async fn release_started_execution_tree_reservation(
-        &self,
-        tree_id: &str,
-    ) -> Result<(), StartedExecutionTreeRegistrationError> {
-        let target = self
-            .target
-            .read()
-            .map_err(|_| StartedExecutionTreeRegistrationError::Corrupt)?
-            .as_ref()
-            .and_then(std::sync::Weak::upgrade)
-            .ok_or(StartedExecutionTreeRegistrationError::Unavailable)?;
-        target
-            .release_started_execution_tree_reservation(tree_id)
-            .await
     }
 }
 

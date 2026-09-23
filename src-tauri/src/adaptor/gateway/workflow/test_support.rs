@@ -5,7 +5,7 @@ use crate::adaptor::gateway::local_event_store::LocalEventStore;
 #[cfg(test)]
 use super::event::WorkflowEvent;
 #[cfg(test)]
-use super::execution_store::WorkflowExecutionMetadata;
+use crate::domain::workflow::WorkflowExecutionSummary as WorkflowExecutionMetadata;
 
 pub(crate) struct WorkflowSessionFactSeed<'a> {
     pub workflow_name: &'a str,

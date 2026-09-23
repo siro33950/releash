@@ -39,12 +39,12 @@ impl Drop for EnvVarGuard {
 }
 
 struct CapturingLogger {
-    messages: std::sync::Mutex<Vec<String>>,
+    messages: std::sync::Mutex<Vec<(log::Level, String)>>,
 }
 
 impl log::Log for CapturingLogger {
     fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
-        metadata.level() <= log::Level::Error
+        metadata.level() <= log::Level::Warn
     }
 
     fn log(&self, record: &log::Record<'_>) {
@@ -52,7 +52,7 @@ impl log::Log for CapturingLogger {
             self.messages
                 .lock()
                 .unwrap()
-                .push(record.args().to_string());
+                .push((record.level(), record.args().to_string()));
         }
     }
 
@@ -72,5 +72,23 @@ pub(crate) fn install_capturing_logger() {
 }
 
 pub(crate) fn captured_error_messages() -> Vec<String> {
-    CAPTURING_LOGGER.messages.lock().unwrap().clone()
+    CAPTURING_LOGGER
+        .messages
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(level, _)| *level == log::Level::Error)
+        .map(|(_, message)| message.clone())
+        .collect()
+}
+
+pub(crate) fn captured_warning_messages() -> Vec<String> {
+    CAPTURING_LOGGER
+        .messages
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(level, _)| *level == log::Level::Warn)
+        .map(|(_, message)| message.clone())
+        .collect()
 }

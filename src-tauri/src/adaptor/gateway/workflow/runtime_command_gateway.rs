@@ -157,7 +157,10 @@ impl WorkflowControlPlaneGateway for WorkflowRuntimeCommandGateway {
         Option<crate::domain::workflow::entities::workflow_execution::ExecutionTree>,
         WorkflowError,
     > {
-        Ok(self.driver.load_control_plane_execution(execution_id).await)
+        self.driver
+            .load_control_plane_execution(&self.app, execution_id)
+            .await
+            .map_err(workflow_runtime_error_to_workflow_error)
     }
 
     fn node_process_presence(
@@ -206,26 +209,9 @@ impl WorkflowControlPlaneGateway for WorkflowRuntimeCommandGateway {
             .map_err(workflow_runtime_error_to_workflow_error)
     }
 
-    async fn reserve_started_execution_tree(&self, tree_id: &str) -> Result<(), WorkflowError> {
-        self.driver
-            .reserve_started_execution_tree(tree_id)
-            .await
-            .map_err(workflow_runtime_error_to_workflow_error)
-    }
-
     async fn register_started_execution_tree(&self, tree_id: &str) -> Result<(), WorkflowError> {
         self.driver
             .register_started_execution_tree(&self.app, tree_id)
-            .await
-            .map_err(workflow_runtime_error_to_workflow_error)
-    }
-
-    async fn release_started_execution_tree_reservation(
-        &self,
-        tree_id: &str,
-    ) -> Result<(), WorkflowError> {
-        self.driver
-            .release_started_execution_tree_reservation(tree_id)
             .await
             .map_err(workflow_runtime_error_to_workflow_error)
     }
@@ -311,7 +297,7 @@ impl WorkflowRuntimeStateGateway for WorkflowRuntimeCommandGateway {
     ) -> Result<Option<WorkflowRuntimeSnapshot>, WorkflowError> {
         Ok(self
             .driver
-            .get_state_by_execution_id(execution_id)
+            .get_state_by_execution_id(&self.app, execution_id)
             .await
             .map(
             crate::adaptor::gateway::workflow::state::runtime_commit_snapshot_to_domain_snapshot,

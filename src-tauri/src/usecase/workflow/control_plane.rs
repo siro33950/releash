@@ -57,20 +57,7 @@ pub(crate) trait WorkflowControlPlaneGateway: Send + Sync {
         session_id: &str,
     ) -> Result<(), WorkflowError>;
 
-    async fn reserve_started_execution_tree(&self, tree_id: &str) -> Result<(), WorkflowError> {
-        let _ = tree_id;
-        Ok(())
-    }
-
     async fn register_started_execution_tree(&self, tree_id: &str) -> Result<(), WorkflowError>;
-
-    async fn release_started_execution_tree_reservation(
-        &self,
-        tree_id: &str,
-    ) -> Result<(), WorkflowError> {
-        let _ = tree_id;
-        Ok(())
-    }
 
     async fn release_deleted_execution_tree(&self, tree_id: &str) -> Result<(), WorkflowError> {
         let _ = tree_id;
@@ -595,11 +582,7 @@ impl WorkflowControlPlaneUsecase {
         command: crate::usecase::provider_lifecycle::ProviderExecutionTreeStopCommand,
         lifecycle_events: Vec<ScopedProviderLifecycleEvent>,
     ) -> Result<(), WorkflowError> {
-        let mut active = self.runtime.load_active_execution(&command.tree_id).await?;
-        if active.is_none() {
-            self.recover_startup().await?;
-            active = self.runtime.load_active_execution(&command.tree_id).await?;
-        }
+        let active = self.runtime.load_active_execution(&command.tree_id).await?;
         let Some(current) = active else {
             if lifecycle_events.is_empty() {
                 return Ok(());
@@ -715,8 +698,10 @@ fn runtime_error_to_workflow_error(error: WorkflowRuntimeError) -> WorkflowError
         | WorkflowRuntimeError::ValidationError(message) => WorkflowError::validation(message),
         WorkflowRuntimeError::ExecutionNotFound(message)
         | WorkflowRuntimeError::SessionNotFound(message) => WorkflowError::NotFound(message),
-        WorkflowRuntimeError::AlreadyActive(message)
-        | WorkflowRuntimeError::InvalidState(message) => WorkflowError::InvalidState(message),
+        error @ WorkflowRuntimeError::AlreadyActive(_) => {
+            WorkflowError::InvalidState(error.to_string())
+        }
+        WorkflowRuntimeError::InvalidState(message) => WorkflowError::InvalidState(message),
         WorkflowRuntimeError::Conflict(message) => WorkflowError::Conflict(message),
         WorkflowRuntimeError::UnauthorizedWorktree(message) => WorkflowError::validation(message),
         WorkflowRuntimeError::UnauthorizedApprovalTarget(message) => {

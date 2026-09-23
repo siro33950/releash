@@ -137,3 +137,25 @@ fn test_起動時abort_完了とabortの既存終端を変更しない() {
         assert!(execution.workflow.is_none());
     }
 }
+
+#[test]
+fn test_起動時前進失敗_理由付きabortは実行中だけに一度適用する() {
+    // Given
+    let mut tree = execution();
+    // When
+    let fact = tree
+        .abort_with_reason("advance failed".into(), 3.0)
+        .unwrap();
+    // Then
+    assert_eq!(
+        fact,
+        NodeFact::AbortRequested(AbortRequestedFact {
+            reason: Some("advance failed".into())
+        })
+    );
+    assert_eq!(tree.state(), &RuntimeExecutionState::Aborted);
+    assert!(tree.abort_with_reason("again".into(), 4.0).is_none());
+    let mut completed = execution();
+    completed.replay_terminal_fact(&NodeFact::ExecutionCompleted, 2.0);
+    assert!(completed.abort_with_reason("late".into(), 3.0).is_none());
+}

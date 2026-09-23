@@ -313,22 +313,9 @@ pub(crate) async fn compose(
     .await?;
     let pending_workflow_recovery = workflow_runtime_usecase.clone();
     tokio::spawn(async move {
-        run_startup_recovery(
-            "pending workflow restart reconciliation",
-            || {
-                let workflow = pending_workflow_recovery.clone();
-                async move {
-                    workflow
-                        .recover_startup()
-                        .await
-                        .map_err(|error| error.to_string())?;
-                    Ok::<usize, String>(0)
-                }
-            },
-            std::time::Duration::from_millis(50),
-            std::time::Duration::from_secs(1),
-        )
-        .await;
+        if let Err(error) = pending_workflow_recovery.recover_startup().await {
+            log::warn!("workflow startup advancement failed: {error}");
+        }
     });
 
     let workflow_query_usecase = workflow_usecase.clone();
@@ -456,52 +443,6 @@ fn performance_provider_fixture_executable() -> Option<String> {
 #[cfg(not(feature = "performance"))]
 fn performance_provider_fixture_executable() -> Option<String> {
     None
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StartupRecoveryWorkerExit {
-    Quiescent,
-}
-
-/// Drives bounded recovery passes after the fixed store is Ready. Every pass
-/// starts with a fresh pending-index snapshot; two empty passes define
-/// quiescence, so work inserted while the first empty page was being observed
-/// is not lost. Transient failures retain the worker with capped backoff.
-async fn run_startup_recovery<Recover, Future, Error>(
-    worker_name: &'static str,
-    mut recover_pass: Recover,
-    initial_retry_delay: std::time::Duration,
-    maximum_retry_delay: std::time::Duration,
-) -> StartupRecoveryWorkerExit
-where
-    Recover: FnMut() -> Future,
-    Future: std::future::Future<Output = Result<usize, Error>>,
-    Error: std::fmt::Debug,
-{
-    let mut retry_delay = initial_retry_delay;
-    let mut consecutive_empty_passes = 0u8;
-    loop {
-        match recover_pass().await {
-            Ok(0) => {
-                consecutive_empty_passes = consecutive_empty_passes.saturating_add(1);
-                if consecutive_empty_passes >= 2 {
-                    return StartupRecoveryWorkerExit::Quiescent;
-                }
-                tokio::task::yield_now().await;
-            }
-            Ok(_) => {
-                consecutive_empty_passes = 0;
-                retry_delay = initial_retry_delay;
-                tokio::time::sleep(initial_retry_delay).await;
-            }
-            Err(error) => {
-                consecutive_empty_passes = 0;
-                log::warn!("{worker_name} startup recovery will retry: {error:?}");
-                tokio::time::sleep(retry_delay).await;
-                retry_delay = retry_delay.saturating_mul(2).min(maximum_retry_delay);
-            }
-        }
-    }
 }
 
 fn classify_startup_failure(

@@ -31,7 +31,80 @@ async fn started_command(fixture: &Fixture, nodes: &str) -> CommandExecutionInpu
 }
 
 #[tokio::test]
-async fn test_終了処理_commandの終了結果を保存せず次回起動で喪失を記録する() {
+async fn test_command起動_起動済みの記録か登録があれば同じプロセスを生成しない() {
+    for persisted in [false, true] {
+        // Given
+        let fixture = Fixture::new(0);
+        let snapshot = fixture
+            .persist_started("  main: {command: true}", "/missing/worktree")
+            .await;
+        let node = &snapshot.node_executions[0];
+        let input = CommandExecutionInput {
+            execution_id: snapshot.execution_id.clone(),
+            node_execution_id: node.id.clone(),
+            node_name: node.node_name.clone(),
+            attempt: node.attempt,
+            worktree_path: "/missing/worktree".into(),
+            raw_command: Some("must-not-start".into()),
+            definition_env: Vec::new(),
+            contract: None,
+            schemas: BTreeMap::new(),
+            session_id: None,
+        };
+        if persisted {
+            fixture
+                .host
+                .commit_command_spawned(&fixture.app, &input, "true".into())
+                .await
+                .unwrap();
+        } else {
+            fixture
+                .host
+                .node_processes
+                .active_commands
+                .lock()
+                .unwrap()
+                .insert(
+                    node.id.clone(),
+                    workflow_command_runner::ActiveCommandHandle::for_test(),
+                );
+        }
+        let before =
+            workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap();
+
+        // When
+        fixture
+            .host
+            .spawn_command_execution(&fixture.app, input)
+            .await
+            .unwrap();
+
+        // Then
+        assert_eq!(
+            workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap(),
+            before
+        );
+        assert_eq!(
+            fixture
+                .host
+                .node_processes
+                .active_commands
+                .lock()
+                .unwrap()
+                .len(),
+            usize::from(!persisted)
+        );
+        assert!(fixture
+            .host
+            .command_completion_observers
+            .lock()
+            .await
+            .is_empty());
+    }
+}
+
+#[tokio::test]
+async fn test_終了処理_commandの終了結果も次回起動での喪失も記録しない() {
     for completion in ["", "\n    completion:\n      require: approval"] {
         for output in [
             Ok(CommandRunOutput {
@@ -101,12 +174,8 @@ async fn test_終了処理_commandの終了結果を保存せず次回起動で�
                     _ => None,
                 })
                 .collect::<Vec<_>>();
-            assert_eq!(exits.len(), 1);
-            assert_eq!(exits[0].exit_code, None);
-            assert_eq!(
-                exits[0].failure_reason.as_deref(),
-                Some("process lost across application restart")
-            );
+            assert!(exits.is_empty());
+            assert_eq!(records.len(), before);
             assert!(!records
                 .iter()
                 .any(|record| matches!(record.fact, NodeFact::ArtifactProduced(_))));
@@ -133,7 +202,8 @@ async fn test_終了処理_commandの保存中は待ち後続commandの起動前
         let execution_id = input.execution_id.clone();
         let node_execution_id = input.node_execution_id.clone();
         let succeeded = output.is_ok();
-        let executions = fixture.host.executions.lock().await;
+        let commit_lock = fixture.host.commit_lock(&execution_id).await;
+        let executions = commit_lock.lock().await;
         let mut completion = Box::pin(async {
             match output {
                 Ok(output) => {
@@ -216,7 +286,8 @@ async fn test_終了処理_command起動の完了を待ち以降の起動を止�
         schemas: BTreeMap::new(),
         session_id: None,
     };
-    let executions = fixture.host.executions.lock().await;
+    let commit_lock = fixture.host.commit_lock(&input.execution_id).await;
+    let executions = commit_lock.lock().await;
     let mut spawn = Box::pin(
         fixture
             .host

@@ -9,7 +9,7 @@ use crate::domain::workflow::entities::workflow_execution::{
     ExecutionTree as ExecutionTreeAggregate, ExecutionTreeRestore, RuntimeNodeExecution,
     RuntimeNodeExecutionStatus, WorkflowDefaults,
 };
-use crate::domain::workflow::services::event_replay;
+use crate::domain::workflow::services::{event_replay, transition};
 use crate::domain::workflow::{
     AgentSessionActivity, Artifact, ExecutionStatus, ExecutionTree as ExecutionTreeReadModel,
     NodeCompletionSignal, NodeExecution, NodeExecutionStatus, NodeFact, NodeFactRecord,
@@ -442,7 +442,16 @@ pub(super) fn apply_record(
                             timestamp,
                         );
                     }
-                    aggregate.derive_leaf_completed(id, timestamp)
+                    if aggregate
+                        .node_definition(&record.meta.node_name)
+                        .map(transition::decide_completion_disposition)
+                        == Some(transition::CompletionDisposition::RequestApproval)
+                    {
+                        let _ = aggregate.mark_node_waiting_approval(id, timestamp);
+                        Ok(())
+                    } else {
+                        aggregate.derive_leaf_completed(id, timestamp)
+                    }
                 }
                 Some(_) | None => Ok(()),
             },

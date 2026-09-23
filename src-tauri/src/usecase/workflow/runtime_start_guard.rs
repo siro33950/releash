@@ -12,16 +12,11 @@ pub(crate) fn validate_workflow_shape(
 }
 
 pub(crate) fn validate_start(
-    workflow: &WorkflowDefinition,
-    existing_active_workflow_name: Option<&str>,
+    worktree_path: &str,
+    candidates: &[domain::WorkflowExecutionSummary],
 ) -> Result<(), WorkflowRuntimeError> {
-    validate_workflow_shape(workflow)?;
-    if let Some(workflow_name) = existing_active_workflow_name {
-        return Err(WorkflowRuntimeError::AlreadyActive(
-            workflow_name.to_string(),
-        ));
-    }
-    Ok(())
+    domain::services::start_admission::validate_worktree_start(worktree_path, candidates)
+        .map_err(WorkflowRuntimeError::AlreadyActive)
 }
 
 fn domain_validation_to_runtime_error(
@@ -75,22 +70,5 @@ mod tests {
         let err = validate_workflow_shape(&workflow(Vec::new())).unwrap_err();
 
         assert_eq!(err.to_string(), "Workflow has no nodes");
-    }
-
-    #[test]
-    fn validate_start_rejects_active_workflow_after_shape_validation() {
-        let err = validate_start(
-            &workflow(vec![NodeDefinition {
-                name: "plan".to_string(),
-                ..Default::default()
-            }]),
-            Some("wf"),
-        )
-        .unwrap_err();
-
-        assert_eq!(
-            err.to_string(),
-            "Workflow 'wf' is already running for this session"
-        );
     }
 }

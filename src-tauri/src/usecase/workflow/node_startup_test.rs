@@ -7,6 +7,8 @@ struct FakeStartup {
     starts: Mutex<Vec<Vec<String>>>,
     restarts: Mutex<Vec<String>>,
     waits: Mutex<Vec<std::time::Duration>>,
+    restart_error: Mutex<Option<WorkflowRuntimeError>>,
+    start_error: Mutex<Option<WorkflowRuntimeError>>,
     cancelled: bool,
     wait_cancelled: bool,
 }
@@ -18,6 +20,8 @@ impl FakeStartup {
             starts: Mutex::new(Vec::new()),
             restarts: Mutex::new(Vec::new()),
             waits: Mutex::new(Vec::new()),
+            restart_error: Mutex::new(None),
+            start_error: Mutex::new(None),
             cancelled: false,
             wait_cancelled: false,
         }
@@ -37,6 +41,9 @@ fn leaf(id: &str, kind: LeafKind) -> NodeStart {
 #[async_trait::async_trait]
 impl NodeStartupGateway for FakeStartup {
     async fn start(&self, starts: Vec<NodeStart>) -> Result<Vec<String>, WorkflowRuntimeError> {
+        if let Some(error) = self.start_error.lock().unwrap().take() {
+            return Err(error);
+        }
         let ids: Vec<_> = starts
             .iter()
             .map(|start| start.node_execution_id().to_string())
@@ -52,6 +59,9 @@ impl NodeStartupGateway for FakeStartup {
 
     async fn restart(&self, id: &str) -> Result<Option<NodeStart>, WorkflowRuntimeError> {
         self.restarts.lock().unwrap().push(id.into());
+        if let Some(error) = self.restart_error.lock().unwrap().take() {
+            return Err(error);
+        }
         Ok((!self.cancelled).then(|| leaf(&format!("{id}-next"), LeafKind::Session)))
     }
 
@@ -66,7 +76,9 @@ async fn start_nodes(
     starts: Vec<NodeStart>,
 ) -> Result<(), WorkflowRuntimeError> {
     let failed = gateway.start(starts).await?;
-    retry_failed_nodes(gateway, failed).await
+    retry_failed_nodes(gateway, failed)
+        .await
+        .map_err(|failure| failure.error)
 }
 
 #[tokio::test]
@@ -126,4 +138,71 @@ async fn test_自動再試行_待機の取消後は新attemptを作らない() {
         .unwrap();
     assert!(gateway.restarts.lock().unwrap().is_empty());
     assert!(gateway.starts.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_自動再試行_restartエラー後も後続nodeを規定回数処理してエラーを返す() {
+    for failures in [0, usize::MAX] {
+        for error in [
+            WorkflowRuntimeError::Conflict("exhausted".into()),
+            WorkflowRuntimeError::SessionStore("unavailable".into()),
+        ] {
+            // Given
+            let gateway = FakeStartup::new(failures);
+            let expected_error = error.to_string();
+            *gateway.restart_error.lock().unwrap() = Some(error);
+            // When
+            let result = retry_failed_nodes(&gateway, vec!["first".into(), "second".into()]).await;
+            // Then
+            let failure = result.unwrap_err();
+            assert_eq!(failure.to_string(), expected_error);
+            assert_eq!(failure.node_execution_id.as_deref(), Some("first"));
+            let expected = if failures == 0 { 1 } else { 4 };
+            assert_eq!(gateway.starts.lock().unwrap().len(), expected);
+            assert_eq!(gateway.restarts.lock().unwrap().len(), expected + 1);
+            assert_eq!(gateway.starts.lock().unwrap()[0], ["second-next"]);
+            assert_eq!(
+                *gateway.waits.lock().unwrap(),
+                [1, 2, 4, 8][..expected]
+                    .iter()
+                    .copied()
+                    .map(std::time::Duration::from_secs)
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_自動再試行_後続nodeが無くてもrestartエラーを返す() {
+    // Given
+    let gateway = FakeStartup::new(0);
+    *gateway.restart_error.lock().unwrap() =
+        Some(WorkflowRuntimeError::Conflict("exhausted".into()));
+    // When
+    let result = retry_failed_nodes(&gateway, vec!["first".into()]).await;
+    // Then
+    let failure = result.unwrap_err();
+    assert_eq!(failure.node_execution_id.as_deref(), Some("first"));
+    assert!(matches!(failure.error, WorkflowRuntimeError::Conflict(_)));
+    assert!(gateway.starts.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_自動再試行_startエラーにrestartの発生元を割り当てない() {
+    // Given
+    let gateway = FakeStartup::new(0);
+    *gateway.restart_error.lock().unwrap() =
+        Some(WorkflowRuntimeError::InvalidState("restart failed".into()));
+    *gateway.start_error.lock().unwrap() =
+        Some(WorkflowRuntimeError::SessionStore("start failed".into()));
+    // When
+    let failure = retry_failed_nodes(&gateway, vec!["first".into(), "second".into()])
+        .await
+        .unwrap_err();
+    // Then
+    assert!(failure.node_execution_id.is_none());
+    assert!(
+        matches!(failure.error, WorkflowRuntimeError::SessionStore(reason) if reason == "start failed")
+    );
 }

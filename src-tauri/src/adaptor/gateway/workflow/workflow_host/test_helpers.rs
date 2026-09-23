@@ -10,6 +10,7 @@ use std::sync::Mutex as StdMutex;
 pub(super) struct TestWorktrees {
     pub(super) calls: StdMutex<Vec<(String, IsolatedWorktree)>>,
     pub(super) failures: AtomicUsize,
+    pub(super) creation_barrier: StdMutex<Option<Arc<std::sync::Barrier>>>,
 }
 
 impl IsolatedWorktreeGateway for TestWorktrees {
@@ -31,6 +32,10 @@ impl IsolatedWorktreeGateway for TestWorktrees {
         parent: &str,
         worktree: &IsolatedWorktree,
     ) -> Result<(), crate::domain::workflow::WorkflowError> {
+        let barrier = self.creation_barrier.lock().unwrap().clone();
+        if let Some(barrier) = barrier {
+            barrier.wait();
+        }
         self.calls
             .lock()
             .unwrap()
@@ -54,10 +59,12 @@ impl IsolatedWorktreeGateway for TestWorktrees {
 pub(crate) struct TestSessions {
     pub(super) initial_instructions: StdMutex<Vec<String>>,
     pub(super) presence_unknown: AtomicBool,
+    pub(super) presence_error_session: StdMutex<Option<String>>,
     pub(crate) live_sessions: StdMutex<std::collections::HashSet<String>>,
     pub(super) conversation_missing: AtomicBool,
     pub(super) prepared: StdMutex<Vec<(String, String, String)>>,
     pub(super) activated: StdMutex<Vec<String>>,
+    pub(super) rolled_back: StdMutex<Vec<String>>,
     pub(super) recovered: StdMutex<Vec<String>>,
     pub(super) continuations: StdMutex<Vec<(String, String)>>,
     pub(super) admitted_continuations: StdMutex<std::collections::BTreeSet<(String, String)>>,
@@ -68,6 +75,7 @@ pub(crate) struct TestSessions {
     pub(super) recovery_fails: AtomicBool,
     pub(super) stop_fails: AtomicBool,
     pub(super) preparation_fails: AtomicBool,
+    pub(super) preparation_conflicts: AtomicBool,
     pub(super) block_preparation: AtomicBool,
     pub(super) preparation_entered: tokio::sync::Notify,
     pub(super) preparation_release: tokio::sync::Notify,
@@ -101,6 +109,9 @@ impl WorkflowAgentSessionPort for TestSessions {
             .push((workspace.into(), cwd.into(), node_id.into()));
         if self.preparation_fails.load(Ordering::SeqCst) {
             return Err(WorkflowRuntimeError::AgentSession("prepare failed".into()));
+        }
+        if self.preparation_conflicts.load(Ordering::SeqCst) {
+            return Err(WorkflowRuntimeError::Conflict("prepare conflicted".into()));
         }
         self.initial_instructions
             .lock()
@@ -185,8 +196,9 @@ impl WorkflowAgentSessionPort for TestSessions {
     async fn rollback_workflow_agent_session(
         &self,
         session_id: &str,
-        _node_id: &str,
+        node_id: &str,
     ) -> Result<(), WorkflowRuntimeError> {
+        self.rolled_back.lock().unwrap().push(node_id.into());
         self.live_sessions.lock().unwrap().remove(session_id);
         Ok(())
     }
@@ -216,6 +228,11 @@ impl crate::domain::agent_session::ProviderAgentTerminalGateway for TestSessions
         else {
             panic!("expected Session owner")
         };
+        if self.presence_error_session.lock().unwrap().as_deref() == Some(session_id.as_str()) {
+            return Err(
+                crate::domain::agent_session::ProviderAgentTerminalGatewayError::Unavailable,
+            );
+        }
         if self.presence_unknown.load(Ordering::SeqCst) {
             return Ok(crate::domain::agent_session::aggregates::ManagedPtyPresence::Unknown);
         }
@@ -267,10 +284,10 @@ impl Fixture {
             ..Default::default()
         });
         let sessions = Arc::new(TestSessions::default());
-        let mut host = WorkflowRuntimeHost::with_execution_store(
+        let mut host = WorkflowRuntimeHost::with_runtime_ports(
             Arc::new(super::workflow_host_tests::UnusedWorkflowResolver),
             Arc::new(super::workflow_host_tests::AcceptingWorktreeResolver),
-            Arc::new(ExecutionStore::new_in_memory_for_tests()),
+            workspace_query(store.clone()),
             sessions.clone(),
             worktrees.clone(),
         );
@@ -368,10 +385,10 @@ impl Fixture {
     }
 
     pub(super) fn restarted_host(&self) -> WorkflowRuntimeHost {
-        let mut host = WorkflowRuntimeHost::with_execution_store(
+        let mut host = WorkflowRuntimeHost::with_runtime_ports(
             Arc::new(super::workflow_host_tests::UnusedWorkflowResolver),
             Arc::new(super::workflow_host_tests::AcceptingWorktreeResolver),
-            Arc::new(ExecutionStore::new_in_memory_for_tests()),
+            self.host.workspace_query.clone(),
             self.sessions.clone(),
             self.host.isolated_worktrees.clone(),
         );
@@ -454,6 +471,15 @@ pub(super) fn take_workflow_execution_broadcasts(
     broadcasts
 }
 
+pub(super) fn workspace_query(store: Arc<LocalEventStore>) -> Arc<SqliteWorkspaceQueryService> {
+    SqliteWorkspaceQueryService::with_repository(
+        SqliteWorkspaceTreeRepository::new(store.clone()),
+        Arc::new(ExecutionTreeArchiveFactRepository::from_backend(
+            workflow_fact_log::FactLogReadBackend::Live(store),
+        )),
+    )
+}
+
 pub(super) fn dependencies(store: Option<Arc<LocalEventStore>>) -> WorkflowRuntimeDependencies {
     WorkflowRuntimeDependencies {
         processes: Arc::new(
@@ -504,10 +530,10 @@ pub(crate) fn archive_fixture_with_resolver(
     );
     let app = test_helpers::dependencies(Some(store.clone()));
     let sessions = Arc::new(TestSessions::default());
-    let host = Arc::new(WorkflowRuntimeHost::with_execution_store(
+    let host = Arc::new(WorkflowRuntimeHost::with_runtime_ports(
         Arc::new(UnusedWorkflowResolver),
         resolver,
-        Arc::new(ExecutionStore::new_canonical(query.clone())),
+        query.clone(),
         sessions.clone(),
         Arc::new(TestWorktrees::default()),
     ));

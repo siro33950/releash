@@ -1437,6 +1437,50 @@ mod fanout_tests {
 mod approval_tests {
     use super::*;
 
+    #[test]
+    fn test_承認付きcommand_正常終了を承認待ちへ再生し承認事実で完了する() {
+        // Given
+        let mut command = command_leaf("reviewed");
+        command.completion = NodeCompletion::require_approval();
+        let mut log = FactLog::new();
+        let node = meta(TREE, None, "reviewed", NodeKindName::Command, 1);
+        log.push(
+            node.clone(),
+            started_root(workflow_root(workflow_definition(
+                vec![command],
+                "reviewed",
+            ))),
+        );
+        log.push(node.clone(), exited(0));
+
+        // When
+        let waiting = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+
+        // Then
+        assert_eq!(
+            node_status(&waiting, TREE),
+            RuntimeNodeExecutionStatus::WaitingApproval
+        );
+        assert_eq!(*waiting.aggregate.state(), RuntimeExecutionState::Running);
+
+        // When
+        log.push(
+            node,
+            NodeFact::ApprovalGranted(ApprovalGrantedFact { comment: None }),
+        );
+        let approved = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+
+        // Then
+        assert_eq!(
+            node_status(&approved, TREE),
+            RuntimeNodeExecutionStatus::Succeeded
+        );
+        assert_eq!(
+            *approved.aggregate.state(),
+            RuntimeExecutionState::Completed
+        );
+    }
+
     fn approval_definition() -> WorkflowDefinition {
         let mut reviewed = session_leaf("reviewed");
         reviewed.completion = NodeCompletion::require_approval();

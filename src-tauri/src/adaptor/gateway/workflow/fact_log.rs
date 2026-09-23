@@ -56,6 +56,68 @@ pub(crate) struct PendingFactRow {
     pub(crate) timestamp_ms: i64,
 }
 
+pub(crate) fn resolve_unknown_append(
+    store: &Arc<LocalEventStore>,
+    rows: Vec<PendingFactRow>,
+    expected_head: Option<i64>,
+) -> Result<
+    Result<Vec<i64>, crate::adaptor::gateway::local_event_store::writer::NodeEventWriteError>,
+    LocalEventQueryError,
+> {
+    use crate::adaptor::gateway::local_event_store::writer::NodeEventWriteError;
+    use rusqlite::OptionalExtension;
+    store.submit_indexed_query_blocking(move |connection| {
+        let transaction = connection
+            .unchecked_transaction()
+            .map_err(|_| LocalEventQueryError::InvalidRequest)?;
+        let mut sequences = Vec::with_capacity(rows.len());
+        for (index, pending) in rows.iter().enumerate() {
+            let sequence = transaction
+                .query_row(
+                    "SELECT seq FROM node_events
+                 WHERE tree_id = ?1 AND node_execution_id = ?2
+                   AND parent_id IS ?3 AND node_name = ?4 AND kind = ?5
+                   AND attempt = ?6 AND event_type = ?7 AND session_id IS ?8
+                   AND detail = ?9 AND timestamp = ?10
+                   AND (?11 IS NULL OR seq = ?11)
+                 ORDER BY seq LIMIT 1",
+                    rusqlite::params![
+                        pending.row.tree_id,
+                        pending.row.node_execution_id,
+                        pending.row.parent_id,
+                        pending.row.node_name,
+                        pending.row.kind,
+                        pending.row.attempt,
+                        pending.row.event_type,
+                        pending.row.session_id,
+                        pending.row.detail,
+                        pending.timestamp_ms.max(0),
+                        expected_head.map(|head| head + index as i64 + 1)
+                    ],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()
+                .map_err(|_| LocalEventQueryError::InvalidRequest)?;
+            let Some(sequence) = sequence else {
+                let advanced = transaction
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM node_events WHERE tree_id = ?1 AND seq > ?2)",
+                        rusqlite::params![pending.row.tree_id, expected_head.unwrap_or(0)],
+                        |row| row.get::<_, bool>(0),
+                    )
+                    .map_err(|_| LocalEventQueryError::InvalidRequest)?;
+                return Ok(Err(if advanced {
+                    NodeEventWriteError::Conflict
+                } else {
+                    NodeEventWriteError::OutcomeUnknown
+                }));
+            };
+            sequences.push(sequence);
+        }
+        Ok(Ok(sequences))
+    })
+}
+
 fn pending_row(
     meta: &FactRowMeta,
     tree_id: &str,
@@ -361,10 +423,25 @@ fn fact_rows_for_events(
                 };
                 rows.push(pending_row(&meta, tree_id, &fact, timestamp)?);
             }
+            WorkflowEvent::ApprovalRequested {
+                node_execution_id,
+                result_summary,
+                ..
+            } => {
+                let meta = resolve(&batch_meta, node_execution_id)?;
+                // command の承認待ち入りはプロセス終了の事実。承認待ちは導出。
+                if meta.kind == NodeKindName::Command {
+                    let fact = NodeFact::ProcessExited(ProcessExitedFact {
+                        failure_kind: None,
+                        exit_code: Some(0),
+                        result_summary: result_summary.clone(),
+                        failure_reason: None,
+                    });
+                    rows.push(pending_row(&meta, tree_id, &fact, timestamp)?);
+                }
+            }
             // 遷移・観測の導出はログに書かない。
-            WorkflowEvent::ApprovalRequested { .. }
-            | WorkflowEvent::StallObserved { .. }
-            | WorkflowEvent::StallCleared { .. } => {}
+            WorkflowEvent::StallObserved { .. } | WorkflowEvent::StallCleared { .. } => {}
         }
     }
     Ok(rows)
@@ -401,9 +478,16 @@ pub(crate) fn append_facts_for_events(
     if events.is_empty() {
         return Ok(());
     }
+    append_pending_rows_blocking(store, pending_rows_for_events(store, events)?)
+}
+
+pub(crate) fn pending_rows_for_events(
+    store: &Arc<LocalEventStore>,
+    events: &[WorkflowEvent],
+) -> Result<Vec<PendingFactRow>, String> {
     let lookup_store = Arc::clone(store);
     let root_store = Arc::clone(store);
-    let rows = fact_rows_for_events(
+    fact_rows_for_events(
         events,
         move |node_execution_id| {
             let node_execution_id = node_execution_id.to_string();
@@ -427,8 +511,7 @@ pub(crate) fn append_facts_for_events(
                 .map(|row| meta_from_row(&row))
                 .transpose()
         },
-    )?;
-    append_pending_rows_blocking(store, rows)
+    )
 }
 
 /// 完了事実を含む行列は原子的に、それ以外は単一行ずつ append する。
@@ -878,8 +961,7 @@ pub(crate) struct TreeReconciliation {
 }
 
 /// 1 tree の冪等 reconciliation パス:
-/// 導出された状態を見て、まだ実行していない行動（プロセス喪失の観測・
-/// 途切れた前進）を実行し、実行した事実を追記して、再導出した状態を返す。
+/// 導出された状態を見て途切れた前進を実行し、その事実を追記する。
 ///
 /// 既に事実が揃っている行動は導出の差分に現れないため、同じパスを何度
 /// 実行しても新しい行は生まれない（冪等）。
@@ -888,16 +970,29 @@ pub(crate) fn reconcile_tree_pass(
     tree_id: &str,
     now: f64,
     new_id: &mut dyn FnMut() -> String,
-) -> Result<Option<TreeReconciliation>, String> {
+) -> Result<Option<TreeReconciliation>, crate::domain::workflow::WorkflowError> {
+    use crate::adaptor::gateway::local_event_store::writer::NodeEventWriteError;
     use crate::domain::workflow::entities::workflow_execution::{
         ExecutionAdvanceDecision, RuntimeNodeExecutionStatus,
     };
-    use crate::domain::workflow::{NodeCompletionSignalState, ProcessExitedFact};
+    use crate::domain::workflow::{NodeCompletionSignalState, WorkflowError};
 
     let backend = FactLogReadBackend::Live(Arc::clone(store));
-    let records = read_tree_records_from(&backend, tree_id)?;
+    let requested = tree_id.to_string();
+    let rows = backend
+        .run_indexed(move |connection| {
+            node_events::read_tree(connection, &requested)
+                .map_err(|_| LocalEventQueryError::InvalidRequest)
+        })
+        .map_err(|error| {
+            WorkflowError::external(format!("node fact tree read failed: {error:?}"))
+        })?;
+    let mut head = rows.last().map_or(0, |row| row.seq);
+    let records = records_from_tree_rows(&rows).map_err(WorkflowError::external)?;
+    drop(rows);
     let Some(folded) =
-        crate::domain::workflow::services::fact_replay::fold_execution_tree(tree_id, &records)?
+        crate::domain::workflow::services::fact_replay::fold_execution_tree(tree_id, &records)
+            .map_err(WorkflowError::external)?
     else {
         return Ok(None);
     };
@@ -937,48 +1032,18 @@ pub(crate) fn reconcile_tree_pass(
     }
     let mut pending_leaf_ids = Vec::new();
 
-    // 1) started だけが永続化された leaf は未起動なので再実行対象に戻す。
-    //    attach / spawn まで記録された leaf だけを、前プロセスと共に消えた
-    //    プロセスの喪失として観測する。
     for node in &folded.aggregate.node_executions {
-        let is_leaf = matches!(node.kind, NodeKindName::Session | NodeKindName::Command);
-        if !is_leaf
-            || exited.contains(node.id.as_str())
-            || node.status != RuntimeNodeExecutionStatus::Running
-            || node.completion_signals == NodeCompletionSignalState::StopReceived
+        if matches!(node.kind, NodeKindName::Session | NodeKindName::Command)
+            && node.status == RuntimeNodeExecutionStatus::Running
+            && node.completion_signals != NodeCompletionSignalState::StopReceived
+            && !exited.contains(node.id.as_str())
+            && !activated.contains(node.id.as_str())
+            && !failed.contains(node.id.as_str())
         {
-            continue;
+            pending_leaf_ids.push(node.id.clone());
         }
-        if !activated.contains(node.id.as_str()) {
-            if !failed.contains(node.id.as_str()) {
-                pending_leaf_ids.push(node.id.clone());
-            }
-            continue;
-        }
-        let meta = NodeFactMeta {
-            tree_id: tree_id.to_string(),
-            node_execution_id: node.id.clone(),
-            parent_id: node.parent.as_ref().map(|parent| parent.parent_id.clone()),
-            node_name: node.node_name.clone(),
-            kind: node.kind,
-            attempt: node.attempt,
-        };
-        append_single_fact(
-            store,
-            &meta,
-            &NodeFact::ProcessExited(ProcessExitedFact {
-                failure_kind: None,
-                exit_code: None,
-                result_summary: None,
-                failure_reason: Some("process lost across application restart".to_string()),
-            }),
-            (now * 1000.0) as i64,
-        )?;
     }
-    // 2) 喪失を含めて再導出し、未実行の前進を実行して事実を追記する。
-    let Some(mut folded) = fold_tree_from(&backend, tree_id)? else {
-        return Ok(None);
-    };
+    let mut folded = folded;
     let mut leaves = pending_leaf_ids
         .into_iter()
         .map(|node_execution_id| {
@@ -986,7 +1051,7 @@ pub(crate) fn reconcile_tree_pass(
                 .aggregate
                 .leaf_start_for(&node_execution_id)
                 .map(crate::domain::workflow::entities::workflow_execution::NodeStart::Leaf)
-                .map_err(|error| error.to_string())
+                .map_err(|error| WorkflowError::external(error.to_string()))
         })
         .collect::<Result<Vec<_>, _>>()?;
     let mut advance_rounds = 0;
@@ -1004,9 +1069,9 @@ pub(crate) fn reconcile_tree_pass(
             break;
         }
         if advance_rounds == MAX_RECONCILIATION_ADVANCE_ROUNDS {
-            return Err(format!(
+            return Err(WorkflowError::external(format!(
                 "workflow tree {tree_id} reconciliation exceeded {MAX_RECONCILIATION_ADVANCE_ROUNDS} advance rounds"
-            ));
+            )));
         }
         advance_rounds += 1;
         for advance in advances {
@@ -1023,8 +1088,33 @@ pub(crate) fn reconcile_tree_pass(
             let applied = folded
                 .aggregate
                 .apply_pending_advance(&advance, new_id, now)
-                .map_err(|error| error.to_string())?;
-            append_facts_for_events(store, &applied.events)?;
+                .map_err(|error| WorkflowError::external(error.to_string()))?;
+            let rows =
+                pending_rows_for_events(store, &applied.events).map_err(WorkflowError::external)?;
+            let sequences = match store.append_node_events_at_head_blocking(
+                rows.iter()
+                    .map(|row| (row.row.clone(), Some(row.timestamp_ms)))
+                    .collect(),
+                Some((tree_id.into(), head)),
+            ) {
+                Err(NodeEventWriteError::OutcomeUnknown) => {
+                    resolve_unknown_append(store, rows, Some(head)).map_err(|error| {
+                        WorkflowError::external(format!(
+                            "startup advancement readback failed: {error:?}"
+                        ))
+                    })?
+                }
+                result => result,
+            }
+            .map_err(|error| match error {
+                NodeEventWriteError::Conflict => WorkflowError::Conflict(format!(
+                    "workflow tree {tree_id} changed before startup advancement commit"
+                )),
+                error => {
+                    WorkflowError::external(format!("startup advancement commit failed: {error}"))
+                }
+            })?;
+            head = sequences.last().copied().unwrap_or(head);
             if let ExecutionAdvanceDecision::StartNodes(applied_leaves) = applied.decision {
                 leaves.extend(applied_leaves);
             }

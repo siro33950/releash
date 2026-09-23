@@ -50,6 +50,11 @@ use crate::domain::local_event::{
     SafeOperationFailure, SessionOperationFailureKind,
 };
 
+fn node_append_error(error: rusqlite::Error) -> NodeEventWriteError {
+    log::error!("node event append failed [{}]: {error}", correlation_id());
+    NodeEventWriteError::StorageUnavailable
+}
+
 fn correlation_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
@@ -726,31 +731,25 @@ impl LocalEventStore {
                             }
                             WriteRequest::NodeEventAppend(request) => {
                                 fault.wait_before_node_event_append_if_armed();
-                                let result = (|| -> Result<_, rusqlite::Error> {
-                                    let transaction = writer_connection.unchecked_transaction()?;
-                                    let sequences = request
-                                        .rows
-                                        .iter()
-                                        .map(|(row, timestamp_ms)| {
-                                            node_events::append_node_event(
-                                                &transaction,
-                                                row,
-                                                timestamp_ms
-                                                    .unwrap_or_else(|| clock.now_ms())
-                                                    .max(0),
-                                            )
-                                        })
-                                        .collect::<Result<Vec<_>, _>>()?;
-                                    transaction.commit()?;
+                                let result = (|| -> Result<_, NodeEventWriteError> {
+                                    let transaction = writer_connection.unchecked_transaction()
+                                        .map_err(node_append_error)?;
+                                    if let Some((tree_id, expected)) = &request.expected_tree_head {
+                                        let current: i64 = transaction.query_row(
+                                            "SELECT COALESCE(MAX(seq), 0) FROM node_events WHERE tree_id = ?1",
+                                            [tree_id], |row| row.get(0),
+                                        ).map_err(node_append_error)?;
+                                        if current != *expected {
+                                            return Err(NodeEventWriteError::Conflict);
+                                        }
+                                    }
+                                    let sequences = request.rows.iter().map(|(row, timestamp_ms)| {
+                                        node_events::append_node_event(&transaction, row,
+                                            timestamp_ms.unwrap_or_else(|| clock.now_ms()).max(0))
+                                    }).collect::<Result<Vec<_>, _>>().map_err(node_append_error)?;
+                                    transaction.commit().map_err(node_append_error)?;
                                     Ok(sequences)
-                                })()
-                                .map_err(|error| {
-                                    let correlation = correlation_id();
-                                    log::error!(
-                                        "node event append failed [{correlation}]: {error}"
-                                    );
-                                    NodeEventWriteError::StorageUnavailable
-                                });
+                                })();
                                 if fault.take_drop_reply() {
                                     drop(request.reply);
                                 } else {
@@ -971,11 +970,20 @@ impl LocalEventStore {
         &self,
         rows: Vec<(NewNodeEventRow, Option<i64>)>,
     ) -> Result<Vec<i64>, NodeEventWriteError> {
+        self.append_node_events_at_head_blocking(rows, None)
+    }
+
+    pub(crate) fn append_node_events_at_head_blocking(
+        &self,
+        rows: Vec<(NewNodeEventRow, Option<i64>)>,
+        expected_tree_head: Option<(String, i64)>,
+    ) -> Result<Vec<i64>, NodeEventWriteError> {
         let (reply, receiver) = mpsc::sync_channel(1);
         match self
             .queue
             .admit(WriteRequest::NodeEventAppend(NodeEventAppendRequest {
                 rows,
+                expected_tree_head,
                 reply,
             })) {
             Ok(()) => {}

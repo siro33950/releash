@@ -53,10 +53,8 @@ fn workflow_location(tree_id: &str, node_execution_id: &str) -> AgentSessionTree
 #[derive(Default)]
 struct RecordingStartedExecutionTrees {
     operation_lock: Arc<tokio::sync::Mutex<()>>,
-    reservations: Mutex<Vec<String>>,
     tree_ids: Mutex<Vec<String>>,
     failure: Option<StartedExecutionTreeRegistrationError>,
-    reservation_releases: Mutex<Vec<String>>,
     releases: Mutex<Vec<String>>,
     release_failure: Mutex<Option<ExecutionTreeCacheReleaseError>>,
 }
@@ -95,14 +93,6 @@ impl crate::usecase::agent_session::ExecutionTreeCache for RecordingStartedExecu
 impl crate::usecase::agent_session::StartedExecutionTreeRegistrar
     for RecordingStartedExecutionTrees
 {
-    async fn reserve_started_execution_tree(
-        &self,
-        tree_id: &str,
-    ) -> Result<(), StartedExecutionTreeRegistrationError> {
-        self.reservations.lock().unwrap().push(tree_id.to_string());
-        Ok(())
-    }
-
     async fn register_started_execution_tree(
         &self,
         tree_id: &str,
@@ -111,17 +101,6 @@ impl crate::usecase::agent_session::StartedExecutionTreeRegistrar
         if let Some(error) = self.failure {
             return Err(error);
         }
-        Ok(())
-    }
-
-    async fn release_started_execution_tree_reservation(
-        &self,
-        tree_id: &str,
-    ) -> Result<(), StartedExecutionTreeRegistrationError> {
-        self.reservation_releases
-            .lock()
-            .unwrap()
-            .push(tree_id.to_string());
         Ok(())
     }
 }
@@ -846,25 +825,13 @@ async fn test_agent_session_launch_利用可能な選択providerをterminal_root
     assert_eq!(spawns[0].process.executable(), "/opt/bin/provider");
     assert_eq!((spawns[0].rows, spawns[0].cols), (30, 120));
     assert_eq!(
-        execution_trees.reservations.lock().unwrap().as_slice(),
-        &[expected_id.to_string()]
-    );
-    assert_eq!(
         execution_trees.tree_ids.lock().unwrap().as_slice(),
-        &[expected_id.to_string()]
-    );
-    assert_eq!(
-        execution_trees
-            .reservation_releases
-            .lock()
-            .unwrap()
-            .as_slice(),
         &[expected_id.to_string()]
     );
 }
 
 #[tokio::test]
-async fn test_agent_session_launch_create_commit失敗でも実行木予約を解放する() {
+async fn test_agent_session_launch_create_commit失敗では実行木を登録しない() {
     let seed = AgentSession::create(
         "seed",
         WorkspaceIdentity::new("/seed"),
@@ -903,16 +870,7 @@ async fn test_agent_session_launch_create_commit失敗でも実行木予約を�
         .unwrap_err();
 
     assert_eq!(error, AgentSessionLaunchUsecaseError::StorageUnavailable);
-    let expected_id = execution_trees.reservations.lock().unwrap()[0].clone();
     assert!(execution_trees.tree_ids.lock().unwrap().is_empty());
-    assert_eq!(
-        execution_trees
-            .reservation_releases
-            .lock()
-            .unwrap()
-            .as_slice(),
-        std::slice::from_ref(&expected_id)
-    );
 }
 
 #[tokio::test]
@@ -971,18 +929,6 @@ async fn test_agent_session_launch_実行木登録失敗ではcreateと起動資
     assert!(repository.stored.lock().unwrap().is_none());
     assert_eq!(repository.atomic_create_calls.load(Ordering::SeqCst), 1);
     let expected_id = execution_trees.tree_ids.lock().unwrap()[0].clone();
-    assert_eq!(
-        execution_trees.reservations.lock().unwrap().as_slice(),
-        std::slice::from_ref(&expected_id)
-    );
-    assert_eq!(
-        execution_trees
-            .reservation_releases
-            .lock()
-            .unwrap()
-            .as_slice(),
-        std::slice::from_ref(&expected_id)
-    );
     assert_eq!(
         execution_trees.releases.lock().unwrap().as_slice(),
         std::slice::from_ref(&expected_id)
@@ -1576,18 +1522,6 @@ async fn test_agent_session_history_resume_実行木登録失敗ではcreateをr
 
     assert_eq!(error, AgentSessionLaunchUsecaseError::StorageUnavailable);
     let expected_id = execution_trees.tree_ids.lock().unwrap()[0].clone();
-    assert_eq!(
-        execution_trees.reservations.lock().unwrap().as_slice(),
-        std::slice::from_ref(&expected_id)
-    );
-    assert_eq!(
-        execution_trees
-            .reservation_releases
-            .lock()
-            .unwrap()
-            .as_slice(),
-        std::slice::from_ref(&expected_id)
-    );
     assert!(sessions.find(&expected_id).await.unwrap().is_none());
     assert_eq!(
         execution_trees.releases.lock().unwrap().as_slice(),
@@ -1756,18 +1690,6 @@ async fn test_agent_session_history_resumeは新しいsessionを作り失敗時�
     );
     assert_eq!(
         execution_trees.tree_ids.lock().unwrap().as_slice(),
-        std::slice::from_ref(&expected_id)
-    );
-    assert_eq!(
-        execution_trees.reservations.lock().unwrap().as_slice(),
-        std::slice::from_ref(&expected_id)
-    );
-    assert_eq!(
-        execution_trees
-            .reservation_releases
-            .lock()
-            .unwrap()
-            .as_slice(),
         std::slice::from_ref(&expected_id)
     );
     let record = captured_terminal_spawn_failure(&expected_id).unwrap();

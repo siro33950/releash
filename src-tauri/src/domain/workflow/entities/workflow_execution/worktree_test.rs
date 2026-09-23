@@ -509,3 +509,134 @@ fn test_起動契約_隔離合成子は準備要求だけを返し葉runtimeと�
         assert_eq!(leaf.node_name, "work");
     }
 }
+
+#[test]
+fn test_worktree準備判定_実行中と導出で完了済みの合成子を許可しabort後を拒否する() {
+    // Given
+    let mut execution = execution("  main: {worktree: isolated, fanout: {items: [], children: [work]}}\n  work: {command: true}");
+    let mut ids = ids();
+    let root = leaves(execution.start_root(&mut ids, 1.0).unwrap()).remove(0);
+    let id = root.node_execution_id();
+    // When / Then
+    assert!(execution.can_prepare_node_worktree(id));
+    let mut aborted = execution.clone();
+    aborted.transition_aborted();
+    assert!(!aborted.can_prepare_node_worktree(id));
+    execution
+        .start_prepared_composite(id, &mut ids, 2.0)
+        .unwrap();
+    assert_eq!(
+        execution.node_execution(id).unwrap().status,
+        RuntimeNodeExecutionStatus::Succeeded
+    );
+    assert!(execution.can_prepare_node_worktree(id));
+    assert!(!execution.can_prepare_node_worktree("missing"));
+}
+
+#[test]
+fn test_合成子再入_成功済みの祖先から未実行の後続へ一度だけ前進する() {
+    // Given
+    let mut execution = execution("  main: {sequence: {children: [group, next]}}\n  group: {sequence: {children: [inner]}}\n  inner: {worktree: isolated, fanout: {items: [], children: [work]}}\n  work: {command: 'true'}\n  next: {command: 'true'}");
+    let mut ids = ids();
+    let inner = leaves(execution.start_root(&mut ids, 1.0).unwrap()).remove(0);
+    let group = execution
+        .node_execution(inner.node_execution_id())
+        .unwrap()
+        .parent
+        .as_ref()
+        .unwrap()
+        .parent_id
+        .clone();
+    for id in [inner.node_execution_id(), group.as_str()] {
+        assert_eq!(
+            execution.complete_node_execution(id, None, None, 2.0),
+            TransitionOutcome::Applied
+        );
+    }
+
+    // When
+    let applied = execution
+        .start_prepared_composite(inner.node_execution_id(), &mut ids, 3.0)
+        .unwrap();
+
+    // Then
+    assert!(!applied.events.is_empty());
+    let starts = leaves(applied);
+    assert_eq!(starts.len(), 1);
+    assert_eq!(starts[0].node_name(), "next");
+    let count = execution.node_executions.len();
+    let repeated = execution
+        .start_prepared_composite(inner.node_execution_id(), &mut ids, 4.0)
+        .unwrap();
+    assert!(matches!(
+        repeated.decision,
+        ExecutionAdvanceDecision::Persist
+    ));
+    assert!(repeated.events.is_empty());
+    assert_eq!(execution.node_executions.len(), count);
+}
+
+#[test]
+fn test_合成子再入_成功済みdelegate子は未注入の結果だけ返す() {
+    // Given
+    let mut execution = execution("  main:\n    session: {provider: codex}\n    artifact: result\n    completion:\n      delegate: {child: group, when: child.work.ok, max_iterations: 2}\n  group: {worktree: isolated, sequence: {children: [work]}}\n  work: {command: 'true'}");
+    let mut ids = ids();
+    let parent = leaves(execution.start_root(&mut ids, 1.0).unwrap()).remove(0);
+    let parent_id = parent.node_execution_id();
+    execution.attach_node_session(parent_id, "session".into(), 1.0);
+    execution.record_node_completion_signal(parent_id, NodeCompletionSignal::Submit, 2.0);
+    execution.apply_submitted_output(
+        "main".into(),
+        parent_id,
+        1,
+        Some("session".into()),
+        "result".into(),
+        json!({}),
+        None,
+        2.0,
+    );
+    execution.record_node_completion_signal(parent_id, NodeCompletionSignal::Stop, 2.0);
+    let advance = execution
+        .apply_node_completion_handshake(parent_id, &mut ids, 2.0)
+        .unwrap();
+    let Some(ExecutionAdvanceDecision::StartNodes(starts)) = advance.advance else {
+        panic!("delegate child must start");
+    };
+    let child_id = starts[0].node_execution_id();
+    let work = leaves(
+        execution
+            .start_prepared_composite(child_id, &mut ids, 2.0)
+            .unwrap(),
+    )
+    .remove(0);
+    complete(&mut execution, &work, Some(json!({"ok": false})), &mut ids);
+    assert_eq!(
+        execution.node_execution(child_id).unwrap().status,
+        RuntimeNodeExecutionStatus::Succeeded
+    );
+    let count = execution.node_executions.len();
+
+    // When
+    let applied = execution
+        .start_prepared_composite(child_id, &mut ids, 4.0)
+        .unwrap();
+
+    // Then
+    assert!(applied.events.is_empty());
+    let starts = leaves(applied);
+    let [NodeStart::InjectDelegate(injection)] = starts.as_slice() else {
+        panic!("pending result must be injected");
+    };
+    assert_eq!(injection.node_execution_id, parent_id);
+    assert_eq!(injection.child_execution_id, child_id);
+    execution.record_delegate_injected(injection, 4.0);
+    let repeated = execution
+        .start_prepared_composite(child_id, &mut ids, 5.0)
+        .unwrap();
+    assert!(matches!(
+        repeated.decision,
+        ExecutionAdvanceDecision::Persist
+    ));
+    assert!(repeated.events.is_empty());
+    assert_eq!(execution.node_executions.len(), count);
+}

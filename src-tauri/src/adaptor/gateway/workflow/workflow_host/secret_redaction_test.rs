@@ -72,7 +72,7 @@ schemas:
             .await;
         let snapshot = fixture
             .host
-            .get_state_by_execution_id(&execution_id)
+            .get_state_by_execution_id(&fixture.app, &execution_id)
             .await
             .unwrap();
         let node = snapshot
