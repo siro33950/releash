@@ -830,7 +830,7 @@ test("stable creates its version tag at the selected nightly commit and requires
     rest: {
       git: { createRef: async args => calls.push(["tag", args]) },
       repos: {
-        getCommit: async () => { throw Object.assign(new Error("Missing tag"), { status: 404 }); },
+        getCommit: async () => { throw Object.assign(new Error("Missing tag"), { status: 422 }); },
         createRelease: async args => { calls.push(["release", args]); return { data: { id: 42 } }; },
       },
     },

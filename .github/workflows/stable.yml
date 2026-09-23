@@ -62,7 +62,7 @@ jobs:
             const commit = await github.rest.repos.getCommit({
               ...context.repo, ref: `tags/${tag}`,
             }).then(response => response.data).catch(error => {
-              if (error.status !== 404) throw error;
+              if (error.status !== 404 && error.status !== 422) throw error;
               return null;
             });
             if (commit && commit.sha !== process.env.RELEASE_SHA) throw new Error('Stable tag points to a different commit');
