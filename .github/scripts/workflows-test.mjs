@@ -869,6 +869,19 @@ test("stable creates its version tag at the selected nightly commit and requires
   }
 });
 
+test("stable creates its tag with a workflows-capable token instead of GITHUB_TOKEN", () => {
+  const create = jobs(stableConfig)["create-release"];
+  assert.doesNotMatch(create, /^    permissions:$/m);
+  const secrets = steps(create).find(step => value(step, "id") === "secrets");
+  assert.ok(value(secrets, "uses").startsWith("1password/load-secrets-action@"));
+  assert.equal(value(section(secrets, "        env:"), "OP_SERVICE_ACCOUNT_TOKEN"), "${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}");
+  assert.equal(value(section(secrets, "        env:"), "STABLE_RELEASE_TOKEN"), "op://releash/releash-stable-release/token");
+  assert.equal(value(secrets, "export-env"), "false");
+  const createStep = steps(create).find(step => value(step, "id") === "create");
+  assert.equal(value(createStep, "github-token"), "${{ steps.secrets.outputs.STABLE_RELEASE_TOKEN }}");
+  assert.ok(steps(create).indexOf(secrets) < steps(create).indexOf(createStep));
+});
+
 test("both builds preserve signing, notarization, updater artifacts, telemetry and universal Tauri build settings", () => {
   for (const config of [nightlyConfig, stableConfig]) {
     const build = config === nightlyConfig ? jobs(config).release : jobs(config).build;
