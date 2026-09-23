@@ -39,8 +39,6 @@ jobs:
     needs: resolve
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    permissions:
-      contents: write
     outputs:
       release-id: ${{ steps.create.outputs.release-id }}
       sha: ${{ needs.resolve.outputs.sha }}
@@ -48,12 +46,22 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ needs.resolve.outputs.sha }}
+      # GITHUB_TOKEN は workflow ファイルがブランチ先端と異なる commit へタグを作れないため、workflows 権限を持つ token を使う
+      - id: secrets
+        uses: 1password/load-secrets-action@70062d7a876d3eb6334754fa26efd2fbd90c32f2 # v5
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          STABLE_RELEASE_TOKEN: op://releash/releash-stable-release/token
+        with:
+          version: "2.38.1"
+          export-env: false
       - id: create
         uses: actions/github-script@v9
         env:
           RELEASE_SHA: ${{ needs.resolve.outputs.sha }}
           NIGHTLY_TAG: ${{ inputs.nightly }}
         with:
+          github-token: ${{ steps.secrets.outputs.STABLE_RELEASE_TOKEN }}
           script: |
             const { version } = require('./package.json');
             if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error('Expected an X.Y.Z version');
