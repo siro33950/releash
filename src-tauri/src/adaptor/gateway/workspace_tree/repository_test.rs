@@ -223,6 +223,7 @@ fn reported_fanout_events(execution_id: &str, workspace: &str) -> Vec<WorkflowEv
             execution_id: execution_id.to_string(),
             node_execution_id: REPORTED_FANOUT_CHILD_1_ID.to_string(),
             node_name: "review_acceptance_opus".to_string(),
+            result_summary: None,
             timestamp: 5.0,
         },
         WorkflowEvent::ApprovalResolved {
@@ -419,6 +420,7 @@ fn reported_fanout_events(execution_id: &str, workspace: &str) -> Vec<WorkflowEv
             execution_id: execution_id.to_string(),
             node_execution_id: REPORTED_FANOUT_CHILD_2_ID.to_string(),
             node_name: "review_acceptance_opus".to_string(),
+            result_summary: None,
             timestamp: 12.0,
         },
     ]

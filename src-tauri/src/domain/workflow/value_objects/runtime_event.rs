@@ -117,6 +117,8 @@ pub enum WorkflowEvent {
         execution_id: String,
         node_execution_id: String,
         node_name: String,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        result_summary: Option<String>,
         timestamp: f64,
     },
     ApprovalResolved {

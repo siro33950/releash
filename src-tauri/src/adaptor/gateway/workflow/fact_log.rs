@@ -424,7 +424,9 @@ fn fact_rows_for_events(
                 rows.push(pending_row(&meta, tree_id, &fact, timestamp)?);
             }
             WorkflowEvent::ApprovalRequested {
-                node_execution_id, ..
+                node_execution_id,
+                result_summary,
+                ..
             } => {
                 let meta = resolve(&batch_meta, node_execution_id)?;
                 // command の承認待ち入りはプロセス終了の事実。承認待ちは導出。
@@ -432,7 +434,7 @@ fn fact_rows_for_events(
                     let fact = NodeFact::ProcessExited(ProcessExitedFact {
                         failure_kind: None,
                         exit_code: Some(0),
-                        result_summary: None,
+                        result_summary: result_summary.clone(),
                         failure_reason: None,
                     });
                     rows.push(pending_row(&meta, tree_id, &fact, timestamp)?);

@@ -1447,6 +1447,7 @@ impl ExecutionTree {
                     execution_id: self.runtime.id.clone(),
                     node_execution_id: scope_id.to_string(),
                     node_name: scope.node_name.clone(),
+                    result_summary: None,
                     timestamp,
                 });
             }
@@ -2792,6 +2793,7 @@ impl ExecutionTree {
                         execution_id: self.id.clone(),
                         node_execution_id: node.id,
                         node_name: node.node_name,
+                        result_summary: None,
                         timestamp,
                     }],
                 })

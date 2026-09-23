@@ -1038,6 +1038,13 @@ impl WorkflowRuntimeHost {
                 .inject_delegate_result(app, execution_id, &injection)
                 .await
             {
+                if matches!(error, WorkflowRuntimeError::Conflict(_)) {
+                    log::warn!(
+                        "workflow {execution_id}: delegate result injection into {} was not applied: {error}",
+                        injection.node_execution_id
+                    );
+                    continue;
+                }
                 Box::pin(self.settle_runtime_failure_for_node(
                     app,
                     execution_id,
@@ -1299,6 +1306,12 @@ impl WorkflowRuntimeHost {
                     .inject_delegate_result(app, &execution_id, &injection)
                     .await
                 {
+                    if matches!(error, WorkflowRuntimeError::Conflict(_)) {
+                        log::warn!(
+                            "workflow {execution_id}: delegate result injection into {node_execution_id} was not applied: {error}"
+                        );
+                        continue;
+                    }
                     self.settle_runtime_failure_for_node(
                         app,
                         &execution_id,
@@ -1677,6 +1690,7 @@ impl WorkflowRuntimeHost {
                         execution_id: input.execution_id.clone(),
                         node_execution_id: input.node_execution_id.clone(),
                         node_name: input.node_name.clone(),
+                        result_summary: Some(result_summary.clone()),
                         timestamp,
                     });
                     None
@@ -2118,6 +2132,13 @@ impl WorkflowRuntimeHost {
                     if let Err(settle_error) =
                         Box::pin(self.settle_runtime_failure(app, &snapshot.execution_id, &e)).await
                     {
+                        if matches!(settle_error, WorkflowRuntimeError::Conflict(_)) {
+                            log::warn!(
+                                "workflow {}: post-commit node start was not applied: {e}",
+                                snapshot.execution_id
+                            );
+                            return Ok(());
+                        }
                         return Err(WorkflowRuntimeError::InvalidState(format!(
                             "{e}; NodeFailed settlement failed: {settle_error}"
                         )));

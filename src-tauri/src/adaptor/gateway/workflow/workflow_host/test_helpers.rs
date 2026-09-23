@@ -75,6 +75,7 @@ pub(crate) struct TestSessions {
     pub(super) recovery_fails: AtomicBool,
     pub(super) stop_fails: AtomicBool,
     pub(super) preparation_fails: AtomicBool,
+    pub(super) preparation_conflicts: AtomicBool,
     pub(super) block_preparation: AtomicBool,
     pub(super) preparation_entered: tokio::sync::Notify,
     pub(super) preparation_release: tokio::sync::Notify,
@@ -108,6 +109,9 @@ impl WorkflowAgentSessionPort for TestSessions {
             .push((workspace.into(), cwd.into(), node_id.into()));
         if self.preparation_fails.load(Ordering::SeqCst) {
             return Err(WorkflowRuntimeError::AgentSession("prepare failed".into()));
+        }
+        if self.preparation_conflicts.load(Ordering::SeqCst) {
+            return Err(WorkflowRuntimeError::Conflict("prepare conflicted".into()));
         }
         self.initial_instructions
             .lock()

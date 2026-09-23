@@ -540,6 +540,7 @@ mod mapping_tests {
                 execution_id: TREE.to_string(),
                 node_execution_id: "s-exec".to_string(),
                 node_name: "a".to_string(),
+                result_summary: None,
                 timestamp: 2.0,
             },
         ];
@@ -560,7 +561,7 @@ mod mapping_tests {
     }
 
     #[test]
-    fn test_写像_commandの承認要求は正常終了の事実として記録する() {
+    fn test_写像_commandの承認要求は結果要約付きの正常終了の事実として記録する() {
         // Given
         let events = vec![
             node_started("c-exec", "run", NodeKindName::Command, None, 1.0),
@@ -568,6 +569,7 @@ mod mapping_tests {
                 execution_id: TREE.to_string(),
                 node_execution_id: "c-exec".to_string(),
                 node_name: "run".to_string(),
+                result_summary: Some("exit_code=0".to_string()),
                 timestamp: 2.0,
             },
         ];
@@ -584,7 +586,7 @@ mod mapping_tests {
             fact_codec::decode(&row.event_type, &row.detail).unwrap(),
             NodeFact::ProcessExited(ProcessExitedFact {
                 exit_code: Some(0),
-                result_summary: None,
+                result_summary: Some("exit_code=0".to_string()),
                 failure_reason: None,
                 failure_kind: None,
             })

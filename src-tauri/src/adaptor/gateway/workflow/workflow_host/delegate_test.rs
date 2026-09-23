@@ -1803,3 +1803,161 @@ async fn test_delegate_新attemptのresumeでも未注入結果を送り再生�
         assert_eq!(records.iter().filter(|record| record.meta.node_execution_id == next.id && matches!(&record.fact, NodeFact::DelegateResultInjected(id) if id == &child.id)).count(), 1);
     }
 }
+
+#[tokio::test]
+async fn test_delegate_結果注入が競合しても同じ回の他leafを起動し親を失敗扱いにしない() {
+    // Given
+    let fixture = Fixture::new(0);
+    let snapshot = fixture
+        .persist_started(
+            "  main: {fanout: {children: [parent, other, writer]}}\n  parent: {artifact: result, session: {provider: codex, facets: {instruction: policy-confirmation}}, completion: {delegate: {child: check, when: child.passed, max_iterations: 2}}}\n  check: {artifact: result, session: {provider: codex, facets: {instruction: policy-confirmation}}}\n  other: {session: {provider: codex, facets: {instruction: policy-confirmation}}}\n  writer: {command: must-not-start}\nschemas:\n  result: {type: object, properties: {passed: {type: boolean}}, required: [passed]}",
+            "/repo",
+        )
+        .await;
+    let tree = snapshot.execution_id.clone();
+    let node = |execution: &DomainExecutionTree, name: &str| {
+        execution
+            .node_executions
+            .iter()
+            .find(|node| node.node_name == name)
+            .unwrap()
+            .clone()
+    };
+    let execution = fixture
+        .host
+        .load_execution(&fixture.app, &tree)
+        .await
+        .unwrap();
+    let parent_id = node(&execution, "parent").id;
+    fixture
+        .host
+        .start_nodes(
+            &fixture.app,
+            &tree,
+            "/repo",
+            vec![NodeStart::Leaf(
+                execution.leaf_start_for(&parent_id).unwrap(),
+            )],
+        )
+        .await
+        .unwrap();
+    let control = control(&fixture, &fixture.host);
+    submit(&control, &parent_id, serde_json::json!({"passed": false})).await;
+    let execution = fixture
+        .host
+        .load_execution(&fixture.app, &tree)
+        .await
+        .unwrap();
+    stop(&control, &tree, &node(&execution, "parent")).await;
+    let child = node(&execution, "check");
+    submit(&control, &child.id, serde_json::json!({"passed": false})).await;
+    workflow_fact_log::append_facts_for_events(
+        &fixture.store,
+        &[WorkflowEvent::NodeStopReceived {
+            execution_id: tree.clone(),
+            node_execution_id: child.id,
+            timestamp: current_timestamp(),
+        }],
+    )
+    .unwrap();
+    let execution = fixture
+        .host
+        .load_execution(&fixture.app, &tree)
+        .await
+        .unwrap();
+    let injection = execution.pending_delegate_injection(&parent_id).unwrap();
+    let other = node(&execution, "other").id;
+    let writer = node(&execution, "writer").id;
+    let starts = vec![
+        NodeStart::InjectDelegate(injection),
+        NodeStart::Leaf(execution.leaf_start_for(&other).unwrap()),
+    ];
+    fixture
+        .sessions
+        .block_continuation
+        .store(true, Ordering::SeqCst);
+    // When
+    // 指示の送信中に記録を進め、注入済みの commit を競合させる。
+    let operation = fixture
+        .host
+        .start_nodes(&fixture.app, &tree, "/repo", starts);
+    let interleave = async {
+        fixture.sessions.continuation_entered.notified().await;
+        workflow_fact_log::append_facts_for_events(
+            &fixture.store,
+            &[WorkflowEvent::CommandSpawned {
+                execution_id: tree.clone(),
+                node_execution_id: writer.clone(),
+                display_command: "external".into(),
+                timestamp: current_timestamp(),
+            }],
+        )
+        .unwrap();
+        fixture
+            .sessions
+            .block_continuation
+            .store(false, Ordering::SeqCst);
+        fixture.sessions.continuation_release.notify_one();
+    };
+    let (result, ()) = tokio::join!(operation, interleave);
+    // Then
+    result.unwrap();
+    assert!(fixture.sessions.activated.lock().unwrap().contains(&other));
+    let records = workflow_fact_log::read_tree_records(&fixture.store, &tree).unwrap();
+    assert!(!records
+        .iter()
+        .any(|record| matches!(record.fact, NodeFact::DelegateResultInjected(_))));
+    assert!(!records
+        .iter()
+        .any(|record| record.meta.node_execution_id == parent_id
+            && matches!(record.fact, NodeFact::RuntimeFailureObserved(_))));
+    let execution = fixture
+        .host
+        .load_execution(&fixture.app, &tree)
+        .await
+        .unwrap();
+    assert_eq!(
+        execution.node_execution(&parent_id).unwrap().status,
+        NodeExecutionStatus::Running
+    );
+    assert!(execution.pending_delegate_injection(&parent_id).is_some());
+}
+
+#[tokio::test]
+async fn test_delegate_child起動の失敗精算が競合しても提出は受理される() {
+    // Given
+    let fixture = Fixture::new(0);
+    let tree = fixture.start(&definition("")).await;
+    let control = control(&fixture, &fixture.host);
+    let parent = fixture
+        .host
+        .load_executions(&fixture.app, &tree)
+        .await
+        .unwrap()[&tree]
+        .node_executions[0]
+        .clone();
+    fixture
+        .sessions
+        .preparation_conflicts
+        .store(true, Ordering::SeqCst);
+    // When
+    let result = control
+        .submit_output(SubmitOutputCommand {
+            node_execution_id: parent.id.clone(),
+            artifact: Some(SubmitOutputArtifact {
+                contract: "result".into(),
+                value: serde_json::json!({"passed": false}),
+            }),
+        })
+        .await;
+    // Then
+    result.unwrap();
+    let records = workflow_fact_log::read_tree_records(&fixture.store, &tree).unwrap();
+    assert!(records
+        .iter()
+        .any(|record| record.meta.node_name == "check"
+            && matches!(record.fact, NodeFact::Started(_))));
+    assert!(!records
+        .iter()
+        .any(|record| matches!(record.fact, NodeFact::RuntimeFailureObserved(_))));
+}
