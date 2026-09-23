@@ -11,13 +11,14 @@ pub(crate) async fn broadcast_state(
     worktree_path: &str,
     commit_snapshot: RuntimeCommitSnapshot,
 ) {
+    let workspace_identity = commit_snapshot.workspace_identity.clone();
     let mut state =
         crate::usecase::workflow::runtime_snapshot::runtime_commit_snapshot_to_domain_snapshot(
             commit_snapshot,
         );
     for node in &mut state.node_executions {
         match app.processes.presence(
-            &state.worktree_path,
+            &workspace_identity,
             &node.id,
             node.kind,
             node.session_id.as_deref(),

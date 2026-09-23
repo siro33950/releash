@@ -608,6 +608,9 @@ impl WorkflowRuntimeHost {
             node_executions: Vec::new(),
             request,
             current_stall_observations: Vec::new(),
+            workspace_identity: crate::domain::workspace_tree::WorkspaceIdentity::new(&worktree_path)
+                .as_str()
+                .to_string(),
             worktree_path: worktree_path.clone(),
             launched_as: crate::domain::workflow::ExecutionTreeLaunch::Workflow,
             repository_root,
@@ -851,7 +854,7 @@ impl WorkflowRuntimeHost {
                 })?;
                 let presence = crate::domain::workflow::NodeProcessReader::presence(
                     self.node_processes.as_ref(),
-                    &current.worktree_path,
+                    &current.workspace_identity,
                     node_execution_id,
                     node.kind,
                     node.session_id.as_deref(),

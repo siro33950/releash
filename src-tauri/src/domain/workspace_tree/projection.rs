@@ -177,8 +177,7 @@ pub fn runtime_snapshot_nodes(
                 !same_retry_target(runtime, candidate) || candidate.attempt <= runtime.attempt
             });
         node.worktree = runtime.worktree.clone();
-        node.can_resume_session =
-            execution_active && runtime.can_resume_session(node.process_presence);
+        node.can_resume_session = runtime.can_resume_session(node.process_presence);
     }
     tree.recompute_status_classifications();
     Ok(tree
@@ -932,6 +931,46 @@ mod tests {
                 assert_eq!(capability_state(leaf), capability_state(baseline_leaf));
                 assert_eq!(capability_state(root), capability_state(baseline_root));
             }
+        }
+    }
+
+    #[test]
+    fn test_session再開可否_終わった実行木の終わったnodeでもプロセスが居なければ再開できる() {
+        use crate::domain::workflow::NodeProcessPresence as P;
+        for status in [
+            RuntimeNodeExecutionStatus::Succeeded,
+            RuntimeNodeExecutionStatus::Aborted,
+        ] {
+            // Given
+            let mut runtime = node("leaf", EXECUTION_ID, status);
+            runtime.kind = NodeKindName::Session;
+            runtime.display_command = None;
+            runtime.session_id = Some("session".into());
+            runtime.completed_at = Some(2.0);
+            // When
+            let nodes = runtime_snapshot_nodes(RuntimeSnapshotNodeProjection {
+                process_presences: &[("leaf".into(), P::ConfirmedAbsent)].into_iter().collect(),
+                execution_id: EXECUTION_ID,
+                workflow_name: "workflow",
+                workspace_identity: "/repo",
+                workflow_definition: Some(&WorkflowDefinition::default()),
+                node_executions: &[runtime],
+                retry_predecessors: &Default::default(),
+                execution_active: false,
+                started_at: 1.0,
+                updated_at: 2.0,
+                execution: &execution(),
+                session_activities: &Default::default(),
+                session_display_names: &Default::default(),
+            })
+            .unwrap();
+            // Then
+            let leaf = nodes
+                .iter()
+                .find(|node| node.node_execution_id.as_deref() == Some("leaf"))
+                .unwrap();
+            assert!(leaf.can_resume_session, "{status:?}");
+            assert!(!leaf.can_retry, "{status:?}");
         }
     }
 

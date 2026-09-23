@@ -45,6 +45,12 @@ vi.mock("@/components/panels/TerminalPanel", () => ({
 }));
 
 const mockInvoke = vi.mocked(invoke);
+const resumeAction = (overrides = {}) => ({
+	pending: false,
+	error: null,
+	onResume: vi.fn(),
+	...overrides,
+});
 const session = {
 	id: "agent-session-1",
 	workspaceIdentity: "/repo",
@@ -63,7 +69,6 @@ const session = {
 		canArchive: true,
 		canRestore: false,
 		canDelete: false,
-		canResume: false,
 	},
 };
 
@@ -145,64 +150,51 @@ describe("AgentSessionPanel", () => {
 		},
 	);
 
-	it("Node内では再開可能なPausedでもAgentSessionのResumeを表示しない", async () => {
+	it("PausedではResumeを表示し押すと受け取ったResumeだけを呼ぶ", async () => {
 		mockInvoke.mockResolvedValueOnce("paused");
+		const action = resumeAction();
+
 		render(
 			<AgentSessionPanel
-				session={{
-					...session,
-					lifecycle: "paused",
-					operations: { ...session.operations, canResume: true },
-				}}
-				showResumeAction={false}
+				session={{ ...session, lifecycle: "paused" }}
+				resumeAction={action}
 			/>,
 		);
+
 		expect(await screen.findByRole("alert")).toHaveTextContent(
-			"Provider session is not running",
+			"Provider session is not running. Resume to retry.",
 		);
-		expect(
-			screen.queryByRole("button", { name: "Resume" }),
-		).not.toBeInTheDocument();
-		expect(
-			mockInvoke.mock.calls.some(
-				([command]) => command === "resume_agent_session",
-			),
-		).toBe(false);
+		fireEvent.click(screen.getByRole("button", { name: "Resume" }));
+		expect(action.onResume).toHaveBeenCalledOnce();
+		expect(mockInvoke).toHaveBeenCalledTimes(1);
+		expect(screen.queryByTestId("provider-terminal")).not.toBeInTheDocument();
 	});
 
-	it("Pausedは明示Resumeが成功するまでTerminalをattachしない", async () => {
-		mockInvoke.mockResolvedValueOnce("paused").mockResolvedValueOnce("resumed");
-
-		render(
+	it("Resume中は二重に押せず失敗理由を表示する", async () => {
+		mockInvoke.mockResolvedValueOnce("paused");
+		const { rerender } = render(
 			<AgentSessionPanel
-				session={{
-					...session,
-					lifecycle: "paused",
-					operations: { ...session.operations, canResume: true },
-				}}
+				session={{ ...session, lifecycle: "paused" }}
+				resumeAction={resumeAction({ pending: true })}
 			/>,
 		);
 
-		const resume = await screen.findByRole("button", { name: "Resume" });
-		expect(screen.queryByTestId("provider-terminal")).not.toBeInTheDocument();
-		fireEvent.click(resume);
-
-		await waitFor(() => {
-			expect(mockInvoke).toHaveBeenCalledWith("resume_agent_session", {
-				agentSessionId: "agent-session-1",
-				rows: 24,
-				cols: 80,
-				callerRequestId: expect.any(String),
-			});
-		});
-		expect(await screen.findByTestId("provider-terminal")).toBeInTheDocument();
+		expect(
+			await screen.findByRole("button", { name: "Resuming..." }),
+		).toBeDisabled();
+		rerender(
+			<AgentSessionPanel
+				session={{ ...session, lifecycle: "paused" }}
+				resumeAction={resumeAction({ error: "resume failed" })}
+			/>,
+		);
+		expect(screen.getByText("resume failed")).toBeVisible();
+		expect(screen.getByRole("button", { name: "Resume" })).toBeEnabled();
 	});
 
-	it("自動resume失敗後はPausedとerrorを表示して明示Resumeを待つ", async () => {
+	it("自動resume失敗後はPausedを表示してResumeを待つ", async () => {
 		const onRefresh = vi.fn();
-		mockInvoke
-			.mockResolvedValueOnce("paused")
-			.mockRejectedValueOnce(new Error("resume failed"));
+		mockInvoke.mockResolvedValueOnce("paused");
 
 		const { rerender } = render(
 			<AgentSessionPanel session={session} onRefresh={onRefresh} />,
@@ -215,16 +207,11 @@ describe("AgentSessionPanel", () => {
 		expect(onRefresh).toHaveBeenCalledOnce();
 		rerender(
 			<AgentSessionPanel
-				session={{
-					...session,
-					lifecycle: "paused",
-					operations: { ...session.operations, canResume: true },
-				}}
+				session={{ ...session, lifecycle: "paused" }}
+				resumeAction={resumeAction()}
 				onRefresh={onRefresh}
 			/>,
 		);
-		fireEvent.click(screen.getByRole("button", { name: "Resume" }));
-		expect(await screen.findByRole("alert")).toHaveTextContent("resume failed");
 		expect(screen.getByRole("button", { name: "Resume" })).toBeVisible();
 		expect(screen.queryByTestId("provider-terminal")).toBeNull();
 	});
@@ -260,8 +247,8 @@ describe("AgentSessionPanel", () => {
 					...session,
 					lifecycle: "paused",
 					lastExitAbnormal: true,
-					operations: { ...session.operations, canResume: true },
 				}}
+				resumeAction={resumeAction()}
 			/>,
 		);
 
@@ -271,7 +258,7 @@ describe("AgentSessionPanel", () => {
 		expect(screen.getByRole("button", { name: "Resume" })).toBeVisible();
 	});
 
-	it("provider session identity未確定のPausedではResumeを表示しない", async () => {
+	it("Resumeを受け取らないPausedではResumeを表示しない", async () => {
 		mockInvoke.mockResolvedValueOnce("paused");
 
 		render(<AgentSessionPanel session={{ ...session, lifecycle: "paused" }} />);
@@ -306,7 +293,6 @@ describe("AgentSessionPanel", () => {
 						canArchive: false,
 						canRestore: false,
 						canDelete: false,
-						canResume: false,
 					},
 				}}
 			/>,
@@ -331,7 +317,6 @@ describe("AgentSessionPanel", () => {
 						canArchive: false,
 						canRestore: true,
 						canDelete: true,
-						canResume: false,
 					},
 				}}
 			/>,
@@ -426,6 +411,37 @@ describe("AgentSessionRoute", () => {
 		expect(screen.queryByText("Loading AgentSession...")).toBeNull();
 	});
 
+	it("AgentSessionが取得できなくても受け取ったResumeを表示する", async () => {
+		mockInvoke.mockResolvedValueOnce(null);
+		const action = resumeAction();
+
+		render(
+			<AgentSessionRoute
+				agentSessionId="missing-session"
+				resumeAction={action}
+			/>,
+		);
+
+		expect(
+			await screen.findByText("AgentSession is no longer available."),
+		).toBeVisible();
+		fireEvent.click(screen.getByRole("button", { name: "Resume" }));
+		expect(action.onResume).toHaveBeenCalledOnce();
+	});
+
+	it("GC済みで不在になったAgentSessionでも受け取ったResumeを表示する", async () => {
+		mockInvoke.mockResolvedValueOnce("garbage_collected");
+
+		render(
+			<AgentSessionPanel session={session} resumeAction={resumeAction()} />,
+		);
+
+		expect(
+			await screen.findByText("AgentSession is no longer available."),
+		).toBeVisible();
+		expect(screen.getByRole("button", { name: "Resume" })).toBeVisible();
+	});
+
 	it("Restore後にbackend read modelを再取得してPausedのResume操作を表示する", async () => {
 		const archived = {
 			...session,
@@ -434,7 +450,6 @@ describe("AgentSessionRoute", () => {
 				canArchive: false,
 				canRestore: true,
 				canDelete: true,
-				canResume: false,
 			},
 		};
 		let getReads = 0;
@@ -448,7 +463,6 @@ describe("AgentSessionRoute", () => {
 						: {
 								...session,
 								lifecycle: "paused",
-								operations: { ...session.operations, canResume: true },
 							},
 				);
 			}
@@ -464,7 +478,12 @@ describe("AgentSessionRoute", () => {
 			return Promise.reject(new Error(`unexpected command: ${command}`));
 		});
 
-		render(<AgentSessionRoute agentSessionId="agent-session-1" />);
+		render(
+			<AgentSessionRoute
+				agentSessionId="agent-session-1"
+				resumeAction={resumeAction()}
+			/>,
+		);
 
 		fireEvent.click(await screen.findByRole("button", { name: "Restore" }));
 
@@ -483,7 +502,6 @@ describe("AgentSessionRoute", () => {
 				canArchive: false,
 				canRestore: true,
 				canDelete: true,
-				canResume: false,
 			},
 		};
 		let getReads = 0;

@@ -2,7 +2,11 @@ import { AlertTriangle } from "lucide-react";
 import type React from "react";
 import { useCallback, useEffect, useState } from "react";
 import { type TogglePanel, ViewToolbar } from "@/components/layout/ViewToolbar";
-import { AgentSessionRoute } from "@/components/panels/AgentSessionPanel";
+import {
+	AgentSessionRoute,
+	type SessionResumeAction,
+	SessionResumeButton,
+} from "@/components/panels/AgentSessionPanel";
 import { Button } from "@/components/ui/button";
 import { WorkflowNodeStatusIcon } from "@/components/workspace/WorkflowNodeStatusIcon";
 import {
@@ -42,6 +46,7 @@ export function NodeContentView({
 }: NodeContentViewProps) {
 	const state = useWorkspaceNodeDetail({ worktreePath, nodeId });
 	const detail = state.detail;
+	const resumeAction = useSessionResumeAction(worktreePath, detail);
 
 	useEffect(() => {
 		if (!nodeId || state.missingNodeId !== nodeId) return;
@@ -65,7 +70,7 @@ export function NodeContentView({
 						detail.content.sessionId ? (
 							<AgentSessionRoute
 								key={`${detail.content.sessionId}:${detail.processPresence}`}
-								showResumeAction={false}
+								resumeAction={resumeAction}
 								agentSessionId={detail.content.sessionId}
 								theme={theme}
 								initialAttachment={
@@ -77,7 +82,10 @@ export function NodeContentView({
 								onInitialSessionConsumed={onInitialSessionConsumed}
 							/>
 						) : (
-							<NodeEmptyState message="Session unavailable." />
+							<NodeEmptyState
+								message="Session unavailable."
+								resumeAction={resumeAction}
+							/>
 						)
 					) : detail.content.kind === "command" ? (
 						<CommandNodeContent detail={detail} content={detail.content} />
@@ -110,7 +118,6 @@ function NodeHeader({
 }) {
 	const [approving, setApproving] = useState(false);
 	const [retrying, setRetrying] = useState(false);
-	const [resuming, setResuming] = useState(false);
 	const [actionError, setActionError] = useState<string | null>(null);
 
 	const approve = useCallback(async () => {
@@ -140,19 +147,6 @@ function NodeHeader({
 			setRetrying(false);
 		}
 	}, [detail.capabilities.canRetry, detail.id, retrying, worktreePath]);
-	const resume = useCallback(async () => {
-		if (resuming || !detail.capabilities.canResumeSession) return;
-		setResuming(true);
-		setActionError(null);
-		try {
-			await resumeWorkspaceSessionNode({ worktreePath, nodeId: detail.id });
-			setActionError(null);
-		} catch (error) {
-			setActionError(getErrorMessage(error));
-		} finally {
-			setResuming(false);
-		}
-	}, [detail.capabilities.canResumeSession, detail.id, resuming, worktreePath]);
 
 	const waitingMessage =
 		detail.waitingFor === "stop"
@@ -215,11 +209,6 @@ function NodeHeader({
 			{detail.capabilities.canApprove && (
 				<Button type="button" size="xs" disabled={approving} onClick={approve}>
 					{approving ? "Approving..." : "Approve"}
-				</Button>
-			)}
-			{detail.capabilities.canResumeSession && (
-				<Button type="button" size="xs" disabled={resuming} onClick={resume}>
-					{resuming ? "Resuming..." : "Resume"}
 				</Button>
 			)}
 			{detail.capabilities.canRetry && (
@@ -303,17 +292,47 @@ function CommandOutput({
 	);
 }
 
+function useSessionResumeAction(
+	worktreePath: string,
+	detail: WorkspaceNodeDetail | null,
+): SessionResumeAction | null {
+	const [pending, setPending] = useState(false);
+	const [failure, setFailure] = useState<{
+		nodeId: string;
+		message: string;
+	} | null>(null);
+	const nodeId = detail?.id ?? null;
+	const canResume = detail?.capabilities.canResumeSession ?? false;
+	const onResume = useCallback(async () => {
+		if (pending || !canResume || nodeId == null) return;
+		setPending(true);
+		setFailure(null);
+		try {
+			await resumeWorkspaceSessionNode({ worktreePath, nodeId });
+		} catch (cause) {
+			setFailure({ nodeId, message: getErrorMessage(cause) });
+		} finally {
+			setPending(false);
+		}
+	}, [canResume, nodeId, pending, worktreePath]);
+	const error = failure?.nodeId === nodeId ? failure.message : null;
+	return canResume ? { pending, error, onResume: () => void onResume() } : null;
+}
+
 function NodeEmptyState({
 	message,
 	error,
+	resumeAction,
 }: {
 	message: string;
 	error?: string | null;
+	resumeAction?: SessionResumeAction | null;
 }) {
 	return (
 		<div className="flex h-full flex-col items-center justify-center gap-1 bg-background px-4 text-center text-sm text-muted-foreground">
 			<div>{message}</div>
 			{error && <div className="max-w-md break-words text-xs">{error}</div>}
+			{resumeAction && <SessionResumeButton action={resumeAction} />}
 		</div>
 	);
 }

@@ -31,7 +31,11 @@ vi.mock("@/hooks/useWorkspaceNodeDetail", () => ({
 }));
 vi.mock("@/components/panels/AgentSessionPanel", async () => {
 	const { useState } = await import("react");
+	const actual = await vi.importActual<
+		typeof import("@/components/panels/AgentSessionPanel")
+	>("@/components/panels/AgentSessionPanel");
 	return {
+		SessionResumeButton: actual.SessionResumeButton,
 		AgentSessionRoute: (props: Record<string, unknown>) => {
 			// 実装は initialAttachment を mount 時の state として固定するため、
 			// 再マウントされたかどうかを同じ形で観測する。
@@ -124,7 +128,7 @@ describe("NodeContentView", () => {
 			expect.objectContaining({
 				agentSessionId: "agent-session-1",
 				theme: "light",
-				showResumeAction: false,
+				resumeAction: null,
 			}),
 		);
 	});
@@ -621,4 +625,30 @@ it("Session Resume 中は二重送信を防ぎ失敗理由を表示する", asyn
 	});
 	expect(screen.getByText("provider recovery failed")).toBeVisible();
 	expect(screen.getByRole("button", { name: "Resume" })).toBeEnabled();
+});
+
+it("完了したSession NodeでもResumeを1つだけSessionへ渡しNodeのResumeを呼ぶ", async () => {
+	const detail = sessionDetail("completed", "agent-session-completed");
+	mocks.detailState.detail = {
+		...detail,
+		status: "completed",
+		processPresence: "confirmed_absent",
+		capabilities: { ...detail.capabilities, canResumeSession: true },
+	};
+	renderView("completed");
+
+	expect(
+		screen.queryByRole("button", { name: "Resume" }),
+	).not.toBeInTheDocument();
+	const props = mocks.agentSessionRoute.mock.lastCall?.[0] as {
+		resumeAction: { onResume: () => void } | null;
+	};
+	expect(props.resumeAction).not.toBeNull();
+	await act(async () => {
+		props.resumeAction?.onResume();
+	});
+	expect(mocks.resumeWorkspaceSessionNode).toHaveBeenCalledWith({
+		worktreePath: "/repo",
+		nodeId: "completed",
+	});
 });

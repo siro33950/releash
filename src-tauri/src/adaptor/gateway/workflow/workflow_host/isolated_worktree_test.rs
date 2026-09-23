@@ -1498,3 +1498,104 @@ async fn test_隔離合成子競合_上限後も兄弟と競合したchildを起
         .unwrap()
         .contains(&retried.id));
 }
+
+#[tokio::test]
+async fn test_session再開_完了したnodeは状態を変えずに会話だけを再開し会話が無ければ拒否する() {
+    // Given
+    let (fixture, root) = Fixture::with_repository();
+    let id = fixture
+        .start_at(
+            "  main:\n    session:\n      provider: codex\n      facets:\n        instruction: policy-confirmation",
+            &root,
+        )
+        .await;
+    let node = fixture
+        .host
+        .load_executions(&fixture.app, &id)
+        .await
+        .unwrap()[&id]
+        .node_executions[0]
+        .clone();
+    let control = control(&fixture);
+    control
+        .submit_output(crate::usecase::workflow::command::SubmitOutputCommand {
+            node_execution_id: node.id.clone(),
+            artifact: None,
+        })
+        .await
+        .unwrap();
+    control
+        .record_provider_stop(
+            crate::usecase::provider_lifecycle::ProviderExecutionTreeStopCommand {
+                agent_session_id: node.session_id.clone().unwrap(),
+                tree_id: id.clone(),
+                node_execution_id: node.id.clone(),
+                binding_id: "binding".into(),
+            },
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let completed = fixture
+        .host
+        .load_executions(&fixture.app, &id)
+        .await
+        .unwrap()[&id]
+        .clone();
+    assert_eq!(completed.state(), &RuntimeExecutionState::Completed);
+    assert_eq!(
+        completed.node_executions[0].status,
+        NodeExecutionStatus::Succeeded
+    );
+    fixture.sessions.live_sessions.lock().unwrap().clear();
+    let resume = || {
+        control.resume_session_node(
+            crate::usecase::workflow::command::ResumeSessionNodeCommand {
+                execution_id: id.clone(),
+                node_execution_id: node.id.clone(),
+            },
+        )
+    };
+
+    // When
+    resume().await.unwrap();
+
+    // Then
+    assert_eq!(
+        *fixture.sessions.recovered.lock().unwrap(),
+        vec![node.id.clone()]
+    );
+    let resumed = fixture
+        .host
+        .load_executions(&fixture.app, &id)
+        .await
+        .unwrap()[&id]
+        .clone();
+    assert_eq!(resumed.state(), &RuntimeExecutionState::Completed);
+    assert_eq!(resumed.node_executions.len(), 1);
+    assert_eq!(
+        resumed.node_executions[0].status,
+        NodeExecutionStatus::Succeeded
+    );
+
+    // Given
+    fixture.sessions.live_sessions.lock().unwrap().clear();
+    fixture
+        .sessions
+        .conversation_missing
+        .store(true, Ordering::SeqCst);
+
+    // When / Then
+    assert!(resume().await.is_err());
+    let rejected = fixture
+        .host
+        .load_executions(&fixture.app, &id)
+        .await
+        .unwrap()[&id]
+        .clone();
+    assert_eq!(rejected.node_executions.len(), 1);
+    assert_eq!(
+        *fixture.sessions.recovered.lock().unwrap(),
+        vec![node.id.clone()]
+    );
+}

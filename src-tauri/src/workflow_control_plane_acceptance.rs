@@ -881,17 +881,17 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             .map_err(|error| format!("{error:?}"))
     }
 
-    pub async fn resume_agent_session(&self, agent_session_id: &str) -> Result<(), String> {
-        self.provider_lifecycle
-            .resume(
-                agent_session_id,
-                24,
-                80,
-                &format!("acceptance-resume-{agent_session_id}"),
+    pub async fn resume_session_node(&self, node_execution_id: &str) -> Result<(), String> {
+        let response: MutationResponse = self
+            .post(
+                &format!("/v1/workflow/node-executions/{node_execution_id}/resume"),
+                &serde_json::json!({}),
             )
-            .await
-            .map(|_| ())
-            .map_err(|error| format!("{error:?}"))
+            .await?;
+        response
+            .ok
+            .then_some(())
+            .ok_or_else(|| "Resume response was not successful".to_string())
     }
 
     pub async fn archive_agent_session(&self, agent_session_id: &str) -> Result<(), String> {

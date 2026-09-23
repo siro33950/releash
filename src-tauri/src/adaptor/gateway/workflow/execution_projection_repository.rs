@@ -61,7 +61,7 @@ impl WorkflowExecutionProjectionRepository for WorkflowExecutionProjectionLogRep
         if let Some(processes) = &self.processes {
             for node in &mut model.node_executions {
                 node.process_presence = processes.presence(
-                    &model.worktree_path,
+                    &tree.aggregate.workspace_identity,
                     &node.id,
                     node.kind,
                     node.session_id.as_deref(),

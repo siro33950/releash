@@ -159,7 +159,7 @@ pub struct AgentSessionTuiAcceptanceHost<R: tauri::Runtime> {
     exit_observer_cancellation:
         Arc<dyn crate::domain::terminal_surface::gateway::TerminalSurfaceEventCancellation>,
     terminal: TerminalSurfaceRuntime,
-    _runtime: Arc<WorkflowRuntimeUsecase>,
+    runtime: Arc<WorkflowRuntimeUsecase>,
     workflow_agent_sessions: Arc<dyn WorkflowAgentSessionPort>,
     local_api: std::sync::Mutex<Arc<LocalApiServer>>,
     local_api_data_dir: PathBuf,
@@ -261,7 +261,7 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
                     ),
                 ),
             );
-        let driver = Arc::new(WorkflowRuntimeHost::new_canonical(
+        let mut driver = WorkflowRuntimeHost::new_canonical(
             Arc::new(AcceptanceUnusedWorkflowDefinitionResolver),
             Arc::new(AcceptanceManagedWorktreeResolver),
             workspace_query,
@@ -270,8 +270,16 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
             composition.lifecycle.clone(),
             composition.availability_reader.clone(),
             Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
-        ));
-        let dependencies = crate::desktop_test_support::workflow_dependencies(app.handle());
+        );
+        let node_processes = Arc::new(
+            crate::adaptor::gateway::workflow::node_process::WorkflowNodeProcesses::new(
+                terminal.application(),
+            ),
+        );
+        driver.node_processes = node_processes.clone();
+        let driver = Arc::new(driver);
+        let mut dependencies = crate::desktop_test_support::workflow_dependencies(app.handle());
+        dependencies.processes = node_processes;
         let startup = crate::adaptor::controller::wiring::wire_workflow_startup(
             dependencies.clone(),
             driver.clone(),
@@ -360,7 +368,7 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
             exit_observer,
             exit_observer_cancellation,
             terminal,
-            _runtime: runtime,
+            runtime,
             workflow_agent_sessions,
             local_api: std::sync::Mutex::new(local_api),
             local_api_data_dir: data_dir,
@@ -483,6 +491,13 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
         Ok(session.id)
     }
 
+    pub async fn resume_session_node(&self, node_execution_id: &str) -> Result<(), String> {
+        self.runtime
+            .resume_session_node_by_id(node_execution_id.to_string())
+            .await
+            .map_err(|error| error.to_string())
+    }
+
     pub async fn wait_until_exited(
         &self,
         workspace_identity: &str,
@@ -517,7 +532,7 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
             exit_observer,
             exit_observer_cancellation,
             terminal,
-            _runtime,
+            runtime: _runtime,
             workflow_agent_sessions,
             local_api,
             local_api_data_dir: _,

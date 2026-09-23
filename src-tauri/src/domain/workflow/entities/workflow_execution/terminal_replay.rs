@@ -20,6 +20,7 @@ impl ExecutionTree {
                 node_history: Vec::new(),
                 workflow_defaults: WorkflowDefaults,
                 worktree_path: root.worktree_path.clone(),
+                workspace_identity: root.workspace_identity.clone(),
                 repository_root: root.repository_root.clone(),
                 launched_as: root.launched_as,
                 created_from: root.created_from,

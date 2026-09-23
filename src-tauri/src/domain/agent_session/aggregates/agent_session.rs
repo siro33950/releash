@@ -264,22 +264,17 @@ pub(crate) struct AgentSessionOperations {
     pub(crate) can_archive: bool,
     pub(crate) can_restore: bool,
     pub(crate) can_delete: bool,
-    pub(crate) can_resume: bool,
 }
 
 pub(crate) fn derive_agent_session_operations(
     launched_as: ExecutionTreeLaunch,
     archived: bool,
-    exited: bool,
-    provider_session_known: bool,
 ) -> AgentSessionOperations {
     let user_owned = launched_as == ExecutionTreeLaunch::Session;
-    let paused = !archived && exited;
     AgentSessionOperations {
         can_archive: user_owned && !archived,
         can_restore: user_owned && archived,
         can_delete: user_owned && archived,
-        can_resume: paused && provider_session_known,
     }
 }
 
@@ -475,8 +470,6 @@ impl AgentSession {
         derive_agent_session_operations(
             self.tree_location.launched_as,
             self.lifecycle == AgentSessionLifecycle::Archived,
-            self.lifecycle == AgentSessionLifecycle::Paused,
-            self.provider_session_id.is_some(),
         )
     }
 

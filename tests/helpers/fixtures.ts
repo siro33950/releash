@@ -163,7 +163,6 @@ const baseIpcHandler: Record<string, unknown> = {
 	list_available_agent_session_providers: ["claude", "codex"],
 	get_agent_session: null,
 	open_agent_session: "attached",
-	resume_agent_session: "resumed",
 	restore_agent_session: "restored",
 	archive_agent_session: "archived",
 	delete_agent_session: null,

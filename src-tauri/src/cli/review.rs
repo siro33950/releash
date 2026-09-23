@@ -541,7 +541,6 @@ mod tests {
                     can_archive: false,
                     can_restore: false,
                     can_delete: false,
-                    can_resume: false,
                 },
                 last_exit_abnormal: false,
             }),

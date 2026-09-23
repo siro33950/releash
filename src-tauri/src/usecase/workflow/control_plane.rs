@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use crate::domain::provider_lifecycle::ScopedProviderLifecycleEvent;
 use crate::domain::workflow::entities::workflow_execution::{
-    ExecutionTree as DomainExecutionTree, ProviderStopRejection, TransitionOutcome,
+    ExecutionTree as DomainExecutionTree, ProviderStopRejection, SessionResumeAction,
+    TransitionOutcome,
 };
 use crate::domain::workflow::services::secret_masker as workflow_secret_masker;
 use crate::domain::workflow::{NodeCompletionSignal, WorkflowError, WorkflowEvent};
@@ -471,32 +472,36 @@ impl WorkflowControlPlaneUsecase {
         let presence = self
             .runtime
             .node_process_presence(&current, &command.node_execution_id)?;
-        if !current.is_active() || !node.can_resume_session(presence) {
-            return Err(WorkflowError::invalid_state(
-                "Only an unfinished Session without a process can be resumed",
-            ));
-        }
         let path = current
             .execution_worktree_path(&command.node_execution_id)
             .ok_or_else(|| WorkflowError::invalid_state("execution worktree is unavailable"))?;
         let worktree_exists = self.runtime.worktree_exists(path)?;
-        let conversation_exists = match node.session_id.as_deref() {
+        let conversation_recoverable = match node.session_id.as_deref() {
             Some(id) => self.runtime.session_conversation_exists(id).await?,
             None => false,
         };
-        if node.requires_new_session_attempt(conversation_exists, worktree_exists) {
-            self.restart_node_attempt(current, command.execution_id, command.node_execution_id)
-                .await
-        } else {
-            self.runtime
-                .resume_session_process(
-                    &command.execution_id,
-                    &command.node_execution_id,
-                    node.session_id.as_deref().ok_or_else(|| {
-                        WorkflowError::invalid_state("Session conversation has no owner")
-                    })?,
-                )
-                .await
+        match current
+            .session_resume_action(
+                &command.node_execution_id,
+                presence,
+                conversation_recoverable,
+                worktree_exists,
+            )
+            .map_err(|rejection| WorkflowError::invalid_state(rejection.to_string()))?
+        {
+            SessionResumeAction::RestartAttempt => {
+                self.restart_node_attempt(current, command.execution_id, command.node_execution_id)
+                    .await
+            }
+            SessionResumeAction::ResumeConversation { session_id, .. } => {
+                self.runtime
+                    .resume_session_process(
+                        &command.execution_id,
+                        &command.node_execution_id,
+                        &session_id,
+                    )
+                    .await
+            }
         }
     }
 

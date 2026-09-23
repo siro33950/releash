@@ -333,7 +333,11 @@ fn removed_workflow_commands_and_node_fields_cannot_reuse_their_wire_tags() {
         let message = pool
             .get_message_by_name(&format!("releash.client.v1.{name}"))
             .unwrap();
-        for (number, field) in [(123, "stop_workflow"), (137, "resume_workflow")] {
+        for (number, field) in [
+            (121, "resume_agent_session"),
+            (123, "stop_workflow"),
+            (137, "resume_workflow"),
+        ] {
             assert!(message
                 .reserved_ranges()
                 .any(|range| range.contains(&number)));
@@ -359,6 +363,14 @@ fn removed_workflow_commands_and_node_fields_cannot_reuse_their_wire_tags() {
             .any(|reserved| reserved == name));
         assert!(capabilities.get_field(number).is_none());
     }
+    let operations = pool
+        .get_message_by_name("releash.client.v1.AgentSessionOperationsDto")
+        .unwrap();
+    assert!(operations.reserved_ranges().any(|range| range.contains(&4)));
+    assert!(operations
+        .reserved_names()
+        .any(|reserved| reserved == "can_resume"));
+    assert!(operations.get_field(4).is_none());
     for name in [
         "NodeExecutionStatusView",
         "WorkspaceNodeStatus",

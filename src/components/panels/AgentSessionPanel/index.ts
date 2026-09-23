@@ -1,1 +1,5 @@
-export { AgentSessionRoute } from "./AgentSessionPanel";
+export {
+	AgentSessionRoute,
+	type SessionResumeAction,
+	SessionResumeButton,
+} from "./AgentSessionPanel";

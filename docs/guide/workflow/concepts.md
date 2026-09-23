@@ -180,7 +180,7 @@ Command が 0 以外で終了した場合は、`ok: false` の Artifact を出�
 | 操作 | 対象と振る舞い |
 | --- | --- |
 | Abort | 実行木を中止する。worktree のフォルダが無くても実行でき、中止した実行は再開できない |
-| Resume | プロセスが居ない、未完了の Session Node の会話を再開する。会話または作業場所が無ければ新しい attempt で起動し、最初の指示を送る |
+| Resume | プロセスが居ない Session Node の会話を再開する。Node の状態は問わず、完了・中止した Node でも再開でき、Node の状態は変わらない。会話または作業場所が無ければ、実行中の実行木では新しい attempt で起動して最初の指示を送り、終わった実行木では失敗する |
 | Retry | プロセスが居ない、未完了の Command Node を新しい attempt で起動する。実行 worktree のフォルダが必要 |
 | Approve | 承認待ちの Node を完了させる |
 

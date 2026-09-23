@@ -569,13 +569,6 @@ export type InputRestoreWorkspaceWorkflowExecutionRequest = {
 	executionId: string;
 };
 
-export type InputResumeAgentSessionRequest = {
-	agentSessionId: string;
-	rows: number;
-	cols: number;
-	callerRequestId: string;
-};
-
 export type InputResumeAgentSessionHistoryCandidateRequest = {
 	workspaceIdentity: string;
 	worktreePath: string;
@@ -1225,7 +1218,6 @@ export type AgentSessionOperationsDto = {
 	canArchive: boolean;
 	canRestore: boolean;
 	canDelete: boolean;
-	canResume: boolean;
 };
 
 export type AppSection = {
@@ -2473,7 +2465,6 @@ export interface ClientCommandArgs {
 	resolve_review_thread: InputResolveReviewThreadRequest;
 	restore_agent_session: InputRestoreAgentSessionRequest;
 	restore_workspace_workflow_execution: InputRestoreWorkspaceWorkflowExecutionRequest;
-	resume_agent_session: InputResumeAgentSessionRequest;
 	resume_agent_session_history_candidate: InputResumeAgentSessionHistoryCandidateRequest;
 	retry_workspace_node: InputRetryWorkspaceNodeRequest;
 	resume_workspace_session_node: InputResumeWorkspaceSessionNodeRequest;
@@ -2820,9 +2811,6 @@ export interface ClientCommands {
 	restore_workspace_workflow_execution(
 		args: ClientCommandArgs["restore_workspace_workflow_execution"],
 	): Promise<void>;
-	resume_agent_session(
-		args: ClientCommandArgs["resume_agent_session"],
-	): Promise<AgentSessionOpenResponse>;
 	resume_agent_session_history_candidate(
 		args: ClientCommandArgs["resume_agent_session_history_candidate"],
 	): Promise<ResultString>;

@@ -1,4 +1,5 @@
 use super::*;
+use crate::domain::workflow::entities::workflow_execution::SessionResumeAction;
 use crate::domain::workflow::{NodeProcessPresence, NodeProcessReader};
 use crate::usecase::workflow::node_startup::NodeStartupGateway;
 
@@ -182,21 +183,24 @@ impl WorkflowRuntimeHost {
         let presence = self
             .node_processes
             .presence(
-                &current.worktree_path,
+                &current.workspace_identity,
                 node_execution_id,
                 node.kind,
                 node.session_id.as_deref(),
             )
             .map_err(|error| WorkflowRuntimeError::InvalidState(error.to_string()))?;
-        if !current.is_active()
-            || !node.can_resume_session(presence)
-            || node.session_id.as_deref() != Some(session_id)
+        let injection = match current.session_resume_action(node_execution_id, presence, true, true)
         {
-            return Err(WorkflowRuntimeError::InvalidState(
-                "Session attempt cannot be resumed".into(),
-            ));
-        }
-        let injection = current.pending_delegate_injection(node_execution_id);
+            Ok(SessionResumeAction::ResumeConversation {
+                session_id: current_session_id,
+                injection,
+            }) if current_session_id == session_id => injection,
+            _ => {
+                return Err(WorkflowRuntimeError::InvalidState(
+                    "Session attempt cannot be resumed".into(),
+                ));
+            }
+        };
         if injection.is_none() {
             run_runtime_activation(
                 &gate,
@@ -247,7 +251,7 @@ impl WorkflowRuntimeHost {
             if self
                 .node_processes
                 .presence(
-                    &before.worktree_path,
+                    &before.workspace_identity,
                     node_execution_id,
                     node.kind,
                     node.session_id.as_deref(),
