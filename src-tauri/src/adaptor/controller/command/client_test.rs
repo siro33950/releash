@@ -250,8 +250,9 @@ async fn test_watcher_protoはusecase結果と一致する() {
     // Given
     let (app, dispatch) = parity_app();
     let watcher = crate::desktop_test_support::build_watcher_usecase(app.handle());
-    let expected =
-        api::protocol::connect::command_error(watcher.stop(999).unwrap_err().to_string().into());
+    let expected = api::protocol::connect::command_error(
+        crate::other::AppError::from_failure(watcher.stop(999).unwrap_err()).into(),
+    );
     let router = api::client::router(Some(api::ClientApiDeps::new(
         dispatch,
         crate::adaptor::gateway::push::ClientPushGateway::new(Arc::new(

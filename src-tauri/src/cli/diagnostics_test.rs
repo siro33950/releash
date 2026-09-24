@@ -223,7 +223,7 @@ fn test_診断_ui経路は存在しない指定directoryをerrorにする() {
 
     // Then
     assert_eq!(
-        error,
+        error.to_string(),
         format!("not_found: directory does not exist: {}", missing.display())
     );
 }

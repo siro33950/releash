@@ -19,7 +19,13 @@ fn test_画像参照_必要項目とsideとversionを検証する() {
         &reference.replace("modified", "invalid"),
         &reference.replace("version=7", "version=no"),
     ] {
-        assert!(parse_blob_reference(invalid).is_err());
+        let error = parse_blob_reference(invalid)
+            .err()
+            .expect("invalid blob reference");
+        assert_eq!(
+            crate::adaptor::protocol::connect::command_error(error.into()).code,
+            connectrpc::ErrorCode::InvalidArgument,
+        );
     }
 }
 

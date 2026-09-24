@@ -20,8 +20,10 @@ pub(crate) fn register_shared(
                     };
                     let app_state = app_state
                         .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                    outcome(Ok::<_, String>(app_state.workspace_list.snapshot()))
-                        .map(wire::command_result::Command::GetWorkspaces)
+                    outcome(Ok::<_, crate::other::AppError>(
+                        app_state.workspace_list.snapshot(),
+                    ))
+                    .map(wire::command_result::Command::GetWorkspaces)
                 })
             }),
         );
@@ -49,7 +51,7 @@ pub(crate) fn register_shared(
                             },
                         })
                         .await
-                        .map_err(|error| error.to_string());
+                        .map_err(|error| crate::other::AppError::new(error.to_string()));
                     outcome(result).map(wire::command_result::Command::RefreshWorkspaces)
                 })
             }),

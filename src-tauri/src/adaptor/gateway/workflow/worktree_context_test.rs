@@ -566,7 +566,7 @@ fn test_実効cwd_祖先の欠落と循環と別木と不正定義はcorruptに�
 }
 
 #[test]
-fn test_実効cwd_祖先sql読み取り障害はunavailableへ伝わる() {
+fn test_実効cwd_祖先sql読み取り障害はinternalへ伝わる() {
     // Given
     let fixture = Fixture::new(false);
     let row = fixture
@@ -593,7 +593,7 @@ fn test_実効cwd_祖先sql読み取り障害はunavailableへ伝わる() {
     assert!(matches!(
         error,
         WorktreeContextReadError::Read(
-            crate::domain::local_event::LocalEventQueryError::StorageUnavailable { .. }
+            crate::domain::local_event::LocalEventQueryError::Internal { .. }
         )
     ));
 }

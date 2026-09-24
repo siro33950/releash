@@ -28,15 +28,13 @@ fn test_監視_repository外ではfile_gatewayに引数と結果を委譲する(
     let files = Arc::new(Files::default());
     let usecase = WatcherUsecase::new(None, files.clone());
     // When / Then
-    assert_eq!(usecase.start("/file"), Ok(42));
-    assert_eq!(usecase.stop(42), Ok(()));
-    assert_eq!(
-        usecase.start("/missing"),
-        Err(UsecaseError::File("missing path".into()))
+    assert_eq!(usecase.start("/file").unwrap(), 42);
+    usecase.stop(42).unwrap();
+    assert!(
+        matches!(usecase.start("/missing"), Err(UsecaseError::File(message)) if message == "missing path")
     );
-    assert_eq!(
-        usecase.stop(999),
-        Err(UsecaseError::File("unknown watcher".into()))
+    assert!(
+        matches!(usecase.stop(999), Err(UsecaseError::File(message)) if message == "unknown watcher")
     );
     assert_eq!(*files.0.lock().unwrap(), ["/file", "42", "/missing", "999"]);
     assert!(usecase.start_git_dir("/repo").is_err());
@@ -58,9 +56,8 @@ async fn test_監視_repositoryの購読と解除ではfile_gatewayを呼ばな�
     assert!(files.0.lock().unwrap().is_empty());
     assert!(usecase.start("/missing-watcher-path").is_err());
     assert!(files.0.lock().unwrap().is_empty());
-    assert_eq!(
-        usecase.stop(u64::MAX),
-        Err(UsecaseError::File("unknown watcher".into()))
+    assert!(
+        matches!(usecase.stop(u64::MAX), Err(UsecaseError::File(message)) if message == "unknown watcher")
     );
 }
 
@@ -102,9 +99,8 @@ async fn test_購読監視_開始失敗と停止失敗を返し成功した停�
     files
         .fail_stop
         .store(true, std::sync::atomic::Ordering::SeqCst);
-    assert_eq!(
-        usecase.stop(id),
-        Err(UsecaseError::File("stop failed".into()))
+    assert!(
+        matches!(usecase.stop(id), Err(UsecaseError::File(message)) if message == "stop failed")
     );
     assert!(files.active.lock().unwrap().contains(&id));
     files
@@ -224,12 +220,73 @@ async fn test_監視購読_生成中に終了した購読のwatcherは同じid�
     let second = usecase.subscribe("same".into()).unwrap();
     release.send(()).unwrap();
     // Then
-    assert_eq!(
+    assert!(matches!(
         watching.await.unwrap(),
         Err(UsecaseError::Subscription(WatchSubscriptionError::NotFound))
-    );
+    ));
     assert!(files.files.active.lock().unwrap().is_empty());
     let id = usecase.watch("same", "/current", false).unwrap();
     assert!(files.files.active.lock().unwrap().contains(&id));
     drop(second);
+}
+
+#[test]
+fn test_失敗分類_全変種と委譲した理由を保持する() {
+    use crate::domain::failure::{ClassifiedFailure, FailureKind as F};
+    // Given
+    let cases = [
+        (
+            UsecaseError::Subscription(WatchSubscriptionError::NotFound),
+            F::Missing,
+        ),
+        (
+            UsecaseError::Subscription(WatchSubscriptionError::AlreadyExists),
+            F::AlreadyPresent,
+        ),
+        (
+            UsecaseError::Subscription(WatchSubscriptionError::Limit),
+            F::Capacity,
+        ),
+        (
+            UsecaseError::Repository(
+                crate::usecase::repository_state::RepositoryStateError::Watcher("io".into()),
+            ),
+            F::Internal,
+        ),
+        (UsecaseError::File("io".into()), F::Internal),
+        (UsecaseError::RepositoryUnavailable, F::StateRequired),
+    ];
+    for (error, expected) in cases {
+        // When / Then
+        assert_eq!(error.failure_kind(), expected, "{error:?}");
+    }
+}
+
+#[test]
+fn test_監視_repositoryの再走査競合と下位エラーの分類を保持する() {
+    use crate::domain::failure::{ClassifiedFailure, FailureKind};
+    use crate::usecase::repository_state::RepositoryStateError;
+    // Given
+    for source in [
+        RepositoryStateError::ScanInvalidated,
+        RepositoryStateError::Repository(
+            crate::domain::repository::RepositoryError::rule("state").into(),
+        ),
+        RepositoryStateError::Code(
+            crate::domain::code::CodeError::StaleReviewBlobVersion {
+                requested: 1,
+                current: 2,
+            }
+            .into(),
+        ),
+    ] {
+        let expected = source.failure_kind();
+        let message = source.to_string();
+        // When
+        let error = UsecaseError::Repository(source);
+        // Then
+        assert_eq!(error.failure_kind(), expected);
+        assert_ne!(error.failure_kind(), FailureKind::Internal);
+        assert_eq!(error.to_string(), message);
+    }
 }

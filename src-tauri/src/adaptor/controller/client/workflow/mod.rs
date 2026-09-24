@@ -173,10 +173,13 @@ fn parse_execution_origin(
 
 /// `execution_id` の形式検証（path traversal / 不正文字対策）。
 /// UUID（RFC 4122）形式のみ許容する。
-fn validate_execution_id(execution_id: &str) -> Result<(), String> {
+fn validate_execution_id(execution_id: &str) -> Result<(), crate::other::AppError> {
     uuid::Uuid::parse_str(execution_id)
         .map(|_| ())
-        .map_err(|_| "Invalid execution_id format (must be UUID)".to_string())
+        .map_err(|_| {
+            crate::other::AppError::new("Invalid execution_id format (must be UUID)")
+                .with_failure_kind(crate::domain::failure::FailureKind::InvalidInput)
+        })
 }
 
 // ---- [05] read-only execution 観測 API ----

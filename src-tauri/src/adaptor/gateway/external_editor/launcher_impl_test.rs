@@ -32,7 +32,7 @@ fn test_外部エディタ_不存在と起動失敗を握りつぶさない() {
         panic!("must not launch missing default path")
     })
     .unwrap_err();
-    assert!(error.starts_with("ファイルを開けませんでした:"));
+    assert!(error.to_string().starts_with("ファイルを開けませんでした:"));
     let error = open_path_with(
         "/literal/$(command)",
         "editor",
@@ -43,5 +43,8 @@ fn test_外部エディタ_不存在と起動失敗を握りつぶさない() {
         },
     )
     .unwrap_err();
-    assert_eq!(error, "エディタでファイルを開けませんでした: launch failed");
+    assert_eq!(
+        error.to_string(),
+        "エディタでファイルを開けませんでした: launch failed"
+    );
 }

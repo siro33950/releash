@@ -1,3 +1,4 @@
+use crate::domain::failure::ClassifiedFailure;
 use std::sync::Arc;
 
 use crate::domain::agent_session::aggregates::AgentSessionInitialInstructionOutcome;
@@ -16,9 +17,10 @@ pub(crate) enum AgentSessionInitialInstructionDeliveryOutcome {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AgentSessionInitialInstructionError {
+    Store(crate::domain::failure::FailureKind),
     InvalidInput,
     NotFound,
-    Conflict,
+    Conflict(crate::domain::failure::FailureKind),
     StorageUnavailable,
     Corrupt,
 }
@@ -96,13 +98,32 @@ fn map_session_error(error: AgentSessionUsecaseError) -> AgentSessionInitialInst
         AgentSessionUsecaseError::InvalidOperation => {
             AgentSessionInitialInstructionError::InvalidInput
         }
-        AgentSessionUsecaseError::Conflict
-        | AgentSessionUsecaseError::ProviderSessionAlreadyOwned { .. } => {
-            AgentSessionInitialInstructionError::Conflict
+        error @ (AgentSessionUsecaseError::Conflict
+        | AgentSessionUsecaseError::ProviderSessionAlreadyOwned { .. }) => {
+            AgentSessionInitialInstructionError::Conflict(error.failure_kind())
         }
         AgentSessionUsecaseError::Unavailable => {
             AgentSessionInitialInstructionError::StorageUnavailable
         }
+        AgentSessionUsecaseError::Store(kind) => AgentSessionInitialInstructionError::Store(kind),
         AgentSessionUsecaseError::Corrupt => AgentSessionInitialInstructionError::Corrupt,
     }
 }
+
+impl crate::domain::failure::ClassifiedFailure for AgentSessionInitialInstructionError {
+    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
+        use crate::domain::failure::FailureKind;
+        match self {
+            Self::Store(kind) => *kind,
+            Self::InvalidInput => FailureKind::InvalidInput,
+            Self::NotFound => FailureKind::Missing,
+            Self::Conflict(kind) => *kind,
+            Self::StorageUnavailable => FailureKind::Temporary,
+            Self::Corrupt => FailureKind::Corrupt,
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "agent_session_initial_instruction_classification_test.rs"]
+mod classification_tests;

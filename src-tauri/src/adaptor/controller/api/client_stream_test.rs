@@ -347,7 +347,10 @@ async fn test_terminal_connectは同じattachmentの出力streamと入力unary�
                 };
                 let owner: crate::adaptor::protocol::terminal::TerminalSurfaceOwnerV1 =
                     convert(required(args.owner, "owner")?)?;
-                let owner = owner.try_into().map_err(wire::CommandError::from)?;
+                let owner = owner.try_into().map_err(|error| {
+                    crate::other::AppError::new(error)
+                        .with_failure_kind(crate::domain::failure::FailureKind::InvalidInput)
+                })?;
                 application
                     .write_attached(
                         &owner,
@@ -356,7 +359,7 @@ async fn test_terminal_connectは同じattachmentの出力streamと入力unary�
                         None,
                         &required(args.data, "data")?,
                     )
-                    .map_err(|error| wire::CommandError::from(error.to_string()))?;
+                    .map_err(crate::other::AppError::from_failure)?;
                 Ok(wire::command_result::Command::WriteTerminalSurface(
                     wire::Unit {},
                 ))

@@ -30,8 +30,10 @@ impl AgentSessionGarbageCollectionPort for AgentSessionLifecycleUsecase {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AgentSessionReadUsecaseError {
+    Lifecycle(AgentSessionLifecycleUsecaseError),
+    Store(crate::domain::failure::FailureKind),
     InvalidRequest,
     StorageUnavailable,
     TerminalUnavailable,
@@ -94,24 +96,43 @@ fn map_query_error(error: AgentSessionQueryError) -> AgentSessionReadUsecaseErro
     match error {
         AgentSessionQueryError::InvalidRequest => AgentSessionReadUsecaseError::InvalidRequest,
         AgentSessionQueryError::Unavailable => AgentSessionReadUsecaseError::StorageUnavailable,
+        AgentSessionQueryError::Store(kind) => AgentSessionReadUsecaseError::Store(kind),
         AgentSessionQueryError::Corrupt => AgentSessionReadUsecaseError::Corrupt,
     }
 }
 
 fn map_lifecycle_error(error: AgentSessionLifecycleUsecaseError) -> AgentSessionReadUsecaseError {
     match error {
+        error @ (AgentSessionLifecycleUsecaseError::Workflow(_)
+        | AgentSessionLifecycleUsecaseError::Conflict(_)) => {
+            AgentSessionReadUsecaseError::Lifecycle(error)
+        }
         AgentSessionLifecycleUsecaseError::TerminalUnavailable => {
             AgentSessionReadUsecaseError::TerminalUnavailable
         }
         AgentSessionLifecycleUsecaseError::StorageUnavailable => {
             AgentSessionReadUsecaseError::StorageUnavailable
         }
+        AgentSessionLifecycleUsecaseError::Store(kind) => AgentSessionReadUsecaseError::Store(kind),
         AgentSessionLifecycleUsecaseError::Corrupt => AgentSessionReadUsecaseError::Corrupt,
         AgentSessionLifecycleUsecaseError::NotFound
         | AgentSessionLifecycleUsecaseError::InvalidOperation
-        | AgentSessionLifecycleUsecaseError::Conflict
         | AgentSessionLifecycleUsecaseError::LaunchUnavailable => {
             AgentSessionReadUsecaseError::Corrupt
+        }
+    }
+}
+
+impl crate::domain::failure::ClassifiedFailure for AgentSessionReadUsecaseError {
+    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
+        use crate::domain::failure::FailureKind;
+        match self {
+            Self::Lifecycle(error) => error.failure_kind(),
+            Self::Store(kind) => *kind,
+            Self::InvalidRequest => FailureKind::InvalidInput,
+            Self::StorageUnavailable => FailureKind::Temporary,
+            Self::TerminalUnavailable => FailureKind::StateRequired,
+            Self::Corrupt => FailureKind::Corrupt,
         }
     }
 }

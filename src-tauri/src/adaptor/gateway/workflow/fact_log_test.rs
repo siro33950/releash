@@ -445,7 +445,10 @@ mod append_contract_tests {
         // Then: 失敗が握りつぶされず呼び出し元へ返り、行は記録されない
         assert_eq!(
             error,
-            "node fact append failed: node event write outcome is unknown"
+            crate::domain::workflow::WorkflowError::StorageUnavailable {
+                message: "node fact append failed: node event write outcome is unknown".into(),
+                kind: crate::domain::failure::FailureKind::RestartRequired,
+            }
         );
         assert!(read_raw_rows(&store, "unavailable-tree").is_empty());
     }
@@ -482,7 +485,10 @@ mod append_contract_tests {
         // Then: 容量拒否が返り、成功済みの1行だけが durable のまま残る
         assert_eq!(
             error,
-            "node fact append failed: node event storage is unavailable"
+            crate::domain::workflow::WorkflowError::StorageUnavailable {
+                message: "node fact append failed: node event storage is unavailable".into(),
+                kind: crate::domain::failure::FailureKind::Temporary,
+            }
         );
         let stored = read_raw_rows(&store, "partial-tree");
         assert_eq!(stored.len(), 1);
@@ -2406,4 +2412,46 @@ fn test_追記結果確認_全行一致と競合と未保存を共通の判定�
         resolve_unknown_append(&store, partial, Some(0)).unwrap(),
         Err(NodeEventWriteError::Conflict)
     );
+}
+
+#[test]
+fn test_fact読み出し_呼び出し境界で混雑と期限切れと破損の分類を保持する() {
+    use crate::domain::failure::{ClassifiedFailure, FailureKind as F};
+    // Given
+    for (source, expected) in [
+        (LocalEventQueryError::QueryBusy, F::Temporary),
+        (LocalEventQueryError::DeadlineExceeded, F::Expired),
+        (
+            LocalEventQueryError::Corrupt {
+                correlation_id: "id".into(),
+            },
+            F::Corrupt,
+        ),
+        (
+            LocalEventQueryError::Internal {
+                correlation_id: "id".into(),
+            },
+            F::Internal,
+        ),
+    ] {
+        // When
+        let workspace = LocalEventQueryError::from(FactReadError::Query(source.clone()));
+        let archive =
+            crate::domain::workflow::WorkflowError::from(FactReadError::Query(source.clone()));
+        // Then
+        assert_eq!(workspace, source);
+        assert_eq!(workspace.failure_kind(), expected);
+        assert_eq!(archive.failure_kind(), expected);
+    }
+    for message in ["invalid fact", "missing session attachment"] {
+        assert_eq!(
+            LocalEventQueryError::from(FactReadError::Corrupt(message.into())).failure_kind(),
+            F::Corrupt
+        );
+        assert_eq!(
+            crate::domain::workflow::WorkflowError::from(FactReadError::Corrupt(message.into()))
+                .failure_kind(),
+            F::Corrupt
+        );
+    }
 }

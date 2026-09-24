@@ -22,13 +22,13 @@ use crate::usecase::repository_state::RepositoryStateError;
 /// serialize 表現は移行前と等価に保たれる。
 impl From<UsecaseError> for AppError {
     fn from(e: UsecaseError) -> Self {
-        AppError::Internal(e.to_string())
+        AppError::from_failure(e)
     }
 }
 
 impl From<RepositoryStateError> for AppError {
     fn from(e: RepositoryStateError) -> Self {
-        AppError::Internal(e.to_string())
+        AppError::from_failure(e)
     }
 }
 

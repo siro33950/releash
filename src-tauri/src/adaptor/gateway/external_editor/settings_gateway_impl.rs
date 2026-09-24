@@ -1,3 +1,4 @@
+use crate::domain::external_editor::EditorError;
 use std::sync::Arc;
 
 use crate::domain::app_config::ConfigRepository;
@@ -15,18 +16,18 @@ impl EditorSettingsConfigGateway {
 }
 
 impl EditorSettingsGateway for EditorSettingsConfigGateway {
-    fn selected_editor(&self) -> Result<String, String> {
+    fn selected_editor(&self) -> Result<String, EditorError> {
         Ok(self
             .config
             .load()
-            .map_err(|e| e.to_string())?
+            .map_err(EditorError::Settings)?
             .app
             .external_editor)
     }
 
-    fn update_selected_editor(&self, editor: String) -> Result<(), String> {
-        let mut config = self.config.load().map_err(|e| e.to_string())?;
+    fn update_selected_editor(&self, editor: String) -> Result<(), EditorError> {
+        let mut config = self.config.load().map_err(EditorError::Settings)?;
         config.app.external_editor = editor;
-        self.config.save(config).map_err(|e| e.to_string())
+        self.config.save(config).map_err(EditorError::Settings)
     }
 }

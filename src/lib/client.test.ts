@@ -33,7 +33,8 @@ it("生成RPCで引数と結果を変換する", async () => {
 	]);
 });
 
-it("応答未到達の変更要求を終了し再接続後に現在状態だけを再取得する", async () => {
+it("応答未到達の変更要求では再接続せず明示的な再接続後に現在状態だけを再取得する", async () => {
+	const { getClient, refreshClient } = await import("./client");
 	let value = false;
 	const mutate = vi.fn(() => {
 		value = true;
@@ -51,9 +52,13 @@ it("応答未到達の変更要求を終了し再接続後に現在状態だけ�
 	});
 	const stop = onClientRefresh(refresh);
 	await vi.waitFor(() => expect(observed).toContain(false));
+	const client = await getClient();
 	await expect(
 		invokeClient("update_crash_reporting", { enabled: true }),
 	).rejects.toBeInstanceOf(ConnectError);
+	expect(await getClient()).toBe(client);
+	expect(observed).toEqual([false]);
+	refreshClient();
 	await vi.waitFor(() => expect(observed).toContain(true), { timeout: 3000 });
 	expect(mutate).toHaveBeenCalledOnce();
 	expect(
@@ -497,6 +502,7 @@ it("進行中要求の上限超過は理由を表示し変更要求を再送し�
 });
 
 it.each([
+	Code.Unavailable,
 	Code.ResourceExhausted,
 	Code.InvalidArgument,
 	Code.NotFound,
@@ -512,68 +518,60 @@ it.each([
 	Code.OutOfRange,
 	Code.Unimplemented,
 	Code.DataLoss,
-])(
-	"接続断でないcode %sは共有接続と進行中のRPCとpushを中断しない",
-	async (code) => {
-		const { getClient, watchClient } = await import("./client");
-		let release!: () => void;
-		const read = vi.fn(async () => {
-			await new Promise<void>((resolve) => {
-				release = resolve;
-			});
-			return { value: "/repo" };
+])("RPC失敗code %sは共有接続と進行中のRPCとpushを中断しない", async (code) => {
+	const { getClient, watchClient } = await import("./client");
+	let release!: () => void;
+	const read = vi.fn(async () => {
+		await new Promise<void>((resolve) => {
+			release = resolve;
 		});
-		const reject = () => {
-			throw new ConnectError("request rejected", code);
-		};
-		const fixture = connectFixture({
-			getCwd: read,
-			updateExternalEditor: reject,
-			watchFiles: reject,
-			watchGitDirectory: reject,
-		});
-		const refreshed = vi.fn();
-		onClientRefresh(refreshed);
-		await vi.waitFor(() => expect(refreshed).toHaveBeenCalledOnce());
-		const client = await getClient();
-		const pending = invokeClient("get_cwd");
-		await vi.waitFor(() => expect(read).toHaveBeenCalledOnce());
-		const error = await invokeClient("update_external_editor", {
-			editor: "vim",
-		}).catch((error) => error);
-		expect(error).toBeInstanceOf(ConnectError);
-		expect(error).toMatchObject({ code, rawMessage: "request rejected" });
-		for (const command of [
-			"start_watching",
-			"start_git_dir_watching",
-		] as const) {
-			const failed = vi.fn();
-			const stop = watchClient(
-				command,
-				command === "start_watching"
-					? { path: "/repo" }
-					: { repoPath: "/repo" },
-				vi.fn(),
-				failed,
-			);
-			await vi.waitFor(() => expect(failed).toHaveBeenCalledOnce());
-			expect(failed.mock.calls[0][0]).toMatchObject({ code });
-			stop();
-		}
-		expect(await getClient()).toBe(client);
-		expect(
-			fixture.requests.find((request) => request.url.endsWith("/GetCwd"))
-				?.signal.aborted,
-		).toBe(false);
-		expect(
-			fixture.requests.find((request) => request.url.endsWith("/SubscribePush"))
-				?.signal.aborted,
-		).toBe(false);
-		expect(refreshed).toHaveBeenCalledOnce();
-		await release();
-		await expect(pending).resolves.toEqual("/repo");
-	},
-);
+		return { value: "/repo" };
+	});
+	const reject = () => {
+		throw new ConnectError("request rejected", code);
+	};
+	const fixture = connectFixture({
+		getCwd: read,
+		updateExternalEditor: reject,
+		watchFiles: reject,
+		watchGitDirectory: reject,
+	});
+	const refreshed = vi.fn();
+	onClientRefresh(refreshed);
+	await vi.waitFor(() => expect(refreshed).toHaveBeenCalledOnce());
+	const client = await getClient();
+	const pending = invokeClient("get_cwd");
+	await vi.waitFor(() => expect(read).toHaveBeenCalledOnce());
+	const error = await invokeClient("update_external_editor", {
+		editor: "vim",
+	}).catch((error) => error);
+	expect(error).toBeInstanceOf(ConnectError);
+	expect(error).toMatchObject({ code, rawMessage: "request rejected" });
+	for (const command of ["start_watching", "start_git_dir_watching"] as const) {
+		const failed = vi.fn();
+		const stop = watchClient(
+			command,
+			command === "start_watching" ? { path: "/repo" } : { repoPath: "/repo" },
+			vi.fn(),
+			failed,
+		);
+		await vi.waitFor(() => expect(failed).toHaveBeenCalledOnce());
+		expect(failed.mock.calls[0][0]).toMatchObject({ code });
+		stop();
+	}
+	expect(await getClient()).toBe(client);
+	expect(
+		fixture.requests.find((request) => request.url.endsWith("/GetCwd"))?.signal
+			.aborted,
+	).toBe(false);
+	expect(
+		fixture.requests.find((request) => request.url.endsWith("/SubscribePush"))
+			?.signal.aborted,
+	).toBe(false);
+	expect(refreshed).toHaveBeenCalledOnce();
+	await release();
+	await expect(pending).resolves.toEqual("/repo");
+});
 
 it.each(["detail", "transport", "end"])(
 	"terminal初回受信の%sは失敗値の型と理由を保持する",
@@ -630,10 +628,11 @@ it.each(["detail", "transport", "end"])(
 );
 
 it.each(["unavailable", "network"])(
-	"terminal初回受信の%sから接続通知で再アタッチしsnapshotを取得する",
+	"terminal初回受信の%sは接続を維持し明示的な再接続通知で再アタッチする",
 	async (failure) => {
 		vi.useFakeTimers();
-		const { attachClientStream, onClientConnection } = await import("./client");
+		const { attachClientStream, onClientConnection, getClient, refreshClient } =
+			await import("./client");
 		let attempts = 0;
 		const fixture = connectFixture({
 			async *terminalOutput(_, context) {
@@ -690,6 +689,7 @@ it.each(["unavailable", "network"])(
 		});
 		try {
 			await vi.waitFor(() => expect(refreshed).toHaveBeenCalledOnce());
+			const client = await getClient();
 			await attachClientStream(
 				{
 					owner: { kind: "workspace", workspacePath: "/repo" },
@@ -699,6 +699,14 @@ it.each(["unavailable", "network"])(
 				received,
 				closed,
 			).catch(failed);
+			expect(await getClient()).toBe(client);
+			expect(attempts).toBe(1);
+			expect(failed).toHaveBeenCalledOnce();
+			refreshClient();
+			await vi.waitFor(() => expect(failed).toHaveBeenCalledTimes(2), {
+				timeout: 4000,
+			});
+			refreshClient();
 			await vi.waitFor(() => expect(received).toHaveBeenCalledOnce(), {
 				timeout: 4000,
 			});
@@ -1630,3 +1638,48 @@ it("状態の受け手が全て停止したらstreamを閉じ再購読で開き�
 	expect(fixture.starts[1].version).toBeUndefined();
 	expect(fixture.streams).toHaveLength(2);
 });
+
+it.each([false, true])(
+	"旧接続のdetachキャンセルはdetailの有無%sによらず解放を完了する",
+	async (detail) => {
+		const { attachClientStream, getClient, refreshClient } = await import(
+			"./client"
+		);
+		connectFixture({
+			async *terminalOutput(_, context) {
+				yield { item: { case: "snapshot", value: { sessionKey: "terminal" } } };
+				await new Promise<void>((resolve) =>
+					context.signal.addEventListener("abort", () => resolve(), {
+						once: true,
+					}),
+				);
+			},
+		});
+		const release = await attachClientStream(
+			{
+				owner: { kind: "workspace", workspacePath: "/repo" },
+				attachmentId: "terminal",
+				recovery: false,
+			},
+			vi.fn(),
+			vi.fn(),
+		);
+		const client = await getClient();
+		let reject!: (error: unknown) => void;
+		const detach = vi.spyOn(client, "detachTerminalSurface").mockImplementation(
+			() =>
+				new Promise((_, rejectPromise) => {
+					reject = rejectPromise;
+				}),
+		);
+		const pending = release();
+		refreshClient();
+		reject(
+			detail
+				? commandError("CANCELED", "canceled", Code.Canceled)
+				: new ConnectError("canceled", Code.Canceled),
+		);
+		await expect(pending).resolves.toBeUndefined();
+		expect(detach).toHaveBeenCalledOnce();
+	},
+);

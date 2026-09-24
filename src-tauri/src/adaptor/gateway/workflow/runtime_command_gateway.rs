@@ -92,6 +92,10 @@ impl WorkflowStartExecutionGateway for WorkflowRuntimeCommandGateway {
 
 fn workflow_runtime_error_to_workflow_error(error: WorkflowRuntimeError) -> WorkflowError {
     match error {
+        WorkflowRuntimeError::Store(kind) => WorkflowError::Store(kind),
+        WorkflowRuntimeError::StorageFailure { message, kind } => {
+            WorkflowError::StorageUnavailable { message, kind }
+        }
         WorkflowRuntimeError::InvalidWorkflow(message)
         | WorkflowRuntimeError::ValidationError(message) => WorkflowError::validation(message),
         error @ WorkflowRuntimeError::ExecutionNotFound(_)
@@ -363,5 +367,32 @@ mod tests {
             )),
             WorkflowError::External(message) if message == "io"
         ));
+    }
+    #[test]
+    fn test_node事実追記_runtimeからconnectまで分類を保持する() {
+        use crate::domain::failure::{ClassifiedFailure, FailureKind};
+        // Given
+        for (kind, code) in [
+            (FailureKind::Temporary, connectrpc::ErrorCode::Unavailable),
+            (FailureKind::Corrupt, connectrpc::ErrorCode::DataLoss),
+            (
+                FailureKind::Expired,
+                connectrpc::ErrorCode::DeadlineExceeded,
+            ),
+            (FailureKind::RestartRequired, connectrpc::ErrorCode::Aborted),
+        ] {
+            // When
+            let error =
+                workflow_runtime_error_to_workflow_error(WorkflowRuntimeError::StorageFailure {
+                    kind,
+                    message: "node append failed".into(),
+                });
+            // Then
+            assert_eq!(error.failure_kind(), kind);
+            assert_eq!(
+                crate::adaptor::protocol::connect::classified_error(error).code,
+                code
+            );
+        }
     }
 }

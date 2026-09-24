@@ -6,7 +6,7 @@ import {
 	toJson,
 } from "@bufbuild/protobuf";
 import { type Client, ConnectError } from "@connectrpc/connect";
-import { getClient, refreshClientOnDisconnect } from "@/lib/client";
+import { getClient } from "@/lib/client";
 import { clientJson } from "@/lib/clientJson";
 import {
 	AbortWorkflowRequestSchema,
@@ -2817,7 +2817,6 @@ export async function invokeClient<K extends ClientCommand>(
 		if (error instanceof ConnectError) {
 			const detail = error.findDetails(CommandErrorSchema)[0];
 			if (detail) throw decode(CommandErrorSchema, detail);
-			refreshClientOnDisconnect(client, error);
 		}
 		throw error;
 	}

@@ -161,6 +161,7 @@ impl WorkspaceNodeCommandUsecase {
 
 fn map_session_rename_error(error: AgentSessionRenameError) -> WorkflowError {
     match error {
+        AgentSessionRenameError::Store(kind) => WorkflowError::Store(kind),
         AgentSessionRenameError::NotFound => {
             WorkflowError::NotFound("AgentSession for Workspace Node was not found".to_string())
         }
@@ -170,9 +171,12 @@ fn map_session_rename_error(error: AgentSessionRenameError) -> WorkflowError {
         AgentSessionRenameError::Conflict => {
             WorkflowError::Conflict("AgentSession rename conflicted".to_string())
         }
+        AgentSessionRenameError::ProviderSessionAlreadyOwned => WorkflowError::InvalidState(
+            "Provider session is already owned by another AgentSession".to_string(),
+        ),
         AgentSessionRenameError::Unavailable => WorkflowError::StorageUnavailable {
             message: "AgentSession rename storage is unavailable".to_string(),
-            retryable: true,
+            kind: crate::domain::failure::FailureKind::Temporary,
         },
         AgentSessionRenameError::Corrupt => {
             WorkflowError::CorruptStoredState("AgentSession rename state is corrupt".to_string())
@@ -182,6 +186,26 @@ fn map_session_rename_error(error: AgentSessionRenameError) -> WorkflowError {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn test_session名前変更_所有済みと保存競合を区別して返す() {
+        use crate::domain::failure::{ClassifiedFailure, FailureKind};
+        // Given / When / Then
+        for (source, expected) in [
+            (
+                super::AgentSessionRenameError::Conflict,
+                FailureKind::RestartRequired,
+            ),
+            (
+                super::AgentSessionRenameError::ProviderSessionAlreadyOwned,
+                FailureKind::StateRequired,
+            ),
+        ] {
+            let error = super::map_session_rename_error(source);
+            assert_eq!(error.failure_kind(), expected);
+            assert!(!error.to_string().contains("Store failure"));
+        }
+    }
+
     use std::sync::Mutex;
 
     use super::*;

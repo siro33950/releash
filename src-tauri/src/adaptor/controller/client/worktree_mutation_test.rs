@@ -94,7 +94,7 @@ async fn test_worktree削除中_変更対象を共通境界で拒否して読み
     // When / Then
     for command in mutations {
         let error = admit(Some(&runtime), &command).err().expect(command.name());
-        let Some(wire::command_error::Variant::Coded(error)) = error.variant else {
+        let Some(wire::command_error::Variant::Coded(error)) = error.detail.variant else {
             panic!("{}: expected coded error", command.name())
         };
         assert_eq!(

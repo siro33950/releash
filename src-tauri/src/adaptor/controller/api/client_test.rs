@@ -85,7 +85,7 @@ async fn test_connect_生成clientのunaryで結果と構造化エラーを返�
         .get_current_branch(rpc::GetCurrentBranchRequest::default())
         .await
         .unwrap_err();
-    assert_eq!(error.code, connectrpc::ErrorCode::FailedPrecondition);
+    assert_eq!(error.code, connectrpc::ErrorCode::InvalidArgument);
     assert_eq!(error.details[0].type_url, "releash.client.v1.CommandError");
     server.abort();
 }
@@ -375,7 +375,7 @@ async fn test_監視unary_pushの購読が所有し明示停止と切断で解�
         })
         .await
         .unwrap_err();
-    assert_eq!(error.code, connectrpc::ErrorCode::FailedPrecondition);
+    assert_eq!(error.code, connectrpc::ErrorCode::Internal);
     assert_eq!(files.active.lock().unwrap().len(), 64);
     files.fail_stop.store(false, Ordering::SeqCst);
     client
@@ -752,20 +752,22 @@ async fn test_サーバ情報取得_上限時は設定取得を拒否し成功�
         body::{to_bytes, Body},
         http::{Request, StatusCode},
     };
-    use std::sync::atomic::AtomicBool;
+
     use tower::ServiceExt;
 
     struct Config {
         loads: AtomicUsize,
-        fail: AtomicBool,
+        failure: AtomicUsize,
         limit: Arc<tokio::sync::Semaphore>,
     }
     impl ConfigRepository for Config {
         fn load(&self) -> Result<AppConfigDocument, AppConfigError> {
             self.loads.fetch_add(1, Ordering::SeqCst);
             assert_eq!(self.limit.available_permits(), 0);
-            if self.fail.load(Ordering::SeqCst) {
-                return Err(AppConfigError::Repository("load failed".into()));
+            match self.failure.load(Ordering::SeqCst) {
+                1 => return Err(AppConfigError::Repository("load failed".into())),
+                2 => return Err(AppConfigError::InvalidInput("invalid settings".into())),
+                _ => {}
             }
             Ok(config_to_domain(&ReleashConfig::default()))
         }
@@ -784,7 +786,7 @@ async fn test_サーバ情報取得_上限時は設定取得を拒否し成功�
     );
     let config = Arc::new(Config {
         loads: AtomicUsize::new(0),
-        fail: AtomicBool::new(false),
+        failure: AtomicUsize::new(0),
         limit: deps.request_limit.clone(),
     });
     let deps = deps.with_desktop_settings(crate::usecase::app_config::AppConfigUsecase::new(
@@ -815,17 +817,22 @@ async fn test_サーバ情報取得_上限時は設定取得を拒否し成功�
     drop(last_permit);
 
     // When / Then
-    for (fail, expected_status, expected_loads) in [
-        (false, StatusCode::OK, 1),
-        (true, StatusCode::INTERNAL_SERVER_ERROR, 2),
+    for (failure, expected_status, expected_loads) in [
+        (0, StatusCode::OK, 1),
+        (1, StatusCode::INTERNAL_SERVER_ERROR, 2),
+        (2, StatusCode::BAD_REQUEST, 3),
     ] {
-        config.fail.store(fail, Ordering::SeqCst);
+        config.failure.store(failure, Ordering::SeqCst);
         let response = router.clone().oneshot(request()).await.unwrap();
         assert_eq!(response.status(), expected_status);
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        if fail {
+        if failure == 1 {
             assert_eq!(body["message"], "load failed");
+            assert_eq!(body["code"], "internal");
+        } else if failure == 2 {
+            assert_eq!(body["message"], "invalid settings");
+            assert_eq!(body["code"], "invalid_argument");
         } else {
             assert!(body["desktopSettings"].is_object());
         }

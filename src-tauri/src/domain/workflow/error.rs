@@ -6,8 +6,13 @@
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkflowError {
+    Store(crate::domain::failure::FailureKind),
     External(String),
-    StorageUnavailable { message: String, retryable: bool },
+    Editor(crate::domain::external_editor::EditorError),
+    StorageUnavailable {
+        message: String,
+        kind: crate::domain::failure::FailureKind,
+    },
     CorruptStoredState(String),
     IncompatibleStoredEvent(String),
     Validation(String),
@@ -20,9 +25,15 @@ pub enum WorkflowError {
 impl std::fmt::Display for WorkflowError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Store(kind) => write!(f, "Store failure: {kind:?}"),
             Self::External(msg) => f.write_str(msg),
-            Self::StorageUnavailable { message, retryable } => {
-                write!(f, "storage_unavailable (retryable={retryable}): {message}")
+            Self::Editor(error) => error.fmt(f),
+            Self::StorageUnavailable { message, kind } => {
+                write!(
+                    f,
+                    "storage_unavailable (retryable={}): {message}",
+                    *kind == crate::domain::failure::FailureKind::Temporary
+                )
             }
             Self::CorruptStoredState(message) => {
                 write!(f, "corrupt_stored_state: {message}")
@@ -73,3 +84,25 @@ mod workflow_error_tests {
         );
     }
 }
+
+impl crate::domain::failure::ClassifiedFailure for WorkflowError {
+    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
+        use crate::domain::failure::FailureKind as F;
+        match self {
+            Self::Store(kind) => *kind,
+            Self::External(_) => F::Internal,
+            Self::Editor(error) => error.failure_kind(),
+            Self::StorageUnavailable { kind, .. } => *kind,
+            Self::CorruptStoredState(_) => F::Corrupt,
+            Self::IncompatibleStoredEvent(_) | Self::InvalidState(_) => F::StateRequired,
+            Self::Validation(_) => F::InvalidInput,
+            Self::Conflict(_) => F::RestartRequired,
+            Self::NotFound(_) => F::Missing,
+            Self::UnauthorizedApprovalTarget(_) => F::Permission,
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "error_test.rs"]
+mod error_tests;

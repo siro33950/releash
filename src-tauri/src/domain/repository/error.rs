@@ -27,3 +27,17 @@ impl RepositoryError {
         Self::Rule(message.into())
     }
 }
+
+impl crate::domain::failure::ClassifiedFailure for RepositoryError {
+    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
+        use crate::domain::failure::FailureKind as F;
+        match self {
+            Self::External(_) => F::Internal,
+            Self::Rule(_) => F::StateRequired,
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "error_test.rs"]
+mod error_tests;

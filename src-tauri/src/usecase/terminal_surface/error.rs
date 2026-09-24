@@ -23,3 +23,19 @@ impl From<TerminalSurfaceGatewayError> for UsecaseError {
         Self::Gateway(value.message().to_string())
     }
 }
+
+impl crate::domain::failure::ClassifiedFailure for UsecaseError {
+    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
+        use crate::domain::failure::FailureKind as F;
+        match self {
+            Self::OwnerConflict => F::StateRequired,
+            Self::Gateway(_) | Self::PtySpawn { .. } | Self::OtherSpawnFailure { .. } => {
+                F::Internal
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "error_test.rs"]
+mod error_tests;

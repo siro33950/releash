@@ -1954,3 +1954,30 @@ fn test_workflow単一取得_単独sessionをworkflow_summaryとして返さな�
         workflow
     );
 }
+
+#[test]
+fn test_workspace_query_結果不明と期限切れの分類を保持する() {
+    use crate::domain::failure::{ClassifiedFailure, FailureKind};
+    use crate::domain::local_event::{
+        LocalEventQueryError, SafeOperationFailure, SessionOperationFailureKind,
+    };
+    // Given
+    for (error, expected) in [
+        (
+            LocalEventQueryError::StorageUnavailable {
+                failure: SafeOperationFailure::new(
+                    SessionOperationFailureKind::OutcomeUnknown,
+                    crate::domain::failure::FailureKind::RestartRequired,
+                    "unknown",
+                    "id",
+                ),
+            },
+            FailureKind::RestartRequired,
+        ),
+        (LocalEventQueryError::DeadlineExceeded, FailureKind::Expired),
+        (LocalEventQueryError::QueryBusy, FailureKind::Temporary),
+    ] {
+        // When / Then
+        assert_eq!(query_error(error).failure_kind(), expected);
+    }
+}

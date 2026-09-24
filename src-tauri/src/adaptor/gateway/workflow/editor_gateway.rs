@@ -50,7 +50,7 @@ impl ExternalEditorGateway for WorkflowExternalEditorGateway {
             .external_editor;
         NativeEditorLauncherGateway
             .open_path(&path.to_string_lossy(), &editor, "ワークフロー")
-            .map_err(WorkflowError::external)
+            .map_err(WorkflowError::Editor)
     }
 
     fn open_facet(&self, kind: &str, key: &str) -> Result<(), WorkflowError> {
@@ -63,7 +63,7 @@ impl ExternalEditorGateway for WorkflowExternalEditorGateway {
             .external_editor;
         NativeEditorLauncherGateway
             .open_path(&path.to_string_lossy(), &editor, "ファセット")
-            .map_err(WorkflowError::external)
+            .map_err(WorkflowError::Editor)
     }
 }
 
@@ -181,3 +181,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "editor_gateway_test.rs"]
+mod editor_gateway_tests;

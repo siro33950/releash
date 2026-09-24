@@ -1,3 +1,4 @@
+use crate::domain::failure::ClassifiedFailure;
 use std::sync::Arc;
 
 use crate::domain::workflow::WorkflowError;
@@ -210,6 +211,7 @@ impl crate::usecase::provider_lifecycle::ProviderExecutionTreeStopTransaction
         self.record_provider_stop(command, lifecycle_events)
             .await
             .map_err(|error| match error {
+                WorkflowError::Store(kind) => crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError::Store(kind),
                 WorkflowError::Validation(_)
                 | WorkflowError::InvalidState(_)
                 | WorkflowError::NotFound(_)
@@ -219,8 +221,8 @@ impl crate::usecase::provider_lifecycle::ProviderExecutionTreeStopTransaction
                 WorkflowError::Conflict(_) => {
                     crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError::Conflict
                 }
-                WorkflowError::StorageUnavailable { .. } | WorkflowError::External(_) => {
-                    crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError::StorageUnavailable
+                error @ (WorkflowError::StorageUnavailable { .. } | WorkflowError::External(_) | WorkflowError::Editor(_)) => {
+                    crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError::Store(error.failure_kind())
                 }
                 WorkflowError::CorruptStoredState(_)
                 | WorkflowError::IncompatibleStoredEvent(_) => {
@@ -249,8 +251,15 @@ impl crate::usecase::agent_session::ExecutionTreeCache for WorkflowRuntimeUsecas
             .release_deleted_execution_tree(tree_id)
             .await
             .map_err(|error| match error {
-                WorkflowError::StorageUnavailable { .. } | WorkflowError::External(_) => {
-                    crate::usecase::agent_session::ExecutionTreeCacheReleaseError::Unavailable
+                WorkflowError::Store(kind) => {
+                    crate::usecase::agent_session::ExecutionTreeCacheReleaseError::Store(kind)
+                }
+                error @ (WorkflowError::StorageUnavailable { .. }
+                | WorkflowError::External(_)
+                | WorkflowError::Editor(_)) => {
+                    crate::usecase::agent_session::ExecutionTreeCacheReleaseError::Store(
+                        error.failure_kind(),
+                    )
                 }
                 WorkflowError::Validation(_)
                 | WorkflowError::InvalidState(_)
@@ -300,8 +309,15 @@ fn map_started_execution_tree_error(
     error: WorkflowError,
 ) -> crate::usecase::agent_session::StartedExecutionTreeRegistrationError {
     match error {
-        WorkflowError::StorageUnavailable { .. } | WorkflowError::External(_) => {
-            crate::usecase::agent_session::StartedExecutionTreeRegistrationError::Unavailable
+        WorkflowError::Store(kind) => {
+            crate::usecase::agent_session::StartedExecutionTreeRegistrationError::Store(kind)
+        }
+        error @ (WorkflowError::StorageUnavailable { .. }
+        | WorkflowError::External(_)
+        | WorkflowError::Editor(_)) => {
+            crate::usecase::agent_session::StartedExecutionTreeRegistrationError::Store(
+                error.failure_kind(),
+            )
         }
         WorkflowError::Validation(_)
         | WorkflowError::InvalidState(_)
@@ -321,10 +337,15 @@ mod tests {
     use crate::domain::workflow::{ExecutionOrigin, WorkflowDefinition};
     use std::sync::Mutex;
 
+    mod runtime_command_tests {
+        include!("runtime_command_test.rs");
+    }
+
     #[derive(Default)]
     struct FakeRuntimeGateway {
         calls: Mutex<Vec<&'static str>>,
         fail_startup: bool,
+        failure: Option<WorkflowError>,
     }
 
     #[async_trait::async_trait]
@@ -423,6 +444,9 @@ mod tests {
             WorkflowError,
         > {
             self.calls.lock().unwrap().push("load_active");
+            if let Some(error) = &self.failure {
+                return Err(error.clone());
+            }
             Ok(None)
         }
 
@@ -430,9 +454,19 @@ mod tests {
             &self,
             _tree_id: &str,
         ) -> Result<(), WorkflowError> {
+            if let Some(error) = &self.failure {
+                return Err(error.clone());
+            }
             Err(WorkflowError::external(
                 "control plane is not used by this test",
             ))
+        }
+
+        async fn release_deleted_execution_tree(&self, _: &str) -> Result<(), WorkflowError> {
+            match &self.failure {
+                Some(error) => Err(error.clone()),
+                None => Ok(()),
+            }
         }
 
         async fn approval_persisted(

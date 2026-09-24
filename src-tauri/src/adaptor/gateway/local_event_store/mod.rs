@@ -21,3 +21,7 @@ pub(crate) mod store;
 pub(crate) mod writer;
 
 pub(crate) use store::{LocalEventStore, LocalEventStoreConfig};
+
+#[cfg(test)]
+#[path = "failure_test.rs"]
+mod failure_tests;

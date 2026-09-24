@@ -256,7 +256,13 @@ async fn test_レビューコメント監視_events_json変更がconnectだけ�
 async fn test_クライアントconnect_失敗と不正引数は構造化エラーになる() {
     let fixture = Fixture::new().await;
     let client = fixture.client();
-    for args in [json!({}), json!({"repoPath":"/missing-releash-repository"})] {
+    for (args, expected) in [
+        (json!({}), connectrpc::ErrorCode::InvalidArgument),
+        (
+            json!({"repoPath":"/missing-releash-repository"}),
+            connectrpc::ErrorCode::Internal,
+        ),
+    ] {
         let error = client
             .get_current_branch(rpc::GetCurrentBranchRequest {
                 repo_path: args["repoPath"].as_str().map(String::from),
@@ -264,7 +270,7 @@ async fn test_クライアントconnect_失敗と不正引数は構造化エラ�
             })
             .await
             .unwrap_err();
-        assert_eq!(error.code, connectrpc::ErrorCode::FailedPrecondition);
+        assert_eq!(error.code, expected);
         assert_eq!(error.details[0].type_url, "releash.client.v1.CommandError");
     }
 }

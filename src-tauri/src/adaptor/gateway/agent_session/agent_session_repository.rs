@@ -1,3 +1,4 @@
+use crate::domain::failure::ClassifiedFailure;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -57,15 +58,14 @@ pub(crate) struct LocalAgentSessionRepository {
 
 pub(super) fn map_commit_batch_error(error: CommitBatchError) -> AgentSessionRepositoryError {
     match error {
-        CommitBatchError::PayloadConflict | CommitBatchError::StreamHeadConflict { .. } => {
-            AgentSessionRepositoryError::Conflict
-        }
-        CommitBatchError::StorageUnavailable { .. } | CommitBatchError::OutcomeUnknown { .. } => {
-            AgentSessionRepositoryError::Unavailable
-        }
-        CommitBatchError::CapacityExceeded
-        | CommitBatchError::SequenceExhausted
-        | CommitBatchError::Corrupt { .. } => AgentSessionRepositoryError::Corrupt,
+        CommitBatchError::StreamHeadConflict { .. } => AgentSessionRepositoryError::Conflict,
+        error => match error.failure_kind() {
+            crate::domain::failure::FailureKind::Temporary => {
+                AgentSessionRepositoryError::Unavailable
+            }
+            crate::domain::failure::FailureKind::Corrupt => AgentSessionRepositoryError::Corrupt,
+            kind => AgentSessionRepositoryError::Store(kind),
+        },
     }
 }
 
@@ -88,7 +88,7 @@ impl LocalAgentSessionRepository {
             &fact_log::FactLogReadBackend::Live(Arc::clone(&self.store)),
             session_id,
         )
-        .map_err(|_| AgentSessionRepositoryError::Unavailable)
+        .map_err(AgentSessionRepositoryError::from)
     }
 
     fn session_event_rows(
@@ -257,7 +257,7 @@ impl LocalAgentSessionRepository {
                         limit: 1,
                     })
                     .await
-                    .map_err(|_| AgentSessionRepositoryError::Unavailable)?
+                    .map_err(AgentSessionRepositoryError::from)?
                     .head;
                 expected_heads.push(ExpectedStreamHead {
                     stream_id: stream_id.clone(),
@@ -445,7 +445,7 @@ impl AgentSessionRepository for LocalAgentSessionRepository {
                     &fact_log::FactLogReadBackend::Live(self.store.clone()),
                     &location,
                 )
-                .map_err(|_| AgentSessionRepositoryError::Unavailable)?;
+                .map_err(AgentSessionRepositoryError::from)?;
                 let existing = self.derive_session(session.id(), &location, &records)?;
                 if existing.session().workspace() != session.workspace()
                     || existing.session().worktree_path() != session.worktree_path()
@@ -481,7 +481,7 @@ impl AgentSessionRepository for LocalAgentSessionRepository {
                     limit: 1,
                 })
                 .await
-                .map_err(|_| AgentSessionRepositoryError::Unavailable)?
+                .map_err(AgentSessionRepositoryError::from)?
                 .head
                 .value()
                 > 0;
@@ -491,7 +491,7 @@ impl AgentSessionRepository for LocalAgentSessionRepository {
                         &fact_log::FactLogReadBackend::Live(self.store.clone()),
                         &location,
                     )
-                    .map_err(|_| AgentSessionRepositoryError::Unavailable)?;
+                    .map_err(AgentSessionRepositoryError::from)?;
                     let existing = self.derive_session(session.id(), &location, &records)?;
                     if existing.session().workspace() != session.workspace()
                         || existing.session().worktree_path() != session.worktree_path()
@@ -530,7 +530,7 @@ impl AgentSessionRepository for LocalAgentSessionRepository {
                 crate::adaptor::gateway::repository::worktree::find_main_repo_path(
                     session.worktree_path(),
                 )
-                .map_err(|_| AgentSessionRepositoryError::Unavailable)?,
+                .map_err(|error| AgentSessionRepositoryError::Store(error.failure_kind()))?,
             )
             .map_err(|_| AgentSessionRepositoryError::Corrupt)?;
             for (index, (meta, fact)) in root_facts.into_facts().into_iter().enumerate() {
@@ -569,7 +569,7 @@ impl AgentSessionRepository for LocalAgentSessionRepository {
             &fact_log::FactLogReadBackend::Live(self.store.clone()),
             &location,
         )
-        .map_err(|_| AgentSessionRepositoryError::Unavailable)?;
+        .map_err(AgentSessionRepositoryError::from)?;
         self.derive_session(session_id, &location, &records)
             .map(Some)
     }
@@ -583,14 +583,14 @@ impl AgentSessionRepository for LocalAgentSessionRepository {
         }
         let backend = fact_log::FactLogReadBackend::Live(Arc::clone(&self.store));
         let Some(attachment) = fact_log::find_session_attachment_record(&backend, session_id)
-            .map_err(|_| AgentSessionRepositoryError::Unavailable)?
+            .map_err(AgentSessionRepositoryError::from)?
         else {
             return Ok(None);
         };
         let location = SessionLocation::from_meta(&attachment.meta);
         let activity =
             fact_log::read_latest_activity_record_for_node(&backend, &location.node_execution_id)
-                .map_err(|_| AgentSessionRepositoryError::Unavailable)?;
+                .map_err(AgentSessionRepositoryError::from)?;
         let mut records = vec![attachment];
         records.extend(activity);
         records.sort_by_key(|record| record.seq);
@@ -605,7 +605,7 @@ impl AgentSessionRepository for LocalAgentSessionRepository {
         let backend = fact_log::FactLogReadBackend::Live(Arc::clone(&self.store));
         let lifecycle_records =
             fact_log::read_records_for_event_types(&backend, OPEN_SESSION_LIFECYCLE_EVENT_TYPES)
-                .map_err(|_| AgentSessionRepositoryError::Unavailable)?;
+                .map_err(AgentSessionRepositoryError::from)?;
         let candidates = open_session_title_candidates(lifecycle_records);
 
         let mut sessions = Vec::new();
@@ -616,7 +616,7 @@ impl AgentSessionRepository for LocalAgentSessionRepository {
                 &candidate.location.node_execution_id,
                 &["provider_session_title_observed"],
             )
-            .map_err(|_| AgentSessionRepositoryError::Unavailable)?
+            .map_err(AgentSessionRepositoryError::from)?
             {
                 records.push(title);
             }
@@ -655,7 +655,7 @@ impl AgentSessionRepository for LocalAgentSessionRepository {
         }
         let backend = fact_log::FactLogReadBackend::Live(Arc::clone(&self.store));
         let attachment = fact_log::find_session_attachment_record(&backend, session.id())
-            .map_err(|_| AgentSessionRepositoryError::Unavailable)?
+            .map_err(AgentSessionRepositoryError::from)?
             .ok_or(AgentSessionRepositoryError::Conflict)?;
         let location = SessionLocation::from_meta(&attachment.meta);
         let rows = self.session_event_rows(&location, session.id(), &session, &pending)?;
@@ -693,7 +693,7 @@ impl AgentSessionRepository for LocalAgentSessionRepository {
         }
         let backend = fact_log::FactLogReadBackend::Live(Arc::clone(&self.store));
         let attachment = fact_log::find_session_attachment_record(&backend, session.id())
-            .map_err(|_| AgentSessionRepositoryError::Unavailable)?
+            .map_err(AgentSessionRepositoryError::from)?
             .ok_or(AgentSessionRepositoryError::Conflict)?;
         let location = SessionLocation::from_meta(&attachment.meta);
         let rows = self.session_event_rows(&location, session.id(), &session, &pending)?;
@@ -868,17 +868,20 @@ impl AgentSessionOwnershipQuery for LocalAgentSessionRepository {
         )
         .await
         .map(|(ownership, _)| ownership.agent_session_id().is_some())
-        .map_err(|error| match error {
-            AgentSessionRepositoryError::InvalidRequest => {
-                AgentSessionHistoryGatewayError::InvalidRequest
-            }
-            AgentSessionRepositoryError::Corrupt => AgentSessionHistoryGatewayError::Corrupt,
-            AgentSessionRepositoryError::Conflict
-            | AgentSessionRepositoryError::ProviderSessionAlreadyOwned { .. }
-            | AgentSessionRepositoryError::Unavailable => {
-                AgentSessionHistoryGatewayError::Unavailable
-            }
-        })
+        .map_err(map_ownership_error)
+    }
+}
+
+pub(super) fn map_ownership_error(
+    error: AgentSessionRepositoryError,
+) -> AgentSessionHistoryGatewayError {
+    match error {
+        AgentSessionRepositoryError::InvalidRequest => {
+            AgentSessionHistoryGatewayError::InvalidRequest
+        }
+        AgentSessionRepositoryError::Corrupt => AgentSessionHistoryGatewayError::Corrupt,
+        AgentSessionRepositoryError::Unavailable => AgentSessionHistoryGatewayError::Unavailable,
+        error => AgentSessionHistoryGatewayError::Store(error.failure_kind()),
     }
 }
 
@@ -895,7 +898,7 @@ impl LocalAgentSessionRepository {
                 session_id: storage_key.to_string(),
             })
             .await
-            .map_err(|_| AgentSessionRepositoryError::Unavailable)?;
+            .map_err(AgentSessionRepositoryError::from)?;
         let LocalEventQueryResult::SessionProjectionByIdentity(view) = result else {
             return Err(AgentSessionRepositoryError::Corrupt);
         };

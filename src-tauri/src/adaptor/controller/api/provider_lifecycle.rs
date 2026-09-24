@@ -213,7 +213,8 @@ fn usecase_error(error: ProviderLifecycleIngressUsecaseError) -> ApiError {
             "provider_lifecycle_conflict",
             "Provider lifecycle conflicts with current AgentSession ownership",
         ),
-        ProviderLifecycleIngressUsecaseError::StorageUnavailable => ApiError::new(
+        ProviderLifecycleIngressUsecaseError::Store(_)
+        | ProviderLifecycleIngressUsecaseError::StorageUnavailable => ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
             "provider_lifecycle_storage_unavailable",
             "Provider lifecycle persistence is unavailable",

@@ -18,3 +18,13 @@ pub trait IssueCache: Send + Sync {
     fn lookup(&self, repo_path: &str) -> Option<Vec<IssueInfo>>;
     fn store(&self, repo_path: &str, value: Vec<IssueInfo>);
 }
+
+impl crate::domain::failure::ClassifiedFailure for GitHostError {
+    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
+        crate::domain::failure::FailureKind::Internal
+    }
+}
+
+#[cfg(test)]
+#[path = "git_host_test.rs"]
+mod git_host_tests;

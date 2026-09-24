@@ -46,15 +46,15 @@ impl LocalAgentSessionQueryService {
         if agent_session_id.trim().is_empty() {
             return Err(AgentSessionQueryError::InvalidRequest);
         }
-        let Some(location) = locate_session(backend, agent_session_id)
-            .map_err(|_| AgentSessionQueryError::Unavailable)?
+        let Some(location) =
+            locate_session(backend, agent_session_id).map_err(AgentSessionQueryError::from)?
         else {
             return Ok(None);
         };
         let context =
             read_session_context(backend, &location).map_err(AgentSessionQueryError::from)?;
-        let records = read_session_records(backend, &location)
-            .map_err(|_| AgentSessionQueryError::Unavailable)?;
+        let records =
+            read_session_records(backend, &location).map_err(AgentSessionQueryError::from)?;
         Ok(Some(agent_session_item_from_facts(
             agent_session_id,
             &location,
@@ -81,7 +81,9 @@ impl AgentSessionQueryService for LocalAgentSessionQueryService {
         let agent_session_id = agent_session_id.to_string();
         tokio::task::spawn_blocking(move || Self::get_derived_from(&backend, &agent_session_id))
             .await
-            .map_err(|_| AgentSessionQueryError::Unavailable)?
+            .map_err(|_| {
+                AgentSessionQueryError::Store(crate::domain::failure::FailureKind::Internal)
+            })?
     }
 }
 
@@ -98,9 +100,11 @@ pub(crate) fn workspace_session_items(
                 crate::adaptor::gateway::local_event_store::node_events::first_row_of_tree(
                     connection, &requested,
                 )
-                .map_err(|_| crate::domain::local_event::LocalEventQueryError::InvalidRequest)
+                .map_err(|error| {
+                    crate::adaptor::gateway::local_event_store::reader::storage_unavailable(&error)
+                })
             })
-            .map_err(|_| AgentSessionQueryError::Unavailable)?;
+            .map_err(AgentSessionQueryError::from)?;
         let Some(root) = root else {
             continue;
         };
@@ -122,8 +126,8 @@ pub(crate) fn workspace_session_items(
             node_name: root.node_name,
             attempt: u32::try_from(root.attempt).map_err(|_| AgentSessionQueryError::Corrupt)?,
         };
-        let records = read_session_records(backend, &location)
-            .map_err(|_| AgentSessionQueryError::Unavailable)?;
+        let records =
+            read_session_records(backend, &location).map_err(AgentSessionQueryError::from)?;
         let Some(session_id) = records.iter().find_map(|record| match &record.fact {
             NodeFact::SessionAttached(attached) => Some(attached.session_id.as_str()),
             _ => None,

@@ -71,7 +71,7 @@ pub(crate) fn build_client_dependencies<R: tauri::Runtime>(
         workflow_runtime_usecase: app.try_state::<std::sync::Arc<crate::usecase::workflow::WorkflowRuntimeUsecase>>().map(|state| state.inner().clone()),
         editor_launcher: Arc::new(crate::adaptor::gateway::external_editor::NativeEditorLauncherGateway),
         watcher: build_watcher_usecase(app),
-        data_dir: data_dir(app),
+        data_dir: data_dir(app).map_err(crate::other::AppError::new),
         comment_notify: Arc::new(crate::adaptor::gateway::push::CommentChangeGateway::new(push_sink(app))),
         process_port: Arc::new(crate::adaptor::gateway::application_lifecycle::TauriApplicationQuitIntentPort::new(app.clone())),
     }

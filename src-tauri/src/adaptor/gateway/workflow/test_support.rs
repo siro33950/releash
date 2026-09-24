@@ -102,7 +102,8 @@ pub(crate) fn seed_workflow_session_facts(
             })),
         }),
         1,
-    )?;
+    )
+    .map_err(|error| error.to_string())?;
     super::fact_log::append_single_fact(
         store,
         &node_meta,
@@ -114,7 +115,8 @@ pub(crate) fn seed_workflow_session_facts(
             root: None,
         }),
         2,
-    )?;
+    )
+    .map_err(|error| error.to_string())?;
     super::fact_log::append_single_fact(
         store,
         &node_meta,
@@ -126,6 +128,7 @@ pub(crate) fn seed_workflow_session_facts(
         }),
         3,
     )
+    .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
@@ -230,7 +233,7 @@ pub(crate) fn append_canonical_events(
     store: &Arc<LocalEventStore>,
     events: &[WorkflowEvent],
 ) -> Result<(), String> {
-    super::fact_log::append_facts_for_events(store, events)
+    super::fact_log::append_facts_for_events(store, events).map_err(|error| error.to_string())
 }
 
 #[cfg(test)]

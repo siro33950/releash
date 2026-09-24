@@ -1,5 +1,6 @@
 mod conversions;
 mod errors;
+pub(crate) use errors::CommandFailure;
 #[cfg(any(test, all(debug_assertions, feature = "desktop")))]
 mod json;
 mod workflow_values;

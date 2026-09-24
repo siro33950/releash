@@ -6,7 +6,7 @@ use crate::usecase::worktree_operation::WorktreeMutationGuard;
 pub(super) fn admit(
     runtime: Option<&WorkflowRuntimeUsecase>,
     command: &wire::command_request::Command,
-) -> Result<Vec<WorktreeMutationGuard>, wire::CommandError> {
+) -> Result<Vec<WorktreeMutationGuard>, wire::CommandFailure> {
     use wire::command_request::Command as C;
     let path = match command {
         C::GitCreateBranch(a) => a.repo_path.as_deref(),
@@ -69,8 +69,14 @@ fn terminal_workspace(owner: Option<&wire::TerminalSurfaceOwnerV1>) -> Option<&s
     }
 }
 
-fn mutation_error(error: crate::domain::workflow::WorkflowError) -> wire::CommandError {
-    crate::other::AppError::coded("WORKTREE_MUTATION_REJECTED", error.to_string()).into()
+fn mutation_error(error: crate::domain::workflow::WorkflowError) -> wire::CommandFailure {
+    use crate::domain::failure::ClassifiedFailure;
+    crate::other::AppError::coded(
+        "WORKTREE_MUTATION_REJECTED",
+        error.to_string(),
+        error.failure_kind(),
+    )
+    .into()
 }
 
 #[cfg(test)]

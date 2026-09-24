@@ -50,13 +50,13 @@ async fn error_server(
 async fn test_接続監督_要求上限拒否が継続しても接続を維持する() {
     // Given
     let (endpoint, server, requests) = error_server(
-        crate::adaptor::controller::api::protocol::connect::command_error_with_code(
+        crate::adaptor::controller::api::protocol::connect::command_error(
             crate::other::AppError::coded(
                 "CLIENT_REQUEST_LIMIT",
                 "Too many pending client commands",
+                crate::domain::failure::FailureKind::Capacity,
             )
             .into(),
-            connectrpc::ErrorCode::ResourceExhausted,
         ),
     )
     .await;
@@ -81,9 +81,13 @@ async fn test_ネイティブ要求_停止とログイン項目の具体的な�
     use crate::adaptor::controller::api::protocol::connect::command_error;
     // Given / When / Then
     for detail in [
-        wire::CommandError::from("設定を保存できません".to_owned()),
-        crate::other::AppError::coded("LOGIN_ITEM_SAVE_FAILED", "ログイン項目を保存できません")
-            .into(),
+        wire::CommandError::from(crate::other::AppError::new("設定を保存できません")),
+        crate::other::AppError::coded(
+            "LOGIN_ITEM_SAVE_FAILED",
+            "ログイン項目を保存できません",
+            crate::domain::failure::FailureKind::Internal,
+        )
+        .into(),
         wire::CommandError {
             variant: Some(wire::command_error::Variant::Application(Box::new(
                 wire::ApplicationError {
@@ -100,7 +104,11 @@ async fn test_ネイティブ要求_停止とログイン項目の具体的な�
             wire::command_error::Variant::Application(value) => value.message.as_ref().unwrap(),
         }
         .clone();
-        let (endpoint, server, _) = error_server(command_error(detail)).await;
+        let (endpoint, server, _) = error_server(command_error(wire::CommandFailure {
+            kind: crate::domain::failure::FailureKind::Internal,
+            detail,
+        }))
+        .await;
         let client = DesktopClient::start(super::client(&endpoint).unwrap());
         for command in [
             wire::command_request::Command::RequestApplicationQuit(Default::default()),

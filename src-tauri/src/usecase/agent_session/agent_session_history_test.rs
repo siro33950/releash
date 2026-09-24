@@ -41,3 +41,74 @@ async fn test_agent_session_history_controller境界へusecaseとして公開す
 
     assert_eq!(page.items[0].provider_session_id, "claude-1");
 }
+
+#[test]
+fn test_失敗分類_全変種と委譲した理由を保持する() {
+    use crate::domain::failure::{ClassifiedFailure, FailureKind as F};
+    use crate::usecase::agent_session::AgentSessionHistoryQueryError;
+    // Given
+    let cases = [
+        (
+            AgentSessionHistoryQueryError::InvalidRequest,
+            F::InvalidInput,
+        ),
+        (AgentSessionHistoryQueryError::Unavailable, F::Temporary),
+        (AgentSessionHistoryQueryError::Corrupt, F::Corrupt),
+        (
+            AgentSessionHistoryQueryError::Store(F::Temporary),
+            F::Temporary,
+        ),
+        (
+            AgentSessionHistoryQueryError::Store(F::RestartRequired),
+            F::RestartRequired,
+        ),
+        (
+            AgentSessionHistoryQueryError::Store(F::StateRequired),
+            F::StateRequired,
+        ),
+        (
+            AgentSessionHistoryQueryError::Store(F::InvalidInput),
+            F::InvalidInput,
+        ),
+        (AgentSessionHistoryQueryError::Store(F::Expired), F::Expired),
+        (AgentSessionHistoryQueryError::Store(F::Missing), F::Missing),
+        (
+            AgentSessionHistoryQueryError::Store(F::AlreadyPresent),
+            F::AlreadyPresent,
+        ),
+        (
+            AgentSessionHistoryQueryError::Store(F::Permission),
+            F::Permission,
+        ),
+        (
+            AgentSessionHistoryQueryError::Store(F::Capacity),
+            F::Capacity,
+        ),
+        (
+            AgentSessionHistoryQueryError::Store(F::Unsupported),
+            F::Unsupported,
+        ),
+        (
+            AgentSessionHistoryQueryError::Store(F::Internal),
+            F::Internal,
+        ),
+        (AgentSessionHistoryQueryError::Store(F::Corrupt), F::Corrupt),
+        (
+            AgentSessionHistoryQueryError::Store(F::Cancelled),
+            F::Cancelled,
+        ),
+        (AgentSessionHistoryQueryError::Store(F::Unknown), F::Unknown),
+        (
+            AgentSessionHistoryQueryError::Store(F::OutsideRange),
+            F::OutsideRange,
+        ),
+        (
+            AgentSessionHistoryQueryError::Store(F::AuthenticationRequired),
+            F::AuthenticationRequired,
+        ),
+    ];
+    for (error, expected) in cases {
+        // When / Then
+        assert_eq!(error.failure_kind(), expected, "{error:?}");
+    }
+}

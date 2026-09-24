@@ -64,6 +64,8 @@ pub struct NodeEventAppendRequest {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum NodeEventWriteError {
+    #[error("node event store failure: {0:?}")]
+    Store(crate::domain::failure::FailureKind),
     #[error("node event tree changed before append")]
     Conflict,
     #[error("node event storage is unavailable")]
@@ -72,6 +74,27 @@ pub enum NodeEventWriteError {
     /// durable. Callers re-derive from the log and retry idempotently.
     #[error("node event write outcome is unknown")]
     OutcomeUnknown,
+}
+
+impl crate::domain::failure::ClassifiedFailure for NodeEventWriteError {
+    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
+        use crate::domain::failure::FailureKind;
+        match self {
+            Self::Store(kind) => *kind,
+            Self::StorageUnavailable => FailureKind::Temporary,
+            Self::Conflict | Self::OutcomeUnknown => FailureKind::RestartRequired,
+        }
+    }
+}
+
+impl From<NodeEventWriteError> for crate::domain::workflow::WorkflowError {
+    fn from(error: NodeEventWriteError) -> Self {
+        use crate::domain::failure::ClassifiedFailure;
+        Self::StorageUnavailable {
+            message: format!("node fact append failed: {error}"),
+            kind: error.failure_kind(),
+        }
+    }
 }
 
 pub enum WriteRequest {

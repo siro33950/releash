@@ -49,6 +49,7 @@ pub(crate) struct AgentSessionItemDto {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AgentSessionQueryError {
+    Store(crate::domain::failure::FailureKind),
     InvalidRequest,
     Unavailable,
     Corrupt,
@@ -61,3 +62,31 @@ pub(crate) trait AgentSessionQueryService: Send + Sync {
         agent_session_id: &str,
     ) -> Result<Option<AgentSessionItemDto>, AgentSessionQueryError>;
 }
+
+impl From<crate::domain::local_event::LocalEventQueryError> for AgentSessionQueryError {
+    fn from(error: crate::domain::local_event::LocalEventQueryError) -> Self {
+        use crate::domain::failure::ClassifiedFailure;
+        match error.failure_kind() {
+            crate::domain::failure::FailureKind::Temporary => Self::Unavailable,
+            crate::domain::failure::FailureKind::Corrupt => Self::Corrupt,
+            crate::domain::failure::FailureKind::InvalidInput => Self::InvalidRequest,
+            kind => Self::Store(kind),
+        }
+    }
+}
+
+impl crate::domain::failure::ClassifiedFailure for AgentSessionQueryError {
+    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
+        use crate::domain::failure::FailureKind;
+        match self {
+            Self::Store(kind) => *kind,
+            Self::InvalidRequest => FailureKind::InvalidInput,
+            Self::Unavailable => FailureKind::Temporary,
+            Self::Corrupt => FailureKind::Corrupt,
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "agent_session_query_test.rs"]
+mod agent_session_query_tests;

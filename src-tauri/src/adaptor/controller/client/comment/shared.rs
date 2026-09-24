@@ -22,7 +22,7 @@ pub(crate) fn register_shared(
                     let result = async move {
                         let usecase = usecase
                             .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        let data_dir = data_dir.map_err(wire::CommandError::from)?;
+                        let data_dir = data_dir.map_err(wire::CommandFailure::from)?;
                         outcome(
                             commands::list_review_threads_shared(
                                 data_dir,
@@ -56,7 +56,7 @@ pub(crate) fn register_shared(
                     let result = async move {
                         let usecase = usecase
                             .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        let data_dir = data_dir.map_err(wire::CommandError::from)?;
+                        let data_dir = data_dir.map_err(wire::CommandFailure::from)?;
                         outcome(
                             commands::create_review_thread_shared(
                                 data_dir,
@@ -96,7 +96,7 @@ pub(crate) fn register_shared(
                     let result = async move {
                         let usecase = usecase
                             .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        let data_dir = data_dir.map_err(wire::CommandError::from)?;
+                        let data_dir = data_dir.map_err(wire::CommandFailure::from)?;
                         outcome(
                             commands::append_review_comment_shared(
                                 data_dir,
@@ -132,7 +132,7 @@ pub(crate) fn register_shared(
                     let result = async move {
                         let usecase = usecase
                             .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        let data_dir = data_dir.map_err(wire::CommandError::from)?;
+                        let data_dir = data_dir.map_err(wire::CommandFailure::from)?;
                         outcome(
                             commands::resolve_review_thread_shared(
                                 data_dir,
@@ -169,7 +169,7 @@ pub(crate) fn register_shared(
                     let result = async move {
                         let usecase = usecase
                             .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        let data_dir = data_dir.map_err(wire::CommandError::from)?;
+                        let data_dir = data_dir.map_err(wire::CommandFailure::from)?;
                         outcome(
                             commands::delete_review_thread_shared(
                                 data_dir,
@@ -203,7 +203,7 @@ pub(crate) fn register_shared(
                     let result = async move {
                         let usecase = usecase
                             .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        let data_dir = data_dir.map_err(wire::CommandError::from)?;
+                        let data_dir = data_dir.map_err(wire::CommandFailure::from)?;
                         outcome(
                             commands::build_review_thread_handoff_shared(
                                 data_dir,

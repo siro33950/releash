@@ -276,6 +276,7 @@ impl WorkflowDiagnosticsAcceptanceHost {
             Some(directory.to_string()),
         )
         .await
+        .map_err(|error| error.to_string())
         .and_then(|report| serde_json::to_value(report).map_err(|error| error.to_string()))
     }
 

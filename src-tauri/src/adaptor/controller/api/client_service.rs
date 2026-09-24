@@ -9,7 +9,7 @@ async fn get_server_info<'a>(
         release: env!("CARGO_PKG_VERSION").into(),
         desktop_settings: self
             .desktop_settings()
-            .map_err(connectrpc::ConnectError::internal)?,
+            .map_err(crate::adaptor::protocol::connect::classified_error)?,
     })?)
 }
 
@@ -68,7 +68,7 @@ async fn subscribe_terminal_surfaces(
     let terminal = self
         .terminal
         .as_ref()
-        .ok_or_else(|| connectrpc::ConnectError::unavailable("Terminal unavailable"))?;
+        .ok_or_else(|| crate::adaptor::protocol::connect::classified_error(crate::other::AppError::new("Terminal unavailable").with_failure_kind(crate::domain::failure::FailureKind::Temporary)))?;
     let request: wire::SubscribeTerminalSurfacesRequest = to_wire(&request.to_owned_message())?;
     connectrpc::Response::stream_ok(terminal.subscribe(request.subscription_id)?)
 }
@@ -85,14 +85,14 @@ async fn attach_terminal_surface<'a>(
     let terminal = self
         .terminal
         .as_ref()
-        .ok_or_else(|| connectrpc::ConnectError::unavailable("Terminal unavailable"))?;
+        .ok_or_else(|| crate::adaptor::protocol::connect::classified_error(crate::other::AppError::new("Terminal unavailable").with_failure_kind(crate::domain::failure::FailureKind::Temporary)))?;
     let request: wire::AttachSubscribedTerminalSurfaceRequest =
         to_wire(&request.to_owned_message())?;
     terminal.attach(
         &request.subscription_id,
         request.stream_id,
         request.request.ok_or_else(|| {
-            connectrpc::ConnectError::invalid_argument("Missing terminal request")
+            crate::adaptor::protocol::connect::classified_error(crate::other::AppError::new("Missing terminal request").with_failure_kind(crate::domain::failure::FailureKind::InvalidInput))
         })?,
     )?;
     connectrpc::Response::ok(rpc::Unit::default())
@@ -106,7 +106,7 @@ async fn watch_files<'a>(
     let request: wire::WatchFilesRequest = to_wire(&request.to_owned_message())?;
     let args = request
         .request
-        .ok_or_else(|| connectrpc::ConnectError::invalid_argument("Missing watch request"))?;
+        .ok_or_else(|| crate::adaptor::protocol::connect::classified_error(crate::other::AppError::new("Missing watch request").with_failure_kind(crate::domain::failure::FailureKind::InvalidInput)))?;
     connectrpc::Response::ok(
         self.watch(
             request.subscription_id,
@@ -126,7 +126,7 @@ async fn watch_git_directory<'a>(
     let request: wire::WatchGitDirectoryRequest = to_wire(&request.to_owned_message())?;
     let args = request
         .request
-        .ok_or_else(|| connectrpc::ConnectError::invalid_argument("Missing watch request"))?;
+        .ok_or_else(|| crate::adaptor::protocol::connect::classified_error(crate::other::AppError::new("Missing watch request").with_failure_kind(crate::domain::failure::FailureKind::InvalidInput)))?;
     connectrpc::Response::ok(
         self.watch(
             request.subscription_id,

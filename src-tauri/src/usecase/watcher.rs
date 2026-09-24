@@ -4,12 +4,12 @@ use crate::domain::repository::file_watcher::FileWatchGateway;
 use crate::domain::repository::watch_subscriptions::{WatchSubscriptionError, WatchSubscriptions};
 use crate::usecase::repository_state::RepositoryStateService;
 
-#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, thiserror::Error)]
 pub(crate) enum UsecaseError {
     #[error(transparent)]
     Subscription(#[from] WatchSubscriptionError),
     #[error("{0}")]
-    Repository(String),
+    Repository(crate::usecase::repository_state::RepositoryStateError),
     #[error("{0}")]
     File(String),
     #[error("Repository state unavailable")]
@@ -38,7 +38,7 @@ impl WatcherUsecase {
         if let Some(repository) = &self.repository {
             if let Some(id) = repository
                 .start_file_watching_if_repository(path)
-                .map_err(|error| UsecaseError::Repository(error.to_string()))?
+                .map_err(UsecaseError::Repository)?
             {
                 return Ok(id);
             }
@@ -51,7 +51,7 @@ impl WatcherUsecase {
             .as_ref()
             .ok_or(UsecaseError::RepositoryUnavailable)?
             .start_git_dir_watching(path)
-            .map_err(|error| UsecaseError::Repository(error.to_string()))
+            .map_err(UsecaseError::Repository)
     }
 
     pub(crate) fn stop(&self, watcher_id: u64) -> Result<(), UsecaseError> {
@@ -64,7 +64,7 @@ impl WatcherUsecase {
         if let Some(repository) = &self.repository {
             if repository
                 .stop_watching(watcher_id)
-                .map_err(|error| UsecaseError::Repository(error.to_string()))?
+                .map_err(UsecaseError::Repository)?
             {
                 return Ok(());
             }
@@ -128,5 +128,17 @@ impl Drop for WatcherSubscription {
         let usecase = self.usecase.clone();
         let watchers = usecase.subscriptions.lock().unsubscribe(&self.id);
         tokio::task::spawn_blocking(move || usecase.stop_watchers(watchers));
+    }
+}
+
+impl crate::domain::failure::ClassifiedFailure for UsecaseError {
+    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
+        use crate::domain::failure::FailureKind;
+        match self {
+            Self::Subscription(error) => error.failure_kind(),
+            Self::Repository(error) => error.failure_kind(),
+            Self::File(_) => FailureKind::Internal,
+            Self::RepositoryUnavailable => FailureKind::StateRequired,
+        }
     }
 }

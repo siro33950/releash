@@ -1,3 +1,5 @@
+use crate::domain::failure::ClassifiedFailure;
+use crate::other::AppError;
 use serde::Serialize;
 
 use crate::adaptor::controller::state::AppState;
@@ -36,41 +38,45 @@ pub(crate) fn invalid_owner_error(
         internal_cause
     );
     TerminalCommandError {
+        kind: crate::domain::failure::FailureKind::InvalidInput,
         code: code.code().to_string(),
         message: operation.message(code).to_string(),
     }
 }
 
-pub(crate) fn invalid_terminal_write_owner_error(internal_cause: String) -> String {
+pub(crate) fn invalid_terminal_write_owner_error(internal_cause: String) -> AppError {
     log::warn!(
         "Terminal command failed: operation=write_terminal_surface code=INVALID_REQUEST cause={}",
         internal_cause
     );
-    "Terminal input could not be sent because the request is invalid.".to_string()
+    AppError::new("Terminal input could not be sent because the request is invalid.")
+        .with_failure_kind(crate::domain::failure::FailureKind::InvalidInput)
 }
 
-pub(crate) fn terminal_write_error(error: UsecaseError) -> String {
+pub(crate) fn terminal_write_error(error: UsecaseError) -> AppError {
     log::error!(
         "Terminal command failed: operation=write_terminal_surface code=PTY_ERROR cause={}",
         error
     );
-    "Terminal input could not be sent. Try again.".to_string()
+    AppError::new("Terminal input could not be sent. Try again.")
+        .with_failure_kind(error.failure_kind())
 }
 
-pub(crate) fn invalid_terminal_resize_owner_error(internal_cause: String) -> String {
+pub(crate) fn invalid_terminal_resize_owner_error(internal_cause: String) -> AppError {
     log::warn!(
         "Terminal command failed: operation=resize_terminal_surface code=INVALID_REQUEST cause={}",
         internal_cause
     );
-    "Terminal resize failed because the request is invalid.".to_string()
+    AppError::new("Terminal resize failed because the request is invalid.")
+        .with_failure_kind(crate::domain::failure::FailureKind::InvalidInput)
 }
 
-pub(crate) fn terminal_resize_error(error: UsecaseError) -> String {
+pub(crate) fn terminal_resize_error(error: UsecaseError) -> AppError {
     log::error!(
         "Terminal command failed: operation=resize_terminal_surface code=PTY_ERROR cause={}",
         error
     );
-    "Terminal resize failed. Try again.".to_string()
+    AppError::new("Terminal resize failed. Try again.").with_failure_kind(error.failure_kind())
 }
 
 pub(crate) fn get_terminal_performance_switches_shared() -> TerminalPerformanceSwitchesV1 {
@@ -122,25 +128,33 @@ pub(crate) fn take_terminal_input_performance_samples_shared(
 pub(crate) fn record_terminal_launch_renderer_phase_shared(
     phase: String,
     duration_ms: f64,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     if !duration_ms.is_finite() || duration_ms < 0.0 {
-        return Err(
-            "Terminal launch renderer duration must be finite and non-negative".to_string(),
-        );
+        return Err(AppError::new(
+            "Terminal launch renderer duration must be finite and non-negative",
+        )
+        .with_failure_kind(crate::domain::failure::FailureKind::InvalidInput));
     }
     let metric = match phase.as_str() {
         "first_xterm_parsed" => crate::other::telemetry::TerminalLaunch::FirstXtermParsed,
         "first_paint" => crate::other::telemetry::TerminalLaunch::FirstPaint,
-        _ => return Err("Unknown Terminal launch renderer phase".to_string()),
+        _ => {
+            return Err(AppError::new("Unknown Terminal launch renderer phase")
+                .with_failure_kind(crate::domain::failure::FailureKind::InvalidInput))
+        }
     };
-    let duration = std::time::Duration::try_from_secs_f64(duration_ms / 1_000.0)
-        .map_err(|_| "Terminal launch renderer duration is out of range".to_string())?;
+    let duration = std::time::Duration::try_from_secs_f64(duration_ms / 1_000.0).map_err(|_| {
+        AppError::new("Terminal launch renderer duration is out of range")
+            .with_failure_kind(crate::domain::failure::FailureKind::InvalidInput)
+    })?;
     telemetry().record_terminal_launch(metric, duration);
     Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TerminalCommandError {
+    #[serde(skip)]
+    pub kind: crate::domain::failure::FailureKind,
     pub code: String,
     pub message: String,
 }
@@ -197,6 +211,7 @@ impl TerminalCommandOperation {
 
 impl TerminalCommandError {
     pub(crate) fn from_usecase(error: UsecaseError, operation: TerminalCommandOperation) -> Self {
+        let kind = error.failure_kind();
         let internal_cause = error.to_string();
         let code = match error {
             UsecaseError::Gateway(_)
@@ -211,6 +226,7 @@ impl TerminalCommandError {
             internal_cause
         );
         Self {
+            kind,
             code: code.code().to_string(),
             message: operation.message(code).to_string(),
         }
@@ -224,7 +240,7 @@ pub(crate) fn write_terminal_surface_shared(
     sequence: u64,
     client_started_at_unix_ms: Option<f64>,
     data: String,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     let owner = owner
         .try_into()
         .map_err(invalid_terminal_write_owner_error)?;
@@ -244,12 +260,14 @@ pub(crate) fn write_paths_to_terminal_surface_shared(
     state: &AppState,
     owner: TerminalSurfaceOwnerV1,
     paths: Vec<String>,
-) -> Result<(), String> {
-    let owner = owner.try_into()?;
+) -> Result<(), AppError> {
+    let owner = owner.try_into().map_err(|error| {
+        AppError::new(error).with_failure_kind(crate::domain::failure::FailureKind::InvalidInput)
+    })?;
     state
         .terminal_surface
         .write_paths(&owner, &paths)
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from_failure)
 }
 
 pub(crate) fn resize_terminal_surface_shared(
@@ -257,7 +275,7 @@ pub(crate) fn resize_terminal_surface_shared(
     owner: TerminalSurfaceOwnerV1,
     rows: u16,
     cols: u16,
-) -> impl std::future::Future<Output = Result<(), String>> + Send + use<> {
+) -> impl std::future::Future<Output = Result<(), AppError>> + Send + use<> {
     let resize = owner
         .try_into()
         .map_err(invalid_terminal_resize_owner_error)
@@ -265,7 +283,7 @@ pub(crate) fn resize_terminal_surface_shared(
     async move {
         tokio::task::spawn_blocking(resize?)
             .await
-            .map_err(|error| format!("Terminal resize task failed: {error}"))?
+            .map_err(|error| AppError::new(format!("Terminal resize task failed: {error}")))?
             .map_err(terminal_resize_error)
     }
 }
@@ -312,12 +330,14 @@ pub(crate) fn ack_terminal_surface_output_shared(
 pub(crate) fn kill_terminal_surface_shared(
     state: &AppState,
     owner: TerminalSurfaceOwnerV1,
-) -> Result<(), String> {
-    let owner = owner.try_into()?;
+) -> Result<(), AppError> {
+    let owner = owner.try_into().map_err(|error| {
+        AppError::new(error).with_failure_kind(crate::domain::failure::FailureKind::InvalidInput)
+    })?;
     state
         .terminal_surface
         .kill(&owner)
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from_failure)
 }
 
 pub(crate) fn get_or_spawn_terminal_surface_shared(

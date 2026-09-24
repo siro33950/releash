@@ -908,3 +908,20 @@ mod tests {
         assert_eq!(filtered[0].id, "other");
     }
 }
+
+impl crate::domain::failure::ClassifiedFailure for ReviewError {
+    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
+        use crate::domain::failure::FailureKind as F;
+        match self {
+            Self::InvalidInput(_) => F::InvalidInput,
+            Self::NotFound(_) => F::Missing,
+            Self::AlreadyResolved(_) => F::StateRequired,
+            Self::PermissionDenied(_) => F::Permission,
+            Self::Io(_) | Self::Serialize(_) => F::Internal,
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "mod_test.rs"]
+mod mod_tests;

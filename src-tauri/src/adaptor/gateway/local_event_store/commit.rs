@@ -33,7 +33,7 @@ fn storage_unavailable(error: &rusqlite::Error) -> CommitBatchError {
     CommitBatchError::StorageUnavailable {
         failure: SafeOperationFailure::new(
             SessionOperationFailureKind::StorageUnavailable,
-            true,
+            super::reader::sqlite_failure_kind(error),
             "local event store write failed",
             correlation,
         ),
@@ -219,18 +219,7 @@ pub(crate) fn resolve_commit_row(
             },
         )
         .optional()
-        .map_err(|error| {
-            let correlation = correlation_id();
-            log::warn!("local event store read failure [{correlation}]: {error}");
-            LocalEventQueryError::StorageUnavailable {
-                failure: SafeOperationFailure::new(
-                    SessionOperationFailureKind::StorageUnavailable,
-                    true,
-                    "local event store read failed",
-                    correlation,
-                ),
-            }
-        })?;
+        .map_err(|error| super::reader::storage_unavailable(&error))?;
     match row {
         None => Ok(CommitResolution::NotCommitted),
         Some(row) => {
@@ -265,7 +254,7 @@ pub fn execute_commit(
         return Err(CommitBatchError::StorageUnavailable {
             failure: SafeOperationFailure::new(
                 SessionOperationFailureKind::StorageUnavailable,
-                true,
+                crate::domain::failure::FailureKind::Temporary,
                 "injected failure before transaction begin",
                 correlation_id(),
             ),
@@ -543,7 +532,7 @@ fn execute_in_transaction(
         return Err(CommitBatchError::StorageUnavailable {
             failure: SafeOperationFailure::new(
                 SessionOperationFailureKind::StorageUnavailable,
-                true,
+                crate::domain::failure::FailureKind::Temporary,
                 "injected failure before COMMIT",
                 correlation_id(),
             ),
@@ -566,7 +555,7 @@ fn fail_after_participant_write_if_armed(fault: &FaultInjector) -> Result<(), Co
     Err(CommitBatchError::StorageUnavailable {
         failure: SafeOperationFailure::new(
             SessionOperationFailureKind::StorageUnavailable,
-            true,
+            crate::domain::failure::FailureKind::Temporary,
             "injected failure after participant write",
             correlation_id(),
         ),
@@ -760,3 +749,7 @@ fn apply_session_projection(
         ],
     ))
 }
+
+#[cfg(test)]
+#[path = "commit_test.rs"]
+mod commit_tests;

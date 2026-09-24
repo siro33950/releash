@@ -1,3 +1,4 @@
+use crate::domain::failure::ClassifiedFailure;
 use std::sync::Arc;
 
 use crate::domain::agent_session::aggregates::AgentSessionMutationOutcome;
@@ -20,6 +21,7 @@ use super::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ProviderLifecycleIngressUsecaseError {
+    Store(crate::domain::failure::FailureKind),
     InvalidInput,
     Conflict,
     StorageUnavailable,
@@ -404,6 +406,9 @@ fn map_lifecycle_error(
         ProviderLifecycleUsecaseError::StorageUnavailable => {
             ProviderLifecycleIngressUsecaseError::StorageUnavailable
         }
+        ProviderLifecycleUsecaseError::Store(kind) => {
+            ProviderLifecycleIngressUsecaseError::Store(kind)
+        }
         ProviderLifecycleUsecaseError::Corrupt => ProviderLifecycleIngressUsecaseError::Corrupt,
     }
 }
@@ -418,6 +423,9 @@ fn map_hook_health_error(
         ProviderHookHealthUsecaseError::StorageUnavailable => {
             ProviderLifecycleIngressUsecaseError::StorageUnavailable
         }
+        ProviderHookHealthUsecaseError::Store(kind) => {
+            ProviderLifecycleIngressUsecaseError::Store(kind)
+        }
         ProviderHookHealthUsecaseError::Corrupt => ProviderLifecycleIngressUsecaseError::Corrupt,
     }
 }
@@ -427,13 +435,14 @@ fn map_session_error(error: AgentSessionUsecaseError) -> ProviderLifecycleIngres
         AgentSessionUsecaseError::NotFound | AgentSessionUsecaseError::InvalidOperation => {
             ProviderLifecycleIngressUsecaseError::InvalidInput
         }
-        AgentSessionUsecaseError::Conflict
-        | AgentSessionUsecaseError::ProviderSessionAlreadyOwned { .. } => {
-            ProviderLifecycleIngressUsecaseError::Conflict
+        AgentSessionUsecaseError::Conflict => ProviderLifecycleIngressUsecaseError::Conflict,
+        error @ AgentSessionUsecaseError::ProviderSessionAlreadyOwned { .. } => {
+            ProviderLifecycleIngressUsecaseError::Store(error.failure_kind())
         }
         AgentSessionUsecaseError::Unavailable => {
             ProviderLifecycleIngressUsecaseError::StorageUnavailable
         }
+        AgentSessionUsecaseError::Store(kind) => ProviderLifecycleIngressUsecaseError::Store(kind),
         AgentSessionUsecaseError::Corrupt => ProviderLifecycleIngressUsecaseError::Corrupt,
     }
 }
@@ -443,8 +452,8 @@ fn map_session_repository_error(
 ) -> ProviderLifecycleIngressUsecaseError {
     match error {
         AgentSessionRepositoryError::Conflict => ProviderLifecycleIngressUsecaseError::Conflict,
-        AgentSessionRepositoryError::ProviderSessionAlreadyOwned { .. } => {
-            ProviderLifecycleIngressUsecaseError::Conflict
+        error @ AgentSessionRepositoryError::ProviderSessionAlreadyOwned { .. } => {
+            ProviderLifecycleIngressUsecaseError::Store(error.failure_kind())
         }
         AgentSessionRepositoryError::InvalidRequest => {
             ProviderLifecycleIngressUsecaseError::InvalidInput
@@ -452,6 +461,26 @@ fn map_session_repository_error(
         AgentSessionRepositoryError::Unavailable => {
             ProviderLifecycleIngressUsecaseError::StorageUnavailable
         }
+        AgentSessionRepositoryError::Store(kind) => {
+            ProviderLifecycleIngressUsecaseError::Store(kind)
+        }
         AgentSessionRepositoryError::Corrupt => ProviderLifecycleIngressUsecaseError::Corrupt,
     }
 }
+
+impl crate::domain::failure::ClassifiedFailure for ProviderLifecycleIngressUsecaseError {
+    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
+        use crate::domain::failure::FailureKind;
+        match self {
+            Self::Store(kind) => *kind,
+            Self::InvalidInput => FailureKind::InvalidInput,
+            Self::Conflict => FailureKind::RestartRequired,
+            Self::StorageUnavailable => FailureKind::Temporary,
+            Self::Corrupt => FailureKind::Corrupt,
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "ingress_test.rs"]
+mod ingress_tests;

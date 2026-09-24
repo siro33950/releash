@@ -74,3 +74,83 @@ fn test_node事実追記_読取後の外部追記と競合したbatchは一行�
         vec![3]
     );
 }
+
+#[test]
+fn test_node事実追記_sqliteの理由をconnectまで保持する() {
+    use crate::domain::failure::{ClassifiedFailure, FailureKind};
+    use connectrpc::ErrorCode;
+    // Given
+    for (code, kind, wire_code) in [
+        (
+            rusqlite::ffi::SQLITE_BUSY,
+            FailureKind::Temporary,
+            ErrorCode::Unavailable,
+        ),
+        (
+            rusqlite::ffi::SQLITE_LOCKED,
+            FailureKind::Temporary,
+            ErrorCode::Unavailable,
+        ),
+        (
+            rusqlite::ffi::SQLITE_CORRUPT,
+            FailureKind::Corrupt,
+            ErrorCode::DataLoss,
+        ),
+        (
+            rusqlite::ffi::SQLITE_NOTADB,
+            FailureKind::Corrupt,
+            ErrorCode::DataLoss,
+        ),
+        (
+            rusqlite::ffi::SQLITE_READONLY,
+            FailureKind::StateRequired,
+            ErrorCode::FailedPrecondition,
+        ),
+        (
+            rusqlite::ffi::SQLITE_FULL,
+            FailureKind::StateRequired,
+            ErrorCode::FailedPrecondition,
+        ),
+        (
+            rusqlite::ffi::SQLITE_ERROR,
+            FailureKind::Internal,
+            ErrorCode::Internal,
+        ),
+    ] {
+        let source = rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(code), None);
+        // When
+        let error = super::node_append_error(source);
+        let workflow = crate::domain::workflow::WorkflowError::from(error);
+        // Then
+        assert_eq!(error.failure_kind(), kind);
+        assert_eq!(workflow.failure_kind(), kind);
+        assert_eq!(
+            crate::adaptor::protocol::connect::classified_error(workflow).code,
+            wire_code
+        );
+    }
+}
+
+#[test]
+fn test_node事実追記_結果不明と競合と混雑を分類する() {
+    use crate::adaptor::gateway::local_event_store::writer::NodeEventWriteError;
+    use crate::domain::failure::{ClassifiedFailure, FailureKind};
+    // Given / When / Then
+    for (error, expected) in [
+        (NodeEventWriteError::Conflict, FailureKind::RestartRequired),
+        (
+            NodeEventWriteError::OutcomeUnknown,
+            FailureKind::RestartRequired,
+        ),
+        (
+            NodeEventWriteError::StorageUnavailable,
+            FailureKind::Temporary,
+        ),
+        (
+            NodeEventWriteError::Store(FailureKind::Expired),
+            FailureKind::Expired,
+        ),
+    ] {
+        assert_eq!(error.failure_kind(), expected);
+    }
+}
