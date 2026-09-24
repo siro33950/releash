@@ -7,6 +7,7 @@ async fn test_購読時計_一定間隔で通知し遅延した印は連続送�
     let timer = TokioSubscriptionTimer;
     let interval = Duration::from_secs(10);
     let mut ticks = timer.interval(interval);
+    assert!(ticks.next().now_or_never().is_none());
     ticks.next().await.unwrap();
     // When
     tokio::time::advance(interval * 3).await;
