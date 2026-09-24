@@ -132,3 +132,36 @@ async fn test_worktree削除中_変更対象を共通境界で拒否して読み
     )
     .is_ok());
 }
+
+#[tokio::test]
+async fn test_同期変更_scope破棄後も完了またはpanicまで削除を待機する() {
+    for panic in [false, true] {
+        // Given
+        let runtime = WorkflowRuntimeUsecase::new(
+            Arc::new(RecordingRuntimeGateway::default()),
+            Arc::new(crate::usecase::workflow::NoopArchiveRepository),
+        );
+        let guard = runtime.begin_worktree_mutation("/repo").unwrap();
+        let started = Arc::new(tokio::sync::Notify::new());
+        let signal = started.clone();
+        let (finish, receiver) = std::sync::mpsc::channel();
+        let task = scope(vec![guard], async move {
+            spawn_blocking(move || {
+                signal.notify_one();
+                receiver.recv().unwrap();
+                assert!(!panic, "blocking mutation panic");
+            })
+        })
+        .await;
+        started.notified().await;
+        let mut deletion = Box::pin(runtime.begin_worktree_deletion("/repo"));
+        assert!(futures_util::poll!(&mut deletion).is_pending());
+        assert!(runtime.begin_worktree_mutation("/repo").is_err());
+        // When
+        finish.send(()).unwrap();
+        assert_eq!(task.await.is_err(), panic);
+        // Then
+        drop(deletion.await.unwrap());
+        assert!(runtime.begin_worktree_mutation("/repo").is_ok());
+    }
+}

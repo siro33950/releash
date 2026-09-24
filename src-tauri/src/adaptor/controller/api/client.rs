@@ -126,24 +126,16 @@ impl ClientApiDeps {
         &self,
         command: wire::command_request::Command,
     ) -> Result<wire::command_result::Command, connectrpc::ConnectError> {
-        let permit = self.request_permit()?;
+        let _permit = self.request_permit()?;
         self.dispatch.admit(command.name()).map_err(command_error)?;
         if let wire::command_request::Command::StopWatching(ref args) = command {
             let id = crate::adaptor::controller::client::required(args.watcher_id, "watcherId")
                 .map_err(command_error)?;
             let watcher = self.watcher.clone();
-            tokio::task::spawn_blocking(move || {
-                let _permit = permit;
-                watcher.stop(id)
-            })
-            .await
-            .map_err(|error| {
-                crate::adaptor::protocol::connect::classified_error(
-                    crate::other::AppError::new(error.to_string())
-                        .with_failure_kind(crate::domain::failure::FailureKind::Internal),
-                )
-            })?
-            .map_err(watch_error)?;
+            tokio::task::spawn_blocking(move || watcher.stop(id))
+                .await
+                .map_err(task_error)?
+                .map_err(watch_error)?;
             return Ok(wire::command_result::Command::StopWatching(wire::Unit {}));
         }
 
@@ -158,21 +150,14 @@ impl ClientApiDeps {
                 wire::Unit {},
             ));
         }
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let _cancel_on_drop = cancellation.clone().drop_guard();
         let dispatch = self.dispatch.clone();
         tokio::spawn(async move {
-            let _permit = permit;
-            dispatch
-                .dispatch_admitted(command)
-                .await
-                .map_err(command_error)
+            run_command(&cancellation, dispatch.dispatch_admitted(command)).await
         })
         .await
-        .map_err(|error| {
-            crate::adaptor::protocol::connect::classified_error(
-                crate::other::AppError::new(error.to_string())
-                    .with_failure_kind(crate::domain::failure::FailureKind::Internal),
-            )
-        })?
+        .map_err(task_error)?
     }
 
     async fn watch(
@@ -181,7 +166,7 @@ impl ClientApiDeps {
         path: String,
         git: bool,
     ) -> Result<rpc::ResultUint64, connectrpc::ConnectError> {
-        let permit = self.request_permit()?;
+        let _permit = self.request_permit()?;
         self.dispatch
             .admit(if git {
                 "start_git_dir_watching"
@@ -190,20 +175,32 @@ impl ClientApiDeps {
             })
             .map_err(command_error)?;
         let watcher = self.watcher.clone();
-        let id = tokio::task::spawn_blocking(move || {
-            let _permit = permit;
-            watcher.watch(&subscription_id, &path, git)
-        })
-        .await
-        .map_err(|error| {
-            crate::adaptor::protocol::connect::classified_error(
-                crate::other::AppError::new(error.to_string())
-                    .with_failure_kind(crate::domain::failure::FailureKind::Internal),
-            )
-        })?
-        .map_err(watch_error)?;
+        let id = tokio::task::spawn_blocking(move || watcher.watch(&subscription_id, &path, git))
+            .await
+            .map_err(task_error)?
+            .map_err(watch_error)?;
         to_rpc(&wire::ResultUint64 { value: Some(id) })
     }
+}
+
+async fn run_command(
+    cancellation: &tokio_util::sync::CancellationToken,
+    future: impl std::future::Future<
+        Output = Result<wire::command_result::Command, wire::CommandFailure>,
+    >,
+) -> Result<wire::command_result::Command, connectrpc::ConnectError> {
+    cancellation
+        .run_until_cancelled(future)
+        .await
+        .unwrap_or_else(|| {
+            Err(crate::other::AppError::coded(
+                "COMMAND_CANCELLED",
+                "Client call cancelled",
+                crate::domain::failure::FailureKind::Cancelled,
+            )
+            .into())
+        })
+        .map_err(command_error)
 }
 
 fn response_headers(command: &wire::command_result::Command) -> axum::http::HeaderMap {
@@ -220,6 +217,17 @@ fn response_headers(command: &wire::command_result::Command) -> axum::http::Head
     headers
 }
 
+fn task_error(error: tokio::task::JoinError) -> connectrpc::ConnectError {
+    use crate::domain::failure::FailureKind;
+    crate::adaptor::protocol::connect::classified_error(
+        crate::other::AppError::new(error.to_string()).with_failure_kind(if error.is_cancelled() {
+            FailureKind::Cancelled
+        } else {
+            FailureKind::Internal
+        }),
+    )
+}
+
 fn watch_error(error: crate::usecase::watcher::UsecaseError) -> connectrpc::ConnectError {
     command_error(crate::other::AppError::from_failure(error).into())
 }
@@ -231,6 +239,10 @@ pub(crate) fn router(deps: Option<ClientApiDeps>) -> Router {
     let service = connectrpc::Router::new()
         .add_service(Arc::new(deps))
         .into_axum_service()
+        .with_deadline_policy(
+            connectrpc::DeadlinePolicy::new()
+                .with_default_timeout(std::time::Duration::from_secs(120)),
+        )
         .with_limits(
             connectrpc::Limits::default()
                 .with_max_request_body_size(16 * 1024 * 1024)

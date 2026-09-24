@@ -57,7 +57,7 @@ where
     T: Send + 'static,
     F: FnOnce() -> Result<T, CodeUsecaseError> + Send + 'static,
 {
-    tokio::task::spawn_blocking(f)
+    crate::adaptor::controller::client::worktree_mutation::spawn_blocking(f)
         .await
         .map_err(|e| AppError::new(format!("task join error: {e}")))?
         .map_err(AppError::from)

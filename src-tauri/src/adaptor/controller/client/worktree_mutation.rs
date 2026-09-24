@@ -3,6 +3,33 @@ use crate::adaptor::controller::api::protocol::client as wire;
 use crate::usecase::workflow::WorkflowRuntimeUsecase;
 use crate::usecase::worktree_operation::WorktreeMutationGuard;
 
+tokio::task_local! {
+    static MUTATION_GUARDS: std::sync::Arc<Vec<WorktreeMutationGuard>>;
+}
+
+pub(super) async fn scope<T>(
+    guards: Vec<WorktreeMutationGuard>,
+    future: impl std::future::Future<Output = T>,
+) -> T {
+    MUTATION_GUARDS
+        .scope(std::sync::Arc::new(guards), future)
+        .await
+}
+
+pub(in crate::adaptor::controller) fn spawn_blocking<F, T>(
+    operation: F,
+) -> tokio::task::JoinHandle<T>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    let guards = MUTATION_GUARDS.try_with(std::sync::Arc::clone).ok();
+    tokio::task::spawn_blocking(move || {
+        let _guards = guards;
+        operation()
+    })
+}
+
 pub(super) fn admit(
     runtime: Option<&WorkflowRuntimeUsecase>,
     command: &wire::command_request::Command,

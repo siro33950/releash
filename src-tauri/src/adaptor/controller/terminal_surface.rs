@@ -281,7 +281,7 @@ pub(crate) fn resize_terminal_surface_shared(
         .map_err(invalid_terminal_resize_owner_error)
         .map(|owner| state.terminal_surface.prepare_resize(owner, rows, cols));
     async move {
-        tokio::task::spawn_blocking(resize?)
+        super::client::worktree_mutation::spawn_blocking(resize?)
             .await
             .map_err(|error| AppError::new(format!("Terminal resize task failed: {error}")))?
             .map_err(terminal_resize_error)

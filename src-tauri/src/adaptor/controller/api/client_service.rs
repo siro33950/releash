@@ -154,6 +154,7 @@ async fn start_state_subscription<'a>(
     _ctx: connectrpc::RequestContext,
     request: connectrpc::ServiceRequest<'_, rpc::StartStateSubscriptionRequest>,
 ) -> connectrpc::ServiceResult<impl connectrpc::Encodable<rpc::Unit> + Send + use<'a>> {
+    let _permit = self.request_permit()?;
     let request: wire::StartStateSubscriptionRequest = to_wire(&request.to_owned_message())?;
     let version = request.version.map(|v| crate::domain::state_subscription::Version { epoch: v.epoch, sequence: v.sequence });
     self.state_subscriptions()?.start(&request.client_id, &request.target, version.as_ref()).map_err(crate::adaptor::protocol::connect::classified_error)?;
@@ -165,6 +166,7 @@ async fn stop_state_subscription<'a>(
     _ctx: connectrpc::RequestContext,
     request: connectrpc::ServiceRequest<'_, rpc::StopStateSubscriptionRequest>,
 ) -> connectrpc::ServiceResult<impl connectrpc::Encodable<rpc::Unit> + Send + use<'a>> {
+    let _permit = self.request_permit()?;
     let request: wire::StopStateSubscriptionRequest = to_wire(&request.to_owned_message())?;
     self.state_subscriptions()?.stop(&request.client_id, &request.target).map_err(crate::adaptor::protocol::connect::classified_error)?;
     connectrpc::Response::ok(rpc::Unit::default())
