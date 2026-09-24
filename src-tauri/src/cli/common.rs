@@ -152,7 +152,7 @@ pub(in crate::cli) mod test_support {
         fs::write(data_dir.join("releash.toml"), "[agents.codex]\n").unwrap();
     }
 
-    pub(in crate::cli) fn write_review_session(
+    pub(in crate::cli) async fn write_review_session(
         data_dir: &Path,
         session_id: &str,
         backend_id: Option<&str>,
@@ -162,10 +162,11 @@ pub(in crate::cli) mod test_support {
             session_id,
             backend_id,
             crate::domain::agent_session::aggregates::AgentSessionLifecycle::Open,
-        );
+        )
+        .await;
     }
 
-    pub(in crate::cli) fn write_review_session_with_lifecycle(
+    pub(in crate::cli) async fn write_review_session_with_lifecycle(
         data_dir: &Path,
         session_id: &str,
         backend_id: Option<&str>,
@@ -215,6 +216,7 @@ pub(in crate::cli) mod test_support {
             crate::adaptor::gateway::workflow::fact_log::append_single_fact(
                 &store, &meta, &fact, 3,
             )
+            .await
             .unwrap();
         }
     }

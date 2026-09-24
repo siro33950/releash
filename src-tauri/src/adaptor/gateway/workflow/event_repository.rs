@@ -299,7 +299,8 @@ mod tests {
             id.as_str(),
             "/repo",
             "main",
-        );
+        )
+        .await;
         let repository = WorkflowEventLogRepository::with_store(store);
 
         // When

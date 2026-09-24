@@ -142,6 +142,7 @@ impl crate::usecase::agent_session::AgentSessionExecutionTreeLifecycle for Recor
             &NodeFact::AbortRequested(Default::default()),
             100,
         )
+        .await
         .unwrap();
         let lifecycle = self
             .lifecycle
@@ -170,6 +171,7 @@ impl crate::usecase::agent_session::AgentSessionExecutionTreeLifecycle for Recor
             }),
             100,
         )
+        .await
         .unwrap();
         Ok(())
     }
@@ -192,6 +194,7 @@ impl crate::usecase::agent_session::AgentSessionExecutionTreeLifecycle for Recor
             &NodeFact::RestoreRequested,
             101,
         )
+        .await
         .unwrap();
         Ok(())
     }
@@ -2709,7 +2712,8 @@ async fn test_agent_session_open_未対応の親または自身の定義があ�
             "tree",
             "/repo",
             unavailable,
-        );
+        )
+        .await;
 
         // When
         let attached = context

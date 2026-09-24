@@ -30,7 +30,7 @@ async fn test_承認記録読取_保存された事実の破損をdata_lossと�
         .store
         .as_ref()
         .unwrap()
-        .append_node_event_blocking(
+        .append_node_event(
             NewNodeEventRow {
                 tree_id: "tree".into(),
                 node_execution_id: "node".into(),
@@ -44,6 +44,7 @@ async fn test_承認記録読取_保存された事実の破損をdata_lossと�
             },
             Some(1000),
         )
+        .await
         .unwrap();
     let gateway =
         WorkflowRuntimeCommandGateway::new_with_driver(fixture.app, Arc::new(fixture.host));

@@ -182,7 +182,8 @@ async fn test_隔離worktree_cliのlive_httpで実行中とabortと完了後のb
         let query_data = TempDir::new().unwrap();
         let workflows = TempDir::new().unwrap();
         let execution_id = "00000000-0000-4000-8000-000000001733";
-        api_test_support::seed_isolated_query_execution(query_data.path(), execution_id, status);
+        api_test_support::seed_isolated_query_execution(query_data.path(), execution_id, status)
+            .await;
         let host =
             start_local_api_test_host(client_data.path(), query_data.path(), workflows.path());
 

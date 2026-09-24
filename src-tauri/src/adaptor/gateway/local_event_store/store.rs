@@ -6,7 +6,7 @@
 //! exchange messages with those threads.
 
 use std::path::PathBuf;
-use std::sync::{mpsc, Arc};
+use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
 use tokio::sync::oneshot;
@@ -39,20 +39,14 @@ use crate::adaptor::gateway::local_event_store::schema::{
     InitialStoreMetadata, APPLICATION_ID, CURRENT_SCHEMA_VERSION,
 };
 use crate::adaptor::gateway::local_event_store::writer::{
-    AdmitRejection, CommitWriteRequest, NodeEventAppendRequest, NodeEventWriteError, PreparedBatch,
-    PreparedEvent, PreparedNodeEvent, QueuePop, WriteQueue, WriteRequest, MAX_BATCH_DECODED_BYTES,
-    MAX_BATCH_EVENTS, MAX_BATCH_STATE_MUTATIONS,
+    AdmitRejection, PreparedBatch, PreparedEvent, PreparedNodeEvent, QueuePop, WriteJob,
+    WriteQueue, MAX_BATCH_DECODED_BYTES, MAX_BATCH_EVENTS, MAX_BATCH_STATE_MUTATIONS,
 };
 use crate::domain::local_event::{
     CommitBatchError, CommitBatchResult, CommitIdentity, CommitResolution, DomainEventPage,
     LoadStreamRequest, LocalAtomicBatch, LocalEventQuery, LocalEventQueryError,
     LocalEventQueryResult, LocalEventTransactionRepository, LocalStateMutation,
 };
-
-fn node_append_error(error: rusqlite::Error) -> NodeEventWriteError {
-    log::error!("node event append failed [{}]: {error}", correlation_id());
-    NodeEventWriteError::Store(super::reader::sqlite_failure_kind(&error))
-}
 
 fn correlation_id() -> String {
     uuid::Uuid::new_v4().to_string()
@@ -412,8 +406,8 @@ impl LocalEventStoreConfig {
 /// The permanent SQLite local event store.
 pub struct LocalEventStore {
     registry: Arc<EventCodecRegistry>,
-    #[cfg(test)]
     fault: Arc<FaultInjector>,
+    clock: Arc<dyn StoreClock>,
     queue: Arc<WriteQueue>,
     readers: Arc<ReaderPool>,
     query_context: Arc<QueryContext>,
@@ -650,7 +644,7 @@ impl LocalEventStore {
             return Err(LocalEventStoreOpenError::StorageUnavailable);
         }
 
-        let writer_connection = if checkpoint.busy {
+        let mut writer_connection = if checkpoint.busy {
             writer_connection
         } else {
             run_startup_maintenance(&layout, writer_connection, config.fault.as_ref()).map_err(
@@ -690,54 +684,11 @@ impl LocalEventStore {
 
         let writer_worker = {
             let queue = Arc::clone(&queue);
-            let fault = Arc::clone(&config.fault);
-            let clock = Arc::clone(&config.clock);
             std::thread::Builder::new()
                 .name("local-event-store-writer".to_string())
                 .spawn(move || loop {
                     match queue.pop_with_timeout(std::time::Duration::from_secs(1)) {
-                        QueuePop::Request(request) => match *request {
-                            WriteRequest::Commit(request) => {
-                                let result = execute_commit(
-                                    &writer_connection,
-                                    &request.prepared,
-                                    clock.now_ms().max(0),
-                                    &fault,
-                                );
-                                if fault.take_drop_reply() {
-                                    drop(request.reply);
-                                } else {
-                                    let _ = request.reply.send(result);
-                                }
-                            }
-                            WriteRequest::NodeEventAppend(request) => {
-                                fault.wait_before_node_event_append_if_armed();
-                                let result = (|| -> Result<_, NodeEventWriteError> {
-                                    let transaction = writer_connection.unchecked_transaction()
-                                        .map_err(node_append_error)?;
-                                    if let Some((tree_id, expected)) = &request.expected_tree_head {
-                                        let current: i64 = transaction.query_row(
-                                            "SELECT COALESCE(MAX(seq), 0) FROM node_events WHERE tree_id = ?1",
-                                            [tree_id], |row| row.get(0),
-                                        ).map_err(node_append_error)?;
-                                        if current != *expected {
-                                            return Err(NodeEventWriteError::Conflict);
-                                        }
-                                    }
-                                    let sequences = request.rows.iter().map(|(row, timestamp_ms)| {
-                                        node_events::append_node_event(&transaction, row,
-                                            timestamp_ms.unwrap_or_else(|| clock.now_ms()).max(0))
-                                    }).collect::<Result<Vec<_>, _>>().map_err(node_append_error)?;
-                                    transaction.commit().map_err(node_append_error)?;
-                                    Ok(sequences)
-                                })();
-                                if fault.take_drop_reply() {
-                                    drop(request.reply);
-                                } else {
-                                    let _ = request.reply.send(result);
-                                }
-                            }
-                        },
+                        QueuePop::Request(request) => (request.run)(&mut writer_connection),
                         QueuePop::Idle => {}
                         QueuePop::Closed => break,
                     }
@@ -772,8 +723,8 @@ impl LocalEventStore {
 
         Ok(Arc::new(Self {
             registry: Arc::clone(&config.registry),
-            #[cfg(test)]
             fault: config.fault,
+            clock: config.clock,
             queue,
             readers,
             query_context,
@@ -809,17 +760,17 @@ impl LocalEventStore {
     }
 
     /// Validate and encode a batch before queue admission (design step 1).
-    fn prepare(&self, batch: LocalAtomicBatch) -> Result<PreparedBatch, CommitBatchError> {
+    fn prepare(
+        &self,
+        batch: LocalAtomicBatch,
+        node_event_count: usize,
+    ) -> Result<PreparedBatch, CommitBatchError> {
         if batch.idempotency.installation_id != self.installation_id {
             return Err(
                 self.shape_error("batch installation identity does not match the store authority")
             );
         }
-        if batch.events.len() > MAX_BATCH_EVENTS
-            || batch.state_mutations.len() > MAX_BATCH_STATE_MUTATIONS
-        {
-            return Err(CommitBatchError::CapacityExceeded);
-        }
+        Self::validate_batch_size(&batch, node_event_count, 0)?;
         // Every stream a batch changes appears exactly once in expected_heads,
         // and every event stream is declared.
         for (index, head) in batch.expected_heads.iter().enumerate() {
@@ -862,9 +813,6 @@ impl LocalEventStore {
         for mutation in &batch.state_mutations {
             decoded_bytes += mutation.approximate_bytes();
         }
-        if decoded_bytes > MAX_BATCH_DECODED_BYTES {
-            return Err(CommitBatchError::CapacityExceeded);
-        }
 
         let critical = batch.idempotency.operation_kind.is_critical();
         Ok(PreparedBatch {
@@ -881,37 +829,74 @@ impl LocalEventStore {
         batch: LocalAtomicBatch,
         node_events: Vec<PreparedNodeEvent>,
     ) -> Result<CommitBatchResult, CommitBatchError> {
-        if node_events.len() > MAX_BATCH_EVENTS {
-            return Err(CommitBatchError::CapacityExceeded);
-        }
         let identity = batch.commit_id.clone();
-        let mut prepared = self.prepare(batch)?;
+        let mut prepared = self.prepare(batch, node_events.len())?;
         for event in &node_events {
             prepared.decoded_bytes = prepared
                 .decoded_bytes
                 .saturating_add(event.row.detail.len().saturating_add(256));
         }
-        if prepared.decoded_bytes > MAX_BATCH_DECODED_BYTES {
+        prepared.node_events = node_events;
+        Self::validate_batch_size(
+            &prepared.batch,
+            prepared.node_events.len(),
+            prepared.decoded_bytes,
+        )?;
+        let clock = Arc::clone(&self.clock);
+        let fault = Arc::clone(&self.fault);
+        self.submit_write(
+            prepared.critical,
+            prepared.decoded_bytes,
+            CommitBatchError::OutcomeUnknown { identity },
+            move |connection| execute_commit(connection, &prepared, clock.now_ms().max(0), &fault),
+        )
+        .await
+    }
+
+    fn validate_batch_size(
+        batch: &LocalAtomicBatch,
+        node_event_count: usize,
+        decoded_bytes: usize,
+    ) -> Result<(), CommitBatchError> {
+        if batch.events.len() > MAX_BATCH_EVENTS
+            || node_event_count > MAX_BATCH_EVENTS
+            || batch.state_mutations.len() > MAX_BATCH_STATE_MUTATIONS
+            || decoded_bytes > MAX_BATCH_DECODED_BYTES
+        {
             return Err(CommitBatchError::CapacityExceeded);
         }
-        prepared.node_events = node_events;
+        Ok(())
+    }
+
+    async fn submit_write<T, F>(
+        &self,
+        critical: bool,
+        bytes: usize,
+        unknown: CommitBatchError,
+        run: F,
+    ) -> Result<T, CommitBatchError>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut rusqlite::Connection) -> Result<T, CommitBatchError> + Send + 'static,
+    {
         let (reply, receiver) = oneshot::channel();
-        match self
-            .queue
-            .admit(WriteRequest::Commit(Box::new(CommitWriteRequest {
-                prepared,
-                reply,
-            }))) {
+        let fault = Arc::clone(&self.fault);
+        let job = WriteJob {
+            critical,
+            bytes,
+            run: Box::new(move |connection| {
+                let result = run(connection);
+                if !fault.take_drop_reply() {
+                    let _ = reply.send(result);
+                }
+            }),
+        };
+        match self.queue.admit(job) {
             Ok(()) => {}
-            Err(AdmitRejection::Capacity) => return Err(CommitBatchError::CapacityExceeded),
-            Err(AdmitRejection::Closed) => {
-                return Err(CommitBatchError::OutcomeUnknown { identity });
-            }
+            Err(AdmitRejection::Capacity) => return Err(CommitBatchError::QueueBusy),
+            Err(AdmitRejection::Closed) => return Err(unknown),
         }
-        match receiver.await {
-            Ok(result) => result,
-            Err(_) => Err(CommitBatchError::OutcomeUnknown { identity }),
-        }
+        receiver.await.unwrap_or(Err(unknown))
     }
 
     fn shape_error(&self, context: &str) -> CommitBatchError {
@@ -933,42 +918,72 @@ impl LocalEventStore {
     /// Append one fact row to the unified-node fact log on the writer thread.
     ///
     /// `timestamp_ms` は事実の発生時刻。None なら store の clock で刻む。
-    pub(crate) fn append_node_event_blocking(
+    pub(crate) async fn append_node_event(
         &self,
         row: NewNodeEventRow,
         timestamp_ms: Option<i64>,
-    ) -> Result<i64, NodeEventWriteError> {
-        self.append_node_events_blocking(vec![(row, timestamp_ms)])
+    ) -> Result<i64, CommitBatchError> {
+        self.append_node_events(vec![(row, timestamp_ms)])
+            .await
             .map(|sequences| sequences[0])
     }
 
-    pub(crate) fn append_node_events_blocking(
+    pub(crate) async fn append_node_events(
         &self,
         rows: Vec<(NewNodeEventRow, Option<i64>)>,
-    ) -> Result<Vec<i64>, NodeEventWriteError> {
-        self.append_node_events_at_head_blocking(rows, None)
+    ) -> Result<Vec<i64>, CommitBatchError> {
+        self.append_node_events_at_head(rows, None).await
     }
 
-    pub(crate) fn append_node_events_at_head_blocking(
+    pub(crate) async fn append_node_events_at_head(
         &self,
         rows: Vec<(NewNodeEventRow, Option<i64>)>,
         expected_tree_head: Option<(String, i64)>,
-    ) -> Result<Vec<i64>, NodeEventWriteError> {
-        let (reply, receiver) = mpsc::sync_channel(1);
-        match self
-            .queue
-            .admit(WriteRequest::NodeEventAppend(NodeEventAppendRequest {
-                rows,
-                expected_tree_head,
-                reply,
-            })) {
-            Ok(()) => {}
-            Err(AdmitRejection::Capacity) => return Err(NodeEventWriteError::StorageUnavailable),
-            Err(AdmitRejection::Closed) => return Err(NodeEventWriteError::OutcomeUnknown),
-        }
-        receiver
-            .recv()
-            .map_err(|_| NodeEventWriteError::OutcomeUnknown)?
+    ) -> Result<Vec<i64>, CommitBatchError> {
+        let bytes = rows.iter().fold(0usize, |size, (row, _)| {
+            size.saturating_add(row.detail.len().saturating_add(256))
+        });
+        let clock = Arc::clone(&self.clock);
+        let fault = Arc::clone(&self.fault);
+        self.submit_write(
+            false,
+            bytes,
+            CommitBatchError::AppendOutcomeUnknown,
+            move |connection| {
+                fault.wait_before_node_event_append_if_armed();
+                let transaction = connection
+                    .unchecked_transaction()
+                    .map_err(|error| super::commit::storage_unavailable(&error))?;
+                if let Some((tree_id, expected)) = &expected_tree_head {
+                    let current: i64 = transaction
+                        .query_row(
+                            "SELECT COALESCE(MAX(seq), 0) FROM node_events WHERE tree_id = ?1",
+                            [tree_id],
+                            |row| row.get(0),
+                        )
+                        .map_err(|error| super::commit::storage_unavailable(&error))?;
+                    if current != *expected {
+                        return Err(CommitBatchError::TreeHeadConflict);
+                    }
+                }
+                let sequences = rows
+                    .iter()
+                    .map(|(row, timestamp_ms)| {
+                        node_events::append_node_event(
+                            &transaction,
+                            row,
+                            timestamp_ms.unwrap_or_else(|| clock.now_ms()).max(0),
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|error| super::commit::storage_unavailable(&error))?;
+                transaction
+                    .commit()
+                    .map_err(|error| super::commit::storage_unavailable(&error))?;
+                Ok(sequences)
+            },
+        )
+        .await
     }
 }
 
@@ -995,27 +1010,7 @@ impl LocalEventTransactionRepository for LocalEventStore {
         &self,
         batch: LocalAtomicBatch,
     ) -> Result<CommitBatchResult, CommitBatchError> {
-        let identity = batch.commit_id.clone();
-        let prepared = self.prepare(batch)?;
-        let (reply, receiver) = oneshot::channel();
-        match self
-            .queue
-            .admit(WriteRequest::Commit(Box::new(CommitWriteRequest {
-                prepared,
-                reply,
-            }))) {
-            Ok(()) => {}
-            Err(AdmitRejection::Capacity) => return Err(CommitBatchError::CapacityExceeded),
-            Err(AdmitRejection::Closed) => {
-                return Err(CommitBatchError::OutcomeUnknown { identity })
-            }
-        }
-        match receiver.await {
-            Ok(result) => result,
-            // Reply loss after admission: the writer may or may not have
-            // committed; resolve with the same commit identity only.
-            Err(_) => Err(CommitBatchError::OutcomeUnknown { identity }),
-        }
+        self.commit_batch_with_node_events(batch, Vec::new()).await
     }
 
     async fn resolve_commit(

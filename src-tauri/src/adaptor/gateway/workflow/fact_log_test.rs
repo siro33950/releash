@@ -106,7 +106,7 @@ fn test_fact_meta(tree_id: &str, node_execution_id: &str) -> NodeFactMeta {
 
 mod fd_invariance_tests {
     use super::*;
-    use std::sync::{Arc, Barrier};
+    use std::sync::Arc;
     use std::time::{Duration, Instant};
 
     const FD_TEST_CHILD: &str = "RELEASH_FACT_LOG_FD_TEST_CHILD";
@@ -199,13 +199,13 @@ mod fd_invariance_tests {
 
         // When: caller が writer の応答待ちに入った状態で open fd 数を測る
         let worker_store = Arc::clone(&store);
-        let worker = std::thread::spawn(move || {
-            append_single_fact(&worker_store, &meta, &NodeFact::RetryRequested, 1_000)
-        });
+        let worker = append_single_fact(&worker_store, &meta, &NodeFact::RetryRequested, 1_000);
+        tokio::pin!(worker);
+        assert!(futures_util::poll!(worker.as_mut()).is_pending());
         stall.wait_until_arrived();
         let in_flight = open_fd_count();
         stall.release();
-        worker.join().unwrap().unwrap();
+        worker.await.unwrap();
         let after = open_fd_count();
 
         // Then: 追記中・完了後とも fd 数が増えず、事実行が記録される
@@ -234,28 +234,28 @@ mod fd_invariance_tests {
             LocalEventStore::open(LocalEventStoreConfig::production(root.path().to_path_buf()))
                 .unwrap();
         let stall = store.fault_injector().arm_node_event_append_stall();
-        let barrier = Arc::new(Barrier::new(APPEND_COUNT + 1));
-        let workers = (0..APPEND_COUNT)
+        let mut workers = (0..APPEND_COUNT)
             .map(|index| {
                 let store = Arc::clone(&store);
-                let barrier = Arc::clone(&barrier);
-                std::thread::spawn(move || {
+                Box::pin(async move {
                     let meta = test_fact_meta("fd-parallel-tree", &format!("node-{index}"));
-                    barrier.wait();
-                    append_single_fact(&store, &meta, &NodeFact::RetryRequested, index as i64)
+                    append_single_fact(&store, &meta, &NodeFact::RetryRequested, index as i64).await
                 })
             })
             .collect::<Vec<_>>();
         let before = open_fd_count();
 
         // When: 1本が writer に到達し、残りすべてが queue に滞留した状態で測る
-        barrier.wait();
+        assert!(futures_util::poll!(workers[0].as_mut()).is_pending());
         stall.wait_until_arrived();
+        for worker in &mut workers[1..] {
+            assert!(futures_util::poll!(worker.as_mut()).is_pending());
+        }
         wait_until_pending_request_count(&store, APPEND_COUNT - 1);
         let in_flight = open_fd_count();
         stall.release();
         for worker in workers {
-            worker.join().unwrap().unwrap();
+            worker.await.unwrap();
         }
         let after = open_fd_count();
 
@@ -292,7 +292,9 @@ mod fd_invariance_tests {
             LocalEventStore::open(LocalEventStoreConfig::production(root.path().to_path_buf()))
                 .unwrap();
         let warm_up_meta = test_fact_meta("fd-warm-up-tree", "fd-warm-up-node");
-        append_single_fact(&store, &warm_up_meta, &NodeFact::RetryRequested, 1_000).unwrap();
+        append_single_fact(&store, &warm_up_meta, &NodeFact::RetryRequested, 1_000)
+            .await
+            .unwrap();
         let current_open_fd_count = open_fd_count();
         let _soft_limit = NoFileSoftLimitGuard::lower_to(current_open_fd_count + 2);
         let meta = test_fact_meta("fd-soft-limit-tree", "fd-soft-limit-node");
@@ -304,7 +306,9 @@ mod fd_invariance_tests {
         });
 
         // When: fd soft limit 直下で session_attached を追記する
-        append_single_fact(&store, &meta, &fact, 2_000).unwrap();
+        append_single_fact(&store, &meta, &fact, 2_000)
+            .await
+            .unwrap();
 
         // Then: fd を追加取得せず追記でき、同じ事実行を既存 reader から読める
         let records = read_tree_records(&store, "fd-soft-limit-tree")
@@ -335,8 +339,8 @@ mod append_contract_tests {
     }
 
     #[tokio::test]
-    async fn test_事実行追記_同期文脈で記録され結果が返る() {
-        // Given: 同期文脈で利用する file-backed store と単独の事実
+    async fn test_事実行追記_asyncで記録され結果が返る() {
+        // Given: async で利用する file-backed store と単独の事実
         let root = tempfile::TempDir::new().unwrap();
         let store =
             LocalEventStore::open(LocalEventStoreConfig::production(root.path().to_path_buf()))
@@ -344,7 +348,7 @@ mod append_contract_tests {
         let meta = test_fact_meta("sync-context-tree", "sync-context-node");
 
         // When: 事実行を追記する
-        let result = append_single_fact(&store, &meta, &NodeFact::RetryRequested, 1_000);
+        let result = append_single_fact(&store, &meta, &NodeFact::RetryRequested, 1_000).await;
 
         // Then: 結果が返り、事実行が記録される
         assert_eq!(result, Ok(()));
@@ -364,8 +368,8 @@ mod append_contract_tests {
                 .unwrap();
         let meta = test_fact_meta("async-context-tree", "async-context-node");
 
-        // When: runtime worker 上から同期 append を呼ぶ
-        let result = append_single_fact(&store, &meta, &NodeFact::ResumeRequested, 2_000);
+        // When: runtime worker 上から async append を呼ぶ
+        let result = append_single_fact(&store, &meta, &NodeFact::ResumeRequested, 2_000).await;
 
         // Then: 呼び出しが停止せず結果が返り、事実行が記録される
         assert_eq!(result, Ok(()));
@@ -409,8 +413,8 @@ mod append_contract_tests {
             .unwrap();
         let expected = rows.clone();
 
-        // When: 3行を1行ずつ同期 append する
-        append_pending_rows_blocking(&store, rows).unwrap();
+        // When: 3行を1行ずつ async append する
+        append_pending_rows(&store, rows).await.unwrap();
 
         // Then: NewNodeEventRow の全 field・timestamp・払い出し seq が入力順と一致する
         let stored = read_raw_rows(&store, "ordering-tree").await;
@@ -447,6 +451,7 @@ mod append_contract_tests {
             &NodeFact::AbortRequested(Default::default()),
             1_000,
         )
+        .await
         .unwrap_err();
 
         // Then: 失敗が握りつぶされず呼び出し元へ返り、行は記録されない
@@ -487,13 +492,15 @@ mod append_contract_tests {
         let after = pending_single_fact(&after_meta, &NodeFact::ResumeRequested, 3_000).unwrap();
 
         // When: 3行を順に追記する
-        let error = append_pending_rows_blocking(&store, vec![before, failed, after]).unwrap_err();
+        let error = append_pending_rows(&store, vec![before, failed, after])
+            .await
+            .unwrap_err();
 
         // Then: 容量拒否が返り、成功済みの1行だけが durable のまま残る
         assert_eq!(
             error,
             crate::domain::workflow::WorkflowError::StorageUnavailable {
-                message: "node fact append failed: node event storage is unavailable".into(),
+                message: "node fact append failed: write queue is full".into(),
                 kind: crate::domain::failure::FailureKind::Temporary,
             }
         );
@@ -947,7 +954,9 @@ mod reconciliation_tests {
         .iter()
         .enumerate()
         {
-            append_single_fact(&store, &parent_meta, fact, (index as i64 + 1) * 1000).unwrap();
+            append_single_fact(&store, &parent_meta, fact, (index as i64 + 1) * 1000)
+                .await
+                .unwrap();
         }
         let mut folded = fold_tree_from(&FactLogReadBackend::Live(store.clone()), TREE)
             .await
@@ -1552,6 +1561,7 @@ async fn test_旧隔離事実の読取_状態導出と再起動復元からだ�
         }),
         2000,
     )
+    .await
     .unwrap();
     let original = read_tree_records(&store, TREE).await.unwrap();
     let rows = [
@@ -1580,7 +1590,7 @@ async fn test_旧隔離事実の読取_状態導出と再起動復元からだ�
         timestamp_ms: 3000,
     })
     .collect();
-    append_pending_rows_blocking(&store, rows).unwrap();
+    append_pending_rows(&store, rows).await.unwrap();
     drop(store);
 
     // When
@@ -1966,7 +1976,9 @@ mod terminal_fact_tests {
                 }),
             ),
         ] {
-            append_single_fact(&store, &root, &fact, timestamp).unwrap();
+            append_single_fact(&store, &root, &fact, timestamp)
+                .await
+                .unwrap();
         }
         let mut expected = fold_tree_from(&FactLogReadBackend::Live(store.clone()), TREE)
             .await
@@ -1984,6 +1996,7 @@ mod terminal_fact_tests {
             &NodeFact::AbortRequested(Default::default()),
             4_000,
         )
+        .await
         .unwrap();
         let before = read_raw_rows(&store, TREE).await;
         let readonly =
@@ -2007,7 +2020,7 @@ mod terminal_fact_tests {
         assert_eq!(read_raw_rows(&store, TREE).await, before);
     }
 
-    fn legacy_tree(store: &Arc<LocalEventStore>, completed_signals: bool) -> NodeFactMeta {
+    async fn legacy_tree(store: &Arc<LocalEventStore>, completed_signals: bool) -> NodeFactMeta {
         let meta = NodeFactMeta {
             tree_id: TREE.into(),
             node_execution_id: TREE.into(),
@@ -2017,7 +2030,7 @@ mod terminal_fact_tests {
             attempt: 1,
         };
         store
-            .append_node_event_blocking(
+            .append_node_event(
                 NewNodeEventRow {
                     tree_id: TREE.into(),
                     node_execution_id: TREE.into(),
@@ -2038,6 +2051,7 @@ mod terminal_fact_tests {
                 },
                 Some(1_000),
             )
+            .await
             .unwrap();
         if completed_signals {
             append_single_fact(
@@ -2051,6 +2065,7 @@ mod terminal_fact_tests {
                 }),
                 2_000,
             )
+            .await
             .unwrap();
         }
         meta
@@ -2062,7 +2077,7 @@ mod terminal_fact_tests {
         let dir = tempfile::tempdir().unwrap();
         let store =
             LocalEventStore::open(LocalEventStoreConfig::production(dir.path().into())).unwrap();
-        legacy_tree(&store, true);
+        legacy_tree(&store, true).await;
         let connection =
             rusqlite::Connection::open(StoreLayout::new(dir.path()).database_path()).unwrap();
         connection.execute_batch("CREATE TRIGGER fail_startup_abort BEFORE INSERT ON node_events WHEN NEW.event_type = 'abort_requested' BEGIN SELECT RAISE(ABORT, 'injected abort failure'); END;").unwrap();
@@ -2100,7 +2115,7 @@ mod terminal_fact_tests {
             let dir = tempfile::tempdir().unwrap();
             let store = LocalEventStore::open(LocalEventStoreConfig::production(dir.path().into()))
                 .unwrap();
-            legacy_tree(&store, completed_signals);
+            legacy_tree(&store, completed_signals).await;
             let backend = FactLogReadBackend::Live(store.clone());
             let before = read_raw_rows(&store, TREE).await.len();
             assert!(fold_tree_from(&backend, TREE).await.is_err());
@@ -2144,7 +2159,7 @@ mod terminal_fact_tests {
         let dir = tempfile::tempdir().unwrap();
         let store =
             LocalEventStore::open(LocalEventStoreConfig::production(dir.path().into())).unwrap();
-        let meta = legacy_tree(&store, false);
+        let meta = legacy_tree(&store, false).await;
         for (event_type, detail) in [
             (
                 "isolated_worktree_created",
@@ -2156,7 +2171,7 @@ mod terminal_fact_tests {
             ("isolated_worktree_lost", serde_json::json!({})),
         ] {
             store
-                .append_node_event_blocking(
+                .append_node_event(
                     NewNodeEventRow {
                         tree_id: TREE.into(),
                         node_execution_id: TREE.into(),
@@ -2170,6 +2185,7 @@ mod terminal_fact_tests {
                     },
                     Some(2_000),
                 )
+                .await
                 .unwrap();
         }
         append_single_fact(
@@ -2182,6 +2198,7 @@ mod terminal_fact_tests {
             }),
             3_000,
         )
+        .await
         .unwrap();
         append_single_fact(
             &store,
@@ -2189,6 +2206,7 @@ mod terminal_fact_tests {
             &NodeFact::AbortRequested(Default::default()),
             4_000,
         )
+        .await
         .unwrap();
         let before = read_raw_rows(&store, TREE).await;
         drop(store);
@@ -2242,8 +2260,10 @@ mod terminal_fact_tests {
             let dir = tempfile::tempdir().unwrap();
             let store = LocalEventStore::open(LocalEventStoreConfig::production(dir.path().into()))
                 .unwrap();
-            let meta = legacy_tree(&store, true);
-            append_single_fact(&store, &meta, &terminal, 3_000).unwrap();
+            let meta = legacy_tree(&store, true).await;
+            append_single_fact(&store, &meta, &terminal, 3_000)
+                .await
+                .unwrap();
             let before = read_raw_rows(&store, TREE).await.len();
             let readonly =
                 crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore::open(
@@ -2334,17 +2354,28 @@ async fn test_起動時前進_head競合を失敗と区別し最新記録から�
         let result = reconcile_tree_pass(&store, TREE, 2.0, &mut || {
             assert!(!injected);
             injected = true;
-            append_single_fact(
-                &store,
-                &meta,
-                &if abort {
-                    NodeFact::AbortRequested(Default::default())
-                } else {
-                    NodeFact::ResumeRequested
-                },
-                2000,
-            )
-            .unwrap();
+            let runtime = tokio::runtime::Handle::current();
+            std::thread::scope(|scope| {
+                scope
+                    .spawn(|| {
+                        runtime.block_on(async {
+                            append_single_fact(
+                                &store,
+                                &meta,
+                                &if abort {
+                                    NodeFact::AbortRequested(Default::default())
+                                } else {
+                                    NodeFact::ResumeRequested
+                                },
+                                2000,
+                            )
+                            .await
+                            .unwrap();
+                        })
+                    })
+                    .join()
+                    .unwrap();
+            });
             if drop_reply {
                 store.fault_injector().arm_drop_reply();
             }
@@ -2392,14 +2423,14 @@ async fn test_起動時前進_旧形式の末尾行を含むheadで追記と応�
             )
             .await
             .unwrap();
-            append_pending_rows_blocking(&store, vec![PendingFactRow {
+            append_pending_rows(&store, vec![PendingFactRow {
                 row: NewNodeEventRow {
                     tree_id: TREE.into(), node_execution_id: "main-exec".into(),
                     parent_id: None, node_name: "main".into(), kind: "sequence".into(), attempt: 1,
                     event_type: event_type.into(), session_id: None,
                     detail: serde_json::json!({"repositoryRoot": "/repo", "worktreePath": "/old", "branch": "old"}).to_string(),
                 }, timestamp_ms: 1500,
-            }]).unwrap();
+            }]).await.unwrap();
             if drop_reply {
                 store.fault_injector().arm_drop_reply();
             }
@@ -2428,7 +2459,7 @@ async fn test_起動時前進_旧形式の末尾行を含むheadで追記と応�
 
 #[tokio::test]
 async fn test_追記結果確認_全行一致と競合と未保存を共通の判定で区別する() {
-    use crate::adaptor::gateway::local_event_store::writer::NodeEventWriteError;
+    use crate::domain::local_event::CommitBatchError;
     // Given
     let dir = tempfile::tempdir().unwrap();
     let store =
@@ -2449,9 +2480,9 @@ async fn test_追記結果確認_全行一致と競合と未保存を共通の�
         resolve_unknown_append(&store, rows.clone(), Some(0))
             .await
             .unwrap(),
-        Err(NodeEventWriteError::OutcomeUnknown)
+        Err(CommitBatchError::AppendOutcomeUnknown)
     );
-    append_pending_rows_blocking(&store, rows.clone()).unwrap();
+    append_pending_rows(&store, rows.clone()).await.unwrap();
     assert_eq!(
         resolve_unknown_append(&store, rows.clone(), Some(0))
             .await
@@ -2488,7 +2519,7 @@ async fn test_追記結果確認_全行一致と競合と未保存を共通の�
         resolve_unknown_append(&store, partial, Some(0))
             .await
             .unwrap(),
-        Err(NodeEventWriteError::Conflict)
+        Err(CommitBatchError::TreeHeadConflict)
     );
 }
 
@@ -2585,6 +2616,7 @@ async fn test_reconciliation読取_復元不能な事実列はdata_lossになる
         &NodeFact::ExecutionCompleted,
         1000,
     )
+    .await
     .unwrap();
 
     // When

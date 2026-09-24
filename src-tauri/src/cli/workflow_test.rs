@@ -58,7 +58,7 @@ async fn test_隔離worktree_statusのfile直接読取で実行中とabortと完
         // Given
         let temp = TempDir::new().unwrap();
         let execution_id = test_uuid(33);
-        seed_isolated_query_execution(temp.path(), &execution_id, status);
+        seed_isolated_query_execution(temp.path(), &execution_id, status).await;
 
         // When
         let output = cmd_status(temp.path(), &execution_id, true).await.unwrap();

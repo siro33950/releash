@@ -802,7 +802,7 @@ pub(crate) mod test_support {
             .unwrap();
     }
 
-    pub(crate) fn seed_isolated_query_execution(
+    pub(crate) async fn seed_isolated_query_execution(
         data_dir: &Path,
         execution_id: &str,
         status: crate::domain::workflow::NodeExecutionStatus,
@@ -846,6 +846,7 @@ pub(crate) mod test_support {
             }),
             100_000,
         )
+        .await
         .unwrap();
         let node = NodeFactMeta {
             node_execution_id: "isolated-review-2".into(),
@@ -869,6 +870,7 @@ pub(crate) mod test_support {
             }),
             101_000,
         )
+        .await
         .unwrap();
         let facts = match status {
             NodeExecutionStatus::Running => Vec::new(),
@@ -890,7 +892,9 @@ pub(crate) mod test_support {
             other => panic!("unsupported isolated fixture status: {other:?}"),
         };
         for (index, fact) in facts.iter().enumerate() {
-            append_single_fact(&store, &node, fact, 110_000 + index as i64).unwrap();
+            append_single_fact(&store, &node, fact, 110_000 + index as i64)
+                .await
+                .unwrap();
         }
     }
 
@@ -1439,7 +1443,7 @@ pub(crate) mod test_support {
             // Given
             let directory = tempfile::tempdir().unwrap();
             let execution_id = "00000000-0000-4000-8000-000000001733";
-            seed_isolated_query_execution(directory.path(), execution_id, status);
+            seed_isolated_query_execution(directory.path(), execution_id, status).await;
             let (router, _, _) = test_router(directory.path(), "secret");
 
             // When

@@ -6,6 +6,9 @@ fn test_失敗分類_commit_batch_error_理由に対応する() {
     // Given
     let cases = [
         (CommitBatchError::PayloadConflict, F::StateRequired),
+        (CommitBatchError::TreeHeadConflict, F::RestartRequired),
+        (CommitBatchError::AppendOutcomeUnknown, F::RestartRequired),
+        (CommitBatchError::QueueBusy, F::Temporary),
         (
             CommitBatchError::StreamHeadConflict {
                 current: StreamVersion::new(1).unwrap(),

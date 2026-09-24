@@ -106,3 +106,13 @@ impl crate::domain::failure::ClassifiedFailure for WorkflowError {
 #[cfg(test)]
 #[path = "error_test.rs"]
 mod error_tests;
+
+impl From<crate::domain::local_event::CommitBatchError> for WorkflowError {
+    fn from(error: crate::domain::local_event::CommitBatchError) -> Self {
+        use crate::domain::failure::ClassifiedFailure;
+        Self::StorageUnavailable {
+            message: format!("node fact append failed: {error}"),
+            kind: error.failure_kind(),
+        }
+    }
+}

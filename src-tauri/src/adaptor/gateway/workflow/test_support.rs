@@ -107,6 +107,7 @@ pub(crate) async fn seed_workflow_session_facts(
         }),
         1,
     )
+    .await
     .map_err(|error| error.to_string())?;
     super::fact_log::append_single_fact(
         store,
@@ -120,6 +121,7 @@ pub(crate) async fn seed_workflow_session_facts(
         }),
         2,
     )
+    .await
     .map_err(|error| error.to_string())?;
     super::fact_log::append_single_fact(
         store,
@@ -132,6 +134,7 @@ pub(crate) async fn seed_workflow_session_facts(
         }),
         3,
     )
+    .await
     .map_err(|error| error.to_string())
 }
 
@@ -249,7 +252,7 @@ pub(crate) async fn append_canonical_events(
 }
 
 #[cfg(test)]
-pub(crate) fn seed_unavailable_definition(
+pub(crate) async fn seed_unavailable_definition(
     store: &Arc<LocalEventStore>,
     tree_id: &str,
     workspace: &str,
@@ -277,7 +280,7 @@ pub(crate) fn seed_unavailable_definition(
         "definition": definition
     }});
     store
-        .append_node_event_blocking(
+        .append_node_event(
             NewNodeEventRow {
                 tree_id: tree_id.into(),
                 node_execution_id: tree_id.into(),
@@ -291,6 +294,7 @@ pub(crate) fn seed_unavailable_definition(
             },
             Some(1),
         )
+        .await
         .unwrap();
     let command = NodeFactMeta {
         tree_id: tree_id.into(),
@@ -319,6 +323,6 @@ pub(crate) fn seed_unavailable_definition(
         (session.clone(), started),
         (session, NodeFact::SessionAttached(SessionAttachedFact { session_id: format!("{tree_id}-session"), provider_session_id: Some("provider-session".into()), transcript_ref: Some("/transcripts/session.jsonl".into()), initial_instruction_admitted: true })),
     ].iter().enumerate() {
-        super::fact_log::append_single_fact(store, meta, fact, index as i64 + 2).unwrap();
+        super::fact_log::append_single_fact(store, meta, fact, index as i64 + 2).await.unwrap();
     }
 }

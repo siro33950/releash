@@ -64,3 +64,20 @@ fn test_失敗分類_workflow_error_理由に対応する() {
         assert_eq!(error.failure_kind(), expected, "{error:?}");
     }
 }
+
+#[test]
+fn test_書込失敗_workflow変換後も分類を保持する() {
+    use crate::domain::failure::ClassifiedFailure;
+    use crate::domain::local_event::CommitBatchError;
+    // Given
+    for error in [
+        CommitBatchError::QueueBusy,
+        CommitBatchError::CapacityExceeded,
+        CommitBatchError::TreeHeadConflict,
+        CommitBatchError::AppendOutcomeUnknown,
+    ] {
+        let expected = error.failure_kind();
+        // When / Then
+        assert_eq!(WorkflowError::from(error).failure_kind(), expected);
+    }
+}

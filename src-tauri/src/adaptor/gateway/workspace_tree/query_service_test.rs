@@ -573,7 +573,7 @@ async fn test_workspace_tree_query_stop事実と後続活動を一覧と詳細�
         .unwrap()
         .meta
         .clone();
-    let append_stop = |timestamp_ms| {
+    let append_stop = async |timestamp_ms| {
         crate::adaptor::gateway::workflow::fact_log::append_single_fact(
             &store,
             &meta,
@@ -583,6 +583,7 @@ async fn test_workspace_tree_query_stop事実と後続活動を一覧と詳細�
             }),
             timestamp_ms,
         )
+        .await
         .unwrap();
     };
     let projected_classification = async |store: Arc<LocalEventStore>| {
@@ -603,7 +604,7 @@ async fn test_workspace_tree_query_stop事実と後続活動を一覧と詳細�
     };
 
     // When: 活動観測を追加せず StopReceived だけを追記する
-    append_stop(10);
+    append_stop(10).await;
 
     // Then: 一覧と詳細は Stop 事実から attention を導出し、再起動後も再現する
     assert_eq!(
@@ -647,6 +648,7 @@ async fn test_workspace_tree_query_stop事実と後続活動を一覧と詳細�
                 }),
                 20,
             )
+            .await
             .unwrap();
             assert_eq!(
                 projected_classification(reopened.clone()).await,
@@ -1583,13 +1585,15 @@ async fn test_workspace読取_未対応定義を起動時abortした後もcomman
             "00000000-0000-4000-8000-000000001744",
             "/repo",
             unavailable,
-        );
+        )
+        .await;
         crate::adaptor::gateway::workflow::test_support::seed_unavailable_definition(
             &store,
             "00000000-0000-4000-8000-000000001745",
             "/other",
             "main",
-        );
+        )
+        .await;
         for tree in [
             "00000000-0000-4000-8000-000000001744",
             "00000000-0000-4000-8000-000000001745",
@@ -1923,6 +1927,7 @@ async fn test_archive履歴_手動とworktree消失の事実の時刻と理由�
             &NodeFact::AbortRequested(Default::default()),
             2,
         )
+        .await
         .unwrap();
         archives
             .archive(

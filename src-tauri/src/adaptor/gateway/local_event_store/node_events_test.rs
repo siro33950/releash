@@ -290,11 +290,11 @@ mod store_round_trip_tests {
     use crate::adaptor::gateway::local_event_store::store::{
         LocalEventStore, LocalEventStoreConfig,
     };
-    use crate::adaptor::gateway::local_event_store::writer::NodeEventWriteError;
+    use crate::domain::local_event::CommitBatchError;
     use crate::domain::local_event::LocalEventQueryError;
 
     #[tokio::test]
-    async fn test_store事実追記_同期文脈で記録され結果が返る() {
+    async fn test_store事実追記_asyncで記録され結果が返る() {
         // Given: file-backed store
         let root = tempfile::TempDir::new().unwrap();
         let store =
@@ -303,10 +303,12 @@ mod store_round_trip_tests {
 
         // When: store API で2行 append する（1行目は明示時刻・2行目は clock）
         let first = store
-            .append_node_event_blocking(row("tree-1", "root", None), Some(1_000))
+            .append_node_event(row("tree-1", "root", None), Some(1_000))
+            .await
             .unwrap();
         let second = store
-            .append_node_event_blocking(row("tree-1", "child", Some("root")), None)
+            .append_node_event(row("tree-1", "child", Some("root")), None)
+            .await
             .unwrap();
 
         // Then: seq が直列に払い出され、reader pool から読み出せる
@@ -329,9 +331,10 @@ mod store_round_trip_tests {
             LocalEventStore::open(LocalEventStoreConfig::production(root.path().to_path_buf()))
                 .unwrap();
 
-        // When: runtime worker 上から同期 append を呼ぶ
+        // When: runtime worker 上から async append を呼ぶ
         let seq = store
-            .append_node_event_blocking(row("tree-async", "root", None), Some(1_000))
+            .append_node_event(row("tree-async", "root", None), Some(1_000))
+            .await
             .unwrap();
 
         // Then: 呼び出しが停止せず結果が返り、事実行を読み出せる
@@ -347,8 +350,8 @@ mod store_round_trip_tests {
         assert_eq!(rows[0].node_execution_id, "root");
     }
 
-    #[test]
-    fn test_store事実追記_閉じたwrite_queueはoutcome_unknownを返す() {
+    #[tokio::test]
+    async fn test_store事実追記_閉じたwrite_queueはoutcome_unknownを返す() {
         // Given: write queue が閉じた file-backed store
         let root = tempfile::TempDir::new().unwrap();
         let store =
@@ -358,11 +361,12 @@ mod store_round_trip_tests {
 
         // When: 事実行を追記する
         let error = store
-            .append_node_event_blocking(row("tree-closed", "root", None), Some(1_000))
+            .append_node_event(row("tree-closed", "root", None), Some(1_000))
+            .await
             .unwrap_err();
 
         // Then: admission の Closed が OutcomeUnknown として返る
-        assert_eq!(error, NodeEventWriteError::OutcomeUnknown);
+        assert_eq!(error, CommitBatchError::AppendOutcomeUnknown);
     }
 
     #[tokio::test]
@@ -376,11 +380,12 @@ mod store_round_trip_tests {
 
         // When: 事実行を追記する
         let error = store
-            .append_node_event_blocking(row("tree-reply-loss", "root", None), Some(1_000))
+            .append_node_event(row("tree-reply-loss", "root", None), Some(1_000))
+            .await
             .unwrap_err();
 
         // Then: receiver の切断が OutcomeUnknown として返り、writer は処理済みである
-        assert_eq!(error, NodeEventWriteError::OutcomeUnknown);
+        assert_eq!(error, CommitBatchError::AppendOutcomeUnknown);
         let rows = store
             .submit_query(|connection| {
                 read_tree(connection, "tree-reply-loss")
@@ -412,13 +417,16 @@ mod store_round_trip_tests {
 
         // When: admission 後の writer thread で INSERT が失敗する
         let error = store
-            .append_node_event_blocking(invalid, Some(1_000))
+            .append_node_event(invalid, Some(1_000))
+            .await
             .unwrap_err();
 
         // Then: SQLite 失敗が返り、失敗行は記録されていない
+        use crate::domain::failure::ClassifiedFailure;
+        assert!(matches!(error, CommitBatchError::StorageUnavailable { .. }));
         assert_eq!(
-            error,
-            NodeEventWriteError::Store(crate::domain::failure::FailureKind::Internal)
+            error.failure_kind(),
+            crate::domain::failure::FailureKind::Internal
         );
         let rows = store
             .submit_query(|connection| {
@@ -431,7 +439,8 @@ mod store_round_trip_tests {
 
         // And: writer は停止せず、後続の正常行に seq 1 を払い出す
         let seq = store
-            .append_node_event_blocking(row("tree-sqlite-failure", "valid", None), Some(2_000))
+            .append_node_event(row("tree-sqlite-failure", "valid", None), Some(2_000))
+            .await
             .unwrap();
         assert_eq!(seq, 1);
     }

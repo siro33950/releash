@@ -38,6 +38,7 @@ async fn test_実行木archive_abortと自然完了の競合だけを終了状�
                         &crate::adaptor::gateway::workflow::fact_codec::decode(kind, "{}").unwrap(),
                         2000,
                     )
+                    .await
                     .unwrap();
                 }
             }
@@ -268,7 +269,9 @@ async fn test_旧sessionarchive移行_128件を越えて時刻と理由と終了
         legacy.row.event_type = "archive_requested".into();
         legacy.row.detail = serde_json::json!({"reason": reason}).to_string();
         rows.push(legacy);
-        fact_log::append_pending_rows_blocking(&fixture.store, rows).unwrap();
+        fact_log::append_pending_rows(&fixture.store, rows)
+            .await
+            .unwrap();
         expected.push((id, timestamp as f64 / 1000.0, reason, completed));
     }
     assert_eq!(

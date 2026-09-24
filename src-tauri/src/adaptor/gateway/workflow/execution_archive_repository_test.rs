@@ -45,6 +45,7 @@ async fn test_実行木archive_終了前は拒否して終了後の理由と時�
         &NodeFact::AbortRequested(Default::default()),
         2,
     )
+    .await
     .unwrap();
     repository
         .archive(&id, 123.456789, "worktree_removed")
@@ -89,6 +90,7 @@ async fn test_実行木restore_終了状態を保ちsessionはpausedになる() 
         &NodeFact::AbortRequested(Default::default()),
         2,
     )
+    .await
     .unwrap();
     repository.archive(&id, 3.0, "manual").await.unwrap();
     // When
@@ -137,7 +139,9 @@ async fn test_完了済み旧archive_元の時刻を保って移行し次回候�
         .unwrap();
         pending.row.event_type = kind.into();
         pending.row.detail = "{}".into();
-        fact_log::append_pending_rows_blocking(&store, vec![pending]).unwrap();
+        fact_log::append_pending_rows(&store, vec![pending])
+            .await
+            .unwrap();
     }
     assert_eq!(
         repository.target(id.as_str()).await.unwrap().status,
@@ -342,7 +346,7 @@ async fn test_archive候補_履歴や定義をfoldせずページングしgcで�
         corrupt.row.event_type = "process_exited".into();
         corrupt.row.detail = "broken history".into();
         rows.push(corrupt);
-        fact_log::append_pending_rows_blocking(&store, rows).unwrap();
+        fact_log::append_pending_rows(&store, rows).await.unwrap();
     }
     fact_log::append_single_fact(
         &store,
@@ -350,6 +354,7 @@ async fn test_archive候補_履歴や定義をfoldせずページングしgcで�
         &NodeFact::AbortRequested(Default::default()),
         2,
     )
+    .await
     .unwrap();
     repository
         .archive(&ExecutionTreeId::new(&meta.tree_id).unwrap(), 3.0, "manual")
@@ -527,7 +532,9 @@ async fn test_repository所属の復元_フォルダ消失済みでも旧隔離w
         "branch": "child"
     })
     .to_string();
-    fact_log::append_pending_rows_blocking(&store, vec![pending]).unwrap();
+    fact_log::append_pending_rows(&store, vec![pending])
+        .await
+        .unwrap();
     // When / Then
     assert_eq!(
         repository.candidate_page(None).await.unwrap()[0]

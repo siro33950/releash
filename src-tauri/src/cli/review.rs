@@ -724,7 +724,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         write_review_config(tmp.path());
         let session_id = "550e8400-e29b-41d4-a716-446655440061".to_string();
-        write_review_session(tmp.path(), &session_id, Some("codex"));
+        write_review_session(tmp.path(), &session_id, Some("codex")).await;
         let thread_id = seed_review_thread(tmp.path());
         let comment_id = test_uuid(43);
 
@@ -883,7 +883,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         write_review_config(tmp.path());
         let session_id = "550e8400-e29b-41d4-a716-446655440062".to_string();
-        write_review_session(tmp.path(), &session_id, Some("codex"));
+        write_review_session(tmp.path(), &session_id, Some("codex")).await;
 
         let human = cmd_review(
             tmp.path(),
@@ -976,7 +976,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         write_review_config(tmp.path());
         let session_id = "550e8400-e29b-41d4-a716-446655440063".to_string();
-        write_review_session(tmp.path(), &session_id, Some("codex"));
+        write_review_session(tmp.path(), &session_id, Some("codex")).await;
 
         let invalid_state = cmd_review(
             tmp.path(),
@@ -1040,7 +1040,8 @@ mod tests {
             &archived_session_id,
             Some("codex"),
             crate::domain::agent_session::aggregates::AgentSessionLifecycle::Archived,
-        );
+        )
+        .await;
         let closed_session = cmd_review(
             tmp.path(),
             ReviewSubcommand::Create {
@@ -1078,7 +1079,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         write_review_config(tmp.path());
         let session_id = uuid::Uuid::new_v4().to_string();
-        write_review_session(tmp.path(), &session_id, Some("codex"));
+        write_review_session(tmp.path(), &session_id, Some("codex")).await;
 
         let actor = review_actor(tmp.path(), &session_id).await.unwrap();
 
@@ -1097,7 +1098,7 @@ mod tests {
 
         for provider in ["codex", "claude"] {
             let session_id = uuid::Uuid::new_v4().to_string();
-            write_review_session(tmp.path(), &session_id, Some(provider));
+            write_review_session(tmp.path(), &session_id, Some(provider)).await;
             let actor = review_actor(tmp.path(), &session_id).await.unwrap();
             assert_eq!(actor.backend_id.as_deref(), Some(provider));
             assert_eq!(actor.model, None);
@@ -1204,7 +1205,8 @@ mod tests {
             &session_id,
             Some("codex"),
             crate::domain::agent_session::aggregates::AgentSessionLifecycle::Archived,
-        );
+        )
+        .await;
 
         let worktree = review_worktree_from_session(tmp.path(), &session_id)
             .await
@@ -1224,7 +1226,8 @@ mod tests {
             crate::domain::agent_session::aggregates::AgentSessionLifecycle::Archived,
         ] {
             let session_id = uuid::Uuid::new_v4().to_string();
-            write_review_session_with_lifecycle(tmp.path(), &session_id, Some("codex"), lifecycle);
+            write_review_session_with_lifecycle(tmp.path(), &session_id, Some("codex"), lifecycle)
+                .await;
 
             let output = cmd_review(
                 tmp.path(),
@@ -1316,7 +1319,8 @@ mod tests {
             &session_id,
             Some("codex"),
             crate::domain::agent_session::aggregates::AgentSessionLifecycle::Archived,
-        );
+        )
+        .await;
         let closed = cmd_review(
             tmp.path(),
             ReviewSubcommand::Create {
@@ -1402,7 +1406,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         write_review_config(tmp.path());
         let session_id = uuid::Uuid::new_v4().to_string();
-        write_review_session(tmp.path(), &session_id, Some("codex"));
+        write_review_session(tmp.path(), &session_id, Some("codex")).await;
 
         cmd_review(
             tmp.path(),
@@ -1459,8 +1463,8 @@ mod tests {
         write_review_config(tmp.path());
         let owner_session = uuid::Uuid::new_v4().to_string();
         let other_session = uuid::Uuid::new_v4().to_string();
-        write_review_session(tmp.path(), &owner_session, Some("codex"));
-        write_review_session(tmp.path(), &other_session, Some("claude"));
+        write_review_session(tmp.path(), &owner_session, Some("codex")).await;
+        write_review_session(tmp.path(), &other_session, Some("claude")).await;
 
         cmd_review(
             tmp.path(),
@@ -1615,7 +1619,9 @@ mod tests {
         root.repository_root = Some("/repo".into());
         root.definition.as_mut().unwrap().nodes[0].worktree = Some(WorktreeMode::Isolated);
         for (meta, fact) in facts.into_facts() {
-            fact_log::append_single_fact(&store, &meta, &fact, 1).unwrap();
+            fact_log::append_single_fact(&store, &meta, &fact, 1)
+                .await
+                .unwrap();
         }
         let thread_id = seed_review_thread(tmp.path());
         let path = IsolatedWorktree::for_attempt("/repo", &id, 1).path;
@@ -1671,7 +1677,7 @@ async fn test_review_cli変更_別所有者のworktree削除中は拒否し読�
     let directory = tempfile::tempdir().unwrap();
     write_review_config(directory.path());
     let id = uuid::Uuid::new_v4().to_string();
-    write_review_session(directory.path(), &id, Some("codex"));
+    write_review_session(directory.path(), &id, Some("codex")).await;
     let thread = build_review_comment_usecase()
         .create_thread(
             directory.path(),

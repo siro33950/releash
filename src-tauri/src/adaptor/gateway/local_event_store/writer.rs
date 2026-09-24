@@ -6,14 +6,12 @@
 //! are enforced at admission time, before the writer sees the request.
 
 use std::collections::VecDeque;
-use std::sync::{mpsc, Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
-
-use tokio::sync::oneshot;
 
 use crate::adaptor::gateway::local_event_store::envelope::EncodedEventPayload;
 use crate::adaptor::gateway::local_event_store::node_events::NewNodeEventRow;
-use crate::domain::local_event::{CommitBatchError, CommitBatchResult, LocalAtomicBatch, StreamId};
+use crate::domain::local_event::{LocalAtomicBatch, StreamId};
 
 pub const NORMAL_LANE_MAX_REQUESTS: usize = 1024;
 pub const NORMAL_LANE_MAX_BYTES: usize = 64 * 1024 * 1024;
@@ -49,80 +47,15 @@ pub struct PreparedBatch {
     pub critical: bool,
 }
 
-pub struct CommitWriteRequest {
-    pub prepared: PreparedBatch,
-    pub reply: oneshot::Sender<Result<CommitBatchResult, CommitBatchError>>,
-}
-
-/// Append fact rows to `node_events` in one transaction.
-pub struct NodeEventAppendRequest {
-    /// 各事実の行と発生時刻。None なら store の clock で刻む。
-    pub rows: Vec<(NewNodeEventRow, Option<i64>)>,
-    pub expected_tree_head: Option<(String, i64)>,
-    pub reply: mpsc::SyncSender<Result<Vec<i64>, NodeEventWriteError>>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub enum NodeEventWriteError {
-    #[error("node event store failure: {0:?}")]
-    Store(crate::domain::failure::FailureKind),
-    #[error("node event tree changed before append")]
-    Conflict,
-    #[error("node event storage is unavailable")]
-    StorageUnavailable,
-    /// Admission failed or the reply was lost: the write may or may not be
-    /// durable. Callers re-derive from the log and retry idempotently.
-    #[error("node event write outcome is unknown")]
-    OutcomeUnknown,
-}
-
-impl crate::domain::failure::ClassifiedFailure for NodeEventWriteError {
-    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
-        use crate::domain::failure::FailureKind;
-        match self {
-            Self::Store(kind) => *kind,
-            Self::StorageUnavailable => FailureKind::Temporary,
-            Self::Conflict | Self::OutcomeUnknown => FailureKind::RestartRequired,
-        }
-    }
-}
-
-impl From<NodeEventWriteError> for crate::domain::workflow::WorkflowError {
-    fn from(error: NodeEventWriteError) -> Self {
-        use crate::domain::failure::ClassifiedFailure;
-        Self::StorageUnavailable {
-            message: format!("node fact append failed: {error}"),
-            kind: error.failure_kind(),
-        }
-    }
-}
-
-pub enum WriteRequest {
-    Commit(Box<CommitWriteRequest>),
-    NodeEventAppend(NodeEventAppendRequest),
-}
-
-impl WriteRequest {
-    fn decoded_bytes(&self) -> usize {
-        match self {
-            Self::Commit(request) => request.prepared.decoded_bytes,
-            Self::NodeEventAppend(request) => request.rows.iter().fold(0usize, |size, (row, _)| {
-                size.saturating_add(row.detail.len().saturating_add(256))
-            }),
-        }
-    }
-
-    fn critical(&self) -> bool {
-        match self {
-            Self::Commit(request) => request.prepared.critical,
-            Self::NodeEventAppend(_) => false,
-        }
-    }
+pub struct WriteJob {
+    pub run: Box<dyn FnOnce(&mut rusqlite::Connection) + Send>,
+    pub bytes: usize,
+    pub critical: bool,
 }
 
 /// Why a request was not admitted into the write queue.
 pub enum AdmitRejection {
-    /// Lane bounds exceeded (`CapacityExceeded` for the caller).
+    /// Lane bounds exceeded (`QueueBusy` for the caller).
     Capacity,
     /// The queue is closed / the writer stopped; the caller must treat the
     /// outcome as unknown and resolve by commit identity.
@@ -130,14 +63,14 @@ pub enum AdmitRejection {
 }
 
 pub enum QueuePop {
-    Request(Box<WriteRequest>),
+    Request(Box<WriteJob>),
     Idle,
     Closed,
 }
 
 #[derive(Default)]
 struct LaneState {
-    queue: VecDeque<WriteRequest>,
+    queue: VecDeque<WriteJob>,
     bytes: usize,
 }
 
@@ -164,14 +97,14 @@ impl WriteQueue {
 
     /// Admit a request into its lane. Lane bounds are checked here, before
     /// the writer ever sees the request.
-    pub fn admit(&self, request: WriteRequest) -> Result<(), AdmitRejection> {
+    pub fn admit(&self, request: WriteJob) -> Result<(), AdmitRejection> {
         let mut state = self.state.lock().expect("write queue poisoned");
         if state.closed {
             drop(request);
             return Err(AdmitRejection::Closed);
         }
-        let bytes = request.decoded_bytes();
-        let critical = request.critical();
+        let bytes = request.bytes;
+        let critical = request.critical;
         let lane = if critical {
             &mut state.critical
         } else {
@@ -202,15 +135,15 @@ impl WriteQueue {
     /// Pop the next request, critical lane first. `None` when closed and
     /// drained.
     #[cfg(test)]
-    pub fn pop_blocking(&self) -> Option<WriteRequest> {
+    pub fn pop_blocking(&self) -> Option<WriteJob> {
         let mut state = self.state.lock().expect("write queue poisoned");
         loop {
             if let Some(request) = state.critical.queue.pop_front() {
-                state.critical.bytes -= request.decoded_bytes();
+                state.critical.bytes -= request.bytes;
                 return Some(request);
             }
             if let Some(request) = state.normal.queue.pop_front() {
-                state.normal.bytes -= request.decoded_bytes();
+                state.normal.bytes -= request.bytes;
                 return Some(request);
             }
             if state.closed {
@@ -227,11 +160,11 @@ impl WriteQueue {
         let mut state = self.state.lock().expect("write queue poisoned");
         loop {
             if let Some(request) = state.critical.queue.pop_front() {
-                state.critical.bytes -= request.decoded_bytes();
+                state.critical.bytes -= request.bytes;
                 return QueuePop::Request(Box::new(request));
             }
             if let Some(request) = state.normal.queue.pop_front() {
-                state.normal.bytes -= request.decoded_bytes();
+                state.normal.bytes -= request.bytes;
                 return QueuePop::Request(Box::new(request));
             }
             if state.closed {
@@ -275,32 +208,12 @@ impl WriteQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::local_event::{CommitIdentity, CommitOperationKind, IdempotencyBinding};
-
-    fn request(critical: bool, bytes: usize) -> WriteRequest {
-        let (reply, receiver) = oneshot::channel();
-        drop(receiver);
-        WriteRequest::Commit(Box::new(CommitWriteRequest {
-            prepared: PreparedBatch {
-                batch: LocalAtomicBatch {
-                    commit_id: CommitIdentity::parse("c-1").unwrap(),
-                    idempotency: IdempotencyBinding {
-                        installation_id: "g".to_string(),
-                        operation_kind: CommitOperationKind::Workflow,
-                        idempotency_key: "k".to_string(),
-                        payload_hash: [0; 32],
-                    },
-                    expected_heads: vec![],
-                    events: vec![],
-                    state_mutations: vec![],
-                },
-                events: vec![],
-                node_events: vec![],
-                decoded_bytes: bytes,
-                critical,
-            },
-            reply,
-        }))
+    fn request(critical: bool, bytes: usize) -> WriteJob {
+        WriteJob {
+            run: Box::new(|_| {}),
+            critical,
+            bytes,
+        }
     }
 
     #[test]
@@ -308,8 +221,8 @@ mod tests {
         let queue = WriteQueue::new();
         assert!(queue.admit(request(false, 1)).is_ok());
         assert!(queue.admit(request(true, 1)).is_ok());
-        assert!(queue.pop_blocking().unwrap().critical());
-        assert!(!queue.pop_blocking().unwrap().critical());
+        assert!(queue.pop_blocking().unwrap().critical);
+        assert!(!queue.pop_blocking().unwrap().critical);
     }
 
     #[test]
@@ -341,8 +254,8 @@ mod tests {
 
         queue.close_after_drain();
 
-        assert!(queue.pop_blocking().unwrap().critical());
-        assert!(!queue.pop_blocking().unwrap().critical());
+        assert!(queue.pop_blocking().unwrap().critical);
+        assert!(!queue.pop_blocking().unwrap().critical);
         assert!(queue.pop_blocking().is_none());
         assert!(matches!(
             queue.admit(request(false, 1)),

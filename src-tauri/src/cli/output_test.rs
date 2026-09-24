@@ -291,7 +291,7 @@ async fn test_隔離worktree_output_getのfile直接読取で完了したattempt
     // Given
     let temp = TempDir::new().unwrap();
     let execution_id = test_uuid(33);
-    seed_isolated_query_execution(temp.path(), &execution_id, NodeExecutionStatus::Succeeded);
+    seed_isolated_query_execution(temp.path(), &execution_id, NodeExecutionStatus::Succeeded).await;
 
     // When
     let output = cmd_output_get(temp.path(), &execution_id, "review", true)

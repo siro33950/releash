@@ -340,7 +340,7 @@ impl WorkflowRuntimeHost {
         head: i64,
         events: &[WorkflowEvent],
     ) -> Result<(), WorkflowRuntimeError> {
-        use crate::adaptor::gateway::local_event_store::writer::NodeEventWriteError;
+        use crate::domain::local_event::CommitBatchError;
         let store = app.store.as_ref().ok_or_else(|| {
             WorkflowRuntimeError::SessionStore(
                 "workflow SQLite event authority is not managed".into(),
@@ -352,14 +352,16 @@ impl WorkflowRuntimeHost {
                 kind: error.failure_kind(),
                 message: error.to_string(),
             })?;
-        let result = store.append_node_events_at_head_blocking(
-            rows.iter()
-                .map(|row| (row.row.clone(), Some(row.timestamp_ms)))
-                .collect(),
-            Some((execution_id.into(), head)),
-        );
+        let result = store
+            .append_node_events_at_head(
+                rows.iter()
+                    .map(|row| (row.row.clone(), Some(row.timestamp_ms)))
+                    .collect(),
+                Some((execution_id.into(), head)),
+            )
+            .await;
         match result {
-            Err(NodeEventWriteError::OutcomeUnknown) => {
+            Err(CommitBatchError::AppendOutcomeUnknown) => {
                 workflow_fact_log::resolve_unknown_append(store, rows, Some(head))
                     .await
                     .map_err(|error| WorkflowRuntimeError::StorageFailure {
@@ -371,7 +373,7 @@ impl WorkflowRuntimeHost {
             result => result.map(|_| ()),
         }
         .map_err(|error| match error {
-            NodeEventWriteError::Conflict => WorkflowRuntimeError::Conflict(format!(
+            CommitBatchError::TreeHeadConflict => WorkflowRuntimeError::Conflict(format!(
                 "execution '{execution_id}' changed before commit"
             )),
             other => WorkflowRuntimeError::StorageFailure {
@@ -4655,7 +4657,7 @@ nodes:
             );
         }
 
-        fn append_started_session_tree(
+        async fn append_started_session_tree(
             store: &Arc<LocalEventStore>,
             tree_id: &str,
             worktree_path: &str,
@@ -4721,6 +4723,7 @@ nodes:
                 }),
                 timestamp_ms,
             )
+            .await
             .unwrap();
             let child_meta = NodeFactMeta {
                 tree_id: tree_id.to_string(),
@@ -4740,6 +4743,7 @@ nodes:
                 }),
                 timestamp_ms + 1,
             )
+            .await
             .unwrap();
         }
 
@@ -4753,9 +4757,9 @@ nodes:
                 directory.path().to_path_buf(),
             ))
             .unwrap();
-            append_started_session_tree(&store, CORRUPT_TREE_ID, "/repo/corrupt", 1);
+            append_started_session_tree(&store, CORRUPT_TREE_ID, "/repo/corrupt", 1).await;
             store
-                .append_node_event_blocking(
+                .append_node_event(
                     NewNodeEventRow {
                         tree_id: CORRUPT_TREE_ID.to_string(),
                         node_execution_id: CORRUPT_TREE_ID.to_string(),
@@ -4769,8 +4773,9 @@ nodes:
                     },
                     Some(4),
                 )
+                .await
                 .unwrap();
-            append_started_session_tree(&store, VALID_TREE_ID, "/repo/valid", 5);
+            append_started_session_tree(&store, VALID_TREE_ID, "/repo/valid", 5).await;
             let valid_records = workflow_fact_log::read_tree_records(&store, VALID_TREE_ID)
                 .await
                 .unwrap();
@@ -4852,7 +4857,7 @@ nodes:
                 r#""permission":"bypassPermissions""#,
             );
             store
-                .append_node_event_blocking(
+                .append_node_event(
                     NewNodeEventRow {
                         tree_id: TREE_ID.to_string(),
                         node_execution_id: TREE_ID.to_string(),
@@ -4866,6 +4871,7 @@ nodes:
                     },
                     Some(1),
                 )
+                .await
                 .unwrap();
 
             assert!(workflow_fact_log::read_tree_records(&store, TREE_ID)
