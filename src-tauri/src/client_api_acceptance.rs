@@ -97,7 +97,6 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
         ));
         let repository = RepositoryUsecase::new(
             branch,
-            Arc::new(repository::log::LogGateway),
             Arc::new(repository::status::StatusGateway),
             Arc::new(repository::worktree::WorktreeGateway),
             Arc::new(repository::git_config::GitConfigGateway),

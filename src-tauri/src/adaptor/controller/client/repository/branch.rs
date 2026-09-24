@@ -15,14 +15,6 @@ pub(crate) async fn list_branches_shared(
     .await
 }
 
-pub(crate) async fn get_default_branch_shared(
-    state: &AppState,
-    repo_path: String,
-) -> Result<String, AppError> {
-    let uc = state.repository_usecase.clone();
-    run_blocking(move || uc.get_default_branch(&repo_path)).await
-}
-
 pub(crate) async fn git_create_branch_shared(
     state: &AppState,
     repo_path: String,

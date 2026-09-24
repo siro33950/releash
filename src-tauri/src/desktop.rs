@@ -79,6 +79,9 @@ pub fn run() {
             usecase::daemon_supervision::DaemonSupervisionUsecase::start(gateway)
         });
         app.manage(supervisor.clone());
+        app.manage(usecase::state_client::StateClientUsecase::new(Arc::new(
+            adaptor::gateway::state_client::StateClientGatewayImpl(Arc::new(supervisor.clone())),
+        ), Arc::new(adaptor::gateway::subscription_timer::TokioSubscriptionTimer)));
         app.manage(usecase::desktop_update::DesktopUpdateUsecase::new(
             Arc::new(adaptor::gateway::desktop_update::TauriUpdateGateway::new(
                 app.handle().clone(),

@@ -395,17 +395,6 @@ mod tests {
             })
         }
 
-        fn status_with_ignored(
-            &self,
-            _repo_path: &str,
-        ) -> Result<Vec<FileStatusDto>, RepositoryStateError> {
-            Ok(vec![FileStatusDto {
-                path: "ignored.txt".to_string(),
-                index_status: "none".to_string(),
-                worktree_status: "ignored".to_string(),
-            }])
-        }
-
         fn prune_stale_branch_bases(
             &self,
             _repo_path: &str,

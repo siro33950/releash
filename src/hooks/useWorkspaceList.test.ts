@@ -415,11 +415,11 @@ describe("useWorkspaceList", () => {
 		visibility.mockRestore();
 	});
 
-	it("branchとRepositoryの通知は同じ全体更新を呼ぶ", async () => {
+	it("branchの通知は全体更新を呼ぶ", async () => {
 		vi.useFakeTimers();
 		renderHook(() => useWorkspaceList());
 		await act(async () => {});
-		for (const name of ["branch-list-sync", "repo-paths-changed"]) {
+		for (const name of ["branch-list-sync"]) {
 			await act(async () => {
 				mocks.listen.mock.calls.find(([event]) => event === name)?.[1]({
 					payload: {},
@@ -428,7 +428,7 @@ describe("useWorkspaceList", () => {
 			});
 		}
 		expect(mocks.invoke.mock.calls).toEqual(
-			Array(3).fill(["refresh_workspaces", { worktreePath: undefined }]),
+			Array(2).fill(["refresh_workspaces", { worktreePath: undefined }]),
 		);
 	});
 
@@ -525,4 +525,46 @@ describe("useWorkspaceList", () => {
 		expect(mocks.invoke).toHaveBeenCalledTimes(3);
 		unmount();
 	});
+
+	it("購読で届いたRepository一覧が変わるとWorkspacesを更新する", async () => {
+		const { rerender } = renderHook(({ paths }) => useWorkspaceList(paths), {
+			initialProps: { paths: ["/repo"] },
+		});
+		await act(async () => {});
+		mocks.invoke.mockClear();
+		rerender({ paths: ["/repo", "/added"] });
+		await act(async () => {});
+		expect(mocks.invoke).toHaveBeenCalledWith("refresh_workspaces", {
+			worktreePath: undefined,
+		});
+	});
+	it.each(["paths-first", "listener-first"])(
+		"初回取得は購読とlistenerの到着順が%sでも一回だけ",
+		async (order) => {
+			const listening = deferred<() => void>();
+			mocks.listen.mockImplementation((name) =>
+				name === "workspace-list-changed"
+					? listening.promise
+					: Promise.resolve(vi.fn()),
+			);
+			const { rerender } = renderHook(({ paths }) => useWorkspaceList(paths), {
+				initialProps: { paths: null as string[] | null },
+			});
+			if (order === "paths-first") {
+				rerender({ paths: ["/repo"] });
+				await act(async () => {});
+				expect(mocks.invoke).not.toHaveBeenCalled();
+				await act(async () => listening.resolve(vi.fn()));
+			} else {
+				await act(async () => listening.resolve(vi.fn()));
+				expect(mocks.invoke).not.toHaveBeenCalled();
+				rerender({ paths: ["/repo"] });
+				await act(async () => {});
+			}
+			expect(mocks.invoke).toHaveBeenCalledTimes(1);
+			rerender({ paths: [] });
+			await act(async () => {});
+			expect(mocks.invoke).toHaveBeenCalledTimes(2);
+		},
+	);
 });

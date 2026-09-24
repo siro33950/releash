@@ -261,8 +261,6 @@ export type InputGetReleashBaseRequest = {
 	repoPath: string;
 };
 
-export type InputGetRepoPathsRequest = Record<string, never>;
-
 export type InputGetReviewFileViewRequest = {
 	input: InputReviewFileViewInput;
 };
@@ -757,39 +755,6 @@ export type InputWriteTerminalSurfaceRequest = {
 	data: string;
 };
 
-export type InputGetCrashReportingEnabledRequest = Record<string, never>;
-
-export type InputGetFileAtRefRequest = {
-	filePath: string;
-	gitRef: string;
-};
-
-export type InputGetStagedContentRequest = {
-	filePath: string;
-};
-
-export type InputGetBinaryStagedContentRequest = {
-	filePath: string;
-};
-
-export type InputGetFileAtBranchBaseRequest = {
-	filePath: string;
-};
-
-export type InputGetBinaryFileAtBranchBaseRequest = {
-	filePath: string;
-};
-
-export type InputGetBinaryFileAtRefRequest = {
-	filePath: string;
-	gitRef: string;
-};
-
-export type InputGetBranchDiffSummaryRequest = {
-	repoPath: string;
-	baseBranch?: string | null;
-};
-
 export type InputBuildDiffFileTreeRequest = {
 	entries: InputListDiffFileEntryInput;
 };
@@ -801,10 +766,6 @@ export type InputDiffFileEntryInput = {
 	status: string;
 	additions: number;
 	deletions: number;
-};
-
-export type InputGetHeadDiffFileTreeSnapshotRequest = {
-	repoPath: string;
 };
 
 export type InputComputeHiddenRangesRequest = {
@@ -825,57 +786,8 @@ export type InputHunkInput = {
 	lines: InputListstring;
 };
 
-export type InputGetRelativePathRequest = {
-	rootPath: string;
-	filePath: string;
-};
-
-export type InputGetReviewThreadRequest = {
-	worktreeName: string;
-	threadId: string;
-};
-
-export type InputGetReviewThreadHistoryRequest = {
-	worktreeName: string;
-	threadId: string;
-};
-
 export type InputFetchPrStatusRequest = {
 	repoPath: string;
-};
-
-export type InputGetDefaultBranchRequest = {
-	repoPath: string;
-};
-
-export type InputGetGitStatusRequest = {
-	repoPath: string;
-	includeIgnored?: boolean | null;
-};
-
-export type InputGetGitStatusSnapshotRequest = {
-	repoPath: string;
-};
-
-export type InputGetStatusDiffStatsRequest = {
-	repoPath: string;
-};
-
-export type InputGetStatusDiffStatsSnapshotRequest = {
-	repoPath: string;
-};
-
-export type InputGetGitLogRequest = {
-	repoPath: string;
-	limit?: number | null;
-};
-
-export type InputGetWorktreeDirtyCountRequest = {
-	worktreePath: string;
-};
-
-export type InputGetRepoGitDirRequest = {
-	filePath: string;
 };
 
 export type InputApproveWorkflowNodeRequest = {
@@ -887,34 +799,6 @@ export type InputApproveWorkflowNodeArgs = {
 	nodeName: string;
 	nodeExecutionId?: string | null;
 	comment?: string | null;
-};
-
-export type InputListWorkflowExecutionsRequest = {
-	status?: string | null;
-	worktreePath: string;
-};
-
-export type InputGetWorkflowExecutionRequest = {
-	executionId: string;
-};
-
-export type InputGetWorkflowExecutionLogRequest = {
-	worktreePath: string;
-	executionId: string;
-};
-
-export type InputGetWorkflowNodeDetailRequest = {
-	worktreePath: string;
-	executionId: string;
-	nodeExecutionId: string;
-};
-
-export type InputResolveWorktreeByExecutionRequest = {
-	executionId: string;
-};
-
-export type InputListFacetsRequest = {
-	kind: string;
 };
 
 export type InputWorkflowSubmitOutputRequest = {
@@ -2137,151 +2021,6 @@ export type NotionPropertyInfoView = {
 	options: Liststring;
 };
 
-export type BranchDiffSummaryDto = {
-	base_branch: string;
-	changed_files: ListChangedFileDto;
-	stats: DiffStatsDto;
-};
-
-export type ListChangedFileDto = Array<ChangedFileDto>;
-
-export type ChangedFileDto = {
-	path: string;
-	old_path: string | null;
-	status: string;
-	binary: boolean;
-	stats: DiffStatsDto;
-};
-
-export type DiffStatsDto = {
-	additions: number;
-	deletions: number;
-};
-
-export type RepositoryHeadDiffFileTreeSnapshotDto = {
-	version: number;
-	stale: boolean;
-	loading: boolean;
-	combined_tree: ListDiffTreeNodeDto;
-	staged_tree: ListDiffTreeNodeDto;
-	changes_tree: ListDiffTreeNodeDto;
-	staged_file_count: number;
-	changes_file_count: number;
-};
-
-export type ListReviewHistoryEntryDto = Array<ReviewHistoryEntryDto>;
-
-export type ReviewHistoryEntryDto =
-	| ({ kind: "thread_created" } & ReviewHistoryEntryDtoThreadCreated)
-	| ({ kind: "comment_appended" } & ReviewHistoryEntryDtoCommentAppended)
-	| ({ kind: "thread_resolved" } & ReviewHistoryEntryDtoThreadResolved)
-	| ({ kind: "thread_deleted" } & ReviewHistoryEntryDtoThreadDeleted);
-
-export type ReviewHistoryEntryDtoThreadCreated = {
-	id: string;
-	threadId: string;
-	commentId: string;
-	actor: ReviewActorWireDto;
-	target: ReviewTargetWireDto;
-	content: string;
-	at: number;
-};
-
-export type ReviewHistoryEntryDtoCommentAppended = {
-	id: string;
-	threadId: string;
-	commentId: string;
-	actor: ReviewActorWireDto;
-	content: string;
-	at: number;
-};
-
-export type ReviewHistoryEntryDtoThreadResolved = {
-	id: string;
-	threadId: string;
-	actor: ReviewActorWireDto;
-	outcome: string;
-	summary: string;
-	at: number;
-};
-
-export type ReviewHistoryEntryDtoThreadDeleted = {
-	id: string;
-	threadId: string;
-	actor: ReviewActorWireDto;
-	at: number;
-};
-
-export type RepositoryStatusSnapshotDto = {
-	version: number;
-	stale: boolean;
-	loading: boolean;
-	status: ListFileStatusDto;
-};
-
-export type RepositoryDiffStatsSnapshotDto = {
-	version: number;
-	stale: boolean;
-	loading: boolean;
-	diff_stats: ListFileDiffStatDto;
-};
-
-export type ListCommitDto = Array<CommitDto>;
-
-export type CommitDto = {
-	hash: string;
-	short_hash: string;
-	message: string;
-	author_name: string;
-	author_email: string;
-	timestamp: number;
-};
-
-export type ResultUint32 = number;
-
-export type ListWorkflowExecutionSummaryDto =
-	Array<WorkflowExecutionSummaryDto>;
-
-export type WorkflowExecutionSummaryDto = {
-	executionId: string;
-	workflowName: string;
-	status: ExecutionStatusDto;
-	worktreePath: string;
-	currentNode?: string;
-	createdFrom: ExecutionOriginDto;
-	startedAt: number;
-	updatedAt: number;
-	completedAt?: number;
-	errorReason?: string;
-	totalTokenUsage: TokenUsageDto;
-};
-
-export type ExecutionStatusDto = "running" | "completed" | "aborted";
-
-export type ExecutionOriginDto = "desktop_ui" | "cli" | "agent" | "api";
-
-export type TokenUsageDto = {
-	inputTokens: number;
-	outputTokens: number;
-};
-
-export type NullableWorkflowExecutionSummaryDto =
-	WorkflowExecutionSummaryDto | null;
-
-export type NullableListDurableWorkflowFactLogEntry =
-	ListDurableWorkflowFactLogEntry | null;
-
-export type ListDurableWorkflowFactLogEntry =
-	Array<DurableWorkflowFactLogEntry>;
-
-export type DurableWorkflowFactLogEntry = {
-	event: string;
-	execution_id: string;
-	timestampMs: number;
-} & { [key: string]: WorkflowValue };
-
-export type NullableNodeExecutionView = NodeExecutionView | null;
-
 export type WorkflowValidateOutputResponse =
 	| { status: "valid" }
 	| ({ status: "invalid" } & WorkflowValidateOutputResponseInvalid);
@@ -2412,7 +2151,6 @@ export interface ClientCommandArgs {
 	get_performance_telemetry_enabled: InputGetPerformanceTelemetryEnabledRequest;
 	get_provider_availability: InputGetProviderAvailabilityRequest;
 	get_releash_base: InputGetReleashBaseRequest;
-	get_repo_paths: InputGetRepoPathsRequest;
 	get_review_file_view: InputGetReviewFileViewRequest;
 	get_review_snapshot: InputGetReviewSnapshotRequest;
 	get_terminal_performance_switches: InputGetTerminalPerformanceSwitchesRequest;
@@ -2490,36 +2228,10 @@ export interface ClientCommandArgs {
 	validate_notion_config: InputValidateNotionConfigRequest;
 	write_paths_to_terminal_surface: InputWritePathsToTerminalSurfaceRequest;
 	write_terminal_surface: InputWriteTerminalSurfaceRequest;
-	get_crash_reporting_enabled: InputGetCrashReportingEnabledRequest;
-	get_file_at_ref: InputGetFileAtRefRequest;
-	get_staged_content: InputGetStagedContentRequest;
-	get_binary_staged_content: InputGetBinaryStagedContentRequest;
-	get_file_at_branch_base: InputGetFileAtBranchBaseRequest;
-	get_binary_file_at_branch_base: InputGetBinaryFileAtBranchBaseRequest;
-	get_binary_file_at_ref: InputGetBinaryFileAtRefRequest;
-	get_branch_diff_summary: InputGetBranchDiffSummaryRequest;
 	build_diff_file_tree: InputBuildDiffFileTreeRequest;
-	get_head_diff_file_tree_snapshot: InputGetHeadDiffFileTreeSnapshotRequest;
 	compute_hidden_ranges: InputComputeHiddenRangesRequest;
-	get_relative_path: InputGetRelativePathRequest;
-	get_review_thread: InputGetReviewThreadRequest;
-	get_review_thread_history: InputGetReviewThreadHistoryRequest;
 	fetch_pr_status: InputFetchPrStatusRequest;
-	get_default_branch: InputGetDefaultBranchRequest;
-	get_git_status: InputGetGitStatusRequest;
-	get_git_status_snapshot: InputGetGitStatusSnapshotRequest;
-	get_status_diff_stats: InputGetStatusDiffStatsRequest;
-	get_status_diff_stats_snapshot: InputGetStatusDiffStatsSnapshotRequest;
-	get_git_log: InputGetGitLogRequest;
-	get_worktree_dirty_count: InputGetWorktreeDirtyCountRequest;
-	get_repo_git_dir: InputGetRepoGitDirRequest;
 	approve_workflow_node: InputApproveWorkflowNodeRequest;
-	list_workflow_executions: InputListWorkflowExecutionsRequest;
-	get_workflow_execution: InputGetWorkflowExecutionRequest;
-	get_workflow_execution_log: InputGetWorkflowExecutionLogRequest;
-	get_workflow_node_detail: InputGetWorkflowNodeDetailRequest;
-	resolve_worktree_by_execution: InputResolveWorktreeByExecutionRequest;
-	list_facets: InputListFacetsRequest;
 	workflow_submit_output: InputWorkflowSubmitOutputRequest;
 	workflow_validate_output: InputWorkflowValidateOutputRequest;
 	workflow_get_output: InputWorkflowGetOutputRequest;
@@ -2662,9 +2374,6 @@ export interface ClientCommands {
 	get_releash_base(
 		args: ClientCommandArgs["get_releash_base"],
 	): Promise<Nullablestring>;
-	get_repo_paths(
-		args: ClientCommandArgs["get_repo_paths"],
-	): Promise<Liststring>;
 	get_review_file_view(
 		args: ClientCommandArgs["get_review_file_view"],
 	): Promise<ReviewFileViewDto>;
@@ -2878,92 +2587,18 @@ export interface ClientCommands {
 	write_terminal_surface(
 		args: ClientCommandArgs["write_terminal_surface"],
 	): Promise<void>;
-	get_crash_reporting_enabled(
-		args: ClientCommandArgs["get_crash_reporting_enabled"],
-	): Promise<ResultBool>;
-	get_file_at_ref(
-		args: ClientCommandArgs["get_file_at_ref"],
-	): Promise<ResultString>;
-	get_staged_content(
-		args: ClientCommandArgs["get_staged_content"],
-	): Promise<ResultString>;
-	get_binary_staged_content(
-		args: ClientCommandArgs["get_binary_staged_content"],
-	): Promise<ResultString>;
-	get_file_at_branch_base(
-		args: ClientCommandArgs["get_file_at_branch_base"],
-	): Promise<ResultString>;
-	get_binary_file_at_branch_base(
-		args: ClientCommandArgs["get_binary_file_at_branch_base"],
-	): Promise<ResultString>;
-	get_binary_file_at_ref(
-		args: ClientCommandArgs["get_binary_file_at_ref"],
-	): Promise<ResultString>;
-	get_branch_diff_summary(
-		args: ClientCommandArgs["get_branch_diff_summary"],
-	): Promise<BranchDiffSummaryDto>;
 	build_diff_file_tree(
 		args: ClientCommandArgs["build_diff_file_tree"],
 	): Promise<ListDiffTreeNodeDto>;
-	get_head_diff_file_tree_snapshot(
-		args: ClientCommandArgs["get_head_diff_file_tree_snapshot"],
-	): Promise<RepositoryHeadDiffFileTreeSnapshotDto>;
 	compute_hidden_ranges(
 		args: ClientCommandArgs["compute_hidden_ranges"],
 	): Promise<ListHiddenRangeDto>;
-	get_relative_path(
-		args: ClientCommandArgs["get_relative_path"],
-	): Promise<Nullablestring>;
-	get_review_thread(
-		args: ClientCommandArgs["get_review_thread"],
-	): Promise<ReviewThreadDto>;
-	get_review_thread_history(
-		args: ClientCommandArgs["get_review_thread_history"],
-	): Promise<ListReviewHistoryEntryDto>;
 	fetch_pr_status(
 		args: ClientCommandArgs["fetch_pr_status"],
 	): Promise<PrStatusDto>;
-	get_default_branch(
-		args: ClientCommandArgs["get_default_branch"],
-	): Promise<ResultString>;
-	get_git_status(
-		args: ClientCommandArgs["get_git_status"],
-	): Promise<ListFileStatusDto>;
-	get_git_status_snapshot(
-		args: ClientCommandArgs["get_git_status_snapshot"],
-	): Promise<RepositoryStatusSnapshotDto>;
-	get_status_diff_stats(
-		args: ClientCommandArgs["get_status_diff_stats"],
-	): Promise<ListFileDiffStatDto>;
-	get_status_diff_stats_snapshot(
-		args: ClientCommandArgs["get_status_diff_stats_snapshot"],
-	): Promise<RepositoryDiffStatsSnapshotDto>;
-	get_git_log(args: ClientCommandArgs["get_git_log"]): Promise<ListCommitDto>;
-	get_worktree_dirty_count(
-		args: ClientCommandArgs["get_worktree_dirty_count"],
-	): Promise<ResultUint32>;
-	get_repo_git_dir(
-		args: ClientCommandArgs["get_repo_git_dir"],
-	): Promise<ResultString>;
 	approve_workflow_node(
 		args: ClientCommandArgs["approve_workflow_node"],
 	): Promise<void>;
-	list_workflow_executions(
-		args: ClientCommandArgs["list_workflow_executions"],
-	): Promise<ListWorkflowExecutionSummaryDto>;
-	get_workflow_execution(
-		args: ClientCommandArgs["get_workflow_execution"],
-	): Promise<NullableWorkflowExecutionSummaryDto>;
-	get_workflow_execution_log(
-		args: ClientCommandArgs["get_workflow_execution_log"],
-	): Promise<NullableListDurableWorkflowFactLogEntry>;
-	get_workflow_node_detail(
-		args: ClientCommandArgs["get_workflow_node_detail"],
-	): Promise<NullableNodeExecutionView>;
-	resolve_worktree_by_execution(
-		args: ClientCommandArgs["resolve_worktree_by_execution"],
-	): Promise<Nullablestring>;
-	list_facets(args: ClientCommandArgs["list_facets"]): Promise<Liststring>;
 	workflow_submit_output(
 		args: ClientCommandArgs["workflow_submit_output"],
 	): Promise<void>;
@@ -2989,7 +2624,6 @@ export interface ClientPushPayloads {
 	"branch-list-sync": null;
 	"file-change": FileChangeEvent;
 	"git-status-changed": GitStatusChangedEvent;
-	"repo-paths-changed": Liststring;
 	"review-comments-changed": ResultString;
 	"workflow-execution-changed": WorkflowExecutionChangedPayloadView;
 	resync: null;

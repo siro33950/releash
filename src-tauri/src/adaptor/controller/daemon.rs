@@ -189,8 +189,14 @@ pub(crate) async fn compose(
     let repo_paths_gateway =
         RepoPathsGateway::new(shared_repo_paths.clone(), config_repository.clone());
 
+    let state_subscriptions = usecase::state_subscription::StateSubscriptionUsecase::new(
+        shared_repo_paths.read().clone(),
+        Arc::new(adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+    );
     let repo_paths_notifier = Arc::new(
-        adaptor::gateway::repository::notify::RepoPathsNotifyGateway::new(push_sink.clone()),
+        adaptor::gateway::repository::notify::RepoPathsNotifyGateway::new(
+            state_subscriptions.publisher(),
+        ),
     );
     let repo_paths_usecase = Arc::new(RepoPathsUsecase::new(
         Arc::new(repo_paths_gateway),
@@ -402,6 +408,7 @@ pub(crate) async fn compose(
                 adaptor::gateway::push::ClientPushGateway::new(push_sink.clone()),
                 dependencies.watcher.clone(),
             )
+            .with_state_subscriptions(state_subscriptions)
             .with_desktop_settings(usecase::app_config::AppConfigUsecase::new(
                 config_repository,
             )),

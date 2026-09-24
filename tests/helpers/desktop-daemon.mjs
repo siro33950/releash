@@ -52,14 +52,14 @@ const bundle = await build({
     stdin: { contents: 'export * from "./src/lib/client.ts";', resolveDir: process.cwd() },
     bundle: true, platform: "node", format: "esm", write: false,
 });
-const {invokeClient, onClientRefresh, completeClientRestoration, refreshClient} = await import(`data:text/javascript;base64,${Buffer.from(`${bundle.outputFiles[0].text}\n//# sourceURL=releash-client-fixture.mjs`).toString("base64")}`);
+const {getClient, invokeClient, onClientRefresh, completeClientRestoration, refreshClient} = await import(`data:text/javascript;base64,${Buffer.from(`${bundle.outputFiles[0].text}\n//# sourceURL=releash-client-fixture.mjs`).toString("base64")}`);
 async function waitFor(predicate) {
     const deadline = Date.now() + 15_000;
     while (!(await predicate())) { assert.ok(Date.now() < deadline, "desktop recovery deadline"); await setTimeout(10); }
 }
 let refreshedSettings;
 const restore = async () => {
-    await Promise.all([invokeClient("get_repo_paths"), invokeClient("get_performance_telemetry_enabled")]);
+    await Promise.all([invokeClient("get_workspaces"), invokeClient("get_performance_telemetry_enabled")]);
     await completeClientRestoration((await invokeHost("get_daemon_status")).connectionGeneration);
     await waitFor(async () => (await invokeHost("get_daemon_status")).phase === "ready");
 };
@@ -84,9 +84,9 @@ try {
         await invokeClient("update_app_settings", { app: { close_to_tray: true, start_minimized: false } });
         await invokeClient("update_app_settings", { app: { close_to_tray: false, start_minimized: true } });
         await invokeClient("update_crash_reporting", { enabled: false });
-        assert.equal(await invokeClient("get_crash_reporting_enabled"), false);
+        assert.equal((await (await getClient()).getServerInfo({})).desktopSettings.crashReporting, false);
         await invokeClient("update_crash_reporting", { enabled: true });
-        assert.equal(await invokeClient("get_crash_reporting_enabled"), true);
+        assert.equal((await (await getClient()).getServerInfo({})).desktopSettings.crashReporting, true);
         await invokeHost("damage_settings");
         const cached = await invokeClient("get_app_settings");
         assert.equal(cached.close_to_tray, false);

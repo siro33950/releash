@@ -8,7 +8,6 @@
 pub(crate) mod branch;
 pub(crate) mod branch_card;
 pub(crate) mod git_config;
-pub(crate) mod log;
 pub(crate) mod notify;
 pub(crate) mod repo_paths;
 pub(crate) mod scanner;

@@ -6,7 +6,7 @@ test("最大16terminalとpushを保持しても入力・ack・状態取得がHTT
 }) => {
 	await setupTauriMock(page, {
 		responses: {
-			get_repo_paths: ["/current"],
+			get_cwd: "/current",
 			attach_terminal_surface: { __mockTerminalAttachment: true },
 			write_terminal_surface: null,
 			ack_terminal_surface_output: null,
@@ -29,7 +29,7 @@ test("最大16terminalとpushを保持しても入力・ack・状態取得がHTT
 		} = await import("/src/lib/client.ts");
 		const events = new Map<string, string[]>();
 		let pushed = false;
-		const stopPush = await listenClient("repo-paths-changed", () => {
+		const stopPush = await listenClient("review-comments-changed", () => {
 			pushed = true;
 		});
 		const releases: Array<() => Promise<void>> = [];
@@ -81,8 +81,8 @@ test("最大16terminalとpushを保持しても入力・ack・状態取得がHTT
 				});
 			}),
 		);
-		const paths = await invokeClient("get_repo_paths");
-		await window.__releashPush("repo-paths-changed", ["/updated"]);
+		const paths = await invokeClient("get_cwd");
+		await window.__releashPush("review-comments-changed", "/updated");
 		const deadline = Date.now() + 3000;
 		while (
 			(!pushed || [...events.values()].some((output) => output.length < 2)) &&
@@ -113,7 +113,7 @@ test("最大16terminalとpushを保持しても入力・ack・状態取得がHTT
 	expect(
 		subscriptions.filter((url) => url.endsWith("/SubscribeTerminalSurfaces")),
 	).toHaveLength(1);
-	expect(result.paths).toEqual(["/current"]);
+	expect(result.paths).toEqual("/current");
 	expect(result.pushed).toBe(true);
 	expect(result.outputs).toEqual(
 		Array.from({ length: 16 }, (_, index) => [

@@ -42,22 +42,6 @@ pub trait ReviewBlobUrlProvider: Send + Sync {
 
 /// 各リビジョン時点のファイル内容参照（テキスト／バイナリ bytes / Base64）。
 pub trait FileContentRepository: Send + Sync {
-    fn file_at_ref(&self, file_path: &str, git_ref: &str) -> Result<String, CodeError>;
-    fn binary_file_at_ref(&self, file_path: &str, git_ref: &str) -> Result<String, CodeError>;
-    /// `base_commit_oid` は usecase が解決済みの base コミット OID(hex)。`None` は
-    /// detached / base 未設定で HEAD コミットにフォールバックする。
-    fn file_at_branch_base(
-        &self,
-        file_path: &str,
-        base_commit_oid: Option<&str>,
-    ) -> Result<String, CodeError>;
-    fn binary_file_at_branch_base(
-        &self,
-        file_path: &str,
-        base_commit_oid: Option<&str>,
-    ) -> Result<String, CodeError>;
-    fn staged_content(&self, file_path: &str) -> Result<String, CodeError>;
-    fn binary_staged_content(&self, file_path: &str) -> Result<String, CodeError>;
     fn review_file_metadata_at_ref(
         &self,
         file_path: &str,

@@ -4,14 +4,14 @@ import "client_options.proto";
 
 
 message Push {
-  reserved 6;
-  reserved "repository_snapshot_changed";
+  reserved 5, 6;
+  reserved "repository_snapshot_changed", "repo_paths_changed";
   oneof event {
     AgentSessionChangedPayload agent_session_changed = 1;
     Unit branch_list_sync = 2;
     FileChangeEvent file_change = 3;
     GitStatusChangedEvent git_status_changed = 4;
-    Liststring repo_paths_changed = 5;
+
     ResultString review_comments_changed = 7;
     WorkflowExecutionChangedPayloadView workflow_execution_changed = 8;
     Unit resync = 9;
@@ -19,6 +19,8 @@ message Push {
   }
 }
 message CommandRequest {
+  reserved 64, 149, 150, 151, 152, 153, 154, 155, 156, 158, 160, 161, 162, 164, 165, 166, 167, 168, 169, 170, 171, 173, 174, 175, 176, 177, 178;
+  reserved "get_repo_paths", "get_crash_reporting_enabled", "get_file_at_ref", "get_staged_content", "get_binary_staged_content", "get_file_at_branch_base", "get_binary_file_at_branch_base", "get_binary_file_at_ref", "get_branch_diff_summary", "get_head_diff_file_tree_snapshot", "get_relative_path", "get_review_thread", "get_review_thread_history", "get_default_branch", "get_git_status", "get_git_status_snapshot", "get_status_diff_stats", "get_status_diff_stats_snapshot", "get_git_log", "get_worktree_dirty_count", "get_repo_git_dir", "list_workflow_executions", "get_workflow_execution", "get_workflow_execution_log", "get_workflow_node_detail", "resolve_worktree_by_execution", "list_facets";
   reserved 12, 25, 44, 45, 67, 86, 89, 118, 182;
   reserved "list_branches_with_status";
   reserved 121, 123, 131, 134, 137;
@@ -75,7 +77,7 @@ message CommandRequest {
     GetPerformanceTelemetryEnabledRequest get_performance_telemetry_enabled = 61;
     GetProviderAvailabilityRequest get_provider_availability = 62;
     GetReleashBaseRequest get_releash_base = 63;
-    GetRepoPathsRequest get_repo_paths = 64;
+
     GetReviewFileViewRequest get_review_file_view = 65;
     GetReviewSnapshotRequest get_review_snapshot = 66;
     GetTerminalPerformanceSwitchesRequest get_terminal_performance_switches = 68;
@@ -153,36 +155,36 @@ message CommandRequest {
     ValidateNotionConfigRequest validate_notion_config = 146;
     WritePathsToTerminalSurfaceRequest write_paths_to_terminal_surface = 147;
     WriteTerminalSurfaceRequest write_terminal_surface = 148;
-    GetCrashReportingEnabledRequest get_crash_reporting_enabled = 149;
-    GetFileAtRefRequest get_file_at_ref = 150;
-    GetStagedContentRequest get_staged_content = 151;
-    GetBinaryStagedContentRequest get_binary_staged_content = 152;
-    GetFileAtBranchBaseRequest get_file_at_branch_base = 153;
-    GetBinaryFileAtBranchBaseRequest get_binary_file_at_branch_base = 154;
-    GetBinaryFileAtRefRequest get_binary_file_at_ref = 155;
-    GetBranchDiffSummaryRequest get_branch_diff_summary = 156;
+
+
+
+
+
+
+
+
     BuildDiffFileTreeRequest build_diff_file_tree = 157;
-    GetHeadDiffFileTreeSnapshotRequest get_head_diff_file_tree_snapshot = 158;
+
     ComputeHiddenRangesRequest compute_hidden_ranges = 159;
-    GetRelativePathRequest get_relative_path = 160;
-    GetReviewThreadRequest get_review_thread = 161;
-    GetReviewThreadHistoryRequest get_review_thread_history = 162;
+
+
+
     FetchPrStatusRequest fetch_pr_status = 163;
-    GetDefaultBranchRequest get_default_branch = 164;
-    GetGitStatusRequest get_git_status = 165;
-    GetGitStatusSnapshotRequest get_git_status_snapshot = 166;
-    GetStatusDiffStatsRequest get_status_diff_stats = 167;
-    GetStatusDiffStatsSnapshotRequest get_status_diff_stats_snapshot = 168;
-    GetGitLogRequest get_git_log = 169;
-    GetWorktreeDirtyCountRequest get_worktree_dirty_count = 170;
-    GetRepoGitDirRequest get_repo_git_dir = 171;
+
+
+
+
+
+
+
+
     ApproveWorkflowNodeRequest approve_workflow_node = 172;
-    ListWorkflowExecutionsRequest list_workflow_executions = 173;
-    GetWorkflowExecutionRequest get_workflow_execution = 174;
-    GetWorkflowExecutionLogRequest get_workflow_execution_log = 175;
-    GetWorkflowNodeDetailRequest get_workflow_node_detail = 176;
-    ResolveWorktreeByExecutionRequest resolve_worktree_by_execution = 177;
-    ListFacetsRequest list_facets = 178;
+
+
+
+
+
+
     WorkflowSubmitOutputRequest workflow_submit_output = 179;
     WorkflowValidateOutputRequest workflow_validate_output = 180;
     WorkflowGetOutputRequest workflow_get_output = 181;
@@ -192,6 +194,8 @@ message CommandRequest {
 }
 
 message CommandResult {
+  reserved 64, 149, 150, 151, 152, 153, 154, 155, 156, 158, 160, 161, 162, 164, 165, 166, 167, 168, 169, 170, 171, 173, 174, 175, 176, 177, 178;
+  reserved "get_repo_paths", "get_crash_reporting_enabled", "get_file_at_ref", "get_staged_content", "get_binary_staged_content", "get_file_at_branch_base", "get_binary_file_at_branch_base", "get_binary_file_at_ref", "get_branch_diff_summary", "get_head_diff_file_tree_snapshot", "get_relative_path", "get_review_thread", "get_review_thread_history", "get_default_branch", "get_git_status", "get_git_status_snapshot", "get_status_diff_stats", "get_status_diff_stats_snapshot", "get_git_log", "get_worktree_dirty_count", "get_repo_git_dir", "list_workflow_executions", "get_workflow_execution", "get_workflow_execution_log", "get_workflow_node_detail", "resolve_worktree_by_execution", "list_facets";
   reserved 12, 25, 44, 45, 67, 86, 89, 118, 182;
   reserved "list_branches_with_status";
   reserved 121, 123, 131, 134, 137;
@@ -248,7 +252,7 @@ message CommandResult {
     ResultBool get_performance_telemetry_enabled = 61;
     ProviderAvailabilitySnapshotResponse get_provider_availability = 62;
     Nullablestring get_releash_base = 63;
-    Liststring get_repo_paths = 64;
+
     ReviewFileViewDto get_review_file_view = 65;
     ReviewSnapshotDto get_review_snapshot = 66;
     TerminalPerformanceSwitchesV1 get_terminal_performance_switches = 68;
@@ -326,36 +330,36 @@ message CommandResult {
     NotionValidationResultView validate_notion_config = 146;
     Unit write_paths_to_terminal_surface = 147;
     Unit write_terminal_surface = 148;
-    ResultBool get_crash_reporting_enabled = 149;
-    ResultString get_file_at_ref = 150;
-    ResultString get_staged_content = 151;
-    ResultString get_binary_staged_content = 152;
-    ResultString get_file_at_branch_base = 153;
-    ResultString get_binary_file_at_branch_base = 154;
-    ResultString get_binary_file_at_ref = 155;
-    BranchDiffSummaryDto get_branch_diff_summary = 156;
+
+
+
+
+
+
+
+
     ListDiffTreeNodeDto build_diff_file_tree = 157;
-    RepositoryHeadDiffFileTreeSnapshotDto get_head_diff_file_tree_snapshot = 158;
+
     ListHiddenRangeDto compute_hidden_ranges = 159;
-    Nullablestring get_relative_path = 160;
-    ReviewThreadDto get_review_thread = 161;
-    ListReviewHistoryEntryDto get_review_thread_history = 162;
+
+
+
     PrStatusDto fetch_pr_status = 163;
-    ResultString get_default_branch = 164;
-    ListFileStatusDto get_git_status = 165;
-    RepositoryStatusSnapshotDto get_git_status_snapshot = 166;
-    ListFileDiffStatDto get_status_diff_stats = 167;
-    RepositoryDiffStatsSnapshotDto get_status_diff_stats_snapshot = 168;
-    ListCommitDto get_git_log = 169;
-    ResultUint32 get_worktree_dirty_count = 170;
-    ResultString get_repo_git_dir = 171;
+
+
+
+
+
+
+
+
     Unit approve_workflow_node = 172;
-    ListWorkflowExecutionSummaryDto list_workflow_executions = 173;
-    NullableWorkflowExecutionSummaryDto get_workflow_execution = 174;
-    NullableListDurableWorkflowFactLogEntry get_workflow_execution_log = 175;
-    NullableNodeExecutionView get_workflow_node_detail = 176;
-    Nullablestring resolve_worktree_by_execution = 177;
-    Liststring list_facets = 178;
+
+
+
+
+
+
     Unit workflow_submit_output = 179;
     WorkflowValidateOutputResponse workflow_validate_output = 180;
     WorkflowGetOutputResponse workflow_get_output = 181;
@@ -1189,9 +1193,6 @@ message GetReleashBaseRequest {
   optional string repo_path = 1 [json_name = "repoPath", (json_required) = true];
 }
 
-message GetRepoPathsRequest {
-
-}
 
 message ReviewFileViewInput {
   optional string worktree_path = 1 [json_name = "worktreePath", (json_required) = true];
@@ -2696,64 +2697,21 @@ message WriteTerminalSurfaceRequest {
   optional string data = 5 [json_name = "data", (json_required) = true];
 }
 
-message GetCrashReportingEnabledRequest {
 
-}
 
-message GetFileAtRefRequest {
-  optional string file_path = 1 [json_name = "filePath", (json_required) = true];
-  optional string git_ref = 2 [json_name = "gitRef", (json_required) = true];
-}
 
-message GetStagedContentRequest {
-  optional string file_path = 1 [json_name = "filePath", (json_required) = true];
-}
 
-message GetBinaryStagedContentRequest {
-  optional string file_path = 1 [json_name = "filePath", (json_required) = true];
-}
 
-message GetFileAtBranchBaseRequest {
-  optional string file_path = 1 [json_name = "filePath", (json_required) = true];
-}
 
-message GetBinaryFileAtBranchBaseRequest {
-  optional string file_path = 1 [json_name = "filePath", (json_required) = true];
-}
 
-message GetBinaryFileAtRefRequest {
-  optional string file_path = 1 [json_name = "filePath", (json_required) = true];
-  optional string git_ref = 2 [json_name = "gitRef", (json_required) = true];
-}
 
-message GetBranchDiffSummaryRequest {
-  optional string repo_path = 1 [json_name = "repoPath", (json_required) = true];
-  optional string base_branch = 2 [json_name = "baseBranch", (json_nullable) = true];
-}
 
-message BranchDiffSummaryDto {
-  optional string base_branch = 1 [json_name = "base_branch", (json_required) = true];
-  optional ListChangedFileDto changed_files = 2 [json_name = "changed_files", (json_required) = true];
-  optional DiffStatsDto stats = 3 [json_name = "stats", (json_required) = true];
-}
 
-message ChangedFileDto {
-  optional string path = 1 [json_name = "path", (json_required) = true];
-  optional string old_path = 2 [json_name = "old_path", (json_nullable) = true];
-  optional string status = 3 [json_name = "status", (json_required) = true];
-  optional bool binary = 4 [json_name = "binary", (json_required) = true];
-  optional DiffStatsDto stats = 5 [json_name = "stats", (json_required) = true];
-}
 
-message DiffStatsDto {
-  optional uint32 additions = 1 [json_name = "additions", (json_required) = true];
-  optional uint32 deletions = 2 [json_name = "deletions", (json_required) = true];
-}
 
-message ListChangedFileDto {
-  option (json_wrapper) = "items";
-  repeated ChangedFileDto items = 1;
-}
+
+
+
 
 message DiffFileEntryInput {
   optional string path = 1 [json_name = "path", (json_required) = true];
@@ -2771,22 +2729,8 @@ message BuildDiffFileTreeRequest {
   optional ListDiffFileEntryInput entries = 1 [json_name = "entries", (json_required) = true];
 }
 
-message GetHeadDiffFileTreeSnapshotRequest {
-  optional string repo_path = 1 [json_name = "repoPath", (json_required) = true];
-}
 
-message RepositoryHeadDiffFileTreeSnapshotDto {
-  reserved 4;
-  reserved "limited";
-  optional uint64 version = 1 [json_name = "version", (json_required) = true];
-  optional bool stale = 2 [json_name = "stale", (json_required) = true];
-  optional bool loading = 3 [json_name = "loading", (json_required) = true];
-  optional ListDiffTreeNodeDto combined_tree = 5 [json_name = "combined_tree", (json_required) = true];
-  optional ListDiffTreeNodeDto staged_tree = 6 [json_name = "staged_tree", (json_required) = true];
-  optional ListDiffTreeNodeDto changes_tree = 7 [json_name = "changes_tree", (json_required) = true];
-  optional uint64 staged_file_count = 8 [json_name = "staged_file_count", (json_required) = true];
-  optional uint64 changes_file_count = 9 [json_name = "changes_file_count", (json_required) = true];
-}
+
 
 message HunkInput {
   optional uint32 index = 1 [json_name = "index", (json_required) = true];
@@ -2809,145 +2753,42 @@ message ComputeHiddenRangesRequest {
   optional uint32 context_lines = 3 [json_name = "contextLines", (json_required) = true];
 }
 
-message GetRelativePathRequest {
-  optional string root_path = 1 [json_name = "rootPath", (json_required) = true];
-  optional string file_path = 2 [json_name = "filePath", (json_required) = true];
-}
 
-message GetReviewThreadRequest {
-  optional string worktree_name = 1 [json_name = "worktreeName", (json_required) = true];
-  optional string thread_id = 2 [json_name = "threadId", (json_required) = true];
-}
 
-message GetReviewThreadHistoryRequest {
-  optional string worktree_name = 1 [json_name = "worktreeName", (json_required) = true];
-  optional string thread_id = 2 [json_name = "threadId", (json_required) = true];
-}
 
-message ReviewHistoryEntryDto {
-  option (json_tag) = "kind";
-  oneof variant {
-    ReviewHistoryEntryDtoThreadCreated thread_created = 1 [json_name = "thread_created"];
-    ReviewHistoryEntryDtoCommentAppended comment_appended = 2 [json_name = "comment_appended"];
-    ReviewHistoryEntryDtoThreadResolved thread_resolved = 3 [json_name = "thread_resolved"];
-    ReviewHistoryEntryDtoThreadDeleted thread_deleted = 4 [json_name = "thread_deleted"];
-  }
-}
 
-message ReviewHistoryEntryDtoThreadCreated {
-  optional string id = 1 [json_name = "id", (json_required) = true];
-  optional string thread_id = 2 [json_name = "threadId", (json_required) = true];
-  optional string comment_id = 3 [json_name = "commentId", (json_required) = true];
-  optional ReviewActorWireDto actor = 4 [json_name = "actor", (json_required) = true];
-  optional ReviewTargetWireDto target = 5 [json_name = "target", (json_required) = true];
-  optional string content = 6 [json_name = "content", (json_required) = true];
-  optional double at = 7 [json_name = "at", (json_required) = true];
-}
 
-message ReviewHistoryEntryDtoCommentAppended {
-  optional string id = 1 [json_name = "id", (json_required) = true];
-  optional string thread_id = 2 [json_name = "threadId", (json_required) = true];
-  optional string comment_id = 3 [json_name = "commentId", (json_required) = true];
-  optional ReviewActorWireDto actor = 4 [json_name = "actor", (json_required) = true];
-  optional string content = 5 [json_name = "content", (json_required) = true];
-  optional double at = 6 [json_name = "at", (json_required) = true];
-}
 
-message ReviewHistoryEntryDtoThreadResolved {
-  optional string id = 1 [json_name = "id", (json_required) = true];
-  optional string thread_id = 2 [json_name = "threadId", (json_required) = true];
-  optional ReviewActorWireDto actor = 3 [json_name = "actor", (json_required) = true];
-  optional string outcome = 4 [json_name = "outcome", (json_required) = true];
-  optional string summary = 5 [json_name = "summary", (json_required) = true];
-  optional double at = 6 [json_name = "at", (json_required) = true];
-}
 
-message ReviewHistoryEntryDtoThreadDeleted {
-  optional string id = 1 [json_name = "id", (json_required) = true];
-  optional string thread_id = 2 [json_name = "threadId", (json_required) = true];
-  optional ReviewActorWireDto actor = 3 [json_name = "actor", (json_required) = true];
-  optional double at = 4 [json_name = "at", (json_required) = true];
-}
 
-message ListReviewHistoryEntryDto {
-  option (json_wrapper) = "items";
-  repeated ReviewHistoryEntryDto items = 1;
-}
+
+
+
+
+
+
 
 message FetchPrStatusRequest {
   optional string repo_path = 1 [json_name = "repoPath", (json_required) = true];
 }
 
-message GetDefaultBranchRequest {
-  optional string repo_path = 1 [json_name = "repoPath", (json_required) = true];
-}
 
-message GetGitStatusRequest {
-  optional string repo_path = 1 [json_name = "repoPath", (json_required) = true];
-  optional bool include_ignored = 2 [json_name = "includeIgnored", (json_nullable) = true];
-}
 
-message GetGitStatusSnapshotRequest {
-  optional string repo_path = 1 [json_name = "repoPath", (json_required) = true];
-}
 
-message RepositoryStatusSnapshotDto {
-  reserved 4;
-  reserved "limited";
-  optional uint64 version = 1 [json_name = "version", (json_required) = true];
-  optional bool stale = 2 [json_name = "stale", (json_required) = true];
-  optional bool loading = 3 [json_name = "loading", (json_required) = true];
-  optional ListFileStatusDto status = 5 [json_name = "status", (json_required) = true];
-}
 
-message GetStatusDiffStatsRequest {
-  optional string repo_path = 1 [json_name = "repoPath", (json_required) = true];
-}
 
-message GetStatusDiffStatsSnapshotRequest {
-  optional string repo_path = 1 [json_name = "repoPath", (json_required) = true];
-}
 
-message RepositoryDiffStatsSnapshotDto {
-  reserved 4;
-  reserved "limited";
-  optional uint64 version = 1 [json_name = "version", (json_required) = true];
-  optional bool stale = 2 [json_name = "stale", (json_required) = true];
-  optional bool loading = 3 [json_name = "loading", (json_required) = true];
-  optional ListFileDiffStatDto diff_stats = 5 [json_name = "diff_stats", (json_required) = true];
-}
 
-message GetGitLogRequest {
-  optional string repo_path = 1 [json_name = "repoPath", (json_required) = true];
-  optional uint64 limit = 2 [json_name = "limit", (json_nullable) = true];
-}
 
-message CommitDto {
-  optional string hash = 1 [json_name = "hash", (json_required) = true];
-  optional string short_hash = 2 [json_name = "short_hash", (json_required) = true];
-  optional string message = 3 [json_name = "message", (json_required) = true];
-  optional string author_name = 4 [json_name = "author_name", (json_required) = true];
-  optional string author_email = 5 [json_name = "author_email", (json_required) = true];
-  optional int64 timestamp = 6 [json_name = "timestamp", (json_required) = true];
-}
 
-message ListCommitDto {
-  option (json_wrapper) = "items";
-  repeated CommitDto items = 1;
-}
 
-message GetWorktreeDirtyCountRequest {
-  optional string worktree_path = 1 [json_name = "worktreePath", (json_required) = true];
-}
 
-message ResultUint32 {
-  option (json_wrapper) = "value";
-  optional uint32 value = 1 [json_name = "value", (json_required) = true];
-}
 
-message GetRepoGitDirRequest {
-  optional string file_path = 1 [json_name = "filePath", (json_required) = true];
-}
+
+
+
+
+
 
 message ApproveWorkflowNodeArgs {
   optional string execution_id = 1 [json_name = "executionId", (json_required) = true];
@@ -2960,97 +2801,27 @@ message ApproveWorkflowNodeRequest {
   optional ApproveWorkflowNodeArgs args = 1 [json_name = "args", (json_required) = true];
 }
 
-message ListWorkflowExecutionsRequest {
-  optional string status = 1 [json_name = "status", (json_nullable) = true];
-  optional string worktree_path = 2 [json_name = "worktreePath", (json_required) = true];
-}
 
-message WorkflowExecutionSummaryDto {
-  reserved 11, 12;
-  reserved "interruption_reason", "resume_from_node";
-  optional string execution_id = 1 [json_name = "executionId", (json_required) = true];
-  optional string workflow_name = 2 [json_name = "workflowName", (json_required) = true];
-  optional ExecutionStatusDto status = 3 [json_name = "status", (json_required) = true];
-  optional string worktree_path = 4 [json_name = "worktreePath", (json_required) = true];
-  optional string current_node = 5 [json_name = "currentNode", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
-  optional ExecutionOriginDto created_from = 6 [json_name = "createdFrom", (json_required) = true];
-  optional double started_at = 7 [json_name = "startedAt", (json_required) = true];
-  optional double updated_at = 8 [json_name = "updatedAt", (json_required) = true];
-  optional double completed_at = 9 [json_name = "completedAt", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
-  optional string error_reason = 10 [json_name = "errorReason", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
-  optional TokenUsageDto total_token_usage = 13 [json_name = "totalTokenUsage", (json_required) = true];
-}
 
-message ExecutionStatusDto {
-  option (json_wrapper) = "value";
-  enum Value {
-    reserved 1, 4;
-    reserved "waiting_approval", "interrupted";
-    running = 0 [(json_enum_name) = "running"];
-    completed = 2 [(json_enum_name) = "completed"];
-    aborted = 3 [(json_enum_name) = "aborted"];
-  }
-  optional Value value = 1 [json_name = "value", (json_required) = true];
-}
 
-message ExecutionOriginDto {
-  option (json_wrapper) = "value";
-  enum Value {
-    desktop_ui = 0 [(json_enum_name) = "desktop_ui"];
-    cli = 1 [(json_enum_name) = "cli"];
-    agent = 2 [(json_enum_name) = "agent"];
-    api = 3 [(json_enum_name) = "api"];
-  }
-  optional Value value = 1 [json_name = "value", (json_required) = true];
-}
 
-message TokenUsageDto {
-  optional uint64 input_tokens = 1 [json_name = "inputTokens", (json_required) = true];
-  optional uint64 output_tokens = 2 [json_name = "outputTokens", (json_required) = true];
-}
 
-message ListWorkflowExecutionSummaryDto {
-  option (json_wrapper) = "items";
-  repeated WorkflowExecutionSummaryDto items = 1;
-}
 
-message GetWorkflowExecutionRequest {
-  optional string execution_id = 1 [json_name = "executionId", (json_required) = true];
-}
 
-message NullableWorkflowExecutionSummaryDto {
-  option (json_wrapper) = "value";
-  optional WorkflowExecutionSummaryDto value = 1 [json_name = "value", (json_nullable) = true];
-}
 
-message GetWorkflowExecutionLogRequest {
-  optional string worktree_path = 1 [json_name = "worktreePath", (json_required) = true];
-  optional string execution_id = 2 [json_name = "executionId", (json_required) = true];
-}
 
-message NullableListDurableWorkflowFactLogEntry {
-  option (json_wrapper) = "value";
-  optional ListDurableWorkflowFactLogEntry value = 1 [json_name = "value", (json_nullable) = true];
-}
 
-message GetWorkflowNodeDetailRequest {
-  optional string worktree_path = 1 [json_name = "worktreePath", (json_required) = true];
-  optional string execution_id = 2 [json_name = "executionId", (json_required) = true];
-  optional string node_execution_id = 3 [json_name = "nodeExecutionId", (json_required) = true];
-}
 
-message NullableNodeExecutionView {
-  option (json_wrapper) = "value";
-  optional NodeExecutionView value = 1 [json_name = "value", (json_nullable) = true];
-}
 
-message ResolveWorktreeByExecutionRequest {
-  optional string execution_id = 1 [json_name = "executionId", (json_required) = true];
-}
 
-message ListFacetsRequest {
-  optional string kind = 1 [json_name = "kind", (json_required) = true];
-}
+
+
+
+
+
+
+
+
 
 message WorkflowSubmitArtifactInput {
   optional string contract = 1 [json_name = "contract", (json_required) = true];
@@ -3315,16 +3086,8 @@ message DiffTreeNodeType {
   optional Value value = 1 [(json_required) = true];
 }
 
-message ListDurableWorkflowFactLogEntry {
-  option (json_wrapper) = "items";
-  repeated DurableWorkflowFactLogEntry items = 1;
-}
-message DurableWorkflowFactLogEntry {
-  optional string event = 1 [(json_required) = true];
-  optional string execution_id = 2 [json_name = "execution_id", (json_required) = true];
-  optional double timestamp_ms = 3 [json_name = "timestampMs", (json_required) = true];
-  map<string, WorkflowValue> payload = 4 [(json_flatten) = true];
-}
+
+
 
 message WorkflowValue {
   option (json_untagged) = true;
@@ -3368,6 +3131,9 @@ message DesktopSettings {
 }
 
 service ClientService {
+  rpc OpenStateStream(OpenStateStreamRequest) returns (stream StateSubscriptionEvent);
+  rpc StartStateSubscription(StartStateSubscriptionRequest) returns (Unit);
+  rpc StopStateSubscription(StopStateSubscriptionRequest) returns (Unit);
   rpc RefreshWorkspaces(RefreshWorkspacesRequest) returns (WorkspaceListSnapshotDto);
   rpc GetWorkspaces(GetWorkspacesRequest) returns (WorkspaceListSnapshotDto);
   rpc GetReviewBlob(GetReviewBlobRequest) returns (ResultString);
@@ -3422,7 +3188,6 @@ service ClientService {
   rpc GetPerformanceTelemetryEnabled(GetPerformanceTelemetryEnabledRequest) returns (ResultBool);
   rpc GetProviderAvailability(GetProviderAvailabilityRequest) returns (ProviderAvailabilitySnapshotResponse);
   rpc GetReleashBase(GetReleashBaseRequest) returns (Nullablestring);
-  rpc GetRepoPaths(GetRepoPathsRequest) returns (Liststring);
   rpc GetReviewFileView(GetReviewFileViewRequest) returns (ReviewFileViewDto);
   rpc GetReviewSnapshot(GetReviewSnapshotRequest) returns (ReviewSnapshotDto);
   rpc GetTerminalPerformanceSwitches(GetTerminalPerformanceSwitchesRequest) returns (TerminalPerformanceSwitchesV1);
@@ -3500,36 +3265,10 @@ service ClientService {
   rpc ValidateNotionConfig(ValidateNotionConfigRequest) returns (NotionValidationResultView);
   rpc WritePathsToTerminalSurface(WritePathsToTerminalSurfaceRequest) returns (Unit);
   rpc WriteTerminalSurface(WriteTerminalSurfaceRequest) returns (Unit);
-  rpc GetCrashReportingEnabled(GetCrashReportingEnabledRequest) returns (ResultBool);
-  rpc GetFileAtRef(GetFileAtRefRequest) returns (ResultString);
-  rpc GetStagedContent(GetStagedContentRequest) returns (ResultString);
-  rpc GetBinaryStagedContent(GetBinaryStagedContentRequest) returns (ResultString);
-  rpc GetFileAtBranchBase(GetFileAtBranchBaseRequest) returns (ResultString);
-  rpc GetBinaryFileAtBranchBase(GetBinaryFileAtBranchBaseRequest) returns (ResultString);
-  rpc GetBinaryFileAtRef(GetBinaryFileAtRefRequest) returns (ResultString);
-  rpc GetBranchDiffSummary(GetBranchDiffSummaryRequest) returns (BranchDiffSummaryDto);
   rpc BuildDiffFileTree(BuildDiffFileTreeRequest) returns (ListDiffTreeNodeDto);
-  rpc GetHeadDiffFileTreeSnapshot(GetHeadDiffFileTreeSnapshotRequest) returns (RepositoryHeadDiffFileTreeSnapshotDto);
   rpc ComputeHiddenRanges(ComputeHiddenRangesRequest) returns (ListHiddenRangeDto);
-  rpc GetRelativePath(GetRelativePathRequest) returns (Nullablestring);
-  rpc GetReviewThread(GetReviewThreadRequest) returns (ReviewThreadDto);
-  rpc GetReviewThreadHistory(GetReviewThreadHistoryRequest) returns (ListReviewHistoryEntryDto);
   rpc FetchPrStatus(FetchPrStatusRequest) returns (PrStatusDto);
-  rpc GetDefaultBranch(GetDefaultBranchRequest) returns (ResultString);
-  rpc GetGitStatus(GetGitStatusRequest) returns (ListFileStatusDto);
-  rpc GetGitStatusSnapshot(GetGitStatusSnapshotRequest) returns (RepositoryStatusSnapshotDto);
-  rpc GetStatusDiffStats(GetStatusDiffStatsRequest) returns (ListFileDiffStatDto);
-  rpc GetStatusDiffStatsSnapshot(GetStatusDiffStatsSnapshotRequest) returns (RepositoryDiffStatsSnapshotDto);
-  rpc GetGitLog(GetGitLogRequest) returns (ListCommitDto);
-  rpc GetWorktreeDirtyCount(GetWorktreeDirtyCountRequest) returns (ResultUint32);
-  rpc GetRepoGitDir(GetRepoGitDirRequest) returns (ResultString);
   rpc ApproveWorkflowNode(ApproveWorkflowNodeRequest) returns (Unit);
-  rpc ListWorkflowExecutions(ListWorkflowExecutionsRequest) returns (ListWorkflowExecutionSummaryDto);
-  rpc GetWorkflowExecution(GetWorkflowExecutionRequest) returns (NullableWorkflowExecutionSummaryDto);
-  rpc GetWorkflowExecutionLog(GetWorkflowExecutionLogRequest) returns (NullableListDurableWorkflowFactLogEntry);
-  rpc GetWorkflowNodeDetail(GetWorkflowNodeDetailRequest) returns (NullableNodeExecutionView);
-  rpc ResolveWorktreeByExecution(ResolveWorktreeByExecutionRequest) returns (Nullablestring);
-  rpc ListFacets(ListFacetsRequest) returns (Liststring);
   rpc WorkflowSubmitOutput(WorkflowSubmitOutputRequest) returns (Unit);
   rpc WorkflowValidateOutput(WorkflowValidateOutputRequest) returns (WorkflowValidateOutputResponse);
   rpc WorkflowGetOutput(WorkflowGetOutputRequest) returns (WorkflowGetOutputResponse);
@@ -3616,4 +3355,27 @@ message ListWorkspaceWorktreeListDto {
 message ListWorkspaceRepositoryListDto {
   option (json_wrapper) = "items";
   repeated WorkspaceRepositoryListDto items = 1;
+}
+
+message OpenStateStreamRequest { string client_id = 1; }
+message StateVersion { string epoch = 1; uint64 sequence = 2; }
+message StartStateSubscriptionRequest {
+  string client_id = 1;
+  string target = 2;
+  StateVersion version = 3;
+}
+message StopStateSubscriptionRequest { string client_id = 1; string target = 2; }
+message StatePayload {
+  oneof value { Liststring repository_paths = 1; }
+}
+message StateChange { bool delta = 1; StatePayload payload = 2; }
+message StateSubscriptionEvent {
+  string target = 1;
+  StateVersion version = 2;
+  oneof event {
+    Unit ready = 3;
+    StatePayload snapshot = 4;
+    StateChange change = 5;
+    Unit bookmark = 6;
+  }
 }

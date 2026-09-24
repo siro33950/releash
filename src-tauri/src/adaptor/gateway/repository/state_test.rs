@@ -1,7 +1,7 @@
 use super::*;
 use crate::adaptor::protocol::client as wire;
 use crate::infrastructure::push::PushSink;
-use crate::usecase::repository_dto::{BranchCardDto, FileStatusDto};
+use crate::usecase::repository_dto::BranchCardDto;
 use crate::usecase::repository_state::runtime::{
     RepositoryStateInvalidationReceiver, RepositoryStateInvalidationSender,
 };
@@ -72,13 +72,6 @@ impl RepositoryScanner for EmptyScanner {
             staged_diff_file_tree: Vec::new(),
             changes_diff_file_tree: Vec::new(),
         })
-    }
-
-    fn status_with_ignored(
-        &self,
-        _repo_path: &str,
-    ) -> Result<Vec<FileStatusDto>, RepositoryStateError> {
-        Ok(Vec::new())
     }
 
     fn prune_stale_branch_bases(

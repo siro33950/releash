@@ -9,3 +9,8 @@
 pub trait WorktreeTerminalGateway: Send + Sync {
     fn kill_by_worktree(&self, worktree_path: &str);
 }
+
+/// 登録済みリポジトリパスの変更を外部へ通知する port。
+pub trait RepoPathsNotifier: Send + Sync {
+    fn notify_changed(&self, paths: Vec<String>);
+}

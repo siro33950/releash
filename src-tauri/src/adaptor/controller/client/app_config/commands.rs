@@ -82,13 +82,6 @@ pub(crate) async fn update_workflow_config_shared(
         .map_err(String::from)
 }
 
-pub(crate) fn get_crash_reporting_enabled_shared(
-    state: &Arc<dyn ConfigRepository>,
-) -> Result<bool, String> {
-    let usecase = build_usecase(state.clone());
-    usecase.get_crash_reporting_enabled().map_err(String::from)
-}
-
 pub(crate) fn get_performance_telemetry_enabled_shared(
     state: &Arc<dyn ConfigRepository>,
 ) -> Result<bool, String> {

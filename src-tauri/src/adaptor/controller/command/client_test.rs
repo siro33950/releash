@@ -130,17 +130,6 @@ macro_rules! parity {
 }
 
 parity!(
-    test_repository_protoはusecase結果と一致する,
-    app,
-    "get_repo_paths",
-    json!({}),
-    value(
-        invoke_tauri(&app, "get_repo_paths", json!({}))
-            .await
-            .unwrap()
-    )
-);
-parity!(
     test_code_protoはusecase結果と一致する,
     app,
     "get_language_from_path",
@@ -354,7 +343,7 @@ async fn test_クライアントdispatch_proto全commandの登録と引数検証
     // Given
     let (_app, dispatch) = parity_app();
     // When / Then
-    assert_eq!(wire::COMMAND_NAMES.len(), 163);
+    assert_eq!(wire::COMMAND_NAMES.len(), 136);
     assert!(wire::COMMAND_NAMES.contains(&"refresh_workspaces"));
     for removed in [
         "resume_agent_session",
@@ -540,7 +529,7 @@ fn mutation_repository() -> (tempfile::TempDir, String) {
 }
 
 #[tokio::test]
-async fn test_未呼出33command_connectの実行結果とエラーがtauriと一致する() {
+async fn test_未呼出7command_connectの実行結果とエラーがtauriと一致する() {
     use crate::adaptor::controller::{api, state::AppState};
 
     // Given
@@ -638,38 +627,9 @@ async fn test_未呼出33command_connectの実行結果とエラーがtauriと�
 
     let execution = "00000000-0000-4000-8000-000000000123";
     let cases = [
-        ("get_crash_reporting_enabled", json!({}), true),
-        (
-            "get_file_at_ref",
-            json!({"filePath":file,"gitRef":"HEAD"}),
-            true,
-        ),
-        ("get_staged_content", json!({"filePath":file}), true),
-        ("get_binary_staged_content", json!({"filePath":file}), true),
-        ("get_file_at_branch_base", json!({"filePath":file}), true),
-        (
-            "get_binary_file_at_branch_base",
-            json!({"filePath":file}),
-            true,
-        ),
-        (
-            "get_binary_file_at_ref",
-            json!({"filePath":file,"gitRef":"HEAD"}),
-            true,
-        ),
-        (
-            "get_branch_diff_summary",
-            json!({"repoPath":path,"baseBranch":"main"}),
-            true,
-        ),
         (
             "build_diff_file_tree",
             json!({"entries":[{"path":"src/日本語.rs","status":"modified","additions":3,"deletions":1}]}),
-            true,
-        ),
-        (
-            "get_head_diff_file_tree_snapshot",
-            json!({"repoPath":path}),
             true,
         ),
         (
@@ -677,73 +637,12 @@ async fn test_未呼出33command_connectの実行結果とエラーがtauriと�
             json!({"hunks":[{"index":0,"oldStart":10,"oldLines":1,"newStart":10,"newLines":2,"lines":["-old","+new","+line"]}],"totalLines":30,"contextLines":2}),
             true,
         ),
-        (
-            "get_relative_path",
-            json!({"rootPath":path,"filePath":file}),
-            true,
-        ),
-        (
-            "get_review_thread",
-            json!({"worktreeName":"../invalid","threadId":"missing"}),
-            false,
-        ),
-        (
-            "get_review_thread_history",
-            json!({"worktreeName":"../invalid","threadId":"missing"}),
-            false,
-        ),
         ("fetch_pr_status", json!({"repoPath":path}), true),
-        ("get_default_branch", json!({"repoPath":path}), true),
-        (
-            "get_git_status",
-            json!({"repoPath":path,"includeIgnored":true}),
-            true,
-        ),
-        ("get_git_status_snapshot", json!({"repoPath":path}), true),
-        ("get_status_diff_stats", json!({"repoPath":path}), true),
-        (
-            "get_status_diff_stats_snapshot",
-            json!({"repoPath":path}),
-            true,
-        ),
-        ("get_git_log", json!({"repoPath":path,"limit":1}), true),
-        (
-            "get_worktree_dirty_count",
-            json!({"worktreePath":path}),
-            true,
-        ),
-        ("get_repo_git_dir", json!({"filePath":file}), true),
         (
             "approve_workflow_node",
             json!({"args":{"executionId":execution,"nodeName":"review","nodeExecutionId":"ne-review-1","comment":"確認済み"}}),
             true,
         ),
-        (
-            "list_workflow_executions",
-            json!({"worktreePath":worktree,"status":"active"}),
-            true,
-        ),
-        (
-            "get_workflow_execution",
-            json!({"executionId":execution}),
-            true,
-        ),
-        (
-            "get_workflow_execution_log",
-            json!({"worktreePath":worktree,"executionId":execution}),
-            true,
-        ),
-        (
-            "get_workflow_node_detail",
-            json!({"worktreePath":worktree,"executionId":execution,"nodeExecutionId":"ne-review-1"}),
-            true,
-        ),
-        (
-            "resolve_worktree_by_execution",
-            json!({"executionId":execution}),
-            true,
-        ),
-        ("list_facets", json!({"kind":"instruction"}), true),
         (
             "workflow_submit_output",
             json!({"worktreePath":worktree,"nodeExecutionId":"missing-node","artifact":{"contract":"review-result","value":{"status":"approved"}}}),
@@ -766,7 +665,7 @@ async fn test_未呼出33command_connectの実行結果とエラーがtauriと�
             .map(|(name, _, _)| *name)
             .collect::<std::collections::HashSet<_>>()
             .len(),
-        33
+        7
     );
     // When / Then
     for (command, args, succeeds) in cases {

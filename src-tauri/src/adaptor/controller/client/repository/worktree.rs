@@ -12,14 +12,6 @@ pub(crate) async fn get_main_repo_path_shared(
     run_blocking(move || uc.get_main_repo_path(&any_path)).await
 }
 
-pub(crate) async fn get_worktree_dirty_count_shared(
-    state: &AppState,
-    worktree_path: String,
-) -> Result<u32, AppError> {
-    let service = state.repository_state.clone();
-    run_repository_state(move || service.get_worktree_dirty_count(&worktree_path)).await
-}
-
 pub(crate) async fn list_worktrees_shared(
     state: &AppState,
     repo_path: String,

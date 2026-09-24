@@ -177,7 +177,7 @@ describe("macOS WKWebView / real Connect daemon", () => {
 			}
 			const started = Date.now();
 			const state = await browser.execute(() =>
-				window.__RELEASH_INVOKE_CLIENT__!("get_repo_paths"),
+				window.__RELEASH_INVOKE_CLIENT__!("get_workspaces").then((snapshot) => snapshot.repositories.map((repo) => repo.path)),
 			);
 			unaryMs.push(Date.now() - started);
 			for (const path of paths) expect(state).toContain(path);
@@ -201,7 +201,7 @@ describe("macOS WKWebView / real Connect daemon", () => {
 			timeout: 5_000,
 		});
 		const current = await browser.execute(() =>
-			window.__RELEASH_INVOKE_CLIENT__!("get_repo_paths"),
+			window.__RELEASH_INVOKE_CLIENT__!("get_workspaces").then((snapshot) => snapshot.repositories.map((repo) => repo.path)),
 		);
 		expect(current).not.toContain(paths[0]);
 		const after = await ticks();
@@ -213,7 +213,7 @@ describe("macOS WKWebView / real Connect daemon", () => {
 				[
 					"WriteTerminalSurface",
 					"AckTerminalSurfaceOutput",
-					"GetRepoPaths",
+					"GetWorkspaces",
 					"GetTerminalSurface",
 				].includes(request.method),
 			),

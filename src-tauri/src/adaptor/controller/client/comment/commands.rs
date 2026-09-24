@@ -4,8 +4,7 @@ use std::sync::Arc;
 use crate::domain::comment::{ReviewActor, ReviewTarget};
 use crate::infrastructure::platform::path_aliases::{alias_name_for_profile, BuildProfile};
 use crate::usecase::comment::{
-    review_error_to_json_string, ReviewCommentUsecase, ReviewHistoryEntryDto, ReviewThreadDto,
-    ReviewThreadFilterDto,
+    review_error_to_json_string, ReviewCommentUsecase, ReviewThreadDto, ReviewThreadFilterDto,
 };
 
 async fn blocking<T, F>(f: F) -> Result<T, String>
@@ -34,22 +33,6 @@ pub(crate) async fn list_review_threads_shared(
                 ReviewActor::human(),
             )
             .map(|threads| threads.into_iter().map(ReviewThreadDto::from).collect())
-            .map_err(review_error_to_json_string)
-    })
-    .await
-}
-
-pub(crate) async fn get_review_thread_shared(
-    data_dir: PathBuf,
-    usecase: &Arc<ReviewCommentUsecase>,
-    worktree_name: String,
-    thread_id: String,
-) -> Result<ReviewThreadDto, String> {
-    let usecase = Arc::clone(usecase);
-    blocking(move || {
-        usecase
-            .get_thread(&data_dir, &worktree_name, &thread_id)
-            .map(ReviewThreadDto::from)
             .map_err(review_error_to_json_string)
     })
     .await
@@ -168,27 +151,6 @@ pub(crate) async fn build_review_thread_handoff_shared(
         let releash_alias = alias_name_for_profile(BuildProfile::current());
         usecase
             .build_handoff(&data_dir, &worktree_name, &thread_id, releash_alias)
-            .map_err(review_error_to_json_string)
-    })
-    .await
-}
-
-pub(crate) async fn get_review_thread_history_shared(
-    data_dir: PathBuf,
-    usecase: &Arc<ReviewCommentUsecase>,
-    worktree_name: String,
-    thread_id: String,
-) -> Result<Vec<ReviewHistoryEntryDto>, String> {
-    let usecase = Arc::clone(usecase);
-    blocking(move || {
-        usecase
-            .history(&data_dir, &worktree_name, &thread_id)
-            .map(|events| {
-                events
-                    .into_iter()
-                    .map(ReviewHistoryEntryDto::from)
-                    .collect()
-            })
             .map_err(review_error_to_json_string)
     })
     .await

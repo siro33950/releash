@@ -8,9 +8,9 @@ use std::sync::Arc;
 use serde_json::{Map, Value};
 
 use crate::domain::workflow::{
-    ExecutionTree, ExecutionTreeId, FacetKind, FacetRepository, FacetSummary, NodeExecution,
-    WorkflowDefinition, WorkflowDefinitionName, WorkflowDefinitionRepository, WorkflowError,
-    WorkflowPageRequest, WorkflowSummary,
+    ExecutionTree, ExecutionTreeId, FacetKind, FacetRepository, FacetSummary, WorkflowDefinition,
+    WorkflowDefinitionName, WorkflowDefinitionRepository, WorkflowError, WorkflowPageRequest,
+    WorkflowSummary,
 };
 
 use super::event_draft;
@@ -103,17 +103,6 @@ impl WorkflowQueryService {
         self.events.read(&execution_id)
     }
 
-    pub fn get_execution_log(
-        &self,
-        execution_id: &str,
-    ) -> Result<Vec<WorkflowEventView>, WorkflowError> {
-        Ok(self
-            .read_events(execution_id)?
-            .into_iter()
-            .map(event_draft_to_log_view)
-            .collect())
-    }
-
     pub fn get_execution_log_page(
         &self,
         execution_id: &str,
@@ -167,25 +156,6 @@ impl WorkflowQueryService {
     ) -> Result<Option<ExecutionTree>, WorkflowError> {
         let execution_id = ExecutionTreeId::new(execution_id.to_string())?;
         self.execution_projection.get_execution(&execution_id)
-    }
-
-    pub fn get_node_detail(
-        &self,
-        execution_id: &str,
-        node_execution_id: &str,
-    ) -> Result<Option<NodeExecution>, WorkflowError> {
-        Ok(self
-            .get_execution_state(execution_id)?
-            .and_then(|execution| {
-                execution
-                    .node_executions
-                    .into_iter()
-                    .find(|node_execution| node_execution.id == node_execution_id)
-            }))
-    }
-
-    pub fn list_facets(&self, kind: FacetKind) -> Result<Vec<String>, WorkflowError> {
-        self.facets.list(kind)
     }
 
     pub fn get_facet(&self, kind: FacetKind, key: &str) -> Result<String, WorkflowError> {
@@ -642,41 +612,6 @@ mod tests {
     }
 
     #[test]
-    fn test_実行木query_単独sessionの状態と事実を共通idで読める() {
-        // Given
-        let fixture = Fixture::new();
-        let id = "agent-session-00000000000040008000000000000001";
-        let expected = execution_projection(id);
-        fixture.projections.seed(expected.clone());
-        fixture
-            .events
-            .append(&artifact_produced(
-                id,
-                "review",
-                "review-result",
-                serde_json::json!({"ok": true}),
-                2.0,
-                "request",
-            ))
-            .unwrap();
-        // When / Then
-        assert_eq!(
-            fixture.service.get_execution_state(id).unwrap(),
-            Some(expected)
-        );
-        assert_eq!(fixture.service.get_execution_log(id).unwrap().len(), 1);
-        assert!(fixture
-            .service
-            .get_node_detail(id, "ne-review-1")
-            .unwrap()
-            .is_some());
-        assert!(fixture
-            .service
-            .get_execution_state("agent-session-invalid")
-            .is_err());
-    }
-
-    #[test]
     fn event_and_facet_queries_validate_execution_ids_and_delegate() {
         let fixture = Fixture::new();
         fixture
@@ -723,36 +658,6 @@ mod tests {
     }
 
     #[test]
-    fn get_execution_log_projects_event_drafts_to_wire_timestamp_fields() {
-        let fixture = Fixture::new();
-        fixture
-            .events
-            .append(&WorkflowEventDraft {
-                execution_id: test_execution_id().to_string(),
-                event_kind: "execution_started".to_string(),
-                timestamp: 1.25,
-                payload: serde_json::json!({
-                    "workflow_name": "wf",
-                    "worktree_path": "/wt",
-                }),
-            })
-            .unwrap();
-
-        let events = fixture
-            .service
-            .get_execution_log(test_execution_id())
-            .unwrap();
-
-        let events = serde_json::to_value(events).unwrap();
-        assert_eq!(events.as_array().unwrap().len(), 1);
-        assert_eq!(events[0]["event"], "execution_started");
-        assert_eq!(events[0]["execution_id"], test_execution_id());
-        assert_eq!(events[0]["workflow_name"], "wf");
-        assert_eq!(events[0]["timestampMs"].as_f64(), Some(1250.0));
-        assert!(events[0].get("timestamp").is_none());
-    }
-
-    #[test]
     fn get_execution_log_page_projects_only_the_requested_event_window() {
         let fixture = Fixture::new();
         for (event_kind, timestamp) in [("execution_started", 1.0), ("node_started", 2.0)] {
@@ -776,37 +681,6 @@ mod tests {
         assert_eq!(events.as_array().unwrap().len(), 1);
         assert_eq!(events[0]["event"], "node_started");
         assert_eq!(events[0]["timestampMs"].as_f64(), Some(2000.0));
-    }
-
-    #[test]
-    fn get_execution_log_renames_submission_timestamp_to_millisecond_field() {
-        let fixture = Fixture::new();
-        fixture
-            .events
-            .append(&WorkflowEventDraft {
-                execution_id: test_execution_id().to_string(),
-                event_kind: "artifact_produced".to_string(),
-                timestamp: 4.0,
-                payload: serde_json::json!({
-                    "node_execution_id": format!("{}:review:1", test_execution_id()),
-                    "node_name": "review",
-                    "contract": "review-result",
-                    "value": {"status": "ok"},
-                    "submitted_at": 4.0,
-                    "request_id": "req-2",
-                }),
-            })
-            .unwrap();
-
-        let events = fixture
-            .service
-            .get_execution_log(test_execution_id())
-            .unwrap();
-
-        let events = serde_json::to_value(events).unwrap();
-        assert_eq!(events[0]["submittedAtMs"].as_f64(), Some(4000.0));
-        assert!(events[0].get("submitted_at").is_none());
-        assert_eq!(events[0]["timestampMs"].as_f64(), Some(4000.0));
     }
 
     #[test]
@@ -922,23 +796,100 @@ mod tests {
     }
 
     #[test]
-    fn get_node_detail_is_derived_from_the_execution_projection() {
+    fn test_実行木query_単独sessionの状態と事実を共通idで読める() {
+        // Given
         let fixture = Fixture::new();
+        let id = "agent-session-00000000000040008000000000000001";
+        let expected = execution_projection(id);
+        fixture.projections.seed(expected.clone());
         fixture
-            .projections
-            .seed(execution_projection(test_execution_id()));
-
-        let detail = fixture
-            .service
-            .get_node_detail(test_execution_id(), "ne-review-1")
-            .unwrap()
+            .events
+            .append(&artifact_produced(
+                id,
+                "review",
+                "review-result",
+                serde_json::json!({"ok": true}),
+                2.0,
+                "request",
+            ))
             .unwrap();
-
-        assert_eq!(detail.node_name, "review");
-        assert_eq!(detail.attempt, 1);
+        // When / Then
+        assert_eq!(
+            fixture.service.get_execution_state(id).unwrap(),
+            Some(expected)
+        );
+        assert_eq!(
+            fixture
+                .service
+                .get_execution_log_page(id, WorkflowPageRequest::new(0, 10))
+                .unwrap()
+                .len(),
+            1
+        );
         assert!(fixture
             .service
-            .get_node_detail("not-a-uuid", "ne-review-1")
+            .get_execution_state("agent-session-invalid")
             .is_err());
+    }
+
+    #[test]
+    fn get_execution_log_projects_event_drafts_to_wire_timestamp_fields() {
+        let fixture = Fixture::new();
+        fixture
+            .events
+            .append(&WorkflowEventDraft {
+                execution_id: test_execution_id().to_string(),
+                event_kind: "execution_started".to_string(),
+                timestamp: 1.25,
+                payload: serde_json::json!({
+                    "workflow_name": "wf",
+                    "worktree_path": "/wt",
+                }),
+            })
+            .unwrap();
+
+        let events = fixture
+            .service
+            .get_execution_log_page(test_execution_id(), WorkflowPageRequest::new(0, 10))
+            .unwrap();
+
+        let events = serde_json::to_value(events).unwrap();
+        assert_eq!(events.as_array().unwrap().len(), 1);
+        assert_eq!(events[0]["event"], "execution_started");
+        assert_eq!(events[0]["execution_id"], test_execution_id());
+        assert_eq!(events[0]["workflow_name"], "wf");
+        assert_eq!(events[0]["timestampMs"].as_f64(), Some(1250.0));
+        assert!(events[0].get("timestamp").is_none());
+    }
+
+    #[test]
+    fn get_execution_log_renames_submission_timestamp_to_millisecond_field() {
+        let fixture = Fixture::new();
+        fixture
+            .events
+            .append(&WorkflowEventDraft {
+                execution_id: test_execution_id().to_string(),
+                event_kind: "artifact_produced".to_string(),
+                timestamp: 4.0,
+                payload: serde_json::json!({
+                    "node_execution_id": format!("{}:review:1", test_execution_id()),
+                    "node_name": "review",
+                    "contract": "review-result",
+                    "value": {"status": "ok"},
+                    "submitted_at": 4.0,
+                    "request_id": "req-2",
+                }),
+            })
+            .unwrap();
+
+        let events = fixture
+            .service
+            .get_execution_log_page(test_execution_id(), WorkflowPageRequest::new(0, 10))
+            .unwrap();
+
+        let events = serde_json::to_value(events).unwrap();
+        assert_eq!(events[0]["submittedAtMs"].as_f64(), Some(4000.0));
+        assert!(events[0].get("submitted_at").is_none());
+        assert_eq!(events[0]["timestampMs"].as_f64(), Some(4000.0));
     }
 }

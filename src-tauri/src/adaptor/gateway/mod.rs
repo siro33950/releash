@@ -33,3 +33,8 @@ pub(crate) mod desktop_client;
 
 #[cfg(feature = "desktop")]
 pub(crate) mod cli_install;
+
+#[cfg(feature = "desktop")]
+pub(crate) mod state_client;
+
+pub(crate) mod subscription_timer;

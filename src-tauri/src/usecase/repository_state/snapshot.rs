@@ -5,8 +5,6 @@ use crate::usecase::repository_dto::{
     BranchCardDto, FileDiffStatDto, FileStatusDto, WorktreeDisplayGroupsDto,
 };
 
-use super::status_membership::{changed_statuses, staged_statuses};
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SnapshotFlags {
     pub stale: bool,
@@ -89,44 +87,6 @@ impl RepositorySnapshotParts {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct RepositoryStatusSnapshotDto {
-    pub version: u64,
-    pub stale: bool,
-    pub loading: bool,
-    pub status: Vec<FileStatusDto>,
-}
-
-impl RepositoryStatusSnapshotDto {
-    pub fn from_snapshot(snapshot: &RepositorySnapshot) -> Self {
-        Self {
-            version: snapshot.version,
-            stale: snapshot.flags.stale,
-            loading: snapshot.flags.loading,
-            status: snapshot.status.clone(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct RepositoryDiffStatsSnapshotDto {
-    pub version: u64,
-    pub stale: bool,
-    pub loading: bool,
-    pub diff_stats: Vec<FileDiffStatDto>,
-}
-
-impl RepositoryDiffStatsSnapshotDto {
-    pub fn from_snapshot(snapshot: &RepositorySnapshot) -> Self {
-        Self {
-            version: snapshot.version,
-            stale: snapshot.flags.stale,
-            loading: snapshot.flags.loading,
-            diff_stats: snapshot.diff_stats.clone(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize)]
 pub struct RepositoryBranchCardsSnapshotDto {
     pub version: u64,
     pub stale: bool,
@@ -144,35 +104,6 @@ impl RepositoryBranchCardsSnapshotDto {
             loading: snapshot.flags.loading,
             branches: snapshot.branch_cards.clone(),
             worktree_display_groups: WorktreeDisplayGroupsDto::default(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct RepositoryHeadDiffFileTreeSnapshotDto {
-    pub version: u64,
-    pub stale: bool,
-    pub loading: bool,
-    pub combined_tree: Vec<DiffTreeNodeDto>,
-    pub staged_tree: Vec<DiffTreeNodeDto>,
-    pub changes_tree: Vec<DiffTreeNodeDto>,
-    pub staged_file_count: usize,
-    pub changes_file_count: usize,
-}
-
-impl RepositoryHeadDiffFileTreeSnapshotDto {
-    pub fn from_snapshot(snapshot: &RepositorySnapshot) -> Self {
-        let staged_file_count = staged_statuses(&snapshot.status).count();
-        let changes_file_count = changed_statuses(&snapshot.status).count();
-        Self {
-            version: snapshot.version,
-            stale: snapshot.flags.stale,
-            loading: snapshot.flags.loading,
-            combined_tree: snapshot.diff_file_tree.clone(),
-            staged_tree: snapshot.staged_diff_file_tree.clone(),
-            changes_tree: snapshot.changes_diff_file_tree.clone(),
-            staged_file_count,
-            changes_file_count,
         }
     }
 }

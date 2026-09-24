@@ -72,19 +72,3 @@ impl TryFrom<wire::WorkflowValue> for Value {
         })
     }
 }
-
-impl TryFrom<crate::usecase::workflow::WorkflowEventView> for wire::DurableWorkflowFactLogEntry {
-    type Error = String;
-    fn try_from(value: crate::usecase::workflow::WorkflowEventView) -> Result<Self, String> {
-        Ok(Self {
-            event: Some(value.event),
-            execution_id: Some(value.execution_id),
-            timestamp_ms: Some(value.timestamp_ms),
-            payload: value
-                .payload
-                .into_iter()
-                .map(|(key, value)| Ok((key, value.try_into()?)))
-                .collect::<Result<_, String>>()?,
-        })
-    }
-}

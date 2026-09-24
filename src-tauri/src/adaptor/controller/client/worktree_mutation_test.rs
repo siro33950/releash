@@ -116,7 +116,7 @@ async fn test_worktree削除中_変更対象を共通境界で拒否して読み
             worktree_name: Some("feature".into()),
             worktree_root: Some(path.into()),
         }),
-        C::GetGitStatus(wire::GetGitStatusRequest {
+        C::ListWorktrees(wire::ListWorktreesRequest {
             repo_path: Some(path.into()),
             ..Default::default()
         }),

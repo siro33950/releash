@@ -31,6 +31,7 @@ pub(crate) struct ClientApiDeps {
     dispatch: Arc<ClientCommandDispatch>,
     push: ClientPushGateway,
     terminal: Option<TerminalApiDeps>,
+    state_subscriptions: Option<crate::usecase::state_subscription::StateSubscriptionUsecase>,
     desktop_settings: Option<Arc<crate::usecase::app_config::AppConfigUsecase>>,
     request_limit: Arc<tokio::sync::Semaphore>,
     watcher: Arc<crate::usecase::watcher::WatcherUsecase>,
@@ -46,10 +47,30 @@ impl ClientApiDeps {
             dispatch,
             push,
             terminal: None,
+            state_subscriptions: None,
             desktop_settings: None,
             request_limit: Arc::new(tokio::sync::Semaphore::new(64)),
             watcher,
         }
+    }
+
+    pub(crate) fn with_state_subscriptions(
+        mut self,
+        subscriptions: crate::usecase::state_subscription::StateSubscriptionUsecase,
+    ) -> Self {
+        self.state_subscriptions = Some(subscriptions);
+        self
+    }
+
+    fn state_subscriptions(
+        &self,
+    ) -> Result<
+        &crate::usecase::state_subscription::StateSubscriptionUsecase,
+        connectrpc::ConnectError,
+    > {
+        self.state_subscriptions
+            .as_ref()
+            .ok_or_else(|| connectrpc::ConnectError::unavailable("State subscriptions unavailable"))
     }
 
     pub(crate) fn with_desktop_settings(

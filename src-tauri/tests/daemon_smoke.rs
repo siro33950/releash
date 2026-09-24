@@ -369,7 +369,7 @@ async fn test_daemon起動_ログ作成失敗でも従来どおりstoreとapiを
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_daemon本番配線_repository変更がconnectへpushされる() {
+async fn test_daemon本番配線_repository一覧が購読へ配信される() {
     // Given
     let directory = tempfile::tempdir().unwrap();
     let (mut daemon, discovery) = start(directory.path());
@@ -379,8 +379,81 @@ async fn test_daemon本番配線_repository変更がconnectへpushされる() {
         .join("repository")
         .to_string_lossy()
         .into_owned();
+    let mut states = socket
+        .client
+        .open_state_stream(rpc::OpenStateStreamRequest {
+            client_id: "repositories".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    states
+        .message::<rpc::StateSubscriptionEvent>()
+        .await
+        .unwrap()
+        .unwrap();
+    socket
+        .client
+        .start_state_subscription(rpc::StartStateSubscriptionRequest {
+            client_id: "repositories".into(),
+            target: "repository-paths".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let initial: wire::StateSubscriptionEvent = to_wire(
+        &states
+            .message::<rpc::StateSubscriptionEvent>()
+            .await
+            .unwrap()
+            .unwrap()
+            .to_owned_message(),
+    )
+    .unwrap();
+    assert!(matches!(
+        initial.event,
+        Some(wire::state_subscription_event::Event::Snapshot(_))
+    ));
+    states
+        .message::<rpc::StateSubscriptionEvent>()
+        .await
+        .unwrap()
+        .unwrap();
     // When
-    let result = request_with_push(&mut socket,"add-repo",wire::command_request::Command::AddRepoPath(wire::AddRepoPathRequest {path:Some(repository.clone())}), |event| matches!(event,wire::push::Event::RepoPathsChanged(paths) if paths.items == [repository.clone()])).await;
+    let result = request(
+        &mut socket,
+        "add-repo",
+        wire::command_request::Command::AddRepoPath(wire::AddRepoPathRequest {
+            path: Some(repository.clone()),
+        }),
+    )
+    .await;
+    // Then
+    let changed = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event: wire::StateSubscriptionEvent = to_wire(
+                &states
+                    .message::<rpc::StateSubscriptionEvent>()
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .to_owned_message(),
+            )
+            .unwrap();
+            if let Some(wire::state_subscription_event::Event::Change(change)) = event.event {
+                break change;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert!(!changed.delta);
+    let Some(wire::state_payload::Value::RepositoryPaths(paths)) = changed.payload.unwrap().value
+    else {
+        panic!("repository paths");
+    };
+    assert_eq!(paths.items, [repository]);
+    drop(states);
     let wire::command_result::Command::AddRepoPath(added) = result else {
         panic!("add repo result");
     };
@@ -648,11 +721,12 @@ async fn test_daemon本番配線_各通知元からwsへpushを届ける() {
     let archive: Value = serde_json::from_str(&facts[archived].1).unwrap();
     assert_eq!(archive["archivedAt"], 12.345678);
     assert_eq!(archive["reason"], "manual");
-    let wire::command_result::Command::GetWorkflowExecution(summary) = request(
+    let wire::command_result::Command::GetWorkflowExecutionState(summary) = request(
         &mut socket,
         "migrated-workflow",
-        C::GetWorkflowExecution(wire::GetWorkflowExecutionRequest {
+        C::GetWorkflowExecutionState(wire::GetWorkflowExecutionStateRequest {
             execution_id: Some(execution_id),
+            worktree_path: Some(worktree.to_string()),
         }),
     )
     .await
@@ -661,7 +735,7 @@ async fn test_daemon本番配線_各通知元からwsへpushを届ける() {
     };
     assert_eq!(
         summary.value.unwrap().status.unwrap().value,
-        Some(wire::execution_status_dto::Value::Aborted as i32)
+        Some(wire::execution_status_view::Value::Aborted as i32)
     );
     quit(&mut restarted, &mut socket, false).await;
 }

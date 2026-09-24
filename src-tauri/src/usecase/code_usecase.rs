@@ -78,41 +78,6 @@ impl CodeUsecase {
 
     // ── ファイル内容参照（読み取り → QueryService へ委譲） ──
 
-    pub fn get_file_at_ref(
-        &self,
-        file_path: &str,
-        git_ref: &str,
-    ) -> Result<String, CodeUsecaseError> {
-        self.query.get_file_at_ref(file_path, git_ref)
-    }
-
-    pub fn get_binary_file_at_ref(
-        &self,
-        file_path: &str,
-        git_ref: &str,
-    ) -> Result<String, CodeUsecaseError> {
-        self.query.get_binary_file_at_ref(file_path, git_ref)
-    }
-
-    pub fn get_file_at_branch_base(&self, file_path: &str) -> Result<String, CodeUsecaseError> {
-        self.query.get_file_at_branch_base(file_path)
-    }
-
-    pub fn get_binary_file_at_branch_base(
-        &self,
-        file_path: &str,
-    ) -> Result<String, CodeUsecaseError> {
-        self.query.get_binary_file_at_branch_base(file_path)
-    }
-
-    pub fn get_staged_content(&self, file_path: &str) -> Result<String, CodeUsecaseError> {
-        self.query.get_staged_content(file_path)
-    }
-
-    pub fn get_binary_staged_content(&self, file_path: &str) -> Result<String, CodeUsecaseError> {
-        self.query.get_binary_staged_content(file_path)
-    }
-
     // ── branch diff ──
 
     pub fn get_branch_diff_summary(
@@ -316,10 +281,6 @@ impl CodeUsecase {
     pub fn get_language_from_path(&self, file_path: &str) -> String {
         self.query.get_language_from_path(file_path)
     }
-
-    pub fn get_relative_path(&self, root_path: &str, file_path: &str) -> Option<String> {
-        self.query.get_relative_path(root_path, file_path)
-    }
 }
 
 #[cfg(test)]
@@ -365,28 +326,6 @@ mod code_usecase_tests {
 
     struct StubFileContent;
     impl FileContentRepository for StubFileContent {
-        fn file_at_ref(&self, _f: &str, _r: &str) -> Result<String, CodeError> {
-            Ok("c".to_string())
-        }
-        fn binary_file_at_ref(&self, _f: &str, _r: &str) -> Result<String, CodeError> {
-            Ok("c".to_string())
-        }
-        fn file_at_branch_base(&self, _f: &str, _b: Option<&str>) -> Result<String, CodeError> {
-            Ok("c".to_string())
-        }
-        fn binary_file_at_branch_base(
-            &self,
-            _f: &str,
-            _b: Option<&str>,
-        ) -> Result<String, CodeError> {
-            Ok("c".to_string())
-        }
-        fn staged_content(&self, _f: &str) -> Result<String, CodeError> {
-            Ok("c".to_string())
-        }
-        fn binary_staged_content(&self, _f: &str) -> Result<String, CodeError> {
-            Ok("c".to_string())
-        }
         fn review_file_metadata_at_ref(
             &self,
             _f: &str,
@@ -463,34 +402,6 @@ mod code_usecase_tests {
     }
 
     impl FileContentRepository for RecordingFileContent {
-        fn file_at_ref(&self, f: &str, r: &str) -> Result<String, CodeError> {
-            self.record(format!("text:ref:{r}:{f}"));
-            Ok("c".to_string())
-        }
-        fn binary_file_at_ref(&self, f: &str, r: &str) -> Result<String, CodeError> {
-            self.record(format!("binary:ref:{r}:{f}"));
-            Ok("c".to_string())
-        }
-        fn file_at_branch_base(&self, f: &str, b: Option<&str>) -> Result<String, CodeError> {
-            self.record(format!("text:branch-base:{}:{f}", b.unwrap_or("none")));
-            Ok("c".to_string())
-        }
-        fn binary_file_at_branch_base(
-            &self,
-            f: &str,
-            b: Option<&str>,
-        ) -> Result<String, CodeError> {
-            self.record(format!("binary:branch-base:{}:{f}", b.unwrap_or("none")));
-            Ok("c".to_string())
-        }
-        fn staged_content(&self, f: &str) -> Result<String, CodeError> {
-            self.record(format!("text:staged:{f}"));
-            Ok("c".to_string())
-        }
-        fn binary_staged_content(&self, f: &str) -> Result<String, CodeError> {
-            self.record(format!("binary:staged:{f}"));
-            Ok("c".to_string())
-        }
         fn review_file_metadata_at_ref(
             &self,
             f: &str,
@@ -630,17 +541,6 @@ mod code_usecase_tests {
         let calls = staging.calls.lock().unwrap();
         assert_eq!(calls[0], "stage:/repo:a.rs");
         assert_eq!(calls[1], "unstage_hunk:/repo");
-    }
-
-    #[test]
-    fn test_読み取りはquery_serviceへ委譲する() {
-        let staging = Arc::new(RecordingStaging {
-            calls: Mutex::new(Vec::new()),
-        });
-        let uc = usecase(staging);
-        // QueryService 経由でファイル内容参照が返ることを確認（委譲経路の担保）。
-        assert_eq!(uc.get_file_at_ref("f.rs", "HEAD").unwrap(), "c");
-        assert_eq!(uc.get_language_from_path("a.rs"), "rust");
     }
 
     #[test]

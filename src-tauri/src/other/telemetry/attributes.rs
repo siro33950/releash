@@ -35,18 +35,16 @@ impl OpStatus {
 pub(crate) enum HotPathMetric {
     GitStatusScan,
     DiffStats,
-    ReviewFileOpen,
 }
 
 impl HotPathMetric {
     #[cfg(test)]
-    pub(crate) const ALL: [Self; 3] = [Self::GitStatusScan, Self::DiffStats, Self::ReviewFileOpen];
+    pub(crate) const ALL: [Self; 2] = [Self::GitStatusScan, Self::DiffStats];
 
     pub(crate) fn operation(self) -> &'static str {
         match self {
             Self::GitStatusScan => "git.status_scan",
             Self::DiffStats => "git.diff_stats",
-            Self::ReviewFileOpen => "review.file_open",
         }
     }
 
@@ -54,7 +52,6 @@ impl HotPathMetric {
         match self {
             Self::GitStatusScan => "Git status scan",
             Self::DiffStats => "Git diff stats",
-            Self::ReviewFileOpen => "Review file open",
         }
     }
 }
@@ -168,10 +165,7 @@ mod tests {
             .map(|metric| metric.operation())
             .collect();
 
-        assert_eq!(
-            operations,
-            ["git.status_scan", "git.diff_stats", "review.file_open",]
-        );
+        assert_eq!(operations, ["git.status_scan", "git.diff_stats"]);
     }
 
     #[test]

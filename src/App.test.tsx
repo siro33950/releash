@@ -21,9 +21,16 @@ const mockInvoke = vi.mocked(invokeClient);
 
 beforeEach(() => {
 	localStorage.clear();
-	vi.mocked(invoke).mockImplementation(async (command) =>
-		command === "get_daemon_status" ? { phase: "ready" } : { type: "ready" },
-	);
+	vi.mocked(invoke).mockImplementation(async (command, args) => {
+		if (command === "subscribe_client_state") {
+			(
+				args as { channel: { onmessage: (paths: string[]) => void } }
+			).channel.onmessage([]);
+		}
+		return command === "get_daemon_status"
+			? { phase: "ready" }
+			: { type: "ready" };
+	});
 	mockInvoke.mockImplementation((cmd: string) => {
 		if (cmd === "get_application_startup_outcome") {
 			return Promise.resolve({ type: "ready" });
@@ -76,7 +83,12 @@ describe("App", () => {
 	it("Repository一覧の初回取得失敗でも画面の復元を完了し更新を操作できる", async () => {
 		vi.mocked(invoke).mockClear();
 		let restored = false;
-		vi.mocked(invoke).mockImplementation(async (command) => {
+		vi.mocked(invoke).mockImplementation(async (command, args) => {
+			if (command === "subscribe_client_state") {
+				(
+					args as { channel: { onmessage: (paths: string[]) => void } }
+				).channel.onmessage([]);
+			}
 			if (command === "get_daemon_status")
 				return {
 					phase: restored ? "ready" : "restoring",

@@ -31,7 +31,9 @@ export const WorkspaceListContext = createContext<WorkspaceListModel | null>(
 	null,
 );
 
-export function useWorkspaceList(): WorkspaceListModel {
+export function useWorkspaceList(
+	repoPaths?: string[] | null,
+): WorkspaceListModel {
 	const [snapshot, setSnapshot] = useState<WorkspaceListSnapshotDto | null>(
 		null,
 	);
@@ -87,7 +89,12 @@ export function useWorkspaceList(): WorkspaceListModel {
 		void request(undefined, undefined, true);
 	}, [request]);
 
+	const [listening, setListening] = useState(false);
 	const refresh = useCallback(() => request(), [request]);
+	useEffect(() => {
+		if (listening && repoPaths !== null) void refresh();
+	}, [listening, repoPaths, refresh]);
+
 	const refreshWorktree = useCallback(
 		(path: string) => request(path),
 		[request],
@@ -105,14 +112,14 @@ export function useWorkspaceList(): WorkspaceListModel {
 			readSnapshot,
 			readSnapshot,
 		).then((fn) => {
-			if (active) void refresh();
+			if (active) setListening(true);
 			return fn;
 		});
 		return () => {
 			active = false;
 			void unlisten.then((fn) => fn());
 		};
-	}, [readSnapshot, refresh]);
+	}, [readSnapshot]);
 
 	const pollInterval = snapshot?.repositories.some((repo) =>
 		repo.branches.some((branch) => branch.is_deleting),
@@ -133,7 +140,6 @@ export function useWorkspaceList(): WorkspaceListModel {
 		};
 		const unlisteners = [
 			listen("branch-list-sync", reload, reload),
-			listen("repo-paths-changed", reload),
 			listen("workflow-execution-changed", scheduleReload, scheduleReload),
 		];
 		const unsubscribeSessions = subscribeAgentSessionChanged(scheduleReload);

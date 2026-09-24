@@ -40,10 +40,6 @@ impl AppConfigQueryService {
         Ok(self.repository.load()?.workflow)
     }
 
-    pub fn get_crash_reporting_enabled(&self) -> Result<bool, UsecaseError> {
-        Ok(self.repository.load()?.telemetry.crash_reporting)
-    }
-
     pub fn get_performance_telemetry_enabled(&self) -> Result<bool, UsecaseError> {
         Ok(self.repository.load()?.telemetry.performance_telemetry)
     }

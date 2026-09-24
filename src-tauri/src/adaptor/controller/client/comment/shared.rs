@@ -42,38 +42,6 @@ pub(crate) fn register_shared(
     {
         let data_dir = deps.data_dir.clone();
         let usecase = deps.review_comment_usecase.clone();
-        router.register_domain(
-            &["get_review_thread"],
-            Box::new(move |command| {
-                let usecase = usecase.clone();
-                let data_dir = data_dir.clone();
-                Box::pin(async move {
-                    let wire::command_request::Command::GetReviewThread(args) = command else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move {
-                        let usecase = usecase
-                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        let data_dir = data_dir.map_err(wire::CommandError::from)?;
-                        outcome(
-                            commands::get_review_thread_shared(
-                                data_dir,
-                                &usecase,
-                                convert(required(args.worktree_name, "worktreeName")?)?,
-                                convert(required(args.thread_id, "threadId")?)?,
-                            )
-                            .await,
-                        )
-                    }
-                    .await?;
-                    Ok(wire::command_result::Command::GetReviewThread(result))
-                })
-            }),
-        );
-    }
-    {
-        let data_dir = deps.data_dir.clone();
-        let usecase = deps.review_comment_usecase.clone();
         let notify = deps.comment_notify.clone();
         router.register_domain(
             &["create_review_thread"],
@@ -248,41 +216,6 @@ pub(crate) fn register_shared(
                     }
                     .await?;
                     Ok(wire::command_result::Command::BuildReviewThreadHandoff(
-                        result,
-                    ))
-                })
-            }),
-        );
-    }
-    {
-        let data_dir = deps.data_dir.clone();
-        let usecase = deps.review_comment_usecase.clone();
-        router.register_domain(
-            &["get_review_thread_history"],
-            Box::new(move |command| {
-                let usecase = usecase.clone();
-                let data_dir = data_dir.clone();
-                Box::pin(async move {
-                    let wire::command_request::Command::GetReviewThreadHistory(args) = command
-                    else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move {
-                        let usecase = usecase
-                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        let data_dir = data_dir.map_err(wire::CommandError::from)?;
-                        outcome(
-                            commands::get_review_thread_history_shared(
-                                data_dir,
-                                &usecase,
-                                convert(required(args.worktree_name, "worktreeName")?)?,
-                                convert(required(args.thread_id, "threadId")?)?,
-                            )
-                            .await,
-                        )
-                    }
-                    .await?;
-                    Ok(wire::command_result::Command::GetReviewThreadHistory(
                         result,
                     ))
                 })

@@ -98,6 +98,11 @@ beforeEach(() => {
 		reason: null,
 	};
 	vi.mocked(invoke).mockImplementation(async (command, args) => {
+		if (command === "subscribe_client_state") {
+			(
+				args as { channel: { onmessage: (paths: string[]) => void } }
+			).channel.onmessage([]);
+		}
 		if (command === "get_application_startup_outcome") return { type: "ready" };
 		if (command === "get_daemon_status") return { ...status };
 		if (command === "fail_desktop_restoration") {
@@ -255,6 +260,14 @@ it("設定とWorkspacesは更新中と失敗時も同じ登録一覧を保持し
 	const settings = screen.getByRole("region", {
 		name: "Registered repositories",
 	});
+	const subscription = vi
+		.mocked(invoke)
+		.mock.calls.find(([name]) => name === "subscribe_client_state");
+	if (!subscription) throw new Error("Missing state subscription");
+	const channel = (
+		subscription[1] as { channel: { onmessage: (paths: string[]) => void } }
+	).channel;
+	await act(async () => channel.onmessage(["/old"]));
 	expect(settings).toHaveTextContent("/old");
 	let reject!: (error: Error) => void;
 	next = new Promise((_, fail) => {
@@ -271,23 +284,19 @@ it("設定とWorkspacesは更新中と失敗時も同じ登録一覧を保持し
 	expect(settings).toHaveTextContent("/old");
 	expect(screen.getByRole("button", { name: "/old" })).toBeVisible();
 	next = Promise.resolve(snapshot(["/new", "/other"]));
-	await act(async () => {
-		fireEvent.click(screen.getByRole("button", { name: "Refresh Workspaces" }));
-	});
+	await act(async () => channel.onmessage(["/new", "/other"]));
 	expect(settings).toHaveTextContent("/new,/other");
 	expect(screen.getByRole("button", { name: "/new" })).toBeVisible();
 	expect(screen.getByRole("button", { name: "/other" })).toBeVisible();
 	expect(screen.queryByRole("button", { name: "/old" })).toBeNull();
 	next = Promise.resolve(snapshot([]));
-	await act(async () => {
-		fireEvent.click(screen.getByRole("button", { name: "Refresh Workspaces" }));
-	});
+	await act(async () => channel.onmessage([]));
 	expect(settings).toBeEmptyDOMElement();
 	expect(screen.queryByRole("button", { name: "/new" })).toBeNull();
 	expect(
 		vi
 			.mocked(invokeClient)
-			.mock.calls.some(([name]) => name === "get_repo_paths"),
+			.mock.calls.some(([name]) => String(name) === "get_repo_paths"),
 	).toBe(false);
 });
 

@@ -1,6 +1,6 @@
 //! repo_paths 責務のユースケース（リポジトリパス一覧の取得・追加・削除）。
 //!
-//! 変更通知（`repo-paths-changed`）の gating は本ユースケースが担う。
+//! Repository パスの更新と購読への配信を順序付ける。
 //! 「追加/削除が成功した時だけ現在の一覧 payload で通知する」という業務手順を
 //! 注入された `RepoPathsNotifier`（送信手段の抽象）経由で実行し、controller は
 //! ユースケースを呼ぶ薄い入口に徹する。
@@ -15,11 +15,16 @@ use super::repository_error::UsecaseError;
 pub struct RepoPathsUsecase {
     repo: Arc<dyn RepoPathsRepository>,
     notifier: Arc<dyn RepoPathsNotifier>,
+    mutation: Arc<parking_lot::Mutex<()>>,
 }
 
 impl RepoPathsUsecase {
     pub fn new(repo: Arc<dyn RepoPathsRepository>, notifier: Arc<dyn RepoPathsNotifier>) -> Self {
-        Self { repo, notifier }
+        Self {
+            repo,
+            notifier,
+            mutation: Arc::new(parking_lot::Mutex::new(())),
+        }
     }
 
     pub fn get(&self) -> Vec<String> {
@@ -29,6 +34,7 @@ impl RepoPathsUsecase {
     /// 追加できた場合に `true`、既存・空文字で追加されなかった場合に `false`。
     /// 追加成功時のみ現在の一覧 payload で変更通知を発火する。
     pub fn add(&self, path: &str) -> Result<bool, UsecaseError> {
+        let _mutation = self.mutation.lock();
         let added = self.repo.add(path)?;
         if added {
             self.notifier.notify_changed(self.repo.get());
@@ -39,6 +45,7 @@ impl RepoPathsUsecase {
     /// 削除できた場合に `true`、存在せず削除されなかった場合に `false`。
     /// 削除成功時のみ現在の一覧 payload で変更通知を発火する。
     pub fn remove(&self, path: &str) -> Result<bool, UsecaseError> {
+        let _mutation = self.mutation.lock();
         let removed = self.repo.remove(path)?;
         if removed {
             self.notifier.notify_changed(self.repo.get());
@@ -148,5 +155,84 @@ mod repo_paths_usecase_tests {
             vec![vec!["/repo/a".to_string()], Vec::<String>::new()],
             "成功時のみ、その時点の一覧 payload で通知される"
         );
+    }
+    #[test]
+    fn test_並行追加削除_通知が完了するまで次の変更を開始しない() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            mpsc,
+        };
+        struct BlockingNotifier {
+            entered: mpsc::Sender<()>,
+            release: Mutex<mpsc::Receiver<()>>,
+            count: AtomicUsize,
+            calls: Mutex<Vec<Vec<String>>>,
+        }
+        impl RepoPathsNotifier for BlockingNotifier {
+            fn notify_changed(&self, paths: Vec<String>) {
+                if self.count.fetch_add(1, Ordering::SeqCst) == 0 {
+                    self.entered.send(()).unwrap();
+                    self.release.lock().recv().unwrap();
+                }
+                self.calls.lock().push(paths);
+            }
+        }
+        for add_first in [true, false] {
+            // Given
+            let repo = Arc::new(FakeRepoPaths::default());
+            if !add_first {
+                repo.add("/repo").unwrap();
+            }
+            let (entered, waiting) = mpsc::channel();
+            let (release, resume) = mpsc::channel();
+            let notifier = Arc::new(BlockingNotifier {
+                entered,
+                release: Mutex::new(resume),
+                count: AtomicUsize::new(0),
+                calls: Mutex::new(Vec::new()),
+            });
+            let uc = Arc::new(RepoPathsUsecase::new(repo.clone(), notifier.clone()));
+            // When
+            std::thread::scope(|scope| {
+                let first = scope.spawn(|| {
+                    if add_first {
+                        uc.add("/repo")
+                    } else {
+                        uc.remove("/repo")
+                    }
+                });
+                waiting
+                    .recv_timeout(std::time::Duration::from_secs(2))
+                    .unwrap();
+                let locked = uc.mutation.try_lock().is_none();
+                let (started, ready) = mpsc::channel();
+                let second_uc = uc.clone();
+                let second = scope.spawn(move || {
+                    started.send(()).unwrap();
+                    if add_first {
+                        second_uc.remove("/repo")
+                    } else {
+                        second_uc.add("/repo")
+                    }
+                });
+                ready.recv().unwrap();
+                release.send(()).unwrap();
+                assert!(first.join().unwrap().unwrap());
+                assert!(second.join().unwrap().unwrap());
+                assert!(
+                    locked,
+                    "通知が完了する前にmutation lockを解放してはならない"
+                );
+            });
+            // Then
+            let present = vec!["/repo".to_string()];
+            let expected = if add_first {
+                vec![present, vec![]]
+            } else {
+                vec![vec![], present]
+            };
+            assert_eq!(*notifier.calls.lock(), expected);
+            assert_eq!(repo.get(), *expected.last().unwrap());
+        }
     }
 }

@@ -39,6 +39,7 @@ interface TauriEventPluginInternals {
 
 declare global {
 	interface Window {
+		__releashRepositoryPaths: (paths: string[]) => void;
 		__releashPush: (event: string, payload: unknown) => Promise<void>;
 		__releashTerminalEvent: (
 			attachmentId: string,
@@ -98,6 +99,7 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
     };
     const router = createConnectRouter();
     for (const method of ClientService.methods) {
+        if (["OpenStateStream", "StartStateSubscription", "StopStateSubscription"].includes(method.name)) continue;
         if (method.name === "GetServerInfo") { router.rpc(method, () => ({ launchId: "fixture" })); continue; }
         if (method.name === "SubscribePush") {
             router.rpc(method, async function* (_, context) {
@@ -253,6 +255,11 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 			});
 		}
 
+        let stateChannel: { id: string; channel: { id: number }; index: number } | null = null;
+        window.__releashRepositoryPaths = (paths) => {
+            cfg.responses.repository_paths = paths;
+            if (stateChannel) runCallback(stateChannel.channel.id, { index: stateChannel.index++, message: paths });
+        };
         let workspaceSnapshot: WorkspaceListSnapshotDto | null = null;
 
 		async function executeCommand(
@@ -260,6 +267,15 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 			args: Record<string, unknown> = {},
 		): Promise<unknown> {
             invocations.push({ cmd, args });
+            if (cmd === "subscribe_client_state") {
+                stateChannel = { id: String(args.id), channel: args.channel as { id: number }, index: 0 };
+                window.__releashRepositoryPaths((cfg.responses.repository_paths ?? []) as string[]);
+                return;
+            }
+            if (cmd === "stop_client_state") {
+                if (stateChannel?.id === args.id) stateChannel = null;
+                return;
+            }
             if (cmd === "get_client_endpoint") return cfg.responses.__clientEndpoint;
 			// plugin:event 系のハンドリング
 			if (cmd === "plugin:event|listen") {
@@ -318,7 +334,7 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
                     }
                     return workspaceSnapshot;
                 }
-                const paths = await executeCommand("get_repo_paths") as string[];
+                const paths = (cfg.responses.repository_paths ?? []) as string[];
                 const repositories = await Promise.all(paths.map(async (path) => {
                     const result = await executeCommand("list_branches_with_status_snapshot", { repoPath: path }) as { worktree_display_groups: { working_areas: Record<string, unknown>[] } };
                     const prs = await executeCommand("get_cached_pr_status", { repoPath: path }) as { open_prs: Record<string, { number: number; url: string }>; merged_branches: string[] };
@@ -675,7 +691,7 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 					![
 						"get_daemon_status", "retry_daemon", "quit_desktop", "restart_desktop", "validate_daemon_connection", "get_login_item_status", "open_login_item_settings", "install_cli", "set_login_item_enabled", "check_desktop_update", "install_desktop_update", "apply_desktop_settings",
 						"complete_desktop_restoration", "fail_desktop_restoration", "get_client_endpoint",
-						"get_application_startup_outcome",
+						"get_application_startup_outcome", "subscribe_client_state", "stop_client_state",
 						"quit_after_startup_failure",
 						"set_menu_items_enabled",
 					].includes(cmd)

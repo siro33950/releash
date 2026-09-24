@@ -8,14 +8,7 @@ fn test_型付き応答_protoが成功と失敗を排他的に保持する() {
     for (command, result) in [
         ("ack_terminal_surface_output", Ok(Json::Null)),
         ("get_current_branch", Ok(json!("日本語"))),
-        ("get_repo_paths", Ok(json!(["/a", "/b"]))),
-        (
-            "get_workflow_execution_log",
-            Ok(
-                json!([{"event":"artifact_produced","execution_id":"e","timestampMs":42.0,"node_name":"review","value":{"items":[null,true,3,"日本語"]},"submittedAtMs":40.0}]),
-            ),
-        ),
-        ("get_workflow_execution_log", Ok(Json::Null)),
+        ("get_cwd", Ok(json!("/a"))),
         (
             "get_current_branch",
             Err(json!({"code":"INVALID_REQUEST","message":"invalid"})),
@@ -106,7 +99,7 @@ fn test_terminal_eventは最大sequenceと日本語を保持する() {
 fn test_push_protoが既存payloadを保持し未定義eventを拒否する() {
     // Given / When / Then
     for (event, payload) in [
-        ("repo-paths-changed", json!(["/a", "/b"])),
+        ("review-comments-changed", json!("/a")),
         ("branch-list-sync", Json::Null),
         ("review-comments-changed", json!("worktree")),
         ("git-status-changed", json!({"repo_path":"/repo"})),
@@ -179,29 +172,6 @@ fn test_workspace過去試行_両commandでnodeタグとchildren省略を保持�
 }
 
 #[test]
-fn test_workflowログ_固定metadataを型付きで生成messageへ渡す() {
-    // Given
-    let view = crate::usecase::workflow::WorkflowEventView {
-        event: "artifact_produced".into(),
-        execution_id: "execution".into(),
-        timestamp_ms: 1234.5,
-        payload: serde_json::from_value(
-            json!({"value":{"items":[null, true, 42]},"submittedAtMs":1000.0}),
-        )
-        .unwrap(),
-    };
-    let expected = serde_json::to_value(&view).unwrap();
-    // When
-    let entry = DurableWorkflowFactLogEntry::try_from(view).unwrap();
-    let decoded = DurableWorkflowFactLogEntry::decode(entry.encode_to_vec().as_slice()).unwrap();
-    // Then
-    assert_eq!(
-        from_message("releash.client.v1.DurableWorkflowFactLogEntry", &decoded).unwrap(),
-        expected
-    );
-}
-
-#[test]
 fn test_workflow状態_protoは削除した番号と名前を予約し残る三状態を保持する() {
     // Given
     let pool = prost_reflect::DescriptorPool::decode(
@@ -211,7 +181,6 @@ fn test_workflow状態_protoは削除した番号と名前を予約し残る三�
     // When / Then
     for (name, numbers) in [
         ("ExecutionStatusView", [1, 4]),
-        ("ExecutionStatusDto", [1, 4]),
         ("WorkspaceHistoryStatus", [7, 8]),
     ] {
         let status = pool
@@ -251,7 +220,7 @@ fn test_workflow状態_protoは削除した番号と名前を予約し残る三�
             );
         }
     }
-    for name in ["WorkflowExecutionView", "WorkflowExecutionSummaryDto"] {
+    for name in ["WorkflowExecutionView"] {
         let message = pool
             .get_message_by_name(&format!("releash.client.v1.{name}"))
             .unwrap();
@@ -268,7 +237,6 @@ fn test_workflow状態_protoは削除した番号と名前を予約し残る三�
     }
     for value in ["waiting_approval", "interrupted"] {
         assert!(ExecutionStatusView::try_from(value).is_err());
-        assert!(ExecutionStatusDto::try_from(value).is_err());
         assert!(WorkspaceHistoryStatus::try_from(value).is_err());
         assert!(
             serde_json::from_value::<crate::adaptor::protocol::workflow::ExecutionStatusView>(
@@ -303,21 +271,6 @@ fn test_workflow応答_connectの詳細と一覧は三状態の値を保ち削�
         let decoded = WorkflowExecutionView::decode(wire.encode_to_vec().as_slice()).unwrap();
         assert_eq!(
             from_message("releash.client.v1.WorkflowExecutionView", &decoded).unwrap(),
-            value
-        );
-
-        let value = json!({
-            "executionId": "execution-1", "workflowName": "review", "status": status,
-            "currentNode": "review", "worktreePath": "/repo", "createdFrom": "cli",
-            "startedAt": 1.0, "updatedAt": 2.0,
-            "totalTokenUsage": {"inputTokens": 13, "outputTokens": 8}
-        });
-        let summary: crate::usecase::workflow::dto::WorkflowExecutionSummaryDto =
-            serde_json::from_value(value.clone()).unwrap();
-        let wire = WorkflowExecutionSummaryDto::try_from(summary).unwrap();
-        let decoded = WorkflowExecutionSummaryDto::decode(wire.encode_to_vec().as_slice()).unwrap();
-        assert_eq!(
-            from_message("releash.client.v1.WorkflowExecutionSummaryDto", &decoded).unwrap(),
             value
         );
     }

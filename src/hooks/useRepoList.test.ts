@@ -1,3 +1,4 @@
+import { invoke as invokeDesktop } from "@tauri-apps/api/core";
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useRepoList } from "./useRepoList";
@@ -14,8 +15,24 @@ describe("useRepoList", () => {
 		vi.clearAllMocks();
 		mockInvoke.mockResolvedValue(undefined);
 	});
-	it("登録一覧を読み取らず購読もしない", () => {
-		renderHook(() => useRepoList());
+	it("購読の一覧を表示し終了時に停止する", async () => {
+		const { result, unmount } = renderHook(() => useRepoList());
+		const call = vi
+			.mocked(invokeDesktop)
+			.mock.calls.find(([name]) => name === "subscribe_client_state");
+		const args = call?.[1] as {
+			id: string;
+			target: string;
+			channel: { onmessage: (paths: string[]) => void };
+		};
+		expect(args.target).toBe("repository-paths");
+		act(() => args.channel.onmessage(["/repo"]));
+		expect(result.current.repoPaths).toEqual(["/repo"]);
+		unmount();
+		await act(async () => {});
+		expect(invokeDesktop).toHaveBeenCalledWith("stop_client_state", {
+			id: args.id,
+		});
 		expect(mockInvoke).not.toHaveBeenCalled();
 		expect(mockListen).not.toHaveBeenCalled();
 	});
