@@ -467,7 +467,7 @@ mod append_contract_tests {
 
     #[tokio::test]
     async fn test_事実行追記_複数行の途中失敗で前の行だけが記録される() {
-        // Given: 正常行、queue 容量を超える行、未投入で終わる正常行の順の入力
+        // Given: 正常行、batch 容量を超える行、未投入で終わる正常行の順の入力
         let root = tempfile::TempDir::new().unwrap();
         let store =
             LocalEventStore::open(LocalEventStoreConfig::production(root.path().to_path_buf()))
@@ -500,8 +500,8 @@ mod append_contract_tests {
         assert_eq!(
             error,
             crate::domain::workflow::WorkflowError::StorageUnavailable {
-                message: "node fact append failed: write queue is full".into(),
-                kind: crate::domain::failure::FailureKind::Temporary,
+                message: "node fact append failed: batch capacity exceeded".into(),
+                kind: crate::domain::failure::FailureKind::Capacity,
             }
         );
         let stored = read_raw_rows(&store, "partial-tree").await;

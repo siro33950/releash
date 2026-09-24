@@ -770,7 +770,12 @@ impl LocalEventStore {
                 self.shape_error("batch installation identity does not match the store authority")
             );
         }
-        Self::validate_batch_size(&batch, node_event_count, 0)?;
+        Self::validate_batch_size(
+            batch.events.len(),
+            node_event_count,
+            batch.state_mutations.len(),
+            0,
+        )?;
         // Every stream a batch changes appears exactly once in expected_heads,
         // and every event stream is declared.
         for (index, head) in batch.expected_heads.iter().enumerate() {
@@ -838,8 +843,9 @@ impl LocalEventStore {
         }
         prepared.node_events = node_events;
         Self::validate_batch_size(
-            &prepared.batch,
+            prepared.batch.events.len(),
             prepared.node_events.len(),
+            prepared.batch.state_mutations.len(),
             prepared.decoded_bytes,
         )?;
         let clock = Arc::clone(&self.clock);
@@ -854,13 +860,14 @@ impl LocalEventStore {
     }
 
     fn validate_batch_size(
-        batch: &LocalAtomicBatch,
+        event_count: usize,
         node_event_count: usize,
+        state_mutation_count: usize,
         decoded_bytes: usize,
     ) -> Result<(), CommitBatchError> {
-        if batch.events.len() > MAX_BATCH_EVENTS
+        if event_count > MAX_BATCH_EVENTS
             || node_event_count > MAX_BATCH_EVENTS
-            || batch.state_mutations.len() > MAX_BATCH_STATE_MUTATIONS
+            || state_mutation_count > MAX_BATCH_STATE_MUTATIONS
             || decoded_bytes > MAX_BATCH_DECODED_BYTES
         {
             return Err(CommitBatchError::CapacityExceeded);
@@ -943,6 +950,7 @@ impl LocalEventStore {
         let bytes = rows.iter().fold(0usize, |size, (row, _)| {
             size.saturating_add(row.detail.len().saturating_add(256))
         });
+        Self::validate_batch_size(0, rows.len(), 0, bytes)?;
         let clock = Arc::clone(&self.clock);
         let fault = Arc::clone(&self.fault);
         self.submit_write(

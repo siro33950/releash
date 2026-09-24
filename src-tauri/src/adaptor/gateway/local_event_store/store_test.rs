@@ -400,15 +400,13 @@ async fn test_batch上限_件数と合計byte超過は保存せずresource_exhau
     );
     let mut boundary = empty_batch(&store);
     boundary.state_mutations = vec![mutation; MAX_BATCH_STATE_MUTATIONS];
-    assert!(LocalEventStore::validate_batch_size(&boundary, 0, 0).is_ok());
+    assert!(LocalEventStore::validate_batch_size(0, 0, boundary.state_mutations.len(), 0).is_ok());
     let mut prepared = store.prepare(empty_batch(&store), 0).unwrap();
     prepared.decoded_bytes = MAX_BATCH_DECODED_BYTES;
-    assert!(
-        LocalEventStore::validate_batch_size(&prepared.batch, 0, prepared.decoded_bytes).is_ok()
-    );
+    assert!(LocalEventStore::validate_batch_size(0, 0, 0, prepared.decoded_bytes).is_ok());
     prepared.decoded_bytes += 1;
     assert_eq!(
-        LocalEventStore::validate_batch_size(&prepared.batch, 0, prepared.decoded_bytes),
+        LocalEventStore::validate_batch_size(0, 0, 0, prepared.decoded_bytes),
         Err(CommitBatchError::CapacityExceeded)
     );
     assert_eq!(store.pending_write_request_count(), 0);
@@ -512,4 +510,40 @@ async fn test_batch件数超過_shape検査とcodec実行より前に拒否す�
         }
     }
     assert_eq!(store.pending_write_request_count(), 0);
+}
+
+#[tokio::test]
+async fn test_node事実追記_件数とbyteの上限まで保存し超過は保存しない() {
+    use super::super::writer::{MAX_BATCH_DECODED_BYTES, MAX_BATCH_EVENTS};
+    use crate::adaptor::protocol::connect::classified_error;
+    use crate::domain::local_event::CommitBatchError;
+
+    for (count, detail_bytes) in [(MAX_BATCH_EVENTS, 2), (1, MAX_BATCH_DECODED_BYTES - 256)] {
+        let directory = tempfile::tempdir().unwrap();
+        let store =
+            LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into()))
+                .unwrap();
+        let mut row = fact_row();
+        row.detail = "x".repeat(detail_bytes);
+        let mut oversized = vec![(row.clone(), None); count];
+        if count == MAX_BATCH_EVENTS {
+            oversized.push((row.clone(), None));
+        } else {
+            oversized[0].0.detail.push('x');
+        }
+
+        let error = store.append_node_events(oversized).await.unwrap_err();
+        assert_eq!(error, CommitBatchError::CapacityExceeded);
+        assert_eq!(
+            classified_error(crate::domain::workflow::WorkflowError::from(error)).code,
+            connectrpc::ErrorCode::ResourceExhausted
+        );
+        let sequences = store
+            .append_node_events_at_head(vec![(row, None); count], Some(("tree".into(), 0)))
+            .await
+            .unwrap();
+        assert_eq!(sequences.len(), count);
+        assert_eq!(sequences[0], 1);
+        assert_eq!(sequences[count - 1], count as i64);
+    }
 }
