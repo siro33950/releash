@@ -12,14 +12,14 @@ use crate::domain::local_event::{
 
 #[async_trait::async_trait]
 pub(crate) trait ExecutionTreeGc: Send + Sync {
-    fn execution_trees(
+    async fn execution_trees(
         &self,
         after: Option<&str>,
     ) -> Result<
         Vec<crate::domain::workflow::ExecutionTreeArchiveCandidate>,
         crate::domain::workflow::WorkflowError,
     >;
-    fn record_repository_root(
+    async fn record_repository_root(
         &self,
         execution_id: &str,
         root: &str,
@@ -40,7 +40,7 @@ pub(crate) async fn archive_removed_execution_trees(
     let mut errors = 0;
     let mut after = None;
     loop {
-        let page = trees.execution_trees(after.as_deref())?;
+        let page = trees.execution_trees(after.as_deref()).await?;
         let Some(last) = page.last() else { break };
         after = Some(last.execution_id.clone());
         for tree in page {
@@ -63,7 +63,7 @@ pub(crate) async fn archive_removed_execution_trees(
                     .map(str::to_string)
                 });
             if let Some(root) = &repository_root {
-                if let Err(error) = trees.record_repository_root(&tree.execution_id, root) {
+                if let Err(error) = trees.record_repository_root(&tree.execution_id, root).await {
                     errors += 1;
                     log::warn!(
                         "execution tree GC failed to record repository for {}: {error}",

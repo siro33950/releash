@@ -1385,6 +1385,7 @@ pub(crate) mod tests {
                 },
             ],
         )
+        .await
         .unwrap();
 
         let view = get_workflow_execution_state_impl(

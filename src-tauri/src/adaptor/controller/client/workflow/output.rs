@@ -20,15 +20,10 @@ async fn authorize_output_execution_access(
     worktree_path: String,
     execution_id: &str,
 ) -> Result<(), AppError> {
-    let query = query.clone();
-    let execution_id = execution_id.to_string();
-    tokio::task::spawn_blocking(move || {
-        query
-            .authorize_execution_access_for_worktree(&execution_id, &worktree_path)
-            .map_err(AppError::from_failure)
-    })
-    .await
-    .map_err(|e| AppError::new(format!("task join error: {e}")))?
+    query
+        .authorize_execution_access_for_worktree(execution_id, &worktree_path)
+        .await
+        .map_err(AppError::from_failure)
 }
 
 async fn authorize_output_node_execution_access(
@@ -36,15 +31,10 @@ async fn authorize_output_node_execution_access(
     worktree_path: String,
     node_execution_id: &str,
 ) -> Result<(), AppError> {
-    let query = query.clone();
-    let node_execution_id = node_execution_id.to_string();
-    tokio::task::spawn_blocking(move || {
-        query
-            .authorize_node_execution_access_for_worktree(&node_execution_id, &worktree_path)
-            .map_err(AppError::from_failure)
-    })
-    .await
-    .map_err(|e| AppError::new(format!("task join error: {e}")))?
+    query
+        .authorize_node_execution_access_for_worktree(node_execution_id, &worktree_path)
+        .await
+        .map_err(AppError::from_failure)
 }
 
 /// Tauri command 経路: NodeExecutionにSubmit signalとoptional Artifactを提出する。
@@ -98,14 +88,11 @@ pub(crate) async fn workflow_validate_output_shared(
     // 共有するため、masking + validate を集約した `preprocess_and_validate_output` を経由する。
     // raw JSON のまま `validate_contract_value` を呼ぶと submit 側の redaction 後の値と
     // 判定が食い違う構造になるため、usecase 側の SecretSourceGateway 経由で redaction 後に判定する。
-    let usecase = state.workflow_usecase.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        usecase
-            .validate_output(&execution_id, &node_name, structured_output)
-            .map_err(AppError::from_failure)
-    })
-    .await
-    .map_err(|e| AppError::new(format!("task join error: {e}")))??;
+    let result = state
+        .workflow_usecase
+        .validate_output(&execution_id, &node_name, structured_output)
+        .await
+        .map_err(AppError::from_failure)?;
     Ok(match result {
         WorkflowValidateOutputResult::Valid => WorkflowValidateOutputResponse::Valid,
         WorkflowValidateOutputResult::Invalid { reason, details } => {
@@ -124,14 +111,11 @@ pub(crate) async fn workflow_get_output_shared(
 ) -> Result<WorkflowGetOutputResponse, AppError> {
     authorize_output_execution_access(&state.workflow_usecase, worktree_path, &execution_id)
         .await?;
-    let usecase = state.workflow_usecase.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        usecase
-            .get_output(&execution_id, &node_name)
-            .map_err(AppError::from_failure)
-    })
-    .await
-    .map_err(|e| AppError::new(format!("task join error: {e}")))??;
+    let result = state
+        .workflow_usecase
+        .get_output(&execution_id, &node_name)
+        .await
+        .map_err(AppError::from_failure)?;
     Ok(match result {
         WorkflowGetOutputResult::Submitted {
             contract,

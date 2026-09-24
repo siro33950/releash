@@ -95,12 +95,16 @@ impl WorkflowRuntimeUsecase {
         &self,
         command: AbortExecutionCommand,
     ) -> Result<(), WorkflowError> {
-        let _mutation = self.begin_execution_tree_mutation(&command.execution_id)?;
+        let _mutation = self
+            .begin_execution_tree_mutation(&command.execution_id)
+            .await?;
         self.abort_execution.execute(command).await
     }
 
     pub async fn retry_node(&self, command: RetryNodeCommand) -> Result<(), WorkflowError> {
-        let _mutation = self.begin_execution_tree_mutation(&command.execution_id)?;
+        let _mutation = self
+            .begin_execution_tree_mutation(&command.execution_id)
+            .await?;
         self.retry_node.execute(command).await
     }
 
@@ -126,12 +130,16 @@ impl WorkflowRuntimeUsecase {
         &self,
         command: ResumeSessionNodeCommand,
     ) -> Result<(), WorkflowError> {
-        let _mutation = self.begin_execution_tree_mutation(&command.execution_id)?;
+        let _mutation = self
+            .begin_execution_tree_mutation(&command.execution_id)
+            .await?;
         self.control_plane.resume_session_node(command).await
     }
 
     pub async fn resolve_approval(&self, command: ApprovalCommand) -> Result<(), WorkflowError> {
-        let _mutation = self.begin_execution_tree_mutation(&command.execution_id)?;
+        let _mutation = self
+            .begin_execution_tree_mutation(&command.execution_id)
+            .await?;
         self.control_plane.resolve_approval(command).await
     }
 
@@ -142,7 +150,7 @@ impl WorkflowRuntimeUsecase {
             .resolve_workflow_execution_id(&command.node_execution_id)
             .await?
             .ok_or_else(|| WorkflowError::NotFound(command.node_execution_id.clone()))?;
-        let _mutation = self.begin_execution_tree_mutation(&id)?;
+        let _mutation = self.begin_execution_tree_mutation(&id).await?;
         self.submit_output.execute(command).await
     }
 
@@ -529,8 +537,9 @@ mod tests {
         }
     }
 
+    #[async_trait::async_trait]
     impl crate::domain::workflow::repository::WorkflowStartupRepository for FakeRuntimeGateway {
-        fn list_tree_ids(&self) -> Result<Vec<String>, WorkflowError> {
+        async fn list_tree_ids(&self) -> Result<Vec<String>, WorkflowError> {
             self.calls.lock().unwrap().push("startup_list");
             if self.fail_startup {
                 Err(WorkflowError::external("startup read failed"))
@@ -539,7 +548,7 @@ mod tests {
             }
         }
 
-        fn load(
+        async fn load(
             &self,
             _tree_id: &str,
         ) -> Result<Option<crate::domain::workflow::repository::WorkflowStartupRecord>, WorkflowError>
@@ -547,7 +556,7 @@ mod tests {
             unreachable!("empty startup inventory")
         }
 
-        fn append(
+        async fn append(
             &self,
             _root: &crate::domain::workflow::NodeFactMeta,
             _fact: &crate::domain::workflow::NodeFact,

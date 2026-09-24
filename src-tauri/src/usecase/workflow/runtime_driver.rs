@@ -138,24 +138,23 @@ impl PreparedWorkflowTransaction {
         })
     }
 
-    pub(crate) fn events(&self) -> &[WorkflowEvent] {
-        &self.decision.events
-    }
-
     /// Persists canonical facts and publishes the aggregate candidate only
     /// after persistence succeeds. Effects stay inaccessible until then.
-    pub(crate) fn persist<E, P>(
+    pub(crate) async fn persist<E, P, Fut>(
         self,
         current: &mut ExecutionTree,
         persist: P,
     ) -> Result<DurableWorkflowTransaction, WorkflowTransactionCommitError<E>>
     where
-        P: FnOnce(&[WorkflowEvent]) -> Result<(), E>,
+        P: FnOnce(Vec<WorkflowEvent>) -> Fut,
+        Fut: std::future::Future<Output = Result<(), E>>,
     {
         if current != &self.before {
             return Err(WorkflowTransactionCommitError::StaleCandidate);
         }
-        persist(self.events()).map_err(WorkflowTransactionCommitError::Persistence)?;
+        persist(self.decision.events)
+            .await
+            .map_err(WorkflowTransactionCommitError::Persistence)?;
         *current = self.after;
         Ok(DurableWorkflowTransaction {
             #[cfg(test)]
@@ -213,8 +212,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn persistence_failure_keeps_exact_pre_commit_aggregate_and_releases_no_effects() {
+    #[tokio::test]
+    async fn persistence_failure_keeps_exact_pre_commit_aggregate_and_releases_no_effects() {
         let mut live = ExecutionTree::restore(RuntimeExecutionState::Running);
         let before = live.clone();
         let prepared = PreparedWorkflowTransaction::observe(&live, |candidate| {
@@ -226,7 +225,9 @@ mod tests {
             })
         })
         .unwrap();
-        let result = prepared.persist(&mut live, |_| Err("disk"));
+        let result = prepared
+            .persist(&mut live, |_| std::future::ready(Err("disk")))
+            .await;
 
         assert!(matches!(
             result,
@@ -235,8 +236,8 @@ mod tests {
         assert_eq!(live, before);
     }
 
-    #[test]
-    fn effects_become_available_only_after_durable_persistence() {
+    #[tokio::test]
+    async fn effects_become_available_only_after_durable_persistence() {
         let mut live = ExecutionTree::restore(RuntimeExecutionState::Running);
         let prepared = PreparedWorkflowTransaction::observe(&live, |candidate| {
             let outcome = candidate.abort();
@@ -247,7 +248,10 @@ mod tests {
             })
         })
         .unwrap();
-        let durable = prepared.persist(&mut live, |_| Ok::<_, ()>(())).unwrap();
+        let durable = prepared
+            .persist(&mut live, |_| std::future::ready(Ok::<_, ()>(())))
+            .await
+            .unwrap();
 
         assert_eq!(durable.outcome(), TransitionOutcome::Applied);
         assert_eq!(
@@ -257,8 +261,8 @@ mod tests {
         assert_eq!(live.state(), &RuntimeExecutionState::Aborted);
     }
 
-    #[test]
-    fn already_applied_observation_persists_event_without_changing_aggregate() {
+    #[tokio::test]
+    async fn already_applied_observation_persists_event_without_changing_aggregate() {
         let mut live = ExecutionTree::restore(RuntimeExecutionState::Running);
         let before = live.clone();
         let event = aborted_event();
@@ -274,9 +278,10 @@ mod tests {
 
         let durable = prepared
             .persist(&mut live, |events| {
-                persisted.extend_from_slice(events);
-                Ok::<_, ()>(())
+                persisted.extend(events);
+                std::future::ready(Ok::<_, ()>(()))
             })
+            .await
             .unwrap();
 
         assert_eq!(durable.outcome(), TransitionOutcome::AlreadyApplied);
@@ -284,8 +289,8 @@ mod tests {
         assert_eq!(live, before);
     }
 
-    #[test]
-    fn newly_terminal_session_stop_effect_becomes_available_after_persistence() {
+    #[tokio::test]
+    async fn newly_terminal_session_stop_effect_becomes_available_after_persistence() {
         let mut live = execution_with_attached_session();
         let prepared = PreparedWorkflowTransaction::observe(&live, |candidate| {
             let outcome = candidate.abort_node_execution("node-execution", 2.0);
@@ -297,7 +302,10 @@ mod tests {
         })
         .unwrap();
 
-        let durable = prepared.persist(&mut live, |_| Ok::<_, ()>(())).unwrap();
+        let durable = prepared
+            .persist(&mut live, |_| std::future::ready(Ok::<_, ()>(())))
+            .await
+            .unwrap();
 
         assert_eq!(
             durable.into_effects(),
@@ -311,8 +319,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn newly_terminal_session_persistence_failure_keeps_active_aggregate() {
+    #[tokio::test]
+    async fn newly_terminal_session_persistence_failure_keeps_active_aggregate() {
         let mut live = execution_with_attached_session();
         let prepared = PreparedWorkflowTransaction::observe(&live, |candidate| {
             let outcome = candidate.abort_node_execution("node-execution", 2.0);
@@ -324,7 +332,9 @@ mod tests {
         })
         .unwrap();
 
-        let result = prepared.persist(&mut live, |_| Err("disk"));
+        let result = prepared
+            .persist(&mut live, |_| std::future::ready(Err("disk")))
+            .await;
 
         assert!(matches!(
             result,
@@ -337,8 +347,8 @@ mod tests {
             .is_active());
     }
 
-    #[test]
-    fn stale_candidate_is_rejected_without_persistence() {
+    #[tokio::test]
+    async fn stale_candidate_is_rejected_without_persistence() {
         let live = ExecutionTree::restore(RuntimeExecutionState::Running);
         let prepared = PreparedWorkflowTransaction::observe(&live, |candidate| {
             let outcome = candidate.abort();
@@ -353,10 +363,12 @@ mod tests {
         stale.abort();
         let mut persisted = false;
 
-        let result = prepared.persist(&mut stale, |_| {
-            persisted = true;
-            Ok::<_, ()>(())
-        });
+        let result = prepared
+            .persist(&mut stale, |_| {
+                persisted = true;
+                std::future::ready(Ok::<_, ()>(()))
+            })
+            .await;
 
         assert!(matches!(
             result,
@@ -365,8 +377,8 @@ mod tests {
         assert!(!persisted);
     }
 
-    #[test]
-    fn aggregate_rejection_is_preserved_as_a_typed_decision() {
+    #[tokio::test]
+    async fn aggregate_rejection_is_preserved_as_a_typed_decision() {
         let mut live = ExecutionTree::restore(RuntimeExecutionState::Completed);
         let rejection = match live.replay_started() {
             crate::domain::workflow::entities::workflow_execution::ReplayOutcome::Rejected(
@@ -385,7 +397,8 @@ mod tests {
         let mut candidate = live.clone();
 
         let durable = prepared
-            .persist(&mut candidate, |_| Ok::<_, ()>(()))
+            .persist(&mut candidate, |_| std::future::ready(Ok::<_, ()>(())))
+            .await
             .unwrap();
 
         assert_eq!(

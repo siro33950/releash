@@ -11,14 +11,14 @@ struct Trees {
 
 #[async_trait::async_trait]
 impl ExecutionTreeGc for Trees {
-    fn record_repository_root(&self, id: &str, root: &str) -> Result<(), WorkflowError> {
+    async fn record_repository_root(&self, id: &str, root: &str) -> Result<(), WorkflowError> {
         self.owners.lock().unwrap().push((id.into(), root.into()));
         if id == "6-record-fail" {
             return Err(WorkflowError::external("repository record failed"));
         }
         Ok(())
     }
-    fn execution_trees(
+    async fn execution_trees(
         &self,
         after: Option<&str>,
     ) -> Result<Vec<ExecutionTreeArchiveCandidate>, WorkflowError> {

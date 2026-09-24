@@ -49,17 +49,19 @@ pub(super) enum WorkflowSubcommand {
     },
 }
 
-pub(super) fn cmd_status(
+pub(super) async fn cmd_status(
     data_dir: &Path,
     execution_id: &str,
     json: bool,
 ) -> Result<String, CliError> {
     validate_execution_id(execution_id)?;
+    let requested_id = execution_id.to_string();
     let execution = api_client::read_with_fallback(
         data_dir,
-        |client| client.execution_status(execution_id),
+        move |client| client.execution_status(&requested_id),
         || file_direct::execution_status(data_dir, execution_id),
-    )?;
+    )
+    .await?;
     format_execution_status(execution, json)
 }
 

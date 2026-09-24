@@ -550,7 +550,8 @@ mod tests {
                 total_token_usage: Default::default(),
             },
             &[],
-        );
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -588,6 +589,7 @@ mod tests {
         let page = crate::domain::workflow::WorkflowPageRequest::new(0, 10);
         let direct_executions = query
             .execution_summaries(None, None, Some(page))
+            .await
             .unwrap()
             .into_iter()
             .map(crate::usecase::workflow::dto::workflow_execution_summary_to_dto)
@@ -595,13 +597,18 @@ mod tests {
         let live_loopback_executions = workflow
             .read_usecase()
             .list_executions_filtered(None, None, page)
+            .await
             .unwrap();
         let standalone_executions = standalone
             .list_executions_filtered(None, None, page)
+            .await
             .unwrap();
         let workspace_identity = crate::domain::workspace_tree::WorkspaceIdentity::new(&workspace);
-        let direct_tree = query.workspace_tree(&workspace_identity).unwrap();
-        let tauri_tree = workflow.list_workspace_tree_nodes(&workspace).unwrap();
+        let direct_tree = query.workspace_tree(&workspace_identity).await.unwrap();
+        let tauri_tree = workflow
+            .list_workspace_tree_nodes(&workspace)
+            .await
+            .unwrap();
         // Then
         assert_eq!(direct_executions.len(), 1);
         assert!(!direct_tree.nodes.is_empty());

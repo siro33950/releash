@@ -1084,6 +1084,7 @@ async fn test_issue_1826_session木のarchiveはabortしrestoreでは手動resum
     );
     assert!(!host
         .execution_fact_event_types(&session_id)
+        .await
         .unwrap()
         .iter()
         .any(|event| event == "resume_requested"));
@@ -1113,7 +1114,7 @@ async fn test_issue_1826_session木のarchiveはabortしrestoreでは手動resum
         ],
     )
     .await;
-    let events = host.execution_fact_event_types(&session_id).unwrap();
+    let events = host.execution_fact_event_types(&session_id).await.unwrap();
     let abort = events
         .iter()
         .position(|event| event == "abort_requested")
@@ -1176,11 +1177,12 @@ async fn test_issue_1700_stopとworkingを何度往復してもrunning_nodeの�
         )
         .await;
         assert_eq!(
-            host.workspace_node_status(&node.id).unwrap(),
+            host.workspace_node_status(&node.id).await.unwrap(),
             Some(AcceptanceWorkspaceNodeStatus::Active)
         );
         assert_eq!(
             host.workspace_node_detail_status(&worktree, &node.id)
+                .await
                 .unwrap()
                 .as_deref(),
             Some("active")
@@ -1201,17 +1203,19 @@ async fn test_issue_1700_stopとworkingを何度往復してもrunning_nodeの�
         assert!(after_stop.node_executions[0].stop_received);
         assert!(!after_stop.node_executions[0].submit_received);
         assert_eq!(
-            host.workspace_node_status(&node.id).unwrap(),
+            host.workspace_node_status(&node.id).await.unwrap(),
             Some(AcceptanceWorkspaceNodeStatus::Attention)
         );
         assert_eq!(
             host.workspace_node_detail_status(&worktree, &node.id)
+                .await
                 .unwrap()
                 .as_deref(),
             Some("attention")
         );
         assert_eq!(
             host.execution_fact_event_types(&execution_id)
+                .await
                 .unwrap()
                 .iter()
                 .filter(|event| event.as_str() == "stop_received")
@@ -1274,7 +1278,7 @@ async fn test_issue_1700_waiting_approval_nodeのstopも活動分類をattention
     )
     .await;
     assert_eq!(
-        host.workspace_node_status(&node.id).unwrap(),
+        host.workspace_node_status(&node.id).await.unwrap(),
         Some(AcceptanceWorkspaceNodeStatus::Active)
     );
     emit_provider_stop(
@@ -1291,17 +1295,19 @@ async fn test_issue_1700_waiting_approval_nodeのstopも活動分類をattention
         AcceptanceNodeExecutionStatus::WaitingApproval
     );
     assert_eq!(
-        host.workspace_node_status(&node.id).unwrap(),
+        host.workspace_node_status(&node.id).await.unwrap(),
         Some(AcceptanceWorkspaceNodeStatus::Attention)
     );
     assert_eq!(
         host.workspace_node_detail_status(&worktree, &node.id)
+            .await
             .unwrap()
             .as_deref(),
         Some("attention")
     );
     assert_eq!(
         host.execution_fact_event_types(&execution_id)
+            .await
             .unwrap()
             .iter()
             .filter(|event| event.as_str() == "stop_received")

@@ -1,3 +1,4 @@
+use crate::usecase::agent_session::AgentSessionQueryService;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -259,16 +260,18 @@ impl WorkflowDelegateAcceptanceHost {
         }
     }
 
-    pub fn session_context(&self, session_id: &str) -> (String, Option<String>) {
+    pub async fn session_context(&self, session_id: &str) -> (String, Option<String>) {
         let session = LocalAgentSessionQueryService::new(self.store.clone())
-            .get_blocking(session_id)
+            .get(session_id)
+            .await
             .unwrap()
             .unwrap();
         (session.worktree_path, session.provider_session_id)
     }
 
-    pub fn nodes(&self, tree: &str) -> Vec<RuntimeNodeExecution> {
+    pub async fn nodes(&self, tree: &str) -> Vec<RuntimeNodeExecution> {
         fact_log::fold_tree_from(&FactLogReadBackend::Live(self.store.clone()), tree)
+            .await
             .unwrap()
             .unwrap()
             .aggregate
@@ -276,8 +279,10 @@ impl WorkflowDelegateAcceptanceHost {
             .clone()
     }
 
-    pub fn session_facts(&self, tree: &str, node_id: &str) -> (Vec<String>, usize) {
-        let records = fact_log::read_tree_records(&self.store, tree).unwrap();
+    pub async fn session_facts(&self, tree: &str, node_id: &str) -> (Vec<String>, usize) {
+        let records = fact_log::read_tree_records(&self.store, tree)
+            .await
+            .unwrap();
         let mut provider_sessions = Vec::new();
         let mut stops = 0;
         for record in records

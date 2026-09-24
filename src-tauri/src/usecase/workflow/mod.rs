@@ -97,12 +97,13 @@ impl WorkflowReadUsecase {
         self.diagnostics.diagnose_all(target)
     }
 
-    pub(crate) fn list_workflow_summaries(
+    pub(crate) async fn list_workflow_summaries(
         &self,
     ) -> Result<Vec<dto::WorkflowSummaryDto>, WorkflowError> {
         let running_names = self
             .workspace_query
-            .execution_summaries(None, Some(ExecutionStatusFilter::Active), None)?
+            .execution_summaries(None, Some(ExecutionStatusFilter::Active), None)
+            .await?
             .into_iter()
             .map(|execution| execution.workflow_name)
             .collect::<Vec<_>>();
@@ -114,7 +115,7 @@ impl WorkflowReadUsecase {
         })
     }
 
-    pub(crate) fn list_executions_filtered(
+    pub(crate) async fn list_executions_filtered(
         &self,
         status: Option<ExecutionStatusFilter>,
         worktree_path: Option<&str>,
@@ -127,6 +128,7 @@ impl WorkflowReadUsecase {
             .map(crate::domain::workspace_tree::WorkspaceIdentity::new);
         self.workspace_query
             .execution_summaries(worktree_path.as_ref(), status, Some(page))
+            .await
             .map(|executions| {
                 executions
                     .into_iter()
@@ -135,54 +137,51 @@ impl WorkflowReadUsecase {
             })
     }
 
-    pub(crate) fn get_execution(
+    pub(crate) async fn get_execution(
         &self,
         execution_id: &str,
     ) -> Result<Option<WorkflowExecutionSummary>, WorkflowError> {
-        self.workspace_query.execution_summary(execution_id)
+        self.workspace_query.execution_summary(execution_id).await
     }
 
-    pub(crate) fn get_execution_log_page(
+    pub(crate) async fn get_execution_log_page(
         &self,
         execution_id: &str,
         page: WorkflowPageRequest,
     ) -> Result<Vec<WorkflowEventView>, WorkflowError> {
-        if self.get_execution(execution_id)?.is_none() {
+        if self.get_execution(execution_id).await?.is_none() {
             return Err(WorkflowError::NotFound(format!(
                 "Workflow execution not found: {execution_id}"
             )));
         }
-        self.query.get_execution_log_page(execution_id, page)
+        self.query.get_execution_log_page(execution_id, page).await
     }
 
-    pub(crate) fn get_execution_state(
+    pub(crate) async fn get_execution_state(
         &self,
         execution_id: &str,
     ) -> Result<Option<ExecutionTree>, WorkflowError> {
-        self.query.get_execution_state(execution_id)
+        self.query.get_execution_state(execution_id).await
     }
 
-    pub(crate) fn validate_output_for_contract(
+    pub(crate) async fn validate_output_for_contract(
         &self,
         execution_id: &str,
         node_name: &str,
         contract: &str,
         structured_output: Value,
     ) -> Result<WorkflowValidateOutputResult, WorkflowError> {
-        self.output.validate_output_for_contract(
-            execution_id,
-            node_name,
-            contract,
-            structured_output,
-        )
+        self.output
+            .validate_output_for_contract(execution_id, node_name, contract, structured_output)
+            .await
     }
 
-    pub(crate) fn get_output(
+    pub(crate) async fn get_output(
         &self,
         execution_id: &str,
         node_name: &str,
     ) -> Result<WorkflowGetOutputResult, WorkflowError> {
-        self.output.get_output(execution_id, node_name)
+        self.output.get_output(execution_id, node_name).await
     }
 }
 
@@ -246,7 +245,7 @@ impl WorkflowUsecase {
         self.read.clone()
     }
 
-    pub fn list_executions_for_worktree(
+    pub async fn list_executions_for_worktree(
         &self,
         status: Option<ExecutionStatusFilter>,
         worktree_path: &str,
@@ -256,20 +255,21 @@ impl WorkflowUsecase {
         );
         self.workspace_query
             .execution_summaries(Some(&worktree_path), status, None)
+            .await
     }
 
-    pub fn get_execution(
+    pub async fn get_execution(
         &self,
         execution_id: &str,
     ) -> Result<Option<WorkflowExecutionSummary>, WorkflowError> {
-        self.workspace_query.execution_summary(execution_id)
+        self.workspace_query.execution_summary(execution_id).await
     }
 
-    pub fn authorize_execution_summary(
+    pub async fn authorize_execution_summary(
         &self,
         execution_id: &str,
     ) -> Result<Option<WorkflowExecutionSummary>, WorkflowError> {
-        let Some(summary) = self.get_execution(execution_id)? else {
+        let Some(summary) = self.get_execution(execution_id).await? else {
             return Ok(None);
         };
         match self.resolve_worktree_path(&summary.worktree_path) {
@@ -278,13 +278,13 @@ impl WorkflowUsecase {
         }
     }
 
-    pub fn authorize_execution_summary_for_worktree(
+    pub async fn authorize_execution_summary_for_worktree(
         &self,
         execution_id: &str,
         worktree_path: &str,
     ) -> Result<Option<WorkflowExecutionSummary>, WorkflowError> {
         let canonical = self.resolve_worktree_path(worktree_path)?;
-        let Some(summary) = self.authorize_execution_summary(execution_id)? else {
+        let Some(summary) = self.authorize_execution_summary(execution_id).await? else {
             return Ok(None);
         };
         if summary.worktree_path == canonical {
@@ -294,14 +294,15 @@ impl WorkflowUsecase {
         }
     }
 
-    pub fn authorize_execution_access_for_worktree(
+    pub async fn authorize_execution_access_for_worktree(
         &self,
         execution_id: &str,
         worktree_path: &str,
     ) -> Result<(), WorkflowError> {
         let execution_id = crate::domain::workflow::ExecutionTreeId::new(execution_id.to_string())?;
         if self
-            .authorize_execution_summary_for_worktree(execution_id.as_str(), worktree_path)?
+            .authorize_execution_summary_for_worktree(execution_id.as_str(), worktree_path)
+            .await?
             .is_some()
         {
             Ok(())
@@ -312,7 +313,7 @@ impl WorkflowUsecase {
         }
     }
 
-    pub fn authorize_node_execution_access_for_worktree(
+    pub async fn authorize_node_execution_access_for_worktree(
         &self,
         node_execution_id: &str,
         worktree_path: &str,
@@ -325,6 +326,7 @@ impl WorkflowUsecase {
         let node = self
             .workspace_nodes
             .load_node_by_node_execution_id(node_execution_id)
+            .await
             .map_err(|error| WorkflowError::external(error.to_string()))?
             .ok_or_else(|| {
                 WorkflowError::external(format!("Node execution not found: {node_execution_id}"))
@@ -333,6 +335,7 @@ impl WorkflowUsecase {
             WorkflowError::external(format!("Node execution not found: {node_execution_id}"))
         })?;
         self.authorize_execution_access_for_worktree(&execution_id, worktree_path)
+            .await
     }
 
     pub fn resolve_worktree_path(&self, worktree_path: &str) -> Result<String, WorkflowError> {
@@ -357,11 +360,11 @@ impl WorkflowUsecase {
         self.query.get_workflow_source_format(file_stem)
     }
 
-    pub fn get_execution_state(
+    pub async fn get_execution_state(
         &self,
         execution_id: &str,
     ) -> Result<Option<ExecutionTree>, WorkflowError> {
-        self.query.get_execution_state(execution_id)
+        self.query.get_execution_state(execution_id).await
     }
 
     pub fn get_facet(&self, kind: FacetKind, key: &str) -> Result<String, WorkflowError> {
@@ -459,7 +462,7 @@ impl WorkflowUsecase {
             .render_facet_preview(content, sample_values)
     }
 
-    pub fn validate_output(
+    pub async fn validate_output(
         &self,
         execution_id: &str,
         node_name: &str,
@@ -467,14 +470,15 @@ impl WorkflowUsecase {
     ) -> Result<WorkflowValidateOutputResult, WorkflowError> {
         self.output
             .validate_output(execution_id, node_name, structured_output)
+            .await
     }
 
-    pub fn get_output(
+    pub async fn get_output(
         &self,
         execution_id: &str,
         node_name: &str,
     ) -> Result<WorkflowGetOutputResult, WorkflowError> {
-        self.output.get_output(execution_id, node_name)
+        self.output.get_output(execution_id, node_name).await
     }
 }
 
@@ -660,13 +664,14 @@ mod tests {
         events: Mutex<Vec<WorkflowEventDraft>>,
     }
 
+    #[async_trait::async_trait]
     impl WorkflowEventRepository for FakeEventRepository {
         fn append(&self, event: &WorkflowEventDraft) -> Result<(), WorkflowError> {
             self.events.lock().unwrap().push(event.clone());
             Ok(())
         }
 
-        fn read(
+        async fn read(
             &self,
             _execution_id: &ExecutionTreeId,
         ) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
@@ -676,24 +681,18 @@ mod tests {
 
     struct NoopExecutionProjectionRepository;
 
+    #[async_trait::async_trait]
     impl WorkflowExecutionProjectionRepository for NoopExecutionProjectionRepository {
         fn get_node_artifact_from_events(
             &self,
-            execution_id: &ExecutionTreeId,
-            node_name: &str,
+            _execution_id: &ExecutionTreeId,
+            _node_name: &str,
             _events: &[WorkflowEventDraft],
         ) -> Result<Option<crate::domain::workflow::Artifact>, WorkflowError> {
-            Ok(self.get_execution(execution_id)?.and_then(|execution| {
-                execution
-                    .node_executions
-                    .into_iter()
-                    .rev()
-                    .find(|node| node.node_name == node_name)
-                    .and_then(|node| node.artifact)
-            }))
+            Ok(None)
         }
 
-        fn get_execution(
+        async fn get_execution(
             &self,
             _execution_id: &ExecutionTreeId,
         ) -> Result<Option<ExecutionTree>, WorkflowError> {
@@ -808,8 +807,9 @@ mod tests {
         }
     }
 
+    #[async_trait::async_trait]
     impl crate::domain::workspace_tree::WorkspaceTreeRepository for FakeWorkspaceTreeRepository {
-        fn load_node(
+        async fn load_node(
             &self,
             _workspace_identity: &crate::domain::workspace_tree::WorkspaceIdentity,
             _node_id: &str,
@@ -820,7 +820,7 @@ mod tests {
             Ok(None)
         }
 
-        fn load_node_by_node_execution_id(
+        async fn load_node_by_node_execution_id(
             &self,
             node_execution_id: &str,
         ) -> Result<
@@ -830,7 +830,7 @@ mod tests {
             Ok(self.nodes.lock().unwrap().get(node_execution_id).cloned())
         }
 
-        fn node_id_for_session(
+        async fn node_id_for_session(
             &self,
             _workspace_identity: &crate::domain::workspace_tree::WorkspaceIdentity,
             _session_id: &str,
@@ -952,7 +952,7 @@ mod tests {
         }
     }
 
-    fn execution_summary(
+    async fn execution_summary(
         execution_id: &str,
         worktree_path: &str,
         status: ExecutionStatus,
@@ -983,18 +983,22 @@ mod tests {
         assert!(fixture.usecase.resolve_worktree_path("reject").is_err());
     }
 
-    #[test]
-    fn list_executions_for_worktree_canonicalizes_path_before_querying_executions() {
-        let executions = vec![execution_summary(
-            "00000000-0000-0000-0000-000000000001",
-            "/canonical/repo",
-            ExecutionStatus::Running,
-        )];
+    #[tokio::test]
+    async fn list_executions_for_worktree_canonicalizes_path_before_querying_executions() {
+        let executions = vec![
+            execution_summary(
+                "00000000-0000-0000-0000-000000000001",
+                "/canonical/repo",
+                ExecutionStatus::Running,
+            )
+            .await,
+        ];
         let fixture = Fixture::with_executions(executions);
 
         let listed = fixture
             .usecase
             .list_executions_for_worktree(Some(ExecutionStatusFilter::Active), "repo")
+            .await
             .unwrap();
 
         assert_eq!(listed.len(), 1);
@@ -1005,22 +1009,26 @@ mod tests {
         assert!(fixture
             .usecase
             .list_executions_for_worktree(None, "reject")
+            .await
             .is_err());
     }
 
-    #[test]
-    fn workflow_read_facade_owns_active_aggregation_filtering_and_dto_projection() {
-        let executions = vec![execution_summary(
-            "00000000-0000-0000-0000-000000000001",
-            "/canonical/repo",
-            ExecutionStatus::Running,
-        )];
+    #[tokio::test]
+    async fn workflow_read_facade_owns_active_aggregation_filtering_and_dto_projection() {
+        let executions = vec![
+            execution_summary(
+                "00000000-0000-0000-0000-000000000001",
+                "/canonical/repo",
+                ExecutionStatus::Running,
+            )
+            .await,
+        ];
         let fixture = Fixture::with_executions(executions);
         fixture.definitions.insert(workflow_definition("idle"));
         fixture.definitions.insert(workflow_definition("wf"));
         let read = fixture.usecase.read_usecase();
 
-        let workflows = read.list_workflow_summaries().unwrap();
+        let workflows = read.list_workflow_summaries().await.unwrap();
         assert_eq!(workflows.len(), 2);
         assert_eq!(workflows[0].name, "idle");
         assert!(!workflows[0].is_running);
@@ -1033,6 +1041,7 @@ mod tests {
                 Some("repo"),
                 WorkflowPageRequest::new(0, 10),
             )
+            .await
             .unwrap();
         assert_eq!(active.len(), 1);
         assert_eq!(
@@ -1084,19 +1093,21 @@ mod tests {
             .is_err());
     }
 
-    #[test]
-    fn authorize_execution_summary_for_worktree_hides_unmanaged_or_mismatched_runs() {
+    #[tokio::test]
+    async fn authorize_execution_summary_for_worktree_hides_unmanaged_or_mismatched_runs() {
         let executions = vec![
             execution_summary(
                 "00000000-0000-0000-0000-000000000011",
                 "/canonical/repo",
                 ExecutionStatus::Running,
-            ),
+            )
+            .await,
             execution_summary(
                 "00000000-0000-0000-0000-000000000012",
                 "reject",
                 ExecutionStatus::Running,
-            ),
+            )
+            .await,
         ];
         let fixture = Fixture::with_executions(executions);
 
@@ -1106,6 +1117,7 @@ mod tests {
                 "00000000-0000-0000-0000-000000000011",
                 "repo",
             )
+            .await
             .unwrap();
         assert!(authorized.is_some());
 
@@ -1115,18 +1127,21 @@ mod tests {
                 "00000000-0000-0000-0000-000000000011",
                 "other",
             )
+            .await
             .unwrap();
         assert!(mismatched.is_none());
 
         let unmanaged = fixture
             .usecase
             .authorize_execution_summary("00000000-0000-0000-0000-000000000012")
+            .await
             .unwrap();
         assert!(unmanaged.is_none());
 
         fixture
             .usecase
             .authorize_execution_access_for_worktree("00000000-0000-0000-0000-000000000011", "repo")
+            .await
             .unwrap();
         assert_eq!(
             fixture
@@ -1135,6 +1150,7 @@ mod tests {
                     "00000000-0000-0000-0000-000000000011",
                     "other",
                 )
+                .await
                 .unwrap_err(),
             WorkflowError::external(
                 "Workflow execution not found: 00000000-0000-0000-0000-000000000011"
@@ -1143,19 +1159,19 @@ mod tests {
         assert!(matches!(
             fixture
                 .usecase
-                .authorize_execution_access_for_worktree("invalid", "repo"),
+                .authorize_execution_access_for_worktree("invalid", "repo")
+                .await,
             Err(WorkflowError::Validation(_))
         ));
     }
 
-    #[test]
-    fn authorize_node_execution_access_for_worktree_checks_identity_and_execution_ownership() {
+    #[tokio::test]
+    async fn authorize_node_execution_access_for_worktree_checks_identity_and_execution_ownership()
+    {
         let execution_id = "00000000-0000-0000-0000-000000000011";
-        let fixture = Fixture::with_executions(vec![execution_summary(
-            execution_id,
-            "/canonical/repo",
-            ExecutionStatus::Running,
-        )]);
+        let fixture = Fixture::with_executions(vec![
+            execution_summary(execution_id, "/canonical/repo", ExecutionStatus::Running).await,
+        ]);
         fixture.workspace_nodes.insert(
             "node-execution-1",
             workspace_node("node-execution-1", Some(execution_id)),
@@ -1168,11 +1184,13 @@ mod tests {
         fixture
             .usecase
             .authorize_node_execution_access_for_worktree("node-execution-1", "repo")
+            .await
             .unwrap();
         assert!(matches!(
             fixture
                 .usecase
-                .authorize_node_execution_access_for_worktree("   ", "repo"),
+                .authorize_node_execution_access_for_worktree("   ", "repo")
+                .await,
             Err(WorkflowError::Validation(_))
         ));
         for node_execution_id in ["missing", "node-execution-without-owner"] {
@@ -1180,6 +1198,7 @@ mod tests {
                 fixture
                     .usecase
                     .authorize_node_execution_access_for_worktree(node_execution_id, "repo")
+                    .await
                     .unwrap_err(),
                 WorkflowError::external(format!("Node execution not found: {node_execution_id}"))
             );
@@ -1188,6 +1207,7 @@ mod tests {
             fixture
                 .usecase
                 .authorize_node_execution_access_for_worktree("node-execution-1", "other")
+                .await
                 .unwrap_err(),
             WorkflowError::external(format!("Workflow execution not found: {execution_id}"))
         );
@@ -1289,8 +1309,9 @@ mod archive_test_repository {
     use super::*;
     pub(crate) struct NoopArchiveRepository;
 
+    #[async_trait::async_trait]
     impl ExecutionTreeArchiveRepository for NoopArchiveRepository {
-        fn location(
+        async fn location(
             &self,
             id: &str,
         ) -> Result<crate::domain::workflow::ExecutionTreeArchiveCandidate, WorkflowError> {
@@ -1304,17 +1325,22 @@ mod archive_test_repository {
         fn worktree_identity(&self, path: &str) -> Result<String, WorkflowError> {
             Ok(crate::domain::repository::normalize_repo_path(path))
         }
-        fn record_repository_root(&self, _: &str, _: &str, _: f64) -> Result<(), WorkflowError> {
+        async fn record_repository_root(
+            &self,
+            _: &str,
+            _: &str,
+            _: f64,
+        ) -> Result<(), WorkflowError> {
             unreachable!()
         }
-        fn candidate_page(
+        async fn candidate_page(
             &self,
             _: Option<&str>,
         ) -> Result<Vec<crate::domain::workflow::ExecutionTreeArchiveCandidate>, WorkflowError>
         {
             unreachable!()
         }
-        fn legacy_session_archive_page(
+        async fn legacy_session_archive_page(
             &self,
             _: Option<&str>,
         ) -> Result<Vec<crate::domain::workflow::ExecutionTreeArchiveRecord>, WorkflowError>
@@ -1322,7 +1348,7 @@ mod archive_test_repository {
             Ok(Vec::new())
         }
 
-        fn worktree_target_page(
+        async fn worktree_target_page(
             &self,
             _: &str,
             _: Option<&str>,
@@ -1330,7 +1356,7 @@ mod archive_test_repository {
         {
             unreachable!()
         }
-        fn target(
+        async fn target(
             &self,
             _: &str,
         ) -> Result<crate::domain::workflow::ExecutionTreeArchiveTarget, WorkflowError> {
@@ -1346,7 +1372,7 @@ mod archive_test_repository {
             Ok(())
         }
 
-        fn archive(
+        async fn archive(
             &self,
             _execution_id: &crate::domain::workflow::ExecutionTreeId,
             _archived_at: f64,
@@ -1355,7 +1381,7 @@ mod archive_test_repository {
             Ok(())
         }
 
-        fn restore(
+        async fn restore(
             &self,
             _execution_id: &crate::domain::workflow::ExecutionTreeId,
             _restored_at: f64,
@@ -1363,7 +1389,7 @@ mod archive_test_repository {
             Ok(())
         }
 
-        fn archive_snapshot_for(
+        async fn archive_snapshot_for(
             &self,
             _execution_ids: &[String],
         ) -> Result<crate::domain::workflow::ExecutionTreeArchiveSnapshot, WorkflowError> {

@@ -14,19 +14,20 @@ pub struct WorkflowEventDraft {
     pub payload: serde_json::Value,
 }
 
+#[async_trait::async_trait]
 pub trait WorkflowEventRepository: Send + Sync {
     #[cfg(test)]
     fn append(&self, event: &WorkflowEventDraft) -> Result<(), WorkflowError>;
-    fn read(
+    async fn read(
         &self,
         execution_id: &ExecutionTreeId,
     ) -> Result<Vec<WorkflowEventDraft>, WorkflowError>;
-    fn read_page(
+    async fn read_page(
         &self,
         execution_id: &ExecutionTreeId,
         page: WorkflowPageRequest,
     ) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
-        self.read(execution_id).map(|events| {
+        self.read(execution_id).await.map(|events| {
             events
                 .into_iter()
                 .skip(page.offset)
@@ -36,6 +37,7 @@ pub trait WorkflowEventRepository: Send + Sync {
     }
 }
 
+#[async_trait::async_trait]
 pub trait WorkflowExecutionProjectionRepository: Send + Sync {
     fn get_node_artifact_from_events(
         &self,
@@ -43,7 +45,7 @@ pub trait WorkflowExecutionProjectionRepository: Send + Sync {
         node_name: &str,
         events: &[WorkflowEventDraft],
     ) -> Result<Option<crate::domain::workflow::Artifact>, WorkflowError>;
-    fn get_execution(
+    async fn get_execution(
         &self,
         execution_id: &ExecutionTreeId,
     ) -> Result<Option<ExecutionTree>, WorkflowError>;

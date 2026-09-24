@@ -105,16 +105,16 @@ fn command_workflow(name: &str) -> WorkflowDefinitionYaml {
     }
 }
 
-#[test]
-fn test_保持対象cli_discoveryとlive_httpを通る() {
+#[tokio::test(flavor = "multi_thread")]
+async fn test_保持対象cli_discoveryとlive_httpを通る() {
     let client_data = TempDir::new().unwrap();
     let query_data = TempDir::new().unwrap();
     let workflows = TempDir::new().unwrap();
     let execution_id = "00000000-0000-4000-8000-000000000321";
 
     storage::save_workflow(workflows.path(), &command_workflow("review")).unwrap();
-    api_test_support::seed_query_execution(query_data.path(), execution_id);
-    api_test_support::seed_submitted_output(query_data.path(), execution_id);
+    api_test_support::seed_query_execution(query_data.path(), execution_id).await;
+    api_test_support::seed_submitted_output(query_data.path(), execution_id).await;
     let Some(host) =
         try_start_local_api_test_host(client_data.path(), query_data.path(), workflows.path())
     else {
@@ -126,7 +126,9 @@ fn test_保持対象cli_discoveryとlive_httpを通る() {
     );
 
     let status: serde_json::Value = serde_json::from_str(
-        &workflow::cmd_status(client_data.path(), execution_id, true).unwrap(),
+        &workflow::cmd_status(client_data.path(), execution_id, true)
+            .await
+            .unwrap(),
     )
     .unwrap();
     assert_eq!(status["id"], execution_id);
@@ -134,16 +136,20 @@ fn test_保持対象cli_discoveryとlive_httpを通る() {
     host.gateway
         .bind_node_execution("00000000-0000-4000-8000-000000000456", execution_id);
 
-    output::cmd_output_submit(
-        client_data.path(),
-        "00000000-0000-4000-8000-000000000456".to_string(),
-        Some("review-result"),
-        Some(r#"{"status":"approved"}"#.to_string()),
-        None,
-    )
-    .unwrap();
+    tokio::task::block_in_place(|| {
+        output::cmd_output_submit(
+            client_data.path(),
+            "00000000-0000-4000-8000-000000000456".to_string(),
+            Some("review-result"),
+            Some(r#"{"status":"approved"}"#.to_string()),
+            None,
+        )
+        .unwrap();
+    });
     let output: serde_json::Value = serde_json::from_str(
-        &output::cmd_output_get(client_data.path(), execution_id, "review", true).unwrap(),
+        &output::cmd_output_get(client_data.path(), execution_id, "review", true)
+            .await
+            .unwrap(),
     )
     .unwrap();
     assert_eq!(output["status"], "submitted");
@@ -157,12 +163,12 @@ fn test_保持対象cli_discoveryとlive_httpを通る() {
     );
     drop(commands);
 
-    drop(host);
+    tokio::task::block_in_place(|| drop(host));
     assert!(!local_api_discovery_path(client_data.path()).exists());
 }
 
-#[test]
-fn test_隔離worktree_cliのlive_httpで実行中とabortと完了後のbranchとpathを返す() {
+#[tokio::test(flavor = "multi_thread")]
+async fn test_隔離worktree_cliのlive_httpで実行中とabortと完了後のbranchとpathを返す() {
     use crate::cli::test_helpers::start_local_api_test_host;
     use crate::domain::workflow::NodeExecutionStatus;
 
@@ -177,14 +183,17 @@ fn test_隔離worktree_cliのlive_httpで実行中とabortと完了後のbranch�
         let workflows = TempDir::new().unwrap();
         let execution_id = "00000000-0000-4000-8000-000000001733";
         api_test_support::seed_isolated_query_execution(query_data.path(), execution_id, status);
-        let _host =
+        let host =
             start_local_api_test_host(client_data.path(), query_data.path(), workflows.path());
 
         // When
-        let execution = workflow::cmd_status(client_data.path(), execution_id, true).unwrap();
+        let execution = workflow::cmd_status(client_data.path(), execution_id, true)
+            .await
+            .unwrap();
         let execution: serde_json::Value = serde_json::from_str(&execution).unwrap();
-        let output =
-            output::cmd_output_get(client_data.path(), execution_id, "review", true).unwrap();
+        let output = output::cmd_output_get(client_data.path(), execution_id, "review", true)
+            .await
+            .unwrap();
         let output: serde_json::Value = serde_json::from_str(&output).unwrap();
 
         // Then
@@ -202,13 +211,16 @@ fn test_隔離worktree_cliのlive_httpで実行中とabortと完了後のbranch�
         } else {
             assert_eq!(output, serde_json::json!({"status": "not_submitted"}));
         }
+        tokio::task::block_in_place(|| drop(host));
     }
 }
 
-#[test]
-fn test_local_api読取_discovery欠落時にfallbackする() {
+#[tokio::test]
+async fn test_local_api読取_discovery欠落時にfallbackする() {
     let temp = TempDir::new().unwrap();
-    let value = read_with_fallback(temp.path(), |_| unreachable!(), || Ok(42)).unwrap();
+    let value = read_with_fallback(temp.path(), |_| unreachable!(), || async { Ok(42) })
+        .await
+        .unwrap();
     assert_eq!(value, 42);
 }
 
@@ -280,42 +292,45 @@ fn test_local_api_status_errorのcli分類を維持する() {
     assert!(matches!(unauthorized, CliError::Other(_)));
 }
 
-#[test]
-fn test_local_api読取_api利用不能時にfallbackする() {
+#[tokio::test]
+async fn test_local_api読取_api利用不能時にfallbackする() {
     let temp = TempDir::new().unwrap();
     let identity_server = write_live_discovery(temp.path(), "secret");
     let value = read_with_fallback(
         temp.path(),
         |_| Err(ApiRequestError::Unavailable),
-        || Ok("fallback"),
+        || async { Ok("fallback") },
     )
+    .await
     .unwrap();
     assert_eq!(value, "fallback");
     identity_server.join().unwrap();
 }
 
-#[test]
-fn test_local_api読取_認証失敗時にfallbackしない() {
+#[tokio::test]
+async fn test_local_api読取_認証失敗時にfallbackしない() {
     let temp = TempDir::new().unwrap();
     let identity_server = write_live_discovery(temp.path(), "secret");
     let result: Result<(), CliError> = read_with_fallback(
         temp.path(),
         |_| Err(ApiRequestError::Cli(api_error(401, Some("bad token")))),
-        || panic!("401 must not fall back"),
-    );
+        || async { panic!("401 must not fall back") },
+    )
+    .await;
     assert!(matches!(result, Err(CliError::Other(message)) if message.contains("認証に失敗")));
     identity_server.join().unwrap();
 }
 
-#[test]
-fn test_local_api読取_不正discoveryでfallbackしない() {
+#[tokio::test]
+async fn test_local_api読取_不正discoveryでfallbackしない() {
     let temp = TempDir::new().unwrap();
     std::fs::write(local_api_discovery_path(temp.path()), "not-json").unwrap();
     let result: Result<(), CliError> = read_with_fallback(
         temp.path(),
         |_| unreachable!(),
-        || panic!("malformed discovery must not fall back"),
-    );
+        || async { panic!("malformed discovery must not fall back") },
+    )
+    .await;
     assert!(
         matches!(result, Err(CliError::Other(message)) if message.contains("discovery file が不正"))
     );

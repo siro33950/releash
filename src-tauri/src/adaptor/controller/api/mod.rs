@@ -484,10 +484,8 @@ pub(crate) mod test_support {
                 _ => None,
             });
             if let Some((command, execution_id, node_name)) = submit {
-                if let (Some(data_dir), Some(artifact)) = (
-                    self.output_persistence_data_dir.lock().unwrap().clone(),
-                    command.artifact.as_ref(),
-                ) {
+                let data_dir = self.output_persistence_data_dir.lock().unwrap().clone();
+                if let (Some(data_dir), Some(artifact)) = (data_dir, command.artifact.as_ref()) {
                     append_canonical_workflow_drafts(
                         &data_dir,
                         &[WorkflowEventDraft {
@@ -503,7 +501,8 @@ pub(crate) mod test_support {
                                 "request_id": "request-1"
                             }),
                         }],
-                    )?;
+                    )
+                    .await?;
                 }
                 self.commands.lock().unwrap().outputs.push(command);
             }
@@ -696,7 +695,7 @@ pub(crate) mod test_support {
         LocalEventStore::open(LocalEventStoreConfig::production(data_dir.to_path_buf())).unwrap()
     }
 
-    fn append_canonical_workflow_drafts(
+    async fn append_canonical_workflow_drafts(
         data_dir: &Path,
         drafts: &[WorkflowEventDraft],
     ) -> Result<(), WorkflowError> {
@@ -708,14 +707,15 @@ pub(crate) mod test_support {
             &canonical_local_event_store(data_dir),
             &events,
         )
+        .await
         .map_err(WorkflowError::external)
     }
 
-    pub(crate) fn seed_query_execution(data_dir: &Path, execution_id: &str) {
-        seed_query_execution_at(data_dir, execution_id, "/repo");
+    pub(crate) async fn seed_query_execution(data_dir: &Path, execution_id: &str) {
+        seed_query_execution_at(data_dir, execution_id, "/repo").await;
     }
 
-    fn seed_query_execution_at(data_dir: &Path, execution_id: &str, worktree_path: &str) {
+    async fn seed_query_execution_at(data_dir: &Path, execution_id: &str, worktree_path: &str) {
         let metadata = WorkflowExecutionMetadata {
             execution_id: execution_id.to_string(),
             workflow_name: "review".to_string(),
@@ -780,10 +780,11 @@ pub(crate) mod test_support {
             &canonical_local_event_store(data_dir),
             &metadata,
             &events,
-        );
+        )
+        .await;
     }
 
-    pub(crate) fn seed_submitted_output(data_dir: &Path, execution_id: &str) {
+    pub(crate) async fn seed_submitted_output(data_dir: &Path, execution_id: &str) {
         let drafts = [WorkflowEventDraft {
             execution_id: execution_id.to_string(),
             event_kind: "artifact_produced".to_string(),
@@ -796,7 +797,9 @@ pub(crate) mod test_support {
                 "request_id": "request-1"
             }),
         }];
-        append_canonical_workflow_drafts(data_dir, &drafts).unwrap();
+        append_canonical_workflow_drafts(data_dir, &drafts)
+            .await
+            .unwrap();
     }
 
     pub(crate) fn seed_isolated_query_execution(
@@ -1358,7 +1361,7 @@ pub(crate) mod test_support {
     async fn authenticated_query_endpoints_project_seeded_execution_and_artifact_data() {
         let directory = tempfile::tempdir().unwrap();
         let execution_id = "00000000-0000-4000-8000-000000000321";
-        seed_query_execution(directory.path(), execution_id);
+        seed_query_execution(directory.path(), execution_id).await;
         let (router, _, _) = test_router(directory.path(), "secret");
 
         let executions = get_json(&router, "/v1/workflow/executions?status=active").await;
@@ -1410,7 +1413,7 @@ pub(crate) mod test_support {
             (StatusCode::OK, serde_json::json!({"status": "valid"}))
         );
 
-        seed_submitted_output(directory.path(), execution_id);
+        seed_submitted_output(directory.path(), execution_id).await;
         let output = get_json(
             &router,
             &format!("/v1/workflow/executions/{execution_id}/artifacts/review"),
@@ -1468,7 +1471,7 @@ pub(crate) mod test_support {
     async fn submitted_artifact_round_trips_through_persistence_and_get_wire_response() {
         let directory = tempfile::tempdir().unwrap();
         let execution_id = "00000000-0000-4000-8000-000000000323";
-        seed_query_execution(directory.path(), execution_id);
+        seed_query_execution(directory.path(), execution_id).await;
         append_canonical_workflow_drafts(
             directory.path(),
             &[
@@ -1493,6 +1496,7 @@ pub(crate) mod test_support {
                 },
             ],
         )
+        .await
         .unwrap();
         let (router, _, gateway) = test_router(directory.path(), "secret");
         gateway.persist_submitted_outputs_to(directory.path().to_path_buf());
@@ -1542,9 +1546,9 @@ pub(crate) mod test_support {
             &config,
         )
         .unwrap();
-        seed_query_execution_at(directory.path(), first_execution_id, &canonical_worktree);
-        seed_query_execution_at(directory.path(), second_execution_id, &canonical_worktree);
-        seed_submitted_output(directory.path(), first_execution_id);
+        seed_query_execution_at(directory.path(), first_execution_id, &canonical_worktree).await;
+        seed_query_execution_at(directory.path(), second_execution_id, &canonical_worktree).await;
+        seed_submitted_output(directory.path(), first_execution_id).await;
         let (router, _, _) = test_router(directory.path(), "secret");
         let encoded_worktree: String =
             url::form_urlencoded::byte_serialize(canonical_worktree.as_bytes()).collect();

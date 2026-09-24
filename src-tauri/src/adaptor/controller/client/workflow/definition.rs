@@ -13,12 +13,9 @@ pub(crate) async fn list_workflows_shared(
     state: &AppState,
 ) -> Result<Vec<WorkflowSummaryDto>, AppError> {
     let read = state.workflow_usecase.read_usecase();
-    tokio::task::spawn_blocking(move || {
-        read.list_workflow_summaries()
-            .map_err(AppError::from_failure)
-    })
-    .await
-    .map_err(|e| AppError::new(format!("task join error: {e}")))?
+    read.list_workflow_summaries()
+        .await
+        .map_err(AppError::from_failure)
 }
 
 pub(crate) async fn get_workflow_shared(

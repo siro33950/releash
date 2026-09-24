@@ -4,8 +4,6 @@ use crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore;
 use crate::adaptor::gateway::local_event_store::store::LocalEventStore;
 use crate::adaptor::gateway::workflow::fact_log::{self, FactLogReadBackend};
 use crate::domain::local_event::{LocalEventQueryError, WorkflowExecutionMetadataRecord};
-#[cfg(test)]
-use crate::domain::local_event::{SafeOperationFailure, SessionOperationFailureKind};
 use crate::domain::workflow::services::fact_replay::{self, FoldedTree};
 use crate::domain::workspace_tree::{
     RuntimeSnapshotNodeProjection, WorkspaceIdentity, WorkspacePublicRoot, WorkspaceStructureFact,
@@ -49,19 +47,22 @@ impl SqliteWorkspaceTreeRepository {
     }
 
     /// workspace identity が一致する全実行木の fold と metadata。
-    pub(super) fn folded_workspace_trees(
+    pub(super) async fn folded_workspace_trees(
         &self,
         workspace: &str,
     ) -> Result<Vec<(FoldedTree, WorkflowExecutionMetadataRecord)>, LocalEventQueryError> {
         let backend = self.fact_backend();
-        let tree_roots = fact_log::list_tree_roots(&backend, None).map_err(fold_query_error)?;
+        let tree_roots = fact_log::list_tree_roots(&backend, None)
+            .await
+            .map_err(fold_query_error)?;
         let mut trees = Vec::new();
         for (tree_id, root) in tree_roots {
             if root.workspace_identity != workspace {
                 continue;
             }
-            let Some(folded) =
-                fact_log::fold_tree_from(&backend, &tree_id).map_err(fold_query_error)?
+            let Some(folded) = fact_log::fold_tree_from(&backend, &tree_id)
+                .await
+                .map_err(fold_query_error)?
             else {
                 continue;
             };
@@ -73,12 +74,14 @@ impl SqliteWorkspaceTreeRepository {
     }
 
     /// 1 tree の fold と metadata。
-    pub(super) fn folded_tree(
+    pub(super) async fn folded_tree(
         &self,
         tree_id: &str,
     ) -> Result<Option<(FoldedTree, WorkflowExecutionMetadataRecord)>, LocalEventQueryError> {
         let backend = self.fact_backend();
-        let Some(folded) = fact_log::fold_tree_from(&backend, tree_id).map_err(fold_query_error)?
+        let Some(folded) = fact_log::fold_tree_from(&backend, tree_id)
+            .await
+            .map_err(fold_query_error)?
         else {
             return Ok(None);
         };
@@ -144,14 +147,15 @@ impl SqliteWorkspaceTreeRepository {
     }
 }
 
+#[async_trait::async_trait]
 impl WorkspaceTreeRepository for SqliteWorkspaceTreeRepository {
-    fn load_node(
+    async fn load_node(
         &self,
         workspace_identity: &WorkspaceIdentity,
         node_id: &str,
     ) -> Result<Option<WorkspaceTreeNode>, LocalEventQueryError> {
         let workspace = workspace_identity.as_str().to_string();
-        let trees = self.folded_workspace_trees(&workspace)?;
+        let trees = self.folded_workspace_trees(&workspace).await?;
         for (folded, record) in &trees {
             let nodes = self.tree_nodes(&workspace, folded, record)?;
             if folded.aggregate.id == node_id {
@@ -170,18 +174,19 @@ impl WorkspaceTreeRepository for SqliteWorkspaceTreeRepository {
         Ok(None)
     }
 
-    fn load_node_by_node_execution_id(
+    async fn load_node_by_node_execution_id(
         &self,
         node_execution_id: &str,
     ) -> Result<Option<WorkspaceTreeNode>, LocalEventQueryError> {
         let backend = self.fact_backend();
         let Some(tree_id) = backend
             .tree_id_for_node(node_execution_id)
+            .await
             .map_err(fold_query_error)?
         else {
             return Ok(None);
         };
-        let Some((folded, record)) = self.folded_tree(&tree_id)? else {
+        let Some((folded, record)) = self.folded_tree(&tree_id).await? else {
             return Ok(None);
         };
         let workspace = folded.root.workspace_identity.clone();
@@ -191,7 +196,7 @@ impl WorkspaceTreeRepository for SqliteWorkspaceTreeRepository {
             .find(|node| node.node_execution_id.as_deref() == Some(node_execution_id)))
     }
 
-    fn node_id_for_session(
+    async fn node_id_for_session(
         &self,
         workspace_identity: &WorkspaceIdentity,
         session_id: &str,
@@ -200,11 +205,12 @@ impl WorkspaceTreeRepository for SqliteWorkspaceTreeRepository {
         let backend = self.fact_backend();
         let Some((tree_id, node_execution_id)) =
             fact_log::find_session_attachment(&backend, session_id)
+                .await
                 .map_err(LocalEventQueryError::from)?
         else {
             return Ok(None);
         };
-        let Some((folded, record)) = self.folded_tree(&tree_id)? else {
+        let Some((folded, record)) = self.folded_tree(&tree_id).await? else {
             return Ok(None);
         };
         if folded.root.workspace_identity != workspace {
@@ -230,63 +236,13 @@ fn execution_summary_fact(execution: &WorkflowExecutionMetadataRecord) -> Worksp
     }
 }
 
-#[cfg(test)]
-fn sql_query_error(error: rusqlite::Error) -> LocalEventQueryError {
-    if let rusqlite::Error::SqliteFailure(inner, _) = &error {
-        if matches!(
-            inner.code,
-            rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
-        ) {
-            return LocalEventQueryError::QueryBusy;
-        }
-        if matches!(
-            inner.code,
-            rusqlite::ErrorCode::DatabaseCorrupt | rusqlite::ErrorCode::NotADatabase
-        ) {
-            return store_corruption_query_error(error);
-        }
-    }
-    match error {
-        rusqlite::Error::FromSqlConversionFailure(..)
-        | rusqlite::Error::IntegralValueOutOfRange(..)
-        | rusqlite::Error::InvalidColumnIndex(..)
-        | rusqlite::Error::InvalidColumnName(..)
-        | rusqlite::Error::InvalidColumnType(..) => codec_query_error(error.to_string()),
-        other => {
-            let correlation_id = uuid::Uuid::new_v4().to_string();
-            log::warn!("Workspace indexed query failure [{correlation_id}]: {other}");
-            LocalEventQueryError::StorageUnavailable {
-                failure: SafeOperationFailure::new(
-                    SessionOperationFailureKind::StorageUnavailable,
-                    crate::domain::failure::FailureKind::Temporary,
-                    "Workspace indexed query failed",
-                    correlation_id,
-                ),
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-fn store_corruption_query_error(error: impl std::fmt::Display) -> LocalEventQueryError {
-    let correlation_id = uuid::Uuid::new_v4().to_string();
-    log::error!("Workspace indexed store corruption [{correlation_id}]: {error}");
-    LocalEventQueryError::Corrupt { correlation_id }
-}
-
-pub(super) fn fold_query_error(reason: String) -> LocalEventQueryError {
-    codec_query_error(reason)
+pub(super) fn fold_query_error(error: fact_log::FactReadError) -> LocalEventQueryError {
+    error.into()
 }
 
 #[cfg(test)]
 #[path = "legacy_projection_test.rs"]
 mod legacy_projection_tests;
-
-pub(super) fn codec_query_error(error: String) -> LocalEventQueryError {
-    let correlation_id = uuid::Uuid::new_v4().to_string();
-    log::error!("Workspace indexed record codec failure [{correlation_id}]: {error}");
-    LocalEventQueryError::IncompatibleStoredEvent { correlation_id }
-}
 
 fn invariant_query_error(error: impl std::fmt::Display) -> LocalEventQueryError {
     let correlation_id = uuid::Uuid::new_v4().to_string();

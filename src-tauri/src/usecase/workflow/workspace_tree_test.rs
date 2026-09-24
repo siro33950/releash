@@ -8,8 +8,8 @@ use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::workflow::SessionExecutionTreeRootFacts;
 use crate::test_support::git::{create_initial_commit, create_test_repo};
 
-#[test]
-fn test_archive_restore認可_別名は受理し非管理対象と別worktreeは拒否する() {
+#[tokio::test]
+async fn test_archive_restore認可_別名は受理し非管理対象と別worktreeは拒否する() {
     // Given
     let (repo_dir, repo) = create_test_repo();
     create_initial_commit(&repo);
@@ -48,7 +48,9 @@ fn test_archive_restore認可_別名は受理し非管理対象と別worktreeは
             Some("worktree_path is not a configured git worktree"),
         ),
     ] {
-        let result = usecase.authorize_archive_target(path.to_str().unwrap(), id);
+        let result = usecase
+            .authorize_archive_target(path.to_str().unwrap(), id)
+            .await;
         match expected_error {
             Some(message) => assert!(result.unwrap_err().to_string().contains(message)),
             None => result.unwrap(),

@@ -30,6 +30,7 @@ impl WorkflowExecutionProjectionLogRepository {
     }
 }
 
+#[async_trait::async_trait]
 impl WorkflowExecutionProjectionRepository for WorkflowExecutionProjectionLogRepository {
     fn get_node_artifact_from_events(
         &self,
@@ -46,12 +47,13 @@ impl WorkflowExecutionProjectionRepository for WorkflowExecutionProjectionLogRep
         .map_err(WorkflowError::external)
     }
 
-    fn get_execution(
+    async fn get_execution(
         &self,
         execution_id: &ExecutionTreeId,
     ) -> Result<Option<ExecutionTree>, WorkflowError> {
         let records = fact_log::read_tree_records_from(&self.backend, execution_id.as_str())
-            .map_err(WorkflowError::external)?;
+            .await
+            .map_err(WorkflowError::from)?;
         let Some(tree) = fact_replay::fold_execution_tree(execution_id.as_str(), &records)
             .map_err(WorkflowError::external)?
         else {

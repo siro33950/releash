@@ -132,7 +132,9 @@ impl crate::usecase::agent_session::AgentSessionExecutionTreeLifecycle for Recor
         let _operation = self.lock_execution_tree(tree_id).await?;
         let store = self.store.as_ref().expect("archive fact store");
         let records =
-            crate::adaptor::gateway::workflow::fact_log::read_tree_records(store, tree_id).unwrap();
+            crate::adaptor::gateway::workflow::fact_log::read_tree_records(store, tree_id)
+                .await
+                .unwrap();
         let meta = &records[0].meta;
         crate::adaptor::gateway::workflow::fact_log::append_single_fact(
             store,
@@ -181,7 +183,9 @@ impl crate::usecase::agent_session::AgentSessionExecutionTreeLifecycle for Recor
         }
         let store = self.store.as_ref().expect("restore fact store");
         let records =
-            crate::adaptor::gateway::workflow::fact_log::read_tree_records(store, tree_id).unwrap();
+            crate::adaptor::gateway::workflow::fact_log::read_tree_records(store, tree_id)
+                .await
+                .unwrap();
         crate::adaptor::gateway::workflow::fact_log::append_single_fact(
             store,
             &records[0].meta,
@@ -728,6 +732,7 @@ async fn setup_activity_stop_exclusion_with_events(
             initial_instruction_admitted: true,
         },
     )
+    .await
     .unwrap();
     context
         .sessions
@@ -787,8 +792,9 @@ async fn setup_activity_stop_exclusion_with_events(
     }
 }
 
-fn activity_fact_count(store: &Arc<LocalEventStore>, tree_id: &str) -> usize {
+async fn activity_fact_count(store: &Arc<LocalEventStore>, tree_id: &str) -> usize {
     crate::adaptor::gateway::workflow::fact_log::read_tree_records(store, tree_id)
+        .await
         .unwrap()
         .into_iter()
         .filter(|record| matches!(record.fact, NodeFact::AgentActivityObserved(_)))
@@ -867,7 +873,7 @@ async fn test_agent_session活動観測と停止は到着順に従い停止後�
     let stop_first = setup_activity_stop_exclusion("stop-first").await;
     stop_activity_fixture(&stop_first, "stop-first").await;
     let facts_after_stop =
-        activity_fact_count(&stop_first.context.store, &stop_first.workflow_execution_id);
+        activity_fact_count(&stop_first.context.store, &stop_first.workflow_execution_id).await;
 
     // When: binding 解放後に Working が到着する
     let rejected = observe_working(&stop_first).await;
@@ -878,7 +884,7 @@ async fn test_agent_session活動観測と停止は到着順に従い停止後�
         ProviderLifecycleIngressResult::Rejected(ProviderLifecycleRejection::BindingNotActive)
     );
     assert_eq!(
-        activity_fact_count(&stop_first.context.store, &stop_first.workflow_execution_id,),
+        activity_fact_count(&stop_first.context.store, &stop_first.workflow_execution_id,).await,
         facts_after_stop
     );
     assert_paused_awaiting_instruction(&stop_first).await;
@@ -893,7 +899,8 @@ async fn test_agent_session活動観測と停止は到着順に従い停止後�
         activity_fact_count(
             &activity_first.context.store,
             &activity_first.workflow_execution_id,
-        ),
+        )
+        .await,
         1
     );
 
@@ -906,7 +913,8 @@ async fn test_agent_session活動観測と停止は到着順に従い停止後�
         activity_fact_count(
             &activity_first.context.store,
             &activity_first.workflow_execution_id,
-        ),
+        )
+        .await,
         1
     );
 }
@@ -973,7 +981,8 @@ async fn test_agent_session活動観測と停止_operation_lockが受理とbindi
         activity_fact_count(
             &receive_fixture.context.store,
             &receive_fixture.workflow_execution_id,
-        ),
+        )
+        .await,
         0
     );
     assert_paused_awaiting_instruction(&receive_fixture).await;
@@ -1030,7 +1039,8 @@ async fn test_agent_session活動観測と停止_operation_lockが受理とbindi
         activity_fact_count(
             &release_fixture.context.store,
             &release_fixture.workflow_execution_id,
-        ),
+        )
+        .await,
         0
     );
     assert_paused_awaiting_instruction(&release_fixture).await;
@@ -1061,6 +1071,7 @@ async fn test_workflow所有agent_session停止_checkpointとprovider参照を�
             initial_instruction_admitted: true,
         },
     )
+    .await
     .unwrap();
     sessions
         .create(
@@ -1313,6 +1324,7 @@ async fn test_workflow所有agent_session停止_provider未確定でもgcせずp
             initial_instruction_admitted: true,
         },
     )
+    .await
     .unwrap();
     sessions
         .create(
@@ -1395,6 +1407,7 @@ async fn test_実行木node終端停止_node不一致と停止失敗ではsettle
             initial_instruction_admitted: true,
         },
     )
+    .await
     .unwrap();
     sessions
         .create(
@@ -2922,6 +2935,7 @@ async fn test_workflowのprovider回復_同じnodeを繰り返し再開し永続
             provider: ProviderKind::Claude,
         },
     )
+    .await
     .unwrap();
     context
         .sessions
@@ -3031,6 +3045,7 @@ async fn test_workflowのprovider回復_同じnodeを繰り返し再開し永続
             initial_instruction_admitted: true,
         },
     )
+    .await
     .unwrap();
     context
         .sessions

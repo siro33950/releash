@@ -251,19 +251,20 @@ pub(in crate::cli) mod test_support {
         );
     }
 
-    pub(in crate::cli) fn append_workflow_event(data_dir: &Path, event: &WorkflowEvent) {
-        append_workflow_events(data_dir, std::slice::from_ref(event));
+    pub(in crate::cli) async fn append_workflow_event(data_dir: &Path, event: &WorkflowEvent) {
+        append_workflow_events(data_dir, std::slice::from_ref(event)).await;
     }
 
-    pub(in crate::cli) fn append_workflow_events(data_dir: &Path, events: &[WorkflowEvent]) {
+    pub(in crate::cli) async fn append_workflow_events(data_dir: &Path, events: &[WorkflowEvent]) {
         let store =
             LocalEventStore::open(LocalEventStoreConfig::production(data_dir.to_path_buf()))
                 .expect("open canonical local event store");
         crate::adaptor::gateway::workflow::fact_log::append_facts_for_events(&store, events)
+            .await
             .expect("append canonical node fact fixture");
     }
 
-    pub(in crate::cli) fn write_canonical_execution(
+    pub(in crate::cli) async fn write_canonical_execution(
         data_dir: &Path,
         execution: &WorkflowExecutionMetadata,
     ) {
@@ -274,7 +275,8 @@ pub(in crate::cli) mod test_support {
             &store,
             execution,
             &[],
-        );
+        )
+        .await;
     }
 
     pub(in crate::cli) fn test_uuid(seed: u8) -> String {

@@ -40,19 +40,15 @@ pub(crate) fn register_shared(
                     };
                     let app_state = app_state
                         .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                    let runtime = tokio::runtime::Handle::current();
-                    let result =
-                        tokio::task::spawn_blocking(move || match args.worktree_path.as_deref() {
-                            Some(path) => app_state.workspace_list.refresh_worktree(path),
-                            None => match args.repo_path.as_deref() {
-                                Some(path) => runtime
-                                    .block_on(app_state.workspace_list.refresh_repository(path)),
-                                None => runtime.block_on(app_state.workspace_list.refresh()),
-                            },
-                        })
-                        .await
-                        .map_err(|error| crate::other::AppError::new(error.to_string()));
-                    outcome(result).map(wire::command_result::Command::RefreshWorkspaces)
+                    let result = match args.worktree_path.as_deref() {
+                        Some(path) => app_state.workspace_list.refresh_worktree(path).await,
+                        None => match args.repo_path.as_deref() {
+                            Some(path) => app_state.workspace_list.refresh_repository(path).await,
+                            None => app_state.workspace_list.refresh().await,
+                        },
+                    };
+                    outcome(Ok::<_, crate::other::AppError>(result))
+                        .map(wire::command_result::Command::RefreshWorkspaces)
                 })
             }),
         );

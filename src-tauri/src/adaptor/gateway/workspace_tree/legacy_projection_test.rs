@@ -39,7 +39,7 @@ async fn legacy_agent_projection_row_is_ignored_by_canonical_session_and_workspa
     drop(connection);
 
     let repository = SqliteWorkspaceTreeRepository::new(store);
-    let trees = repository.folded_workspace_trees("/repo").unwrap();
+    let trees = repository.folded_workspace_trees("/repo").await.unwrap();
     assert!(repository
         .workspace_tree_from_folded("/repo", &trees)
         .unwrap()

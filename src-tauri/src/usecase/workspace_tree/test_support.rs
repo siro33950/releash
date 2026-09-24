@@ -21,8 +21,9 @@ impl TestWorkspaceQueryService {
     }
 }
 
+#[async_trait::async_trait]
 impl WorkspaceQueryService for TestWorkspaceQueryService {
-    fn workspace_tree(
+    async fn workspace_tree(
         &self,
         _workspace_identity: &WorkspaceIdentity,
     ) -> Result<WorkspaceTreeSnapshotDto, WorkflowError> {
@@ -33,7 +34,7 @@ impl WorkspaceQueryService for TestWorkspaceQueryService {
         })
     }
 
-    fn node_detail(
+    async fn node_detail(
         &self,
         _workspace_identity: &WorkspaceIdentity,
         _node_id: &str,
@@ -41,7 +42,7 @@ impl WorkspaceQueryService for TestWorkspaceQueryService {
         Ok(None)
     }
 
-    fn session_node_id(
+    async fn session_node_id(
         &self,
         _workspace_identity: &WorkspaceIdentity,
         _session_id: &str,
@@ -49,7 +50,7 @@ impl WorkspaceQueryService for TestWorkspaceQueryService {
         Ok(None)
     }
 
-    fn execution_summaries(
+    async fn execution_summaries(
         &self,
         _workspace_identity: Option<&WorkspaceIdentity>,
         _status: Option<ExecutionStatusFilter>,
@@ -58,7 +59,7 @@ impl WorkspaceQueryService for TestWorkspaceQueryService {
         Ok(self.executions.clone())
     }
 
-    fn execution_summary(
+    async fn execution_summary(
         &self,
         execution_id: &str,
     ) -> Result<Option<WorkflowExecutionSummary>, WorkflowError> {
@@ -69,7 +70,7 @@ impl WorkspaceQueryService for TestWorkspaceQueryService {
             .cloned())
     }
 
-    fn workflow_history(
+    async fn workflow_history(
         &self,
         _workspace_identity: &WorkspaceIdentity,
     ) -> Result<Vec<WorkspaceWorkflowHistoryItemDto>, WorkflowError> {

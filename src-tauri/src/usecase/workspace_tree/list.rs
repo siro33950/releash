@@ -188,18 +188,11 @@ impl WorkspaceListUsecase {
         let usecase = self.clone();
         let repository = path.to_owned();
         tokio::task::spawn_blocking(move || usecase.refresh_prs(&repository, generation));
-        let usecase = self.clone();
-        if let Err(error) = tokio::task::spawn_blocking(move || {
-            for path in worktrees {
-                if !usecase.lists.lock().is_worktree_current(&path, generation) {
-                    continue;
-                }
-                usecase.refresh_nodes(&path, generation);
+        for path in worktrees {
+            if !self.lists.lock().is_worktree_current(&path, generation) {
+                continue;
             }
-        })
-        .await
-        {
-            log::error!("workspace node refresh task failed: {error}");
+            self.refresh_nodes(&path, generation).await;
         }
     }
 
@@ -221,19 +214,23 @@ impl WorkspaceListUsecase {
         (self.notify)();
     }
 
-    pub fn refresh_worktree(&self, path: &str) -> WorkspaceListSnapshotDto {
+    pub async fn refresh_worktree(&self, path: &str) -> WorkspaceListSnapshotDto {
         let generation = self.lists.lock().begin_worktree(path);
         if let Some(generation) = generation {
-            self.refresh_nodes(path, generation);
+            self.refresh_nodes(path, generation).await;
         }
         self.snapshot()
     }
 
-    fn refresh_nodes(&self, path: &str, generation: u64) {
-        let result = self
-            .query
-            .nodes(path)
-            .and_then(|nodes| self.query.history(path).map(|history| (nodes, history)));
+    async fn refresh_nodes(&self, path: &str, generation: u64) {
+        let result = match self.query.nodes(path).await {
+            Ok(nodes) => self
+                .query
+                .history(path)
+                .await
+                .map(|history| (nodes, history)),
+            Err(error) => Err(error),
+        };
         self.lists.lock().complete_worktree(
             path,
             generation,

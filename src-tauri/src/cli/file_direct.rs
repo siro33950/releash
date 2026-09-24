@@ -10,14 +10,15 @@ use crate::adaptor::presenter::workflow::workflow_execution_to_view;
 use crate::domain::workflow::WorkflowError;
 use crate::usecase::workflow::{WorkflowGetOutputResult, WorkflowReadUsecase};
 
-pub(super) fn execution_status(
+pub(super) async fn execution_status(
     data_dir: &Path,
     execution_id: &str,
 ) -> Result<crate::adaptor::protocol::workflow::WorkflowExecutionView, CliError> {
     ensure_existing_data_dir(data_dir)?;
     let read = read_usecase(data_dir)?;
-    ensure_execution_exists(&read, execution_id)?;
+    ensure_execution_exists(&read, execution_id).await?;
     read.get_execution_state(execution_id)
+        .await
         .map_err(|error| CliError::Other(error.to_string()))?
         .map(workflow_execution_to_view)
         .ok_or_else(|| {
@@ -25,7 +26,7 @@ pub(super) fn execution_status(
         })
 }
 
-pub(super) fn get_output(
+pub(super) async fn get_output(
     data_dir: &Path,
     execution_id: &str,
     node: &str,
@@ -33,6 +34,7 @@ pub(super) fn get_output(
     ensure_existing_data_dir(data_dir)?;
     read_usecase(data_dir)?
         .get_output(execution_id, node)
+        .await
         .map_err(workflow_error_to_cli_error)
 }
 
@@ -44,10 +46,14 @@ fn read_usecase(data_dir: &Path) -> Result<WorkflowReadUsecase, CliError> {
     .map_err(CliError::Other)
 }
 
-fn ensure_execution_exists(read: &WorkflowReadUsecase, execution_id: &str) -> Result<(), CliError> {
+async fn ensure_execution_exists(
+    read: &WorkflowReadUsecase,
+    execution_id: &str,
+) -> Result<(), CliError> {
     validate_execution_id(execution_id)?;
     if read
         .get_execution(execution_id)
+        .await
         .map_err(|error| CliError::Other(error.to_string()))?
         .is_none()
     {

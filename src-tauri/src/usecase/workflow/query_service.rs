@@ -95,15 +95,15 @@ impl WorkflowQueryService {
         self.definition_sources.source_format(name.as_str())
     }
 
-    pub(in crate::usecase::workflow) fn read_events(
+    pub(in crate::usecase::workflow) async fn read_events(
         &self,
         execution_id: &str,
     ) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
         let execution_id = ExecutionTreeId::new(execution_id.to_string())?;
-        self.events.read(&execution_id)
+        self.events.read(&execution_id).await
     }
 
-    pub fn get_execution_log_page(
+    pub async fn get_execution_log_page(
         &self,
         execution_id: &str,
         page: WorkflowPageRequest,
@@ -111,7 +111,8 @@ impl WorkflowQueryService {
         let execution_id = ExecutionTreeId::new(execution_id.to_string())?;
         Ok(self
             .events
-            .read_page(&execution_id, page)?
+            .read_page(&execution_id, page)
+            .await?
             .into_iter()
             .map(event_draft_to_log_view)
             .collect())
@@ -150,12 +151,12 @@ impl WorkflowQueryService {
         )
     }
 
-    pub fn get_execution_state(
+    pub async fn get_execution_state(
         &self,
         execution_id: &str,
     ) -> Result<Option<ExecutionTree>, WorkflowError> {
         let execution_id = ExecutionTreeId::new(execution_id.to_string())?;
-        self.execution_projection.get_execution(&execution_id)
+        self.execution_projection.get_execution(&execution_id).await
     }
 
     pub fn get_facet(&self, kind: FacetKind, key: &str) -> Result<String, WorkflowError> {
@@ -349,13 +350,14 @@ mod tests {
         events: Mutex<Vec<WorkflowEventDraft>>,
     }
 
+    #[async_trait::async_trait]
     impl WorkflowEventRepository for FakeEventRepository {
         fn append(&self, event: &WorkflowEventDraft) -> Result<(), WorkflowError> {
             self.events.lock().unwrap().push(event.clone());
             Ok(())
         }
 
-        fn read(
+        async fn read(
             &self,
             _execution_id: &ExecutionTreeId,
         ) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
@@ -377,6 +379,7 @@ mod tests {
         }
     }
 
+    #[async_trait::async_trait]
     impl WorkflowExecutionProjectionRepository for FakeExecutionProjectionRepository {
         fn get_node_artifact_from_events(
             &self,
@@ -384,17 +387,23 @@ mod tests {
             node_name: &str,
             _events: &[WorkflowEventDraft],
         ) -> Result<Option<crate::domain::workflow::Artifact>, WorkflowError> {
-            Ok(self.get_execution(execution_id)?.and_then(|execution| {
-                execution
-                    .node_executions
-                    .into_iter()
-                    .rev()
-                    .find(|node| node.node_name == node_name)
-                    .and_then(|node| node.artifact)
-            }))
+            Ok(self
+                .executions
+                .lock()
+                .unwrap()
+                .get(execution_id.as_str())
+                .cloned()
+                .and_then(|execution| {
+                    execution
+                        .node_executions
+                        .into_iter()
+                        .rev()
+                        .find(|node| node.node_name == node_name)
+                        .and_then(|node| node.artifact)
+                }))
         }
 
-        fn get_execution(
+        async fn get_execution(
             &self,
             execution_id: &ExecutionTreeId,
         ) -> Result<Option<ExecutionTree>, WorkflowError> {
@@ -611,8 +620,8 @@ mod tests {
         assert!(fixture.service.get_workflow_source("bad name!").is_err());
     }
 
-    #[test]
-    fn event_and_facet_queries_validate_execution_ids_and_delegate() {
+    #[tokio::test]
+    async fn event_and_facet_queries_validate_execution_ids_and_delegate() {
         let fixture = Fixture::new();
         fixture
             .events
@@ -632,12 +641,13 @@ mod tests {
             fixture
                 .service
                 .read_events(test_execution_id())
+                .await
                 .unwrap()
                 .len(),
             1
         );
         assert!(matches!(
-            fixture.service.read_events("not-a-uuid").unwrap_err(),
+            fixture.service.read_events("not-a-uuid").await.unwrap_err(),
             WorkflowError::Validation(_)
         ));
         assert_eq!(
@@ -657,8 +667,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn get_execution_log_page_projects_only_the_requested_event_window() {
+    #[tokio::test]
+    async fn get_execution_log_page_projects_only_the_requested_event_window() {
         let fixture = Fixture::new();
         for (event_kind, timestamp) in [("execution_started", 1.0), ("node_started", 2.0)] {
             fixture
@@ -675,6 +685,7 @@ mod tests {
         let events = fixture
             .service
             .get_execution_log_page(test_execution_id(), WorkflowPageRequest::new(1, 1))
+            .await
             .unwrap();
 
         let events = serde_json::to_value(events).unwrap();
@@ -683,8 +694,8 @@ mod tests {
         assert_eq!(events[0]["timestampMs"].as_f64(), Some(2000.0));
     }
 
-    #[test]
-    fn get_output_returns_latest_submitted_snapshot_for_node() {
+    #[tokio::test]
+    async fn get_output_returns_latest_submitted_snapshot_for_node() {
         let fixture = Fixture::new();
         fixture
             .events
@@ -709,7 +720,11 @@ mod tests {
             ))
             .unwrap();
 
-        let events = fixture.service.read_events(test_execution_id()).unwrap();
+        let events = fixture
+            .service
+            .read_events(test_execution_id())
+            .await
+            .unwrap();
         let result = WorkflowQueryService::get_output_from_events(&events, "review");
 
         assert_eq!(
@@ -728,8 +743,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn get_output_returns_contractless_standard_artifact_for_node() {
+    #[tokio::test]
+    async fn get_output_returns_contractless_standard_artifact_for_node() {
         let fixture = Fixture::new();
         fixture
             .events
@@ -754,7 +769,11 @@ mod tests {
             })
             .unwrap();
 
-        let events = fixture.service.read_events(test_execution_id()).unwrap();
+        let events = fixture
+            .service
+            .read_events(test_execution_id())
+            .await
+            .unwrap();
         let result = WorkflowQueryService::get_output_from_events(&events, "review");
 
         assert_eq!(
@@ -775,8 +794,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn get_execution_state_delegates_to_execution_projection_port() {
+    #[tokio::test]
+    async fn get_execution_state_delegates_to_execution_projection_port() {
         let fixture = Fixture::new();
         fixture
             .projections
@@ -785,6 +804,7 @@ mod tests {
         let state = fixture
             .service
             .get_execution_state(test_execution_id())
+            .await
             .unwrap()
             .unwrap();
 
@@ -792,11 +812,15 @@ mod tests {
         assert_eq!(state.workflow_name, "wf");
         assert_eq!(state.node_executions[0].id, "ne-review-1");
         assert_eq!(state.node_executions[0].node_name, "review");
-        assert!(fixture.service.get_execution_state("not-a-uuid").is_err());
+        assert!(fixture
+            .service
+            .get_execution_state("not-a-uuid")
+            .await
+            .is_err());
     }
 
-    #[test]
-    fn test_実行木query_単独sessionの状態と事実を共通idで読める() {
+    #[tokio::test]
+    async fn test_実行木query_単独sessionの状態と事実を共通idで読める() {
         // Given
         let fixture = Fixture::new();
         let id = "agent-session-00000000000040008000000000000001";
@@ -815,13 +839,14 @@ mod tests {
             .unwrap();
         // When / Then
         assert_eq!(
-            fixture.service.get_execution_state(id).unwrap(),
+            fixture.service.get_execution_state(id).await.unwrap(),
             Some(expected)
         );
         assert_eq!(
             fixture
                 .service
                 .get_execution_log_page(id, WorkflowPageRequest::new(0, 10))
+                .await
                 .unwrap()
                 .len(),
             1
@@ -829,11 +854,12 @@ mod tests {
         assert!(fixture
             .service
             .get_execution_state("agent-session-invalid")
+            .await
             .is_err());
     }
 
-    #[test]
-    fn get_execution_log_projects_event_drafts_to_wire_timestamp_fields() {
+    #[tokio::test]
+    async fn get_execution_log_projects_event_drafts_to_wire_timestamp_fields() {
         let fixture = Fixture::new();
         fixture
             .events
@@ -851,6 +877,7 @@ mod tests {
         let events = fixture
             .service
             .get_execution_log_page(test_execution_id(), WorkflowPageRequest::new(0, 10))
+            .await
             .unwrap();
 
         let events = serde_json::to_value(events).unwrap();
@@ -862,8 +889,8 @@ mod tests {
         assert!(events[0].get("timestamp").is_none());
     }
 
-    #[test]
-    fn get_execution_log_renames_submission_timestamp_to_millisecond_field() {
+    #[tokio::test]
+    async fn get_execution_log_renames_submission_timestamp_to_millisecond_field() {
         let fixture = Fixture::new();
         fixture
             .events
@@ -885,6 +912,7 @@ mod tests {
         let events = fixture
             .service
             .get_execution_log_page(test_execution_id(), WorkflowPageRequest::new(0, 10))
+            .await
             .unwrap();
 
         let events = serde_json::to_value(events).unwrap();

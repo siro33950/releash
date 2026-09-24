@@ -132,14 +132,14 @@ mod tests {
     struct NoExecutionTrees;
     #[async_trait::async_trait]
     impl crate::usecase::app_data_gc::ExecutionTreeGc for NoExecutionTrees {
-        fn record_repository_root(
+        async fn record_repository_root(
             &self,
             _: &str,
             _: &str,
         ) -> Result<(), crate::domain::workflow::WorkflowError> {
             unreachable!()
         }
-        fn execution_trees(
+        async fn execution_trees(
             &self,
             _: Option<&str>,
         ) -> Result<
@@ -744,13 +744,14 @@ async fn test_startup_gc結線_消失候補の未終了実行木をabortしてar
     assert_eq!(report.errors, 0);
     assert!(path.exists());
     assert_eq!(
-        fixture.repository.target(id).unwrap().status,
+        fixture.repository.target(id).await.unwrap().status,
         ExecutionStatus::Aborted
     );
     assert_eq!(
         fixture
             .repository
             .archive_snapshot_for(&[id.into()])
+            .await
             .unwrap()
             .records[0]
             .archive_reason,

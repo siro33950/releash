@@ -18,8 +18,11 @@ pub(crate) trait WorkspaceListQueryService: Send + Sync {
     fn repositories(&self) -> Result<Vec<String>, WorkspaceListUsecaseError>;
     async fn branches(&self, path: &str) -> Result<Vec<BranchCardDto>, WorkspaceListUsecaseError>;
     fn pr_status(&self, path: &str) -> Result<PrStatus, WorkspaceListUsecaseError>;
-    fn nodes(&self, path: &str) -> Result<WorkspaceTreeSnapshotDto, WorkspaceListUsecaseError>;
-    fn history(
+    async fn nodes(
+        &self,
+        path: &str,
+    ) -> Result<WorkspaceTreeSnapshotDto, WorkspaceListUsecaseError>;
+    async fn history(
         &self,
         path: &str,
     ) -> Result<Vec<WorkspaceWorkflowHistoryItemDto>, WorkspaceListUsecaseError>;
@@ -51,18 +54,23 @@ impl WorkspaceListQueryService for WorkspaceListServices {
             .map_err(|error| WorkspaceListUsecaseError(error.to_string()))
     }
 
-    fn nodes(&self, path: &str) -> Result<WorkspaceTreeSnapshotDto, WorkspaceListUsecaseError> {
+    async fn nodes(
+        &self,
+        path: &str,
+    ) -> Result<WorkspaceTreeSnapshotDto, WorkspaceListUsecaseError> {
         self.workflow
             .list_workspace_tree_nodes(path)
+            .await
             .map_err(|error| WorkspaceListUsecaseError(error.to_string()))
     }
 
-    fn history(
+    async fn history(
         &self,
         path: &str,
     ) -> Result<Vec<WorkspaceWorkflowHistoryItemDto>, WorkspaceListUsecaseError> {
         self.workflow
             .list_workspace_workflow_history(path)
+            .await
             .map_err(|error| WorkspaceListUsecaseError(error.to_string()))
     }
 }

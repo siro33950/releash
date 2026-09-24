@@ -293,8 +293,8 @@ mod store_round_trip_tests {
     use crate::adaptor::gateway::local_event_store::writer::NodeEventWriteError;
     use crate::domain::local_event::LocalEventQueryError;
 
-    #[test]
-    fn test_store事実追記_同期文脈で記録され結果が返る() {
+    #[tokio::test]
+    async fn test_store事実追記_同期文脈で記録され結果が返る() {
         // Given: file-backed store
         let root = tempfile::TempDir::new().unwrap();
         let store =
@@ -312,9 +312,10 @@ mod store_round_trip_tests {
         // Then: seq が直列に払い出され、reader pool から読み出せる
         assert_eq!((first, second), (1, 2));
         let rows = store
-            .submit_indexed_query_blocking(|connection| {
+            .submit_query(|connection| {
                 read_tree(connection, "tree-1").map_err(|_| LocalEventQueryError::InvalidRequest)
             })
+            .await
             .unwrap();
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].node_execution_id, "root");
@@ -336,10 +337,11 @@ mod store_round_trip_tests {
         // Then: 呼び出しが停止せず結果が返り、事実行を読み出せる
         assert_eq!(seq, 1);
         let rows = store
-            .submit_indexed_query_blocking(|connection| {
+            .submit_query(|connection| {
                 read_tree(connection, "tree-async")
                     .map_err(|_| LocalEventQueryError::InvalidRequest)
             })
+            .await
             .unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].node_execution_id, "root");
@@ -363,8 +365,8 @@ mod store_round_trip_tests {
         assert_eq!(error, NodeEventWriteError::OutcomeUnknown);
     }
 
-    #[test]
-    fn test_store事実追記_reply喪失はoutcome_unknownを返す() {
+    #[tokio::test]
+    async fn test_store事実追記_reply喪失はoutcome_unknownを返す() {
         // Given: 次の writer reply を失う file-backed store
         let root = tempfile::TempDir::new().unwrap();
         let store =
@@ -380,16 +382,17 @@ mod store_round_trip_tests {
         // Then: receiver の切断が OutcomeUnknown として返り、writer は処理済みである
         assert_eq!(error, NodeEventWriteError::OutcomeUnknown);
         let rows = store
-            .submit_indexed_query_blocking(|connection| {
+            .submit_query(|connection| {
                 read_tree(connection, "tree-reply-loss")
                     .map_err(|_| LocalEventQueryError::InvalidRequest)
             })
+            .await
             .unwrap();
         assert_eq!(rows.len(), 1);
     }
 
-    #[test]
-    fn test_store事実追記_writer内のsqlite失敗を返して後続追記を継続する() {
+    #[tokio::test]
+    async fn test_store事実追記_writer内のsqlite失敗を返して後続追記を継続する() {
         // Given: node_events.kind の CHECK 制約に違反する行
         let root = tempfile::TempDir::new().unwrap();
         let store =
@@ -418,10 +421,11 @@ mod store_round_trip_tests {
             NodeEventWriteError::Store(crate::domain::failure::FailureKind::Internal)
         );
         let rows = store
-            .submit_indexed_query_blocking(|connection| {
+            .submit_query(|connection| {
                 read_tree(connection, "tree-sqlite-failure")
                     .map_err(|_| LocalEventQueryError::InvalidRequest)
             })
+            .await
             .unwrap();
         assert!(rows.is_empty());
 

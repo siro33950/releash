@@ -18,7 +18,11 @@ impl WorkflowRuntimeHost {
             &workflow_fact_log::FactLogReadBackend::Live(store),
             execution_id,
         )
-        .map_err(WorkflowRuntimeError::SessionStore)?
+        .await
+        .map_err(|error| WorkflowRuntimeError::StorageFailure {
+            kind: error.failure_kind(),
+            message: error.to_string(),
+        })?
         .ok_or_else(|| WorkflowRuntimeError::ExecutionNotFound(execution_id.to_string()))?;
         for node in &folded.aggregate.node_executions {
             if let Some(session_id) = &node.session_id {
@@ -46,6 +50,7 @@ impl WorkflowRuntimeHost {
             workflow_fact_log::FactLogReadBackend::Live(store),
         )
         .location(execution_id)
+        .await
         .map_err(|error| match error {
             crate::domain::workflow::WorkflowError::NotFound(id) => {
                 WorkflowRuntimeError::ExecutionNotFound(id)

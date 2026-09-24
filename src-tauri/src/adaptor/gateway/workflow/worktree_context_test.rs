@@ -154,7 +154,9 @@ async fn test_隔離読み取り_sessionの起動先を直近の隔離祖先か�
             fixture.store.clone(),
         );
         let context = repository.find("agent").await.unwrap().unwrap();
-        let workspace = workspace_worktree_path(&fixture.backend, &expected.path).unwrap();
+        let workspace = workspace_worktree_path(&fixture.backend, &expected.path)
+            .await
+            .unwrap();
 
         // Then
         assert_eq!(context.session().worktree_path(), expected.path);
@@ -165,14 +167,15 @@ async fn test_隔離読み取り_sessionの起動先を直近の隔離祖先か�
                 fixture.directory.path()
             )
             .workspace_worktree_path(&expected.path)
+            .await
             .unwrap(),
             ROOT
         );
     }
 }
 
-#[test]
-fn test_隔離読み取り_実体なしでも実行中と失敗後とabort後のbranchとpathを再構築する() {
+#[tokio::test]
+async fn test_隔離読み取り_実体なしでも実行中と失敗後とabort後のbranchとpathを再構築する() {
     // Given
     for terminal in [
         None,
@@ -191,7 +194,12 @@ fn test_隔離読み取り_実体なしでも実行中と失敗後とabort後の
         }
 
         // When
-        let state = fixture.read().get_execution_state(TREE).unwrap().unwrap();
+        let state = fixture
+            .read()
+            .get_execution_state(TREE)
+            .await
+            .unwrap()
+            .unwrap();
         let node = state
             .node_executions
             .iter()
@@ -214,8 +222,8 @@ fn test_隔離読み取り_実体なしでも実行中と失敗後とabort後の
     }
 }
 
-#[test]
-fn test_隔離出力_再構築後もcontractなしsessionと合成子の成果を取得する() {
+#[tokio::test]
+async fn test_隔離出力_再構築後もcontractなしsessionと合成子の成果を取得する() {
     // Given
     let fixture = Fixture::new(true);
     fixture.append_child(NodeFact::SubmitReceived(SubmitReceivedFact {
@@ -229,8 +237,8 @@ fn test_隔離出力_再構築後もcontractなしsessionと合成子の成果�
 
     // When
     let read = fixture.read();
-    let child = read.get_output(TREE, "child").unwrap();
-    let composite = read.get_output(TREE, "main").unwrap();
+    let child = read.get_output(TREE, "child").await.unwrap();
+    let composite = read.get_output(TREE, "main").await.unwrap();
 
     // Then
     let crate::usecase::workflow::WorkflowGetOutputResult::Submitted {
@@ -258,8 +266,8 @@ fn test_隔離出力_再構築後もcontractなしsessionと合成子の成果�
     );
 }
 
-#[test]
-fn test_隔離読み取り_所有者やattemptや配置が一致しないpathを拒否する() {
+#[tokio::test]
+async fn test_隔離読み取り_所有者やattemptや配置が一致しないpathを拒否する() {
     // Given
     let fixture = Fixture::new(true);
     let owned = IsolatedWorktree::for_attempt("/repo", &fixture.child.node_execution_id, 2);
@@ -271,18 +279,22 @@ fn test_隔離読み取り_所有者やattemptや配置が一致しないpathを
         owned.path.replace("/repo-worktrees", "/another-worktrees"),
     ] {
         assert!(
-            workspace_worktree_path(&fixture.backend, &path).is_err(),
+            workspace_worktree_path(&fixture.backend, &path)
+                .await
+                .is_err(),
             "{path}"
         );
     }
     assert_eq!(
-        workspace_worktree_path(&fixture.backend, ROOT).unwrap(),
+        workspace_worktree_path(&fixture.backend, ROOT)
+            .await
+            .unwrap(),
         ROOT
     );
 }
 
-#[test]
-fn test_隔離出力_contractの提出情報を保ちworktreeを合成する() {
+#[tokio::test]
+async fn test_隔離出力_contractの提出情報を保ちworktreeを合成する() {
     // Given
     let fixture = Fixture::with_contract(true, true);
     fixture.append_child(NodeFact::ArtifactProduced(ArtifactProducedFact {
@@ -298,7 +310,7 @@ fn test_隔離出力_contractの提出情報を保ちworktreeを合成する() {
         token_usage: None,
     }));
     // When
-    let output = fixture.read().get_output(TREE, "child").unwrap();
+    let output = fixture.read().get_output(TREE, "child").await.unwrap();
     // Then
     let crate::usecase::workflow::WorkflowGetOutputResult::Submitted {
         structured_output,
@@ -318,8 +330,8 @@ fn test_隔離出力_contractの提出情報を保ちworktreeを合成する() {
     );
 }
 
-#[test]
-fn test_隔離出力_同名slotの開始順と提出順が異なっても提出した所有者の値を返す() {
+#[tokio::test]
+async fn test_隔離出力_同名slotの開始順と提出順が異なっても提出した所有者の値を返す() {
     // Given
     let fixture = Fixture::with_slots(true, true, true);
     let second = NodeFactMeta {
@@ -355,7 +367,7 @@ fn test_隔離出力_同名slotの開始順と提出順が異なっても提出�
         )
         .unwrap();
         // When
-        let output = fixture.read().get_output(TREE, "child").unwrap();
+        let output = fixture.read().get_output(TREE, "child").await.unwrap();
         // Then
         let expected =
             IsolatedWorktree::for_attempt("/repo", &meta.node_execution_id, meta.attempt);
@@ -372,8 +384,8 @@ fn test_隔離出力_同名slotの開始順と提出順が異なっても提出�
     }
 }
 
-#[test]
-fn test_隔離出力_contractなしslotも最後に提出した所有者の成果を返す() {
+#[tokio::test]
+async fn test_隔離出力_contractなしslotも最後に提出した所有者の成果を返す() {
     // Given
     let fixture = Fixture::with_slots(true, false, true);
     let second = NodeFactMeta {
@@ -413,7 +425,7 @@ fn test_隔離出力_contractなしslotも最後に提出した所有者の成�
         )
         .unwrap();
         // When
-        let output = fixture.read().get_output(TREE, "child").unwrap();
+        let output = fixture.read().get_output(TREE, "child").await.unwrap();
         // Then
         let crate::usecase::workflow::WorkflowGetOutputResult::Submitted {
             structured_output, ..
@@ -428,9 +440,12 @@ fn test_隔離出力_contractなしslotも最後に提出した所有者の成�
             serde_json::json!({"worktree": {"branch": expected.branch, "path": expected.path}})
         );
         let folded = fact_log::fold_tree_from(&fixture.backend, TREE)
+            .await
             .unwrap()
             .unwrap();
-        let records = fact_log::read_tree_records_from(&fixture.backend, TREE).unwrap();
+        let records = fact_log::read_tree_records_from(&fixture.backend, TREE)
+            .await
+            .unwrap();
         assert_eq!(
             crate::domain::workflow::services::fact_replay::derive_node_artifact(
                 &folded, &records, "child"
@@ -442,8 +457,8 @@ fn test_隔離出力_contractなしslotも最後に提出した所有者の成�
     }
 }
 
-#[test]
-fn test_隔離context_取得済みrootだけで隔離cwdを導出しroot行を再取得しない() {
+#[tokio::test]
+async fn test_隔離context_取得済みrootだけで隔離cwdを導出しroot行を再取得しない() {
     // Given
     let fixture = Fixture::new(false);
     let row = fixture
@@ -453,6 +468,7 @@ fn test_隔離context_取得済みrootだけで隔離cwdを導出しroot行を�
                 .unwrap()
                 .unwrap())
         })
+        .await
         .unwrap();
     let root = stored_definition::read_tree_context(&row.detail)
         .unwrap()
@@ -466,13 +482,15 @@ fn test_隔離context_取得済みrootだけで隔離cwdを導出しroot行を�
         )
         .unwrap();
     // When
-    let path = execution_worktree_path(&fixture.backend, fixture.child, root_meta, root).unwrap();
+    let path = execution_worktree_path(&fixture.backend, fixture.child, root_meta, root)
+        .await
+        .unwrap();
     // Then
     assert_eq!(path, IsolatedWorktree::for_attempt("/repo", TREE, 1).path);
 }
 
-#[test]
-fn test_実効cwd_自身か直近の隔離祖先で確定したら上位行と定義を読まない() {
+#[tokio::test]
+async fn test_実効cwd_自身か直近の隔離祖先で確定したら上位行と定義を読まない() {
     // Given
     for isolated_child in [true, false] {
         let fixture = Fixture::new(isolated_child);
@@ -483,6 +501,7 @@ fn test_実効cwd_自身か直近の隔離祖先で確定したら上位行と�
                     .unwrap()
                     .unwrap())
             })
+            .await
             .unwrap();
         let mut root = stored_definition::read_tree_context(&row.detail)
             .unwrap()
@@ -519,14 +538,16 @@ fn test_実効cwd_自身か直近の隔離祖先で確定したら上位行と�
         let expected =
             IsolatedWorktree::for_attempt("/repo", &owner.node_execution_id, owner.attempt);
         // When
-        let path = execution_worktree_path(&fixture.backend, child, root_meta, root).unwrap();
+        let path = execution_worktree_path(&fixture.backend, child, root_meta, root)
+            .await
+            .unwrap();
         // Then
         assert_eq!(path, expected.path);
     }
 }
 
-#[test]
-fn test_実効cwd_祖先の欠落と循環と別木と不正定義はcorruptになる() {
+#[tokio::test]
+async fn test_実効cwd_祖先の欠落と循環と別木と不正定義はcorruptになる() {
     for invalid in [
         "missing",
         "cycle",
@@ -543,6 +564,7 @@ fn test_実効cwd_祖先の欠落と循環と別木と不正定義はcorruptに�
                     .unwrap()
                     .unwrap())
             })
+            .await
             .unwrap();
         let mut root = stored_definition::read_tree_context(&row.detail)
             .unwrap()
@@ -559,14 +581,14 @@ fn test_実効cwd_祖先の欠落と循環と別木と不正定義はcorruptに�
         }
         // When / Then
         assert!(matches!(
-            execution_worktree_path(&fixture.backend, child, root_meta, root),
+            execution_worktree_path(&fixture.backend, child, root_meta, root).await,
             Err(WorktreeContextReadError::Corrupt(_))
         ));
     }
 }
 
-#[test]
-fn test_実効cwd_祖先sql読み取り障害はinternalへ伝わる() {
+#[tokio::test]
+async fn test_実効cwd_祖先sql読み取り障害はinternalへ伝わる() {
     // Given
     let fixture = Fixture::new(false);
     let row = fixture
@@ -576,6 +598,7 @@ fn test_実効cwd_祖先sql読み取り障害はinternalへ伝わる() {
                 .unwrap()
                 .unwrap())
         })
+        .await
         .unwrap();
     let root = stored_definition::read_tree_context(&row.detail)
         .unwrap()
@@ -588,7 +611,9 @@ fn test_実効cwd_祖先sql読み取り障害はinternalへ伝わる() {
         .execute("DROP TABLE node_events", [])
         .unwrap();
     // When
-    let error = execution_worktree_path(&fixture.backend, child, root_meta, root).unwrap_err();
+    let error = execution_worktree_path(&fixture.backend, child, root_meta, root)
+        .await
+        .unwrap_err();
     // Then
     assert!(matches!(
         error,
@@ -598,8 +623,8 @@ fn test_実効cwd_祖先sql読み取り障害はinternalへ伝わる() {
     ));
 }
 
-#[test]
-fn test_workspace解決_通常pathではstoreを構築せず隔離pathだけ保存事実を読む() {
+#[tokio::test]
+async fn test_workspace解決_通常pathではstoreを構築せず隔離pathだけ保存事実を読む() {
     // Given
     use crate::usecase::workspace_tree::WorkspaceWorktreePathQuery;
     let fixture = Fixture::new(true);
@@ -610,25 +635,32 @@ fn test_workspace解決_通常pathではstoreを構築せず隔離pathだけ保�
         fixture.child.attempt,
     );
     // When / Then
-    assert_eq!(query.workspace_worktree_path(&isolated.path).unwrap(), ROOT);
+    assert_eq!(
+        query.workspace_worktree_path(&isolated.path).await.unwrap(),
+        ROOT
+    );
     let missing_store = fixture.directory.path().join("missing");
     let query = StoredWorkspaceWorktreePathQuery::new(missing_store.clone());
-    assert_eq!(query.workspace_worktree_path(ROOT).unwrap(), ROOT);
+    assert_eq!(query.workspace_worktree_path(ROOT).await.unwrap(), ROOT);
     assert!(!missing_store.exists());
-    assert!(query.workspace_worktree_path(&isolated.path).is_err());
+    assert!(query.workspace_worktree_path(&isolated.path).await.is_err());
     assert_eq!(
         workspace_worktree_path_with(ROOT, || panic!("ordinary paths must not construct a store"))
+            .await
             .unwrap(),
         ROOT
     );
 }
 
-fn workspace_worktree_path(backend: &FactLogReadBackend, path: &str) -> Result<String, String> {
-    workspace_worktree_path_with(path, || Ok(backend.clone()))
+async fn workspace_worktree_path(
+    backend: &FactLogReadBackend,
+    path: &str,
+) -> Result<String, crate::domain::workflow::WorkflowError> {
+    workspace_worktree_path_with(path, || Ok(backend.clone())).await
 }
 
-#[test]
-fn test_実効cwd_rootのretryで初回rootとidが変わってもworkspaceを継承する() {
+#[tokio::test]
+async fn test_実効cwd_rootのretryで初回rootとidが変わってもworkspaceを継承する() {
     // Given
     let fixture = Fixture::new(false);
     let row = fixture
@@ -638,6 +670,7 @@ fn test_実効cwd_rootのretryで初回rootとidが変わってもworkspaceを�
                 .unwrap()
                 .unwrap())
         })
+        .await
         .unwrap();
     let mut root = stored_definition::read_tree_context(&row.detail)
         .unwrap()
@@ -651,7 +684,50 @@ fn test_実効cwd_rootのretryで初回rootとidが変わってもworkspaceを�
         ..root_meta.clone()
     };
     // When
-    let path = execution_worktree_path(&fixture.backend, current, root_meta, root).unwrap();
+    let path = execution_worktree_path(&fixture.backend, current, root_meta, root)
+        .await
+        .unwrap();
     // Then
     assert_eq!(path, ROOT);
+}
+
+#[tokio::test]
+async fn test_workspace所在地読取_実経路で失敗分類を保持する() {
+    use crate::adaptor::gateway::local_event_store::test_helpers::ReadFailure;
+    use crate::adaptor::protocol::connect::classified_error;
+    // Given
+    let fixture = Fixture::new(false);
+    let isolated = IsolatedWorktree::for_attempt("/repo", TREE, 1);
+    for (failure, expected) in ReadFailure::cases() {
+        fixture.store.fail_next_read(failure);
+        // When
+        let error = workspace_worktree_path(&fixture.backend, &isolated.path)
+            .await
+            .unwrap_err();
+        // Then
+        assert_eq!(classified_error(error).code, expected);
+    }
+}
+
+#[tokio::test]
+async fn test_workspace所在地読取_保存されたrootの破損をdata_lossとして返す() {
+    // Given
+    let fixture = Fixture::new(false);
+    let isolated = IsolatedWorktree::for_attempt("/repo", TREE, 1);
+    rusqlite::Connection::open(fixture.directory.path().join("local-event-store.sqlite3"))
+        .unwrap()
+        .execute(
+            "UPDATE node_events SET detail = '{' WHERE parent_id IS NULL",
+            [],
+        )
+        .unwrap();
+    // When
+    let error = workspace_worktree_path(&fixture.backend, &isolated.path)
+        .await
+        .unwrap_err();
+    // Then
+    assert_eq!(
+        crate::adaptor::protocol::connect::classified_error(error).code,
+        connectrpc::ErrorCode::DataLoss
+    );
 }

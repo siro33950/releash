@@ -33,10 +33,10 @@ impl WorkflowStartupUsecase {
         }
         *attempted = true;
         let mut first_error = None;
-        for tree_id in self.repository.list_tree_ids()? {
+        for tree_id in self.repository.list_tree_ids().await? {
             let timestamp = self.runtime.current_timestamp();
             let result = match super::command::retry_control_plane_conflicts(|| async {
-                abort_unavailable_definition(self.repository.as_ref(), &tree_id, timestamp)
+                abort_unavailable_definition(self.repository.as_ref(), &tree_id, timestamp).await
             })
             .await
             {
@@ -60,6 +60,7 @@ impl WorkflowStartupUsecase {
                         reason.clone(),
                         timestamp,
                     )
+                    .await
                 })
                 .await
                 {
@@ -72,34 +73,38 @@ impl WorkflowStartupUsecase {
     }
 }
 
-fn abort_startup_failure(
+async fn abort_startup_failure(
     repository: &dyn WorkflowStartupRepository,
     tree_id: &str,
     reason: String,
     timestamp: f64,
 ) -> Result<(), WorkflowError> {
-    let Some(mut record) = repository.load(tree_id)? else {
+    let Some(mut record) = repository.load(tree_id).await? else {
         return Ok(());
     };
     if let Some(fact) = record.execution.abort_with_reason(reason, timestamp) {
-        repository.append(&record.root, &fact, timestamp, Some(&record.revision))?;
+        repository
+            .append(&record.root, &fact, timestamp, Some(&record.revision))
+            .await?;
     }
     Ok(())
 }
 
-pub fn abort_unavailable_definition(
+pub async fn abort_unavailable_definition(
     repository: &dyn WorkflowStartupRepository,
     tree_id: &str,
     timestamp: f64,
 ) -> Result<(), WorkflowError> {
-    let Some(mut record) = repository.load(tree_id)? else {
+    let Some(mut record) = repository.load(tree_id).await? else {
         return Ok(());
     };
     if let Some(fact) = record
         .execution
         .abort_unavailable_definition(record.definition_error, timestamp)
     {
-        repository.append(&record.root, &fact, timestamp, Some(&record.revision))?;
+        repository
+            .append(&record.root, &fact, timestamp, Some(&record.revision))
+            .await?;
     }
     Ok(())
 }

@@ -25,8 +25,8 @@ fn test_local_event_store_複製descriptorが残っても終了後にwriter_lock
     drop(reopened);
 }
 
-#[test]
-fn test_node事実追記_読取後の外部追記と競合したbatchは一行も保存しない() {
+#[tokio::test]
+async fn test_node事実追記_読取後の外部追記と競合したbatchは一行も保存しない() {
     use crate::adaptor::gateway::local_event_store::node_events::{read_tree, NewNodeEventRow};
     use crate::adaptor::gateway::local_event_store::writer::NodeEventWriteError;
     // Given
@@ -58,10 +58,11 @@ fn test_node事実追記_読取後の外部追記と競合したbatchは一行�
     // Then
     assert!(matches!(result, Err(NodeEventWriteError::Conflict)));
     let rows = store
-        .submit_indexed_query_blocking(|connection| {
+        .submit_query(|connection| {
             read_tree(connection, "tree")
                 .map_err(|_| crate::domain::local_event::LocalEventQueryError::InvalidRequest)
         })
+        .await
         .unwrap();
     assert_eq!(rows.len(), 2);
     assert_eq!(

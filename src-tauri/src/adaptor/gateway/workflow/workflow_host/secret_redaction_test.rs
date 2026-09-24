@@ -121,7 +121,9 @@ schemas:
             .unwrap();
 
         // Then
-        let records = workflow_fact_log::read_tree_records(&fixture.store, &execution_id).unwrap();
+        let records = workflow_fact_log::read_tree_records(&fixture.store, &execution_id)
+            .await
+            .unwrap();
         let artifact = records
             .iter()
             .find_map(|record| match &record.fact {

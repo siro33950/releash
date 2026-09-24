@@ -26,15 +26,16 @@ fn fixture() -> (
     (directory, store, repository, meta)
 }
 
-#[test]
-fn test_実行木archive_終了前は拒否して終了後の理由と時刻を事実から読む() {
+#[tokio::test]
+async fn test_実行木archive_終了前は拒否して終了後の理由と時刻を事実から読む() {
     // Given
     let (directory, store, repository, meta) = fixture();
     let id = ExecutionTreeId::new(meta.tree_id.clone()).unwrap();
     // When / Then
-    assert!(repository.archive(&id, 123.456789, "manual").is_err());
+    assert!(repository.archive(&id, 123.456789, "manual").await.is_err());
     assert!(repository
         .archive_snapshot_for(&[meta.tree_id.clone()])
+        .await
         .unwrap()
         .records
         .is_empty());
@@ -47,9 +48,11 @@ fn test_実行木archive_終了前は拒否して終了後の理由と時刻を�
     .unwrap();
     repository
         .archive(&id, 123.456789, "worktree_removed")
+        .await
         .unwrap();
     let records = repository
         .archive_snapshot_for(&[meta.tree_id.clone()])
+        .await
         .unwrap()
         .records;
     assert_eq!(
@@ -60,10 +63,11 @@ fn test_実行木archive_終了前は拒否して終了後の理由と時刻を�
             archive_reason: "worktree_removed".into(),
         }]
     );
-    repository.archive(&id, 200.0, "manual").unwrap();
+    repository.archive(&id, 200.0, "manual").await.unwrap();
     assert_eq!(
         repository
             .archive_snapshot_for(&[meta.tree_id])
+            .await
             .unwrap()
             .records,
         records
@@ -74,8 +78,8 @@ fn test_実行木archive_終了前は拒否して終了後の理由と時刻を�
         .exists());
 }
 
-#[test]
-fn test_実行木restore_終了状態を保ちsessionはpausedになる() {
+#[tokio::test]
+async fn test_実行木restore_終了状態を保ちsessionはpausedになる() {
     // Given
     let (_directory, store, repository, meta) = fixture();
     let id = ExecutionTreeId::new(meta.tree_id.clone()).unwrap();
@@ -86,20 +90,23 @@ fn test_実行木restore_終了状態を保ちsessionはpausedになる() {
         2,
     )
     .unwrap();
-    repository.archive(&id, 3.0, "manual").unwrap();
+    repository.archive(&id, 3.0, "manual").await.unwrap();
     // When
-    repository.restore(&id, 4.0).unwrap();
+    repository.restore(&id, 4.0).await.unwrap();
     // Then
     assert!(repository
         .archive_snapshot_for(&[meta.tree_id.clone()])
+        .await
         .unwrap()
         .records
         .is_empty());
     assert_eq!(
-        repository.target(&meta.tree_id).unwrap().status,
+        repository.target(&meta.tree_id).await.unwrap().status,
         crate::domain::workflow::ExecutionStatus::Aborted
     );
-    let records = fact_log::read_tree_records(&store, &meta.tree_id).unwrap();
+    let records = fact_log::read_tree_records(&store, &meta.tree_id)
+        .await
+        .unwrap();
     let session = crate::domain::workflow::services::fact_replay::derive_session_facts(
         &records,
         &meta.node_execution_id,
@@ -112,8 +119,8 @@ fn test_実行木restore_終了状態を保ちsessionはpausedになる() {
         .any(|record| matches!(record.fact, NodeFact::ResumeRequested)));
 }
 
-#[test]
-fn test_完了済み旧archive_元の時刻を保って移行し次回候補から外す() {
+#[tokio::test]
+async fn test_完了済み旧archive_元の時刻を保って移行し次回候補から外す() {
     // Given
     let (_directory, store, repository, meta) = fixture();
     let id = ExecutionTreeId::new(meta.tree_id.clone()).unwrap();
@@ -133,30 +140,45 @@ fn test_完了済み旧archive_元の時刻を保って移行し次回候補か�
         fact_log::append_pending_rows_blocking(&store, vec![pending]).unwrap();
     }
     assert_eq!(
-        repository.target(id.as_str()).unwrap().status,
+        repository.target(id.as_str()).await.unwrap().status,
         crate::domain::workflow::ExecutionStatus::Completed
     );
     assert_eq!(
-        repository.legacy_session_archive_page(None).unwrap().len(),
+        repository
+            .legacy_session_archive_page(None)
+            .await
+            .unwrap()
+            .len(),
         1
     );
     // When
-    repository.archive(&id, 100.0, "worktree_removed").unwrap();
+    repository
+        .archive(&id, 100.0, "worktree_removed")
+        .await
+        .unwrap();
     // Then
-    let snapshot = repository.archive_snapshot_for(&[id.to_string()]).unwrap();
+    let snapshot = repository
+        .archive_snapshot_for(&[id.to_string()])
+        .await
+        .unwrap();
     assert_eq!(snapshot.records[0].archived_at, 42.0);
     assert_eq!(snapshot.records[0].archive_reason, "manual");
     assert!(repository
         .legacy_session_archive_page(None)
+        .await
         .unwrap()
         .is_empty());
-    let facts = fact_log::read_tree_records(&store, id.as_str()).unwrap();
+    let facts = fact_log::read_tree_records(&store, id.as_str())
+        .await
+        .unwrap();
     assert!(!facts
         .iter()
         .any(|record| matches!(record.fact, NodeFact::AbortRequested(_))));
-    repository.archive(&id, 200.0, "manual").unwrap();
+    repository.archive(&id, 200.0, "manual").await.unwrap();
     assert_eq!(
-        fact_log::read_tree_records(&store, id.as_str()).unwrap(),
+        fact_log::read_tree_records(&store, id.as_str())
+            .await
+            .unwrap(),
         facts
     );
 }
@@ -192,15 +214,20 @@ fn test_旧archive記録_理由と時刻を保って読み移行完了後だけ�
     assert!(repository.legacy_archives().unwrap().is_empty());
 }
 
-#[test]
-fn test_実行木restore_archiveされていない実行に終了事実を追加しない() {
+#[tokio::test]
+async fn test_実行木restore_archiveされていない実行に終了事実を追加しない() {
     let (_directory, store, repository, meta) = fixture();
-    let before = fact_log::read_tree_records(&store, &meta.tree_id).unwrap();
+    let before = fact_log::read_tree_records(&store, &meta.tree_id)
+        .await
+        .unwrap();
     repository
         .restore(&ExecutionTreeId::new(meta.tree_id.clone()).unwrap(), 2.0)
+        .await
         .unwrap();
     assert_eq!(
-        fact_log::read_tree_records(&store, &meta.tree_id).unwrap(),
+        fact_log::read_tree_records(&store, &meta.tree_id)
+            .await
+            .unwrap(),
         before
     );
 }
@@ -216,24 +243,29 @@ fn test_旧archive記録_従来許可していた空objectを受理し破損json
     assert_eq!(std::fs::read_to_string(path).unwrap(), "invalid json");
 }
 
-#[test]
-fn test_実行木archive対象_消失pathでも末尾スラッシュを正規化する() {
+#[tokio::test]
+async fn test_実行木archive対象_消失pathでも末尾スラッシュを正規化する() {
     // Given
     let (_directory, _store, repository, meta) = fixture();
     // When / Then
     assert_eq!(
-        repository.worktree_target_page("/repo/", None).unwrap()[0].execution_id,
+        repository
+            .worktree_target_page("/repo/", None)
+            .await
+            .unwrap()[0]
+            .execution_id,
         meta.tree_id
     );
     assert!(repository
         .worktree_target_page("/repo-other", None)
+        .await
         .unwrap()
         .is_empty());
 }
 
 #[cfg(unix)]
-#[test]
-fn test_実行木archive対象_git削除と同じ実体のpathとworkspace表記を照合する() {
+#[tokio::test]
+async fn test_実行木archive対象_git削除と同じ実体のpathとworkspace表記を照合する() {
     // Given
     let (directory, store, repository, _) = fixture();
     let worktree = directory.path().join("worktree");
@@ -269,6 +301,7 @@ fn test_実行木archive対象_git削除と同じ実体のpathとworkspace表記
     ] {
         let mut ids = repository
             .worktree_target_page(&input, None)
+            .await
             .unwrap()
             .into_iter()
             .map(|target| target.execution_id)
@@ -280,11 +313,12 @@ fn test_実行木archive対象_git削除と同じ実体のpathとworkspace表記
     std::os::unix::fs::symlink(&invalid, &invalid).unwrap();
     assert!(repository
         .worktree_target_page(invalid.to_str().unwrap(), None)
+        .await
         .is_err());
 }
 
-#[test]
-fn test_archive候補_履歴や定義をfoldせずページングしgcではarchive済みを除外する() {
+#[tokio::test]
+async fn test_archive候補_履歴や定義をfoldせずページングしgcではarchive済みを除外する() {
     // Given
     let (_directory, store, repository, meta) = fixture();
     for index in 0..260 {
@@ -319,12 +353,13 @@ fn test_archive候補_履歴や定義をfoldせずページングしgcではarch
     .unwrap();
     repository
         .archive(&ExecutionTreeId::new(&meta.tree_id).unwrap(), 3.0, "manual")
+        .await
         .unwrap();
     // When
     let mut ids = Vec::new();
     let mut after = None;
     loop {
-        let page = repository.candidate_page(after.as_deref()).unwrap();
+        let page = repository.candidate_page(after.as_deref()).await.unwrap();
         assert!(page.len() <= 128);
         let Some(last) = page.last() else { break };
         after = Some(last.execution_id.clone());
@@ -338,6 +373,7 @@ fn test_archive候補_履歴や定義をfoldせずページングしgcではarch
     loop {
         let page = repository
             .worktree_target_page("/repo", after.as_deref())
+            .await
             .unwrap();
         assert!(page.len() <= 128);
         let Some(last) = page.last() else { break };
@@ -348,8 +384,8 @@ fn test_archive候補_履歴や定義をfoldせずページングしgcではarch
 }
 
 #[cfg(unix)]
-#[test]
-fn test_worktreearchive候補_対象外の壊れたpathを解決せずページ内の対象だけを返す() {
+#[tokio::test]
+async fn test_worktreearchive候補_対象外の壊れたpathを解決せずページ内の対象だけを返す() {
     // Given
     let (directory, store, repository, meta) = fixture();
     let broken = directory.path().join("broken");
@@ -367,26 +403,34 @@ fn test_worktreearchive候補_対象外の壊れたpathを解決せずページ�
         fact_log::append_fact_batch_for_seed(&store, &facts.into_facts(), 1, &id).unwrap();
     }
     // When / Then
-    let page = repository.worktree_target_page("/repo", None).unwrap();
+    let page = repository
+        .worktree_target_page("/repo", None)
+        .await
+        .unwrap();
     assert_eq!(page.len(), 1);
     assert_eq!(page[0].execution_id, meta.tree_id);
     assert!(repository
         .worktree_target_page("/repo", Some(&meta.tree_id))
+        .await
         .unwrap()
         .is_empty());
 }
 
-#[test]
-fn test_repository所属の記録_追記を繰り返さず再読込後も同じ所属を返す() {
+#[tokio::test]
+async fn test_repository所属の記録_追記を繰り返さず再読込後も同じ所属を返す() {
     // Given
     let (directory, store, repository, meta) = fixture();
-    let before = fact_log::read_tree_records(&store, &meta.tree_id).unwrap();
+    let before = fact_log::read_tree_records(&store, &meta.tree_id)
+        .await
+        .unwrap();
     // When
     repository
         .record_repository_root(&meta.tree_id, "/owner", 2.0)
+        .await
         .unwrap();
     repository
         .record_repository_root(&meta.tree_id, "/owner", 3.0)
+        .await
         .unwrap();
     let reader = ExecutionTreeArchiveFactRepository::from_backend(FactLogReadBackend::ReadOnly(
         crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore::open(
@@ -395,7 +439,9 @@ fn test_repository所属の記録_追記を繰り返さず再読込後も同じ�
         .unwrap(),
     ));
     // Then
-    let after = fact_log::read_tree_records(&store, &meta.tree_id).unwrap();
+    let after = fact_log::read_tree_records(&store, &meta.tree_id)
+        .await
+        .unwrap();
     assert_eq!(&after[..before.len()], before);
     assert_eq!(after.len(), before.len() + 1);
     assert_eq!(
@@ -403,7 +449,7 @@ fn test_repository所属の記録_追記を繰り返さず再読込後も同じ�
         NodeFact::RepositoryRootObserved("/owner".into())
     );
     assert_eq!(
-        reader.candidate_page(None).unwrap()[0]
+        reader.candidate_page(None).await.unwrap()[0]
             .repository_root
             .as_deref(),
         Some("/owner")
@@ -411,6 +457,7 @@ fn test_repository所属の記録_追記を繰り返さず再読込後も同じ�
     assert_eq!(
         reader
             .location(&meta.tree_id)
+            .await
             .unwrap()
             .repository_root
             .as_deref(),
@@ -419,6 +466,7 @@ fn test_repository所属の記録_追記を繰り返さず再読込後も同じ�
     assert_eq!(
         reader
             .target(&meta.tree_id)
+            .await
             .unwrap()
             .repository_root
             .as_deref(),
@@ -426,18 +474,22 @@ fn test_repository所属の記録_追記を繰り返さず再読込後も同じ�
     );
     assert!(repository
         .record_repository_root(&meta.tree_id, "/other", 4.0)
+        .await
         .is_err());
     assert!(repository
         .record_repository_root("missing", "/owner", 4.0)
+        .await
         .is_err());
     assert_eq!(
-        fact_log::read_tree_records(&store, &meta.tree_id).unwrap(),
+        fact_log::read_tree_records(&store, &meta.tree_id)
+            .await
+            .unwrap(),
         after
     );
 }
 
-#[test]
-fn test_repository所属の記録_読取専用では保存失敗を返す() {
+#[tokio::test]
+async fn test_repository所属の記録_読取専用では保存失敗を返す() {
     // Given
     let (directory, _store, _repository, meta) = fixture();
     let reader = ExecutionTreeArchiveFactRepository::from_backend(FactLogReadBackend::ReadOnly(
@@ -449,16 +501,18 @@ fn test_repository所属の記録_読取専用では保存失敗を返す() {
     // When / Then
     assert!(reader
         .record_repository_root(&meta.tree_id, "/owner", 2.0)
+        .await
         .is_err());
     assert!(reader
         .location(&meta.tree_id)
+        .await
         .unwrap()
         .repository_root
         .is_none());
 }
 
-#[test]
-fn test_repository所属の復元_フォルダ消失済みでも旧隔離worktreeの事実を参照する() {
+#[tokio::test]
+async fn test_repository所属の復元_フォルダ消失済みでも旧隔離worktreeの事実を参照する() {
     // Given
     let (_directory, store, repository, meta) = fixture();
     let mut pending =
@@ -476,20 +530,61 @@ fn test_repository所属の復元_フォルダ消失済みでも旧隔離worktre
     fact_log::append_pending_rows_blocking(&store, vec![pending]).unwrap();
     // When / Then
     assert_eq!(
-        repository.candidate_page(None).unwrap()[0]
+        repository.candidate_page(None).await.unwrap()[0]
             .repository_root
             .as_deref(),
         Some("/owner")
     );
     repository
         .record_repository_root(&meta.tree_id, "/owner", 3.0)
+        .await
         .unwrap();
     assert_eq!(
         repository
             .target(&meta.tree_id)
+            .await
             .unwrap()
             .repository_root
             .as_deref(),
         Some("/owner")
     );
+}
+
+#[tokio::test]
+async fn test_archive読取_実経路で失敗分類を保持する() {
+    use crate::adaptor::gateway::local_event_store::test_helpers::ReadFailure;
+    use crate::adaptor::protocol::connect::classified_error;
+    // Given
+    let (_directory, store, repository, meta) = fixture();
+    let id = ExecutionTreeId::new(meta.tree_id.clone()).unwrap();
+    for (failure, expected) in ReadFailure::cases() {
+        for operation in 0..6 {
+            store.fail_next_read(failure.clone());
+            // When
+            let result = match operation {
+                0 => repository.candidate_page(None).await.map(|_| ()),
+                1 => repository.location(&meta.tree_id).await.map(|_| ()),
+                2 => repository
+                    .legacy_session_archive_page(None)
+                    .await
+                    .map(|_| ()),
+                3 => repository
+                    .archive_snapshot_for(&[meta.tree_id.clone()])
+                    .await
+                    .map(|_| ()),
+                4 => repository.archive(&id, 2.0, "manual").await,
+                _ => {
+                    repository
+                        .append(&meta.tree_id, NodeFact::RestoreRequested, 2.0)
+                        .await
+                }
+            };
+            // Then
+            assert_eq!(
+                classified_error(result.unwrap_err()).code,
+                expected,
+                "operation {operation}"
+            );
+        }
+    }
 }

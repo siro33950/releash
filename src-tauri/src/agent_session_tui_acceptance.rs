@@ -464,7 +464,8 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
                 session_id: &seeded_session_id,
                 initial_instruction_admitted: true,
             },
-        )?;
+        )
+        .await?;
         let session = self
             .workflow_agent_sessions
             .prepare_workflow_agent_session(

@@ -199,27 +199,27 @@ pub(crate) struct WorkspaceWorkflowHistoryItemDto {
 }
 
 impl WorkflowUsecase {
-    pub(crate) fn list_workspace_tree_nodes(
+    pub(crate) async fn list_workspace_tree_nodes(
         &self,
         worktree_path: &str,
     ) -> Result<WorkspaceTreeSnapshotDto, WorkflowError> {
         let workspace = crate::domain::workspace_tree::WorkspaceIdentity::new(
             self.resolve_worktree_path(worktree_path)?,
         );
-        self.workspace_query.workspace_tree(&workspace)
+        self.workspace_query.workspace_tree(&workspace).await
     }
 
-    pub(crate) fn list_workspace_workflow_history(
+    pub(crate) async fn list_workspace_workflow_history(
         &self,
         worktree_path: &str,
     ) -> Result<Vec<WorkspaceWorkflowHistoryItemDto>, WorkflowError> {
         let workspace = crate::domain::workspace_tree::WorkspaceIdentity::new(
             self.resolve_worktree_path(worktree_path)?,
         );
-        self.workspace_query.workflow_history(&workspace)
+        self.workspace_query.workflow_history(&workspace).await
     }
 
-    pub(crate) fn get_workspace_node_detail(
+    pub(crate) async fn get_workspace_node_detail(
         &self,
         worktree_path: &str,
         node_id: &str,
@@ -227,10 +227,10 @@ impl WorkflowUsecase {
         let workspace = crate::domain::workspace_tree::WorkspaceIdentity::new(
             self.resolve_worktree_path(worktree_path)?,
         );
-        self.workspace_query.node_detail(&workspace, node_id)
+        self.workspace_query.node_detail(&workspace, node_id).await
     }
 
-    pub(crate) fn get_workspace_session_node_id(
+    pub(crate) async fn get_workspace_session_node_id(
         &self,
         worktree_path: &str,
         session_id: &str,
@@ -238,10 +238,12 @@ impl WorkflowUsecase {
         let workspace = crate::domain::workspace_tree::WorkspaceIdentity::new(
             self.resolve_worktree_path(worktree_path)?,
         );
-        self.workspace_query.session_node_id(&workspace, session_id)
+        self.workspace_query
+            .session_node_id(&workspace, session_id)
+            .await
     }
 
-    pub(crate) fn get_workspace_tree_selection_reconciliation(
+    pub(crate) async fn get_workspace_tree_selection_reconciliation(
         &self,
         worktree_path: &str,
         selected_node_id: &str,
@@ -251,6 +253,7 @@ impl WorkflowUsecase {
         );
         self.workspace_query
             .workspace_tree(&workspace)
+            .await
             .map(|snapshot| reconcile_workspace_tree_selection(snapshot, selected_node_id))
     }
 
@@ -260,7 +263,8 @@ impl WorkflowUsecase {
         worktree_path: &str,
         execution_id: &str,
     ) -> Result<(), WorkflowError> {
-        self.authorize_archive_target(worktree_path, execution_id)?;
+        self.authorize_archive_target(worktree_path, execution_id)
+            .await?;
         runtime.archive_execution_tree(execution_id, "manual").await
     }
 
@@ -270,17 +274,18 @@ impl WorkflowUsecase {
         worktree_path: &str,
         execution_id: &str,
     ) -> Result<(), WorkflowError> {
-        self.authorize_archive_target(worktree_path, execution_id)?;
+        self.authorize_archive_target(worktree_path, execution_id)
+            .await?;
         runtime.restore_execution_tree(execution_id).await
     }
 
-    fn authorize_archive_target(
+    async fn authorize_archive_target(
         &self,
         worktree_path: &str,
         execution_id: &str,
     ) -> Result<(), WorkflowError> {
         crate::domain::workflow::ExecutionTreeId::new(execution_id.to_string())?;
-        let target = self.execution_archives.target(execution_id)?;
+        let target = self.execution_archives.target(execution_id).await?;
         if crate::domain::workspace_tree::WorkspaceIdentity::new(
             self.resolve_worktree_path(worktree_path)?,
         ) != crate::domain::workspace_tree::WorkspaceIdentity::new(&target.workspace_identity)
@@ -293,8 +298,9 @@ impl WorkflowUsecase {
     }
 }
 
+#[async_trait::async_trait]
 impl WorkspaceNodeActionResolver for WorkflowUsecase {
-    fn resolve_approval_target(
+    async fn resolve_approval_target(
         &self,
         worktree_path: &str,
         node_id: &str,
@@ -305,6 +311,7 @@ impl WorkspaceNodeActionResolver for WorkflowUsecase {
         let node = self
             .workspace_nodes
             .load_node(&workspace, node_id)
+            .await
             .map_err(|error| WorkflowError::external(error.to_string()))?
             .ok_or_else(|| {
                 WorkflowError::NotFound(format!("Workspace node not found: {node_id}"))
@@ -323,7 +330,7 @@ impl WorkspaceNodeActionResolver for WorkflowUsecase {
         })
     }
 
-    fn resolve_retry_target(
+    async fn resolve_retry_target(
         &self,
         worktree_path: &str,
         node_id: &str,
@@ -334,6 +341,7 @@ impl WorkspaceNodeActionResolver for WorkflowUsecase {
         let node = self
             .workspace_nodes
             .load_node(&workspace, node_id)
+            .await
             .map_err(|error| WorkflowError::external(error.to_string()))?
             .ok_or_else(|| {
                 WorkflowError::NotFound(format!("Workspace node not found: {node_id}"))
@@ -351,7 +359,7 @@ impl WorkspaceNodeActionResolver for WorkflowUsecase {
         })
     }
 
-    fn resolve_session_resume_target(
+    async fn resolve_session_resume_target(
         &self,
         worktree_path: &str,
         node_id: &str,
@@ -362,6 +370,7 @@ impl WorkspaceNodeActionResolver for WorkflowUsecase {
         let node = self
             .workspace_nodes
             .load_node(&workspace, node_id)
+            .await
             .map_err(|error| WorkflowError::external(error.to_string()))?
             .ok_or_else(|| {
                 WorkflowError::NotFound(format!("Workspace node not found: {node_id}"))
@@ -379,7 +388,7 @@ impl WorkspaceNodeActionResolver for WorkflowUsecase {
         })
     }
 
-    fn resolve_session_rename_target(
+    async fn resolve_session_rename_target(
         &self,
         worktree_path: &str,
         node_id: &str,
@@ -390,6 +399,7 @@ impl WorkspaceNodeActionResolver for WorkflowUsecase {
         let node = self
             .workspace_nodes
             .load_node(&workspace, node_id)
+            .await
             .map_err(|error| WorkflowError::external(error.to_string()))?
             .ok_or_else(|| {
                 WorkflowError::NotFound(format!("Workspace node not found: {node_id}"))

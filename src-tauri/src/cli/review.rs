@@ -1,3 +1,4 @@
+use crate::usecase::agent_session::AgentSessionQueryService;
 use std::io::{self, Write};
 use std::path::Path;
 
@@ -93,15 +94,17 @@ pub(super) enum ReviewSubcommand {
 }
 
 #[cfg(test)]
-fn review_actor(data_dir: &Path, session_id: &str) -> Result<ReviewActor, CliError> {
-    review_actor_and_worktree(data_dir, session_id).map(|(actor, _)| actor)
+async fn review_actor(data_dir: &Path, session_id: &str) -> Result<ReviewActor, CliError> {
+    review_actor_and_worktree(data_dir, session_id)
+        .await
+        .map(|(actor, _)| actor)
 }
 
-fn review_actor_and_worktree(
+async fn review_actor_and_worktree(
     data_dir: &Path,
     session_id: &str,
 ) -> Result<(ReviewActor, String), CliError> {
-    let session = required_review_session_context(data_dir, session_id)?;
+    let session = required_review_session_context(data_dir, session_id).await?;
     review_actor_and_worktree_from_context(session_id, session)
 }
 
@@ -128,11 +131,11 @@ fn review_actor_and_worktree_from_context(
     }
 }
 
-fn review_actor_and_worktree_for_read(
+async fn review_actor_and_worktree_for_read(
     data_dir: &Path,
     session_id: &str,
 ) -> Result<(ReviewActor, String), CliError> {
-    let session = required_review_session_context(data_dir, session_id)?;
+    let session = required_review_session_context(data_dir, session_id).await?;
     Ok(match session {
         ReviewSessionContext::Provider(session) => {
             let provider = match session.provider {
@@ -150,14 +153,17 @@ fn review_actor_and_worktree_for_read(
 /// 読み取り専用 review コマンド (`list` / `get` / `history`) 向けの軽量 helper。
 ///
 /// List / Get / HistoryはAgentSessionのlifecycleに関係なくworktreeだけを解決する。
-fn review_worktree_from_session(data_dir: &Path, session_id: &str) -> Result<String, CliError> {
-    let session = required_review_session_context(data_dir, session_id)?;
+async fn review_worktree_from_session(
+    data_dir: &Path,
+    session_id: &str,
+) -> Result<String, CliError> {
+    let session = required_review_session_context(data_dir, session_id).await?;
     Ok(match session {
         ReviewSessionContext::Provider(session) => session.workspace_worktree_path,
     })
 }
 
-fn required_review_session_context(
+async fn required_review_session_context(
     data_dir: &Path,
     session_id: &str,
 ) -> Result<ReviewSessionContext, CliError> {
@@ -166,11 +172,12 @@ fn required_review_session_context(
             "--session-id must not be empty".to_string(),
         ));
     }
-    review_session_context(data_dir, session_id)?
+    review_session_context(data_dir, session_id)
+        .await?
         .ok_or_else(|| CliError::NotFound(format!("Session not found: {session_id}")))
 }
 
-fn review_list_actor_and_worktree(
+async fn review_list_actor_and_worktree(
     data_dir: &Path,
     session_id: Option<&str>,
     worktree_path: Option<&str>,
@@ -182,12 +189,12 @@ fn review_list_actor_and_worktree(
                 "--session-id is required when --author or --unread is specified".to_string(),
             )
         })?;
-        return review_actor_and_worktree_for_read(data_dir, session_id);
+        return review_actor_and_worktree_for_read(data_dir, session_id).await;
     }
     if let Some(session_id) = session_id {
         return Ok((
             ReviewActor::human(),
-            review_worktree_from_session(data_dir, session_id)?,
+            review_worktree_from_session(data_dir, session_id).await?,
         ));
     }
     let worktree_path = worktree_path
@@ -199,11 +206,11 @@ fn review_list_actor_and_worktree(
         })?;
     Ok((
         ReviewActor::human(),
-        review_workspace_worktree(data_dir, worktree_path)?,
+        review_workspace_worktree(data_dir, worktree_path).await?,
     ))
 }
 
-fn review_session_context(
+async fn review_session_context(
     data_dir: &Path,
     session_id: &str,
 ) -> Result<Option<ReviewSessionContext>, CliError> {
@@ -219,14 +226,16 @@ fn review_session_context(
         data_dir.to_path_buf(),
     )?;
     let context = provider
-        .get_blocking(session_id)
+        .get(session_id)
+        .await
         .map_err(|error| CliError::Other(format!("AgentSession query failed: {error:?}")))?;
     Ok(context.map(ReviewSessionContext::Provider))
 }
 
-fn review_workspace_worktree(data_dir: &Path, path: &str) -> Result<String, CliError> {
+async fn review_workspace_worktree(data_dir: &Path, path: &str) -> Result<String, CliError> {
     crate::adaptor::controller::wiring::build_workspace_worktree_path_usecase(data_dir)
         .workspace_worktree_path(path)
+        .await
         .map_err(|error| CliError::Other(error.to_string()))
 }
 
@@ -394,7 +403,10 @@ fn write_review_history(
     Ok(())
 }
 
-pub(super) fn cmd_review(data_dir: &Path, command: ReviewSubcommand) -> Result<String, CliError> {
+pub(super) async fn cmd_review(
+    data_dir: &Path,
+    command: ReviewSubcommand,
+) -> Result<String, CliError> {
     let usecase = build_review_comment_usecase();
     match command {
         ReviewSubcommand::List {
@@ -416,7 +428,8 @@ pub(super) fn cmd_review(data_dir: &Path, command: ReviewSubcommand) -> Result<S
                 session_id.as_deref(),
                 worktree_path.as_deref(),
                 actor_required,
-            )?;
+            )
+            .await?;
             let filter = ReviewThreadFilter {
                 file,
                 state,
@@ -434,7 +447,7 @@ pub(super) fn cmd_review(data_dir: &Path, command: ReviewSubcommand) -> Result<S
             session_id,
             json,
         } => {
-            let review_worktree = review_worktree_from_session(data_dir, &session_id)?;
+            let review_worktree = review_worktree_from_session(data_dir, &session_id).await?;
             let thread = usecase
                 .get_thread(data_dir, &review_worktree, &thread_id)
                 .map_err(review_error_to_cli_error)?;
@@ -448,7 +461,7 @@ pub(super) fn cmd_review(data_dir: &Path, command: ReviewSubcommand) -> Result<S
             end_line,
             json,
         } => {
-            let (actor, review_worktree) = review_actor_and_worktree(data_dir, &session_id)?;
+            let (actor, review_worktree) = review_actor_and_worktree(data_dir, &session_id).await?;
             let target = ReviewTarget {
                 file_path: file,
                 line_number: line,
@@ -465,7 +478,7 @@ pub(super) fn cmd_review(data_dir: &Path, command: ReviewSubcommand) -> Result<S
             content,
             json,
         } => {
-            let (actor, review_worktree) = review_actor_and_worktree(data_dir, &session_id)?;
+            let (actor, review_worktree) = review_actor_and_worktree(data_dir, &session_id).await?;
             let thread = usecase
                 .append_comment(data_dir, &review_worktree, actor, &thread_id, content)
                 .map_err(review_error_to_cli_error)?;
@@ -478,7 +491,7 @@ pub(super) fn cmd_review(data_dir: &Path, command: ReviewSubcommand) -> Result<S
             summary,
             json,
         } => {
-            let (actor, review_worktree) = review_actor_and_worktree(data_dir, &session_id)?;
+            let (actor, review_worktree) = review_actor_and_worktree(data_dir, &session_id).await?;
             let thread = usecase
                 .resolve_thread(
                     data_dir,
@@ -496,7 +509,7 @@ pub(super) fn cmd_review(data_dir: &Path, command: ReviewSubcommand) -> Result<S
             session_id,
             json,
         } => {
-            let review_worktree = review_worktree_from_session(data_dir, &session_id)?;
+            let review_worktree = review_worktree_from_session(data_dir, &session_id).await?;
             let events = usecase
                 .history(data_dir, &review_worktree, &thread_id)
                 .map_err(review_error_to_cli_error)?;
@@ -706,8 +719,8 @@ mod tests {
         rest[..end].trim().to_string()
     }
 
-    #[test]
-    fn review_list_get_handler_outputs_match_split_before_golden() {
+    #[tokio::test]
+    async fn review_list_get_handler_outputs_match_split_before_golden() {
         let tmp = TempDir::new().unwrap();
         write_review_config(tmp.path());
         let session_id = "550e8400-e29b-41d4-a716-446655440061".to_string();
@@ -727,6 +740,7 @@ mod tests {
                 json: false,
             },
         )
+        .await
         .unwrap();
         assert_eq!(
             list_human,
@@ -748,6 +762,7 @@ mod tests {
                 json: true,
             },
         )
+        .await
         .unwrap();
         assert_eq!(
             list_json,
@@ -801,6 +816,7 @@ mod tests {
                 json: false,
             },
         )
+        .await
         .unwrap();
         assert_eq!(
             get_human,
@@ -817,6 +833,7 @@ mod tests {
                 json: true,
             },
         )
+        .await
         .unwrap();
         assert_eq!(
             get_json,
@@ -861,8 +878,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn review_create_handler_outputs_match_split_before_golden() {
+    #[tokio::test]
+    async fn review_create_handler_outputs_match_split_before_golden() {
         let tmp = TempDir::new().unwrap();
         write_review_config(tmp.path());
         let session_id = "550e8400-e29b-41d4-a716-446655440062".to_string();
@@ -879,6 +896,7 @@ mod tests {
                 json: false,
             },
         )
+        .await
         .unwrap();
         let human_thread_id = human_line_value(&human, "thread_id: ");
         let human_updated = human_line_value(&human, "updated:   ");
@@ -900,6 +918,7 @@ mod tests {
                 json: true,
             },
         )
+        .await
         .unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         let json_thread_id = json_string(&value, "/id");
@@ -952,8 +971,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn review_handler_error_stderr_and_exit_codes_match_split_before_golden() {
+    #[tokio::test]
+    async fn review_handler_error_stderr_and_exit_codes_match_split_before_golden() {
         let tmp = TempDir::new().unwrap();
         write_review_config(tmp.path());
         let session_id = "550e8400-e29b-41d4-a716-446655440063".to_string();
@@ -971,6 +990,7 @@ mod tests {
                 json: false,
             },
         )
+        .await
         .unwrap_err();
         assert_eq!(
             cli_error_stderr(&invalid_state),
@@ -987,6 +1007,7 @@ mod tests {
                 json: false,
             },
         )
+        .await
         .unwrap_err();
         assert_eq!(
             cli_error_stderr(&missing_thread),
@@ -1005,6 +1026,7 @@ mod tests {
                 json: true,
             },
         )
+        .await
         .unwrap_err();
         assert_eq!(
             cli_error_stderr(&invalid_target),
@@ -1030,6 +1052,7 @@ mod tests {
                 json: false,
             },
         )
+        .await
         .unwrap_err();
         assert_eq!(
             cli_error_stderr(&closed_session),
@@ -1050,39 +1073,39 @@ mod tests {
         );
     }
 
-    #[test]
-    fn review_actor_resolves_provider_from_canonical_agent_session() {
+    #[tokio::test]
+    async fn review_actor_resolves_provider_from_canonical_agent_session() {
         let tmp = TempDir::new().unwrap();
         write_review_config(tmp.path());
         let session_id = uuid::Uuid::new_v4().to_string();
         write_review_session(tmp.path(), &session_id, Some("codex"));
 
-        let actor = review_actor(tmp.path(), &session_id).unwrap();
+        let actor = review_actor(tmp.path(), &session_id).await.unwrap();
 
         assert_eq!(actor.backend_id.as_deref(), Some("codex"));
         assert_eq!(actor.model, None);
         assert_eq!(actor.session_id.as_deref(), Some(session_id.as_str()));
     }
 
-    #[test]
-    fn review_actor_uses_canonical_provider_without_model_catalog() {
+    #[tokio::test]
+    async fn review_actor_uses_canonical_provider_without_model_catalog() {
         let tmp = TempDir::new().unwrap();
         write_review_config(tmp.path());
 
-        let missing = review_actor(tmp.path(), &uuid::Uuid::new_v4().to_string());
+        let missing = review_actor(tmp.path(), &uuid::Uuid::new_v4().to_string()).await;
         assert!(matches!(missing, Err(CliError::NotFound(_))));
 
         for provider in ["codex", "claude"] {
             let session_id = uuid::Uuid::new_v4().to_string();
             write_review_session(tmp.path(), &session_id, Some(provider));
-            let actor = review_actor(tmp.path(), &session_id).unwrap();
+            let actor = review_actor(tmp.path(), &session_id).await.unwrap();
             assert_eq!(actor.backend_id.as_deref(), Some(provider));
             assert_eq!(actor.model, None);
         }
     }
 
-    #[test]
-    fn review_actor_treats_legacy_flat_session_as_not_found() {
+    #[tokio::test]
+    async fn review_actor_treats_legacy_flat_session_as_not_found() {
         let tmp = TempDir::new().unwrap();
         write_review_config(tmp.path());
         let session_id = uuid::Uuid::new_v4().to_string();
@@ -1109,13 +1132,13 @@ mod tests {
         )
         .unwrap();
 
-        let err = review_actor(tmp.path(), &session_id).unwrap_err();
+        let err = review_actor(tmp.path(), &session_id).await.unwrap_err();
 
         assert!(matches!(err, CliError::NotFound(_)));
     }
 
-    #[test]
-    fn review_actor_treats_legacy_sidecar_session_as_not_found() {
+    #[tokio::test]
+    async fn review_actor_treats_legacy_sidecar_session_as_not_found() {
         let tmp = TempDir::new().unwrap();
         write_review_config(tmp.path());
         let session_id = uuid::Uuid::new_v4().to_string();
@@ -1142,33 +1165,37 @@ mod tests {
         )
         .unwrap();
 
-        let err = review_actor(tmp.path(), &session_id).unwrap_err();
+        let err = review_actor(tmp.path(), &session_id).await.unwrap_err();
 
         assert!(matches!(err, CliError::NotFound(_)));
     }
 
-    #[test]
-    fn review_actor_and_worktree_rejects_empty_session_id() {
+    #[tokio::test]
+    async fn review_actor_and_worktree_rejects_empty_session_id() {
         let tmp = TempDir::new().unwrap();
 
         for session_id in ["", " "] {
-            let err = review_actor_and_worktree(tmp.path(), session_id).unwrap_err();
+            let err = review_actor_and_worktree(tmp.path(), session_id)
+                .await
+                .unwrap_err();
             assert!(matches!(err, CliError::InvalidInput(_)));
         }
     }
 
-    #[test]
-    fn review_worktree_from_session_rejects_empty_session_id() {
+    #[tokio::test]
+    async fn review_worktree_from_session_rejects_empty_session_id() {
         let tmp = TempDir::new().unwrap();
 
         for session_id in ["", " "] {
-            let err = review_worktree_from_session(tmp.path(), session_id).unwrap_err();
+            let err = review_worktree_from_session(tmp.path(), session_id)
+                .await
+                .unwrap_err();
             assert!(matches!(err, CliError::InvalidInput(_)));
         }
     }
 
-    #[test]
-    fn review_worktree_resolution_allows_archived_session() {
+    #[tokio::test]
+    async fn review_worktree_resolution_allows_archived_session() {
         let tmp = TempDir::new().unwrap();
         write_review_config(tmp.path());
         let session_id = uuid::Uuid::new_v4().to_string();
@@ -1179,13 +1206,15 @@ mod tests {
             crate::domain::agent_session::aggregates::AgentSessionLifecycle::Archived,
         );
 
-        let worktree = review_worktree_from_session(tmp.path(), &session_id).unwrap();
+        let worktree = review_worktree_from_session(tmp.path(), &session_id)
+            .await
+            .unwrap();
 
         assert_eq!(worktree, "/repo");
     }
 
-    #[test]
-    fn review_list_allows_paused_and_archived_sessions() {
+    #[tokio::test]
+    async fn review_list_allows_paused_and_archived_sessions() {
         let tmp = TempDir::new().unwrap();
         write_review_config(tmp.path());
         let thread_id = seed_review_thread(tmp.path());
@@ -1209,6 +1238,7 @@ mod tests {
                     json: true,
                 },
             )
+            .await
             .unwrap();
 
             assert!(output.contains(&thread_id));
@@ -1225,14 +1255,15 @@ mod tests {
                     json: true,
                 },
             )
+            .await
             .unwrap();
 
             assert!(unread_output.contains(&thread_id));
         }
     }
 
-    #[test]
-    fn review_list_actor_filters_require_session_id() {
+    #[tokio::test]
+    async fn review_list_actor_filters_require_session_id() {
         let tmp = TempDir::new().unwrap();
 
         for (author, unread) in [
@@ -1251,6 +1282,7 @@ mod tests {
                     json: true,
                 },
             )
+            .await
             .unwrap_err();
 
             assert!(matches!(
@@ -1261,19 +1293,21 @@ mod tests {
         }
     }
 
-    #[test]
-    fn review_list_uses_worktree_environment_without_session() {
+    #[tokio::test]
+    async fn review_list_uses_worktree_environment_without_session() {
         let tmp = TempDir::new().unwrap();
 
         let (actor, worktree) =
-            review_list_actor_and_worktree(tmp.path(), None, Some("/repo"), false).unwrap();
+            review_list_actor_and_worktree(tmp.path(), None, Some("/repo"), false)
+                .await
+                .unwrap();
 
         assert_eq!(actor, ReviewActor::human());
         assert_eq!(worktree, "/repo");
     }
 
-    #[test]
-    fn review_cli_rejects_mutation_for_archived_session() {
+    #[tokio::test]
+    async fn review_cli_rejects_mutation_for_archived_session() {
         let tmp = TempDir::new().unwrap();
         write_review_config(tmp.path());
         let session_id = uuid::Uuid::new_v4().to_string();
@@ -1293,7 +1327,8 @@ mod tests {
                 end_line: None,
                 json: true,
             },
-        );
+        )
+        .await;
         match closed {
             Err(CliError::InvalidInput(msg)) => assert!(msg.contains("Session is not open")),
             other => panic!("expected archived session rejection, got {other:?}"),
@@ -1362,8 +1397,8 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[test]
-    fn cmd_review_create_list_get_and_json_mode_use_session_worktree_key() {
+    #[tokio::test]
+    async fn cmd_review_create_list_get_and_json_mode_use_session_worktree_key() {
         let tmp = TempDir::new().unwrap();
         write_review_config(tmp.path());
         let session_id = uuid::Uuid::new_v4().to_string();
@@ -1380,6 +1415,7 @@ mod tests {
                 json: true,
             },
         )
+        .await
         .unwrap();
 
         let usecase = build_review_comment_usecase();
@@ -1403,6 +1439,7 @@ mod tests {
                 json: true,
             },
         )
+        .await
         .unwrap();
         cmd_review(
             tmp.path(),
@@ -1412,11 +1449,12 @@ mod tests {
                 json: true,
             },
         )
+        .await
         .unwrap();
     }
 
-    #[test]
-    fn cmd_review_comment_resolve_history_and_rejections_use_domain_reasons() {
+    #[tokio::test]
+    async fn cmd_review_comment_resolve_history_and_rejections_use_domain_reasons() {
         let tmp = TempDir::new().unwrap();
         write_review_config(tmp.path());
         let owner_session = uuid::Uuid::new_v4().to_string();
@@ -1435,6 +1473,7 @@ mod tests {
                 json: true,
             },
         )
+        .await
         .unwrap();
         let usecase = build_review_comment_usecase();
         let thread_id = usecase
@@ -1452,6 +1491,7 @@ mod tests {
                 json: true,
             },
         )
+        .await
         .unwrap();
         cmd_review(
             tmp.path(),
@@ -1462,6 +1502,7 @@ mod tests {
                 json: true,
             },
         )
+        .await
         .unwrap();
         cmd_review(
             tmp.path(),
@@ -1471,6 +1512,7 @@ mod tests {
                 json: true,
             },
         )
+        .await
         .unwrap();
 
         // 別 backend/model session からの Resolve も participant identity に依らず成功する
@@ -1485,6 +1527,7 @@ mod tests {
                 json: true,
             },
         )
+        .await
         .unwrap();
         // resolved 後の Resolve / Comment 追記は state により拒否される。
         let rejected_after_resolve = cmd_review(
@@ -1496,7 +1539,8 @@ mod tests {
                 summary: "second resolve".to_string(),
                 json: true,
             },
-        );
+        )
+        .await;
         match rejected_after_resolve {
             Err(CliError::InvalidInput(msg)) => assert!(msg.contains("already resolved")),
             other => panic!("expected resolved rejection, got {other:?}"),
@@ -1509,7 +1553,8 @@ mod tests {
                 content: "late".to_string(),
                 json: true,
             },
-        );
+        )
+        .await;
         match rejected_late_comment {
             Err(CliError::InvalidInput(msg)) => assert!(msg.contains("already resolved")),
             other => panic!("expected resolved rejection, got {other:?}"),
@@ -1522,7 +1567,8 @@ mod tests {
                 session_id: owner_session.clone(),
                 json: true,
             },
-        );
+        )
+        .await;
         assert!(matches!(missing_history, Err(CliError::NotFound(_))));
 
         let invalid_target = cmd_review(
@@ -1535,11 +1581,12 @@ mod tests {
                 end_line: None,
                 json: true,
             },
-        );
+        )
+        .await;
         assert!(matches!(invalid_target, Err(CliError::InvalidInput(_))));
     }
-    #[test]
-    fn test_隔離thread参照_command環境とsession指定で同じworkspaceのopen一覧を読む() {
+    #[tokio::test]
+    async fn test_隔離thread参照_command環境とsession指定で同じworkspaceのopen一覧を読む() {
         // Given
         use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
         use crate::adaptor::gateway::workflow::fact_log;
@@ -1575,7 +1622,9 @@ mod tests {
 
         // When
         let (actor, workspace) =
-            review_list_actor_and_worktree(tmp.path(), None, Some(&path), false).unwrap();
+            review_list_actor_and_worktree(tmp.path(), None, Some(&path), false)
+                .await
+                .unwrap();
         let command_threads = build_review_comment_usecase()
             .list_threads(
                 tmp.path(),
@@ -1599,6 +1648,7 @@ mod tests {
                 json: true,
             },
         )
+        .await
         .unwrap();
         let session_threads: serde_json::Value = serde_json::from_str(&session_output).unwrap();
 
@@ -1666,7 +1716,7 @@ async fn test_review_cli変更_別所有者のworktree削除中は拒否し読�
         },
     ] {
         assert!(
-            matches!(cmd_review(directory.path(), command), Err(CliError::InvalidInput(message)) if message.contains("deletion is in progress"))
+            matches!(cmd_review(directory.path(), command).await, Err(CliError::InvalidInput(message)) if message.contains("deletion is in progress"))
         );
         assert_eq!(std::fs::read(&file).unwrap(), before);
     }
@@ -1692,6 +1742,7 @@ async fn test_review_cli変更_別所有者のworktree削除中は拒否し読�
         },
     ] {
         assert!(cmd_review(directory.path(), command)
+            .await
             .unwrap()
             .contains(&thread.id));
     }

@@ -23,8 +23,9 @@ use crate::usecase::agent_session::{
 
 struct EmptyArchives;
 
+#[async_trait::async_trait]
 impl ExecutionTreeArchiveRepository for EmptyArchives {
-    fn location(
+    async fn location(
         &self,
         id: &str,
     ) -> Result<crate::domain::workflow::ExecutionTreeArchiveCandidate, WorkflowError> {
@@ -38,30 +39,30 @@ impl ExecutionTreeArchiveRepository for EmptyArchives {
     fn worktree_identity(&self, path: &str) -> Result<String, WorkflowError> {
         Ok(crate::domain::repository::normalize_repo_path(path))
     }
-    fn record_repository_root(&self, _: &str, _: &str, _: f64) -> Result<(), WorkflowError> {
+    async fn record_repository_root(&self, _: &str, _: &str, _: f64) -> Result<(), WorkflowError> {
         unreachable!()
     }
-    fn candidate_page(
+    async fn candidate_page(
         &self,
         _: Option<&str>,
     ) -> Result<Vec<crate::domain::workflow::ExecutionTreeArchiveCandidate>, WorkflowError> {
         unreachable!()
     }
-    fn legacy_session_archive_page(
+    async fn legacy_session_archive_page(
         &self,
         _: Option<&str>,
     ) -> Result<Vec<crate::domain::workflow::ExecutionTreeArchiveRecord>, WorkflowError> {
         Ok(Vec::new())
     }
 
-    fn worktree_target_page(
+    async fn worktree_target_page(
         &self,
         _: &str,
         _: Option<&str>,
     ) -> Result<Vec<crate::domain::workflow::ExecutionTreeArchiveCandidate>, WorkflowError> {
         unreachable!()
     }
-    fn target(
+    async fn target(
         &self,
         _: &str,
     ) -> Result<crate::domain::workflow::ExecutionTreeArchiveTarget, WorkflowError> {
@@ -76,7 +77,7 @@ impl ExecutionTreeArchiveRepository for EmptyArchives {
         Ok(())
     }
 
-    fn archive(
+    async fn archive(
         &self,
         _execution_id: &crate::domain::workflow::ExecutionTreeId,
         _archived_at: f64,
@@ -85,7 +86,7 @@ impl ExecutionTreeArchiveRepository for EmptyArchives {
         Ok(())
     }
 
-    fn restore(
+    async fn restore(
         &self,
         _execution_id: &crate::domain::workflow::ExecutionTreeId,
         _restored_at: f64,
@@ -93,7 +94,7 @@ impl ExecutionTreeArchiveRepository for EmptyArchives {
         Ok(())
     }
 
-    fn archive_snapshot_for(
+    async fn archive_snapshot_for(
         &self,
         _execution_ids: &[String],
     ) -> Result<ExecutionTreeArchiveSnapshot, WorkflowError> {
@@ -108,8 +109,9 @@ struct ArchivedExecution {
     archived_at: f64,
 }
 
+#[async_trait::async_trait]
 impl ExecutionTreeArchiveRepository for ArchivedExecution {
-    fn location(
+    async fn location(
         &self,
         id: &str,
     ) -> Result<crate::domain::workflow::ExecutionTreeArchiveCandidate, WorkflowError> {
@@ -123,30 +125,30 @@ impl ExecutionTreeArchiveRepository for ArchivedExecution {
     fn worktree_identity(&self, path: &str) -> Result<String, WorkflowError> {
         Ok(crate::domain::repository::normalize_repo_path(path))
     }
-    fn record_repository_root(&self, _: &str, _: &str, _: f64) -> Result<(), WorkflowError> {
+    async fn record_repository_root(&self, _: &str, _: &str, _: f64) -> Result<(), WorkflowError> {
         unreachable!()
     }
-    fn candidate_page(
+    async fn candidate_page(
         &self,
         _: Option<&str>,
     ) -> Result<Vec<crate::domain::workflow::ExecutionTreeArchiveCandidate>, WorkflowError> {
         unreachable!()
     }
-    fn legacy_session_archive_page(
+    async fn legacy_session_archive_page(
         &self,
         _: Option<&str>,
     ) -> Result<Vec<crate::domain::workflow::ExecutionTreeArchiveRecord>, WorkflowError> {
         Ok(Vec::new())
     }
 
-    fn worktree_target_page(
+    async fn worktree_target_page(
         &self,
         _: &str,
         _: Option<&str>,
     ) -> Result<Vec<crate::domain::workflow::ExecutionTreeArchiveCandidate>, WorkflowError> {
         unreachable!()
     }
-    fn target(
+    async fn target(
         &self,
         _: &str,
     ) -> Result<crate::domain::workflow::ExecutionTreeArchiveTarget, WorkflowError> {
@@ -161,7 +163,7 @@ impl ExecutionTreeArchiveRepository for ArchivedExecution {
         Ok(())
     }
 
-    fn archive(
+    async fn archive(
         &self,
         _execution_id: &crate::domain::workflow::ExecutionTreeId,
         _archived_at: f64,
@@ -170,7 +172,7 @@ impl ExecutionTreeArchiveRepository for ArchivedExecution {
         Ok(())
     }
 
-    fn restore(
+    async fn restore(
         &self,
         _execution_id: &crate::domain::workflow::ExecutionTreeId,
         _restored_at: f64,
@@ -178,7 +180,7 @@ impl ExecutionTreeArchiveRepository for ArchivedExecution {
         Ok(())
     }
 
-    fn archive_snapshot_for(
+    async fn archive_snapshot_for(
         &self,
         execution_ids: &[String],
     ) -> Result<ExecutionTreeArchiveSnapshot, WorkflowError> {
@@ -195,18 +197,19 @@ impl ExecutionTreeArchiveRepository for ArchivedExecution {
     }
 }
 
-fn assert_working_session_projection(store: Arc<LocalEventStore>) {
+async fn assert_working_session_projection(store: Arc<LocalEventStore>) {
     let workspace = WorkspaceIdentity::new("workspace-activity-read");
     let repository = SqliteWorkspaceTreeRepository::new(store);
     let query = SqliteWorkspaceQueryService::with_repository(repository, Arc::new(EmptyArchives));
 
-    let snapshot = query.workspace_tree(&workspace).unwrap();
+    let snapshot = query.workspace_tree(&workspace).await.unwrap();
     let WorkspaceTreeItemDto::Node(node) = &snapshot.nodes[0] else {
         panic!("standalone Session must be projected as a node");
     };
     assert_eq!(node.status, "active");
     let detail = query
         .node_detail(&workspace, &node.id)
+        .await
         .unwrap()
         .expect("Session detail must exist");
     assert_eq!(detail.status, "running");
@@ -217,7 +220,7 @@ fn assert_working_session_projection(store: Arc<LocalEventStore>) {
     assert!(!detail_json.contains("\"activity\":"));
 }
 
-fn assert_workflow_child_activity_projection(
+async fn assert_workflow_child_activity_projection(
     store: Arc<LocalEventStore>,
     expected_classification: &str,
 ) {
@@ -225,7 +228,7 @@ fn assert_workflow_child_activity_projection(
     let repository = SqliteWorkspaceTreeRepository::new(store);
     let query = SqliteWorkspaceQueryService::with_repository(repository, Arc::new(EmptyArchives));
 
-    let snapshot = query.workspace_tree(&workspace).unwrap();
+    let snapshot = query.workspace_tree(&workspace).await.unwrap();
     let WorkspaceTreeItemDto::Sequence(sequence) = &snapshot.nodes[0] else {
         panic!("workflow root must be projected as a sequence");
     };
@@ -235,6 +238,7 @@ fn assert_workflow_child_activity_projection(
     assert_eq!(node.status, expected_classification);
     let detail = query
         .node_detail(&workspace, &node.id)
+        .await
         .unwrap()
         .expect("workflow child Session detail must exist");
     assert_eq!(detail.status, "running");
@@ -271,14 +275,14 @@ async fn test_workspace_tree_query_記録済み活動状態を一覧と詳細へ
         .unwrap();
     drop(sessions);
 
-    assert_working_session_projection(store.clone());
+    assert_working_session_projection(store.clone()).await;
     drop(store);
 
     let reopened = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
     ))
     .unwrap();
-    assert_working_session_projection(reopened);
+    assert_working_session_projection(reopened).await;
 }
 
 #[tokio::test]
@@ -305,7 +309,9 @@ async fn test_workspace_tree_query_活動未観測のsessionを一覧と詳細�
         .await
         .unwrap();
     let records =
-        crate::adaptor::gateway::workflow::fact_log::read_tree_records(&store, session_id).unwrap();
+        crate::adaptor::gateway::workflow::fact_log::read_tree_records(&store, session_id)
+            .await
+            .unwrap();
     assert!(!records
         .iter()
         .any(|record| matches!(record.fact, NodeFact::AgentActivityObserved(_))));
@@ -313,12 +319,13 @@ async fn test_workspace_tree_query_活動未観測のsessionを一覧と詳細�
     // When: Workspace query service から一覧と詳細を読む
     let repository = SqliteWorkspaceTreeRepository::new(store);
     let query = SqliteWorkspaceQueryService::with_repository(repository, Arc::new(EmptyArchives));
-    let snapshot = query.workspace_tree(&workspace).unwrap();
+    let snapshot = query.workspace_tree(&workspace).await.unwrap();
     let WorkspaceTreeItemDto::Node(node) = &snapshot.nodes[0] else {
         panic!("standalone Session must be projected as a node");
     };
     let detail = query
         .node_detail(&workspace, &node.id)
+        .await
         .unwrap()
         .expect("Session detail must exist");
 
@@ -384,12 +391,13 @@ async fn test_workspace_tree_query_resume直後のsessionを一覧と詳細でat
     // When: Workspace query service から一覧と詳細を読む
     let repository = SqliteWorkspaceTreeRepository::new(store);
     let query = SqliteWorkspaceQueryService::with_repository(repository, Arc::new(EmptyArchives));
-    let snapshot = query.workspace_tree(&workspace).unwrap();
+    let snapshot = query.workspace_tree(&workspace).await.unwrap();
     let WorkspaceTreeItemDto::Node(node) = &snapshot.nodes[0] else {
         panic!("standalone Session must be projected as a node");
     };
     let detail = query
         .node_detail(&workspace, &node.id)
+        .await
         .unwrap()
         .expect("Session detail must exist");
 
@@ -420,6 +428,7 @@ async fn test_workspace_tree_query_workflow子sessionの活動状態を一覧と
             initial_instruction_admitted: true,
         },
     )
+    .await
     .unwrap();
     let sessions =
         AgentSessionUsecase::new(Arc::new(LocalAgentSessionRepository::new(store.clone())));
@@ -433,14 +442,14 @@ async fn test_workspace_tree_query_workflow子sessionの活動状態を一覧と
         .unwrap();
     drop(sessions);
 
-    assert_workflow_child_activity_projection(store.clone(), "active");
+    assert_workflow_child_activity_projection(store.clone(), "active").await;
     drop(store);
 
     let reopened = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
     ))
     .unwrap();
-    assert_workflow_child_activity_projection(reopened.clone(), "active");
+    assert_workflow_child_activity_projection(reopened.clone(), "active").await;
 
     let sessions =
         AgentSessionUsecase::new(Arc::new(LocalAgentSessionRepository::new(reopened.clone())));
@@ -452,7 +461,7 @@ async fn test_workspace_tree_query_workflow子sessionの活動状態を一覧と
         )
         .await
         .unwrap();
-    assert_workflow_child_activity_projection(reopened, "attention");
+    assert_workflow_child_activity_projection(reopened, "attention").await;
 }
 
 #[tokio::test]
@@ -480,13 +489,14 @@ async fn test_workspace_tree_query_活動終了と再開の反復を一覧と詳
         .unwrap();
     let repository = SqliteWorkspaceTreeRepository::new(store);
     let query = SqliteWorkspaceQueryService::with_repository(repository, Arc::new(EmptyArchives));
-    let projected_statuses = || {
-        let snapshot = query.workspace_tree(&workspace).unwrap();
+    let projected_statuses = async || {
+        let snapshot = query.workspace_tree(&workspace).await.unwrap();
         let WorkspaceTreeItemDto::Node(node) = &snapshot.nodes[0] else {
             panic!("standalone Session must be projected as a node");
         };
         let detail = query
             .node_detail(&workspace, &node.id)
+            .await
             .unwrap()
             .expect("Session detail must exist");
         (
@@ -513,7 +523,7 @@ async fn test_workspace_tree_query_活動終了と再開の反復を一覧と詳
             .unwrap();
 
         // Then: 一覧の status と詳細の statusClassification が毎回追従する
-        let (tree_status, detail_status, detail_classification) = projected_statuses();
+        let (tree_status, detail_status, detail_classification) = projected_statuses().await;
         assert_eq!(tree_status, expected_classification);
         assert_eq!(detail_status, "running");
         assert_eq!(detail_classification, expected_classification);
@@ -557,6 +567,7 @@ async fn test_workspace_tree_query_stop事実と後続活動を一覧と詳細�
         .await
         .unwrap();
     let meta = crate::adaptor::gateway::workflow::fact_log::read_tree_records(&store, session_id)
+        .await
         .unwrap()
         .last()
         .unwrap()
@@ -574,16 +585,17 @@ async fn test_workspace_tree_query_stop事実と後続活動を一覧と詳細�
         )
         .unwrap();
     };
-    let projected_classification = |store: Arc<LocalEventStore>| {
+    let projected_classification = async |store: Arc<LocalEventStore>| {
         let repository = SqliteWorkspaceTreeRepository::new(store);
         let query =
             SqliteWorkspaceQueryService::with_repository(repository, Arc::new(EmptyArchives));
-        let snapshot = query.workspace_tree(&workspace).unwrap();
+        let snapshot = query.workspace_tree(&workspace).await.unwrap();
         let WorkspaceTreeItemDto::Node(node) = &snapshot.nodes[0] else {
             panic!("standalone Session must be projected as a node");
         };
         let detail = query
             .node_detail(&workspace, &node.id)
+            .await
             .unwrap()
             .expect("Session detail must exist");
         assert_eq!(detail.status, "running");
@@ -595,7 +607,7 @@ async fn test_workspace_tree_query_stop事実と後続活動を一覧と詳細�
 
     // Then: 一覧と詳細は Stop 事実から attention を導出し、再起動後も再現する
     assert_eq!(
-        projected_classification(store.clone()),
+        projected_classification(store.clone()).await,
         ("attention".to_string(), "attention".to_string())
     );
     drop(sessions);
@@ -605,7 +617,7 @@ async fn test_workspace_tree_query_stop事実と後続活動を一覧と詳細�
     ))
     .unwrap();
     assert_eq!(
-        projected_classification(reopened.clone()),
+        projected_classification(reopened.clone()).await,
         ("attention".to_string(), "attention".to_string())
     );
 
@@ -622,7 +634,7 @@ async fn test_workspace_tree_query_stop事実と後続活動を一覧と詳細�
             .await
             .unwrap();
         assert_eq!(
-            projected_classification(reopened.clone()),
+            projected_classification(reopened.clone()).await,
             ("active".to_string(), "active".to_string())
         );
         if index == 0 {
@@ -637,7 +649,7 @@ async fn test_workspace_tree_query_stop事実と後続活動を一覧と詳細�
             )
             .unwrap();
             assert_eq!(
-                projected_classification(reopened.clone()),
+                projected_classification(reopened.clone()).await,
                 ("attention".to_string(), "attention".to_string())
             );
         }
@@ -664,6 +676,7 @@ async fn launch区分が同じworktreeのworkflow一覧とsession一覧を分け
             initial_instruction_admitted: true,
         },
     )
+    .await
     .unwrap();
     LocalAgentSessionRepository::new(store.clone())
         .create(
@@ -685,12 +698,14 @@ async fn launch区分が同じworktreeのworkflow一覧とsession一覧を分け
 
     let workflow_ids = query
         .execution_summaries(Some(&WorkspaceIdentity::new("/repo")), None, None)
+        .await
         .unwrap()
         .into_iter()
         .map(|summary| summary.execution_id)
         .collect::<Vec<_>>();
     let tree_ids = repository
         .folded_workspace_trees("/repo")
+        .await
         .unwrap()
         .into_iter()
         .map(|(tree, _)| tree.aggregate.id.clone())
@@ -700,6 +715,7 @@ async fn launch区分が同じworktreeのworkflow一覧とsession一覧を分け
         &tree_ids,
         "/repo",
     )
+    .await
     .unwrap()
     .into_iter()
     .map(|session| session.id)
@@ -737,9 +753,10 @@ async fn test_workspace_tree_query_workspace同定子がworktreeと異なるsess
         SqliteWorkspaceQueryService::with_repository(repository.clone(), Arc::new(EmptyArchives));
 
     // When: workspace identity から snapshot と Session 一覧を取得する
-    let snapshot = query.workspace_tree(&workspace).unwrap();
+    let snapshot = query.workspace_tree(&workspace).await.unwrap();
     let tree_ids = repository
         .folded_workspace_trees(workspace.as_str())
+        .await
         .unwrap()
         .into_iter()
         .map(|(tree, _)| tree.aggregate.id.clone())
@@ -749,6 +766,7 @@ async fn test_workspace_tree_query_workspace同定子がworktreeと異なるsess
         &tree_ids,
         workspace.as_str(),
     )
+    .await
     .unwrap();
 
     // Then: root の workspace identity を共通の対象キーとして解決する
@@ -761,8 +779,8 @@ async fn test_workspace_tree_query_workspace同定子がworktreeと異なるsess
     ));
 }
 
-#[test]
-fn test_workspaceツリー投影_同じfoldのworkflow履歴と表示名が一致する() {
+#[tokio::test]
+async fn test_workspaceツリー投影_同じfoldのworkflow履歴と表示名が一致する() {
     // Given
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
@@ -783,6 +801,7 @@ fn test_workspaceツリー投影_同じfoldのworkflow履歴と表示名が一�
             initial_instruction_admitted: true,
         },
     )
+    .await
     .unwrap();
     let repository = SqliteWorkspaceTreeRepository::new(store);
     let tree_query =
@@ -798,9 +817,11 @@ fn test_workspaceツリー投影_同じfoldのworkflow履歴と表示名が一�
     // When
     let snapshot = tree_query
         .workspace_tree(&WorkspaceIdentity::new("/repo"))
+        .await
         .unwrap();
     let history = history_query
         .workflow_history(&WorkspaceIdentity::new("/repo"))
+        .await
         .unwrap();
     let tree_json = serde_json::to_value(snapshot.nodes).unwrap();
     let tree_title = tree_json[0]["title"].as_str().unwrap();
@@ -841,9 +862,10 @@ async fn test_workspaceツリー投影_単独agent_sessionのpublic_root表示�
     let query = SqliteWorkspaceQueryService::with_repository(repository, Arc::new(EmptyArchives));
 
     // When
-    let snapshot = query.workspace_tree(&workspace).unwrap();
+    let snapshot = query.workspace_tree(&workspace).await.unwrap();
     let detail = query
         .node_detail(&workspace, execution_id)
+        .await
         .unwrap()
         .unwrap();
     let tree_json = serde_json::to_value(snapshot.nodes).unwrap();
@@ -853,8 +875,8 @@ async fn test_workspaceツリー投影_単独agent_sessionのpublic_root表示�
     assert_eq!(detail.title, "session");
 }
 
-#[test]
-fn test_workspaceノード詳細_public_rootと子nodeの名前はnodeのtitleを保つ() {
+#[tokio::test]
+async fn test_workspaceノード詳細_public_rootと子nodeの名前はnodeのtitleを保つ() {
     // Given
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
@@ -877,26 +899,31 @@ fn test_workspaceノード詳細_public_rootと子nodeの名前はnodeのtitle�
             initial_instruction_admitted: true,
         },
     )
+    .await
     .unwrap();
     let repository = SqliteWorkspaceTreeRepository::new(store);
     let query =
         SqliteWorkspaceQueryService::with_repository(repository.clone(), Arc::new(EmptyArchives));
     let root_node = repository
         .load_node(&workspace, execution_id)
+        .await
         .unwrap()
         .unwrap();
     let child_node = repository
         .load_node_by_node_execution_id(child_execution_id)
+        .await
         .unwrap()
         .unwrap();
 
     // When
     let root_detail = query
         .node_detail(&workspace, execution_id)
+        .await
         .unwrap()
         .unwrap();
     let child_detail = query
         .node_detail(&workspace, &child_node.id)
+        .await
         .unwrap()
         .unwrap();
 
@@ -1542,8 +1569,8 @@ fn unrepresentable_page_offset_falls_back_to_the_first_record() {
     assert_eq!(sqlite_page_bounds(None), (i64::MAX, 0));
 }
 
-#[test]
-fn test_workspace読取_未対応定義を起動時abortした後もcommand出力とsession参照を取得できる() {
+#[tokio::test]
+async fn test_workspace読取_未対応定義を起動時abortした後もcommand出力とsession参照を取得できる() {
     use crate::domain::workspace_tree::WorkspaceTreeRepository;
     // Given
     for unavailable in ["main", "command", "session", "unused"] {
@@ -1571,7 +1598,7 @@ fn test_workspace読取_未対応定義を起動時abortした後もcommand出�
                 &crate::adaptor::gateway::workflow::startup_repository::StoredWorkflowStartupRepository(store.clone()),
                 tree,
                 10.0,
-            )
+            ).await
             .unwrap();
         }
         let read_store =
@@ -1585,10 +1612,12 @@ fn test_workspace読取_未対応定義を起動時abortした後もcommand出�
         ] {
             let command = repository
                 .load_node_by_node_execution_id("00000000-0000-4000-8000-000000001744-command")
+                .await
                 .unwrap()
                 .unwrap();
             let session = repository
                 .load_node_by_node_execution_id("00000000-0000-4000-8000-000000001744-session")
+                .await
                 .unwrap()
                 .unwrap();
             let query =
@@ -1596,9 +1625,17 @@ fn test_workspace読取_未対応定義を起動時abortした後もcommand出�
             let workspace = WorkspaceIdentity::new("/repo");
 
             // When
-            let snapshot = query.workspace_tree(&workspace).unwrap();
-            let command_detail = query.node_detail(&workspace, &command.id).unwrap().unwrap();
-            let session_detail = query.node_detail(&workspace, &session.id).unwrap().unwrap();
+            let snapshot = query.workspace_tree(&workspace).await.unwrap();
+            let command_detail = query
+                .node_detail(&workspace, &command.id)
+                .await
+                .unwrap()
+                .unwrap();
+            let session_detail = query
+                .node_detail(&workspace, &session.id)
+                .await
+                .unwrap()
+                .unwrap();
 
             // Then
             assert!(!snapshot.nodes.is_empty());
@@ -1837,8 +1874,8 @@ fn test_過去attempt_子のないsessionとcommandも通常行と同じkindを�
     }
 }
 
-#[test]
-fn test_archive履歴_手動とworktree消失の事実の時刻と理由をそのまま投影する() {
+#[tokio::test]
+async fn test_archive履歴_手動とworktree消失の事実の時刻と理由をそのまま投影する() {
     use crate::adaptor::gateway::workflow::{fact_log, ExecutionTreeArchiveFactRepository};
     // Given
     let directory = tempfile::tempdir().unwrap();
@@ -1874,8 +1911,12 @@ fn test_archive履歴_手動とworktree消失の事実の時刻と理由をそ�
                 initial_instruction_admitted: true,
             },
         )
+        .await
         .unwrap();
-        let root = fact_log::read_tree_records(&store, id).unwrap().remove(0);
+        let root = fact_log::read_tree_records(&store, id)
+            .await
+            .unwrap()
+            .remove(0);
         fact_log::append_single_fact(
             &store,
             &root.meta,
@@ -1889,11 +1930,13 @@ fn test_archive履歴_手動とworktree消失の事実の時刻と理由をそ�
                 at,
                 reason,
             )
+            .await
             .unwrap();
     }
     // When
     let history = query
         .workflow_history(&WorkspaceIdentity::new("/repo"))
+        .await
         .unwrap();
     // Then
     assert_eq!(history.len(), 2);
@@ -1906,8 +1949,8 @@ fn test_archive履歴_手動とworktree消失の事実の時刻と理由をそ�
     assert_eq!(history[0].execution_id, fixtures[1].0);
 }
 
-#[test]
-fn test_workflow単一取得_単独sessionをworkflow_summaryとして返さない() {
+#[tokio::test]
+async fn test_workflow単一取得_単独sessionをworkflow_summaryとして返さない() {
     use crate::domain::workflow::SessionExecutionTreeRootFacts;
     // Given
     let directory = tempfile::tempdir().unwrap();
@@ -1938,16 +1981,18 @@ fn test_workflow単一取得_単独sessionをworkflow_summaryとして返さな�
             initial_instruction_admitted: true,
         },
     )
+    .await
     .unwrap();
     let query = SqliteWorkspaceQueryService::with_repository(
         SqliteWorkspaceTreeRepository::new(store),
         Arc::new(EmptyArchives),
     );
     // When / Then
-    assert!(query.execution_summary(session).unwrap().is_none());
+    assert!(query.execution_summary(session).await.unwrap().is_none());
     assert_eq!(
         query
             .execution_summary(workflow)
+            .await
             .unwrap()
             .unwrap()
             .execution_id,
@@ -1979,5 +2024,31 @@ fn test_workspace_query_結果不明と期限切れの分類を保持する() {
     ] {
         // When / Then
         assert_eq!(query_error(error).failure_kind(), expected);
+    }
+}
+
+#[tokio::test]
+async fn test_workspace読取_実経路で失敗分類を保持する() {
+    use crate::adaptor::gateway::local_event_store::test_helpers::ReadFailure;
+    use crate::adaptor::protocol::connect::classified_error;
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let store =
+        LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into())).unwrap();
+    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+    let query = SqliteWorkspaceQueryService::with_repository(repository, Arc::new(EmptyArchives));
+    let workspace = WorkspaceIdentity::new("/repo");
+    for (failure, expected) in ReadFailure::cases() {
+        for tree in [false, true] {
+            store.fail_next_read(failure.clone());
+            // When
+            let result = if tree {
+                query.workspace_tree(&workspace).await.map(|_| ())
+            } else {
+                query.execution_records(None, None, None).await.map(|_| ())
+            };
+            // Then
+            assert_eq!(classified_error(result.unwrap_err()).code, expected);
+        }
     }
 }

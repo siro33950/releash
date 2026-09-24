@@ -3,8 +3,8 @@ use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStor
 use crate::adaptor::gateway::workflow::test_support::seed_unavailable_definition;
 use crate::domain::failure::{ClassifiedFailure, FailureKind};
 
-#[test]
-fn test_session読取_親と自身の実行定義を解釈せず接続情報を取得できる() {
+#[tokio::test]
+async fn test_session読取_親と自身の実行定義を解釈せず接続情報を取得できる() {
     // Given
     for unavailable in ["main", "session", "unused"] {
         let directory = tempfile::tempdir().unwrap();
@@ -13,11 +13,14 @@ fn test_session読取_親と自身の実行定義を解釈せず接続情報を�
                 .unwrap();
         seed_unavailable_definition(&store, "tree", "/repo", unavailable);
         let backend = FactLogReadBackend::Live(store);
-        let location = locate_session(&backend, "tree-session").unwrap().unwrap();
+        let location = locate_session(&backend, "tree-session")
+            .await
+            .unwrap()
+            .unwrap();
 
         // When
-        let context = read_session_context(&backend, &location).unwrap();
-        let records = read_session_records(&backend, &location).unwrap();
+        let context = read_session_context(&backend, &location).await.unwrap();
+        let records = read_session_records(&backend, &location).await.unwrap();
 
         // Then
         assert_eq!(
@@ -35,8 +38,8 @@ fn test_session読取_親と自身の実行定義を解釈せず接続情報を�
     }
 }
 
-#[test]
-fn test_session読取_root欠落と対象provider欠落は接続情報取得エラーになる() {
+#[tokio::test]
+async fn test_session読取_root欠落と対象provider欠落は接続情報取得エラーになる() {
     // Given
     let directory = tempfile::tempdir().unwrap();
     let store =
@@ -52,6 +55,7 @@ fn test_session読取_root欠落と対象provider欠落は接続情報取得エ�
 
     // When / Then
     assert!(read_session_context(&backend, &location)
+        .await
         .unwrap_err()
         .to_string()
         .contains("root is missing"));
@@ -61,13 +65,14 @@ fn test_session読取_root欠落と対象provider欠落は接続情報取得エ�
         ..location
     };
     assert!(read_session_context(&backend, &missing)
+        .await
         .unwrap_err()
         .to_string()
         .contains("provider is unavailable"));
 }
 
-#[test]
-fn test_session読取_sql障害とroot欠損を区別する() {
+#[tokio::test]
+async fn test_session読取_sql障害とroot欠損を区別する() {
     // Given
     let directory = tempfile::tempdir().unwrap();
     let store =
@@ -82,7 +87,7 @@ fn test_session読取_sql障害とroot欠損を区別する() {
     };
 
     // When / Then
-    let error = read_session_context(&backend, &location).unwrap_err();
+    let error = read_session_context(&backend, &location).await.unwrap_err();
     assert_eq!(
         AgentSessionRepositoryError::from(error),
         AgentSessionRepositoryError::Corrupt
@@ -91,7 +96,7 @@ fn test_session読取_sql障害とroot欠損を区別する() {
         .unwrap()
         .execute("DROP TABLE node_events", [])
         .unwrap();
-    let error = read_session_context(&backend, &location).unwrap_err();
+    let error = read_session_context(&backend, &location).await.unwrap_err();
     assert!(matches!(
         &error,
         SessionContextReadError::Read(LocalEventQueryError::Internal { .. })
@@ -101,7 +106,7 @@ fn test_session読取_sql障害とroot欠損を区別する() {
         AgentSessionRepositoryError::Store(FailureKind::Internal)
     );
     assert_eq!(
-        AgentSessionQueryError::from(read_session_context(&backend, &location).unwrap_err()),
+        AgentSessionQueryError::from(read_session_context(&backend, &location).await.unwrap_err()),
         AgentSessionQueryError::Store(FailureKind::Internal)
     );
 }
@@ -187,8 +192,8 @@ fn test_session読取_実効cwdの一時障害と破損をrepositoryとqueryへ�
     }
 }
 
-#[test]
-fn test_session読取_子sessionにもrootのarchiveとrestoreを反映する() {
+#[tokio::test]
+async fn test_session読取_子sessionにもrootのarchiveとrestoreを反映する() {
     use crate::domain::workflow::services::fact_replay::derive_session_facts;
     use crate::domain::workflow::{NodeFact, NodeFactMeta};
     let directory = tempfile::tempdir().unwrap();
@@ -196,7 +201,10 @@ fn test_session読取_子sessionにもrootのarchiveとrestoreを反映する() 
         LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into())).unwrap();
     seed_unavailable_definition(&store, "tree", "/repo", "unused");
     let backend = FactLogReadBackend::Live(store.clone());
-    let location = locate_session(&backend, "tree-session").unwrap().unwrap();
+    let location = locate_session(&backend, "tree-session")
+        .await
+        .unwrap()
+        .unwrap();
     let root = NodeFactMeta {
         tree_id: "tree".into(),
         node_execution_id: "tree".into(),
@@ -213,7 +221,7 @@ fn test_session読取_子sessionにもrootのarchiveとrestoreを反映する() 
         NodeFact::RestoreRequested,
     ] {
         fact_log::append_single_fact(&store, &root, &fact, 100).unwrap();
-        let records = read_session_records(&backend, &location).unwrap();
+        let records = read_session_records(&backend, &location).await.unwrap();
         let view = derive_session_facts(&records, &location.node_execution_id, "tree-session");
         assert_eq!(view.archived, matches!(fact, NodeFact::ArchiveRequested(_)));
         if matches!(fact, NodeFact::RestoreRequested) {

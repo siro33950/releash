@@ -33,22 +33,19 @@ pub(crate) async fn get_workflow_execution_state_impl(
     worktree_path: String,
     execution_id: String,
 ) -> Result<Option<WorkflowExecutionView>, AppError> {
-    let query = query.clone();
-    let state = tokio::task::spawn_blocking(move || {
-        validate_execution_id(&execution_id)?;
-        if query
-            .authorize_execution_summary_for_worktree(&execution_id, &worktree_path)
-            .map_err(AppError::from_failure)?
-            .is_none()
-        {
-            return Ok(None);
-        }
-        query
-            .get_execution_state(&execution_id)
-            .map_err(AppError::from_failure)
-    })
-    .await
-    .map_err(|e| AppError::new(format!("task join error: {e}")))??;
+    validate_execution_id(&execution_id)?;
+    if query
+        .authorize_execution_summary_for_worktree(&execution_id, &worktree_path)
+        .await
+        .map_err(AppError::from_failure)?
+        .is_none()
+    {
+        return Ok(None);
+    }
+    let state = query
+        .get_execution_state(&execution_id)
+        .await
+        .map_err(AppError::from_failure)?;
     Ok(state.map(crate::adaptor::presenter::workflow::workflow_execution_to_view))
 }
 
@@ -57,21 +54,18 @@ pub(crate) async fn resolve_active_execution_by_worktree_shared(
     state: &AppState,
     worktree_path: String,
 ) -> Result<Option<String>, AppError> {
-    let query = state.workflow_usecase.clone();
-    tokio::task::spawn_blocking(move || {
-        query
-            .list_executions_for_worktree(
-                Some(crate::domain::workflow::ExecutionStatusFilter::Active),
-                &worktree_path,
-            )
-            .map(|executions| {
-                executions
-                    .into_iter()
-                    .next()
-                    .map(|execution| execution.execution_id)
-            })
-            .map_err(AppError::from_failure)
-    })
-    .await
-    .map_err(|e| AppError::new(format!("task join error: {e}")))?
+    state
+        .workflow_usecase
+        .list_executions_for_worktree(
+            Some(crate::domain::workflow::ExecutionStatusFilter::Active),
+            &worktree_path,
+        )
+        .await
+        .map(|executions| {
+            executions
+                .into_iter()
+                .next()
+                .map(|execution| execution.execution_id)
+        })
+        .map_err(AppError::from_failure)
 }

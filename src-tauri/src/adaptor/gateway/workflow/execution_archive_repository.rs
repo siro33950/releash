@@ -30,7 +30,7 @@ impl ExecutionTreeArchiveFactRepository {
         }
     }
 
-    fn read_candidate_page(
+    async fn read_candidate_page(
         &self,
         after: Option<&str>,
         include_archived: bool,
@@ -53,14 +53,14 @@ impl ExecutionTreeArchiveFactRepository {
                        AND archive.event_type IN ('archive_requested', 'restore_requested')
                      ORDER BY seq DESC LIMIT 1), '') != 'archive_requested')
                  ORDER BY tree_id LIMIT 128"
-            ).map_err(|_| crate::domain::local_event::LocalEventQueryError::InvalidRequest)?;
+            ).map_err(|error| crate::adaptor::gateway::local_event_store::reader::storage_unavailable(&error))?;
             statement.query_map(rusqlite::params![after, include_archived], |row| Ok(ExecutionTreeArchiveCandidate {
                 execution_id: row.get(0)?, worktree_path: row.get(1)?, workspace_identity: row.get(2)?, repository_root: row.get(3)?,
-            })).and_then(|rows| rows.collect()).map_err(|_| crate::domain::local_event::LocalEventQueryError::InvalidRequest)
-        }).map_err(|error| WorkflowError::external(format!("archive candidate query failed: {error:?}")))
+            })).and_then(|rows| rows.collect()).map_err(|error| crate::adaptor::gateway::local_event_store::reader::storage_unavailable(&error))
+        }).await.map_err(|error| WorkflowError::from(fact_log::FactReadError::Query(error)))
     }
 
-    fn append(
+    async fn append(
         &self,
         execution_id: &str,
         fact: NodeFact,
@@ -76,11 +76,12 @@ impl ExecutionTreeArchiveFactRepository {
                 crate::adaptor::gateway::local_event_store::node_events::first_row_of_tree(
                     connection, &tree_id,
                 )
-                .map_err(|_| crate::domain::local_event::LocalEventQueryError::InvalidRequest)
+                .map_err(|error| {
+                    crate::adaptor::gateway::local_event_store::reader::storage_unavailable(&error)
+                })
             })
-            .map_err(|error| {
-                WorkflowError::external(format!("archive root query failed: {error:?}"))
-            })?
+            .await
+            .map_err(|error| WorkflowError::from(fact_log::FactReadError::Query(error)))?
             .ok_or_else(|| WorkflowError::NotFound(execution_id.to_string()))?;
         let root = fact_log::record_from_row(&row)
             .map_err(WorkflowError::external)?
@@ -89,8 +90,12 @@ impl ExecutionTreeArchiveFactRepository {
     }
 }
 
+#[async_trait::async_trait]
 impl ExecutionTreeArchiveRepository for ExecutionTreeArchiveFactRepository {
-    fn location(&self, execution_id: &str) -> Result<ExecutionTreeArchiveCandidate, WorkflowError> {
+    async fn location(
+        &self,
+        execution_id: &str,
+    ) -> Result<ExecutionTreeArchiveCandidate, WorkflowError> {
         let id = execution_id.to_string();
         let row = self
             .backend
@@ -98,9 +103,12 @@ impl ExecutionTreeArchiveRepository for ExecutionTreeArchiveFactRepository {
                 crate::adaptor::gateway::local_event_store::node_events::first_row_of_tree(
                     connection, &id,
                 )
-                .map_err(|_| crate::domain::local_event::LocalEventQueryError::InvalidRequest)
+                .map_err(|error| {
+                    crate::adaptor::gateway::local_event_store::reader::storage_unavailable(&error)
+                })
             })
-            .map_err(|error| WorkflowError::external(format!("tree root query failed: {error:?}")))?
+            .await
+            .map_err(|error| WorkflowError::from(fact_log::FactReadError::Query(error)))?
             .ok_or_else(|| WorkflowError::NotFound(execution_id.into()))?;
         let mut root = super::stored_definition::read_tree_header(&row.detail)
             .map_err(WorkflowError::CorruptStoredState)?
@@ -113,8 +121,8 @@ impl ExecutionTreeArchiveRepository for ExecutionTreeArchiveFactRepository {
                      WHERE tree_id = ?1 AND parent_id IS NULL AND event_type = 'repository_root_observed'
                      ORDER BY seq LIMIT 1)",
                     [id], |row| row.get(0),
-                ).map_err(|_| crate::domain::local_event::LocalEventQueryError::InvalidRequest)
-            }).map_err(|error| WorkflowError::external(format!("tree repository query failed: {error:?}")))?;
+                ).map_err(|error| crate::adaptor::gateway::local_event_store::reader::storage_unavailable(&error))
+            }).await.map_err(|error| WorkflowError::from(fact_log::FactReadError::Query(error)))?;
         }
         Ok(ExecutionTreeArchiveCandidate {
             execution_id: row.tree_id,
@@ -128,7 +136,7 @@ impl ExecutionTreeArchiveRepository for ExecutionTreeArchiveFactRepository {
         Ok(archive_path_key(path)?.to_string_lossy().into_owned())
     }
 
-    fn worktree_target_page(
+    async fn worktree_target_page(
         &self,
         worktree_path: &str,
         after: Option<&str>,
@@ -136,7 +144,7 @@ impl ExecutionTreeArchiveRepository for ExecutionTreeArchiveFactRepository {
         let worktree_path = archive_path_key(worktree_path)?;
         let mut after = after.map(str::to_string);
         loop {
-            let page = self.read_candidate_page(after.as_deref(), true)?;
+            let page = self.read_candidate_page(after.as_deref(), true).await?;
             let Some(last) = page.last() else {
                 return Ok(Vec::new());
             };
@@ -155,11 +163,11 @@ impl ExecutionTreeArchiveRepository for ExecutionTreeArchiveFactRepository {
         }
     }
 
-    fn candidate_page(
+    async fn candidate_page(
         &self,
         after: Option<&str>,
     ) -> Result<Vec<ExecutionTreeArchiveCandidate>, WorkflowError> {
-        let mut page = self.read_candidate_page(after, false)?;
+        let mut page = self.read_candidate_page(after, false).await?;
         for candidate in &mut page {
             if candidate.repository_root.is_none() {
                 candidate.repository_root =
@@ -173,26 +181,29 @@ impl ExecutionTreeArchiveRepository for ExecutionTreeArchiveFactRepository {
         Ok(page)
     }
 
-    fn record_repository_root(
+    async fn record_repository_root(
         &self,
         execution_id: &str,
         repository_root: &str,
         timestamp: f64,
     ) -> Result<(), WorkflowError> {
-        match self.location(execution_id)?.repository_root {
+        match self.location(execution_id).await?.repository_root {
             Some(root) if root != repository_root => Err(WorkflowError::CorruptStoredState(
                 format!("tree {execution_id} has conflicting repository roots"),
             )),
             Some(_) => Ok(()),
-            None => self.append(
-                execution_id,
-                NodeFact::RepositoryRootObserved(repository_root.into()),
-                timestamp,
-            ),
+            None => {
+                self.append(
+                    execution_id,
+                    NodeFact::RepositoryRootObserved(repository_root.into()),
+                    timestamp,
+                )
+                .await
+            }
         }
     }
 
-    fn legacy_session_archive_page(
+    async fn legacy_session_archive_page(
         &self,
         after: Option<&str>,
     ) -> Result<Vec<ExecutionTreeArchiveRecord>, WorkflowError> {
@@ -205,16 +216,20 @@ impl ExecutionTreeArchiveRepository for ExecutionTreeArchiveFactRepository {
                    AND seq = (SELECT MAX(seq) FROM node_events latest WHERE latest.tree_id = archive.tree_id
                        AND latest.parent_id IS NULL AND latest.event_type IN ('archive_requested', 'restore_requested'))
                  ORDER BY tree_id LIMIT 128"
-            ).map_err(|_| crate::domain::local_event::LocalEventQueryError::InvalidRequest)?;
+            ).map_err(|error| crate::adaptor::gateway::local_event_store::reader::storage_unavailable(&error))?;
             statement.query_map([after], |row| row.get::<_, String>(0)).and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
-                .map_err(|_| crate::domain::local_event::LocalEventQueryError::InvalidRequest)
-        }).map_err(|error| WorkflowError::external(format!("legacy session archive query failed: {error:?}")))?;
-        Ok(self.archive_snapshot_for(&ids)?.records)
+                .map_err(|error| crate::adaptor::gateway::local_event_store::reader::storage_unavailable(&error))
+        }).await.map_err(|error| WorkflowError::from(fact_log::FactReadError::Query(error)))?;
+        Ok(self.archive_snapshot_for(&ids).await?.records)
     }
 
-    fn target(&self, execution_id: &str) -> Result<ExecutionTreeArchiveTarget, WorkflowError> {
+    async fn target(
+        &self,
+        execution_id: &str,
+    ) -> Result<ExecutionTreeArchiveTarget, WorkflowError> {
         let folded = fact_log::fold_tree_from(&self.backend, execution_id)
-            .map_err(WorkflowError::CorruptStoredState)?
+            .await
+            .map_err(WorkflowError::from)?
             .ok_or_else(|| WorkflowError::NotFound(execution_id.to_string()))?;
         let status =
             crate::domain::workflow::services::fact_replay::derive_read_model(&folded).status;
@@ -227,17 +242,18 @@ impl ExecutionTreeArchiveRepository for ExecutionTreeArchiveFactRepository {
         })
     }
 
-    fn archive(
+    async fn archive(
         &self,
         execution_id: &ExecutionTreeId,
         archived_at: f64,
         reason: &str,
     ) -> Result<(), WorkflowError> {
         let mut tree = fact_log::fold_tree_from(&self.backend, execution_id.as_str())
-            .map_err(WorkflowError::CorruptStoredState)?
+            .await
+            .map_err(WorkflowError::from)?
             .ok_or_else(|| WorkflowError::NotFound(execution_id.to_string()))?;
         if let Some(fact) = tree.aggregate.archive(archived_at, reason)? {
-            return self.append(execution_id.as_str(), fact, archived_at);
+            return self.append(execution_id.as_str(), fact, archived_at).await;
         }
         let id = execution_id.to_string();
         let legacy = self.backend.run_indexed(move |connection| {
@@ -245,8 +261,8 @@ impl ExecutionTreeArchiveRepository for ExecutionTreeArchiveFactRepository {
                 "SELECT detail, timestamp FROM node_events WHERE tree_id = ?1 AND parent_id IS NULL
                  AND event_type IN ('archive_requested', 'restore_requested') ORDER BY seq DESC LIMIT 1",
                 [id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
-            ).map_err(|_| crate::domain::local_event::LocalEventQueryError::InvalidRequest)
-        }).map_err(|error| WorkflowError::external(format!("legacy archive query failed: {error:?}")))?;
+            ).map_err(|error| crate::adaptor::gateway::local_event_store::reader::storage_unavailable(&error))
+        }).await.map_err(|error| WorkflowError::from(fact_log::FactReadError::Query(error)))?;
         let detail: serde_json::Value = serde_json::from_str(&legacy.0)
             .map_err(|error| WorkflowError::CorruptStoredState(error.to_string()))?;
         if detail
@@ -256,30 +272,35 @@ impl ExecutionTreeArchiveRepository for ExecutionTreeArchiveFactRepository {
             let fact = fact_log::decode_stored_fact("archive_requested", &legacy.0, legacy.1)
                 .map_err(WorkflowError::CorruptStoredState)?
                 .ok_or_else(|| WorkflowError::CorruptStoredState("archive fact missing".into()))?;
-            return self.append(execution_id.as_str(), fact, legacy.1 as f64 / 1000.0);
+            return self
+                .append(execution_id.as_str(), fact, legacy.1 as f64 / 1000.0)
+                .await;
         }
         Ok(())
     }
 
-    fn restore(
+    async fn restore(
         &self,
         execution_id: &ExecutionTreeId,
         restored_at: f64,
     ) -> Result<(), WorkflowError> {
         let mut tree = fact_log::fold_tree_from(&self.backend, execution_id.as_str())
-            .map_err(WorkflowError::CorruptStoredState)?
+            .await
+            .map_err(WorkflowError::from)?
             .ok_or_else(|| WorkflowError::NotFound(execution_id.to_string()))?;
         if let Some(fact) = tree.aggregate.restore_archive() {
-            self.append(execution_id.as_str(), fact, restored_at)?;
+            self.append(execution_id.as_str(), fact, restored_at)
+                .await?;
         }
         Ok(())
     }
 
-    fn archive_snapshot_for(
+    async fn archive_snapshot_for(
         &self,
         execution_ids: &[String],
     ) -> Result<ExecutionTreeArchiveSnapshot, WorkflowError> {
         let facts = fact_log::read_tree_archive_records_for(&self.backend, execution_ids)
+            .await
             .map_err(WorkflowError::from)?;
         let mut records = facts
             .iter()

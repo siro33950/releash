@@ -85,7 +85,7 @@ fn node_started(
     }
 }
 
-fn no_lookup(_: &str) -> Result<Option<FactRowMeta>, String> {
+fn no_lookup(_: &str) -> Result<Option<FactRowMeta>, FactReadError> {
     Ok(None)
 }
 
@@ -179,8 +179,8 @@ mod fd_invariance_tests {
         }
     }
 
-    #[test]
-    fn test_事実行追記_単発追記中と完了後にopen_fd数が変わらない() {
+    #[tokio::test]
+    async fn test_事実行追記_単発追記中と完了後にopen_fd数が変わらない() {
         if run_in_isolated_process(
             "single",
             "fd_invariance_tests::test_事実行追記_単発追記中と完了後にopen_fd数が変わらない",
@@ -211,14 +211,14 @@ mod fd_invariance_tests {
         // Then: 追記中・完了後とも fd 数が増えず、事実行が記録される
         assert_eq!(in_flight, before);
         assert_eq!(after, before);
-        let records = read_tree_records(&store, "fd-single-tree").unwrap();
+        let records = read_tree_records(&store, "fd-single-tree").await.unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].meta.node_execution_id, "fd-single-node");
         assert_eq!(records[0].fact, NodeFact::RetryRequested);
     }
 
-    #[test]
-    fn test_事実行追記_全追記が並行実行中でもopen_fd数が変わらず全行を記録する() {
+    #[tokio::test]
+    async fn test_事実行追記_全追記が並行実行中でもopen_fd数が変わらず全行を記録する() {
         const APPEND_COUNT: usize = 16;
 
         if run_in_isolated_process(
@@ -262,7 +262,7 @@ mod fd_invariance_tests {
         // Then: 全 append の実行中・完了後とも fd 数が増えず、全行が記録される
         assert_eq!(in_flight, before);
         assert_eq!(after, before);
-        let records = read_tree_records(&store, "fd-parallel-tree").unwrap();
+        let records = read_tree_records(&store, "fd-parallel-tree").await.unwrap();
         assert_eq!(records.len(), APPEND_COUNT);
         let mut node_execution_ids = records
             .iter()
@@ -277,8 +277,8 @@ mod fd_invariance_tests {
     }
 
     #[cfg(unix)]
-    #[test]
-    fn test_事実行追記_fd_soft_limit直下でもsession_attachedを記録する() {
+    #[tokio::test]
+    async fn test_事実行追記_fd_soft_limit直下でもsession_attachedを記録する() {
         if run_in_isolated_process(
             "soft-limit",
             "fd_invariance_tests::test_事実行追記_fd_soft_limit直下でもsession_attachedを記録する",
@@ -307,7 +307,9 @@ mod fd_invariance_tests {
         append_single_fact(&store, &meta, &fact, 2_000).unwrap();
 
         // Then: fd を追加取得せず追記でき、同じ事実行を既存 reader から読める
-        let records = read_tree_records(&store, "fd-soft-limit-tree").unwrap();
+        let records = read_tree_records(&store, "fd-soft-limit-tree")
+            .await
+            .unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].meta.node_execution_id, "fd-soft-limit-node");
         assert_eq!(records[0].fact, fact);
@@ -318,21 +320,22 @@ mod append_contract_tests {
     use super::*;
     use crate::adaptor::gateway::local_event_store::writer::NORMAL_LANE_MAX_BYTES;
 
-    pub(super) fn read_raw_rows(
+    pub(super) async fn read_raw_rows(
         store: &Arc<LocalEventStore>,
         tree_id: &str,
     ) -> Vec<crate::adaptor::gateway::local_event_store::node_events::NodeEventRow> {
         let tree_id = tree_id.to_string();
         store
-            .submit_indexed_query_blocking(move |connection| {
+            .submit_query(move |connection| {
                 node_events::read_tree(connection, &tree_id)
                     .map_err(|_| LocalEventQueryError::InvalidRequest)
             })
+            .await
             .unwrap()
     }
 
-    #[test]
-    fn test_事実行追記_同期文脈で記録され結果が返る() {
+    #[tokio::test]
+    async fn test_事実行追記_同期文脈で記録され結果が返る() {
         // Given: 同期文脈で利用する file-backed store と単独の事実
         let root = tempfile::TempDir::new().unwrap();
         let store =
@@ -345,7 +348,9 @@ mod append_contract_tests {
 
         // Then: 結果が返り、事実行が記録される
         assert_eq!(result, Ok(()));
-        let records = read_tree_records(&store, "sync-context-tree").unwrap();
+        let records = read_tree_records(&store, "sync-context-tree")
+            .await
+            .unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].fact, NodeFact::RetryRequested);
     }
@@ -364,13 +369,15 @@ mod append_contract_tests {
 
         // Then: 呼び出しが停止せず結果が返り、事実行が記録される
         assert_eq!(result, Ok(()));
-        let records = read_tree_records(&store, "async-context-tree").unwrap();
+        let records = read_tree_records(&store, "async-context-tree")
+            .await
+            .unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].fact, NodeFact::ResumeRequested);
     }
 
-    #[test]
-    fn test_事実行追記_同一nodeの内容とseqが入力順に記録される() {
+    #[tokio::test]
+    async fn test_事実行追記_同一nodeの内容とseqが入力順に記録される() {
         // Given: 同一 node に順に発生した、全 field を同定できる3つの事実行
         let root = tempfile::TempDir::new().unwrap();
         let store =
@@ -406,7 +413,7 @@ mod append_contract_tests {
         append_pending_rows_blocking(&store, rows).unwrap();
 
         // Then: NewNodeEventRow の全 field・timestamp・払い出し seq が入力順と一致する
-        let stored = read_raw_rows(&store, "ordering-tree");
+        let stored = read_raw_rows(&store, "ordering-tree").await;
         assert_eq!(stored.len(), expected.len());
         for (index, (stored, expected)) in stored.iter().zip(expected.iter()).enumerate() {
             assert_eq!(stored.tree_id, expected.row.tree_id);
@@ -423,8 +430,8 @@ mod append_contract_tests {
         }
     }
 
-    #[test]
-    fn test_事実行追記_利用不能な追記先の失敗が呼び出し元へ返る() {
+    #[tokio::test]
+    async fn test_事実行追記_利用不能な追記先の失敗が呼び出し元へ返る() {
         // Given: write queue が閉じた store
         let root = tempfile::TempDir::new().unwrap();
         let store =
@@ -450,11 +457,11 @@ mod append_contract_tests {
                 kind: crate::domain::failure::FailureKind::RestartRequired,
             }
         );
-        assert!(read_raw_rows(&store, "unavailable-tree").is_empty());
+        assert!(read_raw_rows(&store, "unavailable-tree").await.is_empty());
     }
 
-    #[test]
-    fn test_事実行追記_複数行の途中失敗で前の行だけが記録される() {
+    #[tokio::test]
+    async fn test_事実行追記_複数行の途中失敗で前の行だけが記録される() {
         // Given: 正常行、queue 容量を超える行、未投入で終わる正常行の順の入力
         let root = tempfile::TempDir::new().unwrap();
         let store =
@@ -490,7 +497,7 @@ mod append_contract_tests {
                 kind: crate::domain::failure::FailureKind::Temporary,
             }
         );
-        let stored = read_raw_rows(&store, "partial-tree");
+        let stored = read_raw_rows(&store, "partial-tree").await;
         assert_eq!(stored.len(), 1);
         assert_eq!(stored[0].seq, 1);
         assert_eq!(stored[0].node_execution_id, "before-failure");
@@ -813,8 +820,8 @@ mod reconciliation_tests {
         }
     }
 
-    #[test]
-    fn test_復旧_起動失敗済みleafは再起動せず起動済みprocessの喪失も記録しない() {
+    #[tokio::test]
+    async fn test_復旧_起動失敗済みleafは再起動せず起動済みprocessの喪失も記録しない() {
         // Given
         let (_root, store) = open_store();
         append_facts_for_events(
@@ -842,9 +849,11 @@ mod reconciliation_tests {
                 },
             ],
         )
+        .await
         .unwrap();
         // When
         let recovered = reconcile_tree_pass(&store, TREE, 3.0, &mut test_id_source())
+            .await
             .unwrap()
             .unwrap();
         // Then
@@ -859,6 +868,7 @@ mod reconciliation_tests {
             RuntimeNodeExecutionStatus::Running
         );
         assert!(!read_tree_records(&store, TREE)
+            .await
             .unwrap()
             .iter()
             .any(|record| matches!(record.fact, NodeFact::ProcessExited(_))));
@@ -872,14 +882,16 @@ mod reconciliation_tests {
                 timestamp: 4.0,
             }],
         )
+        .await
         .unwrap();
         // When
         let recovered = reconcile_tree_pass(&store, TREE, 5.0, &mut test_id_source())
+            .await
             .unwrap()
             .unwrap();
         // Then
         assert!(recovered.starts.is_empty());
-        let records = read_tree_records(&store, TREE).unwrap();
+        let records = read_tree_records(&store, TREE).await.unwrap();
         assert_eq!(
             records
                 .iter()
@@ -889,12 +901,12 @@ mod reconciliation_tests {
         );
     }
 
-    fn row_count(store: &std::sync::Arc<LocalEventStore>) -> usize {
-        read_tree_records(store, TREE).unwrap().len()
+    async fn row_count(store: &std::sync::Arc<LocalEventStore>) -> usize {
+        read_tree_records(store, TREE).await.unwrap().len()
     }
 
-    #[test]
-    fn test_delegate復旧_提出だけ保存された木のchild開始を追記し再導出しない() {
+    #[tokio::test]
+    async fn test_delegate復旧_提出だけ保存された木のchild開始を追記し再導出しない() {
         use crate::domain::workflow::entities::workflow_execution::{
             ExecutionAdvanceDecision, PendingAdvance,
         };
@@ -938,6 +950,7 @@ mod reconciliation_tests {
             append_single_fact(&store, &parent_meta, fact, (index as i64 + 1) * 1000).unwrap();
         }
         let mut folded = fold_tree_from(&FactLogReadBackend::Live(store.clone()), TREE)
+            .await
             .unwrap()
             .unwrap();
         let advance = PendingAdvance::Delegate {
@@ -952,8 +965,11 @@ mod reconciliation_tests {
             .aggregate
             .apply_pending_advance(&advance, &mut || "child".into(), 5.0)
             .unwrap();
-        append_facts_for_events(&store, &applied.events).unwrap();
+        append_facts_for_events(&store, &applied.events)
+            .await
+            .unwrap();
         let restored = fold_tree_from(&FactLogReadBackend::Live(store.clone()), TREE)
+            .await
             .unwrap()
             .unwrap();
         // Then
@@ -969,6 +985,7 @@ mod reconciliation_tests {
         );
         assert_eq!(
             read_tree_records(&store, TREE)
+                .await
                 .unwrap()
                 .iter()
                 .filter(|record| record.meta.node_name == "verify"
@@ -1004,14 +1021,17 @@ mod reconciliation_tests {
                 timestamp: 2.0,
             }],
         )
+        .await
         .unwrap();
         assert!(!read_tree_records(&store, session_id)
+            .await
             .unwrap()
             .iter()
             .any(|record| matches!(record.fact, NodeFact::ProcessExited(_))));
 
         let mut new_id = test_id_source();
         let reconciliation = reconcile_tree_pass(&store, session_id, 10.0, &mut new_id)
+            .await
             .unwrap()
             .unwrap();
 
@@ -1026,11 +1046,13 @@ mod reconciliation_tests {
             crate::domain::workflow::NodeCompletionSignalState::StopReceived
         );
         assert!(!read_tree_records(&store, session_id)
+            .await
             .unwrap()
             .iter()
             .any(|record| matches!(record.fact, NodeFact::ProcessExited(_))));
         let node = SqliteWorkspaceTreeRepository::new(store)
             .load_node(&WorkspaceIdentity::new("/repo"), session_id)
+            .await
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -1042,8 +1064,8 @@ mod reconciliation_tests {
     /// ISSUE 受け入れ基準: 任意の時点で kill しても、再起動後の reconciliation が
     /// 未実行の行動を検出して継続し、行動の二重実行が起きない。
     /// kill 点: 子の完了導出（stop 事実）と次の子の started の間。
-    #[test]
-    fn test_再入_完了と次の開始の間でkillされた前進を検出して継続する() {
+    #[tokio::test]
+    async fn test_再入_完了と次の開始の間でkillされた前進を検出して継続する() {
         let (_root, store) = open_store();
         // Given: a の完了二信号まで（次の run の started が無い = kill 点）
         append_facts_for_events(
@@ -1070,19 +1092,21 @@ mod reconciliation_tests {
                 },
             ],
         )
+        .await
         .unwrap();
-        let before = row_count(&store);
+        let before = row_count(&store).await;
 
         // When: reconciliation パスを実行する
         let mut new_id = test_id_source();
         let outcome = reconcile_tree_pass(&store, TREE, 10.0, &mut new_id)
+            .await
             .unwrap()
             .unwrap();
 
         // Then: 次の子（run command）の started が追記され、起動対象として返る
         assert_eq!(outcome.starts.len(), 1);
         assert_eq!(outcome.starts[0].node_name(), "run");
-        let records = read_tree_records(&store, TREE).unwrap();
+        let records = read_tree_records(&store, TREE).await.unwrap();
         assert_eq!(records.len(), before + 1);
         let last = records.last().unwrap();
         assert_eq!(fact_codec::event_type(&last.fact), "started");
@@ -1092,6 +1116,7 @@ mod reconciliation_tests {
         // started を重複して追記しない。
         let mut new_id = test_id_source();
         let second = reconcile_tree_pass(&store, TREE, 11.0, &mut new_id)
+            .await
             .unwrap()
             .unwrap();
         assert_eq!(second.starts, outcome.starts);
@@ -1101,7 +1126,7 @@ mod reconciliation_tests {
                 .filter(|record| fact_codec::event_type(&record.fact) == "started")
                 .count()
         };
-        let after_second = read_tree_records(&store, TREE).unwrap();
+        let after_second = read_tree_records(&store, TREE).await.unwrap();
         assert_eq!(after_second.len(), records.len());
         assert_eq!(started_rows(&after_second), started_rows(&records));
 
@@ -1115,13 +1140,15 @@ mod reconciliation_tests {
                 timestamp: 11.5,
             }],
         )
+        .await
         .unwrap();
         let mut new_id = test_id_source();
         let third = reconcile_tree_pass(&store, TREE, 12.0, &mut new_id)
+            .await
             .unwrap()
             .unwrap();
         assert!(third.starts.is_empty());
-        let after_third = read_tree_records(&store, TREE).unwrap();
+        let after_third = read_tree_records(&store, TREE).await.unwrap();
         assert_eq!(
             fact_codec::event_type(&after_third.last().unwrap().fact),
             "command_spawned"
@@ -1131,14 +1158,15 @@ mod reconciliation_tests {
         let count_after_third = after_third.len();
         let mut new_id = test_id_source();
         reconcile_tree_pass(&store, TREE, 13.0, &mut new_id)
+            .await
             .unwrap()
             .unwrap();
-        assert_eq!(row_count(&store), count_after_third);
+        assert_eq!(row_count(&store).await, count_after_third);
     }
 
     /// kill 点: 合成子の started と実効 entry の子の started の間。
-    #[test]
-    fn test_再入_entry未開始のsequenceに実効entryの開始を補完する() {
+    #[tokio::test]
+    async fn test_再入_entry未開始のsequenceに実効entryの開始を補完する() {
         let (_root, store) = open_store();
         append_facts_for_events(
             &store,
@@ -1147,22 +1175,24 @@ mod reconciliation_tests {
                 node_started("main-exec", "main", NodeKindName::Sequence, None, 1.0),
             ],
         )
+        .await
         .unwrap();
 
         let mut new_id = test_id_source();
         let outcome = reconcile_tree_pass(&store, TREE, 10.0, &mut new_id)
+            .await
             .unwrap()
             .unwrap();
 
         // Then: entry の子 a が開始される
         assert_eq!(outcome.starts.len(), 1);
         assert_eq!(outcome.starts[0].node_name(), "a");
-        let records = read_tree_records(&store, TREE).unwrap();
+        let records = read_tree_records(&store, TREE).await.unwrap();
         assert_eq!(records.last().unwrap().meta.node_name, "a");
 
         // provider lifecycle の準備は node_events 上の外部実行成立事実ではない。
         // attach 前に kill された場合、2周目も同じ leaf を返し、started は増やさない。
-        let before_second = read_tree_records(&store, TREE).unwrap();
+        let before_second = read_tree_records(&store, TREE).await.unwrap();
         let expected_record_count = before_second.len();
         let started_count = before_second
             .iter()
@@ -1170,10 +1200,11 @@ mod reconciliation_tests {
             .count();
         let mut new_id = test_id_source();
         let second = reconcile_tree_pass(&store, TREE, 11.0, &mut new_id)
+            .await
             .unwrap()
             .unwrap();
         assert_eq!(second.starts, outcome.starts);
-        let after_second = read_tree_records(&store, TREE).unwrap();
+        let after_second = read_tree_records(&store, TREE).await.unwrap();
         assert_eq!(after_second.len(), expected_record_count);
         assert_eq!(
             after_second
@@ -1192,13 +1223,15 @@ mod reconciliation_tests {
                 timestamp: 11.5,
             }],
         )
+        .await
         .unwrap();
         let mut new_id = test_id_source();
         let third = reconcile_tree_pass(&store, TREE, 12.0, &mut new_id)
+            .await
             .unwrap()
             .unwrap();
         assert!(third.starts.is_empty());
-        let after_third = read_tree_records(&store, TREE).unwrap();
+        let after_third = read_tree_records(&store, TREE).await.unwrap();
         assert_eq!(
             fact_codec::event_type(&after_third.last().unwrap().fact),
             "session_attached"
@@ -1207,14 +1240,15 @@ mod reconciliation_tests {
         let count_after_third = after_third.len();
         let mut new_id = test_id_source();
         reconcile_tree_pass(&store, TREE, 13.0, &mut new_id)
+            .await
             .unwrap()
             .unwrap();
-        assert_eq!(row_count(&store), count_after_third);
+        assert_eq!(row_count(&store).await, count_after_third);
     }
 
     /// kill 点: 実行中プロセスごと落ちた場合。記録と Running を維持する。
-    #[test]
-    fn test_再入_実行中プロセスの喪失を追記せずrunningを維持する() {
+    #[tokio::test]
+    async fn test_再入_実行中プロセスの喪失を追記せずrunningを維持する() {
         let (_root, store) = open_store();
         append_facts_for_events(
             &store,
@@ -1236,16 +1270,18 @@ mod reconciliation_tests {
                 },
             ],
         )
+        .await
         .unwrap();
 
         let mut new_id = test_id_source();
         let outcome = reconcile_tree_pass(&store, TREE, 10.0, &mut new_id)
+            .await
             .unwrap()
             .unwrap();
 
         // Then: 起動時にはプロセス喪失を記録せず、node と木は Running
         assert!(outcome.starts.is_empty());
-        let records = read_tree_records(&store, TREE).unwrap();
+        let records = read_tree_records(&store, TREE).await.unwrap();
         assert_eq!(
             fact_codec::event_type(&records.last().unwrap().fact),
             "session_attached"
@@ -1264,20 +1300,21 @@ mod reconciliation_tests {
         );
 
         // 冪等: 2周目にも追記しない
-        let count = row_count(&store);
+        let count = row_count(&store).await;
         let mut new_id = test_id_source();
         reconcile_tree_pass(&store, TREE, 11.0, &mut new_id)
+            .await
             .unwrap()
             .unwrap();
-        assert_eq!(row_count(&store), count);
+        assert_eq!(row_count(&store).await, count);
     }
 }
 
 mod round_trip_tests {
     use super::*;
     use crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecutionStatus;
-    #[test]
-    fn test_session起動由来seedはrootとattachmentを同じdurable_batchで記録する() {
+    #[tokio::test]
+    async fn test_session起動由来seedはrootとattachmentを同じdurable_batchで記録する() {
         // Given: Session 起動由来の木を構成する root と attachment
         let root = tempfile::TempDir::new().unwrap();
         let store =
@@ -1300,9 +1337,12 @@ mod round_trip_tests {
 
         // Then: root だけの中間状態は durable にならず、同じ batch を再試行できる
         assert!(failed.is_err());
-        assert!(read_tree_records(&store, session_id).unwrap().is_empty());
+        assert!(read_tree_records(&store, session_id)
+            .await
+            .unwrap()
+            .is_empty());
         append_fact_batch_for_seed(&store, &facts, 1, "session-seed-atomic").unwrap();
-        let records = read_tree_records(&store, session_id).unwrap();
+        let records = read_tree_records(&store, session_id).await.unwrap();
         assert_eq!(records.len(), 2);
         assert_eq!(fact_codec::event_type(&records[0].fact), "started");
         assert_eq!(fact_codec::event_type(&records[1].fact), "session_attached");
@@ -1310,8 +1350,8 @@ mod round_trip_tests {
 
     /// エンジンが発するイベント列を写像して append した事実ログが、
     /// fold で同じ実行木として導出されることの統合確認。
-    #[test]
-    fn test_store経由_写像した事実ログをfoldすると実行木が導出される() {
+    #[tokio::test]
+    async fn test_store経由_写像した事実ログをfoldすると実行木が導出される() {
         let root = tempfile::TempDir::new().unwrap();
         let store =
             LocalEventStore::open(LocalEventStoreConfig::production(root.path().to_path_buf()))
@@ -1391,9 +1431,9 @@ mod round_trip_tests {
 
         // When: バッチごとに写像して append し、fold する
         for batch in &batches {
-            append_facts_for_events(&store, batch).unwrap();
+            append_facts_for_events(&store, batch).await.unwrap();
         }
-        let records = read_tree_records(&store, TREE).unwrap();
+        let records = read_tree_records(&store, TREE).await.unwrap();
         let tree = fold_execution_tree(TREE, &records).unwrap().unwrap();
 
         // Then: 遷移イベントなしの事実ログから同じ完了状態が導出される
@@ -1413,7 +1453,7 @@ mod round_trip_tests {
         assert!(tree.root.definition.is_some());
         let NodeFact::Started(started) = fact_codec::decode(
             "started",
-            &super::append_contract_tests::read_raw_rows(&store, TREE)[0].detail,
+            &super::append_contract_tests::read_raw_rows(&store, TREE).await[0].detail,
         )
         .unwrap() else {
             panic!()
@@ -1492,6 +1532,7 @@ async fn test_旧隔離事実の読取_状態導出と再起動復元からだ�
             ),
         ],
     )
+    .await
     .unwrap();
     append_single_fact(
         &store,
@@ -1512,7 +1553,7 @@ async fn test_旧隔離事実の読取_状態導出と再起動復元からだ�
         2000,
     )
     .unwrap();
-    let original = read_tree_records(&store, TREE).unwrap();
+    let original = read_tree_records(&store, TREE).await.unwrap();
     let rows = [
         (
             "isolated_worktree_created",
@@ -1553,10 +1594,10 @@ async fn test_旧隔離事実の読取_状態導出と再起動復元からだ�
         FactLogReadBackend::Live(store.clone()),
         FactLogReadBackend::ReadOnly(readonly),
     ] {
-        let records = read_tree_records_from(&backend, TREE).unwrap();
+        let records = read_tree_records_from(&backend, TREE).await.unwrap();
         // Then
         assert_eq!(records, original);
-        let tree = fold_tree_from(&backend, TREE).unwrap().unwrap();
+        let tree = fold_tree_from(&backend, TREE).await.unwrap().unwrap();
         let node = tree.aggregate.node_execution("a-exec").unwrap();
         assert!(node.worktree.is_none());
         assert_eq!(tree.aggregate.state(), &RuntimeExecutionState::Running);
@@ -1569,7 +1610,7 @@ async fn test_旧隔離事実の読取_状態導出と再起動復元からだ�
             .unwrap();
     assert!(session.is_some());
     let status = super::super::execution_projection_repository::WorkflowExecutionProjectionLogRepository::new(store.clone())
-        .get_execution(&crate::domain::workflow::ExecutionTreeId::new(TREE).unwrap()).unwrap().unwrap();
+        .get_execution(&crate::domain::workflow::ExecutionTreeId::new(TREE).unwrap()).await.unwrap().unwrap();
     assert_eq!(
         status.status,
         crate::domain::workflow::ExecutionStatus::Running
@@ -1583,6 +1624,7 @@ async fn test_旧隔離事実の読取_状態導出と再起動復元からだ�
         if owners == vec![CanonicalRuntimeOwnerView::ActiveWorkflow { worktree_path: "/repo".into() }])
     );
     let restored = reconcile_tree_pass(&store, TREE, 5.0, &mut || "next-exec".into())
+        .await
         .unwrap()
         .unwrap();
     assert_eq!(
@@ -1594,6 +1636,7 @@ async fn test_旧隔離事実の読取_状態導出と再起動復元からだ�
             node_events::read_tree(connection, TREE)
                 .map_err(|_| LocalEventQueryError::InvalidRequest)
         })
+        .await
         .unwrap();
     assert_eq!(
         rows.iter()
@@ -1754,8 +1797,8 @@ mod terminal_fact_tests {
     use crate::adaptor::gateway::local_event_store::layout::StoreLayout;
     use crate::domain::workflow::{AbortRequestedFact, ExecutionStatus};
 
-    #[test]
-    fn test_完了記録_終端行の保存失敗で完了信号も巻き戻り再試行で両方が残る() {
+    #[tokio::test]
+    async fn test_完了記録_終端行の保存失敗で完了信号も巻き戻り再試行で両方が残る() {
         use crate::adaptor::gateway::local_event_store::layout::StoreLayout;
 
         // Given
@@ -1776,15 +1819,17 @@ mod terminal_fact_tests {
                 node_started("root", "main", NodeKindName::Command, None, 1.0),
             ],
         )
+        .await
         .unwrap();
         let mut folded = fold_tree_from(&FactLogReadBackend::Live(store.clone()), TREE)
+            .await
             .unwrap()
             .unwrap();
         let completed = folded
             .aggregate
             .complete_leaf_and_advance("root", &mut || panic!("must not start"), 2.0)
             .unwrap();
-        let before = read_raw_rows(&store, TREE);
+        let before = read_raw_rows(&store, TREE).await;
         let connection =
             rusqlite::Connection::open(StoreLayout::new(dir.path()).database_path()).unwrap();
         connection
@@ -1796,42 +1841,48 @@ mod terminal_fact_tests {
             .unwrap();
 
         // When
-        assert!(append_facts_for_events(&store, &completed.events).is_err());
-        assert_eq!(read_raw_rows(&store, TREE), before);
+        assert!(append_facts_for_events(&store, &completed.events)
+            .await
+            .is_err());
+        assert_eq!(read_raw_rows(&store, TREE).await, before);
         drop(store);
         let store =
             LocalEventStore::open(LocalEventStoreConfig::production(dir.path().into())).unwrap();
 
         // Then
         let folded = fold_tree_from(&FactLogReadBackend::Live(store.clone()), TREE)
+            .await
             .unwrap()
             .unwrap();
         assert!(folded.aggregate.is_active());
         connection
             .execute_batch("DROP TRIGGER fail_completion;")
             .unwrap();
-        append_facts_for_events(&store, &completed.events).unwrap();
+        append_facts_for_events(&store, &completed.events)
+            .await
+            .unwrap();
         drop(store);
         let store =
             LocalEventStore::open(LocalEventStoreConfig::production(dir.path().into())).unwrap();
-        let rows = read_raw_rows(&store, TREE);
+        let rows = read_raw_rows(&store, TREE).await;
         assert_eq!(rows.len(), before.len() + 2);
         assert_eq!(rows[before.len()].event_type, "process_exited");
         assert_eq!(rows[before.len() + 1].event_type, "execution_completed");
         assert_eq!(rows[before.len()].timestamp_ms, 2_000);
         assert_eq!(rows[before.len() + 1].timestamp_ms, 2_000);
         let recovered = reconcile_tree_pass(&store, TREE, 3.0, &mut || panic!("must not start"))
+            .await
             .unwrap()
             .unwrap();
         assert_eq!(
             recovered.folded.aggregate.state(),
             &RuntimeExecutionState::Completed
         );
-        assert_eq!(read_raw_rows(&store, TREE), rows);
+        assert_eq!(read_raw_rows(&store, TREE).await, rows);
     }
 
-    #[test]
-    fn test_完了seed_完了事実を保存して再seedでも重複しない() {
+    #[tokio::test]
+    async fn test_完了seed_完了事実を保存して再seedでも重複しない() {
         use crate::adaptor::gateway::workflow::test_support::seed_canonical_execution;
         use crate::domain::workflow::WorkflowExecutionSummary as WorkflowExecutionMetadata;
 
@@ -1854,11 +1905,11 @@ mod terminal_fact_tests {
         };
 
         // When
-        seed_canonical_execution(&store, &execution, &[]);
-        seed_canonical_execution(&store, &execution, &[]);
+        seed_canonical_execution(&store, &execution, &[]).await;
+        seed_canonical_execution(&store, &execution, &[]).await;
 
         // Then
-        let rows = read_raw_rows(&store, TREE);
+        let rows = read_raw_rows(&store, TREE).await;
         assert_eq!(
             rows.iter()
                 .map(|row| row.event_type.as_str())
@@ -1872,13 +1923,14 @@ mod terminal_fact_tests {
         );
         assert_eq!(rows.last().unwrap().timestamp_ms, 2_000);
         let folded = fold_tree_from(&FactLogReadBackend::Live(store), TREE)
+            .await
             .unwrap()
             .unwrap();
         assert_eq!(folded.aggregate.state(), &RuntimeExecutionState::Completed);
     }
 
-    #[test]
-    fn test_終端復元_保存定義の承認待ちnodeをwriterとreadonlyで同じに復元する() {
+    #[tokio::test]
+    async fn test_終端復元_保存定義の承認待ちnodeをwriterとreadonlyで同じに復元する() {
         // Given
         let dir = tempfile::tempdir().unwrap();
         let store =
@@ -1896,8 +1948,11 @@ mod terminal_fact_tests {
                 node_started("root", "main", NodeKindName::Session, None, 1.0),
             ],
         )
+        .await
         .unwrap();
-        let root = read_tree_records(&store, TREE).unwrap()[0].meta.clone();
+        let root = read_tree_records(&store, TREE).await.unwrap()[0]
+            .meta
+            .clone();
         for (timestamp, fact) in [
             (
                 2_000,
@@ -1914,6 +1969,7 @@ mod terminal_fact_tests {
             append_single_fact(&store, &root, &fact, timestamp).unwrap();
         }
         let mut expected = fold_tree_from(&FactLogReadBackend::Live(store.clone()), TREE)
+            .await
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -1929,7 +1985,7 @@ mod terminal_fact_tests {
             4_000,
         )
         .unwrap();
-        let before = read_raw_rows(&store, TREE);
+        let before = read_raw_rows(&store, TREE).await;
         let readonly =
             crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore::open(
                 dir.path(),
@@ -1941,14 +1997,14 @@ mod terminal_fact_tests {
             FactLogReadBackend::Live(store.clone()),
             FactLogReadBackend::ReadOnly(readonly),
         ] {
-            let tree = fold_tree_from(&backend, TREE).unwrap().unwrap();
+            let tree = fold_tree_from(&backend, TREE).await.unwrap().unwrap();
             assert!(tree.root.definition.is_some());
             assert_eq!(
                 crate::domain::workflow::services::fact_replay::derive_read_model(&tree),
                 expected
             );
         }
-        assert_eq!(read_raw_rows(&store, TREE), before);
+        assert_eq!(read_raw_rows(&store, TREE).await, before);
     }
 
     fn legacy_tree(store: &Arc<LocalEventStore>, completed_signals: bool) -> NodeFactMeta {
@@ -2000,8 +2056,8 @@ mod terminal_fact_tests {
         meta
     }
 
-    #[test]
-    fn test_起動時abort_永続化失敗を返し再試行で一度だけ記録する() {
+    #[tokio::test]
+    async fn test_起動時abort_永続化失敗を返し再試行で一度だけ記録する() {
         // Given
         let dir = tempfile::tempdir().unwrap();
         let store =
@@ -2014,28 +2070,31 @@ mod terminal_fact_tests {
             crate::adaptor::gateway::workflow::startup_repository::StoredWorkflowStartupRepository(
                 store.clone(),
             );
-        let before = read_raw_rows(&store, TREE);
+        let before = read_raw_rows(&store, TREE).await;
         // When / Then
         assert!(
             crate::usecase::workflow::startup::abort_unavailable_definition(&repository, TREE, 3.0)
+                .await
                 .is_err()
         );
-        assert_eq!(read_raw_rows(&store, TREE), before);
+        assert_eq!(read_raw_rows(&store, TREE).await, before);
         connection
             .execute_batch("DROP TRIGGER fail_startup_abort")
             .unwrap();
         crate::usecase::workflow::startup::abort_unavailable_definition(&repository, TREE, 4.0)
+            .await
             .unwrap();
         crate::usecase::workflow::startup::abort_unavailable_definition(&repository, TREE, 5.0)
+            .await
             .unwrap();
-        let rows = read_raw_rows(&store, TREE);
+        let rows = read_raw_rows(&store, TREE).await;
         assert_eq!(rows.len(), before.len() + 1);
         assert_eq!(rows.last().unwrap().timestamp_ms, 4_000);
         assert_eq!(rows.last().unwrap().event_type, "abort_requested");
     }
 
-    #[test]
-    fn test_起動時abort_旧定義の未完了と完了事実のない過去完了を同じ理由付きabortにする() {
+    #[tokio::test]
+    async fn test_起動時abort_旧定義の未完了と完了事実のない過去完了を同じ理由付きabortにする() {
         // Given
         for completed_signals in [false, true] {
             let dir = tempfile::tempdir().unwrap();
@@ -2043,17 +2102,19 @@ mod terminal_fact_tests {
                 .unwrap();
             legacy_tree(&store, completed_signals);
             let backend = FactLogReadBackend::Live(store.clone());
-            let before = read_raw_rows(&store, TREE).len();
-            assert!(fold_tree_from(&backend, TREE).is_err());
-            assert_eq!(read_raw_rows(&store, TREE).len(), before);
+            let before = read_raw_rows(&store, TREE).await.len();
+            assert!(fold_tree_from(&backend, TREE).await.is_err());
+            assert_eq!(read_raw_rows(&store, TREE).await.len(), before);
             // When
             crate::usecase::workflow::startup::abort_unavailable_definition(
                 &crate::adaptor::gateway::workflow::startup_repository::StoredWorkflowStartupRepository(store.clone()), TREE, 3.0,
-            ).unwrap();
+            ).await.unwrap();
             let first = reconcile_tree_pass(&store, TREE, 3.0, &mut || panic!("must not start"))
+                .await
                 .unwrap()
                 .unwrap();
             let second = reconcile_tree_pass(&store, TREE, 4.0, &mut || panic!("must not start"))
+                .await
                 .unwrap()
                 .unwrap();
             // Then
@@ -2066,7 +2127,7 @@ mod terminal_fact_tests {
                 assert_eq!(model.completed_at, Some(3.0));
                 assert!(model.error_reason.unwrap().contains("completion"));
             }
-            let records = read_tree_records(&store, TREE).unwrap();
+            let records = read_tree_records(&store, TREE).await.unwrap();
             assert_eq!(records.len(), before + 1);
             assert!(
                 matches!(&records.last().unwrap().fact, NodeFact::AbortRequested(AbortRequestedFact { reason: Some(reason) }) if reason.contains("Workflow definition is unavailable"))
@@ -2077,8 +2138,8 @@ mod terminal_fact_tests {
         }
     }
 
-    #[test]
-    fn test_終端復元_旧隔離worktreeをabort済みnodeと提出artifactに保持する() {
+    #[tokio::test]
+    async fn test_終端復元_旧隔離worktreeをabort済みnodeと提出artifactに保持する() {
         // Given
         let dir = tempfile::tempdir().unwrap();
         let store =
@@ -2129,7 +2190,7 @@ mod terminal_fact_tests {
             4_000,
         )
         .unwrap();
-        let before = read_raw_rows(&store, TREE);
+        let before = read_raw_rows(&store, TREE).await;
         drop(store);
 
         // When
@@ -2144,7 +2205,7 @@ mod terminal_fact_tests {
             FactLogReadBackend::Live(store.clone()),
             FactLogReadBackend::ReadOnly(readonly),
         ] {
-            let tree = fold_tree_from(&backend, TREE).unwrap().unwrap();
+            let tree = fold_tree_from(&backend, TREE).await.unwrap().unwrap();
             let model = crate::domain::workflow::services::fact_replay::derive_read_model(&tree);
 
             // Then
@@ -2168,11 +2229,11 @@ mod terminal_fact_tests {
                 })
             );
         }
-        assert_eq!(read_raw_rows(&store, TREE), before);
+        assert_eq!(read_raw_rows(&store, TREE).await, before);
     }
 
-    #[test]
-    fn test_終端復元_旧定義でも完了とabortを保持し起動時に事実を追加しない() {
+    #[tokio::test]
+    async fn test_終端復元_旧定義でも完了とabortを保持し起動時に事実を追加しない() {
         // Given
         for terminal in [
             NodeFact::ExecutionCompleted,
@@ -2183,7 +2244,7 @@ mod terminal_fact_tests {
                 .unwrap();
             let meta = legacy_tree(&store, true);
             append_single_fact(&store, &meta, &terminal, 3_000).unwrap();
-            let before = read_raw_rows(&store, TREE).len();
+            let before = read_raw_rows(&store, TREE).await.len();
             let readonly =
                 crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore::open(
                     dir.path(),
@@ -2194,7 +2255,7 @@ mod terminal_fact_tests {
                 FactLogReadBackend::Live(store.clone()),
                 FactLogReadBackend::ReadOnly(readonly),
             ] {
-                let folded = fold_tree_from(&backend, TREE).unwrap().unwrap();
+                let folded = fold_tree_from(&backend, TREE).await.unwrap().unwrap();
                 assert_eq!(
                     folded.aggregate.state(),
                     &terminal.terminal_state().unwrap()
@@ -2203,18 +2264,19 @@ mod terminal_fact_tests {
             }
             let recovered =
                 reconcile_tree_pass(&store, TREE, 4.0, &mut || panic!("must not start"))
+                    .await
                     .unwrap()
                     .unwrap();
             assert_eq!(
                 recovered.folded.aggregate.state(),
                 &terminal.terminal_state().unwrap()
             );
-            assert_eq!(read_raw_rows(&store, TREE).len(), before);
+            assert_eq!(read_raw_rows(&store, TREE).await.len(), before);
         }
     }
 
-    #[test]
-    fn test_終端復元_現行形式の定義でも再生規則が一致しなければ完了事実を優先する() {
+    #[tokio::test]
+    async fn test_終端復元_現行形式の定義でも再生規則が一致しなければ完了事実を優先する() {
         // Given
         let dir = tempfile::tempdir().unwrap();
         let store =
@@ -2229,14 +2291,15 @@ mod terminal_fact_tests {
             timestamp: 2.0,
         });
         // When
-        append_facts_for_events(&store, &events).unwrap();
+        append_facts_for_events(&store, &events).await.unwrap();
         let folded = fold_tree_from(&FactLogReadBackend::Live(store.clone()), TREE)
+            .await
             .unwrap()
             .unwrap();
         // Then
         assert_eq!(folded.aggregate.state(), &RuntimeExecutionState::Completed);
         assert_eq!(
-            read_raw_rows(&store, TREE).last().unwrap().event_type,
+            read_raw_rows(&store, TREE).await.last().unwrap().event_type,
             "execution_completed"
         );
         assert_eq!(
@@ -2246,8 +2309,8 @@ mod terminal_fact_tests {
     }
 }
 
-#[test]
-fn test_起動時前進_head競合を失敗と区別し最新記録から再評価できる() {
+#[tokio::test]
+async fn test_起動時前進_head競合を失敗と区別し最新記録から再評価できる() {
     for (abort, drop_reply) in [(false, false), (true, false), (false, true), (true, true)] {
         // Given
         let directory = tempfile::tempdir().unwrap();
@@ -2261,8 +2324,11 @@ fn test_起動時前進_head競合を失敗と区別し最新記録から再評�
                 node_started("main-exec", "main", NodeKindName::Sequence, None, 1.0),
             ],
         )
+        .await
         .unwrap();
-        let meta = read_tree_records(&store, TREE).unwrap()[0].meta.clone();
+        let meta = read_tree_records(&store, TREE).await.unwrap()[0]
+            .meta
+            .clone();
         let mut injected = false;
         // When
         let result = reconcile_tree_pass(&store, TREE, 2.0, &mut || {
@@ -2283,17 +2349,20 @@ fn test_起動時前進_head競合を失敗と区別し最新記録から再評�
                 store.fault_injector().arm_drop_reply();
             }
             "conflicting-child".into()
-        });
+        })
+        .await;
         // Then
         assert!(matches!(
             result,
             Err(crate::domain::workflow::WorkflowError::Conflict(_))
         ));
         assert!(!read_tree_records(&store, TREE)
+            .await
             .unwrap()
             .iter()
             .any(|record| record.meta.node_execution_id == "conflicting-child"));
         let recovered = reconcile_tree_pass(&store, TREE, 3.0, &mut || "fresh-child".into())
+            .await
             .unwrap()
             .unwrap();
         assert_eq!(recovered.starts.len(), usize::from(!abort));
@@ -2301,8 +2370,8 @@ fn test_起動時前進_head競合を失敗と区別し最新記録から再評�
     }
 }
 
-#[test]
-fn test_起動時前進_旧形式の末尾行を含むheadで追記と応答喪失の読戻しを行う() {
+#[tokio::test]
+async fn test_起動時前進_旧形式の末尾行を含むheadで追記と応答喪失の読戻しを行う() {
     for event_type in [
         "isolated_worktree_created",
         "isolated_worktree_released",
@@ -2321,6 +2390,7 @@ fn test_起動時前進_旧形式の末尾行を含むheadで追記と応答喪�
                     node_started("main-exec", "main", NodeKindName::Sequence, None, 1.0),
                 ],
             )
+            .await
             .unwrap();
             append_pending_rows_blocking(&store, vec![PendingFactRow {
                 row: NewNodeEventRow {
@@ -2335,12 +2405,13 @@ fn test_起動時前進_旧形式の末尾行を含むheadで追記と応答喪�
             }
             // When
             let result = reconcile_tree_pass(&store, TREE, 2.0, &mut || "next-child".into())
+                .await
                 .unwrap()
                 .unwrap();
             // Then
             assert_eq!(result.starts.len(), 1);
             assert_eq!(result.starts[0].node_execution_id(), "next-child");
-            let records = read_tree_records(&store, TREE).unwrap();
+            let records = read_tree_records(&store, TREE).await.unwrap();
             assert_eq!(
                 records
                     .iter()
@@ -2355,8 +2426,8 @@ fn test_起動時前進_旧形式の末尾行を含むheadで追記と応答喪�
     }
 }
 
-#[test]
-fn test_追記結果確認_全行一致と競合と未保存を共通の判定で区別する() {
+#[tokio::test]
+async fn test_追記結果確認_全行一致と競合と未保存を共通の判定で区別する() {
     use crate::adaptor::gateway::local_event_store::writer::NodeEventWriteError;
     // Given
     let dir = tempfile::tempdir().unwrap();
@@ -2375,12 +2446,16 @@ fn test_追記結果確認_全行一致と競合と未保存を共通の判定�
     let rows = vec![first, second];
     // When / Then
     assert_eq!(
-        resolve_unknown_append(&store, rows.clone(), Some(0)).unwrap(),
+        resolve_unknown_append(&store, rows.clone(), Some(0))
+            .await
+            .unwrap(),
         Err(NodeEventWriteError::OutcomeUnknown)
     );
     append_pending_rows_blocking(&store, rows.clone()).unwrap();
     assert_eq!(
-        resolve_unknown_append(&store, rows.clone(), Some(0)).unwrap(),
+        resolve_unknown_append(&store, rows.clone(), Some(0))
+            .await
+            .unwrap(),
         Ok(vec![1, 2])
     );
     for field in 0..10 {
@@ -2401,6 +2476,7 @@ fn test_追記結果確認_全行一致と競合と未保存を共通の判定�
         }
         assert!(
             resolve_unknown_append(&store, changed, Some(0))
+                .await
                 .unwrap()
                 .is_err(),
             "field {field}"
@@ -2409,7 +2485,9 @@ fn test_追記結果確認_全行一致と競合と未保存を共通の判定�
     let mut partial = rows;
     partial.push(partial[1].clone());
     assert_eq!(
-        resolve_unknown_append(&store, partial, Some(0)).unwrap(),
+        resolve_unknown_append(&store, partial, Some(0))
+            .await
+            .unwrap(),
         Err(NodeEventWriteError::Conflict)
     );
 }
@@ -2454,4 +2532,74 @@ fn test_fact読み出し_呼び出し境界で混雑と期限切れと破損の�
             F::Corrupt
         );
     }
+}
+
+#[tokio::test]
+async fn test_fact読み出し_liveとread_onlyでsql失敗の分類をconnectまで保持する() {
+    use crate::adaptor::gateway::local_event_store::reader::storage_unavailable;
+    use crate::adaptor::protocol::connect::classified_error;
+    use connectrpc::ErrorCode;
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let live =
+        LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into())).unwrap();
+    let read_only = LocalEventReadStore::open(directory.path()).unwrap();
+    for backend in [
+        FactLogReadBackend::Live(live),
+        FactLogReadBackend::ReadOnly(read_only),
+    ] {
+        for (code, expected) in [
+            (rusqlite::ffi::SQLITE_BUSY, ErrorCode::Unavailable),
+            (rusqlite::ffi::SQLITE_LOCKED, ErrorCode::Unavailable),
+            (rusqlite::ffi::SQLITE_IOERR, ErrorCode::FailedPrecondition),
+            (rusqlite::ffi::SQLITE_CORRUPT, ErrorCode::DataLoss),
+            (rusqlite::ffi::SQLITE_NOTADB, ErrorCode::DataLoss),
+        ] {
+            // When
+            let error = backend
+                .run_indexed::<(), _>(move |_| {
+                    Err(storage_unavailable(&rusqlite::Error::SqliteFailure(
+                        rusqlite::ffi::Error::new(code),
+                        None,
+                    )))
+                })
+                .await
+                .unwrap_err();
+            let fact = FactReadError::Query(error);
+            let workflow = crate::domain::workflow::WorkflowError::from(fact);
+            // Then
+            assert_eq!(classified_error(workflow).code, expected);
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_reconciliation読取_復元不能な事実列はdata_lossになる() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let store =
+        LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into())).unwrap();
+    append_single_fact(
+        &store,
+        &test_fact_meta(TREE, "root"),
+        &NodeFact::ExecutionCompleted,
+        1000,
+    )
+    .unwrap();
+
+    // When
+    let result = reconcile_tree_pass(&store, TREE, 2.0, &mut || panic!("must not start")).await;
+    let error = match result {
+        Err(error) => error,
+        Ok(_) => panic!("invalid stored facts must fail reconciliation"),
+    };
+
+    // Then
+    assert!(
+        matches!(&error, crate::domain::workflow::WorkflowError::CorruptStoredState(message) if message.contains("does not begin with a started fact"))
+    );
+    assert_eq!(
+        crate::adaptor::protocol::connect::classified_error(error).code,
+        connectrpc::ErrorCode::DataLoss
+    );
 }

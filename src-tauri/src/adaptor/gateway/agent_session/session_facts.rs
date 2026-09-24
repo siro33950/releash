@@ -53,7 +53,7 @@ impl From<SessionContextReadError> for AgentSessionQueryError {
     }
 }
 
-pub(crate) fn read_session_context(
+pub(crate) async fn read_session_context(
     backend: &FactLogReadBackend,
     location: &SessionLocation,
 ) -> Result<SessionExecutionContext, SessionContextReadError> {
@@ -67,6 +67,7 @@ pub(crate) fn read_session_context(
                 crate::adaptor::gateway::local_event_store::reader::storage_unavailable(&error)
             })
         })
+        .await
         .map_err(SessionContextReadError::Read)?
         .ok_or_else(|| SessionContextReadError::Corrupt("session tree root is missing".into()))?;
     let root = crate::adaptor::gateway::workflow::stored_definition::read_tree_context(&row.detail)
@@ -103,6 +104,7 @@ pub(crate) fn read_session_context(
             root_meta,
             root,
         )
+        .await
         .map_err(SessionContextReadError::from)?;
     Ok(SessionExecutionContext {
         workspace_identity,
@@ -113,7 +115,7 @@ pub(crate) fn read_session_context(
     })
 }
 
-pub(crate) fn read_session_records(
+pub(crate) async fn read_session_records(
     backend: &FactLogReadBackend,
     location: &SessionLocation,
 ) -> Result<Vec<NodeFactRecord>, fact_log::FactReadError> {
@@ -128,6 +130,7 @@ pub(crate) fn read_session_records(
                 crate::adaptor::gateway::local_event_store::reader::storage_unavailable(&error)
             })
         })
+        .await
         .map_err(fact_log::FactReadError::Query)?;
     let mut records = rows
         .iter()
@@ -135,10 +138,7 @@ pub(crate) fn read_session_records(
         .filter_map(|row| fact_log::record_from_row(row).transpose())
         .collect::<Result<Vec<_>, _>>()?;
     if location.parent_id.is_some() {
-        records.extend(fact_log::read_tree_archive_records(
-            backend,
-            &location.tree_id,
-        )?);
+        records.extend(fact_log::read_tree_archive_records(backend, &location.tree_id).await?);
         records.sort_by_key(|record| record.seq);
     }
     Ok(records)
@@ -176,11 +176,11 @@ impl SessionLocation {
     }
 }
 
-pub(crate) fn locate_session(
+pub(crate) async fn locate_session(
     backend: &FactLogReadBackend,
     session_id: &str,
 ) -> Result<Option<SessionLocation>, fact_log::FactReadError> {
-    let Some(record) = fact_log::find_session_attachment_record(backend, session_id)? else {
+    let Some(record) = fact_log::find_session_attachment_record(backend, session_id).await? else {
         return Ok(None);
     };
     Ok(Some(SessionLocation::from_meta(&record.meta)))

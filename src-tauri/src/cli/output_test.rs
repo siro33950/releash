@@ -16,7 +16,7 @@ use crate::domain::workflow::{
 use clap::Parser;
 use tempfile::TempDir;
 
-fn seed_artifact_node(data_dir: &Path, execution_id: &str) {
+async fn seed_artifact_node(data_dir: &Path, execution_id: &str) {
     let definition = WorkflowDefinitionYaml {
         name: "wf".to_string(),
         description: String::new(),
@@ -63,11 +63,13 @@ fn seed_artifact_node(data_dir: &Path, execution_id: &str) {
                 timestamp: 1.0,
             },
         ],
-    );
+    )
+    .await;
     write_canonical_execution(
         data_dir,
         &make_execution(execution_id, "/repo", ExecutionStatus::Running, 1.0),
-    );
+    )
+    .await;
 }
 
 #[test]
@@ -183,11 +185,11 @@ fn test_workflow_output_submit_rejects_blank_node_execution_id() {
     );
 }
 
-#[test]
-fn test_workflow_output_submit_実行中アプリを要求する() {
+#[tokio::test]
+async fn test_workflow_output_submit_実行中アプリを要求する() {
     let temp = TempDir::new().unwrap();
     let execution_id = test_uuid(10);
-    seed_artifact_node(temp.path(), &execution_id);
+    seed_artifact_node(temp.path(), &execution_id).await;
 
     let error = cmd_output_submit(
         temp.path(),
@@ -203,11 +205,11 @@ fn test_workflow_output_submit_実行中アプリを要求する() {
     ));
 }
 
-#[test]
-fn test_workflow_output_get_file直接読取で最新artifactを返す() {
+#[tokio::test]
+async fn test_workflow_output_get_file直接読取で最新artifactを返す() {
     let temp = TempDir::new().unwrap();
     let execution_id = test_uuid(12);
-    seed_artifact_node(temp.path(), &execution_id);
+    seed_artifact_node(temp.path(), &execution_id).await;
     append_workflow_event(
         temp.path(),
         &WorkflowEvent::ArtifactProduced {
@@ -220,7 +222,8 @@ fn test_workflow_output_get_file直接読取で最新artifactを返す() {
             submitted_at: Some(2.0),
             timestamp: 2.0,
         },
-    );
+    )
+    .await;
     append_workflow_events(
         temp.path(),
         &[
@@ -265,9 +268,12 @@ fn test_workflow_output_get_file直接読取で最新artifactを返す() {
                 timestamp: 3.0,
             },
         ],
-    );
+    )
+    .await;
 
-    let output = cmd_output_get(temp.path(), &execution_id, "review", true).unwrap();
+    let output = cmd_output_get(temp.path(), &execution_id, "review", true)
+        .await
+        .unwrap();
     let output: serde_json::Value = serde_json::from_str(&output).unwrap();
     assert_eq!(output["status"], "submitted");
     assert_eq!(output["artifact"]["verdict"], "LGTM");
@@ -275,8 +281,8 @@ fn test_workflow_output_get_file直接読取で最新artifactを返す() {
     assert!(output.get("structured_output").is_none());
 }
 
-#[test]
-fn test_隔離worktree_output_getのfile直接読取で完了したattemptのbranchとpathを返す() {
+#[tokio::test]
+async fn test_隔離worktree_output_getのfile直接読取で完了したattemptのbranchとpathを返す() {
     use crate::adaptor::controller::api::test_support::{
         isolated_worktree_json, seed_isolated_query_execution,
     };
@@ -288,7 +294,9 @@ fn test_隔離worktree_output_getのfile直接読取で完了したattemptのbra
     seed_isolated_query_execution(temp.path(), &execution_id, NodeExecutionStatus::Succeeded);
 
     // When
-    let output = cmd_output_get(temp.path(), &execution_id, "review", true).unwrap();
+    let output = cmd_output_get(temp.path(), &execution_id, "review", true)
+        .await
+        .unwrap();
     let output: serde_json::Value = serde_json::from_str(&output).unwrap();
 
     // Then
@@ -299,25 +307,27 @@ fn test_隔離worktree_output_getのfile直接読取で完了したattemptのbra
     assert_eq!(output["request_id"], "isolated-request-2");
 }
 
-#[test]
-fn test_workflow_output_get_既知nodeで未提出を報告する() {
+#[tokio::test]
+async fn test_workflow_output_get_既知nodeで未提出を報告する() {
     let temp = TempDir::new().unwrap();
     let execution_id = test_uuid(13);
-    seed_artifact_node(temp.path(), &execution_id);
+    seed_artifact_node(temp.path(), &execution_id).await;
 
     assert_eq!(
-        cmd_output_get(temp.path(), &execution_id, "review", false).unwrap(),
+        cmd_output_get(temp.path(), &execution_id, "review", false)
+            .await
+            .unwrap(),
         "not_submitted: node=review\n"
     );
 }
 
-#[test]
-fn test_workflow_output_get_未知nodeをfile直接読取で拒否する() {
+#[tokio::test]
+async fn test_workflow_output_get_未知nodeをfile直接読取で拒否する() {
     let temp = TempDir::new().unwrap();
     let execution_id = test_uuid(14);
-    seed_artifact_node(temp.path(), &execution_id);
+    seed_artifact_node(temp.path(), &execution_id).await;
     assert!(matches!(
-        cmd_output_get(temp.path(), &execution_id, "missing", true),
+        cmd_output_get(temp.path(), &execution_id, "missing", true).await,
         Err(CliError::InvalidInput(_))
     ));
 }
