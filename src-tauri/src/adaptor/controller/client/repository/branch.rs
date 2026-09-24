@@ -1,19 +1,6 @@
 use super::run_blocking;
 use crate::adaptor::controller::state::AppState;
 use crate::other::AppError;
-use crate::usecase::repository_dto::BranchDto;
-
-pub(crate) async fn list_branches_shared(
-    state: &AppState,
-    repo_path: String,
-) -> Result<Vec<BranchDto>, AppError> {
-    let uc = state.repository_usecase.clone();
-    run_blocking(move || {
-        uc.list_branches(&repo_path)
-            .map(|branches| branches.into_iter().map(Into::into).collect())
-    })
-    .await
-}
 
 pub(crate) async fn git_create_branch_shared(
     state: &AppState,

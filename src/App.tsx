@@ -16,7 +16,7 @@ import { useSettings } from "@/hooks/useSettings";
 import { useUpdateChecker } from "@/hooks/useUpdateChecker";
 import { useWorkspaceList } from "@/hooks/useWorkspaceList";
 import { useWorkspaceNavigation } from "@/hooks/useWorkspaceNavigation";
-import { invokeClient as invoke } from "@/lib/client";
+import { firstState } from "@/lib/client";
 import { MainLayout } from "@/screens/MainLayout";
 import type { CenterSelection } from "@/types/workspace-tree";
 
@@ -111,7 +111,7 @@ function WorkbenchApp() {
 	const { worktrees, selectedWorktreeId, openWorktreeTab } =
 		useWorkspaceNavigation();
 	const { repoPaths, addRepo, removeRepo, initFromCwd } = useRepoList();
-	const workspaceList = useWorkspaceList(repoPaths);
+	const workspaceList = useWorkspaceList();
 	const repositoriesLoaded = workspaceList.snapshot?.status.loaded;
 	const repositoriesError =
 		workspaceList.requestError ?? workspaceList.snapshot?.status.error;
@@ -163,13 +163,11 @@ function WorkbenchApp() {
 		if (!restoration.ready) return;
 		(async () => {
 			try {
-				const cwd = await invoke("get_cwd");
-				const mainPath = await invoke("get_main_repo_path", {
-					anyPath: cwd,
-				});
+				const mainPath = await firstState("startup-repository");
 				initFromCwd(mainPath);
-				const worktrees = await invoke("list_worktrees", {
-					repoPath: mainPath,
+				const worktrees = await firstState({
+					kind: "worktrees",
+					args: [mainPath],
 				});
 				const workingAreas = worktrees;
 				if (workingAreas.length === 1) {
@@ -190,8 +188,9 @@ function WorkbenchApp() {
 		const selected = await open({ directory: true, multiple: false });
 		if (!selected) return;
 		try {
-			const mainPath = await invoke("get_main_repo_path", {
-				anyPath: selected,
+			const mainPath = await firstState({
+				kind: "repository-root",
+				args: [selected],
 			});
 			addRepo(mainPath);
 		} catch {

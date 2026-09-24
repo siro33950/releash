@@ -1,58 +1,40 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback } from "react";
 import { invokeClient as invoke } from "@/lib/client";
+import { useStateSubscription } from "./useStateSubscription";
 
 export function useBaseBranch(
 	rootPath: string | null,
 	branchName: string | null,
 ) {
-	const [baseBranch, setBaseBranchState] = useState<string | null>(null);
-	const [localBranches, setLocalBranches] = useState<string[]>([]);
-
-	const fetch = useCallback(async () => {
-		if (!rootPath || !branchName) {
-			setBaseBranchState(null);
-			setLocalBranches([]);
-			return;
-		}
-		try {
-			const [base, branches] = await Promise.all([
-				invoke("get_branch_base", {
-					repoPath: rootPath,
-					branchName,
-				}),
-				invoke("list_branches", { repoPath: rootPath }),
-			]);
-			setBaseBranchState(base);
-			setLocalBranches(
-				branches
-					.filter((b) => !b.is_remote && b.name !== branchName)
-					.map((b) => b.name),
-			);
-		} catch {
-			setBaseBranchState(null);
-			setLocalBranches([]);
-		}
-	}, [rootPath, branchName]);
-
-	useEffect(() => {
-		fetch();
-	}, [fetch]);
-
+	const baseBranch = useStateSubscription(
+		rootPath && branchName
+			? { kind: "branch-base", args: [rootPath, branchName] }
+			: null,
+	);
+	const branches = useStateSubscription(
+		rootPath
+			? {
+					kind: "branches",
+					args: branchName ? [rootPath, branchName] : [rootPath],
+				}
+			: null,
+	);
 	const setBaseBranch = useCallback(
 		(base: string | null) => {
 			if (!rootPath || !branchName) return;
-			const normalizedBase = base && base.length > 0 ? base : null;
-			setBaseBranchState(normalizedBase);
-			invoke("set_branch_base", {
+			return invoke("set_branch_base", {
 				repoPath: rootPath,
 				branchName,
-				base: normalizedBase,
-			}).catch(() => {
-				fetch();
+				base: base || null,
+			}).catch((error) => {
+				console.error("Failed to set base branch:", error);
 			});
 		},
-		[rootPath, branchName, fetch],
+		[rootPath, branchName],
 	);
-
-	return { baseBranch, setBaseBranch, localBranches };
+	return {
+		baseBranch: baseBranch ?? null,
+		setBaseBranch,
+		localBranches: (branches ?? []).map((branch) => branch.name),
+	};
 }

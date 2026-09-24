@@ -1,10 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { TerminalPanel } from "@/components/panels/TerminalPanel";
 import { Button } from "@/components/ui/button";
-import {
-	notifyAgentSessionChanged,
-	subscribeAgentSessionChanged,
-} from "@/lib/agentSessionEvents";
+import { useStateSubscriptionResult } from "@/hooks/useStateSubscription";
 import { invokeClient as invoke } from "@/lib/client";
 import { getErrorMessage } from "@/lib/errorMessage";
 import type {
@@ -59,7 +56,7 @@ interface AgentSessionPanelProps {
 	session: AgentSessionItem | null;
 	initialAttachment?: AgentSessionLaunchAttachment | null;
 	theme?: Theme;
-	onRefresh?: () => void;
+
 	initiallyAttached?: boolean;
 }
 
@@ -80,16 +77,12 @@ export function AgentSessionPanel({
 	session,
 	initialAttachment,
 	theme,
-	onRefresh,
+
 	initiallyAttached = false,
 }: AgentSessionPanelProps) {
 	const agentSessionId = session?.id ?? initialAttachment?.agentSessionId ?? "";
 	const worktreePath =
 		session?.worktreePath ?? initialAttachment?.worktreePath ?? "";
-	const workspaceWorktreePath =
-		session?.workspaceWorktreePath ??
-		initialAttachment?.workspaceWorktreePath ??
-		"";
 	const workspaceIdentity =
 		session?.workspaceIdentity ?? initialAttachment?.workspaceIdentity ?? "";
 	const provider = session?.provider ?? initialAttachment?.provider ?? "";
@@ -109,16 +102,6 @@ export function AgentSessionPanel({
 	const applyOutcome = useCallback(
 		(outcome: OpenOutcome) => {
 			setError(null);
-			if (
-				outcome === "resumed" ||
-				outcome === "restored" ||
-				outcome === "garbage_collected"
-			) {
-				notifyAgentSessionChanged(workspaceWorktreePath);
-			}
-			if (outcome === "resumed" || outcome === "restored") {
-				onRefresh?.();
-			}
 			switch (outcome) {
 				case "attached":
 				case "resumed":
@@ -128,7 +111,6 @@ export function AgentSessionPanel({
 					setState("paused");
 					return;
 				case "paused":
-					onRefresh?.();
 					setError(pausedMessage);
 					setState("paused");
 					return;
@@ -140,7 +122,7 @@ export function AgentSessionPanel({
 					return;
 			}
 		},
-		[onRefresh, pausedMessage, workspaceWorktreePath],
+		[pausedMessage],
 	);
 
 	const runLifecycleOperation = useCallback(
@@ -179,7 +161,6 @@ export function AgentSessionPanel({
 				callerRequestId: operationId("delete_agent_session"),
 			});
 			setState("gone");
-			notifyAgentSessionChanged(session.workspaceWorktreePath);
 		} catch (cause) {
 			setError(getErrorMessage(cause));
 		} finally {
@@ -309,61 +290,15 @@ export function AgentSessionRoute({
 			? initialAttachment
 			: null,
 	);
-	const [session, setSession] = useState<AgentSessionItem | null>(null);
-	const [error, setError] = useState<string | null>(null);
-	const [unavailable, setUnavailable] = useState(false);
-	const [attempt, setAttempt] = useState(0);
-	const refresh = useCallback(() => setAttempt((value) => value + 1), []);
-
+	const subscription = useStateSubscriptionResult({
+		kind: "agent-session",
+		args: [agentSessionId],
+	});
+	const session = subscription.value;
+	const unavailable = session === null;
 	useEffect(() => {
 		if (launchAttachment) onInitialSessionConsumed?.(agentSessionId);
 	}, [agentSessionId, launchAttachment, onInitialSessionConsumed]);
-
-	useEffect(
-		() =>
-			subscribeAgentSessionChanged(({ worktreePath }) => {
-				if (
-					!worktreePath ||
-					worktreePath ===
-						(session?.workspaceWorktreePath ??
-							launchAttachment?.workspaceWorktreePath)
-				) {
-					refresh();
-				}
-			}),
-		[
-			launchAttachment?.workspaceWorktreePath,
-			refresh,
-			session?.workspaceWorktreePath,
-		],
-	);
-
-	useEffect(() => {
-		void attempt;
-		let active = true;
-		setError(null);
-		setUnavailable(false);
-		void invoke("get_agent_session", {
-			agentSessionId,
-		})
-			.then((result) => {
-				if (!active) return;
-				if (!result) {
-					setSession(null);
-					setUnavailable(true);
-					return;
-				}
-				setSession(result);
-			})
-			.catch((cause) => {
-				if (active) {
-					setError(getErrorMessage(cause));
-				}
-			});
-		return () => {
-			active = false;
-		};
-	}, [agentSessionId, attempt]);
 
 	if (
 		!unavailable &&
@@ -375,7 +310,6 @@ export function AgentSessionRoute({
 				session={session?.id === agentSessionId ? session : null}
 				initialAttachment={launchAttachment}
 				theme={theme}
-				onRefresh={refresh}
 				initiallyAttached={launchAttachment != null}
 			/>
 		);
@@ -390,18 +324,8 @@ export function AgentSessionRoute({
 					</div>
 					{resumeAction && <SessionResumeButton action={resumeAction} />}
 				</>
-			) : error ? (
-				<>
-					<div role="alert" className="text-destructive">
-						{error}
-					</div>
-					<Button
-						type="button"
-						onClick={() => setAttempt((value) => value + 1)}
-					>
-						Retry
-					</Button>
-				</>
+			) : subscription.error ? (
+				<div role="alert">{subscription.error}</div>
 			) : (
 				<div>Loading AgentSession...</div>
 			)}

@@ -118,7 +118,15 @@ impl WorkflowRuntimeUsecase {
         self.runtime
             .stop_execution_tree_processes(execution_id)
             .await?;
-        repository.archive(&id, archived_at, reason).await
+        repository.archive(&id, archived_at, reason).await?;
+        if let Some(publisher) = &self.state_publisher {
+            publisher.invalidate(
+                crate::domain::state_subscription::StateChangeSource::Worktree(
+                    target.worktree_path,
+                ),
+            );
+        }
+        Ok(())
     }
 
     pub async fn archive_worktree(&self, worktree_path: &str) -> Result<(), WorkflowError> {
@@ -157,11 +165,19 @@ impl WorkflowRuntimeUsecase {
         let repository = self.execution_archives.clone();
         let target = repository.target(execution_id).await?;
         self.runtime
-            .resolve_start_execution_worktree(target.worktree_path)
+            .resolve_start_execution_worktree(target.worktree_path.clone())
             .await?;
         repository
             .restore(&id, self.runtime.current_timestamp())
-            .await
+            .await?;
+        if let Some(publisher) = &self.state_publisher {
+            publisher.invalidate(
+                crate::domain::state_subscription::StateChangeSource::Worktree(
+                    target.worktree_path,
+                ),
+            );
+        }
+        Ok(())
     }
 
     pub(crate) async fn migrate_execution_archives(

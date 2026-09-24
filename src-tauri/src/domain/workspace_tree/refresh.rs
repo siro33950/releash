@@ -189,10 +189,24 @@ impl<B, N> WorkspaceListRefresh<B, N> {
         paths
     }
 
+    pub fn repository_generations(&self) -> Vec<(String, u64)> {
+        self.branches
+            .iter()
+            .map(|(path, entry)| (path.clone(), entry.generation))
+            .collect()
+    }
+
     pub fn is_repository_current(&self, path: &str, generation: u64) -> bool {
         self.branches
             .get(path)
             .is_some_and(|list| list.generation == generation)
+    }
+
+    pub fn begin_branch_update(&mut self, path: &str) -> Option<u64> {
+        let list = self.branches.get_mut(path)?;
+        self.generation += 1;
+        list.generation = self.generation;
+        Some(self.generation)
     }
 
     pub fn begin_repository(&mut self, path: &str) -> Option<u64> {

@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { useCurrentBranch } from "@/hooks/useCurrentBranch";
 import { useGitActions } from "@/hooks/useGitActions";
-import { useGitDirWatcher } from "@/hooks/useGitDirWatcher";
 import { useNativeFileDrop } from "@/hooks/useNativeFileDrop";
 import {
 	gitReducer,
@@ -71,7 +70,6 @@ export function useWorktreeState({
 	const { isSettingsOpen, showCreateBranch, newBranchName } = ui;
 
 	// --- Git dir watcher (index / refs / HEAD) ---
-	useGitDirWatcher(rootPath);
 
 	// --- Lifecycle effects ---
 	useEffect(() => {

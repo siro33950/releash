@@ -65,10 +65,12 @@ async fn subscribe_terminal_surfaces(
         impl connectrpc::Encodable<rpc::TerminalSubscriptionEvent> + Send + use<>,
     >,
 > {
-    let terminal = self
-        .terminal
-        .as_ref()
-        .ok_or_else(|| crate::adaptor::protocol::connect::classified_error(crate::other::AppError::new("Terminal unavailable").with_failure_kind(crate::domain::failure::FailureKind::Temporary)))?;
+    let terminal = self.terminal.as_ref().ok_or_else(|| {
+        crate::adaptor::protocol::connect::classified_error(
+            crate::other::AppError::new("Terminal unavailable")
+                .with_failure_kind(crate::domain::failure::FailureKind::Temporary),
+        )
+    })?;
     let request: wire::SubscribeTerminalSurfacesRequest = to_wire(&request.to_owned_message())?;
     connectrpc::Response::stream_ok(terminal.subscribe(request.subscription_id)?)
 }
@@ -82,17 +84,22 @@ async fn attach_terminal_surface<'a>(
     self.dispatch
         .admit("attach_terminal_surface")
         .map_err(command_error)?;
-    let terminal = self
-        .terminal
-        .as_ref()
-        .ok_or_else(|| crate::adaptor::protocol::connect::classified_error(crate::other::AppError::new("Terminal unavailable").with_failure_kind(crate::domain::failure::FailureKind::Temporary)))?;
+    let terminal = self.terminal.as_ref().ok_or_else(|| {
+        crate::adaptor::protocol::connect::classified_error(
+            crate::other::AppError::new("Terminal unavailable")
+                .with_failure_kind(crate::domain::failure::FailureKind::Temporary),
+        )
+    })?;
     let request: wire::AttachSubscribedTerminalSurfaceRequest =
         to_wire(&request.to_owned_message())?;
     terminal.attach(
         &request.subscription_id,
         request.stream_id,
         request.request.ok_or_else(|| {
-            crate::adaptor::protocol::connect::classified_error(crate::other::AppError::new("Missing terminal request").with_failure_kind(crate::domain::failure::FailureKind::InvalidInput))
+            crate::adaptor::protocol::connect::classified_error(
+                crate::other::AppError::new("Missing terminal request")
+                    .with_failure_kind(crate::domain::failure::FailureKind::InvalidInput),
+            )
         })?,
     )?;
     connectrpc::Response::ok(rpc::Unit::default())
@@ -104,9 +111,12 @@ async fn watch_files<'a>(
     request: connectrpc::ServiceRequest<'_, rpc::WatchFilesRequest>,
 ) -> connectrpc::ServiceResult<impl connectrpc::Encodable<rpc::ResultUint64> + Send + use<'a>> {
     let request: wire::WatchFilesRequest = to_wire(&request.to_owned_message())?;
-    let args = request
-        .request
-        .ok_or_else(|| crate::adaptor::protocol::connect::classified_error(crate::other::AppError::new("Missing watch request").with_failure_kind(crate::domain::failure::FailureKind::InvalidInput)))?;
+    let args = request.request.ok_or_else(|| {
+        crate::adaptor::protocol::connect::classified_error(
+            crate::other::AppError::new("Missing watch request")
+                .with_failure_kind(crate::domain::failure::FailureKind::InvalidInput),
+        )
+    })?;
     connectrpc::Response::ok(
         self.watch(
             request.subscription_id,
@@ -124,9 +134,12 @@ async fn watch_git_directory<'a>(
     request: connectrpc::ServiceRequest<'_, rpc::WatchGitDirectoryRequest>,
 ) -> connectrpc::ServiceResult<impl connectrpc::Encodable<rpc::ResultUint64> + Send + use<'a>> {
     let request: wire::WatchGitDirectoryRequest = to_wire(&request.to_owned_message())?;
-    let args = request
-        .request
-        .ok_or_else(|| crate::adaptor::protocol::connect::classified_error(crate::other::AppError::new("Missing watch request").with_failure_kind(crate::domain::failure::FailureKind::InvalidInput)))?;
+    let args = request.request.ok_or_else(|| {
+        crate::adaptor::protocol::connect::classified_error(
+            crate::other::AppError::new("Missing watch request")
+                .with_failure_kind(crate::domain::failure::FailureKind::InvalidInput),
+        )
+    })?;
     connectrpc::Response::ok(
         self.watch(
             request.subscription_id,
@@ -142,10 +155,17 @@ async fn open_state_stream(
     &self,
     _ctx: connectrpc::RequestContext,
     request: connectrpc::ServiceRequest<'_, rpc::OpenStateStreamRequest>,
-) -> connectrpc::ServiceResult<connectrpc::ServiceStream<impl connectrpc::Encodable<rpc::StateSubscriptionEvent> + Send + use<>>> {
+) -> connectrpc::ServiceResult<
+    connectrpc::ServiceStream<
+        impl connectrpc::Encodable<rpc::StateSubscriptionEvent> + Send + use<>,
+    >,
+> {
     use futures_util::StreamExt;
     let request: wire::OpenStateStreamRequest = to_wire(&request.to_owned_message())?;
-    let stream = self.state_subscriptions()?.open(request.client_id).map_err(crate::adaptor::protocol::connect::classified_error)?;
+    let stream = self
+        .state_subscriptions()?
+        .open(request.client_id)
+        .map_err(crate::adaptor::protocol::connect::classified_error)?;
     connectrpc::Response::stream_ok(Box::pin(stream.map(super::state_subscription::event)))
 }
 
@@ -156,8 +176,22 @@ async fn start_state_subscription<'a>(
 ) -> connectrpc::ServiceResult<impl connectrpc::Encodable<rpc::Unit> + Send + use<'a>> {
     let _permit = self.request_permit()?;
     let request: wire::StartStateSubscriptionRequest = to_wire(&request.to_owned_message())?;
-    let version = request.version.map(|v| crate::domain::state_subscription::Version { epoch: v.epoch, sequence: v.sequence });
-    self.state_subscriptions()?.start(&request.client_id, &request.target, version.as_ref()).map_err(crate::adaptor::protocol::connect::classified_error)?;
+    let target = crate::domain::state_subscription::SubscriptionTarget::from_parts(
+        &request.target,
+        &request.args.iter().map(String::as_str).collect::<Vec<_>>(),
+    )
+    .map_err(crate::adaptor::protocol::connect::classified_error)?
+    .to_string();
+    let version = request
+        .version
+        .map(|v| crate::domain::state_subscription::Version {
+            epoch: v.epoch,
+            sequence: v.sequence,
+        });
+    self.state_subscriptions()?
+        .start_read(&request.client_id, &target, version.as_ref())
+        .await
+        .map_err(crate::adaptor::protocol::connect::classified_error)?;
     connectrpc::Response::ok(rpc::Unit::default())
 }
 
@@ -168,6 +202,15 @@ async fn stop_state_subscription<'a>(
 ) -> connectrpc::ServiceResult<impl connectrpc::Encodable<rpc::Unit> + Send + use<'a>> {
     let _permit = self.request_permit()?;
     let request: wire::StopStateSubscriptionRequest = to_wire(&request.to_owned_message())?;
-    self.state_subscriptions()?.stop(&request.client_id, &request.target).map_err(crate::adaptor::protocol::connect::classified_error)?;
+    let target = crate::domain::state_subscription::SubscriptionTarget::from_parts(
+        &request.target,
+        &request.args.iter().map(String::as_str).collect::<Vec<_>>(),
+    )
+    .map_err(crate::adaptor::protocol::connect::classified_error)?
+    .to_string();
+    self.state_subscriptions()?
+        .stop_read(&request.client_id, &target)
+        .await
+        .map_err(crate::adaptor::protocol::connect::classified_error)?;
     connectrpc::Response::ok(rpc::Unit::default())
 }

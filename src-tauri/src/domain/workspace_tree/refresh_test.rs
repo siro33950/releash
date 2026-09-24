@@ -237,3 +237,21 @@ fn test_全体更新要求_未開始を統合し実行中は次の一回を予�
     lists.complete_full(third);
     assert_eq!(lists.start_full(), None);
 }
+
+#[test]
+fn test_git更新_既存nodeの世代を変えず新しいworktreeだけを初期化する() {
+    let mut lists = populated();
+    let node_generation = lists.begin_worktree("/tree").unwrap();
+    let branch_generation = lists.begin_branch_update("/repo").unwrap();
+    lists.complete_branches(
+        "/repo",
+        branch_generation,
+        Ok((
+            vec!["main".into(), "new".into()],
+            vec!["/tree".into(), "/new".into()],
+        )),
+    );
+    assert!(lists.is_worktree_current("/tree", node_generation));
+    assert!(lists.is_worktree_current("/new", branch_generation));
+    assert!(lists.complete_worktree("/tree", node_generation, Ok("changed".into())));
+}

@@ -305,16 +305,17 @@ async fn test_空の隔離fanout_liveと再読取で同じworktree成果を持�
     );
     assert_eq!(fixture.worktrees.calls.lock().unwrap().len(), 1);
     assert!(fixture.sessions.prepared.lock().unwrap().is_empty());
-    let views = take_workflow_execution_broadcasts(&mut broadcasts);
-    let live = &views.last().unwrap().workflow_execution;
-    assert_eq!(
-        live.status,
-        crate::adaptor::protocol::workflow::ExecutionStatusView::Completed
-    );
+    assert!(!take_workflow_execution_broadcasts(&mut broadcasts).is_empty());
+    let live = fixture
+        .host
+        .get_state_by_execution_id(&fixture.app, &id)
+        .await
+        .unwrap();
+    assert_eq!(live.state, RuntimeExecutionState::Completed);
     assert_eq!(live.node_executions.len(), 1);
     assert_eq!(
-        live.node_executions[0].artifact.as_ref().unwrap().value,
-        read.node_executions[0].artifact.as_ref().unwrap().value
+        live.node_executions[0].artifact.as_ref().unwrap(),
+        &read.node_executions[0].artifact.as_ref().unwrap().value
     );
 }
 
@@ -1226,24 +1227,16 @@ async fn test_プロセス在否_実供給元の変化が読取と通知と操�
                 }
             );
             let mut receiver = record_workflow_execution_broadcasts(&fixture.app);
-            workflow_runtime_session::broadcast_state(
-                &fixture.app,
-                &current.worktree_path,
-                RuntimeCommitSnapshot::from_execution(&current).unwrap(),
-            )
-            .await;
+            workflow_runtime_session::broadcast_state(&fixture.app, &current.worktree_path).await;
             let broadcasts = take_workflow_execution_broadcasts(&mut receiver);
-            let pushed = broadcasts
-                .last()
-                .unwrap()
-                .workflow_execution
-                .node_executions
-                .iter()
-                .find(|read| read.id == node.id)
-                .unwrap();
-            assert_eq!(pushed.process_presence, expected.as_str());
-            assert_eq!(pushed.can_retry, retry);
-            assert_eq!(pushed.can_resume_session, resume);
+            assert_eq!(
+                broadcasts,
+                vec![
+                    crate::domain::state_subscription::StateChangeSource::Worktree(
+                        current.worktree_path.clone()
+                    )
+                ]
+            );
         }
     }
 }

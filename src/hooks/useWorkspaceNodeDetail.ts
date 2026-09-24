@@ -1,18 +1,6 @@
-import type { UnlistenFn } from "@tauri-apps/api/event";
-import { useEffect, useRef, useState } from "react";
-import { subscribeAgentSessionChanged } from "@/lib/agentSessionEvents";
-import { invokeClient as invoke, listenClient } from "@/lib/client";
-import { getErrorMessage } from "@/lib/errorMessage";
+import { invokeClient as invoke } from "@/lib/client";
 import type { WorkspaceNodeDetail } from "@/types/workspace-tree";
-
-interface UseWorkspaceNodeDetailInput {
-	worktreePath: string | null;
-	nodeId: string | null;
-}
-
-interface WorkspaceTreeRefreshDetail {
-	worktreePath?: string;
-}
+import { useStateSubscriptionResult } from "./useStateSubscription";
 
 export interface WorkspaceNodeDetailState {
 	detail: WorkspaceNodeDetail | null;
@@ -24,135 +12,24 @@ export interface WorkspaceNodeDetailState {
 export function useWorkspaceNodeDetail({
 	worktreePath,
 	nodeId,
-}: UseWorkspaceNodeDetailInput): WorkspaceNodeDetailState {
-	const [state, setState] = useState<WorkspaceNodeDetailState>({
-		detail: null,
-		loading: false,
-		error: null,
-		missingNodeId: null,
-	});
-	const detailRef = useRef<WorkspaceNodeDetail | null>(null);
-	const loadSeqRef = useRef(0);
-
-	useEffect(() => {
-		detailRef.current = state.detail;
-	}, [state.detail]);
-
-	useEffect(() => {
-		if (!worktreePath || !nodeId) {
-			loadSeqRef.current += 1;
-			detailRef.current = null;
-			setState({
-				detail: null,
-				loading: false,
-				error: null,
-				missingNodeId: null,
-			});
-			return;
-		}
-
-		let cancelled = false;
-		let unlistenWorkflow: UnlistenFn | null = null;
-		detailRef.current = null;
-		setState({
-			detail: null,
-			loading: true,
-			error: null,
-			missingNodeId: null,
-		});
-
-		const load = (preserveDetail: boolean) => {
-			const loadSeq = ++loadSeqRef.current;
-			setState((previous) => ({
-				detail: preserveDetail ? previous.detail : null,
-				loading: true,
-				error: null,
-				missingNodeId: null,
-			}));
-			void invoke("get_workspace_node_detail", {
-				worktreePath,
-				nodeId,
-			})
-				.then((next) => {
-					if (cancelled || loadSeq !== loadSeqRef.current) return;
-					detailRef.current = next;
-					setState({
-						detail: next,
-						loading: false,
-						error: null,
-						missingNodeId: next == null ? nodeId : null,
-					});
-				})
-				.catch((error) => {
-					if (cancelled || loadSeq !== loadSeqRef.current) return;
-					const message = getErrorMessage(error);
-					if (preserveDetail && detailRef.current != null) {
-						setState({
-							detail: detailRef.current,
-							loading: false,
-							error: message,
-							missingNodeId: null,
-						});
-						return;
-					}
-					detailRef.current = null;
-					setState({
-						detail: null,
-						loading: false,
-						error: message,
-						missingNodeId: null,
-					});
-				});
-		};
-
-		const handleRefresh = (event: Event) => {
-			const detail = (event as CustomEvent<WorkspaceTreeRefreshDetail>).detail;
-			if (detail?.worktreePath && detail.worktreePath !== worktreePath) return;
-			load(true);
-		};
-
-		window.addEventListener("workspace-tree-refresh", handleRefresh);
-		const unsubscribeAgentSessions = subscribeAgentSessionChanged(
-			({ worktreePath: changedWorktreePath }) => {
-				if (cancelled) return;
-				if (changedWorktreePath && changedWorktreePath !== worktreePath) return;
-				load(true);
-			},
-		);
-
-		const setup = async () => {
-			const nextUnlistenWorkflow = await listenClient(
-				"workflow-execution-changed",
-				(event) => {
-					if (cancelled) return;
-					if (event.payload.worktreePath !== worktreePath) return;
-					load(true);
-				},
-				() => {
-					if (!cancelled) load(true);
-				},
-			);
-			if (cancelled) {
-				nextUnlistenWorkflow();
-				return;
-			}
-			unlistenWorkflow = nextUnlistenWorkflow;
-
-			load(false);
-		};
-
-		void setup().catch(() => {
-			if (!cancelled) load(false);
-		});
-		return () => {
-			cancelled = true;
-			window.removeEventListener("workspace-tree-refresh", handleRefresh);
-			unsubscribeAgentSessions();
-			unlistenWorkflow?.();
-		};
-	}, [nodeId, worktreePath]);
-
-	return state;
+}: {
+	worktreePath: string | null;
+	nodeId: string | null;
+}): WorkspaceNodeDetailState {
+	const subscription = useStateSubscriptionResult(
+		worktreePath && nodeId
+			? { kind: "node-detail", args: [worktreePath, nodeId] }
+			: null,
+	);
+	const detail = subscription.value;
+	return {
+		detail: detail ?? null,
+		loading: Boolean(
+			worktreePath && nodeId && detail === undefined && !subscription.error,
+		),
+		error: subscription.error,
+		missingNodeId: detail === null ? nodeId : null,
+	};
 }
 
 export async function approveWorkspaceNode({
@@ -161,15 +38,8 @@ export async function approveWorkspaceNode({
 }: {
 	worktreePath: string;
 	nodeId: string;
-}): Promise<WorkspaceNodeDetail | null> {
+}): Promise<void> {
 	await invoke("approve_workspace_node", { worktreePath, nodeId });
-	window.dispatchEvent(
-		new CustomEvent("workspace-tree-refresh", { detail: { worktreePath } }),
-	);
-	return invoke("get_workspace_node_detail", {
-		worktreePath,
-		nodeId,
-	});
 }
 
 export async function retryWorkspaceNode({
@@ -178,15 +48,8 @@ export async function retryWorkspaceNode({
 }: {
 	worktreePath: string;
 	nodeId: string;
-}): Promise<WorkspaceNodeDetail | null> {
+}): Promise<void> {
 	await invoke("retry_workspace_node", { worktreePath, nodeId });
-	window.dispatchEvent(
-		new CustomEvent("workspace-tree-refresh", { detail: { worktreePath } }),
-	);
-	return invoke("get_workspace_node_detail", {
-		worktreePath,
-		nodeId,
-	});
 }
 
 export async function resumeWorkspaceSessionNode({
@@ -195,13 +58,6 @@ export async function resumeWorkspaceSessionNode({
 }: {
 	worktreePath: string;
 	nodeId: string;
-}): Promise<WorkspaceNodeDetail | null> {
+}): Promise<void> {
 	await invoke("resume_workspace_session_node", { worktreePath, nodeId });
-	window.dispatchEvent(
-		new CustomEvent("workspace-tree-refresh", { detail: { worktreePath } }),
-	);
-	return invoke("get_workspace_node_detail", {
-		worktreePath,
-		nodeId,
-	});
 }

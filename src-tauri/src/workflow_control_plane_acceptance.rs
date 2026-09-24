@@ -465,6 +465,7 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
 
         let terminal = TerminalSurfaceRuntime::new(config.data_dir.clone());
         let composition = compose_agent_sessions(AgentSessionCompositionInput {
+            state_publisher: None,
 			store: store.clone(),
 			data_dir: config.data_dir.clone(),
 				provider_executable_config: Arc::new(
@@ -485,7 +486,7 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
 			terminal: terminal.application(),
 			change_notifier: Arc::new(
 				crate::adaptor::gateway::push::ClientAgentSessionChangeNotifier::new(
-					crate::desktop_test_support::push_sink(app.handle()),
+					crate::usecase::state_subscription::StateSubscriptionPublisher::for_test(),
 				),
 			),
 		})
@@ -520,8 +521,7 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             ),
         );
         driver.node_processes = node_processes.clone();
-        let mut dependencies = crate::desktop_test_support::workflow_dependencies(app.handle());
-        dependencies.processes = node_processes;
+        let dependencies = crate::desktop_test_support::workflow_dependencies(app.handle());
         let driver = Arc::new(driver);
         let startup = crate::adaptor::controller::wiring::wire_workflow_startup(
             dependencies.clone(),

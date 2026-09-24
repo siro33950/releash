@@ -1,7 +1,5 @@
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum StateValue {
-    RepositoryPaths(Vec<String>),
-}
+mod subscription_target;
+pub(crate) use subscription_target::{StateChangeSource, SubscriptionTarget, WatchRequirement};
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -67,7 +65,7 @@ impl crate::domain::failure::ClassifiedFailure for SubscriptionError {
 
 struct Target<T> {
     version: Version,
-    snapshot: Arc<T>,
+    snapshot: Option<Arc<T>>,
     delivery: Delivery,
     history: VecDeque<Event<T>>,
 }
@@ -89,7 +87,10 @@ impl<T: Clone> Target<T> {
                     .cloned(),
             );
         } else {
-            pending.push_back(Event::Snapshot(self.version.clone(), self.snapshot.clone()));
+            pending.push_back(Event::Snapshot(
+                self.version.clone(),
+                self.snapshot.clone().expect("active target has a snapshot"),
+            ));
         }
         pending.push_back(Event::Bookmark(self.version.clone()));
         pending
@@ -103,22 +104,26 @@ struct Subscription<T> {
 }
 
 struct Client<T> {
-    subscriptions: HashMap<String, Subscription<T>>,
-    order: VecDeque<String>,
+    subscriptions: HashMap<SubscriptionTarget, Subscription<T>>,
+    order: VecDeque<SubscriptionTarget>,
 }
 
 pub(crate) struct Subscriptions<T> {
     epoch: String,
-    targets: HashMap<String, Target<T>>,
+    target_generation: u64,
+    targets: HashMap<SubscriptionTarget, Target<T>>,
     clients: HashMap<String, Client<T>>,
+    watches: std::collections::HashSet<WatchRequirement>,
 }
 
 impl<T: Clone + PartialEq> Subscriptions<T> {
     pub fn new(epoch: String) -> Self {
         Self {
             epoch,
+            target_generation: 0,
             targets: HashMap::new(),
             clients: HashMap::new(),
+            watches: Default::default(),
         }
     }
 
@@ -128,6 +133,7 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
         snapshot: T,
         delivery: Delivery,
     ) -> Result<(), SubscriptionError> {
+        let id = SubscriptionTarget::parse(&id)?;
         if self.targets.contains_key(&id) {
             return Err(SubscriptionError::AlreadyExists);
         }
@@ -135,10 +141,14 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
             id,
             Target {
                 version: Version {
-                    epoch: self.epoch.clone(),
+                    epoch: if self.target_generation == 0 {
+                        self.epoch.clone()
+                    } else {
+                        format!("{}:{}", self.epoch, self.target_generation)
+                    },
                     sequence: 0,
                 },
-                snapshot: Arc::new(snapshot),
+                snapshot: Some(Arc::new(snapshot)),
                 delivery,
                 history: VecDeque::new(),
             },
@@ -167,29 +177,53 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
         self.clients.remove(id);
     }
 
+    pub fn start_with_snapshot(
+        &mut self,
+        client: &str,
+        raw: &str,
+        snapshot: T,
+        version: Option<&Version>,
+    ) -> Result<(), SubscriptionError> {
+        let target = SubscriptionTarget::parse(raw)?;
+        if !self.clients.contains_key(client) {
+            self.ensure_active(&target)?;
+            return Err(SubscriptionError::StreamEnded);
+        }
+        if self.registered(&target) {
+            self.publish(raw, snapshot, None)?;
+        } else {
+            self.register(raw.into(), snapshot, Delivery::Full)?;
+        }
+        self.start(client, raw, version)
+    }
+
     pub fn start(
         &mut self,
         client: &str,
         target: &str,
         version: Option<&Version>,
     ) -> Result<(), SubscriptionError> {
+        let target = SubscriptionTarget::parse(target)?;
         let value = self
             .targets
-            .get(target)
+            .get(&target)
             .ok_or(SubscriptionError::UnknownTarget)?;
+        if value.snapshot.is_none() {
+            return Err(SubscriptionError::UnknownTarget);
+        }
         let client = self
             .clients
             .get_mut(client)
             .ok_or(SubscriptionError::StreamEnded)?;
-        if client.subscriptions.contains_key(target) {
+        if client.subscriptions.contains_key(&target) {
             return Ok(());
         }
-        client.order.push_back(target.into());
+        client.order.push_back(target.clone());
         client.subscriptions.insert(
-            target.into(),
+            target,
             Subscription {
                 pending: value.resume(version),
-                sent: version.filter(|v| v.epoch == self.epoch).cloned(),
+                sent: version.filter(|v| v.epoch == value.version.epoch).cloned(),
                 overflowed: false,
             },
         );
@@ -201,8 +235,9 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
             .clients
             .get_mut(client)
             .ok_or(SubscriptionError::StreamEnded)?;
-        client.subscriptions.remove(target);
-        client.order.retain(|id| id != target);
+        let target = SubscriptionTarget::parse(target)?;
+        client.subscriptions.remove(&target);
+        client.order.retain(|id| id != &target);
         Ok(())
     }
 
@@ -212,11 +247,12 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
         snapshot: T,
         delta: Option<T>,
     ) -> Result<(), SubscriptionError> {
+        let target = SubscriptionTarget::parse(target)?;
         let value = self
             .targets
-            .get_mut(target)
+            .get_mut(&target)
             .ok_or(SubscriptionError::UnknownTarget)?;
-        if *value.snapshot == snapshot {
+        if value.snapshot.as_deref() == Some(&snapshot) {
             return Ok(());
         }
         value.version.sequence = value
@@ -224,7 +260,7 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
             .sequence
             .checked_add(1)
             .ok_or(SubscriptionError::VersionExhausted)?;
-        value.snapshot = Arc::new(snapshot);
+        value.snapshot = Some(Arc::new(snapshot));
         let change = match (value.delivery, delta) {
             (Delivery::Delta, Some(delta)) => {
                 Event::Change(value.version.clone(), Delivery::Delta, Arc::new(delta))
@@ -232,7 +268,7 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
             _ => Event::Change(
                 value.version.clone(),
                 Delivery::Full,
-                value.snapshot.clone(),
+                value.snapshot.clone().expect("published snapshot"),
             ),
         };
         value.history.push_back(change.clone());
@@ -240,7 +276,7 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
             value.history.pop_front();
         }
         for client in self.clients.values_mut() {
-            if let Some(subscription) = client.subscriptions.get_mut(target) {
+            if let Some(subscription) = client.subscriptions.get_mut(&target) {
                 if subscription.pending.len() >= RETAINED_CHANGES {
                     subscription.pending.clear();
                     subscription.overflowed = true;
@@ -251,6 +287,68 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
             }
         }
         Ok(())
+    }
+
+    pub fn ensure_active(&mut self, target: &SubscriptionTarget) -> Result<(), SubscriptionError> {
+        if self.active_targets().contains(target) {
+            return Ok(());
+        }
+        if *target != SubscriptionTarget::RepositoryPaths && self.targets.contains_key(target) {
+            self.target_generation = self
+                .target_generation
+                .checked_add(1)
+                .ok_or(SubscriptionError::VersionExhausted)?;
+            self.targets.remove(target);
+        }
+        Err(SubscriptionError::StreamEnded)
+    }
+
+    pub fn release_inactive_snapshots(&mut self) {
+        let active = self.active_targets();
+        for (id, target) in &mut self.targets {
+            if *id != SubscriptionTarget::RepositoryPaths && !active.contains(id) {
+                target.snapshot = None;
+                target.history.clear();
+            }
+        }
+    }
+
+    pub fn active_targets(&self) -> std::collections::HashSet<SubscriptionTarget> {
+        self.clients
+            .values()
+            .flat_map(|client| client.subscriptions.keys().cloned())
+            .collect()
+    }
+
+    pub fn watch_failed(&mut self, requirement: &WatchRequirement) {
+        self.watches.remove(requirement);
+    }
+
+    pub fn watch_changes(
+        &mut self,
+        repositories: &[String],
+        history_paths: &[String],
+    ) -> (Vec<WatchRequirement>, Vec<WatchRequirement>) {
+        let required = self.required_watches(repositories, history_paths);
+        let start = required.difference(&self.watches).cloned().collect();
+        let stop = self.watches.difference(&required).cloned().collect();
+        self.watches = required;
+        (start, stop)
+    }
+
+    pub fn registered(&self, target: &SubscriptionTarget) -> bool {
+        self.targets.contains_key(target)
+    }
+
+    pub fn required_watches(
+        &self,
+        repositories: &[String],
+        history_paths: &[String],
+    ) -> std::collections::HashSet<WatchRequirement> {
+        self.active_targets()
+            .iter()
+            .flat_map(|target| target.watches(repositories, history_paths))
+            .collect()
     }
 
     pub fn bookmark(&mut self, client: &str) {
@@ -277,7 +375,7 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
             }
             if let Some(event) = subscription.pending.pop_front() {
                 subscription.sent = Some(event.version().clone());
-                return Some((id, event));
+                return Some((id.to_string(), event));
             }
         }
         None

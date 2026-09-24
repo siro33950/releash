@@ -3,22 +3,23 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { WorkspaceListModel } from "@/hooks/useWorkspaceList";
-import {
-	completeClientRestoration,
-	invokeClient,
-	subscribeState,
-} from "@/lib/client";
+import { completeClientRestoration, invokeClient } from "@/lib/client";
+import { stateSubscriptions } from "@/test/stateSubscriptions";
 import { workspaceListSnapshot } from "@/test/workspaceList";
 import type { AppSettings } from "@/types/settings";
 import App from "./App";
 
+const states = stateSubscriptions();
 vi.mock("@/lib/client", async (importOriginal) => ({
 	...(await importOriginal<typeof import("@/lib/client")>()),
 	invokeClient: vi.fn(),
 	listenClient: vi.fn().mockResolvedValue(() => {}),
 	watchClient: vi.fn().mockReturnValue(() => {}),
 	completeClientRestoration: vi.fn(),
-	subscribeState: vi.fn(),
+	subscribeState: (...args: Parameters<typeof states.subscribeState>) =>
+		states.subscribeState(...args),
+	firstState: (...args: Parameters<typeof states.firstState>) =>
+		states.firstState(...args),
 }));
 vi.mock("@/hooks/useMenuEvents", () => ({ useMenuEvents: vi.fn() }));
 vi.mock("@/hooks/useUpdateChecker", () => ({ useUpdateChecker: () => null }));
@@ -95,10 +96,9 @@ beforeEach(() => {
 	vi.useFakeTimers();
 	vi.clearAllMocks();
 	localStorage.clear();
-	vi.mocked(subscribeState).mockImplementation((_target, onValue) => {
-		onValue([]);
-		return () => {};
-	});
+	states.clear();
+	states.publish("repository-paths", []);
+	states.publish("workspaces", workspaceListSnapshot());
 	status = {
 		phase: "restoring",
 		connectionGeneration: 1,
@@ -135,96 +135,61 @@ beforeEach(() => {
 });
 afterEach(() => vi.useRealTimers());
 
-it.each(["get_performance_telemetry_enabled"] as const)(
-	"%s の初回失敗後に再取得した状態を反映してから操作を再開する",
-	async (failedCommand) => {
-		let resolveRepos!: (paths: string[]) => void;
-		let resolveSettings!: (enabled: boolean) => void;
-		const repos = new Promise<string[]>((resolve) => {
-			resolveRepos = resolve;
-		});
-		const settings = new Promise<boolean>((resolve) => {
-			resolveSettings = resolve;
-		});
-		vi.mocked(invokeClient).mockImplementation((command) => {
-			if (command === "refresh_workspaces") {
-				return repos.then((paths) => ({
-					...workspaceListSnapshot(),
-					repositories: paths.map((path) => ({
-						...workspaceListSnapshot().repositories[0],
-						path,
-					})),
-				}));
-			}
-			if (command === "get_performance_telemetry_enabled") {
-				if (status.connectionGeneration === 1) {
-					if (command === failedCommand)
-						return Promise.reject(new Error("temporary read failure"));
-					return Promise.resolve(true);
-				}
-				return settings;
-			}
-			return Promise.reject(new Error("not in a git repo"));
-		});
-		await act(async () => {
-			render(<App />);
-		});
-		await act(() => vi.advanceTimersByTimeAsync(250));
-		expect(screen.getByText("Releash: state_restoration")).toBeVisible();
-		expect(screen.getByRole("status")).toHaveTextContent(
-			"temporary read failure",
-		);
-		expect(completeClientRestoration).not.toHaveBeenCalled();
-		await act(async () => {
-			fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-		});
-		await act(() => vi.advanceTimersByTimeAsync(250));
-		await act(async () => resolveSettings(false));
-		expect(completeClientRestoration).not.toHaveBeenCalled();
-		expect(screen.queryByRole("main")).toBeNull();
-		await act(async () => resolveRepos(["/current"]));
-		expect(completeClientRestoration).toHaveBeenCalledExactlyOnceWith(2);
-		await act(() => vi.advanceTimersByTimeAsync(250));
-		expect(screen.getByRole("main")).toHaveTextContent("Telemetry: false");
-		expect(screen.getByRole("button", { name: "/current" })).toBeVisible();
-		expect(screen.queryByText("/old")).toBeNull();
-		for (const command of [
-			"refresh_workspaces",
-			"get_performance_telemetry_enabled",
-		]) {
-			expect(
-				vi.mocked(invokeClient).mock.calls.filter(([name]) => name === command),
-			).toHaveLength(2);
-		}
-	},
-);
-
-it("Repository一覧の失敗はWorkspacesの再取得へ委ねて画面全体の操作を再開する", async () => {
-	vi.mocked(invokeClient).mockImplementation((command) =>
-		command === "refresh_workspaces"
-			? Promise.reject(new Error("repository storage unavailable"))
-			: Promise.resolve(true),
+it("設定の初回失敗後は次の接続の状態を反映してから操作を再開する", async () => {
+	states.clear();
+	let resolveSettings!: (value: boolean) => void;
+	const settings = new Promise<boolean>((resolve) => {
+		resolveSettings = resolve;
+	});
+	vi.mocked(invokeClient).mockImplementation((command) => {
+		if (command === "get_performance_telemetry_enabled")
+			return status.connectionGeneration === 1
+				? Promise.reject(new Error("temporary read failure"))
+				: settings;
+		return Promise.resolve(undefined);
+	});
+	await act(async () => {
+		render(<App />);
+	});
+	await act(() => vi.advanceTimersByTimeAsync(250));
+	expect(screen.getByRole("status")).toHaveTextContent(
+		"temporary read failure",
 	);
+	expect(completeClientRestoration).not.toHaveBeenCalled();
+	await act(async () => {
+		fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+	});
+	await act(() => vi.advanceTimersByTimeAsync(250));
+	await act(async () => resolveSettings(false));
+	expect(completeClientRestoration).not.toHaveBeenCalled();
+	await act(async () => states.publish("workspaces", workspaceListSnapshot()));
+	await act(() => vi.advanceTimersByTimeAsync(250));
+	expect(completeClientRestoration).toHaveBeenCalledExactlyOnceWith(2);
+	expect(screen.getByRole("main")).toHaveTextContent("Telemetry: false");
+	expect(
+		vi
+			.mocked(invokeClient)
+			.mock.calls.some(([name]) => name === "refresh_workspaces"),
+	).toBe(false);
+});
+it("初回の一覧失敗でも復元を完了し購読による復旧を表示する", async () => {
+	states.publish("workspaces", {
+		generation: 1,
+		repositories: [],
+		status: { loaded: false, state: "initialFailed", error: "offline" },
+	});
+	vi.mocked(invokeClient).mockResolvedValue(true);
 	await act(async () => {
 		render(<App />);
 	});
 	await act(() => vi.advanceTimersByTimeAsync(250));
 	expect(completeClientRestoration).toHaveBeenCalledExactlyOnceWith(1);
 	expect(screen.getByRole("main")).toBeVisible();
-	expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
-	expect(
-		vi
-			.mocked(invoke)
-			.mock.calls.some(([command]) => command === "fail_desktop_restoration"),
-	).toBe(false);
+	await act(async () => states.publish("workspaces", workspaceListSnapshot()));
+	expect(screen.getByRole("button", { name: "/repo" })).toBeVisible();
 });
-
-it("復元完了の通知が失敗した場合も理由を報告して再取得できる", async () => {
-	vi.mocked(invokeClient).mockImplementation((command) =>
-		Promise.resolve(
-			command === "refresh_workspaces" ? workspaceListSnapshot() : true,
-		),
-	);
+it("復元完了通知が失敗した場合も理由を表示し再開できる", async () => {
+	vi.mocked(invokeClient).mockResolvedValue(true);
 	vi.mocked(completeClientRestoration).mockRejectedValueOnce(
 		new Error("restoration acknowledgement failed"),
 	);
@@ -243,19 +208,9 @@ it("復元完了の通知が失敗した場合も理由を報告して再取得�
 	expect(screen.getByRole("main")).toBeVisible();
 	expect(completeClientRestoration).toHaveBeenLastCalledWith(2);
 });
-
-it("設定とWorkspacesは更新中と失敗時も同じ登録一覧を保持し復旧と削除を反映する", async () => {
-	const snapshot = (paths: string[]) => ({
-		...workspaceListSnapshot(),
-		repositories: paths.map((path) => ({
-			...workspaceListSnapshot().repositories[0],
-			path,
-		})),
-	});
-	let next = Promise.resolve(snapshot(["/old"]));
-	vi.mocked(invokeClient).mockImplementation((command) =>
-		command === "refresh_workspaces" ? next : Promise.resolve(true),
-	);
+it("登録一覧とWorkspacesの変更・削除はそれぞれの購読から届く", async () => {
+	vi.mocked(invokeClient).mockResolvedValue(true);
+	states.publish("repository-paths", ["/repo"]);
 	await act(async () => {
 		render(<App />);
 	});
@@ -264,67 +219,30 @@ it("設定とWorkspacesは更新中と失敗時も同じ登録一覧を保持し
 	const settings = screen.getByRole("region", {
 		name: "Registered repositories",
 	});
-	const subscription = vi
-		.mocked(subscribeState)
-		.mock.calls.find(([target]) => target === "repository-paths");
-	if (!subscription) throw new Error("Missing state subscription");
-	const receive = subscription[1];
-	await act(async () => receive(["/old"]));
-	expect(settings).toHaveTextContent("/old");
-	let reject!: (error: Error) => void;
-	next = new Promise((_, fail) => {
-		reject = fail;
-	});
+	expect(settings).toHaveTextContent("/repo");
+	expect(screen.getByRole("button", { name: "/repo" })).toBeVisible();
+	const next = workspaceListSnapshot();
+	next.repositories[0].path = "/new";
 	await act(async () => {
-		fireEvent.click(screen.getByRole("button", { name: "Refresh Workspaces" }));
+		states.publish("repository-paths", ["/new"]);
+		states.publish("workspaces", next);
 	});
-	expect(settings).toHaveTextContent("/old");
-	expect(screen.getByRole("button", { name: "/old" })).toBeVisible();
-	await act(async () => {
-		reject(new Error("deadline exceeded"));
-	});
-	expect(settings).toHaveTextContent("/old");
-	expect(screen.getByRole("button", { name: "/old" })).toBeVisible();
-	next = Promise.resolve(snapshot(["/new", "/other"]));
-	await act(async () => receive(["/new", "/other"]));
-	expect(settings).toHaveTextContent("/new,/other");
+	expect(settings).toHaveTextContent("/new");
 	expect(screen.getByRole("button", { name: "/new" })).toBeVisible();
-	expect(screen.getByRole("button", { name: "/other" })).toBeVisible();
-	expect(screen.queryByRole("button", { name: "/old" })).toBeNull();
-	next = Promise.resolve(snapshot([]));
-	await act(async () => receive([]));
+	expect(screen.queryByRole("button", { name: "/repo" })).toBeNull();
+	await act(async () => {
+		states.publish("repository-paths", []);
+		states.publish("workspaces", {
+			...next,
+			repositories: [],
+			status: { loaded: true, state: "empty", error: null },
+		});
+	});
 	expect(settings).toBeEmptyDOMElement();
 	expect(screen.queryByRole("button", { name: "/new" })).toBeNull();
 	expect(
 		vi
 			.mocked(invokeClient)
-			.mock.calls.some(([name]) => String(name) === "get_repo_paths"),
+			.mock.calls.some(([name]) => name === "refresh_workspaces"),
 	).toBe(false);
-});
-
-it("登録一覧の初回取得失敗snapshotでも復元を完了し再取得できる", async () => {
-	let next = {
-		...workspaceListSnapshot(),
-		status: {
-			loaded: false,
-			error: "read failed" as string | null,
-			state: "initialFailed",
-		},
-		repositories: [] as ReturnType<
-			typeof workspaceListSnapshot
-		>["repositories"],
-	};
-	vi.mocked(invokeClient).mockImplementation((command) =>
-		Promise.resolve(command === "refresh_workspaces" ? next : true),
-	);
-	await act(async () => {
-		render(<App />);
-	});
-	await act(() => vi.advanceTimersByTimeAsync(250));
-	expect(completeClientRestoration).toHaveBeenCalledExactlyOnceWith(1);
-	next = workspaceListSnapshot();
-	await act(async () => {
-		fireEvent.click(screen.getByRole("button", { name: "Refresh Workspaces" }));
-	});
-	expect(screen.getByRole("button", { name: "/repo" })).toBeVisible();
 });

@@ -172,7 +172,7 @@ fn test_停止応答_acceptedを受理し異なる応答を拒否する() {
     ))
     .is_err());
     assert_eq!(
-        shutdown_response(Command::GetCwd(Default::default())).unwrap_err(),
+        shutdown_response(Command::GetExternalEditor(Default::default())).unwrap_err(),
         "Unexpected shutdown response."
     );
 }

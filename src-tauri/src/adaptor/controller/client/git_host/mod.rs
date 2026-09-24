@@ -2,7 +2,6 @@ mod shared;
 pub(crate) use shared::register_shared;
 
 pub(crate) mod issue;
-pub(crate) mod pr;
 
 use crate::other::AppError;
 

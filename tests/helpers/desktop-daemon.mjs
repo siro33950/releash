@@ -52,14 +52,14 @@ const bundle = await build({
     stdin: { contents: 'export * from "./src/lib/client.ts";', resolveDir: process.cwd() },
     bundle: true, platform: "node", format: "esm", write: false,
 });
-const {getClient, invokeClient, onClientRefresh, completeClientRestoration, refreshClient} = await import(`data:text/javascript;base64,${Buffer.from(`${bundle.outputFiles[0].text}\n//# sourceURL=releash-client-fixture.mjs`).toString("base64")}`);
+const {getClient, firstState, invokeClient, onClientRefresh, completeClientRestoration, refreshClient} = await import(`data:text/javascript;base64,${Buffer.from(`${bundle.outputFiles[0].text}\n//# sourceURL=releash-client-fixture.mjs`).toString("base64")}`);
 async function waitFor(predicate) {
     const deadline = Date.now() + 15_000;
     while (!(await predicate())) { assert.ok(Date.now() < deadline, "desktop recovery deadline"); await setTimeout(10); }
 }
 let refreshedSettings;
 const restore = async () => {
-    await Promise.all([invokeClient("get_workspaces"), invokeClient("get_performance_telemetry_enabled")]);
+    await Promise.all([firstState("workspaces"), invokeClient("get_performance_telemetry_enabled")]);
     await completeClientRestoration((await invokeHost("get_daemon_status")).connectionGeneration);
     await waitFor(async () => (await invokeHost("get_daemon_status")).phase === "ready");
 };

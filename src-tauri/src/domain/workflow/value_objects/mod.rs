@@ -59,7 +59,10 @@ pub use runtime_projection::FanoutChildSnapshot;
 pub use runtime_projection::{
     NodeHistoryEntry, RuntimeArtifact, TokenUsage, NODE_STATUS_ABORTED, NODE_STATUS_COMPLETED,
 };
-pub use state::{RuntimeExecutionState, WorkflowRuntimeSnapshot};
+pub use state::RuntimeExecutionState;
 pub use worktree_origin::{
     isolated_worktree_owner, IsolatedWorktree, WorktreeInheritance, WorktreeInventoryEntry,
 };
+
+#[cfg(any(test, all(debug_assertions, feature = "desktop")))]
+pub use state::WorkflowRuntimeSnapshot;

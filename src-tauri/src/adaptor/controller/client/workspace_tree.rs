@@ -9,67 +9,7 @@ use crate::adaptor::controller::state::AppState;
 use crate::usecase::workflow::{
     ApproveWorkspaceNodeCommand, RenameWorkspaceSessionNodeCommand,
     ResumeWorkspaceSessionNodeCommand, RetryWorkspaceNodeCommand, WorkspaceNodeCommandUsecase,
-    WorkspaceNodeDetailDto, WorkspaceTreeSelectionSnapshotDto, WorkspaceTreeSnapshotDto,
-    WorkspaceWorkflowHistoryItemDto,
 };
-
-pub(crate) async fn list_workspace_worktree_nodes_shared(
-    app_state: &AppState,
-    worktree_path: String,
-) -> Result<WorkspaceTreeSnapshotDto, AppError> {
-    let workflow_usecase = &app_state.workflow_usecase;
-    workflow_usecase
-        .list_workspace_tree_nodes(&worktree_path)
-        .await
-        .map_err(AppError::from_failure)
-}
-
-pub(crate) async fn get_workspace_tree_selection_reconciliation_shared(
-    app_state: &AppState,
-    worktree_path: String,
-    selected_node_id: String,
-) -> Result<WorkspaceTreeSelectionSnapshotDto, AppError> {
-    let workflow_usecase = &app_state.workflow_usecase;
-    workflow_usecase
-        .get_workspace_tree_selection_reconciliation(&worktree_path, &selected_node_id)
-        .await
-        .map_err(AppError::from_failure)
-}
-
-pub(crate) async fn list_workspace_workflow_history_shared(
-    app_state: &AppState,
-    worktree_path: String,
-) -> Result<Vec<WorkspaceWorkflowHistoryItemDto>, AppError> {
-    let workflow_usecase = &app_state.workflow_usecase;
-    workflow_usecase
-        .list_workspace_workflow_history(&worktree_path)
-        .await
-        .map_err(AppError::from_failure)
-}
-
-pub(crate) async fn get_workspace_node_detail_shared(
-    app_state: &AppState,
-    worktree_path: String,
-    node_id: String,
-) -> Result<Option<WorkspaceNodeDetailDto>, AppError> {
-    let workflow_usecase = &app_state.workflow_usecase;
-    workflow_usecase
-        .get_workspace_node_detail(&worktree_path, &node_id)
-        .await
-        .map_err(AppError::from_failure)
-}
-
-pub(crate) async fn get_workspace_session_node_id_shared(
-    app_state: &AppState,
-    worktree_path: String,
-    session_id: String,
-) -> Result<Option<String>, AppError> {
-    let workflow_usecase = &app_state.workflow_usecase;
-    workflow_usecase
-        .get_workspace_session_node_id(&worktree_path, &session_id)
-        .await
-        .map_err(AppError::from_failure)
-}
 
 pub(crate) async fn approve_workspace_node_shared(
     usecase: &Arc<WorkspaceNodeCommandUsecase>,

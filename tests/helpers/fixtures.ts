@@ -17,29 +17,23 @@ interface WorktreeBranch {
 	base_ahead: number;
 }
 
-interface PrStatus {
-	open_prs: Record<string, { number: number; url: string }>;
-	merged_branches: string[];
-}
-
 // -------------------------------------------------------
 // App.tsx 初期化に必要な最小レスポンスセット
 // -------------------------------------------------------
 
 const baseIpcHandler: Record<string, unknown> = {
 	// App.tsx 初期化
-	get_cwd: "/test/repo",
 	get_application_startup_outcome: { type: "ready" },
 	list_provider_hook_health_warnings: [],
-	get_main_repo_path: "/test/repo",
-	list_worktrees: [],
+	"startup-repository": "/test/repo",
+	"worktrees": [],
 	set_menu_items_enabled: null,
 
 	// WorktreeView 初期化
 	start_watching: 1,
 	start_git_dir_watching: 1,
 	stop_git_dir_watching: null,
-	load_workspace_state: null,
+	"workspace-state": null,
 	list_review_threads: [],
 	get_review_snapshot: {
 		version: 1,
@@ -57,17 +51,13 @@ const baseIpcHandler: Record<string, unknown> = {
 		changesFileCount: 0,
 	},
 	stop_watching: null,
-	get_current_branch: "feat/test-branch",
+	"current-branch": "feat/test-branch",
 
 	// RepoKanbanBoard
-	list_branches_with_status: [],
-	get_cached_pr_status: {
-		open_prs: {},
-		merged_branches: [],
-	} satisfies PrStatus,
-	get_cached_issues: [],
-	fetch_issues: [],
-	list_workspace_statuses: [],
+	"workspaceBranches": [],
+	"issues": [],
+	fetch_issues: null,
+    refresh_workspaces: null,
 	get_releash_base: null,
 
 	// Telemetry
@@ -90,7 +80,7 @@ const baseIpcHandler: Record<string, unknown> = {
 	"plugin:autostart|disable": null,
 
 	// Branch base
-	get_branch_base: null,
+	"branch-base": null,
 	set_branch_base: null,
 
 	// Terminal (PTY) — モック上は何もしない
@@ -118,7 +108,7 @@ const baseIpcHandler: Record<string, unknown> = {
 	update_external_editor: null,
 
 	// Repo registry
-	repository_paths: ["/test/repo"],
+	"repository-paths": ["/test/repo"],
 	add_repo_path: true,
 	remove_repo_path: true,
 
@@ -130,7 +120,7 @@ const baseIpcHandler: Record<string, unknown> = {
 	"plugin:updater|download_and_install": null,
 
 	// IssuePanel
-	list_branches: [],
+	"branches": [],
 
 	// NotionPanel
 	get_notion_config: null,
@@ -149,13 +139,13 @@ const baseIpcHandler: Record<string, unknown> = {
 	delete_branch: null,
 
 	// AgentSession TUI
-	list_available_agent_session_providers: ["claude", "codex"],
-	get_agent_session: null,
+	"providers": ["claude", "codex"],
+	"agent-session": null,
 	open_agent_session: "attached",
 	restore_agent_session: "restored",
 	archive_agent_session: "archived",
 	delete_agent_session: null,
-	list_agent_session_history: { items: [], nextAfter: null },
+	"session-history": { items: [], hasMore: false },
 	resume_agent_session_history_candidate: "mock-agent-session-1",
 	get_provider_availability: {
 		providers: [
@@ -199,20 +189,18 @@ const baseIpcHandler: Record<string, unknown> = {
 	approve_workflow_node: null,
 	delete_workflow: null,
 	open_workflow_in_editor: null,
-	get_workflow_execution_state: null,
-	resolve_active_execution_by_worktree: null,
 
 	// Workspace tree
-	list_workspace_worktree_nodes: {
+	"workspaceTree": {
 		nodes: [],
 		archivedSessions: [],
 		preferredNodeId: null,
 	},
-	list_workspace_workflow_history: [],
-	get_workspace_node_detail: null,
+	"workspaceWorkflowHistory": [],
+	"node-detail": null,
 	close_workspace_node: null,
 	approve_workspace_node: null,
-	get_workspace_session_node_id: null,
+	"session-node": null,
 	archive_workspace_workflow_execution: null,
 	restore_workspace_workflow_execution: null,
 };
@@ -296,10 +284,19 @@ export const branchList: BranchInfo[] = [
 export function buildMockConfig(
 	overrides: Record<string, unknown> = {},
 ): MockConfig {
-	return {
-		responses: {
-			...baseIpcHandler,
-			...overrides,
-		},
-	};
+	const values = { ...baseIpcHandler, ...overrides };
+    const stateNames = ["repository-paths", "workspaces", "selection", "node-detail", "agent-session", "session-node", "session-history", "providers", "branches", "branch-base", "branch-status", "current-branch", "issues", "worktrees", "repository-root", "startup-repository", "workspace-state"];
+    const states: Record<string, unknown> = { "repository-root": "/test/repo", selection: null };
+    for (const kind of stateNames) {
+        if (kind in values) { states[kind] = values[kind]; delete values[kind]; }
+    }
+    const workspace = {
+        branches: values.workspaceBranches as MockConfig["workspace"]["branches"],
+        tree: values.workspaceTree as MockConfig["workspace"]["tree"],
+        history: values.workspaceWorkflowHistory as MockConfig["workspace"]["history"],
+    };
+    delete values.workspaceBranches;
+    delete values.workspaceTree;
+    delete values.workspaceWorkflowHistory;
+    return { responses: values, states, workspace };
 }

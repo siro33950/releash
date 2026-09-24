@@ -11,26 +11,6 @@ pub(crate) fn register_shared(
     {
         let app_state = deps.app_state.clone();
         router.register_domain(
-            &["get_workspaces"],
-            Box::new(move |command| {
-                let app_state = app_state.clone();
-                Box::pin(async move {
-                    let wire::command_request::Command::GetWorkspaces(_) = command else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let app_state = app_state
-                        .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                    outcome(Ok::<_, crate::other::AppError>(
-                        app_state.workspace_list.snapshot(),
-                    ))
-                    .map(wire::command_result::Command::GetWorkspaces)
-                })
-            }),
-        );
-    }
-    {
-        let app_state = deps.app_state.clone();
-        router.register_domain(
             &["refresh_workspaces"],
             Box::new(move |command| {
                 let app_state = app_state.clone();
@@ -40,14 +20,14 @@ pub(crate) fn register_shared(
                     };
                     let app_state = app_state
                         .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                    let result = match args.worktree_path.as_deref() {
+                    match args.worktree_path.as_deref() {
                         Some(path) => app_state.workspace_list.refresh_worktree(path).await,
                         None => match args.repo_path.as_deref() {
                             Some(path) => app_state.workspace_list.refresh_repository(path).await,
                             None => app_state.workspace_list.refresh().await,
                         },
                     };
-                    outcome(Ok::<_, crate::other::AppError>(result))
+                    outcome(Ok::<_, crate::other::AppError>(()))
                         .map(wire::command_result::Command::RefreshWorkspaces)
                 })
             }),
@@ -112,164 +92,6 @@ pub(crate) fn register_shared(
                     }
                     .await?;
                     Ok(wire::command_result::Command::ArchiveWorkspaceWorkflowExecution(result))
-                })
-            }),
-        );
-    }
-    {
-        let app_state = deps.app_state.clone();
-        router.register_domain(
-            &["get_workspace_node_detail"],
-            Box::new(move |command| {
-                let app_state = app_state.clone();
-                Box::pin(async move {
-                    let wire::command_request::Command::GetWorkspaceNodeDetail(args) = command
-                    else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move {
-                        let app_state = app_state
-                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        outcome(
-                            get_workspace_node_detail_shared(
-                                &app_state,
-                                convert(required(args.worktree_path, "worktreePath")?)?,
-                                convert(required(args.node_id, "nodeId")?)?,
-                            )
-                            .await,
-                        )
-                    }
-                    .await?;
-                    Ok(wire::command_result::Command::GetWorkspaceNodeDetail(
-                        result,
-                    ))
-                })
-            }),
-        );
-    }
-    {
-        let app_state = deps.app_state.clone();
-        router.register_domain(
-            &["get_workspace_session_node_id"],
-            Box::new(move |command| {
-                let app_state = app_state.clone();
-                Box::pin(async move {
-                    let wire::command_request::Command::GetWorkspaceSessionNodeId(args) = command
-                    else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move {
-                        let app_state = app_state
-                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        outcome(
-                            get_workspace_session_node_id_shared(
-                                &app_state,
-                                convert(required(args.worktree_path, "worktreePath")?)?,
-                                convert(required(args.session_id, "sessionId")?)?,
-                            )
-                            .await,
-                        )
-                    }
-                    .await?;
-                    Ok(wire::command_result::Command::GetWorkspaceSessionNodeId(
-                        result,
-                    ))
-                })
-            }),
-        );
-    }
-    {
-        let app_state = deps.app_state.clone();
-        router.register_domain(
-            &["get_workspace_tree_selection_reconciliation"],
-            Box::new(move |command| {
-                let app_state = app_state.clone();
-                Box::pin(async move {
-                    let wire::command_request::Command::GetWorkspaceTreeSelectionReconciliation(
-                        args,
-                    ) = command
-                    else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move {
-                        let app_state = app_state
-                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        outcome(
-                            get_workspace_tree_selection_reconciliation_shared(
-                                &app_state,
-                                convert(required(args.worktree_path, "worktreePath")?)?,
-                                convert(required(args.selected_node_id, "selectedNodeId")?)?,
-                            )
-                            .await,
-                        )
-                    }
-                    .await?;
-                    Ok(
-                        wire::command_result::Command::GetWorkspaceTreeSelectionReconciliation(
-                            result,
-                        ),
-                    )
-                })
-            }),
-        );
-    }
-    {
-        let app_state = deps.app_state.clone();
-        router.register_domain(
-            &["list_workspace_workflow_history"],
-            Box::new(move |command| {
-                let app_state = app_state.clone();
-                Box::pin(async move {
-                    let wire::command_request::Command::ListWorkspaceWorkflowHistory(args) =
-                        command
-                    else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move {
-                        let app_state = app_state
-                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        outcome(
-                            list_workspace_workflow_history_shared(
-                                &app_state,
-                                convert(required(args.worktree_path, "worktreePath")?)?,
-                            )
-                            .await,
-                        )
-                    }
-                    .await?;
-                    Ok(wire::command_result::Command::ListWorkspaceWorkflowHistory(
-                        result,
-                    ))
-                })
-            }),
-        );
-    }
-    {
-        let app_state = deps.app_state.clone();
-        router.register_domain(
-            &["list_workspace_worktree_nodes"],
-            Box::new(move |command| {
-                let app_state = app_state.clone();
-                Box::pin(async move {
-                    let wire::command_request::Command::ListWorkspaceWorktreeNodes(args) = command
-                    else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move {
-                        let app_state = app_state
-                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        outcome(
-                            list_workspace_worktree_nodes_shared(
-                                &app_state,
-                                convert(required(args.worktree_path, "worktreePath")?)?,
-                            )
-                            .await,
-                        )
-                    }
-                    .await?;
-                    Ok(wire::command_result::Command::ListWorkspaceWorktreeNodes(
-                        result,
-                    ))
                 })
             }),
         );

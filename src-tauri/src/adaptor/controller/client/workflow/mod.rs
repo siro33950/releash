@@ -22,7 +22,6 @@ use tauri::Manager;
 
 pub(crate) mod definition;
 pub(crate) mod diagnostics;
-pub(crate) mod execution;
 pub(crate) mod facet;
 pub(crate) mod output;
 pub(crate) mod runtime;
@@ -205,7 +204,6 @@ fn validate_template_variables(content: &str) -> Result<(), String> {
 
 #[cfg(all(test, feature = "desktop"))]
 pub(crate) mod tests {
-    use super::execution::get_workflow_execution_state_impl;
     use super::*;
     use crate::adaptor::gateway::workflow::event::WorkflowEvent;
     use crate::adaptor::gateway::workflow::schema::{
@@ -242,23 +240,20 @@ pub(crate) mod tests {
             .expect("tauri mock test app must build")
     }
 
-    const REQUIRED_WORKFLOW_EXECUTION_COMMANDS: &[&str] = &[
-        "get_workflow_execution_state",
-        "resolve_active_execution_by_worktree",
-    ];
-
     const REQUIRED_WORKSPACE_EXECUTION_COMMANDS: &[&str] = &[
         "approve_workspace_node",
         "archive_workspace_workflow_execution",
-        "get_workspace_node_detail",
-        "get_workspace_session_node_id",
-        "get_workspace_tree_selection_reconciliation",
         "restore_workspace_workflow_execution",
         "rename_workspace_session_node",
         "retry_workspace_node",
     ];
 
     const RETIRED_WORKFLOW_COMMANDS: &[&str] = &[
+        "get_workflow_execution_state",
+        "resolve_active_execution_by_worktree",
+        "get_workspace_node_detail",
+        "get_workspace_session_node_id",
+        "get_workspace_tree_selection_reconciliation",
         "list_workflow_executions",
         "get_workflow_execution",
         "get_workflow_execution_log",
@@ -285,17 +280,10 @@ pub(crate) mod tests {
         ));
         let deps = crate::desktop_test_support::build_client_dependencies(app.handle());
         let mut dispatch = crate::adaptor::controller::client::ClientCommandDispatch::new(
-            Arc::new(crate::adaptor::controller::wiring::build_repository_usecase()),
             Arc::new(crate::usecase::application_startup::ApplicationStartupAuthority::ready()),
         );
         register_shared(&mut dispatch, &deps);
         let handles_command = |command| dispatch.contains(command);
-        for command in REQUIRED_WORKFLOW_EXECUTION_COMMANDS {
-            assert!(
-                handles_command(command),
-                "missing workflow command: {command}"
-            );
-        }
         for command in RETIRED_WORKFLOW_COMMANDS {
             assert!(
                 !handles_command(command),
@@ -304,7 +292,6 @@ pub(crate) mod tests {
         }
 
         let mut workspace_dispatch = crate::adaptor::controller::client::ClientCommandDispatch::new(
-            Arc::new(crate::adaptor::controller::wiring::build_repository_usecase()),
             Arc::new(crate::usecase::application_startup::ApplicationStartupAuthority::ready()),
         );
         crate::adaptor::controller::client::workspace_tree::register_shared(
@@ -1356,7 +1343,7 @@ pub(crate) mod tests {
     /// 観測結果の露出範囲境界: live runtime registry / OpenTabRegistry 由来の runtime_active /
     /// tab_open enrichment は含めない（戻り値の runtime_states は空）。
     #[tokio::test]
-    async fn get_workflow_execution_state_command_projects_state_without_runtime_enrichment() {
+    async fn execution_projection_preserves_state_without_runtime_enrichment() {
         let (app, _data_dir, local_event_store, worktree_path, _r, _w) =
             make_read_only_app_with_managed_worktree();
         let execution_id = read_only_test_uuid(5);
@@ -1388,27 +1375,22 @@ pub(crate) mod tests {
         .await
         .unwrap();
 
-        let view = get_workflow_execution_state_impl(
-            &app.state::<AppState>().workflow_usecase,
-            worktree_path.clone(),
-            execution_id.clone(),
-        )
-        .await
-        .expect("get_workflow_execution_state must succeed")
-        .expect("state must be available");
+        let read = app.state::<AppState>().workflow_usecase.read_usecase();
+        let view = read
+            .get_execution_state(&execution_id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(view.id, execution_id);
         assert_eq!(view.node_executions.len(), 1);
         assert_eq!(view.node_executions[0].node_name, "main");
         assert!(view.node_executions[0].session_id.is_none());
 
         // 存在しない execution_id は Ok(None)。
-        let missing = get_workflow_execution_state_impl(
-            &app.state::<AppState>().workflow_usecase,
-            worktree_path.clone(),
-            read_only_test_uuid(97),
-        )
-        .await
-        .expect("unknown execution must Ok(None)");
+        let missing = read
+            .get_execution_state(&read_only_test_uuid(97))
+            .await
+            .unwrap();
         assert!(missing.is_none());
     }
 }

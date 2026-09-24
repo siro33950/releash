@@ -1,5 +1,374 @@
 // Generated from proto/client.proto. Run pnpm generate:protocol.
 
+export type Liststring = Array<string>;
+
+export type WorkspaceListSnapshotDto = {
+	generation: number;
+	status: WorkspaceListStatusDto;
+	repositories: ListWorkspaceRepositoryListDto;
+};
+
+export type WorkspaceListStatusDto = {
+	state: string;
+	loaded: boolean;
+	error: string | null;
+};
+
+export type ListWorkspaceRepositoryListDto = Array<WorkspaceRepositoryListDto>;
+
+export type WorkspaceRepositoryListDto = {
+	path: string;
+	status: WorkspaceListStatusDto;
+	branches: ListWorkspaceBranchDto;
+	worktrees: ListWorkspaceWorktreeListDto;
+};
+
+export type ListWorkspaceBranchDto = Array<WorkspaceBranchDto>;
+
+export type WorkspaceBranchDto = {
+	has_pr: boolean;
+	pr_number: number | null;
+	pr_url: string | null;
+} & BranchCardDto;
+
+export type BranchCardDto = {
+	name: string;
+	is_main_worktree: boolean;
+	worktree_path: string | null;
+	dirty_count: number;
+	is_merged: boolean;
+	ahead: number;
+	behind: number;
+	has_upstream: boolean;
+	base_ahead: number;
+	is_deleting: boolean;
+};
+
+export type ListWorkspaceWorktreeListDto = Array<WorkspaceWorktreeListDto>;
+
+export type WorkspaceWorktreeListDto = {
+	path: string;
+	status: WorkspaceListStatusDto;
+	snapshot: WorkspaceTreeSnapshotDto | null;
+	workflowHistory: ListWorkspaceWorkflowHistoryItemDto;
+};
+
+export type WorkspaceTreeSnapshotDto = {
+	nodes: ListWorkspaceTreeItemDto;
+	archivedSessions: ListAgentSessionItemDto;
+	preferredNodeId?: string;
+};
+
+export type ListWorkspaceTreeItemDto = Array<WorkspaceTreeItemDto>;
+
+export type WorkspaceTreeItemDto =
+	| ({ kind: "node" } & WorkspaceNodeDto)
+	| ({ kind: "sequence" } & WorkspaceSequenceDto)
+	| ({ kind: "fanout" } & WorkspaceFanoutDto);
+
+export type WorkspaceNodeDto = {
+	processPresence: NodeProcessPresence;
+	id: string;
+	title: string;
+	status: WorkspaceStatusClassification;
+	errorReason?: string;
+	contentKind: WorkspaceContentKind;
+	capabilities: WorkspaceNodeCapabilitiesDto;
+	workflowCapabilities?: WorkspaceWorkflowCapabilitiesDto;
+	sessionCapabilities?: WorkspaceSessionCapabilitiesDto;
+	children?: ListWorkspaceTreeItemDto;
+	pastAttempts: ListWorkspaceNodeDto;
+	pastAttemptsCollapsed: boolean;
+	updatedAt: number;
+};
+
+export type NodeProcessPresence = "unknown" | "live" | "confirmed_absent";
+
+export type WorkspaceStatusClassification =
+	| "active"
+	| "attention"
+	| "idle"
+	| "unbound";
+
+export type WorkspaceContentKind = "session" | "command";
+
+export type WorkspaceNodeCapabilitiesDto = {
+	canResumeSession: boolean;
+	canRename: boolean;
+	canApprove: boolean;
+	canRetry: boolean;
+};
+
+export type WorkspaceWorkflowCapabilitiesDto = {
+	canAbort: boolean;
+	canArchive: boolean;
+};
+
+export type WorkspaceSessionCapabilitiesDto = {
+	sessionRef: string;
+	canArchive: boolean;
+	canDelete: boolean;
+};
+
+export type ListWorkspaceNodeDto = Array<WorkspacePastAttemptDto>;
+
+export type WorkspacePastAttemptDto = { kind: "node" } & WorkspaceNodeDto;
+
+export type WorkspaceSequenceDto = {
+	worktree?: NodeWorktreeDto;
+	id: string;
+	title: string;
+	status: WorkspaceStatusClassification;
+	workflowCapabilities?: WorkspaceWorkflowCapabilitiesDto;
+	children: ListWorkspaceTreeItemDto;
+	updatedAt: number;
+};
+
+export type NodeWorktreeDto = {
+	branch: string;
+	path: string;
+};
+
+export type WorkspaceFanoutDto = {
+	worktree?: NodeWorktreeDto;
+	id: string;
+	title: string;
+	status: WorkspaceStatusClassification;
+	workflowCapabilities?: WorkspaceWorkflowCapabilitiesDto;
+	children: ListWorkspaceTreeItemDto;
+	updatedAt: number;
+};
+
+export type ListAgentSessionItemDto = Array<AgentSessionItemDto>;
+
+export type AgentSessionItemDto = {
+	id: string;
+	workspaceIdentity: string;
+	worktreePath: string;
+	workspaceWorktreePath: string;
+	provider: AgentSessionProviderDto;
+	treeLocation: AgentSessionTreeLocationDto;
+	lifecycle: AgentSessionLifecycleDto;
+	providerSessionId: string | null;
+	transcriptRef: string | null;
+	operations: AgentSessionOperationsDto;
+	lastExitAbnormal: boolean;
+};
+
+export type AgentSessionProviderDto = "claude" | "codex";
+
+export type AgentSessionTreeLocationDto = {
+	treeId: string;
+	nodeExecutionId: string;
+};
+
+export type AgentSessionLifecycleDto = "open" | "paused" | "archived";
+
+export type AgentSessionOperationsDto = {
+	canArchive: boolean;
+	canRestore: boolean;
+	canDelete: boolean;
+};
+
+export type ListWorkspaceWorkflowHistoryItemDto =
+	Array<WorkspaceWorkflowHistoryItemDto>;
+
+export type WorkspaceWorkflowHistoryItemDto = {
+	executionId: string;
+	worktreePath: string;
+	title: string;
+	status: WorkspaceHistoryStatus;
+	updatedAt: number;
+	archivedAt: number;
+	archiveReason: string;
+};
+
+export type WorkspaceHistoryStatus =
+	| "running"
+	| "waiting"
+	| "aborted"
+	| "completed";
+
+export type WorkspaceTreeSelectionSnapshotDto = {
+	snapshot: WorkspaceTreeSnapshotDto;
+	reconciliation: WorkspaceSelectionReconciliationDto;
+};
+
+export type WorkspaceSelectionReconciliationDto = {
+	selectionInSnapshot: boolean;
+};
+
+export type NullableWorkspaceNodeDetailDto = WorkspaceNodeDetailDto | null;
+
+export type WorkspaceNodeDetailDto = {
+	processPresence: NodeProcessPresence;
+	worktree?: NodeWorktreeDto;
+	id: string;
+	title: string;
+	status: WorkspaceNodeStatus;
+	statusClassification: WorkspaceStatusClassification;
+	submitReceived: boolean;
+	stopReceived: boolean;
+	waitingFor?: WorkspaceWaitingFor;
+	hasArtifact: boolean;
+	errorReason?: string;
+	capabilities: WorkspaceNodeCapabilitiesDto;
+	updatedAt: number;
+	content: WorkspaceNodeContentDto;
+};
+
+export type WorkspaceNodeStatus =
+	| "running"
+	| "waiting"
+	| "aborted"
+	| "completed";
+
+export type WorkspaceWaitingFor = "submit" | "stop";
+
+export type WorkspaceNodeContentDto =
+	| ({ kind: "session" } & WorkspaceSessionNodeContentDto)
+	| ({ kind: "command" } & WorkspaceCommandNodeContentDto);
+
+export type WorkspaceSessionNodeContentDto = {
+	sessionId?: string;
+};
+
+export type WorkspaceCommandNodeContentDto = {
+	displayCommand?: string;
+	result?: WorkspaceCommandResultDto;
+};
+
+export type WorkspaceCommandResultDto = {
+	exitCode: number;
+	duration: number;
+	stdout: string;
+	stderr: string;
+};
+
+export type NullableAgentSessionItemDto = AgentSessionItemDto | null;
+
+export type Nullablestring = string | null;
+
+export type AgentSessionHistoryPageDto = {
+	items: ListAgentSessionHistoryCandidateDto;
+	hasMore: boolean;
+};
+
+export type ListAgentSessionHistoryCandidateDto =
+	Array<AgentSessionHistoryCandidateDto>;
+
+export type AgentSessionHistoryCandidateDto = {
+	provider: AgentSessionProviderDto;
+	providerSessionId: string;
+	label: string;
+	updatedAtMs: number;
+};
+
+export type ListAgentSessionProviderDto = Array<AgentSessionProviderDto>;
+
+export type ListBranchDto = Array<BranchDto>;
+
+export type BranchDto = {
+	name: string;
+	is_remote: boolean;
+};
+
+export type RepositoryBranchCardsSnapshotDto = {
+	version: number;
+	stale: boolean;
+	loading: boolean;
+	branches: ListBranchCardDto;
+	worktree_display_groups: WorktreeDisplayGroupsDto;
+};
+
+export type ListBranchCardDto = Array<BranchCardDto>;
+
+export type WorktreeDisplayGroupsDto = {
+	working_areas: ListBranchCardDto;
+};
+
+export type ResultString = string;
+
+export type ListIssueInfoDto = Array<IssueInfoDto>;
+
+export type IssueInfoDto = {
+	number: number;
+	default_branch_name: string;
+	title: string;
+	state: string;
+	url: string;
+	author: PrAuthorDto;
+	created_at: string;
+	updated_at: string;
+	labels: ListIssueLabelDto;
+	assignees: ListPrAuthorDto;
+	body: string;
+	milestone: MilestoneDto | null;
+};
+
+export type PrAuthorDto = {
+	login: string;
+};
+
+export type ListIssueLabelDto = Array<IssueLabelDto>;
+
+export type IssueLabelDto = {
+	name: string;
+	color: string;
+};
+
+export type ListPrAuthorDto = Array<PrAuthorDto>;
+
+export type MilestoneDto = {
+	title: string;
+};
+
+export type ListWorktreeEntryDto = Array<WorktreeEntryDto>;
+
+export type WorktreeEntryDto = {
+	name: string;
+	path: string;
+	branch: string;
+	is_main: boolean;
+	is_locked: boolean;
+	dirty_count: number;
+	base_branch: string | null;
+};
+
+export type NullableWorkspaceStateDto = WorkspaceStateDto | null;
+
+export type WorkspaceStateDto = {
+	version: 1;
+	tabs: WorkspaceTabsStateDto;
+	layout: WorkspaceLayoutStateDto;
+};
+
+export type WorkspaceTabsStateDto = {
+	editors: ListWorkspaceTabEntryDto;
+	activeEditorPath: string | null;
+};
+
+export type ListWorkspaceTabEntryDto = Array<WorkspaceTabEntryDto>;
+
+export type WorkspaceTabEntryDto = {
+	path: string;
+	name: string;
+};
+
+export type WorkspaceLayoutStateDto = {
+	centerTab: WorkspaceCenterTab;
+	activeView: string;
+	leftNavCollapsed: boolean;
+	rightCollapsed: boolean;
+	rightBottomCollapsed: boolean;
+	rightBottomActiveTab?: string;
+	selectedDiffFile?: string;
+	reviewCollapsed?: boolean;
+	diffOnlyMode?: boolean;
+};
+
+export type WorkspaceCenterTab = "agent" | "editor";
+
 export type InputAttachTerminalSurfaceRequest = {
 	attachmentId: string;
 	owner: InputTerminalSurfaceOwnerV1;
@@ -174,34 +543,11 @@ export type InputFetchNotionLabelOptionsRequest = {
 	repoPath: string;
 };
 
-export type InputGetAgentSessionRequest = {
-	agentSessionId: string;
-};
-
 export type InputGetAppSettingsRequest = Record<string, never>;
 
 export type InputGetApplicationStartupOutcomeRequest = Record<string, never>;
 
 export type InputGetAutomationConfigDirRequest = Record<string, never>;
-
-export type InputGetBranchBaseRequest = {
-	repoPath: string;
-	branchName: string;
-};
-
-export type InputGetCachedIssuesRequest = {
-	repoPath: string;
-};
-
-export type InputGetCachedPrStatusRequest = {
-	repoPath: string;
-};
-
-export type InputGetCurrentBranchRequest = {
-	repoPath: string;
-};
-
-export type InputGetCwdRequest = Record<string, never>;
 
 export type InputGetExternalEditorRequest = Record<string, never>;
 
@@ -232,10 +578,6 @@ export type InputDiffTreeNodeType = "file" | "folder";
 
 export type InputGetLanguageFromPathRequest = {
 	filePath: string;
-};
-
-export type InputGetMainRepoPathRequest = {
-	anyPath: string;
 };
 
 export type InputGetNotionConfigRequest = {
@@ -304,28 +646,8 @@ export type InputGetWorkflowRequest = {
 
 export type InputGetWorkflowConfigRequest = Record<string, never>;
 
-export type InputGetWorkflowExecutionStateRequest = {
-	worktreePath: string;
-	executionId: string;
-};
-
 export type InputGetWorkflowSourceRequest = {
 	name: string;
-};
-
-export type InputGetWorkspaceNodeDetailRequest = {
-	worktreePath: string;
-	nodeId: string;
-};
-
-export type InputGetWorkspaceSessionNodeIdRequest = {
-	worktreePath: string;
-	sessionId: string;
-};
-
-export type InputGetWorkspaceTreeSelectionReconciliationRequest = {
-	worktreePath: string;
-	selectedNodeId: string;
 };
 
 export type InputGitCreateBranchRequest = {
@@ -365,25 +687,6 @@ export type InputKillTerminalSurfaceRequest = {
 	owner: InputTerminalSurfaceOwnerV1;
 };
 
-export type InputListAgentSessionHistoryRequest = {
-	worktreePath: string;
-	limit?: number | null;
-	after?: string | null;
-};
-
-export type InputListAvailableAgentSessionProvidersRequest = Record<
-	string,
-	never
->;
-
-export type InputListBranchesRequest = {
-	repoPath: string;
-};
-
-export type InputListBranchesWithStatusSnapshotRequest = {
-	repoPath: string;
-};
-
 export type InputListFacetSummariesRequest = {
 	kind: string;
 };
@@ -408,23 +711,6 @@ export type InputReviewThreadStateDto = "open" | "resolved";
 export type InputAuthorScopeDto = "mine" | "other";
 
 export type InputListWorkflowsRequest = Record<string, never>;
-
-export type InputListWorkspaceWorkflowHistoryRequest = {
-	worktreePath: string;
-};
-
-export type InputListWorkspaceWorktreeNodesRequest = {
-	worktreePath: string;
-};
-
-export type InputListWorktreesRequest = {
-	repoPath: string;
-};
-
-export type InputLoadWorkspaceStateRequest = {
-	worktreeName: string;
-	worktreeRoot: string;
-};
 
 export type InputOpenAgentSessionRequest = {
 	agentSessionId: string;
@@ -542,10 +828,6 @@ export type InputResizeTerminalSurfaceRequest = {
 	owner: InputTerminalSurfaceOwnerV1;
 	rows: number;
 	cols: number;
-};
-
-export type InputResolveActiveExecutionByWorktreeRequest = {
-	worktreePath: string;
 };
 
 export type InputResolveReviewThreadRequest = {
@@ -786,10 +1068,6 @@ export type InputHunkInput = {
 	lines: InputListstring;
 };
 
-export type InputFetchPrStatusRequest = {
-	repoPath: string;
-};
-
 export type InputApproveWorkflowNodeRequest = {
 	args: InputApproveWorkflowNodeArgs;
 };
@@ -853,10 +1131,6 @@ export type InputRefreshWorkspacesRequest = {
 	repoPath?: string | null;
 	worktreePath?: string | null;
 };
-
-export type InputGetWorkspacesRequest = Record<string, never>;
-
-export type ResultString = string;
 
 export type ResultBool = boolean;
 
@@ -956,16 +1230,6 @@ export type VisibleBlockDto = {
 	deletedContent?: string;
 };
 
-export type WorktreeEntryDto = {
-	name: string;
-	path: string;
-	branch: string;
-	is_main: boolean;
-	is_locked: boolean;
-	dirty_count: number;
-	base_branch: string | null;
-};
-
 export type ListEditorInfoDto = Array<EditorInfoDto>;
 
 export type EditorInfoDto = {
@@ -1028,40 +1292,6 @@ export type FacetUsageEntry = {
 	slot: string;
 };
 
-export type ListIssueInfoDto = Array<IssueInfoDto>;
-
-export type IssueInfoDto = {
-	number: number;
-	default_branch_name: string;
-	title: string;
-	state: string;
-	url: string;
-	author: PrAuthorDto;
-	created_at: string;
-	updated_at: string;
-	labels: ListIssueLabelDto;
-	assignees: ListPrAuthorDto;
-	body: string;
-	milestone: MilestoneDto | null;
-};
-
-export type PrAuthorDto = {
-	login: string;
-};
-
-export type ListIssueLabelDto = Array<IssueLabelDto>;
-
-export type IssueLabelDto = {
-	name: string;
-	color: string;
-};
-
-export type ListPrAuthorDto = Array<PrAuthorDto>;
-
-export type MilestoneDto = {
-	title: string;
-};
-
 export type ListNotionLabelOptionView = Array<NotionLabelOptionView>;
 
 export type NotionLabelOptionView = {
@@ -1069,39 +1299,6 @@ export type NotionLabelOptionView = {
 	property_type: string;
 	options: Liststring;
 	option_ids: Liststring;
-};
-
-export type Liststring = Array<string>;
-
-export type NullableAgentSessionItemDto = AgentSessionItemDto | null;
-
-export type AgentSessionItemDto = {
-	id: string;
-	workspaceIdentity: string;
-	worktreePath: string;
-	workspaceWorktreePath: string;
-	provider: AgentSessionProviderDto;
-	treeLocation: AgentSessionTreeLocationDto;
-	lifecycle: AgentSessionLifecycleDto;
-	providerSessionId: string | null;
-	transcriptRef: string | null;
-	operations: AgentSessionOperationsDto;
-	lastExitAbnormal: boolean;
-};
-
-export type AgentSessionProviderDto = "claude" | "codex";
-
-export type AgentSessionTreeLocationDto = {
-	treeId: string;
-	nodeExecutionId: string;
-};
-
-export type AgentSessionLifecycleDto = "open" | "paused" | "archived";
-
-export type AgentSessionOperationsDto = {
-	canArchive: boolean;
-	canRestore: boolean;
-	canDelete: boolean;
 };
 
 export type AppSection = {
@@ -1137,20 +1334,6 @@ export type StartupFailureKindDtoV1 =
 export type ListStartupFailureActionDtoV1 = Array<StartupFailureActionDtoV1>;
 
 export type StartupFailureActionDtoV1 = "quit";
-
-export type Nullablestring = string | null;
-
-export type PrStatusDto = {
-	open_prs: MapPrInfoDto;
-	merged_branches: Liststring;
-};
-
-export type MapPrInfoDto = { [key: string]: PrInfoDto };
-
-export type PrInfoDto = {
-	number: number;
-	url: string;
-};
 
 export type FileNavigationResultDto = {
 	current_index: number;
@@ -1548,297 +1731,6 @@ export type WorkflowSection = {
 	approval_auto_approve: boolean;
 };
 
-export type NullableWorkflowExecutionView = WorkflowExecutionView | null;
-
-export type WorkflowExecutionView = {
-	id: string;
-	workflowName: string;
-	status: ExecutionStatusView;
-	currentNode: string | null;
-	worktreePath: string;
-	createdFrom: ExecutionOriginView;
-	startedAt: number;
-	updatedAt: number;
-	completedAt: number | null;
-	errorReason: string | null;
-	totalTokenUsage: TokenUsageView;
-	nodeExecutions: ListNodeExecutionView;
-	artifacts: ListArtifactView;
-	fanouts: ListFanoutView;
-	approvalTarget: ApprovalTargetView | null;
-};
-
-export type ExecutionStatusView = "running" | "completed" | "aborted";
-
-export type ExecutionOriginView = "desktop_ui" | "cli" | "agent" | "api";
-
-export type TokenUsageView = {
-	inputTokens: number;
-	outputTokens: number;
-};
-
-export type ListNodeExecutionView = Array<NodeExecutionView>;
-
-export type NodeExecutionView = {
-	canResumeSession: boolean;
-	processPresence: NodeProcessPresence;
-	worktree?: NodeWorktreeDto;
-	id: string;
-	executionId: string;
-	nodeName: string;
-	kind: NodeKindView;
-	attempt: number;
-	status: NodeExecutionStatusView;
-	submitReceived: boolean;
-	stopReceived: boolean;
-	waitingFor?: NodeCompletionSignalView;
-	canApprove: boolean;
-	canRetry: boolean;
-	hasArtifact: boolean;
-	sessionId?: string;
-	displayCommand?: string;
-	resultSummary?: string;
-	artifact?: ArtifactView;
-	tokenUsage?: TokenUsageView;
-	parent?: ExecutionParentRefView;
-	startedAt: number;
-	completedAt?: number;
-};
-
-export type NodeProcessPresence = "unknown" | "live" | "confirmed_absent";
-
-export type NodeWorktreeDto = {
-	branch: string;
-	path: string;
-};
-
-export type NodeKindView = "command" | "session" | "fanout" | "sequence";
-
-export type NodeExecutionStatusView =
-	| "running"
-	| "waiting_approval"
-	| "succeeded"
-	| "aborted";
-
-export type NodeCompletionSignalView = "submit" | "stop";
-
-export type ArtifactView = {
-	nodeName: string;
-	contract?: string;
-	value: WorkflowValue;
-	producedAt: number;
-};
-
-export type ExecutionParentRefView = {
-	parentId: string;
-	itemIndex?: number;
-	childIndex?: number;
-};
-
-export type ListArtifactView = Array<ArtifactView>;
-
-export type ListFanoutView = Array<FanoutView>;
-
-export type FanoutView = {
-	parent: NodeExecutionView;
-	children: ListNodeExecutionView;
-	artifact?: ArtifactView;
-};
-
-export type ApprovalTargetView = {
-	nodeExecutionId: string;
-	nodeName: string;
-	sessionId?: string;
-};
-
-export type NullableWorkspaceNodeDetailDto = WorkspaceNodeDetailDto | null;
-
-export type WorkspaceNodeDetailDto = {
-	processPresence: NodeProcessPresence;
-	worktree?: NodeWorktreeDto;
-	id: string;
-	title: string;
-	status: WorkspaceNodeStatus;
-	statusClassification: WorkspaceStatusClassification;
-	submitReceived: boolean;
-	stopReceived: boolean;
-	waitingFor?: WorkspaceWaitingFor;
-	hasArtifact: boolean;
-	errorReason?: string;
-	capabilities: WorkspaceNodeCapabilitiesDto;
-	updatedAt: number;
-	content: WorkspaceNodeContentDto;
-};
-
-export type WorkspaceNodeStatus =
-	| "running"
-	| "waiting"
-	| "aborted"
-	| "completed";
-
-export type WorkspaceStatusClassification =
-	| "active"
-	| "attention"
-	| "idle"
-	| "unbound";
-
-export type WorkspaceWaitingFor = "submit" | "stop";
-
-export type WorkspaceNodeCapabilitiesDto = {
-	canResumeSession: boolean;
-	canRename: boolean;
-	canApprove: boolean;
-	canRetry: boolean;
-};
-
-export type WorkspaceNodeContentDto =
-	| ({ kind: "session" } & WorkspaceSessionNodeContentDto)
-	| ({ kind: "command" } & WorkspaceCommandNodeContentDto);
-
-export type WorkspaceSessionNodeContentDto = {
-	sessionId?: string;
-};
-
-export type WorkspaceCommandNodeContentDto = {
-	displayCommand?: string;
-	result?: WorkspaceCommandResultDto;
-};
-
-export type WorkspaceCommandResultDto = {
-	exitCode: number;
-	duration: number;
-	stdout: string;
-	stderr: string;
-};
-
-export type WorkspaceTreeSelectionSnapshotDto = {
-	snapshot: WorkspaceTreeSnapshotDto;
-	reconciliation: WorkspaceSelectionReconciliationDto;
-};
-
-export type WorkspaceTreeSnapshotDto = {
-	nodes: ListWorkspaceTreeItemDto;
-	archivedSessions: ListAgentSessionItemDto;
-	preferredNodeId?: string;
-};
-
-export type ListWorkspaceTreeItemDto = Array<WorkspaceTreeItemDto>;
-
-export type WorkspaceTreeItemDto =
-	| ({ kind: "node" } & WorkspaceNodeDto)
-	| ({ kind: "sequence" } & WorkspaceSequenceDto)
-	| ({ kind: "fanout" } & WorkspaceFanoutDto);
-
-export type WorkspaceNodeDto = {
-	processPresence: NodeProcessPresence;
-	id: string;
-	title: string;
-	status: WorkspaceStatusClassification;
-	errorReason?: string;
-	contentKind: WorkspaceContentKind;
-	capabilities: WorkspaceNodeCapabilitiesDto;
-	workflowCapabilities?: WorkspaceWorkflowCapabilitiesDto;
-	sessionCapabilities?: WorkspaceSessionCapabilitiesDto;
-	children?: ListWorkspaceTreeItemDto;
-	pastAttempts: ListWorkspaceNodeDto;
-	pastAttemptsCollapsed: boolean;
-	updatedAt: number;
-};
-
-export type WorkspaceContentKind = "session" | "command";
-
-export type WorkspaceWorkflowCapabilitiesDto = {
-	canAbort: boolean;
-	canArchive: boolean;
-};
-
-export type WorkspaceSessionCapabilitiesDto = {
-	sessionRef: string;
-	canArchive: boolean;
-	canDelete: boolean;
-};
-
-export type ListWorkspaceNodeDto = Array<WorkspacePastAttemptDto>;
-
-export type WorkspacePastAttemptDto = { kind: "node" } & WorkspaceNodeDto;
-
-export type WorkspaceSequenceDto = {
-	worktree?: NodeWorktreeDto;
-	id: string;
-	title: string;
-	status: WorkspaceStatusClassification;
-	workflowCapabilities?: WorkspaceWorkflowCapabilitiesDto;
-	children: ListWorkspaceTreeItemDto;
-	updatedAt: number;
-};
-
-export type WorkspaceFanoutDto = {
-	worktree?: NodeWorktreeDto;
-	id: string;
-	title: string;
-	status: WorkspaceStatusClassification;
-	workflowCapabilities?: WorkspaceWorkflowCapabilitiesDto;
-	children: ListWorkspaceTreeItemDto;
-	updatedAt: number;
-};
-
-export type ListAgentSessionItemDto = Array<AgentSessionItemDto>;
-
-export type WorkspaceSelectionReconciliationDto = {
-	selectionInSnapshot: boolean;
-};
-
-export type AgentSessionHistoryPageDto = {
-	items: ListAgentSessionHistoryCandidateDto;
-	nextAfter: string | null;
-};
-
-export type ListAgentSessionHistoryCandidateDto =
-	Array<AgentSessionHistoryCandidateDto>;
-
-export type AgentSessionHistoryCandidateDto = {
-	provider: AgentSessionProviderDto;
-	providerSessionId: string;
-	label: string;
-	updatedAtMs: number;
-};
-
-export type ListAgentSessionProviderDto = Array<AgentSessionProviderDto>;
-
-export type ListBranchDto = Array<BranchDto>;
-
-export type BranchDto = {
-	name: string;
-	is_remote: boolean;
-};
-
-export type RepositoryBranchCardsSnapshotDto = {
-	version: number;
-	stale: boolean;
-	loading: boolean;
-	branches: ListBranchCardDto;
-	worktree_display_groups: WorktreeDisplayGroupsDto;
-};
-
-export type ListBranchCardDto = Array<BranchCardDto>;
-
-export type BranchCardDto = {
-	name: string;
-	is_main_worktree: boolean;
-	worktree_path: string | null;
-	dirty_count: number;
-	is_merged: boolean;
-	ahead: number;
-	behind: number;
-	has_upstream: boolean;
-	base_ahead: number;
-	is_deleting: boolean;
-};
-
-export type WorktreeDisplayGroupsDto = {
-	working_areas: ListBranchCardDto;
-};
-
 export type ListFacetSummaryDto = Array<FacetSummaryDto>;
 
 export type FacetSummaryDto = {
@@ -1870,61 +1762,6 @@ export type WorkflowSummaryDto = {
 	is_running: boolean;
 	sourceFormat: WorkflowSourceFormat;
 };
-
-export type ListWorkspaceWorkflowHistoryItemDto =
-	Array<WorkspaceWorkflowHistoryItemDto>;
-
-export type WorkspaceWorkflowHistoryItemDto = {
-	executionId: string;
-	worktreePath: string;
-	title: string;
-	status: WorkspaceHistoryStatus;
-	updatedAt: number;
-	archivedAt: number;
-	archiveReason: string;
-};
-
-export type WorkspaceHistoryStatus =
-	| "running"
-	| "waiting"
-	| "aborted"
-	| "completed";
-
-export type ListWorktreeEntryDto = Array<WorktreeEntryDto>;
-
-export type NullableWorkspaceStateDto = WorkspaceStateDto | null;
-
-export type WorkspaceStateDto = {
-	version: 1;
-	tabs: WorkspaceTabsStateDto;
-	layout: WorkspaceLayoutStateDto;
-};
-
-export type WorkspaceTabsStateDto = {
-	editors: ListWorkspaceTabEntryDto;
-	activeEditorPath: string | null;
-};
-
-export type ListWorkspaceTabEntryDto = Array<WorkspaceTabEntryDto>;
-
-export type WorkspaceTabEntryDto = {
-	path: string;
-	name: string;
-};
-
-export type WorkspaceLayoutStateDto = {
-	centerTab: WorkspaceCenterTab;
-	activeView: string;
-	leftNavCollapsed: boolean;
-	rightCollapsed: boolean;
-	rightBottomCollapsed: boolean;
-	rightBottomActiveTab?: string;
-	selectedDiffFile?: string;
-	reviewCollapsed?: boolean;
-	diffOnlyMode?: boolean;
-};
-
-export type WorkspaceCenterTab = "agent" | "editor";
 
 export type AgentSessionOpenResponse =
 	| "attached"
@@ -2042,48 +1879,6 @@ export type WorkflowGetOutputResponseSubmitted = {
 	timestamp: number;
 };
 
-export type WorkspaceListSnapshotDto = {
-	generation: number;
-	status: WorkspaceListStatusDto;
-	repositories: ListWorkspaceRepositoryListDto;
-};
-
-export type WorkspaceListStatusDto = {
-	state: string;
-	loaded: boolean;
-	error: string | null;
-};
-
-export type ListWorkspaceRepositoryListDto = Array<WorkspaceRepositoryListDto>;
-
-export type WorkspaceRepositoryListDto = {
-	path: string;
-	status: WorkspaceListStatusDto;
-	branches: ListWorkspaceBranchDto;
-	worktrees: ListWorkspaceWorktreeListDto;
-};
-
-export type ListWorkspaceBranchDto = Array<WorkspaceBranchDto>;
-
-export type WorkspaceBranchDto = {
-	has_pr: boolean;
-	pr_number: number | null;
-	pr_url: string | null;
-} & BranchCardDto;
-
-export type ListWorkspaceWorktreeListDto = Array<WorkspaceWorktreeListDto>;
-
-export type WorkspaceWorktreeListDto = {
-	path: string;
-	status: WorkspaceListStatusDto;
-	snapshot: WorkspaceTreeSnapshotDto | null;
-	workflowHistory: ListWorkspaceWorkflowHistoryItemDto;
-};
-
-export type AgentSessionChangedPayload = {
-	worktreePath: string;
-};
-
 export type FileChangeEvent = {
 	watcher_id: number;
 	path: string;
@@ -2092,11 +1887,6 @@ export type FileChangeEvent = {
 
 export type GitStatusChangedEvent = {
 	repo_path: string;
-};
-
-export type WorkflowExecutionChangedPayloadView = {
-	worktreePath: string;
-	workflowExecution: WorkflowExecutionView;
 };
 
 export interface ClientCommandArgs {
@@ -2131,20 +1921,13 @@ export interface ClientCommandArgs {
 	duplicate_workflow: InputDuplicateWorkflowRequest;
 	fetch_issues: InputFetchIssuesRequest;
 	fetch_notion_label_options: InputFetchNotionLabelOptionsRequest;
-	get_agent_session: InputGetAgentSessionRequest;
 	get_app_settings: InputGetAppSettingsRequest;
 	get_application_startup_outcome: InputGetApplicationStartupOutcomeRequest;
 	get_automation_config_dir: InputGetAutomationConfigDirRequest;
-	get_branch_base: InputGetBranchBaseRequest;
-	get_cached_issues: InputGetCachedIssuesRequest;
-	get_cached_pr_status: InputGetCachedPrStatusRequest;
-	get_current_branch: InputGetCurrentBranchRequest;
-	get_cwd: InputGetCwdRequest;
 	get_external_editor: InputGetExternalEditorRequest;
 	get_facet: InputGetFacetRequest;
 	get_file_navigation: InputGetFileNavigationRequest;
 	get_language_from_path: InputGetLanguageFromPathRequest;
-	get_main_repo_path: InputGetMainRepoPathRequest;
 	get_notion_config: InputGetNotionConfigRequest;
 	get_or_spawn_terminal_surface: InputGetOrSpawnTerminalSurfaceRequest;
 	get_performance_real_app_mode: InputGetPerformanceRealAppModeRequest;
@@ -2157,29 +1940,17 @@ export interface ClientCommandArgs {
 	get_terminal_surface: InputGetTerminalSurfaceRequest;
 	get_workflow: InputGetWorkflowRequest;
 	get_workflow_config: InputGetWorkflowConfigRequest;
-	get_workflow_execution_state: InputGetWorkflowExecutionStateRequest;
 	get_workflow_source: InputGetWorkflowSourceRequest;
-	get_workspace_node_detail: InputGetWorkspaceNodeDetailRequest;
-	get_workspace_session_node_id: InputGetWorkspaceSessionNodeIdRequest;
-	get_workspace_tree_selection_reconciliation: InputGetWorkspaceTreeSelectionReconciliationRequest;
 	git_create_branch: InputGitCreateBranchRequest;
 	git_stage: InputGitStageRequest;
 	git_stage_review_group: InputGitStageReviewGroupRequest;
 	git_unstage: InputGitUnstageRequest;
 	git_unstage_review_group: InputGitUnstageReviewGroupRequest;
 	kill_terminal_surface: InputKillTerminalSurfaceRequest;
-	list_agent_session_history: InputListAgentSessionHistoryRequest;
-	list_available_agent_session_providers: InputListAvailableAgentSessionProvidersRequest;
-	list_branches: InputListBranchesRequest;
-	list_branches_with_status_snapshot: InputListBranchesWithStatusSnapshotRequest;
 	list_facet_summaries: InputListFacetSummariesRequest;
 	list_provider_hook_health_warnings: InputListProviderHookHealthWarningsRequest;
 	list_review_threads: InputListReviewThreadsRequest;
 	list_workflows: InputListWorkflowsRequest;
-	list_workspace_workflow_history: InputListWorkspaceWorkflowHistoryRequest;
-	list_workspace_worktree_nodes: InputListWorkspaceWorktreeNodesRequest;
-	list_worktrees: InputListWorktreesRequest;
-	load_workspace_state: InputLoadWorkspaceStateRequest;
 	open_agent_session: InputOpenAgentSessionRequest;
 	open_facet_in_editor: InputOpenFacetInEditorRequest;
 	open_folder_in_editor: InputOpenFolderInEditorRequest;
@@ -2199,7 +1970,6 @@ export interface ClientCommandArgs {
 	request_application_quit: InputRequestApplicationQuitRequest;
 	reset_provider_executable: InputResetProviderExecutableRequest;
 	resize_terminal_surface: InputResizeTerminalSurfaceRequest;
-	resolve_active_execution_by_worktree: InputResolveActiveExecutionByWorktreeRequest;
 	resolve_review_thread: InputResolveReviewThreadRequest;
 	restore_agent_session: InputRestoreAgentSessionRequest;
 	restore_workspace_workflow_execution: InputRestoreWorkspaceWorkflowExecutionRequest;
@@ -2230,13 +2000,11 @@ export interface ClientCommandArgs {
 	write_terminal_surface: InputWriteTerminalSurfaceRequest;
 	build_diff_file_tree: InputBuildDiffFileTreeRequest;
 	compute_hidden_ranges: InputComputeHiddenRangesRequest;
-	fetch_pr_status: InputFetchPrStatusRequest;
 	approve_workflow_node: InputApproveWorkflowNodeRequest;
 	workflow_submit_output: InputWorkflowSubmitOutputRequest;
 	workflow_validate_output: InputWorkflowValidateOutputRequest;
 	workflow_get_output: InputWorkflowGetOutputRequest;
 	refresh_workspaces: InputRefreshWorkspacesRequest;
-	get_workspaces: InputGetWorkspacesRequest;
 }
 
 export interface ClientCommands {
@@ -2312,15 +2080,10 @@ export interface ClientCommands {
 	duplicate_workflow(
 		args: ClientCommandArgs["duplicate_workflow"],
 	): Promise<void>;
-	fetch_issues(
-		args: ClientCommandArgs["fetch_issues"],
-	): Promise<ListIssueInfoDto>;
+	fetch_issues(args: ClientCommandArgs["fetch_issues"]): Promise<void>;
 	fetch_notion_label_options(
 		args: ClientCommandArgs["fetch_notion_label_options"],
 	): Promise<ListNotionLabelOptionView>;
-	get_agent_session(
-		args: ClientCommandArgs["get_agent_session"],
-	): Promise<NullableAgentSessionItemDto>;
 	get_app_settings(
 		args: ClientCommandArgs["get_app_settings"],
 	): Promise<AppSection>;
@@ -2330,19 +2093,6 @@ export interface ClientCommands {
 	get_automation_config_dir(
 		args: ClientCommandArgs["get_automation_config_dir"],
 	): Promise<ResultString>;
-	get_branch_base(
-		args: ClientCommandArgs["get_branch_base"],
-	): Promise<Nullablestring>;
-	get_cached_issues(
-		args: ClientCommandArgs["get_cached_issues"],
-	): Promise<ListIssueInfoDto>;
-	get_cached_pr_status(
-		args: ClientCommandArgs["get_cached_pr_status"],
-	): Promise<PrStatusDto>;
-	get_current_branch(
-		args: ClientCommandArgs["get_current_branch"],
-	): Promise<ResultString>;
-	get_cwd(args: ClientCommandArgs["get_cwd"]): Promise<ResultString>;
 	get_external_editor(
 		args: ClientCommandArgs["get_external_editor"],
 	): Promise<ResultString>;
@@ -2352,9 +2102,6 @@ export interface ClientCommands {
 	): Promise<FileNavigationResultDto>;
 	get_language_from_path(
 		args: ClientCommandArgs["get_language_from_path"],
-	): Promise<ResultString>;
-	get_main_repo_path(
-		args: ClientCommandArgs["get_main_repo_path"],
 	): Promise<ResultString>;
 	get_notion_config(
 		args: ClientCommandArgs["get_notion_config"],
@@ -2390,21 +2137,9 @@ export interface ClientCommands {
 	get_workflow_config(
 		args: ClientCommandArgs["get_workflow_config"],
 	): Promise<WorkflowSection>;
-	get_workflow_execution_state(
-		args: ClientCommandArgs["get_workflow_execution_state"],
-	): Promise<NullableWorkflowExecutionView>;
 	get_workflow_source(
 		args: ClientCommandArgs["get_workflow_source"],
 	): Promise<ResultString>;
-	get_workspace_node_detail(
-		args: ClientCommandArgs["get_workspace_node_detail"],
-	): Promise<NullableWorkspaceNodeDetailDto>;
-	get_workspace_session_node_id(
-		args: ClientCommandArgs["get_workspace_session_node_id"],
-	): Promise<Nullablestring>;
-	get_workspace_tree_selection_reconciliation(
-		args: ClientCommandArgs["get_workspace_tree_selection_reconciliation"],
-	): Promise<WorkspaceTreeSelectionSnapshotDto>;
 	git_create_branch(
 		args: ClientCommandArgs["git_create_branch"],
 	): Promise<void>;
@@ -2419,18 +2154,6 @@ export interface ClientCommands {
 	kill_terminal_surface(
 		args: ClientCommandArgs["kill_terminal_surface"],
 	): Promise<void>;
-	list_agent_session_history(
-		args: ClientCommandArgs["list_agent_session_history"],
-	): Promise<AgentSessionHistoryPageDto>;
-	list_available_agent_session_providers(
-		args: ClientCommandArgs["list_available_agent_session_providers"],
-	): Promise<ListAgentSessionProviderDto>;
-	list_branches(
-		args: ClientCommandArgs["list_branches"],
-	): Promise<ListBranchDto>;
-	list_branches_with_status_snapshot(
-		args: ClientCommandArgs["list_branches_with_status_snapshot"],
-	): Promise<RepositoryBranchCardsSnapshotDto>;
 	list_facet_summaries(
 		args: ClientCommandArgs["list_facet_summaries"],
 	): Promise<ListFacetSummaryDto>;
@@ -2443,18 +2166,6 @@ export interface ClientCommands {
 	list_workflows(
 		args: ClientCommandArgs["list_workflows"],
 	): Promise<ListWorkflowSummaryDto>;
-	list_workspace_workflow_history(
-		args: ClientCommandArgs["list_workspace_workflow_history"],
-	): Promise<ListWorkspaceWorkflowHistoryItemDto>;
-	list_workspace_worktree_nodes(
-		args: ClientCommandArgs["list_workspace_worktree_nodes"],
-	): Promise<WorkspaceTreeSnapshotDto>;
-	list_worktrees(
-		args: ClientCommandArgs["list_worktrees"],
-	): Promise<ListWorktreeEntryDto>;
-	load_workspace_state(
-		args: ClientCommandArgs["load_workspace_state"],
-	): Promise<NullableWorkspaceStateDto>;
 	open_agent_session(
 		args: ClientCommandArgs["open_agent_session"],
 	): Promise<AgentSessionOpenResponse>;
@@ -2508,9 +2219,6 @@ export interface ClientCommands {
 	resize_terminal_surface(
 		args: ClientCommandArgs["resize_terminal_surface"],
 	): Promise<void>;
-	resolve_active_execution_by_worktree(
-		args: ClientCommandArgs["resolve_active_execution_by_worktree"],
-	): Promise<Nullablestring>;
 	resolve_review_thread(
 		args: ClientCommandArgs["resolve_review_thread"],
 	): Promise<ReviewThreadDto>;
@@ -2593,9 +2301,6 @@ export interface ClientCommands {
 	compute_hidden_ranges(
 		args: ClientCommandArgs["compute_hidden_ranges"],
 	): Promise<ListHiddenRangeDto>;
-	fetch_pr_status(
-		args: ClientCommandArgs["fetch_pr_status"],
-	): Promise<PrStatusDto>;
 	approve_workflow_node(
 		args: ClientCommandArgs["approve_workflow_node"],
 	): Promise<void>;
@@ -2610,22 +2315,15 @@ export interface ClientCommands {
 	): Promise<WorkflowGetOutputResponse>;
 	refresh_workspaces(
 		args: ClientCommandArgs["refresh_workspaces"],
-	): Promise<WorkspaceListSnapshotDto>;
-	get_workspaces(
-		args: ClientCommandArgs["get_workspaces"],
-	): Promise<WorkspaceListSnapshotDto>;
+	): Promise<void>;
 }
 export type ClientCommandResults = {
 	[K in keyof ClientCommands]: Awaited<ReturnType<ClientCommands[K]>>;
 };
 
 export interface ClientPushPayloads {
-	"agent-session-changed": AgentSessionChangedPayload;
-	"branch-list-sync": null;
 	"file-change": FileChangeEvent;
 	"git-status-changed": GitStatusChangedEvent;
 	"review-comments-changed": ResultString;
-	"workflow-execution-changed": WorkflowExecutionChangedPayloadView;
 	resync: null;
-	"workspace-list-changed": null;
 }

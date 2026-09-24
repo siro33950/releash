@@ -43,14 +43,14 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Textarea } from "@/components/ui/textarea";
 import type { WorkspaceRepositoryListDto } from "@/generated/client_types";
+import { useStateSubscription } from "@/hooks/useStateSubscription";
 import { useWorkflowConfig } from "@/hooks/useWorkflowConfig";
 import {
 	WorkspaceListContext,
 	type WorkspaceListModel,
 } from "@/hooks/useWorkspaceList";
 import { useWorkspaceTreeNodes } from "@/hooks/useWorkspaceTreeNodes";
-import { notifyAgentSessionChanged } from "@/lib/agentSessionEvents";
-import { invokeClient as invoke } from "@/lib/client";
+import { firstState, invokeClient as invoke } from "@/lib/client";
 import { getErrorMessage } from "@/lib/errorMessage";
 import { trackEvent } from "@/lib/telemetry";
 import {
@@ -604,16 +604,7 @@ function WorktreeTreeItem({
 	const [providerActionError, setProviderActionError] = useState<string | null>(
 		null,
 	);
-	const [availableProviders, setAvailableProviders] = useState<string[]>([]);
-	const [providerMenuLoading, setProviderMenuLoading] = useState(false);
 	const [providerCreating, setProviderCreating] = useState<string | null>(null);
-	const [providerHistory, setProviderHistory] = useState<
-		AgentSessionHistoryCandidate[]
-	>([]);
-	const [providerHistoryNextAfter, setProviderHistoryNextAfter] = useState<
-		string | null
-	>(null);
-	const [providerHistoryLoading, setProviderHistoryLoading] = useState(false);
 	const [archiveConfirmation, setArchiveConfirmation] =
 		useState<WorkspaceTreeItem | null>(null);
 	const [workflowStarting, setWorkflowStarting] = useState(false);
@@ -656,16 +647,12 @@ function WorktreeTreeItem({
 		loaded: treeLoaded,
 		state: treeListState,
 		error: treeError,
-		refresh: refreshTree,
 		beginArchiveReconciliation,
 		synchronizeSelectedNodeId,
 		isReconciliationEventCurrent,
 	} = useWorkspaceTreeNodes(branch.worktree_path);
 	const archivedProviderSessionsLoading = treeLoading && worktreeMenuOpen;
 	const archivedProviderSessionsError = treeError;
-	const refreshAgentSessions = useCallback(async () => {
-		await refreshTree();
-	}, [refreshTree]);
 	const {
 		workflows,
 		loading: workflowsLoading,
@@ -782,8 +769,7 @@ function WorktreeTreeItem({
 					agentSessionId: target.id,
 					callerRequestId: `delete.${crypto.randomUUID()}`,
 				});
-				notifyAgentSessionChanged(target.worktreePath);
-				await refreshAgentSessions();
+
 				if (
 					(selectedNodeId ?? target.selectedNodeId) != null &&
 					scopedCenterSelection?.kind === "node" &&
@@ -801,7 +787,7 @@ function WorktreeTreeItem({
 			branch.name,
 			branch.worktree_path,
 			onSelectWorktree,
-			refreshAgentSessions,
+
 			repoName,
 			scopedCenterSelection,
 		],
@@ -817,11 +803,10 @@ function WorktreeTreeItem({
 					cols: 80,
 					callerRequestId: `restore.${crypto.randomUUID()}`,
 				});
-				notifyAgentSessionChanged(session.workspaceWorktreePath);
-				await refreshAgentSessions();
-				const nodeId = await invoke("get_workspace_session_node_id", {
-					worktreePath: branch.worktree_path,
-					sessionId: session.id,
+
+				const nodeId = await firstState({
+					kind: "session-node",
+					args: [branch.worktree_path, session.id],
 				});
 				if (!nodeId) throw new Error("Restored Session Node was not found");
 				selectCenter({
@@ -833,46 +818,22 @@ function WorktreeTreeItem({
 				setProviderActionError(getErrorMessage(error));
 			}
 		},
-		[branch.worktree_path, refreshAgentSessions, selectCenter],
+		[branch.worktree_path, selectCenter],
 	);
 
-	const refreshProviderHistory = useCallback(async () => {
-		if (!branch.worktree_path) return;
-		setProviderHistoryLoading(true);
-		try {
-			const page = await invoke("list_agent_session_history", {
-				worktreePath: branch.worktree_path,
-				limit: 100,
-			});
-			setProviderHistory(page?.items ?? []);
-			setProviderHistoryNextAfter(page?.nextAfter ?? null);
-		} catch (error) {
-			setProviderHistory([]);
-			setProviderHistoryNextAfter(null);
-			setProviderActionError(getErrorMessage(error));
-		} finally {
-			setProviderHistoryLoading(false);
-		}
-	}, [branch.worktree_path]);
-
-	const loadMoreProviderHistory = useCallback(async () => {
-		if (!branch.worktree_path || !providerHistoryNextAfter) return;
-		setProviderHistoryLoading(true);
-		try {
-			const page = await invoke("list_agent_session_history", {
-				worktreePath: branch.worktree_path,
-				limit: 100,
-				after: providerHistoryNextAfter,
-			});
-			setProviderHistory((current) => [...current, ...(page?.items ?? [])]);
-			setProviderHistoryNextAfter(page?.nextAfter ?? null);
-			setProviderActionError(null);
-		} catch (error) {
-			setProviderActionError(getErrorMessage(error));
-		} finally {
-			setProviderHistoryLoading(false);
-		}
-	}, [branch.worktree_path, providerHistoryNextAfter]);
+	const [historyCount, setHistoryCount] = useState(20);
+	const historyPage = useStateSubscription(
+		worktreeMenuOpen && branch.worktree_path
+			? {
+					kind: "session-history",
+					args: [branch.worktree_path, String(historyCount)],
+				}
+			: null,
+	);
+	const providerHistory = historyPage?.items ?? [];
+	const providerHistoryHasMore = historyPage?.hasMore;
+	const providerHistoryLoading = worktreeMenuOpen && historyPage === undefined;
+	const loadMoreProviderHistory = () => setHistoryCount((count) => count + 20);
 
 	const handleResumeProviderHistory = useCallback(
 		async (candidate: AgentSessionHistoryCandidate) => {
@@ -891,10 +852,10 @@ function WorktreeTreeItem({
 						callerRequestId: `history-resume.${crypto.randomUUID()}`,
 					},
 				);
-				await refreshAgentSessions();
-				const nodeId = await invoke("get_workspace_session_node_id", {
-					worktreePath: branch.worktree_path,
-					sessionId: agentSessionId,
+
+				const nodeId = await firstState({
+					kind: "session-node",
+					args: [branch.worktree_path, agentSessionId],
 				});
 				if (!nodeId) throw new Error("Resumed Session Node was not found");
 				selectCenter({
@@ -913,7 +874,7 @@ function WorktreeTreeItem({
 				setProviderActionError(getErrorMessage(error));
 			}
 		},
-		[branch.worktree_path, refreshAgentSessions, selectCenter],
+		[branch.worktree_path, selectCenter],
 	);
 
 	const handleRestoreWorkflow = useCallback(
@@ -923,9 +884,8 @@ function WorktreeTreeItem({
 				worktreePath: branch.worktree_path,
 				executionId: workflow.executionId,
 			});
-			await refreshTree();
 		},
-		[branch.worktree_path, refreshTree],
+		[branch.worktree_path],
 	);
 
 	const handleArchiveWorkflow = useCallback(
@@ -942,13 +902,8 @@ function WorktreeTreeItem({
 					worktreePath: branch.worktree_path,
 					executionId: workflow.id,
 				});
-				if (workflow.kind === "node" && workflow.sessionCapabilities) {
-					notifyAgentSessionChanged(branch.worktree_path);
-				}
 				if (scopedNodeSelection?.nodeId) {
-					await beginArchiveReconciliation(scopedNodeSelection.nodeId);
-				} else {
-					await refreshTree();
+					beginArchiveReconciliation(scopedNodeSelection.nodeId);
 				}
 			} catch (e) {
 				setWorkflowActionError(getErrorMessage(e));
@@ -957,7 +912,7 @@ function WorktreeTreeItem({
 		[
 			beginArchiveReconciliation,
 			branch.worktree_path,
-			refreshTree,
+
 			scopedNodeSelection?.nodeId,
 		],
 	);
@@ -967,28 +922,18 @@ function WorktreeTreeItem({
 			setWorkflowActionError(null);
 			try {
 				await executeWorkflowAction(action, workflow.id);
-				await refreshTree();
 			} catch (error) {
 				setWorkflowActionError(getErrorMessage(error));
 			}
 		},
-		[refreshTree],
+		[],
 	);
 
-	const refreshAvailableProviders = useCallback(async () => {
-		if (!branch.worktree_path) return;
-		setProviderMenuLoading(true);
-		setProviderActionError(null);
-		try {
-			const providers = await invoke("list_available_agent_session_providers");
-			setAvailableProviders(providers ?? []);
-		} catch (error) {
-			setAvailableProviders([]);
-			setProviderActionError(getErrorMessage(error));
-		} finally {
-			setProviderMenuLoading(false);
-		}
-	}, [branch.worktree_path]);
+	const providerValues = useStateSubscription(
+		createMenuOpen ? "providers" : null,
+	);
+	const availableProviders = providerValues ?? [];
+	const providerMenuLoading = createMenuOpen && providerValues === undefined;
 
 	const handleCreateAgentSession = useCallback(
 		async (provider: string) => {
@@ -1039,9 +984,9 @@ function WorktreeTreeItem({
 				});
 				setProviderActionError(null);
 				if (isLaunchSelectionCurrent()) {
-					const nodeId = await invoke("get_workspace_session_node_id", {
-						worktreePath: branch.worktree_path,
-						sessionId: agentSessionId,
+					const nodeId = await firstState({
+						kind: "session-node",
+						args: [branch.worktree_path, agentSessionId],
 					});
 					if (!nodeId) throw new Error("Created Session Node was not found");
 					selectCenter({
@@ -1057,7 +1002,6 @@ function WorktreeTreeItem({
 						},
 					});
 				}
-				void refreshAgentSessions();
 			} catch (error) {
 				showLaunchError(error);
 			} finally {
@@ -1067,7 +1011,7 @@ function WorktreeTreeItem({
 		[
 			branch.worktree_path,
 			providerCreating,
-			refreshAgentSessions,
+
 			selectCenter,
 		],
 	);
@@ -1093,7 +1037,6 @@ function WorktreeTreeItem({
 			});
 			setSelectedWorkflowName(null);
 			setWorkflowRequestInput("");
-			await refreshTree();
 		} catch (e) {
 			setWorkflowStartError(getErrorMessage(e));
 		} finally {
@@ -1101,7 +1044,7 @@ function WorktreeTreeItem({
 		}
 	}, [
 		branch.worktree_path,
-		refreshTree,
+
 		selectedWorkflowName,
 		workflowStarting,
 		workflowRequestInput,
@@ -1177,13 +1120,7 @@ function WorktreeTreeItem({
 					>
 						<DropdownMenu
 							open={worktreeMenuOpen}
-							onOpenChange={(open) => {
-								setWorktreeMenuOpen(open);
-								if (open) {
-									void refreshTree();
-									void refreshProviderHistory();
-								}
-							}}
+							onOpenChange={setWorktreeMenuOpen}
 						>
 							<DropdownMenuTrigger asChild>
 								<Button
@@ -1265,14 +1202,14 @@ function WorktreeTreeItem({
 										{providerHistory.length > 0 && (
 											<DropdownMenuItem
 												disabled={
-													providerHistoryLoading || !providerHistoryNextAfter
+													providerHistoryLoading || !providerHistoryHasMore
 												}
 												onSelect={(event) => {
 													event.preventDefault();
 													void loadMoreProviderHistory();
 												}}
 											>
-												{providerHistoryNextAfter
+												{providerHistoryHasMore
 													? "Load more Provider history"
 													: "All Provider history loaded"}
 											</DropdownMenuItem>
@@ -1328,13 +1265,7 @@ function WorktreeTreeItem({
 						</DropdownMenu>
 						<DropdownMenu
 							open={createMenuOpen}
-							onOpenChange={(open) => {
-								setCreateMenuOpen(open);
-								if (open) {
-									void refreshTree();
-									void refreshAvailableProviders();
-								}
-							}}
+							onOpenChange={setCreateMenuOpen}
 						>
 							<DropdownMenuTrigger asChild>
 								<Button
@@ -1597,7 +1528,6 @@ function ListRefreshError({
 
 function RepoTreeSection({
 	repository,
-	refresh,
 	selectedRootPath,
 	centerSelection,
 	autoSelectPreferredNode,
@@ -1605,7 +1535,6 @@ function RepoTreeSection({
 	onWorkspaceSelectionInvalidated,
 }: {
 	repository: WorkspaceRepositoryListDto;
-	refresh: (repoPath: string) => Promise<unknown>;
 	selectedRootPath: string | null;
 	centerSelection: CenterSelection | null;
 	autoSelectPreferredNode: boolean;
@@ -1630,7 +1559,6 @@ function RepoTreeSection({
 				});
 				trackEvent("worktree_removed");
 				setDeletingBranch((current) => (current === branch ? null : current));
-				void refresh(repoPath);
 				return;
 			} else if (branch.is_merged) {
 				await invoke("delete_branch", {
@@ -1639,10 +1567,9 @@ function RepoTreeSection({
 					force,
 				});
 			}
-			await refresh(repoPath);
 			setDeletingBranch((current) => (current === branch ? null : current));
 		},
-		[repoPath, refresh],
+		[repoPath],
 	);
 
 	return (
@@ -1773,9 +1700,7 @@ export function WorkspaceList({
 				<div className="flex-1 space-y-2 overflow-y-auto px-2 py-1">
 					{model.requestError && (
 						<div role="alert" className="px-2 py-1 text-xs text-destructive">
-							Could not confirm the refresh result
-							{model.requestError.path ? ` for ${model.requestError.path}` : ""}
-							. {model.requestError.message}
+							Could not confirm the refresh result. {model.requestError.message}
 						</div>
 					)}
 					{error && <ListRefreshError loaded={loaded} error={error} />}
@@ -1791,7 +1716,6 @@ export function WorkspaceList({
 						<RepoTreeSection
 							key={repository.path}
 							repository={repository}
-							refresh={model.refreshRepository}
 							selectedRootPath={selectedRootPath}
 							centerSelection={centerSelection ?? null}
 							autoSelectPreferredNode={autoSelectPreferredNode}
@@ -1833,7 +1757,7 @@ export function WorkspaceList({
 						repoPaths={listedRepoPaths}
 						onCreated={(rootPath, branchName, repoName) => {
 							setShowCreate(false);
-							window.dispatchEvent(new Event("branch-list-refresh"));
+
 							onSelectWorktree(rootPath, branchName, repoName);
 						}}
 						onClose={() => setShowCreate(false)}

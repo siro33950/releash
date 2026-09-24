@@ -4,21 +4,63 @@ import "client_options.proto";
 
 
 message Push {
+  reserved 1, 2, 8, 10;
+  reserved "agent_session_changed", "branch_list_sync", "workflow_execution_changed", "workspace_list_changed";
   reserved 5, 6;
   reserved "repository_snapshot_changed", "repo_paths_changed";
   oneof event {
-    AgentSessionChangedPayload agent_session_changed = 1;
-    Unit branch_list_sync = 2;
     FileChangeEvent file_change = 3;
     GitStatusChangedEvent git_status_changed = 4;
 
     ResultString review_comments_changed = 7;
-    WorkflowExecutionChangedPayloadView workflow_execution_changed = 8;
     Unit resync = 9;
-    Unit workspace_list_changed = 10;
   }
 }
 message CommandRequest {
+  reserved 163;
+  reserved "fetch_pr_status";
+  reserved 116;
+  reserved "resolve_active_execution_by_worktree";
+  reserved 72;
+  reserved "get_workflow_execution_state";
+  reserved 93;
+  reserved "list_workspace_workflow_history";
+  reserved 94;
+  reserved "list_workspace_worktree_nodes";
+  reserved 50;
+  reserved "get_cached_pr_status";
+  reserved 96;
+  reserved "load_workspace_state";
+  reserved 52;
+  reserved "get_cwd";
+  reserved 57;
+  reserved "get_main_repo_path";
+  reserved 95;
+  reserved "list_worktrees";
+  reserved 49;
+  reserved "get_cached_issues";
+  reserved 51;
+  reserved "get_current_branch";
+  reserved 87;
+  reserved "list_branches_with_status_snapshot";
+  reserved 48;
+  reserved "get_branch_base";
+  reserved 85;
+  reserved "list_branches";
+  reserved 84;
+  reserved "list_available_agent_session_providers";
+  reserved 83;
+  reserved "list_agent_session_history";
+  reserved 75;
+  reserved "get_workspace_session_node_id";
+  reserved 42;
+  reserved "get_agent_session";
+  reserved 74;
+  reserved "get_workspace_node_detail";
+  reserved 76;
+  reserved "get_workspace_tree_selection_reconciliation";
+  reserved 187;
+  reserved "get_workspaces";
   reserved 64, 149, 150, 151, 152, 153, 154, 155, 156, 158, 160, 161, 162, 164, 165, 166, 167, 168, 169, 170, 171, 173, 174, 175, 176, 177, 178;
   reserved "get_repo_paths", "get_crash_reporting_enabled", "get_file_at_ref", "get_staged_content", "get_binary_staged_content", "get_file_at_branch_base", "get_binary_file_at_branch_base", "get_binary_file_at_ref", "get_branch_diff_summary", "get_head_diff_file_tree_snapshot", "get_relative_path", "get_review_thread", "get_review_thread_history", "get_default_branch", "get_git_status", "get_git_status_snapshot", "get_status_diff_stats", "get_status_diff_stats_snapshot", "get_git_log", "get_worktree_dirty_count", "get_repo_git_dir", "list_workflow_executions", "get_workflow_execution", "get_workflow_execution_log", "get_workflow_node_detail", "resolve_worktree_by_execution", "list_facets";
   reserved 12, 25, 44, 45, 67, 86, 89, 118, 182;
@@ -57,20 +99,16 @@ message CommandRequest {
     DuplicateWorkflowRequest duplicate_workflow = 39;
     FetchIssuesRequest fetch_issues = 40;
     FetchNotionLabelOptionsRequest fetch_notion_label_options = 41;
-    GetAgentSessionRequest get_agent_session = 42;
+
     GetAppSettingsRequest get_app_settings = 43;
     GetApplicationStartupOutcomeRequest get_application_startup_outcome = 46;
     GetAutomationConfigDirRequest get_automation_config_dir = 47;
-    GetBranchBaseRequest get_branch_base = 48;
-    GetCachedIssuesRequest get_cached_issues = 49;
-    GetCachedPrStatusRequest get_cached_pr_status = 50;
-    GetCurrentBranchRequest get_current_branch = 51;
-    GetCwdRequest get_cwd = 52;
+
     GetExternalEditorRequest get_external_editor = 53;
     GetFacetRequest get_facet = 54;
     GetFileNavigationRequest get_file_navigation = 55;
     GetLanguageFromPathRequest get_language_from_path = 56;
-    GetMainRepoPathRequest get_main_repo_path = 57;
+
     GetNotionConfigRequest get_notion_config = 58;
     GetOrSpawnTerminalSurfaceRequest get_or_spawn_terminal_surface = 59;
     GetPerformanceRealAppModeRequest get_performance_real_app_mode = 60;
@@ -84,29 +122,21 @@ message CommandRequest {
     GetTerminalSurfaceRequest get_terminal_surface = 69;
     GetWorkflowRequest get_workflow = 70;
     GetWorkflowConfigRequest get_workflow_config = 71;
-    GetWorkflowExecutionStateRequest get_workflow_execution_state = 72;
+
     GetWorkflowSourceRequest get_workflow_source = 73;
-    GetWorkspaceNodeDetailRequest get_workspace_node_detail = 74;
-    GetWorkspaceSessionNodeIdRequest get_workspace_session_node_id = 75;
-    GetWorkspaceTreeSelectionReconciliationRequest get_workspace_tree_selection_reconciliation = 76;
+
     GitCreateBranchRequest git_create_branch = 77;
     GitStageRequest git_stage = 78;
     GitStageReviewGroupRequest git_stage_review_group = 79;
     GitUnstageRequest git_unstage = 80;
     GitUnstageReviewGroupRequest git_unstage_review_group = 81;
     KillTerminalSurfaceRequest kill_terminal_surface = 82;
-    ListAgentSessionHistoryRequest list_agent_session_history = 83;
-    ListAvailableAgentSessionProvidersRequest list_available_agent_session_providers = 84;
-    ListBranchesRequest list_branches = 85;
-    ListBranchesWithStatusSnapshotRequest list_branches_with_status_snapshot = 87;
+
     ListFacetSummariesRequest list_facet_summaries = 88;
     ListProviderHookHealthWarningsRequest list_provider_hook_health_warnings = 90;
     ListReviewThreadsRequest list_review_threads = 91;
     ListWorkflowsRequest list_workflows = 92;
-    ListWorkspaceWorkflowHistoryRequest list_workspace_workflow_history = 93;
-    ListWorkspaceWorktreeNodesRequest list_workspace_worktree_nodes = 94;
-    ListWorktreesRequest list_worktrees = 95;
-    LoadWorkspaceStateRequest load_workspace_state = 96;
+
     OpenAgentSessionRequest open_agent_session = 97;
     OpenFacetInEditorRequest open_facet_in_editor = 98;
     OpenFolderInEditorRequest open_folder_in_editor = 99;
@@ -126,7 +156,7 @@ message CommandRequest {
     RequestApplicationQuitRequest request_application_quit = 113;
     ResetProviderExecutableRequest reset_provider_executable = 114;
     ResizeTerminalSurfaceRequest resize_terminal_surface = 115;
-    ResolveActiveExecutionByWorktreeRequest resolve_active_execution_by_worktree = 116;
+
     ResolveReviewThreadRequest resolve_review_thread = 117;
     RestoreAgentSessionRequest restore_agent_session = 119;
     RestoreWorkspaceWorkflowExecutionRequest restore_workspace_workflow_execution = 120;
@@ -156,44 +186,65 @@ message CommandRequest {
     WritePathsToTerminalSurfaceRequest write_paths_to_terminal_surface = 147;
     WriteTerminalSurfaceRequest write_terminal_surface = 148;
 
-
-
-
-
-
-
-
     BuildDiffFileTreeRequest build_diff_file_tree = 157;
 
     ComputeHiddenRangesRequest compute_hidden_ranges = 159;
 
-
-
-    FetchPrStatusRequest fetch_pr_status = 163;
-
-
-
-
-
-
-
-
     ApproveWorkflowNodeRequest approve_workflow_node = 172;
-
-
-
-
-
 
     WorkflowSubmitOutputRequest workflow_submit_output = 179;
     WorkflowValidateOutputRequest workflow_validate_output = 180;
     WorkflowGetOutputRequest workflow_get_output = 181;
     RefreshWorkspacesRequest refresh_workspaces = 186;
-    GetWorkspacesRequest get_workspaces = 187;
+
   }
 }
 
 message CommandResult {
+  reserved 163;
+  reserved "fetch_pr_status";
+  reserved 116;
+  reserved "resolve_active_execution_by_worktree";
+  reserved 72;
+  reserved "get_workflow_execution_state";
+  reserved 93;
+  reserved "list_workspace_workflow_history";
+  reserved 94;
+  reserved "list_workspace_worktree_nodes";
+  reserved 50;
+  reserved "get_cached_pr_status";
+  reserved 96;
+  reserved "load_workspace_state";
+  reserved 52;
+  reserved "get_cwd";
+  reserved 57;
+  reserved "get_main_repo_path";
+  reserved 95;
+  reserved "list_worktrees";
+  reserved 49;
+  reserved "get_cached_issues";
+  reserved 51;
+  reserved "get_current_branch";
+  reserved 87;
+  reserved "list_branches_with_status_snapshot";
+  reserved 48;
+  reserved "get_branch_base";
+  reserved 85;
+  reserved "list_branches";
+  reserved 84;
+  reserved "list_available_agent_session_providers";
+  reserved 83;
+  reserved "list_agent_session_history";
+  reserved 75;
+  reserved "get_workspace_session_node_id";
+  reserved 42;
+  reserved "get_agent_session";
+  reserved 74;
+  reserved "get_workspace_node_detail";
+  reserved 76;
+  reserved "get_workspace_tree_selection_reconciliation";
+  reserved 187;
+  reserved "get_workspaces";
   reserved 64, 149, 150, 151, 152, 153, 154, 155, 156, 158, 160, 161, 162, 164, 165, 166, 167, 168, 169, 170, 171, 173, 174, 175, 176, 177, 178;
   reserved "get_repo_paths", "get_crash_reporting_enabled", "get_file_at_ref", "get_staged_content", "get_binary_staged_content", "get_file_at_branch_base", "get_binary_file_at_branch_base", "get_binary_file_at_ref", "get_branch_diff_summary", "get_head_diff_file_tree_snapshot", "get_relative_path", "get_review_thread", "get_review_thread_history", "get_default_branch", "get_git_status", "get_git_status_snapshot", "get_status_diff_stats", "get_status_diff_stats_snapshot", "get_git_log", "get_worktree_dirty_count", "get_repo_git_dir", "list_workflow_executions", "get_workflow_execution", "get_workflow_execution_log", "get_workflow_node_detail", "resolve_worktree_by_execution", "list_facets";
   reserved 12, 25, 44, 45, 67, 86, 89, 118, 182;
@@ -230,22 +281,18 @@ message CommandResult {
     DiagnosticReport diagnose_all_cmd = 37;
     Unit duplicate_facet = 38;
     Unit duplicate_workflow = 39;
-    ListIssueInfoDto fetch_issues = 40;
+    Unit fetch_issues = 40;
     ListNotionLabelOptionView fetch_notion_label_options = 41;
-    NullableAgentSessionItemDto get_agent_session = 42;
+
     AppSection get_app_settings = 43;
     ApplicationStartupOutcomeDtoV1 get_application_startup_outcome = 46;
     ResultString get_automation_config_dir = 47;
-    Nullablestring get_branch_base = 48;
-    ListIssueInfoDto get_cached_issues = 49;
-    PrStatusDto get_cached_pr_status = 50;
-    ResultString get_current_branch = 51;
-    ResultString get_cwd = 52;
+
     ResultString get_external_editor = 53;
     ResultString get_facet = 54;
     FileNavigationResultDto get_file_navigation = 55;
     ResultString get_language_from_path = 56;
-    ResultString get_main_repo_path = 57;
+
     NullableNotionRepoConfigView get_notion_config = 58;
     GetOrSpawnTerminalV1 get_or_spawn_terminal_surface = 59;
     ResultBool get_performance_real_app_mode = 60;
@@ -259,29 +306,21 @@ message CommandResult {
     TerminalSurfaceSummaryV1 get_terminal_surface = 69;
     WorkflowDto get_workflow = 70;
     WorkflowSection get_workflow_config = 71;
-    NullableWorkflowExecutionView get_workflow_execution_state = 72;
+
     ResultString get_workflow_source = 73;
-    NullableWorkspaceNodeDetailDto get_workspace_node_detail = 74;
-    Nullablestring get_workspace_session_node_id = 75;
-    WorkspaceTreeSelectionSnapshotDto get_workspace_tree_selection_reconciliation = 76;
+
     Unit git_create_branch = 77;
     Unit git_stage = 78;
     Unit git_stage_review_group = 79;
     Unit git_unstage = 80;
     Unit git_unstage_review_group = 81;
     Unit kill_terminal_surface = 82;
-    AgentSessionHistoryPageDto list_agent_session_history = 83;
-    ListAgentSessionProviderDto list_available_agent_session_providers = 84;
-    ListBranchDto list_branches = 85;
-    RepositoryBranchCardsSnapshotDto list_branches_with_status_snapshot = 87;
+
     ListFacetSummaryDto list_facet_summaries = 88;
     ListProviderHookHealthWarningResponse list_provider_hook_health_warnings = 90;
     ListReviewThreadDto list_review_threads = 91;
     ListWorkflowSummaryDto list_workflows = 92;
-    ListWorkspaceWorkflowHistoryItemDto list_workspace_workflow_history = 93;
-    WorkspaceTreeSnapshotDto list_workspace_worktree_nodes = 94;
-    ListWorktreeEntryDto list_worktrees = 95;
-    NullableWorkspaceStateDto load_workspace_state = 96;
+
     AgentSessionOpenResponse open_agent_session = 97;
     Unit open_facet_in_editor = 98;
     Unit open_folder_in_editor = 99;
@@ -301,7 +340,7 @@ message CommandResult {
     ApplicationQuitOutcomeDtoV1 request_application_quit = 113;
     ProviderAvailabilitySnapshotResponse reset_provider_executable = 114;
     Unit resize_terminal_surface = 115;
-    Nullablestring resolve_active_execution_by_worktree = 116;
+
     ReviewThreadDto resolve_review_thread = 117;
     AgentSessionOpenResponse restore_agent_session = 119;
     Unit restore_workspace_workflow_execution = 120;
@@ -331,40 +370,17 @@ message CommandResult {
     Unit write_paths_to_terminal_surface = 147;
     Unit write_terminal_surface = 148;
 
-
-
-
-
-
-
-
     ListDiffTreeNodeDto build_diff_file_tree = 157;
 
     ListHiddenRangeDto compute_hidden_ranges = 159;
 
-
-
-    PrStatusDto fetch_pr_status = 163;
-
-
-
-
-
-
-
-
     Unit approve_workflow_node = 172;
-
-
-
-
-
 
     Unit workflow_submit_output = 179;
     WorkflowValidateOutputResponse workflow_validate_output = 180;
     WorkflowGetOutputResponse workflow_get_output = 181;
-    WorkspaceListSnapshotDto refresh_workspaces = 186;
-    WorkspaceListSnapshotDto get_workspaces = 187;
+    Unit refresh_workspaces = 186;
+
   }
 }
 
@@ -887,9 +903,6 @@ message ListNotionLabelOptionView {
   repeated NotionLabelOptionView items = 1;
 }
 
-message GetAgentSessionRequest {
-  optional string agent_session_id = 1 [json_name = "agentSessionId", (json_required) = true];
-}
 
 message AgentSessionItemDto {
   optional string id = 1 [json_name = "id", (json_required) = true];
@@ -1022,45 +1035,10 @@ message GetAutomationConfigDirRequest {
 
 }
 
-message GetBranchBaseRequest {
-  optional string repo_path = 1 [json_name = "repoPath", (json_required) = true];
-  optional string branch_name = 2 [json_name = "branchName", (json_required) = true];
-}
 
 message Nullablestring {
   option (json_wrapper) = "value";
   optional string value = 1 [json_name = "value", (json_nullable) = true];
-}
-
-message GetCachedIssuesRequest {
-  optional string repo_path = 1 [json_name = "repoPath", (json_required) = true];
-}
-
-message GetCachedPrStatusRequest {
-  optional string repo_path = 1 [json_name = "repoPath", (json_required) = true];
-}
-
-message PrStatusDto {
-  optional MapPrInfoDto open_prs = 1 [json_name = "open_prs", (json_required) = true];
-  optional Liststring merged_branches = 2 [json_name = "merged_branches", (json_required) = true];
-}
-
-message PrInfoDto {
-  optional uint64 number = 1 [json_name = "number", (json_required) = true];
-  optional string url = 2 [json_name = "url", (json_required) = true];
-}
-
-message MapPrInfoDto {
-  option (json_wrapper) = "entries";
-  map<string, PrInfoDto> entries = 1;
-}
-
-message GetCurrentBranchRequest {
-  optional string repo_path = 1 [json_name = "repoPath", (json_required) = true];
-}
-
-message GetCwdRequest {
-
 }
 
 message GetExternalEditorRequest {
@@ -1104,9 +1082,6 @@ message GetLanguageFromPathRequest {
   optional string file_path = 1 [json_name = "filePath", (json_required) = true];
 }
 
-message GetMainRepoPathRequest {
-  optional string any_path = 1 [json_name = "anyPath", (json_required) = true];
-}
 
 message GetNotionConfigRequest {
   optional string repo_path = 1 [json_name = "repoPath", (json_required) = true];
@@ -1661,10 +1636,6 @@ message WorkflowSection {
   optional bool approval_auto_approve = 1 [json_name = "approval_auto_approve", (json_default) = true];
 }
 
-message GetWorkflowExecutionStateRequest {
-  optional string worktree_path = 1 [json_name = "worktreePath", (json_required) = true];
-  optional string execution_id = 2 [json_name = "executionId", (json_required) = true];
-}
 
 message WorkflowExecutionView {
   reserved 11, 12;
@@ -1801,8 +1772,6 @@ message ArtifactView {
   optional double produced_at = 4 [json_name = "producedAt", (json_required) = true];
 }
 
-
-
 message ExecutionParentRefView {
   optional string parent_id = 1 [json_name = "parentId", (json_required) = true];
   optional uint64 item_index = 2 [json_name = "itemIndex", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
@@ -1836,19 +1805,10 @@ message ApprovalTargetView {
   optional string session_id = 3 [json_name = "sessionId", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
 }
 
-message NullableWorkflowExecutionView {
-  option (json_wrapper) = "value";
-  optional WorkflowExecutionView value = 1 [json_name = "value", (json_nullable) = true];
-}
-
 message GetWorkflowSourceRequest {
   optional string name = 1 [json_name = "name", (json_required) = true];
 }
 
-message GetWorkspaceNodeDetailRequest {
-  optional string worktree_path = 1 [json_name = "worktreePath", (json_required) = true];
-  optional string node_id = 2 [json_name = "nodeId", (json_required) = true];
-}
 
 message WorkspaceNodeDetailDto {
   optional NodeProcessPresence process_presence = 15 [json_name = "processPresence", (json_required) = true];
@@ -1905,16 +1865,6 @@ message WorkspaceCommandResultDto {
 message NullableWorkspaceNodeDetailDto {
   option (json_wrapper) = "value";
   optional WorkspaceNodeDetailDto value = 1 [json_name = "value", (json_nullable) = true];
-}
-
-message GetWorkspaceSessionNodeIdRequest {
-  optional string worktree_path = 1 [json_name = "worktreePath", (json_required) = true];
-  optional string session_id = 2 [json_name = "sessionId", (json_required) = true];
-}
-
-message GetWorkspaceTreeSelectionReconciliationRequest {
-  optional string worktree_path = 1 [json_name = "worktreePath", (json_required) = true];
-  optional string selected_node_id = 2 [json_name = "selectedNodeId", (json_required) = true];
 }
 
 message WorkspaceTreeSelectionSnapshotDto {
@@ -2047,15 +1997,12 @@ message KillTerminalSurfaceRequest {
   optional TerminalSurfaceOwnerV1 owner = 1 [json_name = "owner", (json_required) = true];
 }
 
-message ListAgentSessionHistoryRequest {
-  optional string worktree_path = 1 [json_name = "worktreePath", (json_required) = true];
-  optional uint64 limit = 2 [json_name = "limit", (json_nullable) = true];
-  optional string after = 3 [json_name = "after", (json_nullable) = true];
-}
 
 message AgentSessionHistoryPageDto {
   optional ListAgentSessionHistoryCandidateDto items = 1 [json_name = "items", (json_required) = true];
-  optional string next_after = 2 [json_name = "nextAfter", (json_nullable) = true];
+  reserved 2;
+  reserved "next_after";
+  optional bool has_more = 3 [json_name = "hasMore", (json_required) = true];
 }
 
 message AgentSessionHistoryCandidateDto {
@@ -2070,18 +2017,12 @@ message ListAgentSessionHistoryCandidateDto {
   repeated AgentSessionHistoryCandidateDto items = 1;
 }
 
-message ListAvailableAgentSessionProvidersRequest {
-
-}
 
 message ListAgentSessionProviderDto {
   option (json_wrapper) = "items";
   repeated AgentSessionProviderDto items = 1;
 }
 
-message ListBranchesRequest {
-  optional string repo_path = 1 [json_name = "repoPath", (json_required) = true];
-}
 
 message BranchDto {
   optional string name = 1 [json_name = "name", (json_required) = true];
@@ -2112,9 +2053,6 @@ message ListBranchCardDto {
   repeated BranchCardDto items = 1;
 }
 
-message ListBranchesWithStatusSnapshotRequest {
-  optional string repo_path = 1 [json_name = "repoPath", (json_required) = true];
-}
 
 message RepositoryBranchCardsSnapshotDto {
   reserved 4;
@@ -2214,9 +2152,6 @@ message ListWorkflowSummaryDto {
   repeated WorkflowSummaryDto items = 1;
 }
 
-message ListWorkspaceWorkflowHistoryRequest {
-  optional string worktree_path = 1 [json_name = "worktreePath", (json_required) = true];
-}
 
 message WorkspaceWorkflowHistoryItemDto {
   optional string execution_id = 1 [json_name = "executionId", (json_required) = true];
@@ -2233,23 +2168,11 @@ message ListWorkspaceWorkflowHistoryItemDto {
   repeated WorkspaceWorkflowHistoryItemDto items = 1;
 }
 
-message ListWorkspaceWorktreeNodesRequest {
-  optional string worktree_path = 1 [json_name = "worktreePath", (json_required) = true];
-}
-
-message ListWorktreesRequest {
-  optional string repo_path = 1 [json_name = "repoPath", (json_required) = true];
-}
-
 message ListWorktreeEntryDto {
   option (json_wrapper) = "items";
   repeated WorktreeEntryDto items = 1;
 }
 
-message LoadWorkspaceStateRequest {
-  optional string worktree_name = 1 [json_name = "worktreeName", (json_required) = true];
-  optional string worktree_root = 2 [json_name = "worktreeRoot", (json_required) = true];
-}
 
 message WorkspaceStateDto {
   optional uint32 version = 1 [json_name = "version", (json_required) = true, (json_literal) = "1"];
@@ -2454,9 +2377,6 @@ message ResizeTerminalSurfaceRequest {
   optional uint32 cols = 3 [json_name = "cols", (json_required) = true];
 }
 
-message ResolveActiveExecutionByWorktreeRequest {
-  optional string worktree_path = 1 [json_name = "worktreePath", (json_required) = true];
-}
 
 message ResolveReviewThreadRequest {
   optional string worktree_name = 1 [json_name = "worktreeName", (json_required) = true];
@@ -2697,22 +2617,6 @@ message WriteTerminalSurfaceRequest {
   optional string data = 5 [json_name = "data", (json_required) = true];
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 message DiffFileEntryInput {
   optional string path = 1 [json_name = "path", (json_required) = true];
   optional string status = 2 [json_name = "status", (json_required) = true];
@@ -2728,9 +2632,6 @@ message ListDiffFileEntryInput {
 message BuildDiffFileTreeRequest {
   optional ListDiffFileEntryInput entries = 1 [json_name = "entries", (json_required) = true];
 }
-
-
-
 
 message HunkInput {
   optional uint32 index = 1 [json_name = "index", (json_required) = true];
@@ -2753,43 +2654,6 @@ message ComputeHiddenRangesRequest {
   optional uint32 context_lines = 3 [json_name = "contextLines", (json_required) = true];
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-message FetchPrStatusRequest {
-  optional string repo_path = 1 [json_name = "repoPath", (json_required) = true];
-}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 message ApproveWorkflowNodeArgs {
   optional string execution_id = 1 [json_name = "executionId", (json_required) = true];
   optional string node_name = 2 [json_name = "nodeName", (json_required) = true];
@@ -2800,28 +2664,6 @@ message ApproveWorkflowNodeArgs {
 message ApproveWorkflowNodeRequest {
   optional ApproveWorkflowNodeArgs args = 1 [json_name = "args", (json_required) = true];
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 message WorkflowSubmitArtifactInput {
   optional string contract = 1 [json_name = "contract", (json_required) = true];
@@ -2876,10 +2718,6 @@ message WorkflowGetOutputResponseSubmitted {
   optional double timestamp = 5 [json_name = "timestamp", (json_required) = true];
 }
 
-message AgentSessionChangedPayload {
-  optional string worktree_path = 1 [json_name = "worktreePath", (json_required) = true];
-}
-
 message FileChangeEvent {
   optional uint64 watcher_id = 1 [json_name = "watcher_id", (json_required) = true];
   optional string path = 2 [json_name = "path", (json_required) = true];
@@ -2889,14 +2727,6 @@ message FileChangeEvent {
 message GitStatusChangedEvent {
   optional string repo_path = 1 [json_name = "repo_path", (json_required) = true];
 }
-
-message WorkflowExecutionChangedPayloadView {
-  optional string worktree_path = 1 [json_name = "worktreePath", (json_required) = true];
-  optional WorkflowExecutionView workflow_execution = 2 [json_name = "workflowExecution", (json_required) = true];
-}
-
-
-
 
 message CommandError {
   option (json_untagged) = true;
@@ -2916,13 +2746,6 @@ message ApplicationError {
   optional string correlation_id = 3 [json_name = "correlation_id"];
   reserved 4;
 }
-
-
-
-
-
-
-
 
 message TerminalEvent {
   oneof item {
@@ -3086,9 +2909,6 @@ message DiffTreeNodeType {
   optional Value value = 1 [(json_required) = true];
 }
 
-
-
-
 message WorkflowValue {
   option (json_untagged) = true;
   oneof variant {
@@ -3114,15 +2934,6 @@ message GetReviewBlobRequest {
   optional string reference = 1 [(json_required) = true];
 }
 
-
-
-
-
-
-
-
-
-
 message DesktopSettings {
   bool close_to_tray = 1;
   bool start_minimized = 2;
@@ -3134,8 +2945,7 @@ service ClientService {
   rpc OpenStateStream(OpenStateStreamRequest) returns (stream StateSubscriptionEvent);
   rpc StartStateSubscription(StartStateSubscriptionRequest) returns (Unit);
   rpc StopStateSubscription(StopStateSubscriptionRequest) returns (Unit);
-  rpc RefreshWorkspaces(RefreshWorkspacesRequest) returns (WorkspaceListSnapshotDto);
-  rpc GetWorkspaces(GetWorkspacesRequest) returns (WorkspaceListSnapshotDto);
+  rpc RefreshWorkspaces(RefreshWorkspacesRequest) returns (Unit);
   rpc GetReviewBlob(GetReviewBlobRequest) returns (ResultString);
   rpc AbortWorkflow(AbortWorkflowRequest) returns (Unit);
   rpc AckTerminalSurfaceOutput(AckTerminalSurfaceOutputRequest) returns (Unit);
@@ -3166,22 +2976,15 @@ service ClientService {
   rpc DiagnoseAllCmd(DiagnoseAllCmdRequest) returns (DiagnosticReport);
   rpc DuplicateFacet(DuplicateFacetRequest) returns (Unit);
   rpc DuplicateWorkflow(DuplicateWorkflowRequest) returns (Unit);
-  rpc FetchIssues(FetchIssuesRequest) returns (ListIssueInfoDto);
+  rpc FetchIssues(FetchIssuesRequest) returns (Unit);
   rpc FetchNotionLabelOptions(FetchNotionLabelOptionsRequest) returns (ListNotionLabelOptionView);
-  rpc GetAgentSession(GetAgentSessionRequest) returns (NullableAgentSessionItemDto);
   rpc GetAppSettings(GetAppSettingsRequest) returns (AppSection);
   rpc GetApplicationStartupOutcome(GetApplicationStartupOutcomeRequest) returns (ApplicationStartupOutcomeDtoV1);
   rpc GetAutomationConfigDir(GetAutomationConfigDirRequest) returns (ResultString);
-  rpc GetBranchBase(GetBranchBaseRequest) returns (Nullablestring);
-  rpc GetCachedIssues(GetCachedIssuesRequest) returns (ListIssueInfoDto);
-  rpc GetCachedPrStatus(GetCachedPrStatusRequest) returns (PrStatusDto);
-  rpc GetCurrentBranch(GetCurrentBranchRequest) returns (ResultString);
-  rpc GetCwd(GetCwdRequest) returns (ResultString);
   rpc GetExternalEditor(GetExternalEditorRequest) returns (ResultString);
   rpc GetFacet(GetFacetRequest) returns (ResultString);
   rpc GetFileNavigation(GetFileNavigationRequest) returns (FileNavigationResultDto);
   rpc GetLanguageFromPath(GetLanguageFromPathRequest) returns (ResultString);
-  rpc GetMainRepoPath(GetMainRepoPathRequest) returns (ResultString);
   rpc GetNotionConfig(GetNotionConfigRequest) returns (NullableNotionRepoConfigView);
   rpc GetOrSpawnTerminalSurface(GetOrSpawnTerminalSurfaceRequest) returns (GetOrSpawnTerminalV1);
   rpc GetPerformanceRealAppMode(GetPerformanceRealAppModeRequest) returns (ResultBool);
@@ -3194,29 +2997,17 @@ service ClientService {
   rpc GetTerminalSurface(GetTerminalSurfaceRequest) returns (TerminalSurfaceSummaryV1);
   rpc GetWorkflow(GetWorkflowRequest) returns (WorkflowDto);
   rpc GetWorkflowConfig(GetWorkflowConfigRequest) returns (WorkflowSection);
-  rpc GetWorkflowExecutionState(GetWorkflowExecutionStateRequest) returns (NullableWorkflowExecutionView);
   rpc GetWorkflowSource(GetWorkflowSourceRequest) returns (ResultString);
-  rpc GetWorkspaceNodeDetail(GetWorkspaceNodeDetailRequest) returns (NullableWorkspaceNodeDetailDto);
-  rpc GetWorkspaceSessionNodeId(GetWorkspaceSessionNodeIdRequest) returns (Nullablestring);
-  rpc GetWorkspaceTreeSelectionReconciliation(GetWorkspaceTreeSelectionReconciliationRequest) returns (WorkspaceTreeSelectionSnapshotDto);
   rpc GitCreateBranch(GitCreateBranchRequest) returns (Unit);
   rpc GitStage(GitStageRequest) returns (Unit);
   rpc GitStageReviewGroup(GitStageReviewGroupRequest) returns (Unit);
   rpc GitUnstage(GitUnstageRequest) returns (Unit);
   rpc GitUnstageReviewGroup(GitUnstageReviewGroupRequest) returns (Unit);
   rpc KillTerminalSurface(KillTerminalSurfaceRequest) returns (Unit);
-  rpc ListAgentSessionHistory(ListAgentSessionHistoryRequest) returns (AgentSessionHistoryPageDto);
-  rpc ListAvailableAgentSessionProviders(ListAvailableAgentSessionProvidersRequest) returns (ListAgentSessionProviderDto);
-  rpc ListBranches(ListBranchesRequest) returns (ListBranchDto);
-  rpc ListBranchesWithStatusSnapshot(ListBranchesWithStatusSnapshotRequest) returns (RepositoryBranchCardsSnapshotDto);
   rpc ListFacetSummaries(ListFacetSummariesRequest) returns (ListFacetSummaryDto);
   rpc ListProviderHookHealthWarnings(ListProviderHookHealthWarningsRequest) returns (ListProviderHookHealthWarningResponse);
   rpc ListReviewThreads(ListReviewThreadsRequest) returns (ListReviewThreadDto);
   rpc ListWorkflows(ListWorkflowsRequest) returns (ListWorkflowSummaryDto);
-  rpc ListWorkspaceWorkflowHistory(ListWorkspaceWorkflowHistoryRequest) returns (ListWorkspaceWorkflowHistoryItemDto);
-  rpc ListWorkspaceWorktreeNodes(ListWorkspaceWorktreeNodesRequest) returns (WorkspaceTreeSnapshotDto);
-  rpc ListWorktrees(ListWorktreesRequest) returns (ListWorktreeEntryDto);
-  rpc LoadWorkspaceState(LoadWorkspaceStateRequest) returns (NullableWorkspaceStateDto);
   rpc OpenAgentSession(OpenAgentSessionRequest) returns (AgentSessionOpenResponse);
   rpc OpenFacetInEditor(OpenFacetInEditorRequest) returns (Unit);
   rpc OpenFolderInEditor(OpenFolderInEditorRequest) returns (Unit);
@@ -3236,7 +3027,6 @@ service ClientService {
   rpc RequestApplicationQuit(RequestApplicationQuitRequest) returns (ApplicationQuitOutcomeDtoV1);
   rpc ResetProviderExecutable(ResetProviderExecutableRequest) returns (ProviderAvailabilitySnapshotResponse);
   rpc ResizeTerminalSurface(ResizeTerminalSurfaceRequest) returns (Unit);
-  rpc ResolveActiveExecutionByWorktree(ResolveActiveExecutionByWorktreeRequest) returns (Nullablestring);
   rpc ResolveReviewThread(ResolveReviewThreadRequest) returns (ReviewThreadDto);
   rpc RestoreAgentSession(RestoreAgentSessionRequest) returns (AgentSessionOpenResponse);
   rpc RestoreWorkspaceWorkflowExecution(RestoreWorkspaceWorkflowExecutionRequest) returns (Unit);
@@ -3267,7 +3057,6 @@ service ClientService {
   rpc WriteTerminalSurface(WriteTerminalSurfaceRequest) returns (Unit);
   rpc BuildDiffFileTree(BuildDiffFileTreeRequest) returns (ListDiffTreeNodeDto);
   rpc ComputeHiddenRanges(ComputeHiddenRangesRequest) returns (ListHiddenRangeDto);
-  rpc FetchPrStatus(FetchPrStatusRequest) returns (PrStatusDto);
   rpc ApproveWorkflowNode(ApproveWorkflowNodeRequest) returns (Unit);
   rpc WorkflowSubmitOutput(WorkflowSubmitOutputRequest) returns (Unit);
   rpc WorkflowValidateOutput(WorkflowValidateOutputRequest) returns (WorkflowValidateOutputResponse);
@@ -3307,7 +3096,6 @@ message TerminalSubscriptionEvent {
   }
 }
 
-message GetWorkspacesRequest {}
 
 message RefreshWorkspacesRequest {
   optional string repo_path = 2 [json_name = "repoPath", (json_nullable) = true];
@@ -3363,13 +3151,33 @@ message StartStateSubscriptionRequest {
   string client_id = 1;
   string target = 2;
   StateVersion version = 3;
+  repeated string args = 4;
 }
-message StopStateSubscriptionRequest { string client_id = 1; string target = 2; }
+message StopStateSubscriptionRequest { string client_id = 1; string target = 2; repeated string args = 3; }
 message StatePayload {
-  oneof value { Liststring repository_paths = 1; }
+  oneof value {
+    Liststring repository_paths = 1;
+    WorkspaceListSnapshotDto workspaces = 2;
+    WorkspaceTreeSelectionSnapshotDto selection = 3;
+    NullableWorkspaceNodeDetailDto node_detail = 4;
+    NullableAgentSessionItemDto agent_session = 5;
+    Nullablestring session_node = 6;
+    AgentSessionHistoryPageDto session_history = 7;
+    ListAgentSessionProviderDto providers = 8;
+    ListBranchDto branches = 9;
+    Nullablestring branch_base = 10;
+    RepositoryBranchCardsSnapshotDto branch_status = 11;
+    ResultString current_branch = 12;
+    ListIssueInfoDto issues = 13;
+    ListWorktreeEntryDto worktrees = 14;
+    ResultString repository_root = 15;
+    ResultString startup_repository = 16;
+    NullableWorkspaceStateDto workspace_state = 17;
+  }
 }
 message StateChange { bool delta = 1; StatePayload payload = 2; }
 message StateSubscriptionEvent {
+  repeated string args = 7;
   string target = 1;
   StateVersion version = 2;
   oneof event {

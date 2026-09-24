@@ -25,7 +25,7 @@ describe("Connect message codecs", () => {
 			event: { case: "reviewCommentsChanged", value: { value: "/repo" } },
 		});
 		expect(decodeClientPush(push, "review-comments-changed")).toEqual("/repo");
-		expect(() => decodeClientPush(push, "branch-list-sync")).toThrow(
+		expect(() => decodeClientPush(push, "git-status-changed")).toThrow(
 			"Invalid push event",
 		);
 	});

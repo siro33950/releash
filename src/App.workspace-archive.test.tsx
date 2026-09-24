@@ -1,11 +1,14 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { workspaceListSnapshot } from "@/test/workspaceList";
 import type {
-	WorkspaceTreeSelectionSnapshot,
-	WorkspaceTreeSnapshot,
-} from "@/types/workspace-tree";
+	WorkspaceTreeSelectionSnapshotDto as WorkspaceTreeSelectionSnapshot,
+	WorkspaceTreeSnapshotDto as WorkspaceTreeSnapshot,
+} from "@/generated/client_types";
+import { stateSubscriptions } from "@/test/stateSubscriptions";
+import { workspaceListSnapshot } from "@/test/workspaceList";
+
+const states = stateSubscriptions();
 
 const SELECTED_NODE_ID = "selected-workflow-node";
 const FALLBACK_NODE_ID = "fallback-session-node";
@@ -33,6 +36,11 @@ vi.mock("@/lib/client", async (importOriginal) => ({
 	...(await importOriginal<typeof import("@/lib/client")>()),
 	invokeClient: mocks.invoke,
 	listenClient: mocks.listen,
+	completeClientRestoration: vi.fn(),
+	subscribeState: (...args: Parameters<typeof states.subscribeState>) =>
+		states.subscribeState(...args),
+	firstState: (...args: Parameters<typeof states.firstState>) =>
+		states.firstState(...args),
 }));
 
 import { invoke } from "@tauri-apps/api/core";
@@ -219,6 +227,13 @@ const { default: App } = await import("./App");
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	states.clear();
+	states.publish(
+		"workspaces",
+		workspaceListSnapshot(initialSnapshot, "/repo/wt"),
+	);
+	states.publish("startup-repository", "/repo");
+	states.publish({ kind: "worktrees", args: ["/repo"] }, []);
 	mocks.archiveCommitted = false;
 	mocks.postArchiveSnapshot = fallbackSnapshot;
 	mocks.reconciliationFailuresRemaining = 0;
@@ -226,43 +241,9 @@ beforeEach(() => {
 	vi.mocked(invoke).mockImplementation(async (command) =>
 		command === "get_daemon_status" ? { phase: "ready" } : { type: "ready" },
 	);
-	mocks.invoke.mockImplementation((command: string, args?: unknown) => {
+	mocks.invoke.mockImplementation((command: string) => {
 		if (command === "get_application_startup_outcome") {
 			return Promise.resolve({ type: "ready" });
-		}
-		if (command === "get_cwd" || command === "get_main_repo_path") {
-			return Promise.resolve("/repo");
-		}
-		if (command === "list_worktrees") return Promise.resolve([]);
-		if (command === "refresh_workspaces") {
-			return Promise.resolve(
-				workspaceListSnapshot(
-					mocks.archiveCommitted
-						? (mocks.postArchiveSnapshot as WorkspaceTreeSnapshot)
-						: initialSnapshot,
-					"/repo/wt",
-				),
-			);
-		}
-		if (command === "get_workspace_tree_selection_reconciliation") {
-			if (mocks.reconciliationFailuresRemaining > 0) {
-				mocks.reconciliationFailuresRemaining -= 1;
-				return Promise.reject(new Error("temporary reconciliation failure"));
-			}
-			const snapshot = mocks.archiveCommitted
-				? (mocks.postArchiveSnapshot as WorkspaceTreeSnapshot)
-				: initialSnapshot;
-			const selectedNodeId = (args as { selectedNodeId: string })
-				.selectedNodeId;
-			return Promise.resolve(
-				reconciliation(
-					snapshot,
-					snapshotContainsNode(snapshot.nodes, selectedNodeId),
-				),
-			);
-		}
-		if (command === "list_workspace_workflow_history") {
-			return Promise.resolve([]);
 		}
 		if (command === "archive_workspace_workflow_execution") {
 			mocks.archiveCommitted = true;
@@ -273,173 +254,58 @@ beforeEach(() => {
 });
 
 describe("App Workspace Archive selection reconciliation", () => {
-	it("retries a failed Archive read on the next refresh and falls back to the snapshot preferred Node", async () => {
-		const user = userEvent.setup();
-		mocks.reconciliationFailuresRemaining = 1;
-		render(<App />);
-		await waitFor(() =>
+	it.each([
+		["preferred Node", fallbackSnapshot, FALLBACK_NODE_ID],
+		["no preferred Node", { nodes: [], archivedSessions: [] }, "none"],
+		["selection remains", initialSnapshot, SELECTED_NODE_ID],
+	] satisfies [string, WorkspaceTreeSnapshot, string][])(
+		"購読の照合結果で選択を更新する: %s",
+		async (_label, snapshot, expected) => {
+			const user = userEvent.setup();
+			render(<App />);
+			await waitFor(() =>
+				expect(screen.getByTestId("center-node")).toHaveTextContent(
+					SELECTED_NODE_ID,
+				),
+			);
+			await user.click(
+				screen.getByRole("button", { name: "Archive Archivable workflow" }),
+			);
+			await waitFor(() =>
+				expect(states.subscribeState).toHaveBeenCalledWith(
+					{ kind: "selection", args: ["/repo/wt", SELECTED_NODE_ID] },
+					expect.any(Function),
+				),
+			);
 			expect(screen.getByTestId("center-node")).toHaveTextContent(
 				SELECTED_NODE_ID,
-			),
-		);
-		expect(
-			mocks.invoke.mock.calls.filter(
-				([command]) =>
-					command === "get_workspace_tree_selection_reconciliation",
-			),
-		).toHaveLength(0);
-
-		await user.click(
-			screen.getByRole("button", { name: "Archive Archivable workflow" }),
-		);
-		await waitFor(() =>
-			expect(
-				mocks.invoke.mock.calls.filter(
-					([command]) =>
-						command === "get_workspace_tree_selection_reconciliation",
-				),
-			).toHaveLength(1),
-		);
-		expect(screen.getByTestId("center-node")).toHaveTextContent(
-			SELECTED_NODE_ID,
-		);
-
-		act(() => {
-			window.dispatchEvent(
-				new CustomEvent("workspace-tree-refresh", {
-					detail: { worktreePath: "/repo/wt" },
-				}),
 			);
-		});
-
-		await waitFor(() =>
-			expect(screen.getByTestId("center-node")).toHaveTextContent(
-				FALLBACK_NODE_ID,
-			),
-		);
-		expect(mocks.invoke).toHaveBeenCalledWith(
-			"archive_workspace_workflow_execution",
-			{ worktreePath: "/repo/wt", executionId: "archivable-workflow" },
-		);
-		const archiveCallIndex = mocks.invoke.mock.calls.findIndex(
-			([command]) => command === "archive_workspace_workflow_execution",
-		);
-		expect(
-			mocks.invoke.mock.calls
-				.slice(archiveCallIndex + 1)
-				.some(
-					([command, args]) =>
-						command === "get_workspace_tree_selection_reconciliation" &&
-						(args as { selectedNodeId?: string }).selectedNodeId ===
-							SELECTED_NODE_ID,
-				),
-		).toBe(true);
-		expect(
-			mocks.invoke.mock.calls.filter(
-				([command]) =>
-					command === "get_workspace_tree_selection_reconciliation",
-			),
-		).toHaveLength(2);
-
-		const listCallsAfterSuccess = mocks.invoke.mock.calls.filter(
-			([command]) => command === "refresh_workspaces",
-		).length;
-		act(() => {
-			window.dispatchEvent(
-				new CustomEvent("workspace-tree-refresh", {
-					detail: { worktreePath: "/repo/wt" },
-				}),
+			act(() => {
+				states.publish(
+					"workspaces",
+					workspaceListSnapshot(snapshot, "/repo/wt"),
+				);
+				states.publish(
+					{ kind: "selection", args: ["/repo/wt", SELECTED_NODE_ID] },
+					reconciliation(
+						snapshot,
+						snapshotContainsNode(snapshot.nodes, SELECTED_NODE_ID),
+					),
+				);
+			});
+			await waitFor(() =>
+				expect(screen.getByTestId("center-node")).toHaveTextContent(expected),
 			);
-		});
-		await waitFor(() =>
-			expect(
-				mocks.invoke.mock.calls.filter(
-					([command]) => command === "refresh_workspaces",
-				).length,
-			).toBeGreaterThan(listCallsAfterSuccess),
-		);
-		expect(
-			mocks.invoke.mock.calls.filter(
-				([command]) =>
-					command === "get_workspace_tree_selection_reconciliation",
-			),
-		).toHaveLength(2);
-		expect(mocks.archiveCommitted).toBe(true);
-	});
-
-	it("retries a failed Archive read and becomes unselected when the snapshot has no preferred Node", async () => {
-		const user = userEvent.setup();
-		mocks.postArchiveSnapshot = {
-			nodes: [],
-			archivedSessions: [],
-			preferredNodeId: null,
-		};
-		mocks.reconciliationFailuresRemaining = 1;
-		render(<App />);
-		await waitFor(() =>
-			expect(screen.getByTestId("center-node")).toHaveTextContent(
-				SELECTED_NODE_ID,
-			),
-		);
-		await user.click(
-			screen.getByRole("button", { name: "Archive Archivable workflow" }),
-		);
-		await waitFor(() =>
-			expect(
-				mocks.invoke.mock.calls.filter(
-					([command]) =>
-						command === "get_workspace_tree_selection_reconciliation",
-				),
-			).toHaveLength(1),
-		);
-		expect(screen.getByTestId("center-node")).toHaveTextContent(
-			SELECTED_NODE_ID,
-		);
-		act(() => {
-			window.dispatchEvent(
-				new CustomEvent("workspace-tree-refresh", {
-					detail: { worktreePath: "/repo/wt" },
-				}),
+			expect(mocks.invoke).toHaveBeenCalledWith(
+				"archive_workspace_workflow_execution",
+				{ worktreePath: "/repo/wt", executionId: "archivable-workflow" },
 			);
-		});
-
-		await waitFor(() =>
-			expect(screen.getByTestId("center-node")).toHaveTextContent("none"),
-		);
-		expect(
-			mocks.invoke.mock.calls.filter(
-				([command]) =>
-					command === "get_workspace_tree_selection_reconciliation",
-			),
-		).toHaveLength(2);
-		expect(mocks.archiveCommitted).toBe(true);
-	});
-
-	it("keeps the selection when it remains in the accepted Archive snapshot", async () => {
-		const user = userEvent.setup();
-		mocks.postArchiveSnapshot = initialSnapshot;
-		render(<App />);
-		await waitFor(() =>
-			expect(screen.getByTestId("center-node")).toHaveTextContent(
-				SELECTED_NODE_ID,
-			),
-		);
-
-		await user.click(
-			screen.getByRole("button", { name: "Archive Archivable workflow" }),
-		);
-		await waitFor(() =>
-			expect(
-				mocks.invoke.mock.calls.filter(
-					([command]) =>
-						command === "get_workspace_tree_selection_reconciliation",
-				),
-			).toHaveLength(1),
-		);
-		expect(screen.getByTestId("center-node")).toHaveTextContent(
-			SELECTED_NODE_ID,
-		);
-	});
+			expect(mocks.invoke).not.toHaveBeenCalledWith(
+				"refresh_workspaces",
+				expect.anything(),
+			);
+		},
+	);
 
 	it("ignores a delayed invalidation callback for a Node that is no longer selected", async () => {
 		const user = userEvent.setup();
@@ -465,5 +331,33 @@ describe("App Workspace Archive selection reconciliation", () => {
 		expect(screen.getByTestId("center-node")).toHaveTextContent(
 			FALLBACK_NODE_ID,
 		);
+	});
+});
+
+it("起動repositoryのworktreeが1件ならそのタブを自動表示する", async () => {
+	states.publish({ kind: "worktrees", args: ["/repo"] }, [
+		{
+			name: "only",
+			path: "/repo/only",
+			branch: "feature",
+			is_main: true,
+			is_locked: false,
+			dirty_count: 0,
+			base_branch: null,
+		},
+	]);
+	render(<App />);
+	await waitFor(() =>
+		expect(mocks.openWorktreeTab).toHaveBeenCalledWith(
+			"/repo/only",
+			"feature",
+			"repo",
+		),
+	);
+	expect(mocks.initFromCwd).toHaveBeenCalledWith("/repo");
+	expect(states.firstState).toHaveBeenCalledWith("startup-repository");
+	expect(states.firstState).toHaveBeenCalledWith({
+		kind: "worktrees",
+		args: ["/repo"],
 	});
 });

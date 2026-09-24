@@ -46,6 +46,10 @@ impl WatcherUsecase {
         self.files.start(path).map_err(UsecaseError::File)
     }
 
+    pub(crate) fn start_files(&self, path: &str) -> Result<u64, UsecaseError> {
+        self.files.start_tree(path).map_err(UsecaseError::File)
+    }
+
     pub(crate) fn start_git_dir(&self, path: &str) -> Result<u64, UsecaseError> {
         self.repository
             .as_ref()

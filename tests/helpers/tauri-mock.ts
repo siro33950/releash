@@ -4,8 +4,8 @@ import { clientJson } from "../../src/lib/clientJson";
 import { create, fromJson, toJson, type Message } from "@bufbuild/protobuf";
 import { Code, ConnectError, createConnectRouter } from "@connectrpc/connect";
 import { createFetchHandler } from "@connectrpc/connect/protocol";
-import { ClientService, CommandRequestSchema, CommandErrorSchema, PushSchema, StateSubscriptionEventSchema, TerminalEventSchema, TerminalSubscriptionEventSchema, AttachTerminalSurfaceRequestSchema } from "../../src/generated/client_pb";
-import type { WorkspaceListSnapshotDto } from "../../src/generated/client_types";
+import { ClientService, CommandRequestSchema, CommandErrorSchema, PushSchema, StateSubscriptionEventSchema, StatePayloadSchema, TerminalEventSchema, TerminalSubscriptionEventSchema, AttachTerminalSurfaceRequestSchema } from "../../src/generated/client_pb";
+import type { BranchCardDto, WorkspaceTreeSnapshotDto, WorkspaceWorkflowHistoryItemDto, WorkspaceListSnapshotDto } from "../../src/generated/client_types";
 import type { TerminalSurfaceStreamItem } from "../../src/lib/terminalSurfaceStream";
 import type { Page } from "@playwright/test";
 export interface MockConfig {
@@ -13,6 +13,8 @@ export interface MockConfig {
 	 * cmd → 返り値のマッピング。関数はシリアライズできないため使用不可。
 	 */
 	responses: Record<string, unknown>;
+    states: Record<string, unknown>;
+    workspace: { branches: BranchCardDto[]; tree: WorkspaceTreeSnapshotDto; history: WorkspaceWorkflowHistoryItemDto[] };
 }
 
 export function workspaceTreeReconciliation(snapshot: unknown): unknown {
@@ -39,7 +41,6 @@ interface TauriEventPluginInternals {
 
 declare global {
 	interface Window {
-		__releashRepositoryPaths: () => string[];
 		__releashPush: (event: string, payload: unknown) => Promise<void>;
 		__releashTerminalEvent: (
 			attachmentId: string,
@@ -51,7 +52,11 @@ declare global {
 				args?: Record<string, unknown>,
 			) => Promise<unknown>;
 			invocations: Array<{ cmd: string; args: Record<string, unknown> }>;
-			setMockResponse: (cmd: string, value: unknown) => void;
+            setMockResponse: (cmd: string, value: unknown) => void;
+            readState: (kind: string, args: string[]) => unknown;
+            setState: (kind: string, value: unknown) => void;
+            setWorkspaceTree: (value: WorkspaceTreeSnapshotDto) => void;
+            setWorkspaceBranches: (value: BranchCardDto[]) => void;
 		};
 		__TAURI_INTERNALS__?: TauriMockInternals;
 		__TAURI_EVENT_PLUGIN_INTERNALS__?: TauriEventPluginInternals;
@@ -69,6 +74,35 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
     const attachments = new Map<string, { output: ReadableStreamDefaultController<Message>; streamId: string }>();
     const terminalSubscriptions = new Map<string, ReadableStreamDefaultController<Message>>();
     const stateStreams = new Map<string, ReadableStreamDefaultController<Message>>();
+    const subscriptions = new Map<string, Map<string, { sequence: bigint; json: string }>>();
+    const stateRequests: string[] = [];
+    function stateKey(target: string, args: string[]) {
+        return args.length ? JSON.stringify([target, args]) : target;
+    }
+    function parseTarget(target: string): { kind: string; args: string[] } {
+        if (!target.startsWith("[")) return { kind: target, args: [] };
+        const [kind, args] = JSON.parse(target);
+        return { kind, args };
+    }
+    async function readState(target: string) {
+        const { kind, args } = parseTarget(target);
+        return page.evaluate(({kind, args}) => window.__RELEASH_BACKEND__!.readState(kind, args), {kind, args});
+    }
+    function statePayload(target: string, value: unknown) {
+        const kind = parseTarget(target).kind;
+        const field = StatePayloadSchema.fields.find(field => field.name.replaceAll("_", "-") === kind)!;
+        return fromJson(StatePayloadSchema, { [field.jsonName]: clientJson(field.message!, value, true) });
+    }
+    async function refreshStates() {
+        for (const [clientId, targets] of subscriptions) for (const [target, current] of targets) {
+            const value = await readState(target);
+            const json = JSON.stringify(value);
+            if (json === current.json) continue;
+            current.json = json;
+            current.sequence++;
+            stateStreams.get(clientId)?.enqueue(create(StateSubscriptionEventSchema, { target: parseTarget(target).kind, args: parseTarget(target).args, version: { epoch: "fixture", sequence: current.sequence }, event: { case: "change", value: { payload: statePayload(target, value) } } }));
+        }
+    }
     const push = (event: string, payload: unknown) => {
         const field = PushSchema.fields.find(field => field.name.replaceAll("_", "-") === event);
         if (!field?.message) throw new Error(`Unknown client event: ${event}`);
@@ -107,23 +141,29 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
                 const stop = () => controller.close();
                 context.signal.addEventListener("abort", stop, { once: true });
                 try { yield create(StateSubscriptionEventSchema, { event: { case: "ready", value: {} } }); yield* stream; }
-                finally { stateStreams.delete(request.clientId); context.signal.removeEventListener("abort", stop); }
+                finally { subscriptions.delete(request.clientId); stateStreams.delete(request.clientId); context.signal.removeEventListener("abort", stop); }
             });
             continue;
         }
         if (method.name === "StartStateSubscription") {
             router.rpc(method, async request => {
                 const stream = stateStreams.get(request.clientId);
-                if (!stream || request.target !== "repository-paths") throw new ConnectError("Unknown state subscription", Code.NotFound);
-                const items = await page.evaluate(() => window.__releashRepositoryPaths());
+                if (!stream) throw new ConnectError("Unknown stream", Code.NotFound);
+                const targets = subscriptions.get(request.clientId) ?? new Map();
+                subscriptions.set(request.clientId, targets);
+                const target = stateKey(request.target, request.args);
+                if (targets.has(target)) return {};
+                stateRequests.push(target);
+                const value = await readState(target);
+                targets.set(target, { sequence: 0n, json: JSON.stringify(value) });
                 const version = { epoch: "fixture", sequence: 0n };
-                stream.enqueue(create(StateSubscriptionEventSchema, { target: request.target, version, event: { case: "snapshot", value: { value: { case: "repositoryPaths", value: { items } } } } }));
-                stream.enqueue(create(StateSubscriptionEventSchema, { target: request.target, version, event: { case: "bookmark", value: {} } }));
+                stream.enqueue(create(StateSubscriptionEventSchema, { target: request.target, args: request.args, version, event: { case: "snapshot", value: statePayload(target, value) } }));
+                stream.enqueue(create(StateSubscriptionEventSchema, { target: request.target, args: request.args, version, event: { case: "bookmark", value: {} } }));
                 return {};
             });
             continue;
         }
-        if (method.name === "StopStateSubscription") { router.rpc(method, () => ({})); continue; }
+        if (method.name === "StopStateSubscription") { router.rpc(method, (request) => { subscriptions.get(request.clientId)?.delete(stateKey(request.target, request.args)); return {}; }); continue; }
         if (method.name === "GetServerInfo") { router.rpc(method, () => ({ launchId: "fixture" })); continue; }
         if (method.name === "SubscribePush") {
             router.rpc(method, async function* (_, context) {
@@ -192,7 +232,11 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
                 if (!context.signal.aborted) await new Promise<void>(resolve => context.signal.addEventListener("abort", () => resolve(), {once:true}));
             });
         } else {
-            router.rpc(method, async request => fromJson(method.output, clientJson(method.output, (await execute(command, argsFor(request))) ?? null, true)));
+            router.rpc(method, async request => {
+                const result = await execute(command, argsFor(request));
+                if (/^(create|delete|archive|restore|rename|retry|resume|abort|approve|reject|save|set|update|add|remove|refresh|fetch|checkout)_/.test(command)) await refreshStates();
+                return fromJson(method.output, clientJson(method.output, command === "refresh_workspaces" || command === "fetch_issues" ? null : result ?? null, true));
+            });
         }
     }
     const server = createServer(async (req, res) => {
@@ -279,8 +323,48 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 			});
 		}
 
-        window.__releashRepositoryPaths = () => (cfg.responses.repository_paths ?? []) as string[];
-        let workspaceSnapshot: WorkspaceListSnapshotDto | null = null;
+        function updateWorkspaceState() {
+            const { branches: cards, tree: snapshot, history: workflowHistory } = cfg.workspace;
+            const worktreeCards = cards.filter(card => card.worktree_path != null);
+            const branches = worktreeCards.map(branch => ({
+                ...branch, has_pr: false, pr_number: null, pr_url: null,
+            }));
+            cfg.states["branch-status"] = {
+                version: 1, stale: false, loading: false, branches: cards,
+                worktree_display_groups: { working_areas: worktreeCards },
+            };
+            const repositories = (cfg.states["repository-paths"] as string[]).map(path => ({
+                path, status: { loaded: true, error: null, state: branches.length ? "ready" : "empty" }, branches,
+                worktrees: branches.map(branch => ({
+                    path: branch.worktree_path!,
+                    status: { loaded: true, error: null, state: snapshot.nodes.length ? "ready" : "empty" },
+                    snapshot, workflowHistory,
+                })),
+            }));
+            cfg.states.workspaces = {
+                generation: 1, status: { loaded: true, error: null, state: repositories.length ? "ready" : "empty" }, repositories,
+            } satisfies WorkspaceListSnapshotDto;
+        }
+        const initialStates = { ...cfg.states };
+        updateWorkspaceState();
+        Object.assign(cfg.states, initialStates);
+
+        function readState(kind: string, args: string[]) {
+            const value = cfg.states[kind];
+            if (value && typeof value === "object" && "__mockError" in value) {
+                throw new Error(String(value.__mockError));
+            }
+            if (kind === "selection" && value && typeof value === "object" && "__workspaceTreeReconciliationSnapshot" in value) {
+                const snapshot = value.__workspaceTreeReconciliationSnapshot as { nodes: unknown[] };
+                return { snapshot, reconciliation: { selectionInSnapshot: workspaceTreeContainsNode(snapshot.nodes, args[1]) } };
+            }
+            if (kind === "session-history") {
+                const history = value as {items: unknown[]; hasMore: boolean};
+                return { items: history.items.slice(0, Number(args[1])), hasMore: history.hasMore || history.items.length > Number(args[1]) };
+            }
+            if (!(kind in cfg.states)) throw new Error(`Unknown state: ${kind}`);
+            return value;
+        }
 
 		async function executeCommand(
 			cmd: string,
@@ -328,64 +412,6 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 					disableTerminalJournal: false,
 					disableRendererWriteSerialization: false,
 					disableWebglRenderer: true,
-				};
-			}
-
-            if (cmd === "get_workspaces" && !(cmd in cfg.responses)) {
-                return workspaceSnapshot ?? { generation: 0, status: { loaded: false, error: null, state: "loading" }, repositories: [] };
-            }
-            if (cmd === "refresh_workspaces" && !(cmd in cfg.responses)) {
-                if (args.worktreePath) {
-                    const tree = workspaceSnapshot?.repositories.flatMap(repo => repo.worktrees).find(tree => tree.path === args.worktreePath);
-                    if (tree) {
-                        const worktreePath = tree.path;
-                        tree.snapshot = await executeCommand("list_workspace_worktree_nodes", { worktreePath }) as typeof tree.snapshot;
-                        tree.workflowHistory = await executeCommand("list_workspace_workflow_history", { worktreePath }) as typeof tree.workflowHistory;
-                        tree.status = { loaded: true, error: null, state: tree.snapshot?.nodes.length ? "ready" : "empty" };
-                    }
-                    return workspaceSnapshot;
-                }
-                const paths = (cfg.responses.repository_paths ?? []) as string[];
-                const repositories = await Promise.all(paths.map(async (path) => {
-                    const result = await executeCommand("list_branches_with_status_snapshot", { repoPath: path }) as { worktree_display_groups: { working_areas: Record<string, unknown>[] } };
-                    const prs = await executeCommand("get_cached_pr_status", { repoPath: path }) as { open_prs: Record<string, { number: number; url: string }>; merged_branches: string[] };
-                    const branches = result.worktree_display_groups.working_areas.map((branch) => {
-                        const pr = prs.open_prs[branch.name as string];
-                        return { ...branch, is_merged: branch.is_merged || (!pr && prs.merged_branches.includes(branch.name as string)), has_pr: Boolean(pr), pr_number: pr?.number ?? null, pr_url: pr?.url ?? null };
-                    });
-                    const worktrees = await Promise.all(branches.filter(branch => branch.worktree_path).map(async (branch) => {
-                        const worktreePath = branch.worktree_path as string;
-                        const snapshot = await executeCommand("list_workspace_worktree_nodes", { worktreePath }) as { nodes: unknown[] };
-                        return { path: worktreePath, status: { loaded: true, error: null, state: snapshot.nodes.length ? "ready" : "empty" }, snapshot, workflowHistory: await executeCommand("list_workspace_workflow_history", { worktreePath }) };
-                    }));
-                    return { path, status: { loaded: true, error: null, state: branches.length ? "ready" : "empty" }, branches, worktrees };
-                }));
-                workspaceSnapshot = { generation: invocations.length, status: { loaded: true, error: null, state: repositories.length ? "ready" : "empty" }, repositories } as WorkspaceListSnapshotDto;
-                return workspaceSnapshot;
-            }
-
-			// list_branches_with_status_snapshot は明示ハンドラが無い場合、
-			// list_branches_with_status の配列を BranchCardsSnapshot 形に
-			// ラップして返す（既存フィクスチャの override をそのまま活かす）。
-			if (
-				cmd === "list_branches_with_status_snapshot" &&
-				!(cmd in cfg.responses) &&
-				"list_branches_with_status" in cfg.responses
-			) {
-				const branches = cfg.responses.list_branches_with_status;
-				const cards = Array.isArray(branches) ? branches : [];
-				const worktreeCards = cards.filter(
-					(card: Record<string, unknown>) => card.worktree_path != null,
-				);
-				return {
-					version: 1,
-					stale: false,
-					loading: false,
-					branches: cards,
-					// backend が確定する表示グループ。fixture は作業の場だけを持つ。
-					worktree_display_groups: {
-						working_areas: worktreeCards,
-					},
 				};
 			}
 
@@ -616,27 +642,6 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 					};
 				}
 				if (
-					cmd === "get_workspace_tree_selection_reconciliation" &&
-					value &&
-					typeof value === "object" &&
-					"__workspaceTreeReconciliationSnapshot" in
-						(value as Record<string, unknown>)
-				) {
-					const snapshot = (
-						value as { __workspaceTreeReconciliationSnapshot: unknown }
-					).__workspaceTreeReconciliationSnapshot as Record<string, unknown>;
-					const selectedNodeId = args.selectedNodeId as string;
-					return {
-						snapshot,
-						reconciliation: {
-							selectionInSnapshot: workspaceTreeContainsNode(
-								snapshot.nodes,
-								selectedNodeId,
-							),
-						},
-					};
-				}
-				if (
 					value &&
 					typeof value === "object" &&
 					"__mockAcceptedStop" in (value as Record<string, unknown>)
@@ -690,9 +695,11 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 		window.__RELEASH_BACKEND__ = {
 			execute: executeCommand,
 			invocations,
-			setMockResponse: (cmd, value) => {
-				cfg.responses[cmd] = value;
-			},
+            setMockResponse: (cmd, value) => { cfg.responses[cmd] = value; },
+            readState,
+            setState: (kind, value) => { cfg.states[kind] = value; },
+            setWorkspaceTree: (value) => { cfg.workspace.tree = value; updateWorkspaceState(); },
+            setWorkspaceBranches: (value) => { cfg.workspace.branches = value; updateWorkspaceState(); },
 		};
 		window.__TAURI_INTERNALS__ = {
 			invoke: (cmd, args = {}) => {
@@ -727,7 +734,7 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 				unregisterCallback(id),
 		};
 	}, config);
-	return { clientRequests, push };
+	return { clientRequests, stateRequests, refreshStates, push };
 }
 
 /**

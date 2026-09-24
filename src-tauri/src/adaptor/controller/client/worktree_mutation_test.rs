@@ -104,25 +104,14 @@ async fn test_worktree削除中_変更対象を共通境界で拒否して読み
             command.name()
         );
     }
-    for command in [
-        C::ListWorkspaceWorktreeNodes(wire::ListWorkspaceWorktreeNodesRequest {
-            worktree_path: Some(path.into()),
-        }),
-        C::GetWorkspaceNodeDetail(wire::GetWorkspaceNodeDetailRequest {
-            worktree_path: Some(path.into()),
-            ..Default::default()
-        }),
-        C::LoadWorkspaceState(wire::LoadWorkspaceStateRequest {
-            worktree_name: Some("feature".into()),
-            worktree_root: Some(path.into()),
-        }),
-        C::ListWorktrees(wire::ListWorktreesRequest {
-            repo_path: Some(path.into()),
-            ..Default::default()
-        }),
-    ] {
-        assert!(admit(Some(&runtime), &command).unwrap().is_empty());
-    }
+    assert!(admit(
+        Some(&runtime),
+        &C::BuildDiffFileTree(wire::BuildDiffFileTreeRequest {
+            entries: Some(wire::ListDiffFileEntryInput { items: vec![] })
+        })
+    )
+    .unwrap()
+    .is_empty());
     assert!(admit(
         Some(&runtime),
         &C::GitStage(wire::GitStageRequest {

@@ -6,10 +6,7 @@ use prost::Message;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn dispatch() -> ClientCommandDispatch {
-    ClientCommandDispatch::new(
-        Arc::new(crate::adaptor::controller::wiring::build_repository_usecase()),
-        Arc::new(ApplicationStartupAuthority::ready()),
-    )
+    ClientCommandDispatch::new(Arc::new(ApplicationStartupAuthority::ready()))
 }
 
 async fn serve(
@@ -61,12 +58,28 @@ async fn test_connect_生成clientのunaryで結果と構造化エラーを返�
     // Given
     let mut dispatch = dispatch();
     dispatch.register_domain(
-        &["get_cwd"],
+        &["get_external_editor"],
         Box::new(|_| {
             Box::pin(async {
-                Ok(wire::command_result::Command::GetCwd(wire::ResultString {
-                    value: Some("/repo".into()),
-                }))
+                Ok(wire::command_result::Command::GetExternalEditor(
+                    wire::ResultString {
+                        value: Some("/repo".into()),
+                    },
+                ))
+            })
+        }),
+    );
+    dispatch.register_domain(
+        &["build_diff_file_tree"],
+        Box::new(|command| {
+            Box::pin(async move {
+                let wire::command_request::Command::BuildDiffFileTree(args) = command else {
+                    unreachable!()
+                };
+                crate::adaptor::controller::client::required(args.entries, "entries")?;
+                Ok(wire::command_result::Command::BuildDiffFileTree(
+                    Default::default(),
+                ))
             })
         }),
     );
@@ -74,7 +87,7 @@ async fn test_connect_生成clientのunaryで結果と構造化エラーを返�
     // When / Then
     assert_eq!(
         client
-            .get_cwd(rpc::GetCwdRequest::default())
+            .get_external_editor(rpc::GetExternalEditorRequest::default())
             .await
             .unwrap()
             .into_owned()
@@ -82,7 +95,7 @@ async fn test_connect_生成clientのunaryで結果と構造化エラーを返�
         Some("/repo".into())
     );
     let error = client
-        .get_current_branch(rpc::GetCurrentBranchRequest::default())
+        .build_diff_file_tree(rpc::BuildDiffFileTreeRequest::default())
         .await
         .unwrap_err();
     assert_eq!(error.code, connectrpc::ErrorCode::InvalidArgument);
@@ -589,7 +602,7 @@ async fn test_設定保存_対象三操作の成功時だけdesktop再適用を�
         ("UpdateCrashReporting", true, true),
         ("UpdatePerformanceTelemetry", true, true),
         ("UpdateExternalEditor", false, true),
-        ("GetCurrentBranch", false, false),
+        ("BuildDiffFileTree", false, false),
     ] {
         let response = router
             .clone()
@@ -684,8 +697,8 @@ async fn test_監視rpc_通常要求と同じ枠を取得し上限時はblocking
     }
     assert_eq!(files.next.load(Ordering::SeqCst), 0);
     assert_eq!(
-        deps.execute(wire::command_request::Command::GetCwd(
-            wire::GetCwdRequest {}
+        deps.execute(wire::command_request::Command::GetExternalEditor(
+            wire::GetExternalEditorRequest {}
         ))
         .await
         .unwrap_err()
@@ -1049,6 +1062,7 @@ async fn test_状態購読_connectで初期状態と変更と再開を配信す�
     let request = wire::StartStateSubscriptionRequest {
         client_id: "state-test".into(),
         target: REPO_PATHS.into(),
+        args: vec![],
         version: None,
     };
     client
@@ -1149,7 +1163,7 @@ async fn assert_request_deadline(timeout: Option<&str>, seconds: u64) {
     let signal = stopped.clone();
     let mut dispatch = dispatch();
     dispatch.register_domain(
-        &["get_cwd"],
+        &["get_external_editor"],
         Box::new(move |_| {
             let guard = signal.clone().drop_guard();
             Box::pin(async move {
@@ -1163,7 +1177,7 @@ async fn assert_request_deadline(timeout: Option<&str>, seconds: u64) {
         ClientPushGateway::new(Arc::new(PushSink::new())),
         crate::client_api_acceptance::watcher(),
     );
-    let mut request = Request::post("/releash.client.v1.ClientService/GetCwd")
+    let mut request = Request::post("/releash.client.v1.ClientService/GetExternalEditor")
         .header("content-type", "application/json")
         .header("connect-protocol-version", "1");
     if let Some(timeout) = timeout {
@@ -1210,7 +1224,7 @@ async fn test_単発rpc_呼び出し破棄でasync処理を止め枠を解放す
     let signal = stopped.clone();
     let mut dispatch = dispatch();
     dispatch.register_domain(
-        &["get_cwd"],
+        &["get_external_editor"],
         Box::new(move |_| {
             let guard = signal.clone().drop_guard();
             Box::pin(async move {
@@ -1224,9 +1238,11 @@ async fn test_単発rpc_呼び出し破棄でasync処理を止め枠を解放す
         ClientPushGateway::new(Arc::new(PushSink::new())),
         crate::client_api_acceptance::watcher(),
     );
-    let mut call = Box::pin(deps.execute(wire::command_request::Command::GetCwd(
-        wire::GetCwdRequest {},
-    )));
+    let mut call = Box::pin(
+        deps.execute(wire::command_request::Command::GetExternalEditor(
+            wire::GetExternalEditorRequest {},
+        )),
+    );
     assert!(futures_util::poll!(&mut call).is_pending());
     tokio::task::yield_now().await;
     // When
@@ -1255,11 +1271,14 @@ async fn test_単発rpc_取り消しはcancelledでpanicはinternalに分類す�
     let token = tokio_util::sync::CancellationToken::new();
     token.cancel();
     let mut dispatch = dispatch();
-    dispatch.register_domain(&["get_cwd"], Box::new(|_| Box::pin(std::future::pending())));
+    dispatch.register_domain(
+        &["get_external_editor"],
+        Box::new(|_| Box::pin(std::future::pending())),
+    );
     let error = run_command(
         &token,
-        dispatch.dispatch_admitted(wire::command_request::Command::GetCwd(
-            wire::GetCwdRequest {},
+        dispatch.dispatch_admitted(wire::command_request::Command::GetExternalEditor(
+            wire::GetExternalEditorRequest {},
         )),
     )
     .await
@@ -1312,7 +1331,7 @@ async fn test_単発rpc_client切断で処理が終了する() {
     let start_signal = started.clone();
     let mut dispatch = dispatch();
     dispatch.register_domain(
-        &["get_cwd"],
+        &["get_external_editor"],
         Box::new(move |_| {
             let guard = signal.clone().drop_guard();
             start_signal.cancel();
@@ -1334,7 +1353,7 @@ async fn test_単発rpc_client切断で処理が終了する() {
         axum::serve(listener, router).await.unwrap();
     });
     let mut connection = tokio::net::TcpStream::connect(address).await.unwrap();
-    connection.write_all(b"POST /releash.client.v1.ClientService/GetCwd HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nConnect-Protocol-Version: 1\r\nContent-Length: 2\r\n\r\n{}").await.unwrap();
+    connection.write_all(b"POST /releash.client.v1.ClientService/GetExternalEditor HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nConnect-Protocol-Version: 1\r\nContent-Length: 2\r\n\r\n{}").await.unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(2), started.cancelled())
         .await
         .unwrap();

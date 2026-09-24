@@ -2,8 +2,12 @@ use super::*;
 
 fn registry() -> Subscriptions<u64> {
     let mut state = Subscriptions::new("boot".into());
-    state.register("a".into(), 0, Delivery::Full).unwrap();
-    state.register("b".into(), 0, Delivery::Delta).unwrap();
+    state
+        .register("workspaces".into(), 0, Delivery::Full)
+        .unwrap();
+    state
+        .register("providers".into(), 0, Delivery::Delta)
+        .unwrap();
     state.open("client".into()).unwrap();
     state
 }
@@ -13,8 +17,8 @@ fn test_購読_初期状態と区切りの後に変更が届く() {
     // Given
     let mut state = registry();
     // When
-    state.start("client", "a", None).unwrap();
-    state.publish("a", 1, None).unwrap();
+    state.start("client", "workspaces", None).unwrap();
+    state.publish("workspaces", 1, None).unwrap();
     // Then
     assert!(
         matches!(state.next("client"), Some((_, Event::Snapshot(Version {sequence: 0, ..}, value))) if *value == 0)
@@ -34,22 +38,22 @@ fn test_購読_重複と停止と存在しない対象() {
     // Given
     let mut state = registry();
     // When
-    state.start("client", "a", None).unwrap();
-    state.start("client", "a", None).unwrap();
+    state.start("client", "workspaces", None).unwrap();
+    state.start("client", "workspaces", None).unwrap();
     // Then
     assert_eq!(state.clients["client"].subscriptions.len(), 1);
     assert_eq!(
         state.start("client", "missing", None),
         Err(SubscriptionError::UnknownTarget)
     );
-    state.stop("client", "a").unwrap();
+    state.stop("client", "workspaces").unwrap();
     assert!(state.next("client").is_none());
-    state.publish("a", 1, None).unwrap();
+    state.publish("workspaces", 1, None).unwrap();
     assert!(state.next("client").is_none());
-    state.start("client", "b", None).unwrap();
+    state.start("client", "providers", None).unwrap();
     state.close("client");
     assert_eq!(
-        state.start("client", "a", None),
+        state.start("client", "workspaces", None),
         Err(SubscriptionError::StreamEnded)
     );
 }
@@ -58,13 +62,13 @@ fn test_購読_重複と停止と存在しない対象() {
 fn test_再開_履歴内と古い版と別起動と未来の版() {
     // Given
     let mut state = registry();
-    state.publish("a", 1, None).unwrap();
+    state.publish("workspaces", 1, None).unwrap();
     let version = Version {
         epoch: "boot".into(),
         sequence: 0,
     };
     // When
-    state.start("client", "a", Some(&version)).unwrap();
+    state.start("client", "workspaces", Some(&version)).unwrap();
     // Then
     assert!(matches!(state.next("client"), Some((_, Event::Change(_, _, value))) if *value == 1));
     for version in [
@@ -77,8 +81,8 @@ fn test_再開_履歴内と古い版と別起動と未来の版() {
             sequence: 100,
         },
     ] {
-        state.stop("client", "a").unwrap();
-        state.start("client", "a", Some(&version)).unwrap();
+        state.stop("client", "workspaces").unwrap();
+        state.start("client", "workspaces", Some(&version)).unwrap();
         assert!(
             matches!(state.next("client"), Some((_, Event::Snapshot(_, value))) if *value == 1)
         );
@@ -88,13 +92,13 @@ fn test_再開_履歴内と古い版と別起動と未来の版() {
         ));
     }
     for n in 2..=70 {
-        state.publish("a", n, None).unwrap();
+        state.publish("workspaces", n, None).unwrap();
     }
-    state.stop("client", "a").unwrap();
+    state.stop("client", "workspaces").unwrap();
     state
         .start(
             "client",
-            "a",
+            "workspaces",
             Some(&Version {
                 epoch: "boot".into(),
                 sequence: 0,
@@ -111,22 +115,22 @@ fn test_再開_履歴内と古い版と別起動と未来の版() {
 fn test_送り待ち_溢れた購読のみ再開し他の対象は続く() {
     // Given
     let mut state = registry();
-    state.start("client", "a", None).unwrap();
-    state.start("client", "b", None).unwrap();
+    state.start("client", "workspaces", None).unwrap();
+    state.start("client", "providers", None).unwrap();
     for _ in 0..4 {
         state.next("client").unwrap();
     }
     // When
     for n in 1..=70 {
-        state.publish("a", n, None).unwrap();
+        state.publish("workspaces", n, None).unwrap();
     }
-    state.publish("b", 10, Some(2)).unwrap();
+    state.publish("providers", 10, Some(2)).unwrap();
     // Then
     assert!(
-        matches!(state.next("client"), Some((id, Event::Snapshot(Version {sequence:70,..}, value))) if id == "a" && *value == 70)
+        matches!(state.next("client"), Some((id, Event::Snapshot(Version {sequence:70,..}, value))) if id == "workspaces" && *value == 70)
     );
     assert!(
-        matches!(state.next("client"), Some((id, Event::Change(_, Delivery::Delta, value))) if id == "b" && *value == 2)
+        matches!(state.next("client"), Some((id, Event::Change(_, Delivery::Delta, value))) if id == "providers" && *value == 2)
     );
     assert!(matches!(
         state.next("client"),
@@ -145,14 +149,14 @@ fn test_購読数_上限がなく版は購読し直しても戻らない() {
     let mut state = registry();
     // When
     for n in 0..100 {
-        let id = n.to_string();
+        let id = SubscriptionTarget::Branches(format!("/repo/{n}"), None).to_string();
         state.register(id.clone(), n, Delivery::Full).unwrap();
         state.start("client", &id, None).unwrap();
     }
-    state.publish("a", 5, None).unwrap();
+    state.publish("workspaces", 5, None).unwrap();
     state.close("client");
     state.open("client".into()).unwrap();
-    state.start("client", "a", None).unwrap();
+    state.start("client", "workspaces", None).unwrap();
     // Then
     assert!(matches!(
         state.next("client"),
@@ -169,11 +173,11 @@ fn test_購読数_上限がなく版は購読し直しても戻らない() {
 fn test_再開_送り待ちが溢れても保持した版以降だけを再生する() {
     // Given
     let mut state = registry();
-    state.start("client", "a", None).unwrap();
+    state.start("client", "workspaces", None).unwrap();
     state.next("client").unwrap();
     // When
     for n in 1..=64 {
-        state.publish("a", n, None).unwrap();
+        state.publish("workspaces", n, None).unwrap();
     }
     // Then
     for n in 1..=64 {
@@ -185,11 +189,11 @@ fn test_再開_送り待ちが溢れても保持した版以降だけを再生�
         state.next("client"),
         Some((_, Event::Bookmark(Version { sequence: 64, .. })))
     ));
-    state.stop("client", "a").unwrap();
+    state.stop("client", "workspaces").unwrap();
     state
         .start(
             "client",
-            "a",
+            "workspaces",
             Some(&Version {
                 epoch: "boot".into(),
                 sequence: 64,
@@ -200,7 +204,7 @@ fn test_再開_送り待ちが溢れても保持した版以降だけを再生�
         state.next("client"),
         Some((_, Event::Bookmark(_)))
     ));
-    state.publish("a", 64, None).unwrap();
+    state.publish("workspaces", 64, None).unwrap();
     assert!(state.next("client").is_none());
 }
 
@@ -219,4 +223,251 @@ fn test_失敗分類_subscription_error_理由に対応する() {
         // When / Then
         assert_eq!(error.failure_kind(), expected, "{error:?}");
     }
+}
+
+#[test]
+fn test_監視_共有する購読が全て終了したときだけ不要になる() {
+    // Given
+    let mut state = registry();
+    state.open("other".into()).unwrap();
+    let paths = vec!["/repo".into()];
+    // When
+    state.start("client", "workspaces", None).unwrap();
+    state.start("other", "workspaces", None).unwrap();
+    state.stop("client", "workspaces").unwrap();
+    // Then
+    assert_eq!(
+        state.required_watches(&paths, &[]),
+        [WatchRequirement::Git("/repo".into())].into()
+    );
+    state.close("other");
+    assert!(state.required_watches(&paths, &[]).is_empty());
+}
+
+#[test]
+fn test_購読開始_切断で解放したsnapshotは再取得前に再開しない() {
+    let mut state = registry();
+    state.start("client", "workspaces", None).unwrap();
+    state.close("client");
+    state.release_inactive_snapshots();
+    state.open("next".into()).unwrap();
+    assert_eq!(
+        state.start("next", "workspaces", None),
+        Err(SubscriptionError::UnknownTarget)
+    );
+    state.publish("workspaces", 1, None).unwrap();
+    state.start("next", "workspaces", None).unwrap();
+    assert!(matches!(state.next("next"), Some((_, Event::Snapshot(_, value))) if *value == 1));
+}
+
+#[test]
+fn test_購読開始失敗_切断済みclientの対象を登録せず既存対象を保持する() {
+    // Given
+    let mut state = registry();
+    state
+        .register("repository-paths".into(), 0, Delivery::Full)
+        .unwrap();
+    let target = SubscriptionTarget::Branches("/repo".into(), None);
+    // When
+    assert_eq!(
+        state.start_with_snapshot("closed", &target.to_string(), 1, None),
+        Err(SubscriptionError::StreamEnded)
+    );
+    // Then
+    assert!(!state.registered(&target));
+    assert!(state.registered(&SubscriptionTarget::RepositoryPaths));
+    state
+        .start_with_snapshot("client", &target.to_string(), 1, None)
+        .unwrap();
+    assert!(state.registered(&target));
+}
+
+#[test]
+fn test_branch一覧購読_repository変更を選び監視し変更値を配信する() {
+    // Given
+    let mut state = Subscriptions::new("boot".into());
+    state.open("client".into()).unwrap();
+    let target = SubscriptionTarget::Branches("/repo".into(), Some("feature".into()));
+    let raw = target.to_string();
+    state
+        .start_with_snapshot("client", &raw, vec!["main".to_string()], None)
+        .unwrap();
+    assert!(
+        matches!(state.next("client"), Some((_, Event::Snapshot(_, value))) if *value == ["main"])
+    );
+    state.next("client");
+    // When
+    let source = StateChangeSource::Repository(vec!["/repo".into()]);
+    let selected: Vec<_> = state
+        .active_targets()
+        .into_iter()
+        .filter(|target| target.affected_by(&source))
+        .collect();
+    // Then
+    assert_eq!(selected, vec![target.clone()]);
+    assert!(!target.affected_by(&StateChangeSource::Repository(vec!["/other".into()])));
+    assert_eq!(
+        state.required_watches(&[], &[]),
+        [WatchRequirement::Git("/repo".into())].into()
+    );
+    state
+        .publish(&raw, vec!["main".to_string(), "develop".to_string()], None)
+        .unwrap();
+    assert!(
+        matches!(state.next("client"), Some((id, Event::Change(_, Delivery::Full, value))) if id == raw && *value == ["main", "develop"])
+    );
+    state.stop("client", &raw).unwrap();
+    assert!(state.required_watches(&[], &[]).is_empty());
+}
+
+#[test]
+fn test_repository購読_path一致の各対象だけに変更値を配信する() {
+    for target in [
+        SubscriptionTarget::BranchBase("/repo".into(), "feature".into()),
+        SubscriptionTarget::BranchStatus("/repo".into()),
+        SubscriptionTarget::CurrentBranch("/repo".into()),
+        SubscriptionTarget::Worktrees("/repo".into()),
+        SubscriptionTarget::RepositoryRoot("/repo".into()),
+    ] {
+        // Given
+        let mut state = Subscriptions::new("boot".into());
+        state.open("client".into()).unwrap();
+        let raw = target.to_string();
+        state
+            .start_with_snapshot("client", &raw, "before", None)
+            .unwrap();
+        assert!(
+            matches!(state.next("client"), Some((id, Event::Snapshot(_, value))) if id == raw && *value == "before")
+        );
+        assert!(matches!(
+            state.next("client"),
+            Some((_, Event::Bookmark(_)))
+        ));
+        // When / Then
+        for path in ["/other", "/repo"] {
+            let source = StateChangeSource::Repository(vec![path.into()]);
+            let selected: Vec<_> = state
+                .active_targets()
+                .into_iter()
+                .filter(|candidate| candidate.affected_by(&source))
+                .collect();
+            if path == "/other" {
+                assert!(selected.is_empty(), "{target}");
+            } else {
+                assert_eq!(selected, vec![target.clone()]);
+            }
+            for candidate in selected {
+                state
+                    .publish(&candidate.to_string(), "after", None)
+                    .unwrap();
+            }
+            if path == "/other" {
+                assert!(state.next("client").is_none(), "{target}");
+            } else {
+                assert!(
+                    matches!(state.next("client"), Some((id, Event::Change(version, Delivery::Full, value))) if id == raw && version.sequence == 1 && *value == "after"),
+                    "{target}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn test_購読開始確認_切断後は対象の鍵を解放し他の購読と起動時対象を保持する() {
+    // Given
+    let mut state = registry();
+    state
+        .register("repository-paths".into(), 0, Delivery::Full)
+        .unwrap();
+    state.open("other".into()).unwrap();
+    state.start("other", "providers", None).unwrap();
+    state.start("client", "workspaces", None).unwrap();
+    // When
+    state.close("client");
+    state.release_inactive_snapshots();
+    // Then
+    assert_eq!(
+        state.ensure_active(&SubscriptionTarget::Workspaces),
+        Err(SubscriptionError::StreamEnded)
+    );
+    assert!(!state.registered(&SubscriptionTarget::Workspaces));
+    assert_eq!(state.ensure_active(&SubscriptionTarget::Providers), Ok(()));
+    assert_eq!(
+        state.ensure_active(&SubscriptionTarget::RepositoryPaths),
+        Err(SubscriptionError::StreamEnded)
+    );
+    assert!(state.registered(&SubscriptionTarget::RepositoryPaths));
+}
+
+#[test]
+fn test_provider一覧購読_provider変更だけを選び同じ購読へ更新一覧を配信する() {
+    // Given
+    let mut state = Subscriptions::new("boot".into());
+    state.open("client".into()).unwrap();
+    state
+        .start_with_snapshot("client", "providers", vec!["codex"], None)
+        .unwrap();
+    state
+        .start_with_snapshot("client", "workspaces", vec![], None)
+        .unwrap();
+    for _ in 0..4 {
+        state.next("client");
+    }
+    // When
+    let selected: Vec<_> = state
+        .active_targets()
+        .into_iter()
+        .filter(|target| target.affected_by(&StateChangeSource::Providers))
+        .collect();
+    // Then
+    assert_eq!(selected, vec![SubscriptionTarget::Providers]);
+    assert!(!SubscriptionTarget::Providers.affected_by(&StateChangeSource::ProviderHistory));
+    for target in selected {
+        state
+            .publish(&target.to_string(), vec!["codex", "claude"], None)
+            .unwrap();
+    }
+    assert!(
+        matches!(state.next("client"), Some((id, Event::Change(version, Delivery::Full, value))) if id == "providers" && version.sequence == 1 && *value == ["codex", "claude"])
+    );
+    assert!(state.next("client").is_none());
+}
+
+#[test]
+fn test_開始失敗で解放した対象_再登録時は以前の版を再利用せずsnapshotを届ける() {
+    // Given
+    let mut state = registry();
+    state.start("client", "workspaces", None).unwrap();
+    let (_, initial) = state.next("client").unwrap();
+    let version = initial.version().clone();
+    state.close("client");
+    state.release_inactive_snapshots();
+    // When
+    assert_eq!(
+        state.start_with_snapshot("closed", "workspaces", 1, None),
+        Err(SubscriptionError::StreamEnded)
+    );
+    assert!(!state.registered(&SubscriptionTarget::Workspaces));
+    state.open("next".into()).unwrap();
+    state
+        .start_with_snapshot("next", "workspaces", 2, Some(&version))
+        .unwrap();
+    // Then
+    assert!(
+        matches!(state.next("next"), Some((_, Event::Snapshot(next, value))) if next.epoch != version.epoch && *value == 2)
+    );
+}
+
+#[test]
+fn test_対象の解放_世代番号が尽きたら版を再利用せずエラーにする() {
+    // Given
+    let mut state = registry();
+    state.target_generation = u64::MAX;
+    // When / Then
+    assert_eq!(
+        state.ensure_active(&SubscriptionTarget::Workspaces),
+        Err(SubscriptionError::VersionExhausted)
+    );
+    assert!(state.registered(&SubscriptionTarget::Workspaces));
 }

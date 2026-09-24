@@ -42,7 +42,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useIssues } from "@/hooks/useIssues";
 import { useNotionLabelOptions } from "@/hooks/useNotionLabelOptions";
 import { useNotionTasks } from "@/hooks/useNotionTasks";
-import { invokeClient as invoke } from "@/lib/client";
+import { invokeClient as invoke, subscribeState } from "@/lib/client";
 import { trackEvent } from "@/lib/telemetry";
 import { cn } from "@/lib/utils";
 import type {
@@ -104,35 +104,28 @@ export function CreateWorktreeModal({
 
 	useEffect(() => {
 		if (!open || !selectedRepoPath) return;
-		let alive = true;
 		setLocalBranches([]);
 		setAllBranches([]);
 		setBaseBranch("HEAD");
-		invoke("list_branches", { repoPath: selectedRepoPath })
-			.then((result) => {
-				if (!alive) return;
-				setLocalBranches(result.filter((b) => !b.is_remote));
+		const branches = subscribeState(
+			{ kind: "branches", args: [selectedRepoPath] },
+			(result) => {
+				setLocalBranches(result);
 				const fallback = result.find(
-					(b) => !b.is_remote && (b.name === "main" || b.name === "master"),
+					(branch) => branch.name === "main" || branch.name === "master",
 				);
-				setBaseBranch(fallback?.name ?? "HEAD");
-			})
-			.catch(() => {
-				if (!alive) return;
-				setLocalBranches([]);
-				setBaseBranch("HEAD");
-			});
-		invoke("list_branches_with_status_snapshot", {
-			repoPath: selectedRepoPath,
-		})
-			.then((result) => {
-				if (alive) setAllBranches(result.branches);
-			})
-			.catch(() => {
-				if (alive) setAllBranches([]);
-			});
+				setBaseBranch((current) =>
+					current === "HEAD" ? (fallback?.name ?? "HEAD") : current,
+				);
+			},
+		);
+		const status = subscribeState(
+			{ kind: "branch-status", args: [selectedRepoPath] },
+			(result) => setAllBranches(result.branches),
+		);
 		return () => {
-			alive = false;
+			branches();
+			status();
 		};
 	}, [open, selectedRepoPath]);
 

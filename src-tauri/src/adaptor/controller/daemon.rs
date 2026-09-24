@@ -44,6 +44,10 @@ pub(crate) async fn compose(
     })?;
     let startup_authority =
         Arc::new(usecase::application_startup::ApplicationStartupAuthority::ready());
+    let state_subscriptions = usecase::state_subscription::StateSubscriptionUsecase::new(
+        Vec::new(),
+        Arc::new(adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+    );
     let push_sink = Arc::new(infrastructure::push::PushSink::new());
 
     let projected_local_event_repository: Arc<
@@ -97,9 +101,22 @@ pub(crate) async fn compose(
     };
     let provider_history_home =
         dirs::home_dir().unwrap_or_else(|| data_dir.join("provider-history-unavailable"));
+    let history_paths = vec![
+        std::env::var_os("CLAUDE_CONFIG_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| provider_history_home.join(".claude"))
+            .to_string_lossy()
+            .into_owned(),
+        std::env::var_os("CODEX_HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| provider_history_home.join(".codex"))
+            .to_string_lossy()
+            .into_owned(),
+    ];
     let agent_sessions =
                 adaptor::controller::agent_session_wiring::compose_agent_sessions(
                     adaptor::controller::agent_session_wiring::AgentSessionCompositionInput {
+                        state_publisher: Some(state_subscriptions.publisher()),
                         store: local_event_store.clone(),
                         data_dir: data_dir.clone(),
                         provider_executable_config,
@@ -124,7 +141,7 @@ pub(crate) async fn compose(
                         terminal: terminal_surface.clone(),
                         change_notifier: Arc::new(
                             adaptor::gateway::push::ClientAgentSessionChangeNotifier::new(
-                                push_sink.clone(),
+                                state_subscriptions.publisher(),
                             ),
                         ),
                     },
@@ -179,7 +196,7 @@ pub(crate) async fn compose(
             Arc::new(usecase::worktree_operation::WorktreeOperations::new(Arc::new(
                 adaptor::gateway::repository::worktree_operation::FileWorktreeOperationLocks::new(&data_dir),
             ))),
-        ),
+        ).with_state_publisher(state_subscriptions.publisher()),
     );
 
     use adaptor::controller::state::AppState;
@@ -189,10 +206,6 @@ pub(crate) async fn compose(
     let repo_paths_gateway =
         RepoPathsGateway::new(shared_repo_paths.clone(), config_repository.clone());
 
-    let state_subscriptions = usecase::state_subscription::StateSubscriptionUsecase::new(
-        shared_repo_paths.read().clone(),
-        Arc::new(adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
-    );
     let repo_paths_notifier = Arc::new(
         adaptor::gateway::repository::notify::RepoPathsNotifyGateway::new(
             state_subscriptions.publisher(),
@@ -203,8 +216,16 @@ pub(crate) async fn compose(
         repo_paths_notifier,
     ));
 
+    state_subscriptions.publisher().publish(
+        usecase::state_subscription::REPO_PATHS,
+        usecase::state_subscription::StateValue::RepositoryPaths(shared_repo_paths.read().clone()),
+        None,
+    )?;
     let code_usecase = Arc::new(adaptor::controller::wiring::build_code_usecase());
-    let git_host_usecase = Arc::new(adaptor::controller::wiring::build_git_host_usecase());
+    let git_host_usecase = Arc::new(
+        adaptor::controller::wiring::build_git_host_usecase()
+            .with_state_publisher(state_subscriptions.publisher()),
+    );
     let repository_scanner = Arc::new(
         adaptor::gateway::repository::scanner::DefaultRepositoryScanner::new(
             repository_usecase.clone(),
@@ -222,6 +243,7 @@ pub(crate) async fn compose(
         Arc::new(
             adaptor::gateway::repository::state::ClientRepositoryStateNotifier::new(
                 push_sink.clone(),
+                state_subscriptions.publisher(),
             ),
         ),
         Arc::new(
@@ -272,8 +294,10 @@ pub(crate) async fn compose(
             git_host_usecase.clone(),
         )
         .with_notifier({
-            let push = push_sink.clone();
-            move || crate::adaptor::gateway::push::BackendPush::WorkspaceListChanged.emit(&push)
+            let publisher = state_subscriptions.publisher();
+            move || {
+                publisher.invalidate(domain::state_subscription::StateChangeSource::WorkspaceList)
+            }
         }),
     );
     let app_state = AppState {
@@ -291,11 +315,10 @@ pub(crate) async fn compose(
     let workflow_runtime_usecase = Arc::new(
         adaptor::controller::wiring::build_workflow_runtime_usecase(
             adaptor::gateway::workflow::workflow_host::WorkflowRuntimeDependencies {
-                processes: node_processes.clone(),
                 store: Some(local_event_store.clone()),
                 config: Some(config_repository.clone()),
                 secrets: Some(config_secret_repository.clone()),
-                push: push_sink.clone(),
+                state_changes: state_subscriptions.publisher(),
             },
             adaptor::gateway::workflow::WorkflowRuntimeCommandGatewayDeps {
                 node_processes,
@@ -355,10 +378,9 @@ pub(crate) async fn compose(
     let local_api_binding =
         infrastructure::local_api::LocalApiServerBinding::bind(data_dir.clone())
             .map_err(|error| format!("local API の起動に失敗しました: {error}"))?;
-    let mut client_dispatch = adaptor::controller::client::ClientCommandDispatch::new(
-        repository_usecase.clone(),
-        startup_authority.clone(),
-    );
+    let mut client_dispatch =
+        adaptor::controller::client::ClientCommandDispatch::new(startup_authority.clone())
+            .with_state_publisher(state_subscriptions.publisher());
     let dependencies = super::client::ClientDependencies {
         application_startup_authority: Some(startup_authority),
         workspace_node_command_usecase: Some(workspace_node_command_usecase),
@@ -380,7 +402,8 @@ pub(crate) async fn compose(
                 adaptor::gateway::repository::file_watcher::FileWatcherGateway::new(
                     file_watchers,
                     push_sink.clone(),
-                ),
+                )
+                .with_state_publisher(state_subscriptions.publisher()),
             ),
         )),
         data_dir: Ok(data_dir),
@@ -391,6 +414,45 @@ pub(crate) async fn compose(
             adaptor::gateway::application_lifecycle::DaemonProcessActionPort(exit_sender),
         ),
     };
+    let state_subscriptions = state_subscriptions.with_reads(
+        Arc::new(usecase::state_subscription::WorkspaceStateReads {
+            repositories: dependencies
+                .app_state
+                .as_ref()
+                .unwrap()
+                .repo_paths_usecase
+                .clone(),
+            repository: repository_usecase.clone(),
+            repository_state: dependencies
+                .app_state
+                .as_ref()
+                .unwrap()
+                .repository_state
+                .clone(),
+            workflow: workflow_usecase.clone(),
+            workspaces: dependencies
+                .app_state
+                .as_ref()
+                .unwrap()
+                .workspace_list
+                .clone(),
+            sessions: dependencies.agent_session_read_usecase.clone().unwrap(),
+            history: dependencies
+                .agent_session_history_read_usecase
+                .clone()
+                .unwrap(),
+            providers: dependencies.provider_availability_usecase.clone().unwrap(),
+            git_host: dependencies
+                .app_state
+                .as_ref()
+                .unwrap()
+                .git_host_usecase
+                .clone(),
+            workspace_state: dependencies.workspace_state_store.clone().unwrap(),
+        }),
+        Some(dependencies.watcher.clone()),
+        history_paths,
+    );
     client_dispatch.register_dependencies(&dependencies);
     let client_dispatch = Arc::new(client_dispatch);
 

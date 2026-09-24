@@ -66,7 +66,7 @@ impl From<FileDiffStat> for FileDiffStatDto {
 /// worktree 識別情報（`domain::repository::Worktree`）に `dirty_count`（status 由来）と
 /// `base_branch`（git_config 由来）を合成した表示・転送向けモデル。単一 Entity の 1:1 写像では
 /// なく、複数集約を usecase が合成して組み立てる read model であり domain Entity ではない。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WorktreeEntryDto {
     pub name: String,
     pub path: String,
@@ -83,7 +83,7 @@ pub struct WorktreeEntryDto {
 /// domain Entity ではない。Query 経路（[`BranchCardQuery`](super::repository_query_service::BranchCardQuery)）の
 /// gateway 実装がデータソース（git2）から直接組み立てる。PR 情報（別ドメイン git_host 由来）は
 /// この repository read model には含めず、呼び出し側が別途取得・合成する。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BranchCardDto {
     pub name: String,
     pub is_main_worktree: bool,
@@ -99,7 +99,7 @@ pub struct BranchCardDto {
 
 /// 管理 UI の worktree 表示先。分類は backend が確定し、client は
 /// 返された一覧をそのまま描画する。
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, PartialEq)]
 pub struct WorktreeDisplayGroupsDto {
     /// 通常一覧に出す worktree card。
     pub working_areas: Vec<BranchCardDto>,

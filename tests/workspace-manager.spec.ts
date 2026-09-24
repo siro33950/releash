@@ -45,10 +45,10 @@ test.describe("Workspace Manager", () => {
 		page,
 	}) => {
 		const config = buildMockConfig({
-			list_worktrees: [],
-			list_branches_with_status: [],
-			get_main_repo_path: { __mockError: "not a git repo" },
-			repository_paths: [],
+			"worktrees": [],
+			"workspaceBranches": [],
+			"startup-repository": { __mockError: "not a git repo" },
+			"repository-paths": [],
 		});
 		await setupTauriMock(page, config);
 		await waitForApp(page);
@@ -63,7 +63,7 @@ test.describe("Workspace Manager", () => {
 		page,
 	}) => {
 		const config = buildMockConfig({
-			list_branches_with_status: kanbanBranches,
+			"workspaceBranches": kanbanBranches,
 		});
 		await setupTauriMock(page, config);
 		await waitForApp(page);
@@ -77,10 +77,10 @@ test.describe("Workspace Manager", () => {
 		page,
 	}) => {
 		const config = buildMockConfig({
-			list_branches_with_status: kanbanBranches.filter(
+			"workspaceBranches": kanbanBranches.filter(
 				(branch) => branch.name === "feat/wip",
 			),
-			list_workspace_worktree_nodes: {
+			"workspaceTree": {
 				nodes: [
 					{
 						kind: "node",
@@ -117,10 +117,10 @@ test.describe("Workspace Manager", () => {
 	}) => {
 		const worktreePath = "/test/repo-worktrees/feat-wip";
 		const config = buildMockConfig({
-			list_branches_with_status: kanbanBranches.filter(
+			"workspaceBranches": kanbanBranches.filter(
 				(branch) => branch.name === "feat/wip",
 			),
-			list_workspace_worktree_nodes: {
+			"workspaceTree": {
 				nodes: [
 					{
 						kind: "sequence",
@@ -202,13 +202,13 @@ test.describe("Workspace Manager", () => {
 		const worktreePath = "/test/repo-worktrees/feat-wip";
 		const agentSessionId = "agent-session-new";
 		const config = buildMockConfig({
-			list_branches_with_status: kanbanBranches.filter(
+			"workspaceBranches": kanbanBranches.filter(
 				(branch) => branch.name === "feat/wip",
 			),
-			list_available_agent_session_providers: ["codex"],
+			"providers": ["codex"],
 			create_agent_session: agentSessionId,
-			get_workspace_session_node_id: agentSessionId,
-			get_workspace_node_detail: {
+			"session-node": agentSessionId,
+			"node-detail": {
 				processPresence: "unknown",
 				statusClassification: "active",
 				id: agentSessionId,
@@ -225,10 +225,10 @@ test.describe("Workspace Manager", () => {
 				hasArtifact: false,
 				content: { kind: "session", sessionId: agentSessionId },
 			},
-			get_agent_session: agentSession(agentSessionId, worktreePath),
+			"agent-session": agentSession(agentSessionId, worktreePath),
 			open_agent_session: "attached",
 		});
-		await setupTauriMock(page, config);
+		const client = await setupTauriMock(page, config);
 		await waitForApp(page);
 
 		await page.getByTestId("worktree-item-feat/wip").hover();
@@ -270,10 +270,8 @@ test.describe("Workspace Manager", () => {
 		const invocations = await page.evaluate(
 			() => window.__RELEASH_BACKEND__?.invocations ?? [],
 		);
-		expect(invocations).toContainEqual({
-			cmd: "get_agent_session",
-			args: { agentSessionId },
-		});
+		expect(client.stateRequests).toContain(JSON.stringify(["agent-session", [agentSessionId]]));
+		expect(client.clientRequests.some(({command}) => command === "get_agent_session")).toBe(false);
 		expect(
 			invocations.some((entry) => entry.cmd === "open_agent_session"),
 		).toBe(false);
@@ -307,7 +305,7 @@ test.describe("Workspace Manager", () => {
 			worktreePath,
 		);
 		const config = buildMockConfig({
-			list_worktrees: [
+			"worktrees": [
 				{
 					name: "feat-wip",
 					is_main: false,
@@ -318,23 +316,22 @@ test.describe("Workspace Manager", () => {
 					branch: "feat/wip",
 				},
 			],
-			list_branches_with_status: kanbanBranches.filter(
+			"workspaceBranches": kanbanBranches.filter(
 				(branch) => branch.name === "feat/wip",
 			),
-			list_workspace_worktree_nodes: {
+			"workspaceTree": {
 				nodes: [],
 				archivedSessions: [],
 				preferredNodeId: null,
 			},
 		});
-		await setupTauriMock(page, config);
+		const client = await setupTauriMock(page, config);
 		await waitForApp(page);
 		await expect(page.getByText("No sessions or workflows")).toBeVisible();
 
 		await page.evaluate(
 			({ worktreePath, workflowNode, firstWorkflowSession }) => {
-				window.__RELEASH_BACKEND__?.setMockResponse(
-					"list_workspace_worktree_nodes",
+				window.__RELEASH_BACKEND__?.setWorkspaceTree(
 					{
 						nodes: [
 							{
@@ -354,8 +351,7 @@ test.describe("Workspace Manager", () => {
 						preferredNodeId: workflowNode.id,
 					},
 				);
-				window.__RELEASH_BACKEND__?.setMockResponse(
-					"get_workspace_node_detail",
+				window.__RELEASH_BACKEND__?.setState("node-detail",
 					{
 						processPresence: "unknown",
 						statusClassification: "active",
@@ -373,18 +369,12 @@ test.describe("Workspace Manager", () => {
 						},
 					},
 				);
-				window.__RELEASH_BACKEND__?.setMockResponse(
-					"get_agent_session",
+				window.__RELEASH_BACKEND__?.setState("agent-session",
 					firstWorkflowSession,
 				);
 				window.__RELEASH_BACKEND__?.setMockResponse(
 					"open_agent_session",
 					"attached",
-				);
-				window.dispatchEvent(
-					new CustomEvent("workspace-tree-refresh", {
-						detail: { worktreePath },
-					}),
 				);
 			},
 			{
@@ -393,6 +383,8 @@ test.describe("Workspace Manager", () => {
 				firstWorkflowSession,
 			},
 		);
+
+		await client.refreshStates();
 
 		await expect
 			.poll(() =>
@@ -421,10 +413,10 @@ test.describe("Workspace Manager", () => {
 		const worktreePath = "/test/repo-worktrees/feat-wip";
 		const agentSessionId = "agent-session-workflow";
 		const config = buildMockConfig({
-			list_branches_with_status: kanbanBranches.filter(
+			"workspaceBranches": kanbanBranches.filter(
 				(branch) => branch.name === "feat/wip",
 			),
-			list_workspace_worktree_nodes: {
+			"workspaceTree": {
 				nodes: [
 					{
 						kind: "sequence",
@@ -459,7 +451,7 @@ test.describe("Workspace Manager", () => {
 				archivedSessions: [],
 				preferredNodeId: null,
 			},
-			get_workspace_node_detail: {
+			"node-detail": {
 				processPresence: "unknown",
 				statusClassification: "attention",
 				id: "node-workflow-session",
@@ -476,7 +468,7 @@ test.describe("Workspace Manager", () => {
 				hasArtifact: false,
 				content: { kind: "session", sessionId: agentSessionId },
 			},
-			get_agent_session: agentSession(agentSessionId, worktreePath),
+			"agent-session": agentSession(agentSessionId, worktreePath),
 			open_agent_session: "attached",
 		});
 		await setupTauriMock(page, config);
@@ -522,10 +514,10 @@ test.describe("Workspace Manager", () => {
 		page,
 	}) => {
 		const config = buildMockConfig({
-			list_branches_with_status: kanbanBranches.filter(
+			"workspaceBranches": kanbanBranches.filter(
 				(branch) => branch.name === "feat/wip",
 			),
-			list_workspace_worktree_nodes: {
+			"workspaceTree": {
 				nodes: [
 					{
 						kind: "sequence",
@@ -594,10 +586,10 @@ test.describe("Workspace Manager", () => {
 		page,
 	}) => {
 		const config = buildMockConfig({
-			list_branches_with_status: kanbanBranches.filter(
+			"workspaceBranches": kanbanBranches.filter(
 				(branch) => branch.name === "feat/wip",
 			),
-			list_workspace_worktree_nodes: {
+			"workspaceTree": {
 				nodes: [
 					{
 						kind: "sequence",
@@ -641,7 +633,7 @@ test.describe("Workspace Manager", () => {
 				archivedSessions: [],
 				preferredNodeId: null,
 			},
-			get_workspace_node_detail: {
+			"node-detail": {
 				processPresence: "unknown",
 				statusClassification: "idle",
 				id: "node-command-opaque",
@@ -764,14 +756,14 @@ test.describe("Workspace Manager", () => {
 			preferredNodeId: fallbackNodeId,
 		};
 		const config = buildMockConfig({
-			list_branches_with_status: kanbanBranches.filter(
+			"workspaceBranches": kanbanBranches.filter(
 				(branch) => branch.name === "feat/wip",
 			),
-			list_workspace_worktree_nodes: initialSnapshot,
-			get_workspace_tree_selection_reconciliation:
+			"workspaceTree": initialSnapshot,
+			"selection":
 				workspaceTreeReconciliation(reconciledSnapshot),
 			archive_workspace_workflow_execution: null,
-			get_workspace_node_detail: {
+			"node-detail": {
 				processPresence: "unknown",
 				statusClassification: "idle",
 				id: selectedNodeId,
@@ -791,13 +783,13 @@ test.describe("Workspace Manager", () => {
 					sessionId: "agent-session-archive-selected",
 				},
 			},
-			get_agent_session: agentSession(
+			"agent-session": agentSession(
 				"agent-session-archive-selected",
 				worktreePath,
 			),
 			open_agent_session: "attached",
 		});
-		await setupTauriMock(page, config);
+		const client = await setupTauriMock(page, config);
 		await waitForApp(page);
 
 		await page.getByRole("button", { name: "Archive selected, idle" }).click();
@@ -811,11 +803,14 @@ test.describe("Workspace Manager", () => {
 			})
 			.hover();
 		await page.evaluate((snapshot) => {
-			window.__RELEASH_BACKEND__?.setMockResponse(
-				"list_workspace_worktree_nodes",
-				snapshot,
-			);
-		}, reconciledSnapshot);
+            const backend = window.__RELEASH_BACKEND__!;
+            const execute = backend.execute;
+            backend.execute = async (command, args) => {
+                const result = await execute(command, args);
+                if (command === "archive_workspace_workflow_execution") backend.setWorkspaceTree( snapshot);
+                return result;
+            };
+        }, reconciledSnapshot);
 
 		await page
 			.getByRole("button", { name: "Archive Archivable integration workflow" })
@@ -824,20 +819,9 @@ test.describe("Workspace Manager", () => {
 		await expect(
 			page.getByRole("button", { name: "Archive fallback, active" }),
 		).toHaveAttribute("aria-current", "page");
-		const reconciliationInvocations = await page.evaluate(
-			() =>
-				window.__RELEASH_BACKEND__?.invocations.filter(
-					(entry) =>
-						entry.cmd === "get_workspace_tree_selection_reconciliation",
-				) ?? [],
-		);
-		expect(reconciliationInvocations).toEqual([
-			{
-				cmd: "get_workspace_tree_selection_reconciliation",
-				args: { worktreePath, selectedNodeId },
-			},
-		]);
-	});
+        expect(client.stateRequests).toContain(JSON.stringify(["selection", [worktreePath, selectedNodeId]]));
+        expect(client.clientRequests.some(({command}) => command === "get_workspace_tree_selection_reconciliation")).toBe(false);
+    });
 
 	test("a later occurrence appends without replacing the selected past occurrence", async ({
 		page,
@@ -872,15 +856,15 @@ test.describe("Workspace Manager", () => {
 			children: [firstOccurrence],
 		};
 		const config = buildMockConfig({
-			list_branches_with_status: kanbanBranches.filter(
+			"workspaceBranches": kanbanBranches.filter(
 				(branch) => branch.name === "feat/wip",
 			),
-			list_workspace_worktree_nodes: {
+			"workspaceTree": {
 				nodes: [workflowSummary],
 				archivedSessions: [],
 				preferredNodeId: null,
 			},
-			get_workspace_node_detail: {
+			"node-detail": {
 				processPresence: "unknown",
 				statusClassification: "active",
 				id: "occurrence-a-1",
@@ -900,10 +884,10 @@ test.describe("Workspace Manager", () => {
 					sessionId: "agent-session-loop-a-1",
 				},
 			},
-			get_agent_session: agentSession("agent-session-loop-a-1", worktreePath),
+			"agent-session": agentSession("agent-session-loop-a-1", worktreePath),
 			open_agent_session: "attached",
 		});
-		await setupTauriMock(page, config);
+		const client = await setupTauriMock(page, config);
 		await waitForApp(page);
 		const firstRow = page.getByRole("button", {
 			name: "Loop step, active",
@@ -946,7 +930,7 @@ test.describe("Workspace Manager", () => {
 					status: "active",
 					updatedAt: 3000,
 				};
-				internals.setMockResponse("list_workspace_worktree_nodes", {
+				internals.setWorkspaceTree( {
 					nodes: [
 						{
 							...workflowSummary,
@@ -957,7 +941,7 @@ test.describe("Workspace Manager", () => {
 					archivedSessions: [],
 					preferredNodeId: "occurrence-a-2",
 				});
-				internals.setMockResponse("get_workspace_node_detail", {
+				internals.setState("node-detail", {
 					processPresence: "unknown",
 					statusClassification: "idle",
 					id: "occurrence-a-1",
@@ -977,14 +961,11 @@ test.describe("Workspace Manager", () => {
 						sessionId: "agent-session-loop-a-1",
 					},
 				});
-				window.dispatchEvent(
-					new CustomEvent("workspace-tree-refresh", {
-						detail: { worktreePath },
-					}),
-				);
 			},
 			{ worktreePath, workflowSummary, firstOccurrence },
 		);
+
+		await client.refreshStates();
 
 		const completedFirstRow = page.getByRole("button", {
 			name: "Loop step, idle",
@@ -1010,7 +991,7 @@ test.describe("Workspace Manager", () => {
 			({ worktreePath, secondSession }) => {
 				const internals = window.__RELEASH_BACKEND__;
 				if (!internals) throw new Error("Tauri mock not initialized");
-				internals.setMockResponse("get_workspace_node_detail", {
+				internals.setState("node-detail", {
 					processPresence: "unknown",
 					statusClassification: "active",
 					id: "occurrence-a-2",
@@ -1030,7 +1011,7 @@ test.describe("Workspace Manager", () => {
 						sessionId: "agent-session-loop-a-2",
 					},
 				});
-				internals.setMockResponse("get_agent_session", secondSession);
+				internals.setState("agent-session", secondSession);
 			},
 			{ worktreePath, secondSession },
 		);
@@ -1055,8 +1036,8 @@ test.describe("Workspace Manager", () => {
 test.describe("CreateWorktreeModal", () => {
 	test("Add worktree ボタンでモーダルが開く", async ({ page }) => {
 		const config = buildMockConfig({
-			list_branches_with_status: kanbanBranches,
-			list_branches: branchList,
+			"workspaceBranches": kanbanBranches,
+			"branches": branchList,
 		});
 		await setupTauriMock(page, config);
 		await waitForApp(page);
@@ -1070,8 +1051,8 @@ test.describe("CreateWorktreeModal", () => {
 
 	test("Branch タブでブランチ一覧がフィルタリングされる", async ({ page }) => {
 		const config = buildMockConfig({
-			list_branches_with_status: kanbanBranches,
-			list_branches: branchList,
+			"workspaceBranches": kanbanBranches,
+			"branches": branchList,
 		});
 		await setupTauriMock(page, config);
 		await waitForApp(page);
@@ -1100,8 +1081,8 @@ test.describe("CreateWorktreeModal", () => {
 
 	test("Cancel ボタンでモーダルが閉じる", async ({ page }) => {
 		const config = buildMockConfig({
-			list_branches_with_status: kanbanBranches,
-			list_branches: branchList,
+			"workspaceBranches": kanbanBranches,
+			"branches": branchList,
 		});
 		await setupTauriMock(page, config);
 		await waitForApp(page);
@@ -1122,8 +1103,8 @@ test.describe("CreateWorktreeModal", () => {
 		page,
 	}) => {
 		const config = buildMockConfig({
-			list_branches_with_status: kanbanBranches,
-			list_branches: branchList,
+			"workspaceBranches": kanbanBranches,
+			"branches": branchList,
 		});
 		await setupTauriMock(page, config);
 		await waitForApp(page);
@@ -1149,10 +1130,10 @@ test.describe("CreateWorktreeModal", () => {
 	});
 });
 
-test("worktree作成完了のfrontend通知で一覧を再取得し新しいworktreeを表示する", async ({ page }) => {
+test("worktree作成後の購読配信で新しいworktreeを表示する", async ({ page }) => {
 	const created = { ...kanbanBranches[0], name: "feat/created", worktree_path: "/test/repo-worktrees/created" };
 	await setupTauriMock(page, buildMockConfig({
-		list_branches_with_status: kanbanBranches,
+		"workspaceBranches": kanbanBranches,
 		create_worktree: { name: "created", path: created.worktree_path, branch: created.name, is_main: false, is_locked: false, dirty_count: 0, base_branch: "main" },
 	}));
 	await waitForApp(page);
@@ -1162,7 +1143,7 @@ test("worktree作成完了のfrontend通知で一覧を再取得し新しいwork
 		const execute = backend.execute;
 		backend.execute = async (command, args) => {
 			const result = await execute(command, args);
-			if (command === "create_worktree") backend.setMockResponse("list_branches_with_status", [...branches, created]);
+			if (command === "create_worktree") backend.setWorkspaceBranches( [...branches, created]);
 			return result;
 		};
 	}, { created, branches: kanbanBranches });
@@ -1173,8 +1154,8 @@ test("worktree作成完了のfrontend通知で一覧を再取得し新しいwork
 	const calls = await page.evaluate(() => window.__RELEASH_BACKEND__!.invocations.map(({ cmd }) => cmd));
 	const creation = calls.indexOf("create_worktree");
 	expect(creation).toBeGreaterThanOrEqual(0);
-	expect(calls.slice(creation + 1)).toContain("list_branches_with_status_snapshot");
-    expect(await page.evaluate(() => performance.getEntriesByName("worktree-created-notification").length)).toBe(1);
+	expect(calls.slice(creation + 1)).not.toContain("list_branches_with_status_snapshot");
+    expect(await page.evaluate(() => performance.getEntriesByName("worktree-created-notification").length)).toBe(0);
 	const ipc = await page.evaluate(() => window.__TAURI_INTERNALS__!.ipcInvocations);
 	expect(ipc.some(({ cmd }) => cmd === "plugin:event|emit" || cmd === "create_worktree")).toBe(false);
 });
@@ -1183,8 +1164,8 @@ test("worktree作成完了のfrontend通知で一覧を再取得し新しいwork
 test("Archiveの画面確認後は期限を超えても共通操作の完了を一度だけ待つ", async ({page}) => {
     const branch = kanbanBranches.find(branch => branch.name === "feat/wip")!;
     await setupTauriMock(page, buildMockConfig({
-        list_branches_with_status: [branch],
-        list_workspace_worktree_nodes: {nodes: [{kind: "node", processPresence: "unknown", id: "archive-session", title: "Late Archive", status: "idle", contentKind: "session", capabilities: {canRename: false, canApprove: false, canRetry: false, canResumeSession: false}, workflowCapabilities: {canAbort: true, canArchive: true}, sessionCapabilities: {sessionRef: "archive-session", canArchive: true, canDelete: false}, pastAttempts: [], pastAttemptsCollapsed: false, updatedAt: 1}], archivedSessions: [], preferredNodeId: null},
+        "workspaceBranches": [branch],
+        "workspaceTree": {nodes: [{kind: "node", processPresence: "unknown", id: "archive-session", title: "Late Archive", status: "idle", contentKind: "session", capabilities: {canRename: false, canApprove: false, canRetry: false, canResumeSession: false}, workflowCapabilities: {canAbort: true, canArchive: true}, sessionCapabilities: {sessionRef: "archive-session", canArchive: true, canDelete: false}, pastAttempts: [], pastAttemptsCollapsed: false, updatedAt: 1}], archivedSessions: [], preferredNodeId: null},
         archive_workspace_workflow_execution: null,
     }));
     await waitForApp(page);
@@ -1196,7 +1177,7 @@ test("Archiveの画面確認後は期限を超えても共通操作の完了を�
             const result = await execute(command, args);
             if (command === "archive_workspace_workflow_execution") {
                 await new Promise<void>(resolve => window.addEventListener("finish-archive", () => resolve(), {once: true}));
-                backend.setMockResponse("list_workspace_worktree_nodes", {nodes: [], archivedSessions: [], preferredNodeId: null});
+                backend.setWorkspaceTree( {nodes: [], archivedSessions: [], preferredNodeId: null});
             }
             return result;
         };

@@ -42,11 +42,11 @@ import { useAutomation } from "@/hooks/useAutomation";
 import { useClientRefresh } from "@/hooks/useClientRefresh";
 import { useNotionSettings } from "@/hooks/useNotionSettings";
 import { useProviderAvailabilitySettings } from "@/hooks/useProviderAvailabilitySettings";
+import { useStateSubscription } from "@/hooks/useStateSubscription";
 import { invokeClient as invoke } from "@/lib/client";
 import { getErrorMessage } from "@/lib/errorMessage";
 import { setPerformanceTelemetryEnabled, trackEvent } from "@/lib/telemetry";
 import { cn } from "@/lib/utils";
-import type { BranchInfo } from "@/types/git";
 import type { AppSettings, DiffBase, DiffMode, Theme } from "@/types/settings";
 import { AutomationSection } from "./AutomationSection";
 import { DeleteConfirmDialog } from "./DeleteConfirmDialog";
@@ -389,7 +389,11 @@ function RepoBaseBranchItem({
 	) => void;
 }) {
 	const refresh = useClientRefresh();
-	const [branches, setBranches] = useState<BranchInfo[]>([]);
+	const branchValues = useStateSubscription({
+		kind: "branches",
+		args: [repoPath],
+	});
+	const branches = branchValues ?? [];
 	const [selectedBase, setSelectedBase] = useState("");
 	const [initialBase, setInitialBase] = useState("");
 	const dirty = useRef(false);
@@ -401,13 +405,9 @@ function RepoBaseBranchItem({
 		setLoading(true);
 		setError(null);
 
-		Promise.all([
-			invoke("list_branches", { repoPath }),
-			invoke("get_releash_base", { repoPath }),
-		])
-			.then(([branchList, currentBase]) => {
+		invoke("get_releash_base", { repoPath })
+			.then((currentBase) => {
 				if (refresh.aborted) return;
-				setBranches(branchList.filter((b) => !b.is_remote));
 				const base = currentBase ?? "";
 				if (!dirty.current) {
 					setSelectedBase(base);

@@ -17,14 +17,13 @@ pub(crate) struct AgentSessionHistoryCandidateDto {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AgentSessionHistoryPageDto {
     pub(crate) items: Vec<AgentSessionHistoryCandidateDto>,
-    pub(crate) next_after: Option<String>,
+    pub(crate) has_more: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AgentSessionHistoryRequest {
     pub(crate) worktree_path: String,
-    pub(crate) limit: usize,
-    pub(crate) after: Option<String>,
+    pub(crate) visible_count: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

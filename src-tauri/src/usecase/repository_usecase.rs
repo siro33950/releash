@@ -36,6 +36,7 @@ pub trait WorktreeExecutionArchiver: Send + Sync {
 
 #[derive(Clone)]
 pub struct RepositoryUsecase {
+    state_publisher: Option<crate::usecase::state_subscription::StateSubscriptionPublisher>,
     branch: Arc<dyn BranchRepository>,
     status: Arc<dyn StatusRepository>,
     worktree: Arc<dyn WorktreeRepository>,
@@ -46,6 +47,14 @@ pub struct RepositoryUsecase {
 }
 
 impl RepositoryUsecase {
+    pub(crate) fn with_state_publisher(
+        mut self,
+        publisher: crate::usecase::state_subscription::StateSubscriptionPublisher,
+    ) -> Self {
+        self.state_publisher = Some(publisher);
+        self
+    }
+
     pub(crate) fn worktree_operations(&self) -> Arc<super::worktree_operation::WorktreeOperations> {
         self.query.worktree_operations.clone()
     }
@@ -61,6 +70,7 @@ impl RepositoryUsecase {
         query: RepositoryQueryService,
     ) -> Self {
         Self {
+            state_publisher: None,
             branch,
             status,
             worktree,
@@ -68,6 +78,14 @@ impl RepositoryUsecase {
             locator,
             worktree_terminals,
             query,
+        }
+    }
+
+    fn notify_repository_changed(&self, path: &str) {
+        if let Some(publisher) = &self.state_publisher {
+            publisher.invalidate(
+                crate::domain::state_subscription::StateChangeSource::Repository(vec![path.into()]),
+            );
         }
     }
 
@@ -260,6 +278,7 @@ impl RepositoryUsecase {
                 .set_branch_base_override(repo_path, branch, Some(base))?;
         }
         // 新規作成直後は dirty_count = 0、base_branch は指定値（旧 gateway 戻り値と等価）。
+        self.notify_repository_changed(repo_path);
         Ok(WorktreeEntryDto {
             name: wt.name,
             path: to_canonical_forward_slash(&wt.path),
@@ -309,6 +328,7 @@ impl RepositoryUsecase {
                 branch,
             },
         )?;
+        self.notify_repository_changed(repo_path);
         let repository = self.clone();
         let repo_path = repo_path.to_string();
         tokio::task::spawn_blocking(move || {
@@ -356,6 +376,7 @@ impl RepositoryUsecase {
         base: Option<&str>,
     ) -> Result<(), UsecaseError> {
         self.git_config.set_releash_base(repo_path, base)?;
+        self.notify_repository_changed(repo_path);
         Ok(())
     }
 
@@ -367,6 +388,7 @@ impl RepositoryUsecase {
     ) -> Result<(), UsecaseError> {
         self.git_config
             .set_branch_base_override(repo_path, branch_name, base)?;
+        self.notify_repository_changed(repo_path);
         Ok(())
     }
 
@@ -1620,5 +1642,53 @@ mod repository_usecase_tests {
         assert!(fake.archived_worktrees.lock().is_empty());
         assert!(fake.removed_worktrees.lock().is_empty());
         assert!(fake.operations.mutate("/wt").is_ok());
+    }
+    #[tokio::test]
+    async fn test_repository更新_操作成功後だけ購読へ通知する() {
+        use crate::domain::state_subscription::StateChangeSource;
+        // Given
+        let fake = Arc::new(<FakeRepo as Default>::default());
+        let publisher = crate::usecase::state_subscription::StateSubscriptionPublisher::for_test();
+        let mut changes = publisher.subscribe_changes();
+        let uc = usecase(fake.clone()).with_state_publisher(publisher.clone());
+        // When / Then
+        uc.create_worktree("/repo", "feature", true, None).unwrap();
+        assert_eq!(
+            changes.try_recv().unwrap(),
+            StateChangeSource::Repository(vec!["/repo".into()])
+        );
+        uc.set_releash_base("/repo", Some("main")).unwrap();
+        assert_eq!(
+            changes.try_recv().unwrap(),
+            StateChangeSource::Repository(vec!["/repo".into()])
+        );
+        uc.set_branch_base_override("/repo", "feature", Some("main"))
+            .unwrap();
+        assert_eq!(
+            changes.try_recv().unwrap(),
+            StateChangeSource::Repository(vec!["/repo".into()])
+        );
+        uc.remove_worktree(fake.as_ref(), "/repo", "/wt", false)
+            .await
+            .unwrap();
+        assert_eq!(
+            changes.try_recv().unwrap(),
+            StateChangeSource::Repository(vec!["/repo".into()])
+        );
+        fake.wait_for_deletion("/wt").await;
+        let failed = Arc::new(FakeRepo {
+            fail_create_worktree: true,
+            fail_validate_removal: true,
+            ..Default::default()
+        });
+        let failed_uc = usecase(failed.clone()).with_state_publisher(publisher);
+        assert!(failed_uc
+            .create_worktree("/repo", "feature", true, None)
+            .is_err());
+        assert!(failed_uc
+            .remove_worktree(failed.as_ref(), "/repo", "/wt", false)
+            .await
+            .is_err());
+        assert!(changes.try_recv().is_err());
     }
 }

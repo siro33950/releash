@@ -86,7 +86,7 @@ impl RepositorySnapshotParts {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct RepositoryBranchCardsSnapshotDto {
     pub version: u64,
     pub stale: bool,

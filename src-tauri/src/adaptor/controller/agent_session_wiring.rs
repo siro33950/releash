@@ -28,6 +28,8 @@ use crate::usecase::provider_lifecycle::{
 use crate::usecase::terminal_surface::application::TerminalSurfaceApplication;
 
 pub(crate) struct AgentSessionCompositionInput {
+    pub(crate) state_publisher:
+        Option<crate::usecase::state_subscription::StateSubscriptionPublisher>,
     pub(crate) store: Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>,
     pub(crate) data_dir: PathBuf,
     pub(crate) provider_executable_config: Arc<dyn ProviderExecutableConfigRepository>,
@@ -307,10 +309,14 @@ pub(crate) fn compose_agent_sessions(
         input.data_dir,
         input.cli_binary,
     ));
-    let provider_availability = Arc::new(ProviderAvailabilityUsecase::initialize(
+    let mut provider_availability = ProviderAvailabilityUsecase::initialize(
         input.provider_executable_config,
         input.provider_executable_probe,
-    )?);
+    )?;
+    if let Some(publisher) = input.state_publisher {
+        provider_availability = provider_availability.with_state_publisher(publisher);
+    }
+    let provider_availability = Arc::new(provider_availability);
     let availability_reader: Arc<dyn ProviderAvailabilityReader> = provider_availability.clone();
     let history_gateway = Arc::new(LocalAgentSessionHistoryGateway::new(
         input.claude_config_dir,

@@ -99,7 +99,7 @@ impl WorkspaceListQueryService for FakeQuery {
         }
         result.map_err(WorkspaceListUsecaseError)
     }
-    fn pr_status(&self, path: &str) -> Result<PrStatus, WorkspaceListUsecaseError> {
+    fn pr_status(&self, path: &str, _force: bool) -> Result<PrStatus, WorkspaceListUsecaseError> {
         let hook = self.on_pr.lock().clone();
         if let Some(hook) = hook {
             hook(path);
@@ -969,7 +969,8 @@ async fn test_pr反映通知_現行世代だけ通知し古い世代と削除済
         tokio::time::timeout(Duration::from_secs(2), started.notified())
             .await
             .unwrap();
-        assert_eq!(notifications.load(Ordering::SeqCst), 1);
+        let before_pr = notifications.load(Ordering::SeqCst);
+        assert_eq!(before_pr, 3);
 
         // When
         match outcome {
@@ -995,7 +996,7 @@ async fn test_pr反映通知_現行世代だけ通知し古い世代と削除済
         // Then
         assert_eq!(
             notifications.load(Ordering::SeqCst),
-            if outcome == "current" { 2 } else { 1 }
+            before_pr + usize::from(outcome == "current")
         );
         let snapshot = usecase.snapshot();
         if outcome == "removed" {
@@ -1136,4 +1137,37 @@ async fn test_一覧状態_各階層の初回取得中と取得済みを区別�
     let empty = usecase.refresh_worktree("/a").await;
     // Then
     assert_eq!(empty.repositories[0].worktrees[0].status.state, "empty");
+}
+
+#[tokio::test]
+async fn test_pr定期取得_遅いrepositoryが他repositoryの取得を止めない() {
+    let query = FakeQuery::new();
+    let usecase = WorkspaceListUsecase::new(query.clone());
+    usecase.refresh().await;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while Arc::strong_count(&usecase.notify) != 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let (release, receive) = std::sync::mpsc::channel();
+    let receive = Mutex::new(receive);
+    let other = Arc::new(tokio::sync::Notify::new());
+    let reached = other.clone();
+    *query.on_pr.lock() = Some(Arc::new(move |path| {
+        if path == "/a" {
+            receive.lock().recv_timeout(Duration::from_secs(5)).unwrap();
+        } else {
+            reached.notify_one();
+        }
+    }));
+    let refresh = tokio::spawn({
+        let usecase = usecase.clone();
+        async move { usecase.refresh_external_information().await }
+    });
+    let result = tokio::time::timeout(Duration::from_secs(2), other.notified()).await;
+    release.send(()).unwrap();
+    result.unwrap();
+    refresh.await.unwrap();
 }

@@ -3,27 +3,27 @@ use crate::domain::workspace_state::value_objects::{
 };
 use crate::domain::workspace_state::WorkspaceState;
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct WorkspaceStateDto {
     pub version: u32,
     pub tabs: WorkspaceTabsStateDto,
     pub layout: WorkspaceLayoutStateDto,
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct WorkspaceTabEntryDto {
     pub path: String,
     pub name: String,
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceTabsStateDto {
     pub editors: Vec<WorkspaceTabEntryDto>,
     pub active_editor_path: Option<String>,
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceLayoutStateDto {
     pub center_tab: String,

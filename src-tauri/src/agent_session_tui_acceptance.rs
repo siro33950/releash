@@ -180,7 +180,12 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
                 .map_err(|error| error.to_string())?;
         let terminal = TerminalSurfaceRuntime::new(config.data_dir.clone());
         let data_dir = config.data_dir.clone();
+        let subscriptions = crate::usecase::state_subscription::StateSubscriptionUsecase::new(
+            vec![],
+            Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+        );
         let composition = compose_agent_sessions(AgentSessionCompositionInput {
+            state_publisher: None,
             store: store.clone(),
             data_dir: data_dir.clone(),
             provider_executable_config: Arc::new(
@@ -222,7 +227,7 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
             terminal: terminal.application(),
             change_notifier: Arc::new(
                 crate::adaptor::gateway::push::ClientAgentSessionChangeNotifier::new(
-                    crate::desktop_test_support::push_sink(app.handle()),
+                    subscriptions.publisher(),
                 ),
             ),
         })
@@ -278,8 +283,7 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
         );
         driver.node_processes = node_processes.clone();
         let driver = Arc::new(driver);
-        let mut dependencies = crate::desktop_test_support::workflow_dependencies(app.handle());
-        dependencies.processes = node_processes;
+        let dependencies = crate::desktop_test_support::workflow_dependencies(app.handle());
         let startup = crate::adaptor::controller::wiring::wire_workflow_startup(
             dependencies.clone(),
             driver.clone(),
@@ -329,10 +333,8 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
         app.manage(Arc::new(
             crate::infrastructure::file_watcher::FileWatcherManager::default(),
         ));
-        let mut dispatch = crate::adaptor::controller::client::ClientCommandDispatch::new(
-            Arc::new(crate::adaptor::controller::wiring::build_repository_usecase_with_worktree_terminals(terminal.application(), operations)),
-            authority,
-        );
+        let mut dispatch =
+            crate::adaptor::controller::client::ClientCommandDispatch::new(authority);
         dispatch.register_dependencies(&crate::desktop_test_support::build_client_dependencies(
             app.handle(),
         ));
@@ -346,6 +348,15 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
             token: client_binding.terminal_bearer_token().to_string(),
             launch_id: String::new(),
         };
+        let subscriptions = subscriptions.with_reads(
+            Arc::new(AcceptanceSessionReads {
+                sessions: composition.read.clone(),
+                history: composition.history_read.clone(),
+                providers: composition.provider_availability.clone(),
+            }),
+            None,
+            vec![],
+        );
         let client_router = crate::adaptor::controller::api::authenticated(
             crate::adaptor::controller::api::client::router(Some(
                 crate::adaptor::controller::api::ClientApiDeps::new(
@@ -356,7 +367,8 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
                             .clone(),
                     ),
                     crate::desktop_test_support::build_watcher_usecase(app.handle()),
-                ),
+                )
+                .with_state_subscriptions(subscriptions),
             )),
             client_binding.terminal_bearer_token(),
         );
@@ -615,3 +627,80 @@ fn provider_kind(provider: AcceptanceProvider) -> ProviderKind {
 #[cfg(test)]
 #[path = "agent_session_tui_acceptance_test.rs"]
 mod agent_session_tui_acceptance_tests;
+
+struct AcceptanceSessionReads {
+    sessions: Arc<AgentSessionReadUsecase>,
+    history: Arc<AgentSessionHistoryReadUsecase>,
+    providers: Arc<crate::usecase::agent_session::ProviderAvailabilityUsecase>,
+}
+#[async_trait::async_trait]
+impl crate::usecase::state_subscription::StateSubscriptionRead for AcceptanceSessionReads {
+    async fn read(
+        &self,
+        target: &crate::domain::state_subscription::SubscriptionTarget,
+    ) -> Result<
+        crate::usecase::state_subscription::StateValue,
+        crate::usecase::state_subscription::StateReadError,
+    > {
+        use crate::domain::failure::ClassifiedFailure;
+        use crate::domain::state_subscription::SubscriptionTarget as T;
+        use crate::usecase::state_subscription::{StateReadError, StateValue};
+        match target {
+            T::AgentSession(id) => self
+                .sessions
+                .get(id)
+                .await
+                .map(StateValue::AgentSession)
+                .map_err(|e| StateReadError {
+                    kind: e.failure_kind(),
+                    message: format!("{e:?}"),
+                }),
+            T::SessionHistory(path, count) => self
+                .history
+                .list(crate::usecase::agent_session::AgentSessionHistoryRequest {
+                    worktree_path: path.clone(),
+                    visible_count: *count,
+                })
+                .await
+                .map(StateValue::SessionHistory)
+                .map_err(|e| StateReadError {
+                    kind: e.failure_kind(),
+                    message: format!("{e:?}"),
+                }),
+            T::Providers => self
+                .providers
+                .available_providers()
+                .map(|providers| {
+                    StateValue::Providers(
+                        providers
+                            .into_iter()
+                            .map(|provider| match provider {
+                                ProviderKind::Claude => {
+                                    crate::usecase::agent_session::AgentSessionProviderDto::Claude
+                                }
+                                ProviderKind::Codex => {
+                                    crate::usecase::agent_session::AgentSessionProviderDto::Codex
+                                }
+                            })
+                            .collect(),
+                    )
+                })
+                .map_err(|e| StateReadError {
+                    kind: e.failure_kind(),
+                    message: format!("{e:?}"),
+                }),
+            _ => Err(StateReadError {
+                kind: crate::domain::failure::FailureKind::Missing,
+                message: "Unsupported acceptance state".into(),
+            }),
+        }
+    }
+    async fn refresh_workspaces(
+        &self,
+        _: Option<crate::domain::state_subscription::StateChangeSource>,
+    ) {
+    }
+    fn repositories(&self) -> Vec<String> {
+        vec![]
+    }
+}

@@ -331,10 +331,9 @@ async fn test_terminal_connectは同じattachmentの出力streamと入力unary�
         Arc::new(super::super::test_support::RecordingRuntimeGateway::default()),
         Arc::new(crate::usecase::workflow::NoopArchiveRepository),
     ));
-    let mut dispatch = ClientCommandDispatch::new(
-        Arc::new(crate::adaptor::controller::wiring::build_repository_usecase()),
-        Arc::new(crate::usecase::application_startup::ApplicationStartupAuthority::ready()),
-    )
+    let mut dispatch = ClientCommandDispatch::new(Arc::new(
+        crate::usecase::application_startup::ApplicationStartupAuthority::ready(),
+    ))
     .with_worktree_mutations(runtime);
     let application = terminal_application.clone();
     dispatch.register_domain(

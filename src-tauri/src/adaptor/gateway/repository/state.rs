@@ -191,7 +191,7 @@ fn start_git_watcher(
     if let Some(git_dir) = paths.index_file.parent() {
         debouncer
             .watcher()
-            .watch(git_dir, RecursiveMode::NonRecursive)
+            .watch(git_dir, RecursiveMode::Recursive)
             .map_err(|err| {
                 RepositoryStateError::Watcher(format!("Failed to watch .git dir: {err}"))
             })?;
@@ -298,12 +298,16 @@ impl WorktreePathNormalizer for FsWorktreePathNormalizer {
 }
 
 pub struct ClientRepositoryStateNotifier {
+    publisher: crate::usecase::state_subscription::StateSubscriptionPublisher,
     sink: std::sync::Arc<crate::infrastructure::push::PushSink>,
 }
 
 impl ClientRepositoryStateNotifier {
-    pub fn new(sink: std::sync::Arc<crate::infrastructure::push::PushSink>) -> Self {
-        Self { sink }
+    pub fn new(
+        sink: std::sync::Arc<crate::infrastructure::push::PushSink>,
+        publisher: crate::usecase::state_subscription::StateSubscriptionPublisher,
+    ) -> Self {
+        Self { sink, publisher }
     }
 }
 
@@ -316,7 +320,11 @@ impl RepositoryStateNotifier for ClientRepositoryStateNotifier {
             .emit(&self.sink);
         }
 
-        BackendPush::BranchListSync.emit(&self.sink);
+        self.publisher.invalidate(
+            crate::domain::state_subscription::StateChangeSource::Repository(
+                notification.worktree_paths.clone(),
+            ),
+        );
 
         if notification.reason.file_change {
             let path = notification.reason.path.unwrap_or_else(|| {

@@ -279,37 +279,6 @@ pub(crate) fn register_shared(
     {
         let state = deps.app_state.clone();
         router.register_domain(
-            &["get_workflow_execution_state"],
-            Box::new(move |command| {
-                let state = state.clone();
-                Box::pin(async move {
-                    let wire::command_request::Command::GetWorkflowExecutionState(args) = command
-                    else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move {
-                        let state = state
-                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        outcome(
-                            execution::get_workflow_execution_state_shared(
-                                &state,
-                                convert(required(args.worktree_path, "worktreePath")?)?,
-                                convert(required(args.execution_id, "executionId")?)?,
-                            )
-                            .await,
-                        )
-                    }
-                    .await?;
-                    Ok(wire::command_result::Command::GetWorkflowExecutionState(
-                        result,
-                    ))
-                })
-            }),
-        );
-    }
-    {
-        let state = deps.app_state.clone();
-        router.register_domain(
             &["get_workflow_source"],
             Box::new(move |command| {
                 let state = state.clone();
@@ -455,35 +424,6 @@ pub(crate) fn register_shared(
                     }
                     .await?;
                     Ok(wire::command_result::Command::RenderFacetPreview(result))
-                })
-            }),
-        );
-    }
-    {
-        let state = deps.app_state.clone();
-        router.register_domain(
-            &["resolve_active_execution_by_worktree"],
-            Box::new(move |command| {
-                let state = state.clone();
-                Box::pin(async move {
-                    let wire::command_request::Command::ResolveActiveExecutionByWorktree(args) =
-                        command
-                    else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move {
-                        let state = state
-                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        outcome(
-                            execution::resolve_active_execution_by_worktree_shared(
-                                &state,
-                                convert(required(args.worktree_path, "worktreePath")?)?,
-                            )
-                            .await,
-                        )
-                    }
-                    .await?;
-                    Ok(wire::command_result::Command::ResolveActiveExecutionByWorktree(result))
                 })
             }),
         );

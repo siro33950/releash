@@ -171,26 +171,6 @@ fn test_agent_session_controller_対象21codeを利用者向け英語文言へ�
             "This operation is not available for the AgentSession in its current state. Refresh and try again.",
         ),
         (
-            read_error(AgentSessionReadUsecaseError::InvalidRequest),
-            "AGENT_SESSION_INVALID_REQUEST",
-            "Releash could not load the AgentSession because the request is invalid.",
-        ),
-        (
-            history_error(AgentSessionHistoryQueryError::InvalidRequest),
-            "AGENT_SESSION_HISTORY_INVALID_REQUEST",
-            "Releash could not load AgentSession history because the request is invalid.",
-        ),
-        (
-            history_error(AgentSessionHistoryQueryError::Unavailable),
-            "AGENT_SESSION_HISTORY_UNAVAILABLE",
-            "Releash could not load AgentSession history. Try again.",
-        ),
-        (
-            history_error(AgentSessionHistoryQueryError::Corrupt),
-            "AGENT_SESSION_HISTORY_CORRUPT",
-            "Releash could not load AgentSession history because its saved data is invalid.",
-        ),
-        (
             hook_health_error(ProviderHookHealthUsecaseError::InvalidInput),
             "PROVIDER_HOOK_HEALTH_INVALID_REQUEST",
             "Releash could not load Provider Hook health because the request is invalid.",
@@ -288,7 +268,6 @@ fn test_agent_session_controller_共有codeは全usecase_error経路で同じ文
                 AgentSessionLaunchOperation::Start,
             ),
             lifecycle_error(AgentSessionLifecycleUsecaseError::StorageUnavailable),
-            read_error(AgentSessionReadUsecaseError::StorageUnavailable),
         ],
         "AGENT_SESSION_STORAGE_UNAVAILABLE",
         "Releash could not access saved AgentSession data. Try again.",
@@ -311,7 +290,6 @@ fn test_agent_session_controller_共有codeは全usecase_error経路で同じ文
                 AgentSessionLaunchOperation::Start,
             ),
             lifecycle_error(AgentSessionLifecycleUsecaseError::TerminalUnavailable),
-            read_error(AgentSessionReadUsecaseError::TerminalUnavailable),
         ],
         "AGENT_SESSION_TERMINAL_UNAVAILABLE",
         "Releash could not complete the Terminal operation for this AgentSession. Try again.",
@@ -323,7 +301,6 @@ fn test_agent_session_controller_共有codeは全usecase_error経路で同じ文
                 AgentSessionLaunchOperation::Start,
             ),
             lifecycle_error(AgentSessionLifecycleUsecaseError::Corrupt),
-            read_error(AgentSessionReadUsecaseError::Corrupt),
         ],
         "AGENT_SESSION_CORRUPT",
         "Releash could not continue because the AgentSession data is invalid.",
@@ -385,10 +362,6 @@ fn test_provider失敗分類_表示コードの生成時に理由を保持する
         (E::AgentSessionCorrupt, F::Corrupt),
         (E::AgentSessionNotFound, F::Missing),
         (E::AgentSessionInvalidOperation, F::StateRequired),
-        (E::AgentSessionInvalidRequest, F::InvalidInput),
-        (E::AgentSessionHistoryInvalidRequest, F::InvalidInput),
-        (E::AgentSessionHistoryUnavailable, F::Temporary),
-        (E::AgentSessionHistoryCorrupt, F::Corrupt),
         (E::ProviderHookHealthInvalidRequest, F::InvalidInput),
         (E::ProviderHookHealthStorageUnavailable, F::Temporary),
         (E::ProviderHookHealthCorrupt, F::Corrupt),
@@ -470,7 +443,7 @@ impl crate::domain::agent_session::AgentSessionOwnershipQuery for FailingHistory
 }
 
 #[tokio::test]
-async fn test_履歴失敗分類_全gateway経路からusecaseとcontrollerを通じconnectへ保持する() {
+async fn test_履歴失敗分類_全gateway経路から購読を通じconnectへ保持する() {
     use crate::domain::failure::{ClassifiedFailure, FailureKind as F};
     use connectrpc::ErrorCode as C;
     // Given
@@ -493,17 +466,27 @@ async fn test_履歴失敗分類_全gateway経路からusecaseとcontrollerを�
                     ports,
                 ),
             );
-            let usecase = Arc::new(AgentSessionHistoryReadUsecase::new(query));
+            let usecase =
+                Arc::new(crate::usecase::agent_session::AgentSessionHistoryReadUsecase::new(query));
             // When
-            let error = list_agent_session_history_shared(&usecase, "/repo".into(), Some(1), None)
+            let error = usecase
+                .list(crate::usecase::agent_session::AgentSessionHistoryRequest {
+                    worktree_path: "/repo".into(),
+                    visible_count: 1,
+                })
                 .await
                 .unwrap_err();
             // Then
             assert_eq!(error.failure_kind(), kind, "{point:?}");
-            let connect = crate::adaptor::protocol::connect::command_error(error.into());
+            let connect = crate::adaptor::protocol::connect::classified_error(
+                crate::usecase::state_subscription::StateReadError {
+                    kind: error.failure_kind(),
+                    message: format!("{error:?}"),
+                },
+            );
             assert_eq!(connect.code, expected, "{point:?}");
             assert_eq!(connect.failure_kind(), kind);
-            assert_eq!(connect.details.len(), 1);
+            assert_eq!(connect.message, Some(format!("{error:?}")));
         }
     }
 }
@@ -524,16 +507,12 @@ fn test_provider操作失敗_各経路の分類がconnectまで一致する() {
             AgentSessionLaunchOperation::Start,
         ),
         lifecycle_error(AgentSessionLifecycleUsecaseError::TerminalUnavailable),
-        read_error(AgentSessionReadUsecaseError::TerminalUnavailable),
         launch_error(
             AgentSessionLaunchUsecaseError::Conflict(FailureKind::StateRequired),
             AgentSessionLaunchOperation::Start,
         ),
         lifecycle_error(AgentSessionLifecycleUsecaseError::Conflict(
             FailureKind::StateRequired,
-        )),
-        read_error(AgentSessionReadUsecaseError::Lifecycle(
-            AgentSessionLifecycleUsecaseError::Conflict(FailureKind::StateRequired),
         )),
     ] {
         // When / Then

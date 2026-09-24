@@ -70,3 +70,33 @@ fn test_変更通知_存在しないpathをスラッシュへ統一する() {
 
     assert_eq!(event.path, "C:/missing/file.txt");
 }
+
+#[tokio::test]
+async fn test_履歴監視_未作成のディレクトリの生成を検知して購読へ通知する() {
+    use super::*;
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().canonicalize().unwrap().join("history");
+    let publisher = crate::usecase::state_subscription::StateSubscriptionPublisher::for_test();
+    let mut changes = publisher.subscribe_changes();
+    let gateway = FileWatcherGateway::new(
+        Arc::new(FileWatcherManager::default()),
+        Arc::new(crate::infrastructure::push::PushSink::new()),
+    )
+    .with_state_publisher(publisher);
+    let id = gateway.start_tree(path.to_str().unwrap()).unwrap();
+    assert_eq!(
+        changes.try_recv().unwrap(),
+        crate::domain::state_subscription::StateChangeSource::ProviderHistory
+    );
+    std::fs::create_dir(&path).unwrap();
+    std::fs::write(path.join("session.json"), "{}").unwrap();
+    let change = tokio::time::timeout(std::time::Duration::from_secs(5), changes.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        change,
+        crate::domain::state_subscription::StateChangeSource::ProviderHistory
+    );
+    gateway.stop(id).unwrap();
+}

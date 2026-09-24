@@ -121,7 +121,7 @@ export function useAutomation(open: boolean) {
 			try {
 				const dir = await invoke("get_automation_config_dir");
 				if (disposed || current !== preparation) return;
-				stopWatch = watchClient("start_watching", { path: dir }, (id) => {
+				stopWatch = watchClient({ path: dir }, (id) => {
 					watcherId = id;
 				});
 			} catch (e) {

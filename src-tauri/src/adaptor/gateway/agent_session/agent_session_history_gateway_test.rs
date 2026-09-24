@@ -552,8 +552,7 @@ async fn test_agent_session_history_query_claudeの一部が読めなくても�
     let page = query
         .list(AgentSessionHistoryRequest {
             worktree_path: "/repo/worktree".to_string(),
-            limit: 3,
-            after: None,
+            visible_count: 3,
         })
         .await
         .unwrap();
@@ -616,8 +615,7 @@ async fn test_agent_session_history_query_codexのdbが無くてもfallbackラ�
     let page = query
         .list(AgentSessionHistoryRequest {
             worktree_path: "/repo/worktree".to_string(),
-            limit: 2,
-            after: None,
+            visible_count: 2,
         })
         .await
         .unwrap();

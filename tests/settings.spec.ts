@@ -9,7 +9,7 @@ import { waitForApp } from "./helpers/utils";
  */
 function settingsConfig(overrides: Record<string, unknown> = {}) {
 	return buildMockConfig({
-		list_worktrees: [
+		"worktrees": [
 			{
 				name: "repo",
 				path: "/test/repo",
@@ -20,7 +20,7 @@ function settingsConfig(overrides: Record<string, unknown> = {}) {
 				base_branch: null,
 			},
 		],
-		get_current_branch: "feat/test",
+		"current-branch": "feat/test",
 		get_git_status: [],
 		...overrides,
 	});

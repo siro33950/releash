@@ -81,7 +81,7 @@ test("10MiB agent-TUI負荷でTerminal Surfaceのstrict performance budgetを守
 	await setupTauriMock(
 		page,
 		buildMockConfig({
-			list_worktrees: [
+			"worktrees": [
 				{
 					name: "repo",
 					path: "/test/repo",
@@ -92,7 +92,7 @@ test("10MiB agent-TUI負荷でTerminal Surfaceのstrict performance budgetを守
 					base_branch: null,
 				},
 			],
-			list_branches_with_status: [
+			"workspaceBranches": [
 				{
 					name: "main",
 					is_main_worktree: true,

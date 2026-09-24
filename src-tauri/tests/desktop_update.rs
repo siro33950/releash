@@ -85,7 +85,11 @@ impl Renderer {
     async fn restore(&mut self, app: &App, expected_repos: Value) {
         self.request("update_external_editor", json!({"editor":"vim"}))
             .await;
-        let snapshot = self.request("refresh_workspaces", json!({})).await;
+        assert!(self
+            .request("refresh_workspaces", json!({}))
+            .await
+            .is_null());
+        let snapshot = host::read_state(&self.client, "workspaces").await.unwrap();
         let repos = Value::Array(
             snapshot["repositories"]
                 .as_array()

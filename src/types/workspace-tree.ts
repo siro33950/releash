@@ -2,7 +2,6 @@ import type {
 	AgentSessionItem,
 	AgentSessionLaunchAttachment,
 } from "./agent-session";
-import type { WorkflowExecutionSummary } from "./workflow";
 
 export type CenterSelection =
 	| {
@@ -151,7 +150,7 @@ export interface WorkspaceWorkflowHistoryItem {
 	executionId: string;
 	worktreePath: string;
 	title: string;
-	status: WorkspaceNodeStatus | WorkflowExecutionSummary["status"];
+	status: WorkspaceNodeStatus;
 	updatedAt: number;
 	archivedAt: number;
 	archiveReason: "auto_no_sessions" | "manual" | string;

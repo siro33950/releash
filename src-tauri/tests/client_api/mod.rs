@@ -106,9 +106,8 @@ async fn receive(connection: &mut ClientConnection) -> Value {
     json!({"status":"push", "event":event, "payload":payload})
 }
 async fn request(connection: &mut ClientConnection, frame: Value) -> Value {
-    let result = request_client(
+    let result = read_current_branch(
         &connection.client,
-        frame["command"].as_str().unwrap(),
         frame.get("args").cloned().unwrap_or(json!({})),
     )
     .await
@@ -126,7 +125,7 @@ async fn test_クライアントconnect_認証と相関を保ちtauri経路を�
     ] {
         let response = reqwest::Client::new()
             .post(format!(
-                "{}/releash.client.v1.ClientService/GetCwd",
+                "{}/releash.client.v1.ClientService/GetExternalEditor",
                 fixture.url
             ))
             .bearer_auth(token)
@@ -142,14 +141,14 @@ async fn test_クライアントconnect_認証と相関を保ちtauri経路を�
     // When
     let response = request(
         &mut socket,
-        json!({"request_id":"one","command":"get_current_branch","args":fixture.args()}),
+        json!({"request_id":"one","command":"current-branch","args":fixture.args()}),
     )
     .await;
     let window = tauri::WebviewWindowBuilder::new(&fixture.host.app, "main", Default::default())
         .build()
         .unwrap();
     let invoke = tauri::webview::InvokeRequest {
-        cmd: "get_current_branch".into(),
+        cmd: "current-branch".into(),
         callback: tauri::ipc::CallbackFn(0),
         error: tauri::ipc::CallbackFn(1),
         url: "tauri://localhost".parse().unwrap(),
@@ -253,7 +252,7 @@ async fn test_レビューコメント監視_events_json変更がconnectだけ�
 }
 
 #[tokio::test]
-async fn test_クライアントconnect_失敗と不正引数は構造化エラーになる() {
+async fn test_クライアント購読_失敗と不正引数の分類と説明を保持する() {
     let fixture = Fixture::new().await;
     let client = fixture.client();
     for (args, expected) in [
@@ -263,53 +262,24 @@ async fn test_クライアントconnect_失敗と不正引数は構造化エラ�
             connectrpc::ErrorCode::Internal,
         ),
     ] {
-        let error = client
-            .get_current_branch(rpc::GetCurrentBranchRequest {
-                repo_path: args["repoPath"].as_str().map(String::from),
-                ..Default::default()
-            })
-            .await
-            .unwrap_err();
+        let error = read_current_branch(&client, args).await.unwrap_err();
         assert_eq!(error.code, expected);
-        assert_eq!(error.details[0].type_url, "releash.client.v1.CommandError");
+        assert!(error
+            .message
+            .as_ref()
+            .is_some_and(|message| !message.is_empty()));
     }
 }
-fn workflow_payload() -> WorkflowExecutionChangedPayloadView {
-    WorkflowExecutionChangedPayloadView {
-        worktree_path: "/repo".into(),
-        workflow_execution: WorkflowExecutionView {
-            id: "execution-1".into(),
-            workflow_name: "review".into(),
-            status: ExecutionStatusView::Running,
-            current_node: None,
-            worktree_path: "/repo".into(),
-            created_from: ExecutionOriginView::Cli,
-            started_at: 1.0,
-            updated_at: 2.0,
-            completed_at: None,
-            error_reason: None,
-            total_token_usage: Default::default(),
-            node_executions: vec![],
-            artifacts: vec![],
-            fanouts: vec![],
-            approval_target: None,
-        },
-    }
-}
-
 #[tokio::test]
-async fn test_backend通知_6イベントがconnectだけへ届く() {
+async fn test_backend通知_残る3イベントがconnectだけへ届く() {
     // Given
     let fixture = Fixture::new().await;
     let mut socket = fixture.connect().await;
     let received = Arc::new(std::sync::Mutex::new(Vec::new()));
     let events = [
-        "agent-session-changed",
-        "branch-list-sync",
         "file-change",
         "git-status-changed",
         "review-comments-changed",
-        "workflow-execution-changed",
     ];
     for event in events {
         let received = received.clone();
@@ -328,17 +298,11 @@ async fn test_backend通知_6イベントがconnectだけへ届く() {
     let git = GitStatusChangedEvent {
         repo_path: "/repo".into(),
     };
-    let workflow = workflow_payload();
     // When
     let pushes = [
-        BackendPush::AgentSessionChanged(AgentSessionChangedPayload {
-            worktree_path: "/repo",
-        }),
-        BackendPush::BranchListSync,
         BackendPush::FileChange(file),
         BackendPush::GitStatusChanged(git),
         BackendPush::ReviewCommentsChanged("*"),
-        BackendPush::WorkflowExecutionChanged(Box::new(workflow.clone())),
     ];
     for (index, push) in pushes.into_iter().enumerate() {
         fixture.host.emit(push);
@@ -347,12 +311,9 @@ async fn test_backend通知_6イベントがconnectだけへ届く() {
         assert_eq!(frame["status"], "push");
         assert_eq!(frame["event"], events[index]);
         let expected = [
-            json!({"worktreePath":"/repo"}),
-            Value::Null,
             json!({"watcher_id":1,"path":"/repo/file","kind":"change"}),
             json!({"repo_path":"/repo"}),
             json!("*"),
-            serde_json::to_value(&workflow).unwrap(),
         ];
         assert_eq!(frame["payload"], expected[index]);
         assert!(received.lock().unwrap().is_empty());
@@ -368,7 +329,7 @@ async fn test_クライアントconnect_往復レイテンシ実測() {
     let mut socket = fixture.connect().await;
     let mut samples = Vec::new();
     for index in 0..1100 {
-        let frame = json!({"request_id":index.to_string(),"command":"get_current_branch","args":fixture.args()});
+        let frame = json!({"request_id":index.to_string(),"command":"current-branch","args":fixture.args()});
         let start = Instant::now();
         let response = request(&mut socket, frame).await;
         let elapsed = start.elapsed().as_secs_f64() * 1000.0;
@@ -380,32 +341,7 @@ async fn test_クライアントconnect_往復レイテンシ実測() {
     samples.sort_by(f64::total_cmp);
     assert!(samples[949] <= 1.0, "p95 exceeds 1ms: {}", samples[949]);
     assert!(samples[989] <= 2.0, "p99 exceeds 2ms: {}", samples[989]);
-    println!("client-ws get_current_branch n={} warmup=100 min_ms={:.6} median_ms={:.6} p95_ms={:.6} p99_ms={:.6} max_ms={:.6} mean_ms={:.6}", samples.len(), samples[0], samples[499], samples[949], samples[989], samples[999], samples.iter().sum::<f64>() / samples.len() as f64);
-    drop(socket);
-}
-
-#[tokio::test]
-async fn test_workflow状態通知_更新済みsnapshotがtypedなconnect_pushになる() {
-    // Given
-    let fixture = Fixture::new().await;
-    let mut socket = fixture.connect().await;
-    // When
-    fixture
-        .host
-        .emit_completed_workflow("execution-state", "/repo", 3.0)
-        .await;
-    // Then
-    let frame = receive(&mut socket).await;
-    assert_eq!(frame["event"], "workflow-execution-changed");
-    let payload: WorkflowExecutionChangedPayloadView =
-        serde_json::from_value(frame["payload"].clone()).unwrap();
-    assert_eq!(payload.worktree_path, "/repo");
-    assert_eq!(payload.workflow_execution.id, "execution-state");
-    assert_eq!(
-        payload.workflow_execution.status,
-        ExecutionStatusView::Completed
-    );
-    assert_eq!(payload.workflow_execution.updated_at, 3.0);
+    println!("client-ws current-branch n={} warmup=100 min_ms={:.6} median_ms={:.6} p95_ms={:.6} p99_ms={:.6} max_ms={:.6} mean_ms={:.6}", samples.len(), samples[0], samples[499], samples[949], samples[989], samples[999], samples.iter().sum::<f64>() / samples.len() as f64);
     drop(socket);
 }
 
@@ -459,17 +395,20 @@ async fn test_push_欠落時は再同期通知後も同じ購読を使える() {
     let fixture = Fixture::new().await;
     let mut socket = fixture.connect().await;
     for _ in 0..65 {
-        fixture.host.emit(BackendPush::BranchListSync);
+        fixture.host.emit(BackendPush::ReviewCommentsChanged("*"));
     }
     assert_eq!(receive(&mut socket).await["event"], "resync");
     assert_eq!(
-        request_client(&socket.client, "get_current_branch", fixture.args())
+        read_current_branch(&socket.client, fixture.args())
             .await
             .unwrap(),
         "ws-branch"
     );
-    fixture.host.emit(BackendPush::BranchListSync);
-    assert_eq!(receive(&mut socket).await["event"], "branch-list-sync");
+    fixture.host.emit(BackendPush::ReviewCommentsChanged("*"));
+    assert_eq!(
+        receive(&mut socket).await["event"],
+        "review-comments-changed"
+    );
 }
 
 #[tokio::test]
@@ -478,7 +417,7 @@ async fn test_connect_不正protoと旧ws_routeを拒否する() {
     let http = reqwest::Client::new();
     let response = http
         .post(format!(
-            "{}/releash.client.v1.ClientService/GetCwd",
+            "{}/releash.client.v1.ClientService/GetExternalEditor",
             fixture.url
         ))
         .bearer_auth(&*fixture.token)
@@ -525,9 +464,7 @@ async fn test_生成client_connectとgrpcとgrpcwebが同じserviceを呼べる(
         };
         let client = rpc::ClientServiceClient::new(transport, config);
         assert_eq!(
-            request_client(&client, "get_current_branch", fixture.args())
-                .await
-                .unwrap(),
+            read_current_branch(&client, fixture.args()).await.unwrap(),
             "ws-branch"
         );
     }
@@ -579,34 +516,23 @@ async fn test_クライアントconnect_command完了待ちの間も容量を超
     let mut socket = fixture.connect().await;
     let client = fixture.client();
     let args = fixture.args();
-    let pending = tokio::spawn(async move {
-        request_client(&client, "get_current_branch", args)
-            .await
-            .unwrap()
-    });
+    let pending = tokio::spawn(async move { read_current_branch(&client, args).await.unwrap() });
     tokio::time::timeout(Duration::from_secs(5), started.notified())
         .await
         .unwrap();
 
     // When / Then
     for index in 0..65 {
-        let payload = workflow_payload();
         fixture
             .host
-            .emit(BackendPush::WorkflowExecutionChanged(Box::new(
-                payload.clone(),
-            )));
+            .emit(BackendPush::ReviewCommentsChanged("/repo"));
         let frame = receive(&mut socket).await;
         assert_eq!(
             frame["status"], "push",
-            "push {index} arrived before command completion"
+            "push {index} arrived before state read completion"
         );
-        assert_eq!(frame["event"], "workflow-execution-changed");
-        assert_eq!(
-            serde_json::from_value::<WorkflowExecutionChangedPayloadView>(frame["payload"].clone())
-                .unwrap(),
-            payload
-        );
+        assert_eq!(frame["event"], "review-comments-changed");
+        assert_eq!(frame["payload"], "/repo");
     }
     resume.send(()).unwrap();
     assert_eq!(pending.await.unwrap(), "ws-branch");
@@ -625,7 +551,7 @@ async fn test_connect_実行中要求の上限を超える要求を拒否する(
     for _ in 0..65 {
         let client = fixture.client();
         let args = fixture.args();
-        pending.spawn(async move { request_client(&client, "get_current_branch", args).await });
+        pending.spawn(async move { request_client(&client, "get_releash_base", args).await });
     }
     assert_eq!(
         tokio::time::timeout(Duration::from_secs(5), pending.join_next())

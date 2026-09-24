@@ -40,6 +40,7 @@ try {
     types.set(name, shape);
     return name;
   }
+  for (const field of registry.getMessage("releash.client.v1.StatePayload").fields) if (field.message) messageType(field.message);
   const terminalArgs = messageType(registry.getMessage("releash.client.v1.AttachTerminalSurfaceRequest"), true);
   const mappings = [["ClientCommandArgs", "CommandRequest"], ["ClientCommandResults", "CommandResult"], ["ClientPushPayloads", "Push"]].map(([name, proto]) => {
     const fields = registry.getMessage(`releash.client.v1.${proto}`).fields.filter(field => field.message && field.oneof);

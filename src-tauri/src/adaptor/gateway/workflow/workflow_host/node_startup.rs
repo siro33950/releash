@@ -220,8 +220,7 @@ impl WorkflowRuntimeHost {
             .load_control_plane_execution(app, execution_id)
             .await?
             .ok_or_else(|| WorkflowRuntimeError::ExecutionNotFound(execution_id.into()))?;
-        let snapshot = RuntimeCommitSnapshot::from_execution(&current)?;
-        workflow_runtime_session::broadcast_state(app, &current.worktree_path, snapshot).await;
+        workflow_runtime_session::broadcast_state(app, &current.worktree_path).await;
         Ok(())
     }
 
@@ -299,12 +298,7 @@ impl WorkflowRuntimeHost {
                     },
                 )
                 .await?;
-            workflow_runtime_session::broadcast_state(
-                app,
-                &snapshot.worktree_path,
-                snapshot.clone(),
-            )
-            .await;
+            workflow_runtime_session::broadcast_state(app, &snapshot.worktree_path).await;
             Ok(Some(NodeStart::Leaf(restarted.leaf)))
         })
         .await

@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { buildMockConfig, kanbanBranches } from "./helpers/fixtures";
-import { setupTauriMock, emitTauriEvent } from "./helpers/tauri-mock";
+import { setupTauriMock } from "./helpers/tauri-mock";
 import { waitForApp } from "./helpers/utils";
 
 /**
@@ -9,7 +9,7 @@ import { waitForApp } from "./helpers/utils";
  */
 function statusBarConfig(overrides: Record<string, unknown> = {}) {
 	return buildMockConfig({
-		list_worktrees: [
+		"worktrees": [
 			{
 				name: "repo",
 				path: "/test/repo",
@@ -20,21 +20,21 @@ function statusBarConfig(overrides: Record<string, unknown> = {}) {
 				base_branch: null,
 			},
 		],
-		get_current_branch: "feat/my-branch",
+		"current-branch": "feat/my-branch",
 		get_git_status: [],
 		...overrides,
 	});
 }
 
 test.describe("StatusBar", () => {
-	test("workflowのws pushでworkspaceの表示が更新される", async ({ page }) => {
+	test("購読からworkspaceの表示が更新され取り直しを呼ばない", async ({ page }) => {
 		const client = await setupTauriMock(
 			page,
 			statusBarConfig({
-				list_branches_with_status: kanbanBranches.filter(
+				"workspaceBranches": kanbanBranches.filter(
 					(branch) => branch.name === "feat/wip",
 				),
-				list_workspace_worktree_nodes: {
+				"workspaceTree": {
 					nodes: [],
 					archivedSessions: [],
 					preferredNodeId: null,
@@ -45,8 +45,7 @@ test.describe("StatusBar", () => {
 		await expect(page.getByText("feat/my-branch")).toBeVisible();
 		await expect(page.getByText("No sessions or workflows")).toBeVisible();
 		await page.evaluate(() =>
-			window.__RELEASH_BACKEND__?.setMockResponse(
-				"list_workspace_worktree_nodes",
+			window.__RELEASH_BACKEND__?.setWorkspaceTree(
 				{
 					nodes: [
 						{
@@ -72,34 +71,8 @@ test.describe("StatusBar", () => {
 				},
 			),
 		);
-		client.push("workflow-execution-changed", {
-			worktreePath: "/test/repo-worktrees/feat-wip",
-			workflowExecution: {
-				id: "execution-1",
-				workflowName: "test",
-				status: "running",
-				currentNode: null,
-				worktreePath: "/test/repo-worktrees/feat-wip",
-				createdFrom: "desktop_ui",
-				startedAt: 1,
-				updatedAt: 2,
-				completedAt: null,
-				errorReason: null,
-				totalTokenUsage: { inputTokens: 0, outputTokens: 0 },
-				nodeExecutions: [],
-				artifacts: [],
-				fanouts: [],
-				approvalTarget: null,
-			},
-		});
-		await expect
-			.poll(
-				() =>
-					client.clientRequests.filter(
-						(request) => request.command === "refresh_workspaces",
-					).length,
-			)
-			.toBeGreaterThan(2);
+        await client.refreshStates();
+        expect(client.clientRequests.some((request) => request.command === "refresh_workspaces")).toBe(false);
 		await expect(page.getByText("From ws push")).toBeVisible();
 		expect(
 			await page.evaluate(() =>
@@ -118,11 +91,7 @@ test.describe("StatusBar", () => {
 		await waitForApp(page);
 
 		await expect(page.getByText("feat/my-branch")).toBeVisible();
-		expect(client.clientRequests).toContainEqual({
-			request_id: expect.any(String),
-			command: "get_current_branch",
-			args: { repoPath: "/test/repo" },
-		});
+        expect(client.stateRequests).toContain(JSON.stringify(["current-branch", ["/test/repo"]]));
 		expect(
 			await page.evaluate(() =>
 				window.__TAURI_INTERNALS__?.ipcInvocations.some(
@@ -137,7 +106,7 @@ test.describe("StatusBar", () => {
 	}) => {
 		const client = await setupTauriMock(
 			page,
-			statusBarConfig({ get_current_branch: { __mockError: "failed" } }),
+			statusBarConfig({ "current-branch": { __mockError: "failed" } }),
 		);
 		await waitForApp(page);
 		await expect.poll(() => client.clientRequests.length).toBeGreaterThan(0);
@@ -155,7 +124,7 @@ test.describe("StatusBar", () => {
 		page,
 	}) => {
 		const config = statusBarConfig({
-			list_branches_with_status: [
+			"workspaceBranches": [
 				{
 					name: "feat/test",
 					is_main_worktree: false,
@@ -170,12 +139,10 @@ test.describe("StatusBar", () => {
 				},
 			],
 		});
-		await setupTauriMock(page, config);
+		const client = await setupTauriMock(page, config);
 		await waitForApp(page);
 
-		await emitTauriEvent(page, "agent-session-changed", {
-			worktreePath: "/test/repo",
-		});
+        await client.refreshStates();
 
 		await expect(page.getByText("feat/my-branch")).toBeVisible();
 		await expect(

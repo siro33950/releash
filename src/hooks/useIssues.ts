@@ -1,46 +1,15 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback } from "react";
 import { invokeClient as invoke } from "@/lib/client";
-import type { IssueInfo } from "@/types/git";
-
-const POLL_INTERVAL = 30_000;
+import { useStateSubscription } from "./useStateSubscription";
 
 export function useIssues(repoPath: string) {
-	const [issues, setIssues] = useState<IssueInfo[]>([]);
-	const [loading, setLoading] = useState(true);
-	const hasFetched = useRef(false);
-
-	const fetchIssues = useCallback(
-		async (
-			command: "get_cached_issues" | "fetch_issues" = "get_cached_issues",
-		) => {
-			if (!hasFetched.current) {
-				setLoading(true);
-			}
-			try {
-				const result = await invoke(command, {
-					repoPath,
-				});
-				setIssues(result);
-			} catch (e) {
-				console.error(`[useIssues] ${command} failed for ${repoPath}:`, e);
-				setIssues([]);
-			} finally {
-				hasFetched.current = true;
-				setLoading(false);
-			}
-		},
+	const issues = useStateSubscription({ kind: "issues", args: [repoPath] });
+	const refresh = useCallback(
+		() =>
+			invoke("fetch_issues", { repoPath }).catch((error) => {
+				console.error("Failed to fetch issues:", error);
+			}),
 		[repoPath],
 	);
-
-	const refresh = useCallback(() => fetchIssues("fetch_issues"), [fetchIssues]);
-
-	useEffect(() => {
-		hasFetched.current = false;
-		setLoading(true);
-		fetchIssues();
-		const id = setInterval(fetchIssues, POLL_INTERVAL);
-		return () => clearInterval(id);
-	}, [fetchIssues]);
-
-	return { issues, loading, refresh };
+	return { issues: issues ?? [], loading: issues === undefined, refresh };
 }
