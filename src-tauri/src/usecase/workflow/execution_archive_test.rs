@@ -414,6 +414,7 @@ async fn test_実行木archiveとrestore_workspace識別子と異なるworktree�
         &NodeFact::AbortRequested(Default::default()),
         2,
     )
+    .await
     .unwrap();
     let target = fixture.repository.target(id).await.unwrap();
     assert_ne!(target.workspace_identity, target.worktree_path);
