@@ -145,7 +145,7 @@ async fn open_state_stream(
 ) -> connectrpc::ServiceResult<connectrpc::ServiceStream<impl connectrpc::Encodable<rpc::StateSubscriptionEvent> + Send + use<>>> {
     use futures_util::StreamExt;
     let request: wire::OpenStateStreamRequest = to_wire(&request.to_owned_message())?;
-    let stream = self.state_subscriptions()?.open(request.client_id).map_err(super::state_subscription::error)?;
+    let stream = self.state_subscriptions()?.open(request.client_id).map_err(crate::adaptor::protocol::connect::classified_error)?;
     connectrpc::Response::stream_ok(Box::pin(stream.map(super::state_subscription::event)))
 }
 
@@ -156,7 +156,7 @@ async fn start_state_subscription<'a>(
 ) -> connectrpc::ServiceResult<impl connectrpc::Encodable<rpc::Unit> + Send + use<'a>> {
     let request: wire::StartStateSubscriptionRequest = to_wire(&request.to_owned_message())?;
     let version = request.version.map(|v| crate::domain::state_subscription::Version { epoch: v.epoch, sequence: v.sequence });
-    self.state_subscriptions()?.start(&request.client_id, &request.target, version.as_ref()).map_err(super::state_subscription::error)?;
+    self.state_subscriptions()?.start(&request.client_id, &request.target, version.as_ref()).map_err(crate::adaptor::protocol::connect::classified_error)?;
     connectrpc::Response::ok(rpc::Unit::default())
 }
 
@@ -166,6 +166,6 @@ async fn stop_state_subscription<'a>(
     request: connectrpc::ServiceRequest<'_, rpc::StopStateSubscriptionRequest>,
 ) -> connectrpc::ServiceResult<impl connectrpc::Encodable<rpc::Unit> + Send + use<'a>> {
     let request: wire::StopStateSubscriptionRequest = to_wire(&request.to_owned_message())?;
-    self.state_subscriptions()?.stop(&request.client_id, &request.target).map_err(super::state_subscription::error)?;
+    self.state_subscriptions()?.stop(&request.client_id, &request.target).map_err(crate::adaptor::protocol::connect::classified_error)?;
     connectrpc::Response::ok(rpc::Unit::default())
 }

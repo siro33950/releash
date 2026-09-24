@@ -73,9 +73,12 @@ impl ClientApiDeps {
         &crate::usecase::state_subscription::StateSubscriptionUsecase,
         connectrpc::ConnectError,
     > {
-        self.state_subscriptions
-            .as_ref()
-            .ok_or_else(|| connectrpc::ConnectError::unavailable("State subscriptions unavailable"))
+        self.state_subscriptions.as_ref().ok_or_else(|| {
+            crate::adaptor::protocol::connect::classified_error(
+                crate::other::AppError::new("State subscriptions unavailable")
+                    .with_failure_kind(crate::domain::failure::FailureKind::Temporary),
+            )
+        })
     }
 
     pub(crate) fn with_desktop_settings(

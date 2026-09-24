@@ -3,25 +3,8 @@ use super::protocol::{
     connect::{rpc, to_rpc},
 };
 use crate::domain::state_subscription::StateValue;
-use crate::domain::state_subscription::{Delivery, Event, SubscriptionError};
+use crate::domain::state_subscription::{Delivery, Event};
 use crate::usecase::state_subscription::StateSubscriptionEvent;
-
-pub(super) fn error(error: SubscriptionError) -> connectrpc::ConnectError {
-    match error {
-        SubscriptionError::InvalidId => {
-            connectrpc::ConnectError::invalid_argument(error.to_string())
-        }
-        SubscriptionError::AlreadyExists => {
-            connectrpc::ConnectError::already_exists(error.to_string())
-        }
-        SubscriptionError::StreamEnded | SubscriptionError::UnknownTarget => {
-            connectrpc::ConnectError::not_found(error.to_string())
-        }
-        SubscriptionError::VersionExhausted => {
-            connectrpc::ConnectError::internal(error.to_string())
-        }
-    }
-}
 
 fn payload(value: &StateValue) -> wire::StatePayload {
     wire::StatePayload {
