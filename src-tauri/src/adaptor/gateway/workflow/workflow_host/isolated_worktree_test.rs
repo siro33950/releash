@@ -1138,6 +1138,7 @@ async fn test_プロセス在否_実供給元の変化が読取と通知と操�
                 ),
                 (current_timestamp() * 1000.0) as i64,
             )
+            .await
             .unwrap();
         }
         let mut projection = crate::adaptor::gateway::workflow::execution_projection_repository::WorkflowExecutionProjectionLogRepository::new(fixture.store.clone());

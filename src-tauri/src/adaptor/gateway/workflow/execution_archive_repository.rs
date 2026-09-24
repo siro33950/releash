@@ -86,7 +86,7 @@ impl ExecutionTreeArchiveFactRepository {
         let root = fact_log::record_from_row(&row)
             .map_err(WorkflowError::external)?
             .ok_or_else(|| WorkflowError::NotFound(execution_id.to_string()))?;
-        fact_log::append_single_fact(store, &root.meta, &fact, (timestamp * 1000.0) as i64)
+        fact_log::append_single_fact(store, &root.meta, &fact, (timestamp * 1000.0) as i64).await
     }
 }
 

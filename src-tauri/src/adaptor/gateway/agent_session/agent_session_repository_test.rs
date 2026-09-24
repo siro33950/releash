@@ -475,6 +475,7 @@ async fn test_agent_session_repository_stop事実後のworking再観測をbounde
         }),
         10,
     )
+    .await
     .unwrap();
 
     let restored = repository
@@ -1180,6 +1181,7 @@ async fn test_agent_session_repository_restore後の指示待ちを事実から�
         .await
         .unwrap();
     fact_log::append_single_fact(&store, &records[0].meta, &NodeFact::RestoreRequested, 100)
+        .await
         .unwrap();
     let restored = repository
         .find("agent-session-restore-activity")
@@ -1252,6 +1254,7 @@ async fn test_agent_session_repository_resumeとarchiveとrestoreを行として
         .await
         .unwrap();
     fact_log::append_single_fact(&store, &records[0].meta, &NodeFact::RestoreRequested, 100)
+        .await
         .unwrap();
     let restored = repository
         .find("agent-session-flow")
@@ -2148,7 +2151,9 @@ async fn test_agent_session_query_service_workflow木のsessionを一覧に出�
             launched_as: ExecutionTreeLaunch::Workflow,
         })),
     });
-    fact_log::append_single_fact(&store, &workflow_meta, &workflow_root, 1).unwrap();
+    fact_log::append_single_fact(&store, &workflow_meta, &workflow_root, 1)
+        .await
+        .unwrap();
     let items = workspace_session_items(
         &fact_log::FactLogReadBackend::Live(store),
         &["standalone-session".to_string(), "workflow-1".to_string()],
@@ -2205,7 +2210,9 @@ async fn test_agent_session_repository_workflow子sessionの事実は元nodeのa
             launched_as: ExecutionTreeLaunch::Workflow,
         })),
     });
-    fact_log::append_single_fact(&store, &meta, &root, 1).unwrap();
+    fact_log::append_single_fact(&store, &meta, &root, 1)
+        .await
+        .unwrap();
     fact_log::append_single_fact(
         &store,
         &meta,
@@ -2217,6 +2224,7 @@ async fn test_agent_session_repository_workflow子sessionの事実は元nodeのa
         }),
         2,
     )
+    .await
     .unwrap();
     let mut session = repository.find("workflow-session").await.unwrap().unwrap();
     session
@@ -2246,7 +2254,8 @@ async fn test_agent_session読取_未対応node定義があってもqueryと操�
             "tree",
             "/repo",
             unavailable,
-        );
+        )
+        .await;
         let repository = new_repository(&store);
         let query = LocalAgentSessionQueryService::new(store.clone());
         let read_store =

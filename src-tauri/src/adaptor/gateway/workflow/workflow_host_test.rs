@@ -56,6 +56,7 @@ async fn test_実行木archive_状態確認後の自然完了で再登録でき�
             &super::fact_codec::decode(kind, "{}").unwrap(),
             2000,
         )
+        .await
         .unwrap();
     }
     drop(commit_guard);
@@ -1114,11 +1115,9 @@ async fn test_実行木archive_旧sessionのarchive事実も終了状態へ移�
     .unwrap();
     pending.row.event_type = "archive_requested".into();
     pending.row.detail = "{}".into();
-    crate::adaptor::gateway::workflow::fact_log::append_pending_rows_blocking(
-        &fixture.store,
-        vec![pending],
-    )
-    .unwrap();
+    crate::adaptor::gateway::workflow::fact_log::append_pending_rows(&fixture.store, vec![pending])
+        .await
+        .unwrap();
     fixture
         .runtime
         .migrate_execution_archives(fixture.repository.as_ref())
@@ -1366,7 +1365,8 @@ async fn test_archive移行_旧ファイルも対象も無い起動では無関�
         super::fact_codec::event_type(&NodeFact::AbortRequested(Default::default())).into();
     corrupt.row.detail = "broken history".into();
     rows.push(corrupt);
-    crate::adaptor::gateway::workflow::fact_log::append_pending_rows_blocking(&fixture.store, rows)
+    crate::adaptor::gateway::workflow::fact_log::append_pending_rows(&fixture.store, rows)
+        .await
         .unwrap();
     // When / Then
     fixture
@@ -1823,7 +1823,9 @@ async fn test_起動時前進_reply喪失後は保存済みなら続行し未保
                 token_usage: None,
             }),
         ] {
-            workflow_fact_log::append_single_fact(&fixture.store, first, &fact, 2000).unwrap();
+            workflow_fact_log::append_single_fact(&fixture.store, first, &fact, 2000)
+                .await
+                .unwrap();
         }
         let healthy = fixture
             .persist_started(
@@ -2335,7 +2337,8 @@ async fn test_worktree排他_abort対象の所在地を読めなければ記録�
     broken.row.detail = "{".into();
     fixture
         .store
-        .append_node_event_blocking(broken.row, Some(1_000))
+        .append_node_event(broken.row, Some(1_000))
+        .await
         .unwrap();
     let mut unavailable = fixture.app.clone();
     unavailable.store = None;
@@ -2885,6 +2888,7 @@ async fn test_abort競合_外部writerの追記後も最新記録を中止する
         }),
         2000,
     )
+    .await
     .unwrap();
     drop(guard);
     abort.await.unwrap();
@@ -2944,6 +2948,7 @@ async fn test_command結果競合_最新記録で成功を保存し終端なら�
             },
             2000,
         )
+        .await
         .unwrap();
         let before = workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id)
             .await
@@ -3038,6 +3043,7 @@ async fn test_操作競合_abortとcommand結果は上限で止まり障害事�
                 }),
                 2000 + attempt as i64 * 1000,
             )
+            .await
             .unwrap();
             if attempt + 1 == CONTROL_PLANE_MAX_ATTEMPTS {
                 drop(guard);

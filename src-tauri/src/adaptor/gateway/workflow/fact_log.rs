@@ -103,11 +103,8 @@ pub(crate) async fn resolve_unknown_append(
     store: &Arc<LocalEventStore>,
     rows: Vec<PendingFactRow>,
     expected_head: Option<i64>,
-) -> Result<
-    Result<Vec<i64>, crate::adaptor::gateway::local_event_store::writer::NodeEventWriteError>,
-    LocalEventQueryError,
-> {
-    use crate::adaptor::gateway::local_event_store::writer::NodeEventWriteError;
+) -> Result<Result<Vec<i64>, crate::domain::local_event::CommitBatchError>, LocalEventQueryError> {
+    use crate::domain::local_event::CommitBatchError;
     use rusqlite::OptionalExtension;
     store
         .submit_query(move |connection| {
@@ -155,9 +152,9 @@ pub(crate) async fn resolve_unknown_append(
                         super::super::local_event_store::reader::storage_unavailable(&error)
                     })?;
                     return Ok(Err(if advanced {
-                        NodeEventWriteError::Conflict
+                        CommitBatchError::TreeHeadConflict
                     } else {
-                        NodeEventWriteError::OutcomeUnknown
+                        CommitBatchError::AppendOutcomeUnknown
                     }));
                 };
                 sequences.push(sequence);
@@ -529,12 +526,13 @@ pub(crate) async fn append_facts_for_events(
     if events.is_empty() {
         return Ok(());
     }
-    append_pending_rows_blocking(
+    append_pending_rows(
         store,
         pending_rows_for_events(store, events)
             .await
             .map_err(crate::domain::workflow::WorkflowError::from)?,
     )
+    .await
 }
 
 pub(crate) async fn pending_rows_for_events(
@@ -572,7 +570,7 @@ pub(crate) async fn pending_rows_for_events(
 }
 
 /// 完了事実を含む行列は原子的に、それ以外は単一行ずつ append する。
-pub(crate) fn append_pending_rows_blocking(
+pub(crate) async fn append_pending_rows(
     store: &Arc<LocalEventStore>,
     rows: Vec<PendingFactRow>,
 ) -> Result<(), crate::domain::workflow::WorkflowError> {
@@ -584,17 +582,19 @@ pub(crate) fn append_pending_rows_blocking(
         .any(|pending| pending.row.event_type == "execution_completed")
     {
         return store
-            .append_node_events_blocking(
+            .append_node_events(
                 rows.into_iter()
                     .map(|pending| (pending.row, Some(pending.timestamp_ms)))
                     .collect(),
             )
+            .await
             .map(|_| ())
             .map_err(crate::domain::workflow::WorkflowError::from);
     }
     for pending in rows {
         store
-            .append_node_event_blocking(pending.row, Some(pending.timestamp_ms))
+            .append_node_event(pending.row, Some(pending.timestamp_ms))
+            .await
             .map_err(crate::domain::workflow::WorkflowError::from)?;
     }
     Ok(())
@@ -992,17 +992,18 @@ pub(crate) fn record_from_row(row: &NodeEventRow) -> Result<Option<NodeFactRecor
 }
 
 /// 単独の事実（human の行動等）を1行 append する。
-pub(crate) fn append_single_fact(
+pub(crate) async fn append_single_fact(
     store: &Arc<LocalEventStore>,
     meta: &NodeFactMeta,
     fact: &NodeFact,
     timestamp_ms: i64,
 ) -> Result<(), crate::domain::workflow::WorkflowError> {
-    append_pending_rows_blocking(
+    append_pending_rows(
         store,
         vec![pending_single_fact(meta, fact, timestamp_ms)
             .map_err(crate::domain::workflow::WorkflowError::external)?],
     )
+    .await
 }
 
 pub(crate) fn pending_single_fact(
@@ -1047,7 +1048,7 @@ pub(crate) async fn reconcile_tree_pass(
     now: f64,
     new_id: &mut (dyn FnMut() -> String + Send),
 ) -> Result<Option<TreeReconciliation>, crate::domain::workflow::WorkflowError> {
-    use crate::adaptor::gateway::local_event_store::writer::NodeEventWriteError;
+    use crate::domain::local_event::CommitBatchError;
     use crate::domain::workflow::entities::workflow_execution::{
         ExecutionAdvanceDecision, RuntimeNodeExecutionStatus,
     };
@@ -1168,13 +1169,16 @@ pub(crate) async fn reconcile_tree_pass(
             let rows = pending_rows_for_events(store, &applied.events)
                 .await
                 .map_err(WorkflowError::from)?;
-            let sequences = match store.append_node_events_at_head_blocking(
-                rows.iter()
-                    .map(|row| (row.row.clone(), Some(row.timestamp_ms)))
-                    .collect(),
-                Some((tree_id.into(), head)),
-            ) {
-                Err(NodeEventWriteError::OutcomeUnknown) => {
+            let sequences = match store
+                .append_node_events_at_head(
+                    rows.iter()
+                        .map(|row| (row.row.clone(), Some(row.timestamp_ms)))
+                        .collect(),
+                    Some((tree_id.into(), head)),
+                )
+                .await
+            {
+                Err(CommitBatchError::AppendOutcomeUnknown) => {
                     resolve_unknown_append(store, rows, Some(head))
                         .await
                         .map_err(|error| WorkflowError::Store(error.failure_kind()))?
@@ -1182,7 +1186,7 @@ pub(crate) async fn reconcile_tree_pass(
                 result => result,
             }
             .map_err(|error| match error {
-                NodeEventWriteError::Conflict => WorkflowError::Conflict(format!(
+                CommitBatchError::TreeHeadConflict => WorkflowError::Conflict(format!(
                     "workflow tree {tree_id} changed before startup advancement commit"
                 )),
                 error => WorkflowError::StorageUnavailable {

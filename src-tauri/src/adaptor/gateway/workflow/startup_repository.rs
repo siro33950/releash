@@ -1,7 +1,7 @@
 use super::{fact_codec, fact_log, stored_definition};
-use crate::adaptor::gateway::local_event_store::writer::NodeEventWriteError;
 use crate::adaptor::gateway::local_event_store::{node_events, LocalEventStore};
 use crate::domain::failure::ClassifiedFailure;
+use crate::domain::local_event::CommitBatchError;
 use crate::domain::workflow::entities::workflow_execution::ExecutionTree;
 use crate::domain::workflow::repository::{
     WorkflowRevision, WorkflowStartupRecord, WorkflowStartupRepository,
@@ -142,12 +142,15 @@ impl WorkflowStartupRepository for StoredWorkflowStartupRepository {
             .map_err(|_| WorkflowError::invalid_state("invalid workflow revision"))?;
         let pending = fact_log::pending_single_fact(root, fact, (timestamp * 1000.0) as i64)
             .map_err(WorkflowError::external)?;
-        let result = self.0.append_node_events_at_head_blocking(
-            vec![(pending.row.clone(), Some(pending.timestamp_ms))],
-            expected_head.map(|head| (root.tree_id.clone(), head)),
-        );
+        let result = self
+            .0
+            .append_node_events_at_head(
+                vec![(pending.row.clone(), Some(pending.timestamp_ms))],
+                expected_head.map(|head| (root.tree_id.clone(), head)),
+            )
+            .await;
         match result {
-            Err(NodeEventWriteError::OutcomeUnknown) => {
+            Err(CommitBatchError::AppendOutcomeUnknown) => {
                 match fact_log::resolve_unknown_append(&self.0, vec![pending], expected_head)
                     .await
                     .map_err(|error| WorkflowError::StorageUnavailable {
@@ -155,17 +158,17 @@ impl WorkflowStartupRepository for StoredWorkflowStartupRepository {
                         message: format!("startup abort readback failed: {error:?}"),
                     })? {
                     Ok(_) => Ok(()),
-                    Err(NodeEventWriteError::Conflict | NodeEventWriteError::OutcomeUnknown) => {
-                        Err(WorkflowError::Conflict(format!(
-                            "tree {} startup abort was not found after an unknown append outcome",
-                            root.tree_id
-                        )))
-                    }
+                    Err(
+                        CommitBatchError::TreeHeadConflict | CommitBatchError::AppendOutcomeUnknown,
+                    ) => Err(WorkflowError::Conflict(format!(
+                        "tree {} startup abort was not found after an unknown append outcome",
+                        root.tree_id
+                    ))),
                     Err(error) => Err(WorkflowError::from(error)),
                 }
             }
             result => result.map(|_| ()).map_err(|error| match error {
-                NodeEventWriteError::Conflict => WorkflowError::Conflict(format!(
+                CommitBatchError::TreeHeadConflict => WorkflowError::Conflict(format!(
                     "tree {} advanced before startup abort",
                     root.tree_id
                 )),

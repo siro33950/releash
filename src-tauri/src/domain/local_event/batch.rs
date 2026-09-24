@@ -89,7 +89,13 @@ pub enum CommitBatchError {
     PayloadConflict,
     /// An expected stream head or mutation revision guard did not match.
     StreamHeadConflict { current: StreamVersion },
-    /// Batch or queue bounds exceeded before writer admission.
+    /// The node fact head changed before append.
+    TreeHeadConflict,
+    /// The writer queue is temporarily full.
+    QueueBusy,
+    /// A node fact append reply was lost; resolve from the fact log.
+    AppendOutcomeUnknown,
+    /// Batch bounds exceeded before writer admission.
     CapacityExceeded,
     /// A sequence / revision would pass `i64::MAX`.
     SequenceExhausted,
@@ -113,7 +119,10 @@ impl fmt::Display for CommitBatchError {
                     current.value()
                 )
             }
-            Self::CapacityExceeded => write!(f, "batch or queue capacity exceeded"),
+            Self::TreeHeadConflict => write!(f, "node event tree changed before append"),
+            Self::QueueBusy => write!(f, "write queue is full"),
+            Self::AppendOutcomeUnknown => write!(f, "node event write outcome is unknown"),
+            Self::CapacityExceeded => write!(f, "batch capacity exceeded"),
             Self::SequenceExhausted => write!(f, "sequence space exhausted"),
             Self::StorageUnavailable { failure } => write!(f, "storage unavailable: {failure}"),
             Self::OutcomeUnknown { identity } => {
@@ -141,9 +150,11 @@ impl crate::domain::failure::ClassifiedFailure for CommitBatchError {
         use crate::domain::failure::FailureKind;
         match self {
             Self::PayloadConflict => FailureKind::StateRequired,
-            Self::StreamHeadConflict { .. } | Self::OutcomeUnknown { .. } => {
-                FailureKind::RestartRequired
-            }
+            Self::QueueBusy => FailureKind::Temporary,
+            Self::StreamHeadConflict { .. }
+            | Self::OutcomeUnknown { .. }
+            | Self::TreeHeadConflict
+            | Self::AppendOutcomeUnknown => FailureKind::RestartRequired,
             Self::CapacityExceeded | Self::SequenceExhausted => FailureKind::Capacity,
             Self::StorageUnavailable { failure } => failure.failure_kind(),
             Self::Corrupt { .. } => FailureKind::Corrupt,

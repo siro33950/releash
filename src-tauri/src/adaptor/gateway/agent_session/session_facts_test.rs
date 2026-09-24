@@ -11,7 +11,7 @@ async fn test_session読取_親と自身の実行定義を解釈せず接続情�
         let store =
             LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into()))
                 .unwrap();
-        seed_unavailable_definition(&store, "tree", "/repo", unavailable);
+        seed_unavailable_definition(&store, "tree", "/repo", unavailable).await;
         let backend = FactLogReadBackend::Live(store);
         let location = locate_session(&backend, "tree-session")
             .await
@@ -59,7 +59,7 @@ async fn test_session読取_root欠落と対象provider欠落は接続情報取�
         .unwrap_err()
         .to_string()
         .contains("root is missing"));
-    seed_unavailable_definition(&store, "tree", "/repo", "unused");
+    seed_unavailable_definition(&store, "tree", "/repo", "unused").await;
     let missing = SessionLocation {
         node_name: "missing".into(),
         ..location
@@ -199,7 +199,7 @@ async fn test_session読取_子sessionにもrootのarchiveとrestoreを反映す
     let directory = tempfile::tempdir().unwrap();
     let store =
         LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into())).unwrap();
-    seed_unavailable_definition(&store, "tree", "/repo", "unused");
+    seed_unavailable_definition(&store, "tree", "/repo", "unused").await;
     let backend = FactLogReadBackend::Live(store.clone());
     let location = locate_session(&backend, "tree-session")
         .await
@@ -220,7 +220,9 @@ async fn test_session読取_子sessionにもrootのarchiveとrestoreを反映す
         }),
         NodeFact::RestoreRequested,
     ] {
-        fact_log::append_single_fact(&store, &root, &fact, 100).unwrap();
+        fact_log::append_single_fact(&store, &root, &fact, 100)
+            .await
+            .unwrap();
         let records = read_session_records(&backend, &location).await.unwrap();
         let view = derive_session_facts(&records, &location.node_execution_id, "tree-session");
         assert_eq!(view.archived, matches!(fact, NodeFact::ArchiveRequested(_)));

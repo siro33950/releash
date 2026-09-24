@@ -119,7 +119,7 @@ async fn test_終端の隔離node出力_旧定義でも状態と同じ保存成�
                 for (index, (node, name, kind, event_type, detail)) in facts.into_iter().enumerate()
                 {
                     store
-                        .append_node_event_blocking(
+                        .append_node_event(
                             NewNodeEventRow {
                                 tree_id: id.into(),
                                 node_execution_id: node.into(),
@@ -133,6 +133,7 @@ async fn test_終端の隔離node出力_旧定義でも状態と同じ保存成�
                             },
                             Some((index as i64 + 1) * 1000),
                         )
+                        .await
                         .unwrap();
                 }
                 let projection =
@@ -295,6 +296,7 @@ async fn test_隔離合成子の出力取得_保存されない成果を一度�
             ),
             3000,
         )
+        .await
         .unwrap();
         fact_log::append_single_fact(
             &store,
@@ -307,6 +309,7 @@ async fn test_隔離合成子の出力取得_保存されない成果を一度�
             ),
             4000,
         )
+        .await
         .unwrap();
         let records = fact_log::read_tree_records(&store, id).await.unwrap();
         assert!(!records.iter().any(|record| matches!(
@@ -500,7 +503,9 @@ async fn test_空の隔離fanout出力_保存事実を一度だけ読みstatus�
             },
         ),
     ] {
-        fact_log::append_single_fact(&store, &records[0].meta, &fact, 2000).unwrap();
+        fact_log::append_single_fact(&store, &records[0].meta, &fact, 2000)
+            .await
+            .unwrap();
         events.reads.store(0, Ordering::SeqCst);
         // When / Then
         assert_eq!(

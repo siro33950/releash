@@ -14,9 +14,11 @@ async fn test_起動時判定_rootと最初の終端だけで復元し通常の�
     let root =
         SessionExecutionTreeRootFacts::new("tree", "/repo", "/repo", ProviderKind::Codex, None)
             .unwrap();
-    fact_log::append_single_fact(&store, &root.meta, &root.started, 1_000).unwrap();
+    fact_log::append_single_fact(&store, &root.meta, &root.started, 1_000)
+        .await
+        .unwrap();
     store
-        .append_node_event_blocking(
+        .append_node_event(
             NewNodeEventRow {
                 tree_id: "tree".into(),
                 node_execution_id: "tree".into(),
@@ -30,6 +32,7 @@ async fn test_起動時判定_rootと最初の終端だけで復元し通常の�
             },
             Some(2_000),
         )
+        .await
         .unwrap();
     let retried_root = NodeFactMeta {
         node_execution_id: "retried-root".into(),
@@ -37,6 +40,7 @@ async fn test_起動時判定_rootと最初の終端だけで復元し通常の�
         ..root.meta.clone()
     };
     fact_log::append_single_fact(&store, &retried_root, &NodeFact::ExecutionCompleted, 3_000)
+        .await
         .unwrap();
     fact_log::append_single_fact(
         &store,
@@ -44,6 +48,7 @@ async fn test_起動時判定_rootと最初の終端だけで復元し通常の�
         &NodeFact::AbortRequested(Default::default()),
         4_000,
     )
+    .await
     .unwrap();
     let repository = StoredWorkflowStartupRepository(store);
 
@@ -68,9 +73,11 @@ async fn test_起動時判定_壊れた終端を読取失敗として返す() {
     let root =
         SessionExecutionTreeRootFacts::new("tree", "/repo", "/repo", ProviderKind::Codex, None)
             .unwrap();
-    fact_log::append_single_fact(&store, &root.meta, &root.started, 1_000).unwrap();
+    fact_log::append_single_fact(&store, &root.meta, &root.started, 1_000)
+        .await
+        .unwrap();
     store
-        .append_node_event_blocking(
+        .append_node_event(
             NewNodeEventRow {
                 tree_id: "tree".into(),
                 node_execution_id: "tree".into(),
@@ -84,6 +91,7 @@ async fn test_起動時判定_壊れた終端を読取失敗として返す() {
             },
             Some(2_000),
         )
+        .await
         .unwrap();
     // When / Then
     assert!(StoredWorkflowStartupRepository(store)
@@ -111,7 +119,9 @@ async fn test_起動失敗abort_読取後の追記を検出し最新の終端状
         let root =
             SessionExecutionTreeRootFacts::new("tree", "/repo", "/repo", ProviderKind::Codex, None)
                 .unwrap();
-        fact_log::append_single_fact(&store, &root.meta, &root.started, 1_000).unwrap();
+        fact_log::append_single_fact(&store, &root.meta, &root.started, 1_000)
+            .await
+            .unwrap();
         let repository = StoredWorkflowStartupRepository(store.clone());
         let mut stale = repository.load("tree").await.unwrap().unwrap();
         let fact = stale
@@ -120,7 +130,9 @@ async fn test_起動失敗abort_読取後の追記を検出し最新の終端状
             .unwrap();
 
         // When
-        fact_log::append_single_fact(&store, &root.meta, &concurrent, 2_000).unwrap();
+        fact_log::append_single_fact(&store, &root.meta, &concurrent, 2_000)
+            .await
+            .unwrap();
         let before = fact_log::read_tree_records(&store, "tree").await.unwrap();
         let result = repository
             .append(&stale.root, &fact, 3.0, Some(&stale.revision))
@@ -172,7 +184,9 @@ async fn test_起動時abort_結果不明でも保存済みなら成功し重複
         let root =
             SessionExecutionTreeRootFacts::new("tree", "/repo", "/repo", ProviderKind::Codex, None)
                 .unwrap();
-        fact_log::append_single_fact(&store, &root.meta, &root.started, 1_000).unwrap();
+        fact_log::append_single_fact(&store, &root.meta, &root.started, 1_000)
+            .await
+            .unwrap();
         let repository = StoredWorkflowStartupRepository(store.clone());
         let fact = NodeFact::AbortRequested(crate::domain::workflow::AbortRequestedFact {
             reason: Some("startup failed".into()),
@@ -223,7 +237,9 @@ async fn test_起動時abort_未保存や別内容の結果不明は再評価を
                 None,
             )
             .unwrap();
-            fact_log::append_single_fact(&store, &root.meta, &root.started, 1_000).unwrap();
+            fact_log::append_single_fact(&store, &root.meta, &root.started, 1_000)
+                .await
+                .unwrap();
             let fact = NodeFact::AbortRequested(crate::domain::workflow::AbortRequestedFact {
                 reason: Some("startup failed".into()),
             });
@@ -238,7 +254,8 @@ async fn test_起動時abort_未保存や別内容の結果不明は再評価を
             }
             if change != "missing" {
                 store
-                    .append_node_event_blocking(pending.row, Some(pending.timestamp_ms))
+                    .append_node_event(pending.row, Some(pending.timestamp_ms))
+                    .await
                     .unwrap();
             }
             let before = fact_log::read_tree_records(&store, "tree").await.unwrap();
@@ -271,7 +288,9 @@ async fn test_起動時abort_結果不明の読戻し失敗を成功や競合に
     let root =
         SessionExecutionTreeRootFacts::new("tree", "/repo", "/repo", ProviderKind::Codex, None)
             .unwrap();
-    fact_log::append_single_fact(&store, &root.meta, &root.started, 1_000).unwrap();
+    fact_log::append_single_fact(&store, &root.meta, &root.started, 1_000)
+        .await
+        .unwrap();
     let repository = StoredWorkflowStartupRepository(store.clone());
     let stall = store.fault_injector().arm_node_event_append_stall();
     store.fault_injector().arm_drop_reply();
@@ -310,7 +329,9 @@ async fn test_起動時abort_不正なrevisionは追記前に拒否する() {
     let root =
         SessionExecutionTreeRootFacts::new("tree", "/repo", "/repo", ProviderKind::Codex, None)
             .unwrap();
-    fact_log::append_single_fact(&store, &root.meta, &root.started, 1000).unwrap();
+    fact_log::append_single_fact(&store, &root.meta, &root.started, 1000)
+        .await
+        .unwrap();
     let repository = StoredWorkflowStartupRepository(store.clone());
     // When
     let result = repository

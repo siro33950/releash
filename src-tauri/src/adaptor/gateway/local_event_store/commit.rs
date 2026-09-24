@@ -27,7 +27,7 @@ fn correlation_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
-fn storage_unavailable(error: &rusqlite::Error) -> CommitBatchError {
+pub(super) fn storage_unavailable(error: &rusqlite::Error) -> CommitBatchError {
     let correlation = correlation_id();
     log::warn!("local event store sqlite failure [{correlation}]: {error}");
     CommitBatchError::StorageUnavailable {

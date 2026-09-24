@@ -16,15 +16,15 @@ struct Fixture {
 }
 
 impl Fixture {
-    fn new(isolated_child: bool) -> Self {
-        Self::with_contract(isolated_child, false)
+    async fn new(isolated_child: bool) -> Self {
+        Self::with_contract(isolated_child, false).await
     }
 
-    fn with_contract(isolated_child: bool, contract: bool) -> Self {
-        Self::with_slots(isolated_child, contract, false)
+    async fn with_contract(isolated_child: bool, contract: bool) -> Self {
+        Self::with_slots(isolated_child, contract, false).await
     }
 
-    fn with_slots(isolated_child: bool, contract: bool, fanout: bool) -> Self {
+    async fn with_slots(isolated_child: bool, contract: bool, fanout: bool) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let store =
             LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into()))
@@ -81,6 +81,7 @@ impl Fixture {
             }),
             1,
         )
+        .await
         .unwrap();
         let child = NodeFactMeta {
             tree_id: TREE.into(),
@@ -105,6 +106,7 @@ impl Fixture {
             }),
             2,
         )
+        .await
         .unwrap();
         let backend = FactLogReadBackend::Live(store.clone());
         Self {
@@ -124,8 +126,10 @@ impl Fixture {
         .unwrap()
     }
 
-    fn append_child(&self, fact: NodeFact) {
-        fact_log::append_single_fact(&self.store, &self.child, &fact, 3).unwrap();
+    async fn append_child(&self, fact: NodeFact) {
+        fact_log::append_single_fact(&self.store, &self.child, &fact, 3)
+            .await
+            .unwrap();
     }
 }
 
@@ -133,7 +137,7 @@ impl Fixture {
 async fn test_隔離読み取り_sessionの起動先を直近の隔離祖先から導出しworkspaceを維持する() {
     // Given
     for isolated_child in [false, true] {
-        let fixture = Fixture::new(isolated_child);
+        let fixture = Fixture::new(isolated_child).await;
         let owner = if isolated_child {
             &fixture.child
         } else {
@@ -144,12 +148,14 @@ async fn test_隔離読み取り_sessionの起動先を直近の隔離祖先か�
 
         // When
         use crate::domain::agent_session::repository::AgentSessionRepository;
-        fixture.append_child(NodeFact::SessionAttached(SessionAttachedFact {
-            session_id: "agent".into(),
-            provider_session_id: None,
-            transcript_ref: None,
-            initial_instruction_admitted: false,
-        }));
+        fixture
+            .append_child(NodeFact::SessionAttached(SessionAttachedFact {
+                session_id: "agent".into(),
+                provider_session_id: None,
+                transcript_ref: None,
+                initial_instruction_admitted: false,
+            }))
+            .await;
         let repository = crate::adaptor::gateway::agent_session::LocalAgentSessionRepository::new(
             fixture.store.clone(),
         );
@@ -187,10 +193,10 @@ async fn test_隔離読み取り_実体なしでも実行中と失敗後とabort
         )),
         Some(NodeFact::AbortRequested(Default::default())),
     ] {
-        let fixture = Fixture::new(true);
+        let fixture = Fixture::new(true).await;
         let expected = IsolatedWorktree::for_attempt("/repo", &fixture.child.node_execution_id, 2);
         if let Some(fact) = terminal {
-            fixture.append_child(fact);
+            fixture.append_child(fact).await;
         }
 
         // When
@@ -225,14 +231,18 @@ async fn test_隔離読み取り_実体なしでも実行中と失敗後とabort
 #[tokio::test]
 async fn test_隔離出力_再構築後もcontractなしsessionと合成子の成果を取得する() {
     // Given
-    let fixture = Fixture::new(true);
-    fixture.append_child(NodeFact::SubmitReceived(SubmitReceivedFact {
-        request_id: Some("submitted".into()),
-    }));
-    fixture.append_child(NodeFact::StopReceived(StopReceivedFact {
-        result_summary: None,
-        token_usage: None,
-    }));
+    let fixture = Fixture::new(true).await;
+    fixture
+        .append_child(NodeFact::SubmitReceived(SubmitReceivedFact {
+            request_id: Some("submitted".into()),
+        }))
+        .await;
+    fixture
+        .append_child(NodeFact::StopReceived(StopReceivedFact {
+            result_summary: None,
+            token_usage: None,
+        }))
+        .await;
     let expected = IsolatedWorktree::for_attempt("/repo", &fixture.child.node_execution_id, 2);
 
     // When
@@ -269,7 +279,7 @@ async fn test_隔離出力_再構築後もcontractなしsessionと合成子の�
 #[tokio::test]
 async fn test_隔離読み取り_所有者やattemptや配置が一致しないpathを拒否する() {
     // Given
-    let fixture = Fixture::new(true);
+    let fixture = Fixture::new(true).await;
     let owned = IsolatedWorktree::for_attempt("/repo", &fixture.child.node_execution_id, 2);
 
     // When / Then
@@ -296,19 +306,25 @@ async fn test_隔離読み取り_所有者やattemptや配置が一致しないp
 #[tokio::test]
 async fn test_隔離出力_contractの提出情報を保ちworktreeを合成する() {
     // Given
-    let fixture = Fixture::with_contract(true, true);
-    fixture.append_child(NodeFact::ArtifactProduced(ArtifactProducedFact {
-        contract: Some("result".into()),
-        value: serde_json::json!({"summary": "done"}),
-        request_id: Some("request-1".into()),
-    }));
-    fixture.append_child(NodeFact::SubmitReceived(SubmitReceivedFact {
-        request_id: Some("request-1".into()),
-    }));
-    fixture.append_child(NodeFact::StopReceived(StopReceivedFact {
-        result_summary: None,
-        token_usage: None,
-    }));
+    let fixture = Fixture::with_contract(true, true).await;
+    fixture
+        .append_child(NodeFact::ArtifactProduced(ArtifactProducedFact {
+            contract: Some("result".into()),
+            value: serde_json::json!({"summary": "done"}),
+            request_id: Some("request-1".into()),
+        }))
+        .await;
+    fixture
+        .append_child(NodeFact::SubmitReceived(SubmitReceivedFact {
+            request_id: Some("request-1".into()),
+        }))
+        .await;
+    fixture
+        .append_child(NodeFact::StopReceived(StopReceivedFact {
+            result_summary: None,
+            token_usage: None,
+        }))
+        .await;
     // When
     let output = fixture.read().get_output(TREE, "child").await.unwrap();
     // Then
@@ -333,7 +349,7 @@ async fn test_隔離出力_contractの提出情報を保ちworktreeを合成す�
 #[tokio::test]
 async fn test_隔離出力_同名slotの開始順と提出順が異なっても提出した所有者の値を返す() {
     // Given
-    let fixture = Fixture::with_slots(true, true, true);
+    let fixture = Fixture::with_slots(true, true, true).await;
     let second = NodeFactMeta {
         node_execution_id: "second-slot".into(),
         attempt: 1,
@@ -349,6 +365,7 @@ async fn test_隔離出力_同名slotの開始順と提出順が異なっても�
         }),
         3,
     )
+    .await
     .unwrap();
     for (meta, timestamp, request) in [
         (&fixture.child, 4, "first"),
@@ -365,6 +382,7 @@ async fn test_隔離出力_同名slotの開始順と提出順が異なっても�
             }),
             timestamp,
         )
+        .await
         .unwrap();
         // When
         let output = fixture.read().get_output(TREE, "child").await.unwrap();
@@ -387,7 +405,7 @@ async fn test_隔離出力_同名slotの開始順と提出順が異なっても�
 #[tokio::test]
 async fn test_隔離出力_contractなしslotも最後に提出した所有者の成果を返す() {
     // Given
-    let fixture = Fixture::with_slots(true, false, true);
+    let fixture = Fixture::with_slots(true, false, true).await;
     let second = NodeFactMeta {
         node_execution_id: "second-slot".into(),
         attempt: 1,
@@ -403,6 +421,7 @@ async fn test_隔離出力_contractなしslotも最後に提出した所有者�
         }),
         3,
     )
+    .await
     .unwrap();
     for (meta, timestamp) in [(&fixture.child, 4), (&second, 6)] {
         fact_log::append_single_fact(
@@ -413,6 +432,7 @@ async fn test_隔離出力_contractなしslotも最後に提出した所有者�
             }),
             timestamp,
         )
+        .await
         .unwrap();
         fact_log::append_single_fact(
             &fixture.store,
@@ -423,6 +443,7 @@ async fn test_隔離出力_contractなしslotも最後に提出した所有者�
             }),
             timestamp + 1,
         )
+        .await
         .unwrap();
         // When
         let output = fixture.read().get_output(TREE, "child").await.unwrap();
@@ -460,7 +481,7 @@ async fn test_隔離出力_contractなしslotも最後に提出した所有者�
 #[tokio::test]
 async fn test_隔離context_取得済みrootだけで隔離cwdを導出しroot行を再取得しない() {
     // Given
-    let fixture = Fixture::new(false);
+    let fixture = Fixture::new(false).await;
     let row = fixture
         .backend
         .run_indexed(|connection| {
@@ -493,7 +514,7 @@ async fn test_隔離context_取得済みrootだけで隔離cwdを導出しroot�
 async fn test_実効cwd_自身か直近の隔離祖先で確定したら上位行と定義を読まない() {
     // Given
     for isolated_child in [true, false] {
-        let fixture = Fixture::new(isolated_child);
+        let fixture = Fixture::new(isolated_child).await;
         let row = fixture
             .backend
             .run_indexed(|connection| {
@@ -524,6 +545,7 @@ async fn test_実効cwd_自身か直近の隔離祖先で確定したら上位�
             }),
             4,
         )
+        .await
         .unwrap();
         let mut child = fixture.child;
         child.parent_id = Some(
@@ -556,7 +578,7 @@ async fn test_実効cwd_祖先の欠落と循環と別木と不正定義はcorru
         "missing-definition",
     ] {
         // Given
-        let fixture = Fixture::new(false);
+        let fixture = Fixture::new(false).await;
         let row = fixture
             .backend
             .run_indexed(|connection| {
@@ -590,7 +612,7 @@ async fn test_実効cwd_祖先の欠落と循環と別木と不正定義はcorru
 #[tokio::test]
 async fn test_実効cwd_祖先sql読み取り障害はinternalへ伝わる() {
     // Given
-    let fixture = Fixture::new(false);
+    let fixture = Fixture::new(false).await;
     let row = fixture
         .backend
         .run_indexed(|connection| {
@@ -627,7 +649,7 @@ async fn test_実効cwd_祖先sql読み取り障害はinternalへ伝わる() {
 async fn test_workspace解決_通常pathではstoreを構築せず隔離pathだけ保存事実を読む() {
     // Given
     use crate::usecase::workspace_tree::WorkspaceWorktreePathQuery;
-    let fixture = Fixture::new(true);
+    let fixture = Fixture::new(true).await;
     let query = StoredWorkspaceWorktreePathQuery::new(fixture.directory.path().into());
     let isolated = IsolatedWorktree::for_attempt(
         "/repo",
@@ -662,7 +684,7 @@ async fn workspace_worktree_path(
 #[tokio::test]
 async fn test_実効cwd_rootのretryで初回rootとidが変わってもworkspaceを継承する() {
     // Given
-    let fixture = Fixture::new(false);
+    let fixture = Fixture::new(false).await;
     let row = fixture
         .backend
         .run_indexed(|connection| {
@@ -696,7 +718,7 @@ async fn test_workspace所在地読取_実経路で失敗分類を保持する()
     use crate::adaptor::gateway::local_event_store::test_helpers::ReadFailure;
     use crate::adaptor::protocol::connect::classified_error;
     // Given
-    let fixture = Fixture::new(false);
+    let fixture = Fixture::new(false).await;
     let isolated = IsolatedWorktree::for_attempt("/repo", TREE, 1);
     for (failure, expected) in ReadFailure::cases() {
         fixture.store.fail_next_read(failure);
@@ -712,7 +734,7 @@ async fn test_workspace所在地読取_実経路で失敗分類を保持する()
 #[tokio::test]
 async fn test_workspace所在地読取_保存されたrootの破損をdata_lossとして返す() {
     // Given
-    let fixture = Fixture::new(false);
+    let fixture = Fixture::new(false).await;
     let isolated = IsolatedWorktree::for_attempt("/repo", TREE, 1);
     rusqlite::Connection::open(fixture.directory.path().join("local-event-store.sqlite3"))
         .unwrap()
