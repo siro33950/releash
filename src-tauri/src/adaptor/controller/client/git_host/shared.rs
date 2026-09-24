@@ -23,7 +23,7 @@ pub(crate) fn register_shared(
                             .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
                         outcome(
                             issue::fetch_issues_shared(
-                                &state,
+                                &state.git_host_usecase,
                                 convert(required(args.repo_path, "repoPath")?)?,
                             )
                             .await,
@@ -31,87 +31,6 @@ pub(crate) fn register_shared(
                     }
                     .await?;
                     Ok(wire::command_result::Command::FetchIssues(result))
-                })
-            }),
-        );
-    }
-    {
-        let state = deps.app_state.clone();
-        router.register_domain(
-            &["fetch_pr_status"],
-            Box::new(move |command| {
-                let state = state.clone();
-                Box::pin(async move {
-                    let wire::command_request::Command::FetchPrStatus(args) = command else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move {
-                        let state = state
-                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        outcome(
-                            pr::fetch_pr_status_shared(
-                                &state,
-                                convert(required(args.repo_path, "repoPath")?)?,
-                            )
-                            .await,
-                        )
-                    }
-                    .await?;
-                    Ok(wire::command_result::Command::FetchPrStatus(result))
-                })
-            }),
-        );
-    }
-    {
-        let state = deps.app_state.clone();
-        router.register_domain(
-            &["get_cached_issues"],
-            Box::new(move |command| {
-                let state = state.clone();
-                Box::pin(async move {
-                    let wire::command_request::Command::GetCachedIssues(args) = command else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move {
-                        let state = state
-                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        outcome(
-                            issue::get_cached_issues_shared(
-                                &state,
-                                convert(required(args.repo_path, "repoPath")?)?,
-                            )
-                            .await,
-                        )
-                    }
-                    .await?;
-                    Ok(wire::command_result::Command::GetCachedIssues(result))
-                })
-            }),
-        );
-    }
-    {
-        let state = deps.app_state.clone();
-        router.register_domain(
-            &["get_cached_pr_status"],
-            Box::new(move |command| {
-                let state = state.clone();
-                Box::pin(async move {
-                    let wire::command_request::Command::GetCachedPrStatus(args) = command else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move {
-                        let state = state
-                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        outcome(
-                            pr::get_cached_pr_status_shared(
-                                &state,
-                                convert(required(args.repo_path, "repoPath")?)?,
-                            )
-                            .await,
-                        )
-                    }
-                    .await?;
-                    Ok(wire::command_result::Command::GetCachedPrStatus(result))
                 })
             }),
         );

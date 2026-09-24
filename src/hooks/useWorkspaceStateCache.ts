@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef } from "react";
-import { invokeClient as invoke } from "@/lib/client";
+import { invokeClient as invoke, subscribeState } from "@/lib/client";
 import {
 	type WorkspaceState,
 	worktreeNameFromPath,
@@ -13,6 +13,7 @@ export interface UseWorkspaceStateCacheReturn {
 }
 
 export function useWorkspaceStateCache(): UseWorkspaceStateCacheReturn {
+	const subscriptions = useRef(new Map<string, () => void>());
 	const cacheRef = useRef<Map<string, WorkspaceState>>(new Map());
 	const timersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(
 		new Map(),
@@ -42,20 +43,22 @@ export function useWorkspaceStateCache(): UseWorkspaceStateCacheReturn {
 
 	const loadState = useCallback(
 		async (rootPath: string): Promise<WorkspaceState | undefined> => {
-			try {
-				const state = await invoke("load_workspace_state", {
-					worktreeName: worktreeNameFromPath(rootPath),
-					worktreeRoot: rootPath,
-				});
-				if (state) {
-					cacheRef.current.set(rootPath, state);
-					return state;
-				}
-				return undefined;
-			} catch (e) {
-				console.error("Failed to load workspace state:", e);
-				return undefined;
-			}
+			subscriptions.current.get(rootPath)?.();
+			return new Promise((resolve) => {
+				const release = subscribeState(
+					{
+						kind: "workspace-state",
+						args: [worktreeNameFromPath(rootPath), rootPath],
+					},
+					(state) => {
+						if (state && !dirtyRef.current.has(rootPath))
+							cacheRef.current.set(rootPath, state);
+						resolve(state ?? undefined);
+					},
+					() => resolve(undefined),
+				);
+				subscriptions.current.set(rootPath, release);
+			});
 		},
 		[],
 	);
@@ -98,6 +101,7 @@ export function useWorkspaceStateCache(): UseWorkspaceStateCacheReturn {
 	// Flush all dirty entries on unmount
 	useEffect(() => {
 		return () => {
+			for (const release of subscriptions.current.values()) release();
 			for (const timer of timersRef.current.values()) {
 				clearTimeout(timer);
 			}

@@ -482,10 +482,7 @@ mod tests {
         // Given
         let effects = Arc::new(AtomicUsize::new(0));
         let authority = Arc::new(ApplicationStartupAuthority::ready());
-        let dispatch = Arc::new(ClientCommandDispatch::new(
-            Arc::new(crate::adaptor::controller::wiring::build_repository_usecase()),
-            authority.clone(),
-        ));
+        let dispatch = Arc::new(ClientCommandDispatch::new(authority.clone()));
         let mut router: CommandRouter<InvokeHandler<tauri::test::MockRuntime>> =
             CommandRouter::new(Box::new(|invoke| {
                 invoke.resolver.resolve("fallback-result");

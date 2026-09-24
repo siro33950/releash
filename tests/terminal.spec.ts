@@ -12,7 +12,7 @@ test("Terminal Surface接続はbackend resizeより先にsnapshotを投影する
 	await setupTauriMock(
 		page,
 		buildMockConfig({
-			list_worktrees: [
+			"worktrees": [
 				{
 					name: "repo",
 					path: "/test/repo",
@@ -55,7 +55,7 @@ test("Terminal Surfaceのproduction wireをreload後もsnapshotとlive outputと
 	await setupTauriMock(
 		page,
 		buildMockConfig({
-			list_worktrees: [
+			"worktrees": [
 				{
 					name: "repo",
 					path: "/test/repo",
@@ -119,7 +119,7 @@ test("backend AVT生成checkpointを実xtermへalternate screen・属性・wide�
 	await setupTauriMock(
 		page,
 		buildMockConfig({
-			list_worktrees: [
+			"worktrees": [
 				{
 					name: "repo",
 					path: "/test/repo",

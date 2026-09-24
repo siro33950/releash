@@ -1,44 +1,6 @@
-use std::collections::HashMap;
-
 use serde::{Deserialize, Serialize};
 
-use crate::domain::git_host::{
-    issue_branch_name, IssueInfo, IssueLabel, Milestone, PrAuthor, PrInfo, PrStatus,
-};
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PrInfoDto {
-    pub number: u64,
-    pub url: String,
-}
-
-impl From<PrInfo> for PrInfoDto {
-    fn from(pr: PrInfo) -> Self {
-        Self {
-            number: pr.number,
-            url: pr.url,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PrStatusDto {
-    pub open_prs: HashMap<String, PrInfoDto>,
-    pub merged_branches: Vec<String>,
-}
-
-impl From<PrStatus> for PrStatusDto {
-    fn from(status: PrStatus) -> Self {
-        Self {
-            open_prs: status
-                .open_prs
-                .into_iter()
-                .map(|(branch, pr)| (branch, pr.into()))
-                .collect(),
-            merged_branches: status.merged_branches,
-        }
-    }
-}
+use crate::domain::git_host::{issue_branch_name, IssueInfo, IssueLabel, Milestone, PrAuthor};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PrAuthorDto {
@@ -121,33 +83,6 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-
-    #[test]
-    fn pr_status_dto_serializes_existing_wire_shape() {
-        let dto = PrStatusDto::from(PrStatus {
-            open_prs: HashMap::from([(
-                "feat/test".to_string(),
-                PrInfo {
-                    number: 42,
-                    url: "https://github.com/owner/repo/pull/42".to_string(),
-                },
-            )]),
-            merged_branches: vec!["feat/done".to_string()],
-        });
-
-        assert_eq!(
-            serde_json::to_value(dto).unwrap(),
-            json!({
-                "open_prs": {
-                    "feat/test": {
-                        "number": 42,
-                        "url": "https://github.com/owner/repo/pull/42"
-                    }
-                },
-                "merged_branches": ["feat/done"]
-            })
-        );
-    }
 
     #[test]
     fn issue_info_dto_serializes_existing_wire_shape() {

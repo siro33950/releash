@@ -7,12 +7,15 @@ import {
 } from "@testing-library/react";
 import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { useWorkspaceNodeDetail } from "@/hooks/useWorkspaceNodeDetail";
-import { invokeClient as invoke, listenClient as listen } from "@/lib/client";
+import { invokeClient as invoke } from "@/lib/client";
+import { stateSubscriptions } from "@/test/stateSubscriptions";
 import { AgentSessionPanel, AgentSessionRoute } from "./AgentSessionPanel";
 
+const states = stateSubscriptions();
 vi.mock("@/lib/client", () => ({
 	invokeClient: vi.fn(),
+	subscribeState: (...args: Parameters<typeof states.subscribeState>) =>
+		states.subscribeState(...args),
 	listenClient: vi.fn().mockResolvedValue(() => {}),
 }));
 vi.mock("@/components/panels/TerminalPanel", () => ({
@@ -170,6 +173,52 @@ describe("AgentSessionPanel", () => {
 		expect(screen.queryByTestId("provider-terminal")).not.toBeInTheDocument();
 	});
 
+	it.each(["open_agent_session", "restore_agent_session"] as const)(
+		"%sがGC済みを返しても受け取ったResumeを表示する",
+		async (command) => {
+			const action = resumeAction();
+			if (command === "restore_agent_session") {
+				mockInvoke.mockRejectedValueOnce(new Error("archived"));
+			}
+			mockInvoke.mockResolvedValueOnce("garbage_collected");
+			render(
+				<AgentSessionPanel
+					session={
+						command === "restore_agent_session"
+							? {
+									...session,
+									lifecycle: "archived",
+									operations: {
+										canArchive: false,
+										canRestore: true,
+										canDelete: true,
+									},
+								}
+							: session
+					}
+					resumeAction={action}
+				/>,
+			);
+			if (command === "restore_agent_session") {
+				await screen.findByRole("alert");
+				fireEvent.click(screen.getByRole("button", { name: "Restore" }));
+			}
+			expect(
+				await screen.findByText("AgentSession is no longer available."),
+			).toBeVisible();
+			expect(mockInvoke).toHaveBeenLastCalledWith(
+				command,
+				expect.objectContaining({ agentSessionId: session.id }),
+			);
+			expect(screen.queryByTestId("provider-terminal")).not.toBeInTheDocument();
+			fireEvent.click(screen.getByRole("button", { name: "Resume" }));
+			expect(action.onResume).toHaveBeenCalledOnce();
+			expect(mockInvoke).toHaveBeenCalledTimes(
+				command === "open_agent_session" ? 1 : 2,
+			);
+		},
+	);
+
 	it("Resume中は二重に押せず失敗理由を表示する", async () => {
 		mockInvoke.mockResolvedValueOnce("paused");
 		const { rerender } = render(
@@ -193,23 +242,18 @@ describe("AgentSessionPanel", () => {
 	});
 
 	it("自動resume失敗後はPausedを表示してResumeを待つ", async () => {
-		const onRefresh = vi.fn();
 		mockInvoke.mockResolvedValueOnce("paused");
 
-		const { rerender } = render(
-			<AgentSessionPanel session={session} onRefresh={onRefresh} />,
-		);
+		const { rerender } = render(<AgentSessionPanel session={session} />);
 
 		expect(await screen.findByRole("alert")).toHaveTextContent(
 			"Provider session is not running",
 		);
 		expect(screen.queryByRole("button", { name: "Resume" })).toBeNull();
-		expect(onRefresh).toHaveBeenCalledOnce();
 		rerender(
 			<AgentSessionPanel
 				session={{ ...session, lifecycle: "paused" }}
 				resumeAction={resumeAction()}
-				onRefresh={onRefresh}
 			/>,
 		);
 		expect(screen.getByRole("button", { name: "Resume" })).toBeVisible();
@@ -339,19 +383,17 @@ describe("AgentSessionPanel", () => {
 });
 
 describe("AgentSessionRoute", () => {
+	const target = { kind: "agent-session", args: ["agent-session-1"] } as const;
+	const publish = (
+		value: import("@/generated/client_types").AgentSessionItemDto | null,
+	) => states.publish({ ...target, args: [...target.args] }, value);
 	beforeEach(() => {
+		states.clear();
 		mockInvoke.mockReset();
+		mockInvoke.mockResolvedValue("attached");
 	});
-
-	it("作成応答のAgentSessionは再取得と再Openを待たずTerminalへattachする", async () => {
-		const onInitialSessionConsumed = vi.fn();
-		mockInvoke.mockImplementation((command) => {
-			if (command === "get_agent_session") {
-				return new Promise(() => {});
-			}
-			return Promise.reject(new Error(`unexpected command: ${command}`));
-		});
-
+	it("作成済みattachmentは購読の初期値と再Openを待たずTerminalへattachする", () => {
+		const consumed = vi.fn();
 		render(
 			<StrictMode>
 				<AgentSessionRoute
@@ -363,302 +405,101 @@ describe("AgentSessionRoute", () => {
 						workspaceWorktreePath: "/repo/worktree",
 						provider: "claude",
 					}}
-					onInitialSessionConsumed={onInitialSessionConsumed}
+					onInitialSessionConsumed={consumed}
 				/>
 			</StrictMode>,
 		);
-
 		expect(screen.getByTestId("provider-terminal")).toBeVisible();
-		expect(mockInvoke).toHaveBeenCalledWith("get_agent_session", {
-			agentSessionId: "agent-session-1",
-		});
-		expect(mockInvoke).not.toHaveBeenCalledWith(
-			"open_agent_session",
-			expect.anything(),
+		expect(states.subscribeState).toHaveBeenCalledWith(
+			target,
+			expect.any(Function),
+			expect.any(Function),
 		);
-		expect(onInitialSessionConsumed).toHaveBeenCalledWith("agent-session-1");
+		expect(mockInvoke).not.toHaveBeenCalled();
+		expect(consumed).toHaveBeenCalledWith("agent-session-1");
+		act(() => publish(session));
+		expect(mockInvoke).not.toHaveBeenCalled();
 	});
-
-	it("idからbackend read modelを取得してAgentSessionを開く", async () => {
-		mockInvoke.mockImplementation((command) => {
-			if (command === "get_agent_session") {
-				return Promise.resolve(session);
-			}
-			if (command === "open_agent_session") {
-				return Promise.resolve("attached");
-			}
-			return Promise.reject(new Error(`unexpected command: ${command}`));
-		});
-
-		render(<AgentSessionRoute agentSessionId="agent-session-1" />);
-
-		await waitFor(() => {
-			expect(mockInvoke).toHaveBeenCalledWith("get_agent_session", {
-				agentSessionId: "agent-session-1",
-			});
-		});
-		expect(await screen.findByTestId("provider-terminal")).toBeVisible();
-	});
-
-	it("backendにAgentSessionが存在しなければLoadingを終了して不在を表示する", async () => {
-		mockInvoke.mockResolvedValueOnce(null);
-
-		render(<AgentSessionRoute agentSessionId="missing-session" />);
-
-		expect(
-			await screen.findByText("AgentSession is no longer available."),
-		).toBeVisible();
-		expect(screen.queryByText("Loading AgentSession...")).toBeNull();
-	});
-
-	it("AgentSessionが取得できなくても受け取ったResumeを表示する", async () => {
-		mockInvoke.mockResolvedValueOnce(null);
-		const action = resumeAction();
-
-		render(
-			<AgentSessionRoute
-				agentSessionId="missing-session"
-				resumeAction={action}
-			/>,
-		);
-
-		expect(
-			await screen.findByText("AgentSession is no longer available."),
-		).toBeVisible();
-		fireEvent.click(screen.getByRole("button", { name: "Resume" }));
-		expect(action.onResume).toHaveBeenCalledOnce();
-	});
-
-	it("GC済みで不在になったAgentSessionでも受け取ったResumeを表示する", async () => {
-		mockInvoke.mockResolvedValueOnce("garbage_collected");
-
-		render(
-			<AgentSessionPanel session={session} resumeAction={resumeAction()} />,
-		);
-
-		expect(
-			await screen.findByText("AgentSession is no longer available."),
-		).toBeVisible();
-		expect(screen.getByRole("button", { name: "Resume" })).toBeVisible();
-	});
-
-	it("Restore後にbackend read modelを再取得してPausedのResume操作を表示する", async () => {
-		const archived = {
-			...session,
-			lifecycle: "archived" as const,
-			operations: {
-				canArchive: false,
-				canRestore: true,
-				canDelete: true,
-			},
-		};
-		let getReads = 0;
-		let openCalls = 0;
-		mockInvoke.mockImplementation((command) => {
-			if (command === "get_agent_session") {
-				getReads += 1;
-				return Promise.resolve(
-					getReads === 1
-						? archived
-						: {
-								...session,
-								lifecycle: "paused",
-							},
-				);
-			}
-			if (command === "open_agent_session") {
-				openCalls += 1;
-				return openCalls === 1
-					? Promise.reject(new Error("resume failed"))
-					: Promise.resolve("attached");
-			}
-			if (command === "restore_agent_session") {
-				return Promise.resolve("restored");
-			}
-			return Promise.reject(new Error(`unexpected command: ${command}`));
-		});
-
+	it("購読から届いたsessionをOpenし更新と削除を取り直し無しで表示する", async () => {
 		render(
 			<AgentSessionRoute
 				agentSessionId="agent-session-1"
 				resumeAction={resumeAction()}
 			/>,
 		);
-
-		fireEvent.click(await screen.findByRole("button", { name: "Restore" }));
-
-		expect(await screen.findByRole("button", { name: "Resume" })).toBeVisible();
-		expect(screen.queryByTestId("provider-terminal")).toBeNull();
-		expect(openCalls).toBe(1);
-		expect(screen.queryByRole("button", { name: "Archive" })).toBeNull();
-		await waitFor(() => expect(getReads).toBe(2));
-	});
-
-	it("同じworktreeの一覧変更後にbackend read modelを再取得する", async () => {
-		const archived = {
-			...session,
-			lifecycle: "archived" as const,
-			operations: {
-				canArchive: false,
-				canRestore: true,
-				canDelete: true,
-			},
-		};
-		let getReads = 0;
-		let openCalls = 0;
-		mockInvoke.mockImplementation((command) => {
-			if (command === "get_agent_session") {
-				getReads += 1;
-				return Promise.resolve(getReads === 1 ? session : archived);
-			}
-			if (command === "open_agent_session") {
-				openCalls += 1;
-				return Promise.resolve(openCalls === 1 ? "attached" : "restored");
-			}
-			return Promise.reject(new Error(`unexpected command: ${command}`));
-		});
-
-		render(<AgentSessionRoute agentSessionId="agent-session-1" />);
+		expect(screen.getByText("Loading AgentSession...")).toBeVisible();
+		act(() => publish(session));
 		expect(await screen.findByTestId("provider-terminal")).toBeVisible();
-
-		window.dispatchEvent(
-			new CustomEvent("agent-session-refresh", {
-				detail: { worktreePath: "/repo/worktree" },
-			}),
+		expect(mockInvoke).toHaveBeenCalledExactlyOnceWith(
+			"open_agent_session",
+			expect.objectContaining({ agentSessionId: "agent-session-1" }),
 		);
-
+		act(() => publish({ ...session, lifecycle: "paused" }));
+		expect(screen.getByRole("button", { name: "Resume" })).toBeVisible();
+		expect(screen.queryByTestId("provider-terminal")).toBeNull();
+		act(() => publish(null));
 		expect(
-			await screen.findByRole("button", { name: "Restore" }),
+			screen.getByText("AgentSession is no longer available."),
 		).toBeVisible();
-		expect(getReads).toBe(2);
-		expect(openCalls).toBe(1);
+		expect(mockInvoke).toHaveBeenCalledTimes(1);
 	});
-});
-
-describe("隔離SessionのWorkspace通知", () => {
-	beforeEach(() => {
-		mockInvoke.mockReset();
-		vi.mocked(listen)
-			.mockReset()
-			.mockResolvedValue(() => {});
-	});
-
-	it.each(["pause", "delete", "rename", "provider title"])(
-		"%sのbackend通知でrootに属するSessionを再取得する",
-		async (change) => {
-			let notify:
-				| ((event: { payload: { worktreePath: string } }) => void)
-				| undefined;
-			vi.mocked(listen).mockImplementation(async (event, handler) => {
-				if (event === "agent-session-changed")
-					notify = handler as typeof notify;
-				return () => {};
-			});
-			let reads = 0;
-			mockInvoke.mockImplementation(async (command) => {
-				if (command === "get_agent_session") {
-					reads++;
-					if (reads > 1 && change === "delete") return null;
-					return reads > 1 && change === "pause"
-						? { ...session, lifecycle: "paused" }
-						: session;
-				}
-				if (command === "open_agent_session") return "attached";
-				throw new Error(`unexpected command: ${command}`);
-			});
-			render(<AgentSessionRoute agentSessionId={session.id} />);
-			expect(await screen.findByTestId("provider-terminal")).toHaveAttribute(
-				"data-cwd",
-				session.worktreePath,
-			);
-			await act(async () =>
-				notify?.({ payload: { worktreePath: session.workspaceWorktreePath } }),
-			);
-			await waitFor(() => expect(reads).toBe(2));
-			if (change === "pause")
-				expect(
-					await screen.findByText("AgentSession is paused."),
-				).toBeVisible();
-			if (change === "delete")
-				expect(
-					await screen.findByText("AgentSession is no longer available."),
-				).toBeVisible();
-		},
-	);
-
-	it("DTOがまだ無い起動attachmentもrootの通知を照合する", async () => {
-		let reads = 0;
-		mockInvoke.mockImplementation((command) => {
-			if (command === "get_agent_session") {
-				reads++;
-				return reads === 1 ? new Promise(() => {}) : Promise.resolve(session);
-			}
-			throw new Error(`unexpected command: ${command}`);
-		});
+	it("存在しないsessionでも受け取ったResume操作を提供する", () => {
+		publish(null);
+		const action = resumeAction();
 		render(
 			<AgentSessionRoute
-				agentSessionId={session.id}
-				initialAttachment={{
-					agentSessionId: session.id,
-					workspaceIdentity: session.workspaceIdentity,
-					workspaceWorktreePath: session.workspaceWorktreePath,
-					worktreePath: session.worktreePath,
-					provider: session.provider,
-				}}
+				agentSessionId="agent-session-1"
+				resumeAction={action}
 			/>,
 		);
-		expect(screen.getByTestId("provider-terminal")).toHaveAttribute(
-			"data-cwd",
-			session.worktreePath,
+		expect(
+			screen.getByText("AgentSession is no longer available."),
+		).toBeVisible();
+		fireEvent.click(screen.getByRole("button", { name: "Resume" }));
+		expect(action.onResume).toHaveBeenCalledOnce();
+		expect(mockInvoke).not.toHaveBeenCalled();
+	});
+	it("Restore操作後の状態は購読から届き再Openしない", async () => {
+		publish({
+			...session,
+			lifecycle: "archived",
+			operations: { canArchive: false, canRestore: true, canDelete: true },
+		});
+		mockInvoke
+			.mockRejectedValueOnce(new Error("archived"))
+			.mockResolvedValue("restored");
+		render(
+			<AgentSessionRoute
+				agentSessionId="agent-session-1"
+				resumeAction={resumeAction()}
+			/>,
 		);
-		await act(async () =>
-			window.dispatchEvent(
-				new CustomEvent("agent-session-refresh", {
-					detail: { worktreePath: session.workspaceWorktreePath },
-				}),
+		fireEvent.click(await screen.findByRole("button", { name: "Restore" }));
+		await waitFor(() =>
+			expect(mockInvoke).toHaveBeenCalledWith(
+				"restore_agent_session",
+				expect.objectContaining({ agentSessionId: "agent-session-1" }),
 			),
 		);
-		await waitFor(() => expect(reads).toBe(2));
-		expect(mockInvoke).not.toHaveBeenCalledWith(
-			"open_agent_session",
-			expect.anything(),
-		);
-	});
-
-	it("panelからのrestore通知がrootを購読するNode詳細へ届く", async () => {
-		let detailReads = 0;
-		function Detail() {
-			useWorkspaceNodeDetail({
-				worktreePath: session.workspaceWorktreePath,
-				nodeId: "node",
-			});
-			return null;
-		}
-		mockInvoke.mockImplementation(async (command) => {
-			if (command === "get_workspace_node_detail") {
-				detailReads++;
-				return null;
-			}
-			if (command === "restore_agent_session") return "restored";
-			throw new Error(`unexpected command: ${command}`);
-		});
-		render(
-			<>
-				<Detail />
-				<AgentSessionPanel
-					initiallyAttached
-					session={{
-						...session,
-						lifecycle: "archived",
-						operations: { ...session.operations, canRestore: true },
-					}}
-				/>
-			</>,
-		);
-		const restore = await screen.findByRole("button", { name: "Restore" });
-		await waitFor(() => expect(detailReads).toBe(1));
-		fireEvent.click(restore);
-		await waitFor(() => expect(detailReads).toBe(2));
+		act(() => publish({ ...session, lifecycle: "paused" }));
+		expect(screen.getByRole("button", { name: "Resume" })).toBeVisible();
 		expect(screen.queryByTestId("provider-terminal")).toBeNull();
+		expect(
+			mockInvoke.mock.calls.filter(([name]) => name === "open_agent_session"),
+		).toHaveLength(1);
+	});
+	it("別sessionの値は表示対象に混ざらない", async () => {
+		publish(session);
+		const { rerender } = render(
+			<AgentSessionRoute agentSessionId="agent-session-1" />,
+		);
+		await screen.findByTestId("provider-terminal");
+		rerender(<AgentSessionRoute agentSessionId="other" />);
+		act(() => publish({ ...session, lifecycle: "archived" }));
+		expect(screen.getByText("Loading AgentSession...")).toBeVisible();
+		act(() => states.publish({ kind: "agent-session", args: ["other"] }, null));
+		expect(
+			screen.getByText("AgentSession is no longer available."),
+		).toBeVisible();
 	});
 });

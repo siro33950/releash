@@ -12,7 +12,6 @@ use crate::usecase::agent_session::{
     AgentSessionHistoryQueryService, AgentSessionHistoryRequest, AgentSessionProviderDto,
 };
 
-const MAX_PAGE_SIZE: usize = 100;
 const MAX_SCAN_PER_PROVIDER: usize = 201;
 
 pub(crate) struct LocalAgentSessionHistoryQueryService {
@@ -35,13 +34,9 @@ impl AgentSessionHistoryQueryService for LocalAgentSessionHistoryQueryService {
         &self,
         request: AgentSessionHistoryRequest,
     ) -> Result<AgentSessionHistoryPageDto, AgentSessionHistoryQueryError> {
-        if request.worktree_path.trim().is_empty()
-            || request.limit == 0
-            || request.limit > MAX_PAGE_SIZE
-        {
+        if request.worktree_path.trim().is_empty() || request.visible_count == 0 {
             return Err(AgentSessionHistoryQueryError::InvalidRequest);
         }
-        let after = request.after.as_deref().map(decode_cursor).transpose()?;
         let mut unique = HashMap::new();
         for provider in ProviderKind::supported() {
             let entries = self
@@ -72,14 +67,12 @@ impl AgentSessionHistoryQueryService for LocalAgentSessionHistoryQueryService {
         }
         let mut candidates = unique.into_values().collect::<Vec<_>>();
         candidates.sort_by(compare_metadata);
-        let mut visible = Vec::with_capacity(request.limit.saturating_add(1));
+        let mut visible = Vec::with_capacity(
+            candidates
+                .len()
+                .min(request.visible_count.saturating_add(1)),
+        );
         for candidate in candidates {
-            if after
-                .as_ref()
-                .is_some_and(|cursor| !is_after(&candidate, cursor))
-            {
-                continue;
-            }
             if self
                 .ownership
                 .is_owned(candidate.provider, &candidate.provider_session_id)
@@ -89,15 +82,12 @@ impl AgentSessionHistoryQueryService for LocalAgentSessionHistoryQueryService {
                 continue;
             }
             visible.push(candidate);
-            if visible.len() > request.limit {
+            if visible.len() > request.visible_count {
                 break;
             }
         }
-        let has_more = visible.len() > request.limit;
-        visible.truncate(request.limit);
-        let next_after = has_more
-            .then(|| visible.last().map(encode_cursor))
-            .flatten();
+        let has_more = visible.len() > request.visible_count;
+        visible.truncate(request.visible_count);
         let mut titles = HashMap::new();
         for provider in ProviderKind::supported() {
             let provider_session_ids = visible
@@ -153,16 +143,9 @@ impl AgentSessionHistoryQueryService for LocalAgentSessionHistoryQueryService {
                     }
                 })
                 .collect(),
-            next_after,
+            has_more,
         })
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct HistoryCursor {
-    updated_at_ms: i64,
-    provider: ProviderKind,
-    provider_session_id: String,
 }
 
 fn compare_metadata(
@@ -174,51 +157,6 @@ fn compare_metadata(
         .cmp(&left.updated_at_ms)
         .then_with(|| provider_rank(left.provider).cmp(&provider_rank(right.provider)))
         .then_with(|| left.provider_session_id.cmp(&right.provider_session_id))
-}
-
-fn is_after(candidate: &AgentSessionHistoryMetadata, cursor: &HistoryCursor) -> bool {
-    compare_metadata(
-        candidate,
-        &AgentSessionHistoryMetadata {
-            provider: cursor.provider,
-            provider_session_id: cursor.provider_session_id.clone(),
-            worktree_path: candidate.worktree_path.clone(),
-            updated_at_ms: cursor.updated_at_ms,
-        },
-    ) == Ordering::Greater
-}
-
-fn encode_cursor(candidate: &AgentSessionHistoryMetadata) -> String {
-    format!(
-        "{}:{}:{}",
-        candidate.updated_at_ms,
-        provider_rank(candidate.provider),
-        hex::encode(candidate.provider_session_id.as_bytes())
-    )
-}
-
-fn decode_cursor(raw: &str) -> Result<HistoryCursor, AgentSessionHistoryQueryError> {
-    let mut parts = raw.splitn(3, ':');
-    let updated_at_ms = parts
-        .next()
-        .and_then(|value| value.parse::<i64>().ok())
-        .ok_or(AgentSessionHistoryQueryError::InvalidRequest)?;
-    let provider = match parts.next() {
-        Some("0") => ProviderKind::Claude,
-        Some("1") => ProviderKind::Codex,
-        _ => return Err(AgentSessionHistoryQueryError::InvalidRequest),
-    };
-    let provider_session_id = parts
-        .next()
-        .and_then(|value| hex::decode(value).ok())
-        .and_then(|value| String::from_utf8(value).ok())
-        .filter(|value| !value.trim().is_empty())
-        .ok_or(AgentSessionHistoryQueryError::InvalidRequest)?;
-    Ok(HistoryCursor {
-        updated_at_ms,
-        provider,
-        provider_session_id,
-    })
 }
 
 fn provider_rank(provider: ProviderKind) -> u8 {

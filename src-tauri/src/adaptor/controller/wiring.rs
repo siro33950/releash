@@ -109,7 +109,7 @@ fn build_repository_usecase_inner(
 }
 
 pub(crate) fn build_git_host_usecase() -> GitHostUsecase {
-    let ttl = CacheTtl::from_secs(30);
+    let ttl = CacheTtl::EXTERNAL_INFORMATION;
     GitHostUsecase::new(
         Arc::new(GitHubGitHostGateway::default()),
         Arc::new(InMemoryTtlCache::<PrStatus>::new(ttl)),
@@ -429,12 +429,14 @@ pub(crate) fn build_workflow_runtime_usecase(
     ));
     let driver = Arc::new(driver);
     let startup = wire_workflow_startup(app.clone(), driver.clone());
+    let publisher = app.state_changes.clone();
     Ok(WorkflowRuntimeUsecase::new_with_worktree_operations(
         Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(app, driver)),
         archives,
         operations,
     )
-    .with_startup(startup))
+    .with_startup(startup)
+    .with_state_publisher(publisher))
 }
 
 pub(crate) fn wire_delegate_continuation(

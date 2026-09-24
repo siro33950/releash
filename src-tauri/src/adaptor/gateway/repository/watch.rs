@@ -80,7 +80,15 @@ pub struct GitStatusChangedEvent {
 pub(crate) fn classify_git_dir_events(events: &[DebouncedEvent]) -> (bool, bool) {
     let has_branch_change = events.iter().any(|e| {
         let p = to_canonical_forward_slash(&e.path.to_string_lossy());
-        p.contains("/refs/heads/") || e.path.file_name().is_some_and(|n| n == "HEAD")
+        p.contains("/refs/heads/")
+            || e.path
+                .parent()
+                .and_then(Path::file_name)
+                .is_some_and(|name| name == "worktrees")
+            || (p.contains("/worktrees/")
+                && e.path.file_name().is_some_and(|name| name == "gitdir"))
+            || p.ends_with("/worktrees")
+            || e.path.file_name().is_some_and(|n| n == "HEAD")
     });
     let has_index_change = events.iter().any(|e| {
         let file_name = e
@@ -191,6 +199,17 @@ mod tests {
         DebouncedEvent {
             path: PathBuf::from(path),
             kind: DebouncedEventKind::Any,
+        }
+    }
+
+    #[test]
+    fn test_worktree登録変更_最初のdirectory作成と配下の追加削除を検出する() {
+        for path in [
+            "/repo/.git/worktrees",
+            "/repo/.git/worktrees/first",
+            "/repo/.git/worktrees/first/gitdir",
+        ] {
+            assert_eq!(classify_git_dir_events(&[make_event(path)]), (true, false));
         }
     }
 

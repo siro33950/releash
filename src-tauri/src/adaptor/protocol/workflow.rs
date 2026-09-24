@@ -180,13 +180,6 @@ pub struct WorkflowExecutionView {
     pub approval_target: Option<ApprovalTargetView>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkflowExecutionChangedPayloadView {
-    pub worktree_path: String,
-    pub workflow_execution: WorkflowExecutionView,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -251,23 +244,5 @@ mod tests {
                 "worktreePath",
             ]
         );
-    }
-
-    #[test]
-    fn execution_changed_payload_names_the_execution() {
-        let value = serde_json::to_value(WorkflowExecutionChangedPayloadView {
-            worktree_path: "/repo".to_string(),
-            workflow_execution: execution(),
-        })
-        .unwrap();
-        assert_eq!(value["worktreePath"], "/repo");
-        assert_eq!(value["workflowExecution"]["id"], "execution-1");
-        let keys = value
-            .as_object()
-            .unwrap()
-            .keys()
-            .cloned()
-            .collect::<Vec<_>>();
-        assert_eq!(keys, vec!["workflowExecution", "worktreePath"]);
     }
 }

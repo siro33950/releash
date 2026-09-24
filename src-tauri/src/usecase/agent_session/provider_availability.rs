@@ -18,6 +18,7 @@ pub(crate) enum ProviderAvailabilityUsecaseError {
 }
 
 pub(crate) struct ProviderAvailabilityUsecase {
+    state_publisher: Option<crate::usecase::state_subscription::StateSubscriptionPublisher>,
     config: Arc<dyn ProviderExecutableConfigRepository>,
     probe: Arc<dyn ProviderExecutableProbeGateway>,
     registry: RwLock<ProviderRegistry>,
@@ -25,12 +26,21 @@ pub(crate) struct ProviderAvailabilityUsecase {
 }
 
 impl ProviderAvailabilityUsecase {
+    pub(crate) fn with_state_publisher(
+        mut self,
+        publisher: crate::usecase::state_subscription::StateSubscriptionPublisher,
+    ) -> Self {
+        self.state_publisher = Some(publisher);
+        self
+    }
+
     pub(crate) fn initialize(
         config: Arc<dyn ProviderExecutableConfigRepository>,
         probe: Arc<dyn ProviderExecutableProbeGateway>,
     ) -> Result<Self, ProviderAvailabilityUsecaseError> {
         let registry = build_registry(config.as_ref(), probe.as_ref())?;
         Ok(Self {
+            state_publisher: None,
             config,
             probe,
             registry: RwLock::new(registry),
@@ -106,6 +116,9 @@ impl ProviderAvailabilityUsecase {
             .registry
             .write()
             .map_err(|_| ProviderAvailabilityUsecaseError::Corrupt)? = next.clone();
+        if let Some(publisher) = &self.state_publisher {
+            publisher.invalidate(crate::domain::state_subscription::StateChangeSource::Providers);
+        }
         Ok(next)
     }
 }
@@ -145,4 +158,15 @@ fn build_registry(
         })
         .collect::<Result<Vec<_>, ProviderAvailabilityUsecaseError>>()?;
     ProviderRegistry::new(entries).map_err(|_| ProviderAvailabilityUsecaseError::Corrupt)
+}
+
+impl crate::domain::failure::ClassifiedFailure for ProviderAvailabilityUsecaseError {
+    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
+        use crate::domain::failure::FailureKind;
+        match self {
+            Self::InvalidInput => FailureKind::InvalidInput,
+            Self::ConfigUnavailable | Self::RefreshUnavailable => FailureKind::Temporary,
+            Self::Corrupt => FailureKind::Corrupt,
+        }
+    }
 }

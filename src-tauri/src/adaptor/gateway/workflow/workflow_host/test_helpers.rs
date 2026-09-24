@@ -278,7 +278,7 @@ impl Fixture {
         let store =
             LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into()))
                 .unwrap();
-        let mut app = test_helpers::dependencies(Some(store.clone()));
+        let app = test_helpers::dependencies(Some(store.clone()));
         let worktrees = Arc::new(TestWorktrees {
             failures: AtomicUsize::new(failures),
             ..Default::default()
@@ -296,8 +296,7 @@ impl Fixture {
                 sessions.clone(),
             ),
         );
-        host.node_processes = processes.clone();
-        app.processes = processes;
+        host.node_processes = processes;
         let host =
             crate::adaptor::controller::wiring::wire_delegate_continuation(app.clone(), host);
         Self {
@@ -448,29 +447,20 @@ pub(super) async fn wait_startup_retries(host: &WorkflowRuntimeHost) {
 
 pub(super) fn record_workflow_execution_broadcasts(
     app: &WorkflowRuntimeDependencies,
-) -> tokio::sync::broadcast::Receiver<Arc<[u8]>> {
-    app.push.subscribe()
+) -> tokio::sync::broadcast::Receiver<crate::domain::state_subscription::StateChangeSource> {
+    app.state_changes.subscribe_changes()
 }
 
 pub(super) fn take_workflow_execution_broadcasts(
-    receiver: &mut tokio::sync::broadcast::Receiver<Arc<[u8]>>,
-) -> Vec<crate::adaptor::protocol::workflow::WorkflowExecutionChangedPayloadView> {
-    use crate::adaptor::protocol::client as wire;
-    use prost::Message;
-    let mut broadcasts = Vec::new();
-    loop {
-        let frame = match receiver.try_recv() {
-            Ok(frame) => frame,
-            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
-            Err(error) => panic!("push reception failed: {error}"),
-        };
-        let push = wire::Push::decode(frame.as_ref()).unwrap();
-        let (event, payload) = push.into_value().unwrap();
-        if event == "workflow-execution-changed" {
-            broadcasts.push(serde_json::from_value(payload).unwrap());
-        }
+    receiver: &mut tokio::sync::broadcast::Receiver<
+        crate::domain::state_subscription::StateChangeSource,
+    >,
+) -> Vec<crate::domain::state_subscription::StateChangeSource> {
+    let mut changes = Vec::new();
+    while let Ok(change) = receiver.try_recv() {
+        changes.push(change);
     }
-    broadcasts
+    changes
 }
 
 pub(super) fn workspace_query(store: Arc<LocalEventStore>) -> Arc<SqliteWorkspaceQueryService> {
@@ -484,13 +474,10 @@ pub(super) fn workspace_query(store: Arc<LocalEventStore>) -> Arc<SqliteWorkspac
 
 pub(super) fn dependencies(store: Option<Arc<LocalEventStore>>) -> WorkflowRuntimeDependencies {
     WorkflowRuntimeDependencies {
-        processes: Arc::new(
-            crate::adaptor::gateway::workflow::node_process::WorkflowNodeProcesses::default(),
-        ),
         store,
         config: None,
         secrets: None,
-        push: Arc::new(crate::infrastructure::push::PushSink::new()),
+        state_changes: crate::usecase::state_subscription::StateSubscriptionPublisher::for_test(),
     }
 }
 

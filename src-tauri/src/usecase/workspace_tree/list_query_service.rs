@@ -17,7 +17,13 @@ pub(crate) struct WorkspaceListUsecaseError(pub String);
 pub(crate) trait WorkspaceListQueryService: Send + Sync {
     fn repositories(&self) -> Result<Vec<String>, WorkspaceListUsecaseError>;
     async fn branches(&self, path: &str) -> Result<Vec<BranchCardDto>, WorkspaceListUsecaseError>;
-    fn pr_status(&self, path: &str) -> Result<PrStatus, WorkspaceListUsecaseError>;
+    async fn current_branches(
+        &self,
+        path: &str,
+    ) -> Result<Vec<BranchCardDto>, WorkspaceListUsecaseError> {
+        self.branches(path).await
+    }
+    fn pr_status(&self, path: &str, force: bool) -> Result<PrStatus, WorkspaceListUsecaseError>;
     async fn nodes(
         &self,
         path: &str,
@@ -48,10 +54,23 @@ impl WorkspaceListQueryService for WorkspaceListServices {
             .map_err(|error| WorkspaceListUsecaseError(error.to_string()))
     }
 
-    fn pr_status(&self, path: &str) -> Result<PrStatus, WorkspaceListUsecaseError> {
-        self.git_host
-            .get_cached_pr_status(path)
+    async fn current_branches(
+        &self,
+        path: &str,
+    ) -> Result<Vec<BranchCardDto>, WorkspaceListUsecaseError> {
+        self.repository_state
+            .list_branches_with_status_snapshot(path)
+            .map(|snapshot| snapshot.branches)
             .map_err(|error| WorkspaceListUsecaseError(error.to_string()))
+    }
+
+    fn pr_status(&self, path: &str, force: bool) -> Result<PrStatus, WorkspaceListUsecaseError> {
+        let result = if force {
+            self.git_host.fetch_pr_status(path)
+        } else {
+            self.git_host.get_cached_pr_status(path)
+        };
+        result.map_err(|error| WorkspaceListUsecaseError(error.to_string()))
     }
 
     async fn nodes(

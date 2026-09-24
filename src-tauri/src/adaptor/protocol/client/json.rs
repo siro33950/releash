@@ -39,7 +39,7 @@ pub(super) fn to_message<M: Message + Default>(name: &str, value: Json) -> Resul
         .map_err(|error| error.to_string())
 }
 
-pub(super) fn from_message<M: Message>(name: &str, value: &M) -> Result<Json, String> {
+pub(crate) fn from_message<M: Message>(name: &str, value: &M) -> Result<Json, String> {
     let descriptor = POOL
         .get_message_by_name(name)
         .ok_or_else(|| format!("Unknown message {name}"))?;

@@ -6,7 +6,7 @@ mod json;
 mod workflow_values;
 
 #[cfg(any(test, all(debug_assertions, feature = "desktop")))]
-use self::json::from_message;
+pub(crate) use self::json::from_message;
 #[cfg(any(test, all(debug_assertions, feature = "desktop")))]
 use self::json::to_message;
 #[cfg(any(test, all(debug_assertions, feature = "desktop")))]

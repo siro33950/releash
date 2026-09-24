@@ -7,18 +7,13 @@ use tauri::Manager;
 #[tokio::test]
 async fn test_クライアントdispatch_startup失敗時はusecase実行前に拒否する() {
     // Given
-    let dispatch = ClientCommandDispatch::new(
-        Arc::new(crate::adaptor::controller::wiring::build_repository_usecase()),
-        Arc::new(ApplicationStartupAuthority::failed_kind(
-            crate::usecase::application_startup::StartupFailureKind::StoreValidationFailed,
-        )),
-    );
+    let dispatch = ClientCommandDispatch::new(Arc::new(ApplicationStartupAuthority::failed_kind(
+        crate::usecase::application_startup::StartupFailureKind::StoreValidationFailed,
+    )));
     // When
     let error = dispatch
-        .dispatch(wire::command_request::Command::GetCurrentBranch(
-            wire::GetCurrentBranchRequest {
-                repo_path: Some("/missing".into()),
-            },
+        .dispatch(wire::command_request::Command::GetExternalEditor(
+            wire::GetExternalEditorRequest {},
         ))
         .await
         .unwrap_err();
@@ -84,12 +79,7 @@ fn parity_app_with_runtime(
         )
         .unwrap(),
     ));
-    let mut dispatch = ClientCommandDispatch::new(
-        app.state::<Arc<crate::usecase::repository_usecase::RepositoryUsecase>>()
-            .inner()
-            .clone(),
-        authority,
-    );
+    let mut dispatch = ClientCommandDispatch::new(authority);
     dispatch.register_dependencies(&crate::desktop_test_support::build_client_dependencies(
         app.handle(),
     ));
@@ -187,35 +177,24 @@ parity!(
     json!({}),
     outcome(invoke_tauri(&app, "list_workflows", json!({})).await)
 );
-parity!(
-    test_workspace_tree_protoはusecase結果と一致する,
-    app,
-    "list_workspace_workflow_history",
-    json!({"worktreePath":"/missing"}),
-    outcome(
-        invoke_tauri(
-            &app,
-            "list_workspace_workflow_history",
-            json!({"worktreePath": "/missing"})
-        )
-        .await
+#[test]
+fn test_workspace_tree_読み取りrpcは購読への移設後に拒否する() {
+    assert!(wire::CommandRequest::from_value(
+        "list_workspace_workflow_history",
+        json!({"worktreePath":"/missing"})
     )
-);
-parity!(
-    test_workspace_state_protoはusecase結果と一致する,
-    app,
-    "load_workspace_state",
-    json!({"worktreeName":"missing","worktreeRoot":"/missing"}),
-    value(
-        invoke_tauri(
-            &app,
-            "load_workspace_state",
-            json!({"worktreeName": "missing","worktreeRoot": "/missing"})
-        )
-        .await
-        .unwrap()
+    .is_err());
+}
+
+#[test]
+fn test_workspace_state_読み取りrpcは購読への移設後に拒否する() {
+    assert!(wire::CommandRequest::from_value(
+        "load_workspace_state",
+        json!({"worktreeName":"missing","worktreeRoot":"/missing"})
     )
-);
+    .is_err());
+}
+
 parity!(
     test_app_config_protoはusecase結果と一致する,
     app,
@@ -230,13 +209,14 @@ parity!(
     json!({"repoPath":"/missing"}),
     outcome(invoke_tauri(&app, "get_notion_config", json!({"repoPath": "/missing"})).await)
 );
-parity!(
-    test_git_host_protoはusecase結果と一致する,
-    app,
-    "get_cached_issues",
-    json!({"repoPath":"/missing"}),
-    outcome(invoke_tauri(&app, "get_cached_issues", json!({"repoPath": "/missing"})).await)
-);
+#[test]
+fn test_git_host_読み取りrpcは購読への移設後に拒否する() {
+    assert!(
+        wire::CommandRequest::from_value("get_cached_issues", json!({"repoPath":"/missing"}))
+            .is_err()
+    );
+}
+
 parity!(
     test_external_editor_protoはusecase結果と一致する,
     app,
@@ -300,10 +280,7 @@ async fn test_application起動結果_protoは本番shell入口の成功と失�
         ));
         let authority = Arc::new(authority);
         app.manage(authority.clone());
-        let mut dispatch = ClientCommandDispatch::new(
-            Arc::new(crate::adaptor::controller::wiring::build_repository_usecase()),
-            authority,
-        );
+        let mut dispatch = ClientCommandDispatch::new(authority);
         dispatch.register_dependencies(&crate::desktop_test_support::build_client_dependencies(
             app.handle(),
         ));
@@ -344,9 +321,31 @@ async fn test_クライアントdispatch_proto全commandの登録と引数検証
     // Given
     let (_app, dispatch) = parity_app();
     // When / Then
-    assert_eq!(wire::COMMAND_NAMES.len(), 136);
+    assert_eq!(wire::COMMAND_NAMES.len(), 114);
     assert!(wire::COMMAND_NAMES.contains(&"refresh_workspaces"));
     for removed in [
+        "get_workspaces",
+        "get_workspace_tree_selection_reconciliation",
+        "get_workspace_node_detail",
+        "get_agent_session",
+        "get_workspace_session_node_id",
+        "list_agent_session_history",
+        "list_available_agent_session_providers",
+        "list_branches",
+        "get_branch_base",
+        "list_branches_with_status_snapshot",
+        "get_current_branch",
+        "get_cached_issues",
+        "list_worktrees",
+        "get_main_repo_path",
+        "get_cwd",
+        "load_workspace_state",
+        "get_cached_pr_status",
+        "list_workspace_worktree_nodes",
+        "list_workspace_workflow_history",
+        "get_workflow_execution_state",
+        "resolve_active_execution_by_worktree",
+        "fetch_pr_status",
         "resume_agent_session",
         "confirm_agent_session_archive_delete",
         "stop_workflow",
@@ -403,12 +402,9 @@ async fn test_クライアントdispatch_proto全commandの登録と引数検証
 #[tokio::test]
 async fn test_クライアントdispatch_startup失敗時はstreamも拒否する() {
     // Given
-    let dispatch = ClientCommandDispatch::new(
-        Arc::new(crate::adaptor::controller::wiring::build_repository_usecase()),
-        Arc::new(ApplicationStartupAuthority::failed_kind(
-            crate::usecase::application_startup::StartupFailureKind::StoreValidationFailed,
-        )),
-    );
+    let dispatch = ClientCommandDispatch::new(Arc::new(ApplicationStartupAuthority::failed_kind(
+        crate::usecase::application_startup::StartupFailureKind::StoreValidationFailed,
+    )));
     // When / Then
     for command in ["attach_terminal_surface", "detach_terminal_surface"] {
         assert_eq!(
@@ -422,10 +418,7 @@ async fn test_クライアントdispatch_startup失敗時はstreamも拒否す�
 async fn test_クライアントrpc_期限切れで処理を止め要求枠を再利用できる() {
     use crate::adaptor::controller::api;
     // Given
-    let mut dispatch = ClientCommandDispatch::new(
-        Arc::new(crate::adaptor::controller::wiring::build_repository_usecase()),
-        Arc::new(ApplicationStartupAuthority::ready()),
-    );
+    let mut dispatch = ClientCommandDispatch::new(Arc::new(ApplicationStartupAuthority::ready()));
     let started = Arc::new(tokio::sync::Notify::new());
     let resume = Arc::new(tokio::sync::Semaphore::new(0));
     let completed = Arc::new(tokio::sync::Semaphore::new(0));
@@ -541,8 +534,8 @@ fn mutation_repository() -> (tempfile::TempDir, String) {
 }
 
 #[tokio::test]
-async fn test_未呼出7command_connectの実行結果とエラーがtauriと一致する() {
-    use crate::adaptor::controller::{api, state::AppState};
+async fn test_計算と操作command_connectの実行結果とエラーがtauriと一致する() {
+    use crate::adaptor::controller::api;
 
     // Given
     let (temp, path) = mutation_repository();
@@ -599,7 +592,6 @@ async fn test_未呼出7command_connectの実行結果とエラーがtauriと一
     config.save(settings).unwrap();
     let data = tempfile::tempdir().unwrap();
     let mut dispatch = ClientCommandDispatch::new(
-        app.state::<AppState>().repository_usecase.clone(),
         app.state::<Arc<ApplicationStartupAuthority>>()
             .inner()
             .clone(),
@@ -649,7 +641,6 @@ async fn test_未呼出7command_connectの実行結果とエラーがtauriと一
             json!({"hunks":[{"index":0,"oldStart":10,"oldLines":1,"newStart":10,"newLines":2,"lines":["-old","+new","+line"]}],"totalLines":30,"contextLines":2}),
             true,
         ),
-        ("fetch_pr_status", json!({"repoPath":path}), true),
         (
             "approve_workflow_node",
             json!({"args":{"executionId":execution,"nodeName":"review","nodeExecutionId":"ne-review-1","comment":"確認済み"}}),
@@ -677,7 +668,7 @@ async fn test_未呼出7command_connectの実行結果とエラーがtauriと一
             .map(|(name, _, _)| *name)
             .collect::<std::collections::HashSet<_>>()
             .len(),
-        7
+        6
     );
     // When / Then
     for (command, args, succeeds) in cases {
@@ -1136,10 +1127,7 @@ async fn test_workspace保存_connectがui追加fieldを受理し既存項目を
     let (app, _) = parity_app();
     let mut deps = crate::desktop_test_support::build_client_dependencies(app.handle());
     deps.workspace_state_store = Some(Arc::new(WorkspaceStateStore::new(data.path().to_owned())));
-    let mut dispatch = ClientCommandDispatch::new(
-        Arc::new(crate::adaptor::controller::wiring::build_repository_usecase()),
-        Arc::new(ApplicationStartupAuthority::ready()),
-    );
+    let mut dispatch = ClientCommandDispatch::new(Arc::new(ApplicationStartupAuthority::ready()));
     dispatch.register_dependencies(&deps);
     let router = api::test_support::test_router_with_optional_deps(
         data.path(),
@@ -1179,12 +1167,7 @@ async fn test_workspace保存_connectがui追加fieldを受理し既存項目を
         Value::Null
     );
     server.abort();
-    deps.workspace_state_store = Some(Arc::new(WorkspaceStateStore::new(data.path().to_owned())));
-    let mut restarted = ClientCommandDispatch::new(
-        Arc::new(crate::adaptor::controller::wiring::build_repository_usecase()),
-        Arc::new(ApplicationStartupAuthority::ready()),
-    );
-    restarted.register_dependencies(&deps);
+    let restarted = WorkspaceStateStore::new(data.path().to_owned());
     let mut expected = state;
     expected["layout"]
         .as_object_mut()
@@ -1195,13 +1178,12 @@ async fn test_workspace保存_connectがui追加fieldを受理し既存項目を
         .unwrap()
         .remove("diffOnlyMode");
     // Then
-    assert_parity(
-        &restarted,
-        "load_workspace_state",
-        json!({"worktreeName":"workspace","worktreeRoot":worktree}),
-        Ok(expected.clone()),
-    )
-    .await;
+    use crate::domain::workspace_state::WorkspaceStateRepository;
+    let restored = restarted
+        .load("workspace", worktree.to_str().unwrap())
+        .unwrap();
+    let restored = crate::usecase::workspace_state::dto::WorkspaceStateDto::from(restored);
+    assert_eq!(serde_json::to_value(restored).unwrap(), expected);
     let persisted: Value = serde_json::from_slice(
         &std::fs::read(data.path().join("workspace_state/workspace.json")).unwrap(),
     )
@@ -1216,7 +1198,7 @@ async fn test_生成要求_必須fieldと非有限数をusecase実行前に拒�
     use wire::command_request::Command;
     // When / Then
     for request in [
-        Command::GetCurrentBranch(wire::GetCurrentBranchRequest::default()),
+        Command::BuildDiffFileTree(wire::BuildDiffFileTreeRequest::default()),
         Command::SaveWorkspaceState(wire::SaveWorkspaceStateRequest {
             worktree_name: Some("workspace".into()),
             state: Some(wire::WorkspaceStateDto {
@@ -1351,6 +1333,28 @@ fn test_通常要求_connect入口にはsupervisorの受付制御を登録しな
     // Then
     assert!(commands.contains(&"get_client_endpoint"));
     for removed in [
+        "get_workspaces",
+        "get_workspace_tree_selection_reconciliation",
+        "get_workspace_node_detail",
+        "get_agent_session",
+        "get_workspace_session_node_id",
+        "list_agent_session_history",
+        "list_available_agent_session_providers",
+        "list_branches",
+        "get_branch_base",
+        "list_branches_with_status_snapshot",
+        "get_current_branch",
+        "get_cached_issues",
+        "list_worktrees",
+        "get_main_repo_path",
+        "get_cwd",
+        "load_workspace_state",
+        "get_cached_pr_status",
+        "list_workspace_worktree_nodes",
+        "list_workspace_workflow_history",
+        "get_workflow_execution_state",
+        "resolve_active_execution_by_worktree",
+        "fetch_pr_status",
         "admit_client_command",
         "attach_desktop_client",
         "send_desktop_client_frame",

@@ -44,7 +44,7 @@ describe("macOS WKWebView / real Connect daemon", () => {
 			join(artifactDirectory, "client-streams-macos.png"),
 		);
 	});
-	it("最大5paneとpushを保持したまま入力・継続出力・状態再取得が進む", async () => {
+	it("最大5paneとpushを保持したまま入力・継続出力・状態の購読が進む", async () => {
 		await browser.tauri.switchWindow("main");
 		await browser.setTimeout({ script: 5_000 });
 		await browser.waitUntil(
@@ -96,9 +96,9 @@ describe("macOS WKWebView / real Connect daemon", () => {
 						cols: 80,
 						callerRequestId: crypto.randomUUID(),
 					});
-					const nodeId = await invoke("get_workspace_session_node_id", {
-						worktreePath,
-						sessionId,
+					const nodeId = await window.__RELEASH_FIRST_STATE__!({
+						kind: "session-node",
+						args: [worktreePath, sessionId],
 					});
 					if (!nodeId) throw new Error("Session node was not created");
 					await invoke("rename_workspace_session_node", {
@@ -110,17 +110,17 @@ describe("macOS WKWebView / real Connect daemon", () => {
 				{ worktreePath: paths[index], name: `streams-pane-${index}` },
 			);
 			await browser.waitUntil(async () => {
-				const snapshot = await client.listBranchesWithStatusSnapshot({
-					repoPath: paths[index],
-				});
+				const snapshot = await browser.execute(
+					(path) => window.__RELEASH_FIRST_STATE__!({ kind: "branch-status", args: [path] }),
+					paths[index],
+				);
 				return (
 					!snapshot.loading &&
-					snapshot.worktreeDisplayGroups?.workingAreas?.items.some(
-						(branch) => branch.worktreePath === paths[index],
+					snapshot.worktree_display_groups.working_areas.some(
+						(branch) => branch.worktree_path === paths[index],
 					)
 				);
 			});
-			await $(`button[aria-label="Refresh pane-${index}"]`).click();
 			await $(`[data-testid="worktree-item-pane-${index}"]`).waitForDisplayed();
 			await (await selectPane(index)).waitForExist();
 		}
@@ -163,7 +163,7 @@ describe("macOS WKWebView / real Connect daemon", () => {
 			);
 		};
 		const before = await ticks();
-		const unaryMs: number[] = [];
+		const subscriptionMs: number[] = [];
 		for (let round = 0; round < 3; round++) {
 			for (let index = 1; index <= 5; index++) {
 				await (await selectPane(index)).addValue(`round-${round}\r`);
@@ -177,9 +177,9 @@ describe("macOS WKWebView / real Connect daemon", () => {
 			}
 			const started = Date.now();
 			const state = await browser.execute(() =>
-				window.__RELEASH_INVOKE_CLIENT__!("get_workspaces").then((snapshot) => snapshot.repositories.map((repo) => repo.path)),
+				window.__RELEASH_FIRST_STATE__!("workspaces").then((snapshot) => snapshot.repositories.map((repo) => repo.path)),
 			);
-			unaryMs.push(Date.now() - started);
+			subscriptionMs.push(Date.now() - started);
 			for (const path of paths) expect(state).toContain(path);
 			const surfaces = await browser.execute(
 				(workspaces) =>
@@ -201,7 +201,7 @@ describe("macOS WKWebView / real Connect daemon", () => {
 			timeout: 5_000,
 		});
 		const current = await browser.execute(() =>
-			window.__RELEASH_INVOKE_CLIENT__!("get_workspaces").then((snapshot) => snapshot.repositories.map((repo) => repo.path)),
+			window.__RELEASH_FIRST_STATE__!("workspaces").then((snapshot) => snapshot.repositories.map((repo) => repo.path)),
 		);
 		expect(current).not.toContain(paths[0]);
 		const after = await ticks();
@@ -213,7 +213,8 @@ describe("macOS WKWebView / real Connect daemon", () => {
 				[
 					"WriteTerminalSurface",
 					"AckTerminalSurfaceOutput",
-					"GetWorkspaces",
+					"StartStateSubscription",
+					"StopStateSubscription",
 					"GetTerminalSurface",
 				].includes(request.method),
 			),
@@ -242,7 +243,7 @@ describe("macOS WKWebView / real Connect daemon", () => {
 					inputRounds: 3,
 					ticksBefore: before,
 					ticksAfter: after,
-					unaryMs,
+					subscriptionMs,
 					requests,
 				},
 				null,

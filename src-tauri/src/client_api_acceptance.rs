@@ -15,13 +15,12 @@ use crate::usecase::application_startup::ApplicationStartupAuthority;
 use crate::usecase::repository_usecase::RepositoryUsecase;
 use crate::usecase::workflow::WorkflowRuntimeUsecase;
 
-pub use crate::adaptor::gateway::push::{AgentSessionChangedPayload, BackendPush};
+pub use crate::adaptor::gateway::push::BackendPush;
 pub use crate::adaptor::gateway::repository::branch::BranchGateway;
 pub use crate::adaptor::gateway::repository::watch::{FileChangeEvent, GitStatusChangedEvent};
 pub use crate::adaptor::protocol::terminal::TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX;
 pub use crate::adaptor::protocol::workflow::*;
 pub use crate::domain::repository::{Branch, BranchRepository, RepositoryError};
-use crate::domain::workflow::{ExecutionOrigin, RuntimeExecutionState, WorkflowRuntimeSnapshot};
 pub use crate::infrastructure::comment::watcher::spawn_review_comments_watcher;
 
 #[derive(serde::Serialize)]
@@ -108,10 +107,42 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
             ),
         );
         let authority = Arc::new(ApplicationStartupAuthority::ready());
-        let dispatch = Arc::new(ClientCommandDispatch::new(
-            Arc::new(repository),
-            authority.clone(),
-        ));
+        let repository = Arc::new(repository);
+        let state = crate::usecase::state_subscription::StateSubscriptionUsecase::new(
+            vec![],
+            Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+        )
+        .with_reads(
+            Arc::new(AcceptanceStateReads(repository.clone())),
+            None,
+            vec![],
+        );
+        let mut dispatch = ClientCommandDispatch::new(authority.clone());
+        dispatch.register_domain(
+            &["get_releash_base"],
+            Box::new(move |command| {
+                let repository = repository.clone();
+                Box::pin(async move {
+                    let crate::adaptor::protocol::client::command_request::Command::GetReleashBase(
+                        args,
+                    ) = command
+                    else {
+                        unreachable!()
+                    };
+                    let path =
+                        crate::adaptor::controller::client::required(args.repo_path, "repoPath")?;
+                    let result =
+                        crate::adaptor::controller::client::repository::run_blocking(move || {
+                            repository.get_current_branch(&path)
+                        })
+                        .await;
+                    crate::adaptor::controller::client::outcome(result.map(Some)).map(
+                        crate::adaptor::protocol::client::command_result::Command::GetReleashBase,
+                    )
+                })
+            }),
+        );
+        let dispatch = Arc::new(dispatch);
         let router: CommandRouter<Box<dyn Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync>> =
             CommandRouter::new(Box::new(|_| false));
         let sink = Arc::new(PushSink::new());
@@ -159,11 +190,14 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
             binding.bearer_token(),
             binding.client_bearer_token(),
             Some(TerminalApiDeps::new(terminal.application())),
-            Some(ClientApiDeps::new(
-                dispatch,
-                ClientPushGateway::new(sink),
-                crate::client_api_acceptance::watcher(),
-            )),
+            Some(
+                ClientApiDeps::new(
+                    dispatch,
+                    ClientPushGateway::new(sink),
+                    crate::client_api_acceptance::watcher(),
+                )
+                .with_state_subscriptions(state),
+            ),
             None,
         );
         Self {
@@ -201,38 +235,6 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
 
     pub fn subscribe_push(&self) -> tokio::sync::broadcast::Receiver<Arc<[u8]>> {
         self.app.state::<Arc<PushSink>>().subscribe()
-    }
-
-    pub async fn emit_completed_workflow(
-        &self,
-        execution_id: &str,
-        worktree_path: &str,
-        updated_at: f64,
-    ) {
-        let state = WorkflowRuntimeSnapshot {
-            execution_id: execution_id.into(),
-            workflow_name: "review".into(),
-            worktree_path: worktree_path.into(),
-            created_from: ExecutionOrigin::Cli,
-            request: "review".into(),
-            error_reason: None,
-            state: RuntimeExecutionState::Completed,
-            current_node_name: None,
-            current_session_id: None,
-            node_history: vec![],
-            workflow_definition: Default::default(),
-            total_token_usage: Default::default(),
-            artifacts: Default::default(),
-            node_executions: vec![],
-            started_at: 1.0,
-            updated_at,
-        };
-        crate::adaptor::gateway::workflow::emit_workflow_execution_from_snapshot(
-            &crate::desktop_test_support::push_sink(self.app.handle()),
-            worktree_path,
-            state,
-        )
-        .await;
     }
 }
 
@@ -307,15 +309,8 @@ impl ClientRecoveryAcceptanceHost {
     pub async fn start() -> Self {
         use crate::adaptor::controller::api::protocol::client as wire;
         let state = Arc::new(std::sync::Mutex::new(ClientRecoveryState::default()));
-        let mut dispatch = ClientCommandDispatch::new(
-            Arc::new(crate::adaptor::controller::wiring::build_repository_usecase_with_worktree_terminals(
-                Arc::new(crate::adaptor::gateway::repository::worktree_terminal::NoopWorktreeTerminalGateway),
-                Arc::new(crate::usecase::worktree_operation::WorktreeOperations::new(Arc::new(
-                    crate::adaptor::gateway::repository::worktree_operation::FileWorktreeOperationLocks::new(&std::env::temp_dir()),
-                ))),
-            )),
-            Arc::new(ApplicationStartupAuthority::ready()),
-        );
+        let mut dispatch =
+            ClientCommandDispatch::new(Arc::new(ApplicationStartupAuthority::ready()));
         for names in [
             &["update_crash_reporting"][..],
             &["report_mounted_xterm_count"][..],
@@ -503,4 +498,115 @@ pub(crate) fn watcher() -> Arc<crate::usecase::watcher::WatcherUsecase> {
             ),
         ),
     ))
+}
+
+struct AcceptanceStateReads(Arc<RepositoryUsecase>);
+#[async_trait::async_trait]
+impl crate::usecase::state_subscription::StateSubscriptionRead for AcceptanceStateReads {
+    async fn read(
+        &self,
+        target: &crate::domain::state_subscription::SubscriptionTarget,
+    ) -> Result<
+        crate::usecase::state_subscription::StateValue,
+        crate::usecase::state_subscription::StateReadError,
+    > {
+        use crate::domain::failure::{ClassifiedFailure, FailureKind};
+        use crate::usecase::state_subscription::{StateReadError, StateValue};
+        let crate::domain::state_subscription::SubscriptionTarget::CurrentBranch(path) = target
+        else {
+            return Err(StateReadError {
+                kind: FailureKind::Missing,
+                message: "unknown target".into(),
+            });
+        };
+        let path = path.clone();
+        let repository = self.0.clone();
+        tokio::task::spawn_blocking(move || {
+            repository
+                .get_current_branch(&path)
+                .map(StateValue::CurrentBranch)
+                .map_err(|error| StateReadError {
+                    kind: error.failure_kind(),
+                    message: error.to_string(),
+                })
+        })
+        .await
+        .unwrap()
+    }
+    async fn refresh_workspaces(
+        &self,
+        _: Option<crate::domain::state_subscription::StateChangeSource>,
+    ) {
+    }
+    fn repositories(&self) -> Vec<String> {
+        vec![]
+    }
+}
+
+pub async fn read_current_branch(
+    client: &NativeClient,
+    args: serde_json::Value,
+) -> Result<serde_json::Value, connectrpc::ConnectError> {
+    let path = args["repoPath"].as_str().unwrap_or_default();
+    let target = crate::domain::state_subscription::SubscriptionTarget::from_parts(
+        "current-branch",
+        &[path],
+    )
+    .map_err(crate::adaptor::protocol::connect::classified_error)?;
+    read_state(client, &target.to_string()).await
+}
+
+pub async fn read_state(
+    client: &NativeClient,
+    target: &str,
+) -> Result<serde_json::Value, connectrpc::ConnectError> {
+    let target = crate::domain::state_subscription::SubscriptionTarget::parse(target)
+        .map_err(crate::adaptor::protocol::connect::classified_error)?;
+    let (name, args) = target.parts();
+    let client_id = uuid::Uuid::new_v4().to_string();
+    let mut stream = client
+        .open_state_stream(rpc::OpenStateStreamRequest {
+            client_id: client_id.clone(),
+            ..Default::default()
+        })
+        .await?;
+    stream.message::<rpc::StateSubscriptionEvent>().await?;
+    client
+        .start_state_subscription(rpc::StartStateSubscriptionRequest {
+            client_id,
+            target: name.into(),
+            args,
+            version: None.into(),
+            ..Default::default()
+        })
+        .await?;
+    let item = stream
+        .message::<rpc::StateSubscriptionEvent>()
+        .await?
+        .unwrap()
+        .to_owned_message();
+    let Some(rpc::state_subscription_event::Event::Snapshot(payload)) = item.event else {
+        panic!("snapshot")
+    };
+    use crate::adaptor::protocol::{client as wire, connect::to_wire};
+    let payload: wire::StatePayload = to_wire(payload.as_ref())?;
+    let value = match payload.value.unwrap() {
+        wire::state_payload::Value::CurrentBranch(value) => {
+            wire::from_message("releash.client.v1.ResultString", &value)
+        }
+        wire::state_payload::Value::AgentSession(value) => {
+            wire::from_message("releash.client.v1.NullableAgentSessionItemDto", &value)
+        }
+        wire::state_payload::Value::Providers(value) => {
+            wire::from_message("releash.client.v1.ListAgentSessionProviderDto", &value)
+        }
+        wire::state_payload::Value::SessionHistory(value) => {
+            wire::from_message("releash.client.v1.AgentSessionHistoryPageDto", &value)
+        }
+        wire::state_payload::Value::Workspaces(value) => {
+            wire::from_message("releash.client.v1.WorkspaceListSnapshotDto", &value)
+        }
+        _ => panic!("Unsupported acceptance state"),
+    };
+    Ok(value.unwrap())
 }

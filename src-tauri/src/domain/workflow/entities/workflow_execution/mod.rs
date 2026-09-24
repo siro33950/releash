@@ -3474,6 +3474,7 @@ impl ExecutionTree {
     /// 全スコープの Artifact をフラットな node 名マップへ導出する
     /// （CLI の `output get` と表示のための互換 read。並走で同名が重なる場合は
     /// 後に開始されたスコープの値が勝つ）。
+    #[cfg(any(test, all(debug_assertions, feature = "desktop")))]
     pub fn flattened_artifacts(&self) -> HashMap<String, RuntimeArtifact> {
         let mut artifacts = HashMap::new();
         if let Some(request) = &self.runtime.request {

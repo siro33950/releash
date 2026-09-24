@@ -236,7 +236,7 @@ pub(in crate::cli) mod test_support {
             created_from: ExecutionOrigin::Cli,
             started_at,
             updated_at: started_at,
-            completed_at: if status.is_terminal() {
+            completed_at: if status.is_finished() {
                 Some(started_at + 1.0)
             } else {
                 None

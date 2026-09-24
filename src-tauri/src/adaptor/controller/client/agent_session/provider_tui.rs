@@ -11,33 +11,14 @@ use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::workspace_tree::WorkspaceIdentity;
 use crate::other::error::AppError;
 use crate::usecase::agent_session::{
-    AgentSessionHistoryPageDto, AgentSessionHistoryQueryError, AgentSessionHistoryReadUsecase,
-    AgentSessionHistoryRequest, AgentSessionHistoryResumeRequest, AgentSessionItemDto,
-    AgentSessionLaunchRequest, AgentSessionLaunchUsecase, AgentSessionLaunchUsecaseError,
-    AgentSessionLifecycleUsecase, AgentSessionLifecycleUsecaseError, AgentSessionOpenOutcome,
-    AgentSessionProviderDto, AgentSessionReadUsecase, AgentSessionReadUsecaseError,
-    ProviderAvailabilityUsecase, ProviderAvailabilityUsecaseError,
+    AgentSessionHistoryResumeRequest, AgentSessionLaunchRequest, AgentSessionLaunchUsecase,
+    AgentSessionLaunchUsecaseError, AgentSessionLifecycleUsecase,
+    AgentSessionLifecycleUsecaseError, AgentSessionOpenOutcome, ProviderAvailabilityUsecase,
+    ProviderAvailabilityUsecaseError,
 };
 use crate::usecase::provider_lifecycle::{
     ProviderHookHealthReadUsecase, ProviderHookHealthUsecaseError, ProviderHookHealthWarning,
 };
-
-pub(crate) fn list_available_agent_session_providers_shared(
-    availability: &Arc<ProviderAvailabilityUsecase>,
-) -> Result<Vec<AgentSessionProviderDto>, AppError> {
-    availability
-        .available_providers()
-        .map(|providers| {
-            providers
-                .into_iter()
-                .map(|provider| match provider {
-                    ProviderKind::Claude => AgentSessionProviderDto::Claude,
-                    ProviderKind::Codex => AgentSessionProviderDto::Codex,
-                })
-                .collect()
-        })
-        .map_err(provider_availability_error)
-}
 
 pub(crate) fn get_provider_availability_shared(
     availability: &Arc<ProviderAvailabilityUsecase>,
@@ -128,10 +109,6 @@ enum ProviderTuiCodedError {
     AgentSessionCorrupt,
     AgentSessionNotFound,
     AgentSessionInvalidOperation,
-    AgentSessionInvalidRequest,
-    AgentSessionHistoryInvalidRequest,
-    AgentSessionHistoryUnavailable,
-    AgentSessionHistoryCorrupt,
     ProviderHookHealthInvalidRequest,
     ProviderHookHealthStorageUnavailable,
     ProviderHookHealthCorrupt,
@@ -145,17 +122,13 @@ fn provider_tui_coded_error(error: ProviderTuiCodedError) -> AppError {
         ProviderTuiCodedError::ProviderAvailabilityInvalidExecutable
         | ProviderTuiCodedError::AgentSessionInvalidProvider(_)
         | ProviderTuiCodedError::AgentSessionInvalidInput(_)
-        | ProviderTuiCodedError::AgentSessionInvalidRequest
-        | ProviderTuiCodedError::AgentSessionHistoryInvalidRequest
         | ProviderTuiCodedError::ProviderHookHealthInvalidRequest => F::InvalidInput,
         ProviderTuiCodedError::ProviderAvailabilityConfigUnavailable
         | ProviderTuiCodedError::ProviderAvailabilityRefreshUnavailable
         | ProviderTuiCodedError::AgentSessionStorageUnavailable
-        | ProviderTuiCodedError::AgentSessionHistoryUnavailable
         | ProviderTuiCodedError::ProviderHookHealthStorageUnavailable => F::Temporary,
         ProviderTuiCodedError::ProviderAvailabilityCorrupt
         | ProviderTuiCodedError::AgentSessionCorrupt
-        | ProviderTuiCodedError::AgentSessionHistoryCorrupt
         | ProviderTuiCodedError::ProviderHookHealthCorrupt => F::Corrupt,
         ProviderTuiCodedError::AgentSessionProviderUnavailable
         | ProviderTuiCodedError::AgentSessionInvalidOperation => F::StateRequired,
@@ -243,22 +216,6 @@ fn provider_tui_coded_error(error: ProviderTuiCodedError) -> AppError {
         ProviderTuiCodedError::AgentSessionInvalidOperation => (
             "AGENT_SESSION_INVALID_OPERATION",
             "This operation is not available for the AgentSession in its current state. Refresh and try again.",
-        ),
-        ProviderTuiCodedError::AgentSessionInvalidRequest => (
-            "AGENT_SESSION_INVALID_REQUEST",
-            "Releash could not load the AgentSession because the request is invalid.",
-        ),
-        ProviderTuiCodedError::AgentSessionHistoryInvalidRequest => (
-            "AGENT_SESSION_HISTORY_INVALID_REQUEST",
-            "Releash could not load AgentSession history because the request is invalid.",
-        ),
-        ProviderTuiCodedError::AgentSessionHistoryUnavailable => (
-            "AGENT_SESSION_HISTORY_UNAVAILABLE",
-            "Releash could not load AgentSession history. Try again.",
-        ),
-        ProviderTuiCodedError::AgentSessionHistoryCorrupt => (
-            "AGENT_SESSION_HISTORY_CORRUPT",
-            "Releash could not load AgentSession history because its saved data is invalid.",
         ),
         ProviderTuiCodedError::ProviderHookHealthInvalidRequest => (
             "PROVIDER_HOOK_HEALTH_INVALID_REQUEST",
@@ -366,13 +323,6 @@ fn parse_provider(
     }
 }
 
-pub(crate) async fn get_agent_session_shared(
-    read: &Arc<AgentSessionReadUsecase>,
-    agent_session_id: String,
-) -> Result<Option<AgentSessionItemDto>, AppError> {
-    read.get(&agent_session_id).await.map_err(read_error)
-}
-
 pub(crate) async fn open_agent_session_shared(
     lifecycle: &Arc<AgentSessionLifecycleUsecase>,
     agent_session_id: String,
@@ -422,22 +372,6 @@ pub(crate) async fn delete_agent_session_shared(
         .delete(&agent_session_id, &caller_request_id)
         .await
         .map_err(lifecycle_error)
-}
-
-pub(crate) async fn list_agent_session_history_shared(
-    query: &Arc<AgentSessionHistoryReadUsecase>,
-    worktree_path: String,
-    limit: Option<usize>,
-    after: Option<String>,
-) -> Result<AgentSessionHistoryPageDto, AppError> {
-    query
-        .list(AgentSessionHistoryRequest {
-            worktree_path,
-            limit: limit.unwrap_or(100),
-            after,
-        })
-        .await
-        .map_err(history_error)
 }
 
 pub(crate) async fn list_provider_hook_health_warnings_shared(
@@ -563,48 +497,6 @@ fn lifecycle_error(error: AgentSessionLifecycleUsecaseError) -> AppError {
         }
         AgentSessionLifecycleUsecaseError::Corrupt => {
             provider_tui_coded_error(ProviderTuiCodedError::AgentSessionCorrupt)
-        }
-    };
-    result.with_failure_kind(kind)
-}
-
-fn read_error(error: AgentSessionReadUsecaseError) -> AppError {
-    let kind = error.failure_kind();
-    let result = match error {
-        AgentSessionReadUsecaseError::Lifecycle(error) => lifecycle_error(error),
-        AgentSessionReadUsecaseError::InvalidRequest => {
-            provider_tui_coded_error(ProviderTuiCodedError::AgentSessionInvalidRequest)
-        }
-        AgentSessionReadUsecaseError::StorageUnavailable => {
-            provider_tui_coded_error(ProviderTuiCodedError::AgentSessionStorageUnavailable)
-        }
-        AgentSessionReadUsecaseError::TerminalUnavailable => {
-            provider_tui_coded_error(ProviderTuiCodedError::AgentSessionTerminalUnavailable(kind))
-        }
-        AgentSessionReadUsecaseError::Store(kind) => {
-            AppError::new(format!("Storage failure: {kind:?}")).with_failure_kind(kind)
-        }
-        AgentSessionReadUsecaseError::Corrupt => {
-            provider_tui_coded_error(ProviderTuiCodedError::AgentSessionCorrupt)
-        }
-    };
-    result.with_failure_kind(kind)
-}
-
-fn history_error(error: AgentSessionHistoryQueryError) -> AppError {
-    let kind = error.failure_kind();
-    let result = match error {
-        AgentSessionHistoryQueryError::InvalidRequest => {
-            provider_tui_coded_error(ProviderTuiCodedError::AgentSessionHistoryInvalidRequest)
-        }
-        AgentSessionHistoryQueryError::Unavailable => {
-            provider_tui_coded_error(ProviderTuiCodedError::AgentSessionHistoryUnavailable)
-        }
-        AgentSessionHistoryQueryError::Store(kind) => {
-            AppError::new(format!("Storage failure: {kind:?}")).with_failure_kind(kind)
-        }
-        AgentSessionHistoryQueryError::Corrupt => {
-            provider_tui_coded_error(ProviderTuiCodedError::AgentSessionHistoryCorrupt)
         }
     };
     result.with_failure_kind(kind)

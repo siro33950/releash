@@ -18,6 +18,7 @@ import {
 	it,
 	vi,
 } from "vitest";
+import { subscribeState } from "@/lib/client";
 import { type AppSettings, DEFAULT_SETTINGS } from "@/types/settings";
 import { SettingsModal } from "./SettingsModal";
 
@@ -56,6 +57,14 @@ describe("SettingsModal", () => {
 	afterEach(() => vi.restoreAllMocks());
 
 	beforeEach(async () => {
+		vi.mocked(subscribeState).mockImplementation((target, receive) => {
+			if ((typeof target === "string" ? target : target.kind) === "branches")
+				receive([
+					{ name: "main", is_remote: false },
+					{ name: "develop", is_remote: false },
+				]);
+			return vi.fn();
+		});
 		vi.mocked(invokeTauri).mockResolvedValue({
 			enabled: false,
 			requiresApproval: false,
@@ -428,11 +437,6 @@ describe("SettingsModal", () => {
 						external_editor: "",
 					});
 				if (command === "get_releash_base") return Promise.resolve("main");
-				if (command === "list_branches")
-					return Promise.resolve([
-						{ name: "main", is_remote: false, is_head: true },
-						{ name: "develop", is_remote: false, is_head: false },
-					]);
 				return initial(command, args);
 			});
 			const user = userEvent.setup();
@@ -969,11 +973,6 @@ describe("SettingsModal", () => {
 		const { invokeClient: invoke } = await import("@/lib/client");
 		vi.mocked(invoke).mockImplementation((cmd: string) => {
 			switch (cmd) {
-				case "list_branches":
-					return Promise.resolve([
-						{ name: "main", is_remote: false },
-						{ name: "develop", is_remote: false },
-					]);
 				case "get_releash_base":
 					return Promise.resolve(null);
 				default:
@@ -1072,11 +1071,6 @@ describe("SettingsModal", () => {
 		const { invokeClient: invoke } = await import("@/lib/client");
 		vi.mocked(invoke).mockImplementation((cmd: string) => {
 			switch (cmd) {
-				case "list_branches":
-					return Promise.resolve([
-						{ name: "main", is_remote: false },
-						{ name: "develop", is_remote: false },
-					]);
 				case "get_releash_base":
 					return Promise.resolve(null);
 				case "set_releash_base":
@@ -1312,8 +1306,6 @@ describe("SettingsModal", () => {
 			const { invokeClient: invoke } = await import("@/lib/client");
 			vi.mocked(invoke).mockImplementation((cmd: string) => {
 				switch (cmd) {
-					case "list_branches":
-						return Promise.resolve([{ name: "main", is_remote: false }]);
 					case "get_releash_base":
 						return Promise.resolve(null);
 					default:
@@ -1665,11 +1657,6 @@ describe("SettingsModal", () => {
 					]);
 				if (name === "get_external_editor")
 					return Promise.resolve(confirmed ? "zed" : "code");
-				if (name === "list_branches")
-					return Promise.resolve([
-						{ name: "main", is_remote: false },
-						{ name: "develop", is_remote: false },
-					]);
 				if (name === "get_releash_base")
 					return Promise.resolve(confirmed ? "develop" : "main");
 				if (name === "get_notion_config")

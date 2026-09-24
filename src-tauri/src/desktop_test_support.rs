@@ -23,9 +23,6 @@ pub(crate) fn workflow_dependencies<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> crate::adaptor::gateway::workflow::workflow_host::WorkflowRuntimeDependencies {
     crate::adaptor::gateway::workflow::workflow_host::WorkflowRuntimeDependencies {
-        processes: Arc::new(
-            crate::adaptor::gateway::workflow::node_process::WorkflowNodeProcesses::default(),
-        ),
         store: app
             .try_state::<Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>>()
             .map(|state| state.inner().clone()),
@@ -35,7 +32,7 @@ pub(crate) fn workflow_dependencies<R: tauri::Runtime>(
         secrets: app
             .try_state::<Arc<dyn crate::domain::app_config::ConfigSecretRepository>>()
             .map(|state| state.inner().clone()),
-        push: push_sink(app),
+        state_changes: crate::usecase::state_subscription::StateSubscriptionPublisher::for_test(),
     }
 }
 

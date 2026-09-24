@@ -10,24 +10,16 @@ pub(crate) use shared::register_shared;
 pub(crate) mod branch;
 pub(crate) mod git_config;
 pub(crate) mod repo_paths;
-pub(crate) mod util;
 pub(crate) mod worktree;
 
 use crate::other::AppError;
 use crate::usecase::repository_error::UsecaseError;
-use crate::usecase::repository_state::RepositoryStateError;
 
 /// ユースケースエラー → アプリエラーの集約変換（adaptor 層が担う）。
 /// `#[error(transparent)]` な `UsecaseError` の `Display` を保持するため、
 /// serialize 表現は移行前と等価に保たれる。
 impl From<UsecaseError> for AppError {
     fn from(e: UsecaseError) -> Self {
-        AppError::from_failure(e)
-    }
-}
-
-impl From<RepositoryStateError> for AppError {
-    fn from(e: RepositoryStateError) -> Self {
         AppError::from_failure(e)
     }
 }
@@ -40,17 +32,6 @@ where
     F: FnOnce() -> Result<T, UsecaseError> + Send + 'static,
 {
     crate::adaptor::controller::client::worktree_mutation::spawn_blocking(f)
-        .await
-        .map_err(|e| AppError::new(format!("task join error: {e}")))?
-        .map_err(AppError::from)
-}
-
-pub(crate) async fn run_repository_state<T, F>(f: F) -> Result<T, AppError>
-where
-    T: Send + 'static,
-    F: FnOnce() -> Result<T, RepositoryStateError> + Send + 'static,
-{
-    tokio::task::spawn_blocking(f)
         .await
         .map_err(|e| AppError::new(format!("task join error: {e}")))?
         .map_err(AppError::from)

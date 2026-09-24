@@ -84,11 +84,10 @@ use runtime_session as workflow_runtime_session;
 
 #[derive(Clone)]
 pub(crate) struct WorkflowRuntimeDependencies {
-    pub(crate) processes: Arc<dyn crate::domain::workflow::NodeProcessReader>,
     pub(crate) store: Option<Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>>,
     pub(crate) config: Option<Arc<dyn crate::domain::app_config::ConfigRepository>>,
     pub(crate) secrets: Option<Arc<dyn crate::domain::app_config::ConfigSecretRepository>>,
-    pub(crate) push: Arc<crate::infrastructure::push::PushSink>,
+    pub(crate) state_changes: crate::usecase::state_subscription::StateSubscriptionPublisher,
 }
 
 fn current_timestamp() -> f64 {
@@ -774,7 +773,7 @@ impl WorkflowRuntimeHost {
 
         drop(start_guard);
         // [04] post-commit: broadcast。ExecutionStarted は append 済みのため command は既に受理。
-        workflow_runtime_session::broadcast_state(app, &worktree_path, snapshot.clone()).await;
+        workflow_runtime_session::broadcast_state(app, &worktree_path).await;
 
         // [04] post-commit: ExecutionStarted append 済みのため start primitive は既に受理。
         //    初回 runtime 起動失敗は事実として記録し、
@@ -973,7 +972,7 @@ impl WorkflowRuntimeHost {
             self.dispatch_node_outcome_side_effects(app, worktree_path, outcome)
                 .await
         } else {
-            workflow_runtime_session::broadcast_state(app, worktree_path, snapshot.clone()).await;
+            workflow_runtime_session::broadcast_state(app, worktree_path).await;
             Ok(())
         }
     }
@@ -1275,8 +1274,8 @@ impl WorkflowRuntimeHost {
                         .await
             })
             .await;
-            let snapshot = match commit_result {
-                Ok(snapshot) => snapshot,
+            match commit_result {
+                Ok(_) => (),
                 Err(error) => {
                     return match self.rollback_prepared_sessions(&session_setups).await {
                         Some(rollback_error) => Err(WorkflowRuntimeError::AgentSession(format!(
@@ -1286,7 +1285,7 @@ impl WorkflowRuntimeHost {
                     };
                 }
             };
-            workflow_runtime_session::broadcast_state(app, worktree_path, snapshot).await;
+            workflow_runtime_session::broadcast_state(app, worktree_path).await;
         }
         let mut activated_sessions = Vec::with_capacity(session_setups.len());
         for (node_execution_id, session_id) in &session_setups {
@@ -2009,7 +2008,7 @@ impl WorkflowRuntimeHost {
             snapshot.state,
             RuntimeExecutionState::Completed | RuntimeExecutionState::Aborted
         );
-        workflow_runtime_session::broadcast_state(app, worktree_path, snapshot.clone()).await;
+        workflow_runtime_session::broadcast_state(app, worktree_path).await;
         if is_finished {
             self.release_terminal_execution(&execution_id).await;
         }
@@ -2208,7 +2207,6 @@ mod workflow_host_tests {
     use crate::adaptor::gateway::workflow::node_session_boundary::NodeSessionInfo;
     use crate::adaptor::gateway::workflow::WorkflowRuntimeCommandGateway;
     use crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository;
-    use crate::adaptor::protocol::workflow::NodeExecutionStatusView;
     use crate::domain::agent_session::aggregates::{AgentSession, AgentSessionTreeLocation};
     use crate::domain::agent_session::repository::AgentSessionRepository;
     use crate::domain::local_event::{
@@ -2391,24 +2389,25 @@ mod workflow_host_tests {
                 assert!(!records
                     .iter()
                     .any(|record| matches!(record.fact, NodeFact::ApprovalGranted(_))));
-                let mut observed = take_workflow_execution_broadcasts(&mut broadcasts);
-                {
-                    let broadcasts = &observed;
-                    assert!(!broadcasts.is_empty());
-                    let statuses = broadcasts
+                assert!(!take_workflow_execution_broadcasts(&mut broadcasts).is_empty());
+                let snapshot = host
+                    .get_state_by_execution_id(&app, &execution_id)
+                    .await
+                    .unwrap();
+                let expected = if require_approval {
+                    NodeExecutionStatus::WaitingApproval
+                } else {
+                    NodeExecutionStatus::Succeeded
+                };
+                assert_eq!(
+                    snapshot
+                        .node_executions
                         .iter()
-                        .flat_map(|broadcast| &broadcast.workflow_execution.node_executions)
-                        .filter(|node| node.id == node_execution_id)
-                        .map(|node| node.status)
-                        .collect::<Vec<_>>();
-                    let expected_view = if require_approval {
-                        NodeExecutionStatusView::WaitingApproval
-                    } else {
-                        NodeExecutionStatusView::Succeeded
-                    };
-                    assert!(!statuses.is_empty());
-                    assert!(statuses.iter().all(|status| *status == expected_view));
-                }
+                        .find(|node| node.id == node_execution_id)
+                        .unwrap()
+                        .status,
+                    expected
+                );
                 if require_approval {
                     let snapshot = host
                         .get_state_by_execution_id(&app, &execution_id)
@@ -2445,16 +2444,15 @@ mod workflow_host_tests {
                         .any(|record| record.meta.node_execution_id == node_execution_id
                             && matches!(record.fact, NodeFact::ApprovalGranted(_))));
                 }
-                observed.extend(take_workflow_execution_broadcasts(&mut broadcasts));
-                let completed = &observed.last().unwrap().workflow_execution;
-                assert_eq!(
-                    completed.status,
-                    crate::adaptor::protocol::workflow::ExecutionStatusView::Completed
-                );
+                let completed = host
+                    .get_state_by_execution_id(&app, &execution_id)
+                    .await
+                    .unwrap();
+                assert_eq!(completed.state, RuntimeExecutionState::Completed);
                 assert!(completed
                     .node_executions
                     .iter()
-                    .all(|node| node.status == NodeExecutionStatusView::Succeeded));
+                    .all(|node| node.status == NodeExecutionStatus::Succeeded));
                 let folded = workflow_fact_log::fold_tree_from(
                     &workflow_fact_log::FactLogReadBackend::Live(store.clone()),
                     &execution_id,

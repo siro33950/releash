@@ -24,6 +24,8 @@ use super::ports::{
 
 #[derive(Clone)]
 pub struct WorkflowRuntimeUsecase {
+    pub(super) state_publisher:
+        Option<crate::usecase::state_subscription::StateSubscriptionPublisher>,
     pub(super) worktree_operations: Arc<crate::usecase::worktree_operation::WorktreeOperations>,
     pub(super) execution_archives: Arc<dyn crate::domain::workflow::ExecutionTreeArchiveRepository>,
     pub(super) runtime: Arc<dyn WorkflowRuntimeCommandGateway>,
@@ -42,6 +44,14 @@ pub struct WorkflowRuntimeUsecase {
 }
 
 impl WorkflowRuntimeUsecase {
+    pub(crate) fn with_state_publisher(
+        mut self,
+        publisher: crate::usecase::state_subscription::StateSubscriptionPublisher,
+    ) -> Self {
+        self.state_publisher = Some(publisher);
+        self
+    }
+
     #[cfg(test)]
     pub fn new(
         runtime: Arc<dyn WorkflowRuntimeCommandGateway>,
@@ -57,6 +67,7 @@ impl WorkflowRuntimeUsecase {
     ) -> Self {
         let control_plane_runtime: Arc<dyn WorkflowControlPlaneGateway> = runtime.clone();
         Self {
+            state_publisher: None,
             execution_archives,
             worktree_operations,
             runtime: runtime.clone(),

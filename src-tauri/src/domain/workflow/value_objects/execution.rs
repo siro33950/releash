@@ -28,10 +28,6 @@ impl ExecutionStatus {
         matches!(self, Self::Completed | Self::Aborted)
     }
 
-    pub fn is_terminal(self) -> bool {
-        self.is_finished()
-    }
-
     pub fn can_abort(self) -> bool {
         self.is_active()
     }
@@ -142,7 +138,7 @@ mod tests {
             assert_eq!(status.as_str(), name);
             assert_eq!(status.is_active(), active);
             assert_eq!(status.is_finished(), !active);
-            assert_eq!(status.is_terminal(), !active);
+            assert_eq!(status.is_finished(), !active);
             assert_eq!(status.can_abort(), active);
         }
     }

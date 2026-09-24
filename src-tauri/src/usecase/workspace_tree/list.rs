@@ -14,7 +14,7 @@ use crate::usecase::{
     workflow::{WorkspaceTreeSnapshotDto, WorkspaceWorkflowHistoryItemDto},
 };
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WorkspaceListStatusDto {
     pub loaded: bool,
@@ -22,7 +22,7 @@ pub(crate) struct WorkspaceListStatusDto {
     pub error: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, PartialEq)]
 pub(crate) struct WorkspaceBranchDto {
     #[serde(flatten)]
     pub branch: BranchCardDto,
@@ -31,7 +31,7 @@ pub(crate) struct WorkspaceBranchDto {
     pub pr_url: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WorkspaceWorktreeListDto {
     pub path: String,
@@ -40,7 +40,7 @@ pub(crate) struct WorkspaceWorktreeListDto {
     pub workflow_history: Vec<WorkspaceWorkflowHistoryItemDto>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WorkspaceRepositoryListDto {
     pub path: String,
@@ -55,6 +55,12 @@ pub(crate) struct WorkspaceListSnapshotDto {
     pub generation: u64,
     pub status: WorkspaceListStatusDto,
     pub repositories: Vec<WorkspaceRepositoryListDto>,
+}
+
+impl PartialEq for WorkspaceListSnapshotDto {
+    fn eq(&self, other: &Self) -> bool {
+        self.status == other.status && self.repositories == other.repositories
+    }
 }
 
 type WorkspaceLists = WorkspaceListRefresh<
@@ -158,21 +164,27 @@ impl WorkspaceListUsecase {
         futures_util::future::join_all(
             paths
                 .iter()
-                .map(|path| self.refresh_branches(path, generation)),
+                .map(|path| self.refresh_branches(path, generation, true)),
         )
         .await;
+        (self.notify)();
     }
 
     pub async fn refresh_repository(&self, path: &str) -> WorkspaceListSnapshotDto {
         let generation = self.lists.lock().begin_repository(path);
         if let Some(generation) = generation {
-            self.refresh_branches(path, generation).await;
+            self.refresh_branches(path, generation, true).await;
         }
         self.snapshot()
     }
 
-    async fn refresh_branches(&self, path: &str, generation: u64) {
-        let branches = self.query.branches(path).await.map(|branches| {
+    async fn refresh_branches(&self, path: &str, generation: u64, rescan: bool) {
+        let result = if rescan {
+            self.query.branches(path).await
+        } else {
+            self.query.current_branches(path).await
+        };
+        let branches = result.map(|branches| {
             let paths = branches
                 .iter()
                 .filter_map(|branch| branch.worktree_path.clone())
@@ -187,7 +199,7 @@ impl WorkspaceListUsecase {
         (self.notify)();
         let usecase = self.clone();
         let repository = path.to_owned();
-        tokio::task::spawn_blocking(move || usecase.refresh_prs(&repository, generation));
+        tokio::task::spawn_blocking(move || usecase.refresh_prs(&repository, generation, rescan));
         for path in worktrees {
             if !self.lists.lock().is_worktree_current(&path, generation) {
                 continue;
@@ -196,8 +208,8 @@ impl WorkspaceListUsecase {
         }
     }
 
-    fn refresh_prs(&self, path: &str, generation: u64) {
-        let status = match self.query.pr_status(path) {
+    fn refresh_prs(&self, path: &str, generation: u64, force: bool) {
+        let status = match self.query.pr_status(path, force) {
             Ok(status) => status,
             Err(error) => {
                 log::warn!("workspace PR status refresh failed for {path}: {error}");
@@ -236,6 +248,43 @@ impl WorkspaceListUsecase {
             generation,
             result.map_err(|error| WorkspaceListFailure::from(error.to_string())),
         );
+        (self.notify)();
+    }
+
+    pub async fn refresh_current_repository(&self, path: &str) {
+        let generation = self.lists.lock().begin_branch_update(path);
+        if let Some(generation) = generation {
+            self.refresh_branches(path, generation, false).await;
+        }
+    }
+
+    pub async fn refresh_external_information(&self) {
+        let repositories = self.lists.lock().repository_generations();
+        futures_util::future::join_all(repositories.into_iter().map(|(path, generation)| {
+            let usecase = self.clone();
+            async move {
+                if let Err(error) = tokio::task::spawn_blocking(move || {
+                    usecase.refresh_prs(&path, generation, true)
+                })
+                .await
+                {
+                    log::error!("PR refresh failed: {error}");
+                }
+            }
+        }))
+        .await;
+    }
+
+    pub fn watch_paths(&self) -> Vec<String> {
+        let lists = self.lists.lock();
+        let mut paths = std::collections::HashSet::new();
+        for path in lists.repositories().value().into_iter().flatten() {
+            if let Some((_, worktrees)) = lists.branches(path).and_then(|entry| entry.value()) {
+                paths.insert(path.clone());
+                paths.extend(worktrees.iter().cloned());
+            }
+        }
+        paths.into_iter().collect()
     }
 
     pub fn snapshot(&self) -> WorkspaceListSnapshotDto {

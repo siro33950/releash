@@ -48,7 +48,6 @@ export function useGitEventRefresh(
 			unlisten = off;
 
 			stopWatch = watchClient(
-				"start_watching",
 				{ path: rootPath },
 				(id) => {
 					watcherIdRef.current = id;

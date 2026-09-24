@@ -1,18 +1,17 @@
 import { expect, test } from "@playwright/test";
+import { buildMockConfig } from "./helpers/fixtures";
 import { setupTauriMock } from "./helpers/tauri-mock";
 
 test("最大16terminalとpushを保持しても入力・ack・状態取得がHTTP/1.1で継続する", async ({
 	page,
 }) => {
-	await setupTauriMock(page, {
-		responses: {
-			get_cwd: "/current",
+	await setupTauriMock(page, buildMockConfig({
+			get_external_editor: "/current",
 			attach_terminal_surface: { __mockTerminalAttachment: true },
 			write_terminal_surface: null,
 			ack_terminal_surface_output: null,
 			detach_terminal_surface: null,
-		},
-	});
+	}));
 	await page.goto("/tests/helpers/client-streams.html");
 	const subscriptions: string[] = [];
 	page.on("request", (request) => {
@@ -81,7 +80,7 @@ test("最大16terminalとpushを保持しても入力・ack・状態取得がHTT
 				});
 			}),
 		);
-		const paths = await invokeClient("get_cwd");
+		const paths = await invokeClient("get_external_editor");
 		await window.__releashPush("review-comments-changed", "/updated");
 		const deadline = Date.now() + 3000;
 		while (
@@ -135,4 +134,28 @@ test("最大16terminalとpushを保持しても入力・ack・状態取得がHTT
 			sequence: 42,
 		});
 	}
+});
+
+
+test("購読fixtureは初回と更新のpayloadを単発commandなしで配信する", async ({page}) => {
+    const fixture = await setupTauriMock(page, buildMockConfig({"current-branch": "before"}));
+    await page.goto("/tests/helpers/client-streams.html");
+    await page.evaluate(async () => {
+        const {subscribeState, firstState} = await import("/src/lib/client.ts");
+        await Promise.all([
+            firstState("workspaces"),
+            firstState("providers"),
+            firstState({kind: "branch-status", args: ["/repo"]}),
+            firstState({kind: "worktrees", args: ["/repo"]}),
+        ]);
+        subscribeState({kind: "current-branch", args: ["/repo"]}, value => {
+            document.body.textContent = value;
+        });
+    });
+    await expect(page.locator("body")).toHaveText("before");
+    await page.evaluate(() => window.__RELEASH_BACKEND__!.setState("current-branch", "after"));
+    await fixture.refreshStates();
+    await expect(page.locator("body")).toHaveText("after");
+    expect(fixture.clientRequests).toEqual([]);
+    expect(await page.evaluate(() => window.__RELEASH_BACKEND__!.invocations.map(({cmd}) => cmd))).toEqual(["get_client_endpoint", "validate_daemon_connection"]);
 });

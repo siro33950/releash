@@ -12,9 +12,9 @@ import {
 	AttachTerminalSurfaceRequestSchema,
 	ClientService,
 	CommandErrorSchema,
-	StartGitDirWatchingRequestSchema,
 	StartWatchingRequestSchema,
 	type StatePayload,
+	StatePayloadSchema,
 	type StateVersion,
 	type TerminalEvent,
 } from "@/generated/client_pb";
@@ -219,9 +219,42 @@ export async function listenClient<K extends keyof ClientPushPayloads>(
 	};
 }
 
-type StateValues = { "repository-paths": string[] };
+export type StateValues = {
+	"repository-paths": string[];
+	workspaces: import("@/generated/client_types").WorkspaceListSnapshotDto;
+	selection: import("@/generated/client_types").WorkspaceTreeSelectionSnapshotDto;
+	"node-detail":
+		| import("@/generated/client_types").WorkspaceNodeDetailDto
+		| null;
+	"agent-session":
+		| import("@/generated/client_types").AgentSessionItemDto
+		| null;
+	"session-node": string | null;
+	"session-history": import("@/generated/client_types").AgentSessionHistoryPageDto;
+	providers: import("@/generated/client_types").AgentSessionProviderDto[];
+	branches: import("@/generated/client_types").BranchDto[];
+	"branch-base": string | null;
+	"branch-status": import("@/generated/client_types").RepositoryBranchCardsSnapshotDto;
+	"current-branch": string;
+	issues: import("@/generated/client_types").IssueInfoDto[];
+	worktrees: import("@/generated/client_types").WorktreeEntryDto[];
+	"repository-root": string;
+	"startup-repository": string;
+	"workspace-state":
+		| import("@/generated/client_types").WorkspaceStateDto
+		| null;
+};
+export type StateTarget<K extends keyof StateValues> =
+	| K
+	| { kind: K; args: string[] };
+function stateTargetKey(kind: string, args: string[]) {
+	return JSON.stringify([kind, args]);
+}
 type StateEntry = {
+	kind: string;
+	args: string[];
 	receivers: Set<(value: never) => void>;
+	errors: Set<(error: unknown) => void>;
 	version?: StateVersion;
 	value?: { current: unknown };
 };
@@ -234,18 +267,33 @@ let stateAbort: AbortController | null = null;
 let stateTask: Promise<void> | null = null;
 
 function decodeState(payload: StatePayload | undefined) {
-	if (payload?.value.case === "repositoryPaths")
-		return { current: payload.value.value.items };
+	if (!payload?.value.case) return;
+	const field = StatePayloadSchema.fields.find(
+		(field) => field.localName === payload.value.case,
+	);
+	if (!field?.message) return;
+	const json = toJson(StatePayloadSchema, payload) as Record<
+		string,
+		import("@bufbuild/protobuf").JsonValue
+	>;
+	return { current: clientJson(field.message, json[field.jsonName], false) };
 }
 
 function startState(stream: StateStream, target: string) {
+	const entry = states.get(target);
+	if (!entry) return;
 	void stream.client
 		.startStateSubscription({
 			clientId: stream.id,
-			target,
-			version: states.get(target)?.version,
+			target: entry.kind,
+			args: entry.args,
+			version: entry.version,
 		})
-		.catch((error) => console.error("State subscription failed", error));
+		.catch((error) => {
+			if (states.get(target) !== entry || stateStream !== stream) return;
+			console.error("State subscription failed", error);
+			for (const receiver of entry.errors) receiver(error);
+		});
 }
 
 function ensureStateStream() {
@@ -274,7 +322,7 @@ function ensureStateStream() {
 						for (const target of states.keys()) startState(stream, target);
 						continue;
 					}
-					const entry = states.get(event.target);
+					const entry = states.get(stateTargetKey(event.target, event.args));
 					if (!entry) continue;
 					entry.version = event.version;
 					const value = decodeState(
@@ -311,23 +359,29 @@ function ensureStateStream() {
 }
 
 export function subscribeState<K extends keyof StateValues>(
-	target: K,
+	input: StateTarget<K>,
 	onValue: (value: StateValues[K]) => void,
+	onError?: (error: unknown) => void,
 ) {
+	const kind = typeof input === "string" ? input : input.kind;
+	const args = typeof input === "string" ? [] : input.args;
+	const target = stateTargetKey(kind, args);
 	const receiver = onValue as (value: never) => void;
 	let entry = states.get(target);
 	if (!entry) {
-		entry = { receivers: new Set() };
+		entry = { kind, args, receivers: new Set(), errors: new Set() };
 		states.set(target, entry);
 		if (stateStream) startState(stateStream, target);
 	} else if (entry.value) onValue(entry.value.current as StateValues[K]);
 	entry.receivers.add(receiver);
+	if (onError) entry.errors.add(onError);
 	stopped = false;
 	ensureStateStream();
 	return () => {
 		const current = states.get(target);
 		if (current !== entry) return;
 		current.receivers.delete(receiver);
+		if (onError) current.errors.delete(onError);
 		if (current.receivers.size) return;
 		states.delete(target);
 		if (!states.size) {
@@ -335,7 +389,7 @@ export function subscribeState<K extends keyof StateValues>(
 			stateAbort?.abort(IDLE);
 		} else if (stateStream)
 			void stateStream.client
-				.stopStateSubscription({ clientId: stateStream.id, target })
+				.stopStateSubscription({ clientId: stateStream.id, target: kind, args })
 				.catch((error) => console.debug("State unsubscribe failed", error));
 	};
 }
@@ -350,7 +404,6 @@ export function onClientConnection(listener: (connected: boolean) => void) {
 }
 
 export function watchClient(
-	command: "start_watching" | "start_git_dir_watching",
 	args: Record<string, unknown>,
 	onReady: (id: number) => void,
 	onError: (error: unknown) => void = console.error,
@@ -367,36 +420,20 @@ export function watchClient(
 		abort = new AbortController();
 		const signal = abort.signal;
 		const { client, id: subscriptionId } = subscription;
-		const request =
-			command === "start_watching"
-				? client.watchFiles(
-						{
-							subscriptionId,
-							request: fromJson(
-								StartWatchingRequestSchema,
-								clientJson(
-									StartWatchingRequestSchema,
-									JSON.parse(JSON.stringify(args)),
-									true,
-								),
-							),
-						},
-						{ signal },
-					)
-				: client.watchGitDirectory(
-						{
-							subscriptionId,
-							request: fromJson(
-								StartGitDirWatchingRequestSchema,
-								clientJson(
-									StartGitDirWatchingRequestSchema,
-									JSON.parse(JSON.stringify(args)),
-									true,
-								),
-							),
-						},
-						{ signal },
-					);
+		const request = client.watchFiles(
+			{
+				subscriptionId,
+				request: fromJson(
+					StartWatchingRequestSchema,
+					clientJson(
+						StartWatchingRequestSchema,
+						JSON.parse(JSON.stringify(args)),
+						true,
+					),
+				),
+			},
+			{ signal },
+		);
 		return request
 			.then((ready) => {
 				const stop = () => {
@@ -648,3 +685,21 @@ window.addEventListener("pagehide", () => {
 	states.clear();
 	stateAbort?.abort();
 });
+
+export function firstState<K extends keyof StateValues>(
+	target: StateTarget<K>,
+): Promise<StateValues[K]> {
+	return new Promise((resolve, reject) => {
+		const release = subscribeState(
+			target,
+			(value) => {
+				resolve(value);
+				queueMicrotask(() => release());
+			},
+			(error) => {
+				reject(error);
+				queueMicrotask(() => release());
+			},
+		);
+	});
+}

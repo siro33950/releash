@@ -68,7 +68,7 @@ impl TryFrom<crate::usecase::agent_session::AgentSessionHistoryPageDto>
     ) -> Result<Self, String> {
         Ok(Self {
             items: Some(cv(value.items)?),
-            next_after: value.next_after.map(cv).transpose()?,
+            has_more: Some(cv(value.has_more)?),
         })
     }
 }
@@ -2002,36 +2002,6 @@ where
             .collect()
     }
 }
-impl<T> TryFrom<std::collections::BTreeMap<String, T>> for wire::MapPrInfoDto
-where
-    wire::PrInfoDto: TryFrom<T>,
-    <wire::PrInfoDto as TryFrom<T>>::Error: std::fmt::Display,
-{
-    type Error = String;
-    fn try_from(value: std::collections::BTreeMap<String, T>) -> Result<Self, String> {
-        Ok(Self {
-            entries: value
-                .into_iter()
-                .map(|(key, value)| Ok((key, cv(value)?)))
-                .collect::<Result<_, String>>()?,
-        })
-    }
-}
-impl<T> TryFrom<std::collections::HashMap<String, T>> for wire::MapPrInfoDto
-where
-    wire::PrInfoDto: TryFrom<T>,
-    <wire::PrInfoDto as TryFrom<T>>::Error: std::fmt::Display,
-{
-    type Error = String;
-    fn try_from(value: std::collections::HashMap<String, T>) -> Result<Self, String> {
-        Ok(Self {
-            entries: value
-                .into_iter()
-                .map(|(key, value)| Ok((key, cv(value)?)))
-                .collect::<Result<_, String>>()?,
-        })
-    }
-}
 impl<T> TryFrom<std::collections::BTreeMap<String, T>> for wire::Mapstring
 where
     String: TryFrom<T>,
@@ -2558,18 +2528,6 @@ where
     }
 }
 
-impl<T> TryFrom<Option<T>> for wire::NullableWorkflowExecutionView
-where
-    wire::WorkflowExecutionView: TryFrom<T>,
-    <wire::WorkflowExecutionView as TryFrom<T>>::Error: std::fmt::Display,
-{
-    type Error = String;
-    fn try_from(value: Option<T>) -> Result<Self, String> {
-        Ok(Self {
-            value: value.map(cv).transpose()?,
-        })
-    }
-}
 impl<T> TryFrom<Option<T>> for wire::NullableWorkspaceNodeDetailDto
 where
     wire::WorkspaceNodeDetailDto: TryFrom<T>,
@@ -2612,26 +2570,6 @@ impl TryFrom<crate::usecase::git_host::dto::PrAuthorDto> for wire::PrAuthorDto {
     fn try_from(value: crate::usecase::git_host::dto::PrAuthorDto) -> Result<Self, String> {
         Ok(Self {
             login: Some(cv(value.login)?),
-        })
-    }
-}
-
-impl TryFrom<crate::usecase::git_host::dto::PrInfoDto> for wire::PrInfoDto {
-    type Error = String;
-    fn try_from(value: crate::usecase::git_host::dto::PrInfoDto) -> Result<Self, String> {
-        Ok(Self {
-            number: Some(cv(value.number)?),
-            url: Some(cv(value.url)?),
-        })
-    }
-}
-
-impl TryFrom<crate::usecase::git_host::dto::PrStatusDto> for wire::PrStatusDto {
-    type Error = String;
-    fn try_from(value: crate::usecase::git_host::dto::PrStatusDto) -> Result<Self, String> {
-        Ok(Self {
-            open_prs: Some(cv(value.open_prs)?),
-            merged_branches: Some(cv(value.merged_branches)?),
         })
     }
 }
@@ -3712,20 +3650,6 @@ impl TryFrom<crate::usecase::workflow::dto::WorkflowDto> for wire::WorkflowDto {
             source_format: Some(cv(value.source_format)?),
             schemas: Some(cv(value.schemas)?),
             nodes: Some(cv(value.nodes)?),
-        })
-    }
-}
-
-impl TryFrom<crate::adaptor::protocol::workflow::WorkflowExecutionChangedPayloadView>
-    for wire::WorkflowExecutionChangedPayloadView
-{
-    type Error = String;
-    fn try_from(
-        value: crate::adaptor::protocol::workflow::WorkflowExecutionChangedPayloadView,
-    ) -> Result<Self, String> {
-        Ok(Self {
-            worktree_path: Some(cv(value.worktree_path)?),
-            workflow_execution: Some(cv(value.workflow_execution)?),
         })
     }
 }

@@ -1,6 +1,7 @@
 use super::*;
 use crate::domain::git_host::PrStatus;
 use crate::usecase::repository_dto::BranchCardDto;
+use crate::usecase::workflow::{WorkspaceTreeSnapshotDto, WorkspaceWorkflowHistoryItemDto};
 use crate::usecase::workspace_tree::{
     WorkspaceListQueryService, WorkspaceListUsecase, WorkspaceListUsecaseError,
 };
@@ -35,7 +36,7 @@ impl WorkspaceListQueryService for Query {
         }])
     }
 
-    fn pr_status(&self, _: &str) -> Result<PrStatus, WorkspaceListUsecaseError> {
+    fn pr_status(&self, _: &str, _: bool) -> Result<PrStatus, WorkspaceListUsecaseError> {
         Ok(PrStatus::default())
     }
 
@@ -72,10 +73,9 @@ async fn test_一覧更新dispatch_省略時は全体を指定時は対象worktr
     let query = Arc::new(Query::default());
     deps.app_state.as_mut().unwrap().workspace_list =
         Arc::new(WorkspaceListUsecase::new(query.clone()));
-    let mut dispatch = ClientCommandDispatch::new(
-        deps.app_state.as_ref().unwrap().repository_usecase.clone(),
-        Arc::new(crate::usecase::application_startup::ApplicationStartupAuthority::ready()),
-    );
+    let mut dispatch = ClientCommandDispatch::new(Arc::new(
+        crate::usecase::application_startup::ApplicationStartupAuthority::ready(),
+    ));
     register_shared(&mut dispatch, &deps);
     // When
     let result = dispatch

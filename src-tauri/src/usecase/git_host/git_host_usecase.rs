@@ -6,18 +6,28 @@ use crate::domain::git_host::{
 
 #[derive(Clone)]
 pub struct GitHostUsecase {
+    state_publisher: Option<crate::usecase::state_subscription::StateSubscriptionPublisher>,
     provider: Arc<dyn GitHostProvider>,
     pr_cache: Arc<dyn PrStatusCache>,
     issue_cache: Arc<dyn IssueCache>,
 }
 
 impl GitHostUsecase {
+    pub(crate) fn with_state_publisher(
+        mut self,
+        publisher: crate::usecase::state_subscription::StateSubscriptionPublisher,
+    ) -> Self {
+        self.state_publisher = Some(publisher);
+        self
+    }
+
     pub fn new(
         provider: Arc<dyn GitHostProvider>,
         pr_cache: Arc<dyn PrStatusCache>,
         issue_cache: Arc<dyn IssueCache>,
     ) -> Self {
         Self {
+            state_publisher: None,
             provider,
             pr_cache,
             issue_cache,
@@ -25,7 +35,9 @@ impl GitHostUsecase {
     }
 
     pub fn fetch_pr_status(&self, repo_path: &str) -> Result<PrStatus, GitHostError> {
-        self.provider.fetch_pr_status(repo_path)
+        let value = self.provider.fetch_pr_status(repo_path)?;
+        self.pr_cache.store(repo_path, value.clone());
+        Ok(value)
     }
 
     pub fn get_cached_pr_status(&self, repo_path: &str) -> Result<PrStatus, GitHostError> {
@@ -39,7 +51,14 @@ impl GitHostUsecase {
     }
 
     pub fn fetch_issues(&self, repo_path: &str) -> Vec<IssueInfo> {
-        self.provider.list_issues(repo_path)
+        let value = self.provider.list_issues(repo_path);
+        self.issue_cache.store(repo_path, value.clone());
+        if let Some(publisher) = &self.state_publisher {
+            publisher.invalidate(
+                crate::domain::state_subscription::StateChangeSource::Issues(repo_path.into()),
+            );
+        }
+        value
     }
 
     pub fn get_cached_issues(&self, repo_path: &str) -> Vec<IssueInfo> {
@@ -199,6 +218,43 @@ mod tests {
         issue_cache: Arc<FakeIssueCache>,
     ) -> GitHostUsecase {
         GitHostUsecase::new(provider, pr_cache, issue_cache)
+    }
+
+    #[test]
+    fn forced_refresh_updates_caches_even_when_previous_values_are_fresh() {
+        let fetched_pr = sample_pr_status();
+        let fetched_issues = vec![sample_issue(2)];
+        let provider = Arc::new(FakeProvider::new(
+            fetched_pr.clone(),
+            fetched_issues.clone(),
+        ));
+        let pr_cache = Arc::new(FakePrCache::with_lookup(Some(PrStatus::default())));
+        let issue_cache = Arc::new(FakeIssueCache::with_lookup(Some(vec![sample_issue(1)])));
+        let uc = usecase_with(provider.clone(), pr_cache.clone(), issue_cache.clone());
+        assert_eq!(uc.fetch_pr_status("/repo"), Ok(fetched_pr.clone()));
+        assert_eq!(uc.fetch_issues("/repo"), fetched_issues);
+        assert_eq!(pr_cache.stored_values(), vec![fetched_pr]);
+        assert_eq!(issue_cache.stored_values(), vec![fetched_issues]);
+        assert_eq!(provider.pr_fetch_count(), 1);
+        assert_eq!(provider.issue_fetch_count(), 1);
+    }
+
+    #[test]
+    fn forced_pr_refresh_failure_keeps_the_previous_cache() {
+        let previous = sample_pr_status();
+        let provider = Arc::new(FakeProvider {
+            pr_status: Err(GitHostError("offline".into())),
+            ..FakeProvider::empty()
+        });
+        let pr_cache = Arc::new(FakePrCache::with_lookup(Some(previous.clone())));
+        let uc = usecase_with(
+            provider,
+            pr_cache.clone(),
+            Arc::new(FakeIssueCache::default()),
+        );
+        assert!(uc.fetch_pr_status("/repo").is_err());
+        assert!(pr_cache.stored_values().is_empty());
+        assert_eq!(uc.get_cached_pr_status("/repo"), Ok(previous));
     }
 
     #[test]

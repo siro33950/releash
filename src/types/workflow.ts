@@ -6,13 +6,6 @@ export type JsonValue =
 	| JsonValue[]
 	| { [key: string]: JsonValue };
 
-export interface TokenUsage {
-	inputTokens: number;
-	outputTokens: number;
-}
-
-export type WorkflowExecutionStatus = "running" | "completed" | "aborted";
-
 export type Predicate = string | { and: Predicate[] } | { or: Predicate[] };
 
 export type Rule =
@@ -113,98 +106,6 @@ export interface WorkflowDefinition {
 	sourceFormat: "yaml" | "lua";
 	schemas?: Record<string, SchemaDefView>;
 	nodes: NodeDefinition[];
-}
-
-export type NodeExecutionStatus =
-	| "running"
-	| "waiting_approval"
-	| "succeeded"
-	| "aborted";
-
-export interface ExecutionParentRef {
-	parentId: string;
-	itemIndex?: number;
-	childIndex?: number;
-}
-
-export interface NodeExecution {
-	worktree?: { branch: string; path: string } | null;
-	id: string;
-	executionId: string;
-	nodeName: string;
-	kind: NodeKind;
-	attempt: number;
-	status: NodeExecutionStatus;
-	submitReceived: boolean;
-	stopReceived: boolean;
-	waitingFor?: "submit" | "stop";
-	canApprove: boolean;
-	canRetry: boolean;
-	canResumeSession: boolean;
-	processPresence: "live" | "confirmed_absent" | "unknown";
-	hasArtifact: boolean;
-	sessionId?: string;
-	artifact?: Artifact;
-	tokenUsage?: TokenUsage;
-	parent?: ExecutionParentRef;
-	startedAt: number;
-	completedAt?: number;
-}
-
-export interface Artifact {
-	nodeName: string;
-	contract?: string;
-	value: JsonValue;
-	producedAt: number;
-}
-
-export interface Fanout {
-	parent: NodeExecution;
-	children: NodeExecution[];
-	artifact?: Artifact;
-}
-
-export interface ApprovalTarget {
-	nodeExecutionId: string;
-	nodeName: string;
-	sessionId?: string;
-}
-
-export interface WorkflowExecution {
-	id: string;
-	workflowName: string;
-	status: WorkflowExecutionStatus;
-	currentNode?: string | null;
-	worktreePath: string;
-	createdFrom: "desktop_ui" | "cli" | "agent" | "api";
-	startedAt: number;
-	updatedAt: number;
-	completedAt?: number | null;
-	errorReason?: string | null;
-	totalTokenUsage: TokenUsage;
-	nodeExecutions: NodeExecution[];
-	artifacts: Artifact[];
-	fanouts: Fanout[];
-	approvalTarget?: ApprovalTarget | null;
-}
-
-export interface WorkflowExecutionSummary {
-	executionId: string;
-	workflowName: string;
-	status: WorkflowExecutionStatus;
-	worktreePath: string;
-	currentNode?: string | null;
-	createdFrom: "desktop_ui" | "cli" | "agent" | "api";
-	startedAt: number;
-	updatedAt: number;
-	completedAt?: number | null;
-	errorReason?: string | null;
-	totalTokenUsage: TokenUsage;
-}
-
-export interface WorkflowExecutionChangedPayload {
-	worktreePath: string;
-	workflowExecution: WorkflowExecution;
 }
 
 export type WorkflowDefinitionSummary = {

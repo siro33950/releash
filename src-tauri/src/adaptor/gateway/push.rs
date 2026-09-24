@@ -1,23 +1,12 @@
 use std::sync::Arc;
 
 use crate::adaptor::gateway::repository::watch::{FileChangeEvent, GitStatusChangedEvent};
-use crate::adaptor::protocol::workflow::WorkflowExecutionChangedPayloadView;
 use crate::infrastructure::push::PushSink;
 
-#[derive(Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentSessionChangedPayload<'a> {
-    pub worktree_path: &'a str,
-}
-
 pub enum BackendPush<'a> {
-    AgentSessionChanged(AgentSessionChangedPayload<'a>),
-    BranchListSync,
-    WorkspaceListChanged,
     FileChange(FileChangeEvent),
     GitStatusChanged(GitStatusChangedEvent),
     ReviewCommentsChanged(&'a str),
-    WorkflowExecutionChanged(Box<WorkflowExecutionChangedPayloadView>),
 }
 
 impl BackendPush<'_> {
@@ -36,23 +25,6 @@ impl BackendPush<'_> {
             }};
         }
         match self {
-            Self::AgentSessionChanged(payload) => publish!(
-                "agent-session-changed",
-                AgentSessionChanged,
-                Ok::<_, String>(wire::AgentSessionChangedPayload {
-                    worktree_path: Some(payload.worktree_path.into())
-                })
-            ),
-            Self::WorkspaceListChanged => publish!(
-                "workspace-list-changed",
-                WorkspaceListChanged,
-                Ok::<_, String>(wire::Unit {})
-            ),
-            Self::BranchListSync => publish!(
-                "branch-list-sync",
-                BranchListSync,
-                Ok::<_, String>(wire::Unit {})
-            ),
             Self::FileChange(payload) => publish!(
                 "file-change",
                 FileChange,
@@ -69,11 +41,6 @@ impl BackendPush<'_> {
                 Ok::<_, String>(wire::ResultString {
                     value: Some(payload.into())
                 })
-            ),
-            Self::WorkflowExecutionChanged(payload) => publish!(
-                "workflow-execution-changed",
-                WorkflowExecutionChanged,
-                wire::WorkflowExecutionChangedPayloadView::try_from(*payload).map(Box::new)
             ),
         }
     }
@@ -142,18 +109,21 @@ mod push_tests;
 use crate::usecase::agent_session::AgentSessionChangeNotifier;
 
 pub(crate) struct ClientAgentSessionChangeNotifier {
-    sink: std::sync::Arc<crate::infrastructure::push::PushSink>,
+    publisher: crate::usecase::state_subscription::StateSubscriptionPublisher,
 }
 
 impl ClientAgentSessionChangeNotifier {
-    pub(crate) fn new(sink: std::sync::Arc<crate::infrastructure::push::PushSink>) -> Self {
-        Self { sink }
+    pub(crate) fn new(
+        publisher: crate::usecase::state_subscription::StateSubscriptionPublisher,
+    ) -> Self {
+        Self { publisher }
     }
 }
 
 impl AgentSessionChangeNotifier for ClientAgentSessionChangeNotifier {
     fn agent_session_changed(&self, worktree_path: &str) {
-        BackendPush::AgentSessionChanged(AgentSessionChangedPayload { worktree_path })
-            .emit(&self.sink);
+        self.publisher.invalidate(
+            crate::domain::state_subscription::StateChangeSource::Worktree(worktree_path.into()),
+        );
     }
 }

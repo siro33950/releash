@@ -344,3 +344,96 @@ async fn test_旧sessionarchive移行_128件を越えて時刻と理由と終了
         .unwrap()
         .is_empty());
 }
+
+#[tokio::test]
+async fn test_終了済み実行木_archiveとrestore成功後だけ所属worktreeの購読を更新する() {
+    use crate::domain::state_subscription::StateChangeSource;
+    // Given
+    let mut fixture = archive_fixture();
+    let id = archive_workflow(&fixture).await;
+    fixture
+        .runtime
+        .abort_execution(crate::usecase::workflow::command::AbortExecutionCommand {
+            execution_id: id.clone(),
+            expected_node_name: None,
+        })
+        .await
+        .unwrap();
+    let publisher = crate::usecase::state_subscription::StateSubscriptionPublisher::for_test();
+    let mut changes = publisher.subscribe_changes();
+    fixture.runtime = fixture.runtime.with_state_publisher(publisher);
+    // When / Then
+    fixture
+        .runtime
+        .archive_execution_tree(&id, "manual")
+        .await
+        .unwrap();
+    assert_eq!(
+        changes.try_recv().unwrap(),
+        StateChangeSource::Worktree("/missing/worktree".into())
+    );
+    fixture.runtime.restore_execution_tree(&id).await.unwrap();
+    assert_eq!(
+        changes.try_recv().unwrap(),
+        StateChangeSource::Worktree("/missing/worktree".into())
+    );
+    assert!(fixture
+        .runtime
+        .archive_execution_tree("missing", "manual")
+        .await
+        .is_err());
+    assert!(fixture
+        .runtime
+        .restore_execution_tree("missing")
+        .await
+        .is_err());
+    assert!(changes.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn test_実行木archiveとrestore_workspace識別子と異なるworktreeパスを通知する() {
+    use crate::adaptor::gateway::workflow::fact_log;
+    use crate::domain::state_subscription::StateChangeSource;
+    use crate::domain::workflow::{NodeFact, SessionExecutionTreeRootFacts};
+    // Given
+    let mut fixture = archive_fixture();
+    let id = "agent-session-00000000000040008000000000000113";
+    let facts = SessionExecutionTreeRootFacts::new(
+        id,
+        "/workspace",
+        "/missing/worktree",
+        crate::domain::provider_lifecycle::ProviderKind::Codex,
+        None,
+    )
+    .unwrap();
+    let meta = facts.meta.clone();
+    fact_log::append_fact_batch_for_seed(&fixture.store, &facts.into_facts(), 1, id).unwrap();
+    fact_log::append_single_fact(
+        &fixture.store,
+        &meta,
+        &NodeFact::AbortRequested(Default::default()),
+        2,
+    )
+    .unwrap();
+    let target = fixture.repository.target(id).await.unwrap();
+    assert_ne!(target.workspace_identity, target.worktree_path);
+    let publisher = crate::usecase::state_subscription::StateSubscriptionPublisher::for_test();
+    let mut changes = publisher.subscribe_changes();
+    fixture.runtime = fixture.runtime.with_state_publisher(publisher);
+    // When / Then
+    fixture
+        .runtime
+        .archive_execution_tree(id, "manual")
+        .await
+        .unwrap();
+    assert_eq!(
+        changes.try_recv().unwrap(),
+        StateChangeSource::Worktree(target.worktree_path.clone())
+    );
+    fixture.runtime.restore_execution_tree(id).await.unwrap();
+    assert_eq!(
+        changes.try_recv().unwrap(),
+        StateChangeSource::Worktree(target.worktree_path)
+    );
+    assert!(changes.try_recv().is_err());
+}

@@ -245,19 +245,6 @@ impl WorkflowUsecase {
         self.read.clone()
     }
 
-    pub async fn list_executions_for_worktree(
-        &self,
-        status: Option<ExecutionStatusFilter>,
-        worktree_path: &str,
-    ) -> Result<Vec<WorkflowExecutionSummary>, WorkflowError> {
-        let worktree_path = crate::domain::workspace_tree::WorkspaceIdentity::new(
-            self.resolve_worktree_path(worktree_path)?,
-        );
-        self.workspace_query
-            .execution_summaries(Some(&worktree_path), status, None)
-            .await
-    }
-
     pub async fn get_execution(
         &self,
         execution_id: &str,
@@ -358,13 +345,6 @@ impl WorkflowUsecase {
         file_stem: &str,
     ) -> Result<crate::domain::workflow::WorkflowSourceFormat, WorkflowError> {
         self.query.get_workflow_source_format(file_stem)
-    }
-
-    pub async fn get_execution_state(
-        &self,
-        execution_id: &str,
-    ) -> Result<Option<ExecutionTree>, WorkflowError> {
-        self.query.get_execution_state(execution_id).await
     }
 
     pub fn get_facet(&self, kind: FacetKind, key: &str) -> Result<String, WorkflowError> {
@@ -981,36 +961,6 @@ mod tests {
             "/canonical/repo"
         );
         assert!(fixture.usecase.resolve_worktree_path("reject").is_err());
-    }
-
-    #[tokio::test]
-    async fn list_executions_for_worktree_canonicalizes_path_before_querying_executions() {
-        let executions = vec![
-            execution_summary(
-                "00000000-0000-0000-0000-000000000001",
-                "/canonical/repo",
-                ExecutionStatus::Running,
-            )
-            .await,
-        ];
-        let fixture = Fixture::with_executions(executions);
-
-        let listed = fixture
-            .usecase
-            .list_executions_for_worktree(Some(ExecutionStatusFilter::Active), "repo")
-            .await
-            .unwrap();
-
-        assert_eq!(listed.len(), 1);
-        assert_eq!(
-            listed[0].execution_id,
-            "00000000-0000-0000-0000-000000000001"
-        );
-        assert!(fixture
-            .usecase
-            .list_executions_for_worktree(None, "reject")
-            .await
-            .is_err());
     }
 
     #[tokio::test]

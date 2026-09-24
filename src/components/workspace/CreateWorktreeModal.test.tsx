@@ -8,7 +8,7 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { invokeClient as invoke } from "@/lib/client";
+import { invokeClient as invoke, subscribeState } from "@/lib/client";
 import type { IssueInfo, WorktreeBranch, WorktreeEntry } from "@/types/git";
 import type { NotionTask } from "@/types/notion";
 import { CreateWorktreeModal } from "./CreateWorktreeModal";
@@ -103,19 +103,20 @@ describe("CreateWorktreeModal", () => {
 			search: vi.fn(),
 			refresh: vi.fn(),
 		});
-		mockInvoke.mockImplementation((command: string, args?: unknown) => {
-			if (command === "list_branches") {
-				return Promise.resolve([{ name: "main", is_remote: false }]);
-			}
-			if (command === "list_branches_with_status_snapshot") {
-				return Promise.resolve({
+		vi.mocked(subscribeState).mockImplementation((target, receive) => {
+			const kind = typeof target === "string" ? target : target.kind;
+			if (kind === "branches") receive([{ name: "main", is_remote: false }]);
+			if (kind === "branch-status")
+				receive({
 					version: 1,
 					stale: false,
 					loading: false,
 					branches: branchCards,
 					worktree_display_groups: { working_areas: branchCards },
 				});
-			}
+			return vi.fn();
+		});
+		mockInvoke.mockImplementation((command: string, args?: unknown) => {
 			if (command === "create_worktree") {
 				const branch = (args as { branch: string }).branch;
 				return Promise.resolve({
@@ -139,9 +140,9 @@ describe("CreateWorktreeModal", () => {
 			<CreateWorktreeModal {...props} repoPaths={["/repo"]} />,
 		);
 		await waitFor(() =>
-			expect(mockInvoke).toHaveBeenCalledWith(
-				"list_branches_with_status_snapshot",
-				{ repoPath: "/repo" },
+			expect(subscribeState).toHaveBeenCalledWith(
+				{ kind: "branch-status", args: ["/repo"] },
+				expect.any(Function),
 			),
 		);
 		await user.type(

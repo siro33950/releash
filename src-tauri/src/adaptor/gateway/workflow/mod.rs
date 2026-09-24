@@ -41,7 +41,6 @@ pub(crate) mod span_map;
 pub(crate) mod startup_repository;
 #[cfg(test)]
 pub(crate) mod state;
-mod state_notification_gateway;
 pub(crate) mod storage;
 pub(crate) mod stored_definition;
 #[cfg(any(test, all(debug_assertions, feature = "desktop")))]
@@ -70,7 +69,6 @@ pub(crate) use runtime_resolver::resolve_workflow_by_name;
 #[cfg(test)]
 pub(crate) use secret_source_gateway::EmptySecretSourceGateway;
 pub(crate) use secret_source_gateway::WorkflowSecretSourceConfigGateway;
-pub(crate) use state_notification_gateway::emit_workflow_execution_from_snapshot;
 #[cfg(test)]
 pub(crate) use worktree_gateway::PassthroughManagedWorktreeGateway;
 pub(crate) use worktree_gateway::RepoPathsManagedWorktreeGateway;

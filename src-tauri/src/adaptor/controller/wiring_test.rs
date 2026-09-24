@@ -34,8 +34,10 @@ async fn test_worktree削除一覧_本番runtime配線で受理した削除状�
         data_dir.join("releash.toml"),
     ));
     let push = Arc::new(PushSink::new());
+    let publisher = crate::usecase::state_subscription::StateSubscriptionPublisher::for_test();
     let terminal = Arc::new(build_terminal_surface_application_for_tests());
     let sessions = compose_agent_sessions(AgentSessionCompositionInput {
+        state_publisher: None,
         store: store.clone(),
         data_dir: data_dir.clone(),
         provider_executable_config: config.clone(),
@@ -46,7 +48,7 @@ async fn test_worktree削除一覧_本番runtime配線で受理した削除状�
         codex_home: root.join("codex"),
         cli_binary: "releash".into(),
         terminal: terminal.clone(),
-        change_notifier: Arc::new(ClientAgentSessionChangeNotifier::new(push.clone())),
+        change_notifier: Arc::new(ClientAgentSessionChangeNotifier::new(publisher.clone())),
     })
     .unwrap();
     let processes = Arc::new(WorkflowNodeProcesses::new(terminal));
@@ -60,11 +62,10 @@ async fn test_worktree削除一覧_本番runtime配線で受理した削除状�
     );
     let runtime = build_workflow_runtime_usecase(
         WorkflowRuntimeDependencies {
-            processes: processes.clone(),
             store: Some(store),
             config: Some(config.clone()),
             secrets: Some(config.clone()),
-            push: push.clone(),
+            state_changes: publisher.clone(),
         },
         WorkflowRuntimeCommandGatewayDeps {
             node_processes: processes,
@@ -85,7 +86,7 @@ async fn test_worktree削除一覧_本番runtime配線で受理した削除状�
             repository.clone(),
             Arc::new(build_code_usecase()),
         )),
-        Arc::new(ClientRepositoryStateNotifier::new(push)),
+        Arc::new(ClientRepositoryStateNotifier::new(push, publisher)),
         Arc::new(NotifyRepositoryStateWatcher::new(repository)),
         Arc::new(TokioRepositoryStateWorkerRuntime),
         Arc::new(FsWorktreePathNormalizer),

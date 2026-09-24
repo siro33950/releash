@@ -7,13 +7,13 @@ fn test_型付き応答_protoが成功と失敗を排他的に保持する() {
     // Given / When / Then
     for (command, result) in [
         ("ack_terminal_surface_output", Ok(Json::Null)),
-        ("get_current_branch", Ok(json!("日本語"))),
-        ("get_cwd", Ok(json!("/a"))),
+        ("get_external_editor", Ok(json!("日本語"))),
+        ("get_releash_base", Ok(json!("/a"))),
         (
-            "get_current_branch",
+            "get_external_editor",
             Err(json!({"code":"INVALID_REQUEST","message":"invalid"})),
         ),
-        ("get_current_branch", Err(json!("failure"))),
+        ("get_external_editor", Err(json!("failure"))),
     ] {
         let decoded = match result.clone() {
             Ok(value) => {
@@ -54,7 +54,7 @@ fn test_workflow値_整数境界と浮動小数を区別して保持する() {
 #[test]
 fn test_クライアント引数_必須フィールドと整数型を検証する() {
     // Given / When / Then
-    assert!(CommandRequest::from_value("get_current_branch", json!({})).is_err());
+    assert!(CommandRequest::from_value("build_diff_file_tree", json!({})).is_err());
     assert!(CommandRequest::from_value(
         "ack_terminal_surface_output",
         json!({"attachmentId":"a", "sequence": 1.5})
@@ -68,8 +68,8 @@ fn test_クライアント引数_必須フィールドと整数型を検証す�
         .unwrap();
     assert_eq!(decoded, ("ack_terminal_surface_output", args));
     let request = CommandRequest {
-        command: Some(command_request::Command::GetCurrentBranch(
-            GetCurrentBranchRequest::default(),
+        command: Some(command_request::Command::BuildDiffFileTree(
+            BuildDiffFileTreeRequest::default(),
         )),
     };
     assert!(request.into_value().is_err());
@@ -104,7 +104,6 @@ fn test_push_protoが既存payloadを保持し未定義eventを拒否する() {
     // Given / When / Then
     for (event, payload) in [
         ("review-comments-changed", json!("/a")),
-        ("branch-list-sync", Json::Null),
         ("review-comments-changed", json!("worktree")),
         ("git-status-changed", json!({"repo_path":"/repo"})),
     ] {
@@ -153,26 +152,17 @@ fn test_workspace過去試行_両commandでnodeタグとchildren省略を保持�
         },
     };
     // When / Then
-    for (result, expected) in [
-        (
-            command_result::Command::ListWorkspaceWorktreeNodes(
-                snapshot.clone().try_into().unwrap(),
-            ),
-            serde_json::to_value(snapshot).unwrap(),
-        ),
-        (
-            command_result::Command::GetWorkspaceTreeSelectionReconciliation(
-                selection.clone().try_into().unwrap(),
-            ),
-            serde_json::to_value(selection).unwrap(),
-        ),
-    ] {
-        let result = CommandResult {
-            command: Some(result),
-        };
-        let decoded = CommandResult::decode(result.encode_to_vec().as_slice()).unwrap();
-        assert_eq!(from_value(decoded).unwrap(), expected);
-    }
+    let result: WorkspaceTreeSelectionSnapshotDto = selection.clone().try_into().unwrap();
+    let decoded =
+        WorkspaceTreeSelectionSnapshotDto::decode(result.encode_to_vec().as_slice()).unwrap();
+    assert_eq!(
+        from_message(
+            "releash.client.v1.WorkspaceTreeSelectionSnapshotDto",
+            &decoded
+        )
+        .unwrap(),
+        serde_json::to_value(selection).unwrap()
+    );
 }
 
 #[test]
@@ -439,18 +429,25 @@ fn test_workspaces一覧_保持した情報と取得状態がwireを往復する
     };
     let expected = serde_json::to_value(&snapshot).unwrap();
     // When
-    let result = CommandResult {
-        command: Some(command_result::Command::RefreshWorkspaces(
+    let payload = StatePayload {
+        value: Some(state_payload::Value::Workspaces(
             snapshot.try_into().unwrap(),
         )),
     };
-    let decoded = CommandResult::decode(result.encode_to_vec().as_slice()).unwrap();
-    // Then
-    let from_json = CommandResult::from_value("refresh_workspaces", expected.clone()).unwrap();
-    assert_eq!(from_json.encode_to_vec(), result.encode_to_vec());
+    let decoded = StatePayload::decode(payload.encode_to_vec().as_slice()).unwrap();
+    let Some(state_payload::Value::Workspaces(snapshot)) = decoded.value else {
+        panic!("workspaces payload")
+    };
     assert_eq!(
-        decoded.into_value().unwrap(),
-        ("refresh_workspaces", expected)
+        from_message("releash.client.v1.WorkspaceListSnapshotDto", &snapshot).unwrap(),
+        expected
+    );
+    assert_eq!(
+        CommandResult::from_value("refresh_workspaces", Json::Null)
+            .unwrap()
+            .into_value()
+            .unwrap(),
+        ("refresh_workspaces", Json::Null)
     );
 }
 

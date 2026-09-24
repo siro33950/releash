@@ -170,12 +170,19 @@ impl AgentSessionTuiAcceptanceHost {
         self.composition.take_terminal_launch_performance_samples()
     }
 
+    fn read_state<T: DeserializeOwned>(&self, target: &str) -> Result<T, String> {
+        let value = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(
+                releash_lib::client_api_acceptance::read_state(&self.client, target),
+            )
+        })
+        .map_err(|e| e.to_string())?;
+        serde_json::from_value(value).map_err(|e| e.to_string())
+    }
+
     fn available_providers(&self) -> Vec<AcceptanceProvider> {
-        self.invoke(
-            "list_available_agent_session_providers",
-            serde_json::json!({}),
-        )
-        .expect("available Provider command")
+        self.read_state("providers")
+            .expect("available Provider subscription")
     }
 
     fn provider_availability(&self) -> Result<ProviderAvailabilitySnapshot, String> {
@@ -257,10 +264,15 @@ impl AgentSessionTuiAcceptanceHost {
         agent_session_id: &str,
     ) -> Result<Option<releash_lib::agent_session_tui_acceptance::AcceptanceAgentSession>, String>
     {
-        self.invoke(
-            "get_agent_session",
-            serde_json::json!({ "agentSessionId": agent_session_id }),
-        )
+        let target = format!(
+            "agent-session:{}:{agent_session_id}",
+            agent_session_id.len()
+        );
+        match releash_lib::client_api_acceptance::read_state(&self.client, &target).await {
+            Ok(value) => serde_json::from_value(value).map_err(|e| e.to_string()),
+            Err(error) if error.code == connectrpc::ErrorCode::NotFound => Ok(None),
+            Err(error) => Err(error.to_string()),
+        }
     }
 
     async fn list_history(
@@ -269,14 +281,12 @@ impl AgentSessionTuiAcceptanceHost {
         limit: usize,
     ) -> Result<Vec<releash_lib::agent_session_tui_acceptance::AcceptanceHistoryCandidate>, String>
     {
-        self.invoke::<AgentSessionHistoryPage>(
-            "list_agent_session_history",
-            serde_json::json!({
-                "worktreePath": worktree_path,
-                "limit": limit,
-                "after": null,
-            }),
-        )
+        let count = limit.to_string();
+        self.read_state::<AgentSessionHistoryPage>(&format!(
+            "session-history:{}:{worktree_path}{}:{count}",
+            worktree_path.len(),
+            count.len()
+        ))
         .map(|page| page.items)
     }
 

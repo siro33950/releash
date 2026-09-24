@@ -1,11 +1,16 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { WorkspaceState } from "@/types/workspace-state";
+import type { WorkspaceStateDto as WorkspaceState } from "@/generated/client_types";
+import { stateSubscriptions } from "@/test/stateSubscriptions";
+import { useWorkspacePersistence } from "./useWorkspacePersistence";
 import { useWorkspaceStateCache } from "./useWorkspaceStateCache";
 
 const mockInvoke = vi.fn();
+const states = stateSubscriptions();
 vi.mock("@/lib/client", () => ({
 	invokeClient: (...args: unknown[]) => mockInvoke(...args),
+	subscribeState: (...args: Parameters<typeof states.subscribeState>) =>
+		states.subscribeState(...args),
 }));
 
 function makeState(overrides?: Partial<WorkspaceState>): WorkspaceState {
@@ -29,6 +34,7 @@ function makeState(overrides?: Partial<WorkspaceState>): WorkspaceState {
 describe("useWorkspaceStateCache", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		states.clear();
 		mockInvoke.mockResolvedValue(undefined);
 		vi.useFakeTimers();
 	});
@@ -175,36 +181,80 @@ describe("useWorkspaceStateCache", () => {
 		expect(mockInvoke).toHaveBeenCalledTimes(3);
 	});
 
-	it("loadState calls invoke and caches result", async () => {
+	it("loadState subscribes and caches current and changed values", async () => {
 		const state = makeState();
-		mockInvoke.mockResolvedValue(state);
+		states.publish({ kind: "workspace-state", args: ["repo", "/repo"] }, state);
 
 		const { result } = renderHook(() => useWorkspaceStateCache());
 
-		let loaded: WorkspaceState | undefined;
+		let loaded: import("@/types/workspace-state").WorkspaceState | undefined;
 		await act(async () => {
 			loaded = await result.current.loadState("/repo");
 		});
 
 		expect(loaded).toEqual(state);
 		expect(result.current.getState("/repo")).toEqual(state);
-		expect(mockInvoke).toHaveBeenCalledWith("load_workspace_state", {
-			worktreeName: "repo",
-			worktreeRoot: "/repo",
-		});
+		expect(states.subscribeState).toHaveBeenCalledWith(
+			{ kind: "workspace-state", args: ["repo", "/repo"] },
+			expect.any(Function),
+			expect.any(Function),
+		);
+		const next = makeState({ tabs: { editors: [], activeEditorPath: null } });
+		act(() =>
+			states.publish(
+				{ kind: "workspace-state", args: ["repo", "/repo"] },
+				next,
+			),
+		);
+		expect(result.current.getState("/repo")).toEqual(next);
+		expect(mockInvoke).not.toHaveBeenCalled();
 	});
 
 	it("loadState returns undefined when backend returns null", async () => {
-		mockInvoke.mockResolvedValue(null);
+		states.publish({ kind: "workspace-state", args: ["repo", "/repo"] }, null);
 
 		const { result } = renderHook(() => useWorkspaceStateCache());
 
-		let loaded: WorkspaceState | undefined;
+		let loaded: import("@/types/workspace-state").WorkspaceState | undefined;
 		await act(async () => {
 			loaded = await result.current.loadState("/repo");
 		});
 
 		expect(loaded).toBeUndefined();
 		expect(result.current.getState("/repo")).toBeUndefined();
+	});
+	it("保存済み表示状態の購読失敗をundefinedで完了し再試行しない", async () => {
+		const { result } = renderHook(() => useWorkspaceStateCache());
+		const loaded = result.current.loadState("/repo");
+		states.fail(
+			{ kind: "workspace-state", args: ["repo", "/repo"] },
+			new Error("offline"),
+		);
+		await expect(loaded).resolves.toBeUndefined();
+		expect(states.subscribeState).toHaveBeenCalledTimes(1);
+		expect(mockInvoke).not.toHaveBeenCalled();
+	});
+
+	it("購読失敗でも呼び出し元のstateReadyが完了する", async () => {
+		const { result } = renderHook(() =>
+			useWorkspacePersistence({
+				selectedRootPath: "/repo",
+				centerTab: "editor",
+				leftNavVisible: true,
+				rightVisible: true,
+				setCenterTab: vi.fn(),
+				leftNavRef: { current: null },
+				rightPanelRef: { current: null },
+			}),
+		);
+		expect(result.current.stateReady).toBe(false);
+		await act(async () =>
+			states.fail(
+				{ kind: "workspace-state", args: ["repo", "/repo"] },
+				new Error("offline"),
+			),
+		);
+		expect(result.current.stateReady).toBe(true);
+		expect(states.subscribeState).toHaveBeenCalledTimes(1);
 	});
 });

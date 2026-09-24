@@ -21,7 +21,7 @@ impl AgentSessionHistoryQueryService for FixedHistoryQueryService {
                 label: "Claude claude-1…".to_string(),
                 updated_at_ms: 10,
             }],
-            next_after: None,
+            has_more: false,
         })
     }
 }
@@ -33,8 +33,7 @@ async fn test_agent_session_history_controller境界へusecaseとして公開す
     let page = usecase
         .list(AgentSessionHistoryRequest {
             worktree_path: "/repo/worktree".to_string(),
-            limit: 1,
-            after: None,
+            visible_count: 1,
         })
         .await
         .unwrap();

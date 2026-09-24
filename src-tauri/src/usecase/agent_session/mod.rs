@@ -41,7 +41,9 @@ pub(crate) use agent_session_query::{
 };
 #[cfg(test)]
 pub(crate) use agent_session_read::AgentSessionGarbageCollectionPort;
-pub(crate) use agent_session_read::{AgentSessionReadUsecase, AgentSessionReadUsecaseError};
+pub(crate) use agent_session_read::AgentSessionReadUsecase;
+#[cfg(test)]
+pub(crate) use agent_session_read::AgentSessionReadUsecaseError;
 pub(crate) use agent_session_rename::{
     AgentSessionRenameError, AgentSessionRenameExecutor, AgentSessionRenameUsecase,
 };

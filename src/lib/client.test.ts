@@ -9,7 +9,12 @@ import {
 	type TerminalSubscriptionEventSchema,
 } from "@/generated/client_pb";
 import { connectFixture } from "@/test/connect";
-import { invokeClient, onClientRefresh, subscribeState } from "./client";
+import {
+	firstState,
+	invokeClient,
+	onClientRefresh,
+	subscribeState,
+} from "./client";
 import * as clientProtocol from "./clientProtocol";
 import { getErrorMessage } from "./errorMessage";
 
@@ -22,14 +27,14 @@ afterEach(async () => {
 
 it("生成RPCで引数と結果を変換する", async () => {
 	const read = vi.fn(() => ({ value: "/repo" }));
-	const fixture = connectFixture({ getCwd: read });
-	await expect(invokeClient("get_cwd")).resolves.toEqual("/repo");
+	const fixture = connectFixture({ getExternalEditor: read });
+	await expect(invokeClient("get_external_editor")).resolves.toEqual("/repo");
 	expect(read).toHaveBeenCalledOnce();
 	expect(
 		fixture.requests.map((request) => new URL(request.url).pathname),
 	).toEqual([
 		"/releash.client.v1.ClientService/GetServerInfo",
-		"/releash.client.v1.ClientService/GetCwd",
+		"/releash.client.v1.ClientService/GetExternalEditor",
 	]);
 });
 
@@ -125,7 +130,7 @@ it("監視はpush一本を共有し切断後に再登録して解除時に停止
 		stopWatching,
 	});
 	const ready = vi.fn();
-	const stop = watchClient("start_watching", { path: "/repo" }, ready, vi.fn());
+	const stop = watchClient({ path: "/repo" }, ready, vi.fn());
 	await vi.waitFor(() => expect(ready).toHaveBeenCalledWith(1));
 	refreshClient();
 	await vi.waitFor(() => expect(ready).toHaveBeenCalledWith(2), {
@@ -155,7 +160,7 @@ it("監視登録中の解除は応答後に資源を停止する", async () => {
 	const stopped = vi.fn(() => ({}));
 	connectFixture({ watchFiles: registered, stopWatching: stopped });
 	const ready = vi.fn();
-	const stop = watchClient("start_watching", { path: "/repo" }, ready);
+	const stop = watchClient({ path: "/repo" }, ready);
 	await vi.waitFor(() => expect(registered).toHaveBeenCalledOnce());
 	stop();
 	complete();
@@ -163,9 +168,9 @@ it("監視登録中の解除は応答後に資源を停止する", async () => {
 	expect(ready).not.toHaveBeenCalled();
 });
 
-it.each(["start_watching", "start_git_dir_watching"] as const)(
+it.each(["start_watching"] as const)(
 	"%sは再購読時の上限超過後も枠が空けば同じ購読で監視を復旧する",
-	async (command) => {
+	async () => {
 		vi.useFakeTimers();
 		const { getClient, refreshClient, watchClient } = await import("./client");
 		let available = true;
@@ -179,17 +184,11 @@ it.each(["start_watching", "start_git_dir_watching"] as const)(
 		});
 		const fixture = connectFixture({
 			watchFiles: watch,
-			watchGitDirectory: watch,
 			stopWatching: () => ({}),
 		});
 		const ready = vi.fn();
 		const failed = vi.fn();
-		const stop = watchClient(
-			command,
-			command === "start_watching" ? { path: "/repo" } : { repoPath: "/repo" },
-			ready,
-			failed,
-		);
+		const stop = watchClient({ path: "/repo" }, ready, failed);
 		try {
 			await vi.waitFor(() => expect(ready).toHaveBeenCalledOnce());
 			available = false;
@@ -231,12 +230,7 @@ it.each(["stop", "pagehide", "reconnect"])(
 		});
 		connectFixture({ watchFiles: watch });
 		const failed = vi.fn();
-		const stop = watchClient(
-			"start_watching",
-			{ path: "/repo" },
-			vi.fn(),
-			failed,
-		);
+		const stop = watchClient({ path: "/repo" }, vi.fn(), failed);
 		try {
 			await vi.waitFor(() => expect(failed).toHaveBeenCalledOnce());
 			if (ending === "stop") stop();
@@ -421,7 +415,7 @@ it("旧世代の要求失敗が新接続と進行中の要求を破棄しない"
 		});
 		return { value: "/current" };
 	});
-	const fixture = connectFixture({ getCwd: read });
+	const fixture = connectFixture({ getExternalEditor: read });
 	const original = fixture.fetch.getMockImplementation();
 	if (!original) throw new Error("Missing fixture implementation");
 	let fail!: () => void;
@@ -439,7 +433,7 @@ it("旧世代の要求失敗が新接続と進行中の要求を破棄しない"
 	await vi.waitFor(() => expect(fail).toBeDefined());
 	refreshClient();
 	const current = await getClient();
-	const pending = invokeClient("get_cwd");
+	const pending = invokeClient("get_external_editor");
 	await vi.waitFor(() => expect(read).toHaveBeenCalledOnce());
 	fail();
 	expect(await old).toBeInstanceOf(ConnectError);
@@ -464,12 +458,14 @@ function commandError(
 it("実adapterがCommandError detailのcodeとmessageを保持する", async () => {
 	const { getClient } = await import("./client");
 	connectFixture({
-		getCwd: () => {
+		getExternalEditor: () => {
 			throw commandError("REPOSITORY_UNAVAILABLE", "Repository is unavailable");
 		},
 	});
 	const client = await getClient();
-	const error = await invokeClient("get_cwd").catch((error) => error);
+	const error = await invokeClient("get_external_editor").catch(
+		(error) => error,
+	);
 	expect(error).toStrictEqual({
 		code: "REPOSITORY_UNAVAILABLE",
 		message: "Repository is unavailable",
@@ -531,38 +527,33 @@ it.each([
 		throw new ConnectError("request rejected", code);
 	};
 	const fixture = connectFixture({
-		getCwd: read,
+		getExternalEditor: read,
 		updateExternalEditor: reject,
 		watchFiles: reject,
-		watchGitDirectory: reject,
 	});
 	const refreshed = vi.fn();
 	onClientRefresh(refreshed);
 	await vi.waitFor(() => expect(refreshed).toHaveBeenCalledOnce());
 	const client = await getClient();
-	const pending = invokeClient("get_cwd");
+	const pending = invokeClient("get_external_editor");
 	await vi.waitFor(() => expect(read).toHaveBeenCalledOnce());
 	const error = await invokeClient("update_external_editor", {
 		editor: "vim",
 	}).catch((error) => error);
 	expect(error).toBeInstanceOf(ConnectError);
 	expect(error).toMatchObject({ code, rawMessage: "request rejected" });
-	for (const command of ["start_watching", "start_git_dir_watching"] as const) {
+	{
 		const failed = vi.fn();
-		const stop = watchClient(
-			command,
-			command === "start_watching" ? { path: "/repo" } : { repoPath: "/repo" },
-			vi.fn(),
-			failed,
-		);
+		const stop = watchClient({ path: "/repo" }, vi.fn(), failed);
 		await vi.waitFor(() => expect(failed).toHaveBeenCalledOnce());
 		expect(failed.mock.calls[0][0]).toMatchObject({ code });
 		stop();
 	}
 	expect(await getClient()).toBe(client);
 	expect(
-		fixture.requests.find((request) => request.url.endsWith("/GetCwd"))?.signal
-			.aborted,
+		fixture.requests.find((request) =>
+			request.url.endsWith("/GetExternalEditor"),
+		)?.signal.aborted,
 	).toBe(false);
 	expect(
 		fixture.requests.find((request) => request.url.endsWith("/SubscribePush"))
@@ -780,7 +771,7 @@ it.each(["end", "failure"])(
 		});
 		const pushed = vi.fn();
 		await listenClient("review-comments-changed", pushed);
-		const stop = watchClient("start_watching", { path: "/repo" }, vi.fn());
+		const stop = watchClient({ path: "/repo" }, vi.fn());
 		await vi.waitFor(() => {
 			expect(observed).toEqual([false]);
 			expect(watch).toHaveBeenCalledOnce();
@@ -832,7 +823,7 @@ it("同じpushのpayloadは購読者が複数でも一度だけ復号する", as
 		const other = vi.fn();
 		await listenClient("review-comments-changed", first);
 		await listenClient("review-comments-changed", second);
-		await listenClient("branch-list-sync", other);
+		await listenClient("git-status-changed", other);
 		await vi.waitFor(() => expect(publish).toBeDefined());
 		publish();
 		await vi.waitFor(() => expect(second).toHaveBeenCalledOnce());
@@ -850,7 +841,7 @@ it("同じpushのpayloadは購読者が複数でも一度だけ復号する", as
 it("terminal共有購読の終了後に全attachmentを再同期しpushとunaryを維持する", async () => {
 	const { attachClientStream, getClient } = await import("./client");
 	const fixture = connectFixture({
-		getCwd: () => ({ value: "/current" }),
+		getExternalEditor: () => ({ value: "/current" }),
 		async *terminalOutput(request, context) {
 			yield {
 				item: {
@@ -904,7 +895,9 @@ it("terminal共有購読の終了後に全attachmentを再同期しpushとunary�
 		});
 	}
 	expect(await getClient()).toBe(client);
-	await expect(invokeClient("get_cwd")).resolves.toEqual("/current");
+	await expect(invokeClient("get_external_editor")).resolves.toEqual(
+		"/current",
+	);
 	expect(
 		fixture.requests.filter((request) =>
 			request.url.endsWith("/SubscribeTerminalSurfaces"),
@@ -1001,7 +994,7 @@ it("AbortSignal.anyが無くても初回RPCとstreamが開始し個別と接続�
 	const { getClient, refreshClient } = await import("./client");
 	const started = vi.fn();
 	const fixture = connectFixture({
-		async getCwd(_, context) {
+		async getExternalEditor(_, context) {
 			started();
 			await new Promise<void>((resolve) =>
 				context.signal.addEventListener("abort", () => resolve(), {
@@ -1018,7 +1011,7 @@ it("AbortSignal.anyが無くても初回RPCとstreamが開始し個別と接続�
 	await vi.waitFor(() => expect(refreshed).toHaveBeenCalledOnce());
 	const abort = new AbortController();
 	const pending = client
-		.getCwd({}, { signal: abort.signal })
+		.getExternalEditor({}, { signal: abort.signal })
 		.catch((error) => error);
 	await vi.waitFor(() => expect(started).toHaveBeenCalledOnce());
 	abort.abort();
@@ -1263,9 +1256,9 @@ it.each([false, true])(
 	},
 );
 
-it.each(["start_watching", "start_git_dir_watching"] as const)(
+it.each(["start_watching"] as const)(
 	"%sの再登録待ちに変わった状態をonReadyの後に再取得する",
-	async (command) => {
+	async () => {
 		const { watchClient, refreshClient, listenClient } = await import(
 			"./client"
 		);
@@ -1282,7 +1275,6 @@ it.each(["start_watching", "start_git_dir_watching"] as const)(
 		};
 		connectFixture({
 			watchFiles: watch,
-			watchGitDirectory: watch,
 			stopWatching: () => ({}),
 			getPerformanceTelemetryEnabled: () => ({ value }),
 			async *subscribePush(_, context) {
@@ -1317,13 +1309,9 @@ it.each(["start_watching", "start_git_dir_watching"] as const)(
 				observed.push({ watcherId: id, value }),
 			);
 		});
-		const stop = watchClient(
-			command,
-			command === "start_watching" ? { path: "/repo" } : { repoPath: "/repo" },
-			(id) => {
-				watcherId = id;
-			},
-		);
+		const stop = watchClient({ path: "/repo" }, (id) => {
+			watcherId = id;
+		});
 		await vi.waitFor(() => expect(watcherId).toBe(1));
 		observed.length = 0;
 		refreshClient();
@@ -1474,7 +1462,7 @@ it("新規watcher登録は購読全体へ再接続を通知しない", async () 
 	const off = onClientRefresh(refreshed);
 	await vi.waitFor(() => expect(refreshed).toHaveBeenCalledOnce());
 	const ready = vi.fn();
-	const stop = watchClient("start_watching", { path: "/repo" }, ready);
+	const stop = watchClient({ path: "/repo" }, ready);
 	await vi.waitFor(() => expect(ready).toHaveBeenCalledWith(1));
 	expect(refreshed).toHaveBeenCalledOnce();
 	stop();
@@ -1483,14 +1471,14 @@ it("新規watcher登録は購読全体へ再接続を通知しない", async () 
 
 type StateEvent = MessageInitShape<typeof StateSubscriptionEventSchema>;
 
-function stateFixture() {
+function stateFixture(start?: () => Promise<Record<string, never>>) {
 	const streams: {
 		send: (event: StateEvent) => void;
 		fail: () => void;
 		signal: AbortSignal;
 	}[] = [];
 	const starts: StartStateSubscriptionRequest[] = [];
-	const stops = vi.fn(() => ({}));
+	const stops = vi.fn((_request: { target: string }) => ({}));
 	connectFixture({
 		async *openStateStream(_, context) {
 			const queue: (StateEvent | Error)[] = [];
@@ -1522,7 +1510,7 @@ function stateFixture() {
 		},
 		startStateSubscription(request) {
 			starts.push(request);
-			return {};
+			return start?.() ?? {};
 		},
 		stopStateSubscription: stops,
 	});
@@ -1683,3 +1671,101 @@ it.each([false, true])(
 		expect(detach).toHaveBeenCalledOnce();
 	},
 );
+
+it("対象名と引数を別々に送り同じstreamで型付きの状態を届ける", async () => {
+	const fixture = stateFixture();
+	const received = vi.fn();
+	const other = vi.fn();
+	const release = subscribeState(
+		{ kind: "current-branch", args: ["/作業:repo"] },
+		received,
+	);
+	subscribeState({ kind: "providers", args: [] }, other);
+	await vi.waitFor(() => expect(fixture.starts).toHaveLength(2));
+	expect(fixture.streams).toHaveLength(1);
+	expect(fixture.starts[0].target).toBe("current-branch");
+	expect(fixture.starts[0].args).toEqual(["/作業:repo"]);
+	fixture.streams[0].send({
+		target: "current-branch",
+		args: ["/作業:repo"],
+		version: { epoch: "boot", sequence: 1n },
+		event: {
+			case: "snapshot",
+			value: { value: { case: "currentBranch", value: { value: "main" } } },
+		},
+	});
+	await vi.waitFor(() => expect(received).toHaveBeenCalledWith("main"));
+	expect(other).not.toHaveBeenCalled();
+	release();
+	await vi.waitFor(() =>
+		expect(fixture.stops).toHaveBeenCalledWith(
+			expect.objectContaining({
+				target: "current-branch",
+				args: ["/作業:repo"],
+			}),
+			expect.anything(),
+		),
+	);
+});
+
+it("解除した購読の遅延失敗を同じ対象の新しい購読へ渡さない", async () => {
+	let rejectStart: (error: unknown) => void = () => {};
+	const start = vi
+		.fn()
+		.mockImplementationOnce(
+			() =>
+				new Promise<Record<string, never>>((_, reject) => {
+					rejectStart = reject;
+				}),
+		)
+		.mockResolvedValue({});
+	const fixture = stateFixture(start);
+	const release = subscribeState("repository-paths", vi.fn());
+	subscribeState("providers", vi.fn());
+	await vi.waitFor(() => expect(fixture.starts).toHaveLength(2));
+	release();
+	const error = vi.fn();
+	subscribeState("repository-paths", vi.fn(), error);
+	rejectStart(new ConnectError("old start failed", Code.Unavailable));
+	await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(3));
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	expect(error).not.toHaveBeenCalled();
+});
+
+it("firstStateは最初の値だけで解決して購読を解放する", async () => {
+	const fixture = stateFixture();
+	subscribeState("providers", vi.fn());
+	const received = vi.fn();
+	const result = firstState("repository-paths").then(received);
+	await vi.waitFor(() => expect(fixture.starts).toHaveLength(2));
+	fixture.streams[0].send(repositoryPaths(0, ["/first"], "snapshot"));
+	fixture.streams[0].send(repositoryPaths(1, ["/second"]));
+	await result;
+	expect(received).toHaveBeenCalledExactlyOnceWith(["/first"]);
+	await vi.waitFor(() => expect(fixture.stops).toHaveBeenCalledOnce());
+	expect(fixture.stops.mock.calls[0][0]).toMatchObject({
+		target: "repository-paths",
+	});
+});
+
+it("firstStateは開始失敗を伝播して購読を解放する", async () => {
+	const fixture = stateFixture(async () => {
+		throw new ConnectError("missing", Code.NotFound);
+	});
+	const result = firstState("repository-paths");
+	await expect(result).rejects.toMatchObject({ code: Code.NotFound });
+	await vi.waitFor(() => expect(fixture.streams[0].signal.aborted).toBe(true));
+});
+
+it("firstStateは共有済みsnapshotの同期通知でも他の購読を残す", async () => {
+	const fixture = stateFixture();
+	const release = subscribeState("repository-paths", vi.fn());
+	await vi.waitFor(() => expect(fixture.starts).toHaveLength(1));
+	fixture.streams[0].send(repositoryPaths(0, ["/cached"], "snapshot"));
+	await vi.waitFor(async () =>
+		expect(await firstState("repository-paths")).toEqual(["/cached"]),
+	);
+	expect(fixture.stops).not.toHaveBeenCalled();
+	release();
+	await vi.waitFor(() => expect(fixture.streams[0].signal.aborted).toBe(true));
+});

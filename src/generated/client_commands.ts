@@ -13,7 +13,6 @@ import {
 	AckTerminalSurfaceOutputRequestSchema,
 	AddRepoPathRequestSchema,
 	AgentSessionArchiveResponseSchema,
-	AgentSessionHistoryPageDtoSchema,
 	AgentSessionOpenResponseSchema,
 	AppendReviewCommentRequestSchema,
 	ApplicationQuitOutcomeDtoV1Schema,
@@ -50,22 +49,14 @@ import {
 	DuplicateWorkflowRequestSchema,
 	FetchIssuesRequestSchema,
 	FetchNotionLabelOptionsRequestSchema,
-	FetchPrStatusRequestSchema,
 	FileNavigationResultDtoSchema,
-	GetAgentSessionRequestSchema,
 	GetApplicationStartupOutcomeRequestSchema,
 	GetAppSettingsRequestSchema,
 	GetAutomationConfigDirRequestSchema,
-	GetBranchBaseRequestSchema,
-	GetCachedIssuesRequestSchema,
-	GetCachedPrStatusRequestSchema,
-	GetCurrentBranchRequestSchema,
-	GetCwdRequestSchema,
 	GetExternalEditorRequestSchema,
 	GetFacetRequestSchema,
 	GetFileNavigationRequestSchema,
 	GetLanguageFromPathRequestSchema,
-	GetMainRepoPathRequestSchema,
 	GetNotionConfigRequestSchema,
 	GetOrSpawnTerminalSurfaceRequestSchema,
 	GetOrSpawnTerminalV1Schema,
@@ -79,25 +70,14 @@ import {
 	GetTerminalPerformanceSwitchesRequestSchema,
 	GetTerminalSurfaceRequestSchema,
 	GetWorkflowConfigRequestSchema,
-	GetWorkflowExecutionStateRequestSchema,
 	GetWorkflowRequestSchema,
 	GetWorkflowSourceRequestSchema,
-	GetWorkspaceNodeDetailRequestSchema,
-	GetWorkspaceSessionNodeIdRequestSchema,
-	GetWorkspacesRequestSchema,
-	GetWorkspaceTreeSelectionReconciliationRequestSchema,
 	GitCreateBranchRequestSchema,
 	GitStageRequestSchema,
 	GitStageReviewGroupRequestSchema,
 	GitUnstageRequestSchema,
 	GitUnstageReviewGroupRequestSchema,
 	KillTerminalSurfaceRequestSchema,
-	ListAgentSessionHistoryRequestSchema,
-	ListAgentSessionProviderDtoSchema,
-	ListAvailableAgentSessionProvidersRequestSchema,
-	ListBranchDtoSchema,
-	ListBranchesRequestSchema,
-	ListBranchesWithStatusSnapshotRequestSchema,
 	ListDiffRangeDtoSchema,
 	ListDiffTreeNodeDtoSchema,
 	ListEditorInfoDtoSchema,
@@ -105,7 +85,6 @@ import {
 	ListFacetSummaryDtoSchema,
 	ListHiddenRangeDtoSchema,
 	ListInlineChunkDtoSchema,
-	ListIssueInfoDtoSchema,
 	ListNotionLabelOptionViewSchema,
 	ListProviderHookHealthWarningResponseSchema,
 	ListProviderHookHealthWarningsRequestSchema,
@@ -117,27 +96,16 @@ import {
 	ListVisibleBlockDtoSchema,
 	ListWorkflowSummaryDtoSchema,
 	ListWorkflowsRequestSchema,
-	ListWorkspaceWorkflowHistoryItemDtoSchema,
-	ListWorkspaceWorkflowHistoryRequestSchema,
-	ListWorkspaceWorktreeNodesRequestSchema,
-	ListWorktreeEntryDtoSchema,
-	ListWorktreesRequestSchema,
-	LoadWorkspaceStateRequestSchema,
 	NotionTaskPageViewSchema,
 	NotionValidationResultViewSchema,
-	NullableAgentSessionItemDtoSchema,
 	NullableNotionRepoConfigViewSchema,
 	NullablestringSchema,
-	NullableWorkflowExecutionViewSchema,
-	NullableWorkspaceNodeDetailDtoSchema,
-	NullableWorkspaceStateDtoSchema,
 	OpenAgentSessionRequestSchema,
 	OpenFacetInEditorRequestSchema,
 	OpenFolderInEditorRequestSchema,
 	OpenInEditorRequestSchema,
 	OpenWorkflowInEditorRequestSchema,
 	ProviderAvailabilitySnapshotResponseSchema,
-	PrStatusDtoSchema,
 	QueryNotionTasksRequestSchema,
 	QuitAfterStartupFailureRequestSchema,
 	RecordTerminalLaunchRendererPhaseRequestSchema,
@@ -150,11 +118,9 @@ import {
 	ReportFrontendErrorRequestSchema,
 	ReportMountedXtermCountRequestSchema,
 	ReportUsageEventRequestSchema,
-	RepositoryBranchCardsSnapshotDtoSchema,
 	RequestApplicationQuitRequestSchema,
 	ResetProviderExecutableRequestSchema,
 	ResizeTerminalSurfaceRequestSchema,
-	ResolveActiveExecutionByWorktreeRequestSchema,
 	ResolveReviewThreadRequestSchema,
 	RestoreAgentSessionRequestSchema,
 	RestoreWorkspaceWorkflowExecutionRequestSchema,
@@ -198,9 +164,6 @@ import {
 	WorkflowSubmitOutputRequestSchema,
 	WorkflowValidateOutputRequestSchema,
 	WorkflowValidateOutputResponseSchema,
-	WorkspaceListSnapshotDtoSchema,
-	WorkspaceTreeSelectionSnapshotDtoSchema,
-	WorkspaceTreeSnapshotDtoSchema,
 	WorktreeEntryDtoSchema,
 	WritePathsToTerminalSurfaceRequestSchema,
 	WriteTerminalSurfaceRequestSchema,
@@ -747,7 +710,7 @@ const commands = {
 		args: ClientCommandArgs["fetch_issues"],
 	) => {
 		const result = decode(
-			ListIssueInfoDtoSchema,
+			UnitSchema,
 			await client.fetchIssues(
 				fromJson(
 					FetchIssuesRequestSchema,
@@ -772,25 +735,6 @@ const commands = {
 					FetchNotionLabelOptionsRequestSchema,
 					clientJson(
 						FetchNotionLabelOptionsRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	get_agent_session: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_agent_session"],
-	) => {
-		const result = decode(
-			NullableAgentSessionItemDtoSchema,
-			await client.getAgentSession(
-				fromJson(
-					GetAgentSessionRequestSchema,
-					clientJson(
-						GetAgentSessionRequestSchema,
 						JSON.parse(JSON.stringify(args ?? {})),
 						true,
 					),
@@ -848,101 +792,6 @@ const commands = {
 					GetAutomationConfigDirRequestSchema,
 					clientJson(
 						GetAutomationConfigDirRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	get_branch_base: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_branch_base"],
-	) => {
-		const result = decode(
-			NullablestringSchema,
-			await client.getBranchBase(
-				fromJson(
-					GetBranchBaseRequestSchema,
-					clientJson(
-						GetBranchBaseRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	get_cached_issues: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_cached_issues"],
-	) => {
-		const result = decode(
-			ListIssueInfoDtoSchema,
-			await client.getCachedIssues(
-				fromJson(
-					GetCachedIssuesRequestSchema,
-					clientJson(
-						GetCachedIssuesRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	get_cached_pr_status: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_cached_pr_status"],
-	) => {
-		const result = decode(
-			PrStatusDtoSchema,
-			await client.getCachedPrStatus(
-				fromJson(
-					GetCachedPrStatusRequestSchema,
-					clientJson(
-						GetCachedPrStatusRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	get_current_branch: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_current_branch"],
-	) => {
-		const result = decode(
-			ResultStringSchema,
-			await client.getCurrentBranch(
-				fromJson(
-					GetCurrentBranchRequestSchema,
-					clientJson(
-						GetCurrentBranchRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	get_cwd: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_cwd"],
-	) => {
-		const result = decode(
-			ResultStringSchema,
-			await client.getCwd(
-				fromJson(
-					GetCwdRequestSchema,
-					clientJson(
-						GetCwdRequestSchema,
 						JSON.parse(JSON.stringify(args ?? {})),
 						true,
 					),
@@ -1019,25 +868,6 @@ const commands = {
 					GetLanguageFromPathRequestSchema,
 					clientJson(
 						GetLanguageFromPathRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	get_main_repo_path: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_main_repo_path"],
-	) => {
-		const result = decode(
-			ResultStringSchema,
-			await client.getMainRepoPath(
-				fromJson(
-					GetMainRepoPathRequestSchema,
-					clientJson(
-						GetMainRepoPathRequestSchema,
 						JSON.parse(JSON.stringify(args ?? {})),
 						true,
 					),
@@ -1274,25 +1104,6 @@ const commands = {
 		);
 		return result;
 	},
-	get_workflow_execution_state: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_workflow_execution_state"],
-	) => {
-		const result = decode(
-			NullableWorkflowExecutionViewSchema,
-			await client.getWorkflowExecutionState(
-				fromJson(
-					GetWorkflowExecutionStateRequestSchema,
-					clientJson(
-						GetWorkflowExecutionStateRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
 	get_workflow_source: async (
 		client: Client<typeof ClientService>,
 		args: ClientCommandArgs["get_workflow_source"],
@@ -1304,63 +1115,6 @@ const commands = {
 					GetWorkflowSourceRequestSchema,
 					clientJson(
 						GetWorkflowSourceRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	get_workspace_node_detail: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_workspace_node_detail"],
-	) => {
-		const result = decode(
-			NullableWorkspaceNodeDetailDtoSchema,
-			await client.getWorkspaceNodeDetail(
-				fromJson(
-					GetWorkspaceNodeDetailRequestSchema,
-					clientJson(
-						GetWorkspaceNodeDetailRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	get_workspace_session_node_id: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_workspace_session_node_id"],
-	) => {
-		const result = decode(
-			NullablestringSchema,
-			await client.getWorkspaceSessionNodeId(
-				fromJson(
-					GetWorkspaceSessionNodeIdRequestSchema,
-					clientJson(
-						GetWorkspaceSessionNodeIdRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	get_workspace_tree_selection_reconciliation: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_workspace_tree_selection_reconciliation"],
-	) => {
-		const result = decode(
-			WorkspaceTreeSelectionSnapshotDtoSchema,
-			await client.getWorkspaceTreeSelectionReconciliation(
-				fromJson(
-					GetWorkspaceTreeSelectionReconciliationRequestSchema,
-					clientJson(
-						GetWorkspaceTreeSelectionReconciliationRequestSchema,
 						JSON.parse(JSON.stringify(args ?? {})),
 						true,
 					),
@@ -1483,82 +1237,6 @@ const commands = {
 		);
 		return result;
 	},
-	list_agent_session_history: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["list_agent_session_history"],
-	) => {
-		const result = decode(
-			AgentSessionHistoryPageDtoSchema,
-			await client.listAgentSessionHistory(
-				fromJson(
-					ListAgentSessionHistoryRequestSchema,
-					clientJson(
-						ListAgentSessionHistoryRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	list_available_agent_session_providers: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["list_available_agent_session_providers"],
-	) => {
-		const result = decode(
-			ListAgentSessionProviderDtoSchema,
-			await client.listAvailableAgentSessionProviders(
-				fromJson(
-					ListAvailableAgentSessionProvidersRequestSchema,
-					clientJson(
-						ListAvailableAgentSessionProvidersRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	list_branches: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["list_branches"],
-	) => {
-		const result = decode(
-			ListBranchDtoSchema,
-			await client.listBranches(
-				fromJson(
-					ListBranchesRequestSchema,
-					clientJson(
-						ListBranchesRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	list_branches_with_status_snapshot: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["list_branches_with_status_snapshot"],
-	) => {
-		const result = decode(
-			RepositoryBranchCardsSnapshotDtoSchema,
-			await client.listBranchesWithStatusSnapshot(
-				fromJson(
-					ListBranchesWithStatusSnapshotRequestSchema,
-					clientJson(
-						ListBranchesWithStatusSnapshotRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
 	list_facet_summaries: async (
 		client: Client<typeof ClientService>,
 		args: ClientCommandArgs["list_facet_summaries"],
@@ -1627,82 +1305,6 @@ const commands = {
 					ListWorkflowsRequestSchema,
 					clientJson(
 						ListWorkflowsRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	list_workspace_workflow_history: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["list_workspace_workflow_history"],
-	) => {
-		const result = decode(
-			ListWorkspaceWorkflowHistoryItemDtoSchema,
-			await client.listWorkspaceWorkflowHistory(
-				fromJson(
-					ListWorkspaceWorkflowHistoryRequestSchema,
-					clientJson(
-						ListWorkspaceWorkflowHistoryRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	list_workspace_worktree_nodes: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["list_workspace_worktree_nodes"],
-	) => {
-		const result = decode(
-			WorkspaceTreeSnapshotDtoSchema,
-			await client.listWorkspaceWorktreeNodes(
-				fromJson(
-					ListWorkspaceWorktreeNodesRequestSchema,
-					clientJson(
-						ListWorkspaceWorktreeNodesRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	list_worktrees: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["list_worktrees"],
-	) => {
-		const result = decode(
-			ListWorktreeEntryDtoSchema,
-			await client.listWorktrees(
-				fromJson(
-					ListWorktreesRequestSchema,
-					clientJson(
-						ListWorktreesRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	load_workspace_state: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["load_workspace_state"],
-	) => {
-		const result = decode(
-			NullableWorkspaceStateDtoSchema,
-			await client.loadWorkspaceState(
-				fromJson(
-					LoadWorkspaceStateRequestSchema,
-					clientJson(
-						LoadWorkspaceStateRequestSchema,
 						JSON.parse(JSON.stringify(args ?? {})),
 						true,
 					),
@@ -2064,25 +1666,6 @@ const commands = {
 					ResizeTerminalSurfaceRequestSchema,
 					clientJson(
 						ResizeTerminalSurfaceRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	resolve_active_execution_by_worktree: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["resolve_active_execution_by_worktree"],
-	) => {
-		const result = decode(
-			NullablestringSchema,
-			await client.resolveActiveExecutionByWorktree(
-				fromJson(
-					ResolveActiveExecutionByWorktreeRequestSchema,
-					clientJson(
-						ResolveActiveExecutionByWorktreeRequestSchema,
 						JSON.parse(JSON.stringify(args ?? {})),
 						true,
 					),
@@ -2661,25 +2244,6 @@ const commands = {
 		);
 		return result;
 	},
-	fetch_pr_status: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["fetch_pr_status"],
-	) => {
-		const result = decode(
-			PrStatusDtoSchema,
-			await client.fetchPrStatus(
-				fromJson(
-					FetchPrStatusRequestSchema,
-					clientJson(
-						FetchPrStatusRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
 	approve_workflow_node: async (
 		client: Client<typeof ClientService>,
 		args: ClientCommandArgs["approve_workflow_node"],
@@ -2761,31 +2325,12 @@ const commands = {
 		args: ClientCommandArgs["refresh_workspaces"],
 	) => {
 		const result = decode(
-			WorkspaceListSnapshotDtoSchema,
+			UnitSchema,
 			await client.refreshWorkspaces(
 				fromJson(
 					RefreshWorkspacesRequestSchema,
 					clientJson(
 						RefreshWorkspacesRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	get_workspaces: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_workspaces"],
-	) => {
-		const result = decode(
-			WorkspaceListSnapshotDtoSchema,
-			await client.getWorkspaces(
-				fromJson(
-					GetWorkspacesRequestSchema,
-					clientJson(
-						GetWorkspacesRequestSchema,
 						JSON.parse(JSON.stringify(args ?? {})),
 						true,
 					),

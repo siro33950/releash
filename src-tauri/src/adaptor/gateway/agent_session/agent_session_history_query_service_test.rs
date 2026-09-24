@@ -123,8 +123,7 @@ async fn test_agent_session_history_query_metadataだけを並べ管理中idを�
     let page = query
         .list(AgentSessionHistoryRequest {
             worktree_path: "/repo/worktree".to_string(),
-            limit: 3,
-            after: None,
+            visible_count: 3,
         })
         .await
         .unwrap();
@@ -160,7 +159,7 @@ async fn test_agent_session_history_query_metadataだけを並べ管理中idを�
             ),
         ]
     );
-    assert!(page.next_after.is_some());
+    assert!(page.has_more);
     assert_eq!(
         history.title_requests.lock().unwrap().as_slice(),
         &[
@@ -174,7 +173,7 @@ async fn test_agent_session_history_query_metadataだけを並べ管理中idを�
 }
 
 #[tokio::test]
-async fn test_agent_session_history_query_cursorで次pageをboundedに返す() {
+async fn test_agent_session_history_query_表示件数を増やすと先頭から指定件数を返す() {
     let query = LocalAgentSessionHistoryQueryService::new(
         Arc::new(FixedHistoryGateway {
             entries: vec![
@@ -193,23 +192,23 @@ async fn test_agent_session_history_query_cursorで次pageをboundedに返す() 
     let first = query
         .list(AgentSessionHistoryRequest {
             worktree_path: "/repo/worktree".to_string(),
-            limit: 2,
-            after: None,
+            visible_count: 2,
         })
         .await
         .unwrap();
     let second = query
         .list(AgentSessionHistoryRequest {
             worktree_path: "/repo/worktree".to_string(),
-            limit: 2,
-            after: first.next_after,
+            visible_count: 3,
         })
         .await
         .unwrap();
 
-    assert_eq!(second.items.len(), 1);
-    assert_eq!(second.items[0].provider_session_id, "claude-1");
-    assert!(second.next_after.is_none());
+    assert_eq!(first.items.len(), 2);
+    assert!(first.has_more);
+    assert_eq!(second.items.len(), 3);
+    assert_eq!(second.items[2].provider_session_id, "claude-1");
+    assert!(!second.has_more);
 }
 
 fn metadata(
@@ -222,5 +221,38 @@ fn metadata(
         provider_session_id: provider_session_id.to_string(),
         worktree_path: "/repo/worktree".to_string(),
         updated_at_ms,
+    }
+}
+
+#[tokio::test]
+async fn test_履歴表示件数_百件を超えて全providerの既存走査範囲へ到達できる() {
+    let entries = ProviderKind::supported()
+        .iter()
+        .flat_map(|provider| {
+            (0..201).map(move |index| metadata(*provider, &format!("session-{index}"), index))
+        })
+        .collect();
+    let history = Arc::new(FixedHistoryGateway {
+        entries,
+        titles: HashMap::new(),
+        prompts: HashMap::new(),
+        title_requests: Mutex::new(vec![]),
+    });
+    let query = LocalAgentSessionHistoryQueryService::new(
+        history.clone(),
+        Arc::new(FixedOwnershipQuery {
+            owned: HashSet::new(),
+        }),
+    );
+    for count in [100, 120, 402, 420, usize::MAX] {
+        let page = query
+            .list(AgentSessionHistoryRequest {
+                worktree_path: "/repo/worktree".into(),
+                visible_count: count,
+            })
+            .await
+            .unwrap();
+        assert_eq!(page.items.len(), count.min(402));
+        assert_eq!(page.has_more, count < 402);
     }
 }

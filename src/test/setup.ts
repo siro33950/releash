@@ -81,9 +81,31 @@ vi.mock("@/lib/client", async (importOriginal) => {
 		watchClient: mockWatchClient(invokeClient),
 		onClientRefresh: vi.fn().mockReturnValue(() => {}),
 		listenClient: vi.fn().mockResolvedValue(() => {}),
-		subscribeState: vi.fn((_target: string, onValue: (value: []) => void) => {
-			onValue([]);
-			return () => {};
-		}),
+		firstState: vi.fn().mockRejectedValue(new Error("No state fixture")),
+		subscribeState: vi.fn(
+			(
+				target: string | { kind: string },
+				onValue: (value: unknown) => void,
+			) => {
+				const name = typeof target === "string" ? target : target.kind;
+				if (
+					[
+						"repository-paths",
+						"branches",
+						"providers",
+						"issues",
+						"worktrees",
+					].includes(name)
+				)
+					onValue([]);
+				else if (name === "session-history")
+					onValue({ items: [], hasMore: false });
+				else if (
+					["workspace-state", "agent-session", "node-detail"].includes(name)
+				)
+					onValue(null);
+				return () => {};
+			},
+		),
 	};
 });

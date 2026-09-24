@@ -158,7 +158,10 @@ fn test_スキャン完了通知_gitとbranchとfileのみclientへ送る() {
     // Given
     let sink = Arc::new(PushSink::new());
     let mut receiver = sink.subscribe();
-    let notifier = ClientRepositoryStateNotifier::new(sink);
+    let notifier = ClientRepositoryStateNotifier::new(
+        sink,
+        crate::usecase::state_subscription::StateSubscriptionPublisher::for_test(),
+    );
 
     // When
     notifier.snapshot_changed(SnapshotNotification {
@@ -178,7 +181,6 @@ fn test_スキャン完了通知_gitとbranchとfileのみclientへ送る() {
             wire::push::Event::GitStatusChanged(wire::GitStatusChangedEvent {
                 repo_path: Some("/repo".into()),
             }),
-            wire::push::Event::BranchListSync(wire::Unit {}),
             wire::push::Event::FileChange(wire::FileChangeEvent {
                 watcher_id: Some(7),
                 path: Some("/repo/file.txt".into()),

@@ -1,7 +1,5 @@
 use crate::adaptor::controller::api::protocol::client as wire;
-use crate::usecase::{
-    application_startup::ApplicationStartupAuthority, repository_usecase::RepositoryUsecase,
-};
+use crate::usecase::application_startup::ApplicationStartupAuthority;
 use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
 
 pub(crate) type CommandHandler = Box<
@@ -16,40 +14,33 @@ pub(crate) type CommandHandler = Box<
         + Sync,
 >;
 
+#[cfg(test)]
+#[path = "dispatch_test.rs"]
+mod tests;
+
 pub(crate) struct ClientCommandDispatch {
     handlers: HashMap<&'static str, CommandHandler>,
     authority: Arc<ApplicationStartupAuthority>,
+    pub(super) publisher: Option<crate::usecase::state_subscription::StateSubscriptionPublisher>,
     mutations: Option<Arc<crate::usecase::workflow::WorkflowRuntimeUsecase>>,
 }
 
 impl ClientCommandDispatch {
-    pub(crate) fn new(
-        repository: Arc<RepositoryUsecase>,
-        authority: Arc<ApplicationStartupAuthority>,
-    ) -> Self {
-        let mut dispatch = Self {
+    pub(crate) fn new(authority: Arc<ApplicationStartupAuthority>) -> Self {
+        Self {
             handlers: HashMap::new(),
             mutations: None,
             authority,
-        };
-        dispatch.register_domain(
-            &["get_current_branch"],
-            Box::new(move |command| {
-                let repository = repository.clone();
-                Box::pin(async move {
-                    let wire::command_request::Command::GetCurrentBranch(args) = command else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let path = required(args.repo_path, "repoPath")?;
-                    let result = super::repository::run_blocking(move || {
-                        repository.get_current_branch(&path)
-                    })
-                    .await;
-                    outcome(result).map(wire::command_result::Command::GetCurrentBranch)
-                })
-            }),
-        );
-        dispatch
+            publisher: None,
+        }
+    }
+
+    pub(crate) fn with_state_publisher(
+        mut self,
+        publisher: crate::usecase::state_subscription::StateSubscriptionPublisher,
+    ) -> Self {
+        self.publisher = Some(publisher);
+        self
     }
 
     pub(crate) fn register_dependencies(&mut self, deps: &super::ClientDependencies) {

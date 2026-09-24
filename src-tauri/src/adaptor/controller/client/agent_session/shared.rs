@@ -1,7 +1,7 @@
 use super::*;
 use crate::adaptor::controller::api::protocol::client as wire;
 use crate::adaptor::controller::client::ClientCommandDispatch;
-use crate::adaptor::controller::client::{convert, optional, required};
+use crate::adaptor::controller::client::{convert, required};
 use crate::adaptor::controller::client::{invalid_request, outcome};
 
 pub(crate) fn register_shared(
@@ -97,33 +97,6 @@ pub(crate) fn register_shared(
         );
     }
     {
-        let read = deps.agent_session_read_usecase.clone();
-        router.register_domain(
-            &["get_agent_session"],
-            Box::new(move |command| {
-                let read = read.clone();
-                Box::pin(async move {
-                    let wire::command_request::Command::GetAgentSession(args) = command else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move {
-                        let read =
-                            read.ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        outcome(
-                            provider_tui::get_agent_session_shared(
-                                &read,
-                                convert(required(args.agent_session_id, "agentSessionId")?)?,
-                            )
-                            .await,
-                        )
-                    }
-                    .await?;
-                    Ok(wire::command_result::Command::GetAgentSession(result))
-                })
-            }),
-        );
-    }
-    {
         let availability = deps.provider_availability_usecase.clone();
         router.register_domain(
             &["get_provider_availability"],
@@ -145,63 +118,6 @@ pub(crate) fn register_shared(
                     Ok(wire::command_result::Command::GetProviderAvailability(
                         result,
                     ))
-                })
-            }),
-        );
-    }
-    {
-        let query = deps.agent_session_history_read_usecase.clone();
-        router.register_domain(
-            &["list_agent_session_history"],
-            Box::new(move |command| {
-                let query = query.clone();
-                Box::pin(async move {
-                    let wire::command_request::Command::ListAgentSessionHistory(args) = command
-                    else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move {
-                        let query = query
-                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        outcome(
-                            provider_tui::list_agent_session_history_shared(
-                                &query,
-                                convert(required(args.worktree_path, "worktreePath")?)?,
-                                optional(args.limit)?,
-                                optional(args.after)?,
-                            )
-                            .await,
-                        )
-                    }
-                    .await?;
-                    Ok(wire::command_result::Command::ListAgentSessionHistory(
-                        result,
-                    ))
-                })
-            }),
-        );
-    }
-    {
-        let availability = deps.provider_availability_usecase.clone();
-        router.register_domain(
-            &["list_available_agent_session_providers"],
-            Box::new(move |command| {
-                let availability = availability.clone();
-                Box::pin(async move {
-                    let wire::command_request::Command::ListAvailableAgentSessionProviders(_args) =
-                        command
-                    else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move {
-                        let availability = availability
-                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        outcome(provider_tui::list_available_agent_session_providers_shared(
-                            &availability,
-                        ))
-                    }
-                    .await?;
-                    Ok(wire::command_result::Command::ListAvailableAgentSessionProviders(result))
                 })
             }),
         );
