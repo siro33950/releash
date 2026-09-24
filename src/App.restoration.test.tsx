@@ -3,7 +3,11 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { WorkspaceListModel } from "@/hooks/useWorkspaceList";
-import { completeClientRestoration, invokeClient } from "@/lib/client";
+import {
+	completeClientRestoration,
+	invokeClient,
+	subscribeState,
+} from "@/lib/client";
 import { workspaceListSnapshot } from "@/test/workspaceList";
 import type { AppSettings } from "@/types/settings";
 import App from "./App";
@@ -14,6 +18,7 @@ vi.mock("@/lib/client", async (importOriginal) => ({
 	listenClient: vi.fn().mockResolvedValue(() => {}),
 	watchClient: vi.fn().mockReturnValue(() => {}),
 	completeClientRestoration: vi.fn(),
+	subscribeState: vi.fn(),
 }));
 vi.mock("@/hooks/useMenuEvents", () => ({ useMenuEvents: vi.fn() }));
 vi.mock("@/hooks/useUpdateChecker", () => ({ useUpdateChecker: () => null }));
@@ -90,6 +95,10 @@ beforeEach(() => {
 	vi.useFakeTimers();
 	vi.clearAllMocks();
 	localStorage.clear();
+	vi.mocked(subscribeState).mockImplementation((_target, onValue) => {
+		onValue([]);
+		return () => {};
+	});
 	status = {
 		phase: "restoring",
 		connectionGeneration: 1,
@@ -98,11 +107,6 @@ beforeEach(() => {
 		reason: null,
 	};
 	vi.mocked(invoke).mockImplementation(async (command, args) => {
-		if (command === "subscribe_client_state") {
-			(
-				args as { channel: { onmessage: (paths: string[]) => void } }
-			).channel.onmessage([]);
-		}
 		if (command === "get_application_startup_outcome") return { type: "ready" };
 		if (command === "get_daemon_status") return { ...status };
 		if (command === "fail_desktop_restoration") {
@@ -261,13 +265,11 @@ it("設定とWorkspacesは更新中と失敗時も同じ登録一覧を保持し
 		name: "Registered repositories",
 	});
 	const subscription = vi
-		.mocked(invoke)
-		.mock.calls.find(([name]) => name === "subscribe_client_state");
+		.mocked(subscribeState)
+		.mock.calls.find(([target]) => target === "repository-paths");
 	if (!subscription) throw new Error("Missing state subscription");
-	const channel = (
-		subscription[1] as { channel: { onmessage: (paths: string[]) => void } }
-	).channel;
-	await act(async () => channel.onmessage(["/old"]));
+	const receive = subscription[1];
+	await act(async () => receive(["/old"]));
 	expect(settings).toHaveTextContent("/old");
 	let reject!: (error: Error) => void;
 	next = new Promise((_, fail) => {
@@ -284,13 +286,13 @@ it("設定とWorkspacesは更新中と失敗時も同じ登録一覧を保持し
 	expect(settings).toHaveTextContent("/old");
 	expect(screen.getByRole("button", { name: "/old" })).toBeVisible();
 	next = Promise.resolve(snapshot(["/new", "/other"]));
-	await act(async () => channel.onmessage(["/new", "/other"]));
+	await act(async () => receive(["/new", "/other"]));
 	expect(settings).toHaveTextContent("/new,/other");
 	expect(screen.getByRole("button", { name: "/new" })).toBeVisible();
 	expect(screen.getByRole("button", { name: "/other" })).toBeVisible();
 	expect(screen.queryByRole("button", { name: "/old" })).toBeNull();
 	next = Promise.resolve(snapshot([]));
-	await act(async () => channel.onmessage([]));
+	await act(async () => receive([]));
 	expect(settings).toBeEmptyDOMElement();
 	expect(screen.queryByRole("button", { name: "/new" })).toBeNull();
 	expect(

@@ -10,11 +10,6 @@ pub(crate) const REPO_PATHS: &str = "repository-paths";
 pub(crate) const BOOKMARK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
 
 pub(crate) trait SubscriptionTimer: Send + Sync {
-    #[cfg(feature = "desktop")]
-    fn sleep(
-        &self,
-        duration: std::time::Duration,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>>;
     fn interval(
         &self,
         duration: std::time::Duration,

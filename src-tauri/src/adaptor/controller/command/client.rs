@@ -5,8 +5,6 @@ pub(crate) const COMMAND_NAMES: &[&str] = &[
     "fail_desktop_restoration",
     "apply_desktop_settings",
     "get_client_endpoint",
-    "subscribe_client_state",
-    "stop_client_state",
 ];
 
 pub(crate) fn register<R: tauri::Runtime>(router: &mut CommandRouter<super::InvokeHandler<R>>) {
@@ -16,9 +14,7 @@ pub(crate) fn register<R: tauri::Runtime>(router: &mut CommandRouter<super::Invo
             complete_desktop_restoration,
             fail_desktop_restoration,
             apply_desktop_settings,
-            get_client_endpoint,
-            subscribe_client_state,
-            stop_client_state
+            get_client_endpoint
         ]),
     );
 }
@@ -87,31 +83,4 @@ fn fail_desktop_restoration(
     reason: String,
 ) {
     supervisor.fail_restoration(generation, reason);
-}
-
-#[tauri::command]
-fn subscribe_client_state(
-    state: tauri::State<'_, crate::usecase::state_client::StateClientUsecase>,
-    id: String,
-    target: String,
-    channel: tauri::ipc::Channel<Vec<String>>,
-) {
-    state.start(
-        id,
-        target,
-        std::sync::Arc::new(move |value| {
-            let crate::domain::state_subscription::StateValue::RepositoryPaths(paths) = value;
-            channel.send(paths).map_err(|error| {
-                crate::domain::state_subscription::connection::StateClientError(error.to_string())
-            })
-        }),
-    );
-}
-
-#[tauri::command]
-fn stop_client_state(
-    state: tauri::State<'_, crate::usecase::state_client::StateClientUsecase>,
-    id: String,
-) {
-    state.stop(&id);
 }

@@ -1,6 +1,3 @@
-#[cfg(feature = "desktop")]
-pub(crate) mod connection;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum StateValue {
     RepositoryPaths(Vec<String>),
@@ -278,6 +275,3 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
 #[cfg(test)]
 #[path = "subscriptions_test.rs"]
 mod subscriptions_tests;
-
-#[cfg(feature = "desktop")]
-pub(crate) mod client;

@@ -1,38 +1,34 @@
-import { invoke as invokeDesktop } from "@tauri-apps/api/core";
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useRepoList } from "./useRepoList";
 
 const mockInvoke = vi.fn();
 const mockListen = vi.fn();
+const mockSubscribe = vi.fn();
 vi.mock("@/lib/client", () => ({
 	invokeClient: (...args: unknown[]) => mockInvoke(...args),
 	listenClient: (...args: unknown[]) => mockListen(...args),
+	subscribeState: (...args: unknown[]) => mockSubscribe(...args),
 }));
 
 describe("useRepoList", () => {
+	const unsubscribe = vi.fn();
 	beforeEach(() => {
 		vi.clearAllMocks();
 		mockInvoke.mockResolvedValue(undefined);
+		mockSubscribe.mockReturnValue(unsubscribe);
 	});
-	it("購読の一覧を表示し終了時に停止する", async () => {
+	it("購読の一覧を表示し終了時に停止する", () => {
 		const { result, unmount } = renderHook(() => useRepoList());
-		const call = vi
-			.mocked(invokeDesktop)
-			.mock.calls.find(([name]) => name === "subscribe_client_state");
-		const args = call?.[1] as {
-			id: string;
-			target: string;
-			channel: { onmessage: (paths: string[]) => void };
-		};
-		expect(args.target).toBe("repository-paths");
-		act(() => args.channel.onmessage(["/repo"]));
+		const [target, receive] = mockSubscribe.mock.calls[0] as [
+			string,
+			(paths: string[]) => void,
+		];
+		expect(target).toBe("repository-paths");
+		act(() => receive(["/repo"]));
 		expect(result.current.repoPaths).toEqual(["/repo"]);
 		unmount();
-		await act(async () => {});
-		expect(invokeDesktop).toHaveBeenCalledWith("stop_client_state", {
-			id: args.id,
-		});
+		expect(unsubscribe).toHaveBeenCalledOnce();
 		expect(mockInvoke).not.toHaveBeenCalled();
 		expect(mockListen).not.toHaveBeenCalled();
 	});

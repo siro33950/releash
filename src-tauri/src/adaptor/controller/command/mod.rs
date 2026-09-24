@@ -31,9 +31,7 @@ fn shell_operation(command: &str) -> crate::domain::daemon_supervision::ShellOpe
         | "get_client_endpoint"
         | "fail_desktop_restoration"
         | "complete_desktop_restoration" => ShellOperation::Supervision,
-        "get_login_item_status" | "subscribe_client_state" | "stop_client_state" => {
-            ShellOperation::RestoreState
-        }
+        "get_login_item_status" => ShellOperation::RestoreState,
         "apply_desktop_settings" => ShellOperation::ApplySettings,
         _ => ShellOperation::Normal,
     }
@@ -122,17 +120,6 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use tauri::Manager;
-
-    #[test]
-    fn test_状態購読_復元中に開始と停止を受け付ける() {
-        // Given / When / Then
-        for command in ["subscribe_client_state", "stop_client_state"] {
-            assert_eq!(
-                shell_operation(command),
-                crate::domain::daemon_supervision::ShellOperation::RestoreState
-            );
-        }
-    }
 
     fn dummy_handler() -> InvokeHandler {
         Box::new(|_invoke| true)

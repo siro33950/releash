@@ -4,7 +4,7 @@ import { clientJson } from "../../src/lib/clientJson";
 import { create, fromJson, toJson, type Message } from "@bufbuild/protobuf";
 import { Code, ConnectError, createConnectRouter } from "@connectrpc/connect";
 import { createFetchHandler } from "@connectrpc/connect/protocol";
-import { ClientService, CommandRequestSchema, CommandErrorSchema, PushSchema, TerminalEventSchema, TerminalSubscriptionEventSchema, AttachTerminalSurfaceRequestSchema } from "../../src/generated/client_pb";
+import { ClientService, CommandRequestSchema, CommandErrorSchema, PushSchema, StateSubscriptionEventSchema, TerminalEventSchema, TerminalSubscriptionEventSchema, AttachTerminalSurfaceRequestSchema } from "../../src/generated/client_pb";
 import type { WorkspaceListSnapshotDto } from "../../src/generated/client_types";
 import type { TerminalSurfaceStreamItem } from "../../src/lib/terminalSurfaceStream";
 import type { Page } from "@playwright/test";
@@ -39,7 +39,7 @@ interface TauriEventPluginInternals {
 
 declare global {
 	interface Window {
-		__releashRepositoryPaths: (paths: string[]) => void;
+		__releashRepositoryPaths: () => string[];
 		__releashPush: (event: string, payload: unknown) => Promise<void>;
 		__releashTerminalEvent: (
 			attachmentId: string,
@@ -68,6 +68,7 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
     const pushes = new Set<ReadableStreamDefaultController<Message>>();
     const attachments = new Map<string, { output: ReadableStreamDefaultController<Message>; streamId: string }>();
     const terminalSubscriptions = new Map<string, ReadableStreamDefaultController<Message>>();
+    const stateStreams = new Map<string, ReadableStreamDefaultController<Message>>();
     const push = (event: string, payload: unknown) => {
         const field = PushSchema.fields.find(field => field.name.replaceAll("_", "-") === event);
         if (!field?.message) throw new Error(`Unknown client event: ${event}`);
@@ -99,7 +100,30 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
     };
     const router = createConnectRouter();
     for (const method of ClientService.methods) {
-        if (["OpenStateStream", "StartStateSubscription", "StopStateSubscription"].includes(method.name)) continue;
+        if (method.name === "OpenStateStream") {
+            router.rpc(method, async function* (request, context) {
+                let controller: ReadableStreamDefaultController<Message>;
+                const stream = new ReadableStream<Message>({ start(value) { controller = value; stateStreams.set(request.clientId, value); } });
+                const stop = () => controller.close();
+                context.signal.addEventListener("abort", stop, { once: true });
+                try { yield create(StateSubscriptionEventSchema, { event: { case: "ready", value: {} } }); yield* stream; }
+                finally { stateStreams.delete(request.clientId); context.signal.removeEventListener("abort", stop); }
+            });
+            continue;
+        }
+        if (method.name === "StartStateSubscription") {
+            router.rpc(method, async request => {
+                const stream = stateStreams.get(request.clientId);
+                if (!stream || request.target !== "repository-paths") throw new ConnectError("Unknown state subscription", Code.NotFound);
+                const items = await page.evaluate(() => window.__releashRepositoryPaths());
+                const version = { epoch: "fixture", sequence: 0n };
+                stream.enqueue(create(StateSubscriptionEventSchema, { target: request.target, version, event: { case: "snapshot", value: { value: { case: "repositoryPaths", value: { items } } } } }));
+                stream.enqueue(create(StateSubscriptionEventSchema, { target: request.target, version, event: { case: "bookmark", value: {} } }));
+                return {};
+            });
+            continue;
+        }
+        if (method.name === "StopStateSubscription") { router.rpc(method, () => ({})); continue; }
         if (method.name === "GetServerInfo") { router.rpc(method, () => ({ launchId: "fixture" })); continue; }
         if (method.name === "SubscribePush") {
             router.rpc(method, async function* (_, context) {
@@ -255,11 +279,7 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 			});
 		}
 
-        let stateChannel: { id: string; channel: { id: number }; index: number } | null = null;
-        window.__releashRepositoryPaths = (paths) => {
-            cfg.responses.repository_paths = paths;
-            if (stateChannel) runCallback(stateChannel.channel.id, { index: stateChannel.index++, message: paths });
-        };
+        window.__releashRepositoryPaths = () => (cfg.responses.repository_paths ?? []) as string[];
         let workspaceSnapshot: WorkspaceListSnapshotDto | null = null;
 
 		async function executeCommand(
@@ -267,15 +287,6 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 			args: Record<string, unknown> = {},
 		): Promise<unknown> {
             invocations.push({ cmd, args });
-            if (cmd === "subscribe_client_state") {
-                stateChannel = { id: String(args.id), channel: args.channel as { id: number }, index: 0 };
-                window.__releashRepositoryPaths((cfg.responses.repository_paths ?? []) as string[]);
-                return;
-            }
-            if (cmd === "stop_client_state") {
-                if (stateChannel?.id === args.id) stateChannel = null;
-                return;
-            }
             if (cmd === "get_client_endpoint") return cfg.responses.__clientEndpoint;
 			// plugin:event 系のハンドリング
 			if (cmd === "plugin:event|listen") {
@@ -691,7 +702,7 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 					![
 						"get_daemon_status", "retry_daemon", "quit_desktop", "restart_desktop", "validate_daemon_connection", "get_login_item_status", "open_login_item_settings", "install_cli", "set_login_item_enabled", "check_desktop_update", "install_desktop_update", "apply_desktop_settings",
 						"complete_desktop_restoration", "fail_desktop_restoration", "get_client_endpoint",
-						"get_application_startup_outcome", "subscribe_client_state", "stop_client_state",
+						"get_application_startup_outcome",
 						"quit_after_startup_failure",
 						"set_menu_items_enabled",
 					].includes(cmd)

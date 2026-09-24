@@ -14,6 +14,8 @@ import {
 	CommandErrorSchema,
 	StartGitDirWatchingRequestSchema,
 	StartWatchingRequestSchema,
+	type StatePayload,
+	type StateVersion,
 	type TerminalEvent,
 } from "@/generated/client_pb";
 import type {
@@ -227,6 +229,130 @@ export async function listenClient<K extends keyof ClientPushPayloads>(
 	ensurePush();
 	return () => {
 		listeners.delete(entry);
+	};
+}
+
+type StateValues = { "repository-paths": string[] };
+type StateEntry = {
+	receivers: Set<(value: never) => void>;
+	version?: StateVersion;
+	value?: { current: unknown };
+};
+type StateStream = { client: Client<typeof ClientService>; id: string };
+const STATE_SILENCE_MS = 30_000;
+const IDLE = "idle";
+const states = new Map<string, StateEntry>();
+let stateStream: StateStream | null = null;
+let stateAbort: AbortController | null = null;
+let stateTask: Promise<void> | null = null;
+
+function decodeState(payload: StatePayload | undefined) {
+	if (payload?.value.case === "repositoryPaths")
+		return { current: payload.value.value.items };
+}
+
+function startState(stream: StateStream, target: string) {
+	void stream.client
+		.startStateSubscription({
+			clientId: stream.id,
+			target,
+			version: states.get(target)?.version,
+		})
+		.catch((error) => {
+			console.error("State subscription failed", error);
+			refreshClientOnDisconnect(stream.client, error);
+		});
+}
+
+function ensureStateStream() {
+	if (stateTask || stopped || !states.size) return;
+	stateTask = (async () => {
+		while (!stopped && states.size) {
+			let client: Client<typeof ClientService> | undefined;
+			const abort = new AbortController();
+			stateAbort = abort;
+			let silence: ReturnType<typeof setTimeout> | undefined;
+			const alive = () => {
+				clearTimeout(silence);
+				silence = setTimeout(() => abort.abort(), STATE_SILENCE_MS);
+			};
+			try {
+				client = await getClient();
+				const stream = { client, id: crypto.randomUUID() };
+				alive();
+				for await (const event of client.openStateStream(
+					{ clientId: stream.id },
+					{ signal: abort.signal, timeoutMs: 0 },
+				)) {
+					alive();
+					if (event.event.case === "ready") {
+						stateStream = stream;
+						for (const target of states.keys()) startState(stream, target);
+						continue;
+					}
+					const entry = states.get(event.target);
+					if (!entry) continue;
+					entry.version = event.version;
+					const value = decodeState(
+						event.event.case === "snapshot"
+							? event.event.value
+							: event.event.case === "change"
+								? event.event.value.payload
+								: undefined,
+					);
+					if (!value) continue;
+					entry.value = value;
+					for (const receiver of entry.receivers)
+						receiver(value.current as never);
+				}
+			} catch (error) {
+				if (stopped) break;
+				if (abort.signal.reason !== IDLE)
+					console.debug("State stream ended", error);
+			} finally {
+				clearTimeout(silence);
+				stateStream = null;
+				if (stateAbort === abort) stateAbort = null;
+			}
+			if (abort.signal.reason === IDLE) continue;
+			if (!stopped && states.size) {
+				refreshClient(client);
+				await new Promise((resolve) => setTimeout(resolve, 1000));
+			}
+		}
+	})().finally(() => {
+		stateTask = null;
+		ensureStateStream();
+	});
+}
+
+export function subscribeState<K extends keyof StateValues>(
+	target: K,
+	onValue: (value: StateValues[K]) => void,
+) {
+	const receiver = onValue as (value: never) => void;
+	let entry = states.get(target);
+	if (!entry) {
+		entry = { receivers: new Set() };
+		states.set(target, entry);
+		if (stateStream) startState(stateStream, target);
+	} else if (entry.value) onValue(entry.value.current as StateValues[K]);
+	entry.receivers.add(receiver);
+	stopped = false;
+	ensureStateStream();
+	return () => {
+		const current = states.get(target);
+		if (current !== entry) return;
+		current.receivers.delete(receiver);
+		if (current.receivers.size) return;
+		states.delete(target);
+		if (!states.size) {
+			stateStream = null;
+			stateAbort?.abort(IDLE);
+		} else if (stateStream)
+			void stateStream.client
+				.stopStateSubscription({ clientId: stateStream.id, target })
+				.catch((error) => console.debug("State unsubscribe failed", error));
 	};
 }
 
@@ -538,4 +664,6 @@ window.addEventListener("pagehide", () => {
 	connectionListeners.clear();
 	activeSubscription = null;
 	watchers.clear();
+	states.clear();
+	stateAbort?.abort();
 });

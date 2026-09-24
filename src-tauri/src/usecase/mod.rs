@@ -47,6 +47,3 @@ pub(crate) mod cli_install;
 pub mod worktree_operation;
 
 pub(crate) mod state_subscription;
-
-#[cfg(feature = "desktop")]
-pub(crate) mod state_client;
