@@ -120,6 +120,16 @@ pub fn run() -> i32 {
             eprintln!("{error}");
         }
     }
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("failed to create CLI runtime: {error}");
+            return 1;
+        }
+    };
     let result = match cli.command {
         TopCommand::Workflow { command } => {
             resolve_data_dir()
@@ -128,9 +138,9 @@ pub fn run() -> i32 {
                     WorkflowSubcommand::Diagnostics { dir, json } => {
                         diagnostics::cmd_diagnostics(&data_dir, dir, json)
                     }
-                    WorkflowSubcommand::Status { execution_id, json } => {
-                        workflow::cmd_status(&data_dir, &execution_id, json).map(CliSuccess::ok)
-                    }
+                    WorkflowSubcommand::Status { execution_id, json } => runtime
+                        .block_on(workflow::cmd_status(&data_dir, &execution_id, json))
+                        .map(CliSuccess::ok),
                     WorkflowSubcommand::Output { command } => match command {
                         OutputSubcommand::Submit {
                             node_execution,
@@ -149,13 +159,22 @@ pub fn run() -> i32 {
                             execution_id,
                             node,
                             json,
-                        } => output::cmd_output_get(&data_dir, &execution_id, &node, json)
+                        } => runtime
+                            .block_on(output::cmd_output_get(
+                                &data_dir,
+                                &execution_id,
+                                &node,
+                                json,
+                            ))
                             .map(CliSuccess::ok),
                     },
                 })
         }
-        TopCommand::Review { command } => resolve_existing_data_dir()
-            .and_then(|data_dir| review::cmd_review(&data_dir, command).map(CliSuccess::ok)),
+        TopCommand::Review { command } => resolve_existing_data_dir().and_then(|data_dir| {
+            runtime
+                .block_on(review::cmd_review(&data_dir, command))
+                .map(CliSuccess::ok)
+        }),
         TopCommand::Hook { command } => match command {
             HookSubcommand::Receive { provider } => hook::cmd_receive(provider).map(CliSuccess::ok),
         },

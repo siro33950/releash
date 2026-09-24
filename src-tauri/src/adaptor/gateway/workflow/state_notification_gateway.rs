@@ -146,7 +146,7 @@ mod tests {
 
     /// event 列を事実ログへ写像し、fold で読み model を導出する
     /// （canonical な読み経路とruntime snapshot mapper の parity を固定する）。
-    fn fold_projection(
+    async fn fold_projection(
         execution_id: &str,
         events: &[WorkflowEvent],
     ) -> crate::domain::workflow::ExecutionTree {
@@ -158,17 +158,19 @@ mod tests {
         )
         .unwrap();
         crate::adaptor::gateway::workflow::test_support::append_canonical_events(&store, events)
+            .await
             .unwrap();
         let backend = crate::adaptor::gateway::workflow::fact_log::FactLogReadBackend::Live(store);
         let folded =
             crate::adaptor::gateway::workflow::fact_log::fold_tree_from(&backend, execution_id)
+                .await
                 .unwrap()
                 .unwrap();
         crate::domain::workflow::services::fact_replay::derive_read_model(&folded)
     }
 
-    #[test]
-    fn runtime_snapshot_mapper_matches_event_log_projection() {
+    #[tokio::test]
+    async fn runtime_snapshot_mapper_matches_event_log_projection() {
         let execution_id = "00000000-0000-4000-8000-000000000001";
         let node_execution_id = "node-1";
         let value = serde_json::json!({"verdict": "approve"});
@@ -242,7 +244,7 @@ mod tests {
                 timestamp: 4.0,
             },
         ];
-        let event_projection = fold_projection(execution_id, &events);
+        let event_projection = fold_projection(execution_id, &events).await;
         // 成果の produced_at は settle（stop 受理決着）時刻。
         let artifact = Artifact {
             node_name: "review".to_string(),
@@ -334,8 +336,8 @@ mod tests {
         assert_eq!(runtime_projection, event_projection);
     }
 
-    #[test]
-    fn node_failure_does_not_create_a_workflow_terminal_projection() {
+    #[tokio::test]
+    async fn node_failure_does_not_create_a_workflow_terminal_projection() {
         let execution_id = "00000000-0000-4000-8000-000000000002";
         let event_parent =
             |item_index| ExecutionParentRef::fanout_child("parent", Some(item_index), 0);
@@ -412,7 +414,7 @@ mod tests {
                 timestamp: 3.0,
             },
         ];
-        let event_projection = fold_projection(execution_id, &events);
+        let event_projection = fold_projection(execution_id, &events).await;
         let domain_parent =
             |item_index| ExecutionParentRef::fanout_child("parent", Some(item_index), 0);
         let node = |id: &str,

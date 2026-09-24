@@ -23,7 +23,9 @@ async fn test_隔離起動_commandのcwdと環境変数は生成済みworktree�
         repo.head().unwrap().shorthand().unwrap(),
         artifact["worktree"]["branch"].as_str().unwrap()
     );
-    let records = workflow_fact_log::read_tree_records(&fixture.store, &execution_id).unwrap();
+    let records = workflow_fact_log::read_tree_records(&fixture.store, &execution_id)
+        .await
+        .unwrap();
     assert_eq!(
         records
             .iter()
@@ -48,7 +50,7 @@ async fn test_隔離復旧_生成後かつ起動記録前のleafと合成子を�
         let worktree = node.worktree.as_ref().unwrap();
         fixture.host.isolated_worktrees.create(&root, worktree).unwrap();
         std::fs::write(format!("{}/keep", worktree.path), "uncommitted").unwrap();
-        let before = workflow_fact_log::read_tree_records(&fixture.store, &started.execution_id).unwrap();
+        let before = workflow_fact_log::read_tree_records(&fixture.store, &started.execution_id).await.unwrap();
         assert!(!before.iter().any(|record| matches!(record.fact, NodeFact::SessionAttached(_) | NodeFact::CommandSpawned(_))));
         let restored = fixture.restarted_host();
 
@@ -72,7 +74,7 @@ async fn test_隔離復旧_生成後かつ起動記録前のleafと合成子を�
         let folded = workflow_fact_log::fold_tree_from(
             &workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone()),
             &started.execution_id,
-        ).unwrap().unwrap();
+        ).await.unwrap().unwrap();
         let attempts = folded.aggregate.node_executions.iter().filter(|attempt| attempt.node_name == "main").collect::<Vec<_>>();
         assert_eq!(attempts.len(), 1);
         assert_eq!(attempts[0].id, node.id);
@@ -102,13 +104,15 @@ async fn test_隔離起動_合成子の生成後に同じcwdとroot所属でsess
             && cwd == &generated[0].1.path
     ));
     assert_eq!(fixture.sessions.activated.lock().unwrap().len(), 2);
-    let records = workflow_fact_log::read_tree_records(&fixture.store, &execution_id).unwrap();
+    let records = workflow_fact_log::read_tree_records(&fixture.store, &execution_id)
+        .await
+        .unwrap();
     assert!(records
         .iter()
         .all(|record| !fact_codec::event_type(&record.fact).starts_with("isolated_worktree")));
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn test_隔離起動_生成失敗後は自動で新しいattemptだけを起動する() {
     // Given
     let fixture = Fixture::new(1);
@@ -143,6 +147,7 @@ async fn test_隔離起動_生成失敗後は自動で新しいattemptだけを�
         &workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone()),
         &execution_id,
     )
+    .await
     .unwrap()
     .unwrap();
     assert_eq!(
@@ -180,6 +185,7 @@ async fn test_隔離起動_合成子の生成失敗では子を起動せず復�
         &workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone()),
         &execution_id,
     )
+    .await
     .unwrap()
     .unwrap();
     assert_eq!(
@@ -208,6 +214,7 @@ async fn test_隔離合成子_子開始のappend失敗はrootと入れ子の対�
                 &workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone()),
                 &execution_id,
             )
+            .await
             .unwrap()
             .unwrap();
             let target_name = if root { "main" } else { "isolated" };
@@ -218,8 +225,9 @@ async fn test_隔離合成子_子開始のappend失敗はrootと入れ子の対�
                 .find(|node| node.node_name == target_name)
                 .unwrap();
             assert_eq!(target.status, NodeExecutionStatus::Running);
-            let records =
-                workflow_fact_log::read_tree_records(&fixture.store, &execution_id).unwrap();
+            let records = workflow_fact_log::read_tree_records(&fixture.store, &execution_id)
+                .await
+                .unwrap();
             assert!(records.iter().any(|record| matches!(&record.fact, NodeFact::RuntimeFailureObserved(failure) if failure.reason.contains("isolated composite child start append failed"))));
             assert!(!folded
                 .aggregate
@@ -286,6 +294,7 @@ async fn test_空の隔離fanout_liveと再読取で同じworktree成果を持�
         &workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone()),
         &id,
     )
+    .await
     .unwrap()
     .unwrap();
     let read = crate::domain::workflow::services::fact_replay::derive_read_model(&folded);
@@ -309,7 +318,7 @@ async fn test_空の隔離fanout_liveと再読取で同じworktree成果を持�
     );
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn startup_exhaustion_leaves_five_distinct_attempts_with_only_the_latest_running() {
     for kind in ["session: {provider: codex}", "command: 'must-not-start'"] {
         let fixture = Fixture::new(usize::MAX);
@@ -321,6 +330,7 @@ async fn startup_exhaustion_leaves_five_distinct_attempts_with_only_the_latest_r
             &workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone()),
             &id,
         )
+        .await
         .unwrap()
         .unwrap();
         let attempts = folded.aggregate.node_executions();
@@ -353,7 +363,9 @@ async fn startup_exhaustion_leaves_five_distinct_attempts_with_only_the_latest_r
             .lock()
             .unwrap()
             .is_empty());
-        let records = workflow_fact_log::read_tree_records(&fixture.store, &id).unwrap();
+        let records = workflow_fact_log::read_tree_records(&fixture.store, &id)
+            .await
+            .unwrap();
         assert_eq!(
             records
                 .iter()
@@ -374,13 +386,15 @@ async fn startup_exhaustion_leaves_five_distinct_attempts_with_only_the_latest_r
         assert_eq!(after.node_executions(), attempts);
         assert_eq!(fixture.worktrees.calls.lock().unwrap().len(), 5);
         assert_eq!(
-            workflow_fact_log::read_tree_records(&fixture.store, &id).unwrap(),
+            workflow_fact_log::read_tree_records(&fixture.store, &id)
+                .await
+                .unwrap(),
             records
         );
     }
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn test_自動再試行_abortとshutdownは待機を終了し追加起動しない() {
     for abort in [true, false] {
         let fixture = Fixture::new(usize::MAX);
@@ -398,9 +412,12 @@ async fn test_自動再試行_abortとshutdownは待機を終了し追加起動�
             fixture.host.shutdown_all_active_commands().await;
         }
         fixture.wait_startup_retries().await;
+        tokio::time::pause();
         tokio::time::advance(std::time::Duration::from_secs(20)).await;
+        tokio::time::resume();
         assert_eq!(fixture.worktrees.calls.lock().unwrap().len(), 1);
         assert!(!workflow_fact_log::read_tree_records(&fixture.store, &tree)
+            .await
             .unwrap()
             .iter()
             .any(|record| matches!(record.fact, NodeFact::RetryRequested)));
@@ -408,7 +425,7 @@ async fn test_自動再試行_abortとshutdownは待機を終了し追加起動�
     }
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn test_自動再試行_待機中の手動resume後に旧attemptを再起動しない() {
     let fixture = Fixture::new(0);
     fixture
@@ -452,7 +469,7 @@ async fn test_自動再試行_待機中の手動resume後に旧attemptを再起�
     assert_eq!(fixture.sessions.activated.lock().unwrap().len(), 1);
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn test_自動再試行_shutdownは進行中の準備の終了を待つ() {
     let fixture = Fixture::new(0);
     fixture
@@ -569,7 +586,7 @@ fn control(
     ))
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn resume_after_never_successful_session_launch_creates_a_new_attempt_with_initial_instruction(
 ) {
     let fixture = Fixture::new(0);
@@ -827,6 +844,7 @@ async fn missing_worktree_rejects_command_retry_but_does_not_prevent_abort() {
         &workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone()),
         &id,
     )
+    .await
     .unwrap()
     .unwrap();
     assert_eq!(
@@ -900,6 +918,7 @@ async fn new_attempt_commit_rechecks_process_presence_before_recording_retry() {
         before
     );
     assert!(!workflow_fact_log::read_tree_records(&fixture.store, &id)
+        .await
         .unwrap()
         .iter()
         .any(|record| matches!(record.fact, NodeFact::RetryRequested)));
@@ -924,6 +943,7 @@ async fn test_session再開_fanoutの準備中は起動を待ち兄弟を取り�
         &workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone()),
         None,
     )
+    .await
     .unwrap()
     .remove(0);
     let before = fixture
@@ -974,6 +994,7 @@ async fn test_session再開_fanoutの準備中は起動を待ち兄弟を取り�
     assert_eq!(fixture.sessions.activated.lock().unwrap().len(), 2);
     assert!(
         !workflow_fact_log::read_tree_records(&fixture.store, &before.id)
+            .await
             .unwrap()
             .iter()
             .any(|record| matches!(record.fact, NodeFact::RetryRequested))
@@ -1020,6 +1041,7 @@ async fn test_command再試行_プロセス無しでフォルダがあれば新a
                 &workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone()),
                 &snapshot.execution_id,
             )
+            .await
             .unwrap()
             .unwrap();
             if current.aggregate.node_executions.last().unwrap().status
@@ -1047,6 +1069,7 @@ async fn test_command再試行_プロセス無しでフォルダがあれば新a
         &workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone()),
         &snapshot.execution_id,
     )
+    .await
     .unwrap()
     .unwrap();
     assert_eq!(folded.aggregate.node_executions.len(), 2);
@@ -1060,6 +1083,7 @@ async fn test_command再試行_プロセス無しでフォルダがあれば新a
     assert_eq!(next.status, NodeExecutionStatus::Succeeded);
     assert!(
         workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id)
+            .await
             .unwrap()
             .iter()
             .any(|record| record.meta.node_execution_id == next.id
@@ -1096,7 +1120,9 @@ async fn test_プロセス在否_実供給元の変化が読取と通知と操�
             .clone();
         let node = &current.node_executions[0];
         if kind == NodeKindName::Session {
-            let records = workflow_fact_log::read_tree_records(&fixture.store, &tree).unwrap();
+            let records = workflow_fact_log::read_tree_records(&fixture.store, &tree)
+                .await
+                .unwrap();
             let meta = &records
                 .iter()
                 .find(|record| record.meta.node_execution_id == node.id)
@@ -1171,6 +1197,7 @@ async fn test_プロセス在否_実供給元の変化が読取と通知と操�
                 .get_execution(
                     &crate::domain::workflow::ExecutionTreeId::new(tree.clone()).unwrap(),
                 )
+                .await
                 .unwrap()
                 .unwrap();
             let read = model
@@ -1183,6 +1210,7 @@ async fn test_プロセス在否_実供給元の変化が読取と通知と操�
             assert_eq!(read.can_resume_session(), resume);
             let read = workspace
                 .load_node_by_node_execution_id(&node.id)
+                .await
                 .unwrap()
                 .unwrap();
             assert_eq!(read.process_presence, expected);
@@ -1274,7 +1302,10 @@ async fn test_隔離合成子競合_最新記録で子開始を再評価し競�
 
             // When
             for attempt in 0..attempts {
-                assert!(futures_util::poll!(operation.as_mut()).is_pending());
+                super::test_helpers::poll_until_pending(operation.as_mut(), || {
+                    Arc::strong_count(&commit_lock) > 1
+                })
+                .await;
                 workflow_fact_log::append_facts_for_events(
                     &fixture.store,
                     &[if change == "abort" {
@@ -1292,6 +1323,7 @@ async fn test_隔離合成子競合_最新記録で子開始を再評価し競�
                         }
                     }],
                 )
+                .await
                 .unwrap();
                 if attempt + 1 == attempts {
                     drop(guard);
@@ -1300,8 +1332,10 @@ async fn test_隔離合成子競合_最新記録で子開始を再評価し競�
                 let mut next_guard = Box::pin(commit_lock.lock());
                 assert!(futures_util::poll!(next_guard.as_mut()).is_pending());
                 drop(guard);
-                assert!(futures_util::poll!(operation.as_mut()).is_pending());
-                guard = next_guard.await;
+                guard = tokio::select! {
+                    guard = next_guard => guard,
+                    _ = operation.as_mut() => panic!("operation must retry after conflict"),
+                };
             }
             let result = operation.await;
 
@@ -1332,6 +1366,7 @@ async fn test_隔離合成子競合_最新記録で子開始を再評価し競�
             }
             let records =
                 workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id)
+                    .await
                     .unwrap();
             assert_eq!(
                 records
@@ -1363,17 +1398,6 @@ async fn test_隔離合成子競合_最新記録で子開始を再評価し競�
 
 #[tokio::test]
 async fn test_隔離合成子競合_上限後も兄弟と競合したchildを起動して生成失敗の自動再試行を続ける() {
-    use std::future::Future;
-    use std::task::{Context, Poll, Wake, Waker};
-    struct Notifier(tokio::sync::Notify);
-    impl Wake for Notifier {
-        fn wake(self: Arc<Self>) {
-            self.0.notify_one();
-        }
-        fn wake_by_ref(self: &Arc<Self>) {
-            self.0.notify_one();
-        }
-    }
     // Given
     let fixture = Fixture::new(1);
     let snapshot = fixture.persist_started(
@@ -1412,23 +1436,26 @@ async fn test_隔離合成子競合_上限後も兄弟と競合したchildを起
         "/repo",
         starts,
     ));
-    let notifier = Arc::new(Notifier(tokio::sync::Notify::new()));
-    let waker = Waker::from(notifier.clone());
     // When
     // 2件のworktree準備が完了してからchild commitを競合させる。
     for _ in 0..2 {
-        assert!(matches!(
-            operation.as_mut().poll(&mut Context::from_waker(&waker)),
-            Poll::Pending
-        ));
-        barrier.wait();
-        tokio::time::timeout(std::time::Duration::from_secs(10), notifier.0.notified())
-            .await
-            .unwrap();
+        let barrier = barrier.clone();
+        let preparation = tokio::task::spawn_blocking(move || barrier.wait());
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            tokio::select! {
+                result = preparation => { result.unwrap(); },
+                _ = operation.as_mut() => panic!("operation must wait for child commit"),
+            }
+        })
+        .await
+        .unwrap();
     }
     *fixture.worktrees.creation_barrier.lock().unwrap() = None;
     for attempt in 0..crate::usecase::workflow::command::CONTROL_PLANE_MAX_ATTEMPTS {
-        assert!(futures_util::poll!(operation.as_mut()).is_pending());
+        super::test_helpers::poll_until_pending(operation.as_mut(), || {
+            Arc::strong_count(&commit_lock) > 1
+        })
+        .await;
         workflow_fact_log::append_facts_for_events(
             &fixture.store,
             &[WorkflowEvent::CommandSpawned {
@@ -1438,6 +1465,7 @@ async fn test_隔離合成子競合_上限後も兄弟と競合したchildを起
                 timestamp: current_timestamp(),
             }],
         )
+        .await
         .unwrap();
         if attempt + 1 == crate::usecase::workflow::command::CONTROL_PLANE_MAX_ATTEMPTS {
             drop(guard);
@@ -1446,14 +1474,17 @@ async fn test_隔離合成子競合_上限後も兄弟と競合したchildを起
         let mut next_guard = Box::pin(commit_lock.lock());
         assert!(futures_util::poll!(next_guard.as_mut()).is_pending());
         drop(guard);
-        assert!(futures_util::poll!(operation.as_mut()).is_pending());
-        guard = next_guard.await;
+        guard = tokio::select! {
+            guard = next_guard => guard,
+            _ = operation.as_mut() => panic!("operation must retry after conflict"),
+        };
     }
     operation.await.unwrap();
     fixture.wait_startup_retries().await;
     // Then
-    let records =
-        workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap();
+    let records = workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id)
+        .await
+        .unwrap();
     assert!(!records
         .iter()
         .any(|record| record.meta.node_execution_id == isolated

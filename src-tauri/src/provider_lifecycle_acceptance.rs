@@ -537,9 +537,9 @@ impl ProviderLifecycleAcceptanceHost {
         Ok(counts)
     }
 
-    pub fn ledger_event_counts(&self) -> Result<AcceptanceLedgerEventCounts, String> {
+    pub async fn ledger_event_counts(&self) -> Result<AcceptanceLedgerEventCounts, String> {
         self.store
-            .submit_indexed_query_blocking(|connection| {
+            .submit_query(|connection| {
                 let (all, provider_lifecycle) = connection
                     .query_row(
                         "SELECT COUNT(*),
@@ -548,8 +548,10 @@ impl ProviderLifecycleAcceptanceHost {
                         [PROVIDER_LIFECYCLE_EVENT_TYPE],
                         |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
                     )
-                    .map_err(|_| {
-                        crate::domain::local_event::LocalEventQueryError::InvalidRequest
+                    .map_err(|error| {
+                        crate::adaptor::gateway::local_event_store::reader::storage_unavailable(
+                            &error,
+                        )
                     })?;
                 let all = usize::try_from(all).map_err(|_| {
                     crate::domain::local_event::LocalEventQueryError::InvalidRequest
@@ -562,6 +564,7 @@ impl ProviderLifecycleAcceptanceHost {
                     other: all.saturating_sub(provider_lifecycle),
                 })
             })
+            .await
             .map_err(|error| error.to_string())
     }
 

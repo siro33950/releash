@@ -88,8 +88,9 @@ fn standalone_session(id: &str, worktree_path: &str, provider: ProviderKind) -> 
     .unwrap()
 }
 
-fn tree_event_types(store: &Arc<LocalEventStore>, tree_id: &str) -> Vec<&'static str> {
+async fn tree_event_types(store: &Arc<LocalEventStore>, tree_id: &str) -> Vec<&'static str> {
     fact_log::read_tree_records(store, tree_id)
+        .await
         .unwrap()
         .iter()
         .map(|record| fact_codec::event_type(&record.fact))
@@ -127,7 +128,9 @@ async fn test_agent_session_repository_単独session作成をnode_eventsへ記�
 
     assert_eq!(saved.revision(), 1);
     assert!(saved.session().uncommitted_events().is_empty());
-    let records = fact_log::read_tree_records(&store, "agent-session-1").unwrap();
+    let records = fact_log::read_tree_records(&store, "agent-session-1")
+        .await
+        .unwrap();
     assert_eq!(records.len(), 2);
     let record = &records[0];
     assert_eq!(record.meta.tree_id, "agent-session-1");
@@ -293,7 +296,9 @@ async fn test_agent_session_repository_活動遷移だけをnode行へ追記し�
     );
 
     // Then: 遷移だけが事実として同じ Session Node へ追記される
-    let records = fact_log::read_tree_records(&store, "agent-session-activity").unwrap();
+    let records = fact_log::read_tree_records(&store, "agent-session-activity")
+        .await
+        .unwrap();
     let activities = records
         .iter()
         .filter_map(|record| match &record.fact {
@@ -382,7 +387,9 @@ async fn test_agent_session_repository_process_exit後のworking再観測を活�
         )
         .await
         .unwrap();
-    let before = fact_log::read_tree_records(&store, "agent-session-activity-exit").unwrap();
+    let before = fact_log::read_tree_records(&store, "agent-session-activity-exit")
+        .await
+        .unwrap();
     assert!(matches!(
         before.last().unwrap().fact,
         NodeFact::ProcessExited(_)
@@ -410,7 +417,9 @@ async fn test_agent_session_repository_process_exit後のworking再観測を活�
         observation.outcome,
         crate::domain::agent_session::aggregates::AgentSessionMutationOutcome::Applied
     );
-    let after = fact_log::read_tree_records(&store, "agent-session-activity-exit").unwrap();
+    let after = fact_log::read_tree_records(&store, "agent-session-activity-exit")
+        .await
+        .unwrap();
     assert_eq!(
         after
             .iter()
@@ -453,7 +462,9 @@ async fn test_agent_session_repository_stop事実後のworking再観測をbounde
         )
         .await
         .unwrap();
-    let records = fact_log::read_tree_records(&store, session_id).unwrap();
+    let records = fact_log::read_tree_records(&store, session_id)
+        .await
+        .unwrap();
     let meta = records.last().unwrap().meta.clone();
     fact_log::append_single_fact(
         &store,
@@ -491,7 +502,9 @@ async fn test_agent_session_repository_stop事実後のworking再観測をbounde
         observation.outcome,
         crate::domain::agent_session::aggregates::AgentSessionMutationOutcome::Applied
     );
-    let records = fact_log::read_tree_records(&store, session_id).unwrap();
+    let records = fact_log::read_tree_records(&store, session_id)
+        .await
+        .unwrap();
     assert_eq!(
         records
             .iter()
@@ -530,6 +543,7 @@ async fn test_agent_session_repository_workflow子sessionも同じ活動保存�
             initial_instruction_admitted: true,
         },
     )
+    .await
     .unwrap();
     let sessions = AgentSessionUsecase::new(Arc::new(new_repository(&store)));
 
@@ -542,7 +556,9 @@ async fn test_agent_session_repository_workflow子sessionも同じ活動保存�
         .await
         .unwrap();
 
-    let records = fact_log::read_tree_records(&store, "workflow-activity").unwrap();
+    let records = fact_log::read_tree_records(&store, "workflow-activity")
+        .await
+        .unwrap();
     assert!(matches!(
         &records.last().unwrap().fact,
         NodeFact::AgentActivityObserved(fact)
@@ -569,6 +585,7 @@ async fn test_agent_session_repository_続行指示の受理を木の事実と�
             initial_instruction_admitted: true,
         },
     )
+    .await
     .unwrap();
     let repository = new_repository(&store);
     let mut saved = repository
@@ -585,7 +602,9 @@ async fn test_agent_session_repository_続行指示の受理を木の事実と�
         .await
         .unwrap();
 
-    let records = fact_log::read_tree_records(&store, "workflow-delegate").unwrap();
+    let records = fact_log::read_tree_records(&store, "workflow-delegate")
+        .await
+        .unwrap();
     assert!(matches!(
         &records.last().unwrap().fact,
         NodeFact::SessionContinuationAdmitted(fact)
@@ -667,7 +686,7 @@ async fn test_agent_session_repository_同一idの再createを拒否する() {
         crate::domain::agent_session::repository::AgentSessionRepositoryError::Conflict
     );
     assert_eq!(
-        tree_event_types(&store, "agent-session-1"),
+        tree_event_types(&store, "agent-session-1").await,
         ["started", "session_attached"]
     );
 }
@@ -693,10 +712,12 @@ async fn test_agent_session_repository_workflow子sessionのcreateは木に行�
 
     assert!(saved.session().initial_instruction_admitted());
     assert!(fact_log::read_tree_records(&store, "workflow-1")
+        .await
         .unwrap()
         .is_empty());
     assert!(
         fact_log::read_tree_records(&store, "agent-session-workflow")
+            .await
             .unwrap()
             .is_empty()
     );
@@ -758,6 +779,7 @@ async fn test_agent_session_repository_attach前に再起動したworkflow子ses
         .unwrap();
     assert_eq!(stream.events.len(), 2);
     assert!(fact_log::read_tree_records(&store, "workflow-1")
+        .await
         .unwrap()
         .is_empty());
 }
@@ -787,7 +809,7 @@ async fn test_agent_session_repository_provider紐付けと状態遷移を事実
     assert_eq!(updated.revision(), 3);
     assert!(updated.session().uncommitted_events().is_empty());
     assert_eq!(
-        tree_event_types(&store, "agent-session-1"),
+        tree_event_types(&store, "agent-session-1").await,
         [
             "started",
             "session_attached",
@@ -885,6 +907,7 @@ async fn test_agent_session_repository_openかつprovider_session確定済みの
         &fact_log::FactLogReadBackend::Live(Arc::clone(&store)),
         OPEN_SESSION_LIFECYCLE_EVENT_TYPES,
     )
+    .await
     .unwrap();
     let candidates = open_session_title_candidates(lifecycle_records);
     let sessions = repository
@@ -965,7 +988,7 @@ async fn test_agent_session_repository_renameとproviderタイトルを対応す
     );
     assert!(saved.session().uncommitted_events().is_empty());
     assert_eq!(
-        tree_event_types(&store, "named-session"),
+        tree_event_types(&store, "named-session").await,
         [
             "started",
             "session_attached",
@@ -1001,14 +1024,17 @@ async fn test_agent_session_repository_providerタイトル軽量保存は他の
         .session_mut()
         .observe_provider_session_title("provider title")
         .unwrap();
-    let rows_before = tree_event_types(&store, "invalid-title-save");
+    let rows_before = tree_event_types(&store, "invalid-title-save").await;
 
     let result = repository
         .save_provider_session_title(saved, "invalid-title-observation")
         .await;
 
     assert_eq!(result, Err(AgentSessionRepositoryError::InvalidRequest));
-    assert_eq!(tree_event_types(&store, "invalid-title-save"), rows_before);
+    assert_eq!(
+        tree_event_types(&store, "invalid-title-save").await,
+        rows_before
+    );
 }
 
 #[tokio::test]
@@ -1031,7 +1057,9 @@ async fn test_agent_session_repository_異常exitをfailure付きprocess_exited�
 
     repository.save(saved, "abnormal-exit-1").await.unwrap();
 
-    let records = fact_log::read_tree_records(&store, "agent-session-abnormal").unwrap();
+    let records = fact_log::read_tree_records(&store, "agent-session-abnormal")
+        .await
+        .unwrap();
     let NodeFact::ProcessExited(exited) = &records.last().unwrap().fact else {
         panic!("abnormal exit must be recorded as a process_exited fact: {records:?}");
     };
@@ -1075,6 +1103,7 @@ async fn test_agent_session_repository_異常終了したsession起動木をresu
         &fact_log::FactLogReadBackend::Live(store.clone()),
         "agent-session-abnormal-resume",
     )
+    .await
     .unwrap()
     .unwrap();
     assert_eq!(
@@ -1101,6 +1130,7 @@ async fn test_agent_session_repository_異常終了したsession起動木をresu
         &fact_log::FactLogReadBackend::Live(store),
         "agent-session-abnormal-resume",
     )
+    .await
     .unwrap()
     .unwrap();
     assert_eq!(
@@ -1146,7 +1176,9 @@ async fn test_agent_session_repository_restore後の指示待ちを事実から�
         .await
         .unwrap();
 
-    let records = fact_log::read_tree_records(&store, "agent-session-restore-activity").unwrap();
+    let records = fact_log::read_tree_records(&store, "agent-session-restore-activity")
+        .await
+        .unwrap();
     fact_log::append_single_fact(&store, &records[0].meta, &NodeFact::RestoreRequested, 100)
         .unwrap();
     let restored = repository
@@ -1159,6 +1191,7 @@ async fn test_agent_session_repository_restore後の指示待ちを事実から�
         AgentSessionActivity::AwaitingInstruction
     );
     let activities = fact_log::read_tree_records(&store, "agent-session-restore-activity")
+        .await
         .unwrap()
         .into_iter()
         .filter_map(|record| match record.fact {
@@ -1215,7 +1248,9 @@ async fn test_agent_session_repository_resumeとarchiveとrestoreを行として
         AgentSessionLifecycle::Archived
     );
 
-    let records = fact_log::read_tree_records(&store, "agent-session-flow").unwrap();
+    let records = fact_log::read_tree_records(&store, "agent-session-flow")
+        .await
+        .unwrap();
     fact_log::append_single_fact(&store, &records[0].meta, &NodeFact::RestoreRequested, 100)
         .unwrap();
     let restored = repository
@@ -1228,7 +1263,7 @@ async fn test_agent_session_repository_resumeとarchiveとrestoreを行として
         AgentSessionLifecycle::Paused
     );
     assert_eq!(
-        tree_event_types(&store, "agent-session-flow"),
+        tree_event_types(&store, "agent-session-flow").await,
         [
             "started",
             "session_attached",
@@ -1339,6 +1374,7 @@ async fn test_agent_session_repository削除で木の行を物理削除しprovid
 
     assert!(repository.find("agent-session-1").await.unwrap().is_none());
     assert!(fact_log::read_tree_records(&store, "agent-session-1")
+        .await
         .unwrap()
         .is_empty());
     assert!(!repository
@@ -1421,6 +1457,7 @@ async fn test_agent_session_repository削除失敗時に木とprovider所有権�
         .unwrap();
     assert!(
         !fact_log::read_tree_records(&store, "agent-session-atomic-delete")
+            .await
             .unwrap()
             .is_empty()
     );
@@ -1725,7 +1762,7 @@ async fn test_agent_session_repository_session起動由来の同一要求を既�
         &session_location(&session_id)
     );
     assert_eq!(
-        tree_event_types(&store, &session_id),
+        tree_event_types(&store, &session_id).await,
         ["started", "session_attached", "session_attached"]
     );
     let stream = store
@@ -1797,6 +1834,7 @@ async fn test_agent_session_repository_workflow起動由来sessionをsession起�
             initial_instruction_admitted: false,
         },
     )
+    .await
     .unwrap();
 
     let error = repository
@@ -1876,6 +1914,7 @@ async fn test_agent_session_repository_workflow起動由来sessionのtree所在�
                 initial_instruction_admitted: false,
             },
         )
+        .await
         .unwrap();
         let requested = AgentSession::create(
             session_id,
@@ -1939,6 +1978,7 @@ async fn test_workspace共通read_modelは同じworkspaceのsessionをid昇順�
         ],
         "/repo",
     )
+    .await
     .unwrap();
     assert_eq!(
         items
@@ -1972,13 +2012,14 @@ async fn test_agent_session_query_service_idで一件の表示モデルを返す
         .await
         .unwrap()
         .unwrap();
-    let blocking_detail = query_service
-        .get_blocking("agent-session-detail")
+    let repeated_detail = query_service
+        .get("agent-session-detail")
+        .await
         .unwrap()
         .unwrap();
 
     assert_eq!(detail.id, "agent-session-detail");
-    assert_eq!(blocking_detail, detail);
+    assert_eq!(repeated_detail, detail);
     assert_eq!(detail.workspace_identity, "/repo/worktree");
     assert_eq!(detail.worktree_path, "/repo/worktree");
     assert_eq!(
@@ -2039,6 +2080,7 @@ async fn test_workspace共通read_modelは全lifecycleを返す() {
         ],
         "/repo",
     )
+    .await
     .unwrap();
     assert_eq!(items.len(), 3);
     let open = items.iter().find(|item| item.id == "open-session").unwrap();
@@ -2112,6 +2154,7 @@ async fn test_agent_session_query_service_workflow木のsessionを一覧に出�
         &["standalone-session".to_string(), "workflow-1".to_string()],
         "/repo",
     )
+    .await
     .unwrap();
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].id, "standalone-session");
@@ -2186,7 +2229,9 @@ async fn test_agent_session_repository_workflow子sessionの事実は元nodeのa
         .await
         .unwrap();
 
-    let records = fact_log::read_tree_records(&store, "workflow-attempt").unwrap();
+    let records = fact_log::read_tree_records(&store, "workflow-attempt")
+        .await
+        .unwrap();
     assert_eq!(records.last().unwrap().meta.attempt, 3);
 }
 
@@ -2254,6 +2299,7 @@ async fn test_agent_session_repository_所属repoの取得失敗では作成事�
         ))
     );
     assert!(fact_log::read_tree_records(&store, "session-bare")
+        .await
         .unwrap()
         .is_empty());
 }

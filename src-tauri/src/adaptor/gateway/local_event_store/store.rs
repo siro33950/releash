@@ -47,7 +47,6 @@ use crate::domain::local_event::{
     CommitBatchError, CommitBatchResult, CommitIdentity, CommitResolution, DomainEventPage,
     LoadStreamRequest, LocalAtomicBatch, LocalEventQuery, LocalEventQueryError,
     LocalEventQueryResult, LocalEventTransactionRepository, LocalStateMutation,
-    SafeOperationFailure, SessionOperationFailureKind,
 };
 
 fn node_append_error(error: rusqlite::Error) -> NodeEventWriteError {
@@ -59,33 +58,15 @@ fn correlation_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
-fn sqlite_error_is_storage_unavailable(error: &rusqlite::Error) -> bool {
-    let rusqlite::Error::SqliteFailure(inner, _) = error else {
-        return false;
-    };
-    matches!(
-        inner.code,
-        rusqlite::ErrorCode::PermissionDenied
-            | rusqlite::ErrorCode::DatabaseBusy
-            | rusqlite::ErrorCode::DatabaseLocked
-            | rusqlite::ErrorCode::OutOfMemory
-            | rusqlite::ErrorCode::ReadOnly
-            | rusqlite::ErrorCode::OperationInterrupted
-            | rusqlite::ErrorCode::SystemIoFailure
-            | rusqlite::ErrorCode::DiskFull
-            | rusqlite::ErrorCode::CannotOpen
-            | rusqlite::ErrorCode::FileLockingProtocolFailed
-            | rusqlite::ErrorCode::TooBig
-            | rusqlite::ErrorCode::NoLargeFileSupport
-            | rusqlite::ErrorCode::AuthorizationForStatementDenied
-    )
-}
-
 fn classify_sqlite_error(
     error: &rusqlite::Error,
     otherwise: LocalEventStoreOpenError,
 ) -> LocalEventStoreOpenError {
-    if sqlite_error_is_storage_unavailable(error) {
+    if matches!(
+        super::reader::sqlite_failure_kind(error),
+        crate::domain::failure::FailureKind::StateRequired
+            | crate::domain::failure::FailureKind::Temporary
+    ) {
         LocalEventStoreOpenError::StorageUnavailable
     } else {
         otherwise
@@ -808,6 +789,11 @@ impl LocalEventStore {
     }
 
     #[cfg(test)]
+    pub(crate) fn fail_next_read(&self, failure: super::test_helpers::ReadFailure) {
+        *self.readers.next_failure.lock().unwrap() = Some(failure);
+    }
+
+    #[cfg(test)]
     pub fn fault_injector(&self) -> &Arc<FaultInjector> {
         &self.fault
     }
@@ -936,22 +922,12 @@ impl LocalEventStore {
         }
     }
 
-    async fn submit_query<T, F>(&self, run: F) -> Result<T, LocalEventQueryError>
+    pub(crate) async fn submit_query<T, F>(&self, run: F) -> Result<T, LocalEventQueryError>
     where
         T: Send + 'static,
         F: FnOnce(&rusqlite::Connection) -> Result<T, LocalEventQueryError> + Send + 'static,
     {
-        let receiver = self.readers.submit(run)?;
-        receiver
-            .await
-            .map_err(|_| LocalEventQueryError::StorageUnavailable {
-                failure: SafeOperationFailure::new(
-                    SessionOperationFailureKind::StorageUnavailable,
-                    crate::domain::failure::FailureKind::Temporary,
-                    "local event store reader reply lost",
-                    correlation_id(),
-                ),
-            })?
+        self.readers.submit(run).await
     }
 
     /// Append one fact row to the unified-node fact log on the writer thread.
@@ -993,22 +969,6 @@ impl LocalEventStore {
         receiver
             .recv()
             .map_err(|_| NodeEventWriteError::OutcomeUnknown)?
-    }
-
-    /// Runs gateway-local indexed reads on the store's fixed reader pool.
-    ///
-    /// This is intentionally not a general SQL port: only adaptors in this
-    /// crate can provide the closure, so usecase/domain layers cannot acquire
-    /// a connection or create a per-request runtime.
-    pub(crate) fn submit_indexed_query_blocking<T, F>(
-        &self,
-        run: F,
-    ) -> Result<T, LocalEventQueryError>
-    where
-        T: Send + 'static,
-        F: FnOnce(&rusqlite::Connection) -> Result<T, LocalEventQueryError> + Send + 'static,
-    {
-        self.readers.submit_blocking(run)
     }
 }
 

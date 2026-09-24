@@ -69,8 +69,9 @@ async fn test_command起動_起動済みの記録か登録があれば同じプ�
                     workflow_command_runner::ActiveCommandHandle::for_test(),
                 );
         }
-        let before =
-            workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap();
+        let before = workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id)
+            .await
+            .unwrap();
 
         // When
         fixture
@@ -81,7 +82,9 @@ async fn test_command起動_起動済みの記録か登録があれば同じプ�
 
         // Then
         assert_eq!(
-            workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap(),
+            workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id)
+                .await
+                .unwrap(),
             before
         );
         assert_eq!(
@@ -133,6 +136,7 @@ async fn test_終了処理_commandの終了結果も次回起動での喪失も�
                 started_command(&fixture, &format!("  main:\n    command: true{completion}")).await;
             let execution_id = input.execution_id.clone();
             let before = workflow_fact_log::read_tree_records(&fixture.store, &execution_id)
+                .await
                 .unwrap()
                 .len();
 
@@ -144,8 +148,9 @@ async fn test_終了処理_commandの終了結果も次回起動での喪失も�
                 .await;
 
             // Then
-            let records =
-                workflow_fact_log::read_tree_records(&fixture.store, &execution_id).unwrap();
+            let records = workflow_fact_log::read_tree_records(&fixture.store, &execution_id)
+                .await
+                .unwrap();
             assert_eq!(
                 records.len(),
                 before,
@@ -155,6 +160,7 @@ async fn test_終了処理_commandの終了結果も次回起動での喪失も�
                 &workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone()),
                 &execution_id,
             )
+            .await
             .unwrap()
             .unwrap();
             assert_eq!(
@@ -165,8 +171,9 @@ async fn test_終了処理_commandの終了結果も次回起動での喪失も�
             test_helpers::reconcile_startup(&restarted, &fixture.app)
                 .await
                 .unwrap();
-            let records =
-                workflow_fact_log::read_tree_records(&fixture.store, &execution_id).unwrap();
+            let records = workflow_fact_log::read_tree_records(&fixture.store, &execution_id)
+                .await
+                .unwrap();
             let exits = records
                 .iter()
                 .filter_map(|record| match &record.fact {
@@ -227,7 +234,10 @@ async fn test_終了処理_commandの保存中は待ち後続commandの起動前
             }
             .unwrap();
         });
-        assert!(futures_util::poll!(completion.as_mut()).is_pending());
+        super::test_helpers::poll_until_pending(completion.as_mut(), || {
+            Arc::strong_count(&commit_lock) > 1
+        })
+        .await;
 
         // When
         let mut shutdown = Box::pin(fixture.host.shutdown_all_active_commands());
@@ -240,7 +250,9 @@ async fn test_終了処理_commandの保存中は待ち後続commandの起動前
         .unwrap();
 
         // Then
-        let records = workflow_fact_log::read_tree_records(&fixture.store, &execution_id).unwrap();
+        let records = workflow_fact_log::read_tree_records(&fixture.store, &execution_id)
+            .await
+            .unwrap();
         assert!(records.iter().any(|record| {
             record.meta.node_execution_id == node_execution_id
                 && if succeeded {
@@ -293,7 +305,8 @@ async fn test_終了処理_command起動の完了を待ち以降の起動を止�
             .host
             .spawn_command_execution(&fixture.app, input.clone()),
     );
-    assert!(futures_util::poll!(spawn.as_mut()).is_pending());
+    super::test_helpers::poll_until_pending(spawn.as_mut(), || Arc::strong_count(&commit_lock) > 1)
+        .await;
 
     // When
     let mut shutdown = Box::pin(fixture.host.shutdown_all_active_commands());
@@ -347,6 +360,7 @@ async fn test_終了処理_command起動の完了を待ち以降の起動を止�
         &workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone()),
         &snapshot.execution_id,
     )
+    .await
     .unwrap()
     .unwrap();
     assert_eq!(
@@ -397,7 +411,16 @@ async fn test_command起動_別executionのobserver登録を待たずプロセ�
             .host
             .spawn_command_execution(&fixture.app, inputs[0].clone()),
     );
-    assert!(futures_util::poll!(first.as_mut()).is_pending());
+    super::test_helpers::poll_until_pending(first.as_mut(), || {
+        fixture
+            .host
+            .node_processes
+            .active_commands
+            .lock()
+            .unwrap()
+            .contains_key(&inputs[0].node_execution_id)
+    })
+    .await;
     assert!(fixture
         .host
         .node_processes
@@ -411,7 +434,16 @@ async fn test_command起動_別executionのobserver登録を待たずプロセ�
             .host
             .spawn_command_execution(&fixture.app, inputs[1].clone()),
     );
-    assert!(futures_util::poll!(second.as_mut()).is_pending());
+    super::test_helpers::poll_until_pending(second.as_mut(), || {
+        fixture
+            .host
+            .node_processes
+            .active_commands
+            .lock()
+            .unwrap()
+            .contains_key(&inputs[1].node_execution_id)
+    })
+    .await;
     let second_registered = fixture
         .host
         .node_processes

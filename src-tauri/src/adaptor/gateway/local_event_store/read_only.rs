@@ -185,25 +185,17 @@ impl LocalEventReadStore {
         let database_path = self.database_path.clone();
         let database_identity = self.database_identity;
         let installation_id = self.installation_id.clone();
-        let receiver = self.readers.submit(move |connection| {
-            validate_reader_snapshot(
-                connection,
-                &database_path,
-                database_identity,
-                &installation_id,
-            )?;
-            operation(connection, &query_context)
-        })?;
-        receiver
+        self.readers
+            .submit(move |connection| {
+                validate_reader_snapshot(
+                    connection,
+                    &database_path,
+                    database_identity,
+                    &installation_id,
+                )?;
+                operation(connection, &query_context)
+            })
             .await
-            .map_err(|_| LocalEventQueryError::StorageUnavailable {
-                failure: SafeOperationFailure::new(
-                    SessionOperationFailureKind::StorageUnavailable,
-                    crate::domain::failure::FailureKind::Temporary,
-                    "local event read store reader reply lost",
-                    uuid::Uuid::new_v4().to_string(),
-                ),
-            })?
     }
 
     #[cfg(test)]
@@ -211,26 +203,12 @@ impl LocalEventReadStore {
         &self.installation_id
     }
 
-    pub(crate) fn submit_indexed_query_blocking<T, F>(
-        &self,
-        operation: F,
-    ) -> Result<T, LocalEventQueryError>
+    pub(crate) async fn submit_query<T, F>(&self, operation: F) -> Result<T, LocalEventQueryError>
     where
         T: Send + 'static,
         F: FnOnce(&rusqlite::Connection) -> Result<T, LocalEventQueryError> + Send + 'static,
     {
-        let database_path = self.database_path.clone();
-        let database_identity = self.database_identity;
-        let installation_id = self.installation_id.clone();
-        self.readers.submit_blocking(move |connection| {
-            validate_reader_snapshot(
-                connection,
-                &database_path,
-                database_identity,
-                &installation_id,
-            )?;
-            operation(connection)
-        })
+        self.read(move |connection, _| operation(connection)).await
     }
 }
 

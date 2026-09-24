@@ -47,7 +47,7 @@ impl SqliteWorkspaceQueryService {
         })
     }
 
-    fn execution_records(
+    async fn execution_records(
         &self,
         workspace_identity: Option<&WorkspaceIdentity>,
         status: Option<ExecutionStatusFilter>,
@@ -59,14 +59,18 @@ impl SqliteWorkspaceQueryService {
             &backend,
             workspace_identity.map(|identity| identity.as_str()),
         )
-        .map_err(WorkflowError::external)?;
+        .await
+        .map_err(WorkflowError::from)?;
         let mut records = Vec::new();
         for (tree_id, root) in tree_roots {
             if root.launched_as != ExecutionTreeLaunch::Workflow {
                 continue;
             }
-            let Some((folded, record)) =
-                self.repository.folded_tree(&tree_id).map_err(query_error)?
+            let Some((folded, record)) = self
+                .repository
+                .folded_tree(&tree_id)
+                .await
+                .map_err(query_error)?
             else {
                 continue;
             };
@@ -100,14 +104,16 @@ impl SqliteWorkspaceQueryService {
     }
 }
 
+#[async_trait::async_trait]
 impl WorkspaceQueryService for SqliteWorkspaceQueryService {
-    fn workspace_tree(
+    async fn workspace_tree(
         &self,
         workspace_identity: &WorkspaceIdentity,
     ) -> Result<WorkspaceTreeSnapshotDto, WorkflowError> {
         let folded = self
             .repository
             .folded_workspace_trees(workspace_identity.as_str())
+            .await
             .map_err(query_error)?;
         let tree = self
             .repository
@@ -127,8 +133,11 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
             &session_tree_ids,
             workspace_identity.as_str(),
         )
+        .await
         .map_err(|error| {
-            WorkflowError::external(format!("workspace session query failed: {error:?}"))
+            WorkflowError::Store(crate::domain::failure::ClassifiedFailure::failure_kind(
+                &error,
+            ))
         })?;
         let workflow_execution_ids = folded
             .iter()
@@ -139,7 +148,7 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
             .iter()
             .map(|(tree, _)| tree.aggregate.id.clone())
             .collect::<Vec<_>>();
-        let archive = self.archives.archive_snapshot_for(&execution_ids)?;
+        let archive = self.archives.archive_snapshot_for(&execution_ids).await?;
         let hidden = WorkspaceTreeVisibilityPolicy::hidden_branch_ids(
             &tree,
             archive
@@ -163,63 +172,69 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
         })
     }
 
-    fn node_detail(
+    async fn node_detail(
         &self,
         workspace_identity: &WorkspaceIdentity,
         node_id: &str,
     ) -> Result<Option<WorkspaceNodeDetailDto>, WorkflowError> {
         self.repository
             .load_node(workspace_identity, node_id)
+            .await
             .map(|node| node.map(node_detail))
             .map_err(query_error)
     }
 
-    fn session_node_id(
+    async fn session_node_id(
         &self,
         workspace_identity: &WorkspaceIdentity,
         session_id: &str,
     ) -> Result<Option<String>, WorkflowError> {
         self.repository
             .node_id_for_session(workspace_identity, session_id)
+            .await
             .map_err(query_error)
     }
 
-    fn execution_summaries(
+    async fn execution_summaries(
         &self,
         workspace_identity: Option<&WorkspaceIdentity>,
         status: Option<ExecutionStatusFilter>,
         page: Option<WorkflowPageRequest>,
     ) -> Result<Vec<WorkflowExecutionSummary>, WorkflowError> {
-        self.execution_records(workspace_identity, status, page)?
+        self.execution_records(workspace_identity, status, page)
+            .await?
             .into_iter()
             .map(execution_summary)
             .collect()
     }
 
-    fn execution_summary(
+    async fn execution_summary(
         &self,
         execution_id: &str,
     ) -> Result<Option<WorkflowExecutionSummary>, WorkflowError> {
         self.repository
             .folded_tree(execution_id)
+            .await
             .map_err(query_error)?
             .filter(|(tree, _)| tree.root.launched_as == ExecutionTreeLaunch::Workflow)
             .map(|(_, record)| execution_summary(record))
             .transpose()
     }
 
-    fn workflow_history(
+    async fn workflow_history(
         &self,
         workspace_identity: &WorkspaceIdentity,
     ) -> Result<Vec<WorkspaceWorkflowHistoryItemDto>, WorkflowError> {
         let summaries = self
-            .execution_records(Some(workspace_identity), None, None)?
+            .execution_records(Some(workspace_identity), None, None)
+            .await?
             .into_iter()
             .map(|summary| (summary.execution_id.clone(), summary))
             .collect::<HashMap<_, _>>();
         let archive = self
             .archives
-            .archive_snapshot_for(&summaries.keys().cloned().collect::<Vec<_>>())?;
+            .archive_snapshot_for(&summaries.keys().cloned().collect::<Vec<_>>())
+            .await?;
         let mut history = archive
             .records
             .into_iter()

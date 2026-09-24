@@ -14,12 +14,35 @@ use crate::usecase::workflow::command::SubmitOutputCommand;
 use crate::usecase::workflow::control_plane::WorkflowControlPlaneUsecase;
 
 #[tokio::test]
+async fn test_実行木読取_load_execution_revisionで失敗分類を保持する() {
+    use crate::adaptor::gateway::local_event_store::test_helpers::ReadFailure;
+    use crate::adaptor::protocol::connect::classified_error;
+    // Given
+    let fixture = archive_fixture();
+    for (failure, expected) in ReadFailure::cases() {
+        fixture.store.fail_next_read(failure);
+        // When
+        let error = WorkflowRuntimeHost::load_execution_revision(&fixture.app, "execution")
+            .await
+            .unwrap_err();
+        // Then
+        assert!(matches!(
+            &error,
+            WorkflowRuntimeError::StorageFailure { .. }
+        ));
+        assert_eq!(classified_error(error).code, expected);
+    }
+}
+
+#[tokio::test]
 async fn test_実行木archive_状態確認後の自然完了で再登録できなくても終了状態を保って隠す() {
     use crate::domain::workflow::{ExecutionTreeArchiveRepository, NodeFact};
     // Given
     let fixture = archive_fixture();
     let id = archive_workflow(&fixture).await;
-    let records = workflow_fact_log::read_tree_records(&fixture.store, &id).unwrap();
+    let records = workflow_fact_log::read_tree_records(&fixture.store, &id)
+        .await
+        .unwrap();
     let meta = &records[0].meta;
     let commit_lock = fixture.host.commit_lock(&id).await;
     let commit_guard = commit_lock.lock().await;
@@ -39,13 +62,14 @@ async fn test_実行木archive_状態確認後の自然完了で再登録でき�
     archive.await.unwrap();
     // Then
     assert_eq!(
-        fixture.repository.target(&id).unwrap().status,
+        fixture.repository.target(&id).await.unwrap().status,
         ExecutionStatus::Completed
     );
     assert_eq!(
         fixture
             .repository
             .archive_snapshot_for(&[id.clone()])
+            .await
             .unwrap()
             .records
             .len(),
@@ -53,6 +77,7 @@ async fn test_実行木archive_状態確認後の自然完了で再登録でき�
     );
     assert!(fixture.sessions.live_sessions.lock().unwrap().is_empty());
     assert!(!workflow_fact_log::read_tree_records(&fixture.store, &id)
+        .await
         .unwrap()
         .iter()
         .any(|record| matches!(record.fact, NodeFact::AbortRequested(_))));
@@ -129,6 +154,7 @@ async fn test_起動時recovery_gcのabortと直列化しarchive後に実行木�
         assert!(fixture
             .repository
             .archive_snapshot_for(&[id.into()])
+            .await
             .unwrap()
             .records
             .is_empty());
@@ -147,13 +173,14 @@ async fn test_起動時recovery_gcのabortと直列化しarchive後に実行木�
 
         // Then
         assert_eq!(
-            fixture.repository.target(id).unwrap().status,
+            fixture.repository.target(id).await.unwrap().status,
             ExecutionStatus::Aborted
         );
         assert_eq!(
             fixture
                 .repository
                 .archive_snapshot_for(&[id.into()])
+                .await
                 .unwrap()
                 .records[0]
                 .archive_reason,
@@ -169,7 +196,9 @@ async fn test_起動時recovery_gcのabortと直列化しarchive後に実行木�
             .lock()
             .unwrap()
             .is_empty());
-        let facts = workflow_fact_log::read_tree_records(&fixture.store, id).unwrap();
+        let facts = workflow_fact_log::read_tree_records(&fixture.store, id)
+            .await
+            .unwrap();
         assert!(!facts.iter().any(|record| matches!(
             record.fact,
             NodeFact::CommandSpawned(_) | NodeFact::SessionAttached(_)
@@ -182,14 +211,18 @@ async fn test_起動時recovery_起動済みの実行木のプロセスを再起
     // Given
     let fixture = archive_fixture();
     let id = archive_workflow(&fixture).await;
-    let before = workflow_fact_log::read_tree_records(&fixture.store, &id).unwrap();
+    let before = workflow_fact_log::read_tree_records(&fixture.store, &id)
+        .await
+        .unwrap();
     // When
     test_helpers::reconcile_startup(&fixture.host, &fixture.app)
         .await
         .unwrap();
     // Then
     assert_eq!(
-        workflow_fact_log::read_tree_records(&fixture.store, &id).unwrap(),
+        workflow_fact_log::read_tree_records(&fixture.store, &id)
+            .await
+            .unwrap(),
         before
     );
 }
@@ -208,17 +241,27 @@ async fn test_起動時recovery_通常起動と同じsessionを一度だけ起�
     let mut gates = fixture.host.runtime_activation_locks.lock().await;
     let mut start = Box::pin(archive_workflow(&fixture));
     assert!(futures_util::poll!(start.as_mut()).is_pending());
-    let id = workflow_fact_log::list_tree_ids(
-        &workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone()),
-        None,
-    )
-    .unwrap()
-    .remove(0);
+    let id = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::select! {
+            _ = start.as_mut() => panic!("start must wait for activation gate"),
+            id = async {
+                loop {
+                    let ids = workflow_fact_log::list_tree_ids(
+                        &workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone()), None,
+                    ).await.unwrap();
+                    if let Some(id) = ids.into_iter().next() { break id; }
+                    tokio::task::yield_now().await;
+                }
+            } => id,
+        }
+    })
+    .await
+    .unwrap();
     let gate = Arc::new(RuntimeActivationGate::new());
     let guard = gate.lock.lock().await;
     gates.insert(id.clone(), Arc::downgrade(&gate));
     drop(gates);
-    assert!(futures_util::poll!(start.as_mut()).is_pending());
+    test_helpers::poll_until_pending(start.as_mut(), || Arc::strong_count(&gate) > 1).await;
     let mut recovery = Box::pin(runtime.recover_startup());
     assert!(futures_util::poll!(recovery.as_mut()).is_pending());
 
@@ -242,7 +285,9 @@ async fn test_起動時recovery_通常起動と同じsessionを一度だけ起�
         .await
         .unwrap()
         .is_active());
-    let records = workflow_fact_log::read_tree_records(&fixture.store, &id).unwrap();
+    let records = workflow_fact_log::read_tree_records(&fixture.store, &id)
+        .await
+        .unwrap();
     assert_eq!(
         records
             .iter()
@@ -280,10 +325,12 @@ async fn test_起動時recovery_回復が先に起動したsessionへの古い�
         .store(true, std::sync::atomic::Ordering::SeqCst);
     let mut recovery = Box::pin(test_helpers::reconcile_startup(&fixture.host, &fixture.app));
     assert!(futures_util::poll!(recovery.as_mut()).is_pending());
-    tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        fixture.sessions.preparation_entered.notified(),
-    )
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::select! {
+            _ = fixture.sessions.preparation_entered.notified() => {},
+            _ = recovery.as_mut() => panic!("recovery must wait for preparation"),
+        }
+    })
     .await
     .unwrap();
 
@@ -300,8 +347,9 @@ async fn test_起動時recovery_回復が先に起動したsessionへの古い�
         .await
         .unwrap()
         .unwrap();
-    let before =
-        workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap();
+    let before = workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id)
+        .await
+        .unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(5), start)
         .await
         .unwrap()
@@ -311,7 +359,9 @@ async fn test_起動時recovery_回復が先に起動したsessionへの古い�
     assert_eq!(fixture.sessions.prepared.lock().unwrap().len(), 1);
     assert_eq!(fixture.sessions.activated.lock().unwrap().len(), 1);
     assert_eq!(
-        workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap(),
+        workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id)
+            .await
+            .unwrap(),
         before
     );
 }
@@ -399,6 +449,7 @@ async fn test_workflow永続化_本番構成で起動から完了とabortまで�
             query.as_ref(),
             &execution_id,
         )
+        .await
         .unwrap()
         .unwrap();
         assert_eq!(record.status, status);
@@ -406,6 +457,7 @@ async fn test_workflow永続化_本番構成で起動から完了とabortまで�
             query.as_ref(),
             &execution_id,
         )
+        .await
         .unwrap()
         .unwrap();
         assert_eq!(reloaded, record);
@@ -467,7 +519,12 @@ async fn test_実行木archive_gcはrepository_rootのない旧実行木も所�
     )
     .unwrap();
     assert_eq!(
-        fixture.repository.location(id).unwrap().repository_root,
+        fixture
+            .repository
+            .location(id)
+            .await
+            .unwrap()
+            .repository_root,
         None
     );
     fixture
@@ -491,24 +548,26 @@ async fn test_実行木archive_gcはrepository_rootのない旧実行木も所�
     assert!(fixture
         .repository
         .archive_snapshot_for(&[id.into()])
+        .await
         .unwrap()
         .records
         .is_empty());
     assert_eq!(
-        fixture.repository.target(id).unwrap().status,
+        fixture.repository.target(id).await.unwrap().status,
         ExecutionStatus::Running
     );
     archive_removed_execution_trees(Some(&resolution("/repos/b")), &fixture.runtime)
         .await
         .unwrap();
     assert_eq!(
-        fixture.repository.target(id).unwrap().status,
+        fixture.repository.target(id).await.unwrap().status,
         ExecutionStatus::Aborted
     );
     assert_eq!(
         fixture
             .repository
             .archive_snapshot_for(&[id.into()])
+            .await
             .unwrap()
             .records[0]
             .archive_reason,
@@ -534,13 +593,14 @@ async fn test_実行木archive_workflowをabortして停止完了後に隠し起
     // Then
     assert!(fixture.sessions.live_sessions.lock().unwrap().is_empty());
     assert_eq!(
-        fixture.repository.target(&id).unwrap().status,
+        fixture.repository.target(&id).await.unwrap().status,
         ExecutionStatus::Aborted
     );
     assert_eq!(
         fixture
             .repository
             .archive_snapshot_for(&[id.clone()])
+            .await
             .unwrap()
             .records[0]
             .archive_reason,
@@ -551,10 +611,12 @@ async fn test_実行木archive_workflowをabortして停止完了後に隠し起
         .workspace_tree(&crate::domain::workspace_tree::WorkspaceIdentity::new(
             "/missing/worktree"
         ))
+        .await
         .unwrap()
         .nodes
         .is_empty());
     let facts = crate::adaptor::gateway::workflow::fact_log::read_tree_records(&fixture.store, &id)
+        .await
         .unwrap();
     let abort = facts
         .iter()
@@ -612,6 +674,7 @@ async fn test_実行木archive_provider_idのない単独sessionも同じ操作�
         fixture
             .query
             .workspace_tree(&workspace)
+            .await
             .unwrap()
             .nodes
             .len(),
@@ -627,18 +690,20 @@ async fn test_実行木archive_provider_idのない単独sessionも同じ操作�
     assert!(fixture
         .query
         .workspace_tree(&workspace)
+        .await
         .unwrap()
         .nodes
         .is_empty());
     assert!(fixture.sessions.live_sessions.lock().unwrap().is_empty());
     assert_eq!(
-        fixture.repository.target(id).unwrap().status,
+        fixture.repository.target(id).await.unwrap().status,
         ExecutionStatus::Aborted
     );
     assert_eq!(
         fixture
             .repository
             .archive_snapshot_for(&[id.into()])
+            .await
             .unwrap()
             .records
             .len(),
@@ -661,12 +726,13 @@ async fn test_実行木archive_abort書込失敗ではarchiveを記録しない(
         .is_err());
     // Then
     assert_eq!(
-        fixture.repository.target(&id).unwrap().status,
+        fixture.repository.target(&id).await.unwrap().status,
         ExecutionStatus::Running
     );
     assert!(fixture
         .repository
         .archive_snapshot_for(&[id])
+        .await
         .unwrap()
         .records
         .is_empty());
@@ -692,12 +758,13 @@ async fn test_実行木archive_旧記録移行はabort後に時刻と理由を�
     // Then
     assert!(!path.exists());
     assert_eq!(
-        fixture.repository.target(&id).unwrap().status,
+        fixture.repository.target(&id).await.unwrap().status,
         ExecutionStatus::Aborted
     );
     let records = fixture
         .repository
         .archive_snapshot_for(&[id])
+        .await
         .unwrap()
         .records;
     assert_eq!(records[0].archived_at, 42.123456);
@@ -722,6 +789,7 @@ async fn test_実行木archive_gcはgit登録の消失だけで判定する() {
         fixture
             .repository
             .target(&id)
+            .await
             .unwrap()
             .repository_root
             .as_deref(),
@@ -741,7 +809,7 @@ async fn test_実行木archive_gcはgit登録の消失だけで判定する() {
         .await
         .unwrap();
     assert_eq!(
-        fixture.repository.target(&id).unwrap().status,
+        fixture.repository.target(&id).await.unwrap().status,
         ExecutionStatus::Running
     );
     let unknown = LiveWorktreeResolution::new(
@@ -753,7 +821,7 @@ async fn test_実行木archive_gcはgit登録の消失だけで判定する() {
         .await
         .unwrap();
     assert_eq!(
-        fixture.repository.target(&id).unwrap().status,
+        fixture.repository.target(&id).await.unwrap().status,
         ExecutionStatus::Running
     );
     let removed = LiveWorktreeResolution::new(
@@ -765,13 +833,14 @@ async fn test_実行木archive_gcはgit登録の消失だけで判定する() {
         .await
         .unwrap();
     assert_eq!(
-        fixture.repository.target(&id).unwrap().status,
+        fixture.repository.target(&id).await.unwrap().status,
         ExecutionStatus::Aborted
     );
     assert_eq!(
         fixture
             .repository
             .archive_snapshot_for(&[id])
+            .await
             .unwrap()
             .records[0]
             .archive_reason,
@@ -797,11 +866,12 @@ async fn test_実行木archive_停止失敗では隠さず再実行で完了す�
     assert!(fixture
         .repository
         .archive_snapshot_for(&[id.clone()])
+        .await
         .unwrap()
         .records
         .is_empty());
     assert_eq!(
-        fixture.repository.target(&id).unwrap().status,
+        fixture.repository.target(&id).await.unwrap().status,
         ExecutionStatus::Aborted
     );
     fixture
@@ -818,6 +888,7 @@ async fn test_実行木archive_停止失敗では隠さず再実行で完了す�
         fixture
             .repository
             .archive_snapshot_for(&[id])
+            .await
             .unwrap()
             .records
             .len(),
@@ -893,16 +964,18 @@ async fn test_実行木archive_終了済みは状態を保持しrestoreでも再
             .await
             .unwrap();
         fixture.runtime.restore_execution_tree(&id).await.unwrap();
-        assert_eq!(fixture.repository.target(&id).unwrap().status, status);
+        assert_eq!(fixture.repository.target(&id).await.unwrap().status, status);
         assert!(fixture
             .repository
             .archive_snapshot_for(&[id.clone()])
+            .await
             .unwrap()
             .records
             .is_empty());
         assert!(fixture.sessions.live_sessions.lock().unwrap().is_empty());
         let facts =
             crate::adaptor::gateway::workflow::fact_log::read_tree_records(&fixture.store, &id)
+                .await
                 .unwrap();
         assert_eq!(
             facts
@@ -992,6 +1065,7 @@ async fn test_実行木archive_command停止完了まではarchiveを記録し�
     assert!(fixture
         .repository
         .archive_snapshot_for(&[id.into()])
+        .await
         .unwrap()
         .records
         .is_empty());
@@ -1001,6 +1075,7 @@ async fn test_実行木archive_command停止完了まではarchiveを記録し�
         fixture
             .repository
             .archive_snapshot_for(&[id.into()])
+            .await
             .unwrap()
             .records[0]
             .archive_reason,
@@ -1050,17 +1125,23 @@ async fn test_実行木archive_旧sessionのarchive事実も終了状態へ移�
         .await
         .unwrap();
     assert_eq!(
-        fixture.repository.target(id).unwrap().status,
+        fixture.repository.target(id).await.unwrap().status,
         ExecutionStatus::Aborted
     );
     assert_eq!(
-        fixture.repository.target(id).unwrap().workspace_identity,
+        fixture
+            .repository
+            .target(id)
+            .await
+            .unwrap()
+            .workspace_identity,
         "/workspace"
     );
     assert_eq!(
         fixture
             .repository
             .worktree_target_page("/workspace", None)
+            .await
             .unwrap()
             .len(),
         1
@@ -1069,6 +1150,7 @@ async fn test_実行木archive_旧sessionのarchive事実も終了状態へ移�
         fixture
             .repository
             .archive_snapshot_for(&[id.into()])
+            .await
             .unwrap()
             .records[0]
             .archived_at,
@@ -1077,6 +1159,7 @@ async fn test_実行木archive_旧sessionのarchive事実も終了状態へ移�
     assert!(fixture
         .repository
         .legacy_session_archive_page(None)
+        .await
         .unwrap()
         .is_empty());
 }
@@ -1131,6 +1214,7 @@ async fn test_実行木archive_gcは単独sessionの所属repoだけの読取結
             fixture
                 .repository
                 .target(id)
+                .await
                 .unwrap()
                 .repository_root
                 .as_deref(),
@@ -1162,7 +1246,7 @@ async fn test_実行木archive_gcは単独sessionの所属repoだけの読取結
             .await
             .unwrap();
         assert_eq!(
-            fixture.repository.target(id).unwrap().status,
+            fixture.repository.target(id).await.unwrap().status,
             ExecutionStatus::Running
         );
         let mut options = git2::WorktreePruneOptions::new();
@@ -1175,12 +1259,13 @@ async fn test_実行木archive_gcは単独sessionの所属repoだけの読取結
             .await
             .unwrap();
         assert_eq!(
-            fixture.repository.target(id).unwrap().status,
+            fixture.repository.target(id).await.unwrap().status,
             ExecutionStatus::Running
         );
         assert!(fixture
             .repository
             .archive_snapshot_for(&[id.into()])
+            .await
             .unwrap()
             .records
             .is_empty());
@@ -1193,13 +1278,14 @@ async fn test_実行木archive_gcは単独sessionの所属repoだけの読取結
 
         // Then
         assert_eq!(
-            fixture.repository.target(id).unwrap().status,
+            fixture.repository.target(id).await.unwrap().status,
             ExecutionStatus::Aborted
         );
         assert_eq!(
             fixture
                 .repository
                 .archive_snapshot_for(&[id.into()])
+                .await
                 .unwrap()
                 .records[0]
                 .archive_reason,
@@ -1239,6 +1325,7 @@ async fn test_実行木restore_同じarchive期間への並行要求は一度だ
         // Then
         let records =
             crate::adaptor::gateway::workflow::fact_log::read_tree_records(&fixture.store, &id)
+                .await
                 .unwrap();
         assert_eq!(
             records
@@ -1291,6 +1378,7 @@ async fn test_archive移行_旧ファイルも対象も無い起動では無関�
         &crate::adaptor::gateway::workflow::fact_log::FactLogReadBackend::Live(fixture.store),
         "unrelated"
     )
+    .await
     .is_err());
 }
 
@@ -1321,6 +1409,7 @@ async fn test_worktree削除中_外部変更を拒否して読み取りと内部
         .unwrap();
     let before =
         crate::adaptor::gateway::workflow::fact_log::read_tree_records(&fixture.store, &id)
+            .await
             .unwrap();
     // When
     let errors = [
@@ -1396,6 +1485,7 @@ async fn test_worktree削除中_外部変更を拒否して読み取りと内部
     );
     assert_eq!(
         crate::adaptor::gateway::workflow::fact_log::read_tree_records(&fixture.store, &id)
+            .await
             .unwrap(),
         before
     );
@@ -1404,6 +1494,7 @@ async fn test_worktree削除中_外部変更を拒否して読み取りと内部
         .workspace_tree(&crate::domain::workspace_tree::WorkspaceIdentity::new(
             "/missing/worktree"
         ))
+        .await
         .unwrap()
         .nodes
         .is_empty());
@@ -1413,12 +1504,13 @@ async fn test_worktree削除中_外部変更を拒否して読み取りと内部
         .await
         .unwrap();
     assert_eq!(
-        fixture.repository.target(&id).unwrap().status,
+        fixture.repository.target(&id).await.unwrap().status,
         ExecutionStatus::Aborted
     );
     assert!(fixture.sessions.live_sessions.lock().unwrap().is_empty());
     assert!(
         crate::adaptor::gateway::workflow::fact_log::read_tree_records(&fixture.store, &id)
+            .await
             .unwrap()
             .iter()
             .any(|fact| matches!(fact.fact, NodeFact::ArchiveRequested(_)))
@@ -1469,6 +1561,7 @@ async fn assert_legacy_linked_worktree_gc(remove_directory: bool, remove_before_
     assert!(fixture
         .repository
         .target(id)
+        .await
         .unwrap()
         .repository_root
         .is_none());
@@ -1495,6 +1588,7 @@ async fn assert_legacy_linked_worktree_gc(remove_directory: bool, remove_before_
     assert!(fixture
         .repository
         .archive_snapshot_for(&[id.into()])
+        .await
         .unwrap()
         .records
         .is_empty());
@@ -1514,7 +1608,7 @@ async fn assert_legacy_linked_worktree_gc(remove_directory: bool, remove_before_
             ),
         );
     assert_eq!(
-        reopened.candidate_page(None).unwrap()[0]
+        reopened.candidate_page(None).await.unwrap()[0]
             .repository_root
             .as_deref(),
         root.to_str(),
@@ -1526,7 +1620,7 @@ async fn assert_legacy_linked_worktree_gc(remove_directory: bool, remove_before_
         .await
         .unwrap();
     assert_eq!(
-        fixture.repository.target(id).unwrap().status,
+        fixture.repository.target(id).await.unwrap().status,
         ExecutionStatus::Running
     );
     std::fs::rename(&hidden, &git_dir).unwrap();
@@ -1537,13 +1631,14 @@ async fn assert_legacy_linked_worktree_gc(remove_directory: bool, remove_before_
         0
     );
     assert_eq!(
-        fixture.repository.target(id).unwrap().status,
+        fixture.repository.target(id).await.unwrap().status,
         ExecutionStatus::Aborted
     );
     assert_eq!(
         fixture
             .repository
             .archive_snapshot_for(&[id.into()])
+            .await
             .unwrap()
             .records[0]
             .archive_reason,
@@ -1622,7 +1717,9 @@ async fn test_記録からの操作_agent_sessionが再開を保存した後にs
         .await
         .unwrap();
     // Then
-    let records = workflow_fact_log::read_tree_records(&fixture.store, id).unwrap();
+    let records = workflow_fact_log::read_tree_records(&fixture.store, id)
+        .await
+        .unwrap();
     assert!(records.iter().any(|record| matches!(
         record.fact,
         crate::domain::workflow::NodeFact::ResumeRequested
@@ -1656,10 +1753,13 @@ async fn test_起動時前進_失敗を理由付きabortにし他の木を進め
     .unwrap();
     // When
     assert!(startup.execute().await.is_err());
-    let failed_records =
-        workflow_fact_log::read_tree_records(&fixture.store, &failed.execution_id).unwrap();
+    let failed_records = workflow_fact_log::read_tree_records(&fixture.store, &failed.execution_id)
+        .await
+        .unwrap();
     let healthy_records =
-        workflow_fact_log::read_tree_records(&fixture.store, &healthy.execution_id).unwrap();
+        workflow_fact_log::read_tree_records(&fixture.store, &healthy.execution_id)
+            .await
+            .unwrap();
     startup.execute().await.unwrap();
     // Then
     assert!(failed_records.iter().any(|record| matches!(&record.fact,
@@ -1677,11 +1777,15 @@ async fn test_起動時前進_失敗を理由付きabortにし他の木を進め
     )));
     assert_eq!(fixture.sessions.activated.lock().unwrap().len(), 1);
     assert_eq!(
-        workflow_fact_log::read_tree_records(&fixture.store, &failed.execution_id).unwrap(),
+        workflow_fact_log::read_tree_records(&fixture.store, &failed.execution_id)
+            .await
+            .unwrap(),
         failed_records
     );
     assert_eq!(
-        workflow_fact_log::read_tree_records(&fixture.store, &healthy.execution_id).unwrap(),
+        workflow_fact_log::read_tree_records(&fixture.store, &healthy.execution_id)
+            .await
+            .unwrap(),
         healthy_records
     );
     assert!(host.startup_retries.lock().await.is_empty());
@@ -1703,6 +1807,7 @@ async fn test_起動時前進_reply喪失後は保存済みなら続行し未保
             .await;
         let records =
             workflow_fact_log::read_tree_records(&fixture.store, &interrupted.execution_id)
+                .await
                 .unwrap();
         let first = &records
             .iter()
@@ -1745,9 +1850,12 @@ async fn test_起動時前進_reply喪失後は保存済みなら続行し未保
         let result = startup.execute().await;
         let records =
             workflow_fact_log::read_tree_records(&fixture.store, &interrupted.execution_id)
+                .await
                 .unwrap();
         let healthy_records =
-            workflow_fact_log::read_tree_records(&fixture.store, &healthy.execution_id).unwrap();
+            workflow_fact_log::read_tree_records(&fixture.store, &healthy.execution_id)
+                .await
+                .unwrap();
         startup.execute().await.unwrap();
 
         // Then
@@ -1794,11 +1902,14 @@ async fn test_起動時前進_reply喪失後は保存済みなら続行し未保
         );
         assert_eq!(
             workflow_fact_log::read_tree_records(&fixture.store, &interrupted.execution_id)
+                .await
                 .unwrap(),
             records
         );
         assert_eq!(
-            workflow_fact_log::read_tree_records(&fixture.store, &healthy.execution_id).unwrap(),
+            workflow_fact_log::read_tree_records(&fixture.store, &healthy.execution_id)
+                .await
+                .unwrap(),
             healthy_records
         );
         assert!(host.startup_retries.lock().await.is_empty());
@@ -1844,9 +1955,12 @@ async fn test_起動時session紐付け_reply喪失後は保存済みなら起�
         let result = startup.execute().await;
         let records =
             workflow_fact_log::read_tree_records(&fixture.store, &interrupted.execution_id)
+                .await
                 .unwrap();
         let healthy_records =
-            workflow_fact_log::read_tree_records(&fixture.store, &healthy.execution_id).unwrap();
+            workflow_fact_log::read_tree_records(&fixture.store, &healthy.execution_id)
+                .await
+                .unwrap();
         startup.execute().await.unwrap();
 
         // Then
@@ -1897,11 +2011,14 @@ async fn test_起動時session紐付け_reply喪失後は保存済みなら起�
         );
         assert_eq!(
             workflow_fact_log::read_tree_records(&fixture.store, &interrupted.execution_id)
+                .await
                 .unwrap(),
             records
         );
         assert_eq!(
-            workflow_fact_log::read_tree_records(&fixture.store, &healthy.execution_id).unwrap(),
+            workflow_fact_log::read_tree_records(&fixture.store, &healthy.execution_id)
+                .await
+                .unwrap(),
             healthy_records
         );
         assert!(host.startup_retries.lock().await.is_empty());
@@ -1977,6 +2094,7 @@ async fn test_worktree排他_同時起動は一件だけ成功し外部abort後�
             timestamp: current_timestamp(),
         }],
     )
+    .await
     .unwrap();
     assert!(fixture
         .host
@@ -2023,7 +2141,20 @@ async fn test_worktree排他_abort待機中も別worktreeは起動し同一workt
                 Some("other-node")
             },
         ));
-        assert!(futures_util::poll!(abort.as_mut()).is_pending());
+        if before_commit {
+            test_helpers::poll_until_pending(abort.as_mut(), || Arc::strong_count(&gate) > 1).await;
+        } else {
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                tokio::select! {
+                    _ = abort.as_mut() => panic!("abort must wait for shutdown"),
+                    _ = async {
+                        while fixture.host.load_execution(&fixture.app, &active.execution_id).await.unwrap().is_active() {
+                            tokio::task::yield_now().await;
+                        }
+                    } => {},
+                }
+            }).await.unwrap();
+        }
 
         // When
         let mut same = Box::pin(fixture.host.start_resolved_workflow(
@@ -2060,6 +2191,7 @@ async fn test_worktree排他_abort待機中も別worktreeは起動し同一workt
         );
         assert!(
             !workflow_fact_log::read_tree_records(&fixture.store, &other_id)
+                .await
                 .unwrap()
                 .is_empty()
         );
@@ -2131,10 +2263,12 @@ async fn test_commit排他_別実行木のcommitとcommand起動判定を妨げ�
         &second_input,
         "true".into(),
     ));
-    assert!(matches!(
-        futures_util::poll!(other.as_mut()),
-        std::task::Poll::Ready(Ok(true))
-    ));
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(5), other.as_mut())
+            .await
+            .unwrap()
+            .unwrap()
+    );
     drop(other);
     fixture
         .host
@@ -2146,10 +2280,10 @@ async fn test_commit排他_別実行木のcommitとcommand起動判定を妨げ�
             .host
             .spawn_command_execution(&fixture.app, second_input),
     );
-    assert!(matches!(
-        futures_util::poll!(spawn.as_mut()),
-        std::task::Poll::Ready(Ok(()))
-    ));
+    tokio::time::timeout(std::time::Duration::from_secs(5), spawn.as_mut())
+        .await
+        .unwrap()
+        .unwrap();
     assert!(fixture
         .host
         .node_processes
@@ -2192,8 +2326,9 @@ async fn test_worktree排他_abort対象の所在地を読めなければ記録�
     let active = fixture
         .persist_started("  main: {session: {provider: codex}}\n", "/repo")
         .await;
-    let records =
-        workflow_fact_log::read_tree_records(&fixture.store, &active.execution_id).unwrap();
+    let records = workflow_fact_log::read_tree_records(&fixture.store, &active.execution_id)
+        .await
+        .unwrap();
     let mut broken =
         workflow_fact_log::pending_single_fact(&records[0].meta, &records[0].fact, 1_000).unwrap();
     broken.row.tree_id = "broken".into();
@@ -2225,7 +2360,9 @@ async fn test_worktree排他_abort対象の所在地を読めなければ記録�
         Err(WorkflowRuntimeError::SessionStore(_))
     ));
     assert_eq!(
-        workflow_fact_log::read_tree_records(&fixture.store, &active.execution_id).unwrap(),
+        workflow_fact_log::read_tree_records(&fixture.store, &active.execution_id)
+            .await
+            .unwrap(),
         records
     );
     assert!(fixture.host.workflow_start_locks.lock().await.is_empty());
@@ -2274,8 +2411,9 @@ async fn test_command反映_登録なしの起動と結果を保存し確定後�
     host.commit_command_output(&fixture.app, input.clone(), command_output())
         .await
         .unwrap();
-    let completed =
-        workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap();
+    let completed = workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id)
+        .await
+        .unwrap();
     host.commit_command_output(&fixture.app, input.clone(), command_output())
         .await
         .unwrap();
@@ -2296,7 +2434,9 @@ async fn test_command反映_登録なしの起動と結果を保存し確定後�
         crate::domain::workflow::NodeFact::ExecutionCompleted
     )));
     assert_eq!(
-        workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap(),
+        workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id)
+            .await
+            .unwrap(),
         completed
     );
     let warnings = crate::test_support::captured_warning_messages();
@@ -2323,8 +2463,9 @@ async fn test_command失敗_登録なしの最新attemptに保存し別attempt�
     host.fail_current_command_node(&fixture.app, &input, "process wait failed".into())
         .await
         .unwrap();
-    let before =
-        workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap();
+    let before = workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id)
+        .await
+        .unwrap();
     let mut stale = input.clone();
     stale.attempt += 1;
     host.fail_current_command_node(&fixture.app, &stale, "wrong attempt".into())
@@ -2336,7 +2477,9 @@ async fn test_command失敗_登録なしの最新attemptに保存し別attempt�
         crate::domain::workflow::NodeFact::RuntimeFailureObserved(_)
     )));
     assert_eq!(
-        workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap(),
+        workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id)
+            .await
+            .unwrap(),
         before
     );
 }
@@ -2349,8 +2492,9 @@ async fn test_commit結果不明_一部や別内容は競合とし保存済みba
         let snapshot = fixture
             .persist_started("  main: {session: {provider: codex}}\n", "/repo")
             .await;
-        let records =
-            workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap();
+        let records = workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id)
+            .await
+            .unwrap();
         let head = records.last().unwrap().seq;
         let events = [
             WorkflowEvent::SessionAttached {
@@ -2390,9 +2534,12 @@ async fn test_commit結果不明_一部や別内容は競合とし保存済みba
             }),
             _ => unreachable!(),
         }
-        workflow_fact_log::append_facts_for_events(&fixture.store, &concurrent).unwrap();
-        let before =
-            workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap();
+        workflow_fact_log::append_facts_for_events(&fixture.store, &concurrent)
+            .await
+            .unwrap();
+        let before = workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id)
+            .await
+            .unwrap();
         fixture.store.fault_injector().arm_drop_reply();
 
         // When
@@ -2401,7 +2548,8 @@ async fn test_commit結果不明_一部や別内容は競合とし保存済みba
             &snapshot.execution_id,
             head,
             &events,
-        );
+        )
+        .await;
 
         // Then
         if change == "complete" {
@@ -2413,13 +2561,15 @@ async fn test_commit結果不明_一部や別内容は競合とし保存済みba
             );
         }
         assert_eq!(
-            workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap(),
+            workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id)
+                .await
+                .unwrap(),
             before
         );
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_commit結果不明_記録を読み直せなければ保存成功にしない() {
     use crate::adaptor::gateway::local_event_store::layout::StoreLayout;
 
@@ -2428,8 +2578,9 @@ async fn test_commit結果不明_記録を読み直せなければ保存成功�
     let snapshot = fixture
         .persist_started("  main: {session: {provider: codex}}\n", "/repo")
         .await;
-    let records =
-        workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap();
+    let records = workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id)
+        .await
+        .unwrap();
     let head = records.last().unwrap().seq;
     let event = WorkflowEvent::SessionAttached {
         execution_id: snapshot.execution_id.clone(),
@@ -2440,8 +2591,9 @@ async fn test_commit結果不明_記録を読み直せなければ保存成功�
     let stall = fixture.store.fault_injector().arm_node_event_append_stall();
     fixture.store.fault_injector().arm_drop_reply();
     let app = fixture.app.clone();
-    let commit = std::thread::spawn(move || {
+    let commit = tokio::spawn(async move {
         WorkflowRuntimeHost::append_events_at_head(&app, &snapshot.execution_id, head, &[event])
+            .await
     });
     stall.wait_until_arrived();
 
@@ -2453,7 +2605,7 @@ async fn test_commit結果不明_記録を読み直せなければ保存成功�
         .execute_batch("ALTER TABLE node_events RENAME TO unavailable_node_events;")
         .unwrap();
     stall.release();
-    let error = commit.join().unwrap().unwrap_err();
+    let error = commit.await.unwrap().unwrap_err();
 
     // Then
     assert!(matches!(
@@ -2476,8 +2628,9 @@ async fn test_commit競合_候補作成後に外部が保存した事実を上�
         .unwrap();
     let mut candidate = before.clone();
     candidate.transition_aborted();
-    let records =
-        workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap();
+    let records = workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id)
+        .await
+        .unwrap();
     workflow_fact_log::append_facts_for_events(
         &fixture.store,
         &[WorkflowEvent::NodeStopReceived {
@@ -2486,9 +2639,11 @@ async fn test_commit競合_候補作成後に外部が保存した事実を上�
             timestamp: current_timestamp() + 0.001,
         }],
     )
+    .await
     .unwrap();
-    let advanced =
-        workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap();
+    let advanced = workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id)
+        .await
+        .unwrap();
     // When
     let error = fixture
         .host
@@ -2512,7 +2667,9 @@ async fn test_commit競合_候補作成後に外部が保存した事実を上�
     // Then
     assert!(matches!(error, WorkflowRuntimeError::Conflict(_)));
     assert_eq!(
-        workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap(),
+        workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id)
+            .await
+            .unwrap(),
         advanced
     );
 }
@@ -2555,6 +2712,7 @@ async fn test_command反映_実行木がない場合は起動と結果と失敗�
     );
     assert!(
         workflow_fact_log::read_tree_records(&fixture.store, &input.execution_id)
+            .await
             .unwrap()
             .is_empty()
     );
@@ -2593,6 +2751,7 @@ async fn test_記録からの承認_外部writerの完了信号で承認待ち�
             },
         ],
     )
+    .await
     .unwrap();
     let control =
         WorkflowControlPlaneUsecase::new(Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(
@@ -2610,7 +2769,9 @@ async fn test_記録からの承認_外部writerの完了信号で承認待ち�
         .await
         .unwrap();
     // Then
-    let records = workflow_fact_log::read_tree_records(&fixture.store, &before.id).unwrap();
+    let records = workflow_fact_log::read_tree_records(&fixture.store, &before.id)
+        .await
+        .unwrap();
     assert!(records
         .iter()
         .any(|record| matches!(record.fact, NodeFact::ApprovalGranted(_))));
@@ -2619,7 +2780,7 @@ async fn test_記録からの承認_外部writerの完了信号で承認待ち�
         .any(|record| matches!(record.fact, NodeFact::ExecutionCompleted)));
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn test_記録からのretry_外部writerが作った最新attemptを再試行する() {
     use crate::domain::workflow::NodeFact;
     use crate::usecase::workflow::command::RetryNodeCommand;
@@ -2658,6 +2819,7 @@ async fn test_記録からのretry_外部writerが作った最新attemptを再�
             },
         ],
     )
+    .await
     .unwrap();
     let control =
         WorkflowControlPlaneUsecase::new(Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(
@@ -2674,7 +2836,9 @@ async fn test_記録からのretry_外部writerが作った最新attemptを再�
         .unwrap();
     fixture.wait_startup_retries().await;
     // Then
-    let records = workflow_fact_log::read_tree_records(&fixture.store, &before.id).unwrap();
+    let records = workflow_fact_log::read_tree_records(&fixture.store, &before.id)
+        .await
+        .unwrap();
     assert!(records
         .iter()
         .any(|record| record.meta.node_execution_id == next_id
@@ -2700,6 +2864,7 @@ async fn test_abort競合_外部writerの追記後も最新記録を中止する
         .persist_started("  main: {command: true}\n", "/repo")
         .await;
     let meta = workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id)
+        .await
         .unwrap()[0]
         .meta
         .clone();
@@ -2710,7 +2875,7 @@ async fn test_abort競合_外部writerの追記後も最新記録を中止する
         &snapshot.execution_id,
         None,
     ));
-    assert!(futures_util::poll!(abort.as_mut()).is_pending());
+    test_helpers::poll_until_pending(abort.as_mut(), || Arc::strong_count(&commit_lock) > 1).await;
     // When
     workflow_fact_log::append_single_fact(
         &fixture.store,
@@ -2724,8 +2889,9 @@ async fn test_abort競合_外部writerの追記後も最新記録を中止する
     drop(guard);
     abort.await.unwrap();
     // Then
-    let records =
-        workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap();
+    let records = workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id)
+        .await
+        .unwrap();
     assert_eq!(
         records
             .iter()
@@ -2750,6 +2916,7 @@ async fn test_command結果競合_最新記録で成功を保存し終端なら�
             .await;
         let input = command_input(&snapshot);
         let meta = workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id)
+            .await
             .unwrap()[0]
             .meta
             .clone();
@@ -2760,7 +2927,10 @@ async fn test_command結果競合_最新記録で成功を保存し終端なら�
             input.clone(),
             Ok(command_output()),
         ));
-        assert!(futures_util::poll!(completion.as_mut()).is_pending());
+        test_helpers::poll_until_pending(completion.as_mut(), || {
+            Arc::strong_count(&commit_lock) > 1
+        })
+        .await;
         // When
         workflow_fact_log::append_single_fact(
             &fixture.store,
@@ -2775,13 +2945,15 @@ async fn test_command結果競合_最新記録で成功を保存し終端なら�
             2000,
         )
         .unwrap();
-        let before =
-            workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap();
+        let before = workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id)
+            .await
+            .unwrap();
         drop(guard);
         completion.await;
         // Then
-        let records =
-            workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap();
+        let records = workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id)
+            .await
+            .unwrap();
         assert!(!records
             .iter()
             .any(|record| matches!(record.fact, NodeFact::RuntimeFailureObserved(_))));
@@ -2832,6 +3004,7 @@ async fn test_操作競合_abortとcommand結果は上限で止まり障害事�
             .await;
         let input = command_input(&snapshot);
         let meta = workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id)
+            .await
             .unwrap()[0]
             .meta
             .clone();
@@ -2853,7 +3026,10 @@ async fn test_操作競合_abortとcommand結果は上限で止まり障害事�
         });
         // When
         for attempt in 0..CONTROL_PLANE_MAX_ATTEMPTS {
-            assert!(futures_util::poll!(operation.as_mut()).is_pending());
+            test_helpers::poll_until_pending(operation.as_mut(), || {
+                Arc::strong_count(&commit_lock) > 1
+            })
+            .await;
             workflow_fact_log::append_single_fact(
                 &fixture.store,
                 &meta,
@@ -2870,8 +3046,10 @@ async fn test_操作競合_abortとcommand結果は上限で止まり障害事�
             let mut next_guard = Box::pin(commit_lock.lock());
             assert!(futures_util::poll!(next_guard.as_mut()).is_pending());
             drop(guard);
-            assert!(futures_util::poll!(operation.as_mut()).is_pending());
-            guard = next_guard.await;
+            guard = tokio::select! {
+                guard = next_guard => guard,
+                _ = operation.as_mut() => panic!("operation must retry after conflict"),
+            };
         }
         let result = operation.await;
         // Then
@@ -2885,8 +3063,9 @@ async fn test_操作競合_abortとcommand結果は上限で止まり障害事�
         } else {
             assert!(matches!(result, Err(WorkflowRuntimeError::Conflict(_))));
         }
-        let records =
-            workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap();
+        let records = workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id)
+            .await
+            .unwrap();
         assert_eq!(records.len(), CONTROL_PLANE_MAX_ATTEMPTS + 1);
         assert!(records.iter().all(|record| matches!(
             record.fact,
@@ -2932,7 +3111,10 @@ async fn test_command起動失敗競合_最新attemptへ保存し終端や更新
                         .map(|()| true)
                 }
             });
-            assert!(futures_util::poll!(operation.as_mut()).is_pending());
+            test_helpers::poll_until_pending(operation.as_mut(), || {
+                Arc::strong_count(&commit_lock) > 1
+            })
+            .await;
             // When
             let timestamp = current_timestamp();
             let events = match change {
@@ -2965,14 +3147,18 @@ async fn test_command起動失敗競合_最新attemptへ保存し終端や更新
                     timestamp,
                 }],
             };
-            workflow_fact_log::append_facts_for_events(&fixture.store, &events).unwrap();
-            let before =
-                workflow_fact_log::read_tree_records(&fixture.store, &input.execution_id).unwrap();
+            workflow_fact_log::append_facts_for_events(&fixture.store, &events)
+                .await
+                .unwrap();
+            let before = workflow_fact_log::read_tree_records(&fixture.store, &input.execution_id)
+                .await
+                .unwrap();
             drop(guard);
             let applied = operation.await.unwrap();
             // Then
-            let records =
-                workflow_fact_log::read_tree_records(&fixture.store, &input.execution_id).unwrap();
+            let records = workflow_fact_log::read_tree_records(&fixture.store, &input.execution_id)
+                .await
+                .unwrap();
             if change == "current" {
                 assert!(applied);
                 assert_eq!(records.len(), before.len() + 1);
@@ -3045,7 +3231,10 @@ async fn test_command起動失敗競合_上限で不反映理由を残し競合�
         });
         // When
         for attempt in 0..CONTROL_PLANE_MAX_ATTEMPTS {
-            assert!(futures_util::poll!(operation.as_mut()).is_pending());
+            test_helpers::poll_until_pending(operation.as_mut(), || {
+                Arc::strong_count(&commit_lock) > 1
+            })
+            .await;
             workflow_fact_log::append_facts_for_events(
                 &fixture.store,
                 &[WorkflowEvent::CommandSpawned {
@@ -3055,6 +3244,7 @@ async fn test_command起動失敗競合_上限で不反映理由を残し競合�
                     timestamp: current_timestamp(),
                 }],
             )
+            .await
             .unwrap();
             if attempt + 1 == CONTROL_PLANE_MAX_ATTEMPTS {
                 drop(guard);
@@ -3063,13 +3253,16 @@ async fn test_command起動失敗競合_上限で不反映理由を残し競合�
             let mut next_guard = Box::pin(commit_lock.lock());
             assert!(futures_util::poll!(next_guard.as_mut()).is_pending());
             drop(guard);
-            assert!(futures_util::poll!(operation.as_mut()).is_pending());
-            guard = next_guard.await;
+            guard = tokio::select! {
+                guard = next_guard => guard,
+                _ = operation.as_mut() => panic!("operation must retry after conflict"),
+            };
         }
         operation.await;
         // Then
-        let records =
-            workflow_fact_log::read_tree_records(&fixture.store, &input.execution_id).unwrap();
+        let records = workflow_fact_log::read_tree_records(&fixture.store, &input.execution_id)
+            .await
+            .unwrap();
         assert_eq!(records.len(), CONTROL_PLANE_MAX_ATTEMPTS + 1);
         assert!(records.iter().all(|record| matches!(
             record.fact,
@@ -3133,7 +3326,10 @@ async fn test_session準備競合_最新記録で紐付けを再評価し準備�
 
         // When
         for attempt in 0..attempts {
-            assert!(futures_util::poll!(operation.as_mut()).is_pending());
+            test_helpers::poll_until_pending(operation.as_mut(), || {
+                Arc::strong_count(&commit_lock) > 1
+            })
+            .await;
             workflow_fact_log::append_facts_for_events(
                 &fixture.store,
                 &[match change {
@@ -3156,6 +3352,7 @@ async fn test_session準備競合_最新記録で紐付けを再評価し準備�
                     },
                 }],
             )
+            .await
             .unwrap();
             if attempt + 1 == attempts {
                 drop(guard);
@@ -3164,8 +3361,10 @@ async fn test_session準備競合_最新記録で紐付けを再評価し準備�
             let mut next_guard = Box::pin(commit_lock.lock());
             assert!(futures_util::poll!(next_guard.as_mut()).is_pending());
             drop(guard);
-            assert!(futures_util::poll!(operation.as_mut()).is_pending());
-            guard = next_guard.await;
+            guard = tokio::select! {
+                guard = next_guard => guard,
+                _ = operation.as_mut() => panic!("operation must retry after conflict"),
+            };
         }
         let result = operation.await;
 
@@ -3198,8 +3397,9 @@ async fn test_session準備競合_最新記録で紐付けを再評価し準備�
             assert!(fixture.sessions.activated.lock().unwrap().is_empty());
         }
         assert_eq!(fixture.sessions.prepared.lock().unwrap().len(), 1);
-        let records =
-            workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap();
+        let records = workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id)
+            .await
+            .unwrap();
         assert_eq!(
             records
                 .iter()
@@ -3295,7 +3495,10 @@ async fn test_自動再起動競合_最新記録で再評価し上限まで再�
 
         // When
         for attempt in 0..attempts {
-            assert!(futures_util::poll!(operation.as_mut()).is_pending());
+            test_helpers::poll_until_pending(operation.as_mut(), || {
+                Arc::strong_count(&commit_lock) > 1
+            })
+            .await;
             workflow_fact_log::append_facts_for_events(
                 &fixture.store,
                 &[if change == "abort" {
@@ -3313,6 +3516,7 @@ async fn test_自動再起動競合_最新記録で再評価し上限まで再�
                     }
                 }],
             )
+            .await
             .unwrap();
             if attempt + 1 == attempts {
                 drop(guard);
@@ -3321,8 +3525,10 @@ async fn test_自動再起動競合_最新記録で再評価し上限まで再�
             let mut next_guard = Box::pin(commit_lock.lock());
             assert!(futures_util::poll!(next_guard.as_mut()).is_pending());
             drop(guard);
-            assert!(futures_util::poll!(operation.as_mut()).is_pending());
-            guard = next_guard.await;
+            guard = tokio::select! {
+                guard = next_guard => guard,
+                _ = operation.as_mut() => panic!("operation must retry after conflict"),
+            };
         }
         let result = operation.await;
 
@@ -3353,8 +3559,9 @@ async fn test_自動再起動競合_最新記録で再評価し上限まで再�
             "abort" => assert!(result.unwrap().is_none()),
             _ => assert!(matches!(result, Err(WorkflowRuntimeError::Conflict(_)))),
         }
-        let records =
-            workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap();
+        let records = workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id)
+            .await
+            .unwrap();
         assert_eq!(
             records
                 .iter()
@@ -3401,6 +3608,7 @@ async fn test_自動再起動_先行nodeのエラーを後続の起動成功node
             timestamp: current_timestamp(),
         }],
     )
+    .await
     .unwrap();
     *fixture.sessions.presence_error_session.lock().unwrap() = Some("unavailable-session".into());
 
@@ -3417,8 +3625,9 @@ async fn test_自動再起動_先行nodeのエラーを後続の起動成功node
     fixture.wait_startup_retries().await;
 
     // Then
-    let records =
-        workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap();
+    let records = workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id)
+        .await
+        .unwrap();
     let failures: Vec<_> = records
         .iter()
         .filter(|record| matches!(record.fact, NodeFact::RuntimeFailureObserved(_)))
@@ -3459,8 +3668,9 @@ async fn test_node事実追記_sqlite混雑をruntimeとconnectまで保持す�
     let snapshot = fixture
         .persist_started("  main: {session: {provider: codex}}\n", "/repo")
         .await;
-    let records =
-        workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap();
+    let records = workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id)
+        .await
+        .unwrap();
     let head = records.last().unwrap().seq;
     let connection =
         rusqlite::Connection::open(StoreLayout::new(fixture._directory.path()).database_path())
@@ -3478,10 +3688,12 @@ async fn test_node事実追記_sqlite混雑をruntimeとconnectまで保持す�
         head,
         &[event.clone()],
     )
+    .await
     .unwrap_err();
     let batch_error = fixture
         .host
         .write_log_required_batch(&fixture.app, &[event])
+        .await
         .unwrap_err();
     connection.execute_batch("ROLLBACK").unwrap();
     // Then
@@ -3492,7 +3704,9 @@ async fn test_node事実追記_sqlite混雑をruntimeとconnectまで保持す�
         connectrpc::ErrorCode::Unavailable
     );
     assert_eq!(
-        workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap(),
+        workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id)
+            .await
+            .unwrap(),
         records
     );
 }

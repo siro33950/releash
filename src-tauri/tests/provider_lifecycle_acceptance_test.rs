@@ -264,7 +264,7 @@ async fn assert_rejected_without_ledger_change(
         serde_json::json!({}),
         "Provider-required Hook stdout must remain valid JSON",
     );
-    assert_eq!(host.ledger_event_counts().unwrap(), before);
+    assert_eq!(host.ledger_event_counts().await.unwrap(), before);
     assert!(
         command.stderr.contains(expected_diagnostic),
         "missing rejection diagnostic {expected_diagnostic:?}: {}",
@@ -373,7 +373,7 @@ async fn test_providerライフサイクル受入_両providerがatui_020とatui_
             plugin_directory.path(),
         )
         .await;
-        let ledger_before = host.ledger_event_counts().unwrap();
+        let ledger_before = host.ledger_event_counts().await.unwrap();
         let workflow_commands_before = host.workflow_runtime_command_count();
         let provider_session = format!("{name}-session-correct");
         let transcript_ref = format!("provider://{name}/transcript-correct");
@@ -415,7 +415,7 @@ async fn test_providerライフサイクル受入_両providerがatui_020とatui_
             .unwrap()
             .occurred_at_ms;
         assert!(stop_at.saturating_sub(session_at) >= 50);
-        let ledger_after = host.ledger_event_counts().unwrap();
+        let ledger_after = host.ledger_event_counts().await.unwrap();
         assert_eq!(
             ledger_after.other, ledger_before.other,
             "#1596 must not append workflow events",
@@ -555,7 +555,7 @@ async fn test_providerライフサイクル受入_両providerがatui_020とatui_
             .await;
             let mut lifecycle_command = command(provider, &launch, data_dir.path());
             replace_environment(&mut lifecycle_command, environment_key, wrong_value);
-            let before = host.ledger_event_counts().unwrap();
+            let before = host.ledger_event_counts().await.unwrap();
             let run = run_product_fixture(
                 &format!("{name}-{scenario}"),
                 lifecycle_command,
@@ -585,7 +585,7 @@ async fn test_providerライフサイクル受入_両providerがatui_020とatui_
             plugin_directory.path(),
         )
         .await;
-        let before = host.ledger_event_counts().unwrap();
+        let before = host.ledger_event_counts().await.unwrap();
         let run = run_product_fixture(
             &format!("{name}-malformed"),
             command(provider, &malformed, data_dir.path()),
@@ -616,7 +616,7 @@ async fn test_providerライフサイクル受入_両providerがatui_020とatui_
             "RELEASH_PROVIDER_LIFECYCLE_CAPABILITY",
             "invalid-capability",
         );
-        let before = host.ledger_event_counts().unwrap();
+        let before = host.ledger_event_counts().await.unwrap();
         let run = run_product_fixture(
             &format!("{name}-invalid-capability"),
             invalid_command,
@@ -661,7 +661,7 @@ async fn test_providerライフサイクル受入_両providerがatui_020とatui_
             "RELEASH_PROVIDER_LIFECYCLE_CAPABILITY",
             &stale.capability,
         );
-        let before = host.ledger_event_counts().unwrap();
+        let before = host.ledger_event_counts().await.unwrap();
         let run = run_product_fixture(
             &format!("{name}-stale-capability"),
             stale_capability_command,
@@ -682,7 +682,7 @@ async fn test_providerライフサイクル受入_両providerがatui_020とatui_
         )
         .await;
 
-        let before = host.ledger_event_counts().unwrap();
+        let before = host.ledger_event_counts().await.unwrap();
         let run = run_product_fixture(
             &format!("{name}-expired-binding"),
             command(provider, &stale, data_dir.path()),
@@ -731,7 +731,7 @@ async fn test_providerライフサイクル受入_両providerがatui_020とatui_
             plugin_directory.path(),
         )
         .await;
-        let before = host.ledger_event_counts().unwrap();
+        let before = host.ledger_event_counts().await.unwrap();
         let run = run_product_fixture(
             &format!("{name}-previous-launch"),
             command(provider, &previous, data_dir.path()),
@@ -778,7 +778,7 @@ async fn test_providerライフサイクル受入_両providerがatui_020とatui_
                 AcceptanceProvider::Codex => "claude",
             },
         );
-        let before = host.ledger_event_counts().unwrap();
+        let before = host.ledger_event_counts().await.unwrap();
         let run = run_product_fixture(
             &format!("{name}-provider-mismatch"),
             provider_mismatch_command,
@@ -808,7 +808,7 @@ async fn test_providerライフサイクル受入_両providerがatui_020とatui_
         )
         .await;
         let absent_data_dir = tempfile::TempDir::new().unwrap();
-        let before = host.ledger_event_counts().unwrap();
+        let before = host.ledger_event_counts().await.unwrap();
         let run = run_product_fixture(
             &format!("{name}-missing-discovery"),
             command(provider, &missing_discovery, absent_data_dir.path()),
@@ -931,7 +931,7 @@ async fn test_providerライフサイクル受入_stale_discoveryから古い接
             serde_json::to_vec(&stale_discovery).unwrap(),
         )
         .unwrap();
-        let before = host.ledger_event_counts().unwrap();
+        let before = host.ledger_event_counts().await.unwrap();
 
         let run = run_product_fixture(
             &format!("{}-stale-discovery", provider_name(provider)),

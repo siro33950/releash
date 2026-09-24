@@ -32,45 +32,50 @@ pub struct ExecutionTreeArchiveTarget {
     pub status: crate::domain::workflow::ExecutionStatus,
 }
 
+#[async_trait::async_trait]
 pub trait ExecutionTreeArchiveRepository: Send + Sync {
-    fn location(&self, execution_id: &str) -> Result<ExecutionTreeArchiveCandidate, WorkflowError>;
+    async fn location(
+        &self,
+        execution_id: &str,
+    ) -> Result<ExecutionTreeArchiveCandidate, WorkflowError>;
     fn worktree_identity(&self, path: &str) -> Result<String, WorkflowError>;
-    fn worktree_target_page(
+    async fn worktree_target_page(
         &self,
         worktree_path: &str,
         after: Option<&str>,
     ) -> Result<Vec<ExecutionTreeArchiveCandidate>, WorkflowError>;
-    fn candidate_page(
+    async fn candidate_page(
         &self,
         after: Option<&str>,
     ) -> Result<Vec<ExecutionTreeArchiveCandidate>, WorkflowError>;
-    fn record_repository_root(
+    async fn record_repository_root(
         &self,
         execution_id: &str,
         repository_root: &str,
         timestamp: f64,
     ) -> Result<(), WorkflowError>;
-    fn legacy_session_archive_page(
+    async fn legacy_session_archive_page(
         &self,
         after: Option<&str>,
     ) -> Result<Vec<ExecutionTreeArchiveRecord>, WorkflowError>;
-    fn target(&self, execution_id: &str) -> Result<ExecutionTreeArchiveTarget, WorkflowError>;
+    async fn target(&self, execution_id: &str)
+        -> Result<ExecutionTreeArchiveTarget, WorkflowError>;
     fn legacy_archives(&self) -> Result<Vec<ExecutionTreeArchiveRecord>, WorkflowError>;
     fn finish_legacy_migration(&self) -> Result<(), WorkflowError>;
-    fn archive(
+    async fn archive(
         &self,
         execution_id: &ExecutionTreeId,
         archived_at: f64,
         reason: &str,
     ) -> Result<(), WorkflowError>;
-    fn restore(
+    async fn restore(
         &self,
         execution_id: &ExecutionTreeId,
         restored_at: f64,
     ) -> Result<(), WorkflowError>;
     /// Returns archive state for only the requested execution identities while
     /// preserving the canonical binding of the same process-local snapshot.
-    fn archive_snapshot_for(
+    async fn archive_snapshot_for(
         &self,
         execution_ids: &[String],
     ) -> Result<ExecutionTreeArchiveSnapshot, WorkflowError>;
@@ -116,10 +121,11 @@ pub struct WorkflowStartupRecord {
     pub revision: WorkflowRevision,
 }
 
+#[async_trait::async_trait]
 pub trait WorkflowStartupRepository: Send + Sync {
-    fn list_tree_ids(&self) -> Result<Vec<String>, WorkflowError>;
-    fn load(&self, tree_id: &str) -> Result<Option<WorkflowStartupRecord>, WorkflowError>;
-    fn append(
+    async fn list_tree_ids(&self) -> Result<Vec<String>, WorkflowError>;
+    async fn load(&self, tree_id: &str) -> Result<Option<WorkflowStartupRecord>, WorkflowError>;
+    async fn append(
         &self,
         root: &crate::domain::workflow::NodeFactMeta,
         fact: &crate::domain::workflow::NodeFact,

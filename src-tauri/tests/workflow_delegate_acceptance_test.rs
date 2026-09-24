@@ -42,6 +42,7 @@ schemas:
         let tree = host.start(&nodes, workspace).await;
         let parent = host
             .nodes(&tree)
+            .await
             .into_iter()
             .find(|node| node.node_name == "implement")
             .unwrap();
@@ -50,6 +51,7 @@ schemas:
         host.stop_parent(&tree, &parent).await;
         let reviewers: Vec<_> = host
             .nodes(&tree)
+            .await
             .into_iter()
             .filter(|node| node.node_name.starts_with("reviewer_"))
             .collect();
@@ -73,7 +75,8 @@ schemas:
             );
 
             // Then
-            let (worktree_path, associated_provider_session) = host.session_context(session_id);
+            let (worktree_path, associated_provider_session) =
+                host.session_context(session_id).await;
             assert_eq!(
                 associated_provider_session.as_deref(),
                 Some(provider_session_id.as_str())
@@ -93,7 +96,7 @@ schemas:
 
         for (reviewer, (launch, provider_session_id)) in reviewers.iter().zip(launches) {
             // Given
-            let before = host.nodes(&tree);
+            let before = host.nodes(&tree).await;
             assert!(!before
                 .iter()
                 .any(|node| node.node_name == "inner_adjudicate"));
@@ -113,11 +116,12 @@ schemas:
             );
 
             // Then
-            let (provider_sessions, stops) = host.session_facts(&tree, &reviewer.id);
+            let (provider_sessions, stops) = host.session_facts(&tree, &reviewer.id).await;
             assert!(provider_sessions.contains(&provider_session_id));
             assert_eq!(stops, 1);
             assert_eq!(
                 host.nodes(&tree)
+                    .await
                     .iter()
                     .find(|node| node.id == reviewer.id)
                     .unwrap()
@@ -128,6 +132,7 @@ schemas:
 
         let adjudicate = host
             .nodes(&tree)
+            .await
             .into_iter()
             .find(|node| node.node_name == "inner_adjudicate")
             .unwrap();

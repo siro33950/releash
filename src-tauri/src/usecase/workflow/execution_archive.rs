@@ -32,12 +32,12 @@ impl WorkflowRuntimeUsecase {
             .map_err(map_worktree_operation_error)
     }
 
-    pub(crate) fn begin_execution_tree_mutation(
+    pub(crate) async fn begin_execution_tree_mutation(
         &self,
         tree_id: &str,
     ) -> Result<Vec<crate::usecase::worktree_operation::WorktreeMutationGuard>, WorkflowError> {
         ExecutionTreeId::new(tree_id)?;
-        let location = self.execution_archives.location(tree_id)?;
+        let location = self.execution_archives.location(tree_id).await?;
         Ok(vec![
             self.begin_worktree_mutation(&location.workspace_identity)?,
             self.begin_worktree_mutation(&location.worktree_path)?,
@@ -71,7 +71,7 @@ impl WorkflowRuntimeUsecase {
         execution_id: &str,
         reason: &str,
     ) -> Result<(), WorkflowError> {
-        let _mutation = self.begin_execution_tree_mutation(execution_id)?;
+        let _mutation = self.begin_execution_tree_mutation(execution_id).await?;
         let repository = self.execution_archives.clone();
         self.archive_execution_tree_at(
             repository.as_ref(),
@@ -91,7 +91,7 @@ impl WorkflowRuntimeUsecase {
     ) -> Result<(), WorkflowError> {
         let _operation = self.lock_execution_tree(execution_id).await?;
         let id = ExecutionTreeId::new(execution_id.to_string())?;
-        let target = repository.target(execution_id)?;
+        let target = repository.target(execution_id).await?;
         if target.status.is_active() {
             let result = async {
                 self.runtime
@@ -109,7 +109,7 @@ impl WorkflowRuntimeUsecase {
                 if !matches!(
                     error,
                     WorkflowError::InvalidState(_) | WorkflowError::NotFound(_)
-                ) || repository.target(execution_id)?.status.is_active()
+                ) || repository.target(execution_id).await?.status.is_active()
                 {
                     return Err(error);
                 }
@@ -118,14 +118,16 @@ impl WorkflowRuntimeUsecase {
         self.runtime
             .stop_execution_tree_processes(execution_id)
             .await?;
-        repository.archive(&id, archived_at, reason)
+        repository.archive(&id, archived_at, reason).await
     }
 
     pub async fn archive_worktree(&self, worktree_path: &str) -> Result<(), WorkflowError> {
         let repository = self.execution_archives.clone();
         let mut after = None;
         loop {
-            let page = repository.worktree_target_page(worktree_path, after.as_deref())?;
+            let page = repository
+                .worktree_target_page(worktree_path, after.as_deref())
+                .await?;
             let Some(last) = page.last() else { break };
             after = Some(last.execution_id.clone());
             for target in page {
@@ -142,7 +144,7 @@ impl WorkflowRuntimeUsecase {
     }
 
     pub async fn restore_execution_tree(&self, execution_id: &str) -> Result<(), WorkflowError> {
-        let _mutation = self.begin_execution_tree_mutation(execution_id)?;
+        let _mutation = self.begin_execution_tree_mutation(execution_id).await?;
         let _operation = self.lock_execution_tree(execution_id).await?;
         self.restore_execution_tree_locked(execution_id).await
     }
@@ -153,11 +155,13 @@ impl WorkflowRuntimeUsecase {
     ) -> Result<(), WorkflowError> {
         let id = ExecutionTreeId::new(execution_id.to_string())?;
         let repository = self.execution_archives.clone();
-        let target = repository.target(execution_id)?;
+        let target = repository.target(execution_id).await?;
         self.runtime
             .resolve_start_execution_worktree(target.worktree_path)
             .await?;
-        repository.restore(&id, self.runtime.current_timestamp())
+        repository
+            .restore(&id, self.runtime.current_timestamp())
+            .await
     }
 
     pub(crate) async fn migrate_execution_archives(
@@ -175,7 +179,9 @@ impl WorkflowRuntimeUsecase {
         }
         let mut after = None;
         loop {
-            let records = repository.legacy_session_archive_page(after.as_deref())?;
+            let records = repository
+                .legacy_session_archive_page(after.as_deref())
+                .await?;
             let Some(last) = records.last() else { break };
             after = Some(last.execution_id.clone());
             for record in records {
@@ -215,18 +221,20 @@ impl crate::usecase::repository_usecase::WorktreeExecutionArchiver for WorkflowR
 
 #[async_trait::async_trait]
 impl crate::usecase::app_data_gc::ExecutionTreeGc for WorkflowRuntimeUsecase {
-    fn execution_trees(
+    async fn execution_trees(
         &self,
         after: Option<&str>,
     ) -> Result<Vec<crate::domain::workflow::ExecutionTreeArchiveCandidate>, WorkflowError> {
-        self.execution_archives.candidate_page(after)
+        self.execution_archives.candidate_page(after).await
     }
-    fn record_repository_root(&self, execution_id: &str, root: &str) -> Result<(), WorkflowError> {
-        self.execution_archives.record_repository_root(
-            execution_id,
-            root,
-            self.runtime.current_timestamp(),
-        )
+    async fn record_repository_root(
+        &self,
+        execution_id: &str,
+        root: &str,
+    ) -> Result<(), WorkflowError> {
+        self.execution_archives
+            .record_repository_root(execution_id, root, self.runtime.current_timestamp())
+            .await
     }
     async fn archive_removed_tree(&self, execution_id: &str) -> Result<(), WorkflowError> {
         self.archive_execution_tree_at(

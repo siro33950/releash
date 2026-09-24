@@ -39,7 +39,10 @@ impl WorkspaceListQueryService for Query {
         Ok(PrStatus::default())
     }
 
-    fn nodes(&self, path: &str) -> Result<WorkspaceTreeSnapshotDto, WorkspaceListUsecaseError> {
+    async fn nodes(
+        &self,
+        path: &str,
+    ) -> Result<WorkspaceTreeSnapshotDto, WorkspaceListUsecaseError> {
         self.calls.lock().push(format!("nodes:{path}"));
         Ok(WorkspaceTreeSnapshotDto {
             nodes: vec![],
@@ -48,7 +51,7 @@ impl WorkspaceListQueryService for Query {
         })
     }
 
-    fn history(
+    async fn history(
         &self,
         path: &str,
     ) -> Result<Vec<WorkspaceWorkflowHistoryItemDto>, WorkspaceListUsecaseError> {

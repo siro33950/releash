@@ -99,7 +99,7 @@ pub(crate) struct PendingFactRow {
     pub(crate) timestamp_ms: i64,
 }
 
-pub(crate) fn resolve_unknown_append(
+pub(crate) async fn resolve_unknown_append(
     store: &Arc<LocalEventStore>,
     rows: Vec<PendingFactRow>,
     expected_head: Option<i64>,
@@ -109,42 +109,43 @@ pub(crate) fn resolve_unknown_append(
 > {
     use crate::adaptor::gateway::local_event_store::writer::NodeEventWriteError;
     use rusqlite::OptionalExtension;
-    store.submit_indexed_query_blocking(move |connection| {
-        let transaction = connection.unchecked_transaction().map_err(|error| {
-            super::super::local_event_store::reader::storage_unavailable(&error)
-        })?;
-        let mut sequences = Vec::with_capacity(rows.len());
-        for (index, pending) in rows.iter().enumerate() {
-            let sequence = transaction
-                .query_row(
-                    "SELECT seq FROM node_events
+    store
+        .submit_query(move |connection| {
+            let transaction = connection.unchecked_transaction().map_err(|error| {
+                super::super::local_event_store::reader::storage_unavailable(&error)
+            })?;
+            let mut sequences = Vec::with_capacity(rows.len());
+            for (index, pending) in rows.iter().enumerate() {
+                let sequence = transaction
+                    .query_row(
+                        "SELECT seq FROM node_events
                  WHERE tree_id = ?1 AND node_execution_id = ?2
                    AND parent_id IS ?3 AND node_name = ?4 AND kind = ?5
                    AND attempt = ?6 AND event_type = ?7 AND session_id IS ?8
                    AND detail = ?9 AND timestamp = ?10
                    AND (?11 IS NULL OR seq = ?11)
                  ORDER BY seq LIMIT 1",
-                    rusqlite::params![
-                        pending.row.tree_id,
-                        pending.row.node_execution_id,
-                        pending.row.parent_id,
-                        pending.row.node_name,
-                        pending.row.kind,
-                        pending.row.attempt,
-                        pending.row.event_type,
-                        pending.row.session_id,
-                        pending.row.detail,
-                        pending.timestamp_ms.max(0),
-                        expected_head.map(|head| head + index as i64 + 1)
-                    ],
-                    |row| row.get::<_, i64>(0),
-                )
-                .optional()
-                .map_err(|error| {
-                    super::super::local_event_store::reader::storage_unavailable(&error)
-                })?;
-            let Some(sequence) = sequence else {
-                let advanced = transaction
+                        rusqlite::params![
+                            pending.row.tree_id,
+                            pending.row.node_execution_id,
+                            pending.row.parent_id,
+                            pending.row.node_name,
+                            pending.row.kind,
+                            pending.row.attempt,
+                            pending.row.event_type,
+                            pending.row.session_id,
+                            pending.row.detail,
+                            pending.timestamp_ms.max(0),
+                            expected_head.map(|head| head + index as i64 + 1)
+                        ],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .optional()
+                    .map_err(|error| {
+                        super::super::local_event_store::reader::storage_unavailable(&error)
+                    })?;
+                let Some(sequence) = sequence else {
+                    let advanced = transaction
                     .query_row(
                         "SELECT EXISTS(SELECT 1 FROM node_events WHERE tree_id = ?1 AND seq > ?2)",
                         rusqlite::params![pending.row.tree_id, expected_head.unwrap_or(0)],
@@ -153,16 +154,17 @@ pub(crate) fn resolve_unknown_append(
                     .map_err(|error| {
                         super::super::local_event_store::reader::storage_unavailable(&error)
                     })?;
-                return Ok(Err(if advanced {
-                    NodeEventWriteError::Conflict
-                } else {
-                    NodeEventWriteError::OutcomeUnknown
-                }));
-            };
-            sequences.push(sequence);
-        }
-        Ok(Ok(sequences))
-    })
+                    return Ok(Err(if advanced {
+                        NodeEventWriteError::Conflict
+                    } else {
+                        NodeEventWriteError::OutcomeUnknown
+                    }));
+                };
+                sequences.push(sequence);
+            }
+            Ok(Ok(sequences))
+        })
+        .await
 }
 
 fn pending_row(
@@ -212,9 +214,9 @@ struct FactRowMeta {
 ///   node_events 行（`lookup`）から同定カラムを補完する。
 fn fact_rows_for_events(
     events: &[WorkflowEvent],
-    mut lookup: impl FnMut(&str) -> Result<Option<FactRowMeta>, String>,
-    mut root_lookup: impl FnMut(&str) -> Result<Option<FactRowMeta>, String>,
-) -> Result<Vec<PendingFactRow>, String> {
+    mut lookup: impl FnMut(&str) -> Result<Option<FactRowMeta>, FactReadError>,
+    mut root_lookup: impl FnMut(&str) -> Result<Option<FactRowMeta>, FactReadError>,
+) -> Result<Vec<PendingFactRow>, FactReadError> {
     let mut rows: Vec<PendingFactRow> = Vec::new();
     let mut batch_meta: HashMap<String, FactRowMeta> = HashMap::new();
     let mut pending_root: Option<TreeRootFact> = None;
@@ -222,12 +224,14 @@ fn fact_rows_for_events(
 
     let mut resolve = |batch_meta: &HashMap<String, FactRowMeta>,
                        node_execution_id: &str|
-     -> Result<FactRowMeta, String> {
+     -> Result<FactRowMeta, FactReadError> {
         if let Some(meta) = batch_meta.get(node_execution_id) {
             return Ok(meta.clone());
         }
         lookup(node_execution_id)?.ok_or_else(|| {
-            format!("node fact references unknown node_execution_id {node_execution_id}")
+            FactReadError::Corrupt(format!(
+                "node fact references unknown node_execution_id {node_execution_id}"
+            ))
         })
     };
 
@@ -518,7 +522,7 @@ pub(crate) fn node_meta_from_row(row: &NodeEventRow) -> Result<NodeFactMeta, Str
 }
 
 /// イベント列を事実行へ写像して node_events に追記する。
-pub(crate) fn append_facts_for_events(
+pub(crate) async fn append_facts_for_events(
     store: &Arc<LocalEventStore>,
     events: &[WorkflowEvent],
 ) -> Result<(), crate::domain::workflow::WorkflowError> {
@@ -528,41 +532,43 @@ pub(crate) fn append_facts_for_events(
     append_pending_rows_blocking(
         store,
         pending_rows_for_events(store, events)
-            .map_err(crate::domain::workflow::WorkflowError::external)?,
+            .await
+            .map_err(crate::domain::workflow::WorkflowError::from)?,
     )
 }
 
-pub(crate) fn pending_rows_for_events(
+pub(crate) async fn pending_rows_for_events(
     store: &Arc<LocalEventStore>,
     events: &[WorkflowEvent],
-) -> Result<Vec<PendingFactRow>, String> {
-    let lookup_store = Arc::clone(store);
-    let root_store = Arc::clone(store);
-    fact_rows_for_events(
-        events,
-        move |node_execution_id| {
-            let node_execution_id = node_execution_id.to_string();
-            lookup_store
-                .submit_indexed_query_blocking(move |connection| {
-                    node_events::latest_row_for_node(connection, &node_execution_id)
-                        .map_err(|_| LocalEventQueryError::InvalidRequest)
-                })
-                .map_err(|error| format!("node fact meta lookup failed: {error:?}"))?
-                .map(|row| meta_from_row(&row))
-                .transpose()
-        },
-        move |tree_id| {
-            let tree_id = tree_id.to_string();
-            root_store
-                .submit_indexed_query_blocking(move |connection| {
-                    node_events::first_row_of_tree(connection, &tree_id)
-                        .map_err(|_| LocalEventQueryError::InvalidRequest)
-                })
-                .map_err(|error| format!("tree root lookup failed: {error:?}"))?
-                .map(|row| meta_from_row(&row))
-                .transpose()
-        },
-    )
+) -> Result<Vec<PendingFactRow>, FactReadError> {
+    let events = events.to_vec();
+    store
+        .submit_query(move |connection| {
+            Ok(fact_rows_for_events(
+                &events,
+                |node_execution_id| {
+                    node_events::latest_row_for_node(connection, node_execution_id)
+                        .map_err(|error| {
+                            crate::adaptor::gateway::local_event_store::reader::storage_unavailable(
+                                &error,
+                            )
+                        })?
+                        .map(|row| meta_from_row(&row).map_err(FactReadError::Corrupt))
+                        .transpose()
+                },
+                |tree_id| {
+                    node_events::first_row_of_tree(connection, tree_id)
+                        .map_err(|error| {
+                            crate::adaptor::gateway::local_event_store::reader::storage_unavailable(
+                                &error,
+                            )
+                        })?
+                        .map(|row| meta_from_row(&row).map_err(FactReadError::Corrupt))
+                        .transpose()
+                },
+            ))
+        })
+        .await?
 }
 
 /// 完了事実を含む行列は原子的に、それ以外は単一行ずつ append する。
@@ -691,45 +697,49 @@ pub(crate) enum FactLogReadBackend {
 }
 
 impl FactLogReadBackend {
-    pub(crate) fn run_indexed<T, F>(&self, run: F) -> Result<T, LocalEventQueryError>
+    pub(crate) async fn run_indexed<T, F>(&self, run: F) -> Result<T, LocalEventQueryError>
     where
         T: Send + 'static,
         F: FnOnce(&rusqlite::Connection) -> Result<T, LocalEventQueryError> + Send + 'static,
     {
         match self {
-            Self::Live(store) => store.submit_indexed_query_blocking(run),
-            Self::ReadOnly(store) => store.submit_indexed_query_blocking(run),
+            Self::Live(store) => store.submit_query(run).await,
+            Self::ReadOnly(store) => store.submit_query(run).await,
         }
     }
 
     /// node_execution_id からその node が属する tree_id を引く。
-    pub(crate) fn tree_id_for_node(
+    pub(crate) async fn tree_id_for_node(
         &self,
         node_execution_id: &str,
-    ) -> Result<Option<String>, String> {
+    ) -> Result<Option<String>, FactReadError> {
         let requested = node_execution_id.to_string();
         self.run_indexed(move |connection| {
-            node_events::latest_row_for_node(connection, &requested)
-                .map_err(|_| LocalEventQueryError::InvalidRequest)
+            node_events::latest_row_for_node(connection, &requested).map_err(|error| {
+                crate::adaptor::gateway::local_event_store::reader::storage_unavailable(&error)
+            })
         })
+        .await
         .map(|row| row.map(|row| row.tree_id))
-        .map_err(|error| format!("node fact tree lookup failed: {error:?}"))
+        .map_err(FactReadError::Query)
     }
 }
 
 /// 1 tree 分の事実行列を読み出して domain の record へ復元する。
-pub(crate) fn read_tree_records_from(
+pub(crate) async fn read_tree_records_from(
     backend: &FactLogReadBackend,
     tree_id: &str,
-) -> Result<Vec<NodeFactRecord>, String> {
+) -> Result<Vec<NodeFactRecord>, FactReadError> {
     let tree_id_owned = tree_id.to_string();
     let rows = backend
         .run_indexed(move |connection| {
-            node_events::read_tree(connection, &tree_id_owned)
-                .map_err(|_| LocalEventQueryError::InvalidRequest)
+            node_events::read_tree(connection, &tree_id_owned).map_err(|error| {
+                crate::adaptor::gateway::local_event_store::reader::storage_unavailable(&error)
+            })
         })
-        .map_err(|error| format!("node fact tree read failed: {error:?}"))?;
-    records_from_tree_rows(&rows)
+        .await
+        .map_err(FactReadError::Query)?;
+    records_from_tree_rows(&rows).map_err(FactReadError::Corrupt)
 }
 
 fn terminal_fact_in_rows(rows: &[NodeEventRow]) -> Result<bool, String> {
@@ -793,7 +803,7 @@ pub(crate) fn records_from_tree_rows(rows: &[NodeEventRow]) -> Result<Vec<NodeFa
         .collect()
 }
 
-pub(crate) fn read_latest_activity_record_for_node(
+pub(crate) async fn read_latest_activity_record_for_node(
     backend: &FactLogReadBackend,
     node_execution_id: &str,
 ) -> Result<Option<NodeFactRecord>, FactReadError> {
@@ -806,6 +816,7 @@ pub(crate) fn read_latest_activity_record_for_node(
                     super::super::local_event_store::reader::storage_unavailable(&error)
                 })
         })
+        .await
         .map_err(FactReadError::Query)?
         .as_ref()
         .map(record_from_row)
@@ -814,14 +825,14 @@ pub(crate) fn read_latest_activity_record_for_node(
         .map_err(FactReadError::Corrupt)
 }
 
-pub(crate) fn read_tree_archive_records(
+pub(crate) async fn read_tree_archive_records(
     backend: &FactLogReadBackend,
     tree_id: &str,
 ) -> Result<Vec<NodeFactRecord>, FactReadError> {
-    read_tree_archive_records_for(backend, &[tree_id.to_string()])
+    read_tree_archive_records_for(backend, &[tree_id.to_string()]).await
 }
 
-pub(crate) fn read_tree_archive_records_for(
+pub(crate) async fn read_tree_archive_records_for(
     backend: &FactLogReadBackend,
     tree_ids: &[String],
 ) -> Result<Vec<NodeFactRecord>, FactReadError> {
@@ -835,6 +846,7 @@ pub(crate) fn read_tree_archive_records_for(
             )
             .map_err(|error| super::super::local_event_store::reader::storage_unavailable(&error))
         })
+        .await
         .map_err(FactReadError::Query)?;
     rows.iter()
         .filter_map(|row| record_from_row(row).transpose())
@@ -842,7 +854,7 @@ pub(crate) fn read_tree_archive_records_for(
         .map_err(FactReadError::Corrupt)
 }
 
-pub(crate) fn read_records_for_event_types(
+pub(crate) async fn read_records_for_event_types(
     backend: &FactLogReadBackend,
     event_types: &[&str],
 ) -> Result<Vec<NodeFactRecord>, FactReadError> {
@@ -857,6 +869,7 @@ pub(crate) fn read_records_for_event_types(
                 super::super::local_event_store::reader::storage_unavailable(&error)
             })
         })
+        .await
         .map_err(FactReadError::Query)?;
     rows.iter()
         .filter_map(|row| record_from_row(row).transpose())
@@ -864,7 +877,7 @@ pub(crate) fn read_records_for_event_types(
         .map_err(FactReadError::Corrupt)
 }
 
-pub(crate) fn read_latest_record_for_node_with_event_types(
+pub(crate) async fn read_latest_record_for_node_with_event_types(
     backend: &FactLogReadBackend,
     node_execution_id: &str,
     event_types: &[&str],
@@ -884,6 +897,7 @@ pub(crate) fn read_latest_record_for_node_with_event_types(
             )
             .map_err(|error| super::super::local_event_store::reader::storage_unavailable(&error))
         })
+        .await
         .map_err(FactReadError::Query)?
         .as_ref()
         .map(record_from_row)
@@ -893,11 +907,11 @@ pub(crate) fn read_latest_record_for_node_with_event_types(
 }
 
 /// 1 tree 分の事実行列を読み出して domain の record へ復元する（writer store）。
-pub(crate) fn read_tree_records(
+pub(crate) async fn read_tree_records(
     store: &Arc<LocalEventStore>,
     tree_id: &str,
-) -> Result<Vec<NodeFactRecord>, String> {
-    read_tree_records_from(&FactLogReadBackend::Live(Arc::clone(store)), tree_id)
+) -> Result<Vec<NodeFactRecord>, FactReadError> {
+    read_tree_records_from(&FactLogReadBackend::Live(Arc::clone(store)), tree_id).await
 }
 
 fn decode_legacy_worktree(
@@ -1027,11 +1041,11 @@ pub(crate) struct TreeReconciliation {
 ///
 /// 既に事実が揃っている行動は導出の差分に現れないため、同じパスを何度
 /// 実行しても新しい行は生まれない（冪等）。
-pub(crate) fn reconcile_tree_pass(
+pub(crate) async fn reconcile_tree_pass(
     store: &Arc<LocalEventStore>,
     tree_id: &str,
     now: f64,
-    new_id: &mut dyn FnMut() -> String,
+    new_id: &mut (dyn FnMut() -> String + Send),
 ) -> Result<Option<TreeReconciliation>, crate::domain::workflow::WorkflowError> {
     use crate::adaptor::gateway::local_event_store::writer::NodeEventWriteError;
     use crate::domain::workflow::entities::workflow_execution::{
@@ -1043,18 +1057,18 @@ pub(crate) fn reconcile_tree_pass(
     let requested = tree_id.to_string();
     let rows = backend
         .run_indexed(move |connection| {
-            node_events::read_tree(connection, &requested)
-                .map_err(|_| LocalEventQueryError::InvalidRequest)
+            node_events::read_tree(connection, &requested).map_err(|error| {
+                crate::adaptor::gateway::local_event_store::reader::storage_unavailable(&error)
+            })
         })
-        .map_err(|error| {
-            WorkflowError::external(format!("node fact tree read failed: {error:?}"))
-        })?;
+        .await
+        .map_err(FactReadError::Query)?;
     let mut head = rows.last().map_or(0, |row| row.seq);
-    let records = records_from_tree_rows(&rows).map_err(WorkflowError::external)?;
+    let records = records_from_tree_rows(&rows).map_err(FactReadError::Corrupt)?;
     drop(rows);
     let Some(folded) =
         crate::domain::workflow::services::fact_replay::fold_execution_tree(tree_id, &records)
-            .map_err(WorkflowError::external)?
+            .map_err(FactReadError::Corrupt)?
     else {
         return Ok(None);
     };
@@ -1151,8 +1165,9 @@ pub(crate) fn reconcile_tree_pass(
                 .aggregate
                 .apply_pending_advance(&advance, new_id, now)
                 .map_err(|error| WorkflowError::external(error.to_string()))?;
-            let rows =
-                pending_rows_for_events(store, &applied.events).map_err(WorkflowError::external)?;
+            let rows = pending_rows_for_events(store, &applied.events)
+                .await
+                .map_err(WorkflowError::from)?;
             let sequences = match store.append_node_events_at_head_blocking(
                 rows.iter()
                     .map(|row| (row.row.clone(), Some(row.timestamp_ms)))
@@ -1161,6 +1176,7 @@ pub(crate) fn reconcile_tree_pass(
             ) {
                 Err(NodeEventWriteError::OutcomeUnknown) => {
                     resolve_unknown_append(store, rows, Some(head))
+                        .await
                         .map_err(|error| WorkflowError::Store(error.failure_kind()))?
                 }
                 result => result,
@@ -1190,16 +1206,18 @@ pub(crate) fn reconcile_tree_pass(
 /// `worktree_path` が None なら全木。
 ///
 /// 絞り込みは detail JSON を Rust で読む（SQL に判定規則を持ち込まない）。
-pub(crate) fn list_tree_roots(
+pub(crate) async fn list_tree_roots(
     backend: &FactLogReadBackend,
     worktree_path: Option<&str>,
-) -> Result<Vec<(String, super::stored_definition::TreeRootHeader)>, String> {
+) -> Result<Vec<(String, super::stored_definition::TreeRootHeader)>, FactReadError> {
     let rows = backend
         .run_indexed(move |connection| {
-            node_events::list_tree_roots(connection, "started")
-                .map_err(|_| LocalEventQueryError::InvalidRequest)
+            node_events::list_tree_roots(connection, "started").map_err(|error| {
+                crate::adaptor::gateway::local_event_store::reader::storage_unavailable(&error)
+            })
         })
-        .map_err(|error| format!("node fact root listing failed: {error:?}"))?;
+        .await
+        .map_err(FactReadError::Query)?;
     let mut seen = std::collections::HashSet::new();
     let mut roots = Vec::new();
     for row in rows {
@@ -1216,21 +1234,23 @@ pub(crate) fn list_tree_roots(
     Ok(roots)
 }
 
-pub(crate) fn list_tree_ids(
+pub(crate) async fn list_tree_ids(
     backend: &FactLogReadBackend,
     worktree_path: Option<&str>,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<String>, FactReadError> {
     list_tree_roots(backend, worktree_path)
+        .await
         .map(|roots| roots.into_iter().map(|(tree_id, _)| tree_id).collect())
 }
 
 /// 1 tree の fold（読み出し + 導出）。
-pub(crate) fn fold_tree_from(
+pub(crate) async fn fold_tree_from(
     backend: &FactLogReadBackend,
     tree_id: &str,
-) -> Result<Option<crate::domain::workflow::services::fact_replay::FoldedTree>, String> {
-    let records = read_tree_records_from(backend, tree_id)?;
+) -> Result<Option<crate::domain::workflow::services::fact_replay::FoldedTree>, FactReadError> {
+    let records = read_tree_records_from(backend, tree_id).await?;
     crate::domain::workflow::services::fact_replay::fold_execution_tree(tree_id, &records)
+        .map_err(FactReadError::Corrupt)
 }
 
 /// fold 済み read model から実行 metadata record を導出する。
@@ -1256,15 +1276,16 @@ pub(crate) fn metadata_record_from_read_model(
 ///
 /// event_type の絞り込みだけを SQL で行い、session_id の照合は detail を
 /// Rust で読む。
-pub(crate) fn find_session_attachment(
+pub(crate) async fn find_session_attachment(
     backend: &FactLogReadBackend,
     session_id: &str,
 ) -> Result<Option<(String, String)>, FactReadError> {
     find_session_attachment_record(backend, session_id)
+        .await
         .map(|record| record.map(|record| (record.meta.tree_id, record.meta.node_execution_id)))
 }
 
-pub(crate) fn find_session_attachment_record(
+pub(crate) async fn find_session_attachment_record(
     backend: &FactLogReadBackend,
     session_id: &str,
 ) -> Result<Option<NodeFactRecord>, FactReadError> {
@@ -1276,6 +1297,7 @@ pub(crate) fn find_session_attachment_record(
                 super::super::local_event_store::reader::storage_unavailable(&error)
             })
         })
+        .await
         .map_err(FactReadError::Query)?;
     let Some(row) = row else {
         return Ok(None);

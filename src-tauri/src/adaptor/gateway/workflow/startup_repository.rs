@@ -2,7 +2,6 @@ use super::{fact_codec, fact_log, stored_definition};
 use crate::adaptor::gateway::local_event_store::writer::NodeEventWriteError;
 use crate::adaptor::gateway::local_event_store::{node_events, LocalEventStore};
 use crate::domain::failure::ClassifiedFailure;
-use crate::domain::local_event::LocalEventQueryError;
 use crate::domain::workflow::entities::workflow_execution::ExecutionTree;
 use crate::domain::workflow::repository::{
     WorkflowRevision, WorkflowStartupRecord, WorkflowStartupRepository,
@@ -38,22 +37,28 @@ impl crate::usecase::workflow::startup::WorkflowStartupGateway for HostWorkflowS
     }
 }
 
+#[async_trait::async_trait]
 impl WorkflowStartupRepository for StoredWorkflowStartupRepository {
-    fn list_tree_ids(&self) -> Result<Vec<String>, WorkflowError> {
+    async fn list_tree_ids(&self) -> Result<Vec<String>, WorkflowError> {
         fact_log::list_tree_ids(&fact_log::FactLogReadBackend::Live(self.0.clone()), None)
-            .map_err(WorkflowError::external)
+            .await
+            .map_err(WorkflowError::from)
     }
 
-    fn load(&self, tree_id: &str) -> Result<Option<WorkflowStartupRecord>, WorkflowError> {
+    async fn load(&self, tree_id: &str) -> Result<Option<WorkflowStartupRecord>, WorkflowError> {
         let backend = fact_log::FactLogReadBackend::Live(self.0.clone());
         let requested = tree_id.to_string();
         let (first, terminal, head) = backend
             .run_indexed(move |connection| {
-                let transaction = connection
-                    .unchecked_transaction()
-                    .map_err(|_| LocalEventQueryError::InvalidRequest)?;
-                let first = node_events::first_row_of_tree(&transaction, &requested)
-                    .map_err(|_| LocalEventQueryError::InvalidRequest)?;
+                let transaction = connection.unchecked_transaction().map_err(|error| {
+                    crate::adaptor::gateway::local_event_store::reader::storage_unavailable(&error)
+                })?;
+                let first =
+                    node_events::first_row_of_tree(&transaction, &requested).map_err(|error| {
+                        crate::adaptor::gateway::local_event_store::reader::storage_unavailable(
+                            &error,
+                        )
+                    })?;
                 let terminal = first
                     .as_ref()
                     .map(|first| {
@@ -64,7 +69,11 @@ impl WorkflowStartupRepository for StoredWorkflowStartupRepository {
                         )
                     })
                     .transpose()
-                    .map_err(|_| LocalEventQueryError::InvalidRequest)?
+                    .map_err(|error| {
+                        crate::adaptor::gateway::local_event_store::reader::storage_unavailable(
+                            &error,
+                        )
+                    })?
                     .flatten();
                 let head = transaction
                     .query_row(
@@ -72,12 +81,15 @@ impl WorkflowStartupRepository for StoredWorkflowStartupRepository {
                         [&requested],
                         |row| row.get::<_, i64>(0),
                     )
-                    .map_err(|_| LocalEventQueryError::InvalidRequest)?;
+                    .map_err(|error| {
+                        crate::adaptor::gateway::local_event_store::reader::storage_unavailable(
+                            &error,
+                        )
+                    })?;
                 Ok((first, terminal, head))
             })
-            .map_err(|error| {
-                WorkflowError::external(format!("node fact tree read failed: {error:?}"))
-            })?;
+            .await
+            .map_err(|error| WorkflowError::from(fact_log::FactReadError::Query(error)))?;
         let Some(first) = first else {
             return Ok(None);
         };
@@ -117,7 +129,7 @@ impl WorkflowStartupRepository for StoredWorkflowStartupRepository {
         }))
     }
 
-    fn append(
+    async fn append(
         &self,
         root: &NodeFactMeta,
         fact: &NodeFact,
@@ -137,6 +149,7 @@ impl WorkflowStartupRepository for StoredWorkflowStartupRepository {
         match result {
             Err(NodeEventWriteError::OutcomeUnknown) => {
                 match fact_log::resolve_unknown_append(&self.0, vec![pending], expected_head)
+                    .await
                     .map_err(|error| WorkflowError::StorageUnavailable {
                         kind: error.failure_kind(),
                         message: format!("startup abort readback failed: {error:?}"),

@@ -151,7 +151,8 @@ impl WorkflowControlPlaneGateway for WorkflowRuntimeCommandGateway {
         })?;
         super::fact_log::FactLogReadBackend::Live(store)
             .tree_id_for_node(node_execution_id)
-            .map_err(WorkflowError::external)
+            .await
+            .map_err(WorkflowError::from)
     }
 
     async fn load_active_execution(
@@ -237,7 +238,8 @@ impl WorkflowControlPlaneGateway for WorkflowRuntimeCommandGateway {
             WorkflowError::external("workflow SQLite event authority is not managed")
         })?;
         let records = super::fact_log::read_tree_records(&store, execution_id)
-            .map_err(|error| WorkflowError::external(error.to_string()))?;
+            .await
+            .map_err(WorkflowError::from)?;
         Ok(records.iter().any(|record| {
             matches!(
                 record.fact,
@@ -396,3 +398,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "runtime_command_gateway_test.rs"]
+mod runtime_command_gateway_tests;

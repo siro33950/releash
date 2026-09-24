@@ -12,10 +12,6 @@ use crate::domain::workflow::{
 };
 use crate::domain::workspace_tree::{WorkspaceNodeStatus, WorkspaceTreeRepository};
 
-fn sqlite_failure(code: i32) -> rusqlite::Error {
-    rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(code), None)
-}
-
 const REPORTED_MAIN_ID: &str = "00000000-0000-4000-8000-000000000710";
 const REPORTED_REVIEW_ID: &str = "00000000-0000-4000-8000-000000000711";
 const REPORTED_REVIEW_SCAN_1_ID: &str = "00000000-0000-4000-8000-000000000712";
@@ -711,38 +707,37 @@ fn dynamic_fanout_with_sequence_child_events(
 }
 
 #[test]
-fn sqlite_query_errors_preserve_store_and_record_failure_classification() {
-    for code in [rusqlite::ffi::SQLITE_CORRUPT, rusqlite::ffi::SQLITE_NOTADB] {
-        assert!(matches!(
-            sql_query_error(sqlite_failure(code)),
-            LocalEventQueryError::Corrupt { .. }
-        ));
-    }
-    for code in [rusqlite::ffi::SQLITE_BUSY, rusqlite::ffi::SQLITE_LOCKED] {
-        assert!(matches!(
-            sql_query_error(sqlite_failure(code)),
-            LocalEventQueryError::QueryBusy
-        ));
-    }
-    assert!(matches!(
-        sql_query_error(rusqlite::Error::FromSqlConversionFailure(
-            0,
-            rusqlite::types::Type::Text,
-            Box::new(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "invalid value",
+fn test_workspace復元失敗_本番の変換でqueryとcodecの分類を保持する() {
+    use crate::adaptor::gateway::local_event_store::{
+        reader::storage_unavailable, test_helpers::ReadFailure,
+    };
+    use crate::adaptor::protocol::connect::classified_error;
+    // Given
+    for (failure, expected) in ReadFailure::cases() {
+        let error = match failure {
+            ReadFailure::Query(error) => error,
+            ReadFailure::Sqlite(code) => storage_unavailable(&rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(code),
+                None,
             )),
-        )),
-        LocalEventQueryError::IncompatibleStoredEvent { .. }
-    ));
-    assert!(matches!(
-        sql_query_error(sqlite_failure(rusqlite::ffi::SQLITE_IOERR)),
-        LocalEventQueryError::StorageUnavailable { .. }
-    ));
+        };
+        // When / Then
+        assert_eq!(
+            classified_error(fold_query_error(fact_log::FactReadError::Query(error))).code,
+            expected
+        );
+    }
+    assert_eq!(
+        classified_error(fold_query_error(fact_log::FactReadError::Corrupt(
+            "invalid stored value".into()
+        )))
+        .code,
+        connectrpc::ErrorCode::DataLoss
+    );
 }
 
-#[test]
-fn test_workspace_tree読み出し_報告実例の後方辺fanout既存fact列から介入対象を解決する() {
+#[tokio::test]
+async fn test_workspace_tree読み出し_報告実例の後方辺fanout既存fact列から介入対象を解決する() {
     // Given
     let directory = tempfile::TempDir::new().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
@@ -763,13 +758,17 @@ fn test_workspace_tree読み出し_報告実例の後方辺fanout既存fact列�
     ));
     let events = reported_fanout_events(execution_id, workspace.as_str());
     crate::adaptor::gateway::workflow::test_support::append_canonical_events(&store, &events)
+        .await
         .unwrap();
-    let rows_before = fact_log::read_tree_records(&store, execution_id).unwrap();
+    let rows_before = fact_log::read_tree_records(&store, execution_id)
+        .await
+        .unwrap();
     let repository = SqliteWorkspaceTreeRepository::new(Arc::clone(&store));
 
     // When
     let folded = repository
         .folded_workspace_trees(workspace.as_str())
+        .await
         .unwrap();
     let tree = repository
         .workspace_tree_from_folded(workspace.as_str(), &folded)
@@ -783,22 +782,28 @@ fn test_workspace_tree読み出し_報告実例の後方辺fanout既存fact列�
         .unwrap();
     let loaded_waiting = repository
         .load_node(&workspace, &waiting_node.id)
+        .await
         .unwrap()
         .unwrap();
     let loaded_by_execution = repository
         .load_node_by_node_execution_id(waiting_execution_id)
+        .await
         .unwrap()
         .unwrap();
     let session_id = REPORTED_SESSION_2_ID;
     let session_node_id = repository
         .node_id_for_session(&workspace, session_id)
+        .await
         .unwrap()
         .unwrap();
     let loaded_session = repository
         .load_node(&workspace, &session_node_id)
+        .await
         .unwrap()
         .unwrap();
-    let rows_after = fact_log::read_tree_records(&store, execution_id).unwrap();
+    let rows_after = fact_log::read_tree_records(&store, execution_id)
+        .await
+        .unwrap();
 
     // Then
     let ids = tree
@@ -831,8 +836,9 @@ fn test_workspace_tree読み出し_報告実例の後方辺fanout既存fact列�
     assert_eq!(rows_after, rows_before);
 }
 
-#[test]
-fn test_ツリー読み出し_command形のsession成果物を含む複数実行木と各nodeをfact変更なしで読める() {
+#[tokio::test]
+async fn test_ツリー読み出し_command形のsession成果物を含む複数実行木と各nodeをfact変更なしで読める(
+) {
     // Given
     let directory = tempfile::TempDir::new().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
@@ -937,38 +943,54 @@ fn test_ツリー読み出し_command形のsession成果物を含む複数実行
             ]);
         }
         crate::adaptor::gateway::workflow::test_support::append_canonical_events(&store, &events)
+            .await
             .unwrap();
     }
-    let rows_before = execution_ids
-        .map(|execution_id| fact_log::read_tree_records(&store, execution_id).unwrap());
+    let rows_before = futures_util::future::join_all(execution_ids.map(|execution_id| async {
+        fact_log::read_tree_records(&store, execution_id)
+            .await
+            .unwrap()
+    }))
+    .await;
     let repository = SqliteWorkspaceTreeRepository::new(Arc::clone(&store));
 
     // When
     let folded = repository
         .folded_workspace_trees(workspace.as_str())
+        .await
         .unwrap();
     let tree = repository
         .workspace_tree_from_folded(workspace.as_str(), &folded)
         .unwrap()
         .unwrap();
-    let loaded_nodes = execution_ids.map(|execution_id| {
+    let mut loaded_nodes = Vec::new();
+    for execution_id in execution_ids {
         let node_execution_id = format!("{execution_id}-report");
         let node = tree
             .nodes()
             .iter()
             .find(|node| node.node_execution_id.as_deref() == Some(&node_execution_id))
             .unwrap();
-        (
+        loaded_nodes.push((
             node,
-            repository.load_node(&workspace, &node.id).unwrap().unwrap(),
             repository
-                .load_node_by_node_execution_id(&node_execution_id)
+                .load_node(&workspace, &node.id)
+                .await
                 .unwrap()
                 .unwrap(),
-        )
-    });
-    let rows_after = execution_ids
-        .map(|execution_id| fact_log::read_tree_records(&store, execution_id).unwrap());
+            repository
+                .load_node_by_node_execution_id(&node_execution_id)
+                .await
+                .unwrap()
+                .unwrap(),
+        ));
+    }
+    let rows_after = futures_util::future::join_all(execution_ids.map(|execution_id| async {
+        fact_log::read_tree_records(&store, execution_id)
+            .await
+            .unwrap()
+    }))
+    .await;
 
     // Then
     assert_eq!(folded.len(), 2);
@@ -994,8 +1016,8 @@ fn test_ツリー読み出し_command形のsession成果物を含む複数実行
     assert_eq!(rows_after, rows_before);
 }
 
-#[test]
-fn test_workspace_tree読み出し_同一worktreeの複数executionでfanout子sequenceが衝突しない() {
+#[tokio::test]
+async fn test_workspace_tree読み出し_同一worktreeの複数executionでfanout子sequenceが衝突しない() {
     // Given
     let directory = tempfile::TempDir::new().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
@@ -1009,17 +1031,20 @@ fn test_workspace_tree読み出し_同一worktreeの複数executionでfanout子s
         &store,
         &fanout_with_sequence_child_events(first_execution_id, workspace.as_str()),
     )
+    .await
     .unwrap();
     crate::adaptor::gateway::workflow::test_support::append_canonical_events(
         &store,
         &fanout_with_sequence_child_events(second_execution_id, workspace.as_str()),
     )
+    .await
     .unwrap();
     let repository = SqliteWorkspaceTreeRepository::new(store);
 
     // When
     let folded = repository
         .folded_workspace_trees(workspace.as_str())
+        .await
         .unwrap();
     let tree = repository
         .workspace_tree_from_folded(workspace.as_str(), &folded)
@@ -1046,8 +1071,9 @@ fn test_workspace_tree読み出し_同一worktreeの複数executionでfanout子s
     assert_ne!(sequence_ids[0], sequence_ids[1]);
 }
 
-#[test]
-fn test_workspace_tree読み出し_同一worktreeの複数executionで動的fanout子sequenceが衝突しない() {
+#[tokio::test]
+async fn test_workspace_tree読み出し_同一worktreeの複数executionで動的fanout子sequenceが衝突しない()
+{
     // Given
     let directory = tempfile::TempDir::new().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
@@ -1061,17 +1087,20 @@ fn test_workspace_tree読み出し_同一worktreeの複数executionで動的fano
         &store,
         &dynamic_fanout_with_sequence_child_events(first_execution_id, workspace.as_str()),
     )
+    .await
     .unwrap();
     crate::adaptor::gateway::workflow::test_support::append_canonical_events(
         &store,
         &dynamic_fanout_with_sequence_child_events(second_execution_id, workspace.as_str()),
     )
+    .await
     .unwrap();
     let repository = SqliteWorkspaceTreeRepository::new(store);
 
     // When
     let folded = repository
         .folded_workspace_trees(workspace.as_str())
+        .await
         .unwrap();
     let tree = repository
         .workspace_tree_from_folded(workspace.as_str(), &folded)
@@ -1098,8 +1127,8 @@ fn test_workspace_tree読み出し_同一worktreeの複数executionで動的fano
     assert_ne!(sequence_ids[0], sequence_ids[1]);
 }
 
-#[test]
-fn test_workspace_tree読み出し_session二重束縛をcorruptとして拒否する() {
+#[tokio::test]
+async fn test_workspace_tree読み出し_session二重束縛をcorruptとして拒否する() {
     // Given
     let directory = tempfile::TempDir::new().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
@@ -1110,12 +1139,14 @@ fn test_workspace_tree読み出し_session二重束縛をcorruptとして拒否�
     let execution_id = "00000000-0000-4000-8000-000000000704";
     let events = duplicate_session_binding_events(execution_id, workspace.as_str());
     crate::adaptor::gateway::workflow::test_support::append_canonical_events(&store, &events)
+        .await
         .unwrap();
     let repository = SqliteWorkspaceTreeRepository::new(store);
 
     // When
     let folded = repository
         .folded_workspace_trees(workspace.as_str())
+        .await
         .unwrap();
     let error = repository
         .workspace_tree_from_folded(workspace.as_str(), &folded)
@@ -1152,10 +1183,12 @@ async fn public_session_root_id_loads_the_session_node_instead_of_the_internal_o
 
     let node_id = repository
         .node_id_for_session(&workspace, "agent-session-1")
+        .await
         .unwrap()
         .expect("the standalone Session must have a public Node id");
     let node = repository
         .load_node(&workspace, &node_id)
+        .await
         .unwrap()
         .expect("the public Node id must resolve");
 
@@ -1198,12 +1231,18 @@ async fn test_workspace_tree_repository_workspace同定子がworktreeと異な�
     // When: workspace identity から木、Session の公開 node、詳細を引く
     let trees = repository
         .folded_workspace_trees(workspace.as_str())
+        .await
         .unwrap();
     let node_id = repository
         .node_id_for_session(&workspace, "agent-session-workspace-identity")
+        .await
         .unwrap()
         .unwrap();
-    let node = repository.load_node(&workspace, &node_id).unwrap().unwrap();
+    let node = repository
+        .load_node(&workspace, &node_id)
+        .await
+        .unwrap()
+        .unwrap();
 
     // Then: worktree path ではなく root の workspace identity で一貫して解決する
     assert_eq!(trees.len(), 1);
@@ -1246,6 +1285,7 @@ async fn a_session_owned_by_another_worktree_has_no_public_node_id() {
     assert!(
         repository
             .node_id_for_session(&other, "agent-session-1")
+            .await
             .unwrap()
             .is_none(),
         "another Worktree must not resolve a public Node id for this Session"
@@ -1253,8 +1293,30 @@ async fn a_session_owned_by_another_worktree_has_no_public_node_id() {
     assert!(
         repository
             .node_id_for_session(&owner, "unknown-session")
+            .await
             .unwrap()
             .is_none(),
         "an unknown Session has no execution tree to publish"
     );
+}
+
+#[tokio::test]
+async fn test_workspace_repository読取_実経路で失敗分類を保持する() {
+    use crate::adaptor::gateway::local_event_store::test_helpers::ReadFailure;
+    use crate::adaptor::protocol::connect::classified_error;
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let store =
+        LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into())).unwrap();
+    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+    for (failure, expected) in ReadFailure::cases() {
+        store.fail_next_read(failure);
+        // When
+        let error = repository
+            .load_node_by_node_execution_id("node")
+            .await
+            .unwrap_err();
+        // Then
+        assert_eq!(classified_error(error).code, expected);
+    }
 }

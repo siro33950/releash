@@ -11,7 +11,7 @@ fn managed_store(
 /// engine の必須 event 列を統一 Node 事実ログ（node_events）へ追記する。
 ///
 /// 実行木の完了を含む列は原子的に保存する。
-pub(crate) fn append_required_events_for_app(
+pub(crate) async fn append_required_events_for_app(
     app: &super::workflow_host::WorkflowRuntimeDependencies,
     events: &[WorkflowEvent],
 ) -> Result<(), crate::domain::workflow::WorkflowError> {
@@ -19,7 +19,7 @@ pub(crate) fn append_required_events_for_app(
         return Ok(());
     }
     let store = managed_store(app).map_err(crate::domain::workflow::WorkflowError::external)?;
-    crate::adaptor::gateway::workflow::fact_log::append_facts_for_events(&store, events)
+    crate::adaptor::gateway::workflow::fact_log::append_facts_for_events(&store, events).await
 }
 
 /// provider Stop の受理: 事実（stop_received 等）を先に追記し、provider lifecycle

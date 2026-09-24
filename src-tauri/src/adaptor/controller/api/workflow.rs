@@ -103,7 +103,7 @@ async fn list_workflows(
     State(state): State<LocalApiState>,
 ) -> Result<Json<Vec<WorkflowSummaryDto>>, ApiError> {
     let workflow = state.workflow;
-    let summaries = blocking(move || workflow.list_workflow_summaries()).await?;
+    let summaries = (workflow.list_workflow_summaries().await).map_err(ApiError::from)?;
     Ok(Json(summaries))
 }
 
@@ -127,9 +127,10 @@ async fn list_executions(
     let worktree = query.worktree;
     let page = parse_page(query.limit, query.offset)?;
     let workflow = state.workflow;
-    let executions =
-        blocking(move || workflow.list_executions_filtered(status, worktree.as_deref(), page))
-            .await?;
+    let executions = (workflow
+        .list_executions_filtered(status, worktree.as_deref(), page)
+        .await)
+        .map_err(ApiError::from)?;
     Ok(Json(executions))
 }
 
@@ -157,8 +158,8 @@ async fn get_execution(
 ) -> Result<Json<WorkflowExecutionView>, ApiError> {
     let workflow = state.workflow;
     let lookup_id = execution_id.clone();
-    let execution = blocking(move || workflow.get_execution_state(&lookup_id))
-        .await?
+    let execution = (workflow.get_execution_state(&lookup_id).await)
+        .map_err(ApiError::from)?
         .ok_or_else(|| {
             ApiError::not_found(format!("workflow execution '{execution_id}' was not found"))
         })?;
@@ -173,7 +174,8 @@ async fn get_execution_log(
     let Query(query) = query.map_err(|error| ApiError::invalid_request(error.body_text()))?;
     let page = parse_page(query.limit, query.offset)?;
     let workflow = state.workflow;
-    let events = blocking(move || workflow.get_execution_log_page(&execution_id, page)).await?;
+    let events =
+        (workflow.get_execution_log_page(&execution_id, page).await).map_err(ApiError::from)?;
     Ok(Json(events))
 }
 
@@ -262,15 +264,17 @@ async fn validate_artifact(
 ) -> Result<Json<ValidateArtifactResponse>, ApiError> {
     let Json(payload) = payload.map_err(|error| ApiError::invalid_request(error.body_text()))?;
     let workflow = state.workflow;
-    let validation = blocking(move || {
-        workflow.validate_output_for_contract(
-            &execution_id,
-            &payload.node,
-            &payload.contract,
-            payload.value,
-        )
+    let validation = ({
+        workflow
+            .validate_output_for_contract(
+                &execution_id,
+                &payload.node,
+                &payload.contract,
+                payload.value,
+            )
+            .await
     })
-    .await?;
+    .map_err(ApiError::from)?;
     Ok(Json(validation.into()))
 }
 
@@ -279,7 +283,7 @@ async fn get_artifact(
     Path((execution_id, node)): Path<(String, String)>,
 ) -> Result<Json<GetArtifactResponse>, ApiError> {
     let workflow = state.workflow;
-    let output = blocking(move || workflow.get_output(&execution_id, &node)).await?;
+    let output = (workflow.get_output(&execution_id, &node).await).map_err(ApiError::from)?;
     Ok(Json(output.into()))
 }
 

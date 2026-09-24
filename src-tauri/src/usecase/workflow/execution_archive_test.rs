@@ -27,8 +27,9 @@ async fn test_実行木archive_abortと自然完了の競合だけを終了状�
             command: AbortExecutionCommand,
         ) -> Result<(), WorkflowError> {
             if self.complete {
-                let records =
-                    fact_log::read_tree_records(&self.store, &command.execution_id).unwrap();
+                let records = fact_log::read_tree_records(&self.store, &command.execution_id)
+                    .await
+                    .unwrap();
                 let meta = &records[0].meta;
                 for kind in ["submit_received", "stop_received"] {
                     fact_log::append_single_fact(
@@ -70,7 +71,7 @@ async fn test_実行木archive_abortと自然完了の競合だけを終了状�
                 assert_eq!(result, Err(error));
             }
             assert_eq!(
-                fixture.repository.target(&id).unwrap().status,
+                fixture.repository.target(&id).await.unwrap().status,
                 if complete {
                     ExecutionStatus::Completed
                 } else {
@@ -80,9 +81,11 @@ async fn test_実行木archive_abortと自然完了の競合だけを終了状�
             let archives = fixture
                 .repository
                 .archive_snapshot_for(&[id.clone()])
+                .await
                 .unwrap();
             assert_eq!(archives.records.len(), usize::from(succeeds));
             assert!(!fact_log::read_tree_records(&fixture.store, &id)
+                .await
                 .unwrap()
                 .iter()
                 .any(|record| matches!(record.fact, NodeFact::AbortRequested(_))));
@@ -163,13 +166,14 @@ async fn test_実行木archive_同じworktreeのworkflowと複数sessionをす�
     // Then
     for id in [workflow.as_str(), ids[0], ids[1]] {
         assert_eq!(
-            fixture.repository.target(id).unwrap().status,
+            fixture.repository.target(id).await.unwrap().status,
             ExecutionStatus::Aborted
         );
         assert_eq!(
             fixture
                 .repository
                 .archive_snapshot_for(&[id.into()])
+                .await
                 .unwrap()
                 .records[0]
                 .archive_reason,
@@ -200,12 +204,14 @@ async fn test_実行木restore_所属worktreeが利用不可なら事実を追�
         .unwrap();
     let before =
         crate::adaptor::gateway::workflow::fact_log::read_tree_records(&fixture.store, &id)
+            .await
             .unwrap();
     // When
     assert!(fixture.runtime.restore_execution_tree(&id).await.is_err());
     // Then
     assert_eq!(
         crate::adaptor::gateway::workflow::fact_log::read_tree_records(&fixture.store, &id)
+            .await
             .unwrap(),
         before
     );
@@ -269,6 +275,7 @@ async fn test_旧sessionarchive移行_128件を越えて時刻と理由と終了
         fixture
             .repository
             .legacy_session_archive_page(None)
+            .await
             .unwrap()
             .len(),
         128
@@ -283,26 +290,30 @@ async fn test_旧sessionarchive移行_128件を越えて時刻と理由と終了
     assert!(fixture
         .repository
         .legacy_session_archive_page(None)
+        .await
         .unwrap()
         .is_empty());
     for (id, timestamp, reason, completed) in expected {
         let record = fixture
             .repository
             .archive_snapshot_for(std::slice::from_ref(&id))
+            .await
             .unwrap()
             .records
             .remove(0);
         assert_eq!(record.archived_at, timestamp);
         assert_eq!(record.archive_reason, reason);
         assert_eq!(
-            fixture.repository.target(&id).unwrap().status,
+            fixture.repository.target(&id).await.unwrap().status,
             if completed {
                 ExecutionStatus::Completed
             } else {
                 ExecutionStatus::Aborted
             }
         );
-        let facts = fact_log::read_tree_records(&fixture.store, &id).unwrap();
+        let facts = fact_log::read_tree_records(&fixture.store, &id)
+            .await
+            .unwrap();
         assert_eq!(
             facts
                 .iter()
@@ -326,6 +337,7 @@ async fn test_旧sessionarchive移行_128件を越えて時刻と理由と終了
     assert!(fixture
         .repository
         .legacy_session_archive_page(None)
+        .await
         .unwrap()
         .is_empty());
 }

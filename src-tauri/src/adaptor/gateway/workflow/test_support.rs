@@ -18,7 +18,7 @@ pub(crate) struct WorkflowSessionFactSeed<'a> {
     pub initial_instruction_admitted: bool,
 }
 
-pub(crate) fn seed_workflow_session_facts(
+pub(crate) async fn seed_workflow_session_facts(
     store: &Arc<LocalEventStore>,
     seed: WorkflowSessionFactSeed<'_>,
 ) -> Result<(), String> {
@@ -28,7 +28,11 @@ pub(crate) fn seed_workflow_session_facts(
         SessionSpec, StartedFact, TreeRootFact, WorkflowDefinition,
     };
 
-    if !super::fact_log::read_tree_records(store, seed.workflow_execution_id)?.is_empty() {
+    if !super::fact_log::read_tree_records(store, seed.workflow_execution_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .is_empty()
+    {
         return Ok(());
     }
     let definition = WorkflowDefinition {
@@ -132,20 +136,26 @@ pub(crate) fn seed_workflow_session_facts(
 }
 
 #[cfg(test)]
-pub(crate) fn seed_canonical_execution(
+pub(crate) async fn seed_canonical_execution(
     store: &Arc<LocalEventStore>,
     execution: &WorkflowExecutionMetadata,
     events: &[WorkflowEvent],
 ) {
     if events.is_empty() {
         // 事実列が既に seed 済みなら合成しない（既存の木を正とする）。
-        let existing = super::fact_log::read_tree_records(store, &execution.execution_id).unwrap();
+        let existing = super::fact_log::read_tree_records(store, &execution.execution_id)
+            .await
+            .unwrap();
         if existing.is_empty() {
             let synthesized = synthesized_metadata_events(execution);
-            super::fact_log::append_facts_for_events(store, &synthesized).unwrap();
+            super::fact_log::append_facts_for_events(store, &synthesized)
+                .await
+                .unwrap();
         }
     } else {
-        super::fact_log::append_facts_for_events(store, events).unwrap();
+        super::fact_log::append_facts_for_events(store, events)
+            .await
+            .unwrap();
     }
 }
 
@@ -229,11 +239,13 @@ fn synthesized_metadata_events(execution: &WorkflowExecutionMetadata) -> Vec<Wor
 }
 
 #[cfg(test)]
-pub(crate) fn append_canonical_events(
+pub(crate) async fn append_canonical_events(
     store: &Arc<LocalEventStore>,
     events: &[WorkflowEvent],
 ) -> Result<(), String> {
-    super::fact_log::append_facts_for_events(store, events).map_err(|error| error.to_string())
+    super::fact_log::append_facts_for_events(store, events)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]

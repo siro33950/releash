@@ -86,7 +86,7 @@ pub(super) fn cmd_output_submit(
     })
 }
 
-pub(super) fn cmd_output_get(
+pub(super) async fn cmd_output_get(
     data_dir: &Path,
     execution_id: &str,
     node: &str,
@@ -94,11 +94,14 @@ pub(super) fn cmd_output_get(
 ) -> Result<String, CliError> {
     validate_execution_id(execution_id)?;
     validate_node(node)?;
+    let requested_id = execution_id.to_string();
+    let requested_node = node.to_string();
     let response = api_client::read_with_fallback(
         data_dir,
-        |client| client.get_output(execution_id, node),
+        move |client| client.get_output(&requested_id, &requested_node),
         || file_direct::get_output(data_dir, execution_id, node),
-    )?;
+    )
+    .await?;
     format_output(response, node, json)
 }
 

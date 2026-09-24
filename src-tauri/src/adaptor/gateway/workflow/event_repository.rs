@@ -34,7 +34,7 @@ impl WorkflowEventLogRepository {
         }
     }
 
-    fn read_drafts(
+    async fn read_drafts(
         &self,
         execution_id: &ExecutionTreeId,
     ) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
@@ -43,17 +43,22 @@ impl WorkflowEventLogRepository {
                 let execution_id = execution_id.as_str().to_string();
                 let rows = backend
                     .run_indexed(move |connection| {
-                        node_events::read_tree(connection, &execution_id).map_err(|_| {
-                            crate::domain::local_event::LocalEventQueryError::InvalidRequest
+                        node_events::read_tree(connection, &execution_id).map_err(|error| {
+                            crate::adaptor::gateway::local_event_store::reader::storage_unavailable(
+                                &error,
+                            )
                         })
                     })
-                    .map_err(|error| WorkflowError::external(error.to_string()))?;
+                    .await
+                    .map_err(|error| {
+                        WorkflowError::from(super::fact_log::FactReadError::Query(error))
+                    })?;
                 rows.iter().map(row_to_draft).collect()
             }
         }
     }
 
-    fn read_draft_page(
+    async fn read_draft_page(
         &self,
         execution_id: &ExecutionTreeId,
         page: WorkflowPageRequest,
@@ -69,11 +74,16 @@ impl WorkflowEventLogRepository {
                             page.offset,
                             page.limit,
                         )
-                        .map_err(|_| {
-                            crate::domain::local_event::LocalEventQueryError::InvalidRequest
+                        .map_err(|error| {
+                            crate::adaptor::gateway::local_event_store::reader::storage_unavailable(
+                                &error,
+                            )
                         })
                     })
-                    .map_err(|error| WorkflowError::external(error.to_string()))?;
+                    .await
+                    .map_err(|error| {
+                        WorkflowError::from(super::fact_log::FactReadError::Query(error))
+                    })?;
                 rows.iter().map(row_to_draft).collect()
             }
         }
@@ -98,6 +108,7 @@ fn row_to_draft(row: &NodeEventRow) -> Result<WorkflowEventDraft, WorkflowError>
     })
 }
 
+#[async_trait::async_trait]
 impl WorkflowEventRepository for WorkflowEventLogRepository {
     #[cfg(test)]
     fn append(&self, _event: &WorkflowEventDraft) -> Result<(), WorkflowError> {
@@ -106,19 +117,19 @@ impl WorkflowEventRepository for WorkflowEventLogRepository {
         ))
     }
 
-    fn read(
+    async fn read(
         &self,
         execution_id: &ExecutionTreeId,
     ) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
-        self.read_drafts(execution_id)
+        self.read_drafts(execution_id).await
     }
 
-    fn read_page(
+    async fn read_page(
         &self,
         execution_id: &ExecutionTreeId,
         page: WorkflowPageRequest,
     ) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
-        self.read_draft_page(execution_id, page)
+        self.read_draft_page(execution_id, page).await
     }
 }
 
@@ -177,8 +188,46 @@ mod tests {
         ]
     }
 
-    #[test]
-    fn read_returns_fact_rows_with_unified_vocabulary() {
+    #[tokio::test]
+    async fn test_実行履歴読取_readとread_pageで失敗分類を保持する() {
+        use crate::adaptor::gateway::local_event_store::test_helpers::ReadFailure;
+        use crate::adaptor::protocol::connect::classified_error;
+        // Given
+        let directory = TempDir::new().unwrap();
+        let store =
+            LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into()))
+                .unwrap();
+        let id = ExecutionTreeId::new("00000000-0000-4000-8000-000000000001").unwrap();
+        let repository = WorkflowEventLogRepository::with_store(store.clone());
+        for (failure, expected) in ReadFailure::cases() {
+            for paged in [false, true] {
+                store.fail_next_read(failure.clone());
+                // When
+                let result = if paged {
+                    repository
+                        .read_page(
+                            &id,
+                            WorkflowPageRequest {
+                                offset: 0,
+                                limit: 1,
+                            },
+                        )
+                        .await
+                } else {
+                    repository.read(&id).await
+                };
+                // Then
+                assert_eq!(
+                    classified_error(result.unwrap_err()).code,
+                    expected,
+                    "paged={paged}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn read_returns_fact_rows_with_unified_vocabulary() {
         let tmp = TempDir::new().unwrap();
         let store =
             LocalEventStore::open(LocalEventStoreConfig::production(tmp.path().to_path_buf()))
@@ -188,10 +237,11 @@ mod tests {
             &store,
             &started_events(execution_id.as_str()),
         )
+        .await
         .unwrap();
         let repo = WorkflowEventLogRepository::with_store(store);
 
-        let events = repo.read(&execution_id).unwrap();
+        let events = repo.read(&execution_id).await.unwrap();
 
         assert_eq!(events[0].event_kind, "started");
         assert_eq!(events[0].payload["root"]["definition"]["name"], "wf");
@@ -199,8 +249,8 @@ mod tests {
         assert_eq!(events[0].payload["root"]["request"], "ship it");
     }
 
-    #[test]
-    fn read_after_cached_read_observes_incremental_append() {
+    #[tokio::test]
+    async fn read_after_cached_read_observes_incremental_append() {
         let tmp = TempDir::new().unwrap();
         let store =
             LocalEventStore::open(LocalEventStoreConfig::production(tmp.path().to_path_buf()))
@@ -210,11 +260,12 @@ mod tests {
             &store,
             &started_events(execution_id.as_str()),
         )
+        .await
         .unwrap();
         let repo = WorkflowEventLogRepository::with_store(store.clone());
 
         // ExecutionStarted と root の NodeStarted は 1 つの root started 行に融合される。
-        let first = repo.read(&execution_id).unwrap();
+        let first = repo.read(&execution_id).await.unwrap();
         assert_eq!(first.len(), 1);
         assert_eq!(first[0].event_kind, "started");
 
@@ -226,16 +277,17 @@ mod tests {
                 timestamp: 2.0,
             }],
         )
+        .await
         .unwrap();
 
-        let second = repo.read(&execution_id).unwrap();
+        let second = repo.read(&execution_id).await.unwrap();
         assert_eq!(second.len(), 2);
         assert_eq!(second[0], first[0]);
         assert_eq!(second[1].event_kind, "abort_requested");
         assert_eq!(second[1].timestamp, 2.0);
     }
-    #[test]
-    fn test_実行履歴_未対応定義を落とさず保存されたpayloadをページでも返す() {
+    #[tokio::test]
+    async fn test_実行履歴_未対応定義を落とさず保存されたpayloadをページでも返す() {
         // Given
         let directory = TempDir::new().unwrap();
         let store =
@@ -251,7 +303,7 @@ mod tests {
         let repository = WorkflowEventLogRepository::with_store(store);
 
         // When
-        let records = repository.read(&id).unwrap();
+        let records = repository.read(&id).await.unwrap();
         let page = repository
             .read_page(
                 &id,
@@ -260,6 +312,7 @@ mod tests {
                     limit: 1,
                 },
             )
+            .await
             .unwrap();
 
         // Then

@@ -374,8 +374,9 @@ struct AcceptanceManagedWorktreeResolver;
 
 struct AcceptanceWorkspaceNodeActionResolver;
 
+#[async_trait::async_trait]
 impl WorkspaceNodeActionResolver for AcceptanceWorkspaceNodeActionResolver {
-    fn resolve_approval_target(
+    async fn resolve_approval_target(
         &self,
         _worktree_path: &str,
         node_id: &str,
@@ -387,7 +388,7 @@ impl WorkspaceNodeActionResolver for AcceptanceWorkspaceNodeActionResolver {
         })
     }
 
-    fn resolve_retry_target(
+    async fn resolve_retry_target(
         &self,
         _worktree_path: &str,
         node_id: &str,
@@ -398,7 +399,7 @@ impl WorkspaceNodeActionResolver for AcceptanceWorkspaceNodeActionResolver {
         })
     }
 
-    fn resolve_session_resume_target(
+    async fn resolve_session_resume_target(
         &self,
         _worktree_path: &str,
         node_id: &str,
@@ -411,7 +412,7 @@ impl WorkspaceNodeActionResolver for AcceptanceWorkspaceNodeActionResolver {
         )
     }
 
-    fn resolve_session_rename_target(
+    async fn resolve_session_rename_target(
         &self,
         _worktree_path: &str,
         node_id: &str,
@@ -919,7 +920,7 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             .map_err(|error| format!("{error:?}"))
     }
 
-    pub fn workspace_node_status(
+    pub async fn workspace_node_status(
         &self,
         node_execution_id: &str,
     ) -> Result<Option<AcceptanceWorkspaceNodeStatus>, String> {
@@ -934,6 +935,7 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             );
         repository
             .load_node_by_node_execution_id(node_execution_id)
+            .await
             .map_err(|error| error.to_string())
             .map(|node| {
                 node.map(|node| match node.status_classification {
@@ -951,7 +953,7 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             })
     }
 
-    pub fn workspace_node_detail_status(
+    pub async fn workspace_node_detail_status(
         &self,
         worktree_path: &str,
         node_execution_id: &str,
@@ -967,6 +969,7 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             );
         let Some(node) = repository
             .load_node_by_node_execution_id(node_execution_id)
+            .await
             .map_err(|error| error.to_string())?
         else {
             return Ok(None);
@@ -987,17 +990,19 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             );
         query
             .node_detail(&WorkspaceIdentity::new(worktree_path), &node.id)
+            .await
             .map(|detail| detail.map(|detail| detail.status_classification))
             .map_err(|error| error.to_string())
     }
 
-    pub fn execution_fact_event_types(&self, tree_id: &str) -> Result<Vec<String>, String> {
+    pub async fn execution_fact_event_types(&self, tree_id: &str) -> Result<Vec<String>, String> {
         let store = self
             ._app
             .try_state::<Arc<LocalEventStore>>()
             .map(|store| store.inner().clone())
             .ok_or_else(|| "LocalEventStore is not managed".to_string())?;
         crate::adaptor::gateway::workflow::fact_log::read_tree_records(&store, tree_id)
+            .await
             .map(|records| {
                 records
                     .into_iter()

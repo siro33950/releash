@@ -22,14 +22,15 @@ struct CountingEvents {
     reads: AtomicUsize,
 }
 
+#[async_trait::async_trait]
 impl WorkflowEventRepository for CountingEvents {
     fn append(&self, _: &WorkflowEventDraft) -> Result<(), WorkflowError> {
         panic!("output get is read-only")
     }
 
-    fn read(&self, id: &ExecutionTreeId) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
+    async fn read(&self, id: &ExecutionTreeId) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
         self.reads.fetch_add(1, Ordering::SeqCst);
-        self.repository.read(id)
+        self.repository.read(id).await
     }
 }
 
@@ -41,8 +42,8 @@ impl SecretSourceGateway for NoSecrets {
     }
 }
 
-#[test]
-fn test_終端の隔離node出力_旧定義でも状態と同じ保存成果を一度の読取で返す() {
+#[tokio::test]
+async fn test_終端の隔離node出力_旧定義でも状態と同じ保存成果を一度の読取で返す() {
     use crate::adaptor::gateway::local_event_store::node_events::NewNodeEventRow;
     use crate::domain::workflow::ExecutionStatus;
 
@@ -158,6 +159,7 @@ fn test_終端の隔離node出力_旧定義でも状態と同じ保存成果を�
                 );
                 let state = projection
                     .get_execution(&ExecutionTreeId::new(id).unwrap())
+                    .await
                     .unwrap()
                     .unwrap();
                 assert_eq!(state.status, status);
@@ -189,8 +191,9 @@ fn test_終端の隔離node出力_旧定義でも状態と同じ保存成果を�
                     WorkflowGetOutputResult::NotSubmitted
                 };
                 // When
-                let output =
-                    fact_replay::without_tree_fold(|| usecase.get_output(id, "main")).unwrap();
+                let output = without_tree_fold(usecase.get_output(id, "main"))
+                    .await
+                    .unwrap();
                 // Then
                 assert_eq!(output, expected);
                 assert_eq!(events.reads.load(Ordering::SeqCst), 1);
@@ -199,8 +202,8 @@ fn test_終端の隔離node出力_旧定義でも状態と同じ保存成果を�
     }
 }
 
-#[test]
-fn test_隔離合成子の出力取得_保存されない成果を一度の読取で実行木の再構築なしに返す() {
+#[tokio::test]
+async fn test_隔離合成子の出力取得_保存されない成果を一度の読取で実行木の再構築なしに返す() {
     for kind in ["sequence", "fanout"] {
         // Given
         let directory = tempfile::TempDir::new().unwrap();
@@ -252,6 +255,7 @@ fn test_隔離合成子の出力取得_保存されない成果を一度の読�
                 },
             ],
         )
+        .await
         .unwrap();
         let events = Arc::new(CountingEvents {
             repository: WorkflowEventLogRepository::with_store(store.clone()),
@@ -275,11 +279,13 @@ fn test_隔離合成子の出力取得_保存されない成果を一度の読�
         );
         // When / Then
         assert_eq!(
-            fact_replay::without_tree_fold(|| usecase.get_output(id, "main")).unwrap(),
+            without_tree_fold(usecase.get_output(id, "main"))
+                .await
+                .unwrap(),
             WorkflowGetOutputResult::NotSubmitted
         );
         assert_eq!(events.reads.swap(0, Ordering::SeqCst), 1);
-        let records = fact_log::read_tree_records(&store, id).unwrap();
+        let records = fact_log::read_tree_records(&store, id).await.unwrap();
         let leaf = records[1].meta.clone();
         fact_log::append_single_fact(
             &store,
@@ -302,7 +308,7 @@ fn test_隔離合成子の出力取得_保存されない成果を一度の読�
             4000,
         )
         .unwrap();
-        let records = fact_log::read_tree_records(&store, id).unwrap();
+        let records = fact_log::read_tree_records(&store, id).await.unwrap();
         assert!(!records.iter().any(|record| matches!(
             record.fact,
             crate::domain::workflow::NodeFact::ArtifactProduced(_)
@@ -312,7 +318,9 @@ fn test_隔離合成子の出力取得_保存されない成果を一度の読�
         let leaf_worktree =
             crate::domain::workflow::IsolatedWorktree::for_attempt("/repo", "work-id", 2);
         assert_eq!(
-            fact_replay::without_tree_fold(|| usecase.get_output(id, "main")).unwrap(),
+            without_tree_fold(usecase.get_output(id, "main"))
+                .await
+                .unwrap(),
             WorkflowGetOutputResult::Submitted {
                 contract: None,
                 submitted_at: None,
@@ -395,8 +403,8 @@ fn test_成果の事実変換_旧隔離事実を状態入力に復活させず�
     ));
 }
 
-#[test]
-fn test_空の隔離fanout出力_保存事実を一度だけ読みstatusと同じ完了成果を返す() {
+#[tokio::test]
+async fn test_空の隔離fanout出力_保存事実を一度だけ読みstatusと同じ完了成果を返す() {
     // Given
     let directory = tempfile::TempDir::new().unwrap();
     let store =
@@ -428,6 +436,7 @@ fn test_空の隔離fanout出力_保存事実を一度だけ読みstatusと同�
             },
         ],
     )
+    .await
     .unwrap();
     let events = Arc::new(CountingEvents {
         repository: WorkflowEventLogRepository::with_store(store.clone()),
@@ -450,10 +459,12 @@ fn test_空の隔離fanout出力_保存事実を一度だけ読みstatusと同�
         Arc::new(NoSecrets),
     );
     // When
-    let output = fact_replay::without_tree_fold(|| usecase.get_output(id, "main")).unwrap();
+    let output = without_tree_fold(usecase.get_output(id, "main"))
+        .await
+        .unwrap();
     // Then
     assert_eq!(events.reads.load(Ordering::SeqCst), 1);
-    let records = fact_log::read_tree_records(&store, id).unwrap();
+    let records = fact_log::read_tree_records(&store, id).await.unwrap();
     let folded = fact_replay::fold_execution_tree(id, &records)
         .unwrap()
         .unwrap();
@@ -493,11 +504,13 @@ fn test_空の隔離fanout出力_保存事実を一度だけ読みstatusと同�
         events.reads.store(0, Ordering::SeqCst);
         // When / Then
         assert_eq!(
-            fact_replay::without_tree_fold(|| usecase.get_output(id, "main")).unwrap(),
+            without_tree_fold(usecase.get_output(id, "main"))
+                .await
+                .unwrap(),
             WorkflowGetOutputResult::NotSubmitted
         );
         assert_eq!(events.reads.load(Ordering::SeqCst), 1);
-        let records = fact_log::read_tree_records(&store, id).unwrap();
+        let records = fact_log::read_tree_records(&store, id).await.unwrap();
         let folded = fact_replay::fold_execution_tree(id, &records)
             .unwrap()
             .unwrap();
@@ -507,5 +520,30 @@ fn test_空の隔離fanout出力_保存事実を一度だけ読みstatusと同�
             crate::domain::workflow::ExecutionStatus::Aborted
         );
         assert!(read_model.node_executions[0].artifact.is_none());
+    }
+}
+
+async fn without_tree_fold<T>(read: impl std::future::Future<Output = T>) -> T {
+    let mut read = std::pin::pin!(read);
+    std::future::poll_fn(|context| fact_replay::without_tree_fold(|| read.as_mut().poll(context)))
+        .await
+}
+
+#[tokio::test]
+async fn test_execution読取_実経路で失敗分類を保持する() {
+    use crate::adaptor::gateway::local_event_store::test_helpers::ReadFailure;
+    use crate::adaptor::protocol::connect::classified_error;
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let store =
+        LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into())).unwrap();
+    let repository = WorkflowExecutionProjectionLogRepository::new(store.clone());
+    let id = ExecutionTreeId::new("00000000-0000-4000-8000-000000000001").unwrap();
+    for (failure, expected) in ReadFailure::cases() {
+        store.fail_next_read(failure);
+        // When
+        let error = repository.get_execution(&id).await.unwrap_err();
+        // Then
+        assert_eq!(classified_error(error).code, expected);
     }
 }

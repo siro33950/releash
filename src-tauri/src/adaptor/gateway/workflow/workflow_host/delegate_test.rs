@@ -202,6 +202,7 @@ async fn test_delegate_child実行中の親再開とchild再開をまたいで�
             &workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone()),
             &tree,
         )
+        .await
         .unwrap()
         .unwrap();
         for id in [&original_parent.id, &parent.id, &child.id] {
@@ -215,7 +216,7 @@ async fn test_delegate_child実行中の親再開とchild再開をまたいで�
     }
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn test_submit受付_child起動の自動再試行待機より前に応答する() {
     let fixture = Fixture::new(0);
     let tree = fixture.start(&definition("")).await;
@@ -361,7 +362,9 @@ async fn test_delegate_注入を永続化して同じsessionへ戻しchildのwor
         drop(calls);
         submit(&control, &parent.id, serde_json::json!({"passed": false})).await;
         stop(&control, &tree, &parent).await;
-        let records = workflow_fact_log::read_tree_records(&fixture.store, &tree).unwrap();
+        let records = workflow_fact_log::read_tree_records(&fixture.store, &tree)
+            .await
+            .unwrap();
         assert_eq!(
             records
                 .iter()
@@ -373,6 +376,7 @@ async fn test_delegate_注入を永続化して同じsessionへ戻しchildのwor
             &workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone()),
             &tree,
         )
+        .await
         .unwrap()
         .unwrap();
         assert_eq!(
@@ -415,7 +419,9 @@ async fn test_delegate_結果注入の失敗は親をrunningに保ち注入済�
     // When
     stop(&control, &tree, &child).await;
     // Then
-    let records = workflow_fact_log::read_tree_records(&fixture.store, &tree).unwrap();
+    let records = workflow_fact_log::read_tree_records(&fixture.store, &tree)
+        .await
+        .unwrap();
     assert!(!records
         .iter()
         .any(|record| matches!(record.fact, NodeFact::DelegateResultInjected(_))));
@@ -423,6 +429,7 @@ async fn test_delegate_結果注入の失敗は親をrunningに保ち注入済�
         &workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone()),
         &tree,
     )
+    .await
     .unwrap()
     .unwrap();
     let failed = folded.aggregate.node_execution(&parent.id).unwrap();
@@ -478,6 +485,7 @@ async fn test_delegate_再起動後のresumeは完了childを再実行せず未�
                     timestamp: current_timestamp(),
                 }],
             )
+            .await
             .unwrap();
         }
         fixture.sessions.live_sessions.lock().unwrap().clear();
@@ -494,7 +502,9 @@ async fn test_delegate_再起動後のresumeは完了childを再実行せず未�
             .await
             .unwrap();
         // Then
-        let records = workflow_fact_log::read_tree_records(&fixture.store, &tree).unwrap();
+        let records = workflow_fact_log::read_tree_records(&fixture.store, &tree)
+            .await
+            .unwrap();
         assert_eq!(
             records
                 .iter()
@@ -583,11 +593,13 @@ async fn test_delegate_送信成功後の注入済み事実保存失敗からres
             timestamp: current_timestamp(),
         }],
     )
+    .await
     .unwrap();
     let folded = workflow_fact_log::fold_tree_from(
         &workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone()),
         &tree,
     )
+    .await
     .unwrap()
     .unwrap();
     let injection = folded
@@ -604,7 +616,9 @@ async fn test_delegate_送信成功後の注入済み事実保存失敗からres
         .await
         .is_err());
     assert_eq!(fixture.sessions.continuations.lock().unwrap().len(), 1);
-    let records = workflow_fact_log::read_tree_records(&fixture.store, &tree).unwrap();
+    let records = workflow_fact_log::read_tree_records(&fixture.store, &tree)
+        .await
+        .unwrap();
     assert!(!records
         .iter()
         .any(|record| matches!(record.fact, NodeFact::DelegateResultInjected(_))));
@@ -627,7 +641,9 @@ async fn test_delegate_送信成功後の注入済み事実保存失敗からres
         .unwrap();
 
     // Then
-    let records = workflow_fact_log::read_tree_records(&fixture.store, &tree).unwrap();
+    let records = workflow_fact_log::read_tree_records(&fixture.store, &tree)
+        .await
+        .unwrap();
     assert_eq!(
         records
             .iter()
@@ -688,6 +704,7 @@ async fn test_delegate_共有worktreeでもresume時のprovider復元失敗は�
         &workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone()),
         &tree,
     )
+    .await
     .unwrap()
     .unwrap();
     let failed = folded.aggregate.node_execution(&parent.id).unwrap();
@@ -815,6 +832,7 @@ async fn test_delegate_sequenceとfanoutのchildを提出から起動して統�
                 &workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone()),
                 &tree,
             )
+            .await
             .unwrap()
             .unwrap();
             let current = folded.aggregate.node_execution(&parent.id).unwrap();
@@ -920,7 +938,9 @@ async fn test_delegate_未完了childを持つ再起動resumeは既存childだ�
     .await;
     stop(&resumed_control, &tree, &child).await;
     assert_eq!(fixture.sessions.continuations.lock().unwrap().len(), 1);
-    let records = workflow_fact_log::read_tree_records(&fixture.store, &tree).unwrap();
+    let records = workflow_fact_log::read_tree_records(&fixture.store, &tree)
+        .await
+        .unwrap();
     assert_eq!(
         records
             .iter()
@@ -970,11 +990,13 @@ async fn test_delegate_同じpendingを並行注入しても送信とcommitは�
             timestamp: current_timestamp(),
         }],
     )
+    .await
     .unwrap();
     let folded = workflow_fact_log::fold_tree_from(
         &workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone()),
         &tree,
     )
+    .await
     .unwrap()
     .unwrap();
     let injection = folded
@@ -1014,7 +1036,9 @@ async fn test_delegate_同じpendingを並行注入しても送信とcommitは�
     first.unwrap();
     second.unwrap();
     assert_eq!(fixture.sessions.continuations.lock().unwrap().len(), 1);
-    let records = workflow_fact_log::read_tree_records(&fixture.store, &tree).unwrap();
+    let records = workflow_fact_log::read_tree_records(&fixture.store, &tree)
+        .await
+        .unwrap();
     assert_eq!(
         records
             .iter()
@@ -1100,7 +1124,9 @@ async fn test_delegate_child待ち中の再submitは状態拒否となり保存�
         .node_executions[0]
         .clone();
     submit(&control, &parent.id, serde_json::json!({"passed": false})).await;
-    let before = workflow_fact_log::read_tree_records(&fixture.store, &tree).unwrap();
+    let before = workflow_fact_log::read_tree_records(&fixture.store, &tree)
+        .await
+        .unwrap();
     // When
     let error = control
         .submit_output(SubmitOutputCommand {
@@ -1121,7 +1147,9 @@ async fn test_delegate_child待ち中の再submitは状態拒否となり保存�
         )
     );
     assert_eq!(
-        workflow_fact_log::read_tree_records(&fixture.store, &tree).unwrap(),
+        workflow_fact_log::read_tree_records(&fixture.store, &tree)
+            .await
+            .unwrap(),
         before
     );
     let executions = fixture
@@ -1215,6 +1243,7 @@ async fn test_delegate_childの新attemptへのresumeは親を待機させ注入
         &workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone()),
         &tree,
     )
+    .await
     .unwrap()
     .unwrap();
     assert!(folded.aggregate.delegate_waits_for_child(&parent.id));
@@ -1230,7 +1259,9 @@ async fn test_delegate_childの新attemptへのresumeは親を待機させ注入
     submit(&control, &retry.id, serde_json::json!({"passed": false})).await;
     stop(&control, &tree, &retry).await;
     // Then
-    let records = workflow_fact_log::read_tree_records(&fixture.store, &tree).unwrap();
+    let records = workflow_fact_log::read_tree_records(&fixture.store, &tree)
+        .await
+        .unwrap();
     assert!(records
         .iter()
         .any(|record| record.fact == NodeFact::DelegateResultInjected(retry.id.clone())));
@@ -1244,6 +1275,7 @@ async fn test_delegate_childの新attemptへのresumeは親を待機させ注入
         &workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone()),
         &tree,
     )
+    .await
     .unwrap()
     .unwrap()
     .aggregate;
@@ -1291,6 +1323,7 @@ async fn test_delegate_childの新attemptへのresumeは親を待機させ注入
         &workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone()),
         &tree,
     )
+    .await
     .unwrap()
     .unwrap();
     let executions = fixture
@@ -1314,6 +1347,7 @@ async fn test_delegate_childの新attemptへのresumeは親を待機させ注入
         &workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone()),
         &tree,
     )
+    .await
     .unwrap()
     .unwrap();
     assert!(!fixture
@@ -1377,6 +1411,7 @@ async fn test_delegate_artifactを省略したisolated_session_childのworktree�
         &workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone()),
         &tree,
     )
+    .await
     .unwrap()
     .unwrap();
     assert_eq!(
@@ -1487,8 +1522,11 @@ schemas:
             timestamp: current_timestamp(),
         }],
     )
+    .await
     .unwrap();
-    let records = workflow_fact_log::read_tree_records(&fixture.store, &tree).unwrap();
+    let records = workflow_fact_log::read_tree_records(&fixture.store, &tree)
+        .await
+        .unwrap();
     let root = fact_codec::decode(
         fact_codec::event_type(&records[0].fact),
         &fact_codec::encode_detail(&records[0].fact).unwrap(),
@@ -1658,7 +1696,9 @@ async fn test_delegate_false_childが親stopより先に完了しても再開後
         stop(&resumed_control, &tree, &parent).await;
         stop(&resumed_control, &tree, &parent).await;
         // Then
-        let records = workflow_fact_log::read_tree_records(&fixture.store, &tree).unwrap();
+        let records = workflow_fact_log::read_tree_records(&fixture.store, &tree)
+            .await
+            .unwrap();
         assert_eq!(
             records
                 .iter()
@@ -1781,6 +1821,7 @@ async fn test_delegate_新attemptのresumeでも未注入結果を送り再生�
             &workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone()),
             &tree,
         )
+        .await
         .unwrap()
         .unwrap();
         let replayed = folded.aggregate.node_execution(&next.id).unwrap();
@@ -1791,7 +1832,9 @@ async fn test_delegate_新attemptのresumeでも未注入結果を送り再生�
         assert_eq!(replayed.artifact, next.artifact);
         assert_eq!(replayed.completion_signals, next.completion_signals);
         assert!(folded.aggregate.pending_delegate_injections().is_empty());
-        let records = workflow_fact_log::read_tree_records(&fixture.store, &tree).unwrap();
+        let records = workflow_fact_log::read_tree_records(&fixture.store, &tree)
+            .await
+            .unwrap();
         assert_eq!(
             records
                 .iter()
@@ -1859,6 +1902,7 @@ async fn test_delegate_結果注入が競合しても同じ回の他leafを起�
             timestamp: current_timestamp(),
         }],
     )
+    .await
     .unwrap();
     let execution = fixture
         .host
@@ -1892,6 +1936,7 @@ async fn test_delegate_結果注入が競合しても同じ回の他leafを起�
                 timestamp: current_timestamp(),
             }],
         )
+        .await
         .unwrap();
         fixture
             .sessions
@@ -1903,7 +1948,9 @@ async fn test_delegate_結果注入が競合しても同じ回の他leafを起�
     // Then
     result.unwrap();
     assert!(fixture.sessions.activated.lock().unwrap().contains(&other));
-    let records = workflow_fact_log::read_tree_records(&fixture.store, &tree).unwrap();
+    let records = workflow_fact_log::read_tree_records(&fixture.store, &tree)
+        .await
+        .unwrap();
     assert!(!records
         .iter()
         .any(|record| matches!(record.fact, NodeFact::DelegateResultInjected(_))));
@@ -1952,7 +1999,9 @@ async fn test_delegate_child起動の失敗精算が競合しても提出は受�
         .await;
     // Then
     result.unwrap();
-    let records = workflow_fact_log::read_tree_records(&fixture.store, &tree).unwrap();
+    let records = workflow_fact_log::read_tree_records(&fixture.store, &tree)
+        .await
+        .unwrap();
     assert!(records
         .iter()
         .any(|record| record.meta.node_name == "check"

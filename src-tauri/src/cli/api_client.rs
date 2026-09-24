@@ -123,17 +123,22 @@ fn discovery_error(error: LocalApiClientError) -> CliError {
     CliError::Other(error.to_string())
 }
 
-pub(super) fn read_with_fallback<T>(
+pub(super) async fn read_with_fallback<T, F>(
     data_dir: &Path,
-    api_request: impl FnOnce(&LocalApiClient) -> Result<T, ApiRequestError>,
-    fallback: impl FnOnce() -> Result<T, CliError>,
-) -> Result<T, CliError> {
-    let Some(client) = LocalApiClient::discover(data_dir)? else {
-        return fallback();
-    };
-    match api_request(&client) {
+    api_request: impl FnOnce(&LocalApiClient) -> Result<T, ApiRequestError> + Send + 'static,
+    fallback: impl FnOnce() -> F,
+) -> Result<T, CliError>
+where
+    T: Send + 'static,
+    F: std::future::Future<Output = Result<T, CliError>>,
+{
+    let data_dir = data_dir.to_path_buf();
+    match tokio::task::spawn_blocking(move || request_classified(&data_dir, api_request))
+        .await
+        .map_err(|error| CliError::Other(format!("local API request task failed: {error}")))?
+    {
         Ok(value) => Ok(value),
-        Err(ApiRequestError::Unavailable) => fallback(),
+        Err(ApiRequestError::Unavailable) => fallback().await,
         Err(ApiRequestError::Cli(error)) => Err(error),
     }
 }

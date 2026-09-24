@@ -111,16 +111,22 @@ impl WorkspaceListQueryService for FakeQuery {
             .unwrap_or_else(|| Ok(PrStatus::default()))
             .map_err(WorkspaceListUsecaseError)
     }
-    fn nodes(&self, path: &str) -> Result<WorkspaceTreeSnapshotDto, WorkspaceListUsecaseError> {
+    async fn nodes(
+        &self,
+        path: &str,
+    ) -> Result<WorkspaceTreeSnapshotDto, WorkspaceListUsecaseError> {
         self.node_reads.lock().push(path.into());
         let result = self.nodes.lock()[path].clone();
         let hook = self.on_nodes.lock().clone();
         if let Some(hook) = hook {
-            hook(path);
+            let path = path.to_string();
+            tokio::task::spawn_blocking(move || hook(&path))
+                .await
+                .unwrap();
         }
         result.map_err(WorkspaceListUsecaseError)
     }
-    fn history(
+    async fn history(
         &self,
         path: &str,
     ) -> Result<Vec<WorkspaceWorkflowHistoryItemDto>, WorkspaceListUsecaseError> {
@@ -541,7 +547,7 @@ async fn test_局所再読込_指定worktreeの子一覧だけを更新する() 
         .insert("/a".into(), Ok(history("/a", "local")));
     *query.paths.lock() = Err("must not read repositories".into());
     // When
-    let snapshot = usecase.refresh_worktree("/a");
+    let snapshot = usecase.refresh_worktree("/a").await;
     // Then
     assert_eq!(query.scans.load(Ordering::SeqCst), 2);
     assert!(snapshot.status.error.is_none());
@@ -573,7 +579,7 @@ async fn test_局所再読込_指定worktreeの子一覧だけを更新する() 
         .nodes
         .lock()
         .insert("/a".into(), Err("local failure".into()));
-    let failed = usecase.refresh_worktree("/a");
+    let failed = usecase.refresh_worktree("/a").await;
     // Then
     assert_eq!(
         failed.repositories[0].worktrees[0].status.error.as_deref(),
@@ -593,7 +599,7 @@ async fn test_局所再読込_指定worktreeの子一覧だけを更新する() 
         .nodes
         .lock()
         .insert("/a".into(), Ok(nodes("recovered")));
-    let recovered = usecase.refresh_worktree("/a");
+    let recovered = usecase.refresh_worktree("/a").await;
     // Then
     assert!(recovered.repositories[0].worktrees[0]
         .status
@@ -698,7 +704,7 @@ async fn test_局所と全体の競合_開始順がどちらでも後続の子�
             let usecase = usecase.clone();
             tokio::spawn(async move {
                 if local_first {
-                    usecase.refresh_worktree("/a")
+                    usecase.refresh_worktree("/a").await
                 } else {
                     usecase.refresh().await
                 }
@@ -710,7 +716,7 @@ async fn test_局所と全体の競合_開始順がどちらでも後続の子�
         let new = if local_first {
             usecase.refresh().await
         } else {
-            usecase.refresh_worktree("/a")
+            usecase.refresh_worktree("/a").await
         };
         release.send(()).unwrap();
         let old = old.await.unwrap();
@@ -1127,7 +1133,7 @@ async fn test_一覧状態_各階層の初回取得中と取得済みを区別�
 
     // When
     query.nodes.lock().insert("/a".into(), Ok(nodes("empty")));
-    let empty = usecase.refresh_worktree("/a");
+    let empty = usecase.refresh_worktree("/a").await;
     // Then
     assert_eq!(empty.repositories[0].worktrees[0].status.state, "empty");
 }

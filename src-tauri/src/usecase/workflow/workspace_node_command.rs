@@ -47,26 +47,27 @@ pub(crate) struct WorkspaceSessionNodeRenameTarget {
     pub agent_session_id: String,
 }
 
+#[async_trait::async_trait]
 pub(crate) trait WorkspaceNodeActionResolver: Send + Sync {
-    fn resolve_approval_target(
+    async fn resolve_approval_target(
         &self,
         worktree_path: &str,
         node_id: &str,
     ) -> Result<WorkspaceNodeApprovalTarget, WorkflowError>;
 
-    fn resolve_retry_target(
+    async fn resolve_retry_target(
         &self,
         worktree_path: &str,
         node_id: &str,
     ) -> Result<WorkspaceNodeRetryTarget, WorkflowError>;
 
-    fn resolve_session_resume_target(
+    async fn resolve_session_resume_target(
         &self,
         worktree_path: &str,
         node_id: &str,
     ) -> Result<ResumeSessionNodeCommand, WorkflowError>;
 
-    fn resolve_session_rename_target(
+    async fn resolve_session_rename_target(
         &self,
         worktree_path: &str,
         node_id: &str,
@@ -108,7 +109,8 @@ impl WorkspaceNodeCommandUsecase {
     ) -> Result<(), WorkflowError> {
         let target = self
             .resolver
-            .resolve_approval_target(&command.worktree_path, &command.node_id)?;
+            .resolve_approval_target(&command.worktree_path, &command.node_id)
+            .await?;
         self.workflows
             .approve_node(ApprovalCommand {
                 execution_id: target.execution_id,
@@ -125,7 +127,8 @@ impl WorkspaceNodeCommandUsecase {
     ) -> Result<(), WorkflowError> {
         let target = self
             .resolver
-            .resolve_retry_target(&command.worktree_path, &command.node_id)?;
+            .resolve_retry_target(&command.worktree_path, &command.node_id)
+            .await?;
         self.workflows
             .retry_node(RetryNodeCommand {
                 execution_id: target.execution_id,
@@ -140,7 +143,8 @@ impl WorkspaceNodeCommandUsecase {
     ) -> Result<(), WorkflowError> {
         let target = self
             .resolver
-            .resolve_session_resume_target(&command.worktree_path, &command.node_id)?;
+            .resolve_session_resume_target(&command.worktree_path, &command.node_id)
+            .await?;
         self.workflows.resume_session_node(target).await
     }
 
@@ -150,7 +154,8 @@ impl WorkspaceNodeCommandUsecase {
     ) -> Result<(), WorkflowError> {
         let target = self
             .resolver
-            .resolve_session_rename_target(&command.worktree_path, &command.node_id)?;
+            .resolve_session_rename_target(&command.worktree_path, &command.node_id)
+            .await?;
         self.session_renames
             .rename(&target.agent_session_id, &command.name)
             .await
@@ -251,20 +256,21 @@ mod tests {
         }
     }
 
+    #[async_trait::async_trait]
     impl WorkspaceNodeActionResolver for FakeWorkspaceNodeActionResolver {
-        fn resolve_session_resume_target(
+        async fn resolve_session_resume_target(
             &self,
             worktree: &str,
             node: &str,
         ) -> Result<ResumeSessionNodeCommand, WorkflowError> {
-            let target = self.resolve_retry_target(worktree, node)?;
+            let target = self.resolve_retry_target(worktree, node).await?;
             Ok(ResumeSessionNodeCommand {
                 execution_id: target.execution_id,
                 node_execution_id: target.node_execution_id,
             })
         }
 
-        fn resolve_approval_target(
+        async fn resolve_approval_target(
             &self,
             worktree_path: &str,
             node_id: &str,
@@ -282,7 +288,7 @@ mod tests {
             }
         }
 
-        fn resolve_retry_target(
+        async fn resolve_retry_target(
             &self,
             worktree_path: &str,
             node_id: &str,
@@ -300,7 +306,7 @@ mod tests {
             }
         }
 
-        fn resolve_session_rename_target(
+        async fn resolve_session_rename_target(
             &self,
             worktree_path: &str,
             node_id: &str,

@@ -18,12 +18,13 @@ struct Repository {
     appended: Mutex<Vec<(NodeFact, f64)>>,
 }
 
+#[async_trait::async_trait]
 impl WorkflowStartupRepository for Repository {
-    fn list_tree_ids(&self) -> Result<Vec<String>, WorkflowError> {
+    async fn list_tree_ids(&self) -> Result<Vec<String>, WorkflowError> {
         Ok(vec!["tree".into()])
     }
 
-    fn load(&self, tree_id: &str) -> Result<Option<WorkflowStartupRecord>, WorkflowError> {
+    async fn load(&self, tree_id: &str) -> Result<Option<WorkflowStartupRecord>, WorkflowError> {
         if self.fail_load {
             return Err(WorkflowError::external("read failed"));
         }
@@ -57,7 +58,7 @@ impl WorkflowStartupRepository for Repository {
             revision: WorkflowRevision(self.head.lock().unwrap().to_string()),
         }))
     }
-    fn append(
+    async fn append(
         &self,
         root: &NodeFactMeta,
         fact: &NodeFact,
@@ -110,13 +111,17 @@ fn repository() -> Repository {
     }
 }
 
-#[test]
-fn test_起動時abort_理由付き事実を保存し再実行では追記しない() {
+#[tokio::test]
+async fn test_起動時abort_理由付き事実を保存し再実行では追記しない() {
     // Given
     let repository = repository();
     // When
-    abort_unavailable_definition(&repository, "tree", 3.0).unwrap();
-    abort_unavailable_definition(&repository, "tree", 4.0).unwrap();
+    abort_unavailable_definition(&repository, "tree", 3.0)
+        .await
+        .unwrap();
+    abort_unavailable_definition(&repository, "tree", 4.0)
+        .await
+        .unwrap();
     // Then
     assert_eq!(
         *repository.appended.lock().unwrap(),
@@ -129,8 +134,8 @@ fn test_起動時abort_理由付き事実を保存し再実行では追記しな
     );
 }
 
-#[test]
-fn test_起動時abort_読める定義と既存の終端事実には追記しない() {
+#[tokio::test]
+async fn test_起動時abort_読める定義と既存の終端事実には追記しない() {
     // Given
     for terminal in [
         None,
@@ -141,25 +146,31 @@ fn test_起動時abort_読める定義と既存の終端事実には追記しな
         repository.unreadable = terminal.is_some();
         *repository.terminal.lock().unwrap() = terminal;
         // When
-        abort_unavailable_definition(&repository, "tree", 3.0).unwrap();
+        abort_unavailable_definition(&repository, "tree", 3.0)
+            .await
+            .unwrap();
         // Then
         assert!(repository.appended.lock().unwrap().is_empty());
     }
 }
 
-#[test]
-fn test_起動時abort_読取と追記の失敗を返し再試行で保存できる() {
+#[tokio::test]
+async fn test_起動時abort_読取と追記の失敗を返し再試行で保存できる() {
     // Given
     for fail_load in [true, false] {
         let mut repository = repository();
         repository.fail_load = fail_load;
         repository.fail_append = !fail_load;
         // When / Then
-        assert!(abort_unavailable_definition(&repository, "tree", 3.0).is_err());
+        assert!(abort_unavailable_definition(&repository, "tree", 3.0)
+            .await
+            .is_err());
         assert!(repository.appended.lock().unwrap().is_empty());
         repository.fail_load = false;
         repository.fail_append = false;
-        abort_unavailable_definition(&repository, "tree", 4.0).unwrap();
+        abort_unavailable_definition(&repository, "tree", 4.0)
+            .await
+            .unwrap();
         assert_eq!(repository.appended.lock().unwrap().len(), 1);
     }
 }
@@ -185,18 +196,19 @@ impl Startup {
     }
 }
 
+#[async_trait::async_trait]
 impl WorkflowStartupRepository for Startup {
-    fn list_tree_ids(&self) -> Result<Vec<String>, WorkflowError> {
+    async fn list_tree_ids(&self) -> Result<Vec<String>, WorkflowError> {
         self.record("list".into())?;
         Ok(["first", "second"].map(String::from).into())
     }
 
-    fn load(&self, tree_id: &str) -> Result<Option<WorkflowStartupRecord>, WorkflowError> {
+    async fn load(&self, tree_id: &str) -> Result<Option<WorkflowStartupRecord>, WorkflowError> {
         self.record(format!("load:{tree_id}"))?;
-        repository().load(tree_id)
+        repository().load(tree_id).await
     }
 
-    fn append(
+    async fn append(
         &self,
         root: &NodeFactMeta,
         fact: &NodeFact,

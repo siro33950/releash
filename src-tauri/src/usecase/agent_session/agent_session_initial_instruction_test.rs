@@ -21,7 +21,7 @@ fn workflow_location(tree_id: &str, node_execution_id: &str) -> AgentSessionTree
 
 /// workflow engine が所有する実行木を模して、session が attach 済みの
 /// node を持つ tree を node_events に seed する。
-fn seed_workflow_tree(
+async fn seed_workflow_tree(
     store: &Arc<LocalEventStore>,
     tree_id: &str,
     node_execution_id: &str,
@@ -42,6 +42,7 @@ fn seed_workflow_tree(
             initial_instruction_admitted: false,
         },
     )
+    .await
     .unwrap();
 }
 
@@ -82,7 +83,8 @@ async fn test_agent_session_continuation_session操作lock解放後に送る() {
         "node-execution-1",
         "agent-workflow-locked",
         ProviderKind::Claude,
-    );
+    )
+    .await;
     sessions
         .create(
             "agent-workflow-locked",
@@ -169,7 +171,7 @@ async fn test_delegate_続行指示は識別子ごとに一度だけ送り再送
         let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
             LocalAgentSessionRepository::new(store.clone()),
         )));
-        seed_workflow_tree(&store, "tree", "node", "agent", ProviderKind::Codex);
+        seed_workflow_tree(&store, "tree", "node", "agent", ProviderKind::Codex).await;
         sessions
             .create(
                 "agent",
@@ -273,7 +275,7 @@ async fn test_terminal投入_継続指示は同じ末尾改行処理とpaste形�
     let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
         LocalAgentSessionRepository::new(store.clone()),
     )));
-    seed_workflow_tree(&store, "tree", "node", "agent", ProviderKind::Codex);
+    seed_workflow_tree(&store, "tree", "node", "agent", ProviderKind::Codex).await;
     sessions
         .create(
             "agent",

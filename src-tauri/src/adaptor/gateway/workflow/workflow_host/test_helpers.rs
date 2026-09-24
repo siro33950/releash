@@ -380,6 +380,7 @@ impl Fixture {
         events.extend(applied.events);
         self.host
             .write_log_required_batch(&self.app, &events)
+            .await
             .unwrap();
         snapshot
     }
@@ -403,6 +404,7 @@ impl Fixture {
                     &workflow_fact_log::FactLogReadBackend::Live(self.store.clone()),
                     execution_id,
                 )
+                .await
                 .unwrap()
                 .unwrap();
                 if let Some(node) = folded
@@ -584,4 +586,24 @@ pub(crate) async fn reconcile_startup(
             .map_err(|error| WorkflowRuntimeError::SessionStore(error.to_string())),
         None => Ok(()),
     }
+}
+
+pub(super) async fn poll_until_pending<F: std::future::Future>(
+    mut operation: std::pin::Pin<&mut F>,
+    ready: impl Fn() -> bool,
+) {
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        std::future::poll_fn(|cx| {
+            assert!(operation.as_mut().poll(cx).is_pending());
+            if ready() {
+                std::task::Poll::Ready(())
+            } else {
+                cx.waker().wake_by_ref();
+                std::task::Poll::Pending
+            }
+        }),
+    )
+    .await
+    .expect("operation must reach the pending checkpoint");
 }

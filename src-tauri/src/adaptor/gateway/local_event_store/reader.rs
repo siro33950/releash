@@ -8,7 +8,7 @@
 #[cfg(test)]
 use crate::adaptor::gateway::workflow::fact_codec;
 use std::collections::VecDeque;
-use std::sync::{mpsc, Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 
 use rusqlite::{params, Connection, OptionalExtension};
 use tokio::sync::oneshot;
@@ -53,7 +53,14 @@ pub(crate) fn sqlite_failure_kind(error: &rusqlite::Error) -> crate::domain::fai
             rusqlite::ErrorCode::PermissionDenied
             | rusqlite::ErrorCode::ReadOnly
             | rusqlite::ErrorCode::CannotOpen
-            | rusqlite::ErrorCode::DiskFull,
+            | rusqlite::ErrorCode::DiskFull
+            | rusqlite::ErrorCode::OutOfMemory
+            | rusqlite::ErrorCode::OperationInterrupted
+            | rusqlite::ErrorCode::SystemIoFailure
+            | rusqlite::ErrorCode::FileLockingProtocolFailed
+            | rusqlite::ErrorCode::TooBig
+            | rusqlite::ErrorCode::NoLargeFileSupport
+            | rusqlite::ErrorCode::AuthorizationForStatementDenied,
         ) => FailureKind::StateRequired,
         _ => FailureKind::Internal,
     }
@@ -277,8 +284,7 @@ fn canonical_runtime_owner_snapshot(
     for root in roots {
         let rows = super::node_events::read_tree(connection, &root.tree_id)
             .map_err(|error| storage_unavailable(&error))?;
-        let records =
-            records_from_tree_rows(&rows).map_err(|_| LocalEventQueryError::InvalidRequest)?;
+        let records = records_from_tree_rows(&rows).map_err(|error| corrupt(&error))?;
         let Some(NodeFact::Started(started)) = records.first().map(|record| &record.fact) else {
             continue;
         };
@@ -308,8 +314,8 @@ fn canonical_runtime_owner_snapshot(
             }
             Some(tree_root) if tree_root.launched_as == ExecutionTreeLaunch::Workflow => {
                 let folded = fact_replay::fold_execution_tree(&root.tree_id, &records)
-                    .map_err(|_| LocalEventQueryError::InvalidRequest)?
-                    .ok_or(LocalEventQueryError::InvalidRequest)?;
+                    .map_err(|error| corrupt(&error))?
+                    .ok_or_else(|| corrupt("runtime owner tree fold missing"))?;
                 let read_model = fact_replay::derive_read_model(&folded);
                 if read_model.status.is_active() {
                     owners.push(CanonicalRuntimeOwnerView::ActiveWorkflow {
@@ -345,6 +351,8 @@ pub struct ReaderPool {
     clock: Arc<dyn StoreClock>,
     #[cfg(test)]
     running_workers: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    pub(super) next_failure: Mutex<Option<super::test_helpers::ReadFailure>>,
 }
 
 impl ReaderPool {
@@ -358,80 +366,50 @@ impl ReaderPool {
             clock,
             #[cfg(test)]
             running_workers: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            next_failure: Mutex::new(None),
         })
     }
 
     /// Submit a query; `QueryBusy` when the bounded queue is full.
-    pub fn submit<T, F>(
-        &self,
-        run: F,
-    ) -> Result<oneshot::Receiver<Result<T, LocalEventQueryError>>, LocalEventQueryError>
+    pub async fn submit<T, F>(&self, run: F) -> Result<T, LocalEventQueryError>
     where
         T: Send + 'static,
         F: FnOnce(&Connection) -> Result<T, LocalEventQueryError> + Send + 'static,
     {
+        #[cfg(test)]
+        let failure = self.next_failure.lock().unwrap().take();
         let (reply, receiver) = oneshot::channel();
         let deadline_ms = self.clock.now_ms() + QUERY_DEADLINE_MS;
-        let mut state = self.state.lock().expect("reader queue poisoned");
-        if state.closed {
-            return Err(reader_pool_unavailable(
-                "local event store reader pool is closed",
-                crate::domain::failure::FailureKind::StateRequired,
-            ));
+        {
+            let mut state = self.state.lock().expect("reader queue poisoned");
+            if state.closed {
+                return Err(reader_pool_unavailable(
+                    "local event store reader pool is closed",
+                    crate::domain::failure::FailureKind::StateRequired,
+                ));
+            }
+            if state.jobs.len() >= READ_QUEUE_MAX_DEPTH {
+                return Err(LocalEventQueryError::QueryBusy);
+            }
+            state.jobs.push_back(ReadJob {
+                deadline_ms,
+                task: Box::new(move |connection, deadline_exceeded| {
+                    if deadline_exceeded {
+                        let _ = reply.send(Err(LocalEventQueryError::DeadlineExceeded));
+                        return;
+                    }
+                    #[cfg(test)]
+                    let run = |connection: &Connection| match failure {
+                        Some(failure) => failure.run(connection, run),
+                        None => run(connection),
+                    };
+                    let _ = reply.send(run(connection));
+                }),
+            });
         }
-        if state.jobs.len() >= READ_QUEUE_MAX_DEPTH {
-            return Err(LocalEventQueryError::QueryBusy);
-        }
-        state.jobs.push_back(ReadJob {
-            deadline_ms,
-            task: Box::new(move |connection, deadline_exceeded| {
-                if deadline_exceeded {
-                    let _ = reply.send(Err(LocalEventQueryError::DeadlineExceeded));
-                    return;
-                }
-                let _ = reply.send(run(connection));
-            }),
-        });
-        drop(state);
         self.available.notify_one();
-        Ok(receiver)
-    }
-
-    /// Synchronous facade over the same fixed reader workers.
-    ///
-    /// This exists for established synchronous application ports. It does not
-    /// create a thread, runtime, or SQLite connection per call.
-    pub fn submit_blocking<T, F>(&self, run: F) -> Result<T, LocalEventQueryError>
-    where
-        T: Send + 'static,
-        F: FnOnce(&Connection) -> Result<T, LocalEventQueryError> + Send + 'static,
-    {
-        let (reply, receiver) = mpsc::sync_channel(1);
-        let deadline_ms = self.clock.now_ms() + QUERY_DEADLINE_MS;
-        let mut state = self.state.lock().expect("reader queue poisoned");
-        if state.closed {
-            return Err(reader_pool_unavailable(
-                "local event store reader pool is closed",
-                crate::domain::failure::FailureKind::StateRequired,
-            ));
-        }
-        if state.jobs.len() >= READ_QUEUE_MAX_DEPTH {
-            return Err(LocalEventQueryError::QueryBusy);
-        }
-        state.jobs.push_back(ReadJob {
-            deadline_ms,
-            task: Box::new(move |connection, deadline_exceeded| {
-                let result = if deadline_exceeded {
-                    Err(LocalEventQueryError::DeadlineExceeded)
-                } else {
-                    run(connection)
-                };
-                let _ = reply.send(result);
-            }),
-        });
-        drop(state);
-        self.available.notify_one();
-        receiver.recv().map_err(|_| {
+        receiver.await.map_err(|_| {
             reader_pool_unavailable(
                 "local event store reader reply lost",
                 crate::domain::failure::FailureKind::Temporary,
@@ -627,6 +605,57 @@ mod canonical_runtime_owner_snapshot_tests {
     }
 
     #[test]
+    fn test_owner一覧_decodeとfoldの破損をdata_lossで返す() {
+        use crate::adaptor::protocol::connect::classified_error;
+
+        for decode_failure in [true, false] {
+            // Given
+            let connection = connection_with_active_workflow_owners(1);
+            if decode_failure {
+                connection
+                    .execute("UPDATE node_events SET detail = '{'", [])
+                    .unwrap();
+            } else {
+                insert_second_fact(
+                    &connection,
+                    "execution-0",
+                    &NodeFact::RepositoryRootObserved("/first".into()),
+                );
+                insert_third_fact(
+                    &connection,
+                    "execution-0",
+                    &NodeFact::RepositoryRootObserved("/conflicting".into()),
+                );
+            }
+
+            // When
+            let error = canonical_runtime_owner_snapshot(&connection, 1).unwrap_err();
+
+            // Then
+            assert_eq!(
+                classified_error(error).code,
+                connectrpc::ErrorCode::DataLoss
+            );
+        }
+    }
+
+    #[test]
+    fn test_owner一覧_limit範囲外はinvalid_argumentを維持する() {
+        use crate::adaptor::protocol::connect::classified_error;
+        // Given
+        let connection = connection_with_node_events();
+        for limit in [0, MAX_CANONICAL_RUNTIME_OWNER_SNAPSHOT + 1] {
+            // When
+            let error = canonical_runtime_owner_snapshot(&connection, limit).unwrap_err();
+            // Then
+            assert_eq!(
+                classified_error(error).code,
+                connectrpc::ErrorCode::InvalidArgument
+            );
+        }
+    }
+
+    #[test]
     fn app_data_gc_owner_snapshot_returns_one_bounded_lightweight_inventory() {
         let connection = connection_with_active_workflow_owners(2);
 
@@ -744,3 +773,7 @@ mod canonical_runtime_owner_snapshot_tests {
         ));
     }
 }
+
+#[cfg(test)]
+#[path = "reader_test.rs"]
+mod reader_tests;

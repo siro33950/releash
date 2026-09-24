@@ -1,4 +1,4 @@
-use super::fact_log::FactLogReadBackend;
+use super::fact_log::{FactLogReadBackend, FactReadError};
 use super::stored_definition;
 use crate::adaptor::gateway::local_event_store::{node_events, reader::storage_unavailable};
 use crate::domain::workflow::{IsolatedWorktree, NodeFactMeta, WorktreeInheritance, WorktreeMode};
@@ -9,7 +9,7 @@ pub(crate) enum WorktreeContextReadError {
     Corrupt(String),
 }
 
-pub(crate) fn execution_worktree_path(
+pub(crate) async fn execution_worktree_path(
     backend: &FactLogReadBackend,
     mut node: NodeFactMeta,
     root_meta: NodeFactMeta,
@@ -73,6 +73,7 @@ pub(crate) fn execution_worktree_path(
                 }
             })())
         })
+        .await
         .map_err(WorktreeContextReadError::Read)?
 }
 
@@ -86,10 +87,11 @@ impl StoredWorkspaceWorktreePathQuery {
     }
 }
 
+#[async_trait::async_trait]
 impl crate::usecase::workspace_tree::WorkspaceWorktreePathQuery
     for StoredWorkspaceWorktreePathQuery
 {
-    fn workspace_worktree_path(
+    async fn workspace_worktree_path(
         &self,
         path: &str,
     ) -> Result<String, crate::domain::workflow::WorkflowError> {
@@ -98,15 +100,16 @@ impl crate::usecase::workspace_tree::WorkspaceWorktreePathQuery
                 &self.data_dir,
             )
             .map(FactLogReadBackend::ReadOnly)
+            .map_err(crate::domain::workflow::WorkflowError::external)
         })
-        .map_err(crate::domain::workflow::WorkflowError::external)
+        .await
     }
 }
 
-fn workspace_worktree_path_with(
+async fn workspace_worktree_path_with(
     path: &str,
-    backend: impl FnOnce() -> Result<FactLogReadBackend, String>,
-) -> Result<String, String> {
+    backend: impl FnOnce() -> Result<FactLogReadBackend, crate::domain::workflow::WorkflowError>,
+) -> Result<String, crate::domain::workflow::WorkflowError> {
     let Some((node_id, attempt)) = crate::domain::workflow::isolated_worktree_owner(path) else {
         return Ok(path.to_string());
     };
@@ -139,7 +142,10 @@ fn workspace_worktree_path_with(
                 Ok(header.worktree_path)
             })())
         })
-        .map_err(|error| error.to_string())?
+        .await
+        .map_err(FactReadError::Query)?
+        .map_err(FactReadError::Corrupt)
+        .map_err(crate::domain::workflow::WorkflowError::from)
 }
 
 #[cfg(test)]

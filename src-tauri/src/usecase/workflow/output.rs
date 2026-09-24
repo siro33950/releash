@@ -27,25 +27,25 @@ impl WorkflowOutputUsecase {
         Self { query, secrets }
     }
 
-    pub fn validate_output(
+    pub async fn validate_output(
         &self,
         execution_id: &str,
         node_name: &str,
         structured_output: Value,
     ) -> Result<WorkflowValidateOutputResult, WorkflowError> {
-        let events = self.query.read_events(execution_id)?;
+        let events = self.query.read_events(execution_id).await?;
         let context = resolve_node_artifact_schema_from_drafts(&events, node_name, execution_id)?;
         self.validate_with_context(context, structured_output)
     }
 
-    pub fn validate_output_for_contract(
+    pub async fn validate_output_for_contract(
         &self,
         execution_id: &str,
         node_name: &str,
         contract: &str,
         structured_output: Value,
     ) -> Result<WorkflowValidateOutputResult, WorkflowError> {
-        let events = self.query.read_events(execution_id)?;
+        let events = self.query.read_events(execution_id).await?;
         let context = resolve_node_artifact_schema_from_drafts(&events, node_name, execution_id)?;
         if context.contract != contract {
             return Err(WorkflowError::validation(format!(
@@ -77,12 +77,12 @@ impl WorkflowOutputUsecase {
         )
     }
 
-    pub fn get_output(
+    pub async fn get_output(
         &self,
         execution_id: &str,
         node_name: &str,
     ) -> Result<WorkflowGetOutputResult, WorkflowError> {
-        let events = self.query.read_events(execution_id)?;
+        let events = self.query.read_events(execution_id).await?;
         match event_draft::node_exists_in_drafts(&events, node_name, execution_id)
             .map_err(contract_lookup_error_to_workflow_error)?
         {
@@ -195,13 +195,14 @@ mod tests {
         }
     }
 
+    #[async_trait::async_trait]
     impl WorkflowEventRepository for FakeEventRepository {
         fn append(&self, event: &WorkflowEventDraft) -> Result<(), WorkflowError> {
             self.events.lock().unwrap().push(event.clone());
             Ok(())
         }
 
-        fn read(
+        async fn read(
             &self,
             _execution_id: &ExecutionTreeId,
         ) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
@@ -255,6 +256,7 @@ mod tests {
 
     struct NoopExecutionProjectionRepository;
 
+    #[async_trait::async_trait]
     impl WorkflowExecutionProjectionRepository for NoopExecutionProjectionRepository {
         fn get_node_artifact_from_events(
             &self,
@@ -265,7 +267,7 @@ mod tests {
             panic!("submitted output must not reconstruct the execution aggregate")
         }
 
-        fn get_execution(
+        async fn get_execution(
             &self,
             _execution_id: &ExecutionTreeId,
         ) -> Result<Option<ExecutionTree>, WorkflowError> {
@@ -383,8 +385,9 @@ mod tests {
         "00000000-0000-4000-8000-000000000301"
     }
 
-    #[test]
-    fn validate_output_resolves_contract_from_execution_started_and_masks_before_validation() {
+    #[tokio::test]
+    async fn validate_output_resolves_contract_from_execution_started_and_masks_before_validation()
+    {
         let fixture = Fixture::new();
         fixture.events.seed(execution_started(
             test_execution_id(),
@@ -397,12 +400,14 @@ mod tests {
                 "review",
                 serde_json::json!({"status":"ok","secret":"token-123"}),
             )
+            .await
             .unwrap();
 
         assert_eq!(result, WorkflowValidateOutputResult::Valid);
         let invalid = fixture
             .usecase
             .validate_output(test_execution_id(), "review", serde_json::json!({}))
+            .await
             .unwrap();
         assert!(matches!(
             invalid,
@@ -410,8 +415,8 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn validate_output_for_contract_rejects_a_mismatched_contract() {
+    #[tokio::test]
+    async fn validate_output_for_contract_rejects_a_mismatched_contract() {
         let fixture = Fixture::new();
         fixture.events.seed(execution_started(
             test_execution_id(),
@@ -426,6 +431,7 @@ mod tests {
                 "different-result",
                 serde_json::json!({"status":"ok"}),
             )
+            .await
             .unwrap_err();
 
         assert!(matches!(
@@ -435,8 +441,8 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn get_output_delegates_to_query_projection() {
+    #[tokio::test]
+    async fn get_output_delegates_to_query_projection() {
         let fixture = Fixture::new();
         fixture.events.seed(execution_started(
             test_execution_id(),
@@ -454,6 +460,7 @@ mod tests {
         let output = fixture
             .usecase
             .get_output(test_execution_id(), "review")
+            .await
             .unwrap();
 
         assert!(matches!(
@@ -463,8 +470,8 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn get_output_rejects_an_unknown_node_through_the_shared_usecase() {
+    #[tokio::test]
+    async fn get_output_rejects_an_unknown_node_through_the_shared_usecase() {
         let fixture = Fixture::new();
         fixture.events.seed(execution_started(
             test_execution_id(),
@@ -474,6 +481,7 @@ mod tests {
         let error = fixture
             .usecase
             .get_output(test_execution_id(), "missing")
+            .await
             .unwrap_err();
 
         assert!(matches!(
@@ -481,8 +489,8 @@ mod tests {
             WorkflowError::Validation(message) if message.contains("is not defined")
         ));
     }
-    #[test]
-    fn test_隔離出力_開始順によらず最後の提出と同じattemptの成果を一度の読取で返す() {
+    #[tokio::test]
+    async fn test_隔離出力_開始順によらず最後の提出と同じattemptの成果を一度の読取で返す() {
         // Given
         let fixture = Fixture::new();
         let mut definition = definition_with_artifact_contract("review-result");
@@ -522,6 +530,7 @@ mod tests {
             let output = fixture
                 .usecase
                 .get_output(test_execution_id(), "review")
+                .await
                 .unwrap();
             // Then
             let worktree =
@@ -546,8 +555,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_隔離出力_所有者情報の破損を未提出に置き換えない() {
+    #[tokio::test]
+    async fn test_隔離出力_所有者情報の破損を未提出に置き換えない() {
         for field in ["nodeExecutionId", "attempt", "repositoryRoot"] {
             // Given
             let fixture = Fixture::new();
@@ -575,6 +584,7 @@ mod tests {
                 fixture
                     .usecase
                     .get_output(test_execution_id(), "review")
+                    .await
                     .is_err(),
                 "{field}"
             );

@@ -39,35 +39,31 @@ impl LocalAgentSessionQueryService {
         }
     }
 
-    fn get_derived_from(
+    async fn get_derived_from(
         backend: &FactLogReadBackend,
         agent_session_id: &str,
     ) -> Result<Option<AgentSessionItemDto>, AgentSessionQueryError> {
         if agent_session_id.trim().is_empty() {
             return Err(AgentSessionQueryError::InvalidRequest);
         }
-        let Some(location) =
-            locate_session(backend, agent_session_id).map_err(AgentSessionQueryError::from)?
+        let Some(location) = locate_session(backend, agent_session_id)
+            .await
+            .map_err(AgentSessionQueryError::from)?
         else {
             return Ok(None);
         };
-        let context =
-            read_session_context(backend, &location).map_err(AgentSessionQueryError::from)?;
-        let records =
-            read_session_records(backend, &location).map_err(AgentSessionQueryError::from)?;
+        let context = read_session_context(backend, &location)
+            .await
+            .map_err(AgentSessionQueryError::from)?;
+        let records = read_session_records(backend, &location)
+            .await
+            .map_err(AgentSessionQueryError::from)?;
         Ok(Some(agent_session_item_from_facts(
             agent_session_id,
             &location,
             &context,
             &records,
         )?))
-    }
-
-    pub(crate) fn get_blocking(
-        &self,
-        agent_session_id: &str,
-    ) -> Result<Option<AgentSessionItemDto>, AgentSessionQueryError> {
-        Self::get_derived_from(&self.backend, agent_session_id)
     }
 }
 
@@ -77,17 +73,11 @@ impl AgentSessionQueryService for LocalAgentSessionQueryService {
         &self,
         agent_session_id: &str,
     ) -> Result<Option<AgentSessionItemDto>, AgentSessionQueryError> {
-        let backend = self.backend.clone();
-        let agent_session_id = agent_session_id.to_string();
-        tokio::task::spawn_blocking(move || Self::get_derived_from(&backend, &agent_session_id))
-            .await
-            .map_err(|_| {
-                AgentSessionQueryError::Store(crate::domain::failure::FailureKind::Internal)
-            })?
+        Self::get_derived_from(&self.backend, agent_session_id).await
     }
 }
 
-pub(crate) fn workspace_session_items(
+pub(crate) async fn workspace_session_items(
     backend: &FactLogReadBackend,
     tree_ids: &[String],
     workspace: &str,
@@ -104,6 +94,7 @@ pub(crate) fn workspace_session_items(
                     crate::adaptor::gateway::local_event_store::reader::storage_unavailable(&error)
                 })
             })
+            .await
             .map_err(AgentSessionQueryError::from)?;
         let Some(root) = root else {
             continue;
@@ -126,16 +117,18 @@ pub(crate) fn workspace_session_items(
             node_name: root.node_name,
             attempt: u32::try_from(root.attempt).map_err(|_| AgentSessionQueryError::Corrupt)?,
         };
-        let records =
-            read_session_records(backend, &location).map_err(AgentSessionQueryError::from)?;
+        let records = read_session_records(backend, &location)
+            .await
+            .map_err(AgentSessionQueryError::from)?;
         let Some(session_id) = records.iter().find_map(|record| match &record.fact {
             NodeFact::SessionAttached(attached) => Some(attached.session_id.as_str()),
             _ => None,
         }) else {
             continue;
         };
-        let context =
-            read_session_context(backend, &location).map_err(AgentSessionQueryError::from)?;
+        let context = read_session_context(backend, &location)
+            .await
+            .map_err(AgentSessionQueryError::from)?;
         items.push(agent_session_item_from_facts(
             session_id, &location, &context, &records,
         )?);

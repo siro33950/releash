@@ -270,10 +270,12 @@ impl WorkflowRuntimeHost {
         app: &WorkflowRuntimeDependencies,
         execution_id: &str,
     ) -> Result<Option<DomainExecutionTree>, WorkflowRuntimeError> {
-        Ok(Self::load_execution_revision(app, execution_id)?.map(|(execution, _)| execution))
+        Ok(Self::load_execution_revision(app, execution_id)
+            .await?
+            .map(|(execution, _)| execution))
     }
 
-    fn load_execution_revision(
+    async fn load_execution_revision(
         app: &WorkflowRuntimeDependencies,
         execution_id: &str,
     ) -> Result<Option<(DomainExecutionTree, i64)>, WorkflowRuntimeError> {
@@ -285,12 +287,15 @@ impl WorkflowRuntimeHost {
         })?;
         let tree_id = execution_id.to_string();
         let rows = store
-            .submit_indexed_query_blocking(move |connection| {
-                node_events::read_tree(connection, &tree_id)
-                    .map_err(|_| crate::domain::local_event::LocalEventQueryError::InvalidRequest)
+            .submit_query(move |connection| {
+                node_events::read_tree(connection, &tree_id).map_err(|error| {
+                    crate::adaptor::gateway::local_event_store::reader::storage_unavailable(&error)
+                })
             })
-            .map_err(|error| {
-                WorkflowRuntimeError::SessionStore(format!("tree read failed: {error:?}"))
+            .await
+            .map_err(|error| WorkflowRuntimeError::StorageFailure {
+                kind: error.failure_kind(),
+                message: format!("tree read failed: {error:?}"),
             })?;
         let head = rows.last().map_or(0, |row| row.seq);
         let records = workflow_fact_log::records_from_tree_rows(&rows)
@@ -329,7 +334,7 @@ impl WorkflowRuntimeHost {
             .collect())
     }
 
-    fn append_events_at_head(
+    async fn append_events_at_head(
         app: &WorkflowRuntimeDependencies,
         execution_id: &str,
         head: i64,
@@ -342,7 +347,11 @@ impl WorkflowRuntimeHost {
             )
         })?;
         let rows = workflow_fact_log::pending_rows_for_events(store, events)
-            .map_err(WorkflowRuntimeError::SessionStore)?;
+            .await
+            .map_err(|error| WorkflowRuntimeError::StorageFailure {
+                kind: error.failure_kind(),
+                message: error.to_string(),
+            })?;
         let result = store.append_node_events_at_head_blocking(
             rows.iter()
                 .map(|row| (row.row.clone(), Some(row.timestamp_ms)))
@@ -352,6 +361,7 @@ impl WorkflowRuntimeHost {
         match result {
             Err(NodeEventWriteError::OutcomeUnknown) => {
                 workflow_fact_log::resolve_unknown_append(store, rows, Some(head))
+                    .await
                     .map_err(|error| WorkflowRuntimeError::StorageFailure {
                         kind: error.failure_kind(),
                         message: format!("control-plane commit readback failed: {error:?}"),
@@ -641,14 +651,14 @@ impl WorkflowRuntimeHost {
         let activation_guard = activation_gate.lock.lock().await;
         let mut new_id = new_node_execution_id;
         let Some(reconciliation) =
-            workflow_fact_log::reconcile_tree_pass(store, tree_id, now, &mut new_id).map_err(
-                |error| match error {
+            workflow_fact_log::reconcile_tree_pass(store, tree_id, now, &mut new_id)
+                .await
+                .map_err(|error| match error {
                     crate::domain::workflow::WorkflowError::Conflict(reason) => {
                         WorkflowRuntimeError::Conflict(reason)
                     }
                     error => WorkflowRuntimeError::SessionStore(error.to_string()),
-                },
-            )?
+                })?
         else {
             return Ok(());
         };
@@ -706,6 +716,7 @@ impl WorkflowRuntimeHost {
                 Some(crate::domain::workflow::ExecutionStatusFilter::Active),
                 None,
             )
+            .await
             .map_err(|error| WorkflowRuntimeError::SessionStore(error.to_string()))?;
         workflow_runtime_start_guard::validate_start(&worktree_path, &candidates)?;
         let now = current_timestamp();
@@ -748,7 +759,10 @@ impl WorkflowRuntimeHost {
             timestamp: now,
         }];
         required_start_events.extend(applied.events);
-        if let Err(e) = self.write_log_required_batch(app, &required_start_events) {
+        if let Err(e) = self
+            .write_log_required_batch(app, &required_start_events)
+            .await
+        {
             self.release_execution_facet_contents(&execution_id).await;
             return Err(WorkflowRuntimeError::StorageFailure {
                 kind: e.failure_kind(),
@@ -846,7 +860,8 @@ impl WorkflowRuntimeHost {
         })?;
         let commit_lock = self.commit_lock(execution_id).await;
         let _commit_guard = commit_lock.lock().await;
-        let (mut current, head) = Self::load_execution_revision(app, execution_id)?
+        let (mut current, head) = Self::load_execution_revision(app, execution_id)
+            .await?
             .ok_or_else(|| WorkflowRuntimeError::ExecutionNotFound(execution_id.into()))?;
         for event in events {
             if let WorkflowEvent::NodeRetryRequested {
@@ -872,9 +887,10 @@ impl WorkflowRuntimeHost {
             }
         }
         let durable = transaction
-            .persist(&mut current, |events| {
-                Self::append_events_at_head(app, execution_id, head, events)
+            .persist(&mut current, |events| async move {
+                Self::append_events_at_head(app, execution_id, head, &events).await
             })
+            .await
             .map_err(|error| match error {
                 WorkflowTransactionCommitError::StaleCandidate => WorkflowRuntimeError::Conflict(
                     format!("execution '{execution_id}' changed before control-plane commit"),
@@ -2168,12 +2184,12 @@ impl WorkflowRuntimeHost {
     /// [04] spec『event 列と domain state の整合』Rule: 同一 command 受理サイクル内で
     /// 複数 required event を発行する場合は本 helper を使う。永続形は純粋事実の
     /// 行 append であり、導出表 mutation は存在しない。
-    fn write_log_required_batch(
+    async fn write_log_required_batch(
         &self,
         app: &WorkflowRuntimeDependencies,
         events: &[WorkflowEvent],
     ) -> Result<(), crate::domain::workflow::WorkflowError> {
-        workflow_event_log_writer::append_required_events_for_app(app, events)
+        workflow_event_log_writer::append_required_events_for_app(app, events).await
     }
 }
 
@@ -2324,7 +2340,9 @@ mod workflow_host_tests {
                     timestamp: now,
                 }];
                 start_events.extend(applied.events);
-                host.write_log_required_batch(&app, &start_events).unwrap();
+                host.write_log_required_batch(&app, &start_events)
+                    .await
+                    .unwrap();
                 let node = started
                     .node_executions
                     .iter()
@@ -2361,7 +2379,9 @@ mod workflow_host_tests {
                 .unwrap();
 
                 // Then
-                let records = workflow_fact_log::read_tree_records(&store, &execution_id).unwrap();
+                let records = workflow_fact_log::read_tree_records(&store, &execution_id)
+                    .await
+                    .unwrap();
                 assert!(records.iter().any(|record| matches!(
                     &record.fact,
                     NodeFact::ArtifactProduced(fact) if record.meta.node_execution_id == node_execution_id && fact.value["stdout"] == "command finished" && fact.value["ok"] == (exit_code == 0)
@@ -2415,8 +2435,9 @@ mod workflow_host_tests {
                         })
                         .await
                         .unwrap();
-                    let records =
-                        workflow_fact_log::read_tree_records(&store, &execution_id).unwrap();
+                    let records = workflow_fact_log::read_tree_records(&store, &execution_id)
+                        .await
+                        .unwrap();
                     assert!(records
                         .iter()
                         .any(|record| record.meta.node_execution_id == node_execution_id
@@ -2436,6 +2457,7 @@ mod workflow_host_tests {
                     &workflow_fact_log::FactLogReadBackend::Live(store.clone()),
                     &execution_id,
                 )
+                .await
                 .unwrap()
                 .unwrap();
                 let replayed = folded.aggregate.node_execution(&node_execution_id).unwrap();
@@ -2504,8 +2526,9 @@ mod workflow_host_tests {
                     .to_string()
                     .contains("outcome is unknown"));
             }
-            let records =
-                workflow_fact_log::read_tree_records(&fixture.store, execution_id).unwrap();
+            let records = workflow_fact_log::read_tree_records(&fixture.store, execution_id)
+                .await
+                .unwrap();
             assert_eq!(
                 records
                     .iter()
@@ -2528,6 +2551,7 @@ mod workflow_host_tests {
                 &workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone()),
                 execution_id,
             )
+            .await
             .unwrap()
             .unwrap();
             assert_eq!(folded.aggregate.state(), &expected_state);
@@ -2553,7 +2577,9 @@ mod workflow_host_tests {
                     .await
                     .unwrap();
                 assert_eq!(
-                    workflow_fact_log::read_tree_records(&fixture.store, execution_id).unwrap(),
+                    workflow_fact_log::read_tree_records(&fixture.store, execution_id)
+                        .await
+                        .unwrap(),
                     records
                 );
             }
@@ -2591,6 +2617,7 @@ mod workflow_host_tests {
                         },
                     ],
                 )
+                .await
                 .unwrap();
             fixture
                 .host
@@ -2636,8 +2663,9 @@ mod workflow_host_tests {
                     .to_string()
                     .contains("outcome is unknown"));
             }
-            let records =
-                workflow_fact_log::read_tree_records(&fixture.store, execution_id).unwrap();
+            let records = workflow_fact_log::read_tree_records(&fixture.store, execution_id)
+                .await
+                .unwrap();
             assert_eq!(
                 records
                     .iter()
@@ -2675,13 +2703,14 @@ mod workflow_host_tests {
                 &workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone()),
                 execution_id,
             )
+            .await
             .unwrap()
             .unwrap();
             assert_eq!(folded.aggregate.state(), &expected_state);
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn test_command_env_未束縛inputではprocessを起動せずnode_failureにする() {
         let directory = tempfile::tempdir().unwrap();
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
@@ -2732,7 +2761,9 @@ nodes:
             snapshot.node_executions.last().unwrap().status,
             NodeExecutionStatus::Running
         );
-        let records = workflow_fact_log::read_tree_records(&store, &execution_id).unwrap();
+        let records = workflow_fact_log::read_tree_records(&store, &execution_id)
+            .await
+            .unwrap();
         assert!(records.iter().any(|record| matches!(
             &record.fact,
             NodeFact::RuntimeFailureObserved(fact) if !fact.reason.is_empty()
@@ -2744,6 +2775,7 @@ nodes:
             &workflow_fact_log::FactLogReadBackend::Live(store),
             &execution_id,
         )
+        .await
         .unwrap()
         .unwrap();
         assert_eq!(
@@ -2758,7 +2790,7 @@ nodes:
             .can_retry(crate::domain::workflow::NodeProcessPresence::ConfirmedAbsent));
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn test_command_env_nulによるspawn失敗を既存node_failureにする() {
         let directory = tempfile::tempdir().unwrap();
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
@@ -2818,7 +2850,9 @@ nodes:
                 .map(|node| node.status),
             Some(NodeExecutionStatus::Running)
         );
-        let records = workflow_fact_log::read_tree_records(&store, &execution_id).unwrap();
+        let records = workflow_fact_log::read_tree_records(&store, &execution_id)
+            .await
+            .unwrap();
         assert!(records.iter().any(|record| matches!(
             &record.fact,
             NodeFact::RuntimeFailureObserved(fact) if !fact.reason.is_empty()
@@ -2830,6 +2864,7 @@ nodes:
             &workflow_fact_log::FactLogReadBackend::Live(store),
             &execution_id,
         )
+        .await
         .unwrap()
         .unwrap();
         let failed = restored
@@ -3592,11 +3627,11 @@ nodes:
             }
         }
 
-        fn persisted_node_status(fixture: &RuntimeEffectFixture) -> NodeExecutionStatus {
-            persisted_node(fixture).status
+        async fn persisted_node_status(fixture: &RuntimeEffectFixture) -> NodeExecutionStatus {
+            persisted_node(fixture).await.status
         }
 
-        fn persisted_node(
+        async fn persisted_node(
             fixture: &RuntimeEffectFixture,
         ) -> crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecution {
             persisted_node_for(
@@ -3604,15 +3639,17 @@ nodes:
                 &fixture.execution_id,
                 &fixture.node_execution_id,
             )
+            .await
         }
 
-        fn persisted_node_for(
+        async fn persisted_node_for(
             store: &Arc<LocalEventStore>,
             execution_id: &str,
             node_execution_id: &str,
         ) -> crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecution {
             let backend = workflow_fact_log::FactLogReadBackend::Live(store.clone());
             workflow_fact_log::fold_tree_from(&backend, execution_id)
+                .await
                 .unwrap()
                 .unwrap()
                 .aggregate
@@ -3702,6 +3739,7 @@ nodes:
                     timestamp: 2.0,
                 }],
             )
+            .await
             .unwrap();
 
             let error = fixture
@@ -3736,7 +3774,9 @@ nodes:
                 .await
                 .unwrap();
 
-            let records = workflow_fact_log::read_tree_records(&fixture.store, session_id).unwrap();
+            let records = workflow_fact_log::read_tree_records(&fixture.store, session_id)
+                .await
+                .unwrap();
             assert!(!records
                 .iter()
                 .any(|record| matches!(record.fact, NodeFact::ProcessExited(_))));
@@ -3760,12 +3800,15 @@ nodes:
                 .await
                 .unwrap();
 
-            let records = workflow_fact_log::read_tree_records(&fixture.store, session_id).unwrap();
+            let records = workflow_fact_log::read_tree_records(&fixture.store, session_id)
+                .await
+                .unwrap();
             assert!(records
                 .iter()
                 .any(|record| matches!(record.fact, NodeFact::StopReceived(_))));
             let backend = workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone());
             let folded = workflow_fact_log::fold_tree_from(&backend, session_id)
+                .await
                 .unwrap()
                 .unwrap();
             let node = folded
@@ -3781,6 +3824,7 @@ nodes:
             assert_eq!(node.status, NodeExecutionStatus::Running);
             let workspace_node = SqliteWorkspaceTreeRepository::new(fixture.store.clone())
                 .load_node_by_node_execution_id(session_id)
+                .await
                 .unwrap()
                 .unwrap();
             assert_eq!(
@@ -3800,6 +3844,7 @@ nodes:
                 .unwrap();
 
             let restarted_fold = workflow_fact_log::fold_tree_from(&backend, session_id)
+                .await
                 .unwrap()
                 .unwrap();
             let restarted_node = restarted_fold
@@ -3815,6 +3860,7 @@ nodes:
             assert_eq!(
                 SqliteWorkspaceTreeRepository::new(fixture.store.clone())
                     .load_node_by_node_execution_id(session_id)
+                    .await
                     .unwrap()
                     .unwrap()
                     .status_classification,
@@ -3822,6 +3868,7 @@ nodes:
             );
             assert!(
                 !workflow_fact_log::read_tree_records(&fixture.store, session_id)
+                    .await
                     .unwrap()
                     .iter()
                     .any(|record| matches!(record.fact, NodeFact::ProcessExited(_)))
@@ -3857,7 +3904,9 @@ nodes:
                 .await
                 .unwrap();
 
-            let records = workflow_fact_log::read_tree_records(&fixture.store, session_id).unwrap();
+            let records = workflow_fact_log::read_tree_records(&fixture.store, session_id)
+                .await
+                .unwrap();
             assert!(!records
                 .iter()
                 .any(|record| matches!(record.fact, NodeFact::ProcessExited(_))));
@@ -3953,7 +4002,9 @@ nodes:
                     .load(std::sync::atomic::Ordering::SeqCst),
                 1
             );
-            let records = workflow_fact_log::read_tree_records(&store, &execution_id).unwrap();
+            let records = workflow_fact_log::read_tree_records(&store, &execution_id)
+                .await
+                .unwrap();
             let attached_seq = records
                 .iter()
                 .find_map(|record| match &record.fact {
@@ -4026,6 +4077,7 @@ nodes:
                 ),
             ] {
                 let folded = workflow_fact_log::fold_tree_from(&backend, tree_id)
+                    .await
                     .unwrap()
                     .unwrap();
                 let node = folded
@@ -4193,7 +4245,7 @@ nodes:
             // Then
             assert!(result.is_ok(), "unexpected provider Stop error: {result:?}");
             assert_eq!(
-                persisted_node_status(&fixture),
+                persisted_node_status(&fixture).await,
                 NodeExecutionStatus::Succeeded
             );
             wait_for_single_terminal_stop(&fixture).await;
@@ -4231,7 +4283,7 @@ nodes:
             // Then
             assert!(result.is_ok(), "unexpected Submit error: {result:?}");
             assert_eq!(
-                persisted_node_status(&fixture),
+                persisted_node_status(&fixture).await,
                 NodeExecutionStatus::Succeeded
             );
             wait_for_single_terminal_stop(&fixture).await;
@@ -4338,7 +4390,7 @@ nodes:
                 result.expect("provider Stop acceptance must not block on the session stop effect");
             assert!(result.is_ok(), "unexpected provider Stop error: {result:?}");
             assert_eq!(
-                persisted_node_status(&fixture),
+                persisted_node_status(&fixture).await,
                 NodeExecutionStatus::Succeeded
             );
         }
@@ -4361,7 +4413,7 @@ nodes:
                 .await
                 .unwrap();
             assert_eq!(
-                persisted_node_status(&fixture),
+                persisted_node_status(&fixture).await,
                 NodeExecutionStatus::Succeeded
             );
             wait_for_single_terminal_stop(&fixture).await;
@@ -4375,7 +4427,7 @@ nodes:
             // Then
             assert!(result.is_ok(), "unexpected repeated Stop error: {result:?}");
             assert_eq!(
-                persisted_node_status(&fixture),
+                persisted_node_status(&fixture).await,
                 NodeExecutionStatus::Succeeded
             );
             wait_for_single_terminal_stop(&fixture).await;
@@ -4427,7 +4479,7 @@ nodes:
             // Then
             assert!(result.is_ok(), "unexpected approval error: {result:?}");
             assert_eq!(
-                persisted_node_status(&fixture),
+                persisted_node_status(&fixture).await,
                 NodeExecutionStatus::Succeeded
             );
             wait_for_single_terminal_stop(&fixture).await;
@@ -4486,7 +4538,7 @@ nodes:
             // Then
             assert!(result.is_ok(), "unexpected abort error: {result:?}");
             assert_eq!(
-                persisted_node_status(&fixture),
+                persisted_node_status(&fixture).await,
                 NodeExecutionStatus::Aborted
             );
             wait_for_single_terminal_stop(&fixture).await;
@@ -4564,8 +4616,10 @@ nodes:
                     timestamp: 2.0,
                 }],
             )
+            .await
             .unwrap();
             let before = workflow_fact_log::read_tree_records(&store, session_id)
+                .await
                 .unwrap()
                 .len();
             let app = test_helpers::dependencies(Some(store.clone()));
@@ -4594,6 +4648,7 @@ nodes:
             );
             assert_eq!(
                 workflow_fact_log::read_tree_records(&store, session_id)
+                    .await
                     .unwrap()
                     .len(),
                 before
@@ -4716,8 +4771,9 @@ nodes:
                 )
                 .unwrap();
             append_started_session_tree(&store, VALID_TREE_ID, "/repo/valid", 5);
-            let valid_records =
-                workflow_fact_log::read_tree_records(&store, VALID_TREE_ID).unwrap();
+            let valid_records = workflow_fact_log::read_tree_records(&store, VALID_TREE_ID)
+                .await
+                .unwrap();
             workflow_fact_log::append_facts_for_events(
                 &store,
                 &[WorkflowEvent::SessionAttached {
@@ -4727,11 +4783,14 @@ nodes:
                     timestamp: 0.006,
                 }],
             )
+            .await
             .unwrap();
-            let corrupt_count =
-                workflow_fact_log::read_tree_records(&store, CORRUPT_TREE_ID).unwrap_err();
-            assert!(corrupt_count.contains("decode"));
+            let corrupt_count = workflow_fact_log::read_tree_records(&store, CORRUPT_TREE_ID)
+                .await
+                .unwrap_err();
+            assert!(corrupt_count.to_string().contains("decode"));
             let valid_count = workflow_fact_log::read_tree_records(&store, VALID_TREE_ID)
+                .await
                 .unwrap()
                 .len();
 
@@ -4751,6 +4810,7 @@ nodes:
             assert!(matches!(error, WorkflowRuntimeError::SessionStore(_)));
             assert_eq!(
                 workflow_fact_log::read_tree_records(&store, VALID_TREE_ID)
+                    .await
                     .unwrap()
                     .len(),
                 valid_count
@@ -4808,7 +4868,9 @@ nodes:
                 )
                 .unwrap();
 
-            assert!(workflow_fact_log::read_tree_records(&store, TREE_ID).is_err());
+            assert!(workflow_fact_log::read_tree_records(&store, TREE_ID)
+                .await
+                .is_err());
 
             let app = test_helpers::dependencies(Some(store.clone()));
             let host = WorkflowRuntimeHost::with_runtime_ports(
@@ -4824,6 +4886,7 @@ nodes:
                 &workflow_fact_log::FactLogReadBackend::Live(store.clone()),
                 TREE_ID,
             )
+            .await
             .unwrap()
             .unwrap();
             assert_eq!(
@@ -4841,11 +4904,13 @@ nodes:
                 crate::domain::workflow::NodeExecutionStatus::Aborted
             );
             let count = workflow_fact_log::read_tree_records(&store, TREE_ID)
+                .await
                 .unwrap()
                 .len();
             test_helpers::reconcile_startup(&host, &app).await.unwrap();
             assert_eq!(
                 workflow_fact_log::read_tree_records(&store, TREE_ID)
+                    .await
                     .unwrap()
                     .len(),
                 count

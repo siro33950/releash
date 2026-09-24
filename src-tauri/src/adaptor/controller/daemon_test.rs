@@ -256,12 +256,13 @@ async fn test_daemon起動のarchive移行結線_未終了対象をabortし事�
     // Then
     assert!(!path.exists());
     assert_eq!(
-        fixture.repository.target(&id).unwrap().status,
+        fixture.repository.target(&id).await.unwrap().status,
         ExecutionStatus::Aborted
     );
     let archived = fixture
         .repository
         .archive_snapshot_for(&[id])
+        .await
         .unwrap()
         .records
         .remove(0);
