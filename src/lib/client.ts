@@ -129,19 +129,6 @@ export function refreshClient(failedClient?: Client<typeof ClientService>) {
 	ensurePush();
 }
 
-export function refreshClientOnDisconnect(
-	client: Client<typeof ClientService>,
-	error: unknown,
-) {
-	if (
-		error instanceof ConnectError &&
-		!error.findDetails(CommandErrorSchema).length &&
-		(error.code === Code.Unavailable ||
-			(error.code === Code.Unknown && error.cause instanceof TypeError))
-	)
-		refreshClient(client);
-}
-
 function refreshState() {
 	for (const listener of refreshListeners) listener();
 	for (const entry of listeners) entry.onReconnect();
@@ -258,10 +245,7 @@ function startState(stream: StateStream, target: string) {
 			target,
 			version: states.get(target)?.version,
 		})
-		.catch((error) => {
-			console.error("State subscription failed", error);
-			refreshClientOnDisconnect(stream.client, error);
-		});
+		.catch((error) => console.error("State subscription failed", error));
 }
 
 function ensureStateStream() {
@@ -441,7 +425,6 @@ export function watchClient(
 							start(subscription);
 					}, 1000);
 				}
-				refreshClientOnDisconnect(client, error);
 			});
 	};
 	watchers.add(start);
@@ -555,8 +538,7 @@ export async function attachClientStream(
 				if (
 					current?.client !== client &&
 					error instanceof ConnectError &&
-					error.code === Code.Canceled &&
-					!error.findDetails(CommandErrorSchema).length
+					error.code === Code.Canceled
 				)
 					return;
 				throw terminalError(error);
@@ -606,7 +588,6 @@ export async function attachClientStream(
 		void release().catch((cleanupError) =>
 			console.error("Terminal cleanup failed", cleanupError),
 		);
-		refreshClientOnDisconnect(client, error);
 		throw terminalError(error);
 	}
 }

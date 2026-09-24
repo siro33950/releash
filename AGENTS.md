@@ -40,6 +40,7 @@ Releash は、特定の作業単位や特定の道具を主語にしない。コ
 - **全てのアプリケーションロジックはサーバ（daemon）に置く。例外なし。**
 - client は、画面（frontend）と Tauri のシェルである。Tauri のシェルは Rust で書かれていても client であり、ロジックを置かない。
 - client に許すのは、表示とレイアウト制御、ユーザー入力の受付とフォーム状態管理、サーバの呼び出しと購読（接続、受け取り、つなぎ直し）、受け取ったデータの表示用フォーマット（日付表示形式の変換等）だけ。
+- サーバとの通信（呼び出し、購読、受け取り、つなぎ直し）は画面側の React（`src/lib/client.ts`）が直接行う。Tauri のシェルは通信を中継しない。Tauri のシェルが持つのは、ウィンドウ、daemon の起動と監視、更新、接続先の受け渡しなど desktop 固有の操作だけ。
 - サーバに置くのは、ビジネスロジック全般、データ変換・加工・計算、バリデーション、外部リソースアクセス（ファイル、Git、ネットワーク等）。
 - 新しい振る舞いはサーバの usecase / query service の背後に実装し、client からは proto で定義した呼び出しと購読で使う。
 - workflow、session、artifact、terminal、review、persistence のロジックを client に追加しない。
@@ -66,8 +67,9 @@ Releash は、特定の作業単位や特定の道具を主語にしない。コ
 ディレクトリの内訳はコードを見る。コードからは読み取りにくい点だけ挙げる。
 
 - **workflow 定義はリポジトリ直下の `workflows/`** に置く。`*.yml` と `facets/{instructions,policies,knowledge}/*.md`。builtin は `adaptor/gateway/workflow/builtin.rs` が `include_str!` でコンパイル時に取り込むため、定義を追加するときは builtin.rs 側の登録も要る。
-- **入口は3つあり、同じ usecase を共有する**。Tauri command（`adaptor/controller/command/`）、loopback HTTP local API（`adaptor/controller/api/` と `infrastructure/local_api/`）、CLI（`cli/`、`releash workflow|review|hook`）。`main.rs` が引数の有無で CLI と GUI を分岐する。
-- **local API は 127.0.0.1 のみに bind する**。discovery file に port と token を書き出す。terminal stream だけが WebSocket で、renderer へ渡す token は master token と分離する。
+- **実行ファイルは2つある**。`releash`（`src/main.rs`、Tauri のシェル）は daemon を子プロセスとして起動・監視する。`releash-backend`（`src/bin/backend.rs`）は `--internal-daemon` で daemon、それ以外で CLI（`cli/`、`releash workflow|review|hook`）として動く。
+- **daemon の入口は2つあり、同じ usecase を共有する**。画面用は Connect の ClientService（契約は `proto/client.proto`、入口は `adaptor/controller/api/client*.rs`、コマンドごとの処理は `adaptor/controller/client/`）。CLI / hook 用は HTTP local API（`adaptor/controller/api/` の `workflow.rs` / `provider_lifecycle.rs`）。Tauri コマンド（`adaptor/controller/command/`）は desktop 固有の操作だけを扱う。
+- **daemon は 127.0.0.1 のみに bind する**。discovery file に port と token を書き出す。画面へ渡す client token は master token と分離する。
 - **永続化は event store**。`domain/local_event/` と `adaptor/gateway/local_event_store/`。事実を追記し、読み側で projection を導出する。full-recompute 経路を増やさない。
 
 ## ビルド・テスト・Lint

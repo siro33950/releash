@@ -53,8 +53,8 @@ impl BoundedNoticeText {
 /// Bounded, content-safe operation failure surfaced to callers and telemetry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SafeOperationFailure {
+    classification: crate::domain::failure::FailureKind,
     pub kind: SessionOperationFailureKind,
-    pub retryable: bool,
     pub label: Box<BoundedNoticeText>,
     pub correlation_id: String,
 }
@@ -62,13 +62,13 @@ pub struct SafeOperationFailure {
 impl SafeOperationFailure {
     pub fn new(
         kind: SessionOperationFailureKind,
-        retryable: bool,
+        classification: crate::domain::failure::FailureKind,
         label: &str,
         correlation_id: impl Into<String>,
     ) -> Self {
         Self {
+            classification,
             kind,
-            retryable,
             label: Box::new(BoundedNoticeText::label(label)),
             correlation_id: correlation_id.into(),
         }
@@ -81,7 +81,7 @@ impl fmt::Display for SafeOperationFailure {
             f,
             "{:?} (retryable={}, correlation_id={}): {}",
             self.kind,
-            self.retryable,
+            self.classification == crate::domain::failure::FailureKind::Temporary,
             self.correlation_id,
             self.label.value()
         )
@@ -111,3 +111,13 @@ mod tests {
         assert_eq!(text.value(), "ok");
     }
 }
+
+impl crate::domain::failure::ClassifiedFailure for SafeOperationFailure {
+    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
+        self.classification
+    }
+}
+
+#[cfg(test)]
+#[path = "failure_test.rs"]
+mod failure_tests;

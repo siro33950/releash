@@ -7,6 +7,7 @@ pub(crate) mod comment;
 #[cfg(any(test, feature = "desktop"))]
 pub(crate) mod daemon_supervision;
 pub(crate) mod external_editor;
+pub(crate) mod failure;
 pub(crate) mod git_host;
 pub(crate) mod local_api_discovery;
 pub(crate) mod local_event;

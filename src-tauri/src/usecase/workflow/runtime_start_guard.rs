@@ -24,6 +24,10 @@ fn domain_validation_to_runtime_error(
     _workflow: &domain::WorkflowDefinition,
 ) -> WorkflowRuntimeError {
     match err {
+        error @ domain::WorkflowError::Editor(_) => WorkflowRuntimeError::Store(
+            crate::domain::failure::ClassifiedFailure::failure_kind(&error),
+        ),
+        domain::WorkflowError::Store(kind) => WorkflowRuntimeError::Store(kind),
         domain::WorkflowError::Validation(message) if message == "workflow has no nodes" => {
             WorkflowRuntimeError::InvalidWorkflow("Workflow has no nodes".to_string())
         }

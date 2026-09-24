@@ -9,9 +9,11 @@ use super::AgentSessionChangeNotifier;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AgentSessionRenameError {
+    Store(crate::domain::failure::FailureKind),
     NotFound,
     InvalidOperation,
     Conflict,
+    ProviderSessionAlreadyOwned,
     Unavailable,
     Corrupt,
 }
@@ -81,12 +83,32 @@ impl AgentSessionRenameExecutor for AgentSessionRenameUsecase {
 
 fn map_repository_error(error: AgentSessionRepositoryError) -> AgentSessionRenameError {
     match error {
-        AgentSessionRepositoryError::Conflict
-        | AgentSessionRepositoryError::ProviderSessionAlreadyOwned { .. } => {
-            AgentSessionRenameError::Conflict
+        AgentSessionRepositoryError::Conflict => AgentSessionRenameError::Conflict,
+        AgentSessionRepositoryError::ProviderSessionAlreadyOwned { .. } => {
+            AgentSessionRenameError::ProviderSessionAlreadyOwned
         }
         AgentSessionRepositoryError::InvalidRequest => AgentSessionRenameError::InvalidOperation,
+        AgentSessionRepositoryError::Store(kind) => AgentSessionRenameError::Store(kind),
         AgentSessionRepositoryError::Corrupt => AgentSessionRenameError::Corrupt,
         AgentSessionRepositoryError::Unavailable => AgentSessionRenameError::Unavailable,
     }
 }
+
+impl crate::domain::failure::ClassifiedFailure for AgentSessionRenameError {
+    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
+        use crate::domain::failure::FailureKind;
+        match self {
+            Self::Store(kind) => *kind,
+            Self::NotFound => FailureKind::Missing,
+            Self::InvalidOperation => FailureKind::StateRequired,
+            Self::Conflict => FailureKind::RestartRequired,
+            Self::ProviderSessionAlreadyOwned => FailureKind::StateRequired,
+            Self::Unavailable => FailureKind::Temporary,
+            Self::Corrupt => FailureKind::Corrupt,
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "agent_session_rename_classification_test.rs"]
+mod classification_tests;

@@ -1,3 +1,4 @@
+use crate::other::AppError;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -6,7 +7,7 @@ use crate::adaptor::controller::state::AppState;
 pub(crate) async fn diagnose_all_cmd_shared(
     state: &AppState,
     dir: Option<String>,
-) -> Result<crate::usecase::workflow::diagnostic_dto::DiagnosticReport, String> {
+) -> Result<crate::usecase::workflow::diagnostic_dto::DiagnosticReport, AppError> {
     diagnose_all_impl(&state.workflow_usecase, dir).await
 }
 
@@ -14,29 +15,31 @@ pub(crate) async fn diagnose_all_cmd_shared(
 pub(crate) async fn diagnose_all_impl(
     usecase: &Arc<crate::usecase::workflow::WorkflowUsecase>,
     dir: Option<String>,
-) -> Result<crate::usecase::workflow::diagnostic_dto::DiagnosticReport, String> {
+) -> Result<crate::usecase::workflow::diagnostic_dto::DiagnosticReport, AppError> {
     let target =
         crate::usecase::workflow::ports::WorkflowDiagnosticsTarget::from_optional_directory(dir)
-            .map_err(|e| e.to_string())?;
+            .map_err(AppError::from_failure)?;
     let usecase = usecase.clone();
-    tokio::task::spawn_blocking(move || usecase.diagnose_all(target).map_err(|e| e.to_string()))
-        .await
-        .map_err(|e| format!("task join error: {e}"))?
+    tokio::task::spawn_blocking(move || {
+        usecase.diagnose_all(target).map_err(AppError::from_failure)
+    })
+    .await
+    .map_err(|e| AppError::new(format!("task join error: {e}")))?
 }
 
 pub(crate) async fn render_facet_preview_shared(
     state: &AppState,
     content: String,
     sample_values: HashMap<String, String>,
-) -> Result<String, String> {
+) -> Result<String, AppError> {
     Ok(state
         .workflow_usecase
         .render_facet_preview(&content, &sample_values))
 }
 
-pub(crate) fn get_automation_config_dir_shared(state: &AppState) -> Result<String, String> {
+pub(crate) fn get_automation_config_dir_shared(state: &AppState) -> Result<String, AppError> {
     state
         .workflow_usecase
         .automation_config_dir()
-        .map_err(|e| e.to_string())
+        .map_err(AppError::from_failure)
 }

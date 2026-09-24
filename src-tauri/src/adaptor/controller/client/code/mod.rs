@@ -15,6 +15,7 @@ pub(crate) mod review;
 pub(crate) mod staging;
 
 use crate::domain::code::CodeError;
+use crate::domain::failure::ClassifiedFailure;
 use crate::other::AppError;
 use crate::usecase::code_error::CodeUsecaseError;
 
@@ -28,8 +29,9 @@ const STALE_REVIEW_GROUP_TARGET_ERROR_MESSAGE: &str =
 /// frontend が回復判断を必要とする stale review group だけ機械可読 code を付ける。
 impl From<CodeUsecaseError> for AppError {
     fn from(e: CodeUsecaseError) -> Self {
+        let kind = e.failure_kind();
         let message = e.to_string();
-        match &e {
+        let result = match &e {
             CodeUsecaseError::Code(CodeError::StaleReviewGroupTarget { group_id }) => {
                 log::warn!(
                     "code command failed: code={} group_id={}",
@@ -39,10 +41,12 @@ impl From<CodeUsecaseError> for AppError {
                 AppError::coded(
                     STALE_REVIEW_GROUP_TARGET_ERROR_CODE,
                     STALE_REVIEW_GROUP_TARGET_ERROR_MESSAGE,
+                    kind,
                 )
             }
             _ => AppError::Internal(message),
-        }
+        };
+        result.with_failure_kind(kind)
     }
 }
 

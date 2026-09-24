@@ -13,3 +13,17 @@ impl std::fmt::Display for AppConfigError {
 }
 
 impl std::error::Error for AppConfigError {}
+
+impl crate::domain::failure::ClassifiedFailure for AppConfigError {
+    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
+        use crate::domain::failure::FailureKind as F;
+        match self {
+            Self::Repository(_) => F::Internal,
+            Self::InvalidInput(_) => F::InvalidInput,
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "error_test.rs"]
+mod error_tests;

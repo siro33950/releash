@@ -55,6 +55,11 @@ impl ApiError {
 impl From<WorkflowError> for ApiError {
     fn from(error: WorkflowError) -> Self {
         match error {
+            WorkflowError::Store(_) => Self::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "storage_unavailable",
+                error.to_string(),
+            ),
             WorkflowError::Validation(message) => {
                 Self::new(StatusCode::BAD_REQUEST, "validation_error", message)
             }
@@ -71,6 +76,11 @@ impl From<WorkflowError> for ApiError {
                 StatusCode::FORBIDDEN,
                 "unauthorized_approval_target",
                 message,
+            ),
+            WorkflowError::Editor(error) => Self::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "workflow_error",
+                error.to_string(),
             ),
             WorkflowError::External(message) => {
                 Self::new(StatusCode::INTERNAL_SERVER_ERROR, "workflow_error", message)

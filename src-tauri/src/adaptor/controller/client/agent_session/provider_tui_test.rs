@@ -122,7 +122,7 @@ fn test_agent_session_controller_対象21codeを利用者向け英語文言へ�
         ),
         (
             launch_error(
-                AgentSessionLaunchUsecaseError::Conflict,
+                AgentSessionLaunchUsecaseError::Conflict(crate::domain::failure::FailureKind::RestartRequired),
                 AgentSessionLaunchOperation::Start,
             ),
             "AGENT_SESSION_CONFLICT",
@@ -251,7 +251,7 @@ fn test_agent_session_controller_操作依存codeを操作ごとの固定文言�
         ),
         (
             launch_error(
-                AgentSessionLaunchUsecaseError::Conflict,
+                AgentSessionLaunchUsecaseError::Conflict(crate::domain::failure::FailureKind::RestartRequired),
                 AgentSessionLaunchOperation::Start,
             ),
             "AGENT_SESSION_CONFLICT",
@@ -259,14 +259,14 @@ fn test_agent_session_controller_操作依存codeを操作ごとの固定文言�
         ),
         (
             launch_error(
-                AgentSessionLaunchUsecaseError::Conflict,
+                AgentSessionLaunchUsecaseError::Conflict(crate::domain::failure::FailureKind::RestartRequired),
                 AgentSessionLaunchOperation::ResumeHistory,
             ),
             "AGENT_SESSION_CONFLICT",
             "The AgentSession could not be resumed because it changed or its Provider session is already in use. Refresh and try again.",
         ),
         (
-            lifecycle_error(AgentSessionLifecycleUsecaseError::Conflict),
+            lifecycle_error(AgentSessionLifecycleUsecaseError::Conflict(crate::domain::failure::FailureKind::RestartRequired)),
             "AGENT_SESSION_CONFLICT",
             "The AgentSession could not be updated because it changed or its Provider session is already in use. Refresh and try again.",
         ),
@@ -348,4 +348,232 @@ fn assert_coded_error(error: AppError, expected_code: &str, expected_message: &s
             "message": expected_message,
         })
     );
+}
+
+#[test]
+fn test_provider失敗分類_表示コードの生成時に理由を保持する() {
+    use super::ProviderTuiCodedError as E;
+    use crate::domain::failure::{ClassifiedFailure, FailureKind as F};
+    // Given
+    let cases = [
+        (E::ProviderAvailabilityInvalidExecutable, F::InvalidInput),
+        (E::ProviderAvailabilityConfigUnavailable, F::Temporary),
+        (E::ProviderAvailabilityRefreshUnavailable, F::Temporary),
+        (E::ProviderAvailabilityCorrupt, F::Corrupt),
+        (
+            E::AgentSessionInvalidProvider(super::ProviderParseOperation::Start),
+            F::InvalidInput,
+        ),
+        (E::AgentSessionProviderUnavailable, F::StateRequired),
+        (
+            E::AgentSessionInvalidInput(super::AgentSessionLaunchOperation::Start),
+            F::InvalidInput,
+        ),
+        (
+            E::AgentSessionConflict(super::AgentSessionConflictOperation::Start),
+            F::RestartRequired,
+        ),
+        (E::AgentSessionStorageUnavailable, F::Temporary),
+        (
+            E::AgentSessionLaunchUnavailable(F::StateRequired),
+            F::StateRequired,
+        ),
+        (
+            E::AgentSessionTerminalUnavailable(F::StateRequired),
+            F::StateRequired,
+        ),
+        (E::AgentSessionCorrupt, F::Corrupt),
+        (E::AgentSessionNotFound, F::Missing),
+        (E::AgentSessionInvalidOperation, F::StateRequired),
+        (E::AgentSessionInvalidRequest, F::InvalidInput),
+        (E::AgentSessionHistoryInvalidRequest, F::InvalidInput),
+        (E::AgentSessionHistoryUnavailable, F::Temporary),
+        (E::AgentSessionHistoryCorrupt, F::Corrupt),
+        (E::ProviderHookHealthInvalidRequest, F::InvalidInput),
+        (E::ProviderHookHealthStorageUnavailable, F::Temporary),
+        (E::ProviderHookHealthCorrupt, F::Corrupt),
+    ];
+    for (error, expected) in cases {
+        // When
+        let error = super::provider_tui_coded_error(error);
+        // Then
+        assert_eq!(error.failure_kind(), expected);
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum HistoryFailurePoint {
+    Metadata,
+    Ownership,
+    Titles,
+}
+
+struct FailingHistoryPorts {
+    point: HistoryFailurePoint,
+    kind: crate::domain::failure::FailureKind,
+}
+
+#[async_trait::async_trait]
+impl crate::domain::agent_session::AgentSessionHistoryGateway for FailingHistoryPorts {
+    async fn list_metadata(
+        &self,
+        provider: ProviderKind,
+        worktree_path: &str,
+        _: usize,
+    ) -> Result<
+        Vec<crate::domain::agent_session::AgentSessionHistoryMetadata>,
+        crate::domain::agent_session::AgentSessionHistoryGatewayError,
+    > {
+        if matches!(self.point, HistoryFailurePoint::Metadata) {
+            return Err(
+                crate::domain::agent_session::AgentSessionHistoryGatewayError::Store(self.kind),
+            );
+        }
+        Ok(vec![
+            crate::domain::agent_session::AgentSessionHistoryMetadata {
+                provider,
+                provider_session_id: "session".into(),
+                worktree_path: worktree_path.into(),
+                updated_at_ms: 1,
+            },
+        ])
+    }
+
+    async fn list_session_titles(
+        &self,
+        _: ProviderKind,
+        _: &str,
+        _: &[String],
+    ) -> Result<
+        Vec<crate::domain::agent_session::ProviderSessionTitleEntry>,
+        crate::domain::agent_session::AgentSessionHistoryGatewayError,
+    > {
+        assert!(matches!(self.point, HistoryFailurePoint::Titles));
+        Err(crate::domain::agent_session::AgentSessionHistoryGatewayError::Store(self.kind))
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::domain::agent_session::AgentSessionOwnershipQuery for FailingHistoryPorts {
+    async fn is_owned(
+        &self,
+        _: ProviderKind,
+        _: &str,
+    ) -> Result<bool, crate::domain::agent_session::AgentSessionHistoryGatewayError> {
+        if matches!(self.point, HistoryFailurePoint::Ownership) {
+            return Err(
+                crate::domain::agent_session::AgentSessionHistoryGatewayError::Store(self.kind),
+            );
+        }
+        Ok(false)
+    }
+}
+
+#[tokio::test]
+async fn test_履歴失敗分類_全gateway経路からusecaseとcontrollerを通じconnectへ保持する() {
+    use crate::domain::failure::{ClassifiedFailure, FailureKind as F};
+    use connectrpc::ErrorCode as C;
+    // Given
+    for point in [
+        HistoryFailurePoint::Metadata,
+        HistoryFailurePoint::Ownership,
+        HistoryFailurePoint::Titles,
+    ] {
+        for (kind, expected) in [
+            (F::Expired, C::DeadlineExceeded),
+            (F::Corrupt, C::DataLoss),
+            (F::Temporary, C::Unavailable),
+            (F::RestartRequired, C::Aborted),
+            (F::StateRequired, C::FailedPrecondition),
+        ] {
+            let ports = Arc::new(FailingHistoryPorts { point, kind });
+            let query = Arc::new(
+                crate::adaptor::gateway::agent_session::LocalAgentSessionHistoryQueryService::new(
+                    ports.clone(),
+                    ports,
+                ),
+            );
+            let usecase = Arc::new(AgentSessionHistoryReadUsecase::new(query));
+            // When
+            let error = list_agent_session_history_shared(&usecase, "/repo".into(), Some(1), None)
+                .await
+                .unwrap_err();
+            // Then
+            assert_eq!(error.failure_kind(), kind, "{point:?}");
+            let connect = crate::adaptor::protocol::connect::command_error(error.into());
+            assert_eq!(connect.code, expected, "{point:?}");
+            assert_eq!(connect.failure_kind(), kind);
+            assert_eq!(connect.details.len(), 1);
+        }
+    }
+}
+
+#[test]
+fn test_provider操作失敗_各経路の分類がconnectまで一致する() {
+    use crate::adaptor::protocol::connect::classified_error;
+    use crate::domain::failure::{ClassifiedFailure, FailureKind};
+    // Given
+    for error in [
+        launch_error(
+            AgentSessionLaunchUsecaseError::LaunchUnavailable,
+            AgentSessionLaunchOperation::Start,
+        ),
+        lifecycle_error(AgentSessionLifecycleUsecaseError::LaunchUnavailable),
+        launch_error(
+            AgentSessionLaunchUsecaseError::TerminalUnavailable,
+            AgentSessionLaunchOperation::Start,
+        ),
+        lifecycle_error(AgentSessionLifecycleUsecaseError::TerminalUnavailable),
+        read_error(AgentSessionReadUsecaseError::TerminalUnavailable),
+        launch_error(
+            AgentSessionLaunchUsecaseError::Conflict(FailureKind::StateRequired),
+            AgentSessionLaunchOperation::Start,
+        ),
+        lifecycle_error(AgentSessionLifecycleUsecaseError::Conflict(
+            FailureKind::StateRequired,
+        )),
+        read_error(AgentSessionReadUsecaseError::Lifecycle(
+            AgentSessionLifecycleUsecaseError::Conflict(FailureKind::StateRequired),
+        )),
+    ] {
+        // When / Then
+        assert_eq!(error.failure_kind(), FailureKind::StateRequired);
+        assert_eq!(
+            classified_error(error).code,
+            connectrpc::ErrorCode::FailedPrecondition
+        );
+    }
+}
+
+#[test]
+fn test_workflow失敗_session経由でも非storeの原因表示と分類を保持する() {
+    use crate::adaptor::protocol::connect::classified_error;
+    use crate::domain::workflow::WorkflowError as W;
+    // Given
+    for (source, expected) in [
+        (
+            W::Validation("input".into()),
+            connectrpc::ErrorCode::InvalidArgument,
+        ),
+        (
+            W::UnauthorizedApprovalTarget("target".into()),
+            connectrpc::ErrorCode::PermissionDenied,
+        ),
+        (
+            W::IncompatibleStoredEvent("version".into()),
+            connectrpc::ErrorCode::FailedPrecondition,
+        ),
+        (
+            W::External("external".into()),
+            connectrpc::ErrorCode::Internal,
+        ),
+    ] {
+        let expected_message = source.to_string();
+        // When
+        let error = lifecycle_error(AgentSessionLifecycleUsecaseError::Workflow(source));
+        // Then
+        assert_eq!(error.to_string(), expected_message);
+        assert!(!error.to_string().contains("Storage failure"));
+        assert_eq!(classified_error(error).code, expected);
+    }
 }

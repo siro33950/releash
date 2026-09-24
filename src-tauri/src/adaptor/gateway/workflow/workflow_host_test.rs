@@ -2456,9 +2456,10 @@ async fn test_commit結果不明_記録を読み直せなければ保存成功�
     let error = commit.join().unwrap().unwrap_err();
 
     // Then
-    assert!(
-        matches!(error, WorkflowRuntimeError::SessionStore(reason) if reason.contains("control-plane commit readback failed"))
-    );
+    assert!(matches!(
+        error,
+        WorkflowRuntimeError::StorageFailure { kind: crate::domain::failure::FailureKind::Internal, message } if message.contains("control-plane commit readback failed")
+    ));
 }
 
 #[tokio::test]
@@ -3447,4 +3448,51 @@ async fn test_自動再起動_先行nodeのエラーを後続の起動成功node
         .iter()
         .any(|record| record.meta.node_execution_id == restarted.id
             && matches!(record.fact, NodeFact::RuntimeFailureObserved(_))));
+}
+
+#[tokio::test]
+async fn test_node事実追記_sqlite混雑をruntimeとconnectまで保持する() {
+    use crate::adaptor::gateway::local_event_store::layout::StoreLayout;
+    use crate::domain::failure::{ClassifiedFailure, FailureKind};
+    // Given
+    let fixture = test_helpers::Fixture::new(0);
+    let snapshot = fixture
+        .persist_started("  main: {session: {provider: codex}}\n", "/repo")
+        .await;
+    let records =
+        workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap();
+    let head = records.last().unwrap().seq;
+    let connection =
+        rusqlite::Connection::open(StoreLayout::new(fixture._directory.path()).database_path())
+            .unwrap();
+    connection.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let event = WorkflowEvent::NodeStopReceived {
+        execution_id: snapshot.execution_id.clone(),
+        node_execution_id: records[0].meta.node_execution_id.clone(),
+        timestamp: 3.0,
+    };
+    // When
+    let error = WorkflowRuntimeHost::append_events_at_head(
+        &fixture.app,
+        &snapshot.execution_id,
+        head,
+        &[event.clone()],
+    )
+    .unwrap_err();
+    let batch_error = fixture
+        .host
+        .write_log_required_batch(&fixture.app, &[event])
+        .unwrap_err();
+    connection.execute_batch("ROLLBACK").unwrap();
+    // Then
+    assert_eq!(error.failure_kind(), FailureKind::Temporary);
+    assert_eq!(batch_error.failure_kind(), FailureKind::Temporary);
+    assert_eq!(
+        crate::adaptor::protocol::connect::classified_error(error).code,
+        connectrpc::ErrorCode::Unavailable
+    );
+    assert_eq!(
+        workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id).unwrap(),
+        records
+    );
 }

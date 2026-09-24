@@ -29,6 +29,7 @@ pub(crate) struct AgentSessionHistoryRequest {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AgentSessionHistoryQueryError {
+    Store(crate::domain::failure::FailureKind),
     InvalidRequest,
     Unavailable,
     Corrupt,
@@ -56,5 +57,17 @@ impl AgentSessionHistoryReadUsecase {
         request: AgentSessionHistoryRequest,
     ) -> Result<AgentSessionHistoryPageDto, AgentSessionHistoryQueryError> {
         self.query.list(request).await
+    }
+}
+
+impl crate::domain::failure::ClassifiedFailure for AgentSessionHistoryQueryError {
+    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
+        use crate::domain::failure::FailureKind;
+        match self {
+            Self::Store(kind) => *kind,
+            Self::InvalidRequest => FailureKind::InvalidInput,
+            Self::Unavailable => FailureKind::Temporary,
+            Self::Corrupt => FailureKind::Corrupt,
+        }
     }
 }

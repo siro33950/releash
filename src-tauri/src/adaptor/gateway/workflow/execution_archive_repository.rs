@@ -86,7 +86,6 @@ impl ExecutionTreeArchiveFactRepository {
             .map_err(WorkflowError::external)?
             .ok_or_else(|| WorkflowError::NotFound(execution_id.to_string()))?;
         fact_log::append_single_fact(store, &root.meta, &fact, (timestamp * 1000.0) as i64)
-            .map_err(WorkflowError::external)
     }
 }
 
@@ -281,7 +280,7 @@ impl ExecutionTreeArchiveRepository for ExecutionTreeArchiveFactRepository {
         execution_ids: &[String],
     ) -> Result<ExecutionTreeArchiveSnapshot, WorkflowError> {
         let facts = fact_log::read_tree_archive_records_for(&self.backend, execution_ids)
-            .map_err(WorkflowError::external)?;
+            .map_err(WorkflowError::from)?;
         let mut records = facts
             .iter()
             .filter_map(|fact| {

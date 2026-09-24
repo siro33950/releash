@@ -1,3 +1,4 @@
+use crate::other::AppError;
 use std::sync::Arc;
 
 use crate::adaptor::controller::client::workflow::validate_execution_id;
@@ -22,7 +23,7 @@ pub(crate) async fn get_workflow_execution_state_shared(
     state: &AppState,
     worktree_path: String,
     execution_id: String,
-) -> Result<Option<WorkflowExecutionView>, String> {
+) -> Result<Option<WorkflowExecutionView>, AppError> {
     get_workflow_execution_state_impl(&state.workflow_usecase, worktree_path, execution_id).await
 }
 
@@ -31,23 +32,23 @@ pub(crate) async fn get_workflow_execution_state_impl(
     query: &Arc<crate::usecase::workflow::WorkflowUsecase>,
     worktree_path: String,
     execution_id: String,
-) -> Result<Option<WorkflowExecutionView>, String> {
+) -> Result<Option<WorkflowExecutionView>, AppError> {
     let query = query.clone();
     let state = tokio::task::spawn_blocking(move || {
         validate_execution_id(&execution_id)?;
         if query
             .authorize_execution_summary_for_worktree(&execution_id, &worktree_path)
-            .map_err(|e| e.to_string())?
+            .map_err(AppError::from_failure)?
             .is_none()
         {
             return Ok(None);
         }
         query
             .get_execution_state(&execution_id)
-            .map_err(|e| e.to_string())
+            .map_err(AppError::from_failure)
     })
     .await
-    .map_err(|e| format!("task join error: {e}"))??;
+    .map_err(|e| AppError::new(format!("task join error: {e}")))??;
     Ok(state.map(crate::adaptor::presenter::workflow::workflow_execution_to_view))
 }
 
@@ -55,7 +56,7 @@ pub(crate) async fn get_workflow_execution_state_impl(
 pub(crate) async fn resolve_active_execution_by_worktree_shared(
     state: &AppState,
     worktree_path: String,
-) -> Result<Option<String>, String> {
+) -> Result<Option<String>, AppError> {
     let query = state.workflow_usecase.clone();
     tokio::task::spawn_blocking(move || {
         query
@@ -69,8 +70,8 @@ pub(crate) async fn resolve_active_execution_by_worktree_shared(
                     .next()
                     .map(|execution| execution.execution_id)
             })
-            .map_err(|e| e.to_string())
+            .map_err(AppError::from_failure)
     })
     .await
-    .map_err(|e| format!("task join error: {e}"))?
+    .map_err(|e| AppError::new(format!("task join error: {e}")))?
 }

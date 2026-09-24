@@ -40,3 +40,21 @@ fn test_terminal購読_空id重複上限終了を判定し解放後に再利用�
     subscriptions.release_attachment();
     subscriptions.reserve_attachment().unwrap();
 }
+
+#[test]
+fn test_失敗分類_terminal_subscription_error_理由に対応する() {
+    use crate::domain::failure::{ClassifiedFailure, FailureKind as F};
+    // Given
+    let cases = [
+        (TerminalSubscriptionError::InvalidId, F::InvalidInput),
+        (TerminalSubscriptionError::AlreadyExists, F::AlreadyPresent),
+        (TerminalSubscriptionError::Limit, F::Capacity),
+        (TerminalSubscriptionError::PendingLimit, F::Capacity),
+        (TerminalSubscriptionError::AttachmentLimit, F::Capacity),
+        (TerminalSubscriptionError::Ended, F::Missing),
+    ];
+    for (error, expected) in cases {
+        // When / Then
+        assert_eq!(error.failure_kind(), expected, "{error:?}");
+    }
+}

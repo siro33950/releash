@@ -70,7 +70,7 @@ fn database_metadata_unavailable() -> LocalEventQueryError {
     LocalEventQueryError::StorageUnavailable {
         failure: SafeOperationFailure::new(
             SessionOperationFailureKind::StorageUnavailable,
-            true,
+            crate::domain::failure::FailureKind::Temporary,
             "local event read store database metadata is unavailable",
             uuid::Uuid::new_v4().to_string(),
         ),
@@ -199,7 +199,7 @@ impl LocalEventReadStore {
             .map_err(|_| LocalEventQueryError::StorageUnavailable {
                 failure: SafeOperationFailure::new(
                     SessionOperationFailureKind::StorageUnavailable,
-                    true,
+                    crate::domain::failure::FailureKind::Temporary,
                     "local event read store reader reply lost",
                     uuid::Uuid::new_v4().to_string(),
                 ),
@@ -312,7 +312,7 @@ impl LocalEventTransactionRepository for LocalEventReadStore {
         Err(CommitBatchError::StorageUnavailable {
             failure: SafeOperationFailure::new(
                 SessionOperationFailureKind::PersistFailure,
-                false,
+                crate::domain::failure::FailureKind::StateRequired,
                 "The CLI session reader cannot accept mutations.",
                 uuid::Uuid::new_v4().to_string(),
             ),
@@ -328,7 +328,7 @@ impl LocalEventTransactionRepository for LocalEventReadStore {
         Err(LocalEventQueryError::StorageUnavailable {
             failure: SafeOperationFailure::new(
                 SessionOperationFailureKind::OutcomeUnknown,
-                true,
+                crate::domain::failure::FailureKind::RestartRequired,
                 "Commit resolution requires the canonical writer authority.",
                 uuid::Uuid::new_v4().to_string(),
             ),
@@ -545,7 +545,7 @@ mod tests {
             commit_error,
             CommitBatchError::StorageUnavailable { failure }
                 if failure.kind == SessionOperationFailureKind::PersistFailure
-                    && !failure.retryable
+                    && crate::domain::failure::ClassifiedFailure::failure_kind(&failure) == crate::domain::failure::FailureKind::StateRequired
         ));
         assert_eq!(
             writer
@@ -563,7 +563,7 @@ mod tests {
             resolve_error,
             LocalEventQueryError::StorageUnavailable { failure }
                 if failure.kind == SessionOperationFailureKind::OutcomeUnknown
-                    && failure.retryable
+                    && crate::domain::failure::ClassifiedFailure::failure_kind(&failure) == crate::domain::failure::FailureKind::RestartRequired
         ));
     }
 

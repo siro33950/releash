@@ -1,3 +1,4 @@
+use crate::other::AppError;
 use std::sync::Arc;
 
 use crate::adaptor::gateway::workspace_state::WorkspaceStateStore;
@@ -20,11 +21,11 @@ pub(crate) fn save_workspace_state_shared(
     store: &Arc<WorkspaceStateStore>,
     worktree_name: String,
     state: WorkspaceStateDto,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     crate::usecase::workspace_state::usecase::save_workspace_state(
         store.as_ref(),
         &worktree_name,
         state.into(),
     )
-    .map_err(|e| e.to_string())
+    .map_err(AppError::from_failure)
 }

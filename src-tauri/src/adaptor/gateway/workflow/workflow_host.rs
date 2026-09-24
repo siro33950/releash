@@ -8,6 +8,7 @@
 
 #[cfg(test)]
 use crate::adaptor::gateway::workflow::fact_codec;
+use crate::domain::failure::ClassifiedFailure;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Weak};
 
@@ -351,10 +352,9 @@ impl WorkflowRuntimeHost {
         match result {
             Err(NodeEventWriteError::OutcomeUnknown) => {
                 workflow_fact_log::resolve_unknown_append(store, rows, Some(head))
-                    .map_err(|error| {
-                        WorkflowRuntimeError::SessionStore(format!(
-                            "control-plane commit readback failed: {error:?}"
-                        ))
+                    .map_err(|error| WorkflowRuntimeError::StorageFailure {
+                        kind: error.failure_kind(),
+                        message: format!("control-plane commit readback failed: {error:?}"),
                     })?
                     .map(|_| ())
             }
@@ -364,7 +364,10 @@ impl WorkflowRuntimeHost {
             NodeEventWriteError::Conflict => WorkflowRuntimeError::Conflict(format!(
                 "execution '{execution_id}' changed before commit"
             )),
-            other => WorkflowRuntimeError::SessionStore(other.to_string()),
+            other => WorkflowRuntimeError::StorageFailure {
+                kind: other.failure_kind(),
+                message: other.to_string(),
+            },
         })
     }
 
@@ -747,9 +750,10 @@ impl WorkflowRuntimeHost {
         required_start_events.extend(applied.events);
         if let Err(e) = self.write_log_required_batch(app, &required_start_events) {
             self.release_execution_facet_contents(&execution_id).await;
-            return Err(WorkflowRuntimeError::SessionStore(format!(
-                "write initial workflow event batch failed: {e}"
-            )));
+            return Err(WorkflowRuntimeError::StorageFailure {
+                kind: e.failure_kind(),
+                message: format!("write initial workflow event batch failed: {e}"),
+            });
         }
 
         drop(start_guard);
@@ -1963,6 +1967,12 @@ impl WorkflowRuntimeHost {
             WorkflowRuntimeError::SessionStore(reason) => {
                 WorkflowRuntimeError::SessionStore(format!("{append_error_context}: {reason}"))
             }
+            WorkflowRuntimeError::StorageFailure { message, kind } => {
+                WorkflowRuntimeError::StorageFailure {
+                    message: format!("{append_error_context}: {message}"),
+                    kind,
+                }
+            }
             other => other,
         })
     }
@@ -2162,7 +2172,7 @@ impl WorkflowRuntimeHost {
         &self,
         app: &WorkflowRuntimeDependencies,
         events: &[WorkflowEvent],
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::domain::workflow::WorkflowError> {
         workflow_event_log_writer::append_required_events_for_app(app, events)
     }
 }

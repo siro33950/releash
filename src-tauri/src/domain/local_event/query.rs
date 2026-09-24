@@ -77,3 +77,23 @@ impl fmt::Display for LocalEventQueryError {
 }
 
 impl std::error::Error for LocalEventQueryError {}
+
+impl crate::domain::failure::ClassifiedFailure for LocalEventQueryError {
+    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
+        use crate::domain::failure::FailureKind;
+        match self {
+            Self::InvalidRequest => FailureKind::InvalidInput,
+            Self::QueryBusy => FailureKind::Temporary,
+            Self::DeadlineExceeded => FailureKind::Expired,
+            Self::ResponseTooLarge => FailureKind::Capacity,
+            Self::IncompatibleStoredEvent { .. } => FailureKind::StateRequired,
+            Self::StorageUnavailable { failure } => failure.failure_kind(),
+            Self::Corrupt { .. } => FailureKind::Corrupt,
+            Self::Internal { .. } => FailureKind::Internal,
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "query_test.rs"]
+mod query_tests;

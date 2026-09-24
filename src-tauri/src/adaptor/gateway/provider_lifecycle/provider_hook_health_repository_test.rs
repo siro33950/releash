@@ -104,3 +104,27 @@ async fn test_provider_hook_health_repository_providerごとの状態を混同�
         None
     );
 }
+
+#[tokio::test]
+async fn test_hook保存_同一キーの異なる内容と古いrevisionの分類を区別する() {
+    use crate::domain::failure::{ClassifiedFailure, FailureKind};
+    // Given
+    let directory = tempdir().unwrap();
+    let store =
+        LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into())).unwrap();
+    let repository =
+        LocalProviderHookHealthRepository::new(store.clone(), store.installation_id().into());
+    let mut first = repository.load(ProviderKind::Codex).await.unwrap();
+    let mut stale = repository.load(ProviderKind::Codex).await.unwrap();
+    first.health_mut().observe_launch("first");
+    repository.save(first, "same-request").await.unwrap();
+    let mut updated = repository.load(ProviderKind::Codex).await.unwrap();
+    updated.health_mut().observe_launch("second");
+    stale.health_mut().observe_launch("stale");
+    // When
+    let payload = repository.save(updated, "same-request").await.unwrap_err();
+    let head = repository.save(stale, "new-request").await.unwrap_err();
+    // Then
+    assert_eq!(payload.failure_kind(), FailureKind::StateRequired);
+    assert_eq!(head.failure_kind(), FailureKind::RestartRequired);
+}

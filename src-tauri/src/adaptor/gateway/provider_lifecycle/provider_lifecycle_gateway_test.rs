@@ -897,9 +897,7 @@ impl LocalEventTransactionRepository for ResolveFailureRepository {
         identity: CommitIdentity,
     ) -> Result<CommitResolution, LocalEventQueryError> {
         if self.fail_resolve.load(Ordering::SeqCst) {
-            return Err(LocalEventQueryError::Internal {
-                correlation_id: "provider-lifecycle-persistent-resolve-failure".to_string(),
-            });
+            return Err(LocalEventQueryError::QueryBusy);
         }
         self.inner.resolve_commit(identity).await
     }
@@ -956,9 +954,7 @@ impl LocalEventTransactionRepository for ResolveFailureOnceRepository {
         identity: CommitIdentity,
     ) -> Result<CommitResolution, LocalEventQueryError> {
         if self.fail_resolve_once.swap(false, Ordering::SeqCst) {
-            return Err(LocalEventQueryError::Internal {
-                correlation_id: "provider-lifecycle-resolve-failure".to_string(),
-            });
+            return Err(LocalEventQueryError::QueryBusy);
         }
         self.inner.resolve_commit(identity).await
     }

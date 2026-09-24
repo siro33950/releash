@@ -843,6 +843,7 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             node_id.to_string(),
         )
         .await
+        .map_err(|error| error.to_string())
     }
 
     pub async fn abort(&self, execution_id: &str) -> Result<(), String> {

@@ -52,7 +52,7 @@ use crate::domain::local_event::{
 
 fn node_append_error(error: rusqlite::Error) -> NodeEventWriteError {
     log::error!("node event append failed [{}]: {error}", correlation_id());
-    NodeEventWriteError::StorageUnavailable
+    NodeEventWriteError::Store(super::reader::sqlite_failure_kind(&error))
 }
 
 fn correlation_id() -> String {
@@ -947,7 +947,7 @@ impl LocalEventStore {
             .map_err(|_| LocalEventQueryError::StorageUnavailable {
                 failure: SafeOperationFailure::new(
                     SessionOperationFailureKind::StorageUnavailable,
-                    true,
+                    crate::domain::failure::FailureKind::Temporary,
                     "local event store reader reply lost",
                     correlation_id(),
                 ),

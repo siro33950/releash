@@ -4,6 +4,7 @@ use super::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ProviderLifecycleRepositoryError {
+    Store(crate::domain::failure::FailureKind),
     InvalidInput,
     StorageUnavailable,
     Corrupt,
@@ -24,6 +25,7 @@ pub(crate) trait ProviderLifecycleEventRepository: Send + Sync {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ProviderHookHealthRepositoryError {
+    Store(crate::domain::failure::FailureKind),
     InvalidInput,
     Conflict,
     StorageUnavailable,
@@ -71,3 +73,56 @@ pub(crate) trait ProviderHookHealthRepository: Send + Sync {
         caller_request_id: &str,
     ) -> Result<VersionedProviderHookHealth, ProviderHookHealthRepositoryError>;
 }
+
+impl crate::domain::failure::ClassifiedFailure for ProviderLifecycleRepositoryError {
+    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
+        use crate::domain::failure::FailureKind;
+        match self {
+            Self::Store(kind) => *kind,
+            Self::InvalidInput => FailureKind::InvalidInput,
+            Self::StorageUnavailable => FailureKind::Temporary,
+            Self::Corrupt => FailureKind::Corrupt,
+        }
+    }
+}
+
+impl From<crate::domain::local_event::LocalEventQueryError> for ProviderLifecycleRepositoryError {
+    fn from(error: crate::domain::local_event::LocalEventQueryError) -> Self {
+        use crate::domain::failure::ClassifiedFailure;
+        match error.failure_kind() {
+            crate::domain::failure::FailureKind::Temporary => Self::StorageUnavailable,
+            crate::domain::failure::FailureKind::InvalidInput => Self::InvalidInput,
+            crate::domain::failure::FailureKind::Corrupt => Self::Corrupt,
+            kind => Self::Store(kind),
+        }
+    }
+}
+
+impl crate::domain::failure::ClassifiedFailure for ProviderHookHealthRepositoryError {
+    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
+        use crate::domain::failure::FailureKind;
+        match self {
+            Self::Store(kind) => *kind,
+            Self::InvalidInput => FailureKind::InvalidInput,
+            Self::Conflict => FailureKind::RestartRequired,
+            Self::StorageUnavailable => FailureKind::Temporary,
+            Self::Corrupt => FailureKind::Corrupt,
+        }
+    }
+}
+
+impl From<crate::domain::local_event::LocalEventQueryError> for ProviderHookHealthRepositoryError {
+    fn from(error: crate::domain::local_event::LocalEventQueryError) -> Self {
+        use crate::domain::failure::ClassifiedFailure;
+        match error.failure_kind() {
+            crate::domain::failure::FailureKind::Temporary => Self::StorageUnavailable,
+            crate::domain::failure::FailureKind::InvalidInput => Self::InvalidInput,
+            crate::domain::failure::FailureKind::Corrupt => Self::Corrupt,
+            kind => Self::Store(kind),
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "repository_test.rs"]
+mod repository_tests;

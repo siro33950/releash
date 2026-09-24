@@ -113,11 +113,11 @@ fn test_ターミナル入力_write失敗をtransport共通の固定文言へ変
 
     // Then
     assert_eq!(
-        gateway_error,
+        gateway_error.to_string(),
         "Terminal input could not be sent. Try again."
     );
     assert_eq!(
-        invalid_owner_error,
+        invalid_owner_error.to_string(),
         "Terminal input could not be sent because the request is invalid."
     );
 }
@@ -133,9 +133,12 @@ fn test_ターミナル画面変形_resize失敗をtransport共通の固定文�
     );
 
     // Then
-    assert_eq!(gateway_error, "Terminal resize failed. Try again.");
     assert_eq!(
-        invalid_owner_error,
+        gateway_error.to_string(),
+        "Terminal resize failed. Try again."
+    );
+    assert_eq!(
+        invalid_owner_error.to_string(),
         "Terminal resize failed because the request is invalid."
     );
 }

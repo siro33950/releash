@@ -14,11 +14,11 @@ fn managed_store(
 pub(crate) fn append_required_events_for_app(
     app: &super::workflow_host::WorkflowRuntimeDependencies,
     events: &[WorkflowEvent],
-) -> Result<(), String> {
+) -> Result<(), crate::domain::workflow::WorkflowError> {
     if events.is_empty() {
         return Ok(());
     }
-    let store = managed_store(app)?;
+    let store = managed_store(app).map_err(crate::domain::workflow::WorkflowError::external)?;
     crate::adaptor::gateway::workflow::fact_log::append_facts_for_events(&store, events)
 }
 

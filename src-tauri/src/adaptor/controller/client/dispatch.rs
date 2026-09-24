@@ -9,7 +9,7 @@ pub(crate) type CommandHandler = Box<
             wire::command_request::Command,
         ) -> Pin<
             Box<
-                dyn Future<Output = Result<wire::command_result::Command, wire::CommandError>>
+                dyn Future<Output = Result<wire::command_result::Command, wire::CommandFailure>>
                     + Send,
             >,
         > + Send
@@ -89,11 +89,12 @@ impl ClientCommandDispatch {
     pub(crate) fn contains(&self, name: &str) -> bool {
         self.handlers.contains_key(name)
     }
-    pub(crate) fn admit(&self, command: &str) -> Result<(), wire::CommandError> {
+    pub(crate) fn admit(&self, command: &str) -> Result<(), wire::CommandFailure> {
         if !command_admitted(command, Some(&self.authority)) {
             return Err(crate::other::AppError::coded(
                 "APPLICATION_UNAVAILABLE",
                 "Application is unavailable",
+                crate::domain::failure::FailureKind::StateRequired,
             )
             .into());
         }
@@ -104,7 +105,9 @@ impl ClientCommandDispatch {
         &self,
         command: wire::command_request::Command,
     ) -> Pin<
-        Box<dyn Future<Output = Result<wire::command_result::Command, wire::CommandError>> + Send>,
+        Box<
+            dyn Future<Output = Result<wire::command_result::Command, wire::CommandFailure>> + Send,
+        >,
     > {
         if let Err(error) = self.admit(command.name()) {
             return Box::pin(std::future::ready(Err(error)));
@@ -115,7 +118,9 @@ impl ClientCommandDispatch {
         &self,
         command: wire::command_request::Command,
     ) -> Pin<
-        Box<dyn Future<Output = Result<wire::command_result::Command, wire::CommandError>> + Send>,
+        Box<
+            dyn Future<Output = Result<wire::command_result::Command, wire::CommandFailure>> + Send,
+        >,
     > {
         let guards = match super::worktree_mutation::admit(self.mutations.as_deref(), &command) {
             Ok(guards) => guards,
@@ -134,48 +139,65 @@ impl ClientCommandDispatch {
                     })
                     .await
                     .map_err(|error| {
-                        crate::other::AppError::coded("COMMAND_FAILED", error.to_string())
+                        crate::other::AppError::coded(
+                            "COMMAND_FAILED",
+                            error.to_string(),
+                            crate::domain::failure::FailureKind::Internal,
+                        )
                     })?
                 })
             }
             None => Box::pin(std::future::ready(Err(crate::other::AppError::coded(
                 "UNKNOWN_COMMAND",
                 "Command was not found",
+                crate::domain::failure::FailureKind::Missing,
             )
             .into()))),
         }
     }
 }
 
-pub(crate) fn invalid_request(message: impl Into<String>) -> wire::CommandError {
-    crate::other::AppError::coded("INVALID_REQUEST", message).into()
+pub(crate) fn invalid_request(message: impl Into<String>) -> wire::CommandFailure {
+    crate::other::AppError::coded(
+        "INVALID_REQUEST",
+        message,
+        crate::domain::failure::FailureKind::InvalidInput,
+    )
+    .into()
 }
-pub(crate) fn required<T>(value: Option<T>, field: &str) -> Result<T, wire::CommandError> {
+pub(crate) fn required<T>(value: Option<T>, field: &str) -> Result<T, wire::CommandFailure> {
     value.ok_or_else(|| invalid_request(format!("Missing {field}")))
 }
-pub(crate) fn convert<T, U: TryFrom<T>>(value: T) -> Result<U, wire::CommandError>
+pub(crate) fn convert<T, U: TryFrom<T>>(value: T) -> Result<U, wire::CommandFailure>
 where
     U::Error: std::fmt::Display,
 {
     U::try_from(value).map_err(|error| invalid_request(error.to_string()))
 }
-pub(crate) fn optional<T, U: TryFrom<T>>(value: Option<T>) -> Result<Option<U>, wire::CommandError>
+pub(crate) fn optional<T, U: TryFrom<T>>(
+    value: Option<T>,
+) -> Result<Option<U>, wire::CommandFailure>
 where
     U::Error: std::fmt::Display,
 {
     value.map(convert).transpose()
 }
-pub(crate) fn value<T, U: TryFrom<T>>(value: T) -> Result<U, wire::CommandError>
+pub(crate) fn value<T, U: TryFrom<T>>(value: T) -> Result<U, wire::CommandFailure>
 where
     U::Error: std::fmt::Display,
 {
     U::try_from(value).map_err(|error| {
-        crate::other::AppError::coded("INVALID_RESPONSE", error.to_string()).into()
+        crate::other::AppError::coded(
+            "INVALID_RESPONSE",
+            error.to_string(),
+            crate::domain::failure::FailureKind::Internal,
+        )
+        .into()
     })
 }
-pub(crate) fn outcome<T, U: TryFrom<T>, E: Into<wire::CommandError>>(
+pub(crate) fn outcome<T, U: TryFrom<T>, E: Into<wire::CommandFailure>>(
     result: Result<T, E>,
-) -> Result<U, wire::CommandError>
+) -> Result<U, wire::CommandFailure>
 where
     U::Error: std::fmt::Display,
 {
@@ -196,7 +218,7 @@ pub(crate) fn command_admitted(
     })
 }
 
-pub(crate) fn finite(value: f64) -> Result<f64, wire::CommandError> {
+pub(crate) fn finite(value: f64) -> Result<f64, wire::CommandFailure> {
     if value.is_finite() {
         Ok(value)
     } else {

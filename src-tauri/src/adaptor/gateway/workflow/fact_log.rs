@@ -7,6 +7,7 @@
 //! domain の fold（`fact_replay`）に委ねる。
 
 use crate::adaptor::gateway::workflow::fact_codec;
+use crate::domain::failure::ClassifiedFailure;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -23,6 +24,48 @@ use crate::domain::workflow::{
     TreeRootFact, WorkflowEvent,
 };
 use crate::domain::workspace_tree::WorkspaceIdentity;
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum FactReadError {
+    #[error(transparent)]
+    Query(#[from] LocalEventQueryError),
+    #[error("{0}")]
+    Corrupt(String),
+}
+impl From<String> for FactReadError {
+    fn from(message: String) -> Self {
+        Self::Corrupt(message)
+    }
+}
+impl From<FactReadError> for LocalEventQueryError {
+    fn from(error: FactReadError) -> Self {
+        match error {
+            FactReadError::Query(error) => error,
+            FactReadError::Corrupt(reason) => {
+                let correlation_id = uuid::Uuid::new_v4().to_string();
+                log::error!("Workflow fact read failed [{correlation_id}]: {reason}");
+                Self::Corrupt { correlation_id }
+            }
+        }
+    }
+}
+impl From<FactReadError> for crate::domain::workflow::WorkflowError {
+    fn from(error: FactReadError) -> Self {
+        use crate::domain::failure::ClassifiedFailure;
+        match error {
+            FactReadError::Query(error) => Self::Store(error.failure_kind()),
+            FactReadError::Corrupt(message) => Self::CorruptStoredState(message),
+        }
+    }
+}
+impl crate::domain::failure::ClassifiedFailure for FactReadError {
+    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
+        match self {
+            Self::Query(error) => error.failure_kind(),
+            Self::Corrupt(_) => crate::domain::failure::FailureKind::Corrupt,
+        }
+    }
+}
 
 const MAX_RECONCILIATION_ADVANCE_ROUNDS: usize = 4_096;
 
@@ -67,9 +110,9 @@ pub(crate) fn resolve_unknown_append(
     use crate::adaptor::gateway::local_event_store::writer::NodeEventWriteError;
     use rusqlite::OptionalExtension;
     store.submit_indexed_query_blocking(move |connection| {
-        let transaction = connection
-            .unchecked_transaction()
-            .map_err(|_| LocalEventQueryError::InvalidRequest)?;
+        let transaction = connection.unchecked_transaction().map_err(|error| {
+            super::super::local_event_store::reader::storage_unavailable(&error)
+        })?;
         let mut sequences = Vec::with_capacity(rows.len());
         for (index, pending) in rows.iter().enumerate() {
             let sequence = transaction
@@ -97,7 +140,9 @@ pub(crate) fn resolve_unknown_append(
                     |row| row.get::<_, i64>(0),
                 )
                 .optional()
-                .map_err(|_| LocalEventQueryError::InvalidRequest)?;
+                .map_err(|error| {
+                    super::super::local_event_store::reader::storage_unavailable(&error)
+                })?;
             let Some(sequence) = sequence else {
                 let advanced = transaction
                     .query_row(
@@ -105,7 +150,9 @@ pub(crate) fn resolve_unknown_append(
                         rusqlite::params![pending.row.tree_id, expected_head.unwrap_or(0)],
                         |row| row.get::<_, bool>(0),
                     )
-                    .map_err(|_| LocalEventQueryError::InvalidRequest)?;
+                    .map_err(|error| {
+                        super::super::local_event_store::reader::storage_unavailable(&error)
+                    })?;
                 return Ok(Err(if advanced {
                     NodeEventWriteError::Conflict
                 } else {
@@ -474,11 +521,15 @@ pub(crate) fn node_meta_from_row(row: &NodeEventRow) -> Result<NodeFactMeta, Str
 pub(crate) fn append_facts_for_events(
     store: &Arc<LocalEventStore>,
     events: &[WorkflowEvent],
-) -> Result<(), String> {
+) -> Result<(), crate::domain::workflow::WorkflowError> {
     if events.is_empty() {
         return Ok(());
     }
-    append_pending_rows_blocking(store, pending_rows_for_events(store, events)?)
+    append_pending_rows_blocking(
+        store,
+        pending_rows_for_events(store, events)
+            .map_err(crate::domain::workflow::WorkflowError::external)?,
+    )
 }
 
 pub(crate) fn pending_rows_for_events(
@@ -518,7 +569,7 @@ pub(crate) fn pending_rows_for_events(
 pub(crate) fn append_pending_rows_blocking(
     store: &Arc<LocalEventStore>,
     rows: Vec<PendingFactRow>,
-) -> Result<(), String> {
+) -> Result<(), crate::domain::workflow::WorkflowError> {
     if rows.is_empty() {
         return Ok(());
     }
@@ -533,12 +584,12 @@ pub(crate) fn append_pending_rows_blocking(
                     .collect(),
             )
             .map(|_| ())
-            .map_err(|error| format!("node fact append failed: {error}"));
+            .map_err(crate::domain::workflow::WorkflowError::from);
     }
     for pending in rows {
         store
             .append_node_event_blocking(pending.row, Some(pending.timestamp_ms))
-            .map_err(|error| format!("node fact append failed: {error}"))?;
+            .map_err(crate::domain::workflow::WorkflowError::from)?;
     }
     Ok(())
 }
@@ -745,32 +796,35 @@ pub(crate) fn records_from_tree_rows(rows: &[NodeEventRow]) -> Result<Vec<NodeFa
 pub(crate) fn read_latest_activity_record_for_node(
     backend: &FactLogReadBackend,
     node_execution_id: &str,
-) -> Result<Option<NodeFactRecord>, String> {
+) -> Result<Option<NodeFactRecord>, FactReadError> {
     let requested = node_execution_id.to_string();
     let event_types = fact_codec::activity_replay_event_types();
     backend
         .run_indexed(move |connection| {
             node_events::latest_row_for_node_with_event_types(connection, &requested, event_types)
-                .map_err(|_| LocalEventQueryError::InvalidRequest)
+                .map_err(|error| {
+                    super::super::local_event_store::reader::storage_unavailable(&error)
+                })
         })
-        .map_err(|error| format!("node activity fact lookup failed: {error:?}"))?
+        .map_err(FactReadError::Query)?
         .as_ref()
         .map(record_from_row)
         .transpose()
         .map(Option::flatten)
+        .map_err(FactReadError::Corrupt)
 }
 
 pub(crate) fn read_tree_archive_records(
     backend: &FactLogReadBackend,
     tree_id: &str,
-) -> Result<Vec<NodeFactRecord>, String> {
+) -> Result<Vec<NodeFactRecord>, FactReadError> {
     read_tree_archive_records_for(backend, &[tree_id.to_string()])
 }
 
 pub(crate) fn read_tree_archive_records_for(
     backend: &FactLogReadBackend,
     tree_ids: &[String],
-) -> Result<Vec<NodeFactRecord>, String> {
+) -> Result<Vec<NodeFactRecord>, FactReadError> {
     let tree_ids = tree_ids.to_vec();
     let rows = backend
         .run_indexed(move |connection| {
@@ -779,18 +833,19 @@ pub(crate) fn read_tree_archive_records_for(
                 &tree_ids,
                 &["archive_requested", "restore_requested"],
             )
-            .map_err(|_| LocalEventQueryError::InvalidRequest)
+            .map_err(|error| super::super::local_event_store::reader::storage_unavailable(&error))
         })
-        .map_err(|error| format!("tree archive query failed: {error:?}"))?;
+        .map_err(FactReadError::Query)?;
     rows.iter()
         .filter_map(|row| record_from_row(row).transpose())
-        .collect()
+        .collect::<Result<_, _>>()
+        .map_err(FactReadError::Corrupt)
 }
 
 pub(crate) fn read_records_for_event_types(
     backend: &FactLogReadBackend,
     event_types: &[&str],
-) -> Result<Vec<NodeFactRecord>, String> {
+) -> Result<Vec<NodeFactRecord>, FactReadError> {
     let event_types = event_types
         .iter()
         .map(|event_type| (*event_type).to_string())
@@ -798,20 +853,22 @@ pub(crate) fn read_records_for_event_types(
     let rows = backend
         .run_indexed(move |connection| {
             let event_types = event_types.iter().map(String::as_str).collect::<Vec<_>>();
-            node_events::rows_for_event_types(connection, &event_types)
-                .map_err(|_| LocalEventQueryError::InvalidRequest)
+            node_events::rows_for_event_types(connection, &event_types).map_err(|error| {
+                super::super::local_event_store::reader::storage_unavailable(&error)
+            })
         })
-        .map_err(|error| format!("node lifecycle fact lookup failed: {error:?}"))?;
+        .map_err(FactReadError::Query)?;
     rows.iter()
         .filter_map(|row| record_from_row(row).transpose())
-        .collect()
+        .collect::<Result<_, _>>()
+        .map_err(FactReadError::Corrupt)
 }
 
 pub(crate) fn read_latest_record_for_node_with_event_types(
     backend: &FactLogReadBackend,
     node_execution_id: &str,
     event_types: &[&str],
-) -> Result<Option<NodeFactRecord>, String> {
+) -> Result<Option<NodeFactRecord>, FactReadError> {
     let node_execution_id = node_execution_id.to_string();
     let event_types = event_types
         .iter()
@@ -825,13 +882,14 @@ pub(crate) fn read_latest_record_for_node_with_event_types(
                 &node_execution_id,
                 &event_types,
             )
-            .map_err(|_| LocalEventQueryError::InvalidRequest)
+            .map_err(|error| super::super::local_event_store::reader::storage_unavailable(&error))
         })
-        .map_err(|error| format!("latest node fact lookup failed: {error:?}"))?
+        .map_err(FactReadError::Query)?
         .as_ref()
         .map(record_from_row)
         .transpose()
         .map(Option::flatten)
+        .map_err(FactReadError::Corrupt)
 }
 
 /// 1 tree 分の事実行列を読み出して domain の record へ復元する（writer store）。
@@ -925,8 +983,12 @@ pub(crate) fn append_single_fact(
     meta: &NodeFactMeta,
     fact: &NodeFact,
     timestamp_ms: i64,
-) -> Result<(), String> {
-    append_pending_rows_blocking(store, vec![pending_single_fact(meta, fact, timestamp_ms)?])
+) -> Result<(), crate::domain::workflow::WorkflowError> {
+    append_pending_rows_blocking(
+        store,
+        vec![pending_single_fact(meta, fact, timestamp_ms)
+            .map_err(crate::domain::workflow::WorkflowError::external)?],
+    )
 }
 
 pub(crate) fn pending_single_fact(
@@ -1098,11 +1160,8 @@ pub(crate) fn reconcile_tree_pass(
                 Some((tree_id.into(), head)),
             ) {
                 Err(NodeEventWriteError::OutcomeUnknown) => {
-                    resolve_unknown_append(store, rows, Some(head)).map_err(|error| {
-                        WorkflowError::external(format!(
-                            "startup advancement readback failed: {error:?}"
-                        ))
-                    })?
+                    resolve_unknown_append(store, rows, Some(head))
+                        .map_err(|error| WorkflowError::Store(error.failure_kind()))?
                 }
                 result => result,
             }
@@ -1110,9 +1169,10 @@ pub(crate) fn reconcile_tree_pass(
                 NodeEventWriteError::Conflict => WorkflowError::Conflict(format!(
                     "workflow tree {tree_id} changed before startup advancement commit"
                 )),
-                error => {
-                    WorkflowError::external(format!("startup advancement commit failed: {error}"))
-                }
+                error => WorkflowError::StorageUnavailable {
+                    message: format!("startup advancement commit failed: {error}"),
+                    kind: error.failure_kind(),
+                },
             })?;
             head = sequences.last().copied().unwrap_or(head);
             if let ExecutionAdvanceDecision::StartNodes(applied_leaves) = applied.decision {
@@ -1199,7 +1259,7 @@ pub(crate) fn metadata_record_from_read_model(
 pub(crate) fn find_session_attachment(
     backend: &FactLogReadBackend,
     session_id: &str,
-) -> Result<Option<(String, String)>, String> {
+) -> Result<Option<(String, String)>, FactReadError> {
     find_session_attachment_record(backend, session_id)
         .map(|record| record.map(|record| (record.meta.tree_id, record.meta.node_execution_id)))
 }
@@ -1207,25 +1267,30 @@ pub(crate) fn find_session_attachment(
 pub(crate) fn find_session_attachment_record(
     backend: &FactLogReadBackend,
     session_id: &str,
-) -> Result<Option<NodeFactRecord>, String> {
+) -> Result<Option<NodeFactRecord>, FactReadError> {
     let session = session_id.to_string();
     let query_session = session.clone();
     let row = backend
         .run_indexed(move |connection| {
-            node_events::latest_session_attachment(connection, &query_session)
-                .map_err(|_| LocalEventQueryError::InvalidRequest)
+            node_events::latest_session_attachment(connection, &query_session).map_err(|error| {
+                super::super::local_event_store::reader::storage_unavailable(&error)
+            })
         })
-        .map_err(|error| format!("session attachment lookup failed: {error:?}"))?;
+        .map_err(FactReadError::Query)?;
     let Some(row) = row else {
         return Ok(None);
     };
     let record = record_from_row(&row)?
         .ok_or_else(|| "session attachment index points to a retired fact".to_string())?;
     let NodeFact::SessionAttached(fact) = &record.fact else {
-        return Err("session attachment index points to a non-attachment fact".to_string());
+        return Err(FactReadError::Corrupt(
+            "session attachment index points to a non-attachment fact".to_string(),
+        ));
     };
     if fact.session_id != session {
-        return Err("session attachment index identity mismatch".to_string());
+        return Err(FactReadError::Corrupt(
+            "session attachment index identity mismatch".to_string(),
+        ));
     }
     Ok(Some(record))
 }

@@ -540,17 +540,18 @@ fn execution_summary(
 }
 
 fn query_error(error: crate::domain::local_event::LocalEventQueryError) -> WorkflowError {
+    use crate::domain::failure::ClassifiedFailure;
     use crate::domain::local_event::LocalEventQueryError;
 
     match error {
         LocalEventQueryError::StorageUnavailable { failure } => WorkflowError::StorageUnavailable {
             message: failure.to_string(),
-            retryable: failure.retryable,
+            kind: failure.failure_kind(),
         },
         error @ (LocalEventQueryError::QueryBusy | LocalEventQueryError::DeadlineExceeded) => {
             WorkflowError::StorageUnavailable {
                 message: error.to_string(),
-                retryable: true,
+                kind: error.failure_kind(),
             }
         }
         error @ LocalEventQueryError::Corrupt { .. } => {

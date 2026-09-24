@@ -1,3 +1,4 @@
+use crate::other::AppError;
 #[path = "application_lifecycle_shared.rs"]
 mod shared;
 use crate::adaptor::protocol::application_lifecycle_v1::{
@@ -29,13 +30,13 @@ pub(crate) fn quit_after_startup_failure_shared(
 pub(crate) fn request_application_quit_shared(
     process_port: &dyn crate::domain::application_lifecycle::ApplicationQuitIntentPort,
     request: ApplicationQuitRequestDtoV1,
-) -> Result<ApplicationQuitOutcomeDtoV1, String> {
+) -> Result<ApplicationQuitOutcomeDtoV1, AppError> {
     let intent = match request.intent {
         ApplicationQuitIntentDtoV1::Exit { code } => ApplicationQuitIntent::Exit { code },
         ApplicationQuitIntentDtoV1::Restart { code } => ApplicationQuitIntent::Restart { code },
     };
     crate::usecase::application_lifecycle::request_quit(process_port, intent)
-        .map_err(|error| error.to_string())?;
+        .map_err(AppError::from_failure)?;
     Ok(ApplicationQuitOutcomeDtoV1::Accepted)
 }
 

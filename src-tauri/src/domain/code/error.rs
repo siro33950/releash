@@ -36,3 +36,20 @@ impl std::fmt::Display for CodeError {
 }
 
 impl std::error::Error for CodeError {}
+
+impl crate::domain::failure::ClassifiedFailure for CodeError {
+    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
+        use crate::domain::failure::FailureKind as F;
+        match self {
+            Self::External(_) => F::Internal,
+            Self::Rule(_) => F::StateRequired,
+            Self::StaleReviewBlobVersion { .. } | Self::StaleReviewGroupTarget { .. } => {
+                F::RestartRequired
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "error_test.rs"]
+mod error_tests;

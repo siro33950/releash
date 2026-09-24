@@ -609,22 +609,30 @@ async fn test_worktree削除中_sessionのopen_resume_restore_deleteを副作用
     // When / Then
     assert_eq!(
         context.lifecycle.open(id, 24, 80, "open").await,
-        Err(AgentSessionLifecycleUsecaseError::Conflict)
+        Err(AgentSessionLifecycleUsecaseError::Conflict(
+            crate::domain::failure::FailureKind::RestartRequired
+        ))
     );
     assert_eq!(
         context
             .lifecycle
             .ensure_provider_running(id, 24, 80, "resume")
             .await,
-        Err(AgentSessionLifecycleUsecaseError::Conflict)
+        Err(AgentSessionLifecycleUsecaseError::Conflict(
+            crate::domain::failure::FailureKind::RestartRequired
+        ))
     );
     assert_eq!(
         context.lifecycle.restore(id, 24, 80, "restore").await,
-        Err(AgentSessionLifecycleUsecaseError::Conflict)
+        Err(AgentSessionLifecycleUsecaseError::Conflict(
+            crate::domain::failure::FailureKind::RestartRequired
+        ))
     );
     assert_eq!(
         context.lifecycle.delete(id, "delete").await,
-        Err(AgentSessionLifecycleUsecaseError::Conflict)
+        Err(AgentSessionLifecycleUsecaseError::Conflict(
+            crate::domain::failure::FailureKind::RestartRequired
+        ))
     );
     assert_eq!(context.sessions.find(id).await.unwrap().unwrap(), before);
     assert_eq!(*context.terminal.spawn_count.lock().unwrap(), 0);
@@ -3131,30 +3139,48 @@ async fn test_agent_session_archive中のexitとgcはarchive確定後に評価�
 
 #[tokio::test]
 async fn test_sessionのarchiveとrestore_共通実行木操作のエラー分類を保持する() {
+    use crate::domain::failure::FailureKind as F;
     use crate::domain::workflow::WorkflowError as W;
     use AgentSessionLifecycleUsecaseError as E;
     for (error, expected) in [
-        (W::Conflict("deleting".into()), E::Conflict),
+        (
+            W::Conflict("deleting".into()),
+            E::Conflict(F::RestartRequired),
+        ),
         (W::InvalidState("invalid".into()), E::InvalidOperation),
-        (W::Validation("invalid".into()), E::InvalidOperation),
+        (
+            W::Validation("invalid".into()),
+            E::Workflow(W::Validation("invalid".into())),
+        ),
         (
             W::UnauthorizedApprovalTarget("invalid".into()),
-            E::InvalidOperation,
+            E::Workflow(W::UnauthorizedApprovalTarget("invalid".into())),
         ),
         (W::NotFound("missing".into()), E::NotFound),
         (W::CorruptStoredState("corrupt".into()), E::Corrupt),
         (
             W::IncompatibleStoredEvent("incompatible".into()),
-            E::Corrupt,
+            E::Workflow(W::IncompatibleStoredEvent("incompatible".into())),
         ),
         (
             W::StorageUnavailable {
                 message: "unavailable".into(),
-                retryable: true,
+                kind: crate::domain::failure::FailureKind::Temporary,
             },
-            E::StorageUnavailable,
+            E::Store(F::Temporary),
         ),
-        (W::External("unavailable".into()), E::StorageUnavailable),
+        (
+            W::External("internal".into()),
+            E::Workflow(W::External("internal".into())),
+        ),
+        (
+            W::StorageUnavailable {
+                message: "repair".into(),
+                kind: crate::domain::failure::FailureKind::StateRequired,
+            },
+            E::Store(F::StateRequired),
+        ),
+        (W::Store(F::Expired), E::Store(F::Expired)),
     ] {
         // Given
         let context = setup();
@@ -3175,7 +3201,7 @@ async fn test_sessionのarchiveとrestore_共通実行木操作のエラー分�
         // When / Then
         assert_eq!(
             context.lifecycle.archive(id, "archive").await,
-            Err(expected)
+            Err(expected.clone())
         );
         assert_eq!(
             context
@@ -3202,14 +3228,14 @@ async fn test_sessionのarchiveとrestore_共通実行木操作のエラー分�
                 .lifecycle
                 .restore(id, 24, 80, "restore-admission")
                 .await,
-            Err(expected)
+            Err(expected.clone())
         );
         assert!(context.change_notifier.notified.lock().unwrap().is_empty());
         *context.execution_trees.mutation_error.lock().unwrap() = None;
         *context.execution_trees.restore_error.lock().unwrap() = Some(error);
         assert_eq!(
             context.lifecycle.restore(id, 24, 80, "restore").await,
-            Err(expected)
+            Err(expected.clone())
         );
         assert_eq!(
             context

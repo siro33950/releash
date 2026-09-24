@@ -53,6 +53,18 @@ impl std::fmt::Display for SubscriptionError {
 }
 impl std::error::Error for SubscriptionError {}
 
+impl crate::domain::failure::ClassifiedFailure for SubscriptionError {
+    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
+        use crate::domain::failure::FailureKind as F;
+        match self {
+            Self::InvalidId => F::InvalidInput,
+            Self::AlreadyExists => F::AlreadyPresent,
+            Self::StreamEnded | Self::UnknownTarget => F::Missing,
+            Self::VersionExhausted => F::Internal,
+        }
+    }
+}
+
 struct Target<T> {
     version: Version,
     snapshot: Arc<T>,

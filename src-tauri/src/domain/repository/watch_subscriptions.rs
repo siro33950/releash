@@ -111,3 +111,14 @@ impl WatchSubscriptions {
 #[cfg(test)]
 #[path = "watch_subscriptions_test.rs"]
 mod watch_subscriptions_tests;
+
+impl crate::domain::failure::ClassifiedFailure for WatchSubscriptionError {
+    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
+        use crate::domain::failure::FailureKind;
+        match self {
+            Self::NotFound => FailureKind::Missing,
+            Self::AlreadyExists => FailureKind::AlreadyPresent,
+            Self::Limit => FailureKind::Capacity,
+        }
+    }
+}

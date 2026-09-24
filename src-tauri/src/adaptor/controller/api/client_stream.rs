@@ -3,7 +3,7 @@ use futures_util::StreamExt;
 use std::sync::Arc;
 
 use super::protocol::client as wire;
-use super::protocol::connect::{command_error, command_error_with_code, rpc, to_rpc};
+use super::protocol::connect::{command_error, rpc, to_rpc};
 use crate::adaptor::controller::client::{convert, required};
 use crate::adaptor::controller::terminal_surface::{
     invalid_owner_error, TerminalCommandError, TerminalCommandOperation,
@@ -80,8 +80,9 @@ impl TerminalApiDeps {
                 .map_err(command_error)?;
         let recovery = required(args.recovery, "recovery").map_err(command_error)?;
         if id.is_empty() || id.len() > 128 {
-            return Err(command_error(wire::CommandError::from(
+            return Err(command_error(wire::CommandFailure::from(
                 TerminalCommandError {
+                    kind: crate::domain::failure::FailureKind::InvalidInput,
                     code: "INVALID_REQUEST".into(),
                     message: "Invalid attachment ID".into(),
                 },
@@ -103,25 +104,27 @@ impl TerminalApiDeps {
 }
 pub(super) fn validate_identifier(id: &str) -> Result<(), ConnectError> {
     if id.len() > 128 {
-        return Err(ConnectError::invalid_argument(
-            "Identifier exceeds 128 bytes",
+        return Err(crate::adaptor::protocol::connect::classified_error(
+            crate::other::AppError::new("Identifier exceeds 128 bytes")
+                .with_failure_kind(crate::domain::failure::FailureKind::InvalidInput),
         ));
     }
     Ok(())
 }
 
 fn subscription_error(error: TerminalSubscriptionError) -> ConnectError {
-    match error {
-        TerminalSubscriptionError::InvalidId => ConnectError::invalid_argument(error.to_string()),
-        TerminalSubscriptionError::AlreadyExists => ConnectError::already_exists(error.to_string()),
-        TerminalSubscriptionError::Ended => ConnectError::not_found(error.to_string()),
-        TerminalSubscriptionError::Limit | TerminalSubscriptionError::PendingLimit => {
-            ConnectError::resource_exhausted(error.to_string())
-        }
-        TerminalSubscriptionError::AttachmentLimit => command_error_with_code(
-            crate::other::AppError::coded("TERMINAL_ATTACHMENT_LIMIT", error.to_string()).into(),
-            connectrpc::ErrorCode::ResourceExhausted,
-        ),
+    use crate::domain::failure::ClassifiedFailure;
+    if error == TerminalSubscriptionError::AttachmentLimit {
+        command_error(
+            crate::other::AppError::coded(
+                "TERMINAL_ATTACHMENT_LIMIT",
+                error.to_string(),
+                error.failure_kind(),
+            )
+            .into(),
+        )
+    } else {
+        crate::adaptor::protocol::connect::classified_error(error)
     }
 }
 

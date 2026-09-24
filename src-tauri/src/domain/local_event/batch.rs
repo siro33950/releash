@@ -135,3 +135,22 @@ pub enum CommitResolution {
     Committed(CommittedBatch),
     NotCommitted,
 }
+
+impl crate::domain::failure::ClassifiedFailure for CommitBatchError {
+    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
+        use crate::domain::failure::FailureKind;
+        match self {
+            Self::PayloadConflict => FailureKind::StateRequired,
+            Self::StreamHeadConflict { .. } | Self::OutcomeUnknown { .. } => {
+                FailureKind::RestartRequired
+            }
+            Self::CapacityExceeded | Self::SequenceExhausted => FailureKind::Capacity,
+            Self::StorageUnavailable { failure } => failure.failure_kind(),
+            Self::Corrupt { .. } => FailureKind::Corrupt,
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "batch_test.rs"]
+mod batch_tests;

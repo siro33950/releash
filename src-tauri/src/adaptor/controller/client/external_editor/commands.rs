@@ -16,7 +16,7 @@ pub(crate) fn detect_editors_shared() -> Vec<EditorInfoDto> {
 
 pub(crate) fn get_external_editor_shared(
     state: &Arc<dyn ConfigRepository>,
-) -> Result<String, String> {
+) -> Result<String, crate::domain::external_editor::EditorError> {
     crate::usecase::external_editor::open_usecase::get_external_editor(
         &EditorSettingsConfigGateway::new(state.clone()),
     )
@@ -25,11 +25,12 @@ pub(crate) fn get_external_editor_shared(
 pub(crate) async fn update_external_editor_shared(
     state: &Arc<dyn ConfigRepository>,
     editor: String,
-) -> Result<(), String> {
+) -> Result<(), crate::other::AppError> {
     let settings = EditorSettingsConfigGateway::new(state.clone());
     tokio::task::spawn_blocking(move || {
         crate::usecase::external_editor::open_usecase::update_external_editor(&settings, editor)
     })
     .await
-    .map_err(|e| format!("task join error: {e}"))?
+    .map_err(|e| crate::other::AppError::new(format!("task join error: {e}")))?
+    .map_err(crate::other::AppError::from_failure)
 }

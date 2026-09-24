@@ -1,3 +1,4 @@
+use crate::domain::failure::{ClassifiedFailure, FailureKind};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -84,7 +85,6 @@ impl LocalProviderLifecycleEventRepository {
                 Ok(CommitBatchResult::Committed(_) | CommitBatchResult::Replayed(_)) => {
                     return Ok(())
                 }
-                Err(CommitBatchError::StreamHeadConflict { .. }) => continue,
                 Err(CommitBatchError::OutcomeUnknown { identity }) => {
                     if identity != prepared.commit_id {
                         return Err(ProviderLifecycleRepositoryError::Corrupt);
@@ -99,18 +99,16 @@ impl LocalProviderLifecycleEventRepository {
                         }
                     }
                 }
-                Err(CommitBatchError::StorageUnavailable { .. }) => {
-                    return Err(ProviderLifecycleRepositoryError::StorageUnavailable)
+                Err(error) => {
+                    return Err(ProviderLifecycleRepositoryError::Store(
+                        error.failure_kind(),
+                    ))
                 }
-                Err(
-                    CommitBatchError::PayloadConflict
-                    | CommitBatchError::CapacityExceeded
-                    | CommitBatchError::SequenceExhausted
-                    | CommitBatchError::Corrupt { .. },
-                ) => return Err(ProviderLifecycleRepositoryError::Corrupt),
             }
         }
-        Err(ProviderLifecycleRepositoryError::StorageUnavailable)
+        Err(ProviderLifecycleRepositoryError::Store(
+            FailureKind::RestartRequired,
+        ))
     }
 
     fn prepare_commit(
@@ -160,7 +158,7 @@ impl LocalProviderLifecycleEventRepository {
                     limit: 1,
                 })
                 .await
-                .map_err(|_| ProviderLifecycleRepositoryError::StorageUnavailable)?
+                .map_err(ProviderLifecycleRepositoryError::from)?
                 .head;
             expected_heads.push(ExpectedStreamHead {
                 stream_id: stream_id.clone(),
@@ -178,11 +176,11 @@ impl LocalProviderLifecycleEventRepository {
         for attempt in 0..4 {
             match self.repository.resolve_commit(identity.clone()).await {
                 Ok(resolution) => return Ok(resolution),
-                Err(_) if attempt < 3 => {
+                Err(error) if error.failure_kind() == FailureKind::Temporary && attempt < 3 => {
                     tokio::time::sleep(retry_delay).await;
                     retry_delay = retry_delay.saturating_mul(2);
                 }
-                Err(_) => return Err(ProviderLifecycleRepositoryError::StorageUnavailable),
+                Err(error) => return Err(error.into()),
             }
         }
         unreachable!("bounded resolution loop always returns")
@@ -257,7 +255,7 @@ impl ProviderLifecycleEventRepository for LocalProviderLifecycleEventRepository 
                     limit: 256,
                 })
                 .await
-                .map_err(|_| ProviderLifecycleRepositoryError::StorageUnavailable)?;
+                .map_err(ProviderLifecycleRepositoryError::from)?;
             for committed in page.events {
                 let crate::domain::local_event::LoadedDomainEvent::Known(event) = committed.event
                 else {
@@ -282,3 +280,7 @@ fn now_ms() -> i64 {
         .map(|elapsed| elapsed.as_millis() as i64)
         .unwrap_or(0)
 }
+
+#[cfg(test)]
+#[path = "event_repository_impl_test.rs"]
+mod event_repository_impl_tests;

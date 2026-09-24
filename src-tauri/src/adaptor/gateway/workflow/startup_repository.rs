@@ -1,6 +1,7 @@
 use super::{fact_codec, fact_log, stored_definition};
 use crate::adaptor::gateway::local_event_store::writer::NodeEventWriteError;
 use crate::adaptor::gateway::local_event_store::{node_events, LocalEventStore};
+use crate::domain::failure::ClassifiedFailure;
 use crate::domain::local_event::LocalEventQueryError;
 use crate::domain::workflow::entities::workflow_execution::ExecutionTree;
 use crate::domain::workflow::repository::{
@@ -136,8 +137,9 @@ impl WorkflowStartupRepository for StoredWorkflowStartupRepository {
         match result {
             Err(NodeEventWriteError::OutcomeUnknown) => {
                 match fact_log::resolve_unknown_append(&self.0, vec![pending], expected_head)
-                    .map_err(|error| {
-                        WorkflowError::external(format!("startup abort readback failed: {error:?}"))
+                    .map_err(|error| WorkflowError::StorageUnavailable {
+                        kind: error.failure_kind(),
+                        message: format!("startup abort readback failed: {error:?}"),
                     })? {
                     Ok(_) => Ok(()),
                     Err(NodeEventWriteError::Conflict | NodeEventWriteError::OutcomeUnknown) => {
@@ -146,9 +148,7 @@ impl WorkflowStartupRepository for StoredWorkflowStartupRepository {
                             root.tree_id
                         )))
                     }
-                    Err(error) => Err(WorkflowError::external(format!(
-                        "startup abort append failed: {error}"
-                    ))),
+                    Err(error) => Err(WorkflowError::from(error)),
                 }
             }
             result => result.map(|_| ()).map_err(|error| match error {
@@ -156,7 +156,7 @@ impl WorkflowStartupRepository for StoredWorkflowStartupRepository {
                     "tree {} advanced before startup abort",
                     root.tree_id
                 )),
-                error => WorkflowError::external(format!("startup abort append failed: {error:?}")),
+                error => WorkflowError::from(error),
             }),
         }
     }

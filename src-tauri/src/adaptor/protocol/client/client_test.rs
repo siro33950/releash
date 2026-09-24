@@ -26,8 +26,12 @@ fn test_型付き応答_protoが成功と失敗を排他的に保持する() {
             Err(error) => {
                 let message: CommandError =
                     to_message("releash.client.v1.CommandError", error).unwrap();
-                let error =
-                    crate::adaptor::controller::api::protocol::connect::command_error(message);
+                let error = crate::adaptor::controller::api::protocol::connect::command_error(
+                    super::CommandFailure {
+                        kind: crate::domain::failure::FailureKind::Internal,
+                        detail: message,
+                    },
+                );
                 use base64::Engine;
                 let bytes = base64::engine::general_purpose::STANDARD_NO_PAD
                     .decode(error.details[0].value.as_ref().unwrap())

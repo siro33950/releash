@@ -60,6 +60,7 @@ fn ensure_execution_exists(read: &WorkflowReadUsecase, execution_id: &str) -> Re
 
 fn workflow_error_to_cli_error(error: WorkflowError) -> CliError {
     match error {
+        WorkflowError::Editor(_) | WorkflowError::Store(_) => CliError::Other(error.to_string()),
         WorkflowError::NotFound(message) => CliError::NotFound(message),
         WorkflowError::Validation(message)
         | WorkflowError::InvalidState(message)

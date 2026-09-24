@@ -1,3 +1,4 @@
+use crate::other::AppError;
 use std::sync::Arc;
 
 use crate::adaptor::controller::state::AppState;
@@ -18,32 +19,32 @@ async fn authorize_output_execution_access(
     query: &Arc<crate::usecase::workflow::WorkflowUsecase>,
     worktree_path: String,
     execution_id: &str,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     let query = query.clone();
     let execution_id = execution_id.to_string();
     tokio::task::spawn_blocking(move || {
         query
             .authorize_execution_access_for_worktree(&execution_id, &worktree_path)
-            .map_err(|e| e.to_string())
+            .map_err(AppError::from_failure)
     })
     .await
-    .map_err(|e| format!("task join error: {e}"))?
+    .map_err(|e| AppError::new(format!("task join error: {e}")))?
 }
 
 async fn authorize_output_node_execution_access(
     query: &Arc<crate::usecase::workflow::WorkflowUsecase>,
     worktree_path: String,
     node_execution_id: &str,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     let query = query.clone();
     let node_execution_id = node_execution_id.to_string();
     tokio::task::spawn_blocking(move || {
         query
             .authorize_node_execution_access_for_worktree(&node_execution_id, &worktree_path)
-            .map_err(|e| e.to_string())
+            .map_err(AppError::from_failure)
     })
     .await
-    .map_err(|e| format!("task join error: {e}"))?
+    .map_err(|e| AppError::new(format!("task join error: {e}")))?
 }
 
 /// Tauri command 経路: NodeExecutionにSubmit signalとoptional Artifactを提出する。
@@ -58,7 +59,7 @@ pub(crate) async fn workflow_submit_output_shared(
     worktree_path: String,
     node_execution_id: String,
     artifact: Option<WorkflowSubmitArtifactInput>,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     authorize_output_node_execution_access(
         &state.workflow_usecase,
         worktree_path,
@@ -74,7 +75,7 @@ pub(crate) async fn workflow_submit_output_shared(
             }),
         })
         .await
-        .map_err(|e| e.to_string())
+        .map_err(AppError::from_failure)
 }
 
 /// [08] structured output の contract 適合性のみを副作用なしで判定する Tauri command。
@@ -90,7 +91,7 @@ pub(crate) async fn workflow_validate_output_shared(
     execution_id: String,
     node_name: String,
     structured_output: serde_json::Value,
-) -> Result<WorkflowValidateOutputResponse, String> {
+) -> Result<WorkflowValidateOutputResponse, AppError> {
     authorize_output_execution_access(&state.workflow_usecase, worktree_path, &execution_id)
         .await?;
     // [08] preflight と本 submit (`handle_submit_output`) で同一の前処理 + validation を
@@ -101,10 +102,10 @@ pub(crate) async fn workflow_validate_output_shared(
     let result = tokio::task::spawn_blocking(move || {
         usecase
             .validate_output(&execution_id, &node_name, structured_output)
-            .map_err(|e| e.to_string())
+            .map_err(AppError::from_failure)
     })
     .await
-    .map_err(|e| format!("task join error: {e}"))??;
+    .map_err(|e| AppError::new(format!("task join error: {e}")))??;
     Ok(match result {
         WorkflowValidateOutputResult::Valid => WorkflowValidateOutputResponse::Valid,
         WorkflowValidateOutputResult::Invalid { reason, details } => {
@@ -120,17 +121,17 @@ pub(crate) async fn workflow_get_output_shared(
     worktree_path: String,
     execution_id: String,
     node_name: String,
-) -> Result<WorkflowGetOutputResponse, String> {
+) -> Result<WorkflowGetOutputResponse, AppError> {
     authorize_output_execution_access(&state.workflow_usecase, worktree_path, &execution_id)
         .await?;
     let usecase = state.workflow_usecase.clone();
     let result = tokio::task::spawn_blocking(move || {
         usecase
             .get_output(&execution_id, &node_name)
-            .map_err(|e| e.to_string())
+            .map_err(AppError::from_failure)
     })
     .await
-    .map_err(|e| format!("task join error: {e}"))??;
+    .map_err(|e| AppError::new(format!("task join error: {e}")))??;
     Ok(match result {
         WorkflowGetOutputResult::Submitted {
             contract,

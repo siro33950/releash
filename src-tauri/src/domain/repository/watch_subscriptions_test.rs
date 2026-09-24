@@ -67,3 +67,18 @@ fn test_監視予約_生成中も上限を保ち失敗と旧購読の予約を�
     );
     assert!(subscriptions.unsubscribe("push").is_empty());
 }
+
+#[test]
+fn test_失敗分類_watch_subscription_error_理由に対応する() {
+    use crate::domain::failure::{ClassifiedFailure, FailureKind as F};
+    // Given
+    let cases = [
+        (WatchSubscriptionError::NotFound, F::Missing),
+        (WatchSubscriptionError::AlreadyExists, F::AlreadyPresent),
+        (WatchSubscriptionError::Limit, F::Capacity),
+    ];
+    for (error, expected) in cases {
+        // When / Then
+        assert_eq!(error.failure_kind(), expected, "{error:?}");
+    }
+}

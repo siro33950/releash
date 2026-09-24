@@ -80,3 +80,15 @@ impl<T> TerminalSubscriptions<T> {
 #[cfg(test)]
 #[path = "subscriptions_test.rs"]
 mod subscriptions_tests;
+
+impl crate::domain::failure::ClassifiedFailure for TerminalSubscriptionError {
+    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
+        use crate::domain::failure::FailureKind;
+        match self {
+            Self::InvalidId => FailureKind::InvalidInput,
+            Self::AlreadyExists => FailureKind::AlreadyPresent,
+            Self::Limit | Self::PendingLimit | Self::AttachmentLimit => FailureKind::Capacity,
+            Self::Ended => FailureKind::Missing,
+        }
+    }
+}

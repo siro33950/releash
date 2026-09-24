@@ -1,3 +1,4 @@
+use crate::domain::failure::ClassifiedFailure;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -46,7 +47,7 @@ impl ProviderHookHealthRepository for LocalProviderHookHealthRepository {
                 session_id: storage_key(provider),
             })
             .await
-            .map_err(|_| ProviderHookHealthRepositoryError::StorageUnavailable)?;
+            .map_err(ProviderHookHealthRepositoryError::from)?;
         let LocalEventQueryResult::SessionProjectionByIdentity(view) = result else {
             return Err(ProviderHookHealthRepositoryError::Corrupt);
         };
@@ -120,7 +121,7 @@ impl ProviderHookHealthRepository for LocalProviderHookHealthRepository {
                 limit: 1,
             })
             .await
-            .map_err(|_| ProviderHookHealthRepositoryError::StorageUnavailable)?
+            .map_err(ProviderHookHealthRepositoryError::from)?
             .head;
         let occurred_at_ms = now_ms();
         let events = pending
@@ -201,18 +202,12 @@ impl ProviderHookHealthRepository for LocalProviderHookHealthRepository {
             Ok(CommitBatchResult::Committed(_) | CommitBatchResult::Replayed(_)) => {
                 Ok(VersionedProviderHookHealth::restored(health, next_revision))
             }
-            Err(
-                CommitBatchError::PayloadConflict | CommitBatchError::StreamHeadConflict { .. },
-            ) => Err(ProviderHookHealthRepositoryError::Conflict),
-            Err(
-                CommitBatchError::StorageUnavailable { .. }
-                | CommitBatchError::OutcomeUnknown { .. },
-            ) => Err(ProviderHookHealthRepositoryError::StorageUnavailable),
-            Err(
-                CommitBatchError::CapacityExceeded
-                | CommitBatchError::SequenceExhausted
-                | CommitBatchError::Corrupt { .. },
-            ) => Err(ProviderHookHealthRepositoryError::Corrupt),
+            Err(CommitBatchError::StreamHeadConflict { .. }) => {
+                Err(ProviderHookHealthRepositoryError::Conflict)
+            }
+            Err(error) => Err(ProviderHookHealthRepositoryError::Store(
+                error.failure_kind(),
+            )),
         }
     }
 }

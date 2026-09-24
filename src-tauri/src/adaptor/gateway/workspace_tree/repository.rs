@@ -199,7 +199,8 @@ impl WorkspaceTreeRepository for SqliteWorkspaceTreeRepository {
         let workspace = workspace_identity.as_str().to_string();
         let backend = self.fact_backend();
         let Some((tree_id, node_execution_id)) =
-            fact_log::find_session_attachment(&backend, session_id).map_err(fold_query_error)?
+            fact_log::find_session_attachment(&backend, session_id)
+                .map_err(LocalEventQueryError::from)?
         else {
             return Ok(None);
         };
@@ -257,7 +258,7 @@ fn sql_query_error(error: rusqlite::Error) -> LocalEventQueryError {
             LocalEventQueryError::StorageUnavailable {
                 failure: SafeOperationFailure::new(
                     SessionOperationFailureKind::StorageUnavailable,
-                    true,
+                    crate::domain::failure::FailureKind::Temporary,
                     "Workspace indexed query failed",
                     correlation_id,
                 ),

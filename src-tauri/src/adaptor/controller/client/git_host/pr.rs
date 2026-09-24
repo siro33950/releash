@@ -11,7 +11,7 @@ pub(crate) async fn fetch_pr_status_shared(
     run_blocking(move || uc.fetch_pr_status(&repo_path))
         .await?
         .map(PrStatusDto::from)
-        .map_err(|error| AppError::new(error.to_string()))
+        .map_err(AppError::from_failure)
 }
 
 pub(crate) async fn get_cached_pr_status_shared(
@@ -22,5 +22,5 @@ pub(crate) async fn get_cached_pr_status_shared(
     run_blocking(move || uc.get_cached_pr_status(&repo_path))
         .await?
         .map(PrStatusDto::from)
-        .map_err(|error| AppError::new(error.to_string()))
+        .map_err(AppError::from_failure)
 }

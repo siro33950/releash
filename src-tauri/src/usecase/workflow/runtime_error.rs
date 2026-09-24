@@ -6,6 +6,11 @@ use crate::usecase::workflow::runtime_resolver::{
 /// Workflow runtime boundary error.
 #[derive(Debug)]
 pub enum WorkflowRuntimeError {
+    Store(crate::domain::failure::FailureKind),
+    StorageFailure {
+        kind: crate::domain::failure::FailureKind,
+        message: String,
+    },
     /// ワークフロー実行が見つからない
     ExecutionNotFound(String),
     /// セッションが見つからない
@@ -33,6 +38,8 @@ pub enum WorkflowRuntimeError {
 impl std::fmt::Display for WorkflowRuntimeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Store(kind) => write!(f, "Store failure: {kind:?}"),
+            Self::StorageFailure { message, .. } => f.write_str(message),
             Self::ExecutionNotFound(id) => {
                 write!(f, "No workflow execution found for session '{id}'")
             }
@@ -58,7 +65,9 @@ impl std::fmt::Display for WorkflowRuntimeError {
 impl WorkflowRuntimeError {
     pub(crate) fn workflow_failure_kind(&self) -> NodeExecutionFailureKind {
         match self {
-            Self::SessionStore(_) => NodeExecutionFailureKind::InfrastructureCrash,
+            Self::Store(_) | Self::StorageFailure { .. } | Self::SessionStore(_) => {
+                NodeExecutionFailureKind::InfrastructureCrash
+            }
             Self::AgentSession(_) => NodeExecutionFailureKind::ValidationFailure,
             Self::ExecutionNotFound(_)
             | Self::SessionNotFound(_)
@@ -129,3 +138,25 @@ mod tests {
         );
     }
 }
+
+impl crate::domain::failure::ClassifiedFailure for WorkflowRuntimeError {
+    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
+        use crate::domain::failure::FailureKind;
+        match self {
+            Self::Store(kind) | Self::StorageFailure { kind, .. } => *kind,
+            Self::AlreadyActive(_) | Self::InvalidState(_) => FailureKind::StateRequired,
+            Self::Conflict(_) => FailureKind::RestartRequired,
+            Self::ExecutionNotFound(_) | Self::SessionNotFound(_) => FailureKind::Missing,
+            Self::InvalidWorkflow(_) | Self::ValidationError(_) => FailureKind::InvalidInput,
+            Self::UnauthorizedWorktree(_) | Self::UnauthorizedApprovalTarget(_) => {
+                FailureKind::Permission
+            }
+            Self::SessionStore(_) => FailureKind::Internal,
+            Self::AgentSession(_) => FailureKind::StateRequired,
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "runtime_error_test.rs"]
+mod runtime_error_tests;

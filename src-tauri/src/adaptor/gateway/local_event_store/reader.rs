@@ -40,27 +40,45 @@ fn correlation_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
-pub(crate) fn storage_unavailable(error: &rusqlite::Error) -> LocalEventQueryError {
-    // Concurrent-commit contention surfaces as SQLITE_BUSY / SQLITE_LOCKED
-    // after the 250 ms busy timeout; that is `QueryBusy`, not a storage
-    // failure (B-069).
-    if let rusqlite::Error::SqliteFailure(inner, _) = error {
-        if matches!(
-            inner.code,
-            rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
-        ) {
-            return LocalEventQueryError::QueryBusy;
+pub(crate) fn sqlite_failure_kind(error: &rusqlite::Error) -> crate::domain::failure::FailureKind {
+    use crate::domain::failure::FailureKind;
+    match error.sqlite_error_code() {
+        Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked) => {
+            FailureKind::Temporary
         }
+        Some(rusqlite::ErrorCode::DatabaseCorrupt | rusqlite::ErrorCode::NotADatabase) => {
+            FailureKind::Corrupt
+        }
+        Some(
+            rusqlite::ErrorCode::PermissionDenied
+            | rusqlite::ErrorCode::ReadOnly
+            | rusqlite::ErrorCode::CannotOpen
+            | rusqlite::ErrorCode::DiskFull,
+        ) => FailureKind::StateRequired,
+        _ => FailureKind::Internal,
     }
+}
+
+pub(crate) fn storage_unavailable(error: &rusqlite::Error) -> LocalEventQueryError {
+    use crate::domain::failure::FailureKind;
     let correlation = correlation_id();
     log::warn!("local event store read failure [{correlation}]: {error}");
-    LocalEventQueryError::StorageUnavailable {
-        failure: SafeOperationFailure::new(
-            SessionOperationFailureKind::StorageUnavailable,
-            true,
-            "local event store read failed",
-            correlation,
-        ),
+    match sqlite_failure_kind(error) {
+        FailureKind::Temporary => LocalEventQueryError::QueryBusy,
+        FailureKind::Corrupt => LocalEventQueryError::Corrupt {
+            correlation_id: correlation,
+        },
+        FailureKind::StateRequired => LocalEventQueryError::StorageUnavailable {
+            failure: SafeOperationFailure::new(
+                SessionOperationFailureKind::StorageUnavailable,
+                crate::domain::failure::FailureKind::StateRequired,
+                "local event store read failed",
+                correlation,
+            ),
+        },
+        _ => LocalEventQueryError::Internal {
+            correlation_id: correlation,
+        },
     }
 }
 
@@ -72,13 +90,16 @@ fn corrupt(context: &str) -> LocalEventQueryError {
     }
 }
 
-fn reader_pool_unavailable(message: &'static str, retryable: bool) -> LocalEventQueryError {
+fn reader_pool_unavailable(
+    message: &'static str,
+    classification: crate::domain::failure::FailureKind,
+) -> LocalEventQueryError {
     let correlation = correlation_id();
     log::error!("local event reader pool failure [{correlation}]: {message}");
     LocalEventQueryError::StorageUnavailable {
         failure: SafeOperationFailure::new(
             SessionOperationFailureKind::StorageUnavailable,
-            retryable,
+            classification,
             message,
             correlation,
         ),
@@ -355,7 +376,7 @@ impl ReaderPool {
         if state.closed {
             return Err(reader_pool_unavailable(
                 "local event store reader pool is closed",
-                false,
+                crate::domain::failure::FailureKind::StateRequired,
             ));
         }
         if state.jobs.len() >= READ_QUEUE_MAX_DEPTH {
@@ -391,7 +412,7 @@ impl ReaderPool {
         if state.closed {
             return Err(reader_pool_unavailable(
                 "local event store reader pool is closed",
-                false,
+                crate::domain::failure::FailureKind::StateRequired,
             ));
         }
         if state.jobs.len() >= READ_QUEUE_MAX_DEPTH {
@@ -410,9 +431,12 @@ impl ReaderPool {
         });
         drop(state);
         self.available.notify_one();
-        receiver
-            .recv()
-            .map_err(|_| reader_pool_unavailable("local event store reader reply lost", true))?
+        receiver.recv().map_err(|_| {
+            reader_pool_unavailable(
+                "local event store reader reply lost",
+                crate::domain::failure::FailureKind::Temporary,
+            )
+        })?
     }
 
     fn pop_blocking(&self) -> Option<ReadJob> {

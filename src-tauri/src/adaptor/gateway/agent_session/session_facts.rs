@@ -26,19 +26,6 @@ impl From<crate::adaptor::gateway::workflow::worktree_context::WorktreeContextRe
     }
 }
 
-impl SessionContextReadError {
-    fn is_corrupt(&self) -> bool {
-        matches!(
-            self,
-            Self::Corrupt(_)
-                | Self::Read(
-                    LocalEventQueryError::Corrupt { .. }
-                        | LocalEventQueryError::IncompatibleStoredEvent { .. }
-                )
-        )
-    }
-}
-
 impl std::fmt::Display for SessionContextReadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -50,20 +37,18 @@ impl std::fmt::Display for SessionContextReadError {
 
 impl From<SessionContextReadError> for AgentSessionRepositoryError {
     fn from(error: SessionContextReadError) -> Self {
-        if error.is_corrupt() {
-            Self::Corrupt
-        } else {
-            Self::Unavailable
+        match error {
+            SessionContextReadError::Corrupt(_) => Self::Corrupt,
+            SessionContextReadError::Read(error) => error.into(),
         }
     }
 }
 
 impl From<SessionContextReadError> for AgentSessionQueryError {
     fn from(error: SessionContextReadError) -> Self {
-        if error.is_corrupt() {
-            Self::Corrupt
-        } else {
-            Self::Unavailable
+        match error {
+            SessionContextReadError::Corrupt(_) => Self::Corrupt,
+            SessionContextReadError::Read(error) => error.into(),
         }
     }
 }
@@ -131,7 +116,7 @@ pub(crate) fn read_session_context(
 pub(crate) fn read_session_records(
     backend: &FactLogReadBackend,
     location: &SessionLocation,
-) -> Result<Vec<NodeFactRecord>, String> {
+) -> Result<Vec<NodeFactRecord>, fact_log::FactReadError> {
     let tree_id = location.tree_id.clone();
     let node_id = location.node_execution_id.clone();
     let rows = backend
@@ -139,9 +124,11 @@ pub(crate) fn read_session_records(
             crate::adaptor::gateway::local_event_store::node_events::read_node(
                 connection, &tree_id, &node_id,
             )
-            .map_err(|_| crate::domain::local_event::LocalEventQueryError::InvalidRequest)
+            .map_err(|error| {
+                crate::adaptor::gateway::local_event_store::reader::storage_unavailable(&error)
+            })
         })
-        .map_err(|error| format!("session facts read failed: {error:?}"))?;
+        .map_err(fact_log::FactReadError::Query)?;
     let mut records = rows
         .iter()
         .filter(|row| row.event_type != "started")
@@ -192,7 +179,7 @@ impl SessionLocation {
 pub(crate) fn locate_session(
     backend: &FactLogReadBackend,
     session_id: &str,
-) -> Result<Option<SessionLocation>, String> {
+) -> Result<Option<SessionLocation>, fact_log::FactReadError> {
     let Some(record) = fact_log::find_session_attachment_record(backend, session_id)? else {
         return Ok(None);
     };
@@ -202,3 +189,19 @@ pub(crate) fn locate_session(
 #[cfg(test)]
 #[path = "session_facts_test.rs"]
 mod session_facts_tests;
+
+impl From<fact_log::FactReadError> for AgentSessionRepositoryError {
+    fn from(error: fact_log::FactReadError) -> Self {
+        match error {
+            fact_log::FactReadError::Query(error) => error.into(),
+            fact_log::FactReadError::Corrupt(_) => Self::Corrupt,
+        }
+    }
+}
+
+impl From<fact_log::FactReadError> for AgentSessionQueryError {
+    fn from(error: fact_log::FactReadError) -> Self {
+        use crate::domain::failure::ClassifiedFailure;
+        Self::Store(error.failure_kind())
+    }
+}

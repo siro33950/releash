@@ -593,3 +593,73 @@ async fn test_provider_hook_health_正常session_start後の同一launch欠落�
         .unwrap();
     assert!(health.warnings().await.unwrap().is_empty());
 }
+
+#[test]
+fn test_失敗分類_usecase_全変種と委譲した理由を保持する() {
+    use crate::domain::failure::{ClassifiedFailure, FailureKind as F};
+    // Given
+    let cases = [
+        (ProviderLifecycleUsecaseError::InvalidInput, F::InvalidInput),
+        (
+            ProviderLifecycleUsecaseError::StorageUnavailable,
+            F::Temporary,
+        ),
+        (ProviderLifecycleUsecaseError::Corrupt, F::Corrupt),
+        (
+            ProviderLifecycleUsecaseError::Store(F::Temporary),
+            F::Temporary,
+        ),
+        (
+            ProviderLifecycleUsecaseError::Store(F::RestartRequired),
+            F::RestartRequired,
+        ),
+        (
+            ProviderLifecycleUsecaseError::Store(F::StateRequired),
+            F::StateRequired,
+        ),
+        (
+            ProviderLifecycleUsecaseError::Store(F::InvalidInput),
+            F::InvalidInput,
+        ),
+        (ProviderLifecycleUsecaseError::Store(F::Expired), F::Expired),
+        (ProviderLifecycleUsecaseError::Store(F::Missing), F::Missing),
+        (
+            ProviderLifecycleUsecaseError::Store(F::AlreadyPresent),
+            F::AlreadyPresent,
+        ),
+        (
+            ProviderLifecycleUsecaseError::Store(F::Permission),
+            F::Permission,
+        ),
+        (
+            ProviderLifecycleUsecaseError::Store(F::Capacity),
+            F::Capacity,
+        ),
+        (
+            ProviderLifecycleUsecaseError::Store(F::Unsupported),
+            F::Unsupported,
+        ),
+        (
+            ProviderLifecycleUsecaseError::Store(F::Internal),
+            F::Internal,
+        ),
+        (ProviderLifecycleUsecaseError::Store(F::Corrupt), F::Corrupt),
+        (
+            ProviderLifecycleUsecaseError::Store(F::Cancelled),
+            F::Cancelled,
+        ),
+        (ProviderLifecycleUsecaseError::Store(F::Unknown), F::Unknown),
+        (
+            ProviderLifecycleUsecaseError::Store(F::OutsideRange),
+            F::OutsideRange,
+        ),
+        (
+            ProviderLifecycleUsecaseError::Store(F::AuthenticationRequired),
+            F::AuthenticationRequired,
+        ),
+    ];
+    for (error, expected) in cases {
+        // When / Then
+        assert_eq!(error.failure_kind(), expected, "{error:?}");
+    }
+}

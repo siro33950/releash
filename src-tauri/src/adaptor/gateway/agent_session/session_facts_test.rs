@@ -1,6 +1,7 @@
 use super::*;
 use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
 use crate::adaptor::gateway::workflow::test_support::seed_unavailable_definition;
+use crate::domain::failure::{ClassifiedFailure, FailureKind};
 
 #[test]
 fn test_session読取_親と自身の実行定義を解釈せず接続情報を取得できる() {
@@ -93,33 +94,34 @@ fn test_session読取_sql障害とroot欠損を区別する() {
     let error = read_session_context(&backend, &location).unwrap_err();
     assert!(matches!(
         &error,
-        SessionContextReadError::Read(LocalEventQueryError::StorageUnavailable { .. })
+        SessionContextReadError::Read(LocalEventQueryError::Internal { .. })
     ));
     assert_eq!(
         AgentSessionRepositoryError::from(error),
-        AgentSessionRepositoryError::Unavailable
+        AgentSessionRepositoryError::Store(FailureKind::Internal)
     );
     assert_eq!(
         AgentSessionQueryError::from(read_session_context(&backend, &location).unwrap_err()),
-        AgentSessionQueryError::Unavailable
+        AgentSessionQueryError::Store(FailureKind::Internal)
     );
 }
 
 #[test]
 fn test_session読取_混雑と期限切れをデータ破損扱いしない() {
     // Given
-    for error in [
-        LocalEventQueryError::QueryBusy,
-        LocalEventQueryError::DeadlineExceeded,
+    for (error, expected) in [
+        (LocalEventQueryError::QueryBusy, FailureKind::Temporary),
+        (LocalEventQueryError::DeadlineExceeded, FailureKind::Expired),
     ] {
         // When / Then
         assert_eq!(
-            AgentSessionRepositoryError::from(SessionContextReadError::Read(error.clone())),
-            AgentSessionRepositoryError::Unavailable
+            AgentSessionRepositoryError::from(SessionContextReadError::Read(error.clone()))
+                .failure_kind(),
+            expected
         );
         assert_eq!(
-            AgentSessionQueryError::from(SessionContextReadError::Read(error)),
-            AgentSessionQueryError::Unavailable
+            AgentSessionQueryError::from(SessionContextReadError::Read(error)).failure_kind(),
+            expected
         );
     }
     let corrupt = LocalEventQueryError::Corrupt {
@@ -139,25 +141,30 @@ fn test_session読取_混雑と期限切れをデータ破損扱いしない() {
 fn test_session読取_実効cwdの一時障害と破損をrepositoryとqueryへ区別して返す() {
     use crate::adaptor::gateway::workflow::worktree_context::WorktreeContextReadError;
     // Given
-    for error in [
-        LocalEventQueryError::QueryBusy,
-        LocalEventQueryError::DeadlineExceeded,
-        crate::adaptor::gateway::local_event_store::reader::storage_unavailable(
-            &rusqlite::Error::InvalidQuery,
+    for (error, expected) in [
+        (LocalEventQueryError::QueryBusy, FailureKind::Temporary),
+        (LocalEventQueryError::DeadlineExceeded, FailureKind::Expired),
+        (
+            crate::adaptor::gateway::local_event_store::reader::storage_unavailable(
+                &rusqlite::Error::InvalidQuery,
+            ),
+            FailureKind::Internal,
         ),
     ] {
         // When / Then
         assert_eq!(
             AgentSessionRepositoryError::from(SessionContextReadError::from(
                 WorktreeContextReadError::Read(error.clone())
-            )),
-            AgentSessionRepositoryError::Unavailable
+            ))
+            .failure_kind(),
+            expected
         );
         assert_eq!(
             AgentSessionQueryError::from(SessionContextReadError::from(
                 WorktreeContextReadError::Read(error)
-            )),
-            AgentSessionQueryError::Unavailable
+            ))
+            .failure_kind(),
+            expected
         );
     }
     for reason in [

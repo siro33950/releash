@@ -56,18 +56,24 @@ fn workflow_location(tree_id: &str, node_execution_id: &str) -> AgentSessionTree
 }
 
 #[test]
-fn test_agent_session_repository_commit_errorの非競合障害をcorruptに分類する() {
-    for error in [
-        CommitBatchError::CapacityExceeded,
-        CommitBatchError::SequenceExhausted,
-        CommitBatchError::Corrupt {
-            correlation_id: "corrupt-commit".to_string(),
-        },
+fn test_agent_session_repository_commit_errorの理由別分類を保持する() {
+    use crate::domain::failure::{ClassifiedFailure, FailureKind};
+    // Given / When / Then
+    for (error, expected) in [
+        (CommitBatchError::CapacityExceeded, FailureKind::Capacity),
+        (CommitBatchError::SequenceExhausted, FailureKind::Capacity),
+        (
+            CommitBatchError::PayloadConflict,
+            FailureKind::StateRequired,
+        ),
+        (
+            CommitBatchError::Corrupt {
+                correlation_id: "corrupt-commit".into(),
+            },
+            FailureKind::Corrupt,
+        ),
     ] {
-        assert_eq!(
-            map_commit_batch_error(error),
-            crate::domain::agent_session::repository::AgentSessionRepositoryError::Corrupt
-        );
+        assert_eq!(map_commit_batch_error(error).failure_kind(), expected);
     }
 }
 
@@ -2241,8 +2247,50 @@ async fn test_agent_session_repository_所属repoの取得失敗では作成事�
     // When
     let result = repository.create(session, "create-bare").await;
     // Then
-    assert_eq!(result, Err(AgentSessionRepositoryError::Unavailable));
+    assert_eq!(
+        result,
+        Err(AgentSessionRepositoryError::Store(
+            crate::domain::failure::FailureKind::StateRequired
+        ))
+    );
     assert!(fact_log::read_tree_records(&store, "session-bare")
         .unwrap()
         .is_empty());
+}
+
+#[test]
+fn test_所有照会_所有済みと競合と一時的失敗の分類を保持する() {
+    use crate::domain::failure::{ClassifiedFailure, FailureKind};
+    // Given
+    for (error, expected) in [
+        (
+            AgentSessionRepositoryError::ProviderSessionAlreadyOwned {
+                agent_session_id: "owner".into(),
+            },
+            FailureKind::StateRequired,
+        ),
+        (
+            AgentSessionRepositoryError::Conflict,
+            FailureKind::RestartRequired,
+        ),
+        (
+            AgentSessionRepositoryError::Unavailable,
+            FailureKind::Temporary,
+        ),
+        (AgentSessionRepositoryError::Corrupt, FailureKind::Corrupt),
+        (
+            AgentSessionRepositoryError::InvalidRequest,
+            FailureKind::InvalidInput,
+        ),
+        (
+            AgentSessionRepositoryError::Store(FailureKind::Expired),
+            FailureKind::Expired,
+        ),
+    ] {
+        // When / Then
+        assert_eq!(
+            super::agent_session_repository::map_ownership_error(error).failure_kind(),
+            expected
+        );
+    }
 }

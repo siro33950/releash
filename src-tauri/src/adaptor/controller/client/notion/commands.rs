@@ -3,21 +3,22 @@ use crate::adaptor::protocol::notion::{
     NotionLabelOptionView, NotionRepoConfigView, NotionTaskPageView, NotionTaskQueryInput,
     NotionValidationResultView, PropertyMappingView,
 };
+use crate::other::AppError;
 use crate::usecase::notion::error::NotionUsecaseError;
 
-fn map_join_error(error: tokio::task::JoinError) -> String {
-    format!("task join error: {error}")
+fn map_join_error(error: tokio::task::JoinError) -> AppError {
+    AppError::new(format!("task join error: {error}"))
 }
 
-fn map_usecase_error(error: NotionUsecaseError) -> String {
-    error.to_string()
+fn map_usecase_error(error: NotionUsecaseError) -> AppError {
+    AppError::from_failure(error)
 }
 
 pub(crate) async fn query_notion_tasks_shared(
     state: &AppState,
     repo_path: String,
     query: NotionTaskQueryInput,
-) -> Result<NotionTaskPageView, String> {
+) -> Result<NotionTaskPageView, AppError> {
     let notion_usecase = state.notion_usecase.clone();
     let query = query.into();
     tokio::task::spawn_blocking(move || {
@@ -33,7 +34,7 @@ pub(crate) async fn query_notion_tasks_shared(
 pub(crate) async fn fetch_notion_label_options_shared(
     state: &AppState,
     repo_path: String,
-) -> Result<Vec<NotionLabelOptionView>, String> {
+) -> Result<Vec<NotionLabelOptionView>, AppError> {
     let notion_usecase = state.notion_usecase.clone();
     tokio::task::spawn_blocking(move || {
         notion_usecase
@@ -51,7 +52,7 @@ pub(crate) async fn save_notion_config_shared(
     api_token: String,
     database_id: String,
     property_mapping: PropertyMappingView,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     let notion_usecase = state.notion_usecase.clone();
     let config = NotionRepoConfigView {
         api_token,
@@ -68,7 +69,7 @@ pub(crate) async fn save_notion_config_shared(
 pub(crate) fn get_notion_config_shared(
     state: &AppState,
     repo_path: String,
-) -> Result<Option<NotionRepoConfigView>, String> {
+) -> Result<Option<NotionRepoConfigView>, AppError> {
     state
         .notion_usecase
         .get_config(&repo_path)
@@ -79,7 +80,7 @@ pub(crate) fn get_notion_config_shared(
 pub(crate) async fn delete_notion_config_shared(
     state: &AppState,
     repo_path: String,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     let notion_usecase = state.notion_usecase.clone();
     tokio::task::spawn_blocking(move || notion_usecase.delete_config(&repo_path))
         .await
@@ -91,7 +92,7 @@ pub(crate) async fn validate_notion_config_shared(
     state: &AppState,
     api_token: String,
     database_id: String,
-) -> Result<NotionValidationResultView, String> {
+) -> Result<NotionValidationResultView, AppError> {
     let notion_usecase = state.notion_usecase.clone();
     tokio::task::spawn_blocking(move || {
         let result = notion_usecase.validate_config(api_token, database_id);

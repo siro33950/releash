@@ -413,7 +413,10 @@ mod store_round_trip_tests {
             .unwrap_err();
 
         // Then: SQLite 失敗が返り、失敗行は記録されていない
-        assert_eq!(error, NodeEventWriteError::StorageUnavailable);
+        assert_eq!(
+            error,
+            NodeEventWriteError::Store(crate::domain::failure::FailureKind::Internal)
+        );
         let rows = store
             .submit_indexed_query_blocking(|connection| {
                 read_tree(connection, "tree-sqlite-failure")

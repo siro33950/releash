@@ -1,3 +1,4 @@
+use crate::domain::failure::ClassifiedFailure;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
@@ -69,9 +70,10 @@ pub(crate) enum AgentSessionHistoryResumeOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AgentSessionLaunchUsecaseError {
+    Store(crate::domain::failure::FailureKind),
     ProviderUnavailable,
     InvalidInput,
-    Conflict,
+    Conflict(crate::domain::failure::FailureKind),
     StorageUnavailable,
     LaunchUnavailable,
     TerminalUnavailable,
@@ -81,12 +83,14 @@ pub(crate) enum AgentSessionLaunchUsecaseError {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StartedExecutionTreeRegistrationError {
+    Store(crate::domain::failure::FailureKind),
     Unavailable,
     Corrupt,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ExecutionTreeCacheReleaseError {
+    Store(crate::domain::failure::FailureKind),
     Unavailable,
     Corrupt,
 }
@@ -365,11 +369,11 @@ impl AgentSessionLaunchUsecase {
         let _workspace = self
             .execution_trees
             .begin_worktree_mutation(request.workspace.as_str())
-            .map_err(|_| AgentSessionLaunchUsecaseError::Conflict)?;
+            .map_err(|error| AgentSessionLaunchUsecaseError::Conflict(error.failure_kind()))?;
         let _worktree = self
             .execution_trees
             .begin_worktree_mutation(&request.worktree_path)
-            .map_err(|_| AgentSessionLaunchUsecaseError::Conflict)?;
+            .map_err(|error| AgentSessionLaunchUsecaseError::Conflict(error.failure_kind()))?;
         let agent_session_id = issue_agent_session_id(&request.caller_request_id)?;
         let tree_location = AgentSessionTreeLocation::session_tree_root(&agent_session_id)
             .map_err(|_| AgentSessionLaunchUsecaseError::InvalidInput)?;
@@ -765,11 +769,11 @@ impl AgentSessionLaunchUsecase {
         let _workspace = self
             .execution_trees
             .begin_worktree_mutation(request.workspace.as_str())
-            .map_err(|_| AgentSessionLaunchUsecaseError::Conflict)?;
+            .map_err(|error| AgentSessionLaunchUsecaseError::Conflict(error.failure_kind()))?;
         let _worktree = self
             .execution_trees
             .begin_worktree_mutation(&request.worktree_path)
-            .map_err(|_| AgentSessionLaunchUsecaseError::Conflict)?;
+            .map_err(|error| AgentSessionLaunchUsecaseError::Conflict(error.failure_kind()))?;
         if request.provider_session_id.trim().is_empty() {
             return Err(AgentSessionLaunchUsecaseError::InvalidInput);
         }
@@ -784,6 +788,9 @@ impl AgentSessionLaunchUsecase {
                 }
                 AgentSessionHistoryGatewayError::Unavailable => {
                     AgentSessionLaunchUsecaseError::StorageUnavailable
+                }
+                AgentSessionHistoryGatewayError::Store(kind) => {
+                    AgentSessionLaunchUsecaseError::Store(kind)
                 }
                 AgentSessionHistoryGatewayError::Corrupt => AgentSessionLaunchUsecaseError::Corrupt,
             })?;
@@ -1095,11 +1102,12 @@ fn map_session_error(error: AgentSessionUsecaseError) -> AgentSessionLaunchUseca
         AgentSessionUsecaseError::NotFound | AgentSessionUsecaseError::InvalidOperation => {
             AgentSessionLaunchUsecaseError::InvalidInput
         }
-        AgentSessionUsecaseError::Conflict
-        | AgentSessionUsecaseError::ProviderSessionAlreadyOwned { .. } => {
-            AgentSessionLaunchUsecaseError::Conflict
+        error @ (AgentSessionUsecaseError::Conflict
+        | AgentSessionUsecaseError::ProviderSessionAlreadyOwned { .. }) => {
+            AgentSessionLaunchUsecaseError::Conflict(error.failure_kind())
         }
         AgentSessionUsecaseError::Unavailable => AgentSessionLaunchUsecaseError::StorageUnavailable,
+        AgentSessionUsecaseError::Store(kind) => AgentSessionLaunchUsecaseError::Store(kind),
         AgentSessionUsecaseError::Corrupt => AgentSessionLaunchUsecaseError::Corrupt,
     }
 }
@@ -1110,6 +1118,7 @@ fn map_lifecycle_error(error: ProviderLifecycleUsecaseError) -> AgentSessionLaun
         ProviderLifecycleUsecaseError::StorageUnavailable => {
             AgentSessionLaunchUsecaseError::StorageUnavailable
         }
+        ProviderLifecycleUsecaseError::Store(kind) => AgentSessionLaunchUsecaseError::Store(kind),
         ProviderLifecycleUsecaseError::Corrupt => AgentSessionLaunchUsecaseError::Corrupt,
     }
 }
@@ -1132,6 +1141,9 @@ fn map_execution_tree_registration_error(
         StartedExecutionTreeRegistrationError::Unavailable => {
             AgentSessionLaunchUsecaseError::StorageUnavailable
         }
+        StartedExecutionTreeRegistrationError::Store(kind) => {
+            AgentSessionLaunchUsecaseError::Store(kind)
+        }
         StartedExecutionTreeRegistrationError::Corrupt => AgentSessionLaunchUsecaseError::Corrupt,
     }
 }
@@ -1139,3 +1151,20 @@ fn map_execution_tree_registration_error(
 #[cfg(test)]
 #[path = "agent_session_launch_test.rs"]
 mod agent_session_launch_tests;
+
+impl crate::domain::failure::ClassifiedFailure for AgentSessionLaunchUsecaseError {
+    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
+        use crate::domain::failure::FailureKind;
+        match self {
+            Self::Store(kind) => *kind,
+            Self::ProviderUnavailable => FailureKind::StateRequired,
+            Self::InvalidInput => FailureKind::InvalidInput,
+            Self::Conflict(kind) => *kind,
+            Self::StorageUnavailable => FailureKind::Temporary,
+            Self::LaunchUnavailable => FailureKind::StateRequired,
+            Self::TerminalUnavailable => FailureKind::StateRequired,
+            Self::TerminalSpawn(_) => FailureKind::StateRequired,
+            Self::Corrupt => FailureKind::Corrupt,
+        }
+    }
+}

@@ -4,7 +4,7 @@ use axum::Router;
 
 use super::client_stream::TerminalApiDeps;
 use super::protocol::client as wire;
-use super::protocol::connect::{command_error, command_error_with_code, rpc, to_rpc, to_wire};
+use super::protocol::connect::{command_error, rpc, to_rpc, to_wire};
 use crate::adaptor::controller::client::ClientCommandDispatch;
 use crate::adaptor::gateway::push::{ClientPushError, ClientPushGateway};
 
@@ -18,8 +18,13 @@ impl connectrpc::Encodable<rpc::Push> for EncodedPush {
         match codec {
             connectrpc::CodecFormat::Proto => Ok(axum::body::Bytes::from_owner(self.0.clone())),
             _ => {
-                let push = <rpc::Push as buffa::Message>::decode_from_slice(&self.0)
-                    .map_err(|error| connectrpc::ConnectError::internal(error.to_string()))?;
+                let push =
+                    <rpc::Push as buffa::Message>::decode_from_slice(&self.0).map_err(|error| {
+                        crate::adaptor::protocol::connect::classified_error(
+                            crate::other::AppError::new(error.to_string())
+                                .with_failure_kind(crate::domain::failure::FailureKind::Internal),
+                        )
+                    })?;
                 push.encode(codec)
             }
         }
@@ -68,9 +73,12 @@ impl ClientApiDeps {
         &crate::usecase::state_subscription::StateSubscriptionUsecase,
         connectrpc::ConnectError,
     > {
-        self.state_subscriptions
-            .as_ref()
-            .ok_or_else(|| connectrpc::ConnectError::unavailable("State subscriptions unavailable"))
+        self.state_subscriptions.as_ref().ok_or_else(|| {
+            crate::adaptor::protocol::connect::classified_error(
+                crate::other::AppError::new("State subscriptions unavailable")
+                    .with_failure_kind(crate::domain::failure::FailureKind::Temporary),
+            )
+        })
     }
 
     pub(crate) fn with_desktop_settings(
@@ -81,15 +89,13 @@ impl ClientApiDeps {
         self
     }
 
-    fn desktop_settings(&self) -> Result<Option<wire::DesktopSettings>, String> {
+    fn desktop_settings(
+        &self,
+    ) -> Result<Option<wire::DesktopSettings>, crate::usecase::app_config::error::UsecaseError>
+    {
         self.desktop_settings
             .as_ref()
-            .map(|settings| {
-                settings
-                    .desktop_settings()
-                    .map(Into::into)
-                    .map_err(String::from)
-            })
+            .map(|settings| settings.desktop_settings().map(Into::into))
             .transpose()
     }
 
@@ -103,9 +109,13 @@ impl ClientApiDeps {
     ) -> Result<tokio::sync::OwnedSemaphorePermit, connectrpc::ConnectError> {
         self.request_limit.clone().try_acquire_owned().map_err(|_| {
             let message = "Too many pending client commands";
-            let mut error = command_error_with_code(
-                crate::other::AppError::coded("CLIENT_REQUEST_LIMIT", message).into(),
-                connectrpc::ErrorCode::ResourceExhausted,
+            let mut error = command_error(
+                crate::other::AppError::coded(
+                    "CLIENT_REQUEST_LIMIT",
+                    message,
+                    crate::domain::failure::FailureKind::Capacity,
+                )
+                .into(),
             );
             error.message = Some(message.into());
             error
@@ -127,7 +137,12 @@ impl ClientApiDeps {
                 watcher.stop(id)
             })
             .await
-            .map_err(|error| connectrpc::ConnectError::internal(error.to_string()))?
+            .map_err(|error| {
+                crate::adaptor::protocol::connect::classified_error(
+                    crate::other::AppError::new(error.to_string())
+                        .with_failure_kind(crate::domain::failure::FailureKind::Internal),
+                )
+            })?
             .map_err(watch_error)?;
             return Ok(wire::command_result::Command::StopWatching(wire::Unit {}));
         }
@@ -152,7 +167,12 @@ impl ClientApiDeps {
                 .map_err(command_error)
         })
         .await
-        .map_err(|error| connectrpc::ConnectError::internal(error.to_string()))?
+        .map_err(|error| {
+            crate::adaptor::protocol::connect::classified_error(
+                crate::other::AppError::new(error.to_string())
+                    .with_failure_kind(crate::domain::failure::FailureKind::Internal),
+            )
+        })?
     }
 
     async fn watch(
@@ -175,7 +195,12 @@ impl ClientApiDeps {
             watcher.watch(&subscription_id, &path, git)
         })
         .await
-        .map_err(|error| connectrpc::ConnectError::internal(error.to_string()))?
+        .map_err(|error| {
+            crate::adaptor::protocol::connect::classified_error(
+                crate::other::AppError::new(error.to_string())
+                    .with_failure_kind(crate::domain::failure::FailureKind::Internal),
+            )
+        })?
         .map_err(watch_error)?;
         to_rpc(&wire::ResultUint64 { value: Some(id) })
     }
@@ -196,20 +221,7 @@ fn response_headers(command: &wire::command_result::Command) -> axum::http::Head
 }
 
 fn watch_error(error: crate::usecase::watcher::UsecaseError) -> connectrpc::ConnectError {
-    use crate::domain::repository::watch_subscriptions::WatchSubscriptionError;
-    use crate::usecase::watcher::UsecaseError;
-    match error {
-        UsecaseError::Subscription(WatchSubscriptionError::NotFound) => {
-            connectrpc::ConnectError::not_found(error.to_string())
-        }
-        UsecaseError::Subscription(WatchSubscriptionError::AlreadyExists) => {
-            connectrpc::ConnectError::already_exists(error.to_string())
-        }
-        UsecaseError::Subscription(WatchSubscriptionError::Limit) => {
-            connectrpc::ConnectError::resource_exhausted(error.to_string())
-        }
-        error => command_error(wire::CommandError::from(error.to_string())),
-    }
+    command_error(crate::other::AppError::from_failure(error).into())
 }
 
 pub(crate) fn router(deps: Option<ClientApiDeps>) -> Router {
