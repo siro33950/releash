@@ -419,7 +419,7 @@ async fn test_クライアントdispatch_startup失敗時はstreamも拒否す�
 }
 
 #[tokio::test]
-async fn test_クライアントws_切断しても受理済みcommandを途中で破棄しない() {
+async fn test_クライアントrpc_期限切れで処理を止め要求枠を再利用できる() {
     use crate::adaptor::controller::api;
     // Given
     let mut dispatch = ClientCommandDispatch::new(
@@ -429,12 +429,19 @@ async fn test_クライアントws_切断しても受理済みcommandを途中�
     let started = Arc::new(tokio::sync::Notify::new());
     let resume = Arc::new(tokio::sync::Semaphore::new(0));
     let completed = Arc::new(tokio::sync::Semaphore::new(0));
-    let notifications = (started.clone(), resume.clone(), completed.clone());
+    let active = Arc::new(tokio::sync::Semaphore::new(1));
+    let notifications = (
+        started.clone(),
+        resume.clone(),
+        completed.clone(),
+        active.clone(),
+    );
     dispatch.register_domain(
         &["get_language_from_path"],
         Box::new(move |_| {
-            let (started, resume, completed) = notifications.clone();
+            let (started, resume, completed, active) = notifications.clone();
             Box::pin(async move {
+                let _active = active.acquire_owned().await.unwrap();
                 started.notify_one();
                 resume.acquire().await.unwrap().forget();
                 completed.add_permits(1);
@@ -484,28 +491,32 @@ async fn test_クライアントws_切断しても受理済みcommandを途中�
                 .with_timeout(std::time::Duration::from_millis(20)),
         );
         let (_, result) = tokio::join!(started.notified(), request);
-        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().code,
+            connectrpc::ErrorCode::DeadlineExceeded
+        );
+        let stopped = tokio::time::timeout(std::time::Duration::from_secs(1), active.acquire())
+            .await
+            .unwrap()
+            .unwrap();
+        drop(stopped);
     }
-    let error = client
-        .get_language_from_path(
+    // When
+    resume.add_permits(1);
+    let result = client
+        .get_language_from_path_with_options(
             crate::client_api_acceptance::rpc::GetLanguageFromPathRequest {
                 file_path: Some("/repo".into()),
                 ..Default::default()
             },
+            connectrpc::client::CallOptions::default()
+                .with_timeout(std::time::Duration::from_secs(1)),
         )
         .await
-        .unwrap_err();
-    assert_eq!(error.code, connectrpc::ErrorCode::ResourceExhausted);
-    resume.add_permits(64);
+        .unwrap();
     // Then
-    tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        completed.acquire_many(64),
-    )
-    .await
-    .expect("受理済み操作は接続の寿命から独立して完了する")
-    .unwrap()
-    .forget();
+    assert_eq!(result.into_owned().value.as_deref(), Some("done"));
+    assert_eq!(completed.available_permits(), 1);
     server.abort();
 }
 

@@ -842,7 +842,7 @@ async fn test_サーバ情報取得_上限時は設定取得を拒否し成功�
 }
 
 #[tokio::test]
-async fn test_監視rpc_要求中断後もblocking終了まで枠を保持する() {
+async fn test_監視rpc_要求中断でblocking終了前に枠を解放する() {
     struct BlockingFiles {
         started: tokio::sync::Notify,
         finish: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
@@ -884,7 +884,7 @@ async fn test_監視rpc_要求中断後もblocking終了まで枠を保持する
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());
     // Then
-    assert_eq!(deps.request_limit.available_permits(), 63);
+    assert_eq!(deps.request_limit.available_permits(), 64);
     finish.send(()).unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
         while deps.request_limit.available_permits() != 64 {
@@ -894,6 +894,58 @@ async fn test_監視rpc_要求中断後もblocking終了まで枠を保持する
     .await
     .unwrap();
     drop(subscription);
+}
+
+#[tokio::test]
+async fn test_監視停止rpc_要求中断でblocking終了前に枠を解放する() {
+    struct BlockingFiles {
+        started: tokio::sync::Notify,
+        finish: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+    impl crate::domain::repository::file_watcher::FileWatchGateway for BlockingFiles {
+        fn start(&self, _: &str) -> Result<u64, String> {
+            Ok(1)
+        }
+        fn stop(&self, _: u64) -> Result<(), String> {
+            self.started.notify_one();
+            self.finish.lock().unwrap().recv().unwrap();
+            Ok(())
+        }
+    }
+    // Given
+    let (finish, receiver) = std::sync::mpsc::channel();
+    let files = Arc::new(BlockingFiles {
+        started: tokio::sync::Notify::new(),
+        finish: std::sync::Mutex::new(receiver),
+    });
+    let watcher = Arc::new(crate::usecase::watcher::WatcherUsecase::new(
+        None,
+        files.clone(),
+    ));
+    let deps = ClientApiDeps::new(
+        Arc::new(dispatch()),
+        ClientPushGateway::new(Arc::new(PushSink::new())),
+        watcher,
+    );
+    let id = 1;
+    let task_deps = deps.clone();
+    let task = tokio::spawn(async move {
+        task_deps
+            .execute(wire::command_request::Command::StopWatching(
+                wire::StopWatchingRequest {
+                    watcher_id: Some(id),
+                },
+            ))
+            .await
+    });
+    files.started.notified().await;
+    // When
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    // Then
+    assert_eq!(deps.request_limit.available_permits(), 64);
+    assert!(deps.request_permit().is_ok());
+    finish.send(()).unwrap();
 }
 
 #[tokio::test]
@@ -1084,4 +1136,458 @@ async fn test_状態購読_connectで初期状態と変更と再開を配信す�
     assert!(matches!(resumed.event, Some(Event::Change(_))));
     drop(stream);
     server.abort();
+}
+
+async fn assert_request_deadline(timeout: Option<&str>, seconds: u64) {
+    use axum::{
+        body::{to_bytes, Body},
+        http::Request,
+    };
+    use tower::ServiceExt;
+    // Given
+    let stopped = tokio_util::sync::CancellationToken::new();
+    let signal = stopped.clone();
+    let mut dispatch = dispatch();
+    dispatch.register_domain(
+        &["get_cwd"],
+        Box::new(move |_| {
+            let guard = signal.clone().drop_guard();
+            Box::pin(async move {
+                let _guard = guard;
+                std::future::pending().await
+            })
+        }),
+    );
+    let deps = ClientApiDeps::new(
+        Arc::new(dispatch),
+        ClientPushGateway::new(Arc::new(PushSink::new())),
+        crate::client_api_acceptance::watcher(),
+    );
+    let mut request = Request::post("/releash.client.v1.ClientService/GetCwd")
+        .header("content-type", "application/json")
+        .header("connect-protocol-version", "1");
+    if let Some(timeout) = timeout {
+        request = request.header("connect-timeout-ms", timeout);
+    }
+    let call = router(Some(deps.clone())).oneshot(request.body(Body::from("{}")).unwrap());
+    tokio::pin!(call);
+    assert!(futures_util::poll!(&mut call).is_pending());
+    tokio::task::yield_now().await;
+    assert_eq!(deps.request_limit.available_permits(), 63);
+    // When
+    tokio::time::advance(std::time::Duration::from_secs(seconds - 1)).await;
+    assert!(futures_util::poll!(&mut call).is_pending());
+    tokio::time::advance(std::time::Duration::from_secs(1)).await;
+    let response = call.await.unwrap();
+    // Then
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(error["code"], "deadline_exceeded");
+    stopped.cancelled().await;
+    assert_eq!(deps.request_limit.available_permits(), 64);
+    assert!(deps.request_permit().is_ok());
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_単発rpc_期限なしは120秒で処理を止め枠を解放する() {
+    assert_request_deadline(None, 120).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_単発rpc_clientの短い期限で処理を止め枠を解放する() {
+    assert_request_deadline(Some("1000"), 1).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_単発rpc_clientの長い期限を短縮しない() {
+    assert_request_deadline(Some("180000"), 180).await;
+}
+
+#[tokio::test]
+async fn test_単発rpc_呼び出し破棄でasync処理を止め枠を解放する() {
+    // Given
+    let stopped = tokio_util::sync::CancellationToken::new();
+    let signal = stopped.clone();
+    let mut dispatch = dispatch();
+    dispatch.register_domain(
+        &["get_cwd"],
+        Box::new(move |_| {
+            let guard = signal.clone().drop_guard();
+            Box::pin(async move {
+                let _guard = guard;
+                std::future::pending().await
+            })
+        }),
+    );
+    let deps = ClientApiDeps::new(
+        Arc::new(dispatch),
+        ClientPushGateway::new(Arc::new(PushSink::new())),
+        crate::client_api_acceptance::watcher(),
+    );
+    let mut call = Box::pin(deps.execute(wire::command_request::Command::GetCwd(
+        wire::GetCwdRequest {},
+    )));
+    assert!(futures_util::poll!(&mut call).is_pending());
+    tokio::task::yield_now().await;
+    // When
+    drop(call);
+    // Then
+    assert_eq!(deps.request_limit.available_permits(), 64);
+    tokio::time::timeout(std::time::Duration::from_secs(1), stopped.cancelled())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn test_単発rpc_取り消しはcancelledでpanicはinternalに分類する() {
+    // Given
+    let task = tokio::spawn(std::future::pending::<()>());
+    // When
+    task.abort();
+    let error = task_error(task.await.unwrap_err());
+    // Then
+    assert_eq!(error.code, connectrpc::ErrorCode::Canceled);
+    let task = tokio::spawn(async { panic!("test panic") });
+    assert_eq!(
+        task_error(task.await.unwrap_err()).code,
+        connectrpc::ErrorCode::Internal
+    );
+    let token = tokio_util::sync::CancellationToken::new();
+    token.cancel();
+    let mut dispatch = dispatch();
+    dispatch.register_domain(&["get_cwd"], Box::new(|_| Box::pin(std::future::pending())));
+    let error = run_command(
+        &token,
+        dispatch.dispatch_admitted(wire::command_request::Command::GetCwd(
+            wire::GetCwdRequest {},
+        )),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.code, connectrpc::ErrorCode::Canceled);
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_購読stream_既定期限を過ぎても配信できる() {
+    use axum::{body::Body, http::Request};
+    use futures_util::StreamExt;
+    use tower::ServiceExt;
+    // Given
+    let sink = Arc::new(PushSink::new());
+    let deps = ClientApiDeps::new(
+        Arc::new(dispatch()),
+        ClientPushGateway::new(sink.clone()),
+        crate::client_api_acceptance::watcher(),
+    );
+    let response = router(Some(deps))
+        .oneshot(
+            Request::post("/releash.client.v1.ClientService/SubscribePush")
+                .header("content-type", "application/connect+json")
+                .header("connect-protocol-version", "1")
+                .body(Body::from(vec![0, 0, 0, 0, 2, b'{', b'}']))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(response.status().is_success());
+    let mut body = response.into_body().into_data_stream();
+    assert!(body.next().await.unwrap().is_ok());
+    // When
+    tokio::time::advance(std::time::Duration::from_secs(121)).await;
+    assert!(futures_util::poll!(body.next()).is_pending());
+    crate::adaptor::gateway::push::BackendPush::ReviewCommentsChanged("/next".into()).emit(&sink);
+    // Then
+    let frame = body.next().await.unwrap().unwrap();
+    assert_eq!(frame[0], 0);
+    assert!(std::str::from_utf8(&frame[5..]).unwrap().contains("/next"));
+}
+
+#[tokio::test]
+async fn test_単発rpc_client切断で処理が終了する() {
+    use tokio::io::AsyncWriteExt;
+    // Given
+    let stopped = tokio_util::sync::CancellationToken::new();
+    let started = tokio_util::sync::CancellationToken::new();
+    let signal = stopped.clone();
+    let start_signal = started.clone();
+    let mut dispatch = dispatch();
+    dispatch.register_domain(
+        &["get_cwd"],
+        Box::new(move |_| {
+            let guard = signal.clone().drop_guard();
+            start_signal.cancel();
+            Box::pin(async move {
+                let _guard = guard;
+                std::future::pending().await
+            })
+        }),
+    );
+    let deps = ClientApiDeps::new(
+        Arc::new(dispatch),
+        ClientPushGateway::new(Arc::new(PushSink::new())),
+        crate::client_api_acceptance::watcher(),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let router = router(Some(deps.clone()));
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    let mut connection = tokio::net::TcpStream::connect(address).await.unwrap();
+    connection.write_all(b"POST /releash.client.v1.ClientService/GetCwd HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nConnect-Protocol-Version: 1\r\nContent-Length: 2\r\n\r\n{}").await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), started.cancelled())
+        .await
+        .unwrap();
+    // When
+    drop(connection);
+    // Then
+    let result = tokio::time::timeout(std::time::Duration::from_secs(2), stopped.cancelled()).await;
+    server.abort();
+    result.unwrap();
+    assert_eq!(deps.request_limit.available_permits(), 64);
+}
+
+#[tokio::test]
+async fn test_単発rpc_変更処理の取り消しでhandlerとworktreeの枠を解放する() {
+    use crate::usecase::repository_usecase::WorktreeExecutionArchiver;
+    // Given
+    let runtime = Arc::new(crate::usecase::workflow::WorkflowRuntimeUsecase::new(
+        Arc::new(super::super::test_support::RecordingRuntimeGateway::default()),
+        Arc::new(crate::usecase::workflow::NoopArchiveRepository),
+    ));
+    let stopped = tokio_util::sync::CancellationToken::new();
+    let signal = stopped.clone();
+    let mut dispatch = dispatch().with_worktree_mutations(runtime.clone());
+    dispatch.register_domain(
+        &["git_stage"],
+        Box::new(move |_| {
+            let guard = signal.clone().drop_guard();
+            Box::pin(async move {
+                let _guard = guard;
+                std::future::pending().await
+            })
+        }),
+    );
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    let mut call = Box::pin(run_command(
+        &cancellation,
+        dispatch.dispatch_admitted(wire::command_request::Command::GitStage(
+            wire::GitStageRequest {
+                repo_path: Some("/repo".into()),
+                ..Default::default()
+            },
+        )),
+    ));
+    assert!(futures_util::poll!(&mut call).is_pending());
+    let deletion = runtime.begin_worktree_deletion("/repo");
+    tokio::pin!(deletion);
+    assert!(futures_util::poll!(&mut deletion).is_pending());
+    // When
+    cancellation.cancel();
+    assert_eq!(
+        call.await.unwrap_err().code,
+        connectrpc::ErrorCode::Canceled
+    );
+    // Then
+    assert!(stopped.is_cancelled());
+    tokio::time::timeout(std::time::Duration::from_secs(1), deletion)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_状態購読_既定期限後もbookmarkが届く() {
+    use axum::{body::Body, http::Request};
+    use futures_util::StreamExt;
+    use tower::ServiceExt;
+    // Given
+    let subscriptions = crate::usecase::state_subscription::StateSubscriptionUsecase::new(
+        Vec::new(),
+        Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+    );
+    let deps = ClientApiDeps::new(
+        Arc::new(dispatch()),
+        ClientPushGateway::new(Arc::new(PushSink::new())),
+        crate::client_api_acceptance::watcher(),
+    )
+    .with_state_subscriptions(subscriptions.clone());
+    let payload = br#"{"clientId":"deadline-test"}"#;
+    let mut bytes = vec![0];
+    bytes.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+    bytes.extend_from_slice(payload);
+    let response = router(Some(deps))
+        .oneshot(
+            Request::post("/releash.client.v1.ClientService/OpenStateStream")
+                .header("content-type", "application/connect+json")
+                .header("connect-protocol-version", "1")
+                .body(Body::from(bytes))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(response.status().is_success());
+    let mut body = response.into_body().into_data_stream();
+    assert!(body.next().await.unwrap().is_ok());
+    subscriptions
+        .start("deadline-test", "repository-paths", None)
+        .unwrap();
+    assert!(body.next().await.unwrap().is_ok());
+    // When / Then
+    for _ in 0..13 {
+        tokio::time::advance(std::time::Duration::from_secs(10)).await;
+        let frame = body.next().await.unwrap().unwrap();
+        assert_eq!(frame[0], 0);
+        assert!(std::str::from_utf8(&frame[5..])
+            .unwrap()
+            .contains("bookmark"));
+    }
+}
+
+#[tokio::test]
+async fn test_状態購読操作_上限時は拒否し枠解放後は受理する() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+    // Given
+    let subscriptions = crate::usecase::state_subscription::StateSubscriptionUsecase::new(
+        Vec::new(),
+        Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+    );
+    let _stream = subscriptions.open("limited".into()).unwrap();
+    let deps = ClientApiDeps::new(
+        Arc::new(dispatch()),
+        ClientPushGateway::new(Arc::new(PushSink::new())),
+        crate::client_api_acceptance::watcher(),
+    )
+    .with_state_subscriptions(subscriptions);
+    let router = router(Some(deps.clone()));
+    for method in ["StartStateSubscription", "StopStateSubscription"] {
+        let permits = (0..64)
+            .map(|_| deps.request_permit().unwrap())
+            .collect::<Vec<_>>();
+        let request = || {
+            Request::post(format!("/releash.client.v1.ClientService/{method}"))
+                .header("content-type", "application/json")
+                .header("connect-protocol-version", "1")
+                .body(Body::from(
+                    r#"{"clientId":"limited","target":"repository-paths"}"#,
+                ))
+                .unwrap()
+        };
+        // When / Then
+        assert_eq!(
+            router.clone().oneshot(request()).await.unwrap().status(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        drop(permits);
+        assert_eq!(
+            router.clone().oneshot(request()).await.unwrap().status(),
+            StatusCode::OK
+        );
+        assert_eq!(deps.request_limit.available_permits(), 64);
+    }
+}
+
+async fn assert_cancelled_blocking_mutation(deadline: bool, repository: bool) {
+    use crate::usecase::repository_usecase::WorktreeExecutionArchiver;
+    use axum::{
+        body::{to_bytes, Body},
+        http::Request,
+    };
+    use tower::ServiceExt;
+    // Given
+    let runtime = Arc::new(crate::usecase::workflow::WorkflowRuntimeUsecase::new(
+        Arc::new(super::super::test_support::RecordingRuntimeGateway::default()),
+        Arc::new(crate::usecase::workflow::NoopArchiveRepository),
+    ));
+    let started = Arc::new(tokio::sync::Notify::new());
+    let signal = started.clone();
+    let (finish, receiver) = std::sync::mpsc::channel();
+    let receiver = Arc::new(std::sync::Mutex::new(receiver));
+    let stopped = tokio_util::sync::CancellationToken::new();
+    let stop_signal = stopped.clone();
+    let mut dispatch = dispatch().with_worktree_mutations(runtime.clone());
+    dispatch.register_domain(
+        &["git_stage"],
+        Box::new(move |_| {
+            let signal = signal.clone();
+            let receiver = receiver.clone();
+            let guard = stop_signal.clone().drop_guard();
+            Box::pin(async move {
+                let _guard = guard;
+                let operation = move || {
+                    signal.notify_one();
+                    receiver.lock().unwrap().recv().unwrap();
+                };
+                let result = if repository {
+                    crate::adaptor::controller::client::repository::run_blocking(move || {
+                        operation();
+                        Ok(())
+                    })
+                    .await
+                } else {
+                    crate::adaptor::controller::client::code::run_blocking(move || {
+                        operation();
+                        Ok(())
+                    })
+                    .await
+                };
+                result.map_err(wire::CommandFailure::from)?;
+                Ok(wire::command_result::Command::GitStage(wire::Unit {}))
+            })
+        }),
+    );
+    let deps = ClientApiDeps::new(
+        Arc::new(dispatch),
+        ClientPushGateway::new(Arc::new(PushSink::new())),
+        crate::client_api_acceptance::watcher(),
+    );
+    let request = Request::post("/releash.client.v1.ClientService/GitStage")
+        .header("content-type", "application/json")
+        .header("connect-protocol-version", "1")
+        .header("connect-timeout-ms", "1000")
+        .body(Body::from(r#"{"repoPath":"/repo","paths":[]}"#))
+        .unwrap();
+    let mut call = Box::pin(router(Some(deps.clone())).oneshot(request));
+    assert!(futures_util::poll!(&mut call).is_pending());
+    started.notified().await;
+    let mut deletion = Box::pin(runtime.begin_worktree_deletion("/repo"));
+    assert!(futures_util::poll!(&mut deletion).is_pending());
+    // When
+    if deadline {
+        let response = call.await.unwrap();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(error["code"], "deadline_exceeded");
+    } else {
+        drop(call);
+    }
+    stopped.cancelled().await;
+    // Then
+    assert_eq!(deps.request_limit.available_permits(), 64);
+    assert!(deps.request_permit().is_ok());
+    assert!(futures_util::poll!(&mut deletion).is_pending());
+    assert!(runtime.begin_worktree_mutation("/repo").is_err());
+    finish.send(()).unwrap();
+    let guard = deletion.await.unwrap();
+    assert!(runtime.begin_worktree_mutation("/repo").is_err());
+    drop(guard);
+    assert!(runtime.begin_worktree_mutation("/repo").is_ok());
+}
+
+#[tokio::test]
+async fn test_変更rpc_中断後も同期処理の完了まで削除と変更を拒否する() {
+    for repository in [false, true] {
+        assert_cancelled_blocking_mutation(false, repository).await;
+    }
+}
+
+#[tokio::test]
+async fn test_変更rpc_期限切れ後も同期処理の完了まで削除と変更を拒否する() {
+    for repository in [false, true] {
+        assert_cancelled_blocking_mutation(true, repository).await;
+    }
 }

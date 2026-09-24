@@ -60,10 +60,12 @@ pub(crate) async fn save_notion_config_shared(
         property_mapping,
     }
     .into();
-    tokio::task::spawn_blocking(move || notion_usecase.save_config(repo_path, config))
-        .await
-        .map_err(map_join_error)?
-        .map_err(map_usecase_error)
+    crate::adaptor::controller::client::worktree_mutation::spawn_blocking(move || {
+        notion_usecase.save_config(repo_path, config)
+    })
+    .await
+    .map_err(map_join_error)?
+    .map_err(map_usecase_error)
 }
 
 pub(crate) fn get_notion_config_shared(
@@ -82,10 +84,12 @@ pub(crate) async fn delete_notion_config_shared(
     repo_path: String,
 ) -> Result<(), AppError> {
     let notion_usecase = state.notion_usecase.clone();
-    tokio::task::spawn_blocking(move || notion_usecase.delete_config(&repo_path))
-        .await
-        .map_err(map_join_error)?
-        .map_err(map_usecase_error)
+    crate::adaptor::controller::client::worktree_mutation::spawn_blocking(move || {
+        notion_usecase.delete_config(&repo_path)
+    })
+    .await
+    .map_err(map_join_error)?
+    .map_err(map_usecase_error)
 }
 
 pub(crate) async fn validate_notion_config_shared(

@@ -129,23 +129,7 @@ impl ClientCommandDispatch {
         match self.handlers.get(command.name()) {
             Some(handler) => {
                 let future = handler(command);
-                if guards.is_empty() {
-                    return future;
-                }
-                Box::pin(async move {
-                    tokio::spawn(async move {
-                        let _guards = guards;
-                        future.await
-                    })
-                    .await
-                    .map_err(|error| {
-                        crate::other::AppError::coded(
-                            "COMMAND_FAILED",
-                            error.to_string(),
-                            crate::domain::failure::FailureKind::Internal,
-                        )
-                    })?
-                })
+                Box::pin(super::worktree_mutation::scope(guards, future))
             }
             None => Box::pin(std::future::ready(Err(crate::other::AppError::coded(
                 "UNKNOWN_COMMAND",
