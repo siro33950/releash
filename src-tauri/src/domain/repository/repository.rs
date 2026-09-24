@@ -8,7 +8,7 @@
 //! （`spawn_blocking`）は controller 層で被せる方針のため、各 trait の
 //! メソッドは同期シグネチャで定義する。
 
-use super::entities::{Branch, Commit, FileStatus, RepositoryStatusScan, Worktree};
+use super::entities::{Branch, RepositoryStatusScan, Worktree};
 use super::error::RepositoryError;
 
 /// ブランチの参照・作成・削除。
@@ -22,18 +22,8 @@ pub trait BranchRepository: Send + Sync {
     fn delete(&self, repo_path: &str, branch_name: &str) -> Result<(), RepositoryError>;
 }
 
-/// コミット履歴の読み取り。
-pub trait LogRepository: Send + Sync {
-    fn log(&self, repo_path: &str, limit: Option<usize>) -> Result<Vec<Commit>, RepositoryError>;
-}
-
 /// 作業ツリー状態の読み取り。
 pub trait StatusRepository: Send + Sync {
-    fn status_with_options(
-        &self,
-        repo_path: &str,
-        include_ignored: bool,
-    ) -> Result<Vec<FileStatus>, RepositoryError>;
     fn status_scan(&self, repo_path: &str) -> Result<RepositoryStatusScan, RepositoryError>;
 }
 
@@ -120,7 +110,6 @@ pub trait GitConfigRepository: Send + Sync {
 /// リポジトリパスの解決ユーティリティ。
 pub trait RepoLocator: Send + Sync {
     fn cwd(&self) -> Result<String, RepositoryError>;
-    fn git_dir(&self, file_path: &str) -> Result<String, RepositoryError>;
 }
 
 /// 登録済みリポジトリパス一覧（メモリ共有リスト + アプリ設定への永続化）。
@@ -130,12 +119,4 @@ pub trait RepoPathsRepository: Send + Sync {
     fn add(&self, path: &str) -> Result<bool, RepositoryError>;
     /// 削除できた場合に `true`、存在せず削除されなかった場合に `false`。
     fn remove(&self, path: &str) -> Result<bool, RepositoryError>;
-}
-
-/// repo_paths 変更通知の port。実装は adaptor/gateway 層で Tauri/WS 等の送信
-/// infra（`repo-paths-changed` イベント）を呼ぶ。「成功時に現在の一覧 payload で
-/// 通知する」gating は usecase が担い、本 trait は送信手段のみを抽象化する。
-pub trait RepoPathsNotifier: Send + Sync {
-    /// 変更後の現在の一覧 payload で変更通知を発火する。
-    fn notify_changed(&self, paths: Vec<String>);
 }

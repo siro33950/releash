@@ -50,18 +50,6 @@ impl RepositoryScanner for DefaultRepositoryScanner {
         })
     }
 
-    fn status_with_ignored(
-        &self,
-        repo_path: &str,
-    ) -> Result<Vec<FileStatusDto>, RepositoryStateError> {
-        Ok(self
-            .repository
-            .get_git_status_include_ignored(repo_path)?
-            .into_iter()
-            .map(Into::into)
-            .collect())
-    }
-
     fn prune_stale_branch_bases(
         &self,
         repo_path: &str,

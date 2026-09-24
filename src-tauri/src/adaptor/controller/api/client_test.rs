@@ -61,14 +61,12 @@ async fn test_connect_生成clientのunaryで結果と構造化エラーを返�
     // Given
     let mut dispatch = dispatch();
     dispatch.register_domain(
-        &["get_repo_paths"],
+        &["get_cwd"],
         Box::new(|_| {
             Box::pin(async {
-                Ok(wire::command_result::Command::GetRepoPaths(
-                    wire::Liststring {
-                        items: vec!["/repo".into()],
-                    },
-                ))
+                Ok(wire::command_result::Command::GetCwd(wire::ResultString {
+                    value: Some("/repo".into()),
+                }))
             })
         }),
     );
@@ -76,12 +74,12 @@ async fn test_connect_生成clientのunaryで結果と構造化エラーを返�
     // When / Then
     assert_eq!(
         client
-            .get_repo_paths(rpc::GetRepoPathsRequest::default())
+            .get_cwd(rpc::GetCwdRequest::default())
             .await
             .unwrap()
             .into_owned()
-            .items,
-        ["/repo"]
+            .value,
+        Some("/repo".into())
     );
     let error = client
         .get_current_branch(rpc::GetCurrentBranchRequest::default())
@@ -112,19 +110,19 @@ async fn test_push_server_streamは再同期通知の後にbackend変更を配�
         to_wire::<wire::Push>(&initial).unwrap().event,
         Some(wire::push::Event::Resync(_))
     ));
-    crate::adaptor::gateway::push::BackendPush::RepoPathsChanged(&["/next".into()]).emit(&sink);
+    crate::adaptor::gateway::push::BackendPush::ReviewCommentsChanged("/next").emit(&sink);
     let push = stream
         .message::<rpc::Push>()
         .await
         .unwrap()
         .unwrap()
         .to_owned_message();
-    let Some(wire::push::Event::RepoPathsChanged(value)) =
+    let Some(wire::push::Event::ReviewCommentsChanged(value)) =
         to_wire::<wire::Push>(&push).unwrap().event
     else {
         panic!("repo paths push");
     };
-    assert_eq!(value.items, ["/next"]);
+    assert_eq!(value.value.as_deref(), Some("/next"));
     drop(stream);
     server.abort();
 }
@@ -167,9 +165,11 @@ async fn test_push配信_符号化済みpayloadを保持しlagged後も配信す
         resync
     );
     let event = wire::Push {
-        event: Some(wire::push::Event::RepoPathsChanged(wire::Liststring {
-            items: vec!["/next".into()],
-        })),
+        event: Some(wire::push::Event::ReviewCommentsChanged(
+            wire::ResultString {
+                value: Some("/next".into()),
+            },
+        )),
     };
     let mut bytes = resync.clone();
     bytes.extend(event.encode_to_vec());
@@ -181,7 +181,7 @@ async fn test_push配信_符号化済みpayloadを保持しlagged後も配信す
         serde_json::from_slice(&push.encode(CodecFormat::Json).unwrap()).unwrap();
     assert_eq!(
         json,
-        serde_json::json!({"repoPathsChanged": {"items": ["/next"]}})
+        serde_json::json!({"reviewCommentsChanged": {"value": "/next"}})
     );
     for _ in 0..65 {
         sink.send(bytes.clone());
@@ -245,15 +245,17 @@ async fn test_応答未到達_副作用は完了するが照会と再送は行�
     );
     let count = effects.clone();
     dispatch.register_domain(
-        &["get_crash_reporting_enabled"],
+        &["get_performance_telemetry_enabled"],
         Box::new(move |_| {
             let count = count.clone();
             Box::pin(async move {
-                Ok(wire::command_result::Command::GetCrashReportingEnabled(
-                    wire::ResultBool {
-                        value: Some(count.load(Ordering::SeqCst) != 0),
-                    },
-                ))
+                Ok(
+                    wire::command_result::Command::GetPerformanceTelemetryEnabled(
+                        wire::ResultBool {
+                            value: Some(count.load(Ordering::SeqCst) != 0),
+                        },
+                    ),
+                )
             })
         }),
     );
@@ -280,7 +282,7 @@ async fn test_応答未到達_副作用は完了するが照会と再送は行�
     // Then
     assert_eq!(
         client
-            .get_crash_reporting_enabled(rpc::GetCrashReportingEnabledRequest::default())
+            .get_performance_telemetry_enabled(rpc::GetPerformanceTelemetryEnabledRequest::default())
             .await
             .unwrap()
             .into_owned()
@@ -682,8 +684,8 @@ async fn test_監視rpc_通常要求と同じ枠を取得し上限時はblocking
     }
     assert_eq!(files.next.load(Ordering::SeqCst), 0);
     assert_eq!(
-        deps.execute(wire::command_request::Command::GetRepoPaths(
-            wire::GetRepoPathsRequest {}
+        deps.execute(wire::command_request::Command::GetCwd(
+            wire::GetCwdRequest {}
         ))
         .await
         .unwrap_err()
@@ -939,5 +941,140 @@ async fn test_push購読_idは128byteまで受理し超過を保持前に拒否�
             .unwrap();
         assert!(stream.message::<rpc::Push>().await.unwrap().is_some());
     }
+    server.abort();
+}
+
+#[tokio::test]
+async fn test_状態購読_connectで初期状態と変更と再開を配信する() {
+    use crate::usecase::state_subscription::{StateSubscriptionUsecase, REPO_PATHS};
+    use wire::state_subscription_event::Event;
+    // Given
+    let subscriptions = StateSubscriptionUsecase::new(
+        vec!["/repo".into()],
+        Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+    );
+    let deps = ClientApiDeps::new(
+        Arc::new(dispatch()),
+        ClientPushGateway::new(Arc::new(PushSink::new())),
+        crate::client_api_acceptance::watcher(),
+    )
+    .with_state_subscriptions(subscriptions.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let config = ClientConfig::new(
+        format!("http://{}", listener.local_addr().unwrap())
+            .parse()
+            .unwrap(),
+    );
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router(Some(deps))).await.unwrap();
+    });
+    let client = rpc::ClientServiceClient::new(HttpClient::plaintext(), config);
+    let mut stream = client
+        .open_state_stream(rpc::OpenStateStreamRequest {
+            client_id: "state-test".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let ready: wire::StateSubscriptionEvent = to_wire(
+        &stream
+            .message::<rpc::StateSubscriptionEvent>()
+            .await
+            .unwrap()
+            .unwrap()
+            .to_owned_message(),
+    )
+    .unwrap();
+    assert!(matches!(ready.event, Some(Event::Ready(_))));
+    // When
+    let request = wire::StartStateSubscriptionRequest {
+        client_id: "state-test".into(),
+        target: REPO_PATHS.into(),
+        version: None,
+    };
+    client
+        .start_state_subscription(to_rpc::<rpc::StartStateSubscriptionRequest>(&request).unwrap())
+        .await
+        .unwrap();
+    client
+        .start_state_subscription(to_rpc::<rpc::StartStateSubscriptionRequest>(&request).unwrap())
+        .await
+        .unwrap();
+    // Then
+    let initial: wire::StateSubscriptionEvent = to_wire(
+        &stream
+            .message::<rpc::StateSubscriptionEvent>()
+            .await
+            .unwrap()
+            .unwrap()
+            .to_owned_message(),
+    )
+    .unwrap();
+    assert!(matches!(initial.event, Some(Event::Snapshot(_))));
+    let bookmark: wire::StateSubscriptionEvent = to_wire(
+        &stream
+            .message::<rpc::StateSubscriptionEvent>()
+            .await
+            .unwrap()
+            .unwrap()
+            .to_owned_message(),
+    )
+    .unwrap();
+    assert!(matches!(bookmark.event, Some(Event::Bookmark(_))));
+    crate::domain::repository::RepoPathsNotifier::notify_changed(
+        &crate::adaptor::gateway::repository::notify::RepoPathsNotifyGateway::new(
+            subscriptions.publisher(),
+        ),
+        vec!["/next".into()],
+    );
+    let changed: wire::StateSubscriptionEvent = to_wire(
+        &stream
+            .message::<rpc::StateSubscriptionEvent>()
+            .await
+            .unwrap()
+            .unwrap()
+            .to_owned_message(),
+    )
+    .unwrap();
+    assert!(matches!(changed.event, Some(Event::Change(_))));
+    assert_eq!(changed.version.unwrap().sequence, 1);
+    client
+        .stop_state_subscription(rpc::StopStateSubscriptionRequest {
+            client_id: "state-test".into(),
+            target: REPO_PATHS.into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let error = client
+        .start_state_subscription(rpc::StartStateSubscriptionRequest {
+            client_id: "state-test".into(),
+            target: "missing".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, connectrpc::ErrorCode::NotFound);
+    client
+        .start_state_subscription(
+            to_rpc::<rpc::StartStateSubscriptionRequest>(&wire::StartStateSubscriptionRequest {
+                version: initial.version,
+                ..request
+            })
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let resumed: wire::StateSubscriptionEvent = to_wire(
+        &stream
+            .message::<rpc::StateSubscriptionEvent>()
+            .await
+            .unwrap()
+            .unwrap()
+            .to_owned_message(),
+    )
+    .unwrap();
+    assert!(matches!(resumed.event, Some(Event::Change(_))));
+    drop(stream);
     server.abort();
 }

@@ -3,7 +3,11 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { WorkspaceListModel } from "@/hooks/useWorkspaceList";
-import { completeClientRestoration, invokeClient } from "@/lib/client";
+import {
+	completeClientRestoration,
+	invokeClient,
+	subscribeState,
+} from "@/lib/client";
 import { workspaceListSnapshot } from "@/test/workspaceList";
 import type { AppSettings } from "@/types/settings";
 import App from "./App";
@@ -14,6 +18,7 @@ vi.mock("@/lib/client", async (importOriginal) => ({
 	listenClient: vi.fn().mockResolvedValue(() => {}),
 	watchClient: vi.fn().mockReturnValue(() => {}),
 	completeClientRestoration: vi.fn(),
+	subscribeState: vi.fn(),
 }));
 vi.mock("@/hooks/useMenuEvents", () => ({ useMenuEvents: vi.fn() }));
 vi.mock("@/hooks/useUpdateChecker", () => ({ useUpdateChecker: () => null }));
@@ -90,6 +95,10 @@ beforeEach(() => {
 	vi.useFakeTimers();
 	vi.clearAllMocks();
 	localStorage.clear();
+	vi.mocked(subscribeState).mockImplementation((_target, onValue) => {
+		onValue([]);
+		return () => {};
+	});
 	status = {
 		phase: "restoring",
 		connectionGeneration: 1,
@@ -255,6 +264,12 @@ it("設定とWorkspacesは更新中と失敗時も同じ登録一覧を保持し
 	const settings = screen.getByRole("region", {
 		name: "Registered repositories",
 	});
+	const subscription = vi
+		.mocked(subscribeState)
+		.mock.calls.find(([target]) => target === "repository-paths");
+	if (!subscription) throw new Error("Missing state subscription");
+	const receive = subscription[1];
+	await act(async () => receive(["/old"]));
 	expect(settings).toHaveTextContent("/old");
 	let reject!: (error: Error) => void;
 	next = new Promise((_, fail) => {
@@ -271,23 +286,19 @@ it("設定とWorkspacesは更新中と失敗時も同じ登録一覧を保持し
 	expect(settings).toHaveTextContent("/old");
 	expect(screen.getByRole("button", { name: "/old" })).toBeVisible();
 	next = Promise.resolve(snapshot(["/new", "/other"]));
-	await act(async () => {
-		fireEvent.click(screen.getByRole("button", { name: "Refresh Workspaces" }));
-	});
+	await act(async () => receive(["/new", "/other"]));
 	expect(settings).toHaveTextContent("/new,/other");
 	expect(screen.getByRole("button", { name: "/new" })).toBeVisible();
 	expect(screen.getByRole("button", { name: "/other" })).toBeVisible();
 	expect(screen.queryByRole("button", { name: "/old" })).toBeNull();
 	next = Promise.resolve(snapshot([]));
-	await act(async () => {
-		fireEvent.click(screen.getByRole("button", { name: "Refresh Workspaces" }));
-	});
+	await act(async () => receive([]));
 	expect(settings).toBeEmptyDOMElement();
 	expect(screen.queryByRole("button", { name: "/new" })).toBeNull();
 	expect(
 		vi
 			.mocked(invokeClient)
-			.mock.calls.some(([name]) => name === "get_repo_paths"),
+			.mock.calls.some(([name]) => String(name) === "get_repo_paths"),
 	).toBe(false);
 });
 

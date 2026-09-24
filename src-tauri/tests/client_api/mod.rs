@@ -126,7 +126,7 @@ async fn test_クライアントconnect_認証と相関を保ちtauri経路を�
     ] {
         let response = reqwest::Client::new()
             .post(format!(
-                "{}/releash.client.v1.ClientService/GetRepoPaths",
+                "{}/releash.client.v1.ClientService/GetCwd",
                 fixture.url
             ))
             .bearer_auth(token)
@@ -292,7 +292,7 @@ fn workflow_payload() -> WorkflowExecutionChangedPayloadView {
 }
 
 #[tokio::test]
-async fn test_backend通知_7イベントがconnectだけへ届く() {
+async fn test_backend通知_6イベントがconnectだけへ届く() {
     // Given
     let fixture = Fixture::new().await;
     let mut socket = fixture.connect().await;
@@ -302,7 +302,6 @@ async fn test_backend通知_7イベントがconnectだけへ届く() {
         "branch-list-sync",
         "file-change",
         "git-status-changed",
-        "repo-paths-changed",
         "review-comments-changed",
         "workflow-execution-changed",
     ];
@@ -323,7 +322,6 @@ async fn test_backend通知_7イベントがconnectだけへ届く() {
     let git = GitStatusChangedEvent {
         repo_path: "/repo".into(),
     };
-    let paths = vec!["/repo".into()];
     let workflow = workflow_payload();
     // When
     let pushes = [
@@ -333,7 +331,6 @@ async fn test_backend通知_7イベントがconnectだけへ届く() {
         BackendPush::BranchListSync,
         BackendPush::FileChange(file),
         BackendPush::GitStatusChanged(git),
-        BackendPush::RepoPathsChanged(&paths),
         BackendPush::ReviewCommentsChanged("*"),
         BackendPush::WorkflowExecutionChanged(Box::new(workflow.clone())),
     ];
@@ -348,7 +345,6 @@ async fn test_backend通知_7イベントがconnectだけへ届く() {
             Value::Null,
             json!({"watcher_id":1,"path":"/repo/file","kind":"change"}),
             json!({"repo_path":"/repo"}),
-            json!(["/repo"]),
             json!("*"),
             serde_json::to_value(&workflow).unwrap(),
         ];
@@ -476,7 +472,7 @@ async fn test_connect_不正protoと旧ws_routeを拒否する() {
     let http = reqwest::Client::new();
     let response = http
         .post(format!(
-            "{}/releash.client.v1.ClientService/GetRepoPaths",
+            "{}/releash.client.v1.ClientService/GetCwd",
             fixture.url
         ))
         .bearer_auth(&*fixture.token)

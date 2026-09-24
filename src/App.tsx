@@ -110,10 +110,8 @@ function WorkbenchApp() {
 	);
 	const { worktrees, selectedWorktreeId, openWorktreeTab } =
 		useWorkspaceNavigation();
-	const { addRepo, removeRepo, initFromCwd } = useRepoList();
-	const workspaceList = useWorkspaceList();
-	const repoPaths =
-		workspaceList.snapshot?.repositories.map((repo) => repo.path) ?? [];
+	const { repoPaths, addRepo, removeRepo, initFromCwd } = useRepoList();
+	const workspaceList = useWorkspaceList(repoPaths);
 	const repositoriesLoaded = workspaceList.snapshot?.status.loaded;
 	const repositoriesError =
 		workspaceList.requestError ?? workspaceList.snapshot?.status.error;
@@ -331,7 +329,7 @@ function WorkbenchApp() {
 				onOpenChange={setShowAppSettings}
 				settings={settings}
 				onSave={updateSettings}
-				repoPaths={repoPaths}
+				repoPaths={repoPaths ?? []}
 				onRemoveRepo={removeRepo}
 			/>
 		</TooltipProvider>

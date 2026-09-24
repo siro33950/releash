@@ -21,9 +21,9 @@ afterEach(async () => {
 it("desktopの業務要求をHTTPへ送りIPCには接続情報と復元完了だけを渡す", async () => {
 	vi.mocked(invoke).mockClear();
 	const fixture = connectFixture({
-		getRepoPaths: () => ({ items: ["/repo"] }),
+		getCwd: () => ({ value: "/repo" }),
 	});
-	await expect(invokeClient("get_repo_paths")).resolves.toEqual(["/repo"]);
+	await expect(invokeClient("get_cwd")).resolves.toEqual("/repo");
 	await completeClientRestoration(7);
 	for (const request of fixture.requests)
 		expect(request.headers.get("authorization")).toBe("Bearer client-token");
@@ -40,7 +40,7 @@ it("desktopの業務要求をHTTPへ送りIPCには接続情報と復元完了�
 });
 
 it("破棄済み画面の遅い接続情報が次の接続を上書きしない", async () => {
-	connectFixture({ getRepoPaths: () => ({ items: ["/repo"] }) });
+	connectFixture({ getCwd: () => ({ value: "/repo" }) });
 	const original = vi.mocked(invoke).getMockImplementation();
 	if (!original) throw new Error("Missing endpoint fixture");
 	let release!: (value: unknown) => void;
@@ -52,20 +52,20 @@ it("破棄済み画面の遅い接続情報が次の接続を上書きしない"
 			});
 		return original(command, args);
 	});
-	const old = invokeClient("get_repo_paths").catch((error) => error);
+	const old = invokeClient("get_cwd").catch((error) => error);
 	window.dispatchEvent(new Event("pagehide"));
-	await expect(invokeClient("get_repo_paths")).resolves.toEqual(["/repo"]);
+	await expect(invokeClient("get_cwd")).resolves.toEqual("/repo");
 	release({ url: "http://127.0.0.1:9829", token: "old", launchId: "launch" });
 	expect(await old).toBeInstanceOf(Error);
-	await expect(invokeClient("get_repo_paths")).resolves.toEqual(["/repo"]);
+	await expect(invokeClient("get_cwd")).resolves.toEqual("/repo");
 	expect(endpoints).toBe(2);
 });
 
 it("Rustの同一性検証が失敗した接続では業務RPCも復元完了も呼ばない", async () => {
-	const read = vi.fn(() => ({ items: ["/repo"] }));
+	const read = vi.fn(() => ({ value: "/repo" }));
 	connectFixture({
 		getServerInfo: () => ({ launchId: "different", release: "test" }),
-		getRepoPaths: read,
+		getCwd: read,
 	});
 	const original = vi.mocked(invoke).getMockImplementation();
 	if (!original) throw new Error("Missing fixture implementation");
@@ -75,7 +75,7 @@ it("Rustの同一性検証が失敗した接続では業務RPCも復元完了も
 			throw new Error("Daemon identity changed");
 		return original(command, args);
 	});
-	await expect(invokeClient("get_repo_paths")).rejects.toThrow(
+	await expect(invokeClient("get_cwd")).rejects.toThrow(
 		"Daemon identity changed",
 	);
 	await expect(completeClientRestoration(7)).rejects.toThrow(
@@ -107,9 +107,9 @@ it("設定再適用はコマンド名によらずRustの応答指示に従う", 
 			desktopSettings: settings,
 		}),
 		updateCrashReporting: () => ({}),
-		getRepoPaths: (_, context) => {
+		getCwd: (_, context) => {
 			context.responseHeader.set("releash-desktop-settings-changed", "true");
-			return { items: ["/repo"] };
+			return { value: "/repo" };
 		},
 	});
 	const { getClient } = await import("./client");
@@ -117,7 +117,7 @@ it("設定再適用はコマンド名によらずRustの応答指示に従う", 
 	vi.mocked(invoke).mockClear();
 	await invokeClient("update_crash_reporting", { enabled: true });
 	expect(invoke).not.toHaveBeenCalled();
-	await expect(invokeClient("get_repo_paths")).resolves.toEqual(["/repo"]);
+	await expect(invokeClient("get_cwd")).resolves.toEqual("/repo");
 	expect(invoke).toHaveBeenCalledExactlyOnceWith("apply_desktop_settings", {
 		settings: expect.objectContaining(settings),
 	});
@@ -160,11 +160,11 @@ it.each(["unavailable", "network", "permission", "apply"])(
 			},
 			getAppSettings: () => ({ closeToTray: true, startMinimized: false }),
 			updateAppSettings: update,
-			getRepoPaths: async () => {
+			getCwd: async () => {
 				await new Promise<void>((resolve) => {
 					finishRead = resolve;
 				});
-				return { items: ["/repo"] };
+				return { value: "/repo" };
 			},
 			async *terminalOutput(_, context) {
 				yield {
@@ -215,7 +215,7 @@ it.each(["unavailable", "network", "permission", "apply"])(
 		await waitFor(() => expect(result.current.loading).toBe(false));
 		expect(result.current.error).toBeNull();
 		const client = await getClient();
-		const pending = invokeClient("get_repo_paths").catch((error) => error);
+		const pending = invokeClient("get_cwd").catch((error) => error);
 		const received = vi.fn();
 		const closed = vi.fn();
 		const release = await attachClientStream(
@@ -248,7 +248,7 @@ it.each(["unavailable", "network", "permission", "apply"])(
 			expect(update).toHaveBeenCalledOnce();
 			expect(await getClient()).toBe(client);
 			for (const method of [
-				"GetRepoPaths",
+				"GetCwd",
 				"SubscribePush",
 				"SubscribeTerminalSurfaces",
 			])
@@ -257,7 +257,7 @@ it.each(["unavailable", "network", "permission", "apply"])(
 						?.signal.aborted,
 				).toBe(false);
 			finishRead();
-			await expect(pending).resolves.toEqual(["/repo"]);
+			await expect(pending).resolves.toEqual("/repo");
 			emitOutput();
 			await vi.waitFor(() =>
 				expect(received).toHaveBeenCalledWith({

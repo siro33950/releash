@@ -335,16 +335,6 @@ impl WorkflowUsecase {
         self.authorize_execution_access_for_worktree(&execution_id, worktree_path)
     }
 
-    pub fn resolve_worktree_by_execution(
-        &self,
-        execution_id: &str,
-    ) -> Result<Option<String>, WorkflowError> {
-        Ok(self
-            .workspace_query
-            .execution_summary(execution_id)?
-            .map(|execution| execution.worktree_path))
-    }
-
     pub fn resolve_worktree_path(&self, worktree_path: &str) -> Result<String, WorkflowError> {
         self.worktrees.resolve(worktree_path)
     }
@@ -367,35 +357,11 @@ impl WorkflowUsecase {
         self.query.get_workflow_source_format(file_stem)
     }
 
-    pub fn get_execution_log(
-        &self,
-        execution_id: &str,
-    ) -> Result<Vec<WorkflowEventView>, WorkflowError> {
-        if self.get_execution(execution_id)?.is_none() {
-            return Err(WorkflowError::NotFound(format!(
-                "Workflow execution not found: {execution_id}"
-            )));
-        }
-        self.query.get_execution_log(execution_id)
-    }
-
     pub fn get_execution_state(
         &self,
         execution_id: &str,
     ) -> Result<Option<ExecutionTree>, WorkflowError> {
         self.query.get_execution_state(execution_id)
-    }
-
-    pub fn get_node_detail(
-        &self,
-        execution_id: &str,
-        node_execution_id: &str,
-    ) -> Result<Option<crate::domain::workflow::NodeExecution>, WorkflowError> {
-        self.query.get_node_detail(execution_id, node_execution_id)
-    }
-
-    pub fn list_facets(&self, kind: FacetKind) -> Result<Vec<String>, WorkflowError> {
-        self.query.list_facets(kind)
     }
 
     pub fn get_facet(&self, kind: FacetKind, key: &str) -> Result<String, WorkflowError> {

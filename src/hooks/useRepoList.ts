@@ -1,13 +1,16 @@
-import { useCallback } from "react";
-import { invokeClient as invoke } from "@/lib/client";
+import { useCallback, useEffect, useState } from "react";
+import { invokeClient as invoke, subscribeState } from "@/lib/client";
 
 export interface UseRepoListReturn {
+	repoPaths: string[] | null;
 	addRepo: (path: string) => void;
 	removeRepo: (path: string) => void;
 	initFromCwd: (cwdRepoPath: string) => void;
 }
 
 export function useRepoList(): UseRepoListReturn {
+	const [repoPaths, setRepoPaths] = useState<string[] | null>(null);
+	useEffect(() => subscribeState("repository-paths", setRepoPaths), []);
 	const addRepo = useCallback((path: string) => {
 		invoke("add_repo_path", { path }).catch((err) =>
 			console.warn("[useRepoList] add_repo_path failed", err),
@@ -26,5 +29,5 @@ export function useRepoList(): UseRepoListReturn {
 		);
 	}, []);
 
-	return { addRepo, removeRepo, initFromCwd };
+	return { repoPaths, addRepo, removeRepo, initFromCwd };
 }

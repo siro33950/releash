@@ -23,7 +23,6 @@ import {
 	AppSectionSchema,
 	ArchiveAgentSessionRequestSchema,
 	ArchiveWorkspaceWorkflowExecutionRequestSchema,
-	BranchDiffSummaryDtoSchema,
 	BuildDiffFileTreeRequestSchema,
 	BuildReviewThreadHandoffRequestSchema,
 	type ClientService,
@@ -57,26 +56,14 @@ import {
 	GetApplicationStartupOutcomeRequestSchema,
 	GetAppSettingsRequestSchema,
 	GetAutomationConfigDirRequestSchema,
-	GetBinaryFileAtBranchBaseRequestSchema,
-	GetBinaryFileAtRefRequestSchema,
-	GetBinaryStagedContentRequestSchema,
 	GetBranchBaseRequestSchema,
-	GetBranchDiffSummaryRequestSchema,
 	GetCachedIssuesRequestSchema,
 	GetCachedPrStatusRequestSchema,
-	GetCrashReportingEnabledRequestSchema,
 	GetCurrentBranchRequestSchema,
 	GetCwdRequestSchema,
-	GetDefaultBranchRequestSchema,
 	GetExternalEditorRequestSchema,
 	GetFacetRequestSchema,
-	GetFileAtBranchBaseRequestSchema,
-	GetFileAtRefRequestSchema,
 	GetFileNavigationRequestSchema,
-	GetGitLogRequestSchema,
-	GetGitStatusRequestSchema,
-	GetGitStatusSnapshotRequestSchema,
-	GetHeadDiffFileTreeSnapshotRequestSchema,
 	GetLanguageFromPathRequestSchema,
 	GetMainRepoPathRequestSchema,
 	GetNotionConfigRequestSchema,
@@ -85,32 +72,20 @@ import {
 	GetPerformanceRealAppModeRequestSchema,
 	GetPerformanceTelemetryEnabledRequestSchema,
 	GetProviderAvailabilityRequestSchema,
-	GetRelativePathRequestSchema,
 	GetReleashBaseRequestSchema,
-	GetRepoGitDirRequestSchema,
-	GetRepoPathsRequestSchema,
 	GetReviewBlobRequestSchema,
 	GetReviewFileViewRequestSchema,
 	GetReviewSnapshotRequestSchema,
-	GetReviewThreadHistoryRequestSchema,
-	GetReviewThreadRequestSchema,
-	GetStagedContentRequestSchema,
-	GetStatusDiffStatsRequestSchema,
-	GetStatusDiffStatsSnapshotRequestSchema,
 	GetTerminalPerformanceSwitchesRequestSchema,
 	GetTerminalSurfaceRequestSchema,
 	GetWorkflowConfigRequestSchema,
-	GetWorkflowExecutionLogRequestSchema,
-	GetWorkflowExecutionRequestSchema,
 	GetWorkflowExecutionStateRequestSchema,
-	GetWorkflowNodeDetailRequestSchema,
 	GetWorkflowRequestSchema,
 	GetWorkflowSourceRequestSchema,
 	GetWorkspaceNodeDetailRequestSchema,
 	GetWorkspaceSessionNodeIdRequestSchema,
 	GetWorkspacesRequestSchema,
 	GetWorkspaceTreeSelectionReconciliationRequestSchema,
-	GetWorktreeDirtyCountRequestSchema,
 	GitCreateBranchRequestSchema,
 	GitStageRequestSchema,
 	GitStageReviewGroupRequestSchema,
@@ -123,31 +98,23 @@ import {
 	ListBranchDtoSchema,
 	ListBranchesRequestSchema,
 	ListBranchesWithStatusSnapshotRequestSchema,
-	ListCommitDtoSchema,
 	ListDiffRangeDtoSchema,
 	ListDiffTreeNodeDtoSchema,
 	ListEditorInfoDtoSchema,
 	ListFacetSummariesRequestSchema,
 	ListFacetSummaryDtoSchema,
-	ListFacetsRequestSchema,
-	ListFileDiffStatDtoSchema,
-	ListFileStatusDtoSchema,
 	ListHiddenRangeDtoSchema,
 	ListInlineChunkDtoSchema,
 	ListIssueInfoDtoSchema,
 	ListNotionLabelOptionViewSchema,
 	ListProviderHookHealthWarningResponseSchema,
 	ListProviderHookHealthWarningsRequestSchema,
-	ListReviewHistoryEntryDtoSchema,
 	ListReviewThreadDtoSchema,
 	ListReviewThreadsRequestSchema,
 	ListSplitRowDtoSchema,
-	ListstringSchema,
 	ListTerminalInputPerformanceSampleV1Schema,
 	ListTerminalLaunchPerformanceSampleV1Schema,
 	ListVisibleBlockDtoSchema,
-	ListWorkflowExecutionSummaryDtoSchema,
-	ListWorkflowExecutionsRequestSchema,
 	ListWorkflowSummaryDtoSchema,
 	ListWorkflowsRequestSchema,
 	ListWorkspaceWorkflowHistoryItemDtoSchema,
@@ -159,11 +126,8 @@ import {
 	NotionTaskPageViewSchema,
 	NotionValidationResultViewSchema,
 	NullableAgentSessionItemDtoSchema,
-	NullableListDurableWorkflowFactLogEntrySchema,
-	NullableNodeExecutionViewSchema,
 	NullableNotionRepoConfigViewSchema,
 	NullablestringSchema,
-	NullableWorkflowExecutionSummaryDtoSchema,
 	NullableWorkflowExecutionViewSchema,
 	NullableWorkspaceNodeDetailDtoSchema,
 	NullableWorkspaceStateDtoSchema,
@@ -187,20 +151,15 @@ import {
 	ReportMountedXtermCountRequestSchema,
 	ReportUsageEventRequestSchema,
 	RepositoryBranchCardsSnapshotDtoSchema,
-	RepositoryDiffStatsSnapshotDtoSchema,
-	RepositoryHeadDiffFileTreeSnapshotDtoSchema,
-	RepositoryStatusSnapshotDtoSchema,
 	RequestApplicationQuitRequestSchema,
 	ResetProviderExecutableRequestSchema,
 	ResizeTerminalSurfaceRequestSchema,
 	ResolveActiveExecutionByWorktreeRequestSchema,
 	ResolveReviewThreadRequestSchema,
-	ResolveWorktreeByExecutionRequestSchema,
 	RestoreAgentSessionRequestSchema,
 	RestoreWorkspaceWorkflowExecutionRequestSchema,
 	ResultBoolSchema,
 	ResultStringSchema,
-	ResultUint32Schema,
 	ResumeAgentSessionHistoryCandidateRequestSchema,
 	ResumeWorkspaceSessionNodeRequestSchema,
 	RetryWorkspaceNodeRequestSchema,
@@ -1193,25 +1152,6 @@ const commands = {
 					GetReleashBaseRequestSchema,
 					clientJson(
 						GetReleashBaseRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	get_repo_paths: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_repo_paths"],
-	) => {
-		const result = decode(
-			ListstringSchema,
-			await client.getRepoPaths(
-				fromJson(
-					GetRepoPathsRequestSchema,
-					clientJson(
-						GetRepoPathsRequestSchema,
 						JSON.parse(JSON.stringify(args ?? {})),
 						true,
 					),
@@ -2683,158 +2623,6 @@ const commands = {
 		);
 		return result;
 	},
-	get_crash_reporting_enabled: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_crash_reporting_enabled"],
-	) => {
-		const result = decode(
-			ResultBoolSchema,
-			await client.getCrashReportingEnabled(
-				fromJson(
-					GetCrashReportingEnabledRequestSchema,
-					clientJson(
-						GetCrashReportingEnabledRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	get_file_at_ref: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_file_at_ref"],
-	) => {
-		const result = decode(
-			ResultStringSchema,
-			await client.getFileAtRef(
-				fromJson(
-					GetFileAtRefRequestSchema,
-					clientJson(
-						GetFileAtRefRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	get_staged_content: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_staged_content"],
-	) => {
-		const result = decode(
-			ResultStringSchema,
-			await client.getStagedContent(
-				fromJson(
-					GetStagedContentRequestSchema,
-					clientJson(
-						GetStagedContentRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	get_binary_staged_content: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_binary_staged_content"],
-	) => {
-		const result = decode(
-			ResultStringSchema,
-			await client.getBinaryStagedContent(
-				fromJson(
-					GetBinaryStagedContentRequestSchema,
-					clientJson(
-						GetBinaryStagedContentRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	get_file_at_branch_base: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_file_at_branch_base"],
-	) => {
-		const result = decode(
-			ResultStringSchema,
-			await client.getFileAtBranchBase(
-				fromJson(
-					GetFileAtBranchBaseRequestSchema,
-					clientJson(
-						GetFileAtBranchBaseRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	get_binary_file_at_branch_base: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_binary_file_at_branch_base"],
-	) => {
-		const result = decode(
-			ResultStringSchema,
-			await client.getBinaryFileAtBranchBase(
-				fromJson(
-					GetBinaryFileAtBranchBaseRequestSchema,
-					clientJson(
-						GetBinaryFileAtBranchBaseRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	get_binary_file_at_ref: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_binary_file_at_ref"],
-	) => {
-		const result = decode(
-			ResultStringSchema,
-			await client.getBinaryFileAtRef(
-				fromJson(
-					GetBinaryFileAtRefRequestSchema,
-					clientJson(
-						GetBinaryFileAtRefRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	get_branch_diff_summary: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_branch_diff_summary"],
-	) => {
-		const result = decode(
-			BranchDiffSummaryDtoSchema,
-			await client.getBranchDiffSummary(
-				fromJson(
-					GetBranchDiffSummaryRequestSchema,
-					clientJson(
-						GetBranchDiffSummaryRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
 	build_diff_file_tree: async (
 		client: Client<typeof ClientService>,
 		args: ClientCommandArgs["build_diff_file_tree"],
@@ -2846,25 +2634,6 @@ const commands = {
 					BuildDiffFileTreeRequestSchema,
 					clientJson(
 						BuildDiffFileTreeRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	get_head_diff_file_tree_snapshot: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_head_diff_file_tree_snapshot"],
-	) => {
-		const result = decode(
-			RepositoryHeadDiffFileTreeSnapshotDtoSchema,
-			await client.getHeadDiffFileTreeSnapshot(
-				fromJson(
-					GetHeadDiffFileTreeSnapshotRequestSchema,
-					clientJson(
-						GetHeadDiffFileTreeSnapshotRequestSchema,
 						JSON.parse(JSON.stringify(args ?? {})),
 						true,
 					),
@@ -2892,63 +2661,6 @@ const commands = {
 		);
 		return result;
 	},
-	get_relative_path: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_relative_path"],
-	) => {
-		const result = decode(
-			NullablestringSchema,
-			await client.getRelativePath(
-				fromJson(
-					GetRelativePathRequestSchema,
-					clientJson(
-						GetRelativePathRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	get_review_thread: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_review_thread"],
-	) => {
-		const result = decode(
-			ReviewThreadDtoSchema,
-			await client.getReviewThread(
-				fromJson(
-					GetReviewThreadRequestSchema,
-					clientJson(
-						GetReviewThreadRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	get_review_thread_history: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_review_thread_history"],
-	) => {
-		const result = decode(
-			ListReviewHistoryEntryDtoSchema,
-			await client.getReviewThreadHistory(
-				fromJson(
-					GetReviewThreadHistoryRequestSchema,
-					clientJson(
-						GetReviewThreadHistoryRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
 	fetch_pr_status: async (
 		client: Client<typeof ClientService>,
 		args: ClientCommandArgs["fetch_pr_status"],
@@ -2968,158 +2680,6 @@ const commands = {
 		);
 		return result;
 	},
-	get_default_branch: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_default_branch"],
-	) => {
-		const result = decode(
-			ResultStringSchema,
-			await client.getDefaultBranch(
-				fromJson(
-					GetDefaultBranchRequestSchema,
-					clientJson(
-						GetDefaultBranchRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	get_git_status: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_git_status"],
-	) => {
-		const result = decode(
-			ListFileStatusDtoSchema,
-			await client.getGitStatus(
-				fromJson(
-					GetGitStatusRequestSchema,
-					clientJson(
-						GetGitStatusRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	get_git_status_snapshot: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_git_status_snapshot"],
-	) => {
-		const result = decode(
-			RepositoryStatusSnapshotDtoSchema,
-			await client.getGitStatusSnapshot(
-				fromJson(
-					GetGitStatusSnapshotRequestSchema,
-					clientJson(
-						GetGitStatusSnapshotRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	get_status_diff_stats: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_status_diff_stats"],
-	) => {
-		const result = decode(
-			ListFileDiffStatDtoSchema,
-			await client.getStatusDiffStats(
-				fromJson(
-					GetStatusDiffStatsRequestSchema,
-					clientJson(
-						GetStatusDiffStatsRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	get_status_diff_stats_snapshot: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_status_diff_stats_snapshot"],
-	) => {
-		const result = decode(
-			RepositoryDiffStatsSnapshotDtoSchema,
-			await client.getStatusDiffStatsSnapshot(
-				fromJson(
-					GetStatusDiffStatsSnapshotRequestSchema,
-					clientJson(
-						GetStatusDiffStatsSnapshotRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	get_git_log: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_git_log"],
-	) => {
-		const result = decode(
-			ListCommitDtoSchema,
-			await client.getGitLog(
-				fromJson(
-					GetGitLogRequestSchema,
-					clientJson(
-						GetGitLogRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	get_worktree_dirty_count: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_worktree_dirty_count"],
-	) => {
-		const result = decode(
-			ResultUint32Schema,
-			await client.getWorktreeDirtyCount(
-				fromJson(
-					GetWorktreeDirtyCountRequestSchema,
-					clientJson(
-						GetWorktreeDirtyCountRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	get_repo_git_dir: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_repo_git_dir"],
-	) => {
-		const result = decode(
-			ResultStringSchema,
-			await client.getRepoGitDir(
-				fromJson(
-					GetRepoGitDirRequestSchema,
-					clientJson(
-						GetRepoGitDirRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
 	approve_workflow_node: async (
 		client: Client<typeof ClientService>,
 		args: ClientCommandArgs["approve_workflow_node"],
@@ -3131,120 +2691,6 @@ const commands = {
 					ApproveWorkflowNodeRequestSchema,
 					clientJson(
 						ApproveWorkflowNodeRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	list_workflow_executions: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["list_workflow_executions"],
-	) => {
-		const result = decode(
-			ListWorkflowExecutionSummaryDtoSchema,
-			await client.listWorkflowExecutions(
-				fromJson(
-					ListWorkflowExecutionsRequestSchema,
-					clientJson(
-						ListWorkflowExecutionsRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	get_workflow_execution: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_workflow_execution"],
-	) => {
-		const result = decode(
-			NullableWorkflowExecutionSummaryDtoSchema,
-			await client.getWorkflowExecution(
-				fromJson(
-					GetWorkflowExecutionRequestSchema,
-					clientJson(
-						GetWorkflowExecutionRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	get_workflow_execution_log: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_workflow_execution_log"],
-	) => {
-		const result = decode(
-			NullableListDurableWorkflowFactLogEntrySchema,
-			await client.getWorkflowExecutionLog(
-				fromJson(
-					GetWorkflowExecutionLogRequestSchema,
-					clientJson(
-						GetWorkflowExecutionLogRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	get_workflow_node_detail: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_workflow_node_detail"],
-	) => {
-		const result = decode(
-			NullableNodeExecutionViewSchema,
-			await client.getWorkflowNodeDetail(
-				fromJson(
-					GetWorkflowNodeDetailRequestSchema,
-					clientJson(
-						GetWorkflowNodeDetailRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	resolve_worktree_by_execution: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["resolve_worktree_by_execution"],
-	) => {
-		const result = decode(
-			NullablestringSchema,
-			await client.resolveWorktreeByExecution(
-				fromJson(
-					ResolveWorktreeByExecutionRequestSchema,
-					clientJson(
-						ResolveWorktreeByExecutionRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	list_facets: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["list_facets"],
-	) => {
-		const result = decode(
-			ListstringSchema,
-			await client.listFacets(
-				fromJson(
-					ListFacetsRequestSchema,
-					clientJson(
-						ListFacetsRequestSchema,
 						JSON.parse(JSON.stringify(args ?? {})),
 						true,
 					),

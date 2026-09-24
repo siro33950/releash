@@ -8,7 +8,6 @@ mod shared;
 pub(crate) use shared::register_shared;
 
 pub(crate) mod diff;
-pub(crate) mod file_content;
 pub(crate) mod hunk;
 pub(crate) mod language;
 pub(crate) mod markdown;

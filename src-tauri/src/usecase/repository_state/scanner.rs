@@ -10,11 +10,6 @@ use super::status_membership::{changed_statuses, staged_statuses};
 pub trait RepositoryScanner: Send + Sync {
     fn scan(&self, repo_path: &str) -> Result<RepositorySnapshotParts, RepositoryStateError>;
 
-    fn status_with_ignored(
-        &self,
-        repo_path: &str,
-    ) -> Result<Vec<FileStatusDto>, RepositoryStateError>;
-
     fn prune_stale_branch_bases(
         &self,
         repo_path: &str,

@@ -85,7 +85,15 @@ impl Renderer {
     async fn restore(&mut self, app: &App, expected_repos: Value) {
         self.request("update_external_editor", json!({"editor":"vim"}))
             .await;
-        let repos = self.request("get_repo_paths", json!({})).await;
+        let snapshot = self.request("refresh_workspaces", json!({})).await;
+        let repos = Value::Array(
+            snapshot["repositories"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|repo| repo["path"].clone())
+                .collect(),
+        );
         let telemetry = self
             .request("get_performance_telemetry_enabled", json!({}))
             .await;
@@ -178,7 +186,6 @@ async fn test_実workflow更新_一括停止と旧daemon終了から適用と新
         .iter()
         .any(|(_, event, _)| event == "process_exited"));
     let pid = old["pid"].as_i64().unwrap() as i32;
-    let old_launch = renderer.launch.clone();
     let old_launch = renderer.launch.clone();
     let next_binary = root.join("updated-backend");
     let steps = Arc::new(Mutex::new(Vec::new()));

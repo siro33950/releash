@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::domain::repository::{Branch, Commit, FileDiffStat, FileStatus};
+use crate::domain::repository::{Branch, FileDiffStat, FileStatus};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BranchDto {
@@ -19,29 +19,6 @@ impl From<Branch> for BranchDto {
         Self {
             name: branch.name,
             is_remote: branch.is_remote,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CommitDto {
-    pub hash: String,
-    pub short_hash: String,
-    pub message: String,
-    pub author_name: String,
-    pub author_email: String,
-    pub timestamp: i64,
-}
-
-impl From<Commit> for CommitDto {
-    fn from(commit: Commit) -> Self {
-        Self {
-            hash: commit.hash,
-            short_hash: commit.short_hash,
-            message: commit.message,
-            author_name: commit.author_name,
-            author_email: commit.author_email,
-            timestamp: commit.timestamp,
         }
     }
 }

@@ -43,7 +43,7 @@ test("配布.appの起動・最小化・閉鎖後のworkflow継続・本番Resta
         workflowFile = sourceFile;
         const executionId = await client.call("client", "start_workflow", { workflowName, worktreePath });
         await waitFor(() => existsSync(join(worktreePath, "window-close-running")), "workflow did not start");
-        assert.equal((await client.call("client", "get_workflow_execution", { executionId })).status, "running");
+        assert.equal((await client.call("client", "get_workflow_execution_state", { worktreePath, executionId })).status, "running");
         // When: click the native close button, delivering CloseRequested.
         accessibility(first.ui, 'click (first button of window 1 whose subrole is "AXCloseButton")');
         await waitFor(() => accessibility(first.ui, "count windows") === "0", "close did not hide the window");
@@ -52,14 +52,14 @@ test("配布.appの起動・最小化・閉鎖後のworkflow継続・本番Resta
         assert.deepEqual(discovery(), initial);
         assert.equal(accessibility(first.ui, "count menu bar items of menu bar 2"), "1");
         assert.equal((await client.call("shell", "get_daemon_status")).phase, "ready");
-        assert.equal((await client.call("client", "get_workflow_execution", { executionId })).status, "running");
+        assert.equal((await client.call("client", "get_workflow_execution_state", { worktreePath, executionId })).status, "running");
         tray(first.ui, "Show Releash");
         await waitFor(() => accessibility(first.ui, "count windows") === "1", "closed window did not reopen");
         client = await connect();
         assert.deepEqual(pair(bundle), first);
-        assert.equal((await client.call("client", "get_workflow_execution", { executionId })).status, "running");
+        assert.equal((await client.call("client", "get_workflow_execution_state", { worktreePath, executionId })).status, "running");
         writeFileSync(join(worktreePath, "window-close-finish"), "");
-        await waitFor(async () => (await client.call("client", "get_workflow_execution", { executionId })).status === "completed", "workflow did not complete after reopening");
+        await waitFor(async () => (await client.call("client", "get_workflow_execution_state", { worktreePath, executionId })).status === "completed", "workflow did not complete after reopening");
         await client.call("client", "update_external_editor", { editor: "bundle-restart-marker" });
         // When: the real command goes through observe -> spawn_successor -> wait_for_predecessor.
         await client.execute("setTimeout(() => window.__TAURI__.core.invoke('restart_desktop'), 100); return true");

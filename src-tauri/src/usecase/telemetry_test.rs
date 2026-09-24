@@ -118,7 +118,7 @@ fn test_telemetry設定_永続化成功時だけruntime設定を更新する() {
         } else {
             assert_eq!(*port.0.lock().unwrap(), ["performance:true", "crash:true"]);
             assert!(config.get_performance_telemetry_enabled().unwrap());
-            assert!(config.get_crash_reporting_enabled().unwrap());
+            assert!(config.desktop_settings().unwrap().crash_reporting);
             config.get_app_settings().unwrap();
             config.get_workflow_config().unwrap();
         }

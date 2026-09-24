@@ -4,7 +4,7 @@ import { clientJson } from "../../src/lib/clientJson";
 import { create, fromJson, toJson, type Message } from "@bufbuild/protobuf";
 import { Code, ConnectError, createConnectRouter } from "@connectrpc/connect";
 import { createFetchHandler } from "@connectrpc/connect/protocol";
-import { ClientService, CommandRequestSchema, CommandErrorSchema, PushSchema, TerminalEventSchema, TerminalSubscriptionEventSchema, AttachTerminalSurfaceRequestSchema } from "../../src/generated/client_pb";
+import { ClientService, CommandRequestSchema, CommandErrorSchema, PushSchema, StateSubscriptionEventSchema, TerminalEventSchema, TerminalSubscriptionEventSchema, AttachTerminalSurfaceRequestSchema } from "../../src/generated/client_pb";
 import type { WorkspaceListSnapshotDto } from "../../src/generated/client_types";
 import type { TerminalSurfaceStreamItem } from "../../src/lib/terminalSurfaceStream";
 import type { Page } from "@playwright/test";
@@ -39,6 +39,7 @@ interface TauriEventPluginInternals {
 
 declare global {
 	interface Window {
+		__releashRepositoryPaths: () => string[];
 		__releashPush: (event: string, payload: unknown) => Promise<void>;
 		__releashTerminalEvent: (
 			attachmentId: string,
@@ -67,6 +68,7 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
     const pushes = new Set<ReadableStreamDefaultController<Message>>();
     const attachments = new Map<string, { output: ReadableStreamDefaultController<Message>; streamId: string }>();
     const terminalSubscriptions = new Map<string, ReadableStreamDefaultController<Message>>();
+    const stateStreams = new Map<string, ReadableStreamDefaultController<Message>>();
     const push = (event: string, payload: unknown) => {
         const field = PushSchema.fields.find(field => field.name.replaceAll("_", "-") === event);
         if (!field?.message) throw new Error(`Unknown client event: ${event}`);
@@ -98,6 +100,30 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
     };
     const router = createConnectRouter();
     for (const method of ClientService.methods) {
+        if (method.name === "OpenStateStream") {
+            router.rpc(method, async function* (request, context) {
+                let controller: ReadableStreamDefaultController<Message>;
+                const stream = new ReadableStream<Message>({ start(value) { controller = value; stateStreams.set(request.clientId, value); } });
+                const stop = () => controller.close();
+                context.signal.addEventListener("abort", stop, { once: true });
+                try { yield create(StateSubscriptionEventSchema, { event: { case: "ready", value: {} } }); yield* stream; }
+                finally { stateStreams.delete(request.clientId); context.signal.removeEventListener("abort", stop); }
+            });
+            continue;
+        }
+        if (method.name === "StartStateSubscription") {
+            router.rpc(method, async request => {
+                const stream = stateStreams.get(request.clientId);
+                if (!stream || request.target !== "repository-paths") throw new ConnectError("Unknown state subscription", Code.NotFound);
+                const items = await page.evaluate(() => window.__releashRepositoryPaths());
+                const version = { epoch: "fixture", sequence: 0n };
+                stream.enqueue(create(StateSubscriptionEventSchema, { target: request.target, version, event: { case: "snapshot", value: { value: { case: "repositoryPaths", value: { items } } } } }));
+                stream.enqueue(create(StateSubscriptionEventSchema, { target: request.target, version, event: { case: "bookmark", value: {} } }));
+                return {};
+            });
+            continue;
+        }
+        if (method.name === "StopStateSubscription") { router.rpc(method, () => ({})); continue; }
         if (method.name === "GetServerInfo") { router.rpc(method, () => ({ launchId: "fixture" })); continue; }
         if (method.name === "SubscribePush") {
             router.rpc(method, async function* (_, context) {
@@ -253,6 +279,7 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 			});
 		}
 
+        window.__releashRepositoryPaths = () => (cfg.responses.repository_paths ?? []) as string[];
         let workspaceSnapshot: WorkspaceListSnapshotDto | null = null;
 
 		async function executeCommand(
@@ -318,7 +345,7 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
                     }
                     return workspaceSnapshot;
                 }
-                const paths = await executeCommand("get_repo_paths") as string[];
+                const paths = (cfg.responses.repository_paths ?? []) as string[];
                 const repositories = await Promise.all(paths.map(async (path) => {
                     const result = await executeCommand("list_branches_with_status_snapshot", { repoPath: path }) as { worktree_display_groups: { working_areas: Record<string, unknown>[] } };
                     const prs = await executeCommand("get_cached_pr_status", { repoPath: path }) as { open_prs: Record<string, { number: number; url: string }>; merged_branches: string[] };

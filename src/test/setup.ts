@@ -81,5 +81,9 @@ vi.mock("@/lib/client", async (importOriginal) => {
 		watchClient: mockWatchClient(invokeClient),
 		onClientRefresh: vi.fn().mockReturnValue(() => {}),
 		listenClient: vi.fn().mockResolvedValue(() => {}),
+		subscribeState: vi.fn((_target: string, onValue: (value: []) => void) => {
+			onValue([]);
+			return () => {};
+		}),
 	};
 });

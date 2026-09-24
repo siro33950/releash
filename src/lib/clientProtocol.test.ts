@@ -22,9 +22,9 @@ import { decodeClientPush, decodeTerminalEvent } from "./clientProtocol";
 describe("Connect message codecs", () => {
 	it("生成されたpushを既存の表示用payloadへ戻す", () => {
 		const push = create(PushSchema, {
-			event: { case: "repoPathsChanged", value: { items: ["/repo"] } },
+			event: { case: "reviewCommentsChanged", value: { value: "/repo" } },
 		});
-		expect(decodeClientPush(push, "repo-paths-changed")).toEqual(["/repo"]);
+		expect(decodeClientPush(push, "review-comments-changed")).toEqual("/repo");
 		expect(() => decodeClientPush(push, "branch-list-sync")).toThrow(
 			"Invalid push event",
 		);

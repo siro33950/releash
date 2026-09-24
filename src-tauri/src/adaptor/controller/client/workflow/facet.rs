@@ -11,17 +11,6 @@ fn parse_domain_facet_kind(kind: &str) -> Result<FacetKind, String> {
     }
 }
 
-pub(crate) async fn list_facets_shared(
-    state: &AppState,
-    kind: String,
-) -> Result<Vec<String>, String> {
-    let kind = parse_domain_facet_kind(&kind)?;
-    let query = state.workflow_usecase.clone();
-    tokio::task::spawn_blocking(move || query.list_facets(kind).map_err(|e| e.to_string()))
-        .await
-        .map_err(|e| format!("task join error: {e}"))?
-}
-
 pub(crate) async fn get_facet_shared(
     state: &AppState,
     kind: String,

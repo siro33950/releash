@@ -16,7 +16,6 @@ pub enum BackendPush<'a> {
     WorkspaceListChanged,
     FileChange(FileChangeEvent),
     GitStatusChanged(GitStatusChangedEvent),
-    RepoPathsChanged(&'a [String]),
     ReviewCommentsChanged(&'a str),
     WorkflowExecutionChanged(Box<WorkflowExecutionChangedPayloadView>),
 }
@@ -63,13 +62,6 @@ impl BackendPush<'_> {
                 "git-status-changed",
                 GitStatusChanged,
                 wire::GitStatusChangedEvent::try_from(payload)
-            ),
-            Self::RepoPathsChanged(payload) => publish!(
-                "repo-paths-changed",
-                RepoPathsChanged,
-                Ok::<_, String>(wire::Liststring {
-                    items: payload.to_vec()
-                })
             ),
             Self::ReviewCommentsChanged(payload) => publish!(
                 "review-comments-changed",

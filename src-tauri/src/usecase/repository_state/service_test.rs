@@ -1,4 +1,5 @@
 use super::*;
+use crate::usecase::repository_dto::{FileDiffStatDto, FileStatusDto};
 use crate::usecase::repository_state::{
     runtime::tests_support::{IdentityWorktreePathNormalizer, TestRepositoryStateWorkerRuntime},
     snapshot::RepositorySnapshotParts,
@@ -51,9 +52,7 @@ impl RepositoryScanner for Scanner {
             }],
         })
     }
-    fn status_with_ignored(&self, _: &str) -> Result<Vec<FileStatusDto>, RepositoryStateError> {
-        Ok(vec![])
-    }
+
     fn prune_stale_branch_bases(&self, _: &str, _: &[String]) -> Result<(), RepositoryStateError> {
         Ok(())
     }
@@ -125,9 +124,12 @@ async fn test_一覧の再走査_監視中も保存済みsnapshotを使わず毎
     let snapshot = service.get_snapshot("/repo").unwrap();
     assert_eq!(snapshot.branch_cards[0].name, latest[0].name);
     assert_eq!(snapshot.status[0].path, latest[0].name);
-    assert_eq!(service.get_status("/repo", false).unwrap(), snapshot.status);
     assert_eq!(
-        service.get_diff_stats("/repo").unwrap(),
+        service.get_snapshot("/repo").unwrap().status,
+        snapshot.status
+    );
+    assert_eq!(
+        service.get_snapshot("/repo").unwrap().diff_stats,
         snapshot.diff_stats
     );
     assert_eq!(

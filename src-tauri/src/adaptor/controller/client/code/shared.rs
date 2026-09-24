@@ -1,7 +1,7 @@
 use super::*;
 use crate::adaptor::controller::api::protocol::client as wire;
 use crate::adaptor::controller::client::ClientCommandDispatch;
-use crate::adaptor::controller::client::{convert, optional, required};
+use crate::adaptor::controller::client::{convert, required};
 use crate::adaptor::controller::client::{invalid_request, outcome};
 
 pub(crate) fn register_shared(
@@ -249,177 +249,6 @@ pub(crate) fn register_shared(
     {
         let state = deps.app_state.clone();
         router.register_domain(
-            &["get_binary_file_at_branch_base"],
-            Box::new(move |command| {
-                let state = state.clone();
-                Box::pin(async move {
-                    let wire::command_request::Command::GetBinaryFileAtBranchBase(args) = command
-                    else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move {
-                        let state = state
-                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        outcome(
-                            file_content::get_binary_file_at_branch_base_shared(
-                                &state,
-                                convert(required(args.file_path, "filePath")?)?,
-                            )
-                            .await,
-                        )
-                    }
-                    .await?;
-                    Ok(wire::command_result::Command::GetBinaryFileAtBranchBase(
-                        result,
-                    ))
-                })
-            }),
-        );
-    }
-    {
-        let state = deps.app_state.clone();
-        router.register_domain(
-            &["get_binary_file_at_ref"],
-            Box::new(move |command| {
-                let state = state.clone();
-                Box::pin(async move {
-                    let wire::command_request::Command::GetBinaryFileAtRef(args) = command else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move {
-                        let state = state
-                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        outcome(
-                            file_content::get_binary_file_at_ref_shared(
-                                &state,
-                                convert(required(args.file_path, "filePath")?)?,
-                                convert(required(args.git_ref, "gitRef")?)?,
-                            )
-                            .await,
-                        )
-                    }
-                    .await?;
-                    Ok(wire::command_result::Command::GetBinaryFileAtRef(result))
-                })
-            }),
-        );
-    }
-    {
-        let state = deps.app_state.clone();
-        router.register_domain(
-            &["get_binary_staged_content"],
-            Box::new(move |command| {
-                let state = state.clone();
-                Box::pin(async move {
-                    let wire::command_request::Command::GetBinaryStagedContent(args) = command
-                    else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move {
-                        let state = state
-                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        outcome(
-                            file_content::get_binary_staged_content_shared(
-                                &state,
-                                convert(required(args.file_path, "filePath")?)?,
-                            )
-                            .await,
-                        )
-                    }
-                    .await?;
-                    Ok(wire::command_result::Command::GetBinaryStagedContent(
-                        result,
-                    ))
-                })
-            }),
-        );
-    }
-    {
-        let state = deps.app_state.clone();
-        router.register_domain(
-            &["get_branch_diff_summary"],
-            Box::new(move |command| {
-                let state = state.clone();
-                Box::pin(async move {
-                    let wire::command_request::Command::GetBranchDiffSummary(args) = command else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move {
-                        let state = state
-                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        outcome(
-                            diff::get_branch_diff_summary_shared(
-                                &state,
-                                convert(required(args.repo_path, "repoPath")?)?,
-                                optional(args.base_branch)?,
-                            )
-                            .await,
-                        )
-                    }
-                    .await?;
-                    Ok(wire::command_result::Command::GetBranchDiffSummary(result))
-                })
-            }),
-        );
-    }
-    {
-        let state = deps.app_state.clone();
-        router.register_domain(
-            &["get_file_at_branch_base"],
-            Box::new(move |command| {
-                let state = state.clone();
-                Box::pin(async move {
-                    let wire::command_request::Command::GetFileAtBranchBase(args) = command else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move {
-                        let state = state
-                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        outcome(
-                            file_content::get_file_at_branch_base_shared(
-                                &state,
-                                convert(required(args.file_path, "filePath")?)?,
-                            )
-                            .await,
-                        )
-                    }
-                    .await?;
-                    Ok(wire::command_result::Command::GetFileAtBranchBase(result))
-                })
-            }),
-        );
-    }
-    {
-        let state = deps.app_state.clone();
-        router.register_domain(
-            &["get_file_at_ref"],
-            Box::new(move |command| {
-                let state = state.clone();
-                Box::pin(async move {
-                    let wire::command_request::Command::GetFileAtRef(args) = command else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move {
-                        let state = state
-                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        outcome(
-                            file_content::get_file_at_ref_shared(
-                                &state,
-                                convert(required(args.file_path, "filePath")?)?,
-                                convert(required(args.git_ref, "gitRef")?)?,
-                            )
-                            .await,
-                        )
-                    }
-                    .await?;
-                    Ok(wire::command_result::Command::GetFileAtRef(result))
-                })
-            }),
-        );
-    }
-    {
-        let state = deps.app_state.clone();
-        router.register_domain(
             &["get_file_navigation"],
             Box::new(move |command| {
                 let state = state.clone();
@@ -448,36 +277,6 @@ pub(crate) fn register_shared(
     {
         let state = deps.app_state.clone();
         router.register_domain(
-            &["get_head_diff_file_tree_snapshot"],
-            Box::new(move |command| {
-                let state = state.clone();
-                Box::pin(async move {
-                    let wire::command_request::Command::GetHeadDiffFileTreeSnapshot(args) = command
-                    else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move {
-                        let state = state
-                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        outcome(
-                            diff::get_head_diff_file_tree_snapshot_shared(
-                                &state,
-                                convert(required(args.repo_path, "repoPath")?)?,
-                            )
-                            .await,
-                        )
-                    }
-                    .await?;
-                    Ok(wire::command_result::Command::GetHeadDiffFileTreeSnapshot(
-                        result,
-                    ))
-                })
-            }),
-        );
-    }
-    {
-        let state = deps.app_state.clone();
-        router.register_domain(
             &["get_language_from_path"],
             Box::new(move |command| {
                 let state = state.clone();
@@ -498,34 +297,6 @@ pub(crate) fn register_shared(
                     }
                     .await?;
                     Ok(wire::command_result::Command::GetLanguageFromPath(result))
-                })
-            }),
-        );
-    }
-    {
-        let state = deps.app_state.clone();
-        router.register_domain(
-            &["get_relative_path"],
-            Box::new(move |command| {
-                let state = state.clone();
-                Box::pin(async move {
-                    let wire::command_request::Command::GetRelativePath(args) = command else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move {
-                        let state = state
-                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        outcome(
-                            diff::get_relative_path_shared(
-                                &state,
-                                convert(required(args.root_path, "rootPath")?)?,
-                                convert(required(args.file_path, "filePath")?)?,
-                            )
-                            .await,
-                        )
-                    }
-                    .await?;
-                    Ok(wire::command_result::Command::GetRelativePath(result))
                 })
             }),
         );
@@ -580,33 +351,6 @@ pub(crate) fn register_shared(
                     }
                     .await?;
                     Ok(wire::command_result::Command::GetReviewSnapshot(result))
-                })
-            }),
-        );
-    }
-    {
-        let state = deps.app_state.clone();
-        router.register_domain(
-            &["get_staged_content"],
-            Box::new(move |command| {
-                let state = state.clone();
-                Box::pin(async move {
-                    let wire::command_request::Command::GetStagedContent(args) = command else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move {
-                        let state = state
-                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        outcome(
-                            file_content::get_staged_content_shared(
-                                &state,
-                                convert(required(args.file_path, "filePath")?)?,
-                            )
-                            .await,
-                        )
-                    }
-                    .await?;
-                    Ok(wire::command_result::Command::GetStagedContent(result))
                 })
             }),
         );

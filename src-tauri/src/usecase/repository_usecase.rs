@@ -10,9 +10,9 @@ use std::sync::Arc;
 
 use crate::domain::path::to_canonical_forward_slash;
 use crate::domain::repository::{
-    worktree_path as derive_worktree_path, Branch, BranchRepository, Commit, FileStatus,
-    GitConfigRepository, LogRepository, RepoLocator, RepositoryStatusScan, StatusRepository,
-    WorktreeRepository, WorktreeTerminalGateway,
+    worktree_path as derive_worktree_path, Branch, BranchRepository, GitConfigRepository,
+    RepoLocator, RepositoryStatusScan, StatusRepository, WorktreeRepository,
+    WorktreeTerminalGateway,
 };
 
 use super::repository_dto::{BranchCardDto, WorktreeEntryDto};
@@ -37,7 +37,6 @@ pub trait WorktreeExecutionArchiver: Send + Sync {
 #[derive(Clone)]
 pub struct RepositoryUsecase {
     branch: Arc<dyn BranchRepository>,
-    log: Arc<dyn LogRepository>,
     status: Arc<dyn StatusRepository>,
     worktree: Arc<dyn WorktreeRepository>,
     git_config: Arc<dyn GitConfigRepository>,
@@ -54,7 +53,6 @@ impl RepositoryUsecase {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         branch: Arc<dyn BranchRepository>,
-        log: Arc<dyn LogRepository>,
         status: Arc<dyn StatusRepository>,
         worktree: Arc<dyn WorktreeRepository>,
         git_config: Arc<dyn GitConfigRepository>,
@@ -64,7 +62,6 @@ impl RepositoryUsecase {
     ) -> Self {
         Self {
             branch,
-            log,
             status,
             worktree,
             git_config,
@@ -82,10 +79,6 @@ impl RepositoryUsecase {
 
     pub fn get_current_branch(&self, repo_path: &str) -> Result<String, UsecaseError> {
         Ok(self.branch.current(repo_path)?)
-    }
-
-    pub fn get_default_branch(&self, repo_path: &str) -> Result<String, UsecaseError> {
-        Ok(self.branch.default(repo_path)?)
     }
 
     // ── branch（書き込み） ──
@@ -199,24 +192,7 @@ impl RepositoryUsecase {
         Ok(())
     }
 
-    // ── commit・log（読み取り） ──
-
-    pub fn get_git_log(
-        &self,
-        repo_path: &str,
-        limit: Option<usize>,
-    ) -> Result<Vec<Commit>, UsecaseError> {
-        Ok(self.log.log(repo_path, limit)?)
-    }
-
     // ── status（読み取り） ──
-
-    pub fn get_git_status_include_ignored(
-        &self,
-        repo_path: &str,
-    ) -> Result<Vec<FileStatus>, UsecaseError> {
-        Ok(self.status.status_with_options(repo_path, true)?)
-    }
 
     pub fn get_repository_status_scan(
         &self,
@@ -412,10 +388,6 @@ impl RepositoryUsecase {
         Ok(self.locator.cwd()?)
     }
 
-    pub fn get_repo_git_dir(&self, file_path: &str) -> Result<String, UsecaseError> {
-        Ok(self.locator.git_dir(file_path)?)
-    }
-
     /// ブランチカード read model を副作用なしで取得する。
     ///
     /// snapshot scanner は watcher invalidate から実行される read model 更新経路なので、
@@ -561,25 +533,7 @@ mod repository_usecase_tests {
         }
     }
 
-    impl LogRepository for FakeRepo {
-        fn log(
-            &self,
-            _repo_path: &str,
-            _limit: Option<usize>,
-        ) -> Result<Vec<Commit>, RepositoryError> {
-            Ok(Vec::new())
-        }
-    }
-
     impl StatusRepository for FakeRepo {
-        fn status_with_options(
-            &self,
-            _repo_path: &str,
-            include_ignored: bool,
-        ) -> Result<Vec<FileStatus>, RepositoryError> {
-            let _ = include_ignored;
-            Ok(Vec::new())
-        }
         fn status_scan(&self, _repo_path: &str) -> Result<RepositoryStatusScan, RepositoryError> {
             Ok(RepositoryStatusScan {
                 status: Vec::new(),
@@ -740,9 +694,6 @@ mod repository_usecase_tests {
         fn cwd(&self) -> Result<String, RepositoryError> {
             Ok("/cwd".to_string())
         }
-        fn git_dir(&self, _file_path: &str) -> Result<String, RepositoryError> {
-            Ok("/cwd/.git".to_string())
-        }
     }
 
     impl WorktreeTerminalGateway for FakeRepo {
@@ -776,7 +727,6 @@ mod repository_usecase_tests {
     fn usecase(fake: Arc<FakeRepo>) -> RepositoryUsecase {
         let query = RepositoryQueryService::new(fake.clone(), fake.operations.clone());
         RepositoryUsecase::new(
-            fake.clone(),
             fake.clone(),
             fake.clone(),
             fake.clone(),
@@ -1472,6 +1422,7 @@ mod repository_usecase_tests {
         assert!(path.exists());
         assert!(fake.operations.mutate(path.to_str().unwrap()).is_ok());
     }
+
     #[tokio::test]
     async fn test_worktree削除_受理後も削除終了まで一覧と排他を保つ() {
         for fail in [false, true] {
@@ -1513,7 +1464,7 @@ mod repository_usecase_tests {
             assert_eq!(*fake.archived_worktrees.lock(), vec![("/wt".into(), 0)]);
             assert!(fake.operations.mutate("/wt").is_err());
             assert!(fake.operations.mutate("/other").is_ok());
-            assert!(repository.get_git_log("/wt", None).is_ok());
+            assert!(repository.get_repository_status_scan("/wt").is_ok());
             assert!(repository
                 .remove_worktree(fake.as_ref(), "/repo", "/wt", false)
                 .await
@@ -1551,6 +1502,7 @@ mod repository_usecase_tests {
             );
         }
     }
+
     #[tokio::test]
     async fn test_worktree削除_base設定の後始末が終わるまで一覧と排他を保つ() {
         // Given
@@ -1580,7 +1532,7 @@ mod repository_usecase_tests {
         assert_eq!(cards.len(), 1);
         assert!(cards[0].is_deleting);
         assert!(fake.operations.mutate("/wt").is_err());
-        assert!(repository.get_git_log("/wt", None).is_ok());
+        assert!(repository.get_repository_status_scan("/wt").is_ok());
         release.send(()).unwrap();
         fake.wait_for_deletion("/wt").await;
         let mut cards = Vec::new();

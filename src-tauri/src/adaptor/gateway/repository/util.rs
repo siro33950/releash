@@ -3,7 +3,6 @@
 use git2::Repository;
 
 use crate::domain::repository::{RepoLocator, RepositoryError};
-use crate::infrastructure::git::client;
 use crate::infrastructure::git::helpers::detect_default_branch;
 
 /// ベースブランチ名をフォールバックチェーンで解決する（repository gateway の業務ルール）。
@@ -34,23 +33,11 @@ pub(crate) fn get_cwd() -> Result<String, RepositoryError> {
         .map(|s| s.to_string())
 }
 
-pub(crate) fn get_repo_git_dir(file_path: &str) -> Result<String, RepositoryError> {
-    let repo = client::discover(file_path)?;
-
-    repo.path()
-        .to_str()
-        .ok_or_else(|| RepositoryError::rule("invalid path encoding"))
-        .map(|s| s.to_string())
-}
-
 /// `RepoLocator` の実装。
 pub struct RepoLocatorGateway;
 
 impl RepoLocator for RepoLocatorGateway {
     fn cwd(&self) -> Result<String, RepositoryError> {
         get_cwd()
-    }
-    fn git_dir(&self, file_path: &str) -> Result<String, RepositoryError> {
-        get_repo_git_dir(file_path)
     }
 }

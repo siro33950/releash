@@ -58,7 +58,6 @@ const baseIpcHandler: Record<string, unknown> = {
 	},
 	stop_watching: null,
 	get_current_branch: "feat/test-branch",
-	get_git_status: [],
 
 	// RepoKanbanBoard
 	list_branches_with_status: [],
@@ -70,10 +69,8 @@ const baseIpcHandler: Record<string, unknown> = {
 	fetch_issues: [],
 	list_workspace_statuses: [],
 	get_releash_base: null,
-	get_default_branch: "main",
 
 	// Telemetry
-	get_crash_reporting_enabled: true,
 	update_crash_reporting: null,
 	get_performance_telemetry_enabled: true,
 	update_performance_telemetry: null,
@@ -121,14 +118,9 @@ const baseIpcHandler: Record<string, unknown> = {
 	update_external_editor: null,
 
 	// Repo registry
-	get_repo_paths: ["/test/repo"],
+	repository_paths: ["/test/repo"],
 	add_repo_path: true,
 	remove_repo_path: true,
-
-	// Editor
-	get_file_at_ref: "",
-	get_staged_content: "",
-	get_repo_git_dir: "/test/repo/.git",
 
 	// File system plugin (readDir)
 	"plugin:fs|read_dir": [],
@@ -136,9 +128,6 @@ const baseIpcHandler: Record<string, unknown> = {
 	// Updater plugin
 	"plugin:updater|check": null,
 	"plugin:updater|download_and_install": null,
-
-	// Git log
-	get_git_log: [],
 
 	// IssuePanel
 	list_branches: [],
@@ -199,7 +188,6 @@ const baseIpcHandler: Record<string, unknown> = {
 	list_workflows: [],
 	get_workflow_config: { approval_auto_approve: false },
 	get_automation_config_dir: "/test/automation",
-	list_facets: [],
 	diagnose_all_cmd: {
 		items: [],
 		workflow_summaries: {},
@@ -211,13 +199,8 @@ const baseIpcHandler: Record<string, unknown> = {
 	approve_workflow_node: null,
 	delete_workflow: null,
 	open_workflow_in_editor: null,
-	list_workflow_executions: [],
-	get_workflow_execution: null,
-	get_workflow_execution_log: [],
 	get_workflow_execution_state: null,
-	get_workflow_node_detail: null,
 	resolve_active_execution_by_worktree: null,
-	resolve_worktree_by_execution: null,
 
 	// Workspace tree
 	list_workspace_worktree_nodes: {

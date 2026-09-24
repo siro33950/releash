@@ -22,3 +22,5 @@ pub(crate) mod workspace_tree;
 
 #[cfg(feature = "desktop")]
 pub(crate) mod login_item;
+
+pub(crate) mod state_subscription;

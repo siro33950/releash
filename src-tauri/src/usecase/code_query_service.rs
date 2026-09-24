@@ -64,22 +64,6 @@ impl CodeQueryService {
 
     // ── ファイル内容参照 ──
 
-    pub fn get_file_at_ref(
-        &self,
-        file_path: &str,
-        git_ref: &str,
-    ) -> Result<String, CodeUsecaseError> {
-        Ok(self.file_content.file_at_ref(file_path, git_ref)?)
-    }
-
-    pub fn get_binary_file_at_ref(
-        &self,
-        file_path: &str,
-        git_ref: &str,
-    ) -> Result<String, CodeUsecaseError> {
-        Ok(self.file_content.binary_file_at_ref(file_path, git_ref)?)
-    }
-
     /// 現在ブランチの base 名を解決し、その base コミット OID(hex) を返す。base 名は
     /// 解決できるが ref が実在しない場合は、移行前の gateway（`find_merge_base_commit` /
     /// `find_base_commit`）と等価に `base branch '{name}' not found` を返す。detached /
@@ -95,31 +79,6 @@ impl CodeQueryService {
             },
             None => Ok(None),
         }
-    }
-
-    pub fn get_file_at_branch_base(&self, file_path: &str) -> Result<String, CodeUsecaseError> {
-        let base_oid = self.resolve_base_commit_oid_for(file_path)?;
-        Ok(self
-            .file_content
-            .file_at_branch_base(file_path, base_oid.as_deref())?)
-    }
-
-    pub fn get_binary_file_at_branch_base(
-        &self,
-        file_path: &str,
-    ) -> Result<String, CodeUsecaseError> {
-        let base_oid = self.resolve_base_commit_oid_for(file_path)?;
-        Ok(self
-            .file_content
-            .binary_file_at_branch_base(file_path, base_oid.as_deref())?)
-    }
-
-    pub fn get_staged_content(&self, file_path: &str) -> Result<String, CodeUsecaseError> {
-        Ok(self.file_content.staged_content(file_path)?)
-    }
-
-    pub fn get_binary_staged_content(&self, file_path: &str) -> Result<String, CodeUsecaseError> {
-        Ok(self.file_content.binary_staged_content(file_path)?)
     }
 
     pub fn review_file_metadata_at_ref(
@@ -356,10 +315,6 @@ impl CodeQueryService {
     pub fn get_language_from_path(&self, file_path: &str) -> String {
         services::language::get_language_from_path(file_path)
     }
-
-    pub fn get_relative_path(&self, root_path: &str, file_path: &str) -> Option<String> {
-        crate::other::utils::relative_path(root_path, file_path)
-    }
 }
 
 // ── 既存 domain VO → DTO 変換（hunk/range などの共通 read model） ──
@@ -462,36 +417,6 @@ mod code_query_service_tests {
 
     struct FakeFileContent;
     impl FileContentRepository for FakeFileContent {
-        fn file_at_ref(&self, file_path: &str, git_ref: &str) -> Result<String, CodeError> {
-            Ok(format!("{file_path}@{git_ref}"))
-        }
-        fn binary_file_at_ref(
-            &self,
-            _file_path: &str,
-            _git_ref: &str,
-        ) -> Result<String, CodeError> {
-            Ok("YmluYXJ5".to_string())
-        }
-        fn file_at_branch_base(
-            &self,
-            _file_path: &str,
-            base_commit_oid: Option<&str>,
-        ) -> Result<String, CodeError> {
-            Ok(format!("base@{}", base_commit_oid.unwrap_or("HEAD")))
-        }
-        fn binary_file_at_branch_base(
-            &self,
-            _file_path: &str,
-            _base_branch: Option<&str>,
-        ) -> Result<String, CodeError> {
-            Ok("YmFzZQ==".to_string())
-        }
-        fn staged_content(&self, _file_path: &str) -> Result<String, CodeError> {
-            Ok("staged".to_string())
-        }
-        fn binary_staged_content(&self, _file_path: &str) -> Result<String, CodeError> {
-            Ok("c3RhZ2Vk".to_string())
-        }
         fn review_file_metadata_at_ref(
             &self,
             _file_path: &str,
@@ -612,21 +537,6 @@ mod code_query_service_tests {
             Arc::new(FakeBranchDiff),
             Arc::new(FakeBranchBase),
         )
-    }
-
-    #[test]
-    fn test_ファイル内容参照を委譲する() {
-        let s = service();
-        assert_eq!(s.get_file_at_ref("f.rs", "HEAD").unwrap(), "f.rs@HEAD");
-        assert_eq!(s.get_staged_content("f.rs").unwrap(), "staged");
-    }
-
-    #[test]
-    fn test_branch_base参照はresolverで解決したbase名を渡す() {
-        // FakeBranchBase が Some("main") を返し、FakeFileContent が受け取った base 名を
-        // 反映する（base@main）。base 名解決を resolver 経由で行う配線を担保する。
-        let s = service();
-        assert_eq!(s.get_file_at_branch_base("f.rs").unwrap(), "base@main");
     }
 
     #[test]

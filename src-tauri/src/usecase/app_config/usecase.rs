@@ -28,9 +28,7 @@ impl AppConfigUsecase {
     pub fn get_workflow_config(&self) -> Result<WorkflowConfig, UsecaseError> {
         self.query.get_workflow_config()
     }
-    pub fn get_crash_reporting_enabled(&self) -> Result<bool, UsecaseError> {
-        self.query.get_crash_reporting_enabled()
-    }
+
     pub fn get_performance_telemetry_enabled(&self) -> Result<bool, UsecaseError> {
         self.query.get_performance_telemetry_enabled()
     }

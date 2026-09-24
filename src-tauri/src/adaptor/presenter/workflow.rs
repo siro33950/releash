@@ -78,11 +78,6 @@ fn artifact_to_view(artifact: workflow::Artifact) -> workflow_wire::ArtifactView
     }
 }
 
-pub fn node_execution_to_view(node: workflow::NodeExecution) -> workflow_wire::NodeExecutionView {
-    let can_retry = node.can_retry();
-    node_execution_to_view_with_retry(node, can_retry)
-}
-
 fn node_execution_to_view_with_retry(
     node: workflow::NodeExecution,
     can_retry: bool,
@@ -296,7 +291,8 @@ mod tests {
         command.session_id = None;
         command.display_command = Some("printf '[REDACTED]'".to_string());
 
-        let value = serde_json::to_value(node_execution_to_view(command)).unwrap();
+        let value =
+            serde_json::to_value(node_execution_to_view_with_retry(command, false)).unwrap();
 
         assert_eq!(value["displayCommand"], "printf '[REDACTED]'");
         assert!(value.get("display_command").is_none());

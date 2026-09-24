@@ -5,18 +5,13 @@ use std::time::Duration;
 
 use parking_lot::RwLock;
 
-use crate::usecase::repository_dto::{
-    BranchCardDto, FileDiffStatDto, FileStatusDto, WorktreeDisplayGroupsDto,
-};
+use crate::usecase::repository_dto::{BranchCardDto, WorktreeDisplayGroupsDto};
 use crate::usecase::repository_query_service::classify_branch_cards;
 
 use super::error::RepositoryStateError;
 use super::runtime::{RepositoryStateWorkerRuntime, WorktreePathNormalizer};
 use super::scanner::RepositoryScanner;
-use super::snapshot::{
-    RepositoryBranchCardsSnapshotDto, RepositoryDiffStatsSnapshotDto,
-    RepositoryHeadDiffFileTreeSnapshotDto, RepositorySnapshot, RepositoryStatusSnapshotDto,
-};
+use super::snapshot::{RepositoryBranchCardsSnapshotDto, RepositorySnapshot};
 use super::worktree::WatchSubscriptionKind;
 use super::worktree::{RepositoryStateNotifier, RepositoryStateWatcher, WorktreeState};
 
@@ -158,54 +153,6 @@ impl RepositoryStateService {
         Ok(classify_branch_cards(repository_root, cards))
     }
 
-    pub fn get_status(
-        &self,
-        worktree_path: &str,
-        include_ignored: bool,
-    ) -> Result<Vec<FileStatusDto>, RepositoryStateError> {
-        if include_ignored {
-            return self.scanner.status_with_ignored(worktree_path);
-        }
-        Ok(self.get_snapshot(worktree_path)?.status.clone())
-    }
-
-    pub fn get_status_snapshot(
-        &self,
-        worktree_path: &str,
-    ) -> Result<RepositoryStatusSnapshotDto, RepositoryStateError> {
-        let snapshot = self.get_snapshot(worktree_path)?;
-        Ok(RepositoryStatusSnapshotDto::from_snapshot(
-            snapshot.as_ref(),
-        ))
-    }
-
-    pub fn get_diff_stats(
-        &self,
-        worktree_path: &str,
-    ) -> Result<Vec<FileDiffStatDto>, RepositoryStateError> {
-        Ok(self.get_snapshot(worktree_path)?.diff_stats.clone())
-    }
-
-    pub fn get_diff_stats_snapshot(
-        &self,
-        worktree_path: &str,
-    ) -> Result<RepositoryDiffStatsSnapshotDto, RepositoryStateError> {
-        let snapshot = self.get_snapshot(worktree_path)?;
-        Ok(RepositoryDiffStatsSnapshotDto::from_snapshot(
-            snapshot.as_ref(),
-        ))
-    }
-
-    pub fn get_head_diff_file_tree_snapshot(
-        &self,
-        worktree_path: &str,
-    ) -> Result<RepositoryHeadDiffFileTreeSnapshotDto, RepositoryStateError> {
-        let snapshot = self.get_snapshot(worktree_path)?;
-        Ok(RepositoryHeadDiffFileTreeSnapshotDto::from_snapshot(
-            snapshot.as_ref(),
-        ))
-    }
-
     pub fn list_branches_with_status_snapshot(
         &self,
         repo_path: &str,
@@ -216,13 +163,6 @@ impl RepositoryStateService {
         dto.worktree_display_groups =
             self.branch_display_groups(&repository_root, &mut dto.branches)?;
         Ok(dto)
-    }
-
-    pub fn get_worktree_dirty_count(
-        &self,
-        worktree_path: &str,
-    ) -> Result<u32, RepositoryStateError> {
-        Ok(self.get_snapshot(worktree_path)?.status.len() as u32)
     }
 
     pub fn stop_watching(&self, watcher_id: u64) -> Result<bool, RepositoryStateError> {
@@ -381,9 +321,7 @@ pub(crate) mod tests {
         }
     }
 
-    struct EmptyScanner {
-        ignored_calls: AtomicUsize,
-    }
+    struct EmptyScanner;
 
     impl RepositoryScanner for EmptyScanner {
         fn scan(&self, _repo_path: &str) -> Result<RepositorySnapshotParts, RepositoryStateError> {
@@ -395,18 +333,6 @@ pub(crate) mod tests {
                 staged_diff_file_tree: Vec::new(),
                 changes_diff_file_tree: Vec::new(),
             })
-        }
-
-        fn status_with_ignored(
-            &self,
-            _repo_path: &str,
-        ) -> Result<Vec<FileStatusDto>, RepositoryStateError> {
-            self.ignored_calls.fetch_add(1, Ordering::SeqCst);
-            Ok(vec![FileStatusDto {
-                path: "ignored.txt".to_string(),
-                index_status: "none".to_string(),
-                worktree_status: "ignored".to_string(),
-            }])
         }
 
         fn prune_stale_branch_bases(
@@ -461,19 +387,6 @@ pub(crate) mod tests {
             })
         }
 
-        fn status_with_ignored(
-            &self,
-            _repo_path: &str,
-        ) -> Result<Vec<FileStatusDto>, RepositoryStateError> {
-            let mut status = self.status.lock().clone();
-            status.push(FileStatusDto {
-                path: "ignored.txt".to_string(),
-                index_status: "none".to_string(),
-                worktree_status: "ignored".to_string(),
-            });
-            Ok(status)
-        }
-
         fn prune_stale_branch_bases(
             &self,
             _repo_path: &str,
@@ -520,9 +433,7 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn watching_service() -> RepositoryStateService {
-        test_service(Arc::new(EmptyScanner {
-            ignored_calls: AtomicUsize::new(0),
-        }))
+        test_service(Arc::new(EmptyScanner))
     }
 
     fn test_service(scanner: Arc<EmptyScanner>) -> RepositoryStateService {
@@ -586,9 +497,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn same_worktree_reuses_one_state() {
-        let service = test_service(Arc::new(EmptyScanner {
-            ignored_calls: AtomicUsize::new(0),
-        }));
+        let service = test_service(Arc::new(EmptyScanner));
 
         let first = service.ensure_for_tests("/repo");
         let second = service.ensure_for_tests("/repo");
@@ -697,17 +606,17 @@ pub(crate) mod tests {
             .subscribe(path, WatchSubscriptionKind::File)
             .unwrap();
         for _ in 0..100 {
-            if service.get_status_snapshot(path).unwrap().version >= 1 {
+            if service.get_snapshot(path).unwrap().version >= 1 {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
 
-        let status = service.get_status_snapshot(path).unwrap();
-        let diff_stats = service.get_diff_stats_snapshot(path).unwrap();
+        let status = service.get_snapshot(path).unwrap();
+        let diff_stats = service.get_snapshot(path).unwrap();
         let branch_cards = service.list_branches_with_status_snapshot(path).unwrap();
-        let head_tree = service.get_head_diff_file_tree_snapshot(path).unwrap();
-        let dirty_count = service.get_worktree_dirty_count(path).unwrap();
+        let head_tree = service.get_snapshot(path).unwrap();
+        let dirty_count = service.get_snapshot(path).unwrap().status.len() as u32;
 
         assert!(status.version >= 1);
         assert_eq!(diff_stats.version, status.version);
@@ -725,9 +634,9 @@ pub(crate) mod tests {
         crate::test_support::git::create_initial_commit(&repo);
         let path = dir.path().to_str().unwrap();
 
-        service.get_status_snapshot(path).unwrap();
-        service.get_diff_stats_snapshot(path).unwrap();
-        service.get_head_diff_file_tree_snapshot(path).unwrap();
+        service.get_snapshot(path).unwrap();
+        service.get_snapshot(path).unwrap();
+        service.get_snapshot(path).unwrap();
 
         assert_eq!(watcher.start_count(), 0);
         assert_eq!(service.worktree_count(), 0);
@@ -830,26 +739,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn dirty_count_uses_default_snapshot_status_and_excludes_ignored_opt_in_status() {
-        let scanner = Arc::new(CountingScanner::with_status(vec![
-            FileStatusDto {
-                path: "modified.txt".to_string(),
-                index_status: "none".to_string(),
-                worktree_status: "modified".to_string(),
-            },
-            FileStatusDto {
-                path: "staged.txt".to_string(),
-                index_status: "modified".to_string(),
-                worktree_status: "none".to_string(),
-            },
-        ]));
-        let service = counting_service(scanner.clone(), Arc::new(NoopRepositoryStateWatcher));
-
-        assert_eq!(service.get_worktree_dirty_count("/repo").unwrap(), 2);
-        assert_eq!(service.get_status("/repo", true).unwrap().len(), 3);
-    }
-
-    #[test]
     fn list_branches_with_status_is_pure_read_and_does_not_prune() {
         let scanner = Arc::new(CountingScanner::default());
         scanner.set_branch_cards(vec![BranchCardDto {
@@ -945,16 +834,14 @@ pub(crate) mod tests {
 
         let legacy =
             crate::adaptor::gateway::repository::worktree::get_worktree_dirty_count(path).unwrap();
-        let snapshot_count = service.get_worktree_dirty_count(path).unwrap();
+        let snapshot_count = service.get_snapshot(path).unwrap().status.len() as u32;
 
         assert_eq!(snapshot_count, legacy);
     }
 
     #[tokio::test]
     async fn subscriptions_share_state_but_get_distinct_release_ids() {
-        let service = test_service(Arc::new(EmptyScanner {
-            ignored_calls: AtomicUsize::new(0),
-        }));
+        let service = test_service(Arc::new(EmptyScanner));
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().to_str().unwrap();
 
@@ -974,9 +861,7 @@ pub(crate) mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn canonical_state_notifies_each_subscriber_path_alias() {
-        let scanner = Arc::new(EmptyScanner {
-            ignored_calls: AtomicUsize::new(0),
-        });
+        let scanner = Arc::new(EmptyScanner);
         let notifier = Arc::new(CapturingNotifier::default());
         let service = test_service_with_notifier(scanner, notifier.clone());
         let dir = tempfile::TempDir::new().unwrap();
@@ -1019,37 +904,13 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn multiple_worktrees_are_independent_entries() {
-        let service = test_service(Arc::new(EmptyScanner {
-            ignored_calls: AtomicUsize::new(0),
-        }));
+        let service = test_service(Arc::new(EmptyScanner));
 
         let first = service.ensure_for_tests("/repo-one");
         let second = service.ensure_for_tests("/repo-two");
 
         assert_eq!(service.worktree_count(), 2);
         assert!(!Arc::ptr_eq(&first, &second));
-    }
-
-    #[tokio::test]
-    async fn ignored_status_is_opt_in_and_not_cached_in_default_snapshot() {
-        let scanner = Arc::new(EmptyScanner {
-            ignored_calls: AtomicUsize::new(0),
-        });
-        let service = test_service(scanner.clone());
-        let state = service.ensure_for_tests("/repo");
-        state.invalidate(InvalidateReason::initial());
-
-        for _ in 0..100 {
-            if state.snapshot_for_read().version >= 1 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-
-        assert!(state.snapshot_for_read().status.is_empty());
-        let ignored = service.get_status("/repo", true).unwrap();
-        assert_eq!(ignored[0].worktree_status, "ignored");
-        assert_eq!(scanner.ignored_calls.load(Ordering::SeqCst), 1);
     }
 
     struct GateWatchSession {

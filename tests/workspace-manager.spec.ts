@@ -48,7 +48,7 @@ test.describe("Workspace Manager", () => {
 			list_worktrees: [],
 			list_branches_with_status: [],
 			get_main_repo_path: { __mockError: "not a git repo" },
-			get_repo_paths: [],
+			repository_paths: [],
 		});
 		await setupTauriMock(page, config);
 		await waitForApp(page);
