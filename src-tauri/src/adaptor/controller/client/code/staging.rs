@@ -2,7 +2,7 @@
 
 use super::run_blocking;
 use crate::adaptor::controller::state::AppState;
-use crate::other::AppError;
+use crate::adaptor::presenter::error::AppError;
 
 pub(crate) async fn git_stage_shared(
     state: &AppState,

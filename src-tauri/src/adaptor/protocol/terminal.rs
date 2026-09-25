@@ -24,10 +24,10 @@ pub struct TerminalPerformanceSwitchesV1 {
     pub disable_webgl_renderer: bool,
 }
 
-impl From<crate::other::performance_switches::TerminalPerformanceSwitches>
+impl From<crate::usecase::telemetry::TerminalPerformanceSwitches>
     for TerminalPerformanceSwitchesV1
 {
-    fn from(switches: crate::other::performance_switches::TerminalPerformanceSwitches) -> Self {
+    fn from(switches: crate::usecase::telemetry::TerminalPerformanceSwitches) -> Self {
         Self {
             disable_output_flow_control: switches.disable_output_flow_control,
             disable_terminal_journal: switches.disable_terminal_journal,

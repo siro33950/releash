@@ -16,7 +16,12 @@ impl ReadFailure {
                 ErrorCode::Unavailable,
             ),
             (
-                Self::Query(LocalEventQueryError::DeadlineExceeded),
+                Self::Query(LocalEventQueryError::Technical(
+                    crate::domain::failure::TechnicalFailure {
+                        kind: crate::domain::failure::FailureKind::Expired,
+                        message: "deadline exceeded".into(),
+                    },
+                )),
                 ErrorCode::DeadlineExceeded,
             ),
             (Self::Sqlite(ffi::SQLITE_BUSY), ErrorCode::Unavailable),

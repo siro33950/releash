@@ -51,7 +51,7 @@ async fn test_接続監督_要求上限拒否が継続しても接続を維持�
     // Given
     let (endpoint, server, requests) = error_server(
         crate::adaptor::controller::api::protocol::connect::command_error(
-            crate::other::AppError::coded(
+            crate::adaptor::presenter::error::AppError::coded(
                 "CLIENT_REQUEST_LIMIT",
                 "Too many pending client commands",
                 crate::domain::failure::FailureKind::Capacity,
@@ -81,8 +81,10 @@ async fn test_ネイティブ要求_停止とログイン項目の具体的な�
     use crate::adaptor::controller::api::protocol::connect::command_error;
     // Given / When / Then
     for detail in [
-        wire::CommandError::from(crate::other::AppError::new("設定を保存できません")),
-        crate::other::AppError::coded(
+        wire::CommandError::from(crate::adaptor::presenter::error::AppError::new(
+            "設定を保存できません",
+        )),
+        crate::adaptor::presenter::error::AppError::coded(
             "LOGIN_ITEM_SAVE_FAILED",
             "ログイン項目を保存できません",
             crate::domain::failure::FailureKind::Internal,

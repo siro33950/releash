@@ -5,7 +5,7 @@ pub enum GitHostError {
     #[error("{0}")]
     External(String),
     #[error("{0}")]
-    Stopped(crate::domain::operation_context::OperationStopped),
+    Technical(crate::domain::failure::TechnicalFailure),
 }
 
 pub trait GitHostProvider: Send + Sync {
@@ -27,7 +27,9 @@ impl crate::domain::failure::ClassifiedFailure for GitHostError {
     fn failure_kind(&self) -> crate::domain::failure::FailureKind {
         match self {
             Self::External(_) => crate::domain::failure::FailureKind::Internal,
-            Self::Stopped(error) => crate::domain::failure::ClassifiedFailure::failure_kind(error),
+            Self::Technical(error) => {
+                crate::domain::failure::ClassifiedFailure::failure_kind(error)
+            }
         }
     }
 }

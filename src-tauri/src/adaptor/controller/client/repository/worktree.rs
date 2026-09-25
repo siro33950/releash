@@ -1,6 +1,6 @@
 use super::run_blocking;
 use crate::adaptor::controller::state::AppState;
-use crate::other::AppError;
+use crate::adaptor::presenter::error::AppError;
 use crate::usecase::repository_dto::WorktreeEntryDto;
 
 pub(crate) async fn create_worktree_shared(

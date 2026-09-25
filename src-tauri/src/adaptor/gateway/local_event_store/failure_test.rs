@@ -34,12 +34,23 @@ fn test_sqliteの混雑と破損と状態不備を発生元で区別する() {
 fn test_storeの期限切れを各repositoryが混雑へ潰さない() {
     // Given / When / Then
     assert_eq!(
-        AgentSessionRepositoryError::from(LocalEventQueryError::DeadlineExceeded).failure_kind(),
+        AgentSessionRepositoryError::from(LocalEventQueryError::Technical(
+            crate::domain::failure::TechnicalFailure {
+                kind: crate::domain::failure::FailureKind::Expired,
+                message: "deadline exceeded".into()
+            }
+        ))
+        .failure_kind(),
         FailureKind::Expired
     );
     assert_eq!(
-        ProviderLifecycleRepositoryError::from(LocalEventQueryError::DeadlineExceeded)
-            .failure_kind(),
+        ProviderLifecycleRepositoryError::from(LocalEventQueryError::Technical(
+            crate::domain::failure::TechnicalFailure {
+                kind: crate::domain::failure::FailureKind::Expired,
+                message: "deadline exceeded".into()
+            }
+        ))
+        .failure_kind(),
         FailureKind::Expired
     );
 }

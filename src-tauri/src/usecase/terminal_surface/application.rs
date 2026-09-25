@@ -14,6 +14,7 @@ use crate::usecase::terminal_surface::spawn_usecase::GetOrSpawnTerminalOutcome;
 
 #[derive(Clone)]
 pub(crate) struct TerminalSurfaceApplication {
+    performance: Arc<dyn crate::usecase::telemetry::PerformanceOutput>,
     gateway: Arc<dyn TerminalSurfaceGateway + Send + Sync>,
     event_source: Arc<dyn TerminalSurfaceEventSource>,
     runtime_lifecycle: Arc<RwLock<TerminalSurfaceRuntimeLifecycle>>,
@@ -75,10 +76,12 @@ impl TerminalSurfaceApplication {
     }
 
     pub(crate) fn new(
+        performance: Arc<dyn crate::usecase::telemetry::PerformanceOutput>,
         gateway: Arc<dyn TerminalSurfaceGateway + Send + Sync>,
         event_source: Arc<dyn TerminalSurfaceEventSource>,
     ) -> Self {
         Self {
+            performance,
             gateway,
             event_source,
             resize_tails: Arc::new(Mutex::new(HashMap::new())),
@@ -249,6 +252,7 @@ impl TerminalSurfaceApplication {
     ) -> Result<GetOrSpawnTerminalOutcome, UsecaseError> {
         let _admission = self.admit_mutation()?;
         super::spawn_usecase::get_or_spawn_with_startup(
+            self.performance.as_ref(),
             self.gateway.as_ref(),
             rows,
             cols,
@@ -271,6 +275,7 @@ impl TerminalSurfaceApplication {
     ) -> Result<GetOrSpawnTerminalOutcome, UsecaseError> {
         let _admission = self.admit_mutation()?;
         super::spawn_usecase::get_or_spawn_with_process(
+            self.performance.as_ref(),
             self.gateway.as_ref(),
             rows,
             cols,
@@ -299,14 +304,15 @@ impl TerminalSurfaceApplication {
         data: &str,
     ) -> Result<(), UsecaseError> {
         if let Some(client_started_at_unix_ms) = client_started_at_unix_ms {
-            crate::other::telemetry::start_terminal_input_trace(
+            self.performance.start_terminal_input_trace(
                 attachment_id,
                 sequence,
                 client_started_at_unix_ms,
             );
         }
         let _admission = self.admit_mutation()?;
-        crate::other::telemetry::record_terminal_input_admission(attachment_id, sequence);
+        self.performance
+            .record_terminal_input_admission(attachment_id, sequence);
         self.gateway
             .write_attached(&owner.stable_key(), attachment_id, sequence, data)
             .map_err(|error| UsecaseError::Gateway(error.to_string()))

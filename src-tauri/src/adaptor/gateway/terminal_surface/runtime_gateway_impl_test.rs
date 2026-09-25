@@ -158,6 +158,7 @@ fn test_ターミナル画面_再起動復元_復元点破損時は新規画面�
     let gateway = TerminalSurfaceRuntimeGatewayFor::new(data_dir.path().to_path_buf());
 
     let result = crate::usecase::terminal_surface::spawn_usecase::get_or_spawn(
+        &crate::adaptor::gateway::telemetry::TelemetryGateway,
         &gateway,
         24,
         80,
@@ -260,6 +261,7 @@ fn test_ターミナル画面_取得または生成_既存画面の概要取得�
         .apply("runtime-only-output");
 
     let outcome = crate::usecase::terminal_surface::spawn_usecase::get_or_spawn(
+        &crate::adaptor::gateway::telemetry::TelemetryGateway,
         &gateway,
         24,
         80,
@@ -1178,6 +1180,7 @@ async fn assert_terminal_recreation(drain_exit: bool) {
     );
     gateway.insert_surface(TerminalSurface::new(1, owner.clone(), None));
     let terminal = Arc::new(TerminalSurfaceApplication::new(
+        std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
         gateway.clone(),
         hub.clone(),
     ));

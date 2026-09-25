@@ -12,7 +12,7 @@ pub(crate) mod git_config;
 pub(crate) mod repo_paths;
 pub(crate) mod worktree;
 
-use crate::other::AppError;
+use crate::adaptor::presenter::error::AppError;
 use crate::usecase::repository_error::UsecaseError;
 
 /// ユースケースエラー → アプリエラーの集約変換（adaptor 層が担う）。

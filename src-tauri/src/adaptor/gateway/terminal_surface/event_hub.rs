@@ -22,7 +22,7 @@ pub(crate) struct TerminalSurfaceEventHub {
 
 impl TerminalSurfaceEventHub {
     pub(crate) fn new() -> Self {
-        let switches = crate::other::performance_switches::terminal_performance_switches();
+        let switches = crate::infrastructure::performance_switches::terminal_performance_switches();
         Self::with_flags(
             TERMINAL_SURFACE_STREAM_CAPACITY,
             !switches.disable_output_flow_control,

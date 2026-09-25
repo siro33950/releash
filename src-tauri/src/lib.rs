@@ -4,9 +4,9 @@ pub mod agent_session_tui_acceptance;
 pub mod cli;
 #[cfg(all(debug_assertions, feature = "desktop"))]
 pub mod client_api_acceptance;
+mod common;
 mod domain;
 mod infrastructure;
-mod other;
 #[cfg(all(debug_assertions, feature = "desktop"))]
 pub mod provider_lifecycle_acceptance;
 #[cfg(debug_assertions)]

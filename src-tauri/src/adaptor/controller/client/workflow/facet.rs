@@ -1,6 +1,6 @@
 use crate::adaptor::controller::state::AppState;
+use crate::adaptor::presenter::error::AppError;
 use crate::domain::workflow::FacetKind;
-use crate::other::AppError;
 use crate::usecase::workflow::dto::{facet_summary_to_dto, FacetSummaryDto};
 
 fn parse_domain_facet_kind(kind: &str) -> Result<FacetKind, AppError> {
@@ -20,7 +20,7 @@ pub(crate) async fn get_facet_shared(
 ) -> Result<String, AppError> {
     let kind = parse_domain_facet_kind(&kind)?;
     let query = state.workflow_usecase.clone();
-    crate::other::operation_context::spawn_blocking(move || {
+    crate::common::operation_context::spawn_blocking(move || {
         query.get_facet(kind, &key).map_err(AppError::from_failure)
     })
     .await
@@ -37,7 +37,7 @@ pub(crate) async fn save_facet_shared(
     let kind = parse_domain_facet_kind(&kind)?;
     let is_new = is_new.unwrap_or(false);
     let usecase = state.workflow_usecase.clone();
-    crate::other::operation_context::spawn_blocking(move || {
+    crate::common::operation_context::spawn_blocking(move || {
         usecase
             .save_facet(kind, &key, &content, is_new)
             .map_err(AppError::from_failure)
@@ -53,7 +53,7 @@ pub(crate) async fn delete_facet_shared(
 ) -> Result<(), AppError> {
     let kind = parse_domain_facet_kind(&kind)?;
     let usecase = state.workflow_usecase.clone();
-    crate::other::operation_context::spawn_blocking(move || {
+    crate::common::operation_context::spawn_blocking(move || {
         usecase
             .delete_facet(kind, &key)
             .map_err(AppError::from_failure)
@@ -68,7 +68,7 @@ pub(crate) async fn list_facet_summaries_shared(
 ) -> Result<Vec<FacetSummaryDto>, AppError> {
     let kind = parse_domain_facet_kind(&kind)?;
     let query = state.workflow_usecase.clone();
-    crate::other::operation_context::spawn_blocking(move || {
+    crate::common::operation_context::spawn_blocking(move || {
         query
             .list_facet_summaries(kind)
             .map(|summaries| summaries.into_iter().map(facet_summary_to_dto).collect())
@@ -86,7 +86,7 @@ pub(crate) async fn duplicate_facet_shared(
 ) -> Result<(), AppError> {
     let kind = parse_domain_facet_kind(&kind)?;
     let usecase = state.workflow_usecase.clone();
-    crate::other::operation_context::spawn_blocking(move || {
+    crate::common::operation_context::spawn_blocking(move || {
         usecase
             .duplicate_facet(kind, &source_key, &new_key)
             .map_err(AppError::from_failure)

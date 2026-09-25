@@ -83,8 +83,8 @@ impl ProviderAgentLaunchGateway for LocalProviderAgentLaunchGateway {
                 worktree_path,
             )
             .or_else(|error| match error {
-                crate::domain::repository::RepositoryError::Stopped(stopped) => {
-                    Err(ProviderAgentLaunchGatewayError::Stopped(stopped))
+                crate::domain::repository::RepositoryError::Technical(stopped) => {
+                    Err(ProviderAgentLaunchGatewayError::Technical(stopped))
                 }
                 _ => Ok(None),
             })?

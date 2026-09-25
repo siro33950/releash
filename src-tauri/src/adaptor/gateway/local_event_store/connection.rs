@@ -42,17 +42,17 @@ pub fn check_sqlite_version() -> Result<(), ConnectionError> {
     Ok(())
 }
 
-thread_local! { static BUSY_CONTEXT: std::cell::RefCell<crate::domain::operation_context::OperationContext> = std::cell::RefCell::default(); }
+thread_local! { static BUSY_CONTEXT: std::cell::RefCell<crate::common::operation_context::OperationContext> = std::cell::RefCell::default(); }
 
 fn configure_common(connection: &Connection) -> Result<(), ConnectionError> {
     connection.busy_handler(Some(|attempt| {
         if attempt == 0 {
-            BUSY_CONTEXT.set(crate::other::operation_context::with_timeout(
+            BUSY_CONTEXT.set(crate::common::operation_context::with_timeout(
                 Duration::from_secs(2),
             ));
         }
         BUSY_CONTEXT.with_borrow(|context| {
-            crate::other::operation_context::sleep(context, Duration::from_millis(1)).is_ok()
+            crate::common::operation_context::sleep(context, Duration::from_millis(1)).is_ok()
         })
     }))?;
     connection.pragma_update(None, "foreign_keys", "ON")?;

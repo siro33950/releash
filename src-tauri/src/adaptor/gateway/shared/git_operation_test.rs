@@ -1,5 +1,5 @@
 use super::*;
-use crate::domain::operation_context::{Deadline, OperationContext};
+use crate::common::operation_context::{Deadline, OperationContext};
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc,
@@ -12,7 +12,7 @@ fn test_git操作_実行中の取り消し後は次の操作に進まない() {
     let context = OperationContext::new(None, Arc::new(token.clone()));
     let calls = AtomicUsize::new(0);
     // When
-    crate::other::operation_context::sync_scope(context, || {
+    crate::common::operation_context::sync_scope(context, || {
         let result = run(|| {
             calls.fetch_add(1, Ordering::SeqCst);
             token.cancel();
@@ -38,17 +38,23 @@ fn test_git操作_期限切れではステージもブランチ作成も実行�
     let context =
         OperationContext::default().with_deadline(Deadline::new(std::time::Instant::now()));
     // When / Then
-    crate::other::operation_context::sync_scope(context, || {
+    crate::common::operation_context::sync_scope(context, || {
         assert!(matches!(
             crate::adaptor::gateway::code::staging::git_stage("/missing", vec![]),
-            Err(crate::domain::code::CodeError::Stopped(
-                OperationStopped::Expired
+            Err(crate::domain::code::CodeError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    kind: crate::domain::failure::FailureKind::Expired,
+                    ..
+                }
             ))
         ));
         assert!(matches!(
             crate::adaptor::gateway::repository::branch::git_create_branch("/missing", "branch"),
-            Err(crate::domain::repository::RepositoryError::Stopped(
-                OperationStopped::Expired
+            Err(crate::domain::repository::RepositoryError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    kind: crate::domain::failure::FailureKind::Expired,
+                    ..
+                }
             ))
         ));
     });
@@ -59,7 +65,7 @@ fn test_checkout_notifyで操作途中の取消を検出する() {
     struct CancelOnNotify {
         calls: AtomicUsize,
     }
-    impl crate::domain::operation_context::Cancellation for CancelOnNotify {
+    impl crate::common::operation_context::Cancellation for CancelOnNotify {
         fn is_cancelled(&self) -> bool {
             self.calls.fetch_add(1, Ordering::SeqCst) > 0
         }
@@ -79,7 +85,7 @@ fn test_checkout_notifyで操作途中の取消を検出する() {
     let cancel = Arc::new(CancelOnNotify {
         calls: AtomicUsize::new(0),
     });
-    crate::other::operation_context::sync_scope(
+    crate::common::operation_context::sync_scope(
         OperationContext::new(None, cancel.clone()),
         || {
             let mut options = checkout();
@@ -111,7 +117,7 @@ fn test_branch探索_停止を未検出や空名へ変換しない() {
     struct CancelAfter {
         remaining: AtomicUsize,
     }
-    impl crate::domain::operation_context::Cancellation for CancelAfter {
+    impl crate::common::operation_context::Cancellation for CancelAfter {
         fn is_cancelled(&self) -> bool {
             self.remaining.fetch_sub(1, Ordering::SeqCst) == 0
         }
@@ -126,7 +132,7 @@ fn test_branch探索_停止を未検出や空名へ変換しない() {
             }),
         );
         let result =
-            crate::other::operation_context::sync_scope(context, || detect_default_branch(&repo));
+            crate::common::operation_context::sync_scope(context, || detect_default_branch(&repo));
         assert_eq!(
             result,
             Err(OperationStopped::Cancelled),
@@ -141,7 +147,7 @@ fn test_branch探索_停止を未検出や空名へ変換しない() {
             }),
         );
         assert_eq!(
-            crate::other::operation_context::sync_scope(context, || get_branch_name_for_repo(
+            crate::common::operation_context::sync_scope(context, || get_branch_name_for_repo(
                 &repo
             )),
             Err(OperationStopped::Cancelled)
@@ -149,7 +155,7 @@ fn test_branch探索_停止を未検出や空名へ変換しない() {
     }
     let context =
         OperationContext::default().with_deadline(Deadline::new(std::time::Instant::now()));
-    crate::other::operation_context::sync_scope(context, || {
+    crate::common::operation_context::sync_scope(context, || {
         assert_eq!(detect_default_branch(&repo), Err(OperationStopped::Expired));
         assert_eq!(
             get_branch_name_for_repo(&repo),

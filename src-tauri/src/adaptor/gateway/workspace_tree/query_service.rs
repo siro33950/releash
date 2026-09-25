@@ -565,17 +565,15 @@ fn query_error(error: crate::domain::local_event::LocalEventQueryError) -> Workf
     use crate::domain::local_event::LocalEventQueryError;
 
     match error {
-        LocalEventQueryError::Stopped(stopped) => WorkflowError::Stopped(stopped),
+        LocalEventQueryError::Technical(stopped) => WorkflowError::Technical(stopped),
         LocalEventQueryError::StorageUnavailable { failure } => WorkflowError::StorageUnavailable {
             message: failure.to_string(),
             kind: failure.failure_kind(),
         },
-        error @ (LocalEventQueryError::QueryBusy | LocalEventQueryError::DeadlineExceeded) => {
-            WorkflowError::StorageUnavailable {
-                message: error.to_string(),
-                kind: error.failure_kind(),
-            }
-        }
+        error @ LocalEventQueryError::QueryBusy => WorkflowError::StorageUnavailable {
+            message: error.to_string(),
+            kind: error.failure_kind(),
+        },
         error @ LocalEventQueryError::Corrupt { .. } => {
             WorkflowError::CorruptStoredState(error.to_string())
         }

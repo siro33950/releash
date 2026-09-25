@@ -25,12 +25,12 @@ pub(crate) fn get_external_editor_shared(
 pub(crate) async fn update_external_editor_shared(
     state: &Arc<dyn ConfigRepository>,
     editor: String,
-) -> Result<(), crate::other::AppError> {
+) -> Result<(), crate::adaptor::presenter::error::AppError> {
     let settings = EditorSettingsConfigGateway::new(state.clone());
-    crate::other::operation_context::spawn_blocking(move || {
+    crate::common::operation_context::spawn_blocking(move || {
         crate::usecase::external_editor::open_usecase::update_external_editor(&settings, editor)
     })
     .await
-    .map_err(|e| crate::other::AppError::new(format!("task join error: {e}")))?
-    .map_err(crate::other::AppError::from_failure)
+    .map_err(|e| crate::adaptor::presenter::error::AppError::new(format!("task join error: {e}")))?
+    .map_err(crate::adaptor::presenter::error::AppError::from_failure)
 }

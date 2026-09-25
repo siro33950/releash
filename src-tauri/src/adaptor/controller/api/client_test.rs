@@ -1630,7 +1630,7 @@ async fn test_変更rpc_期限切れ後も同期処理の完了まで削除と�
 
 #[tokio::test]
 async fn test_単発rpc_期限と呼出破棄が同期処理の内側まで届く() {
-    use crate::domain::operation_context::OperationStopped;
+    use crate::common::operation_context::OperationStopped;
     use std::time::{Duration, Instant};
     for expire in [false, true] {
         // Given
@@ -1643,15 +1643,15 @@ async fn test_単発rpc_期限と呼出破棄が同期処理の内側まで届�
                 let started = started.clone();
                 let stopped = stopped.clone();
                 Box::pin(async move {
-                    crate::other::operation_context::spawn_blocking(move || {
+                    crate::common::operation_context::spawn_blocking(move || {
                         started.send(()).unwrap();
-                        let error = crate::other::operation_context::sleep(
-                            &crate::other::operation_context::current(),
+                        let error = crate::common::operation_context::sleep(
+                            &crate::common::operation_context::current(),
                             Duration::from_secs(30),
                         )
                         .unwrap_err();
                         stopped.send(error).unwrap();
-                        Err(crate::other::AppError::from_failure(error).into())
+                        Err(crate::adaptor::presenter::error::AppError::from_failure(error).into())
                     })
                     .await
                     .unwrap()
@@ -1695,7 +1695,7 @@ async fn test_単発rpc_期限と呼出破棄が同期処理の内側まで届�
 
 #[tokio::test]
 async fn test_監視rpc_期限と呼出破棄が同期処理の内側まで届く() {
-    use crate::domain::operation_context::OperationStopped;
+    use crate::common::operation_context::OperationStopped;
     use std::time::{Duration, Instant};
     struct ContextFiles {
         started: tokio::sync::mpsc::UnboundedSender<()>,
@@ -1705,8 +1705,8 @@ async fn test_監視rpc_期限と呼出破棄が同期処理の内側まで届�
         fn release(&self, _: u64) {}
         fn start(&self, _: &str) -> Result<u64, String> {
             self.started.send(()).unwrap();
-            let error = crate::other::operation_context::sleep(
-                &crate::other::operation_context::current(),
+            let error = crate::common::operation_context::sleep(
+                &crate::common::operation_context::current(),
                 Duration::from_secs(30),
             )
             .unwrap_err();
@@ -1776,8 +1776,8 @@ async fn test_監視rpc_登録後の期限切れでidを返せない監視を解
         }
         fn start(&self, _: &str) -> Result<u64, String> {
             self.started.fetch_add(1, Ordering::SeqCst);
-            let _ = crate::other::operation_context::sleep(
-                &crate::other::operation_context::current(),
+            let _ = crate::common::operation_context::sleep(
+                &crate::common::operation_context::current(),
                 Duration::from_secs(5),
             );
             Ok(42)
@@ -1860,6 +1860,7 @@ async fn test_terminal購読_connectの後段配線と差分再開と流量停�
     let gateway = Arc::new(gateway);
     let hub = Arc::new(TerminalSurfaceEventHub::with_flags(256, true));
     let terminal = Arc::new(TerminalSurfaceApplication::new(
+        std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
         gateway.clone(),
         hub.clone(),
     ));
@@ -2108,4 +2109,51 @@ async fn test_terminal購読_connectの後段配線と差分再開と流量停�
     assert!(matches!(bookmark.event, Some(Event::Bookmark(_))));
     drop(stream);
     server.abort();
+}
+
+async fn run_command(
+    cancellation: &tokio_util::sync::CancellationToken,
+    future: impl std::future::Future<
+        Output = Result<wire::command_result::Command, wire::CommandFailure>,
+    >,
+) -> Result<wire::command_result::Command, connectrpc::ConnectError> {
+    let context = crate::common::operation_context::OperationContext::new(
+        None,
+        Arc::new(cancellation.clone()),
+    );
+    crate::common::operation_context::wait(&context, future)
+        .await
+        .map_err(|error| {
+            crate::adaptor::protocol::connect::classified_error(
+                crate::adaptor::presenter::error::AppError::from_failure(error),
+            )
+        })?
+        .map_err(command_error)
+}
+
+#[tokio::test]
+async fn test_共通入口_期限切れを変換し成功と内部失敗を保持する() {
+    // Given / When
+    let expired = ingress(Some(std::time::Instant::now()), async {
+        Ok::<(), connectrpc::ConnectError>(())
+    })
+    .await
+    .unwrap_err();
+    // Then
+    assert_eq!(expired.code, connectrpc::ErrorCode::DeadlineExceeded);
+    assert_eq!(
+        ingress(None, async { Ok::<_, connectrpc::ConnectError>(42) })
+            .await
+            .unwrap(),
+        42
+    );
+    let error = ingress(None, async {
+        Err::<(), _>(crate::adaptor::protocol::connect::classified_error(
+            crate::adaptor::presenter::error::AppError::new("unavailable")
+                .with_failure_kind(crate::domain::failure::FailureKind::Temporary),
+        ))
+    })
+    .await
+    .unwrap_err();
+    assert_eq!(error.code, connectrpc::ErrorCode::Unavailable);
 }

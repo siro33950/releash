@@ -1,4 +1,4 @@
-use crate::domain::retry::RetryBackoff;
+use crate::common::retry::RetryBackoff;
 use crate::usecase::work_queue::{WorkFailure, WorkKey};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;

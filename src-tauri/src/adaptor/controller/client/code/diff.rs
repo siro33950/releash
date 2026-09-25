@@ -2,8 +2,8 @@
 
 use super::run_blocking;
 use crate::adaptor::controller::state::AppState;
+use crate::adaptor::presenter::error::AppError;
 use crate::adaptor::protocol::code::{DiffFileEntryInput, DiffTreeNodeInput};
-use crate::other::AppError;
 use crate::usecase::code_dto::{DiffTreeNodeDto, FileNavigationResultDto};
 
 pub(crate) async fn build_diff_file_tree_shared(

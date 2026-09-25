@@ -66,7 +66,7 @@ async fn ensure_execution_exists(
 
 fn workflow_error_to_cli_error(error: WorkflowError) -> CliError {
     match error {
-        WorkflowError::Stopped(_) | WorkflowError::Editor(_) | WorkflowError::Store(_) => {
+        WorkflowError::Technical(_) | WorkflowError::Editor(_) | WorkflowError::Store(_) => {
             CliError::Other(error.to_string())
         }
         WorkflowError::NotFound(message) => CliError::NotFound(message),

@@ -1,5 +1,36 @@
-use crate::other::performance_switches::TerminalPerformanceSwitches;
-use crate::other::telemetry::{TerminalInputSample, TerminalLaunch, TerminalLaunchSample};
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct TerminalLaunchSample {
+    pub(crate) phase: &'static str,
+    pub(crate) duration_ms: f64,
+}
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct TerminalInputSample {
+    pub(crate) sequence: u64,
+    pub(crate) on_data_to_command_ingress_ms: f64,
+    pub(crate) command_ingress_to_admission_ms: f64,
+    pub(crate) admission_to_writer_enqueue_ms: f64,
+    pub(crate) writer_enqueue_to_output_read_ms: f64,
+    pub(crate) output_read_to_model_apply_ms: f64,
+    pub(crate) model_apply_to_event_publish_ms: f64,
+    pub(crate) event_published_at_unix_ms: f64,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TerminalPerformanceSwitches {
+    pub disable_output_flow_control: bool,
+    pub disable_terminal_journal: bool,
+    pub disable_renderer_write_serialization: bool,
+    pub disable_webgl_renderer: bool,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TerminalLaunch {
+    AvailabilityAndLock,
+    DurableCreateCommit,
+    LaunchFileMaterialize,
+    CheckpointLookup,
+    OutputReaderReady,
+    FirstXtermParsed,
+    FirstPaint,
+}
 use std::time::Duration;
 
 pub(crate) trait TelemetryPort {
@@ -82,3 +113,20 @@ impl<'a> TelemetryUsecase<'a> {
 #[cfg(test)]
 #[path = "telemetry_test.rs"]
 mod telemetry_tests;
+
+pub(crate) trait TerminalLaunchCompletion: Send {
+    fn finish(self: Box<Self>);
+}
+pub(crate) trait PerformanceOutput: Send + Sync {
+    fn start_terminal_launch_phase(
+        &self,
+        phase: TerminalLaunch,
+    ) -> Box<dyn TerminalLaunchCompletion>;
+    fn start_terminal_input_trace(
+        &self,
+        attachment_id: &str,
+        sequence: u64,
+        client_started_at_unix_ms: f64,
+    );
+    fn record_terminal_input_admission(&self, attachment_id: &str, sequence: u64);
+}

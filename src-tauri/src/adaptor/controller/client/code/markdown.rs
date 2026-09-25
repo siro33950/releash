@@ -2,8 +2,8 @@
 
 use super::run_blocking;
 use crate::adaptor::controller::state::AppState;
+use crate::adaptor::presenter::error::AppError;
 use crate::adaptor::protocol::code::MarkdownDiffSideInput;
-use crate::other::AppError;
 use crate::usecase::code_dto::{DiffRangeDto, InlineChunkDto, SplitRowDto};
 
 pub(crate) async fn compute_markdown_diff_ranges_shared(

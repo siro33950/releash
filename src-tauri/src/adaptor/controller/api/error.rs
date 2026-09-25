@@ -77,7 +77,7 @@ impl From<WorkflowError> for ApiError {
                 "unauthorized_approval_target",
                 message,
             ),
-            WorkflowError::Stopped(error) => Self::new(
+            WorkflowError::Technical(error) => Self::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "workflow_error",
                 error.to_string(),

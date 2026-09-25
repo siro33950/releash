@@ -1,6 +1,6 @@
 use super::*;
+use crate::adaptor::presenter::error::AppError;
 use crate::domain::failure::{ClassifiedFailure, FailureKind};
-use crate::other::AppError;
 
 #[test]
 fn test_失敗分類を単一の対応表でconnectへ変換する() {

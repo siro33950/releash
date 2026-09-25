@@ -1,4 +1,4 @@
-use crate::other::AppError;
+use crate::adaptor::presenter::error::AppError;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -20,7 +20,7 @@ pub(crate) async fn diagnose_all_impl(
         crate::usecase::workflow::ports::WorkflowDiagnosticsTarget::from_optional_directory(dir)
             .map_err(AppError::from_failure)?;
     let usecase = usecase.clone();
-    crate::other::operation_context::spawn_blocking(move || {
+    crate::common::operation_context::spawn_blocking(move || {
         usecase.diagnose_all(target).map_err(AppError::from_failure)
     })
     .await

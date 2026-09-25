@@ -25,6 +25,7 @@ fn fixture() -> (
     gateway.insert_surface(surface.clone());
     let terminal = Arc::new(
         crate::usecase::terminal_surface::application::TerminalSurfaceApplication::new(
+            std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
             gateway.clone(),
             hub.clone(),
         ),
@@ -190,6 +191,7 @@ async fn test_snapshot作成中_別terminalのsnapshotと出力とexecutorを止
     let hub = Arc::new(TerminalSurfaceEventHub::new());
     let terminal = Arc::new(
         crate::usecase::terminal_surface::application::TerminalSurfaceApplication::new(
+            std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
             gateway.clone(),
             hub.clone(),
         ),

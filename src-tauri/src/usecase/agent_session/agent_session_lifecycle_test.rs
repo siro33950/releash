@@ -320,7 +320,7 @@ impl ProviderExecutionTreeStopTransaction for NoopProviderExecutionTreeStops {
 
 #[derive(Default)]
 struct RecordingResumeLaunches {
-    prepare_stopped: Mutex<Option<crate::domain::operation_context::OperationStopped>>,
+    prepare_stopped: Mutex<Option<crate::common::operation_context::OperationStopped>>,
     launches: Mutex<Vec<ProviderSessionLaunch>>,
     cleanups: Mutex<Vec<String>>,
     armed: Mutex<Vec<ArmedProviderLifecycle>>,
@@ -337,7 +337,7 @@ impl ProviderAgentLaunchGateway for RecordingResumeLaunches {
         _worktree_path: &str,
     ) -> Result<PreparedProviderLaunch, ProviderAgentLaunchGatewayError> {
         if let Some(stopped) = *self.prepare_stopped.lock().unwrap() {
-            return Err(ProviderAgentLaunchGatewayError::Stopped(stopped));
+            return Err(ProviderAgentLaunchGatewayError::Technical(stopped.into()));
         }
         self.armed.lock().unwrap().push(armed.clone());
         self.launches.lock().unwrap().push(launch);
@@ -676,6 +676,7 @@ fn setup_with_lifecycle_events(
         ..Default::default()
     });
     let usecase = Arc::new(AgentSessionLifecycleUsecase::new(
+        std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
         sessions.clone(),
         lifecycle.clone(),
         ProviderAgentRuntime::new(
@@ -754,6 +755,7 @@ async fn setup_activity_stop_exclusion_with_events(
         .await
         .unwrap();
     let ingress = ProviderLifecycleIngressUsecase::new(
+        std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
         context.provider_lifecycle.clone(),
         context.sessions.clone(),
         context.hook_health.clone(),
@@ -2109,6 +2111,7 @@ async fn test_agent_session_resume状態保存失敗時は起動済みprocessを
         MemoryHookHealthRepository::default(),
     )));
     let lifecycle = AgentSessionLifecycleUsecase::new(
+        std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
         sessions,
         provider_lifecycle,
         ProviderAgentRuntime::new(
@@ -2247,6 +2250,7 @@ async fn test_agent_session_resume_同一sessionへの並行要求はptyを一�
     *terminal.first_spawn_entered.lock().unwrap() = Some(entered_sender);
     *terminal.first_spawn_release.lock().unwrap() = Some(release_receiver);
     let lifecycle = Arc::new(AgentSessionLifecycleUsecase::new(
+        std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
         sessions,
         provider_lifecycle,
         ProviderAgentRuntime::new(
@@ -2355,6 +2359,7 @@ async fn test_agent_session_resume中のarchiveは同一sessionの操作完了�
         ..Default::default()
     });
     let lifecycle = Arc::new(AgentSessionLifecycleUsecase::new(
+        std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
         sessions.clone(),
         provider_lifecycle,
         ProviderAgentRuntime::new(
@@ -2451,6 +2456,7 @@ async fn test_agent_session_open_同一sessionへの並行要求は一度だけ�
     *terminal.first_spawn_entered.lock().unwrap() = Some(entered_sender);
     *terminal.first_spawn_release.lock().unwrap() = Some(release_receiver);
     let lifecycle = Arc::new(AgentSessionLifecycleUsecase::new(
+        std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
         sessions,
         Arc::new(ProviderLifecycleUsecase::new(
             Arc::new(LocalProviderLifecycleCredentialGateway),
@@ -2965,6 +2971,7 @@ async fn test_workflowのprovider回復_同じnodeを繰り返し再開し永続
     let input = Arc::new(RecordingContinuationInput::default());
     let port = ProviderWorkflowAgentSessionPort::new(
         Arc::new(super::AgentSessionLaunchUsecase::new(
+            std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
             context.sessions.clone(),
             context.provider_lifecycle.clone(),
             ProviderAgentRuntime::new(
@@ -3280,8 +3287,8 @@ async fn test_workflow_session準備_入口から期限と取消の分類を保�
     use crate::adaptor::gateway::workflow::node_session_boundary::{
         ProviderWorkflowAgentSessionPort, WorkflowAgentSessionPort, WorkflowSessionLaunchConfig,
     };
+    use crate::common::operation_context::OperationStopped;
     use crate::domain::failure::ClassifiedFailure;
-    use crate::domain::operation_context::OperationStopped;
     use crate::usecase::workflow::runtime_error::WorkflowRuntimeError;
     for stopped in [OperationStopped::Expired, OperationStopped::Cancelled] {
         // Given
@@ -3289,6 +3296,7 @@ async fn test_workflow_session準備_入口から期限と取消の分類を保�
         *context.launches.prepare_stopped.lock().unwrap() = Some(stopped);
         let port = ProviderWorkflowAgentSessionPort::new(
             Arc::new(super::AgentSessionLaunchUsecase::new(
+                std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
                 context.sessions.clone(),
                 context.provider_lifecycle.clone(),
                 ProviderAgentRuntime::new(
@@ -3332,7 +3340,9 @@ async fn test_workflow_session準備_入口から期限と取消の分類を保�
             Err(error) => error,
             Ok(_) => panic!("prepare must stop"),
         };
-        assert!(matches!(error, WorkflowRuntimeError::Stopped(actual) if actual == stopped));
+        assert!(
+            matches!(error, WorkflowRuntimeError::Technical(ref actual) if *actual == stopped.into())
+        );
         assert_eq!(error.failure_kind(), stopped.failure_kind());
         assert_eq!(*context.terminal.spawn_count.lock().unwrap(), 0);
     }

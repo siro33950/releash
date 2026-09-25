@@ -267,7 +267,7 @@ fn map_worktree_operation_error(
     error: crate::domain::repository::RepositoryError,
 ) -> WorkflowError {
     match error {
-        crate::domain::repository::RepositoryError::Stopped(error) => {
+        crate::domain::repository::RepositoryError::Technical(error) => {
             WorkflowError::StorageUnavailable {
                 message: error.to_string(),
                 kind: crate::domain::failure::ClassifiedFailure::failure_kind(&error),

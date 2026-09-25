@@ -62,13 +62,13 @@ impl LocalProviderLifecycleEventRepository {
             .take_pending(&semantic_key)?
             .map(Ok)
             .unwrap_or_else(|| self.prepare_commit(&scoped_events))?;
-        crate::usecase::work_queue::retry_with_scope(
+        crate::adaptor::gateway::work_queue::retry(
             &self.queue,
             crate::usecase::work_queue::WorkKey::new(
                 "provider_lifecycle_append",
                 &prepared.identity,
             ),
-            crate::domain::retry::RetryBackoff::SERVICE,
+            crate::common::retry::RetryBackoff::SERVICE,
             || self.append_prepared(semantic_key, &prepared),
             true,
         )
@@ -208,10 +208,10 @@ impl LocalProviderLifecycleEventRepository {
             "provider_lifecycle_resolution",
             &format!("{identity:?}"),
         );
-        crate::usecase::work_queue::retry_with_scope(
+        crate::adaptor::gateway::work_queue::retry(
             &self.queue,
             key,
-            crate::domain::retry::RetryBackoff::SERVICE,
+            crate::common::retry::RetryBackoff::SERVICE,
             || async {
                 self.repository
                     .resolve_commit(identity.clone())

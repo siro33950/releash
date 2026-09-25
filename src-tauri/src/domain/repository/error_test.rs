@@ -6,11 +6,17 @@ fn test_失敗分類_repository_error_理由に対応する() {
     // Given
     let cases = [
         (
-            RepositoryError::Stopped(crate::domain::operation_context::OperationStopped::Expired),
+            RepositoryError::Technical(crate::domain::failure::TechnicalFailure {
+                kind: crate::domain::failure::FailureKind::Expired,
+                message: "Operation deadline exceeded".into(),
+            }),
             F::Expired,
         ),
         (
-            RepositoryError::Stopped(crate::domain::operation_context::OperationStopped::Cancelled),
+            RepositoryError::Technical(crate::domain::failure::TechnicalFailure {
+                kind: crate::domain::failure::FailureKind::Cancelled,
+                message: "Operation cancelled".into(),
+            }),
             F::Cancelled,
         ),
         (RepositoryError::External("io".into()), F::Internal),

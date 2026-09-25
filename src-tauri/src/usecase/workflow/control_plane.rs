@@ -111,7 +111,7 @@ impl WorkflowControlPlaneUsecase {
                 "workflow_control_plane",
                 &commit.execution_id,
             ),
-            crate::domain::retry::RetryBackoff::CONFLICT,
+            crate::common::retry::RetryBackoff::CONFLICT,
             || self.runtime.commit_control_plane(commit.clone()),
         )
         .await
@@ -129,7 +129,7 @@ impl WorkflowControlPlaneUsecase {
                 "workflow_control_plane",
                 &snapshot.execution_id,
             ),
-            crate::domain::retry::RetryBackoff::CONFLICT,
+            crate::common::retry::RetryBackoff::CONFLICT,
             || {
                 self.runtime
                     .finish_control_plane_commit(worktree, snapshot, outcome.clone())
@@ -749,7 +749,7 @@ fn runtime_error_to_workflow_error(error: WorkflowRuntimeError) -> WorkflowError
         WorkflowRuntimeError::InvalidWorkflow(message)
         | WorkflowRuntimeError::ValidationError(message) => WorkflowError::validation(message),
         WorkflowRuntimeError::Store(kind) => WorkflowError::Store(kind),
-        WorkflowRuntimeError::Stopped(stopped) => WorkflowError::Stopped(stopped),
+        WorkflowRuntimeError::Technical(stopped) => WorkflowError::Technical(stopped),
         WorkflowRuntimeError::StorageFailure { message, kind } => {
             WorkflowError::StorageUnavailable { message, kind }
         }

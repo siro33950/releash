@@ -37,7 +37,7 @@ fn test_worktree識別パス_解決エラーを返す() {
 
 #[test]
 fn test_worktree列挙_途中の停止を欠損や成功に変えず返す() {
-    use crate::domain::operation_context::{Deadline, OperationContext, OperationStopped};
+    use crate::common::operation_context::{Deadline, OperationContext, OperationStopped};
     use std::sync::Arc;
     use std::time::Instant;
     // Given
@@ -64,7 +64,7 @@ fn test_worktree列挙_途中の停止を欠損や成功に変えず返す() {
         assert!(entries.next().unwrap().is_ok());
         let mut visited = 0;
         // When
-        let result = crate::other::operation_context::sync_scope(context, || {
+        let result = crate::common::operation_context::sync_scope(context, || {
             entries.try_for_each(|entry| {
                 entry?;
                 visited += 1;
@@ -192,7 +192,7 @@ fn test_worktree作成失敗_巻き戻しの停止を元のgitエラーへ変え
         )
         .unwrap_err();
         match error {
-            RepositoryError::Stopped(_) => Err(error),
+            RepositoryError::Technical(_) => Err(error),
             RepositoryError::External(_) => {
                 assert!(repo.find_branch("rollback", BranchType::Local).is_err());
                 Ok(())

@@ -134,7 +134,7 @@ async fn test_worktree削除排他_保存先がファイルならioエラーを�
 
 #[tokio::test]
 async fn test_worktree削除排他_registryとactive待ちを期限と取消で終了する() {
-    use crate::domain::operation_context::{Deadline, OperationContext, OperationStopped};
+    use crate::common::operation_context::{Deadline, OperationContext, OperationStopped};
     use std::{
         sync::Arc,
         time::{Duration, Instant},
@@ -150,7 +150,7 @@ async fn test_worktree削除排他_registryとactive待ちを期限と取消で�
                 expire.then(|| Deadline::new(Instant::now() + Duration::from_millis(50))),
                 Arc::new(token.clone()),
             );
-            let mut deletion = Box::pin(crate::other::operation_context::scope(
+            let mut deletion = Box::pin(crate::common::operation_context::scope(
                 context,
                 locks.deletion("/repo/worktree"),
             ));
@@ -162,7 +162,7 @@ async fn test_worktree削除排他_registryとactive待ちを期限と取消で�
                 .await
                 .unwrap();
             assert!(
-                matches!(result, Err(RepositoryError::Stopped(error)) if error == if expire { OperationStopped::Expired } else { OperationStopped::Cancelled })
+                matches!(result, Err(RepositoryError::Technical(error)) if error == if expire { OperationStopped::Expired.into() } else { OperationStopped::Cancelled.into() })
             );
             drop(registry);
             drop(mutation);
@@ -190,7 +190,7 @@ fn test_worktree削除排他_複製されたfdが残ってもleaseの破棄でlo
 
 #[test]
 fn test_worktree変更排他_registry待ちを期限と取消で終了し再取得できる() {
-    use crate::domain::operation_context::{
+    use crate::common::operation_context::{
         Cancellation, Deadline, OperationContext, OperationStopped,
     };
     use std::sync::{mpsc, Arc};
@@ -222,7 +222,7 @@ fn test_worktree変更排他_registry待ちを期限と取消で終了し再取�
         let worker_locks = locks.clone();
         let (reply, result) = mpsc::channel();
         let worker = std::thread::spawn(move || {
-            let result = crate::other::operation_context::sync_scope(context, || {
+            let result = crate::common::operation_context::sync_scope(context, || {
                 worker_locks.mutation("/repo/worktree").map(drop)
             });
             reply.send(result).unwrap();
@@ -238,8 +238,8 @@ fn test_worktree変更排他_registry待ちを期限と取消で終了し再取�
         worker.join().unwrap();
         // Then
         assert!(
-            matches!(stopped.unwrap(), Err(RepositoryError::Stopped(error))
-            if error == if expire { OperationStopped::Expired } else { OperationStopped::Cancelled })
+            matches!(stopped.unwrap(), Err(RepositoryError::Technical(error))
+            if error == if expire { OperationStopped::Expired.into() } else { OperationStopped::Cancelled.into() })
         );
         drop(locks.mutation("/repo/worktree").unwrap());
         assert_eq!(std::fs::read_dir(&locks.directory).unwrap().count(), 1);
@@ -249,7 +249,7 @@ fn test_worktree変更排他_registry待ちを期限と取消で終了し再取�
 
 #[test]
 fn test_worktree排他_停止済みscopeの破棄でも最後の所有者がファイルを掃除する() {
-    use crate::domain::operation_context::{Deadline, OperationContext};
+    use crate::common::operation_context::{Deadline, OperationContext};
     use std::{sync::Arc, time::Instant};
     for expire in [false, true] {
         for deleting in [false, true] {
@@ -267,7 +267,7 @@ fn test_worktree排他_停止済みscopeの破棄でも最後の所有者がフ�
                 Arc::new(token),
             );
             // When / Then
-            crate::other::operation_context::sync_scope(context, || {
+            crate::common::operation_context::sync_scope(context, || {
                 drop(lease);
                 if another.is_some() {
                     assert_eq!(std::fs::read_dir(&locks.directory).unwrap().count(), 3);
@@ -282,7 +282,7 @@ fn test_worktree排他_停止済みscopeの破棄でも最後の所有者がフ�
 
 #[test]
 fn test_worktree排他_破棄時のregistry競合では待たずlockを解放する() {
-    use crate::domain::operation_context::{Deadline, OperationContext};
+    use crate::common::operation_context::{Deadline, OperationContext};
     use std::{
         sync::Arc,
         time::{Duration, Instant},
@@ -306,7 +306,7 @@ fn test_worktree排他_破棄時のregistry競合では待たずlockを解放す
             let (done, finished) = std::sync::mpsc::channel();
             // When
             let worker = std::thread::spawn(move || {
-                crate::other::operation_context::sync_scope(context, || drop(lease));
+                crate::common::operation_context::sync_scope(context, || drop(lease));
                 done.send(()).unwrap();
             });
             let result = finished.recv_timeout(Duration::from_secs(2));

@@ -1,6 +1,6 @@
 use super::*;
-use crate::domain::operation_context::{Deadline, OperationContext, OperationStopped};
-use crate::other::operation_context::sync_scope;
+use crate::common::operation_context::sync_scope;
+use crate::common::operation_context::{Deadline, OperationContext, OperationStopped};
 use std::time::Instant;
 
 #[cfg(unix)]

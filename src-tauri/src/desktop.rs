@@ -1,4 +1,4 @@
-use crate::{adaptor, infrastructure, other, usecase};
+use crate::{adaptor, infrastructure, usecase};
 use std::sync::Arc;
 use tauri::Manager;
 
@@ -32,7 +32,7 @@ pub(crate) fn apply_desktop_settings<R: tauri::Runtime>(
 }
 
 pub fn run() {
-    other::telemetry::set_startup_origin(std::time::Instant::now());
+    infrastructure::telemetry::metrics::set_startup_origin(std::time::Instant::now());
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())
@@ -140,8 +140,12 @@ pub fn run() {
 }
 
 pub(crate) fn record_window_ready() {
-    other::telemetry::record_startup_from_origin(other::telemetry::Startup::FirstWindowReady);
-    other::telemetry::record_startup_from_origin(other::telemetry::Startup::AppStartup);
+    infrastructure::telemetry::metrics::record_startup_from_origin(
+        infrastructure::telemetry::metrics::Startup::FirstWindowReady,
+    );
+    infrastructure::telemetry::metrics::record_startup_from_origin(
+        infrastructure::telemetry::metrics::Startup::AppStartup,
+    );
 }
 
 #[cfg(test)]

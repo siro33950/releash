@@ -6,11 +6,17 @@ fn test_失敗分類_notion_error_理由に対応する() {
     // Given
     let cases = [
         (
-            NotionError::Stopped(crate::domain::operation_context::OperationStopped::Expired),
+            NotionError::Technical(crate::domain::failure::TechnicalFailure {
+                kind: crate::domain::failure::FailureKind::Expired,
+                message: "Operation deadline exceeded".into(),
+            }),
             F::Expired,
         ),
         (
-            NotionError::Stopped(crate::domain::operation_context::OperationStopped::Cancelled),
+            NotionError::Technical(crate::domain::failure::TechnicalFailure {
+                kind: crate::domain::failure::FailureKind::Cancelled,
+                message: "Operation cancelled".into(),
+            }),
             F::Cancelled,
         ),
         (NotionError::RequestFailed("network".into()), F::Temporary),

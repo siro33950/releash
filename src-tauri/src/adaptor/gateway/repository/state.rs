@@ -76,7 +76,7 @@ impl Drop for RepositoryStateWatcherHandles {
     fn drop(&mut self) {
         // FsEventWatcher の drop は run loop の停止待ちでブロックし得るため、
         // 呼び出し元スレッドでは実行しない（#1641）
-        crate::other::dispose::dispose_in_background(
+        crate::infrastructure::dispose::dispose_in_background(
             "repository-watcher-dispose",
             (self.file_debouncer.take(), self.git_debouncer.take()),
         );

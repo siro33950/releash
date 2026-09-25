@@ -45,7 +45,7 @@ impl ProviderSessionTitleIngestionUsecase {
         self.queue
             .enqueue(
                 crate::usecase::work_queue::WorkKey::new("provider_session_title_list", "daemon"),
-                crate::domain::retry::RetryBackoff::ITEM,
+                crate::common::retry::RetryBackoff::ITEM,
                 Arc::new(move |_| {
                     let this = this.clone();
                     Box::pin(async move {
@@ -81,7 +81,7 @@ impl ProviderSessionTitleIngestionUsecase {
             self.queue
                 .enqueue(
                     key,
-                    crate::domain::retry::RetryBackoff::ITEM,
+                    crate::common::retry::RetryBackoff::ITEM,
                     Arc::new(move |action| {
                         let this = this.clone();
                         let id = id.clone();

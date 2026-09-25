@@ -41,7 +41,7 @@ enum GhCommandOutput {
     SpawnFailed(String),
     NonZero { status: String, stderr: String },
     Timeout,
-    Stopped(crate::domain::operation_context::OperationStopped),
+    Stopped(crate::common::operation_context::OperationStopped),
     InvalidUtf8,
 }
 
@@ -58,8 +58,9 @@ impl GhCommandRunner for SystemGhCommandRunner {
         let program = self.program.as_deref().unwrap_or(program);
         let mut command = tokio::process::Command::new(program);
         command.args(args).current_dir(repo_path);
-        let context = crate::other::operation_context::with_timeout(GH_TIMEOUT);
-        match crate::adaptor::gateway::shared::process::output(command, Vec::new(), &context) {
+        match crate::common::operation_context::timeout_sync(GH_TIMEOUT, || {
+            crate::infrastructure::process::output::output(command, Vec::new())
+        }) {
             Ok(output) if output.status.success() => String::from_utf8(output.stdout)
                 .map(GhCommandOutput::Success)
                 .unwrap_or(GhCommandOutput::InvalidUtf8),
@@ -67,13 +68,13 @@ impl GhCommandRunner for SystemGhCommandRunner {
                 status: output.status.to_string(),
                 stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
             },
-            Err(crate::adaptor::gateway::shared::process::ProcessError::Stopped(
-                crate::domain::operation_context::OperationStopped::Expired,
+            Err(crate::infrastructure::process::output::ProcessError::Stopped(
+                crate::common::operation_context::OperationStopped::Expired,
             )) => GhCommandOutput::Timeout,
-            Err(crate::adaptor::gateway::shared::process::ProcessError::Stopped(error)) => {
+            Err(crate::infrastructure::process::output::ProcessError::Stopped(error)) => {
                 GhCommandOutput::Stopped(error)
             }
-            Err(crate::adaptor::gateway::shared::process::ProcessError::Io(error)) => {
+            Err(crate::infrastructure::process::output::ProcessError::Io(error)) => {
                 GhCommandOutput::SpawnFailed(error.to_string())
             }
         }
@@ -82,7 +83,7 @@ impl GhCommandRunner for SystemGhCommandRunner {
 
 impl GitHostProvider for GitHubGitHostGateway {
     fn fetch_pr_status(&self, repo_path: &str) -> Result<PrStatus, GitHostError> {
-        if !is_github_repository(repo_path).map_err(GitHostError::Stopped)? {
+        if !is_github_repository(repo_path).map_err(GitHostError::from)? {
             return Ok(PrStatus::default());
         }
 
@@ -93,7 +94,7 @@ impl GitHostProvider for GitHubGitHostGateway {
     }
 
     fn list_issues(&self, repo_path: &str) -> Result<Vec<IssueInfo>, GitHostError> {
-        if !is_github_repository(repo_path).map_err(GitHostError::Stopped)? {
+        if !is_github_repository(repo_path).map_err(GitHostError::from)? {
             return Ok(Vec::new());
         }
 
@@ -119,7 +120,7 @@ impl GitHostProvider for GitHubGitHostGateway {
                 }
                 Ok(issues)
             }
-            Err(error @ GitHostError::Stopped(_)) => Err(error),
+            Err(error @ GitHostError::Technical(_)) => Err(error),
             Err(error) => {
                 eprintln!("[list_issues] {error}");
                 Ok(Vec::new())
@@ -175,14 +176,15 @@ fn run_gh_with_timeout(
     args: &[&str],
     repo_path: &str,
 ) -> Result<String, GitHostError> {
-    crate::other::operation_context::check().map_err(GitHostError::Stopped)?;
     let command = args.join(" ");
-    let result = match runner.output(args, repo_path) {
+    let result = match crate::common::operation_context::before(|| runner.output(args, repo_path))
+        .map_err(GitHostError::from)?
+    {
         GhCommandOutput::Success(stdout) => return Ok(stdout),
-        GhCommandOutput::Stopped(error) => return Err(GitHostError::Stopped(error)),
+        GhCommandOutput::Stopped(error) => return Err(GitHostError::from(error)),
         GhCommandOutput::Timeout => {
-            return Err(GitHostError::Stopped(
-                crate::domain::operation_context::OperationStopped::Expired,
+            return Err(GitHostError::Technical(
+                crate::common::operation_context::OperationStopped::Expired.into(),
             ))
         }
         GhCommandOutput::SpawnFailed(error) => format!("gh spawn failed: {error}"),
@@ -567,8 +569,11 @@ mod tests {
             if failure == GhCommandOutput::Timeout {
                 assert!(matches!(
                     issues,
-                    Err(GitHostError::Stopped(
-                        crate::domain::operation_context::OperationStopped::Expired
+                    Err(GitHostError::Technical(
+                        crate::domain::failure::TechnicalFailure {
+                            kind: crate::domain::failure::FailureKind::Expired,
+                            ..
+                        }
                     ))
                 ));
             } else {

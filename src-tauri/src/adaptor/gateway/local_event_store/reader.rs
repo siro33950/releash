@@ -17,7 +17,7 @@ use crate::adaptor::gateway::local_event_store::envelope::{
     DecodedStoredEvent, EventCodecRegistry,
 };
 use crate::adaptor::gateway::local_event_store::projection_record_codec::decode_session_projection_record_v1;
-use crate::domain::operation_context::OperationContext;
+use crate::common::operation_context::OperationContext;
 
 use crate::domain::local_event::{
     CanonicalRuntimeOwnerView, CommitIdentity, CommittedDomainEvent, DomainEventPage, EventId,
@@ -332,7 +332,7 @@ fn canonical_runtime_owner_snapshot(
     Ok(owners)
 }
 
-type ReadTask = Box<dyn FnOnce(&Connection, &OperationContext) + Send>;
+type ReadTask = Box<dyn FnOnce(&Connection) + Send>;
 
 struct ReadJob {
     context: OperationContext,
@@ -375,15 +375,22 @@ impl ReaderPool {
         T: Send + 'static,
         F: FnOnce(&Connection) -> Result<T, LocalEventQueryError> + Send + 'static,
     {
+        crate::common::operation_context::timeout(
+            std::time::Duration::from_millis(QUERY_DEADLINE_MS as u64),
+            self.submit_scoped(run),
+        )
+        .await?
+    }
+
+    async fn submit_scoped<T, F>(&self, run: F) -> Result<T, LocalEventQueryError>
+    where
+        T: Send + 'static,
+        F: FnOnce(&Connection) -> Result<T, LocalEventQueryError> + Send + 'static,
+    {
         #[cfg(test)]
         let failure = self.next_failure.lock().unwrap().take();
         let (reply, receiver) = oneshot::channel();
-        let context = crate::other::operation_context::with_timeout(
-            std::time::Duration::from_millis(QUERY_DEADLINE_MS as u64),
-        );
-        context
-            .check(std::time::Instant::now())
-            .map_err(LocalEventQueryError::from)?;
+        let context = crate::common::operation_context::current();
         {
             let mut state = self.state.lock().expect("reader queue poisoned");
             if state.closed {
@@ -397,70 +404,60 @@ impl ReaderPool {
             }
             state.jobs.push_back(ReadJob {
                 context: context.clone(),
-                task: Box::new(move |connection, job_context| {
+                task: Box::new(move |connection| {
+                    let job_context = crate::common::operation_context::current();
                     #[cfg(test)]
                     let run = |connection: &Connection| match failure {
                         Some(failure) => failure.run(connection, run),
                         None => run(connection),
                     };
-                    let result =
-                        crate::other::operation_context::sync_scope(job_context.clone(), || {
-                            job_context
-                                .check(std::time::Instant::now())
-                                .map_err(LocalEventQueryError::from)?;
-                            let progress_context = job_context.clone();
-                            connection
-                                .progress_handler(
-                                    1,
-                                    Some(move || {
-                                        progress_context.check(std::time::Instant::now()).is_err()
-                                    }),
-                                )
-                                .map_err(|error| storage_unavailable(&error))?;
-                            let interrupt = connection.get_interrupt_handle();
-                            let (done, stopped) = std::sync::mpsc::channel();
-                            let result = std::thread::scope(|scope| {
-                                let context = &job_context;
-                                scope.spawn(move || loop {
-                                    match stopped.recv_timeout(std::time::Duration::from_millis(1))
-                                    {
-                                        Ok(())
-                                        | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                                            break
-                                        }
-                                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                                            if context.check(std::time::Instant::now()).is_err() {
-                                                interrupt.interrupt();
-                                            }
+                    let result = crate::common::operation_context::checked(|| {
+                        let progress_context = job_context.clone();
+                        connection
+                            .progress_handler(
+                                1,
+                                Some(move || {
+                                    progress_context.check(std::time::Instant::now()).is_err()
+                                }),
+                            )
+                            .map_err(|error| storage_unavailable(&error))?;
+                        let interrupt = connection.get_interrupt_handle();
+                        let (done, stopped) = std::sync::mpsc::channel();
+                        let result = std::thread::scope(|scope| {
+                            let context = &job_context;
+                            scope.spawn(move || loop {
+                                match stopped.recv_timeout(std::time::Duration::from_millis(1)) {
+                                    Ok(())
+                                    | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                                        if context.check(std::time::Instant::now()).is_err() {
+                                            interrupt.interrupt();
                                         }
                                     }
-                                });
-                                let result = run(connection);
-                                drop(done);
-                                result
+                                }
                             });
-                            connection
-                                .progress_handler(0, None::<fn() -> bool>)
-                                .map_err(|error| storage_unavailable(&error))?;
-                            job_context
-                                .check(std::time::Instant::now())
-                                .map_err(LocalEventQueryError::from)?;
+                            let result = run(connection);
+                            drop(done);
                             result
                         });
+                        connection
+                            .progress_handler(0, None::<fn() -> bool>)
+                            .map_err(|error| storage_unavailable(&error))?;
+                        result
+                    })
+                    .map_err(LocalEventQueryError::from)
+                    .and_then(std::convert::identity);
                     let _ = reply.send(result);
                 }),
             });
         }
         self.available.notify_one();
-        crate::other::operation_context::wait(&context, receiver)
-            .await
-            .map_err(LocalEventQueryError::from)?
-            .map_err(|_| {
-                reader_pool_unavailable(
-                    "local event store reader reply lost",
-                    crate::domain::failure::FailureKind::Temporary,
-                )
-            })?
+        receiver.await.map_err(|_| {
+            reader_pool_unavailable(
+                "local event store reader reply lost",
+                crate::domain::failure::FailureKind::Temporary,
+            )
+        })?
     }
 
     fn pop_blocking(&self) -> Option<ReadJob> {
@@ -490,7 +487,7 @@ impl ReaderPool {
         self.running_workers
             .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         while let Some(job) = self.pop_blocking() {
-            (job.task)(&connection, &job.context);
+            crate::common::operation_context::sync_scope(job.context, || (job.task)(&connection));
         }
         #[cfg(test)]
         self.running_workers

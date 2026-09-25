@@ -93,7 +93,7 @@ impl WorkflowStartExecutionGateway for WorkflowRuntimeCommandGateway {
 fn workflow_runtime_error_to_workflow_error(error: WorkflowRuntimeError) -> WorkflowError {
     match error {
         WorkflowRuntimeError::Store(kind) => WorkflowError::Store(kind),
-        WorkflowRuntimeError::Stopped(stopped) => WorkflowError::Stopped(stopped),
+        WorkflowRuntimeError::Technical(stopped) => WorkflowError::Technical(stopped),
         WorkflowRuntimeError::StorageFailure { message, kind } => {
             WorkflowError::StorageUnavailable { message, kind }
         }

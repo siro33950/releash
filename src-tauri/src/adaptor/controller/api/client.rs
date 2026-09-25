@@ -21,7 +21,7 @@ impl connectrpc::Encodable<rpc::Push> for EncodedPush {
                 let push =
                     <rpc::Push as buffa::Message>::decode_from_slice(&self.0).map_err(|error| {
                         crate::adaptor::protocol::connect::classified_error(
-                            crate::other::AppError::new(error.to_string())
+                            crate::adaptor::presenter::error::AppError::new(error.to_string())
                                 .with_failure_kind(crate::domain::failure::FailureKind::Internal),
                         )
                     })?;
@@ -73,7 +73,7 @@ impl ClientApiDeps {
     > {
         self.state_subscriptions.as_ref().ok_or_else(|| {
             crate::adaptor::protocol::connect::classified_error(
-                crate::other::AppError::new("State subscriptions unavailable")
+                crate::adaptor::presenter::error::AppError::new("State subscriptions unavailable")
                     .with_failure_kind(crate::domain::failure::FailureKind::Temporary),
             )
         })
@@ -113,7 +113,7 @@ impl ClientApiDeps {
         self.request_limit.clone().try_acquire_owned().map_err(|_| {
             let message = "Too many pending client commands";
             let mut error = command_error(
-                crate::other::AppError::coded(
+                crate::adaptor::presenter::error::AppError::coded(
                     "CLIENT_REQUEST_LIMIT",
                     message,
                     crate::domain::failure::FailureKind::Capacity,
@@ -130,20 +130,12 @@ impl ClientApiDeps {
         deadline: Option<std::time::Instant>,
         command: wire::command_request::Command,
     ) -> Result<wire::command_result::Command, connectrpc::ConnectError> {
-        let cancellation = tokio_util::sync::CancellationToken::new();
-        let _cancel_on_drop = cancellation.clone().drop_guard();
-        let context = crate::domain::operation_context::OperationContext::new(
-            deadline.map(crate::domain::operation_context::Deadline::new),
-            Arc::new(cancellation.clone()),
-        );
-        crate::other::operation_context::scope(context, self.execute_scoped(command, cancellation))
-            .await
+        ingress(deadline, self.execute_scoped(command)).await
     }
 
     async fn execute_scoped(
         &self,
         command: wire::command_request::Command,
-        cancellation: tokio_util::sync::CancellationToken,
     ) -> Result<wire::command_result::Command, connectrpc::ConnectError> {
         let _permit = self.request_permit()?;
         self.dispatch.admit(command.name()).map_err(command_error)?;
@@ -151,29 +143,41 @@ impl ClientApiDeps {
             let id = crate::adaptor::controller::client::required(args.watcher_id, "watcherId")
                 .map_err(command_error)?;
             let watcher = self.watcher.clone();
-            crate::other::operation_context::spawn_blocking(move || watcher.stop(id))
+            crate::common::operation_context::spawn_blocking(move || watcher.stop(id))
                 .await
                 .map_err(task_error)?
                 .map_err(watch_error)?;
             return Ok(wire::command_result::Command::StopWatching(wire::Unit {}));
         }
 
-        let context = crate::other::operation_context::current();
         let dispatch = self.dispatch.clone();
-        tokio::spawn(async move {
-            crate::other::operation_context::scope(
-                context,
-                run_command(&cancellation, dispatch.dispatch_admitted(command)),
-            )
-            .await
+        crate::common::operation_context::spawned(async move {
+            dispatch
+                .dispatch_admitted(command)
+                .await
+                .map_err(command_error)
         })
         .await
         .map_err(task_error)?
+        .map_err(|error| {
+            crate::adaptor::protocol::connect::classified_error(
+                crate::adaptor::presenter::error::AppError::from_failure(error),
+            )
+        })?
     }
 
     async fn watch(
         &self,
         deadline: Option<std::time::Instant>,
+        subscription_id: String,
+        path: String,
+        git: bool,
+    ) -> Result<rpc::ResultUint64, connectrpc::ConnectError> {
+        ingress(deadline, self.watch_scoped(subscription_id, path, git)).await
+    }
+
+    async fn watch_scoped(
+        &self,
         subscription_id: String,
         path: String,
         git: bool,
@@ -187,16 +191,13 @@ impl ClientApiDeps {
             })
             .map_err(command_error)?;
         let watcher = self.watcher.clone();
-        let cancellation = tokio_util::sync::CancellationToken::new();
-        let _cancel_on_drop = cancellation.clone().drop_guard();
-        let context = crate::domain::operation_context::OperationContext::new(
-            deadline.map(crate::domain::operation_context::Deadline::new),
-            Arc::new(cancellation),
-        );
-        let result = crate::other::operation_context::scope(context.clone(), async {
-            crate::other::operation_context::spawn_blocking(move || {
+        let context = crate::common::operation_context::current();
+        let result = crate::common::operation_context::scope(context.clone(), async {
+            crate::common::operation_context::spawn_blocking(move || {
                 context.check(std::time::Instant::now()).map_err(|error| {
-                    command_error(crate::other::AppError::from_failure(error).into())
+                    command_error(
+                        crate::adaptor::presenter::error::AppError::from_failure(error).into(),
+                    )
                 })?;
                 let result = watcher.watch(&subscription_id, &path, git);
                 if let Err(error) = context.check(std::time::Instant::now()) {
@@ -204,7 +205,7 @@ impl ClientApiDeps {
                         watcher.release(id);
                     }
                     return Err(command_error(
-                        crate::other::AppError::from_failure(error).into(),
+                        crate::adaptor::presenter::error::AppError::from_failure(error).into(),
                     ));
                 }
                 result.map_err(watch_error)
@@ -218,30 +219,17 @@ impl ClientApiDeps {
     }
 }
 
-async fn run_command(
-    cancellation: &tokio_util::sync::CancellationToken,
-    future: impl std::future::Future<
-        Output = Result<wire::command_result::Command, wire::CommandFailure>,
-    >,
-) -> Result<wire::command_result::Command, connectrpc::ConnectError> {
-    let result = cancellation
-        .run_until_cancelled(future)
+async fn ingress<T>(
+    deadline: Option<std::time::Instant>,
+    operation: impl std::future::Future<Output = Result<T, connectrpc::ConnectError>>,
+) -> Result<T, connectrpc::ConnectError> {
+    crate::common::operation_context::ingress(deadline, operation)
         .await
-        .unwrap_or_else(|| {
-            Err(crate::other::AppError::coded(
-                "COMMAND_CANCELLED",
-                "Client call cancelled",
-                crate::domain::failure::FailureKind::Cancelled,
+        .map_err(|error| {
+            crate::adaptor::protocol::connect::classified_error(
+                crate::adaptor::presenter::error::AppError::from_failure(error),
             )
-            .into())
-        })
-        .map_err(command_error);
-    crate::other::operation_context::check().map_err(|error| {
-        crate::adaptor::protocol::connect::classified_error(crate::other::AppError::from_failure(
-            error,
-        ))
-    })?;
-    result
+        })?
 }
 
 fn response_headers(command: &wire::command_result::Command) -> axum::http::HeaderMap {
@@ -261,16 +249,18 @@ fn response_headers(command: &wire::command_result::Command) -> axum::http::Head
 fn task_error(error: tokio::task::JoinError) -> connectrpc::ConnectError {
     use crate::domain::failure::FailureKind;
     crate::adaptor::protocol::connect::classified_error(
-        crate::other::AppError::new(error.to_string()).with_failure_kind(if error.is_cancelled() {
-            FailureKind::Cancelled
-        } else {
-            FailureKind::Internal
-        }),
+        crate::adaptor::presenter::error::AppError::new(error.to_string()).with_failure_kind(
+            if error.is_cancelled() {
+                FailureKind::Cancelled
+            } else {
+                FailureKind::Internal
+            },
+        ),
     )
 }
 
 fn watch_error(error: crate::usecase::watcher::UsecaseError) -> connectrpc::ConnectError {
-    command_error(crate::other::AppError::from_failure(error).into())
+    command_error(crate::adaptor::presenter::error::AppError::from_failure(error).into())
 }
 
 pub(crate) fn router(deps: Option<ClientApiDeps>) -> Router {

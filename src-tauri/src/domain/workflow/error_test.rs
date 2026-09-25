@@ -85,11 +85,20 @@ fn test_書込失敗_workflow変換後も分類を保持する() {
 #[test]
 fn test_workflow停止_分類とメッセージを保持する() {
     use crate::domain::failure::ClassifiedFailure;
-    use crate::domain::operation_context::OperationStopped;
+    use crate::domain::failure::{FailureKind, TechnicalFailure};
     // Given
-    for stopped in [OperationStopped::Expired, OperationStopped::Cancelled] {
+    for stopped in [
+        TechnicalFailure {
+            kind: FailureKind::Expired,
+            message: "Operation deadline exceeded".into(),
+        },
+        TechnicalFailure {
+            kind: FailureKind::Cancelled,
+            message: "Operation cancelled".into(),
+        },
+    ] {
         // When
-        let error = WorkflowError::Stopped(stopped);
+        let error = WorkflowError::Technical(stopped.clone());
         // Then
         assert_eq!(error.failure_kind(), stopped.failure_kind());
         assert_eq!(error.to_string(), stopped.to_string());

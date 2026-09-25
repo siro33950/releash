@@ -1,5 +1,5 @@
+use crate::adaptor::presenter::error::AppError;
 use crate::domain::failure::ClassifiedFailure;
-use crate::other::AppError;
 use serde::Serialize;
 
 use crate::adaptor::controller::state::AppState;
@@ -134,8 +134,8 @@ pub(crate) fn record_terminal_launch_renderer_phase_shared(
         .with_failure_kind(crate::domain::failure::FailureKind::InvalidInput));
     }
     let metric = match phase.as_str() {
-        "first_xterm_parsed" => crate::other::telemetry::TerminalLaunch::FirstXtermParsed,
-        "first_paint" => crate::other::telemetry::TerminalLaunch::FirstPaint,
+        "first_xterm_parsed" => crate::usecase::telemetry::TerminalLaunch::FirstXtermParsed,
+        "first_paint" => crate::usecase::telemetry::TerminalLaunch::FirstPaint,
         _ => {
             return Err(AppError::new("Unknown Terminal launch renderer phase")
                 .with_failure_kind(crate::domain::failure::FailureKind::InvalidInput))

@@ -1,5 +1,5 @@
+use crate::common::retry::RetryBackoff;
 use crate::domain::failure::FailureKind;
-use crate::domain::retry::RetryBackoff;
 use crate::domain::workflow::NodeKindName;
 use crate::domain::workspace_tree::{
     WorkspaceNodeStatusClassification, WorkspaceStructureFact, WorkspaceTree,

@@ -2,7 +2,7 @@ use std::fs::File;
 use std::io;
 use std::time::{Duration, Instant};
 
-use crate::domain::operation_context::{OperationContext, OperationStopped};
+use crate::common::operation_context::{OperationContext, OperationStopped};
 
 pub enum LockError {
     Io(io::Error),
@@ -18,18 +18,20 @@ fn try_exclusive(file: &File, context: &OperationContext) -> Result<bool, LockEr
     }
 }
 
-pub fn exclusive(file: &File, context: &OperationContext) -> Result<(), LockError> {
-    while !try_exclusive(file, context)? {
-        crate::other::operation_context::sleep(context, Duration::from_millis(10))
+pub fn exclusive(file: &File) -> Result<(), LockError> {
+    let context = crate::common::operation_context::current();
+    while !try_exclusive(file, &context)? {
+        crate::common::operation_context::sleep(&context, Duration::from_millis(10))
             .map_err(LockError::Stopped)?;
     }
     Ok(())
 }
 
-pub async fn exclusive_async(file: &File, context: &OperationContext) -> Result<(), LockError> {
-    while !try_exclusive(file, context)? {
-        crate::other::operation_context::wait(
-            context,
+pub async fn exclusive_async(file: &File) -> Result<(), LockError> {
+    let context = crate::common::operation_context::current();
+    while !try_exclusive(file, &context)? {
+        crate::common::operation_context::wait(
+            &context,
             tokio::time::sleep(Duration::from_millis(10)),
         )
         .await

@@ -18,7 +18,7 @@ impl std::fmt::Display for WorkflowDefinitionResolverError {
 
 #[derive(Debug)]
 pub(crate) enum ManagedWorktreeResolverError {
-    Stopped(crate::domain::operation_context::OperationStopped),
+    Technical(crate::domain::failure::TechnicalFailure),
     Validation(String),
 }
 
@@ -26,7 +26,7 @@ impl std::fmt::Display for ManagedWorktreeResolverError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Validation(message) => write!(f, "{message}"),
-            Self::Stopped(stopped) => stopped.fmt(f),
+            Self::Technical(stopped) => stopped.fmt(f),
         }
     }
 }

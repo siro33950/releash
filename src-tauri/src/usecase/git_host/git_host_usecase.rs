@@ -370,7 +370,7 @@ mod tests {
 #[cfg(test)]
 #[test]
 fn test_github検出_停止時に既定pr状態を保存しない() {
-    use crate::domain::operation_context::{Deadline, OperationContext, OperationStopped};
+    use crate::common::operation_context::{Deadline, OperationContext, OperationStopped};
     struct NoStore;
     impl PrStatusCache for NoStore {
         fn lookup(&self, _: &str) -> Option<PrStatus> {
@@ -400,20 +400,20 @@ fn test_github検出_停止時に既定pr状態を保存しない() {
             expire.then(|| Deadline::new(std::time::Instant::now())),
             Arc::new(token),
         );
-        crate::other::operation_context::sync_scope(context, || {
+        crate::common::operation_context::sync_scope(context, || {
             let expected = if expire {
                 OperationStopped::Expired
             } else {
                 OperationStopped::Cancelled
             };
             assert!(
-                matches!(uc.fetch_pr_status("/missing"), Err(GitHostError::Stopped(error)) if error == expected)
+                matches!(uc.fetch_pr_status("/missing"), Err(GitHostError::Technical(error)) if error == expected.into())
             );
             assert!(
-                matches!(uc.get_cached_pr_status("/missing"), Err(GitHostError::Stopped(error)) if error == expected)
+                matches!(uc.get_cached_pr_status("/missing"), Err(GitHostError::Technical(error)) if error == expected.into())
             );
             assert!(
-                matches!(uc.fetch_issues("/missing"), Err(GitHostError::Stopped(error)) if error == expected)
+                matches!(uc.fetch_issues("/missing"), Err(GitHostError::Technical(error)) if error == expected.into())
             );
         });
     }

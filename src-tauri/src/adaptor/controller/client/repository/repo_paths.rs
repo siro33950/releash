@@ -1,5 +1,5 @@
 use crate::adaptor::controller::state::AppState;
-use crate::other::AppError;
+use crate::adaptor::presenter::error::AppError;
 
 pub(crate) async fn add_repo_path_shared(state: &AppState, path: String) -> Result<bool, AppError> {
     let uc = state.repo_paths_usecase.clone();

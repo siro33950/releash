@@ -65,3 +65,29 @@ impl RetryBucket {
 #[cfg(test)]
 #[path = "retry_test.rs"]
 mod retry_tests;
+
+pub(crate) async fn requested<T, E, A, S, C, F, Fut>(
+    mut attempts: tokio::sync::mpsc::UnboundedReceiver<(A, tokio::sync::oneshot::Sender<S>)>,
+    mut completion: tokio::sync::oneshot::Receiver<C>,
+    mut operation: F,
+    status: impl Fn(&Result<T, E>) -> S,
+) -> Result<T, E>
+where
+    F: FnMut(A) -> Fut,
+    Fut: std::future::Future<Output = Result<T, E>>,
+{
+    let mut result = None;
+    loop {
+        tokio::select! {
+            biased;
+            _ = &mut completion => return result.expect("completed borrowed operation"),
+            request = attempts.recv() => {
+                let Some((action, reply)) = request else { return result.expect("completed borrowed operation"); };
+                let value = operation(action).await;
+                let response = status(&value);
+                result = Some(value);
+                let _ = reply.send(response);
+            }
+        }
+    }
+}

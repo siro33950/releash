@@ -6,16 +6,12 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crate::domain::workflow::FailureClassification;
-#[cfg(test)]
-use crate::domain::workflow::NodeExecutionFailureKind;
 use attributes::{
     usage_event_allowed, HotPathMetric, OpStatus, StartupMetric, TerminalLaunchMetric,
     KEY_OPERATION, KEY_STATUS, KEY_USAGE_EVENT,
 };
 use opentelemetry::global;
 use opentelemetry::metrics::{Counter, Histogram, ObservableGauge};
-use opentelemetry::trace::{Span, Tracer};
 use opentelemetry::KeyValue;
 use resource::ProcessResourceObserver;
 
@@ -570,34 +566,27 @@ pub(crate) fn lock_test_telemetry() -> TestTelemetryGuard {
     TestTelemetryGuard { _guard: guard }
 }
 
-pub(crate) fn measure_result<T, E, F>(metric: HotPathMetric, f: F) -> Result<T, E>
-where
-    F: FnOnce() -> Result<T, E>,
-{
-    if !is_performance_active() {
-        return f();
-    }
-
-    let tracer = global::tracer("releash.performance");
-    let mut span = tracer
-        .span_builder(metric.span_name())
-        .with_attributes(vec![KeyValue::new(KEY_OPERATION, metric.operation())])
-        .start(&tracer);
-
-    let started = Instant::now();
-    let result = f();
-    let status = if result.is_ok() {
-        OpStatus::Success
-    } else {
-        OpStatus::Failure
-    };
-    let elapsed = started.elapsed();
-
-    record_hot_path_duration(metric, status, elapsed);
-    span.set_attribute(KeyValue::new(KEY_STATUS, status.as_str()));
-    span.end();
-
-    result
+pub(crate) fn measure_result<T, E>(
+    metric: HotPathMetric,
+    operation: impl FnOnce() -> Result<T, E>,
+) -> Result<T, E> {
+    crate::common::telemetry::measure_result(
+        is_performance_active(),
+        metric.span_name(),
+        metric.operation(),
+        operation,
+        |success, elapsed| {
+            record_hot_path_duration(
+                metric,
+                if success {
+                    OpStatus::Success
+                } else {
+                    OpStatus::Failure
+                },
+                elapsed,
+            );
+        },
+    )
 }
 
 pub(crate) fn record_hot_path_duration(metric: HotPathMetric, status: OpStatus, elapsed: Duration) {
@@ -626,7 +615,9 @@ pub(crate) fn record_hot_path_duration(metric: HotPathMetric, status: OpStatus, 
 }
 
 pub(crate) fn record_workflow_node_failure(
-    classification: FailureClassification,
+    kind: &'static str,
+    disposition: &'static str,
+    timeout_kind: Option<&'static str>,
     retry_count: Option<u32>,
 ) {
     if !is_performance_active() {
@@ -635,11 +626,8 @@ pub(crate) fn record_workflow_node_failure(
     let mut attrs = vec![
         KeyValue::new(KEY_OPERATION, "workflow.node.failure"),
         KeyValue::new(KEY_STATUS, OpStatus::Failure.as_str()),
-        KeyValue::new(attributes::KEY_FAILURE_KIND, classification.kind.as_str()),
-        KeyValue::new(
-            attributes::KEY_FAILURE_DISPOSITION,
-            classification.disposition.as_str(),
-        ),
+        KeyValue::new(attributes::KEY_FAILURE_KIND, kind),
+        KeyValue::new(attributes::KEY_FAILURE_DISPOSITION, disposition),
     ];
     if let Some(retry_count) = retry_count {
         attrs.push(KeyValue::new(
@@ -647,11 +635,8 @@ pub(crate) fn record_workflow_node_failure(
             retry_count.to_string(),
         ));
     }
-    if let Some(timeout_kind) = classification.timeout_kind {
-        attrs.push(KeyValue::new(
-            attributes::KEY_TIMEOUT_KIND,
-            timeout_kind.as_str(),
-        ));
+    if let Some(timeout_kind) = timeout_kind {
+        attrs.push(KeyValue::new(attributes::KEY_TIMEOUT_KIND, timeout_kind));
     }
     #[cfg(test)]
     record_test_metric("releash.operation.status", 1.0, &attrs);
@@ -836,10 +821,7 @@ mod tests {
         reset_test_metrics();
         set_active(true);
 
-        record_workflow_node_failure(
-            FailureClassification::new(NodeExecutionFailureKind::StartupTimeout),
-            Some(2),
-        );
+        record_workflow_node_failure("startup_timeout", "retryable", Some("startup"), Some(2));
 
         let records = records_named("releash.operation.status");
         assert!(records.iter().any(|record| {
@@ -859,10 +841,7 @@ mod tests {
         reset_test_metrics();
         set_active(true);
 
-        record_workflow_node_failure(
-            FailureClassification::new(NodeExecutionFailureKind::UserAbort),
-            None,
-        );
+        record_workflow_node_failure("user_abort", "user-action-required", None, None);
 
         let records = records_named("releash.operation.status");
         assert!(records.iter().any(|record| {

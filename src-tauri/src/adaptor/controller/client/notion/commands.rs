@@ -1,9 +1,9 @@
 use crate::adaptor::controller::state::AppState;
+use crate::adaptor::presenter::error::AppError;
 use crate::adaptor::protocol::notion::{
     NotionLabelOptionView, NotionRepoConfigView, NotionTaskPageView, NotionTaskQueryInput,
     NotionValidationResultView, PropertyMappingView,
 };
-use crate::other::AppError;
 use crate::usecase::notion::error::NotionUsecaseError;
 
 fn map_join_error(error: tokio::task::JoinError) -> AppError {
@@ -21,7 +21,7 @@ pub(crate) async fn query_notion_tasks_shared(
 ) -> Result<NotionTaskPageView, AppError> {
     let notion_usecase = state.notion_usecase.clone();
     let query = query.into();
-    crate::other::operation_context::spawn_blocking(move || {
+    crate::common::operation_context::spawn_blocking(move || {
         notion_usecase
             .query_tasks(&repo_path, &query)
             .map(Into::into)
@@ -36,7 +36,7 @@ pub(crate) async fn fetch_notion_label_options_shared(
     repo_path: String,
 ) -> Result<Vec<NotionLabelOptionView>, AppError> {
     let notion_usecase = state.notion_usecase.clone();
-    crate::other::operation_context::spawn_blocking(move || {
+    crate::common::operation_context::spawn_blocking(move || {
         notion_usecase
             .fetch_label_options(&repo_path)
             .map(|options| options.into_iter().map(Into::into).collect())
@@ -98,7 +98,7 @@ pub(crate) async fn validate_notion_config_shared(
     database_id: String,
 ) -> Result<NotionValidationResultView, AppError> {
     let notion_usecase = state.notion_usecase.clone();
-    crate::other::operation_context::spawn_blocking(move || {
+    crate::common::operation_context::spawn_blocking(move || {
         let result = notion_usecase
             .validate_config(api_token, database_id)
             .map_err(AppError::from_failure)?;

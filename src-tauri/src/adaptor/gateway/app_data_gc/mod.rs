@@ -115,7 +115,7 @@ pub(crate) fn build_startup_gc_request(
         cache_records: collect_cache_records(&app_data_dir, file_system),
         legacy_comment_paths: collect_legacy_comment_paths(&app_data_dir, file_system),
         runtime_protection: RuntimeProtection::incomplete(),
-        now_secs: crate::other::utils::unix_timestamp_seconds(),
+        now_secs: crate::infrastructure::utils::unix_timestamp_seconds(),
         retention: RetentionPolicy::default(),
     }
 }

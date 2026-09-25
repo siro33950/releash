@@ -1,4 +1,4 @@
-use crate::other::AppError;
+use crate::adaptor::presenter::error::AppError;
 #[path = "application_lifecycle_shared.rs"]
 mod shared;
 use crate::adaptor::protocol::application_lifecycle_v1::{

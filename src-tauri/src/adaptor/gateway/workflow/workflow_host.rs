@@ -848,11 +848,12 @@ impl WorkflowRuntimeHost {
         app: &WorkflowRuntimeDependencies,
         commit: ControlPlaneCommitCandidate<'_>,
     ) -> Result<RuntimeCommitSnapshot, WorkflowRuntimeError> {
-        crate::usecase::work_queue::retry_stage(
+        crate::adaptor::gateway::work_queue::retry(
             &self.queue,
             crate::usecase::work_queue::WorkKey::new("workflow_runtime", commit.execution_id),
-            crate::domain::retry::RetryBackoff::CONFLICT,
+            crate::common::retry::RetryBackoff::CONFLICT,
             || self.commit_control_plane_candidate_once(app, commit.clone()),
+            false,
         )
         .await
     }

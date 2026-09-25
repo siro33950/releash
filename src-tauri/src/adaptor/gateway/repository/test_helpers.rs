@@ -1,5 +1,5 @@
+use crate::common::operation_context::{Cancellation, OperationContext};
 use crate::domain::failure::FailureKind;
-use crate::domain::operation_context::{Cancellation, OperationContext};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -18,8 +18,8 @@ pub(crate) fn assert_stops_at_each_checkpoint<
             self.checks.fetch_add(1, Ordering::SeqCst) >= self.stop_at
         }
     }
-    let expired = crate::other::operation_context::sync_scope(
-        OperationContext::default().with_deadline(crate::domain::operation_context::Deadline::new(
+    let expired = crate::common::operation_context::sync_scope(
+        OperationContext::default().with_deadline(crate::common::operation_context::Deadline::new(
             std::time::Instant::now(),
         )),
         &mut operation,
@@ -29,7 +29,7 @@ pub(crate) fn assert_stops_at_each_checkpoint<
         checks: AtomicUsize::new(0),
         stop_at: usize::MAX,
     });
-    crate::other::operation_context::sync_scope(
+    crate::common::operation_context::sync_scope(
         OperationContext::new(None, baseline.clone()),
         &mut operation,
     )
@@ -41,7 +41,7 @@ pub(crate) fn assert_stops_at_each_checkpoint<
             checks: AtomicUsize::new(0),
             stop_at,
         });
-        let result = crate::other::operation_context::sync_scope(
+        let result = crate::common::operation_context::sync_scope(
             OperationContext::new(None, cancellation.clone()),
             &mut operation,
         );

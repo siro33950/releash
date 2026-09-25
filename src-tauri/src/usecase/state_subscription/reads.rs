@@ -105,14 +105,7 @@ impl WorkspaceStateReads {
             }
             _ => {}
         }
-        let reads = self.clone();
-        let target = target.clone();
-        crate::other::operation_context::spawn_blocking(move || reads.read_blocking(&target))
-            .await
-            .map_err(|e| StateReadError {
-                kind: FailureKind::Internal,
-                message: e.to_string(),
-            })?
+        self.read_blocking(target)
     }
 
     fn read_blocking(&self, target: &SubscriptionTarget) -> Result<StateValue, StateReadError> {
@@ -215,18 +208,8 @@ impl StateSubscriptionRead for WorkspaceStateReads {
     }
     async fn refresh_external(&self, target: &SubscriptionTarget) -> Result<(), StateReadError> {
         if let SubscriptionTarget::Issues(path) = target {
-            let reads = self.clone();
-            let path = path.clone();
-            crate::other::operation_context::spawn_blocking(move || {
-                reads.repository.get_main_repo_path(&path).map_err(error)?;
-                reads.git_host.fetch_issues(&path).map_err(error)?;
-                Ok(())
-            })
-            .await
-            .map_err(|error| StateReadError {
-                kind: FailureKind::Internal,
-                message: error.to_string(),
-            })??;
+            self.repository.get_main_repo_path(path).map_err(error)?;
+            self.git_host.fetch_issues(path).map_err(error)?;
         }
         Ok(())
     }

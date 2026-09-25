@@ -1,6 +1,6 @@
 use super::runtime_error::WorkflowRuntimeError;
+use crate::common::retry::RetryBackoff;
 use crate::domain::failure::{ClassifiedFailure, FailureKind, RetryAction};
-use crate::domain::retry::RetryBackoff;
 use crate::domain::workflow::entities::workflow_execution::NodeStart;
 
 #[derive(Debug, Clone)]

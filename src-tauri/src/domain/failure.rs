@@ -70,3 +70,19 @@ pub trait BackgroundFailures: Send {
     fn clear(&mut self, target: &str) -> bool;
     fn requires_attention(&self, target: &str) -> bool;
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TechnicalFailure {
+    pub kind: FailureKind,
+    pub message: String,
+}
+impl std::fmt::Display for TechnicalFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+impl ClassifiedFailure for TechnicalFailure {
+    fn failure_kind(&self) -> FailureKind {
+        self.kind
+    }
+}

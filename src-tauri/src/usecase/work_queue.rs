@@ -1,6 +1,6 @@
+use crate::common::retry::{RetryBackoff, RetryBucket};
 use crate::domain::failure::{ClassifiedFailure, FailureKind, RetryAction};
 use crate::domain::failure_records::FailureRecord;
-use crate::domain::retry::{RetryBackoff, RetryBucket};
 use crate::domain::work_queue::WorkQueue;
 use std::collections::HashMap;
 use std::future::Future;
@@ -100,7 +100,7 @@ struct State {
 pub struct WorkQueueUsecase {
     runtime: Arc<dyn WorkQueueRuntime>,
     state: std::sync::Mutex<State>,
-    bucket: Mutex<RetryBucket>,
+    bucket: Arc<Mutex<RetryBucket>>,
     query: Arc<super::failure_query_service::FailureQueryService>,
     changed: Notify,
     publisher:
@@ -114,9 +114,18 @@ pub fn shared() -> &'static Arc<WorkQueueUsecase> {
 }
 
 impl WorkQueueUsecase {
+    #[cfg(test)]
     pub fn new(runtime: Arc<dyn WorkQueueRuntime>) -> Arc<Self> {
+        let bucket = Arc::new(Mutex::new(RetryBucket::new(runtime.now())));
+        Self::with_retry_bucket(runtime, bucket)
+    }
+
+    pub fn with_retry_bucket(
+        runtime: Arc<dyn WorkQueueRuntime>,
+        bucket: Arc<Mutex<RetryBucket>>,
+    ) -> Arc<Self> {
         Arc::new(Self {
-            bucket: Mutex::new(RetryBucket::new(runtime.now())),
+            bucket,
             runtime,
             state: std::sync::Mutex::new(State {
                 queue: WorkQueue::default(),
@@ -300,7 +309,8 @@ impl WorkQueueUsecase {
                                 && (!key.stage
                                     || error.kind.retry_action() == RetryAction::Retry) =>
                         {
-                            let due = state.queue.retry(
+                            let due = retry_due(
+                                &mut state.queue,
                                 &key,
                                 error.kind,
                                 backoff,
@@ -514,9 +524,9 @@ where
 
 pub(crate) async fn run_borrowed<T, E, F, Fut>(
     queue: &Arc<WorkQueueUsecase>,
-    mut key: WorkKey,
+    key: WorkKey,
     policy: RetryBackoff,
-    mut operation: F,
+    operation: F,
     restart: bool,
     record_failures: bool,
 ) -> Result<T, E>
@@ -525,53 +535,17 @@ where
     F: FnMut(RetryAction) -> Fut,
     Fut: Future<Output = Result<T, E>>,
 {
-    key.stage = !restart;
-    let (requests, mut attempts) = tokio::sync::mpsc::unbounded_channel();
-    let (completed, mut completion) = tokio::sync::oneshot::channel();
-    let job: Job = Arc::new(move |action| {
-        let (reply, result) = tokio::sync::oneshot::channel();
-        let sent = requests.send((action, reply));
-        Box::pin(async move {
-            if sent.is_err() {
-                return Err(cancelled());
-            }
-            result.await.unwrap_or_else(|_| Err(cancelled()))
-        })
-    });
-    queue
-        .enqueue_with_completion(
-            key.clone(),
-            policy,
-            job.clone(),
-            Some(completed),
-            Duration::ZERO,
-            AttemptMode::Borrowed { record_failures },
-        )
-        .await;
-    let _work = BorrowedWork {
-        queue: queue.clone(),
-        key,
-        job,
-    };
-    let mut result = None;
-    loop {
-        tokio::select! {
-            biased;
-            _ = &mut completion => return result.expect("completed borrowed operation"),
-            request = attempts.recv() => {
-                let Some((action, reply)) = request else {
-                    return result.expect("completed borrowed operation");
-                };
-                let value = operation(action).await;
-                let status = value.as_ref().map(|_| None).map_err(WorkFailure::from_error);
-                result = Some(value);
-                let _ = reply.send(status);
-            }
-        }
-    }
+    let (_work, attempts, completion) = queue.borrowed(key, policy, restart, record_failures).await;
+    crate::common::retry::requested(attempts, completion, operation, |value| {
+        value
+            .as_ref()
+            .map(|_| None)
+            .map_err(WorkFailure::from_error)
+    })
+    .await
 }
 
-struct BorrowedWork {
+pub(crate) struct BorrowedWork {
     queue: Arc<WorkQueueUsecase>,
     key: WorkKey,
     job: Job,
@@ -642,3 +616,66 @@ impl WorkQueueRuntime for ImmediateWorkQueueRuntime {
 #[cfg(test)]
 #[path = "work_queue_test.rs"]
 pub(crate) mod work_queue_tests;
+
+fn retry_due<K: Eq + std::hash::Hash + Clone>(
+    queue: &mut WorkQueue<K>,
+    key: &K,
+    kind: FailureKind,
+    policy: RetryBackoff,
+    now: Duration,
+    jitter: f64,
+) -> Duration {
+    let policy = if kind.retry_action() == RetryAction::Restart {
+        RetryBackoff::CONFLICT
+    } else {
+        policy
+    };
+    now + policy.delay(queue.failed(key), jitter)
+}
+
+type BorrowedRequest = (
+    RetryAction,
+    tokio::sync::oneshot::Sender<Result<Option<Duration>, WorkFailure>>,
+);
+impl WorkQueueUsecase {
+    pub(crate) async fn borrowed(
+        self: &Arc<Self>,
+        mut key: WorkKey,
+        policy: RetryBackoff,
+        restart: bool,
+        record_failures: bool,
+    ) -> (
+        BorrowedWork,
+        tokio::sync::mpsc::UnboundedReceiver<BorrowedRequest>,
+        tokio::sync::oneshot::Receiver<Result<(), WorkFailure>>,
+    ) {
+        key.stage = !restart;
+        let (requests, attempts) = tokio::sync::mpsc::unbounded_channel();
+        let (completed, completion) = tokio::sync::oneshot::channel();
+        let job: Job = Arc::new(move |action| {
+            let (reply, result) = tokio::sync::oneshot::channel();
+            let sent = requests.send((action, reply));
+            Box::pin(async move {
+                if sent.is_err() {
+                    return Err(cancelled());
+                }
+                result.await.unwrap_or_else(|_| Err(cancelled()))
+            })
+        });
+        self.enqueue_with_completion(
+            key.clone(),
+            policy,
+            job.clone(),
+            Some(completed),
+            Duration::ZERO,
+            AttemptMode::Borrowed { record_failures },
+        )
+        .await;
+        let work = BorrowedWork {
+            queue: self.clone(),
+            key,
+            job,
+        };
+        (work, attempts, completion)
+    }
+}

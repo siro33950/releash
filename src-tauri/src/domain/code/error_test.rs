@@ -6,11 +6,17 @@ fn test_失敗分類_code_error_理由に対応する() {
     // Given
     let cases = [
         (
-            CodeError::Stopped(crate::domain::operation_context::OperationStopped::Expired),
+            CodeError::Technical(crate::domain::failure::TechnicalFailure {
+                kind: crate::domain::failure::FailureKind::Expired,
+                message: "Operation deadline exceeded".into(),
+            }),
             F::Expired,
         ),
         (
-            CodeError::Stopped(crate::domain::operation_context::OperationStopped::Cancelled),
+            CodeError::Technical(crate::domain::failure::TechnicalFailure {
+                kind: crate::domain::failure::FailureKind::Cancelled,
+                message: "Operation cancelled".into(),
+            }),
             F::Cancelled,
         ),
         (CodeError::External("io".into()), F::Internal),

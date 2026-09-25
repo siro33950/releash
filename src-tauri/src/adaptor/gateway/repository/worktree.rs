@@ -24,7 +24,7 @@ pub(crate) fn find_main_repo_path(any_path: &str) -> Result<Option<String>, Repo
 
 pub(crate) fn recorded_main_repo_path(
     path: &str,
-) -> Result<Option<String>, crate::domain::operation_context::OperationStopped> {
+) -> Result<Option<String>, crate::common::operation_context::OperationStopped> {
     if let Some(repository) = git_operation::optional(git_operation::run(|| client::open(path)))? {
         if let Ok(path) = main_repo_path(&repository) {
             return Ok(Some(path));
@@ -107,7 +107,7 @@ pub(super) fn get_dirty_count_for_path(path: &Path) -> Result<u32, RepositoryErr
     };
     match count_dirty_entries(&repo) {
         Ok(count) => Ok(count),
-        Err(error @ RepositoryError::Stopped(_)) => Err(error),
+        Err(error @ RepositoryError::Technical(_)) => Err(error),
         Err(_) => Ok(0),
     }
 }
@@ -120,7 +120,7 @@ pub(super) fn each_worktree<'a>(
     repo: &'a Repository,
     names: &'a git2::string_array::StringArray,
 ) -> impl Iterator<
-    Item = Result<(String, git2::Worktree), crate::domain::operation_context::OperationStopped>,
+    Item = Result<(String, git2::Worktree), crate::common::operation_context::OperationStopped>,
 > + 'a {
     (0..names.len()).filter_map(move |i| {
         let name = match names.get(i) {

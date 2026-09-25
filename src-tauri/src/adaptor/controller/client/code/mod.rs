@@ -14,9 +14,9 @@ pub(crate) mod markdown;
 pub(crate) mod review;
 pub(crate) mod staging;
 
+use crate::adaptor::presenter::error::AppError;
 use crate::domain::code::CodeError;
 use crate::domain::failure::ClassifiedFailure;
-use crate::other::AppError;
 use crate::usecase::code_error::CodeUsecaseError;
 
 const STALE_REVIEW_GROUP_TARGET_ERROR_CODE: &str = "STALE_REVIEW_GROUP_TARGET";

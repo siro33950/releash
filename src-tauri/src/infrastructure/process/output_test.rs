@@ -1,16 +1,15 @@
 use super::*;
-use crate::domain::operation_context::Deadline;
+use crate::common::operation_context::{sync_scope, Deadline, OperationContext};
 use std::time::{Duration, Instant};
 
 #[test]
 fn test_プロセス実行_期限切れでは起動しない() {
     let context = OperationContext::default().with_deadline(Deadline::new(Instant::now()));
     assert!(matches!(
-        output(
+        sync_scope(context, || output(
             tokio::process::Command::new("/nonexistent"),
-            vec![],
-            &context
-        ),
+            vec![]
+        )),
         Err(ProcessError::Stopped(OperationStopped::Expired))
     ));
 }
@@ -29,7 +28,7 @@ fn test_プロセス実行_入出力待ちを期限で止め子を回収する()
     let context = OperationContext::default()
         .with_deadline(Deadline::new(Instant::now() + Duration::from_millis(100)));
     // When
-    let result = output(command, vec![0; 1024 * 1024], &context);
+    let result = sync_scope(context, || output(command, vec![0; 1024 * 1024]));
     // Then
     assert!(matches!(
         result,
@@ -70,7 +69,7 @@ fn test_プロセス実行_取消で実行中の子を終了し回収する() {
         }
         token.cancel();
     });
-    let result = output(command, vec![0; 1024 * 1024], &context);
+    let result = sync_scope(context, || output(command, vec![0; 1024 * 1024]));
     cancel.join().unwrap();
     assert!(matches!(
         result,

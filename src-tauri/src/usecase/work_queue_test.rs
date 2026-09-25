@@ -520,3 +520,74 @@ async fn test_借用する再試行_取消で作業列の同じキーを解放�
         42
     );
 }
+
+#[test]
+fn test_再試行_分類から待ち時間を選び失敗回数を保持する() {
+    // Given
+    let mut queue = WorkQueue::default();
+    queue.add("a", Duration::ZERO);
+    queue.get(Duration::ZERO);
+    // When / Then
+    let due = retry_due(
+        &mut queue,
+        &"a",
+        FailureKind::RestartRequired,
+        RetryBackoff::ITEM,
+        Duration::ZERO,
+        1.0,
+    );
+    assert_eq!(due, Duration::from_millis(10));
+    queue.done(&"a", Some(due), false);
+    assert_eq!(queue.get(Duration::from_millis(9)), None);
+    assert_eq!(queue.get(due), Some("a"));
+    let due = retry_due(
+        &mut queue,
+        &"a",
+        FailureKind::Temporary,
+        RetryBackoff::ITEM,
+        due,
+        1.0,
+    );
+    assert_eq!(due, Duration::from_millis(20));
+    assert_eq!(queue.failure_count(&"a"), 2);
+    queue.done(&"a", None, true);
+    assert_eq!(queue.failure_count(&"a"), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_借用する再試行_restartを渡し最終失敗を返して仕事を解放する() {
+    // Given
+    let queue = queue();
+    let actions = std::sync::Mutex::new(Vec::new());
+    // When
+    let result = run_borrowed(
+        &queue,
+        WorkKey::new("workflow_control_plane", "final-failure"),
+        RetryBackoff::ITEM,
+        |action| {
+            let mut actions = actions.lock().unwrap();
+            actions.push(action);
+            let kind = if actions.len() == 1 {
+                FailureKind::RestartRequired
+            } else {
+                FailureKind::InvalidInput
+            };
+            async move {
+                Err::<(), _>(WorkFailure {
+                    kind,
+                    message: "failed".into(),
+                })
+            }
+        },
+        true,
+        true,
+    )
+    .await;
+    // Then
+    assert_eq!(result.unwrap_err().kind, FailureKind::InvalidInput);
+    assert_eq!(
+        *actions.lock().unwrap(),
+        [RetryAction::Retry, RetryAction::Restart]
+    );
+    assert!(queue.state.lock().unwrap().jobs.is_empty());
+}

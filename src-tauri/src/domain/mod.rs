@@ -25,8 +25,7 @@ pub(crate) mod workspace_tree;
 pub(crate) mod login_item;
 
 pub(crate) mod failure_records;
-pub(crate) mod retry;
 pub(crate) mod state_subscription;
 pub(crate) mod work_queue;
 
-pub mod operation_context;
+pub(crate) mod identity;

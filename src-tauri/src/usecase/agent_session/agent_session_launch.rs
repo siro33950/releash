@@ -70,7 +70,7 @@ pub(crate) enum AgentSessionHistoryResumeOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AgentSessionLaunchUsecaseError {
-    Stopped(crate::domain::operation_context::OperationStopped),
+    Technical(crate::domain::failure::TechnicalFailure),
     Store(crate::domain::failure::FailureKind),
     ProviderUnavailable,
     InvalidInput,
@@ -254,6 +254,7 @@ impl StandaloneLaunchRequestRegistry {
 }
 
 pub(crate) struct AgentSessionLaunchUsecase {
+    performance: Arc<dyn crate::usecase::telemetry::PerformanceOutput>,
     sessions: Arc<AgentSessionUsecase>,
     lifecycle: Arc<ProviderLifecycleUsecase>,
     availability: Arc<dyn ProviderAvailabilityReader>,
@@ -291,6 +292,7 @@ struct DurableAgentSessionLaunch {
 
 impl AgentSessionLaunchUsecase {
     pub(crate) fn new(
+        performance: Arc<dyn crate::usecase::telemetry::PerformanceOutput>,
         sessions: Arc<AgentSessionUsecase>,
         lifecycle: Arc<ProviderLifecycleUsecase>,
         provider_runtime: ProviderAgentRuntime,
@@ -304,6 +306,7 @@ impl AgentSessionLaunchUsecase {
             terminal,
         } = provider_runtime;
         Self {
+            performance,
             sessions,
             lifecycle,
             availability,
@@ -531,8 +534,8 @@ impl AgentSessionLaunchUsecase {
         tree_location: AgentSessionTreeLocation,
         launch: ProviderSessionLaunch,
     ) -> Result<PreparedAgentSessionLaunch, AgentSessionLaunchUsecaseError> {
-        let availability_and_lock = crate::other::telemetry::start_terminal_launch_phase(
-            crate::other::telemetry::TerminalLaunch::AvailabilityAndLock,
+        let availability_and_lock = self.performance.start_terminal_launch_phase(
+            crate::usecase::telemetry::TerminalLaunch::AvailabilityAndLock,
         );
         let executable = self
             .availability
@@ -547,8 +550,8 @@ impl AgentSessionLaunchUsecase {
         let slot_id = issue_lifecycle_slot_id(&request.caller_request_id)?;
         let scope = ProviderLifecycleScope::new(&agent_session_id)
             .map_err(|_| AgentSessionLaunchUsecaseError::Corrupt)?;
-        let durable_create = crate::other::telemetry::start_terminal_launch_phase(
-            crate::other::telemetry::TerminalLaunch::DurableCreateCommit,
+        let durable_create = self.performance.start_terminal_launch_phase(
+            crate::usecase::telemetry::TerminalLaunch::DurableCreateCommit,
         );
         let create_result = self
             .lifecycle
@@ -690,8 +693,8 @@ impl AgentSessionLaunchUsecase {
         caller_request_id: &str,
         launch: ProviderSessionLaunch,
     ) -> Result<PreparedAgentSessionLaunch, AgentSessionLaunchUsecaseError> {
-        let launch_file_materialize = crate::other::telemetry::start_terminal_launch_phase(
-            crate::other::telemetry::TerminalLaunch::LaunchFileMaterialize,
+        let launch_file_materialize = self.performance.start_terminal_launch_phase(
+            crate::usecase::telemetry::TerminalLaunch::LaunchFileMaterialize,
         );
         let prepared = match self
             .launch_gateway
@@ -1126,8 +1129,8 @@ fn map_lifecycle_error(error: ProviderLifecycleUsecaseError) -> AgentSessionLaun
 
 fn map_launch_error(error: ProviderAgentLaunchGatewayError) -> AgentSessionLaunchUsecaseError {
     match error {
-        ProviderAgentLaunchGatewayError::Stopped(stopped) => {
-            AgentSessionLaunchUsecaseError::Stopped(stopped)
+        ProviderAgentLaunchGatewayError::Technical(stopped) => {
+            AgentSessionLaunchUsecaseError::Technical(stopped)
         }
         ProviderAgentLaunchGatewayError::InvalidInput => {
             AgentSessionLaunchUsecaseError::InvalidInput
@@ -1161,7 +1164,7 @@ impl crate::domain::failure::ClassifiedFailure for AgentSessionLaunchUsecaseErro
         use crate::domain::failure::FailureKind;
         match self {
             Self::Store(kind) => *kind,
-            Self::Stopped(stopped) => stopped.failure_kind(),
+            Self::Technical(stopped) => stopped.failure_kind(),
             Self::ProviderUnavailable => FailureKind::StateRequired,
             Self::InvalidInput => FailureKind::InvalidInput,
             Self::Conflict(kind) => *kind,

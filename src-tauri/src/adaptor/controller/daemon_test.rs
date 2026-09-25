@@ -198,7 +198,7 @@ fn test_daemon終了_subprocess() {
             let (started, ready) = tokio::sync::oneshot::channel();
             let (_release, receiver) = std::sync::mpsc::channel();
             *pty.shutdown_gate.lock() = Some((blocked, started, receiver));
-            let terminal = Arc::new(usecase::terminal_surface::application::TerminalSurfaceApplication::new(
+            let terminal = Arc::new(usecase::terminal_surface::application::TerminalSurfaceApplication::new(std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
                 Arc::new(pty),
                 Arc::new(adaptor::gateway::terminal_surface::event_hub::TerminalSurfaceEventHub::new()),
             ));
@@ -268,4 +268,37 @@ async fn test_daemon起動のarchive移行結線_未終了対象をabortし事�
         .remove(0);
     assert_eq!(archived.archived_at, 12.345678);
     assert_eq!(archived.archive_reason, "manual");
+}
+
+#[tokio::test]
+async fn test_開始計測_組み立て失敗前に起点を記録する() {
+    use infrastructure::telemetry::metrics;
+    // Given
+    let _guard = metrics::lock_test_telemetry();
+    metrics::reset_test_metrics();
+    metrics::set_performance_configured(true);
+    let directory = tempfile::tempdir().unwrap();
+    let invalid_data_dir = directory.path().join("file");
+    std::fs::write(&invalid_data_dir, "not a directory").unwrap();
+
+    // When
+    let result = compose(
+        invalid_data_dir,
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        Ok(std::ffi::OsString::new()),
+    )
+    .await;
+    metrics::record_first_repo_snapshot_ready();
+    metrics::record_first_repo_snapshot_ready();
+
+    // Then
+    assert!(result.is_err());
+    let records = metrics::test_metric_records();
+    let startup: Vec<_> = records
+        .iter()
+        .filter(|record| record.name == "releash.startup.duration_ms")
+        .collect();
+    assert_eq!(startup.len(), 1);
+    assert!(startup[0].value >= 0.0);
+    metrics::reset_test_metrics();
 }

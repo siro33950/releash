@@ -12,8 +12,8 @@ use crate::usecase::provider_lifecycle::{
 async fn test_workflow失敗_stopとcache解放と起動登録で元の分類を保持する() {
     // Given
     for error in [
-        WorkflowError::Stopped(crate::domain::operation_context::OperationStopped::Expired),
-        WorkflowError::Stopped(crate::domain::operation_context::OperationStopped::Cancelled),
+        WorkflowError::Technical(crate::common::operation_context::OperationStopped::Expired.into()),
+        WorkflowError::Technical(crate::common::operation_context::OperationStopped::Cancelled.into()),
         WorkflowError::External("internal".into()),
         WorkflowError::Editor(crate::domain::external_editor::EditorError::Launch(
             "launch".into(),

@@ -97,12 +97,9 @@ impl FileWorktreeOperationLocks {
                 std::thread::Builder::new()
                     .name("worktree-lock-cleanup".into())
                     .spawn(move || {
-                        let result = crate::adaptor::gateway::shared::file_lock::exclusive(
-                            &registry,
-                            &crate::domain::operation_context::OperationContext::default(),
-                        )
-                        .map_err(lock_error)
-                        .and_then(|()| locks.remove_idle_registered(&key, registry));
+                        let result = crate::infrastructure::file_lock::exclusive(&registry)
+                            .map_err(lock_error)
+                            .and_then(|()| locks.remove_idle_registered(&key, registry));
                         if let Err(error) = result {
                             log::warn!("worktree operation lock cleanup failed: {error}");
                         }
@@ -187,14 +184,13 @@ impl WorktreeOperationLocks for FileWorktreeOperationLocks {
         &self,
         identity: &str,
     ) -> Result<Box<dyn WorktreeOperationLease>, RepositoryError> {
-        let context = crate::other::operation_context::current();
         std::fs::create_dir_all(&self.directory)?;
         let registry = self.open("registry")?;
-        crate::adaptor::gateway::shared::file_lock::exclusive_async(&registry, &context)
+        crate::infrastructure::file_lock::exclusive_async(&registry)
             .await
             .map_err(lock_error)?;
         let lease = self.lease_registered(identity, true, registry)?;
-        crate::adaptor::gateway::shared::file_lock::exclusive_async(&lease.files[1], &context)
+        crate::infrastructure::file_lock::exclusive_async(&lease.files[1])
             .await
             .map_err(lock_error)?;
         Ok(Box::new(lease))
@@ -206,15 +202,11 @@ impl WorktreeOperationLocks for FileWorktreeOperationLocks {
 mod worktree_operation_tests;
 
 fn wait_lock(file: &File) -> Result<(), RepositoryError> {
-    crate::adaptor::gateway::shared::file_lock::exclusive(
-        file,
-        &crate::other::operation_context::current(),
-    )
-    .map_err(lock_error)
+    crate::infrastructure::file_lock::exclusive(file).map_err(lock_error)
 }
-fn lock_error(error: crate::adaptor::gateway::shared::file_lock::LockError) -> RepositoryError {
+fn lock_error(error: crate::infrastructure::file_lock::LockError) -> RepositoryError {
     match error {
-        crate::adaptor::gateway::shared::file_lock::LockError::Io(error) => error.into(),
-        crate::adaptor::gateway::shared::file_lock::LockError::Stopped(error) => error.into(),
+        crate::infrastructure::file_lock::LockError::Io(error) => error.into(),
+        crate::infrastructure::file_lock::LockError::Stopped(error) => error.into(),
     }
 }

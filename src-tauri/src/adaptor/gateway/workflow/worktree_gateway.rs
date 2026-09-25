@@ -48,8 +48,8 @@ pub(crate) fn canonicalize_managed_worktree_path_inner(
         let worktrees = match usecase.list_worktrees(&repo_path_str) {
             Ok(worktrees) => worktrees,
             Err(crate::usecase::repository_error::UsecaseError::Repository(
-                RepositoryError::Stopped(stopped),
-            )) => return Err(WorkflowError::Stopped(stopped)),
+                RepositoryError::Technical(stopped),
+            )) => return Err(WorkflowError::Technical(stopped)),
             Err(_) => continue,
         };
         for worktree in worktrees {
@@ -77,7 +77,7 @@ pub(crate) async fn canonicalize_managed_worktree_path(
             .map_err(|e| WorkflowError::external(e.to_string()))?
             .app,
     );
-    crate::other::operation_context::spawn_blocking(move || {
+    crate::common::operation_context::spawn_blocking(move || {
         canonicalize_managed_worktree_path_inner(&usecase, repo_paths, worktree_path)
     })
     .await
@@ -119,7 +119,7 @@ pub(crate) struct RepositoryIsolatedWorktreeGateway;
 
 fn isolated_worktree_error(error: RepositoryError) -> WorkflowError {
     match error {
-        RepositoryError::Stopped(stopped) => WorkflowError::Stopped(stopped),
+        RepositoryError::Technical(stopped) => WorkflowError::Technical(stopped),
         error => WorkflowError::external(error.to_string()),
     }
 }

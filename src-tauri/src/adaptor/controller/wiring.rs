@@ -142,6 +142,7 @@ pub(crate) fn build_code_usecase() -> CodeUsecase {
 #[cfg(test)]
 pub(crate) fn build_terminal_surface_application_for_tests() -> TerminalSurfaceApplication {
     TerminalSurfaceApplication::new(
+        std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
         Arc::new(TerminalSurfaceRuntimeGateway::default()),
         Arc::new(
             crate::adaptor::gateway::terminal_surface::event_hub::TerminalSurfaceEventHub::new(),

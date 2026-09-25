@@ -7,7 +7,13 @@ fn test_失敗分類_local_event_query_error_理由に対応する() {
     let cases = [
         (LocalEventQueryError::InvalidRequest, F::InvalidInput),
         (LocalEventQueryError::QueryBusy, F::Temporary),
-        (LocalEventQueryError::DeadlineExceeded, F::Expired),
+        (
+            LocalEventQueryError::Technical(crate::domain::failure::TechnicalFailure {
+                kind: crate::domain::failure::FailureKind::Expired,
+                message: "deadline exceeded".into(),
+            }),
+            F::Expired,
+        ),
         (LocalEventQueryError::ResponseTooLarge, F::Capacity),
         (
             LocalEventQueryError::IncompatibleStoredEvent {

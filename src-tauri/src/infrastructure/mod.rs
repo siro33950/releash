@@ -14,3 +14,10 @@ pub(crate) mod telemetry;
 pub(crate) mod terminal;
 
 pub(crate) mod push;
+
+pub mod dispose;
+pub(crate) mod id;
+pub mod performance_switches;
+pub mod utils;
+
+pub(crate) mod file_lock;

@@ -898,16 +898,20 @@ impl LocalEventStore {
                 }
             }),
         };
-        crate::other::operation_context::check().map_err(CommitBatchError::from)?;
-        match self.queue.admit(job) {
+        match crate::common::operation_context::before(|| self.queue.admit(job))
+            .map_err(CommitBatchError::from)?
+        {
             Ok(()) => {}
             Err(AdmitRejection::Capacity) => return Err(CommitBatchError::QueueBusy),
             Err(AdmitRejection::Closed) => return Err(unknown),
         }
-        crate::other::operation_context::wait(&crate::other::operation_context::current(), receiver)
-            .await
-            .map_err(CommitBatchError::from)?
-            .unwrap_or(Err(unknown))
+        crate::common::operation_context::wait(
+            &crate::common::operation_context::current(),
+            receiver,
+        )
+        .await
+        .map_err(CommitBatchError::from)?
+        .unwrap_or(Err(unknown))
     }
 
     fn shape_error(&self, context: &str) -> CommitBatchError {

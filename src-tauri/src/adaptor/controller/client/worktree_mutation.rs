@@ -24,7 +24,7 @@ where
     T: Send + 'static,
 {
     let guards = MUTATION_GUARDS.try_with(std::sync::Arc::clone).ok();
-    crate::other::operation_context::spawn_blocking(move || {
+    crate::common::operation_context::spawn_blocking(move || {
         let _guards = guards;
         operation()
     })
@@ -98,7 +98,7 @@ fn terminal_workspace(owner: Option<&wire::TerminalSurfaceOwnerV1>) -> Option<&s
 
 fn mutation_error(error: crate::domain::workflow::WorkflowError) -> wire::CommandFailure {
     use crate::domain::failure::ClassifiedFailure;
-    crate::other::AppError::coded(
+    crate::adaptor::presenter::error::AppError::coded(
         "WORKTREE_MUTATION_REJECTED",
         error.to_string(),
         error.failure_kind(),

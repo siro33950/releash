@@ -136,8 +136,8 @@ impl ManagedWorktreeResolver for AppConfigManagedWorktreeResolver {
         )
         .await
         .map_err(|error| match error {
-            crate::domain::workflow::WorkflowError::Stopped(stopped) => {
-                ManagedWorktreeResolverError::Stopped(stopped)
+            crate::domain::workflow::WorkflowError::Technical(stopped) => {
+                ManagedWorktreeResolverError::Technical(stopped)
             }
             error => ManagedWorktreeResolverError::Validation(error.to_string()),
         })

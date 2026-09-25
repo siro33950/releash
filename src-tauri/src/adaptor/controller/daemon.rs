@@ -1,4 +1,4 @@
-use crate::{adaptor, domain, infrastructure, other, terminal_surface, usecase};
+use crate::{adaptor, domain, infrastructure, terminal_surface, usecase};
 use adaptor::gateway::app_config::{load_or_create_config, AppConfig};
 use domain::app_config::{ConfigRepository, ConfigSecretRepository, NotionConfigRepository};
 use std::path::PathBuf;
@@ -26,10 +26,13 @@ pub(crate) async fn compose(
         infrastructure::process::search_path::LoginShellPathError,
     >,
 ) -> Result<Daemon, Box<dyn std::error::Error>> {
-    let queue = usecase::work_queue::WorkQueueUsecase::new(Arc::new(
-        adaptor::gateway::work_queue::TokioWorkQueueRuntime::default(),
-    ));
-    other::telemetry::set_startup_origin(std::time::Instant::now());
+    let queue = usecase::work_queue::WorkQueueUsecase::with_retry_bucket(
+        Arc::new(adaptor::gateway::work_queue::TokioWorkQueueRuntime::default()),
+        Arc::new(tokio::sync::Mutex::new(
+            crate::common::retry::RetryBucket::new(std::time::Duration::ZERO),
+        )),
+    );
+    infrastructure::telemetry::metrics::set_startup_origin(std::time::Instant::now());
     let (exit_sender, exit_receiver) = tokio::sync::mpsc::channel(1);
     let app_data = super::app_data_composition::ProductionAppDataComposition::new(data_dir.clone());
     let local_event_store = app_data.open_local_event_store().map_err(|error| {
@@ -417,42 +420,46 @@ pub(crate) async fn compose(
         ),
     };
     let state_subscriptions = state_subscriptions.with_reads(
-        Arc::new(usecase::state_subscription::WorkspaceStateReads {
-            queue: queue.clone(),
-            repositories: dependencies
-                .app_state
-                .as_ref()
-                .unwrap()
-                .repo_paths_usecase
-                .clone(),
-            repository: repository_usecase.clone(),
-            repository_state: dependencies
-                .app_state
-                .as_ref()
-                .unwrap()
-                .repository_state
-                .clone(),
-            workflow: workflow_usecase.clone(),
-            workspaces: dependencies
-                .app_state
-                .as_ref()
-                .unwrap()
-                .workspace_list
-                .clone(),
-            sessions: dependencies.agent_session_read_usecase.clone().unwrap(),
-            history: dependencies
-                .agent_session_history_read_usecase
-                .clone()
-                .unwrap(),
-            providers: dependencies.provider_availability_usecase.clone().unwrap(),
-            git_host: dependencies
-                .app_state
-                .as_ref()
-                .unwrap()
-                .git_host_usecase
-                .clone(),
-            workspace_state: dependencies.workspace_state_store.clone().unwrap(),
-        }),
+        Arc::new(
+            adaptor::gateway::state_subscription_reads::StateSubscriptionReads(
+                usecase::state_subscription::WorkspaceStateReads {
+                    queue: queue.clone(),
+                    repositories: dependencies
+                        .app_state
+                        .as_ref()
+                        .unwrap()
+                        .repo_paths_usecase
+                        .clone(),
+                    repository: repository_usecase.clone(),
+                    repository_state: dependencies
+                        .app_state
+                        .as_ref()
+                        .unwrap()
+                        .repository_state
+                        .clone(),
+                    workflow: workflow_usecase.clone(),
+                    workspaces: dependencies
+                        .app_state
+                        .as_ref()
+                        .unwrap()
+                        .workspace_list
+                        .clone(),
+                    sessions: dependencies.agent_session_read_usecase.clone().unwrap(),
+                    history: dependencies
+                        .agent_session_history_read_usecase
+                        .clone()
+                        .unwrap(),
+                    providers: dependencies.provider_availability_usecase.clone().unwrap(),
+                    git_host: dependencies
+                        .app_state
+                        .as_ref()
+                        .unwrap()
+                        .git_host_usecase
+                        .clone(),
+                    workspace_state: dependencies.workspace_state_store.clone().unwrap(),
+                },
+            ),
+        ),
         Some(dependencies.watcher.clone()),
         history_paths,
     );

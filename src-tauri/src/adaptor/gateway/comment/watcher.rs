@@ -2,8 +2,8 @@ use super::super::shared::{
     background_io,
     background_worker::{request, Request},
 };
+use crate::common::retry::RetryBackoff;
 use crate::domain::failure::RetryAction;
-use crate::domain::retry::RetryBackoff;
 use crate::infrastructure::process::background_worker::BackgroundWorker;
 use crate::usecase::work_queue::{WorkFailure, WorkKey};
 use std::path::PathBuf;

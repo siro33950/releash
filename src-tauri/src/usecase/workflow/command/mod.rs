@@ -41,7 +41,7 @@ where
     crate::usecase::work_queue::retry(
         queue,
         crate::usecase::work_queue::WorkKey::new("workflow_control_plane", target),
-        crate::domain::retry::RetryBackoff::CONFLICT,
+        crate::common::retry::RetryBackoff::CONFLICT,
         operation,
     )
     .await

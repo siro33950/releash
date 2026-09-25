@@ -39,16 +39,21 @@ async fn test_読み込みキュー_混雑と期限切れとreply喪失を分類
         Err(LocalEventQueryError::QueryBusy)
     );
     let job = pool.pop_blocking().unwrap();
-    (job.task)(
-        &Connection::open_in_memory().unwrap(),
-        &job.context
-            .with_deadline(crate::domain::operation_context::Deadline::new(
+    crate::common::operation_context::sync_scope(
+        job.context
+            .with_deadline(crate::common::operation_context::Deadline::new(
                 std::time::Instant::now(),
             )),
+        || (job.task)(&Connection::open_in_memory().unwrap()),
     );
     assert_eq!(
         pending.remove(0).await,
-        Err(LocalEventQueryError::DeadlineExceeded)
+        Err(LocalEventQueryError::Technical(
+            crate::domain::failure::TechnicalFailure {
+                kind: crate::domain::failure::FailureKind::Expired,
+                message: "deadline exceeded".into()
+            }
+        ))
     );
     pool.close();
     assert_eq!(
@@ -89,7 +94,7 @@ fn test_sqlite分類_環境起因の全コードを同じ分類にする() {
 
 #[tokio::test]
 async fn test_読み込み実行中_期限と取り消しでsqliteを止め接続を再利用できる() {
-    use crate::domain::operation_context::{Deadline, OperationContext};
+    use crate::common::operation_context::{Deadline, OperationContext};
     use std::time::{Duration, Instant};
     for expire in [false, true] {
         // Given
@@ -104,7 +109,7 @@ async fn test_読み込み実行中_期限と取り消しでsqliteを止め接�
             Arc::new(token.clone()),
         );
         let (started, ready) = tokio::sync::oneshot::channel();
-        let query = crate::other::operation_context::scope(context, pool.submit(move |connection| {
+        let query = crate::common::operation_context::scope(context, pool.submit(move |connection| {
             let _ = started.send(());
             connection.query_row("WITH RECURSIVE numbers(n) AS (VALUES(0) UNION ALL SELECT n+1 FROM numbers WHERE n<1000000000) SELECT sum(n) FROM numbers", [], |row| row.get::<_, i64>(0)).map_err(|error| storage_unavailable(&error))
         }));
@@ -142,21 +147,29 @@ async fn test_読み込み実行中_期限と取り消しでsqliteを止め接�
 
 #[tokio::test]
 async fn test_読み込み待ち_実行前の期限切れでqueryを実行しない() {
-    use crate::domain::operation_context::Deadline;
+    use crate::common::operation_context::Deadline;
     let pool = ReaderPool::new();
     let context =
         OperationContext::default().with_deadline(Deadline::new(std::time::Instant::now()));
-    let result = crate::other::operation_context::scope(
+    let result = crate::common::operation_context::scope(
         context,
         pool.submit(|_| -> Result<(), LocalEventQueryError> { panic!("expired query ran") }),
     )
     .await;
-    assert_eq!(result, Err(LocalEventQueryError::DeadlineExceeded));
+    assert_eq!(
+        result,
+        Err(LocalEventQueryError::Technical(
+            crate::domain::failure::TechnicalFailure {
+                kind: crate::domain::failure::FailureKind::Expired,
+                message: "deadline exceeded".into()
+            }
+        ))
+    );
 }
 
 #[tokio::test]
 async fn test_読み込み取消_短い文の間で取り消しても次の文を実行しない() {
-    use crate::domain::operation_context::OperationContext;
+    use crate::common::operation_context::OperationContext;
     use std::sync::atomic::{AtomicBool, Ordering};
     // Given
     let pool = ReaderPool::new();
@@ -168,7 +181,7 @@ async fn test_読み込み取消_短い文の間で取り消しても次の文�
     let second_ran = Arc::new(AtomicBool::new(false));
     let observed = second_ran.clone();
     // When
-    let result = crate::other::operation_context::scope(
+    let result = crate::common::operation_context::scope(
         context,
         pool.submit(move |connection| {
             connection
@@ -190,7 +203,7 @@ async fn test_読み込み取消_短い文の間で取り消しても次の文�
 
 #[tokio::test]
 async fn test_reader_busy待ち_実際のdb競合で期限と取消を引き継ぐ() {
-    use crate::domain::operation_context::{Deadline, OperationContext};
+    use crate::common::operation_context::{Deadline, OperationContext};
     use std::time::{Duration, Instant};
     for expire in [false, true] {
         let directory = tempfile::tempdir().unwrap();
@@ -211,7 +224,7 @@ async fn test_reader_busy待ち_実際のdb競合で期限と取消を引き継�
         );
         let (started, ready) = tokio::sync::oneshot::channel();
         let (finished, completion) = tokio::sync::oneshot::channel();
-        let mut query = Box::pin(crate::other::operation_context::scope(
+        let mut query = Box::pin(crate::common::operation_context::scope(
             context,
             pool.submit(move |connection| {
                 started.send(()).unwrap();
@@ -261,7 +274,7 @@ async fn test_reader_busy待ち_実際のdb競合で期限と取消を引き継�
 
 #[tokio::test]
 async fn test_読み込み資源期限_親が無期限でも長い期限でも二秒で待ちを終える() {
-    use crate::domain::operation_context::{Deadline, OperationContext};
+    use crate::common::operation_context::{Deadline, OperationContext};
     use std::time::{Duration, Instant};
     // Given
     let pool = ReaderPool::new();
@@ -272,7 +285,7 @@ async fn test_読み込み資源期限_親が無期限でも長い期限でも�
     ];
     let mut queries = Vec::new();
     for context in contexts {
-        let mut query = Box::pin(crate::other::operation_context::scope(
+        let mut query = Box::pin(crate::common::operation_context::scope(
             context,
             pool.submit(|_| -> Result<(), LocalEventQueryError> {
                 panic!("expired queued query must not run")
@@ -287,7 +300,12 @@ async fn test_読み込み資源期限_親が無期限でも長い期限でも�
             tokio::time::timeout(Duration::from_secs(4), query)
                 .await
                 .unwrap(),
-            Err(LocalEventQueryError::DeadlineExceeded)
+            Err(LocalEventQueryError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    kind: crate::domain::failure::FailureKind::Expired,
+                    message: "deadline exceeded".into()
+                }
+            ))
         );
     }
     // Then
@@ -296,7 +314,7 @@ async fn test_読み込み資源期限_親が無期限でも長い期限でも�
     let connection = Connection::open_in_memory().unwrap();
     for _ in 0..2 {
         let job = pool.pop_blocking().unwrap();
-        (job.task)(&connection, &job.context);
+        crate::common::operation_context::sync_scope(job.context, || (job.task)(&connection));
     }
     pool.close();
 }

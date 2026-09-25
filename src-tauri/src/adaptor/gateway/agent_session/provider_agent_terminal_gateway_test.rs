@@ -37,7 +37,11 @@ fn application_with(surface: Option<TerminalSurface>) -> TerminalSurfaceApplicat
     if let Some(surface) = surface {
         gateway.insert_surface(surface);
     }
-    TerminalSurfaceApplication::new(gateway, Arc::new(TerminalSurfaceEventHub::new()))
+    TerminalSurfaceApplication::new(
+        std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
+        gateway,
+        Arc::new(TerminalSurfaceEventHub::new()),
+    )
 }
 
 #[test]

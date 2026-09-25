@@ -1,9 +1,9 @@
 use super::*;
+use crate::common::operation_context::{Deadline, OperationContext, OperationStopped};
 use crate::domain::app_config::repository::ConfigUpdate;
 use crate::domain::app_config::value_objects::AppConfigDocument;
 use crate::domain::app_config::AppConfigError;
 use crate::domain::failure::ClassifiedFailure;
-use crate::domain::operation_context::{Deadline, OperationContext, OperationStopped};
 use crate::usecase::workflow::runtime_error::WorkflowRuntimeError;
 
 struct Config(AppConfigDocument);
@@ -43,9 +43,10 @@ async fn test_managed_worktree非同期解決_期限と取消の分類をruntime
             Arc::new(token),
         );
         // When
-        let error = crate::other::operation_context::scope(context, resolver.resolve(root.clone()))
-            .await
-            .unwrap_err();
+        let error =
+            crate::common::operation_context::scope(context, resolver.resolve(root.clone()))
+                .await
+                .unwrap_err();
         let error = WorkflowRuntimeError::from(error);
         // Then
         let stopped = if expire {
@@ -54,7 +55,7 @@ async fn test_managed_worktree非同期解決_期限と取消の分類をruntime
             OperationStopped::Cancelled
         };
         assert_eq!(error.failure_kind(), stopped.failure_kind());
-        assert!(matches!(error, WorkflowRuntimeError::Stopped(value) if value == stopped));
+        assert!(matches!(error, WorkflowRuntimeError::Technical(value) if value == stopped.into()));
     }
     assert!(resolver.resolve(root).await.is_ok());
     assert!(matches!(

@@ -49,3 +49,32 @@ fn test_再試行頻度_初期100件の後は毎秒10件まで() {
     }
     assert!(!bucket.acquire(Duration::from_secs(100)).is_zero());
 }
+
+#[tokio::test]
+async fn test_再試行の包み_同じ呼び出しへ試行を返し最終結果を返す() {
+    let (requests, attempts) = tokio::sync::mpsc::unbounded_channel();
+    let (done, completion) = tokio::sync::oneshot::channel();
+    let scheduler = tokio::spawn(async move {
+        for (attempt, expected) in [(0, Err("temporary")), (1, Ok(42))] {
+            let (reply, result) = tokio::sync::oneshot::channel();
+            requests.send((attempt, reply)).unwrap();
+            assert_eq!(result.await.unwrap(), expected);
+        }
+        done.send(()).unwrap();
+    });
+    let result = requested(
+        attempts,
+        completion,
+        |attempt| async move {
+            if attempt == 0 {
+                Err("temporary")
+            } else {
+                Ok(42)
+            }
+        },
+        |result| *result,
+    )
+    .await;
+    assert_eq!(result, Ok(42));
+    scheduler.await.unwrap();
+}

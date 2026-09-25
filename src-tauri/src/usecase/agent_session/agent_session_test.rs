@@ -717,6 +717,7 @@ fn launch_usecase_with_tree_registrar(
         Arc::new(RecordingLifecycleEvents::default()),
     ));
     AgentSessionLaunchUsecase::new(
+        std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
         Arc::new(AgentSessionUsecase::new(repository)),
         lifecycle,
         provider_runtime(availability, launch_gateway, terminal),
@@ -892,7 +893,7 @@ async fn test_agent_session_launch_実行木登録失敗ではcreateと起動資
         failure: Some(StartedExecutionTreeRegistrationError::Unavailable),
         ..RecordingStartedExecutionTrees::default()
     });
-    let usecase = AgentSessionLaunchUsecase::new(
+    let usecase = AgentSessionLaunchUsecase::new(std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
         Arc::new(AgentSessionUsecase::new(repository.clone())),
         Arc::new(ProviderLifecycleUsecase::new(
             Arc::new(
@@ -961,7 +962,7 @@ async fn test_agent_session_launch_session作成とlifecycle_armを一回のrepo
     let repository = Arc::new(FailingSaveRepository::new(seed));
     *repository.stored.lock().unwrap() = None;
     let lifecycle_events = Arc::new(RecordingLifecycleEvents::default());
-    let usecase = AgentSessionLaunchUsecase::new(
+    let usecase = AgentSessionLaunchUsecase::new(std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
         Arc::new(AgentSessionUsecase::new(repository.clone())),
         Arc::new(ProviderLifecycleUsecase::new(
             Arc::new(
@@ -1140,7 +1141,7 @@ async fn test_agent_session_launch_同一request_idの並行呼び出しはsessi
         spawns: AtomicUsize::new(0),
         deletes: Mutex::new(0),
     });
-    let usecase = Arc::new(AgentSessionLaunchUsecase::new(
+    let usecase = Arc::new(AgentSessionLaunchUsecase::new(std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
         Arc::new(AgentSessionUsecase::new(repository.clone())),
         Arc::new(ProviderLifecycleUsecase::new(
             Arc::new(
@@ -1324,7 +1325,7 @@ async fn test_agent_session_launch_起動panic後はin_flightに残さず同一r
     let availability = Arc::new(PanicOnFirstCheckAvailability {
         checks: AtomicUsize::new(0),
     });
-    let usecase = Arc::new(AgentSessionLaunchUsecase::new(
+    let usecase = Arc::new(AgentSessionLaunchUsecase::new(std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
         Arc::new(AgentSessionUsecase::new(repository.clone())),
         Arc::new(ProviderLifecycleUsecase::new(
             Arc::new(
@@ -1388,6 +1389,7 @@ async fn test_agent_session_launch_pty起動中のsessionをgcしない() {
     let launches = Arc::new(RecordingLaunchGateway::default());
     let hook_health = hook_health_usecase();
     let launch = Arc::new(AgentSessionLaunchUsecase::new(
+        std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
         sessions.clone(),
         provider_lifecycle.clone(),
         provider_runtime(
@@ -1409,6 +1411,7 @@ async fn test_agent_session_launch_pty起動中のsessionをgcしない() {
         fn agent_session_changed(&self, _worktree_path: &str) {}
     }
     let lifecycle = Arc::new(AgentSessionLifecycleUsecase::new(
+        std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
         sessions.clone(),
         provider_lifecycle,
         provider_runtime(
@@ -1479,7 +1482,7 @@ async fn test_agent_session_history_resume_実行木登録失敗ではcreateをr
         failure: Some(StartedExecutionTreeRegistrationError::Unavailable),
         ..RecordingStartedExecutionTrees::default()
     });
-    let usecase = AgentSessionLaunchUsecase::new(
+    let usecase = AgentSessionLaunchUsecase::new(std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
         sessions.clone(),
         Arc::new(ProviderLifecycleUsecase::new(
             Arc::new(
@@ -1548,7 +1551,7 @@ async fn test_agent_session_history_resume_同一要求の再送は既存session
     )));
     let lifecycle_events = Arc::new(RecordingLifecycleEvents::default());
     let terminal = Arc::new(RecordingTerminal::default());
-    let usecase = AgentSessionLaunchUsecase::new(
+    let usecase = AgentSessionLaunchUsecase::new(std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
         sessions,
         Arc::new(ProviderLifecycleUsecase::new(
             Arc::new(
@@ -1642,6 +1645,7 @@ async fn test_agent_session_history_resumeは新しいsessionを作り失敗時�
     let hook_health = hook_health_usecase();
     let execution_trees = started_execution_trees();
     let usecase = AgentSessionLaunchUsecase::new(
+        std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
         sessions.clone(),
         lifecycle,
         provider_runtime(availability, launch_gateway.clone(), terminal),
@@ -1716,6 +1720,7 @@ async fn test_agent_session_history_resume_lifecycle準備失敗でもpausedへ�
         Arc::new(FailingFirstLifecycleEvents::default()),
     ));
     let usecase = AgentSessionLaunchUsecase::new(
+        std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
         sessions.clone(),
         lifecycle,
         provider_runtime(
@@ -1938,7 +1943,7 @@ async fn test_provider_agent_workflow_session_launch_workflow関連付け後に�
     )));
     let launch_gateway = Arc::new(RecordingLaunchGateway::default());
     let terminal = Arc::new(RecordingTerminal::default());
-    let usecase = AgentSessionLaunchUsecase::new(
+    let usecase = AgentSessionLaunchUsecase::new(std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
         sessions,
         Arc::new(ProviderLifecycleUsecase::new(
             Arc::new(
@@ -2032,7 +2037,7 @@ async fn test_provider_agent_workflow_session_launch_別sessionのactivateを起
         spawns: AtomicUsize::new(0),
         deletes: Mutex::new(0),
     });
-    let usecase = Arc::new(AgentSessionLaunchUsecase::new(
+    let usecase = Arc::new(AgentSessionLaunchUsecase::new(std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
         sessions,
         Arc::new(ProviderLifecycleUsecase::new(
             Arc::new(
@@ -2133,7 +2138,7 @@ async fn test_provider_agent_workflow_session_launch_activate後のrollbackで�
     let lifecycle_events = Arc::new(RecordingLifecycleEvents::default());
     let launch_gateway = Arc::new(RecordingLaunchGateway::default());
     let terminal = Arc::new(RecordingTerminal::default());
-    let usecase = AgentSessionLaunchUsecase::new(
+    let usecase = AgentSessionLaunchUsecase::new(std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
         sessions,
         Arc::new(ProviderLifecycleUsecase::new(
             Arc::new(
@@ -2212,7 +2217,7 @@ async fn test_agent_session_launch_spawn失敗時はsessionとlaunch資源をrol
     });
     let hook_health = hook_health_usecase();
     let execution_trees = started_execution_trees();
-    let usecase = AgentSessionLaunchUsecase::new(
+    let usecase = AgentSessionLaunchUsecase::new(std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
         sessions.clone(),
         Arc::new(ProviderLifecycleUsecase::new(
             Arc::new(
@@ -2285,7 +2290,7 @@ async fn test_agent_session_launch_prepare失敗時のrollbackのterminal削除�
     let execution_trees = started_execution_trees();
     *execution_trees.release_failure.lock().unwrap() =
         Some(ExecutionTreeCacheReleaseError::Unavailable);
-    let usecase = AgentSessionLaunchUsecase::new(
+    let usecase = AgentSessionLaunchUsecase::new(std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
         sessions.clone(),
         Arc::new(ProviderLifecycleUsecase::new(
             Arc::new(
@@ -2358,7 +2363,7 @@ async fn test_agent_session_launch_spawn失敗時のrollbackのterminal削除失
     let execution_trees = started_execution_trees();
     *execution_trees.release_failure.lock().unwrap() =
         Some(ExecutionTreeCacheReleaseError::Corrupt);
-    let usecase = AgentSessionLaunchUsecase::new(
+    let usecase = AgentSessionLaunchUsecase::new(std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
         sessions.clone(),
         Arc::new(ProviderLifecycleUsecase::new(
             Arc::new(
@@ -2475,7 +2480,7 @@ async fn test_agent_session_launch_codexのhook_delivery未確認を警告しpro
     let launch_gateway = Arc::new(RecordingLaunchGateway::default());
     let terminal = Arc::new(RecordingTerminal::default());
     let hook_health = hook_health_usecase();
-    let usecase = AgentSessionLaunchUsecase::new(
+    let usecase = AgentSessionLaunchUsecase::new(std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
         Arc::new(AgentSessionUsecase::new(repository)),
         Arc::new(ProviderLifecycleUsecase::new(
             Arc::new(

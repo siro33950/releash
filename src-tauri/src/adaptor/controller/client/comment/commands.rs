@@ -1,5 +1,5 @@
+use crate::adaptor::presenter::error::AppError;
 use crate::domain::failure::ClassifiedFailure;
-use crate::other::AppError;
 use std::path::PathBuf;
 use std::sync::Arc;
 

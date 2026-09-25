@@ -1,4 +1,4 @@
-use crate::domain::operation_context::OperationStopped;
+use crate::common::operation_context::OperationStopped;
 
 #[derive(Debug)]
 pub(crate) enum GitOperationError {
@@ -31,10 +31,9 @@ impl From<git2::Error> for GitOperationError {
 pub(crate) fn run<T>(
     operation: impl FnOnce() -> Result<T, git2::Error>,
 ) -> Result<T, GitOperationError> {
-    crate::other::operation_context::check().map_err(GitOperationError::Stopped)?;
-    let result = operation();
-    crate::other::operation_context::check().map_err(GitOperationError::Stopped)?;
-    result.map_err(GitOperationError::Git)
+    crate::common::operation_context::checked(operation)
+        .map_err(GitOperationError::Stopped)?
+        .map_err(GitOperationError::Git)
 }
 
 impl From<GitOperationError> for crate::domain::code::CodeError {
@@ -55,7 +54,7 @@ impl From<GitOperationError> for crate::domain::repository::RepositoryError {
 }
 
 pub(crate) fn checkout() -> git2::build::CheckoutBuilder<'static> {
-    let context = crate::other::operation_context::current();
+    let context = crate::common::operation_context::current();
     let mut options = git2::build::CheckoutBuilder::new();
     options.notify_on(git2::CheckoutNotificationType::all());
     options.notify(move |_, _, _, _, _| context.check(std::time::Instant::now()).is_ok());
@@ -71,7 +70,7 @@ pub(crate) fn detect_default_branch(
 ) -> Result<Option<String>, OperationStopped> {
     crate::infrastructure::git::helpers::detect_default_branch(
         repo,
-        &crate::other::operation_context::check,
+        &crate::common::operation_context::check,
     )
 }
 pub(crate) fn get_branch_name_for_repo(
@@ -79,7 +78,7 @@ pub(crate) fn get_branch_name_for_repo(
 ) -> Result<String, OperationStopped> {
     crate::infrastructure::git::helpers::get_branch_name_for_repo(
         repo,
-        &crate::other::operation_context::check,
+        &crate::common::operation_context::check,
     )
 }
 pub(crate) fn optional<T>(

@@ -24,7 +24,7 @@ fn domain_validation_to_runtime_error(
     _workflow: &domain::WorkflowDefinition,
 ) -> WorkflowRuntimeError {
     match err {
-        error @ (domain::WorkflowError::Stopped(_) | domain::WorkflowError::Editor(_)) => {
+        error @ (domain::WorkflowError::Technical(_) | domain::WorkflowError::Editor(_)) => {
             WorkflowRuntimeError::Store(crate::domain::failure::ClassifiedFailure::failure_kind(
                 &error,
             ))

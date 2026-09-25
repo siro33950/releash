@@ -82,7 +82,7 @@ impl ClientCommandDispatch {
     }
     pub(crate) fn admit(&self, command: &str) -> Result<(), wire::CommandFailure> {
         if !command_admitted(command, Some(&self.authority)) {
-            return Err(crate::other::AppError::coded(
+            return Err(crate::adaptor::presenter::error::AppError::coded(
                 "APPLICATION_UNAVAILABLE",
                 "Application is unavailable",
                 crate::domain::failure::FailureKind::StateRequired,
@@ -124,20 +124,28 @@ impl ClientCommandDispatch {
         let handler = self.handlers.get(command.name()).cloned();
         let mutations = self.mutations.clone();
         Box::pin(async move {
-            let (guards, command) = crate::other::operation_context::spawn_blocking(move || {
+            let (guards, command) = crate::common::operation_context::spawn_blocking(move || {
                 let guards = super::worktree_mutation::admit(mutations.as_deref(), &command)?;
                 Ok::<_, wire::CommandFailure>((guards, command))
             })
             .await
             .map_err(|error| {
-                wire::CommandFailure::from(crate::other::AppError::new(error.to_string()))
+                wire::CommandFailure::from(crate::adaptor::presenter::error::AppError::new(
+                    error.to_string(),
+                ))
             })??;
-            crate::other::operation_context::check().map_err(|error| {
-                wire::CommandFailure::from(crate::other::AppError::from_failure(error))
-            })?;
             match handler {
-                Some(handler) => super::worktree_mutation::scope(guards, handler(command)).await,
-                None => Err(crate::other::AppError::coded(
+                Some(handler) => crate::common::operation_context::wait(
+                    &crate::common::operation_context::current(),
+                    async { super::worktree_mutation::scope(guards, handler(command)).await },
+                )
+                .await
+                .map_err(|error| {
+                    wire::CommandFailure::from(
+                        crate::adaptor::presenter::error::AppError::from_failure(error),
+                    )
+                })?,
+                None => Err(crate::adaptor::presenter::error::AppError::coded(
                     "UNKNOWN_COMMAND",
                     "Command was not found",
                     crate::domain::failure::FailureKind::Missing,
@@ -149,7 +157,7 @@ impl ClientCommandDispatch {
 }
 
 pub(crate) fn invalid_request(message: impl Into<String>) -> wire::CommandFailure {
-    crate::other::AppError::coded(
+    crate::adaptor::presenter::error::AppError::coded(
         "INVALID_REQUEST",
         message,
         crate::domain::failure::FailureKind::InvalidInput,
@@ -178,7 +186,7 @@ where
     U::Error: std::fmt::Display,
 {
     U::try_from(value).map_err(|error| {
-        crate::other::AppError::coded(
+        crate::adaptor::presenter::error::AppError::coded(
             "INVALID_RESPONSE",
             error.to_string(),
             crate::domain::failure::FailureKind::Internal,

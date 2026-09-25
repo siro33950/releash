@@ -1,4 +1,4 @@
-use crate::domain::operation_context::{OperationContext, OperationStopped};
+use crate::common::operation_context::OperationStopped;
 use crate::infrastructure::process::child_process;
 use std::io;
 use std::process::{Output, Stdio};
@@ -11,8 +11,8 @@ pub enum ProcessError {
 pub fn output(
     mut command: tokio::process::Command,
     input: Vec<u8>,
-    context: &OperationContext,
 ) -> Result<Output, ProcessError> {
+    let context = crate::common::operation_context::current();
     context
         .check(std::time::Instant::now())
         .map_err(ProcessError::Stopped)?;
@@ -54,7 +54,7 @@ pub fn output(
                 stderr,
             })
         };
-        let result = crate::other::operation_context::wait(context, operation).await;
+        let result = crate::common::operation_context::wait(&context, operation).await;
         if !matches!(&result, Ok(Ok(_))) {
             #[cfg(unix)]
             if let Some(pid) = pid {
@@ -73,5 +73,5 @@ pub fn output(
 }
 
 #[cfg(test)]
-#[path = "process_test.rs"]
+#[path = "output_test.rs"]
 mod process_tests;

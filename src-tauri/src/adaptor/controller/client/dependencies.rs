@@ -28,7 +28,7 @@ pub(crate) struct ClientDependencies {
         Option<std::sync::Arc<crate::usecase::workflow::WorkflowRuntimeUsecase>>,
     pub(crate) editor_launcher: Arc<dyn crate::domain::external_editor::EditorLauncherGateway>,
     pub(crate) watcher: Arc<crate::usecase::watcher::WatcherUsecase>,
-    pub(crate) data_dir: Result<std::path::PathBuf, crate::other::AppError>,
+    pub(crate) data_dir: Result<std::path::PathBuf, crate::adaptor::presenter::error::AppError>,
     pub(crate) comment_notify: Arc<crate::adaptor::gateway::push::CommentChangeGateway>,
     pub(crate) process_port:
         Arc<dyn crate::domain::application_lifecycle::ApplicationQuitIntentPort>,

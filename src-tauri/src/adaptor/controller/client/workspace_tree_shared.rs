@@ -27,7 +27,7 @@ pub(crate) fn register_shared(
                             None => app_state.workspace_list.refresh().await,
                         },
                     };
-                    outcome(Ok::<_, crate::other::AppError>(()))
+                    outcome(Ok::<_, crate::adaptor::presenter::error::AppError>(()))
                         .map(wire::command_result::Command::RefreshWorkspaces)
                 })
             }),

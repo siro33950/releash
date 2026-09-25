@@ -57,8 +57,9 @@ impl TerminalSurfaceRuntime {
         >,
         event_sink: Arc<dyn TerminalSurfaceEventSink>,
     ) -> Self {
-        let journal_enabled = !crate::other::performance_switches::terminal_performance_switches()
-            .disable_terminal_journal;
+        let journal_enabled =
+            !crate::infrastructure::performance_switches::terminal_performance_switches()
+                .disable_terminal_journal;
         let gateway = Arc::new(crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor::new_with_event_sink(queue,
             data_dir,
             event_sink,
@@ -66,7 +67,9 @@ impl TerminalSurfaceRuntime {
         ));
         let application = Arc::new(
             crate::usecase::terminal_surface::application::TerminalSurfaceApplication::new(
-                gateway, event_hub,
+                std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
+                gateway,
+                event_hub,
             ),
         );
         Self { application }
@@ -186,9 +189,12 @@ pub fn initialize_background_work_for_acceptance(
             .expect("acceptance work queue runtime")
     });
     let _entered = runtime.enter();
-    crate::usecase::work_queue::WorkQueueUsecase::new(Arc::new(
-        crate::adaptor::gateway::work_queue::TokioWorkQueueRuntime::default(),
-    ))
+    crate::usecase::work_queue::WorkQueueUsecase::with_retry_bucket(
+        Arc::new(crate::adaptor::gateway::work_queue::TokioWorkQueueRuntime::default()),
+        Arc::new(tokio::sync::Mutex::new(
+            crate::common::retry::RetryBucket::new(std::time::Duration::ZERO),
+        )),
+    )
 }
 
 #[cfg(test)]

@@ -2078,7 +2078,13 @@ fn test_workspace_query_結果不明と期限切れの分類を保持する() {
             },
             FailureKind::RestartRequired,
         ),
-        (LocalEventQueryError::DeadlineExceeded, FailureKind::Expired),
+        (
+            LocalEventQueryError::Technical(crate::domain::failure::TechnicalFailure {
+                kind: crate::domain::failure::FailureKind::Expired,
+                message: "deadline exceeded".into(),
+            }),
+            FailureKind::Expired,
+        ),
         (LocalEventQueryError::QueryBusy, FailureKind::Temporary),
     ] {
         // When / Then
@@ -2118,24 +2124,24 @@ async fn test_workspace読取_実経路で失敗分類を保持する() {
 
 #[test]
 fn test_store問い合わせエラー_停止の分類を保持する() {
+    use crate::common::operation_context::OperationStopped;
     use crate::domain::failure::ClassifiedFailure;
-    use crate::domain::operation_context::OperationStopped;
     // Given
     for stopped in [OperationStopped::Expired, OperationStopped::Cancelled] {
         // When
-        let error = query_error(crate::domain::local_event::LocalEventQueryError::Stopped(
-            stopped,
+        let error = query_error(crate::domain::local_event::LocalEventQueryError::Technical(
+            stopped.into(),
         ));
         // Then
         assert_eq!(error.failure_kind(), stopped.failure_kind());
-        assert!(matches!(error, WorkflowError::Stopped(value) if value == stopped));
+        assert!(matches!(error, WorkflowError::Technical(value) if value == stopped.into()));
     }
 }
 
 #[tokio::test]
 async fn test_workspaceツリー投影_背景失敗の対象と理由を表示し成功後は解除する() {
+    use crate::common::retry::RetryBackoff;
     use crate::domain::failure::FailureKind;
-    use crate::domain::retry::RetryBackoff;
     use crate::usecase::work_queue::{work_queue_tests::queue, WorkFailure, WorkKey};
 
     // Given

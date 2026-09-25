@@ -40,7 +40,25 @@ async fn receive(
     State(state): State<ProviderLifecycleApiState>,
     payload: Result<Json<ProviderLifecycleReceiveRequest>, JsonRejection>,
 ) -> Result<Json<ProviderLifecycleReceiveResponse>, ApiError> {
-    let ingress_started = std::time::Instant::now();
+    crate::common::telemetry::observe_result_async(
+        receive_inner(state, payload),
+        |result, elapsed| {
+            if matches!(result, Ok((_, true))) {
+                crate::infrastructure::telemetry::metrics::record_terminal_launch(
+                    crate::infrastructure::telemetry::metrics::TerminalLaunch::HookIngress,
+                    elapsed,
+                );
+            }
+        },
+    )
+    .await
+    .map(|(result, _)| Json(response(result)))
+}
+
+async fn receive_inner(
+    state: ProviderLifecycleApiState,
+    payload: Result<Json<ProviderLifecycleReceiveRequest>, JsonRejection>,
+) -> Result<(ProviderLifecycleIngressResult, bool), ApiError> {
     let Json(payload) = payload.map_err(|error| ApiError::invalid_request(error.body_text()))?;
     let usecase = state.usecase.ok_or_else(|| {
         ApiError::new(
@@ -123,13 +141,7 @@ async fn receive(
         .receive(&slot_id, &payload.capability, signal)
         .await
         .map_err(usecase_error)?;
-    if is_session_started {
-        crate::other::telemetry::record_terminal_launch(
-            crate::other::telemetry::TerminalLaunch::HookIngress,
-            ingress_started.elapsed(),
-        );
-    }
-    Ok(Json(response(result)))
+    Ok((result, is_session_started))
 }
 
 async fn report_unavailable(

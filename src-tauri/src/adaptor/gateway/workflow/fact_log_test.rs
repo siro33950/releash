@@ -2492,7 +2492,13 @@ fn test_fact読み出し_呼び出し境界で混雑と期限切れと破損の�
     // Given
     for (source, expected) in [
         (LocalEventQueryError::QueryBusy, F::Temporary),
-        (LocalEventQueryError::DeadlineExceeded, F::Expired),
+        (
+            LocalEventQueryError::Technical(crate::domain::failure::TechnicalFailure {
+                kind: crate::domain::failure::FailureKind::Expired,
+                message: "deadline exceeded".into(),
+            }),
+            F::Expired,
+        ),
         (
             LocalEventQueryError::Corrupt {
                 correlation_id: "id".into(),

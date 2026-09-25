@@ -6,7 +6,7 @@
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkflowError {
-    Stopped(crate::domain::operation_context::OperationStopped),
+    Technical(crate::domain::failure::TechnicalFailure),
     Store(crate::domain::failure::FailureKind),
     External(String),
     Editor(crate::domain::external_editor::EditorError),
@@ -26,7 +26,7 @@ pub enum WorkflowError {
 impl std::fmt::Display for WorkflowError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Stopped(error) => error.fmt(f),
+            Self::Technical(error) => error.fmt(f),
             Self::Store(kind) => write!(f, "Store failure: {kind:?}"),
             Self::External(msg) => f.write_str(msg),
             Self::Editor(error) => error.fmt(f),
@@ -91,7 +91,7 @@ impl crate::domain::failure::ClassifiedFailure for WorkflowError {
     fn failure_kind(&self) -> crate::domain::failure::FailureKind {
         use crate::domain::failure::FailureKind as F;
         match self {
-            Self::Stopped(error) => error.failure_kind(),
+            Self::Technical(error) => error.failure_kind(),
             Self::Store(kind) => *kind,
             Self::External(_) => F::Internal,
             Self::Editor(error) => error.failure_kind(),
