@@ -1160,6 +1160,7 @@ async fn assert_terminal_recreation(drain_exit: bool) {
     use futures_util::StreamExt;
     let hub = Arc::new(TerminalSurfaceEventHub::with_flags(256, true));
     let gateway = Arc::new(TerminalSurfaceRuntimeGatewayFor::new_with_event_sink(
+        crate::usecase::work_queue::shared().clone(),
         std::path::PathBuf::new(),
         hub.clone(),
         false,
