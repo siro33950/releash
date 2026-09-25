@@ -15,13 +15,24 @@ use crate::usecase::application_startup::ApplicationStartupAuthority;
 use crate::usecase::repository_usecase::RepositoryUsecase;
 use crate::usecase::workflow::WorkflowRuntimeUsecase;
 
+pub fn spawn_review_comments_watcher(
+    dir: std::path::PathBuf,
+    notify_changed: Arc<dyn Fn() + Send + Sync>,
+) {
+    let queue = crate::terminal_surface::initialize_background_work_for_acceptance();
+    crate::adaptor::gateway::comment::watcher::spawn_review_comments_watcher(
+        queue.clone(),
+        dir,
+        notify_changed,
+    );
+}
+
 pub use crate::adaptor::gateway::push::BackendPush;
 pub use crate::adaptor::gateway::repository::branch::BranchGateway;
 pub use crate::adaptor::gateway::repository::watch::{FileChangeEvent, GitStatusChangedEvent};
 pub use crate::adaptor::protocol::terminal::TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX;
 pub use crate::adaptor::protocol::workflow::*;
 pub use crate::domain::repository::{Branch, BranchRepository, RepositoryError};
-pub use crate::infrastructure::comment::watcher::spawn_review_comments_watcher;
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -90,6 +101,7 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
         data_dir: &Path,
         branch: Arc<dyn BranchRepository>,
     ) -> Self {
+        let queue = crate::terminal_surface::initialize_background_work_for_acceptance();
         use crate::adaptor::gateway::repository;
         let operations = Arc::new(crate::usecase::worktree_operation::WorktreeOperations::new(
             Arc::new(repository::worktree_operation::FileWorktreeOperationLocks::new(data_dir)),
@@ -173,6 +185,7 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
         )
         .unwrap();
         let runtime = WorkflowRuntimeUsecase::new_with_worktree_operations(
+            queue.clone(),
             Arc::new(
                 crate::provider_lifecycle_acceptance::AcceptanceWorkflowRuntimeGateway::default(),
             ),
@@ -183,7 +196,7 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
             ),
             operations,
         );
-        let terminal = TerminalSurfaceRuntime::new(data_dir.to_path_buf());
+        let terminal = TerminalSurfaceRuntime::new(queue.clone(), data_dir.to_path_buf());
         let router = crate::adaptor::controller::api::build_router(
             Arc::new(workflow),
             Arc::new(runtime),
@@ -605,6 +618,9 @@ pub async fn read_state(
         }
         wire::state_payload::Value::Workspaces(value) => {
             wire::from_message("releash.client.v1.WorkspaceListSnapshotDto", &value)
+        }
+        wire::state_payload::Value::Failures(value) => {
+            wire::from_message("releash.client.v1.FailureRecords", &value)
         }
         _ => panic!("Unsupported acceptance state"),
     };

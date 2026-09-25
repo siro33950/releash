@@ -323,10 +323,12 @@ impl WorkflowRuntimeShutdownGateway for AcceptanceWorkflowRuntimeGateway {
 
 impl ProviderLifecycleAcceptanceHost {
     pub fn start(data_dir: &Path) -> Result<Self, String> {
+        let queue = crate::terminal_surface::initialize_background_work_for_acceptance();
         let store =
             LocalEventStore::open(LocalEventStoreConfig::production(data_dir.to_path_buf()))
                 .map_err(|error| error.to_string())?;
         let events = Arc::new(LocalProviderLifecycleEventRepository::new(
+            queue.clone(),
             store.clone() as Arc<dyn LocalEventTransactionRepository>,
             store.installation_id().to_string(),
         ));
@@ -341,7 +343,7 @@ impl ProviderLifecycleAcceptanceHost {
         )
         .map_err(|error| error.to_string())?;
         let workflow_runtime_command_count = Arc::new(AtomicUsize::new(0));
-        let runtime = Arc::new(WorkflowRuntimeUsecase::new_with_worktree_operations(
+        let runtime = Arc::new(WorkflowRuntimeUsecase::new_with_worktree_operations(queue.clone(),
             Arc::new(AcceptanceWorkflowRuntimeGateway {
                 command_count: workflow_runtime_command_count.clone(),
             }),

@@ -9,6 +9,29 @@ use crate::usecase::state_subscription::StateValue;
 fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::ConnectError> {
     Ok(wire::StatePayload {
         value: Some(match value {
+            StateValue::Failures(records) => {
+                wire::state_payload::Value::Failures(wire::FailureRecords {
+                    next_offset: records.next_offset.map(|offset| offset as u32),
+                    requires_attention: Some(records.requires_attention),
+                    items: records
+                        .items
+                        .iter()
+                        .map(|observation| {
+                            let record = &observation.record;
+                            wire::FailureRecord {
+                                operation: Some(record.operation.clone()),
+                                target: Some(record.target.clone()),
+                                classification: Some(format!("{:?}", record.kind)),
+                                message: Some(record.message.clone()),
+                                count: Some(record.count),
+                                first_observed_ms: Some(record.first_observed_ms),
+                                last_observed_ms: Some(record.last_observed_ms),
+                                requires_attention: Some(observation.requires_attention),
+                            }
+                        })
+                        .collect(),
+                })
+            }
             StateValue::Workspaces(value) => wire::state_payload::Value::Workspaces(
                 crate::adaptor::controller::client::value(value.clone())
                     .map_err(crate::adaptor::protocol::connect::command_error)?,

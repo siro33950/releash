@@ -27,6 +27,26 @@ pub struct WorkspaceTree {
 }
 
 impl WorkspaceTree {
+    pub fn observe_background_failure(
+        &mut self,
+        target: &str,
+        kind: crate::domain::failure::FailureKind,
+        message: &str,
+    ) {
+        if !kind.requires_attention() {
+            return;
+        }
+        for node in &mut self.nodes {
+            if node.id == target
+                || node.node_execution_id.as_deref() == Some(target)
+                || node.execution_id.as_deref() == Some(target)
+            {
+                node.observe_background_failure(message);
+            }
+        }
+        self.aggregate_status_classifications(true);
+    }
+
     pub fn empty(workspace_identity: impl Into<String>) -> Self {
         Self {
             workspace_identity: WorkspaceIdentity::new(workspace_identity.into()),
@@ -271,6 +291,7 @@ impl WorkspaceTree {
                 None,
                 false,
                 Default::default(),
+                false,
             ),
             activity: None,
             error_reason: None,
@@ -317,6 +338,7 @@ impl WorkspaceTree {
                     None,
                     false,
                     Default::default(),
+                    false,
                 ),
                 activity: None,
                 error_reason: None,
@@ -458,6 +480,7 @@ impl WorkspaceTree {
                 activity,
                 false,
                 Default::default(),
+                false,
             ),
             activity,
             error_reason: None,
@@ -561,6 +584,10 @@ impl WorkspaceTree {
         for node in &mut self.nodes {
             node.status_classification = node.own_status_classification();
         }
+        self.aggregate_status_classifications(false);
+    }
+
+    fn aggregate_status_classifications(&mut self, background_failure: bool) {
         let mut by_parent = BTreeMap::<String, Vec<usize>>::new();
         for (index, node) in self.nodes.iter().enumerate() {
             if !node.is_internal_rule_record() && !node.is_retry_history {
@@ -571,7 +598,13 @@ impl WorkspaceTree {
         }
         let mut visit_state = vec![0_u8; self.nodes.len()];
         for index in 0..self.nodes.len() {
-            aggregate_status_classification(index, &mut self.nodes, &by_parent, &mut visit_state);
+            aggregate_status_classification(
+                index,
+                &mut self.nodes,
+                &by_parent,
+                &mut visit_state,
+                background_failure,
+            );
         }
     }
 
@@ -990,6 +1023,7 @@ fn aggregate_status_classification(
     nodes: &mut [WorkspaceTreeNode],
     by_parent: &BTreeMap<String, Vec<usize>>,
     visit_state: &mut [u8],
+    background_failure: bool,
 ) -> WorkspaceNodeStatusClassification {
     if visit_state[index] != 0 {
         // A visiting node keeps its own classification until validate() rejects the parent cycle.
@@ -1005,17 +1039,30 @@ fn aggregate_status_classification(
     let mut has_aggregate_child = false;
     let mut all_aggregate_children_unbound = true;
     for child_index in by_parent.get(&node_id).into_iter().flatten().copied() {
-        let child_classification =
-            aggregate_status_classification(child_index, nodes, by_parent, visit_state);
+        let child_classification = aggregate_status_classification(
+            child_index,
+            nodes,
+            by_parent,
+            visit_state,
+            background_failure,
+        );
         if aggregate_children {
             has_aggregate_child = true;
             if child_classification != WorkspaceNodeStatusClassification::Unbound {
                 all_aggregate_children_unbound = false;
                 classification = classification.most_severe(child_classification);
             }
+        } else if background_failure
+            && child_classification == WorkspaceNodeStatusClassification::Attention
+        {
+            classification = classification.most_severe(child_classification);
         }
     }
-    if aggregate_children && has_aggregate_child && all_aggregate_children_unbound {
+    if aggregate_children
+        && has_aggregate_child
+        && all_aggregate_children_unbound
+        && (!background_failure || classification != WorkspaceNodeStatusClassification::Attention)
+    {
         classification = WorkspaceNodeStatusClassification::Unbound;
     }
     nodes[index].status_classification = classification;

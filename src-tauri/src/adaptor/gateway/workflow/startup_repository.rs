@@ -1,12 +1,9 @@
 use super::{fact_codec, fact_log, stored_definition};
 use crate::adaptor::gateway::local_event_store::{node_events, LocalEventStore};
 use crate::domain::failure::ClassifiedFailure;
-use crate::domain::local_event::CommitBatchError;
 use crate::domain::workflow::entities::workflow_execution::ExecutionTree;
-use crate::domain::workflow::repository::{
-    WorkflowRevision, WorkflowStartupRecord, WorkflowStartupRepository,
-};
-use crate::domain::workflow::{NodeFact, NodeFactMeta, WorkflowError};
+use crate::domain::workflow::repository::{WorkflowStartupRecord, WorkflowStartupRepository};
+use crate::domain::workflow::{NodeFact, WorkflowError};
 use std::sync::Arc;
 
 pub struct StoredWorkflowStartupRepository(pub Arc<LocalEventStore>);
@@ -32,7 +29,10 @@ impl crate::usecase::workflow::startup::WorkflowStartupGateway for HostWorkflowS
                 crate::usecase::workflow::runtime_error::WorkflowRuntimeError::Conflict(reason) => {
                     WorkflowError::Conflict(reason)
                 }
-                error => WorkflowError::external(error.to_string()),
+                error => WorkflowError::StorageUnavailable {
+                    kind: error.failure_kind(),
+                    message: error.to_string(),
+                },
             })
     }
 }
@@ -48,7 +48,7 @@ impl WorkflowStartupRepository for StoredWorkflowStartupRepository {
     async fn load(&self, tree_id: &str) -> Result<Option<WorkflowStartupRecord>, WorkflowError> {
         let backend = fact_log::FactLogReadBackend::Live(self.0.clone());
         let requested = tree_id.to_string();
-        let (first, terminal, head) = backend
+        let (first, terminal) = backend
             .run_indexed(move |connection| {
                 let transaction = connection.unchecked_transaction().map_err(|error| {
                     crate::adaptor::gateway::local_event_store::reader::storage_unavailable(&error)
@@ -75,18 +75,7 @@ impl WorkflowStartupRepository for StoredWorkflowStartupRepository {
                         )
                     })?
                     .flatten();
-                let head = transaction
-                    .query_row(
-                        "SELECT COALESCE(MAX(seq), 0) FROM node_events WHERE tree_id = ?1",
-                        [&requested],
-                        |row| row.get::<_, i64>(0),
-                    )
-                    .map_err(|error| {
-                        crate::adaptor::gateway::local_event_store::reader::storage_unavailable(
-                            &error,
-                        )
-                    })?;
-                Ok((first, terminal, head))
+                Ok((first, terminal))
             })
             .await
             .map_err(|error| WorkflowError::from(fact_log::FactReadError::Query(error)))?;
@@ -123,58 +112,8 @@ impl WorkflowStartupRepository for StoredWorkflowStartupRepository {
         };
         Ok(Some(WorkflowStartupRecord {
             execution,
-            root: fact_log::node_meta_from_row(&first).map_err(WorkflowError::external)?,
             definition_error,
-            revision: WorkflowRevision(head.to_string()),
         }))
-    }
-
-    async fn append(
-        &self,
-        root: &NodeFactMeta,
-        fact: &NodeFact,
-        timestamp: f64,
-        expected_revision: Option<&WorkflowRevision>,
-    ) -> Result<(), WorkflowError> {
-        let expected_head = expected_revision
-            .map(|revision| revision.0.parse::<i64>())
-            .transpose()
-            .map_err(|_| WorkflowError::invalid_state("invalid workflow revision"))?;
-        let pending = fact_log::pending_single_fact(root, fact, (timestamp * 1000.0) as i64)
-            .map_err(WorkflowError::external)?;
-        let result = self
-            .0
-            .append_node_events_at_head(
-                vec![(pending.row.clone(), Some(pending.timestamp_ms))],
-                expected_head.map(|head| (root.tree_id.clone(), head)),
-            )
-            .await;
-        match result {
-            Err(CommitBatchError::AppendOutcomeUnknown) => {
-                match fact_log::resolve_unknown_append(&self.0, vec![pending], expected_head)
-                    .await
-                    .map_err(|error| WorkflowError::StorageUnavailable {
-                        kind: error.failure_kind(),
-                        message: format!("startup abort readback failed: {error:?}"),
-                    })? {
-                    Ok(_) => Ok(()),
-                    Err(
-                        CommitBatchError::TreeHeadConflict | CommitBatchError::AppendOutcomeUnknown,
-                    ) => Err(WorkflowError::Conflict(format!(
-                        "tree {} startup abort was not found after an unknown append outcome",
-                        root.tree_id
-                    ))),
-                    Err(error) => Err(WorkflowError::from(error)),
-                }
-            }
-            result => result.map(|_| ()).map_err(|error| match error {
-                CommitBatchError::TreeHeadConflict => WorkflowError::Conflict(format!(
-                    "tree {} advanced before startup abort",
-                    root.tree_id
-                )),
-                error => WorkflowError::from(error),
-            }),
-        }
     }
 }
 

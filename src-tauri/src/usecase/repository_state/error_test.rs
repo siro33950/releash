@@ -6,6 +6,20 @@ fn test_失敗分類_全変種と委譲した理由を保持する() {
     // Given
     let cases = [
         (RepositoryStateError::ScanInvalidated, F::RestartRequired),
+        (
+            RepositoryStateError::Background {
+                kind: F::Temporary,
+                message: "worker".into(),
+            },
+            F::Temporary,
+        ),
+        (
+            RepositoryStateError::Background {
+                kind: F::Expired,
+                message: "deadline".into(),
+            },
+            F::Expired,
+        ),
         (RepositoryStateError::Watcher("watch".into()), F::Internal),
         (
             RepositoryStateError::Repository(UsecaseError::Rule("state".into())),

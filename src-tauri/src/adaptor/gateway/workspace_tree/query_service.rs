@@ -22,26 +22,31 @@ use crate::usecase::workflow::{
 use crate::usecase::workspace_tree::WorkspaceQueryService;
 
 pub(crate) struct SqliteWorkspaceQueryService {
+    failures: Arc<crate::usecase::failure_query_service::FailureQueryService>,
     repository: Arc<SqliteWorkspaceTreeRepository>,
     archives: Arc<dyn ExecutionTreeArchiveRepository>,
 }
 
 impl SqliteWorkspaceQueryService {
     pub(crate) fn with_repository(
+        queue: std::sync::Arc<crate::usecase::work_queue::WorkQueueUsecase>,
         repository: Arc<SqliteWorkspaceTreeRepository>,
         archives: Arc<dyn ExecutionTreeArchiveRepository>,
     ) -> Arc<Self> {
         Arc::new(Self {
+            failures: queue.failure_query(),
             repository,
             archives,
         })
     }
 
     pub(crate) fn new_read_only(
+        failures: Arc<crate::usecase::failure_query_service::FailureQueryService>,
         store: Arc<LocalEventReadStore>,
         archives: Arc<dyn ExecutionTreeArchiveRepository>,
     ) -> Arc<Self> {
         Arc::new(Self {
+            failures,
             repository: SqliteWorkspaceTreeRepository::new_read_only(store),
             archives,
         })
@@ -115,11 +120,12 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
             .folded_workspace_trees(workspace_identity.as_str())
             .await
             .map_err(query_error)?;
-        let tree = self
+        let mut tree = self
             .repository
             .workspace_tree_from_folded(workspace_identity.as_str(), &folded)
             .map_err(query_error)?
             .unwrap_or_else(|| WorkspaceTree::empty(workspace_identity.as_str()));
+        self.failures.apply_workflow_failures(&mut tree).await;
         let session_tree_ids = folded
             .iter()
             .filter(|(tree, _)| {

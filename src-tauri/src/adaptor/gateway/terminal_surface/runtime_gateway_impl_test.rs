@@ -597,11 +597,21 @@ fn journal_output_context(
         },
         true,
     )));
+    let background_calls = flush_calls.clone();
     let scheduler = DirtyCheckpointScheduler::spawn(
+        crate::usecase::work_queue::shared().clone(),
+        uuid::Uuid::new_v4().to_string(),
         Duration::from_millis(10),
         Arc::new(move || {
             flush_calls.fetch_add(1, Ordering::SeqCst);
             Ok(())
+        }),
+        Arc::new(move || {
+            let calls = background_calls.clone();
+            Box::pin(async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
         }),
     );
     let context = TerminalOutputReaderContext {
@@ -750,6 +760,7 @@ fn test_ターミナル画面_イベント順序_別画面の配信を相互に�
         release: Arc::clone(&release_first),
     });
     let gateway = Arc::new(TerminalSurfaceRuntimeGatewayFor::new_with_event_sink(
+        crate::usecase::work_queue::shared().clone(),
         data_dir.path().to_path_buf(),
         sink,
         true,
@@ -792,6 +803,7 @@ fn test_ターミナル画面_寸法変更_次の画面_連番で配信する() 
     let data_dir = tempfile::tempdir().unwrap();
     let captured = Arc::new(CapturedTerminalOutput::default());
     let gateway = TerminalSurfaceRuntimeGatewayFor::new_with_event_sink(
+        crate::usecase::work_queue::shared().clone(),
         data_dir.path().to_path_buf(),
         captured.clone(),
         true,
@@ -850,4 +862,54 @@ fn test_ターミナル画面終了_画面削除後の終了通知を拒否す�
     gateway.remove_surface(1);
 
     assert!(gateway.registry.lock().mark_exited(1, Some(0)).is_none());
+}
+
+#[tokio::test]
+async fn test_定期保存の期限切れ_子を回収して保留データと保存枠を返す() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let store =
+        TerminalCheckpointFileStore::new(directory.path(), TERMINAL_SURFACE_SCROLLBACK_ROWS);
+    let journal = Arc::new(Mutex::new(IncrementalCheckpointJournal::new(
+        NativeTerminalCheckpoint {
+            replay: String::new(),
+            sequence: 0,
+            cols: 80,
+            rows: 24,
+        },
+        false,
+    )));
+    journal
+        .lock()
+        .record(NativeTerminalCheckpointRecord::Output {
+            sequence: 1,
+            data: "kept-output".into(),
+        })
+        .unwrap();
+    let background = Arc::new(BackgroundCheckpoint {
+        store: store.clone(),
+        session_key: "deadline".into(),
+        registry: Arc::new(Mutex::new(TerminalSurfaceRegistry::default())),
+        runtime_generation: 1,
+        terminal_surface: Arc::new(Mutex::new(NativeTerminalEmulator::new(
+            80,
+            24,
+            TERMINAL_SURFACE_SCROLLBACK_ROWS,
+        ))),
+        journal: journal.clone(),
+        io: Arc::new(tokio::sync::Mutex::new(())),
+    });
+    let attempt = background.clone();
+    // When
+    super::super::super::shared::background_worker::background_worker_tests::assert_expired_releases(Box::pin(async move { attempt.flush().await?; Ok(None) })).await;
+    // Then
+    assert!(background.io.try_lock().is_ok());
+    let pending = journal.lock().take_pending();
+    assert!(pending.base.is_some());
+    assert_eq!(pending.records.len(), 1);
+    journal.lock().restore_failed(pending);
+    background.flush().await.unwrap();
+    let loaded = store.load("deadline").unwrap().unwrap();
+    assert_eq!(loaded.sequence, 1);
+    assert!(loaded.replay.contains("kept-output"));
 }

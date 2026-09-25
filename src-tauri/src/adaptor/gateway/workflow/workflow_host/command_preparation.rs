@@ -77,7 +77,7 @@ impl WorkflowRuntimeHost {
     ) -> Result<bool, WorkflowRuntimeError> {
         let timestamp = current_timestamp();
 
-        let result = retry_runtime_conflicts(|| async {
+        let result = retry_runtime_conflicts(&self.queue, &input.node_execution_id, || async {
             let Some(before) = self.load_current_command(app, input).await? else {
                 return Ok(None);
             };

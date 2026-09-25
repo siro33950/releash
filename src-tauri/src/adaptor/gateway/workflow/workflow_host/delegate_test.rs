@@ -12,7 +12,10 @@ fn control(fixture: &Fixture, host: &WorkflowRuntimeHost) -> WorkflowControlPlan
         fixture.app.clone(),
         Arc::new(host.clone()),
     );
-    WorkflowControlPlaneUsecase::new(Arc::new(gateway))
+    WorkflowControlPlaneUsecase::new(
+        crate::usecase::work_queue::shared().clone(),
+        Arc::new(gateway),
+    )
 }
 
 async fn submit(control: &WorkflowControlPlaneUsecase, id: &str, value: serde_json::Value) {
@@ -217,7 +220,7 @@ async fn test_delegate_child実行中の親再開とchild再開をまたいで�
 }
 
 #[tokio::test]
-async fn test_submit受付_child起動の自動再試行待機より前に応答する() {
+async fn test_submit受付_child起動の恒久失敗で再試行せず応答する() {
     let fixture = Fixture::new(0);
     let tree = fixture.start(&definition("")).await;
     let control = control(&fixture, &fixture.host);
@@ -246,7 +249,7 @@ async fn test_submit受付_child起動の自動再試行待機より前に応答
             .len(),
         2
     );
-    assert_eq!(fixture.host.startup_retries.lock().await.len(), 1);
+    assert!(fixture.host.startup_retries.lock().await.is_empty());
     fixture.wait_startup_retries().await;
     let live = fixture
         .host
@@ -259,7 +262,7 @@ async fn test_submit受付_child起動の自動再試行待機より前に応答
             .iter()
             .filter(|node| node.node_name == "check")
             .count(),
-        5
+        1
     );
 }
 

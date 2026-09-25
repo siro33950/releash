@@ -272,14 +272,7 @@ impl RepositoryStateWorkerRuntime for TokioRepositoryStateWorkerRuntime {
         scanner: Arc<dyn RepositoryScanner>,
         repo_path: String,
     ) -> Result<RepositorySnapshotParts, RepositoryStateError> {
-        let scan_repo_path = repo_path.clone();
-        tokio::task::spawn_blocking(move || scanner.scan(&scan_repo_path))
-            .await
-            .map_err(|err| {
-                RepositoryStateError::Watcher(format!(
-                    "repository snapshot worker failed for {repo_path}: {err}"
-                ))
-            })?
+        scanner.scan_async(&repo_path).await
     }
 }
 

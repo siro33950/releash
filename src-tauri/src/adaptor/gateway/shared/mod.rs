@@ -1,3 +1,5 @@
+pub(crate) mod background_io;
+pub(crate) mod background_worker;
 pub mod error_handling;
 
 pub(crate) mod operation_context;

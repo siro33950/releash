@@ -1,7 +1,8 @@
 import { listen } from "@tauri-apps/api/event";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { invokeClient as invoke } from "@/lib/client";
+import { invokeClient as invoke, subscribeState } from "@/lib/client";
+import { stateSubscriptions } from "@/test/stateSubscriptions";
 import { TerminalPanel } from "./TerminalPanel";
 
 const mockSendInput = vi.fn();
@@ -58,8 +59,46 @@ describe("TerminalPanel", () => {
 
 		expect(mockUseTerminal).toHaveBeenCalledWith(
 			expect.objectContaining({ current: expect.any(HTMLDivElement) }),
-			expect.objectContaining({ onTerminalReady }),
+			expect.objectContaining({ onTerminalReady: expect.any(Function) }),
 		);
+		act(() =>
+			mockUseTerminal.mock.calls[0][1].onTerminalReady?.("surface-key"),
+		);
+		expect(onTerminalReady).toHaveBeenCalledWith("surface-key");
+	});
+
+	it("BackgroundFailuresへ準備完了したterminalのsessionKeyを渡す", async () => {
+		const states = stateSubscriptions();
+		vi.mocked(subscribeState).mockImplementationOnce(states.subscribeState);
+		states.publish(
+			{ kind: "failures", args: ["surface-key"] },
+			{
+				requiresAttention: true,
+				items: [
+					{
+						operation: "terminal_checkpoint",
+						target: "surface-key",
+						classification: "StateRequired",
+						message: "terminal needs repair",
+						count: 1,
+						firstObservedMs: 1,
+						lastObservedMs: 1,
+						requiresAttention: true,
+					},
+				],
+			},
+		);
+		render(<TerminalPanel cwd="/different/worktree" />);
+		expect(screen.queryByText("要対応")).not.toBeInTheDocument();
+		act(() => mockUseTerminal.mock.calls[0][1].onTerminalReady("surface-key"));
+		expect(await screen.findByText("要対応")).toBeVisible();
+		expect(states.subscribeState).toHaveBeenCalledWith(
+			{ kind: "failures", args: ["surface-key"] },
+			expect.any(Function),
+			expect.any(Function),
+		);
+		fireEvent.click(screen.getByText("要対応"));
+		expect(screen.getByText("terminal needs repair")).toBeVisible();
 	});
 
 	it("drop された path を escaping せず Rust command に渡す", () => {

@@ -133,6 +133,9 @@ impl Fixture {
             ),
         ));
         let repository_state = Arc::new(RepositoryStateService::new(
+            crate::usecase::work_queue::WorkQueueUsecase::new(
+                crate::usecase::work_queue_test_runtime::runtime(),
+            ),
             Arc::new(RepositoryStateRepositoryGateway::new(repository.clone())),
             Arc::new(DefaultRepositoryScanner::new(
                 repository.clone(),
@@ -183,6 +186,7 @@ impl Fixture {
             .with_state_publisher(publisher),
         );
         let reads = WorkspaceStateReads {
+            queue: crate::usecase::work_queue::shared().clone(),
             repositories,
             repository,
             repository_state,
@@ -461,6 +465,7 @@ async fn test_終了済み実行木のarchiveとrestore_取り直しなしでツ
     let mut reads = fixture.reads.clone();
     reads.workflow = Arc::new(
         wiring::build_workflow_services_with_gateways(
+            crate::usecase::work_queue::shared().clone(),
             archive.directory.path(),
             Arc::new(PassthroughManagedWorktreeGateway),
             Arc::new(NoopWorkflowExternalEditorGateway),

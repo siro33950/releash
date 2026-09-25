@@ -24,3 +24,5 @@ pub(crate) mod worktree_operation;
 
 mod branch_inventory;
 pub use branch_inventory::classify_branch_cards;
+
+pub(crate) mod background_failure;

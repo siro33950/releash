@@ -28,6 +28,7 @@ use crate::usecase::provider_lifecycle::{
 use crate::usecase::terminal_surface::application::TerminalSurfaceApplication;
 
 pub(crate) struct AgentSessionCompositionInput {
+    pub(crate) queue: Arc<crate::usecase::work_queue::WorkQueueUsecase>,
     pub(crate) state_publisher:
         Option<crate::usecase::state_subscription::StateSubscriptionPublisher>,
     pub(crate) store: Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>,
@@ -280,6 +281,7 @@ pub(crate) fn compose_agent_sessions(
     let provider_lifecycle = Arc::new(ProviderLifecycleUsecase::new(
         Arc::new(LocalProviderLifecycleCredentialGateway),
         Arc::new(LocalProviderLifecycleEventRepository::new(
+            input.queue.clone(),
             repository.clone(),
             installation_id.clone(),
         )),
@@ -329,6 +331,7 @@ pub(crate) fn compose_agent_sessions(
         ),
     )));
     let provider_session_title_ingestion = Arc::new(ProviderSessionTitleIngestionUsecase::new(
+        input.queue.clone(),
         session_repository.clone(),
         history_gateway.clone(),
         input.change_notifier.clone(),

@@ -4362,6 +4362,7 @@ dependencies = [
  "dirs",
  "filetime",
  "fs2",
+ "futures-executor",
  "futures-util",
  "git2",
  "hex",

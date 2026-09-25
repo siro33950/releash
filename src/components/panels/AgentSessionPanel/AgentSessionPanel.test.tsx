@@ -77,8 +77,46 @@ const session = {
 
 describe("AgentSessionPanel", () => {
 	beforeEach(() => {
+		states.clear();
 		mockInvoke.mockReset();
 	});
+
+	it.each(["attached", "paused"] as const)(
+		"%s画面のBackgroundFailuresへAgentSessionのIDを渡す",
+		async (outcome) => {
+			mockInvoke.mockResolvedValueOnce(outcome);
+			states.publish(
+				{ kind: "failures", args: [session.id] },
+				{
+					requiresAttention: true,
+					items: [
+						{
+							operation: "provider_session_title",
+							target: session.id,
+							classification: "StateRequired",
+							message: "session title needs repair",
+							count: 1,
+							firstObservedMs: 1,
+							lastObservedMs: 1,
+							requiresAttention: true,
+						},
+					],
+				},
+			);
+			render(<AgentSessionPanel session={session} />);
+			if (outcome === "attached")
+				await screen.findByTestId("provider-terminal");
+			else await screen.findByText("AgentSession is paused.");
+			expect(states.subscribeState).toHaveBeenCalledWith(
+				{ kind: "failures", args: [session.id] },
+				expect.any(Function),
+				expect.any(Function),
+			);
+			expect(screen.getByText("要対応")).toBeVisible();
+			fireEvent.click(screen.getByText("要対応"));
+			expect(screen.getByText("session title needs repair")).toBeVisible();
+		},
+	);
 
 	it("backend open後に既存AgentSession Terminal Surfaceへattachする", async () => {
 		mockInvoke.mockResolvedValueOnce("attached");

@@ -3156,6 +3156,7 @@ message StartStateSubscriptionRequest {
 message StopStateSubscriptionRequest { string client_id = 1; string target = 2; repeated string args = 3; }
 message StatePayload {
   oneof value {
+    FailureRecords failures = 18;
     Liststring repository_paths = 1;
     WorkspaceListSnapshotDto workspaces = 2;
     WorkspaceTreeSelectionSnapshotDto selection = 3;
@@ -3186,4 +3187,20 @@ message StateSubscriptionEvent {
     StateChange change = 5;
     Unit bookmark = 6;
   }
+}
+
+message FailureRecord {
+  optional string operation = 1 [(json_required) = true];
+  optional string target = 2 [(json_required) = true];
+  optional string classification = 3 [(json_required) = true];
+  optional string message = 4 [(json_required) = true];
+  optional uint64 count = 5 [(json_required) = true];
+  optional uint64 first_observed_ms = 6 [(json_required) = true];
+  optional uint64 last_observed_ms = 7 [(json_required) = true];
+  optional bool requires_attention = 8 [(json_required) = true];
+}
+message FailureRecords {
+  repeated FailureRecord items = 1;
+  optional uint32 next_offset = 2;
+  optional bool requires_attention = 3 [(json_required) = true];
 }

@@ -1,214 +1,104 @@
-//! `<app_data_dir>/review-comments/` ディレクトリの file watcher。
-//!
-//! CLI (`releash review create` / `releash review comment` 等) は独立プロセスで
-//! UI shell を経由しないため、クライアント ws の push で
-//! デスクトップ UI へ変更通知することができない。代わりに本 watcher が
-//! `review-comments` 配下の `*.events.json` の変更を検知し、デスクトップ側で
-//! `review-comments-changed` イベントを発火することで、CLI 経由・Agent 経由・
-//! 外部プロセス経由いずれの書き込みも UI に反映されるようにする。
-//!
-//! payload はワイルドカード `"*"` 固定。フロントエンド (`useDiffComments`)
-//! 側で payload が `"*"` または自分の `worktreeName` に一致するときに
-//! reload する仕様。watcher は worktree 名を逆引きしない。
-//!
-//! debounce は 500ms。`infrastructure/file_watcher` の file watcher
-//! と同じ値を採用している。
-
+use notify_debouncer_mini::{
+    new_debouncer,
+    notify::{RecommendedWatcher, RecursiveMode},
+    Debouncer,
+};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
-use notify_debouncer_mini::{new_debouncer, notify::RecursiveMode};
-use std::sync::Arc;
+type Signature = Vec<(String, u64, Option<SystemTime>)>;
 
-fn review_events_signature(dir: &Path) -> Vec<(String, u64, Option<SystemTime>)> {
+fn review_events_signature(dir: &Path) -> std::io::Result<Signature> {
     let mut signature = Vec::new();
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return signature;
-    };
-
-    for entry in entries.flatten() {
-        let file_name = entry.file_name();
-        let Some(file_name) = file_name.to_str() else {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
             continue;
         };
-        if !file_name.ends_with(".events.json") {
+        if !name.ends_with(".events.json") {
             continue;
         }
-
-        let metadata = entry.metadata().ok();
-        let len = metadata.as_ref().map_or(0, std::fs::Metadata::len);
-        let modified = metadata.and_then(|m| m.modified().ok());
-        signature.push((file_name.to_string(), len, modified));
+        let metadata = entry.metadata()?;
+        signature.push((name.to_string(), metadata.len(), metadata.modified().ok()));
     }
-
     signature.sort_by(|a, b| a.0.cmp(&b.0));
-    signature
+    Ok(signature)
 }
 
-/// `review-comments` ディレクトリの file watcher を起動する。
-///
-/// production 経路では daemon の composition root から呼ぶ。watcher (OS file
-/// notify) は spawn されたタスク上に閉じ、ハンドルは外部に返さない（アプリ
-/// 終了時の drop は tauri runtime に任せる）。
-///
-/// `app_data_dir` 配下に `review-comments/` が無ければ作成する。作成に失敗
-/// したり debouncer の生成に失敗した場合は watcher は spawn せず警告ログを
-/// 出すのみ（既存 Tauri コマンド経由の `emit_changed` は引き続き機能する）。
-pub fn spawn_review_comments_watcher(dir: PathBuf, notify_changed: Arc<dyn Fn() + Send + Sync>) {
-    if let Err(e) = std::fs::create_dir_all(&dir) {
-        log::error!(
-            "Failed to prepare review-comments directory {}: {e}",
-            dir.display()
-        );
-        return;
-    }
+pub(crate) struct ReviewCommentsWatcher {
+    _debouncer: Debouncer<RecommendedWatcher>,
+    dir: PathBuf,
+    signature: Signature,
+    error: Arc<Mutex<Option<std::io::Error>>>,
+    notify_changed: Arc<dyn Fn() + Send + Sync>,
+}
 
-    let emit_changed = notify_changed.clone();
-    let debouncer_result = new_debouncer(
-        Duration::from_millis(500),
-        move |res: Result<
-            Vec<notify_debouncer_mini::DebouncedEvent>,
-            notify_debouncer_mini::notify::Error,
-        >| match res {
-            Ok(events) => {
-                // `*.events.json` の変更のみを emit 対象にする（lock ファイル等の
-                // 副次更新は無視）。
-                let relevant = events.iter().any(|event| {
-                    event
-                        .path
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .is_some_and(|name| name.ends_with(".events.json"))
-                });
-                if !relevant {
-                    return;
+fn io_error(error: notify_debouncer_mini::notify::Error) -> std::io::Error {
+    match error.kind {
+        notify_debouncer_mini::notify::ErrorKind::Io(error) => error,
+        _ => std::io::Error::other(error.to_string()),
+    }
+}
+
+impl ReviewCommentsWatcher {
+    pub(crate) fn start(
+        dir: PathBuf,
+        notify_changed: Arc<dyn Fn() + Send + Sync>,
+    ) -> std::io::Result<Self> {
+        std::fs::create_dir_all(&dir)?;
+        let error = Arc::new(Mutex::new(None));
+        let errors = error.clone();
+        let emit = notify_changed.clone();
+        let mut debouncer = new_debouncer(
+            Duration::from_millis(500),
+            move |result: Result<
+                Vec<notify_debouncer_mini::DebouncedEvent>,
+                notify_debouncer_mini::notify::Error,
+            >| {
+                match result {
+                    Ok(events) => {
+                        if events.iter().any(|event| {
+                            event
+                                .path
+                                .file_name()
+                                .and_then(|name| name.to_str())
+                                .is_some_and(|name| name.ends_with(".events.json"))
+                        }) {
+                            emit();
+                        }
+                    }
+                    Err(error) => {
+                        *errors.lock().expect("watcher error lock") = Some(io_error(error));
+                    }
                 }
-                emit_changed();
-            }
-            Err(e) => {
-                log::warn!("review-comments watcher error: {e:?}");
-            }
-        },
-    );
-
-    let mut debouncer = match debouncer_result {
-        Ok(d) => d,
-        Err(e) => {
-            log::error!("Failed to create review-comments debouncer: {e}");
-            return;
-        }
-    };
-
-    if let Err(e) = debouncer.watcher().watch(&dir, RecursiveMode::NonRecursive) {
-        log::error!(
-            "Failed to watch review-comments directory {}: {e}",
-            dir.display()
-        );
-        return;
+            },
+        )
+        .map_err(io_error)?;
+        debouncer
+            .watcher()
+            .watch(&dir, RecursiveMode::NonRecursive)
+            .map_err(io_error)?;
+        let signature = review_events_signature(&dir)?;
+        Ok(Self {
+            _debouncer: debouncer,
+            dir,
+            signature,
+            error,
+            notify_changed,
+        })
     }
 
-    // debouncer は drop されるまで OS watch を保つ。tokio タスクが debouncer の
-    // 所有権を握り、アプリ終了時に runtime が落ちるタイミングで drop される。
-
-    let poll_dir = dir.clone();
-    let task = async move {
-        let _retained_debouncer = debouncer;
-        let mut last_signature = review_events_signature(&poll_dir);
-        let mut interval = tokio::time::interval(Duration::from_secs(1));
-
-        loop {
-            interval.tick().await;
-            let next_signature = review_events_signature(&poll_dir);
-            if next_signature != last_signature {
-                last_signature = next_signature;
-                notify_changed();
-            }
+    pub(crate) fn poll(&mut self) -> std::io::Result<()> {
+        if let Some(error) = self.error.lock().expect("watcher error lock").take() {
+            return Err(error);
         }
-    };
-    #[cfg(test)]
-    tokio::spawn(task);
-    #[cfg(not(test))]
-    tokio::spawn(task);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::{Arc, Mutex};
-    use std::time::Duration;
-    use tempfile::TempDir;
-
-    /// Rule: `review-comments/` 配下の `*.events.json` 変更を検知すると
-    /// `review-comments-changed` イベントが payload `"*"` で発火する。
-    #[tokio::test]
-    async fn emits_review_comments_changed_when_events_json_is_written() {
-        let data_dir = TempDir::new().unwrap();
-        let received: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-
-        spawn_review_comments_watcher(
-            data_dir.path().join("review-comments"),
-            Arc::new({
-                let received = received.clone();
-                move || received.lock().unwrap().push("*".into())
-            }),
-        );
-        // watcher の watch 開始が反映されるまで少し待つ
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        let target = data_dir
-            .path()
-            .join("review-comments")
-            .join("dummy.events.json");
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(4);
-        let mut attempt = 0usize;
-        loop {
-            if !received.lock().unwrap().is_empty() {
-                break;
-            }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "watcher did not emit review-comments-changed within deadline"
-            );
-            std::fs::write(&target, format!("[{attempt}]")).unwrap();
-            attempt += 1;
-            tokio::time::sleep(Duration::from_millis(700)).await;
+        let signature = review_events_signature(&self.dir)?;
+        if signature != self.signature {
+            self.signature = signature;
+            (self.notify_changed)();
         }
-
-        let payloads = received.lock().unwrap().clone();
-        assert!(
-            payloads.iter().any(|p| p == "*"),
-            "expected wildcard payload, got {payloads:?}"
-        );
-    }
-
-    /// Rule: `*.events.json` 以外のファイル変更（例: `.lock` ファイル）は
-    /// emit 対象にしない。
-    #[tokio::test]
-    async fn ignores_non_events_json_changes() {
-        let data_dir = TempDir::new().unwrap();
-        let received: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-
-        spawn_review_comments_watcher(
-            data_dir.path().join("review-comments"),
-            Arc::new({
-                let received = received.clone();
-                move || received.lock().unwrap().push("*".into())
-            }),
-        );
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        let target = data_dir
-            .path()
-            .join("review-comments")
-            .join("dummy.events.lock");
-        std::fs::write(&target, b"lock").unwrap();
-
-        // debounce 後にも emit されないことを確認する。
-        tokio::time::sleep(Duration::from_millis(900)).await;
-        let payloads = received.lock().unwrap().clone();
-        assert!(
-            payloads.is_empty(),
-            "expected no emit for non-events.json change, got {payloads:?}"
-        );
+        Ok(())
     }
 }

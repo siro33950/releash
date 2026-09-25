@@ -430,3 +430,51 @@ fn test_ターミナル増分復元点_unixでは既存journalとrootの権限�
     assert_eq!(mode(&store.root), 0o700);
     assert_eq!(mode(&journal_path), 0o600);
 }
+
+#[test]
+fn test_保存中断_不完全なjournal末尾を修復して再送分を重複なく復元する() {
+    use std::io::Write;
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let store = TerminalCheckpointFileStore::new(directory.path(), 100);
+    store
+        .replace_base(
+            "session",
+            &NativeTerminalCheckpoint {
+                replay: String::new(),
+                sequence: 0,
+                cols: 80,
+                rows: 24,
+            },
+        )
+        .unwrap();
+    let record = NativeTerminalCheckpointRecord::Output {
+        sequence: 1,
+        data: "once".into(),
+    };
+    store.append_records("session", &[record.clone()]).unwrap();
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(store.journal_path_for("session"))
+        .unwrap();
+    file.write_all(b"{\"kind\":\"output\",\"sequence\":2")
+        .unwrap();
+    // When
+    store
+        .append_records(
+            "session",
+            &[
+                record,
+                NativeTerminalCheckpointRecord::Output {
+                    sequence: 2,
+                    data: "-after".into(),
+                },
+            ],
+        )
+        .unwrap();
+    // Then
+    let checkpoint = store.load("session").unwrap().unwrap();
+    assert_eq!(checkpoint.sequence, 2);
+    assert!(checkpoint.replay.contains("once-after"));
+    assert!(!checkpoint.replay.contains("onceonce"));
+}

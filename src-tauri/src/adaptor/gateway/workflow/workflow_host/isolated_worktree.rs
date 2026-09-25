@@ -22,7 +22,7 @@ impl NodePreparation {
 #[derive(Default)]
 pub(super) struct PreparedNodes {
     pub(super) leaves: Vec<LeafStart>,
-    pub(super) failed: Vec<String>,
+    pub(super) failed: Vec<crate::usecase::workflow::node_startup::FailedNodeStart>,
     pub(super) injections: Vec<DelegateInjection>,
 }
 
@@ -89,7 +89,10 @@ impl WorkflowRuntimeHost {
                 })
                 .await
                 .map_err(|error| WorkflowRuntimeError::SessionStore(error.to_string()))?
-                .map_err(|error| WorkflowRuntimeError::SessionStore(error.to_string()));
+                .map_err(|error| WorkflowRuntimeError::StorageFailure {
+                    kind: error.failure_kind(),
+                    message: error.to_string(),
+                });
                 if let Err(error) = result {
                     failures.push((start.node_execution_id().to_string(), error));
                     continue;
@@ -127,19 +130,13 @@ impl WorkflowRuntimeHost {
                 .await;
         }
         for (node_execution_id, error) in failures {
-            prepared.failed.push(node_execution_id.clone());
-            if matches!(error, WorkflowRuntimeError::Conflict(_)) {
-                log::warn!(
-                    "workflow {execution_id}: isolated composite {node_execution_id} child start was not applied: {error}"
-                );
-                continue;
-            }
-            Box::pin(self.settle_runtime_failure_for_node(
+            self.record_node_start_failure(
                 app,
                 execution_id,
                 &node_execution_id,
                 &error,
-            ))
+                &mut prepared.failed,
+            )
             .await?;
         }
         Ok(prepared)
@@ -152,7 +149,7 @@ impl WorkflowRuntimeHost {
         node_execution_id: &str,
     ) -> Result<Option<(RuntimeCommitSnapshot, ExecutionAdvanceDecision)>, WorkflowRuntimeError>
     {
-        retry_runtime_conflicts(|| async {
+        retry_runtime_conflicts(&self.queue, node_execution_id, || async {
             let before = self.load_execution(app, execution_id).await?;
             if !before.can_prepare_node_worktree(node_execution_id) {
                 return Ok(None);

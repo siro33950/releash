@@ -9,3 +9,5 @@ pub use value_objects::{
 };
 
 pub(crate) mod subscriptions;
+
+pub(crate) mod background_failure;

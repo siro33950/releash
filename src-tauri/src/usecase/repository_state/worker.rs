@@ -58,6 +58,7 @@ impl InvalidateReason {
 }
 
 pub(crate) async fn run_worker(
+    queue: std::sync::Arc<crate::usecase::work_queue::WorkQueueUsecase>,
     state: Arc<WorktreeState>,
     scanner: Arc<dyn RepositoryScanner>,
     runtime: Arc<dyn RepositoryStateWorkerRuntime>,
@@ -72,16 +73,41 @@ pub(crate) async fn run_worker(
             collect_debounced_reasons(first_reason, rx.as_mut(), runtime.as_ref(), debounce).await;
 
         loop {
-            let _scan = state.scan_lock.lock().await;
             if state.is_shutdown() || reason.shutdown {
                 return;
             }
             let start_generation = state.requested_generation();
-            state.set_refreshing(true);
 
             let repo_path = state.worktree_path().to_string();
             let scanner = scanner.clone();
-            let scan_result = runtime.scan(scanner.clone(), repo_path).await;
+            let worker_runtime = runtime.clone();
+            let worker_scanner = scanner.clone();
+            let worker_state = state.clone();
+            let scan_result = queue
+                .execute(
+                    crate::usecase::work_queue::WorkKey::new("repository_scan", &repo_path),
+                    crate::domain::retry::RetryBackoff::ITEM,
+                    move |_| {
+                        let state = worker_state.clone();
+                        let runtime = worker_runtime.clone();
+                        let scanner = worker_scanner.clone();
+                        let repo_path = repo_path.clone();
+                        async move {
+                            let _scan = state.scan_lock.lock().await;
+                            if state.is_shutdown() {
+                                return Ok(None);
+                            }
+                            state.set_refreshing(true);
+                            let generation = state.requested_generation();
+                            let parts =
+                                runtime.scan(scanner, repo_path).await.map_err(|error| {
+                                    crate::usecase::work_queue::WorkFailure::from_error(&error)
+                                })?;
+                            Ok(state.commit_snapshot(parts, generation))
+                        }
+                    },
+                )
+                .await;
 
             let current_generation = state.requested_generation();
             if state.is_shutdown() {
@@ -100,8 +126,8 @@ pub(crate) async fn run_worker(
             state.set_refreshing(false);
 
             match scan_result {
-                Ok(parts) => {
-                    let Some(snapshot) = state.commit_snapshot(parts, start_generation) else {
+                Ok(snapshot) => {
+                    let Some(snapshot) = snapshot else {
                         reason.merge(collect_pending_reasons(rx.as_mut()));
                         continue;
                     };

@@ -38,6 +38,7 @@ fn error(e: impl ClassifiedFailure + std::fmt::Debug) -> StateReadError {
 
 #[derive(Clone)]
 pub(crate) struct WorkspaceStateReads {
+    pub queue: std::sync::Arc<crate::usecase::work_queue::WorkQueueUsecase>,
     pub repositories: Arc<RepoPathsUsecase>,
     pub repository: Arc<RepositoryUsecase>,
     pub repository_state: Arc<RepositoryStateService>,
@@ -54,6 +55,11 @@ impl WorkspaceStateReads {
     pub async fn read(&self, target: &SubscriptionTarget) -> Result<StateValue, StateReadError> {
         use SubscriptionTarget as T;
         match target {
+            T::Failures(target, offset) => {
+                return Ok(StateValue::Failures(
+                    self.queue.records_page(target, *offset).await,
+                ))
+            }
             T::AgentSession(id) => {
                 return self
                     .sessions
@@ -176,7 +182,8 @@ impl WorkspaceStateReads {
                 )
                 .map(Into::into),
             ),
-            T::AgentSession(_)
+            T::Failures(..)
+            | T::AgentSession(_)
             | T::SessionHistory(_, _)
             | T::Selection(_, _)
             | T::NodeDetail(_, _)

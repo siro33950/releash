@@ -1,7 +1,7 @@
 use crate::domain::failure::{ClassifiedFailure, FailureKind};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use sha2::{Digest, Sha256};
 
@@ -19,6 +19,7 @@ pub(crate) struct LocalProviderLifecycleEventRepository {
     repository: Arc<dyn LocalEventTransactionRepository>,
     installation_id: String,
     pending: Mutex<HashMap<[u8; 32], PreparedCommit>>,
+    queue: Arc<crate::usecase::work_queue::WorkQueueUsecase>,
 }
 
 #[derive(Clone)]
@@ -32,6 +33,7 @@ struct PreparedCommit {
 
 impl LocalProviderLifecycleEventRepository {
     pub(crate) fn new(
+        queue: std::sync::Arc<crate::usecase::work_queue::WorkQueueUsecase>,
         repository: Arc<dyn LocalEventTransactionRepository>,
         installation_id: String,
     ) -> Self {
@@ -39,6 +41,7 @@ impl LocalProviderLifecycleEventRepository {
             repository,
             installation_id,
             pending: Mutex::new(HashMap::new()),
+            queue,
         }
     }
 
@@ -55,55 +58,84 @@ impl LocalProviderLifecycleEventRepository {
             .canonical_event_batch_identity_v1(&semantic_events)
             .map_err(|_| ProviderLifecycleRepositoryError::Corrupt)?;
         let semantic_key: [u8; 32] = Sha256::digest(&semantic_identity).into();
-        let mut prepared = match self.take_pending(&semantic_key)? {
-            Some(pending) => match self.resolve_bounded(&pending.commit_id).await {
-                Ok(CommitResolution::Committed(_)) => return Ok(()),
-                Ok(CommitResolution::NotCommitted) => pending,
-                Err(error) => {
-                    self.restore_pending(semantic_key, pending)?;
-                    return Err(error);
-                }
-            },
-            None => self.prepare_commit(&scoped_events)?,
-        };
+        let prepared = self
+            .take_pending(&semantic_key)?
+            .map(Ok)
+            .unwrap_or_else(|| self.prepare_commit(&scoped_events))?;
+        crate::usecase::work_queue::retry_with_scope(
+            &self.queue,
+            crate::usecase::work_queue::WorkKey::new(
+                "provider_lifecycle_append",
+                &prepared.identity,
+            ),
+            crate::domain::retry::RetryBackoff::SERVICE,
+            || self.append_prepared(semantic_key, &prepared),
+            true,
+        )
+        .await
+    }
 
-        for _ in 0..4 {
-            let expected_heads = self.load_expected_heads(&prepared.stream_ids).await?;
-            let batch = LocalAtomicBatch {
-                commit_id: prepared.commit_id.clone(),
-                idempotency: IdempotencyBinding {
-                    installation_id: self.installation_id.clone(),
-                    operation_kind: CommitOperationKind::Projection,
-                    idempotency_key: format!("provider-lifecycle.{}", prepared.identity),
-                    payload_hash: prepared.payload_hash,
-                },
-                expected_heads,
-                events: prepared.events.clone(),
-                state_mutations: Vec::new(),
-            };
-            match self.repository.commit_batch(batch).await {
-                Ok(CommitBatchResult::Committed(_) | CommitBatchResult::Replayed(_)) => {
-                    return Ok(())
+    async fn append_prepared(
+        &self,
+        semantic_key: [u8; 32],
+        prepared: &PreparedCommit,
+    ) -> Result<(), ProviderLifecycleRepositoryError> {
+        if self.take_pending(&semantic_key)?.is_some()
+            && matches!(
+                self.resolve_bounded(&prepared.commit_id).await?,
+                CommitResolution::Committed(_)
+            )
+        {
+            self.pending
+                .lock()
+                .map_err(|_| ProviderLifecycleRepositoryError::Corrupt)?
+                .remove(&semantic_key);
+            return Ok(());
+        }
+        let expected_heads = self.load_expected_heads(&prepared.stream_ids).await?;
+        let batch = LocalAtomicBatch {
+            commit_id: prepared.commit_id.clone(),
+            idempotency: IdempotencyBinding {
+                installation_id: self.installation_id.clone(),
+                operation_kind: CommitOperationKind::Projection,
+                idempotency_key: format!("provider-lifecycle.{}", prepared.identity),
+                payload_hash: prepared.payload_hash,
+            },
+            expected_heads,
+            events: prepared.events.clone(),
+            state_mutations: Vec::new(),
+        };
+        match self.repository.commit_batch(batch).await {
+            Ok(CommitBatchResult::Committed(_) | CommitBatchResult::Replayed(_)) => {
+                self.pending
+                    .lock()
+                    .map_err(|_| ProviderLifecycleRepositoryError::Corrupt)?
+                    .remove(&semantic_key);
+                return Ok(());
+            }
+            Err(CommitBatchError::OutcomeUnknown { identity }) => {
+                if identity != prepared.commit_id {
+                    return Err(ProviderLifecycleRepositoryError::Corrupt);
                 }
-                Err(CommitBatchError::OutcomeUnknown { identity }) => {
-                    if identity != prepared.commit_id {
-                        return Err(ProviderLifecycleRepositoryError::Corrupt);
+                self.restore_pending(semantic_key, prepared.clone())?;
+                match self.resolve_bounded(&identity).await {
+                    Ok(CommitResolution::Committed(_)) => {
+                        self.pending
+                            .lock()
+                            .map_err(|_| ProviderLifecycleRepositoryError::Corrupt)?
+                            .remove(&semantic_key);
+                        return Ok(());
                     }
-                    match self.resolve_bounded(&identity).await {
-                        Ok(CommitResolution::Committed(_)) => return Ok(()),
-                        Ok(CommitResolution::NotCommitted) => continue,
-                        Err(error) => {
-                            prepared.commit_id = identity;
-                            self.restore_pending(semantic_key, prepared)?;
-                            return Err(error);
-                        }
+                    Ok(CommitResolution::NotCommitted) => {}
+                    Err(error) => {
+                        return Err(error);
                     }
                 }
-                Err(error) => {
-                    return Err(ProviderLifecycleRepositoryError::Store(
-                        error.failure_kind(),
-                    ))
-                }
+            }
+            Err(error) => {
+                return Err(ProviderLifecycleRepositoryError::Store(
+                    error.failure_kind(),
+                ))
             }
         }
         Err(ProviderLifecycleRepositoryError::Store(
@@ -172,18 +204,23 @@ impl LocalProviderLifecycleEventRepository {
         &self,
         identity: &CommitIdentity,
     ) -> Result<CommitResolution, ProviderLifecycleRepositoryError> {
-        let mut retry_delay = Duration::from_millis(10);
-        for attempt in 0..4 {
-            match self.repository.resolve_commit(identity.clone()).await {
-                Ok(resolution) => return Ok(resolution),
-                Err(error) if error.failure_kind() == FailureKind::Temporary && attempt < 3 => {
-                    tokio::time::sleep(retry_delay).await;
-                    retry_delay = retry_delay.saturating_mul(2);
-                }
-                Err(error) => return Err(error.into()),
-            }
-        }
-        unreachable!("bounded resolution loop always returns")
+        let key = crate::usecase::work_queue::WorkKey::new(
+            "provider_lifecycle_resolution",
+            &format!("{identity:?}"),
+        );
+        crate::usecase::work_queue::retry_with_scope(
+            &self.queue,
+            key,
+            crate::domain::retry::RetryBackoff::SERVICE,
+            || async {
+                self.repository
+                    .resolve_commit(identity.clone())
+                    .await
+                    .map_err(ProviderLifecycleRepositoryError::from)
+            },
+            false,
+        )
+        .await
     }
 
     fn take_pending(
@@ -193,7 +230,7 @@ impl LocalProviderLifecycleEventRepository {
         self.pending
             .lock()
             .map_err(|_| ProviderLifecycleRepositoryError::Corrupt)
-            .map(|mut pending| pending.remove(key))
+            .map(|pending| pending.get(key).cloned())
     }
 
     fn restore_pending(

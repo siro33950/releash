@@ -99,6 +99,7 @@ pub struct WorktreeState {
 
 impl WorktreeState {
     pub fn new(
+        queue: std::sync::Arc<crate::usecase::work_queue::WorkQueueUsecase>,
         worktree_path: String,
         scanner: Arc<dyn RepositoryScanner>,
         notifier: Arc<dyn RepositoryStateNotifier>,
@@ -121,6 +122,7 @@ impl WorktreeState {
             notifier,
         });
         runtime.spawn_worker(Box::pin(run_worker(
+            queue,
             state.clone(),
             scanner,
             runtime.clone(),
@@ -351,7 +353,16 @@ mod tests {
         }
     }
 
+    #[async_trait::async_trait]
+
     impl RepositoryScanner for FakeScanner {
+        async fn scan_async(
+            &self,
+            repo_path: &str,
+        ) -> Result<RepositorySnapshotParts, RepositoryStateError> {
+            self.scan(repo_path)
+        }
+
         fn scan(&self, _repo_path: &str) -> Result<RepositorySnapshotParts, RepositoryStateError> {
             let call = self.scans.fetch_add(1, Ordering::SeqCst) + 1;
             if let Some(on_scan) = self.on_scan.lock().as_ref() {
@@ -407,6 +418,9 @@ mod tests {
 
     fn test_state(scanner: Arc<dyn RepositoryScanner>, debounce: Duration) -> Arc<WorktreeState> {
         WorktreeState::new(
+            crate::usecase::work_queue::WorkQueueUsecase::new(
+                crate::usecase::work_queue_test_runtime::runtime(),
+            ),
             "/repo".to_string(),
             scanner,
             Arc::new(NoopRepositoryStateNotifier),
@@ -420,6 +434,9 @@ mod tests {
         notifier: Arc<dyn RepositoryStateNotifier>,
     ) -> Arc<WorktreeState> {
         WorktreeState::new(
+            crate::usecase::work_queue::WorkQueueUsecase::new(
+                crate::usecase::work_queue_test_runtime::runtime(),
+            ),
             "/repo".to_string(),
             scanner,
             notifier,

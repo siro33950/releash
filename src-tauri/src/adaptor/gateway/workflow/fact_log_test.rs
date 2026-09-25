@@ -1805,7 +1805,7 @@ mod terminal_fact_tests {
     use super::append_contract_tests::read_raw_rows;
     use super::*;
     use crate::adaptor::gateway::local_event_store::layout::StoreLayout;
-    use crate::domain::workflow::{AbortRequestedFact, ExecutionStatus};
+    use crate::domain::workflow::ExecutionStatus;
 
     #[tokio::test]
     async fn test_完了記録_終端行の保存失敗で完了信号も巻き戻り再試行で両方が残る() {
@@ -2072,8 +2072,7 @@ mod terminal_fact_tests {
     }
 
     #[tokio::test]
-    async fn test_起動時abort_永続化失敗を返し再試行で一度だけ記録する() {
-        // Given
+    async fn test_起動時定義確認_書込が失敗する状態でもabortを保存しない() {
         let dir = tempfile::tempdir().unwrap();
         let store =
             LocalEventStore::open(LocalEventStoreConfig::production(dir.path().into())).unwrap();
@@ -2086,70 +2085,34 @@ mod terminal_fact_tests {
                 store.clone(),
             );
         let before = read_raw_rows(&store, TREE).await;
-        // When / Then
-        assert!(
-            crate::usecase::workflow::startup::abort_unavailable_definition(&repository, TREE, 3.0)
-                .await
-                .is_err()
-        );
-        assert_eq!(read_raw_rows(&store, TREE).await, before);
-        connection
-            .execute_batch("DROP TRIGGER fail_startup_abort")
-            .unwrap();
-        crate::usecase::workflow::startup::abort_unavailable_definition(&repository, TREE, 4.0)
-            .await
-            .unwrap();
-        crate::usecase::workflow::startup::abort_unavailable_definition(&repository, TREE, 5.0)
-            .await
-            .unwrap();
-        let rows = read_raw_rows(&store, TREE).await;
-        assert_eq!(rows.len(), before.len() + 1);
-        assert_eq!(rows.last().unwrap().timestamp_ms, 4_000);
-        assert_eq!(rows.last().unwrap().event_type, "abort_requested");
+        for _ in 0..2 {
+            assert!(matches!(
+                crate::usecase::workflow::startup::check_startup_definition(&repository, TREE).await,
+                Err(crate::domain::workflow::WorkflowError::IncompatibleStoredEvent(reason)) if reason.contains("completion")
+            ));
+            assert_eq!(read_raw_rows(&store, TREE).await, before);
+        }
     }
 
     #[tokio::test]
-    async fn test_起動時abort_旧定義の未完了と完了事実のない過去完了を同じ理由付きabortにする() {
-        // Given
+    async fn test_起動時定義確認_旧定義の未完了と完了事実のない過去完了をabortしない() {
         for completed_signals in [false, true] {
             let dir = tempfile::tempdir().unwrap();
             let store = LocalEventStore::open(LocalEventStoreConfig::production(dir.path().into()))
                 .unwrap();
             legacy_tree(&store, completed_signals).await;
             let backend = FactLogReadBackend::Live(store.clone());
-            let before = read_raw_rows(&store, TREE).await.len();
-            assert!(fold_tree_from(&backend, TREE).await.is_err());
-            assert_eq!(read_raw_rows(&store, TREE).await.len(), before);
-            // When
-            crate::usecase::workflow::startup::abort_unavailable_definition(
-                &crate::adaptor::gateway::workflow::startup_repository::StoredWorkflowStartupRepository(store.clone()), TREE, 3.0,
-            ).await.unwrap();
-            let first = reconcile_tree_pass(&store, TREE, 3.0, &mut || panic!("must not start"))
-                .await
-                .unwrap()
-                .unwrap();
-            let second = reconcile_tree_pass(&store, TREE, 4.0, &mut || panic!("must not start"))
-                .await
-                .unwrap()
-                .unwrap();
-            // Then
-            for result in [first, second] {
-                assert!(result.starts.is_empty());
-                let model = crate::domain::workflow::services::fact_replay::derive_read_model(
-                    &result.folded,
-                );
-                assert_eq!(model.status, ExecutionStatus::Aborted);
-                assert_eq!(model.completed_at, Some(3.0));
-                assert!(model.error_reason.unwrap().contains("completion"));
+            let before = read_raw_rows(&store, TREE).await;
+            let repository = crate::adaptor::gateway::workflow::startup_repository::StoredWorkflowStartupRepository(store.clone());
+            for _ in 0..2 {
+                assert!(matches!(
+                    crate::usecase::workflow::startup::check_startup_definition(&repository, TREE)
+                        .await,
+                    Err(crate::domain::workflow::WorkflowError::IncompatibleStoredEvent(_))
+                ));
+                assert!(fold_tree_from(&backend, TREE).await.is_err());
+                assert_eq!(read_raw_rows(&store, TREE).await, before);
             }
-            let records = read_tree_records(&store, TREE).await.unwrap();
-            assert_eq!(records.len(), before + 1);
-            assert!(
-                matches!(&records.last().unwrap().fact, NodeFact::AbortRequested(AbortRequestedFact { reason: Some(reason) }) if reason.contains("Workflow definition is unavailable"))
-            );
-            assert!(!records
-                .iter()
-                .any(|record| matches!(record.fact, NodeFact::ExecutionCompleted)));
         }
     }
 

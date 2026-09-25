@@ -68,7 +68,7 @@ impl WorkflowRuntimeHost {
             acquired = gate.lock.lock() => { guard = Some(acquired); }
         }
         let paused = guard.is_none();
-        let result = retry_runtime_conflicts(|| {
+        let result = retry_runtime_conflicts(&self.queue, execution_id, || {
             self.commit_abort_workflow_by_execution_id(app, execution_id, expected_node_name)
         })
         .await;

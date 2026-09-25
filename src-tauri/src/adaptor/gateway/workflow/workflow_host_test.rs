@@ -100,7 +100,7 @@ async fn test_起動時recovery_gcのabortと直列化しarchive後に実行木�
         (
             ExecutionTreeLaunch::Session,
             NodeKindName::Session,
-            "session: {provider: codex}",
+            "session: {provider: codex, facets: {instruction: policy-confirmation}}",
         ),
     ] {
         // Given
@@ -159,13 +159,16 @@ async fn test_起動時recovery_gcのabortと直列化しarchive後に実行木�
             .unwrap()
             .records
             .is_empty());
+        let mut operations = Box::pin(async { tokio::join!(recovery, archive) });
+        test_helpers::poll_until_pending(operations.as_mut(), || {
+            Arc::strong_count(&activation_gate) >= 3
+        })
+        .await;
         drop(activation_guard);
         let (recovered, archived) =
-            tokio::time::timeout(std::time::Duration::from_secs(5), async {
-                tokio::join!(recovery, archive)
-            })
-            .await
-            .unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(5), operations)
+                .await
+                .unwrap();
         recovered.unwrap();
         archived.unwrap();
         test_helpers::reconcile_startup(&fixture.host, &fixture.app)
@@ -235,6 +238,9 @@ async fn test_起動時recovery_通常起動と同じsessionを一度だけ起�
     let fixture = archive_fixture();
     let runtime = fixture.runtime.clone().with_startup(
         crate::adaptor::controller::wiring::wire_workflow_startup(
+            crate::usecase::work_queue::WorkQueueUsecase::new(std::sync::Arc::new(
+                crate::usecase::work_queue::ImmediateWorkQueueRuntime::default(),
+            )),
             fixture.app.clone(),
             fixture.host.clone(),
         ),
@@ -377,6 +383,7 @@ async fn test_workflow永続化_本番構成で起動から完了とabortまで�
                 .unwrap();
         let app = test_helpers::dependencies(Some(store.clone()));
         let query = SqliteWorkspaceQueryService::with_repository(
+            crate::usecase::work_queue::shared().clone(),
             SqliteWorkspaceTreeRepository::new(store.clone()),
             Arc::new(ExecutionTreeArchiveFactRepository::new(
                 store.clone(),
@@ -384,6 +391,7 @@ async fn test_workflow永続化_本番構成で起動から完了とabortまで�
             )),
         );
         let host = Arc::new(WorkflowRuntimeHost::with_runtime_ports(
+            crate::usecase::work_queue::shared().clone(),
             Arc::new(UnusedWorkflowResolver),
             Arc::new(AcceptingWorktreeResolver),
             query.clone(),
@@ -421,9 +429,10 @@ async fn test_workflow永続化_本番構成で起動から完了とabortまで�
                 .unwrap();
         } else {
             let node = &snapshot.node_executions[0];
-            let control = WorkflowControlPlaneUsecase::new(Arc::new(
-                WorkflowRuntimeCommandGateway::new_with_driver(app, host),
-            ));
+            let control = WorkflowControlPlaneUsecase::new(
+                crate::usecase::work_queue::shared().clone(),
+                Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(app, host)),
+            );
             control
                 .submit_output(SubmitOutputCommand {
                     node_execution_id: node.id.clone(),
@@ -720,11 +729,12 @@ async fn test_実行木archive_abort書込失敗ではarchiveを記録しない(
     let id = archive_workflow(&fixture).await;
     fixture.store.close_write_queue_for_tests();
     // When
-    assert!(fixture
-        .runtime
-        .archive_execution_tree(&id, "manual")
-        .await
-        .is_err());
+    assert!(tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        fixture.runtime.archive_execution_tree(&id, "manual"),
+    )
+    .await
+    .is_err());
     // Then
     assert_eq!(
         fixture.repository.target(&id).await.unwrap().status,
@@ -910,11 +920,14 @@ async fn test_実行木archive_移行失敗は旧記録を保持する() {
             .to_string();
     std::fs::write(&path, &legacy).unwrap();
     fixture.store.close_write_queue_for_tests();
-    assert!(fixture
-        .runtime
-        .migrate_execution_archives(fixture.repository.as_ref())
-        .await
-        .is_err());
+    assert!(tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        fixture
+            .runtime
+            .migrate_execution_archives(fixture.repository.as_ref()),
+    )
+    .await
+    .is_err());
     assert_eq!(std::fs::read_to_string(path).unwrap(), legacy);
 }
 
@@ -1691,11 +1704,13 @@ async fn test_記録からの操作_agent_sessionが再開を保存した後にs
         .complete_resume(AgentSessionRecoveryResult::Succeeded)
         .unwrap();
     repository.save(saved, "record-only-resume").await.unwrap();
-    let control =
-        WorkflowControlPlaneUsecase::new(Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(
+    let control = WorkflowControlPlaneUsecase::new(
+        crate::usecase::work_queue::shared().clone(),
+        Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(
             fixture.app.clone(),
             Arc::new(fixture.restarted_host()),
-        )));
+        )),
+    );
     // When
     control
         .submit_output(SubmitOutputCommand {
@@ -1735,7 +1750,7 @@ async fn test_記録からの操作_agent_sessionが再開を保存した後にs
 }
 
 #[tokio::test]
-async fn test_起動時前進_失敗を理由付きabortにし他の木を進め再試行しない() {
+async fn test_起動時前進_恒久失敗でもabortせず他の木を進める() {
     // Given
     let fixture = test_helpers::Fixture::new(0);
     let failed = fixture.persist_started("  main: {session: {provider: codex, facets: {instruction: missing-startup-facet-1840}}}\n", "/failed").await;
@@ -1747,6 +1762,9 @@ async fn test_起動時前進_失敗を理由付きabortにし他の木を進め
         .await;
     let host = Arc::new(fixture.restarted_host());
     let startup = crate::adaptor::controller::wiring::wire_workflow_startup(
+        crate::usecase::work_queue::WorkQueueUsecase::new(std::sync::Arc::new(
+            crate::usecase::work_queue::ImmediateWorkQueueRuntime::default(),
+        )),
         fixture.app.clone(),
         host.clone(),
     )
@@ -1762,14 +1780,14 @@ async fn test_起動時前進_失敗を理由付きabortにし他の木を進め
             .unwrap();
     startup.execute().await.unwrap();
     // Then
-    assert!(failed_records.iter().any(|record| matches!(&record.fact,
+    assert!(!failed_records.iter().any(|record| matches!(&record.fact,
         crate::domain::workflow::NodeFact::AbortRequested(fact) if fact.reason.as_ref().is_some_and(|reason| reason.contains("missing-startup-facet-1840")))));
     assert_eq!(
         host.load_execution(&fixture.app, &failed.execution_id)
             .await
             .unwrap()
             .state(),
-        &RuntimeExecutionState::Aborted
+        &RuntimeExecutionState::Running
     );
     assert!(healthy_records.iter().any(|record| matches!(
         record.fact,
@@ -1792,7 +1810,7 @@ async fn test_起動時前進_失敗を理由付きabortにし他の木を進め
 }
 
 #[tokio::test]
-async fn test_起動時前進_reply喪失後は保存済みなら続行し未保存なら理由付きabortする() {
+async fn test_起動時前進_reply喪失後は保存済みなら続行し未保存でもabortしない() {
     use crate::adaptor::gateway::local_event_store::layout::StoreLayout;
     use crate::domain::workflow::NodeFact;
 
@@ -1842,6 +1860,9 @@ async fn test_起動時前進_reply喪失後は保存済みなら続行し未保
         }
         let host = Arc::new(fixture.restarted_host());
         let startup = crate::adaptor::controller::wiring::wire_workflow_startup(
+            crate::usecase::work_queue::WorkQueueUsecase::new(std::sync::Arc::new(
+                crate::usecase::work_queue::ImmediateWorkQueueRuntime::default(),
+            )),
             fixture.app.clone(),
             host.clone(),
         )
@@ -1882,18 +1903,14 @@ async fn test_起動時前進_reply喪失後は保存済みなら続行し未保
         );
         assert_eq!(
             records.iter().filter(|record| matches!(&record.fact, NodeFact::AbortRequested(fact) if fact.reason.as_ref().is_some_and(|reason| reason.contains("startup advancement commit failed")))).count(),
-            usize::from(!persisted)
+            0
         );
         assert_eq!(
             host.load_execution(&fixture.app, &interrupted.execution_id)
                 .await
                 .unwrap()
                 .state(),
-            if persisted {
-                &RuntimeExecutionState::Running
-            } else {
-                &RuntimeExecutionState::Aborted
-            }
+            &RuntimeExecutionState::Running
         );
         assert!(healthy_records
             .iter()
@@ -1919,7 +1936,7 @@ async fn test_起動時前進_reply喪失後は保存済みなら続行し未保
 }
 
 #[tokio::test]
-async fn test_起動時session紐付け_reply喪失後は保存済みなら起動し未保存ならabortする() {
+async fn test_起動時session紐付け_reply喪失後は保存済みなら起動し未保存でもabortしない() {
     use crate::adaptor::gateway::local_event_store::layout::StoreLayout;
     use crate::domain::workflow::NodeFact;
 
@@ -1947,6 +1964,9 @@ async fn test_起動時session紐付け_reply喪失後は保存済みなら起�
         }
         let host = Arc::new(fixture.restarted_host());
         let startup = crate::adaptor::controller::wiring::wire_workflow_startup(
+            crate::usecase::work_queue::WorkQueueUsecase::new(std::sync::Arc::new(
+                crate::usecase::work_queue::ImmediateWorkQueueRuntime::default(),
+            )),
             fixture.app.clone(),
             host.clone(),
         )
@@ -1984,20 +2004,13 @@ async fn test_起動時session紐付け_reply喪失後は保存済みなら起�
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(aborts.len(), usize::from(!persisted));
-        if let Some(abort) = aborts.first() {
-            assert!(abort
-                .reason
-                .as_ref()
-                .unwrap()
-                .contains("session attachment event append failed"));
-        }
+        assert!(aborts.is_empty());
         assert_eq!(
             host.load_execution(&fixture.app, &interrupted.execution_id)
                 .await
                 .unwrap()
                 .is_active(),
-            persisted
+            true
         );
         assert!(healthy_records
             .iter()
@@ -2756,11 +2769,13 @@ async fn test_記録からの承認_外部writerの完了信号で承認待ち�
     )
     .await
     .unwrap();
-    let control =
-        WorkflowControlPlaneUsecase::new(Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(
+    let control = WorkflowControlPlaneUsecase::new(
+        crate::usecase::work_queue::shared().clone(),
+        Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(
             fixture.app.clone(),
             Arc::new(fixture.host.clone()),
-        )));
+        )),
+    );
     // When
     control
         .resolve_approval(ApprovalCommand {
@@ -2824,11 +2839,13 @@ async fn test_記録からのretry_外部writerが作った最新attemptを再�
     )
     .await
     .unwrap();
-    let control =
-        WorkflowControlPlaneUsecase::new(Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(
+    let control = WorkflowControlPlaneUsecase::new(
+        crate::usecase::work_queue::shared().clone(),
+        Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(
             fixture.app.clone(),
             Arc::new(fixture.host.clone()),
-        )));
+        )),
+    );
     // When
     control
         .retry_node(RetryNodeCommand {
@@ -2997,9 +3014,9 @@ async fn test_command結果競合_最新記録で成功を保存し終端なら�
 }
 
 #[tokio::test]
-async fn test_操作競合_abortとcommand結果は上限で止まり障害事実を追加しない() {
+async fn test_操作競合_abortとcommand結果は4回を超えて収束し障害事実を追加しない() {
     use crate::domain::workflow::NodeFact;
-    use crate::usecase::workflow::command::CONTROL_PLANE_MAX_ATTEMPTS;
+    const CONFLICT_COUNT: usize = 5;
     for command in [false, true] {
         // Given
         crate::test_support::install_capturing_logger();
@@ -3030,7 +3047,7 @@ async fn test_操作競合_abortとcommand結果は上限で止まり障害事�
             }
         });
         // When
-        for attempt in 0..CONTROL_PLANE_MAX_ATTEMPTS {
+        for attempt in 0..CONFLICT_COUNT {
             test_helpers::poll_until_pending(operation.as_mut(), || {
                 Arc::strong_count(&commit_lock) > 1
             })
@@ -3045,7 +3062,7 @@ async fn test_操作競合_abortとcommand結果は上限で止まり障害事�
             )
             .await
             .unwrap();
-            if attempt + 1 == CONTROL_PLANE_MAX_ATTEMPTS {
+            if attempt + 1 == CONFLICT_COUNT {
                 drop(guard);
                 break;
             }
@@ -3059,29 +3076,26 @@ async fn test_操作競合_abortとcommand結果は上限で止まり障害事�
         }
         let result = operation.await;
         // Then
-        if command {
-            result.unwrap();
-            assert!(crate::test_support::captured_warning_messages()
-                .iter()
-                .any(|message| message.contains(&input.node_execution_id)
-                    && message.contains("result was not applied")
-                    && message.contains("conflict")));
-        } else {
-            assert!(matches!(result, Err(WorkflowRuntimeError::Conflict(_))));
-        }
+        result.unwrap();
         let records = workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id)
             .await
             .unwrap();
-        assert_eq!(records.len(), CONTROL_PLANE_MAX_ATTEMPTS + 1);
-        assert!(records.iter().all(|record| matches!(
-            record.fact,
-            NodeFact::Started(_) | NodeFact::CommandSpawned(_)
-        )));
-        fixture
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| matches!(record.fact, NodeFact::CommandSpawned(_)))
+                .count(),
+            CONFLICT_COUNT
+        );
+        assert!(!records
+            .iter()
+            .any(|record| matches!(record.fact, NodeFact::RuntimeFailureObserved(_))));
+        assert!(!fixture
             .host
-            .abort_workflow_execution(&fixture.app, &snapshot.execution_id, None)
+            .load_execution(&fixture.app, &snapshot.execution_id)
             .await
-            .unwrap();
+            .unwrap()
+            .is_active());
     }
 }
 
@@ -3204,7 +3218,7 @@ async fn test_command起動失敗競合_最新attemptへ保存し終端や更新
 #[tokio::test]
 async fn test_command起動失敗競合_上限で不反映理由を残し競合を障害事実にしない() {
     use crate::domain::workflow::NodeFact;
-    use crate::usecase::workflow::command::CONTROL_PLANE_MAX_ATTEMPTS;
+    const CONFLICT_COUNT: usize = 5;
     for spawned in [true, false] {
         // Given
         crate::test_support::install_capturing_logger();
@@ -3217,7 +3231,7 @@ async fn test_command起動失敗競合_上限で不反映理由を残し競合�
         let mut guard = commit_lock.lock().await;
         let mut operation = Box::pin(async {
             if spawned {
-                assert!(!fixture
+                assert!(fixture
                     .host
                     .commit_command_spawned(&fixture.app, &input, "true".into())
                     .await
@@ -3236,7 +3250,7 @@ async fn test_command起動失敗競合_上限で不反映理由を残し競合�
             }
         });
         // When
-        for attempt in 0..CONTROL_PLANE_MAX_ATTEMPTS {
+        for attempt in 0..CONFLICT_COUNT {
             test_helpers::poll_until_pending(operation.as_mut(), || {
                 Arc::strong_count(&commit_lock) > 1
             })
@@ -3252,7 +3266,7 @@ async fn test_command起動失敗競合_上限で不反映理由を残し競合�
             )
             .await
             .unwrap();
-            if attempt + 1 == CONTROL_PLANE_MAX_ATTEMPTS {
+            if attempt + 1 == CONFLICT_COUNT {
                 drop(guard);
                 break;
             }
@@ -3269,28 +3283,27 @@ async fn test_command起動失敗競合_上限で不反映理由を残し競合�
         let records = workflow_fact_log::read_tree_records(&fixture.store, &input.execution_id)
             .await
             .unwrap();
-        assert_eq!(records.len(), CONTROL_PLANE_MAX_ATTEMPTS + 1);
-        assert!(records.iter().all(|record| matches!(
-            record.fact,
-            NodeFact::Started(_) | NodeFact::CommandSpawned(_)
-        )));
-        let expected = if spawned {
-            "start was not applied"
-        } else {
-            "failure was not applied"
-        };
-        assert!(crate::test_support::captured_warning_messages()
-            .iter()
-            .any(|message| message.contains(&input.node_execution_id)
-                && message.contains(expected)
-                && message.contains("conflict")));
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| matches!(record.fact, NodeFact::CommandSpawned(_)))
+                .count(),
+            CONFLICT_COUNT + usize::from(spawned)
+        );
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| matches!(record.fact, NodeFact::RuntimeFailureObserved(_)))
+                .count(),
+            usize::from(!spawned)
+        );
     }
 }
 
 #[tokio::test]
 async fn test_session準備競合_最新記録で紐付けを再評価し準備を繰り返さない() {
     use crate::domain::workflow::NodeFact;
-    use crate::usecase::workflow::command::CONTROL_PLANE_MAX_ATTEMPTS;
+    const CONFLICT_COUNT: usize = 5;
     for change in ["sibling", "abort", "attached", "exhausted"] {
         // Given
         let fixture = test_helpers::Fixture::new(0);
@@ -3325,7 +3338,7 @@ async fn test_session準備競合_最新記録で紐付けを再評価し準備�
             starts,
         ));
         let attempts = if change == "exhausted" {
-            CONTROL_PLANE_MAX_ATTEMPTS
+            CONFLICT_COUNT
         } else {
             1
         };
@@ -3375,7 +3388,7 @@ async fn test_session準備競合_最新記録で紐付けを再評価し準備�
         let result = operation.await;
 
         // Then
-        if change == "sibling" {
+        if matches!(change, "sibling" | "exhausted") {
             result.unwrap();
             assert!(fixture.sessions.rolled_back.lock().unwrap().is_empty());
             assert_eq!(
@@ -3384,18 +3397,7 @@ async fn test_session準備競合_最新記録で紐付けを再評価し準備�
             );
         } else {
             let error = result.unwrap_err();
-            if change == "exhausted" {
-                assert!(matches!(error, WorkflowRuntimeError::Conflict(_)));
-                assert!(matches!(
-                    fixture
-                        .host
-                        .settle_runtime_failure(&fixture.app, &snapshot.execution_id, &error,)
-                        .await,
-                    Err(WorkflowRuntimeError::Conflict(_))
-                ));
-            } else {
-                assert!(matches!(error, WorkflowRuntimeError::InvalidState(_)));
-            }
+            assert!(matches!(error, WorkflowRuntimeError::InvalidState(_)));
             assert_eq!(
                 *fixture.sessions.rolled_back.lock().unwrap(),
                 [target.id.clone()]
@@ -3411,7 +3413,7 @@ async fn test_session準備競合_最新記録で紐付けを再評価し準備�
                 .iter()
                 .filter(|record| matches!(record.fact, NodeFact::SessionAttached(_)))
                 .count(),
-            usize::from(matches!(change, "sibling" | "attached"))
+            usize::from(matches!(change, "sibling" | "attached" | "exhausted"))
         );
         assert!(!records
             .iter()
@@ -3422,7 +3424,7 @@ async fn test_session準備競合_最新記録で紐付けを再評価し準備�
             .await
             .unwrap();
         let expected = match change {
-            "sibling" => Some(format!("agent-{}", target.id)),
+            "sibling" | "exhausted" => Some(format!("agent-{}", target.id)),
             "attached" => Some("external-session".into()),
             _ => None,
         };
@@ -3440,30 +3442,28 @@ async fn test_runtime再試行_競合だけを上限まで再実行する() {
         // Given
         let calls = AtomicUsize::new(0);
         // When
-        let result = retry_runtime_conflicts(|| async {
-            let attempt = calls.fetch_add(1, Ordering::SeqCst);
-            if storage_error {
-                Err(WorkflowRuntimeError::SessionStore("unavailable".into()))
-            } else if attempt < conflicts {
-                Err(WorkflowRuntimeError::Conflict("advanced".into()))
-            } else {
-                Ok(())
-            }
-        })
-        .await;
+        let result =
+            retry_runtime_conflicts(crate::usecase::work_queue::shared(), "test", || async {
+                let attempt = calls.fetch_add(1, Ordering::SeqCst);
+                if storage_error {
+                    Err(WorkflowRuntimeError::SessionStore("unavailable".into()))
+                } else if attempt < conflicts {
+                    Err(WorkflowRuntimeError::Conflict("advanced".into()))
+                } else {
+                    Ok(())
+                }
+            })
+            .await;
         // Then
-        assert_eq!(
-            calls.load(Ordering::SeqCst),
-            (conflicts + 1).min(crate::usecase::workflow::command::CONTROL_PLANE_MAX_ATTEMPTS)
-        );
-        assert_eq!(result.is_ok(), !storage_error && conflicts < 4);
+        assert_eq!(calls.load(Ordering::SeqCst), (conflicts + 1));
+        assert_eq!(result.is_ok(), !storage_error);
     }
 }
 
 #[tokio::test]
 async fn test_自動再起動競合_最新記録で再評価し上限まで再試行する() {
     use crate::domain::workflow::NodeFact;
-    use crate::usecase::workflow::command::CONTROL_PLANE_MAX_ATTEMPTS;
+    const CONFLICT_COUNT: usize = 5;
     for change in ["sibling", "abort", "exhausted"] {
         // Given
         let fixture = test_helpers::Fixture::new(0);
@@ -3494,7 +3494,7 @@ async fn test_自動再起動競合_最新記録で再評価し上限まで再�
             &target.id,
         ));
         let attempts = if change == "exhausted" {
-            CONTROL_PLANE_MAX_ATTEMPTS
+            CONFLICT_COUNT
         } else {
             1
         };
@@ -3540,7 +3540,7 @@ async fn test_自動再起動競合_最新記録で再評価し上限まで再�
 
         // Then
         match change {
-            "sibling" => {
+            "sibling" | "exhausted" => {
                 let start = result.unwrap().unwrap();
                 assert_ne!(start.node_execution_id(), target.id);
                 let latest = fixture
@@ -3563,7 +3563,7 @@ async fn test_自動再起動競合_最新記録で再評価し上限まで再�
                     .is_none());
             }
             "abort" => assert!(result.unwrap().is_none()),
-            _ => assert!(matches!(result, Err(WorkflowRuntimeError::Conflict(_)))),
+            _ => unreachable!(),
         }
         let records = workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id)
             .await
@@ -3573,7 +3573,7 @@ async fn test_自動再起動競合_最新記録で再評価し上限まで再�
                 .iter()
                 .filter(|record| matches!(record.fact, NodeFact::RetryRequested))
                 .count(),
-            usize::from(change == "sibling")
+            usize::from(matches!(change, "sibling" | "exhausted"))
         );
         assert!(!records
             .iter()
@@ -3625,7 +3625,7 @@ async fn test_自動再起動_先行nodeのエラーを後続の起動成功node
             &fixture.app,
             &snapshot.execution_id,
             "/repo",
-            vec![target.id.clone(), sibling.id.clone()],
+            vec![target.id.as_str().into(), sibling.id.as_str().into()],
         )
         .await;
     fixture.wait_startup_retries().await;

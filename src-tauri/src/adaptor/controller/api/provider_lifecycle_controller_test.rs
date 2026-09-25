@@ -72,6 +72,7 @@ fn receive_payload(armed: &ArmedProviderLifecycle) -> serde_json::Value {
 
 fn provider_lifecycle_usecase(store: &Arc<LocalEventStore>) -> Arc<ProviderLifecycleUsecase> {
     let events = Arc::new(LocalProviderLifecycleEventRepository::new(
+        crate::usecase::work_queue::shared().clone(),
         store.clone() as Arc<dyn LocalEventTransactionRepository>,
         store.installation_id().to_string(),
     ));
