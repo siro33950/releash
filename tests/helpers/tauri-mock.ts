@@ -116,7 +116,7 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
         const { output: stream, args } = attachment;
         const event = item.type === "snapshot"
             ? { snapshot: { sessionKey: item.surface.session_key, processedReportUnits: 5000, ...item.surface.terminal_surface, sequence: String(item.surface.terminal_surface.sequence), isExited: item.surface.is_exited, exitCode: item.surface.exit_code } }
-            : { [item.type === "input_unavailable" ? "inputUnavailable" : item.type]: { ...item, sessionKey: item.session_key, type: undefined, session_key: undefined, exitCode: "exit_code" in item ? item.exit_code : undefined, exit_code: undefined, sequence: "sequence" in item ? String(item.sequence) : undefined } };
+            : { [item.type]: { ...item, sessionKey: item.session_key, type: undefined, session_key: undefined, exitCode: "exit_code" in item ? item.exit_code : undefined, exit_code: undefined, sequence: "sequence" in item ? String(item.sequence) : undefined } };
         const sequence = item.type === "snapshot" ? item.surface.terminal_surface.sequence : "sequence" in item ? item.sequence : 0;
         const payload = create(StatePayloadSchema, {value: {case: "terminal", value: fromJson(TerminalEventSchema, JSON.parse(JSON.stringify(event)))}});
         stream.enqueue(create(StateSubscriptionEventSchema, {target: "terminal", args, version: {epoch: "fixture", sequence: BigInt(sequence)}, event: item.type === "snapshot" ? {case: "snapshot", value: payload} : {case: "change", value: {delta: true, payload}}}));
@@ -151,10 +151,11 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
                 const targets = subscriptions.get(request.clientId) ?? new Map();
                 subscriptions.set(request.clientId, targets);
                 const target = stateKey(request.target, request.args);
-                if (targets.has(target)) return {};
+                if (request.target !== "terminal" && targets.has(target)) return {};
                 stateRequests.push(target);
                 if (request.target === "terminal") {
                     const id = request.terminalInputId ?? request.clientId;
+                    for (const [previousId, value] of attachments) if (value.clientId === request.clientId && JSON.stringify(value.args) === JSON.stringify(request.args)) attachments.delete(previousId);
                     attachments.set(id, {output: stream, args: request.args, clientId: request.clientId});
                     targets.set(target, {sequence: 0n, json: ""});
                     const owner = request.args.length === 2 ? {kind: "session", workspacePath: request.args[0], sessionId: request.args[1]} : {kind: "workspace", workspacePath: request.args[0]};

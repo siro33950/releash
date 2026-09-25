@@ -1106,3 +1106,199 @@ fn test_流量停止_実processorの出力で高水位を超えると後続出�
         }
     ));
 }
+
+#[test]
+fn test_ターミナル削除_画面削除後のruntime削除の有無によらず入力attachmentを解放する() {
+    for remove_runtime_after_surface in [false, true] {
+        // Given
+        let gateway = TerminalSurfaceRuntimeGateway::default();
+        insert_test_session(&gateway, 1, "key", Some("/repo"), None);
+        gateway.activate_input_attachment("key", "input");
+        gateway
+            .write_attached("key", "input", 1, "pending")
+            .unwrap();
+        gateway.activate_input_attachment("other", "other-input");
+
+        // When
+        assert!(gateway.remove_surface(1).is_some());
+        if remove_runtime_after_surface {
+            gateway.remove_runtime(1);
+        }
+
+        // Then
+        let mut ingress = gateway.input_ingress.lock();
+        assert_eq!(
+            ingress.admit("key", "input", 0, "stale".into()),
+            Err(TerminalSurfaceInputIngressError::StaleAttachment)
+        );
+        assert!(ingress
+            .admit("other", "other-input", 0, "active".into())
+            .is_ok());
+    }
+}
+
+#[tokio::test]
+async fn test_ターミナル再作成_継続購読へ終了とsnapshotを届け入力連番と処理済み通知を保つ() {
+    assert_terminal_recreation(false).await;
+}
+
+#[tokio::test]
+async fn test_ターミナル再作成_送り待ちが空でも購読と入力と処理済み通知を保つ() {
+    assert_terminal_recreation(true).await;
+}
+
+async fn assert_terminal_recreation(drain_exit: bool) {
+    // Given
+    use crate::adaptor::gateway::terminal_surface::event_hub::TerminalSurfaceEventHub;
+    use crate::domain::state_subscription::{Event, SubscriptionTarget};
+    use crate::usecase::state_subscription::{
+        StateSubscriptionEvent, StateSubscriptionUsecase, StateValue,
+    };
+    use crate::usecase::terminal_surface::application::{
+        TerminalSurfaceApplication, TerminalSurfaceStreamItem,
+    };
+    use futures_util::StreamExt;
+    let hub = Arc::new(TerminalSurfaceEventHub::with_flags(256, true));
+    let gateway = Arc::new(TerminalSurfaceRuntimeGatewayFor::new_with_event_sink(
+        std::path::PathBuf::new(),
+        hub.clone(),
+        false,
+    ));
+    let owner = workspace_owner("/repo");
+    let key = owner.stable_key();
+    let target = SubscriptionTarget::Terminal(owner.clone()).to_string();
+    let (_, old_written) = insert_test_session_with_resizer(
+        &gateway,
+        1,
+        &key,
+        Some("/repo"),
+        None,
+        Box::new(MockResizer { rows: 24, cols: 80 }),
+    );
+    gateway.insert_surface(TerminalSurface::new(1, owner.clone(), None));
+    let terminal = Arc::new(TerminalSurfaceApplication::new(
+        gateway.clone(),
+        hub.clone(),
+    ));
+    let subscriptions = StateSubscriptionUsecase::new(
+        vec![],
+        Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+    )
+    .with_terminal(terminal.clone());
+    let stream = subscriptions.open("client".into()).unwrap();
+    tokio::pin!(stream);
+    stream.next().await;
+    subscriptions
+        .start_terminal("client", &target, None, "input")
+        .await
+        .unwrap();
+    stream.next().await;
+    stream.next().await;
+    terminal
+        .write_attached(&owner, "input", 0, None, "old")
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while old_written.lock().len() < 3 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(&*old_written.lock(), b"old");
+    // When
+    hub.publish(TerminalSurfaceEvent::Exit {
+        session_key: key.clone(),
+        runtime_generation: 1,
+        exit_code: Some(7),
+        sequence: 0,
+    });
+    if drain_exit {
+        let next = tokio::time::timeout(Duration::from_secs(2), stream.next())
+            .await
+            .unwrap();
+        assert!(
+            matches!(next, Some(StateSubscriptionEvent::Item(_, Event::Change(_, _, value))) if matches!(value.as_ref(), StateValue::Terminal(TerminalSurfaceStreamItem::Exit { exit_code: Some(7), .. })))
+        );
+    }
+    gateway.remove_surface(1).unwrap();
+    gateway.remove_runtime(1);
+    let (_, new_written) = insert_test_session_with_resizer(
+        &gateway,
+        2,
+        &key,
+        Some("/repo"),
+        None,
+        Box::new(MockResizer { rows: 24, cols: 80 }),
+    );
+    gateway.insert_surface(TerminalSurface::new(2, owner.clone(), None));
+    // Then
+    if !drain_exit {
+        let next = tokio::time::timeout(Duration::from_secs(2), stream.next())
+            .await
+            .unwrap();
+        assert!(
+            matches!(next, Some(StateSubscriptionEvent::Item(_, Event::Change(_, _, value))) if matches!(value.as_ref(), StateValue::Terminal(TerminalSurfaceStreamItem::Exit { exit_code: Some(7), .. })))
+        );
+    }
+    let next = tokio::time::timeout(Duration::from_secs(2), stream.next())
+        .await
+        .unwrap();
+    assert!(
+        matches!(next, Some(StateSubscriptionEvent::Item(_, Event::Snapshot(_, value))) if matches!(value.as_ref(), StateValue::Terminal(TerminalSurfaceStreamItem::Snapshot(surface)) if surface.runtime_generation.value() == 2))
+    );
+    terminal
+        .write_attached(&owner, "input", 1, None, "new")
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while new_written.lock().len() < 3 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(&*new_written.lock(), b"new");
+    hub.publish(TerminalSurfaceEvent::Output {
+        session_key: key.clone(),
+        sequence: 1,
+        data: "x".repeat(100_001).into(),
+    });
+    assert!(matches!(
+        stream.next().await,
+        Some(StateSubscriptionEvent::Item(_, Event::Bookmark(_)))
+    ));
+    let next = tokio::time::timeout(Duration::from_secs(2), stream.next())
+        .await
+        .unwrap();
+    assert!(
+        matches!(next, Some(StateSubscriptionEvent::Item(_, Event::Change(_, _, value))) if matches!(value.as_ref(), StateValue::Terminal(TerminalSurfaceStreamItem::Output { sequence: 1, data, .. }) if data.len() == 100_001))
+    );
+    let (sent, received) = tokio::sync::oneshot::channel();
+    let waiting_hub = hub.clone();
+    let waiter = tokio::task::spawn_blocking(move || {
+        waiting_hub.wait_output(&key);
+        sent.send(()).unwrap();
+    });
+    tokio::pin!(received);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), &mut received)
+            .await
+            .is_err()
+    );
+    for _ in 0..20 {
+        subscriptions
+            .terminal_processed("client", &target, 5000)
+            .unwrap();
+    }
+    tokio::time::timeout(Duration::from_secs(2), received)
+        .await
+        .unwrap()
+        .unwrap();
+    waiter.await.unwrap();
+    subscriptions.stop("client", &target).unwrap();
+    assert!(terminal
+        .write_attached(&owner, "input", 2, None, "stale")
+        .is_err());
+    assert!(subscriptions
+        .terminal_processed("client", &target, 5000)
+        .is_err());
+}

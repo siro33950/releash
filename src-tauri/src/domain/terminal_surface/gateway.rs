@@ -92,11 +92,17 @@ impl TerminalSurfaceEvent {
 
 pub trait TerminalSurfaceStateSink: Send + Sync {
     fn initialize(&self, surface: &TerminalSurfaceSummary);
+    /// Returns whether a subscription still owns the input attachment.
+    fn remove(&self, surface: &TerminalSurfaceSummary) -> bool;
     fn publish(&self, event: TerminalSurfaceEvent);
 }
 
 pub trait TerminalSurfaceEventSink: Send + Sync {
     fn initialize(&self, _surface: &TerminalSurfaceSummary) {}
+    /// Returns whether a subscription still owns the input attachment.
+    fn remove(&self, _surface: &TerminalSurfaceSummary) -> bool {
+        false
+    }
     fn wait_output(&self, _session_key: &str) {}
     fn release_output(&self, _session_key: &str) {}
 

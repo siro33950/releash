@@ -163,6 +163,18 @@ impl TerminalSurfaceEventSink for TerminalSurfaceEventHub {
             sink.initialize(surface);
         }
     }
+    fn remove(
+        &self,
+        surface: &crate::domain::terminal_surface::entities::TerminalSurfaceSummary,
+    ) -> bool {
+        let subscribed = self
+            .state_sink
+            .lock()
+            .as_ref()
+            .is_some_and(|sink| sink.remove(surface));
+        self.release_output(&surface.session_key);
+        subscribed
+    }
     fn release_output(&self, session_key: &str) {
         if let Some((_, pause)) = self.output.lock().remove(session_key) {
             pause.set(false);

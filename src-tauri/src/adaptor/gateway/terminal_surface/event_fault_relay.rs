@@ -42,6 +42,12 @@ impl TerminalSurfaceEventSink for FaultInjectingTerminalSurfaceEventSink {
     ) {
         self.target.initialize(surface);
     }
+    fn remove(
+        &self,
+        surface: &crate::domain::terminal_surface::entities::TerminalSurfaceSummary,
+    ) -> bool {
+        self.target.remove(surface)
+    }
     fn wait_output(&self, session_key: &str) {
         self.target.wait_output(session_key);
     }

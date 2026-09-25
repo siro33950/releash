@@ -83,3 +83,31 @@ fn test_ターミナル入力受付_書込失敗分を新しい入力より先�
         Ok(vec![input(0, "first"), input(1, "second")])
     );
 }
+
+#[test]
+fn test_ターミナル入力受付_削除でattachmentと保留入力を解放する() {
+    // Given
+    let mut registry = TerminalSurfaceInputIngressRegistry::default();
+    registry.activate("surface", "input");
+    registry
+        .admit("surface", "input", 1, "pending".into())
+        .unwrap();
+    registry.activate("other", "other-input");
+
+    // When
+    registry.remove("surface");
+    registry.remove("surface");
+
+    // Then
+    assert!(!registry.sessions.contains_key("surface"));
+    assert_eq!(registry.sessions.len(), 1);
+    assert_eq!(
+        registry.admit("surface", "input", 0, "stale".into()),
+        Err(TerminalSurfaceInputIngressError::StaleAttachment)
+    );
+    registry.activate("surface", "new-input");
+    assert_eq!(
+        registry.admit("surface", "new-input", 0, "new".into()),
+        Ok(vec![input(0, "new")])
+    );
+}

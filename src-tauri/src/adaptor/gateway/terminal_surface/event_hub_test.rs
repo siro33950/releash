@@ -115,3 +115,52 @@ fn test_流量制御無効_高水位を超える履歴再開と後続出力で�
     worker.join().unwrap();
     completed.unwrap();
 }
+
+#[test]
+fn test_ターミナル削除_購読の有無によらず停止中の出力元を解放する() {
+    use crate::domain::terminal_surface::entities::{TerminalSurface, TerminalSurfaceSummary};
+    use crate::domain::terminal_surface::gateway::TerminalSurfaceStateSink;
+    use crate::domain::terminal_surface::TerminalSurfaceOwner;
+    use crate::domain::workspace_tree::WorkspaceIdentity;
+
+    struct StateSink(bool);
+    impl TerminalSurfaceStateSink for StateSink {
+        fn initialize(&self, _: &TerminalSurfaceSummary) {}
+        fn remove(&self, _: &TerminalSurfaceSummary) -> bool {
+            self.0
+        }
+        fn publish(&self, _: TerminalSurfaceEvent) {}
+    }
+
+    for subscribed in [false, true] {
+        // Given
+        let hub = Arc::new(TerminalSurfaceEventHub::with_flags(8, true));
+        hub.set_state_sink(Arc::new(StateSink(subscribed)));
+        let owner = TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/repo")).unwrap();
+        let surface = TerminalSurface::new(1, owner, None).summary();
+        hub.subscribe_output(&surface.session_key, "client", 0);
+        hub.publish(TerminalSurfaceEvent::Output {
+            session_key: surface.session_key.clone(),
+            sequence: 1,
+            data: "x".repeat(100_001).into(),
+        });
+        let pause = hub.output.lock()[&surface.session_key].1.clone();
+        let (done, receiver) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn({
+            let pause = pause.clone();
+            move || {
+                pause.wait();
+                done.send(()).unwrap();
+            }
+        });
+        assert!(receiver.recv_timeout(Duration::from_millis(30)).is_err());
+        // When
+        assert_eq!(hub.remove(&surface), subscribed);
+        // Then
+        let completed = receiver.recv_timeout(Duration::from_secs(1));
+        pause.set(false);
+        worker.join().unwrap();
+        completed.unwrap();
+        assert!(!hub.output.lock().contains_key(&surface.session_key));
+    }
+}

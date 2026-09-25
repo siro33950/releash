@@ -44,21 +44,12 @@ impl StateSubscriptionUsecase {
         let input_id = input_id.to_string();
         tokio::task::spawn_blocking(move || {
             let summary = terminal.get_summary(&owner).map_err(error)?;
-            let target_version = Version {
-                epoch: format!(
-                    "{}:{}",
-                    usecase.publisher.boot,
-                    summary.runtime_generation.value()
-                ),
-                sequence: summary.latest_sequence,
-            };
             let mut start_result = Ok(());
             let mut needs_snapshot = true;
             terminal.with_output_order(summary.runtime_generation.value(), &mut || {
                 let mut state = usecase.publisher.state.lock();
                 start_result = state
-                    .register_delta(&raw, target_version.clone(), OUTPUT_PENDING_LIMIT)
-                    .and_then(|()| state.needs_snapshot(&raw, version.as_ref()))
+                    .needs_snapshot(&raw, version.as_ref())
                     .map(|required| needs_snapshot = required);
                 if start_result.is_ok() && !needs_snapshot {
                     start_result = state.start(&client, &raw, version.as_ref());
@@ -244,6 +235,31 @@ impl TerminalSurfaceStateSink for StateSubscriptionPublisher {
         {
             log::error!("Terminal registration failed: {e}");
         }
+    }
+
+    fn remove(&self, surface: &TerminalSurfaceSummary) -> bool {
+        let mut routes = self.terminal_routes.lock();
+        let Some(target) = routes.get(&surface.session_key) else {
+            return false;
+        };
+        let mut state = self.state.lock();
+        let epoch = format!("{}:{}", self.boot, surface.runtime_generation.value());
+        if state
+            .current_version(target)
+            .is_none_or(|version| version.epoch != epoch)
+        {
+            return false;
+        }
+        if let Err(error) = state.unregister(target) {
+            log::error!("Terminal removal failed: {error}");
+            return false;
+        }
+        let mut inputs = self.terminal_inputs.lock();
+        inputs.retain(|(client, raw), _| raw != target || state.is_subscribed(client, raw));
+        let subscribed = inputs.keys().any(|(_, raw)| raw == target);
+        routes.remove(&surface.session_key);
+        self.changed.notify_waiters();
+        subscribed
     }
 
     fn publish(&self, event: TerminalSurfaceEvent) {

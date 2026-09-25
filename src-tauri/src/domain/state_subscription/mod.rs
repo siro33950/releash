@@ -202,6 +202,12 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
         Ok(())
     }
 
+    pub fn unregister(&mut self, target: &str) -> Result<(), SubscriptionError> {
+        let target = SubscriptionTarget::parse(target)?;
+        self.targets.remove(&target);
+        Ok(())
+    }
+
     pub fn open(&mut self, id: String) -> Result<(), SubscriptionError> {
         if id.is_empty() || id.len() > 128 {
             return Err(SubscriptionError::InvalidId);
@@ -337,13 +343,18 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
         );
         for client in self.clients.values_mut() {
             if let Some(subscription) = client.subscriptions.get_mut(&id) {
-                subscription.pending.clear();
-                subscription.sizes.clear();
-                subscription.pending_units = 0;
                 subscription.overflowed = true;
             }
         }
         Ok(())
+    }
+
+    pub fn is_subscribed(&self, client: &str, target: &str) -> bool {
+        SubscriptionTarget::parse(target).is_ok_and(|target| {
+            self.clients
+                .get(client)
+                .is_some_and(|client| client.subscriptions.contains_key(&target))
+        })
     }
 
     pub fn needs_snapshot(
@@ -432,6 +443,9 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
         let units = units.max(1);
         for client in self.clients.values_mut() {
             if let Some(subscription) = client.subscriptions.get_mut(&id) {
+                if subscription.overflowed {
+                    continue;
+                }
                 if subscription.pending_units.saturating_add(units)
                     > value.pending_limit.unwrap_or(0)
                 {
@@ -480,7 +494,9 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
             .into_iter()
             .flat_map(|client| client.subscriptions.iter())
             .filter(|(id, subscription)| {
-                let value = &self.targets[*id];
+                let Some(value) = self.targets.get(*id) else {
+                    return false;
+                };
                 subscription.overflowed
                     && value.snapshot.is_none()
                     && !value.resumable(subscription.sent.as_ref())
@@ -622,9 +638,11 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
         if let Some(client) = self.clients.get_mut(client) {
             for (id, subscription) in &mut client.subscriptions {
                 if subscription.pending.is_empty() && !subscription.overflowed {
-                    subscription
-                        .pending
-                        .push_back(Event::Bookmark(self.targets[id].version.clone()));
+                    if let Some(target) = self.targets.get(id) {
+                        subscription
+                            .pending
+                            .push_back(Event::Bookmark(target.version.clone()));
+                    }
                 }
             }
         }
@@ -636,8 +654,10 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
             let id = client.order.pop_front()?;
             client.order.push_back(id.clone());
             let subscription = client.subscriptions.get_mut(&id)?;
-            if subscription.overflowed {
-                let value = &self.targets[&id];
+            if subscription.overflowed && subscription.pending.is_empty() {
+                let Some(value) = self.targets.get(&id) else {
+                    continue;
+                };
                 if value.snapshot.is_none() && !value.resumable(subscription.sent.as_ref()) {
                     continue;
                 }

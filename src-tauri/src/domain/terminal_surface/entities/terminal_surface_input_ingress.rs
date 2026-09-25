@@ -59,6 +59,10 @@ impl TerminalSurfaceInputIngressRegistry {
         }
     }
 
+    pub fn remove(&mut self, session_key: &str) {
+        self.sessions.remove(session_key);
+    }
+
     fn active(
         &mut self,
         session_key: &str,

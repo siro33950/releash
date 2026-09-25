@@ -63,17 +63,19 @@ impl StateSubscriptionUsecase {
                 Delivery::Full,
             )
             .expect("unique target");
+        let terminal_inputs = Arc::new(Mutex::new(std::collections::HashMap::new()));
         Self {
             publisher: StateSubscriptionPublisher {
                 state: Arc::new(Mutex::new(state)),
                 changed: Arc::new(Notify::new()),
                 invalidated: tokio::sync::broadcast::channel(64).0,
                 terminal_routes: Default::default(),
+                terminal_inputs: terminal_inputs.clone(),
                 boot: uuid::Uuid::new_v4().to_string(),
             },
             timer,
             terminal: None,
-            terminal_inputs: Default::default(),
+            terminal_inputs,
             reads: None,
             history_paths: vec![],
             watchers: None,
@@ -364,6 +366,7 @@ pub(crate) struct StateSubscriptionPublisher {
     state: Arc<Mutex<Subscriptions<StateValue>>>,
     changed: Arc<Notify>,
     terminal_routes: Arc<Mutex<std::collections::HashMap<String, String>>>,
+    terminal_inputs: Arc<Mutex<std::collections::HashMap<(String, String), String>>>,
     boot: String,
     invalidated:
         tokio::sync::broadcast::Sender<crate::domain::state_subscription::StateChangeSource>,

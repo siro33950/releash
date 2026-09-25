@@ -64,6 +64,8 @@ pub struct TerminalSurfaceRuntimeGatewayFor {
     journal_enabled: bool,
     #[cfg(test)]
     snapshot_materialization_count: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    pub(crate) before_output_order: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 #[cfg(test)]
@@ -80,6 +82,8 @@ impl Default for TerminalSurfaceRuntimeGatewayFor {
             native_pty: NativePtySystem,
             journal_enabled: true,
             snapshot_materialization_count: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            before_output_order: Mutex::new(None),
         }
     }
 }
@@ -566,6 +570,8 @@ impl TerminalSurfaceRuntimeGatewayFor {
             native_pty: NativePtySystem,
             journal_enabled: true,
             snapshot_materialization_count: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            before_output_order: Mutex::new(None),
         }
     }
 
@@ -587,6 +593,8 @@ impl TerminalSurfaceRuntimeGatewayFor {
             journal_enabled,
             #[cfg(test)]
             snapshot_materialization_count: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            before_output_order: Mutex::new(None),
         }
     }
 
@@ -874,11 +882,11 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
         let active_count = {
             let mut registry = self.registry.lock();
             registry.insert(surface);
+            if let Some(sink) = &self.event_sink {
+                sink.initialize(&summary);
+            }
             registry.len()
         };
-        if let Some(sink) = &self.event_sink {
-            sink.initialize(&summary);
-        }
         crate::other::telemetry::set_active_pty_count(active_count as u64);
     }
 
@@ -945,6 +953,13 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
     }
 
     fn with_output_order(&self, runtime_generation: u64, visit: &mut dyn FnMut()) {
+        #[cfg(test)]
+        {
+            let before = self.before_output_order.lock().take();
+            if let Some(before) = before {
+                before();
+            }
+        }
         let order = self
             .runtimes
             .lock()
@@ -962,11 +977,21 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
 
     fn remove_surface(&self, runtime_generation: u64) -> Option<TerminalSurface> {
         self.runtimes.lock().remove(&runtime_generation);
-        let (removed, active_count) = {
+        let (removed, active_count, subscribed) = {
             let mut registry = self.registry.lock();
             let removed = registry.remove(runtime_generation);
-            (removed, registry.len())
+            let subscribed = removed.as_ref().is_some_and(|surface| {
+                self.event_sink
+                    .as_ref()
+                    .is_some_and(|sink| sink.remove(&surface.summary()))
+            });
+            (removed, registry.len(), subscribed)
         };
+        if !subscribed {
+            if let Some(surface) = &removed {
+                self.input_ingress.lock().remove(&surface.session_key);
+            }
+        }
         crate::other::telemetry::set_active_pty_count(active_count as u64);
         removed
     }

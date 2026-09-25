@@ -13,8 +13,12 @@ fn fixture() -> (
     Arc<TerminalSurfaceEventHub>,
     TerminalSurface,
 ) {
-    let gateway = Arc::new(TerminalSurfaceRuntimeGatewayFor::default());
     let hub = Arc::new(TerminalSurfaceEventHub::new());
+    let gateway = Arc::new(TerminalSurfaceRuntimeGatewayFor::new_with_event_sink(
+        std::path::PathBuf::new(),
+        hub.clone(),
+        false,
+    ));
     let owner = TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/repo")).unwrap();
     let surface = TerminalSurface::new(1, owner, None);
     gateway.insert_surface(surface.clone());
@@ -463,4 +467,122 @@ async fn test_terminal購読_出力と寸法の逆転は古い寸法を捨てず
     assert!(
         matches!(snapshot.as_ref(), StateValue::Terminal(TerminalSurfaceStreamItem::Snapshot(value)) if value.checkpoint.cols == 120 && value.checkpoint.rows == 30)
     );
+}
+
+#[tokio::test]
+async fn test_terminal削除_経路と履歴を解放し購読と入力は明示停止まで保つ() {
+    // Given
+    let (subscriptions, gateway, hub, surface) = fixture();
+    let target = SubscriptionTarget::Terminal(surface.owner.clone()).to_string();
+    let stream = subscriptions.open("client".into()).unwrap();
+    tokio::pin!(stream);
+    stream.next().await;
+    // When
+    for generation in 1..=10 {
+        let surface = TerminalSurface::new(generation, surface.owner.clone(), None);
+        gateway.insert_surface(surface.clone());
+        subscriptions
+            .start_terminal("client", &target, None, "input")
+            .await
+            .unwrap();
+        stream.next().await;
+        stream.next().await;
+        hub.publish(TerminalSurfaceEvent::Output {
+            session_key: surface.session_key.clone(),
+            data: "retained".into(),
+            sequence: 1,
+        });
+        hub.publish(TerminalSurfaceEvent::Exit {
+            session_key: surface.session_key.clone(),
+            runtime_generation: generation,
+            exit_code: Some(0),
+            sequence: 1,
+        });
+        gateway.remove_surface(generation).unwrap();
+        // Then
+        assert!(subscriptions.publisher.terminal_routes.lock().is_empty());
+        assert_eq!(subscriptions.terminal_inputs.lock().len(), 1);
+        let mut state = subscriptions.publisher.state.lock();
+        assert!(state.current_version(&target).is_none());
+        state.bookmark("client");
+        assert!(state.snapshot_requests("client").is_empty());
+        drop(state);
+        assert!(
+            matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Change(_, _, value))) if matches!(value.as_ref(), StateValue::Terminal(TerminalSurfaceStreamItem::Output { .. })))
+        );
+        assert!(
+            matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Change(_, _, value))) if matches!(value.as_ref(), StateValue::Terminal(TerminalSurfaceStreamItem::Exit { exit_code: Some(0), .. })))
+        );
+        assert!(subscriptions
+            .publisher
+            .state
+            .lock()
+            .is_subscribed("client", &target));
+        assert_eq!(subscriptions.terminal_inputs.lock().len(), 1);
+        subscriptions.stop("client", &target).unwrap();
+        assert!(subscriptions
+            .publisher
+            .state
+            .lock()
+            .active_targets()
+            .is_empty());
+        assert!(subscriptions.terminal_inputs.lock().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn test_terminal購読開始_古いsummary取得後の再作成でepochを巻き戻さない() {
+    // Given
+    let (subscriptions, gateway, _, surface) = fixture();
+    let target = SubscriptionTarget::Terminal(surface.owner.clone()).to_string();
+    let stream = subscriptions.open("client".into()).unwrap();
+    tokio::pin!(stream);
+    stream.next().await;
+    let old_version = subscriptions
+        .publisher
+        .state
+        .lock()
+        .current_version(&target)
+        .unwrap();
+    let recreated = TerminalSurface::new(2, surface.owner.clone(), None);
+    let replacement = recreated.clone();
+    let gateway_for_replacement = gateway.clone();
+    *gateway.before_output_order.lock() = Some(Box::new(move || {
+        gateway_for_replacement.remove_surface(1).unwrap();
+        gateway_for_replacement.insert_surface(replacement);
+    }));
+    // When
+    subscriptions
+        .start_terminal("client", &target, Some(&old_version), "new-input")
+        .await
+        .unwrap();
+    // Then
+    let Some(StateSubscriptionEvent::Item(_, Event::Snapshot(version, value))) =
+        stream.next().await
+    else {
+        panic!("new runtime snapshot");
+    };
+    assert_ne!(version.epoch, old_version.epoch);
+    assert_eq!(
+        version,
+        subscriptions
+            .publisher
+            .state
+            .lock()
+            .current_version(&target)
+            .unwrap()
+    );
+    assert!(
+        matches!(value.as_ref(), StateValue::Terminal(TerminalSurfaceStreamItem::Snapshot(surface)) if surface.runtime_generation == recreated.runtime_generation)
+    );
+    subscriptions.publisher.remove(&surface.summary());
+    assert_eq!(
+        subscriptions
+            .publisher
+            .state
+            .lock()
+            .current_version(&target),
+        Some(version)
+    );
+    assert_eq!(subscriptions.publisher.terminal_routes.lock().len(), 1);
 }

@@ -157,3 +157,32 @@ test("購読fixtureは初回と更新のpayloadを単発commandなしで配信�
     expect(fixture.clientRequests).toEqual([]);
     expect(await page.evaluate(() => window.__RELEASH_BACKEND__!.invocations.map(({cmd}) => cmd))).toEqual(["get_client_endpoint", "validate_daemon_connection"]);
 });
+
+test("同一terminalの再購読で新しいattachmentのsnapshotと差分を受け取る", async ({ page }) => {
+	const mock = await setupTauriMock(page, buildMockConfig({
+		start_state_subscription: { __mockTerminalAttachment: true },
+		stop_state_subscription: null,
+	}));
+	await page.goto("/tests/helpers/client-streams.html");
+	const result = await page.evaluate(async () => {
+		const { subscribeTerminalState } = await import("/src/lib/client.ts");
+		const owner = { kind: "workspace" as const, workspacePath: "/repo" };
+		const first: string[] = [];
+		const second: string[] = [];
+		const stopFirst = await subscribeTerminalState({ owner, attachmentId: "first" }, item => first.push(item.type), () => {});
+		let received: () => void = () => {};
+		const output = new Promise<void>(resolve => { received = resolve; });
+		const stopSecond = await subscribeTerminalState({ owner, attachmentId: "second" }, item => {
+			second.push(item.type);
+			if (item.type === "output") received();
+		}, () => {});
+		await window.__releashTerminalEvent("first", { type: "output", session_key: "terminal", data: "stale", sequence: 1 });
+		await window.__releashTerminalEvent("second", { type: "output", session_key: "terminal", data: "new", sequence: 2 });
+		await output;
+		await stopFirst();
+		await stopSecond();
+		return { first, second };
+	});
+	expect(result).toEqual({ first: ["snapshot", "snapshot", "output"], second: ["snapshot", "output"] });
+	expect(mock.clientRequests.filter(request => request.command === "start_state_subscription").map(request => request.args.attachmentId)).toEqual(["first", "second"]);
+});
