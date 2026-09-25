@@ -149,9 +149,10 @@ fn collect_diff_stats(diff: &git2::Diff) -> Result<HashMap<String, (u32, u32)>, 
 
 #[cfg(test)]
 pub(crate) fn get_status_diff_stats(repo_path: &str) -> Result<Vec<FileDiffStat>, RepositoryError> {
-    crate::other::telemetry::measure_result(crate::other::telemetry::HotPath::DiffStats, || {
-        get_status_diff_stats_inner(repo_path)
-    })
+    crate::infrastructure::telemetry::metrics::measure_result(
+        crate::infrastructure::telemetry::metrics::HotPath::DiffStats,
+        || get_status_diff_stats_inner(repo_path),
+    )
 }
 
 #[cfg(test)]
@@ -212,14 +213,19 @@ fn collect_status_diff_stats(repo: &Repository) -> Result<Vec<FileDiffStat>, Rep
 pub(crate) fn get_repository_status_scan(
     repo_path: &str,
 ) -> Result<RepositoryStatusScan, RepositoryError> {
-    let result = crate::other::telemetry::measure_result(
-        crate::other::telemetry::HotPath::GitStatusScan,
-        || get_repository_status_scan_inner(repo_path),
-    );
-    if result.is_ok() {
-        crate::other::telemetry::record_first_repo_snapshot_ready();
-    }
-    result
+    crate::common::telemetry::observe_result(
+        || {
+            crate::infrastructure::telemetry::metrics::measure_result(
+                crate::infrastructure::telemetry::metrics::HotPath::GitStatusScan,
+                || get_repository_status_scan_inner(repo_path),
+            )
+        },
+        |result, _| {
+            if result.is_ok() {
+                crate::infrastructure::telemetry::metrics::record_first_repo_snapshot_ready();
+            }
+        },
+    )
 }
 
 fn get_repository_status_scan_inner(
@@ -231,8 +237,8 @@ fn get_repository_status_scan_inner(
         .iter()
         .filter(|entry| entry.worktree_status != "ignored")
         .count();
-    let diff_stats = crate::other::telemetry::measure_result(
-        crate::other::telemetry::HotPath::DiffStats,
+    let diff_stats = crate::infrastructure::telemetry::metrics::measure_result(
+        crate::infrastructure::telemetry::metrics::HotPath::DiffStats,
         || collect_status_diff_stats(&repo),
     )?;
 
@@ -274,36 +280,41 @@ mod status_gateway_tests {
 
     #[test]
     fn first_repo_snapshot_records_only_first_successful_status_scan() {
-        let _guard = crate::other::telemetry::lock_test_telemetry();
-        crate::other::telemetry::reset_test_metrics();
-        crate::other::telemetry::set_performance_configured(true);
-        crate::other::telemetry::set_performance_enabled(true);
-        crate::other::telemetry::set_startup_origin(
+        let _guard = crate::infrastructure::telemetry::metrics::lock_test_telemetry();
+        crate::infrastructure::telemetry::metrics::reset_test_metrics();
+        crate::infrastructure::telemetry::metrics::set_performance_configured(true);
+        crate::infrastructure::telemetry::metrics::set_performance_enabled(true);
+        crate::infrastructure::telemetry::metrics::set_startup_origin(
             std::time::Instant::now() - std::time::Duration::from_millis(20),
         );
 
         let invalid = tempfile::TempDir::new().unwrap();
         assert!(get_repository_status_scan(invalid.path().to_str().unwrap()).is_err());
-        assert!(!crate::other::telemetry::first_repo_snapshot_recorded_for_tests());
-        assert!(crate::other::telemetry::test_metric_records()
-            .iter()
-            .all(|record| record.name != "releash.startup.duration_ms"));
+        assert!(
+            !crate::infrastructure::telemetry::metrics::first_repo_snapshot_recorded_for_tests()
+        );
+        assert!(
+            crate::infrastructure::telemetry::metrics::test_metric_records()
+                .iter()
+                .all(|record| record.name != "releash.startup.duration_ms")
+        );
 
         let (dir, repo) = create_test_repo();
         create_initial_commit(&repo);
         get_repository_status_scan(dir.path().to_str().unwrap()).unwrap();
         get_repository_status_scan(dir.path().to_str().unwrap()).unwrap();
 
-        let startup_records: Vec<_> = crate::other::telemetry::test_metric_records()
-            .into_iter()
-            .filter(|record| record.name == "releash.startup.duration_ms")
-            .collect();
+        let startup_records: Vec<_> =
+            crate::infrastructure::telemetry::metrics::test_metric_records()
+                .into_iter()
+                .filter(|record| record.name == "releash.startup.duration_ms")
+                .collect();
         assert_eq!(startup_records.len(), 1);
         assert!(startup_records[0].value >= 20.0);
         assert!(startup_records[0].attributes.iter().any(|(key, value)| {
             key == "releash.operation" && value == "startup.first_repo_snapshot_ready"
         }));
-        crate::other::telemetry::reset_test_metrics();
+        crate::infrastructure::telemetry::metrics::reset_test_metrics();
     }
 
     #[test]

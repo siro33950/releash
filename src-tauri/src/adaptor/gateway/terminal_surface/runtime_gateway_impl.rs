@@ -44,7 +44,8 @@ pub(crate) struct AttachedTerminalRuntime {
     checkpoint_journal: Option<Arc<Mutex<IncrementalCheckpointJournal>>>,
     checkpoint_store: Option<TerminalCheckpointFileStore>,
     checkpoint_io: Option<Arc<tokio::sync::Mutex<()>>>,
-    pending_input_traces: Arc<Mutex<VecDeque<crate::other::telemetry::TerminalInputTraceKey>>>,
+    pending_input_traces:
+        Arc<Mutex<VecDeque<crate::infrastructure::telemetry::metrics::TerminalInputTraceKey>>>,
 }
 
 #[cfg(test)]
@@ -319,13 +320,14 @@ struct TerminalOutputReaderContext {
     checkpoint_journal: Option<Arc<Mutex<IncrementalCheckpointJournal>>>,
     journal_enabled: bool,
     first_provider_byte_started_at: Instant,
-    pending_input_traces: Arc<Mutex<VecDeque<crate::other::telemetry::TerminalInputTraceKey>>>,
+    pending_input_traces:
+        Arc<Mutex<VecDeque<crate::infrastructure::telemetry::metrics::TerminalInputTraceKey>>>,
 }
 
 enum TerminalOutputCommand {
     Data {
         data: String,
-        input_traces: Vec<crate::other::telemetry::TerminalInputTraceKey>,
+        input_traces: Vec<crate::infrastructure::telemetry::metrics::TerminalInputTraceKey>,
     },
     Exit(Option<i32>),
 }
@@ -335,10 +337,10 @@ const OUTPUT_READER_QUEUE_CAPACITY: usize = 256;
 fn publish_terminal_output(
     context: &TerminalOutputReaderContext,
     data: String,
-    input_traces: Vec<crate::other::telemetry::TerminalInputTraceKey>,
+    input_traces: Vec<crate::infrastructure::telemetry::metrics::TerminalInputTraceKey>,
 ) {
     for trace in &input_traces {
-        crate::other::telemetry::record_terminal_input_model_apply(trace);
+        crate::infrastructure::telemetry::metrics::record_terminal_input_model_apply(trace);
     }
     let data: Arc<str> = Arc::from(data);
     let published = context
@@ -382,7 +384,7 @@ fn publish_terminal_output(
         });
     if published.is_some() {
         for trace in &input_traces {
-            crate::other::telemetry::record_terminal_input_event_publish(trace);
+            crate::infrastructure::telemetry::metrics::record_terminal_input_event_publish(trace);
         }
     }
 }
@@ -515,8 +517,8 @@ fn spawn_output_reader(mut output: NativePtyOutput, context: TerminalOutputReade
                 Ok(n) => {
                     if !first_provider_byte_recorded {
                         first_provider_byte_recorded = true;
-                        crate::other::telemetry::record_terminal_launch(
-                            crate::other::telemetry::TerminalLaunch::FirstProviderByte,
+                        crate::infrastructure::telemetry::metrics::record_terminal_launch(
+                            crate::infrastructure::telemetry::metrics::TerminalLaunch::FirstProviderByte,
                             first_provider_byte_started_at.elapsed(),
                         );
                     }
@@ -524,7 +526,7 @@ fn spawn_output_reader(mut output: NativePtyOutput, context: TerminalOutputReade
                         let input_traces =
                             pending_input_traces.lock().drain(..).collect::<Vec<_>>();
                         for trace in &input_traces {
-                            crate::other::telemetry::record_terminal_input_output_read(trace);
+                            crate::infrastructure::telemetry::metrics::record_terminal_input_output_read(trace);
                         }
                         if sender
                             .send(TerminalOutputCommand::Data {
@@ -621,7 +623,7 @@ impl TerminalSurfaceRuntimeGatewayFor {
         &self,
         session_key: &str,
         data: &str,
-        input_trace: Option<crate::other::telemetry::TerminalInputTraceKey>,
+        input_trace: Option<crate::infrastructure::telemetry::metrics::TerminalInputTraceKey>,
     ) -> Result<(), TerminalSurfaceGatewayError> {
         let runtime_generation = {
             let registry = self.registry.lock();
@@ -642,7 +644,7 @@ impl TerminalSurfaceRuntimeGatewayFor {
             TerminalSurfaceGatewayError::new(format!("PTY {} not found", runtime_generation))
         })?;
         if let Some(trace) = &input_trace {
-            crate::other::telemetry::record_terminal_input_writer_enqueue(
+            crate::infrastructure::telemetry::metrics::record_terminal_input_writer_enqueue(
                 trace.attachment_id(),
                 trace.sequence(),
             );
@@ -747,8 +749,8 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
                 )));
             }
         }
-        crate::other::telemetry::record_terminal_launch(
-            crate::other::telemetry::TerminalLaunch::ChildEnvironment,
+        crate::infrastructure::telemetry::metrics::record_terminal_launch(
+            crate::infrastructure::telemetry::metrics::TerminalLaunch::ChildEnvironment,
             child_environment.elapsed(),
         );
         let pty_open_and_spawn = Instant::now();
@@ -769,8 +771,8 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
                 }),
             })
             .map_err(TerminalSurfaceGatewayError::new)?;
-        crate::other::telemetry::record_terminal_launch(
-            crate::other::telemetry::TerminalLaunch::PtyOpenAndSpawn,
+        crate::infrastructure::telemetry::metrics::record_terminal_launch(
+            crate::infrastructure::telemetry::metrics::TerminalLaunch::PtyOpenAndSpawn,
             pty_open_and_spawn.elapsed(),
         );
 
@@ -887,7 +889,7 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
             }
             registry.len()
         };
-        crate::other::telemetry::set_active_pty_count(active_count as u64);
+        crate::infrastructure::telemetry::metrics::set_active_pty_count(active_count as u64);
     }
 
     fn start_output_reader(
@@ -992,7 +994,7 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
                 self.input_ingress.lock().remove(&surface.session_key);
             }
         }
-        crate::other::telemetry::set_active_pty_count(active_count as u64);
+        crate::infrastructure::telemetry::metrics::set_active_pty_count(active_count as u64);
         removed
     }
 
@@ -1051,7 +1053,7 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
             let result = self.write_runtime(
                 session_key,
                 &ready[index].data,
-                crate::other::telemetry::terminal_input_trace_key(
+                crate::infrastructure::telemetry::metrics::terminal_input_trace_key(
                     attachment_id,
                     ready[index].sequence,
                 ),

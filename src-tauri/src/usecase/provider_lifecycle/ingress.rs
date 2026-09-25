@@ -70,6 +70,7 @@ impl From<ProviderLifecycleUsecaseError> for ProviderLifecycleIngressUsecaseErro
 }
 
 pub(crate) struct ProviderLifecycleIngressUsecase {
+    identities: Arc<dyn crate::domain::identity::IdentityIssuer>,
     lifecycle: Arc<ProviderLifecycleUsecase>,
     sessions: Arc<AgentSessionUsecase>,
     hook_health: Arc<ProviderHookHealthUsecase>,
@@ -97,6 +98,7 @@ pub(crate) trait ProviderLifecycleIngressPort: Send + Sync {
 
 impl ProviderLifecycleIngressUsecase {
     pub(crate) fn new(
+        identities: Arc<dyn crate::domain::identity::IdentityIssuer>,
         lifecycle: Arc<ProviderLifecycleUsecase>,
         sessions: Arc<AgentSessionUsecase>,
         hook_health: Arc<ProviderHookHealthUsecase>,
@@ -105,6 +107,7 @@ impl ProviderLifecycleIngressUsecase {
         change_notifier: Arc<dyn AgentSessionChangeNotifier>,
     ) -> Self {
         Self {
+            identities,
             lifecycle,
             sessions,
             hook_health,
@@ -176,7 +179,7 @@ impl ProviderLifecycleIngressUsecase {
                 ) {
                     let caller_request_id = format!(
                         "provider-session-started.{binding_id}.{}",
-                        crate::other::id::unique_simple_id()
+                        self.identities.issue()
                     );
                     self.hook_health
                         .record_session_started(provider, slot_id.as_str(), &caller_request_id)
@@ -274,7 +277,7 @@ impl ProviderLifecycleIngressUsecase {
                 activity,
                 &format!(
                     "{caller_request_id_prefix}.{binding_id}.{}",
-                    crate::other::id::unique_simple_id()
+                    self.identities.issue()
                 ),
             )
             .await
@@ -309,7 +312,7 @@ impl ProviderLifecycleIngressUsecase {
         ) {
             let caller_request_id = format!(
                 "provider-hook-unavailable.{binding_id}.{}",
-                crate::other::id::unique_simple_id()
+                self.identities.issue()
             );
             self.hook_health
                 .record_unavailable(provider, slot_id.as_str(), reason, &caller_request_id)

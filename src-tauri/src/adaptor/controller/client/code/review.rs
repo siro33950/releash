@@ -2,10 +2,10 @@
 
 use super::run_blocking;
 use crate::adaptor::controller::state::AppState;
+use crate::adaptor::presenter::error::AppError;
 use crate::adaptor::protocol::code::{
     ReviewFileViewInput, ReviewGroupActionInput, ReviewSnapshotInput, ReviewTargetInput,
 };
-use crate::other::AppError;
 use crate::usecase::code_dto::{ReviewFileViewDto, ReviewSnapshotDto};
 use crate::usecase::review_usecase::{ReviewTarget, ReviewViewport};
 

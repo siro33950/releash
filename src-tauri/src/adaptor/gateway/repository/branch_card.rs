@@ -10,7 +10,7 @@ use crate::adaptor::gateway::shared::git_operation;
 use crate::adaptor::gateway::shared::git_operation::{
     detect_default_branch, get_branch_name_for_repo,
 };
-use crate::domain::operation_context::OperationStopped;
+use crate::common::operation_context::OperationStopped;
 use crate::domain::repository::{normalize_repo_path, RepositoryError};
 use crate::infrastructure::git::client;
 use crate::usecase::repository_dto::BranchCardDto;

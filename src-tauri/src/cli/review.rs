@@ -274,7 +274,7 @@ fn parse_optional_unread(value: Option<String>) -> Result<Option<bool>, CliError
 
 fn review_error_to_cli_error(error: ReviewError) -> CliError {
     match error {
-        ReviewError::Stopped(error) => CliError::Other(error.to_string()),
+        ReviewError::Technical(error) => CliError::Other(error.to_string()),
         ReviewError::InvalidInput(msg) => CliError::InvalidInput(msg),
         ReviewError::NotFound(msg) => CliError::NotFound(msg),
         ReviewError::AlreadyResolved(msg) | ReviewError::PermissionDenied(msg) => {

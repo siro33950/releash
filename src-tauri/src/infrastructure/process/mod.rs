@@ -6,3 +6,5 @@ pub(crate) mod executable_probe;
 pub(crate) mod parent_lifetime;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub(crate) mod search_path;
+
+pub(crate) mod output;

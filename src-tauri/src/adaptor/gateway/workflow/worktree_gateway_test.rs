@@ -214,8 +214,8 @@ fn test_隔離生成確認_同名登録でもpathまたはrepositoryが違えば
 
 #[test]
 fn test_隔離worktree_全入口で期限切れと取り消しの分類を保持する() {
+    use crate::common::operation_context::{Deadline, OperationContext};
     use crate::domain::failure::{ClassifiedFailure, FailureKind};
-    use crate::domain::operation_context::{Deadline, OperationContext};
     use std::sync::Arc;
     use std::time::Instant;
     // Given
@@ -235,7 +235,7 @@ fn test_隔離worktree_全入口で期限切れと取り消しの分類を保持
         ),
     ] {
         // When / Then
-        crate::other::operation_context::sync_scope(context, || {
+        crate::common::operation_context::sync_scope(context, || {
             assert_eq!(
                 gateway.repository_root(&root).unwrap_err().failure_kind(),
                 expected
@@ -275,7 +275,7 @@ fn test_managed_worktree解決_各操作の停止で別repositoryへ進まない
 
 #[test]
 fn test_隔離生成確認_validateの停止を後続のパス検証エラーへ変えない() {
-    use crate::domain::operation_context::{Cancellation, OperationContext, OperationStopped};
+    use crate::common::operation_context::{Cancellation, OperationContext};
     use std::sync::atomic::{AtomicUsize, Ordering};
     struct CancelAfterValidate(AtomicUsize);
     impl Cancellation for CancelAfterValidate {
@@ -296,14 +296,19 @@ fn test_隔離生成確認_validateの停止を後続のパス検証エラーへ
         .into_owned();
     let cancellation = Arc::new(CancelAfterValidate(AtomicUsize::new(0)));
     // When
-    let result = crate::other::operation_context::sync_scope(
+    let result = crate::common::operation_context::sync_scope(
         OperationContext::new(None, cancellation.clone()),
         || gateway.is_created(&root, &worktree),
     );
     // Then
     assert!(matches!(
         result,
-        Err(WorkflowError::Stopped(OperationStopped::Cancelled))
+        Err(WorkflowError::Technical(
+            crate::domain::failure::TechnicalFailure {
+                kind: crate::domain::failure::FailureKind::Cancelled,
+                ..
+            }
+        ))
     ));
     assert_eq!(cancellation.0.load(Ordering::SeqCst), 6);
 }

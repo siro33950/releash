@@ -1,5 +1,5 @@
 use super::*;
-use crate::domain::operation_context::{Deadline, OperationContext};
+use crate::common::operation_context::{Deadline, OperationContext};
 use std::time::Instant;
 
 #[test]
@@ -15,7 +15,7 @@ fn test_busy待ち_呼出期限より早い資源側の2秒で終了する() {
     let context = OperationContext::default()
         .with_deadline(Deadline::new(Instant::now() + Duration::from_secs(10)));
     let started = Instant::now();
-    let error = crate::other::operation_context::sync_scope(context.clone(), || {
+    let error = crate::common::operation_context::sync_scope(context.clone(), || {
         reader.query_row("SELECT n FROM value", [], |row| row.get::<_, i64>(0))
     })
     .unwrap_err();

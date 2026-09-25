@@ -16,6 +16,7 @@ pub struct GetOrSpawnTerminalOutcome {
 
 #[allow(clippy::too_many_arguments)]
 fn spawn_reserved<G: TerminalSurfaceGateway + ?Sized>(
+    performance: &dyn crate::usecase::telemetry::PerformanceOutput,
     manager: &G,
     reservation: TerminalSurfaceSpawnReservation,
     rows: u16,
@@ -64,9 +65,8 @@ fn spawn_reserved<G: TerminalSurfaceGateway + ?Sized>(
         TerminalSurface::with_checkpoint(runtime_generation, owner, label, initial_checkpoint);
     let surface_summary = surface.summary();
     manager.insert_surface(surface);
-    let output_reader_ready = crate::other::telemetry::start_terminal_launch_phase(
-        crate::other::telemetry::TerminalLaunch::OutputReaderReady,
-    );
+    let output_reader_ready = performance
+        .start_terminal_launch_phase(crate::usecase::telemetry::TerminalLaunch::OutputReaderReady);
     if let Err(error) = manager.start_output_reader(runtime_generation) {
         cleanup_failed_spawn(manager, runtime_generation);
         manager.rollback_spawn_slot(&reservation);
@@ -131,6 +131,7 @@ fn cleanup_failed_spawn<G: TerminalSurfaceGateway + ?Sized>(manager: &G, runtime
 #[allow(clippy::too_many_arguments)]
 #[cfg(test)]
 pub fn get_or_spawn<G: TerminalSurfaceGateway + ?Sized>(
+    performance: &dyn crate::usecase::telemetry::PerformanceOutput,
     manager: &G,
     rows: u16,
     cols: u16,
@@ -138,11 +139,12 @@ pub fn get_or_spawn<G: TerminalSurfaceGateway + ?Sized>(
     owner: TerminalSurfaceOwner,
     label: Option<String>,
 ) -> Result<GetOrSpawnTerminalOutcome, UsecaseError> {
-    get_or_spawn_with_startup(manager, rows, cols, cwd, owner, label, None)
+    get_or_spawn_with_startup(performance, manager, rows, cols, cwd, owner, label, None)
 }
 
 #[allow(clippy::too_many_arguments)]
 pub fn get_or_spawn_with_startup<G: TerminalSurfaceGateway + ?Sized>(
+    performance: &dyn crate::usecase::telemetry::PerformanceOutput,
     manager: &G,
     rows: u16,
     cols: u16,
@@ -178,8 +180,8 @@ pub fn get_or_spawn_with_startup<G: TerminalSurfaceGateway + ?Sized>(
                 continue;
             }
         };
-        let checkpoint_lookup = crate::other::telemetry::start_terminal_launch_phase(
-            crate::other::telemetry::TerminalLaunch::CheckpointLookup,
+        let checkpoint_lookup = performance.start_terminal_launch_phase(
+            crate::usecase::telemetry::TerminalLaunch::CheckpointLookup,
         );
         let restored_terminal_surface = match manager.load_terminal_checkpoint(&session_key) {
             Ok(checkpoint) => checkpoint,
@@ -192,6 +194,7 @@ pub fn get_or_spawn_with_startup<G: TerminalSurfaceGateway + ?Sized>(
         };
         checkpoint_lookup.finish();
         let surface = spawn_reserved(
+            performance,
             manager,
             reservation,
             rows,
@@ -210,6 +213,7 @@ pub fn get_or_spawn_with_startup<G: TerminalSurfaceGateway + ?Sized>(
 
 #[allow(clippy::too_many_arguments)]
 pub fn get_or_spawn_with_process<G: TerminalSurfaceGateway + ?Sized>(
+    performance: &dyn crate::usecase::telemetry::PerformanceOutput,
     manager: &G,
     rows: u16,
     cols: u16,
@@ -255,8 +259,8 @@ pub fn get_or_spawn_with_process<G: TerminalSurfaceGateway + ?Sized>(
                 continue;
             }
         };
-        let checkpoint_lookup = crate::other::telemetry::start_terminal_launch_phase(
-            crate::other::telemetry::TerminalLaunch::CheckpointLookup,
+        let checkpoint_lookup = performance.start_terminal_launch_phase(
+            crate::usecase::telemetry::TerminalLaunch::CheckpointLookup,
         );
         let restored_terminal_surface = match manager.load_terminal_checkpoint(&session_key) {
             Ok(checkpoint) => checkpoint,
@@ -269,6 +273,7 @@ pub fn get_or_spawn_with_process<G: TerminalSurfaceGateway + ?Sized>(
         };
         checkpoint_lookup.finish();
         let surface = spawn_reserved(
+            performance,
             manager,
             reservation,
             rows,

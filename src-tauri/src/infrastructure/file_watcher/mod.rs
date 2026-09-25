@@ -82,7 +82,7 @@ impl FileWatcherManager {
             return false;
         };
         // debouncer の drop はブロックし得るため sessions ロックの外・別スレッドで行う（#1641）
-        crate::other::dispose::dispose_in_background("file-watcher-dispose", session);
+        crate::infrastructure::dispose::dispose_in_background("file-watcher-dispose", session);
         true
     }
 }

@@ -300,6 +300,7 @@ pub(crate) fn compose_agent_sessions(
     let execution_tree_stops = Arc::new(DeferredProviderExecutionTreeStopTransaction::new());
     let execution_tree_registrations = Arc::new(DeferredStartedExecutionTreeRegistrar::new());
     let lifecycle_ingress = Arc::new(ProviderLifecycleIngressUsecase::new(
+        std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
         provider_lifecycle.clone(),
         sessions.clone(),
         hook_health.clone(),
@@ -346,6 +347,7 @@ pub(crate) fn compose_agent_sessions(
         input.terminal.clone(),
     );
     let launch = Arc::new(AgentSessionLaunchUsecase::new(
+        std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
         sessions.clone(),
         provider_lifecycle.clone(),
         provider_runtime.clone(),
@@ -354,6 +356,7 @@ pub(crate) fn compose_agent_sessions(
         execution_tree_registrations.clone(),
     ));
     let lifecycle = Arc::new(AgentSessionLifecycleUsecase::new(
+        std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
         sessions.clone(),
         provider_lifecycle.clone(),
         provider_runtime,
@@ -363,7 +366,11 @@ pub(crate) fn compose_agent_sessions(
     ));
     let query: Arc<dyn AgentSessionQueryService> =
         Arc::new(LocalAgentSessionQueryService::new(input.store.clone()));
-    let read = Arc::new(AgentSessionReadUsecase::new(query, lifecycle.clone()));
+    let read = Arc::new(AgentSessionReadUsecase::new(
+        std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
+        query,
+        lifecycle.clone(),
+    ));
     let initial_instruction = Arc::new(AgentSessionInitialInstructionUsecase::new(
         sessions.clone(),
         input.terminal.clone(),

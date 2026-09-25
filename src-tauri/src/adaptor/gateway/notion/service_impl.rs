@@ -90,8 +90,8 @@ fn send_with_retry(
                 .and_then(|value| value.parse::<u64>().ok())
                 .unwrap_or(1)
                 .min(60);
-            crate::other::operation_context::sleep(
-                &crate::other::operation_context::current(),
+            crate::common::operation_context::sleep(
+                &crate::common::operation_context::current(),
                 std::time::Duration::from_secs(retry_after),
             )?;
             retries += 1;
@@ -171,7 +171,7 @@ fn validate_config(config: &NotionRepoConfig) -> Result<NotionValidationResult, 
     let url = format!("{NOTION_BASE_URL}/databases/{}", config.database_id);
     let resp = match send(client.get(&url)) {
         Ok(resp) => resp,
-        Err(error @ NotionError::Stopped(_)) => return Err(error),
+        Err(error @ NotionError::Technical(_)) => return Err(error),
         Err(_) => return Ok(empty_validation_result(NotionConfigStatus::NetworkError)),
     };
     let status = classify_validation_status(resp.status());
@@ -189,7 +189,7 @@ fn validate_config(config: &NotionRepoConfig) -> Result<NotionValidationResult, 
     let properties =
         match validation_properties(&json, |id| fetch_data_source_properties(&client, id)) {
             Ok(properties) => properties,
-            Err(error @ NotionError::Stopped(_)) => return Err(error),
+            Err(error @ NotionError::Technical(_)) => return Err(error),
             Err(_) => return Ok(empty_validation_result(NotionConfigStatus::NetworkError)),
         };
     Ok(NotionValidationResult {
@@ -617,27 +617,28 @@ impl NotionResponse {
     }
 }
 fn send(request: reqwest::RequestBuilder) -> Result<NotionResponse, NotionError> {
-    let context = crate::other::operation_context::with_timeout(REQUEST_TIMEOUT);
-    context.check(std::time::Instant::now())?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|error| NotionError::RequestFailed(error.to_string()))?;
     runtime
-        .block_on(crate::other::operation_context::wait(&context, async {
-            let response = request.send().await?;
-            let status = response.status();
-            let headers = response.headers().clone();
-            let body = response.bytes().await?.to_vec();
-            Ok::<_, reqwest::Error>(NotionResponse {
-                status,
-                headers,
-                body,
-            })
-        }))?
+        .block_on(crate::common::operation_context::timeout(
+            REQUEST_TIMEOUT,
+            async {
+                let response = request.send().await?;
+                let status = response.status();
+                let headers = response.headers().clone();
+                let body = response.bytes().await?.to_vec();
+                Ok::<_, reqwest::Error>(NotionResponse {
+                    status,
+                    headers,
+                    body,
+                })
+            },
+        ))?
         .map_err(|error| {
             if error.is_timeout() {
-                NotionError::Stopped(crate::domain::operation_context::OperationStopped::Expired)
+                NotionError::from(crate::common::operation_context::OperationStopped::Expired)
             } else {
                 NotionError::RequestFailed(error.to_string())
             }

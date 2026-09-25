@@ -34,5 +34,7 @@ pub(crate) mod desktop_client;
 #[cfg(feature = "desktop")]
 pub(crate) mod cli_install;
 
+pub(crate) mod identity;
+pub(crate) mod state_subscription_reads;
 pub(crate) mod subscription_timer;
 pub(crate) mod work_queue;

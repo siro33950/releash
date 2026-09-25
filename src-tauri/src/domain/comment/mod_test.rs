@@ -6,11 +6,17 @@ fn test_失敗分類_review_error_理由に対応する() {
     // Given
     let cases = [
         (
-            ReviewError::Stopped(crate::domain::operation_context::OperationStopped::Expired),
+            ReviewError::Technical(crate::domain::failure::TechnicalFailure {
+                kind: crate::domain::failure::FailureKind::Expired,
+                message: "Operation deadline exceeded".into(),
+            }),
             F::Expired,
         ),
         (
-            ReviewError::Stopped(crate::domain::operation_context::OperationStopped::Cancelled),
+            ReviewError::Technical(crate::domain::failure::TechnicalFailure {
+                kind: crate::domain::failure::FailureKind::Cancelled,
+                message: "Operation cancelled".into(),
+            }),
             F::Cancelled,
         ),
         (ReviewError::InvalidInput("reason".into()), F::InvalidInput),
@@ -34,13 +40,20 @@ fn test_失敗分類_review_error_理由に対応する() {
 
 #[test]
 fn test_review停止_詳細コードと失敗分類が一致する() {
-    use crate::domain::operation_context::OperationStopped;
+    use crate::domain::failure::{FailureKind, TechnicalFailure};
     // Given
     for (stopped, code) in [
-        (OperationStopped::Expired, ReviewErrorCode::Expired),
-        (OperationStopped::Cancelled, ReviewErrorCode::Cancelled),
+        (FailureKind::Expired, ReviewErrorCode::Expired),
+        (FailureKind::Cancelled, ReviewErrorCode::Cancelled),
     ] {
         // When / Then
-        assert_eq!(ReviewError::Stopped(stopped).code(), code);
+        assert_eq!(
+            ReviewError::Technical(TechnicalFailure {
+                kind: stopped,
+                message: "technical failure".into()
+            })
+            .code(),
+            code
+        );
     }
 }

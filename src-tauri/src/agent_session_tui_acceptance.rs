@@ -440,13 +440,13 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
     }
 
     pub fn start_terminal_launch_performance_collection(&self) {
-        crate::other::telemetry::start_terminal_launch_sample_collection();
+        crate::infrastructure::telemetry::metrics::start_terminal_launch_sample_collection();
     }
 
     pub fn take_terminal_launch_performance_samples(
         &self,
     ) -> Vec<AcceptanceTerminalLaunchPerformanceSample> {
-        crate::other::telemetry::take_terminal_launch_samples()
+        crate::infrastructure::telemetry::metrics::take_terminal_launch_samples()
             .into_iter()
             .map(|sample| AcceptanceTerminalLaunchPerformanceSample {
                 phase: sample.phase.to_string(),

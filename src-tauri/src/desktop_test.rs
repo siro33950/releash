@@ -81,7 +81,7 @@ fn test_desktop設定_daemonの設定だけを保持して閉じる操作へ渡�
     use crate::usecase::app_config::query_service::DesktopSettingsDto;
     use tauri::Manager;
     // Given
-    let _telemetry = crate::other::telemetry::lock_test_telemetry();
+    let _telemetry = crate::infrastructure::telemetry::metrics::lock_test_telemetry();
     let _crash = crate::infrastructure::telemetry::crash::tests::TEST_LOCK
         .lock()
         .unwrap();
@@ -111,7 +111,7 @@ fn test_desktop設定_クラッシュ送信の無効化と再有効化を再起�
     use crate::infrastructure::telemetry::crash::tests::{install_test_exporter, TEST_LOCK};
     use crate::usecase::app_config::query_service::DesktopSettingsDto;
     // Given
-    let _telemetry = crate::other::telemetry::lock_test_telemetry();
+    let _telemetry = crate::infrastructure::telemetry::metrics::lock_test_telemetry();
     let _guard = TEST_LOCK.lock().unwrap();
     let (provider, exporter) = install_test_exporter(true, true);
     let app = tauri::test::mock_builder()
@@ -138,7 +138,7 @@ fn test_desktop設定_クラッシュ送信の無効化と再有効化を再起�
 
 #[test]
 fn test_desktop観測_初回windowとappの起動時間を設定に従って記録する() {
-    use crate::other::telemetry;
+    use crate::infrastructure::telemetry::metrics as telemetry;
     // Given
     let _guard = telemetry::lock_test_telemetry();
     telemetry::reset_test_metrics();

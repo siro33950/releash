@@ -40,7 +40,7 @@ impl WorkflowStartupUsecase {
             .queue
             .execute(
                 crate::usecase::work_queue::WorkKey::new("workflow_recovery_list", "daemon"),
-                crate::domain::retry::RetryBackoff::RECOVERY,
+                crate::common::retry::RetryBackoff::RECOVERY,
                 move |_| {
                     let repository = repository.clone();
                     async move {
@@ -60,7 +60,7 @@ impl WorkflowStartupUsecase {
                 self.queue
                     .execute(
                         crate::usecase::work_queue::WorkKey::new("workflow_recovery", &tree_id),
-                        crate::domain::retry::RetryBackoff::RECOVERY,
+                        crate::common::retry::RetryBackoff::RECOVERY,
                         move |action| {
                             let repository = repository.clone();
                             let runtime = runtime.clone();

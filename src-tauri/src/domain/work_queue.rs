@@ -96,23 +96,6 @@ impl<K: Eq + Hash + Clone> WorkQueue<K> {
         self.items.contains_key(key)
     }
 
-    pub fn retry(
-        &mut self,
-        key: &K,
-        kind: super::failure::FailureKind,
-        policy: super::retry::RetryBackoff,
-        now: Duration,
-        jitter: f64,
-    ) -> Duration {
-        let count = self.failed(key);
-        let policy = if kind.retry_action() == super::failure::RetryAction::Restart {
-            super::retry::RetryBackoff::CONFLICT
-        } else {
-            policy
-        };
-        now + policy.delay(count, jitter)
-    }
-
     #[cfg(test)]
     pub fn failure_count(&self, key: &K) -> u64 {
         self.items.get(key).map_or(0, |item| item.failures)

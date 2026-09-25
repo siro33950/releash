@@ -215,7 +215,8 @@ async fn test_watcher_protoはusecase結果と一致する() {
     let (app, dispatch) = parity_app();
     let watcher = crate::desktop_test_support::build_watcher_usecase(app.handle());
     let expected = api::protocol::connect::command_error(
-        crate::other::AppError::from_failure(watcher.stop(999).unwrap_err()).into(),
+        crate::adaptor::presenter::error::AppError::from_failure(watcher.stop(999).unwrap_err())
+            .into(),
     );
     let router = api::client::router(Some(api::ClientApiDeps::new(
         dispatch,
@@ -285,7 +286,7 @@ async fn test_application起動結果_protoは本番shell入口の成功と失�
 #[tokio::test]
 async fn test_telemetry_protoはcommand結果と一致する() {
     // Given
-    let _guard = crate::other::telemetry::lock_test_telemetry();
+    let _guard = crate::infrastructure::telemetry::metrics::lock_test_telemetry();
     let (app, dispatch) = parity_app();
     // When / Then
     invoke_tauri(&app, "report_mounted_xterm_count", json!({"count": 2}))

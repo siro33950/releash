@@ -1,4 +1,4 @@
-use crate::other::AppError;
+use crate::adaptor::presenter::error::AppError;
 #[path = "workspace_tree_shared.rs"]
 mod shared;
 pub(crate) use shared::register_shared;

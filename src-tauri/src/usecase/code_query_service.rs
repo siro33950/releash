@@ -558,8 +558,8 @@ mod code_query_service_tests {
 
     #[test]
     fn test_差分算出_停止を全read_modelの失敗として返す() {
+        use crate::common::operation_context::OperationStopped;
         use crate::domain::failure::{ClassifiedFailure, FailureKind};
-        use crate::domain::operation_context::OperationStopped;
         struct StoppedDiff(OperationStopped);
         impl DiffComputer for StoppedDiff {
             fn diff_buffers(

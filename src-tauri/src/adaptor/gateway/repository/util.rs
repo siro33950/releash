@@ -15,7 +15,7 @@ pub(crate) fn resolve_branch_base(
     repo: &Repository,
     config: Option<&git2::Config>,
     branch_name: &str,
-) -> Result<Option<String>, crate::domain::operation_context::OperationStopped> {
+) -> Result<Option<String>, crate::common::operation_context::OperationStopped> {
     if let Some(cfg) = config {
         if let Some(base) = git_operation::optional(git_operation::run(|| {
             cfg.get_string(&format!("branch.{branch_name}.releash-base"))

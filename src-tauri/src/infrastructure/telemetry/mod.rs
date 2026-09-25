@@ -45,8 +45,8 @@ pub(crate) fn init_telemetry(
         performance_telemetry,
     );
 
-    crate::other::telemetry::set_performance_configured(configured);
-    crate::other::telemetry::set_performance_enabled(active);
+    crate::infrastructure::telemetry::metrics::set_performance_configured(configured);
+    crate::infrastructure::telemetry::metrics::set_performance_enabled(active);
 
     if !configured {
         crash::init_crash_reporting(None, crash_reporting, false);
@@ -107,7 +107,7 @@ pub(crate) fn init_telemetry(
         .with_resource(resource.clone())
         .build();
     global::set_meter_provider(meter_provider.clone());
-    crate::other::telemetry::install_metrics();
+    crate::infrastructure::telemetry::metrics::install_metrics();
 
     let logger_provider = SdkLoggerProvider::builder()
         .with_batch_exporter(log_exporter)
@@ -187,3 +187,5 @@ mod tests {
         assert_eq!(attrs.len(), 4);
     }
 }
+
+pub(crate) mod metrics;

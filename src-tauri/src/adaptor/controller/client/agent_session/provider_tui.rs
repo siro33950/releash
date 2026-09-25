@@ -1,7 +1,7 @@
 use crate::domain::failure::ClassifiedFailure;
 use std::sync::Arc;
-use std::time::Instant;
 
+use crate::adaptor::presenter::error::AppError;
 use crate::adaptor::protocol::agent_session::{
     AgentSessionArchiveResponse, AgentSessionOpenResponse, ProviderAvailabilitySnapshotResponse,
     ProviderHookHealthProviderResponse, ProviderHookHealthWarningResponse,
@@ -9,7 +9,6 @@ use crate::adaptor::protocol::agent_session::{
 use crate::domain::agent_session::aggregates::AgentSessionArchiveOutcome;
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::workspace_tree::WorkspaceIdentity;
-use crate::other::error::AppError;
 use crate::usecase::agent_session::{
     AgentSessionHistoryResumeRequest, AgentSessionLaunchRequest, AgentSessionLaunchUsecase,
     AgentSessionLaunchUsecaseError, AgentSessionLifecycleUsecase,
@@ -68,7 +67,7 @@ where
     T: Send + 'static,
     F: FnOnce() -> Result<T, ProviderAvailabilityUsecaseError> + Send + 'static,
 {
-    crate::other::operation_context::spawn_blocking(operation)
+    crate::common::operation_context::spawn_blocking(operation)
         .await
         .map_err(|_| provider_availability_error(ProviderAvailabilityUsecaseError::Corrupt))?
         .map_err(provider_availability_error)
@@ -259,12 +258,17 @@ pub(crate) async fn create_agent_session_shared(
     cols: u16,
     caller_request_id: String,
 ) -> Result<String, AppError> {
-    let command_ingress = Instant::now();
-    let provider = parse_provider(&provider, ProviderParseOperation::Start)?;
-    crate::other::telemetry::record_terminal_launch(
-        crate::other::telemetry::TerminalLaunch::CommandIngress,
-        command_ingress.elapsed(),
-    );
+    let provider = crate::common::telemetry::observe_result(
+        || parse_provider(&provider, ProviderParseOperation::Start),
+        |result, elapsed| {
+            if result.is_ok() {
+                crate::infrastructure::telemetry::metrics::record_terminal_launch(
+                    crate::infrastructure::telemetry::metrics::TerminalLaunch::CommandIngress,
+                    elapsed,
+                );
+            }
+        },
+    )?;
     Arc::clone(launch)
         .launch_standalone_idempotent(AgentSessionLaunchRequest {
             workspace: WorkspaceIdentity::new(workspace_identity),
@@ -435,7 +439,9 @@ fn launch_error(
 ) -> AppError {
     let kind = error.failure_kind();
     let result = match error {
-        AgentSessionLaunchUsecaseError::Stopped(stopped) => return AppError::from_failure(stopped),
+        AgentSessionLaunchUsecaseError::Technical(stopped) => {
+            return AppError::from_failure(stopped)
+        }
         AgentSessionLaunchUsecaseError::ProviderUnavailable => {
             provider_tui_coded_error(ProviderTuiCodedError::AgentSessionProviderUnavailable)
         }

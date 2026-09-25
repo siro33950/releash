@@ -1,5 +1,5 @@
 use super::*;
-use crate::domain::operation_context::{Deadline, OperationContext, OperationStopped};
+use crate::common::operation_context::{Deadline, OperationContext, OperationStopped};
 use std::time::{Duration, Instant};
 
 thread_local! {
@@ -58,7 +58,7 @@ fn test_hunk変更_実行中のprocessを期限と取消で回収し停止分類
                 }
             });
             // When
-            let result = crate::other::operation_context::sync_scope(context, || {
+            let result = crate::common::operation_context::sync_scope(context, || {
                 if reverse {
                     StagingGateway.unstage_hunk(dir.path().to_str().unwrap(), "patch")
                 } else {
@@ -68,7 +68,7 @@ fn test_hunk変更_実行中のprocessを期限と取消で回収し停止分類
             signal.join().unwrap();
             // Then
             assert!(
-                matches!(result, Err(CodeError::Stopped(error)) if error == if expire { OperationStopped::Expired } else { OperationStopped::Cancelled })
+                matches!(result, Err(CodeError::Technical(error)) if error == if expire { OperationStopped::Expired.into() } else { OperationStopped::Cancelled.into() })
             );
             let pid: i32 = std::fs::read_to_string(pid_file)
                 .unwrap()

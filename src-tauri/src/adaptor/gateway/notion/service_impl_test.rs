@@ -1,5 +1,5 @@
 use super::*;
-use crate::domain::operation_context::{OperationContext, OperationStopped};
+use crate::common::operation_context::OperationContext;
 use std::io::{Read, Write};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -26,13 +26,18 @@ fn test_notion通信_応答body待ちを取り消せる() {
     });
     let context = OperationContext::new(None, Arc::new(token));
     // When
-    let result = crate::other::operation_context::sync_scope(context, || {
+    let result = crate::common::operation_context::sync_scope(context, || {
         send(build_client("token").unwrap().get(url))
     });
     // Then
     assert!(matches!(
         result,
-        Err(NotionError::Stopped(OperationStopped::Cancelled))
+        Err(NotionError::Technical(
+            crate::domain::failure::TechnicalFailure {
+                kind: crate::domain::failure::FailureKind::Cancelled,
+                ..
+            }
+        ))
     ));
     assert_eq!(server.join().unwrap(), 0);
 }
@@ -55,7 +60,7 @@ fn test_notion再試行_retry_afterの待ちを取り消せる() {
     let context = OperationContext::new(None, Arc::new(token));
     let start = Instant::now();
     // When
-    let result = crate::other::operation_context::sync_scope(context, || {
+    let result = crate::common::operation_context::sync_scope(context, || {
         send_with_retry(
             &build_client("token").unwrap(),
             &url,
@@ -65,7 +70,12 @@ fn test_notion再試行_retry_afterの待ちを取り消せる() {
     // Then
     assert!(matches!(
         result,
-        Err(NotionError::Stopped(OperationStopped::Cancelled))
+        Err(NotionError::Technical(
+            crate::domain::failure::TechnicalFailure {
+                kind: crate::domain::failure::FailureKind::Cancelled,
+                ..
+            }
+        ))
     ));
     assert!(start.elapsed() < Duration::from_secs(2));
     server.join().unwrap();
@@ -73,7 +83,7 @@ fn test_notion再試行_retry_afterの待ちを取り消せる() {
 
 #[test]
 fn test_notion通信_応答body待ちが引き継いだ期限で終わる() {
-    use crate::domain::operation_context::Deadline;
+    use crate::common::operation_context::Deadline;
     // Given
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}/", listener.local_addr().unwrap());
@@ -93,13 +103,18 @@ fn test_notion通信_応答body待ちが引き継いだ期限で終わる() {
     let context = OperationContext::default()
         .with_deadline(Deadline::new(start + Duration::from_millis(500)));
     // When
-    let result = crate::other::operation_context::sync_scope(context, || {
+    let result = crate::common::operation_context::sync_scope(context, || {
         send(build_client("token").unwrap().get(url))
     });
     // Then
     assert!(matches!(
         result,
-        Err(NotionError::Stopped(OperationStopped::Expired))
+        Err(NotionError::Technical(
+            crate::domain::failure::TechnicalFailure {
+                kind: crate::domain::failure::FailureKind::Expired,
+                ..
+            }
+        ))
     ));
     assert!(start.elapsed() < Duration::from_secs(3));
     assert_eq!(server.join().unwrap(), 0);
@@ -107,7 +122,7 @@ fn test_notion通信_応答body待ちが引き継いだ期限で終わる() {
 
 #[test]
 fn test_notion再試行_retry_after待ちが引き継いだ期限で終わる() {
-    use crate::domain::operation_context::Deadline;
+    use crate::common::operation_context::Deadline;
     // Given
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}/", listener.local_addr().unwrap());
@@ -125,7 +140,7 @@ fn test_notion再試行_retry_after待ちが引き継いだ期限で終わる() 
     let context = OperationContext::default()
         .with_deadline(Deadline::new(start + Duration::from_millis(500)));
     // When
-    let result = crate::other::operation_context::sync_scope(context, || {
+    let result = crate::common::operation_context::sync_scope(context, || {
         send_with_retry(
             &build_client("token").unwrap(),
             &url,
@@ -135,7 +150,12 @@ fn test_notion再試行_retry_after待ちが引き継いだ期限で終わる() 
     // Then
     assert!(matches!(
         result,
-        Err(NotionError::Stopped(OperationStopped::Expired))
+        Err(NotionError::Technical(
+            crate::domain::failure::TechnicalFailure {
+                kind: crate::domain::failure::FailureKind::Expired,
+                ..
+            }
+        ))
     ));
     assert!(start.elapsed() < Duration::from_secs(3));
     let listener = server.join().unwrap();
@@ -148,7 +168,7 @@ fn test_notion再試行_retry_after待ちが引き継いだ期限で終わる() 
 
 #[test]
 fn test_notion資源期限_親が無期限でも長い期限でも十秒で終了する() {
-    use crate::domain::operation_context::Deadline;
+    use crate::common::operation_context::Deadline;
     for parent_deadline in [false, true] {
         // Given
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -171,7 +191,7 @@ fn test_notion資源期限_親が無期限でも長い期限でも十秒で終�
             Arc::new(tokio_util::sync::CancellationToken::new()),
         );
         // When
-        let result = crate::other::operation_context::sync_scope(context, || {
+        let result = crate::common::operation_context::sync_scope(context, || {
             send(
                 build_client("token")
                     .unwrap()
@@ -183,7 +203,12 @@ fn test_notion資源期限_親が無期限でも長い期限でも十秒で終�
         // Then
         assert!(matches!(
             result,
-            Err(NotionError::Stopped(OperationStopped::Expired))
+            Err(NotionError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    kind: crate::domain::failure::FailureKind::Expired,
+                    ..
+                }
+            ))
         ));
         assert!(elapsed >= Duration::from_secs(10));
         assert!(elapsed < Duration::from_secs(15));

@@ -50,6 +50,7 @@ pub(crate) enum AgentSessionLifecycleUsecaseError {
 }
 
 pub(crate) struct AgentSessionLifecycleUsecase {
+    identities: Arc<dyn crate::domain::identity::IdentityIssuer>,
     sessions: Arc<AgentSessionUsecase>,
     lifecycle: Arc<ProviderLifecycleUsecase>,
     launch_gateway: Arc<dyn ProviderAgentLaunchGateway>,
@@ -62,6 +63,7 @@ pub(crate) struct AgentSessionLifecycleUsecase {
 
 impl AgentSessionLifecycleUsecase {
     pub(crate) fn new(
+        identities: Arc<dyn crate::domain::identity::IdentityIssuer>,
         sessions: Arc<AgentSessionUsecase>,
         lifecycle: Arc<ProviderLifecycleUsecase>,
         provider_runtime: ProviderAgentRuntime,
@@ -75,6 +77,7 @@ impl AgentSessionLifecycleUsecase {
             terminal,
         } = provider_runtime;
         Self {
+            identities,
             sessions,
             lifecycle,
             launch_gateway,
@@ -538,7 +541,7 @@ impl AgentSessionLifecycleUsecase {
             .availability
             .resolved_executable(session.session().provider())
             .ok_or(AgentSessionLifecycleUsecaseError::LaunchUnavailable)?;
-        let slot_id = ProviderLifecycleSlotId::new(crate::other::id::unique_simple_id())
+        let slot_id = ProviderLifecycleSlotId::new(self.identities.issue())
             .map_err(|_| AgentSessionLifecycleUsecaseError::Corrupt)?;
         let scope = ProviderLifecycleScope::new(agent_session_id)
             .map_err(|_| AgentSessionLifecycleUsecaseError::InvalidOperation)?;

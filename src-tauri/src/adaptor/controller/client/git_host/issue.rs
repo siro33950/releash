@@ -1,5 +1,5 @@
 use super::run_blocking;
-use crate::other::AppError;
+use crate::adaptor::presenter::error::AppError;
 use crate::usecase::git_host::GitHostUsecase;
 
 pub(crate) async fn fetch_issues_shared(

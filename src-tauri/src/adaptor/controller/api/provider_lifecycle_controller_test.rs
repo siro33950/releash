@@ -341,7 +341,7 @@ async fn test_providerライフサイクル解放_local_apiに外部routeを公�
 
 #[tokio::test]
 async fn test_providerライフサイクルapi_session_started受理でhook_ingress区間を記録する() {
-    let _guard = crate::other::telemetry::lock_test_telemetry();
+    let _guard = crate::infrastructure::telemetry::metrics::lock_test_telemetry();
     let directory = TempDir::new().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
@@ -358,7 +358,7 @@ async fn test_providerライフサイクルapi_session_started受理でhook_ingr
         .unwrap();
     let router =
         test_support::test_router_with_provider_lifecycle(directory.path(), "secret", usecase);
-    crate::other::telemetry::start_terminal_launch_sample_collection();
+    crate::infrastructure::telemetry::metrics::start_terminal_launch_sample_collection();
 
     let (status, _) = test_support::send_json(
         &router,
@@ -368,7 +368,7 @@ async fn test_providerライフサイクルapi_session_started受理でhook_ingr
     .await;
 
     assert_eq!(status, axum::http::StatusCode::OK);
-    let samples = crate::other::telemetry::take_terminal_launch_samples();
+    let samples = crate::infrastructure::telemetry::metrics::take_terminal_launch_samples();
     assert!(samples
         .iter()
         .any(|sample| sample.phase == "terminal.launch.hook_ingress"));

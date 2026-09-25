@@ -84,7 +84,7 @@ pub enum CommitBatchResult {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CommitBatchError {
-    Stopped(crate::domain::operation_context::OperationStopped),
+    Technical(crate::domain::failure::TechnicalFailure),
     /// Same idempotency key or unique record key with a different canonical
     /// payload / content binding.
     PayloadConflict,
@@ -120,7 +120,7 @@ pub enum CommitBatchError {
 impl fmt::Display for CommitBatchError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Stopped(error) => std::fmt::Display::fmt(error, f),
+            Self::Technical(error) => std::fmt::Display::fmt(error, f),
             Self::PayloadConflict => write!(f, "same key bound to a different payload"),
             Self::StreamHeadConflict { current } => {
                 write!(
@@ -159,7 +159,9 @@ impl crate::domain::failure::ClassifiedFailure for CommitBatchError {
     fn failure_kind(&self) -> crate::domain::failure::FailureKind {
         use crate::domain::failure::FailureKind;
         match self {
-            Self::Stopped(error) => crate::domain::failure::ClassifiedFailure::failure_kind(error),
+            Self::Technical(error) => {
+                crate::domain::failure::ClassifiedFailure::failure_kind(error)
+            }
             Self::PayloadConflict => FailureKind::StateRequired,
             Self::QueueBusy => FailureKind::Temporary,
             Self::StreamHeadConflict { .. }
@@ -176,9 +178,3 @@ impl crate::domain::failure::ClassifiedFailure for CommitBatchError {
 #[cfg(test)]
 #[path = "batch_test.rs"]
 mod batch_tests;
-
-impl From<crate::domain::operation_context::OperationStopped> for CommitBatchError {
-    fn from(error: crate::domain::operation_context::OperationStopped) -> Self {
-        Self::Stopped(error)
-    }
-}

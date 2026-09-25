@@ -173,7 +173,7 @@ impl ExecutionTreeArchiveRepository for ExecutionTreeArchiveFactRepository {
                 for path in [&candidate.workspace_identity, &candidate.worktree_path] {
                     candidate.repository_root =
                         super::super::repository::worktree::recorded_main_repo_path(path)
-                            .map_err(WorkflowError::Stopped)?;
+                            .map_err(WorkflowError::from)?;
                     if candidate.repository_root.is_some() {
                         break;
                     }

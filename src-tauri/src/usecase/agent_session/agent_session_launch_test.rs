@@ -223,13 +223,15 @@ fn test_実行木登録の失敗_起動エラーへ変換しても元の分類�
 
 #[test]
 fn test_provider起動準備_停止分類をusecaseまで保持する() {
+    use crate::common::operation_context::OperationStopped;
     use crate::domain::failure::ClassifiedFailure;
-    use crate::domain::operation_context::OperationStopped;
     // Given
     for stopped in [OperationStopped::Expired, OperationStopped::Cancelled] {
         // When
         let error = super::map_launch_error(
-            crate::domain::agent_session::ProviderAgentLaunchGatewayError::Stopped(stopped),
+            crate::domain::agent_session::ProviderAgentLaunchGatewayError::Technical(
+                stopped.into(),
+            ),
         );
         // Then
         assert_eq!(error.failure_kind(), stopped.failure_kind());

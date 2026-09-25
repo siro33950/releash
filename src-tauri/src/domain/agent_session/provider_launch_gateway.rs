@@ -50,7 +50,7 @@ impl PreparedProviderLaunch {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ProviderAgentLaunchGatewayError {
-    Stopped(crate::domain::operation_context::OperationStopped),
+    Technical(crate::domain::failure::TechnicalFailure),
     InvalidInput,
     Unavailable,
 }

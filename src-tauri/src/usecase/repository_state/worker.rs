@@ -86,7 +86,7 @@ pub(crate) async fn run_worker(
             let scan_result = queue
                 .execute(
                     crate::usecase::work_queue::WorkKey::new("repository_scan", &repo_path),
-                    crate::domain::retry::RetryBackoff::ITEM,
+                    crate::common::retry::RetryBackoff::ITEM,
                     move |_| {
                         let state = worker_state.clone();
                         let runtime = worker_runtime.clone();

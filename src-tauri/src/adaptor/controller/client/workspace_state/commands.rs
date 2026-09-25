@@ -1,4 +1,4 @@
-use crate::other::AppError;
+use crate::adaptor::presenter::error::AppError;
 use std::sync::Arc;
 
 use crate::adaptor::gateway::workspace_state::WorkspaceStateStore;

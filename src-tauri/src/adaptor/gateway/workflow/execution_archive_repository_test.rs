@@ -598,10 +598,10 @@ async fn test_archive読取_実経路で失敗分類を保持する() {
 
 #[tokio::test]
 async fn test_archive候補_repo補完の期限と取消を保持し次のpathへ進まない() {
-    use crate::domain::failure::ClassifiedFailure;
-    use crate::domain::operation_context::{
+    use crate::common::operation_context::{
         Cancellation, Deadline, OperationContext, OperationStopped,
     };
+    use crate::domain::failure::ClassifiedFailure;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
     struct CountCancelled(AtomicUsize);
@@ -647,7 +647,7 @@ async fn test_archive候補_repo補完の期限と取消を保持し次のpath�
             cancellation.clone(),
         );
         // When
-        let error = crate::other::operation_context::scope(context, page)
+        let error = crate::common::operation_context::scope(context, page)
             .await
             .unwrap_err();
         // Then
@@ -656,7 +656,9 @@ async fn test_archive候補_repo補完の期限と取消を保持し次のpath�
         } else {
             OperationStopped::Cancelled
         };
-        assert!(matches!(error, WorkflowError::Stopped(stopped) if stopped == expected));
+        assert!(
+            matches!(error, WorkflowError::Technical(ref stopped) if *stopped == expected.into())
+        );
         assert_eq!(error.failure_kind(), expected.failure_kind());
         assert_eq!(cancellation.0.load(Ordering::SeqCst), usize::from(!expire));
     }

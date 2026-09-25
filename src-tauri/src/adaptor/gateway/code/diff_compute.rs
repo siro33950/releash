@@ -250,9 +250,7 @@ mod diff_compute_gateway_tests {
 #[cfg(test)]
 #[test]
 fn test_diff_途中の取消を空や部分結果へ変換しない() {
-    use crate::domain::operation_context::{
-        Cancellation, Deadline, OperationContext, OperationStopped,
-    };
+    use crate::common::operation_context::{Cancellation, Deadline, OperationContext};
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
@@ -266,16 +264,26 @@ fn test_diff_途中の取消を空や部分結果へ変換しない() {
     for after in [0, 2, 4, 6, 8] {
         let context = OperationContext::new(None, Arc::new(CancelAfter(AtomicUsize::new(after))));
         assert!(matches!(
-            crate::other::operation_context::sync_scope(context, || diff_buffers(
+            crate::common::operation_context::sync_scope(context, || diff_buffers(
                 "a\nb\n", "c\nd\n", None
             )),
-            Err(CodeError::Stopped(OperationStopped::Cancelled))
+            Err(CodeError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    kind: crate::domain::failure::FailureKind::Cancelled,
+                    ..
+                }
+            ))
         ));
     }
     let context =
         OperationContext::default().with_deadline(Deadline::new(std::time::Instant::now()));
     assert!(matches!(
-        crate::other::operation_context::sync_scope(context, || diff_buffers("a", "b", None)),
-        Err(CodeError::Stopped(OperationStopped::Expired))
+        crate::common::operation_context::sync_scope(context, || diff_buffers("a", "b", None)),
+        Err(CodeError::Technical(
+            crate::domain::failure::TechnicalFailure {
+                kind: crate::domain::failure::FailureKind::Expired,
+                ..
+            }
+        ))
     ));
 }

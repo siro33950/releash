@@ -251,6 +251,7 @@ async fn workflow_origin_stop_uses_the_atomic_provider_workflow_commit_boundary(
     ));
     let notifier = Arc::new(RecordingChangeNotifier::default());
     let ingress = ProviderLifecycleIngressUsecase::new(
+        std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
         lifecycle.clone(),
         Arc::new(AgentSessionUsecase::new(agent_repository.clone())),
         Arc::new(ProviderHookHealthUsecase::new(Arc::new(
@@ -430,6 +431,7 @@ async fn test_worktree削除中_provider_hookの状態変更を保存前に拒�
         Arc::new(MemoryLifecycleEvents),
     ));
     let ingress = ProviderLifecycleIngressUsecase::new(
+        std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
         lifecycle.clone(),
         Arc::new(AgentSessionUsecase::new(repository.clone())),
         Arc::new(ProviderHookHealthUsecase::new(health.clone())),
@@ -525,6 +527,7 @@ async fn assert_activity_ingress_for_location(
     ));
     let notifier = Arc::new(RecordingChangeNotifier::default());
     let ingress = ProviderLifecycleIngressUsecase::new(
+        std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
         lifecycle.clone(),
         Arc::new(AgentSessionUsecase::new(agent_repository.clone())),
         Arc::new(ProviderHookHealthUsecase::new(Arc::new(
@@ -635,6 +638,7 @@ async fn test_provider_lifecycle_ingress_活動保存失敗は状態とrevision�
     ));
     let notifier = Arc::new(RecordingChangeNotifier::default());
     let ingress = ProviderLifecycleIngressUsecase::new(
+        std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
         lifecycle.clone(),
         Arc::new(AgentSessionUsecase::new(agent_repository.clone())),
         Arc::new(ProviderHookHealthUsecase::new(Arc::new(
@@ -724,6 +728,7 @@ async fn test_provider_lifecycle_ingress_claudeのstop_failureは活動だけを
     ));
     let notifier = Arc::new(RecordingChangeNotifier::default());
     let ingress = ProviderLifecycleIngressUsecase::new(
+        std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
         lifecycle.clone(),
         Arc::new(AgentSessionUsecase::new(agent_repository.clone())),
         Arc::new(ProviderHookHealthUsecase::new(Arc::new(
@@ -827,6 +832,7 @@ async fn standalone_stop_uses_the_same_execution_tree_transaction() {
         Arc::new(MemoryLifecycleEvents),
     ));
     let ingress = ProviderLifecycleIngressUsecase::new(
+        std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
         lifecycle.clone(),
         Arc::new(AgentSessionUsecase::new(agent_repository.clone())),
         Arc::new(ProviderHookHealthUsecase::new(Arc::new(
@@ -908,6 +914,7 @@ async fn test_provider_lifecycle_ingress_session_startでwarningを解除しsess
         MemoryHookHealth::default(),
     )));
     let ingress = ProviderLifecycleIngressUsecase::new(
+        std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
         lifecycle.clone(),
         sessions,
         health.clone(),
@@ -993,6 +1000,7 @@ async fn test_provider_lifecycle_ingress_session関連付け失敗時はwarning�
         MemoryHookHealth::default(),
     )));
     let ingress = ProviderLifecycleIngressUsecase::new(
+        std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
         lifecycle.clone(),
         sessions,
         health.clone(),
@@ -1074,6 +1082,7 @@ async fn test_provider_lifecycle_ingress_session関連付け拒否時にlifecycl
         Arc::new(MemoryLifecycleEvents),
     ));
     let ingress = ProviderLifecycleIngressUsecase::new(
+        std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
         lifecycle.clone(),
         sessions,
         Arc::new(ProviderHookHealthUsecase::new(Arc::new(
@@ -1155,6 +1164,7 @@ async fn test_provider_lifecycle_ingress_session操作lock解放後にsession_st
         MemoryHookHealth::default(),
     )));
     let ingress = Arc::new(ProviderLifecycleIngressUsecase::new(
+        std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
         lifecycle.clone(),
         sessions.clone(),
         health,
@@ -1230,6 +1240,7 @@ async fn test_provider_lifecycle_ingress_session操作lock解放後に活動観�
         Arc::new(MemoryLifecycleEvents),
     ));
     let ingress = Arc::new(ProviderLifecycleIngressUsecase::new(
+        std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
         lifecycle.clone(),
         sessions.clone(),
         Arc::new(ProviderHookHealthUsecase::new(Arc::new(

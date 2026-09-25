@@ -194,6 +194,7 @@ impl Fixture {
             workspaces,
             git_host,
             sessions: Arc::new(AgentSessionReadUsecase::new(
+                std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
                 sessions.clone(),
                 sessions.clone(),
             )),

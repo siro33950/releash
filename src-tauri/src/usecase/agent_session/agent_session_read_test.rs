@@ -87,7 +87,11 @@ async fn test_agent_session_read単体取得時にgc済みsessionを返さない
         items,
         calls: Mutex::new(Vec::new()),
     });
-    let usecase = AgentSessionReadUsecase::new(query, collector);
+    let usecase = AgentSessionReadUsecase::new(
+        std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
+        query,
+        collector,
+    );
 
     assert!(usecase.get("orphan").await.unwrap().is_none());
 }
@@ -107,7 +111,11 @@ async fn test_agent_session_read_lifecycleと異常終了状態をquery結果の
         items,
         calls: Mutex::new(Vec::new()),
     });
-    let usecase = AgentSessionReadUsecase::new(query, collector);
+    let usecase = AgentSessionReadUsecase::new(
+        std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
+        query,
+        collector,
+    );
 
     let open = usecase.get("open-running").await.unwrap().unwrap();
     let paused = usecase.get("paused-idle").await.unwrap().unwrap();
@@ -240,6 +248,7 @@ async fn test_session読取_所有済みとworkflow失敗をgc経由でも保持
     ] {
         let expected = source.failure_kind();
         let usecase = AgentSessionReadUsecase::new(
+            std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
             Arc::new(MutableSessionQuery {
                 items: Arc::new(Mutex::new(vec![item("session")])),
             }),

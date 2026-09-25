@@ -235,11 +235,11 @@ impl RepositoryUsecase {
         let mut entries = Vec::with_capacity(worktrees.len());
         for wt in worktrees {
             let dirty_count = match self.worktree.dirty_count(&wt.path) {
-                Err(error @ RepositoryError::Stopped(_)) => return Err(error.into()),
+                Err(error @ RepositoryError::Technical(_)) => return Err(error.into()),
                 result => result.unwrap_or(0),
             };
             let base_branch = match self.git_config.get_branch_base(&wt.path, &wt.branch) {
-                Err(error @ RepositoryError::Stopped(_)) => return Err(error.into()),
+                Err(error @ RepositoryError::Technical(_)) => return Err(error.into()),
                 result => result.unwrap_or(None),
             };
             entries.push(WorktreeEntryDto {
@@ -316,7 +316,7 @@ impl RepositoryUsecase {
             .validate_removal(repo_path, worktree_path, force)?;
         let repository_root = self.worktree.main_repo_path(worktree_path)?;
         let branch = match self.branch.current(worktree_path) {
-            Err(error @ RepositoryError::Stopped(_)) => return Err(error.into()),
+            Err(error @ RepositoryError::Technical(_)) => return Err(error.into()),
             result => result.ok(),
         };
         archives
@@ -458,12 +458,12 @@ mod repository_usecase_tests {
         default_branch: Option<String>,
         current_branch: String,
         fail_current_branch: bool,
-        stop_current_branch: Option<crate::domain::operation_context::OperationStopped>,
+        stop_current_branch: Option<crate::common::operation_context::OperationStopped>,
         worktrees: Vec<Worktree>,
         invalid_worktrees: Vec<String>,
         dirty: u32,
-        stop_dirty: Option<crate::domain::operation_context::OperationStopped>,
-        stop_base: Option<crate::domain::operation_context::OperationStopped>,
+        stop_dirty: Option<crate::common::operation_context::OperationStopped>,
+        stop_base: Option<crate::common::operation_context::OperationStopped>,
         detail_calls: Mutex<Vec<&'static str>>,
         branch_base: Option<String>,
         fail_create_worktree: bool,
@@ -769,8 +769,8 @@ mod repository_usecase_tests {
 
     #[test]
     fn test_worktree一覧_詳細取得の停止を既定値に変えず後続を呼ばない() {
+        use crate::common::operation_context::OperationStopped;
         use crate::domain::failure::ClassifiedFailure;
-        use crate::domain::operation_context::OperationStopped;
         // Given
         for stopped in [OperationStopped::Expired, OperationStopped::Cancelled] {
             for stop_dirty in [true, false] {
@@ -1647,8 +1647,8 @@ mod repository_usecase_tests {
 
     #[tokio::test]
     async fn test_worktree削除_ブランチ取得の停止を保持し後続操作へ進まない() {
+        use crate::common::operation_context::OperationStopped;
         use crate::domain::failure::ClassifiedFailure;
-        use crate::domain::operation_context::OperationStopped;
         for stopped in [OperationStopped::Expired, OperationStopped::Cancelled] {
             for force in [false, true] {
                 // Given

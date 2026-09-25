@@ -212,9 +212,12 @@ pub struct WorkflowDiagnosticsAcceptanceHost {
 
 impl WorkflowDiagnosticsAcceptanceHost {
     pub fn start(data_dir: PathBuf, applied_directory: PathBuf) -> Result<Self, String> {
-        let queue = crate::usecase::work_queue::WorkQueueUsecase::new(Arc::new(
-            crate::adaptor::gateway::work_queue::TokioWorkQueueRuntime::default(),
-        ));
+        let queue = crate::usecase::work_queue::WorkQueueUsecase::with_retry_bucket(
+            Arc::new(crate::adaptor::gateway::work_queue::TokioWorkQueueRuntime::default()),
+            Arc::new(tokio::sync::Mutex::new(
+                crate::common::retry::RetryBucket::new(std::time::Duration::ZERO),
+            )),
+        );
         let store = LocalEventStore::open(LocalEventStoreConfig::production(data_dir.clone()))
             .map_err(|error| error.to_string())?;
         let ui_usecase = crate::adaptor::controller::wiring::build_workflow_services_with_gateways(

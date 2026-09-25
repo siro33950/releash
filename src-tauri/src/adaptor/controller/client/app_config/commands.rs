@@ -1,4 +1,4 @@
-use crate::other::AppError;
+use crate::adaptor::presenter::error::AppError;
 use std::sync::Arc;
 
 use crate::adaptor::gateway::app_config::{
@@ -20,7 +20,7 @@ pub(crate) async fn update_performance_telemetry_shared(
     enabled: bool,
 ) -> Result<(), AppError> {
     let usecase = build_usecase(state.clone());
-    crate::other::operation_context::spawn_blocking(move || {
+    crate::common::operation_context::spawn_blocking(move || {
         crate::usecase::telemetry::TelemetryUsecase::new(
             &crate::adaptor::gateway::telemetry::TelemetryGateway,
         )
@@ -46,7 +46,7 @@ pub(crate) async fn update_app_settings_shared(
     start_minimized: bool,
 ) -> Result<(), AppError> {
     let usecase = build_usecase(state.clone());
-    crate::other::operation_context::spawn_blocking(move || {
+    crate::common::operation_context::spawn_blocking(move || {
         usecase.update_app_settings(close_to_tray, start_minimized)
     })
     .await
@@ -59,7 +59,7 @@ pub(crate) async fn update_login_item_preference_shared(
     requested: bool,
 ) -> Result<(), AppError> {
     let usecase = build_usecase(state.clone());
-    crate::other::operation_context::spawn_blocking(move || {
+    crate::common::operation_context::spawn_blocking(move || {
         usecase.update_login_item_preference(requested)
     })
     .await
@@ -83,7 +83,7 @@ pub(crate) async fn update_workflow_config_shared(
 ) -> Result<(), AppError> {
     let usecase = build_usecase(state.clone());
     let workflow = workflow_to_domain(&workflow);
-    crate::other::operation_context::spawn_blocking(move || {
+    crate::common::operation_context::spawn_blocking(move || {
         usecase.update_workflow_config(workflow)
     })
     .await
@@ -105,7 +105,7 @@ pub(crate) async fn update_crash_reporting_shared(
     enabled: bool,
 ) -> Result<(), AppError> {
     let usecase = build_usecase(state.clone());
-    crate::other::operation_context::spawn_blocking(move || {
+    crate::common::operation_context::spawn_blocking(move || {
         crate::usecase::telemetry::TelemetryUsecase::new(
             &crate::adaptor::gateway::telemetry::TelemetryGateway,
         )

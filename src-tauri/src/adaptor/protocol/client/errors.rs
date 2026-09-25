@@ -1,14 +1,14 @@
 use super as wire;
-impl From<crate::other::AppError> for wire::CommandError {
-    fn from(value: crate::other::AppError) -> Self {
+impl From<crate::adaptor::presenter::error::AppError> for wire::CommandError {
+    fn from(value: crate::adaptor::presenter::error::AppError) -> Self {
         match value {
-            crate::other::AppError::Classified { error, .. } => (*error).into(),
-            crate::other::AppError::Internal(value) => Self {
+            crate::adaptor::presenter::error::AppError::Classified { error, .. } => (*error).into(),
+            crate::adaptor::presenter::error::AppError::Internal(value) => Self {
                 variant: Some(wire::command_error::Variant::Message(wire::ResultString {
                     value: Some(value),
                 })),
             },
-            crate::other::AppError::Coded { code, message, .. } => Self {
+            crate::adaptor::presenter::error::AppError::Coded { code, message, .. } => Self {
                 variant: Some(wire::command_error::Variant::Coded(wire::CodedError {
                     code: Some(code),
                     message: Some(message),
@@ -44,8 +44,8 @@ pub(crate) struct CommandFailure {
     pub(crate) kind: crate::domain::failure::FailureKind,
     pub(crate) detail: wire::CommandError,
 }
-impl From<crate::other::AppError> for CommandFailure {
-    fn from(error: crate::other::AppError) -> Self {
+impl From<crate::adaptor::presenter::error::AppError> for CommandFailure {
+    fn from(error: crate::adaptor::presenter::error::AppError) -> Self {
         use crate::domain::failure::ClassifiedFailure;
         Self {
             kind: error.failure_kind(),
@@ -79,6 +79,6 @@ impl From<crate::usecase::application_startup::ApplicationUnavailable> for Comma
 
 impl From<crate::domain::external_editor::EditorError> for CommandFailure {
     fn from(error: crate::domain::external_editor::EditorError) -> Self {
-        crate::other::AppError::from_failure(error).into()
+        crate::adaptor::presenter::error::AppError::from_failure(error).into()
     }
 }

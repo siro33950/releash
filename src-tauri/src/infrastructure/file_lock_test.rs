@@ -1,5 +1,5 @@
 use super::*;
-use crate::domain::operation_context::Deadline;
+use crate::common::operation_context::Deadline;
 
 #[test]
 fn test_ファイルlock_期限と取り消しで待ちを終え取得済みlockは解放できる() {
@@ -20,11 +20,11 @@ fn test_ファイルlock_期限と取り消しで待ちを終え取得済みlock
         }
         // When / Then
         assert!(
-            matches!(exclusive(&waiter, &context), Err(LockError::Stopped(reason)) if reason == if expire { OperationStopped::Expired } else { OperationStopped::Cancelled })
+            matches!(crate::common::operation_context::sync_scope(context, || exclusive(&waiter)), Err(LockError::Stopped(reason)) if reason == if expire { OperationStopped::Expired } else { OperationStopped::Cancelled })
         );
         drop(holder);
-        assert!(exclusive(&waiter, &OperationContext::default()).is_ok());
+        assert!(exclusive(&waiter).is_ok());
         drop(waiter);
-        assert!(exclusive(&File::open(path).unwrap(), &OperationContext::default()).is_ok());
+        assert!(exclusive(&File::open(path).unwrap()).is_ok());
     }
 }

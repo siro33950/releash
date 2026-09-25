@@ -559,13 +559,13 @@ fn test_workflow失敗_session経由でも非storeの原因表示と分類を保
 
 #[test]
 fn test_provider起動準備_停止分類をrpcまで保持する() {
+    use crate::common::operation_context::OperationStopped;
     use crate::domain::failure::ClassifiedFailure;
-    use crate::domain::operation_context::OperationStopped;
     // Given
     for stopped in [OperationStopped::Expired, OperationStopped::Cancelled] {
         // When
         let error = launch_error(
-            AgentSessionLaunchUsecaseError::Stopped(stopped),
+            AgentSessionLaunchUsecaseError::Technical(stopped.into()),
             AgentSessionLaunchOperation::Start,
         );
         // Then

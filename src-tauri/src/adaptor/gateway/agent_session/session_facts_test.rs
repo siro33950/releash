@@ -116,7 +116,13 @@ fn test_session読取_混雑と期限切れをデータ破損扱いしない() {
     // Given
     for (error, expected) in [
         (LocalEventQueryError::QueryBusy, FailureKind::Temporary),
-        (LocalEventQueryError::DeadlineExceeded, FailureKind::Expired),
+        (
+            LocalEventQueryError::Technical(crate::domain::failure::TechnicalFailure {
+                kind: crate::domain::failure::FailureKind::Expired,
+                message: "deadline exceeded".into(),
+            }),
+            FailureKind::Expired,
+        ),
     ] {
         // When / Then
         assert_eq!(
@@ -148,7 +154,13 @@ fn test_session読取_実効cwdの一時障害と破損をrepositoryとqueryへ�
     // Given
     for (error, expected) in [
         (LocalEventQueryError::QueryBusy, FailureKind::Temporary),
-        (LocalEventQueryError::DeadlineExceeded, FailureKind::Expired),
+        (
+            LocalEventQueryError::Technical(crate::domain::failure::TechnicalFailure {
+                kind: crate::domain::failure::FailureKind::Expired,
+                message: "deadline exceeded".into(),
+            }),
+            FailureKind::Expired,
+        ),
         (
             crate::adaptor::gateway::local_event_store::reader::storage_unavailable(
                 &rusqlite::Error::InvalidQuery,

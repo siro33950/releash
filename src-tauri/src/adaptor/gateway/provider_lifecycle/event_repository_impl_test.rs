@@ -64,7 +64,13 @@ async fn test_確定照会_混雑のみを同じ位置で再試行する() {
 async fn test_確定照会_恒久失敗と期限切れと上位再試行は即座に分類を保持して返す() {
     // Given
     let cases = [
-        (LocalEventQueryError::DeadlineExceeded, FailureKind::Expired),
+        (
+            LocalEventQueryError::Technical(crate::domain::failure::TechnicalFailure {
+                kind: crate::domain::failure::FailureKind::Expired,
+                message: "deadline exceeded".into(),
+            }),
+            FailureKind::Expired,
+        ),
         (
             LocalEventQueryError::Corrupt {
                 correlation_id: "corrupt".into(),

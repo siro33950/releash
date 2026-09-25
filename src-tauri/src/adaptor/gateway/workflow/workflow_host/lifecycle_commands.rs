@@ -103,6 +103,30 @@ impl WorkflowRuntimeHost {
         execution_id: &str,
         expected_node_name: Option<&str>,
     ) -> Result<RuntimeCommitSnapshot, WorkflowRuntimeError> {
+        crate::common::telemetry::observe_result_async(
+            self.commit_abort_workflow_by_execution_id_inner(app, execution_id, expected_node_name),
+            |result, _| {
+                if result.is_ok() {
+                    let classification =
+                        FailureClassification::new(NodeExecutionFailureKind::UserAbort);
+                    crate::infrastructure::telemetry::metrics::record_workflow_node_failure(
+                        classification.kind.as_str(),
+                        classification.disposition.as_str(),
+                        classification.timeout_kind.map(|kind| kind.as_str()),
+                        None,
+                    );
+                }
+            },
+        )
+        .await
+    }
+
+    async fn commit_abort_workflow_by_execution_id_inner(
+        &self,
+        app: &WorkflowRuntimeDependencies,
+        execution_id: &str,
+        expected_node_name: Option<&str>,
+    ) -> Result<RuntimeCommitSnapshot, WorkflowRuntimeError> {
         let before = self
             .load_control_plane_execution(app, execution_id)
             .await?
@@ -141,10 +165,6 @@ impl WorkflowRuntimeHost {
                 },
             )
             .await?;
-        crate::other::telemetry::record_workflow_node_failure(
-            FailureClassification::new(NodeExecutionFailureKind::UserAbort),
-            None,
-        );
         Ok(snapshot)
     }
 }

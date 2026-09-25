@@ -550,8 +550,8 @@ async fn test_node事実追記_件数とbyteの上限まで保存し超過は保
 
 #[tokio::test]
 async fn test_書込待ち_期限と取り消しで待ちを終えても受理済みの事実は保存する() {
+    use crate::common::operation_context::{Deadline, OperationContext};
     use crate::domain::failure::{ClassifiedFailure, FailureKind};
-    use crate::domain::operation_context::{Deadline, OperationContext};
     use std::time::{Duration, Instant};
     for expire in [false, true] {
         // Given
@@ -565,7 +565,7 @@ async fn test_書込待ち_期限と取り消しで待ちを終えても受理�
             expire.then(|| Deadline::new(Instant::now() + Duration::from_millis(30))),
             std::sync::Arc::new(token.clone()),
         );
-        let append = crate::other::operation_context::scope(
+        let append = crate::common::operation_context::scope(
             context,
             store.append_node_event(fact_row(), None),
         );

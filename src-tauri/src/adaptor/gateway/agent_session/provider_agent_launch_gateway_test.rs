@@ -314,8 +314,8 @@ fn test_provider_launch_gateway_non_utf8実行pathをterminal_processまで保�
 
 #[test]
 fn test_provider起動準備_base解決の停止を欠損へ変換しない() {
+    use crate::common::operation_context::{Deadline, OperationContext, OperationStopped};
     use crate::domain::agent_session::ProviderAgentLaunchGatewayError;
-    use crate::domain::operation_context::{Deadline, OperationContext, OperationStopped};
     // Given
     let data_dir = tempdir().unwrap();
     let gateway =
@@ -332,7 +332,7 @@ fn test_provider起動準備_base解決の停止を欠損へ変換しない() {
             std::sync::Arc::new(token),
         );
         // When
-        let result = crate::other::operation_context::sync_scope(context, || {
+        let result = crate::common::operation_context::sync_scope(context, || {
             gateway.prepare(
                 &armed(ProviderKind::Claude),
                 ResolvedProviderExecutable::new("/opt/bin/claude".into()).unwrap(),
@@ -342,7 +342,7 @@ fn test_provider起動準備_base解決の停止を欠損へ変換しない() {
         });
         // Then
         assert!(
-            matches!(result, Err(ProviderAgentLaunchGatewayError::Stopped(value)) if value == if expire { OperationStopped::Expired } else { OperationStopped::Cancelled })
+            matches!(result, Err(ProviderAgentLaunchGatewayError::Technical(value)) if value == if expire { OperationStopped::Expired.into() } else { OperationStopped::Cancelled.into() })
         );
     }
 }

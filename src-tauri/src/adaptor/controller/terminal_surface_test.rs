@@ -123,14 +123,14 @@ fn test_ターミナル画面生成_spawn失敗を汎用codeと固定文言へ�
 
 #[test]
 fn test_ターミナル起動性能計測_commandは匿名phaseとdurationだけを返してdrainする() {
-    let _guard = crate::other::telemetry::lock_test_telemetry();
-    crate::other::telemetry::reset_test_metrics();
-    crate::other::telemetry::set_performance_configured(true);
-    crate::other::telemetry::set_performance_enabled(true);
+    let _guard = crate::infrastructure::telemetry::metrics::lock_test_telemetry();
+    crate::infrastructure::telemetry::metrics::reset_test_metrics();
+    crate::infrastructure::telemetry::metrics::set_performance_configured(true);
+    crate::infrastructure::telemetry::metrics::set_performance_enabled(true);
 
     start_terminal_launch_performance_collection_shared();
-    crate::other::telemetry::record_terminal_launch(
-        crate::other::telemetry::TerminalLaunch::PtyOpenAndSpawn,
+    crate::infrastructure::telemetry::metrics::record_terminal_launch(
+        crate::infrastructure::telemetry::metrics::TerminalLaunch::PtyOpenAndSpawn,
         std::time::Duration::from_millis(7),
     );
 
@@ -144,12 +144,12 @@ fn test_ターミナル起動性能計測_commandは匿名phaseとdurationだけ
         ]
     );
     assert!(take_terminal_launch_performance_samples_shared().is_empty());
-    crate::other::telemetry::reset_test_metrics();
+    crate::infrastructure::telemetry::metrics::reset_test_metrics();
 }
 
 #[test]
 fn test_ターミナル起動性能計測_rendererは許可したphaseと有限durationだけを記録する() {
-    let _guard = crate::other::telemetry::lock_test_telemetry();
+    let _guard = crate::infrastructure::telemetry::metrics::lock_test_telemetry();
     start_terminal_launch_performance_collection_shared();
 
     assert!(record_terminal_launch_renderer_phase_shared("provider_id".to_string(), 1.0).is_err());

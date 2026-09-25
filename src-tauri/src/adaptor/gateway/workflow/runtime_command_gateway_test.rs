@@ -62,13 +62,15 @@ async fn test_承認記録読取_保存された事実の破損をdata_lossと�
 
 #[test]
 fn test_workflow起動_停止分類をgateway境界で保持する() {
+    use crate::common::operation_context::OperationStopped;
     use crate::domain::failure::ClassifiedFailure;
-    use crate::domain::operation_context::OperationStopped;
     // Given
     for stopped in [OperationStopped::Expired, OperationStopped::Cancelled] {
         // When
         let error = super::workflow_runtime_error_to_workflow_error(
-            crate::usecase::workflow::runtime_error::WorkflowRuntimeError::Stopped(stopped),
+            crate::usecase::workflow::runtime_error::WorkflowRuntimeError::Technical(
+                stopped.into(),
+            ),
         );
         // Then
         assert_eq!(error.failure_kind(), stopped.failure_kind());

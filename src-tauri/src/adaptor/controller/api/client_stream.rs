@@ -13,7 +13,7 @@ impl TerminalApiDeps {
 pub(super) fn validate_identifier(id: &str) -> Result<(), ConnectError> {
     if id.len() > 128 {
         return Err(crate::adaptor::protocol::connect::classified_error(
-            crate::other::AppError::new("Identifier exceeds 128 bytes")
+            crate::adaptor::presenter::error::AppError::new("Identifier exceeds 128 bytes")
                 .with_failure_kind(crate::domain::failure::FailureKind::InvalidInput),
         ));
     }

@@ -41,16 +41,19 @@ pub(crate) enum AgentSessionReadUsecaseError {
 }
 
 pub(crate) struct AgentSessionReadUsecase {
+    identities: Arc<dyn crate::domain::identity::IdentityIssuer>,
     query: Arc<dyn AgentSessionQueryService>,
     garbage_collection: Arc<dyn AgentSessionGarbageCollectionPort>,
 }
 
 impl AgentSessionReadUsecase {
     pub(crate) fn new(
+        identities: Arc<dyn crate::domain::identity::IdentityIssuer>,
         query: Arc<dyn AgentSessionQueryService>,
         garbage_collection: Arc<dyn AgentSessionGarbageCollectionPort>,
     ) -> Self {
         Self {
+            identities,
             query,
             garbage_collection,
         }
@@ -70,7 +73,10 @@ impl AgentSessionReadUsecase {
         };
         match self
             .garbage_collection
-            .reconcile_garbage_collection(agent_session_id, &gc_request_id())
+            .reconcile_garbage_collection(
+                agent_session_id,
+                &format!("agent-session-read-gc-{}", self.identities.issue()),
+            )
             .await
         {
             Ok(AgentSessionGarbageCollectionOutcome::Retained) => Ok(Some(item)),
@@ -83,13 +89,6 @@ impl AgentSessionReadUsecase {
             Err(error) => Err(map_lifecycle_error(error)),
         }
     }
-}
-
-fn gc_request_id() -> String {
-    format!(
-        "agent-session-read-gc-{}",
-        crate::other::id::unique_simple_id()
-    )
 }
 
 fn map_query_error(error: AgentSessionQueryError) -> AgentSessionReadUsecaseError {

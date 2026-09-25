@@ -114,7 +114,6 @@ pub(crate) fn git_unstage_hunk(repo_path: &str, patch: &str) -> Result<(), CodeE
 }
 
 fn apply_patch(repo_path: &str, patch: &str, reverse: bool) -> Result<(), CodeError> {
-    crate::other::operation_context::check()?;
     git_operation::run(|| Repository::open(repo_path))?;
     #[cfg(test)]
     let program = staging_tests::git_program();
@@ -125,17 +124,15 @@ fn apply_patch(repo_path: &str, patch: &str, reverse: bool) -> Result<(), CodeEr
     if reverse {
         command.arg("--reverse");
     }
-    let output = crate::adaptor::gateway::shared::process::output(
-        command,
-        patch.as_bytes().to_vec(),
-        &crate::other::operation_context::current(),
-    )
-    .map_err(|error| match error {
-        crate::adaptor::gateway::shared::process::ProcessError::Io(error) => CodeError::from(error),
-        crate::adaptor::gateway::shared::process::ProcessError::Stopped(error) => {
-            CodeError::from(error)
-        }
-    })?;
+    let output = crate::infrastructure::process::output::output(command, patch.as_bytes().to_vec())
+        .map_err(|error| match error {
+            crate::infrastructure::process::output::ProcessError::Io(error) => {
+                CodeError::from(error)
+            }
+            crate::infrastructure::process::output::ProcessError::Stopped(error) => {
+                CodeError::from(error)
+            }
+        })?;
     if output.status.success() {
         Ok(())
     } else {

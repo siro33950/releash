@@ -74,3 +74,30 @@ impl WorkQueueRuntime for TokioWorkQueueRuntime {
 #[cfg(test)]
 #[path = "work_queue_test.rs"]
 mod work_queue_tests;
+
+pub(crate) async fn retry<T, E, F, Fut>(
+    queue: &std::sync::Arc<crate::usecase::work_queue::WorkQueueUsecase>,
+    key: crate::usecase::work_queue::WorkKey,
+    policy: crate::common::retry::RetryBackoff,
+    mut operation: F,
+    restart: bool,
+) -> Result<T, E>
+where
+    E: crate::domain::failure::ClassifiedFailure + std::fmt::Debug,
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, E>>,
+{
+    let (_work, attempts, completion) = queue.borrowed(key, policy, restart, true).await;
+    crate::common::retry::requested(
+        attempts,
+        completion,
+        |_| operation(),
+        |value| {
+            value
+                .as_ref()
+                .map(|_| None)
+                .map_err(WorkFailure::from_error)
+        },
+    )
+    .await
+}

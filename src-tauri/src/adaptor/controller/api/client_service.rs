@@ -64,7 +64,7 @@ async fn watch_files<'a>(
     let request: wire::WatchFilesRequest = to_wire(&request.to_owned_message())?;
     let args = request.request.ok_or_else(|| {
         crate::adaptor::protocol::connect::classified_error(
-            crate::other::AppError::new("Missing watch request")
+            crate::adaptor::presenter::error::AppError::new("Missing watch request")
                 .with_failure_kind(crate::domain::failure::FailureKind::InvalidInput),
         )
     })?;
@@ -88,7 +88,7 @@ async fn watch_git_directory<'a>(
     let request: wire::WatchGitDirectoryRequest = to_wire(&request.to_owned_message())?;
     let args = request.request.ok_or_else(|| {
         crate::adaptor::protocol::connect::classified_error(
-            crate::other::AppError::new("Missing watch request")
+            crate::adaptor::presenter::error::AppError::new("Missing watch request")
                 .with_failure_kind(crate::domain::failure::FailureKind::InvalidInput),
         )
     })?;

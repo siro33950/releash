@@ -16,6 +16,7 @@ fn test_ターミナル画面_所有者概要lookup_不在とowner不整合を�
         crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor::default(),
     );
     let application = super::TerminalSurfaceApplication::new(
+        std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
         gateway.clone(),
         Arc::new(TerminalSurfaceEventHub::new()),
     );
@@ -67,6 +68,7 @@ fn test_summary系読み取りはsnapshot全量再構築を伴わない() {
         last_output_at: None,
     });
     let application = super::TerminalSurfaceApplication::new(
+        std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
         gateway.clone(),
         Arc::new(TerminalSurfaceEventHub::new()),
     );
@@ -89,6 +91,7 @@ async fn test_サイズ更新_別入口からも予約順を守り別terminalを
     // Given
     let gateway = Arc::new(super::super::io_usecase::io_usecase_tests::FakePtyGateway::new());
     let application = super::TerminalSurfaceApplication::new(
+        std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
         gateway.clone(),
         Arc::new(TerminalSurfaceEventHub::new()),
     );
@@ -126,6 +129,7 @@ fn test_サイズ更新_最後の完了で待機列を解放し後続予約は�
     // Given
     let gateway = Arc::new(super::super::io_usecase::io_usecase_tests::FakePtyGateway::new());
     let application = super::TerminalSurfaceApplication::new(
+        std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
         gateway.clone(),
         Arc::new(TerminalSurfaceEventHub::new()),
     );
@@ -149,6 +153,7 @@ fn test_サイズ更新_予約の破棄と受付失敗でも待機列を解放�
     // Given
     let gateway = Arc::new(super::super::io_usecase::io_usecase_tests::FakePtyGateway::new());
     let application = super::TerminalSurfaceApplication::new(
+        std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
         gateway.clone(),
         Arc::new(TerminalSurfaceEventHub::new()),
     );
@@ -204,6 +209,7 @@ fn test_終了保存_停止と出力排出の失敗後も別terminalと保存へ
             .collect();
         let gateway = Arc::new(gateway);
         let application = super::TerminalSurfaceApplication::new(
+            std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
             gateway.clone(),
             Arc::new(TerminalSurfaceEventHub::new()),
         );
