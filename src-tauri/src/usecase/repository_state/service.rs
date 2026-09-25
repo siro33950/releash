@@ -166,6 +166,10 @@ impl RepositoryStateService {
     }
 
     pub fn stop_watching(&self, watcher_id: u64) -> Result<bool, RepositoryStateError> {
+        Ok(self.release_watching(watcher_id))
+    }
+
+    pub(crate) fn release_watching(&self, watcher_id: u64) -> bool {
         let mut found = false;
         let mut removed = None;
 
@@ -193,7 +197,7 @@ impl RepositoryStateService {
             state.shutdown();
         }
 
-        Ok(found)
+        found
     }
 
     fn subscribe(

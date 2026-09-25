@@ -311,3 +311,38 @@ fn test_provider_launch_gateway_non_utf8実行pathをterminal_processまで保�
 
     assert_eq!(prepared.process().executable(), executable.as_os_str());
 }
+
+#[test]
+fn test_provider起動準備_base解決の停止を欠損へ変換しない() {
+    use crate::domain::agent_session::ProviderAgentLaunchGatewayError;
+    use crate::domain::operation_context::{Deadline, OperationContext, OperationStopped};
+    // Given
+    let data_dir = tempdir().unwrap();
+    let gateway =
+        LocalProviderAgentLaunchGateway::new(data_dir.path().to_path_buf(), "releash".into());
+    let (dir, repo) = crate::test_support::git::create_test_repo();
+    crate::test_support::git::create_initial_commit(&repo);
+    for expire in [false, true] {
+        let token = tokio_util::sync::CancellationToken::new();
+        if !expire {
+            token.cancel();
+        }
+        let context = OperationContext::new(
+            expire.then(|| Deadline::new(std::time::Instant::now())),
+            std::sync::Arc::new(token),
+        );
+        // When
+        let result = crate::other::operation_context::sync_scope(context, || {
+            gateway.prepare(
+                &armed(ProviderKind::Claude),
+                ResolvedProviderExecutable::new("/opt/bin/claude".into()).unwrap(),
+                ProviderSessionLaunch::New,
+                dir.path().to_str().unwrap(),
+            )
+        });
+        // Then
+        assert!(
+            matches!(result, Err(ProviderAgentLaunchGatewayError::Stopped(value)) if value == if expire { OperationStopped::Expired } else { OperationStopped::Cancelled })
+        );
+    }
+}

@@ -23,7 +23,7 @@ pub(crate) async fn get_workflow_shared(
     name: String,
 ) -> Result<WorkflowDto, AppError> {
     let query = state.workflow_usecase.clone();
-    tokio::task::spawn_blocking(move || {
+    crate::other::operation_context::spawn_blocking(move || {
         query
             .get_workflow(&name)
             .map_err(AppError::from_failure)?
@@ -47,7 +47,7 @@ pub(crate) async fn get_workflow_source_shared(
     name: String,
 ) -> Result<String, AppError> {
     let query = state.workflow_usecase.clone();
-    tokio::task::spawn_blocking(move || {
+    crate::other::operation_context::spawn_blocking(move || {
         query
             .get_workflow_source(&name)
             .map_err(AppError::from_failure)?
@@ -66,7 +66,7 @@ pub(crate) async fn save_workflow_source_shared(
     original_name: Option<String>,
 ) -> Result<SaveWorkflowSourceResultDto, AppError> {
     let usecase = state.workflow_usecase.clone();
-    tokio::task::spawn_blocking(move || {
+    crate::other::operation_context::spawn_blocking(move || {
         match usecase.save_workflow_source_with_diagnostics(&source, original_name.as_deref()) {
             Ok(workflow) => Ok(SaveWorkflowSourceResultDto {
                 variant: Some(Variant::Success(SaveWorkflowSuccess {
@@ -96,7 +96,7 @@ pub(crate) async fn save_workflow_source_shared(
 
 pub(crate) async fn delete_workflow_shared(state: &AppState, name: String) -> Result<(), AppError> {
     let usecase = state.workflow_usecase.clone();
-    tokio::task::spawn_blocking(move || {
+    crate::other::operation_context::spawn_blocking(move || {
         usecase
             .delete_workflow(&name)
             .map_err(AppError::from_failure)
@@ -121,7 +121,7 @@ pub(crate) async fn duplicate_workflow_shared(
     new_name: String,
 ) -> Result<(), AppError> {
     let usecase = state.workflow_usecase.clone();
-    tokio::task::spawn_blocking(move || {
+    crate::other::operation_context::spawn_blocking(move || {
         usecase
             .duplicate_workflow(&source_name, &new_name)
             .map_err(AppError::from_failure)

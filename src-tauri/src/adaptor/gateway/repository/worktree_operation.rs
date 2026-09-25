@@ -39,14 +39,23 @@ impl FileWorktreeOperationLocks {
     fn registry_lock(&self) -> Result<File, RepositoryError> {
         std::fs::create_dir_all(&self.directory)?;
         let registry = self.open("registry")?;
-        fs2::FileExt::lock_exclusive(&registry)?;
+        wait_lock(&registry)?;
         Ok(registry)
     }
 
     fn lease(&self, identity: &str, deleting: bool) -> Result<FileLease, RepositoryError> {
+        let registry = self.registry_lock()?;
+        self.lease_registered(identity, deleting, registry)
+    }
+
+    fn lease_registered(
+        &self,
+        identity: &str,
+        deleting: bool,
+        registry: File,
+    ) -> Result<FileLease, RepositoryError> {
         let identity = worktree_identity(identity)?;
         let key = hex::encode(Sha256::digest(identity.to_string_lossy().as_bytes()));
-        let registry = self.registry_lock()?;
         let mut lease = FileLease {
             files: Vec::new(),
             locks: self.clone(),
@@ -78,7 +87,34 @@ impl FileWorktreeOperationLocks {
     }
 
     fn remove_idle(&self, key: &str) -> Result<(), RepositoryError> {
-        let _registry = self.registry_lock()?;
+        let registry = self.open("registry")?;
+        match fs2::FileExt::try_lock_exclusive(&registry) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                let locks = self.clone();
+                let key = key.to_string();
+                // ponytail: 競合ごとに1スレッド。競合が常態化したら単一cleanup workerへ集約する。
+                std::thread::Builder::new()
+                    .name("worktree-lock-cleanup".into())
+                    .spawn(move || {
+                        let result = crate::adaptor::gateway::shared::file_lock::exclusive(
+                            &registry,
+                            &crate::domain::operation_context::OperationContext::default(),
+                        )
+                        .map_err(lock_error)
+                        .and_then(|()| locks.remove_idle_registered(&key, registry));
+                        if let Err(error) = result {
+                            log::warn!("worktree operation lock cleanup failed: {error}");
+                        }
+                    })?;
+                return Ok(());
+            }
+            Err(error) => return Err(error.into()),
+        }
+        self.remove_idle_registered(key, registry)
+    }
+
+    fn remove_idle_registered(&self, key: &str, _registry: File) -> Result<(), RepositoryError> {
         let mut files = Vec::new();
         for suffix in ["admission", "active"] {
             let path = self.directory.join(format!("{key}.{suffix}"));
@@ -102,6 +138,11 @@ impl FileWorktreeOperationLocks {
 
 impl Drop for FileLease {
     fn drop(&mut self) {
+        for file in &self.files {
+            if let Err(error) = fs2::FileExt::unlock(file) {
+                log::warn!("worktree operation unlock failed: {error}");
+            }
+        }
         self.files.clear();
         if let Err(error) = self.locks.remove_idle(&self.key) {
             log::warn!("worktree operation lock cleanup failed: {error}");
@@ -146,16 +187,16 @@ impl WorktreeOperationLocks for FileWorktreeOperationLocks {
         &self,
         identity: &str,
     ) -> Result<Box<dyn WorktreeOperationLease>, RepositoryError> {
-        let lease = self.lease(identity, true)?;
-        loop {
-            match fs2::FileExt::try_lock_exclusive(&lease.files[1]) {
-                Ok(()) => break,
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                }
-                Err(error) => return Err(error.into()),
-            }
-        }
+        let context = crate::other::operation_context::current();
+        std::fs::create_dir_all(&self.directory)?;
+        let registry = self.open("registry")?;
+        crate::adaptor::gateway::shared::file_lock::exclusive_async(&registry, &context)
+            .await
+            .map_err(lock_error)?;
+        let lease = self.lease_registered(identity, true, registry)?;
+        crate::adaptor::gateway::shared::file_lock::exclusive_async(&lease.files[1], &context)
+            .await
+            .map_err(lock_error)?;
         Ok(Box::new(lease))
     }
 }
@@ -163,3 +204,17 @@ impl WorktreeOperationLocks for FileWorktreeOperationLocks {
 #[cfg(test)]
 #[path = "worktree_operation_test.rs"]
 mod worktree_operation_tests;
+
+fn wait_lock(file: &File) -> Result<(), RepositoryError> {
+    crate::adaptor::gateway::shared::file_lock::exclusive(
+        file,
+        &crate::other::operation_context::current(),
+    )
+    .map_err(lock_error)
+}
+fn lock_error(error: crate::adaptor::gateway::shared::file_lock::LockError) -> RepositoryError {
+    match error {
+        crate::adaptor::gateway::shared::file_lock::LockError::Io(error) => error.into(),
+        crate::adaptor::gateway::shared::file_lock::LockError::Stopped(error) => error.into(),
+    }
+}

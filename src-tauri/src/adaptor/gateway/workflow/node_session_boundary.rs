@@ -100,6 +100,9 @@ fn activation_error(
     node_session_id: &str,
     error: AgentSessionLaunchUsecaseError,
 ) -> WorkflowRuntimeError {
+    if let AgentSessionLaunchUsecaseError::Stopped(stopped) = error {
+        return WorkflowRuntimeError::Stopped(stopped);
+    }
     WorkflowRuntimeError::AgentSession(format!(
         "activate Workflow AgentSession '{node_session_id}': {error}"
     ))
@@ -171,6 +174,7 @@ impl WorkflowAgentSessionPort for ProviderWorkflowAgentSessionPort {
             ))
             .await
             .map_err(|error| {
+                if let AgentSessionLaunchUsecaseError::Stopped(stopped) = error { return WorkflowRuntimeError::Stopped(stopped); }
                 WorkflowRuntimeError::AgentSession(format!(
                     "launch Workflow AgentSession for NodeExecution '{node_execution_id}': {error:?}"
                 ))
@@ -314,6 +318,20 @@ impl WorkflowAgentSessionPort for ProviderWorkflowAgentSessionPort {
 mod tests {
     use super::*;
     use crate::domain::agent_session::ProviderAgentTerminalSpawnError;
+
+    #[test]
+    fn test_session起動停止_分類をruntimeまで保持する() {
+        use crate::domain::failure::ClassifiedFailure;
+        use crate::domain::operation_context::OperationStopped;
+        // Given
+        for stopped in [OperationStopped::Expired, OperationStopped::Cancelled] {
+            // When
+            let error =
+                activation_error("session", AgentSessionLaunchUsecaseError::Stopped(stopped));
+            // Then
+            assert_eq!(error.failure_kind(), stopped.failure_kind());
+        }
+    }
 
     #[test]
     fn test_session起動要求_workspaceと隔離cwdをそれぞれの項目に写す() {

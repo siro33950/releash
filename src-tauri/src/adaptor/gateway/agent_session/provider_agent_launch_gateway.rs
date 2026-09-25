@@ -82,8 +82,12 @@ impl ProviderAgentLaunchGateway for LocalProviderAgentLaunchGateway {
             crate::adaptor::gateway::repository::git_config::resolve_effective_base_branch(
                 worktree_path,
             )
-            .ok()
-            .flatten()
+            .or_else(|error| match error {
+                crate::domain::repository::RepositoryError::Stopped(stopped) => {
+                    Err(ProviderAgentLaunchGatewayError::Stopped(stopped))
+                }
+                _ => Ok(None),
+            })?
         {
             environment.push(("RELEASH_BASE_BRANCH".to_string(), base_branch));
         }

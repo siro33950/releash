@@ -1,9 +1,10 @@
 //! リポジトリパス解決ユーティリティの gateway 実装。
 
+use crate::adaptor::gateway::shared::git_operation;
 use git2::Repository;
 
+use crate::adaptor::gateway::shared::git_operation::detect_default_branch;
 use crate::domain::repository::{RepoLocator, RepositoryError};
-use crate::infrastructure::git::helpers::detect_default_branch;
 
 /// ベースブランチ名をフォールバックチェーンで解決する（repository gateway の業務ルール）。
 /// `branch.<name>.releash-base` → `releash.base` → `detect_default_branch()`。
@@ -14,13 +15,17 @@ pub(crate) fn resolve_branch_base(
     repo: &Repository,
     config: Option<&git2::Config>,
     branch_name: &str,
-) -> Option<String> {
+) -> Result<Option<String>, crate::domain::operation_context::OperationStopped> {
     if let Some(cfg) = config {
-        if let Ok(base) = cfg.get_string(&format!("branch.{branch_name}.releash-base")) {
-            return Some(base);
+        if let Some(base) = git_operation::optional(git_operation::run(|| {
+            cfg.get_string(&format!("branch.{branch_name}.releash-base"))
+        }))? {
+            return Ok(Some(base));
         }
-        if let Ok(base) = cfg.get_string("releash.base") {
-            return Some(base);
+        if let Some(base) =
+            git_operation::optional(git_operation::run(|| cfg.get_string("releash.base")))?
+        {
+            return Ok(Some(base));
         }
     }
     detect_default_branch(repo)
@@ -41,3 +46,7 @@ impl RepoLocator for RepoLocatorGateway {
         get_cwd()
     }
 }
+
+#[cfg(test)]
+#[path = "util_test.rs"]
+mod util_tests;

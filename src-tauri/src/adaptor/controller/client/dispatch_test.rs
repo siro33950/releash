@@ -22,7 +22,9 @@ async fn test_更新通知_成功時だけ購読対象を更新する() {
                 if args.repo_path.as_deref() == Some("/fail") {
                     return Err(invalid_request("Fetch failed"));
                 }
-                git_host.fetch_issues(args.repo_path.as_deref().unwrap());
+                git_host
+                    .fetch_issues(args.repo_path.as_deref().unwrap())
+                    .unwrap();
                 Ok(wire::command_result::Command::FetchIssues(wire::Unit {}))
             })
         }),

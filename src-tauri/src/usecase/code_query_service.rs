@@ -214,16 +214,16 @@ impl CodeQueryService {
         original: &str,
         modified: &str,
         file_path: Option<&str>,
-    ) -> DiffHunksResultDto {
+    ) -> Result<DiffHunksResultDto, CodeUsecaseError> {
         let hunks = self
             .diff_computer
-            .diff_buffers(original, modified, file_path);
+            .diff_buffers(original, modified, file_path)?;
         let hunks = services::hunk::assign_hunk_ids(&hunks);
         let change_groups = services::hunk::compute_change_groups(&hunks);
-        DiffHunksResultDto {
+        Ok(DiffHunksResultDto {
             hunks: hunks.iter().map(hunk_to_dto).collect(),
             change_groups: change_groups.iter().map(change_group_to_dto).collect(),
-        }
+        })
     }
 
     pub fn generate_group_patch(
@@ -252,13 +252,15 @@ impl CodeQueryService {
         original: &str,
         modified: &str,
         context_lines: u32,
-    ) -> Vec<HiddenRangeDto> {
-        let hunks = self.diff_computer.diff_buffers(original, modified, None);
+    ) -> Result<Vec<HiddenRangeDto>, CodeUsecaseError> {
+        let hunks = self.diff_computer.diff_buffers(original, modified, None)?;
         let total_lines = modified.lines().count() as u32;
-        services::hunk::compute_hidden_ranges(&hunks, total_lines, context_lines)
-            .iter()
-            .map(hidden_range_to_dto)
-            .collect()
+        Ok(
+            services::hunk::compute_hidden_ranges(&hunks, total_lines, context_lines)
+                .iter()
+                .map(hidden_range_to_dto)
+                .collect(),
+        )
     }
 
     pub fn compute_visible_markdown_blocks(
@@ -266,12 +268,17 @@ impl CodeQueryService {
         original: &str,
         modified: &str,
         context_lines: u32,
-    ) -> Vec<VisibleBlockDto> {
-        let hunks = self.diff_computer.diff_buffers(original, modified, None);
-        services::hunk::compute_visible_markdown_blocks(&hunks, original, modified, context_lines)
-            .iter()
-            .map(visible_block_to_dto)
-            .collect()
+    ) -> Result<Vec<VisibleBlockDto>, CodeUsecaseError> {
+        let hunks = self.diff_computer.diff_buffers(original, modified, None)?;
+        Ok(services::hunk::compute_visible_markdown_blocks(
+            &hunks,
+            original,
+            modified,
+            context_lines,
+        )
+        .iter()
+        .map(visible_block_to_dto)
+        .collect())
     }
 
     pub fn compute_markdown_diff_ranges(
@@ -279,35 +286,45 @@ impl CodeQueryService {
         original: &str,
         modified: &str,
         side: DiffSide,
-    ) -> Vec<DiffRangeDto> {
-        let hunks = self.diff_computer.diff_buffers(original, modified, None);
+    ) -> Result<Vec<DiffRangeDto>, CodeUsecaseError> {
+        let hunks = self.diff_computer.diff_buffers(original, modified, None)?;
         let blocks = services::markdown_diff::compute_diff_blocks(&hunks, original, modified);
-        services::markdown_diff::markdown_diff_ranges_from_blocks(&blocks, side)
-            .iter()
-            .map(diff_range_to_dto)
-            .collect()
+        Ok(
+            services::markdown_diff::markdown_diff_ranges_from_blocks(&blocks, side)
+                .iter()
+                .map(diff_range_to_dto)
+                .collect(),
+        )
     }
 
-    pub fn compute_markdown_split_rows(&self, original: &str, modified: &str) -> Vec<SplitRowDto> {
-        let hunks = self.diff_computer.diff_buffers(original, modified, None);
+    pub fn compute_markdown_split_rows(
+        &self,
+        original: &str,
+        modified: &str,
+    ) -> Result<Vec<SplitRowDto>, CodeUsecaseError> {
+        let hunks = self.diff_computer.diff_buffers(original, modified, None)?;
         let blocks = services::markdown_diff::compute_diff_blocks(&hunks, original, modified);
-        services::markdown_diff::markdown_split_rows_from_blocks(&blocks)
-            .iter()
-            .map(split_row_to_dto)
-            .collect()
+        Ok(
+            services::markdown_diff::markdown_split_rows_from_blocks(&blocks)
+                .iter()
+                .map(split_row_to_dto)
+                .collect(),
+        )
     }
 
     pub fn compute_markdown_inline_chunks(
         &self,
         original: &str,
         modified: &str,
-    ) -> Vec<InlineChunkDto> {
-        let hunks = self.diff_computer.diff_buffers(original, modified, None);
+    ) -> Result<Vec<InlineChunkDto>, CodeUsecaseError> {
+        let hunks = self.diff_computer.diff_buffers(original, modified, None)?;
         let blocks = services::markdown_diff::compute_diff_blocks(&hunks, original, modified);
-        services::markdown_diff::markdown_inline_chunks_from_blocks(&blocks)
-            .iter()
-            .map(inline_chunk_to_dto)
-            .collect()
+        Ok(
+            services::markdown_diff::markdown_inline_chunks_from_blocks(&blocks)
+                .iter()
+                .map(inline_chunk_to_dto)
+                .collect(),
+        )
     }
 
     // ── language（純粋） ──
@@ -482,8 +499,8 @@ mod code_query_service_tests {
             _original: &str,
             _modified: &str,
             _file_path: Option<&str>,
-        ) -> Vec<Hunk> {
-            vec![Hunk {
+        ) -> Result<Vec<Hunk>, CodeError> {
+            Ok(vec![Hunk {
                 index: 0,
                 hunk_id: String::new(),
                 old_start: 1,
@@ -491,7 +508,7 @@ mod code_query_service_tests {
                 new_start: 1,
                 new_lines: 1,
                 lines: vec!["-a".to_string(), "+b".to_string()],
-            }]
+            }])
         }
     }
 
@@ -540,10 +557,53 @@ mod code_query_service_tests {
     }
 
     #[test]
+    fn test_差分算出_停止を全read_modelの失敗として返す() {
+        use crate::domain::failure::{ClassifiedFailure, FailureKind};
+        use crate::domain::operation_context::OperationStopped;
+        struct StoppedDiff(OperationStopped);
+        impl DiffComputer for StoppedDiff {
+            fn diff_buffers(
+                &self,
+                _: &str,
+                _: &str,
+                _: Option<&str>,
+            ) -> Result<Vec<Hunk>, CodeError> {
+                Err(self.0.into())
+            }
+        }
+        for (stopped, expected) in [
+            (OperationStopped::Expired, FailureKind::Expired),
+            (OperationStopped::Cancelled, FailureKind::Cancelled),
+        ] {
+            let mut service = service();
+            service.diff_computer = Arc::new(StoppedDiff(stopped));
+            let errors = [
+                service.compute_diff_hunks("a", "b", None).unwrap_err(),
+                service
+                    .compute_hidden_ranges_from_content("a", "b", 3)
+                    .unwrap_err(),
+                service
+                    .compute_visible_markdown_blocks("a", "b", 3)
+                    .unwrap_err(),
+                service
+                    .compute_markdown_diff_ranges("a", "b", DiffSide::Modified)
+                    .unwrap_err(),
+                service.compute_markdown_split_rows("a", "b").unwrap_err(),
+                service
+                    .compute_markdown_inline_chunks("a", "b")
+                    .unwrap_err(),
+            ];
+            for error in errors {
+                assert_eq!(error.failure_kind(), expected);
+            }
+        }
+    }
+
+    #[test]
     fn test_diff_hunks算出はchange_groupを付与する() {
         let s = service();
         // FakeDiffComputer が 1 hunk（-a/+b）を返す → change group が 1 件算出される。
-        let result = s.compute_diff_hunks("a\n", "b\n", None);
+        let result = s.compute_diff_hunks("a\n", "b\n", None).unwrap();
         assert_eq!(result.hunks.len(), 1);
         assert_eq!(result.change_groups.len(), 1);
         assert_eq!(result.change_groups[0].hunk_index, 0);
@@ -553,16 +613,18 @@ mod code_query_service_tests {
     fn test_markdown_diff_read_modelを算出する() {
         let s = service();
 
-        let ranges = s.compute_markdown_diff_ranges("a\n", "b\n", DiffSide::Modified);
+        let ranges = s
+            .compute_markdown_diff_ranges("a\n", "b\n", DiffSide::Modified)
+            .unwrap();
         assert_eq!(ranges.len(), 1);
         assert_eq!(ranges[0].start_line, 1);
 
-        let rows = s.compute_markdown_split_rows("a\n", "b\n");
+        let rows = s.compute_markdown_split_rows("a\n", "b\n").unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].left.as_deref(), Some("a\n"));
         assert_eq!(rows[0].right.as_deref(), Some("b\n"));
 
-        let chunks = s.compute_markdown_inline_chunks("a\n", "b\n");
+        let chunks = s.compute_markdown_inline_chunks("a\n", "b\n").unwrap();
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks[0].content, "a\n");
         assert_eq!(chunks[1].content, "b\n");

@@ -1,3 +1,4 @@
+use crate::adaptor::gateway::shared::git_operation;
 use notify_debouncer_mini::DebouncedEvent;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -21,7 +22,7 @@ pub(crate) fn resolve_git_watch_paths(
     let main_repo = usecase
         .get_main_repo_path(repo_path)
         .map_err(|e| format!("Failed to resolve main repo: {e}"))?;
-    let git_dir = git2::Repository::open(&main_repo)
+    let git_dir = git_operation::run(|| git2::Repository::open(&main_repo))
         .map_err(|e| format!("Failed to open repo: {e}"))?
         .path()
         .to_path_buf();

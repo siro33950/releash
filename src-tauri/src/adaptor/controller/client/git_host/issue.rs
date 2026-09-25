@@ -8,7 +8,9 @@ pub(crate) async fn fetch_issues_shared(
 ) -> Result<(), AppError> {
     let uc = usecase.clone();
     run_blocking(move || {
-        uc.fetch_issues(&repo_path);
+        uc.fetch_issues(&repo_path)
+            .map(|_| ())
+            .map_err(AppError::from_failure)
     })
-    .await
+    .await?
 }

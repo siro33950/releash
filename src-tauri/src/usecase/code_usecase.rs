@@ -210,7 +210,7 @@ impl CodeUsecase {
         original: &str,
         modified: &str,
         file_path: Option<&str>,
-    ) -> DiffHunksResultDto {
+    ) -> Result<DiffHunksResultDto, CodeUsecaseError> {
         self.query.compute_diff_hunks(original, modified, file_path)
     }
 
@@ -238,7 +238,7 @@ impl CodeUsecase {
         original: &str,
         modified: &str,
         context_lines: u32,
-    ) -> Vec<HiddenRangeDto> {
+    ) -> Result<Vec<HiddenRangeDto>, CodeUsecaseError> {
         self.query
             .compute_hidden_ranges_from_content(original, modified, context_lines)
     }
@@ -248,7 +248,7 @@ impl CodeUsecase {
         original: &str,
         modified: &str,
         context_lines: u32,
-    ) -> Vec<VisibleBlockDto> {
+    ) -> Result<Vec<VisibleBlockDto>, CodeUsecaseError> {
         self.query
             .compute_visible_markdown_blocks(original, modified, context_lines)
     }
@@ -258,12 +258,16 @@ impl CodeUsecase {
         original: &str,
         modified: &str,
         side: DiffSide,
-    ) -> Vec<DiffRangeDto> {
+    ) -> Result<Vec<DiffRangeDto>, CodeUsecaseError> {
         self.query
             .compute_markdown_diff_ranges(original, modified, side)
     }
 
-    pub fn compute_markdown_split_rows(&self, original: &str, modified: &str) -> Vec<SplitRowDto> {
+    pub fn compute_markdown_split_rows(
+        &self,
+        original: &str,
+        modified: &str,
+    ) -> Result<Vec<SplitRowDto>, CodeUsecaseError> {
         self.query.compute_markdown_split_rows(original, modified)
     }
 
@@ -271,7 +275,7 @@ impl CodeUsecase {
         &self,
         original: &str,
         modified: &str,
-    ) -> Vec<InlineChunkDto> {
+    ) -> Result<Vec<InlineChunkDto>, CodeUsecaseError> {
         self.query
             .compute_markdown_inline_chunks(original, modified)
     }
@@ -464,8 +468,13 @@ mod code_usecase_tests {
 
     struct StubDiffComputer;
     impl DiffComputer for StubDiffComputer {
-        fn diff_buffers(&self, _o: &str, _m: &str, _f: Option<&str>) -> Vec<Hunk> {
-            Vec::new()
+        fn diff_buffers(
+            &self,
+            _o: &str,
+            _m: &str,
+            _f: Option<&str>,
+        ) -> Result<Vec<Hunk>, CodeError> {
+            Ok(Vec::new())
         }
     }
 

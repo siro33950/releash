@@ -71,6 +71,10 @@ impl FileWatchGateway for FileWatcherGateway {
         Ok(id)
     }
 
+    fn release(&self, watcher_id: u64) {
+        self.manager.release_watching(watcher_id);
+    }
+
     fn stop(&self, watcher_id: u64) -> Result<(), String> {
         self.manager.stop_watching(watcher_id)
     }

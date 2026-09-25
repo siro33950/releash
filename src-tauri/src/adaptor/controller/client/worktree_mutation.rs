@@ -24,7 +24,7 @@ where
     T: Send + 'static,
 {
     let guards = MUTATION_GUARDS.try_with(std::sync::Arc::clone).ok();
-    tokio::task::spawn_blocking(move || {
+    crate::other::operation_context::spawn_blocking(move || {
         let _guards = guards;
         operation()
     })

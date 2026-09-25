@@ -70,14 +70,20 @@ impl FileWatcherManager {
     }
 
     pub(crate) fn stop_watching(&self, watcher_id: u64) -> Result<(), String> {
-        let session = self
-            .sessions
-            .lock()
-            .remove(&watcher_id)
-            .ok_or_else(|| format!("Watcher {} not found", watcher_id))?;
+        if self.release_watching(watcher_id) {
+            Ok(())
+        } else {
+            Err(format!("Watcher {} not found", watcher_id))
+        }
+    }
+
+    pub(crate) fn release_watching(&self, watcher_id: u64) -> bool {
+        let Some(session) = self.sessions.lock().remove(&watcher_id) else {
+            return false;
+        };
         // debouncer の drop はブロックし得るため sessions ロックの外・別スレッドで行う（#1641）
         crate::other::dispose::dispose_in_background("file-watcher-dispose", session);
-        Ok(())
+        true
     }
 }
 

@@ -6,9 +6,13 @@
 
 use super::util::resolve_branch_base;
 use super::worktree::each_worktree;
+use crate::adaptor::gateway::shared::git_operation;
+use crate::adaptor::gateway::shared::git_operation::{
+    detect_default_branch, get_branch_name_for_repo,
+};
+use crate::domain::operation_context::OperationStopped;
 use crate::domain::repository::{normalize_repo_path, RepositoryError};
 use crate::infrastructure::git::client;
-use crate::infrastructure::git::helpers::{detect_default_branch, get_branch_name_for_repo};
 use crate::usecase::repository_dto::BranchCardDto;
 use crate::usecase::repository_query_service::BranchCardQuery;
 use git2::{BranchType, Oid, Repository};
@@ -45,62 +49,75 @@ impl DirtyCountSnapshot {
         snapshot
     }
 
-    fn dirty_count_for_path(&mut self, path: &str) -> usize {
+    fn dirty_count_for_path(&mut self, path: &str) -> Result<usize, RepositoryError> {
         let key = normalize_worktree_path(path);
         if let Some(count) = self.counts_by_path.get(&key) {
-            return *count;
+            return Ok(*count);
         }
-        let count = calculate_dirty_count_for_path(Path::new(path)) as usize;
+        let count = calculate_dirty_count_for_path(Path::new(path))? as usize;
         self.counts_by_path.insert(key, count);
-        count
+        Ok(count)
     }
 }
 
-fn calculate_dirty_count_for_path(path: &Path) -> u32 {
+fn calculate_dirty_count_for_path(path: &Path) -> Result<u32, RepositoryError> {
     #[cfg(test)]
     DIRTY_WORKTREE_SCAN_COUNT.with(|count| count.set(count.get() + 1));
     super::worktree::get_dirty_count_for_path(path)
 }
 
-fn is_on_first_parent_line(repo: &Repository, ancestor_oid: Oid, descendant_oid: Oid) -> bool {
+fn is_on_first_parent_line(
+    repo: &Repository,
+    ancestor_oid: Oid,
+    descendant_oid: Oid,
+) -> Result<bool, OperationStopped> {
     let mut current = descendant_oid;
     const MAX_DEPTH: usize = 10_000;
     for _ in 0..MAX_DEPTH {
         if current == ancestor_oid {
-            return true;
+            return Ok(true);
         }
-        match repo.find_commit(current) {
-            Ok(commit) if commit.parent_count() > 0 => match commit.parent_id(0) {
-                Ok(parent_id) => current = parent_id,
-                Err(_) => return false,
-            },
-            _ => return false,
+        let Some(commit) =
+            git_operation::optional(git_operation::run(|| repo.find_commit(current)))?
+        else {
+            return Ok(false);
+        };
+        if commit.parent_count() == 0 {
+            return Ok(false);
         }
+        let Some(parent_id) = git_operation::optional(git_operation::run(|| commit.parent_id(0)))?
+        else {
+            return Ok(false);
+        };
+        current = parent_id;
     }
-    false
+    Ok(false)
 }
 
-fn compute_is_merged(repo: &Repository, branch_oid: Oid, base_target_oid: Option<Oid>) -> bool {
-    base_target_oid
-        .and_then(|t_oid| {
-            if branch_oid == t_oid {
-                return Some(false);
-            }
-            let merge_base = repo.merge_base(branch_oid, t_oid).ok()?;
-            if merge_base != branch_oid {
-                return Some(false);
-            }
-            Some(!is_on_first_parent_line(repo, branch_oid, t_oid))
-        })
-        .unwrap_or(false)
+fn compute_is_merged(
+    repo: &Repository,
+    branch_oid: Oid,
+    base_target_oid: Option<Oid>,
+) -> Result<bool, OperationStopped> {
+    let Some(target) = base_target_oid.filter(|target| *target != branch_oid) else {
+        return Ok(false);
+    };
+    let merge_base =
+        git_operation::optional(git_operation::run(|| repo.merge_base(branch_oid, target)))?;
+    if merge_base != Some(branch_oid) {
+        return Ok(false);
+    }
+    Ok(!is_on_first_parent_line(repo, branch_oid, target)?)
 }
 
 /// メイン workdir とリンク worktree を走査し、`branch 名 → workdir パス` のマップと
 /// メイン workdir パスを返す。
-fn build_worktree_map(repo: &Repository) -> (HashMap<String, String>, Option<String>) {
+fn build_worktree_map(
+    repo: &Repository,
+) -> Result<(HashMap<String, String>, Option<String>), RepositoryError> {
     let mut wt_map: HashMap<String, String> = HashMap::new();
 
-    let main_branch = get_branch_name_for_repo(repo);
+    let main_branch = get_branch_name_for_repo(repo)?;
     let main_workdir = repo
         .workdir()
         .and_then(|p| p.to_str())
@@ -109,14 +126,17 @@ fn build_worktree_map(repo: &Repository) -> (HashMap<String, String>, Option<Str
         wt_map.insert(main_branch, workdir.clone());
     }
 
-    if let Ok(wt_names) = repo.worktrees() {
-        for (_, wt) in each_worktree(repo, &wt_names) {
-            if wt.validate().is_err() {
+    if let Some(wt_names) = git_operation::optional(git_operation::run(|| repo.worktrees()))? {
+        for entry in each_worktree(repo, &wt_names) {
+            let (_, wt) = entry?;
+            if git_operation::optional(git_operation::run(|| wt.validate()))?.is_none() {
                 continue;
             }
             let wt_path = wt.path();
-            if let Ok(wt_repo) = Repository::open(wt_path) {
-                let branch = get_branch_name_for_repo(&wt_repo);
+            if let Some(wt_repo) =
+                git_operation::optional(git_operation::run(|| Repository::open(wt_path)))?
+            {
+                let branch = get_branch_name_for_repo(&wt_repo)?;
                 wt_map.insert(
                     branch,
                     normalize_worktree_path(wt_path.to_str().unwrap_or("")),
@@ -125,7 +145,7 @@ fn build_worktree_map(repo: &Repository) -> (HashMap<String, String>, Option<Str
         }
     }
 
-    (wt_map, main_workdir)
+    Ok((wt_map, main_workdir))
 }
 
 /// is_merged 判定の基準 OID を解決する: `releash.base`（設定）→ 既定ブランチ（fallback）。
@@ -133,12 +153,22 @@ fn resolve_base_target_oid(
     repo: &Repository,
     config: Option<&git2::Config>,
     default_oid: Option<Oid>,
-) -> Option<Oid> {
-    config
-        .and_then(|cfg| cfg.get_string("releash.base").ok())
-        .and_then(|base_name| repo.find_branch(&base_name, BranchType::Local).ok())
-        .and_then(|b| b.get().target())
-        .or(default_oid)
+) -> Result<Option<Oid>, OperationStopped> {
+    let base_name = config
+        .map(|cfg| git_operation::optional(git_operation::run(|| cfg.get_string("releash.base"))))
+        .transpose()?
+        .flatten();
+    let branch = base_name
+        .map(|name| {
+            git_operation::optional(git_operation::run(|| {
+                repo.find_branch(&name, BranchType::Local)
+            }))
+        })
+        .transpose()?
+        .flatten();
+    Ok(branch
+        .and_then(|branch| branch.get().target())
+        .or(default_oid))
 }
 
 /// ローカルブランチ 1 件分のカードを構築する（worktree マッチ・dirty・is_merged・
@@ -156,10 +186,10 @@ fn build_branch_card(
     name: String,
     context: &BranchCardBuildContext,
     dirty_counts: &mut DirtyCountSnapshot,
-) -> BranchCardDto {
+) -> Result<BranchCardDto, RepositoryError> {
     let (worktree_path, dirty_count) = match context.wt_map.get(&name) {
         Some(path) => {
-            let dirty = dirty_counts.dirty_count_for_path(path);
+            let dirty = dirty_counts.dirty_count_for_path(path)?;
             (Some(path.clone()), dirty)
         }
         None => (None, 0),
@@ -169,39 +199,50 @@ fn build_branch_card(
         .get()
         .target()
         .map(|oid| compute_is_merged(context.repo, oid, context.base_target_oid))
+        .transpose()?
         .unwrap_or(false);
 
-    let upstream = branch.upstream().ok();
+    let upstream = git_operation::optional(git_operation::run(|| branch.upstream()))?;
     let has_upstream = upstream.is_some();
-    let (ahead, behind) = upstream
-        .and_then(|u| {
-            let local_oid = branch.get().target()?;
-            let remote_oid = u.get().target()?;
-            context.repo.graph_ahead_behind(local_oid, remote_oid).ok()
+    let upstream_oids =
+        upstream.and_then(|upstream| branch.get().target().zip(upstream.get().target()));
+    let (ahead, behind) = upstream_oids
+        .map(|(local, remote)| {
+            git_operation::optional(git_operation::run(|| {
+                context.repo.graph_ahead_behind(local, remote)
+            }))
         })
+        .transpose()?
+        .flatten()
         .unwrap_or((0, 0));
 
-    let base_ahead = branch
+    let base_name = resolve_branch_base(context.repo, context.config, &name)?;
+    let base_branch = base_name
+        .as_ref()
+        .map(|name| {
+            git_operation::optional(git_operation::run(|| {
+                context.repo.find_branch(name, BranchType::Local)
+            }))
+        })
+        .transpose()?
+        .flatten();
+    let base_oids = branch
         .get()
         .target()
-        .and_then(|branch_oid| {
-            let base_name = resolve_branch_base(context.repo, context.config, &name)?;
-            let base_oid = context
-                .repo
-                .find_branch(&base_name, BranchType::Local)
-                .ok()?
-                .get()
-                .target()?;
-            context
-                .repo
-                .graph_ahead_behind(branch_oid, base_oid)
-                .ok()
-                .map(|(a, _)| a)
+        .zip(base_branch.and_then(|base| base.get().target()));
+    let base_ahead = base_oids
+        .map(|(branch, base)| {
+            git_operation::optional(git_operation::run(|| {
+                context.repo.graph_ahead_behind(branch, base)
+            }))
         })
+        .transpose()?
+        .flatten()
+        .map(|(ahead, _)| ahead)
         .unwrap_or(0);
 
     let is_main_wt = worktree_path.as_deref() == context.main_workdir;
-    BranchCardDto {
+    Ok(BranchCardDto {
         name,
         is_main_worktree: is_main_wt,
         is_deleting: false,
@@ -212,7 +253,7 @@ fn build_branch_card(
         behind,
         has_upstream,
         base_ahead,
-    }
+    })
 }
 
 /// ローカルブランチにマッチしなかった worktree（detached HEAD 等）のカードを構築する。
@@ -221,10 +262,10 @@ fn build_unmatched_worktree_card(
     wt_path: &str,
     main_workdir: Option<&str>,
     dirty_counts: &mut DirtyCountSnapshot,
-) -> BranchCardDto {
-    let dirty_count = dirty_counts.dirty_count_for_path(wt_path);
+) -> Result<BranchCardDto, RepositoryError> {
+    let dirty_count = dirty_counts.dirty_count_for_path(wt_path)?;
     let is_main_wt = main_workdir == Some(wt_path);
-    BranchCardDto {
+    Ok(BranchCardDto {
         name: wt_branch_name.to_string(),
         is_main_worktree: is_main_wt,
         is_deleting: false,
@@ -235,13 +276,13 @@ fn build_unmatched_worktree_card(
         behind: 0,
         has_upstream: false,
         base_ahead: 0,
-    }
+    })
 }
 
 pub(crate) fn list_branches_with_status(
     repo_path: &str,
 ) -> Result<Vec<BranchCardDto>, RepositoryError> {
-    let repo = client::open(repo_path)?;
+    let repo = git_operation::run(|| client::open(repo_path))?;
     list_branches_with_status_for_repo(&repo, DirtyCountSnapshot::empty())
 }
 
@@ -249,7 +290,7 @@ pub(crate) fn list_branches_with_status_for_scan(
     repo_path: &str,
     current_dirty_count: usize,
 ) -> Result<Vec<BranchCardDto>, RepositoryError> {
-    let repo = client::open(repo_path)?;
+    let repo = git_operation::run(|| client::open(repo_path))?;
     let current_workdir = repo
         .workdir()
         .and_then(|path| path.to_str())
@@ -264,20 +305,24 @@ fn list_branches_with_status_for_repo(
     repo: &Repository,
     mut dirty_counts: DirtyCountSnapshot,
 ) -> Result<Vec<BranchCardDto>, RepositoryError> {
-    let default_branch = detect_default_branch(repo);
+    let default_branch = detect_default_branch(repo)?;
 
-    let default_oid = default_branch.as_ref().and_then(|name| {
-        repo.find_branch(name, BranchType::Local)
-            .ok()?
-            .get()
-            .target()
-    });
+    let default_oid = default_branch
+        .as_ref()
+        .map(|name| {
+            git_operation::optional(git_operation::run(|| {
+                repo.find_branch(name, BranchType::Local)
+            }))
+        })
+        .transpose()?
+        .flatten()
+        .and_then(|branch| branch.get().target());
 
-    let (wt_map, main_workdir) = build_worktree_map(repo);
+    let (wt_map, main_workdir) = build_worktree_map(repo)?;
 
-    let local_branches = repo.branches(Some(BranchType::Local))?;
-    let config = repo.config().ok();
-    let base_target_oid = resolve_base_target_oid(repo, config.as_ref(), default_oid);
+    let local_branches = git_operation::run(|| repo.branches(Some(BranchType::Local)))?;
+    let config = git_operation::optional(git_operation::run(|| repo.config()))?;
+    let base_target_oid = resolve_base_target_oid(repo, config.as_ref(), default_oid)?;
     let context = BranchCardBuildContext {
         repo,
         wt_map: &wt_map,
@@ -290,7 +335,7 @@ fn list_branches_with_status_for_repo(
     let mut matched_wt_keys: HashSet<String> = HashSet::new();
     for branch in local_branches {
         let (branch, _) = branch?;
-        let name = match branch.name()? {
+        let name = match git_operation::run(|| branch.name())? {
             Some(n) => n.to_string(),
             None => continue,
         };
@@ -304,7 +349,7 @@ fn list_branches_with_status_for_repo(
             name,
             &context,
             &mut dirty_counts,
-        ));
+        )?);
     }
 
     // wt_map に残ったエントリ（ローカルブランチにマッチしなかったワークツリー）を追加
@@ -318,7 +363,7 @@ fn list_branches_with_status_for_repo(
             wt_path,
             main_workdir.as_deref(),
             &mut dirty_counts,
-        ));
+        )?);
     }
 
     Ok(cards)
@@ -526,7 +571,7 @@ mod branch_card_gateway_tests {
         add_and_commit(&repo, "feat.txt", "feat", "feature commit");
         let feature_commit = repo.head().unwrap().peel_to_commit().unwrap();
 
-        let default_branch = detect_default_branch(&repo).unwrap();
+        let default_branch = detect_default_branch(&repo).unwrap().unwrap();
         repo.set_head(&format!("refs/heads/{default_branch}"))
             .unwrap();
         repo.checkout_head(Some(CheckoutBuilder::new().force()))
@@ -569,7 +614,7 @@ mod branch_card_gateway_tests {
             .unwrap();
         add_and_commit(&repo, "feat.txt", "feat", "feature commit");
 
-        let default_branch = detect_default_branch(&repo).unwrap();
+        let default_branch = detect_default_branch(&repo).unwrap().unwrap();
         repo.set_head(&format!("refs/heads/{default_branch}"))
             .unwrap();
         repo.checkout_head(Some(CheckoutBuilder::new().force()))
@@ -636,7 +681,7 @@ mod branch_card_gateway_tests {
         )
         .unwrap();
 
-        let default_branch = detect_default_branch(&repo).unwrap();
+        let default_branch = detect_default_branch(&repo).unwrap().unwrap();
         repo.set_head(&format!("refs/heads/{default_branch}"))
             .unwrap();
         repo.checkout_head(Some(CheckoutBuilder::new().force()))
@@ -770,3 +815,7 @@ mod branch_card_gateway_tests {
         assert!(detached_card.is_main_worktree);
     }
 }
+
+#[cfg(test)]
+#[path = "branch_card_test.rs"]
+mod branch_card_tests;

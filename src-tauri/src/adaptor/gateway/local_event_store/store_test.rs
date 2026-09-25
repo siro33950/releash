@@ -547,3 +547,59 @@ async fn test_node事実追記_件数とbyteの上限まで保存し超過は保
         assert_eq!(sequences[count - 1], count as i64);
     }
 }
+
+#[tokio::test]
+async fn test_書込待ち_期限と取り消しで待ちを終えても受理済みの事実は保存する() {
+    use crate::domain::failure::{ClassifiedFailure, FailureKind};
+    use crate::domain::operation_context::{Deadline, OperationContext};
+    use std::time::{Duration, Instant};
+    for expire in [false, true] {
+        // Given
+        let directory = tempfile::tempdir().unwrap();
+        let store =
+            LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into()))
+                .unwrap();
+        let stall = store.fault_injector().arm_node_event_append_stall();
+        let token = tokio_util::sync::CancellationToken::new();
+        let context = OperationContext::new(
+            expire.then(|| Deadline::new(Instant::now() + Duration::from_millis(30))),
+            std::sync::Arc::new(token.clone()),
+        );
+        let append = crate::other::operation_context::scope(
+            context,
+            store.append_node_event(fact_row(), None),
+        );
+        tokio::pin!(append);
+        assert!(futures_util::poll!(&mut append).is_pending());
+        stall.wait_until_arrived();
+        // When
+        if !expire {
+            token.cancel();
+        }
+        let error = tokio::time::timeout(Duration::from_secs(2), append)
+            .await
+            .unwrap()
+            .unwrap_err();
+        // Then
+        assert_eq!(
+            error.failure_kind(),
+            if expire {
+                FailureKind::Expired
+            } else {
+                FailureKind::Cancelled
+            }
+        );
+        stall.release();
+        assert_eq!(store.append_node_event(fact_row(), None).await.unwrap(), 2);
+        assert_eq!(
+            store
+                .submit_query(|connection| connection
+                    .query_row("SELECT count(*) FROM node_events", [], |row| row
+                        .get::<_, i64>(0))
+                    .map_err(|error| super::super::reader::storage_unavailable(&error)))
+                .await
+                .unwrap(),
+            2
+        );
+    }
+}

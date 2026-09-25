@@ -20,7 +20,7 @@ pub(crate) async fn diagnose_all_impl(
         crate::usecase::workflow::ports::WorkflowDiagnosticsTarget::from_optional_directory(dir)
             .map_err(AppError::from_failure)?;
     let usecase = usecase.clone();
-    tokio::task::spawn_blocking(move || {
+    crate::other::operation_context::spawn_blocking(move || {
         usecase.diagnose_all(target).map_err(AppError::from_failure)
     })
     .await

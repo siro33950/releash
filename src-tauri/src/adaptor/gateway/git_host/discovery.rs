@@ -1,15 +1,27 @@
-pub(super) fn get_origin_url(repo_path: &str) -> Option<String> {
-    let repo = git2::Repository::open(repo_path).ok()?;
-    let remote = repo.find_remote("origin").ok()?;
-    remote.url().ok().map(|s| s.to_string())
+use crate::adaptor::gateway::shared::git_operation;
+pub(super) fn get_origin_url(
+    repo_path: &str,
+) -> Result<Option<String>, crate::domain::operation_context::OperationStopped> {
+    let Some(repo) =
+        git_operation::optional(git_operation::run(|| git2::Repository::open(repo_path)))?
+    else {
+        return Ok(None);
+    };
+    let Some(remote) = git_operation::optional(git_operation::run(|| repo.find_remote("origin")))?
+    else {
+        return Ok(None);
+    };
+    Ok(remote.url().ok().map(|s| s.to_string()))
 }
 
 pub(super) fn is_github(url: &str) -> bool {
     url.contains("github.com")
 }
 
-pub(super) fn is_github_repository(repo_path: &str) -> bool {
-    get_origin_url(repo_path).is_some_and(|url| is_github(&url))
+pub(super) fn is_github_repository(
+    repo_path: &str,
+) -> Result<bool, crate::domain::operation_context::OperationStopped> {
+    Ok(get_origin_url(repo_path)?.is_some_and(|url| is_github(&url)))
 }
 
 #[cfg(test)]
@@ -21,7 +33,9 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         git2::Repository::init(dir.path()).unwrap();
 
-        assert!(get_origin_url(dir.path().to_str().unwrap()).is_none());
+        assert!(get_origin_url(dir.path().to_str().unwrap())
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -31,7 +45,9 @@ mod tests {
         repo.remote("origin", "https://github.com/user/repo.git")
             .unwrap();
 
-        let url = get_origin_url(dir.path().to_str().unwrap()).unwrap();
+        let url = get_origin_url(dir.path().to_str().unwrap())
+            .unwrap()
+            .unwrap();
         assert!(url.contains("github.com"));
     }
 
@@ -51,7 +67,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         git2::Repository::init(dir.path()).unwrap();
 
-        assert!(!is_github_repository(dir.path().to_str().unwrap()));
+        assert!(!is_github_repository(dir.path().to_str().unwrap()).unwrap());
     }
 
     #[test]
@@ -61,6 +77,10 @@ mod tests {
         repo.remote("origin", "git@github.com:user/repo.git")
             .unwrap();
 
-        assert!(is_github_repository(dir.path().to_str().unwrap()));
+        assert!(is_github_repository(dir.path().to_str().unwrap()).unwrap());
     }
 }
+
+#[cfg(test)]
+#[path = "discovery_test.rs"]
+mod discovery_tests;

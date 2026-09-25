@@ -13,10 +13,8 @@ pub(crate) async fn compute_markdown_diff_ranges_shared(
     side: MarkdownDiffSideInput,
 ) -> Result<Vec<DiffRangeDto>, AppError> {
     let uc = state.code_usecase.clone();
-    run_blocking(move || {
-        Ok(uc.compute_markdown_diff_ranges(&original, &modified, side.into_usecase()))
-    })
-    .await
+    run_blocking(move || uc.compute_markdown_diff_ranges(&original, &modified, side.into_usecase()))
+        .await
 }
 
 pub(crate) async fn compute_markdown_split_rows_shared(
@@ -25,7 +23,7 @@ pub(crate) async fn compute_markdown_split_rows_shared(
     modified: String,
 ) -> Result<Vec<SplitRowDto>, AppError> {
     let uc = state.code_usecase.clone();
-    run_blocking(move || Ok(uc.compute_markdown_split_rows(&original, &modified))).await
+    run_blocking(move || uc.compute_markdown_split_rows(&original, &modified)).await
 }
 
 pub(crate) async fn compute_markdown_inline_chunks_shared(
@@ -34,5 +32,5 @@ pub(crate) async fn compute_markdown_inline_chunks_shared(
     modified: String,
 ) -> Result<Vec<InlineChunkDto>, AppError> {
     let uc = state.code_usecase.clone();
-    run_blocking(move || Ok(uc.compute_markdown_inline_chunks(&original, &modified))).await
+    run_blocking(move || uc.compute_markdown_inline_chunks(&original, &modified)).await
 }

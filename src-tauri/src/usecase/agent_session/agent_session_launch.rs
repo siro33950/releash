@@ -70,6 +70,7 @@ pub(crate) enum AgentSessionHistoryResumeOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AgentSessionLaunchUsecaseError {
+    Stopped(crate::domain::operation_context::OperationStopped),
     Store(crate::domain::failure::FailureKind),
     ProviderUnavailable,
     InvalidInput,
@@ -1125,6 +1126,9 @@ fn map_lifecycle_error(error: ProviderLifecycleUsecaseError) -> AgentSessionLaun
 
 fn map_launch_error(error: ProviderAgentLaunchGatewayError) -> AgentSessionLaunchUsecaseError {
     match error {
+        ProviderAgentLaunchGatewayError::Stopped(stopped) => {
+            AgentSessionLaunchUsecaseError::Stopped(stopped)
+        }
         ProviderAgentLaunchGatewayError::InvalidInput => {
             AgentSessionLaunchUsecaseError::InvalidInput
         }
@@ -1157,6 +1161,7 @@ impl crate::domain::failure::ClassifiedFailure for AgentSessionLaunchUsecaseErro
         use crate::domain::failure::FailureKind;
         match self {
             Self::Store(kind) => *kind,
+            Self::Stopped(stopped) => stopped.failure_kind(),
             Self::ProviderUnavailable => FailureKind::StateRequired,
             Self::InvalidInput => FailureKind::InvalidInput,
             Self::Conflict(kind) => *kind,

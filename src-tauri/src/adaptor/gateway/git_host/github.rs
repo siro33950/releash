@@ -1,9 +1,6 @@
 use std::collections::HashMap;
-use std::io::Read;
-use std::process::{Command, Stdio};
 use std::sync::Arc;
-use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde::Deserialize;
 
@@ -29,7 +26,7 @@ impl GitHubGitHostGateway {
 impl Default for GitHubGitHostGateway {
     fn default() -> Self {
         Self {
-            runner: Arc::new(SystemGhCommandRunner),
+            runner: Arc::new(SystemGhCommandRunner::default()),
         }
     }
 }
@@ -44,102 +41,48 @@ enum GhCommandOutput {
     SpawnFailed(String),
     NonZero { status: String, stderr: String },
     Timeout,
-    TryWaitFailed(String),
-    ReadFailed,
+    Stopped(crate::domain::operation_context::OperationStopped),
     InvalidUtf8,
 }
 
-struct SystemGhCommandRunner;
+#[derive(Default)]
+struct SystemGhCommandRunner {
+    #[cfg(test)]
+    program: Option<std::path::PathBuf>,
+}
 
 impl GhCommandRunner for SystemGhCommandRunner {
     fn output(&self, args: &[&str], repo_path: &str) -> GhCommandOutput {
-        let spawn_guard = crate::infrastructure::process::parent_lifetime::spawn_guard();
-        let mut child = match Command::new("gh")
-            .args(args)
-            .current_dir(repo_path)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-        {
-            Ok(c) => c,
-            Err(e) => return GhCommandOutput::SpawnFailed(e.to_string()),
-        };
-
-        drop(spawn_guard);
-        let Some(stdout) = child.stdout.take() else {
-            let _ = child.kill();
-            let _ = child.wait();
-            return GhCommandOutput::ReadFailed;
-        };
-        let Some(stderr) = child.stderr.take() else {
-            let _ = child.kill();
-            let _ = child.wait();
-            return GhCommandOutput::ReadFailed;
-        };
-        let stdout_reader = spawn_pipe_reader(stdout);
-        let stderr_reader = spawn_pipe_reader(stderr);
-
-        let start = Instant::now();
-        loop {
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    let stdout_buf = join_pipe_reader(stdout_reader);
-                    let stderr_buf = join_pipe_reader(stderr_reader).unwrap_or_default();
-                    if !status.success() {
-                        let stderr = String::from_utf8(stderr_buf).unwrap_or_default();
-                        return GhCommandOutput::NonZero {
-                            status: status.to_string(),
-                            stderr,
-                        };
-                    }
-
-                    let Some(stdout_buf) = stdout_buf else {
-                        return GhCommandOutput::ReadFailed;
-                    };
-                    return String::from_utf8(stdout_buf)
-                        .map(GhCommandOutput::Success)
-                        .unwrap_or(GhCommandOutput::InvalidUtf8);
-                }
-                Ok(None) => {
-                    if start.elapsed() > GH_TIMEOUT {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        let _ = join_pipe_reader(stdout_reader);
-                        let _ = join_pipe_reader(stderr_reader);
-                        return GhCommandOutput::Timeout;
-                    }
-                    thread::sleep(Duration::from_millis(100));
-                }
-                Err(e) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    let _ = join_pipe_reader(stdout_reader);
-                    let _ = join_pipe_reader(stderr_reader);
-                    return GhCommandOutput::TryWaitFailed(e.to_string());
-                }
+        let program = std::path::Path::new("gh");
+        #[cfg(test)]
+        let program = self.program.as_deref().unwrap_or(program);
+        let mut command = tokio::process::Command::new(program);
+        command.args(args).current_dir(repo_path);
+        let context = crate::other::operation_context::with_timeout(GH_TIMEOUT);
+        match crate::adaptor::gateway::shared::process::output(command, Vec::new(), &context) {
+            Ok(output) if output.status.success() => String::from_utf8(output.stdout)
+                .map(GhCommandOutput::Success)
+                .unwrap_or(GhCommandOutput::InvalidUtf8),
+            Ok(output) => GhCommandOutput::NonZero {
+                status: output.status.to_string(),
+                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            },
+            Err(crate::adaptor::gateway::shared::process::ProcessError::Stopped(
+                crate::domain::operation_context::OperationStopped::Expired,
+            )) => GhCommandOutput::Timeout,
+            Err(crate::adaptor::gateway::shared::process::ProcessError::Stopped(error)) => {
+                GhCommandOutput::Stopped(error)
+            }
+            Err(crate::adaptor::gateway::shared::process::ProcessError::Io(error)) => {
+                GhCommandOutput::SpawnFailed(error.to_string())
             }
         }
     }
 }
 
-fn spawn_pipe_reader<R>(mut pipe: R) -> JoinHandle<Option<Vec<u8>>>
-where
-    R: Read + Send + 'static,
-{
-    thread::spawn(move || {
-        let mut buf = Vec::new();
-        pipe.read_to_end(&mut buf).ok()?;
-        Some(buf)
-    })
-}
-
-fn join_pipe_reader(handle: JoinHandle<Option<Vec<u8>>>) -> Option<Vec<u8>> {
-    handle.join().ok().flatten()
-}
-
 impl GitHostProvider for GitHubGitHostGateway {
     fn fetch_pr_status(&self, repo_path: &str) -> Result<PrStatus, GitHostError> {
-        if !is_github_repository(repo_path) {
+        if !is_github_repository(repo_path).map_err(GitHostError::Stopped)? {
             return Ok(PrStatus::default());
         }
 
@@ -149,9 +92,9 @@ impl GitHostProvider for GitHubGitHostGateway {
         })
     }
 
-    fn list_issues(&self, repo_path: &str) -> Vec<IssueInfo> {
-        if !is_github_repository(repo_path) {
-            return Vec::new();
+    fn list_issues(&self, repo_path: &str) -> Result<Vec<IssueInfo>, GitHostError> {
+        if !is_github_repository(repo_path).map_err(GitHostError::Stopped)? {
+            return Ok(Vec::new());
         }
 
         let output = run_gh_with_timeout(
@@ -174,11 +117,12 @@ impl GitHostProvider for GitHubGitHostGateway {
                 if issues.is_empty() && stdout.trim() != "[]" && !stdout.trim().is_empty() {
                     eprintln!("{}", list_issues_parse_empty_log_message(&stdout));
                 }
-                issues
+                Ok(issues)
             }
+            Err(error @ GitHostError::Stopped(_)) => Err(error),
             Err(error) => {
                 eprintln!("[list_issues] {error}");
-                Vec::new()
+                Ok(Vec::new())
             }
         }
     }
@@ -202,7 +146,7 @@ fn detect_open_prs(
         ],
         repo_path,
     );
-    parse_gh_pr_list_output(&output.map_err(GitHostError)?)
+    parse_gh_pr_list_output(&output?)
 }
 
 fn detect_merged_prs(
@@ -223,26 +167,31 @@ fn detect_merged_prs(
         ],
         repo_path,
     );
-    parse_gh_merged_pr_output(&output.map_err(GitHostError)?)
+    parse_gh_merged_pr_output(&output?)
 }
 
 fn run_gh_with_timeout(
     runner: &dyn GhCommandRunner,
     args: &[&str],
     repo_path: &str,
-) -> Result<String, String> {
+) -> Result<String, GitHostError> {
+    crate::other::operation_context::check().map_err(GitHostError::Stopped)?;
     let command = args.join(" ");
-    match runner.output(args, repo_path) {
-        GhCommandOutput::Success(stdout) => Ok(stdout),
-        GhCommandOutput::SpawnFailed(error) => Err(format!("gh spawn failed: {error}")),
-        GhCommandOutput::NonZero { status, stderr } => Err(format!(
-            "gh exit {status} for `gh {command}` in {repo_path}: {stderr}"
-        )),
-        GhCommandOutput::Timeout => Err(format!("gh timeout for `gh {command}` in {repo_path}")),
-        GhCommandOutput::TryWaitFailed(error) => Err(format!("gh try_wait error: {error}")),
-        GhCommandOutput::ReadFailed => Err(format!("gh output read failed for `gh {command}`")),
-        GhCommandOutput::InvalidUtf8 => Err(format!("gh output is not UTF-8 for `gh {command}`")),
-    }
+    let result = match runner.output(args, repo_path) {
+        GhCommandOutput::Success(stdout) => return Ok(stdout),
+        GhCommandOutput::Stopped(error) => return Err(GitHostError::Stopped(error)),
+        GhCommandOutput::Timeout => {
+            return Err(GitHostError::Stopped(
+                crate::domain::operation_context::OperationStopped::Expired,
+            ))
+        }
+        GhCommandOutput::SpawnFailed(error) => format!("gh spawn failed: {error}"),
+        GhCommandOutput::NonZero { status, stderr } => {
+            format!("gh exit {status} for `gh {command}` in {repo_path}: {stderr}")
+        }
+        GhCommandOutput::InvalidUtf8 => format!("gh output is not UTF-8 for `gh {command}`"),
+    };
+    Err(GitHostError::External(result))
 }
 
 fn list_issues_parse_empty_log_message(stdout: &str) -> String {
@@ -254,7 +203,7 @@ fn list_issues_parse_empty_log_message(stdout: &str) -> String {
 
 fn parse_gh_pr_items(json_str: &str) -> Result<Vec<serde_json::Value>, GitHostError> {
     serde_json::from_str(json_str)
-        .map_err(|error| GitHostError(format!("gh pr list output is invalid: {error}")))
+        .map_err(|error| GitHostError::External(format!("gh pr list output is invalid: {error}")))
 }
 
 fn parse_gh_pr_list_output(json_str: &str) -> Result<HashMap<String, PrInfo>, GitHostError> {
@@ -492,7 +441,9 @@ mod tests {
         repo.remote("origin", "https://gitlab.com/user/repo.git")
             .unwrap();
 
-        let issues = GitHubGitHostGateway::default().list_issues(dir.path().to_str().unwrap());
+        let issues = GitHubGitHostGateway::default()
+            .list_issues(dir.path().to_str().unwrap())
+            .unwrap();
 
         assert!(issues.is_empty());
     }
@@ -571,7 +522,8 @@ mod tests {
         );
 
         let issues = GitHubGitHostGateway::with_runner(runner.clone())
-            .list_issues(dir.path().to_str().unwrap());
+            .list_issues(dir.path().to_str().unwrap())
+            .unwrap();
 
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].number, 305);
@@ -604,14 +556,24 @@ mod tests {
                 FakeGhRunner::new()
                     .with_output(&open_pr_list_args(), failure.clone())
                     .with_output(&merged_pr_list_args(), failure.clone())
-                    .with_output(&issue_list_args(), failure),
+                    .with_output(&issue_list_args(), failure.clone()),
             );
             let gateway = GitHubGitHostGateway::with_runner(runner);
 
             assert!(gateway
                 .fetch_pr_status(dir.path().to_str().unwrap())
                 .is_err());
-            assert!(gateway.list_issues(dir.path().to_str().unwrap()).is_empty());
+            let issues = gateway.list_issues(dir.path().to_str().unwrap());
+            if failure == GhCommandOutput::Timeout {
+                assert!(matches!(
+                    issues,
+                    Err(GitHostError::Stopped(
+                        crate::domain::operation_context::OperationStopped::Expired
+                    ))
+                ));
+            } else {
+                assert!(issues.unwrap().is_empty());
+            }
         }
     }
 
@@ -812,3 +774,7 @@ mod tests {
         assert!(!message.contains(&stdout));
     }
 }
+
+#[cfg(test)]
+#[path = "github_test.rs"]
+mod github_tests;

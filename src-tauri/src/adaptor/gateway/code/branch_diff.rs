@@ -6,6 +6,7 @@
 //! usecase の orchestration（`CodeQueryService` が `BranchBaseResolver` 越しに
 //! repository へ委譲）で解決済みの base 名を受け取り、merge-base diff の計算のみを担う。
 
+use crate::adaptor::gateway::shared::git_operation;
 use git2::Repository;
 
 use crate::domain::code::CodeError;
@@ -14,7 +15,7 @@ use crate::usecase::code_query_service::BranchDiffQuery;
 
 /// リポジトリにまだコミットが無い（HEAD が unborn branch を指す）場合に true。
 fn is_unborn_branch(repo: &Repository) -> Result<bool, CodeError> {
-    match repo.head() {
+    match git_operation::run(|| repo.head()) {
         Ok(_) => Ok(false),
         Err(e) if e.code() == git2::ErrorCode::UnbornBranch => Ok(true),
         Err(e) => Err(CodeError::from(e)),
@@ -29,7 +30,7 @@ pub(crate) fn get_branch_diff_summary(
     base_name: Option<&str>,
     base_commit_oid: Option<&str>,
 ) -> Result<BranchDiffSummaryDto, CodeError> {
-    let repo = Repository::open(repo_path)?;
+    let repo = git_operation::run(|| Repository::open(repo_path))?;
     if is_unborn_branch(&repo)? {
         return Ok(BranchDiffSummaryDto {
             base_branch: String::new(),
@@ -44,20 +45,22 @@ pub(crate) fn get_branch_diff_summary(
     // 解決済み base OID から計算する（`None` は detached / 未設定で HEAD フォールバック）。
     let base_ref = base_name.unwrap_or("HEAD").to_string();
     let base_commit = super::resolve_merge_base_commit(&repo, base_commit_oid)?;
-    let base_tree = base_commit.tree()?;
+    let base_tree = git_operation::run(|| base_commit.tree())?;
 
     let mut opts = git2::DiffOptions::new();
     opts.include_untracked(true);
     opts.recurse_untracked_dirs(true);
     opts.show_untracked_content(true);
 
-    let diff = repo.diff_tree_to_workdir_with_index(Some(&base_tree), Some(&mut opts))?;
+    let diff = git_operation::run(|| {
+        repo.diff_tree_to_workdir_with_index(Some(&base_tree), Some(&mut opts))
+    })?;
     let mut find_opts = git2::DiffFindOptions::new();
     find_opts.renames(true).copies(true);
     let mut diff = diff;
-    diff.find_similar(Some(&mut find_opts))?;
+    git_operation::run(|| diff.find_similar(Some(&mut find_opts)))?;
 
-    let stats = diff.stats()?;
+    let stats = git_operation::run(|| diff.stats())?;
     let total_additions = stats.insertions() as u32;
     let total_deletions = stats.deletions() as u32;
 
@@ -96,13 +99,13 @@ pub(crate) fn get_branch_diff_summary(
 
         let (additions, deletions) = if binary {
             (0u32, 0u32)
-        } else if let Some(patch) = git2::Patch::from_diff(&diff, i)? {
+        } else if let Some(patch) = git_operation::run(|| git2::Patch::from_diff(&diff, i))? {
             let mut adds = 0u32;
             let mut dels = 0u32;
             for h in 0..patch.num_hunks() {
-                let lines = patch.num_lines_in_hunk(h)?;
+                let lines = git_operation::run(|| patch.num_lines_in_hunk(h))?;
                 for l in 0..lines {
-                    let line = patch.line_in_hunk(h, l)?;
+                    let line = git_operation::run(|| patch.line_in_hunk(h, l))?;
                     match line.origin() {
                         '+' => adds += 1,
                         '-' => dels += 1,
@@ -284,3 +287,7 @@ mod branch_diff_gateway_tests {
         assert!(!summary.changed_files.iter().any(|f| f.path == "file.txt"));
     }
 }
+
+#[cfg(test)]
+#[path = "branch_diff_test.rs"]
+mod branch_diff_tests;

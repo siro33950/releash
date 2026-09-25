@@ -2,6 +2,7 @@
 //! git config 読み書きを封じ込める。
 
 use super::util::resolve_branch_base;
+use crate::adaptor::gateway::shared::git_operation;
 use crate::domain::repository::{GitConfigRepository, RepositoryError};
 use crate::infrastructure::git::client;
 
@@ -9,9 +10,9 @@ pub(crate) fn get_branch_base(
     repo_path: &str,
     branch_name: &str,
 ) -> Result<Option<String>, RepositoryError> {
-    let repo = client::open(repo_path)?;
-    let config = repo.config().ok();
-    Ok(resolve_branch_base(&repo, config.as_ref(), branch_name))
+    let repo = git_operation::run(|| client::open(repo_path))?;
+    let config = git_operation::optional(git_operation::run(|| repo.config()))?;
+    Ok(resolve_branch_base(&repo, config.as_ref(), branch_name)?)
 }
 
 /// `value` が `Some` なら `key` を設定、`None` なら削除する。削除時の
@@ -23,8 +24,8 @@ fn set_or_remove(
     value: Option<&str>,
 ) -> Result<(), RepositoryError> {
     match value {
-        Some(v) => config.set_str(key, v)?,
-        None => match config.remove(key) {
+        Some(v) => git_operation::run(|| config.set_str(key, v))?,
+        None => match git_operation::run(|| config.remove(key)) {
             Ok(()) => {}
             Err(e) if e.code() == git2::ErrorCode::NotFound => {}
             Err(e) => return Err(e.into()),
@@ -38,24 +39,26 @@ pub(crate) fn set_branch_base_override(
     branch_name: &str,
     base: Option<&str>,
 ) -> Result<(), RepositoryError> {
-    let repo = client::open(repo_path)?;
-    let mut config = repo.config()?;
+    let repo = git_operation::run(|| client::open(repo_path))?;
+    let mut config = git_operation::run(|| repo.config())?;
     let key = format!("branch.{branch_name}.releash-base");
     set_or_remove(&mut config, &key, base)
 }
 
 pub(crate) fn get_releash_base(repo_path: &str) -> Result<Option<String>, RepositoryError> {
-    let repo = client::open(repo_path)?;
-    let base = repo
-        .config()
-        .ok()
-        .and_then(|cfg| cfg.get_string("releash.base").ok());
+    let repo = git_operation::run(|| client::open(repo_path))?;
+    let base = match git_operation::optional(git_operation::run(|| repo.config()))? {
+        Some(cfg) => {
+            git_operation::optional(git_operation::run(|| cfg.get_string("releash.base")))?
+        }
+        None => None,
+    };
     Ok(base)
 }
 
 pub(crate) fn set_releash_base(repo_path: &str, base: Option<&str>) -> Result<(), RepositoryError> {
-    let repo = client::open(repo_path)?;
-    let mut config = repo.config()?;
+    let repo = git_operation::run(|| client::open(repo_path))?;
+    let mut config = git_operation::run(|| repo.config())?;
     set_or_remove(&mut config, "releash.base", base)
 }
 
@@ -64,10 +67,10 @@ pub(crate) fn prune_stale_branch_bases(
     repo_path: &str,
     existing_branches: &[String],
 ) -> Result<(), RepositoryError> {
-    let repo = client::open(repo_path)?;
+    let repo = git_operation::run(|| client::open(repo_path))?;
     let existing: std::collections::HashSet<&str> =
         existing_branches.iter().map(|s| s.as_str()).collect();
-    if let Ok(mut gc_cfg) = repo.config() {
+    if let Some(mut gc_cfg) = git_operation::optional(git_operation::run(|| repo.config()))? {
         if let Ok(snap) = gc_cfg.snapshot() {
             let mut to_remove = Vec::new();
             if let Ok(mut entries) = snap.entries(Some("branch.*.releash-base")) {
@@ -86,7 +89,7 @@ pub(crate) fn prune_stale_branch_bases(
             }
             drop(snap);
             for key in &to_remove {
-                let _ = gc_cfg.remove(key);
+                git_operation::optional(git_operation::run(|| gc_cfg.remove(key)))?;
             }
         }
     }
@@ -96,13 +99,14 @@ pub(crate) fn prune_stale_branch_bases(
 /// `path_hint` からリポジトリを discover する。`path_hint` が存在しないファイル
 /// （削除済みファイル等）の場合は親ディレクトリから discover する。
 fn discover_repo(path: &std::path::Path) -> Result<git2::Repository, RepositoryError> {
-    match client::discover(path) {
+    match git_operation::run(|| client::discover(path)) {
         Ok(repo) => Ok(repo),
+        Err(error @ git_operation::GitOperationError::Stopped(_)) => Err(error.into()),
         Err(_) if !path.exists() => {
             if let Some(parent) = path.parent() {
-                Ok(client::discover(parent)?)
+                Ok(git_operation::run(|| client::discover(parent))?)
             } else {
-                Ok(client::discover(path)?)
+                Ok(git_operation::run(|| client::discover(path))?)
             }
         }
         Err(e) => Err(e.into()),
@@ -115,7 +119,7 @@ pub(crate) fn resolve_current_base_branch(
     path_hint: &str,
 ) -> Result<Option<String>, RepositoryError> {
     let repo = discover_repo(std::path::Path::new(path_hint))?;
-    let head = match repo.head() {
+    let head = match git_operation::run(|| repo.head()) {
         Ok(h) => h,
         Err(e) if e.code() == git2::ErrorCode::UnbornBranch => return Ok(None),
         Err(e) => return Err(e.into()),
@@ -124,22 +128,33 @@ pub(crate) fn resolve_current_base_branch(
         return Ok(None);
     }
     let branch_name = head.shorthand()?;
-    let config = repo.config().ok();
-    Ok(resolve_branch_base(&repo, config.as_ref(), branch_name))
+    let config = git_operation::optional(git_operation::run(|| repo.config()))?;
+    Ok(resolve_branch_base(&repo, config.as_ref(), branch_name)?)
 }
 
 /// 開いた repo で base 名 → local（`refs/heads/<name>`）→ remote
 /// （`refs/remotes/origin/<name>`）の順に ref を解決し、base コミットの OID を返す。
 /// いずれの ref も実在しない場合は `None`。
-fn resolve_base_ref_oid(repo: &git2::Repository, base_name: &str) -> Option<git2::Oid> {
-    let peel = |reference: &str| {
-        repo.revparse_single(reference)
-            .ok()
-            .and_then(|obj| obj.peel_to_commit().ok())
-            .map(|commit| commit.id())
-    };
-    peel(&format!("refs/heads/{base_name}"))
-        .or_else(|| peel(&format!("refs/remotes/origin/{base_name}")))
+fn resolve_base_ref_oid(
+    repo: &git2::Repository,
+    base_name: &str,
+) -> Result<Option<git2::Oid>, RepositoryError> {
+    for reference in [
+        format!("refs/heads/{base_name}"),
+        format!("refs/remotes/origin/{base_name}"),
+    ] {
+        let Some(object) =
+            git_operation::optional(git_operation::run(|| repo.revparse_single(&reference)))?
+        else {
+            continue;
+        };
+        if let Some(commit) =
+            git_operation::optional(git_operation::run(|| object.peel_to_commit()))?
+        {
+            return Ok(Some(commit.id()));
+        }
+    }
+    Ok(None)
 }
 
 /// Provider TUI の `RELEASH_BASE_BRANCH` に渡す現在ブランチの実効 base 名を返す。
@@ -147,13 +162,12 @@ fn resolve_base_ref_oid(repo: &git2::Repository, base_name: &str) -> Option<git2
 pub(crate) fn resolve_effective_base_branch(
     repo_path: &str,
 ) -> Result<Option<String>, RepositoryError> {
-    let repo = match client::open(repo_path) {
-        Ok(repo) => repo,
-        Err(_) => return Ok(None),
+    let Some(repo) = git_operation::optional(git_operation::run(|| client::open(repo_path)))?
+    else {
+        return Ok(None);
     };
-    let head = match repo.head() {
-        Ok(head) => head,
-        Err(_) => return Ok(None),
+    let Some(head) = git_operation::optional(git_operation::run(|| repo.head()))? else {
+        return Ok(None);
     };
     if !head.is_branch() {
         return Ok(None);
@@ -166,16 +180,20 @@ pub(crate) fn resolve_effective_base_branch(
         Ok(branch_name) => branch_name.to_string(),
         Err(_) => return Ok(None),
     };
-    let config = repo.config().ok();
-    let base_name = match resolve_branch_base(&repo, config.as_ref(), &branch_name) {
+    let config = git_operation::optional(git_operation::run(|| repo.config()))?;
+    let base_name = match resolve_branch_base(&repo, config.as_ref(), &branch_name)? {
         Some(base_name) => base_name,
         None => return Ok(None),
     };
-    let base_oid = match resolve_base_ref_oid(&repo, &base_name) {
+    let base_oid = match resolve_base_ref_oid(&repo, &base_name)? {
         Some(base_oid) => base_oid,
         None => return Ok(None),
     };
-    if repo.merge_base(current_oid, base_oid).is_err() {
+    if git_operation::optional(git_operation::run(|| {
+        repo.merge_base(current_oid, base_oid)
+    }))?
+    .is_none()
+    {
         return Ok(None);
     }
     Ok(Some(base_name))
@@ -186,7 +204,7 @@ pub(crate) fn resolve_base_commit_oid(
     base_name: &str,
 ) -> Result<Option<String>, RepositoryError> {
     let repo = discover_repo(std::path::Path::new(path_hint))?;
-    Ok(resolve_base_ref_oid(&repo, base_name).map(|oid| oid.to_string()))
+    Ok(resolve_base_ref_oid(&repo, base_name)?.map(|oid| oid.to_string()))
 }
 
 /// `GitConfigRepository` の git2 実装。
@@ -249,7 +267,7 @@ mod git_config_gateway_tests {
 
         set_branch_base_override(repo_path, "feat", Some("develop")).unwrap();
         let config = repo.config().ok();
-        let result = resolve_branch_base(&repo, config.as_ref(), "feat");
+        let result = resolve_branch_base(&repo, config.as_ref(), "feat").unwrap();
         assert_eq!(result, Some("develop".to_string()));
     }
 
@@ -261,7 +279,7 @@ mod git_config_gateway_tests {
 
         set_releash_base(repo_path, Some("develop")).unwrap();
         let config = repo.config().ok();
-        let result = resolve_branch_base(&repo, config.as_ref(), "feat");
+        let result = resolve_branch_base(&repo, config.as_ref(), "feat").unwrap();
         assert_eq!(result, Some("develop".to_string()));
     }
 
@@ -270,7 +288,7 @@ mod git_config_gateway_tests {
         let (_dir, repo) = create_test_repo();
         create_initial_commit(&repo);
         let config = repo.config().ok();
-        let result = resolve_branch_base(&repo, config.as_ref(), "feat");
+        let result = resolve_branch_base(&repo, config.as_ref(), "feat").unwrap();
         assert!(result.is_some());
     }
 
@@ -401,3 +419,7 @@ mod git_config_gateway_tests {
         assert!(config.get_string("branch.stale.releash-base").is_err());
     }
 }
+
+#[cfg(test)]
+#[path = "git_config_test.rs"]
+mod git_config_tests;

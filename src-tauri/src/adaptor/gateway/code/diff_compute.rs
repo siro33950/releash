@@ -4,35 +4,49 @@
 //! 担う。hunk 区切り（change group）・range 算出・patch 生成といった後段の純粋ロジックは
 //! ドメインサービス（`domain::code::services::hunk`）が担う。
 
+use crate::adaptor::gateway::shared::git_operation;
 use std::path::Path;
 
-use crate::domain::code::{DiffComputer, Hunk};
+use crate::domain::code::{CodeError, DiffComputer, Hunk};
 
 /// 2 つのバッファを diff して hunk 列を生成する。
-/// diff 計算に失敗した場合は空の hunk 列を返す（移行前の挙動と等価）。
-pub(crate) fn diff_buffers(original: &str, modified: &str, file_path: Option<&str>) -> Vec<Hunk> {
+/// git2 の通常エラーは従来どおり空の hunk 列とし、期限切れ・取消はエラーを返す。
+pub(crate) fn diff_buffers(
+    original: &str,
+    modified: &str,
+    file_path: Option<&str>,
+) -> Result<Vec<Hunk>, CodeError> {
     let path = Path::new(file_path.unwrap_or("file"));
     let mut hunks: Vec<Hunk> = Vec::new();
 
-    let patch = git2::Patch::from_buffers(
-        original.as_bytes(),
-        Some(path),
-        modified.as_bytes(),
-        Some(path),
-        None,
-    );
+    let patch = git_operation::optional(git_operation::run(|| {
+        git2::Patch::from_buffers(
+            original.as_bytes(),
+            Some(path),
+            modified.as_bytes(),
+            Some(path),
+            None,
+        )
+    }))?;
 
-    if let Ok(patch) = patch {
+    if let Some(patch) = patch {
         let num_hunks = patch.num_hunks();
         for hunk_idx in 0..num_hunks {
-            let Ok((hdr, _)) = patch.hunk(hunk_idx) else {
+            let Some((hdr, _)) =
+                git_operation::optional(git_operation::run(|| patch.hunk(hunk_idx)))?
+            else {
                 continue;
             };
-            let num_lines = patch.num_lines_in_hunk(hunk_idx).unwrap_or(0);
+            let num_lines =
+                git_operation::optional(git_operation::run(|| patch.num_lines_in_hunk(hunk_idx)))?
+                    .unwrap_or(0);
             let mut lines: Vec<String> = Vec::new();
 
             for line_idx in 0..num_lines {
-                let Ok(line) = patch.line_in_hunk(hunk_idx, line_idx) else {
+                let Some(line) = git_operation::optional(git_operation::run(|| {
+                    patch.line_in_hunk(hunk_idx, line_idx)
+                }))?
+                else {
                     continue;
                 };
                 let content = std::str::from_utf8(line.content()).unwrap_or("");
@@ -59,14 +73,19 @@ pub(crate) fn diff_buffers(original: &str, modified: &str, file_path: Option<&st
         }
     }
 
-    hunks
+    Ok(hunks)
 }
 
 /// `DiffComputer` の git2 実装。
 pub struct DiffComputerGateway;
 
 impl DiffComputer for DiffComputerGateway {
-    fn diff_buffers(&self, original: &str, modified: &str, file_path: Option<&str>) -> Vec<Hunk> {
+    fn diff_buffers(
+        &self,
+        original: &str,
+        modified: &str,
+        file_path: Option<&str>,
+    ) -> Result<Vec<Hunk>, CodeError> {
         diff_buffers(original, modified, file_path)
     }
 }
@@ -82,28 +101,29 @@ mod diff_compute_gateway_tests {
 
     #[test]
     fn test_diff_同一内容は空() {
-        let hunks = diff_buffers("hello\nworld\n", "hello\nworld\n", None);
+        let hunks = diff_buffers("hello\nworld\n", "hello\nworld\n", None).unwrap();
         assert!(hunks.is_empty());
         assert!(compute_change_groups(&hunks).is_empty());
     }
 
     #[test]
     fn test_diff_追加行検出() {
-        let hunks = diff_buffers("line1\nline2\n", "line1\nline2\nline3\n", None);
+        let hunks = diff_buffers("line1\nline2\n", "line1\nline2\nline3\n", None).unwrap();
         assert_eq!(hunks.len(), 1);
         assert!(hunks[0].lines.iter().any(|l| l == "+line3"));
     }
 
     #[test]
     fn test_diff_削除行検出() {
-        let hunks = diff_buffers("line1\nline2\nline3\n", "line1\nline3\n", None);
+        let hunks = diff_buffers("line1\nline2\nline3\n", "line1\nline3\n", None).unwrap();
         assert_eq!(hunks.len(), 1);
         assert!(hunks[0].lines.iter().any(|l| l == "-line2"));
     }
 
     #[test]
     fn test_diff_変更行検出() {
-        let hunks = diff_buffers("line1\noriginal\nline3\n", "line1\nmodified\nline3\n", None);
+        let hunks =
+            diff_buffers("line1\noriginal\nline3\n", "line1\nmodified\nline3\n", None).unwrap();
         assert_eq!(hunks.len(), 1);
         assert!(hunks[0].lines.iter().any(|l| l == "-original"));
         assert!(hunks[0].lines.iter().any(|l| l == "+modified"));
@@ -113,20 +133,20 @@ mod diff_compute_gateway_tests {
     fn test_diff_複数hunk検出() {
         let lines = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm\nn\no\np\nq\nr\ns\nt\n";
         let modified = lines.replace("b\n", "B\n").replace("r\n", "R\n");
-        let hunks = diff_buffers(lines, &modified, None);
+        let hunks = diff_buffers(lines, &modified, None).unwrap();
         assert_eq!(hunks.len(), 2);
     }
 
     #[test]
     fn test_diff_空original() {
-        let hunks = diff_buffers("", "new content\n", None);
+        let hunks = diff_buffers("", "new content\n", None).unwrap();
         assert_eq!(hunks.len(), 1);
         assert!(hunks[0].lines.iter().any(|l| l == "+new content"));
     }
 
     #[test]
     fn test_diff_空modified() {
-        let hunks = diff_buffers("content\n", "", None);
+        let hunks = diff_buffers("content\n", "", None).unwrap();
         assert_eq!(hunks.len(), 1);
         assert!(hunks[0].lines.iter().any(|l| l == "-content"));
     }
@@ -135,14 +155,14 @@ mod diff_compute_gateway_tests {
     fn test_diff_インデックスは連番() {
         let lines = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm\nn\no\np\nq\nr\ns\nt\n";
         let modified = lines.replace("b\n", "B\n").replace("r\n", "R\n");
-        let hunks = diff_buffers(lines, &modified, None);
+        let hunks = diff_buffers(lines, &modified, None).unwrap();
         assert_eq!(hunks[0].index, 0);
         assert_eq!(hunks[1].index, 1);
     }
 
     #[test]
     fn test_diff_hunkは位置情報を持つ() {
-        let hunks = diff_buffers("line1\nline2\n", "line1\nline2\nline3\n", None);
+        let hunks = diff_buffers("line1\nline2\n", "line1\nline2\nline3\n", None).unwrap();
         assert!(hunks[0].old_start > 0);
         assert!(hunks[0].new_start > 0);
     }
@@ -151,7 +171,7 @@ mod diff_compute_gateway_tests {
 
     #[test]
     fn test_change_group_単一変更() {
-        let hunks = diff_buffers("line1\nline2\n", "line1\nline2\nline3\n", None);
+        let hunks = diff_buffers("line1\nline2\n", "line1\nline2\nline3\n", None).unwrap();
         let groups = compute_change_groups(&hunks);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].group_index, 0);
@@ -162,7 +182,7 @@ mod diff_compute_gateway_tests {
     fn test_change_group_複数hunk() {
         let lines = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm\nn\no\np\nq\nr\ns\nt\n";
         let modified = lines.replace("b\n", "B\n").replace("r\n", "R\n");
-        let hunks = diff_buffers(lines, &modified, None);
+        let hunks = diff_buffers(lines, &modified, None).unwrap();
         let groups = compute_change_groups(&hunks);
         assert_eq!(groups.len(), 2);
         assert_eq!(groups[0].group_index, 0);
@@ -174,7 +194,7 @@ mod diff_compute_gateway_tests {
     #[test]
     fn test_非表示範囲_内容から_変更なし() {
         let text = "line1\nline2\nline3\n";
-        let hunks = diff_buffers(text, text, None);
+        let hunks = diff_buffers(text, text, None).unwrap();
         let result = compute_hidden_ranges(&hunks, text.lines().count() as u32, 3);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].start_line, 1);
@@ -187,7 +207,7 @@ mod diff_compute_gateway_tests {
         let mut modified_lines = lines.clone();
         modified_lines[14] = "CHANGED15".to_string();
         let modified = modified_lines.join("\n");
-        let hunks = diff_buffers(&original, &modified, None);
+        let hunks = diff_buffers(&original, &modified, None).unwrap();
         let result = compute_hidden_ranges(&hunks, modified.lines().count() as u32, 3);
         assert!(
             !result.is_empty(),
@@ -200,7 +220,7 @@ mod diff_compute_gateway_tests {
     #[test]
     fn test_可視ブロック_変更なし() {
         let text = "line1\nline2\nline3\n";
-        let hunks = diff_buffers(text, text, None);
+        let hunks = diff_buffers(text, text, None).unwrap();
         let result = compute_visible_markdown_blocks(&hunks, text, text, 3);
         assert!(result.is_empty());
     }
@@ -209,7 +229,7 @@ mod diff_compute_gateway_tests {
     fn test_可視ブロック_単一変更() {
         let original = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\n";
         let modified = "a\nb\nc\nd\nE\nf\ng\nh\ni\nj\n";
-        let hunks = diff_buffers(original, modified, None);
+        let hunks = diff_buffers(original, modified, None).unwrap();
         let result = compute_visible_markdown_blocks(&hunks, original, modified, 2);
         assert_eq!(result.len(), 1);
         assert!(result[0].content.contains('E'));
@@ -221,8 +241,41 @@ mod diff_compute_gateway_tests {
     fn test_可視ブロック_複数変更() {
         let original = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm\nn\no\np\nq\nr\ns\nt\n";
         let modified = original.replace("b\n", "B\n").replace("s\n", "S\n");
-        let hunks = diff_buffers(original, &modified, None);
+        let hunks = diff_buffers(original, &modified, None).unwrap();
         let result = compute_visible_markdown_blocks(&hunks, original, &modified, 2);
         assert_eq!(result.len(), 2);
     }
+}
+
+#[cfg(test)]
+#[test]
+fn test_diff_途中の取消を空や部分結果へ変換しない() {
+    use crate::domain::operation_context::{
+        Cancellation, Deadline, OperationContext, OperationStopped,
+    };
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    struct CancelAfter(AtomicUsize);
+    impl Cancellation for CancelAfter {
+        fn is_cancelled(&self) -> bool {
+            self.0.fetch_sub(1, Ordering::SeqCst) == 0
+        }
+    }
+    for after in [0, 2, 4, 6, 8] {
+        let context = OperationContext::new(None, Arc::new(CancelAfter(AtomicUsize::new(after))));
+        assert!(matches!(
+            crate::other::operation_context::sync_scope(context, || diff_buffers(
+                "a\nb\n", "c\nd\n", None
+            )),
+            Err(CodeError::Stopped(OperationStopped::Cancelled))
+        ));
+    }
+    let context =
+        OperationContext::default().with_deadline(Deadline::new(std::time::Instant::now()));
+    assert!(matches!(
+        crate::other::operation_context::sync_scope(context, || diff_buffers("a", "b", None)),
+        Err(CodeError::Stopped(OperationStopped::Expired))
+    ));
 }

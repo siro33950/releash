@@ -240,7 +240,7 @@ impl crate::usecase::provider_lifecycle::ProviderExecutionTreeStopTransaction
                 WorkflowError::Conflict(_) => {
                     crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError::Conflict
                 }
-                error @ (WorkflowError::StorageUnavailable { .. } | WorkflowError::External(_) | WorkflowError::Editor(_)) => {
+                error @ (WorkflowError::Stopped(_) | WorkflowError::StorageUnavailable { .. } | WorkflowError::External(_) | WorkflowError::Editor(_)) => {
                     crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError::Store(error.failure_kind())
                 }
                 WorkflowError::CorruptStoredState(_)
@@ -273,7 +273,8 @@ impl crate::usecase::agent_session::ExecutionTreeCache for WorkflowRuntimeUsecas
                 WorkflowError::Store(kind) => {
                     crate::usecase::agent_session::ExecutionTreeCacheReleaseError::Store(kind)
                 }
-                error @ (WorkflowError::StorageUnavailable { .. }
+                error @ (WorkflowError::Stopped(_)
+                | WorkflowError::StorageUnavailable { .. }
                 | WorkflowError::External(_)
                 | WorkflowError::Editor(_)) => {
                     crate::usecase::agent_session::ExecutionTreeCacheReleaseError::Store(
@@ -331,7 +332,8 @@ fn map_started_execution_tree_error(
         WorkflowError::Store(kind) => {
             crate::usecase::agent_session::StartedExecutionTreeRegistrationError::Store(kind)
         }
-        error @ (WorkflowError::StorageUnavailable { .. }
+        error @ (WorkflowError::Stopped(_)
+        | WorkflowError::StorageUnavailable { .. }
         | WorkflowError::External(_)
         | WorkflowError::Editor(_)) => {
             crate::usecase::agent_session::StartedExecutionTreeRegistrationError::Store(

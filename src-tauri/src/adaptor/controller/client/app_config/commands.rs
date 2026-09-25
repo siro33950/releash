@@ -20,7 +20,7 @@ pub(crate) async fn update_performance_telemetry_shared(
     enabled: bool,
 ) -> Result<(), AppError> {
     let usecase = build_usecase(state.clone());
-    tokio::task::spawn_blocking(move || {
+    crate::other::operation_context::spawn_blocking(move || {
         crate::usecase::telemetry::TelemetryUsecase::new(
             &crate::adaptor::gateway::telemetry::TelemetryGateway,
         )
@@ -46,10 +46,12 @@ pub(crate) async fn update_app_settings_shared(
     start_minimized: bool,
 ) -> Result<(), AppError> {
     let usecase = build_usecase(state.clone());
-    tokio::task::spawn_blocking(move || usecase.update_app_settings(close_to_tray, start_minimized))
-        .await
-        .map_err(map_join_error)?
-        .map_err(AppError::from_failure)
+    crate::other::operation_context::spawn_blocking(move || {
+        usecase.update_app_settings(close_to_tray, start_minimized)
+    })
+    .await
+    .map_err(map_join_error)?
+    .map_err(AppError::from_failure)
 }
 
 pub(crate) async fn update_login_item_preference_shared(
@@ -57,10 +59,12 @@ pub(crate) async fn update_login_item_preference_shared(
     requested: bool,
 ) -> Result<(), AppError> {
     let usecase = build_usecase(state.clone());
-    tokio::task::spawn_blocking(move || usecase.update_login_item_preference(requested))
-        .await
-        .map_err(map_join_error)?
-        .map_err(AppError::from_failure)
+    crate::other::operation_context::spawn_blocking(move || {
+        usecase.update_login_item_preference(requested)
+    })
+    .await
+    .map_err(map_join_error)?
+    .map_err(AppError::from_failure)
 }
 
 pub(crate) fn get_workflow_config_shared(
@@ -79,10 +83,12 @@ pub(crate) async fn update_workflow_config_shared(
 ) -> Result<(), AppError> {
     let usecase = build_usecase(state.clone());
     let workflow = workflow_to_domain(&workflow);
-    tokio::task::spawn_blocking(move || usecase.update_workflow_config(workflow))
-        .await
-        .map_err(map_join_error)?
-        .map_err(AppError::from_failure)
+    crate::other::operation_context::spawn_blocking(move || {
+        usecase.update_workflow_config(workflow)
+    })
+    .await
+    .map_err(map_join_error)?
+    .map_err(AppError::from_failure)
 }
 
 pub(crate) fn get_performance_telemetry_enabled_shared(
@@ -99,7 +105,7 @@ pub(crate) async fn update_crash_reporting_shared(
     enabled: bool,
 ) -> Result<(), AppError> {
     let usecase = build_usecase(state.clone());
-    tokio::task::spawn_blocking(move || {
+    crate::other::operation_context::spawn_blocking(move || {
         crate::usecase::telemetry::TelemetryUsecase::new(
             &crate::adaptor::gateway::telemetry::TelemetryGateway,
         )

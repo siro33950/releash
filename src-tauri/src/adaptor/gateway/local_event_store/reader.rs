@@ -13,11 +13,11 @@ use std::sync::{Arc, Condvar, Mutex};
 use rusqlite::{params, Connection, OptionalExtension};
 use tokio::sync::oneshot;
 
-use crate::adaptor::gateway::local_event_store::clock::StoreClock;
 use crate::adaptor::gateway::local_event_store::envelope::{
     DecodedStoredEvent, EventCodecRegistry,
 };
 use crate::adaptor::gateway::local_event_store::projection_record_codec::decode_session_projection_record_v1;
+use crate::domain::operation_context::OperationContext;
 
 use crate::domain::local_event::{
     CanonicalRuntimeOwnerView, CommitIdentity, CommittedDomainEvent, DomainEventPage, EventId,
@@ -332,10 +332,10 @@ fn canonical_runtime_owner_snapshot(
     Ok(owners)
 }
 
-type ReadTask = Box<dyn FnOnce(&Connection, bool) + Send>;
+type ReadTask = Box<dyn FnOnce(&Connection, &OperationContext) + Send>;
 
 struct ReadJob {
-    deadline_ms: i64,
+    context: OperationContext,
     task: ReadTask,
 }
 
@@ -348,7 +348,6 @@ struct ReadQueueState {
 pub struct ReaderPool {
     state: Mutex<ReadQueueState>,
     available: Condvar,
-    clock: Arc<dyn StoreClock>,
     #[cfg(test)]
     running_workers: std::sync::atomic::AtomicUsize,
     #[cfg(test)]
@@ -356,14 +355,13 @@ pub struct ReaderPool {
 }
 
 impl ReaderPool {
-    pub fn new(clock: Arc<dyn StoreClock>) -> Arc<Self> {
+    pub fn new() -> Arc<Self> {
         Arc::new(Self {
             state: Mutex::new(ReadQueueState {
                 jobs: VecDeque::new(),
                 closed: false,
             }),
             available: Condvar::new(),
-            clock,
             #[cfg(test)]
             running_workers: std::sync::atomic::AtomicUsize::new(0),
             #[cfg(test)]
@@ -380,7 +378,12 @@ impl ReaderPool {
         #[cfg(test)]
         let failure = self.next_failure.lock().unwrap().take();
         let (reply, receiver) = oneshot::channel();
-        let deadline_ms = self.clock.now_ms() + QUERY_DEADLINE_MS;
+        let context = crate::other::operation_context::with_timeout(
+            std::time::Duration::from_millis(QUERY_DEADLINE_MS as u64),
+        );
+        context
+            .check(std::time::Instant::now())
+            .map_err(LocalEventQueryError::from)?;
         {
             let mut state = self.state.lock().expect("reader queue poisoned");
             if state.closed {
@@ -393,28 +396,71 @@ impl ReaderPool {
                 return Err(LocalEventQueryError::QueryBusy);
             }
             state.jobs.push_back(ReadJob {
-                deadline_ms,
-                task: Box::new(move |connection, deadline_exceeded| {
-                    if deadline_exceeded {
-                        let _ = reply.send(Err(LocalEventQueryError::DeadlineExceeded));
-                        return;
-                    }
+                context: context.clone(),
+                task: Box::new(move |connection, job_context| {
                     #[cfg(test)]
                     let run = |connection: &Connection| match failure {
                         Some(failure) => failure.run(connection, run),
                         None => run(connection),
                     };
-                    let _ = reply.send(run(connection));
+                    let result =
+                        crate::other::operation_context::sync_scope(job_context.clone(), || {
+                            job_context
+                                .check(std::time::Instant::now())
+                                .map_err(LocalEventQueryError::from)?;
+                            let progress_context = job_context.clone();
+                            connection
+                                .progress_handler(
+                                    1,
+                                    Some(move || {
+                                        progress_context.check(std::time::Instant::now()).is_err()
+                                    }),
+                                )
+                                .map_err(|error| storage_unavailable(&error))?;
+                            let interrupt = connection.get_interrupt_handle();
+                            let (done, stopped) = std::sync::mpsc::channel();
+                            let result = std::thread::scope(|scope| {
+                                let context = &job_context;
+                                scope.spawn(move || loop {
+                                    match stopped.recv_timeout(std::time::Duration::from_millis(1))
+                                    {
+                                        Ok(())
+                                        | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                                            break
+                                        }
+                                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                                            if context.check(std::time::Instant::now()).is_err() {
+                                                interrupt.interrupt();
+                                            }
+                                        }
+                                    }
+                                });
+                                let result = run(connection);
+                                drop(done);
+                                result
+                            });
+                            connection
+                                .progress_handler(0, None::<fn() -> bool>)
+                                .map_err(|error| storage_unavailable(&error))?;
+                            job_context
+                                .check(std::time::Instant::now())
+                                .map_err(LocalEventQueryError::from)?;
+                            result
+                        });
+                    let _ = reply.send(result);
                 }),
             });
         }
         self.available.notify_one();
-        receiver.await.map_err(|_| {
-            reader_pool_unavailable(
-                "local event store reader reply lost",
-                crate::domain::failure::FailureKind::Temporary,
-            )
-        })?
+        crate::other::operation_context::wait(&context, receiver)
+            .await
+            .map_err(LocalEventQueryError::from)?
+            .map_err(|_| {
+                reader_pool_unavailable(
+                    "local event store reader reply lost",
+                    crate::domain::failure::FailureKind::Temporary,
+                )
+            })?
     }
 
     fn pop_blocking(&self) -> Option<ReadJob> {
@@ -444,8 +490,7 @@ impl ReaderPool {
         self.running_workers
             .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         while let Some(job) = self.pop_blocking() {
-            let deadline_exceeded = self.clock.now_ms() > job.deadline_ms;
-            (job.task)(&connection, deadline_exceeded);
+            (job.task)(&connection, &job.context);
         }
         #[cfg(test)]
         self.running_workers

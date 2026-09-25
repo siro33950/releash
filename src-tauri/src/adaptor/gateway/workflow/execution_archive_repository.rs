@@ -170,12 +170,14 @@ impl ExecutionTreeArchiveRepository for ExecutionTreeArchiveFactRepository {
         let mut page = self.read_candidate_page(after, false).await?;
         for candidate in &mut page {
             if candidate.repository_root.is_none() {
-                candidate.repository_root =
-                    [&candidate.workspace_identity, &candidate.worktree_path]
-                        .into_iter()
-                        .find_map(|path| {
-                            super::super::repository::worktree::recorded_main_repo_path(path)
-                        });
+                for path in [&candidate.workspace_identity, &candidate.worktree_path] {
+                    candidate.repository_root =
+                        super::super::repository::worktree::recorded_main_repo_path(path)
+                            .map_err(WorkflowError::Stopped)?;
+                    if candidate.repository_root.is_some() {
+                        break;
+                    }
+                }
             }
         }
         Ok(page)

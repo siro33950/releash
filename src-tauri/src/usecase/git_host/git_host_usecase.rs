@@ -50,25 +50,25 @@ impl GitHostUsecase {
         Ok(status)
     }
 
-    pub fn fetch_issues(&self, repo_path: &str) -> Vec<IssueInfo> {
-        let value = self.provider.list_issues(repo_path);
+    pub fn fetch_issues(&self, repo_path: &str) -> Result<Vec<IssueInfo>, GitHostError> {
+        let value = self.provider.list_issues(repo_path)?;
         self.issue_cache.store(repo_path, value.clone());
         if let Some(publisher) = &self.state_publisher {
             publisher.invalidate(
                 crate::domain::state_subscription::StateChangeSource::Issues(repo_path.into()),
             );
         }
-        value
+        Ok(value)
     }
 
-    pub fn get_cached_issues(&self, repo_path: &str) -> Vec<IssueInfo> {
+    pub fn get_cached_issues(&self, repo_path: &str) -> Result<Vec<IssueInfo>, GitHostError> {
         if let Some(issues) = self.issue_cache.lookup(repo_path) {
-            return issues;
+            return Ok(issues);
         }
 
-        let issues = self.provider.list_issues(repo_path);
+        let issues = self.provider.list_issues(repo_path)?;
         self.issue_cache.store(repo_path, issues.clone());
-        issues
+        Ok(issues)
     }
 }
 
@@ -117,9 +117,9 @@ mod tests {
             self.pr_status.clone()
         }
 
-        fn list_issues(&self, _repo_path: &str) -> Vec<IssueInfo> {
+        fn list_issues(&self, _repo_path: &str) -> Result<Vec<IssueInfo>, GitHostError> {
             self.issue_fetch_count.fetch_add(1, Ordering::SeqCst);
-            self.issues.clone()
+            Ok(self.issues.clone())
         }
     }
 
@@ -232,7 +232,7 @@ mod tests {
         let issue_cache = Arc::new(FakeIssueCache::with_lookup(Some(vec![sample_issue(1)])));
         let uc = usecase_with(provider.clone(), pr_cache.clone(), issue_cache.clone());
         assert_eq!(uc.fetch_pr_status("/repo"), Ok(fetched_pr.clone()));
-        assert_eq!(uc.fetch_issues("/repo"), fetched_issues);
+        assert_eq!(uc.fetch_issues("/repo").unwrap(), fetched_issues);
         assert_eq!(pr_cache.stored_values(), vec![fetched_pr]);
         assert_eq!(issue_cache.stored_values(), vec![fetched_issues]);
         assert_eq!(provider.pr_fetch_count(), 1);
@@ -243,7 +243,7 @@ mod tests {
     fn forced_pr_refresh_failure_keeps_the_previous_cache() {
         let previous = sample_pr_status();
         let provider = Arc::new(FakeProvider {
-            pr_status: Err(GitHostError("offline".into())),
+            pr_status: Err(GitHostError::External("offline".into())),
             ..FakeProvider::empty()
         });
         let pr_cache = Arc::new(FakePrCache::with_lookup(Some(previous.clone())));
@@ -267,7 +267,7 @@ mod tests {
         );
 
         assert_eq!(uc.fetch_pr_status("/repo"), Ok(PrStatus::default()));
-        assert!(uc.fetch_issues("/repo").is_empty());
+        assert!(uc.fetch_issues("/repo").unwrap().is_empty());
     }
 
     #[test]
@@ -303,7 +303,7 @@ mod tests {
     #[test]
     fn cached_pr_status_fetch_failure_returns_error_without_storing() {
         let provider = Arc::new(FakeProvider {
-            pr_status: Err(GitHostError("gh timeout".to_string())),
+            pr_status: Err(GitHostError::External("gh timeout".to_string())),
             ..FakeProvider::empty()
         });
         let pr_cache = Arc::new(FakePrCache::with_lookup(None));
@@ -315,7 +315,7 @@ mod tests {
 
         assert_eq!(
             uc.get_cached_pr_status("/repo"),
-            Err(GitHostError("gh timeout".to_string()))
+            Err(GitHostError::External("gh timeout".to_string()))
         );
         assert!(pr_cache.stored_values().is_empty());
     }
@@ -346,7 +346,7 @@ mod tests {
             Arc::new(FakeIssueCache::with_lookup(Some(cached.clone()))),
         );
 
-        assert_eq!(uc.get_cached_issues("/repo"), cached);
+        assert_eq!(uc.get_cached_issues("/repo").unwrap(), cached);
         assert_eq!(provider.issue_fetch_count(), 0);
     }
 
@@ -361,8 +361,60 @@ mod tests {
             issue_cache.clone(),
         );
 
-        assert_eq!(uc.get_cached_issues("/repo"), fetched);
+        assert_eq!(uc.get_cached_issues("/repo").unwrap(), fetched);
         assert_eq!(provider.issue_fetch_count(), 1);
         assert_eq!(issue_cache.stored_values(), vec![fetched]);
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn test_github検出_停止時に既定pr状態を保存しない() {
+    use crate::domain::operation_context::{Deadline, OperationContext, OperationStopped};
+    struct NoStore;
+    impl PrStatusCache for NoStore {
+        fn lookup(&self, _: &str) -> Option<PrStatus> {
+            None
+        }
+        fn store(&self, _: &str, _: PrStatus) {
+            panic!("stopped status must not be cached")
+        }
+    }
+    impl IssueCache for NoStore {
+        fn lookup(&self, _: &str) -> Option<Vec<IssueInfo>> {
+            None
+        }
+        fn store(&self, _: &str, _: Vec<IssueInfo>) {
+            panic!("stopped issues must not be cached")
+        }
+    }
+    let uc = GitHostUsecase::new(
+        Arc::new(crate::adaptor::gateway::git_host::github::GitHubGitHostGateway::default()),
+        Arc::new(NoStore),
+        Arc::new(NoStore),
+    );
+    for expire in [false, true] {
+        let token = tokio_util::sync::CancellationToken::new();
+        token.cancel();
+        let context = OperationContext::new(
+            expire.then(|| Deadline::new(std::time::Instant::now())),
+            Arc::new(token),
+        );
+        crate::other::operation_context::sync_scope(context, || {
+            let expected = if expire {
+                OperationStopped::Expired
+            } else {
+                OperationStopped::Cancelled
+            };
+            assert!(
+                matches!(uc.fetch_pr_status("/missing"), Err(GitHostError::Stopped(error)) if error == expected)
+            );
+            assert!(
+                matches!(uc.get_cached_pr_status("/missing"), Err(GitHostError::Stopped(error)) if error == expected)
+            );
+            assert!(
+                matches!(uc.fetch_issues("/missing"), Err(GitHostError::Stopped(error)) if error == expected)
+            );
+        });
     }
 }

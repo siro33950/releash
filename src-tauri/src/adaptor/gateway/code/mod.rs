@@ -9,6 +9,7 @@
 //! `CodeUsecase` の公開 API 経由で利用する。gateway は domain trait / usecase port の具体
 //! 実装（`*Gateway` 構造体）に閉じる。
 
+use crate::adaptor::gateway::shared::git_operation;
 pub(crate) mod branch_base;
 pub(crate) mod branch_diff;
 pub(crate) mod diff_compute;
@@ -31,7 +32,7 @@ pub(crate) fn resolve_merge_base_commit<'a>(
     repo: &'a Repository,
     base_commit_oid: Option<&str>,
 ) -> Result<git2::Commit<'a>, CodeError> {
-    let head = repo.head().map_err(|e| {
+    let head = git_operation::run(|| repo.head()).map_err(|e| {
         if e.code() == git2::ErrorCode::UnbornBranch {
             CodeError::Rule("unborn branch: no commits yet".to_string())
         } else {
@@ -45,9 +46,13 @@ pub(crate) fn resolve_merge_base_commit<'a>(
     // base 未指定（detached / base 未設定）→ HEAD コミットにフォールバック。
     let base_oid = match base_commit_oid {
         Some(oid_hex) => git2::Oid::from_str(oid_hex)?,
-        None => return Ok(repo.find_commit(current_oid)?),
+        None => return Ok(git_operation::run(|| repo.find_commit(current_oid))?),
     };
 
-    let merge_base_oid = repo.merge_base(current_oid, base_oid)?;
-    Ok(repo.find_commit(merge_base_oid)?)
+    let merge_base_oid = git_operation::run(|| repo.merge_base(current_oid, base_oid))?;
+    Ok(git_operation::run(|| repo.find_commit(merge_base_oid))?)
 }
+
+#[cfg(test)]
+#[path = "mod_test.rs"]
+mod mod_tests;

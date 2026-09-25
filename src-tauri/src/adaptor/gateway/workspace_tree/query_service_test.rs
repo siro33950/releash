@@ -2057,3 +2057,19 @@ async fn test_workspace読取_実経路で失敗分類を保持する() {
         }
     }
 }
+
+#[test]
+fn test_store問い合わせエラー_停止の分類を保持する() {
+    use crate::domain::failure::ClassifiedFailure;
+    use crate::domain::operation_context::OperationStopped;
+    // Given
+    for stopped in [OperationStopped::Expired, OperationStopped::Cancelled] {
+        // When
+        let error = query_error(crate::domain::local_event::LocalEventQueryError::Stopped(
+            stopped,
+        ));
+        // Then
+        assert_eq!(error.failure_kind(), stopped.failure_kind());
+        assert!(matches!(error, WorkflowError::Stopped(value) if value == stopped));
+    }
+}

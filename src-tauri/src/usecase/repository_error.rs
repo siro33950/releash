@@ -9,6 +9,8 @@ use crate::domain::repository::RepositoryError;
 #[derive(Debug, thiserror::Error)]
 pub enum UsecaseError {
     #[error(transparent)]
+    Workflow(#[from] crate::domain::workflow::WorkflowError),
+    #[error(transparent)]
     Repository(#[from] RepositoryError),
     /// ユースケースの業務ルール違反（削除拒否ポリシー等）。
     /// `#[error("{0}")]` によりメッセージ文字列をそのまま serialize し、
@@ -21,6 +23,7 @@ impl crate::domain::failure::ClassifiedFailure for UsecaseError {
     fn failure_kind(&self) -> crate::domain::failure::FailureKind {
         use crate::domain::failure::FailureKind as F;
         match self {
+            Self::Workflow(error) => error.failure_kind(),
             Self::Repository(error) => error.failure_kind(),
             Self::Rule(_) => F::StateRequired,
         }

@@ -41,12 +41,12 @@ impl NotionApiGateway for NotionApiGatewayImpl {
         fetch_label_options(config)
     }
 
-    fn validate(&self, config: &NotionRepoConfig) -> NotionValidationResult {
+    fn validate(&self, config: &NotionRepoConfig) -> Result<NotionValidationResult, NotionError> {
         validate_config(config)
     }
 }
 
-fn build_client(api_token: &str) -> Result<reqwest::blocking::Client, NotionError> {
+fn build_client(api_token: &str) -> Result<reqwest::Client, NotionError> {
     use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 
     let mut headers = HeaderMap::new();
@@ -61,7 +61,7 @@ fn build_client(api_token: &str) -> Result<reqwest::blocking::Client, NotionErro
     );
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
-    reqwest::blocking::Client::builder()
+    reqwest::Client::builder()
         .default_headers(headers)
         .timeout(REQUEST_TIMEOUT)
         .build()
@@ -69,17 +69,13 @@ fn build_client(api_token: &str) -> Result<reqwest::blocking::Client, NotionErro
 }
 
 fn send_with_retry(
-    client: &reqwest::blocking::Client,
+    client: &reqwest::Client,
     url: &str,
     body: &serde_json::Value,
-) -> Result<reqwest::blocking::Response, NotionError> {
+) -> Result<NotionResponse, NotionError> {
     let mut retries = 0;
     loop {
-        let resp = client
-            .post(url)
-            .json(body)
-            .send()
-            .map_err(|error| NotionError::RequestFailed(error.to_string()))?;
+        let resp = send(client.post(url).json(body))?;
 
         if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
             if retries >= MAX_RETRIES {
@@ -94,7 +90,10 @@ fn send_with_retry(
                 .and_then(|value| value.parse::<u64>().ok())
                 .unwrap_or(1)
                 .min(60);
-            std::thread::sleep(std::time::Duration::from_secs(retry_after));
+            crate::other::operation_context::sleep(
+                &crate::other::operation_context::current(),
+                std::time::Duration::from_secs(retry_after),
+            )?;
             retries += 1;
             continue;
         }
@@ -160,53 +159,43 @@ fn parse_page_metadata(json: &serde_json::Value) -> (bool, Option<String>) {
     (has_more, next_cursor)
 }
 
-fn validate_config(config: &NotionRepoConfig) -> NotionValidationResult {
+fn validate_config(config: &NotionRepoConfig) -> Result<NotionValidationResult, NotionError> {
     let client = match build_client(&config.api_token) {
         Ok(client) => client,
         Err(_) => {
-            return empty_validation_result(classify_validation_failure(
+            return Ok(empty_validation_result(classify_validation_failure(
                 ValidationFailure::BuildClient,
-            ));
+            )))
         }
     };
-
     let url = format!("{NOTION_BASE_URL}/databases/{}", config.database_id);
-    let resp = match client.get(&url).send() {
+    let resp = match send(client.get(&url)) {
         Ok(resp) => resp,
-        Err(_) => {
-            return NotionValidationResult {
-                status: NotionConfigStatus::NetworkError,
-                properties: Vec::new(),
-            };
-        }
+        Err(error @ NotionError::Stopped(_)) => return Err(error),
+        Err(_) => return Ok(empty_validation_result(NotionConfigStatus::NetworkError)),
     };
-
-    let status_code = resp.status();
-    let status = classify_validation_status(status_code);
+    let status = classify_validation_status(resp.status());
     if status != NotionConfigStatus::Configured {
-        return empty_validation_result(status);
+        return Ok(empty_validation_result(status));
     }
-
     let json: serde_json::Value = match resp.json() {
         Ok(json) => json,
         Err(_) => {
-            return empty_validation_result(classify_validation_failure(
+            return Ok(empty_validation_result(classify_validation_failure(
                 ValidationFailure::ParseResponse,
-            ));
+            )))
         }
     };
-
-    let properties = match validation_properties(&json, |data_source_id| {
-        fetch_data_source_properties(&client, data_source_id)
-    }) {
-        Ok(properties) => properties,
-        Err(status) => return empty_validation_result(status),
-    };
-
-    NotionValidationResult {
+    let properties =
+        match validation_properties(&json, |id| fetch_data_source_properties(&client, id)) {
+            Ok(properties) => properties,
+            Err(error @ NotionError::Stopped(_)) => return Err(error),
+            Err(_) => return Ok(empty_validation_result(NotionConfigStatus::NetworkError)),
+        };
+    Ok(NotionValidationResult {
         status: NotionConfigStatus::Configured,
         properties,
-    }
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -251,13 +240,12 @@ fn empty_validation_result(status: NotionConfigStatus) -> NotionValidationResult
 fn validation_properties<F>(
     json: &serde_json::Value,
     fetch_data_source_properties: F,
-) -> Result<Vec<NotionPropertyInfo>, NotionConfigStatus>
+) -> Result<Vec<NotionPropertyInfo>, NotionError>
 where
     F: FnOnce(&str) -> Result<Vec<NotionPropertyInfo>, NotionError>,
 {
     match extract_first_data_source_id(json) {
-        Some(data_source_id) => fetch_data_source_properties(&data_source_id)
-            .map_err(|_| NotionConfigStatus::NetworkError),
+        Some(data_source_id) => fetch_data_source_properties(&data_source_id),
         None => Ok(extract_properties_from_json(json)),
     }
 }
@@ -330,9 +318,7 @@ where
     }
 }
 
-fn fetch_workspace_users(
-    client: &reqwest::blocking::Client,
-) -> Result<Vec<(String, String)>, NotionError> {
+fn fetch_workspace_users(client: &reqwest::Client) -> Result<Vec<(String, String)>, NotionError> {
     let mut users = Vec::new();
     let mut next_cursor: Option<String> = None;
 
@@ -342,10 +328,7 @@ fn fetch_workspace_users(
             url.push_str(&format!("&start_cursor={cursor}"));
         }
 
-        let resp = client
-            .get(&url)
-            .send()
-            .map_err(|error| NotionError::RequestFailed(error.to_string()))?;
+        let resp = send(client.get(&url))?;
 
         if !resp.status().is_success() {
             let status = resp.status();
@@ -397,14 +380,11 @@ fn fetch_workspace_users(
 }
 
 fn fetch_data_source_properties(
-    client: &reqwest::blocking::Client,
+    client: &reqwest::Client,
     data_source_id: &str,
 ) -> Result<Vec<NotionPropertyInfo>, NotionError> {
     let url = format!("{NOTION_BASE_URL}/data_sources/{data_source_id}");
-    let resp = client
-        .get(&url)
-        .send()
-        .map_err(|error| NotionError::RequestFailed(error.to_string()))?;
+    let resp = send(client.get(&url))?;
 
     if !resp.status().is_success() {
         let status = resp.status();
@@ -420,14 +400,11 @@ fn fetch_data_source_properties(
 }
 
 fn fetch_database_properties(
-    client: &reqwest::blocking::Client,
+    client: &reqwest::Client,
     database_id: &str,
 ) -> Result<Vec<NotionPropertyInfo>, NotionError> {
     let url = format!("{NOTION_BASE_URL}/databases/{database_id}");
-    let resp = client
-        .get(&url)
-        .send()
-        .map_err(|error| NotionError::RequestFailed(error.to_string()))?;
+    let resp = send(client.get(&url))?;
 
     if !resp.status().is_success() {
         let status = resp.status();
@@ -560,7 +537,7 @@ mod tests {
     }
 
     #[test]
-    fn validation_properties_data_source取得失敗はnetwork_errorを返す() {
+    fn validation_properties_data_source取得失敗を呼出元へ返す() {
         let json = serde_json::json!({
             "data_sources": [{ "id": "ds-1" }]
         });
@@ -569,7 +546,10 @@ mod tests {
             Err(NotionError::RequestFailed("timeout".to_string()))
         });
 
-        assert_eq!(result.unwrap_err(), NotionConfigStatus::NetworkError);
+        assert_eq!(
+            result.unwrap_err(),
+            NotionError::RequestFailed("timeout".to_string())
+        );
     }
 
     #[test]
@@ -616,3 +596,54 @@ mod tests {
         assert!(result.is_empty());
     }
 }
+
+struct NotionResponse {
+    status: reqwest::StatusCode,
+    headers: reqwest::header::HeaderMap,
+    body: Vec<u8>,
+}
+impl NotionResponse {
+    fn status(&self) -> reqwest::StatusCode {
+        self.status
+    }
+    fn headers(&self) -> &reqwest::header::HeaderMap {
+        &self.headers
+    }
+    fn text(self) -> Result<String, std::string::FromUtf8Error> {
+        String::from_utf8(self.body)
+    }
+    fn json<T: serde::de::DeserializeOwned>(self) -> Result<T, serde_json::Error> {
+        serde_json::from_slice(&self.body)
+    }
+}
+fn send(request: reqwest::RequestBuilder) -> Result<NotionResponse, NotionError> {
+    let context = crate::other::operation_context::with_timeout(REQUEST_TIMEOUT);
+    context.check(std::time::Instant::now())?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| NotionError::RequestFailed(error.to_string()))?;
+    runtime
+        .block_on(crate::other::operation_context::wait(&context, async {
+            let response = request.send().await?;
+            let status = response.status();
+            let headers = response.headers().clone();
+            let body = response.bytes().await?.to_vec();
+            Ok::<_, reqwest::Error>(NotionResponse {
+                status,
+                headers,
+                body,
+            })
+        }))?
+        .map_err(|error| {
+            if error.is_timeout() {
+                NotionError::Stopped(crate::domain::operation_context::OperationStopped::Expired)
+            } else {
+                NotionError::RequestFailed(error.to_string())
+            }
+        })
+}
+
+#[cfg(test)]
+#[path = "service_impl_test.rs"]
+mod service_impl_tests;

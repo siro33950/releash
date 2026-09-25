@@ -101,7 +101,7 @@ impl WorkspaceStateReads {
         }
         let reads = self.clone();
         let target = target.clone();
-        tokio::task::spawn_blocking(move || reads.read_blocking(&target))
+        crate::other::operation_context::spawn_blocking(move || reads.read_blocking(&target))
             .await
             .map_err(|e| StateReadError {
                 kind: FailureKind::Internal,
@@ -152,6 +152,7 @@ impl WorkspaceStateReads {
             T::Issues(p) => StateValue::Issues(
                 self.git_host
                     .get_cached_issues(p)
+                    .map_err(error)?
                     .into_iter()
                     .map(Into::into)
                     .collect(),
@@ -208,9 +209,9 @@ impl StateSubscriptionRead for WorkspaceStateReads {
         if let SubscriptionTarget::Issues(path) = target {
             let reads = self.clone();
             let path = path.clone();
-            tokio::task::spawn_blocking(move || {
+            crate::other::operation_context::spawn_blocking(move || {
                 reads.repository.get_main_repo_path(&path).map_err(error)?;
-                reads.git_host.fetch_issues(&path);
+                reads.git_host.fetch_issues(&path).map_err(error)?;
                 Ok(())
             })
             .await

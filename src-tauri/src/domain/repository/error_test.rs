@@ -5,6 +5,14 @@ fn test_失敗分類_repository_error_理由に対応する() {
     use crate::domain::failure::{ClassifiedFailure, FailureKind as F};
     // Given
     let cases = [
+        (
+            RepositoryError::Stopped(crate::domain::operation_context::OperationStopped::Expired),
+            F::Expired,
+        ),
+        (
+            RepositoryError::Stopped(crate::domain::operation_context::OperationStopped::Cancelled),
+            F::Cancelled,
+        ),
         (RepositoryError::External("io".into()), F::Internal),
         (RepositoryError::Rule("rule".into()), F::StateRequired),
     ];

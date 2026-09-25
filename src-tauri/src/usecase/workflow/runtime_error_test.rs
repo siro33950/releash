@@ -120,3 +120,17 @@ fn test_node事実追記_分類と失敗理由と実行木の失敗種別を保�
         );
     }
 }
+
+#[test]
+fn test_managed_worktree停止_runtime境界で分類を保持する() {
+    use crate::domain::failure::ClassifiedFailure;
+    use crate::domain::operation_context::OperationStopped;
+    // Given
+    for stopped in [OperationStopped::Expired, OperationStopped::Cancelled] {
+        // When
+        let error = WorkflowRuntimeError::from(ManagedWorktreeResolverError::Stopped(stopped));
+        // Then
+        assert_eq!(error.failure_kind(), stopped.failure_kind());
+        assert_eq!(error.to_string(), stopped.to_string());
+    }
+}

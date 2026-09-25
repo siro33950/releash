@@ -64,6 +64,14 @@ impl WatcherUsecase {
         Ok(())
     }
 
+    pub(crate) fn release(&self, watcher_id: u64) {
+        if let Some(repository) = &self.repository {
+            repository.release_watching(watcher_id);
+        }
+        self.files.release(watcher_id);
+        self.subscriptions.lock().stopped(watcher_id);
+    }
+
     fn stop_backend(&self, watcher_id: u64) -> Result<(), UsecaseError> {
         if let Some(repository) = &self.repository {
             if repository
@@ -104,7 +112,7 @@ impl WatcherUsecase {
             .complete(reservation, result.as_ref().ok().copied());
         let id = result?;
         if let Err(error) = registered {
-            self.stop_backend(id)?;
+            self.release(id);
             return Err(error.into());
         }
         Ok(id)
@@ -112,9 +120,7 @@ impl WatcherUsecase {
 
     fn stop_watchers(&self, watchers: std::collections::HashSet<u64>) {
         for id in watchers {
-            if let Err(error) = self.stop_backend(id) {
-                log::error!("Watcher cleanup failed: {error}");
-            }
+            self.release(id);
         }
     }
 }

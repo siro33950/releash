@@ -25,3 +25,5 @@ pub(crate) mod workspace_tree;
 pub(crate) mod login_item;
 
 pub(crate) mod state_subscription;
+
+pub mod operation_context;

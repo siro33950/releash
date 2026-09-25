@@ -124,7 +124,23 @@ impl ClientApiDeps {
 
     async fn execute(
         &self,
+        deadline: Option<std::time::Instant>,
         command: wire::command_request::Command,
+    ) -> Result<wire::command_result::Command, connectrpc::ConnectError> {
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let _cancel_on_drop = cancellation.clone().drop_guard();
+        let context = crate::domain::operation_context::OperationContext::new(
+            deadline.map(crate::domain::operation_context::Deadline::new),
+            Arc::new(cancellation.clone()),
+        );
+        crate::other::operation_context::scope(context, self.execute_scoped(command, cancellation))
+            .await
+    }
+
+    async fn execute_scoped(
+        &self,
+        command: wire::command_request::Command,
+        cancellation: tokio_util::sync::CancellationToken,
     ) -> Result<wire::command_result::Command, connectrpc::ConnectError> {
         let _permit = self.request_permit()?;
         self.dispatch.admit(command.name()).map_err(command_error)?;
@@ -132,7 +148,7 @@ impl ClientApiDeps {
             let id = crate::adaptor::controller::client::required(args.watcher_id, "watcherId")
                 .map_err(command_error)?;
             let watcher = self.watcher.clone();
-            tokio::task::spawn_blocking(move || watcher.stop(id))
+            crate::other::operation_context::spawn_blocking(move || watcher.stop(id))
                 .await
                 .map_err(task_error)?
                 .map_err(watch_error)?;
@@ -150,11 +166,14 @@ impl ClientApiDeps {
                 wire::Unit {},
             ));
         }
-        let cancellation = tokio_util::sync::CancellationToken::new();
-        let _cancel_on_drop = cancellation.clone().drop_guard();
+        let context = crate::other::operation_context::current();
         let dispatch = self.dispatch.clone();
         tokio::spawn(async move {
-            run_command(&cancellation, dispatch.dispatch_admitted(command)).await
+            crate::other::operation_context::scope(
+                context,
+                run_command(&cancellation, dispatch.dispatch_admitted(command)),
+            )
+            .await
         })
         .await
         .map_err(task_error)?
@@ -162,6 +181,7 @@ impl ClientApiDeps {
 
     async fn watch(
         &self,
+        deadline: Option<std::time::Instant>,
         subscription_id: String,
         path: String,
         git: bool,
@@ -175,10 +195,33 @@ impl ClientApiDeps {
             })
             .map_err(command_error)?;
         let watcher = self.watcher.clone();
-        let id = tokio::task::spawn_blocking(move || watcher.watch(&subscription_id, &path, git))
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let _cancel_on_drop = cancellation.clone().drop_guard();
+        let context = crate::domain::operation_context::OperationContext::new(
+            deadline.map(crate::domain::operation_context::Deadline::new),
+            Arc::new(cancellation),
+        );
+        let result = crate::other::operation_context::scope(context.clone(), async {
+            crate::other::operation_context::spawn_blocking(move || {
+                context.check(std::time::Instant::now()).map_err(|error| {
+                    command_error(crate::other::AppError::from_failure(error).into())
+                })?;
+                let result = watcher.watch(&subscription_id, &path, git);
+                if let Err(error) = context.check(std::time::Instant::now()) {
+                    if let Ok(id) = result {
+                        watcher.release(id);
+                    }
+                    return Err(command_error(
+                        crate::other::AppError::from_failure(error).into(),
+                    ));
+                }
+                result.map_err(watch_error)
+            })
             .await
-            .map_err(task_error)?
-            .map_err(watch_error)?;
+        })
+        .await
+        .map_err(task_error)?;
+        let id = result?;
         to_rpc(&wire::ResultUint64 { value: Some(id) })
     }
 }
@@ -189,7 +232,7 @@ async fn run_command(
         Output = Result<wire::command_result::Command, wire::CommandFailure>,
     >,
 ) -> Result<wire::command_result::Command, connectrpc::ConnectError> {
-    cancellation
+    let result = cancellation
         .run_until_cancelled(future)
         .await
         .unwrap_or_else(|| {
@@ -200,7 +243,13 @@ async fn run_command(
             )
             .into())
         })
-        .map_err(command_error)
+        .map_err(command_error);
+    crate::other::operation_context::check().map_err(|error| {
+        crate::adaptor::protocol::connect::classified_error(crate::other::AppError::from_failure(
+            error,
+        ))
+    })?;
+    result
 }
 
 fn response_headers(command: &wire::command_result::Command) -> axum::http::HeaderMap {

@@ -16,5 +16,5 @@ pub(crate) trait NotionApiGateway: Send + Sync {
         config: &NotionRepoConfig,
     ) -> Result<Vec<NotionLabelOption>, NotionError>;
 
-    fn validate(&self, config: &NotionRepoConfig) -> NotionValidationResult;
+    fn validate(&self, config: &NotionRepoConfig) -> Result<NotionValidationResult, NotionError>;
 }

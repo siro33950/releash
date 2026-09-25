@@ -595,3 +595,69 @@ async fn test_archive読取_実経路で失敗分類を保持する() {
         }
     }
 }
+
+#[tokio::test]
+async fn test_archive候補_repo補完の期限と取消を保持し次のpathへ進まない() {
+    use crate::domain::failure::ClassifiedFailure;
+    use crate::domain::operation_context::{
+        Cancellation, Deadline, OperationContext, OperationStopped,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
+    struct CountCancelled(AtomicUsize);
+    impl Cancellation for CountCancelled {
+        fn is_cancelled(&self) -> bool {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            true
+        }
+    }
+    for expire in [false, true] {
+        // Given: store読取の待機中にcontextを切り替え、repo補完で初めて停止させる。
+        let (_directory, store, repository, _) = fixture();
+        let mut blockers = Vec::new();
+        let mut releases = Vec::new();
+        for _ in 0..crate::adaptor::gateway::local_event_store::reader::READER_POOL_SIZE {
+            let store = store.clone();
+            let (started, ready) = tokio::sync::oneshot::channel();
+            let (release, wait) = std::sync::mpsc::channel();
+            blockers.push(tokio::spawn(async move {
+                store
+                    .submit_query(move |_| {
+                        started.send(()).unwrap();
+                        wait.recv_timeout(Duration::from_secs(2)).unwrap();
+                        Ok(())
+                    })
+                    .await
+                    .unwrap();
+            }));
+            ready.await.unwrap();
+            releases.push(release);
+        }
+        let mut page = Box::pin(repository.candidate_page(None));
+        assert!(futures_util::poll!(&mut page).is_pending());
+        for release in releases {
+            release.send(()).unwrap();
+        }
+        for blocker in blockers {
+            blocker.await.unwrap();
+        }
+        let cancellation = Arc::new(CountCancelled(AtomicUsize::new(0)));
+        let context = OperationContext::new(
+            expire.then(|| Deadline::new(Instant::now())),
+            cancellation.clone(),
+        );
+        // When
+        let error = crate::other::operation_context::scope(context, page)
+            .await
+            .unwrap_err();
+        // Then
+        let expected = if expire {
+            OperationStopped::Expired
+        } else {
+            OperationStopped::Cancelled
+        };
+        assert!(matches!(error, WorkflowError::Stopped(stopped) if stopped == expected));
+        assert_eq!(error.failure_kind(), expected.failure_kind());
+        assert_eq!(cancellation.0.load(Ordering::SeqCst), usize::from(!expire));
+    }
+}

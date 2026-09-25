@@ -19,7 +19,7 @@ pub(crate) type CommandHandler = Box<
 mod tests;
 
 pub(crate) struct ClientCommandDispatch {
-    handlers: HashMap<&'static str, CommandHandler>,
+    handlers: HashMap<&'static str, Arc<CommandHandler>>,
     authority: Arc<ApplicationStartupAuthority>,
     pub(super) publisher: Option<crate::usecase::state_subscription::StateSubscriptionPublisher>,
     mutations: Option<Arc<crate::usecase::workflow::WorkflowRuntimeUsecase>>,
@@ -74,7 +74,7 @@ impl ClientCommandDispatch {
         handler: CommandHandler,
     ) {
         assert_eq!(names.len(), 1);
-        assert!(self.handlers.insert(names[0], handler).is_none());
+        assert!(self.handlers.insert(names[0], Arc::new(handler)).is_none());
     }
     #[cfg(test)]
     pub(crate) fn contains(&self, name: &str) -> bool {
@@ -113,22 +113,38 @@ impl ClientCommandDispatch {
             dyn Future<Output = Result<wire::command_result::Command, wire::CommandFailure>> + Send,
         >,
     > {
-        let guards = match super::worktree_mutation::admit(self.mutations.as_deref(), &command) {
-            Ok(guards) => guards,
-            Err(error) => return Box::pin(std::future::ready(Err(error))),
-        };
-        match self.handlers.get(command.name()) {
-            Some(handler) => {
-                let future = handler(command);
-                Box::pin(super::worktree_mutation::scope(guards, future))
+        if self.mutations.is_none() {
+            if let Err(error) = super::worktree_mutation::admit(None, &command) {
+                return Box::pin(std::future::ready(Err(error)));
             }
-            None => Box::pin(std::future::ready(Err(crate::other::AppError::coded(
-                "UNKNOWN_COMMAND",
-                "Command was not found",
-                crate::domain::failure::FailureKind::Missing,
-            )
-            .into()))),
+            if let Some(handler) = self.handlers.get(command.name()) {
+                return handler(command);
+            }
         }
+        let handler = self.handlers.get(command.name()).cloned();
+        let mutations = self.mutations.clone();
+        Box::pin(async move {
+            let (guards, command) = crate::other::operation_context::spawn_blocking(move || {
+                let guards = super::worktree_mutation::admit(mutations.as_deref(), &command)?;
+                Ok::<_, wire::CommandFailure>((guards, command))
+            })
+            .await
+            .map_err(|error| {
+                wire::CommandFailure::from(crate::other::AppError::new(error.to_string()))
+            })??;
+            crate::other::operation_context::check().map_err(|error| {
+                wire::CommandFailure::from(crate::other::AppError::from_failure(error))
+            })?;
+            match handler {
+                Some(handler) => super::worktree_mutation::scope(guards, handler(command)).await,
+                None => Err(crate::other::AppError::coded(
+                    "UNKNOWN_COMMAND",
+                    "Command was not found",
+                    crate::domain::failure::FailureKind::Missing,
+                )
+                .into()),
+            }
+        })
     }
 }
 

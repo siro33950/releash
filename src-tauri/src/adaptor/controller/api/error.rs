@@ -77,6 +77,11 @@ impl From<WorkflowError> for ApiError {
                 "unauthorized_approval_target",
                 message,
             ),
+            WorkflowError::Stopped(error) => Self::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "workflow_error",
+                error.to_string(),
+            ),
             WorkflowError::Editor(error) => Self::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "workflow_error",
@@ -109,3 +114,7 @@ impl IntoResponse for ApiError {
         (self.status, Json(self.body)).into_response()
     }
 }
+
+#[cfg(test)]
+#[path = "error_test.rs"]
+mod error_tests;

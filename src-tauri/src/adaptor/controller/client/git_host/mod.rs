@@ -10,7 +10,7 @@ where
     T: Send + 'static,
     F: FnOnce() -> T + Send + 'static,
 {
-    tokio::task::spawn_blocking(f)
+    crate::other::operation_context::spawn_blocking(f)
         .await
         .map_err(|e| AppError::new(format!("task join error: {e}")))
 }

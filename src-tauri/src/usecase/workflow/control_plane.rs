@@ -702,6 +702,7 @@ fn runtime_error_to_workflow_error(error: WorkflowRuntimeError) -> WorkflowError
         WorkflowRuntimeError::InvalidWorkflow(message)
         | WorkflowRuntimeError::ValidationError(message) => WorkflowError::validation(message),
         WorkflowRuntimeError::Store(kind) => WorkflowError::Store(kind),
+        WorkflowRuntimeError::Stopped(stopped) => WorkflowError::Stopped(stopped),
         WorkflowRuntimeError::StorageFailure { message, kind } => {
             WorkflowError::StorageUnavailable { message, kind }
         }
@@ -720,3 +721,7 @@ fn runtime_error_to_workflow_error(error: WorkflowRuntimeError) -> WorkflowError
         | WorkflowRuntimeError::AgentSession(message) => WorkflowError::external(message),
     }
 }
+
+#[cfg(test)]
+#[path = "control_plane_test.rs"]
+mod control_plane_tests;

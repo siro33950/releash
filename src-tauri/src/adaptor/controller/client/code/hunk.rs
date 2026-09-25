@@ -27,10 +27,8 @@ pub(crate) async fn compute_hidden_ranges_from_content_shared(
     context_lines: u32,
 ) -> Result<Vec<HiddenRangeDto>, AppError> {
     let uc = state.code_usecase.clone();
-    run_blocking(move || {
-        Ok(uc.compute_hidden_ranges_from_content(&original, &modified, context_lines))
-    })
-    .await
+    run_blocking(move || uc.compute_hidden_ranges_from_content(&original, &modified, context_lines))
+        .await
 }
 
 pub(crate) async fn compute_visible_markdown_blocks_shared(
@@ -40,8 +38,6 @@ pub(crate) async fn compute_visible_markdown_blocks_shared(
     context_lines: u32,
 ) -> Result<Vec<VisibleBlockDto>, AppError> {
     let uc = state.code_usecase.clone();
-    run_blocking(move || {
-        Ok(uc.compute_visible_markdown_blocks(&original, &modified, context_lines))
-    })
-    .await
+    run_blocking(move || uc.compute_visible_markdown_blocks(&original, &modified, context_lines))
+        .await
 }

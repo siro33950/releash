@@ -135,7 +135,12 @@ impl ManagedWorktreeResolver for AppConfigManagedWorktreeResolver {
             worktree_path,
         )
         .await
-        .map_err(ManagedWorktreeResolverError::Validation)
+        .map_err(|error| match error {
+            crate::domain::workflow::WorkflowError::Stopped(stopped) => {
+                ManagedWorktreeResolverError::Stopped(stopped)
+            }
+            error => ManagedWorktreeResolverError::Validation(error.to_string()),
+        })
     }
 }
 
@@ -240,3 +245,7 @@ return r.workflow{
         assert!(error.to_string().contains("WFS006"));
     }
 }
+
+#[cfg(test)]
+#[path = "runtime_resolver_test.rs"]
+mod runtime_resolver_tests;

@@ -559,6 +559,7 @@ fn query_error(error: crate::domain::local_event::LocalEventQueryError) -> Workf
     use crate::domain::local_event::LocalEventQueryError;
 
     match error {
+        LocalEventQueryError::Stopped(stopped) => WorkflowError::Stopped(stopped),
         LocalEventQueryError::StorageUnavailable { failure } => WorkflowError::StorageUnavailable {
             message: failure.to_string(),
             kind: failure.failure_kind(),

@@ -316,6 +316,8 @@ impl From<domain::ReviewHistoryEntry> for ReviewHistoryEntryDto {
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ReviewErrorCodeDto {
+    Expired,
+    Cancelled,
     InvalidInput,
     NotFound,
     AlreadyResolved,
@@ -327,6 +329,8 @@ pub(crate) enum ReviewErrorCodeDto {
 impl From<domain::ReviewErrorCode> for ReviewErrorCodeDto {
     fn from(code: domain::ReviewErrorCode) -> Self {
         match code {
+            domain::ReviewErrorCode::Expired => Self::Expired,
+            domain::ReviewErrorCode::Cancelled => Self::Cancelled,
             domain::ReviewErrorCode::InvalidInput => Self::InvalidInput,
             domain::ReviewErrorCode::NotFound => Self::NotFound,
             domain::ReviewErrorCode::AlreadyResolved => Self::AlreadyResolved,
@@ -356,3 +360,7 @@ impl From<&domain::ReviewError> for ReviewErrorDto {
 pub(crate) fn review_error_to_json_string(error: domain::ReviewError) -> String {
     serde_json::to_string(&ReviewErrorDto::from(&error)).unwrap_or_else(|_| error.to_string())
 }
+
+#[cfg(test)]
+#[path = "dto_test.rs"]
+mod dto_tests;
