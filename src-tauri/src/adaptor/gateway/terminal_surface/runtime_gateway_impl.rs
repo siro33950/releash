@@ -64,6 +64,8 @@ pub struct TerminalSurfaceRuntimeGatewayFor {
     journal_enabled: bool,
     #[cfg(test)]
     snapshot_materialization_count: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    pub(crate) before_output_order: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 #[cfg(test)]
@@ -80,6 +82,8 @@ impl Default for TerminalSurfaceRuntimeGatewayFor {
             native_pty: NativePtySystem,
             journal_enabled: true,
             snapshot_materialization_count: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            before_output_order: Mutex::new(None),
         }
     }
 }
@@ -119,9 +123,18 @@ fn materialize_surface(
     terminal_surface: &Arc<Mutex<NativeTerminalEmulator>>,
 ) -> Option<TerminalSurface> {
     let checkpoint = materialize_checkpoint(registry, runtime_generation, terminal_surface).ok()?;
-    let mut registry = registry.lock();
-    registry.apply_checkpoint(runtime_generation, into_domain_checkpoint(checkpoint));
-    registry.get(runtime_generation).cloned()
+    let summary = registry.lock().get(runtime_generation)?.summary();
+    Some(TerminalSurface {
+        session_key: summary.session_key,
+        owner: summary.owner,
+        worktree_path: summary.worktree_path,
+        label: summary.label,
+        runtime_generation: summary.runtime_generation,
+        process_state: summary.process_state,
+        latest_sequence: checkpoint.sequence,
+        last_output_at: summary.last_output_at,
+        checkpoint: into_domain_checkpoint(checkpoint),
+    })
 }
 
 fn materialize_checkpoint(
@@ -130,8 +143,8 @@ fn materialize_checkpoint(
     terminal_surface: &Arc<Mutex<NativeTerminalEmulator>>,
 ) -> Result<NativeTerminalCheckpoint, String> {
     let terminal_surface = terminal_surface.lock();
-    let registry = registry.lock();
     let sequence = registry
+        .lock()
         .get(runtime_generation)
         .map(TerminalSurface::latest_sequence)
         .ok_or_else(|| format!("Terminal Surface for PTY {runtime_generation} not found"))?;
@@ -423,6 +436,9 @@ fn run_output_processor(
     let mut batcher = TerminalOutputBatcher::default();
     let mut pending_input_traces = Vec::new();
     loop {
+        if let Some(sink) = &context.event_sink {
+            sink.wait_output(&context.session_key);
+        }
         let command = match batcher.remaining_window(Instant::now()) {
             Some(wait) => receiver.recv_timeout(wait).map_err(|error| match error {
                 mpsc::RecvTimeoutError::Timeout => None,
@@ -483,12 +499,17 @@ fn spawn_output_reader(mut output: NativePtyOutput, context: TerminalOutputReade
     let (sender, receiver) = mpsc::sync_channel(OUTPUT_READER_QUEUE_CAPACITY);
     let first_provider_byte_started_at = context.first_provider_byte_started_at;
     let pending_input_traces = Arc::clone(&context.pending_input_traces);
+    let event_sink = context.event_sink.clone();
+    let session_key = context.session_key.clone();
     std::thread::spawn(move || run_output_processor(receiver, context));
     std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
         let mut pending = Vec::new();
         let mut first_provider_byte_recorded = false;
         loop {
+            if let Some(sink) = &event_sink {
+                sink.wait_output(&session_key);
+            }
             match output.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
@@ -549,6 +570,8 @@ impl TerminalSurfaceRuntimeGatewayFor {
             native_pty: NativePtySystem,
             journal_enabled: true,
             snapshot_materialization_count: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            before_output_order: Mutex::new(None),
         }
     }
 
@@ -570,6 +593,8 @@ impl TerminalSurfaceRuntimeGatewayFor {
             journal_enabled,
             #[cfg(test)]
             snapshot_materialization_count: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            before_output_order: Mutex::new(None),
         }
     }
 
@@ -590,19 +615,6 @@ impl TerminalSurfaceRuntimeGatewayFor {
             .lock()
             .find_by_session_key(session_key)
             .map(|surface| surface.runtime_generation.value())
-    }
-
-    fn publish_input_unavailable(
-        &self,
-        session_key: &str,
-        cause: TerminalSurfaceInputUnavailableCause,
-    ) {
-        if let Some(event_sink) = &self.event_sink {
-            event_sink.publish(TerminalSurfaceEvent::InputUnavailable {
-                session_key: session_key.to_string(),
-                cause,
-            });
-        }
     }
 
     fn write_runtime(
@@ -866,9 +878,13 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
     }
 
     fn insert_surface(&self, surface: TerminalSurface) {
+        let summary = surface.summary();
         let active_count = {
             let mut registry = self.registry.lock();
             registry.insert(surface);
+            if let Some(sink) = &self.event_sink {
+                sink.initialize(&summary);
+            }
             registry.len()
         };
         crate::other::telemetry::set_active_pty_count(active_count as u64);
@@ -936,6 +952,23 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
         self.materialize_surface(runtime_generation)
     }
 
+    fn with_output_order(&self, runtime_generation: u64, visit: &mut dyn FnMut()) {
+        #[cfg(test)]
+        {
+            let before = self.before_output_order.lock().take();
+            if let Some(before) = before {
+                before();
+            }
+        }
+        let order = self
+            .runtimes
+            .lock()
+            .get(&runtime_generation)
+            .map(|runtime| runtime.event_order.clone());
+        let _order = order.as_ref().map(|order| order.serialization.lock());
+        visit();
+    }
+
     fn select_kill_targets_by_worktree(&self, worktree_path: &str) -> Vec<u64> {
         self.registry
             .lock()
@@ -944,11 +977,21 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
 
     fn remove_surface(&self, runtime_generation: u64) -> Option<TerminalSurface> {
         self.runtimes.lock().remove(&runtime_generation);
-        let (removed, active_count) = {
+        let (removed, active_count, subscribed) = {
             let mut registry = self.registry.lock();
             let removed = registry.remove(runtime_generation);
-            (removed, registry.len())
+            let subscribed = removed.as_ref().is_some_and(|surface| {
+                self.event_sink
+                    .as_ref()
+                    .is_some_and(|sink| sink.remove(&surface.summary()))
+            });
+            (removed, registry.len(), subscribed)
         };
+        if !subscribed {
+            if let Some(surface) = &removed {
+                self.input_ingress.lock().remove(&surface.session_key);
+            }
+        }
         crate::other::telemetry::set_active_pty_count(active_count as u64);
         removed
     }
@@ -996,18 +1039,11 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
             Err(TerminalSurfaceInputIngressError::StaleAttachment) => {
                 let cause = TerminalSurfaceInputUnavailableCause::StaleAttachment;
                 let error = TerminalSurfaceGatewayError::new(cause.internal_cause());
-                drop(ingress);
-                self.publish_input_unavailable(session_key, cause);
                 return Err(error);
             }
             Err(TerminalSurfaceInputIngressError::PendingCapacityExceeded) => {
                 let cause = TerminalSurfaceInputUnavailableCause::PendingCapacityExceeded;
                 let error = TerminalSurfaceGatewayError::new(cause.internal_cause());
-                let should_publish = ingress.record_failure(session_key, attachment_id);
-                drop(ingress);
-                if should_publish {
-                    self.publish_input_unavailable(session_key, cause);
-                }
                 return Err(error);
             }
         };
@@ -1023,21 +1059,8 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
             if let Err(error) = result {
                 let failed = ready.split_off(index);
                 let _ = ingress.restore_failed(session_key, attachment_id, failed);
-                let should_publish = ingress.record_failure(session_key, attachment_id);
-                drop(ingress);
-                if should_publish {
-                    self.publish_input_unavailable(
-                        session_key,
-                        TerminalSurfaceInputUnavailableCause::RuntimeWriteFailed(
-                            error.message().to_string(),
-                        ),
-                    );
-                }
                 return Err(error);
             }
-        }
-        if !ready.is_empty() {
-            ingress.record_success(session_key, attachment_id);
         }
         Ok(())
     }
@@ -1133,7 +1156,6 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
                 sequence,
             });
         }
-        debug_assert!(sequence > 0);
         Ok(())
     }
 
@@ -1141,6 +1163,17 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
         &self,
         runtime_generation: u64,
     ) -> Result<(), TerminalSurfaceGatewayError> {
+        if let Some(summary) = self
+            .registry
+            .lock()
+            .get(runtime_generation)
+            .map(TerminalSurface::summary)
+        {
+            if let Some(sink) = &self.event_sink {
+                sink.release_output(&summary.session_key);
+            }
+        }
+
         let native_pty = {
             let runtimes = self.runtimes.lock();
             let runtime = runtimes.get(&runtime_generation).ok_or_else(|| {

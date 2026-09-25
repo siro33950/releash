@@ -78,7 +78,7 @@ fn test_ターミナル画面終了_登録簿内のプロセス状態を更新�
     let mut registry = TerminalSurfaceRegistry::default();
     registry.insert(session(1, "key-1", Some("/repo"), None));
 
-    assert_eq!(registry.mark_exited(1, Some(42)), Some(1));
+    assert_eq!(registry.mark_exited(1, Some(42)), Some(0));
     let snapshot = registry.get(1).unwrap().clone();
     assert!(snapshot.process_state.is_exited());
     assert_eq!(snapshot.process_state.exit_code(), Some(42));

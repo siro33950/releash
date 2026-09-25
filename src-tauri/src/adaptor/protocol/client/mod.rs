@@ -50,6 +50,7 @@ impl From<crate::adaptor::protocol::terminal::TerminalSurfaceStreamItemV1> for T
             item: Some(match value {
                 Item::Snapshot { surface } => Wire::Snapshot(TerminalSnapshot {
                     session_key: surface.session_key,
+                    processed_report_units: crate::domain::terminal_surface::value_objects::output_flow_control::OUTPUT_REPORT_UNITS as u32,
                     replay: surface.terminal_surface.replay,
                     sequence: surface.terminal_surface.sequence,
                     cols: surface.terminal_surface.cols.into(),
@@ -85,13 +86,6 @@ impl From<crate::adaptor::protocol::terminal::TerminalSurfaceStreamItemV1> for T
                     session_key,
                     exit_code,
                     sequence,
-                }),
-                Item::InputUnavailable {
-                    session_key,
-                    message,
-                } => Wire::InputUnavailable(TerminalInputUnavailable {
-                    session_key,
-                    message,
                 }),
             }),
         }

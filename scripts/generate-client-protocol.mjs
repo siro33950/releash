@@ -41,11 +41,10 @@ try {
     return name;
   }
   for (const field of registry.getMessage("releash.client.v1.StatePayload").fields) if (field.message) messageType(field.message);
-  const terminalArgs = messageType(registry.getMessage("releash.client.v1.AttachTerminalSurfaceRequest"), true);
   const mappings = [["ClientCommandArgs", "CommandRequest"], ["ClientCommandResults", "CommandResult"], ["ClientPushPayloads", "Push"]].map(([name, proto]) => {
     const fields = registry.getMessage(`releash.client.v1.${proto}`).fields.filter(field => field.message && field.oneof);
     if (name === "ClientCommandResults") return `export interface ClientCommands {\n${fields.map(field => `${JSON.stringify(field.name)}(args: ClientCommandArgs[${JSON.stringify(field.name)}]): Promise<${option(field.message, "json_unit") ? "void" : messageType(field.message)}>;`).join("\n")}\n}\nexport type ClientCommandResults = { [K in keyof ClientCommands]: Awaited<ReturnType<ClientCommands[K]>> };`;
-    return `export interface ${name} {\n${name === "ClientCommandArgs" ? `"attach_terminal_surface": ${terminalArgs};\n` : ""}${fields.map(field => `${JSON.stringify(proto === "Push" ? field.name.replaceAll("_", "-") : field.name)}: ${name === "ClientCommandResults" && option(field.message, "json_unit") ? "void" : messageType(field.message, name === "ClientCommandArgs")};`).join("\n")}\n}`;
+    return `export interface ${name} {\n${fields.map(field => `${JSON.stringify(proto === "Push" ? field.name.replaceAll("_", "-") : field.name)}: ${name === "ClientCommandResults" && option(field.message, "json_unit") ? "void" : messageType(field.message, name === "ClientCommandArgs")};`).join("\n")}\n}`;
   });
   const service = registry.getService("releash.client.v1.ClientService");
   const commands = registry.getMessage("releash.client.v1.CommandRequest").fields.filter(field => field.message && field.oneof);

@@ -16,7 +16,6 @@ struct TerminalSurfaceInputIngress {
     attachment_id: String,
     next_sequence: u64,
     pending: BTreeMap<u64, TerminalSurfaceInput>,
-    failure_active: bool,
 }
 
 pub struct TerminalSurfaceInputIngressRegistry {
@@ -45,7 +44,6 @@ impl TerminalSurfaceInputIngressRegistry {
                 attachment_id: attachment_id.to_string(),
                 next_sequence: 0,
                 pending: BTreeMap::new(),
-                failure_active: false,
             },
         );
     }
@@ -59,6 +57,10 @@ impl TerminalSurfaceInputIngressRegistry {
         {
             self.sessions.remove(session_key);
         }
+    }
+
+    pub fn remove(&mut self, session_key: &str) {
+        self.sessions.remove(session_key);
     }
 
     fn active(
@@ -122,23 +124,6 @@ impl TerminalSurfaceInputIngressRegistry {
             ingress.pending.entry(input.sequence).or_insert(input);
         }
         Ok(())
-    }
-
-    pub fn record_failure(&mut self, session_key: &str, attachment_id: &str) -> bool {
-        let Ok(ingress) = self.active(session_key, attachment_id) else {
-            return false;
-        };
-        if ingress.failure_active {
-            return false;
-        }
-        ingress.failure_active = true;
-        true
-    }
-
-    pub fn record_success(&mut self, session_key: &str, attachment_id: &str) {
-        if let Ok(ingress) = self.active(session_key, attachment_id) {
-            ingress.failure_active = false;
-        }
     }
 }
 

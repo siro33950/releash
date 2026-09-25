@@ -135,6 +135,7 @@ describe("macOS WKWebView / real Connect daemon", () => {
 				"settings[3] &= ~termios.ECHO",
 				"termios.tcsetattr(0, termios.TCSANOW, settings)",
 				"count = 0",
+				"print('x' * 5000, flush=True)",
 				"while True:",
 				"    if select.select([sys.stdin], [], [], 0.1)[0]:",
 				`        print('received:${index}:' + sys.stdin.readline().strip(), flush=True)`,
@@ -185,15 +186,16 @@ describe("macOS WKWebView / real Connect daemon", () => {
 				(workspaces) =>
 					Promise.all(
 						workspaces.map((workspacePath) =>
-							window.__RELEASH_INVOKE_CLIENT__!("get_terminal_surface", {
-								owner: { kind: "workspace", workspacePath },
-							}),
+							window.__RELEASH_FIRST_STATE__!({kind: "terminal", args: [workspacePath]}),
 						),
 					),
 				paths.slice(1),
 			);
 			expect(surfaces).toHaveLength(5);
-			for (const surface of surfaces) expect(surface.is_exited).toBe(false);
+			for (const surface of surfaces) {
+				expect(surface.type).toBe("snapshot");
+				if (surface.type === "snapshot") expect(surface.surface.is_exited).toBe(false);
+			}
 		}
 		await client.removeRepoPath({ path: paths[0] });
 		await $(`[data-testid="worktree-item-pane-0"]`).waitForExist({
@@ -212,10 +214,9 @@ describe("macOS WKWebView / real Connect daemon", () => {
 			window.__CLIENT_STREAM_REQUESTS__.filter((request) =>
 				[
 					"WriteTerminalSurface",
-					"AckTerminalSurfaceOutput",
+					"ReportTerminalProcessed",
 					"StartStateSubscription",
 					"StopStateSubscription",
-					"GetTerminalSurface",
 				].includes(request.method),
 			),
 		);
@@ -231,7 +232,7 @@ describe("macOS WKWebView / real Connect daemon", () => {
 				.length,
 		).toBeGreaterThanOrEqual(20);
 		expect(
-			requests.some((request) => request.method === "AckTerminalSurfaceOutput"),
+			requests.some((request) => request.method === "ReportTerminalProcessed"),
 		).toBe(true);
 		await mkdir(artifactDirectory, { recursive: true });
 		await writeFile(

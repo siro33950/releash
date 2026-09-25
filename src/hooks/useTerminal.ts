@@ -7,11 +7,11 @@ import type {
 	ClientCommandResults,
 } from "@/generated/client_types";
 import {
-	acknowledgeClientStream,
-	attachClientStream,
 	type ClientCommand,
 	invokeClient as invoke,
 	onClientConnection,
+	reportTerminalProcessed,
+	subscribeTerminalState,
 } from "@/lib/client";
 import { getErrorMessage } from "@/lib/errorMessage";
 import {
@@ -362,9 +362,7 @@ export function useTerminal(
 			performanceRequestStartedAt = launchOrigin ?? requestStartedAt;
 			const result =
 				initialization === "attach-existing"
-					? await invokeTerminalBackendCommand("get_terminal_surface", {
-							owner: terminalOwner,
-						})
+					? null
 					: await invokeTerminalBackendCommand(
 							"get_or_spawn_terminal_surface",
 							{
@@ -385,7 +383,7 @@ export function useTerminal(
 				const shouldKillDetachedPty =
 					killOnUnmountRef.current ||
 					(shouldKillPendingTerminalRef.current?.() ?? false);
-				if (shouldKillDetachedPty && !result.is_exited) {
+				if (shouldKillDetachedPty) {
 					invoke("kill_terminal_surface", { owner: terminalOwner }).catch(
 						(error) => {
 							console.error(
@@ -394,7 +392,7 @@ export function useTerminal(
 							);
 						},
 					);
-				} else if (!shouldKillDetachedPty) {
+				} else if (!shouldKillDetachedPty && result) {
 					onTerminalReadyRef.current?.(result.session_key);
 				}
 				return;
@@ -425,7 +423,7 @@ export function useTerminal(
 				resolveInitialSnapshot = resolve;
 			});
 			let hasSnapshot = false;
-			let streamSessionKey = result.session_key;
+			let streamSessionKey = result?.session_key ?? "";
 			let streamProcessing = Promise.resolve();
 			let recoveringSinceEpoch: number | null = null;
 			let firstChannelReceived = false;
@@ -437,15 +435,21 @@ export function useTerminal(
 				const attached = new Promise<void>((resolve) => {
 					markAttached = resolve;
 				});
-				const acknowledgeOutput = (sequence: number) => {
-					if (epoch !== attachmentEpoch) return;
-					void acknowledgeClientStream(nextAttachmentId, sequence).catch(
-						(error) => {
-							if (!isMounted || epoch !== attachmentEpoch) return;
-							console.debug("Terminal output acknowledgement failed", error);
-							recoverAttachment?.(epoch);
-						},
-					);
+				let processedUnits = 0;
+				let reportUnits = 0;
+				const reportProcessed = (units: number) => {
+					if (epoch !== attachmentEpoch || reportUnits <= 0) return;
+					processedUnits += units;
+					while (processedUnits >= reportUnits) {
+						processedUnits -= reportUnits;
+						void reportTerminalProcessed(terminalOwner, reportUnits).catch(
+							(error) => {
+								if (!isMounted || epoch !== attachmentEpoch) return;
+								console.debug("Terminal processed notification failed", error);
+								recoverAttachment?.(epoch);
+							},
+						);
+					}
 				};
 				const applyContext: TerminalStreamApplyContext = {
 					isCurrent: () => isMounted && epoch === attachmentEpoch,
@@ -493,11 +497,10 @@ export function useTerminal(
 					reportOutputTracePoint: reportTerminalInputPerformancePoint,
 					enqueueOutput: (data, onParsed) =>
 						liveOutputScheduler.enqueue(data, onParsed),
-					acknowledgeOutput,
-					reportInputUnavailable: (message) => {
-						console.error(message);
-						onTerminalErrorRef.current?.(message);
-						recoverAttachment?.();
+					reportProcessed,
+					setProcessedReportUnits: (units) => {
+						reportUnits = units;
+						processedUnits = 0;
 					},
 				};
 				const handleStreamItem = (item: TerminalSurfaceStreamItem) => {
@@ -520,8 +523,8 @@ export function useTerminal(
 							}),
 						);
 				};
-				const nextReleaseStream = await attachClientStream(
-					{ owner: terminalOwner, attachmentId: nextAttachmentId, recovery },
+				const nextReleaseStream = await subscribeTerminalState(
+					{ owner: terminalOwner, attachmentId: nextAttachmentId },
 					handleStreamItem,
 					() => {
 						if (!isMounted || epoch !== attachmentEpoch) return;

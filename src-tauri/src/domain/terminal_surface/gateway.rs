@@ -48,7 +48,6 @@ impl std::error::Error for TerminalSurfaceGatewayError {}
 pub enum TerminalSurfaceInputUnavailableCause {
     StaleAttachment,
     PendingCapacityExceeded,
-    RuntimeWriteFailed(String),
 }
 
 impl TerminalSurfaceInputUnavailableCause {
@@ -56,7 +55,6 @@ impl TerminalSurfaceInputUnavailableCause {
         match self {
             Self::StaleAttachment => "Terminal input attachment is no longer active",
             Self::PendingCapacityExceeded => "Terminal input reorder buffer is full",
-            Self::RuntimeWriteFailed(cause) => cause,
         }
     }
 }
@@ -80,10 +78,6 @@ pub enum TerminalSurfaceEvent {
         exit_code: Option<i32>,
         sequence: u64,
     },
-    InputUnavailable {
-        session_key: String,
-        cause: TerminalSurfaceInputUnavailableCause,
-    },
 }
 
 impl TerminalSurfaceEvent {
@@ -91,13 +85,27 @@ impl TerminalSurfaceEvent {
         match self {
             Self::Output { session_key, .. }
             | Self::Resize { session_key, .. }
-            | Self::Exit { session_key, .. }
-            | Self::InputUnavailable { session_key, .. } => session_key,
+            | Self::Exit { session_key, .. } => session_key,
         }
     }
 }
 
+pub trait TerminalSurfaceStateSink: Send + Sync {
+    fn initialize(&self, surface: &TerminalSurfaceSummary);
+    /// Returns whether a subscription still owns the input attachment.
+    fn remove(&self, surface: &TerminalSurfaceSummary) -> bool;
+    fn publish(&self, event: TerminalSurfaceEvent);
+}
+
 pub trait TerminalSurfaceEventSink: Send + Sync {
+    fn initialize(&self, _surface: &TerminalSurfaceSummary) {}
+    /// Returns whether a subscription still owns the input attachment.
+    fn remove(&self, _surface: &TerminalSurfaceSummary) -> bool {
+        false
+    }
+    fn wait_output(&self, _session_key: &str) {}
+    fn release_output(&self, _session_key: &str) {}
+
     fn publish(&self, event: TerminalSurfaceEvent);
 }
 
@@ -130,16 +138,10 @@ pub struct TerminalSurfaceEventStream {
 
 pub trait TerminalSurfaceEventSource: Send + Sync {
     fn subscribe(&self) -> TerminalSurfaceEventStream;
-
-    fn subscribe_owner(
-        &self,
-        _session_key: &str,
-        _attachment_id: &str,
-    ) -> TerminalSurfaceEventStream {
-        self.subscribe()
-    }
-
-    fn acknowledge_owner_output(&self, _session_key: &str, _attachment_id: &str, _sequence: u64) {}
+    fn set_state_sink(&self, _sink: Arc<dyn TerminalSurfaceStateSink>) {}
+    fn subscribe_output(&self, _session_key: &str, _client: &str, _units: usize) {}
+    fn unsubscribe_output(&self, _session_key: &str, _client: &str) {}
+    fn processed_output(&self, _session_key: &str, _client: &str, _units: usize) {}
 }
 
 pub trait TerminalSurfaceRepository {
@@ -171,6 +173,25 @@ pub trait TerminalSurfaceGateway: TerminalSurfaceRepository {
         runtime_generation: u64,
     ) -> Result<(), TerminalSurfaceGatewayError>;
     fn snapshot(&self, runtime_generation: u64) -> Option<TerminalSurface>;
+    fn with_output_order(&self, _runtime_generation: u64, visit: &mut dyn FnMut()) {
+        visit();
+    }
+
+    fn visit_snapshot(
+        &self,
+        runtime_generation: u64,
+        visit: &mut dyn FnMut(TerminalSurface),
+    ) -> bool {
+        let mut found = false;
+        self.with_output_order(runtime_generation, &mut || {
+            if let Some(surface) = self.snapshot(runtime_generation) {
+                visit(surface);
+                found = true;
+            }
+        });
+        found
+    }
+
     fn select_kill_targets_by_worktree(&self, worktree_path: &str) -> Vec<u64>;
     fn remove_surface(&self, runtime_generation: u64) -> Option<TerminalSurface>;
     fn reserve_spawn_slot(

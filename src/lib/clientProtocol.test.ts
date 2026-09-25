@@ -7,7 +7,6 @@ import {
 } from "@bufbuild/protobuf";
 import { describe, expect, it } from "vitest";
 import {
-	AckTerminalSurfaceOutputRequestSchema,
 	NodeExecutionStatusViewSchema,
 	PushSchema,
 	RefreshWorkspacesRequestSchema,
@@ -15,6 +14,7 @@ import {
 	UpdateCrashReportingRequestSchema,
 	WorkflowValueSchema,
 	WorkspaceListSnapshotDtoSchema,
+	WriteTerminalSurfaceRequestSchema,
 } from "@/generated/client_pb";
 import { clientJson } from "./clientJson";
 import { decodeClientPush, decodeTerminalEvent } from "./clientProtocol";
@@ -37,6 +37,7 @@ describe("Connect message codecs", () => {
 						case: "snapshot",
 						value: {
 							sessionKey: "terminal",
+							processedReportUnits: 5000,
 							replay: "screen",
 							sequence: 42n,
 							cols: 80,
@@ -49,6 +50,7 @@ describe("Connect message codecs", () => {
 			type: "snapshot",
 			surface: {
 				session_key: "terminal",
+				processed_report_units: 5000,
 				terminal_surface: {
 					replay: "screen",
 					sequence: 42,
@@ -93,7 +95,7 @@ describe("Connect message codecs", () => {
 			"Missing terminal event",
 		);
 	});
-	it("resizeと入力不可と終了済みsnapshotを変換する", () => {
+	it("resizeと終了済みsnapshotを変換する", () => {
 		expect(
 			decodeTerminalEvent(
 				create(TerminalEventSchema, {
@@ -119,23 +121,10 @@ describe("Connect message codecs", () => {
 			decodeTerminalEvent(
 				create(TerminalEventSchema, {
 					item: {
-						case: "inputUnavailable",
-						value: { sessionKey: "terminal", message: "Input unavailable" },
-					},
-				}),
-			),
-		).toEqual({
-			type: "input_unavailable",
-			session_key: "terminal",
-			message: "Input unavailable",
-		});
-		expect(
-			decodeTerminalEvent(
-				create(TerminalEventSchema, {
-					item: {
 						case: "snapshot",
 						value: {
 							sessionKey: "terminal",
+							processedReportUnits: 5000,
 							replay: "done",
 							rows: 37,
 							cols: 111,
@@ -150,6 +139,7 @@ describe("Connect message codecs", () => {
 			type: "snapshot",
 			surface: {
 				session_key: "terminal",
+				processed_report_units: 5000,
 				terminal_surface: { replay: "done", rows: 37, cols: 111, sequence: 10 },
 				is_exited: true,
 				exit_code: 3,
@@ -187,11 +177,17 @@ describe("Connect message codecs", () => {
 			clientJson(UpdateCrashReportingRequestSchema, { enabled: "yes" }, true),
 		).toThrow();
 		const json = clientJson(
-			AckTerminalSurfaceOutputRequestSchema,
-			{ attachmentId: "id", sequence: 42 },
+			WriteTerminalSurfaceRequestSchema,
+			{
+				owner: { kind: "workspace", workspacePath: "/repo" },
+				attachmentId: "id",
+				sequence: 42,
+				data: "x",
+				clientStartedAtUnixMs: null,
+			},
 			true,
 		);
-		expect(fromJson(AckTerminalSurfaceOutputRequestSchema, json).sequence).toBe(
+		expect(fromJson(WriteTerminalSurfaceRequestSchema, json).sequence).toBe(
 			42n,
 		);
 	});

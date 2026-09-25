@@ -6,7 +6,6 @@ import {
 	PushSchema,
 	type StartStateSubscriptionRequest,
 	type StateSubscriptionEventSchema,
-	type TerminalSubscriptionEventSchema,
 } from "@/generated/client_pb";
 import { connectFixture } from "@/test/connect";
 import {
@@ -248,164 +247,6 @@ it.each(["stop", "pagehide", "reconnect"])(
 	},
 );
 
-it.each(["snapshot", "exit", "failure", "end"])(
-	"terminal streamの%sを正常終了と切断に分ける",
-	async (ending) => {
-		const { attachClientStream } = await import("./client");
-		connectFixture({
-			async *terminalOutput() {
-				yield {
-					item: {
-						case: "snapshot",
-						value: {
-							sessionKey: "terminal",
-							isExited: ending === "snapshot",
-							exitCode: ending === "snapshot" ? 3 : undefined,
-						},
-					},
-				};
-				if (ending === "failure")
-					throw new ConnectError("lost", Code.Unavailable);
-				if (ending === "exit")
-					yield {
-						item: {
-							case: "exit",
-							value: { sessionKey: "terminal", exitCode: 0, sequence: 1n },
-						},
-					};
-			},
-		});
-		const received = vi.fn();
-		const closed = vi.fn();
-		const release = await attachClientStream(
-			{
-				owner: { kind: "workspace", workspacePath: "/repo" },
-				attachmentId: "terminal",
-				recovery: false,
-			},
-			received,
-			closed,
-		);
-		if (ending === "failure" || ending === "end")
-			await vi.waitFor(() => expect(closed).toHaveBeenCalledOnce());
-		else {
-			await new Promise((resolve) => setTimeout(resolve, 20));
-			expect(closed).not.toHaveBeenCalled();
-			expect(received).toHaveBeenCalledTimes(ending === "exit" ? 2 : 1);
-		}
-		await release();
-	},
-);
-
-it("terminalの途中完了から同じ接続で再attachしsnapshotと後続出力を受信する", async () => {
-	const { attachClientStream, getClient } = await import("./client");
-	const requests: Array<{ attachmentId?: string; recovery?: boolean }> = [];
-	connectFixture({
-		async *terminalOutput(request, context) {
-			requests.push(request);
-			yield {
-				item: {
-					case: "snapshot",
-					value: {
-						sessionKey: "terminal",
-						replay: request.recovery
-							? "recovered snapshot"
-							: "initial snapshot",
-						sequence: request.recovery ? 42n : 0n,
-						isExited: false,
-					},
-				},
-			};
-			if (!request.recovery) return;
-			yield {
-				item: {
-					case: "output",
-					value: { sessionKey: "terminal", data: "live output", sequence: 43n },
-				},
-			};
-			await new Promise<void>((resolve) =>
-				context.signal.addEventListener("abort", () => resolve(), {
-					once: true,
-				}),
-			);
-		},
-	});
-	const client = await getClient();
-	const owner = { kind: "workspace", workspacePath: "/repo" } as const;
-	const received = vi.fn();
-	let recovery: Promise<() => Promise<void>> | undefined;
-	const closed = vi.fn(() => {
-		recovery = attachClientStream(
-			{ owner, attachmentId: "recovered", recovery: true },
-			received,
-			closed,
-		);
-	});
-	const release = await attachClientStream(
-		{ owner, attachmentId: "initial", recovery: false },
-		received,
-		closed,
-	);
-	await vi.waitFor(() => expect(received).toHaveBeenCalledTimes(3));
-	expect(closed).toHaveBeenCalledOnce();
-	expect(requests).toMatchObject([
-		{ attachmentId: "initial", recovery: false },
-		{ attachmentId: "recovered", recovery: true },
-	]);
-	expect(received.mock.calls[1][0]).toMatchObject({
-		type: "snapshot",
-		surface: {
-			terminal_surface: { replay: "recovered snapshot", sequence: 42 },
-		},
-	});
-	expect(received.mock.calls[2][0]).toEqual({
-		type: "output",
-		session_key: "terminal",
-		data: "live output",
-		sequence: 43,
-	});
-	expect(await getClient()).toBe(client);
-	await release();
-	await (await recovery)?.();
-});
-
-it.each(["end", "failure"])(
-	"明示解除後のterminal streamの%sでは再同期を通知しない",
-	async (ending) => {
-		const { attachClientStream } = await import("./client");
-		connectFixture({
-			async *terminalOutput(_, context) {
-				yield {
-					item: {
-						case: "snapshot",
-						value: { sessionKey: "terminal", isExited: false },
-					},
-				};
-				await new Promise<void>((resolve) =>
-					context.signal.addEventListener("abort", () => resolve(), {
-						once: true,
-					}),
-				);
-				if (ending === "failure")
-					throw new ConnectError("stream canceled", Code.Canceled);
-			},
-		});
-		const closed = vi.fn();
-		const release = await attachClientStream(
-			{
-				owner: { kind: "workspace", workspacePath: "/repo" },
-				attachmentId: "terminal",
-				recovery: false,
-			},
-			vi.fn(),
-			closed,
-		);
-		await release();
-		await new Promise((resolve) => setTimeout(resolve, 20));
-		expect(closed).not.toHaveBeenCalled();
-	},
-);
-
 it("旧世代の要求失敗が新接続と進行中の要求を破棄しない", async () => {
 	const { refreshClient, getClient } = await import("./client");
 	let release!: () => void;
@@ -564,169 +405,6 @@ it.each([
 	await expect(pending).resolves.toEqual("/repo");
 });
 
-it.each(["detail", "transport", "end"])(
-	"terminal初回受信の%sは失敗値の型と理由を保持する",
-	async (failure) => {
-		const { attachClientStream } = await import("./client");
-		connectFixture({
-			async *terminalOutput() {
-				if (failure === "detail")
-					throw commandError(
-						"TERMINAL_ATTACHMENT_LIMIT",
-						"Too many terminal attachments",
-						Code.ResourceExhausted,
-					);
-				if (failure === "transport")
-					throw new ConnectError("connection lost", Code.Unavailable);
-				yield* [];
-			},
-		});
-		const received = vi.fn();
-		const closed = vi.fn();
-		const error = await attachClientStream(
-			{
-				owner: { kind: "workspace", workspacePath: "/repo" },
-				attachmentId: "terminal",
-				recovery: false,
-			},
-			received,
-			closed,
-		).catch((error) => error);
-		if (failure === "detail") {
-			expect(error).not.toBeInstanceOf(Error);
-			expect(error).toStrictEqual({
-				code: "TERMINAL_ATTACHMENT_LIMIT",
-				message: "Too many terminal attachments",
-			});
-			expect(getErrorMessage(error)).toBe("Too many terminal attachments");
-		} else if (failure === "transport") {
-			expect(error).toBeInstanceOf(ConnectError);
-			expect(error).toMatchObject({
-				code: Code.Unavailable,
-				message: "[unavailable] connection lost",
-				rawMessage: "connection lost",
-			});
-			expect(getErrorMessage(error)).toBe("処理中にエラーが発生しました");
-		} else {
-			expect(error).toBeInstanceOf(Error);
-			expect(error).not.toBeInstanceOf(ConnectError);
-			expect(error.message).toBe("Terminal stream closed before snapshot");
-			expect(error).not.toHaveProperty("code");
-		}
-		expect(received).not.toHaveBeenCalled();
-		expect(closed).toHaveBeenCalledTimes(failure === "end" ? 1 : 0);
-	},
-);
-
-it.each(["unavailable", "network"])(
-	"terminal初回受信の%sは接続を維持し明示的な再接続通知で再アタッチする",
-	async (failure) => {
-		vi.useFakeTimers();
-		const { attachClientStream, onClientConnection, getClient, refreshClient } =
-			await import("./client");
-		let attempts = 0;
-		const fixture = connectFixture({
-			async *terminalOutput(_, context) {
-				if (++attempts <= 2)
-					throw new ConnectError("terminal response lost", Code.Unavailable);
-				yield {
-					item: {
-						case: "snapshot",
-						value: {
-							sessionKey: "terminal",
-							replay: "current output",
-							sequence: 42n,
-							cols: 80,
-							rows: 24,
-							isExited: false,
-						},
-					},
-				};
-				await new Promise<void>((resolve) =>
-					context.signal.addEventListener("abort", () => resolve(), {
-						once: true,
-					}),
-				);
-			},
-		});
-		if (failure === "network") {
-			const fetch = fixture.fetch.getMockImplementation();
-			if (!fetch) throw new Error("Missing fixture implementation");
-			fixture.fetch.mockImplementation((input, init) => {
-				const request = new Request(input, init);
-				if (request.url.endsWith("/AttachTerminalSurface") && attempts < 2) {
-					attempts++;
-					throw new TypeError("terminal response lost");
-				}
-				return fetch(request);
-			});
-		}
-		const received = vi.fn();
-		const failed = vi.fn();
-		const closed = vi.fn();
-		const refreshed = vi.fn();
-		onClientRefresh(refreshed);
-		const release = onClientConnection((connected) => {
-			if (!connected || attempts === 0) return;
-			void attachClientStream(
-				{
-					owner: { kind: "workspace", workspacePath: "/repo" },
-					attachmentId: crypto.randomUUID(),
-					recovery: true,
-				},
-				received,
-				closed,
-			).catch(failed);
-		});
-		try {
-			await vi.waitFor(() => expect(refreshed).toHaveBeenCalledOnce());
-			const client = await getClient();
-			await attachClientStream(
-				{
-					owner: { kind: "workspace", workspacePath: "/repo" },
-					attachmentId: "initial",
-					recovery: false,
-				},
-				received,
-				closed,
-			).catch(failed);
-			expect(await getClient()).toBe(client);
-			expect(attempts).toBe(1);
-			expect(failed).toHaveBeenCalledOnce();
-			refreshClient();
-			await vi.waitFor(() => expect(failed).toHaveBeenCalledTimes(2), {
-				timeout: 4000,
-			});
-			refreshClient();
-			await vi.waitFor(() => expect(received).toHaveBeenCalledOnce(), {
-				timeout: 4000,
-			});
-			expect(failed).toHaveBeenCalledTimes(2);
-			expect(attempts).toBe(3);
-			expect(received).toHaveBeenCalledWith({
-				type: "snapshot",
-				surface: {
-					session_key: "terminal",
-					terminal_surface: {
-						replay: "current output",
-						sequence: 42,
-						cols: 80,
-						rows: 24,
-					},
-					is_exited: false,
-					exit_code: null,
-				},
-			});
-			expect(closed).not.toHaveBeenCalled();
-		} finally {
-			release();
-			window.dispatchEvent(new Event("pagehide"));
-			await vi.advanceTimersByTimeAsync(1000);
-			vi.useRealTimers();
-		}
-	},
-);
-
 it.each(["end", "failure"])(
 	"push単独の%sから再購読と状態再取得を行う",
 	async (ending) => {
@@ -838,105 +516,6 @@ it("同じpushのpayloadは購読者が複数でも一度だけ復号する", as
 	}
 });
 
-it("terminal共有購読の終了後に全attachmentを再同期しpushとunaryを維持する", async () => {
-	const { attachClientStream, getClient } = await import("./client");
-	const fixture = connectFixture({
-		getExternalEditor: () => ({ value: "/current" }),
-		async *terminalOutput(request, context) {
-			yield {
-				item: {
-					case: "snapshot",
-					value: {
-						sessionKey: request.attachmentId,
-						replay: request.recovery ? "current" : "initial",
-					},
-				},
-			};
-			await new Promise<void>((resolve) =>
-				context.signal.addEventListener("abort", () => resolve(), {
-					once: true,
-				}),
-			);
-		},
-	});
-	const client = await getClient();
-	const received = [vi.fn(), vi.fn()];
-	const releases: Array<() => Promise<void>> = [];
-	const recovered: Array<Promise<() => Promise<void>>> = [];
-	for (let index = 0; index < 2; index++) {
-		const owner = {
-			kind: "workspace",
-			workspacePath: `/repo-${index}`,
-		} as const;
-		releases.push(
-			await attachClientStream(
-				{ owner, attachmentId: `initial-${index}`, recovery: false },
-				received[index],
-				() => {
-					recovered.push(
-						attachClientStream(
-							{ owner, attachmentId: `recovered-${index}`, recovery: true },
-							received[index],
-							vi.fn(),
-						),
-					);
-				},
-			),
-		);
-	}
-	fixture.closeTerminalSubscriptions();
-	await vi.waitFor(() => expect(recovered).toHaveLength(2));
-	releases.push(...(await Promise.all(recovered)));
-	for (const receive of received) {
-		expect(receive).toHaveBeenCalledTimes(2);
-		expect(receive.mock.calls[1][0]).toMatchObject({
-			type: "snapshot",
-			surface: { terminal_surface: { replay: "current" } },
-		});
-	}
-	expect(await getClient()).toBe(client);
-	await expect(invokeClient("get_external_editor")).resolves.toEqual(
-		"/current",
-	);
-	expect(
-		fixture.requests.filter((request) =>
-			request.url.endsWith("/SubscribeTerminalSurfaces"),
-		),
-	).toHaveLength(2);
-	for (const release of releases) await release();
-});
-
-it.each(["rejected", "end"])(
-	"terminal共有購読の%sは待機中attachmentを失敗させる",
-	async (failure) => {
-		const { attachClientStream } = await import("./client");
-		connectFixture({
-			async *subscribeTerminalSurfaces() {
-				if (failure === "rejected")
-					throw new ConnectError("subscription limit", Code.ResourceExhausted);
-				yield* [];
-			},
-		});
-		const received = vi.fn();
-		const closed = vi.fn();
-		const error = await attachClientStream(
-			{
-				owner: { kind: "workspace", workspacePath: "/repo" },
-				attachmentId: "pending",
-				recovery: false,
-			},
-			received,
-			closed,
-		).catch((error) => error);
-		if (failure === "rejected")
-			expect(error).toMatchObject({ code: Code.ResourceExhausted });
-		else
-			expect(error.message).toBe("Terminal subscription closed before ready");
-		expect(received).not.toHaveBeenCalled();
-		expect(closed).not.toHaveBeenCalled();
-	},
-);
-
 it("確立済みpushの途中resyncは両listenerへ復旧を通知し後続pushも配信する", async () => {
 	const { listenClient } = await import("./client");
 	let resync!: () => void;
@@ -1024,238 +603,6 @@ it("AbortSignal.anyが無くても初回RPCとstreamが開始し個別と接続�
 	expect(streaming?.signal.aborted).toBe(true);
 });
 
-it("同じattachmentへの旧Closedと旧releaseは新しいlistenerと入力を壊さない", async () => {
-	const { attachClientStream, getClient } = await import("./client");
-	let endOld!: () => void;
-	let outputNew!: () => void;
-	let attempts = 0;
-	const write = vi.fn(() => ({}));
-	const fixture = connectFixture({
-		writeTerminalSurface: write,
-		async *terminalOutput(_, context) {
-			const first = ++attempts === 1;
-			yield { item: { case: "snapshot", value: { sessionKey: "same" } } };
-			if (first) {
-				await new Promise<void>((resolve) => {
-					endOld = resolve;
-				});
-				return;
-			}
-			await new Promise<void>((resolve) => {
-				outputNew = resolve;
-			});
-			yield {
-				item: {
-					case: "output",
-					value: { sessionKey: "same", sequence: 1n, data: "new output" },
-				},
-			};
-			await new Promise<void>((resolve) =>
-				context.signal.addEventListener("abort", () => resolve(), {
-					once: true,
-				}),
-			);
-		},
-	});
-	const args = {
-		owner: { kind: "workspace", workspacePath: "/repo" },
-		attachmentId: "same",
-		recovery: false,
-	} as const;
-	const oldClosed = vi.fn();
-	const newClosed = vi.fn();
-	const received = vi.fn();
-	const oldRelease = await attachClientStream(args, vi.fn(), oldClosed);
-	const newRelease = await attachClientStream(args, received, newClosed);
-	endOld();
-	await oldRelease();
-	outputNew();
-	await vi.waitFor(() => expect(received).toHaveBeenCalledTimes(2));
-	expect(newClosed).not.toHaveBeenCalled();
-	expect(oldClosed).not.toHaveBeenCalled();
-	await (await getClient()).writeTerminalSurface({
-		attachmentId: "same",
-		sequence: 0n,
-		data: "input",
-	});
-	expect(write).toHaveBeenCalledOnce();
-	expect(
-		fixture.requests.filter((request) =>
-			request.url.endsWith("/DetachTerminalSurface"),
-		),
-	).toHaveLength(0);
-	await Promise.all([newRelease(), newRelease()]);
-	expect(
-		fixture.requests.filter((request) =>
-			request.url.endsWith("/DetachTerminalSurface"),
-		),
-	).toHaveLength(1);
-});
-
-it.each(["disconnect", "pending"])(
-	"接続断時の%sなattachment解放はエラーや旧接続への再送を発生させない",
-	async (timing) => {
-		const { attachClientStream, onClientConnection, refreshClient } =
-			await import("./client");
-		const detach = vi.fn(async (_, context: HandlerContext) => {
-			await new Promise<void>((resolve) =>
-				context.signal.addEventListener("abort", () => resolve(), {
-					once: true,
-				}),
-			);
-			return {};
-		});
-		const fixture = connectFixture({
-			detachTerminalSurface: detach,
-			async *terminalOutput(_, context) {
-				yield { item: { case: "snapshot", value: { sessionKey: "terminal" } } };
-				await new Promise<void>((resolve) =>
-					context.signal.addEventListener("abort", () => resolve(), {
-						once: true,
-					}),
-				);
-			},
-		});
-		const closed = vi.fn();
-		const release = await attachClientStream(
-			{
-				owner: { kind: "workspace", workspacePath: "/repo" },
-				attachmentId: "terminal",
-				recovery: false,
-			},
-			vi.fn(),
-			closed,
-		);
-		let released: Promise<void> | undefined;
-		const stop = onClientConnection((connected) => {
-			if (!connected) released = release();
-		});
-		if (timing === "pending") {
-			released = release();
-			await vi.waitFor(() => expect(detach).toHaveBeenCalledOnce());
-		}
-		refreshClient();
-		expect(released).toBeDefined();
-		await expect(released).resolves.toBeUndefined();
-		await expect(release()).resolves.toBeUndefined();
-		expect(closed).not.toHaveBeenCalled();
-		expect(
-			fixture.requests.filter((request) =>
-				request.url.endsWith("/DetachTerminalSurface"),
-			),
-		).toHaveLength(timing === "pending" ? 1 : 0);
-		stop();
-	},
-);
-
-it("解放RPCの失敗を呼び出し元へ返し繰り返し解放でも再送しない", async () => {
-	const { attachClientStream } = await import("./client");
-	const detach = vi.fn(() => {
-		throw commandError("PTY_ERROR", "Terminal detachment failed. Try again.");
-	});
-	connectFixture({
-		detachTerminalSurface: detach,
-		async *terminalOutput(_, context) {
-			yield { item: { case: "snapshot", value: { sessionKey: "terminal" } } };
-			await new Promise<void>((resolve) =>
-				context.signal.addEventListener("abort", () => resolve(), {
-					once: true,
-				}),
-			);
-		},
-	});
-	const release = await attachClientStream(
-		{
-			owner: { kind: "workspace", workspacePath: "/repo" },
-			attachmentId: "terminal",
-			recovery: false,
-		},
-		vi.fn(),
-		vi.fn(),
-	);
-	for (let attempt = 0; attempt < 2; attempt++)
-		await expect(release()).rejects.toEqual({
-			code: "PTY_ERROR",
-			message: "Terminal detachment failed. Try again.",
-		});
-	expect(detach).toHaveBeenCalledOnce();
-});
-
-it.each([false, true])(
-	"terminal完了の再同期可否%sはsnapshotの状態ではなくRustの通知に従う",
-	async (resynchronize) => {
-		const { attachClientStream } = await import("./client");
-		let attachment!: { attachmentId: string; streamId: string };
-		let attached!: () => void;
-		let finish!: () => void;
-		const ready = new Promise<void>((resolve) => {
-			attached = resolve;
-		});
-		const closed = new Promise<void>((resolve) => {
-			finish = resolve;
-		});
-		connectFixture({
-			attachTerminalSurface(request) {
-				attachment = {
-					attachmentId: request.request?.attachmentId ?? "",
-					streamId: request.streamId,
-				};
-				attached();
-				return {};
-			},
-			async *subscribeTerminalSurfaces(
-				_,
-				context,
-			): AsyncIterable<
-				MessageInitShape<typeof TerminalSubscriptionEventSchema>
-			> {
-				yield { event: { case: "ready", value: {} } };
-				await ready;
-				yield {
-					...attachment,
-					event: {
-						case: "item",
-						value: {
-							item: {
-								case: "snapshot",
-								value: { sessionKey: "terminal", isExited: resynchronize },
-							},
-						},
-					},
-				};
-				await closed;
-				yield {
-					...attachment,
-					event: { case: "closed", value: { resynchronize } },
-				};
-				await new Promise<void>((resolve) =>
-					context.signal.addEventListener("abort", () => resolve(), {
-						once: true,
-					}),
-				);
-			},
-		});
-		const onClosed = vi.fn();
-		const release = await attachClientStream(
-			{
-				owner: { kind: "workspace", workspacePath: "/repo" },
-				attachmentId: "terminal",
-				recovery: false,
-			},
-			vi.fn(),
-			onClosed,
-		);
-		finish();
-		if (resynchronize)
-			await vi.waitFor(() => expect(onClosed).toHaveBeenCalledOnce());
-		else {
-			await new Promise((resolve) => setTimeout(resolve, 20));
-			expect(onClosed).not.toHaveBeenCalled();
-		}
-		await release();
-	},
-);
-
 it.each(["start_watching"] as const)(
 	"%sの再登録待ちに変わった状態をonReadyの後に再取得する",
 	async () => {
@@ -1337,104 +684,6 @@ it.each(["start_watching"] as const)(
 	},
 );
 
-it.each(["end", "closed"])(
-	"初回snapshot前の%sから再attachしてsnapshotと出力と入力を復旧する",
-	async (ending) => {
-		const { attachClientStream, getClient } = await import("./client");
-		let finish!: () => void;
-		const pending = new Promise<void>((resolve) => {
-			finish = resolve;
-		});
-		const write = vi.fn(() => ({}));
-		const fixture = connectFixture({
-			async *terminalOutput(request, context) {
-				if (!request.recovery) {
-					await pending;
-					if (ending === "end") {
-						fixture.closeTerminalSubscriptions();
-						await new Promise<void>((resolve) =>
-							context.signal.addEventListener("abort", () => resolve(), {
-								once: true,
-							}),
-						);
-					}
-					return;
-				}
-				yield {
-					item: {
-						case: "snapshot",
-						value: { sessionKey: "terminal", replay: "restored", sequence: 3n },
-					},
-				};
-				yield {
-					item: {
-						case: "output",
-						value: { sessionKey: "terminal", data: "live", sequence: 4n },
-					},
-				};
-				await new Promise<void>((resolve) =>
-					context.signal.addEventListener("abort", () => resolve(), {
-						once: true,
-					}),
-				);
-			},
-			writeTerminalSurface: write,
-		});
-		const received = vi.fn();
-		let recovery: Promise<() => Promise<void>> | undefined;
-		const owner = { kind: "workspace", workspacePath: "/repo" } as const;
-		const onClosed = vi.fn(() => {
-			recovery = attachClientStream(
-				{ owner, attachmentId: "recovered", recovery: true },
-				received,
-				vi.fn(),
-			);
-		});
-		const initial = attachClientStream(
-			{ owner, attachmentId: "initial", recovery: false },
-			received,
-			onClosed,
-		).catch((error) => error);
-		await vi.waitFor(() =>
-			expect(
-				fixture.requests.some((request) =>
-					request.url.endsWith("/AttachTerminalSurface"),
-				),
-			).toBe(true),
-		);
-		finish();
-		await vi.waitFor(() => expect(onClosed).toHaveBeenCalledOnce());
-		expect(await initial).toBeInstanceOf(Error);
-		const release = await recovery;
-		await vi.waitFor(() =>
-			expect(received).toHaveBeenCalledWith(
-				expect.objectContaining({ type: "output", data: "live" }),
-			),
-		);
-		expect(received).toHaveBeenCalledWith(
-			expect.objectContaining({
-				type: "snapshot",
-				surface: expect.objectContaining({
-					terminal_surface: expect.objectContaining({ replay: "restored" }),
-				}),
-			}),
-		);
-		await invokeClient("write_terminal_surface", {
-			owner,
-			attachmentId: "recovered",
-			sequence: 0,
-			data: "input",
-			clientStartedAtUnixMs: null,
-		});
-		expect(write).toHaveBeenCalledWith(
-			expect.objectContaining({ attachmentId: "recovered", data: "input" }),
-			expect.anything(),
-		);
-		expect(await getClient()).toBeDefined();
-		await release?.();
-	},
-);
-
 it("watcher復旧後の再取得通知が失敗してもpushを再購読する", async () => {
 	const fixture = connectFixture();
 	const refreshed = vi.fn(() => {
@@ -1478,6 +727,7 @@ function stateFixture(start?: () => Promise<Record<string, never>>) {
 		signal: AbortSignal;
 	}[] = [];
 	const starts: StartStateSubscriptionRequest[] = [];
+	const reports = vi.fn(() => ({}));
 	const stops = vi.fn((_request: { target: string }) => ({}));
 	connectFixture({
 		async *openStateStream(_, context) {
@@ -1513,8 +763,9 @@ function stateFixture(start?: () => Promise<Record<string, never>>) {
 			return start?.() ?? {};
 		},
 		stopStateSubscription: stops,
+		reportTerminalProcessed: reports,
 	});
-	return { streams, starts, stops };
+	return { streams, starts, stops, reports };
 }
 
 const repositoryPaths = (
@@ -1627,51 +878,6 @@ it("状態の受け手が全て停止したらstreamを閉じ再購読で開き�
 	expect(fixture.streams).toHaveLength(2);
 });
 
-it.each([false, true])(
-	"旧接続のdetachキャンセルはdetailの有無%sによらず解放を完了する",
-	async (detail) => {
-		const { attachClientStream, getClient, refreshClient } = await import(
-			"./client"
-		);
-		connectFixture({
-			async *terminalOutput(_, context) {
-				yield { item: { case: "snapshot", value: { sessionKey: "terminal" } } };
-				await new Promise<void>((resolve) =>
-					context.signal.addEventListener("abort", () => resolve(), {
-						once: true,
-					}),
-				);
-			},
-		});
-		const release = await attachClientStream(
-			{
-				owner: { kind: "workspace", workspacePath: "/repo" },
-				attachmentId: "terminal",
-				recovery: false,
-			},
-			vi.fn(),
-			vi.fn(),
-		);
-		const client = await getClient();
-		let reject!: (error: unknown) => void;
-		const detach = vi.spyOn(client, "detachTerminalSurface").mockImplementation(
-			() =>
-				new Promise((_, rejectPromise) => {
-					reject = rejectPromise;
-				}),
-		);
-		const pending = release();
-		refreshClient();
-		reject(
-			detail
-				? commandError("CANCELED", "canceled", Code.Canceled)
-				: new ConnectError("canceled", Code.Canceled),
-		);
-		await expect(pending).resolves.toBeUndefined();
-		expect(detach).toHaveBeenCalledOnce();
-	},
-);
-
 it("対象名と引数を別々に送り同じstreamで型付きの状態を届ける", async () => {
 	const fixture = stateFixture();
 	const received = vi.fn();
@@ -1768,4 +974,105 @@ it("firstStateは共有済みsnapshotの同期通知でも他の購読を残す"
 	expect(fixture.stops).not.toHaveBeenCalled();
 	release();
 	await vi.waitFor(() => expect(fixture.streams[0].signal.aborted).toBe(true));
+});
+
+it("terminalのsnapshotと差分を他の対象と同じstreamで受け取り最後の出力番号から再開する", async () => {
+	const { subscribeTerminalState, reportTerminalProcessed } = await import(
+		"./client"
+	);
+	const fixture = stateFixture();
+	const other = vi.fn();
+	const stopOther = subscribeState("repository-paths", other);
+	const received = vi.fn();
+	const pending = subscribeTerminalState(
+		{
+			owner: { kind: "workspace", workspacePath: "/repo" },
+			attachmentId: "input",
+		},
+		received,
+		vi.fn(),
+	);
+	await vi.waitFor(() => expect(fixture.starts).toHaveLength(2));
+	const version = { epoch: "runtime-1", sequence: 17n };
+	fixture.streams[0].send({
+		target: "terminal",
+		args: ["/repo"],
+		version,
+		event: {
+			case: "snapshot",
+			value: {
+				value: {
+					case: "terminal",
+					value: {
+						item: {
+							case: "snapshot",
+							value: {
+								sessionKey: "key",
+								sequence: 17n,
+								replay: "screen",
+								cols: 80,
+								rows: 24,
+								processedReportUnits: 5000,
+							},
+						},
+					},
+				},
+			},
+		},
+	});
+	const release = await pending;
+	expect(received).toHaveBeenCalledWith(
+		expect.objectContaining({
+			type: "snapshot",
+			surface: expect.objectContaining({ processed_report_units: 5000 }),
+		}),
+	);
+	fixture.streams[0].send({
+		target: "terminal",
+		args: ["/repo"],
+		version: { ...version, sequence: 18n },
+		event: {
+			case: "change",
+			value: {
+				delta: true,
+				payload: {
+					value: {
+						case: "terminal",
+						value: {
+							item: {
+								case: "output",
+								value: { sessionKey: "key", sequence: 18n, data: "next" },
+							},
+						},
+					},
+				},
+			},
+		},
+	});
+	await vi.waitFor(() =>
+		expect(received).toHaveBeenLastCalledWith({
+			type: "output",
+			session_key: "key",
+			sequence: 18,
+			data: "next",
+		}),
+	);
+	expect(fixture.streams).toHaveLength(1);
+	await reportTerminalProcessed(
+		{ kind: "workspace", workspacePath: "/repo" },
+		5000,
+	);
+	expect(fixture.reports).toHaveBeenCalledOnce();
+	fixture.streams[0].fail();
+	await vi.waitFor(() => expect(fixture.starts).toHaveLength(4), {
+		timeout: 3000,
+	});
+	expect(
+		fixture.starts.filter((start) => start.target === "terminal")[1],
+	).toMatchObject({
+		version: { ...version, sequence: 18n },
+		terminalInputId: "input",
+	});
+	await release();
+	stopOther();
 });

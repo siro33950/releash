@@ -36,7 +36,6 @@ impl TerminalSurfaceEventSink for BlockingFirstEventSink {
             TerminalSurfaceEvent::Output { sequence, .. }
             | TerminalSurfaceEvent::Resize { sequence, .. }
             | TerminalSurfaceEvent::Exit { sequence, .. } => sequence,
-            TerminalSurfaceEvent::InputUnavailable { .. } => return,
         };
         if sequence == 1 {
             let (started, changed) = &*self.first_started;
@@ -129,9 +128,7 @@ impl TerminalSurfaceEventSink for CapturedTerminalOutput {
             } => {
                 self.resizes.lock().unwrap().push((cols, rows, sequence));
             }
-            TerminalSurfaceEvent::Output { .. }
-            | TerminalSurfaceEvent::Exit { .. }
-            | TerminalSurfaceEvent::InputUnavailable { .. } => {}
+            TerminalSurfaceEvent::Output { .. } | TerminalSurfaceEvent::Exit { .. } => {}
         }
     }
 }
@@ -396,8 +393,7 @@ impl TerminalSurfaceEventSink for BlockingSessionSink {
         let session_key = match event {
             TerminalSurfaceEvent::Output { session_key, .. }
             | TerminalSurfaceEvent::Resize { session_key, .. }
-            | TerminalSurfaceEvent::Exit { session_key, .. }
-            | TerminalSurfaceEvent::InputUnavailable { session_key, .. } => session_key,
+            | TerminalSurfaceEvent::Exit { session_key, .. } => session_key,
         };
         if session_key != self.blocked_session_key {
             return;
@@ -518,7 +514,7 @@ fn test_ターミナル画面入力_attachment_sequenceをpty書込順へ変換�
 }
 
 #[test]
-fn test_ターミナル画面入力_連続する入力不能をattachment_streamへ一度だけ通知する() {
+fn test_ターミナル画面入力_連続する入力不能は応答で失敗し購読へ通知しない() {
     let recorded = Arc::new(RecordingEventSink::default());
     let gateway = TerminalSurfaceRuntimeGateway {
         event_sink: Some(recorded.clone()),
@@ -539,17 +535,11 @@ fn test_ターミナル画面入力_連続する入力不能をattachment_stream
         .write_attached("key", "attachment-a", 4, "fifth")
         .is_err());
 
-    assert_eq!(
-        recorded.events.lock().unwrap().as_slice(),
-        &[TerminalSurfaceEvent::InputUnavailable {
-            session_key: "key".to_string(),
-            cause: TerminalSurfaceInputUnavailableCause::PendingCapacityExceeded,
-        }]
-    );
+    assert!(recorded.events.lock().unwrap().is_empty());
 }
 
 #[test]
-fn test_ターミナル画面入力_失効attachmentのwrite失敗はinput_unavailableを通知する() {
+fn test_ターミナル画面入力_失効attachmentのwrite失敗は応答だけで伝える() {
     let recorded = Arc::new(RecordingEventSink::default());
     let gateway = TerminalSurfaceRuntimeGateway {
         event_sink: Some(recorded.clone()),
@@ -563,12 +553,36 @@ fn test_ターミナル画面入力_失効attachmentのwrite失敗はinput_unava
         result,
         Err(error) if error.message() == "Terminal input attachment is no longer active"
     ));
+    assert!(recorded.events.lock().unwrap().is_empty());
+}
+
+#[test]
+fn test_ターミナル画面入力_runtime書込失敗は応答だけで伝え未処理入力を保持する() {
+    // Given
+    let recorded = Arc::new(RecordingEventSink::default());
+    let gateway = TerminalSurfaceRuntimeGateway {
+        event_sink: Some(recorded.clone()),
+        ..Default::default()
+    };
+    gateway.activate_input_attachment("key", "attachment-a");
+
+    // When
+    let result = gateway.write_attached("key", "attachment-a", 0, "input");
+
+    // Then
+    assert!(result.is_err());
+    assert!(recorded.events.lock().unwrap().is_empty());
+    let pending = gateway
+        .input_ingress
+        .lock()
+        .admit("key", "attachment-a", 1, "next".into())
+        .unwrap();
     assert_eq!(
-        recorded.events.lock().unwrap().as_slice(),
-        &[TerminalSurfaceEvent::InputUnavailable {
-            session_key: "key".to_string(),
-            cause: TerminalSurfaceInputUnavailableCause::StaleAttachment,
-        }]
+        pending
+            .iter()
+            .map(|input| input.data.as_str())
+            .collect::<Vec<_>>(),
+        vec!["input", "next"]
     );
 }
 
@@ -812,7 +826,7 @@ fn test_ターミナル画面_寸法変更_次の画面_連番で配信する() 
 
     gateway.resize("key", 30, 100).unwrap();
 
-    assert_eq!(*captured.resizes.lock().unwrap(), vec![(100, 30, 2)]);
+    assert_eq!(*captured.resizes.lock().unwrap(), vec![(100, 30, 1)]);
 }
 
 #[test]
@@ -912,4 +926,380 @@ async fn test_定期保存の期限切れ_子を回収して保留データと�
     let loaded = store.load("deadline").unwrap().unwrap();
     assert_eq!(loaded.sequence, 1);
     assert!(loaded.replay.contains("kept-output"));
+}
+
+struct FlowControlledSink {
+    hub: Arc<super::super::event_hub::TerminalSurfaceEventHub>,
+    waiting: mpsc::Sender<std::thread::ThreadId>,
+    events: mpsc::Sender<TerminalSurfaceEvent>,
+}
+
+impl TerminalSurfaceEventSink for FlowControlledSink {
+    fn wait_output(&self, session_key: &str) {
+        self.waiting.send(std::thread::current().id()).unwrap();
+        self.hub.wait_output(session_key);
+    }
+
+    fn publish(&self, event: TerminalSurfaceEvent) {
+        self.hub.publish(event.clone());
+        self.events.send(event).unwrap();
+    }
+}
+
+struct ObservedReader {
+    read: mpsc::Sender<()>,
+    data: std::io::Cursor<Vec<u8>>,
+}
+
+impl std::io::Read for ObservedReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.read.send(()).unwrap();
+        self.data.read(buf)
+    }
+}
+
+impl portable_pty::Child for MockKiller {
+    fn try_wait(&mut self) -> std::io::Result<Option<portable_pty::ExitStatus>> {
+        Ok(Some(portable_pty::ExitStatus::with_exit_code(0)))
+    }
+
+    fn wait(&mut self) -> std::io::Result<portable_pty::ExitStatus> {
+        Ok(portable_pty::ExitStatus::with_exit_code(0))
+    }
+
+    fn process_id(&self) -> Option<u32> {
+        None
+    }
+
+    #[cfg(windows)]
+    fn as_raw_handle(&self) -> Option<std::os::windows::io::RawHandle> {
+        None
+    }
+}
+
+#[test]
+fn test_流量停止_実出力readerとprocessorが履歴の低水位まで停止し再開する() {
+    use crate::domain::terminal_surface::gateway::TerminalSurfaceEventSource;
+    // Given
+    let hub = Arc::new(super::super::event_hub::TerminalSurfaceEventHub::with_flags(8, true));
+    let (waiting, waits) = mpsc::channel();
+    let (events, received) = mpsc::channel();
+    let sink = Arc::new(FlowControlledSink {
+        hub: hub.clone(),
+        waiting,
+        events,
+    });
+    let (mut context, _) = journal_output_context(false, Arc::new(Default::default()));
+    context.event_sink = Some(sink);
+    let drained = context.output_drained.clone();
+    let (read, reads) = mpsc::channel();
+    let output = NativePtyOutput::from_parts(
+        Box::new(ObservedReader {
+            read,
+            data: std::io::Cursor::new(b"resumed".to_vec()),
+        }),
+        Box::new(MockKiller {
+            killed: Arc::new(Default::default()),
+        }),
+    );
+    hub.subscribe_output("journal-key", "client", 100_001);
+    // When
+    spawn_output_reader(output, context);
+    let first = waits.recv_timeout(Duration::from_secs(1));
+    let second = waits.recv_timeout(Duration::from_secs(1));
+    let read_while_paused = reads.recv_timeout(Duration::from_millis(50));
+    let output_while_paused = received.try_recv();
+    hub.processed_output("journal-key", "client", 95_001);
+    let read_at_low_watermark = reads.recv_timeout(Duration::from_millis(50));
+    hub.processed_output("journal-key", "client", 1);
+    // Then
+    reads.recv_timeout(Duration::from_secs(1)).unwrap();
+    let output = received.recv_timeout(Duration::from_secs(1)).unwrap();
+    let exit = received.recv_timeout(Duration::from_secs(1)).unwrap();
+    let (done, changed) = &*drained;
+    let mut done = done.lock();
+    if !*done {
+        changed.wait_for(&mut done, Duration::from_secs(1));
+    }
+    assert!(*done);
+    assert_ne!(first.unwrap(), second.unwrap());
+    assert!(matches!(
+        read_while_paused,
+        Err(mpsc::RecvTimeoutError::Timeout)
+    ));
+    assert!(matches!(
+        output_while_paused,
+        Err(mpsc::TryRecvError::Empty)
+    ));
+    assert!(matches!(
+        read_at_low_watermark,
+        Err(mpsc::RecvTimeoutError::Timeout)
+    ));
+    assert!(
+        matches!(output, TerminalSurfaceEvent::Output { data, .. } if data.as_ref() == "resumed")
+    );
+    assert!(matches!(
+        exit,
+        TerminalSurfaceEvent::Exit {
+            exit_code: Some(0),
+            ..
+        }
+    ));
+}
+
+#[test]
+fn test_流量停止_実processorの出力で高水位を超えると後続出力を低水位まで止める() {
+    use crate::domain::terminal_surface::gateway::TerminalSurfaceEventSource;
+    // Given
+    let hub = Arc::new(super::super::event_hub::TerminalSurfaceEventHub::with_flags(8, true));
+    let (waiting, waits) = mpsc::channel();
+    let (events, received) = mpsc::channel();
+    let sink = Arc::new(FlowControlledSink {
+        hub: hub.clone(),
+        waiting,
+        events,
+    });
+    let (mut context, _) = journal_output_context(false, Arc::new(Default::default()));
+    context.event_sink = Some(sink);
+    hub.subscribe_output("journal-key", "client", 0);
+    let (send, commands) = mpsc::sync_channel(4);
+    let worker = std::thread::spawn(move || run_output_processor(commands, context));
+    // When
+    waits.recv_timeout(Duration::from_secs(1)).unwrap();
+    let units = 7 * crate::infrastructure::terminal::output_batcher::OUTPUT_BATCH_MAX_CODE_UNITS;
+    send.send(TerminalOutputCommand::Data {
+        data: "x".repeat(units),
+        input_traces: vec![],
+    })
+    .unwrap();
+    let mut published = 0;
+    while published < units {
+        let TerminalSurfaceEvent::Output { data, .. } =
+            received.recv_timeout(Duration::from_secs(1)).unwrap()
+        else {
+            panic!("output");
+        };
+        published += data.len();
+    }
+    let stopped = waits.recv_timeout(Duration::from_secs(1));
+    send.send(TerminalOutputCommand::Data {
+        data: "next".into(),
+        input_traces: vec![],
+    })
+    .unwrap();
+    send.send(TerminalOutputCommand::Exit(Some(0))).unwrap();
+    let premature = received.recv_timeout(Duration::from_millis(50));
+    hub.processed_output("journal-key", "client", units - 4_999);
+    let resumed = received.recv_timeout(Duration::from_secs(1));
+    worker.join().unwrap();
+    // Then
+    stopped.unwrap();
+    assert!(matches!(premature, Err(mpsc::RecvTimeoutError::Timeout)));
+    assert!(
+        matches!(resumed.unwrap(), TerminalSurfaceEvent::Output { data, .. } if data.as_ref() == "next")
+    );
+    assert!(matches!(
+        received.recv_timeout(Duration::from_secs(1)).unwrap(),
+        TerminalSurfaceEvent::Exit {
+            exit_code: Some(0),
+            ..
+        }
+    ));
+}
+
+#[test]
+fn test_ターミナル削除_画面削除後のruntime削除の有無によらず入力attachmentを解放する() {
+    for remove_runtime_after_surface in [false, true] {
+        // Given
+        let gateway = TerminalSurfaceRuntimeGateway::default();
+        insert_test_session(&gateway, 1, "key", Some("/repo"), None);
+        gateway.activate_input_attachment("key", "input");
+        gateway
+            .write_attached("key", "input", 1, "pending")
+            .unwrap();
+        gateway.activate_input_attachment("other", "other-input");
+
+        // When
+        assert!(gateway.remove_surface(1).is_some());
+        if remove_runtime_after_surface {
+            gateway.remove_runtime(1);
+        }
+
+        // Then
+        let mut ingress = gateway.input_ingress.lock();
+        assert_eq!(
+            ingress.admit("key", "input", 0, "stale".into()),
+            Err(TerminalSurfaceInputIngressError::StaleAttachment)
+        );
+        assert!(ingress
+            .admit("other", "other-input", 0, "active".into())
+            .is_ok());
+    }
+}
+
+#[tokio::test]
+async fn test_ターミナル再作成_継続購読へ終了とsnapshotを届け入力連番と処理済み通知を保つ() {
+    assert_terminal_recreation(false).await;
+}
+
+#[tokio::test]
+async fn test_ターミナル再作成_送り待ちが空でも購読と入力と処理済み通知を保つ() {
+    assert_terminal_recreation(true).await;
+}
+
+async fn assert_terminal_recreation(drain_exit: bool) {
+    // Given
+    use crate::adaptor::gateway::terminal_surface::event_hub::TerminalSurfaceEventHub;
+    use crate::domain::state_subscription::{Event, SubscriptionTarget};
+    use crate::usecase::state_subscription::{
+        StateSubscriptionEvent, StateSubscriptionUsecase, StateValue,
+    };
+    use crate::usecase::terminal_surface::application::{
+        TerminalSurfaceApplication, TerminalSurfaceStreamItem,
+    };
+    use futures_util::StreamExt;
+    let hub = Arc::new(TerminalSurfaceEventHub::with_flags(256, true));
+    let gateway = Arc::new(TerminalSurfaceRuntimeGatewayFor::new_with_event_sink(
+        crate::usecase::work_queue::shared().clone(),
+        std::path::PathBuf::new(),
+        hub.clone(),
+        false,
+    ));
+    let owner = workspace_owner("/repo");
+    let key = owner.stable_key();
+    let target = SubscriptionTarget::Terminal(owner.clone()).to_string();
+    let (_, old_written) = insert_test_session_with_resizer(
+        &gateway,
+        1,
+        &key,
+        Some("/repo"),
+        None,
+        Box::new(MockResizer { rows: 24, cols: 80 }),
+    );
+    gateway.insert_surface(TerminalSurface::new(1, owner.clone(), None));
+    let terminal = Arc::new(TerminalSurfaceApplication::new(
+        gateway.clone(),
+        hub.clone(),
+    ));
+    let subscriptions = StateSubscriptionUsecase::new(
+        vec![],
+        Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+    )
+    .with_terminal(terminal.clone());
+    let stream = subscriptions.open("client".into()).unwrap();
+    tokio::pin!(stream);
+    stream.next().await;
+    subscriptions
+        .start_terminal("client", &target, None, "input")
+        .await
+        .unwrap();
+    stream.next().await;
+    stream.next().await;
+    terminal
+        .write_attached(&owner, "input", 0, None, "old")
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while old_written.lock().len() < 3 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(&*old_written.lock(), b"old");
+    // When
+    hub.publish(TerminalSurfaceEvent::Exit {
+        session_key: key.clone(),
+        runtime_generation: 1,
+        exit_code: Some(7),
+        sequence: 0,
+    });
+    if drain_exit {
+        let next = tokio::time::timeout(Duration::from_secs(2), stream.next())
+            .await
+            .unwrap();
+        assert!(
+            matches!(next, Some(StateSubscriptionEvent::Item(_, Event::Change(_, _, value))) if matches!(value.as_ref(), StateValue::Terminal(TerminalSurfaceStreamItem::Exit { exit_code: Some(7), .. })))
+        );
+    }
+    gateway.remove_surface(1).unwrap();
+    gateway.remove_runtime(1);
+    let (_, new_written) = insert_test_session_with_resizer(
+        &gateway,
+        2,
+        &key,
+        Some("/repo"),
+        None,
+        Box::new(MockResizer { rows: 24, cols: 80 }),
+    );
+    gateway.insert_surface(TerminalSurface::new(2, owner.clone(), None));
+    // Then
+    if !drain_exit {
+        let next = tokio::time::timeout(Duration::from_secs(2), stream.next())
+            .await
+            .unwrap();
+        assert!(
+            matches!(next, Some(StateSubscriptionEvent::Item(_, Event::Change(_, _, value))) if matches!(value.as_ref(), StateValue::Terminal(TerminalSurfaceStreamItem::Exit { exit_code: Some(7), .. })))
+        );
+    }
+    let next = tokio::time::timeout(Duration::from_secs(2), stream.next())
+        .await
+        .unwrap();
+    assert!(
+        matches!(next, Some(StateSubscriptionEvent::Item(_, Event::Snapshot(_, value))) if matches!(value.as_ref(), StateValue::Terminal(TerminalSurfaceStreamItem::Snapshot(surface)) if surface.runtime_generation.value() == 2))
+    );
+    terminal
+        .write_attached(&owner, "input", 1, None, "new")
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while new_written.lock().len() < 3 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(&*new_written.lock(), b"new");
+    hub.publish(TerminalSurfaceEvent::Output {
+        session_key: key.clone(),
+        sequence: 1,
+        data: "x".repeat(100_001).into(),
+    });
+    assert!(matches!(
+        stream.next().await,
+        Some(StateSubscriptionEvent::Item(_, Event::Bookmark(_)))
+    ));
+    let next = tokio::time::timeout(Duration::from_secs(2), stream.next())
+        .await
+        .unwrap();
+    assert!(
+        matches!(next, Some(StateSubscriptionEvent::Item(_, Event::Change(_, _, value))) if matches!(value.as_ref(), StateValue::Terminal(TerminalSurfaceStreamItem::Output { sequence: 1, data, .. }) if data.len() == 100_001))
+    );
+    let (sent, received) = tokio::sync::oneshot::channel();
+    let waiting_hub = hub.clone();
+    let waiter = tokio::task::spawn_blocking(move || {
+        waiting_hub.wait_output(&key);
+        sent.send(()).unwrap();
+    });
+    tokio::pin!(received);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), &mut received)
+            .await
+            .is_err()
+    );
+    for _ in 0..20 {
+        subscriptions
+            .terminal_processed("client", &target, 5000)
+            .unwrap();
+    }
+    tokio::time::timeout(Duration::from_secs(2), received)
+        .await
+        .unwrap()
+        .unwrap();
+    waiter.await.unwrap();
+    subscriptions.stop("client", &target).unwrap();
+    assert!(terminal
+        .write_attached(&owner, "input", 2, None, "stale")
+        .is_err());
+    assert!(subscriptions
+        .terminal_processed("client", &target, 5000)
+        .is_err());
 }

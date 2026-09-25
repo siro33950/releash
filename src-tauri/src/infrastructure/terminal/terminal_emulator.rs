@@ -268,10 +268,13 @@ impl TerminalCheckpointFileStore {
             }
             let record: NativeTerminalCheckpointRecord = serde_json::from_slice(line)
                 .map_err(|error| format!("decode {}: {error}", journal_path.display()))?;
-            if record.sequence() <= sequence {
+            if record.sequence() < sequence
+                || (record.sequence() == sequence
+                    && matches!(&record, NativeTerminalCheckpointRecord::Output { .. }))
+            {
                 continue;
             }
-            if record.sequence() != sequence + 1 {
+            if record.sequence() > sequence.saturating_add(1) {
                 return Err(format!(
                     "non-contiguous Terminal Surface journal: {}",
                     journal_path.display()

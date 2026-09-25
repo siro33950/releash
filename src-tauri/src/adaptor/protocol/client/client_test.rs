@@ -6,7 +6,7 @@ use serde_json::json;
 fn test_型付き応答_protoが成功と失敗を排他的に保持する() {
     // Given / When / Then
     for (command, result) in [
-        ("ack_terminal_surface_output", Ok(Json::Null)),
+        ("update_external_editor", Ok(Json::Null)),
         ("get_external_editor", Ok(json!("日本語"))),
         ("get_releash_base", Ok(json!("/a"))),
         (
@@ -56,17 +56,17 @@ fn test_クライアント引数_必須フィールドと整数型を検証す�
     // Given / When / Then
     assert!(CommandRequest::from_value("build_diff_file_tree", json!({})).is_err());
     assert!(CommandRequest::from_value(
-        "ack_terminal_surface_output",
-        json!({"attachmentId":"a", "sequence": 1.5})
+        "write_terminal_surface",
+        json!({"owner":{"kind":"workspace","workspacePath":"/repo"},"attachmentId":"a", "sequence": 1.5,"data":"x","clientStartedAtUnixMs":null})
     )
     .is_err());
-    let args = json!({"attachmentId":"a", "sequence": u64::MAX});
-    let request = CommandRequest::from_value("ack_terminal_surface_output", args.clone()).unwrap();
+    let args = json!({"owner":{"kind":"workspace","workspacePath":"/repo"},"attachmentId":"a", "sequence": u64::MAX,"data":"x","clientStartedAtUnixMs":null});
+    let request = CommandRequest::from_value("write_terminal_surface", args.clone()).unwrap();
     let decoded = CommandRequest::decode(request.encode_to_vec().as_slice())
         .unwrap()
         .into_value()
         .unwrap();
-    assert_eq!(decoded, ("ack_terminal_surface_output", args));
+    assert_eq!(decoded, ("write_terminal_surface", args));
     let request = CommandRequest {
         command: Some(command_request::Command::BuildDiffFileTree(
             BuildDiffFileTreeRequest::default(),

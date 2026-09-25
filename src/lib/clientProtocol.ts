@@ -40,6 +40,7 @@ export function decodeTerminalEvent({
 				type: "snapshot",
 				surface: {
 					session_key: item.value.sessionKey,
+					processed_report_units: item.value.processedReportUnits,
 					terminal_surface: {
 						replay: item.value.replay,
 						sequence: Number(item.value.sequence),
@@ -71,12 +72,6 @@ export function decodeTerminalEvent({
 				session_key: item.value.sessionKey,
 				exit_code: item.value.exitCode ?? null,
 				sequence: Number(item.value.sequence),
-			};
-		case "inputUnavailable":
-			return {
-				type: "input_unavailable",
-				session_key: item.value.sessionKey,
-				message: item.value.message,
 			};
 		default:
 			throw new Error("Missing terminal event");

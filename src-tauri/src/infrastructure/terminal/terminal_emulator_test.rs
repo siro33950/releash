@@ -478,3 +478,59 @@ fn test_保存中断_不完全なjournal末尾を修復して再送分を重複�
     assert!(checkpoint.replay.contains("once-after"));
     assert!(!checkpoint.replay.contains("onceonce"));
 }
+
+#[test]
+fn test_ターミナル増分復元点_出力番号を進めず寸法変更と終了を復元する() {
+    // Given
+    let data_dir = tempfile::TempDir::new().unwrap();
+    let store = TerminalCheckpointFileStore::new(data_dir.path(), TEST_SCROLLBACK_ROWS);
+    store
+        .replace_base(
+            "session",
+            &NativeTerminalCheckpoint {
+                replay: String::new(),
+                sequence: 0,
+                cols: 80,
+                rows: 24,
+            },
+        )
+        .unwrap();
+    // When
+    store
+        .append_records(
+            "session",
+            &[
+                NativeTerminalCheckpointRecord::Resize {
+                    sequence: 0,
+                    cols: 100,
+                    rows: 30,
+                },
+                NativeTerminalCheckpointRecord::Output {
+                    sequence: 1,
+                    data: "one".into(),
+                },
+                NativeTerminalCheckpointRecord::Resize {
+                    sequence: 1,
+                    cols: 120,
+                    rows: 40,
+                },
+                NativeTerminalCheckpointRecord::Output {
+                    sequence: 2,
+                    data: "two".into(),
+                },
+                NativeTerminalCheckpointRecord::Barrier { sequence: 2 },
+            ],
+        )
+        .unwrap();
+    // Then
+    let restored = store.load("session").unwrap().unwrap();
+    assert_eq!(restored.sequence, 2);
+    assert_eq!((restored.cols, restored.rows), (120, 40));
+    assert!(
+        NativeTerminalEmulator::restore(&restored, TEST_SCROLLBACK_ROWS)
+            .terminal
+            .text()
+            .join("\n")
+            .contains("onetwo")
+    );
+}

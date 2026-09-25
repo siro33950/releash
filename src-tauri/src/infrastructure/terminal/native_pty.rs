@@ -115,6 +115,14 @@ pub(crate) struct NativePtyOutput {
 }
 
 impl NativePtyOutput {
+    #[cfg(test)]
+    pub(crate) fn from_parts(
+        reader: Box<dyn Read + Send>,
+        child: Box<dyn portable_pty::Child + Send + Sync>,
+    ) -> Self {
+        Self { reader, child }
+    }
+
     pub(crate) fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
         self.reader.read(buffer)
     }

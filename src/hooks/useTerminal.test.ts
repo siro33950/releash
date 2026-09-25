@@ -1,4 +1,4 @@
-import { renderHook, waitFor } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TerminalOutputScheduler } from "@/lib/terminalOutputScheduler";
@@ -69,14 +69,14 @@ vi.mock("@/lib/client", () => ({
 		mockConnectionListener = listener;
 		return vi.fn();
 	},
-	attachClientStream: async (
+	subscribeTerminalState: async (
 		args: { attachmentId: string },
 		onmessage: (message: unknown) => void,
 		onClosed: () => void,
 	) => {
 		if (mockStreamSubscriptionError) throw mockStreamSubscriptionError;
 		mockStreams.push({ attachmentId: args.attachmentId, onmessage, onClosed });
-		await mockInvoke("attach_terminal_surface", args).catch(
+		await mockInvoke("start_state_subscription", args).catch(
 			(error: unknown) => {
 				throw error instanceof Error ? error.message : error;
 			},
@@ -84,13 +84,13 @@ vi.mock("@/lib/client", () => ({
 		let released: Promise<void> | undefined;
 		return vi.fn(
 			() =>
-				(released ??= mockInvoke("detach_terminal_surface", {
+				(released ??= mockInvoke("stop_state_subscription", {
 					attachmentId: args.attachmentId,
 				})),
 		);
 	},
-	acknowledgeClientStream: async (attachmentId: string, sequence: number) =>
-		mockInvoke("ack_terminal_surface_output", { attachmentId, sequence }),
+	reportTerminalProcessed: async (owner: unknown, units: number) =>
+		mockInvoke("report_terminal_processed", { owner, units }),
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -293,30 +293,16 @@ describe("useTerminal", () => {
 
 		mockInvoke.mockImplementation(
 			(cmd: string, args?: Record<string, unknown>) => {
-				if (
-					cmd === "get_or_spawn_terminal_surface" ||
-					cmd === "get_terminal_surface"
-				) {
-					return Promise.resolve({
-						session_key: "test-uuid-1234",
-						terminal_surface: {
-							replay: "",
-							sequence: 0,
-							cols: 80,
-							rows: 24,
-						},
-						restored_from_checkpoint: false,
-						is_new: true,
-						is_exited: false,
-						exit_code: null,
-					});
+				if (cmd === "get_or_spawn_terminal_surface") {
+					return Promise.resolve({ session_key: "test-uuid-1234" });
 				}
-				if (cmd === "attach_terminal_surface") {
+				if (cmd === "start_state_subscription") {
 					const channel = streamForAttachment(args?.attachmentId);
 					queueMicrotask(() => {
 						channel.onmessage({
 							type: "snapshot",
 							surface: {
+								processed_report_units: 5000,
 								session_key: "test-uuid-1234",
 								terminal_surface: {
 									replay: "",
@@ -535,10 +521,9 @@ describe("useTerminal", () => {
 		renderHook(() => useTerminal(containerRef));
 
 		await waitFor(() => {
-			expect(mockInvoke).toHaveBeenCalledWith("attach_terminal_surface", {
+			expect(mockInvoke).toHaveBeenCalledWith("start_state_subscription", {
 				owner: { kind: "workspace", workspacePath: "" },
 				attachmentId: expect.any(String),
-				recovery: false,
 			});
 		});
 		expect(mockStreams).toHaveLength(1);
@@ -558,12 +543,12 @@ describe("useTerminal", () => {
 		});
 
 		unmount();
-		expect(mockInvoke).toHaveBeenCalledWith("detach_terminal_surface", {
+		expect(mockInvoke).toHaveBeenCalledWith("stop_state_subscription", {
 			attachmentId: expect.any(String),
 		});
 		expect(
 			mockInvoke.mock.calls.filter(
-				([command]) => command === "detach_terminal_surface",
+				([command]) => command === "stop_state_subscription",
 			),
 		).toHaveLength(1);
 
@@ -581,25 +566,14 @@ describe("useTerminal", () => {
 		mockInvoke.mockImplementation(
 			(cmd: string, args?: Record<string, unknown>) => {
 				if (cmd === "get_or_spawn_terminal_surface") {
-					return Promise.resolve({
-						session_key: "same-session",
-						terminal_surface: {
-							replay: "",
-							sequence: 0,
-							cols: 80,
-							rows: 24,
-						},
-						restored_from_checkpoint: false,
-						is_new: false,
-						is_exited: false,
-						exit_code: null,
-					});
+					return Promise.resolve({ session_key: "same-session" });
 				}
-				if (cmd === "attach_terminal_surface") {
+				if (cmd === "start_state_subscription") {
 					const channel = streamForAttachment(args?.attachmentId);
 					channel.onmessage({
 						type: "snapshot",
 						surface: {
+							processed_report_units: 5000,
 							session_key: "same-session",
 							terminal_surface: {
 								replay: "",
@@ -646,19 +620,7 @@ describe("useTerminal", () => {
 	});
 
 	it("unmount後にget_or_spawnが完了してもmanaged paneへsession keyを通知する", async () => {
-		type SpawnResult = {
-			session_key: string;
-			terminal_surface: {
-				replay: string;
-				sequence: number;
-				cols: number;
-				rows: number;
-			};
-			restored_from_checkpoint: boolean;
-			is_new: boolean;
-			is_exited: boolean;
-			exit_code: number | null;
-		};
+		type SpawnResult = { session_key: string };
 		let resolveSpawn!: (value: SpawnResult) => void;
 		const pendingSpawn = new Promise<SpawnResult>((resolve) => {
 			resolveSpawn = resolve;
@@ -686,19 +648,7 @@ describe("useTerminal", () => {
 		unmount();
 		mockInvoke.mockClear();
 
-		resolveSpawn({
-			session_key: "late-session",
-			terminal_surface: {
-				replay: "",
-				sequence: 0,
-				cols: 80,
-				rows: 24,
-			},
-			restored_from_checkpoint: false,
-			is_new: true,
-			is_exited: false,
-			exit_code: null,
-		});
+		resolveSpawn({ session_key: "late-session" });
 
 		await waitFor(() => {
 			expect(onTerminalReady).toHaveBeenCalledWith("late-session");
@@ -710,19 +660,7 @@ describe("useTerminal", () => {
 	});
 
 	it("pending kill中に遅れて生成されたmanaged PTYはready通知せず終了する", async () => {
-		type SpawnResult = {
-			session_key: string;
-			terminal_surface: {
-				replay: string;
-				sequence: number;
-				cols: number;
-				rows: number;
-			};
-			restored_from_checkpoint: boolean;
-			is_new: boolean;
-			is_exited: boolean;
-			exit_code: number | null;
-		};
+		type SpawnResult = { session_key: string };
 		let resolveSpawn!: (value: SpawnResult) => void;
 		const pendingSpawn = new Promise<SpawnResult>((resolve) => {
 			resolveSpawn = resolve;
@@ -753,19 +691,7 @@ describe("useTerminal", () => {
 		unmount();
 		mockInvoke.mockClear();
 
-		resolveSpawn({
-			session_key: "late-session",
-			terminal_surface: {
-				replay: "",
-				sequence: 0,
-				cols: 80,
-				rows: 24,
-			},
-			restored_from_checkpoint: false,
-			is_new: true,
-			is_exited: false,
-			exit_code: null,
-		});
+		resolveSpawn({ session_key: "late-session" });
 
 		await waitFor(() => {
 			expect(mockInvoke).toHaveBeenCalledWith("kill_terminal_surface", {
@@ -776,19 +702,7 @@ describe("useTerminal", () => {
 	});
 
 	it("requestKill() 後に get_or_spawn が解決した pending PTY は onTerminalReady を呼ばない", async () => {
-		type SpawnResult = {
-			session_key: string;
-			terminal_surface: {
-				replay: string;
-				sequence: number;
-				cols: number;
-				rows: number;
-			};
-			restored_from_checkpoint: boolean;
-			is_new: boolean;
-			is_exited: boolean;
-			exit_code: number | null;
-		};
+		type SpawnResult = { session_key: string };
 		let resolveSpawn!: (value: SpawnResult) => void;
 		const pendingSpawn = new Promise<SpawnResult>((resolve) => {
 			resolveSpawn = resolve;
@@ -817,37 +731,13 @@ describe("useTerminal", () => {
 		unmount();
 		mockInvoke.mockClear();
 
-		resolveSpawn({
-			session_key: "late-session",
-			terminal_surface: {
-				replay: "",
-				sequence: 0,
-				cols: 80,
-				rows: 24,
-			},
-			restored_from_checkpoint: false,
-			is_new: true,
-			is_exited: false,
-			exit_code: null,
-		});
+		resolveSpawn({ session_key: "late-session" });
 
 		expect(onTerminalReady).not.toHaveBeenCalled();
 	});
 
 	it("requestKill() 後に get_or_spawn が解決した pending PTY を kill する", async () => {
-		type SpawnResult = {
-			session_key: string;
-			terminal_surface: {
-				replay: string;
-				sequence: number;
-				cols: number;
-				rows: number;
-			};
-			restored_from_checkpoint: boolean;
-			is_new: boolean;
-			is_exited: boolean;
-			exit_code: number | null;
-		};
+		type SpawnResult = { session_key: string };
 		let resolveSpawn!: (value: SpawnResult) => void;
 		const pendingSpawn = new Promise<SpawnResult>((resolve) => {
 			resolveSpawn = resolve;
@@ -871,19 +761,7 @@ describe("useTerminal", () => {
 		unmount();
 		mockInvoke.mockClear();
 
-		resolveSpawn({
-			session_key: "late-session",
-			terminal_surface: {
-				replay: "",
-				sequence: 0,
-				cols: 80,
-				rows: 24,
-			},
-			restored_from_checkpoint: false,
-			is_new: true,
-			is_exited: false,
-			exit_code: null,
-		});
+		resolveSpawn({ session_key: "late-session" });
 
 		await waitFor(() => {
 			expect(mockInvoke).toHaveBeenCalledWith("kill_terminal_surface", {
@@ -970,15 +848,15 @@ describe("useTerminal", () => {
 
 		await waitFor(() => {
 			expect(mockInvoke).toHaveBeenCalledWith(
-				"attach_terminal_surface",
+				"start_state_subscription",
 				expect.any(Object),
 			);
 		});
 		const attachmentCall = mockInvoke.mock.calls.find(
-			([command]) => command === "attach_terminal_surface",
+			([command]) => command === "start_state_subscription",
 		);
 		if (!attachmentCall)
-			throw new Error("attach_terminal_surface call is missing");
+			throw new Error("start_state_subscription call is missing");
 		const attachmentId = (attachmentCall[1] as { attachmentId: string })
 			.attachmentId;
 
@@ -1024,7 +902,7 @@ describe("useTerminal", () => {
 			]);
 			expect(
 				mockInvoke.mock.calls.filter(
-					([command]) => command === "attach_terminal_surface",
+					([command]) => command === "start_state_subscription",
 				),
 			).toHaveLength(2);
 		});
@@ -1039,7 +917,7 @@ describe("useTerminal", () => {
 
 		await waitFor(() => {
 			expect(mockInvoke).toHaveBeenCalledWith(
-				"attach_terminal_surface",
+				"start_state_subscription",
 				expect.any(Object),
 			);
 		});
@@ -1070,21 +948,20 @@ describe("useTerminal", () => {
 		completeFirstWrite();
 	});
 
-	it("Rustが通知した入力不能をattachment streamから表示する", async () => {
+	it("入力の失敗応答を表示する", async () => {
 		const onTerminalError = vi.fn();
 		renderHook(() => useTerminal(containerRef, { onTerminalError }));
 
 		await waitFor(() => {
 			expect(mockInvoke).toHaveBeenCalledWith(
-				"attach_terminal_surface",
+				"start_state_subscription",
 				expect.any(Object),
 			);
 		});
-		mockStreams[mockStreams.length - 1]?.onmessage({
-			type: "input_unavailable",
-			session_key: "test-uuid-1234",
-			message: "Terminal input could not be sent. Try again.",
-		});
+		mockInvoke.mockRejectedValueOnce(
+			new Error("Terminal input could not be sent. Try again."),
+		);
+		mockOnDataCallback("x");
 		await waitFor(() => {
 			expect(onTerminalError).toHaveBeenCalledWith(
 				"Terminal input could not be sent. Try again.",
@@ -1092,7 +969,7 @@ describe("useTerminal", () => {
 		});
 	});
 
-	it("input_unavailable受信時は新attachmentへ一度だけ自動resyncする", async () => {
+	it("入力の失敗応答では新attachmentへ一度だけ自動resyncする", async () => {
 		const onTerminalError = vi.fn();
 		const onTerminalReady = vi.fn();
 		renderHook(() =>
@@ -1104,23 +981,22 @@ describe("useTerminal", () => {
 		});
 		onTerminalError.mockClear();
 		const firstAttachCall = mockInvoke.mock.calls.find(
-			([command]) => command === "attach_terminal_surface",
+			([command]) => command === "start_state_subscription",
 		);
 		if (!firstAttachCall)
-			throw new Error("attach_terminal_surface call is missing");
+			throw new Error("start_state_subscription call is missing");
 		const firstAttachmentId = (firstAttachCall[1] as { attachmentId: string })
 			.attachmentId;
 
-		mockStreams[0].onmessage({
-			type: "input_unavailable",
-			session_key: "test-uuid-1234",
-			message: "Terminal input could not be sent. Try again.",
-		});
+		mockInvoke.mockRejectedValueOnce(
+			new Error("Terminal input could not be sent. Try again."),
+		);
+		mockOnDataCallback("x");
 
 		await waitFor(() => {
 			expect(
 				mockInvoke.mock.calls.filter(
-					([command]) => command === "attach_terminal_surface",
+					([command]) => command === "start_state_subscription",
 				),
 			).toHaveLength(2);
 		});
@@ -1128,14 +1004,14 @@ describe("useTerminal", () => {
 			"Terminal input could not be sent. Try again.",
 		);
 		const attachCalls = mockInvoke.mock.calls.filter(
-			([command]) => command === "attach_terminal_surface",
+			([command]) => command === "start_state_subscription",
 		);
 		expect(attachCalls).toHaveLength(2);
 		expect(attachCalls[0][1]).toEqual(
-			expect.objectContaining({ recovery: false }),
+			expect.objectContaining({ attachmentId: mockStreams[0].attachmentId }),
 		);
 		expect(attachCalls[1][1]).toEqual(
-			expect.objectContaining({ recovery: true }),
+			expect.objectContaining({ attachmentId: mockStreams[1].attachmentId }),
 		);
 		expect(onTerminalError.mock.calls).toEqual([
 			["Terminal input could not be sent. Try again."],
@@ -1152,7 +1028,7 @@ describe("useTerminal", () => {
 		const baseImplementation = mockInvoke.getMockImplementation();
 		mockInvoke.mockImplementation(
 			(cmd: string, args?: Record<string, unknown>) => {
-				if (cmd === "attach_terminal_surface") {
+				if (cmd === "start_state_subscription") {
 					attachCalls += 1;
 					if (attachCalls === 2) {
 						return Promise.reject("backend resync failed");
@@ -1166,11 +1042,8 @@ describe("useTerminal", () => {
 		await waitFor(() => {
 			expect(mockStreams).toHaveLength(1);
 		});
-		mockStreams[0].onmessage({
-			type: "input_unavailable",
-			session_key: "test-uuid-1234",
-			message: "stale attachment",
-		});
+		mockInvoke.mockRejectedValueOnce(new Error("stale attachment"));
+		mockOnDataCallback("x");
 
 		await waitFor(() => {
 			expect(onTerminalError).toHaveBeenCalledWith("backend resync failed");
@@ -1220,7 +1093,7 @@ describe("useTerminal", () => {
 		const baseImplementation = mockInvoke.getMockImplementation();
 		mockInvoke.mockImplementation(
 			(cmd: string, args?: Record<string, unknown>) => {
-				if (cmd === "attach_terminal_surface") {
+				if (cmd === "start_state_subscription") {
 					attachCalls += 1;
 					if (attachCalls === 1) {
 						const channel = streamForAttachment(args?.attachmentId);
@@ -1228,6 +1101,7 @@ describe("useTerminal", () => {
 							channel.onmessage({
 								type: "snapshot",
 								surface: {
+									processed_report_units: 5000,
 									session_key: "test-uuid-1234",
 									terminal_surface: {
 										replay: "",
@@ -1300,7 +1174,7 @@ describe("useTerminal", () => {
 		const baseImplementation = mockInvoke.getMockImplementation();
 		mockInvoke.mockImplementation(
 			(cmd: string, args?: Record<string, unknown>) => {
-				if (cmd === "attach_terminal_surface") {
+				if (cmd === "start_state_subscription") {
 					attachCalls += 1;
 					attachmentIds.push(String(args?.attachmentId));
 					if (attachCalls >= 2) {
@@ -1317,11 +1191,8 @@ describe("useTerminal", () => {
 		await waitFor(() => {
 			expect(mockStreams).toHaveLength(1);
 		});
-		mockStreams[0].onmessage({
-			type: "input_unavailable",
-			session_key: "test-uuid-1234",
-			message: "stale attachment",
-		});
+		mockInvoke.mockRejectedValueOnce(new Error("stale attachment"));
+		mockOnDataCallback("x");
 		await waitFor(() => {
 			expect(attachCalls).toBe(2);
 		});
@@ -1330,14 +1201,14 @@ describe("useTerminal", () => {
 		pendingAttachResolvers[0]?.();
 
 		await waitFor(() => {
-			expect(mockInvoke).toHaveBeenCalledWith("detach_terminal_surface", {
+			expect(mockInvoke).toHaveBeenCalledWith("stop_state_subscription", {
 				attachmentId: attachmentIds[1],
 			});
 			for (const id of attachmentIds)
 				expect(
 					mockInvoke.mock.calls.filter(
 						([command, args]) =>
-							command === "detach_terminal_surface" &&
+							command === "stop_state_subscription" &&
 							args?.attachmentId === id,
 					),
 				).toHaveLength(1);
@@ -1351,11 +1222,8 @@ describe("useTerminal", () => {
 			expect(mockStreams).toHaveLength(1);
 		});
 		mockStreamSubscriptionError = new Error("renderer recovery setup failed");
-		mockStreams[0].onmessage({
-			type: "input_unavailable",
-			session_key: "test-uuid-1234",
-			message: "stale attachment",
-		});
+		mockInvoke.mockRejectedValueOnce(new Error("stale attachment"));
+		mockOnDataCallback("x");
 
 		await waitFor(() => {
 			expect(onTerminalError).toHaveBeenCalledWith(
@@ -1369,7 +1237,7 @@ describe("useTerminal", () => {
 		const baseImplementation = mockInvoke.getMockImplementation();
 		mockInvoke.mockImplementation(
 			(cmd: string, args?: Record<string, unknown>) => {
-				if (cmd === "detach_terminal_surface") {
+				if (cmd === "stop_state_subscription") {
 					return Promise.reject({
 						code: "PTY_ERROR",
 						message: "Terminal detachment failed. Try again.",
@@ -1383,11 +1251,8 @@ describe("useTerminal", () => {
 		await waitFor(() => {
 			expect(mockStreams).toHaveLength(1);
 		});
-		mockStreams[0].onmessage({
-			type: "input_unavailable",
-			session_key: "test-uuid-1234",
-			message: "stale attachment",
-		});
+		mockInvoke.mockRejectedValueOnce(new Error("stale attachment"));
+		mockOnDataCallback("x");
 
 		await waitFor(() => {
 			expect(onTerminalError).toHaveBeenCalledWith(
@@ -1446,7 +1311,7 @@ describe("useTerminal", () => {
 			const original = mockInvoke.getMockImplementation();
 			mockInvoke.mockImplementation(
 				(command: string, args?: Record<string, unknown>) =>
-					command === "attach_terminal_surface"
+					command === "start_state_subscription"
 						? Promise.resolve()
 						: original?.(command, args),
 			);
@@ -1559,14 +1424,14 @@ describe("useTerminal", () => {
 		await waitFor(() => {
 			expect(
 				mockInvoke.mock.calls.filter(
-					([command]) => command === "attach_terminal_surface",
+					([command]) => command === "start_state_subscription",
 				),
 			).toHaveLength(1);
 			expect(mockStreams).toHaveLength(2);
 		});
 		expect(
 			mockInvoke.mock.calls.filter(
-				([command]) => command === "detach_terminal_surface",
+				([command]) => command === "stop_state_subscription",
 			),
 		).toHaveLength(1);
 
@@ -1590,7 +1455,7 @@ describe("useTerminal", () => {
 		const baseImplementation = mockInvoke.getMockImplementation();
 		mockInvoke.mockImplementation(
 			(cmd: string, args?: Record<string, unknown>) => {
-				if (cmd === "attach_terminal_surface") {
+				if (cmd === "start_state_subscription") {
 					return new Promise<void>((resolve) => {
 						attachResolvers.push(() => resolve());
 					});
@@ -1619,6 +1484,7 @@ describe("useTerminal", () => {
 		mockStreams[0].onmessage({
 			type: "snapshot",
 			surface: {
+				processed_report_units: 5000,
 				session_key: "test-uuid-1234",
 				terminal_surface: { replay: "", sequence: 0, cols: 80, rows: 24 },
 				is_exited: false,
@@ -1643,7 +1509,7 @@ describe("useTerminal", () => {
 		const baseImplementation = mockInvoke.getMockImplementation();
 		mockInvoke.mockImplementation(
 			(cmd: string, args?: Record<string, unknown>) => {
-				if (cmd === "attach_terminal_surface") {
+				if (cmd === "start_state_subscription") {
 					attachCalls += 1;
 					attachmentIds.push(String(args?.attachmentId));
 					if (attachCalls >= 2) {
@@ -1669,7 +1535,7 @@ describe("useTerminal", () => {
 			).toHaveLength(1);
 		});
 
-		// renderer queue超過で再attach（2回目のattach_terminal_surfaceは未解決のまま保持）
+		// renderer queue超過で再attach（2回目のstart_state_subscriptionは未解決のまま保持）
 		mockTerminalInstance.write.mockImplementation(
 			(_data: string, callback?: () => void) => callback?.(),
 		);
@@ -1714,6 +1580,7 @@ describe("useTerminal", () => {
 		mockStreams[1].onmessage({
 			type: "snapshot",
 			surface: {
+				processed_report_units: 5000,
 				session_key: "test-uuid-1234",
 				terminal_surface: { replay: "", sequence: 2, cols: 80, rows: 24 },
 				is_exited: false,
@@ -1742,19 +1609,7 @@ describe("useTerminal", () => {
 	});
 
 	it("初期replay中のprocess exitを失わずsurface identityを保持する", async () => {
-		type SpawnResult = {
-			session_key: string;
-			terminal_surface: {
-				replay: string;
-				sequence: number;
-				cols: number;
-				rows: number;
-			};
-			restored_from_checkpoint: boolean;
-			is_new: boolean;
-			is_exited: boolean;
-			exit_code: number | null;
-		};
+		type SpawnResult = { session_key: string };
 		let resolveSpawn!: (value: SpawnResult) => void;
 		const pendingSpawn = new Promise<SpawnResult>((resolve) => {
 			resolveSpawn = resolve;
@@ -1762,11 +1617,12 @@ describe("useTerminal", () => {
 		mockInvoke.mockImplementation(
 			(command: string, args?: Record<string, unknown>) => {
 				if (command === "get_or_spawn_terminal_surface") return pendingSpawn;
-				if (command === "attach_terminal_surface") {
+				if (command === "start_state_subscription") {
 					const channel = streamForAttachment(args?.attachmentId);
 					channel.onmessage({
 						type: "snapshot",
 						surface: {
+							processed_report_units: 5000,
 							session_key: "late-exit",
 							terminal_surface: {
 								replay: "final screen",
@@ -1793,19 +1649,7 @@ describe("useTerminal", () => {
 		const { result } = renderHook(() =>
 			useTerminal(containerRef, { cwd: "/repo", onTerminalReady }),
 		);
-		resolveSpawn({
-			session_key: "late-exit",
-			terminal_surface: {
-				replay: "final screen",
-				sequence: 4,
-				cols: 80,
-				rows: 24,
-			},
-			restored_from_checkpoint: false,
-			is_new: false,
-			is_exited: false,
-			exit_code: null,
-		});
+		resolveSpawn({ session_key: "late-exit" });
 
 		await waitFor(() => {
 			expect(onTerminalReady).toHaveBeenCalledWith("late-exit");
@@ -1837,25 +1681,14 @@ describe("useTerminal", () => {
 		mockInvoke.mockImplementation(
 			(cmd: string, args?: Record<string, unknown>) => {
 				if (cmd === "get_or_spawn_terminal_surface") {
-					return Promise.resolve({
-						session_key: "pre-spawned-key",
-						terminal_surface: {
-							replay: "previously buffered text\r\n$ ",
-							sequence: 3,
-							cols: 80,
-							rows: 24,
-						},
-						restored_from_checkpoint: false,
-						is_new: false,
-						is_exited: false,
-						exit_code: null,
-					});
+					return Promise.resolve({ session_key: "pre-spawned-key" });
 				}
-				if (cmd === "attach_terminal_surface") {
+				if (cmd === "start_state_subscription") {
 					const channel = streamForAttachment(args?.attachmentId);
 					channel.onmessage({
 						type: "snapshot",
 						surface: {
+							processed_report_units: 5000,
 							session_key: "pre-spawned-key",
 							terminal_surface: {
 								replay: "previously buffered text\r\n$ ",
@@ -1886,20 +1719,14 @@ describe("useTerminal", () => {
 		mockInvoke.mockImplementation(
 			(cmd: string, args?: Record<string, unknown>) => {
 				if (cmd === "get_or_spawn_terminal_surface") {
-					return Promise.resolve({
-						session_key: "pre-spawned-key",
-						terminal_surface: { replay: "", sequence: 0, cols: 80, rows: 24 },
-						restored_from_checkpoint: false,
-						is_new: false,
-						is_exited: false,
-						exit_code: null,
-					});
+					return Promise.resolve({ session_key: "pre-spawned-key" });
 				}
-				if (cmd === "attach_terminal_surface") {
+				if (cmd === "start_state_subscription") {
 					const channel = streamForAttachment(args?.attachmentId);
 					channel.onmessage({
 						type: "snapshot",
 						surface: {
+							processed_report_units: 5000,
 							session_key: "pre-spawned-key",
 							terminal_surface: {
 								replay: "previously buffered text\r\n$ ",
@@ -2009,7 +1836,7 @@ describe("useTerminal", () => {
 	});
 
 	it.each([false, true])(
-		"backend flow control無効=%sでもparse完了後にstreamをackする",
+		"backend flow control無効=%sでもparse完了後に通知単位ごとに処理済み量を知らせる",
 		async (disabled) => {
 			const previous = mockInvoke.getMockImplementation();
 			mockInvoke.mockImplementation(async (cmd, args) => {
@@ -2029,7 +1856,7 @@ describe("useTerminal", () => {
 				expect(mockStreams).toHaveLength(1);
 			});
 			const attachmentCall = mockInvoke.mock.calls.find(
-				([command]) => command === "attach_terminal_surface",
+				([command]) => command === "start_state_subscription",
 			);
 			const attachmentId = (
 				attachmentCall?.[1] as { attachmentId?: string } | undefined
@@ -2045,37 +1872,92 @@ describe("useTerminal", () => {
 			mockStreams[0].onmessage({
 				type: "output",
 				session_key: "test-uuid-1234",
-				data: "provider output",
+				data: "x".repeat(5000),
 				sequence: 7,
 			});
 			await waitFor(() => {
 				expect(mockTerminalInstance.write).toHaveBeenCalledWith(
-					"provider output",
+					"x".repeat(5000),
 					expect.any(Function),
 				);
 			});
 			expect(mockInvoke).not.toHaveBeenCalledWith(
-				"ack_terminal_surface_output",
+				"report_terminal_processed",
 				expect.anything(),
 			);
 
 			parsed();
 			await waitFor(() => {
-				expect(mockInvoke).toHaveBeenCalledWith("ack_terminal_surface_output", {
-					attachmentId,
-					sequence: 7,
+				expect(mockInvoke).toHaveBeenCalledWith("report_terminal_processed", {
+					owner: expect.any(Object),
+					units: 5000,
 				});
 			});
 		},
 	);
 
-	it("非同期ackの失敗から新attachmentへ再同期し出力と入力を再開する", async () => {
+	it("snapshotで受け取った単位でUTF16の処理済み量を蓄積し端数を次へ持ち越す", async () => {
+		renderHook(() => useTerminal(containerRef));
+		await waitFor(() => expect(mockStreams).toHaveLength(1));
+		await act(async () => {
+			mockStreams[0].onmessage({
+				type: "snapshot",
+				surface: {
+					session_key: "test-uuid-1234",
+					processed_report_units: 6,
+					terminal_surface: { replay: "", sequence: 0, cols: 80, rows: 24 },
+					is_exited: false,
+					exit_code: null,
+				},
+			});
+		});
+		let parsed!: () => void;
+		mockTerminalInstance.write.mockImplementation(
+			(_data: string, callback?: () => void) => {
+				if (callback) parsed = callback;
+			},
+		);
+		mockInvoke.mockClear();
+		let sequence = 0;
+		const output = async (data: string) => {
+			mockTerminalInstance.write.mockClear();
+			mockStreams[0].onmessage({
+				type: "output",
+				session_key: "test-uuid-1234",
+				data,
+				sequence: ++sequence,
+			});
+			await waitFor(() =>
+				expect(mockTerminalInstance.write).toHaveBeenCalledWith(
+					data,
+					expect.any(Function),
+				),
+			);
+			await act(async () => parsed());
+		};
+		const reports = () =>
+			mockInvoke.mock.calls.filter(
+				([cmd]) => cmd === "report_terminal_processed",
+			);
+		await output("🙂🙂");
+		expect(reports()).toHaveLength(0);
+		await output("🙂");
+		expect(reports()).toHaveLength(1);
+		await output("🙂".repeat(7));
+		expect(reports()).toHaveLength(3);
+		await output("🙂🙂");
+		expect(reports()).toHaveLength(4);
+		for (const [, args] of reports())
+			expect(args).toEqual({ owner: expect.any(Object), units: 6 });
+	});
+
+	it("処理済み量通知の失敗から新attachmentへ再同期し出力と入力を再開する", async () => {
 		const onTerminalError = vi.fn();
 		const baseImplementation = mockInvoke.getMockImplementation();
 		let failed = false;
 		mockInvoke.mockImplementation(
 			(cmd: string, args?: Record<string, unknown>) => {
-				if (cmd === "ack_terminal_surface_output" && !failed) {
+				if (cmd === "report_terminal_processed" && !failed) {
 					failed = true;
 					return Promise.reject(new Error("Connect unavailable"));
 				}
@@ -2087,31 +1969,31 @@ describe("useTerminal", () => {
 		mockStreams[0].onmessage({
 			type: "output",
 			session_key: "test-uuid-1234",
-			data: "before",
+			data: "b".repeat(5000),
 			sequence: 7,
 		});
 		await waitFor(() => expect(mockStreams).toHaveLength(2));
 		await waitFor(() =>
-			expect(mockInvoke).toHaveBeenCalledWith("detach_terminal_surface", {
+			expect(mockInvoke).toHaveBeenCalledWith("stop_state_subscription", {
 				attachmentId: mockStreams[0].attachmentId,
 			}),
 		);
 		mockStreams[1].onmessage({
 			type: "output",
 			session_key: "test-uuid-1234",
-			data: "after",
+			data: "a".repeat(5000),
 			sequence: 8,
 		});
 		await waitFor(() =>
 			expect(mockTerminalInstance.write).toHaveBeenCalledWith(
-				"after",
+				"a".repeat(5000),
 				expect.any(Function),
 			),
 		);
 		await waitFor(() =>
-			expect(mockInvoke).toHaveBeenCalledWith("ack_terminal_surface_output", {
-				attachmentId: mockStreams[1].attachmentId,
-				sequence: 8,
+			expect(mockInvoke).toHaveBeenCalledWith("report_terminal_processed", {
+				owner: expect.any(Object),
+				units: 5000,
 			}),
 		);
 		mockOnDataCallback("recovered");
@@ -2240,11 +2122,12 @@ describe("useTerminal", () => {
 				if (cmd === "get_or_spawn_terminal_surface") {
 					return pendingSpawn;
 				}
-				if (cmd === "attach_terminal_surface") {
+				if (cmd === "start_state_subscription") {
 					const channel = streamForAttachment(args?.attachmentId);
 					channel.onmessage({
 						type: "snapshot",
 						surface: {
+							processed_report_units: 5000,
 							session_key: "terminal-surface",
 							terminal_surface: {
 								replay: "semantic checkpoint",
@@ -2278,14 +2161,7 @@ describe("useTerminal", () => {
 				callback?.();
 			},
 		);
-		resolveSpawn({
-			session_key: "terminal-surface",
-			terminal_surface: { replay: "", sequence: 0, cols: 80, rows: 24 },
-			restored_from_checkpoint: false,
-			is_new: false,
-			is_exited: false,
-			exit_code: null,
-		});
+		resolveSpawn({ session_key: "terminal-surface" });
 
 		await waitFor(() => {
 			expect(mockTerminalInstance.resize).toHaveBeenCalledWith(111, 37);
@@ -2337,21 +2213,15 @@ describe("useTerminal", () => {
 		mockInvoke.mockImplementation(
 			(cmd: string, args?: Record<string, unknown>) => {
 				if (cmd === "get_or_spawn_terminal_surface") {
-					return Promise.resolve({
-						session_key: "pre-spawned-key",
-						terminal_surface: { replay: "", sequence: 0, cols: 80, rows: 24 },
-						restored_from_checkpoint: false,
-						is_new: false,
-						is_exited: false,
-						exit_code: null,
-					});
+					return Promise.resolve({ session_key: "pre-spawned-key" });
 				}
-				if (cmd === "attach_terminal_surface") {
+				if (cmd === "start_state_subscription") {
 					const channel = streamForAttachment(args?.attachmentId);
 					for (const message of [
 						{
 							type: "snapshot",
 							surface: {
+								processed_report_units: 5000,
 								session_key: "pre-spawned-key",
 								terminal_surface: {
 									replay: "stale backend replay",
@@ -2366,6 +2236,7 @@ describe("useTerminal", () => {
 						{
 							type: "snapshot",
 							surface: {
+								processed_report_units: 5000,
 								session_key: "pre-spawned-key",
 								terminal_surface: {
 									replay: "backend replay through 256",
@@ -2433,24 +2304,12 @@ describe("useTerminal", () => {
 	it("AgentSessionは既存Terminal Surfaceにattachして入力focusを得る", async () => {
 		mockInvoke.mockImplementation(
 			(cmd: string, args?: Record<string, unknown>) => {
-				if (cmd === "get_terminal_surface") {
-					return Promise.resolve({
-						session_key: "agent-session-surface",
-						terminal_surface: {
-							replay: "provider screen",
-							sequence: 4,
-							cols: 80,
-							rows: 24,
-						},
-						is_exited: false,
-						exit_code: null,
-					});
-				}
-				if (cmd === "attach_terminal_surface") {
+				if (cmd === "start_state_subscription") {
 					const channel = streamForAttachment(args?.attachmentId);
 					channel.onmessage({
 						type: "snapshot",
 						surface: {
+							processed_report_units: 5000,
 							session_key: "agent-session-surface",
 							terminal_surface: {
 								replay: "provider screen",
@@ -2481,13 +2340,16 @@ describe("useTerminal", () => {
 		);
 
 		await waitFor(() => {
-			expect(mockInvoke).toHaveBeenCalledWith("get_terminal_surface", {
-				owner: {
-					kind: "session",
-					workspacePath: "/repo",
-					sessionId: "agent-session-1",
-				},
-			});
+			expect(mockInvoke).toHaveBeenCalledWith(
+				"start_state_subscription",
+				expect.objectContaining({
+					owner: {
+						kind: "session",
+						workspacePath: "/repo",
+						sessionId: "agent-session-1",
+					},
+				}),
+			);
 		});
 		expect(mockInvoke).not.toHaveBeenCalledWith(
 			"get_or_spawn_terminal_surface",
@@ -2500,25 +2362,14 @@ describe("useTerminal", () => {
 		mockInvoke.mockImplementation(
 			(cmd: string, args?: Record<string, unknown>) => {
 				if (cmd === "get_or_spawn_terminal_surface") {
-					return Promise.resolve({
-						session_key: "restored-session",
-						terminal_surface: {
-							replay: "restored screen",
-							sequence: 9,
-							cols: 80,
-							rows: 24,
-						},
-						restored_from_checkpoint: true,
-						is_new: true,
-						is_exited: false,
-						exit_code: null,
-					});
+					return Promise.resolve({ session_key: "restored-session" });
 				}
-				if (cmd === "attach_terminal_surface") {
+				if (cmd === "start_state_subscription") {
 					const channel = streamForAttachment(args?.attachmentId);
 					channel.onmessage({
 						type: "snapshot",
 						surface: {
+							processed_report_units: 5000,
 							session_key: "restored-session",
 							terminal_surface: {
 								replay: "restored screen",
@@ -2557,19 +2408,7 @@ describe("useTerminal", () => {
 	it("既存セッション（is_new: false）のとき起動コマンドが送信されない", async () => {
 		mockInvoke.mockImplementation((cmd: string) => {
 			if (cmd === "get_or_spawn_terminal_surface") {
-				return Promise.resolve({
-					session_key: "test-uuid-existing",
-					terminal_surface: {
-						replay: "",
-						sequence: 0,
-						cols: 80,
-						rows: 24,
-					},
-					restored_from_checkpoint: false,
-					is_new: false,
-					is_exited: false,
-					exit_code: null,
-				});
+				return Promise.resolve({ session_key: "test-uuid-existing" });
 			}
 			return Promise.resolve();
 		});
@@ -3103,7 +2942,7 @@ describe("useTerminal", () => {
 				),
 			);
 			const first = mockInvoke.mock.calls.find(
-				([cmd]) => cmd === "attach_terminal_surface",
+				([cmd]) => cmd === "start_state_subscription",
 			)?.[1].attachmentId;
 			mockConnectionListener(false);
 			mockInvoke.mockClear();
@@ -3116,8 +2955,10 @@ describe("useTerminal", () => {
 			await waitFor(() => expect(mockStreams).toHaveLength(2));
 			await waitFor(() =>
 				expect(mockInvoke).toHaveBeenCalledWith(
-					"attach_terminal_surface",
-					expect.objectContaining({ recovery: true }),
+					"start_state_subscription",
+					expect.objectContaining({
+						attachmentId: mockStreams[1].attachmentId,
+					}),
 				),
 			);
 			await new Promise((resolve) => setTimeout(resolve, 0));
@@ -3164,7 +3005,7 @@ describe("useTerminal", () => {
 			let first = true;
 			mockInvoke.mockImplementation(
 				(cmd: string, args: Record<string, unknown>) => {
-					if (cmd === "attach_terminal_surface" && first) {
+					if (cmd === "start_state_subscription" && first) {
 						first = false;
 						streamForAttachment(args.attachmentId).onClosed();
 						return Promise.reject(
@@ -3213,7 +3054,7 @@ describe("useTerminal", () => {
 			let failed = false;
 			mockInvoke.mockImplementation(
 				(cmd: string, args: Record<string, unknown>) => {
-					if (cmd === "attach_terminal_surface" && !failed) {
+					if (cmd === "start_state_subscription" && !failed) {
 						failed = true;
 						return Promise.reject(new Error("connection closed"));
 					}
@@ -3250,7 +3091,7 @@ describe("useTerminal", () => {
 				const original = mockInvoke.getMockImplementation();
 				mockInvoke.mockImplementation(
 					(cmd: string, args: Record<string, unknown>) => {
-						if (fails && cmd === "attach_terminal_surface")
+						if (fails && cmd === "start_state_subscription")
 							return Promise.reject({
 								code: "PTY_ERROR",
 								message: "Terminal resynchronization failed. Try again.",
@@ -3262,8 +3103,10 @@ describe("useTerminal", () => {
 				await waitFor(() => expect(mockStreams).toHaveLength(2));
 				await waitFor(() =>
 					expect(mockInvoke).toHaveBeenCalledWith(
-						"attach_terminal_surface",
-						expect.objectContaining({ recovery: true }),
+						"start_state_subscription",
+						expect.objectContaining({
+							attachmentId: mockStreams[1].attachmentId,
+						}),
 					),
 				);
 				if (fails) {
@@ -3294,7 +3137,7 @@ describe("useTerminal", () => {
 			let first = true;
 			mockInvoke.mockImplementation(
 				(cmd: string, args?: Record<string, unknown>) => {
-					if (cmd === "attach_terminal_surface" && first) {
+					if (cmd === "start_state_subscription" && first) {
 						first = false;
 						return new Promise<void>((resolve) => {
 							complete = () => {
@@ -3341,7 +3184,7 @@ describe("useTerminal", () => {
 			mockInvoke.mockClear();
 			mockConnectionListener(true);
 			expect(mockInvoke).not.toHaveBeenCalledWith(
-				"attach_terminal_surface",
+				"start_state_subscription",
 				expect.anything(),
 			);
 		});
@@ -3354,7 +3197,7 @@ describe("useTerminal", () => {
 			const baseImplementation = mockInvoke.getMockImplementation();
 			mockInvoke.mockImplementation(
 				(cmd: string, args?: Record<string, unknown>) => {
-					if (cmd === "attach_terminal_surface") {
+					if (cmd === "start_state_subscription") {
 						return new Promise<void>((resolve) => {
 							attachResolvers.push(() => resolve());
 						});
@@ -3381,6 +3224,7 @@ describe("useTerminal", () => {
 			mockStreams[0].onmessage({
 				type: "snapshot",
 				surface: {
+					processed_report_units: 5000,
 					session_key: "test-uuid-1234",
 					terminal_surface: { replay: "", sequence: 0, cols: 80, rows: 24 },
 					is_exited: false,
@@ -3410,7 +3254,7 @@ describe("useTerminal", () => {
 			const baseImplementation = mockInvoke.getMockImplementation();
 			mockInvoke.mockImplementation(
 				(cmd: string, args?: Record<string, unknown>) => {
-					if (cmd === "attach_terminal_surface") {
+					if (cmd === "start_state_subscription") {
 						return new Promise<void>((resolve) => {
 							attachResolvers.push(() => resolve());
 						});
@@ -3436,6 +3280,7 @@ describe("useTerminal", () => {
 			mockStreams[0].onmessage({
 				type: "snapshot",
 				surface: {
+					processed_report_units: 5000,
 					session_key: "test-uuid-1234",
 					terminal_surface: { replay: "", sequence: 0, cols: 80, rows: 24 },
 					is_exited: true,

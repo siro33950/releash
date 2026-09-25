@@ -471,3 +471,392 @@ fn test_対象の解放_世代番号が尽きたら版を再利用せずエラ�
     );
     assert!(state.registered(&SubscriptionTarget::Workspaces));
 }
+
+#[test]
+fn test_差分購読_対象の版で再開し件数では溢れない() {
+    // Given
+    let mut state = registry();
+    let target = "terminal:3:pty";
+    let version = |sequence| Version {
+        epoch: "runtime-1".into(),
+        sequence,
+    };
+    state.register_delta(target, version(20), 100_000).unwrap();
+    assert!(state.needs_snapshot(target, None).unwrap());
+    state.set_delta_snapshot(target, version(20), 0).unwrap();
+    state.start("client", target, None).unwrap();
+    // When
+    for sequence in 21..=120 {
+        state
+            .publish_delta(target, version(sequence), sequence, 1, true)
+            .unwrap();
+    }
+    // Then
+    assert!(matches!(state.next("client"), Some((_, Event::Snapshot(v, _))) if v.sequence == 20));
+    assert!(matches!(
+        state.next("client"),
+        Some((_, Event::Bookmark(_)))
+    ));
+    for sequence in 21..=120 {
+        assert!(
+            matches!(state.next("client"), Some((_, Event::Change(v, Delivery::Delta, _))) if v.sequence == sequence)
+        );
+    }
+    state.stop("client", target).unwrap();
+    assert!(!state.needs_snapshot(target, Some(&version(119))).unwrap());
+    state.start("client", target, Some(&version(119))).unwrap();
+    assert!(matches!(state.next("client"), Some((_, Event::Change(v, _, _))) if v.sequence == 120));
+}
+
+#[test]
+fn test_差分購読_量の超過と作り直しは現在状態を要求する() {
+    // Given
+    let mut state = registry();
+    let target = "terminal:3:pty";
+    let version = Version {
+        epoch: "runtime-1".into(),
+        sequence: 10,
+    };
+    state.register_delta(target, version.clone(), 100).unwrap();
+    state
+        .set_delta_snapshot(target, version.clone(), 0)
+        .unwrap();
+    state.start("client", target, None).unwrap();
+    state.next("client");
+    state.next("client");
+    // When
+    for sequence in 11..=80 {
+        state
+            .publish_delta(
+                target,
+                Version {
+                    sequence,
+                    ..version.clone()
+                },
+                sequence,
+                2,
+                true,
+            )
+            .unwrap();
+    }
+    // Then
+    assert_eq!(state.snapshot_requests("client"), vec![target]);
+    assert!(state.next("client").is_none());
+    state
+        .register_delta(
+            target,
+            Version {
+                epoch: "runtime-2".into(),
+                sequence: 10,
+            },
+            100,
+        )
+        .unwrap();
+    assert!(state.needs_snapshot(target, Some(&version)).unwrap());
+}
+
+#[test]
+fn test_差分再開_同じ出力番号の変更を再送し出力は重複させない() {
+    // Given
+    let mut state = registry();
+    let target = "terminal:3:pty";
+    let version = |sequence| Version {
+        epoch: "runtime".into(),
+        sequence,
+    };
+    state.register_delta(target, version(0), 100_000).unwrap();
+    state
+        .publish_delta(target, version(1), 10, 10, true)
+        .unwrap();
+    state
+        .publish_delta(target, version(1), 20, 0, false)
+        .unwrap();
+    state
+        .publish_delta(target, version(1), 30, 0, false)
+        .unwrap();
+    state
+        .publish_delta(target, version(2), 40, 10, true)
+        .unwrap();
+    // When
+    state.start("client", target, Some(&version(1))).unwrap();
+    // Then
+    for (sequence, expected) in [(1, 20), (1, 30), (2, 40)] {
+        assert!(
+            matches!(state.next("client"), Some((_, Event::Change(v, Delivery::Delta, value))) if v.sequence == sequence && *value == expected)
+        );
+    }
+    assert!(matches!(state.next("client"), Some((_, Event::Bookmark(v))) if v.sequence == 2));
+    assert!(state.next("client").is_none());
+}
+
+#[test]
+fn test_差分再開_同番号の変更の履歴が欠けたら現在状態を要求する() {
+    // Given
+    let mut state = registry();
+    let target = "terminal:3:pty";
+    let version = Version {
+        epoch: "runtime".into(),
+        sequence: 0,
+    };
+    state
+        .register_delta(target, version.clone(), 100_000)
+        .unwrap();
+    // When
+    for value in 0..=RETAINED_CHANGES {
+        state
+            .publish_delta(target, version.clone(), value as u64, 0, false)
+            .unwrap();
+    }
+    // Then
+    assert!(state.needs_snapshot(target, Some(&version)).unwrap());
+}
+
+#[test]
+fn test_差分購読_出力欠落後の同番号変更だけで再開せずsnapshotを要求する() {
+    // Given
+    let mut state = registry();
+    let target = "terminal:3:pty";
+    let version = |sequence| Version {
+        epoch: "runtime".into(),
+        sequence,
+    };
+    state.register_delta(target, version(0), 100_000).unwrap();
+    state.set_delta_snapshot(target, version(0), 0).unwrap();
+    state.start("client", target, None).unwrap();
+    state.next("client");
+    state.next("client");
+    // When
+    state
+        .publish_delta(target, version(1), 20, 0, false)
+        .unwrap();
+    // Then
+    assert_eq!(state.snapshot_requests("client"), vec![target]);
+    assert!(state.next("client").is_none());
+    assert!(state.needs_snapshot(target, Some(&version(0))).unwrap());
+}
+
+#[test]
+fn test_差分復元要求_同じ対象の全購読を現在状態から再開する() {
+    // Given
+    let mut state = registry();
+    let target = "terminal:3:pty";
+    let version = Version {
+        epoch: "runtime".into(),
+        sequence: 1,
+    };
+    state
+        .register_delta(target, version.clone(), 100_000)
+        .unwrap();
+    state
+        .set_delta_snapshot(target, version.clone(), 10)
+        .unwrap();
+    state.open("second".into()).unwrap();
+    for client in ["client", "second"] {
+        state.start(client, target, None).unwrap();
+        state.next(client);
+        state.next(client);
+    }
+    // When
+    state.require_delta_snapshot(target).unwrap();
+    // Then
+    for client in ["client", "second"] {
+        assert_eq!(state.snapshot_requests(client), vec![target]);
+        assert!(state.next(client).is_none());
+    }
+    state
+        .set_delta_snapshot(target, version.clone(), 20)
+        .unwrap();
+    for client in ["client", "second"] {
+        assert!(
+            matches!(state.next(client), Some((_, Event::Snapshot(v, value))) if v == version && *value == 20)
+        );
+    }
+}
+
+#[test]
+fn test_購読対象削除_差分履歴を解放し購読は明示停止まで保つ() {
+    // Given
+    let target = "terminal:5:/repo";
+    let mut state = Subscriptions::new("boot".into());
+    let version = Version {
+        epoch: "runtime-1".into(),
+        sequence: 0,
+    };
+    state
+        .register_delta(target, version.clone(), 100_000)
+        .unwrap();
+    state
+        .set_delta_snapshot(target, version.clone(), "snapshot")
+        .unwrap();
+    state.open("client".into()).unwrap();
+    state.start("client", target, None).unwrap();
+    state
+        .publish_delta(
+            target,
+            Version {
+                sequence: 1,
+                ..version.clone()
+            },
+            "output",
+            6,
+            true,
+        )
+        .unwrap();
+    // When
+    state.unregister(target).unwrap();
+    // Then
+    assert!(state.targets.is_empty());
+    state.bookmark("client");
+    assert!(state.snapshot_requests("client").is_empty());
+    assert!(matches!(
+        state.next("client"),
+        Some((_, Event::Snapshot(_, _)))
+    ));
+    assert!(matches!(
+        state.next("client"),
+        Some((_, Event::Bookmark(_)))
+    ));
+    assert!(
+        matches!(state.next("client"), Some((_, Event::Change(_, Delivery::Delta, value))) if *value == "output")
+    );
+    assert!(state.is_subscribed("client", target));
+    assert!(state.next("client").is_none());
+    state
+        .register_delta(
+            target,
+            Version {
+                epoch: "runtime-2".into(),
+                sequence: 0,
+            },
+            100_000,
+        )
+        .unwrap();
+    assert!(state.needs_snapshot(target, Some(&version)).unwrap());
+}
+
+#[test]
+fn test_購読対象再作成_送り待ちが無い購読と溢れた購読も再開する() {
+    for overflow in [false, true] {
+        // Given
+        let mut state = registry();
+        let target = "terminal:3:pty";
+        let version = Version {
+            epoch: "runtime".into(),
+            sequence: 0,
+        };
+        state.register_delta(target, version.clone(), 1).unwrap();
+        state
+            .set_delta_snapshot(target, version.clone(), 0)
+            .unwrap();
+        state.start("client", target, None).unwrap();
+        state.next("client");
+        state.next("client");
+        if overflow {
+            state
+                .publish_delta(
+                    target,
+                    Version {
+                        sequence: 1,
+                        ..version
+                    },
+                    1,
+                    2,
+                    true,
+                )
+                .unwrap();
+        }
+        // When
+        state.unregister(target).unwrap();
+        // Then
+        assert!(!state.registered(&SubscriptionTarget::parse(target).unwrap()));
+        assert!(state.is_subscribed("client", target));
+        assert!(state.next("client").is_none());
+        let new = Version {
+            epoch: "new".into(),
+            sequence: 0,
+        };
+        state.register_delta(target, new.clone(), 100).unwrap();
+        assert_eq!(state.snapshot_requests("client"), vec![target]);
+        state.set_delta_snapshot(target, new.clone(), 2).unwrap();
+        assert_eq!(
+            state.next("client"),
+            Some((target.into(), Event::Snapshot(new.clone(), Arc::new(2))))
+        );
+        assert_eq!(
+            state.next("client"),
+            Some((target.into(), Event::Bookmark(new.clone())))
+        );
+        let output = Version { sequence: 1, ..new };
+        state
+            .publish_delta(target, output.clone(), 3, 1, true)
+            .unwrap();
+        assert_eq!(
+            state.next("client"),
+            Some((
+                target.into(),
+                Event::Change(output, Delivery::Delta, Arc::new(3))
+            ))
+        );
+        state.stop("client", target).unwrap();
+        assert!(!state.is_subscribed("client", target));
+        assert!(state.clients["client"].order.is_empty());
+    }
+}
+
+#[test]
+fn test_差分対象再作成_旧世代の送り待ちを新世代snapshotより先に届ける() {
+    // Given
+    let mut state = registry();
+    let target = "terminal:3:pty";
+    let old = Version {
+        epoch: "old".into(),
+        sequence: 0,
+    };
+    let new = Version {
+        epoch: "new".into(),
+        sequence: 1,
+    };
+    state.register_delta(target, old.clone(), 100).unwrap();
+    state.set_delta_snapshot(target, old.clone(), 0).unwrap();
+    state.start("client", target, None).unwrap();
+    state.next("client");
+    state.next("client");
+    state
+        .publish_delta(target, old.clone(), 7, 0, false)
+        .unwrap();
+    // When
+    state.unregister(target).unwrap();
+    state
+        .register_delta(
+            target,
+            Version {
+                sequence: 0,
+                ..new.clone()
+            },
+            100,
+        )
+        .unwrap();
+    state
+        .publish_delta(target, new.clone(), 8, 101, true)
+        .unwrap();
+    state.set_delta_snapshot(target, new.clone(), 9).unwrap();
+    // Then
+    assert_eq!(
+        state.next("client"),
+        Some((
+            target.into(),
+            Event::Change(old, Delivery::Delta, Arc::new(7))
+        ))
+    );
+    assert_eq!(
+        state.next("client"),
+        Some((target.into(), Event::Snapshot(new.clone(), Arc::new(9))))
+    );
+    assert_eq!(
+        state.next("client"),
+        Some((target.into(), Event::Bookmark(new)))
+    );
+    assert!(state.is_subscribed("client", target));
+    state.stop("client", target).unwrap();
+    assert!(!state.is_subscribed("client", target));
+}

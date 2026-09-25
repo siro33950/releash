@@ -21,7 +21,7 @@ use crate::domain::workflow::{
 use crate::domain::workspace_tree::WorkspaceIdentity;
 use crate::domain::workspace_tree::{WorkspaceNodeStatusClassification, WorkspaceTreeRepository};
 use crate::infrastructure::local_api::{LocalApiServer, LocalApiServerBinding};
-use crate::terminal_surface::TerminalSurfaceRuntime;
+use crate::terminal_subscription_acceptance::TerminalSubscriptionHarness as TerminalSurfaceRuntime;
 use crate::usecase::agent_session::{
     AgentSessionLaunchRequest, AgentSessionLaunchUsecase, AgentSessionLifecycleUsecase,
     AgentSessionUsecase,

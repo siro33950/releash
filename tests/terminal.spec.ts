@@ -68,17 +68,13 @@ test("Terminal Surfaceのproduction wireをreload後もsnapshotとlive outputと
 			],
 			get_or_spawn_terminal_surface: {
 				session_key: snapshot.session_key,
-				restored_from_checkpoint: false,
-				is_new: false,
-				is_exited: false,
-				exit_code: null,
 			},
-			get_terminal_surface: {
+			terminal_snapshot: {
 				session_key: snapshot.session_key,
 				is_exited: snapshot.is_exited,
 				exit_code: snapshot.exit_code,
 			},
-			attach_terminal_surface: {
+			start_state_subscription: {
 				__mockTerminalAttachment: true,
 				messages: [
 					{ type: "snapshot", surface: snapshot },
@@ -132,17 +128,13 @@ test("backend AVT生成checkpointを実xtermへalternate screen・属性・wide�
 			],
 			get_or_spawn_terminal_surface: {
 				session_key: snapshot.session_key,
-				restored_from_checkpoint: true,
-				is_new: true,
-				is_exited: false,
-				exit_code: null,
 			},
-			get_terminal_surface: {
+			terminal_snapshot: {
 				session_key: snapshot.session_key,
 				is_exited: snapshot.is_exited,
 				exit_code: snapshot.exit_code,
 			},
-			attach_terminal_surface: {
+			start_state_subscription: {
 				__mockTerminalAttachment: true,
 				messages: [{ type: "snapshot", surface: snapshot }],
 			},

@@ -1,3 +1,7 @@
+use releash_lib::terminal_subscription_acceptance::{
+    TerminalSubscription as TerminalSurfaceWireAttachment,
+    TerminalSubscriptionHarness as TerminalSurfaceRuntime,
+};
 #[path = "support/agent_tui_fixture.rs"]
 mod agent_tui_fixture;
 
@@ -6,8 +10,7 @@ use std::time::Duration;
 use agent_tui_fixture::{fixture_process_launch, fixture_process_shell_command, FixturePlan};
 use releash_lib::terminal_surface::{
     TerminalProcessLaunchV1, TerminalSurfaceEventFault, TerminalSurfaceOwnerV1,
-    TerminalSurfaceRuntime, TerminalSurfaceStreamItemV1, TerminalSurfaceV1,
-    TerminalSurfaceWireAttachment,
+    TerminalSurfaceStreamItemV1, TerminalSurfaceV1,
 };
 
 const PRODUCTION_SCROLLBACK_ROWS: usize = 1_000;
@@ -49,7 +52,8 @@ async fn test_atui_030_provider_cliがterminal_surfaceのroot_processとして�
         )
         .expect("spawn provider fixture as PTY root process");
     let mut attachment = runtime
-        .attach("atui-030-root-process".to_string(), owner.clone())
+        .subscribe("atui-030-root-process".to_string(), owner.clone())
+        .await
         .expect("attach root process surface");
     receive_until(&mut attachment, "atui-030-root-process").await;
     runtime
@@ -319,7 +323,8 @@ async fn test_atui_010_実ptyのproduction_attachが欠落重複逆転なく再�
     }
 
     let mut attached = runtime
-        .attach("atui-010-production".to_string(), owner.clone())
+        .subscribe("atui-010-production".to_string(), owner.clone())
+        .await
         .expect("production attach");
     let first = attached.next().await.expect("initial snapshot");
     let attached_surface = snapshot(std::slice::from_ref(&first));
@@ -368,7 +373,8 @@ async fn test_atui_010_実ptyのproduction_attachが欠落重複逆転なく再�
     }
 
     let mut reloaded = runtime
-        .attach("atui-010-reload".to_string(), owner.clone())
+        .subscribe("atui-010-reload".to_string(), owner.clone())
+        .await
         .expect("reattach after renderer reload");
     let first_reloaded = reloaded.next().await.expect("reload snapshot");
     let reloaded_surface = snapshot(std::slice::from_ref(&first_reloaded));
@@ -424,7 +430,8 @@ async fn test_atui_010_実ptyのproduction_attachが注入された欠落重複�
         .expect("launch fault-injection fixture");
     wait_surface_contains(&runtime, &owner, "atui-010-fault-injection 日本語🙂").await;
     let mut attached = runtime
-        .attach("atui-010-faults".to_string(), owner.clone())
+        .subscribe("atui-010-faults".to_string(), owner.clone())
+        .await
         .expect("attach production continuity detector");
     assert!(matches!(
         attached.next().await,
@@ -469,11 +476,12 @@ async fn test_atui_010_実ptyのproduction_attachが注入された欠落重複�
 
     faults.arm(TerminalSurfaceEventFault::ReverseNextTwo);
     runtime
-        .resize(owner.clone(), 24, 241)
-        .expect("publish first reversed production event");
+        .write(owner.clone(), "fault-reversal-first\r")
+        .expect("publish first reversed production output");
+    wait_surface_contains(&runtime, &owner, "received-5:fault-reversal-first").await;
     runtime
-        .write(owner.clone(), "fault-reversal\r")
-        .expect("publish second reversed production event through real PTY");
+        .write(owner.clone(), "fault-reversal-second\r")
+        .expect("publish second reversed production output through real PTY");
     assert!(matches!(
         tokio::time::timeout(Duration::from_secs(10), attached.next())
             .await
@@ -515,7 +523,8 @@ async fn test_atui_011_terminal_checkpointが画面属性と終了後のbounded_
         )
         .expect("launch alternate-screen fixture");
     let mut monitor = runtime
-        .attach("atui-011-monitor".to_string(), owner.clone())
+        .subscribe("atui-011-monitor".to_string(), owner.clone())
+        .await
         .expect("attach alternate-screen monitor");
     receive_until(&mut monitor, "atui-011-wide-日本語🙂 日本語🙂").await;
     runtime
@@ -527,7 +536,8 @@ async fn test_atui_011_terminal_checkpointが画面属性と終了後のbounded_
     receive_until(&mut monitor, "received-0:style-probe").await;
     wait_surface_cursor(&runtime, &owner, (0, 3)).await;
     let mut attached = runtime
-        .attach("atui-011-checkpoint".to_string(), owner.clone())
+        .subscribe("atui-011-checkpoint".to_string(), owner.clone())
+        .await
         .expect("attach checkpoint");
     let surface = snapshot(&[attached.next().await.expect("checkpoint snapshot")]);
     assert_eq!(
@@ -583,10 +593,11 @@ async fn test_atui_011_terminal_checkpointが画面属性と終了後のbounded_
         )
         .expect("launch bounded fixture");
     let mut bounded_monitor = runtime
-        .attach(
+        .subscribe(
             "atui-011-bounded-monitor".to_string(),
             bounded_owner.clone(),
         )
+        .await
         .expect("attach bounded monitor");
     receive_until(&mut bounded_monitor, "atui-011-bounded 日本語🙂").await;
     for index in 0..FRAME_COUNT {
@@ -647,10 +658,12 @@ async fn test_atui_011_複数terminal_surfaceの画面状態が混線しない()
     }
 
     let mut first = runtime
-        .attach("atui-011-first".to_string(), first_owner.clone())
+        .subscribe("atui-011-first".to_string(), first_owner.clone())
+        .await
         .expect("attach first surface");
     let mut second = runtime
-        .attach("atui-011-second".to_string(), second_owner.clone())
+        .subscribe("atui-011-second".to_string(), second_owner.clone())
+        .await
         .expect("attach second surface");
     let fixture_command = |label| {
         fixture_process_shell_command(&FixturePlan {
@@ -743,7 +756,8 @@ async fn test_atui_012_app再構築後は同一process扱いせず最終画面�
         )
         .expect("launch cold-restore fixture");
     let mut monitor = first_runtime
-        .attach("atui-012-monitor".to_string(), owner.clone())
+        .subscribe("atui-012-monitor".to_string(), owner.clone())
+        .await
         .expect("attach first runtime");
     receive_until(&mut monitor, "atui-012-cold-restore 日本語🙂").await;
     for index in 0..FRAME_COUNT {
@@ -772,9 +786,6 @@ async fn test_atui_012_app再構築後は同一process扱いせず最終画面�
             Some(startup_command),
         )
         .expect("cold restore into new PTY");
-    assert!(restored.is_new);
-    assert!(restored.restored_from_checkpoint);
-    assert!(!restored.is_exited);
     assert_eq!(restored.session_key, first.session_key);
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(std::fs::read_to_string(&startup_count_path).unwrap(), "x");
@@ -790,9 +801,11 @@ async fn test_atui_012_app再構築後は同一process扱いせず最終画面�
     let second_pid = wait_file_content(&second_pid_path).await;
     assert_ne!(first_pid, second_pid);
     let mut attachment = second_runtime
-        .attach("atui-012-restored".to_string(), owner.clone())
+        .subscribe("atui-012-restored".to_string(), owner.clone())
+        .await
         .expect("attach cold-restored surface");
     let surface = snapshot(&[attachment.next().await.expect("restored snapshot")]);
+    assert!(!surface.is_exited);
     let mut terminal = avt::Vt::builder()
         .size(
             usize::from(surface.terminal_surface.cols),
@@ -829,7 +842,8 @@ async fn test_atui_012_通常終了は実ptyを停止して出力drain後の最�
         )
         .expect("spawn shutdown-drain PTY");
     let mut monitor = first_runtime
-        .attach("atui-012-shutdown-monitor".to_string(), owner.clone())
+        .subscribe("atui-012-shutdown-monitor".to_string(), owner.clone())
+        .await
         .expect("attach shutdown-drain monitor");
     assert!(matches!(
         monitor.next().await,
@@ -878,10 +892,9 @@ async fn test_atui_012_通常終了は実ptyを停止して出力drain後の最�
     drop(first_runtime);
 
     let second_runtime = TerminalSurfaceRuntime::new(queue.clone(), data_dir.path().to_path_buf());
-    let restored = second_runtime
+    second_runtime
         .get_or_spawn(24, 120, Some(path), owner.clone(), None)
         .expect("cold restore final drained screen");
-    assert!(restored.restored_from_checkpoint);
     let restored_surface = second_runtime
         .get(owner.clone())
         .expect("read restored surface");
@@ -903,7 +916,7 @@ async fn test_atui_012_明示kill後はcheckpointを復元せず起動コマン�
     );
     let runtime = TerminalSurfaceRuntime::new(queue.clone(), data_dir.path().to_path_buf());
 
-    let first = runtime
+    runtime
         .get_or_spawn_with_startup(
             24,
             80,
@@ -913,13 +926,12 @@ async fn test_atui_012_明示kill後はcheckpointを復元せず起動コマン�
             Some(startup_command.clone()),
         )
         .expect("spawn first explicit-kill PTY");
-    assert!(!first.restored_from_checkpoint);
     wait_file_content_equals(&startup_count, "x").await;
 
     runtime
         .kill(owner.clone())
         .expect("stop, drain, delete checkpoint");
-    let regenerated = runtime
+    runtime
         .get_or_spawn_with_startup(
             24,
             80,
@@ -930,7 +942,6 @@ async fn test_atui_012_明示kill後はcheckpointを復元せず起動コマン�
         )
         .expect("regenerate after explicit kill");
 
-    assert!(!regenerated.restored_from_checkpoint);
     wait_file_content_equals(&startup_count, "xx").await;
     runtime.kill(owner).expect("kill regenerated PTY");
 }

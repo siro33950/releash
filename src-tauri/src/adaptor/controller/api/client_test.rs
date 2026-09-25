@@ -1075,6 +1075,7 @@ async fn test_状態購読_connectで初期状態と変更と再開を配信す�
         target: REPO_PATHS.into(),
         args: vec![],
         version: None,
+        terminal_input_id: None,
     };
     client
         .start_state_subscription(to_rpc::<rpc::StartStateSubscriptionRequest>(&request).unwrap())
@@ -1826,4 +1827,285 @@ async fn test_監視rpc_登録後の期限切れでidを返せない監視を解
     assert_eq!(files.started.load(Ordering::SeqCst), 1);
     assert_eq!(files.stopped.load(Ordering::SeqCst), 1);
     drop(subscription);
+}
+
+#[tokio::test]
+async fn test_terminal購読_connectの後段配線と差分再開と流量停止中の応答を保証する() {
+    use crate::adaptor::gateway::terminal_surface::event_hub::TerminalSurfaceEventHub;
+    use crate::domain::terminal_surface::entities::TerminalSurface;
+    use crate::domain::terminal_surface::gateway::{
+        TerminalSurfaceEvent, TerminalSurfaceEventSink,
+    };
+    use crate::domain::terminal_surface::TerminalSurfaceOwner;
+    use crate::domain::workspace_tree::WorkspaceIdentity;
+    use crate::usecase::state_subscription::StateSubscriptionUsecase;
+    use crate::usecase::terminal_surface::application::TerminalSurfaceApplication;
+    use crate::usecase::terminal_surface::io_usecase::io_usecase_tests::FakePtyGateway;
+    use std::time::Duration;
+    use wire::{state_payload::Value, state_subscription_event::Event, terminal_event::Item};
+
+    // Given
+    let first = TerminalSurface::new(
+        1,
+        TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/first")).unwrap(),
+        None,
+    );
+    let second = TerminalSurface::new(
+        2,
+        TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/second")).unwrap(),
+        None,
+    );
+    let mut gateway = FakePtyGateway::new();
+    gateway.additional_surfaces = vec![first.clone(), second.clone()];
+    let gateway = Arc::new(gateway);
+    let hub = Arc::new(TerminalSurfaceEventHub::with_flags(256, true));
+    let terminal = Arc::new(TerminalSurfaceApplication::new(
+        gateway.clone(),
+        hub.clone(),
+    ));
+    let (app, _, _) =
+        crate::adaptor::controller::client::workflow::tests::make_read_only_app_with_terminal(
+            terminal.clone(),
+        );
+    use tauri::Manager;
+    app.manage(Arc::new(
+        crate::infrastructure::file_watcher::FileWatcherManager::default(),
+    ));
+    let mut dependencies = crate::desktop_test_support::build_client_dependencies(app.handle());
+    dependencies.workflow_runtime_usecase = Some(Arc::new(
+        crate::usecase::workflow::WorkflowRuntimeUsecase::new(
+            Arc::new(super::super::test_support::RecordingRuntimeGateway::default()),
+            Arc::new(crate::usecase::workflow::NoopArchiveRepository),
+        ),
+    ));
+    let mut dispatch = dispatch();
+    dispatch.register_dependencies(&dependencies);
+    let deps = ClientApiDeps::new(
+        Arc::new(dispatch),
+        ClientPushGateway::new(Arc::new(PushSink::new())),
+        dependencies.watcher,
+    )
+    .with_state_subscriptions(StateSubscriptionUsecase::new(
+        vec!["/repo".into()],
+        Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+    ))
+    .with_terminal(Some(TerminalApiDeps::new(terminal)));
+    assert_eq!(*gateway.list_summaries_calls.lock(), 1);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let config = ClientConfig::new(
+        format!("http://{}", listener.local_addr().unwrap())
+            .parse()
+            .unwrap(),
+    );
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router(Some(deps))).await.unwrap();
+    });
+    let client = rpc::ClientServiceClient::new(HttpClient::plaintext(), config);
+    let mut stream = client
+        .open_state_stream(rpc::OpenStateStreamRequest {
+            client_id: "terminal-client".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    macro_rules! next_event {
+        () => {{
+            let message = tokio::time::timeout(
+                Duration::from_secs(2),
+                stream.message::<rpc::StateSubscriptionEvent>(),
+            )
+            .await
+            .expect("state stream deadline")
+            .unwrap()
+            .unwrap()
+            .to_owned_message();
+            let event: wire::StateSubscriptionEvent = to_wire(&message).unwrap();
+            event
+        }};
+    }
+    assert!(matches!(next_event!().event, Some(Event::Ready(_))));
+
+    // When / Then: terminal is wired after subscriptions, as in build_router.
+    let mut initial_version = None;
+    for path in ["/first", "/second"] {
+        client
+            .start_state_subscription(rpc::StartStateSubscriptionRequest {
+                client_id: "terminal-client".into(),
+                target: "terminal".into(),
+                args: vec![path.into()],
+                terminal_input_id: Some(format!("input-{path}")).into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let initial = next_event!();
+        assert_eq!(initial.target, "terminal");
+        assert_eq!(initial.args, vec![path]);
+        assert_eq!(initial.version.as_ref().unwrap().sequence, 0);
+        let Some(Event::Snapshot(payload)) = initial.event else {
+            panic!("terminal snapshot");
+        };
+        let Some(Value::Terminal(event)) = payload.value else {
+            panic!("terminal payload");
+        };
+        let Some(Item::Snapshot(snapshot)) = event.item else {
+            panic!("initial terminal state");
+        };
+        assert_eq!(snapshot.processed_report_units, 5000);
+        assert_eq!(snapshot.sequence, 0);
+        if path == "/first" {
+            initial_version = initial.version;
+        }
+        assert!(matches!(next_event!().event, Some(Event::Bookmark(_))));
+    }
+    client
+        .start_state_subscription(rpc::StartStateSubscriptionRequest {
+            client_id: "terminal-client".into(),
+            target: "repository-paths".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let repository = next_event!();
+    assert_eq!(repository.target, "repository-paths");
+    assert!(matches!(repository.event, Some(Event::Snapshot(_))));
+    assert!(matches!(next_event!().event, Some(Event::Bookmark(_))));
+
+    // When: unprocessed UTF-16 output exceeds the high watermark.
+    let data: Arc<str> = "🙂".repeat(50_001).into();
+    hub.publish(TerminalSurfaceEvent::Output {
+        session_key: first.session_key.clone(),
+        data: data.clone(),
+        sequence: 1,
+    });
+    let output = next_event!();
+    assert_eq!(output.version.as_ref().unwrap().sequence, 1);
+    let Some(Event::Change(change)) = output.event else {
+        panic!("output delta");
+    };
+    assert!(change.delta);
+    let Some(Value::Terminal(event)) = change.payload.unwrap().value else {
+        panic!("terminal payload");
+    };
+    assert!(
+        matches!(event.item, Some(Item::Output(value)) if value.data == data.as_ref() && value.sequence == 1)
+    );
+    struct ReleaseSource(Arc<TerminalSurfaceEventHub>, String);
+    impl Drop for ReleaseSource {
+        fn drop(&mut self) {
+            self.0.release_output(&self.1);
+        }
+    }
+    let _release_source = ReleaseSource(hub.clone(), first.session_key.clone());
+    let mut paused = tokio::task::spawn_blocking({
+        let hub = hub.clone();
+        let key = first.session_key.clone();
+        move || hub.wait_output(&key)
+    });
+    assert!(tokio::time::timeout(Duration::from_millis(50), &mut paused)
+        .await
+        .is_err());
+
+    // Then: another terminal, another RPC, and resize of the paused terminal progress.
+    hub.publish(TerminalSurfaceEvent::Output {
+        session_key: second.session_key.clone(),
+        data: "still running".into(),
+        sequence: 1,
+    });
+    let other = next_event!();
+    assert_eq!(other.args, vec!["/second"]);
+    let Some(Event::Change(change)) = other.event else {
+        panic!("other terminal delta");
+    };
+    let Some(Value::Terminal(event)) = change.payload.unwrap().value else {
+        panic!("terminal payload");
+    };
+    assert!(matches!(event.item, Some(Item::Output(value)) if value.data == "still running"));
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        client.get_server_info(rpc::Unit::default()),
+    )
+    .await
+    .expect("other RPC deadline")
+    .unwrap();
+    let request = wire::CommandRequest::from_value("resize_terminal_surface", serde_json::json!({"owner": {"kind": "workspace", "workspacePath": "/first"}, "rows": 30, "cols": 120})).unwrap();
+    let wire::command_request::Command::ResizeTerminalSurface(request) = request.command.unwrap()
+    else {
+        unreachable!()
+    };
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        client.resize_terminal_surface(
+            to_rpc::<rpc::ResizeTerminalSurfaceRequest>(&request).unwrap(),
+        ),
+    )
+    .await
+    .expect("paused terminal resize deadline")
+    .unwrap();
+    assert_eq!(
+        *gateway.resizes.lock(),
+        vec![(first.session_key.clone(), 30, 120)]
+    );
+    assert!(!paused.is_finished());
+
+    // When / Then: only valid processed units release the source below the low watermark.
+    let request = |units| rpc::ReportTerminalProcessedRequest {
+        client_id: "terminal-client".into(),
+        args: vec!["/first".into()],
+        units,
+        ..Default::default()
+    };
+    assert_eq!(
+        client
+            .report_terminal_processed(request(1))
+            .await
+            .unwrap_err()
+            .code,
+        connectrpc::ErrorCode::InvalidArgument
+    );
+    for _ in 0..19 {
+        client
+            .report_terminal_processed(request(5000))
+            .await
+            .unwrap();
+    }
+    assert!(!paused.is_finished());
+    client
+        .report_terminal_processed(request(5000))
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), paused)
+        .await
+        .expect("source resume deadline")
+        .unwrap();
+
+    // When / Then: resume the terminal's output number through the same wire contract.
+    client
+        .stop_state_subscription(rpc::StopStateSubscriptionRequest {
+            client_id: "terminal-client".into(),
+            target: "terminal".into(),
+            args: vec!["/first".into()],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let resume = wire::StartStateSubscriptionRequest {
+        client_id: "terminal-client".into(),
+        target: "terminal".into(),
+        args: vec!["/first".into()],
+        version: initial_version,
+        terminal_input_id: Some("resumed-input".into()),
+    };
+    client
+        .start_state_subscription(to_rpc::<rpc::StartStateSubscriptionRequest>(&resume).unwrap())
+        .await
+        .unwrap();
+    let resumed = next_event!();
+    assert_eq!(resumed.version.unwrap().sequence, 1);
+    assert!(matches!(resumed.event, Some(Event::Change(change)) if change.delta));
+    let bookmark = next_event!();
+    assert_eq!(bookmark.version.unwrap().sequence, 1);
+    assert!(matches!(bookmark.event, Some(Event::Bookmark(_))));
+    drop(stream);
+    server.abort();
 }

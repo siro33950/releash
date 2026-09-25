@@ -267,7 +267,7 @@ impl TerminalSurfaceGateway for MockGateway {
 fn test_ターミナル画面取得または生成_上限未到達なら新規生成する() {
     let gateway = MockGateway::new();
 
-    let result = get_or_spawn(
+    get_or_spawn(
         &gateway,
         24,
         80,
@@ -277,7 +277,6 @@ fn test_ターミナル画面取得または生成_上限未到達なら新規�
     )
     .unwrap();
 
-    assert!(result.is_new);
     assert_eq!(*gateway.spawn_count.lock().unwrap(), 1);
 }
 
@@ -285,7 +284,7 @@ fn test_ターミナル画面取得または生成_上限未到達なら新規�
 fn test_ターミナル画面生成_新規ptyだけに起動コマンドを一度入力する() {
     let gateway = MockGateway::new();
 
-    let result = get_or_spawn_with_startup(
+    get_or_spawn_with_startup(
         &gateway,
         24,
         80,
@@ -296,7 +295,6 @@ fn test_ターミナル画面生成_新規ptyだけに起動コマンドを一�
     )
     .unwrap();
 
-    assert!(result.is_new);
     assert_eq!(
         gateway.written_inputs.lock().unwrap().as_slice(),
         ["cargo test\n"]
@@ -316,7 +314,7 @@ fn test_agent_session_terminal生成_providerをstructured_root_processとして
     )
     .unwrap();
 
-    let result = get_or_spawn_with_process(
+    get_or_spawn_with_process(
         &gateway,
         24,
         80,
@@ -327,7 +325,6 @@ fn test_agent_session_terminal生成_providerをstructured_root_processとして
     )
     .unwrap();
 
-    assert!(result.is_new);
     assert_eq!(
         gateway.spawned_processes.lock().unwrap().as_slice(),
         [Some(process)]
@@ -358,7 +355,6 @@ fn test_agent_session_terminal再開_終了済みruntimeを新しいprocessへ�
     )
     .unwrap();
 
-    assert!(result.is_new);
     assert_ne!(result.surface.runtime_generation.value(), old_generation);
     assert_eq!(*gateway.spawn_count.lock().unwrap(), 1);
     assert!(gateway.snapshot(old_generation).is_none());
@@ -449,8 +445,6 @@ fn test_ターミナル画面_取得または生成_同一所有者の生成中�
         first.surface.runtime_generation,
         second.surface.runtime_generation
     );
-    assert!(first.is_new);
-    assert!(!second.is_new);
     assert_eq!(*gateway.spawn_count.lock().unwrap(), 1);
 }
 
@@ -458,7 +452,7 @@ fn test_ターミナル画面_取得または生成_同一所有者の生成中�
 fn test_ターミナル画面取得または生成_通信文脈を要求しない() {
     let gateway = MockGateway::new();
 
-    let result = get_or_spawn(
+    get_or_spawn(
         &gateway,
         24,
         80,
@@ -467,8 +461,6 @@ fn test_ターミナル画面取得または生成_通信文脈を要求しな�
         None,
     )
     .unwrap();
-
-    assert!(result.is_new);
 }
 
 #[test]
@@ -478,7 +470,7 @@ fn test_ターミナル画面取得または生成_同一作業木に旧上限�
         .map(|index| gateway.insert_session(&format!("key-{index}"), "/repo"))
         .collect::<Vec<_>>();
 
-    let result = get_or_spawn(
+    get_or_spawn(
         &gateway,
         24,
         80,
@@ -488,7 +480,6 @@ fn test_ターミナル画面取得または生成_同一作業木に旧上限�
     )
     .unwrap();
 
-    assert!(result.is_new);
     assert_eq!(*gateway.spawn_count.lock().unwrap(), 1);
     assert!(gateway.killed.lock().unwrap().is_empty());
     assert!(existing
@@ -503,7 +494,7 @@ fn test_ターミナル画面取得または生成_異なる作業木に旧総�
         .map(|index| gateway.insert_session(&format!("key-{index}"), &format!("/repo-{index}")))
         .collect::<Vec<_>>();
 
-    let result = get_or_spawn(
+    get_or_spawn(
         &gateway,
         24,
         80,
@@ -513,7 +504,6 @@ fn test_ターミナル画面取得または生成_異なる作業木に旧総�
     )
     .unwrap();
 
-    assert!(result.is_new);
     assert_eq!(*gateway.spawn_count.lock().unwrap(), 1);
     assert!(gateway.killed.lock().unwrap().is_empty());
     assert!(existing
@@ -576,7 +566,7 @@ fn test_ターミナル画面生成_実行環境生成失敗時に予約を解�
     );
     gateway.fail_spawn.store(false, Ordering::SeqCst);
 
-    let retry = get_or_spawn(
+    get_or_spawn(
         &gateway,
         24,
         80,
@@ -586,7 +576,6 @@ fn test_ターミナル画面生成_実行環境生成失敗時に予約を解�
     )
     .unwrap();
 
-    assert!(retry.is_new);
     assert_eq!(*gateway.spawn_count.lock().unwrap(), 2);
 }
 
@@ -615,7 +604,7 @@ fn test_ターミナル画面生成_復元点読込失敗時に予約を解除�
         .is_spawn_reserved(&workspace_owner("/repo").stable_key()));
     gateway.fail_load_checkpoint.store(false, Ordering::SeqCst);
 
-    let retry = get_or_spawn(
+    get_or_spawn(
         &gateway,
         24,
         80,
@@ -625,7 +614,6 @@ fn test_ターミナル画面生成_復元点読込失敗時に予約を解除�
     )
     .unwrap();
 
-    assert!(retry.is_new);
     assert_eq!(*gateway.spawn_count.lock().unwrap(), 1);
 }
 
@@ -678,7 +666,7 @@ fn test_ターミナル画面生成_出力読取開始失敗時は復元点も�
     assert!(gateway.checkpoint.lock().unwrap().is_none());
 
     gateway.fail_start_reader.store(false, Ordering::SeqCst);
-    let retried = get_or_spawn_with_startup(
+    get_or_spawn_with_startup(
         &gateway,
         24,
         80,
@@ -689,7 +677,6 @@ fn test_ターミナル画面生成_出力読取開始失敗時は復元点も�
     )
     .unwrap();
 
-    assert!(!retried.restored_from_checkpoint);
     assert_eq!(
         gateway.written_inputs.lock().unwrap().as_slice(),
         ["cargo test\n"]
@@ -712,7 +699,7 @@ fn test_ターミナル画面明示終了_復元点も破棄して再生成の�
     crate::usecase::terminal_surface::lifecycle_usecase::kill(&gateway, &owner).unwrap();
     assert!(gateway.checkpoint.lock().unwrap().is_none());
 
-    let regenerated = get_or_spawn_with_startup(
+    get_or_spawn_with_startup(
         &gateway,
         24,
         80,
@@ -723,7 +710,6 @@ fn test_ターミナル画面明示終了_復元点も破棄して再生成の�
     )
     .unwrap();
 
-    assert!(!regenerated.restored_from_checkpoint);
     assert_eq!(
         gateway.written_inputs.lock().unwrap().as_slice(),
         ["cargo test\n"]
@@ -776,7 +762,6 @@ fn test_ターミナル画面取得または生成_既存所有者なら生成�
     )
     .unwrap();
 
-    assert!(!result.is_new);
     assert_eq!(
         result.surface.runtime_generation.value(),
         runtime_generation
@@ -799,7 +784,6 @@ fn test_ターミナル画面取得または生成_既存所有者確認で復�
     )
     .unwrap();
 
-    assert!(!result.is_new);
     let _: TerminalSurfaceSummary = result.surface;
 }
 
@@ -818,7 +802,6 @@ fn test_ターミナル画面取得または生成_別ワークスペースの�
     )
     .unwrap();
 
-    assert!(result.is_new);
     assert_ne!(
         result.surface.runtime_generation.value(),
         runtime_generation
@@ -836,7 +819,7 @@ fn test_ターミナル画面_再起動復元_復元点寸法で新規ptyを開�
         rows: 37,
     });
 
-    let result = get_or_spawn_with_startup(
+    get_or_spawn_with_startup(
         &gateway,
         24,
         80,
@@ -847,7 +830,6 @@ fn test_ターミナル画面_再起動復元_復元点寸法で新規ptyを開�
     )
     .unwrap();
 
-    assert!(result.restored_from_checkpoint);
     assert_eq!(*gateway.spawned_sizes.lock().unwrap(), vec![(37, 111)]);
     assert!(gateway.written_inputs.lock().unwrap().is_empty());
 }

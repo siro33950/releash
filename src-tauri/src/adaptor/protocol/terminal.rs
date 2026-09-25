@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::domain::terminal_surface::entities::{TerminalSurface, TerminalSurfaceSummary};
+use crate::domain::terminal_surface::entities::TerminalSurface;
 use crate::domain::terminal_surface::{TerminalProcessLaunch, TerminalSurfaceOwner};
 use crate::domain::workspace_tree::WorkspaceIdentity;
 use crate::usecase::terminal_surface::application::TerminalSurfaceStreamItem;
@@ -105,10 +105,6 @@ impl From<TerminalSurface> for TerminalSurfaceV1 {
 #[derive(Clone, Debug, Serialize)]
 pub struct GetOrSpawnTerminalV1 {
     pub session_key: String,
-    pub restored_from_checkpoint: bool,
-    pub is_new: bool,
-    pub is_exited: bool,
-    pub exit_code: Option<i32>,
 }
 
 impl From<GetOrSpawnTerminalOutcome> for GetOrSpawnTerminalV1 {
@@ -116,10 +112,6 @@ impl From<GetOrSpawnTerminalOutcome> for GetOrSpawnTerminalV1 {
         let surface = outcome.surface;
         Self {
             session_key: surface.session_key,
-            restored_from_checkpoint: outcome.restored_from_checkpoint,
-            is_new: outcome.is_new,
-            is_exited: surface.process_state.is_exited(),
-            exit_code: surface.process_state.exit_code(),
         }
     }
 }
@@ -127,25 +119,6 @@ impl From<GetOrSpawnTerminalOutcome> for GetOrSpawnTerminalV1 {
 /// terminal WebSocket認証に使うsubprotocolのprefix。クライアントは
 /// `{prefix}{bearer_token}` を Sec-WebSocket-Protocol として送る。
 pub const TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX: &str = "releash-bearer.";
-
-/// replay全量を含まないTerminal Surfaceの読み取り応答。
-/// frontendのattach前照会はsession identityと生存状態だけを必要とする。
-#[derive(Clone, Debug, Serialize)]
-pub struct TerminalSurfaceSummaryV1 {
-    pub session_key: String,
-    pub is_exited: bool,
-    pub exit_code: Option<i32>,
-}
-
-impl From<TerminalSurfaceSummary> for TerminalSurfaceSummaryV1 {
-    fn from(surface: TerminalSurfaceSummary) -> Self {
-        Self {
-            session_key: surface.session_key,
-            is_exited: surface.process_state.is_exited(),
-            exit_code: surface.process_state.exit_code(),
-        }
-    }
-}
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -168,10 +141,6 @@ pub enum TerminalSurfaceStreamItemV1 {
         session_key: String,
         exit_code: Option<i32>,
         sequence: u64,
-    },
-    InputUnavailable {
-        session_key: String,
-        message: String,
     },
 }
 
@@ -210,16 +179,6 @@ impl From<TerminalSurfaceStreamItem> for TerminalSurfaceStreamItemV1 {
                 exit_code,
                 sequence,
             },
-            TerminalSurfaceStreamItem::InputUnavailable { session_key, cause } => {
-                log::error!(
-                    "Terminal input unavailable: operation=write_terminal_surface code=PTY_ERROR cause={}",
-                    cause.internal_cause()
-                );
-                Self::InputUnavailable {
-                    session_key,
-                    message: "Terminal input could not be sent. Try again.".to_string(),
-                }
-            }
         }
     }
 }

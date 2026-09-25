@@ -11,35 +11,6 @@ pub(crate) fn register_shared(
     {
         let state = deps.app_state.clone();
         router.register_domain(
-            &["ack_terminal_surface_output"],
-            Box::new(move |command| {
-                let state = state.clone();
-                Box::pin(async move {
-                    let wire::command_request::Command::AckTerminalSurfaceOutput(args) = command
-                    else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move {
-                        let state = state
-                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        commands::ack_terminal_surface_output_shared(
-                            &state,
-                            convert(required(args.attachment_id, "attachmentId")?)?,
-                            convert(required(args.sequence, "sequence")?)?,
-                        );
-                        value(())
-                    }
-                    .await?;
-                    Ok(wire::command_result::Command::AckTerminalSurfaceOutput(
-                        result,
-                    ))
-                })
-            }),
-        );
-    }
-    {
-        let state = deps.app_state.clone();
-        router.register_domain(
             &["get_or_spawn_terminal_surface"],
             Box::new(move |command| {
                 let state = state.clone();
@@ -106,30 +77,7 @@ pub(crate) fn register_shared(
             }),
         );
     }
-    {
-        let state = deps.app_state.clone();
-        router.register_domain(
-            &["get_terminal_surface"],
-            Box::new(move |command| {
-                let state = state.clone();
-                Box::pin(async move {
-                    let wire::command_request::Command::GetTerminalSurface(args) = command else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move {
-                        let state = state
-                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        outcome(commands::get_terminal_surface_shared(
-                            &state,
-                            convert(required(args.owner, "owner")?)?,
-                        ))
-                    }
-                    .await?;
-                    Ok(wire::command_result::Command::GetTerminalSurface(result))
-                })
-            }),
-        );
-    }
+
     {
         let state = deps.app_state.clone();
         router.register_domain(

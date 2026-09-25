@@ -2,26 +2,26 @@ import { expect, test } from "@playwright/test";
 import { buildMockConfig } from "./helpers/fixtures";
 import { setupTauriMock } from "./helpers/tauri-mock";
 
-test("最大16terminalとpushを保持しても入力・ack・状態取得がHTTP/1.1で継続する", async ({
+test("20terminalとpushを保持しても入力・処理済み量通知・状態取得がHTTP/1.1で継続する", async ({
 	page,
 }) => {
 	await setupTauriMock(page, buildMockConfig({
 			get_external_editor: "/current",
-			attach_terminal_surface: { __mockTerminalAttachment: true },
+			start_state_subscription: { __mockTerminalAttachment: true },
 			write_terminal_surface: null,
-			ack_terminal_surface_output: null,
-			detach_terminal_surface: null,
+			report_terminal_processed: null,
+			stop_state_subscription: null,
 	}));
 	await page.goto("/tests/helpers/client-streams.html");
 	const subscriptions: string[] = [];
 	page.on("request", (request) => {
-		if (/\/Subscribe(?:Push|TerminalSurfaces)$/.test(request.url()))
+		if (/\/(?:SubscribePush|OpenStateStream)$/.test(request.url()))
 			subscriptions.push(request.url());
 	});
 	const result = await page.evaluate(async () => {
 		const {
-			attachClientStream,
-			acknowledgeClientStream,
+			subscribeTerminalState,
+			reportTerminalProcessed,
 			getClient,
 			listenClient,
 			invokeClient,
@@ -32,15 +32,14 @@ test("最大16terminalとpushを保持しても入力・ack・状態取得がHTT
 			pushed = true;
 		});
 		const releases: Array<() => Promise<void>> = [];
-		for (let index = 0; index < 16; index++) {
+		for (let index = 0; index < 20; index++) {
 			const id = `pane-${index}`;
 			events.set(id, []);
 			releases.push(
-				await attachClientStream(
+				await subscribeTerminalState(
 					{
 						owner: { kind: "workspace", workspacePath: `/repo-${index}` },
 						attachmentId: id,
-						recovery: false,
 					},
 					(item) => {
 						if (item.type === "output") events.get(id)!.push(item.data);
@@ -71,7 +70,7 @@ test("最大16terminalとpushを保持しても入力・ack・状態取得がHTT
 					data: `output-${index}`,
 					sequence: 42,
 				});
-				await acknowledgeClientStream(attachmentId, 42);
+				await reportTerminalProcessed({kind: "workspace", workspacePath: `/repo-${index}`}, 5000);
 				await window.__releashTerminalEvent(attachmentId, {
 					type: "output",
 					session_key: attachmentId,
@@ -101,7 +100,7 @@ test("最大16terminalとpushを保持しても入力・ack・状態取得がHTT
 				.map((item) => item.args),
 			acks: window
 				.__RELEASH_BACKEND__!.invocations.filter(
-					(item) => item.cmd === "ack_terminal_surface_output",
+					(item) => item.cmd === "report_terminal_processed",
 				)
 				.map((item) => item.args),
 		};
@@ -110,19 +109,19 @@ test("最大16terminalとpushを保持しても入力・ack・状態取得がHTT
 		subscriptions.filter((url) => url.endsWith("/SubscribePush")),
 	).toHaveLength(1);
 	expect(
-		subscriptions.filter((url) => url.endsWith("/SubscribeTerminalSurfaces")),
+		subscriptions.filter((url) => url.endsWith("/OpenStateStream")),
 	).toHaveLength(1);
 	expect(result.paths).toEqual("/current");
 	expect(result.pushed).toBe(true);
 	expect(result.outputs).toEqual(
-		Array.from({ length: 16 }, (_, index) => [
+		Array.from({ length: 20 }, (_, index) => [
 			`output-${index}`,
 			`resumed-${index}`,
 		]),
 	);
-	expect(result.inputs).toHaveLength(16);
-	expect(result.acks).toHaveLength(16);
-	for (let index = 0; index < 16; index++) {
+	expect(result.inputs).toHaveLength(20);
+	expect(result.acks).toHaveLength(20);
+	for (let index = 0; index < 20; index++) {
 		expect(result.inputs).toContainEqual(
 			expect.objectContaining({
 				attachmentId: `pane-${index}`,
@@ -130,8 +129,7 @@ test("最大16terminalとpushを保持しても入力・ack・状態取得がHTT
 			}),
 		);
 		expect(result.acks).toContainEqual({
-			attachmentId: `pane-${index}`,
-			sequence: 42,
+			clientId: expect.any(String), args: [`/repo-${index}`], units: 5000,
 		});
 	}
 });
@@ -158,4 +156,33 @@ test("購読fixtureは初回と更新のpayloadを単発commandなしで配信�
     await expect(page.locator("body")).toHaveText("after");
     expect(fixture.clientRequests).toEqual([]);
     expect(await page.evaluate(() => window.__RELEASH_BACKEND__!.invocations.map(({cmd}) => cmd))).toEqual(["get_client_endpoint", "validate_daemon_connection"]);
+});
+
+test("同一terminalの再購読で新しいattachmentのsnapshotと差分を受け取る", async ({ page }) => {
+	const mock = await setupTauriMock(page, buildMockConfig({
+		start_state_subscription: { __mockTerminalAttachment: true },
+		stop_state_subscription: null,
+	}));
+	await page.goto("/tests/helpers/client-streams.html");
+	const result = await page.evaluate(async () => {
+		const { subscribeTerminalState } = await import("/src/lib/client.ts");
+		const owner = { kind: "workspace" as const, workspacePath: "/repo" };
+		const first: string[] = [];
+		const second: string[] = [];
+		const stopFirst = await subscribeTerminalState({ owner, attachmentId: "first" }, item => first.push(item.type), () => {});
+		let received: () => void = () => {};
+		const output = new Promise<void>(resolve => { received = resolve; });
+		const stopSecond = await subscribeTerminalState({ owner, attachmentId: "second" }, item => {
+			second.push(item.type);
+			if (item.type === "output") received();
+		}, () => {});
+		await window.__releashTerminalEvent("first", { type: "output", session_key: "terminal", data: "stale", sequence: 1 });
+		await window.__releashTerminalEvent("second", { type: "output", session_key: "terminal", data: "new", sequence: 2 });
+		await output;
+		await stopFirst();
+		await stopSecond();
+		return { first, second };
+	});
+	expect(result).toEqual({ first: ["snapshot", "snapshot", "output"], second: ["snapshot", "output"] });
+	expect(mock.clientRequests.filter(request => request.command === "start_state_subscription").map(request => request.args.attachmentId)).toEqual(["first", "second"]);
 });

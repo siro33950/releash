@@ -104,7 +104,8 @@ impl TerminalSurface {
     }
 
     pub fn record_resize(&mut self, runtime_generation: TerminalRuntimeGeneration) -> Option<u64> {
-        self.advance_running_sequence(runtime_generation)
+        (self.runtime_generation == runtime_generation && !self.process_state.is_exited())
+            .then_some(self.latest_sequence)
     }
 
     pub fn apply_checkpoint(
@@ -128,7 +129,7 @@ impl TerminalSurface {
         runtime_generation: TerminalRuntimeGeneration,
         exit_code: Option<i32>,
     ) -> Option<u64> {
-        let sequence = self.advance_running_sequence(runtime_generation)?;
+        let sequence = self.record_resize(runtime_generation)?;
         self.process_state = TerminalProcessState::Exited { exit_code };
         Some(sequence)
     }

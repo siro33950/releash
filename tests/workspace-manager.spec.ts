@@ -240,7 +240,7 @@ test.describe("Workspace Manager", () => {
 				page.evaluate(() =>
 					window.__RELEASH_BACKEND__?.invocations.find(
 						(entry) =>
-							entry.cmd === "attach_terminal_surface" &&
+							entry.cmd === "start_state_subscription" &&
 							entry.args.owner?.kind === "session",
 					),
 				),
@@ -391,7 +391,7 @@ test.describe("Workspace Manager", () => {
 				page.evaluate(() =>
 					window.__RELEASH_BACKEND__?.invocations.find(
 						(entry) =>
-							entry.cmd === "attach_terminal_surface" &&
+							entry.cmd === "start_state_subscription" &&
 							entry.args.owner?.kind === "session",
 					),
 				),
@@ -483,7 +483,7 @@ test.describe("Workspace Manager", () => {
 				page.evaluate(() =>
 					window.__RELEASH_BACKEND__?.invocations.find(
 						(entry) =>
-							entry.cmd === "attach_terminal_surface" &&
+							entry.cmd === "start_state_subscription" &&
 							entry.args.owner?.kind === "session",
 					),
 				),
@@ -899,7 +899,7 @@ test.describe("Workspace Manager", () => {
 				page.evaluate(() =>
 					window.__RELEASH_BACKEND__?.invocations.find(
 						(entry) =>
-							entry.cmd === "attach_terminal_surface" &&
+							entry.cmd === "start_state_subscription" &&
 							entry.args.owner?.sessionId === "agent-session-loop-a-1",
 					),
 				),
@@ -1022,7 +1022,7 @@ test.describe("Workspace Manager", () => {
 				page.evaluate(() =>
 					window.__RELEASH_BACKEND__?.invocations.find(
 						(entry) =>
-							entry.cmd === "attach_terminal_surface" &&
+							entry.cmd === "start_state_subscription" &&
 							entry.args.owner?.sessionId === "agent-session-loop-a-2",
 					),
 				),

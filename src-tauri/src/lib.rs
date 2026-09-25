@@ -9,6 +9,8 @@ mod infrastructure;
 mod other;
 #[cfg(all(debug_assertions, feature = "desktop"))]
 pub mod provider_lifecycle_acceptance;
+#[cfg(debug_assertions)]
+pub mod terminal_subscription_acceptance;
 #[cfg(all(debug_assertions, feature = "desktop"))]
 pub mod workflow_control_plane_acceptance;
 #[cfg(all(debug_assertions, feature = "desktop"))]
@@ -18,7 +20,7 @@ pub mod workflow_diagnostics_acceptance;
 pub mod terminal_surface {
     pub use crate::adaptor::controller::terminal_surface_runtime::{
         initialize_background_work_for_acceptance, TerminalSurfaceEventFault,
-        TerminalSurfaceEventFaultController, TerminalSurfaceRuntime, TerminalSurfaceWireAttachment,
+        TerminalSurfaceEventFaultController, TerminalSurfaceRuntime,
     };
     pub use crate::adaptor::protocol::terminal::{
         GetOrSpawnTerminalV1, TerminalProcessLaunchV1, TerminalSurfaceOwnerV1,

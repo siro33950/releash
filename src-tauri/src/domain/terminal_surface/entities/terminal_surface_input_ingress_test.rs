@@ -85,12 +85,29 @@ fn test_ターミナル入力受付_書込失敗分を新しい入力より先�
 }
 
 #[test]
-fn test_ターミナル入力受付_失敗通知は次の成功まで一度だけ発火する() {
-    let mut registry = TerminalSurfaceInputIngressRegistry::with_pending_capacity(8);
-    registry.activate("surface-a", "attachment-a");
+fn test_ターミナル入力受付_削除でattachmentと保留入力を解放する() {
+    // Given
+    let mut registry = TerminalSurfaceInputIngressRegistry::default();
+    registry.activate("surface", "input");
+    registry
+        .admit("surface", "input", 1, "pending".into())
+        .unwrap();
+    registry.activate("other", "other-input");
 
-    assert!(registry.record_failure("surface-a", "attachment-a"));
-    assert!(!registry.record_failure("surface-a", "attachment-a"));
-    registry.record_success("surface-a", "attachment-a");
-    assert!(registry.record_failure("surface-a", "attachment-a"));
+    // When
+    registry.remove("surface");
+    registry.remove("surface");
+
+    // Then
+    assert!(!registry.sessions.contains_key("surface"));
+    assert_eq!(registry.sessions.len(), 1);
+    assert_eq!(
+        registry.admit("surface", "input", 0, "stale".into()),
+        Err(TerminalSurfaceInputIngressError::StaleAttachment)
+    );
+    registry.activate("surface", "new-input");
+    assert_eq!(
+        registry.admit("surface", "new-input", 0, "new".into()),
+        Ok(vec![input(0, "new")])
+    );
 }

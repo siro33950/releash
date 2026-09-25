@@ -1,3 +1,4 @@
+use releash_lib::terminal_subscription_acceptance::TerminalSubscription as TerminalSurfaceWireAttachment;
 #[path = "support/agent_tui_fixture.rs"]
 mod agent_tui_fixture;
 
@@ -8,9 +9,7 @@ use agent_tui_fixture::{fixture_process_shell_command, FixtureLifecycleCommand, 
 use releash_lib::agent_session_tui_acceptance::{
     AcceptanceAgentSessionLifecycle, AcceptanceProvider, AgentSessionTuiAcceptanceConfig,
 };
-use releash_lib::terminal_surface::{
-    TerminalSurfaceOwnerV1, TerminalSurfaceStreamItemV1, TerminalSurfaceWireAttachment,
-};
+use releash_lib::terminal_surface::{TerminalSurfaceOwnerV1, TerminalSurfaceStreamItemV1};
 use releash_lib::workflow_control_plane_acceptance::{
     AcceptanceNodeExecution, AcceptanceNodeExecutionStatus, AcceptanceNodeKind,
     AcceptanceWorkflowExecution, AcceptanceWorkflowExecutionStatus, AcceptanceWorkspaceNodeStatus,
@@ -154,15 +153,19 @@ async fn send_hook(
         )
         .unwrap();
     // node を終端させる Stop では、commit 後の停止 effect が結果行の出力より先に
-    // PTY を閉じることがある。stream 終了は commit 完了の証拠なので同期完了として扱う。
+    // PTY を閉じることがある。terminal の終了通知を commit 完了の証拠として扱う。
     tokio::time::timeout(Duration::from_secs(10), async {
         let mut output = String::new();
         while !output.contains("releash-fixture-lifecycle-command-result:") {
             match terminal.next().await {
                 Some(TerminalSurfaceStreamItemV1::Snapshot { surface }) => {
+                    if surface.is_exited {
+                        return;
+                    }
                     output.push_str(&surface.terminal_surface.replay)
                 }
                 Some(TerminalSurfaceStreamItemV1::Output { data, .. }) => output.push_str(&data),
+                Some(TerminalSurfaceStreamItemV1::Exit { .. }) => return,
                 Some(_) => {}
                 None => return,
             }
@@ -468,7 +471,8 @@ async fn test_atui_040_同時submit_stopは競合を利用者へ返さず一度�
     let terminal_owner = owner(&worktree, &session_id);
     let mut terminal = host
         .terminal()
-        .attach("atui-040-concurrent".to_string(), terminal_owner.clone())
+        .subscribe("atui-040-concurrent".to_string(), terminal_owner.clone())
+        .await
         .unwrap();
     receive_until(&mut terminal, "releash-fixture-input-complete-0").await;
     associate_provider_session(&host, &mut terminal, &terminal_owner, "provider-concurrent").await;
@@ -507,7 +511,8 @@ async fn test_atui_040_autoは両signal順序と重複に依存せず後続を�
         let first_owner = owner(&worktree, &first_session_id);
         let mut first_terminal = host
             .terminal()
-            .attach(format!("atui-040-first-{index}"), first_owner.clone())
+            .subscribe(format!("atui-040-first-{index}"), first_owner.clone())
+            .await
             .unwrap();
         receive_until(&mut first_terminal, "releash-fixture-input-complete-0").await;
         associate_provider_session(
@@ -617,7 +622,8 @@ async fn test_atui_041_approvalは両signal成立後だけ対象nodeを承認で
         let terminal_owner = owner(&worktree, &session_id);
         let mut terminal = host
             .terminal()
-            .attach(format!("atui-041-{index}"), terminal_owner.clone())
+            .subscribe(format!("atui-041-{index}"), terminal_owner.clone())
+            .await
             .unwrap();
         receive_until(&mut terminal, "releash-fixture-input-complete-0").await;
         associate_provider_session(
@@ -726,11 +732,13 @@ async fn test_atui_041_fanout兄弟は独立し全子成功時だけ一度完了
     let second_owner = owner(&worktree, second.agent_session_id.as_deref().unwrap());
     let mut first_terminal = host
         .terminal()
-        .attach("atui-041-fanout-first".to_string(), first_owner.clone())
+        .subscribe("atui-041-fanout-first".to_string(), first_owner.clone())
+        .await
         .unwrap();
     let mut second_terminal = host
         .terminal()
-        .attach("atui-041-fanout-second".to_string(), second_owner.clone())
+        .subscribe("atui-041-fanout-second".to_string(), second_owner.clone())
+        .await
         .unwrap();
     receive_until(&mut first_terminal, "releash-fixture-input-complete-0").await;
     receive_until(&mut second_terminal, "releash-fixture-input-complete-0").await;
@@ -843,7 +851,8 @@ async fn test_atui_042_片側signalは再起動後も同じattemptへ復元さ�
         let terminal_owner = owner(&worktree, node.agent_session_id.as_deref().unwrap());
         let mut terminal = host_before
             .terminal()
-            .attach(format!("atui-042-restart-{index}"), terminal_owner.clone())
+            .subscribe(format!("atui-042-restart-{index}"), terminal_owner.clone())
+            .await
             .unwrap();
         receive_until(&mut terminal, "releash-fixture-input-complete-0").await;
         associate_provider_session(
@@ -920,7 +929,8 @@ async fn test_issue_1696_session起動木はretryを拒否しsubmitとstopで資
     let terminal_owner = owner(&worktree, &session_id);
     let mut terminal = host
         .terminal()
-        .attach("issue-1696-standalone".to_string(), terminal_owner.clone())
+        .subscribe("issue-1696-standalone".to_string(), terminal_owner.clone())
+        .await
         .unwrap();
     receive_until(&mut terminal, "claude-workflow-fixture 日本語").await;
     host.terminal()
@@ -1035,10 +1045,11 @@ async fn test_issue_1826_session木のarchiveはabortしrestoreでは手動resum
     let terminal_owner = owner(&worktree, &session_id);
     let mut terminal = host
         .terminal()
-        .attach(
+        .subscribe(
             "issue-1696-archive-restore".to_string(),
             terminal_owner.clone(),
         )
+        .await
         .unwrap();
     receive_until(&mut terminal, "codex-workflow-fixture 日本語").await;
     host.terminal()
@@ -1097,10 +1108,11 @@ async fn test_issue_1826_session木のarchiveはabortしrestoreでは手動resum
     assert_eq!(host.active_provider_process_count(), 1);
     let mut resumed_terminal = host
         .terminal()
-        .attach(
+        .subscribe(
             "issue-1826-manual-resume".to_string(),
             terminal_owner.clone(),
         )
+        .await
         .unwrap();
     receive_until(&mut resumed_terminal, "codex-workflow-fixture 日本語").await;
     host.terminal()
@@ -1154,10 +1166,11 @@ async fn test_issue_1700_stopとworkingを何度往復してもrunning_nodeの�
     let terminal_owner = owner(&worktree, node.agent_session_id.as_deref().unwrap());
     let mut terminal = host
         .terminal()
-        .attach(
+        .subscribe(
             "issue-1700-repeated-stop".to_string(),
             terminal_owner.clone(),
         )
+        .await
         .unwrap();
     receive_until(&mut terminal, "releash-fixture-input-complete-0").await;
     associate_provider_session(
@@ -1243,10 +1256,11 @@ async fn test_issue_1700_waiting_approval_nodeのstopも活動分類をattention
     let terminal_owner = owner(&worktree, node.agent_session_id.as_deref().unwrap());
     let mut terminal = host
         .terminal()
-        .attach(
+        .subscribe(
             "issue-1700-waiting-approval-stop".to_string(),
             terminal_owner.clone(),
         )
+        .await
         .unwrap();
     receive_until(&mut terminal, "releash-fixture-input-complete-0").await;
     associate_provider_session(
@@ -1334,7 +1348,8 @@ async fn test_atui_042_別bindingのstopを拒否しinvalid_artifactはsubmitご
     let terminal_owner = owner(&worktree, node.agent_session_id.as_deref().unwrap());
     let mut terminal = host
         .terminal()
-        .attach("atui-042-artifact".to_string(), terminal_owner.clone())
+        .subscribe("atui-042-artifact".to_string(), terminal_owner.clone())
+        .await
         .unwrap();
     receive_until(&mut terminal, "releash-fixture-input-complete-0").await;
     associate_provider_session(
@@ -1409,7 +1424,8 @@ async fn test_issue_1626_active_attemptへの再submitはartifactを差し替え
     let terminal_owner = owner(&worktree, node.agent_session_id.as_deref().unwrap());
     let mut terminal = host
         .terminal()
-        .attach("issue-1626-resubmit".to_string(), terminal_owner.clone())
+        .subscribe("issue-1626-resubmit".to_string(), terminal_owner.clone())
+        .await
         .unwrap();
     receive_until(&mut terminal, "releash-fixture-input-complete-0").await;
     associate_provider_session(&host, &mut terminal, &terminal_owner, "provider-resubmit").await;
@@ -1577,10 +1593,11 @@ async fn test_issue_1654_workflow完了時にproviderを停止しcheckpointか�
     let terminal_owner = owner(&worktree, &session_id);
     let mut terminal = host
         .terminal()
-        .attach(
+        .subscribe(
             "workflow-completion-retention".to_string(),
             terminal_owner.clone(),
         )
+        .await
         .unwrap();
     receive_until(&mut terminal, "releash-fixture-input-complete-0").await;
 
@@ -1629,10 +1646,11 @@ async fn test_issue_1654_workflow完了時にproviderを停止しcheckpointか�
     );
     let mut resumed_terminal = host
         .terminal()
-        .attach(
+        .subscribe(
             "workflow-completion-resume".to_string(),
             terminal_owner.clone(),
         )
+        .await
         .unwrap();
     // 復元画面の replay は resumed fixture の起動出力で上書きされ得るため、
     // 同期は「resumed fixture が実際に入力を消費すること」で取る。echo と marker は

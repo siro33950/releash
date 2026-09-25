@@ -11,6 +11,7 @@ export interface TerminalSurfaceSnapshot {
 
 export interface TerminalSnapshotSurface {
 	session_key: string;
+	processed_report_units: number;
 	terminal_surface: TerminalSurfaceSnapshot;
 	is_exited: boolean;
 	exit_code: number | null;
@@ -39,11 +40,6 @@ export type TerminalSurfaceStreamItem =
 			session_key: string;
 			exit_code: number | null;
 			sequence: number;
-	  }
-	| {
-			type: "input_unavailable";
-			session_key: string;
-			message: string;
 	  };
 
 export type TerminalOutputTracePhase =
@@ -69,8 +65,8 @@ export interface TerminalStreamApplyContext {
 		phase: TerminalOutputTracePhase,
 	): void;
 	enqueueOutput(data: string, onParsed: () => void): void;
-	acknowledgeOutput(sequence: number): void;
-	reportInputUnavailable(message: string): void;
+	setProcessedReportUnits(units: number): void;
+	reportProcessed(units: number): void;
 }
 
 function processExitNotice(exitCode: number | null): string {
@@ -86,6 +82,7 @@ export async function applyTerminalStreamItem(
 		await ctx.drainLiveOutput();
 		if (!ctx.isCurrent()) return;
 		ctx.applySnapshotIdentity(item.surface.session_key);
+		ctx.setProcessedReportUnits(item.surface.processed_report_units);
 		const checkpoint = item.surface.terminal_surface;
 		if (checkpoint.replay) {
 			// replayは記録時の寸法で描画する必要がある
@@ -112,7 +109,7 @@ export async function applyTerminalStreamItem(
 			ctx.reportOutputTracePoint(traceSequence, "channel_receive");
 		}
 		ctx.enqueueOutput(item.data, () => {
-			ctx.acknowledgeOutput(item.sequence);
+			ctx.reportProcessed(item.data.length);
 			if (traceSequence !== undefined) {
 				ctx.reportOutputTracePoint(traceSequence, "xterm_parsed");
 				requestAnimationFrame(() => {
@@ -126,10 +123,6 @@ export async function applyTerminalStreamItem(
 		await ctx.drainLiveOutput();
 		if (!ctx.isCurrent()) return;
 		ctx.resizeTerminal(item.cols, item.rows);
-		return;
-	}
-	if (item.type === "input_unavailable") {
-		ctx.reportInputUnavailable(item.message);
 		return;
 	}
 	if (item.type === "exit") {

@@ -1,3 +1,4 @@
+use releash_lib::terminal_subscription_acceptance::TerminalSubscription as TerminalSurfaceWireAttachment;
 #[path = "support/agent_tui_fixture.rs"]
 mod agent_tui_fixture;
 
@@ -11,9 +12,7 @@ use releash_lib::agent_session_tui_acceptance::{
     AgentSessionTuiAcceptanceConfig,
     AgentSessionTuiAcceptanceHost as AgentSessionTuiAcceptanceComposition,
 };
-use releash_lib::terminal_surface::{
-    TerminalSurfaceOwnerV1, TerminalSurfaceStreamItemV1, TerminalSurfaceWireAttachment,
-};
+use releash_lib::terminal_surface::{TerminalSurfaceOwnerV1, TerminalSurfaceStreamItemV1};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 
@@ -138,7 +137,9 @@ impl AgentSessionTuiAcceptanceHost {
         serde_json::from_value(value).map_err(|error| error.to_string())
     }
 
-    fn terminal(&self) -> &releash_lib::terminal_surface::TerminalSurfaceRuntime {
+    fn terminal(
+        &self,
+    ) -> &releash_lib::terminal_subscription_acceptance::TerminalSubscriptionHarness {
         self.composition.terminal()
     }
 
@@ -644,7 +645,8 @@ async fn test_atui_025_初期化した全providerの利用可否と理由をprod
     let standalone_owner = owner("workspace-atui-025", &standalone_id);
     let mut standalone = host
         .terminal()
-        .attach("atui-025-standalone".to_string(), standalone_owner.clone())
+        .subscribe("atui-025-standalone".to_string(), standalone_owner.clone())
+        .await
         .unwrap();
     receive_until(&mut standalone, "non-standard-codex").await;
     assert!(host
@@ -1010,9 +1012,49 @@ async fn test_atui_030_provider選択からarchive_restore_deleteまで旧messag
             }
         );
         let terminal_owner = owner("workspace-1", &session_id);
+        use releash_lib::client_api_acceptance::rpc;
+        let client_id = format!("terminal-wire-{session_id}");
+        let mut stream = host
+            .client
+            .open_state_stream(rpc::OpenStateStreamRequest {
+                client_id: client_id.clone(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        stream
+            .message::<rpc::StateSubscriptionEvent>()
+            .await
+            .unwrap();
+        host.client
+            .start_state_subscription(rpc::StartStateSubscriptionRequest {
+                client_id: client_id.clone(),
+                target: "terminal".into(),
+                args: vec!["workspace-1".into(), session_id.clone()],
+                terminal_input_id: Some(client_id).into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let snapshot = tokio::time::timeout(
+            Duration::from_secs(5),
+            stream.message::<rpc::StateSubscriptionEvent>(),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap()
+        .to_owned_message();
+        assert!(matches!(
+            snapshot.event,
+            Some(rpc::state_subscription_event::Event::Snapshot(_))
+        ));
+        drop(stream);
+
         let mut attached = host
             .terminal()
-            .attach("acceptance-first".to_string(), terminal_owner.clone())
+            .subscribe("acceptance-first".to_string(), terminal_owner.clone())
+            .await
             .unwrap();
         receive_until(&mut attached, fixture_label(provider)).await;
         host.terminal()
@@ -1023,7 +1065,8 @@ async fn test_atui_030_provider選択からarchive_restore_deleteまで旧messag
 
         let mut reloaded = host
             .terminal()
-            .attach("acceptance-reload".to_string(), terminal_owner.clone())
+            .subscribe("acceptance-reload".to_string(), terminal_owner.clone())
+            .await
             .unwrap();
         receive_until(&mut reloaded, "received-0:permission-approved").await;
         emit_session_start(
@@ -1091,7 +1134,8 @@ async fn test_atui_030_workflow初期指示は一度だけで追加質問もterm
     let terminal_owner = owner(&workspace, &session_id);
     let mut attached = host
         .terminal()
-        .attach("workflow-session".to_string(), terminal_owner.clone())
+        .subscribe("workflow-session".to_string(), terminal_owner.clone())
+        .await
         .unwrap();
     receive_until(
         &mut attached,
@@ -1141,7 +1185,8 @@ async fn test_atui_030_subagentを無視し複数turnのstop後もagent_session�
     let terminal_owner = owner("workspace-1", &session_id);
     let mut terminal = host
         .terminal()
-        .attach("multi-turn-session".to_string(), terminal_owner.clone())
+        .subscribe("multi-turn-session".to_string(), terminal_owner.clone())
+        .await
         .unwrap();
     receive_until(&mut terminal, fixture_label(AcceptanceProvider::Claude)).await;
 
@@ -1227,7 +1272,8 @@ async fn test_atui_030_hook配送失敗をapp警告にしprocessを止めず後�
     let terminal_owner = owner("workspace-1", &session_id);
     let mut terminal = host
         .terminal()
-        .attach("hook-health-session".to_string(), terminal_owner.clone())
+        .subscribe("hook-health-session".to_string(), terminal_owner.clone())
+        .await
         .unwrap();
     receive_until(&mut terminal, fixture_label(AcceptanceProvider::Claude)).await;
     emit_session_start(
@@ -1327,7 +1373,8 @@ async fn test_atui_030_provider利用不可とduplicate所有を永続境界で�
     let first_owner = owner("workspace-1", &first);
     let mut first_terminal = host
         .terminal()
-        .attach("duplicate-first".to_string(), first_owner.clone())
+        .subscribe("duplicate-first".to_string(), first_owner.clone())
+        .await
         .unwrap();
     receive_until(
         &mut first_terminal,
@@ -1345,7 +1392,8 @@ async fn test_atui_030_provider利用不可とduplicate所有を永続境界で�
     let second_owner = owner("workspace-1", &second);
     let mut second_terminal = host
         .terminal()
-        .attach("duplicate-second".to_string(), second_owner.clone())
+        .subscribe("duplicate-second".to_string(), second_owner.clone())
+        .await
         .unwrap();
     receive_until(
         &mut second_terminal,
@@ -1416,7 +1464,8 @@ async fn test_atui_030_process終了はprovider_idの有無に応じてpausedま
     let paused_owner = owner("workspace-1", &paused);
     let mut paused_terminal = host
         .terminal()
-        .attach("paused-session".to_string(), paused_owner.clone())
+        .subscribe("paused-session".to_string(), paused_owner.clone())
+        .await
         .unwrap();
     receive_until(
         &mut paused_terminal,
@@ -1457,7 +1506,8 @@ async fn test_atui_030_process終了はprovider_idの有無に応じてpausedま
     let gc_owner = owner("workspace-1", &gc);
     let mut gc_terminal = host
         .terminal()
-        .attach("gc-session".to_string(), gc_owner.clone())
+        .subscribe("gc-session".to_string(), gc_owner.clone())
+        .await
         .unwrap();
     receive_until(&mut gc_terminal, fixture_label(AcceptanceProvider::Codex)).await;
     host.terminal()
@@ -1518,7 +1568,8 @@ async fn test_atui_030_provider履歴はmetadataだけを列挙し新しいsessi
     let deleted_owner = owner("workspace-1", &deleted);
     let mut deleted_terminal = host
         .terminal()
-        .attach("history-deleted".to_string(), deleted_owner.clone())
+        .subscribe("history-deleted".to_string(), deleted_owner.clone())
+        .await
         .unwrap();
     receive_until(
         &mut deleted_terminal,
@@ -1659,7 +1710,8 @@ async fn test_atui_030_provider実行fileが無くてもrestoreできresumeだ�
     let terminal_owner = owner("workspace-1", &session_id);
     let mut terminal = host
         .terminal()
-        .attach("restore-failure".to_string(), terminal_owner.clone())
+        .subscribe("restore-failure".to_string(), terminal_owner.clone())
+        .await
         .unwrap();
     receive_until(&mut terminal, fixture_label(AcceptanceProvider::Claude)).await;
     emit_session_start(
@@ -1729,10 +1781,11 @@ async fn test_terminal_launch_deterministic_fixture_reports_30_warm_runs() {
         .unwrap();
     let mut warmup = host
         .terminal()
-        .attach(
+        .subscribe(
             "performance-warmup".to_string(),
             owner("performance-workspace", &warmup_id),
         )
+        .await
         .unwrap();
     receive_until(&mut warmup, fixture_label(AcceptanceProvider::Codex)).await;
     drop(warmup);
@@ -1754,10 +1807,11 @@ async fn test_terminal_launch_deterministic_fixture_reports_30_warm_runs() {
             .unwrap();
         let mut terminal = host
             .terminal()
-            .attach(
+            .subscribe(
                 format!("performance-run-{index}"),
                 owner("performance-workspace", &session_id),
             )
+            .await
             .unwrap();
         receive_until(&mut terminal, fixture_label(AcceptanceProvider::Codex)).await;
         totals.push(started_at.elapsed().as_secs_f64() * 1_000.0);
@@ -1825,7 +1879,8 @@ async fn test_atui_030_実claudeをproduction経路で起動しroot_session_star
     let terminal_owner = owner(&workspace, &session_id);
     let mut terminal = host
         .terminal()
-        .attach("actual-claude".to_string(), terminal_owner.clone())
+        .subscribe("actual-claude".to_string(), terminal_owner.clone())
+        .await
         .unwrap();
     let mut output = Vec::new();
 
@@ -1889,10 +1944,11 @@ async fn test_atui_030_実codexをproduction経路でtrustしroot_session_start�
     let untrusted_owner = owner(&workspace, &untrusted_session_id);
     let mut untrusted_terminal = host
         .terminal()
-        .attach(
+        .subscribe(
             "actual-codex-untrusted".to_string(),
             untrusted_owner.clone(),
         )
+        .await
         .unwrap();
     let mut untrusted_output = Vec::new();
     receive_until_any_normalized(
@@ -1972,7 +2028,8 @@ async fn test_atui_030_実codexをproduction経路でtrustしroot_session_start�
     let terminal_owner = owner(&workspace, &session_id);
     let mut terminal = host
         .terminal()
-        .attach("actual-codex-trusted".to_string(), terminal_owner.clone())
+        .subscribe("actual-codex-trusted".to_string(), terminal_owner.clone())
+        .await
         .unwrap();
     let mut output = Vec::new();
     let startup = receive_until_any_normalized(

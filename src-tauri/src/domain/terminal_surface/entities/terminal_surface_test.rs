@@ -39,7 +39,7 @@ fn test_ターミナル画面終了_古い実行環境は置換後画面を終�
     assert!(!surface.process_state.is_exited());
     assert_eq!(
         surface.mark_exited(TerminalRuntimeGeneration::new(7), Some(0)),
-        Some(1)
+        Some(0)
     );
     assert!(surface.process_state.is_exited());
     assert_eq!(surface.process_state.exit_code(), Some(0));
@@ -71,7 +71,7 @@ fn test_ターミナル画面_復元点_古い連番を拒否する() {
 }
 
 #[test]
-fn test_ターミナル画面_連番_出力寸法変更終了で単調増加する() {
+fn test_ターミナル画面_連番_出力だけで増加し寸法変更終了は同じ番号を返す() {
     let mut surface = surface();
     let runtime_generation = TerminalRuntimeGeneration::new(7);
 
@@ -79,9 +79,9 @@ fn test_ターミナル画面_連番_出力寸法変更終了で単調増加す�
         surface.record_output(runtime_generation, std::time::Instant::now()),
         Some(1)
     );
-    assert_eq!(surface.record_resize(runtime_generation), Some(2));
-    assert_eq!(surface.mark_exited(runtime_generation, Some(0)), Some(3));
-    assert_eq!(surface.latest_sequence(), 3);
+    assert_eq!(surface.record_resize(runtime_generation), Some(1));
+    assert_eq!(surface.mark_exited(runtime_generation, Some(0)), Some(1));
+    assert_eq!(surface.latest_sequence(), 1);
     assert_eq!(surface.checkpoint.sequence, 0);
     assert_eq!(
         surface.record_output(runtime_generation, std::time::Instant::now()),
