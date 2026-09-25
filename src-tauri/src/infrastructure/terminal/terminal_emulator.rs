@@ -164,7 +164,15 @@ fn append_color_codes(codes: &mut Vec<String>, color: Option<avt::Color>, foregr
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum CheckpointWriteError {
+    #[error(transparent)]
+    Io(std::io::Error),
+    #[error(transparent)]
+    Encode(serde_json::Error),
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct TerminalCheckpointFileStore {
     root: std::path::PathBuf,
     scrollback_rows: usize,
@@ -288,13 +296,14 @@ impl TerminalCheckpointFileStore {
         checkpoint: &NativeTerminalCheckpoint,
     ) -> Result<(), String> {
         self.replace_base(session_key, checkpoint)
+            .map_err(|error| error.to_string())
     }
 
     pub(crate) fn replace_base(
         &self,
         session_key: &str,
         checkpoint: &NativeTerminalCheckpoint,
-    ) -> Result<(), String> {
+    ) -> Result<(), CheckpointWriteError> {
         self.create_private_root()?;
         let path = self.path_for(session_key);
         let temp = self.root.join(format!(".{}.tmp", uuid::Uuid::new_v4()));
@@ -303,7 +312,7 @@ impl TerminalCheckpointFileStore {
             session_key: session_key.to_string(),
             checkpoint: checkpoint.clone(),
         })
-        .map_err(|error| format!("encode Terminal Surface checkpoint: {error}"))?;
+        .map_err(CheckpointWriteError::Encode)?;
         let write_result = (|| -> std::io::Result<()> {
             use std::io::Write;
             let mut options = std::fs::OpenOptions::new();
@@ -319,13 +328,13 @@ impl TerminalCheckpointFileStore {
         })();
         if let Err(error) = write_result {
             let _ = std::fs::remove_file(&temp);
-            return Err(format!("write {}: {error}", path.display()));
+            return Err(CheckpointWriteError::Io(error));
         }
         let journal_path = self.journal_path_for(session_key);
         match std::fs::remove_file(&journal_path) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(format!("delete {}: {error}", journal_path.display())),
+            Err(error) => return Err(CheckpointWriteError::Io(error)),
         }
         Ok(())
     }
@@ -334,7 +343,7 @@ impl TerminalCheckpointFileStore {
         &self,
         session_key: &str,
         records: &[NativeTerminalCheckpointRecord],
-    ) -> Result<usize, String> {
+    ) -> Result<usize, CheckpointWriteError> {
         if records.is_empty() {
             return Ok(0);
         }
@@ -342,31 +351,31 @@ impl TerminalCheckpointFileStore {
         let path = self.journal_path_for(session_key);
         let mut bytes = Vec::new();
         for record in records {
-            serde_json::to_writer(&mut bytes, record)
-                .map_err(|error| format!("encode Terminal Surface journal: {error}"))?;
+            serde_json::to_writer(&mut bytes, record).map_err(CheckpointWriteError::Encode)?;
             bytes.push(b'\n');
         }
         let write_result = (|| -> std::io::Result<()> {
             use std::io::Write;
             let mut options = std::fs::OpenOptions::new();
-            options.create(true).append(true);
+            options.create(true).read(true).append(true);
             #[cfg(unix)]
             options.mode(0o600);
             let mut file = options.open(&path)?;
+            repair_journal_tail(&mut file)?;
             #[cfg(unix)]
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
             file.write_all(&bytes)?;
             file.sync_all()
         })();
-        write_result.map_err(|error| format!("write {}: {error}", path.display()))?;
+        write_result.map_err(CheckpointWriteError::Io)?;
         Ok(bytes.len())
     }
 
-    pub(crate) fn journal_len(&self, session_key: &str) -> Result<u64, String> {
+    pub(crate) fn journal_len(&self, session_key: &str) -> Result<u64, CheckpointWriteError> {
         match std::fs::metadata(self.journal_path_for(session_key)) {
             Ok(metadata) => Ok(metadata.len()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
-            Err(error) => Err(error.to_string()),
+            Err(error) => Err(CheckpointWriteError::Io(error)),
         }
     }
 
@@ -385,7 +394,7 @@ impl TerminalCheckpointFileStore {
         }
     }
 
-    fn create_private_root(&self) -> Result<(), String> {
+    fn create_private_root(&self) -> Result<(), CheckpointWriteError> {
         let result = (|| -> std::io::Result<()> {
             #[cfg(unix)]
             {
@@ -400,7 +409,7 @@ impl TerminalCheckpointFileStore {
                 std::fs::create_dir_all(&self.root)
             }
         })();
-        result.map_err(|error| format!("create {}: {error}", self.root.display()))
+        result.map_err(CheckpointWriteError::Io)
     }
 
     fn path_for(&self, session_key: &str) -> std::path::PathBuf {
@@ -416,6 +425,31 @@ impl TerminalCheckpointFileStore {
         self.root
             .join(format!("{}.journal-v2.jsonl", hex::encode(digest)))
     }
+}
+
+fn repair_journal_tail(file: &mut std::fs::File) -> std::io::Result<()> {
+    use std::io::{Read, Seek, SeekFrom};
+    let length = file.seek(SeekFrom::End(0))?;
+    let mut end = length;
+    let mut buffer = [0; 4096];
+    while end > 0 {
+        let start = end.saturating_sub(buffer.len() as u64);
+        let count = (end - start) as usize;
+        file.seek(SeekFrom::Start(start))?;
+        file.read_exact(&mut buffer[..count])?;
+        if let Some(index) = buffer[..count].iter().rposition(|byte| *byte == b'\n') {
+            let durable = start + index as u64 + 1;
+            if durable != length {
+                file.set_len(durable)?;
+            }
+            return Ok(());
+        }
+        end = start;
+    }
+    if length != 0 {
+        file.set_len(0)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

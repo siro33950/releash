@@ -1,7 +1,8 @@
 use super::*;
+use crate::domain::failure::RetryAction;
 use crate::domain::workflow::entities::workflow_execution::SessionResumeAction;
 use crate::domain::workflow::{NodeProcessPresence, NodeProcessReader};
-use crate::usecase::workflow::node_startup::NodeStartupGateway;
+use crate::usecase::workflow::node_startup::{FailedNodeStart, NodeStartupGateway};
 
 pub(super) struct HostNodeStartup<'a> {
     pub host: &'a WorkflowRuntimeHost,
@@ -19,7 +20,10 @@ pub(super) struct NodeStartupTask {
 
 #[async_trait::async_trait]
 impl NodeStartupGateway for HostNodeStartup<'_> {
-    async fn start(&self, starts: Vec<NodeStart>) -> Result<Vec<String>, WorkflowRuntimeError> {
+    async fn start(
+        &self,
+        starts: Vec<NodeStart>,
+    ) -> Result<Vec<FailedNodeStart>, WorkflowRuntimeError> {
         if *self.cancelled.borrow() {
             return Ok(Vec::new());
         }
@@ -31,13 +35,43 @@ impl NodeStartupGateway for HostNodeStartup<'_> {
     async fn restart(
         &self,
         node_execution_id: &str,
+        action: RetryAction,
     ) -> Result<Option<NodeStart>, WorkflowRuntimeError> {
         if *self.cancelled.borrow() {
             return Ok(None);
         }
+        if action == RetryAction::Retry {
+            let Some(execution) = self
+                .host
+                .load_control_plane_execution(self.app, self.execution_id)
+                .await?
+            else {
+                return Ok(None);
+            };
+            if !execution.is_active() {
+                return Ok(None);
+            }
+            if let Some(composite) = execution.isolated_composite_start(node_execution_id) {
+                return Ok(Some(NodeStart::PrepareComposite(composite)));
+            }
+            return execution
+                .leaf_start_for(node_execution_id)
+                .map(|leaf| Some(NodeStart::Leaf(leaf)))
+                .map_err(|error| WorkflowRuntimeError::StorageFailure {
+                    kind: error.failure_kind(),
+                    message: error.to_string(),
+                });
+        }
         self.host
             .restart_node_attempt(self.app, self.execution_id, node_execution_id)
             .await
+    }
+
+    async fn cancelled(&self) {
+        let mut cancelled = self.cancelled.clone();
+        if !*cancelled.borrow() {
+            let _ = cancelled.changed().await;
+        }
     }
 
     async fn wait(&self, duration: std::time::Duration) -> bool {
@@ -59,7 +93,7 @@ impl WorkflowRuntimeHost {
         app: &'a WorkflowRuntimeDependencies,
         execution_id: &'a str,
         worktree_path: &'a str,
-        failed: Vec<String>,
+        failed: Vec<FailedNodeStart>,
     ) -> futures_util::future::BoxFuture<'a, ()> {
         Box::pin(async move {
             if failed.is_empty() {
@@ -70,14 +104,6 @@ impl WorkflowRuntimeHost {
                 return;
             }
             let mut tasks = self.startup_retries.lock().await;
-            match self.load_control_plane_execution(app, execution_id).await {
-                Ok(Some(execution)) if execution.is_active() => {}
-                Ok(_) => return,
-                Err(error) => {
-                    log::warn!("workflow {execution_id}: startup retries could not read execution: {error}");
-                    return;
-                }
-            }
             let task_id = uuid::Uuid::new_v4().to_string();
             let (cancel, cancelled) = tokio::sync::watch::channel(false);
             let host = self.clone();
@@ -95,8 +121,12 @@ impl WorkflowRuntimeHost {
                     cancelled,
                 };
                 if let Err(failure) =
-                    crate::usecase::workflow::node_startup::retry_failed_nodes(&gateway, failed)
-                        .await
+                    crate::usecase::workflow::node_startup::retry_failed_nodes_with_queue(
+                        &gateway,
+                        failed,
+                        &host.queue,
+                    )
+                    .await
                 {
                     let error = &failure.error;
                     log::warn!("workflow {execution_id}: startup retries failed: {error}");
@@ -232,12 +262,15 @@ impl WorkflowRuntimeHost {
     ) -> Result<Option<NodeStart>, WorkflowRuntimeError> {
         let gate = self.runtime_activation_gate(execution_id).await;
         let _guard = gate.lock.lock().await;
-        retry_runtime_conflicts(|| async {
+        retry_runtime_conflicts(&self.queue, node_execution_id, || async {
             let (before, mut candidate) = {
                 let Some(loaded) = self.load_control_plane_execution(app, execution_id).await?
                 else {
                     return Ok(None);
                 };
+                if !loaded.is_active() {
+                    return Ok(None);
+                }
                 let current = &loaded;
                 (current.clone(), current.clone())
             };
@@ -304,3 +337,7 @@ impl WorkflowRuntimeHost {
         .await
     }
 }
+
+#[cfg(test)]
+#[path = "node_startup_test.rs"]
+mod node_startup_tests;

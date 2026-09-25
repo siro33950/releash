@@ -220,6 +220,7 @@ export async function listenClient<K extends keyof ClientPushPayloads>(
 }
 
 export type StateValues = {
+	failures: import("@/generated/client_types").FailureRecords;
 	"repository-paths": string[];
 	workspaces: import("@/generated/client_types").WorkspaceListSnapshotDto;
 	selection: import("@/generated/client_types").WorkspaceTreeSelectionSnapshotDto;

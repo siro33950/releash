@@ -1157,3 +1157,4 @@ mod tests {
         assert_eq!(events[1]["actor"]["sessionId"], "new-session");
     }
 }
+pub(crate) mod watcher;

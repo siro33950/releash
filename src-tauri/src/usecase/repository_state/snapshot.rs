@@ -61,7 +61,7 @@ impl RepositorySnapshot {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepositorySnapshotParts {
     pub status: Vec<FileStatusDto>,
     pub diff_stats: Vec<FileDiffStatDto>,

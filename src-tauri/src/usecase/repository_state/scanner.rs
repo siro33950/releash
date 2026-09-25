@@ -7,8 +7,14 @@ use super::error::RepositoryStateError;
 use super::snapshot::RepositorySnapshotParts;
 use super::status_membership::{changed_statuses, staged_statuses};
 
+#[async_trait::async_trait]
 pub trait RepositoryScanner: Send + Sync {
     fn scan(&self, repo_path: &str) -> Result<RepositorySnapshotParts, RepositoryStateError>;
+
+    async fn scan_async(
+        &self,
+        repo_path: &str,
+    ) -> Result<RepositorySnapshotParts, RepositoryStateError>;
 
     fn prune_stale_branch_bases(
         &self,

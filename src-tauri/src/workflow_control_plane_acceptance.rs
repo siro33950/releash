@@ -431,6 +431,7 @@ impl ManagedWorktreeResolver for AcceptanceManagedWorktreeResolver {
 }
 
 pub struct WorkflowControlPlaneAcceptanceHost<R: tauri::Runtime> {
+    queue: Arc<crate::usecase::work_queue::WorkQueueUsecase>,
     _app: tauri::App<R>,
     writer_lock_path: std::path::PathBuf,
     terminal: TerminalSurfaceRuntime,
@@ -453,6 +454,7 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
         config: AgentSessionTuiAcceptanceConfig,
         app: tauri::App<R>,
     ) -> Result<Self, String> {
+        let queue = crate::terminal_surface::initialize_background_work_for_acceptance();
         std::fs::create_dir_all(&config.data_dir).map_err(|error| error.to_string())?;
         let store =
             LocalEventStore::open(LocalEventStoreConfig::production(config.data_dir.clone()))
@@ -463,8 +465,9 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             config.data_dir.clone(),
         ));
 
-        let terminal = TerminalSurfaceRuntime::new(config.data_dir.clone());
+        let terminal = TerminalSurfaceRuntime::new(queue.clone(), config.data_dir.clone());
         let composition = compose_agent_sessions(AgentSessionCompositionInput {
+            queue: queue.clone(),
             state_publisher: None,
 			store: store.clone(),
 			data_dir: config.data_dir.clone(),
@@ -494,6 +497,7 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
 
         let workspace_query: Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService> =
             crate::adaptor::gateway::workspace_tree::SqliteWorkspaceQueryService::with_repository(
+                queue.clone(),
                 crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::new(
                     store.clone(),
                 ),
@@ -506,6 +510,7 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             );
 
         let mut driver = WorkflowRuntimeHost::new_canonical(
+            queue.clone(),
             Arc::new(AcceptanceWorkflowDefinitionResolver),
             Arc::new(AcceptanceManagedWorktreeResolver),
             workspace_query,
@@ -524,6 +529,7 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
         let dependencies = crate::desktop_test_support::workflow_dependencies(app.handle());
         let driver = Arc::new(driver);
         let startup = crate::adaptor::controller::wiring::wire_workflow_startup(
+            queue.clone(),
             dependencies.clone(),
             driver.clone(),
         );
@@ -532,7 +538,7 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             driver.clone(),
         ));
         let runtime = Arc::new(
-            WorkflowRuntimeUsecase::new_with_worktree_operations(
+            WorkflowRuntimeUsecase::new_with_worktree_operations(queue.clone(),
                 gateway,
                 Arc::new(
                     crate::adaptor::gateway::workflow::ExecutionTreeArchiveFactRepository::new(
@@ -591,6 +597,7 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
 		);
 
         Ok(Self {
+            queue,
             _app: app,
             writer_lock_path: config.data_dir.join("local-event-store.lock"),
             terminal,
@@ -980,6 +987,7 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             .ok_or_else(|| "Local Event Store data directory is unavailable".to_string())?;
         let query =
             crate::adaptor::gateway::workspace_tree::SqliteWorkspaceQueryService::with_repository(
+                self.queue.clone(),
                 repository,
                 Arc::new(
                     crate::adaptor::gateway::workflow::ExecutionTreeArchiveFactRepository::new(
@@ -1106,6 +1114,7 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
     #[allow(deprecated)]
     pub async fn shutdown(self) -> Result<(), String> {
         let Self {
+            queue: _,
             _app,
             writer_lock_path,
             terminal,

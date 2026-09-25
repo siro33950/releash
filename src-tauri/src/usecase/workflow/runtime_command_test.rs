@@ -41,7 +41,7 @@ async fn test_workflow失敗_stopとcache解放と起動登録で元の分類を
             Arc::new(crate::usecase::workflow::NoopArchiveRepository),
         );
         // When / Then
-        let stop_error = ProviderExecutionTreeStopTransaction::commit_provider_stop(
+        let stop = ProviderExecutionTreeStopTransaction::commit_provider_stop(
             &usecase,
             ProviderExecutionTreeStopCommand {
                 tree_id: "tree".into(),
@@ -50,10 +50,12 @@ async fn test_workflow失敗_stopとcache解放と起動登録で元の分類を
                 binding_id: "binding".into(),
             },
             Vec::new(),
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(stop_error.failure_kind(), expected);
+        );
+        if expected == FailureKind::Temporary {
+            assert!(tokio::time::timeout(std::time::Duration::from_millis(100), stop).await.is_err());
+        } else {
+            assert_eq!(stop.await.unwrap_err().failure_kind(), expected);
+        }
         assert_eq!(
             ExecutionTreeCache::release_deleted_execution_tree(&usecase, "tree").await,
             Err(ExecutionTreeCacheReleaseError::Store(expected))

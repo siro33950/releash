@@ -426,9 +426,7 @@ pub enum TransitionRejection {
 /// Replay outcomes distinguish valid application, idempotency, and contradiction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReplayOutcome {
-    Applied,
     AlreadyApplied,
-    NotApplicable,
     Rejected(TransitionRejection),
 }
 
@@ -3652,30 +3650,27 @@ impl ExecutionTree {
         }
     }
 
-    pub fn replay_aborted(&mut self) -> ReplayOutcome {
-        transition_to_replay(self.abort())
+    #[cfg(test)]
+    pub fn replay_aborted(&mut self) -> TransitionOutcome {
+        self.abort()
     }
 
-    pub fn replay_aborted_at(&mut self, timestamp: f64, reason: Option<String>) -> ReplayOutcome {
+    #[cfg(test)]
+    pub fn replay_aborted_at(
+        &mut self,
+        timestamp: f64,
+        reason: Option<String>,
+    ) -> TransitionOutcome {
         let outcome = self.replay_aborted();
         if matches!(
             outcome,
-            ReplayOutcome::Applied | ReplayOutcome::AlreadyApplied
+            TransitionOutcome::Applied | TransitionOutcome::AlreadyApplied
         ) {
             self.abort_active_node_executions(timestamp);
             self.runtime.error_reason = reason;
             self.runtime.updated_at = timestamp;
         }
         outcome
-    }
-}
-
-fn transition_to_replay(outcome: TransitionOutcome) -> ReplayOutcome {
-    match outcome {
-        TransitionOutcome::Applied => ReplayOutcome::Applied,
-        TransitionOutcome::AlreadyApplied => ReplayOutcome::AlreadyApplied,
-        TransitionOutcome::NotApplicable => ReplayOutcome::NotApplicable,
-        TransitionOutcome::Rejected(reason) => ReplayOutcome::Rejected(reason),
     }
 }
 

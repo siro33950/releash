@@ -41,8 +41,8 @@ pub use ids::{
     WorkspaceWorktreePath,
 };
 pub use node_execution::{
-    startup_restart_delay, ExecutionParentRef, FanoutSlot, NodeCompletionSignal,
-    NodeCompletionSignalState, NodeExecution, NodeExecutionStatus, NodeProcessPresence,
+    ExecutionParentRef, FanoutSlot, NodeCompletionSignal, NodeCompletionSignalState, NodeExecution,
+    NodeExecutionStatus, NodeProcessPresence,
 };
 pub use node_fact::{
     AbortRequestedFact, AgentActivityObservedFact, AgentSessionActivity, ApprovalGrantedFact,

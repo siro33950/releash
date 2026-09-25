@@ -132,6 +132,14 @@ async fn test_隔離起動_生成失敗後は自動で新しいattemptだけを�
         .iter()
         .filter(|node| node.node_name == "work")
         .collect::<Vec<_>>();
+    let failures = crate::usecase::work_queue::shared()
+        .records(&attempts[0].id)
+        .await;
+    assert!(failures
+        .iter()
+        .any(|failure| failure.record.operation == "workflow_node_start"
+            && failure.record.kind == crate::domain::failure::FailureKind::RestartRequired
+            && failure.record.count == 1));
     assert_eq!(attempts.len(), 2);
     assert_eq!(attempts[0].status, NodeExecutionStatus::Aborted);
     assert_eq!(attempts[1].status, NodeExecutionStatus::Running);
@@ -174,6 +182,14 @@ async fn test_隔離起動_合成子の生成失敗では子を起動せず復�
         .get_state_by_execution_id(&fixture.app, &execution_id)
         .await
         .unwrap();
+    let failures = crate::usecase::work_queue::shared()
+        .records(&snapshot.node_executions[0].id)
+        .await;
+    assert!(failures
+        .iter()
+        .any(|failure| failure.record.operation == "workflow_node_start"
+            && failure.record.kind == crate::domain::failure::FailureKind::RestartRequired
+            && failure.record.count == 1));
     assert_eq!(snapshot.node_executions.len(), 1);
     assert_eq!(
         snapshot.node_executions[0].status,
@@ -320,9 +336,16 @@ async fn test_空の隔離fanout_liveと再読取で同じworktree成果を持�
 }
 
 #[tokio::test]
-async fn startup_exhaustion_leaves_five_distinct_attempts_with_only_the_latest_running() {
-    for kind in ["session: {provider: codex}", "command: 'must-not-start'"] {
-        let fixture = Fixture::new(usize::MAX);
+async fn test_起動再試行_停止する分類では最初のattemptだけが残る() {
+    for kind in [
+        "session: {provider: codex, facets: {instruction: policy-confirmation}}",
+        "command: 'must-not-start'",
+    ] {
+        let fixture = Fixture::new(0);
+        fixture
+            .sessions
+            .preparation_fails
+            .store(true, Ordering::SeqCst);
         let id = fixture
             .start(&format!("  main: {{worktree: isolated, {kind}}}"))
             .await;
@@ -335,13 +358,10 @@ async fn startup_exhaustion_leaves_five_distinct_attempts_with_only_the_latest_r
         .unwrap()
         .unwrap();
         let attempts = folded.aggregate.node_executions();
-        assert_eq!(attempts.len(), 5);
-        assert!(attempts[..4]
-            .iter()
-            .all(|node| node.status == NodeExecutionStatus::Aborted));
-        let last = &attempts[4];
+        assert_eq!(attempts.len(), 1);
+        let last = &attempts[0];
         assert_eq!(last.status, NodeExecutionStatus::Running);
-        assert_eq!(last.attempt, 5);
+        assert_eq!(last.attempt, 1);
         assert_eq!(
             last.can_retry(NodeProcessPresence::ConfirmedAbsent),
             last.kind == NodeKindName::Command
@@ -350,13 +370,16 @@ async fn startup_exhaustion_leaves_five_distinct_attempts_with_only_the_latest_r
             last.can_resume_session(NodeProcessPresence::ConfirmedAbsent),
             last.kind == NodeKindName::Session
         );
-        assert_eq!(fixture.worktrees.calls.lock().unwrap().len(), 5);
+        assert_eq!(fixture.worktrees.calls.lock().unwrap().len(), 1);
         let worktrees = attempts
             .iter()
             .map(|node| node.worktree.as_ref().unwrap().path.clone())
             .collect::<std::collections::HashSet<_>>();
-        assert_eq!(worktrees.len(), 5);
-        assert!(fixture.sessions.prepared.lock().unwrap().is_empty());
+        assert_eq!(worktrees.len(), 1);
+        assert_eq!(
+            fixture.sessions.prepared.lock().unwrap().len(),
+            usize::from(last.kind == NodeKindName::Session)
+        );
         assert!(fixture
             .host
             .node_processes
@@ -372,20 +395,20 @@ async fn startup_exhaustion_leaves_five_distinct_attempts_with_only_the_latest_r
                 .iter()
                 .filter(|record| matches!(record.fact, NodeFact::RuntimeFailureObserved(_)))
                 .count(),
-            5
+            1
         );
         assert_eq!(
             records
                 .iter()
                 .filter(|record| matches!(record.fact, NodeFact::RetryRequested))
                 .count(),
-            4
+            0
         );
         let restored = fixture.restarted_host();
         reconcile_startup(&restored, &fixture.app).await.unwrap();
         let after = restored.load_executions(&fixture.app, &id).await.unwrap()[&id].clone();
         assert_eq!(after.node_executions(), attempts);
-        assert_eq!(fixture.worktrees.calls.lock().unwrap().len(), 5);
+        assert_eq!(fixture.worktrees.calls.lock().unwrap().len(), 1);
         assert_eq!(
             workflow_fact_log::read_tree_records(&fixture.store, &id)
                 .await
@@ -475,7 +498,7 @@ async fn test_自動再試行_shutdownは進行中の準備の終了を待つ() 
     let fixture = Fixture::new(0);
     fixture
         .sessions
-        .preparation_fails
+        .preparation_conflicts
         .store(true, Ordering::SeqCst);
     let tree = fixture
         .start("  main: {session: {provider: codex, facets: {instruction: policy-confirmation}}}")
@@ -579,12 +602,15 @@ async fn test_session起動_準備済みの旧attemptを除外して兄弟だけ
 fn control(
     fixture: &Fixture,
 ) -> crate::usecase::workflow::control_plane::WorkflowControlPlaneUsecase {
-    crate::usecase::workflow::control_plane::WorkflowControlPlaneUsecase::new(Arc::new(
-        crate::adaptor::gateway::workflow::WorkflowRuntimeCommandGateway::new_with_driver(
-            fixture.app.clone(),
-            Arc::new(fixture.host.clone()),
+    crate::usecase::workflow::control_plane::WorkflowControlPlaneUsecase::new(
+        crate::usecase::work_queue::shared().clone(),
+        Arc::new(
+            crate::adaptor::gateway::workflow::WorkflowRuntimeCommandGateway::new_with_driver(
+                fixture.app.clone(),
+                Arc::new(fixture.host.clone()),
+            ),
         ),
-    ))
+    )
 }
 
 #[tokio::test]
@@ -606,7 +632,7 @@ async fn resume_after_never_successful_session_launch_creates_a_new_attempt_with
         .last()
         .unwrap()
         .clone();
-    assert_eq!(current.attempt, 5);
+    assert_eq!(current.attempt, 1);
     assert_eq!(current.status, NodeExecutionStatus::Running);
     assert!(current.session_id.is_none());
     fixture
@@ -628,7 +654,7 @@ async fn resume_after_never_successful_session_launch_creates_a_new_attempt_with
         .await
         .unwrap();
     let next = executions[&id].node_executions.last().unwrap();
-    assert_eq!(next.attempt, 6);
+    assert_eq!(next.attempt, 2);
     assert_eq!(next.status, NodeExecutionStatus::Running);
     assert!(next.session_id.is_some());
     assert_eq!(
@@ -1263,7 +1289,7 @@ async fn test_空の隔離fanout_記録で完了が導出されても準備し�
 
 #[tokio::test]
 async fn test_隔離合成子競合_最新記録で子開始を再評価し競合を障害にしない() {
-    use crate::usecase::workflow::command::CONTROL_PLANE_MAX_ATTEMPTS;
+    const CONFLICT_COUNT: usize = 5;
     for change in ["sibling", "abort", "exhausted"] {
         for kind in ["sequence", "fanout"] {
             // Given
@@ -1289,7 +1315,7 @@ async fn test_隔離合成子競合_最新記録で子開始を再評価し競�
                 &target.id,
             ));
             let attempts = if change == "exhausted" {
-                CONTROL_PLANE_MAX_ATTEMPTS
+                CONFLICT_COUNT
             } else {
                 1
             };
@@ -1335,22 +1361,6 @@ async fn test_隔離合成子競合_最新記録で子開始を再評価し競�
 
             // Then
             match change {
-                "exhausted" => {
-                    let error = result.unwrap_err();
-                    assert!(matches!(error, WorkflowRuntimeError::Conflict(_)));
-                    assert!(matches!(
-                        fixture
-                            .host
-                            .settle_runtime_failure_for_node(
-                                &fixture.app,
-                                &snapshot.execution_id,
-                                &target.id,
-                                &error,
-                            )
-                            .await,
-                        Err(WorkflowRuntimeError::Conflict(_))
-                    ));
-                }
                 "abort" => assert!(result.unwrap().is_none()),
                 _ => {
                     let (_, decision) = result.unwrap().unwrap();
@@ -1368,7 +1378,7 @@ async fn test_隔離合成子競合_最新記録で子開始を再評価し競�
                     .filter(|record| record.meta.node_name == "work"
                         && matches!(record.fact, NodeFact::Started(_)))
                     .count(),
-                usize::from(change == "sibling")
+                usize::from(matches!(change, "sibling" | "exhausted"))
             );
             assert!(!records
                 .iter()
@@ -1445,7 +1455,7 @@ async fn test_隔離合成子競合_上限後も兄弟と競合したchildを起
         .unwrap();
     }
     *fixture.worktrees.creation_barrier.lock().unwrap() = None;
-    for attempt in 0..crate::usecase::workflow::command::CONTROL_PLANE_MAX_ATTEMPTS {
+    for attempt in 0..5 {
         super::test_helpers::poll_until_pending(operation.as_mut(), || {
             Arc::strong_count(&commit_lock) > 1
         })
@@ -1461,7 +1471,7 @@ async fn test_隔離合成子競合_上限後も兄弟と競合したchildを起
         )
         .await
         .unwrap();
-        if attempt + 1 == crate::usecase::workflow::command::CONTROL_PLANE_MAX_ATTEMPTS {
+        if attempt + 1 == 5 {
             drop(guard);
             break;
         }
@@ -1623,4 +1633,58 @@ async fn test_session再開_完了したnodeは状態を変えずに会話だけ
         *fixture.sessions.recovered.lock().unwrap(),
         vec![node.id.clone()]
     );
+}
+
+#[tokio::test]
+async fn test_起動時再開_実経路でstore失敗の分類を保持する() {
+    use crate::adaptor::gateway::local_event_store::test_helpers::ReadFailure;
+    use crate::adaptor::gateway::workflow::startup_repository::HostWorkflowStartup;
+    use crate::usecase::workflow::startup::WorkflowStartupGateway;
+    let fixture = Fixture::new(0);
+    let startup = HostWorkflowStartup {
+        host: Arc::new(fixture.host),
+        app: fixture.app,
+    };
+    for (failure, expected) in ReadFailure::cases() {
+        fixture.store.fail_next_read(failure);
+        let error = startup.reconcile_tree("tree", 1.0).await.unwrap_err();
+        assert_eq!(
+            crate::adaptor::protocol::connect::classified_error(error).code,
+            expected
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_node起動失敗_分類が同じなら共通の観測と再試行対象化を行う() {
+    // Given
+    use crate::domain::failure::{FailureKind, RetryAction};
+    for kind in [
+        FailureKind::Temporary,
+        FailureKind::RestartRequired,
+        FailureKind::Internal,
+    ] {
+        for nodes in [
+            "  main: {session: {provider: codex, facets: {instruction: policy-confirmation}}}",
+            "  main: {command: echo done}",
+            "  main: {worktree: isolated, sequence: {children: [work]}}\n  work: {command: echo done}",
+        ] {
+            let fixture = Fixture::new(0);
+            let execution = fixture.persist_started(nodes, "/repo").await;
+            let node_id = &execution.node_executions[0].id;
+            let error = WorkflowRuntimeError::StorageFailure { kind, message: "start failed".into() };
+            let mut failed = Vec::new();
+            // When
+            fixture.host.record_node_start_failure(&fixture.app, &execution.execution_id, node_id, &error, &mut failed).await.unwrap();
+            // Then
+            assert_eq!(failed.len(), usize::from(kind.retry_action() != RetryAction::Stop));
+            if let Some(failure) = failed.first() { assert_eq!(failure.kind, kind); assert_eq!(&failure.id, node_id); }
+            let records = crate::usecase::work_queue::shared().records(node_id).await;
+            let observed = records.iter().find(|record| record.record.operation == "workflow_node_start").unwrap();
+            assert_eq!(observed.record.kind, kind);
+            assert_eq!(observed.record.count, 1);
+            let facts = workflow_fact_log::read_tree_records(&fixture.store, &execution.execution_id).await.unwrap();
+            assert_eq!(facts.iter().any(|record| matches!(record.fact, NodeFact::RuntimeFailureObserved(_))), kind.retry_action() != RetryAction::Restart);
+        }
+    }
 }

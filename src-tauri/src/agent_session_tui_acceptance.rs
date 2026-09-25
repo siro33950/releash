@@ -173,18 +173,20 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
         config: AgentSessionTuiAcceptanceConfig,
         app: tauri::App<R>,
     ) -> Result<Self, String> {
+        let queue = crate::terminal_surface::initialize_background_work_for_acceptance();
         app.manage(Arc::new(crate::infrastructure::push::PushSink::new()));
         std::fs::create_dir_all(&config.data_dir).map_err(|error| error.to_string())?;
         let store =
             LocalEventStore::open(LocalEventStoreConfig::production(config.data_dir.clone()))
                 .map_err(|error| error.to_string())?;
-        let terminal = TerminalSurfaceRuntime::new(config.data_dir.clone());
+        let terminal = TerminalSurfaceRuntime::new(queue.clone(), config.data_dir.clone());
         let data_dir = config.data_dir.clone();
         let subscriptions = crate::usecase::state_subscription::StateSubscriptionUsecase::new(
             vec![],
             Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
         );
         let composition = compose_agent_sessions(AgentSessionCompositionInput {
+            queue: queue.clone(),
             state_publisher: None,
             store: store.clone(),
             data_dir: data_dir.clone(),
@@ -256,6 +258,7 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
         app.manage(store.clone());
         let workspace_query: Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService> =
             crate::adaptor::gateway::workspace_tree::SqliteWorkspaceQueryService::with_repository(
+                queue.clone(),
                 crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::new(
                     store.clone(),
                 ),
@@ -267,6 +270,7 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
                 ),
             );
         let mut driver = WorkflowRuntimeHost::new_canonical(
+            queue.clone(),
             Arc::new(AcceptanceUnusedWorkflowDefinitionResolver),
             Arc::new(AcceptanceManagedWorktreeResolver),
             workspace_query,
@@ -285,6 +289,7 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
         let driver = Arc::new(driver);
         let dependencies = crate::desktop_test_support::workflow_dependencies(app.handle());
         let startup = crate::adaptor::controller::wiring::wire_workflow_startup(
+            queue.clone(),
             dependencies.clone(),
             driver.clone(),
         );
@@ -297,6 +302,7 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
         )));
         let runtime = Arc::new(
             WorkflowRuntimeUsecase::new_with_worktree_operations(
+                queue.clone(),
                 gateway,
                 Arc::new(
                     crate::adaptor::gateway::workflow::ExecutionTreeArchiveFactRepository::new(

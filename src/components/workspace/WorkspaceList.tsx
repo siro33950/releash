@@ -42,6 +42,7 @@ import {
 	DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Textarea } from "@/components/ui/textarea";
+import { BackgroundFailures } from "@/components/workflow/BackgroundFailures";
 import type { WorkspaceRepositoryListDto } from "@/generated/client_types";
 import { useStateSubscription } from "@/hooks/useStateSubscription";
 import { useWorkflowConfig } from "@/hooks/useWorkflowConfig";
@@ -230,6 +231,7 @@ function WorkspaceNodeRow({
 			}`}
 			style={{ paddingLeft: indentPx }}
 		>
+			<BackgroundFailures target={node.id} />
 			{renaming ? (
 				<div className="flex min-w-0 flex-1 items-center gap-2">
 					<span
@@ -1101,6 +1103,7 @@ function WorktreeTreeItem({
 						<ChevronRight className="hidden size-3.5 shrink-0 text-muted-foreground group-hover:block" />
 					)}
 				</button>
+				<BackgroundFailures target={branch.worktree_path} />
 				<div className="relative h-5 w-11 shrink-0">
 					<div
 						className={`absolute inset-0 items-center justify-end ${
@@ -1592,6 +1595,7 @@ function RepoTreeSection({
 					</span>
 				</button>
 			</div>
+			<BackgroundFailures target={repoPath} />
 			{error && <ListRefreshError loaded={status.loaded} error={error} />}
 			<div className="space-y-1" hidden={collapsed}>
 				{status.state === "loading" && (
@@ -1669,6 +1673,7 @@ export function WorkspaceList({
 					<span className="text-xs font-semibold tracking-wide text-muted-foreground">
 						Workspaces
 					</span>
+					{loaded && <BackgroundFailures target="*" />}
 					<div className="flex items-center gap-0.5">
 						<Button
 							size="icon-xs"

@@ -1,9 +1,5 @@
 use super::{Artifact, NodeKindName, TokenUsage};
 
-pub fn startup_restart_delay(restarts: u32) -> Option<std::time::Duration> {
-    (restarts < 4).then(|| std::time::Duration::from_secs(1 << restarts))
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum NodeCompletionSignalState {
     #[default]

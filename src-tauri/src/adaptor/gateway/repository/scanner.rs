@@ -20,7 +20,23 @@ impl DefaultRepositoryScanner {
     }
 }
 
+#[async_trait::async_trait]
+
 impl RepositoryScanner for DefaultRepositoryScanner {
+    async fn scan_async(
+        &self,
+        repo_path: &str,
+    ) -> Result<RepositorySnapshotParts, RepositoryStateError> {
+        super::super::shared::background_worker::execute(
+            &super::super::shared::background_worker::Request::RepositoryScan(repo_path.to_owned()),
+        )
+        .await
+        .map_err(|error| RepositoryStateError::Background {
+            kind: error.kind,
+            message: error.message,
+        })
+    }
+
     fn scan(&self, repo_path: &str) -> Result<RepositorySnapshotParts, RepositoryStateError> {
         let status_scan = self.repository.get_repository_status_scan(repo_path)?;
         let current_dirty_count = status_scan.dirty_count;
@@ -163,7 +179,7 @@ mod tests {
         let repository = Arc::new(crate::adaptor::controller::wiring::build_repository_usecase());
         let code = Arc::new(crate::adaptor::controller::wiring::build_code_usecase());
         let scanner = Arc::new(DefaultRepositoryScanner::new(repository, code));
-        let state = crate::usecase::repository_state::worktree::WorktreeState::new(
+        let state = crate::usecase::repository_state::worktree::WorktreeState::new(crate::usecase::work_queue::WorkQueueUsecase::new(crate::usecase::work_queue_test_runtime::runtime()),
             dir.path().to_str().unwrap().to_string(),
             scanner,
             Arc::new(crate::usecase::repository_state::worktree::NoopRepositoryStateNotifier),

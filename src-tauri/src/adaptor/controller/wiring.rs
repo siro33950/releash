@@ -210,6 +210,7 @@ pub(crate) fn build_workflow_usecase_and_store(
         LocalEventStore::open(LocalEventStoreConfig::production(data_dir.clone()))
             .expect("test workflow composition requires the canonical local event store");
     let workflow_usecase = build_workflow_services_with_gateways(
+        crate::usecase::work_queue::shared().clone(),
         data_dir,
         Arc::new(PassthroughManagedWorktreeGateway),
         Arc::new(NoopWorkflowExternalEditorGateway),
@@ -222,6 +223,7 @@ pub(crate) fn build_workflow_usecase_and_store(
 }
 
 pub(crate) fn build_workflow_services_with_repository_worktrees(
+    queue: Arc<crate::usecase::work_queue::WorkQueueUsecase>,
     data_dir: impl Into<std::path::PathBuf>,
     repository_usecase: Arc<RepositoryUsecase>,
     app_config: Arc<dyn ConfigRepository>,
@@ -234,6 +236,7 @@ pub(crate) fn build_workflow_services_with_repository_worktrees(
 ) {
     let data_dir = data_dir.into();
     build_workflow_services_with_gateways(
+        queue,
         data_dir,
         Arc::new(RepositoryManagedWorktreeGateway::new(
             repository_usecase,
@@ -311,6 +314,7 @@ pub(crate) fn build_canonical_workflow_read_usecase(
     );
     let workspace_query: Arc<dyn WorkspaceQueryService> =
         crate::adaptor::gateway::workspace_tree::SqliteWorkspaceQueryService::new_read_only(
+            Arc::new(crate::usecase::failure_query_service::FailureQueryService::new()),
             local_event_store.clone(),
             Arc::new(ExecutionTreeArchiveFactRepository::from_backend(
                 crate::adaptor::gateway::workflow::fact_log::FactLogReadBackend::ReadOnly(
@@ -330,6 +334,7 @@ pub(crate) fn build_canonical_workflow_read_usecase(
 /// gateway を呼び出し側から差し替えられる workflow composition。production 配線と
 /// acceptance harness の双方がこの一箇所を通る。
 pub(crate) fn build_workflow_services_with_gateways(
+    queue: Arc<crate::usecase::work_queue::WorkQueueUsecase>,
     data_dir: impl Into<std::path::PathBuf>,
     worktrees: Arc<dyn ManagedWorktreeGateway>,
     editors: Arc<dyn ExternalEditorGateway>,
@@ -351,6 +356,7 @@ pub(crate) fn build_workflow_services_with_gateways(
         .processes = processes.clone();
     let workspace_query: Arc<dyn WorkspaceQueryService> =
         crate::adaptor::gateway::workspace_tree::SqliteWorkspaceQueryService::with_repository(
+            queue,
             workspace_nodes.clone(),
             execution_archives.clone(),
         );
@@ -397,6 +403,7 @@ pub(crate) fn build_workflow_services_with_gateways(
 }
 
 pub(crate) fn build_workflow_runtime_usecase(
+    queue: Arc<crate::usecase::work_queue::WorkQueueUsecase>,
     app: crate::adaptor::gateway::workflow::workflow_host::WorkflowRuntimeDependencies,
     deps: WorkflowRuntimeCommandGatewayDeps,
 ) -> Result<WorkflowRuntimeUsecase, WorkflowRuntimeError> {
@@ -406,6 +413,7 @@ pub(crate) fn build_workflow_runtime_usecase(
     };
     let operations = deps.repository_usecase.worktree_operations();
     let mut driver = WorkflowRuntimeHost::new_canonical(
+        queue.clone(),
         Arc::new(DefaultWorkflowDefinitionResolver),
         Arc::new(AppConfigManagedWorktreeResolver::new(
             deps.repository_usecase,
@@ -428,9 +436,10 @@ pub(crate) fn build_workflow_runtime_usecase(
         ),
     ));
     let driver = Arc::new(driver);
-    let startup = wire_workflow_startup(app.clone(), driver.clone());
+    let startup = wire_workflow_startup(queue.clone(), app.clone(), driver.clone());
     let publisher = app.state_changes.clone();
     Ok(WorkflowRuntimeUsecase::new_with_worktree_operations(
+        queue.clone(),
         Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(app, driver)),
         archives,
         operations,
@@ -455,6 +464,7 @@ pub(crate) fn wire_delegate_continuation(
 }
 
 pub(crate) fn wire_workflow_startup(
+    queue: Arc<crate::usecase::work_queue::WorkQueueUsecase>,
     app: crate::adaptor::gateway::workflow::workflow_host::WorkflowRuntimeDependencies,
     host: Arc<crate::adaptor::gateway::workflow::workflow_host::WorkflowRuntimeHost>,
 ) -> Option<Arc<crate::usecase::workflow::startup::WorkflowStartupUsecase>> {
@@ -465,6 +475,7 @@ pub(crate) fn wire_workflow_startup(
 
     let store = app.store.clone()?;
     Some(Arc::new(WorkflowStartupUsecase::new(
+        queue,
         Arc::new(StoredWorkflowStartupRepository(store)),
         Arc::new(HostWorkflowStartup { host, app }),
     )))
@@ -576,6 +587,7 @@ mod tests {
             .into_owned();
         seed_b006_execution(&store, &workspace).await;
         let (workflow, query) = build_workflow_services_with_gateways(
+            crate::usecase::work_queue::shared().clone(),
             root.path(),
             Arc::new(PassthroughManagedWorktreeGateway),
             Arc::new(NoopWorkflowExternalEditorGateway),

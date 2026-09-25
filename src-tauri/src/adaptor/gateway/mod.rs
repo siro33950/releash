@@ -35,3 +35,4 @@ pub(crate) mod desktop_client;
 pub(crate) mod cli_install;
 
 pub(crate) mod subscription_timer;
+pub(crate) mod work_queue;

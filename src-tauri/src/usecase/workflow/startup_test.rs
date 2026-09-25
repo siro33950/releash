@@ -1,14 +1,11 @@
 use super::*;
 use crate::domain::workflow::entities::workflow_execution::ExecutionTree;
-use crate::domain::workflow::repository::{WorkflowRevision, WorkflowStartupRecord};
-use crate::domain::workflow::{
-    ExecutionOrigin, ExecutionTreeLaunch, NodeFact, NodeFactMeta, NodeKindName, TreeRootFact,
-};
+use crate::domain::workflow::repository::WorkflowStartupRecord;
+use crate::domain::workflow::{ExecutionOrigin, ExecutionTreeLaunch, NodeFact, TreeRootFact};
 use std::sync::Mutex;
 
 struct Repository {
     terminal: Mutex<Option<NodeFact>>,
-    head: Mutex<i64>,
     concurrent_facts: Mutex<std::collections::VecDeque<Option<NodeFact>>>,
     unpersisted_appends: Mutex<usize>,
     append_attempts: Mutex<Vec<Option<i64>>>,
@@ -44,63 +41,16 @@ impl WorkflowStartupRepository for Repository {
         }
         Ok(Some(WorkflowStartupRecord {
             execution,
-            root: NodeFactMeta {
-                tree_id: tree_id.into(),
-                node_execution_id: "root".into(),
-                parent_id: None,
-                node_name: "main".into(),
-                kind: NodeKindName::Command,
-                attempt: 1,
-            },
             definition_error: self
                 .unreadable
                 .then(|| "Workflow definition is unavailable: completion".into()),
-            revision: WorkflowRevision(self.head.lock().unwrap().to_string()),
         }))
-    }
-    async fn append(
-        &self,
-        root: &NodeFactMeta,
-        fact: &NodeFact,
-        timestamp: f64,
-        expected_revision: Option<&WorkflowRevision>,
-    ) -> Result<(), WorkflowError> {
-        let expected_head = expected_revision.map(|revision| revision.0.parse::<i64>().unwrap());
-        assert_eq!(root.tree_id, "tree");
-        assert_eq!(root.node_execution_id, "root");
-        self.append_attempts.lock().unwrap().push(expected_head);
-        let mut head = self.head.lock().unwrap();
-        if let Some(concurrent) = self.concurrent_facts.lock().unwrap().pop_front() {
-            *head += 1;
-            if let Some(fact) = concurrent {
-                *self.terminal.lock().unwrap() = Some(fact);
-            }
-        }
-        if expected_head.is_some_and(|expected| expected != *head) {
-            return Err(WorkflowError::Conflict("head advanced".into()));
-        }
-        if self.fail_append {
-            return Err(WorkflowError::external("append failed"));
-        }
-        let mut unpersisted = self.unpersisted_appends.lock().unwrap();
-        if *unpersisted > 0 {
-            *unpersisted -= 1;
-            return Err(WorkflowError::Conflict("abort was not persisted".into()));
-        }
-        self.appended
-            .lock()
-            .unwrap()
-            .push((fact.clone(), timestamp));
-        *self.terminal.lock().unwrap() = Some(fact.clone());
-        *head += 1;
-        Ok(())
     }
 }
 
 fn repository() -> Repository {
     Repository {
         terminal: Mutex::new(None),
-        head: Mutex::new(1),
         concurrent_facts: Default::default(),
         unpersisted_appends: Default::default(),
         append_attempts: Default::default(),
@@ -112,31 +62,21 @@ fn repository() -> Repository {
 }
 
 #[tokio::test]
-async fn test_起動時abort_理由付き事実を保存し再実行では追記しない() {
-    // Given
+async fn test_起動時定義確認_読めない定義は要対応を返し事実を追記しない() {
     let repository = repository();
-    // When
-    abort_unavailable_definition(&repository, "tree", 3.0)
-        .await
-        .unwrap();
-    abort_unavailable_definition(&repository, "tree", 4.0)
-        .await
-        .unwrap();
-    // Then
-    assert_eq!(
-        *repository.appended.lock().unwrap(),
-        vec![(
-            NodeFact::AbortRequested(crate::domain::workflow::AbortRequestedFact {
-                reason: Some("Workflow definition is unavailable: completion".into())
-            }),
-            3.0
-        )]
-    );
+    for _ in 0..2 {
+        assert!(matches!(
+            check_startup_definition(&repository, "tree").await,
+            Err(WorkflowError::IncompatibleStoredEvent(reason)) if reason.contains("completion")
+        ));
+    }
+    assert!(repository.appended.lock().unwrap().is_empty());
+    assert!(repository.append_attempts.lock().unwrap().is_empty());
+    assert!(repository.terminal.lock().unwrap().is_none());
 }
 
 #[tokio::test]
-async fn test_起動時abort_読める定義と既存の終端事実には追記しない() {
-    // Given
+async fn test_起動時定義確認_読める定義と既存の終端事実には追記しない() {
     for terminal in [
         None,
         Some(NodeFact::ExecutionCompleted),
@@ -145,47 +85,45 @@ async fn test_起動時abort_読める定義と既存の終端事実には追記
         let mut repository = repository();
         repository.unreadable = terminal.is_some();
         *repository.terminal.lock().unwrap() = terminal;
-        // When
-        abort_unavailable_definition(&repository, "tree", 3.0)
-            .await
-            .unwrap();
-        // Then
+        check_startup_definition(&repository, "tree").await.unwrap();
         assert!(repository.appended.lock().unwrap().is_empty());
     }
 }
 
 #[tokio::test]
-async fn test_起動時abort_読取と追記の失敗を返し再試行で保存できる() {
-    // Given
-    for fail_load in [true, false] {
-        let mut repository = repository();
-        repository.fail_load = fail_load;
-        repository.fail_append = !fail_load;
-        // When / Then
-        assert!(abort_unavailable_definition(&repository, "tree", 3.0)
-            .await
-            .is_err());
-        assert!(repository.appended.lock().unwrap().is_empty());
-        repository.fail_load = false;
-        repository.fail_append = false;
-        abort_unavailable_definition(&repository, "tree", 4.0)
-            .await
-            .unwrap();
-        assert_eq!(repository.appended.lock().unwrap().len(), 1);
-    }
+async fn test_起動時定義確認_読取失敗を返し修復後に成功する() {
+    let mut repository = repository();
+    repository.fail_load = true;
+    assert!(check_startup_definition(&repository, "tree")
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("read failed"));
+    repository.fail_load = false;
+    repository.unreadable = false;
+    repository.fail_append = true;
+    check_startup_definition(&repository, "tree").await.unwrap();
+    assert!(repository.append_attempts.lock().unwrap().is_empty());
 }
 
 struct Startup {
     calls: Mutex<Vec<String>>,
     failure: Option<&'static str>,
     conflict: bool,
+    temporary: bool,
 }
 
 impl Startup {
     fn record(&self, call: String) -> Result<(), WorkflowError> {
+        let first = !self.calls.lock().unwrap().contains(&call);
         self.calls.lock().unwrap().push(call.clone());
-        if self.failure == Some(call.as_str()) {
-            if self.conflict {
+        if self.failure == Some(call.as_str()) && (!(self.conflict || self.temporary) || first) {
+            if self.temporary {
+                Err(WorkflowError::StorageUnavailable {
+                    kind: crate::domain::failure::FailureKind::Temporary,
+                    message: call,
+                })
+            } else if self.conflict {
                 Err(WorkflowError::Conflict(call))
             } else {
                 Err(WorkflowError::external(call))
@@ -205,19 +143,9 @@ impl WorkflowStartupRepository for Startup {
 
     async fn load(&self, tree_id: &str) -> Result<Option<WorkflowStartupRecord>, WorkflowError> {
         self.record(format!("load:{tree_id}"))?;
-        repository().load(tree_id).await
-    }
-
-    async fn append(
-        &self,
-        root: &NodeFactMeta,
-        fact: &NodeFact,
-        timestamp: f64,
-        _expected_revision: Option<&WorkflowRevision>,
-    ) -> Result<(), WorkflowError> {
-        assert!(matches!(fact, NodeFact::AbortRequested(_)));
-        assert_eq!(timestamp, 3.0);
-        self.record(format!("append:{}", root.tree_id))
+        let mut repository = repository();
+        repository.unreadable = false;
+        repository.load(tree_id).await
     }
 }
 
@@ -235,14 +163,21 @@ impl WorkflowStartupGateway for Startup {
 }
 
 #[tokio::test]
-async fn test_起動時復旧_列挙とabort保存とreconciliationの順序を所有する() {
+async fn test_起動時復旧_列挙と定義確認とreconciliationの順序を所有する() {
     // Given
     let startup = Arc::new(Startup {
         calls: Mutex::new(Vec::new()),
         failure: None,
         conflict: false,
+        temporary: false,
     });
-    let usecase = WorkflowStartupUsecase::new(startup.clone(), startup.clone());
+    let usecase = WorkflowStartupUsecase::new(
+        crate::usecase::work_queue::WorkQueueUsecase::new(std::sync::Arc::new(
+            crate::usecase::work_queue::ImmediateWorkQueueRuntime::default(),
+        )),
+        startup.clone(),
+        startup.clone(),
+    );
 
     // When
     let (first, second) = tokio::join!(usecase.execute(), usecase.execute());
@@ -253,48 +188,70 @@ async fn test_起動時復旧_列挙とabort保存とreconciliationの順序を�
     let pass = [
         "list",
         "load:first",
-        "append:first",
         "reconcile:first",
         "load:second",
-        "append:second",
         "reconcile:second",
     ];
-    assert_eq!(*startup.calls.lock().unwrap(), pass);
+    let calls = startup.calls.lock().unwrap();
+    assert_eq!(calls.first().unwrap(), "list");
+    for tree in ["first", "second"] {
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| call.ends_with(tree))
+                .cloned()
+                .collect::<Vec<_>>(),
+            pass.iter()
+                .filter(|call| call.ends_with(tree))
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+        );
+    }
 }
 
 #[tokio::test]
-async fn test_起動時復旧_abort失敗したtreeを再生せず後続を処理して最初の失敗を返す() {
+async fn test_起動時復旧_定義確認に失敗したtreeを再生せず後続を処理して最初の失敗を返す() {
     for conflict in [false, true] {
-        for failure in ["load:first", "append:first", "reconcile:first"] {
+        for failure in ["load:first", "reconcile:first"] {
             // Given
             let startup = Arc::new(Startup {
                 calls: Mutex::new(Vec::new()),
                 failure: Some(failure),
                 conflict,
+                temporary: false,
             });
-            let usecase = WorkflowStartupUsecase::new(startup.clone(), startup.clone());
+            let usecase = WorkflowStartupUsecase::new(
+                crate::usecase::work_queue::WorkQueueUsecase::new(std::sync::Arc::new(
+                    crate::usecase::work_queue::ImmediateWorkQueueRuntime::default(),
+                )),
+                startup.clone(),
+                startup.clone(),
+            );
 
             // When
-            let error = usecase.execute().await.unwrap_err();
+            let result = usecase.execute().await;
             usecase.execute().await.unwrap();
 
             // Then
-            assert!(error.to_string().contains(failure));
+            if conflict {
+                result.unwrap();
+            } else {
+                assert!(result.unwrap_err().to_string().contains(failure));
+            }
             let calls = startup.calls.lock().unwrap();
-            assert!(
+            assert!(calls.contains(&"reconcile:second".into()));
+            assert_eq!(
                 calls
                     .iter()
                     .filter(|call| call.as_str() == "reconcile:first")
-                    .count()
-                    <= 1
-            );
-            assert_eq!(
-                calls.contains(&"reconcile:first".into()),
-                failure == "reconcile:first"
-            );
-            assert_eq!(
-                &calls[calls.len() - 3..],
-                ["load:second", "append:second", "reconcile:second"]
+                    .count(),
+                if conflict && failure == "reconcile:first" {
+                    2
+                } else if conflict || failure == "reconcile:first" {
+                    1
+                } else {
+                    0
+                }
             );
         }
     }
@@ -307,8 +264,15 @@ async fn test_起動時復旧_列挙失敗は後続操作を呼ばず返す() {
         calls: Mutex::new(Vec::new()),
         failure: Some("list"),
         conflict: false,
+        temporary: false,
     });
-    let usecase = WorkflowStartupUsecase::new(startup.clone(), startup.clone());
+    let usecase = WorkflowStartupUsecase::new(
+        crate::usecase::work_queue::WorkQueueUsecase::new(std::sync::Arc::new(
+            crate::usecase::work_queue::ImmediateWorkQueueRuntime::default(),
+        )),
+        startup.clone(),
+        startup.clone(),
+    );
     // When / Then
     assert!(usecase
         .execute()
@@ -340,8 +304,8 @@ impl WorkflowStartupGateway for ConflictingStartup {
 }
 
 #[tokio::test]
-async fn test_起動時前進_競合でも前進を再試行せず理由付きでabortする() {
-    for conflicts in [1, super::super::command::CONTROL_PLANE_MAX_ATTEMPTS] {
+async fn test_起動時前進_競合後に読み直して再試行しabortしない() {
+    for conflicts in [1, 5] {
         // Given
         let mut repository = repository();
         repository.unreadable = false;
@@ -350,21 +314,22 @@ async fn test_起動時前進_競合でも前進を再試行せず理由付き�
             conflicts,
             calls: Default::default(),
         });
-        let usecase = WorkflowStartupUsecase::new(repository.clone(), runtime.clone());
+        let usecase = WorkflowStartupUsecase::new(
+            crate::usecase::work_queue::WorkQueueUsecase::new(std::sync::Arc::new(
+                crate::usecase::work_queue::ImmediateWorkQueueRuntime::default(),
+            )),
+            repository.clone(),
+            runtime.clone(),
+        );
         // When
-        let result = usecase.execute().await;
+        usecase.execute().await.unwrap();
         usecase.execute().await.unwrap();
         // Then
-        assert!(result.unwrap_err().to_string().contains("head advanced"));
-        assert_eq!(runtime.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
-        let appended = repository.appended.lock().unwrap();
-        assert_eq!(appended.len(), 1);
-        assert!(matches!(&appended[0].0, NodeFact::AbortRequested(fact)
-            if fact.reason.as_ref().is_some_and(|reason| reason.contains("head advanced"))));
         assert_eq!(
-            *repository.terminal.lock().unwrap(),
-            Some(appended[0].0.clone())
+            runtime.calls.load(std::sync::atomic::Ordering::SeqCst),
+            conflicts + 1
         );
+        assert!(repository.appended.lock().unwrap().is_empty());
     }
 }
 
@@ -401,49 +366,50 @@ async fn test_起動失敗abort_追記直前に完了またはabortされた実�
             .push_back(Some(terminal.clone()));
         let repository = Arc::new(repository);
         let runtime = Arc::new(FailedStartup::default());
-        let usecase = WorkflowStartupUsecase::new(repository.clone(), runtime.clone());
+        let usecase = WorkflowStartupUsecase::new(
+            crate::usecase::work_queue::WorkQueueUsecase::new(std::sync::Arc::new(
+                crate::usecase::work_queue::ImmediateWorkQueueRuntime::default(),
+            )),
+            repository.clone(),
+            runtime.clone(),
+        );
 
         // When
         assert!(usecase.execute().await.is_err());
         usecase.execute().await.unwrap();
 
         // Then
-        assert_eq!(*repository.terminal.lock().unwrap(), Some(terminal));
+        assert!(repository.terminal.lock().unwrap().is_none());
         assert!(repository.appended.lock().unwrap().is_empty());
-        assert_eq!(*repository.append_attempts.lock().unwrap(), [Some(1)]);
+        assert!(repository.append_attempts.lock().unwrap().is_empty());
         assert_eq!(runtime.0.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 }
 
 #[tokio::test]
 async fn test_起動失敗abort_競合時だけ最新記録で有界に再判定し前進は繰り返さない() {
-    for conflicts in [0, 1, super::super::command::CONTROL_PLANE_MAX_ATTEMPTS] {
+    for conflicts in [0, 1, 5] {
         // Given
         let mut repository = repository();
         repository.unreadable = false;
         *repository.concurrent_facts.lock().unwrap() = vec![None; conflicts].into();
         let repository = Arc::new(repository);
         let runtime = Arc::new(FailedStartup::default());
-        let usecase = WorkflowStartupUsecase::new(repository.clone(), runtime.clone());
+        let usecase = WorkflowStartupUsecase::new(
+            crate::usecase::work_queue::WorkQueueUsecase::new(std::sync::Arc::new(
+                crate::usecase::work_queue::ImmediateWorkQueueRuntime::default(),
+            )),
+            repository.clone(),
+            runtime.clone(),
+        );
 
         // When
         assert!(usecase.execute().await.is_err());
         usecase.execute().await.unwrap();
 
         // Then
-        let limit = super::super::command::CONTROL_PLANE_MAX_ATTEMPTS;
-        assert_eq!(
-            *repository.append_attempts.lock().unwrap(),
-            (1..=(conflicts + 1).min(limit))
-                .map(|head| Some(head as i64))
-                .collect::<Vec<_>>()
-        );
-        let appended = repository.appended.lock().unwrap();
-        assert_eq!(appended.len(), usize::from(conflicts < limit));
-        if conflicts < limit {
-            assert!(matches!(&appended[0].0, NodeFact::AbortRequested(fact)
-                if fact.reason.as_ref().is_some_and(|reason| reason.contains("advancement failed"))));
-        }
+        assert!(repository.append_attempts.lock().unwrap().is_empty());
+        assert!(repository.appended.lock().unwrap().is_empty());
         assert_eq!(runtime.0.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 }
@@ -456,61 +422,63 @@ async fn test_起動失敗abort_保存エラーは再試行しない() {
     repository.fail_append = true;
     let repository = Arc::new(repository);
     let runtime = Arc::new(FailedStartup::default());
-    let usecase = WorkflowStartupUsecase::new(repository.clone(), runtime.clone());
+    let usecase = WorkflowStartupUsecase::new(
+        crate::usecase::work_queue::WorkQueueUsecase::new(std::sync::Arc::new(
+            crate::usecase::work_queue::ImmediateWorkQueueRuntime::default(),
+        )),
+        repository.clone(),
+        runtime.clone(),
+    );
 
     // When
     assert!(usecase.execute().await.is_err());
     usecase.execute().await.unwrap();
 
     // Then
-    assert_eq!(*repository.append_attempts.lock().unwrap(), [Some(1)]);
+    assert!(repository.append_attempts.lock().unwrap().is_empty());
     assert!(repository.appended.lock().unwrap().is_empty());
     assert_eq!(runtime.0.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
-async fn test_起動時abort_未保存なら有界に再評価して保存し前進は繰り返さない() {
+async fn test_起動時復旧_定義不明でも保存を試みず要対応を記録する() {
     for unreadable in [false, true] {
-        for unpersisted in [1, super::super::command::CONTROL_PLANE_MAX_ATTEMPTS] {
+        for unpersisted in [1, 5] {
             // Given
             let mut repository = repository();
             repository.unreadable = unreadable;
             *repository.unpersisted_appends.lock().unwrap() = unpersisted;
             let repository = Arc::new(repository);
             let runtime = Arc::new(FailedStartup::default());
-            let usecase = WorkflowStartupUsecase::new(repository.clone(), runtime.clone());
+            let usecase = WorkflowStartupUsecase::new(
+                crate::usecase::work_queue::WorkQueueUsecase::new(std::sync::Arc::new(
+                    crate::usecase::work_queue::ImmediateWorkQueueRuntime::default(),
+                )),
+                repository.clone(),
+                runtime.clone(),
+            );
 
             // When
             assert!(usecase.execute().await.is_err());
             usecase.execute().await.unwrap();
 
             // Then
-            let limit = super::super::command::CONTROL_PLANE_MAX_ATTEMPTS;
-            assert_eq!(
-                *repository.append_attempts.lock().unwrap(),
-                vec![Some(1); (unpersisted + 1).min(limit)]
-            );
-            let appended = repository.appended.lock().unwrap();
-            assert_eq!(appended.len(), usize::from(unpersisted < limit));
-            if unpersisted < limit {
-                let reason = if unreadable {
-                    "definition is unavailable"
-                } else {
-                    "advancement failed"
-                };
-                assert!(matches!(&appended[0].0, NodeFact::AbortRequested(fact)
-                    if fact.reason.as_ref().is_some_and(|value| value.contains(reason))));
-            }
+            assert!(repository.append_attempts.lock().unwrap().is_empty());
+            assert!(repository.appended.lock().unwrap().is_empty());
+            assert!(repository.terminal.lock().unwrap().is_none());
             assert_eq!(
                 runtime.0.load(std::sync::atomic::Ordering::SeqCst),
-                usize::from(!unreadable || unpersisted < limit)
+                usize::from(!unreadable)
             );
+            let observations = usecase.queue.failure_query().records("tree").await;
+            assert_eq!(observations.len(), 1);
+            assert!(observations[0].requires_attention);
         }
     }
 }
 
 #[tokio::test]
-async fn test_定義不明abort_読取後の終端追記と競合したら再読取して重ねない() {
+async fn test_定義不明_追記経路に入らず実行木を維持する() {
     for terminal in [
         NodeFact::ExecutionCompleted,
         NodeFact::AbortRequested(Default::default()),
@@ -526,13 +494,50 @@ async fn test_定義不明abort_読取後の終端追記と競合したら再読
             conflicts: 0,
             calls: Default::default(),
         });
-        let usecase = WorkflowStartupUsecase::new(repository.clone(), runtime.clone());
+        let usecase = WorkflowStartupUsecase::new(
+            crate::usecase::work_queue::WorkQueueUsecase::new(std::sync::Arc::new(
+                crate::usecase::work_queue::ImmediateWorkQueueRuntime::default(),
+            )),
+            repository.clone(),
+            runtime.clone(),
+        );
         // When
-        usecase.execute().await.unwrap();
+        assert!(usecase.execute().await.is_err());
         // Then
-        assert_eq!(*repository.terminal.lock().unwrap(), Some(terminal));
+        assert!(repository.terminal.lock().unwrap().is_none());
         assert!(repository.appended.lock().unwrap().is_empty());
-        assert_eq!(*repository.append_attempts.lock().unwrap(), [Some(1)]);
-        assert_eq!(runtime.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(repository.append_attempts.lock().unwrap().is_empty());
+        assert_eq!(runtime.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+}
+
+#[tokio::test]
+async fn test_起動時復旧_一覧の一時的失敗を再試行して各実行木を再開する() {
+    let startup = Arc::new(Startup {
+        calls: Mutex::new(Vec::new()),
+        failure: Some("list"),
+        conflict: false,
+        temporary: true,
+    });
+    WorkflowStartupUsecase::new(
+        crate::usecase::work_queue::WorkQueueUsecase::new(std::sync::Arc::new(
+            crate::usecase::work_queue::ImmediateWorkQueueRuntime::default(),
+        )),
+        startup.clone(),
+        startup.clone(),
+    )
+    .execute()
+    .await
+    .unwrap();
+    let calls = startup.calls.lock().unwrap();
+    assert_eq!(&calls[..2], &["list", "list"]);
+    for tree in ["first", "second"] {
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| **call == format!("reconcile:{tree}"))
+                .count(),
+            1
+        );
     }
 }

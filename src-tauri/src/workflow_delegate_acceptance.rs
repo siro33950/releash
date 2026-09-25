@@ -62,6 +62,7 @@ pub struct WorkflowDelegateAcceptanceHost {
 
 impl WorkflowDelegateAcceptanceHost {
     pub fn new(data_dir: &Path) -> Self {
+        let queue = crate::terminal_surface::initialize_background_work_for_acceptance();
         let store =
             LocalEventStore::open(LocalEventStoreConfig::production(data_dir.into())).unwrap();
         let archives = Arc::new(ExecutionTreeArchiveFactRepository::new(
@@ -69,11 +70,13 @@ impl WorkflowDelegateAcceptanceHost {
             data_dir,
         ));
         let workspace_query = SqliteWorkspaceQueryService::with_repository(
+            queue.clone(),
             SqliteWorkspaceTreeRepository::new(store.clone()),
             archives.clone(),
         );
         let sessions = Arc::new(AcceptanceSessions::default());
         let host = WorkflowRuntimeHost::with_runtime_ports(
+            queue.clone(),
             Arc::new(UnusedWorkflowResolver),
             Arc::new(AcceptanceWorktrees),
             workspace_query,
@@ -95,7 +98,7 @@ impl WorkflowDelegateAcceptanceHost {
             dependencies.clone(),
             Arc::new(host.clone()),
         ));
-        let runtime = Arc::new(WorkflowRuntimeUsecase::new_with_worktree_operations(
+        let runtime = Arc::new(WorkflowRuntimeUsecase::new_with_worktree_operations(queue.clone(),
             gateway.clone(),
             archives,
             Arc::new(crate::usecase::worktree_operation::WorktreeOperations::new(
@@ -108,6 +111,7 @@ impl WorkflowDelegateAcceptanceHost {
         let lifecycle = Arc::new(ProviderLifecycleUsecase::new(
             Arc::new(LocalProviderLifecycleCredentialGateway),
             Arc::new(LocalProviderLifecycleEventRepository::new(
+                queue.clone(),
                 store.clone(),
                 store.installation_id().to_string(),
             )),
@@ -134,7 +138,7 @@ impl WorkflowDelegateAcceptanceHost {
             dependencies,
             host,
             sessions,
-            control: WorkflowControlPlaneUsecase::new(gateway),
+            control: WorkflowControlPlaneUsecase::new(queue.clone(), gateway),
             lifecycle,
             ingress,
         }

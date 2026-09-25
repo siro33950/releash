@@ -25,6 +25,10 @@ use crate::domain::workspace_tree::{
 struct RecordingRepository {
     sessions: Mutex<Vec<VersionedAgentSession>>,
     saved_titles: Mutex<Vec<(String, String)>>,
+    list_failures: Mutex<usize>,
+    save_failures: Mutex<Vec<AgentSessionRepositoryError>>,
+    find_calls: std::sync::atomic::AtomicUsize,
+    list_calls: std::sync::atomic::AtomicUsize,
 }
 
 impl RecordingRepository {
@@ -32,6 +36,10 @@ impl RecordingRepository {
         Self {
             sessions: Mutex::new(sessions),
             saved_titles: Mutex::new(Vec::new()),
+            list_failures: Mutex::new(0),
+            save_failures: Mutex::new(Vec::new()),
+            find_calls: Default::default(),
+            list_calls: Default::default(),
         }
     }
 }
@@ -57,14 +65,29 @@ impl AgentSessionRepository for RecordingRepository {
 
     async fn find(
         &self,
-        _session_id: &str,
+        session_id: &str,
     ) -> Result<Option<VersionedAgentSession>, AgentSessionRepositoryError> {
-        Err(AgentSessionRepositoryError::InvalidRequest)
+        self.find_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(self
+            .sessions
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|session| session.session().id() == session_id)
+            .cloned())
     }
 
     async fn list_open_for_provider_session_title(
         &self,
     ) -> Result<Vec<VersionedAgentSession>, AgentSessionRepositoryError> {
+        self.list_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let mut failures = self.list_failures.lock().unwrap();
+        if *failures > 0 {
+            *failures -= 1;
+            return Err(AgentSessionRepositoryError::Unavailable);
+        }
         Ok(self.sessions.lock().unwrap().clone())
     }
 
@@ -81,6 +104,9 @@ impl AgentSessionRepository for RecordingRepository {
         session: VersionedAgentSession,
         _caller_request_id: &str,
     ) -> Result<VersionedAgentSession, AgentSessionRepositoryError> {
+        if let Some(error) = self.save_failures.lock().unwrap().pop() {
+            return Err(error);
+        }
         let revision = session.revision();
         let mut session = session.into_session();
         let events = session.take_uncommitted_events();
@@ -262,7 +288,12 @@ async fn test_provider_session_title_ingestion_未取得は毎tickで取得済�
         ("provider-known", Ok(Some("Known title"))),
     ]));
     let notifier = Arc::new(RecordingNotifier::default());
-    let usecase = ProviderSessionTitleIngestionUsecase::new(repository, gateway.clone(), notifier);
+    let usecase = ProviderSessionTitleIngestionUsecase::new(
+        crate::usecase::work_queue::shared().clone(),
+        repository,
+        gateway.clone(),
+        notifier,
+    );
 
     for _ in 0..16 {
         usecase.ingest_due().await;
@@ -284,8 +315,12 @@ async fn test_provider_session_title_ingestion_同値なら保存も通知もし
         Ok(Some("Same title")),
     )]));
     let notifier = Arc::new(RecordingNotifier::default());
-    let usecase =
-        ProviderSessionTitleIngestionUsecase::new(repository.clone(), gateway, notifier.clone());
+    let usecase = ProviderSessionTitleIngestionUsecase::new(
+        crate::usecase::work_queue::shared().clone(),
+        repository.clone(),
+        gateway,
+        notifier.clone(),
+    );
 
     usecase.ingest_due().await;
 
@@ -306,6 +341,7 @@ async fn test_provider_session_title_ingestion_変化時だけ保存してworktr
     )]));
     let notifier = Arc::new(RecordingNotifier::default());
     let usecase = ProviderSessionTitleIngestionUsecase::new(
+        crate::usecase::work_queue::shared().clone(),
         repository.clone(),
         gateway.clone(),
         notifier.clone(),
@@ -347,8 +383,12 @@ async fn test_provider_session_title_ingestion_読み取り失敗で他session�
         ("provider-continued", Ok(Some("Available title"))),
     ]));
     let notifier = Arc::new(RecordingNotifier::default());
-    let usecase =
-        ProviderSessionTitleIngestionUsecase::new(repository.clone(), gateway, notifier.clone());
+    let usecase = ProviderSessionTitleIngestionUsecase::new(
+        crate::usecase::work_queue::shared().clone(),
+        repository.clone(),
+        gateway,
+        notifier.clone(),
+    );
 
     usecase.ingest_due().await;
 
@@ -377,8 +417,12 @@ async fn test_provider_session_title_ingestion_タイトル事実から単独ses
         Ok(Some("Generated title")),
     )]));
     let notifier = Arc::new(RecordingNotifier::default());
-    let usecase =
-        ProviderSessionTitleIngestionUsecase::new(repository.clone(), gateway.clone(), notifier);
+    let usecase = ProviderSessionTitleIngestionUsecase::new(
+        crate::usecase::work_queue::shared().clone(),
+        repository.clone(),
+        gateway.clone(),
+        notifier,
+    );
     let root = SessionExecutionTreeRootFacts::new(
         session_id,
         "workspace",
@@ -458,9 +502,64 @@ async fn test_隔離通知_providerタイトルの更新をrootのworkspaceへ�
         Ok(Some("updated")),
     )]));
     let notifier = Arc::new(RecordingNotifier::default());
-    let usecase = ProviderSessionTitleIngestionUsecase::new(repository, gateway, notifier.clone());
+    let usecase = ProviderSessionTitleIngestionUsecase::new(
+        crate::usecase::work_queue::shared().clone(),
+        repository,
+        gateway,
+        notifier.clone(),
+    );
     // When
     usecase.ingest_due().await;
     // Then
     assert_eq!(notifier.worktrees.lock().unwrap().as_slice(), &["/repo"]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_provider_title作業列_開始の一時失敗と対象の分類別再試行を行う() {
+    use std::sync::atomic::Ordering;
+    for failure in [
+        AgentSessionRepositoryError::Unavailable,
+        AgentSessionRepositoryError::Conflict,
+    ] {
+        let repository = Arc::new(RecordingRepository::new(vec![session(
+            "queued",
+            "provider-queued",
+            None,
+        )]));
+        *repository.list_failures.lock().unwrap() = 2;
+        *repository.save_failures.lock().unwrap() = vec![failure.clone(), failure.clone()];
+        let gateway = Arc::new(FixedTitleGateway::new([(
+            "provider-queued",
+            Ok(Some("title")),
+        )]));
+        let notifier = Arc::new(RecordingNotifier::default());
+        let mut usecase = ProviderSessionTitleIngestionUsecase::new(
+            crate::usecase::work_queue::shared().clone(),
+            repository.clone(),
+            gateway.clone(),
+            notifier.clone(),
+        );
+        usecase.queue = crate::usecase::work_queue::work_queue_tests::queue();
+        let usecase = Arc::new(usecase);
+        usecase.start().await;
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while notifier.worktrees.lock().unwrap().is_empty() {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(repository.list_calls.load(Ordering::SeqCst), 3);
+        let expected_reads = if failure == AgentSessionRepositoryError::Conflict {
+            3
+        } else {
+            1
+        };
+        assert_eq!(repository.find_calls.load(Ordering::SeqCst), expected_reads);
+        assert_eq!(gateway.read_count("provider-queued"), expected_reads);
+        assert_eq!(repository.saved_titles.lock().unwrap().len(), 1);
+        let records = usecase.queue.records("queued").await;
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].record.count, 2);
+    }
 }

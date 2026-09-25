@@ -178,6 +178,7 @@ fn test_hook受信_session_start成功だけがdelivery_failure_markerを解除�
     ))
     .unwrap();
     let events = Arc::new(LocalProviderLifecycleEventRepository::new(
+        crate::usecase::work_queue::shared().clone(),
         store.clone() as Arc<dyn LocalEventTransactionRepository>,
         store.installation_id().to_string(),
     ));

@@ -4,6 +4,7 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use super::checkpoint_scheduler::DirtyCheckpointScheduler;
 use crate::domain::terminal_surface::entities::{
     TerminalSurface, TerminalSurfaceInputIngressError, TerminalSurfaceInputIngressRegistry,
     TerminalSurfaceRegistry, TerminalSurfaceSpawnReservation, TerminalSurfaceSpawnReservationError,
@@ -18,7 +19,6 @@ use crate::domain::terminal_surface::{
     TerminalSurfaceCheckpoint as DomainTerminalCheckpoint, TERMINAL_SURFACE_SCROLLBACK_ROWS,
 };
 use crate::infrastructure::terminal::checkpoint_journal::IncrementalCheckpointJournal;
-use crate::infrastructure::terminal::checkpoint_scheduler::DirtyCheckpointScheduler;
 #[cfg(test)]
 use crate::infrastructure::terminal::native_pty::NativePtyResizer;
 use crate::infrastructure::terminal::native_pty::{
@@ -31,6 +31,7 @@ use crate::infrastructure::terminal::terminal_emulator::{
     TerminalCheckpointFileStore,
 };
 use crate::infrastructure::terminal::utf8_decoder::decode_utf8_chunk;
+use crate::usecase::work_queue::WorkFailure;
 
 pub(crate) struct AttachedTerminalRuntime {
     native_pty: NativePtyRuntime,
@@ -42,7 +43,7 @@ pub(crate) struct AttachedTerminalRuntime {
     output_drained: Arc<(Mutex<bool>, Condvar)>,
     checkpoint_journal: Option<Arc<Mutex<IncrementalCheckpointJournal>>>,
     checkpoint_store: Option<TerminalCheckpointFileStore>,
-    checkpoint_io: Option<Arc<Mutex<()>>>,
+    checkpoint_io: Option<Arc<tokio::sync::Mutex<()>>>,
     pending_input_traces: Arc<Mutex<VecDeque<crate::other::telemetry::TerminalInputTraceKey>>>,
 }
 
@@ -52,6 +53,7 @@ pub type TerminalSurfaceRuntimeGateway = TerminalSurfaceRuntimeGatewayFor;
 const CHECKPOINT_PERSIST_INTERVAL: Duration = Duration::from_millis(250);
 
 pub struct TerminalSurfaceRuntimeGatewayFor {
+    queue: std::sync::Arc<crate::usecase::work_queue::WorkQueueUsecase>,
     data_dir: Option<std::path::PathBuf>,
     event_sink: Option<Arc<dyn TerminalSurfaceEventSink>>,
     registry: Arc<Mutex<TerminalSurfaceRegistry>>,
@@ -68,6 +70,7 @@ pub struct TerminalSurfaceRuntimeGatewayFor {
 impl Default for TerminalSurfaceRuntimeGatewayFor {
     fn default() -> Self {
         Self {
+            queue: crate::usecase::work_queue::shared().clone(),
             data_dir: None,
             event_sink: None,
             registry: Arc::new(Mutex::new(TerminalSurfaceRegistry::default())),
@@ -135,6 +138,12 @@ fn materialize_checkpoint(
     Ok(terminal_surface.snapshot(sequence))
 }
 
+fn checkpoint_write_failure(
+    error: crate::infrastructure::terminal::terminal_emulator::CheckpointWriteError,
+) -> WorkFailure {
+    super::super::shared::background_worker::checkpoint_failure(error)
+}
+
 fn compact_checkpoint(
     store: &TerminalCheckpointFileStore,
     session_key: &str,
@@ -142,9 +151,15 @@ fn compact_checkpoint(
     runtime_generation: u64,
     terminal_surface: &Arc<Mutex<NativeTerminalEmulator>>,
     journal: &Arc<Mutex<IncrementalCheckpointJournal>>,
-) -> Result<(), String> {
-    let checkpoint = materialize_checkpoint(registry, runtime_generation, terminal_surface)?;
-    store.replace_base(session_key, &checkpoint)?;
+) -> Result<(), WorkFailure> {
+    let checkpoint = materialize_checkpoint(registry, runtime_generation, terminal_surface)
+        .map_err(|message| WorkFailure {
+            kind: crate::domain::failure::FailureKind::Missing,
+            message,
+        })?;
+    store
+        .replace_base(session_key, &checkpoint)
+        .map_err(checkpoint_write_failure)?;
     journal.lock().compacted(checkpoint.clone());
     registry
         .lock()
@@ -161,20 +176,28 @@ fn flush_incremental_checkpoint(
     runtime_generation: u64,
     terminal_surface: &Arc<Mutex<NativeTerminalEmulator>>,
     journal: &Arc<Mutex<IncrementalCheckpointJournal>>,
-) -> Result<(), String> {
+) -> Result<(), WorkFailure> {
     let pending = journal.lock().take_pending();
     let persist_result = (|| {
         if let Some(base) = &pending.base {
-            store.replace_base(session_key, base)?;
+            store
+                .replace_base(session_key, base)
+                .map_err(checkpoint_write_failure)?;
         }
-        store.append_records(session_key, &pending.records)?;
+        store
+            .append_records(session_key, &pending.records)
+            .map_err(checkpoint_write_failure)?;
         Ok(())
     })();
     if let Err(error) = persist_result {
         journal.lock().restore_failed(pending);
         return Err(error);
     }
-    if store.journal_len(session_key)? >= CHECKPOINT_JOURNAL_COMPACTION_BYTES {
+    if store
+        .journal_len(session_key)
+        .map_err(checkpoint_write_failure)?
+        >= CHECKPOINT_JOURNAL_COMPACTION_BYTES
+    {
         compact_checkpoint(
             store,
             session_key,
@@ -185,6 +208,70 @@ fn flush_incremental_checkpoint(
         )?;
     }
     Ok(())
+}
+
+struct BackgroundCheckpoint {
+    store: TerminalCheckpointFileStore,
+    session_key: String,
+    registry: Arc<Mutex<TerminalSurfaceRegistry>>,
+    runtime_generation: u64,
+    terminal_surface: Arc<Mutex<NativeTerminalEmulator>>,
+    journal: Arc<Mutex<IncrementalCheckpointJournal>>,
+    io: Arc<tokio::sync::Mutex<()>>,
+}
+
+struct PendingFlush {
+    journal: Arc<Mutex<IncrementalCheckpointJournal>>,
+    pending: Option<crate::infrastructure::terminal::checkpoint_journal::PendingCheckpointFlush>,
+}
+impl Drop for PendingFlush {
+    fn drop(&mut self) {
+        if let Some(pending) = self.pending.take() {
+            self.journal.lock().restore_failed(pending);
+        }
+    }
+}
+
+impl BackgroundCheckpoint {
+    async fn flush(&self) -> Result<(), WorkFailure> {
+        use super::super::shared::background_worker::{execute, Request};
+        let _io = self.io.lock().await;
+        let mut pending = PendingFlush {
+            journal: self.journal.clone(),
+            pending: Some(self.journal.lock().take_pending()),
+        };
+        let flush = pending.pending.as_ref().expect("pending checkpoint");
+        let length: u64 = execute(&Request::CheckpointAppend {
+            store: self.store.clone(),
+            key: self.session_key.clone(),
+            base: flush.base.clone(),
+            records: flush.records.clone(),
+        })
+        .await?;
+        pending.pending = None;
+        if length >= CHECKPOINT_JOURNAL_COMPACTION_BYTES {
+            let checkpoint = materialize_checkpoint(
+                &self.registry,
+                self.runtime_generation,
+                &self.terminal_surface,
+            )
+            .map_err(|message| WorkFailure {
+                kind: crate::domain::failure::FailureKind::Missing,
+                message,
+            })?;
+            execute::<()>(&Request::CheckpointCompact {
+                store: self.store.clone(),
+                key: self.session_key.clone(),
+                checkpoint: checkpoint.clone(),
+            })
+            .await?;
+            self.journal.lock().compacted(checkpoint.clone());
+            self.registry
+                .lock()
+                .apply_checkpoint(self.runtime_generation, into_domain_checkpoint(checkpoint));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Default)]
@@ -450,7 +537,9 @@ fn wait_for_output_drain(output_drained: &Arc<(Mutex<bool>, Condvar)>) {
 impl TerminalSurfaceRuntimeGatewayFor {
     #[cfg(test)]
     pub fn new(data_dir: std::path::PathBuf) -> Self {
+        let queue = crate::usecase::work_queue::shared().clone();
         Self {
+            queue,
             data_dir: Some(data_dir),
             event_sink: None,
             registry: Arc::new(Mutex::new(TerminalSurfaceRegistry::default())),
@@ -464,11 +553,13 @@ impl TerminalSurfaceRuntimeGatewayFor {
     }
 
     pub fn new_with_event_sink(
+        queue: std::sync::Arc<crate::usecase::work_queue::WorkQueueUsecase>,
         data_dir: std::path::PathBuf,
         event_sink: Arc<dyn TerminalSurfaceEventSink>,
         journal_enabled: bool,
     ) -> Self {
         Self {
+            queue,
             data_dir: Some(data_dir),
             event_sink: Some(event_sink),
             registry: Arc::new(Mutex::new(TerminalSurfaceRegistry::default())),
@@ -707,7 +798,7 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
                 }),
             initial_checkpoint.is_some(),
         )));
-        let checkpoint_io = Arc::new(Mutex::new(()));
+        let checkpoint_io = Arc::new(tokio::sync::Mutex::new(()));
         let checkpoint_scheduler = Some({
             let store = checkpoint_store.clone();
             let registry = Arc::clone(&self.registry);
@@ -715,10 +806,21 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
             let checkpoint_journal = Arc::clone(&checkpoint_journal);
             let checkpoint_io = Arc::clone(&checkpoint_io);
             let session_key = request.session_key.clone();
+            let background = Arc::new(BackgroundCheckpoint {
+                store: store.clone(),
+                session_key: session_key.clone(),
+                registry: registry.clone(),
+                runtime_generation,
+                terminal_surface: terminal_surface.clone(),
+                journal: checkpoint_journal.clone(),
+                io: checkpoint_io.clone(),
+            });
             DirtyCheckpointScheduler::spawn(
+                self.queue.clone(),
+                request.session_key.clone(),
                 CHECKPOINT_PERSIST_INTERVAL,
                 Arc::new(move || {
-                    let _io = checkpoint_io.lock();
+                    let _io = futures_executor::block_on(checkpoint_io.lock());
                     flush_incremental_checkpoint(
                         &store,
                         &session_key,
@@ -727,6 +829,10 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
                         &terminal_surface,
                         &checkpoint_journal,
                     )
+                }),
+                Arc::new(move || {
+                    let background = background.clone();
+                    Box::pin(async move { background.flush().await })
                 }),
             )
         });
@@ -1096,7 +1202,7 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
                         "Terminal Surface not found for owner {session_key}"
                     ))
                 })?;
-            let _io = checkpoint_io.lock();
+            let _io = futures_executor::block_on(checkpoint_io.lock());
             compact_checkpoint(
                 &store,
                 &session_key,
@@ -1105,7 +1211,7 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
                 &terminal_surface,
                 &journal,
             )
-            .map_err(TerminalSurfaceGatewayError::new)?;
+            .map_err(|error| TerminalSurfaceGatewayError::new(error.to_string()))?;
         }
         Ok(())
     }

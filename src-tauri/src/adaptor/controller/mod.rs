@@ -3,6 +3,7 @@ pub(crate) mod agent_session_wiring;
 pub(crate) mod api;
 pub(crate) mod app_data_composition;
 pub(crate) mod application_lifecycle;
+pub(crate) mod background_worker;
 pub(crate) mod client;
 #[cfg(feature = "desktop")]
 pub(crate) mod command;

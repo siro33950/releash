@@ -111,25 +111,13 @@ pub trait FacetRepository: Send + Sync {
     fn list_summaries(&self, kind: FacetKind) -> Result<Vec<FacetSummary>, WorkflowError>;
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkflowRevision(pub String);
-
 pub struct WorkflowStartupRecord {
     pub execution: crate::domain::workflow::entities::workflow_execution::ExecutionTree,
-    pub root: crate::domain::workflow::NodeFactMeta,
     pub definition_error: Option<String>,
-    pub revision: WorkflowRevision,
 }
 
 #[async_trait::async_trait]
 pub trait WorkflowStartupRepository: Send + Sync {
     async fn list_tree_ids(&self) -> Result<Vec<String>, WorkflowError>;
     async fn load(&self, tree_id: &str) -> Result<Option<WorkflowStartupRecord>, WorkflowError>;
-    async fn append(
-        &self,
-        root: &crate::domain::workflow::NodeFactMeta,
-        fact: &crate::domain::workflow::NodeFact,
-        timestamp: f64,
-        expected_revision: Option<&WorkflowRevision>,
-    ) -> Result<(), WorkflowError>;
 }

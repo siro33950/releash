@@ -21,11 +21,12 @@ fn workspace_owner(path: &str) -> TerminalSurfaceOwnerV1 {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_atui_030_provider_cliがterminal_surfaceのroot_processとして終了する() {
+    let queue = releash_lib::terminal_surface::initialize_background_work_for_acceptance();
     let data_dir = tempfile::TempDir::new().unwrap();
     let cwd = tempfile::TempDir::new().unwrap();
     let path = cwd.path().to_string_lossy().into_owned();
     let owner = session_owner(&path, "agent-session-root-process");
-    let runtime = TerminalSurfaceRuntime::new(data_dir.path().to_path_buf());
+    let runtime = TerminalSurfaceRuntime::new(queue.clone(), data_dir.path().to_path_buf());
     let fixture = FixturePlan {
         input_lines: 1,
         alternate_screen: true,
@@ -274,6 +275,7 @@ fn reconstruct(surface: &TerminalSurfaceV1, events: &[(u64, String)]) -> Result<
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_atui_010_実ptyのproduction_attachが欠落重複逆転なく再接続する() {
+    let queue = releash_lib::terminal_surface::initialize_background_work_for_acceptance();
     const FRAME_COUNT: usize = 20;
     const ATTACH_BOUNDARY: usize = FRAME_COUNT / 2;
     const DETACH_BOUNDARY: usize = 14;
@@ -283,7 +285,7 @@ async fn test_atui_010_実ptyのproduction_attachが欠落重複逆転なく再�
     let cwd = tempfile::TempDir::new().unwrap();
     let path = cwd.path().to_string_lossy().into_owned();
     let owner = workspace_owner(&path);
-    let runtime = TerminalSurfaceRuntime::new(data_dir.path().to_path_buf());
+    let runtime = TerminalSurfaceRuntime::new(queue.clone(), data_dir.path().to_path_buf());
     let spawned = runtime
         .get_or_spawn(
             24,
@@ -397,12 +399,15 @@ async fn test_atui_010_実ptyのproduction_attachが欠落重複逆転なく再�
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_atui_010_実ptyのproduction_attachが注入された欠落重複逆転を判定する() {
+    let queue = releash_lib::terminal_surface::initialize_background_work_for_acceptance();
     let data_dir = tempfile::TempDir::new().unwrap();
     let cwd = tempfile::TempDir::new().unwrap();
     let path = cwd.path().to_string_lossy().into_owned();
     let owner = session_owner(&path, "fault-injection");
-    let (runtime, faults) =
-        TerminalSurfaceRuntime::new_with_data_dir_and_event_faults(data_dir.path().to_path_buf());
+    let (runtime, faults) = TerminalSurfaceRuntime::new_with_data_dir_and_event_faults(
+        queue.clone(),
+        data_dir.path().to_path_buf(),
+    );
     runtime
         .get_or_spawn(24, 240, Some(path), owner.clone(), None)
         .expect("spawn fault-injection PTY");
@@ -481,13 +486,14 @@ async fn test_atui_010_実ptyのproduction_attachが注入された欠落重複�
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_atui_011_terminal_checkpointが画面属性と終了後のbounded_scrollbackを復元する() {
+    let queue = releash_lib::terminal_surface::initialize_background_work_for_acceptance();
     const FRAME_COUNT: usize = 550;
 
     let data_dir = tempfile::TempDir::new().unwrap();
     let cwd = tempfile::TempDir::new().unwrap();
     let path = cwd.path().to_string_lossy().into_owned();
     let owner = workspace_owner(&path);
-    let runtime = TerminalSurfaceRuntime::new(data_dir.path().to_path_buf());
+    let runtime = TerminalSurfaceRuntime::new(queue.clone(), data_dir.path().to_path_buf());
     runtime
         .get_or_spawn(
             24,
@@ -617,12 +623,13 @@ async fn test_atui_011_terminal_checkpointが画面属性と終了後のbounded_
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_atui_011_複数terminal_surfaceの画面状態が混線しない() {
+    let queue = releash_lib::terminal_surface::initialize_background_work_for_acceptance();
     let data_dir = tempfile::TempDir::new().unwrap();
     let cwd = tempfile::TempDir::new().unwrap();
     let path = cwd.path().to_string_lossy().into_owned();
     let first_owner = session_owner(&path, "first");
     let second_owner = session_owner(&path, "second");
-    let runtime = TerminalSurfaceRuntime::new(data_dir.path().to_path_buf());
+    let runtime = TerminalSurfaceRuntime::new(queue.clone(), data_dir.path().to_path_buf());
 
     for (owner, label) in [
         (first_owner.clone(), "terminal-surface-first"),
@@ -695,6 +702,7 @@ async fn test_atui_011_複数terminal_surfaceの画面状態が混線しない()
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_atui_012_app再構築後は同一process扱いせず最終画面だけをcold_restoreする() {
+    let queue = releash_lib::terminal_surface::initialize_background_work_for_acceptance();
     const FRAME_COUNT: usize = 550;
 
     let data_dir = tempfile::TempDir::new().unwrap();
@@ -710,7 +718,7 @@ async fn test_atui_012_app再構築後は同一process扱いせず最終画面�
         shell_quote(&first_pid_path.to_string_lossy())
     );
 
-    let first_runtime = TerminalSurfaceRuntime::new(data_dir.path().to_path_buf());
+    let first_runtime = TerminalSurfaceRuntime::new(queue.clone(), data_dir.path().to_path_buf());
     let first = first_runtime
         .get_or_spawn_with_startup(
             24,
@@ -753,7 +761,7 @@ async fn test_atui_012_app再構築後は同一process扱いせず最終画面�
     #[cfg(unix)]
     wait_process_exit(&first_pid).await;
 
-    let second_runtime = TerminalSurfaceRuntime::new(data_dir.path().to_path_buf());
+    let second_runtime = TerminalSurfaceRuntime::new(queue.clone(), data_dir.path().to_path_buf());
     let restored = second_runtime
         .get_or_spawn_with_startup(
             24,
@@ -805,11 +813,12 @@ async fn test_atui_012_app再構築後は同一process扱いせず最終画面�
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_atui_012_通常終了は実ptyを停止して出力drain後の最終画面をcold_restoreする() {
+    let queue = releash_lib::terminal_surface::initialize_background_work_for_acceptance();
     let data_dir = tempfile::TempDir::new().unwrap();
     let cwd = tempfile::TempDir::new().unwrap();
     let path = cwd.path().to_string_lossy().into_owned();
     let owner = session_owner(&path, "shutdown-drain");
-    let first_runtime = TerminalSurfaceRuntime::new(data_dir.path().to_path_buf());
+    let first_runtime = TerminalSurfaceRuntime::new(queue.clone(), data_dir.path().to_path_buf());
     first_runtime
         .get_or_spawn(
             24,
@@ -868,7 +877,7 @@ async fn test_atui_012_通常終了は実ptyを停止して出力drain後の最�
         .is_err());
     drop(first_runtime);
 
-    let second_runtime = TerminalSurfaceRuntime::new(data_dir.path().to_path_buf());
+    let second_runtime = TerminalSurfaceRuntime::new(queue.clone(), data_dir.path().to_path_buf());
     let restored = second_runtime
         .get_or_spawn(24, 120, Some(path), owner.clone(), None)
         .expect("cold restore final drained screen");
@@ -882,6 +891,7 @@ async fn test_atui_012_通常終了は実ptyを停止して出力drain後の最�
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_atui_012_明示kill後はcheckpointを復元せず起動コマンドを再実行する() {
+    let queue = releash_lib::terminal_surface::initialize_background_work_for_acceptance();
     let data_dir = tempfile::TempDir::new().unwrap();
     let cwd = tempfile::TempDir::new().unwrap();
     let path = cwd.path().to_string_lossy().into_owned();
@@ -891,7 +901,7 @@ async fn test_atui_012_明示kill後はcheckpointを復元せず起動コマン�
         "printf x >> {}",
         shell_quote(&startup_count.to_string_lossy())
     );
-    let runtime = TerminalSurfaceRuntime::new(data_dir.path().to_path_buf());
+    let runtime = TerminalSurfaceRuntime::new(queue.clone(), data_dir.path().to_path_buf());
 
     let first = runtime
         .get_or_spawn_with_startup(

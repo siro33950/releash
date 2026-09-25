@@ -69,3 +69,28 @@ fn test_購読対象_構造化入力を検証し対象名との変換を所有�
         assert!(SubscriptionTarget::from_parts(name, &args).is_err());
     }
 }
+
+#[test]
+fn test_失敗購読_対象と全体に更新を配信する() {
+    for target in ["tree", "*"] {
+        let subscription = SubscriptionTarget::Failures(target.into(), 0);
+        assert_eq!(
+            SubscriptionTarget::parse(&subscription.to_string()),
+            Ok(subscription.clone())
+        );
+        assert!(subscription.affected_by(&StateChangeSource::Failures("tree".into())));
+    }
+    assert!(!SubscriptionTarget::Failures("other".into(), 0)
+        .affected_by(&StateChangeSource::Failures("tree".into())));
+}
+
+#[test]
+fn test_失敗購読_ページ指定を検証して往復する() {
+    // Given / When
+    let target = SubscriptionTarget::from_parts("failures", &["*", "100"]).unwrap();
+    // Then
+    assert_eq!(SubscriptionTarget::parse(&target.to_string()), Ok(target));
+    for offset in ["0", "-1", "+100", "0100", "4096", "invalid"] {
+        assert!(SubscriptionTarget::from_parts("failures", &["*", offset]).is_err());
+    }
+}

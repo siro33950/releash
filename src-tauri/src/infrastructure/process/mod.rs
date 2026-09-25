@@ -1,3 +1,5 @@
+pub(crate) mod attempt;
+pub(crate) mod background_worker;
 pub(crate) mod child_process;
 pub(crate) mod command_runner;
 pub(crate) mod executable_probe;

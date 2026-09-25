@@ -1,5 +1,4 @@
 pub(crate) mod checkpoint_journal;
-pub(crate) mod checkpoint_scheduler;
 pub(crate) mod native_pty;
 pub(crate) mod output_batcher;
 pub(crate) mod shell_integration;

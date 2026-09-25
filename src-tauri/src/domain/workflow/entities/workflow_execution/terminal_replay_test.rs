@@ -159,3 +159,25 @@ fn test_起動時前進失敗_理由付きabortは実行中だけに一度適用
     completed.replay_terminal_fact(&NodeFact::ExecutionCompleted, 2.0);
     assert!(completed.abort_with_reason("late".into(), 3.0).is_none());
 }
+
+impl ExecutionTree {
+    pub fn abort_unavailable_definition(
+        &mut self,
+        reason: Option<String>,
+        timestamp: f64,
+    ) -> Option<NodeFact> {
+        self.abort_with_reason(reason?, timestamp)
+    }
+
+    pub fn abort_with_reason(&mut self, reason: String, timestamp: f64) -> Option<NodeFact> {
+        if !self.is_active() {
+            return None;
+        }
+        self.replay_aborted_at(timestamp, Some(reason.clone()));
+        Some(NodeFact::AbortRequested(
+            crate::domain::workflow::AbortRequestedFact {
+                reason: Some(reason),
+            },
+        ))
+    }
+}

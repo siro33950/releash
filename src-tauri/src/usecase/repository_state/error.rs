@@ -5,6 +5,11 @@ use crate::usecase::repository_error::UsecaseError;
 pub enum RepositoryStateError {
     #[error("Repository changed during rescan; retry the refresh")]
     ScanInvalidated,
+    #[error("{message}")]
+    Background {
+        kind: crate::domain::failure::FailureKind,
+        message: String,
+    },
     #[error(transparent)]
     Repository(#[from] UsecaseError),
     #[error(transparent)]
@@ -17,6 +22,7 @@ impl crate::domain::failure::ClassifiedFailure for RepositoryStateError {
     fn failure_kind(&self) -> crate::domain::failure::FailureKind {
         use crate::domain::failure::FailureKind as F;
         match self {
+            Self::Background { kind, .. } => *kind,
             Self::ScanInvalidated => F::RestartRequired,
             Self::Repository(error) => error.failure_kind(),
             Self::Code(error) => error.failure_kind(),

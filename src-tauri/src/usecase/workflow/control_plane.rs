@@ -16,6 +16,7 @@ use super::runtime_driver::{self, NodeOutcome};
 use super::runtime_error::WorkflowRuntimeError;
 use super::runtime_snapshot::RuntimeCommitSnapshot;
 
+#[derive(Clone)]
 pub(crate) struct WorkflowControlPlaneCommit {
     pub(crate) execution_id: String,
     pub(crate) before: DomainExecutionTree,
@@ -94,18 +95,60 @@ pub(crate) trait WorkflowControlPlaneGateway: Send + Sync {
 
 #[derive(Clone)]
 pub(crate) struct WorkflowControlPlaneUsecase {
+    queue: std::sync::Arc<crate::usecase::work_queue::WorkQueueUsecase>,
     runtime: Arc<dyn WorkflowControlPlaneGateway>,
     startup: Option<Arc<super::startup::WorkflowStartupUsecase>>,
 }
 
 impl WorkflowControlPlaneUsecase {
+    async fn commit_control_plane(
+        &self,
+        commit: WorkflowControlPlaneCommit,
+    ) -> Result<RuntimeCommitSnapshot, WorkflowError> {
+        crate::usecase::work_queue::retry_stage(
+            &self.queue,
+            crate::usecase::work_queue::WorkKey::new(
+                "workflow_control_plane",
+                &commit.execution_id,
+            ),
+            crate::domain::retry::RetryBackoff::CONFLICT,
+            || self.runtime.commit_control_plane(commit.clone()),
+        )
+        .await
+    }
+
+    async fn finish_control_plane_commit(
+        &self,
+        worktree: &str,
+        snapshot: &RuntimeCommitSnapshot,
+        outcome: Option<NodeOutcome>,
+    ) -> Result<(), WorkflowError> {
+        crate::usecase::work_queue::retry_stage(
+            &self.queue,
+            crate::usecase::work_queue::WorkKey::new(
+                "workflow_control_plane",
+                &snapshot.execution_id,
+            ),
+            crate::domain::retry::RetryBackoff::CONFLICT,
+            || {
+                self.runtime
+                    .finish_control_plane_commit(worktree, snapshot, outcome.clone())
+            },
+        )
+        .await
+    }
+
     fn node_execution_id_source(&self) -> impl FnMut() -> String {
         let runtime = Arc::clone(&self.runtime);
         move || runtime.new_node_execution_id()
     }
 
-    pub(crate) fn new(runtime: Arc<dyn WorkflowControlPlaneGateway>) -> Self {
+    pub(crate) fn new(
+        queue: std::sync::Arc<crate::usecase::work_queue::WorkQueueUsecase>,
+        runtime: Arc<dyn WorkflowControlPlaneGateway>,
+    ) -> Self {
         Self {
+            queue,
             runtime,
             startup: None,
         }
@@ -131,7 +174,7 @@ impl WorkflowControlPlaneUsecase {
         command: ApprovalCommand,
     ) -> Result<(), WorkflowError> {
         super::command::WorkflowRuntimeCommandPreflight.validate_approval(&command)?;
-        super::command::retry_control_plane_conflicts(|| {
+        super::command::retry_control_plane_conflicts(&self.queue, &command.execution_id, || {
             self.resolve_approval_once(command.clone())
         })
         .await
@@ -191,7 +234,6 @@ impl WorkflowControlPlaneUsecase {
             .map_err(runtime_error_to_workflow_error)?;
         let worktree_path = current.worktree_path.clone();
         let snapshot = self
-            .runtime
             .commit_control_plane(WorkflowControlPlaneCommit {
                 execution_id: command.execution_id,
                 before: current,
@@ -201,8 +243,7 @@ impl WorkflowControlPlaneUsecase {
                 provider_events: Vec::new(),
             })
             .await?;
-        self.runtime
-            .finish_control_plane_commit(&worktree_path, &snapshot, Some(outcome))
+        self.finish_control_plane_commit(&worktree_path, &snapshot, Some(outcome))
             .await?;
         self.auto_approve_if_needed(&snapshot).await
     }
@@ -237,8 +278,12 @@ impl WorkflowControlPlaneUsecase {
         &self,
         command: SubmitOutputCommand,
     ) -> Result<(), WorkflowError> {
-        super::command::retry_control_plane_conflicts(|| self.submit_output_once(command.clone()))
-            .await
+        super::command::retry_control_plane_conflicts(
+            &self.queue,
+            &command.node_execution_id,
+            || self.submit_output_once(command.clone()),
+        )
+        .await
     }
 
     async fn submit_output_once(&self, command: SubmitOutputCommand) -> Result<(), WorkflowError> {
@@ -371,7 +416,6 @@ impl WorkflowControlPlaneUsecase {
             };
         let worktree_path = current.worktree_path.clone();
         let snapshot = self
-            .runtime
             .commit_control_plane(WorkflowControlPlaneCommit {
                 execution_id,
                 before: current,
@@ -381,15 +425,18 @@ impl WorkflowControlPlaneUsecase {
                 provider_events: Vec::new(),
             })
             .await?;
-        self.runtime
-            .finish_control_plane_commit(&worktree_path, &snapshot, outcome)
+        self.finish_control_plane_commit(&worktree_path, &snapshot, outcome)
             .await?;
         self.auto_approve_if_needed(&snapshot).await
     }
 
     pub(crate) async fn retry_node(&self, command: RetryNodeCommand) -> Result<(), WorkflowError> {
-        super::command::retry_control_plane_conflicts(|| self.retry_node_once(command.clone()))
-            .await
+        super::command::retry_control_plane_conflicts(
+            &self.queue,
+            &command.node_execution_id,
+            || self.retry_node_once(command.clone()),
+        )
+        .await
     }
 
     async fn retry_node_once(&self, command: RetryNodeCommand) -> Result<(), WorkflowError> {
@@ -441,9 +488,11 @@ impl WorkflowControlPlaneUsecase {
                 "node_execution_id must not be empty",
             ));
         }
-        super::command::retry_control_plane_conflicts(|| {
-            self.resume_session_node_once(command.clone())
-        })
+        super::command::retry_control_plane_conflicts(
+            &self.queue,
+            &command.node_execution_id,
+            || self.resume_session_node_once(command.clone()),
+        )
         .await
     }
 
@@ -544,7 +593,6 @@ impl WorkflowControlPlaneUsecase {
         ];
         let worktree_path = current.worktree_path.clone();
         let snapshot = self
-            .runtime
             .commit_control_plane(WorkflowControlPlaneCommit {
                 execution_id,
                 before: current,
@@ -554,20 +602,19 @@ impl WorkflowControlPlaneUsecase {
                 provider_events: Vec::new(),
             })
             .await?;
-        self.runtime
-            .finish_control_plane_commit(
-                &worktree_path,
-                &snapshot,
-                Some(NodeOutcome::StartNodes(
-                    Box::new(snapshot.clone()),
-                    vec![
-                        crate::domain::workflow::entities::workflow_execution::NodeStart::Leaf(
-                            restarted.leaf,
-                        ),
-                    ],
-                )),
-            )
-            .await?;
+        self.finish_control_plane_commit(
+            &worktree_path,
+            &snapshot,
+            Some(NodeOutcome::StartNodes(
+                Box::new(snapshot.clone()),
+                vec![
+                    crate::domain::workflow::entities::workflow_execution::NodeStart::Leaf(
+                        restarted.leaf,
+                    ),
+                ],
+            )),
+        )
+        .await?;
         Ok(())
     }
 
@@ -576,9 +623,11 @@ impl WorkflowControlPlaneUsecase {
         command: crate::usecase::provider_lifecycle::ProviderExecutionTreeStopCommand,
         lifecycle_events: Vec<ScopedProviderLifecycleEvent>,
     ) -> Result<(), WorkflowError> {
-        super::command::retry_control_plane_conflicts(|| {
-            self.record_provider_stop_once(command.clone(), lifecycle_events.clone())
-        })
+        super::command::retry_control_plane_conflicts(
+            &self.queue,
+            &command.node_execution_id,
+            || self.record_provider_stop_once(command.clone(), lifecycle_events.clone()),
+        )
         .await
     }
 
@@ -664,7 +713,6 @@ impl WorkflowControlPlaneUsecase {
         };
         let worktree_path = current.worktree_path.clone();
         let snapshot = self
-            .runtime
             .commit_control_plane(WorkflowControlPlaneCommit {
                 execution_id: command.tree_id,
                 before: current,
@@ -674,8 +722,7 @@ impl WorkflowControlPlaneUsecase {
                 provider_events: lifecycle_events,
             })
             .await?;
-        self.runtime
-            .finish_control_plane_commit(&worktree_path, &snapshot, outcome)
+        self.finish_control_plane_commit(&worktree_path, &snapshot, outcome)
             .await?;
         self.auto_approve_if_needed(&snapshot).await
     }

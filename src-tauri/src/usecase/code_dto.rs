@@ -149,7 +149,7 @@ pub enum InlineChunkKindDto {
 // ── diff_tree（フィールド名は snake_case のまま＝移行前と等価） ──
 
 /// diff ファイルツリーのノードの転送表現。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiffTreeNodeDto {
     pub id: String,
     pub name: String,

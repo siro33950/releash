@@ -5,6 +5,7 @@
 //! in-memory list refresh lifecycle: retained results, failures, generations,
 //! and coalescing of pending full refresh requests.
 
+pub(crate) mod background_failure;
 mod entities;
 mod projection;
 mod refresh;

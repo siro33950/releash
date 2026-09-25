@@ -18,6 +18,7 @@ use crate::domain::workflow::entities::workflow_execution::{
 use crate::domain::workflow::WorkflowEvent;
 use crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot;
 
+#[derive(Clone)]
 pub(crate) enum NodeOutcome {
     /// 起動すべき runtime は無い（完了・承認待ち・並走子待ち）。
     Persist,

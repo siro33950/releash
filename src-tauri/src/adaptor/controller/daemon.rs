@@ -26,6 +26,9 @@ pub(crate) async fn compose(
         infrastructure::process::search_path::LoginShellPathError,
     >,
 ) -> Result<Daemon, Box<dyn std::error::Error>> {
+    let queue = usecase::work_queue::WorkQueueUsecase::new(Arc::new(
+        adaptor::gateway::work_queue::TokioWorkQueueRuntime::default(),
+    ));
     other::telemetry::set_startup_origin(std::time::Instant::now());
     let (exit_sender, exit_receiver) = tokio::sync::mpsc::channel(1);
     let app_data = super::app_data_composition::ProductionAppDataComposition::new(data_dir.clone());
@@ -48,12 +51,14 @@ pub(crate) async fn compose(
         Vec::new(),
         Arc::new(adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
     );
+    queue.set_publisher(state_subscriptions.publisher());
     let push_sink = Arc::new(infrastructure::push::PushSink::new());
 
     let projected_local_event_repository: Arc<
         dyn domain::local_event::LocalEventTransactionRepository,
     > = local_event_store.clone();
-    let terminal_surface_runtime = terminal_surface::TerminalSurfaceRuntime::new(data_dir.clone());
+    let terminal_surface_runtime =
+        terminal_surface::TerminalSurfaceRuntime::new(queue.clone(), data_dir.clone());
     let terminal_surface = terminal_surface_runtime.application();
     let review_comment_usecase =
         Arc::new(adaptor::controller::wiring::build_review_comment_usecase());
@@ -116,6 +121,7 @@ pub(crate) async fn compose(
     let agent_sessions =
                 adaptor::controller::agent_session_wiring::compose_agent_sessions(
                     adaptor::controller::agent_session_wiring::AgentSessionCompositionInput {
+                        queue: queue.clone(),
                         state_publisher: Some(state_subscriptions.publisher()),
                         store: local_event_store.clone(),
                         data_dir: data_dir.clone(),
@@ -156,15 +162,7 @@ pub(crate) async fn compose(
     let provider_execution_tree_stops = agent_sessions.execution_tree_stops.clone();
     let started_execution_tree_registrations = agent_sessions.execution_tree_registrations.clone();
     let provider_session_title_ingestion = agent_sessions.provider_session_title_ingestion.clone();
-    tokio::spawn(async move {
-        let mut interval =
-            tokio::time::interval(domain::agent_session::PROVIDER_SESSION_TITLE_TICK_INTERVAL);
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        loop {
-            interval.tick().await;
-            provider_session_title_ingestion.ingest_due().await;
-        }
-    });
+    provider_session_title_ingestion.start().await;
     let provider_agent_terminal_events = terminal_surface.subscribe_events();
     let shutdown_provider_exit_observer: Arc<dyn Fn() + Send + Sync> = Arc::new({
         let cancellation = provider_agent_terminal_events.cancellation.clone();
@@ -238,6 +236,7 @@ pub(crate) async fn compose(
         ),
     );
     let repository_state = Arc::new(usecase::repository_state::RepositoryStateService::new(
+        queue.clone(),
         repository_state_repository,
         repository_scanner,
         Arc::new(
@@ -271,6 +270,7 @@ pub(crate) async fn compose(
     );
     let (workflow_usecase, workspace_query_service) =
         adaptor::controller::wiring::build_workflow_services_with_repository_worktrees(
+            queue.clone(),
             data_dir.clone(),
             repository_usecase.clone(),
             config_repository.clone(),
@@ -314,6 +314,7 @@ pub(crate) async fn compose(
     };
     let workflow_runtime_usecase = Arc::new(
         adaptor::controller::wiring::build_workflow_runtime_usecase(
+            queue.clone(),
             adaptor::gateway::workflow::workflow_host::WorkflowRuntimeDependencies {
                 store: Some(local_event_store.clone()),
                 config: Some(config_repository.clone()),
@@ -361,7 +362,8 @@ pub(crate) async fn compose(
     });
 
     let workflow_query_usecase = workflow_usecase.clone();
-    infrastructure::comment::watcher::spawn_review_comments_watcher(
+    adaptor::gateway::comment::watcher::spawn_review_comments_watcher(
+        queue.clone(),
         adaptor::gateway::comment::state_dir(&data_dir),
         Arc::new({
             let app = push_sink.clone();
@@ -416,6 +418,7 @@ pub(crate) async fn compose(
     };
     let state_subscriptions = state_subscriptions.with_reads(
         Arc::new(usecase::state_subscription::WorkspaceStateReads {
+            queue: queue.clone(),
             repositories: dependencies
                 .app_state
                 .as_ref()

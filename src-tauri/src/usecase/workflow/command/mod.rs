@@ -16,36 +16,35 @@ pub use start_execution::{ResolvedStartExecutionCommand, StartExecutionCommand};
 pub(crate) use submit_output::WorkflowSubmitOutputUsecase;
 pub use submit_output::{SubmitOutputArtifact, SubmitOutputCommand};
 
-pub(crate) const CONTROL_PLANE_MAX_ATTEMPTS: usize = 4;
-
 pub(crate) async fn retry_control_plane_conflicts<T, F, Fut>(
+    queue: &std::sync::Arc<crate::usecase::work_queue::WorkQueueUsecase>,
+    target: &str,
     operation: F,
 ) -> Result<T, crate::domain::workflow::WorkflowError>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<T, crate::domain::workflow::WorkflowError>>,
 {
-    retry_control_plane_operation(operation, |error| {
-        matches!(error, crate::domain::workflow::WorkflowError::Conflict(_))
-    })
-    .await
+    retry_control_plane_operation(queue, target, operation).await
 }
 
 pub(crate) async fn retry_control_plane_operation<T, E, F, Fut>(
-    mut operation: F,
-    retryable: impl Fn(&E) -> bool,
+    queue: &std::sync::Arc<crate::usecase::work_queue::WorkQueueUsecase>,
+    target: &str,
+    operation: F,
 ) -> Result<T, E>
 where
+    E: crate::domain::failure::ClassifiedFailure + std::fmt::Debug,
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<T, E>>,
 {
-    for attempt in 1..=CONTROL_PLANE_MAX_ATTEMPTS {
-        match operation().await {
-            Err(error) if attempt < CONTROL_PLANE_MAX_ATTEMPTS && retryable(&error) => {}
-            result => return result,
-        }
-    }
-    unreachable!("bounded control-plane retry always returns from the loop")
+    crate::usecase::work_queue::retry(
+        queue,
+        crate::usecase::work_queue::WorkKey::new("workflow_control_plane", target),
+        crate::domain::retry::RetryBackoff::CONFLICT,
+        operation,
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -218,13 +217,17 @@ mod tests {
     async fn control_plane_conflict_is_retried_until_the_operation_converges() {
         let attempts = AtomicUsize::new(0);
 
-        let result = super::retry_control_plane_conflicts(|| async {
-            if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
-                Err(WorkflowError::Conflict("stale workflow head".to_string()))
-            } else {
-                Ok("committed")
-            }
-        })
+        let result = super::retry_control_plane_conflicts(
+            crate::usecase::work_queue::shared(),
+            "test",
+            || async {
+                if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                    Err(WorkflowError::Conflict("stale workflow head".to_string()))
+                } else {
+                    Ok("committed")
+                }
+            },
+        )
         .await;
 
         assert_eq!(result.unwrap(), "committed");
@@ -232,20 +235,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn control_plane_conflict_retry_is_bounded() {
+    async fn test_競合再試行_4回を超えて収束する() {
         let attempts = AtomicUsize::new(0);
 
-        let result = super::retry_control_plane_conflicts(|| async {
-            attempts.fetch_add(1, Ordering::SeqCst);
-            Err::<(), _>(WorkflowError::Conflict("stale workflow head".to_string()))
-        })
+        let result = super::retry_control_plane_conflicts(
+            crate::usecase::work_queue::shared(),
+            "test",
+            || async {
+                if attempts.fetch_add(1, Ordering::SeqCst) < 5 {
+                    Err(WorkflowError::Conflict("stale workflow head".to_string()))
+                } else {
+                    Ok(())
+                }
+            },
+        )
         .await;
 
-        assert!(matches!(result, Err(WorkflowError::Conflict(_))));
-        assert_eq!(
-            attempts.load(Ordering::SeqCst),
-            super::CONTROL_PLANE_MAX_ATTEMPTS
-        );
+        assert!(result.is_ok());
+        assert_eq!(attempts.load(Ordering::SeqCst), 6);
     }
 
     #[tokio::test]
@@ -294,16 +301,19 @@ mod tests {
             })
             .await
             .is_err());
-        assert!(WorkflowSubmitOutputUsecase::new(gateway.clone())
-            .execute(SubmitOutputCommand {
-                node_execution_id: "node-execution-1".to_string(),
-                artifact: Some(SubmitOutputArtifact {
-                    contract: " ".to_string(),
-                    value: serde_json::json!({}),
-                }),
-            })
-            .await
-            .is_err());
+        assert!(WorkflowSubmitOutputUsecase::new(
+            crate::usecase::work_queue::shared().clone(),
+            gateway.clone()
+        )
+        .execute(SubmitOutputCommand {
+            node_execution_id: "node-execution-1".to_string(),
+            artifact: Some(SubmitOutputArtifact {
+                contract: " ".to_string(),
+                value: serde_json::json!({}),
+            }),
+        })
+        .await
+        .is_err());
         assert!(gateway.calls.lock().unwrap().is_empty());
     }
 }

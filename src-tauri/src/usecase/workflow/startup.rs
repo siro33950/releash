@@ -11,17 +11,20 @@ pub(crate) trait WorkflowStartupGateway: Send + Sync {
 pub(crate) struct WorkflowStartupUsecase {
     repository: Arc<dyn WorkflowStartupRepository>,
     runtime: Arc<dyn WorkflowStartupGateway>,
+    queue: Arc<crate::usecase::work_queue::WorkQueueUsecase>,
     recovery_lock: tokio::sync::Mutex<bool>,
 }
 
 impl WorkflowStartupUsecase {
     pub(crate) fn new(
+        queue: std::sync::Arc<crate::usecase::work_queue::WorkQueueUsecase>,
         repository: Arc<dyn WorkflowStartupRepository>,
         runtime: Arc<dyn WorkflowStartupGateway>,
     ) -> Self {
         Self {
             repository,
             runtime,
+            queue,
             recovery_lock: tokio::sync::Mutex::new(false),
         }
     }
@@ -32,79 +35,87 @@ impl WorkflowStartupUsecase {
             return Ok(());
         }
         *attempted = true;
-        let mut first_error = None;
-        for tree_id in self.repository.list_tree_ids().await? {
-            let timestamp = self.runtime.current_timestamp();
-            let result = match super::command::retry_control_plane_conflicts(|| async {
-                abort_unavailable_definition(self.repository.as_ref(), &tree_id, timestamp).await
-            })
+        let repository = self.repository.clone();
+        let tree_ids = self
+            .queue
+            .execute(
+                crate::usecase::work_queue::WorkKey::new("workflow_recovery_list", "daemon"),
+                crate::domain::retry::RetryBackoff::RECOVERY,
+                move |_| {
+                    let repository = repository.clone();
+                    async move {
+                        repository.list_tree_ids().await.map_err(|error| {
+                            crate::usecase::work_queue::WorkFailure::from_error(&error)
+                        })
+                    }
+                },
+            )
             .await
-            {
-                Ok(()) => self.runtime.reconcile_tree(&tree_id, timestamp).await,
-                Err(error @ WorkflowError::Conflict(_)) => {
-                    log::warn!(
-                        "workflow {tree_id}: startup definition abort was not applied: {error}"
-                    );
-                    first_error.get_or_insert(error);
-                    continue;
-                }
-                Err(error) => Err(error),
-            };
-            if let Err(error) = result {
-                let reason = format!("workflow {tree_id}: startup advancement failed: {error}");
-                log::warn!("{reason}");
-                if let Err(abort_error) = super::command::retry_control_plane_conflicts(|| async {
-                    abort_startup_failure(
-                        self.repository.as_ref(),
-                        &tree_id,
-                        reason.clone(),
-                        timestamp,
+            .map_err(recovery_error)?;
+        let results = futures_util::future::join_all(tree_ids.into_iter().map(|tree_id| {
+            let repository = self.repository.clone();
+            let runtime = self.runtime.clone();
+            let checked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            async move {
+                self.queue
+                    .execute(
+                        crate::usecase::work_queue::WorkKey::new("workflow_recovery", &tree_id),
+                        crate::domain::retry::RetryBackoff::RECOVERY,
+                        move |action| {
+                            let repository = repository.clone();
+                            let runtime = runtime.clone();
+                            let tree_id = tree_id.clone();
+                            let checked = checked.clone();
+                            async move {
+                                if action == crate::domain::failure::RetryAction::Restart {
+                                    checked.store(false, std::sync::atomic::Ordering::Release);
+                                }
+                                if !checked.load(std::sync::atomic::Ordering::Acquire) {
+                                    check_startup_definition(repository.as_ref(), &tree_id)
+                                        .await
+                                        .map_err(|error| {
+                                            crate::usecase::work_queue::WorkFailure::from_error(
+                                                &error,
+                                            )
+                                        })?;
+                                    checked.store(true, std::sync::atomic::Ordering::Release);
+                                }
+                                runtime
+                                    .reconcile_tree(&tree_id, runtime.current_timestamp())
+                                    .await
+                                    .map_err(|error| {
+                                        crate::usecase::work_queue::WorkFailure::from_error(&error)
+                                    })
+                            }
+                        },
                     )
                     .await
-                })
-                .await
-                {
-                    log::error!("{reason}; abort failed: {abort_error}");
-                }
-                first_error.get_or_insert_with(|| WorkflowError::external(reason));
+                    .map_err(recovery_error)
             }
+        }))
+        .await;
+        results.into_iter().collect()
+    }
+}
+
+fn recovery_error(error: crate::usecase::work_queue::WorkFailure) -> WorkflowError {
+    WorkflowError::StorageUnavailable {
+        kind: error.kind,
+        message: error.message,
+    }
+}
+
+pub(crate) async fn check_startup_definition(
+    repository: &dyn WorkflowStartupRepository,
+    tree_id: &str,
+) -> Result<(), WorkflowError> {
+    let Some(record) = repository.load(tree_id).await? else {
+        return Ok(());
+    };
+    if record.execution.is_active() {
+        if let Some(reason) = record.definition_error {
+            return Err(WorkflowError::IncompatibleStoredEvent(reason));
         }
-        first_error.map_or(Ok(()), Err)
-    }
-}
-
-async fn abort_startup_failure(
-    repository: &dyn WorkflowStartupRepository,
-    tree_id: &str,
-    reason: String,
-    timestamp: f64,
-) -> Result<(), WorkflowError> {
-    let Some(mut record) = repository.load(tree_id).await? else {
-        return Ok(());
-    };
-    if let Some(fact) = record.execution.abort_with_reason(reason, timestamp) {
-        repository
-            .append(&record.root, &fact, timestamp, Some(&record.revision))
-            .await?;
-    }
-    Ok(())
-}
-
-pub async fn abort_unavailable_definition(
-    repository: &dyn WorkflowStartupRepository,
-    tree_id: &str,
-    timestamp: f64,
-) -> Result<(), WorkflowError> {
-    let Some(mut record) = repository.load(tree_id).await? else {
-        return Ok(());
-    };
-    if let Some(fact) = record
-        .execution
-        .abort_unavailable_definition(record.definition_error, timestamp)
-    {
-        repository
-            .append(&record.root, &fact, timestamp, Some(&record.revision))
-            .await?;
     }
     Ok(())
 }

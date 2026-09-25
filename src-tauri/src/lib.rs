@@ -17,8 +17,8 @@ pub mod workflow_delegate_acceptance;
 pub mod workflow_diagnostics_acceptance;
 pub mod terminal_surface {
     pub use crate::adaptor::controller::terminal_surface_runtime::{
-        TerminalSurfaceEventFault, TerminalSurfaceEventFaultController, TerminalSurfaceRuntime,
-        TerminalSurfaceWireAttachment,
+        initialize_background_work_for_acceptance, TerminalSurfaceEventFault,
+        TerminalSurfaceEventFaultController, TerminalSurfaceRuntime, TerminalSurfaceWireAttachment,
     };
     pub use crate::adaptor::protocol::terminal::{
         GetOrSpawnTerminalV1, TerminalProcessLaunchV1, TerminalSurfaceOwnerV1,
@@ -81,3 +81,8 @@ pub fn run_daemon(data_dir: Option<std::path::PathBuf>) -> i32 {
 
 #[cfg(all(debug_assertions, feature = "desktop"))]
 mod desktop_test_support;
+
+#[doc(hidden)]
+pub fn run_background_worker() -> i32 {
+    adaptor::controller::background_worker::run()
+}

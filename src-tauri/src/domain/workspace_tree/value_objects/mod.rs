@@ -161,8 +161,11 @@ impl WorkspaceTreeNode {
         activity: Option<AgentSessionActivity>,
         session_bound: bool,
         process_presence: NodeProcessPresence,
+        has_error: bool,
     ) -> WorkspaceNodeStatusClassification {
-        if matches!(
+        if has_error {
+            WorkspaceNodeStatusClassification::Attention
+        } else if matches!(
             status,
             WorkspaceNodeStatus::Completed | WorkspaceNodeStatus::Aborted
         ) {
@@ -197,6 +200,7 @@ impl WorkspaceTreeNode {
             self.activity,
             self.session_id.is_some(),
             self.process_presence,
+            false,
         )
     }
 }

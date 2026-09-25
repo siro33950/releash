@@ -37,26 +37,6 @@ impl ExecutionTree {
         }
     }
 
-    pub fn abort_unavailable_definition(
-        &mut self,
-        reason: Option<String>,
-        timestamp: f64,
-    ) -> Option<NodeFact> {
-        self.abort_with_reason(reason?, timestamp)
-    }
-
-    pub fn abort_with_reason(&mut self, reason: String, timestamp: f64) -> Option<NodeFact> {
-        if !self.is_active() {
-            return None;
-        }
-        self.replay_aborted_at(timestamp, Some(reason.clone()));
-        Some(NodeFact::AbortRequested(
-            crate::domain::workflow::AbortRequestedFact {
-                reason: Some(reason),
-            },
-        ))
-    }
-
     pub fn replay_terminal_fact(&mut self, fact: &NodeFact, timestamp: f64) {
         let Some(state) = fact.terminal_state() else {
             return;

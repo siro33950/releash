@@ -815,6 +815,7 @@ fn setup_persistence_usecase() -> (TempDir, Arc<LocalEventStore>, ProviderLifecy
     ))
     .unwrap();
     let events = LocalProviderLifecycleEventRepository::new(
+        crate::usecase::work_queue::shared().clone(),
         store.clone() as Arc<dyn LocalEventTransactionRepository>,
         store.installation_id().to_string(),
     );
@@ -1183,6 +1184,7 @@ async fn test_providerライフサイクル再試行_outcome_unknownの照会失
     .unwrap();
     let repository = Arc::new(ResolveFailureOnceRepository::new(store.clone()));
     let events = LocalProviderLifecycleEventRepository::new(
+        crate::usecase::work_queue::shared().clone(),
         repository as Arc<dyn LocalEventTransactionRepository>,
         store.installation_id().to_string(),
     );
@@ -1217,8 +1219,7 @@ async fn test_providerライフサイクル再試行_outcome_unknownの照会失
 }
 
 #[tokio::test]
-async fn test_providerライフサイクル再試行_outcome_unknownを有限時間で返し再送で同一commitを確定する(
-) {
+async fn test_providerライフサイクル再試行_中断後も同一commitを確定して重複を防ぐ() {
     let directory = TempDir::new().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
@@ -1226,6 +1227,7 @@ async fn test_providerライフサイクル再試行_outcome_unknownを有限時
     .unwrap();
     let repository = Arc::new(ResolveFailureRepository::new(store.clone()));
     let events = LocalProviderLifecycleEventRepository::new(
+        crate::usecase::work_queue::shared().clone(),
         repository.clone() as Arc<dyn LocalEventTransactionRepository>,
         store.installation_id().to_string(),
     );
@@ -1253,14 +1255,13 @@ async fn test_providerライフサイクル再試行_outcome_unknownを有限時
         .arm_crash_after_commit_before_readback();
 
     let first = tokio::time::timeout(
-        std::time::Duration::from_millis(500),
+        std::time::Duration::from_millis(100),
         usecase.receive(armed.slot_id(), armed.capability(), session_start()),
     )
-    .await
-    .expect("persistent resolve failure must not block the Slot indefinitely");
-    assert_eq!(
-        first,
-        Err(crate::usecase::provider_lifecycle::ProviderLifecycleUsecaseError::StorageUnavailable)
+    .await;
+    assert!(
+        first.is_err(),
+        "temporary resolution failures remain retryable"
     );
 
     repository.set_resolve_failure(false);

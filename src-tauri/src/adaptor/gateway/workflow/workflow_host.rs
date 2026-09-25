@@ -99,6 +99,7 @@ fn current_timestamp() -> f64 {
 /// 記録から取得した Workflow 集約と usecase の駆動手順を外界へ接続する gateway host。
 #[derive(Clone)]
 pub struct WorkflowRuntimeHost {
+    queue: std::sync::Arc<crate::usecase::work_queue::WorkQueueUsecase>,
     workflow_start_locks: Arc<Mutex<HashMap<String, Weak<Mutex<()>>>>>,
     commit_locks: Arc<Mutex<HashMap<String, Weak<Mutex<()>>>>>,
     /// execution_id → 解決済み facet 本文。workflow state / event には含めない runtime-local read model。
@@ -127,6 +128,7 @@ pub struct WorkflowRuntimeHost {
         Option<Arc<crate::usecase::workflow::delegate::DelegateContinuationUsecase>>,
 }
 
+#[derive(Clone)]
 struct ControlPlaneCommitCandidate<'a> {
     execution_id: &'a str,
     snapshot_before: DomainExecutionTree,
@@ -252,15 +254,16 @@ fn build_command_artifact(
     }
 }
 
-async fn retry_runtime_conflicts<T, F, Fut>(operation: F) -> Result<T, WorkflowRuntimeError>
+async fn retry_runtime_conflicts<T, F, Fut>(
+    queue: &std::sync::Arc<crate::usecase::work_queue::WorkQueueUsecase>,
+    target: &str,
+    operation: F,
+) -> Result<T, WorkflowRuntimeError>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<T, WorkflowRuntimeError>>,
 {
-    crate::usecase::workflow::command::retry_control_plane_operation(operation, |error| {
-        matches!(error, WorkflowRuntimeError::Conflict(_))
-    })
-    .await
+    crate::usecase::workflow::command::retry_control_plane_operation(queue, target, operation).await
 }
 
 impl WorkflowRuntimeHost {
@@ -444,6 +447,7 @@ impl WorkflowRuntimeHost {
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_canonical(
+        queue: std::sync::Arc<crate::usecase::work_queue::WorkQueueUsecase>,
         workflow_resolver: Arc<dyn WorkflowDefinitionResolver>,
         worktree_resolver: Arc<dyn ManagedWorktreeResolver>,
         workspace_query: Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
@@ -454,6 +458,7 @@ impl WorkflowRuntimeHost {
         isolated_worktrees: Arc<dyn crate::domain::workflow::IsolatedWorktreeGateway>,
     ) -> Self {
         Self::with_runtime_ports(
+            queue,
             workflow_resolver,
             worktree_resolver,
             workspace_query,
@@ -468,6 +473,7 @@ impl WorkflowRuntimeHost {
     }
 
     pub(crate) fn with_runtime_ports(
+        queue: std::sync::Arc<crate::usecase::work_queue::WorkQueueUsecase>,
         workflow_resolver: Arc<dyn WorkflowDefinitionResolver>,
         worktree_resolver: Arc<dyn ManagedWorktreeResolver>,
         workspace_query: Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
@@ -475,6 +481,7 @@ impl WorkflowRuntimeHost {
         isolated_worktrees: Arc<dyn crate::domain::workflow::IsolatedWorktreeGateway>,
     ) -> Self {
         Self {
+            queue,
             workflow_start_locks: Arc::new(Mutex::new(HashMap::new())),
             commit_locks: Arc::new(Mutex::new(HashMap::new())),
             execution_facet_contents: Arc::new(Mutex::new(HashMap::new())),
@@ -658,7 +665,10 @@ impl WorkflowRuntimeHost {
                     crate::domain::workflow::WorkflowError::Conflict(reason) => {
                         WorkflowRuntimeError::Conflict(reason)
                     }
-                    error => WorkflowRuntimeError::SessionStore(error.to_string()),
+                    error => WorkflowRuntimeError::StorageFailure {
+                        kind: error.failure_kind(),
+                        message: error.to_string(),
+                    },
                 })?
         else {
             return Ok(());
@@ -834,6 +844,20 @@ impl WorkflowRuntimeHost {
     }
 
     async fn commit_control_plane_candidate(
+        &self,
+        app: &WorkflowRuntimeDependencies,
+        commit: ControlPlaneCommitCandidate<'_>,
+    ) -> Result<RuntimeCommitSnapshot, WorkflowRuntimeError> {
+        crate::usecase::work_queue::retry_stage(
+            &self.queue,
+            crate::usecase::work_queue::WorkKey::new("workflow_runtime", commit.execution_id),
+            crate::domain::retry::RetryBackoff::CONFLICT,
+            || self.commit_control_plane_candidate_once(app, commit.clone()),
+        )
+        .await
+    }
+
+    async fn commit_control_plane_candidate_once(
         &self,
         app: &WorkflowRuntimeDependencies,
         commit: ControlPlaneCommitCandidate<'_>,
@@ -1047,7 +1071,8 @@ impl WorkflowRuntimeHost {
         execution_id: &str,
         worktree_path: &str,
         starts: Vec<NodeStart>,
-    ) -> Result<Vec<String>, WorkflowRuntimeError> {
+    ) -> Result<Vec<crate::usecase::workflow::node_startup::FailedNodeStart>, WorkflowRuntimeError>
+    {
         if starts.is_empty() {
             return Ok(Vec::new());
         }
@@ -1235,7 +1260,7 @@ impl WorkflowRuntimeHost {
         }
         if !session_setups.is_empty() {
             let timestamp = current_timestamp();
-            let commit_result: Result<RuntimeCommitSnapshot, WorkflowRuntimeError> = retry_runtime_conflicts(|| async {
+            let commit_result: Result<RuntimeCommitSnapshot, WorkflowRuntimeError> = retry_runtime_conflicts(&self.queue, &execution_id, || async {
                     let snapshot_before = self.load_execution(app, &execution_id).await?;
                     let mut candidate = snapshot_before.clone();
                     let mut events = Vec::new();
@@ -1347,9 +1372,14 @@ impl WorkflowRuntimeHost {
             }
         }
         for (node_execution_id, error) in session_failures {
-            failed.push(node_execution_id.clone());
-            self.settle_runtime_failure_for_node(app, &execution_id, &node_execution_id, &error)
-                .await?;
+            self.record_node_start_failure(
+                app,
+                &execution_id,
+                &node_execution_id,
+                &error,
+                &mut failed,
+            )
+            .await?;
         }
         for input in command_inputs {
             let (node_execution_id, result) = match input {
@@ -1366,12 +1396,12 @@ impl WorkflowRuntimeHost {
                 ),
             };
             if let Err(error) = result {
-                failed.push(node_execution_id.clone());
-                self.settle_runtime_failure_for_node(
+                self.record_node_start_failure(
                     app,
                     &execution_id,
                     &node_execution_id,
                     &error,
+                    &mut failed,
                 )
                 .await?;
                 log::warn!(
@@ -1380,6 +1410,39 @@ impl WorkflowRuntimeHost {
             }
         }
         Ok(failed)
+    }
+
+    async fn record_node_start_failure(
+        &self,
+        app: &WorkflowRuntimeDependencies,
+        execution_id: &str,
+        node_execution_id: &str,
+        error: &WorkflowRuntimeError,
+        failed: &mut Vec<crate::usecase::workflow::node_startup::FailedNodeStart>,
+    ) -> Result<(), WorkflowRuntimeError> {
+        use crate::domain::failure::RetryAction;
+        self.queue
+            .observe(
+                &crate::usecase::work_queue::WorkKey::new("workflow_node_start", node_execution_id),
+                &crate::usecase::work_queue::WorkFailure::from_error(error),
+            )
+            .await;
+        if error.failure_kind().retry_action() != RetryAction::Stop {
+            failed.push(crate::usecase::workflow::node_startup::FailedNodeStart {
+                id: node_execution_id.into(),
+                kind: error.failure_kind(),
+            });
+        }
+        if error.failure_kind().retry_action() != RetryAction::Restart {
+            Box::pin(self.settle_runtime_failure_for_node(
+                app,
+                execution_id,
+                node_execution_id,
+                error,
+            ))
+            .await?;
+        }
+        Ok(())
     }
 
     async fn rollback_prepared_sessions(
@@ -1670,7 +1733,7 @@ impl WorkflowRuntimeHost {
         let result_summary = artifact.result_summary.clone();
         let timestamp = current_timestamp();
 
-        let committed = retry_runtime_conflicts(|| async {
+        let committed = retry_runtime_conflicts(&self.queue, &input.node_execution_id, || async {
             let (outcome, snapshot_before, candidate, worktree_path, required_events) = {
                 let Some(mut loaded) = self.load_current_command(app, &input).await? else {
                     return Ok(None);
@@ -1803,7 +1866,7 @@ impl WorkflowRuntimeHost {
             retry_count: None,
             timestamp: current_timestamp(),
         }];
-        let snapshot = retry_runtime_conflicts(|| async {
+        let snapshot = retry_runtime_conflicts(&self.queue, &input.node_execution_id, || async {
             let Some(before) = self.load_current_command(app, input).await? else {
                 return Ok(None);
             };
@@ -2055,6 +2118,8 @@ impl WorkflowRuntimeHost {
         let failure_kind = error.workflow_failure_kind();
         let reason = format!("workflow runtime activation failed: {error}");
         crate::usecase::workflow::command::retry_control_plane_operation(
+            &self.queue,
+            node_execution_id,
             || {
                 self.settle_node_failure_for_node(
                     app,
@@ -2062,12 +2127,6 @@ impl WorkflowRuntimeHost {
                     node_execution_id,
                     reason.clone(),
                     failure_kind,
-                )
-            },
-            |error| {
-                matches!(
-                    error,
-                    WorkflowRuntimeError::Conflict(_) | WorkflowRuntimeError::SessionStore(_)
                 )
             },
         )
@@ -2303,6 +2362,7 @@ mod workflow_host_tests {
                 .unwrap();
                 let app = test_helpers::dependencies(Some(store.clone()));
                 let host = Arc::new(WorkflowRuntimeHost::with_runtime_ports(
+                    crate::usecase::work_queue::shared().clone(),
                     Arc::new(UnusedWorkflowResolver),
                     Arc::new(AcceptingWorktreeResolver),
                     test_helpers::workspace_query(store.clone()),
@@ -2427,15 +2487,18 @@ mod workflow_host_tests {
                         app.clone(),
                         host.clone(),
                     ));
-                    WorkflowControlPlaneUsecase::new(gateway)
-                        .resolve_approval(ApprovalCommand {
-                            execution_id: execution_id.clone(),
-                            node_name: node_name.to_string(),
-                            node_execution_id: Some(node_execution_id.clone()),
-                            comment: None,
-                        })
-                        .await
-                        .unwrap();
+                    WorkflowControlPlaneUsecase::new(
+                        crate::usecase::work_queue::shared().clone(),
+                        gateway,
+                    )
+                    .resolve_approval(ApprovalCommand {
+                        execution_id: execution_id.clone(),
+                        node_name: node_name.to_string(),
+                        node_execution_id: Some(node_execution_id.clone()),
+                        comment: None,
+                    })
+                    .await
+                    .unwrap();
                     let records = workflow_fact_log::read_tree_records(&store, &execution_id)
                         .await
                         .unwrap();
@@ -2503,9 +2566,9 @@ mod workflow_host_tests {
             }
 
             // When
-            let result = fixture
-                .host
-                .commit_command_output(
+            let result = tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                fixture.host.commit_command_output(
                     &fixture.app,
                     input.clone(),
                     CommandRunOutput {
@@ -2514,17 +2577,15 @@ mod workflow_host_tests {
                         stderr: String::new(),
                         duration_ms: 1,
                     },
-                )
-                .await;
+                ),
+            )
+            .await;
 
             // Then
             if durable {
-                result.unwrap();
+                result.unwrap().unwrap();
             } else {
-                assert!(result
-                    .unwrap_err()
-                    .to_string()
-                    .contains("outcome is unknown"));
+                assert!(result.is_err());
             }
             let records = workflow_fact_log::read_tree_records(&fixture.store, execution_id)
                 .await
@@ -2645,23 +2706,26 @@ mod workflow_host_tests {
             }
 
             // When
-            let result = WorkflowControlPlaneUsecase::new(gateway)
-                .resolve_approval(ApprovalCommand {
+            let control_plane = WorkflowControlPlaneUsecase::new(
+                crate::usecase::work_queue::shared().clone(),
+                gateway,
+            );
+            let result = tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                control_plane.resolve_approval(ApprovalCommand {
                     execution_id: execution_id.clone(),
                     node_name: node.node_name.clone(),
                     node_execution_id: Some(node.id.clone()),
                     comment: None,
-                })
-                .await;
+                }),
+            )
+            .await;
 
             // Then
             if durable {
-                result.unwrap();
+                result.unwrap().unwrap();
             } else {
-                assert!(result
-                    .unwrap_err()
-                    .to_string()
-                    .contains("outcome is unknown"));
+                assert!(result.is_err());
             }
             let records = workflow_fact_log::read_tree_records(&fixture.store, execution_id)
                 .await
@@ -2719,6 +2783,7 @@ mod workflow_host_tests {
         .unwrap();
         let app = test_helpers::dependencies(Some(store.clone()));
         let host = WorkflowRuntimeHost::with_runtime_ports(
+            crate::usecase::work_queue::shared().clone(),
             Arc::new(UnusedWorkflowResolver),
             Arc::new(AcceptingWorktreeResolver),
             test_helpers::workspace_query(store.clone()),
@@ -2756,7 +2821,7 @@ nodes:
             .get_state_by_execution_id(&app, &execution_id)
             .await
             .unwrap();
-        assert_eq!(snapshot.node_executions.len(), 5);
+        assert_eq!(snapshot.node_executions.len(), 1);
         assert_eq!(
             snapshot.node_executions.last().unwrap().status,
             NodeExecutionStatus::Running
@@ -2799,6 +2864,7 @@ nodes:
         .unwrap();
         let app = test_helpers::dependencies(Some(store.clone()));
         let host = WorkflowRuntimeHost::with_runtime_ports(
+            crate::usecase::work_queue::shared().clone(),
             Arc::new(UnusedWorkflowResolver),
             Arc::new(AcceptingWorktreeResolver),
             test_helpers::workspace_query(store.clone()),
@@ -3429,6 +3495,7 @@ nodes:
             let store = LocalEventStore::open(config).unwrap();
             let app = test_helpers::dependencies(Some(store.clone()));
             let host = Arc::new(WorkflowRuntimeHost::with_runtime_ports(
+                crate::usecase::work_queue::shared().clone(),
                 Arc::new(UnusedWorkflowResolver),
                 Arc::new(AcceptingWorktreeResolver),
                 test_helpers::workspace_query(store.clone()),
@@ -3495,12 +3562,17 @@ nodes:
                 app.clone(),
                 host.clone(),
             ));
-            let control_plane = WorkflowControlPlaneUsecase::new(gateway).with_startup(
-                crate::adaptor::controller::wiring::wire_workflow_startup(
-                    app.clone(),
-                    host.clone(),
-                ),
-            );
+            let control_plane = WorkflowControlPlaneUsecase::new(
+                crate::usecase::work_queue::shared().clone(),
+                gateway,
+            )
+            .with_startup(crate::adaptor::controller::wiring::wire_workflow_startup(
+                crate::usecase::work_queue::WorkQueueUsecase::new(std::sync::Arc::new(
+                    crate::usecase::work_queue::ImmediateWorkQueueRuntime::default(),
+                )),
+                app.clone(),
+                host.clone(),
+            ));
             RuntimeEffectFixture {
                 app,
                 store,
@@ -3523,6 +3595,7 @@ nodes:
             let app = test_helpers::dependencies(Some(store.clone()));
             let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
             let host = Arc::new(WorkflowRuntimeHost::with_runtime_ports(
+                crate::usecase::work_queue::shared().clone(),
                 Arc::new(UnusedWorkflowResolver),
                 Arc::new(AcceptingWorktreeResolver),
                 test_helpers::workspace_query(store.clone()),
@@ -3598,12 +3671,17 @@ nodes:
                 app.clone(),
                 host.clone(),
             ));
-            let control_plane = WorkflowControlPlaneUsecase::new(gateway).with_startup(
-                crate::adaptor::controller::wiring::wire_workflow_startup(
-                    app.clone(),
-                    host.clone(),
-                ),
-            );
+            let control_plane = WorkflowControlPlaneUsecase::new(
+                crate::usecase::work_queue::shared().clone(),
+                gateway,
+            )
+            .with_startup(crate::adaptor::controller::wiring::wire_workflow_startup(
+                crate::usecase::work_queue::WorkQueueUsecase::new(std::sync::Arc::new(
+                    crate::usecase::work_queue::ImmediateWorkQueueRuntime::default(),
+                )),
+                app.clone(),
+                host.clone(),
+            ));
             SequentialRuntimeEffectFixture {
                 _app: app,
                 host,
@@ -3833,6 +3911,7 @@ nodes:
             );
 
             let restarted = WorkflowRuntimeHost::with_runtime_ports(
+                crate::usecase::work_queue::shared().clone(),
                 Arc::new(UnusedWorkflowResolver),
                 Arc::new(UnusedWorktreeResolver),
                 test_helpers::workspace_query(fixture.store.clone()),
@@ -3928,6 +4007,7 @@ nodes:
                 confirmation_count: std::sync::atomic::AtomicUsize::new(0),
             });
             let host = Arc::new(WorkflowRuntimeHost::with_runtime_ports(
+                crate::usecase::work_queue::shared().clone(),
                 Arc::new(UnusedWorkflowResolver),
                 Arc::new(AcceptingWorktreeResolver),
                 test_helpers::workspace_query(store.clone()),
@@ -3939,7 +4019,10 @@ nodes:
                 host.clone(),
             ));
             *sessions.control_plane.lock().await =
-                Some(Arc::new(WorkflowControlPlaneUsecase::new(gateway)));
+                Some(Arc::new(WorkflowControlPlaneUsecase::new(
+                    crate::usecase::work_queue::shared().clone(),
+                    gateway,
+                )));
             let workflow = WorkflowDefinition {
                 name: "stop-during-activation".to_string(),
                 description: String::new(),
@@ -4119,6 +4202,7 @@ nodes:
                 .await
                 .unwrap();
             let host = Arc::new(WorkflowRuntimeHost::with_runtime_ports(
+                crate::usecase::work_queue::shared().clone(),
                 Arc::new(UnusedWorkflowResolver),
                 Arc::new(AcceptingWorktreeResolver),
                 test_helpers::workspace_query(store.clone()),
@@ -4624,6 +4708,7 @@ nodes:
                 .len();
             let app = test_helpers::dependencies(Some(store.clone()));
             let host = WorkflowRuntimeHost::with_runtime_ports(
+                crate::usecase::work_queue::shared().clone(),
                 Arc::new(UnusedWorkflowResolver),
                 Arc::new(UnusedWorktreeResolver),
                 test_helpers::workspace_query(store.clone()),
@@ -4799,6 +4884,7 @@ nodes:
 
             let app = test_helpers::dependencies(Some(store.clone()));
             let host = WorkflowRuntimeHost::with_runtime_ports(
+                crate::usecase::work_queue::shared().clone(),
                 Arc::new(UnusedWorkflowResolver),
                 Arc::new(UnusedWorktreeResolver),
                 test_helpers::workspace_query(store.clone()),
@@ -4821,7 +4907,7 @@ nodes:
         }
 
         #[tokio::test]
-        async fn test_startup_reconciliation_未対応permissionは理由付きabortを記録する() {
+        async fn test_startup_reconciliation_未対応permissionはabortせず要対応を記録する() {
             const TREE_ID: &str = "00000000-0000-4000-8000-000000000004";
             let directory = tempfile::tempdir().unwrap();
             let store = LocalEventStore::open(LocalEventStoreConfig::production(
@@ -4878,6 +4964,7 @@ nodes:
 
             let app = test_helpers::dependencies(Some(store.clone()));
             let host = WorkflowRuntimeHost::with_runtime_ports(
+                crate::usecase::work_queue::shared().clone(),
                 Arc::new(UnusedWorkflowResolver),
                 Arc::new(UnusedWorktreeResolver),
                 test_helpers::workspace_query(store.clone()),
@@ -4885,40 +4972,51 @@ nodes:
                 Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
             );
 
-            test_helpers::reconcile_startup(&host, &app).await.unwrap();
-            let folded = workflow_fact_log::fold_tree_from(
-                &workflow_fact_log::FactLogReadBackend::Live(store.clone()),
-                TREE_ID,
+            use crate::adaptor::gateway::workflow::startup_repository::{
+                HostWorkflowStartup, StoredWorkflowStartupRepository,
+            };
+            use crate::domain::workflow::repository::WorkflowStartupRepository;
+            let repository = Arc::new(StoredWorkflowStartupRepository(store));
+            let connection = rusqlite::Connection::open(
+                crate::adaptor::gateway::local_event_store::layout::StoreLayout::new(
+                    directory.path(),
+                )
+                .database_path(),
             )
-            .await
-            .unwrap()
             .unwrap();
-            assert_eq!(
-                folded.aggregate.state(),
-                &crate::domain::workflow::RuntimeExecutionState::Aborted
-            );
-            assert!(folded
-                .aggregate
-                .error_reason
-                .as_ref()
-                .unwrap()
-                .contains("bypassPermissions"));
-            assert_eq!(
-                folded.aggregate.node_execution(TREE_ID).unwrap().status,
-                crate::domain::workflow::NodeExecutionStatus::Aborted
-            );
-            let count = workflow_fact_log::read_tree_records(&store, TREE_ID)
-                .await
-                .unwrap()
-                .len();
-            test_helpers::reconcile_startup(&host, &app).await.unwrap();
-            assert_eq!(
-                workflow_fact_log::read_tree_records(&store, TREE_ID)
+            let queue = crate::usecase::work_queue::WorkQueueUsecase::new(Arc::new(
+                crate::usecase::work_queue::ImmediateWorkQueueRuntime::default(),
+            ));
+            let runtime = Arc::new(HostWorkflowStartup {
+                host: Arc::new(host),
+                app,
+            });
+            for _ in 0..2 {
+                let startup = crate::usecase::workflow::startup::WorkflowStartupUsecase::new(
+                    queue.clone(),
+                    repository.clone(),
+                    runtime.clone(),
+                );
+                assert!(startup
+                    .execute()
                     .await
-                    .unwrap()
-                    .len(),
-                count
-            );
+                    .unwrap_err()
+                    .to_string()
+                    .contains("bypassPermissions"));
+                let after = repository.load(TREE_ID).await.unwrap().unwrap();
+                let count: i64 = connection
+                    .query_row("SELECT COUNT(*) FROM node_events", [], |row| row.get(0))
+                    .unwrap();
+                assert_eq!(count, 1);
+                assert!(after.execution.is_active());
+                let observations = queue.failure_query().records(TREE_ID).await;
+                assert_eq!(observations.len(), 1);
+                assert_eq!(
+                    observations[0].record.kind,
+                    crate::domain::failure::FailureKind::StateRequired
+                );
+                assert!(observations[0].requires_attention);
+            }
         }
     }
 }

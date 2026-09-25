@@ -17,6 +17,9 @@ use crate::usecase::repository_usecase::WorktreeExecutionArchiver;
 #[tokio::test]
 async fn test_worktree削除一覧_本番runtime配線で受理した削除状態を処理終了まで共有する() {
     // Given
+    let queue = crate::usecase::work_queue::WorkQueueUsecase::new(
+        crate::usecase::work_queue_test_runtime::runtime(),
+    );
     let parent = tempfile::tempdir().unwrap();
     let root = parent.path().canonicalize().unwrap();
     let repo_path = root.join("repo");
@@ -37,6 +40,7 @@ async fn test_worktree削除一覧_本番runtime配線で受理した削除状�
     let publisher = crate::usecase::state_subscription::StateSubscriptionPublisher::for_test();
     let terminal = Arc::new(build_terminal_surface_application_for_tests());
     let sessions = compose_agent_sessions(AgentSessionCompositionInput {
+        queue: queue.clone(),
         state_publisher: None,
         store: store.clone(),
         data_dir: data_dir.clone(),
@@ -53,6 +57,7 @@ async fn test_worktree削除一覧_本番runtime配線で受理した削除状�
     .unwrap();
     let processes = Arc::new(WorkflowNodeProcesses::new(terminal));
     let (_, workspace_query) = build_workflow_services_with_repository_worktrees(
+        queue.clone(),
         data_dir,
         repository.clone(),
         config.clone(),
@@ -61,6 +66,7 @@ async fn test_worktree削除一覧_本番runtime配線で受理した削除状�
         processes.clone(),
     );
     let runtime = build_workflow_runtime_usecase(
+        queue.clone(),
         WorkflowRuntimeDependencies {
             store: Some(store),
             config: Some(config.clone()),
@@ -81,6 +87,9 @@ async fn test_worktree削除一覧_本番runtime配線で受理した削除状�
     )
     .unwrap();
     let state = RepositoryStateService::new(
+        crate::usecase::work_queue::WorkQueueUsecase::new(
+            crate::usecase::work_queue_test_runtime::runtime(),
+        ),
         Arc::new(RepositoryStateRepositoryGateway::new(repository.clone())),
         Arc::new(DefaultRepositoryScanner::new(
             repository.clone(),

@@ -62,7 +62,16 @@ impl RepositoryStateWorkerRuntime for InertRuntime {
 
 struct EmptyScanner;
 
+#[async_trait::async_trait]
+
 impl RepositoryScanner for EmptyScanner {
+    async fn scan_async(
+        &self,
+        repo_path: &str,
+    ) -> Result<RepositorySnapshotParts, RepositoryStateError> {
+        self.scan(repo_path)
+    }
+
     fn scan(&self, _repo_path: &str) -> Result<RepositorySnapshotParts, RepositoryStateError> {
         Ok(RepositorySnapshotParts {
             status: Vec::new(),
@@ -103,6 +112,9 @@ fn event(path: &std::path::Path) -> DebouncedEvent {
 
 fn state_with_notifier(notifier: Arc<CountingNotifier>) -> Arc<WorktreeState> {
     WorktreeState::new(
+        crate::usecase::work_queue::WorkQueueUsecase::new(
+            crate::usecase::work_queue_test_runtime::runtime(),
+        ),
         "/repo".to_string(),
         Arc::new(EmptyScanner),
         notifier,
@@ -389,4 +401,38 @@ fn test_workspace一覧_パス識別失敗を呼び出し元へ返す() {
     assert!(gateway
         .include_deleting_worktrees("/repo", &mut cards)
         .is_err());
+}
+
+#[tokio::test]
+async fn test_repository走査の期限切れ_旧走査を回収して同じ対象と他対象を走査できる() {
+    // Given
+    let (dir, repo) = crate::test_support::git::create_test_repo();
+    crate::test_support::git::create_initial_commit(&repo);
+    let scanner = Arc::new(super::super::scanner::DefaultRepositoryScanner::new(
+        Arc::new(crate::adaptor::controller::wiring::build_repository_usecase()),
+        Arc::new(crate::adaptor::controller::wiring::build_code_usecase()),
+    ));
+    let path = dir.path().to_str().unwrap().to_owned();
+    let scan_lock = Arc::new(tokio::sync::Mutex::new(()));
+    let attempt_scanner = scanner.clone();
+    let attempt_path = path.clone();
+    let attempt_lock = scan_lock.clone();
+    // When
+    super::super::super::shared::background_worker::background_worker_tests::assert_expired_releases(Box::pin(async move {
+        let _scan = attempt_lock.lock().await;
+        TokioRepositoryStateWorkerRuntime.scan(attempt_scanner, attempt_path).await.map_err(|error| crate::usecase::work_queue::WorkFailure::from_error(&error))?;
+        Ok(None)
+    })).await;
+    // Then
+    assert!(scan_lock.try_lock().is_ok());
+    TokioRepositoryStateWorkerRuntime
+        .scan(scanner.clone(), path)
+        .await
+        .unwrap();
+    let (other, repo) = crate::test_support::git::create_test_repo();
+    crate::test_support::git::create_initial_commit(&repo);
+    TokioRepositoryStateWorkerRuntime
+        .scan(scanner, other.path().to_str().unwrap().into())
+        .await
+        .unwrap();
 }

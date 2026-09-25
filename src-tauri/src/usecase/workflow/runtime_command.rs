@@ -57,10 +57,16 @@ impl WorkflowRuntimeUsecase {
         runtime: Arc<dyn WorkflowRuntimeCommandGateway>,
         execution_archives: Arc<dyn crate::domain::workflow::ExecutionTreeArchiveRepository>,
     ) -> Self {
-        Self::new_with_worktree_operations(runtime, execution_archives, Default::default())
+        Self::new_with_worktree_operations(
+            crate::usecase::work_queue::shared().clone(),
+            runtime,
+            execution_archives,
+            Default::default(),
+        )
     }
 
     pub(crate) fn new_with_worktree_operations(
+        queue: std::sync::Arc<crate::usecase::work_queue::WorkQueueUsecase>,
         runtime: Arc<dyn WorkflowRuntimeCommandGateway>,
         execution_archives: Arc<dyn crate::domain::workflow::ExecutionTreeArchiveRepository>,
         worktree_operations: Arc<crate::usecase::worktree_operation::WorktreeOperations>,
@@ -74,9 +80,12 @@ impl WorkflowRuntimeUsecase {
             archive_locks: Default::default(),
             start_execution: WorkflowStartExecutionUsecase::new(runtime.clone()),
             abort_execution: WorkflowAbortExecutionUsecase::new(runtime.clone()),
-            retry_node: WorkflowRetryNodeUsecase::new(control_plane_runtime.clone()),
-            submit_output: WorkflowSubmitOutputUsecase::new(control_plane_runtime.clone()),
-            control_plane: WorkflowControlPlaneUsecase::new(control_plane_runtime),
+            retry_node: WorkflowRetryNodeUsecase::new(queue.clone(), control_plane_runtime.clone()),
+            submit_output: WorkflowSubmitOutputUsecase::new(
+                queue.clone(),
+                control_plane_runtime.clone(),
+            ),
+            control_plane: WorkflowControlPlaneUsecase::new(queue.clone(), control_plane_runtime),
             #[cfg(test)]
             preflight: WorkflowRuntimeCommandPreflight,
         }
@@ -568,16 +577,6 @@ mod tests {
         {
             unreachable!("empty startup inventory")
         }
-
-        async fn append(
-            &self,
-            _root: &crate::domain::workflow::NodeFactMeta,
-            _fact: &crate::domain::workflow::NodeFact,
-            _timestamp: f64,
-            _expected_revision: Option<&crate::domain::workflow::repository::WorkflowRevision>,
-        ) -> Result<(), WorkflowError> {
-            unreachable!("empty startup inventory")
-        }
     }
 
     #[async_trait::async_trait]
@@ -600,7 +599,13 @@ mod tests {
             Arc::new(crate::usecase::workflow::NoopArchiveRepository),
         )
         .with_startup(Some(Arc::new(
-            super::super::startup::WorkflowStartupUsecase::new(gateway.clone(), gateway),
+            super::super::startup::WorkflowStartupUsecase::new(
+                crate::usecase::work_queue::WorkQueueUsecase::new(std::sync::Arc::new(
+                    crate::usecase::work_queue::ImmediateWorkQueueRuntime::default(),
+                )),
+                gateway.clone(),
+                gateway,
+            ),
         )))
     }
 

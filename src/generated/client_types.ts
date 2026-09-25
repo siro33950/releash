@@ -1,5 +1,22 @@
 // Generated from proto/client.proto. Run pnpm generate:protocol.
 
+export type FailureRecords = {
+	items?: Array<FailureRecord>;
+	nextOffset?: number;
+	requiresAttention: boolean;
+};
+
+export type FailureRecord = {
+	operation: string;
+	target: string;
+	classification: string;
+	message: string;
+	count: number;
+	firstObservedMs: number;
+	lastObservedMs: number;
+	requiresAttention: boolean;
+};
+
 export type Liststring = Array<string>;
 
 export type WorkspaceListSnapshotDto = {

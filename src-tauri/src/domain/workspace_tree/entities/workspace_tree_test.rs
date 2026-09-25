@@ -2230,3 +2230,125 @@ fn runtime_failure_observation_preserves_running_approval_and_terminal_states() 
         assert_eq!(node.error_reason, None);
     }
 }
+
+#[test]
+fn test_背景処理の失敗_対象の要対応と理由を既存状態へ反映する() {
+    // Given
+    let mut tree = WorkspaceTree::empty("/repo");
+    WorkspaceTreeProjector::project(
+        &mut tree,
+        [WorkspaceStructureFact::WorkflowStarted {
+            execution_id: "00000000-0000-4000-8000-000000000743".into(),
+            workflow_name: "review".into(),
+            worktree_path: "/repo".into(),
+            dynamic_fanout_names: definition().dynamic_fanout_names(),
+            timestamp: 1.0,
+        }],
+    )
+    .unwrap();
+    let before = tree.clone();
+    // When / Then
+    tree.observe_background_failure(
+        "00000000-0000-4000-8000-000000000743",
+        crate::domain::failure::FailureKind::Cancelled,
+        "cancelled",
+    );
+    assert_eq!(tree, before);
+    tree.observe_background_failure(
+        "00000000-0000-4000-8000-000000000743",
+        crate::domain::failure::FailureKind::StateRequired,
+        "repair",
+    );
+    let node = tree.nodes().first().unwrap();
+    assert_eq!(
+        node.status_classification,
+        WorkspaceNodeStatusClassification::Attention
+    );
+    assert_eq!(node.error_reason.as_deref(), Some("repair"));
+}
+
+#[test]
+fn test_背景処理の失敗_既存分類で子から祖先へ要対応を集約する() {
+    let execution_id = "00000000-0000-4000-8000-0000000000d2";
+    let mut tree = WorkspaceTree::empty("/repo");
+    let facts = [
+        WorkspaceStructureFact::WorkflowStarted {
+            execution_id: execution_id.to_string(),
+            workflow_name: "classification".to_string(),
+            worktree_path: "/repo".to_string(),
+            dynamic_fanout_names: definition().dynamic_fanout_names(),
+            timestamp: 1.0,
+        },
+        WorkspaceStructureFact::NodeStarted {
+            execution_id: execution_id.to_string(),
+            node_execution_id: "outer-sequence".to_string(),
+            node_name: "outer".to_string(),
+            kind: NodeKindName::Sequence,
+            attempt: 1,
+            parent: None,
+            timestamp: 2.0,
+        },
+        WorkspaceStructureFact::NodeStarted {
+            execution_id: execution_id.to_string(),
+            node_execution_id: "inner-fanout".to_string(),
+            node_name: "inner".to_string(),
+            kind: NodeKindName::Fanout,
+            attempt: 1,
+            parent: Some(ExecutionParentRef::sequence_child("outer-sequence")),
+            timestamp: 3.0,
+        },
+        WorkspaceStructureFact::NodeStarted {
+            execution_id: execution_id.to_string(),
+            node_execution_id: "failed-leaf".to_string(),
+            node_name: "leaf".to_string(),
+            kind: NodeKindName::Command,
+            attempt: 1,
+            parent: Some(ExecutionParentRef::fanout_child("inner-fanout", None, 0)),
+            timestamp: 4.0,
+        },
+        WorkspaceStructureFact::NodeStarted {
+            execution_id: execution_id.to_string(),
+            node_execution_id: "sibling".into(),
+            node_name: "sibling".into(),
+            kind: NodeKindName::Command,
+            attempt: 1,
+            parent: Some(ExecutionParentRef::fanout_child("inner-fanout", None, 1)),
+            timestamp: 4.0,
+        },
+    ];
+    WorkspaceTreeProjector::project(&mut tree, facts).unwrap();
+    tree.observe_background_failure(
+        "failed-leaf",
+        crate::domain::failure::FailureKind::StateRequired,
+        "repair",
+    );
+    for id in ["failed-leaf", "inner-fanout", "outer-sequence"] {
+        let node = tree
+            .nodes()
+            .iter()
+            .find(|node| node.node_execution_id.as_deref() == Some(id))
+            .unwrap();
+        assert_eq!(
+            node.status_classification,
+            WorkspaceNodeStatusClassification::Attention
+        );
+    }
+    assert_eq!(
+        tree.nodes()
+            .iter()
+            .find(|node| node.id == execution_id)
+            .unwrap()
+            .status_classification,
+        WorkspaceNodeStatusClassification::Attention
+    );
+    let sibling = tree
+        .nodes()
+        .iter()
+        .find(|node| node.node_execution_id.as_deref() == Some("sibling"))
+        .unwrap();
+    assert_eq!(
+        sibling.status_classification,
+        WorkspaceNodeStatusClassification::Active
+    );
+    assert!(sibling.error_reason.is_none());
+}

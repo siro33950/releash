@@ -2,6 +2,7 @@ use super::SubscriptionError;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum SubscriptionTarget {
+    Failures(String, usize),
     RepositoryPaths,
     Workspaces,
     Selection(String, String),
@@ -55,6 +56,14 @@ impl SubscriptionTarget {
             return Err(SubscriptionError::InvalidId);
         }
         let target = match (name, args) {
+            ("failures", [target]) => Ok(Self::Failures((*target).into(), 0)),
+            ("failures", [target, offset]) => {
+                let parsed: usize = offset.parse().map_err(|_| SubscriptionError::InvalidId)?;
+                if parsed == 0 || parsed >= 4096 || parsed.to_string() != *offset {
+                    return Err(SubscriptionError::InvalidId);
+                }
+                Ok(Self::Failures((*target).into(), parsed))
+            }
             ("repository-paths", []) => Ok(Self::RepositoryPaths),
             ("workspaces", []) => Ok(Self::Workspaces),
             ("selection", [path, id]) => Ok(Self::Selection((*path).into(), (*id).into())),
@@ -122,6 +131,14 @@ impl SubscriptionTarget {
 impl SubscriptionTarget {
     pub fn parts(&self) -> (&'static str, Vec<String>) {
         match self {
+            Self::Failures(target, offset) => (
+                "failures",
+                if *offset == 0 {
+                    vec![target.clone()]
+                } else {
+                    vec![target.clone(), offset.to_string()]
+                },
+            ),
             Self::RepositoryPaths => ("repository-paths", vec![]),
             Self::Workspaces => ("workspaces", vec![]),
             Self::Selection(p, id) => ("selection", vec![p.clone(), id.clone()]),
@@ -170,6 +187,7 @@ mod subscription_target_tests;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum StateChangeSource {
+    Failures(String),
     Repositories,
     Repository(Vec<String>),
     Worktree(String),
@@ -184,6 +202,9 @@ impl SubscriptionTarget {
     pub fn affected_by(&self, change: &StateChangeSource) -> bool {
         use StateChangeSource as C;
         match change {
+            C::Failures(target) => {
+                matches!(self, Self::Failures(id, _) if id == target || id == "*")
+            }
             C::Repositories => matches!(self, Self::Workspaces),
             C::Repository(paths) => match self {
                 Self::Workspaces => true,

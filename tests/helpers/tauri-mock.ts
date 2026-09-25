@@ -350,6 +350,7 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
         Object.assign(cfg.states, initialStates);
 
         function readState(kind: string, args: string[]) {
+            if (kind === "failures") return cfg.states.failures ?? { items: [], requiresAttention: false };
             const value = cfg.states[kind];
             if (value && typeof value === "object" && "__mockError" in value) {
                 throw new Error(String(value.__mockError));

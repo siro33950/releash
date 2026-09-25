@@ -1517,7 +1517,7 @@ mod repository_usecase_tests {
                 ..Default::default()
             });
             let repository = Arc::new(usecase(fake.clone()));
-            let state = crate::usecase::repository_state::RepositoryStateService::new(
+            let state = crate::usecase::repository_state::RepositoryStateService::new(crate::usecase::work_queue::WorkQueueUsecase::new(crate::usecase::work_queue_test_runtime::runtime()),
                 Arc::new(crate::adaptor::gateway::repository::state::RepositoryStateRepositoryGateway::new(repository.clone())),
                 Arc::new(crate::adaptor::gateway::repository::scanner::DefaultRepositoryScanner::new(
                     repository.clone(), Arc::new(crate::adaptor::controller::wiring::build_code_usecase())

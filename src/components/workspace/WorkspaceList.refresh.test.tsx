@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useWorkspaceList } from "@/hooks/useWorkspaceList";
@@ -89,6 +89,61 @@ describe("Workspaces subscriptions", () => {
 		mocks.invoke.mockResolvedValue(undefined);
 		mocks.listen.mockResolvedValue(vi.fn());
 	});
+	it.each([
+		["*", "review_comments_watch"],
+		["/repo", "repository_scan"],
+		["/repo/worktree", "repository_scan"],
+		["session", "workflow_node_start"],
+	])(
+		"BackgroundFailuresへ一覧の対象%sを渡して要対応を表示する",
+		async (target, operation) => {
+			states.publish(
+				"workspaces",
+				workspaceListSnapshot(tree, "/repo/worktree"),
+			);
+			states.publish(
+				{ kind: "failures", args: [target] },
+				{
+					requiresAttention: true,
+					items: [
+						{
+							operation,
+							target,
+							classification: "StateRequired",
+							message: `repair ${target}`,
+							count: 1,
+							firstObservedMs: 1,
+							lastObservedMs: 1,
+							requiresAttention: true,
+						},
+					],
+				},
+			);
+			setup();
+			await screen.findByText("Running session");
+			expect(states.subscribeState).toHaveBeenCalledWith(
+				{ kind: "failures", args: [target] },
+				expect.any(Function),
+				expect.any(Function),
+			);
+			expect(screen.getAllByText("要対応")).toHaveLength(1);
+			fireEvent.click(screen.getByText("要対応"));
+			const message = screen.getByText(`repair ${target}`);
+			expect(message).toBeVisible();
+			const row =
+				target === "*"
+					? screen.getByText("Workspaces").parentElement
+					: target === "/repo"
+						? screen.getByText("repo").closest("button")?.parentElement
+								?.parentElement
+						: target === "/repo/worktree"
+							? screen.getByTestId("worktree-item-feature").parentElement
+							: screen.getByRole("button", { name: "Running session, active" })
+									.parentElement;
+			expect(message.closest("details")?.parentElement).toBe(row);
+		},
+	);
+
 	it.each(["all", "repository", "worktree"] as const)(
 		"%sの取得失敗を購読から表示し前回の行・選択を保持する",
 		async (scope) => {

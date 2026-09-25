@@ -11,13 +11,31 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 struct Scanner {
     calls: AtomicUsize,
     fail: AtomicBool,
+    retry_failures: AtomicUsize,
     on_scan: parking_lot::Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
 }
+#[async_trait::async_trait]
 impl RepositoryScanner for Scanner {
+    async fn scan_async(
+        &self,
+        repo_path: &str,
+    ) -> Result<RepositorySnapshotParts, RepositoryStateError> {
+        self.scan(repo_path)
+    }
+
     fn scan(&self, _: &str) -> Result<RepositorySnapshotParts, RepositoryStateError> {
         let call = self.calls.fetch_add(1, Ordering::SeqCst);
         if let Some(hook) = self.on_scan.lock().as_ref() {
             hook();
+        }
+        if self
+            .retry_failures
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
+                count.checked_sub(1)
+            })
+            .is_ok()
+        {
+            return Err(RepositoryStateError::ScanInvalidated);
         }
         if self.fail.load(Ordering::SeqCst) {
             return Err(RepositoryStateError::Watcher("scan failed".into()));
@@ -86,15 +104,18 @@ impl RepositoryStateNotifier for Notifier {
     }
 }
 fn service(scanner: Arc<Scanner>, notifier: Arc<Notifier>) -> RepositoryStateService {
-    RepositoryStateService::new_with_scanner(
+    RepositoryStateService::new(
+        crate::usecase::work_queue::WorkQueueUsecase::new(
+            crate::usecase::work_queue_test_runtime::runtime(),
+        ),
         Arc::new(Repository),
         scanner,
         notifier,
         Arc::new(NoopRepositoryStateWatcher),
         Arc::new(TestRepositoryStateWorkerRuntime),
         Arc::new(IdentityWorktreePathNormalizer),
-        Duration::ZERO,
     )
+    .with_debounce(Duration::ZERO)
 }
 
 #[tokio::test]
@@ -332,4 +353,35 @@ async fn test_明示再走査_失効が続くと終了してscanロックを解�
     *scanner.on_scan.lock() = None;
     drop(scan);
     assert!(service.rescan_branches("/repo").await.is_ok());
+}
+
+#[tokio::test]
+async fn test_背景走査_開始失敗を再試行中もbranches要求が走査できる() {
+    let scanner = Arc::new(Scanner::default());
+    scanner.retry_failures.store(usize::MAX, Ordering::SeqCst);
+    let notifier = Arc::new(Notifier::default());
+    let service = service(scanner.clone(), notifier.clone());
+    service.start_git_dir_watching("/repo").unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while scanner.calls.load(Ordering::SeqCst) < 3 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let calls = scanner.calls.load(Ordering::SeqCst);
+    let result = tokio::time::timeout(Duration::from_millis(100), service.rescan_branches("/repo"))
+        .await
+        .expect("backoff must release scan_lock");
+    assert!(matches!(result, Err(RepositoryStateError::ScanInvalidated)));
+    assert!(scanner.calls.load(Ordering::SeqCst) > calls);
+    scanner.retry_failures.store(0, Ordering::SeqCst);
+    tokio::time::timeout(Duration::from_secs(2), notifier.changed.notified())
+        .await
+        .unwrap();
+    assert!(!service
+        .get_snapshot("/repo")
+        .unwrap()
+        .branch_cards
+        .is_empty());
 }

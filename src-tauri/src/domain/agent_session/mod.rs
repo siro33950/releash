@@ -46,3 +46,5 @@ pub(crate) use provider_terminal_gateway::{
     ProviderAgentTerminalInputGateway, ProviderAgentTerminalObservationGateway,
     ProviderAgentTerminalSpawnError,
 };
+
+pub(crate) mod background_failure;
