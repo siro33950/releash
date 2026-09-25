@@ -1,8 +1,9 @@
 use std::fs::{File, OpenOptions};
-use std::io::{ErrorKind, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(test)]
+use std::time::Instant;
 
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -351,6 +352,7 @@ impl ReviewEventStore for FileReviewEventStore {
             super::repository::worktree_operation::FileWorktreeOperationLocks::new(app_data_dir)
                 .mutation(worktree_name)
                 .map_err(|error| match error {
+                    crate::domain::repository::RepositoryError::Stopped(error) => error.into(),
                     crate::domain::repository::RepositoryError::Rule(message) => {
                         ReviewError::PermissionDenied(message)
                     }
@@ -358,11 +360,18 @@ impl ReviewEventStore for FileReviewEventStore {
                         ReviewError::Io(message)
                     }
                 })?;
-        let _guard = self.file_lock.lock();
+        let _guard = loop {
+            crate::other::operation_context::check()?;
+            if let Some(guard) = self.file_lock.try_lock_for(Duration::from_millis(10)) {
+                break guard;
+            }
+        };
         let _process_guard = acquire_worktree_file_lock(app_data_dir, worktree_name)?;
         let mut events = self.load_events(app_data_dir, worktree_name)?;
+        crate::other::operation_context::check()?;
         let appended = mutation(&events)?;
         events.extend(appended);
+        crate::other::operation_context::check()?;
         self.write_events(app_data_dir, worktree_name, &events)?;
         Ok(events)
     }
@@ -474,19 +483,14 @@ fn acquire_worktree_file_lock(
         .map_err(io_error)?;
     writeln!(file, "pid={}", std::process::id()).map_err(io_error)?;
     file.flush().map_err(io_error)?;
-    let start = Instant::now();
-    loop {
-        match fs2::FileExt::try_lock_exclusive(&file) {
-            Ok(()) => return Ok(WorktreeFileLock { _file: file }),
-            Err(e)
-                if e.kind() == ErrorKind::WouldBlock
-                    && start.elapsed() < Duration::from_secs(10) =>
-            {
-                thread::sleep(Duration::from_millis(10));
-            }
-            Err(e) => return Err(ReviewError::Io(e.to_string())),
+    let context = crate::other::operation_context::with_timeout(Duration::from_secs(10));
+    crate::adaptor::gateway::shared::file_lock::exclusive(&file, &context).map_err(|error| {
+        match error {
+            crate::adaptor::gateway::shared::file_lock::LockError::Io(error) => io_error(error),
+            crate::adaptor::gateway::shared::file_lock::LockError::Stopped(error) => error.into(),
         }
-    }
+    })?;
+    Ok(WorktreeFileLock { _file: file })
 }
 
 #[cfg(test)]
@@ -759,6 +763,129 @@ mod tests {
             .get_thread(dir.path(), "wt", &thread.id)
             .unwrap();
         assert_eq!(final_thread.comments.len(), 31);
+    }
+
+    #[test]
+    fn test_comment変更_in_process_lock待ちを期限と取消で終了する() {
+        use crate::domain::operation_context::{Deadline, OperationContext, OperationStopped};
+        for expire in [false, true] {
+            let dir = TempDir::new().unwrap();
+            let store = Arc::new(FileReviewEventStore::default());
+            let _guard = store.file_lock.lock();
+            let token = tokio_util::sync::CancellationToken::new();
+            let context = OperationContext::new(
+                expire.then(|| Deadline::new(Instant::now() + Duration::from_millis(50))),
+                Arc::new(token.clone()),
+            );
+            let (started, ready) = std::sync::mpsc::channel();
+            std::thread::scope(|scope| {
+                let store = store.clone();
+                let dir = dir.path();
+                let worker = scope.spawn(move || {
+                    crate::other::operation_context::sync_scope(context, || {
+                        started.send(()).unwrap();
+                        usecase(store).create_thread(
+                            dir,
+                            "wt",
+                            agent("s1"),
+                            target(),
+                            "Claim".to_string(),
+                        )
+                    })
+                });
+                ready.recv().unwrap();
+                if !expire {
+                    std::thread::sleep(Duration::from_millis(30));
+                    token.cancel();
+                }
+                let result = worker.join().unwrap();
+                assert!(
+                    matches!(result, Err(ReviewError::Stopped(error)) if error == if expire { OperationStopped::Expired } else { OperationStopped::Cancelled })
+                );
+            });
+            assert!(!state_file(dir.path(), "wt").exists());
+        }
+    }
+
+    #[test]
+    fn test_comment変更_実ファイルlock待ちを期限と取消で終了する() {
+        use crate::domain::operation_context::{Deadline, OperationContext, OperationStopped};
+        // Given
+        for expire in [false, true] {
+            let dir = TempDir::new().unwrap();
+            let store = Arc::new(FileReviewEventStore::default());
+            let guard = acquire_worktree_file_lock(dir.path(), "wt").unwrap();
+            let token = tokio_util::sync::CancellationToken::new();
+            let context = OperationContext::new(
+                expire.then(|| Deadline::new(Instant::now() + Duration::from_millis(100))),
+                Arc::new(token.clone()),
+            );
+            let (sent, received) = std::sync::mpsc::channel();
+            std::thread::scope(|scope| {
+                let store = store.clone();
+                let path = dir.path();
+                scope.spawn(move || {
+                    let result = crate::other::operation_context::sync_scope(context, || {
+                        usecase(store).create_thread(
+                            path,
+                            "wt",
+                            agent("s1"),
+                            target(),
+                            "Claim".into(),
+                        )
+                    });
+                    sent.send(result).unwrap();
+                });
+                // When / Then
+                assert!(received.recv_timeout(Duration::from_millis(30)).is_err());
+                if !expire {
+                    token.cancel();
+                }
+                let result = received.recv_timeout(Duration::from_secs(2)).unwrap();
+                assert!(
+                    matches!(result, Err(ReviewError::Stopped(error)) if error == if expire { OperationStopped::Expired } else { OperationStopped::Cancelled })
+                );
+                assert!(!state_file(path, "wt").exists());
+            });
+            drop(guard);
+            assert!(acquire_worktree_file_lock(dir.path(), "wt").is_ok());
+        }
+    }
+
+    #[test]
+    fn test_comment資源期限_親が無期限でも長い期限でも十秒で終了する() {
+        use crate::domain::operation_context::{Deadline, OperationContext, OperationStopped};
+        for parent_deadline in [false, true] {
+            // Given
+            let dir = TempDir::new().unwrap();
+            let guard = acquire_worktree_file_lock(dir.path(), "wt").unwrap();
+            let start = Instant::now();
+            let context = OperationContext::new(
+                parent_deadline.then(|| Deadline::new(start + Duration::from_secs(30))),
+                Arc::new(tokio_util::sync::CancellationToken::new()),
+            );
+            let path = dir.path().to_path_buf();
+            let (sent, received) = std::sync::mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                let result = crate::other::operation_context::sync_scope(context, || {
+                    acquire_worktree_file_lock(&path, "wt").map(drop)
+                });
+                sent.send(result).unwrap();
+            });
+            // When
+            let result = received.recv_timeout(Duration::from_secs(15));
+            let elapsed = start.elapsed();
+            drop(guard);
+            worker.join().unwrap();
+            // Then
+            assert!(matches!(
+                result.unwrap(),
+                Err(ReviewError::Stopped(OperationStopped::Expired))
+            ));
+            assert!(elapsed >= Duration::from_secs(10));
+            assert!(elapsed < Duration::from_secs(15));
+            assert!(acquire_worktree_file_lock(dir.path(), "wt").is_ok());
+        }
     }
 
     #[test]

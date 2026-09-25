@@ -112,7 +112,7 @@ trait ReviewCodePort: Send + Sync {
         original: &str,
         modified: &str,
         file_path: Option<&str>,
-    ) -> DiffHunksResultDto;
+    ) -> Result<DiffHunksResultDto, CodeUsecaseError>;
 
     fn generate_group_patch(&self, file_path: &str, hunk: &Hunk, group: &ChangeGroup) -> String;
 
@@ -173,7 +173,7 @@ impl ReviewCodePort for CodeUsecase {
         original: &str,
         modified: &str,
         file_path: Option<&str>,
-    ) -> DiffHunksResultDto {
+    ) -> Result<DiffHunksResultDto, CodeUsecaseError> {
         CodeUsecase::compute_diff_hunks(self, original, modified, file_path)
     }
 
@@ -577,7 +577,7 @@ impl ReviewUsecase {
                 },
                 Some(relative_path),
                 section,
-            );
+            )?;
             return Ok(ReviewFileViewDto::TextDiff(ReviewTextDiffDto {
                 version,
                 stale,
@@ -607,7 +607,7 @@ impl ReviewUsecase {
         }
 
         let hunks =
-            self.compute_review_diff_hunks(&original, &modified, Some(relative_path), section);
+            self.compute_review_diff_hunks(&original, &modified, Some(relative_path), section)?;
         if let Some(reason) = thresholds.hunk_count_limit(hunks.hunks.len()) {
             return Ok(fallback_view(
                 relative_path,
@@ -701,7 +701,7 @@ impl ReviewUsecase {
         modified: &str,
         file_path: Option<&str>,
         section: ReviewSection,
-    ) -> DiffHunksResultDto {
+    ) -> Result<DiffHunksResultDto, CodeUsecaseError> {
         self.compute_review_diff_hunks_with_stable_sources(
             original,
             modified,
@@ -722,8 +722,10 @@ impl ReviewUsecase {
         stable_sources: StableDiffSources<'_>,
         file_path: Option<&str>,
         section: ReviewSection,
-    ) -> DiffHunksResultDto {
-        let mut result = self.code.compute_diff_hunks(original, modified, file_path);
+    ) -> Result<DiffHunksResultDto, CodeUsecaseError> {
+        let mut result = self
+            .code
+            .compute_diff_hunks(original, modified, file_path)?;
         let hunks: Vec<Hunk> = result.hunks.iter().map(hunk_dto_to_domain).collect();
         let groups: Vec<ChangeGroup> = result
             .change_groups
@@ -771,7 +773,7 @@ impl ReviewUsecase {
             .iter()
             .map(change_group_domain_to_dto)
             .collect();
-        result
+        Ok(result)
     }
 
     fn generate_review_group_patch(
@@ -825,7 +827,7 @@ impl ReviewUsecase {
                 .read_review_source_bytes(&file_path, modified_source.source)?,
         )?;
         let result =
-            self.compute_review_diff_hunks(&original, &modified, Some(&relative_path), section);
+            self.compute_review_diff_hunks(&original, &modified, Some(&relative_path), section)?;
         let group = result
             .change_groups
             .iter()
@@ -1343,7 +1345,7 @@ pub(crate) mod tests_support {
             _original: &str,
             _modified: &str,
             _file_path: Option<&str>,
-        ) -> DiffHunksResultDto {
+        ) -> Result<DiffHunksResultDto, CodeUsecaseError> {
             panic!("review code port should not be called for stale review blob versions")
         }
 
@@ -1652,7 +1654,7 @@ mod tests {
             original: &str,
             modified: &str,
             file_path: Option<&str>,
-        ) -> DiffHunksResultDto {
+        ) -> Result<DiffHunksResultDto, CodeUsecaseError> {
             let has_fixed_diff = file_path
                 .map(|path| {
                     self.hunk_indexes_by_path.contains_key(path)
@@ -1674,7 +1676,7 @@ mod tests {
             let change_groups = file_path
                 .and_then(|path| self.change_groups_by_path.get(path).cloned())
                 .unwrap_or_default();
-            DiffHunksResultDto {
+            Ok(DiffHunksResultDto {
                 hunks: hunk_indexes
                     .into_iter()
                     .map(|index| HunkDto {
@@ -1688,7 +1690,7 @@ mod tests {
                     })
                     .collect(),
                 change_groups,
-            }
+            })
         }
 
         fn generate_group_patch(
@@ -1816,13 +1818,13 @@ mod tests {
         original: &str,
         modified: &str,
         file_path: Option<&str>,
-    ) -> DiffHunksResultDto {
+    ) -> Result<DiffHunksResultDto, CodeUsecaseError> {
         let raw_hunks = crate::adaptor::gateway::code::diff_compute::diff_buffers(
             original, modified, file_path,
-        );
+        )?;
         let hunks = crate::domain::code::services::hunk::assign_hunk_ids(&raw_hunks);
         let change_groups = crate::domain::code::services::hunk::compute_change_groups(&hunks);
-        DiffHunksResultDto {
+        Ok(DiffHunksResultDto {
             hunks: hunks
                 .iter()
                 .map(|hunk| HunkDto {
@@ -1848,7 +1850,7 @@ mod tests {
                     is_staged: group.is_staged,
                 })
                 .collect(),
-        }
+        })
     }
 
     fn review_content_source_for(

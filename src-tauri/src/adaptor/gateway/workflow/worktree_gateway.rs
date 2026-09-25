@@ -1,10 +1,11 @@
+use crate::adaptor::gateway::shared::git_operation;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::adaptor::gateway::repository::worktree::WorktreeGateway;
 use crate::domain::app_config::value_objects::AppSettings;
 use crate::domain::app_config::ConfigRepository;
-use crate::domain::repository::WorktreeRepository;
+use crate::domain::repository::{RepositoryError, WorktreeRepository};
 use crate::domain::workflow::{ManagedWorktreeGateway, WorkflowError};
 use crate::usecase::repository_usecase::RepositoryUsecase;
 
@@ -32,8 +33,9 @@ pub(crate) fn canonicalize_managed_worktree_path_inner(
     usecase: &RepositoryUsecase,
     repo_paths: Vec<String>,
     worktree_path: String,
-) -> Result<String, String> {
-    let requested_normalized = normalize_worktree_filter_path(&worktree_path)?;
+) -> Result<String, WorkflowError> {
+    let requested_normalized =
+        normalize_worktree_filter_path(&worktree_path).map_err(WorkflowError::external)?;
     let requested = PathBuf::from(&requested_normalized);
     for repo_path in repo_paths {
         let Ok(repo_path) = PathBuf::from(&repo_path).canonicalize() else {
@@ -41,10 +43,14 @@ pub(crate) fn canonicalize_managed_worktree_path_inner(
         };
         let repo_path_str = repo_path
             .to_str()
-            .ok_or_else(|| "configured repo path has invalid encoding".to_string())?
+            .ok_or_else(|| WorkflowError::external("configured repo path has invalid encoding"))?
             .to_string();
-        let Ok(worktrees) = usecase.list_worktrees(&repo_path_str) else {
-            continue;
+        let worktrees = match usecase.list_worktrees(&repo_path_str) {
+            Ok(worktrees) => worktrees,
+            Err(crate::usecase::repository_error::UsecaseError::Repository(
+                RepositoryError::Stopped(stopped),
+            )) => return Err(WorkflowError::Stopped(stopped)),
+            Err(_) => continue,
         };
         for worktree in worktrees {
             let Ok(candidate) = PathBuf::from(&worktree.path).canonicalize() else {
@@ -55,20 +61,27 @@ pub(crate) fn canonicalize_managed_worktree_path_inner(
             }
         }
     }
-    Err("worktree_path is not a configured git worktree".to_string())
+    Err(WorkflowError::external(
+        "worktree_path is not a configured git worktree",
+    ))
 }
 
 pub(crate) async fn canonicalize_managed_worktree_path(
     usecase: Arc<RepositoryUsecase>,
     config: Arc<dyn ConfigRepository>,
     worktree_path: String,
-) -> Result<String, String> {
-    let repo_paths = configured_repo_paths(&config.load().map_err(|e| e.to_string())?.app);
-    tokio::task::spawn_blocking(move || {
+) -> Result<String, WorkflowError> {
+    let repo_paths = configured_repo_paths(
+        &config
+            .load()
+            .map_err(|e| WorkflowError::external(e.to_string()))?
+            .app,
+    );
+    crate::other::operation_context::spawn_blocking(move || {
         canonicalize_managed_worktree_path_inner(&usecase, repo_paths, worktree_path)
     })
     .await
-    .map_err(|e| format!("task join error: {e}"))?
+    .map_err(|e| WorkflowError::external(format!("task join error: {e}")))?
 }
 
 #[derive(Clone)]
@@ -98,18 +111,24 @@ impl ManagedWorktreeGateway for RepositoryManagedWorktreeGateway {
             repo_paths,
             worktree_path.to_string(),
         )
-        .map_err(WorkflowError::external)
     }
 }
 
 #[derive(Clone)]
 pub(crate) struct RepositoryIsolatedWorktreeGateway;
 
+fn isolated_worktree_error(error: RepositoryError) -> WorkflowError {
+    match error {
+        RepositoryError::Stopped(stopped) => WorkflowError::Stopped(stopped),
+        error => WorkflowError::external(error.to_string()),
+    }
+}
+
 impl crate::domain::workflow::IsolatedWorktreeGateway for RepositoryIsolatedWorktreeGateway {
     fn repository_root(&self, worktree_path: &str) -> Result<String, WorkflowError> {
         WorktreeGateway
             .main_repo_path(worktree_path)
-            .map_err(|error| WorkflowError::external(error.to_string()))
+            .map_err(isolated_worktree_error)
     }
 
     fn is_created(
@@ -117,31 +136,36 @@ impl crate::domain::workflow::IsolatedWorktreeGateway for RepositoryIsolatedWork
         parent_worktree_path: &str,
         worktree: &crate::domain::workflow::IsolatedWorktree,
     ) -> Result<bool, WorkflowError> {
-        let inspect = || -> Result<bool, Box<dyn std::error::Error>> {
-            let repo = git2::Repository::open(parent_worktree_path)?;
+        let inspect = || -> Result<bool, RepositoryError> {
+            let repo = git_operation::run(|| git2::Repository::open(parent_worktree_path))?;
             let path = std::path::Path::new(&worktree.path);
             let name = path
                 .file_name()
                 .and_then(|name| name.to_str())
-                .ok_or("invalid isolated worktree path")?;
-            let existing = match repo.find_worktree(name) {
+                .ok_or_else(|| RepositoryError::rule("invalid isolated worktree path"))?;
+            let existing = match git_operation::run(|| repo.find_worktree(name)) {
                 Ok(existing) => existing,
                 Err(error) if error.code() == git2::ErrorCode::NotFound => return Ok(false),
                 Err(error) => return Err(error.into()),
             };
-            existing.validate()?;
+            git_operation::run(|| existing.validate())?;
             if existing.path().canonicalize()? != path.canonicalize()? {
-                return Err("isolated worktree path does not match its registration".into());
+                return Err(RepositoryError::rule(
+                    "isolated worktree path does not match its registration",
+                ));
             }
-            let isolated = git2::Repository::open(path)?;
+            let isolated = git_operation::run(|| git2::Repository::open(path))?;
             if isolated.commondir().canonicalize()? != repo.commondir().canonicalize()?
-                || isolated.head()?.name()? != format!("refs/heads/{}", worktree.branch)
+                || git_operation::run(|| isolated.head())?.name()?
+                    != format!("refs/heads/{}", worktree.branch)
             {
-                return Err("isolated worktree repository or branch does not match".into());
+                return Err(RepositoryError::rule(
+                    "isolated worktree repository or branch does not match",
+                ));
             }
             Ok(true)
         };
-        inspect().map_err(|error| WorkflowError::external(error.to_string()))
+        inspect().map_err(isolated_worktree_error)
     }
 
     fn create(
@@ -149,26 +173,26 @@ impl crate::domain::workflow::IsolatedWorktreeGateway for RepositoryIsolatedWork
         parent_worktree_path: &str,
         worktree: &crate::domain::workflow::IsolatedWorktree,
     ) -> Result<(), WorkflowError> {
-        let create = || -> Result<(), Box<dyn std::error::Error>> {
-            let repo = git2::Repository::open(parent_worktree_path)?;
-            let commit = repo.head()?.peel_to_commit()?;
-            let reference = repo
-                .branch(&worktree.branch, &commit, false)?
+        let create = || -> Result<(), RepositoryError> {
+            let repo = git_operation::run(|| git2::Repository::open(parent_worktree_path))?;
+            let head = git_operation::run(|| repo.head())?;
+            let commit = git_operation::run(|| head.peel_to_commit())?;
+            let reference = git_operation::run(|| repo.branch(&worktree.branch, &commit, false))?
                 .into_reference();
             let path = std::path::Path::new(&worktree.path);
             let name = path
                 .file_name()
                 .and_then(|name| name.to_str())
-                .ok_or("invalid isolated worktree path")?;
+                .ok_or_else(|| RepositoryError::rule("invalid isolated worktree path"))?;
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
             let mut options = git2::WorktreeAddOptions::new();
             options.reference(Some(&reference));
-            repo.worktree(name, path, Some(&options))?;
+            git_operation::run(|| repo.worktree(name, path, Some(&options)))?;
             Ok(())
         };
-        create().map_err(|error| WorkflowError::external(error.to_string()))
+        create().map_err(isolated_worktree_error)
     }
 }
 
@@ -194,7 +218,6 @@ impl ManagedWorktreeGateway for RepoPathsManagedWorktreeGateway {
             self.repo_paths.clone(),
             worktree_path.to_string(),
         )
-        .map_err(WorkflowError::external)
     }
 }
 
@@ -243,7 +266,7 @@ mod tests {
             outside.path().to_string_lossy().to_string(),
         )
         .unwrap_err();
-        assert!(err.contains("not a configured git worktree"));
+        assert!(err.to_string().contains("not a configured git worktree"));
     }
 }
 

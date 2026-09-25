@@ -314,6 +314,8 @@ impl ReviewEvent {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReviewErrorCode {
+    Expired,
+    Cancelled,
     InvalidInput,
     NotFound,
     AlreadyResolved,
@@ -324,6 +326,7 @@ pub enum ReviewErrorCode {
 
 #[derive(Debug)]
 pub enum ReviewError {
+    Stopped(crate::domain::operation_context::OperationStopped),
     InvalidInput(String),
     NotFound(String),
     AlreadyResolved(String),
@@ -335,6 +338,12 @@ pub enum ReviewError {
 impl ReviewError {
     pub fn code(&self) -> ReviewErrorCode {
         match self {
+            Self::Stopped(crate::domain::operation_context::OperationStopped::Expired) => {
+                ReviewErrorCode::Expired
+            }
+            Self::Stopped(crate::domain::operation_context::OperationStopped::Cancelled) => {
+                ReviewErrorCode::Cancelled
+            }
             Self::InvalidInput(_) => ReviewErrorCode::InvalidInput,
             Self::NotFound(_) => ReviewErrorCode::NotFound,
             Self::AlreadyResolved(_) => ReviewErrorCode::AlreadyResolved,
@@ -348,6 +357,7 @@ impl ReviewError {
 impl fmt::Display for ReviewError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Stopped(error) => std::fmt::Display::fmt(error, f),
             Self::InvalidInput(msg)
             | Self::NotFound(msg)
             | Self::AlreadyResolved(msg)
@@ -913,6 +923,7 @@ impl crate::domain::failure::ClassifiedFailure for ReviewError {
     fn failure_kind(&self) -> crate::domain::failure::FailureKind {
         use crate::domain::failure::FailureKind as F;
         match self {
+            Self::Stopped(error) => crate::domain::failure::ClassifiedFailure::failure_kind(error),
             Self::InvalidInput(_) => F::InvalidInput,
             Self::NotFound(_) => F::Missing,
             Self::AlreadyResolved(_) => F::StateRequired,
@@ -925,3 +936,9 @@ impl crate::domain::failure::ClassifiedFailure for ReviewError {
 #[cfg(test)]
 #[path = "mod_test.rs"]
 mod mod_tests;
+
+impl From<crate::domain::operation_context::OperationStopped> for ReviewError {
+    fn from(error: crate::domain::operation_context::OperationStopped) -> Self {
+        Self::Stopped(error)
+    }
+}

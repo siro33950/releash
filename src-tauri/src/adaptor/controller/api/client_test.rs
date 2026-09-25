@@ -697,22 +697,23 @@ async fn test_監視rpc_通常要求と同じ枠を取得し上限時はblocking
     }
     assert_eq!(files.next.load(Ordering::SeqCst), 0);
     assert_eq!(
-        deps.execute(wire::command_request::Command::GetExternalEditor(
-            wire::GetExternalEditorRequest {}
-        ))
+        deps.execute(
+            None,
+            wire::command_request::Command::GetExternalEditor(wire::GetExternalEditorRequest {})
+        )
         .await
         .unwrap_err()
         .code,
         connectrpc::ErrorCode::ResourceExhausted
     );
     drop(permits);
-    deps.watch("limited".into(), "/repo".into(), false)
+    deps.watch(None, "limited".into(), "/repo".into(), false)
         .await
         .unwrap();
     assert_eq!(files.next.load(Ordering::SeqCst), 1);
     assert_eq!(deps.request_limit.available_permits(), 64);
     assert!(deps
-        .watch("limited".into(), "/missing".into(), false)
+        .watch(None, "limited".into(), "/missing".into(), false)
         .await
         .is_err());
     assert_eq!(deps.request_limit.available_permits(), 64);
@@ -858,22 +859,27 @@ async fn test_サーバ情報取得_上限時は設定取得を拒否し成功�
 async fn test_監視rpc_要求中断でblocking終了前に枠を解放する() {
     struct BlockingFiles {
         started: tokio::sync::Notify,
+        stopped: tokio::sync::Notify,
         finish: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
     }
     impl crate::domain::repository::file_watcher::FileWatchGateway for BlockingFiles {
+        fn release(&self, _: u64) {
+            self.stopped.notify_one();
+        }
         fn start(&self, _: &str) -> Result<u64, String> {
             self.started.notify_one();
             self.finish.lock().unwrap().recv().unwrap();
             Ok(1)
         }
         fn stop(&self, _: u64) -> Result<(), String> {
-            Ok(())
+            Err("ordinary stop failed".into())
         }
     }
     // Given
     let (finish, receiver) = std::sync::mpsc::channel();
     let files = Arc::new(BlockingFiles {
         started: tokio::sync::Notify::new(),
+        stopped: tokio::sync::Notify::new(),
         finish: std::sync::Mutex::new(receiver),
     });
     let watcher = Arc::new(crate::usecase::watcher::WatcherUsecase::new(
@@ -889,7 +895,7 @@ async fn test_監視rpc_要求中断でblocking終了前に枠を解放する() 
     let task_deps = deps.clone();
     let task = tokio::spawn(async move {
         task_deps
-            .watch("blocking".into(), "/repo".into(), false)
+            .watch(None, "blocking".into(), "/repo".into(), false)
             .await
     });
     files.started.notified().await;
@@ -906,6 +912,9 @@ async fn test_監視rpc_要求中断でblocking終了前に枠を解放する() 
     })
     .await
     .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(1), files.stopped.notified())
+        .await
+        .unwrap();
     drop(subscription);
 }
 
@@ -916,6 +925,7 @@ async fn test_監視停止rpc_要求中断でblocking終了前に枠を解放す
         finish: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
     }
     impl crate::domain::repository::file_watcher::FileWatchGateway for BlockingFiles {
+        fn release(&self, _: u64) {}
         fn start(&self, _: &str) -> Result<u64, String> {
             Ok(1)
         }
@@ -944,11 +954,12 @@ async fn test_監視停止rpc_要求中断でblocking終了前に枠を解放す
     let task_deps = deps.clone();
     let task = tokio::spawn(async move {
         task_deps
-            .execute(wire::command_request::Command::StopWatching(
-                wire::StopWatchingRequest {
+            .execute(
+                None,
+                wire::command_request::Command::StopWatching(wire::StopWatchingRequest {
                     watcher_id: Some(id),
-                },
-            ))
+                }),
+            )
             .await
     });
     files.started.notified().await;
@@ -1238,11 +1249,10 @@ async fn test_単発rpc_呼び出し破棄でasync処理を止め枠を解放す
         ClientPushGateway::new(Arc::new(PushSink::new())),
         crate::client_api_acceptance::watcher(),
     );
-    let mut call = Box::pin(
-        deps.execute(wire::command_request::Command::GetExternalEditor(
-            wire::GetExternalEditorRequest {},
-        )),
-    );
+    let mut call = Box::pin(deps.execute(
+        None,
+        wire::command_request::Command::GetExternalEditor(wire::GetExternalEditorRequest {}),
+    ));
     assert!(futures_util::poll!(&mut call).is_pending());
     tokio::task::yield_now().await;
     // When
@@ -1374,12 +1384,15 @@ async fn test_単発rpc_変更処理の取り消しでhandlerとworktreeの枠�
         Arc::new(super::super::test_support::RecordingRuntimeGateway::default()),
         Arc::new(crate::usecase::workflow::NoopArchiveRepository),
     ));
+    let started = Arc::new(tokio::sync::Notify::new());
+    let start_signal = started.clone();
     let stopped = tokio_util::sync::CancellationToken::new();
     let signal = stopped.clone();
     let mut dispatch = dispatch().with_worktree_mutations(runtime.clone());
     dispatch.register_domain(
         &["git_stage"],
         Box::new(move |_| {
+            start_signal.notify_one();
             let guard = signal.clone().drop_guard();
             Box::pin(async move {
                 let _guard = guard;
@@ -1397,7 +1410,10 @@ async fn test_単発rpc_変更処理の取り消しでhandlerとworktreeの枠�
             },
         )),
     ));
-    assert!(futures_util::poll!(&mut call).is_pending());
+    tokio::select! {
+        _ = started.notified() => {},
+        result = &mut call => panic!("handler ended before cancellation: {result:?}"),
+    }
     let deletion = runtime.begin_worktree_deletion("/repo");
     tokio::pin!(deletion);
     assert!(futures_util::poll!(&mut deletion).is_pending());
@@ -1609,4 +1625,205 @@ async fn test_変更rpc_期限切れ後も同期処理の完了まで削除と�
     for repository in [false, true] {
         assert_cancelled_blocking_mutation(true, repository).await;
     }
+}
+
+#[tokio::test]
+async fn test_単発rpc_期限と呼出破棄が同期処理の内側まで届く() {
+    use crate::domain::operation_context::OperationStopped;
+    use std::time::{Duration, Instant};
+    for expire in [false, true] {
+        // Given
+        let (started, mut ready) = tokio::sync::mpsc::unbounded_channel();
+        let (stopped, mut stopped_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut dispatch = dispatch();
+        dispatch.register_domain(
+            &["get_external_editor"],
+            Box::new(move |_| {
+                let started = started.clone();
+                let stopped = stopped.clone();
+                Box::pin(async move {
+                    crate::other::operation_context::spawn_blocking(move || {
+                        started.send(()).unwrap();
+                        let error = crate::other::operation_context::sleep(
+                            &crate::other::operation_context::current(),
+                            Duration::from_secs(30),
+                        )
+                        .unwrap_err();
+                        stopped.send(error).unwrap();
+                        Err(crate::other::AppError::from_failure(error).into())
+                    })
+                    .await
+                    .unwrap()
+                })
+            }),
+        );
+        let deps = ClientApiDeps::new(
+            Arc::new(dispatch),
+            ClientPushGateway::new(Arc::new(PushSink::new())),
+            crate::client_api_acceptance::watcher(),
+        );
+        let mut call = Box::pin(deps.execute(
+            expire.then(|| Instant::now() + Duration::from_millis(100)),
+            wire::command_request::Command::GetExternalEditor(wire::GetExternalEditorRequest {}),
+        ));
+        // When
+        tokio::select! { _ = ready.recv() => {}, result = &mut call => panic!("call ended before starting: {result:?}") }
+        if expire {
+            assert_eq!(
+                call.await.unwrap_err().code,
+                connectrpc::ErrorCode::DeadlineExceeded
+            );
+        } else {
+            drop(call);
+        }
+        // Then
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), stopped_rx.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+            if expire {
+                OperationStopped::Expired
+            } else {
+                OperationStopped::Cancelled
+            }
+        );
+        assert_eq!(deps.request_limit.available_permits(), 64);
+    }
+}
+
+#[tokio::test]
+async fn test_監視rpc_期限と呼出破棄が同期処理の内側まで届く() {
+    use crate::domain::operation_context::OperationStopped;
+    use std::time::{Duration, Instant};
+    struct ContextFiles {
+        started: tokio::sync::mpsc::UnboundedSender<()>,
+        stopped: tokio::sync::mpsc::UnboundedSender<OperationStopped>,
+    }
+    impl crate::domain::repository::file_watcher::FileWatchGateway for ContextFiles {
+        fn release(&self, _: u64) {}
+        fn start(&self, _: &str) -> Result<u64, String> {
+            self.started.send(()).unwrap();
+            let error = crate::other::operation_context::sleep(
+                &crate::other::operation_context::current(),
+                Duration::from_secs(30),
+            )
+            .unwrap_err();
+            self.stopped.send(error).unwrap();
+            Err(error.to_string())
+        }
+        fn stop(&self, _: u64) -> Result<(), String> {
+            Ok(())
+        }
+    }
+    for expire in [false, true] {
+        let (started, mut ready) = tokio::sync::mpsc::unbounded_channel();
+        let (stopped, mut stopped_rx) = tokio::sync::mpsc::unbounded_channel();
+        let watcher = Arc::new(crate::usecase::watcher::WatcherUsecase::new(
+            None,
+            Arc::new(ContextFiles { started, stopped }),
+        ));
+        let subscription = watcher.subscribe("context".into()).unwrap();
+        let deps = ClientApiDeps::new(
+            Arc::new(dispatch()),
+            ClientPushGateway::new(Arc::new(PushSink::new())),
+            watcher,
+        );
+        let mut call = Box::pin(deps.watch(
+            expire.then(|| Instant::now() + Duration::from_millis(100)),
+            "context".into(),
+            "/repo".into(),
+            false,
+        ));
+        tokio::select! { _ = ready.recv() => {}, result = &mut call => panic!("call ended before starting: {result:?}") }
+        if expire {
+            assert_eq!(
+                call.await.unwrap_err().code,
+                connectrpc::ErrorCode::DeadlineExceeded
+            );
+        } else {
+            drop(call);
+        }
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), stopped_rx.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+            if expire {
+                OperationStopped::Expired
+            } else {
+                OperationStopped::Cancelled
+            }
+        );
+        assert_eq!(deps.request_limit.available_permits(), 64);
+        drop(subscription);
+    }
+}
+
+#[tokio::test]
+async fn test_監視rpc_登録後の期限切れでidを返せない監視を解除する() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
+    struct Files {
+        started: AtomicUsize,
+        stopped: AtomicUsize,
+    }
+    impl crate::domain::repository::file_watcher::FileWatchGateway for Files {
+        fn release(&self, id: u64) {
+            assert_eq!(id, 42);
+            self.stopped.fetch_add(1, Ordering::SeqCst);
+        }
+        fn start(&self, _: &str) -> Result<u64, String> {
+            self.started.fetch_add(1, Ordering::SeqCst);
+            let _ = crate::other::operation_context::sleep(
+                &crate::other::operation_context::current(),
+                Duration::from_secs(5),
+            );
+            Ok(42)
+        }
+        fn stop(&self, id: u64) -> Result<(), String> {
+            assert_eq!(id, 42);
+            Err("ordinary stop failed".into())
+        }
+    }
+    // Given
+    let files = Arc::new(Files {
+        started: AtomicUsize::new(0),
+        stopped: AtomicUsize::new(0),
+    });
+    let watcher = Arc::new(crate::usecase::watcher::WatcherUsecase::new(
+        None,
+        files.clone(),
+    ));
+    let subscription = watcher.subscribe("expires".into()).unwrap();
+    let deps = ClientApiDeps::new(
+        Arc::new(dispatch()),
+        ClientPushGateway::new(Arc::new(PushSink::new())),
+        watcher,
+    );
+    // When / Then
+    let error = deps
+        .watch(
+            Some(Instant::now()),
+            "expires".into(),
+            "/repo".into(),
+            false,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, connectrpc::ErrorCode::DeadlineExceeded);
+    assert_eq!(files.started.load(Ordering::SeqCst), 0);
+    let error = deps
+        .watch(
+            Some(Instant::now() + Duration::from_millis(100)),
+            "expires".into(),
+            "/repo".into(),
+            false,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, connectrpc::ErrorCode::DeadlineExceeded);
+    assert_eq!(files.started.load(Ordering::SeqCst), 1);
+    assert_eq!(files.stopped.load(Ordering::SeqCst), 1);
+    drop(subscription);
 }

@@ -1,5 +1,6 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum NotionError {
+    Stopped(crate::domain::operation_context::OperationStopped),
     RequestFailed(String),
     ApiError(String),
     ParseError(String),
@@ -8,6 +9,7 @@ pub(crate) enum NotionError {
 impl std::fmt::Display for NotionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Stopped(error) => std::fmt::Display::fmt(error, f),
             NotionError::RequestFailed(msg) => write!(f, "リクエスト失敗: {msg}"),
             NotionError::ApiError(msg) => write!(f, "API エラー: {msg}"),
             NotionError::ParseError(msg) => write!(f, "パースエラー: {msg}"),
@@ -38,6 +40,7 @@ impl crate::domain::failure::ClassifiedFailure for NotionError {
     fn failure_kind(&self) -> crate::domain::failure::FailureKind {
         use crate::domain::failure::FailureKind as F;
         match self {
+            Self::Stopped(error) => crate::domain::failure::ClassifiedFailure::failure_kind(error),
             Self::RequestFailed(_) => F::Temporary,
             Self::ApiError(_) => F::StateRequired,
             Self::ParseError(_) => F::Internal,
@@ -48,3 +51,9 @@ impl crate::domain::failure::ClassifiedFailure for NotionError {
 #[cfg(test)]
 #[path = "error_test.rs"]
 mod error_tests;
+
+impl From<crate::domain::operation_context::OperationStopped> for NotionError {
+    fn from(error: crate::domain::operation_context::OperationStopped) -> Self {
+        Self::Stopped(error)
+    }
+}

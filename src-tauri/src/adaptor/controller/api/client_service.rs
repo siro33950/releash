@@ -119,6 +119,7 @@ async fn watch_files<'a>(
     })?;
     connectrpc::Response::ok(
         self.watch(
+            _ctx.deadline(),
             request.subscription_id,
             crate::adaptor::controller::client::required(args.path, "path")
                 .map_err(command_error)?,
@@ -142,6 +143,7 @@ async fn watch_git_directory<'a>(
     })?;
     connectrpc::Response::ok(
         self.watch(
+            _ctx.deadline(),
             request.subscription_id,
             crate::adaptor::controller::client::required(args.repo_path, "repoPath")
                 .map_err(command_error)?,

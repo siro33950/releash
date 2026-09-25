@@ -119,3 +119,60 @@ async fn test_worktree削除_lease解放中も一覧を読め排他終了で対�
     assert!(operations.mutate("/worktree").is_ok());
     assert!(operations.mutate("workspace-state:worktree").is_ok());
 }
+
+#[tokio::test]
+async fn test_worktree削除待ち_取り消しで予約を解放する() {
+    use crate::domain::operation_context::{OperationContext, OperationStopped};
+    // Given
+    let operations = WorktreeOperations::default();
+    let mutation = operations.mutate("/worktree").unwrap();
+    let token = tokio_util::sync::CancellationToken::new();
+    let context = OperationContext::new(None, Arc::new(token.clone()));
+    let deletion = crate::other::operation_context::scope(context, operations.delete("/worktree"));
+    tokio::pin!(deletion);
+    assert!(futures_util::poll!(&mut deletion).is_pending());
+    // When
+    token.cancel();
+    let result = deletion.await;
+    // Then
+    assert!(matches!(
+        result,
+        Err(RepositoryError::Stopped(OperationStopped::Cancelled))
+    ));
+    assert!(operations.mutate("/worktree").is_ok());
+    drop(mutation);
+    assert!(operations.delete("/worktree").await.is_ok());
+}
+
+#[tokio::test]
+async fn test_worktree削除待ち_期限切れで全対象の予約を解放する() {
+    use crate::domain::operation_context::{Deadline, OperationContext, OperationStopped};
+    use std::time::{Duration, Instant};
+    // Given
+    let operations = WorktreeOperations::default();
+    let mutation = operations.mutate("/worktree").unwrap();
+    let identities = ["/worktree".to_string(), "/other".to_string()];
+    let context = OperationContext::default()
+        .with_deadline(Deadline::new(Instant::now() + Duration::from_millis(100)));
+    let deletion =
+        crate::other::operation_context::scope(context, operations.delete_many(&identities));
+    tokio::pin!(deletion);
+    assert!(futures_util::poll!(&mut deletion).is_pending());
+    for identity in &identities {
+        assert!(operations.mutate(identity).is_err());
+    }
+    // When
+    let result = tokio::time::timeout(Duration::from_secs(2), deletion)
+        .await
+        .unwrap();
+    // Then
+    assert!(matches!(
+        result,
+        Err(RepositoryError::Stopped(OperationStopped::Expired))
+    ));
+    for identity in &identities {
+        assert!(operations.mutate(identity).is_ok());
+    }
+    drop(mutation);
+    assert!(operations.delete_many(&identities).await.is_ok());
+}

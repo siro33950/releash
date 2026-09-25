@@ -68,7 +68,7 @@ where
     T: Send + 'static,
     F: FnOnce() -> Result<T, ProviderAvailabilityUsecaseError> + Send + 'static,
 {
-    tokio::task::spawn_blocking(operation)
+    crate::other::operation_context::spawn_blocking(operation)
         .await
         .map_err(|_| provider_availability_error(ProviderAvailabilityUsecaseError::Corrupt))?
         .map_err(provider_availability_error)
@@ -435,6 +435,7 @@ fn launch_error(
 ) -> AppError {
     let kind = error.failure_kind();
     let result = match error {
+        AgentSessionLaunchUsecaseError::Stopped(stopped) => return AppError::from_failure(stopped),
         AgentSessionLaunchUsecaseError::ProviderUnavailable => {
             provider_tui_coded_error(ProviderTuiCodedError::AgentSessionProviderUnavailable)
         }

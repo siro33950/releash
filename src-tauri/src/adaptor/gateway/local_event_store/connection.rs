@@ -42,8 +42,19 @@ pub fn check_sqlite_version() -> Result<(), ConnectionError> {
     Ok(())
 }
 
+thread_local! { static BUSY_CONTEXT: std::cell::RefCell<crate::domain::operation_context::OperationContext> = std::cell::RefCell::default(); }
+
 fn configure_common(connection: &Connection) -> Result<(), ConnectionError> {
-    connection.busy_timeout(Duration::from_secs(2))?;
+    connection.busy_handler(Some(|attempt| {
+        if attempt == 0 {
+            BUSY_CONTEXT.set(crate::other::operation_context::with_timeout(
+                Duration::from_secs(2),
+            ));
+        }
+        BUSY_CONTEXT.with_borrow(|context| {
+            crate::other::operation_context::sleep(context, Duration::from_millis(1)).is_ok()
+        })
+    }))?;
     connection.pragma_update(None, "foreign_keys", "ON")?;
     connection.pragma_update(None, "trusted_schema", "OFF")?;
     Ok(())
@@ -113,3 +124,7 @@ pub fn set_owner_only_permissions(path: &Path) -> std::io::Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "connection_test.rs"]
+mod connection_tests;

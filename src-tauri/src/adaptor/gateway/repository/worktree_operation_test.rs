@@ -131,3 +131,198 @@ async fn test_worktree削除排他_保存先がファイルならioエラーを�
         Err(RepositoryError::External(_))
     ));
 }
+
+#[tokio::test]
+async fn test_worktree削除排他_registryとactive待ちを期限と取消で終了する() {
+    use crate::domain::operation_context::{Deadline, OperationContext, OperationStopped};
+    use std::{
+        sync::Arc,
+        time::{Duration, Instant},
+    };
+    for registry_wait in [false, true] {
+        for expire in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let locks = FileWorktreeOperationLocks::new(directory.path());
+            let registry = registry_wait.then(|| locks.registry_lock().unwrap());
+            let mutation = (!registry_wait).then(|| locks.mutation("/repo/worktree").unwrap());
+            let token = tokio_util::sync::CancellationToken::new();
+            let context = OperationContext::new(
+                expire.then(|| Deadline::new(Instant::now() + Duration::from_millis(50))),
+                Arc::new(token.clone()),
+            );
+            let mut deletion = Box::pin(crate::other::operation_context::scope(
+                context,
+                locks.deletion("/repo/worktree"),
+            ));
+            assert!(futures_util::poll!(&mut deletion).is_pending());
+            if !expire {
+                token.cancel();
+            }
+            let result = tokio::time::timeout(Duration::from_secs(2), deletion)
+                .await
+                .unwrap();
+            assert!(
+                matches!(result, Err(RepositoryError::Stopped(error)) if error == if expire { OperationStopped::Expired } else { OperationStopped::Cancelled })
+            );
+            drop(registry);
+            drop(mutation);
+            assert!(locks.mutation("/repo/worktree").is_ok());
+            let lease = locks.deletion("/repo/worktree").await.unwrap();
+            drop(lease);
+        }
+    }
+}
+
+#[test]
+fn test_worktree削除排他_複製されたfdが残ってもleaseの破棄でlockを解放する() {
+    let directory = tempfile::tempdir().unwrap();
+    let locks = FileWorktreeOperationLocks::new(directory.path());
+    let lease = locks.lease("/repo/worktree", true).unwrap();
+    fs2::FileExt::try_lock_exclusive(&lease.files[1]).unwrap();
+    let _duplicates: Vec<_> = lease
+        .files
+        .iter()
+        .map(|file| file.try_clone().unwrap())
+        .collect();
+    drop(lease);
+    assert!(locks.mutation("/repo/worktree").is_ok());
+}
+
+#[test]
+fn test_worktree変更排他_registry待ちを期限と取消で終了し再取得できる() {
+    use crate::domain::operation_context::{
+        Cancellation, Deadline, OperationContext, OperationStopped,
+    };
+    use std::sync::{mpsc, Arc};
+    use std::time::{Duration, Instant};
+    struct ObservedCancellation {
+        token: tokio_util::sync::CancellationToken,
+        checked: mpsc::Sender<()>,
+    }
+    impl Cancellation for ObservedCancellation {
+        fn is_cancelled(&self) -> bool {
+            let _ = self.checked.send(());
+            self.token.is_cancelled()
+        }
+    }
+    for expire in [false, true] {
+        // Given
+        let directory = tempfile::tempdir().unwrap();
+        let locks = FileWorktreeOperationLocks::new(directory.path());
+        let registry = locks.registry_lock().unwrap();
+        let token = tokio_util::sync::CancellationToken::new();
+        let (checked, observed) = mpsc::channel();
+        let context = OperationContext::new(
+            expire.then(|| Deadline::new(Instant::now() + Duration::from_millis(200))),
+            Arc::new(ObservedCancellation {
+                token: token.clone(),
+                checked,
+            }),
+        );
+        let worker_locks = locks.clone();
+        let (reply, result) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result = crate::other::operation_context::sync_scope(context, || {
+                worker_locks.mutation("/repo/worktree").map(drop)
+            });
+            reply.send(result).unwrap();
+        });
+        // When
+        observed.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(result.try_recv().is_err());
+        if !expire {
+            token.cancel();
+        }
+        let stopped = result.recv_timeout(Duration::from_secs(2));
+        drop(registry);
+        worker.join().unwrap();
+        // Then
+        assert!(
+            matches!(stopped.unwrap(), Err(RepositoryError::Stopped(error))
+            if error == if expire { OperationStopped::Expired } else { OperationStopped::Cancelled })
+        );
+        drop(locks.mutation("/repo/worktree").unwrap());
+        assert_eq!(std::fs::read_dir(&locks.directory).unwrap().count(), 1);
+        drop(locks.registry_lock().unwrap());
+    }
+}
+
+#[test]
+fn test_worktree排他_停止済みscopeの破棄でも最後の所有者がファイルを掃除する() {
+    use crate::domain::operation_context::{Deadline, OperationContext};
+    use std::{sync::Arc, time::Instant};
+    for expire in [false, true] {
+        for deleting in [false, true] {
+            // Given
+            let directory = tempfile::tempdir().unwrap();
+            let locks = FileWorktreeOperationLocks::new(directory.path());
+            let lease = locks.lease("/repo/worktree", deleting).unwrap();
+            let another = (!deleting).then(|| locks.mutation("/repo/worktree").unwrap());
+            let token = tokio_util::sync::CancellationToken::new();
+            if !expire {
+                token.cancel();
+            }
+            let context = OperationContext::new(
+                expire.then(|| Deadline::new(Instant::now())),
+                Arc::new(token),
+            );
+            // When / Then
+            crate::other::operation_context::sync_scope(context, || {
+                drop(lease);
+                if another.is_some() {
+                    assert_eq!(std::fs::read_dir(&locks.directory).unwrap().count(), 3);
+                }
+                drop(another);
+                assert_eq!(std::fs::read_dir(&locks.directory).unwrap().count(), 1);
+            });
+            assert!(locks.mutation("/repo/worktree").is_ok());
+        }
+    }
+}
+
+#[test]
+fn test_worktree排他_破棄時のregistry競合では待たずlockを解放する() {
+    use crate::domain::operation_context::{Deadline, OperationContext};
+    use std::{
+        sync::Arc,
+        time::{Duration, Instant},
+    };
+    for expire in [false, true] {
+        for deleting in [false, true] {
+            // Given
+            let directory = tempfile::tempdir().unwrap();
+            let locks = FileWorktreeOperationLocks::new(directory.path());
+            let lease = locks.lease("/repo/worktree", deleting).unwrap();
+            let key = lease.key.clone();
+            let registry = locks.registry_lock().unwrap();
+            let token = tokio_util::sync::CancellationToken::new();
+            if !expire {
+                token.cancel();
+            }
+            let context = OperationContext::new(
+                expire.then(|| Deadline::new(Instant::now())),
+                Arc::new(token),
+            );
+            let (done, finished) = std::sync::mpsc::channel();
+            // When
+            let worker = std::thread::spawn(move || {
+                crate::other::operation_context::sync_scope(context, || drop(lease));
+                done.send(()).unwrap();
+            });
+            let result = finished.recv_timeout(Duration::from_secs(2));
+            // Then
+            for suffix in ["admission", "active"] {
+                let file = locks.open(&format!("{key}.{suffix}")).unwrap();
+                fs2::FileExt::try_lock_exclusive(&file).unwrap();
+            }
+            drop(registry);
+            worker.join().unwrap();
+            result.unwrap();
+            let start = Instant::now();
+            while std::fs::read_dir(&locks.directory).unwrap().count() != 1 {
+                assert!(start.elapsed() < Duration::from_secs(2));
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+    }
+}

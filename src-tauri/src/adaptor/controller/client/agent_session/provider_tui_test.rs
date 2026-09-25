@@ -556,3 +556,19 @@ fn test_workflow失敗_session経由でも非storeの原因表示と分類を保
         assert_eq!(classified_error(error).code, expected);
     }
 }
+
+#[test]
+fn test_provider起動準備_停止分類をrpcまで保持する() {
+    use crate::domain::failure::ClassifiedFailure;
+    use crate::domain::operation_context::OperationStopped;
+    // Given
+    for stopped in [OperationStopped::Expired, OperationStopped::Cancelled] {
+        // When
+        let error = launch_error(
+            AgentSessionLaunchUsecaseError::Stopped(stopped),
+            AgentSessionLaunchOperation::Start,
+        );
+        // Then
+        assert_eq!(error.failure_kind(), stopped.failure_kind());
+    }
+}

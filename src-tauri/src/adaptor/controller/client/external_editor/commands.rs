@@ -27,7 +27,7 @@ pub(crate) async fn update_external_editor_shared(
     editor: String,
 ) -> Result<(), crate::other::AppError> {
     let settings = EditorSettingsConfigGateway::new(state.clone());
-    tokio::task::spawn_blocking(move || {
+    crate::other::operation_context::spawn_blocking(move || {
         crate::usecase::external_editor::open_usecase::update_external_editor(&settings, editor)
     })
     .await

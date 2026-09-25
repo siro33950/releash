@@ -1,6 +1,7 @@
 //! ファイル内容参照（at_ref / at_branch_base / staged、テキスト／バイナリ）の
 //! gateway 実装。git2 によるリビジョン時点のファイル内容取得を封じ込める。
 
+use crate::adaptor::gateway::shared::git_operation;
 use git2::{AttrCheckFlags, AttrValue, Blob, Repository};
 use std::io::ErrorKind;
 use std::path::Path;
@@ -9,12 +10,13 @@ use crate::domain::code::{CodeError, FileContentRepository, ReviewSideBytes, Rev
 
 /// Discover a git repository from a file path.
 /// Walks ancestors so deleted files whose parent directories were also removed can still resolve.
-fn discover_repo(path: &Path) -> Result<Repository, git2::Error> {
+fn discover_repo(path: &Path) -> Result<Repository, git_operation::GitOperationError> {
     let mut first_error = None;
     let mut current = Some(path);
     while let Some(candidate) = current {
-        match Repository::discover(candidate) {
+        match git_operation::run(|| Repository::discover(candidate)) {
             Ok(repo) => return Ok(repo),
+            Err(e @ git_operation::GitOperationError::Stopped(_)) => return Err(e),
             Err(e) => {
                 if first_error.is_none() {
                     first_error = Some(e);
@@ -24,7 +26,7 @@ fn discover_repo(path: &Path) -> Result<Repository, git2::Error> {
         current = candidate.parent();
     }
     Err(
-        first_error.unwrap_or_else(|| match Repository::discover(path) {
+        first_error.unwrap_or_else(|| match git_operation::run(|| Repository::discover(path)) {
             Ok(_) => unreachable!("repository discovery should fail consistently"),
             Err(error) => error,
         }),
@@ -79,13 +81,13 @@ fn resolve_blob_at_branch_base<T>(
     let relative_path = open_relative(path, &repo)?;
 
     let merge_base_commit = super::resolve_merge_base_commit(&repo, base_commit_oid)?;
-    let tree = merge_base_commit.tree()?;
-    let entry = match tree.get_path(relative_path) {
+    let tree = git_operation::run(|| merge_base_commit.tree())?;
+    let entry = match git_operation::run(|| tree.get_path(relative_path)) {
         Ok(entry) => entry,
         Err(e) if e.code() == git2::ErrorCode::NotFound => return Ok(None),
         Err(e) => return Err(CodeError::from(e)),
     };
-    let blob = repo.find_blob(entry.id())?;
+    let blob = git_operation::run(|| repo.find_blob(entry.id()))?;
     Ok(Some(present(&blob)))
 }
 
@@ -116,23 +118,23 @@ fn resolve_blob_at_ref<T>(
     let repo = discover_repo(path)?;
     let relative_path = open_relative(path, &repo)?;
 
-    let obj = match repo.revparse_single(git_ref) {
+    let obj = match git_operation::run(|| repo.revparse_single(git_ref)) {
         Ok(obj) => obj,
         Err(e) if is_missing_head_ref(&e, git_ref) => return Ok(None),
         Err(e) => return Err(CodeError::from(e)),
     };
-    let commit = obj.peel_to_commit()?;
-    let tree = commit.tree()?;
-    let entry = match tree.get_path(relative_path) {
+    let commit = git_operation::run(|| obj.peel_to_commit())?;
+    let tree = git_operation::run(|| commit.tree())?;
+    let entry = match git_operation::run(|| tree.get_path(relative_path)) {
         Ok(entry) => entry,
         Err(e) if e.code() == git2::ErrorCode::NotFound => return Ok(None),
         Err(e) => return Err(CodeError::from(e)),
     };
-    let blob = repo.find_blob(entry.id())?;
+    let blob = git_operation::run(|| repo.find_blob(entry.id()))?;
     Ok(Some(present(&blob)))
 }
 
-fn is_missing_head_ref(error: &git2::Error, git_ref: &str) -> bool {
+fn is_missing_head_ref(error: &git_operation::GitOperationError, git_ref: &str) -> bool {
     git_ref == "HEAD"
         && matches!(
             error.code(),
@@ -166,17 +168,17 @@ fn resolve_staged_blob<T>(
     let repo = discover_repo(path)?;
     let relative_path = open_relative(path, &repo)?;
 
-    let index = repo.index()?;
+    let index = git_operation::run(|| repo.index())?;
 
     let relative_str = relative_path
         .to_str()
         .ok_or_else(|| CodeError::Rule("invalid path encoding".to_string()))?;
 
-    let Some(entry) = index.get_path(Path::new(relative_str), 0) else {
+    let Some(entry) = git_operation::run(|| Ok(index.get_path(Path::new(relative_str), 0)))? else {
         return Ok(None);
     };
 
-    let blob = repo.find_blob(entry.id)?;
+    let blob = git_operation::run(|| repo.find_blob(entry.id))?;
     Ok(Some(present(&blob)))
 }
 
@@ -214,11 +216,15 @@ fn binary_by_attributes(file_path: &str) -> Result<bool, CodeError> {
     let repo = discover_repo(path)?;
     let relative_path = open_relative(path, &repo)?;
     let flags = AttrCheckFlags::FILE_THEN_INDEX;
-    let binary = AttrValue::from_string(repo.get_attr(relative_path, "binary", flags)?);
+    let binary = AttrValue::from_string(git_operation::run(|| {
+        repo.get_attr(relative_path, "binary", flags)
+    })?);
     if matches!(binary, AttrValue::True) {
         return Ok(true);
     }
-    let diff = AttrValue::from_string(repo.get_attr(relative_path, "diff", flags)?);
+    let diff = AttrValue::from_string(git_operation::run(|| {
+        repo.get_attr(relative_path, "diff", flags)
+    })?);
     Ok(matches!(
         diff,
         AttrValue::False | AttrValue::String("binary")
@@ -447,3 +453,7 @@ mod file_content_gateway_tests {
         assert!(gateway.review_binary_by_attributes(&file_path).unwrap());
     }
 }
+
+#[cfg(test)]
+#[path = "file_content_test.rs"]
+mod file_content_tests;

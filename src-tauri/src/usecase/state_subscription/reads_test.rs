@@ -70,9 +70,9 @@ impl GitHostProvider for Issues {
     fn fetch_pr_status(&self, _: &str) -> Result<PrStatus, GitHostError> {
         Ok(PrStatus::default())
     }
-    fn list_issues(&self, _: &str) -> Vec<IssueInfo> {
+    fn list_issues(&self, _: &str) -> Result<Vec<IssueInfo>, GitHostError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        self.values.lock().clone()
+        Ok(self.values.lock().clone())
     }
 }
 fn issue(number: u64) -> IssueInfo {

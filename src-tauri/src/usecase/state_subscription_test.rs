@@ -730,6 +730,7 @@ struct DisconnectingFiles {
     publisher: StateSubscriptionPublisher,
 }
 impl crate::domain::repository::file_watcher::FileWatchGateway for DisconnectingFiles {
+    fn release(&self, _: u64) {}
     fn start(&self, _: &str) -> Result<u64, String> {
         self.publisher.state.lock().close("client");
         Ok(1)

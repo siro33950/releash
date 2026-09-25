@@ -21,7 +21,7 @@ pub(crate) async fn query_notion_tasks_shared(
 ) -> Result<NotionTaskPageView, AppError> {
     let notion_usecase = state.notion_usecase.clone();
     let query = query.into();
-    tokio::task::spawn_blocking(move || {
+    crate::other::operation_context::spawn_blocking(move || {
         notion_usecase
             .query_tasks(&repo_path, &query)
             .map(Into::into)
@@ -36,7 +36,7 @@ pub(crate) async fn fetch_notion_label_options_shared(
     repo_path: String,
 ) -> Result<Vec<NotionLabelOptionView>, AppError> {
     let notion_usecase = state.notion_usecase.clone();
-    tokio::task::spawn_blocking(move || {
+    crate::other::operation_context::spawn_blocking(move || {
         notion_usecase
             .fetch_label_options(&repo_path)
             .map(|options| options.into_iter().map(Into::into).collect())
@@ -98,8 +98,10 @@ pub(crate) async fn validate_notion_config_shared(
     database_id: String,
 ) -> Result<NotionValidationResultView, AppError> {
     let notion_usecase = state.notion_usecase.clone();
-    tokio::task::spawn_blocking(move || {
-        let result = notion_usecase.validate_config(api_token, database_id);
+    crate::other::operation_context::spawn_blocking(move || {
+        let result = notion_usecase
+            .validate_config(api_token, database_id)
+            .map_err(AppError::from_failure)?;
         Ok(result.into())
     })
     .await

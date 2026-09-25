@@ -84,11 +84,14 @@ pub enum CommitBatchResult {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CommitBatchError {
+    Stopped(crate::domain::operation_context::OperationStopped),
     /// Same idempotency key or unique record key with a different canonical
     /// payload / content binding.
     PayloadConflict,
     /// An expected stream head or mutation revision guard did not match.
-    StreamHeadConflict { current: StreamVersion },
+    StreamHeadConflict {
+        current: StreamVersion,
+    },
     /// The node fact head changed before append.
     TreeHeadConflict,
     /// The writer queue is temporarily full.
@@ -100,17 +103,24 @@ pub enum CommitBatchError {
     /// A sequence / revision would pass `i64::MAX`.
     SequenceExhausted,
     /// The store rolled back before SQLite COMMIT; nothing changed.
-    StorageUnavailable { failure: SafeOperationFailure },
+    StorageUnavailable {
+        failure: SafeOperationFailure,
+    },
     /// COMMIT was started but the result could not be confirmed. Resolve with
     /// `resolve_commit` or a retry of the same batch; never a new identity.
-    OutcomeUnknown { identity: CommitIdentity },
+    OutcomeUnknown {
+        identity: CommitIdentity,
+    },
     /// The store detected inconsistent durable state.
-    Corrupt { correlation_id: String },
+    Corrupt {
+        correlation_id: String,
+    },
 }
 
 impl fmt::Display for CommitBatchError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Stopped(error) => std::fmt::Display::fmt(error, f),
             Self::PayloadConflict => write!(f, "same key bound to a different payload"),
             Self::StreamHeadConflict { current } => {
                 write!(
@@ -149,6 +159,7 @@ impl crate::domain::failure::ClassifiedFailure for CommitBatchError {
     fn failure_kind(&self) -> crate::domain::failure::FailureKind {
         use crate::domain::failure::FailureKind;
         match self {
+            Self::Stopped(error) => crate::domain::failure::ClassifiedFailure::failure_kind(error),
             Self::PayloadConflict => FailureKind::StateRequired,
             Self::QueueBusy => FailureKind::Temporary,
             Self::StreamHeadConflict { .. }
@@ -165,3 +176,9 @@ impl crate::domain::failure::ClassifiedFailure for CommitBatchError {
 #[cfg(test)]
 #[path = "batch_test.rs"]
 mod batch_tests;
+
+impl From<crate::domain::operation_context::OperationStopped> for CommitBatchError {
+    fn from(error: crate::domain::operation_context::OperationStopped) -> Self {
+        Self::Stopped(error)
+    }
+}

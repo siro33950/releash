@@ -8,7 +8,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::adaptor::gateway::local_event_store::clock::SystemStoreClock;
 use crate::adaptor::gateway::local_event_store::connection::open_reader;
 use crate::adaptor::gateway::local_event_store::envelope::EventCodecRegistry;
 use crate::adaptor::gateway::local_event_store::layout::StoreLayout;
@@ -134,12 +133,10 @@ impl LocalEventReadStore {
                 |row| row.get(0),
             )
             .map_err(|_| STORE_NOT_READY.to_string())?;
-        let clock: Arc<dyn crate::adaptor::gateway::local_event_store::clock::StoreClock> =
-            Arc::new(SystemStoreClock);
         let query_context = Arc::new(QueryContext {
             registry: Arc::new(EventCodecRegistry::new()),
         });
-        let readers = ReaderPool::new(clock);
+        let readers = ReaderPool::new();
         let mut connections = Vec::with_capacity(READER_POOL_SIZE);
         connections.push(connection);
         for _ in 1..READER_POOL_SIZE {

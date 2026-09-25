@@ -100,3 +100,22 @@ async fn test_履歴監視_未作成のディレクトリの生成を検知し�
     );
     gateway.stop(id).unwrap();
 }
+
+#[test]
+fn test_監視資源破棄_実watcherを除去し未知idも許容する() {
+    use crate::domain::repository::file_watcher::FileWatchGateway;
+    // Given
+    let dir = tempfile::tempdir().unwrap();
+    let manager =
+        std::sync::Arc::new(crate::infrastructure::file_watcher::FileWatcherManager::default());
+    let gateway = super::FileWatcherGateway::new(
+        manager.clone(),
+        std::sync::Arc::new(crate::infrastructure::push::PushSink::new()),
+    );
+    let id = gateway.start(dir.path().to_str().unwrap()).unwrap();
+    // When
+    gateway.release(id);
+    gateway.release(id);
+    // Then
+    assert!(manager.stop_watching(id).is_err());
+}

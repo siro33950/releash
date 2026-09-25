@@ -33,6 +33,7 @@ pub enum LocalEventQueryResult {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum LocalEventQueryError {
+    Stopped(crate::domain::operation_context::OperationStopped),
     InvalidRequest,
     QueryBusy,
     DeadlineExceeded,
@@ -55,6 +56,7 @@ pub enum LocalEventQueryError {
 impl fmt::Display for LocalEventQueryError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Stopped(error) => std::fmt::Display::fmt(error, f),
             Self::InvalidRequest => write!(f, "invalid request"),
             Self::QueryBusy => write!(f, "query busy"),
             Self::DeadlineExceeded => write!(f, "deadline exceeded"),
@@ -82,6 +84,7 @@ impl crate::domain::failure::ClassifiedFailure for LocalEventQueryError {
     fn failure_kind(&self) -> crate::domain::failure::FailureKind {
         use crate::domain::failure::FailureKind;
         match self {
+            Self::Stopped(error) => crate::domain::failure::ClassifiedFailure::failure_kind(error),
             Self::InvalidRequest => FailureKind::InvalidInput,
             Self::QueryBusy => FailureKind::Temporary,
             Self::DeadlineExceeded => FailureKind::Expired,
@@ -97,3 +100,12 @@ impl crate::domain::failure::ClassifiedFailure for LocalEventQueryError {
 #[cfg(test)]
 #[path = "query_test.rs"]
 mod query_tests;
+
+impl From<crate::domain::operation_context::OperationStopped> for LocalEventQueryError {
+    fn from(error: crate::domain::operation_context::OperationStopped) -> Self {
+        match error {
+            crate::domain::operation_context::OperationStopped::Expired => Self::DeadlineExceeded,
+            _ => Self::Stopped(error),
+        }
+    }
+}

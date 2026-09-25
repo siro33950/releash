@@ -1,29 +1,32 @@
 //! branch 責務の gateway 実装。git2 によるブランチ操作を封じ込める。
 
+use crate::adaptor::gateway::shared::git_operation;
+use crate::adaptor::gateway::shared::git_operation::detect_default_branch;
 use crate::domain::repository::{Branch, BranchRepository, RepositoryError};
 use crate::infrastructure::git::client;
-use crate::infrastructure::git::helpers::detect_default_branch;
-use git2::{build::CheckoutBuilder, BranchType};
+#[cfg(test)]
+use git2::build::CheckoutBuilder;
+use git2::BranchType;
 
 pub(crate) fn list_branches(repo_path: &str) -> Result<Vec<Branch>, RepositoryError> {
-    let repo = client::discover(repo_path)?;
+    let repo = git_operation::run(|| client::discover(repo_path))?;
 
     let mut result = Vec::new();
     let mut local_names = std::collections::HashSet::new();
 
-    let local_branches = repo.branches(Some(BranchType::Local))?;
+    let local_branches = git_operation::run(|| repo.branches(Some(BranchType::Local)))?;
     for branch in local_branches {
         let (branch, _) = branch?;
-        if let Some(name) = branch.name()? {
+        if let Some(name) = git_operation::run(|| branch.name())? {
             local_names.insert(name.to_string());
             result.push(Branch::local(name));
         }
     }
 
-    let remote_branches = repo.branches(Some(BranchType::Remote))?;
+    let remote_branches = git_operation::run(|| repo.branches(Some(BranchType::Remote)))?;
     for branch in remote_branches {
         let (branch, _) = branch?;
-        if let Some(full_name) = branch.name()? {
+        if let Some(full_name) = git_operation::run(|| branch.name())? {
             // "origin/branch-name" → "branch-name"
             let short = full_name
                 .split_once('/')
@@ -40,9 +43,9 @@ pub(crate) fn list_branches(repo_path: &str) -> Result<Vec<Branch>, RepositoryEr
 }
 
 pub(crate) fn get_current_branch(repo_path: &str) -> Result<String, RepositoryError> {
-    let repo = client::open(repo_path)?;
+    let repo = git_operation::run(|| client::open(repo_path))?;
 
-    let head = match repo.head() {
+    let head = match git_operation::run(|| repo.head()) {
         Ok(h) => h,
         Err(e) if e.code() == git2::ErrorCode::UnbornBranch => {
             return Ok("(no commits)".to_string())
@@ -62,21 +65,21 @@ pub(crate) fn get_current_branch(repo_path: &str) -> Result<String, RepositoryEr
 }
 
 pub(crate) fn git_create_branch(repo_path: &str, branch_name: &str) -> Result<(), RepositoryError> {
-    let repo = client::open(repo_path)?;
+    let repo = git_operation::run(|| client::open(repo_path))?;
 
-    let head = repo.head()?;
-    let commit = head.peel_to_commit()?;
+    let head = git_operation::run(|| repo.head())?;
+    let commit = git_operation::run(|| head.peel_to_commit())?;
 
-    repo.branch(branch_name, &commit, false)?;
-    repo.set_head(&format!("refs/heads/{branch_name}"))?;
-    repo.checkout_head(Some(CheckoutBuilder::new().safe()))?;
+    git_operation::run(|| repo.branch(branch_name, &commit, false))?;
+    git_operation::run(|| repo.set_head(&format!("refs/heads/{branch_name}")))?;
+    git_operation::run(|| repo.checkout_head(Some(git_operation::checkout().safe())))?;
 
     Ok(())
 }
 
 pub(crate) fn get_default_branch(repo_path: &str) -> Result<String, RepositoryError> {
-    let repo = client::open(repo_path)?;
-    detect_default_branch(&repo).ok_or_else(|| RepositoryError::rule("no default branch found"))
+    let repo = git_operation::run(|| client::open(repo_path))?;
+    detect_default_branch(&repo)?.ok_or_else(|| RepositoryError::rule("no default branch found"))
 }
 
 /// 単一ローカルブランチを削除する純粋プリミティブ。
@@ -85,9 +88,9 @@ pub(crate) fn get_default_branch(repo_path: &str) -> Result<String, RepositoryEr
 /// releash-base config の後始末といった業務手順は usecase が担う
 /// （[`RepositoryUsecase::delete_branch`](crate::usecase::repository_usecase::RepositoryUsecase::delete_branch)）。
 pub(crate) fn delete_branch(repo_path: &str, branch_name: &str) -> Result<(), RepositoryError> {
-    let repo = client::open(repo_path)?;
-    let mut branch = repo.find_branch(branch_name, BranchType::Local)?;
-    branch.delete()?;
+    let repo = git_operation::run(|| client::open(repo_path))?;
+    let mut branch = git_operation::run(|| repo.find_branch(branch_name, BranchType::Local))?;
+    git_operation::run(|| branch.delete())?;
     Ok(())
 }
 
@@ -251,7 +254,11 @@ mod branch_gateway_tests {
             }
         }
 
-        let result = detect_default_branch(&repo);
+        let result = detect_default_branch(&repo).unwrap();
         assert_eq!(result, Some("develop".to_string()));
     }
 }
+
+#[cfg(test)]
+#[path = "branch_test.rs"]
+mod branch_tests;

@@ -63,7 +63,7 @@ impl NotionUsecase {
         &self,
         api_token: String,
         database_id: String,
-    ) -> NotionValidationResult {
+    ) -> Result<NotionValidationResult, NotionUsecaseError> {
         validate_config(self.api.as_ref(), api_token, database_id)
     }
 }
@@ -113,9 +113,9 @@ fn validate_config(
     api: &dyn NotionApiGateway,
     api_token: String,
     database_id: String,
-) -> NotionValidationResult {
+) -> Result<NotionValidationResult, NotionUsecaseError> {
     if api_token.is_empty() || database_id.is_empty() {
-        return NotionValidationResult::not_configured();
+        return Ok(NotionValidationResult::not_configured());
     }
 
     let config = app_config_vo::NotionRepoConfig {
@@ -123,7 +123,7 @@ fn validate_config(
         database_id,
         property_mapping: app_config_vo::NotionPropertyMapping::default(),
     };
-    api.validate(&config)
+    api.validate(&config).map_err(Into::into)
 }
 
 fn resolve_config(
@@ -249,13 +249,17 @@ mod tests {
                 .unwrap_or_else(|| Ok(Vec::new()))
         }
 
-        fn validate(&self, _config: &app_config_vo::NotionRepoConfig) -> NotionValidationResult {
+        fn validate(
+            &self,
+            _config: &app_config_vo::NotionRepoConfig,
+        ) -> Result<NotionValidationResult, NotionError> {
             self.validate_calls.fetch_add(1, Ordering::SeqCst);
-            self.validate_result
+            Ok(self
+                .validate_result
                 .lock()
                 .unwrap()
                 .take()
-                .unwrap_or_else(NotionValidationResult::not_configured)
+                .unwrap_or_else(NotionValidationResult::not_configured))
         }
     }
 
@@ -419,7 +423,8 @@ mod tests {
         for (api_token, database_id) in [("", "db-1"), ("ntn_token", ""), ("", "")] {
             let api = FakeNotionApiGateway::default();
 
-            let result = validate_config(&api, api_token.to_string(), database_id.to_string());
+            let result =
+                validate_config(&api, api_token.to_string(), database_id.to_string()).unwrap();
 
             assert_eq!(result.status, NotionConfigStatus::NotConfigured);
             assert!(result.properties.is_empty());
@@ -439,7 +444,7 @@ mod tests {
         };
         let api = FakeNotionApiGateway::with_validate_result(expected.clone());
 
-        let result = validate_config(&api, "ntn_token".to_string(), "db-1".to_string());
+        let result = validate_config(&api, "ntn_token".to_string(), "db-1".to_string()).unwrap();
 
         assert_eq!(result, expected);
         assert_eq!(api.validate_calls.load(Ordering::SeqCst), 1);
@@ -453,7 +458,7 @@ mod tests {
         };
         let api = FakeNotionApiGateway::with_validate_result(expected.clone());
 
-        let result = validate_config(&api, "ntn_invalid".to_string(), "db-1".to_string());
+        let result = validate_config(&api, "ntn_invalid".to_string(), "db-1".to_string()).unwrap();
 
         assert_eq!(result, expected);
         assert_eq!(api.validate_calls.load(Ordering::SeqCst), 1);

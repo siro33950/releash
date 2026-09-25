@@ -66,6 +66,7 @@ impl WorktreeOperations {
     }
 
     pub(crate) fn mutate(&self, identity: &str) -> Result<WorktreeMutationGuard, RepositoryError> {
+        crate::other::operation_context::check()?;
         let lease = self.locks.mutation(identity)?;
         let slot = self.slot(identity);
         slot.state.lock().begin_mutation()?;
@@ -87,6 +88,7 @@ impl WorktreeOperations {
         &self,
         identities: &[String],
     ) -> Result<WorktreeDeletionGuard, RepositoryError> {
+        crate::other::operation_context::check()?;
         let mut guard = WorktreeDeletionGuard(Vec::new(), Vec::new());
         for identity in identities {
             let slot = self.slot(identity);
@@ -98,11 +100,16 @@ impl WorktreeOperations {
         }
         for slot in &guard.0 {
             loop {
+                crate::other::operation_context::check()?;
                 let changed = slot.changed.notified();
                 if slot.state.lock().ready_to_delete() {
                     break;
                 }
-                changed.await;
+                crate::other::operation_context::wait(
+                    &crate::other::operation_context::current(),
+                    changed,
+                )
+                .await?;
             }
         }
         Ok(guard)

@@ -86,7 +86,12 @@ pub trait StagingRepository: Send + Sync {
 /// hunk 区切り（change group）や patch 生成といった後段の純粋ロジックは
 /// ドメインサービス（`services::hunk`）が担う。
 pub trait DiffComputer: Send + Sync {
-    fn diff_buffers(&self, original: &str, modified: &str, file_path: Option<&str>) -> Vec<Hunk>;
+    fn diff_buffers(
+        &self,
+        original: &str,
+        modified: &str,
+        file_path: Option<&str>,
+    ) -> Result<Vec<Hunk>, CodeError>;
 }
 
 /// 現在ブランチのベースブランチ名解決の抽象。

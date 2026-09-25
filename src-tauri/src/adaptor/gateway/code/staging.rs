@@ -1,22 +1,23 @@
 //! staging（差分 Approve）責務の gateway 実装。git2 index 操作と `git apply --cached`
 //! を封じ込める。
 
+use crate::adaptor::gateway::shared::git_operation;
 use git2::{ErrorCode, Repository, StatusOptions};
 use std::path::Path;
-use std::process::Command;
+use tokio::process::Command;
 
 use crate::domain::code::{CodeError, StagingRepository};
 
 pub(crate) fn git_stage(repo_path: &str, paths: Vec<String>) -> Result<(), CodeError> {
-    let repo = Repository::open(repo_path)?;
-    let mut index = repo.index()?;
+    let repo = git_operation::run(|| Repository::open(repo_path))?;
+    let mut index = git_operation::run(|| repo.index())?;
 
     let targets: Vec<String> = if paths.is_empty() {
         let mut opts = StatusOptions::new();
         opts.include_untracked(true)
             .recurse_untracked_dirs(true)
             .renames_index_to_workdir(true);
-        let statuses = repo.statuses(Some(&mut opts))?;
+        let statuses = git_operation::run(|| repo.statuses(Some(&mut opts)))?;
         statuses
             .iter()
             .filter_map(|entry| {
@@ -44,40 +45,40 @@ pub(crate) fn git_stage(repo_path: &str, paths: Vec<String>) -> Result<(), CodeE
     for p in &targets {
         let full_path = workdir.join(p);
         if full_path.exists() {
-            index.add_path(Path::new(p))?;
+            git_operation::run(|| index.add_path(Path::new(p)))?;
         } else {
-            index.remove_path(Path::new(p))?;
+            git_operation::run(|| index.remove_path(Path::new(p)))?;
         }
     }
 
-    index.write()?;
+    git_operation::run(|| index.write())?;
     Ok(())
 }
 
 pub(crate) fn git_unstage(repo_path: &str, paths: Vec<String>) -> Result<(), CodeError> {
-    let repo = Repository::open(repo_path)?;
+    let repo = git_operation::run(|| Repository::open(repo_path))?;
 
-    let head_result = repo.head();
+    let head_result = git_operation::run(|| repo.head());
     let is_unborn = matches!(&head_result, Err(e) if e.code() == ErrorCode::UnbornBranch);
 
     if is_unborn {
-        let mut index = repo.index()?;
+        let mut index = git_operation::run(|| repo.index())?;
         if paths.is_empty() {
-            index.clear()?;
+            git_operation::run(|| index.clear())?;
         } else {
             for p in &paths {
-                index.remove_path(Path::new(p))?;
+                git_operation::run(|| index.remove_path(Path::new(p)))?;
             }
         }
-        index.write()?;
+        git_operation::run(|| index.write())?;
     } else {
         let head_ref = head_result?;
-        let head_obj = head_ref.peel(git2::ObjectType::Any)?;
+        let head_obj = git_operation::run(|| head_ref.peel(git2::ObjectType::Any))?;
 
         let targets: Vec<String> = if paths.is_empty() {
             let mut opts = StatusOptions::new();
             opts.include_untracked(true).recurse_untracked_dirs(true);
-            let statuses = repo.statuses(Some(&mut opts))?;
+            let statuses = git_operation::run(|| repo.statuses(Some(&mut opts)))?;
             statuses
                 .iter()
                 .filter_map(|entry| {
@@ -98,83 +99,49 @@ pub(crate) fn git_unstage(repo_path: &str, paths: Vec<String>) -> Result<(), Cod
         };
 
         let path_specs: Vec<&str> = targets.iter().map(|s| s.as_str()).collect();
-        repo.reset_default(Some(&head_obj), &path_specs)?;
+        git_operation::run(|| repo.reset_default(Some(&head_obj), &path_specs))?;
     }
 
     Ok(())
 }
 
 pub(crate) fn git_stage_hunk(repo_path: &str, patch: &str) -> Result<(), CodeError> {
-    Repository::open(repo_path)?;
-
-    let spawn_guard = crate::infrastructure::process::parent_lifetime::spawn_guard();
-    let mut child = Command::new("git")
-        .args(["apply", "--cached"])
-        .current_dir(repo_path)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| CodeError::Rule(format!("Failed to execute git apply: {e}")))?;
-    drop(spawn_guard);
-
-    {
-        use std::io::Write;
-        let stdin = child
-            .stdin
-            .as_mut()
-            .ok_or_else(|| CodeError::Rule("Failed to open stdin for git apply".to_string()))?;
-        stdin
-            .write_all(patch.as_bytes())
-            .map_err(|e| CodeError::Rule(format!("Failed to write patch: {e}")))?;
-    }
-
-    let output = child
-        .wait_with_output()
-        .map_err(|e| CodeError::Rule(format!("Failed to wait for git apply: {e}")))?;
-
-    if output.status.success() {
-        Ok(())
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(CodeError::Rule(stderr.trim().to_string()))
-    }
+    apply_patch(repo_path, patch, false)
 }
 
 pub(crate) fn git_unstage_hunk(repo_path: &str, patch: &str) -> Result<(), CodeError> {
-    Repository::open(repo_path)?;
+    apply_patch(repo_path, patch, true)
+}
 
-    let spawn_guard = crate::infrastructure::process::parent_lifetime::spawn_guard();
-    let mut child = Command::new("git")
-        .args(["apply", "--cached", "--reverse"])
-        .current_dir(repo_path)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| CodeError::Rule(format!("Failed to execute git apply: {e}")))?;
-    drop(spawn_guard);
-
-    {
-        use std::io::Write;
-        let stdin = child
-            .stdin
-            .as_mut()
-            .ok_or_else(|| CodeError::Rule("Failed to open stdin for git apply".to_string()))?;
-        stdin
-            .write_all(patch.as_bytes())
-            .map_err(|e| CodeError::Rule(format!("Failed to write patch: {e}")))?;
+fn apply_patch(repo_path: &str, patch: &str, reverse: bool) -> Result<(), CodeError> {
+    crate::other::operation_context::check()?;
+    git_operation::run(|| Repository::open(repo_path))?;
+    #[cfg(test)]
+    let program = staging_tests::git_program();
+    #[cfg(not(test))]
+    let program = "git";
+    let mut command = Command::new(program);
+    command.args(["apply", "--cached"]).current_dir(repo_path);
+    if reverse {
+        command.arg("--reverse");
     }
-
-    let output = child
-        .wait_with_output()
-        .map_err(|e| CodeError::Rule(format!("Failed to wait for git apply: {e}")))?;
-
+    let output = crate::adaptor::gateway::shared::process::output(
+        command,
+        patch.as_bytes().to_vec(),
+        &crate::other::operation_context::current(),
+    )
+    .map_err(|error| match error {
+        crate::adaptor::gateway::shared::process::ProcessError::Io(error) => CodeError::from(error),
+        crate::adaptor::gateway::shared::process::ProcessError::Stopped(error) => {
+            CodeError::from(error)
+        }
+    })?;
     if output.status.success() {
         Ok(())
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(CodeError::Rule(stderr.trim().to_string()))
+        Err(CodeError::Rule(
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        ))
     }
 }
 
@@ -216,7 +183,7 @@ mod staging_gateway_tests {
     }
 
     fn diff_hunks_and_groups(original: &str, modified: &str) -> (Vec<Hunk>, Vec<ChangeGroup>) {
-        let raw_hunks = diff_compute::diff_buffers(original, modified, Some("file.txt"));
+        let raw_hunks = diff_compute::diff_buffers(original, modified, Some("file.txt")).unwrap();
         let hunks = hunk_service::assign_hunk_ids(&raw_hunks);
         let groups = hunk_service::compute_change_groups(&hunks);
         (hunks, groups)
@@ -417,3 +384,7 @@ mod staging_gateway_tests {
         assert_eq!(file_status.index_status, "none");
     }
 }
+
+#[cfg(test)]
+#[path = "staging_test.rs"]
+mod staging_tests;

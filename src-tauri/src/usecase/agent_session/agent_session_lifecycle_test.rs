@@ -320,6 +320,7 @@ impl ProviderExecutionTreeStopTransaction for NoopProviderExecutionTreeStops {
 
 #[derive(Default)]
 struct RecordingResumeLaunches {
+    prepare_stopped: Mutex<Option<crate::domain::operation_context::OperationStopped>>,
     launches: Mutex<Vec<ProviderSessionLaunch>>,
     cleanups: Mutex<Vec<String>>,
     armed: Mutex<Vec<ArmedProviderLifecycle>>,
@@ -335,6 +336,9 @@ impl ProviderAgentLaunchGateway for RecordingResumeLaunches {
         launch: ProviderSessionLaunch,
         _worktree_path: &str,
     ) -> Result<PreparedProviderLaunch, ProviderAgentLaunchGatewayError> {
+        if let Some(stopped) = *self.prepare_stopped.lock().unwrap() {
+            return Err(ProviderAgentLaunchGatewayError::Stopped(stopped));
+        }
         self.armed.lock().unwrap().push(armed.clone());
         self.launches.lock().unwrap().push(launch);
         Ok(PreparedProviderLaunch::new(
@@ -3268,5 +3272,68 @@ async fn test_sessionのarchiveとrestore_共通実行木操作のエラー分�
             AgentSessionLifecycle::Archived
         );
         assert!(context.change_notifier.notified.lock().unwrap().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn test_workflow_session準備_入口から期限と取消の分類を保持する() {
+    use crate::adaptor::gateway::workflow::node_session_boundary::{
+        ProviderWorkflowAgentSessionPort, WorkflowAgentSessionPort, WorkflowSessionLaunchConfig,
+    };
+    use crate::domain::failure::ClassifiedFailure;
+    use crate::domain::operation_context::OperationStopped;
+    use crate::usecase::workflow::runtime_error::WorkflowRuntimeError;
+    for stopped in [OperationStopped::Expired, OperationStopped::Cancelled] {
+        // Given
+        let context = setup();
+        *context.launches.prepare_stopped.lock().unwrap() = Some(stopped);
+        let port = ProviderWorkflowAgentSessionPort::new(
+            Arc::new(super::AgentSessionLaunchUsecase::new(
+                context.sessions.clone(),
+                context.provider_lifecycle.clone(),
+                ProviderAgentRuntime::new(
+                    Arc::new(AlwaysProviderAvailable),
+                    context.launches.clone(),
+                    context.terminal.clone(),
+                ),
+                Arc::new(
+                    crate::adaptor::gateway::agent_session::LocalAgentSessionHistoryGateway::new(
+                        context._directory.path().join("claude"),
+                        context._directory.path().join("codex"),
+                    ),
+                ),
+                context.hook_health.clone(),
+                context.execution_trees.clone(),
+            )),
+            Arc::new(super::AgentSessionInitialInstructionUsecase::new(
+                context.sessions.clone(),
+                Arc::new(RecordingContinuationInput::default()),
+            )),
+            context.lifecycle.clone(),
+            Arc::new(AlwaysProviderAvailable),
+        );
+        // When
+        let result = port
+            .prepare_workflow_agent_session(
+                "/repo",
+                "/repo/worktree",
+                WorkflowSessionLaunchConfig {
+                    provider: ProviderKind::Claude,
+                    model: None,
+                    permission: None,
+                },
+                "workflow-tree",
+                "node-1",
+                "test",
+            )
+            .await;
+        // Then
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("prepare must stop"),
+        };
+        assert!(matches!(error, WorkflowRuntimeError::Stopped(actual) if actual == stopped));
+        assert_eq!(error.failure_kind(), stopped.failure_kind());
+        assert_eq!(*context.terminal.spawn_count.lock().unwrap(), 0);
     }
 }

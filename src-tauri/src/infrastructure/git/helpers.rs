@@ -13,31 +13,50 @@ use git2::{BranchType, ErrorCode, Repository};
 
 /// 既定ブランチ名を検出する。
 /// remote HEAD（`refs/remotes/origin/HEAD`）を最優先、次に `main` / `master`。
-pub(crate) fn detect_default_branch(repo: &Repository) -> Option<String> {
+pub(crate) fn detect_default_branch<E>(
+    repo: &Repository,
+    check: &dyn Fn() -> Result<(), E>,
+) -> Result<Option<String>, E> {
+    check()?;
     // remote HEAD (refs/remotes/origin/HEAD) を最優先で確認
     if let Ok(reference) = repo.find_reference("refs/remotes/origin/HEAD") {
+        check()?;
         if let Ok(resolved) = reference.resolve() {
+            check()?;
             if let Ok(name) = resolved.shorthand() {
                 // "origin/main" → "main"
                 let short = name.strip_prefix("origin/").unwrap_or(name);
-                if repo.find_branch(short, BranchType::Local).is_ok() {
-                    return Some(short.to_string());
+                check()?;
+                let found = repo.find_branch(short, BranchType::Local).is_ok();
+                check()?;
+                if found {
+                    return Ok(Some(short.to_string()));
                 }
             }
         }
     }
 
     for name in &["main", "master"] {
-        if repo.find_branch(name, BranchType::Local).is_ok() {
-            return Some(name.to_string());
+        check()?;
+        let found = repo.find_branch(name, BranchType::Local).is_ok();
+        check()?;
+        if found {
+            return Ok(Some(name.to_string()));
         }
     }
-    None
+    check()?;
+    Ok(None)
 }
 
 /// リポジトリの HEAD が指すブランチ名（detached / unborn は表示用文字列）。
-pub(crate) fn get_branch_name_for_repo(repo: &Repository) -> String {
-    match repo.head() {
+pub(crate) fn get_branch_name_for_repo<E>(
+    repo: &Repository,
+    check: &dyn Fn() -> Result<(), E>,
+) -> Result<String, E> {
+    check()?;
+    let head = repo.head();
+    check()?;
+    Ok(match head {
         Ok(head) => {
             if head.is_branch() {
                 head.shorthand().unwrap_or("HEAD").to_string()
@@ -51,5 +70,5 @@ pub(crate) fn get_branch_name_for_repo(repo: &Repository) -> String {
         }
         Err(e) if e.code() == ErrorCode::UnbornBranch => "(no commits)".to_string(),
         Err(_) => "unknown".to_string(),
-    }
+    })
 }

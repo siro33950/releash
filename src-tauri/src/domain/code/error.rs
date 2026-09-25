@@ -9,20 +9,27 @@
 //! メッセージ文字列のみを保持し、`Display` はメッセージそのものを返す。
 #[derive(Debug)]
 pub enum CodeError {
+    Stopped(crate::domain::operation_context::OperationStopped),
     /// 外部リソース由来のエラー（git2・I/O・UTF-8・パス変換等）。メッセージを保持する。
     External(String),
     /// ドメインルール／前提条件の違反（bare repository・未ステージ・unborn branch 等）。
     /// 移行前の `GitError::Custom` が表していたメッセージと等価に保つ。
     Rule(String),
     /// review-blob URI が参照する snapshot version が現在の snapshot と一致しない。
-    StaleReviewBlobVersion { requested: u64, current: u64 },
+    StaleReviewBlobVersion {
+        requested: u64,
+        current: u64,
+    },
     /// review group action の stable id が現在の snapshot 上で解決できない。
-    StaleReviewGroupTarget { group_id: String },
+    StaleReviewGroupTarget {
+        group_id: String,
+    },
 }
 
 impl std::fmt::Display for CodeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Stopped(error) => std::fmt::Display::fmt(error, f),
             Self::External(msg) | Self::Rule(msg) => f.write_str(msg),
             Self::StaleReviewBlobVersion { requested, current } => write!(
                 f,
@@ -41,6 +48,7 @@ impl crate::domain::failure::ClassifiedFailure for CodeError {
     fn failure_kind(&self) -> crate::domain::failure::FailureKind {
         use crate::domain::failure::FailureKind as F;
         match self {
+            Self::Stopped(error) => crate::domain::failure::ClassifiedFailure::failure_kind(error),
             Self::External(_) => F::Internal,
             Self::Rule(_) => F::StateRequired,
             Self::StaleReviewBlobVersion { .. } | Self::StaleReviewGroupTarget { .. } => {
@@ -53,3 +61,9 @@ impl crate::domain::failure::ClassifiedFailure for CodeError {
 #[cfg(test)]
 #[path = "error_test.rs"]
 mod error_tests;
+
+impl From<crate::domain::operation_context::OperationStopped> for CodeError {
+    fn from(error: crate::domain::operation_context::OperationStopped) -> Self {
+        Self::Stopped(error)
+    }
+}

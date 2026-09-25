@@ -4,6 +4,9 @@ use std::sync::Mutex;
 #[derive(Default)]
 struct Files(Mutex<Vec<String>>);
 impl FileWatchGateway for Files {
+    fn release(&self, id: u64) {
+        self.0.lock().unwrap().push(id.to_string());
+    }
     fn start(&self, path: &str) -> Result<u64, String> {
         self.0.lock().unwrap().push(path.into());
         if path == "/missing" {
@@ -68,6 +71,9 @@ pub(crate) struct SubscriptionFiles {
     pub(crate) fail_stop: std::sync::atomic::AtomicBool,
 }
 impl FileWatchGateway for SubscriptionFiles {
+    fn release(&self, id: u64) {
+        self.active.lock().unwrap().remove(&id);
+    }
     fn start(&self, path: &str) -> Result<u64, String> {
         if path == "/missing" {
             return Err("missing path".into());
@@ -127,6 +133,9 @@ struct BlockingFiles {
     block_stop: bool,
 }
 impl FileWatchGateway for BlockingFiles {
+    fn release(&self, id: u64) {
+        self.files.release(id);
+    }
     fn start(&self, path: &str) -> Result<u64, String> {
         if path == "/blocked" && !self.block_stop {
             self.started.notify_one();
@@ -216,6 +225,10 @@ async fn test_監視購読_生成中に終了した購読のwatcherは同じid�
     };
     files.started.notified().await;
     // When
+    files
+        .files
+        .fail_stop
+        .store(true, std::sync::atomic::Ordering::SeqCst);
     drop(first);
     let second = usecase.subscribe("same".into()).unwrap();
     release.send(()).unwrap();
@@ -289,4 +302,24 @@ fn test_監視_repositoryの再走査競合と下位エラーの分類を保持�
         assert_ne!(error.failure_kind(), FailureKind::Internal);
         assert_eq!(error.to_string(), message);
     }
+}
+
+#[tokio::test]
+async fn test_監視登録破棄_通常停止が失敗しても資源と購読の枠を解放する() {
+    // Given
+    let files = Arc::new(SubscriptionFiles::default());
+    files
+        .fail_stop
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let usecase = Arc::new(WatcherUsecase::new(None, files.clone()));
+    let subscription = usecase.subscribe("push".into()).unwrap();
+    // When / Then
+    for _ in 0..65 {
+        let id = usecase.watch("push", "/file", false).unwrap();
+        assert!(usecase.stop(id).is_err());
+        usecase.release(id);
+        usecase.release(id);
+        assert!(files.active.lock().unwrap().is_empty());
+    }
+    drop(subscription);
 }

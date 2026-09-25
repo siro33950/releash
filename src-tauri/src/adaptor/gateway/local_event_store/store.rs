@@ -668,7 +668,7 @@ impl LocalEventStore {
                 classify_sqlite_error(&error, LocalEventStoreOpenError::StoreValidationFailed)
             })?;
         let queue = WriteQueue::new();
-        let readers = ReaderPool::new(Arc::clone(&config.clock));
+        let readers = ReaderPool::new();
         let query_context = Arc::new(QueryContext {
             registry: Arc::clone(&config.registry),
         });
@@ -898,12 +898,16 @@ impl LocalEventStore {
                 }
             }),
         };
+        crate::other::operation_context::check().map_err(CommitBatchError::from)?;
         match self.queue.admit(job) {
             Ok(()) => {}
             Err(AdmitRejection::Capacity) => return Err(CommitBatchError::QueueBusy),
             Err(AdmitRejection::Closed) => return Err(unknown),
         }
-        receiver.await.unwrap_or(Err(unknown))
+        crate::other::operation_context::wait(&crate::other::operation_context::current(), receiver)
+            .await
+            .map_err(CommitBatchError::from)?
+            .unwrap_or(Err(unknown))
     }
 
     fn shape_error(&self, context: &str) -> CommitBatchError {

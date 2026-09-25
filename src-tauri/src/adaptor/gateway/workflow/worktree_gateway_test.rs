@@ -211,3 +211,99 @@ fn test_隔離生成確認_同名登録でもpathまたはrepositoryが違えば
     .unwrap();
     assert!(gateway.is_created(&root, &worktree).is_err());
 }
+
+#[test]
+fn test_隔離worktree_全入口で期限切れと取り消しの分類を保持する() {
+    use crate::domain::failure::{ClassifiedFailure, FailureKind};
+    use crate::domain::operation_context::{Deadline, OperationContext};
+    use std::sync::Arc;
+    use std::time::Instant;
+    // Given
+    let (_directory, repo, root) = repository();
+    let gateway = RepositoryIsolatedWorktreeGateway;
+    let worktree = IsolatedWorktree::for_attempt(&root, "stopped", 1);
+    let token = tokio_util::sync::CancellationToken::new();
+    token.cancel();
+    for (context, expected) in [
+        (
+            OperationContext::new(None, Arc::new(token)),
+            FailureKind::Cancelled,
+        ),
+        (
+            OperationContext::default().with_deadline(Deadline::new(Instant::now())),
+            FailureKind::Expired,
+        ),
+    ] {
+        // When / Then
+        crate::other::operation_context::sync_scope(context, || {
+            assert_eq!(
+                gateway.repository_root(&root).unwrap_err().failure_kind(),
+                expected
+            );
+            assert_eq!(
+                gateway
+                    .is_created(&root, &worktree)
+                    .unwrap_err()
+                    .failure_kind(),
+                expected
+            );
+            assert_eq!(
+                gateway.create(&root, &worktree).unwrap_err().failure_kind(),
+                expected
+            );
+        });
+        assert!(!std::path::Path::new(&worktree.path).exists());
+        assert!(repo
+            .find_branch(&worktree.branch, git2::BranchType::Local)
+            .is_err());
+    }
+}
+
+#[test]
+fn test_managed_worktree解決_各操作の停止で別repositoryへ進まない() {
+    use crate::adaptor::gateway::repository::test_helpers::assert_stops_at_each_checkpoint;
+    // Given
+    let (_directory, _repo, root) = repository();
+    let (_second_directory, _second_repo, second_root) = repository();
+    let gateway = RepoPathsManagedWorktreeGateway::new(
+        Arc::new(crate::adaptor::controller::wiring::build_repository_usecase()),
+        vec![root.clone(), second_root],
+    );
+    // When / Then
+    assert_stops_at_each_checkpoint(|| gateway.resolve(&root));
+}
+
+#[test]
+fn test_隔離生成確認_validateの停止を後続のパス検証エラーへ変えない() {
+    use crate::domain::operation_context::{Cancellation, OperationContext, OperationStopped};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct CancelAfterValidate(AtomicUsize);
+    impl Cancellation for CancelAfterValidate {
+        fn is_cancelled(&self) -> bool {
+            self.0.fetch_add(1, Ordering::SeqCst) >= 5
+        }
+    }
+    // Given
+    let (_directory, _repo, root) = repository();
+    let gateway = RepositoryIsolatedWorktreeGateway;
+    let mut worktree = IsolatedWorktree::for_attempt(&root, "validate", 1);
+    gateway.create(&root, &worktree).unwrap();
+    let name = std::path::Path::new(&worktree.path).file_name().unwrap();
+    worktree.path = std::path::Path::new(&root)
+        .join("missing")
+        .join(name)
+        .to_string_lossy()
+        .into_owned();
+    let cancellation = Arc::new(CancelAfterValidate(AtomicUsize::new(0)));
+    // When
+    let result = crate::other::operation_context::sync_scope(
+        OperationContext::new(None, cancellation.clone()),
+        || gateway.is_created(&root, &worktree),
+    );
+    // Then
+    assert!(matches!(
+        result,
+        Err(WorkflowError::Stopped(OperationStopped::Cancelled))
+    ));
+    assert_eq!(cancellation.0.load(Ordering::SeqCst), 6);
+}

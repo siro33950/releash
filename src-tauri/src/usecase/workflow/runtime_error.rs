@@ -6,6 +6,7 @@ use crate::usecase::workflow::runtime_resolver::{
 /// Workflow runtime boundary error.
 #[derive(Debug)]
 pub enum WorkflowRuntimeError {
+    Stopped(crate::domain::operation_context::OperationStopped),
     Store(crate::domain::failure::FailureKind),
     StorageFailure {
         kind: crate::domain::failure::FailureKind,
@@ -39,6 +40,7 @@ impl std::fmt::Display for WorkflowRuntimeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Store(kind) => write!(f, "Store failure: {kind:?}"),
+            Self::Stopped(stopped) => stopped.fmt(f),
             Self::StorageFailure { message, .. } => f.write_str(message),
             Self::ExecutionNotFound(id) => {
                 write!(f, "No workflow execution found for session '{id}'")
@@ -68,7 +70,7 @@ impl WorkflowRuntimeError {
             Self::Store(_) | Self::StorageFailure { .. } | Self::SessionStore(_) => {
                 NodeExecutionFailureKind::InfrastructureCrash
             }
-            Self::AgentSession(_) => NodeExecutionFailureKind::ValidationFailure,
+            Self::AgentSession(_) | Self::Stopped(_) => NodeExecutionFailureKind::ValidationFailure,
             Self::ExecutionNotFound(_)
             | Self::SessionNotFound(_)
             | Self::InvalidWorkflow(_)
@@ -103,6 +105,7 @@ impl From<ManagedWorktreeResolverError> for WorkflowRuntimeError {
     fn from(e: ManagedWorktreeResolverError) -> Self {
         match e {
             ManagedWorktreeResolverError::Validation(message) => Self::ValidationError(message),
+            ManagedWorktreeResolverError::Stopped(stopped) => Self::Stopped(stopped),
         }
     }
 }
@@ -144,6 +147,7 @@ impl crate::domain::failure::ClassifiedFailure for WorkflowRuntimeError {
         use crate::domain::failure::FailureKind;
         match self {
             Self::Store(kind) | Self::StorageFailure { kind, .. } => *kind,
+            Self::Stopped(stopped) => stopped.failure_kind(),
             Self::AlreadyActive(_) | Self::InvalidState(_) => FailureKind::StateRequired,
             Self::Conflict(_) => FailureKind::RestartRequired,
             Self::ExecutionNotFound(_) | Self::SessionNotFound(_) => FailureKind::Missing,

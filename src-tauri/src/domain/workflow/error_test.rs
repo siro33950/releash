@@ -81,3 +81,17 @@ fn test_書込失敗_workflow変換後も分類を保持する() {
         assert_eq!(WorkflowError::from(error).failure_kind(), expected);
     }
 }
+
+#[test]
+fn test_workflow停止_分類とメッセージを保持する() {
+    use crate::domain::failure::ClassifiedFailure;
+    use crate::domain::operation_context::OperationStopped;
+    // Given
+    for stopped in [OperationStopped::Expired, OperationStopped::Cancelled] {
+        // When
+        let error = WorkflowError::Stopped(stopped);
+        // Then
+        assert_eq!(error.failure_kind(), stopped.failure_kind());
+        assert_eq!(error.to_string(), stopped.to_string());
+    }
+}

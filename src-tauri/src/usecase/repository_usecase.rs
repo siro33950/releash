@@ -11,7 +11,7 @@ use std::sync::Arc;
 use crate::domain::path::to_canonical_forward_slash;
 use crate::domain::repository::{
     worktree_path as derive_worktree_path, Branch, BranchRepository, GitConfigRepository,
-    RepoLocator, RepositoryStatusScan, StatusRepository, WorktreeRepository,
+    RepoLocator, RepositoryError, RepositoryStatusScan, StatusRepository, WorktreeRepository,
     WorktreeTerminalGateway,
 };
 
@@ -139,7 +139,7 @@ impl RepositoryUsecase {
                 archives
                     .begin_worktree_deletion(path)
                     .await
-                    .map_err(|error| UsecaseError::Rule(error.to_string()))?,
+                    .map_err(UsecaseError::from)?,
             );
         }
         let invalid_paths = self.worktree.invalid_worktree_paths(repo_path)?;
@@ -148,7 +148,7 @@ impl RepositoryUsecase {
                 archives
                     .begin_worktree_deletion(path)
                     .await
-                    .map_err(|error| UsecaseError::Rule(error.to_string()))?,
+                    .map_err(UsecaseError::from)?,
             );
         }
         self.validate_branch_deletion(repo_path, branch_name)?;
@@ -159,13 +159,13 @@ impl RepositoryUsecase {
             archives
                 .archive_worktree(path)
                 .await
-                .map_err(|error| UsecaseError::Rule(error.to_string()))?;
+                .map_err(UsecaseError::from)?;
         }
         for path in &targets {
             archives
                 .archive_worktree(path)
                 .await
-                .map_err(|error| UsecaseError::Rule(error.to_string()))?;
+                .map_err(UsecaseError::from)?;
         }
         self.worktree.prune_invalid(repo_path)?;
         for path in &targets {
@@ -227,18 +227,21 @@ impl RepositoryUsecase {
 
     /// worktree 一覧の read model を組み立てる。worktree 識別情報（worktree 集約）に
     /// `dirty_count`（status 集約）と `base_branch`（git_config 集約）を合成する複数集約の
-    /// オーケストレーション。各 worktree 自身のパスで解決し、失敗時は 0 / None に倒す
+    /// オーケストレーション。各 worktree 自身のパスで解決し、停止以外の失敗時は 0 / None に倒す
     /// （旧 gateway の一覧構築と等価）。
     pub fn list_worktrees(&self, repo_path: &str) -> Result<Vec<WorktreeEntryDto>, UsecaseError> {
         let repository_root = self.worktree.main_repo_path(repo_path)?;
         let worktrees = self.worktree.list(repo_path)?;
         let mut entries = Vec::with_capacity(worktrees.len());
         for wt in worktrees {
-            let dirty_count = self.worktree.dirty_count(&wt.path).unwrap_or(0);
-            let base_branch = self
-                .git_config
-                .get_branch_base(&wt.path, &wt.branch)
-                .unwrap_or(None);
+            let dirty_count = match self.worktree.dirty_count(&wt.path) {
+                Err(error @ RepositoryError::Stopped(_)) => return Err(error.into()),
+                result => result.unwrap_or(0),
+            };
+            let base_branch = match self.git_config.get_branch_base(&wt.path, &wt.branch) {
+                Err(error @ RepositoryError::Stopped(_)) => return Err(error.into()),
+                result => result.unwrap_or(None),
+            };
             entries.push(WorktreeEntryDto {
                 name: wt.name,
                 path: to_canonical_forward_slash(&wt.path),
@@ -308,15 +311,18 @@ impl RepositoryUsecase {
         let mut deletion = archives
             .begin_worktree_deletion(worktree_path)
             .await
-            .map_err(|error| UsecaseError::Rule(error.to_string()))?;
+            .map_err(UsecaseError::from)?;
         self.worktree
             .validate_removal(repo_path, worktree_path, force)?;
         let repository_root = self.worktree.main_repo_path(worktree_path)?;
-        let branch = self.branch.current(worktree_path).ok();
+        let branch = match self.branch.current(worktree_path) {
+            Err(error @ RepositoryError::Stopped(_)) => return Err(error.into()),
+            result => result.ok(),
+        };
         archives
             .archive_worktree(worktree_path)
             .await
-            .map_err(|error| UsecaseError::Rule(error.to_string()))?;
+            .map_err(UsecaseError::from)?;
         // (1) 紐づく terminal surface を停止する。
         self.worktree_terminals.kill_by_worktree(worktree_path);
 
@@ -452,9 +458,13 @@ mod repository_usecase_tests {
         default_branch: Option<String>,
         current_branch: String,
         fail_current_branch: bool,
+        stop_current_branch: Option<crate::domain::operation_context::OperationStopped>,
         worktrees: Vec<Worktree>,
         invalid_worktrees: Vec<String>,
         dirty: u32,
+        stop_dirty: Option<crate::domain::operation_context::OperationStopped>,
+        stop_base: Option<crate::domain::operation_context::OperationStopped>,
+        detail_calls: Mutex<Vec<&'static str>>,
         branch_base: Option<String>,
         fail_create_worktree: bool,
         fail_remove_worktree: bool,
@@ -535,6 +545,9 @@ mod repository_usecase_tests {
             Ok(Vec::new())
         }
         fn current(&self, _repo_path: &str) -> Result<String, RepositoryError> {
+            if let Some(stopped) = self.stop_current_branch {
+                return Err(stopped.into());
+            }
             if self.fail_current_branch {
                 return Err(RepositoryError::External("branch unavailable".into()));
             }
@@ -575,6 +588,10 @@ mod repository_usecase_tests {
             Ok("/main".to_string())
         }
         fn dirty_count(&self, _worktree_path: &str) -> Result<u32, RepositoryError> {
+            self.detail_calls.lock().push("dirty");
+            if let Some(stopped) = self.stop_dirty {
+                return Err(stopped.into());
+            }
             Ok(self.dirty)
         }
         fn list(&self, repo_path: &str) -> Result<Vec<Worktree>, RepositoryError> {
@@ -669,6 +686,10 @@ mod repository_usecase_tests {
             _repo_path: &str,
             _branch_name: &str,
         ) -> Result<Option<String>, RepositoryError> {
+            self.detail_calls.lock().push("base");
+            if let Some(stopped) = self.stop_base {
+                return Err(stopped.into());
+            }
             Ok(self.branch_base.clone())
         }
         fn set_branch_base_override(
@@ -743,6 +764,44 @@ mod repository_usecase_tests {
         ) -> Result<Vec<BranchCardDto>, RepositoryError> {
             self.branch_card_paths.lock().push(repo_path.to_string());
             Ok(Vec::new())
+        }
+    }
+
+    #[test]
+    fn test_worktree一覧_詳細取得の停止を既定値に変えず後続を呼ばない() {
+        use crate::domain::failure::ClassifiedFailure;
+        use crate::domain::operation_context::OperationStopped;
+        // Given
+        for stopped in [OperationStopped::Expired, OperationStopped::Cancelled] {
+            for stop_dirty in [true, false] {
+                let fake = Arc::new(FakeRepo {
+                    stop_dirty: stop_dirty.then_some(stopped),
+                    stop_base: (!stop_dirty).then_some(stopped),
+                    worktrees: vec![
+                        Worktree {
+                            name: "main".into(),
+                            path: "/main".into(),
+                            branch: "main".into(),
+                            is_main: true,
+                            is_locked: false
+                        };
+                        2
+                    ],
+                    ..Default::default()
+                });
+                // When
+                let error = usecase(fake.clone()).list_worktrees("/main").unwrap_err();
+                // Then
+                assert_eq!(error.failure_kind(), stopped.failure_kind());
+                assert_eq!(
+                    *fake.detail_calls.lock(),
+                    if stop_dirty {
+                        vec!["dirty"]
+                    } else {
+                        vec!["dirty", "base"]
+                    }
+                );
+            }
         }
     }
 
@@ -1584,6 +1643,41 @@ mod repository_usecase_tests {
         removal.await.unwrap();
         fake.wait_for_deletion("/wt").await;
         assert_eq!(fake.removed_worktrees.lock().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_worktree削除_ブランチ取得の停止を保持し後続操作へ進まない() {
+        use crate::domain::failure::ClassifiedFailure;
+        use crate::domain::operation_context::OperationStopped;
+        for stopped in [OperationStopped::Expired, OperationStopped::Cancelled] {
+            for force in [false, true] {
+                // Given
+                let fake = Arc::new(FakeRepo {
+                    stop_current_branch: Some(stopped),
+                    ..Default::default()
+                });
+                let publisher =
+                    crate::usecase::state_subscription::StateSubscriptionPublisher::for_test();
+                let mut changes = publisher.subscribe_changes();
+                let repository = usecase(fake.clone()).with_state_publisher(publisher);
+                // When
+                let error = repository
+                    .remove_worktree(fake.as_ref(), "/repo", "/wt", force)
+                    .await
+                    .unwrap_err();
+                // Then
+                assert_eq!(error.failure_kind(), stopped.failure_kind());
+                assert!(fake.archived_worktrees.lock().is_empty());
+                assert!(fake.killed_worktree_terminals.lock().is_empty());
+                assert!(fake.removed_worktrees.lock().is_empty());
+                assert!(fake.set_branch_base_override_calls.lock().is_empty());
+                assert!(changes.try_recv().is_err());
+                let mut cards = Vec::new();
+                repository.include_deleting_worktrees("/main", &mut cards);
+                assert!(cards.is_empty());
+                assert!(fake.operations.mutate("/wt").is_ok());
+            }
+        }
     }
 
     #[tokio::test]
