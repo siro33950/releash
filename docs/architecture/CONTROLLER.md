@@ -3,7 +3,7 @@
 ## 原則
 
 - **外部入力の受け口**として薄く保つ
-- 転送の形を Input Data に変えて Usecase を呼ぶことのみ
+- 外からのきっかけ（転送の要求、時刻・起動、OS の通知）を Input Data に変えて Usecase を呼ぶことのみ。きっかけの種類で入口の部品を分けない。きっかけを生む駆動部（Web サーバ、タイマー、OS の通知）は infrastructure に置く
 - 業務ロジックを書かない（Usecase を呼ぶだけ。QueryService や Repository を controller から直接呼ばない）
 - **受理判定を controller で書かない**: 「この状態でこの操作を受理してよいか」の判断は domain の集約が答える（[DOMAIN.md](./DOMAIN.md) モデルが実行を担う）。controller が状態型を独自解釈してゲートを設けると、同じ判断が層をまたいで二重化し、domain 側の不変条件が効かなくなる
 - 3系統の入口を分離する：

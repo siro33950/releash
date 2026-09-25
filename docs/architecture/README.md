@@ -23,7 +23,7 @@
 | usecase | Input Data / Output Data | 操作の入力と出力。Entity を参照しない単純なデータ。失敗も出力として表す |
 | usecase | Output Boundary の trait | 結果を外へ出す口。画面への状態の配信もここを通る。adaptor/presenter が実装する |
 | usecase | QueryService の trait | 読み取り要求に Output Data で答える口。adaptor/gateway が実装する |
-| adaptor/controller | Controller | 転送の形を Input Data に変えて、Usecase を呼ぶ |
+| adaptor/controller | Controller | 外からのきっかけ（転送の要求、時刻・起動、OS の通知）を Input Data に変えて、Usecase を呼ぶ。きっかけを生む駆動部（Web サーバ、タイマー、OS の通知）は infrastructure に置く |
 | adaptor/presenter | Presenter、転送のメッセージ型 | Output Data を転送の形とステータスコードに変える |
 | adaptor/gateway | domain と usecase の trait の実装 | 内側の型と外部世界の形の変換 |
 | infrastructure | 外部世界の駆動部 | 外部世界そのもの（SQLite、Web サーバ、process・PTY、HTTP、OS）。内側へつなぐ部分だけを書く |
