@@ -17,6 +17,43 @@ export type FailureRecord = {
 	requiresAttention: boolean;
 };
 
+export type TerminalEvent = {
+	snapshot?: TerminalSnapshot;
+	output?: TerminalOutput;
+	resize?: TerminalResize;
+	exit?: TerminalExit;
+};
+
+export type TerminalSnapshot = {
+	sessionKey?: string;
+	replay?: string;
+	sequence?: number;
+	cols?: number;
+	rows?: number;
+	isExited?: boolean;
+	exitCode?: number;
+	processedReportUnits?: number;
+};
+
+export type TerminalOutput = {
+	sessionKey?: string;
+	data?: string;
+	sequence?: number;
+};
+
+export type TerminalResize = {
+	sessionKey?: string;
+	cols?: number;
+	rows?: number;
+	sequence?: number;
+};
+
+export type TerminalExit = {
+	sessionKey?: string;
+	exitCode?: number;
+	sequence?: number;
+};
+
 export type Liststring = Array<string>;
 
 export type WorkspaceListSnapshotDto = {
@@ -386,36 +423,12 @@ export type WorkspaceLayoutStateDto = {
 
 export type WorkspaceCenterTab = "agent" | "editor";
 
-export type InputAttachTerminalSurfaceRequest = {
-	attachmentId: string;
-	owner: InputTerminalSurfaceOwnerV1;
-	recovery: boolean;
-};
-
-export type InputTerminalSurfaceOwnerV1 =
-	| ({ kind: "workspace" } & InputTerminalSurfaceOwnerV1Workspace)
-	| ({ kind: "session" } & InputTerminalSurfaceOwnerV1Session);
-
-export type InputTerminalSurfaceOwnerV1Workspace = {
-	workspacePath: string;
-};
-
-export type InputTerminalSurfaceOwnerV1Session = {
-	workspacePath: string;
-	sessionId: string;
-};
-
 export type InputGetReviewBlobRequest = {
 	reference: string;
 };
 
 export type InputAbortWorkflowRequest = {
 	executionId: string;
-};
-
-export type InputAckTerminalSurfaceOutputRequest = {
-	attachmentId: string;
-	sequence: number;
 };
 
 export type InputAddRepoPathRequest = {
@@ -531,10 +544,6 @@ export type InputDeleteWorkflowRequest = {
 	name: string;
 };
 
-export type InputDetachTerminalSurfaceRequest = {
-	attachmentId: string;
-};
-
 export type InputDetectEditorsRequest = Record<string, never>;
 
 export type InputDiagnoseAllCmdRequest = {
@@ -610,6 +619,19 @@ export type InputGetOrSpawnTerminalSurfaceRequest = {
 	startupCommand?: string | null;
 };
 
+export type InputTerminalSurfaceOwnerV1 =
+	| ({ kind: "workspace" } & InputTerminalSurfaceOwnerV1Workspace)
+	| ({ kind: "session" } & InputTerminalSurfaceOwnerV1Session);
+
+export type InputTerminalSurfaceOwnerV1Workspace = {
+	workspacePath: string;
+};
+
+export type InputTerminalSurfaceOwnerV1Session = {
+	workspacePath: string;
+	sessionId: string;
+};
+
 export type InputGetPerformanceRealAppModeRequest = Record<string, never>;
 
 export type InputGetPerformanceTelemetryEnabledRequest = Record<string, never>;
@@ -652,10 +674,6 @@ export type InputReviewSnapshotInput = {
 };
 
 export type InputGetTerminalPerformanceSwitchesRequest = Record<string, never>;
-
-export type InputGetTerminalSurfaceRequest = {
-	owner: InputTerminalSurfaceOwnerV1;
-};
 
 export type InputGetWorkflowRequest = {
 	name: string;
@@ -1383,10 +1401,6 @@ export type LabelPropertyView = {
 
 export type GetOrSpawnTerminalV1 = {
 	session_key: string;
-	restored_from_checkpoint: boolean;
-	is_new: boolean;
-	is_exited: boolean;
-	exit_code: number | null;
 };
 
 export type ProviderAvailabilitySnapshotResponse = {
@@ -1580,12 +1594,6 @@ export type TerminalPerformanceSwitchesV1 = {
 	disableTerminalJournal: boolean;
 	disableRendererWriteSerialization: boolean;
 	disableWebglRenderer: boolean;
-};
-
-export type TerminalSurfaceSummaryV1 = {
-	session_key: string;
-	is_exited: boolean;
-	exit_code: number | null;
 };
 
 export type WorkflowDto = {
@@ -1907,10 +1915,8 @@ export type GitStatusChangedEvent = {
 };
 
 export interface ClientCommandArgs {
-	attach_terminal_surface: InputAttachTerminalSurfaceRequest;
 	get_review_blob: InputGetReviewBlobRequest;
 	abort_workflow: InputAbortWorkflowRequest;
-	ack_terminal_surface_output: InputAckTerminalSurfaceOutputRequest;
 	add_repo_path: InputAddRepoPathRequest;
 	append_review_comment: InputAppendReviewCommentRequest;
 	approve_workspace_node: InputApproveWorkspaceNodeRequest;
@@ -1931,7 +1937,6 @@ export interface ClientCommandArgs {
 	delete_notion_config: InputDeleteNotionConfigRequest;
 	delete_review_thread: InputDeleteReviewThreadRequest;
 	delete_workflow: InputDeleteWorkflowRequest;
-	detach_terminal_surface: InputDetachTerminalSurfaceRequest;
 	detect_editors: InputDetectEditorsRequest;
 	diagnose_all_cmd: InputDiagnoseAllCmdRequest;
 	duplicate_facet: InputDuplicateFacetRequest;
@@ -1954,7 +1959,6 @@ export interface ClientCommandArgs {
 	get_review_file_view: InputGetReviewFileViewRequest;
 	get_review_snapshot: InputGetReviewSnapshotRequest;
 	get_terminal_performance_switches: InputGetTerminalPerformanceSwitchesRequest;
-	get_terminal_surface: InputGetTerminalSurfaceRequest;
 	get_workflow: InputGetWorkflowRequest;
 	get_workflow_config: InputGetWorkflowConfigRequest;
 	get_workflow_source: InputGetWorkflowSourceRequest;
@@ -2029,9 +2033,6 @@ export interface ClientCommands {
 		args: ClientCommandArgs["get_review_blob"],
 	): Promise<ResultString>;
 	abort_workflow(args: ClientCommandArgs["abort_workflow"]): Promise<void>;
-	ack_terminal_surface_output(
-		args: ClientCommandArgs["ack_terminal_surface_output"],
-	): Promise<void>;
 	add_repo_path(args: ClientCommandArgs["add_repo_path"]): Promise<ResultBool>;
 	append_review_comment(
 		args: ClientCommandArgs["append_review_comment"],
@@ -2084,9 +2085,6 @@ export interface ClientCommands {
 		args: ClientCommandArgs["delete_review_thread"],
 	): Promise<void>;
 	delete_workflow(args: ClientCommandArgs["delete_workflow"]): Promise<void>;
-	detach_terminal_surface(
-		args: ClientCommandArgs["detach_terminal_surface"],
-	): Promise<void>;
 	detect_editors(
 		args: ClientCommandArgs["detect_editors"],
 	): Promise<ListEditorInfoDto>;
@@ -2147,9 +2145,6 @@ export interface ClientCommands {
 	get_terminal_performance_switches(
 		args: ClientCommandArgs["get_terminal_performance_switches"],
 	): Promise<TerminalPerformanceSwitchesV1>;
-	get_terminal_surface(
-		args: ClientCommandArgs["get_terminal_surface"],
-	): Promise<TerminalSurfaceSummaryV1>;
 	get_workflow(args: ClientCommandArgs["get_workflow"]): Promise<WorkflowDto>;
 	get_workflow_config(
 		args: ClientCommandArgs["get_workflow_config"],

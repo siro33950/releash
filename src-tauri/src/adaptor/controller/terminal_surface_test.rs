@@ -1,51 +1,12 @@
-use std::sync::{Arc, Mutex};
-
 use super::*;
-use crate::adaptor::gateway::terminal_surface::event_hub::TerminalSurfaceEventHub;
-use crate::domain::terminal_surface::entities::TerminalSurface;
-use crate::domain::terminal_surface::gateway::{
-    TerminalSurfaceEvent, TerminalSurfaceEventSink, TerminalSurfaceGateway,
-};
-use crate::domain::terminal_surface::{
-    TerminalProcessState, TerminalSurfaceCheckpoint, TerminalSurfaceOwner,
-};
-use crate::domain::workspace_tree::WorkspaceIdentity;
-use crate::usecase::terminal_surface::application::TerminalSurfaceApplication;
-
-#[test]
-fn test_ターミナル接続_recovery指定を初回接続と再同期へ対応づける() {
-    // Given / When / Then
-    assert_eq!(
-        TerminalCommandOperation::attachment(false),
-        TerminalCommandOperation::Attach
-    );
-    assert_eq!(
-        TerminalCommandOperation::attachment(true),
-        TerminalCommandOperation::Resynchronize
-    );
-}
 
 #[test]
 fn test_ターミナル操作_gateway失敗を操作ごとの固定文言へ変換する() {
     // Given
-    let cases = [
-        (
-            TerminalCommandOperation::Initialize,
-            "Terminal initialization failed. Try again.",
-        ),
-        (
-            TerminalCommandOperation::GetExisting,
-            "Terminal attachment failed. Try again.",
-        ),
-        (
-            TerminalCommandOperation::Attach,
-            "Terminal attachment failed. Try again.",
-        ),
-        (
-            TerminalCommandOperation::Resynchronize,
-            "Terminal resynchronization failed. Try again.",
-        ),
-    ];
+    let cases = [(
+        TerminalCommandOperation::Initialize,
+        "Terminal initialization failed. Try again.",
+    )];
 
     // When / Then
     for (operation, expected_message) in cases {
@@ -66,24 +27,10 @@ fn test_ターミナル操作_gateway失敗を操作ごとの固定文言へ変�
 #[test]
 fn test_ターミナル操作_不正なownerを操作ごとの固定文言へ変換する() {
     // Given
-    let cases = [
-        (
-            TerminalCommandOperation::Initialize,
-            "Terminal initialization failed because the request is invalid.",
-        ),
-        (
-            TerminalCommandOperation::GetExisting,
-            "Terminal attachment failed because the request is invalid.",
-        ),
-        (
-            TerminalCommandOperation::Attach,
-            "Terminal attachment failed because the request is invalid.",
-        ),
-        (
-            TerminalCommandOperation::Resynchronize,
-            "Terminal resynchronization failed because the request is invalid.",
-        ),
-    ];
+    let cases = [(
+        TerminalCommandOperation::Initialize,
+        "Terminal initialization failed because the request is invalid.",
+    )];
 
     // When / Then
     for (operation, expected_message) in cases {
@@ -232,73 +179,4 @@ fn test_ターミナル起動性能計測_rendererは許可したphaseと有限d
             },
         ]
     );
-}
-
-#[tokio::test]
-async fn test_ターミナル画面接続_画面写像後は新しい出力と終了だけを送る() {
-    let owner = TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/repo")).unwrap();
-    let gateway = Arc::new(
-        crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor::default(),
-    );
-    gateway.insert_surface(TerminalSurface {
-        session_key: owner.stable_key(),
-        owner: owner.clone(),
-        worktree_path: Some("/repo".to_string()),
-        label: None,
-        runtime_generation: 1.into(),
-        process_state: TerminalProcessState::Running,
-        checkpoint: TerminalSurfaceCheckpoint {
-            replay: "snapshot".to_string(),
-            sequence: 4,
-            cols: 80,
-            rows: 24,
-        },
-        latest_sequence: 4,
-        last_output_at: None,
-    });
-    let event_hub = Arc::new(TerminalSurfaceEventHub::new());
-    let application = Arc::new(TerminalSurfaceApplication::new(gateway, event_hub.clone()));
-    let attachment = application.attach("attachment-1", &owner).unwrap();
-    event_hub.publish(TerminalSurfaceEvent::Output {
-        session_key: owner.stable_key(),
-        data: "duplicate".into(),
-        sequence: 4,
-    });
-    event_hub.publish(TerminalSurfaceEvent::Output {
-        session_key: owner.stable_key(),
-        data: "live".into(),
-        sequence: 5,
-    });
-    event_hub.publish(TerminalSurfaceEvent::Exit {
-        session_key: owner.stable_key(),
-        runtime_generation: 1,
-        exit_code: Some(0),
-        sequence: 6,
-    });
-    let sent = Arc::new(Mutex::new(Vec::new()));
-    let captured = sent.clone();
-
-    forward_terminal_surface_attachment(attachment, move |item| {
-        captured.lock().unwrap().push(item);
-        Ok(())
-    })
-    .await;
-
-    let sent = sent.lock().unwrap();
-    assert_eq!(sent.len(), 3);
-    assert!(matches!(
-        &sent[0],
-        crate::adaptor::protocol::terminal::TerminalSurfaceStreamItemV1::Snapshot { surface }
-            if surface.terminal_surface.sequence == 4
-    ));
-    assert!(matches!(
-        &sent[1],
-        crate::adaptor::protocol::terminal::TerminalSurfaceStreamItemV1::Output { data, sequence, .. }
-            if data.as_ref() == "live" && *sequence == 5
-    ));
-    assert!(matches!(
-        &sent[2],
-        crate::adaptor::protocol::terminal::TerminalSurfaceStreamItemV1::Exit { exit_code, .. }
-            if *exit_code == Some(0)
-    ));
 }

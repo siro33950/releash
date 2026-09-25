@@ -23,7 +23,7 @@ fn test_増分収集_連番をdrainし失敗時は同じ順序で戻す() {
         .unwrap();
     journal
         .record(NativeTerminalCheckpointRecord::Resize {
-            sequence: 2,
+            sequence: 1,
             cols: 100,
             rows: 30,
         })
@@ -37,7 +37,7 @@ fn test_増分収集_連番をdrainし失敗時は同じ順序で戻す() {
             .iter()
             .map(NativeTerminalCheckpointRecord::sequence)
             .collect::<Vec<_>>(),
-        vec![1, 2]
+        vec![1, 1]
     );
     journal.restore_failed(flush);
     let retry = journal.take_pending();
@@ -47,7 +47,7 @@ fn test_増分収集_連番をdrainし失敗時は同じ順序で戻す() {
             .iter()
             .map(NativeTerminalCheckpointRecord::sequence)
             .collect::<Vec<_>>(),
-        vec![1, 2]
+        vec![1, 1]
     );
 }
 
@@ -55,13 +55,60 @@ fn test_増分収集_連番をdrainし失敗時は同じ順序で戻す() {
 fn test_増分収集_重複逆転欠落を拒否する() {
     let mut journal = IncrementalCheckpointJournal::new(base(), true);
     journal
-        .record(NativeTerminalCheckpointRecord::Barrier { sequence: 1 })
+        .record(NativeTerminalCheckpointRecord::Output {
+            sequence: 1,
+            data: "x".into(),
+        })
         .unwrap();
 
     assert!(journal
-        .record(NativeTerminalCheckpointRecord::Barrier { sequence: 1 })
+        .record(NativeTerminalCheckpointRecord::Output {
+            sequence: 1,
+            data: "x".into()
+        })
         .is_err());
     assert!(journal
-        .record(NativeTerminalCheckpointRecord::Barrier { sequence: 3 })
+        .record(NativeTerminalCheckpointRecord::Output {
+            sequence: 3,
+            data: "x".into()
+        })
+        .is_err());
+}
+
+#[test]
+fn test_増分収集_出力前の寸法変更と終了は同番号で保持する() {
+    // Given
+    let mut journal = IncrementalCheckpointJournal::new(base(), true);
+    // When
+    journal
+        .record(NativeTerminalCheckpointRecord::Resize {
+            sequence: 0,
+            cols: 100,
+            rows: 30,
+        })
+        .unwrap();
+    journal.compacted(base());
+    journal
+        .record(NativeTerminalCheckpointRecord::Barrier { sequence: 0 })
+        .unwrap();
+    // Then
+    let records = journal.take_pending().records;
+    assert!(matches!(
+        records.as_slice(),
+        [
+            NativeTerminalCheckpointRecord::Resize {
+                sequence: 0,
+                cols: 100,
+                rows: 30
+            },
+            NativeTerminalCheckpointRecord::Barrier { sequence: 0 }
+        ]
+    ));
+    assert!(journal
+        .record(NativeTerminalCheckpointRecord::Resize {
+            sequence: 1,
+            cols: 120,
+            rows: 40
+        })
         .is_err());
 }

@@ -86,18 +86,14 @@ const baseIpcHandler: Record<string, unknown> = {
 	// Terminal (PTY) — モック上は何もしない
 	get_or_spawn_terminal_surface: {
 		session_key: "mock-session",
-		restored_from_checkpoint: false,
-		is_new: true,
-		is_exited: false,
-		exit_code: null,
 	},
-	get_terminal_surface: {
+	terminal_snapshot: {
 		session_key: "mock-session",
 		is_exited: false,
 		exit_code: null,
 	},
-	attach_terminal_surface: { __mockTerminalAttachment: true },
-	detach_terminal_surface: null,
+	start_state_subscription: { __mockTerminalAttachment: true },
+	stop_state_subscription: null,
 	write_terminal_surface: null,
 	resize_terminal_surface: null,
 	kill_terminal_surface: null,

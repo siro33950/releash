@@ -19,7 +19,8 @@ use crate::adaptor::gateway::workflow::WorkflowRuntimeCommandGateway;
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::workflow::WorkflowDefinition;
 use crate::infrastructure::local_api::LocalApiServer;
-use crate::terminal_surface::{TerminalSurfaceOwnerV1, TerminalSurfaceRuntime};
+use crate::terminal_subscription_acceptance::TerminalSubscriptionHarness as TerminalSurfaceRuntime;
+use crate::terminal_surface::TerminalSurfaceOwnerV1;
 use crate::usecase::agent_session::{
     AgentSessionHistoryReadUsecase, AgentSessionInitialInstructionUsecase,
     AgentSessionLaunchUsecase, AgentSessionLifecycleUsecase, AgentSessionReadUsecase,
@@ -181,10 +182,7 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
                 .map_err(|error| error.to_string())?;
         let terminal = TerminalSurfaceRuntime::new(queue.clone(), config.data_dir.clone());
         let data_dir = config.data_dir.clone();
-        let subscriptions = crate::usecase::state_subscription::StateSubscriptionUsecase::new(
-            vec![],
-            Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
-        );
+        let subscriptions = terminal.subscriptions();
         let composition = compose_agent_sessions(AgentSessionCompositionInput {
             queue: queue.clone(),
             state_publisher: None,

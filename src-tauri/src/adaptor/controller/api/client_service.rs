@@ -56,55 +56,6 @@ async fn subscribe_push(
     connectrpc::Response::stream_ok(Box::pin(stream))
 }
 
-async fn subscribe_terminal_surfaces(
-    &self,
-    _ctx: connectrpc::RequestContext,
-    request: connectrpc::ServiceRequest<'_, rpc::SubscribeTerminalSurfacesRequest>,
-) -> connectrpc::ServiceResult<
-    connectrpc::ServiceStream<
-        impl connectrpc::Encodable<rpc::TerminalSubscriptionEvent> + Send + use<>,
-    >,
-> {
-    let terminal = self.terminal.as_ref().ok_or_else(|| {
-        crate::adaptor::protocol::connect::classified_error(
-            crate::other::AppError::new("Terminal unavailable")
-                .with_failure_kind(crate::domain::failure::FailureKind::Temporary),
-        )
-    })?;
-    let request: wire::SubscribeTerminalSurfacesRequest = to_wire(&request.to_owned_message())?;
-    connectrpc::Response::stream_ok(terminal.subscribe(request.subscription_id)?)
-}
-
-async fn attach_terminal_surface<'a>(
-    &'a self,
-    _ctx: connectrpc::RequestContext,
-    request: connectrpc::ServiceRequest<'_, rpc::AttachSubscribedTerminalSurfaceRequest>,
-) -> connectrpc::ServiceResult<impl connectrpc::Encodable<rpc::Unit> + Send + use<'a>> {
-    let _permit = self.request_permit()?;
-    self.dispatch
-        .admit("attach_terminal_surface")
-        .map_err(command_error)?;
-    let terminal = self.terminal.as_ref().ok_or_else(|| {
-        crate::adaptor::protocol::connect::classified_error(
-            crate::other::AppError::new("Terminal unavailable")
-                .with_failure_kind(crate::domain::failure::FailureKind::Temporary),
-        )
-    })?;
-    let request: wire::AttachSubscribedTerminalSurfaceRequest =
-        to_wire(&request.to_owned_message())?;
-    terminal.attach(
-        &request.subscription_id,
-        request.stream_id,
-        request.request.ok_or_else(|| {
-            crate::adaptor::protocol::connect::classified_error(
-                crate::other::AppError::new("Missing terminal request")
-                    .with_failure_kind(crate::domain::failure::FailureKind::InvalidInput),
-            )
-        })?,
-    )?;
-    connectrpc::Response::ok(rpc::Unit::default())
-}
-
 async fn watch_files<'a>(
     &'a self,
     _ctx: connectrpc::RequestContext,
@@ -190,10 +141,17 @@ async fn start_state_subscription<'a>(
             epoch: v.epoch,
             sequence: v.sequence,
         });
-    self.state_subscriptions()?
-        .start_read(&request.client_id, &target, version.as_ref())
-        .await
-        .map_err(crate::adaptor::protocol::connect::classified_error)?;
+    let subscriptions = self.state_subscriptions()?;
+    if let Some(input_id) = request.terminal_input_id {
+        subscriptions
+            .start_terminal(&request.client_id, &target, version.as_ref(), &input_id)
+            .await
+    } else {
+        subscriptions
+            .start_read(&request.client_id, &target, version.as_ref())
+            .await
+    }
+    .map_err(crate::adaptor::protocol::connect::classified_error)?;
     connectrpc::Response::ok(rpc::Unit::default())
 }
 
@@ -213,6 +171,28 @@ async fn stop_state_subscription<'a>(
     self.state_subscriptions()?
         .stop_read(&request.client_id, &target)
         .await
+        .map_err(crate::adaptor::protocol::connect::classified_error)?;
+    connectrpc::Response::ok(rpc::Unit::default())
+}
+
+async fn report_terminal_processed<'a>(
+    &'a self,
+    _ctx: connectrpc::RequestContext,
+    request: connectrpc::ServiceRequest<'_, rpc::ReportTerminalProcessedRequest>,
+) -> connectrpc::ServiceResult<impl connectrpc::Encodable<rpc::Unit> + Send + use<'a>> {
+    let _permit = self.request_permit()?;
+    let request: wire::ReportTerminalProcessedRequest = to_wire(&request.to_owned_message())?;
+    let target = crate::domain::state_subscription::SubscriptionTarget::from_parts(
+        "terminal",
+        &request.args.iter().map(String::as_str).collect::<Vec<_>>(),
+    )
+    .map_err(crate::adaptor::protocol::connect::classified_error)?;
+    self.state_subscriptions()?
+        .terminal_processed(
+            &request.client_id,
+            &target.to_string(),
+            request.units as usize,
+        )
         .map_err(crate::adaptor::protocol::connect::classified_error)?;
     connectrpc::Response::ok(rpc::Unit::default())
 }

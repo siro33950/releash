@@ -4,7 +4,7 @@ import { clientJson } from "../../src/lib/clientJson";
 import { create, fromJson, toJson, type Message } from "@bufbuild/protobuf";
 import { Code, ConnectError, createConnectRouter } from "@connectrpc/connect";
 import { createFetchHandler } from "@connectrpc/connect/protocol";
-import { ClientService, CommandRequestSchema, CommandErrorSchema, PushSchema, StateSubscriptionEventSchema, StatePayloadSchema, TerminalEventSchema, TerminalSubscriptionEventSchema, AttachTerminalSurfaceRequestSchema } from "../../src/generated/client_pb";
+import { ClientService, CommandRequestSchema, CommandErrorSchema, PushSchema, StateSubscriptionEventSchema, StatePayloadSchema, TerminalEventSchema } from "../../src/generated/client_pb";
 import type { BranchCardDto, WorkspaceTreeSnapshotDto, WorkspaceWorkflowHistoryItemDto, WorkspaceListSnapshotDto } from "../../src/generated/client_types";
 import type { TerminalSurfaceStreamItem } from "../../src/lib/terminalSurfaceStream";
 import type { Page } from "@playwright/test";
@@ -71,8 +71,7 @@ declare global {
 export async function setupTauriMock(page: Page, config: MockConfig) {
     const clientRequests: Array<{ request_id: string; command: string; args: Record<string, unknown> }> = [];
     const pushes = new Set<ReadableStreamDefaultController<Message>>();
-    const attachments = new Map<string, { output: ReadableStreamDefaultController<Message>; streamId: string }>();
-    const terminalSubscriptions = new Map<string, ReadableStreamDefaultController<Message>>();
+    const attachments = new Map<string, { output: ReadableStreamDefaultController<Message>; args: string[]; clientId: string }>();
     const stateStreams = new Map<string, ReadableStreamDefaultController<Message>>();
     const subscriptions = new Map<string, Map<string, { sequence: bigint; json: string }>>();
     const stateRequests: string[] = [];
@@ -95,6 +94,7 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
     }
     async function refreshStates() {
         for (const [clientId, targets] of subscriptions) for (const [target, current] of targets) {
+            if (parseTarget(target).kind === "terminal") continue;
             const value = await readState(target);
             const json = JSON.stringify(value);
             if (json === current.json) continue;
@@ -113,15 +113,14 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
     await page.exposeFunction("__releashTerminalEvent", (attachmentId: string, item: TerminalSurfaceStreamItem) => {
         const attachment = attachments.get(attachmentId);
         if (!attachment) return;
-        const { output: stream, streamId } = attachment;
+        const { output: stream, args } = attachment;
         const event = item.type === "snapshot"
-            ? { snapshot: { sessionKey: item.surface.session_key, ...item.surface.terminal_surface, sequence: String(item.surface.terminal_surface.sequence), isExited: item.surface.is_exited, exitCode: item.surface.exit_code } }
+            ? { snapshot: { sessionKey: item.surface.session_key, processedReportUnits: 5000, ...item.surface.terminal_surface, sequence: String(item.surface.terminal_surface.sequence), isExited: item.surface.is_exited, exitCode: item.surface.exit_code } }
             : { [item.type === "input_unavailable" ? "inputUnavailable" : item.type]: { ...item, sessionKey: item.session_key, type: undefined, session_key: undefined, exitCode: "exit_code" in item ? item.exit_code : undefined, exit_code: undefined, sequence: "sequence" in item ? String(item.sequence) : undefined } };
-        stream.enqueue(create(TerminalSubscriptionEventSchema, { attachmentId, streamId, event: { case: "item", value: fromJson(TerminalEventSchema, JSON.parse(JSON.stringify(event))) } }));
-        if (item.type === "exit" || (item.type === "snapshot" && item.surface.is_exited)) {
-            attachments.delete(attachmentId);
-            stream.enqueue(create(TerminalSubscriptionEventSchema, { attachmentId, streamId, event: { case: "closed", value: { resynchronize: false } } }));
-        }
+        const sequence = item.type === "snapshot" ? item.surface.terminal_surface.sequence : "sequence" in item ? item.sequence : 0;
+        const payload = create(StatePayloadSchema, {value: {case: "terminal", value: fromJson(TerminalEventSchema, JSON.parse(JSON.stringify(event)))}});
+        stream.enqueue(create(StateSubscriptionEventSchema, {target: "terminal", args, version: {epoch: "fixture", sequence: BigInt(sequence)}, event: item.type === "snapshot" ? {case: "snapshot", value: payload} : {case: "change", value: {delta: true, payload}}}));
+
     });
     const execute = async (command: string, args: Record<string, unknown>) => {
         clientRequests.push({ request_id: crypto.randomUUID(), command, args });
@@ -141,7 +140,7 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
                 const stop = () => controller.close();
                 context.signal.addEventListener("abort", stop, { once: true });
                 try { yield create(StateSubscriptionEventSchema, { event: { case: "ready", value: {} } }); yield* stream; }
-                finally { subscriptions.delete(request.clientId); stateStreams.delete(request.clientId); context.signal.removeEventListener("abort", stop); }
+                finally { for (const [id, value] of attachments) if (value.clientId === request.clientId) attachments.delete(id); subscriptions.delete(request.clientId); stateStreams.delete(request.clientId); context.signal.removeEventListener("abort", stop); }
             });
             continue;
         }
@@ -154,6 +153,14 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
                 const target = stateKey(request.target, request.args);
                 if (targets.has(target)) return {};
                 stateRequests.push(target);
+                if (request.target === "terminal") {
+                    const id = request.terminalInputId ?? request.clientId;
+                    attachments.set(id, {output: stream, args: request.args, clientId: request.clientId});
+                    targets.set(target, {sequence: 0n, json: ""});
+                    const owner = request.args.length === 2 ? {kind: "session", workspacePath: request.args[0], sessionId: request.args[1]} : {kind: "workspace", workspacePath: request.args[0]};
+                    await execute("start_state_subscription", {owner, attachmentId: id});
+                    return {};
+                }
                 const value = await readState(target);
                 targets.set(target, { sequence: 0n, json: JSON.stringify(value) });
                 const version = { epoch: "fixture", sequence: 0n };
@@ -163,7 +170,12 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
             });
             continue;
         }
-        if (method.name === "StopStateSubscription") { router.rpc(method, (request) => { subscriptions.get(request.clientId)?.delete(stateKey(request.target, request.args)); return {}; }); continue; }
+        if (method.name === "StopStateSubscription") { router.rpc(method, async (request) => {
+            subscriptions.get(request.clientId)?.delete(stateKey(request.target, request.args));
+            for (const [id, value] of attachments) if (value.clientId === request.clientId && JSON.stringify(value.args) === JSON.stringify(request.args)) { attachments.delete(id); await execute("stop_state_subscription", {attachmentId: id}); }
+            return {};
+        }); continue; }
+        if (method.name === "ReportTerminalProcessed") { router.rpc(method, async request => { await execute("report_terminal_processed", {clientId: request.clientId, args: request.args, units: request.units}); return {}; }); continue; }
         if (method.name === "GetServerInfo") { router.rpc(method, () => ({ launchId: "fixture" })); continue; }
         if (method.name === "SubscribePush") {
             router.rpc(method, async function* (_, context) {
@@ -186,46 +198,9 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
             });
             continue;
         }
-        if (method.name === "SubscribeTerminalSurfaces") {
-            router.rpc(method, async function* (request, context) {
-                let controller: ReadableStreamDefaultController<Message>;
-                const stream = new ReadableStream<Message>({ start(value) { controller = value; terminalSubscriptions.set(request.subscriptionId, value); } });
-                const stop = () => controller.close();
-                context.signal.addEventListener("abort", stop, { once: true });
-                try { yield create(TerminalSubscriptionEventSchema, { event: { case: "ready", value: {} } }); yield* stream; }
-                finally {
-                    terminalSubscriptions.delete(request.subscriptionId);
-                    for (const [id, output] of attachments) if (output.output === controller!) attachments.delete(id);
-                    context.signal.removeEventListener("abort", stop);
-                }
-            });
-            continue;
-        }
-        if (method.name === "AttachTerminalSurface") {
-            router.rpc(method, async request => {
-                const output = terminalSubscriptions.get(request.subscriptionId);
-                if (!output || !request.request) throw new ConnectError("Terminal subscription ended", Code.NotFound);
-                const args = clientJson(AttachTerminalSurfaceRequestSchema, toJson(AttachTerminalSurfaceRequestSchema, request.request), false) as Record<string, unknown>;
-                const id = String(args.attachmentId);
-                attachments.set(id, { output, streamId: request.streamId });
-                try { await execute("attach_terminal_surface", args); }
-                catch (error) { attachments.delete(id); throw error; }
-                return {};
-            });
-            continue;
-        }
         const command = CommandRequestSchema.fields.find(field => field.message?.typeName === method.input.typeName)!.name;
         const argsFor = (request: Message) => clientJson(method.input, toJson(method.input, request), false) as Record<string, unknown>;
-        if (method.name === "DetachTerminalSurface") {
-            router.rpc(method, async request => {
-                const id = request.attachmentId ?? "";
-                const output = attachments.get(id);
-                attachments.delete(id);
-                output?.output.enqueue(create(TerminalSubscriptionEventSchema, { attachmentId: id, streamId: output.streamId, event: { case: "closed", value: { resynchronize: true } } }));
-                await execute(command, argsFor(request));
-                return {};
-            });
-        } else if (method.methodKind === "server_streaming") {
+        if (method.methodKind === "server_streaming") {
             router.rpc(method, async function* (request, context) {
                 const result = await execute(command, argsFor(request));
                 yield fromJson(method.output, clientJson(method.output, result ?? null, true));
@@ -390,8 +365,8 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 				}
 				return;
 			}
-			if (cmd === "ack_terminal_surface_output") {
-				acknowledgeTerminalPerformanceOutput?.(Number(args.sequence));
+			if (cmd === "report_terminal_processed") {
+				acknowledgeTerminalPerformanceOutput?.(Number(args.units));
 				return;
 			}
 			if (cmd === "start_terminal_performance_fixture") {
@@ -420,7 +395,7 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 			if (cmd in cfg.responses) {
 				let value = cfg.responses[cmd];
 				if (
-					cmd === "attach_terminal_surface" &&
+					cmd === "start_state_subscription" &&
 					value &&
 					typeof value === "object" &&
 					("__mockTerminalAttachment" in (value as Record<string, unknown>) ||
@@ -493,7 +468,7 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 							}
 							let offset = 0;
 							let pendingCodeUnits = 0;
-							let pending: Array<{ sequence: number; codeUnits: number }> = [];
+
 							let continuationPosted = false;
 							const continuation = new MessageChannel();
 							const schedule = () => {
@@ -501,20 +476,16 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 									!terminalPerformanceStarted ||
 									continuationPosted ||
 									offset >= fixture.length ||
-									pendingCodeUnits >= 256 * 1024
+									pendingCodeUnits >= 100_000
 								)
 									return;
 								continuationPosted = true;
 								continuation.port2.postMessage(null);
 							};
-							acknowledgeTerminalPerformanceOutput = (sequence) => {
-								pending = pending.filter((entry) => {
-									if (entry.sequence > sequence) return true;
-									pendingCodeUnits -= entry.codeUnits;
-									return false;
-								});
-								schedule();
-							};
+                            acknowledgeTerminalPerformanceOutput = (units) => {
+                                pendingCodeUnits = Math.max(0, pendingCodeUnits - units);
+                                schedule();
+                            };
 							emitTerminalPerformanceOutput = (data) => {
 								if (!data) return;
 								terminalPerformanceSequence += 1;
@@ -547,7 +518,7 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 									let index = 0;
 									index < 8 &&
 									offset < fixture.length &&
-									pendingCodeUnits < 256 * 1024;
+									pendingCodeUnits < 100_000;
 									index += 1
 								) {
 									const data = fixture.slice(
@@ -556,10 +527,7 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 									);
 									offset += data.length;
 									terminalPerformanceSequence += 1;
-									pending.push({
-										sequence: terminalPerformanceSequence,
-										codeUnits: data.length,
-									});
+
 									pendingCodeUnits += data.length;
 									runCallback(Number(channelId), {
 										index: terminalPerformanceSequence,
@@ -601,7 +569,7 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 								{
 									type: "snapshot",
 									surface: {
-										...(cfg.responses.get_terminal_surface as object),
+										...(cfg.responses.terminal_snapshot as object),
 										terminal_surface: {
 											replay: "",
 											sequence: 0,

@@ -3,6 +3,7 @@ use super::SubscriptionError;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum SubscriptionTarget {
     Failures(String, usize),
+    Terminal(crate::domain::terminal_surface::TerminalSurfaceOwner),
     RepositoryPaths,
     Workspaces,
     Selection(String, String),
@@ -63,6 +64,21 @@ impl SubscriptionTarget {
                     return Err(SubscriptionError::InvalidId);
                 }
                 Ok(Self::Failures((*target).into(), parsed))
+            }
+            ("terminal", [path]) => {
+                crate::domain::terminal_surface::TerminalSurfaceOwner::workspace(
+                    crate::domain::workspace_tree::WorkspaceIdentity::new(*path),
+                )
+                .map(Self::Terminal)
+                .map_err(|_| SubscriptionError::InvalidId)
+            }
+            ("terminal", [path, id]) => {
+                crate::domain::terminal_surface::TerminalSurfaceOwner::session(
+                    crate::domain::workspace_tree::WorkspaceIdentity::new(*path),
+                    *id,
+                )
+                .map(Self::Terminal)
+                .map_err(|_| SubscriptionError::InvalidId)
             }
             ("repository-paths", []) => Ok(Self::RepositoryPaths),
             ("workspaces", []) => Ok(Self::Workspaces),
@@ -137,6 +153,18 @@ impl SubscriptionTarget {
                     vec![target.clone()]
                 } else {
                     vec![target.clone(), offset.to_string()]
+                },
+            ),
+            Self::Terminal(owner) => (
+                "terminal",
+                match owner {
+                    crate::domain::terminal_surface::TerminalSurfaceOwner::Workspace {
+                        workspace,
+                    } => vec![workspace.as_str().into()],
+                    crate::domain::terminal_surface::TerminalSurfaceOwner::Session {
+                        workspace,
+                        session_id,
+                    } => vec![workspace.as_str().into(), session_id.clone()],
                 },
             ),
             Self::RepositoryPaths => ("repository-paths", vec![]),

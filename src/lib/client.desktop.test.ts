@@ -1,14 +1,16 @@
+import type { MessageInitShape } from "@bufbuild/protobuf";
 import { Code, ConnectError, type HandlerContext } from "@connectrpc/connect";
 import { invoke } from "@tauri-apps/api/core";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
+import type { StateSubscriptionEventSchema } from "@/generated/client_pb";
 import { useBackgroundConfig } from "@/hooks/useAppSettings";
 import { connectFixture } from "@/test/connect";
 import {
-	attachClientStream,
 	completeClientRestoration,
 	getClient,
 	invokeClient,
+	subscribeTerminalState,
 } from "./client";
 
 vi.unmock("@/lib/client");
@@ -134,6 +136,10 @@ it.each(["unavailable", "network", "permission", "apply"])(
 		let saved = false;
 		let finishRead!: () => void;
 		let emitOutput!: () => void;
+		let startTerminal!: () => void;
+		const started = new Promise<void>((resolve) => {
+			startTerminal = resolve;
+		});
 		const settings = {
 			closeToTray: true,
 			startMinimized: false,
@@ -166,23 +172,66 @@ it.each(["unavailable", "network", "permission", "apply"])(
 				});
 				return { value: "/repo" };
 			},
-			async *terminalOutput(_, context) {
+			startStateSubscription: () => {
+				startTerminal();
+				return {};
+			},
+			stopStateSubscription: () => ({}),
+			async *openStateStream(
+				_,
+				context,
+			): AsyncGenerator<MessageInitShape<typeof StateSubscriptionEventSchema>> {
+				yield { event: { case: "ready", value: {} } };
+				await started;
 				yield {
-					item: {
+					target: "terminal",
+					args: ["/repo"],
+					version: { epoch: "terminal", sequence: 0n },
+					event: {
 						case: "snapshot",
-						value: { sessionKey: "terminal", isExited: false },
+						value: {
+							value: {
+								case: "terminal",
+								value: {
+									item: {
+										case: "snapshot",
+										value: {
+											sessionKey: "terminal",
+											isExited: false,
+											processedReportUnits: 5000,
+										},
+									},
+								},
+							},
+						},
 					},
 				};
 				await new Promise<void>((resolve) => {
 					emitOutput = resolve;
 				});
 				yield {
-					item: {
-						case: "output",
+					target: "terminal",
+					args: ["/repo"],
+					version: { epoch: "terminal", sequence: 1n },
+					event: {
+						case: "change",
 						value: {
-							sessionKey: "terminal",
-							data: "still running",
-							sequence: 1n,
+							delta: true,
+							payload: {
+								value: {
+									case: "terminal",
+									value: {
+										item: {
+											case: "output",
+											value: {
+												sessionKey: "terminal",
+												data: "still running",
+												sequence: 1n,
+											},
+										},
+									},
+								},
+							},
 						},
 					},
 				};
@@ -218,11 +267,10 @@ it.each(["unavailable", "network", "permission", "apply"])(
 		const pending = invokeClient("get_external_editor").catch((error) => error);
 		const received = vi.fn();
 		const closed = vi.fn();
-		const release = await attachClientStream(
+		const release = await subscribeTerminalState(
 			{
 				owner: { kind: "workspace", workspacePath: "/repo" },
 				attachmentId: "terminal",
-				recovery: false,
 			},
 			received,
 			closed,
@@ -250,7 +298,7 @@ it.each(["unavailable", "network", "permission", "apply"])(
 			for (const method of [
 				"GetExternalEditor",
 				"SubscribePush",
-				"SubscribeTerminalSurfaces",
+				"OpenStateStream",
 			])
 				expect(
 					fixture.requests.find((request) => request.url.endsWith(`/${method}`))

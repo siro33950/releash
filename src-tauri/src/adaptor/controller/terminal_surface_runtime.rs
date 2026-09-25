@@ -2,8 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::adaptor::protocol::terminal::{
-    GetOrSpawnTerminalV1, TerminalProcessLaunchV1, TerminalSurfaceOwnerV1,
-    TerminalSurfaceStreamItemV1, TerminalSurfaceV1,
+    GetOrSpawnTerminalV1, TerminalProcessLaunchV1, TerminalSurfaceOwnerV1, TerminalSurfaceV1,
 };
 use crate::domain::terminal_surface::gateway::TerminalSurfaceEventSink;
 
@@ -11,19 +10,9 @@ pub struct TerminalSurfaceRuntime {
     application: Arc<crate::usecase::terminal_surface::application::TerminalSurfaceApplication>,
 }
 
-pub struct TerminalSurfaceWireAttachment {
-    receiver: tokio::sync::mpsc::Receiver<TerminalSurfaceStreamItemV1>,
-}
-
 pub use crate::adaptor::gateway::terminal_surface::event_fault_relay::{
     TerminalSurfaceEventFault, TerminalSurfaceEventFaultController,
 };
-
-impl TerminalSurfaceWireAttachment {
-    pub async fn next(&mut self) -> Option<TerminalSurfaceStreamItemV1> {
-        self.receiver.recv().await
-    }
-}
 
 impl TerminalSurfaceRuntime {
     pub fn new(
@@ -75,13 +64,12 @@ impl TerminalSurfaceRuntime {
             event_sink,
             journal_enabled,
         ));
-        Self {
-            application: Arc::new(
-                crate::usecase::terminal_surface::application::TerminalSurfaceApplication::new(
-                    gateway, event_hub,
-                ),
+        let application = Arc::new(
+            crate::usecase::terminal_surface::application::TerminalSurfaceApplication::new(
+                gateway, event_hub,
             ),
-        }
+        );
+        Self { application }
     }
 
     pub(crate) fn application(
@@ -183,25 +171,6 @@ impl TerminalSurfaceRuntime {
         self.application
             .shutdown()
             .map_err(|error| error.to_string())
-    }
-
-    pub fn attach(
-        &self,
-        attachment_id: String,
-        owner: TerminalSurfaceOwnerV1,
-    ) -> Result<TerminalSurfaceWireAttachment, String> {
-        let attachment = self
-            .application
-            .attach(&attachment_id, &owner.try_into()?)
-            .map_err(|error| error.to_string())?;
-        let (sender, receiver) = tokio::sync::mpsc::channel(256);
-        tokio::spawn(
-            crate::adaptor::controller::terminal_surface::forward_terminal_surface_attachment(
-                attachment,
-                move |item| sender.try_send(item).map_err(|error| error.to_string()),
-            ),
-        );
-        Ok(TerminalSurfaceWireAttachment { receiver })
     }
 }
 

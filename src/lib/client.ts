@@ -9,19 +9,13 @@ import { createLinkedAbortController } from "@connectrpc/connect/protocol";
 import { createConnectTransport } from "@connectrpc/connect-web";
 import { invoke } from "@tauri-apps/api/core";
 import {
-	AttachTerminalSurfaceRequestSchema,
 	ClientService,
-	CommandErrorSchema,
 	StartWatchingRequestSchema,
 	type StatePayload,
 	StatePayloadSchema,
 	type StateVersion,
-	type TerminalEvent,
 } from "@/generated/client_pb";
-import type {
-	ClientCommandArgs,
-	ClientPushPayloads,
-} from "@/generated/client_types";
+import type { ClientPushPayloads } from "@/generated/client_types";
 import { clientJson } from "./clientJson";
 import { decodeClientPush, decodeTerminalEvent } from "./clientProtocol";
 import type { TerminalSurfaceStreamItem } from "./terminalSurfaceStream";
@@ -221,6 +215,7 @@ export async function listenClient<K extends keyof ClientPushPayloads>(
 
 export type StateValues = {
 	failures: import("@/generated/client_types").FailureRecords;
+	terminal: TerminalSurfaceStreamItem;
 	"repository-paths": string[];
 	workspaces: import("@/generated/client_types").WorkspaceListSnapshotDto;
 	selection: import("@/generated/client_types").WorkspaceTreeSelectionSnapshotDto;
@@ -252,6 +247,7 @@ function stateTargetKey(kind: string, args: string[]) {
 	return JSON.stringify([kind, args]);
 }
 type StateEntry = {
+	terminalInputId?: string;
 	kind: string;
 	args: string[];
 	receivers: Set<(value: never) => void>;
@@ -268,6 +264,8 @@ let stateAbort: AbortController | null = null;
 let stateTask: Promise<void> | null = null;
 
 function decodeState(payload: StatePayload | undefined) {
+	if (payload?.value.case === "terminal")
+		return { current: decodeTerminalEvent(payload.value.value) };
 	if (!payload?.value.case) return;
 	const field = StatePayloadSchema.fields.find(
 		(field) => field.localName === payload.value.case,
@@ -289,6 +287,7 @@ function startState(stream: StateStream, target: string) {
 			target: entry.kind,
 			args: entry.args,
 			version: entry.version,
+			terminalInputId: entry.terminalInputId,
 		})
 		.catch((error) => {
 			if (states.get(target) !== entry || stateStream !== stream) return;
@@ -334,7 +333,9 @@ function ensureStateStream() {
 								: undefined,
 					);
 					if (!value) continue;
-					entry.value = value;
+					const delta =
+						event.event.case === "change" && event.event.value.delta;
+					if (!delta && entry.kind !== "terminal") entry.value = value;
 					for (const receiver of entry.receivers)
 						receiver(value.current as never);
 				}
@@ -363,6 +364,7 @@ export function subscribeState<K extends keyof StateValues>(
 	input: StateTarget<K>,
 	onValue: (value: StateValues[K]) => void,
 	onError?: (error: unknown) => void,
+	terminalInputId?: string,
 ) {
 	const kind = typeof input === "string" ? input : input.kind;
 	const args = typeof input === "string" ? [] : input.args;
@@ -370,8 +372,18 @@ export function subscribeState<K extends keyof StateValues>(
 	const receiver = onValue as (value: never) => void;
 	let entry = states.get(target);
 	if (!entry) {
-		entry = { kind, args, receivers: new Set(), errors: new Set() };
+		entry = {
+			kind,
+			args,
+			terminalInputId,
+			receivers: new Set(),
+			errors: new Set(),
+		};
 		states.set(target, entry);
+		if (stateStream) startState(stateStream, target);
+	} else if (kind === "terminal") {
+		if (terminalInputId) entry.terminalInputId = terminalInputId;
+		entry.version = undefined;
 		if (stateStream) startState(stateStream, target);
 	} else if (entry.value) onValue(entry.value.current as StateValues[K]);
 	entry.receivers.add(receiver);
@@ -479,178 +491,55 @@ export function watchClient(
 	};
 }
 
-type TerminalListener = {
-	streamId: string;
-	receive: (event: TerminalEvent) => void;
-	close: (resynchronize: boolean, error?: unknown) => void;
-};
-type TerminalSubscription = {
-	id: string;
-	listeners: Map<string, TerminalListener>;
-};
-const terminalSubscriptions = new WeakMap<
-	Client<typeof ClientService>,
-	Promise<TerminalSubscription>
->();
-
-function getTerminalSubscription(client: Client<typeof ClientService>) {
-	const existing = terminalSubscriptions.get(client);
-	if (existing) return existing;
-	const abort = new AbortController();
-	const pending = (async () => {
-		const subscription: TerminalSubscription = {
-			id: crypto.randomUUID(),
-			listeners: new Map(),
-		};
-		const stream = client
-			.subscribeTerminalSurfaces(
-				{ subscriptionId: subscription.id },
-				{ signal: abort.signal, timeoutMs: 0 },
-			)
-			[Symbol.asyncIterator]();
-		const initial = await stream.next();
-		if (initial.done || initial.value.event.case !== "ready")
-			throw new Error("Terminal subscription closed before ready");
-		void (async () => {
-			let failure: unknown;
-			try {
-				for (;;) {
-					const next = await stream.next();
-					if (next.done) break;
-					const { attachmentId, streamId, event } = next.value;
-					const listener = subscription.listeners.get(attachmentId);
-					if (listener?.streamId !== streamId) continue;
-					if (event.case === "item") listener?.receive(event.value);
-					else if (event.case === "closed") {
-						subscription.listeners.delete(attachmentId);
-						listener?.close(event.value.resynchronize);
-					}
-				}
-			} catch (error) {
-				failure = error;
-			} finally {
-				abort.abort();
-				terminalSubscriptions.delete(client);
-				for (const listener of subscription.listeners.values())
-					listener.close(true, failure);
-				subscription.listeners.clear();
-			}
-		})();
-		return subscription;
-	})();
-	terminalSubscriptions.set(client, pending);
-	void pending.catch(() => {
-		abort.abort();
-		terminalSubscriptions.delete(client);
-	});
-	return pending;
-}
-
-export async function attachClientStream(
-	args: ClientCommandArgs["attach_terminal_surface"],
+export async function subscribeTerminalState(
+	args: {
+		owner: import("./terminalSurfaceStream").TerminalSurfaceOwner;
+		attachmentId: string;
+	},
 	listener: (item: TerminalSurfaceStreamItem) => void,
 	onClosed: () => void,
 ): Promise<() => Promise<void>> {
-	const client = await getClient();
-	let subscription: TerminalSubscription | undefined;
-	let active = true;
-	const streamId = crypto.randomUUID();
-	let released: Promise<void> | undefined;
-	const release = () => {
-		active = false;
-		if (released) return released;
-		const registered = subscription?.listeners.get(args.attachmentId);
-		if (registered && registered.streamId !== streamId) {
-			released = Promise.resolve();
-			return released;
-		}
-		subscription?.listeners.delete(args.attachmentId);
-		if (current?.client !== client) {
-			released = Promise.resolve();
-			return released;
-		}
-		released = client
-			.detachTerminalSurface({ attachmentId: args.attachmentId })
-			.then(() => {})
-			.catch((error) => {
-				if (
-					current?.client !== client &&
-					error instanceof ConnectError &&
-					error.code === Code.Canceled
-				)
-					return;
-				throw terminalError(error);
-			});
-		return released;
-	};
-	try {
-		subscription = await getTerminalSubscription(client);
-		let initialized = false;
-		let resolveInitial!: () => void;
-		let rejectInitial!: (error: unknown) => void;
-		const initial = new Promise<void>((resolve, reject) => {
-			resolveInitial = resolve;
-			rejectInitial = reject;
-		});
-		const attached = client.attachTerminalSurface({
-			subscriptionId: subscription.id,
-			streamId,
-			request: fromJson(
-				AttachTerminalSurfaceRequestSchema,
-				clientJson(
-					AttachTerminalSurfaceRequestSchema,
-					JSON.parse(JSON.stringify(args)),
-					true,
-				),
-			),
-		});
-		subscription.listeners.set(args.attachmentId, {
-			streamId,
-			receive: (event) => {
-				const item = decodeTerminalEvent(event);
+	const owner = args.owner;
+	const targetArgs =
+		owner.kind === "session"
+			? [owner.workspacePath, owner.sessionId]
+			: [owner.workspacePath];
+	let release = () => {};
+	let initialized = false;
+	await new Promise<void>((resolve, reject) => {
+		release = subscribeState(
+			{ kind: "terminal", args: targetArgs },
+			(item) => {
 				listener(item);
 				initialized = true;
-				resolveInitial();
+				resolve();
 			},
-			close: (resynchronize, error) => {
-				if (!initialized)
-					rejectInitial(
-						error ?? new Error("Terminal stream closed before snapshot"),
-					);
-				if (active && resynchronize) onClosed();
+			(error) => {
+				reject(error);
+				if (initialized) onClosed();
 			},
-		});
-		await Promise.all([attached, initial]);
-		return release;
-	} catch (error) {
-		void release().catch((cleanupError) =>
-			console.error("Terminal cleanup failed", cleanupError),
+			args.attachmentId,
 		);
-		throw terminalError(error);
-	}
+	}).catch((error) => {
+		release();
+		throw error;
+	});
+	return async () => release();
 }
 
-function terminalError(error: unknown) {
-	if (error instanceof ConnectError) {
-		const detail = error.findDetails(CommandErrorSchema)[0];
-		if (detail)
-			return clientJson(
-				CommandErrorSchema,
-				toJson(CommandErrorSchema, detail),
-				false,
-			);
-	}
-	return error;
-}
-
-export async function acknowledgeClientStream(
-	attachmentId: string,
-	sequence: number,
+export async function reportTerminalProcessed(
+	owner: import("./terminalSurfaceStream").TerminalSurfaceOwner,
+	units: number,
 ) {
-	const client = await getClient();
-	await client.ackTerminalSurfaceOutput({
-		attachmentId,
-		sequence: BigInt(sequence),
+	const stream = stateStream;
+	if (!stream) return;
+	await stream.client.reportTerminalProcessed({
+		clientId: stream.id,
+		args:
+			owner.kind === "session"
+				? [owner.workspacePath, owner.sessionId]
+				: [owner.workspacePath],
+		units,
 	});
 }
 

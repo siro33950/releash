@@ -155,22 +155,6 @@ parity!(
     outcome(invoke_tauri(&app, "get_provider_availability", json!({})).await)
 );
 parity!(
-    test_terminal_surface_protoはusecase結果と一致する,
-    app,
-    "get_terminal_surface",
-    json!({"owner":{"kind":"workspace","workspacePath":"/missing"}}),
-    outcome(
-        invoke_tauri(
-            &app,
-            "get_terminal_surface",
-            json!({"owner": crate::adaptor::protocol::terminal::TerminalSurfaceOwnerV1::Workspace {
-                workspace_path: "/missing".into()
-            }})
-        )
-        .await
-    )
-);
-parity!(
     test_workflow_protoはusecase結果と一致する,
     app,
     "list_workflows",
@@ -321,9 +305,12 @@ async fn test_クライアントdispatch_proto全commandの登録と引数検証
     // Given
     let (_app, dispatch) = parity_app();
     // When / Then
-    assert_eq!(wire::COMMAND_NAMES.len(), 114);
+    assert_eq!(wire::COMMAND_NAMES.len(), 111);
     assert!(wire::COMMAND_NAMES.contains(&"refresh_workspaces"));
     for removed in [
+        "get_terminal_surface",
+        "ack_terminal_surface_output",
+        "detach_terminal_surface",
         "get_workspaces",
         "get_workspace_tree_selection_reconciliation",
         "get_workspace_node_detail",
@@ -374,7 +361,7 @@ async fn test_クライアントdispatch_proto全commandの登録と引数検証
     for command in wire::COMMAND_NAMES {
         assert_eq!(
             dispatch.contains(command),
-            !["stop_watching", "detach_terminal_surface"].contains(command),
+            !["stop_watching"].contains(command),
             "{command}"
         );
     }
@@ -406,7 +393,7 @@ async fn test_クライアントdispatch_startup失敗時はstreamも拒否す�
         crate::usecase::application_startup::StartupFailureKind::StoreValidationFailed,
     )));
     // When / Then
-    for command in ["attach_terminal_surface", "detach_terminal_surface"] {
+    for command in ["start_state_subscription", "stop_state_subscription"] {
         assert_eq!(
             wire::from_value(dispatch.admit(command).unwrap_err()).unwrap()["code"],
             "APPLICATION_UNAVAILABLE"
@@ -1072,7 +1059,6 @@ pub(crate) async fn invoke_tauri(
     if ![
         "get_application_startup_outcome",
         "quit_after_startup_failure",
-        "attach_terminal_surface",
     ]
     .contains(&command)
     {

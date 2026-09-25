@@ -32,6 +32,12 @@ fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::Connect
                         .collect(),
                 })
             }
+            StateValue::Terminal(value) => wire::state_payload::Value::Terminal(
+                crate::adaptor::protocol::terminal::TerminalSurfaceStreamItemV1::from(
+                    value.clone(),
+                )
+                .into(),
+            ),
             StateValue::Workspaces(value) => wire::state_payload::Value::Workspaces(
                 crate::adaptor::controller::client::value(value.clone())
                     .map_err(crate::adaptor::protocol::connect::command_error)?,

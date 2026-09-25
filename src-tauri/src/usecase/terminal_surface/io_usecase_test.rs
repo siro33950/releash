@@ -11,10 +11,12 @@ use crate::domain::workspace_tree::WorkspaceIdentity;
 use parking_lot::Mutex;
 
 pub(crate) struct FakePtyGateway {
+    pub(crate) list_summaries_calls: Mutex<usize>,
     pub(crate) resizes: Mutex<Vec<(String, u16, u16)>>,
     pub(crate) writes: Mutex<Vec<(String, String)>>,
     input_ingress: Mutex<TerminalSurfaceInputIngressRegistry>,
     pub(crate) surface: Option<TerminalSurface>,
+    pub(crate) additional_surfaces: Vec<TerminalSurface>,
     pub(crate) snapshot_gate:
         Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
     pub(crate) deactivated: Mutex<Vec<String>>,
@@ -34,10 +36,12 @@ pub(crate) struct FakePtyGateway {
 impl FakePtyGateway {
     pub(crate) fn new() -> Self {
         Self {
+            list_summaries_calls: Mutex::new(0),
             resizes: Mutex::new(Vec::new()),
             writes: Mutex::new(Vec::new()),
             input_ingress: Mutex::new(TerminalSurfaceInputIngressRegistry::default()),
             surface: None,
+            additional_surfaces: Vec::new(),
             snapshot_gate: Mutex::new(None),
             deactivated: Mutex::new(Vec::new()),
             shutdown_surfaces: Vec::new(),
@@ -81,16 +85,25 @@ impl FakePtyGateway {
 impl TerminalSurfaceRepository for FakePtyGateway {
     fn find_summary_by_session_key(
         &self,
-        _session_key: &str,
+        session_key: &str,
     ) -> Option<crate::domain::terminal_surface::entities::TerminalSurfaceSummary> {
-        self.surface.as_ref().map(TerminalSurface::summary)
+        self.surface
+            .as_ref()
+            .or_else(|| {
+                self.additional_surfaces
+                    .iter()
+                    .find(|surface| surface.session_key == session_key)
+            })
+            .map(TerminalSurface::summary)
     }
 
     fn list_summaries(
         &self,
     ) -> Vec<crate::domain::terminal_surface::entities::TerminalSurfaceSummary> {
+        *self.list_summaries_calls.lock() += 1;
         self.shutdown_surfaces
             .iter()
+            .chain(self.additional_surfaces.iter())
             .map(TerminalSurface::summary)
             .collect()
     }
@@ -117,7 +130,7 @@ impl TerminalSurfaceGateway for FakePtyGateway {
         Ok(())
     }
 
-    fn snapshot(&self, _runtime_generation: u64) -> Option<TerminalSurface> {
+    fn snapshot(&self, runtime_generation: u64) -> Option<TerminalSurface> {
         let gate = self.snapshot_gate.lock().take();
         if let Some((started, release)) = gate {
             started.send(()).unwrap();
@@ -125,7 +138,12 @@ impl TerminalSurfaceGateway for FakePtyGateway {
                 .recv_timeout(std::time::Duration::from_secs(5))
                 .unwrap();
         }
-        self.surface.clone()
+        self.surface.clone().or_else(|| {
+            self.additional_surfaces
+                .iter()
+                .find(|surface| surface.runtime_generation.value() == runtime_generation)
+                .cloned()
+        })
     }
 
     fn select_kill_targets_by_worktree(&self, _worktree_path: &str) -> Vec<u64> {

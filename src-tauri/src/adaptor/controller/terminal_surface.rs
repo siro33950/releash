@@ -5,10 +5,8 @@ use serde::Serialize;
 use crate::adaptor::controller::state::AppState;
 use crate::adaptor::protocol::terminal::{
     GetOrSpawnTerminalV1, TerminalInputPerformanceSampleV1, TerminalLaunchPerformanceSampleV1,
-    TerminalPerformanceSwitchesV1, TerminalSurfaceOwnerV1, TerminalSurfaceStreamItemV1,
-    TerminalSurfaceSummaryV1,
+    TerminalPerformanceSwitchesV1, TerminalSurfaceOwnerV1,
 };
-use crate::usecase::terminal_surface::application::TerminalSurfaceAttachmentStream;
 use crate::usecase::terminal_surface::error::UsecaseError;
 
 #[derive(Clone, Copy)]
@@ -162,26 +160,12 @@ pub struct TerminalCommandError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TerminalCommandOperation {
     Initialize,
-    GetExisting,
-    Attach,
-    Resynchronize,
 }
 
 impl TerminalCommandOperation {
-    pub(crate) fn attachment(recovery: bool) -> Self {
-        if recovery {
-            Self::Resynchronize
-        } else {
-            Self::Attach
-        }
-    }
-
     fn name(self) -> &'static str {
         match self {
             Self::Initialize => "get_or_spawn_terminal_surface",
-            Self::GetExisting => "get_terminal_surface",
-            Self::Attach => "attach_terminal_surface",
-            Self::Resynchronize => "attach_terminal_surface_recovery",
         }
     }
 
@@ -192,18 +176,6 @@ impl TerminalCommandOperation {
             }
             (Self::Initialize, TerminalCommandErrorCode::InvalidRequest) => {
                 "Terminal initialization failed because the request is invalid."
-            }
-            (Self::GetExisting | Self::Attach, TerminalCommandErrorCode::PtyError) => {
-                "Terminal attachment failed. Try again."
-            }
-            (Self::GetExisting | Self::Attach, TerminalCommandErrorCode::InvalidRequest) => {
-                "Terminal attachment failed because the request is invalid."
-            }
-            (Self::Resynchronize, TerminalCommandErrorCode::PtyError) => {
-                "Terminal resynchronization failed. Try again."
-            }
-            (Self::Resynchronize, TerminalCommandErrorCode::InvalidRequest) => {
-                "Terminal resynchronization failed because the request is invalid."
             }
         }
     }
@@ -286,45 +258,6 @@ pub(crate) fn resize_terminal_surface_shared(
             .map_err(|error| AppError::new(format!("Terminal resize task failed: {error}")))?
             .map_err(terminal_resize_error)
     }
-}
-
-pub(crate) fn get_terminal_surface_shared(
-    state: &AppState,
-    owner: TerminalSurfaceOwnerV1,
-) -> Result<TerminalSurfaceSummaryV1, TerminalCommandError> {
-    let owner = owner
-        .try_into()
-        .map_err(|cause| invalid_owner_error(TerminalCommandOperation::GetExisting, cause))?;
-    state
-        .terminal_surface
-        .get_summary(&owner)
-        .map(Into::into)
-        .map_err(|error| {
-            TerminalCommandError::from_usecase(error, TerminalCommandOperation::GetExisting)
-        })
-}
-
-pub(crate) async fn forward_terminal_surface_attachment<F>(
-    mut attachment: TerminalSurfaceAttachmentStream,
-    mut send: F,
-) where
-    F: FnMut(TerminalSurfaceStreamItemV1) -> Result<(), String>,
-{
-    while let Some(item) = attachment.next().await {
-        if send(item.into()).is_err() {
-            break;
-        }
-    }
-}
-
-pub(crate) fn ack_terminal_surface_output_shared(
-    state: &AppState,
-    attachment_id: String,
-    sequence: u64,
-) {
-    state
-        .terminal_surface
-        .acknowledge_output(&attachment_id, sequence);
 }
 
 pub(crate) fn kill_terminal_surface_shared(

@@ -83,14 +83,3 @@ fn test_ターミナル入力受付_書込失敗分を新しい入力より先�
         Ok(vec![input(0, "first"), input(1, "second")])
     );
 }
-
-#[test]
-fn test_ターミナル入力受付_失敗通知は次の成功まで一度だけ発火する() {
-    let mut registry = TerminalSurfaceInputIngressRegistry::with_pending_capacity(8);
-    registry.activate("surface-a", "attachment-a");
-
-    assert!(registry.record_failure("surface-a", "attachment-a"));
-    assert!(!registry.record_failure("surface-a", "attachment-a"));
-    registry.record_success("surface-a", "attachment-a");
-    assert!(registry.record_failure("surface-a", "attachment-a"));
-}

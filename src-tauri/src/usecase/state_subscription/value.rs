@@ -11,6 +11,7 @@ use crate::usecase::{
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum StateValue {
     Failures(crate::usecase::work_queue::FailurePage),
+    Terminal(crate::usecase::terminal_surface::application::TerminalSurfaceStreamItem),
     RepositoryPaths(Vec<String>),
     Workspaces(WorkspaceListSnapshotDto),
     Selection(WorkspaceTreeSelectionSnapshotDto),

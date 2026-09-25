@@ -8,6 +8,4 @@ pub use value_objects::{
     TERMINAL_SURFACE_SCROLLBACK_ROWS,
 };
 
-pub(crate) mod subscriptions;
-
 pub(crate) mod background_failure;

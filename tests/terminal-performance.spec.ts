@@ -106,7 +106,7 @@ test("10MiB agent-TUI負荷でTerminal Surfaceのstrict performance budgetを守
 					base_ahead: 0,
 				},
 			],
-			attach_terminal_surface: {
+			start_state_subscription: {
 				__mockTerminalPerformanceAttachment: {
 					targetBytes: 10 * 1024 * 1024,
 					chunkCodeUnits: 16 * 1024,

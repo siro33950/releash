@@ -18,3 +18,5 @@ pub use terminal_surface_checkpoint::{
 };
 pub use terminal_surface_owner::TerminalSurfaceOwner;
 pub use terminal_surface_startup_command::TerminalSurfaceStartupCommand;
+
+pub(crate) mod output_flow_control;

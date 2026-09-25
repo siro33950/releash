@@ -183,6 +183,7 @@ impl WorkspaceStateReads {
                 .map(Into::into),
             ),
             T::Failures(..)
+            | T::Terminal(_)
             | T::AgentSession(_)
             | T::SessionHistory(_, _)
             | T::Selection(_, _)

@@ -36,6 +36,19 @@ struct FaultInjectingTerminalSurfaceEventSink {
 }
 
 impl TerminalSurfaceEventSink for FaultInjectingTerminalSurfaceEventSink {
+    fn initialize(
+        &self,
+        surface: &crate::domain::terminal_surface::entities::TerminalSurfaceSummary,
+    ) {
+        self.target.initialize(surface);
+    }
+    fn wait_output(&self, session_key: &str) {
+        self.target.wait_output(session_key);
+    }
+    fn release_output(&self, session_key: &str) {
+        self.target.release_output(session_key);
+    }
+
     fn publish(&self, event: TerminalSurfaceEvent) {
         let events = {
             let mut state = self.state.lock();

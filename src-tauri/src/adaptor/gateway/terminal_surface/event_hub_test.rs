@@ -1,9 +1,8 @@
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::domain::terminal_surface::gateway::{
     TerminalSurfaceEvent, TerminalSurfaceEventSink, TerminalSurfaceEventSource,
-    TerminalSurfaceInputUnavailableCause,
 };
 
 use super::TerminalSurfaceEventHub;
@@ -28,10 +27,6 @@ fn test_global_broadcastへはexitだけが流れoutputやresizeは流れない(
         rows: 24,
         sequence: 2,
     });
-    hub.publish(TerminalSurfaceEvent::InputUnavailable {
-        session_key: "session".to_string(),
-        cause: TerminalSurfaceInputUnavailableCause::StaleAttachment,
-    });
     assert!(matches!(
         global.try_recv(),
         Err(tokio::sync::broadcast::error::TryRecvError::Empty)
@@ -49,84 +44,74 @@ fn test_global_broadcastへはexitだけが流れoutputやresizeは流れない(
     ));
 }
 
-#[tokio::test]
-async fn test_owner購読があってもexitはownerとglobalの両方へ流れoutputはownerだけに流れる() {
-    let hub = TerminalSurfaceEventHub::with_flags(8, true);
-    let mut global = hub.sender.subscribe();
-    let mut owner = hub.subscribe_owner("session", "attachment");
-
-    hub.publish(output_event(1, "x"));
-    hub.publish(TerminalSurfaceEvent::Exit {
-        session_key: "session".to_string(),
-        runtime_generation: 1,
-        exit_code: Some(0),
+#[test]
+fn test_流量停止_配信を塞がず最も遅い購読が処理すると出力元を再開する() {
+    // Given
+    let hub = Arc::new(TerminalSurfaceEventHub::with_flags(8, true));
+    hub.subscribe_output("session", "fast", 0);
+    hub.subscribe_output("session", "slow", 0);
+    hub.publish(output_event(1, &"x".repeat(100_001)));
+    let (done, receiver) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn({
+        let hub = hub.clone();
+        move || {
+            hub.wait_output("session");
+            done.send(()).unwrap();
+        }
+    });
+    // When
+    hub.processed_output("session", "fast", 100_000);
+    hub.wait_output("another-session");
+    hub.publish(TerminalSurfaceEvent::Resize {
+        session_key: "session".into(),
+        cols: 100,
+        rows: 30,
         sequence: 2,
     });
-
-    assert!(matches!(
-        owner.subscription.recv().await,
-        Ok(TerminalSurfaceEvent::Output { sequence: 1, .. })
-    ));
-    assert!(matches!(
-        owner.subscription.recv().await,
-        Ok(TerminalSurfaceEvent::Exit { sequence: 2, .. })
-    ));
-    assert!(matches!(
-        global.try_recv(),
-        Ok(TerminalSurfaceEvent::Exit { sequence: 2, .. })
-    ));
-    assert!(matches!(
-        global.try_recv(),
-        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
-    ));
+    // Then
+    assert!(receiver.recv_timeout(Duration::from_millis(30)).is_err());
+    hub.processed_output("session", "slow", 100_000);
+    receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+    worker.join().unwrap();
 }
 
 #[test]
-fn test_flow_control無効時は未ack超過でもpublishがブロックしない() {
-    let hub = TerminalSurfaceEventHub::with_flags(8, false);
-    let _attachment = hub.subscribe_owner("session", "attachment");
-    let hub = Arc::new(hub);
-
-    let worker = {
-        let hub = Arc::clone(&hub);
-        std::thread::spawn(move || {
-            let data = "x".repeat(300 * 1024);
-            hub.publish(output_event(1, &data));
-            hub.publish(output_event(2, &data));
-        })
-    };
-
-    let started_at = Instant::now();
-    while !worker.is_finished() {
-        assert!(
-            started_at.elapsed() < Duration::from_secs(5),
-            "publish must not block on credit when flow control is disabled"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    worker.join().expect("publisher thread must finish");
+fn test_購読解除_停止中の出力元を解放する() {
+    let hub = Arc::new(TerminalSurfaceEventHub::with_flags(8, true));
+    hub.subscribe_output("session", "client", 0);
+    hub.publish(output_event(1, &"x".repeat(100_001)));
+    let (done, receiver) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn({
+        let hub = hub.clone();
+        move || {
+            hub.wait_output("session");
+            done.send(()).unwrap();
+        }
+    });
+    hub.unsubscribe_output("session", "client");
+    receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+    worker.join().unwrap();
 }
 
 #[test]
-fn test_owner購読をdropするとowner_streamを解放する() {
-    let hub = TerminalSurfaceEventHub::with_flags(8, true);
-    let subscription = hub.subscribe_owner("session", "attachment");
-    assert_eq!(hub.owner_stream_count(), 1);
-
-    drop(subscription);
-
-    assert_eq!(hub.owner_stream_count(), 0);
-}
-
-#[test]
-fn test_旧owner購読のcancelは新しい購読を解放しない() {
-    let hub = TerminalSurfaceEventHub::with_flags(8, true);
-    let previous = hub.subscribe_owner("session", "attachment");
-    let current = hub.subscribe_owner("session", "attachment");
-
-    previous.cancellation.cancel();
-
-    assert_eq!(hub.owner_stream_count(), 1);
-    drop(current);
-    assert_eq!(hub.owner_stream_count(), 0);
+fn test_流量制御無効_高水位を超える履歴再開と後続出力でも停止しない() {
+    // Given
+    let hub = Arc::new(TerminalSurfaceEventHub::with_flags(8, false));
+    // When
+    hub.subscribe_output("session", "client", 150_000);
+    hub.publish(output_event(1, &"x".repeat(100_001)));
+    hub.processed_output("session", "client", 5_000);
+    let (done, receiver) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn({
+        let hub = hub.clone();
+        move || {
+            hub.wait_output("session");
+            done.send(()).unwrap();
+        }
+    });
+    // Then
+    let completed = receiver.recv_timeout(Duration::from_secs(1));
+    hub.release_output("session");
+    worker.join().unwrap();
+    completed.unwrap();
 }

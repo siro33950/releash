@@ -982,10 +982,6 @@ impl TryFrom<crate::adaptor::protocol::terminal::GetOrSpawnTerminalV1>
     ) -> Result<Self, String> {
         Ok(Self {
             session_key: Some(cv(value.session_key)?),
-            restored_from_checkpoint: Some(cv(value.restored_from_checkpoint)?),
-            is_new: Some(cv(value.is_new)?),
-            is_exited: Some(cv(value.is_exited)?),
-            exit_code: value.exit_code.map(cv).transpose()?,
         })
     }
 }
@@ -3564,21 +3560,6 @@ impl TryFrom<wire::TerminalSurfaceOwnerV1>
                     session_id: cv(req(value.session_id, "sessionId")?)?,
                 }
             }
-        })
-    }
-}
-
-impl TryFrom<crate::adaptor::protocol::terminal::TerminalSurfaceSummaryV1>
-    for wire::TerminalSurfaceSummaryV1
-{
-    type Error = String;
-    fn try_from(
-        value: crate::adaptor::protocol::terminal::TerminalSurfaceSummaryV1,
-    ) -> Result<Self, String> {
-        Ok(Self {
-            session_key: Some(cv(value.session_key)?),
-            is_exited: Some(cv(value.is_exited)?),
-            exit_code: value.exit_code.map(cv).transpose()?,
         })
     }
 }

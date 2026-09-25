@@ -28,11 +28,7 @@ pub(crate) async fn run_agent_session_exit_observer(
                     log::warn!("failed to observe AgentSession terminal exit: {error:?}");
                 }
             }
-            Ok(
-                TerminalSurfaceEvent::Output { .. }
-                | TerminalSurfaceEvent::Resize { .. }
-                | TerminalSurfaceEvent::InputUnavailable { .. },
-            ) => {}
+            Ok(TerminalSurfaceEvent::Output { .. } | TerminalSurfaceEvent::Resize { .. }) => {}
             Err(TerminalSurfaceEventReceiveError::Lagged(_)) => {
                 if let Err(error) = usecase
                     .reconcile_exited(&format!("terminal-exit-reconcile-{}", uuid::Uuid::new_v4()))

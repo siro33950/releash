@@ -35,7 +35,6 @@ impl connectrpc::Encodable<rpc::Push> for EncodedPush {
 pub(crate) struct ClientApiDeps {
     dispatch: Arc<ClientCommandDispatch>,
     push: ClientPushGateway,
-    terminal: Option<TerminalApiDeps>,
     state_subscriptions: Option<crate::usecase::state_subscription::StateSubscriptionUsecase>,
     desktop_settings: Option<Arc<crate::usecase::app_config::AppConfigUsecase>>,
     request_limit: Arc<tokio::sync::Semaphore>,
@@ -51,7 +50,6 @@ impl ClientApiDeps {
         Self {
             dispatch,
             push,
-            terminal: None,
             state_subscriptions: None,
             desktop_settings: None,
             request_limit: Arc::new(tokio::sync::Semaphore::new(64)),
@@ -100,7 +98,12 @@ impl ClientApiDeps {
     }
 
     pub(super) fn with_terminal(mut self, terminal: Option<TerminalApiDeps>) -> Self {
-        self.terminal = terminal;
+        if let Some(terminal) = &terminal {
+            self.state_subscriptions = self
+                .state_subscriptions
+                .take()
+                .map(|subscriptions| subscriptions.with_terminal(terminal.application.clone()));
+        }
         self
     }
 
@@ -155,17 +158,6 @@ impl ClientApiDeps {
             return Ok(wire::command_result::Command::StopWatching(wire::Unit {}));
         }
 
-        if let wire::command_request::Command::DetachTerminalSurface(args) = command {
-            let id =
-                crate::adaptor::controller::client::required(args.attachment_id, "attachmentId")
-                    .map_err(command_error)?;
-            if let Some(terminal) = &self.terminal {
-                terminal.detach(&id);
-            }
-            return Ok(wire::command_result::Command::DetachTerminalSurface(
-                wire::Unit {},
-            ));
-        }
         let context = crate::other::operation_context::current();
         let dispatch = self.dispatch.clone();
         tokio::spawn(async move {

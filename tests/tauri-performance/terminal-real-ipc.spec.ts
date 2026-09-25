@@ -32,15 +32,10 @@ describe("Terminal Surface real WebSocket performance harness", () => {
 		);
 		expect(workspacePath).toMatch(/^releash-performance-terminal-/);
 		const surface = await browser.execute((ownerWorkspacePath) =>
-			window.__RELEASH_INVOKE_CLIENT__!("get_terminal_surface", {
-				owner: {
-					kind: "workspace",
-					workspacePath: ownerWorkspacePath,
-				},
-			}),
+			window.__RELEASH_FIRST_STATE__!({kind: "terminal", args: [ownerWorkspacePath]}),
 			workspacePath,
 		);
-		expect(surface.session_key.length).toBeGreaterThan(0);
+		expect(surface.surface.session_key.length).toBeGreaterThan(0);
 
 		const terminalInput = await $(".xterm-helper-textarea");
 		await terminalInput.click();

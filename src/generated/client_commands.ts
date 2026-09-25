@@ -10,7 +10,6 @@ import { getClient } from "@/lib/client";
 import { clientJson } from "@/lib/clientJson";
 import {
 	AbortWorkflowRequestSchema,
-	AckTerminalSurfaceOutputRequestSchema,
 	AddRepoPathRequestSchema,
 	AgentSessionArchiveResponseSchema,
 	AgentSessionOpenResponseSchema,
@@ -41,7 +40,6 @@ import {
 	DeleteNotionConfigRequestSchema,
 	DeleteReviewThreadRequestSchema,
 	DeleteWorkflowRequestSchema,
-	DetachTerminalSurfaceRequestSchema,
 	DetectEditorsRequestSchema,
 	DiagnoseAllCmdRequestSchema,
 	DiagnosticReportSchema,
@@ -68,7 +66,6 @@ import {
 	GetReviewFileViewRequestSchema,
 	GetReviewSnapshotRequestSchema,
 	GetTerminalPerformanceSwitchesRequestSchema,
-	GetTerminalSurfaceRequestSchema,
 	GetWorkflowConfigRequestSchema,
 	GetWorkflowRequestSchema,
 	GetWorkflowSourceRequestSchema,
@@ -147,7 +144,6 @@ import {
 	TakeTerminalInputPerformanceSamplesRequestSchema,
 	TakeTerminalLaunchPerformanceSamplesRequestSchema,
 	TerminalPerformanceSwitchesV1Schema,
-	TerminalSurfaceSummaryV1Schema,
 	UnitSchema,
 	UpdateAppSettingsRequestSchema,
 	UpdateCrashReportingRequestSchema,
@@ -203,25 +199,6 @@ const commands = {
 					AbortWorkflowRequestSchema,
 					clientJson(
 						AbortWorkflowRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	ack_terminal_surface_output: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["ack_terminal_surface_output"],
-	) => {
-		const result = decode(
-			UnitSchema,
-			await client.ackTerminalSurfaceOutput(
-				fromJson(
-					AckTerminalSurfaceOutputRequestSchema,
-					clientJson(
-						AckTerminalSurfaceOutputRequestSchema,
 						JSON.parse(JSON.stringify(args ?? {})),
 						true,
 					),
@@ -602,25 +579,6 @@ const commands = {
 					DeleteWorkflowRequestSchema,
 					clientJson(
 						DeleteWorkflowRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	detach_terminal_surface: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["detach_terminal_surface"],
-	) => {
-		const result = decode(
-			UnitSchema,
-			await client.detachTerminalSurface(
-				fromJson(
-					DetachTerminalSurfaceRequestSchema,
-					clientJson(
-						DetachTerminalSurfaceRequestSchema,
 						JSON.parse(JSON.stringify(args ?? {})),
 						true,
 					),
@@ -1039,25 +997,6 @@ const commands = {
 					GetTerminalPerformanceSwitchesRequestSchema,
 					clientJson(
 						GetTerminalPerformanceSwitchesRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	get_terminal_surface: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_terminal_surface"],
-	) => {
-		const result = decode(
-			TerminalSurfaceSummaryV1Schema,
-			await client.getTerminalSurface(
-				fromJson(
-					GetTerminalSurfaceRequestSchema,
-					clientJson(
-						GetTerminalSurfaceRequestSchema,
 						JSON.parse(JSON.stringify(args ?? {})),
 						true,
 					),

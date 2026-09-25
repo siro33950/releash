@@ -2,13 +2,11 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
 
 use crate::domain::terminal_surface::entities::{
-    TerminalSurface, TerminalSurfaceAttachment, TerminalSurfaceMutationRejected,
-    TerminalSurfaceRuntimeLifecycle, TerminalSurfaceSequenceDecision, TerminalSurfaceSummary,
+    TerminalSurface, TerminalSurfaceMutationRejected, TerminalSurfaceRuntimeLifecycle,
+    TerminalSurfaceSummary,
 };
 use crate::domain::terminal_surface::gateway::{
-    TerminalSurfaceEvent, TerminalSurfaceEventCancellation, TerminalSurfaceEventReceiveError,
-    TerminalSurfaceEventSource, TerminalSurfaceEventSubscription, TerminalSurfaceGateway,
-    TerminalSurfaceInputUnavailableCause,
+    TerminalSurfaceEventSource, TerminalSurfaceGateway,
 };
 use crate::domain::terminal_surface::{TerminalProcessLaunch, TerminalSurfaceOwner};
 use crate::usecase::terminal_surface::error::UsecaseError;
@@ -18,15 +16,8 @@ use crate::usecase::terminal_surface::spawn_usecase::GetOrSpawnTerminalOutcome;
 pub(crate) struct TerminalSurfaceApplication {
     gateway: Arc<dyn TerminalSurfaceGateway + Send + Sync>,
     event_source: Arc<dyn TerminalSurfaceEventSource>,
-    attach_lock: Arc<Mutex<()>>,
-    attachment_cancellations: Arc<Mutex<HashMap<String, TerminalSurfaceAttachmentRegistration>>>,
     runtime_lifecycle: Arc<RwLock<TerminalSurfaceRuntimeLifecycle>>,
     resize_tails: Arc<Mutex<HashMap<String, std::sync::mpsc::Receiver<()>>>>,
-}
-
-struct TerminalSurfaceAttachmentRegistration {
-    session_key: String,
-    cancellation: Arc<dyn TerminalSurfaceEventCancellation>,
 }
 
 struct TerminalSurfaceResizeCompletion {
@@ -48,16 +39,6 @@ impl Drop for TerminalSurfaceResizeCompletion {
             tails.remove(&self.session_key);
         }
     }
-}
-
-pub(crate) struct TerminalSurfaceAttachmentStream {
-    application: TerminalSurfaceApplication,
-    owner: TerminalSurfaceOwner,
-    session_key: String,
-    attachment: TerminalSurfaceAttachment,
-    pending_snapshot: Option<TerminalSurface>,
-    subscription: Box<dyn TerminalSurfaceEventSubscription>,
-    cancellation: Arc<dyn TerminalSurfaceEventCancellation>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -86,158 +67,6 @@ pub(crate) enum TerminalSurfaceStreamItem {
         exit_code: Option<i32>,
         sequence: u64,
     },
-    InputUnavailable {
-        session_key: String,
-        cause: TerminalSurfaceInputUnavailableCause,
-    },
-}
-
-impl Drop for TerminalSurfaceAttachmentStream {
-    fn drop(&mut self) {
-        let mut registrations = self
-            .application
-            .attachment_cancellations
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let id = self.attachment.attachment_id();
-        if registrations
-            .get(id)
-            .is_some_and(|current| Arc::ptr_eq(&current.cancellation, &self.cancellation))
-        {
-            if let Some(registration) = registrations.remove(id) {
-                registration.cancellation.cancel();
-                self.application
-                    .gateway
-                    .deactivate_input_attachment(&registration.session_key, id);
-            }
-        }
-    }
-}
-
-impl TerminalSurfaceAttachmentStream {
-    pub(crate) fn should_resynchronize(&self) -> bool {
-        self.attachment.should_resynchronize()
-    }
-
-    fn resynchronize(
-        &mut self,
-        minimum_covered_sequence: Option<u64>,
-    ) -> Option<TerminalSurfaceStreamItem> {
-        let surface = match self.application.get(&self.owner) {
-            Ok(surface) => surface,
-            Err(_) => {
-                self.attachment.close();
-                return None;
-            }
-        };
-        if !self.attachment.apply_snapshot(
-            surface.checkpoint.sequence,
-            minimum_covered_sequence,
-            surface.process_state.is_exited(),
-        ) {
-            return None;
-        }
-        Some(TerminalSurfaceStreamItem::Snapshot(surface))
-    }
-
-    pub(crate) async fn next(&mut self) -> Option<TerminalSurfaceStreamItem> {
-        if let Some(surface) = self.pending_snapshot.take() {
-            self.attachment.apply_snapshot(
-                surface.checkpoint.sequence,
-                None,
-                surface.process_state.is_exited(),
-            );
-            return Some(TerminalSurfaceStreamItem::Snapshot(surface));
-        }
-        if self.attachment.is_closed() {
-            return None;
-        }
-
-        loop {
-            let received = self.subscription.recv().await;
-            match received {
-                Ok(TerminalSurfaceEvent::Output {
-                    session_key,
-                    data,
-                    sequence,
-                }) if session_key == self.session_key => {
-                    match self.attachment.observe(sequence, false) {
-                        TerminalSurfaceSequenceDecision::Deliver => {
-                            return Some(TerminalSurfaceStreamItem::Output {
-                                session_key,
-                                data,
-                                sequence,
-                            });
-                        }
-                        TerminalSurfaceSequenceDecision::Ignore => {}
-                        TerminalSurfaceSequenceDecision::Resynchronize => {
-                            return self.resynchronize(Some(sequence));
-                        }
-                        TerminalSurfaceSequenceDecision::Closed => return None,
-                    }
-                }
-                Ok(TerminalSurfaceEvent::Resize {
-                    session_key,
-                    cols,
-                    rows,
-                    sequence,
-                }) if session_key == self.session_key => {
-                    match self.attachment.observe(sequence, false) {
-                        TerminalSurfaceSequenceDecision::Deliver => {
-                            return Some(TerminalSurfaceStreamItem::Resize {
-                                session_key,
-                                cols,
-                                rows,
-                                sequence,
-                            });
-                        }
-                        TerminalSurfaceSequenceDecision::Ignore => {}
-                        TerminalSurfaceSequenceDecision::Resynchronize => {
-                            return self.resynchronize(Some(sequence));
-                        }
-                        TerminalSurfaceSequenceDecision::Closed => return None,
-                    }
-                }
-                Ok(TerminalSurfaceEvent::Exit {
-                    session_key,
-                    exit_code,
-                    sequence,
-                    ..
-                }) if session_key == self.session_key => {
-                    match self.attachment.observe(sequence, true) {
-                        TerminalSurfaceSequenceDecision::Deliver => {
-                            return Some(TerminalSurfaceStreamItem::Exit {
-                                session_key,
-                                exit_code,
-                                sequence,
-                            });
-                        }
-                        TerminalSurfaceSequenceDecision::Ignore => {}
-                        TerminalSurfaceSequenceDecision::Resynchronize => {
-                            return self.resynchronize(Some(sequence));
-                        }
-                        TerminalSurfaceSequenceDecision::Closed => return None,
-                    }
-                }
-                Ok(TerminalSurfaceEvent::InputUnavailable { session_key, cause })
-                    if session_key == self.session_key =>
-                {
-                    return Some(TerminalSurfaceStreamItem::InputUnavailable {
-                        session_key,
-                        cause,
-                    });
-                }
-                Ok(_) => {}
-                Err(TerminalSurfaceEventReceiveError::Lagged(_)) => {
-                    return self.resynchronize(None);
-                }
-                Err(TerminalSurfaceEventReceiveError::Closed) => {
-                    self.attachment.close();
-                    return None;
-                }
-            }
-        }
-    }
 }
 
 impl TerminalSurfaceApplication {
@@ -252,9 +81,7 @@ impl TerminalSurfaceApplication {
         Self {
             gateway,
             event_source,
-            attach_lock: Arc::new(Mutex::new(())),
             resize_tails: Arc::new(Mutex::new(HashMap::new())),
-            attachment_cancellations: Arc::new(Mutex::new(HashMap::new())),
             runtime_lifecycle: Arc::new(RwLock::new(TerminalSurfaceRuntimeLifecycle::new(
                 "application-process".to_string(),
             ))),
@@ -272,6 +99,78 @@ impl TerminalSurfaceApplication {
             .admit_mutation()
             .map_err(Self::mutation_rejected)?;
         Ok(lifecycle)
+    }
+
+    pub(crate) fn connect_state(
+        &self,
+        sink: Arc<dyn crate::domain::terminal_surface::gateway::TerminalSurfaceStateSink>,
+    ) {
+        self.event_source.set_state_sink(sink.clone());
+        for summary in self.gateway.list_summaries() {
+            sink.initialize(&summary);
+        }
+    }
+
+    pub(crate) fn with_output_order(&self, runtime_generation: u64, visit: &mut dyn FnMut()) {
+        self.gateway.with_output_order(runtime_generation, visit);
+    }
+
+    pub(crate) fn visit_snapshot(
+        &self,
+        owner: &TerminalSurfaceOwner,
+        visit: &mut dyn FnMut(TerminalSurface),
+    ) -> Result<(), UsecaseError> {
+        let summary = self.owned_summary(owner)?;
+        if self
+            .gateway
+            .visit_snapshot(summary.runtime_generation.value(), visit)
+        {
+            Ok(())
+        } else {
+            Err(UsecaseError::Gateway(
+                "Terminal snapshot unavailable".into(),
+            ))
+        }
+    }
+
+    pub(crate) fn subscribe_output(
+        &self,
+        owner: &TerminalSurfaceOwner,
+        client: &str,
+        input_id: &str,
+        units: usize,
+    ) {
+        self.event_source
+            .subscribe_output(&owner.stable_key(), client, units);
+        self.gateway
+            .activate_input_attachment(&owner.stable_key(), input_id);
+    }
+
+    pub(crate) fn unsubscribe_output(
+        &self,
+        owner: &TerminalSurfaceOwner,
+        client: &str,
+        input_id: &str,
+    ) {
+        self.event_source
+            .unsubscribe_output(&owner.stable_key(), client);
+        self.gateway
+            .deactivate_input_attachment(&owner.stable_key(), input_id);
+    }
+
+    pub(crate) fn reset_output(&self, owner: &TerminalSurfaceOwner, client: &str) {
+        self.event_source
+            .subscribe_output(&owner.stable_key(), client, 0);
+    }
+
+    pub(crate) fn processed_output(
+        &self,
+        owner: &TerminalSurfaceOwner,
+        client: &str,
+        units: usize,
+    ) {
+        self.event_source
+            .processed_output(&owner.stable_key(), client, units);
     }
 
     pub(crate) fn summaries(&self) -> Vec<TerminalSurfaceSummary> {
@@ -337,84 +236,6 @@ impl TerminalSurfaceApplication {
                     "Terminal Surface not found for owner {session_key}"
                 ))
             })
-    }
-
-    pub(crate) fn attach(
-        &self,
-        attachment_id: &str,
-        owner: &TerminalSurfaceOwner,
-    ) -> Result<TerminalSurfaceAttachmentStream, UsecaseError> {
-        if attachment_id.trim().is_empty() {
-            return Err(UsecaseError::Gateway(
-                "Terminal Surface attachment id must not be empty".to_string(),
-            ));
-        }
-        // ponytail: attach全体は直列化する。並列snapshotが必要になればattachment単位へ分割する。
-        let _attach = self
-            .attach_lock
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let event_stream = self
-            .event_source
-            .subscribe_owner(&owner.stable_key(), attachment_id);
-        let surface = self.get(owner)?;
-        let mut registrations = self
-            .attachment_cancellations
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.gateway
-            .activate_input_attachment(&surface.session_key, attachment_id);
-        if let Some(previous) = registrations.insert(
-            attachment_id.to_string(),
-            TerminalSurfaceAttachmentRegistration {
-                session_key: surface.session_key.clone(),
-                cancellation: event_stream.cancellation.clone(),
-            },
-        ) {
-            previous.cancellation.cancel();
-            if previous.session_key != surface.session_key {
-                self.gateway
-                    .deactivate_input_attachment(&previous.session_key, attachment_id);
-            }
-        }
-        Ok(TerminalSurfaceAttachmentStream {
-            application: self.clone(),
-            owner: owner.clone(),
-            session_key: surface.session_key.clone(),
-            attachment: TerminalSurfaceAttachment::new(
-                attachment_id.to_string(),
-                surface.checkpoint.sequence,
-            ),
-            pending_snapshot: Some(surface),
-            subscription: event_stream.subscription,
-            cancellation: event_stream.cancellation,
-        })
-    }
-
-    pub(crate) fn detach(&self, attachment_id: &str) {
-        if let Some(registration) = self
-            .attachment_cancellations
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(attachment_id)
-        {
-            registration.cancellation.cancel();
-            self.gateway
-                .deactivate_input_attachment(&registration.session_key, attachment_id);
-        }
-    }
-
-    pub(crate) fn acknowledge_output(&self, attachment_id: &str, sequence: u64) {
-        let session_key = self
-            .attachment_cancellations
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(attachment_id)
-            .map(|registration| registration.session_key.clone());
-        if let Some(session_key) = session_key {
-            self.event_source
-                .acknowledge_owner_output(&session_key, attachment_id, sequence);
-        }
     }
 
     pub(crate) fn get_or_spawn(

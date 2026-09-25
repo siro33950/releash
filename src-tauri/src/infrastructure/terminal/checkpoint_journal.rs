@@ -27,7 +27,11 @@ impl IncrementalCheckpointJournal {
 
     pub(crate) fn record(&mut self, record: NativeTerminalCheckpointRecord) -> Result<(), String> {
         let sequence = record.sequence();
-        if sequence != self.latest_sequence + 1 {
+        let expected = match &record {
+            NativeTerminalCheckpointRecord::Output { .. } => self.latest_sequence.checked_add(1),
+            _ => Some(self.latest_sequence),
+        };
+        if Some(sequence) != expected {
             return Err(format!(
                 "Terminal Surface checkpoint sequence {} does not follow {}",
                 sequence, self.latest_sequence
@@ -56,8 +60,11 @@ impl IncrementalCheckpointJournal {
     }
 
     pub(crate) fn compacted(&mut self, base: NativeTerminalCheckpoint) {
-        self.pending
-            .retain(|record| record.sequence() > base.sequence);
+        self.pending.retain(|record| {
+            record.sequence() > base.sequence
+                || (record.sequence() == base.sequence
+                    && !matches!(record, NativeTerminalCheckpointRecord::Output { .. }))
+        });
         self.base = base;
         self.base_persisted = true;
     }
