@@ -159,6 +159,11 @@ impl ClientApiDeps {
         })
         .await
         .map_err(task_error)?
+        .map_err(|error| {
+            crate::adaptor::protocol::connect::classified_error(
+                crate::adaptor::presenter::error::AppError::from_failure(error),
+            )
+        })?
     }
 
     async fn watch(

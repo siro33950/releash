@@ -21,25 +21,21 @@ fn test_実行context_panic時も元のcontextに戻す() {
 }
 
 #[tokio::test]
-async fn test_受け口_期限切れで内部のfutureを破棄する() {
-    let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    struct Guard(Arc<std::sync::atomic::AtomicBool>);
-    impl Drop for Guard {
-        fn drop(&mut self) {
-            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
-        }
-    }
-    let flag = dropped.clone();
-    let result = ingress(
-        Some(Instant::now() + Duration::from_millis(20)),
-        async move {
-            let _guard = Guard(flag);
-            std::future::pending::<()>().await
-        },
-    )
-    .await;
-    assert_eq!(result, Err(OperationStopped::Expired));
-    assert!(dropped.load(std::sync::atomic::Ordering::SeqCst));
+async fn test_受け口_期限を超えても処理の完了を待ってから期限切れを返す() {
+    // Given
+    let (finish, done) = tokio::sync::oneshot::channel();
+    let completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = completed.clone();
+    let mut call = Box::pin(ingress(Some(Instant::now()), async move {
+        done.await.unwrap();
+        flag.store(true, std::sync::atomic::Ordering::SeqCst);
+    }));
+    // When
+    assert!(futures_util::poll!(&mut call).is_pending());
+    finish.send(()).unwrap();
+    // Then
+    assert_eq!(call.await, Err(OperationStopped::Expired));
+    assert!(completed.load(std::sync::atomic::Ordering::SeqCst));
     assert_eq!(ingress(None, async { 42 }).await, Ok(42));
 }
 

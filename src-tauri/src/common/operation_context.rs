@@ -167,7 +167,9 @@ pub async fn ingress<T>(
     let cancellation = tokio_util::sync::CancellationToken::new();
     let _cancel_on_drop = cancellation.clone().drop_guard();
     let context = OperationContext::new(deadline.map(Deadline::new), Arc::new(cancellation));
-    scope(context.clone(), wait(&context, operation)).await
+    let result = scope(context.clone(), operation).await;
+    context.check(Instant::now())?;
+    Ok(result)
 }
 
 impl Cancellation for tokio_util::sync::CancellationToken {
@@ -178,16 +180,16 @@ impl Cancellation for tokio_util::sync::CancellationToken {
 
 pub async fn spawned<T: Send + 'static>(
     operation: impl Future<Output = T> + Send + 'static,
-) -> Result<T, tokio::task::JoinError> {
-    struct Abort(tokio::task::AbortHandle);
-    impl Drop for Abort {
-        fn drop(&mut self) {
-            self.0.abort();
-        }
-    }
-    let task = tokio::spawn(scope(current(), operation));
-    let _abort = Abort(task.abort_handle());
-    task.await
+) -> Result<Result<T, OperationStopped>, tokio::task::JoinError> {
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    let _cancel_on_drop = cancellation.clone().drop_guard();
+    tokio::spawn(scope(current(), async move {
+        cancellation
+            .run_until_cancelled(operation)
+            .await
+            .ok_or(OperationStopped::Cancelled)
+    }))
+    .await
 }
 
 pub fn before<T>(operation: impl FnOnce() -> T) -> Result<T, OperationStopped> {
