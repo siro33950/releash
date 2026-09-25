@@ -28,7 +28,7 @@ mod terminal_surface_registry_tests;
 | `adaptor/controller/api/` | 柔軟 | HTTP 依存で書きにくい場合は省略可 |
 | `adaptor/presenter/` | 柔軟 | 表示整形のみ、必要に応じて |
 | `infrastructure/` | 柔軟 | 外部世界の都合をそのまま扱う層。判断も変換も持たないため、統合テストで検証 |
-| `other/` | 柔軟 | 横断的関心事 |
+| `common/` | 柔軟 | 横断的関心事の包み |
 
 「柔軟」のレイヤーも、テストを書ける範囲では書く。書きにくいから書かない判断は許容するが、書きやすくする工夫（インターフェース抽出等）も検討する。
 
@@ -38,7 +38,7 @@ Given / When / Then をコメントで区切り、前提・操作・検証を分
 
 ## モック方針
 
-- **ドメイン層の Repository / Gateway trait**: `mockall` でモック生成可、または手書きの fake 実装
+- **domain の trait（Repository、ドメインサービス）と usecase の trait（QueryService、Output Boundary）**: `mockall` でモック生成可、または手書きの fake 実装
 - **Tauri API**: テストでは呼ばない設計を優先。やむを得ない場合は薄いラッパー化してテスト側で差し替え
 - **git2**: 実 git リポジトリを `tempdir` 上に作って統合テスト寄りに書く
 - **外部 HTTP API**: 偽サーバを立てる
