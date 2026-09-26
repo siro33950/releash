@@ -6,6 +6,8 @@ use std::sync::Mutex;
 struct Gateway {
     execution: Mutex<ExecutionTree>,
     calls: Mutex<Vec<&'static str>>,
+    on_send: Mutex<Option<fn(&mut ExecutionTree)>>,
+    conflicts: std::sync::atomic::AtomicUsize,
     fail: Option<&'static str>,
 }
 
@@ -40,6 +42,9 @@ impl DelegateContinuationGateway for Gateway {
         if self.fail == Some("send") {
             return Err(WorkflowRuntimeError::AgentSession("send failed".into()));
         }
+        if let Some(change) = self.on_send.lock().unwrap().take() {
+            change(&mut self.execution.lock().unwrap());
+        }
         Ok(())
     }
     async fn commit(
@@ -50,12 +55,28 @@ impl DelegateContinuationGateway for Gateway {
         if self.fail == Some("commit") {
             return Err(WorkflowRuntimeError::SessionStore("commit failed".into()));
         }
+        let mut execution = self.execution.lock().unwrap();
+        if self
+            .conflicts
+            .fetch_update(
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+                |count| count.checked_sub(1),
+            )
+            .is_ok()
+        {
+            execution.record_node_display_command("node-1", "codex".into(), 8.0);
+            return Err(WorkflowRuntimeError::Conflict(
+                "changed before commit".into(),
+            ));
+        }
+        assert_eq!(commit.before, *execution);
         assert!(matches!(
             commit.workflow_events.as_slice(),
             [WorkflowEvent::DelegateResultInjected { .. }]
         ));
         let snapshot = RuntimeCommitSnapshot::from_execution(&commit.after)?;
-        *self.execution.lock().unwrap() = commit.after;
+        *execution = commit.after;
         Ok(snapshot)
     }
 }
@@ -108,6 +129,8 @@ fn fixture(fail: Option<&'static str>) -> (std::sync::Arc<Gateway>, DelegateInje
             execution: Mutex::new(execution),
             calls: Mutex::new(Vec::new()),
             fail,
+            on_send: Mutex::new(None),
+            conflicts: Default::default(),
         }),
         injection,
     )
@@ -119,6 +142,9 @@ async fn test_delegate_復元と注入が成功した後に事実化し注入済
     let (gateway, injection) = fixture(None);
     let usecase = DelegateContinuationUsecase {
         gateway: gateway.clone(),
+        queue: crate::usecase::work_queue::WorkQueueUsecase::new(std::sync::Arc::new(
+            crate::usecase::work_queue::ImmediateWorkQueueRuntime::default(),
+        )),
     };
     // When
     assert!(usecase.execute("tree", &injection).await.unwrap().is_some());
@@ -148,6 +174,9 @@ async fn test_delegate_復元と注入と保存の失敗を呼び出し元へ返
         // When
         let result = (DelegateContinuationUsecase {
             gateway: gateway.clone(),
+            queue: crate::usecase::work_queue::WorkQueueUsecase::new(std::sync::Arc::new(
+                crate::usecase::work_queue::ImmediateWorkQueueRuntime::default(),
+            )),
         })
         .execute("tree", &injection)
         .await;
@@ -163,4 +192,153 @@ async fn test_delegate_復元と注入と保存の失敗を呼び出し元へ返
             [injection]
         );
     }
+}
+
+fn continuation(gateway: std::sync::Arc<Gateway>) -> DelegateContinuationUsecase {
+    DelegateContinuationUsecase {
+        gateway,
+        queue: crate::usecase::work_queue::WorkQueueUsecase::new(std::sync::Arc::new(
+            crate::usecase::work_queue::ImmediateWorkQueueRuntime::default(),
+        )),
+    }
+}
+
+fn submit_again(execution: &mut ExecutionTree) {
+    assert_eq!(
+        execution.apply_submitted_output(
+            "main".into(),
+            "node-1",
+            1,
+            Some("agent".into()),
+            "result".into(),
+            serde_json::json!({}),
+            None,
+            10.0,
+        ),
+        TransitionOutcome::Applied,
+    );
+}
+
+#[tokio::test]
+async fn test_delegate_送付中の変更と末尾競合を保持し再送せず次の提出を受理する() {
+    for during_send in [true, false] {
+        // Given
+        let (gateway, injection) = fixture(None);
+        if during_send {
+            *gateway.on_send.lock().unwrap() = Some(|execution| {
+                execution.record_node_display_command("node-1", "codex".into(), 8.0);
+            });
+        } else {
+            gateway
+                .conflicts
+                .store(2, std::sync::atomic::Ordering::SeqCst);
+        }
+        let usecase = continuation(gateway.clone());
+        // When
+        usecase.execute("tree", &injection).await.unwrap();
+        // Then
+        let mut execution = gateway.execution.lock().unwrap();
+        assert_eq!(
+            execution
+                .node_execution("node-1")
+                .unwrap()
+                .display_command
+                .as_deref(),
+            Some("codex")
+        );
+        submit_again(&mut execution);
+        let calls = gateway.calls.lock().unwrap();
+        assert_eq!(calls.iter().filter(|call| **call == "send").count(), 1);
+        assert_eq!(
+            calls.iter().filter(|call| **call == "commit").count(),
+            if during_send { 1 } else { 3 }
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_delegate_送付後に注入済みまたは対象変更または中止なら保存しない() {
+    for change in [0, 1, 2] {
+        // Given
+        let (gateway, injection) = fixture(None);
+        *gateway.on_send.lock().unwrap() = Some(match change {
+            0 => |execution| {
+                let injection = execution.pending_delegate_injection("node-1").unwrap();
+                execution.record_delegate_injected(&injection, 8.0);
+            },
+            1 => |execution| {
+                let injection = execution.pending_delegate_injection("node-1").unwrap();
+                execution.record_delegate_injected(&injection, 8.0);
+                submit_again(execution);
+                execution.record_node_completion_signal(
+                    "node-1",
+                    NodeCompletionSignal::Submit,
+                    10.0,
+                );
+                execution
+                    .apply_node_completion_handshake("node-1", &mut || "node-3".into(), 10.0)
+                    .unwrap();
+                execution.record_node_completion_signal("node-1", NodeCompletionSignal::Stop, 10.0);
+                execution.record_pending_result(
+                    "node-3",
+                    None,
+                    Some(serde_json::json!({"ok": false})),
+                    None,
+                    None,
+                    11.0,
+                );
+                execution
+                    .complete_leaf_and_advance("node-3", &mut || "unused".into(), 11.0)
+                    .unwrap();
+                assert_eq!(
+                    execution
+                        .pending_delegate_injection("node-1")
+                        .unwrap()
+                        .child_execution_id,
+                    "node-3"
+                );
+            },
+            _ => |execution| {
+                execution.abort_active_node_executions(8.0);
+                execution.abort();
+            },
+        });
+        let usecase = continuation(gateway.clone());
+        // When
+        assert!(usecase.execute("tree", &injection).await.unwrap().is_none());
+        // Then
+        assert_eq!(*gateway.calls.lock().unwrap(), ["restore", "send"]);
+    }
+}
+
+#[tokio::test]
+async fn test_delegate_競合中の失敗をnodeから回数と時刻付きで観測できる() {
+    // Given
+    let (gateway, injection) = fixture(None);
+    gateway
+        .conflicts
+        .store(usize::MAX, std::sync::atomic::Ordering::SeqCst);
+    let usecase = continuation(gateway.clone());
+    // When
+    let operation = usecase.execute("tree", &injection);
+    tokio::pin!(operation);
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            tokio::select! {
+                result = &mut operation => panic!("unexpected completion: {result:?}"),
+                _ = tokio::task::yield_now() => {}
+            }
+            let records = usecase.queue.records("node-1").await;
+            if let Some(observation) = records.first().filter(|item| item.record.count >= 2) {
+                // Then
+                assert!(observation.record.active);
+                assert!(!observation.requires_attention);
+                assert_eq!(observation.record.operation, "workflow_delegate_injection");
+                assert!(observation.record.last_observed_ms > observation.record.first_observed_ms);
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
 }

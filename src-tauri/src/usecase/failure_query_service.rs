@@ -32,12 +32,23 @@ impl FailureQueryService {
     }
 
     pub async fn records_page(&self, target: &str, offset: usize) -> FailurePage {
+        self.records_page_for_targets(&[target.to_string()], offset)
+            .await
+    }
+
+    pub(crate) async fn records_page_for_targets(
+        &self,
+        targets: &[String],
+        offset: usize,
+    ) -> FailurePage {
         let (records, total, requires_attention) = {
             let records = self.records.lock().await;
             let matching = || {
-                records
-                    .records()
-                    .filter(|record| target == "*" || record.target == target)
+                records.records().filter(|record| {
+                    targets
+                        .iter()
+                        .any(|target| target == "*" || record.target == *target)
+                })
             };
             let mut requires_attention = false;
             for record in matching() {

@@ -32,6 +32,7 @@ pub(crate) trait DelegateContinuationGateway: Send + Sync {
 }
 
 pub(crate) struct DelegateContinuationUsecase {
+    pub(crate) queue: std::sync::Arc<crate::usecase::work_queue::WorkQueueUsecase>,
     pub(crate) gateway: std::sync::Arc<dyn DelegateContinuationGateway>,
 }
 
@@ -65,6 +66,31 @@ impl DelegateContinuationUsecase {
         self.gateway
             .send_instruction(session_id, &injection.child_execution_id, &instruction)
             .await?;
+        crate::usecase::work_queue::retry(
+            &self.queue,
+            crate::usecase::work_queue::WorkKey::new(
+                "workflow_delegate_injection",
+                &injection.node_execution_id,
+            ),
+            crate::common::retry::RetryBackoff::CONFLICT,
+            || self.record_injected(execution_id, injection),
+        )
+        .await
+    }
+
+    async fn record_injected(
+        &self,
+        execution_id: &str,
+        injection: &DelegateInjection,
+    ) -> Result<Option<RuntimeCommitSnapshot>, WorkflowRuntimeError> {
+        let current = self.gateway.load_execution(execution_id).await?;
+        if current
+            .pending_delegate_injection(&injection.node_execution_id)
+            .as_ref()
+            != Some(injection)
+        {
+            return Ok(None);
+        }
         let timestamp = self.gateway.current_timestamp();
         let mut candidate = current.clone();
         let outcome = candidate.record_delegate_injected(injection, timestamp);

@@ -3,6 +3,12 @@ use crate::domain::workflow::entities::workflow_execution::DelegateInjection;
 use crate::usecase::workflow::control_plane::WorkflowControlPlaneCommit;
 use crate::usecase::workflow::delegate::DelegateContinuationGateway;
 
+#[derive(Clone, Copy)]
+pub(super) enum DelegateInjectionOrigin {
+    Automatic,
+    Resume,
+}
+
 pub(crate) struct HostDelegateContinuation {
     pub(crate) host: WorkflowRuntimeHost,
     pub(crate) app: WorkflowRuntimeDependencies,
@@ -63,14 +69,35 @@ impl WorkflowRuntimeHost {
         app: &WorkflowRuntimeDependencies,
         execution_id: &str,
         injection: &DelegateInjection,
+        origin: DelegateInjectionOrigin,
     ) -> Result<(), WorkflowRuntimeError> {
         let gate = self.runtime_activation_gate(execution_id).await;
         let guard = gate.lock.lock().await;
         let continuation = self.delegate_continuation.as_ref().ok_or_else(|| {
             WorkflowRuntimeError::InvalidState("delegate continuation is not configured".into())
         })?;
-        let snapshot = continuation.execute(execution_id, injection).await?;
+        let result = run_runtime_activation(&gate, execution_id, "delegate", async {
+            Ok(continuation.execute(execution_id, injection).await)
+        })
+        .await;
+
         drop(guard);
+        let snapshot = match result {
+            Err(_) => return Ok(()),
+            Ok(Ok(snapshot)) => snapshot,
+            Ok(Err(error)) => {
+                if matches!(origin, DelegateInjectionOrigin::Resume) {
+                    return Err(error);
+                }
+                return Box::pin(self.settle_runtime_failure_for_node(
+                    app,
+                    execution_id,
+                    &injection.node_execution_id,
+                    &error,
+                ))
+                .await;
+            }
+        };
         if let Some(snapshot) = snapshot {
             self.finalize_after_commit(app, &snapshot, &snapshot.worktree_path)
                 .await;

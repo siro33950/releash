@@ -9,6 +9,8 @@ use crate::usecase::workflow::{
 /// The one backend-owned read contract shared by every client surface.
 #[async_trait::async_trait]
 pub(crate) trait WorkspaceQueryService: Send + Sync {
+    async fn failure_targets(&self, node_id: &str) -> Result<Vec<String>, WorkflowError>;
+
     async fn workspace_tree(
         &self,
         workspace_identity: &WorkspaceIdentity,

@@ -111,6 +111,56 @@ impl SqliteWorkspaceQueryService {
 
 #[async_trait::async_trait]
 impl WorkspaceQueryService for SqliteWorkspaceQueryService {
+    async fn failure_targets(&self, node_id: &str) -> Result<Vec<String>, WorkflowError> {
+        let mut targets = vec![node_id.to_string()];
+        if node_id == "*" {
+            return Ok(targets);
+        }
+        let tree_id = if let Some(id) = node_id
+            .strip_prefix("node-w-")
+            .and_then(|id| id.split_once('-').map(|(tree, _)| tree))
+        {
+            uuid::Uuid::parse_str(id).ok().map(|id| id.to_string())
+        } else {
+            uuid::Uuid::parse_str(node_id)
+                .ok()
+                .map(|_| node_id.to_string())
+        };
+        let Some(tree_id) = tree_id else {
+            return Ok(targets);
+        };
+        if let Some((folded, record)) = self
+            .repository
+            .folded_tree(&tree_id)
+            .await
+            .map_err(query_error)?
+        {
+            let workspace = folded.root.workspace_identity.clone();
+            let Some(tree) = self
+                .repository
+                .workspace_tree_from_folded(&workspace, &[(folded, record)])
+                .map_err(query_error)?
+            else {
+                return Ok(targets);
+            };
+            let nodes = tree.nodes();
+            let node = if node_id == tree_id {
+                WorkspacePublicRoot::for_execution(nodes, &tree_id).map(|root| root.node())
+            } else {
+                nodes.iter().find(|node| node.id == node_id)
+            };
+            if let Some(node) = node {
+                targets.extend(node.node_execution_id.iter().cloned());
+                for past in &node.past_attempt_ids {
+                    if let Some(past) = nodes.iter().find(|node| &node.id == past) {
+                        targets.extend(past.node_execution_id.iter().cloned());
+                    }
+                }
+            }
+        }
+        Ok(targets)
+    }
+
     async fn workspace_tree(
         &self,
         workspace_identity: &WorkspaceIdentity,

@@ -613,11 +613,16 @@ async fn test_delegate_送信成功後の注入済み事実保存失敗からres
         rusqlite::Connection::open(fixture._directory.path().join("local-event-store.sqlite3"))
             .unwrap();
     connection.execute_batch("CREATE TRIGGER fail_delegate_injected BEFORE INSERT ON node_events WHEN NEW.event_type = 'delegate_result_injected' BEGIN SELECT RAISE(ABORT, 'injected delegate fact failure'); END;").unwrap();
-    assert!(fixture
+    fixture
         .host
-        .inject_delegate_result(&fixture.app, &tree, &injection)
+        .inject_delegate_result(
+            &fixture.app,
+            &tree,
+            &injection,
+            delegate::DelegateInjectionOrigin::Automatic,
+        )
         .await
-        .is_err());
+        .unwrap();
     assert_eq!(fixture.sessions.continuations.lock().unwrap().len(), 1);
     let records = workflow_fact_log::read_tree_records(&fixture.store, &tree)
         .await
@@ -1012,14 +1017,20 @@ async fn test_delegate_同じpendingを並行注入しても送信とcommitは�
         .store(true, Ordering::SeqCst);
     // When
     let dependencies = fixture.app.clone();
-    let first = fixture
-        .host
-        .inject_delegate_result(&dependencies, &tree, &injection);
+    let first = fixture.host.inject_delegate_result(
+        &dependencies,
+        &tree,
+        &injection,
+        delegate::DelegateInjectionOrigin::Automatic,
+    );
     let second = async {
         fixture.sessions.continuation_entered.notified().await;
-        let second = fixture
-            .host
-            .inject_delegate_result(&dependencies, &tree, &injection);
+        let second = fixture.host.inject_delegate_result(
+            &dependencies,
+            &tree,
+            &injection,
+            delegate::DelegateInjectionOrigin::Automatic,
+        );
         tokio::pin!(second);
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(25), &mut second)
@@ -1105,7 +1116,12 @@ async fn test_delegate_組み立てが欠けた入口は送信せずエラーを
     };
     // When
     let error = host
-        .inject_delegate_result(&fixture.app, "tree", &injection)
+        .inject_delegate_result(
+            &fixture.app,
+            "tree",
+            &injection,
+            delegate::DelegateInjectionOrigin::Automatic,
+        )
         .await
         .unwrap_err();
     // Then
@@ -1808,6 +1824,41 @@ async fn test_delegate_新attemptのresumeでも未注入結果を送り再生�
         assert_ne!(next.id, parent.id);
         assert_eq!(next.attempt, 2);
         assert_eq!(next.status, NodeExecutionStatus::Running);
+        let targets = fixture
+            .host
+            .workspace_query
+            .failure_targets(&tree)
+            .await
+            .unwrap();
+        assert!(targets.contains(&parent.id));
+        assert!(targets.contains(&next.id));
+        assert!(!targets.contains(&child.id));
+        for id in [&parent.id, &next.id, &child.id] {
+            fixture
+                .host
+                .queue
+                .observe(
+                    &crate::usecase::work_queue::WorkKey::new("workflow_delegate_injection", id),
+                    &crate::usecase::work_queue::WorkFailure {
+                        kind: crate::domain::failure::FailureKind::StateRequired,
+                        message: "injection failed".into(),
+                    },
+                )
+                .await;
+        }
+        let page = fixture
+            .host
+            .queue
+            .failure_query()
+            .records_page_for_targets(&targets, 0)
+            .await;
+        assert!(page
+            .items
+            .iter()
+            .any(|item| item.record.target == parent.id));
+        assert!(page.items.iter().any(|item| item.record.target == next.id));
+        assert!(!page.items.iter().any(|item| item.record.target == child.id));
+        assert!(page.requires_attention);
         assert!(live.pending_delegate_injections().is_empty());
         let deliveries = fixture.sessions.continuations.lock().unwrap();
         assert_eq!(deliveries.len(), 1);
@@ -1954,9 +2005,18 @@ async fn test_delegate_結果注入が競合しても同じ回の他leafを起�
     let records = workflow_fact_log::read_tree_records(&fixture.store, &tree)
         .await
         .unwrap();
-    assert!(!records
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| matches!(record.fact, NodeFact::DelegateResultInjected(_)))
+            .count(),
+        1
+    );
+    assert!(records
         .iter()
-        .any(|record| matches!(record.fact, NodeFact::DelegateResultInjected(_))));
+        .any(|record| record.meta.node_execution_id == writer
+            && matches!(record.fact, NodeFact::CommandSpawned(_))));
+    assert_eq!(fixture.sessions.continuations.lock().unwrap().len(), 1);
     assert!(!records
         .iter()
         .any(|record| record.meta.node_execution_id == parent_id
@@ -1970,7 +2030,8 @@ async fn test_delegate_結果注入が競合しても同じ回の他leafを起�
         execution.node_execution(&parent_id).unwrap().status,
         NodeExecutionStatus::Running
     );
-    assert!(execution.pending_delegate_injection(&parent_id).is_some());
+    assert!(execution.pending_delegate_injection(&parent_id).is_none());
+    submit(&control, &parent_id, serde_json::json!({"passed": false})).await;
 }
 
 #[tokio::test]
@@ -2012,4 +2073,229 @@ async fn test_delegate_child起動の失敗精算が競合しても提出は受�
     assert!(!records
         .iter()
         .any(|record| matches!(record.fact, NodeFact::RuntimeFailureObserved(_))));
+}
+
+struct ConflictingContinuation {
+    inner: HostDelegateContinuation,
+}
+
+#[async_trait::async_trait]
+impl DelegateContinuationGateway for ConflictingContinuation {
+    fn current_timestamp(&self) -> f64 {
+        self.inner.current_timestamp()
+    }
+
+    async fn load_execution(&self, id: &str) -> Result<DomainExecutionTree, WorkflowRuntimeError> {
+        self.inner.load_execution(id).await
+    }
+
+    async fn restore_provider(
+        &self,
+        session: &str,
+        node: &str,
+    ) -> Result<(), WorkflowRuntimeError> {
+        self.inner.restore_provider(session, node).await
+    }
+
+    async fn send_instruction(
+        &self,
+        session: &str,
+        child: &str,
+        instruction: &str,
+    ) -> Result<(), WorkflowRuntimeError> {
+        self.inner
+            .send_instruction(session, child, instruction)
+            .await
+    }
+
+    async fn commit(
+        &self,
+        _: WorkflowControlPlaneCommit,
+    ) -> Result<RuntimeCommitSnapshot, WorkflowRuntimeError> {
+        Err(WorkflowRuntimeError::Conflict("concurrent writer".into()))
+    }
+}
+
+#[tokio::test]
+async fn test_delegate_保存の競合が続いてもabortを完了し注入も失敗精算も残さない() {
+    // Given
+    let fixture = Fixture::new(0);
+    let tree = fixture.start(&definition("")).await;
+    let control = control(&fixture, &fixture.host);
+    let parent = fixture
+        .host
+        .load_executions(&fixture.app, &tree)
+        .await
+        .unwrap()[&tree]
+        .node_executions[0]
+        .clone();
+    submit(&control, &parent.id, serde_json::json!({"passed": false})).await;
+    stop(&control, &tree, &parent).await;
+    let child = fixture
+        .host
+        .load_executions(&fixture.app, &tree)
+        .await
+        .unwrap()[&tree]
+        .node_executions
+        .last()
+        .unwrap()
+        .clone();
+    submit(&control, &child.id, serde_json::json!({"passed": false})).await;
+    workflow_fact_log::append_facts_for_events(
+        &fixture.store,
+        &[WorkflowEvent::NodeStopReceived {
+            execution_id: tree.clone(),
+            node_execution_id: child.id,
+            timestamp: current_timestamp(),
+        }],
+    )
+    .await
+    .unwrap();
+    let folded = workflow_fact_log::fold_tree_from(
+        &workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone()),
+        &tree,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let injection = folded
+        .aggregate
+        .pending_delegate_injection(&parent.id)
+        .unwrap();
+
+    let mut host = fixture.host.clone();
+    host.delegate_continuation = Some(Arc::new(
+        crate::usecase::workflow::delegate::DelegateContinuationUsecase {
+            queue: host.queue.clone(),
+            gateway: Arc::new(ConflictingContinuation {
+                inner: HostDelegateContinuation {
+                    host: host.clone(),
+                    app: fixture.app.clone(),
+                },
+            }),
+        },
+    ));
+    // When
+    let inject = host.inject_delegate_result(
+        &fixture.app,
+        &tree,
+        &injection,
+        delegate::DelegateInjectionOrigin::Automatic,
+    );
+    let abort = async {
+        loop {
+            let targets = host.workspace_query.failure_targets(&tree).await.unwrap();
+            let page = host
+                .queue
+                .failure_query()
+                .records_page_for_targets(&targets, 0)
+                .await;
+            if let Some(item) = page.items.iter().find(|item| item.record.count >= 2) {
+                assert_eq!(item.record.target, parent.id);
+                assert!(item.record.active);
+                assert!(!item.requires_attention);
+                assert!(item.record.last_observed_ms > item.record.first_observed_ms);
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        host.abort_workflow_execution(&fixture.app, &tree, None)
+            .await
+            .unwrap();
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let (result, ()) = tokio::join!(inject, abort);
+        result.unwrap();
+    })
+    .await
+    .unwrap();
+    // Then
+    let records = workflow_fact_log::read_tree_records(&fixture.store, &tree)
+        .await
+        .unwrap();
+    assert!(!records
+        .iter()
+        .any(|r| matches!(r.fact, NodeFact::DelegateResultInjected(_))));
+    let after = host
+        .load_control_plane_execution(&fixture.app, &tree)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        after.node_execution(&parent.id).unwrap().status,
+        NodeExecutionStatus::Aborted
+    );
+    assert_eq!(fixture.sessions.continuations.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn test_delegate_resumeの注入失敗を返し親を失敗として確定しない() {
+    // Given
+    let fixture = Fixture::new(0);
+    let tree = fixture.start(&definition("")).await;
+    let control = control(&fixture, &fixture.host);
+    let parent = fixture
+        .host
+        .load_executions(&fixture.app, &tree)
+        .await
+        .unwrap()[&tree]
+        .node_executions[0]
+        .clone();
+    submit(&control, &parent.id, serde_json::json!({"passed": false})).await;
+    stop(&control, &tree, &parent).await;
+    let child = fixture
+        .host
+        .load_executions(&fixture.app, &tree)
+        .await
+        .unwrap()[&tree]
+        .node_executions
+        .last()
+        .unwrap()
+        .clone();
+    submit(&control, &child.id, serde_json::json!({"passed": false})).await;
+    workflow_fact_log::append_facts_for_events(
+        &fixture.store,
+        &[WorkflowEvent::NodeStopReceived {
+            execution_id: tree.clone(),
+            node_execution_id: child.id,
+            timestamp: current_timestamp(),
+        }],
+    )
+    .await
+    .unwrap();
+    fixture.sessions.live_sessions.lock().unwrap().clear();
+    fixture
+        .sessions
+        .continuation_fails
+        .store(true, Ordering::SeqCst);
+    // When
+    let result = fixture
+        .host
+        .resume_session_process(
+            &fixture.app,
+            &tree,
+            &parent.id,
+            parent.session_id.as_deref().unwrap(),
+        )
+        .await;
+    // Then
+    assert!(matches!(result, Err(WorkflowRuntimeError::AgentSession(_))));
+    let after = fixture
+        .host
+        .load_control_plane_execution(&fixture.app, &tree)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        after.node_execution(&parent.id).unwrap().status,
+        NodeExecutionStatus::Running
+    );
+    assert!(after.pending_delegate_injection(&parent.id).is_some());
+    let records = workflow_fact_log::read_tree_records(&fixture.store, &tree)
+        .await
+        .unwrap();
+    assert!(!records
+        .iter()
+        .any(|record| record.meta.node_execution_id == parent.id
+            && matches!(record.fact, NodeFact::RuntimeFailureObserved(_))));
 }

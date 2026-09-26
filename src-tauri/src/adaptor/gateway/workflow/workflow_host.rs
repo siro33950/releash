@@ -99,7 +99,7 @@ fn current_timestamp() -> f64 {
 /// 記録から取得した Workflow 集約と usecase の駆動手順を外界へ接続する gateway host。
 #[derive(Clone)]
 pub struct WorkflowRuntimeHost {
-    queue: std::sync::Arc<crate::usecase::work_queue::WorkQueueUsecase>,
+    pub(crate) queue: std::sync::Arc<crate::usecase::work_queue::WorkQueueUsecase>,
     workflow_start_locks: Arc<Mutex<HashMap<String, Weak<Mutex<()>>>>>,
     commit_locks: Arc<Mutex<HashMap<String, Weak<Mutex<()>>>>>,
     /// execution_id → 解決済み facet 本文。workflow state / event には含めない runtime-local read model。
@@ -1084,25 +1084,13 @@ impl WorkflowRuntimeHost {
         let mut failed = prepared.failed;
         injections.extend(prepared.injections);
         for injection in injections {
-            if let Err(error) = self
-                .inject_delegate_result(app, execution_id, &injection)
-                .await
-            {
-                if matches!(error, WorkflowRuntimeError::Conflict(_)) {
-                    log::warn!(
-                        "workflow {execution_id}: delegate result injection into {} was not applied: {error}",
-                        injection.node_execution_id
-                    );
-                    continue;
-                }
-                Box::pin(self.settle_runtime_failure_for_node(
-                    app,
-                    execution_id,
-                    &injection.node_execution_id,
-                    &error,
-                ))
-                .await?;
-            }
+            self.inject_delegate_result(
+                app,
+                execution_id,
+                &injection,
+                delegate::DelegateInjectionOrigin::Automatic,
+            )
+            .await?;
         }
         let leaves = prepared.leaves;
         if leaves.is_empty() {
@@ -1352,24 +1340,13 @@ impl WorkflowRuntimeHost {
                 .await?
                 .and_then(|execution| execution.pending_delegate_injection(&node_execution_id));
             if let Some(injection) = injection {
-                if let Err(error) = self
-                    .inject_delegate_result(app, &execution_id, &injection)
-                    .await
-                {
-                    if matches!(error, WorkflowRuntimeError::Conflict(_)) {
-                        log::warn!(
-                            "workflow {execution_id}: delegate result injection into {node_execution_id} was not applied: {error}"
-                        );
-                        continue;
-                    }
-                    self.settle_runtime_failure_for_node(
-                        app,
-                        &execution_id,
-                        &node_execution_id,
-                        &error,
-                    )
-                    .await?;
-                }
+                self.inject_delegate_result(
+                    app,
+                    &execution_id,
+                    &injection,
+                    delegate::DelegateInjectionOrigin::Automatic,
+                )
+                .await?;
             }
         }
         for (node_execution_id, error) in session_failures {

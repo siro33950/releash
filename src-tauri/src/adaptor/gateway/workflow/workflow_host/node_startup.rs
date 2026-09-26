@@ -243,8 +243,13 @@ impl WorkflowRuntimeHost {
         }
         drop(guard);
         if let Some(injection) = injection {
-            self.inject_delegate_result(app, execution_id, &injection)
-                .await?;
+            self.inject_delegate_result(
+                app,
+                execution_id,
+                &injection,
+                delegate::DelegateInjectionOrigin::Resume,
+            )
+            .await?;
         }
         let current = self
             .load_control_plane_execution(app, execution_id)

@@ -597,3 +597,104 @@ async fn test_agent_session購読_状態変更通知から再読取して同じ�
             .all(|id| id == "session"));
     }
 }
+
+#[tokio::test]
+async fn test_失敗購読_node行から実行idの失敗と解消を受け取る() {
+    use crate::adaptor::gateway::workflow::test_support::{
+        seed_workflow_session_facts, WorkflowSessionFactSeed,
+    };
+    use crate::domain::state_subscription::Event;
+    use crate::usecase::work_queue::{work_queue_tests::queue, WorkFailure, WorkKey};
+    // Given
+    let fixture = Fixture::new();
+    let (workflow, store) =
+        wiring::build_workflow_usecase_and_store(fixture._directory.path().join("failures"));
+    seed_workflow_session_facts(
+        &store,
+        WorkflowSessionFactSeed {
+            workflow_name: "failures",
+            request: "test",
+            worktree_path: &fixture.path,
+            provider: crate::domain::provider_lifecycle::ProviderKind::Codex,
+            workflow_execution_id: "00000000-0000-4000-8000-000000001932",
+            node_execution_id: "parent",
+            session_id: "session",
+            initial_instruction_admitted: true,
+        },
+    )
+    .await
+    .unwrap();
+    let snapshot = workflow
+        .list_workspace_tree_nodes(&fixture.path)
+        .await
+        .unwrap();
+    let crate::usecase::workflow::WorkspaceTreeItemDto::Sequence(root) = &snapshot.nodes[0] else {
+        panic!("root")
+    };
+    let crate::usecase::workflow::WorkspaceTreeItemDto::Node(node) = &root.children[0] else {
+        panic!("node")
+    };
+    let target = SubscriptionTarget::Failures(node.id.clone(), 0).to_string();
+    let queue = queue();
+    let mut reads = fixture.reads.clone();
+    reads.workflow = Arc::new(workflow);
+    reads.queue = queue.clone();
+    let subscriptions = fixture
+        .subscriptions
+        .with_reads(Arc::new(reads), None, vec![]);
+    queue.set_publisher(subscriptions.publisher());
+    let mut stream = Box::pin(subscriptions.open("client".into()).unwrap());
+    stream.next().await;
+    subscriptions
+        .start_read("client", &target, None)
+        .await
+        .unwrap();
+    assert!(matches!(
+        stream.next().await,
+        Some(StateSubscriptionEvent::Item(_, Event::Snapshot(_, _)))
+    ));
+    stream.next().await;
+    // When / Then
+    let key = WorkKey::new("workflow_delegate_injection", "parent");
+    for active in [true, false] {
+        if active {
+            queue
+                .observe(
+                    &key,
+                    &WorkFailure {
+                        kind: FailureKind::StateRequired,
+                        message: "failed".into(),
+                    },
+                )
+                .await;
+        } else {
+            queue
+                .execute(
+                    key.clone(),
+                    crate::common::retry::RetryBackoff::CONFLICT,
+                    |_| async { Ok(()) },
+                )
+                .await
+                .unwrap();
+        }
+        let value = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if let Some(StateSubscriptionEvent::Item(id, Event::Change(_, _, value))) =
+                    stream.next().await
+                {
+                    assert_eq!(id, target);
+                    break value;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        let StateValue::Failures(page) = value.as_ref() else {
+            panic!("failures")
+        };
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.items[0].record.target, "parent");
+        assert_eq!(page.items[0].record.active, active);
+        assert_eq!(page.requires_attention, active);
+    }
+}

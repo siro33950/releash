@@ -2229,3 +2229,36 @@ async fn test_workspaceツリー投影_背景失敗の対象と理由を表示�
         assert_eq!(query.workspace_tree(&workspace).await.unwrap(), before);
     }
 }
+
+#[tokio::test]
+async fn test_失敗対象の読取_node行以外はstoreに依存せず未知の行はそのまま返す() {
+    use crate::adaptor::gateway::local_event_store::test_helpers::ReadFailure;
+    use crate::adaptor::protocol::connect::classified_error;
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let store =
+        LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into())).unwrap();
+    let query = SqliteWorkspaceQueryService::with_repository(
+        crate::usecase::work_queue::shared().clone(),
+        SqliteWorkspaceTreeRepository::new(store.clone()),
+        Arc::new(EmptyArchives),
+    );
+    let missing = "node-w-00000000000040008000000000001932-missing";
+    // When / Then
+    for (failure, expected) in ReadFailure::cases() {
+        store.fail_next_read(failure);
+        for target in [
+            "*",
+            "/repo",
+            "startup-completion-probe",
+            "node-w-invalid-missing",
+        ] {
+            assert_eq!(query.failure_targets(target).await.unwrap(), [target]);
+        }
+        assert_eq!(
+            classified_error(query.failure_targets(missing).await.unwrap_err()).code,
+            expected
+        );
+    }
+    assert_eq!(query.failure_targets(missing).await.unwrap(), [missing]);
+}
