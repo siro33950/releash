@@ -1,22 +1,14 @@
 use super::work_queue::{FailureObservation, FailurePage};
 use crate::domain::failure_records::{FailureRecord, FailureRecords};
-use std::collections::HashMap;
 use tokio::sync::Mutex;
 
 pub(crate) struct FailureQueryService {
     pub(super) records: Mutex<FailureRecords>,
-    pub(super) target_failures:
-        HashMap<&'static str, Mutex<Box<dyn crate::domain::failure::BackgroundFailures>>>,
 }
 impl FailureQueryService {
     pub(crate) fn new() -> Self {
         Self {
             records: Mutex::new(FailureRecords::new(4096)),
-            target_failures: [
-                ("repository_scan", Box::<crate::domain::repository::background_failure::BackgroundFailureState>::default() as Box<dyn crate::domain::failure::BackgroundFailures>),
-                ("terminal_checkpoint", Box::<crate::domain::terminal_surface::background_failure::BackgroundFailureState>::default()),
-                ("provider_session_title", Box::<crate::domain::agent_session::background_failure::BackgroundFailureState>::default()),
-            ].into_iter().map(|(operation, state)| (operation, Mutex::new(state))).collect(),
         }
     }
     pub async fn records(&self, target: &str) -> Vec<FailureObservation> {
@@ -28,7 +20,7 @@ impl FailureQueryService {
             .filter(|record| target == "*" || record.target == target)
             .cloned()
             .collect();
-        self.observations(records).await
+        Self::observations(records)
     }
 
     pub async fn records_page(&self, target: &str, offset: usize) -> FailurePage {
@@ -52,7 +44,7 @@ impl FailureQueryService {
             };
             let mut requires_attention = false;
             for record in matching() {
-                if self.requires_attention(record).await {
+                if record.active && self::requires_attention(record.kind) {
                     requires_attention = true;
                     break;
                 }
@@ -64,30 +56,22 @@ impl FailureQueryService {
             )
         };
         FailurePage {
-            items: self.observations(records).await,
+            items: Self::observations(records),
             next_offset: (offset.saturating_add(100) < total).then_some(offset.saturating_add(100)),
             requires_attention,
         }
     }
 
-    async fn observations(&self, records: Vec<FailureRecord>) -> Vec<FailureObservation> {
+    fn observations(records: Vec<FailureRecord>) -> Vec<FailureObservation> {
         let mut result = Vec::new();
         for record in records {
-            let requires_attention = self.requires_attention(&record).await;
+            let requires_attention = record.active && self::requires_attention(record.kind);
             result.push(FailureObservation {
                 record,
                 requires_attention,
             });
         }
         result
-    }
-
-    async fn requires_attention(&self, record: &FailureRecord) -> bool {
-        if let Some(state) = self.target_failures.get(record.operation.as_str()) {
-            state.lock().await.requires_attention(&record.target)
-        } else {
-            record.active && record.kind.requires_attention()
-        }
     }
 
     pub async fn apply_workflow_failures(
@@ -109,11 +93,7 @@ impl FailureQueryService {
         for target in targets {
             for observation in self.records(&target).await {
                 if observation.requires_attention {
-                    tree.observe_background_failure(
-                        &target,
-                        observation.record.kind,
-                        &observation.record.message,
-                    );
+                    tree.observe_background_failure(&target, &observation.record.message);
                 }
             }
         }
@@ -123,3 +103,12 @@ impl FailureQueryService {
 #[cfg(test)]
 #[path = "failure_query_service_test.rs"]
 mod failure_query_service_tests;
+
+pub(super) fn requires_attention(kind: crate::domain::failure::Failure) -> bool {
+    use crate::domain::failure::{BusinessFailure, Failure, TechnicalFailureNature};
+    matches!(
+        kind,
+        Failure::Business(BusinessFailure::Other)
+            | Failure::Technical(TechnicalFailureNature::TimedOut | TechnicalFailureNature::Other)
+    )
+}

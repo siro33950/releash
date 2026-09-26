@@ -770,7 +770,6 @@ mod repository_usecase_tests {
     #[test]
     fn test_worktree一覧_詳細取得の停止を既定値に変えず後続を呼ばない() {
         use crate::common::operation_context::OperationStopped;
-        use crate::domain::failure::ClassifiedFailure;
         // Given
         for stopped in [OperationStopped::Expired, OperationStopped::Cancelled] {
             for stop_dirty in [true, false] {
@@ -792,7 +791,9 @@ mod repository_usecase_tests {
                 // When
                 let error = usecase(fake.clone()).list_worktrees("/main").unwrap_err();
                 // Then
-                assert_eq!(error.failure_kind(), stopped.failure_kind());
+                assert!(
+                    matches!(error, UsecaseError::Repository(crate::domain::repository::RepositoryError::Technical(ref actual)) if *actual == stopped.into())
+                );
                 assert_eq!(
                     *fake.detail_calls.lock(),
                     if stop_dirty {
@@ -1648,7 +1649,6 @@ mod repository_usecase_tests {
     #[tokio::test]
     async fn test_worktree削除_ブランチ取得の停止を保持し後続操作へ進まない() {
         use crate::common::operation_context::OperationStopped;
-        use crate::domain::failure::ClassifiedFailure;
         for stopped in [OperationStopped::Expired, OperationStopped::Cancelled] {
             for force in [false, true] {
                 // Given
@@ -1666,7 +1666,9 @@ mod repository_usecase_tests {
                     .await
                     .unwrap_err();
                 // Then
-                assert_eq!(error.failure_kind(), stopped.failure_kind());
+                assert!(
+                    matches!(error, UsecaseError::Repository(crate::domain::repository::RepositoryError::Technical(ref actual)) if *actual == stopped.into())
+                );
                 assert!(fake.archived_worktrees.lock().is_empty());
                 assert!(fake.killed_worktree_terminals.lock().is_empty());
                 assert!(fake.removed_worktrees.lock().is_empty());

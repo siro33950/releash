@@ -3,8 +3,8 @@ use super::super::shared::{
     background_worker::{request, Request},
 };
 use crate::common::retry::RetryBackoff;
-use crate::domain::failure::RetryAction;
 use crate::infrastructure::process::background_worker::BackgroundWorker;
+use crate::usecase::work_queue::AttemptProgress;
 use crate::usecase::work_queue::{WorkFailure, WorkKey};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -64,7 +64,7 @@ fn watcher_job(
         let notify_changed = notify_changed.clone();
         Box::pin(async move {
             let mut current = watcher.lock().expect("review watcher lock").take();
-            if action == RetryAction::Restart {
+            if action == AttemptProgress::Reload {
                 if let Some(mut worker) = current.take() {
                     worker.stop().await.map_err(background_io::failure)?;
                 }

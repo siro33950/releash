@@ -750,9 +750,6 @@ fn runtime_error_to_workflow_error(error: WorkflowRuntimeError) -> WorkflowError
         | WorkflowRuntimeError::ValidationError(message) => WorkflowError::validation(message),
         WorkflowRuntimeError::Store(kind) => WorkflowError::Store(kind),
         WorkflowRuntimeError::Technical(stopped) => WorkflowError::Technical(stopped),
-        WorkflowRuntimeError::StorageFailure { message, kind } => {
-            WorkflowError::StorageUnavailable { message, kind }
-        }
         WorkflowRuntimeError::ExecutionNotFound(message)
         | WorkflowRuntimeError::SessionNotFound(message) => WorkflowError::NotFound(message),
         error @ WorkflowRuntimeError::AlreadyActive(_) => {

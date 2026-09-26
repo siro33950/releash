@@ -1,4 +1,5 @@
-use crate::domain::failure::FailureKind;
+use crate::domain::failure::{Failure, TechnicalFailureNature};
+
 use crate::usecase::work_queue::{Attempt, WorkFailure, WorkQueueRuntime};
 use std::future::Future;
 use std::pin::Pin;
@@ -55,7 +56,7 @@ impl WorkQueueRuntime for TestWorkQueueRuntime {
             .await
             .unwrap_or_else(|_| {
                 Err(WorkFailure {
-                    kind: FailureKind::Expired,
+                    kind: Failure::Technical(TechnicalFailureNature::TimedOut),
                     message: "試行の期限（20秒）を超えました".into(),
                 })
             })

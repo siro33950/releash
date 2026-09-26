@@ -28,8 +28,7 @@ pub(crate) async fn get_workflow_shared(
             .get_workflow(&name)
             .map_err(AppError::from_failure)?
             .ok_or_else(|| {
-                AppError::new(format!("ワークフロー '{name}' が見つかりません"))
-                    .with_failure_kind(crate::domain::failure::FailureKind::Missing)
+                AppError::missing_target(format!("ワークフロー '{name}' が見つかりません"))
             })
             .and_then(|workflow| {
                 query
@@ -52,8 +51,7 @@ pub(crate) async fn get_workflow_source_shared(
             .get_workflow_source(&name)
             .map_err(AppError::from_failure)?
             .ok_or_else(|| {
-                AppError::new(format!("ワークフロー '{name}' が見つかりません"))
-                    .with_failure_kind(crate::domain::failure::FailureKind::Missing)
+                AppError::missing_target(format!("ワークフロー '{name}' が見つかりません"))
             })
     })
     .await

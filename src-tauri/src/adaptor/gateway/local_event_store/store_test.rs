@@ -77,43 +77,43 @@ async fn test_node事実追記_読取後の外部追記と競合したbatchは�
 
 #[test]
 fn test_node事実追記_sqliteの理由をconnectまで保持する() {
-    use crate::domain::failure::{ClassifiedFailure, FailureKind};
+    use crate::adaptor::presenter::connect::ConnectFailure;
     use connectrpc::ErrorCode;
     // Given
     for (code, kind, wire_code) in [
         (
             rusqlite::ffi::SQLITE_BUSY,
-            FailureKind::Temporary,
+            ErrorCode::Unavailable,
             ErrorCode::Unavailable,
         ),
         (
             rusqlite::ffi::SQLITE_LOCKED,
-            FailureKind::Temporary,
+            ErrorCode::Unavailable,
             ErrorCode::Unavailable,
         ),
         (
             rusqlite::ffi::SQLITE_CORRUPT,
-            FailureKind::Corrupt,
+            ErrorCode::DataLoss,
             ErrorCode::DataLoss,
         ),
         (
             rusqlite::ffi::SQLITE_NOTADB,
-            FailureKind::Corrupt,
+            ErrorCode::DataLoss,
             ErrorCode::DataLoss,
         ),
         (
             rusqlite::ffi::SQLITE_READONLY,
-            FailureKind::StateRequired,
+            ErrorCode::FailedPrecondition,
             ErrorCode::FailedPrecondition,
         ),
         (
             rusqlite::ffi::SQLITE_FULL,
-            FailureKind::StateRequired,
+            ErrorCode::FailedPrecondition,
             ErrorCode::FailedPrecondition,
         ),
         (
             rusqlite::ffi::SQLITE_ERROR,
-            FailureKind::Internal,
+            ErrorCode::Internal,
             ErrorCode::Internal,
         ),
     ] {
@@ -122,10 +122,10 @@ fn test_node事実追記_sqliteの理由をconnectまで保持する() {
         let error = super::super::commit::storage_unavailable(&source);
         let workflow = crate::domain::workflow::WorkflowError::from(error.clone());
         // Then
-        assert_eq!(error.failure_kind(), kind);
-        assert_eq!(workflow.failure_kind(), kind);
+        assert_eq!(error.connect_code(), kind);
+        assert_eq!(workflow.connect_code(), kind);
         assert_eq!(
-            crate::adaptor::protocol::connect::classified_error(workflow).code,
+            crate::adaptor::presenter::connect::classified_error(workflow).code,
             wire_code
         );
     }
@@ -133,32 +133,27 @@ fn test_node事実追記_sqliteの理由をconnectまで保持する() {
 
 #[test]
 fn test_node事実追記_結果不明と競合と混雑を分類する() {
-    use crate::domain::failure::{ClassifiedFailure, FailureKind};
+    use crate::adaptor::presenter::connect::ConnectFailure;
     use crate::domain::local_event::CommitBatchError;
+    use connectrpc::ErrorCode;
     // Given / When / Then
     for (error, expected) in [
-        (
-            CommitBatchError::TreeHeadConflict,
-            FailureKind::RestartRequired,
-        ),
-        (
-            CommitBatchError::AppendOutcomeUnknown,
-            FailureKind::RestartRequired,
-        ),
-        (CommitBatchError::QueueBusy, FailureKind::Temporary),
+        (CommitBatchError::TreeHeadConflict, ErrorCode::Aborted),
+        (CommitBatchError::AppendOutcomeUnknown, ErrorCode::Aborted),
+        (CommitBatchError::QueueBusy, ErrorCode::Unavailable),
         (
             crate::domain::local_event::CommitBatchError::StorageUnavailable {
                 failure: crate::domain::local_event::SafeOperationFailure::new(
                     crate::domain::local_event::SessionOperationFailureKind::StorageUnavailable,
-                    FailureKind::Expired,
+                    crate::domain::failure::TechnicalFailureNature::TimedOut,
                     "expired",
                     "test",
                 ),
             },
-            FailureKind::Expired,
+            ErrorCode::DeadlineExceeded,
         ),
     ] {
-        assert_eq!(error.failure_kind(), expected);
+        assert_eq!(error.connect_code(), expected);
     }
 }
 
@@ -219,7 +214,7 @@ async fn test_書込待ち_writer停滞中も同じruntimeの読取が完了す�
 #[tokio::test]
 async fn test_書込混雑_全入口と両車線でunavailableを返す() {
     use super::super::writer::*;
-    use crate::adaptor::protocol::connect::classified_error;
+    use crate::adaptor::presenter::connect::classified_error;
     use crate::domain::local_event::{
         CommitBatchError, CommitOperationKind, LocalEventTransactionRepository,
     };
@@ -329,7 +324,7 @@ async fn test_batch上限_件数と合計byte超過は保存せずresource_exhau
     // When / Then
     let error = store.commit_batch(batch).await.unwrap_err();
     assert_eq!(
-        crate::adaptor::protocol::connect::classified_error(error).code,
+        crate::adaptor::presenter::connect::classified_error(error).code,
         connectrpc::ErrorCode::ResourceExhausted
     );
     for (count, detail_bytes) in [(MAX_BATCH_EVENTS + 1, 2), (1, MAX_BATCH_DECODED_BYTES)] {
@@ -348,7 +343,7 @@ async fn test_batch上限_件数と合計byte超過は保存せずresource_exhau
             .await
             .unwrap_err();
         assert_eq!(
-            crate::adaptor::protocol::connect::classified_error(error).code,
+            crate::adaptor::presenter::connect::classified_error(error).code,
             connectrpc::ErrorCode::ResourceExhausted
         );
     }
@@ -362,7 +357,7 @@ async fn test_batch上限_件数と合計byte超過は保存せずresource_exhau
     oversized.state_mutations = vec![mutation.clone(); MAX_BATCH_STATE_MUTATIONS + 1];
     let error = store.commit_batch(oversized).await.unwrap_err();
     assert_eq!(
-        crate::adaptor::protocol::connect::classified_error(error).code,
+        crate::adaptor::presenter::connect::classified_error(error).code,
         connectrpc::ErrorCode::ResourceExhausted
     );
     let mut oversized = empty_batch(&store);
@@ -376,7 +371,7 @@ async fn test_batch上限_件数と合計byte超過は保存せずresource_exhau
     )];
     let error = store.commit_batch(oversized).await.unwrap_err();
     assert_eq!(
-        crate::adaptor::protocol::connect::classified_error(error).code,
+        crate::adaptor::presenter::connect::classified_error(error).code,
         connectrpc::ErrorCode::ResourceExhausted
     );
     let mut combined = empty_batch(&store);
@@ -395,7 +390,7 @@ async fn test_batch上限_件数と合計byte超過は保存せずresource_exhau
         .await
         .unwrap_err();
     assert_eq!(
-        crate::adaptor::protocol::connect::classified_error(error).code,
+        crate::adaptor::presenter::connect::classified_error(error).code,
         connectrpc::ErrorCode::ResourceExhausted
     );
     let mut boundary = empty_batch(&store);
@@ -515,7 +510,7 @@ async fn test_batch件数超過_shape検査とcodec実行より前に拒否す�
 #[tokio::test]
 async fn test_node事実追記_件数とbyteの上限まで保存し超過は保存しない() {
     use super::super::writer::{MAX_BATCH_DECODED_BYTES, MAX_BATCH_EVENTS};
-    use crate::adaptor::protocol::connect::classified_error;
+    use crate::adaptor::presenter::connect::classified_error;
     use crate::domain::local_event::CommitBatchError;
 
     for (count, detail_bytes) in [(MAX_BATCH_EVENTS, 2), (1, MAX_BATCH_DECODED_BYTES - 256)] {
@@ -550,8 +545,9 @@ async fn test_node事実追記_件数とbyteの上限まで保存し超過は保
 
 #[tokio::test]
 async fn test_書込待ち_期限と取り消しで待ちを終えても受理済みの事実は保存する() {
+    use crate::adaptor::presenter::connect::ConnectFailure;
     use crate::common::operation_context::{Deadline, OperationContext};
-    use crate::domain::failure::{ClassifiedFailure, FailureKind};
+    use connectrpc::ErrorCode;
     use std::time::{Duration, Instant};
     for expire in [false, true] {
         // Given
@@ -582,11 +578,11 @@ async fn test_書込待ち_期限と取り消しで待ちを終えても受理�
             .unwrap_err();
         // Then
         assert_eq!(
-            error.failure_kind(),
+            error.connect_code(),
             if expire {
-                FailureKind::Expired
+                ErrorCode::DeadlineExceeded
             } else {
-                FailureKind::Cancelled
+                ErrorCode::Canceled
             }
         );
         stall.release();

@@ -713,10 +713,11 @@ async fn test_初回読取中の切断_開始失敗後に対象の鍵もworker�
     drop(stream);
     reads.release.notify_one();
     // Then
-    assert_eq!(
-        started.await.unwrap().unwrap_err().kind,
-        crate::domain::failure::FailureKind::Missing
+    let error = started.await.unwrap().unwrap_err();
+    assert!(
+        matches!(error.source, StateReadFailure::Subscription(source) if *source == SubscriptionError::StreamEnded)
     );
+    assert_eq!(error.message, SubscriptionError::StreamEnded.to_string());
     assert!(!usecase.publisher.state.lock().registered(&target));
     assert!(usecase
         .publisher

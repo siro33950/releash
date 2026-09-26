@@ -58,173 +58,68 @@ async fn test_workflow_activation待機_true通知を完了として扱う() {
 }
 
 #[test]
-fn test_失敗分類_全変種と委譲した理由を保持する() {
-    use crate::domain::failure::{ClassifiedFailure, FailureKind as F};
-    use crate::usecase::agent_session::AgentSessionLaunchUsecaseError;
-    // Given
-    let cases = [
-        (
-            AgentSessionLaunchUsecaseError::ProviderUnavailable,
-            F::StateRequired,
-        ),
-        (
-            AgentSessionLaunchUsecaseError::InvalidInput,
-            F::InvalidInput,
-        ),
-        (
-            AgentSessionLaunchUsecaseError::Conflict(
-                crate::domain::failure::FailureKind::RestartRequired,
-            ),
-            F::RestartRequired,
-        ),
-        (
-            AgentSessionLaunchUsecaseError::StorageUnavailable,
-            F::Temporary,
-        ),
-        (
-            AgentSessionLaunchUsecaseError::LaunchUnavailable,
-            F::StateRequired,
-        ),
-        (
-            AgentSessionLaunchUsecaseError::TerminalUnavailable,
-            F::StateRequired,
-        ),
-        (AgentSessionLaunchUsecaseError::Corrupt, F::Corrupt),
-        (
-            AgentSessionLaunchUsecaseError::TerminalSpawn(
-                crate::domain::agent_session::ProviderAgentTerminalSpawnError::OwnerConflict,
-            ),
-            F::StateRequired,
-        ),
-        (
-            AgentSessionLaunchUsecaseError::TerminalSpawn(
-                crate::domain::agent_session::ProviderAgentTerminalSpawnError::PtySpawn {
-                    error: "pty".into(),
-                },
-            ),
-            F::StateRequired,
-        ),
-        (
-            AgentSessionLaunchUsecaseError::TerminalSpawn(
-                crate::domain::agent_session::ProviderAgentTerminalSpawnError::OtherSpawnFailure {
-                    error: "spawn".into(),
-                },
-            ),
-            F::StateRequired,
-        ),
-        (
-            AgentSessionLaunchUsecaseError::Store(F::Temporary),
-            F::Temporary,
-        ),
-        (
-            AgentSessionLaunchUsecaseError::Store(F::RestartRequired),
-            F::RestartRequired,
-        ),
-        (
-            AgentSessionLaunchUsecaseError::Store(F::StateRequired),
-            F::StateRequired,
-        ),
-        (
-            AgentSessionLaunchUsecaseError::Store(F::InvalidInput),
-            F::InvalidInput,
-        ),
-        (
-            AgentSessionLaunchUsecaseError::Store(F::Expired),
-            F::Expired,
-        ),
-        (
-            AgentSessionLaunchUsecaseError::Store(F::Missing),
-            F::Missing,
-        ),
-        (
-            AgentSessionLaunchUsecaseError::Store(F::AlreadyPresent),
-            F::AlreadyPresent,
-        ),
-        (
-            AgentSessionLaunchUsecaseError::Store(F::Permission),
-            F::Permission,
-        ),
-        (
-            AgentSessionLaunchUsecaseError::Store(F::Capacity),
-            F::Capacity,
-        ),
-        (
-            AgentSessionLaunchUsecaseError::Store(F::Unsupported),
-            F::Unsupported,
-        ),
-        (
-            AgentSessionLaunchUsecaseError::Store(F::Internal),
-            F::Internal,
-        ),
-        (
-            AgentSessionLaunchUsecaseError::Store(F::Corrupt),
-            F::Corrupt,
-        ),
-        (
-            AgentSessionLaunchUsecaseError::Store(F::Cancelled),
-            F::Cancelled,
-        ),
-        (
-            AgentSessionLaunchUsecaseError::Store(F::Unknown),
-            F::Unknown,
-        ),
-        (
-            AgentSessionLaunchUsecaseError::Store(F::OutsideRange),
-            F::OutsideRange,
-        ),
-        (
-            AgentSessionLaunchUsecaseError::Store(F::AuthenticationRequired),
-            F::AuthenticationRequired,
-        ),
-    ];
-    for (error, expected) in cases {
-        // When / Then
-        assert_eq!(error.failure_kind(), expected, "{error:?}");
-    }
-}
-
-#[test]
 fn test_session所有済みと保存競合を区別して伝播する() {
     use super::AgentSessionUsecaseError;
-    use crate::domain::failure::{ClassifiedFailure, FailureKind};
+
     // Given / When / Then
-    for (source, expected) in [
-        (
-            AgentSessionUsecaseError::Conflict,
-            FailureKind::RestartRequired,
-        ),
-        (
-            AgentSessionUsecaseError::ProviderSessionAlreadyOwned {
-                agent_session_id: "owner".into(),
-            },
-            FailureKind::StateRequired,
-        ),
+    for source in [
+        AgentSessionUsecaseError::Conflict,
+        AgentSessionUsecaseError::ProviderSessionAlreadyOwned {
+            agent_session_id: "owner".into(),
+        },
     ] {
-        assert_eq!(super::map_session_error(source).failure_kind(), expected);
+        let expected = match &source {
+            AgentSessionUsecaseError::Conflict => {
+                crate::domain::agent_session::repository::AgentSessionRepositoryError::Conflict
+                    .into()
+            }
+            AgentSessionUsecaseError::ProviderSessionAlreadyOwned { agent_session_id } => {
+                crate::domain::agent_session::repository::AgentSessionRepositoryError::ProviderSessionAlreadyOwned {
+                    agent_session_id: agent_session_id.clone(),
+                }
+                .into()
+            }
+            _ => unreachable!(),
+        };
+        assert_eq!(
+            super::map_session_error(source),
+            super::AgentSessionLaunchUsecaseError::Conflict(expected)
+        );
     }
 }
 
 #[test]
 fn test_実行木登録の失敗_起動エラーへ変換しても元の分類を保持する() {
-    use crate::domain::failure::{ClassifiedFailure, FailureKind};
     // Given / When / Then
-    for kind in [
-        FailureKind::Internal,
-        FailureKind::Temporary,
-        FailureKind::Expired,
-        FailureKind::StateRequired,
+    for source in [
+        crate::domain::local_event::LocalEventQueryError::Internal {
+            correlation_id: "id".into(),
+        },
+        crate::domain::local_event::LocalEventQueryError::QueryBusy,
+        crate::domain::local_event::LocalEventQueryError::Technical(
+            crate::domain::failure::TechnicalFailure {
+                nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
+                message: "timeout".into(),
+            },
+        ),
+        crate::domain::local_event::LocalEventQueryError::IncompatibleStoredEvent {
+            correlation_id: "id".into(),
+        },
     ] {
+        let expected = source.clone().into();
         let error = super::map_execution_tree_registration_error(
-            super::StartedExecutionTreeRegistrationError::Store(kind),
+            super::StartedExecutionTreeRegistrationError::Store(source.into()),
         );
-        assert_eq!(error.failure_kind(), kind);
+        assert_eq!(
+            error,
+            super::AgentSessionLaunchUsecaseError::Store(expected)
+        );
     }
 }
 
 #[test]
 fn test_provider起動準備_停止分類をusecaseまで保持する() {
     use crate::common::operation_context::OperationStopped;
-    use crate::domain::failure::ClassifiedFailure;
     // Given
     for stopped in [OperationStopped::Expired, OperationStopped::Cancelled] {
         // When
@@ -234,6 +129,8 @@ fn test_provider起動準備_停止分類をusecaseまで保持する() {
             ),
         );
         // Then
-        assert_eq!(error.failure_kind(), stopped.failure_kind());
+        assert!(
+            matches!(error, super::AgentSessionLaunchUsecaseError::Technical(ref actual) if *actual == stopped.into())
+        );
     }
 }

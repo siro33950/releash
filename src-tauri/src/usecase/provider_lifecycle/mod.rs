@@ -29,8 +29,10 @@ pub(crate) use ingress::{
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub(crate) enum ProviderLifecycleUsecaseError {
+    #[error("provider lifecycle version conflict")]
+    Conflict,
     #[error("Storage failure: {0:?}")]
-    Store(crate::domain::failure::FailureKind),
+    Store(crate::domain::failure::StorageFailure),
     #[error("Provider lifecycle input is invalid")]
     InvalidInput,
     #[error("Provider lifecycle persistence is unavailable")]
@@ -44,6 +46,7 @@ impl From<ProviderLifecycleRepositoryError> for ProviderLifecycleUsecaseError {
         match error {
             ProviderLifecycleRepositoryError::InvalidInput => Self::InvalidInput,
             ProviderLifecycleRepositoryError::StorageUnavailable => Self::StorageUnavailable,
+            ProviderLifecycleRepositoryError::Conflict => Self::Conflict,
             ProviderLifecycleRepositoryError::Store(kind) => Self::Store(kind),
             ProviderLifecycleRepositoryError::Corrupt => Self::Corrupt,
         }
@@ -433,15 +436,3 @@ mod provider_lifecycle_ingress_tests;
 #[cfg(test)]
 #[path = "provider_lifecycle_usecase_test.rs"]
 mod provider_lifecycle_usecase_tests;
-
-impl crate::domain::failure::ClassifiedFailure for ProviderLifecycleUsecaseError {
-    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
-        use crate::domain::failure::FailureKind;
-        match self {
-            Self::Store(kind) => *kind,
-            Self::InvalidInput => FailureKind::InvalidInput,
-            Self::StorageUnavailable => FailureKind::Temporary,
-            Self::Corrupt => FailureKind::Corrupt,
-        }
-    }
-}

@@ -1,118 +1,56 @@
 use super::*;
 
 #[test]
-fn test_失敗分類_全変種と委譲した理由を保持する() {
-    use crate::domain::failure::{ClassifiedFailure, FailureKind as F};
+fn test_版競合_業務上の競合だけを返す() {
     // Given
-    let cases = [
-        (
-            WorkflowRuntimeError::ExecutionNotFound("reason".into()),
-            F::Missing,
-        ),
-        (
-            WorkflowRuntimeError::SessionNotFound("reason".into()),
-            F::Missing,
-        ),
-        (
-            WorkflowRuntimeError::InvalidWorkflow("reason".into()),
-            F::InvalidInput,
-        ),
-        (
-            WorkflowRuntimeError::InvalidState("reason".into()),
-            F::StateRequired,
-        ),
-        (
-            WorkflowRuntimeError::Conflict("reason".into()),
-            F::RestartRequired,
-        ),
-        (
-            WorkflowRuntimeError::ValidationError("reason".into()),
-            F::InvalidInput,
-        ),
-        (
-            WorkflowRuntimeError::UnauthorizedWorktree("reason".into()),
-            F::Permission,
-        ),
-        (
-            WorkflowRuntimeError::UnauthorizedApprovalTarget("reason".into()),
-            F::Permission,
-        ),
-        (
-            WorkflowRuntimeError::SessionStore("reason".into()),
-            F::Internal,
-        ),
-        (
-            WorkflowRuntimeError::AgentSession("reason".into()),
-            F::StateRequired,
-        ),
-        (
-            WorkflowRuntimeError::AlreadyActive(
-                crate::domain::workflow::services::start_admission::WorktreeActiveExecution {
-                    worktree_path: "/repo".into(),
-                    execution_id: "execution".into(),
-                    workflow_name: "workflow".into(),
-                },
-            ),
-            F::StateRequired,
-        ),
-        (WorkflowRuntimeError::Store(F::Temporary), F::Temporary),
-        (
-            WorkflowRuntimeError::Store(F::RestartRequired),
-            F::RestartRequired,
-        ),
-        (
-            WorkflowRuntimeError::Store(F::StateRequired),
-            F::StateRequired,
-        ),
-        (
-            WorkflowRuntimeError::Store(F::InvalidInput),
-            F::InvalidInput,
-        ),
-        (WorkflowRuntimeError::Store(F::Expired), F::Expired),
-        (WorkflowRuntimeError::Store(F::Missing), F::Missing),
-        (
-            WorkflowRuntimeError::Store(F::AlreadyPresent),
-            F::AlreadyPresent,
-        ),
-        (WorkflowRuntimeError::Store(F::Permission), F::Permission),
-        (WorkflowRuntimeError::Store(F::Capacity), F::Capacity),
-        (WorkflowRuntimeError::Store(F::Unsupported), F::Unsupported),
-        (WorkflowRuntimeError::Store(F::Internal), F::Internal),
-        (WorkflowRuntimeError::Store(F::Corrupt), F::Corrupt),
-        (WorkflowRuntimeError::Store(F::Cancelled), F::Cancelled),
-        (WorkflowRuntimeError::Store(F::Unknown), F::Unknown),
-        (
-            WorkflowRuntimeError::Store(F::OutsideRange),
-            F::OutsideRange,
-        ),
-        (
-            WorkflowRuntimeError::Store(F::AuthenticationRequired),
-            F::AuthenticationRequired,
-        ),
-    ];
-    for (error, expected) in cases {
-        // When / Then
-        assert_eq!(error.failure_kind(), expected, "{error:?}");
-    }
+    let conflict = WorkflowRuntimeError::Conflict("head advanced".into());
+    let storage = WorkflowRuntimeError::Store(
+        crate::domain::failure::StorageFailure::from(
+            crate::domain::local_event::CommitBatchError::AppendOutcomeUnknown,
+        )
+        .with_message("append outcome unknown"),
+    );
+    // When / Then
+    assert_eq!(conflict.version_conflict(), Some("head advanced"));
+    assert_eq!(storage.version_conflict(), None);
+    let stored_conflict = WorkflowRuntimeError::storage(
+        crate::domain::workflow::WorkflowError::Conflict("head advanced".into()),
+        "reconcile",
+    );
+    assert_eq!(stored_conflict.version_conflict(), Some("head advanced"));
+    let stored_commit_conflict = WorkflowRuntimeError::Store(
+        crate::domain::failure::StorageFailure::from(
+            crate::domain::local_event::CommitBatchError::TreeHeadConflict,
+        )
+        .with_message("creation failed"),
+    );
+    assert_eq!(
+        stored_commit_conflict.version_conflict(),
+        Some("creation failed")
+    );
 }
 
 #[test]
 fn test_node事実追記_分類と失敗理由と実行木の失敗種別を保持する() {
-    use crate::domain::failure::{ClassifiedFailure, FailureKind};
     // Given
-    for kind in [
-        FailureKind::Temporary,
-        FailureKind::Corrupt,
-        FailureKind::Expired,
-        FailureKind::RestartRequired,
+    for failure in [
+        crate::domain::local_event::CommitBatchError::QueueBusy.into(),
+        crate::domain::local_event::CommitBatchError::Corrupt {
+            correlation_id: "id".into(),
+        }
+        .into(),
+        crate::domain::failure::TechnicalFailure {
+            nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
+            message: "timeout".into(),
+        }
+        .into(),
+        crate::domain::local_event::CommitBatchError::AppendOutcomeUnknown.into(),
     ] {
-        // When
-        let error = WorkflowRuntimeError::StorageFailure {
-            kind,
-            message: "append failed".into(),
-        };
+        let failure: crate::domain::failure::StorageFailure = failure;
+        let expected = failure.with_message("append failed");
+        let error = WorkflowRuntimeError::Store(expected.clone());
         // Then
-        assert_eq!(error.failure_kind(), kind);
+        assert!(matches!(&error, WorkflowRuntimeError::Store(actual) if *actual == expected));
         assert_eq!(error.to_string(), "append failed");
         assert_eq!(
             error.workflow_failure_kind(),
@@ -124,14 +62,15 @@ fn test_node事実追記_分類と失敗理由と実行木の失敗種別を保�
 #[test]
 fn test_managed_worktree停止_runtime境界で分類を保持する() {
     use crate::common::operation_context::OperationStopped;
-    use crate::domain::failure::ClassifiedFailure;
     // Given
     for stopped in [OperationStopped::Expired, OperationStopped::Cancelled] {
         // When
         let error =
             WorkflowRuntimeError::from(ManagedWorktreeResolverError::Technical(stopped.into()));
         // Then
-        assert_eq!(error.failure_kind(), stopped.failure_kind());
+        assert!(
+            matches!(error, WorkflowRuntimeError::Technical(ref actual) if *actual == stopped.into())
+        );
         assert_eq!(error.to_string(), stopped.to_string());
     }
 }

@@ -537,7 +537,7 @@ async fn without_tree_fold<T>(read: impl std::future::Future<Output = T>) -> T {
 #[tokio::test]
 async fn test_execution読取_実経路で失敗分類を保持する() {
     use crate::adaptor::gateway::local_event_store::test_helpers::ReadFailure;
-    use crate::adaptor::protocol::connect::classified_error;
+    use crate::adaptor::presenter::connect::classified_error;
     // Given
     let directory = tempfile::tempdir().unwrap();
     let store =

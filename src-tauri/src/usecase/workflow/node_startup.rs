@@ -1,12 +1,13 @@
 use super::runtime_error::WorkflowRuntimeError;
 use crate::common::retry::RetryBackoff;
-use crate::domain::failure::{ClassifiedFailure, FailureKind, RetryAction};
+use crate::domain::failure::Failure;
 use crate::domain::workflow::entities::workflow_execution::NodeStart;
+use crate::usecase::work_queue::AttemptProgress;
 
 #[derive(Debug, Clone)]
 pub(crate) struct FailedNodeStart {
     pub id: String,
-    pub kind: FailureKind,
+    pub kind: Failure,
 }
 
 #[cfg(test)]
@@ -14,7 +15,7 @@ impl From<&str> for FailedNodeStart {
     fn from(id: &str) -> Self {
         Self {
             id: id.into(),
-            kind: FailureKind::RestartRequired,
+            kind: Failure::Business(crate::domain::failure::BusinessFailure::VersionConflict),
         }
     }
 }
@@ -28,7 +29,7 @@ pub(crate) trait NodeStartupGateway: Send + Sync {
     async fn restart(
         &self,
         node_execution_id: &str,
-        action: RetryAction,
+        action: AttemptProgress,
     ) -> Result<Option<NodeStart>, WorkflowRuntimeError>;
     async fn wait(&self, duration: std::time::Duration) -> bool;
     async fn cancelled(&self);
@@ -74,7 +75,7 @@ async fn retry_node(
     failure: FailedNodeStart,
     queue: &std::sync::Arc<crate::usecase::work_queue::WorkQueueUsecase>,
 ) -> Result<Vec<FailedNodeStart>, NodeStartupError> {
-    if failure.kind.retry_action() == RetryAction::Stop {
+    if crate::usecase::work_queue::next_attempt(failure.kind).is_none() {
         return Ok(Vec::new());
     }
     let key = crate::usecase::work_queue::WorkKey::new("workflow_node_start", &failure.id);
@@ -91,10 +92,13 @@ async fn retry_node(
                 *first = false;
                 return Err(NodeStartupError {
                     node_execution_id: Some(failure.id.clone()),
-                    error: WorkflowRuntimeError::StorageFailure {
-                        kind: failure.kind,
-                        message: "起動を再試行します".into(),
-                    },
+                    error: WorkflowRuntimeError::storage(
+                        crate::usecase::work_queue::WorkFailure {
+                            kind: failure.kind,
+                            message: "起動を再試行します".into(),
+                        },
+                        "起動を再試行します",
+                    ),
                 });
             }
             if !gateway.wait(std::time::Duration::ZERO).await {
@@ -114,24 +118,28 @@ async fn retry_node(
                 .await;
             let (result, node_execution_id) = attempted.unwrap_or_else(|error| {
                 (
-                    Err(WorkflowRuntimeError::StorageFailure {
-                        kind: error.kind,
-                        message: error.message,
+                    Err({
+                        let message = error.message.clone();
+                        WorkflowRuntimeError::storage(error, message)
                     }),
                     Some(failure.id.clone()),
                 )
             });
             match result {
                 Ok(mut failed)
-                    if failed.len() == 1 && failed[0].kind.retry_action() != RetryAction::Stop =>
+                    if failed.len() == 1
+                        && crate::usecase::work_queue::next_attempt(failed[0].kind).is_some() =>
                 {
                     *failure = failed.remove(0);
                     Err(NodeStartupError {
                         node_execution_id: Some(failure.id.clone()),
-                        error: WorkflowRuntimeError::StorageFailure {
-                            kind: failure.kind,
-                            message: "起動を再試行します".into(),
-                        },
+                        error: WorkflowRuntimeError::storage(
+                            crate::usecase::work_queue::WorkFailure {
+                                kind: failure.kind,
+                                message: "起動を再試行します".into(),
+                            },
+                            "起動を再試行します",
+                        ),
                     })
                 }
                 Ok(failed) => Ok(failed),
@@ -165,12 +173,12 @@ async fn retry_node(
     }
 }
 
-impl ClassifiedFailure for NodeStartupError {
-    fn failure_kind(&self) -> FailureKind {
-        self.error.failure_kind()
-    }
-}
-
 #[cfg(test)]
 #[path = "node_startup_test.rs"]
 mod node_startup_tests;
+
+impl From<&NodeStartupError> for Failure {
+    fn from(error: &NodeStartupError) -> Self {
+        (&error.error).into()
+    }
+}

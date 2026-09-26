@@ -3,7 +3,7 @@ use super::*;
 #[tokio::test]
 async fn test_承認記録読取_実経路で失敗分類を保持する() {
     use crate::adaptor::gateway::local_event_store::test_helpers::ReadFailure;
-    use crate::adaptor::protocol::connect::classified_error;
+    use crate::adaptor::presenter::connect::classified_error;
     // Given
     let fixture = super::super::workflow_host::test_helpers::Fixture::new(0);
     let gateway =
@@ -55,15 +55,15 @@ async fn test_承認記録読取_保存された事実の破損をdata_lossと�
         .unwrap_err();
     // Then
     assert_eq!(
-        crate::adaptor::protocol::connect::classified_error(error).code,
+        crate::adaptor::presenter::connect::classified_error(error).code,
         connectrpc::ErrorCode::DataLoss
     );
 }
 
 #[test]
 fn test_workflow起動_停止分類をgateway境界で保持する() {
+    use crate::adaptor::presenter::connect::ConnectFailure;
     use crate::common::operation_context::OperationStopped;
-    use crate::domain::failure::ClassifiedFailure;
     // Given
     for stopped in [OperationStopped::Expired, OperationStopped::Cancelled] {
         // When
@@ -73,6 +73,9 @@ fn test_workflow起動_停止分類をgateway境界で保持する() {
             ),
         );
         // Then
-        assert_eq!(error.failure_kind(), stopped.failure_kind());
+        assert_eq!(
+            error.connect_code(),
+            crate::domain::failure::TechnicalFailure::from(stopped).connect_code()
+        );
     }
 }

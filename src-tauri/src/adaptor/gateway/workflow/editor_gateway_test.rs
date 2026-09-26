@@ -1,9 +1,10 @@
 use super::*;
+use crate::adaptor::presenter::connect::ConnectFailure;
 use crate::domain::app_config::{
     repository::ConfigUpdate, value_objects::AppConfigDocument, AppConfigError,
 };
 use crate::domain::external_editor::EditorError;
-use crate::domain::failure::{ClassifiedFailure, FailureKind};
+use connectrpc::ErrorCode;
 
 struct RemoveEditorTarget(PathBuf);
 
@@ -56,12 +57,12 @@ fn test_エディタ起動失敗_workflowとfacetが元の分類を保持する(
             error,
             WorkflowError::Editor(EditorError::Launch(_))
         ));
-        assert_eq!(error.failure_kind(), FailureKind::StateRequired);
-        let direct = crate::adaptor::protocol::connect::classified_error(EditorError::Launch(
+        assert_eq!(error.connect_code(), ErrorCode::FailedPrecondition);
+        let direct = crate::adaptor::presenter::connect::classified_error(EditorError::Launch(
             "missing".into(),
         ));
         assert_eq!(
-            crate::adaptor::protocol::connect::classified_error(error).code,
+            crate::adaptor::presenter::connect::classified_error(error).code,
             direct.code
         );
     }

@@ -1,11 +1,11 @@
 use crate::common::operation_context::{Cancellation, OperationContext};
-use crate::domain::failure::FailureKind;
+use connectrpc::ErrorCode;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 pub(crate) fn assert_stops_at_each_checkpoint<
     T,
-    E: crate::domain::failure::ClassifiedFailure + std::fmt::Debug,
+    E: crate::adaptor::presenter::connect::ConnectFailure + std::fmt::Debug,
 >(
     mut operation: impl FnMut() -> Result<T, E>,
 ) {
@@ -24,7 +24,9 @@ pub(crate) fn assert_stops_at_each_checkpoint<
         )),
         &mut operation,
     );
-    assert!(matches!(expired, Err(ref error) if error.failure_kind() == FailureKind::Expired));
+    assert!(
+        matches!(expired, Err(ref error) if error.connect_code() == ErrorCode::DeadlineExceeded)
+    );
     let baseline = Arc::new(CancelAt {
         checks: AtomicUsize::new(0),
         stop_at: usize::MAX,
@@ -46,7 +48,7 @@ pub(crate) fn assert_stops_at_each_checkpoint<
             &mut operation,
         );
         assert!(
-            matches!(result, Err(ref error) if error.failure_kind() == FailureKind::Cancelled),
+            matches!(result, Err(ref error) if error.connect_code() == ErrorCode::Canceled),
             "checkpoint {stop_at}"
         );
         assert_eq!(

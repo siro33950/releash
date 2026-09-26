@@ -1651,7 +1651,10 @@ async fn test_単発rpc_期限と呼出破棄が同期処理の内側まで届�
                         )
                         .unwrap_err();
                         stopped.send(error).unwrap();
-                        Err(crate::adaptor::presenter::error::AppError::from_failure(error).into())
+                        Err(crate::adaptor::presenter::error::AppError::from_failure(
+                            crate::domain::failure::TechnicalFailure::from(error),
+                        )
+                        .into())
                     })
                     .await
                     .unwrap()
@@ -2124,8 +2127,10 @@ async fn run_command(
     crate::common::operation_context::wait(&context, future)
         .await
         .map_err(|error| {
-            crate::adaptor::protocol::connect::classified_error(
-                crate::adaptor::presenter::error::AppError::from_failure(error),
+            crate::adaptor::presenter::connect::classified_error(
+                crate::adaptor::presenter::error::AppError::from_failure(
+                    crate::domain::failure::TechnicalFailure::from(error),
+                ),
             )
         })?
         .map_err(command_error)
@@ -2148,9 +2153,9 @@ async fn test_共通入口_期限切れを変換し成功と内部失敗を保�
         42
     );
     let error = ingress(None, async {
-        Err::<(), _>(crate::adaptor::protocol::connect::classified_error(
+        Err::<(), _>(crate::adaptor::presenter::connect::classified_error(
             crate::adaptor::presenter::error::AppError::new("unavailable")
-                .with_failure_kind(crate::domain::failure::FailureKind::Temporary),
+                .with_status(connectrpc::ErrorCode::Unavailable),
         ))
     })
     .await

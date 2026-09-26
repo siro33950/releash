@@ -103,7 +103,9 @@ fn test_worktree一覧と掃除_各git操作の停止を成功に変えず後続
     let path = directory.path().to_str().unwrap();
     // When / Then
     assert_stops_at_each_checkpoint(|| list_worktrees(path));
-    assert_stops_at_each_checkpoint(|| prune_invalid_worktrees(&repo));
+    assert_stops_at_each_checkpoint(|| {
+        prune_invalid_worktrees(&repo).map_err(crate::domain::repository::RepositoryError::from)
+    });
     assert_stops_at_each_checkpoint(|| WorktreeGateway.invalid_worktree_paths(path));
     assert_stops_at_each_checkpoint(|| get_dirty_count_for_path(directory.path()));
 }
@@ -118,7 +120,7 @@ fn test_worktree掃除_無効な登録のpruneでも停止を返す() {
         let path = directory.path().join("missing");
         repo.worktree("missing", &path, None).unwrap();
         std::fs::remove_dir_all(path).unwrap();
-        prune_invalid_worktrees(&repo)
+        prune_invalid_worktrees(&repo).map_err(crate::domain::repository::RepositoryError::from)
     });
 }
 
@@ -170,7 +172,10 @@ fn test_旧worktreeの所属repo_停止を欠損やgitファイルの復元へ�
         assert!(recorded_main_repo_path(path.to_str().unwrap())
             .unwrap()
             .is_some());
-        assert_stops_at_each_checkpoint(|| recorded_main_repo_path(path.to_str().unwrap()));
+        assert_stops_at_each_checkpoint(|| {
+            recorded_main_repo_path(path.to_str().unwrap())
+                .map_err(crate::domain::repository::RepositoryError::from)
+        });
     }
 }
 

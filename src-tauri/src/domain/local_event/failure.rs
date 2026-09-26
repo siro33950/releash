@@ -13,7 +13,6 @@ pub const NOTICE_LABEL_MAX_BYTES: usize = 160;
 pub enum SessionOperationFailureKind {
     StorageUnavailable,
     PersistFailure,
-    OutcomeUnknown,
 }
 
 /// UTF-8 text truncated to a byte bound; keeps a digest of the original when
@@ -53,7 +52,7 @@ impl BoundedNoticeText {
 /// Bounded, content-safe operation failure surfaced to callers and telemetry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SafeOperationFailure {
-    classification: crate::domain::failure::FailureKind,
+    pub nature: crate::domain::failure::TechnicalFailureNature,
     pub kind: SessionOperationFailureKind,
     pub label: Box<BoundedNoticeText>,
     pub correlation_id: String,
@@ -62,12 +61,12 @@ pub struct SafeOperationFailure {
 impl SafeOperationFailure {
     pub fn new(
         kind: SessionOperationFailureKind,
-        classification: crate::domain::failure::FailureKind,
+        nature: crate::domain::failure::TechnicalFailureNature,
         label: &str,
         correlation_id: impl Into<String>,
     ) -> Self {
         Self {
-            classification,
+            nature,
             kind,
             label: Box::new(BoundedNoticeText::label(label)),
             correlation_id: correlation_id.into(),
@@ -79,9 +78,9 @@ impl fmt::Display for SafeOperationFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "{:?} (retryable={}, correlation_id={}): {}",
+            "{:?} (nature={:?}, correlation_id={}): {}",
             self.kind,
-            self.classification == crate::domain::failure::FailureKind::Temporary,
+            self.nature,
             self.correlation_id,
             self.label.value()
         )
@@ -109,12 +108,6 @@ mod tests {
     fn short_text_is_not_truncated() {
         let text = BoundedNoticeText::label("ok");
         assert_eq!(text.value(), "ok");
-    }
-}
-
-impl crate::domain::failure::ClassifiedFailure for SafeOperationFailure {
-    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
-        self.classification
     }
 }
 

@@ -1,8 +1,9 @@
 use super as wire;
+use crate::adaptor::presenter::connect::ConnectFailure;
 impl From<crate::adaptor::presenter::error::AppError> for wire::CommandError {
     fn from(value: crate::adaptor::presenter::error::AppError) -> Self {
         match value {
-            crate::adaptor::presenter::error::AppError::Classified { error, .. } => (*error).into(),
+            crate::adaptor::presenter::error::AppError::Presented { error, .. } => (*error).into(),
             crate::adaptor::presenter::error::AppError::Internal(value) => Self {
                 variant: Some(wire::command_error::Variant::Message(wire::ResultString {
                     value: Some(value),
@@ -41,14 +42,13 @@ mod errors_tests;
 
 #[derive(Debug)]
 pub(crate) struct CommandFailure {
-    pub(crate) kind: crate::domain::failure::FailureKind,
+    pub(crate) kind: connectrpc::ErrorCode,
     pub(crate) detail: wire::CommandError,
 }
 impl From<crate::adaptor::presenter::error::AppError> for CommandFailure {
     fn from(error: crate::adaptor::presenter::error::AppError) -> Self {
-        use crate::domain::failure::ClassifiedFailure;
         Self {
-            kind: error.failure_kind(),
+            kind: error.connect_code(),
             detail: error.into(),
         }
     }
@@ -71,7 +71,7 @@ impl wire::ClientValue for CommandFailure {
 impl From<crate::usecase::application_startup::ApplicationUnavailable> for CommandFailure {
     fn from(error: crate::usecase::application_startup::ApplicationUnavailable) -> Self {
         Self {
-            kind: crate::domain::failure::FailureKind::StateRequired,
+            kind: error.connect_code(),
             detail: error.into(),
         }
     }

@@ -1,4 +1,3 @@
-use crate::domain::failure::ClassifiedFailure;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -58,14 +57,10 @@ pub(crate) struct LocalAgentSessionRepository {
 
 pub(super) fn map_commit_batch_error(error: CommitBatchError) -> AgentSessionRepositoryError {
     match error {
-        CommitBatchError::StreamHeadConflict { .. } => AgentSessionRepositoryError::Conflict,
-        error => match error.failure_kind() {
-            crate::domain::failure::FailureKind::Temporary => {
-                AgentSessionRepositoryError::Unavailable
-            }
-            crate::domain::failure::FailureKind::Corrupt => AgentSessionRepositoryError::Corrupt,
-            kind => AgentSessionRepositoryError::Store(kind),
-        },
+        CommitBatchError::StreamHeadConflict { .. } | CommitBatchError::TreeHeadConflict => {
+            AgentSessionRepositoryError::Conflict
+        }
+        error => AgentSessionRepositoryError::Store(error.into()),
     }
 }
 
@@ -538,7 +533,7 @@ impl AgentSessionRepository for LocalAgentSessionRepository {
                 crate::adaptor::gateway::repository::worktree::find_main_repo_path(
                     session.worktree_path(),
                 )
-                .map_err(|error| AgentSessionRepositoryError::Store(error.failure_kind()))?,
+                .map_err(|error| AgentSessionRepositoryError::Store(error.into()))?,
             )
             .map_err(|_| AgentSessionRepositoryError::Corrupt)?;
             for (index, (meta, fact)) in root_facts.into_facts().into_iter().enumerate() {
@@ -901,7 +896,13 @@ pub(super) fn map_ownership_error(
         }
         AgentSessionRepositoryError::Corrupt => AgentSessionHistoryGatewayError::Corrupt,
         AgentSessionRepositoryError::Unavailable => AgentSessionHistoryGatewayError::Unavailable,
-        error => AgentSessionHistoryGatewayError::Store(error.failure_kind()),
+        AgentSessionRepositoryError::Conflict => AgentSessionHistoryGatewayError::Conflict,
+        AgentSessionRepositoryError::ProviderSessionAlreadyOwned { agent_session_id } => {
+            AgentSessionHistoryGatewayError::ProviderSessionAlreadyOwned { agent_session_id }
+        }
+        AgentSessionRepositoryError::Store(failure) => {
+            AgentSessionHistoryGatewayError::Store(failure)
+        }
     }
 }
 

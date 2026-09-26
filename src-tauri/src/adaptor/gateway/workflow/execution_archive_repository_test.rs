@@ -560,7 +560,7 @@ async fn test_repository所属の復元_フォルダ消失済みでも旧隔離w
 #[tokio::test]
 async fn test_archive読取_実経路で失敗分類を保持する() {
     use crate::adaptor::gateway::local_event_store::test_helpers::ReadFailure;
-    use crate::adaptor::protocol::connect::classified_error;
+    use crate::adaptor::presenter::connect::classified_error;
     // Given
     let (_directory, store, repository, meta) = fixture();
     let id = ExecutionTreeId::new(meta.tree_id.clone()).unwrap();
@@ -598,10 +598,10 @@ async fn test_archive読取_実経路で失敗分類を保持する() {
 
 #[tokio::test]
 async fn test_archive候補_repo補完の期限と取消を保持し次のpathへ進まない() {
+    use crate::adaptor::presenter::connect::ConnectFailure;
     use crate::common::operation_context::{
         Cancellation, Deadline, OperationContext, OperationStopped,
     };
-    use crate::domain::failure::ClassifiedFailure;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
     struct CountCancelled(AtomicUsize);
@@ -659,7 +659,10 @@ async fn test_archive候補_repo補完の期限と取消を保持し次のpath�
         assert!(
             matches!(error, WorkflowError::Technical(ref stopped) if *stopped == expected.into())
         );
-        assert_eq!(error.failure_kind(), expected.failure_kind());
+        assert_eq!(
+            error.connect_code(),
+            crate::domain::failure::TechnicalFailure::from(expected).connect_code()
+        );
         assert_eq!(cancellation.0.load(Ordering::SeqCst), usize::from(!expire));
     }
 }

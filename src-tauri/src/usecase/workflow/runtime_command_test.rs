@@ -1,5 +1,5 @@
 use super::*;
-use crate::domain::failure::FailureKind;
+use crate::domain::failure::{StorageFailure, StorageFailureSource, TechnicalFailureNature};
 use crate::usecase::agent_session::{
     ExecutionTreeCache, ExecutionTreeCacheReleaseError, StartedExecutionTreeRegistrar,
     StartedExecutionTreeRegistrationError,
@@ -12,26 +12,49 @@ use crate::usecase::provider_lifecycle::{
 async fn test_workflow失敗_stopとcache解放と起動登録で元の分類を保持する() {
     // Given
     for error in [
-        WorkflowError::Technical(crate::common::operation_context::OperationStopped::Expired.into()),
-        WorkflowError::Technical(crate::common::operation_context::OperationStopped::Cancelled.into()),
+        WorkflowError::Technical(
+            crate::common::operation_context::OperationStopped::Expired.into(),
+        ),
+        WorkflowError::Technical(
+            crate::common::operation_context::OperationStopped::Cancelled.into(),
+        ),
         WorkflowError::External("internal".into()),
         WorkflowError::Editor(crate::domain::external_editor::EditorError::Launch(
             "launch".into(),
         )),
-        WorkflowError::StorageUnavailable {
-            message: "busy".into(),
-            kind: FailureKind::Temporary,
-        },
-        WorkflowError::StorageUnavailable {
-            message: "expired".into(),
-            kind: FailureKind::Expired,
-        },
-        WorkflowError::StorageUnavailable {
-            message: "repair".into(),
-            kind: FailureKind::StateRequired,
-        },
+        WorkflowError::Store(
+            crate::domain::failure::StorageFailure::from(
+                crate::domain::local_event::CommitBatchError::QueueBusy,
+            )
+            .with_message("busy"),
+        ),
+        WorkflowError::Store(
+            crate::domain::failure::StorageFailure::from(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
+                    message: "failure".into(),
+                },
+            )
+            .with_message("expired"),
+        ),
+        WorkflowError::Store(
+            crate::domain::failure::StorageFailure::from(
+                crate::domain::local_event::CommitBatchError::PayloadConflict,
+            )
+            .with_message("repair"),
+        ),
     ] {
-        let expected = error.failure_kind();
+        let expected = match &error {
+            WorkflowError::Store(failure) => failure.clone(),
+            error => StorageFailure {
+                nature: match error {
+                    WorkflowError::Technical(failure) => failure.nature,
+                    _ => TechnicalFailureNature::Other,
+                },
+                source: StorageFailureSource::Workflow(Box::new(error.clone())),
+                context: None,
+            },
+        };
         let gateway = Arc::new(FakeRuntimeGateway {
             failure: Some(error),
             ..Default::default()
@@ -51,18 +74,37 @@ async fn test_workflow失敗_stopとcache解放と起動登録で元の分類を
             },
             Vec::new(),
         );
-        if expected == FailureKind::Temporary {
-            assert!(tokio::time::timeout(std::time::Duration::from_millis(100), stop).await.is_err());
+        if expected.nature == TechnicalFailureNature::Transient {
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(100), stop)
+                    .await
+                    .is_err()
+            );
         } else {
-            assert_eq!(stop.await.unwrap_err().failure_kind(), expected);
+            assert_eq!(
+                stop.await.unwrap_err(),
+                crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError::Store(expected.clone())
+            );
         }
         assert_eq!(
-            ExecutionTreeCache::release_deleted_execution_tree(&usecase, "tree").await,
-            Err(ExecutionTreeCacheReleaseError::Store(expected))
+            match ExecutionTreeCache::release_deleted_execution_tree(&usecase, "tree")
+                .await
+                .unwrap_err()
+            {
+                ExecutionTreeCacheReleaseError::Store(failure) => failure,
+                error => panic!("unexpected error: {error:?}"),
+            },
+            expected
         );
         assert_eq!(
-            StartedExecutionTreeRegistrar::register_started_execution_tree(&usecase, "tree").await,
-            Err(StartedExecutionTreeRegistrationError::Store(expected))
+            match StartedExecutionTreeRegistrar::register_started_execution_tree(&usecase, "tree")
+                .await
+                .unwrap_err()
+            {
+                StartedExecutionTreeRegistrationError::Store(failure) => failure,
+                error => panic!("unexpected error: {error:?}"),
+            },
+            expected
         );
     }
 }

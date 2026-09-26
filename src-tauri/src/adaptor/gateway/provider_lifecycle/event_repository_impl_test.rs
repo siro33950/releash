@@ -1,8 +1,10 @@
 use super::*;
+use crate::adaptor::presenter::connect::ConnectFailure;
 use crate::domain::local_event::{
     DomainEventPage, LocalEventQuery, LocalEventQueryError, LocalEventQueryResult,
     SafeOperationFailure, SessionOperationFailureKind,
 };
+use connectrpc::ErrorCode;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 struct FailingRepository {
@@ -66,58 +68,51 @@ async fn test_確定照会_恒久失敗と期限切れと上位再試行は即�
     let cases = [
         (
             LocalEventQueryError::Technical(crate::domain::failure::TechnicalFailure {
-                kind: crate::domain::failure::FailureKind::Expired,
+                nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
                 message: "deadline exceeded".into(),
             }),
-            FailureKind::Expired,
+            ErrorCode::DeadlineExceeded,
         ),
         (
             LocalEventQueryError::Corrupt {
                 correlation_id: "corrupt".into(),
             },
-            FailureKind::Corrupt,
+            ErrorCode::DataLoss,
         ),
         (
             LocalEventQueryError::Internal {
                 correlation_id: "internal".into(),
             },
-            FailureKind::Internal,
+            ErrorCode::Internal,
         ),
         (
             LocalEventQueryError::InvalidRequest,
-            FailureKind::InvalidInput,
+            ErrorCode::InvalidArgument,
         ),
         (
             LocalEventQueryError::ResponseTooLarge,
-            FailureKind::Capacity,
+            ErrorCode::ResourceExhausted,
         ),
         (
             LocalEventQueryError::IncompatibleStoredEvent {
                 correlation_id: "version".into(),
             },
-            FailureKind::StateRequired,
+            ErrorCode::FailedPrecondition,
         ),
         (
-            LocalEventQueryError::StorageUnavailable {
+            LocalEventQueryError::StorageAccessRequired {
                 failure: SafeOperationFailure::new(
                     SessionOperationFailureKind::StorageUnavailable,
-                    crate::domain::failure::FailureKind::StateRequired,
+                    crate::domain::failure::TechnicalFailureNature::Other,
                     "repair required",
                     "fixed",
                 ),
             },
-            FailureKind::StateRequired,
+            ErrorCode::FailedPrecondition,
         ),
         (
-            LocalEventQueryError::StorageUnavailable {
-                failure: SafeOperationFailure::new(
-                    SessionOperationFailureKind::OutcomeUnknown,
-                    crate::domain::failure::FailureKind::RestartRequired,
-                    "resolve at caller",
-                    "unknown",
-                ),
-            },
-            FailureKind::RestartRequired,
+            LocalEventQueryError::CanonicalWriterRequired,
+            ErrorCode::Aborted,
         ),
     ];
     for (index, (error, expected)) in cases.into_iter().enumerate() {
@@ -131,13 +126,13 @@ async fn test_確定照会_恒久失敗と期限切れと上位再試行は即�
         let identity = CommitIdentity::parse(&format!("resolution-stop-{index}")).unwrap();
         let error = repository.resolve_bounded(&identity).await.unwrap_err();
         // Then
-        assert_eq!(error.failure_kind(), expected);
+        assert_eq!(error.connect_code(), expected);
         assert_eq!(source.calls.load(Ordering::SeqCst), 1);
         let error = repository
             .load_expected_heads(&[StreamId::application()])
             .await
             .unwrap_err();
-        assert_eq!(error.failure_kind(), expected);
+        assert_eq!(error.connect_code(), expected);
     }
 }
 
@@ -165,6 +160,7 @@ struct ConflictingAppendRepository {
     commits: AtomicUsize,
     reads: AtomicUsize,
     unknown: bool,
+    tree_conflict: bool,
     resolutions: AtomicUsize,
     identities: Mutex<Vec<CommitIdentity>>,
 }
@@ -192,8 +188,12 @@ impl LocalEventTransactionRepository for ConflictingAppendRepository {
             });
         }
         if !self.unknown && call < 5 {
-            return Err(CommitBatchError::StreamHeadConflict {
-                current: crate::domain::local_event::StreamVersion::zero(),
+            return Err(if self.tree_conflict {
+                CommitBatchError::TreeHeadConflict
+            } else {
+                CommitBatchError::StreamHeadConflict {
+                    current: crate::domain::local_event::StreamVersion::zero(),
+                }
             });
         }
         Ok(CommitBatchResult::Committed(
@@ -216,8 +216,8 @@ impl LocalEventTransactionRepository for ConflictingAppendRepository {
             Err(LocalEventQueryError::StorageUnavailable {
                 failure: SafeOperationFailure::new(
                     SessionOperationFailureKind::StorageUnavailable,
-                    FailureKind::RestartRequired,
-                    "reload",
+                    crate::domain::failure::TechnicalFailureNature::Transient,
+                    "resolution busy",
                     "test-restart",
                 ),
             })
@@ -246,23 +246,33 @@ impl LocalEventTransactionRepository for ConflictingAppendRepository {
 
 #[tokio::test]
 async fn test_lifecycle追記_保存競合は状態を再読込して上位から再試行する() {
-    // Given
-    let source = Arc::new(ConflictingAppendRepository::default());
-    let repository = test_repository(source.clone());
-    let event = ScopedProviderLifecycleEvent::new(
-        ProviderLifecycleScope::new("session").unwrap(),
-        crate::domain::provider_lifecycle::ProviderLifecycleEvent::stop_observed("binding")
-            .unwrap(),
-    );
-    // When
-    repository.append(vec![event]).await.unwrap();
-    // Then
-    assert_eq!(source.commits.load(Ordering::SeqCst), 6);
-    assert_eq!(source.reads.load(Ordering::SeqCst), 6);
-    let records = repository.queue.records("*").await;
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0].record.kind, FailureKind::RestartRequired);
-    assert_eq!(records[0].record.count, 5);
+    for tree_conflict in [false, true] {
+        // Given
+        let source = Arc::new(ConflictingAppendRepository {
+            tree_conflict,
+            ..Default::default()
+        });
+        let repository = test_repository(source.clone());
+        let event = ScopedProviderLifecycleEvent::new(
+            ProviderLifecycleScope::new("session").unwrap(),
+            crate::domain::provider_lifecycle::ProviderLifecycleEvent::stop_observed("binding")
+                .unwrap(),
+        );
+        // When
+        repository.append(vec![event]).await.unwrap();
+        // Then
+        assert_eq!(source.commits.load(Ordering::SeqCst), 6);
+        assert_eq!(source.reads.load(Ordering::SeqCst), 6);
+        let records = repository.queue.records("*").await;
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records[0].record.kind,
+            crate::domain::failure::Failure::Business(
+                crate::domain::failure::BusinessFailure::VersionConflict
+            )
+        );
+        assert_eq!(records[0].record.count, 5);
+    }
 }
 
 fn test_repository(
@@ -280,7 +290,7 @@ fn test_repository(
 }
 
 #[tokio::test]
-async fn test_確定照会のrestart_追記段階で確定状態とheadを再読込する() {
+async fn test_確定照会の一時失敗_確定状態を再確認して同じ追記を継続する() {
     for pending in [false, true] {
         let source = Arc::new(ConflictingAppendRepository {
             unknown: true,
@@ -301,7 +311,10 @@ async fn test_確定照会のrestart_追記段階で確定状態とheadを再読
             source.commits.store(1, Ordering::SeqCst);
         }
         repository.append(vec![event]).await.unwrap();
-        assert_eq!(source.resolutions.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            source.resolutions.load(Ordering::SeqCst),
+            if pending { 2 } else { 3 }
+        );
         assert_eq!(
             source.reads.load(Ordering::SeqCst),
             if pending { 1 } else { 2 }
@@ -309,9 +322,16 @@ async fn test_確定照会のrestart_追記段階で確定状態とheadを再読
         let identities = source.identities.lock().unwrap();
         assert!(identities.iter().all(|identity| identity == &identities[0]));
         let records = repository.queue.records("*").await;
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].record.kind, FailureKind::RestartRequired);
-        assert_eq!(records[0].record.count, 1);
+        assert_eq!(records.len(), if pending { 1 } else { 2 });
+        for record in records {
+            assert_eq!(
+                record.record.kind,
+                crate::domain::failure::Failure::Technical(
+                    crate::domain::failure::TechnicalFailureNature::Transient
+                )
+            );
+            assert_eq!(record.record.count, 1);
+        }
         assert!(repository.pending.lock().unwrap().is_empty());
     }
 }

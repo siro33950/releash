@@ -47,10 +47,12 @@ impl IsolatedWorktreeGateway for TestWorktrees {
             })
             .is_ok()
         {
-            return Err(crate::domain::workflow::WorkflowError::StorageUnavailable {
-                kind: crate::domain::failure::FailureKind::RestartRequired,
-                message: "creation failed".into(),
-            });
+            return Err(crate::domain::workflow::WorkflowError::Store(
+                crate::domain::failure::StorageFailure::from(
+                    crate::domain::local_event::CommitBatchError::TreeHeadConflict,
+                )
+                .with_message("creation failed"),
+            ));
         }
         Ok(())
     }

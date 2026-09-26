@@ -1,7 +1,8 @@
 use super::*;
 use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
 use crate::adaptor::gateway::workflow::test_support::seed_unavailable_definition;
-use crate::domain::failure::{ClassifiedFailure, FailureKind};
+use crate::adaptor::presenter::connect::ConnectFailure;
+use connectrpc::ErrorCode;
 
 #[tokio::test]
 async fn test_session読取_親と自身の実行定義を解釈せず接続情報を取得できる() {
@@ -101,37 +102,42 @@ async fn test_session読取_sql障害とroot欠損を区別する() {
         &error,
         SessionContextReadError::Read(LocalEventQueryError::Internal { .. })
     ));
-    assert_eq!(
-        AgentSessionRepositoryError::from(error),
-        AgentSessionRepositoryError::Store(FailureKind::Internal)
+    let repository_error = AgentSessionRepositoryError::from(error);
+    assert_eq!(repository_error.connect_code(), ErrorCode::Internal);
+    assert!(
+        matches!(repository_error, AgentSessionRepositoryError::Store(failure)
+        if failure.nature == crate::domain::failure::TechnicalFailureNature::Other
+        && matches!(failure.source, crate::domain::failure::StorageFailureSource::Query(LocalEventQueryError::Internal { .. })))
     );
-    assert_eq!(
-        AgentSessionQueryError::from(read_session_context(&backend, &location).await.unwrap_err()),
-        AgentSessionQueryError::Store(FailureKind::Internal)
-    );
+    let query_error =
+        AgentSessionQueryError::from(read_session_context(&backend, &location).await.unwrap_err());
+    assert_eq!(query_error.connect_code(), ErrorCode::Internal);
+    assert!(matches!(query_error, AgentSessionQueryError::Store(failure)
+        if failure.nature == crate::domain::failure::TechnicalFailureNature::Other
+        && matches!(failure.source, crate::domain::failure::StorageFailureSource::Query(LocalEventQueryError::Internal { .. }))));
 }
 
 #[test]
 fn test_session読取_混雑と期限切れをデータ破損扱いしない() {
     // Given
     for (error, expected) in [
-        (LocalEventQueryError::QueryBusy, FailureKind::Temporary),
+        (LocalEventQueryError::QueryBusy, ErrorCode::Unavailable),
         (
             LocalEventQueryError::Technical(crate::domain::failure::TechnicalFailure {
-                kind: crate::domain::failure::FailureKind::Expired,
+                nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
                 message: "deadline exceeded".into(),
             }),
-            FailureKind::Expired,
+            ErrorCode::DeadlineExceeded,
         ),
     ] {
         // When / Then
         assert_eq!(
             AgentSessionRepositoryError::from(SessionContextReadError::Read(error.clone()))
-                .failure_kind(),
+                .connect_code(),
             expected
         );
         assert_eq!(
-            AgentSessionQueryError::from(SessionContextReadError::Read(error)).failure_kind(),
+            AgentSessionQueryError::from(SessionContextReadError::Read(error)).connect_code(),
             expected
         );
     }
@@ -153,19 +159,19 @@ fn test_session読取_実効cwdの一時障害と破損をrepositoryとqueryへ�
     use crate::adaptor::gateway::workflow::worktree_context::WorktreeContextReadError;
     // Given
     for (error, expected) in [
-        (LocalEventQueryError::QueryBusy, FailureKind::Temporary),
+        (LocalEventQueryError::QueryBusy, ErrorCode::Unavailable),
         (
             LocalEventQueryError::Technical(crate::domain::failure::TechnicalFailure {
-                kind: crate::domain::failure::FailureKind::Expired,
+                nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
                 message: "deadline exceeded".into(),
             }),
-            FailureKind::Expired,
+            ErrorCode::DeadlineExceeded,
         ),
         (
             crate::adaptor::gateway::local_event_store::reader::storage_unavailable(
                 &rusqlite::Error::InvalidQuery,
             ),
-            FailureKind::Internal,
+            ErrorCode::Internal,
         ),
     ] {
         // When / Then
@@ -173,14 +179,14 @@ fn test_session読取_実効cwdの一時障害と破損をrepositoryとqueryへ�
             AgentSessionRepositoryError::from(SessionContextReadError::from(
                 WorktreeContextReadError::Read(error.clone())
             ))
-            .failure_kind(),
+            .connect_code(),
             expected
         );
         assert_eq!(
             AgentSessionQueryError::from(SessionContextReadError::from(
                 WorktreeContextReadError::Read(error)
             ))
-            .failure_kind(),
+            .connect_code(),
             expected
         );
     }

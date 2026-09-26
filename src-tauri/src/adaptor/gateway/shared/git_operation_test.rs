@@ -43,7 +43,7 @@ fn test_git操作_期限切れではステージもブランチ作成も実行�
             crate::adaptor::gateway::code::staging::git_stage("/missing", vec![]),
             Err(crate::domain::code::CodeError::Technical(
                 crate::domain::failure::TechnicalFailure {
-                    kind: crate::domain::failure::FailureKind::Expired,
+                    nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
                     ..
                 }
             ))
@@ -52,7 +52,7 @@ fn test_git操作_期限切れではステージもブランチ作成も実行�
             crate::adaptor::gateway::repository::branch::git_create_branch("/missing", "branch"),
             Err(crate::domain::repository::RepositoryError::Technical(
                 crate::domain::failure::TechnicalFailure {
-                    kind: crate::domain::failure::FailureKind::Expired,
+                    nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
                     ..
                 }
             ))

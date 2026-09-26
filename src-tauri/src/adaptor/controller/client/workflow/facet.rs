@@ -8,8 +8,9 @@ fn parse_domain_facet_kind(kind: &str) -> Result<FacetKind, AppError> {
         "policy" => Ok(FacetKind::Policy),
         "knowledge" => Ok(FacetKind::Knowledge),
         "instruction" => Ok(FacetKind::Instruction),
-        _ => Err(AppError::new(format!("Unknown facet kind: {kind}"))
-            .with_failure_kind(crate::domain::failure::FailureKind::InvalidInput)),
+        _ => Err(AppError::invalid_request(format!(
+            "Unknown facet kind: {kind}"
+        ))),
     }
 }
 

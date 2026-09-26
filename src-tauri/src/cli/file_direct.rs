@@ -66,16 +66,18 @@ async fn ensure_execution_exists(
 
 fn workflow_error_to_cli_error(error: WorkflowError) -> CliError {
     match error {
-        WorkflowError::Technical(_) | WorkflowError::Editor(_) | WorkflowError::Store(_) => {
+        WorkflowError::Technical(_) | WorkflowError::Editor(_) => {
             CliError::Other(error.to_string())
         }
+        WorkflowError::Store(failure) => CliError::Other(
+            crate::adaptor::presenter::error::workflow_storage_message(&failure),
+        ),
         WorkflowError::NotFound(message) => CliError::NotFound(message),
         WorkflowError::Validation(message)
         | WorkflowError::InvalidState(message)
         | WorkflowError::UnauthorizedApprovalTarget(message) => CliError::InvalidInput(message),
         WorkflowError::Conflict(message) => CliError::Other(message),
         WorkflowError::External(message)
-        | WorkflowError::StorageUnavailable { message, .. }
         | WorkflowError::CorruptStoredState(message)
         | WorkflowError::IncompatibleStoredEvent(message) => CliError::Other(message),
     }

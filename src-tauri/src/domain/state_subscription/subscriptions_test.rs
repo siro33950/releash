@@ -209,23 +209,6 @@ fn test_再開_送り待ちが溢れても保持した版以降だけを再生�
 }
 
 #[test]
-fn test_失敗分類_subscription_error_理由に対応する() {
-    use crate::domain::failure::{ClassifiedFailure, FailureKind as F};
-    // Given
-    let cases = [
-        (SubscriptionError::InvalidId, F::InvalidInput),
-        (SubscriptionError::AlreadyExists, F::AlreadyPresent),
-        (SubscriptionError::StreamEnded, F::Missing),
-        (SubscriptionError::UnknownTarget, F::Missing),
-        (SubscriptionError::VersionExhausted, F::Internal),
-    ];
-    for (error, expected) in cases {
-        // When / Then
-        assert_eq!(error.failure_kind(), expected, "{error:?}");
-    }
-}
-
-#[test]
 fn test_監視_共有する購読が全て終了したときだけ不要になる() {
     // Given
     let mut state = registry();

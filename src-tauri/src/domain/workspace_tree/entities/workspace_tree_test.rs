@@ -2246,19 +2246,8 @@ fn test_背景処理の失敗_対象の要対応と理由を既存状態へ反�
         }],
     )
     .unwrap();
-    let before = tree.clone();
-    // When / Then
-    tree.observe_background_failure(
-        "00000000-0000-4000-8000-000000000743",
-        crate::domain::failure::FailureKind::Cancelled,
-        "cancelled",
-    );
-    assert_eq!(tree, before);
-    tree.observe_background_failure(
-        "00000000-0000-4000-8000-000000000743",
-        crate::domain::failure::FailureKind::StateRequired,
-        "repair",
-    );
+    // When
+    tree.observe_background_failure("00000000-0000-4000-8000-000000000743", "repair");
     let node = tree.nodes().first().unwrap();
     assert_eq!(
         node.status_classification,
@@ -2317,11 +2306,7 @@ fn test_背景処理の失敗_既存分類で子から祖先へ要対応を集�
         },
     ];
     WorkspaceTreeProjector::project(&mut tree, facts).unwrap();
-    tree.observe_background_failure(
-        "failed-leaf",
-        crate::domain::failure::FailureKind::StateRequired,
-        "repair",
-    );
+    tree.observe_background_failure("failed-leaf", "repair");
     for id in ["failed-leaf", "inner-fanout", "outer-sequence"] {
         let node = tree
             .nodes()

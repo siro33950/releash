@@ -1,3 +1,4 @@
+use crate::domain::failure::{BusinessFailure, Failure, TechnicalFailureNature};
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
@@ -111,7 +112,7 @@ fn test_ターミナル復元点定期保存_失敗後は追加出力なしで�
             changed.notify_all();
             if *attempts == 1 {
                 Err(crate::usecase::work_queue::WorkFailure {
-                    kind: crate::domain::failure::FailureKind::Temporary,
+                    kind: Failure::Technical(TechnicalFailureNature::Transient),
                     message: "temporary storage failure".to_string(),
                 })
             } else {
@@ -155,15 +156,14 @@ fn spawn_scheduler(
 
 #[tokio::test(start_paused = true)]
 async fn test_ターミナル復元点_停止分類の失敗後は新しい出力だけで保存を再開する() {
-    use crate::domain::failure::{FailureKind, RetryAction};
     use crate::usecase::work_queue::WorkFailure;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     for kind in [
-        FailureKind::Internal,
-        FailureKind::StateRequired,
-        FailureKind::Cancelled,
-        FailureKind::Expired,
+        Failure::Technical(TechnicalFailureNature::Other),
+        Failure::Business(BusinessFailure::Other),
+        Failure::Technical(TechnicalFailureNature::Cancelled),
+        Failure::Technical(TechnicalFailureNature::TimedOut),
     ] {
         // Given
         let queue = crate::usecase::work_queue::work_queue_tests::queue();
@@ -194,11 +194,11 @@ async fn test_ターミナル復元点_停止分類の失敗後は新しい出�
         scheduler.mark_dirty();
         tokio::time::sleep(Duration::from_secs(1)).await;
         // When / Then
-        assert_eq!(kind.retry_action(), RetryAction::Stop);
+        assert_eq!(crate::usecase::work_queue::next_attempt(kind), None);
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
         assert_eq!(
             queue.records("terminal").await[0].requires_attention,
-            kind.requires_attention()
+            kind != Failure::Technical(TechnicalFailureNature::Cancelled)
         );
         tokio::time::sleep(Duration::from_secs(60)).await;
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
@@ -215,7 +215,6 @@ async fn test_ターミナル復元点_停止分類の失敗後は新しい出�
 
 #[tokio::test(start_paused = true)]
 async fn test_ターミナル復元点_保存中の新しい出力は停止分類の失敗でも失わない() {
-    use crate::domain::failure::FailureKind;
     use crate::usecase::work_queue::WorkFailure;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -242,7 +241,7 @@ async fn test_ターミナル復元点_保存中の新しい出力は停止分�
                         entered.notify_one();
                         release.notified().await;
                         Err(WorkFailure {
-                            kind: FailureKind::Internal,
+                            kind: Failure::Technical(TechnicalFailureNature::Other),
                             message: "failed checkpoint".into(),
                         })
                     } else {

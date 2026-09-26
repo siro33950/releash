@@ -7,9 +7,9 @@ use crate::domain::agent_session::repository::{
 
 use super::AgentSessionChangeNotifier;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AgentSessionRenameError {
-    Store(crate::domain::failure::FailureKind),
+    Store(crate::domain::failure::StorageFailure),
     NotFound,
     InvalidOperation,
     Conflict,
@@ -91,21 +91,6 @@ fn map_repository_error(error: AgentSessionRepositoryError) -> AgentSessionRenam
         AgentSessionRepositoryError::Store(kind) => AgentSessionRenameError::Store(kind),
         AgentSessionRepositoryError::Corrupt => AgentSessionRenameError::Corrupt,
         AgentSessionRepositoryError::Unavailable => AgentSessionRenameError::Unavailable,
-    }
-}
-
-impl crate::domain::failure::ClassifiedFailure for AgentSessionRenameError {
-    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
-        use crate::domain::failure::FailureKind;
-        match self {
-            Self::Store(kind) => *kind,
-            Self::NotFound => FailureKind::Missing,
-            Self::InvalidOperation => FailureKind::StateRequired,
-            Self::Conflict => FailureKind::RestartRequired,
-            Self::ProviderSessionAlreadyOwned => FailureKind::StateRequired,
-            Self::Unavailable => FailureKind::Temporary,
-            Self::Corrupt => FailureKind::Corrupt,
-        }
     }
 }
 

@@ -2,7 +2,7 @@ mod reads;
 #[cfg(test)]
 pub(crate) use reads::reads_tests::Fixture as StateReadsFixture;
 pub(crate) use reads::StateSubscriptionRead;
-pub(crate) use reads::{StateReadError, WorkspaceStateReads};
+pub(crate) use reads::{StateReadError, StateReadFailure, WorkspaceStateReads};
 mod terminal;
 mod value;
 use crate::domain::state_subscription::{
@@ -112,12 +112,8 @@ impl StateSubscriptionUsecase {
         raw: &str,
         version: Option<&Version>,
     ) -> Result<(), StateReadError> {
-        use crate::domain::failure::ClassifiedFailure;
         use crate::domain::state_subscription::{StateChangeSource, SubscriptionTarget};
-        let convert = |e: SubscriptionError| StateReadError {
-            kind: e.failure_kind(),
-            message: e.to_string(),
-        };
+        let convert = StateReadError::from_error;
         let target = SubscriptionTarget::parse(raw).map_err(convert)?;
         if let SubscriptionTarget::Terminal(_) = &target {
             return self.start_terminal(client, raw, version, client).await;
@@ -220,7 +216,6 @@ impl StateSubscriptionUsecase {
     }
 
     fn reconcile_watches(&self) -> Result<(), StateReadError> {
-        use crate::domain::failure::ClassifiedFailure;
         let mut failure = None;
         if let (Some(reads), Some(watcher)) = (&self.reads, &self.watchers) {
             let mut watches = self.watches.lock();
@@ -251,10 +246,7 @@ impl StateSubscriptionUsecase {
                     }
                     Err(error) => {
                         self.publisher.state.lock().watch_failed(&requirement);
-                        failure = Some(StateReadError {
-                            kind: error.failure_kind(),
-                            message: error.to_string(),
-                        });
+                        failure = Some(StateReadError::from_error(error));
                     }
                 }
             }

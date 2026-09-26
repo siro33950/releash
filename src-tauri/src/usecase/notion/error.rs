@@ -61,18 +61,3 @@ mod notion_usecase_error_tests {
         assert_eq!(error.to_string(), "API エラー: HTTP 500");
     }
 }
-
-impl crate::domain::failure::ClassifiedFailure for NotionUsecaseError {
-    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
-        use crate::domain::failure::FailureKind as F;
-        match self {
-            Self::ConfigNotFound => F::StateRequired,
-            Self::AppConfig(error) => error.failure_kind(),
-            Self::Notion(error) => error.failure_kind(),
-        }
-    }
-}
-
-#[cfg(test)]
-#[path = "error_test.rs"]
-mod error_tests;

@@ -4,7 +4,7 @@ use super::{
     AgentSessionGarbageCollectionOutcome, AgentSessionGarbageCollectionPort, AgentSessionItemDto,
     AgentSessionLifecycleDto, AgentSessionLifecycleUsecaseError, AgentSessionOperationsDto,
     AgentSessionProviderDto, AgentSessionQueryError, AgentSessionQueryService,
-    AgentSessionReadUsecase, AgentSessionTreeLocationDto,
+    AgentSessionReadUsecase, AgentSessionReadUsecaseError, AgentSessionTreeLocationDto,
 };
 
 struct MutableSessionQuery {
@@ -145,87 +145,8 @@ fn test_agent_session_read_一覧itemのjsonからactivityを除きlastexitabnor
     assert_eq!(json["lastExitAbnormal"], true);
 }
 
-#[test]
-fn test_失敗分類_全変種と委譲した理由を保持する() {
-    use crate::domain::failure::{ClassifiedFailure, FailureKind as F};
-    use crate::usecase::agent_session::AgentSessionReadUsecaseError;
-    // Given
-    let cases = [
-        (
-            AgentSessionReadUsecaseError::InvalidRequest,
-            F::InvalidInput,
-        ),
-        (
-            AgentSessionReadUsecaseError::StorageUnavailable,
-            F::Temporary,
-        ),
-        (
-            AgentSessionReadUsecaseError::TerminalUnavailable,
-            F::StateRequired,
-        ),
-        (AgentSessionReadUsecaseError::Corrupt, F::Corrupt),
-        (
-            AgentSessionReadUsecaseError::Store(F::Temporary),
-            F::Temporary,
-        ),
-        (
-            AgentSessionReadUsecaseError::Store(F::RestartRequired),
-            F::RestartRequired,
-        ),
-        (
-            AgentSessionReadUsecaseError::Store(F::StateRequired),
-            F::StateRequired,
-        ),
-        (
-            AgentSessionReadUsecaseError::Store(F::InvalidInput),
-            F::InvalidInput,
-        ),
-        (AgentSessionReadUsecaseError::Store(F::Expired), F::Expired),
-        (AgentSessionReadUsecaseError::Store(F::Missing), F::Missing),
-        (
-            AgentSessionReadUsecaseError::Store(F::AlreadyPresent),
-            F::AlreadyPresent,
-        ),
-        (
-            AgentSessionReadUsecaseError::Store(F::Permission),
-            F::Permission,
-        ),
-        (
-            AgentSessionReadUsecaseError::Store(F::Capacity),
-            F::Capacity,
-        ),
-        (
-            AgentSessionReadUsecaseError::Store(F::Unsupported),
-            F::Unsupported,
-        ),
-        (
-            AgentSessionReadUsecaseError::Store(F::Internal),
-            F::Internal,
-        ),
-        (AgentSessionReadUsecaseError::Store(F::Corrupt), F::Corrupt),
-        (
-            AgentSessionReadUsecaseError::Store(F::Cancelled),
-            F::Cancelled,
-        ),
-        (AgentSessionReadUsecaseError::Store(F::Unknown), F::Unknown),
-        (
-            AgentSessionReadUsecaseError::Store(F::OutsideRange),
-            F::OutsideRange,
-        ),
-        (
-            AgentSessionReadUsecaseError::Store(F::AuthenticationRequired),
-            F::AuthenticationRequired,
-        ),
-    ];
-    for (error, expected) in cases {
-        // When / Then
-        assert_eq!(error.failure_kind(), expected, "{error:?}");
-    }
-}
-
 #[tokio::test]
 async fn test_session読取_所有済みとworkflow失敗をgc経由でも保持する() {
-    use crate::domain::failure::{ClassifiedFailure, FailureKind};
     struct FailingGc(AgentSessionLifecycleUsecaseError);
     #[async_trait::async_trait]
     impl AgentSessionGarbageCollectionPort for FailingGc {
@@ -240,13 +161,17 @@ async fn test_session読取_所有済みとworkflow失敗をgc経由でも保持
     }
     // Given
     for source in [
-        AgentSessionLifecycleUsecaseError::Conflict(FailureKind::StateRequired),
-        AgentSessionLifecycleUsecaseError::Conflict(FailureKind::RestartRequired),
+        AgentSessionLifecycleUsecaseError::Conflict(
+            (crate::domain::local_event::CommitBatchError::PayloadConflict).into(),
+        ),
+        AgentSessionLifecycleUsecaseError::Conflict(
+            (crate::domain::local_event::CommitBatchError::TreeHeadConflict).into(),
+        ),
         AgentSessionLifecycleUsecaseError::Workflow(
             crate::domain::workflow::WorkflowError::Validation("input".into()),
         ),
     ] {
-        let expected = source.failure_kind();
+        let expected = AgentSessionReadUsecaseError::Lifecycle(source.clone());
         let usecase = AgentSessionReadUsecase::new(
             std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
             Arc::new(MutableSessionQuery {
@@ -255,9 +180,6 @@ async fn test_session読取_所有済みとworkflow失敗をgc経由でも保持
             Arc::new(FailingGc(source)),
         );
         // When / Then
-        assert_eq!(
-            usecase.get("session").await.unwrap_err().failure_kind(),
-            expected
-        );
+        assert_eq!(usecase.get("session").await.unwrap_err(), expected);
     }
 }

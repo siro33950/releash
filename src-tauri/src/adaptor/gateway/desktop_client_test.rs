@@ -54,7 +54,7 @@ async fn test_接続監督_要求上限拒否が継続しても接続を維持�
             crate::adaptor::presenter::error::AppError::coded(
                 "CLIENT_REQUEST_LIMIT",
                 "Too many pending client commands",
-                crate::domain::failure::FailureKind::Capacity,
+                connectrpc::ErrorCode::ResourceExhausted,
             )
             .into(),
         ),
@@ -87,7 +87,7 @@ async fn test_ネイティブ要求_停止とログイン項目の具体的な�
         crate::adaptor::presenter::error::AppError::coded(
             "LOGIN_ITEM_SAVE_FAILED",
             "ログイン項目を保存できません",
-            crate::domain::failure::FailureKind::Internal,
+            connectrpc::ErrorCode::Internal,
         )
         .into(),
         wire::CommandError {
@@ -107,7 +107,7 @@ async fn test_ネイティブ要求_停止とログイン項目の具体的な�
         }
         .clone();
         let (endpoint, server, _) = error_server(command_error(wire::CommandFailure {
-            kind: crate::domain::failure::FailureKind::Internal,
+            kind: connectrpc::ErrorCode::Internal,
             detail,
         }))
         .await;

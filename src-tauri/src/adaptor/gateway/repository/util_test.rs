@@ -9,5 +9,8 @@ fn test_base解決_各候補の停止で次候補へ進まない() {
     create_initial_commit(&repo);
     let config = repo.config().unwrap();
     // When / Then
-    assert_stops_at_each_checkpoint(|| resolve_branch_base(&repo, Some(&config), "feature"));
+    assert_stops_at_each_checkpoint(|| {
+        resolve_branch_base(&repo, Some(&config), "feature")
+            .map_err(crate::domain::failure::TechnicalFailure::from)
+    });
 }

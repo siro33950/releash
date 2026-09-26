@@ -1,79 +1,14 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FailureKind {
-    Temporary,
-    RestartRequired,
-    StateRequired,
-    InvalidInput,
-    Expired,
-    Missing,
-    AlreadyPresent,
-    Permission,
-    Capacity,
-    Unsupported,
-    Internal,
-    Corrupt,
+pub enum TechnicalFailureNature {
+    Transient,
+    TimedOut,
     Cancelled,
-    Unknown,
-    OutsideRange,
-    AuthenticationRequired,
-}
-
-pub trait ClassifiedFailure {
-    fn failure_kind(&self) -> FailureKind;
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RetryAction {
-    Stop,
-    Retry,
-    Restart,
-}
-
-impl FailureKind {
-    pub fn retry_action(self) -> RetryAction {
-        match self {
-            Self::Temporary => RetryAction::Retry,
-            Self::RestartRequired => RetryAction::Restart,
-            _ => RetryAction::Stop,
-        }
-    }
-
-    pub fn requires_attention(self) -> bool {
-        self.retry_action() == RetryAction::Stop && self != Self::Cancelled
-    }
-}
-
-#[cfg(test)]
-#[path = "failure_test.rs"]
-mod failure_tests;
-
-#[derive(Default)]
-pub struct TargetFailures(std::collections::HashMap<(String, String), FailureKind>);
-impl TargetFailures {
-    pub fn observe(&mut self, operation: &str, target: &str, kind: FailureKind) -> bool {
-        if kind.requires_attention() {
-            self.0.insert((operation.into(), target.into()), kind) != Some(kind)
-        } else {
-            self.clear(operation, target)
-        }
-    }
-    pub fn clear(&mut self, operation: &str, target: &str) -> bool {
-        self.0.remove(&(operation.into(), target.into())).is_some()
-    }
-    pub fn requires_attention(&self, operation: &str, target: &str) -> bool {
-        self.0.contains_key(&(operation.into(), target.into()))
-    }
-}
-
-pub trait BackgroundFailures: Send {
-    fn observe(&mut self, target: &str, kind: FailureKind) -> bool;
-    fn clear(&mut self, target: &str) -> bool;
-    fn requires_attention(&self, target: &str) -> bool;
+    Other,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TechnicalFailure {
-    pub kind: FailureKind,
+    pub nature: TechnicalFailureNature,
     pub message: String,
 }
 impl std::fmt::Display for TechnicalFailure {
@@ -81,8 +16,72 @@ impl std::fmt::Display for TechnicalFailure {
         f.write_str(&self.message)
     }
 }
-impl ClassifiedFailure for TechnicalFailure {
-    fn failure_kind(&self) -> FailureKind {
-        self.kind
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BusinessFailure {
+    VersionConflict,
+    Other,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Failure {
+    Business(BusinessFailure),
+    Technical(TechnicalFailureNature),
+}
+
+#[cfg(test)]
+#[path = "failure_test.rs"]
+mod failure_tests;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StorageFailure {
+    pub nature: TechnicalFailureNature,
+    pub source: StorageFailureSource,
+    pub context: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StorageFailureSource {
+    Commit(crate::domain::local_event::CommitBatchError),
+    Query(crate::domain::local_event::LocalEventQueryError),
+    Technical(TechnicalFailure),
+    Workflow(Box<crate::domain::workflow::WorkflowError>),
+    Repository(crate::domain::repository::RepositoryError),
+    AgentSession(Box<crate::domain::agent_session::repository::AgentSessionRepositoryError>),
+}
+
+impl StorageFailure {
+    pub fn with_message(mut self, message: impl Into<String>) -> Self {
+        self.context = Some(message.into());
+        self
+    }
+
+    pub fn version_conflict(&self) -> Option<&str> {
+        match &self.source {
+            StorageFailureSource::Commit(error) if error.is_version_conflict() => {
+                self.context.as_deref().or(Some("store version conflict"))
+            }
+            StorageFailureSource::Workflow(error) => match error.as_ref() {
+                crate::domain::workflow::WorkflowError::Conflict(reason) => Some(reason),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for StorageFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.context {
+            Some(message) => f.write_str(message),
+            None => match &self.source {
+                StorageFailureSource::Commit(error) => error.fmt(f),
+                StorageFailureSource::Query(error) => error.fmt(f),
+                StorageFailureSource::Technical(error) => error.fmt(f),
+                StorageFailureSource::Workflow(error) => error.fmt(f),
+                StorageFailureSource::Repository(error) => error.fmt(f),
+                StorageFailureSource::AgentSession(error) => write!(f, "{error:?}"),
+            },
+        }
     }
 }

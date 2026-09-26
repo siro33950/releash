@@ -321,8 +321,8 @@ mod tests {
 
     #[test]
     fn test_session起動停止_分類をruntimeまで保持する() {
+        use crate::adaptor::presenter::connect::ConnectFailure;
         use crate::common::operation_context::OperationStopped;
-        use crate::domain::failure::ClassifiedFailure;
         // Given
         for stopped in [OperationStopped::Expired, OperationStopped::Cancelled] {
             // When
@@ -331,7 +331,10 @@ mod tests {
                 AgentSessionLaunchUsecaseError::Technical(stopped.into()),
             );
             // Then
-            assert_eq!(error.failure_kind(), stopped.failure_kind());
+            assert_eq!(
+                error.connect_code(),
+                crate::domain::failure::TechnicalFailure::from(stopped).connect_code()
+            );
         }
     }
 

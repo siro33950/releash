@@ -1,4 +1,8 @@
 use super::*;
+use crate::usecase::agent_session::{
+    AgentSessionLaunchUsecaseError, AgentSessionLifecycleUsecaseError,
+};
+use crate::usecase::provider_lifecycle::ProviderHookHealthUsecaseError;
 
 #[tokio::test(flavor = "current_thread")]
 async fn test_provider_availability_controller_blocking操作中もasync_runtimeを占有しない() {
@@ -122,7 +126,7 @@ fn test_agent_session_controller_対象21codeを利用者向け英語文言へ�
         ),
         (
             launch_error(
-                AgentSessionLaunchUsecaseError::Conflict(crate::domain::failure::FailureKind::RestartRequired),
+                AgentSessionLaunchUsecaseError::Conflict((crate::domain::local_event::CommitBatchError::TreeHeadConflict).into()),
                 AgentSessionLaunchOperation::Start,
             ),
             "AGENT_SESSION_CONFLICT",
@@ -231,7 +235,7 @@ fn test_agent_session_controller_操作依存codeを操作ごとの固定文言�
         ),
         (
             launch_error(
-                AgentSessionLaunchUsecaseError::Conflict(crate::domain::failure::FailureKind::RestartRequired),
+                AgentSessionLaunchUsecaseError::Conflict((crate::domain::local_event::CommitBatchError::TreeHeadConflict).into()),
                 AgentSessionLaunchOperation::Start,
             ),
             "AGENT_SESSION_CONFLICT",
@@ -239,14 +243,14 @@ fn test_agent_session_controller_操作依存codeを操作ごとの固定文言�
         ),
         (
             launch_error(
-                AgentSessionLaunchUsecaseError::Conflict(crate::domain::failure::FailureKind::RestartRequired),
+                AgentSessionLaunchUsecaseError::Conflict((crate::domain::local_event::CommitBatchError::TreeHeadConflict).into()),
                 AgentSessionLaunchOperation::ResumeHistory,
             ),
             "AGENT_SESSION_CONFLICT",
             "The AgentSession could not be resumed because it changed or its Provider session is already in use. Refresh and try again.",
         ),
         (
-            lifecycle_error(AgentSessionLifecycleUsecaseError::Conflict(crate::domain::failure::FailureKind::RestartRequired)),
+            lifecycle_error(AgentSessionLifecycleUsecaseError::Conflict((crate::domain::local_event::CommitBatchError::TreeHeadConflict).into())),
             "AGENT_SESSION_CONFLICT",
             "The AgentSession could not be updated because it changed or its Provider session is already in use. Refresh and try again.",
         ),
@@ -330,47 +334,50 @@ fn assert_coded_error(error: AppError, expected_code: &str, expected_message: &s
 #[test]
 fn test_provider失敗分類_表示コードの生成時に理由を保持する() {
     use super::ProviderTuiCodedError as E;
-    use crate::domain::failure::{ClassifiedFailure, FailureKind as F};
+    use crate::adaptor::presenter::connect::ConnectFailure;
+    use connectrpc::ErrorCode as F;
     // Given
     let cases = [
-        (E::ProviderAvailabilityInvalidExecutable, F::InvalidInput),
-        (E::ProviderAvailabilityConfigUnavailable, F::Temporary),
-        (E::ProviderAvailabilityRefreshUnavailable, F::Temporary),
-        (E::ProviderAvailabilityCorrupt, F::Corrupt),
+        (E::ProviderAvailabilityInvalidExecutable, F::InvalidArgument),
+        (E::ProviderAvailabilityConfigUnavailable, F::Unavailable),
+        (E::ProviderAvailabilityRefreshUnavailable, F::Unavailable),
+        (E::ProviderAvailabilityCorrupt, F::DataLoss),
         (
             E::AgentSessionInvalidProvider(super::ProviderParseOperation::Start),
-            F::InvalidInput,
+            F::InvalidArgument,
         ),
-        (E::AgentSessionProviderUnavailable, F::StateRequired),
+        (E::AgentSessionProviderUnavailable, F::FailedPrecondition),
         (
             E::AgentSessionInvalidInput(super::AgentSessionLaunchOperation::Start),
-            F::InvalidInput,
+            F::InvalidArgument,
         ),
         (
-            E::AgentSessionConflict(super::AgentSessionConflictOperation::Start),
-            F::RestartRequired,
+            E::AgentSessionConflict(
+                crate::adaptor::presenter::provider_tui::AgentSessionConflictOperation::Start,
+            ),
+            F::Aborted,
         ),
-        (E::AgentSessionStorageUnavailable, F::Temporary),
+        (E::AgentSessionStorageUnavailable, F::Unavailable),
         (
-            E::AgentSessionLaunchUnavailable(F::StateRequired),
-            F::StateRequired,
+            E::AgentSessionLaunchUnavailable(F::FailedPrecondition),
+            F::FailedPrecondition,
         ),
         (
-            E::AgentSessionTerminalUnavailable(F::StateRequired),
-            F::StateRequired,
+            E::AgentSessionTerminalUnavailable(F::FailedPrecondition),
+            F::FailedPrecondition,
         ),
-        (E::AgentSessionCorrupt, F::Corrupt),
-        (E::AgentSessionNotFound, F::Missing),
-        (E::AgentSessionInvalidOperation, F::StateRequired),
-        (E::ProviderHookHealthInvalidRequest, F::InvalidInput),
-        (E::ProviderHookHealthStorageUnavailable, F::Temporary),
-        (E::ProviderHookHealthCorrupt, F::Corrupt),
+        (E::AgentSessionCorrupt, F::DataLoss),
+        (E::AgentSessionNotFound, F::NotFound),
+        (E::AgentSessionInvalidOperation, F::FailedPrecondition),
+        (E::ProviderHookHealthInvalidRequest, F::InvalidArgument),
+        (E::ProviderHookHealthStorageUnavailable, F::Unavailable),
+        (E::ProviderHookHealthCorrupt, F::DataLoss),
     ];
     for (error, expected) in cases {
         // When
         let error = super::provider_tui_coded_error(error);
         // Then
-        assert_eq!(error.failure_kind(), expected);
+        assert_eq!(error.connect_code(), expected);
     }
 }
 
@@ -383,7 +390,7 @@ enum HistoryFailurePoint {
 
 struct FailingHistoryPorts {
     point: HistoryFailurePoint,
-    kind: crate::domain::failure::FailureKind,
+    kind: crate::domain::failure::StorageFailure,
 }
 
 #[async_trait::async_trait]
@@ -399,7 +406,9 @@ impl crate::domain::agent_session::AgentSessionHistoryGateway for FailingHistory
     > {
         if matches!(self.point, HistoryFailurePoint::Metadata) {
             return Err(
-                crate::domain::agent_session::AgentSessionHistoryGatewayError::Store(self.kind),
+                crate::domain::agent_session::AgentSessionHistoryGatewayError::Store(
+                    self.kind.clone(),
+                ),
             );
         }
         Ok(vec![
@@ -422,7 +431,7 @@ impl crate::domain::agent_session::AgentSessionHistoryGateway for FailingHistory
         crate::domain::agent_session::AgentSessionHistoryGatewayError,
     > {
         assert!(matches!(self.point, HistoryFailurePoint::Titles));
-        Err(crate::domain::agent_session::AgentSessionHistoryGatewayError::Store(self.kind))
+        Err(crate::domain::agent_session::AgentSessionHistoryGatewayError::Store(self.kind.clone()))
     }
 }
 
@@ -435,7 +444,9 @@ impl crate::domain::agent_session::AgentSessionOwnershipQuery for FailingHistory
     ) -> Result<bool, crate::domain::agent_session::AgentSessionHistoryGatewayError> {
         if matches!(self.point, HistoryFailurePoint::Ownership) {
             return Err(
-                crate::domain::agent_session::AgentSessionHistoryGatewayError::Store(self.kind),
+                crate::domain::agent_session::AgentSessionHistoryGatewayError::Store(
+                    self.kind.clone(),
+                ),
             );
         }
         Ok(false)
@@ -444,7 +455,7 @@ impl crate::domain::agent_session::AgentSessionOwnershipQuery for FailingHistory
 
 #[tokio::test]
 async fn test_履歴失敗分類_全gateway経路から購読を通じconnectへ保持する() {
-    use crate::domain::failure::{ClassifiedFailure, FailureKind as F};
+    use crate::adaptor::presenter::connect::ConnectFailure;
     use connectrpc::ErrorCode as C;
     // Given
     for point in [
@@ -453,11 +464,33 @@ async fn test_履歴失敗分類_全gateway経路から購読を通じconnectへ
         HistoryFailurePoint::Titles,
     ] {
         for (kind, expected) in [
-            (F::Expired, C::DeadlineExceeded),
-            (F::Corrupt, C::DataLoss),
-            (F::Temporary, C::Unavailable),
-            (F::RestartRequired, C::Aborted),
-            (F::StateRequired, C::FailedPrecondition),
+            (
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
+                    message: "timeout".into(),
+                }
+                .into(),
+                C::DeadlineExceeded,
+            ),
+            (
+                crate::domain::local_event::CommitBatchError::Corrupt {
+                    correlation_id: "id".into(),
+                }
+                .into(),
+                C::DataLoss,
+            ),
+            (
+                crate::domain::local_event::CommitBatchError::QueueBusy.into(),
+                C::Unavailable,
+            ),
+            (
+                crate::domain::local_event::CommitBatchError::AppendOutcomeUnknown.into(),
+                C::Aborted,
+            ),
+            (
+                crate::domain::local_event::CommitBatchError::PayloadConflict.into(),
+                C::FailedPrecondition,
+            ),
         ] {
             let ports = Arc::new(FailingHistoryPorts { point, kind });
             let query = Arc::new(
@@ -477,24 +510,25 @@ async fn test_履歴失敗分類_全gateway経路から購読を通じconnectへ
                 .await
                 .unwrap_err();
             // Then
-            assert_eq!(error.failure_kind(), kind, "{point:?}");
-            let connect = crate::adaptor::protocol::connect::classified_error(
+            assert_eq!(error.connect_code(), expected, "{point:?}");
+            let message = format!("{error:?}");
+            let connect = crate::adaptor::presenter::connect::classified_error(
                 crate::usecase::state_subscription::StateReadError {
-                    kind: error.failure_kind(),
-                    message: format!("{error:?}"),
+                    message: message.clone(),
+                    source: error.into(),
                 },
             );
             assert_eq!(connect.code, expected, "{point:?}");
-            assert_eq!(connect.failure_kind(), kind);
-            assert_eq!(connect.message, Some(format!("{error:?}")));
+            assert_eq!(connect.message, Some(message));
         }
     }
 }
 
 #[test]
 fn test_provider操作失敗_各経路の分類がconnectまで一致する() {
-    use crate::adaptor::protocol::connect::classified_error;
-    use crate::domain::failure::{ClassifiedFailure, FailureKind};
+    use crate::adaptor::presenter::connect::classified_error;
+    use crate::adaptor::presenter::connect::ConnectFailure;
+    use connectrpc::ErrorCode;
     // Given
     for error in [
         launch_error(
@@ -508,15 +542,17 @@ fn test_provider操作失敗_各経路の分類がconnectまで一致する() {
         ),
         lifecycle_error(AgentSessionLifecycleUsecaseError::TerminalUnavailable),
         launch_error(
-            AgentSessionLaunchUsecaseError::Conflict(FailureKind::StateRequired),
+            AgentSessionLaunchUsecaseError::Conflict(
+                (crate::domain::local_event::CommitBatchError::PayloadConflict).into(),
+            ),
             AgentSessionLaunchOperation::Start,
         ),
         lifecycle_error(AgentSessionLifecycleUsecaseError::Conflict(
-            FailureKind::StateRequired,
+            (crate::domain::local_event::CommitBatchError::PayloadConflict).into(),
         )),
     ] {
         // When / Then
-        assert_eq!(error.failure_kind(), FailureKind::StateRequired);
+        assert_eq!(error.connect_code(), ErrorCode::FailedPrecondition);
         assert_eq!(
             classified_error(error).code,
             connectrpc::ErrorCode::FailedPrecondition
@@ -526,7 +562,7 @@ fn test_provider操作失敗_各経路の分類がconnectまで一致する() {
 
 #[test]
 fn test_workflow失敗_session経由でも非storeの原因表示と分類を保持する() {
-    use crate::adaptor::protocol::connect::classified_error;
+    use crate::adaptor::presenter::connect::classified_error;
     use crate::domain::workflow::WorkflowError as W;
     // Given
     for (source, expected) in [
@@ -559,8 +595,8 @@ fn test_workflow失敗_session経由でも非storeの原因表示と分類を保
 
 #[test]
 fn test_provider起動準備_停止分類をrpcまで保持する() {
+    use crate::adaptor::presenter::connect::ConnectFailure;
     use crate::common::operation_context::OperationStopped;
-    use crate::domain::failure::ClassifiedFailure;
     // Given
     for stopped in [OperationStopped::Expired, OperationStopped::Cancelled] {
         // When
@@ -569,6 +605,9 @@ fn test_provider起動準備_停止分類をrpcまで保持する() {
             AgentSessionLaunchOperation::Start,
         );
         // Then
-        assert_eq!(error.failure_kind(), stopped.failure_kind());
+        assert_eq!(
+            error.connect_code(),
+            crate::domain::failure::TechnicalFailure::from(stopped).connect_code()
+        );
     }
 }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::domain::failure::{Failure, TechnicalFailureNature};
 
 #[test]
 fn test_ばらつき_uuidの固定bitに制限されず両側へ分散する() {
@@ -27,6 +28,9 @@ async fn test_借用する試行_20秒でexpiredを返してfutureを解放す�
     .expect("borrowed attempt must end at its 20 second deadline");
     // Then
     assert!(entered);
-    assert_eq!(result.unwrap_err().kind, FailureKind::Expired);
+    assert_eq!(
+        result.unwrap_err().kind,
+        Failure::Technical(TechnicalFailureNature::TimedOut)
+    );
     assert_eq!(started.elapsed(), Duration::from_secs(20));
 }

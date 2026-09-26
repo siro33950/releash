@@ -1,5 +1,5 @@
 use super::background_io;
-use crate::domain::failure::FailureKind;
+use crate::domain::failure::{BusinessFailure, Failure, TechnicalFailureNature};
 use crate::infrastructure::process::background_worker::{BackgroundWorker, FRAME_PREFIX};
 use crate::infrastructure::terminal::terminal_emulator::{
     NativeTerminalCheckpoint, NativeTerminalCheckpointRecord, TerminalCheckpointFileStore,
@@ -31,30 +31,30 @@ pub(crate) enum Request {
 }
 
 #[derive(Serialize, Deserialize)]
-#[serde(remote = "FailureKind")]
-enum FailureKindWire {
-    Temporary,
-    RestartRequired,
-    StateRequired,
-    InvalidInput,
-    Expired,
-    Missing,
-    AlreadyPresent,
-    Permission,
-    Capacity,
-    Unsupported,
-    Internal,
-    Corrupt,
+#[serde(remote = "Failure")]
+enum FailureWire {
+    Business(#[serde(with = "BusinessFailureWire")] BusinessFailure),
+    Technical(#[serde(with = "TechnicalFailureNatureWire")] TechnicalFailureNature),
+}
+#[derive(Serialize, Deserialize)]
+#[serde(remote = "BusinessFailure")]
+enum BusinessFailureWire {
+    VersionConflict,
+    Other,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(remote = "TechnicalFailureNature")]
+enum TechnicalFailureNatureWire {
+    Transient,
+    TimedOut,
     Cancelled,
-    Unknown,
-    OutsideRange,
-    AuthenticationRequired,
+    Other,
 }
 
 #[derive(Serialize, Deserialize)]
 pub(crate) struct WorkerFailure {
-    #[serde(with = "FailureKindWire")]
-    kind: FailureKind,
+    #[serde(with = "FailureWire")]
+    kind: Failure,
     message: String,
 }
 impl From<WorkFailure> for WorkerFailure {
@@ -108,7 +108,7 @@ pub(crate) async fn execute<T: serde::de::DeserializeOwned>(
 
 fn encoding_failure(error: serde_json::Error) -> WorkFailure {
     WorkFailure {
-        kind: FailureKind::Internal,
+        kind: Failure::Technical(TechnicalFailureNature::Other),
         message: error.to_string(),
     }
 }
@@ -145,7 +145,7 @@ pub(crate) fn serve(
                     watcher
                         .as_mut()
                         .ok_or_else(|| WorkFailure {
-                            kind: FailureKind::StateRequired,
+                            kind: Failure::Business(BusinessFailure::Other),
                             message: "watcher is not started".into(),
                         })?
                         .poll()

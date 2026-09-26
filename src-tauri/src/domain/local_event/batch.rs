@@ -82,7 +82,7 @@ pub enum CommitBatchResult {
     Replayed(CommittedBatch),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommitBatchError {
     Technical(crate::domain::failure::TechnicalFailure),
     /// Same idempotency key or unique record key with a different canonical
@@ -106,6 +106,9 @@ pub enum CommitBatchError {
     StorageUnavailable {
         failure: SafeOperationFailure,
     },
+    StorageAccessRequired {
+        failure: SafeOperationFailure,
+    },
     /// COMMIT was started but the result could not be confirmed. Resolve with
     /// `resolve_commit` or a retry of the same batch; never a new identity.
     OutcomeUnknown {
@@ -115,6 +118,15 @@ pub enum CommitBatchError {
     Corrupt {
         correlation_id: String,
     },
+}
+
+impl CommitBatchError {
+    pub fn is_version_conflict(&self) -> bool {
+        matches!(
+            self,
+            Self::StreamHeadConflict { .. } | Self::TreeHeadConflict
+        )
+    }
 }
 
 impl fmt::Display for CommitBatchError {
@@ -134,7 +146,9 @@ impl fmt::Display for CommitBatchError {
             Self::AppendOutcomeUnknown => write!(f, "node event write outcome is unknown"),
             Self::CapacityExceeded => write!(f, "batch capacity exceeded"),
             Self::SequenceExhausted => write!(f, "sequence space exhausted"),
-            Self::StorageUnavailable { failure } => write!(f, "storage unavailable: {failure}"),
+            Self::StorageUnavailable { failure } | Self::StorageAccessRequired { failure } => {
+                write!(f, "storage unavailable: {failure}")
+            }
             Self::OutcomeUnknown { identity } => {
                 write!(f, "commit outcome unknown for {}", identity.as_str())
             }
@@ -153,26 +167,6 @@ impl std::error::Error for CommitBatchError {}
 pub enum CommitResolution {
     Committed(CommittedBatch),
     NotCommitted,
-}
-
-impl crate::domain::failure::ClassifiedFailure for CommitBatchError {
-    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
-        use crate::domain::failure::FailureKind;
-        match self {
-            Self::Technical(error) => {
-                crate::domain::failure::ClassifiedFailure::failure_kind(error)
-            }
-            Self::PayloadConflict => FailureKind::StateRequired,
-            Self::QueueBusy => FailureKind::Temporary,
-            Self::StreamHeadConflict { .. }
-            | Self::OutcomeUnknown { .. }
-            | Self::TreeHeadConflict
-            | Self::AppendOutcomeUnknown => FailureKind::RestartRequired,
-            Self::CapacityExceeded | Self::SequenceExhausted => FailureKind::Capacity,
-            Self::StorageUnavailable { failure } => failure.failure_kind(),
-            Self::Corrupt { .. } => FailureKind::Corrupt,
-        }
-    }
 }
 
 #[cfg(test)]

@@ -88,7 +88,7 @@ impl ProviderSessionTitleIngestionUsecase {
                         let progress = progress.clone();
                         Box::pin(async move {
                             let mut progress = progress.lock().await;
-                            if action == crate::domain::failure::RetryAction::Restart {
+                            if action == crate::usecase::work_queue::AttemptProgress::Reload {
                                 *progress = TitleAttempt::default();
                             }
                             this.ingest_session(&id, &mut progress).await?;

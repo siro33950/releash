@@ -3,7 +3,7 @@ use crate::domain::provider_lifecycle::ScopedProviderLifecycleEvent;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentSessionRepositoryError {
-    Store(crate::domain::failure::FailureKind),
+    Store(crate::domain::failure::StorageFailure),
     Conflict,
     ProviderSessionAlreadyOwned { agent_session_id: String },
     InvalidRequest,
@@ -101,33 +101,3 @@ pub trait AgentSessionRepository: Send + Sync {
         caller_request_id: &str,
     ) -> Result<(), AgentSessionRepositoryError>;
 }
-
-impl crate::domain::failure::ClassifiedFailure for AgentSessionRepositoryError {
-    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
-        use crate::domain::failure::FailureKind;
-        match self {
-            Self::Store(kind) => *kind,
-            Self::Conflict => FailureKind::RestartRequired,
-            Self::ProviderSessionAlreadyOwned { .. } => FailureKind::StateRequired,
-            Self::InvalidRequest => FailureKind::InvalidInput,
-            Self::Corrupt => FailureKind::Corrupt,
-            Self::Unavailable => FailureKind::Temporary,
-        }
-    }
-}
-
-impl From<crate::domain::local_event::LocalEventQueryError> for AgentSessionRepositoryError {
-    fn from(error: crate::domain::local_event::LocalEventQueryError) -> Self {
-        use crate::domain::failure::ClassifiedFailure;
-        match error.failure_kind() {
-            crate::domain::failure::FailureKind::Temporary => Self::Unavailable,
-            crate::domain::failure::FailureKind::InvalidInput => Self::InvalidRequest,
-            crate::domain::failure::FailureKind::Corrupt => Self::Corrupt,
-            kind => Self::Store(kind),
-        }
-    }
-}
-
-#[cfg(test)]
-#[path = "repository_test.rs"]
-mod repository_tests;

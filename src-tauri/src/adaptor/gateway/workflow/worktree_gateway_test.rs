@@ -214,8 +214,9 @@ fn test_隔離生成確認_同名登録でもpathまたはrepositoryが違えば
 
 #[test]
 fn test_隔離worktree_全入口で期限切れと取り消しの分類を保持する() {
+    use crate::adaptor::presenter::connect::ConnectFailure;
     use crate::common::operation_context::{Deadline, OperationContext};
-    use crate::domain::failure::{ClassifiedFailure, FailureKind};
+    use connectrpc::ErrorCode;
     use std::sync::Arc;
     use std::time::Instant;
     // Given
@@ -227,28 +228,28 @@ fn test_隔離worktree_全入口で期限切れと取り消しの分類を保持
     for (context, expected) in [
         (
             OperationContext::new(None, Arc::new(token)),
-            FailureKind::Cancelled,
+            ErrorCode::Canceled,
         ),
         (
             OperationContext::default().with_deadline(Deadline::new(Instant::now())),
-            FailureKind::Expired,
+            ErrorCode::DeadlineExceeded,
         ),
     ] {
         // When / Then
         crate::common::operation_context::sync_scope(context, || {
             assert_eq!(
-                gateway.repository_root(&root).unwrap_err().failure_kind(),
+                gateway.repository_root(&root).unwrap_err().connect_code(),
                 expected
             );
             assert_eq!(
                 gateway
                     .is_created(&root, &worktree)
                     .unwrap_err()
-                    .failure_kind(),
+                    .connect_code(),
                 expected
             );
             assert_eq!(
-                gateway.create(&root, &worktree).unwrap_err().failure_kind(),
+                gateway.create(&root, &worktree).unwrap_err().connect_code(),
                 expected
             );
         });
@@ -305,7 +306,7 @@ fn test_隔離生成確認_validateの停止を後続のパス検証エラーへ
         result,
         Err(WorkflowError::Technical(
             crate::domain::failure::TechnicalFailure {
-                kind: crate::domain::failure::FailureKind::Cancelled,
+                nature: crate::domain::failure::TechnicalFailureNature::Cancelled,
                 ..
             }
         ))

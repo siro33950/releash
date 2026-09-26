@@ -243,7 +243,7 @@ async fn test_実workflow更新_一括停止と旧daemon終了から適用と新
             if failures["items"].as_array().unwrap().iter().any(|record| {
                 record["target"] == startup_probe
                     && record["operation"] == "workflow_recovery"
-                    && record["classification"] == "StateRequired"
+                    && record["classification"] == "BusinessFailure"
                     && record["requiresAttention"] == true
             }) {
                 break;

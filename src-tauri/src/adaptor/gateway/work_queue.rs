@@ -1,4 +1,4 @@
-use crate::domain::failure::FailureKind;
+use crate::domain::failure::{Failure, TechnicalFailureNature};
 use crate::usecase::work_queue::{Attempt, WorkFailure, WorkQueueRuntime};
 use std::future::Future;
 use std::pin::Pin;
@@ -64,7 +64,7 @@ impl WorkQueueRuntime for TokioWorkQueueRuntime {
                     format!("試行の期限（20秒）を超えました: {error}")
                 };
                 Err(WorkFailure {
-                    kind: FailureKind::Expired,
+                    kind: Failure::Technical(TechnicalFailureNature::TimedOut),
                     message,
                 })
             })
@@ -83,7 +83,8 @@ pub(crate) async fn retry<T, E, F, Fut>(
     restart: bool,
 ) -> Result<T, E>
 where
-    E: crate::domain::failure::ClassifiedFailure + std::fmt::Debug,
+    E: std::fmt::Debug,
+    for<'a> Failure: From<&'a E>,
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<T, E>>,
 {

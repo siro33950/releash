@@ -881,7 +881,7 @@ mod tests {
                 result.unwrap(),
                 Err(ReviewError::Technical(
                     crate::domain::failure::TechnicalFailure {
-                        kind: crate::domain::failure::FailureKind::Expired,
+                        nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
                         ..
                     }
                 ))

@@ -18,7 +18,7 @@ impl ReadFailure {
             (
                 Self::Query(LocalEventQueryError::Technical(
                     crate::domain::failure::TechnicalFailure {
-                        kind: crate::domain::failure::FailureKind::Expired,
+                        nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
                         message: "deadline exceeded".into(),
                     },
                 )),

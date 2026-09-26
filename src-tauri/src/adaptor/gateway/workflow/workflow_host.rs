@@ -8,7 +8,6 @@
 
 #[cfg(test)]
 use crate::adaptor::gateway::workflow::fact_codec;
-use crate::domain::failure::ClassifiedFailure;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Weak};
 
@@ -295,9 +294,9 @@ impl WorkflowRuntimeHost {
                 })
             })
             .await
-            .map_err(|error| WorkflowRuntimeError::StorageFailure {
-                kind: error.failure_kind(),
-                message: format!("tree read failed: {error:?}"),
+            .map_err(|error| {
+                let message = format!("tree read failed: {error:?}");
+                WorkflowRuntimeError::storage(error, message)
             })?;
         let head = rows.last().map_or(0, |row| row.seq);
         let records = workflow_fact_log::records_from_tree_rows(&rows)
@@ -350,9 +349,9 @@ impl WorkflowRuntimeHost {
         })?;
         let rows = workflow_fact_log::pending_rows_for_events(store, events)
             .await
-            .map_err(|error| WorkflowRuntimeError::StorageFailure {
-                kind: error.failure_kind(),
-                message: error.to_string(),
+            .map_err(|error| {
+                let message = error.to_string();
+                WorkflowRuntimeError::storage(error, message)
             })?;
         let result = store
             .append_node_events_at_head(
@@ -366,9 +365,9 @@ impl WorkflowRuntimeHost {
             Err(CommitBatchError::AppendOutcomeUnknown) => {
                 workflow_fact_log::resolve_unknown_append(store, rows, Some(head))
                     .await
-                    .map_err(|error| WorkflowRuntimeError::StorageFailure {
-                        kind: error.failure_kind(),
-                        message: format!("control-plane commit readback failed: {error:?}"),
+                    .map_err(|error| {
+                        let message = format!("control-plane commit readback failed: {error:?}");
+                        WorkflowRuntimeError::storage(error, message)
                     })?
                     .map(|_| ())
             }
@@ -378,10 +377,10 @@ impl WorkflowRuntimeHost {
             CommitBatchError::TreeHeadConflict => WorkflowRuntimeError::Conflict(format!(
                 "execution '{execution_id}' changed before commit"
             )),
-            other => WorkflowRuntimeError::StorageFailure {
-                kind: other.failure_kind(),
-                message: other.to_string(),
-            },
+            other => {
+                let message = other.to_string();
+                WorkflowRuntimeError::storage(other, message)
+            }
         })
     }
 
@@ -665,10 +664,10 @@ impl WorkflowRuntimeHost {
                     crate::domain::workflow::WorkflowError::Conflict(reason) => {
                         WorkflowRuntimeError::Conflict(reason)
                     }
-                    error => WorkflowRuntimeError::StorageFailure {
-                        kind: error.failure_kind(),
-                        message: error.to_string(),
-                    },
+                    error => {
+                        let message = error.to_string();
+                        WorkflowRuntimeError::storage(error, message)
+                    }
                 })?
         else {
             return Ok(());
@@ -775,9 +774,9 @@ impl WorkflowRuntimeHost {
             .await
         {
             self.release_execution_facet_contents(&execution_id).await;
-            return Err(WorkflowRuntimeError::StorageFailure {
-                kind: e.failure_kind(),
-                message: format!("write initial workflow event batch failed: {e}"),
+            return Err({
+                let message = format!("write initial workflow event batch failed: {e}");
+                WorkflowRuntimeError::storage(e, message)
             });
         }
 
@@ -1398,20 +1397,20 @@ impl WorkflowRuntimeHost {
         error: &WorkflowRuntimeError,
         failed: &mut Vec<crate::usecase::workflow::node_startup::FailedNodeStart>,
     ) -> Result<(), WorkflowRuntimeError> {
-        use crate::domain::failure::RetryAction;
         self.queue
             .observe(
                 &crate::usecase::work_queue::WorkKey::new("workflow_node_start", node_execution_id),
                 &crate::usecase::work_queue::WorkFailure::from_error(error),
             )
             .await;
-        if error.failure_kind().retry_action() != RetryAction::Stop {
+        let kind = crate::domain::failure::Failure::from(error);
+        if crate::usecase::work_queue::next_attempt(kind).is_some() {
             failed.push(crate::usecase::workflow::node_startup::FailedNodeStart {
                 id: node_execution_id.into(),
-                kind: error.failure_kind(),
+                kind,
             });
         }
-        if error.failure_kind().retry_action() != RetryAction::Restart {
+        if error.version_conflict().is_none() {
             Box::pin(self.settle_runtime_failure_for_node(
                 app,
                 execution_id,
@@ -2025,11 +2024,9 @@ impl WorkflowRuntimeHost {
             WorkflowRuntimeError::SessionStore(reason) => {
                 WorkflowRuntimeError::SessionStore(format!("{append_error_context}: {reason}"))
             }
-            WorkflowRuntimeError::StorageFailure { message, kind } => {
-                WorkflowRuntimeError::StorageFailure {
-                    message: format!("{append_error_context}: {message}"),
-                    kind,
-                }
+            WorkflowRuntimeError::Store(failure) => {
+                let message = format!("{append_error_context}: {failure}");
+                WorkflowRuntimeError::Store(failure.with_message(message))
             }
             other => other,
         })
@@ -2090,8 +2087,8 @@ impl WorkflowRuntimeHost {
         node_execution_id: &str,
         error: &WorkflowRuntimeError,
     ) -> Result<(), WorkflowRuntimeError> {
-        if let WorkflowRuntimeError::Conflict(reason) = error {
-            return Err(WorkflowRuntimeError::Conflict(reason.clone()));
+        if let Some(reason) = error.version_conflict() {
+            return Err(WorkflowRuntimeError::Conflict(reason.into()));
         }
         let failure_kind = error.workflow_failure_kind();
         let reason = format!("workflow runtime activation failed: {error}");
@@ -4548,6 +4545,47 @@ nodes:
         }
 
         #[tokio::test]
+        async fn test_失敗確定_版の競合では事実とnodeの状態を変更しない() {
+            // Given
+            let fixture = runtime_effect_fixture(NodeCompletion::default(), false).await;
+            let before =
+                workflow_fact_log::read_tree_records(&fixture.store, &fixture.execution_id)
+                    .await
+                    .unwrap()
+                    .len();
+            let runtime_error = WorkflowRuntimeError::Conflict("version conflict".into());
+
+            // When
+            let result = fixture
+                .host
+                .settle_runtime_failure_for_node(
+                    &fixture.app,
+                    &fixture.execution_id,
+                    &fixture.node_execution_id,
+                    &runtime_error,
+                )
+                .await;
+
+            // Then
+            assert!(matches!(
+                result,
+                Err(WorkflowRuntimeError::Conflict(reason)) if reason == "version conflict"
+            ));
+            assert_eq!(
+                workflow_fact_log::read_tree_records(&fixture.store, &fixture.execution_id)
+                    .await
+                    .unwrap()
+                    .len(),
+                before
+            );
+            assert_eq!(
+                persisted_node_status(&fixture).await,
+                NodeExecutionStatus::Running
+            );
+            assert!(fixture.stop_calls.lock().unwrap().is_empty());
+        }
+
+        #[tokio::test]
         async fn test_failure_settlement_異常の記録はsessionをrunningのまま維持する() {
             // Given
             let fixture = runtime_effect_fixture(NodeCompletion::default(), true).await;
@@ -4991,7 +5029,9 @@ nodes:
                 assert_eq!(observations.len(), 1);
                 assert_eq!(
                     observations[0].record.kind,
-                    crate::domain::failure::FailureKind::StateRequired
+                    crate::domain::failure::Failure::Business(
+                        crate::domain::failure::BusinessFailure::Other
+                    )
                 );
                 assert!(observations[0].requires_attention);
             }

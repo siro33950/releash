@@ -178,10 +178,9 @@ fn validate_execution_id(
     uuid::Uuid::parse_str(execution_id)
         .map(|_| ())
         .map_err(|_| {
-            crate::adaptor::presenter::error::AppError::new(
+            crate::adaptor::presenter::error::AppError::invalid_request(
                 "Invalid execution_id format (must be UUID)",
             )
-            .with_failure_kind(crate::domain::failure::FailureKind::InvalidInput)
         })
 }
 

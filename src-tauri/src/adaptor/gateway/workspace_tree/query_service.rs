@@ -190,11 +190,7 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
             workspace_identity.as_str(),
         )
         .await
-        .map_err(|error| {
-            WorkflowError::Store(crate::domain::failure::ClassifiedFailure::failure_kind(
-                &error,
-            ))
-        })?;
+        .map_err(|error| WorkflowError::Store(error.into()))?;
         let workflow_execution_ids = folded
             .iter()
             .filter(|(tree, _)| tree.root.launched_as == ExecutionTreeLaunch::Workflow)
@@ -611,19 +607,15 @@ fn execution_summary(
 }
 
 fn query_error(error: crate::domain::local_event::LocalEventQueryError) -> WorkflowError {
-    use crate::domain::failure::ClassifiedFailure;
     use crate::domain::local_event::LocalEventQueryError;
 
     match error {
         LocalEventQueryError::Technical(stopped) => WorkflowError::Technical(stopped),
-        LocalEventQueryError::StorageUnavailable { failure } => WorkflowError::StorageUnavailable {
-            message: failure.to_string(),
-            kind: failure.failure_kind(),
-        },
-        error @ LocalEventQueryError::QueryBusy => WorkflowError::StorageUnavailable {
-            message: error.to_string(),
-            kind: error.failure_kind(),
-        },
+        error @ (LocalEventQueryError::StorageUnavailable { .. }
+        | LocalEventQueryError::QueryBusy) => {
+            let message = error.to_string();
+            WorkflowError::storage(error, message)
+        }
         error @ LocalEventQueryError::Corrupt { .. } => {
             WorkflowError::CorruptStoredState(error.to_string())
         }

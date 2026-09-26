@@ -1,11 +1,11 @@
-use super::failure::FailureKind;
+use super::failure::Failure;
 use std::collections::VecDeque;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FailureRecord {
     pub operation: String,
     pub target: String,
-    pub kind: FailureKind,
+    pub kind: Failure,
     pub message: String,
     pub active: bool,
     pub count: u64,
@@ -31,11 +31,11 @@ impl FailureRecords {
         &mut self,
         operation: &str,
         target: &str,
-        kind: FailureKind,
+        kind: Failure,
         message: String,
         now_ms: u64,
-    ) -> bool {
-        let was_attention = self.resolve(operation, target);
+    ) {
+        self.resolve(operation, target);
         let existing = self.records.iter().position(|record| {
             record.operation == operation && record.target == target && record.kind == kind
         });
@@ -62,14 +62,13 @@ impl FailureRecords {
             }
         };
         self.records.push_back(record);
-        was_attention != kind.requires_attention()
     }
 
     pub fn resolve(&mut self, operation: &str, target: &str) -> bool {
         let mut changed = false;
         for record in &mut self.records {
             if record.operation == operation && record.target == target {
-                changed |= record.active && record.kind.requires_attention();
+                changed |= record.active;
                 record.active = false;
             }
         }

@@ -1,4 +1,3 @@
-use crate::domain::failure::ClassifiedFailure;
 use std::sync::Arc;
 
 use crate::domain::workflow::WorkflowError;
@@ -249,8 +248,8 @@ impl crate::usecase::provider_lifecycle::ProviderExecutionTreeStopTransaction
                 WorkflowError::Conflict(_) => {
                     crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError::Conflict
                 }
-                error @ (WorkflowError::Technical(_) | WorkflowError::StorageUnavailable { .. } | WorkflowError::External(_) | WorkflowError::Editor(_)) => {
-                    crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError::Store(error.failure_kind())
+                error @ (WorkflowError::Technical(_) | WorkflowError::External(_) | WorkflowError::Editor(_)) => {
+                    crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError::Store(error.into())
                 }
                 WorkflowError::CorruptStoredState(_)
                 | WorkflowError::IncompatibleStoredEvent(_) => {
@@ -283,11 +282,10 @@ impl crate::usecase::agent_session::ExecutionTreeCache for WorkflowRuntimeUsecas
                     crate::usecase::agent_session::ExecutionTreeCacheReleaseError::Store(kind)
                 }
                 error @ (WorkflowError::Technical(_)
-                | WorkflowError::StorageUnavailable { .. }
                 | WorkflowError::External(_)
                 | WorkflowError::Editor(_)) => {
                     crate::usecase::agent_session::ExecutionTreeCacheReleaseError::Store(
-                        error.failure_kind(),
+                        error.into(),
                     )
                 }
                 WorkflowError::Validation(_)
@@ -342,11 +340,10 @@ fn map_started_execution_tree_error(
             crate::usecase::agent_session::StartedExecutionTreeRegistrationError::Store(kind)
         }
         error @ (WorkflowError::Technical(_)
-        | WorkflowError::StorageUnavailable { .. }
         | WorkflowError::External(_)
         | WorkflowError::Editor(_)) => {
             crate::usecase::agent_session::StartedExecutionTreeRegistrationError::Store(
-                error.failure_kind(),
+                error.into(),
             )
         }
         WorkflowError::Validation(_)

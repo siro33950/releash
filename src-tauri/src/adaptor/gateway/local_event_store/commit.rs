@@ -30,13 +30,28 @@ fn correlation_id() -> String {
 pub(super) fn storage_unavailable(error: &rusqlite::Error) -> CommitBatchError {
     let correlation = correlation_id();
     log::warn!("local event store sqlite failure [{correlation}]: {error}");
-    CommitBatchError::StorageUnavailable {
-        failure: SafeOperationFailure::new(
-            SessionOperationFailureKind::StorageUnavailable,
-            super::reader::sqlite_failure_kind(error),
-            "local event store write failed",
-            correlation,
-        ),
+    use crate::adaptor::gateway::shared::sqlite_failure::{condition, SqliteFailureCondition};
+    use crate::domain::failure::TechnicalFailureNature;
+    let condition = condition(error);
+    if condition == SqliteFailureCondition::Corrupt {
+        return CommitBatchError::Corrupt {
+            correlation_id: correlation,
+        };
+    }
+    let failure = SafeOperationFailure::new(
+        SessionOperationFailureKind::StorageUnavailable,
+        if condition == SqliteFailureCondition::Busy {
+            TechnicalFailureNature::Transient
+        } else {
+            TechnicalFailureNature::Other
+        },
+        "local event store write failed",
+        correlation,
+    );
+    if condition == SqliteFailureCondition::Inaccessible {
+        CommitBatchError::StorageAccessRequired { failure }
+    } else {
+        CommitBatchError::StorageUnavailable { failure }
     }
 }
 
@@ -254,7 +269,7 @@ pub fn execute_commit(
         return Err(CommitBatchError::StorageUnavailable {
             failure: SafeOperationFailure::new(
                 SessionOperationFailureKind::StorageUnavailable,
-                crate::domain::failure::FailureKind::Temporary,
+                crate::domain::failure::TechnicalFailureNature::Transient,
                 "injected failure before transaction begin",
                 correlation_id(),
             ),
@@ -532,7 +547,7 @@ fn execute_in_transaction(
         return Err(CommitBatchError::StorageUnavailable {
             failure: SafeOperationFailure::new(
                 SessionOperationFailureKind::StorageUnavailable,
-                crate::domain::failure::FailureKind::Temporary,
+                crate::domain::failure::TechnicalFailureNature::Transient,
                 "injected failure before COMMIT",
                 correlation_id(),
             ),
@@ -555,7 +570,7 @@ fn fail_after_participant_write_if_armed(fault: &FaultInjector) -> Result<(), Co
     Err(CommitBatchError::StorageUnavailable {
         failure: SafeOperationFailure::new(
             SessionOperationFailureKind::StorageUnavailable,
-            crate::domain::failure::FailureKind::Temporary,
+            crate::domain::failure::TechnicalFailureNature::Transient,
             "injected failure after participant write",
             correlation_id(),
         ),

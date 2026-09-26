@@ -168,6 +168,10 @@ fn provider_rank(provider: ProviderKind) -> u8 {
 
 fn map_gateway_error(error: AgentSessionHistoryGatewayError) -> AgentSessionHistoryQueryError {
     match error {
+        AgentSessionHistoryGatewayError::Conflict => AgentSessionHistoryQueryError::Conflict,
+        AgentSessionHistoryGatewayError::ProviderSessionAlreadyOwned { agent_session_id } => {
+            AgentSessionHistoryQueryError::ProviderSessionAlreadyOwned { agent_session_id }
+        }
         AgentSessionHistoryGatewayError::InvalidRequest => {
             AgentSessionHistoryQueryError::InvalidRequest
         }

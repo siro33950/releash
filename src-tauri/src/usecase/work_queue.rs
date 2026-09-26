@@ -1,5 +1,5 @@
 use crate::common::retry::{RetryBackoff, RetryBucket};
-use crate::domain::failure::{ClassifiedFailure, FailureKind, RetryAction};
+use crate::domain::failure::{BusinessFailure, Failure, TechnicalFailureNature};
 use crate::domain::failure_records::FailureRecord;
 use crate::domain::work_queue::WorkQueue;
 use std::collections::HashMap;
@@ -12,7 +12,7 @@ use tokio::sync::{Mutex, Notify};
 type Task = Pin<Box<dyn Future<Output = ()> + Send>>;
 pub type Attempt<'a> =
     Pin<Box<dyn Future<Output = Result<Option<Duration>, WorkFailure>> + Send + 'a>>;
-pub type Job = Arc<dyn Fn(RetryAction) -> Attempt<'static> + Send + Sync>;
+pub type Job = Arc<dyn Fn(AttemptProgress) -> Attempt<'static> + Send + Sync>;
 
 #[async_trait::async_trait]
 pub trait WorkQueueRuntime: Send + Sync {
@@ -26,13 +26,16 @@ pub trait WorkQueueRuntime: Send + Sync {
 
 #[derive(Debug, Clone)]
 pub struct WorkFailure {
-    pub kind: FailureKind,
+    pub kind: Failure,
     pub message: String,
 }
 impl WorkFailure {
-    pub fn from_error(error: &(impl ClassifiedFailure + std::fmt::Debug)) -> Self {
+    pub fn from_error<E: std::fmt::Debug>(error: &E) -> Self
+    where
+        for<'a> Failure: From<&'a E>,
+    {
         Self {
-            kind: error.failure_kind(),
+            kind: Failure::from(error),
             message: format!("{error:?}"),
         }
     }
@@ -40,11 +43,6 @@ impl WorkFailure {
 impl std::fmt::Display for WorkFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.message)
-    }
-}
-impl ClassifiedFailure for WorkFailure {
-    fn failure_kind(&self) -> FailureKind {
-        self.kind
     }
 }
 
@@ -87,7 +85,7 @@ enum AttemptMode {
 struct Entry {
     job: Job,
     backoff: RetryBackoff,
-    action: RetryAction,
+    action: AttemptProgress,
     retrying: bool,
     mode: AttemptMode,
     completed: Option<tokio::sync::oneshot::Sender<Result<(), WorkFailure>>>,
@@ -202,7 +200,7 @@ impl WorkQueueUsecase {
                     if state.jobs.contains_key(&key) {
                         if let Some(completed) = completed.take() {
                             let _ = completed.send(Err(WorkFailure {
-                                kind: FailureKind::AlreadyPresent,
+                                kind: Failure::Business(BusinessFailure::Other),
                                 message: "同じ対象の処理が実行中です".into(),
                             }));
                             return;
@@ -218,7 +216,7 @@ impl WorkQueueUsecase {
                     state.jobs.entry(key.clone()).or_insert_with(|| Entry {
                         job: job.clone(),
                         backoff,
-                        action: RetryAction::Retry,
+                        action: AttemptProgress::Continue,
                         retrying: false,
                         mode,
                         completed: completed.take(),
@@ -288,7 +286,8 @@ impl WorkQueueUsecase {
                                 AttemptMode::Borrowed {
                                     record_failures: false
                                 }
-                            ) && (!key.stage || error.kind.retry_action() == RetryAction::Retry)
+                            ) && (!key.stage
+                                || next_attempt(error.kind) == Some(AttemptProgress::Continue))
                             {
                                 queue.observe(&key, error).await;
                             }
@@ -305,9 +304,10 @@ impl WorkQueueUsecase {
                     }
                     match result {
                         Err(error)
-                            if error.kind.retry_action() != RetryAction::Stop
+                            if next_attempt(error.kind).is_some()
                                 && (!key.stage
-                                    || error.kind.retry_action() == RetryAction::Retry) =>
+                                    || next_attempt(error.kind)
+                                        == Some(AttemptProgress::Continue)) =>
                         {
                             let due = retry_due(
                                 &mut state.queue,
@@ -318,7 +318,7 @@ impl WorkQueueUsecase {
                                 queue.runtime.jitter(),
                             );
                             let entry = state.jobs.get_mut(&key).expect("processing job");
-                            entry.action = error.kind.retry_action();
+                            entry.action = next_attempt(error.kind).expect("continuing attempt");
                             entry.retrying = true;
                             state.queue.done(&key, Some(due), false);
                         }
@@ -368,7 +368,7 @@ impl WorkQueueUsecase {
     ) -> Result<T, WorkFailure>
     where
         T: Send + 'static,
-        F: Fn(RetryAction) -> Fut + Send + Sync + 'static,
+        F: Fn(AttemptProgress) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<T, WorkFailure>> + Send + 'static,
     {
         let value = Arc::new(Mutex::new(None));
@@ -391,7 +391,7 @@ impl WorkQueueUsecase {
         )
         .await;
         completion.await.map_err(|_| WorkFailure {
-            kind: FailureKind::Cancelled,
+            kind: Failure::Technical(TechnicalFailureNature::Cancelled),
             message: "作業列が終了しました".into(),
         })??;
         let value = result
@@ -403,19 +403,24 @@ impl WorkQueueUsecase {
     }
 
     pub async fn observe(&self, key: &WorkKey, error: &WorkFailure) {
-        let record_attention_changed = self.query.records.lock().await.observe(
+        let mut records = self.query.records.lock().await;
+        let attention = records.records().find(|record| {
+            record.operation == key.operation
+                && record.target == key.target
+                && record.active
+                && super::failure_query_service::requires_attention(record.kind)
+        });
+        let attention_changed = attention.map(|record| (record.kind, record.message.as_str()))
+            != super::failure_query_service::requires_attention(error.kind)
+                .then_some((error.kind, error.message.as_str()));
+        records.observe(
             &key.operation,
             &key.target,
             error.kind,
             error.message.clone(),
             self.runtime.timestamp_ms(),
         );
-        let attention_changed =
-            if let Some(state) = self.query.target_failures.get(key.operation.as_str()) {
-                state.lock().await.observe(&key.target, error.kind)
-            } else {
-                record_attention_changed
-            };
+        drop(records);
         self.publish_failure_change(key, attention_changed);
     }
 
@@ -440,18 +445,15 @@ impl WorkQueueUsecase {
     }
 
     async fn clear_attention(&self, key: &WorkKey) {
-        let record_changed = self
-            .query
-            .records
-            .lock()
-            .await
-            .resolve(&key.operation, &key.target);
-        let attention_changed =
-            if let Some(state) = self.query.target_failures.get(key.operation.as_str()) {
-                state.lock().await.clear(&key.target)
-            } else {
-                record_changed
-            };
+        let mut records = self.query.records.lock().await;
+        let attention_changed = records.records().any(|record| {
+            record.operation == key.operation
+                && record.target == key.target
+                && record.active
+                && super::failure_query_service::requires_attention(record.kind)
+        });
+        records.resolve(&key.operation, &key.target);
+        drop(records);
         self.publish_failure_change(key, attention_changed);
     }
 
@@ -486,7 +488,8 @@ pub async fn retry<T, E, F, Fut>(
     operation: F,
 ) -> Result<T, E>
 where
-    E: ClassifiedFailure + std::fmt::Debug,
+    E: std::fmt::Debug,
+    for<'a> Failure: From<&'a E>,
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<T, E>>,
 {
@@ -500,7 +503,8 @@ pub async fn retry_stage<T, E, F, Fut>(
     operation: F,
 ) -> Result<T, E>
 where
-    E: ClassifiedFailure + std::fmt::Debug,
+    E: std::fmt::Debug,
+    for<'a> Failure: From<&'a E>,
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<T, E>>,
 {
@@ -515,7 +519,8 @@ pub(crate) async fn retry_with_scope<T, E, F, Fut>(
     restart: bool,
 ) -> Result<T, E>
 where
-    E: ClassifiedFailure + std::fmt::Debug,
+    E: std::fmt::Debug,
+    for<'a> Failure: From<&'a E>,
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<T, E>>,
 {
@@ -531,8 +536,9 @@ pub(crate) async fn run_borrowed<T, E, F, Fut>(
     record_failures: bool,
 ) -> Result<T, E>
 where
-    E: ClassifiedFailure + std::fmt::Debug,
-    F: FnMut(RetryAction) -> Fut,
+    E: std::fmt::Debug,
+    for<'a> Failure: From<&'a E>,
+    F: FnMut(AttemptProgress) -> Fut,
     Fut: Future<Output = Result<T, E>>,
 {
     let (_work, attempts, completion) = queue.borrowed(key, policy, restart, record_failures).await;
@@ -569,7 +575,7 @@ impl Drop for BorrowedWork {
 
 fn cancelled() -> WorkFailure {
     WorkFailure {
-        kind: FailureKind::Cancelled,
+        kind: Failure::Technical(TechnicalFailureNature::Cancelled),
         message: "作業の呼び出し元が終了しました".into(),
     }
 }
@@ -620,12 +626,12 @@ pub(crate) mod work_queue_tests;
 fn retry_due<K: Eq + std::hash::Hash + Clone>(
     queue: &mut WorkQueue<K>,
     key: &K,
-    kind: FailureKind,
+    kind: Failure,
     policy: RetryBackoff,
     now: Duration,
     jitter: f64,
 ) -> Duration {
-    let policy = if kind.retry_action() == RetryAction::Restart {
+    let policy = if next_attempt(kind) == Some(AttemptProgress::Reload) {
         RetryBackoff::CONFLICT
     } else {
         policy
@@ -634,7 +640,7 @@ fn retry_due<K: Eq + std::hash::Hash + Clone>(
 }
 
 type BorrowedRequest = (
-    RetryAction,
+    AttemptProgress,
     tokio::sync::oneshot::Sender<Result<Option<Duration>, WorkFailure>>,
 );
 impl WorkQueueUsecase {
@@ -677,5 +683,20 @@ impl WorkQueueUsecase {
             job,
         };
         (work, attempts, completion)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttemptProgress {
+    Continue,
+    Reload,
+}
+
+pub(crate) fn next_attempt(failure: crate::domain::failure::Failure) -> Option<AttemptProgress> {
+    use crate::domain::failure::{BusinessFailure, Failure, TechnicalFailureNature};
+    match failure {
+        Failure::Business(BusinessFailure::VersionConflict) => Some(AttemptProgress::Reload),
+        Failure::Technical(TechnicalFailureNature::Transient) => Some(AttemptProgress::Continue),
+        _ => None,
     }
 }

@@ -7,7 +7,6 @@
 //! domain の fold（`fact_replay`）に委ねる。
 
 use crate::adaptor::gateway::workflow::fact_codec;
-use crate::domain::failure::ClassifiedFailure;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -51,18 +50,9 @@ impl From<FactReadError> for LocalEventQueryError {
 }
 impl From<FactReadError> for crate::domain::workflow::WorkflowError {
     fn from(error: FactReadError) -> Self {
-        use crate::domain::failure::ClassifiedFailure;
         match error {
-            FactReadError::Query(error) => Self::Store(error.failure_kind()),
+            FactReadError::Query(error) => Self::Store(error.into()),
             FactReadError::Corrupt(message) => Self::CorruptStoredState(message),
-        }
-    }
-}
-impl crate::domain::failure::ClassifiedFailure for FactReadError {
-    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
-        match self {
-            Self::Query(error) => error.failure_kind(),
-            Self::Corrupt(_) => crate::domain::failure::FailureKind::Corrupt,
         }
     }
 }
@@ -1181,7 +1171,10 @@ pub(crate) async fn reconcile_tree_pass(
                 Err(CommitBatchError::AppendOutcomeUnknown) => {
                     resolve_unknown_append(store, rows, Some(head))
                         .await
-                        .map_err(|error| WorkflowError::Store(error.failure_kind()))?
+                        .map_err(|error: LocalEventQueryError| {
+                            let message = error.to_string();
+                            WorkflowError::storage(error, message)
+                        })?
                 }
                 result => result,
             }
@@ -1189,10 +1182,10 @@ pub(crate) async fn reconcile_tree_pass(
                 CommitBatchError::TreeHeadConflict => WorkflowError::Conflict(format!(
                     "workflow tree {tree_id} changed before startup advancement commit"
                 )),
-                error => WorkflowError::StorageUnavailable {
-                    message: format!("startup advancement commit failed: {error}"),
-                    kind: error.failure_kind(),
-                },
+                error => {
+                    let message = format!("startup advancement commit failed: {error}");
+                    WorkflowError::storage(error, message)
+                }
             })?;
             head = sequences.last().copied().unwrap_or(head);
             if let ExecutionAdvanceDecision::StartNodes(applied_leaves) = applied.decision {

@@ -42,9 +42,3 @@ mod agent_session_display_name_tests {
         }
     }
 }
-
-impl crate::domain::failure::ClassifiedFailure for AgentSessionDisplayNameError {
-    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
-        crate::domain::failure::FailureKind::InvalidInput
-    }
-}

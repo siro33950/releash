@@ -21,7 +21,12 @@ fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::Connect
                             wire::FailureRecord {
                                 operation: Some(record.operation.clone()),
                                 target: Some(record.target.clone()),
-                                classification: Some(format!("{:?}", record.kind)),
+                                classification: Some(
+                                    crate::adaptor::presenter::connect::failure_classification(
+                                        record.kind,
+                                    )
+                                    .into(),
+                                ),
                                 message: Some(record.message.clone()),
                                 count: Some(record.count),
                                 first_observed_ms: Some(record.first_observed_ms),
@@ -40,67 +45,67 @@ fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::Connect
             ),
             StateValue::Workspaces(value) => wire::state_payload::Value::Workspaces(
                 crate::adaptor::controller::client::value(value.clone())
-                    .map_err(crate::adaptor::protocol::connect::command_error)?,
+                    .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
             StateValue::Selection(value) => wire::state_payload::Value::Selection(
                 crate::adaptor::controller::client::value(value.clone())
-                    .map_err(crate::adaptor::protocol::connect::command_error)?,
+                    .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
             StateValue::NodeDetail(value) => wire::state_payload::Value::NodeDetail(
                 crate::adaptor::controller::client::value(value.clone())
-                    .map_err(crate::adaptor::protocol::connect::command_error)?,
+                    .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
             StateValue::AgentSession(value) => wire::state_payload::Value::AgentSession(
                 crate::adaptor::controller::client::value(value.clone())
-                    .map_err(crate::adaptor::protocol::connect::command_error)?,
+                    .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
             StateValue::SessionNode(value) => wire::state_payload::Value::SessionNode(
                 crate::adaptor::controller::client::value(value.clone())
-                    .map_err(crate::adaptor::protocol::connect::command_error)?,
+                    .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
             StateValue::SessionHistory(value) => wire::state_payload::Value::SessionHistory(
                 crate::adaptor::controller::client::value(value.clone())
-                    .map_err(crate::adaptor::protocol::connect::command_error)?,
+                    .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
             StateValue::Providers(value) => wire::state_payload::Value::Providers(
                 crate::adaptor::controller::client::value(value.clone())
-                    .map_err(crate::adaptor::protocol::connect::command_error)?,
+                    .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
             StateValue::Branches(value) => wire::state_payload::Value::Branches(
                 crate::adaptor::controller::client::value(value.clone())
-                    .map_err(crate::adaptor::protocol::connect::command_error)?,
+                    .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
             StateValue::BranchBase(value) => wire::state_payload::Value::BranchBase(
                 crate::adaptor::controller::client::value(value.clone())
-                    .map_err(crate::adaptor::protocol::connect::command_error)?,
+                    .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
             StateValue::BranchStatus(value) => wire::state_payload::Value::BranchStatus(
                 crate::adaptor::controller::client::value(value.clone())
-                    .map_err(crate::adaptor::protocol::connect::command_error)?,
+                    .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
             StateValue::CurrentBranch(value) => wire::state_payload::Value::CurrentBranch(
                 crate::adaptor::controller::client::value(value.clone())
-                    .map_err(crate::adaptor::protocol::connect::command_error)?,
+                    .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
             StateValue::Issues(value) => wire::state_payload::Value::Issues(
                 crate::adaptor::controller::client::value(value.clone())
-                    .map_err(crate::adaptor::protocol::connect::command_error)?,
+                    .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
             StateValue::Worktrees(value) => wire::state_payload::Value::Worktrees(
                 crate::adaptor::controller::client::value(value.clone())
-                    .map_err(crate::adaptor::protocol::connect::command_error)?,
+                    .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
             StateValue::RepositoryRoot(value) => wire::state_payload::Value::RepositoryRoot(
                 crate::adaptor::controller::client::value(value.clone())
-                    .map_err(crate::adaptor::protocol::connect::command_error)?,
+                    .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
             StateValue::StartupRepository(value) => wire::state_payload::Value::StartupRepository(
                 crate::adaptor::controller::client::value(value.clone())
-                    .map_err(crate::adaptor::protocol::connect::command_error)?,
+                    .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
             StateValue::WorkspaceState(value) => wire::state_payload::Value::WorkspaceState(
                 crate::adaptor::controller::client::value(value.clone())
-                    .map_err(crate::adaptor::protocol::connect::command_error)?,
+                    .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
 
             StateValue::RepositoryPaths(paths) => {
@@ -135,7 +140,7 @@ pub(super) fn event(
                 Event::Bookmark(_) => WireEvent::Bookmark(wire::Unit {}),
             };
             let target = crate::domain::state_subscription::SubscriptionTarget::parse(&target)
-                .map_err(crate::adaptor::protocol::connect::classified_error)?;
+                .map_err(crate::adaptor::presenter::connect::classified_error)?;
             let (name, args) = target.parts();
             (name.into(), args, version, event)
         }

@@ -19,17 +19,6 @@ pub enum UsecaseError {
     Rule(String),
 }
 
-impl crate::domain::failure::ClassifiedFailure for UsecaseError {
-    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
-        use crate::domain::failure::FailureKind as F;
-        match self {
-            Self::Workflow(error) => error.failure_kind(),
-            Self::Repository(error) => error.failure_kind(),
-            Self::Rule(_) => F::StateRequired,
-        }
-    }
-}
-
 #[cfg(test)]
 #[path = "repository_error_test.rs"]
 mod repository_error_tests;

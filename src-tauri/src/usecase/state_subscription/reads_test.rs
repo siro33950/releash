@@ -5,6 +5,8 @@ use crate::adaptor::gateway::{
     git_host::InMemoryTtlCache,
     repository::{repo_paths::RepoPathsGateway, scanner::DefaultRepositoryScanner, state::*},
 };
+
+use crate::domain::failure::{BusinessFailure, Failure};
 use crate::domain::git_host::{CacheTtl, GitHostError, GitHostProvider, IssueInfo, PrStatus};
 use crate::usecase::agent_session::*;
 use crate::usecase::state_subscription::{StateSubscriptionEvent, StateSubscriptionUsecase};
@@ -346,15 +348,16 @@ async fn test_状態読取_全対象を対応するサービスへ引数付き�
         ["missing-session".to_string(), format!("{p}:120")]
     );
     assert_eq!(fixture.issues.calls.load(Ordering::SeqCst), 1);
-    assert_eq!(
-        r.read(&T::CurrentBranch("/missing/repository".into()))
-            .await
-            .unwrap_err()
-            .kind,
-        r.repository
-            .get_current_branch("/missing/repository")
-            .unwrap_err()
-            .failure_kind()
+    let error = r
+        .read(&T::CurrentBranch("/missing/repository".into()))
+        .await
+        .unwrap_err();
+    let expected = r
+        .repository
+        .get_current_branch("/missing/repository")
+        .unwrap_err();
+    assert!(
+        matches!(error.source, super::StateReadFailure::Repository(actual) if format!("{actual:?}") == format!("{expected:?}"))
     );
 }
 
@@ -662,7 +665,7 @@ async fn test_失敗購読_node行から実行idの失敗と解消を受け取�
                 .observe(
                     &key,
                     &WorkFailure {
-                        kind: FailureKind::StateRequired,
+                        kind: Failure::Business(BusinessFailure::Other),
                         message: "failed".into(),
                     },
                 )

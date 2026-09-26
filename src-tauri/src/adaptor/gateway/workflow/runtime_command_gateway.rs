@@ -94,9 +94,6 @@ fn workflow_runtime_error_to_workflow_error(error: WorkflowRuntimeError) -> Work
     match error {
         WorkflowRuntimeError::Store(kind) => WorkflowError::Store(kind),
         WorkflowRuntimeError::Technical(stopped) => WorkflowError::Technical(stopped),
-        WorkflowRuntimeError::StorageFailure { message, kind } => {
-            WorkflowError::StorageUnavailable { message, kind }
-        }
         WorkflowRuntimeError::InvalidWorkflow(message)
         | WorkflowRuntimeError::ValidationError(message) => WorkflowError::validation(message),
         error @ WorkflowRuntimeError::ExecutionNotFound(_)
@@ -373,27 +370,41 @@ mod tests {
     }
     #[test]
     fn test_node事実追記_runtimeからconnectまで分類を保持する() {
-        use crate::domain::failure::{ClassifiedFailure, FailureKind};
+        use crate::adaptor::presenter::connect::ConnectFailure;
         // Given
-        for (kind, code) in [
-            (FailureKind::Temporary, connectrpc::ErrorCode::Unavailable),
-            (FailureKind::Corrupt, connectrpc::ErrorCode::DataLoss),
+        for (failure, code) in [
             (
-                FailureKind::Expired,
+                crate::domain::local_event::CommitBatchError::QueueBusy.into(),
+                connectrpc::ErrorCode::Unavailable,
+            ),
+            (
+                crate::domain::local_event::CommitBatchError::Corrupt {
+                    correlation_id: "id".into(),
+                }
+                .into(),
+                connectrpc::ErrorCode::DataLoss,
+            ),
+            (
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
+                    message: "timeout".into(),
+                }
+                .into(),
                 connectrpc::ErrorCode::DeadlineExceeded,
             ),
-            (FailureKind::RestartRequired, connectrpc::ErrorCode::Aborted),
+            (
+                crate::domain::local_event::CommitBatchError::AppendOutcomeUnknown.into(),
+                connectrpc::ErrorCode::Aborted,
+            ),
         ] {
-            // When
-            let error =
-                workflow_runtime_error_to_workflow_error(WorkflowRuntimeError::StorageFailure {
-                    kind,
-                    message: "node append failed".into(),
-                });
+            let failure: crate::domain::failure::StorageFailure = failure;
+            let error = workflow_runtime_error_to_workflow_error(WorkflowRuntimeError::Store(
+                failure.with_message("node append failed"),
+            ));
             // Then
-            assert_eq!(error.failure_kind(), kind);
+            assert_eq!(error.connect_code(), code);
             assert_eq!(
-                crate::adaptor::protocol::connect::classified_error(error).code,
+                crate::adaptor::presenter::connect::classified_error(error).code,
                 code
             );
         }

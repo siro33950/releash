@@ -716,7 +716,7 @@ async fn test_実効cwd_rootのretryで初回rootとidが変わってもworkspac
 #[tokio::test]
 async fn test_workspace所在地読取_実経路で失敗分類を保持する() {
     use crate::adaptor::gateway::local_event_store::test_helpers::ReadFailure;
-    use crate::adaptor::protocol::connect::classified_error;
+    use crate::adaptor::presenter::connect::classified_error;
     // Given
     let fixture = Fixture::new(false).await;
     let isolated = IsolatedWorktree::for_attempt("/repo", TREE, 1);
@@ -749,7 +749,7 @@ async fn test_workspace所在地読取_保存されたrootの破損をdata_loss�
         .unwrap_err();
     // Then
     assert_eq!(
-        crate::adaptor::protocol::connect::classified_error(error).code,
+        crate::adaptor::presenter::connect::classified_error(error).code,
         connectrpc::ErrorCode::DataLoss
     );
 }

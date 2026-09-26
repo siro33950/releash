@@ -168,7 +168,9 @@ fn compact_checkpoint(
 ) -> Result<(), WorkFailure> {
     let checkpoint = materialize_checkpoint(registry, runtime_generation, terminal_surface)
         .map_err(|message| WorkFailure {
-            kind: crate::domain::failure::FailureKind::Missing,
+            kind: crate::domain::failure::Failure::Business(
+                crate::domain::failure::BusinessFailure::Other,
+            ),
             message,
         })?;
     store
@@ -270,7 +272,9 @@ impl BackgroundCheckpoint {
                 &self.terminal_surface,
             )
             .map_err(|message| WorkFailure {
-                kind: crate::domain::failure::FailureKind::Missing,
+                kind: crate::domain::failure::Failure::Business(
+                    crate::domain::failure::BusinessFailure::Other,
+                ),
                 message,
             })?;
             execute::<()>(&Request::CheckpointCompact {

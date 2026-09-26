@@ -57,9 +57,9 @@ fn classify_sqlite_error(
     otherwise: LocalEventStoreOpenError,
 ) -> LocalEventStoreOpenError {
     if matches!(
-        super::reader::sqlite_failure_kind(error),
-        crate::domain::failure::FailureKind::StateRequired
-            | crate::domain::failure::FailureKind::Temporary
+        crate::adaptor::gateway::shared::sqlite_failure::condition(error),
+        crate::adaptor::gateway::shared::sqlite_failure::SqliteFailureCondition::Inaccessible
+            | crate::adaptor::gateway::shared::sqlite_failure::SqliteFailureCondition::Busy
     ) {
         LocalEventStoreOpenError::StorageUnavailable
     } else {

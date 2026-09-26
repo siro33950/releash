@@ -1,31 +1,15 @@
 use crate::common::operation_context::OperationStopped;
-use crate::domain::failure::{ClassifiedFailure, FailureKind};
-impl ClassifiedFailure for OperationStopped {
-    fn failure_kind(&self) -> FailureKind {
-        match self {
-            Self::Expired => FailureKind::Expired,
-            Self::Cancelled => FailureKind::Cancelled,
-        }
-    }
-}
-
-#[cfg(test)]
-#[test]
-fn test_停止理由_既存の分類へ変換する() {
-    assert_eq!(
-        OperationStopped::Cancelled.failure_kind(),
-        FailureKind::Cancelled
-    );
-    assert_eq!(
-        OperationStopped::Expired.failure_kind(),
-        FailureKind::Expired
-    );
-}
-
 impl From<OperationStopped> for crate::domain::failure::TechnicalFailure {
     fn from(error: OperationStopped) -> Self {
         Self {
-            kind: error.failure_kind(),
+            nature: match error {
+                OperationStopped::Expired => {
+                    crate::domain::failure::TechnicalFailureNature::TimedOut
+                }
+                OperationStopped::Cancelled => {
+                    crate::domain::failure::TechnicalFailureNature::Cancelled
+                }
+            },
             message: error.to_string(),
         }
     }
@@ -72,5 +56,22 @@ impl From<OperationStopped> for crate::domain::workflow::WorkflowError {
 impl From<OperationStopped> for crate::domain::git_host::GitHostError {
     fn from(error: OperationStopped) -> Self {
         Self::Technical(error.into())
+    }
+}
+
+#[cfg(test)]
+#[path = "operation_context_test.rs"]
+mod operation_context_tests;
+
+impl From<tokio::task::JoinError> for crate::domain::failure::TechnicalFailure {
+    fn from(error: tokio::task::JoinError) -> Self {
+        Self {
+            nature: if error.is_cancelled() {
+                crate::domain::failure::TechnicalFailureNature::Cancelled
+            } else {
+                crate::domain::failure::TechnicalFailureNature::Other
+            },
+            message: error.to_string(),
+        }
     }
 }

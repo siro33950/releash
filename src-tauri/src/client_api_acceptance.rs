@@ -523,12 +523,13 @@ impl crate::usecase::state_subscription::StateSubscriptionRead for AcceptanceSta
         crate::usecase::state_subscription::StateValue,
         crate::usecase::state_subscription::StateReadError,
     > {
-        use crate::domain::failure::{ClassifiedFailure, FailureKind};
         use crate::usecase::state_subscription::{StateReadError, StateValue};
         let crate::domain::state_subscription::SubscriptionTarget::CurrentBranch(path) = target
         else {
             return Err(StateReadError {
-                kind: FailureKind::Missing,
+                source: crate::usecase::state_subscription::StateReadFailure::Workflow(Box::new(
+                    crate::domain::workflow::WorkflowError::NotFound("unknown target".into()),
+                )),
                 message: "unknown target".into(),
             });
         };
@@ -539,8 +540,8 @@ impl crate::usecase::state_subscription::StateSubscriptionRead for AcceptanceSta
                 .get_current_branch(&path)
                 .map(StateValue::CurrentBranch)
                 .map_err(|error| StateReadError {
-                    kind: error.failure_kind(),
                     message: error.to_string(),
+                    source: error.into(),
                 })
         })
         .await
@@ -565,7 +566,7 @@ pub async fn read_current_branch(
         "current-branch",
         &[path],
     )
-    .map_err(crate::adaptor::protocol::connect::classified_error)?;
+    .map_err(crate::adaptor::presenter::connect::classified_error)?;
     read_state(client, &target.to_string()).await
 }
 
@@ -574,7 +575,7 @@ pub async fn read_state(
     target: &str,
 ) -> Result<serde_json::Value, connectrpc::ConnectError> {
     let target = crate::domain::state_subscription::SubscriptionTarget::parse(target)
-        .map_err(crate::adaptor::protocol::connect::classified_error)?;
+        .map_err(crate::adaptor::presenter::connect::classified_error)?;
     let (name, args) = target.parts();
     let client_id = uuid::Uuid::new_v4().to_string();
     let mut stream = client

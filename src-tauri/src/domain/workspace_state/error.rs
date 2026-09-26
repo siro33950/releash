@@ -12,16 +12,3 @@ impl std::fmt::Display for WorkspaceStateError {
 }
 
 impl std::error::Error for WorkspaceStateError {}
-
-impl crate::domain::failure::ClassifiedFailure for WorkspaceStateError {
-    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
-        use crate::domain::failure::FailureKind as F;
-        match self {
-            Self::Message(_) => F::Internal,
-        }
-    }
-}
-
-#[cfg(test)]
-#[path = "error_test.rs"]
-mod error_tests;

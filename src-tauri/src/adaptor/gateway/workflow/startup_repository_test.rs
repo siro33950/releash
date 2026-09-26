@@ -2,6 +2,7 @@ use super::*;
 use crate::adaptor::gateway::local_event_store::{
     node_events::NewNodeEventRow, LocalEventStoreConfig,
 };
+use crate::adaptor::presenter::connect::ConnectFailure;
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::workflow::NodeFactMeta;
 use crate::domain::workflow::{RuntimeExecutionState, SessionExecutionTreeRootFacts};
@@ -241,7 +242,7 @@ async fn test_起動時判定_書込口を閉じても未終端と異なる終�
 #[tokio::test]
 async fn test_起動時判定_読取失敗を成功や競合に変換しない() {
     use crate::adaptor::gateway::local_event_store::test_helpers::ReadFailure;
-    use crate::domain::failure::FailureKind;
+    use connectrpc::ErrorCode;
     let dir = tempfile::tempdir().unwrap();
     let store =
         LocalEventStore::open(LocalEventStoreConfig::production(dir.path().into())).unwrap();
@@ -253,7 +254,7 @@ async fn test_起動時判定_読取失敗を成功や競合に変換しない()
         .await
         .err()
         .unwrap();
-    assert_eq!(error.failure_kind(), FailureKind::Temporary);
+    assert_eq!(error.connect_code(), ErrorCode::Unavailable);
     assert!(!matches!(error, WorkflowError::Conflict(_)));
 }
 
@@ -272,7 +273,7 @@ async fn test_起動時判定_存在しない実行木の確認で追記しな�
 #[tokio::test]
 async fn test_起動時読取_実経路で失敗分類を保持する() {
     use crate::adaptor::gateway::local_event_store::test_helpers::ReadFailure;
-    use crate::adaptor::protocol::connect::classified_error;
+    use crate::adaptor::presenter::connect::classified_error;
     // Given
     let directory = tempfile::tempdir().unwrap();
     let store =

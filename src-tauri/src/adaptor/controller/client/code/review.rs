@@ -110,13 +110,8 @@ struct BlobReference {
 }
 
 fn parse_blob_reference(reference: &str) -> Result<BlobReference, AppError> {
-    let invalid = || {
-        AppError::coded(
-            "INVALID_REQUEST",
-            "Invalid review blob reference",
-            crate::domain::failure::FailureKind::InvalidInput,
-        )
-    };
+    let invalid =
+        || AppError::invalid_request("Invalid review blob reference").with_code("INVALID_REQUEST");
     let query = reference.strip_prefix("blob?").ok_or_else(invalid)?;
     let params: std::collections::HashMap<_, _> = url::form_urlencoded::parse(query.as_bytes())
         .into_owned()
