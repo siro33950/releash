@@ -35,21 +35,3 @@ mod notion_error_tests {
         assert_eq!(err.to_string(), "パースエラー: invalid json");
     }
 }
-
-impl crate::domain::failure::ClassifiedFailure for NotionError {
-    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
-        use crate::domain::failure::FailureKind as F;
-        match self {
-            Self::Technical(error) => {
-                crate::domain::failure::ClassifiedFailure::failure_kind(error)
-            }
-            Self::RequestFailed(_) => F::Temporary,
-            Self::ApiError(_) => F::StateRequired,
-            Self::ParseError(_) => F::Internal,
-        }
-    }
-}
-
-#[cfg(test)]
-#[path = "error_test.rs"]
-mod error_tests;

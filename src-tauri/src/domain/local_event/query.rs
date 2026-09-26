@@ -31,10 +31,11 @@ pub enum LocalEventQueryResult {
     CanonicalRuntimeOwnerSnapshot(Vec<CanonicalRuntimeOwnerView>),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LocalEventQueryError {
     Technical(crate::domain::failure::TechnicalFailure),
     InvalidRequest,
+    CanonicalWriterRequired,
     QueryBusy,
     ResponseTooLarge,
     /// A stored event required for meaning could not be decoded.
@@ -42,6 +43,9 @@ pub enum LocalEventQueryError {
         correlation_id: String,
     },
     StorageUnavailable {
+        failure: SafeOperationFailure,
+    },
+    StorageAccessRequired {
         failure: SafeOperationFailure,
     },
     Corrupt {
@@ -56,6 +60,10 @@ impl fmt::Display for LocalEventQueryError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Technical(error) => std::fmt::Display::fmt(error, f),
+            Self::CanonicalWriterRequired => write!(
+                f,
+                "Commit resolution requires the canonical writer authority."
+            ),
             Self::InvalidRequest => write!(f, "invalid request"),
             Self::QueryBusy => write!(f, "query busy"),
             Self::ResponseTooLarge => write!(f, "response too large"),
@@ -65,7 +73,9 @@ impl fmt::Display for LocalEventQueryError {
                     "incompatible stored event (correlation_id={correlation_id})"
                 )
             }
-            Self::StorageUnavailable { failure } => write!(f, "storage unavailable: {failure}"),
+            Self::StorageUnavailable { failure } | Self::StorageAccessRequired { failure } => {
+                write!(f, "storage unavailable: {failure}")
+            }
             Self::Corrupt { correlation_id } => {
                 write!(f, "store corrupt (correlation_id={correlation_id})")
             }
@@ -77,25 +87,3 @@ impl fmt::Display for LocalEventQueryError {
 }
 
 impl std::error::Error for LocalEventQueryError {}
-
-impl crate::domain::failure::ClassifiedFailure for LocalEventQueryError {
-    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
-        use crate::domain::failure::FailureKind;
-        match self {
-            Self::Technical(error) => {
-                crate::domain::failure::ClassifiedFailure::failure_kind(error)
-            }
-            Self::InvalidRequest => FailureKind::InvalidInput,
-            Self::QueryBusy => FailureKind::Temporary,
-            Self::ResponseTooLarge => FailureKind::Capacity,
-            Self::IncompatibleStoredEvent { .. } => FailureKind::StateRequired,
-            Self::StorageUnavailable { failure } => failure.failure_kind(),
-            Self::Corrupt { .. } => FailureKind::Corrupt,
-            Self::Internal { .. } => FailureKind::Internal,
-        }
-    }
-}
-
-#[cfg(test)]
-#[path = "query_test.rs"]
-mod query_tests;

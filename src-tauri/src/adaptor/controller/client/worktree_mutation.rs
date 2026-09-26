@@ -97,13 +97,9 @@ fn terminal_workspace(owner: Option<&wire::TerminalSurfaceOwnerV1>) -> Option<&s
 }
 
 fn mutation_error(error: crate::domain::workflow::WorkflowError) -> wire::CommandFailure {
-    use crate::domain::failure::ClassifiedFailure;
-    crate::adaptor::presenter::error::AppError::coded(
-        "WORKTREE_MUTATION_REJECTED",
-        error.to_string(),
-        error.failure_kind(),
-    )
-    .into()
+    crate::adaptor::presenter::error::AppError::from_failure(error)
+        .with_code("WORKTREE_MUTATION_REJECTED")
+        .into()
 }
 
 #[cfg(test)]

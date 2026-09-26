@@ -201,7 +201,6 @@ impl From<fact_log::FactReadError> for AgentSessionRepositoryError {
 
 impl From<fact_log::FactReadError> for AgentSessionQueryError {
     fn from(error: fact_log::FactReadError) -> Self {
-        use crate::domain::failure::ClassifiedFailure;
-        Self::Store(error.failure_kind())
+        Self::Store(error.into())
     }
 }

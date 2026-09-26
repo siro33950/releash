@@ -1,4 +1,3 @@
-use crate::domain::failure::{ClassifiedFailure, FailureKind};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -132,14 +131,16 @@ impl LocalProviderLifecycleEventRepository {
                     }
                 }
             }
-            Err(error) => {
-                return Err(ProviderLifecycleRepositoryError::Store(
-                    error.failure_kind(),
-                ))
-            }
+            Err(
+                CommitBatchError::StreamHeadConflict { .. } | CommitBatchError::TreeHeadConflict,
+            ) => return Err(ProviderLifecycleRepositoryError::Conflict),
+            Err(error) => return Err(ProviderLifecycleRepositoryError::Store(error.into())),
         }
         Err(ProviderLifecycleRepositoryError::Store(
-            FailureKind::RestartRequired,
+            CommitBatchError::OutcomeUnknown {
+                identity: prepared.commit_id.clone(),
+            }
+            .into(),
         ))
     }
 

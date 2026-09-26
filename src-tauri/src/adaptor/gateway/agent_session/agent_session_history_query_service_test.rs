@@ -8,7 +8,8 @@ use crate::domain::agent_session::{
 };
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::usecase::agent_session::{
-    AgentSessionHistoryQueryService, AgentSessionHistoryRequest, AgentSessionProviderDto,
+    AgentSessionHistoryQueryError, AgentSessionHistoryQueryService, AgentSessionHistoryRequest,
+    AgentSessionProviderDto,
 };
 
 struct FixedHistoryGateway {
@@ -66,6 +67,59 @@ impl AgentSessionHistoryGateway for FixedHistoryGateway {
 
 struct FixedOwnershipQuery {
     owned: HashSet<(ProviderKind, String)>,
+}
+
+struct FailingOwnershipQuery(AgentSessionHistoryGatewayError);
+
+#[async_trait::async_trait]
+impl AgentSessionOwnershipQuery for FailingOwnershipQuery {
+    async fn is_owned(
+        &self,
+        _provider: ProviderKind,
+        _provider_session_id: &str,
+    ) -> Result<bool, AgentSessionHistoryGatewayError> {
+        Err(self.0.clone())
+    }
+}
+
+#[tokio::test]
+async fn test_履歴照会_所有照会の業務失敗を保持する() {
+    // Given
+    for (error, expected) in [
+        (
+            AgentSessionHistoryGatewayError::Conflict,
+            AgentSessionHistoryQueryError::Conflict,
+        ),
+        (
+            AgentSessionHistoryGatewayError::ProviderSessionAlreadyOwned {
+                agent_session_id: "owner".into(),
+            },
+            AgentSessionHistoryQueryError::ProviderSessionAlreadyOwned {
+                agent_session_id: "owner".into(),
+            },
+        ),
+    ] {
+        let query = LocalAgentSessionHistoryQueryService::new(
+            Arc::new(FixedHistoryGateway {
+                entries: vec![metadata(ProviderKind::Codex, "session", 10)],
+                titles: HashMap::new(),
+                prompts: HashMap::new(),
+                title_requests: Mutex::new(Vec::new()),
+            }),
+            Arc::new(FailingOwnershipQuery(error)),
+        );
+
+        // When
+        let result = query
+            .list(AgentSessionHistoryRequest {
+                worktree_path: "/repo/worktree".into(),
+                visible_count: 1,
+            })
+            .await;
+
+        // Then
+        assert_eq!(result.unwrap_err(), expected);
+    }
 }
 
 #[async_trait::async_trait]

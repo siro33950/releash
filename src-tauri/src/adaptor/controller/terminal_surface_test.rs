@@ -1,4 +1,5 @@
 use super::*;
+use crate::usecase::terminal_surface::error::UsecaseError;
 
 #[test]
 fn test_ターミナル操作_gateway失敗を操作ごとの固定文言へ変換する() {

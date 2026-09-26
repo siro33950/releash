@@ -15,9 +15,11 @@ pub(crate) struct ProviderSessionTitleEntry {
     pub(crate) first_user_prompt: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AgentSessionHistoryGatewayError {
-    Store(crate::domain::failure::FailureKind),
+    Conflict,
+    ProviderSessionAlreadyOwned { agent_session_id: String },
+    Store(crate::domain::failure::StorageFailure),
     InvalidRequest,
     Unavailable,
     Corrupt,
@@ -48,19 +50,3 @@ pub(crate) trait AgentSessionOwnershipQuery: Send + Sync {
         provider_session_id: &str,
     ) -> Result<bool, AgentSessionHistoryGatewayError>;
 }
-
-impl crate::domain::failure::ClassifiedFailure for AgentSessionHistoryGatewayError {
-    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
-        use crate::domain::failure::FailureKind;
-        match self {
-            Self::Store(kind) => *kind,
-            Self::InvalidRequest => FailureKind::InvalidInput,
-            Self::Unavailable => FailureKind::Temporary,
-            Self::Corrupt => FailureKind::Corrupt,
-        }
-    }
-}
-
-#[cfg(test)]
-#[path = "provider_history_gateway_test.rs"]
-mod provider_history_gateway_tests;

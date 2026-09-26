@@ -571,7 +571,7 @@ mod tests {
                     issues,
                     Err(GitHostError::Technical(
                         crate::domain::failure::TechnicalFailure {
-                            kind: crate::domain::failure::FailureKind::Expired,
+                            nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
                             ..
                         }
                     ))

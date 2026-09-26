@@ -1,4 +1,5 @@
 use super::*;
+use crate::domain::failure::{BusinessFailure, Failure, TechnicalFailureNature};
 use crate::domain::workflow::entities::workflow_execution::{LeafKind, LeafStart};
 use std::sync::Mutex;
 
@@ -76,14 +77,14 @@ impl NodeStartupGateway for FakeStartup {
         *remaining -= 1;
         Ok(vec![FailedNodeStart {
             id: ids[0].clone(),
-            kind: FailureKind::RestartRequired,
+            kind: Failure::Business(BusinessFailure::VersionConflict),
         }])
     }
 
     async fn restart(
         &self,
         id: &str,
-        action: RetryAction,
+        action: AttemptProgress,
     ) -> Result<Option<NodeStart>, WorkflowRuntimeError> {
         self.restarts.lock().unwrap().push(id.into());
         if id == "blocked" {
@@ -99,7 +100,7 @@ impl NodeStartupGateway for FakeStartup {
         }
         Ok((!self.cancelled).then(|| {
             leaf(
-                &if action == RetryAction::Retry {
+                &if action == AttemptProgress::Continue {
                     id.to_string()
                 } else {
                     format!("{id}-next")
@@ -266,7 +267,7 @@ async fn test_自動再試行_一時失敗は同じattemptを起動する() {
         &gateway,
         vec![FailedNodeStart {
             id: "first".into(),
-            kind: FailureKind::Temporary,
+            kind: Failure::Technical(TechnicalFailureNature::Transient),
         }],
     )
     .await
@@ -297,7 +298,10 @@ async fn test_node起動再試行_restartとstartに共通の20秒期限を適�
         .expect("node attempt must end at its 20 second deadline")
         .unwrap_err();
         // Then
-        assert_eq!(failure.error.failure_kind(), FailureKind::Expired);
+        assert_eq!(
+            Failure::from(&failure.error),
+            Failure::Technical(TechnicalFailureNature::TimedOut)
+        );
         let target = if pending_restart {
             "blocked"
         } else {
@@ -309,7 +313,12 @@ async fn test_node起動再試行_restartとstartに共通の20秒期限を適�
         assert_eq!(*gateway.starts.lock().unwrap(), [vec!["other-next"]]);
         let records = queue.records(target).await;
         assert_eq!(records.len(), 1);
-        assert_eq!(records[0].record.kind, FailureKind::Expired);
+        assert_eq!(
+            records[0].record.kind,
+            crate::domain::failure::Failure::Technical(
+                crate::domain::failure::TechnicalFailureNature::TimedOut
+            )
+        );
         assert!(records[0].requires_attention);
         assert_eq!(
             queue

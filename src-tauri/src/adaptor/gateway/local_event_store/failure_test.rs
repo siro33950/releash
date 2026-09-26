@@ -1,30 +1,34 @@
 use super::reader::storage_unavailable;
+use crate::adaptor::presenter::connect::ConnectFailure;
 use crate::domain::agent_session::repository::AgentSessionRepositoryError;
-use crate::domain::failure::{ClassifiedFailure, FailureKind};
 use crate::domain::local_event::LocalEventQueryError;
 use crate::domain::provider_lifecycle::ProviderLifecycleRepositoryError;
+use connectrpc::ErrorCode;
 
 #[test]
 fn test_sqliteの混雑と破損と状態不備を発生元で区別する() {
     // Given / When / Then
     for (code, expected) in [
-        (rusqlite::ffi::SQLITE_BUSY, FailureKind::Temporary),
-        (rusqlite::ffi::SQLITE_LOCKED, FailureKind::Temporary),
-        (rusqlite::ffi::SQLITE_CORRUPT, FailureKind::Corrupt),
-        (rusqlite::ffi::SQLITE_NOTADB, FailureKind::Corrupt),
-        (rusqlite::ffi::SQLITE_READONLY, FailureKind::StateRequired),
-        (rusqlite::ffi::SQLITE_FULL, FailureKind::StateRequired),
-        (rusqlite::ffi::SQLITE_ERROR, FailureKind::Internal),
+        (rusqlite::ffi::SQLITE_BUSY, ErrorCode::Unavailable),
+        (rusqlite::ffi::SQLITE_LOCKED, ErrorCode::Unavailable),
+        (rusqlite::ffi::SQLITE_CORRUPT, ErrorCode::DataLoss),
+        (rusqlite::ffi::SQLITE_NOTADB, ErrorCode::DataLoss),
+        (
+            rusqlite::ffi::SQLITE_READONLY,
+            ErrorCode::FailedPrecondition,
+        ),
+        (rusqlite::ffi::SQLITE_FULL, ErrorCode::FailedPrecondition),
+        (rusqlite::ffi::SQLITE_ERROR, ErrorCode::Internal),
     ] {
         let sqlite = rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(code), None);
         let error = storage_unavailable(&sqlite);
-        assert_eq!(error.failure_kind(), expected);
+        assert_eq!(error.connect_code(), expected);
         assert_eq!(
-            AgentSessionRepositoryError::from(error.clone()).failure_kind(),
+            AgentSessionRepositoryError::from(error.clone()).connect_code(),
             expected
         );
         assert_eq!(
-            ProviderLifecycleRepositoryError::from(error).failure_kind(),
+            ProviderLifecycleRepositoryError::from(error).connect_code(),
             expected
         );
     }
@@ -36,21 +40,21 @@ fn test_storeの期限切れを各repositoryが混雑へ潰さない() {
     assert_eq!(
         AgentSessionRepositoryError::from(LocalEventQueryError::Technical(
             crate::domain::failure::TechnicalFailure {
-                kind: crate::domain::failure::FailureKind::Expired,
+                nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
                 message: "deadline exceeded".into()
             }
         ))
-        .failure_kind(),
-        FailureKind::Expired
+        .connect_code(),
+        ErrorCode::DeadlineExceeded
     );
     assert_eq!(
         ProviderLifecycleRepositoryError::from(LocalEventQueryError::Technical(
             crate::domain::failure::TechnicalFailure {
-                kind: crate::domain::failure::FailureKind::Expired,
+                nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
                 message: "deadline exceeded".into()
             }
         ))
-        .failure_kind(),
-        FailureKind::Expired
+        .connect_code(),
+        ErrorCode::DeadlineExceeded
     );
 }

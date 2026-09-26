@@ -27,15 +27,7 @@ pub struct WorkspaceTree {
 }
 
 impl WorkspaceTree {
-    pub fn observe_background_failure(
-        &mut self,
-        target: &str,
-        kind: crate::domain::failure::FailureKind,
-        message: &str,
-    ) {
-        if !kind.requires_attention() {
-            return;
-        }
+    pub fn observe_background_failure(&mut self, target: &str, message: &str) {
         for node in &mut self.nodes {
             if node.id == target
                 || node.node_execution_id.as_deref() == Some(target)

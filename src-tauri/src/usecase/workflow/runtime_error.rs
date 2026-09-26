@@ -7,11 +7,7 @@ use crate::usecase::workflow::runtime_resolver::{
 #[derive(Debug)]
 pub enum WorkflowRuntimeError {
     Technical(crate::domain::failure::TechnicalFailure),
-    Store(crate::domain::failure::FailureKind),
-    StorageFailure {
-        kind: crate::domain::failure::FailureKind,
-        message: String,
-    },
+    Store(crate::domain::failure::StorageFailure),
     /// ワークフロー実行が見つからない
     ExecutionNotFound(String),
     /// セッションが見つからない
@@ -39,9 +35,8 @@ pub enum WorkflowRuntimeError {
 impl std::fmt::Display for WorkflowRuntimeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Store(kind) => write!(f, "Store failure: {kind:?}"),
+            Self::Store(failure) => failure.fmt(f),
             Self::Technical(stopped) => stopped.fmt(f),
-            Self::StorageFailure { message, .. } => f.write_str(message),
             Self::ExecutionNotFound(id) => {
                 write!(f, "No workflow execution found for session '{id}'")
             }
@@ -65,11 +60,16 @@ impl std::fmt::Display for WorkflowRuntimeError {
 }
 
 impl WorkflowRuntimeError {
+    pub(crate) fn version_conflict(&self) -> Option<&str> {
+        match self {
+            Self::Conflict(reason) => Some(reason),
+            _ => None,
+        }
+    }
+
     pub(crate) fn workflow_failure_kind(&self) -> NodeExecutionFailureKind {
         match self {
-            Self::Store(_) | Self::StorageFailure { .. } | Self::SessionStore(_) => {
-                NodeExecutionFailureKind::InfrastructureCrash
-            }
+            Self::Store(_) | Self::SessionStore(_) => NodeExecutionFailureKind::InfrastructureCrash,
             Self::AgentSession(_) | Self::Technical(_) => {
                 NodeExecutionFailureKind::ValidationFailure
             }
@@ -144,25 +144,19 @@ mod tests {
     }
 }
 
-impl crate::domain::failure::ClassifiedFailure for WorkflowRuntimeError {
-    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
-        use crate::domain::failure::FailureKind;
-        match self {
-            Self::Store(kind) | Self::StorageFailure { kind, .. } => *kind,
-            Self::Technical(stopped) => stopped.failure_kind(),
-            Self::AlreadyActive(_) | Self::InvalidState(_) => FailureKind::StateRequired,
-            Self::Conflict(_) => FailureKind::RestartRequired,
-            Self::ExecutionNotFound(_) | Self::SessionNotFound(_) => FailureKind::Missing,
-            Self::InvalidWorkflow(_) | Self::ValidationError(_) => FailureKind::InvalidInput,
-            Self::UnauthorizedWorktree(_) | Self::UnauthorizedApprovalTarget(_) => {
-                FailureKind::Permission
-            }
-            Self::SessionStore(_) => FailureKind::Internal,
-            Self::AgentSession(_) => FailureKind::StateRequired,
-        }
-    }
-}
-
 #[cfg(test)]
 #[path = "runtime_error_test.rs"]
 mod runtime_error_tests;
+
+impl WorkflowRuntimeError {
+    pub(crate) fn storage(
+        error: impl Into<crate::domain::failure::StorageFailure>,
+        message: impl Into<String>,
+    ) -> Self {
+        match crate::domain::workflow::WorkflowError::storage(error, message) {
+            crate::domain::workflow::WorkflowError::Conflict(message) => Self::Conflict(message),
+            crate::domain::workflow::WorkflowError::Store(failure) => Self::Store(failure),
+            _ => unreachable!("storage conversion only returns storage or version conflict"),
+        }
+    }
+}

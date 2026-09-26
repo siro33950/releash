@@ -1,9 +1,9 @@
 use super::*;
+use crate::adaptor::presenter::connect::ConnectFailure;
 use crate::common::operation_context::{Deadline, OperationContext, OperationStopped};
 use crate::domain::app_config::repository::ConfigUpdate;
 use crate::domain::app_config::value_objects::AppConfigDocument;
 use crate::domain::app_config::AppConfigError;
-use crate::domain::failure::ClassifiedFailure;
 use crate::usecase::workflow::runtime_error::WorkflowRuntimeError;
 
 struct Config(AppConfigDocument);
@@ -54,7 +54,10 @@ async fn test_managed_worktree非同期解決_期限と取消の分類をruntime
         } else {
             OperationStopped::Cancelled
         };
-        assert_eq!(error.failure_kind(), stopped.failure_kind());
+        assert_eq!(
+            error.connect_code(),
+            crate::domain::failure::TechnicalFailure::from(stopped).connect_code()
+        );
         assert!(matches!(error, WorkflowRuntimeError::Technical(value) if value == stopped.into()));
     }
     assert!(resolver.resolve(root).await.is_ok());

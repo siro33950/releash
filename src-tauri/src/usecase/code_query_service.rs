@@ -559,7 +559,7 @@ mod code_query_service_tests {
     #[test]
     fn test_差分算出_停止を全read_modelの失敗として返す() {
         use crate::common::operation_context::OperationStopped;
-        use crate::domain::failure::{ClassifiedFailure, FailureKind};
+
         struct StoppedDiff(OperationStopped);
         impl DiffComputer for StoppedDiff {
             fn diff_buffers(
@@ -571,10 +571,7 @@ mod code_query_service_tests {
                 Err(self.0.into())
             }
         }
-        for (stopped, expected) in [
-            (OperationStopped::Expired, FailureKind::Expired),
-            (OperationStopped::Cancelled, FailureKind::Cancelled),
-        ] {
+        for stopped in [OperationStopped::Expired, OperationStopped::Cancelled] {
             let mut service = service();
             service.diff_computer = Arc::new(StoppedDiff(stopped));
             let errors = [
@@ -594,7 +591,9 @@ mod code_query_service_tests {
                     .unwrap_err(),
             ];
             for error in errors {
-                assert_eq!(error.failure_kind(), expected);
+                assert!(
+                    matches!(error, CodeUsecaseError::Code(CodeError::Technical(actual)) if actual == stopped.into())
+                );
             }
         }
     }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::domain::failure::{BusinessFailure, Failure, TechnicalFailureNature};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 struct Runtime(tokio::time::Instant);
@@ -24,7 +25,7 @@ impl WorkQueueRuntime for Runtime {
             .await
             .unwrap_or_else(|_| {
                 Err(WorkFailure {
-                    kind: FailureKind::Expired,
+                    kind: Failure::Technical(TechnicalFailureNature::TimedOut),
                     message: "deadline".into(),
                 })
             })
@@ -38,11 +39,11 @@ pub(crate) fn queue() -> Arc<WorkQueueUsecase> {
 async fn test_作業列_分類による再試行と失敗集約を同じ経路で行う() {
     // Given
     for kind in [
-        FailureKind::Temporary,
-        FailureKind::RestartRequired,
-        FailureKind::Internal,
-        FailureKind::Cancelled,
-        FailureKind::StateRequired,
+        Failure::Technical(TechnicalFailureNature::Transient),
+        Failure::Business(BusinessFailure::VersionConflict),
+        Failure::Technical(TechnicalFailureNature::Other),
+        Failure::Technical(TechnicalFailureNature::Cancelled),
+        Failure::Business(BusinessFailure::Other),
     ] {
         let queue = queue();
         let calls = Arc::new(AtomicUsize::new(0));
@@ -54,7 +55,14 @@ async fn test_作業列_分類による再試行と失敗集約を同じ経路�
                 let call = seen.fetch_add(1, Ordering::SeqCst);
                 async move {
                     if call > 0 {
-                        assert_eq!(action, kind.retry_action());
+                        assert_eq!(
+                            action,
+                            if kind == Failure::Technical(TechnicalFailureNature::Transient) {
+                                AttemptProgress::Continue
+                            } else {
+                                AttemptProgress::Reload
+                            }
+                        );
                     }
                     if call < 6 {
                         Err(WorkFailure {
@@ -68,13 +76,21 @@ async fn test_作業列_分類による再試行と失敗集約を同じ経路�
             })
             .await;
         // Then
-        let retryable = kind.retry_action() != RetryAction::Stop;
+        let retryable = crate::usecase::work_queue::next_attempt(kind).is_some();
         assert_eq!(result.is_ok(), retryable);
         assert_eq!(calls.load(Ordering::SeqCst), if retryable { 7 } else { 1 });
         let records = queue.records("/repo").await;
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].record.count, if retryable { 6 } else { 1 });
-        assert_eq!(records[0].requires_attention, kind.requires_attention());
+        assert_eq!(
+            records[0].requires_attention,
+            !matches!(
+                kind,
+                Failure::Technical(TechnicalFailureNature::Transient)
+                    | Failure::Business(BusinessFailure::VersionConflict)
+                    | Failure::Technical(TechnicalFailureNature::Cancelled)
+            )
+        );
     }
 }
 
@@ -96,7 +112,10 @@ async fn test_作業列_期限で停止して他対象を妨げない() {
     let (blocked, ready) = tokio::join!(blocked, ready);
     // Then
     assert_eq!(ready.unwrap(), 42);
-    assert_eq!(blocked.unwrap_err().kind, FailureKind::Expired);
+    assert_eq!(
+        blocked.unwrap_err().kind,
+        Failure::Technical(TechnicalFailureNature::TimedOut)
+    );
     assert_eq!(queue.records("slow").await[0].record.count, 1);
     assert!(queue.records("slow").await[0].requires_attention);
 }
@@ -112,7 +131,7 @@ async fn test_作業列_停止分類を周期から再投入しても繰り返�
         seen.fetch_add(1, Ordering::SeqCst);
         Box::pin(async {
             Err(WorkFailure {
-                kind: FailureKind::Corrupt,
+                kind: Failure::Technical(TechnicalFailureNature::Other),
                 message: "corrupt".into(),
             })
         })
@@ -140,16 +159,19 @@ async fn test_試行の失敗記録_下位の再試行と上位への伝播を�
         retry_stage(shared(), key.clone(), RetryBackoff::ITEM, || async {
             Err::<(), _>(WorkFailure {
                 kind: if calls.fetch_add(1, Ordering::SeqCst) == 0 {
-                    FailureKind::Temporary
+                    Failure::Technical(TechnicalFailureNature::Transient)
                 } else {
-                    FailureKind::Internal
+                    Failure::Technical(TechnicalFailureNature::Other)
                 },
                 message: "failure".into(),
             })
         })
     })
     .await;
-    assert_eq!(result.unwrap_err().kind, FailureKind::Internal);
+    assert_eq!(
+        result.unwrap_err().kind,
+        Failure::Technical(TechnicalFailureNature::Other)
+    );
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     let records = shared().records(&key.target).await;
     assert_eq!(records.len(), 2);
@@ -163,7 +185,7 @@ async fn test_監視の恒久失敗_全体の記録にも要対応を表示す�
         .observe(
             &WorkKey::new("review_comments_watch", "comments"),
             &WorkFailure {
-                kind: FailureKind::Permission,
+                kind: Failure::Business(BusinessFailure::Other),
                 message: "permission denied".into(),
             },
         )
@@ -182,7 +204,7 @@ async fn test_workflow失敗_停止理由を保持し成功後は要対応を解
         .observe(
             &key,
             &WorkFailure {
-                kind: FailureKind::StateRequired,
+                kind: Failure::Business(BusinessFailure::Other),
                 message: "repair".into(),
             },
         )
@@ -231,7 +253,10 @@ async fn test_作業列_同一キーの実行重複を明示して先行の結�
         .await;
     release.notify_one();
     // Then
-    assert_eq!(second.unwrap_err().kind, FailureKind::AlreadyPresent);
+    assert_eq!(
+        second.unwrap_err().kind,
+        Failure::Business(BusinessFailure::Other)
+    );
     assert_eq!(first.await.unwrap().unwrap(), 42);
 }
 
@@ -240,9 +265,9 @@ async fn test_対象の要対応_terminalとsessionは停止失敗を表示し�
     // Given
     for operation in ["terminal_checkpoint", "provider_session_title"] {
         for kind in [
-            FailureKind::StateRequired,
-            FailureKind::Internal,
-            FailureKind::Cancelled,
+            Failure::Business(BusinessFailure::Other),
+            Failure::Technical(TechnicalFailureNature::Other),
+            Failure::Technical(TechnicalFailureNature::Cancelled),
         ] {
             let queue = queue();
             let key = WorkKey::new(operation, "target");
@@ -259,7 +284,12 @@ async fn test_対象の要対応_terminalとsessionは停止失敗を表示し�
             // Then
             assert_eq!(
                 queue.records("target").await[0].requires_attention,
-                kind.requires_attention()
+                !matches!(
+                    kind,
+                    Failure::Technical(TechnicalFailureNature::Transient)
+                        | Failure::Business(BusinessFailure::VersionConflict)
+                        | Failure::Technical(TechnicalFailureNature::Cancelled)
+                )
             );
             queue
                 .execute(key, RetryBackoff::ITEM, |_| async { Ok(()) })
@@ -280,7 +310,7 @@ async fn test_失敗の記録_保持上限までページから欠落なく観�
             .observe(
                 &WorkKey::new(&format!("operation-{index}"), "target"),
                 &WorkFailure {
-                    kind: FailureKind::StateRequired,
+                    kind: Failure::Business(BusinessFailure::Other),
                     message: index.to_string(),
                 },
             )
@@ -297,7 +327,12 @@ async fn test_失敗の記録_保持上限までページから欠落なく観�
             let record = observation.record;
             assert!(seen.insert(record.operation));
             assert_eq!(record.target, "target");
-            assert_eq!(record.kind, FailureKind::StateRequired);
+            assert_eq!(
+                record.kind,
+                crate::domain::failure::Failure::Business(
+                    crate::domain::failure::BusinessFailure::Other
+                )
+            );
             assert_eq!(record.count, 1);
             assert_eq!(record.first_observed_ms, record.last_observed_ms);
         }
@@ -332,7 +367,7 @@ async fn test_作業列_多数の対象の再試行に共通の頻度上限が�
                         async move {
                             if first {
                                 Err(WorkFailure {
-                                    kind: FailureKind::Temporary,
+                                    kind: Failure::Technical(TechnicalFailureNature::Transient),
                                     message: "busy".into(),
                                 })
                             } else {
@@ -377,7 +412,7 @@ async fn test_借用する再試行_同一キーを直列化し失敗回数を�
             durations.lock().unwrap().push(start.elapsed());
             if calls.fetch_add(1, Ordering::SeqCst) < 2 {
                 Err(WorkFailure {
-                    kind: FailureKind::RestartRequired,
+                    kind: Failure::Business(BusinessFailure::VersionConflict),
                     message: "conflict".into(),
                 })
             } else {
@@ -422,7 +457,7 @@ async fn test_要対応_取消後は対象表示と全体ページの両方か�
             .observe(
                 &key,
                 &WorkFailure {
-                    kind: FailureKind::StateRequired,
+                    kind: Failure::Business(BusinessFailure::Other),
                     message: "repair".into(),
                 },
             )
@@ -433,7 +468,7 @@ async fn test_要対応_取消後は対象表示と全体ページの両方か�
             .observe(
                 &key,
                 &WorkFailure {
-                    kind: FailureKind::Cancelled,
+                    kind: Failure::Technical(TechnicalFailureNature::Cancelled),
                     message: "cancel".into(),
                 },
             )
@@ -463,7 +498,7 @@ async fn test_要対応の通知_設定と解除で同じ購読対象に通知�
         .observe(
             &key,
             &WorkFailure {
-                kind: FailureKind::StateRequired,
+                kind: Failure::Business(BusinessFailure::Other),
                 message: "repair".into(),
             },
         )
@@ -475,6 +510,27 @@ async fn test_要対応の通知_設定と解除で同じ購読対象に通知�
     assert_eq!(
         changes.recv().await.unwrap(),
         StateChangeSource::Failures("tree".into())
+    );
+    queue
+        .observe(
+            &key,
+            &WorkFailure {
+                kind: Failure::Business(BusinessFailure::Other),
+                message: "new repair reason".into(),
+            },
+        )
+        .await;
+    assert_eq!(
+        changes.recv().await.unwrap(),
+        StateChangeSource::WorkspaceList
+    );
+    assert_eq!(
+        changes.recv().await.unwrap(),
+        StateChangeSource::Failures("tree".into())
+    );
+    assert_eq!(
+        queue.records("tree").await[0].record.message,
+        "new repair reason"
     );
     queue.clear_attention(&key).await;
     assert_eq!(
@@ -531,7 +587,7 @@ fn test_再試行_分類から待ち時間を選び失敗回数を保持する()
     let due = retry_due(
         &mut queue,
         &"a",
-        FailureKind::RestartRequired,
+        Failure::Business(BusinessFailure::VersionConflict),
         RetryBackoff::ITEM,
         Duration::ZERO,
         1.0,
@@ -543,7 +599,7 @@ fn test_再試行_分類から待ち時間を選び失敗回数を保持する()
     let due = retry_due(
         &mut queue,
         &"a",
-        FailureKind::Temporary,
+        Failure::Technical(TechnicalFailureNature::Transient),
         RetryBackoff::ITEM,
         due,
         1.0,
@@ -568,9 +624,9 @@ async fn test_借用する再試行_restartを渡し最終失敗を返して仕�
             let mut actions = actions.lock().unwrap();
             actions.push(action);
             let kind = if actions.len() == 1 {
-                FailureKind::RestartRequired
+                Failure::Business(BusinessFailure::VersionConflict)
             } else {
-                FailureKind::InvalidInput
+                Failure::Business(BusinessFailure::Other)
             };
             async move {
                 Err::<(), _>(WorkFailure {
@@ -584,10 +640,13 @@ async fn test_借用する再試行_restartを渡し最終失敗を返して仕�
     )
     .await;
     // Then
-    assert_eq!(result.unwrap_err().kind, FailureKind::InvalidInput);
+    assert_eq!(
+        result.unwrap_err().kind,
+        Failure::Business(BusinessFailure::Other)
+    );
     assert_eq!(
         *actions.lock().unwrap(),
-        [RetryAction::Retry, RetryAction::Restart]
+        [AttemptProgress::Continue, AttemptProgress::Reload]
     );
     assert!(queue.state.lock().unwrap().jobs.is_empty());
 }

@@ -312,18 +312,6 @@ impl ReviewEvent {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ReviewErrorCode {
-    Expired,
-    Cancelled,
-    InvalidInput,
-    NotFound,
-    AlreadyResolved,
-    PermissionDenied,
-    Io,
-    Serialize,
-}
-
 #[derive(Debug)]
 pub enum ReviewError {
     Technical(crate::domain::failure::TechnicalFailure),
@@ -333,24 +321,6 @@ pub enum ReviewError {
     PermissionDenied(String),
     Io(String),
     Serialize(String),
-}
-
-impl ReviewError {
-    pub fn code(&self) -> ReviewErrorCode {
-        match self {
-            Self::Technical(error) => match error.kind {
-                crate::domain::failure::FailureKind::Expired => ReviewErrorCode::Expired,
-                crate::domain::failure::FailureKind::Cancelled => ReviewErrorCode::Cancelled,
-                _ => ReviewErrorCode::Io,
-            },
-            Self::InvalidInput(_) => ReviewErrorCode::InvalidInput,
-            Self::NotFound(_) => ReviewErrorCode::NotFound,
-            Self::AlreadyResolved(_) => ReviewErrorCode::AlreadyResolved,
-            Self::PermissionDenied(_) => ReviewErrorCode::PermissionDenied,
-            Self::Io(_) => ReviewErrorCode::Io,
-            Self::Serialize(_) => ReviewErrorCode::Serialize,
-        }
-    }
 }
 
 impl fmt::Display for ReviewError {
@@ -915,22 +885,6 @@ mod tests {
 
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].id, "other");
-    }
-}
-
-impl crate::domain::failure::ClassifiedFailure for ReviewError {
-    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
-        use crate::domain::failure::FailureKind as F;
-        match self {
-            Self::Technical(error) => {
-                crate::domain::failure::ClassifiedFailure::failure_kind(error)
-            }
-            Self::InvalidInput(_) => F::InvalidInput,
-            Self::NotFound(_) => F::Missing,
-            Self::AlreadyResolved(_) => F::StateRequired,
-            Self::PermissionDenied(_) => F::Permission,
-            Self::Io(_) | Self::Serialize(_) => F::Internal,
-        }
     }
 }
 

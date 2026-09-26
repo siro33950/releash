@@ -5,3 +5,7 @@ pub mod error_handling;
 pub(crate) mod operation_context;
 
 pub(crate) mod git_operation;
+
+pub(crate) mod sqlite_failure;
+
+pub(crate) mod storage_failure;

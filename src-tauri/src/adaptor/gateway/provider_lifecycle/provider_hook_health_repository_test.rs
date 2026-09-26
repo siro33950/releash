@@ -107,7 +107,8 @@ async fn test_provider_hook_health_repository_providerごとの状態を混同�
 
 #[tokio::test]
 async fn test_hook保存_同一キーの異なる内容と古いrevisionの分類を区別する() {
-    use crate::domain::failure::{ClassifiedFailure, FailureKind};
+    use crate::adaptor::presenter::connect::ConnectFailure;
+    use connectrpc::ErrorCode;
     // Given
     let directory = tempdir().unwrap();
     let store =
@@ -125,6 +126,6 @@ async fn test_hook保存_同一キーの異なる内容と古いrevisionの分�
     let payload = repository.save(updated, "same-request").await.unwrap_err();
     let head = repository.save(stale, "new-request").await.unwrap_err();
     // Then
-    assert_eq!(payload.failure_kind(), FailureKind::StateRequired);
-    assert_eq!(head.failure_kind(), FailureKind::RestartRequired);
+    assert_eq!(payload.connect_code(), ErrorCode::FailedPrecondition);
+    assert_eq!(head.connect_code(), ErrorCode::Aborted);
 }

@@ -1,6 +1,5 @@
 use super::{fact_codec, fact_log, stored_definition};
 use crate::adaptor::gateway::local_event_store::{node_events, LocalEventStore};
-use crate::domain::failure::ClassifiedFailure;
 use crate::domain::workflow::entities::workflow_execution::ExecutionTree;
 use crate::domain::workflow::repository::{WorkflowStartupRecord, WorkflowStartupRepository};
 use crate::domain::workflow::{NodeFact, WorkflowError};
@@ -29,10 +28,10 @@ impl crate::usecase::workflow::startup::WorkflowStartupGateway for HostWorkflowS
                 crate::usecase::workflow::runtime_error::WorkflowRuntimeError::Conflict(reason) => {
                     WorkflowError::Conflict(reason)
                 }
-                error => WorkflowError::StorageUnavailable {
-                    kind: error.failure_kind(),
-                    message: error.to_string(),
-                },
+                error => {
+                    let message = error.to_string();
+                    WorkflowError::storage(error, message)
+                }
             })
     }
 }

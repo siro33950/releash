@@ -269,7 +269,7 @@ fn test_diff_途中の取消を空や部分結果へ変換しない() {
             )),
             Err(CodeError::Technical(
                 crate::domain::failure::TechnicalFailure {
-                    kind: crate::domain::failure::FailureKind::Cancelled,
+                    nature: crate::domain::failure::TechnicalFailureNature::Cancelled,
                     ..
                 }
             ))
@@ -281,7 +281,7 @@ fn test_diff_途中の取消を空や部分結果へ変換しない() {
         crate::common::operation_context::sync_scope(context, || diff_buffers("a", "b", None)),
         Err(CodeError::Technical(
             crate::domain::failure::TechnicalFailure {
-                kind: crate::domain::failure::FailureKind::Expired,
+                nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
                 ..
             }
         ))

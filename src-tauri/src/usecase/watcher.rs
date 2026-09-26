@@ -140,15 +140,3 @@ impl Drop for WatcherSubscription {
         tokio::task::spawn_blocking(move || usecase.stop_watchers(watchers));
     }
 }
-
-impl crate::domain::failure::ClassifiedFailure for UsecaseError {
-    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
-        use crate::domain::failure::FailureKind;
-        match self {
-            Self::Subscription(error) => error.failure_kind(),
-            Self::Repository(error) => error.failure_kind(),
-            Self::File(_) => FailureKind::Internal,
-            Self::RepositoryUnavailable => FailureKind::StateRequired,
-        }
-    }
-}

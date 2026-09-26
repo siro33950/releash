@@ -457,10 +457,12 @@ mod append_contract_tests {
         // Then: 失敗が握りつぶされず呼び出し元へ返り、行は記録されない
         assert_eq!(
             error,
-            crate::domain::workflow::WorkflowError::StorageUnavailable {
-                message: "node fact append failed: node event write outcome is unknown".into(),
-                kind: crate::domain::failure::FailureKind::RestartRequired,
-            }
+            crate::domain::workflow::WorkflowError::Store(
+                crate::domain::failure::StorageFailure::from(
+                    crate::domain::local_event::CommitBatchError::AppendOutcomeUnknown
+                )
+                .with_message("node fact append failed: node event write outcome is unknown")
+            )
         );
         assert!(read_raw_rows(&store, "unavailable-tree").await.is_empty());
     }
@@ -499,10 +501,12 @@ mod append_contract_tests {
         // Then: 容量拒否が返り、成功済みの1行だけが durable のまま残る
         assert_eq!(
             error,
-            crate::domain::workflow::WorkflowError::StorageUnavailable {
-                message: "node fact append failed: batch capacity exceeded".into(),
-                kind: crate::domain::failure::FailureKind::Capacity,
-            }
+            crate::domain::workflow::WorkflowError::Store(
+                crate::domain::failure::StorageFailure::from(
+                    crate::domain::local_event::CommitBatchError::CapacityExceeded
+                )
+                .with_message("node fact append failed: batch capacity exceeded")
+            )
         );
         let stored = read_raw_rows(&store, "partial-tree").await;
         assert_eq!(stored.len(), 1);
@@ -2488,22 +2492,23 @@ async fn test_追記結果確認_全行一致と競合と未保存を共通の�
 
 #[test]
 fn test_fact読み出し_呼び出し境界で混雑と期限切れと破損の分類を保持する() {
-    use crate::domain::failure::{ClassifiedFailure, FailureKind as F};
+    use crate::adaptor::presenter::connect::ConnectFailure;
+    use connectrpc::ErrorCode as F;
     // Given
     for (source, expected) in [
-        (LocalEventQueryError::QueryBusy, F::Temporary),
+        (LocalEventQueryError::QueryBusy, F::Unavailable),
         (
             LocalEventQueryError::Technical(crate::domain::failure::TechnicalFailure {
-                kind: crate::domain::failure::FailureKind::Expired,
+                nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
                 message: "deadline exceeded".into(),
             }),
-            F::Expired,
+            F::DeadlineExceeded,
         ),
         (
             LocalEventQueryError::Corrupt {
                 correlation_id: "id".into(),
             },
-            F::Corrupt,
+            F::DataLoss,
         ),
         (
             LocalEventQueryError::Internal {
@@ -2518,18 +2523,18 @@ fn test_fact読み出し_呼び出し境界で混雑と期限切れと破損の�
             crate::domain::workflow::WorkflowError::from(FactReadError::Query(source.clone()));
         // Then
         assert_eq!(workspace, source);
-        assert_eq!(workspace.failure_kind(), expected);
-        assert_eq!(archive.failure_kind(), expected);
+        assert_eq!(workspace.connect_code(), expected);
+        assert_eq!(archive.connect_code(), expected);
     }
     for message in ["invalid fact", "missing session attachment"] {
         assert_eq!(
-            LocalEventQueryError::from(FactReadError::Corrupt(message.into())).failure_kind(),
-            F::Corrupt
+            LocalEventQueryError::from(FactReadError::Corrupt(message.into())).connect_code(),
+            F::DataLoss
         );
         assert_eq!(
             crate::domain::workflow::WorkflowError::from(FactReadError::Corrupt(message.into()))
-                .failure_kind(),
-            F::Corrupt
+                .connect_code(),
+            F::DataLoss
         );
     }
 }
@@ -2537,7 +2542,7 @@ fn test_fact読み出し_呼び出し境界で混雑と期限切れと破損の�
 #[tokio::test]
 async fn test_fact読み出し_liveとread_onlyでsql失敗の分類をconnectまで保持する() {
     use crate::adaptor::gateway::local_event_store::reader::storage_unavailable;
-    use crate::adaptor::protocol::connect::classified_error;
+    use crate::adaptor::presenter::connect::classified_error;
     use connectrpc::ErrorCode;
     // Given
     let directory = tempfile::tempdir().unwrap();
@@ -2600,7 +2605,7 @@ async fn test_reconciliation読取_復元不能な事実列はdata_lossになる
         matches!(&error, crate::domain::workflow::WorkflowError::CorruptStoredState(message) if message.contains("does not begin with a started fact"))
     );
     assert_eq!(
-        crate::adaptor::protocol::connect::classified_error(error).code,
+        crate::adaptor::presenter::connect::classified_error(error).code,
         connectrpc::ErrorCode::DataLoss
     );
 }

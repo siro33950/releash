@@ -1,81 +1,14 @@
 use crate::adaptor::presenter::error::AppError;
-use crate::domain::failure::ClassifiedFailure;
-use serde::Serialize;
+pub(crate) use crate::adaptor::presenter::terminal_error::{
+    invalid_owner_error, invalid_terminal_resize_owner_error, invalid_terminal_write_owner_error,
+    terminal_resize_error, terminal_write_error, TerminalCommandError, TerminalCommandOperation,
+};
 
 use crate::adaptor::controller::state::AppState;
 use crate::adaptor::protocol::terminal::{
     GetOrSpawnTerminalV1, TerminalInputPerformanceSampleV1, TerminalLaunchPerformanceSampleV1,
     TerminalPerformanceSwitchesV1, TerminalSurfaceOwnerV1,
 };
-use crate::usecase::terminal_surface::error::UsecaseError;
-
-#[derive(Clone, Copy)]
-pub(crate) enum TerminalCommandErrorCode {
-    PtyError,
-    InvalidRequest,
-}
-
-impl TerminalCommandErrorCode {
-    fn code(self) -> &'static str {
-        match self {
-            Self::PtyError => "PTY_ERROR",
-            Self::InvalidRequest => "INVALID_REQUEST",
-        }
-    }
-}
-
-pub(crate) fn invalid_owner_error(
-    operation: TerminalCommandOperation,
-    internal_cause: String,
-) -> TerminalCommandError {
-    let code = TerminalCommandErrorCode::InvalidRequest;
-    log::warn!(
-        "Terminal command failed: operation={} code={} cause={}",
-        operation.name(),
-        code.code(),
-        internal_cause
-    );
-    TerminalCommandError {
-        kind: crate::domain::failure::FailureKind::InvalidInput,
-        code: code.code().to_string(),
-        message: operation.message(code).to_string(),
-    }
-}
-
-pub(crate) fn invalid_terminal_write_owner_error(internal_cause: String) -> AppError {
-    log::warn!(
-        "Terminal command failed: operation=write_terminal_surface code=INVALID_REQUEST cause={}",
-        internal_cause
-    );
-    AppError::new("Terminal input could not be sent because the request is invalid.")
-        .with_failure_kind(crate::domain::failure::FailureKind::InvalidInput)
-}
-
-pub(crate) fn terminal_write_error(error: UsecaseError) -> AppError {
-    log::error!(
-        "Terminal command failed: operation=write_terminal_surface code=PTY_ERROR cause={}",
-        error
-    );
-    AppError::new("Terminal input could not be sent. Try again.")
-        .with_failure_kind(error.failure_kind())
-}
-
-pub(crate) fn invalid_terminal_resize_owner_error(internal_cause: String) -> AppError {
-    log::warn!(
-        "Terminal command failed: operation=resize_terminal_surface code=INVALID_REQUEST cause={}",
-        internal_cause
-    );
-    AppError::new("Terminal resize failed because the request is invalid.")
-        .with_failure_kind(crate::domain::failure::FailureKind::InvalidInput)
-}
-
-pub(crate) fn terminal_resize_error(error: UsecaseError) -> AppError {
-    log::error!(
-        "Terminal command failed: operation=resize_terminal_surface code=PTY_ERROR cause={}",
-        error
-    );
-    AppError::new("Terminal resize failed. Try again.").with_failure_kind(error.failure_kind())
-}
 
 pub(crate) fn get_terminal_performance_switches_shared() -> TerminalPerformanceSwitchesV1 {
     telemetry().terminal_performance_switches().into()
@@ -128,81 +61,24 @@ pub(crate) fn record_terminal_launch_renderer_phase_shared(
     duration_ms: f64,
 ) -> Result<(), AppError> {
     if !duration_ms.is_finite() || duration_ms < 0.0 {
-        return Err(AppError::new(
+        return Err(AppError::invalid_request(
             "Terminal launch renderer duration must be finite and non-negative",
-        )
-        .with_failure_kind(crate::domain::failure::FailureKind::InvalidInput));
+        ));
     }
     let metric = match phase.as_str() {
         "first_xterm_parsed" => crate::usecase::telemetry::TerminalLaunch::FirstXtermParsed,
         "first_paint" => crate::usecase::telemetry::TerminalLaunch::FirstPaint,
         _ => {
-            return Err(AppError::new("Unknown Terminal launch renderer phase")
-                .with_failure_kind(crate::domain::failure::FailureKind::InvalidInput))
+            return Err(AppError::invalid_request(
+                "Unknown Terminal launch renderer phase",
+            ))
         }
     };
     let duration = std::time::Duration::try_from_secs_f64(duration_ms / 1_000.0).map_err(|_| {
-        AppError::new("Terminal launch renderer duration is out of range")
-            .with_failure_kind(crate::domain::failure::FailureKind::InvalidInput)
+        AppError::invalid_request("Terminal launch renderer duration is out of range")
     })?;
     telemetry().record_terminal_launch(metric, duration);
     Ok(())
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct TerminalCommandError {
-    #[serde(skip)]
-    pub kind: crate::domain::failure::FailureKind,
-    pub code: String,
-    pub message: String,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum TerminalCommandOperation {
-    Initialize,
-}
-
-impl TerminalCommandOperation {
-    fn name(self) -> &'static str {
-        match self {
-            Self::Initialize => "get_or_spawn_terminal_surface",
-        }
-    }
-
-    fn message(self, code: TerminalCommandErrorCode) -> &'static str {
-        match (self, code) {
-            (Self::Initialize, TerminalCommandErrorCode::PtyError) => {
-                "Terminal initialization failed. Try again."
-            }
-            (Self::Initialize, TerminalCommandErrorCode::InvalidRequest) => {
-                "Terminal initialization failed because the request is invalid."
-            }
-        }
-    }
-}
-
-impl TerminalCommandError {
-    pub(crate) fn from_usecase(error: UsecaseError, operation: TerminalCommandOperation) -> Self {
-        let kind = error.failure_kind();
-        let internal_cause = error.to_string();
-        let code = match error {
-            UsecaseError::Gateway(_)
-            | UsecaseError::OwnerConflict
-            | UsecaseError::PtySpawn { .. }
-            | UsecaseError::OtherSpawnFailure { .. } => TerminalCommandErrorCode::PtyError,
-        };
-        log::error!(
-            "Terminal command failed: operation={} code={} cause={}",
-            operation.name(),
-            code.code(),
-            internal_cause
-        );
-        Self {
-            kind,
-            code: code.code().to_string(),
-            message: operation.message(code).to_string(),
-        }
-    }
 }
 
 pub(crate) fn write_terminal_surface_shared(
@@ -233,9 +109,7 @@ pub(crate) fn write_paths_to_terminal_surface_shared(
     owner: TerminalSurfaceOwnerV1,
     paths: Vec<String>,
 ) -> Result<(), AppError> {
-    let owner = owner.try_into().map_err(|error| {
-        AppError::new(error).with_failure_kind(crate::domain::failure::FailureKind::InvalidInput)
-    })?;
+    let owner = owner.try_into().map_err(AppError::invalid_request)?;
     state
         .terminal_surface
         .write_paths(&owner, &paths)
@@ -264,9 +138,7 @@ pub(crate) fn kill_terminal_surface_shared(
     state: &AppState,
     owner: TerminalSurfaceOwnerV1,
 ) -> Result<(), AppError> {
-    let owner = owner.try_into().map_err(|error| {
-        AppError::new(error).with_failure_kind(crate::domain::failure::FailureKind::InvalidInput)
-    })?;
+    let owner = owner.try_into().map_err(AppError::invalid_request)?;
     state
         .terminal_surface
         .kill(&owner)

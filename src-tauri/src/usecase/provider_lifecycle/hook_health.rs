@@ -1,4 +1,3 @@
-use crate::domain::failure::ClassifiedFailure;
 use std::sync::Arc;
 
 use crate::domain::provider_lifecycle::{
@@ -34,9 +33,10 @@ pub(crate) trait ProviderHookHealthFailureQuery: Send + Sync {
     ) -> Result<Vec<ProviderHookHealthFailureObservation>, ProviderHookHealthFailureQueryError>;
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ProviderHookHealthUsecaseError {
-    Store(crate::domain::failure::FailureKind),
+    Conflict,
+    Store(crate::domain::failure::StorageFailure),
     InvalidInput,
     StorageUnavailable,
     Corrupt,
@@ -129,7 +129,10 @@ impl ProviderHookHealthUsecase {
             match self.repository.save(versioned, caller_request_id).await {
                 Ok(_) => return Ok(()),
                 Err(error)
-                    if error.failure_kind() == crate::domain::failure::FailureKind::Temporary =>
+                    if crate::domain::failure::Failure::from(&error)
+                        == crate::domain::failure::Failure::Technical(
+                            crate::domain::failure::TechnicalFailureNature::Transient,
+                        ) =>
                 {
                     continue
                 }
@@ -161,7 +164,10 @@ impl ProviderHookHealthUsecase {
             match self.repository.save(versioned, caller_request_id).await {
                 Ok(_) => return Ok(()),
                 Err(error)
-                    if error.failure_kind() == crate::domain::failure::FailureKind::Temporary =>
+                    if crate::domain::failure::Failure::from(&error)
+                        == crate::domain::failure::Failure::Technical(
+                            crate::domain::failure::TechnicalFailureNature::Transient,
+                        ) =>
                 {
                     continue
                 }
@@ -192,7 +198,10 @@ impl ProviderHookHealthUsecase {
             match self.repository.save(versioned, caller_request_id).await {
                 Ok(_) => return Ok(()),
                 Err(error)
-                    if error.failure_kind() == crate::domain::failure::FailureKind::Temporary =>
+                    if crate::domain::failure::Failure::from(&error)
+                        == crate::domain::failure::Failure::Technical(
+                            crate::domain::failure::TechnicalFailureNature::Transient,
+                        ) =>
                 {
                     continue
                 }
@@ -225,9 +234,7 @@ fn map_error(error: ProviderHookHealthRepositoryError) -> ProviderHookHealthUsec
         ProviderHookHealthRepositoryError::InvalidInput => {
             ProviderHookHealthUsecaseError::InvalidInput
         }
-        error @ ProviderHookHealthRepositoryError::Conflict => {
-            ProviderHookHealthUsecaseError::Store(error.failure_kind())
-        }
+        ProviderHookHealthRepositoryError::Conflict => ProviderHookHealthUsecaseError::Conflict,
         ProviderHookHealthRepositoryError::StorageUnavailable => {
             ProviderHookHealthUsecaseError::StorageUnavailable
         }
@@ -242,28 +249,6 @@ fn provider_label(provider: ProviderKind) -> &'static str {
     match provider {
         ProviderKind::Claude => "claude",
         ProviderKind::Codex => "codex",
-    }
-}
-
-impl crate::domain::failure::ClassifiedFailure for ProviderHookHealthFailureQueryError {
-    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
-        use crate::domain::failure::FailureKind;
-        match self {
-            Self::Unavailable => FailureKind::Temporary,
-            Self::Corrupt => FailureKind::Corrupt,
-        }
-    }
-}
-
-impl crate::domain::failure::ClassifiedFailure for ProviderHookHealthUsecaseError {
-    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
-        use crate::domain::failure::FailureKind;
-        match self {
-            Self::Store(kind) => *kind,
-            Self::InvalidInput => FailureKind::InvalidInput,
-            Self::StorageUnavailable => FailureKind::Temporary,
-            Self::Corrupt => FailureKind::Corrupt,
-        }
     }
 }
 

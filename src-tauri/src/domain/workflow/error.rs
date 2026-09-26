@@ -7,13 +7,9 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkflowError {
     Technical(crate::domain::failure::TechnicalFailure),
-    Store(crate::domain::failure::FailureKind),
+    Store(crate::domain::failure::StorageFailure),
     External(String),
     Editor(crate::domain::external_editor::EditorError),
-    StorageUnavailable {
-        message: String,
-        kind: crate::domain::failure::FailureKind,
-    },
     CorruptStoredState(String),
     IncompatibleStoredEvent(String),
     Validation(String),
@@ -27,16 +23,9 @@ impl std::fmt::Display for WorkflowError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Technical(error) => error.fmt(f),
-            Self::Store(kind) => write!(f, "Store failure: {kind:?}"),
+            Self::Store(failure) => failure.fmt(f),
             Self::External(msg) => f.write_str(msg),
             Self::Editor(error) => error.fmt(f),
-            Self::StorageUnavailable { message, kind } => {
-                write!(
-                    f,
-                    "storage_unavailable (retryable={}): {message}",
-                    *kind == crate::domain::failure::FailureKind::Temporary
-                )
-            }
             Self::CorruptStoredState(message) => {
                 write!(f, "corrupt_stored_state: {message}")
             }
@@ -87,35 +76,6 @@ mod workflow_error_tests {
     }
 }
 
-impl crate::domain::failure::ClassifiedFailure for WorkflowError {
-    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
-        use crate::domain::failure::FailureKind as F;
-        match self {
-            Self::Technical(error) => error.failure_kind(),
-            Self::Store(kind) => *kind,
-            Self::External(_) => F::Internal,
-            Self::Editor(error) => error.failure_kind(),
-            Self::StorageUnavailable { kind, .. } => *kind,
-            Self::CorruptStoredState(_) => F::Corrupt,
-            Self::IncompatibleStoredEvent(_) | Self::InvalidState(_) => F::StateRequired,
-            Self::Validation(_) => F::InvalidInput,
-            Self::Conflict(_) => F::RestartRequired,
-            Self::NotFound(_) => F::Missing,
-            Self::UnauthorizedApprovalTarget(_) => F::Permission,
-        }
-    }
-}
-
 #[cfg(test)]
 #[path = "error_test.rs"]
 mod error_tests;
-
-impl From<crate::domain::local_event::CommitBatchError> for WorkflowError {
-    fn from(error: crate::domain::local_event::CommitBatchError) -> Self {
-        use crate::domain::failure::ClassifiedFailure;
-        Self::StorageUnavailable {
-            message: format!("node fact append failed: {error}"),
-            kind: error.failure_kind(),
-        }
-    }
-}

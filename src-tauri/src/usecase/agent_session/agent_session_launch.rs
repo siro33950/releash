@@ -1,4 +1,3 @@
-use crate::domain::failure::ClassifiedFailure;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
@@ -71,10 +70,10 @@ pub(crate) enum AgentSessionHistoryResumeOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AgentSessionLaunchUsecaseError {
     Technical(crate::domain::failure::TechnicalFailure),
-    Store(crate::domain::failure::FailureKind),
+    Store(crate::domain::failure::StorageFailure),
     ProviderUnavailable,
     InvalidInput,
-    Conflict(crate::domain::failure::FailureKind),
+    Conflict(crate::domain::failure::StorageFailure),
     StorageUnavailable,
     LaunchUnavailable,
     TerminalUnavailable,
@@ -82,16 +81,16 @@ pub(crate) enum AgentSessionLaunchUsecaseError {
     Corrupt,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum StartedExecutionTreeRegistrationError {
-    Store(crate::domain::failure::FailureKind),
+    Store(crate::domain::failure::StorageFailure),
     Unavailable,
     Corrupt,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ExecutionTreeCacheReleaseError {
-    Store(crate::domain::failure::FailureKind),
+    Store(crate::domain::failure::StorageFailure),
     Unavailable,
     Corrupt,
 }
@@ -373,11 +372,11 @@ impl AgentSessionLaunchUsecase {
         let _workspace = self
             .execution_trees
             .begin_worktree_mutation(request.workspace.as_str())
-            .map_err(|error| AgentSessionLaunchUsecaseError::Conflict(error.failure_kind()))?;
+            .map_err(|error| AgentSessionLaunchUsecaseError::Conflict(error.into()))?;
         let _worktree = self
             .execution_trees
             .begin_worktree_mutation(&request.worktree_path)
-            .map_err(|error| AgentSessionLaunchUsecaseError::Conflict(error.failure_kind()))?;
+            .map_err(|error| AgentSessionLaunchUsecaseError::Conflict(error.into()))?;
         let agent_session_id = issue_agent_session_id(&request.caller_request_id)?;
         let tree_location = AgentSessionTreeLocation::session_tree_root(&agent_session_id)
             .map_err(|_| AgentSessionLaunchUsecaseError::InvalidInput)?;
@@ -773,11 +772,11 @@ impl AgentSessionLaunchUsecase {
         let _workspace = self
             .execution_trees
             .begin_worktree_mutation(request.workspace.as_str())
-            .map_err(|error| AgentSessionLaunchUsecaseError::Conflict(error.failure_kind()))?;
+            .map_err(|error| AgentSessionLaunchUsecaseError::Conflict(error.into()))?;
         let _worktree = self
             .execution_trees
             .begin_worktree_mutation(&request.worktree_path)
-            .map_err(|error| AgentSessionLaunchUsecaseError::Conflict(error.failure_kind()))?;
+            .map_err(|error| AgentSessionLaunchUsecaseError::Conflict(error.into()))?;
         if request.provider_session_id.trim().is_empty() {
             return Err(AgentSessionLaunchUsecaseError::InvalidInput);
         }
@@ -787,6 +786,14 @@ impl AgentSessionLaunchUsecase {
             .list_metadata(request.provider, &request.worktree_path, 201)
             .await
             .map_err(|error| match error {
+                AgentSessionHistoryGatewayError::Conflict => AgentSessionLaunchUsecaseError::Conflict(
+                    crate::domain::agent_session::repository::AgentSessionRepositoryError::Conflict.into(),
+                ),
+                AgentSessionHistoryGatewayError::ProviderSessionAlreadyOwned { agent_session_id } => {
+                    AgentSessionLaunchUsecaseError::Conflict(
+                        crate::domain::agent_session::repository::AgentSessionRepositoryError::ProviderSessionAlreadyOwned { agent_session_id }.into(),
+                    )
+                }
                 AgentSessionHistoryGatewayError::InvalidRequest => {
                     AgentSessionLaunchUsecaseError::InvalidInput
                 }
@@ -1108,7 +1115,7 @@ fn map_session_error(error: AgentSessionUsecaseError) -> AgentSessionLaunchUseca
         }
         error @ (AgentSessionUsecaseError::Conflict
         | AgentSessionUsecaseError::ProviderSessionAlreadyOwned { .. }) => {
-            AgentSessionLaunchUsecaseError::Conflict(error.failure_kind())
+            AgentSessionLaunchUsecaseError::Conflict(error.into())
         }
         AgentSessionUsecaseError::Unavailable => AgentSessionLaunchUsecaseError::StorageUnavailable,
         AgentSessionUsecaseError::Store(kind) => AgentSessionLaunchUsecaseError::Store(kind),
@@ -1122,6 +1129,12 @@ fn map_lifecycle_error(error: ProviderLifecycleUsecaseError) -> AgentSessionLaun
         ProviderLifecycleUsecaseError::StorageUnavailable => {
             AgentSessionLaunchUsecaseError::StorageUnavailable
         }
+        ProviderLifecycleUsecaseError::Conflict => AgentSessionLaunchUsecaseError::Conflict(
+            crate::domain::workflow::WorkflowError::Conflict(
+                "provider lifecycle version conflict".into(),
+            )
+            .into(),
+        ),
         ProviderLifecycleUsecaseError::Store(kind) => AgentSessionLaunchUsecaseError::Store(kind),
         ProviderLifecycleUsecaseError::Corrupt => AgentSessionLaunchUsecaseError::Corrupt,
     }
@@ -1158,21 +1171,3 @@ fn map_execution_tree_registration_error(
 #[cfg(test)]
 #[path = "agent_session_launch_test.rs"]
 mod agent_session_launch_tests;
-
-impl crate::domain::failure::ClassifiedFailure for AgentSessionLaunchUsecaseError {
-    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
-        use crate::domain::failure::FailureKind;
-        match self {
-            Self::Store(kind) => *kind,
-            Self::Technical(stopped) => stopped.failure_kind(),
-            Self::ProviderUnavailable => FailureKind::StateRequired,
-            Self::InvalidInput => FailureKind::InvalidInput,
-            Self::Conflict(kind) => *kind,
-            Self::StorageUnavailable => FailureKind::Temporary,
-            Self::LaunchUnavailable => FailureKind::StateRequired,
-            Self::TerminalUnavailable => FailureKind::StateRequired,
-            Self::TerminalSpawn(_) => FailureKind::StateRequired,
-            Self::Corrupt => FailureKind::Corrupt,
-        }
-    }
-}

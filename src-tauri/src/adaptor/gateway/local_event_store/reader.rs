@@ -40,45 +40,19 @@ fn correlation_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
-pub(crate) fn sqlite_failure_kind(error: &rusqlite::Error) -> crate::domain::failure::FailureKind {
-    use crate::domain::failure::FailureKind;
-    match error.sqlite_error_code() {
-        Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked) => {
-            FailureKind::Temporary
-        }
-        Some(rusqlite::ErrorCode::DatabaseCorrupt | rusqlite::ErrorCode::NotADatabase) => {
-            FailureKind::Corrupt
-        }
-        Some(
-            rusqlite::ErrorCode::PermissionDenied
-            | rusqlite::ErrorCode::ReadOnly
-            | rusqlite::ErrorCode::CannotOpen
-            | rusqlite::ErrorCode::DiskFull
-            | rusqlite::ErrorCode::OutOfMemory
-            | rusqlite::ErrorCode::OperationInterrupted
-            | rusqlite::ErrorCode::SystemIoFailure
-            | rusqlite::ErrorCode::FileLockingProtocolFailed
-            | rusqlite::ErrorCode::TooBig
-            | rusqlite::ErrorCode::NoLargeFileSupport
-            | rusqlite::ErrorCode::AuthorizationForStatementDenied,
-        ) => FailureKind::StateRequired,
-        _ => FailureKind::Internal,
-    }
-}
-
 pub(crate) fn storage_unavailable(error: &rusqlite::Error) -> LocalEventQueryError {
-    use crate::domain::failure::FailureKind;
+    use crate::adaptor::gateway::shared::sqlite_failure::{condition, SqliteFailureCondition};
     let correlation = correlation_id();
     log::warn!("local event store read failure [{correlation}]: {error}");
-    match sqlite_failure_kind(error) {
-        FailureKind::Temporary => LocalEventQueryError::QueryBusy,
-        FailureKind::Corrupt => LocalEventQueryError::Corrupt {
+    match condition(error) {
+        SqliteFailureCondition::Busy => LocalEventQueryError::QueryBusy,
+        SqliteFailureCondition::Corrupt => LocalEventQueryError::Corrupt {
             correlation_id: correlation,
         },
-        FailureKind::StateRequired => LocalEventQueryError::StorageUnavailable {
+        SqliteFailureCondition::Inaccessible => LocalEventQueryError::StorageAccessRequired {
             failure: SafeOperationFailure::new(
                 SessionOperationFailureKind::StorageUnavailable,
-                crate::domain::failure::FailureKind::StateRequired,
+                crate::domain::failure::TechnicalFailureNature::Other,
                 "local event store read failed",
                 correlation,
             ),
@@ -99,17 +73,20 @@ fn corrupt(context: &str) -> LocalEventQueryError {
 
 fn reader_pool_unavailable(
     message: &'static str,
-    classification: crate::domain::failure::FailureKind,
+    nature: crate::domain::failure::TechnicalFailureNature,
 ) -> LocalEventQueryError {
     let correlation = correlation_id();
     log::error!("local event reader pool failure [{correlation}]: {message}");
-    LocalEventQueryError::StorageUnavailable {
-        failure: SafeOperationFailure::new(
-            SessionOperationFailureKind::StorageUnavailable,
-            classification,
-            message,
-            correlation,
-        ),
+    let failure = SafeOperationFailure::new(
+        SessionOperationFailureKind::StorageUnavailable,
+        nature,
+        message,
+        correlation,
+    );
+    if nature == crate::domain::failure::TechnicalFailureNature::Transient {
+        LocalEventQueryError::StorageUnavailable { failure }
+    } else {
+        LocalEventQueryError::StorageAccessRequired { failure }
     }
 }
 
@@ -396,7 +373,7 @@ impl ReaderPool {
             if state.closed {
                 return Err(reader_pool_unavailable(
                     "local event store reader pool is closed",
-                    crate::domain::failure::FailureKind::StateRequired,
+                    crate::domain::failure::TechnicalFailureNature::Other,
                 ));
             }
             if state.jobs.len() >= READ_QUEUE_MAX_DEPTH {
@@ -455,7 +432,7 @@ impl ReaderPool {
         receiver.await.map_err(|_| {
             reader_pool_unavailable(
                 "local event store reader reply lost",
-                crate::domain::failure::FailureKind::Temporary,
+                crate::domain::failure::TechnicalFailureNature::Transient,
             )
         })?
     }
@@ -648,7 +625,7 @@ mod canonical_runtime_owner_snapshot_tests {
 
     #[test]
     fn test_owner一覧_decodeとfoldの破損をdata_lossで返す() {
-        use crate::adaptor::protocol::connect::classified_error;
+        use crate::adaptor::presenter::connect::classified_error;
 
         for decode_failure in [true, false] {
             // Given
@@ -683,7 +660,7 @@ mod canonical_runtime_owner_snapshot_tests {
 
     #[test]
     fn test_owner一覧_limit範囲外はinvalid_argumentを維持する() {
-        use crate::adaptor::protocol::connect::classified_error;
+        use crate::adaptor::presenter::connect::classified_error;
         // Given
         let connection = connection_with_node_events();
         for limit in [0, MAX_CANONICAL_RUNTIME_OWNER_SNAPSHOT + 1] {

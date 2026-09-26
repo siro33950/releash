@@ -53,10 +53,10 @@ impl StateSubscriptionRead for StateSubscriptionReads {
     }
 }
 fn task_error(error: tokio::task::JoinError) -> StateReadError {
-    StateReadError {
-        kind: crate::domain::failure::FailureKind::Internal,
+    StateReadError::from_error(crate::domain::failure::TechnicalFailure {
+        nature: crate::domain::failure::TechnicalFailureNature::Other,
         message: error.to_string(),
-    }
+    })
 }
 
 #[cfg(test)]

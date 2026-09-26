@@ -1,4 +1,3 @@
-use crate::domain::failure::ClassifiedFailure;
 use std::sync::Arc;
 
 use crate::domain::agent_session::aggregates::{
@@ -39,10 +38,10 @@ pub(crate) enum AgentSessionGarbageCollectionOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AgentSessionLifecycleUsecaseError {
     Workflow(crate::domain::workflow::WorkflowError),
-    Store(crate::domain::failure::FailureKind),
+    Store(crate::domain::failure::StorageFailure),
     NotFound,
     InvalidOperation,
-    Conflict(crate::domain::failure::FailureKind),
+    Conflict(crate::domain::failure::StorageFailure),
     StorageUnavailable,
     LaunchUnavailable,
     TerminalUnavailable,
@@ -747,7 +746,7 @@ fn map_session_error(error: AgentSessionUsecaseError) -> AgentSessionLifecycleUs
         }
         error @ (AgentSessionUsecaseError::Conflict
         | AgentSessionUsecaseError::ProviderSessionAlreadyOwned { .. }) => {
-            AgentSessionLifecycleUsecaseError::Conflict(error.failure_kind())
+            AgentSessionLifecycleUsecaseError::Conflict(error.into())
         }
         AgentSessionUsecaseError::Unavailable => {
             AgentSessionLifecycleUsecaseError::StorageUnavailable
@@ -765,6 +764,12 @@ fn map_lifecycle_error(error: ProviderLifecycleUsecaseError) -> AgentSessionLife
         ProviderLifecycleUsecaseError::StorageUnavailable => {
             AgentSessionLifecycleUsecaseError::StorageUnavailable
         }
+        ProviderLifecycleUsecaseError::Conflict => AgentSessionLifecycleUsecaseError::Conflict(
+            crate::domain::workflow::WorkflowError::Conflict(
+                "provider lifecycle version conflict".into(),
+            )
+            .into(),
+        ),
         ProviderLifecycleUsecaseError::Store(kind) => {
             AgentSessionLifecycleUsecaseError::Store(kind)
         }
@@ -775,36 +780,16 @@ fn map_lifecycle_error(error: ProviderLifecycleUsecaseError) -> AgentSessionLife
 fn map_workflow_error(
     error: crate::domain::workflow::WorkflowError,
 ) -> AgentSessionLifecycleUsecaseError {
-    use crate::domain::failure::ClassifiedFailure;
     use crate::domain::workflow::WorkflowError;
     match error {
         error @ WorkflowError::Conflict(_) => {
-            AgentSessionLifecycleUsecaseError::Conflict(error.failure_kind())
+            AgentSessionLifecycleUsecaseError::Conflict(error.into())
         }
         WorkflowError::InvalidState(_) => AgentSessionLifecycleUsecaseError::InvalidOperation,
         WorkflowError::NotFound(_) => AgentSessionLifecycleUsecaseError::NotFound,
         WorkflowError::CorruptStoredState(_) => AgentSessionLifecycleUsecaseError::Corrupt,
-        WorkflowError::Store(kind) | WorkflowError::StorageUnavailable { kind, .. } => {
-            AgentSessionLifecycleUsecaseError::Store(kind)
-        }
+        WorkflowError::Store(kind) => AgentSessionLifecycleUsecaseError::Store(kind),
         error => AgentSessionLifecycleUsecaseError::Workflow(error),
-    }
-}
-
-impl crate::domain::failure::ClassifiedFailure for AgentSessionLifecycleUsecaseError {
-    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
-        use crate::domain::failure::FailureKind;
-        match self {
-            Self::Workflow(error) => error.failure_kind(),
-            Self::Store(kind) => *kind,
-            Self::NotFound => FailureKind::Missing,
-            Self::InvalidOperation => FailureKind::StateRequired,
-            Self::Conflict(kind) => *kind,
-            Self::StorageUnavailable => FailureKind::Temporary,
-            Self::LaunchUnavailable => FailureKind::StateRequired,
-            Self::TerminalUnavailable => FailureKind::StateRequired,
-            Self::Corrupt => FailureKind::Corrupt,
-        }
     }
 }
 

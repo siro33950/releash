@@ -1,5 +1,6 @@
 use super::*;
-use crate::domain::failure::{ClassifiedFailure, FailureKind};
+use crate::adaptor::presenter::connect::ConnectFailure;
+use connectrpc::ErrorCode;
 #[tokio::test(flavor = "current_thread")]
 async fn test_読み込み待ち_同じruntimeの別処理が先に完了する() {
     // Given
@@ -50,19 +51,19 @@ async fn test_読み込みキュー_混雑と期限切れとreply喪失を分類
         pending.remove(0).await,
         Err(LocalEventQueryError::Technical(
             crate::domain::failure::TechnicalFailure {
-                kind: crate::domain::failure::FailureKind::Expired,
+                nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
                 message: "deadline exceeded".into()
             }
         ))
     );
     pool.close();
     assert_eq!(
-        pending.remove(0).await.unwrap_err().failure_kind(),
-        FailureKind::Temporary
+        pending.remove(0).await.unwrap_err().connect_code(),
+        ErrorCode::Unavailable
     );
     assert_eq!(
-        pool.submit(|_| Ok(())).await.unwrap_err().failure_kind(),
-        FailureKind::StateRequired
+        pool.submit(|_| Ok(())).await.unwrap_err().connect_code(),
+        ErrorCode::FailedPrecondition
     );
 }
 
@@ -84,10 +85,13 @@ fn test_sqlite分類_環境起因の全コードを同じ分類にする() {
     ] {
         let error = rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(code), None);
         // When / Then
-        assert_eq!(sqlite_failure_kind(&error), FailureKind::StateRequired);
         assert_eq!(
-            storage_unavailable(&error).failure_kind(),
-            FailureKind::StateRequired
+            crate::adaptor::gateway::shared::sqlite_failure::condition(&error),
+            crate::adaptor::gateway::shared::sqlite_failure::SqliteFailureCondition::Inaccessible
+        );
+        assert_eq!(
+            storage_unavailable(&error).connect_code(),
+            ErrorCode::FailedPrecondition
         );
     }
 }
@@ -126,11 +130,11 @@ async fn test_読み込み実行中_期限と取り消しでsqliteを止め接�
             .unwrap_err();
         // Then
         assert_eq!(
-            error.failure_kind(),
+            error.connect_code(),
             if expire {
-                FailureKind::Expired
+                ErrorCode::DeadlineExceeded
             } else {
-                FailureKind::Cancelled
+                ErrorCode::Canceled
             }
         );
         assert_eq!(
@@ -160,7 +164,7 @@ async fn test_読み込み待ち_実行前の期限切れでqueryを実行しな
         result,
         Err(LocalEventQueryError::Technical(
             crate::domain::failure::TechnicalFailure {
-                kind: crate::domain::failure::FailureKind::Expired,
+                nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
                 message: "deadline exceeded".into()
             }
         ))
@@ -197,7 +201,7 @@ async fn test_読み込み取消_短い文の間で取り消しても次の文�
     pool.close();
     worker.join().unwrap();
     // Then
-    assert_eq!(result.unwrap_err().failure_kind(), FailureKind::Cancelled);
+    assert_eq!(result.unwrap_err().connect_code(), ErrorCode::Canceled);
     assert!(!second_ran.load(Ordering::SeqCst));
 }
 
@@ -252,11 +256,11 @@ async fn test_reader_busy待ち_実際のdb競合で期限と取消を引き継�
             .unwrap()
             .unwrap_err();
         assert_eq!(
-            error.failure_kind(),
+            error.connect_code(),
             if expire {
-                FailureKind::Expired
+                ErrorCode::DeadlineExceeded
             } else {
-                FailureKind::Cancelled
+                ErrorCode::Canceled
             }
         );
         assert_eq!(
@@ -302,7 +306,7 @@ async fn test_読み込み資源期限_親が無期限でも長い期限でも�
                 .unwrap(),
             Err(LocalEventQueryError::Technical(
                 crate::domain::failure::TechnicalFailure {
-                    kind: crate::domain::failure::FailureKind::Expired,
+                    nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
                     message: "deadline exceeded".into()
                 }
             ))

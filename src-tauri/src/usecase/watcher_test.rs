@@ -244,41 +244,9 @@ async fn test_監視購読_生成中に終了した購読のwatcherは同じid�
 }
 
 #[test]
-fn test_失敗分類_全変種と委譲した理由を保持する() {
-    use crate::domain::failure::{ClassifiedFailure, FailureKind as F};
-    // Given
-    let cases = [
-        (
-            UsecaseError::Subscription(WatchSubscriptionError::NotFound),
-            F::Missing,
-        ),
-        (
-            UsecaseError::Subscription(WatchSubscriptionError::AlreadyExists),
-            F::AlreadyPresent,
-        ),
-        (
-            UsecaseError::Subscription(WatchSubscriptionError::Limit),
-            F::Capacity,
-        ),
-        (
-            UsecaseError::Repository(
-                crate::usecase::repository_state::RepositoryStateError::Watcher("io".into()),
-            ),
-            F::Internal,
-        ),
-        (UsecaseError::File("io".into()), F::Internal),
-        (UsecaseError::RepositoryUnavailable, F::StateRequired),
-    ];
-    for (error, expected) in cases {
-        // When / Then
-        assert_eq!(error.failure_kind(), expected, "{error:?}");
-    }
-}
-
-#[test]
 fn test_監視_repositoryの再走査競合と下位エラーの分類を保持する() {
-    use crate::domain::failure::{ClassifiedFailure, FailureKind};
     use crate::usecase::repository_state::RepositoryStateError;
+
     // Given
     for source in [
         RepositoryStateError::ScanInvalidated,
@@ -293,13 +261,14 @@ fn test_監視_repositoryの再走査競合と下位エラーの分類を保持�
             .into(),
         ),
     ] {
-        let expected = source.failure_kind();
+        let expected = format!("{source:?}");
         let message = source.to_string();
         // When
         let error = UsecaseError::Repository(source);
         // Then
-        assert_eq!(error.failure_kind(), expected);
-        assert_ne!(error.failure_kind(), FailureKind::Internal);
+        assert!(
+            matches!(&error, UsecaseError::Repository(actual) if format!("{actual:?}") == expected)
+        );
         assert_eq!(error.to_string(), message);
     }
 }

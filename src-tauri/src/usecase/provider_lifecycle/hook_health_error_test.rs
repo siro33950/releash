@@ -1,114 +1,11 @@
 use super::*;
-use crate::domain::failure::FailureKind;
 
 #[test]
 fn test_hook_healthの競合をその場で再試行可能な失敗に変えない() {
     // Given / When
     let error = map_error(ProviderHookHealthRepositoryError::Conflict);
     // Then
-    assert_eq!(error.failure_kind(), FailureKind::RestartRequired);
-}
-
-#[test]
-fn test_失敗分類_usecase_全変種と委譲した理由を保持する() {
-    use crate::domain::failure::{ClassifiedFailure, FailureKind as F};
-    // Given
-    let cases = [
-        (
-            ProviderHookHealthUsecaseError::InvalidInput,
-            F::InvalidInput,
-        ),
-        (
-            ProviderHookHealthUsecaseError::StorageUnavailable,
-            F::Temporary,
-        ),
-        (ProviderHookHealthUsecaseError::Corrupt, F::Corrupt),
-        (
-            ProviderHookHealthUsecaseError::Store(F::Temporary),
-            F::Temporary,
-        ),
-        (
-            ProviderHookHealthUsecaseError::Store(F::RestartRequired),
-            F::RestartRequired,
-        ),
-        (
-            ProviderHookHealthUsecaseError::Store(F::StateRequired),
-            F::StateRequired,
-        ),
-        (
-            ProviderHookHealthUsecaseError::Store(F::InvalidInput),
-            F::InvalidInput,
-        ),
-        (
-            ProviderHookHealthUsecaseError::Store(F::Expired),
-            F::Expired,
-        ),
-        (
-            ProviderHookHealthUsecaseError::Store(F::Missing),
-            F::Missing,
-        ),
-        (
-            ProviderHookHealthUsecaseError::Store(F::AlreadyPresent),
-            F::AlreadyPresent,
-        ),
-        (
-            ProviderHookHealthUsecaseError::Store(F::Permission),
-            F::Permission,
-        ),
-        (
-            ProviderHookHealthUsecaseError::Store(F::Capacity),
-            F::Capacity,
-        ),
-        (
-            ProviderHookHealthUsecaseError::Store(F::Unsupported),
-            F::Unsupported,
-        ),
-        (
-            ProviderHookHealthUsecaseError::Store(F::Internal),
-            F::Internal,
-        ),
-        (
-            ProviderHookHealthUsecaseError::Store(F::Corrupt),
-            F::Corrupt,
-        ),
-        (
-            ProviderHookHealthUsecaseError::Store(F::Cancelled),
-            F::Cancelled,
-        ),
-        (
-            ProviderHookHealthUsecaseError::Store(F::Unknown),
-            F::Unknown,
-        ),
-        (
-            ProviderHookHealthUsecaseError::Store(F::OutsideRange),
-            F::OutsideRange,
-        ),
-        (
-            ProviderHookHealthUsecaseError::Store(F::AuthenticationRequired),
-            F::AuthenticationRequired,
-        ),
-    ];
-    for (error, expected) in cases {
-        // When / Then
-        assert_eq!(error.failure_kind(), expected, "{error:?}");
-    }
-}
-
-#[test]
-fn test_失敗分類_query_全変種と委譲した理由を保持する() {
-    use crate::domain::failure::{ClassifiedFailure, FailureKind as F};
-    // Given
-    let cases = [
-        (
-            ProviderHookHealthFailureQueryError::Unavailable,
-            F::Temporary,
-        ),
-        (ProviderHookHealthFailureQueryError::Corrupt, F::Corrupt),
-    ];
-    for (error, expected) in cases {
-        // When / Then
-        assert_eq!(error.failure_kind(), expected, "{error:?}");
-    }
+    assert_eq!(error, ProviderHookHealthUsecaseError::Conflict);
 }
 
 struct FailingHealthRepository {
@@ -151,12 +48,29 @@ async fn test_hook_health記録_一時的失敗だけ4回再試行し分類を�
     // Given
     for failure in [
         ProviderHookHealthRepositoryError::Conflict,
-        ProviderHookHealthRepositoryError::Store(FailureKind::RestartRequired),
+        ProviderHookHealthRepositoryError::Store(
+            (crate::domain::local_event::CommitBatchError::TreeHeadConflict).into(),
+        ),
         ProviderHookHealthRepositoryError::StorageUnavailable,
-        ProviderHookHealthRepositoryError::Store(FailureKind::Temporary),
-        ProviderHookHealthRepositoryError::Store(FailureKind::Expired),
-        ProviderHookHealthRepositoryError::Store(FailureKind::StateRequired),
-        ProviderHookHealthRepositoryError::Store(FailureKind::Corrupt),
+        ProviderHookHealthRepositoryError::Store(
+            (crate::domain::local_event::CommitBatchError::QueueBusy).into(),
+        ),
+        ProviderHookHealthRepositoryError::Store(
+            (crate::domain::failure::TechnicalFailure {
+                nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
+                message: "failure".into(),
+            })
+            .into(),
+        ),
+        ProviderHookHealthRepositoryError::Store(
+            (crate::domain::local_event::CommitBatchError::PayloadConflict).into(),
+        ),
+        ProviderHookHealthRepositoryError::Store(
+            (crate::domain::local_event::CommitBatchError::Corrupt {
+                correlation_id: "id".into(),
+            })
+            .into(),
+        ),
     ] {
         for operation in 0..3 {
             let repository = Arc::new(FailingHealthRepository {
@@ -194,12 +108,39 @@ async fn test_hook_health記録_一時的失敗だけ4回再試行し分類を�
                 }
             };
             // Then
-            let attempts = if failure.failure_kind() == FailureKind::Temporary {
+            let attempts = if matches!(
+                &failure,
+                ProviderHookHealthRepositoryError::StorageUnavailable
+                    | ProviderHookHealthRepositoryError::Store(
+                        crate::domain::failure::StorageFailure {
+                            nature: crate::domain::failure::TechnicalFailureNature::Transient,
+                            ..
+                        }
+                    )
+            ) {
                 4
             } else {
                 1
             };
-            assert_eq!(result.unwrap_err().failure_kind(), failure.failure_kind());
+            let expected = match &failure {
+                ProviderHookHealthRepositoryError::Conflict => {
+                    ProviderHookHealthUsecaseError::Conflict
+                }
+                ProviderHookHealthRepositoryError::StorageUnavailable => {
+                    ProviderHookHealthUsecaseError::StorageUnavailable
+                }
+                ProviderHookHealthRepositoryError::Store(failure)
+                    if failure.nature
+                        == crate::domain::failure::TechnicalFailureNature::Transient =>
+                {
+                    ProviderHookHealthUsecaseError::StorageUnavailable
+                }
+                ProviderHookHealthRepositoryError::Store(failure) => {
+                    ProviderHookHealthUsecaseError::Store(failure.clone())
+                }
+                error => panic!("unexpected test input: {error:?}"),
+            };
+            assert_eq!(result.unwrap_err(), expected);
             assert_eq!(
                 repository.saves.load(std::sync::atomic::Ordering::SeqCst),
                 attempts

@@ -19,9 +19,9 @@ impl WorkflowRuntimeHost {
             execution_id,
         )
         .await
-        .map_err(|error| WorkflowRuntimeError::StorageFailure {
-            kind: error.failure_kind(),
-            message: error.to_string(),
+        .map_err(|error| {
+            let message = error.to_string();
+            WorkflowRuntimeError::storage(error, message)
         })?
         .ok_or_else(|| WorkflowRuntimeError::ExecutionNotFound(execution_id.to_string()))?;
         for node in &folded.aggregate.node_executions {

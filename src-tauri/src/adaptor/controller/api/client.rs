@@ -20,9 +20,8 @@ impl connectrpc::Encodable<rpc::Push> for EncodedPush {
             _ => {
                 let push =
                     <rpc::Push as buffa::Message>::decode_from_slice(&self.0).map_err(|error| {
-                        crate::adaptor::protocol::connect::classified_error(
-                            crate::adaptor::presenter::error::AppError::new(error.to_string())
-                                .with_failure_kind(crate::domain::failure::FailureKind::Internal),
+                        crate::adaptor::presenter::connect::classified_error(
+                            crate::adaptor::presenter::error::AppError::new(error.to_string()),
                         )
                     })?;
                 push.encode(codec)
@@ -72,9 +71,10 @@ impl ClientApiDeps {
         connectrpc::ConnectError,
     > {
         self.state_subscriptions.as_ref().ok_or_else(|| {
-            crate::adaptor::protocol::connect::classified_error(
-                crate::adaptor::presenter::error::AppError::new("State subscriptions unavailable")
-                    .with_failure_kind(crate::domain::failure::FailureKind::Temporary),
+            crate::adaptor::presenter::connect::classified_error(
+                crate::adaptor::presenter::error::AppError::unavailable(
+                    "State subscriptions unavailable",
+                ),
             )
         })
     }
@@ -110,19 +110,10 @@ impl ClientApiDeps {
     fn request_permit(
         &self,
     ) -> Result<tokio::sync::OwnedSemaphorePermit, connectrpc::ConnectError> {
-        self.request_limit.clone().try_acquire_owned().map_err(|_| {
-            let message = "Too many pending client commands";
-            let mut error = command_error(
-                crate::adaptor::presenter::error::AppError::coded(
-                    "CLIENT_REQUEST_LIMIT",
-                    message,
-                    crate::domain::failure::FailureKind::Capacity,
-                )
-                .into(),
-            );
-            error.message = Some(message.into());
-            error
-        })
+        self.request_limit
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| crate::adaptor::presenter::connect::request_capacity_error())
     }
 
     async fn execute(
@@ -160,8 +151,10 @@ impl ClientApiDeps {
         .await
         .map_err(task_error)?
         .map_err(|error| {
-            crate::adaptor::protocol::connect::classified_error(
-                crate::adaptor::presenter::error::AppError::from_failure(error),
+            crate::adaptor::presenter::connect::classified_error(
+                crate::adaptor::presenter::error::AppError::from_failure(
+                    crate::domain::failure::TechnicalFailure::from(error),
+                ),
             )
         })?
     }
@@ -196,7 +189,10 @@ impl ClientApiDeps {
             crate::common::operation_context::spawn_blocking(move || {
                 context.check(std::time::Instant::now()).map_err(|error| {
                     command_error(
-                        crate::adaptor::presenter::error::AppError::from_failure(error).into(),
+                        crate::adaptor::presenter::error::AppError::from_failure(
+                            crate::domain::failure::TechnicalFailure::from(error),
+                        )
+                        .into(),
                     )
                 })?;
                 let result = watcher.watch(&subscription_id, &path, git);
@@ -205,7 +201,10 @@ impl ClientApiDeps {
                         watcher.release(id);
                     }
                     return Err(command_error(
-                        crate::adaptor::presenter::error::AppError::from_failure(error).into(),
+                        crate::adaptor::presenter::error::AppError::from_failure(
+                            crate::domain::failure::TechnicalFailure::from(error),
+                        )
+                        .into(),
                     ));
                 }
                 result.map_err(watch_error)
@@ -226,8 +225,10 @@ async fn ingress<T>(
     crate::common::operation_context::ingress(deadline, operation)
         .await
         .map_err(|error| {
-            crate::adaptor::protocol::connect::classified_error(
-                crate::adaptor::presenter::error::AppError::from_failure(error),
+            crate::adaptor::presenter::connect::classified_error(
+                crate::adaptor::presenter::error::AppError::from_failure(
+                    crate::domain::failure::TechnicalFailure::from(error),
+                ),
             )
         })?
 }
@@ -247,15 +248,8 @@ fn response_headers(command: &wire::command_result::Command) -> axum::http::Head
 }
 
 fn task_error(error: tokio::task::JoinError) -> connectrpc::ConnectError {
-    use crate::domain::failure::FailureKind;
-    crate::adaptor::protocol::connect::classified_error(
-        crate::adaptor::presenter::error::AppError::new(error.to_string()).with_failure_kind(
-            if error.is_cancelled() {
-                FailureKind::Cancelled
-            } else {
-                FailureKind::Internal
-            },
-        ),
+    crate::adaptor::presenter::connect::classified_error(
+        crate::domain::failure::TechnicalFailure::from(error),
     )
 }
 

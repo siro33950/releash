@@ -1840,7 +1840,9 @@ async fn test_delegate_新attemptのresumeでも未注入結果を送り再生�
                 .observe(
                     &crate::usecase::work_queue::WorkKey::new("workflow_delegate_injection", id),
                     &crate::usecase::work_queue::WorkFailure {
-                        kind: crate::domain::failure::FailureKind::StateRequired,
+                        kind: crate::domain::failure::Failure::Business(
+                            crate::domain::failure::BusinessFailure::Other,
+                        ),
                         message: "injection failed".into(),
                     },
                 )

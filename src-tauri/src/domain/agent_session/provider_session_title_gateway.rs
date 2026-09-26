@@ -21,12 +21,3 @@ pub(crate) trait ProviderSessionTitleGateway: Send + Sync {
         request: ProviderSessionTitleRequest,
     ) -> Result<Option<String>, ProviderSessionTitleGatewayError>;
 }
-
-impl crate::domain::failure::ClassifiedFailure for ProviderSessionTitleGatewayError {
-    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
-        match self {
-            Self::Unavailable => crate::domain::failure::FailureKind::Temporary,
-            Self::Corrupt => crate::domain::failure::FailureKind::Corrupt,
-        }
-    }
-}

@@ -7,5 +7,3 @@ pub use value_objects::{
     TerminalSurfaceCheckpoint, TerminalSurfaceOwner, TerminalSurfaceStartupCommand,
     TERMINAL_SURFACE_SCROLLBACK_ROWS,
 };
-
-pub(crate) mod background_failure;

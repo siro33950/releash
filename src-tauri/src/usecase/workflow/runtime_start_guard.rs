@@ -25,9 +25,7 @@ fn domain_validation_to_runtime_error(
 ) -> WorkflowRuntimeError {
     match err {
         error @ (domain::WorkflowError::Technical(_) | domain::WorkflowError::Editor(_)) => {
-            WorkflowRuntimeError::Store(crate::domain::failure::ClassifiedFailure::failure_kind(
-                &error,
-            ))
+            WorkflowRuntimeError::Store(error.into())
         }
         domain::WorkflowError::Store(kind) => WorkflowRuntimeError::Store(kind),
         domain::WorkflowError::Validation(message) if message == "workflow has no nodes" => {
@@ -43,7 +41,6 @@ fn domain_validation_to_runtime_error(
         }
         domain::WorkflowError::NotFound(message)
         | domain::WorkflowError::External(message)
-        | domain::WorkflowError::StorageUnavailable { message, .. }
         | domain::WorkflowError::CorruptStoredState(message)
         | domain::WorkflowError::IncompatibleStoredEvent(message) => {
             WorkflowRuntimeError::InvalidWorkflow(message)

@@ -1,4 +1,3 @@
-use crate::domain::failure::ClassifiedFailure;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -202,12 +201,10 @@ impl ProviderHookHealthRepository for LocalProviderHookHealthRepository {
             Ok(CommitBatchResult::Committed(_) | CommitBatchResult::Replayed(_)) => {
                 Ok(VersionedProviderHookHealth::restored(health, next_revision))
             }
-            Err(CommitBatchError::StreamHeadConflict { .. }) => {
-                Err(ProviderHookHealthRepositoryError::Conflict)
-            }
-            Err(error) => Err(ProviderHookHealthRepositoryError::Store(
-                error.failure_kind(),
-            )),
+            Err(
+                CommitBatchError::StreamHeadConflict { .. } | CommitBatchError::TreeHeadConflict,
+            ) => Err(ProviderHookHealthRepositoryError::Conflict),
+            Err(error) => Err(ProviderHookHealthRepositoryError::Store(error.into())),
         }
     }
 }

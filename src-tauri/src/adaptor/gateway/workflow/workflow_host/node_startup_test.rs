@@ -18,7 +18,7 @@ async fn test_一時失敗の再起動_保存済み実行を読み直しleafと�
         };
         let id = &started.node_executions[0].id;
         // When
-        let start = gateway.restart(id, RetryAction::Retry).await.unwrap().unwrap();
+        let start = gateway.restart(id, AttemptProgress::Continue).await.unwrap().unwrap();
         // Then
         assert_eq!(start.node_execution_id(), id);
         match start {
@@ -31,7 +31,7 @@ async fn test_一時失敗の再起動_保存済み実行を読み直しleafと�
             NodeStart::PrepareComposite(_) => assert!(nodes.contains("children")),
         }
         fixture.host.abort_workflow_execution(&fixture.app, &started.execution_id, None).await.unwrap();
-        assert!(gateway.restart(id, RetryAction::Retry).await.unwrap().is_none());
+        assert!(gateway.restart(id, AttemptProgress::Continue).await.unwrap().is_none());
         assert!(fixture.sessions.prepared.lock().unwrap().is_empty());
     }
 }
@@ -39,23 +39,28 @@ async fn test_一時失敗の再起動_保存済み実行を読み直しleafと�
 #[tokio::test]
 async fn test_起動再試行登録_読込の一時失敗を作業列で再試行し停止分類は終了する() {
     use crate::adaptor::gateway::local_event_store::test_helpers::ReadFailure;
-    use crate::domain::failure::FailureKind;
     use crate::domain::local_event::LocalEventQueryError;
     use crate::usecase::workflow::node_startup::FailedNodeStart;
 
     for (kind, read_failure, should_start) in [
         (
-            FailureKind::Temporary,
+            crate::domain::failure::Failure::Technical(
+                crate::domain::failure::TechnicalFailureNature::Transient,
+            ),
             ReadFailure::Query(LocalEventQueryError::QueryBusy),
             true,
         ),
         (
-            FailureKind::RestartRequired,
+            crate::domain::failure::Failure::Business(
+                crate::domain::failure::BusinessFailure::VersionConflict,
+            ),
             ReadFailure::Query(LocalEventQueryError::QueryBusy),
             true,
         ),
         (
-            FailureKind::Temporary,
+            crate::domain::failure::Failure::Technical(
+                crate::domain::failure::TechnicalFailureNature::Transient,
+            ),
             ReadFailure::Sqlite(rusqlite::ffi::SQLITE_IOERR),
             false,
         ),
@@ -85,16 +90,25 @@ async fn test_起動再試行登録_読込の一時失敗を作業列で再試�
         let activated = fixture.sessions.activated.lock().unwrap().clone();
         assert_eq!(activated.len(), usize::from(should_start));
         if should_start {
-            assert_eq!(activated[0] == *id, kind == FailureKind::Temporary);
+            assert_eq!(
+                activated[0] == *id,
+                kind == crate::domain::failure::Failure::Technical(
+                    crate::domain::failure::TechnicalFailureNature::Transient
+                )
+            );
         }
         let observations = fixture.host.queue.failure_query().records(id).await;
         assert!(observations
             .iter()
             .any(|observation| observation.record.kind
                 == if should_start {
-                    FailureKind::Temporary
+                    crate::domain::failure::Failure::Technical(
+                        crate::domain::failure::TechnicalFailureNature::Transient,
+                    )
                 } else {
-                    FailureKind::StateRequired
+                    crate::domain::failure::Failure::Technical(
+                        crate::domain::failure::TechnicalFailureNature::Other,
+                    )
                 }));
     }
 }

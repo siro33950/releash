@@ -1,35 +1,24 @@
 use super::*;
-use crate::domain::failure::{ClassifiedFailure, FailureKind as F};
+use crate::domain::failure::TechnicalFailureNature as N;
 
 #[test]
-fn test_失敗分類_生成元の分類を保存し再試行表示を導出する() {
+fn test_失敗分類_生成元の性質を保存し判断を含めず表示する() {
     // Given
     for kind in [
         SessionOperationFailureKind::StorageUnavailable,
         SessionOperationFailureKind::PersistFailure,
-        SessionOperationFailureKind::OutcomeUnknown,
     ] {
-        for classification in [
-            F::Temporary,
-            F::RestartRequired,
-            F::StateRequired,
-            F::Expired,
-            F::Corrupt,
-            F::Internal,
-        ] {
+        for nature in [N::Transient, N::TimedOut, N::Cancelled, N::Other] {
             // When
-            let failure = SafeOperationFailure::new(kind, classification, "reason", "id");
+            let failure = SafeOperationFailure::new(kind, nature, "reason", "id");
             // Then
-            assert_eq!(failure.failure_kind(), classification);
+            assert_eq!(failure.nature, nature);
             assert_eq!(failure.kind, kind);
             assert_eq!(failure.label.value(), "reason");
             assert_eq!(failure.correlation_id, "id");
             assert_eq!(
                 failure.to_string(),
-                format!(
-                    "{kind:?} (retryable={}, correlation_id=id): reason",
-                    classification == F::Temporary
-                )
+                format!("{kind:?} (nature={nature:?}, correlation_id=id): reason")
             );
         }
     }

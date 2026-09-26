@@ -1,5 +1,6 @@
 use crate::common::retry::RetryBackoff;
-use crate::domain::failure::FailureKind;
+use crate::domain::failure::{BusinessFailure, Failure, TechnicalFailureNature};
+
 use crate::domain::workflow::NodeKindName;
 use crate::domain::workspace_tree::{
     WorkspaceNodeStatusClassification, WorkspaceStructureFact, WorkspaceTree,
@@ -69,7 +70,7 @@ async fn test_背景失敗の表示変換_三種類の対象idで要対応と理
             .observe(
                 &key,
                 &WorkFailure {
-                    kind: FailureKind::StateRequired,
+                    kind: Failure::Business(BusinessFailure::Other),
                     message: "repair required".into(),
                 },
             )
@@ -119,9 +120,18 @@ async fn test_背景失敗の表示変換_無関係な対象と要対応でな�
     let original = tree();
     let target = original.nodes()[0].id.clone();
     for (target, kind) in [
-        (target.clone(), FailureKind::Cancelled),
-        (target, FailureKind::Temporary),
-        ("other-tree".into(), FailureKind::Internal),
+        (
+            target.clone(),
+            Failure::Technical(TechnicalFailureNature::Cancelled),
+        ),
+        (
+            target,
+            Failure::Technical(TechnicalFailureNature::Transient),
+        ),
+        (
+            "other-tree".into(),
+            Failure::Technical(TechnicalFailureNature::Other),
+        ),
     ] {
         let queue = queue();
         queue
@@ -156,7 +166,7 @@ async fn test_失敗ページ_複数試行をまとめてページングし対�
                     if index % 2 == 0 { "old" } else { "new" },
                 ),
                 &WorkFailure {
-                    kind: FailureKind::StateRequired,
+                    kind: Failure::Business(BusinessFailure::Other),
                     message: "failed".into(),
                 },
             )
@@ -166,7 +176,7 @@ async fn test_失敗ページ_複数試行をまとめてページングし対�
         .observe(
             &WorkKey::new("other", "unrelated"),
             &WorkFailure {
-                kind: FailureKind::StateRequired,
+                kind: Failure::Business(BusinessFailure::Other),
                 message: "other".into(),
             },
         )
@@ -203,4 +213,77 @@ async fn test_失敗ページ_複数試行をまとめてページングし対�
         .await
         .items
         .is_empty());
+}
+
+#[tokio::test]
+async fn test_失敗記録_三種類の背景処理で現在の理由だけを表示する() {
+    for operation in [
+        "repository_scan",
+        "terminal_checkpoint",
+        "provider_session_title",
+    ] {
+        // Given
+        let queue = queue();
+        let original = tree();
+        let target = original.nodes()[0].id.clone();
+        let key = WorkKey::new(operation, &target);
+        for (kind, message) in [
+            (Failure::Business(BusinessFailure::Other), "old"),
+            (Failure::Technical(TechnicalFailureNature::Other), "current"),
+        ] {
+            queue
+                .observe(
+                    &key,
+                    &WorkFailure {
+                        kind,
+                        message: message.into(),
+                    },
+                )
+                .await;
+        }
+        // When
+        let records = queue.records(&target).await;
+        let mut projected = original.clone();
+        queue
+            .failure_query()
+            .apply_workflow_failures(&mut projected)
+            .await;
+        // Then
+        assert!(!records[0].requires_attention);
+        assert!(records[1].requires_attention);
+        assert_eq!(
+            projected.nodes()[0].error_reason.as_deref(),
+            Some("current")
+        );
+        queue
+            .execute(key, RetryBackoff::RECOVERY, |_| async { Ok(()) })
+            .await
+            .unwrap();
+        let mut recovered = original.clone();
+        queue
+            .failure_query()
+            .apply_workflow_failures(&mut recovered)
+            .await;
+        assert_eq!(recovered, original);
+        assert!(queue
+            .records(&target)
+            .await
+            .iter()
+            .all(|record| !record.requires_attention));
+    }
+}
+
+#[test]
+fn test_要対応判定_六種類の失敗の意味だけから決まる() {
+    use crate::domain::failure::{BusinessFailure, Failure, TechnicalFailureNature};
+    for (kind, expected) in [
+        (Failure::Business(BusinessFailure::VersionConflict), false),
+        (Failure::Business(BusinessFailure::Other), true),
+        (Failure::Technical(TechnicalFailureNature::Transient), false),
+        (Failure::Technical(TechnicalFailureNature::TimedOut), true),
+        (Failure::Technical(TechnicalFailureNature::Cancelled), false),
+        (Failure::Technical(TechnicalFailureNature::Other), true),
+    ] {
+        assert_eq!(super::requires_attention(kind), expected);
+    }
 }

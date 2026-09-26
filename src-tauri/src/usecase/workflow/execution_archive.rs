@@ -268,10 +268,8 @@ fn map_worktree_operation_error(
 ) -> WorkflowError {
     match error {
         crate::domain::repository::RepositoryError::Technical(error) => {
-            WorkflowError::StorageUnavailable {
-                message: error.to_string(),
-                kind: crate::domain::failure::ClassifiedFailure::failure_kind(&error),
-            }
+            let message = error.to_string();
+            WorkflowError::storage(error, message)
         }
         crate::domain::repository::RepositoryError::Rule(message) => {
             WorkflowError::Conflict(message)

@@ -9,9 +9,7 @@ use crate::domain::comment::{
     ReviewHistoryEntry, ReviewTarget, ReviewThread, ReviewThreadFilter,
 };
 
-pub(crate) use dto::{
-    review_error_to_json_string, ReviewHistoryEntryDto, ReviewThreadDto, ReviewThreadFilterDto,
-};
+pub(crate) use dto::{ReviewHistoryEntryDto, ReviewThreadDto, ReviewThreadFilterDto};
 
 pub(crate) type ReviewEventMutation<'a> =
     Box<dyn FnOnce(&[ReviewEvent]) -> Result<Vec<ReviewEvent>, ReviewError> + Send + 'a>;

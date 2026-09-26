@@ -1,48 +1,20 @@
-use super::*;
-
 #[test]
-fn test_失敗分類_commit_batch_error_理由に対応する() {
-    use crate::domain::failure::{ClassifiedFailure, FailureKind as F};
-    // Given
-    let cases = [
-        (CommitBatchError::PayloadConflict, F::StateRequired),
-        (CommitBatchError::TreeHeadConflict, F::RestartRequired),
-        (CommitBatchError::AppendOutcomeUnknown, F::RestartRequired),
-        (CommitBatchError::QueueBusy, F::Temporary),
+fn test_storeの版競合_集約の版の競合だけを識別する() {
+    use crate::domain::local_event::{CommitBatchError, StreamVersion};
+    // Given / When / Then
+    for (error, expected) in [
+        (CommitBatchError::TreeHeadConflict, true),
         (
             CommitBatchError::StreamHeadConflict {
-                current: StreamVersion::new(1).unwrap(),
+                current: StreamVersion::new(2).unwrap(),
             },
-            F::RestartRequired,
+            true,
         ),
-        (
-            CommitBatchError::OutcomeUnknown {
-                identity: CommitIdentity::parse("commit").unwrap(),
-            },
-            F::RestartRequired,
-        ),
-        (CommitBatchError::CapacityExceeded, F::Capacity),
-        (CommitBatchError::SequenceExhausted, F::Capacity),
-        (
-            CommitBatchError::Corrupt {
-                correlation_id: "id".into(),
-            },
-            F::Corrupt,
-        ),
-        (
-            CommitBatchError::StorageUnavailable {
-                failure: SafeOperationFailure::new(
-                    crate::domain::local_event::SessionOperationFailureKind::StorageUnavailable,
-                    F::Expired,
-                    "busy",
-                    "id",
-                ),
-            },
-            F::Expired,
-        ),
-    ];
-    for (error, expected) in cases {
-        // When / Then
-        assert_eq!(error.failure_kind(), expected, "{error:?}");
+        (CommitBatchError::PayloadConflict, false),
+        (CommitBatchError::QueueBusy, false),
+        (CommitBatchError::AppendOutcomeUnknown, false),
+        (CommitBatchError::CapacityExceeded, false),
+    ] {
+        assert_eq!(error.is_version_conflict(), expected);
     }
 }

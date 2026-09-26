@@ -1,7 +1,6 @@
 use super::StateValue;
 use crate::domain::{
-    failure::{ClassifiedFailure, FailureKind},
-    state_subscription::SubscriptionTarget,
+    failure::TechnicalFailure, state_subscription::SubscriptionTarget,
     workspace_state::WorkspaceStateRepository,
 };
 use crate::usecase::{
@@ -18,21 +17,97 @@ use crate::usecase::{
 };
 use std::sync::Arc;
 
-#[derive(Debug, thiserror::Error)]
-#[error("{message}")]
+#[derive(Debug)]
 pub(crate) struct StateReadError {
-    pub kind: FailureKind,
+    pub source: StateReadFailure,
     pub message: String,
 }
-impl ClassifiedFailure for StateReadError {
-    fn failure_kind(&self) -> FailureKind {
-        self.kind
+
+#[derive(Debug)]
+pub(crate) enum StateReadFailure {
+    InvalidTerminalInput,
+    TerminalSubscriptionEnded,
+    Workflow(Box<crate::domain::workflow::WorkflowError>),
+    Session(Box<crate::usecase::agent_session::AgentSessionReadUsecaseError>),
+    History(Box<crate::usecase::agent_session::AgentSessionHistoryQueryError>),
+    Providers(Box<crate::usecase::agent_session::ProviderAvailabilityUsecaseError>),
+    Repository(Box<crate::usecase::repository_error::UsecaseError>),
+    RepositoryState(Box<crate::usecase::repository_state::error::RepositoryStateError>),
+    GitHost(Box<crate::domain::git_host::GitHostError>),
+    Watcher(Box<crate::usecase::watcher::UsecaseError>),
+    Subscription(Box<crate::domain::state_subscription::SubscriptionError>),
+    Technical(Box<TechnicalFailure>),
+}
+impl From<crate::domain::workflow::WorkflowError> for StateReadFailure {
+    fn from(error: crate::domain::workflow::WorkflowError) -> Self {
+        Self::Workflow(Box::new(error))
     }
 }
-fn error(e: impl ClassifiedFailure + std::fmt::Debug) -> StateReadError {
+impl From<crate::usecase::agent_session::AgentSessionReadUsecaseError> for StateReadFailure {
+    fn from(error: crate::usecase::agent_session::AgentSessionReadUsecaseError) -> Self {
+        Self::Session(Box::new(error))
+    }
+}
+impl From<crate::usecase::agent_session::AgentSessionHistoryQueryError> for StateReadFailure {
+    fn from(error: crate::usecase::agent_session::AgentSessionHistoryQueryError) -> Self {
+        Self::History(Box::new(error))
+    }
+}
+impl From<crate::usecase::agent_session::ProviderAvailabilityUsecaseError> for StateReadFailure {
+    fn from(error: crate::usecase::agent_session::ProviderAvailabilityUsecaseError) -> Self {
+        Self::Providers(Box::new(error))
+    }
+}
+impl From<crate::usecase::repository_error::UsecaseError> for StateReadFailure {
+    fn from(error: crate::usecase::repository_error::UsecaseError) -> Self {
+        Self::Repository(Box::new(error))
+    }
+}
+impl From<crate::usecase::repository_state::error::RepositoryStateError> for StateReadFailure {
+    fn from(error: crate::usecase::repository_state::error::RepositoryStateError) -> Self {
+        Self::RepositoryState(Box::new(error))
+    }
+}
+impl From<crate::domain::git_host::GitHostError> for StateReadFailure {
+    fn from(error: crate::domain::git_host::GitHostError) -> Self {
+        Self::GitHost(Box::new(error))
+    }
+}
+impl From<crate::usecase::watcher::UsecaseError> for StateReadFailure {
+    fn from(error: crate::usecase::watcher::UsecaseError) -> Self {
+        Self::Watcher(Box::new(error))
+    }
+}
+impl From<crate::domain::state_subscription::SubscriptionError> for StateReadFailure {
+    fn from(error: crate::domain::state_subscription::SubscriptionError) -> Self {
+        Self::Subscription(Box::new(error))
+    }
+}
+impl From<TechnicalFailure> for StateReadFailure {
+    fn from(error: TechnicalFailure) -> Self {
+        Self::Technical(Box::new(error))
+    }
+}
+impl StateReadError {
+    pub(crate) fn from_error<E: std::fmt::Display>(error: E) -> Self
+    where
+        StateReadFailure: From<E>,
+    {
+        let message = error.to_string();
+        Self {
+            source: error.into(),
+            message,
+        }
+    }
+}
+fn error<E: std::fmt::Debug>(e: E) -> StateReadError
+where
+    StateReadFailure: From<E>,
+{
+    let message = format!("{e:?}");
     StateReadError {
-        kind: e.failure_kind(),
-        message: format!("{e:?}"),
+        source: e.into(),
+        message,
     }
 }
 
@@ -257,3 +332,10 @@ impl StateSubscriptionRead for WorkspaceStateReads {
 #[cfg(test)]
 #[path = "reads_test.rs"]
 pub(crate) mod reads_tests;
+
+impl std::fmt::Display for StateReadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+impl std::error::Error for StateReadError {}

@@ -1,4 +1,5 @@
 use super::*;
+use crate::domain::failure::{BusinessFailure, Failure, TechnicalFailureNature};
 use crate::usecase::work_queue::{Attempt, WorkQueueRuntime};
 use std::time::Duration;
 
@@ -40,7 +41,10 @@ pub(crate) async fn assert_expired_releases(attempt: Attempt<'static>) {
     tokio::time::advance(Duration::from_secs(20)).await;
     let error = task.await.unwrap().unwrap_err();
     tokio::time::resume();
-    assert_eq!(error.kind, FailureKind::Expired);
+    assert_eq!(
+        error.kind,
+        Failure::Technical(TechnicalFailureNature::TimedOut)
+    );
     let child = child.lock().unwrap().take().expect("registered worker");
     let mut child = child.lock().unwrap();
     assert!(
@@ -62,25 +66,13 @@ impl Drop for ReleaseAfterChild {
 
 #[test]
 fn test_子プロセス失敗分類_全分類を変更せず往復する() {
-    use FailureKind::*;
-    // Given
     for kind in [
-        Temporary,
-        RestartRequired,
-        StateRequired,
-        InvalidInput,
-        Expired,
-        Missing,
-        AlreadyPresent,
-        Permission,
-        Capacity,
-        Unsupported,
-        Internal,
-        Corrupt,
-        Cancelled,
-        Unknown,
-        OutsideRange,
-        AuthenticationRequired,
+        Failure::Business(BusinessFailure::VersionConflict),
+        Failure::Business(BusinessFailure::Other),
+        Failure::Technical(TechnicalFailureNature::Transient),
+        Failure::Technical(TechnicalFailureNature::TimedOut),
+        Failure::Technical(TechnicalFailureNature::Cancelled),
+        Failure::Technical(TechnicalFailureNature::Other),
     ] {
         let failure = WorkerFailure::from(WorkFailure {
             kind,

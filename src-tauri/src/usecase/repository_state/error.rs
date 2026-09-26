@@ -7,7 +7,7 @@ pub enum RepositoryStateError {
     ScanInvalidated,
     #[error("{message}")]
     Background {
-        kind: crate::domain::failure::FailureKind,
+        kind: crate::domain::failure::Failure,
         message: String,
     },
     #[error(transparent)]
@@ -17,20 +17,3 @@ pub enum RepositoryStateError {
     #[error("{0}")]
     Watcher(String),
 }
-
-impl crate::domain::failure::ClassifiedFailure for RepositoryStateError {
-    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
-        use crate::domain::failure::FailureKind as F;
-        match self {
-            Self::Background { kind, .. } => *kind,
-            Self::ScanInvalidated => F::RestartRequired,
-            Self::Repository(error) => error.failure_kind(),
-            Self::Code(error) => error.failure_kind(),
-            Self::Watcher(_) => F::Internal,
-        }
-    }
-}
-
-#[cfg(test)]
-#[path = "error_test.rs"]
-mod error_tests;

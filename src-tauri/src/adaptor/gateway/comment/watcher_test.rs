@@ -1,5 +1,4 @@
 use super::*;
-use crate::domain::failure::FailureKind;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tempfile::TempDir;
@@ -131,7 +130,12 @@ async fn test_監視開始の一時失敗_再試行後に変更を検知する()
     assert_eq!(starts.load(Ordering::SeqCst), 2);
     let records = queue.records(&dir.to_string_lossy()).await;
     assert_eq!(records.len(), 1);
-    assert_eq!(records[0].record.kind, FailureKind::Temporary);
+    assert_eq!(
+        records[0].record.kind,
+        crate::domain::failure::Failure::Technical(
+            crate::domain::failure::TechnicalFailureNature::Transient
+        )
+    );
     assert_eq!(records[0].record.count, 1);
     assert!(!records[0].requires_attention);
 }
@@ -142,9 +146,9 @@ async fn test_監視開始の期限切れ_処理を終了して資源を返し�
     let directory = TempDir::new().unwrap();
     let job = watcher_job(directory.path().join("comments"), Arc::new(|| {}), start());
     // When / Then
-    super::super::super::shared::background_worker::background_worker_tests::assert_expired_releases(job(RetryAction::Retry)).await;
+    super::super::super::shared::background_worker::background_worker_tests::assert_expired_releases(job(AttemptProgress::Continue)).await;
     assert_eq!(
-        job(RetryAction::Retry).await.unwrap(),
+        job(AttemptProgress::Continue).await.unwrap(),
         Some(Duration::from_secs(1))
     );
 }
@@ -154,11 +158,11 @@ async fn test_監視pollの期限切れ_監視資源を回収して同じ対象�
     // Given
     let directory = TempDir::new().unwrap();
     let job = watcher_job(directory.path().join("comments"), Arc::new(|| {}), start());
-    job(RetryAction::Retry).await.unwrap();
+    job(AttemptProgress::Continue).await.unwrap();
     // When / Then
-    super::super::super::shared::background_worker::background_worker_tests::assert_expired_releases(job(RetryAction::Retry)).await;
+    super::super::super::shared::background_worker::background_worker_tests::assert_expired_releases(job(AttemptProgress::Continue)).await;
     assert_eq!(
-        job(RetryAction::Retry).await.unwrap(),
+        job(AttemptProgress::Continue).await.unwrap(),
         Some(Duration::from_secs(1))
     );
 }

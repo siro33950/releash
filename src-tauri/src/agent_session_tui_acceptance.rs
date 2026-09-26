@@ -646,7 +646,6 @@ impl crate::usecase::state_subscription::StateSubscriptionRead for AcceptanceSes
         crate::usecase::state_subscription::StateValue,
         crate::usecase::state_subscription::StateReadError,
     > {
-        use crate::domain::failure::ClassifiedFailure;
         use crate::domain::state_subscription::SubscriptionTarget as T;
         use crate::usecase::state_subscription::{StateReadError, StateValue};
         match target {
@@ -656,8 +655,8 @@ impl crate::usecase::state_subscription::StateSubscriptionRead for AcceptanceSes
                 .await
                 .map(StateValue::AgentSession)
                 .map_err(|e| StateReadError {
-                    kind: e.failure_kind(),
                     message: format!("{e:?}"),
+                    source: e.into(),
                 }),
             T::SessionHistory(path, count) => self
                 .history
@@ -668,8 +667,8 @@ impl crate::usecase::state_subscription::StateSubscriptionRead for AcceptanceSes
                 .await
                 .map(StateValue::SessionHistory)
                 .map_err(|e| StateReadError {
-                    kind: e.failure_kind(),
                     message: format!("{e:?}"),
+                    source: e.into(),
                 }),
             T::Providers => self
                 .providers
@@ -690,11 +689,13 @@ impl crate::usecase::state_subscription::StateSubscriptionRead for AcceptanceSes
                     )
                 })
                 .map_err(|e| StateReadError {
-                    kind: e.failure_kind(),
                     message: format!("{e:?}"),
+                    source: e.into(),
                 }),
             _ => Err(StateReadError {
-                kind: crate::domain::failure::FailureKind::Missing,
+                source: crate::usecase::state_subscription::StateReadFailure::Workflow(Box::new(
+                    crate::domain::workflow::WorkflowError::NotFound("unknown target".into()),
+                )),
                 message: "Unsupported acceptance state".into(),
             }),
         }

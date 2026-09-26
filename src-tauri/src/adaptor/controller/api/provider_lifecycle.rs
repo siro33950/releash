@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use axum::extract::rejection::JsonRejection;
 use axum::extract::State;
-use axum::http::StatusCode;
 use axum::routing::post;
 use axum::{Json, Router};
 
@@ -11,7 +10,6 @@ use crate::domain::provider_lifecycle::{
     ProviderLifecycleScope, ProviderLifecycleSignal, ProviderLifecycleSlotId,
     ProviderLifecycleUnavailableObservation, ProviderLifecycleUnavailableReason,
 };
-use crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError;
 
 use super::error::ApiError;
 use crate::adaptor::protocol::provider_lifecycle::{
@@ -60,13 +58,9 @@ async fn receive_inner(
     payload: Result<Json<ProviderLifecycleReceiveRequest>, JsonRejection>,
 ) -> Result<(ProviderLifecycleIngressResult, bool), ApiError> {
     let Json(payload) = payload.map_err(|error| ApiError::invalid_request(error.body_text()))?;
-    let usecase = state.usecase.ok_or_else(|| {
-        ApiError::new(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "provider_lifecycle_unavailable",
-            "Provider lifecycle service is unavailable",
-        )
-    })?;
+    let usecase = state
+        .usecase
+        .ok_or_else(ApiError::provider_lifecycle_unavailable)?;
     let provider = match payload.provider {
         ProviderLifecycleProvider::Claude => ProviderKind::Claude,
         ProviderLifecycleProvider::Codex => ProviderKind::Codex,
@@ -140,7 +134,7 @@ async fn receive_inner(
     let result = usecase
         .receive(&slot_id, &payload.capability, signal)
         .await
-        .map_err(usecase_error)?;
+        .map_err(ApiError::from)?;
     Ok((result, is_session_started))
 }
 
@@ -149,13 +143,9 @@ async fn report_unavailable(
     payload: Result<Json<ProviderLifecycleUnavailableRequest>, JsonRejection>,
 ) -> Result<Json<ProviderLifecycleReceiveResponse>, ApiError> {
     let Json(payload) = payload.map_err(|error| ApiError::invalid_request(error.body_text()))?;
-    let usecase = state.usecase.ok_or_else(|| {
-        ApiError::new(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "provider_lifecycle_unavailable",
-            "Provider lifecycle service is unavailable",
-        )
-    })?;
+    let usecase = state
+        .usecase
+        .ok_or_else(ApiError::provider_lifecycle_unavailable)?;
     let provider = match payload.provider {
         ProviderLifecycleProvider::Claude => ProviderKind::Claude,
         ProviderLifecycleProvider::Codex => ProviderKind::Codex,
@@ -184,7 +174,7 @@ async fn report_unavailable(
     let result = usecase
         .report_unavailable(&slot_id, &payload.capability, observation)
         .await
-        .map_err(usecase_error)?;
+        .map_err(ApiError::from)?;
     Ok(Json(response(result)))
 }
 
@@ -212,28 +202,6 @@ fn rejection_reason(reason: ProviderLifecycleRejection) -> &'static str {
         ProviderLifecycleRejection::SessionNotAssociated => "session_not_associated",
         ProviderLifecycleRejection::ProviderSessionMismatch => "provider_session_mismatch",
         ProviderLifecycleRejection::TranscriptMismatch => "transcript_mismatch",
-    }
-}
-
-fn usecase_error(error: ProviderLifecycleIngressUsecaseError) -> ApiError {
-    match error {
-        ProviderLifecycleIngressUsecaseError::InvalidInput => {
-            ApiError::invalid_request("Provider lifecycle input is invalid")
-        }
-        ProviderLifecycleIngressUsecaseError::Conflict => ApiError::new(
-            StatusCode::CONFLICT,
-            "provider_lifecycle_conflict",
-            "Provider lifecycle conflicts with current AgentSession ownership",
-        ),
-        ProviderLifecycleIngressUsecaseError::Store(_)
-        | ProviderLifecycleIngressUsecaseError::StorageUnavailable => ApiError::new(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "provider_lifecycle_storage_unavailable",
-            "Provider lifecycle persistence is unavailable",
-        ),
-        ProviderLifecycleIngressUsecaseError::Corrupt => {
-            ApiError::internal("Provider lifecycle state is corrupt")
-        }
     }
 }
 

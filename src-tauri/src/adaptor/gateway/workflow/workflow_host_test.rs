@@ -16,7 +16,7 @@ use crate::usecase::workflow::control_plane::WorkflowControlPlaneUsecase;
 #[tokio::test]
 async fn test_実行木読取_load_execution_revisionで失敗分類を保持する() {
     use crate::adaptor::gateway::local_event_store::test_helpers::ReadFailure;
-    use crate::adaptor::protocol::connect::classified_error;
+    use crate::adaptor::presenter::connect::classified_error;
     // Given
     let fixture = archive_fixture();
     for (failure, expected) in ReadFailure::cases() {
@@ -26,10 +26,7 @@ async fn test_実行木読取_load_execution_revisionで失敗分類を保持す
             .await
             .unwrap_err();
         // Then
-        assert!(matches!(
-            &error,
-            WorkflowRuntimeError::StorageFailure { .. }
-        ));
+        assert!(matches!(&error, WorkflowRuntimeError::Store(_)));
         assert_eq!(classified_error(error).code, expected);
     }
 }
@@ -731,7 +728,7 @@ async fn test_実行木archive_abort書込失敗ではarchiveを記録しない(
     // When
     assert!(tokio::time::timeout(
         std::time::Duration::from_millis(100),
-        fixture.runtime.archive_execution_tree(&id, "manual"),
+        fixture.runtime.archive_execution_tree(&id, "manual")
     )
     .await
     .is_err());
@@ -924,10 +921,11 @@ async fn test_実行木archive_移行失敗は旧記録を保持する() {
         std::time::Duration::from_millis(100),
         fixture
             .runtime
-            .migrate_execution_archives(fixture.repository.as_ref()),
+            .migrate_execution_archives(fixture.repository.as_ref())
     )
     .await
     .is_err());
+
     assert_eq!(std::fs::read_to_string(path).unwrap(), legacy);
 }
 
@@ -2626,7 +2624,7 @@ async fn test_commit結果不明_記録を読み直せなければ保存成功�
     // Then
     assert!(matches!(
         error,
-        WorkflowRuntimeError::StorageFailure { kind: crate::domain::failure::FailureKind::Internal, message } if message.contains("control-plane commit readback failed")
+        WorkflowRuntimeError::Store(failure) if failure.to_string().contains("control-plane commit readback failed") && crate::adaptor::presenter::connect::ConnectFailure::connect_code(&failure) == connectrpc::ErrorCode::Internal
     ));
 }
 
@@ -3668,7 +3666,8 @@ async fn test_自動再起動_先行nodeのエラーを後続の起動成功node
 #[tokio::test]
 async fn test_node事実追記_sqlite混雑をruntimeとconnectまで保持する() {
     use crate::adaptor::gateway::local_event_store::layout::StoreLayout;
-    use crate::domain::failure::{ClassifiedFailure, FailureKind};
+    use crate::adaptor::presenter::connect::ConnectFailure;
+    use connectrpc::ErrorCode;
     // Given
     let fixture = test_helpers::Fixture::new(0);
     let snapshot = fixture
@@ -3703,10 +3702,10 @@ async fn test_node事実追記_sqlite混雑をruntimeとconnectまで保持す�
         .unwrap_err();
     connection.execute_batch("ROLLBACK").unwrap();
     // Then
-    assert_eq!(error.failure_kind(), FailureKind::Temporary);
-    assert_eq!(batch_error.failure_kind(), FailureKind::Temporary);
+    assert_eq!(error.connect_code(), ErrorCode::Unavailable);
+    assert_eq!(batch_error.connect_code(), ErrorCode::Unavailable);
     assert_eq!(
-        crate::adaptor::protocol::connect::classified_error(error).code,
+        crate::adaptor::presenter::connect::classified_error(error).code,
         connectrpc::ErrorCode::Unavailable
     );
     assert_eq!(

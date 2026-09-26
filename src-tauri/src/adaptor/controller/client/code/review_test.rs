@@ -23,7 +23,7 @@ fn test_画像参照_必要項目とsideとversionを検証する() {
             .err()
             .expect("invalid blob reference");
         assert_eq!(
-            crate::adaptor::protocol::connect::command_error(error.into()).code,
+            crate::adaptor::presenter::connect::command_error(error.into()).code,
             connectrpc::ErrorCode::InvalidArgument,
         );
     }

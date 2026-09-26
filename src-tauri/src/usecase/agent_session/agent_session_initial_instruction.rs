@@ -1,4 +1,3 @@
-use crate::domain::failure::ClassifiedFailure;
 use std::sync::Arc;
 
 use crate::domain::agent_session::aggregates::AgentSessionInitialInstructionOutcome;
@@ -15,12 +14,12 @@ pub(crate) enum AgentSessionInitialInstructionDeliveryOutcome {
     AlreadyDispatched,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AgentSessionInitialInstructionError {
-    Store(crate::domain::failure::FailureKind),
+    Store(crate::domain::failure::StorageFailure),
     InvalidInput,
     NotFound,
-    Conflict(crate::domain::failure::FailureKind),
+    Conflict(crate::domain::failure::StorageFailure),
     StorageUnavailable,
     Corrupt,
 }
@@ -100,27 +99,13 @@ fn map_session_error(error: AgentSessionUsecaseError) -> AgentSessionInitialInst
         }
         error @ (AgentSessionUsecaseError::Conflict
         | AgentSessionUsecaseError::ProviderSessionAlreadyOwned { .. }) => {
-            AgentSessionInitialInstructionError::Conflict(error.failure_kind())
+            AgentSessionInitialInstructionError::Conflict(error.into())
         }
         AgentSessionUsecaseError::Unavailable => {
             AgentSessionInitialInstructionError::StorageUnavailable
         }
         AgentSessionUsecaseError::Store(kind) => AgentSessionInitialInstructionError::Store(kind),
         AgentSessionUsecaseError::Corrupt => AgentSessionInitialInstructionError::Corrupt,
-    }
-}
-
-impl crate::domain::failure::ClassifiedFailure for AgentSessionInitialInstructionError {
-    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
-        use crate::domain::failure::FailureKind;
-        match self {
-            Self::Store(kind) => *kind,
-            Self::InvalidInput => FailureKind::InvalidInput,
-            Self::NotFound => FailureKind::Missing,
-            Self::Conflict(kind) => *kind,
-            Self::StorageUnavailable => FailureKind::Temporary,
-            Self::Corrupt => FailureKind::Corrupt,
-        }
     }
 }
 

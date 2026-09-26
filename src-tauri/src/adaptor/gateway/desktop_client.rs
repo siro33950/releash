@@ -2,7 +2,6 @@ use crate::adaptor::protocol::{
     client as wire,
     connect::{rpc, to_rpc, to_wire},
 };
-use crate::domain::failure::{ClassifiedFailure, FailureKind};
 use crate::usecase::client_connection::ClientConnectionDto;
 use connectrpc::client::{ClientConfig, HttpClient};
 use std::sync::Arc;
@@ -54,7 +53,7 @@ impl DesktopClient {
                     )
                     .await
                 {
-                    if error.failure_kind() == FailureKind::Capacity {
+                    if error.code == connectrpc::ErrorCode::ResourceExhausted {
                         continue;
                     }
                     *failed.lock() = Some(error_message(error));

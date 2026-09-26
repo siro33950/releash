@@ -98,7 +98,7 @@ impl crate::usecase::agent_session::ExecutionTreeCache for RecordingExecutionTre
             .lock()
             .unwrap()
             .as_ref()
-            .copied()
+            .cloned()
             .map_or(Ok(()), Err)
     }
 }
@@ -621,7 +621,10 @@ async fn test_worktree削除中_sessionのopen_resume_restore_deleteを副作用
     assert_eq!(
         context.lifecycle.open(id, 24, 80, "open").await,
         Err(AgentSessionLifecycleUsecaseError::Conflict(
-            crate::domain::failure::FailureKind::RestartRequired
+            (crate::domain::workflow::WorkflowError::Conflict(
+                "worktree deletion is in progress".into()
+            ))
+            .into()
         ))
     );
     assert_eq!(
@@ -630,19 +633,28 @@ async fn test_worktree削除中_sessionのopen_resume_restore_deleteを副作用
             .ensure_provider_running(id, 24, 80, "resume")
             .await,
         Err(AgentSessionLifecycleUsecaseError::Conflict(
-            crate::domain::failure::FailureKind::RestartRequired
+            (crate::domain::workflow::WorkflowError::Conflict(
+                "worktree deletion is in progress".into()
+            ))
+            .into()
         ))
     );
     assert_eq!(
         context.lifecycle.restore(id, 24, 80, "restore").await,
         Err(AgentSessionLifecycleUsecaseError::Conflict(
-            crate::domain::failure::FailureKind::RestartRequired
+            (crate::domain::workflow::WorkflowError::Conflict(
+                "worktree deletion is in progress".into()
+            ))
+            .into()
         ))
     );
     assert_eq!(
         context.lifecycle.delete(id, "delete").await,
         Err(AgentSessionLifecycleUsecaseError::Conflict(
-            crate::domain::failure::FailureKind::RestartRequired
+            (crate::domain::workflow::WorkflowError::Conflict(
+                "worktree deletion is in progress".into()
+            ))
+            .into()
         ))
     );
     assert_eq!(context.sessions.find(id).await.unwrap().unwrap(), before);
@@ -3169,13 +3181,12 @@ async fn test_agent_session_archive中のexitとgcはarchive確定後に評価�
 
 #[tokio::test]
 async fn test_sessionのarchiveとrestore_共通実行木操作のエラー分類を保持する() {
-    use crate::domain::failure::FailureKind as F;
     use crate::domain::workflow::WorkflowError as W;
     use AgentSessionLifecycleUsecaseError as E;
     for (error, expected) in [
         (
             W::Conflict("deleting".into()),
-            E::Conflict(F::RestartRequired),
+            E::Conflict(W::Conflict("deleting".into()).into()),
         ),
         (W::InvalidState("invalid".into()), E::InvalidOperation),
         (
@@ -3193,24 +3204,53 @@ async fn test_sessionのarchiveとrestore_共通実行木操作のエラー分�
             E::Workflow(W::IncompatibleStoredEvent("incompatible".into())),
         ),
         (
-            W::StorageUnavailable {
-                message: "unavailable".into(),
-                kind: crate::domain::failure::FailureKind::Temporary,
-            },
-            E::Store(F::Temporary),
+            W::Store(
+                crate::domain::failure::StorageFailure::from(
+                    crate::domain::local_event::CommitBatchError::QueueBusy,
+                )
+                .with_message("unavailable"),
+            ),
+            E::Store(
+                crate::domain::failure::StorageFailure::from(
+                    crate::domain::local_event::CommitBatchError::QueueBusy,
+                )
+                .with_message("unavailable"),
+            ),
         ),
         (
             W::External("internal".into()),
             E::Workflow(W::External("internal".into())),
         ),
         (
-            W::StorageUnavailable {
-                message: "repair".into(),
-                kind: crate::domain::failure::FailureKind::StateRequired,
-            },
-            E::Store(F::StateRequired),
+            W::Store(
+                crate::domain::failure::StorageFailure::from(
+                    crate::domain::local_event::CommitBatchError::PayloadConflict,
+                )
+                .with_message("repair"),
+            ),
+            E::Store(
+                crate::domain::failure::StorageFailure::from(
+                    crate::domain::local_event::CommitBatchError::PayloadConflict,
+                )
+                .with_message("repair"),
+            ),
         ),
-        (W::Store(F::Expired), E::Store(F::Expired)),
+        (
+            W::Store(
+                (crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
+                    message: "failure".into(),
+                })
+                .into(),
+            ),
+            E::Store(
+                (crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
+                    message: "failure".into(),
+                })
+                .into(),
+            ),
+        ),
     ] {
         // Given
         let context = setup();
@@ -3287,8 +3327,8 @@ async fn test_workflow_session準備_入口から期限と取消の分類を保�
     use crate::adaptor::gateway::workflow::node_session_boundary::{
         ProviderWorkflowAgentSessionPort, WorkflowAgentSessionPort, WorkflowSessionLaunchConfig,
     };
+
     use crate::common::operation_context::OperationStopped;
-    use crate::domain::failure::ClassifiedFailure;
     use crate::usecase::workflow::runtime_error::WorkflowRuntimeError;
     for stopped in [OperationStopped::Expired, OperationStopped::Cancelled] {
         // Given
@@ -3343,7 +3383,7 @@ async fn test_workflow_session準備_入口から期限と取消の分類を保�
         assert!(
             matches!(error, WorkflowRuntimeError::Technical(ref actual) if *actual == stopped.into())
         );
-        assert_eq!(error.failure_kind(), stopped.failure_kind());
+
         assert_eq!(*context.terminal.spawn_count.lock().unwrap(), 0);
     }
 }

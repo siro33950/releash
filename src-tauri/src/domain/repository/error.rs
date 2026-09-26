@@ -4,7 +4,7 @@
 /// 具体的な外部エラー型はメッセージ文字列として畳み込んで保持する。
 /// 外部エラー → `RepositoryError` への変換は gateway 層
 /// （`adaptor/gateway/shared/error_handling.rs`）で行う。
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RepositoryError {
     Technical(crate::domain::failure::TechnicalFailure),
     /// 外部リソース由来のエラー（git2・I/O 等）。メッセージを保持する。
@@ -29,20 +29,3 @@ impl RepositoryError {
         Self::Rule(message.into())
     }
 }
-
-impl crate::domain::failure::ClassifiedFailure for RepositoryError {
-    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
-        use crate::domain::failure::FailureKind as F;
-        match self {
-            Self::Technical(error) => {
-                crate::domain::failure::ClassifiedFailure::failure_kind(error)
-            }
-            Self::External(_) => F::Internal,
-            Self::Rule(_) => F::StateRequired,
-        }
-    }
-}
-
-#[cfg(test)]
-#[path = "error_test.rs"]
-mod error_tests;

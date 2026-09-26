@@ -8,8 +8,12 @@ fn test_origin探索_各操作の停止をremote不在に変えない() {
     let (dir, repo) = create_test_repo();
     let path = dir.path().to_str().unwrap();
     // When / Then
-    assert_stops_at_each_checkpoint(|| is_github_repository(path));
+    assert_stops_at_each_checkpoint(|| {
+        is_github_repository(path).map_err(crate::domain::failure::TechnicalFailure::from)
+    });
     repo.remote("origin", "https://github.com/test/repository")
         .unwrap();
-    assert_stops_at_each_checkpoint(|| is_github_repository(path));
+    assert_stops_at_each_checkpoint(|| {
+        is_github_repository(path).map_err(crate::domain::failure::TechnicalFailure::from)
+    });
 }

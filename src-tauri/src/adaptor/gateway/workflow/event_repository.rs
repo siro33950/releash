@@ -191,7 +191,7 @@ mod tests {
     #[tokio::test]
     async fn test_実行履歴読取_readとread_pageで失敗分類を保持する() {
         use crate::adaptor::gateway::local_event_store::test_helpers::ReadFailure;
-        use crate::adaptor::protocol::connect::classified_error;
+        use crate::adaptor::presenter::connect::classified_error;
         // Given
         let directory = TempDir::new().unwrap();
         let store =

@@ -138,7 +138,10 @@ async fn test_隔離起動_生成失敗後は自動で新しいattemptだけを�
     assert!(failures
         .iter()
         .any(|failure| failure.record.operation == "workflow_node_start"
-            && failure.record.kind == crate::domain::failure::FailureKind::RestartRequired
+            && failure.record.kind
+                == crate::domain::failure::Failure::Business(
+                    crate::domain::failure::BusinessFailure::VersionConflict
+                )
             && failure.record.count == 1));
     assert_eq!(attempts.len(), 2);
     assert_eq!(attempts[0].status, NodeExecutionStatus::Aborted);
@@ -188,7 +191,10 @@ async fn test_隔離起動_合成子の生成失敗では子を起動せず復�
     assert!(failures
         .iter()
         .any(|failure| failure.record.operation == "workflow_node_start"
-            && failure.record.kind == crate::domain::failure::FailureKind::RestartRequired
+            && failure.record.kind
+                == crate::domain::failure::Failure::Business(
+                    crate::domain::failure::BusinessFailure::VersionConflict
+                )
             && failure.record.count == 1));
     assert_eq!(snapshot.node_executions.len(), 1);
     assert_eq!(
@@ -1649,21 +1655,70 @@ async fn test_起動時再開_実経路でstore失敗の分類を保持する() 
         fixture.store.fail_next_read(failure);
         let error = startup.reconcile_tree("tree", 1.0).await.unwrap_err();
         assert_eq!(
-            crate::adaptor::protocol::connect::classified_error(error).code,
+            crate::adaptor::presenter::connect::classified_error(error).code,
             expected
         );
     }
 }
 
 #[tokio::test]
-async fn test_node起動失敗_分類が同じなら共通の観測と再試行対象化を行う() {
+async fn test_node起動失敗_版競合だけは失敗として記録しない() {
     // Given
-    use crate::domain::failure::{FailureKind, RetryAction};
-    for kind in [
-        FailureKind::Temporary,
-        FailureKind::RestartRequired,
-        FailureKind::Internal,
+    use crate::domain::failure::{Failure, TechnicalFailure, TechnicalFailureNature};
+    for (error, retry, version_conflict) in [
+        (
+            WorkflowRuntimeError::Store(
+                crate::domain::local_event::CommitBatchError::QueueBusy.into(),
+            ),
+            true,
+            false,
+        ),
+        (
+            WorkflowRuntimeError::Store(
+                crate::domain::local_event::CommitBatchError::AppendOutcomeUnknown.into(),
+            ),
+            true,
+            false,
+        ),
+        (
+            WorkflowRuntimeError::Conflict("head advanced".into()),
+            true,
+            true,
+        ),
+        (
+            WorkflowRuntimeError::Technical(TechnicalFailure {
+                nature: TechnicalFailureNature::Transient,
+                message: "temporarily unavailable".into(),
+            }),
+            true,
+            false,
+        ),
+        (
+            WorkflowRuntimeError::Technical(TechnicalFailure {
+                nature: TechnicalFailureNature::TimedOut,
+                message: "timed out".into(),
+            }),
+            false,
+            false,
+        ),
+        (
+            WorkflowRuntimeError::Technical(TechnicalFailure {
+                nature: TechnicalFailureNature::Cancelled,
+                message: "cancelled".into(),
+            }),
+            false,
+            false,
+        ),
+        (
+            WorkflowRuntimeError::Technical(TechnicalFailure {
+                nature: TechnicalFailureNature::Other,
+                message: "start failed".into(),
+            }),
+            false,
+            false,
+        ),
     ] {
+        let kind = Failure::from(&error);
         for nodes in [
             "  main: {session: {provider: codex, facets: {instruction: policy-confirmation}}}",
             "  main: {command: echo done}",
@@ -1672,19 +1727,18 @@ async fn test_node起動失敗_分類が同じなら共通の観測と再試行�
             let fixture = Fixture::new(0);
             let execution = fixture.persist_started(nodes, "/repo").await;
             let node_id = &execution.node_executions[0].id;
-            let error = WorkflowRuntimeError::StorageFailure { kind, message: "start failed".into() };
             let mut failed = Vec::new();
             // When
             fixture.host.record_node_start_failure(&fixture.app, &execution.execution_id, node_id, &error, &mut failed).await.unwrap();
             // Then
-            assert_eq!(failed.len(), usize::from(kind.retry_action() != RetryAction::Stop));
+            assert_eq!(failed.len(), usize::from(retry), "{error:?}");
             if let Some(failure) = failed.first() { assert_eq!(failure.kind, kind); assert_eq!(&failure.id, node_id); }
             let records = crate::usecase::work_queue::shared().records(node_id).await;
             let observed = records.iter().find(|record| record.record.operation == "workflow_node_start").unwrap();
             assert_eq!(observed.record.kind, kind);
             assert_eq!(observed.record.count, 1);
             let facts = workflow_fact_log::read_tree_records(&fixture.store, &execution.execution_id).await.unwrap();
-            assert_eq!(facts.iter().any(|record| matches!(record.fact, NodeFact::RuntimeFailureObserved(_))), kind.retry_action() != RetryAction::Restart);
+            assert_eq!(facts.iter().any(|record| matches!(record.fact, NodeFact::RuntimeFailureObserved(_))), !version_conflict);
         }
     }
 }

@@ -57,23 +57,30 @@ fn workflow_location(tree_id: &str, node_execution_id: &str) -> AgentSessionTree
 
 #[test]
 fn test_agent_session_repository_commit_errorの理由別分類を保持する() {
-    use crate::domain::failure::{ClassifiedFailure, FailureKind};
+    use crate::adaptor::presenter::connect::ConnectFailure;
+    use connectrpc::ErrorCode;
     // Given / When / Then
     for (error, expected) in [
-        (CommitBatchError::CapacityExceeded, FailureKind::Capacity),
-        (CommitBatchError::SequenceExhausted, FailureKind::Capacity),
+        (
+            CommitBatchError::CapacityExceeded,
+            ErrorCode::ResourceExhausted,
+        ),
+        (
+            CommitBatchError::SequenceExhausted,
+            ErrorCode::ResourceExhausted,
+        ),
         (
             CommitBatchError::PayloadConflict,
-            FailureKind::StateRequired,
+            ErrorCode::FailedPrecondition,
         ),
         (
             CommitBatchError::Corrupt {
                 correlation_id: "corrupt-commit".into(),
             },
-            FailureKind::Corrupt,
+            ErrorCode::DataLoss,
         ),
     ] {
-        assert_eq!(map_commit_batch_error(error).failure_kind(), expected);
+        assert_eq!(map_commit_batch_error(error).connect_code(), expected);
     }
 }
 
@@ -1449,9 +1456,10 @@ async fn test_agent_session_repository削除失敗時に木とprovider所有権�
         .remove(session, authorization, "delete-atomic")
         .await;
 
-    assert_eq!(
-        result.unwrap_err(),
-        crate::domain::agent_session::repository::AgentSessionRepositoryError::Unavailable
+    assert!(
+        matches!(result.unwrap_err(), crate::domain::agent_session::repository::AgentSessionRepositoryError::Store(failure)
+        if failure.nature == crate::domain::failure::TechnicalFailureNature::Transient
+        && matches!(failure.source, crate::domain::failure::StorageFailureSource::Commit(CommitBatchError::StorageUnavailable { .. })))
     );
     let retained = repository
         .find("agent-session-atomic-delete")
@@ -1510,9 +1518,10 @@ async fn test_agent_session_repository永続化失敗時に所有権も導出状
 
     let result = repository.save(saved, "associate-request-1").await;
 
-    assert_eq!(
-        result.unwrap_err(),
-        crate::domain::agent_session::repository::AgentSessionRepositoryError::Unavailable
+    assert!(
+        matches!(result.unwrap_err(), crate::domain::agent_session::repository::AgentSessionRepositoryError::Store(failure)
+        if failure.nature == crate::domain::failure::TechnicalFailureNature::Transient
+        && matches!(failure.source, crate::domain::failure::StorageFailureSource::Commit(CommitBatchError::StorageUnavailable { .. })))
     );
     let unchanged = repository.find("agent-session-1").await.unwrap().unwrap();
     assert_eq!(unchanged.revision(), 2);
@@ -1566,10 +1575,10 @@ async fn test_agent_session_repository_session_startをlifecycleと原子的に�
         )
         .await;
 
-    assert_eq!(
-        failed.unwrap_err(),
-        crate::domain::agent_session::repository::AgentSessionRepositoryError::Unavailable
-    );
+    assert!(matches!(failed.unwrap_err(),
+        crate::domain::agent_session::repository::AgentSessionRepositoryError::Store(failure)
+        if failure.nature == crate::domain::failure::TechnicalFailureNature::Transient
+        && matches!(failure.source, crate::domain::failure::StorageFailureSource::Commit(CommitBatchError::StorageUnavailable { .. }))));
     assert_eq!(
         repository
             .find("agent-session-atomic")
@@ -1648,10 +1657,10 @@ async fn test_agent_session_repository_単独rootとprovider_lifecycleを原子�
         .create_with_lifecycle_events(session, lifecycle_events.clone(), "create-atomic-request")
         .await;
 
-    assert_eq!(
-        failed.unwrap_err(),
-        crate::domain::agent_session::repository::AgentSessionRepositoryError::Unavailable
-    );
+    assert!(matches!(failed.unwrap_err(),
+        crate::domain::agent_session::repository::AgentSessionRepositoryError::Store(failure)
+        if failure.nature == crate::domain::failure::TechnicalFailureNature::Transient
+        && matches!(failure.source, crate::domain::failure::StorageFailureSource::Commit(CommitBatchError::StorageUnavailable { .. }))));
     assert!(repository
         .find("agent-session-create-atomic")
         .await
@@ -2304,7 +2313,7 @@ async fn test_agent_session_repository_所属repoの取得失敗では作成事�
     assert_eq!(
         result,
         Err(AgentSessionRepositoryError::Store(
-            crate::domain::failure::FailureKind::StateRequired
+            crate::domain::repository::RepositoryError::Rule("bare repository".into()).into()
         ))
     );
     assert!(fact_log::read_tree_records(&store, "session-bare")
@@ -2314,37 +2323,68 @@ async fn test_agent_session_repository_所属repoの取得失敗では作成事�
 }
 
 #[test]
+fn test_所有照会_版の競合と所有済みを業務の失敗として保持する() {
+    use crate::domain::agent_session::AgentSessionHistoryGatewayError;
+
+    // Given
+    for (error, expected) in [
+        (
+            AgentSessionRepositoryError::Conflict,
+            AgentSessionHistoryGatewayError::Conflict,
+        ),
+        (
+            AgentSessionRepositoryError::ProviderSessionAlreadyOwned {
+                agent_session_id: "owner".into(),
+            },
+            AgentSessionHistoryGatewayError::ProviderSessionAlreadyOwned {
+                agent_session_id: "owner".into(),
+            },
+        ),
+    ] {
+        // When / Then
+        assert_eq!(
+            super::agent_session_repository::map_ownership_error(error),
+            expected
+        );
+    }
+}
+
+#[test]
 fn test_所有照会_所有済みと競合と一時的失敗の分類を保持する() {
-    use crate::domain::failure::{ClassifiedFailure, FailureKind};
+    use crate::adaptor::presenter::connect::ConnectFailure;
+    use connectrpc::ErrorCode;
     // Given
     for (error, expected) in [
         (
             AgentSessionRepositoryError::ProviderSessionAlreadyOwned {
                 agent_session_id: "owner".into(),
             },
-            FailureKind::StateRequired,
+            ErrorCode::FailedPrecondition,
         ),
-        (
-            AgentSessionRepositoryError::Conflict,
-            FailureKind::RestartRequired,
-        ),
+        (AgentSessionRepositoryError::Conflict, ErrorCode::Aborted),
         (
             AgentSessionRepositoryError::Unavailable,
-            FailureKind::Temporary,
+            ErrorCode::Unavailable,
         ),
-        (AgentSessionRepositoryError::Corrupt, FailureKind::Corrupt),
+        (AgentSessionRepositoryError::Corrupt, ErrorCode::DataLoss),
         (
             AgentSessionRepositoryError::InvalidRequest,
-            FailureKind::InvalidInput,
+            ErrorCode::InvalidArgument,
         ),
         (
-            AgentSessionRepositoryError::Store(FailureKind::Expired),
-            FailureKind::Expired,
+            AgentSessionRepositoryError::Store(
+                (crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
+                    message: "failure".into(),
+                })
+                .into(),
+            ),
+            ErrorCode::DeadlineExceeded,
         ),
     ] {
         // When / Then
         assert_eq!(
-            super::agent_session_repository::map_ownership_error(error).failure_kind(),
+            super::agent_session_repository::map_ownership_error(error).connect_code(),
             expected
         );
     }

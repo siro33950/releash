@@ -34,7 +34,8 @@ pub(crate) async fn retry_control_plane_operation<T, E, F, Fut>(
     operation: F,
 ) -> Result<T, E>
 where
-    E: crate::domain::failure::ClassifiedFailure + std::fmt::Debug,
+    E: std::fmt::Debug,
+    for<'a> crate::domain::failure::Failure: From<&'a E>,
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<T, E>>,
 {

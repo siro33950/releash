@@ -1,5 +1,5 @@
 use super::*;
-use crate::domain::failure::FailureKind;
+use crate::domain::failure::{StorageFailure, StorageFailureSource, TechnicalFailureNature};
 
 #[test]
 fn test_所有済みセッション_ingressの両経路で分類を保持する() {
@@ -12,24 +12,29 @@ fn test_所有済みセッション_ingressの両経路で分類を保持する(
             AgentSessionUsecaseError::ProviderSessionAlreadyOwned {
                 agent_session_id: "owner".into(),
             },
-            FailureKind::StateRequired,
+            ProviderLifecycleIngressUsecaseError::Store(StorageFailure {
+                nature: TechnicalFailureNature::Other,
+                source: StorageFailureSource::AgentSession(Box::new(
+                    AgentSessionRepositoryError::ProviderSessionAlreadyOwned {
+                        agent_session_id: "owner".into(),
+                    },
+                )),
+                context: None,
+            }),
         ),
         (
             AgentSessionRepositoryError::Conflict,
             AgentSessionUsecaseError::Conflict,
-            FailureKind::RestartRequired,
+            ProviderLifecycleIngressUsecaseError::Conflict,
         ),
         (
             AgentSessionRepositoryError::Unavailable,
             AgentSessionUsecaseError::Unavailable,
-            FailureKind::Temporary,
+            ProviderLifecycleIngressUsecaseError::StorageUnavailable,
         ),
     ] {
         // When / Then
-        assert_eq!(
-            map_session_repository_error(repository).failure_kind(),
-            expected
-        );
-        assert_eq!(map_session_error(usecase).failure_kind(), expected);
+        assert_eq!(map_session_repository_error(repository), expected);
+        assert_eq!(map_session_error(usecase), expected);
     }
 }

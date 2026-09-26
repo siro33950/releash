@@ -34,7 +34,7 @@ fn test_notion通信_応答body待ちを取り消せる() {
         result,
         Err(NotionError::Technical(
             crate::domain::failure::TechnicalFailure {
-                kind: crate::domain::failure::FailureKind::Cancelled,
+                nature: crate::domain::failure::TechnicalFailureNature::Cancelled,
                 ..
             }
         ))
@@ -72,7 +72,7 @@ fn test_notion再試行_retry_afterの待ちを取り消せる() {
         result,
         Err(NotionError::Technical(
             crate::domain::failure::TechnicalFailure {
-                kind: crate::domain::failure::FailureKind::Cancelled,
+                nature: crate::domain::failure::TechnicalFailureNature::Cancelled,
                 ..
             }
         ))
@@ -111,7 +111,7 @@ fn test_notion通信_応答body待ちが引き継いだ期限で終わる() {
         result,
         Err(NotionError::Technical(
             crate::domain::failure::TechnicalFailure {
-                kind: crate::domain::failure::FailureKind::Expired,
+                nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
                 ..
             }
         ))
@@ -152,7 +152,7 @@ fn test_notion再試行_retry_after待ちが引き継いだ期限で終わる() 
         result,
         Err(NotionError::Technical(
             crate::domain::failure::TechnicalFailure {
-                kind: crate::domain::failure::FailureKind::Expired,
+                nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
                 ..
             }
         ))
@@ -205,7 +205,7 @@ fn test_notion資源期限_親が無期限でも長い期限でも十秒で終�
             result,
             Err(NotionError::Technical(
                 crate::domain::failure::TechnicalFailure {
-                    kind: crate::domain::failure::FailureKind::Expired,
+                    nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
                     ..
                 }
             ))

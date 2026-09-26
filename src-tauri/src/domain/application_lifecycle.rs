@@ -46,9 +46,3 @@ impl CommandAdmission {
 #[cfg(test)]
 #[path = "application_lifecycle_test.rs"]
 mod application_lifecycle_tests;
-
-impl crate::domain::failure::ClassifiedFailure for ApplicationLifecycleError {
-    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
-        crate::domain::failure::FailureKind::Internal
-    }
-}

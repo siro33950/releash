@@ -1,5 +1,6 @@
 use super::*;
-use crate::domain::failure::FailureKind;
+use crate::domain::failure::{BusinessFailure, Failure};
+
 use crate::usecase::work_queue::{WorkFailure, WorkKey};
 
 #[tokio::test]
@@ -17,7 +18,7 @@ async fn test_作業列配線_複数のcompositionで失敗状態を共有しな
         .observe(
             &WorkKey::new("terminal_checkpoint", "terminal"),
             &WorkFailure {
-                kind: FailureKind::StateRequired,
+                kind: Failure::Business(BusinessFailure::Other),
                 message: "repair required".into(),
             },
         )

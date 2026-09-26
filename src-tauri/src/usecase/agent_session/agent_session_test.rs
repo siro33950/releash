@@ -82,7 +82,7 @@ impl crate::usecase::agent_session::ExecutionTreeCache for RecordingStartedExecu
         tree_id: &str,
     ) -> Result<(), ExecutionTreeCacheReleaseError> {
         self.releases.lock().unwrap().push(tree_id.to_string());
-        match *self.release_failure.lock().unwrap() {
+        match self.release_failure.lock().unwrap().clone() {
             Some(error) => Err(error),
             None => Ok(()),
         }
@@ -98,7 +98,7 @@ impl crate::usecase::agent_session::StartedExecutionTreeRegistrar
         tree_id: &str,
     ) -> Result<(), StartedExecutionTreeRegistrationError> {
         self.tree_ids.lock().unwrap().push(tree_id.to_string());
-        if let Some(error) = self.failure {
+        if let Some(error) = self.failure.clone() {
             return Err(error);
         }
         Ok(())
@@ -2528,68 +2528,4 @@ async fn test_agent_session_launch_codexのhook_delivery未確認を警告しpro
         warnings[0].reason,
         ProviderLifecycleUnavailableReason::CodexHookDeliveryUnconfirmed
     );
-}
-
-#[test]
-fn test_失敗分類_全変種と委譲した理由を保持する() {
-    use crate::domain::failure::{ClassifiedFailure, FailureKind as F};
-    use crate::usecase::agent_session::AgentSessionUsecaseError;
-    // Given
-    let cases = [
-        (AgentSessionUsecaseError::NotFound, F::Missing),
-        (AgentSessionUsecaseError::InvalidOperation, F::StateRequired),
-        (AgentSessionUsecaseError::Conflict, F::RestartRequired),
-        (
-            AgentSessionUsecaseError::ProviderSessionAlreadyOwned {
-                agent_session_id: "session".into(),
-            },
-            F::StateRequired,
-        ),
-        (AgentSessionUsecaseError::Unavailable, F::Temporary),
-        (AgentSessionUsecaseError::Corrupt, F::Corrupt),
-        (AgentSessionUsecaseError::Store(F::Temporary), F::Temporary),
-        (
-            AgentSessionUsecaseError::Store(F::RestartRequired),
-            F::RestartRequired,
-        ),
-        (
-            AgentSessionUsecaseError::Store(F::StateRequired),
-            F::StateRequired,
-        ),
-        (
-            AgentSessionUsecaseError::Store(F::InvalidInput),
-            F::InvalidInput,
-        ),
-        (AgentSessionUsecaseError::Store(F::Expired), F::Expired),
-        (AgentSessionUsecaseError::Store(F::Missing), F::Missing),
-        (
-            AgentSessionUsecaseError::Store(F::AlreadyPresent),
-            F::AlreadyPresent,
-        ),
-        (
-            AgentSessionUsecaseError::Store(F::Permission),
-            F::Permission,
-        ),
-        (AgentSessionUsecaseError::Store(F::Capacity), F::Capacity),
-        (
-            AgentSessionUsecaseError::Store(F::Unsupported),
-            F::Unsupported,
-        ),
-        (AgentSessionUsecaseError::Store(F::Internal), F::Internal),
-        (AgentSessionUsecaseError::Store(F::Corrupt), F::Corrupt),
-        (AgentSessionUsecaseError::Store(F::Cancelled), F::Cancelled),
-        (AgentSessionUsecaseError::Store(F::Unknown), F::Unknown),
-        (
-            AgentSessionUsecaseError::Store(F::OutsideRange),
-            F::OutsideRange,
-        ),
-        (
-            AgentSessionUsecaseError::Store(F::AuthenticationRequired),
-            F::AuthenticationRequired,
-        ),
-    ];
-    for (error, expected) in cases {
-        // When / Then
-        assert_eq!(error.failure_kind(), expected, "{error:?}");
-    }
 }

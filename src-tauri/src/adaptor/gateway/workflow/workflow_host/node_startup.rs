@@ -1,7 +1,7 @@
 use super::*;
-use crate::domain::failure::RetryAction;
 use crate::domain::workflow::entities::workflow_execution::SessionResumeAction;
 use crate::domain::workflow::{NodeProcessPresence, NodeProcessReader};
+use crate::usecase::work_queue::AttemptProgress;
 use crate::usecase::workflow::node_startup::{FailedNodeStart, NodeStartupGateway};
 
 pub(super) struct HostNodeStartup<'a> {
@@ -35,12 +35,12 @@ impl NodeStartupGateway for HostNodeStartup<'_> {
     async fn restart(
         &self,
         node_execution_id: &str,
-        action: RetryAction,
+        action: AttemptProgress,
     ) -> Result<Option<NodeStart>, WorkflowRuntimeError> {
         if *self.cancelled.borrow() {
             return Ok(None);
         }
-        if action == RetryAction::Retry {
+        if action == AttemptProgress::Continue {
             let Some(execution) = self
                 .host
                 .load_control_plane_execution(self.app, self.execution_id)
@@ -57,9 +57,9 @@ impl NodeStartupGateway for HostNodeStartup<'_> {
             return execution
                 .leaf_start_for(node_execution_id)
                 .map(|leaf| Some(NodeStart::Leaf(leaf)))
-                .map_err(|error| WorkflowRuntimeError::StorageFailure {
-                    kind: error.failure_kind(),
-                    message: error.to_string(),
+                .map_err(|error| {
+                    let message = error.to_string();
+                    WorkflowRuntimeError::storage(error, message)
                 });
         }
         self.host

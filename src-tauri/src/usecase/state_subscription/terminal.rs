@@ -1,5 +1,5 @@
 use super::*;
-use crate::domain::failure::{ClassifiedFailure, FailureKind};
+use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
 use crate::domain::state_subscription::SubscriptionTarget;
 use crate::domain::terminal_surface::entities::TerminalSurfaceSummary;
 use crate::domain::terminal_surface::gateway::{TerminalSurfaceEvent, TerminalSurfaceStateSink};
@@ -9,10 +9,10 @@ use crate::domain::terminal_surface::value_objects::output_flow_control::{
 use crate::usecase::terminal_surface::application::TerminalSurfaceStreamItem;
 
 fn error(e: impl std::fmt::Display) -> StateReadError {
-    StateReadError {
-        kind: FailureKind::Internal,
+    StateReadError::from_error(TechnicalFailure {
+        nature: TechnicalFailureNature::Other,
         message: e.to_string(),
-    }
+    })
 }
 
 impl StateSubscriptionUsecase {
@@ -25,7 +25,7 @@ impl StateSubscriptionUsecase {
     ) -> Result<(), StateReadError> {
         if input_id.trim().is_empty() || input_id.len() > 128 {
             return Err(StateReadError {
-                kind: FailureKind::InvalidInput,
+                source: StateReadFailure::InvalidTerminalInput,
                 message: "Invalid terminal input identity".into(),
             });
         }
@@ -114,10 +114,7 @@ impl StateSubscriptionUsecase {
                     })
                     .map_err(error)?;
             }
-            start_result.map_err(|e| StateReadError {
-                kind: e.failure_kind(),
-                message: e.to_string(),
-            })?;
+            start_result.map_err(StateReadError::from_error)?;
             usecase.publisher.changed.notify_waiters();
             Ok(())
         })
@@ -194,7 +191,7 @@ impl StateSubscriptionUsecase {
     ) -> Result<(), StateReadError> {
         if units != OUTPUT_REPORT_UNITS {
             return Err(StateReadError {
-                kind: FailureKind::InvalidInput,
+                source: StateReadFailure::InvalidTerminalInput,
                 message: "Invalid terminal processed units".into(),
             });
         }
@@ -204,7 +201,7 @@ impl StateSubscriptionUsecase {
             .contains_key(&(client.into(), raw.into()))
         {
             return Err(StateReadError {
-                kind: FailureKind::Missing,
+                source: StateReadFailure::TerminalSubscriptionEnded,
                 message: "Terminal subscription ended".into(),
             });
         }

@@ -422,12 +422,9 @@ mod store_round_trip_tests {
             .unwrap_err();
 
         // Then: SQLite 失敗が返り、失敗行は記録されていない
-        use crate::domain::failure::ClassifiedFailure;
+        use crate::adaptor::presenter::connect::ConnectFailure;
         assert!(matches!(error, CommitBatchError::StorageUnavailable { .. }));
-        assert_eq!(
-            error.failure_kind(),
-            crate::domain::failure::FailureKind::Internal
-        );
+        assert_eq!(error.connect_code(), connectrpc::ErrorCode::Internal);
         let rows = store
             .submit_query(|connection| {
                 read_tree(connection, "tree-sqlite-failure")

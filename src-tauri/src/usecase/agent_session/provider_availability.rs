@@ -159,14 +159,3 @@ fn build_registry(
         .collect::<Result<Vec<_>, ProviderAvailabilityUsecaseError>>()?;
     ProviderRegistry::new(entries).map_err(|_| ProviderAvailabilityUsecaseError::Corrupt)
 }
-
-impl crate::domain::failure::ClassifiedFailure for ProviderAvailabilityUsecaseError {
-    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
-        use crate::domain::failure::FailureKind;
-        match self {
-            Self::InvalidInput => FailureKind::InvalidInput,
-            Self::ConfigUnavailable | Self::RefreshUnavailable => FailureKind::Temporary,
-            Self::Corrupt => FailureKind::Corrupt,
-        }
-    }
-}

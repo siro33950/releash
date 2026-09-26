@@ -33,7 +33,7 @@ impl AgentSessionGarbageCollectionPort for AgentSessionLifecycleUsecase {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AgentSessionReadUsecaseError {
     Lifecycle(AgentSessionLifecycleUsecaseError),
-    Store(crate::domain::failure::FailureKind),
+    Store(crate::domain::failure::StorageFailure),
     InvalidRequest,
     StorageUnavailable,
     TerminalUnavailable,
@@ -118,20 +118,6 @@ fn map_lifecycle_error(error: AgentSessionLifecycleUsecaseError) -> AgentSession
         | AgentSessionLifecycleUsecaseError::InvalidOperation
         | AgentSessionLifecycleUsecaseError::LaunchUnavailable => {
             AgentSessionReadUsecaseError::Corrupt
-        }
-    }
-}
-
-impl crate::domain::failure::ClassifiedFailure for AgentSessionReadUsecaseError {
-    fn failure_kind(&self) -> crate::domain::failure::FailureKind {
-        use crate::domain::failure::FailureKind;
-        match self {
-            Self::Lifecycle(error) => error.failure_kind(),
-            Self::Store(kind) => *kind,
-            Self::InvalidRequest => FailureKind::InvalidInput,
-            Self::StorageUnavailable => FailureKind::Temporary,
-            Self::TerminalUnavailable => FailureKind::StateRequired,
-            Self::Corrupt => FailureKind::Corrupt,
         }
     }
 }

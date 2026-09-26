@@ -179,10 +179,13 @@ fn map_session_rename_error(error: AgentSessionRenameError) -> WorkflowError {
         AgentSessionRenameError::ProviderSessionAlreadyOwned => WorkflowError::InvalidState(
             "Provider session is already owned by another AgentSession".to_string(),
         ),
-        AgentSessionRenameError::Unavailable => WorkflowError::StorageUnavailable {
-            message: "AgentSession rename storage is unavailable".to_string(),
-            kind: crate::domain::failure::FailureKind::Temporary,
-        },
+        AgentSessionRenameError::Unavailable => WorkflowError::Store(
+            crate::domain::failure::TechnicalFailure {
+                message: "AgentSession rename storage is unavailable".to_string(),
+                nature: crate::domain::failure::TechnicalFailureNature::Transient,
+            }
+            .into(),
+        ),
         AgentSessionRenameError::Corrupt => {
             WorkflowError::CorruptStoredState("AgentSession rename state is corrupt".to_string())
         }
@@ -193,20 +196,24 @@ fn map_session_rename_error(error: AgentSessionRenameError) -> WorkflowError {
 mod tests {
     #[test]
     fn test_session名前変更_所有済みと保存競合を区別して返す() {
-        use crate::domain::failure::{ClassifiedFailure, FailureKind};
         // Given / When / Then
         for (source, expected) in [
-            (
-                super::AgentSessionRenameError::Conflict,
-                FailureKind::RestartRequired,
-            ),
+            (super::AgentSessionRenameError::Conflict, true),
             (
                 super::AgentSessionRenameError::ProviderSessionAlreadyOwned,
-                FailureKind::StateRequired,
+                false,
             ),
         ] {
             let error = super::map_session_rename_error(source);
-            assert_eq!(error.failure_kind(), expected);
+            assert_eq!(
+                matches!(error, crate::domain::workflow::WorkflowError::Conflict(_)),
+                expected
+            );
+            assert!(matches!(
+                error,
+                crate::domain::workflow::WorkflowError::Conflict(_)
+                    | crate::domain::workflow::WorkflowError::InvalidState(_)
+            ));
             assert!(!error.to_string().contains("Store failure"));
         }
     }

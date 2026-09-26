@@ -69,7 +69,7 @@ fn database_metadata_unavailable() -> LocalEventQueryError {
     LocalEventQueryError::StorageUnavailable {
         failure: SafeOperationFailure::new(
             SessionOperationFailureKind::StorageUnavailable,
-            crate::domain::failure::FailureKind::Temporary,
+            crate::domain::failure::TechnicalFailureNature::Transient,
             "local event read store database metadata is unavailable",
             uuid::Uuid::new_v4().to_string(),
         ),
@@ -284,10 +284,10 @@ impl LocalEventTransactionRepository for LocalEventReadStore {
         &self,
         _batch: LocalAtomicBatch,
     ) -> Result<CommitBatchResult, CommitBatchError> {
-        Err(CommitBatchError::StorageUnavailable {
+        Err(CommitBatchError::StorageAccessRequired {
             failure: SafeOperationFailure::new(
                 SessionOperationFailureKind::PersistFailure,
-                crate::domain::failure::FailureKind::StateRequired,
+                crate::domain::failure::TechnicalFailureNature::Other,
                 "The CLI session reader cannot accept mutations.",
                 uuid::Uuid::new_v4().to_string(),
             ),
@@ -300,14 +300,7 @@ impl LocalEventTransactionRepository for LocalEventReadStore {
     ) -> Result<CommitResolution, LocalEventQueryError> {
         // A concurrent read-only snapshot cannot prove non-commit. Only the
         // exclusive writer owner may resolve an OutcomeUnknown identity.
-        Err(LocalEventQueryError::StorageUnavailable {
-            failure: SafeOperationFailure::new(
-                SessionOperationFailureKind::OutcomeUnknown,
-                crate::domain::failure::FailureKind::RestartRequired,
-                "Commit resolution requires the canonical writer authority.",
-                uuid::Uuid::new_v4().to_string(),
-            ),
-        })
+        Err(LocalEventQueryError::CanonicalWriterRequired)
     }
 
     async fn load_stream(
@@ -518,9 +511,9 @@ mod tests {
             .expect_err("read-only repository must reject commit_batch");
         assert!(matches!(
             commit_error,
-            CommitBatchError::StorageUnavailable { failure }
+            CommitBatchError::StorageAccessRequired { failure }
                 if failure.kind == SessionOperationFailureKind::PersistFailure
-                    && crate::domain::failure::ClassifiedFailure::failure_kind(&failure) == crate::domain::failure::FailureKind::StateRequired
+                    && failure.nature == crate::domain::failure::TechnicalFailureNature::Other
         ));
         assert_eq!(
             writer
@@ -536,9 +529,7 @@ mod tests {
             .expect_err("read-only repository cannot prove non-commit");
         assert!(matches!(
             resolve_error,
-            LocalEventQueryError::StorageUnavailable { failure }
-                if failure.kind == SessionOperationFailureKind::OutcomeUnknown
-                    && crate::domain::failure::ClassifiedFailure::failure_kind(&failure) == crate::domain::failure::FailureKind::RestartRequired
+            LocalEventQueryError::CanonicalWriterRequired
         ));
     }
 

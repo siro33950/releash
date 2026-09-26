@@ -8,6 +8,7 @@ use crate::domain::agent_session::aggregates::{
     AgentSession, AgentSessionRecoveryResult, AgentSessionTreeLocation,
 };
 use crate::domain::agent_session::repository::AgentSessionRepository;
+use crate::domain::failure::{BusinessFailure, Failure, TechnicalFailureNature};
 use crate::domain::local_event::WorkflowExecutionMetadataRecord;
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::workflow::{
@@ -2061,41 +2062,33 @@ async fn test_workflow単一取得_単独sessionをworkflow_summaryとして返�
 
 #[test]
 fn test_workspace_query_結果不明と期限切れの分類を保持する() {
-    use crate::domain::failure::{ClassifiedFailure, FailureKind};
-    use crate::domain::local_event::{
-        LocalEventQueryError, SafeOperationFailure, SessionOperationFailureKind,
-    };
+    use crate::adaptor::presenter::connect::ConnectFailure;
+    use crate::domain::local_event::LocalEventQueryError;
+    use connectrpc::ErrorCode;
     // Given
     for (error, expected) in [
         (
-            LocalEventQueryError::StorageUnavailable {
-                failure: SafeOperationFailure::new(
-                    SessionOperationFailureKind::OutcomeUnknown,
-                    crate::domain::failure::FailureKind::RestartRequired,
-                    "unknown",
-                    "id",
-                ),
-            },
-            FailureKind::RestartRequired,
+            LocalEventQueryError::CanonicalWriterRequired,
+            ErrorCode::Aborted,
         ),
         (
             LocalEventQueryError::Technical(crate::domain::failure::TechnicalFailure {
-                kind: crate::domain::failure::FailureKind::Expired,
+                nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
                 message: "deadline exceeded".into(),
             }),
-            FailureKind::Expired,
+            ErrorCode::DeadlineExceeded,
         ),
-        (LocalEventQueryError::QueryBusy, FailureKind::Temporary),
+        (LocalEventQueryError::QueryBusy, ErrorCode::Unavailable),
     ] {
         // When / Then
-        assert_eq!(query_error(error).failure_kind(), expected);
+        assert_eq!(query_error(error).connect_code(), expected);
     }
 }
 
 #[tokio::test]
 async fn test_workspace読取_実経路で失敗分類を保持する() {
     use crate::adaptor::gateway::local_event_store::test_helpers::ReadFailure;
-    use crate::adaptor::protocol::connect::classified_error;
+    use crate::adaptor::presenter::connect::classified_error;
     // Given
     let directory = tempfile::tempdir().unwrap();
     let store =
@@ -2124,8 +2117,8 @@ async fn test_workspace読取_実経路で失敗分類を保持する() {
 
 #[test]
 fn test_store問い合わせエラー_停止の分類を保持する() {
+    use crate::adaptor::presenter::connect::ConnectFailure;
     use crate::common::operation_context::OperationStopped;
-    use crate::domain::failure::ClassifiedFailure;
     // Given
     for stopped in [OperationStopped::Expired, OperationStopped::Cancelled] {
         // When
@@ -2133,7 +2126,10 @@ fn test_store問い合わせエラー_停止の分類を保持する() {
             stopped.into(),
         ));
         // Then
-        assert_eq!(error.failure_kind(), stopped.failure_kind());
+        assert_eq!(
+            error.connect_code(),
+            crate::domain::failure::TechnicalFailure::from(stopped).connect_code()
+        );
         assert!(matches!(error, WorkflowError::Technical(value) if value == stopped.into()));
     }
 }
@@ -2141,7 +2137,6 @@ fn test_store問い合わせエラー_停止の分類を保持する() {
 #[tokio::test]
 async fn test_workspaceツリー投影_背景失敗の対象と理由を表示し成功後は解除する() {
     use crate::common::retry::RetryBackoff;
-    use crate::domain::failure::FailureKind;
     use crate::usecase::work_queue::{work_queue_tests::queue, WorkFailure, WorkKey};
 
     // Given
@@ -2197,7 +2192,7 @@ async fn test_workspaceツリー投影_背景失敗の対象と理由を表示�
             .observe(
                 &key,
                 &WorkFailure {
-                    kind: FailureKind::Cancelled,
+                    kind: Failure::Technical(TechnicalFailureNature::Cancelled),
                     message: "cancelled".into(),
                 },
             )
@@ -2207,7 +2202,7 @@ async fn test_workspaceツリー投影_背景失敗の対象と理由を表示�
             .observe(
                 &key,
                 &WorkFailure {
-                    kind: FailureKind::StateRequired,
+                    kind: Failure::Business(BusinessFailure::Other),
                     message: "repair required".into(),
                 },
             )
@@ -2233,7 +2228,7 @@ async fn test_workspaceツリー投影_背景失敗の対象と理由を表示�
 #[tokio::test]
 async fn test_失敗対象の読取_node行以外はstoreに依存せず未知の行はそのまま返す() {
     use crate::adaptor::gateway::local_event_store::test_helpers::ReadFailure;
-    use crate::adaptor::protocol::connect::classified_error;
+    use crate::adaptor::presenter::connect::classified_error;
     // Given
     let directory = tempfile::tempdir().unwrap();
     let store =

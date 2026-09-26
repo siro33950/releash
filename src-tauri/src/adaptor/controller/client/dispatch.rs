@@ -82,11 +82,10 @@ impl ClientCommandDispatch {
     }
     pub(crate) fn admit(&self, command: &str) -> Result<(), wire::CommandFailure> {
         if !command_admitted(command, Some(&self.authority)) {
-            return Err(crate::adaptor::presenter::error::AppError::coded(
-                "APPLICATION_UNAVAILABLE",
+            return Err(crate::adaptor::presenter::error::AppError::invalid_state(
                 "Application is unavailable",
-                crate::domain::failure::FailureKind::StateRequired,
             )
+            .with_code("APPLICATION_UNAVAILABLE")
             .into());
         }
         Ok(())
@@ -142,14 +141,15 @@ impl ClientCommandDispatch {
                 .await
                 .map_err(|error| {
                     wire::CommandFailure::from(
-                        crate::adaptor::presenter::error::AppError::from_failure(error),
+                        crate::adaptor::presenter::error::AppError::from_failure(
+                            crate::domain::failure::TechnicalFailure::from(error),
+                        ),
                     )
                 })?,
-                None => Err(crate::adaptor::presenter::error::AppError::coded(
-                    "UNKNOWN_COMMAND",
+                None => Err(crate::adaptor::presenter::error::AppError::missing_target(
                     "Command was not found",
-                    crate::domain::failure::FailureKind::Missing,
                 )
+                .with_code("UNKNOWN_COMMAND")
                 .into()),
             }
         })
@@ -157,12 +157,9 @@ impl ClientCommandDispatch {
 }
 
 pub(crate) fn invalid_request(message: impl Into<String>) -> wire::CommandFailure {
-    crate::adaptor::presenter::error::AppError::coded(
-        "INVALID_REQUEST",
-        message,
-        crate::domain::failure::FailureKind::InvalidInput,
-    )
-    .into()
+    crate::adaptor::presenter::error::AppError::invalid_request(message)
+        .with_code("INVALID_REQUEST")
+        .into()
 }
 pub(crate) fn required<T>(value: Option<T>, field: &str) -> Result<T, wire::CommandFailure> {
     value.ok_or_else(|| invalid_request(format!("Missing {field}")))
@@ -186,12 +183,9 @@ where
     U::Error: std::fmt::Display,
 {
     U::try_from(value).map_err(|error| {
-        crate::adaptor::presenter::error::AppError::coded(
-            "INVALID_RESPONSE",
-            error.to_string(),
-            crate::domain::failure::FailureKind::Internal,
-        )
-        .into()
+        crate::adaptor::presenter::error::AppError::new(error.to_string())
+            .with_code("INVALID_RESPONSE")
+            .into()
     })
 }
 pub(crate) fn outcome<T, U: TryFrom<T>, E: Into<wire::CommandFailure>>(

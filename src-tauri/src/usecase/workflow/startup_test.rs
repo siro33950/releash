@@ -119,10 +119,12 @@ impl Startup {
         self.calls.lock().unwrap().push(call.clone());
         if self.failure == Some(call.as_str()) && (!(self.conflict || self.temporary) || first) {
             if self.temporary {
-                Err(WorkflowError::StorageUnavailable {
-                    kind: crate::domain::failure::FailureKind::Temporary,
-                    message: call,
-                })
+                Err(WorkflowError::Store(
+                    crate::domain::failure::StorageFailure::from(
+                        crate::domain::local_event::CommitBatchError::QueueBusy,
+                    )
+                    .with_message(call),
+                ))
             } else if self.conflict {
                 Err(WorkflowError::Conflict(call))
             } else {
@@ -540,4 +542,148 @@ async fn test_起動時復旧_一覧の一時的失敗を再試行して各実�
             1
         );
     }
+}
+
+struct FailingStartupList(WorkflowError);
+
+#[async_trait::async_trait]
+impl WorkflowStartupRepository for FailingStartupList {
+    async fn list_tree_ids(&self) -> Result<Vec<String>, WorkflowError> {
+        Err(self.0.clone())
+    }
+
+    async fn load(&self, _: &str) -> Result<Option<WorkflowStartupRecord>, WorkflowError> {
+        panic!("failed enumeration must not load a tree")
+    }
+}
+
+#[tokio::test]
+async fn test_起動復旧_作業列を通しても元のstore失敗を保持する() {
+    use crate::domain::local_event::LocalEventQueryError;
+    for source in [
+        LocalEventQueryError::Corrupt {
+            correlation_id: "corrupt".into(),
+        },
+        LocalEventQueryError::ResponseTooLarge,
+        LocalEventQueryError::CanonicalWriterRequired,
+        LocalEventQueryError::InvalidRequest,
+    ] {
+        // Given
+        let queue = crate::usecase::work_queue::WorkQueueUsecase::new(Arc::new(
+            crate::usecase::work_queue::ImmediateWorkQueueRuntime::default(),
+        ));
+        let source = crate::domain::failure::StorageFailure::from(source);
+        let startup = WorkflowStartupUsecase::new(
+            queue,
+            Arc::new(FailingStartupList(WorkflowError::Store(source.clone()))),
+            Arc::new(Startup {
+                calls: Default::default(),
+                failure: None,
+                conflict: false,
+                temporary: false,
+            }),
+        );
+        // When
+        let error = startup.execute().await.unwrap_err();
+        // Then
+        assert!(matches!(error, WorkflowError::Store(failure) if failure.source == source.source));
+    }
+}
+
+#[derive(Default)]
+struct CountingRuntime {
+    inner: crate::usecase::work_queue::ImmediateWorkQueueRuntime,
+    attempts: std::sync::atomic::AtomicUsize,
+    expire_on: Option<usize>,
+}
+
+#[async_trait::async_trait]
+impl crate::usecase::work_queue::WorkQueueRuntime for CountingRuntime {
+    fn now(&self) -> std::time::Duration {
+        self.inner.now()
+    }
+    fn timestamp_ms(&self) -> u64 {
+        self.inner.timestamp_ms()
+    }
+    fn jitter(&self) -> f64 {
+        self.inner.jitter()
+    }
+    fn spawn(&self, task: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>) {
+        self.inner.spawn(task);
+    }
+    async fn sleep(&self, duration: std::time::Duration) {
+        self.inner.sleep(duration).await;
+    }
+    async fn attempt(
+        &self,
+        attempt: crate::usecase::work_queue::Attempt<'_>,
+    ) -> Result<Option<std::time::Duration>, crate::usecase::work_queue::WorkFailure> {
+        let count = self
+            .attempts
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
+        if self.expire_on == Some(count) {
+            return Err(crate::usecase::work_queue::WorkFailure {
+                kind: crate::domain::failure::Failure::Technical(
+                    crate::domain::failure::TechnicalFailureNature::TimedOut,
+                ),
+                message: "attempt timed out".into(),
+            });
+        }
+        self.inner.attempt(attempt).await
+    }
+}
+
+#[tokio::test]
+async fn test_起動復旧_列挙と各treeの期限を一度だけ適用する() {
+    // Given
+    let runtime = Arc::new(CountingRuntime::default());
+    let startup = Arc::new(Startup {
+        calls: Default::default(),
+        failure: None,
+        conflict: false,
+        temporary: false,
+    });
+    let usecase = WorkflowStartupUsecase::new(
+        crate::usecase::work_queue::WorkQueueUsecase::new(runtime.clone()),
+        startup.clone(),
+        startup,
+    );
+    // When
+    usecase.execute().await.unwrap();
+    // Then
+    assert_eq!(
+        runtime.attempts.load(std::sync::atomic::Ordering::SeqCst),
+        3
+    );
+}
+
+#[tokio::test]
+async fn test_起動復旧_再試行の期限切れを直前の元失敗で上書きしない() {
+    use crate::domain::failure::{StorageFailureSource, TechnicalFailureNature};
+    // Given
+    let runtime = Arc::new(CountingRuntime {
+        expire_on: Some(2),
+        ..Default::default()
+    });
+    let queue = crate::usecase::work_queue::WorkQueueUsecase::new(runtime);
+    // When
+    let result: Result<(), _> = execute_recovery(
+        &queue,
+        crate::usecase::work_queue::WorkKey::new("workflow_recovery", "tree"),
+        |_| async {
+            Err(WorkflowError::from(
+                crate::domain::local_event::CommitBatchError::QueueBusy,
+            ))
+        },
+    )
+    .await;
+    // Then
+    let WorkflowError::Store(failure) = result.unwrap_err() else {
+        panic!("expected storage failure")
+    };
+    assert_eq!(failure.nature, TechnicalFailureNature::TimedOut);
+    assert!(
+        matches!(failure.source, StorageFailureSource::Technical(error) if error.message == "attempt timed out")
+    );
 }

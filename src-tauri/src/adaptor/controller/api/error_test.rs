@@ -1,4 +1,5 @@
 use super::*;
+use crate::domain::workflow::WorkflowError;
 
 #[test]
 fn test_workflow停止_local_apiの既存エラー形式を保つ() {

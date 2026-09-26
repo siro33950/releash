@@ -1,6 +1,7 @@
 use super::*;
+use crate::adaptor::presenter::connect::ConnectFailure;
 use crate::common::operation_context::{scope, Deadline, OperationContext};
-use crate::domain::failure::FailureKind;
+use connectrpc::ErrorCode;
 
 #[tokio::test]
 async fn test_購読読取の境界_同期queryへ期限を引き継ぐ() {
@@ -11,7 +12,7 @@ async fn test_購読読取の境界_同期queryへ期限を引き継ぐ() {
     let context =
         OperationContext::default().with_deadline(Deadline::new(std::time::Instant::now()));
     let error = scope(context, reads.read(&target)).await.unwrap_err();
-    assert_eq!(error.kind, FailureKind::Expired);
+    assert_eq!(error.connect_code(), ErrorCode::DeadlineExceeded);
     assert!(reads.read(&target).await.is_ok());
 }
 
