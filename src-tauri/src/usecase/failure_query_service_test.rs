@@ -143,3 +143,64 @@ async fn test_背景失敗の表示変換_無関係な対象と要対応でな�
         assert_eq!(projected, original);
     }
 }
+
+#[tokio::test]
+async fn test_失敗ページ_複数試行をまとめてページングし対象外を除く() {
+    // Given
+    let queue = queue();
+    for index in 0..103 {
+        queue
+            .observe(
+                &WorkKey::new(
+                    &format!("operation-{index}"),
+                    if index % 2 == 0 { "old" } else { "new" },
+                ),
+                &WorkFailure {
+                    kind: FailureKind::StateRequired,
+                    message: "failed".into(),
+                },
+            )
+            .await;
+    }
+    queue
+        .observe(
+            &WorkKey::new("other", "unrelated"),
+            &WorkFailure {
+                kind: FailureKind::StateRequired,
+                message: "other".into(),
+            },
+        )
+        .await;
+    // When
+    let targets = ["old".into(), "new".into(), "old".into()];
+    let query = queue.failure_query();
+    let first = query.records_page_for_targets(&targets, 0).await;
+    let last = query
+        .records_page_for_targets(&targets, first.next_offset.unwrap())
+        .await;
+    // Then
+    assert_eq!(first.items.len(), 100);
+    assert_eq!(last.items.len(), 3);
+    assert!(last.next_offset.is_none());
+    assert!(first.requires_attention && last.requires_attention);
+    assert!(first
+        .items
+        .iter()
+        .chain(&last.items)
+        .all(|item| targets.contains(&item.record.target)));
+    assert_eq!(
+        first
+            .items
+            .iter()
+            .chain(&last.items)
+            .map(|item| &item.record.operation)
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        103
+    );
+    assert!(query
+        .records_page_for_targets(&["missing".into()], 0)
+        .await
+        .items
+        .is_empty());
+}

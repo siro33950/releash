@@ -57,7 +57,13 @@ impl WorkspaceStateReads {
         match target {
             T::Failures(target, offset) => {
                 return Ok(StateValue::Failures(
-                    self.queue.records_page(target, *offset).await,
+                    self.queue
+                        .failure_query()
+                        .records_page_for_targets(
+                            &self.workflow.failure_targets(target).await.map_err(error)?,
+                            *offset,
+                        )
+                        .await,
                 ))
             }
             T::AgentSession(id) => {

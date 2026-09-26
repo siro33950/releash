@@ -23,6 +23,10 @@ impl TestWorkspaceQueryService {
 
 #[async_trait::async_trait]
 impl WorkspaceQueryService for TestWorkspaceQueryService {
+    async fn failure_targets(&self, node_id: &str) -> Result<Vec<String>, WorkflowError> {
+        Ok(vec![node_id.to_string()])
+    }
+
     async fn workspace_tree(
         &self,
         _workspace_identity: &WorkspaceIdentity,

@@ -181,7 +181,10 @@ impl StateSubscriptionUsecase {
             loop {
                 let source = tokio::select! {
                     result = changes.recv() => match result {
-                        Ok(source) if worker_target.affected_by(&source) => Some(source),
+                        Ok(source) if worker_target.affected_by(&source)
+                            || matches!((&worker_target, &source),
+                                (SubscriptionTarget::Failures(_, _),
+                                 crate::domain::state_subscription::StateChangeSource::Failures(_))) => Some(source),
                         Ok(_) => continue,
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => None,
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,

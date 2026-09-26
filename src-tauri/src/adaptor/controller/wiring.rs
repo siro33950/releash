@@ -456,6 +456,7 @@ pub(crate) fn wire_delegate_continuation(
     use crate::adaptor::gateway::workflow::workflow_host::delegate::HostDelegateContinuation;
     use crate::usecase::workflow::delegate::DelegateContinuationUsecase;
     host.delegate_continuation = Some(Arc::new(DelegateContinuationUsecase {
+        queue: host.queue.clone(),
         gateway: Arc::new(HostDelegateContinuation {
             host: host.clone(),
             app,
