@@ -615,7 +615,6 @@ impl ConnectFailure for crate::domain::failure::StorageFailure {
             StorageFailureSource::Commit(error) => error.connect_code(),
             StorageFailureSource::Query(error) => error.connect_code(),
             StorageFailureSource::Technical(error) => error.connect_code(),
-            StorageFailureSource::Editor(error) => error.connect_code(),
             StorageFailureSource::Workflow(error) => error.connect_code(),
             StorageFailureSource::Repository(error) => error.connect_code(),
             StorageFailureSource::AgentSession(error) => error.connect_code(),

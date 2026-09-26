@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn test_storeの版競合_workflowの業務上の競合として保持する() {
+fn test_storeの版競合_workflowのstoreに元の値を保持する() {
     use crate::domain::local_event::{CommitBatchError, StreamVersion};
     // Given
     for source in [
@@ -10,11 +10,13 @@ fn test_storeの版競合_workflowの業務上の競合として保持する() {
             current: StreamVersion::new(2).unwrap(),
         },
     ] {
-        let reason = source.to_string();
+        let expected = source.clone();
         // When
         let error = WorkflowError::from(source);
         // Then
-        assert!(matches!(error, WorkflowError::Conflict(message) if message.contains(&reason)));
+        assert!(
+            matches!(error, WorkflowError::Store(failure) if failure.source == crate::domain::failure::StorageFailureSource::Commit(expected))
+        );
     }
 }
 
@@ -31,13 +33,9 @@ fn test_書込失敗_workflow変換後も分類を保持する() {
         let expected = error.clone();
         // When / Then
         let actual = WorkflowError::from(error);
-        if expected == CommitBatchError::TreeHeadConflict {
-            assert!(matches!(actual, WorkflowError::Conflict(_)));
-        } else {
-            assert!(
-                matches!(actual, WorkflowError::Store(failure) if failure.source == crate::domain::failure::StorageFailureSource::Commit(expected))
-            );
-        }
+        assert!(
+            matches!(actual, WorkflowError::Store(failure) if failure.source == crate::domain::failure::StorageFailureSource::Commit(expected))
+        );
     }
 }
 

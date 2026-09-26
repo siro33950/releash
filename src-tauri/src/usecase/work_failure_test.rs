@@ -37,6 +37,23 @@ fn test_作業列の失敗_版競合だけが業務の手順を読み直す() {
         LocalEventQueryError::CanonicalWriterRequired,
     ));
     assert_eq!(next_attempt(Failure::from(&error)), None);
+    let stored_conflict = WorkflowError::Store(StorageFailure::from(WorkflowError::Conflict(
+        "head advanced".into(),
+    )));
+    assert_eq!(
+        Failure::from(&stored_conflict),
+        Failure::Business(BusinessFailure::VersionConflict)
+    );
+    assert_eq!(
+        next_attempt(Failure::from(&stored_conflict)),
+        Some(AttemptProgress::Reload)
+    );
+    let stored_commit_conflict =
+        WorkflowError::Store(StorageFailure::from(CommitBatchError::TreeHeadConflict));
+    assert_eq!(
+        Failure::from(&stored_commit_conflict),
+        Failure::Business(BusinessFailure::VersionConflict)
+    );
 }
 
 #[test]

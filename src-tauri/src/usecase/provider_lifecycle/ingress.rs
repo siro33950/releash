@@ -440,8 +440,11 @@ fn map_session_error(error: AgentSessionUsecaseError) -> ProviderLifecycleIngres
             ProviderLifecycleIngressUsecaseError::InvalidInput
         }
         AgentSessionUsecaseError::Conflict => ProviderLifecycleIngressUsecaseError::Conflict,
-        error @ AgentSessionUsecaseError::ProviderSessionAlreadyOwned { .. } => {
-            ProviderLifecycleIngressUsecaseError::Store(error.into())
+        AgentSessionUsecaseError::ProviderSessionAlreadyOwned { agent_session_id } => {
+            ProviderLifecycleIngressUsecaseError::Store(
+                AgentSessionRepositoryError::ProviderSessionAlreadyOwned { agent_session_id }
+                    .into(),
+            )
         }
         AgentSessionUsecaseError::Unavailable => {
             ProviderLifecycleIngressUsecaseError::StorageUnavailable

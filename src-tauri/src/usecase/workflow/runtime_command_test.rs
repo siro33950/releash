@@ -46,11 +46,6 @@ async fn test_workflow失敗_stopとcache解放と起動登録で元の分類を
     ] {
         let expected = match &error {
             WorkflowError::Store(failure) => failure.clone(),
-            WorkflowError::Editor(error) => StorageFailure {
-                nature: TechnicalFailureNature::Other,
-                source: StorageFailureSource::Editor(error.clone()),
-                context: None,
-            },
             error => StorageFailure {
                 nature: match error {
                     WorkflowError::Technical(failure) => failure.nature,

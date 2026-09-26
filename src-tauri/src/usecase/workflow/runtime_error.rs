@@ -63,6 +63,7 @@ impl WorkflowRuntimeError {
     pub(crate) fn version_conflict(&self) -> Option<&str> {
         match self {
             Self::Conflict(reason) => Some(reason),
+            Self::Store(failure) => failure.version_conflict(),
             _ => None,
         }
     }
@@ -153,10 +154,6 @@ impl WorkflowRuntimeError {
         error: impl Into<crate::domain::failure::StorageFailure>,
         message: impl Into<String>,
     ) -> Self {
-        match crate::domain::workflow::WorkflowError::storage(error, message) {
-            crate::domain::workflow::WorkflowError::Conflict(message) => Self::Conflict(message),
-            crate::domain::workflow::WorkflowError::Store(failure) => Self::Store(failure),
-            _ => unreachable!("storage conversion only returns storage or version conflict"),
-        }
+        Self::Store(error.into().with_message(message))
     }
 }

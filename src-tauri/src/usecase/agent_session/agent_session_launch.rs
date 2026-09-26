@@ -1113,9 +1113,13 @@ fn map_session_error(error: AgentSessionUsecaseError) -> AgentSessionLaunchUseca
         AgentSessionUsecaseError::NotFound | AgentSessionUsecaseError::InvalidOperation => {
             AgentSessionLaunchUsecaseError::InvalidInput
         }
-        error @ (AgentSessionUsecaseError::Conflict
-        | AgentSessionUsecaseError::ProviderSessionAlreadyOwned { .. }) => {
-            AgentSessionLaunchUsecaseError::Conflict(error.into())
+        AgentSessionUsecaseError::Conflict => AgentSessionLaunchUsecaseError::Conflict(
+            crate::domain::agent_session::repository::AgentSessionRepositoryError::Conflict.into(),
+        ),
+        AgentSessionUsecaseError::ProviderSessionAlreadyOwned { agent_session_id } => {
+            AgentSessionLaunchUsecaseError::Conflict(
+                crate::domain::agent_session::repository::AgentSessionRepositoryError::ProviderSessionAlreadyOwned { agent_session_id }.into(),
+            )
         }
         AgentSessionUsecaseError::Unavailable => AgentSessionLaunchUsecaseError::StorageUnavailable,
         AgentSessionUsecaseError::Store(kind) => AgentSessionLaunchUsecaseError::Store(kind),

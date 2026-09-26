@@ -113,7 +113,9 @@ where
         .map_err(|failure| match source.lock().unwrap().take() {
             Some(error) => {
                 let message = error.to_string();
-                WorkflowError::storage(error, message)
+                WorkflowError::Store(
+                    crate::domain::failure::StorageFailure::from(error).with_message(message),
+                )
             }
             None => recovery_error(failure),
         })
@@ -121,7 +123,7 @@ where
 
 fn recovery_error(error: crate::usecase::work_queue::WorkFailure) -> WorkflowError {
     let message = error.message.clone();
-    WorkflowError::storage(error, message)
+    WorkflowError::Store(crate::domain::failure::StorageFailure::from(error).with_message(message))
 }
 
 pub(crate) async fn check_startup_definition(

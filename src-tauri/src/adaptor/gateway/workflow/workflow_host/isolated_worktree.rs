@@ -91,7 +91,9 @@ impl WorkflowRuntimeHost {
                 .map_err(|error| WorkflowRuntimeError::SessionStore(error.to_string()))?
                 .map_err(|error| {
                     let message = error.to_string();
-                    WorkflowRuntimeError::storage(error, message)
+                    WorkflowRuntimeError::Store(
+                        crate::domain::failure::StorageFailure::from(error).with_message(message),
+                    )
                 });
                 if let Err(error) = result {
                     failures.push((start.node_execution_id().to_string(), error));

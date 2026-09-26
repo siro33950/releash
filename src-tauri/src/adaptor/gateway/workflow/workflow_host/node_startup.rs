@@ -59,7 +59,9 @@ impl NodeStartupGateway for HostNodeStartup<'_> {
                 .map(|leaf| Some(NodeStart::Leaf(leaf)))
                 .map_err(|error| {
                     let message = error.to_string();
-                    WorkflowRuntimeError::storage(error, message)
+                    WorkflowRuntimeError::Store(
+                        crate::domain::failure::StorageFailure::from(error).with_message(message),
+                    )
                 });
         }
         self.host

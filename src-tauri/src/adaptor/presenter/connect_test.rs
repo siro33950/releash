@@ -188,3 +188,81 @@ fn test_作業手順の失敗_storeに包んでも転送コードを保持する
         );
     }
 }
+
+#[test]
+fn test_mainでstoreだった経路_httpとconnectのコードを保持する() {
+    use crate::adaptor::controller::api::error::ApiError;
+    use crate::domain::agent_session::repository::AgentSessionRepositoryError;
+    use crate::domain::failure::TechnicalFailure;
+    use crate::domain::local_event::{CommitBatchError, LocalEventQueryError};
+    use crate::domain::workflow::WorkflowError;
+    use crate::usecase::workflow::runtime_error::WorkflowRuntimeError;
+
+    let cases = [
+        (
+            WorkflowError::storage(CommitBatchError::QueueBusy, "commit"),
+            ErrorCode::Unavailable,
+        ),
+        (
+            WorkflowError::from(CommitBatchError::TreeHeadConflict),
+            ErrorCode::Aborted,
+        ),
+        (
+            WorkflowError::storage(LocalEventQueryError::QueryBusy, "query"),
+            ErrorCode::Unavailable,
+        ),
+        (
+            WorkflowError::storage(
+                TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
+                    message: "deadline".into(),
+                },
+                "archive",
+            ),
+            ErrorCode::DeadlineExceeded,
+        ),
+        (
+            WorkflowError::storage(
+                WorkflowError::Editor(crate::domain::external_editor::EditorError::Launch(
+                    "editor".into(),
+                )),
+                "editor",
+            ),
+            ErrorCode::FailedPrecondition,
+        ),
+        (
+            WorkflowError::Store(
+                crate::domain::failure::StorageFailure::from(WorkflowError::Conflict(
+                    "advanced".into(),
+                ))
+                .with_message("reconcile"),
+            ),
+            ErrorCode::Aborted,
+        ),
+    ];
+    for (error, code) in cases {
+        assert!(matches!(error, WorkflowError::Store(_)));
+        assert_eq!(error.connect_code(), code);
+        assert_eq!(ApiError::from(error).status.as_u16(), 503);
+    }
+
+    let runtime = WorkflowRuntimeError::Store(
+        crate::domain::failure::StorageFailure::from(WorkflowError::Conflict("advanced".into()))
+            .with_message("isolated worktree"),
+    );
+    assert_eq!(runtime.connect_code(), ErrorCode::Aborted);
+    let WorkflowRuntimeError::Store(failure) = runtime else {
+        panic!("runtime error must stay in Store");
+    };
+    let workflow = WorkflowError::Store(failure);
+    assert_eq!(ApiError::from(workflow).status.as_u16(), 503);
+
+    let owned = AgentSessionRepositoryError::ProviderSessionAlreadyOwned {
+        agent_session_id: "owner".into(),
+    };
+    let ingress = crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError::Store(
+        owned.into(),
+    );
+    assert_eq!(ingress.connect_code(), ErrorCode::FailedPrecondition);
+    assert_eq!(ApiError::from(ingress).status.as_u16(), 503);
+}

@@ -744,9 +744,13 @@ fn map_session_error(error: AgentSessionUsecaseError) -> AgentSessionLifecycleUs
         AgentSessionUsecaseError::InvalidOperation => {
             AgentSessionLifecycleUsecaseError::InvalidOperation
         }
-        error @ (AgentSessionUsecaseError::Conflict
-        | AgentSessionUsecaseError::ProviderSessionAlreadyOwned { .. }) => {
-            AgentSessionLifecycleUsecaseError::Conflict(error.into())
+        AgentSessionUsecaseError::Conflict => AgentSessionLifecycleUsecaseError::Conflict(
+            crate::domain::agent_session::repository::AgentSessionRepositoryError::Conflict.into(),
+        ),
+        AgentSessionUsecaseError::ProviderSessionAlreadyOwned { agent_session_id } => {
+            AgentSessionLifecycleUsecaseError::Conflict(
+                crate::domain::agent_session::repository::AgentSessionRepositoryError::ProviderSessionAlreadyOwned { agent_session_id }.into(),
+            )
         }
         AgentSessionUsecaseError::Unavailable => {
             AgentSessionLifecycleUsecaseError::StorageUnavailable

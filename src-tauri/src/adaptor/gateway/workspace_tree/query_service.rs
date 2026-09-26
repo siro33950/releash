@@ -612,9 +612,7 @@ fn query_error(error: crate::domain::local_event::LocalEventQueryError) -> Workf
     match error {
         LocalEventQueryError::Technical(stopped) => WorkflowError::Technical(stopped),
         error @ (LocalEventQueryError::StorageUnavailable { .. }
-        | LocalEventQueryError::StorageAccessRequired { .. }
-        | LocalEventQueryError::QueryBusy
-        | LocalEventQueryError::CanonicalWriterRequired) => {
+        | LocalEventQueryError::QueryBusy) => {
             let message = error.to_string();
             WorkflowError::storage(error, message)
         }

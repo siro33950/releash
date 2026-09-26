@@ -226,7 +226,11 @@ impl From<&crate::domain::local_event::SafeOperationFailure> for Failure {
 
 impl From<&crate::domain::failure::StorageFailure> for Failure {
     fn from(error: &crate::domain::failure::StorageFailure) -> Self {
-        Self::Technical(error.nature)
+        if error.version_conflict().is_some() {
+            Self::Business(BusinessFailure::VersionConflict)
+        } else {
+            Self::Technical(error.nature)
+        }
     }
 }
 impl From<&super::work_queue::WorkFailure> for Failure {

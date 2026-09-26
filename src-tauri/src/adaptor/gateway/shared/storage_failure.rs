@@ -49,21 +49,10 @@ impl From<TechnicalFailure> for StorageFailure {
     }
 }
 
-impl From<crate::domain::external_editor::EditorError> for StorageFailure {
-    fn from(error: crate::domain::external_editor::EditorError) -> Self {
-        Self {
-            nature: TechnicalFailureNature::Other,
-            context: None,
-            source: StorageFailureSource::Editor(error),
-        }
-    }
-}
-
 impl From<crate::domain::workflow::WorkflowError> for StorageFailure {
     fn from(error: crate::domain::workflow::WorkflowError) -> Self {
         let error = match error {
             crate::domain::workflow::WorkflowError::Store(failure) => return failure,
-            crate::domain::workflow::WorkflowError::Editor(failure) => return failure.into(),
             error => error,
         };
         let nature = match &error {
@@ -115,30 +104,6 @@ impl From<crate::domain::agent_session::repository::AgentSessionRepositoryError>
             nature,
             context: None,
             source: StorageFailureSource::AgentSession(Box::new(error)),
-        }
-    }
-}
-
-impl From<crate::usecase::agent_session::AgentSessionUsecaseError> for StorageFailure {
-    fn from(error: crate::usecase::agent_session::AgentSessionUsecaseError) -> Self {
-        use crate::domain::agent_session::repository::AgentSessionRepositoryError as R;
-        use crate::usecase::agent_session::AgentSessionUsecaseError as E;
-        match error {
-            E::Store(failure) => failure,
-            E::Conflict => R::Conflict.into(),
-            E::ProviderSessionAlreadyOwned { agent_session_id } => {
-                R::ProviderSessionAlreadyOwned { agent_session_id }.into()
-            }
-            E::Unavailable => R::Unavailable.into(),
-            E::Corrupt => R::Corrupt.into(),
-            E::NotFound => {
-                crate::domain::workflow::WorkflowError::NotFound("AgentSession not found".into())
-                    .into()
-            }
-            E::InvalidOperation => crate::domain::workflow::WorkflowError::InvalidState(
-                "AgentSession operation is not available".into(),
-            )
-            .into(),
         }
     }
 }
@@ -298,19 +263,6 @@ impl WorkflowError {
         error: impl Into<crate::domain::failure::StorageFailure>,
         message: impl Into<String>,
     ) -> Self {
-        use crate::domain::failure::StorageFailureSource;
-        let message = message.into();
-        let failure = error.into();
-        match &failure.source {
-            StorageFailureSource::Commit(error) if error.is_version_conflict() => {
-                Self::Conflict(message)
-            }
-            StorageFailureSource::Workflow(error)
-                if matches!(error.as_ref(), Self::Conflict(_)) =>
-            {
-                Self::Conflict(message)
-            }
-            _ => Self::Store(failure.with_message(message)),
-        }
+        Self::Store(error.into().with_message(message))
     }
 }

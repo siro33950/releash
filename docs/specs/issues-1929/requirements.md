@@ -112,7 +112,7 @@
 - 技術的な失敗の変種が持つ失敗の性質を、転送のコードの別名ではない 4 つ（一時的・期限切れ・取り消し・それ以外）として定義し直すこと。性質を決めるのは失敗を生んだ側の gateway で、変換は `src-tauri/src/adaptor/gateway/shared/` に集約する。store の失敗も同じで、rusqlite のエラーコードから性質を決める（`src-tauri/src/adaptor/gateway/local_event_store/reader.rs`）。
 - 作業列に載る失敗と失敗の記録が運ぶ値を新設すること。中身は「業務の失敗（集約の版の競合か、それ以外か）」か「技術的な失敗（性質 4 値）」のどちらかで、既存の 2 つを 1 つに包むだけの値とする。判断のメソッドはこの値に持たせない。
 - 作業列が試行ごとに入口へ渡す引数（今の `RetryAction`）を、受け手の動きを表す 2 値に置き換え、作業列（`src-tauri/src/usecase/work_queue.rs`）が所有すること。
-- store 由来の版の競合（`CommitBatchError::StreamHeadConflict`・`TreeHeadConflict`）を、`WorkflowError` と `WorkflowRuntimeError` の既存の `Conflict` と同じ業務の失敗の変種で受けること。
+- store 由来の版の競合（`CommitBatchError::StreamHeadConflict`・`TreeHeadConflict`）を、`WorkflowError` と `WorkflowRuntimeError` で版の競合として判定すること。HTTP 503 を保つ `WorkflowError::Store` の経路では元の `CommitBatchError` を保持する。
 - `WorkflowRuntimeError::Store(FailureKind)`・`StorageFailure { kind }` と `WorkflowError::Store(FailureKind)`・`StorageUnavailable { kind }` の 4 変種を、store の失敗の値（`CommitBatchError` / `LocalEventQueryError`）をそのまま持つ技術的な失敗の変種 1 つにまとめること。統合は両方の型で揃え、その間の変換（`src-tauri/src/adaptor/gateway/workflow/runtime_command_gateway.rs:93-100`、`src-tauri/src/usecase/workflow/control_plane.rs:747-756`）も統合後の変種どうしで行う。統合後の変種は、store の失敗と、今そこへ変換されている store 以外の技術的な失敗（`src-tauri/src/usecase/workflow/execution_archive.rs`、`startup.rs`、`node_startup.rs`）の両方を運ぶ。
 - 外部の失敗から失敗の性質を決める変換の集約。今の `src-tauri/src/adaptor/gateway/shared/operation_context.rs:6`、`src-tauri/src/adaptor/gateway/shared/background_io.rs:6-20`、`src-tauri/src/adaptor/gateway/local_event_store/reader.rs:43` が分類している。
 - domain の中で業務の語彙の上に `FailureKind` が重なっている箇所の置き換え。`src-tauri/src/domain/local_event/failure.rs` の `SafeOperationFailure` から `classification` を無くすことを含む。
@@ -130,6 +130,8 @@
 
 今回変更しない対象。
 
+- store 以外の失敗を `StorageFailure` で運ぶのは、main で `StorageFailure` になっていた経路のステータスコード（HTTP 503 と Connect の分類）を保つため。HTTP local API が無くなるマイルストーン #100 と、失敗の扱いを見直すマイルストーン #97 で解消する。
+- store 由来の版の競合を `Conflict` の変種にまとめるのは、HTTP local API が無くなるマイルストーン #100 の後。
 - `UsecaseError` などの usecase のエラー型そのものの廃止。マイルストーン #97 が扱う。
 - 2 つの技術的な失敗の変種（store の失敗を含む統合後の変種と、`Technical`）を 1 つにまとめること。2 つ並ぶのは HTTP local API の 503 と 500 の出し分けを保つためであり、1 つにまとめるのはマイルストーン #100 で HTTP local API が無くなった後とする。
 - `src-tauri/src/adaptor/protocol/` の `connect.rs` 以外と、HTTP local API のリクエスト・レスポンスの型の presenter への移動。#1931 が扱う。
@@ -150,7 +152,7 @@
 - R-001: domain が表す失敗は業務の意味があるものだけであり、転送の語彙（gRPC のステータスコード、HTTP status）と 1 対 1 に対応する分類を domain は持たない。
 - R-002: trait の失敗は、業務の結果と、中身を見ない技術的な失敗の変種 1 つで表される。技術的な失敗が一時的か、やり直してよいかを domain は判断に使わない。
 - R-003: Usecase が出した失敗から転送のステータスコード（Connect のステータスコード、HTTP local API の HTTP status）を決めるのは presenter の 1 か所だけであり、業務の失敗と技術的な失敗を区別して対応付ける。presenter の外で転送の失敗を組み立てない。
-- R-004: 業務の手順をやり直すかは、集約の版が競合したという業務の失敗で決まる。一時的な失敗をやり直すかは、技術的な失敗が持つ性質で決まる。
+- R-004: 業務の手順をやり直すかは、集約の版が競合したという業務の失敗で決まる。一時的な失敗をやり直すかは、技術的な失敗が持つ性質で決まる。store 由来の版の競合は、版の競合として判定される。HTTP local API のステータスを保つため、`WorkflowError` での変種は `Store` のままとする。
 - R-005: 「やり直しで直る失敗は Node の失敗にしない」の判定は 1 つであり、その条件は集約の版が競合したかである。この判定を通るすべての経路で同じ結果になる。
 - R-006: 画面と CLI が受け取る転送のステータスコードは、この変更の前と同じである。Connect では、出ていく側の自前の期限切れが `DEADLINE_EXCEEDED`、SQLite の busy の待ちの期限切れが `UNAVAILABLE` である。HTTP local API では、期限切れによる技術的な失敗が 500 である。
 - R-007: 技術的な失敗は、presenter が転送のステータスコードを決めるために必要な情報を、それ自身が運ぶ。少なくとも一時的・期限切れ・取り消し・それ以外の区別が、失敗の外の情報を使わずに導ける。store の失敗では元の失敗の値も運ばれ、presenter はより細かいステータスコードを選ぶときだけそれを見る。

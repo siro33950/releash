@@ -2069,7 +2069,7 @@ fn test_workspace_query_結果不明と期限切れの分類を保持する() {
     for (error, expected) in [
         (
             LocalEventQueryError::CanonicalWriterRequired,
-            ErrorCode::Aborted,
+            ErrorCode::Internal,
         ),
         (
             LocalEventQueryError::Technical(crate::domain::failure::TechnicalFailure {
@@ -2082,6 +2082,32 @@ fn test_workspace_query_結果不明と期限切れの分類を保持する() {
     ] {
         // When / Then
         assert_eq!(query_error(error).connect_code(), expected);
+    }
+}
+
+#[test]
+fn test_workspace_query_store以外の失敗はmainと同じ変種を返す() {
+    use crate::adaptor::controller::api::error::ApiError;
+    use crate::adaptor::presenter::connect::ConnectFailure;
+    use crate::domain::local_event::{
+        LocalEventQueryError, SafeOperationFailure, SessionOperationFailureKind,
+    };
+
+    for error in [
+        LocalEventQueryError::CanonicalWriterRequired,
+        LocalEventQueryError::StorageAccessRequired {
+            failure: SafeOperationFailure::new(
+                SessionOperationFailureKind::StorageUnavailable,
+                TechnicalFailureNature::Other,
+                "access required",
+                "id",
+            ),
+        },
+    ] {
+        let error = query_error(error);
+        assert!(matches!(error, WorkflowError::External(_)));
+        assert_eq!(error.connect_code(), connectrpc::ErrorCode::Internal);
+        assert_eq!(ApiError::from(error).status.as_u16(), 500);
     }
 }
 
@@ -2102,6 +2128,12 @@ async fn test_workspace読取_実経路で失敗分類を保持する() {
     let workspace = WorkspaceIdentity::new("/repo");
     for (failure, expected) in ReadFailure::cases() {
         for tree in [false, true] {
+            let expected =
+                if tree && matches!(failure, ReadFailure::Sqlite(rusqlite::ffi::SQLITE_IOERR)) {
+                    connectrpc::ErrorCode::Internal
+                } else {
+                    expected
+                };
             store.fail_next_read(failure.clone());
             // When
             let result = if tree {
@@ -2241,6 +2273,11 @@ async fn test_失敗対象の読取_node行以外はstoreに依存せず未知�
     let missing = "node-w-00000000000040008000000000001932-missing";
     // When / Then
     for (failure, expected) in ReadFailure::cases() {
+        let expected = if matches!(failure, ReadFailure::Sqlite(rusqlite::ffi::SQLITE_IOERR)) {
+            connectrpc::ErrorCode::Internal
+        } else {
+            expected
+        };
         store.fail_next_read(failure);
         for target in [
             "*",

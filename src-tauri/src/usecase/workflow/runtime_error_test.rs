@@ -13,6 +13,21 @@ fn test_版競合_業務上の競合だけを返す() {
     // When / Then
     assert_eq!(conflict.version_conflict(), Some("head advanced"));
     assert_eq!(storage.version_conflict(), None);
+    let stored_conflict = WorkflowRuntimeError::storage(
+        crate::domain::workflow::WorkflowError::Conflict("head advanced".into()),
+        "reconcile",
+    );
+    assert_eq!(stored_conflict.version_conflict(), Some("head advanced"));
+    let stored_commit_conflict = WorkflowRuntimeError::Store(
+        crate::domain::failure::StorageFailure::from(
+            crate::domain::local_event::CommitBatchError::TreeHeadConflict,
+        )
+        .with_message("creation failed"),
+    );
+    assert_eq!(
+        stored_commit_conflict.version_conflict(),
+        Some("creation failed")
+    );
 }
 
 #[test]
