@@ -17,7 +17,7 @@ fn test_購読事象_対象名と日本語を含む引数を分離して配信�
                 epoch: "boot:1".into(),
                 sequence: 7,
             },
-            Arc::new(StateValue::BranchBase(Some("main".into()))),
+            Arc::new(payload(&StateValue::BranchBase(Some("main".into()))).unwrap()),
         ),
     ));
     assert_eq!(
@@ -73,7 +73,7 @@ fn test_購読事象_準備変更と定期印の旧転送形式を保つ() {
                         sequence,
                     },
                     delivery,
-                    Arc::new(StateValue::RepositoryPaths(vec!["/repo".into()])),
+                    Arc::new(payload(&StateValue::RepositoryPaths(vec!["/repo".into()])).unwrap()),
                 ),
             )),
             wire::StateSubscriptionEvent {

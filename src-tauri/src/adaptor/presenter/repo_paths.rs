@@ -1,6 +1,6 @@
 use crate::usecase::repo_paths_usecase::RepoPathsNotifier;
+use crate::usecase::state_subscription::StateSubscriptionOutputRef;
 use crate::usecase::state_subscription::StateValue;
-use crate::usecase::state_subscription::{StateSubscriptionOutputRef, REPO_PATHS};
 
 pub struct RepoPathsNotifyGateway {
     publisher: StateSubscriptionOutputRef,
@@ -17,7 +17,11 @@ impl RepoPathsNotifier for RepoPathsNotifyGateway {
         self.publisher
             .invalidate(crate::usecase::state_subscription::StateChangeSource::Repositories);
         self.publisher
-            .publish(REPO_PATHS, StateValue::RepositoryPaths(paths), None)
+            .publish(
+                &crate::usecase::state_subscription::SubscriptionTarget::RepositoryPaths,
+                StateValue::RepositoryPaths(paths),
+                None,
+            )
             .expect("registered target and available version");
     }
 }

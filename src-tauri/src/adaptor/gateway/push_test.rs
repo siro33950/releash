@@ -29,7 +29,7 @@ async fn test_push購読_frameと欠落と終了をgateway境界で返す() {
 async fn test_agent_session通知_購読対象の更新を通知する() {
     use crate::usecase::agent_session::AgentSessionChangeNotifier;
     let publisher = crate::adaptor::presenter::state_subscription::test_output();
-    let mut changes = publisher.subscribe_changes();
+    let mut changes = crate::test_support::state_subscription::changes(&publisher);
     let notifier = ClientAgentSessionChangeNotifier::new(publisher);
     notifier.agent_session_changed("/repo");
     assert_eq!(

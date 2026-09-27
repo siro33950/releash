@@ -37,3 +37,7 @@ fn rejection_reason(reason: ProviderLifecycleRejection) -> &'static str {
         ProviderLifecycleRejection::TranscriptMismatch => "transcript_mismatch",
     }
 }
+
+#[cfg(test)]
+#[path = "provider_lifecycle_response_test.rs"]
+mod provider_lifecycle_response_tests;

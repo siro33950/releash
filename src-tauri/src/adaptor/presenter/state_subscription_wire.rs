@@ -4,7 +4,7 @@ use crate::adaptor::presenter::state_subscription::StateSubscriptionEvent;
 use crate::infrastructure::state_subscription::{Delivery, Event};
 use crate::usecase::state_subscription::StateValue;
 
-fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::ConnectError> {
+pub(crate) fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::ConnectError> {
     Ok(wire::StatePayload {
         value: Some(match value {
             StateValue::Failures(records) => {
@@ -130,10 +130,10 @@ pub(crate) fn event(
                 sequence: version.sequence,
             });
             let event = match event {
-                Event::Snapshot(_, value) => WireEvent::Snapshot(payload(&value)?),
+                Event::Snapshot(_, value) => WireEvent::Snapshot((*value).clone()),
                 Event::Change(_, delivery, value) => WireEvent::Change(wire::StateChange {
                     delta: delivery == Delivery::Delta,
-                    payload: Some(payload(&value)?),
+                    payload: Some((*value).clone()),
                 }),
                 Event::Bookmark(_) => WireEvent::Bookmark(wire::Unit {}),
             };

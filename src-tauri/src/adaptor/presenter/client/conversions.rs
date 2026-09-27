@@ -3775,7 +3775,7 @@ impl TryFrom<&str> for wire::WorkflowSourceFormat {
 }
 
 impl TryFrom<wire::WorkflowSubmitArtifactInput>
-    for crate::adaptor::controller::api::protocol::WorkflowSubmitArtifactInput
+    for crate::adaptor::presenter::workflow_wire::WorkflowSubmitArtifactInput
 {
     type Error = String;
     fn try_from(value: wire::WorkflowSubmitArtifactInput) -> Result<Self, String> {

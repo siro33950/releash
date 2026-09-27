@@ -307,7 +307,7 @@ impl ConnectFailure for crate::usecase::state_subscription::SubscriptionError {
             Self::StreamEnded | Self::UnknownTarget | Self::SnapshotRequired => {
                 connectrpc::ErrorCode::NotFound
             }
-            Self::VersionExhausted => connectrpc::ErrorCode::Internal,
+            Self::VersionExhausted | Self::EncodingFailed => connectrpc::ErrorCode::Internal,
         }
     }
 }
@@ -686,13 +686,3 @@ impl ConnectFailure for super::provider_tui::ProviderTuiCodedError {
 #[cfg(test)]
 #[path = "connect_mapping_test.rs"]
 mod connect_mapping_tests;
-pub(crate) fn validate_identifier(id: &str) -> Result<(), connectrpc::ConnectError> {
-    if id.len() > 128 {
-        return Err(classified_error(
-            crate::adaptor::presenter::error::AppError::invalid_request(
-                "Identifier exceeds 128 bytes",
-            ),
-        ));
-    }
-    Ok(())
-}

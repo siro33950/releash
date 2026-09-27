@@ -13,8 +13,7 @@ impl StateSubscriptionUsecase {
     pub async fn start_terminal(
         &self,
         client: &str,
-        raw: &str,
-        cursor: Option<(&str, u64)>,
+        target: &SubscriptionTarget,
         input_id: &str,
     ) -> Result<(), StateReadError> {
         if input_id.trim().is_empty() || input_id.len() > 128 {
@@ -23,91 +22,60 @@ impl StateSubscriptionUsecase {
                 message: "Invalid terminal input identity".into(),
             });
         }
-        let SubscriptionTarget::Terminal(owner) = SubscriptionTarget::parse(raw).map_err(error)?
-        else {
+        let SubscriptionTarget::Terminal(_) = target else {
             return Err(error("Not a terminal target"));
         };
-        let terminal = self
-            .terminal
-            .clone()
+        self.terminal
+            .as_ref()
             .ok_or_else(|| error("Terminal unavailable"))?;
-        let output = self.publisher.clone();
-        let client = client.to_string();
-        let raw = raw.to_string();
-        let cursor = cursor.map(|(epoch, sequence)| (epoch.to_string(), sequence));
-        let input_id = input_id.to_string();
-        tokio::task::spawn_blocking(move || {
-            let summary = terminal.get_summary(&owner).map_err(error)?;
-            let cursor = cursor
-                .as_ref()
-                .map(|(epoch, sequence)| (epoch.as_str(), *sequence));
-            let mut start_result = Ok(());
-            let mut needs_snapshot = true;
-            terminal.with_output_order(summary.runtime_generation.value(), &mut || {
-                start_result = output
-                    .needs_snapshot(&raw, cursor)
-                    .map(|required| needs_snapshot = required);
-                if start_result.is_ok() && !needs_snapshot {
-                    start_result = output.start(&client, &raw, cursor);
-                    if start_result.is_ok() {
-                        terminal.subscribe_output(
-                            &owner,
-                            &client,
-                            &input_id,
-                            output.terminal_pending_amount(&client, &raw),
-                        );
-                        output.set_terminal_input(&client, &raw, &input_id);
-                    }
-                }
-            });
-            if start_result.is_ok() && needs_snapshot {
-                terminal
-                    .visit_snapshot(&owner, &mut |surface| {
-                        start_result = output
-                            .set_terminal_snapshot(
-                                &raw,
-                                surface.runtime_generation.value(),
-                                surface.latest_sequence(),
-                                StateValue::Terminal(TerminalSurfaceStreamItem::Snapshot(surface)),
-                            )
-                            .and_then(|()| output.stop(&client, &raw))
-                            .and_then(|()| output.start(&client, &raw, cursor));
-                        if start_result.is_ok() {
-                            terminal.subscribe_output(
-                                &owner,
-                                &client,
-                                &input_id,
-                                output.terminal_pending_amount(&client, &raw),
-                            );
-                            output.set_terminal_input(&client, &raw, &input_id);
-                        }
-                    })
-                    .map_err(error)?;
-            }
-            start_result.map_err(StateReadError::from_error)
-        })
-        .await
-        .map_err(error)?
+        self.start(client, target)
+            .map_err(StateReadError::from_error)
     }
 
-    pub(crate) async fn refresh_terminal(&self, raw: &str) -> Result<(), StateReadError> {
-        let SubscriptionTarget::Terminal(owner) = SubscriptionTarget::parse(raw).map_err(error)?
-        else {
+    pub(crate) fn attach_terminal(
+        &self,
+        client: &str,
+        target: &SubscriptionTarget,
+        input_id: &str,
+    ) -> Result<(), StateReadError> {
+        let SubscriptionTarget::Terminal(_) = target else {
+            return Err(error("Not a terminal target"));
+        };
+        let clients = self.clients.lock();
+        if !clients
+            .get(client)
+            .is_some_and(|targets| targets.contains(target))
+        {
+            return Err(StateReadError::from_error(SubscriptionError::StreamEnded));
+        }
+        self.terminal_inputs
+            .lock()
+            .insert((client.into(), target.clone()), input_id.into());
+        Ok(())
+    }
+
+    pub(crate) async fn refresh_terminal(
+        &self,
+        target: &SubscriptionTarget,
+    ) -> Result<(), StateReadError> {
+        let SubscriptionTarget::Terminal(owner) = target else {
             return Ok(());
         };
+        let owner = owner.clone();
         let terminal = self
             .terminal
             .clone()
             .ok_or_else(|| error("Terminal unavailable"))?;
         let output = self.publisher.clone();
-        let raw = raw.to_string();
+        let target = target.clone();
+        let resets = self.terminal_resets.clone();
         tokio::task::spawn_blocking(move || {
             let mut result = Ok(());
             terminal
                 .visit_snapshot(&owner, &mut |surface| {
-                    let reset = output.terminal_reset_clients(&raw);
+                    let reset = resets.lock().remove(&target).unwrap_or_default();
                     result = output.set_terminal_snapshot(
-                        &raw,
+                        &target,
                         surface.runtime_generation.value(),
                         surface.latest_sequence(),
                         StateValue::Terminal(TerminalSurfaceStreamItem::Snapshot(surface)),
@@ -125,12 +93,15 @@ impl StateSubscriptionUsecase {
         .map_err(error)?
     }
 
-    pub(super) fn stop_terminal(&self, client: &str, raw: &str) {
-        if let Some(input_id) = self.publisher.remove_terminal_input(client, raw) {
-            if let (Some(terminal), Ok(SubscriptionTarget::Terminal(owner))) =
-                (&self.terminal, SubscriptionTarget::parse(raw))
+    pub(super) fn stop_terminal(&self, client: &str, target: &SubscriptionTarget) {
+        if let Some(input_id) = self
+            .terminal_inputs
+            .lock()
+            .remove(&(client.into(), target.clone()))
+        {
+            if let (Some(terminal), SubscriptionTarget::Terminal(owner)) = (&self.terminal, target)
             {
-                terminal.unsubscribe_output(&owner, client, &input_id);
+                terminal.unsubscribe_output(owner, client, &input_id);
             }
         }
     }
@@ -138,29 +109,26 @@ impl StateSubscriptionUsecase {
     pub fn terminal_processed(
         &self,
         client: &str,
-        raw: &str,
+        target: &SubscriptionTarget,
         units: usize,
     ) -> Result<(), StateReadError> {
-        if units != self.publisher.terminal_report_units() {
-            return Err(StateReadError {
-                source: StateReadFailure::InvalidTerminalInput,
-                message: "Invalid terminal processed units".into(),
-            });
-        }
-        if !self.publisher.has_terminal_input(client, raw) {
+        if !self
+            .terminal_inputs
+            .lock()
+            .contains_key(&(client.into(), target.clone()))
+        {
             return Err(StateReadError {
                 source: StateReadFailure::TerminalSubscriptionEnded,
                 message: "Terminal subscription ended".into(),
             });
         }
-        let SubscriptionTarget::Terminal(owner) = SubscriptionTarget::parse(raw).map_err(error)?
-        else {
+        let SubscriptionTarget::Terminal(owner) = target else {
             return Err(error("Not a terminal target"));
         };
         self.terminal
             .as_ref()
             .ok_or_else(|| error("Terminal unavailable"))?
-            .processed_output(&owner, client, units);
+            .processed_output(owner, client, units);
         Ok(())
     }
 }

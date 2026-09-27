@@ -372,8 +372,7 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
                     ),
                     crate::desktop_test_support::build_watcher_usecase(app.handle()),
                 )
-                .with_state_subscriptions(subscriptions)
-                .with_state_presenter(terminal.presenter()),
+                .with_state_subscriptions(subscriptions, terminal.presenter()),
             )),
             client_binding.terminal_bearer_token(),
         );

@@ -321,7 +321,7 @@ fn test_provider設定_更新とresetとrefresh成功時だけ購読へ通知す
     // Given
     let config = Arc::new(FakeProviderExecutableConfigRepository::default());
     let publisher = crate::test_support::state_subscription::test_output();
-    let mut changes = publisher.subscribe_changes();
+    let mut changes = crate::test_support::state_subscription::changes(&publisher);
     let usecase = ProviderAvailabilityUsecase::initialize(
         config.clone(),
         Arc::new(FakeProviderExecutableProbeGateway::default()),

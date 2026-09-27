@@ -183,6 +183,60 @@ impl From<TerminalSurfaceStreamItem> for TerminalSurfaceStreamItemV1 {
     }
 }
 
+impl TryFrom<&crate::adaptor::presenter::client::TerminalEvent> for TerminalSurfaceStreamItemV1 {
+    type Error = String;
+
+    fn try_from(
+        value: &crate::adaptor::presenter::client::TerminalEvent,
+    ) -> Result<Self, Self::Error> {
+        use crate::adaptor::presenter::client::terminal_event::Item;
+        match value.item.as_ref().ok_or("Missing terminal event")? {
+            Item::Snapshot(snapshot) => Ok(Self::Snapshot {
+                surface: TerminalSurfaceV1 {
+                    session_key: snapshot.session_key.clone(),
+                    terminal_surface: TerminalSurfaceCheckpointV1 {
+                        replay: snapshot.replay.clone(),
+                        sequence: snapshot.sequence,
+                        cols: snapshot
+                            .cols
+                            .try_into()
+                            .map_err(|_| "Invalid terminal columns")?,
+                        rows: snapshot
+                            .rows
+                            .try_into()
+                            .map_err(|_| "Invalid terminal rows")?,
+                    },
+                    is_exited: snapshot.is_exited,
+                    exit_code: snapshot.exit_code,
+                    label: None,
+                },
+            }),
+            Item::Output(output) => Ok(Self::Output {
+                session_key: output.session_key.clone(),
+                data: Arc::from(output.data.as_str()),
+                sequence: output.sequence,
+            }),
+            Item::Resize(resize) => Ok(Self::Resize {
+                session_key: resize.session_key.clone(),
+                cols: resize
+                    .cols
+                    .try_into()
+                    .map_err(|_| "Invalid terminal columns")?,
+                rows: resize
+                    .rows
+                    .try_into()
+                    .map_err(|_| "Invalid terminal rows")?,
+                sequence: resize.sequence,
+            }),
+            Item::Exit(exit) => Ok(Self::Exit {
+                session_key: exit.session_key.clone(),
+                exit_code: exit.exit_code,
+                sequence: exit.sequence,
+            }),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(
     tag = "kind",

@@ -18,6 +18,17 @@ use crate::usecase::terminal_surface::output::{
     TerminalSurfaceEventSink, TerminalSurfaceOutputEvent, TerminalSurfaceOutputSummary,
 };
 
+impl From<&TerminalSurfaceSummary> for TerminalSurfaceOutputSummary {
+    fn from(surface: &TerminalSurfaceSummary) -> Self {
+        Self {
+            session_key: surface.session_key.clone(),
+            owner: surface.owner.clone(),
+            runtime_generation: surface.runtime_generation.value(),
+            latest_sequence: surface.latest_sequence,
+        }
+    }
+}
+
 use crate::domain::terminal_surface::{
     TerminalSurfaceCheckpoint as DomainTerminalCheckpoint, TERMINAL_SURFACE_SCROLLBACK_ROWS,
 };

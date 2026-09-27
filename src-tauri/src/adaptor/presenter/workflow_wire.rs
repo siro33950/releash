@@ -2,6 +2,13 @@
 
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkflowSubmitArtifactInput {
+    pub contract: String,
+    pub value: serde_json::Value,
+}
+
 pub use crate::usecase::workflow::diagnostic_dto::{
     DiagnosticItem, DiagnosticReport, DiagnosticSpan, DiagnosticStage, DiagnosticSummary,
     FacetUsageEntry, Severity,

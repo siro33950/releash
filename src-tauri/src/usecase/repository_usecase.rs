@@ -1659,7 +1659,7 @@ mod repository_usecase_tests {
                     ..Default::default()
                 });
                 let publisher = crate::test_support::state_subscription::test_output();
-                let mut changes = publisher.subscribe_changes();
+                let mut changes = crate::test_support::state_subscription::changes(&publisher);
                 let repository = usecase(fake.clone()).with_state_publisher(publisher);
                 // When
                 let error = repository
@@ -1746,7 +1746,7 @@ mod repository_usecase_tests {
         // Given
         let fake = Arc::new(<FakeRepo as Default>::default());
         let publisher = crate::test_support::state_subscription::test_output();
-        let mut changes = publisher.subscribe_changes();
+        let mut changes = crate::test_support::state_subscription::changes(&publisher);
         let uc = usecase(fake.clone()).with_state_publisher(publisher.clone());
         // When / Then
         uc.create_worktree("/repo", "feature", true, None).unwrap();

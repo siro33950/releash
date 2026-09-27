@@ -1158,11 +1158,9 @@ async fn assert_terminal_recreation(drain_exit: bool) {
     // Given
     use crate::adaptor::presenter::terminal_event_hub::TerminalSurfaceEventHub;
     use crate::test_support::state_subscription::{Event, StateSubscriptionEvent};
+    use crate::usecase::state_subscription::StateSubscriptionUsecase;
     use crate::usecase::state_subscription::SubscriptionTarget;
-    use crate::usecase::state_subscription::{StateSubscriptionUsecase, StateValue};
-    use crate::usecase::terminal_surface::application::{
-        TerminalSurfaceApplication, TerminalSurfaceStreamItem,
-    };
+    use crate::usecase::terminal_surface::application::TerminalSurfaceApplication;
     use futures_util::StreamExt;
     let hub = Arc::new(TerminalSurfaceEventHub::with_flags(256, true));
     let gateway = Arc::new(TerminalSurfaceRuntimeGatewayFor::new_with_event_sink(
@@ -1192,15 +1190,24 @@ async fn assert_terminal_recreation(drain_exit: bool) {
     let subscriptions = StateSubscriptionUsecase::new(
         vec![],
         Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
-    )
-    .with_terminal(terminal.clone());
+    );
+    subscriptions
+        .test_presenter()
+        .unwrap()
+        .connect_terminal(&terminal);
+    let subscriptions = subscriptions.with_terminal(terminal.clone());
     let stream = subscriptions.open("client".into()).unwrap();
     tokio::pin!(stream);
     stream.next().await;
-    subscriptions
-        .start_terminal("client", &target, None, "input")
-        .await
-        .unwrap();
+    crate::test_support::state_subscription::start_terminal(
+        &subscriptions,
+        "client",
+        &target,
+        None,
+        "input",
+    )
+    .await
+    .unwrap();
     stream.next().await;
     stream.next().await;
     terminal
@@ -1226,7 +1233,7 @@ async fn assert_terminal_recreation(drain_exit: bool) {
             .await
             .unwrap();
         assert!(
-            matches!(next, Some(StateSubscriptionEvent::Item(_, Event::Change(_, _, value))) if matches!(value.as_ref(), StateValue::Terminal(TerminalSurfaceStreamItem::Exit { exit_code: Some(7), .. })))
+            matches!(next, Some(StateSubscriptionEvent::Item(_, Event::Change(_, _, value))) if matches!(crate::test_support::state_subscription::terminal_item(&value), crate::adaptor::presenter::client::terminal_event::Item::Exit(exit) if exit.exit_code == Some(7)))
         );
     }
     gateway.remove_surface(1).unwrap();
@@ -1246,14 +1253,14 @@ async fn assert_terminal_recreation(drain_exit: bool) {
             .await
             .unwrap();
         assert!(
-            matches!(next, Some(StateSubscriptionEvent::Item(_, Event::Change(_, _, value))) if matches!(value.as_ref(), StateValue::Terminal(TerminalSurfaceStreamItem::Exit { exit_code: Some(7), .. })))
+            matches!(next, Some(StateSubscriptionEvent::Item(_, Event::Change(_, _, value))) if matches!(crate::test_support::state_subscription::terminal_item(&value), crate::adaptor::presenter::client::terminal_event::Item::Exit(exit) if exit.exit_code == Some(7)))
         );
     }
     let next = tokio::time::timeout(Duration::from_secs(2), stream.next())
         .await
         .unwrap();
     assert!(
-        matches!(next, Some(StateSubscriptionEvent::Item(_, Event::Snapshot(_, value))) if matches!(value.as_ref(), StateValue::Terminal(TerminalSurfaceStreamItem::Snapshot(surface)) if surface.runtime_generation.value() == 2))
+        matches!(next, Some(StateSubscriptionEvent::Item(_, Event::Snapshot(version, value))) if version.epoch.ends_with(":2") && matches!(crate::test_support::state_subscription::terminal_item(&value), crate::adaptor::presenter::client::terminal_event::Item::Snapshot(surface) if surface.session_key == key))
     );
     terminal
         .write_attached(&owner, "input", 1, None, "new")
@@ -1279,7 +1286,7 @@ async fn assert_terminal_recreation(drain_exit: bool) {
         .await
         .unwrap();
     assert!(
-        matches!(next, Some(StateSubscriptionEvent::Item(_, Event::Change(_, _, value))) if matches!(value.as_ref(), StateValue::Terminal(TerminalSurfaceStreamItem::Output { sequence: 1, data, .. }) if data.len() == 100_001))
+        matches!(next, Some(StateSubscriptionEvent::Item(_, Event::Change(_, _, value))) if matches!(crate::test_support::state_subscription::terminal_item(&value), crate::adaptor::presenter::client::terminal_event::Item::Output(output) if output.sequence == 1 && output.data.len() == 100_001))
     );
     let (sent, received) = tokio::sync::oneshot::channel();
     let waiting_hub = hub.clone();
@@ -1294,20 +1301,28 @@ async fn assert_terminal_recreation(drain_exit: bool) {
             .is_err()
     );
     for _ in 0..20 {
-        subscriptions
-            .terminal_processed("client", &target, 5000)
-            .unwrap();
+        crate::test_support::state_subscription::terminal_processed(
+            &subscriptions,
+            "client",
+            &target,
+            5000,
+        )
+        .unwrap();
     }
     tokio::time::timeout(Duration::from_secs(2), received)
         .await
         .unwrap()
         .unwrap();
     waiter.await.unwrap();
-    subscriptions.stop("client", &target).unwrap();
+    crate::test_support::state_subscription::stop(&subscriptions, "client", &target).unwrap();
     assert!(terminal
         .write_attached(&owner, "input", 2, None, "stale")
         .is_err());
-    assert!(subscriptions
-        .terminal_processed("client", &target, 5000)
-        .is_err());
+    assert!(crate::test_support::state_subscription::terminal_processed(
+        &subscriptions,
+        "client",
+        &target,
+        5000
+    )
+    .is_err());
 }

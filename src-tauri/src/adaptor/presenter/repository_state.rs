@@ -43,3 +43,7 @@ impl RepositoryStateNotifier for ClientRepositoryStateNotifier {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "repository_state_test.rs"]
+mod repository_state_tests;

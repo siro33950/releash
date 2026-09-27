@@ -1,5 +1,5 @@
-use crate::adaptor::controller::api::protocol::WorkflowSubmitArtifactInput;
 use crate::adaptor::presenter::error::AppError;
+use crate::adaptor::presenter::workflow_wire::WorkflowSubmitArtifactInput;
 use std::sync::Arc;
 
 use crate::adaptor::controller::state::AppState;

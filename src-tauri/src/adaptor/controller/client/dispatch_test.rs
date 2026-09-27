@@ -8,7 +8,7 @@ async fn test_更新通知_成功時だけ購読対象を更新する() {
     let fixture = StateReadsFixture::new();
     let publisher = fixture.subscriptions.publisher();
     let git_host = fixture.reads.git_host.clone();
-    let mut changes = publisher.subscribe_changes();
+    let mut changes = crate::test_support::state_subscription::changes(&publisher);
     let mut dispatch = ClientCommandDispatch::new(Arc::new(ApplicationStartupAuthority::ready()))
         .with_state_publisher(publisher);
     dispatch.register_domain(

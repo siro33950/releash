@@ -6,9 +6,7 @@ use crate::adaptor::presenter::state_subscription::{
 };
 use crate::adaptor::presenter::terminal::{TerminalSurfaceOwnerV1, TerminalSurfaceStreamItemV1};
 use crate::infrastructure::state_subscription::Event;
-use crate::usecase::state_subscription::{
-    StateSubscriptionUsecase, StateValue, SubscriptionTarget,
-};
+use crate::usecase::state_subscription::{StateSubscriptionUsecase, SubscriptionTarget};
 use futures_util::{Stream, StreamExt};
 use std::{path::PathBuf, pin::Pin, sync::Arc};
 
@@ -44,8 +42,10 @@ impl TerminalSubscriptionHarness {
 
     fn compose(runtime: TerminalSurfaceRuntime) -> Self {
         let presenter = Arc::new(StateSubscriptionPresenter::new(vec![]));
+        presenter.connect_terminal(&runtime.application());
         let subscriptions = StateSubscriptionUsecase::new_with_output(
             presenter.clone(),
+            presenter.change_sender(),
             Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
         )
         .with_terminal(runtime.application());
@@ -71,15 +71,20 @@ impl TerminalSubscriptionHarness {
         input_id: String,
         owner: TerminalSurfaceOwnerV1,
     ) -> Result<TerminalSubscription, String> {
-        let target = SubscriptionTarget::Terminal(owner.try_into()?).to_string();
+        let target = SubscriptionTarget::Terminal(owner.try_into()?);
         let client = uuid::Uuid::new_v4().to_string();
         let stream = Box::pin(
             self.presenter
                 .stream(self.subscriptions.clone(), client.clone())
                 .map_err(|e| e.to_string())?,
         );
-        self.subscriptions
-            .start_terminal(&client, &target, None, &input_id)
+        let started = self
+            .subscriptions
+            .start_subscription(&client, &target, Some(&input_id))
+            .await
+            .map_err(|e| e.to_string())?;
+        self.presenter
+            .present_start(&self.subscriptions, &started, None)
             .await
             .map_err(|e| e.to_string())?;
         Ok(TerminalSubscription {
@@ -97,7 +102,7 @@ pub struct TerminalSubscription {
     stream: Pin<Box<dyn Stream<Item = StateSubscriptionEvent> + Send>>,
     subscriptions: StateSubscriptionUsecase,
     client: String,
-    target: String,
+    target: SubscriptionTarget,
     processed: usize,
     report_units: usize,
 }
@@ -108,21 +113,22 @@ impl TerminalSubscription {
             let StateSubscriptionEvent::Item(target, event) = event else {
                 continue;
             };
-            assert_eq!(target, self.target);
+            assert_eq!(target, self.target.to_string());
             let value = match event {
                 Event::Snapshot(_, value) | Event::Change(_, _, value) => value,
                 _ => continue,
             };
-            let StateValue::Terminal(item) = value.as_ref() else {
+            let Some(crate::adaptor::presenter::client::state_payload::Value::Terminal(wire)) =
+                &value.value
+            else {
                 panic!("expected terminal state");
             };
-            let item: TerminalSurfaceStreamItemV1 = item.clone().into();
+            let item = TerminalSurfaceStreamItemV1::try_from(wire).expect("valid terminal event");
             match &item {
                 TerminalSurfaceStreamItemV1::Snapshot { .. } => {
-                    let wire = crate::adaptor::presenter::client::TerminalEvent::from(item.clone());
                     let Some(crate::adaptor::presenter::client::terminal_event::Item::Snapshot(
                         snapshot,
-                    )) = wire.item
+                    )) = &wire.item
                     else {
                         unreachable!()
                     };

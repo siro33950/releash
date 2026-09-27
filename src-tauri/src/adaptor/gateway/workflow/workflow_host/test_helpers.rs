@@ -453,7 +453,7 @@ pub(super) async fn wait_startup_retries(host: &WorkflowRuntimeHost) {
 pub(super) fn record_workflow_execution_broadcasts(
     app: &WorkflowRuntimeDependencies,
 ) -> tokio::sync::broadcast::Receiver<crate::usecase::state_subscription::StateChangeSource> {
-    app.state_changes.subscribe_changes()
+    crate::test_support::state_subscription::changes(&app.state_changes)
 }
 
 pub(super) fn take_workflow_execution_broadcasts(

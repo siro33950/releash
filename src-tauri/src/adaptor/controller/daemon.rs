@@ -56,6 +56,7 @@ pub(crate) async fn compose(
     let state_subscriptions =
         usecase::state_subscription::StateSubscriptionUsecase::new_with_output(
             state_presenter.clone(),
+            state_presenter.change_sender(),
             Arc::new(adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
         );
     queue.set_publisher(state_subscriptions.publisher());
@@ -221,7 +222,7 @@ pub(crate) async fn compose(
     ));
 
     state_subscriptions.publisher().publish(
-        usecase::state_subscription::REPO_PATHS,
+        &usecase::state_subscription::SubscriptionTarget::RepositoryPaths,
         usecase::state_subscription::StateValue::RepositoryPaths(shared_repo_paths.read().clone()),
         None,
     )?;
@@ -485,8 +486,7 @@ pub(crate) async fn compose(
                 adaptor::gateway::push::ClientPushGateway::new(push_sink.clone()),
                 dependencies.watcher.clone(),
             )
-            .with_state_subscriptions(state_subscriptions)
-            .with_state_presenter(state_presenter)
+            .with_state_subscriptions(state_subscriptions, state_presenter)
             .with_desktop_settings(usecase::app_config::AppConfigUsecase::new(
                 config_repository,
             )),

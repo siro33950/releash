@@ -77,7 +77,7 @@ async fn test_履歴監視_未作成のディレクトリの生成を検知し�
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().canonicalize().unwrap().join("history");
     let publisher = crate::adaptor::presenter::state_subscription::test_output();
-    let mut changes = publisher.subscribe_changes();
+    let mut changes = crate::test_support::state_subscription::changes(&publisher);
     let gateway = FileWatcherGateway::new(
         Arc::new(FileWatcherManager::default()),
         Arc::new(crate::infrastructure::push::PushSink::new()),

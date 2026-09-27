@@ -6,6 +6,7 @@ use crate::adaptor::gateway::{
 };
 use crate::domain::failure::{BusinessFailure, Failure};
 use crate::domain::git_host::{CacheTtl, GitHostError, GitHostProvider, IssueInfo, PrStatus};
+use crate::test_support::state_subscription::start_read;
 use crate::test_support::state_subscription::StateSubscriptionEvent;
 use crate::usecase::agent_session::*;
 use crate::usecase::git_host::GitHostUsecase;
@@ -14,7 +15,7 @@ use crate::usecase::repository_state::worktree::{RepositoryStateNotifier, Snapsh
 use crate::usecase::repository_state::RepositoryStateService;
 use crate::usecase::state_subscription::{
     StateChangeSource, StateReadFailure, StateSubscriptionOutputRef, StateSubscriptionUsecase,
-    StateValue, SubscriptionTarget, WorkspaceStateReads, REPO_PATHS,
+    StateValue, SubscriptionTarget, WorkspaceStateReads,
 };
 use crate::usecase::workspace_tree::WorkspaceListUsecase;
 use futures_util::StreamExt;
@@ -28,7 +29,11 @@ impl RepoPathsNotifier for RepoPathsOutput {
     fn notify_changed(&self, paths: Vec<String>) {
         self.0.invalidate(StateChangeSource::Repositories);
         self.0
-            .publish(REPO_PATHS, StateValue::RepositoryPaths(paths), None)
+            .publish(
+                &SubscriptionTarget::RepositoryPaths,
+                StateValue::RepositoryPaths(paths),
+                None,
+            )
             .unwrap();
     }
 }
@@ -389,13 +394,11 @@ async fn test_issue手動更新_有効なcacheを無視し30秒前に同じ購�
     let mut stream = Box::pin(fixture.subscriptions.open("client".into()).unwrap());
     stream.next().await;
     let target = SubscriptionTarget::Issues(fixture.path.clone()).to_string();
-    fixture
-        .subscriptions
-        .start_read("client", &target, None)
+    start_read(&fixture.subscriptions, "client", &target, None)
         .await
         .unwrap();
     assert!(
-        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, crate::test_support::state_subscription::Event::Snapshot(_, value))) if *value == StateValue::Issues(vec![issue(1).into()]))
+        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, crate::test_support::state_subscription::Event::Snapshot(_, value))) if crate::test_support::state_subscription::same(&value, &StateValue::Issues(vec![issue(1).into()])))
     );
     stream.next().await;
     *fixture.issues.values.lock() = vec![issue(2)];
@@ -417,7 +420,10 @@ async fn test_issue手動更新_有効なcacheを無視し30秒前に同じ購�
     })
     .await
     .unwrap();
-    assert_eq!(*value, StateValue::Issues(vec![issue(2).into()]));
+    assert!(crate::test_support::state_subscription::same(
+        &value,
+        &StateValue::Issues(vec![issue(2).into()])
+    ));
     assert!(before.elapsed() < CacheTtl::EXTERNAL_INFORMATION.duration());
     assert_eq!(fixture.issues.calls.load(Ordering::SeqCst), 2);
 }
@@ -475,18 +481,27 @@ async fn test_終了済み実行木のarchiveとrestore_取り直しなしでツ
     let mut stream = Box::pin(subscriptions.open("client".into()).unwrap());
     stream.next().await;
     let target = SubscriptionTarget::Selection(fixture.path.clone(), "selected".into()).to_string();
-    subscriptions
-        .start_read("client", &target, None)
+    start_read(&subscriptions, "client", &target, None)
         .await
         .unwrap();
     let Some(StateSubscriptionEvent::Item(_, Event::Snapshot(_, value))) = stream.next().await
     else {
         panic!("initial snapshot")
     };
-    let StateValue::Selection(initial) = value.as_ref() else {
+    let Some(crate::adaptor::presenter::client::state_payload::Value::Selection(initial)) =
+        &value.value
+    else {
         panic!("selection")
     };
-    assert!(!initial.snapshot.nodes.is_empty());
+    assert!(!initial
+        .snapshot
+        .as_ref()
+        .unwrap()
+        .nodes
+        .as_ref()
+        .unwrap()
+        .items
+        .is_empty());
     stream.next().await;
     // When / Then
     for archived in [true, false] {
@@ -506,10 +521,23 @@ async fn test_終了済み実行木のarchiveとrestore_取り直しなしでツ
             panic!("changed tree")
         };
         assert_eq!(received, target);
-        let StateValue::Selection(selection) = value.as_ref() else {
+        let Some(crate::adaptor::presenter::client::state_payload::Value::Selection(selection)) =
+            &value.value
+        else {
             panic!("selection")
         };
-        assert_eq!(selection.snapshot.nodes.is_empty(), archived);
+        assert_eq!(
+            selection
+                .snapshot
+                .as_ref()
+                .unwrap()
+                .nodes
+                .as_ref()
+                .unwrap()
+                .items
+                .is_empty(),
+            archived
+        );
     }
 }
 
@@ -542,13 +570,11 @@ async fn test_agent_session購読_状態変更通知から再読取して同じ�
     let mut stream = Box::pin(fixture.subscriptions.open("client".into()).unwrap());
     stream.next().await;
     let target = SubscriptionTarget::AgentSession(item.id.clone()).to_string();
-    fixture
-        .subscriptions
-        .start_read("client", &target, None)
+    start_read(&fixture.subscriptions, "client", &target, None)
         .await
         .unwrap();
     assert!(
-        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(id, Event::Snapshot(_, value))) if id == target && *value == StateValue::AgentSession(Some(item.clone())))
+        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(id, Event::Snapshot(_, value))) if id == target && crate::test_support::state_subscription::same(&value, &StateValue::AgentSession(Some(item.clone()))))
     );
     stream.next().await;
     // When / Then
@@ -577,7 +603,7 @@ async fn test_agent_session購読_状態変更通知から再読取して同じ�
             .await
             .unwrap();
         assert!(
-            matches!(event, Some(StateSubscriptionEvent::Item(id, Event::Change(_, crate::test_support::state_subscription::Delivery::Full, value))) if id == target && *value == StateValue::AgentSession(next))
+            matches!(event, Some(StateSubscriptionEvent::Item(id, Event::Change(_, crate::test_support::state_subscription::Delivery::Full, value))) if id == target && crate::test_support::state_subscription::same(&value, &StateValue::AgentSession(next)))
         );
         assert_eq!(fixture.sessions.calls.lock().len(), before + 1);
         assert!(fixture
@@ -636,8 +662,7 @@ async fn test_失敗購読_node行から実行idの失敗と解消を受け取�
     queue.set_publisher(subscriptions.publisher());
     let mut stream = Box::pin(subscriptions.open("client".into()).unwrap());
     stream.next().await;
-    subscriptions
-        .start_read("client", &target, None)
+    start_read(&subscriptions, "client", &target, None)
         .await
         .unwrap();
     assert!(matches!(
@@ -680,12 +705,14 @@ async fn test_失敗購読_node行から実行idの失敗と解消を受け取�
         })
         .await
         .unwrap();
-        let StateValue::Failures(page) = value.as_ref() else {
+        let Some(crate::adaptor::presenter::client::state_payload::Value::Failures(page)) =
+            &value.value
+        else {
             panic!("failures")
         };
         assert_eq!(page.items.len(), 1);
-        assert_eq!(page.items[0].record.target, "parent");
-        assert_eq!(page.items[0].record.active, active);
-        assert_eq!(page.requires_attention, active);
+        assert_eq!(page.items[0].target.as_deref(), Some("parent"));
+        assert_eq!(queue.records("*").await[0].record.active, active);
+        assert_eq!(page.requires_attention, Some(active));
     }
 }

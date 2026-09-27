@@ -1028,8 +1028,65 @@ async fn test_push購読_idは128byteまで受理し超過を保持前に拒否�
 }
 
 #[tokio::test]
+async fn test_状態購読_購読idを入口で128バイトまで受け付ける() {
+    let subscriptions = crate::usecase::state_subscription::StateSubscriptionUsecase::new(
+        vec![],
+        Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+    );
+    let deps = ClientApiDeps::new(
+        Arc::new(dispatch()),
+        ClientPushGateway::new(Arc::new(PushSink::new())),
+        crate::client_api_acceptance::watcher(),
+    )
+    .with_state_subscriptions(
+        subscriptions.clone(),
+        Arc::new(subscriptions.test_presenter().unwrap().clone()),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let config = ClientConfig::new(
+        format!("http://{}", listener.local_addr().unwrap())
+            .parse()
+            .unwrap(),
+    );
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router(Some(deps))).await.unwrap();
+    });
+    let client = rpc::ClientServiceClient::new(HttpClient::plaintext(), config);
+    for id in [String::new(), "x".repeat(129), "あ".repeat(43)] {
+        let mut stream = client
+            .open_state_stream(rpc::OpenStateStreamRequest {
+                client_id: id,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            stream
+                .message::<rpc::StateSubscriptionEvent>()
+                .await
+                .unwrap_err()
+                .code,
+            connectrpc::ErrorCode::InvalidArgument
+        );
+    }
+    let mut stream = client
+        .open_state_stream(rpc::OpenStateStreamRequest {
+            client_id: "x".repeat(128),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(stream
+        .message::<rpc::StateSubscriptionEvent>()
+        .await
+        .unwrap()
+        .is_some());
+    server.abort();
+}
+
+#[tokio::test]
 async fn test_状態購読_connectで初期状態と変更と再開を配信する() {
-    use crate::usecase::state_subscription::{StateSubscriptionUsecase, REPO_PATHS};
+    use crate::usecase::state_subscription::{StateSubscriptionUsecase, SubscriptionTarget};
     use wire::state_subscription_event::Event;
     // Given
     let subscriptions = StateSubscriptionUsecase::new(
@@ -1041,7 +1098,10 @@ async fn test_状態購読_connectで初期状態と変更と再開を配信す�
         ClientPushGateway::new(Arc::new(PushSink::new())),
         crate::client_api_acceptance::watcher(),
     )
-    .with_state_subscriptions(subscriptions.clone());
+    .with_state_subscriptions(
+        subscriptions.clone(),
+        Arc::new(subscriptions.test_presenter().unwrap().clone()),
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let config = ClientConfig::new(
         format!("http://{}", listener.local_addr().unwrap())
@@ -1072,7 +1132,7 @@ async fn test_状態購読_connectで初期状態と変更と再開を配信す�
     // When
     let request = wire::StartStateSubscriptionRequest {
         client_id: "state-test".into(),
-        target: REPO_PATHS.into(),
+        target: SubscriptionTarget::RepositoryPaths.to_string(),
         args: vec![],
         version: None,
         terminal_input_id: None,
@@ -1126,7 +1186,7 @@ async fn test_状態購読_connectで初期状態と変更と再開を配信す�
     client
         .stop_state_subscription(rpc::StopStateSubscriptionRequest {
             client_id: "state-test".into(),
-            target: REPO_PATHS.into(),
+            target: SubscriptionTarget::RepositoryPaths.to_string(),
             ..Default::default()
         })
         .await
@@ -1448,7 +1508,10 @@ async fn test_状態購読_既定期限後もbookmarkが届く() {
         ClientPushGateway::new(Arc::new(PushSink::new())),
         crate::client_api_acceptance::watcher(),
     )
-    .with_state_subscriptions(subscriptions.clone());
+    .with_state_subscriptions(
+        subscriptions.clone(),
+        Arc::new(subscriptions.test_presenter().unwrap().clone()),
+    );
     let payload = br#"{"clientId":"deadline-test"}"#;
     let mut bytes = vec![0];
     bytes.extend_from_slice(&(payload.len() as u32).to_be_bytes());
@@ -1466,9 +1529,13 @@ async fn test_状態購読_既定期限後もbookmarkが届く() {
     assert!(response.status().is_success());
     let mut body = response.into_body().into_data_stream();
     assert!(body.next().await.unwrap().is_ok());
-    subscriptions
-        .start("deadline-test", "repository-paths", None)
-        .unwrap();
+    crate::test_support::state_subscription::start(
+        &subscriptions,
+        "deadline-test",
+        "repository-paths",
+        None,
+    )
+    .unwrap();
     assert!(body.next().await.unwrap().is_ok());
     // When / Then
     for _ in 0..13 {
@@ -1499,7 +1566,10 @@ async fn test_状態購読操作_上限時は拒否し枠解放後は受理す�
         ClientPushGateway::new(Arc::new(PushSink::new())),
         crate::client_api_acceptance::watcher(),
     )
-    .with_state_subscriptions(subscriptions);
+    .with_state_subscriptions(
+        subscriptions.clone(),
+        Arc::new(subscriptions.test_presenter().unwrap().clone()),
+    );
     let router = router(Some(deps.clone()));
     for method in ["StartStateSubscription", "StopStateSubscription"] {
         let permits = (0..64)
@@ -1886,15 +1956,19 @@ async fn test_terminal購読_connectの後段配線と差分再開と流量停�
     ));
     let mut dispatch = dispatch();
     dispatch.register_dependencies(&dependencies);
+    let subscriptions = StateSubscriptionUsecase::new(
+        vec!["/repo".into()],
+        Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+    );
     let deps = ClientApiDeps::new(
         Arc::new(dispatch),
         ClientPushGateway::new(Arc::new(PushSink::new())),
         dependencies.watcher,
     )
-    .with_state_subscriptions(StateSubscriptionUsecase::new(
-        vec!["/repo".into()],
-        Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
-    ))
+    .with_state_subscriptions(
+        subscriptions.clone(),
+        Arc::new(subscriptions.test_presenter().unwrap().clone()),
+    )
     .with_terminal(Some(TerminalApiDeps::new(terminal)));
     assert_eq!(*gateway.list_summaries_calls.lock(), 1);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1939,7 +2013,7 @@ async fn test_terminal購読_connectの後段配線と差分再開と流量停�
                 client_id: "terminal-client".into(),
                 target: "terminal".into(),
                 args: vec![path.into()],
-                terminal_input_id: Some(format!("input-{path}")).into(),
+                terminal_input_id: (path == "/first").then(|| format!("input-{path}")).into(),
                 ..Default::default()
             })
             .await
@@ -2109,7 +2183,15 @@ async fn test_terminal購読_connectの後段配線と差分再開と流量停�
     let resumed = next_event!();
     assert_eq!(resumed.version.unwrap().sequence, 1);
     assert!(matches!(resumed.event, Some(Event::Change(change)) if change.delta));
-    let bookmark = next_event!();
+    let mut bookmark = None;
+    for _ in 0..3 {
+        let event = next_event!();
+        if event.target == "terminal" && event.args.len() == 1 && event.args[0] == "/first" {
+            bookmark = Some(event);
+            break;
+        }
+    }
+    let bookmark = bookmark.expect("resumed terminal bookmark");
     assert_eq!(bookmark.version.unwrap().sequence, 1);
     assert!(matches!(bookmark.event, Some(Event::Bookmark(_))));
     drop(stream);

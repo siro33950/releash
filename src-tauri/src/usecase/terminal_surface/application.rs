@@ -10,9 +10,7 @@ use crate::domain::terminal_surface::gateway::{
 };
 use crate::domain::terminal_surface::{TerminalProcessLaunch, TerminalSurfaceOwner};
 use crate::usecase::terminal_surface::error::UsecaseError;
-use crate::usecase::terminal_surface::output::{
-    TerminalSurfaceOutputControl, TerminalSurfaceOutputSummary,
-};
+use crate::usecase::terminal_surface::output::TerminalSurfaceOutputControl;
 use crate::usecase::terminal_surface::spawn_usecase::GetOrSpawnTerminalOutcome;
 
 #[derive(Clone)]
@@ -74,20 +72,6 @@ pub(crate) enum TerminalSurfaceStreamItem {
     },
 }
 
-impl From<&TerminalSurfaceSummary> for TerminalSurfaceOutputSummary {
-    fn from(surface: &TerminalSurfaceSummary) -> Self {
-        Self {
-            session_key: surface.session_key.clone(),
-            target: crate::usecase::state_subscription::SubscriptionTarget::Terminal(
-                surface.owner.clone(),
-            )
-            .to_string(),
-            runtime_generation: surface.runtime_generation.value(),
-            latest_sequence: surface.latest_sequence,
-        }
-    }
-}
-
 impl TerminalSurfaceApplication {
     fn mutation_rejected(_: TerminalSurfaceMutationRejected) -> UsecaseError {
         UsecaseError::Gateway("Terminal Surface runtime is shutting down".to_string())
@@ -128,10 +112,7 @@ impl TerminalSurfaceApplication {
         &self,
         sink: Arc<dyn crate::usecase::terminal_surface::output::TerminalSurfaceStateSink>,
     ) {
-        self.output.set_state_sink(sink.clone());
-        for summary in self.gateway.list_summaries() {
-            sink.initialize(&(&summary).into());
-        }
+        self.output.set_state_sink(sink);
     }
 
     pub(crate) fn with_output_order(&self, runtime_generation: u64, visit: &mut dyn FnMut()) {

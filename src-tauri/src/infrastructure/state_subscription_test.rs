@@ -1,20 +1,4 @@
 use super::*;
-use crate::usecase::state_subscription::{StateChangeSource, SubscriptionTarget, WatchRequirement};
-
-impl<T: Clone + PartialEq> Subscriptions<T> {
-    fn required_watches(
-        &self,
-        repositories: &[String],
-        history_paths: &[String],
-    ) -> std::collections::HashSet<WatchRequirement> {
-        self.active_targets()
-            .iter()
-            .filter_map(|raw| SubscriptionTarget::parse(raw).ok())
-            .flat_map(|target| target.watches(repositories, history_paths))
-            .collect()
-    }
-}
-
 fn registry() -> Subscriptions<u64> {
     let mut state = Subscriptions::new("boot".into());
     state
@@ -25,6 +9,99 @@ fn registry() -> Subscriptions<u64> {
         .unwrap();
     state.open("client".into()).unwrap();
     state
+}
+
+#[test]
+fn test_再開_変更直後のbookmarkと送り待ち量が対応する() {
+    // Given
+    let mut state = registry();
+    let target = "terminal:3:pty";
+    let before = Version {
+        epoch: "runtime".into(),
+        sequence: 0,
+    };
+    state.register_delta(target, before.clone(), 100).unwrap();
+    state.set_delta_snapshot(target, before.clone(), 0).unwrap();
+    state
+        .publish_delta(
+            target,
+            Version {
+                sequence: 1,
+                ..before.clone()
+            },
+            1,
+            8,
+            true,
+        )
+        .unwrap();
+    // When
+    state.start("client", target, Some(&before)).unwrap();
+    // Then
+    assert_eq!(state.pending_amount("client", target), 8);
+    assert_eq!(state.clients["client"].subscriptions[target].sizes.len(), 2);
+    assert!(matches!(
+        state.next("client"),
+        Some((
+            _,
+            Event::Change(Version { sequence: 1, .. }, Delivery::Delta, _)
+        ))
+    ));
+    assert_eq!(state.pending_amount("client", target), 0);
+    assert!(matches!(
+        state.next("client"),
+        Some((_, Event::Bookmark(Version { sequence: 1, .. })))
+    ));
+    assert!(state.next("client").is_none());
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_定期印_別対象の更新が続いても無通信の購読へ送る() {
+    // Given
+    let runtime = StateSubscriptionRuntime::new("boot".into());
+    runtime
+        .state
+        .lock()
+        .register("idle".into(), 0_u64, Delivery::Full)
+        .unwrap();
+    runtime
+        .state
+        .lock()
+        .register("busy".into(), 0_u64, Delivery::Full)
+        .unwrap();
+    runtime.state.lock().open("client".into()).unwrap();
+    runtime.state.lock().start("client", "idle", None).unwrap();
+    let mut stream = Box::pin(runtime.stream("client".into(), (), |_, _| {}));
+    assert!(matches!(
+        stream.next().await,
+        Some(StateSubscriptionEvent::Ready)
+    ));
+    assert!(matches!(
+        stream.next().await,
+        Some(StateSubscriptionEvent::Item(_, Event::Snapshot(_, _)))
+    ));
+    assert!(matches!(
+        stream.next().await,
+        Some(StateSubscriptionEvent::Item(_, Event::Bookmark(_)))
+    ));
+    let waiting = tokio::spawn(async move { stream.next().await });
+    tokio::task::yield_now().await;
+    // When
+    for value in 1..=9 {
+        tokio::time::advance(std::time::Duration::from_secs(1)).await;
+        runtime
+            .update(|state| state.publish("busy", value, None))
+            .unwrap();
+        tokio::task::yield_now().await;
+    }
+    tokio::time::advance(std::time::Duration::from_secs(1)).await;
+    // Then
+    assert!(matches!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), waiting)
+            .await
+            .unwrap()
+            .unwrap(),
+        Some(StateSubscriptionEvent::Item(target, Event::Bookmark(_))) if target == "idle"
+    ));
 }
 
 #[test]
@@ -164,7 +241,7 @@ fn test_購読数_上限がなく版は購読し直しても戻らない() {
     let mut state = registry();
     // When
     for n in 0..100 {
-        let id = SubscriptionTarget::Branches(format!("/repo/{n}"), None).to_string();
+        let id = format!("branches-{n}");
         state.register(id.clone(), n, Delivery::Full).unwrap();
         state.start("client", &id, None).unwrap();
     }
@@ -190,6 +267,10 @@ fn test_再開_送り待ちが溢れても保持した版以降だけを再生�
     let mut state = registry();
     state.start("client", "workspaces", None).unwrap();
     state.next("client").unwrap();
+    assert!(matches!(
+        state.next("client"),
+        Some((_, Event::Bookmark(_)))
+    ));
     // When
     for n in 1..=64 {
         state.publish("workspaces", n, None).unwrap();
@@ -200,6 +281,8 @@ fn test_再開_送り待ちが溢れても保持した版以降だけを再生�
             matches!(state.next("client"), Some((_, Event::Change(Version {sequence,..}, _, _))) if sequence == n)
         );
     }
+    assert!(state.next("client").is_none());
+    state.bookmark("client");
     assert!(matches!(
         state.next("client"),
         Some((_, Event::Bookmark(Version { sequence: 64, .. })))
@@ -219,27 +302,29 @@ fn test_再開_送り待ちが溢れても保持した版以降だけを再生�
         state.next("client"),
         Some((_, Event::Bookmark(_)))
     ));
+    assert!(state.next("client").is_none());
+    state.bookmark("client");
+    assert!(matches!(
+        state.next("client"),
+        Some((_, Event::Bookmark(_)))
+    ));
     state.publish("workspaces", 64, None).unwrap();
     assert!(state.next("client").is_none());
 }
 
 #[test]
-fn test_監視_共有する購読が全て終了したときだけ不要になる() {
+fn test_共有購読_最後のclient終了時に対象がinactiveになる() {
     // Given
     let mut state = registry();
     state.open("other".into()).unwrap();
-    let paths = vec!["/repo".into()];
     // When
     state.start("client", "workspaces", None).unwrap();
     state.start("other", "workspaces", None).unwrap();
     state.stop("client", "workspaces").unwrap();
     // Then
-    assert_eq!(
-        state.required_watches(&paths, &[]),
-        [WatchRequirement::Git("/repo".into())].into()
-    );
+    assert!(state.active_targets().contains("workspaces"));
     state.close("other");
-    assert!(state.required_watches(&paths, &[]).is_empty());
+    assert!(!state.active_targets().contains("workspaces"));
 }
 
 #[test]
@@ -265,76 +350,67 @@ fn test_購読開始失敗_切断済みclientの対象を登録せず既存対�
     state
         .register("repository-paths".into(), 0, Delivery::Full)
         .unwrap();
-    let target = SubscriptionTarget::Branches("/repo".into(), None);
+    let target = "branches";
     // When
+    state.register(target.into(), 1, Delivery::Full).unwrap();
     assert_eq!(
-        state.start_with_snapshot("closed", &target.to_string(), 1, None),
+        state.start("closed", target, None),
+        Err(SubscriptionError::StreamEnded)
+    );
+    assert_eq!(
+        state.ensure_active(target),
         Err(SubscriptionError::StreamEnded)
     );
     // Then
-    assert!(!state.registered(&target.to_string()));
+    assert!(!state.registered(target));
     assert!(state.registered("repository-paths"));
-    state
-        .start_with_snapshot("client", &target.to_string(), 1, None)
-        .unwrap();
-    assert!(state.registered(&target.to_string()));
+    state.register(target.into(), 1, Delivery::Full).unwrap();
+    state.start("client", target, None).unwrap();
+    assert!(state.registered(target));
 }
 
 #[test]
-fn test_branch一覧購読_repository変更を選び監視し変更値を配信する() {
+fn test_対象ごとの配信_変更値を購読clientへ届ける() {
     // Given
     let mut state = Subscriptions::new("boot".into());
     state.open("client".into()).unwrap();
-    let target = SubscriptionTarget::Branches("/repo".into(), Some("feature".into()));
-    let raw = target.to_string();
+    let raw = "branch-list";
     state
-        .start_with_snapshot("client", &raw, vec!["main".to_string()], None)
+        .register(raw.into(), vec!["main".to_string()], Delivery::Full)
         .unwrap();
+    state.start("client", raw, None).unwrap();
     assert!(
         matches!(state.next("client"), Some((_, Event::Snapshot(_, value))) if *value == ["main"])
     );
     state.next("client");
     // When
-    let source = StateChangeSource::Repository(vec!["/repo".into()]);
-    let selected: Vec<_> = state
-        .active_targets()
-        .into_iter()
-        .filter_map(|raw| SubscriptionTarget::parse(&raw).ok())
-        .filter(|target| target.affected_by(&source))
-        .collect();
-    // Then
-    assert_eq!(selected, vec![target.clone()]);
-    assert!(!target.affected_by(&StateChangeSource::Repository(vec!["/other".into()])));
-    assert_eq!(
-        state.required_watches(&[], &[]),
-        [WatchRequirement::Git("/repo".into())].into()
-    );
     state
-        .publish(&raw, vec!["main".to_string(), "develop".to_string()], None)
+        .publish(raw, vec!["main".to_string(), "develop".to_string()], None)
         .unwrap();
+    // Then
     assert!(
         matches!(state.next("client"), Some((id, Event::Change(_, Delivery::Full, value))) if id == raw && *value == ["main", "develop"])
     );
-    state.stop("client", &raw).unwrap();
-    assert!(state.required_watches(&[], &[]).is_empty());
+    state.stop("client", raw).unwrap();
+    assert!(!state.active_targets().contains(raw));
 }
 
 #[test]
-fn test_repository購読_path一致の各対象だけに変更値を配信する() {
-    for target in [
-        SubscriptionTarget::BranchBase("/repo".into(), "feature".into()),
-        SubscriptionTarget::BranchStatus("/repo".into()),
-        SubscriptionTarget::CurrentBranch("/repo".into()),
-        SubscriptionTarget::Worktrees("/repo".into()),
-        SubscriptionTarget::RepositoryRoot("/repo".into()),
+fn test_複数対象の配信_指定した対象だけに変更値を届ける() {
+    for raw in [
+        "branch-base",
+        "branch-status",
+        "current-branch",
+        "worktrees",
+        "repository-root",
     ] {
         // Given
         let mut state = Subscriptions::new("boot".into());
         state.open("client".into()).unwrap();
-        let raw = target.to_string();
         state
-            .start_with_snapshot("client", &raw, "before", None)
+            .register(raw.into(), "before", Delivery::Full)
             .unwrap();
+        state.start("client", raw, None).unwrap();
         assert!(
             matches!(state.next("client"), Some((id, Event::Snapshot(_, value))) if id == raw && *value == "before")
         );
@@ -342,35 +418,34 @@ fn test_repository購読_path一致の各対象だけに変更値を配信する
             state.next("client"),
             Some((_, Event::Bookmark(_)))
         ));
-        // When / Then
-        for path in ["/other", "/repo"] {
-            let source = StateChangeSource::Repository(vec![path.into()]);
-            let selected: Vec<_> = state
-                .active_targets()
-                .into_iter()
-                .filter_map(|raw| SubscriptionTarget::parse(&raw).ok())
-                .filter(|candidate| candidate.affected_by(&source))
-                .collect();
-            if path == "/other" {
-                assert!(selected.is_empty(), "{target}");
-            } else {
-                assert_eq!(selected, vec![target.clone()]);
-            }
-            for candidate in selected {
-                state
-                    .publish(&candidate.to_string(), "after", None)
-                    .unwrap();
-            }
-            if path == "/other" {
-                assert!(state.next("client").is_none(), "{target}");
-            } else {
-                assert!(
-                    matches!(state.next("client"), Some((id, Event::Change(version, Delivery::Full, value))) if id == raw && version.sequence == 1 && *value == "after"),
-                    "{target}"
-                );
-            }
-        }
+        // When
+        state.publish(raw, "after", None).unwrap();
+        // Then
+        assert!(
+            matches!(state.next("client"), Some((id, Event::Change(version, Delivery::Full, value))) if id == raw && version.sequence == 1 && *value == "after")
+        );
     }
+}
+
+#[test]
+fn test_差分対象_最後のclient切断後もruntimeの登録を保持する() {
+    let mut state = registry();
+    let target = "terminal:3:pty";
+    let version = Version {
+        epoch: "runtime-1".into(),
+        sequence: 0,
+    };
+    state.register_delta(target, version.clone(), 100).unwrap();
+    state.set_delta_snapshot(target, version, 0).unwrap();
+    state.start("client", target, None).unwrap();
+
+    state.close("client");
+
+    assert_eq!(
+        state.ensure_active(target),
+        Err(SubscriptionError::StreamEnded)
+    );
+    assert!(state.registered(target));
 }
 
 #[test]
@@ -402,34 +477,26 @@ fn test_購読開始確認_切断後は対象の鍵を解放し他の購読と�
 }
 
 #[test]
-fn test_provider一覧購読_provider変更だけを選び同じ購読へ更新一覧を配信する() {
+fn test_provider一覧購読_指定対象に更新一覧を配信する() {
     // Given
     let mut state = Subscriptions::new("boot".into());
     state.open("client".into()).unwrap();
     state
-        .start_with_snapshot("client", "providers", vec!["codex"], None)
+        .register("providers".into(), vec!["codex"], Delivery::Full)
         .unwrap();
+    state.start("client", "providers", None).unwrap();
     state
-        .start_with_snapshot("client", "workspaces", vec![], None)
+        .register("workspaces".into(), vec![], Delivery::Full)
         .unwrap();
+    state.start("client", "workspaces", None).unwrap();
     for _ in 0..4 {
         state.next("client");
     }
     // When
-    let selected: Vec<_> = state
-        .active_targets()
-        .into_iter()
-        .filter_map(|raw| SubscriptionTarget::parse(&raw).ok())
-        .filter(|target| target.affected_by(&StateChangeSource::Providers))
-        .collect();
+    state
+        .publish("providers", vec!["codex", "claude"], None)
+        .unwrap();
     // Then
-    assert_eq!(selected, vec![SubscriptionTarget::Providers]);
-    assert!(!SubscriptionTarget::Providers.affected_by(&StateChangeSource::ProviderHistory));
-    for target in selected {
-        state
-            .publish(&target.to_string(), vec!["codex", "claude"], None)
-            .unwrap();
-    }
     assert!(
         matches!(state.next("client"), Some((id, Event::Change(version, Delivery::Full, value))) if id == "providers" && version.sequence == 1 && *value == ["codex", "claude"])
     );
@@ -446,15 +513,21 @@ fn test_開始失敗で解放した対象_再登録時は以前の版を再利�
     state.close("client");
     state.release_inactive_snapshots();
     // When
+    state.publish("workspaces", 1, None).unwrap();
     assert_eq!(
-        state.start_with_snapshot("closed", "workspaces", 1, None),
+        state.start("closed", "workspaces", None),
+        Err(SubscriptionError::StreamEnded)
+    );
+    assert_eq!(
+        state.ensure_active("workspaces"),
         Err(SubscriptionError::StreamEnded)
     );
     assert!(!state.registered("workspaces"));
     state.open("next".into()).unwrap();
     state
-        .start_with_snapshot("next", "workspaces", 2, Some(&version))
+        .register("workspaces".into(), 2, Delivery::Full)
         .unwrap();
+    state.start("next", "workspaces", Some(&version)).unwrap();
     // Then
     assert!(
         matches!(state.next("next"), Some((_, Event::Snapshot(next, value))) if next.epoch != version.epoch && *value == 2)
@@ -508,6 +581,89 @@ fn test_差分購読_対象の版で再開し件数では溢れない() {
     assert!(!state.needs_snapshot(target, Some(&version(119))).unwrap());
     state.start("client", target, Some(&version(119))).unwrap();
     assert!(matches!(state.next("client"), Some((_, Event::Change(v, _, _))) if v.sequence == 120));
+}
+
+#[test]
+fn test_terminal開始_登録後の出力でsnapshotが消えても現在状態を待つ() {
+    // Given
+    let mut state = Subscriptions::new("boot".into());
+    let target = "terminal:3:pty";
+    let initial = Version {
+        epoch: "runtime".into(),
+        sequence: 0,
+    };
+    let current = Version {
+        sequence: 1,
+        ..initial.clone()
+    };
+    state.open("client".into()).unwrap();
+    state.register_delta(target, initial.clone(), 100).unwrap();
+    state.set_delta_snapshot(target, initial, 0).unwrap();
+    state
+        .publish_delta(target, current.clone(), 1, 1, true)
+        .unwrap();
+
+    // When
+    state
+        .start(
+            "client",
+            target,
+            Some(&Version {
+                epoch: "old".into(),
+                sequence: 0,
+            }),
+        )
+        .unwrap();
+
+    // Then
+    assert_eq!(state.snapshot_requests("client"), vec![target]);
+    assert!(state.next("client").is_none());
+    state
+        .set_delta_snapshot(target, current.clone(), 2)
+        .unwrap();
+    assert!(matches!(
+        state.next("client"),
+        Some((_, Event::Snapshot(version, value))) if version == current && *value == 2
+    ));
+}
+
+#[test]
+fn test_差分購読_送り待ちは出力の単位だけを数える() {
+    let mut state = registry();
+    let target = "terminal:3:pty";
+    let version = Version {
+        epoch: "runtime-1".into(),
+        sequence: 0,
+    };
+    state.register_delta(target, version.clone(), 100).unwrap();
+    state
+        .set_delta_snapshot(target, version.clone(), 0)
+        .unwrap();
+    state.start("client", target, None).unwrap();
+    state.next("client");
+    state.next("client");
+
+    state
+        .publish_delta(target, version.clone(), 1, 0, false)
+        .unwrap();
+    state
+        .publish_delta(
+            target,
+            Version {
+                sequence: 1,
+                ..version
+            },
+            2,
+            4,
+            true,
+        )
+        .unwrap();
+
+    assert_eq!(state.pending_amount("client", target), 4);
+    state.next("client");
+    assert_eq!(state.pending_amount("client", target), 4);
+    state.next("client");
+    assert_eq!(state.pending_amount("client", target), 0);
 }
 
 #[test]
@@ -589,6 +745,9 @@ fn test_差分再開_同じ出力番号の変更を再送し出力は重複さ�
     }
     assert!(matches!(state.next("client"), Some((_, Event::Bookmark(v))) if v.sequence == 2));
     assert!(state.next("client").is_none());
+    state.bookmark("client");
+    assert!(matches!(state.next("client"), Some((_, Event::Bookmark(v))) if v.sequence == 2));
+    assert!(state.next("client").is_none());
 }
 
 #[test]
@@ -665,6 +824,9 @@ fn test_差分復元要求_同じ対象の全購読を現在状態から再開�
         assert_eq!(state.snapshot_requests(client), vec![target]);
         assert!(state.next(client).is_none());
     }
+    let mut clients = state.snapshot_request_clients(target);
+    clients.sort();
+    assert_eq!(clients, ["client", "second"]);
     state
         .set_delta_snapshot(target, version.clone(), 20)
         .unwrap();

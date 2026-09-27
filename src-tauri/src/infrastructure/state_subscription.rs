@@ -1,6 +1,110 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
+use futures_util::{Stream, StreamExt};
+use parking_lot::Mutex;
+use tokio::sync::Notify;
+
+pub(crate) enum StateSubscriptionEvent<T> {
+    Ready,
+    Item(String, Event<T>),
+}
+
+const BOOKMARK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+
+#[derive(Clone)]
+pub(crate) struct StateSubscriptionRuntime<T> {
+    pub(crate) state: Arc<Mutex<Subscriptions<T>>>,
+    changed: Arc<Notify>,
+    pub(crate) terminal_routes: Arc<Mutex<HashMap<String, String>>>,
+    terminal_boot: String,
+}
+
+impl<T: Clone + PartialEq + Send + Sync + 'static> StateSubscriptionRuntime<T> {
+    pub(crate) fn new(epoch: String) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(Subscriptions::new(epoch))),
+            changed: Arc::new(Notify::new()),
+            terminal_routes: Default::default(),
+            terminal_boot: uuid::Uuid::new_v4().to_string(),
+        }
+    }
+
+    pub(crate) fn terminal_version(&self, runtime_generation: u64, sequence: u64) -> Version {
+        Version {
+            epoch: format!("{}:{runtime_generation}", self.terminal_boot),
+            sequence,
+        }
+    }
+
+    pub(crate) fn update(
+        &self,
+        update: impl FnOnce(&mut Subscriptions<T>) -> Result<(), SubscriptionError>,
+    ) -> Result<(), SubscriptionError> {
+        update(&mut self.state.lock())?;
+        self.changed.notify_waiters();
+        Ok(())
+    }
+
+    pub(crate) fn notify(&self) {
+        self.changed.notify_waiters();
+    }
+
+    pub(crate) fn stream<P, F>(
+        &self,
+        id: String,
+        permit: P,
+        refresh: F,
+    ) -> impl Stream<Item = StateSubscriptionEvent<T>> + Send + use<T, P, F>
+    where
+        P: Send + 'static,
+        F: Fn(String, Vec<String>) + Send + Sync + 'static,
+    {
+        let runtime = self.clone();
+        let mut timer = tokio::time::interval_at(
+            tokio::time::Instant::now() + BOOKMARK_INTERVAL,
+            BOOKMARK_INTERVAL,
+        );
+        timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let events = futures_util::stream::unfold(
+            (id, permit, timer, runtime, refresh),
+            |(id, permit, mut timer, runtime, refresh)| async move {
+                loop {
+                    let changed = runtime.changed.notified();
+                    tokio::pin!(changed);
+                    changed.as_mut().enable();
+                    let requests = {
+                        let state = runtime.state.lock();
+                        state
+                            .snapshot_requests(&id)
+                            .into_iter()
+                            .map(|raw| {
+                                let clients = state.snapshot_request_clients(&raw);
+                                (raw, clients)
+                            })
+                            .collect::<Vec<_>>()
+                    };
+                    for (raw, clients) in requests {
+                        refresh(raw, clients);
+                    }
+                    if let Some((target, event)) = runtime.state.lock().next(&id) {
+                        timer.reset_at(tokio::time::Instant::now() + BOOKMARK_INTERVAL);
+                        return Some((
+                            StateSubscriptionEvent::Item(target, event),
+                            (id, permit, timer, runtime.clone(), refresh),
+                        ));
+                    }
+                    tokio::select! {
+                        _ = changed => {},
+                        _ = timer.tick() => runtime.state.lock().bookmark(&id),
+                    }
+                }
+            },
+        );
+        futures_util::stream::once(async { StateSubscriptionEvent::Ready }).chain(events)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SubscriptionError {
     InvalidId,
@@ -88,13 +192,14 @@ impl<T: Clone> Target<T> {
                     || (*same_version && event.version().sequence == version.sequence)
             })
             .map(|(_, units)| *units)
-            .chain(std::iter::once(0))
             .collect()
     }
 
     fn pending_sizes(&self, version: Option<&Version>) -> VecDeque<usize> {
         if self.resumable(version) {
-            self.replay_sizes(version.unwrap())
+            let mut sizes = self.replay_sizes(version.unwrap());
+            sizes.push_back(0);
+            sizes
         } else {
             VecDeque::from([0, 0])
         }
@@ -213,26 +318,6 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
         self.clients.remove(id);
     }
 
-    pub fn start_with_snapshot(
-        &mut self,
-        client: &str,
-        raw: &str,
-        snapshot: T,
-        version: Option<&Version>,
-    ) -> Result<(), SubscriptionError> {
-        let target = raw.to_string();
-        if !self.clients.contains_key(client) {
-            self.ensure_active(&target)?;
-            return Err(SubscriptionError::StreamEnded);
-        }
-        if self.registered(&target) {
-            self.publish(raw, snapshot, None)?;
-        } else {
-            self.register(raw.into(), snapshot, Delivery::Full)?;
-        }
-        self.start(client, raw, version)
-    }
-
     pub fn start(
         &mut self,
         client: &str,
@@ -244,7 +329,8 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
             .targets
             .get(&target)
             .ok_or(SubscriptionError::UnknownTarget)?;
-        if value.snapshot.is_none() && !value.resumable(version) {
+        let awaiting_snapshot = value.snapshot.is_none() && !value.resumable(version);
+        if awaiting_snapshot && value.delivery != Delivery::Delta {
             return Err(SubscriptionError::UnknownTarget);
         }
         let client = self
@@ -258,36 +344,34 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
         client.subscriptions.insert(
             target,
             Subscription {
-                pending: value.resume(version),
+                pending: if awaiting_snapshot {
+                    VecDeque::new()
+                } else {
+                    value.resume(version)
+                },
                 sent: version.filter(|v| v.epoch == value.version.epoch).cloned(),
-                overflowed: false,
-                pending_units: value.pending_sizes(version).iter().sum(),
-                sizes: value.pending_sizes(version),
+                overflowed: awaiting_snapshot,
+                pending_units: if awaiting_snapshot {
+                    0
+                } else {
+                    value.pending_sizes(version).iter().sum()
+                },
+                sizes: if awaiting_snapshot {
+                    VecDeque::new()
+                } else {
+                    value.pending_sizes(version)
+                },
             },
         );
         Ok(())
     }
 
-    pub fn pending_amount(
-        &self,
-        client: &str,
-        target: &str,
-        measure: impl Fn(&T) -> usize,
-    ) -> usize {
+    pub fn pending_amount(&self, client: &str, target: &str) -> usize {
         let target = target.to_string();
         self.clients
             .get(client)
             .and_then(|client| client.subscriptions.get(&target))
-            .map(|subscription| {
-                subscription
-                    .pending
-                    .iter()
-                    .map(|event| match event {
-                        Event::Change(_, _, value) => measure(value),
-                        _ => 0,
-                    })
-                    .sum()
-            })
+            .map(|subscription| subscription.pending_units)
             .unwrap_or(0)
     }
 
@@ -332,10 +416,17 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn is_subscribed(&self, client: &str, target: &str) -> bool {
         self.clients
             .get(client)
             .is_some_and(|client| client.subscriptions.contains_key(target))
+    }
+
+    pub fn has_subscribers(&self, target: &str) -> bool {
+        self.clients
+            .values()
+            .any(|client| client.subscriptions.contains_key(target))
     }
 
     pub fn needs_snapshot(
@@ -413,7 +504,7 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
         value.snapshot = None;
         let event = Event::Change(version, Delivery::Delta, Arc::new(delta));
         value.history.push_back((event.clone(), same_version));
-        value.history_units.push_back(units.max(1));
+        value.history_units.push_back(units);
         if value.history.len() > RETAINED_CHANGES {
             value.discarded_through = value
                 .history
@@ -421,7 +512,6 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
                 .map(|(event, _)| event.version().sequence);
             value.history_units.pop_front();
         }
-        let units = units.max(1);
         for client in self.clients.values_mut() {
             if let Some(subscription) = client.subscriptions.get_mut(&id) {
                 if subscription.overflowed {
@@ -474,16 +564,30 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
             .get(client)
             .into_iter()
             .flat_map(|client| client.subscriptions.iter())
-            .filter(|(id, subscription)| {
-                let Some(value) = self.targets.get(*id) else {
-                    return false;
-                };
-                subscription.overflowed
-                    && value.snapshot.is_none()
-                    && !value.resumable(subscription.sent.as_ref())
-            })
+            .filter(|(id, subscription)| self.snapshot_required(id, subscription))
             .map(|(id, _)| id.to_string())
             .collect()
+    }
+
+    pub fn snapshot_request_clients(&self, target: &str) -> Vec<String> {
+        self.clients
+            .iter()
+            .filter(|(_, client)| {
+                client
+                    .subscriptions
+                    .get(target)
+                    .is_some_and(|subscription| self.snapshot_required(target, subscription))
+            })
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
+    fn snapshot_required(&self, target: &str, subscription: &Subscription<T>) -> bool {
+        self.targets.get(target).is_some_and(|value| {
+            subscription.overflowed
+                && value.snapshot.is_none()
+                && !value.resumable(subscription.sent.as_ref())
+        })
     }
 
     pub fn stop(&mut self, client: &str, target: &str) -> Result<(), SubscriptionError> {
@@ -557,7 +661,7 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
         if self
             .targets
             .get(target)
-            .is_some_and(|value| !value.persistent)
+            .is_some_and(|value| !value.persistent && value.delivery == Delivery::Full)
         {
             self.target_generation = self
                 .target_generation
@@ -568,10 +672,18 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
         Err(SubscriptionError::StreamEnded)
     }
 
+    #[cfg(test)]
     pub fn release_inactive_snapshots(&mut self) {
+        self.release_inactive_snapshots_except(&Default::default());
+    }
+
+    pub fn release_inactive_snapshots_except(
+        &mut self,
+        protected: &std::collections::HashSet<String>,
+    ) {
         let active = self.active_targets();
         for (id, target) in &mut self.targets {
-            if !target.persistent && !active.contains(id) {
+            if !target.persistent && !active.contains(id) && !protected.contains(id) {
                 target.snapshot = None;
                 if target.delivery == Delivery::Full {
                     target.history.clear();

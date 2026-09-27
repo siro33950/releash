@@ -10,7 +10,7 @@ use crate::domain::workspace_tree::WorkspaceIdentity;
 use crate::usecase::terminal_surface::output::TerminalSurfaceOutputSummary;
 
 #[test]
-fn test_ターミナル画面出力_概要を購読対象と単純な値へ変換する() {
+fn test_ターミナル画面出力_概要を所有者と単純な値へ変換する() {
     let owner = TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/repo")).unwrap();
     let surface = TerminalSurface::new(7, owner.clone(), None);
 
@@ -19,10 +19,7 @@ fn test_ターミナル画面出力_概要を購読対象と単純な値へ変�
     assert_eq!(output.session_key, owner.stable_key());
     assert_eq!(output.runtime_generation, 7);
     assert_eq!(output.latest_sequence, 0);
-    assert_eq!(
-        crate::usecase::state_subscription::SubscriptionTarget::parse(&output.target).unwrap(),
-        crate::usecase::state_subscription::SubscriptionTarget::Terminal(owner)
-    );
+    assert_eq!(output.owner, owner);
 }
 
 #[test]

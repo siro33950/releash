@@ -15,6 +15,7 @@ pub(crate) mod push;
 pub(crate) mod repo_paths;
 pub(crate) mod repository_state;
 pub(crate) mod state_subscription;
+mod state_subscription_target;
 pub(crate) mod state_subscription_wire;
 pub(crate) mod terminal;
 pub(crate) mod terminal_error;

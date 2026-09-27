@@ -125,6 +125,7 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
         );
         let state = crate::usecase::state_subscription::StateSubscriptionUsecase::new_with_output(
             state_presenter.clone(),
+            state_presenter.change_sender(),
             Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
         )
         .with_reads(
@@ -212,8 +213,7 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
                     ClientPushGateway::new(sink),
                     crate::client_api_acceptance::watcher(),
                 )
-                .with_state_subscriptions(state)
-                .with_state_presenter(state_presenter),
+                .with_state_subscriptions(state, state_presenter),
             ),
             None,
         );

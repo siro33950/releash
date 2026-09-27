@@ -490,7 +490,7 @@ async fn test_要対応の通知_設定と解除で同じ購読対象に通知�
     use crate::usecase::state_subscription::StateChangeSource;
     let queue = queue();
     let publisher = crate::test_support::state_subscription::test_output();
-    let mut changes = publisher.subscribe_changes();
+    let mut changes = crate::test_support::state_subscription::changes(&publisher);
     queue.set_publisher(publisher);
     let key = WorkKey::new("workflow_recovery", "tree");
     // When / Then

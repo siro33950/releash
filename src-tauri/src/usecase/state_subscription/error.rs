@@ -6,6 +6,7 @@ pub(crate) enum SubscriptionError {
     UnknownTarget,
     VersionExhausted,
     SnapshotRequired,
+    EncodingFailed,
 }
 
 impl std::fmt::Display for SubscriptionError {

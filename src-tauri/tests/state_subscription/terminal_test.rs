@@ -6,11 +6,22 @@ use crate::domain::terminal_surface::gateway::TerminalSurfaceGateway;
 use crate::test_support::state_subscription::{Delivery, Event, StateSubscriptionEvent, Version};
 use crate::usecase::state_subscription::SubscriptionTarget;
 use crate::usecase::terminal_surface::output::TerminalSurfaceEventSink;
+use crate::usecase::terminal_surface::output::TerminalSurfaceOutputControl;
 use crate::usecase::terminal_surface::output::TerminalSurfaceOutputEvent;
 use crate::usecase::terminal_surface::output::TerminalSurfaceStateSink;
 
 use crate::domain::terminal_surface::TerminalSurfaceOwner;
 use crate::domain::workspace_tree::WorkspaceIdentity;
+
+fn terminal_item(
+    value: &crate::adaptor::presenter::client::StatePayload,
+) -> &crate::adaptor::presenter::client::terminal_event::Item {
+    use crate::adaptor::presenter::client::state_payload::Value;
+    let Some(Value::Terminal(event)) = &value.value else {
+        panic!("terminal payload");
+    };
+    event.item.as_ref().expect("terminal item")
+}
 
 fn fixture() -> (
     StateSubscriptionUsecase,
@@ -39,8 +50,12 @@ fn fixture() -> (
     let subscriptions = StateSubscriptionUsecase::new(
         vec!["/repo".into()],
         Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
-    )
-    .with_terminal(terminal);
+    );
+    subscriptions
+        .test_presenter()
+        .unwrap()
+        .connect_terminal(&terminal);
+    let subscriptions = subscriptions.with_terminal(terminal);
     (subscriptions, gateway, hub, surface)
 }
 
@@ -57,16 +72,25 @@ async fn test_terminal購読_同じstreamでsnapshot差分と区切りを届け�
     ));
     let before = gateway.snapshot_materialization_count();
     // When
-    subscriptions
-        .start_terminal("client", &raw, None, "input")
-        .await
-        .unwrap();
-    subscriptions
-        .start("client", "repository-paths", None)
-        .unwrap();
+    crate::test_support::state_subscription::start_terminal(
+        &subscriptions,
+        "client",
+        &raw,
+        None,
+        "input",
+    )
+    .await
+    .unwrap();
+    crate::test_support::state_subscription::start(
+        &subscriptions,
+        "client",
+        "repository-paths",
+        None,
+    )
+    .unwrap();
     // Then
     assert!(
-        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Snapshot(Version { sequence: 0, .. }, value))) if matches!(value.as_ref(), StateValue::Terminal(TerminalSurfaceStreamItem::Snapshot(_))))
+        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Snapshot(Version { sequence: 0, .. }, value))) if matches!(terminal_item(&value), crate::adaptor::presenter::client::terminal_event::Item::Snapshot(_)))
     );
     assert!(
         matches!(stream.next().await, Some(StateSubscriptionEvent::Item(target, Event::Snapshot(_, _))) if target == "repository-paths")
@@ -88,7 +112,7 @@ async fn test_terminal購読_同じstreamでsnapshot差分と区切りを届け�
     assert_eq!(gateway.snapshot_materialization_count(), before + 1);
     for sequence in 1..=100 {
         assert!(
-            matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Change(version, Delivery::Delta, value))) if version.sequence == sequence && matches!(value.as_ref(), StateValue::Terminal(TerminalSurfaceStreamItem::Output { .. })))
+            matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Change(version, Delivery::Delta, value))) if version.sequence == sequence && matches!(terminal_item(&value), crate::adaptor::presenter::client::terminal_event::Item::Output(_)))
         );
     }
 }
@@ -100,17 +124,88 @@ async fn test_terminal再開_履歴内ならsnapshotを作らず再起動後は�
     let stream = subscriptions.open("client".into()).unwrap();
     tokio::pin!(stream);
     stream.next().await;
-    subscriptions
-        .start_terminal("client", &target, None, "input")
-        .await
-        .unwrap();
+    crate::test_support::state_subscription::start_terminal(
+        &subscriptions,
+        "client",
+        &target,
+        None,
+        "input",
+    )
+    .await
+    .unwrap();
     let Some(StateSubscriptionEvent::Item(_, Event::Snapshot(version, _))) = stream.next().await
     else {
         panic!("snapshot");
     };
     stream.next().await;
     let before = gateway.snapshot_materialization_count();
-    subscriptions.stop("client", &target).unwrap();
+    crate::test_support::state_subscription::stop(&subscriptions, "client", &target).unwrap();
+    surface
+        .record_output(surface.runtime_generation, std::time::Instant::now())
+        .unwrap();
+    gateway.insert_surface(surface.clone());
+    hub.publish(TerminalSurfaceOutputEvent::Output {
+        session_key: surface.session_key.clone(),
+        data: "next".into(),
+        sequence: 1,
+    });
+    crate::test_support::state_subscription::start_terminal(
+        &subscriptions,
+        "client",
+        &target,
+        Some((&version.epoch, version.sequence)),
+        "input-2",
+    )
+    .await
+    .unwrap();
+    assert_eq!(gateway.snapshot_materialization_count(), before);
+    assert!(
+        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Change(v, Delivery::Delta, _))) if v.sequence == 1)
+    );
+    stream.next().await;
+    crate::test_support::state_subscription::stop(&subscriptions, "client", &target).unwrap();
+    let recreated = TerminalSurface::new(2, surface.owner.clone(), None);
+    gateway.remove_surface(surface.runtime_generation.value());
+    gateway.insert_surface(recreated.clone());
+    subscriptions
+        .test_presenter()
+        .unwrap()
+        .initialize(&(&recreated.summary()).into());
+    crate::test_support::state_subscription::start_terminal(
+        &subscriptions,
+        "client",
+        &target,
+        Some((&version.epoch, version.sequence)),
+        "input-3",
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Snapshot(v, _))) if v.epoch != version.epoch)
+    );
+    assert_eq!(gateway.snapshot_materialization_count(), before + 1);
+}
+
+#[tokio::test]
+async fn test_terminal再開不能_配信開始前の出力を現在snapshotで回復する() {
+    // Given
+    let (subscriptions, gateway, hub, mut surface) = fixture();
+    let target = SubscriptionTarget::Terminal(surface.owner.clone());
+    let raw = target.to_string();
+    let mut stream = Box::pin(subscriptions.open("client".into()).unwrap());
+    stream.next().await;
+    let cursor = Some(("old-epoch", 0));
+    assert!(subscriptions
+        .test_presenter()
+        .unwrap()
+        .needs_snapshot(&raw, cursor)
+        .unwrap());
+    let started = subscriptions
+        .start_subscription("client", &target, Some("input"))
+        .await
+        .unwrap();
+
+    // When
     surface
         .record_output(surface.runtime_generation, std::time::Instant::now())
         .unwrap();
@@ -121,40 +216,20 @@ async fn test_terminal再開_履歴内ならsnapshotを作らず再起動後は�
         sequence: 1,
     });
     subscriptions
-        .start_terminal(
-            "client",
-            &target,
-            Some((&version.epoch, version.sequence)),
-            "input-2",
-        )
-        .await
-        .unwrap();
-    assert_eq!(gateway.snapshot_materialization_count(), before);
-    assert!(
-        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Change(v, Delivery::Delta, _))) if v.sequence == 1)
-    );
-    stream.next().await;
-    subscriptions.stop("client", &target).unwrap();
-    let recreated = TerminalSurface::new(2, surface.owner.clone(), None);
-    gateway.remove_surface(surface.runtime_generation.value());
-    gateway.insert_surface(recreated.clone());
-    subscriptions
         .test_presenter()
         .unwrap()
-        .initialize(&(&recreated.summary()).into());
-    subscriptions
-        .start_terminal(
-            "client",
-            &target,
-            Some((&version.epoch, version.sequence)),
-            "input-3",
-        )
+        .present_start(&subscriptions, &started, cursor)
         .await
         .unwrap();
-    assert!(
-        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Snapshot(v, _))) if v.epoch != version.epoch)
-    );
-    assert_eq!(gateway.snapshot_materialization_count(), before + 1);
+
+    // Then
+    assert!(matches!(
+        tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+            .await
+            .unwrap(),
+        Some(StateSubscriptionEvent::Item(_, Event::Snapshot(version, _)))
+            if version.sequence == 1
+    ));
 }
 
 #[tokio::test]
@@ -171,22 +246,24 @@ async fn test_terminal購読_件数上限がなく停止と切断で流量を解
             .test_presenter()
             .unwrap()
             .initialize(&(&surface.summary()).into());
-        subscriptions
-            .start_terminal(
-                "client",
-                &SubscriptionTarget::Terminal(owner).to_string(),
-                None,
-                "input",
-            )
-            .await
-            .unwrap();
+        crate::test_support::state_subscription::start_terminal(
+            &subscriptions,
+            "client",
+            &SubscriptionTarget::Terminal(owner).to_string(),
+            None,
+            "input",
+        )
+        .await
+        .unwrap();
     }
     assert_eq!(
         subscriptions
             .test_presenter()
             .unwrap()
-            .terminal_inputs
+            .runtime
+            .state
             .lock()
+            .active_targets()
             .len(),
         20
     );
@@ -194,16 +271,77 @@ async fn test_terminal購読_件数上限がなく停止と切断で流量を解
     assert!(subscriptions
         .test_presenter()
         .unwrap()
-        .terminal_inputs
+        .runtime
+        .state
         .lock()
+        .active_targets()
         .is_empty());
-    assert!(subscriptions
-        .terminal_processed(
-            "client",
-            &SubscriptionTarget::Terminal(surface.owner).to_string(),
-            5000
+    assert!(crate::test_support::state_subscription::terminal_processed(
+        &subscriptions,
+        "client",
+        &SubscriptionTarget::Terminal(surface.owner).to_string(),
+        5000
+    )
+    .is_err());
+}
+
+#[tokio::test]
+async fn test_terminal復元_同じ対象の全clientの流量停止を解放する() {
+    let (subscriptions, _, hub, surface) = fixture();
+    let target = SubscriptionTarget::Terminal(surface.owner.clone()).to_string();
+    let mut first = Box::pin(subscriptions.open("first".into()).unwrap());
+    let mut second = Box::pin(subscriptions.open("second".into()).unwrap());
+    first.next().await;
+    second.next().await;
+    for client in ["first", "second"] {
+        crate::test_support::state_subscription::start_terminal(
+            &subscriptions,
+            client,
+            &target,
+            None,
+            client,
         )
-        .is_err());
+        .await
+        .unwrap();
+    }
+    first.next().await;
+    first.next().await;
+    second.next().await;
+    second.next().await;
+    for client in ["first", "second"] {
+        hub.subscribe_output(
+            &surface.session_key,
+            client,
+            crate::infrastructure::terminal::output_flow_control::OUTPUT_HIGH_WATERMARK + 1,
+        );
+    }
+    subscriptions
+        .test_presenter()
+        .unwrap()
+        .runtime
+        .update(|state| state.require_delta_snapshot(&target))
+        .unwrap();
+
+    assert!(matches!(
+        tokio::time::timeout(std::time::Duration::from_secs(2), first.next())
+            .await
+            .unwrap(),
+        Some(StateSubscriptionEvent::Item(_, Event::Snapshot(_, _)))
+    ));
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let hub_for_wait = hub.clone();
+    let session_key = surface.session_key.clone();
+    let waiter = std::thread::spawn(move || {
+        hub_for_wait.wait_output(&session_key);
+        sender.send(()).unwrap();
+    });
+    let resumed = receiver
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .is_ok();
+    hub.unsubscribe_output(&surface.session_key, "first");
+    hub.unsubscribe_output(&surface.session_key, "second");
+    waiter.join().unwrap();
+    assert!(resumed);
 }
 
 #[tokio::test]
@@ -235,8 +373,12 @@ async fn test_snapshot作成中_別terminalのsnapshotと出力とexecutorを止
     let subscriptions = StateSubscriptionUsecase::new(
         vec![],
         Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
-    )
-    .with_terminal(terminal.clone());
+    );
+    subscriptions
+        .test_presenter()
+        .unwrap()
+        .connect_terminal(&terminal);
+    let subscriptions = subscriptions.with_terminal(terminal.clone());
     let stream = subscriptions.open("client".into()).unwrap();
     tokio::pin!(stream);
     stream.next().await;
@@ -247,14 +389,14 @@ async fn test_snapshot作成中_別terminalのsnapshotと出力とexecutorを止
     let request = tokio::spawn({
         let subscriptions = subscriptions.clone();
         async move {
-            subscriptions
-                .start_terminal(
-                    "client",
-                    &SubscriptionTarget::Terminal(first.owner).to_string(),
-                    None,
-                    "first-input",
-                )
-                .await
+            crate::test_support::state_subscription::start_terminal(
+                &subscriptions,
+                "client",
+                &SubscriptionTarget::Terminal(first.owner).to_string(),
+                None,
+                "first-input",
+            )
+            .await
         }
     });
     tokio::task::spawn_blocking(move || {
@@ -266,7 +408,8 @@ async fn test_snapshot作成中_別terminalのsnapshotと出力とexecutorを止
     .unwrap();
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(1),
-        subscriptions.start_terminal(
+        crate::test_support::state_subscription::start_terminal(
+            &subscriptions,
             "client",
             &SubscriptionTarget::Terminal(second.owner.clone()).to_string(),
             None,
@@ -306,22 +449,40 @@ async fn test_terminal差分_出力の重複を除き同じ出力番号で寸法
     let stream = subscriptions.open("client".into()).unwrap();
     tokio::pin!(stream);
     stream.next().await;
-    assert!(subscriptions
-        .start_terminal("client", &target, None, "")
-        .await
-        .is_err());
-    subscriptions
-        .start_terminal("client", &target, None, "input")
-        .await
-        .unwrap();
+    assert!(crate::test_support::state_subscription::start_terminal(
+        &subscriptions,
+        "client",
+        &target,
+        None,
+        ""
+    )
+    .await
+    .is_err());
+    crate::test_support::state_subscription::start_terminal(
+        &subscriptions,
+        "client",
+        &target,
+        None,
+        "input",
+    )
+    .await
+    .unwrap();
     stream.next().await;
     stream.next().await;
-    assert!(subscriptions
-        .terminal_processed("client", &target, 1)
-        .is_err());
-    assert!(subscriptions
-        .terminal_processed("client", &target, 5000)
-        .is_ok());
+    assert!(crate::test_support::state_subscription::terminal_processed(
+        &subscriptions,
+        "client",
+        &target,
+        1
+    )
+    .is_err());
+    assert!(crate::test_support::state_subscription::terminal_processed(
+        &subscriptions,
+        "client",
+        &target,
+        5000
+    )
+    .is_ok());
     let output = TerminalSurfaceOutputEvent::Output {
         session_key: surface.session_key.clone(),
         data: "x".into(),
@@ -377,15 +538,22 @@ async fn test_terminal差分_出力の重複を除き同じ出力番号で寸法
         };
         assert_eq!(actual_target, target);
         assert_eq!(version.sequence, sequence);
-        let StateValue::Terminal(actual) = value.as_ref() else {
-            panic!("terminal payload");
-        };
-        assert_eq!(actual, &expected);
+        assert_eq!(
+            *value,
+            crate::adaptor::presenter::state_subscription_wire::payload(&StateValue::Terminal(
+                expected
+            ))
+            .unwrap()
+        );
     }
-    subscriptions.stop("client", &target).unwrap();
-    assert!(subscriptions
-        .terminal_processed("client", &target, 5000)
-        .is_err());
+    crate::test_support::state_subscription::stop(&subscriptions, "client", &target).unwrap();
+    assert!(crate::test_support::state_subscription::terminal_processed(
+        &subscriptions,
+        "client",
+        &target,
+        5000
+    )
+    .is_err());
 }
 
 #[tokio::test]
@@ -396,10 +564,15 @@ async fn test_terminal購読_出力前の寸法変更と終了を版ゼロで届
     let stream = subscriptions.open("client".into()).unwrap();
     tokio::pin!(stream);
     stream.next().await;
-    subscriptions
-        .start_terminal("client", &target, None, "input")
-        .await
-        .unwrap();
+    crate::test_support::state_subscription::start_terminal(
+        &subscriptions,
+        "client",
+        &target,
+        None,
+        "input",
+    )
+    .await
+    .unwrap();
     let Some(StateSubscriptionEvent::Item(_, Event::Snapshot(version, _))) = stream.next().await
     else {
         panic!("snapshot");
@@ -422,16 +595,17 @@ async fn test_terminal購読_出力前の寸法変更と終了を版ゼロで届
     // Then
     for reconnect in [false, true] {
         if reconnect {
-            subscriptions.stop("client", &target).unwrap();
-            subscriptions
-                .start_terminal(
-                    "client",
-                    &target,
-                    Some((&version.epoch, version.sequence)),
-                    "input",
-                )
-                .await
+            crate::test_support::state_subscription::stop(&subscriptions, "client", &target)
                 .unwrap();
+            crate::test_support::state_subscription::start_terminal(
+                &subscriptions,
+                "client",
+                &target,
+                Some((&version.epoch, version.sequence)),
+                "input",
+            )
+            .await
+            .unwrap();
         }
         let Some(StateSubscriptionEvent::Item(
             _,
@@ -442,13 +616,15 @@ async fn test_terminal購読_出力前の寸法変更と終了を版ゼロで届
         };
         assert_eq!(resize_version, version);
         assert!(matches!(
-            resize.as_ref(),
-            StateValue::Terminal(TerminalSurfaceStreamItem::Resize {
-                cols: 120,
-                rows: 30,
-                sequence: 0,
-                ..
-            })
+            terminal_item(&resize),
+            crate::adaptor::presenter::client::terminal_event::Item::Resize(
+                crate::adaptor::presenter::client::TerminalResize {
+                    cols: 120,
+                    rows: 30,
+                    sequence: 0,
+                    ..
+                }
+            )
         ));
         let Some(StateSubscriptionEvent::Item(
             _,
@@ -459,12 +635,14 @@ async fn test_terminal購読_出力前の寸法変更と終了を版ゼロで届
         };
         assert_eq!(exit_version, version);
         assert!(matches!(
-            exit.as_ref(),
-            StateValue::Terminal(TerminalSurfaceStreamItem::Exit {
-                exit_code: Some(7),
-                sequence: 0,
-                ..
-            })
+            terminal_item(&exit),
+            crate::adaptor::presenter::client::terminal_event::Item::Exit(
+                crate::adaptor::presenter::client::TerminalExit {
+                    exit_code: Some(7),
+                    sequence: 0,
+                    ..
+                }
+            )
         ));
     }
 }
@@ -477,10 +655,15 @@ async fn test_terminal購読_出力と寸法の逆転は古い寸法を捨てず
     let stream = subscriptions.open("client".into()).unwrap();
     tokio::pin!(stream);
     stream.next().await;
-    subscriptions
-        .start_terminal("client", &target, None, "input")
-        .await
-        .unwrap();
+    crate::test_support::state_subscription::start_terminal(
+        &subscriptions,
+        "client",
+        &target,
+        None,
+        "input",
+    )
+    .await
+    .unwrap();
     stream.next().await;
     stream.next().await;
     surface
@@ -509,7 +692,7 @@ async fn test_terminal購読_出力と寸法の逆転は古い寸法を捨てず
     };
     assert_eq!(version.sequence, 1);
     assert!(
-        matches!(snapshot.as_ref(), StateValue::Terminal(TerminalSurfaceStreamItem::Snapshot(value)) if value.checkpoint.cols == 120 && value.checkpoint.rows == 30)
+        matches!(terminal_item(&snapshot), crate::adaptor::presenter::client::terminal_event::Item::Snapshot(value) if value.cols == 120 && value.rows == 30)
     );
 }
 
@@ -525,10 +708,15 @@ async fn test_terminal削除_経路と履歴を解放し購読と入力は明示
     for generation in 1..=10 {
         let surface = TerminalSurface::new(generation, surface.owner.clone(), None);
         gateway.insert_surface(surface.clone());
-        subscriptions
-            .start_terminal("client", &target, None, "input")
-            .await
-            .unwrap();
+        crate::test_support::state_subscription::start_terminal(
+            &subscriptions,
+            "client",
+            &target,
+            None,
+            "input",
+        )
+        .await
+        .unwrap();
         stream.next().await;
         stream.next().await;
         hub.publish(TerminalSurfaceOutputEvent::Output {
@@ -547,6 +735,7 @@ async fn test_terminal削除_経路と履歴を解放し購読と入力は明示
         assert!(subscriptions
             .test_presenter()
             .unwrap()
+            .runtime
             .terminal_routes
             .lock()
             .is_empty());
@@ -555,25 +744,28 @@ async fn test_terminal削除_経路と履歴を解放し購読と入力は明示
                 .test_presenter()
                 .as_ref()
                 .unwrap()
-                .terminal_inputs
+                .runtime
+                .state
                 .lock()
+                .active_targets()
                 .len(),
             1
         );
-        let mut state = subscriptions.test_presenter().unwrap().state.lock();
+        let mut state = subscriptions.test_presenter().unwrap().runtime.state.lock();
         assert!(state.current_version(&target).is_none());
         state.bookmark("client");
         assert!(state.snapshot_requests("client").is_empty());
         drop(state);
         assert!(
-            matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Change(_, _, value))) if matches!(value.as_ref(), StateValue::Terminal(TerminalSurfaceStreamItem::Output { .. })))
+            matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Change(_, _, value))) if matches!(terminal_item(&value), crate::adaptor::presenter::client::terminal_event::Item::Output(_)))
         );
         assert!(
-            matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Change(_, _, value))) if matches!(value.as_ref(), StateValue::Terminal(TerminalSurfaceStreamItem::Exit { exit_code: Some(0), .. })))
+            matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Change(_, _, value))) if matches!(terminal_item(&value), crate::adaptor::presenter::client::terminal_event::Item::Exit(event) if event.exit_code == Some(0)))
         );
         assert!(subscriptions
             .test_presenter()
             .unwrap()
+            .runtime
             .state
             .lock()
             .is_subscribed("client", &target));
@@ -582,15 +774,18 @@ async fn test_terminal削除_経路と履歴を解放し購読と入力は明示
                 .test_presenter()
                 .as_ref()
                 .unwrap()
-                .terminal_inputs
+                .runtime
+                .state
                 .lock()
+                .active_targets()
                 .len(),
             1
         );
-        subscriptions.stop("client", &target).unwrap();
+        crate::test_support::state_subscription::stop(&subscriptions, "client", &target).unwrap();
         assert!(subscriptions
             .test_presenter()
             .unwrap()
+            .runtime
             .state
             .lock()
             .active_targets()
@@ -598,8 +793,10 @@ async fn test_terminal削除_経路と履歴を解放し購読と入力は明示
         assert!(subscriptions
             .test_presenter()
             .unwrap()
-            .terminal_inputs
+            .runtime
+            .state
             .lock()
+            .active_targets()
             .is_empty());
     }
 }
@@ -615,6 +812,7 @@ async fn test_terminal購読開始_古いsummary取得後の再作成でepochを
     let old_version = subscriptions
         .test_presenter()
         .unwrap()
+        .runtime
         .state
         .lock()
         .current_version(&target)
@@ -627,15 +825,15 @@ async fn test_terminal購読開始_古いsummary取得後の再作成でepochを
         gateway_for_replacement.insert_surface(replacement);
     }));
     // When
-    subscriptions
-        .start_terminal(
-            "client",
-            &target,
-            Some((&old_version.epoch, old_version.sequence)),
-            "new-input",
-        )
-        .await
-        .unwrap();
+    crate::test_support::state_subscription::start_terminal(
+        &subscriptions,
+        "client",
+        &target,
+        Some((&old_version.epoch, old_version.sequence)),
+        "new-input",
+    )
+    .await
+    .unwrap();
     // Then
     let Some(StateSubscriptionEvent::Item(_, Event::Snapshot(version, value))) =
         stream.next().await
@@ -648,13 +846,14 @@ async fn test_terminal購読開始_古いsummary取得後の再作成でepochを
         subscriptions
             .test_presenter()
             .unwrap()
+            .runtime
             .state
             .lock()
             .current_version(&target)
             .unwrap()
     );
     assert!(
-        matches!(value.as_ref(), StateValue::Terminal(TerminalSurfaceStreamItem::Snapshot(surface)) if surface.runtime_generation == recreated.runtime_generation)
+        matches!(terminal_item(&value), crate::adaptor::presenter::client::terminal_event::Item::Snapshot(surface) if surface.session_key == recreated.session_key)
     );
     subscriptions
         .test_presenter()
@@ -664,6 +863,7 @@ async fn test_terminal購読開始_古いsummary取得後の再作成でepochを
         subscriptions
             .test_presenter()
             .unwrap()
+            .runtime
             .state
             .lock()
             .current_version(&target),
@@ -673,6 +873,7 @@ async fn test_terminal購読開始_古いsummary取得後の再作成でepochを
         subscriptions
             .test_presenter()
             .unwrap()
+            .runtime
             .terminal_routes
             .lock()
             .len(),

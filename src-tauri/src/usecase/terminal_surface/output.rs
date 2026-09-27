@@ -3,7 +3,7 @@ use std::sync::Arc;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TerminalSurfaceOutputSummary {
     pub session_key: String,
-    pub target: String,
+    pub owner: crate::domain::terminal_surface::TerminalSurfaceOwner,
     pub runtime_generation: u64,
     pub latest_sequence: u64,
 }

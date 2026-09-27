@@ -2,6 +2,7 @@ use super::*;
 
 #[test]
 fn test_workflow一覧応答_既存のjsonフィールドを維持する() {
+    // Given
     let response = WorkflowSummaryResponse::from(dto::WorkflowSummaryDto {
         name: "demo".into(),
         description: "description".into(),
@@ -9,8 +10,11 @@ fn test_workflow一覧応答_既存のjsonフィールドを維持する() {
         is_running: false,
         source_format: crate::domain::workflow::WorkflowSourceFormat::Yaml,
     });
+    // When
+    let value = serde_json::to_value(response).unwrap();
+    // Then
     assert_eq!(
-        serde_json::to_value(response).unwrap(),
+        value,
         serde_json::json!({
             "name": "demo",
             "description": "description",
@@ -23,6 +27,7 @@ fn test_workflow一覧応答_既存のjsonフィールドを維持する() {
 
 #[test]
 fn test_実行一覧応答_状態と起点を既存表記へ変換する() {
+    // Given
     for (status, status_json) in [
         (dto::ExecutionStatusDto::Running, "running"),
         (dto::ExecutionStatusDto::Completed, "completed"),
@@ -34,6 +39,7 @@ fn test_実行一覧応答_状態と起点を既存表記へ変換する() {
             (dto::ExecutionOriginDto::Agent, "agent"),
             (dto::ExecutionOriginDto::Api, "api"),
         ] {
+            // When
             let response =
                 WorkflowExecutionSummaryResponse::from(dto::WorkflowExecutionSummaryDto {
                     execution_id: "id".into(),
@@ -52,6 +58,7 @@ fn test_実行一覧応答_状態と起点を既存表記へ変換する() {
                     },
                 });
             let value = serde_json::to_value(response).unwrap();
+            // Then
             assert_eq!(value["status"], status_json);
             assert_eq!(value["createdFrom"], origin_json);
             assert!(value.get("currentNode").is_none());
@@ -64,15 +71,46 @@ fn test_実行一覧応答_状態と起点を既存表記へ変換する() {
 }
 
 #[test]
+fn test_実行一覧応答_任意フィールドの値を維持する() {
+    // Given
+    let summary = dto::WorkflowExecutionSummaryDto {
+        execution_id: "id".into(),
+        workflow_name: "demo".into(),
+        status: dto::ExecutionStatusDto::Completed,
+        worktree_path: "/repo".into(),
+        current_node: Some("publish".into()),
+        created_from: dto::ExecutionOriginDto::Cli,
+        started_at: 1.0,
+        updated_at: 2.0,
+        completed_at: Some(3.0),
+        error_reason: Some("failed".into()),
+        total_token_usage: dto::TokenUsageDto {
+            input_tokens: 3,
+            output_tokens: 4,
+        },
+    };
+    // When
+    let value = serde_json::to_value(WorkflowExecutionSummaryResponse::from(summary)).unwrap();
+    // Then
+    assert_eq!(value["currentNode"], "publish");
+    assert_eq!(value["completedAt"], 3.0);
+    assert_eq!(value["errorReason"], "failed");
+}
+
+#[test]
 fn test_実行ログ応答_payloadを展開する() {
+    // Given
     let response = WorkflowEventResponse::from(WorkflowEventView {
         event: "node_started".into(),
         execution_id: "id".into(),
         timestamp_ms: 2000.0,
         payload: serde_json::from_value(serde_json::json!({"node": "main"})).unwrap(),
     });
+    // When
+    let value = serde_json::to_value(response).unwrap();
+    // Then
     assert_eq!(
-        serde_json::to_value(response).unwrap(),
+        value,
         serde_json::json!({
             "event": "node_started",
             "execution_id": "id",
@@ -84,6 +122,7 @@ fn test_実行ログ応答_payloadを展開する() {
 
 #[test]
 fn test_診断応答_変更前のjson形を維持する() {
+    // Given
     let report = diagnostic::DiagnosticReport {
         items: vec![
             diagnostic::DiagnosticItem {
@@ -171,8 +210,11 @@ fn test_診断応答_変更前のjson形を維持する() {
         )]),
     };
 
+    // When
+    let value = serde_json::to_value(DiagnosticReportResponse::from(report)).unwrap();
+    // Then
     assert_eq!(
-        serde_json::to_value(DiagnosticReportResponse::from(report)).unwrap(),
+        value,
         serde_json::json!({
             "items": [
                 {

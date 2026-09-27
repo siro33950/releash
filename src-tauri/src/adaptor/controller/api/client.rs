@@ -14,12 +14,16 @@ use crate::adaptor::presenter::push::EncodedPush;
 pub(crate) struct ClientApiDeps {
     dispatch: Arc<ClientCommandDispatch>,
     push: ClientPushGateway,
-    state_subscriptions: Option<crate::usecase::state_subscription::StateSubscriptionUsecase>,
-    state_presenter:
-        Option<Arc<crate::adaptor::presenter::state_subscription::StateSubscriptionPresenter>>,
+    state_subscriptions: Option<StateSubscriptionDeps>,
     desktop_settings: Option<Arc<crate::usecase::app_config::AppConfigUsecase>>,
     request_limit: Arc<tokio::sync::Semaphore>,
     watcher: Arc<crate::usecase::watcher::WatcherUsecase>,
+}
+
+#[derive(Clone)]
+struct StateSubscriptionDeps {
+    usecase: crate::usecase::state_subscription::StateSubscriptionUsecase,
+    presenter: Arc<crate::adaptor::presenter::state_subscription::StateSubscriptionPresenter>,
 }
 
 impl ClientApiDeps {
@@ -32,7 +36,6 @@ impl ClientApiDeps {
             dispatch,
             push,
             state_subscriptions: None,
-            state_presenter: None,
             desktop_settings: None,
             request_limit: Arc::new(tokio::sync::Semaphore::new(64)),
             watcher,
@@ -42,22 +45,12 @@ impl ClientApiDeps {
     pub(crate) fn with_state_subscriptions(
         mut self,
         subscriptions: crate::usecase::state_subscription::StateSubscriptionUsecase,
-    ) -> Self {
-        #[cfg(test)]
-        {
-            self.state_presenter = subscriptions
-                .test_presenter()
-                .map(|presenter| Arc::new(presenter.clone()));
-        }
-        self.state_subscriptions = Some(subscriptions);
-        self
-    }
-
-    pub(crate) fn with_state_presenter(
-        mut self,
         presenter: Arc<crate::adaptor::presenter::state_subscription::StateSubscriptionPresenter>,
     ) -> Self {
-        self.state_presenter = Some(presenter);
+        self.state_subscriptions = Some(StateSubscriptionDeps {
+            usecase: subscriptions,
+            presenter,
+        });
         self
     }
 
@@ -67,13 +60,16 @@ impl ClientApiDeps {
         &Arc<crate::adaptor::presenter::state_subscription::StateSubscriptionPresenter>,
         connectrpc::ConnectError,
     > {
-        self.state_presenter.as_ref().ok_or_else(|| {
-            crate::adaptor::presenter::connect::classified_error(
-                crate::adaptor::presenter::error::AppError::unavailable(
-                    "State subscriptions unavailable",
-                ),
-            )
-        })
+        self.state_subscriptions
+            .as_ref()
+            .map(|deps| &deps.presenter)
+            .ok_or_else(|| {
+                crate::adaptor::presenter::connect::classified_error(
+                    crate::adaptor::presenter::error::AppError::unavailable(
+                        "State subscriptions unavailable",
+                    ),
+                )
+            })
     }
 
     fn state_subscriptions(
@@ -82,13 +78,16 @@ impl ClientApiDeps {
         &crate::usecase::state_subscription::StateSubscriptionUsecase,
         connectrpc::ConnectError,
     > {
-        self.state_subscriptions.as_ref().ok_or_else(|| {
-            crate::adaptor::presenter::connect::classified_error(
-                crate::adaptor::presenter::error::AppError::unavailable(
-                    "State subscriptions unavailable",
-                ),
-            )
-        })
+        self.state_subscriptions
+            .as_ref()
+            .map(|deps| &deps.usecase)
+            .ok_or_else(|| {
+                crate::adaptor::presenter::connect::classified_error(
+                    crate::adaptor::presenter::error::AppError::unavailable(
+                        "State subscriptions unavailable",
+                    ),
+                )
+            })
     }
 
     pub(crate) fn with_desktop_settings(
@@ -111,10 +110,15 @@ impl ClientApiDeps {
 
     pub(super) fn with_terminal(mut self, terminal: Option<TerminalApiDeps>) -> Self {
         if let Some(terminal) = &terminal {
-            self.state_subscriptions = self
-                .state_subscriptions
-                .take()
-                .map(|subscriptions| subscriptions.with_terminal(terminal.application.clone()));
+            self.state_subscriptions = self.state_subscriptions.take().map(|mut subscriptions| {
+                subscriptions
+                    .presenter
+                    .connect_terminal(&terminal.application);
+                subscriptions.usecase = subscriptions
+                    .usecase
+                    .with_terminal(terminal.application.clone());
+                subscriptions
+            });
         }
         self
     }
