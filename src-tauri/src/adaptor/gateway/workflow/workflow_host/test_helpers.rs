@@ -452,15 +452,15 @@ pub(super) async fn wait_startup_retries(host: &WorkflowRuntimeHost) {
 
 pub(super) fn record_workflow_execution_broadcasts(
     app: &WorkflowRuntimeDependencies,
-) -> tokio::sync::broadcast::Receiver<crate::domain::state_subscription::StateChangeSource> {
+) -> tokio::sync::broadcast::Receiver<crate::usecase::state_subscription::StateChangeSource> {
     app.state_changes.subscribe_changes()
 }
 
 pub(super) fn take_workflow_execution_broadcasts(
     receiver: &mut tokio::sync::broadcast::Receiver<
-        crate::domain::state_subscription::StateChangeSource,
+        crate::usecase::state_subscription::StateChangeSource,
     >,
-) -> Vec<crate::domain::state_subscription::StateChangeSource> {
+) -> Vec<crate::usecase::state_subscription::StateChangeSource> {
     let mut changes = Vec::new();
     while let Ok(change) = receiver.try_recv() {
         changes.push(change);
@@ -483,7 +483,7 @@ pub(super) fn dependencies(store: Option<Arc<LocalEventStore>>) -> WorkflowRunti
         store,
         config: None,
         secrets: None,
-        state_changes: crate::usecase::state_subscription::StateSubscriptionPublisher::for_test(),
+        state_changes: crate::adaptor::presenter::state_subscription::test_output(),
     }
 }
 

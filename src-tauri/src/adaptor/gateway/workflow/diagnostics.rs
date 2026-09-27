@@ -7,16 +7,16 @@ use crate::adaptor::gateway::workflow::schema::NodeDefinition;
 use crate::adaptor::gateway::workflow::schema::{NodeKind, Rule, WorkflowDefinitionYaml};
 use crate::adaptor::gateway::workflow::span_map::YamlSpanMap;
 use crate::adaptor::gateway::workflow::workflow_host::prompt_rendering;
-use crate::adaptor::protocol::workflow::{
-    DiagnosticItem, DiagnosticReport, DiagnosticSpan, DiagnosticStage, DiagnosticSummary,
-    FacetUsageEntry, Severity,
-};
 use crate::domain::workflow::validation;
 use crate::domain::workflow::validation::{
     InvalidArtifactReferenceKind, InvalidEnvironmentReferenceKind, InvalidRuleKind,
     InvalidSchemaKind,
 };
 use crate::domain::workflow::SessionPermission;
+use crate::usecase::workflow::diagnostic_dto::{
+    DiagnosticItem, DiagnosticReport, DiagnosticSpan, DiagnosticStage, DiagnosticSummary,
+    FacetUsageEntry, Severity,
+};
 use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
 use std::path::Path;
@@ -2287,8 +2287,14 @@ nodes:
 
         // When
         let report = diagnose_all(tmp.path(), tmp.path());
-        let value = serde_json::to_value(report).unwrap();
-        let decoded = serde_json::from_value::<DiagnosticReport>(value.clone()).unwrap();
+        let value = serde_json::to_value(
+            crate::adaptor::presenter::workflow_api::DiagnosticReportResponse::from(report),
+        )
+        .unwrap();
+        let decoded = serde_json::from_value::<
+            crate::adaptor::presenter::workflow_api::DiagnosticReportResponse,
+        >(value.clone())
+        .unwrap();
 
         // Then
         assert_eq!(serde_json::to_value(decoded).unwrap(), value);
@@ -2305,7 +2311,10 @@ nodes:
         });
 
         // When
-        let item = serde_json::from_value::<DiagnosticItem>(value).unwrap();
+        let item = serde_json::from_value::<
+            crate::adaptor::presenter::workflow_api::DiagnosticItemResponse,
+        >(value)
+        .unwrap();
 
         // Then
         assert!(item.span.is_none());
@@ -2327,7 +2336,10 @@ nodes:
         });
 
         // When
-        let span = serde_json::from_value::<DiagnosticSpan>(value).unwrap();
+        let span = serde_json::from_value::<
+            crate::adaptor::presenter::workflow_api::DiagnosticSpanResponse,
+        >(value)
+        .unwrap();
 
         // Then
         assert!(span.source.is_none());

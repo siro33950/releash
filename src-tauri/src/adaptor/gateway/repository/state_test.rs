@@ -1,12 +1,13 @@
 use super::*;
-use crate::adaptor::protocol::client as wire;
+use crate::adaptor::presenter::client as wire;
+use crate::adaptor::presenter::repository_state::ClientRepositoryStateNotifier;
 use crate::infrastructure::push::PushSink;
 use crate::usecase::repository_dto::BranchCardDto;
 use crate::usecase::repository_state::runtime::{
     RepositoryStateInvalidationReceiver, RepositoryStateInvalidationSender,
 };
 use crate::usecase::repository_state::snapshot::RepositorySnapshotParts;
-use crate::usecase::repository_state::worktree::RepositoryStateNotifier;
+use crate::usecase::repository_state::worktree::{RepositoryStateNotifier, SnapshotNotification};
 use notify_debouncer_mini::DebouncedEventKind;
 use prost::Message;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -172,7 +173,7 @@ fn test_スキャン完了通知_gitとbranchとfileのみclientへ送る() {
     let mut receiver = sink.subscribe();
     let notifier = ClientRepositoryStateNotifier::new(
         sink,
-        crate::usecase::state_subscription::StateSubscriptionPublisher::for_test(),
+        crate::adaptor::presenter::state_subscription::test_output(),
     );
 
     // When

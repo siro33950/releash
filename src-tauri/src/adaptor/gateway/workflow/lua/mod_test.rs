@@ -1236,7 +1236,7 @@ fn test_completion_delegate_二重宣言をshapeエラーにしてfield名より
     assert_eq!(error.code, "WFS002");
     assert_eq!(
         error.stage,
-        crate::adaptor::protocol::workflow::DiagnosticStage::ParseShape
+        crate::usecase::workflow::diagnostic_dto::DiagnosticStage::ParseShape
     );
     assert!(error.message.contains("same Session handle"));
     assert!(error.message.contains("twice"));
@@ -1286,7 +1286,7 @@ fn test_completion_delegate_同名fieldがあってもメソッドを供給元�
         assert_eq!(error.code, "WFS010", "{new}");
         assert_eq!(
             error.stage,
-            crate::adaptor::protocol::workflow::DiagnosticStage::ParseShape,
+            crate::usecase::workflow::diagnostic_dto::DiagnosticStage::ParseShape,
             "{new}"
         );
         assert!(
@@ -1662,7 +1662,7 @@ fn test_completion_delegate_非sessionのhandleからの宣言を受理しない
         assert_eq!(result.diagnostics[0].code, "WFS010", "{owner}");
         assert_eq!(
             result.diagnostics[0].stage,
-            crate::adaptor::protocol::workflow::DiagnosticStage::ParseShape
+            crate::usecase::workflow::diagnostic_dto::DiagnosticStage::ParseShape
         );
         assert!(
             result.diagnostics[0].message.contains("attempt to call"),

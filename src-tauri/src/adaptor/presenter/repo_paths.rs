@@ -1,13 +1,13 @@
-use crate::domain::repository::RepoPathsNotifier;
+use crate::usecase::repo_paths_usecase::RepoPathsNotifier;
 use crate::usecase::state_subscription::StateValue;
-use crate::usecase::state_subscription::{StateSubscriptionPublisher, REPO_PATHS};
+use crate::usecase::state_subscription::{StateSubscriptionOutputRef, REPO_PATHS};
 
 pub struct RepoPathsNotifyGateway {
-    publisher: StateSubscriptionPublisher,
+    publisher: StateSubscriptionOutputRef,
 }
 
 impl RepoPathsNotifyGateway {
-    pub(crate) fn new(publisher: StateSubscriptionPublisher) -> Self {
+    pub(crate) fn new(publisher: StateSubscriptionOutputRef) -> Self {
         Self { publisher }
     }
 }
@@ -15,7 +15,7 @@ impl RepoPathsNotifyGateway {
 impl RepoPathsNotifier for RepoPathsNotifyGateway {
     fn notify_changed(&self, paths: Vec<String>) {
         self.publisher
-            .invalidate(crate::domain::state_subscription::StateChangeSource::Repositories);
+            .invalidate(crate::usecase::state_subscription::StateChangeSource::Repositories);
         self.publisher
             .publish(REPO_PATHS, StateValue::RepositoryPaths(paths), None)
             .expect("registered target and available version");
@@ -23,5 +23,5 @@ impl RepoPathsNotifier for RepoPathsNotifyGateway {
 }
 
 #[cfg(test)]
-#[path = "notify_test.rs"]
+#[path = "repo_paths_test.rs"]
 mod notify_tests;

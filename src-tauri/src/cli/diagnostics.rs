@@ -4,7 +4,9 @@ use super::api_client;
 use serde::Deserialize;
 
 use super::common::{self, CliError, CliSuccess};
-use crate::adaptor::protocol::workflow::{DiagnosticReport, Severity};
+use crate::adaptor::presenter::workflow_api::{
+    DiagnosticReportResponse as DiagnosticReport, SeverityResponse as Severity,
+};
 
 pub(super) fn cmd_diagnostics(
     data_dir: &Path,

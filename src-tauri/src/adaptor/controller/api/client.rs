@@ -3,38 +3,20 @@ use std::sync::Arc;
 use axum::Router;
 
 use super::client_stream::TerminalApiDeps;
-use super::protocol::client as wire;
-use super::protocol::connect::{command_error, rpc, to_rpc, to_wire};
 use crate::adaptor::controller::client::ClientCommandDispatch;
 use crate::adaptor::gateway::push::{ClientPushError, ClientPushGateway};
-
-struct EncodedPush(Arc<[u8]>);
-
-impl connectrpc::Encodable<rpc::Push> for EncodedPush {
-    fn encode(
-        &self,
-        codec: connectrpc::CodecFormat,
-    ) -> Result<axum::body::Bytes, connectrpc::ConnectError> {
-        match codec {
-            connectrpc::CodecFormat::Proto => Ok(axum::body::Bytes::from_owner(self.0.clone())),
-            _ => {
-                let push =
-                    <rpc::Push as buffa::Message>::decode_from_slice(&self.0).map_err(|error| {
-                        crate::adaptor::presenter::connect::classified_error(
-                            crate::adaptor::presenter::error::AppError::new(error.to_string()),
-                        )
-                    })?;
-                push.encode(codec)
-            }
-        }
-    }
-}
+use crate::adaptor::presenter::client as wire;
+use crate::adaptor::presenter::connect::command_error;
+use crate::adaptor::presenter::connect_wire::{rpc, to_rpc, to_wire};
+use crate::adaptor::presenter::push::EncodedPush;
 
 #[derive(Clone)]
 pub(crate) struct ClientApiDeps {
     dispatch: Arc<ClientCommandDispatch>,
     push: ClientPushGateway,
     state_subscriptions: Option<crate::usecase::state_subscription::StateSubscriptionUsecase>,
+    state_presenter:
+        Option<Arc<crate::adaptor::presenter::state_subscription::StateSubscriptionPresenter>>,
     desktop_settings: Option<Arc<crate::usecase::app_config::AppConfigUsecase>>,
     request_limit: Arc<tokio::sync::Semaphore>,
     watcher: Arc<crate::usecase::watcher::WatcherUsecase>,
@@ -50,6 +32,7 @@ impl ClientApiDeps {
             dispatch,
             push,
             state_subscriptions: None,
+            state_presenter: None,
             desktop_settings: None,
             request_limit: Arc::new(tokio::sync::Semaphore::new(64)),
             watcher,
@@ -60,8 +43,37 @@ impl ClientApiDeps {
         mut self,
         subscriptions: crate::usecase::state_subscription::StateSubscriptionUsecase,
     ) -> Self {
+        #[cfg(test)]
+        {
+            self.state_presenter = subscriptions
+                .test_presenter()
+                .map(|presenter| Arc::new(presenter.clone()));
+        }
         self.state_subscriptions = Some(subscriptions);
         self
+    }
+
+    pub(crate) fn with_state_presenter(
+        mut self,
+        presenter: Arc<crate::adaptor::presenter::state_subscription::StateSubscriptionPresenter>,
+    ) -> Self {
+        self.state_presenter = Some(presenter);
+        self
+    }
+
+    fn state_presenter(
+        &self,
+    ) -> Result<
+        &Arc<crate::adaptor::presenter::state_subscription::StateSubscriptionPresenter>,
+        connectrpc::ConnectError,
+    > {
+        self.state_presenter.as_ref().ok_or_else(|| {
+            crate::adaptor::presenter::connect::classified_error(
+                crate::adaptor::presenter::error::AppError::unavailable(
+                    "State subscriptions unavailable",
+                ),
+            )
+        })
     }
 
     fn state_subscriptions(

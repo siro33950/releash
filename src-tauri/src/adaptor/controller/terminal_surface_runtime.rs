@@ -1,16 +1,16 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::adaptor::protocol::terminal::{
+use crate::adaptor::presenter::terminal::{
     GetOrSpawnTerminalV1, TerminalProcessLaunchV1, TerminalSurfaceOwnerV1, TerminalSurfaceV1,
 };
-use crate::domain::terminal_surface::gateway::TerminalSurfaceEventSink;
+use crate::usecase::terminal_surface::output::TerminalSurfaceEventSink;
 
 pub struct TerminalSurfaceRuntime {
     application: Arc<crate::usecase::terminal_surface::application::TerminalSurfaceApplication>,
 }
 
-pub use crate::adaptor::gateway::terminal_surface::event_fault_relay::{
+pub use crate::adaptor::presenter::terminal_event_fault_relay::{
     TerminalSurfaceEventFault, TerminalSurfaceEventFaultController,
 };
 
@@ -27,11 +27,13 @@ impl TerminalSurfaceRuntime {
         queue: Arc<crate::usecase::work_queue::WorkQueueUsecase>,
         data_dir: PathBuf,
     ) -> (Self, TerminalSurfaceEventFaultController) {
-        let event_hub = Arc::new(
-            crate::adaptor::gateway::terminal_surface::event_hub::TerminalSurfaceEventHub::new(),
-        );
+        let event_hub =
+            Arc::new(crate::adaptor::presenter::terminal_event_hub::TerminalSurfaceEventHub::new());
         let event_target: Arc<dyn TerminalSurfaceEventSink> = event_hub.clone();
-        let (event_sink, faults) = crate::adaptor::gateway::terminal_surface::event_fault_relay::fault_injecting_event_sink(event_target);
+        let (event_sink, faults) =
+            crate::adaptor::presenter::terminal_event_fault_relay::fault_injecting_event_sink(
+                event_target,
+            );
         (
             Self::compose_with_event_transport(queue, data_dir, event_hub, event_sink),
             faults,
@@ -42,9 +44,8 @@ impl TerminalSurfaceRuntime {
         queue: Arc<crate::usecase::work_queue::WorkQueueUsecase>,
         data_dir: PathBuf,
     ) -> Self {
-        let event_hub = Arc::new(
-            crate::adaptor::gateway::terminal_surface::event_hub::TerminalSurfaceEventHub::new(),
-        );
+        let event_hub =
+            Arc::new(crate::adaptor::presenter::terminal_event_hub::TerminalSurfaceEventHub::new());
         let event_sink: Arc<dyn TerminalSurfaceEventSink> = event_hub.clone();
         Self::compose_with_event_transport(queue, data_dir, event_hub, event_sink)
     }
@@ -52,9 +53,7 @@ impl TerminalSurfaceRuntime {
     fn compose_with_event_transport(
         queue: Arc<crate::usecase::work_queue::WorkQueueUsecase>,
         data_dir: PathBuf,
-        event_hub: Arc<
-            crate::adaptor::gateway::terminal_surface::event_hub::TerminalSurfaceEventHub,
-        >,
+        event_hub: Arc<crate::adaptor::presenter::terminal_event_hub::TerminalSurfaceEventHub>,
         event_sink: Arc<dyn TerminalSurfaceEventSink>,
     ) -> Self {
         let journal_enabled =
@@ -69,6 +68,7 @@ impl TerminalSurfaceRuntime {
             crate::usecase::terminal_surface::application::TerminalSurfaceApplication::new(
                 std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
                 gateway,
+                Arc::new(crate::adaptor::gateway::terminal_surface::event_source::TerminalSurfaceEventSourceGateway::new(event_hub.event_sender())),
                 event_hub,
             ),
         );

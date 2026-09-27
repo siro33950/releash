@@ -10,14 +10,14 @@ fn req<T>(value: Option<T>, name: &str) -> Result<T, String> {
     value.ok_or_else(|| format!("Missing {name}"))
 }
 
-impl TryFrom<crate::adaptor::protocol::agent_session::AgentSessionArchiveResponse>
+impl TryFrom<crate::adaptor::presenter::agent_session::AgentSessionArchiveResponse>
     for wire::AgentSessionArchiveResponse
 {
     type Error = String;
     fn try_from(
-        value: crate::adaptor::protocol::agent_session::AgentSessionArchiveResponse,
+        value: crate::adaptor::presenter::agent_session::AgentSessionArchiveResponse,
     ) -> Result<Self, String> {
-        Ok(Self { value: Some(match value { crate::adaptor::protocol::agent_session::AgentSessionArchiveResponse::Archived => wire::agent_session_archive_response::Value::Archived as i32, crate::adaptor::protocol::agent_session::AgentSessionArchiveResponse::AlreadyArchived => wire::agent_session_archive_response::Value::AlreadyArchived as i32 }) })
+        Ok(Self { value: Some(match value { crate::adaptor::presenter::agent_session::AgentSessionArchiveResponse::Archived => wire::agent_session_archive_response::Value::Archived as i32, crate::adaptor::presenter::agent_session::AgentSessionArchiveResponse::AlreadyArchived => wire::agent_session_archive_response::Value::AlreadyArchived as i32 }) })
     }
 }
 
@@ -136,14 +136,14 @@ impl TryFrom<&str> for wire::AgentSessionLifecycleDto {
     }
 }
 
-impl TryFrom<crate::adaptor::protocol::agent_session::AgentSessionOpenResponse>
+impl TryFrom<crate::adaptor::presenter::agent_session::AgentSessionOpenResponse>
     for wire::AgentSessionOpenResponse
 {
     type Error = String;
     fn try_from(
-        value: crate::adaptor::protocol::agent_session::AgentSessionOpenResponse,
+        value: crate::adaptor::presenter::agent_session::AgentSessionOpenResponse,
     ) -> Result<Self, String> {
-        Ok(Self { value: Some(match value { crate::adaptor::protocol::agent_session::AgentSessionOpenResponse::Attached => wire::agent_session_open_response::Value::Attached as i32, crate::adaptor::protocol::agent_session::AgentSessionOpenResponse::Resumed => wire::agent_session_open_response::Value::Resumed as i32, crate::adaptor::protocol::agent_session::AgentSessionOpenResponse::Restored => wire::agent_session_open_response::Value::Restored as i32, crate::adaptor::protocol::agent_session::AgentSessionOpenResponse::Paused => wire::agent_session_open_response::Value::Paused as i32, crate::adaptor::protocol::agent_session::AgentSessionOpenResponse::Indeterminate => wire::agent_session_open_response::Value::Indeterminate as i32, crate::adaptor::protocol::agent_session::AgentSessionOpenResponse::GarbageCollected => wire::agent_session_open_response::Value::GarbageCollected as i32 }) })
+        Ok(Self { value: Some(match value { crate::adaptor::presenter::agent_session::AgentSessionOpenResponse::Attached => wire::agent_session_open_response::Value::Attached as i32, crate::adaptor::presenter::agent_session::AgentSessionOpenResponse::Resumed => wire::agent_session_open_response::Value::Resumed as i32, crate::adaptor::presenter::agent_session::AgentSessionOpenResponse::Restored => wire::agent_session_open_response::Value::Restored as i32, crate::adaptor::presenter::agent_session::AgentSessionOpenResponse::Paused => wire::agent_session_open_response::Value::Paused as i32, crate::adaptor::presenter::agent_session::AgentSessionOpenResponse::Indeterminate => wire::agent_session_open_response::Value::Indeterminate as i32, crate::adaptor::presenter::agent_session::AgentSessionOpenResponse::GarbageCollected => wire::agent_session_open_response::Value::GarbageCollected as i32 }) })
     }
 }
 
@@ -286,28 +286,28 @@ impl TryFrom<wire::AppSection> for crate::adaptor::gateway::app_config::AppSecti
     }
 }
 
-impl TryFrom<crate::adaptor::protocol::application_lifecycle_v1::ApplicationQuitIntentDtoV1>
+impl TryFrom<crate::adaptor::presenter::application_lifecycle_v1::ApplicationQuitIntentDtoV1>
     for wire::ApplicationQuitIntentDtoV1
 {
     type Error = String;
     fn try_from(
-        value: crate::adaptor::protocol::application_lifecycle_v1::ApplicationQuitIntentDtoV1,
+        value: crate::adaptor::presenter::application_lifecycle_v1::ApplicationQuitIntentDtoV1,
     ) -> Result<Self, String> {
-        Ok(Self { variant: Some(match value { crate::adaptor::protocol::application_lifecycle_v1::ApplicationQuitIntentDtoV1::Exit { code } => wire::application_quit_intent_dto_v1::Variant::Exit(wire::ApplicationQuitIntentDtoV1Exit { code: Some(cv(code)?) }), crate::adaptor::protocol::application_lifecycle_v1::ApplicationQuitIntentDtoV1::Restart { code } => wire::application_quit_intent_dto_v1::Variant::Restart(wire::ApplicationQuitIntentDtoV1Restart { code: Some(cv(code)?) }) }) })
+        Ok(Self { variant: Some(match value { crate::adaptor::presenter::application_lifecycle_v1::ApplicationQuitIntentDtoV1::Exit { code } => wire::application_quit_intent_dto_v1::Variant::Exit(wire::ApplicationQuitIntentDtoV1Exit { code: Some(cv(code)?) }), crate::adaptor::presenter::application_lifecycle_v1::ApplicationQuitIntentDtoV1::Restart { code } => wire::application_quit_intent_dto_v1::Variant::Restart(wire::ApplicationQuitIntentDtoV1Restart { code: Some(cv(code)?) }) }) })
     }
 }
 
 impl TryFrom<wire::ApplicationQuitIntentDtoV1>
-    for crate::adaptor::protocol::application_lifecycle_v1::ApplicationQuitIntentDtoV1
+    for crate::adaptor::presenter::application_lifecycle_v1::ApplicationQuitIntentDtoV1
 {
     type Error = String;
     fn try_from(value: wire::ApplicationQuitIntentDtoV1) -> Result<Self, String> {
-        Ok(match req(value.variant,"variant")? { wire::application_quit_intent_dto_v1::Variant::Exit(value) => crate::adaptor::protocol::application_lifecycle_v1::ApplicationQuitIntentDtoV1::Exit { code: cv(req(value.code, "code")?)? }, wire::application_quit_intent_dto_v1::Variant::Restart(value) => crate::adaptor::protocol::application_lifecycle_v1::ApplicationQuitIntentDtoV1::Restart { code: cv(req(value.code, "code")?)? } })
+        Ok(match req(value.variant,"variant")? { wire::application_quit_intent_dto_v1::Variant::Exit(value) => crate::adaptor::presenter::application_lifecycle_v1::ApplicationQuitIntentDtoV1::Exit { code: cv(req(value.code, "code")?)? }, wire::application_quit_intent_dto_v1::Variant::Restart(value) => crate::adaptor::presenter::application_lifecycle_v1::ApplicationQuitIntentDtoV1::Restart { code: cv(req(value.code, "code")?)? } })
     }
 }
 
 impl TryFrom<wire::ApplicationQuitRequestDtoV1>
-    for crate::adaptor::protocol::application_lifecycle_v1::ApplicationQuitRequestDtoV1
+    for crate::adaptor::presenter::application_lifecycle_v1::ApplicationQuitRequestDtoV1
 {
     type Error = String;
     fn try_from(value: wire::ApplicationQuitRequestDtoV1) -> Result<Self, String> {
@@ -317,21 +317,23 @@ impl TryFrom<wire::ApplicationQuitRequestDtoV1>
     }
 }
 
-impl TryFrom<crate::adaptor::protocol::application_lifecycle_v1::ApplicationStartupOutcomeDtoV1>
+impl TryFrom<crate::adaptor::presenter::application_lifecycle_v1::ApplicationStartupOutcomeDtoV1>
     for wire::ApplicationStartupOutcomeDtoV1
 {
     type Error = String;
     fn try_from(
-        value: crate::adaptor::protocol::application_lifecycle_v1::ApplicationStartupOutcomeDtoV1,
+        value: crate::adaptor::presenter::application_lifecycle_v1::ApplicationStartupOutcomeDtoV1,
     ) -> Result<Self, String> {
-        Ok(Self { variant: Some(match value { crate::adaptor::protocol::application_lifecycle_v1::ApplicationStartupOutcomeDtoV1::Ready => wire::application_startup_outcome_dto_v1::Variant::Ready(wire::Unit {}), crate::adaptor::protocol::application_lifecycle_v1::ApplicationStartupOutcomeDtoV1::Failed { kind, safe_description, correlation_id, retry_on_next_launch, actions } => wire::application_startup_outcome_dto_v1::Variant::Failed(wire::ApplicationStartupOutcomeDtoV1Failed { kind: Some(cv(kind)?), safe_description: Some(cv(safe_description)?), correlation_id: Some(cv(correlation_id)?), retry_on_next_launch: Some(cv(retry_on_next_launch)?), actions: Some(cv(actions.to_vec())?) }) }) })
+        Ok(Self { variant: Some(match value { crate::adaptor::presenter::application_lifecycle_v1::ApplicationStartupOutcomeDtoV1::Ready => wire::application_startup_outcome_dto_v1::Variant::Ready(wire::Unit {}), crate::adaptor::presenter::application_lifecycle_v1::ApplicationStartupOutcomeDtoV1::Failed { kind, safe_description, correlation_id, retry_on_next_launch, actions } => wire::application_startup_outcome_dto_v1::Variant::Failed(wire::ApplicationStartupOutcomeDtoV1Failed { kind: Some(cv(kind)?), safe_description: Some(cv(safe_description)?), correlation_id: Some(cv(correlation_id)?), retry_on_next_launch: Some(cv(retry_on_next_launch)?), actions: Some(cv(actions.to_vec())?) }) }) })
     }
 }
 
-impl TryFrom<crate::adaptor::protocol::workflow::ApprovalTargetView> for wire::ApprovalTargetView {
+impl TryFrom<crate::adaptor::presenter::workflow_wire::ApprovalTargetView>
+    for wire::ApprovalTargetView
+{
     type Error = String;
     fn try_from(
-        value: crate::adaptor::protocol::workflow::ApprovalTargetView,
+        value: crate::adaptor::presenter::workflow_wire::ApprovalTargetView,
     ) -> Result<Self, String> {
         Ok(Self {
             node_execution_id: Some(cv(value.node_execution_id)?),
@@ -353,9 +355,11 @@ impl TryFrom<wire::ApproveWorkflowNodeArgs> for crate::usecase::workflow::comman
     }
 }
 
-impl TryFrom<crate::adaptor::protocol::workflow::ArtifactView> for wire::ArtifactView {
+impl TryFrom<crate::adaptor::presenter::workflow_wire::ArtifactView> for wire::ArtifactView {
     type Error = String;
-    fn try_from(value: crate::adaptor::protocol::workflow::ArtifactView) -> Result<Self, String> {
+    fn try_from(
+        value: crate::adaptor::presenter::workflow_wire::ArtifactView,
+    ) -> Result<Self, String> {
         Ok(Self {
             node_name: Some(cv(value.node_name)?),
             contract: value.contract.map(cv).transpose()?,
@@ -494,9 +498,11 @@ impl TryFrom<&str> for wire::CompletionRequirementDto {
     }
 }
 
-impl TryFrom<crate::adaptor::protocol::workflow::DiagnosticItem> for wire::DiagnosticItem {
+impl TryFrom<crate::adaptor::presenter::workflow_wire::DiagnosticItem> for wire::DiagnosticItem {
     type Error = String;
-    fn try_from(value: crate::adaptor::protocol::workflow::DiagnosticItem) -> Result<Self, String> {
+    fn try_from(
+        value: crate::adaptor::presenter::workflow_wire::DiagnosticItem,
+    ) -> Result<Self, String> {
         Ok(Self {
             code: Some(cv(value.code)?),
             severity: Some(cv(value.severity)?),
@@ -512,10 +518,12 @@ impl TryFrom<crate::adaptor::protocol::workflow::DiagnosticItem> for wire::Diagn
     }
 }
 
-impl TryFrom<crate::adaptor::protocol::workflow::DiagnosticReport> for wire::DiagnosticReport {
+impl TryFrom<crate::adaptor::presenter::workflow_wire::DiagnosticReport>
+    for wire::DiagnosticReport
+{
     type Error = String;
     fn try_from(
-        value: crate::adaptor::protocol::workflow::DiagnosticReport,
+        value: crate::adaptor::presenter::workflow_wire::DiagnosticReport,
     ) -> Result<Self, String> {
         Ok(Self {
             items: Some(cv(value.items)?),
@@ -526,9 +534,11 @@ impl TryFrom<crate::adaptor::protocol::workflow::DiagnosticReport> for wire::Dia
     }
 }
 
-impl TryFrom<crate::adaptor::protocol::workflow::DiagnosticSpan> for wire::DiagnosticSpan {
+impl TryFrom<crate::adaptor::presenter::workflow_wire::DiagnosticSpan> for wire::DiagnosticSpan {
     type Error = String;
-    fn try_from(value: crate::adaptor::protocol::workflow::DiagnosticSpan) -> Result<Self, String> {
+    fn try_from(
+        value: crate::adaptor::presenter::workflow_wire::DiagnosticSpan,
+    ) -> Result<Self, String> {
         Ok(Self {
             source: value.source.map(cv).transpose()?,
             start_line: Some(cv(value.start_line)?),
@@ -539,23 +549,23 @@ impl TryFrom<crate::adaptor::protocol::workflow::DiagnosticSpan> for wire::Diagn
     }
 }
 
-impl TryFrom<crate::adaptor::protocol::workflow::DiagnosticStage> for wire::DiagnosticStage {
+impl TryFrom<crate::adaptor::presenter::workflow_wire::DiagnosticStage> for wire::DiagnosticStage {
     type Error = String;
     fn try_from(
-        value: crate::adaptor::protocol::workflow::DiagnosticStage,
+        value: crate::adaptor::presenter::workflow_wire::DiagnosticStage,
     ) -> Result<Self, String> {
         Ok(Self {
             value: Some(match value {
-                crate::adaptor::protocol::workflow::DiagnosticStage::ParseShape => {
+                crate::adaptor::presenter::workflow_wire::DiagnosticStage::ParseShape => {
                     wire::diagnostic_stage::Value::ParseShape as i32
                 }
-                crate::adaptor::protocol::workflow::DiagnosticStage::Resolve => {
+                crate::adaptor::presenter::workflow_wire::DiagnosticStage::Resolve => {
                     wire::diagnostic_stage::Value::Resolve as i32
                 }
-                crate::adaptor::protocol::workflow::DiagnosticStage::Typecheck => {
+                crate::adaptor::presenter::workflow_wire::DiagnosticStage::Typecheck => {
                     wire::diagnostic_stage::Value::Typecheck as i32
                 }
-                crate::adaptor::protocol::workflow::DiagnosticStage::ControlFlow => {
+                crate::adaptor::presenter::workflow_wire::DiagnosticStage::ControlFlow => {
                     wire::diagnostic_stage::Value::ControlFlow as i32
                 }
             }),
@@ -585,10 +595,12 @@ impl TryFrom<&str> for wire::DiagnosticStage {
     }
 }
 
-impl TryFrom<crate::adaptor::protocol::workflow::DiagnosticSummary> for wire::DiagnosticSummary {
+impl TryFrom<crate::adaptor::presenter::workflow_wire::DiagnosticSummary>
+    for wire::DiagnosticSummary
+{
     type Error = String;
     fn try_from(
-        value: crate::adaptor::protocol::workflow::DiagnosticSummary,
+        value: crate::adaptor::presenter::workflow_wire::DiagnosticSummary,
     ) -> Result<Self, String> {
         Ok(Self {
             error_count: Some(cv(value.error_count)?),
@@ -617,7 +629,7 @@ impl TryFrom<&str> for wire::DiffBase {
     }
 }
 
-impl TryFrom<wire::DiffFileEntryInput> for crate::adaptor::protocol::code::DiffFileEntryInput {
+impl TryFrom<wire::DiffFileEntryInput> for crate::adaptor::presenter::code::DiffFileEntryInput {
     type Error = String;
     fn try_from(value: wire::DiffFileEntryInput) -> Result<Self, String> {
         Ok(Self {
@@ -696,7 +708,7 @@ impl TryFrom<crate::usecase::code_dto::DiffTreeNodeDto> for wire::DiffTreeNodeDt
     }
 }
 
-impl TryFrom<wire::DiffTreeNodeInput> for crate::adaptor::protocol::code::DiffTreeNodeInput {
+impl TryFrom<wire::DiffTreeNodeInput> for crate::adaptor::presenter::code::DiffTreeNodeInput {
     type Error = String;
     fn try_from(value: wire::DiffTreeNodeInput) -> Result<Self, String> {
         Ok(Self {
@@ -758,25 +770,25 @@ impl TryFrom<crate::usecase::external_editor::dto::EditorInfoDto> for wire::Edit
     }
 }
 
-impl TryFrom<crate::adaptor::protocol::workflow::ExecutionOriginView>
+impl TryFrom<crate::adaptor::presenter::workflow_wire::ExecutionOriginView>
     for wire::ExecutionOriginView
 {
     type Error = String;
     fn try_from(
-        value: crate::adaptor::protocol::workflow::ExecutionOriginView,
+        value: crate::adaptor::presenter::workflow_wire::ExecutionOriginView,
     ) -> Result<Self, String> {
         Ok(Self {
             value: Some(match value {
-                crate::adaptor::protocol::workflow::ExecutionOriginView::DesktopUi => {
+                crate::adaptor::presenter::workflow_wire::ExecutionOriginView::DesktopUi => {
                     wire::execution_origin_view::Value::DesktopUi as i32
                 }
-                crate::adaptor::protocol::workflow::ExecutionOriginView::Cli => {
+                crate::adaptor::presenter::workflow_wire::ExecutionOriginView::Cli => {
                     wire::execution_origin_view::Value::Cli as i32
                 }
-                crate::adaptor::protocol::workflow::ExecutionOriginView::Agent => {
+                crate::adaptor::presenter::workflow_wire::ExecutionOriginView::Agent => {
                     wire::execution_origin_view::Value::Agent as i32
                 }
-                crate::adaptor::protocol::workflow::ExecutionOriginView::Api => {
+                crate::adaptor::presenter::workflow_wire::ExecutionOriginView::Api => {
                     wire::execution_origin_view::Value::Api as i32
                 }
             }),
@@ -806,12 +818,12 @@ impl TryFrom<&str> for wire::ExecutionOriginView {
     }
 }
 
-impl TryFrom<crate::adaptor::protocol::workflow::ExecutionParentRefView>
+impl TryFrom<crate::adaptor::presenter::workflow_wire::ExecutionParentRefView>
     for wire::ExecutionParentRefView
 {
     type Error = String;
     fn try_from(
-        value: crate::adaptor::protocol::workflow::ExecutionParentRefView,
+        value: crate::adaptor::presenter::workflow_wire::ExecutionParentRefView,
     ) -> Result<Self, String> {
         Ok(Self {
             parent_id: Some(cv(value.parent_id)?),
@@ -821,22 +833,22 @@ impl TryFrom<crate::adaptor::protocol::workflow::ExecutionParentRefView>
     }
 }
 
-impl TryFrom<crate::adaptor::protocol::workflow::ExecutionStatusView>
+impl TryFrom<crate::adaptor::presenter::workflow_wire::ExecutionStatusView>
     for wire::ExecutionStatusView
 {
     type Error = String;
     fn try_from(
-        value: crate::adaptor::protocol::workflow::ExecutionStatusView,
+        value: crate::adaptor::presenter::workflow_wire::ExecutionStatusView,
     ) -> Result<Self, String> {
         Ok(Self {
             value: Some(match value {
-                crate::adaptor::protocol::workflow::ExecutionStatusView::Running => {
+                crate::adaptor::presenter::workflow_wire::ExecutionStatusView::Running => {
                     wire::execution_status_view::Value::Running as i32
                 }
-                crate::adaptor::protocol::workflow::ExecutionStatusView::Completed => {
+                crate::adaptor::presenter::workflow_wire::ExecutionStatusView::Completed => {
                     wire::execution_status_view::Value::Completed as i32
                 }
-                crate::adaptor::protocol::workflow::ExecutionStatusView::Aborted => {
+                crate::adaptor::presenter::workflow_wire::ExecutionStatusView::Aborted => {
                     wire::execution_status_view::Value::Aborted as i32
                 }
             }),
@@ -888,10 +900,10 @@ impl TryFrom<crate::usecase::workflow::dto::FacetSummaryDto> for wire::FacetSumm
     }
 }
 
-impl TryFrom<crate::adaptor::protocol::workflow::FacetUsageEntry> for wire::FacetUsageEntry {
+impl TryFrom<crate::adaptor::presenter::workflow_wire::FacetUsageEntry> for wire::FacetUsageEntry {
     type Error = String;
     fn try_from(
-        value: crate::adaptor::protocol::workflow::FacetUsageEntry,
+        value: crate::adaptor::presenter::workflow_wire::FacetUsageEntry,
     ) -> Result<Self, String> {
         Ok(Self {
             workflow_name: Some(cv(value.workflow_name)?),
@@ -911,28 +923,15 @@ impl TryFrom<crate::usecase::workflow::dto::FanoutSpecDto> for wire::FanoutSpecD
     }
 }
 
-impl TryFrom<crate::adaptor::protocol::workflow::FanoutView> for wire::FanoutView {
+impl TryFrom<crate::adaptor::presenter::workflow_wire::FanoutView> for wire::FanoutView {
     type Error = String;
-    fn try_from(value: crate::adaptor::protocol::workflow::FanoutView) -> Result<Self, String> {
+    fn try_from(
+        value: crate::adaptor::presenter::workflow_wire::FanoutView,
+    ) -> Result<Self, String> {
         Ok(Self {
             parent: Some(cv(value.parent)?),
             children: Some(cv(value.children)?),
             artifact: value.artifact.map(cv).transpose()?,
-        })
-    }
-}
-
-impl TryFrom<crate::adaptor::gateway::repository::watch::FileChangeEvent>
-    for wire::FileChangeEvent
-{
-    type Error = String;
-    fn try_from(
-        value: crate::adaptor::gateway::repository::watch::FileChangeEvent,
-    ) -> Result<Self, String> {
-        Ok(Self {
-            watcher_id: Some(cv(value.watcher_id)?),
-            path: Some(cv(value.path)?),
-            kind: Some(cv(value.kind)?),
         })
     }
 }
@@ -973,12 +972,12 @@ impl TryFrom<crate::usecase::repository_dto::FileStatusDto> for wire::FileStatus
     }
 }
 
-impl TryFrom<crate::adaptor::protocol::terminal::GetOrSpawnTerminalV1>
+impl TryFrom<crate::adaptor::presenter::terminal::GetOrSpawnTerminalV1>
     for wire::GetOrSpawnTerminalV1
 {
     type Error = String;
     fn try_from(
-        value: crate::adaptor::protocol::terminal::GetOrSpawnTerminalV1,
+        value: crate::adaptor::presenter::terminal::GetOrSpawnTerminalV1,
     ) -> Result<Self, String> {
         Ok(Self {
             session_key: Some(cv(value.session_key)?),
@@ -1006,19 +1005,6 @@ impl TryFrom<&str> for wire::GitIndexStatus {
     type Error = String;
     fn try_from(value: &str) -> Result<Self, String> {
         cv(value.to_owned())
-    }
-}
-
-impl TryFrom<crate::adaptor::gateway::repository::watch::GitStatusChangedEvent>
-    for wire::GitStatusChangedEvent
-{
-    type Error = String;
-    fn try_from(
-        value: crate::adaptor::gateway::repository::watch::GitStatusChangedEvent,
-    ) -> Result<Self, String> {
-        Ok(Self {
-            repo_path: Some(cv(value.repo_path)?),
-        })
     }
 }
 
@@ -1071,7 +1057,7 @@ impl TryFrom<crate::usecase::code_dto::HunkDto> for wire::HunkDto {
     }
 }
 
-impl TryFrom<wire::HunkInput> for crate::adaptor::protocol::code::HunkInput {
+impl TryFrom<wire::HunkInput> for crate::adaptor::presenter::code::HunkInput {
     type Error = String;
     fn try_from(value: wire::HunkInput) -> Result<Self, String> {
         Ok(Self {
@@ -1192,10 +1178,10 @@ impl TryFrom<crate::usecase::workflow::dto::ItemsSourceDto> for wire::ItemsSourc
     }
 }
 
-impl TryFrom<crate::adaptor::protocol::notion::LabelPropertyView> for wire::LabelPropertyView {
+impl TryFrom<crate::adaptor::presenter::notion::LabelPropertyView> for wire::LabelPropertyView {
     type Error = String;
     fn try_from(
-        value: crate::adaptor::protocol::notion::LabelPropertyView,
+        value: crate::adaptor::presenter::notion::LabelPropertyView,
     ) -> Result<Self, String> {
         Ok(Self {
             name: Some(cv(value.name)?),
@@ -1204,7 +1190,7 @@ impl TryFrom<crate::adaptor::protocol::notion::LabelPropertyView> for wire::Labe
     }
 }
 
-impl TryFrom<wire::LabelPropertyView> for crate::adaptor::protocol::notion::LabelPropertyView {
+impl TryFrom<wire::LabelPropertyView> for crate::adaptor::presenter::notion::LabelPropertyView {
     type Error = String;
     fn try_from(value: wire::LabelPropertyView) -> Result<Self, String> {
         Ok(Self {
@@ -2055,7 +2041,7 @@ where
     }
 }
 impl TryFrom<wire::MarkdownDiffSideInput>
-    for crate::adaptor::protocol::code::MarkdownDiffSideInput
+    for crate::adaptor::presenter::code::MarkdownDiffSideInput
 {
     type Error = String;
     fn try_from(value: wire::MarkdownDiffSideInput) -> Result<Self, String> {
@@ -2103,19 +2089,19 @@ impl TryFrom<crate::usecase::workflow::dto::NodeCompletionDto> for wire::NodeCom
     }
 }
 
-impl TryFrom<crate::adaptor::protocol::workflow::NodeCompletionSignalView>
+impl TryFrom<crate::adaptor::presenter::workflow_wire::NodeCompletionSignalView>
     for wire::NodeCompletionSignalView
 {
     type Error = String;
     fn try_from(
-        value: crate::adaptor::protocol::workflow::NodeCompletionSignalView,
+        value: crate::adaptor::presenter::workflow_wire::NodeCompletionSignalView,
     ) -> Result<Self, String> {
         Ok(Self {
             value: Some(match value {
-                crate::adaptor::protocol::workflow::NodeCompletionSignalView::Submit => {
+                crate::adaptor::presenter::workflow_wire::NodeCompletionSignalView::Submit => {
                     wire::node_completion_signal_view::Value::Submit as i32
                 }
-                crate::adaptor::protocol::workflow::NodeCompletionSignalView::Stop => {
+                crate::adaptor::presenter::workflow_wire::NodeCompletionSignalView::Stop => {
                     wire::node_completion_signal_view::Value::Stop as i32
                 }
             }),
@@ -2161,25 +2147,25 @@ impl TryFrom<crate::usecase::workflow::dto::NodeDefinitionDto> for wire::NodeDef
     }
 }
 
-impl TryFrom<crate::adaptor::protocol::workflow::NodeExecutionStatusView>
+impl TryFrom<crate::adaptor::presenter::workflow_wire::NodeExecutionStatusView>
     for wire::NodeExecutionStatusView
 {
     type Error = String;
     fn try_from(
-        value: crate::adaptor::protocol::workflow::NodeExecutionStatusView,
+        value: crate::adaptor::presenter::workflow_wire::NodeExecutionStatusView,
     ) -> Result<Self, String> {
         Ok(Self {
             value: Some(match value {
-                crate::adaptor::protocol::workflow::NodeExecutionStatusView::Running => {
+                crate::adaptor::presenter::workflow_wire::NodeExecutionStatusView::Running => {
                     wire::node_execution_status_view::Value::Running as i32
                 }
-                crate::adaptor::protocol::workflow::NodeExecutionStatusView::WaitingApproval => {
+                crate::adaptor::presenter::workflow_wire::NodeExecutionStatusView::WaitingApproval => {
                     wire::node_execution_status_view::Value::WaitingApproval as i32
                 }
-                crate::adaptor::protocol::workflow::NodeExecutionStatusView::Succeeded => {
+                crate::adaptor::presenter::workflow_wire::NodeExecutionStatusView::Succeeded => {
                     wire::node_execution_status_view::Value::Succeeded as i32
                 }
-                crate::adaptor::protocol::workflow::NodeExecutionStatusView::Aborted => {
+                crate::adaptor::presenter::workflow_wire::NodeExecutionStatusView::Aborted => {
                     wire::node_execution_status_view::Value::Aborted as i32
                 }
             }),
@@ -2211,10 +2197,12 @@ impl TryFrom<&str> for wire::NodeExecutionStatusView {
     }
 }
 
-impl TryFrom<crate::adaptor::protocol::workflow::NodeExecutionView> for wire::NodeExecutionView {
+impl TryFrom<crate::adaptor::presenter::workflow_wire::NodeExecutionView>
+    for wire::NodeExecutionView
+{
     type Error = String;
     fn try_from(
-        value: crate::adaptor::protocol::workflow::NodeExecutionView,
+        value: crate::adaptor::presenter::workflow_wire::NodeExecutionView,
     ) -> Result<Self, String> {
         Ok(Self {
             process_presence: Some(cv(value.process_presence)?),
@@ -2288,21 +2276,23 @@ impl TryFrom<&str> for wire::NodeKindDto {
     }
 }
 
-impl TryFrom<crate::adaptor::protocol::workflow::NodeKindView> for wire::NodeKindView {
+impl TryFrom<crate::adaptor::presenter::workflow_wire::NodeKindView> for wire::NodeKindView {
     type Error = String;
-    fn try_from(value: crate::adaptor::protocol::workflow::NodeKindView) -> Result<Self, String> {
+    fn try_from(
+        value: crate::adaptor::presenter::workflow_wire::NodeKindView,
+    ) -> Result<Self, String> {
         Ok(Self {
             value: Some(match value {
-                crate::adaptor::protocol::workflow::NodeKindView::Command => {
+                crate::adaptor::presenter::workflow_wire::NodeKindView::Command => {
                     wire::node_kind_view::Value::Command as i32
                 }
-                crate::adaptor::protocol::workflow::NodeKindView::Session => {
+                crate::adaptor::presenter::workflow_wire::NodeKindView::Session => {
                     wire::node_kind_view::Value::Session as i32
                 }
-                crate::adaptor::protocol::workflow::NodeKindView::Fanout => {
+                crate::adaptor::presenter::workflow_wire::NodeKindView::Fanout => {
                     wire::node_kind_view::Value::Fanout as i32
                 }
-                crate::adaptor::protocol::workflow::NodeKindView::Sequence => {
+                crate::adaptor::presenter::workflow_wire::NodeKindView::Sequence => {
                     wire::node_kind_view::Value::Sequence as i32
                 }
             }),
@@ -2342,28 +2332,28 @@ impl TryFrom<crate::usecase::workflow::NodeWorktreeDto> for wire::NodeWorktreeDt
     }
 }
 
-impl TryFrom<crate::adaptor::protocol::notion::NotionConfigStatusView>
+impl TryFrom<crate::adaptor::presenter::notion::NotionConfigStatusView>
     for wire::NotionConfigStatusView
 {
     type Error = String;
     fn try_from(
-        value: crate::adaptor::protocol::notion::NotionConfigStatusView,
+        value: crate::adaptor::presenter::notion::NotionConfigStatusView,
     ) -> Result<Self, String> {
         Ok(Self {
             value: Some(match value {
-                crate::adaptor::protocol::notion::NotionConfigStatusView::NotConfigured => {
+                crate::adaptor::presenter::notion::NotionConfigStatusView::NotConfigured => {
                     wire::notion_config_status_view::Value::NotConfigured as i32
                 }
-                crate::adaptor::protocol::notion::NotionConfigStatusView::Configured => {
+                crate::adaptor::presenter::notion::NotionConfigStatusView::Configured => {
                     wire::notion_config_status_view::Value::Configured as i32
                 }
-                crate::adaptor::protocol::notion::NotionConfigStatusView::InvalidToken => {
+                crate::adaptor::presenter::notion::NotionConfigStatusView::InvalidToken => {
                     wire::notion_config_status_view::Value::InvalidToken as i32
                 }
-                crate::adaptor::protocol::notion::NotionConfigStatusView::InvalidDatabase => {
+                crate::adaptor::presenter::notion::NotionConfigStatusView::InvalidDatabase => {
                     wire::notion_config_status_view::Value::InvalidDatabase as i32
                 }
-                crate::adaptor::protocol::notion::NotionConfigStatusView::NetworkError => {
+                crate::adaptor::presenter::notion::NotionConfigStatusView::NetworkError => {
                     wire::notion_config_status_view::Value::NetworkError as i32
                 }
             }),
@@ -2396,12 +2386,12 @@ impl TryFrom<&str> for wire::NotionConfigStatusView {
     }
 }
 
-impl TryFrom<crate::adaptor::protocol::notion::NotionLabelOptionView>
+impl TryFrom<crate::adaptor::presenter::notion::NotionLabelOptionView>
     for wire::NotionLabelOptionView
 {
     type Error = String;
     fn try_from(
-        value: crate::adaptor::protocol::notion::NotionLabelOptionView,
+        value: crate::adaptor::presenter::notion::NotionLabelOptionView,
     ) -> Result<Self, String> {
         Ok(Self {
             property_name: Some(cv(value.property_name)?),
@@ -2412,12 +2402,12 @@ impl TryFrom<crate::adaptor::protocol::notion::NotionLabelOptionView>
     }
 }
 
-impl TryFrom<crate::adaptor::protocol::notion::NotionPropertyInfoView>
+impl TryFrom<crate::adaptor::presenter::notion::NotionPropertyInfoView>
     for wire::NotionPropertyInfoView
 {
     type Error = String;
     fn try_from(
-        value: crate::adaptor::protocol::notion::NotionPropertyInfoView,
+        value: crate::adaptor::presenter::notion::NotionPropertyInfoView,
     ) -> Result<Self, String> {
         Ok(Self {
             name: Some(cv(value.name)?),
@@ -2427,12 +2417,12 @@ impl TryFrom<crate::adaptor::protocol::notion::NotionPropertyInfoView>
     }
 }
 
-impl TryFrom<crate::adaptor::protocol::notion::NotionRepoConfigView>
+impl TryFrom<crate::adaptor::presenter::notion::NotionRepoConfigView>
     for wire::NotionRepoConfigView
 {
     type Error = String;
     fn try_from(
-        value: crate::adaptor::protocol::notion::NotionRepoConfigView,
+        value: crate::adaptor::presenter::notion::NotionRepoConfigView,
     ) -> Result<Self, String> {
         Ok(Self {
             api_token: Some(cv(value.api_token)?),
@@ -2442,10 +2432,10 @@ impl TryFrom<crate::adaptor::protocol::notion::NotionRepoConfigView>
     }
 }
 
-impl TryFrom<crate::adaptor::protocol::notion::NotionTaskPageView> for wire::NotionTaskPageView {
+impl TryFrom<crate::adaptor::presenter::notion::NotionTaskPageView> for wire::NotionTaskPageView {
     type Error = String;
     fn try_from(
-        value: crate::adaptor::protocol::notion::NotionTaskPageView,
+        value: crate::adaptor::presenter::notion::NotionTaskPageView,
     ) -> Result<Self, String> {
         Ok(Self {
             tasks: Some(cv(value.tasks)?),
@@ -2456,7 +2446,7 @@ impl TryFrom<crate::adaptor::protocol::notion::NotionTaskPageView> for wire::Not
 }
 
 impl TryFrom<wire::NotionTaskQueryInput>
-    for crate::adaptor::protocol::notion::NotionTaskQueryInput
+    for crate::adaptor::presenter::notion::NotionTaskQueryInput
 {
     type Error = String;
     fn try_from(value: wire::NotionTaskQueryInput) -> Result<Self, String> {
@@ -2469,9 +2459,9 @@ impl TryFrom<wire::NotionTaskQueryInput>
     }
 }
 
-impl TryFrom<crate::adaptor::protocol::notion::NotionTaskView> for wire::NotionTaskView {
+impl TryFrom<crate::adaptor::presenter::notion::NotionTaskView> for wire::NotionTaskView {
     type Error = String;
-    fn try_from(value: crate::adaptor::protocol::notion::NotionTaskView) -> Result<Self, String> {
+    fn try_from(value: crate::adaptor::presenter::notion::NotionTaskView) -> Result<Self, String> {
         Ok(Self {
             id: Some(cv(value.id)?),
             title: Some(cv(value.title)?),
@@ -2484,12 +2474,12 @@ impl TryFrom<crate::adaptor::protocol::notion::NotionTaskView> for wire::NotionT
     }
 }
 
-impl TryFrom<crate::adaptor::protocol::notion::NotionValidationResultView>
+impl TryFrom<crate::adaptor::presenter::notion::NotionValidationResultView>
     for wire::NotionValidationResultView
 {
     type Error = String;
     fn try_from(
-        value: crate::adaptor::protocol::notion::NotionValidationResultView,
+        value: crate::adaptor::presenter::notion::NotionValidationResultView,
     ) -> Result<Self, String> {
         Ok(Self {
             status: Some(cv(value.status)?),
@@ -2591,10 +2581,10 @@ impl TryFrom<crate::usecase::workflow::dto::PredicateDto> for wire::PredicateDto
     }
 }
 
-impl TryFrom<crate::adaptor::protocol::notion::PropertyMappingView> for wire::PropertyMappingView {
+impl TryFrom<crate::adaptor::presenter::notion::PropertyMappingView> for wire::PropertyMappingView {
     type Error = String;
     fn try_from(
-        value: crate::adaptor::protocol::notion::PropertyMappingView,
+        value: crate::adaptor::presenter::notion::PropertyMappingView,
     ) -> Result<Self, String> {
         Ok(Self {
             title: Some(cv(value.title)?),
@@ -2605,7 +2595,7 @@ impl TryFrom<crate::adaptor::protocol::notion::PropertyMappingView> for wire::Pr
     }
 }
 
-impl TryFrom<wire::PropertyMappingView> for crate::adaptor::protocol::notion::PropertyMappingView {
+impl TryFrom<wire::PropertyMappingView> for crate::adaptor::presenter::notion::PropertyMappingView {
     type Error = String;
     fn try_from(value: wire::PropertyMappingView) -> Result<Self, String> {
         Ok(Self {
@@ -2617,12 +2607,12 @@ impl TryFrom<wire::PropertyMappingView> for crate::adaptor::protocol::notion::Pr
     }
 }
 
-impl TryFrom<crate::adaptor::protocol::agent_session::ProviderAvailabilityItemResponse>
+impl TryFrom<crate::adaptor::presenter::agent_session::ProviderAvailabilityItemResponse>
     for wire::ProviderAvailabilityItemResponse
 {
     type Error = String;
     fn try_from(
-        value: crate::adaptor::protocol::agent_session::ProviderAvailabilityItemResponse,
+        value: crate::adaptor::presenter::agent_session::ProviderAvailabilityItemResponse,
     ) -> Result<Self, String> {
         Ok(Self {
             provider: Some(cv(value.provider)?),
@@ -2637,12 +2627,12 @@ impl TryFrom<crate::adaptor::protocol::agent_session::ProviderAvailabilityItemRe
     }
 }
 
-impl TryFrom<crate::adaptor::protocol::agent_session::ProviderAvailabilitySnapshotResponse>
+impl TryFrom<crate::adaptor::presenter::agent_session::ProviderAvailabilitySnapshotResponse>
     for wire::ProviderAvailabilitySnapshotResponse
 {
     type Error = String;
     fn try_from(
-        value: crate::adaptor::protocol::agent_session::ProviderAvailabilitySnapshotResponse,
+        value: crate::adaptor::presenter::agent_session::ProviderAvailabilitySnapshotResponse,
     ) -> Result<Self, String> {
         Ok(Self {
             providers: Some(cv(value.providers)?),
@@ -2650,14 +2640,14 @@ impl TryFrom<crate::adaptor::protocol::agent_session::ProviderAvailabilitySnapsh
     }
 }
 
-impl TryFrom<crate::adaptor::protocol::agent_session::ProviderHookHealthProviderResponse>
+impl TryFrom<crate::adaptor::presenter::agent_session::ProviderHookHealthProviderResponse>
     for wire::ProviderHookHealthProviderResponse
 {
     type Error = String;
     fn try_from(
-        value: crate::adaptor::protocol::agent_session::ProviderHookHealthProviderResponse,
+        value: crate::adaptor::presenter::agent_session::ProviderHookHealthProviderResponse,
     ) -> Result<Self, String> {
-        Ok(Self { value: Some(match value { crate::adaptor::protocol::agent_session::ProviderHookHealthProviderResponse::Claude => wire::provider_hook_health_provider_response::Value::Claude as i32, crate::adaptor::protocol::agent_session::ProviderHookHealthProviderResponse::Codex => wire::provider_hook_health_provider_response::Value::Codex as i32 }) })
+        Ok(Self { value: Some(match value { crate::adaptor::presenter::agent_session::ProviderHookHealthProviderResponse::Claude => wire::provider_hook_health_provider_response::Value::Claude as i32, crate::adaptor::presenter::agent_session::ProviderHookHealthProviderResponse::Codex => wire::provider_hook_health_provider_response::Value::Codex as i32 }) })
     }
 }
 
@@ -2685,12 +2675,12 @@ impl TryFrom<&str> for wire::ProviderHookHealthProviderResponse {
     }
 }
 
-impl TryFrom<crate::adaptor::protocol::agent_session::ProviderHookHealthWarningResponse>
+impl TryFrom<crate::adaptor::presenter::agent_session::ProviderHookHealthWarningResponse>
     for wire::ProviderHookHealthWarningResponse
 {
     type Error = String;
     fn try_from(
-        value: crate::adaptor::protocol::agent_session::ProviderHookHealthWarningResponse,
+        value: crate::adaptor::presenter::agent_session::ProviderHookHealthWarningResponse,
     ) -> Result<Self, String> {
         Ok(Self {
             provider: Some(cv(value.provider)?),
@@ -2893,7 +2883,7 @@ impl TryFrom<crate::usecase::code_dto::ReviewFileViewDto> for wire::ReviewFileVi
     }
 }
 
-impl TryFrom<wire::ReviewFileViewInput> for crate::adaptor::protocol::code::ReviewFileViewInput {
+impl TryFrom<wire::ReviewFileViewInput> for crate::adaptor::presenter::code::ReviewFileViewInput {
     type Error = String;
     fn try_from(value: wire::ReviewFileViewInput) -> Result<Self, String> {
         Ok(Self {
@@ -2908,7 +2898,7 @@ impl TryFrom<wire::ReviewFileViewInput> for crate::adaptor::protocol::code::Revi
 }
 
 impl TryFrom<wire::ReviewGroupActionInput>
-    for crate::adaptor::protocol::code::ReviewGroupActionInput
+    for crate::adaptor::presenter::code::ReviewGroupActionInput
 {
     type Error = String;
     fn try_from(value: wire::ReviewGroupActionInput) -> Result<Self, String> {
@@ -3014,7 +3004,7 @@ impl TryFrom<crate::usecase::code_dto::ReviewSnapshotDto> for wire::ReviewSnapsh
     }
 }
 
-impl TryFrom<wire::ReviewSnapshotInput> for crate::adaptor::protocol::code::ReviewSnapshotInput {
+impl TryFrom<wire::ReviewSnapshotInput> for crate::adaptor::presenter::code::ReviewSnapshotInput {
     type Error = String;
     fn try_from(value: wire::ReviewSnapshotInput) -> Result<Self, String> {
         Ok(Self {
@@ -3024,15 +3014,15 @@ impl TryFrom<wire::ReviewSnapshotInput> for crate::adaptor::protocol::code::Revi
     }
 }
 
-impl TryFrom<wire::ReviewTargetInput> for crate::adaptor::protocol::code::ReviewTargetInput {
+impl TryFrom<wire::ReviewTargetInput> for crate::adaptor::presenter::code::ReviewTargetInput {
     type Error = String;
     fn try_from(value: wire::ReviewTargetInput) -> Result<Self, String> {
         Ok(match req(value.variant, "variant")? {
             wire::review_target_input::Variant::FileId(value) => {
-                crate::adaptor::protocol::code::ReviewTargetInput::FileId(cv(value)?)
+                crate::adaptor::presenter::code::ReviewTargetInput::FileId(cv(value)?)
             }
             wire::review_target_input::Variant::Path(value) => {
-                crate::adaptor::protocol::code::ReviewTargetInput::Path(cv(value)?)
+                crate::adaptor::presenter::code::ReviewTargetInput::Path(cv(value)?)
             }
         })
     }
@@ -3311,15 +3301,15 @@ impl TryFrom<crate::usecase::workflow::dto::SessionSpecDto> for wire::SessionSpe
     }
 }
 
-impl TryFrom<crate::adaptor::protocol::workflow::Severity> for wire::Severity {
+impl TryFrom<crate::adaptor::presenter::workflow_wire::Severity> for wire::Severity {
     type Error = String;
-    fn try_from(value: crate::adaptor::protocol::workflow::Severity) -> Result<Self, String> {
+    fn try_from(value: crate::adaptor::presenter::workflow_wire::Severity) -> Result<Self, String> {
         Ok(Self {
             value: Some(match value {
-                crate::adaptor::protocol::workflow::Severity::Error => {
+                crate::adaptor::presenter::workflow_wire::Severity::Error => {
                     wire::severity::Value::Error as i32
                 }
-                crate::adaptor::protocol::workflow::Severity::Info => {
+                crate::adaptor::presenter::workflow_wire::Severity::Info => {
                     wire::severity::Value::Info as i32
                 }
             }),
@@ -3402,14 +3392,14 @@ impl TryFrom<&str> for wire::SplitRowKindDto {
     }
 }
 
-impl TryFrom<crate::adaptor::protocol::application_lifecycle_v1::StartupFailureActionDtoV1>
+impl TryFrom<crate::adaptor::presenter::application_lifecycle_v1::StartupFailureActionDtoV1>
     for wire::StartupFailureActionDtoV1
 {
     type Error = String;
     fn try_from(
-        value: crate::adaptor::protocol::application_lifecycle_v1::StartupFailureActionDtoV1,
+        value: crate::adaptor::presenter::application_lifecycle_v1::StartupFailureActionDtoV1,
     ) -> Result<Self, String> {
-        Ok(Self { value: Some(match value { crate::adaptor::protocol::application_lifecycle_v1::StartupFailureActionDtoV1::Quit => wire::startup_failure_action_dto_v1::Value::Quit as i32 }) })
+        Ok(Self { value: Some(match value { crate::adaptor::presenter::application_lifecycle_v1::StartupFailureActionDtoV1::Quit => wire::startup_failure_action_dto_v1::Value::Quit as i32 }) })
     }
 }
 
@@ -3432,14 +3422,14 @@ impl TryFrom<&str> for wire::StartupFailureActionDtoV1 {
     }
 }
 
-impl TryFrom<crate::adaptor::protocol::application_lifecycle_v1::StartupFailureKindDtoV1>
+impl TryFrom<crate::adaptor::presenter::application_lifecycle_v1::StartupFailureKindDtoV1>
     for wire::StartupFailureKindDtoV1
 {
     type Error = String;
     fn try_from(
-        value: crate::adaptor::protocol::application_lifecycle_v1::StartupFailureKindDtoV1,
+        value: crate::adaptor::presenter::application_lifecycle_v1::StartupFailureKindDtoV1,
     ) -> Result<Self, String> {
-        Ok(Self { value: Some(match value { crate::adaptor::protocol::application_lifecycle_v1::StartupFailureKindDtoV1::StoreInUse => wire::startup_failure_kind_dto_v1::Value::StoreInUse as i32, crate::adaptor::protocol::application_lifecycle_v1::StartupFailureKindDtoV1::StorageUnavailable => wire::startup_failure_kind_dto_v1::Value::StorageUnavailable as i32, crate::adaptor::protocol::application_lifecycle_v1::StartupFailureKindDtoV1::UnsupportedRuntime => wire::startup_failure_kind_dto_v1::Value::UnsupportedRuntime as i32, crate::adaptor::protocol::application_lifecycle_v1::StartupFailureKindDtoV1::UnsupportedStoreVersion => wire::startup_failure_kind_dto_v1::Value::UnsupportedStoreVersion as i32, crate::adaptor::protocol::application_lifecycle_v1::StartupFailureKindDtoV1::InitializationStateInvalid => wire::startup_failure_kind_dto_v1::Value::InitializationStateInvalid as i32, crate::adaptor::protocol::application_lifecycle_v1::StartupFailureKindDtoV1::StoreValidationFailed => wire::startup_failure_kind_dto_v1::Value::StoreValidationFailed as i32, crate::adaptor::protocol::application_lifecycle_v1::StartupFailureKindDtoV1::SchemaEvolutionFailed => wire::startup_failure_kind_dto_v1::Value::SchemaEvolutionFailed as i32 }) })
+        Ok(Self { value: Some(match value { crate::adaptor::presenter::application_lifecycle_v1::StartupFailureKindDtoV1::StoreInUse => wire::startup_failure_kind_dto_v1::Value::StoreInUse as i32, crate::adaptor::presenter::application_lifecycle_v1::StartupFailureKindDtoV1::StorageUnavailable => wire::startup_failure_kind_dto_v1::Value::StorageUnavailable as i32, crate::adaptor::presenter::application_lifecycle_v1::StartupFailureKindDtoV1::UnsupportedRuntime => wire::startup_failure_kind_dto_v1::Value::UnsupportedRuntime as i32, crate::adaptor::presenter::application_lifecycle_v1::StartupFailureKindDtoV1::UnsupportedStoreVersion => wire::startup_failure_kind_dto_v1::Value::UnsupportedStoreVersion as i32, crate::adaptor::presenter::application_lifecycle_v1::StartupFailureKindDtoV1::InitializationStateInvalid => wire::startup_failure_kind_dto_v1::Value::InitializationStateInvalid as i32, crate::adaptor::presenter::application_lifecycle_v1::StartupFailureKindDtoV1::StoreValidationFailed => wire::startup_failure_kind_dto_v1::Value::StoreValidationFailed as i32, crate::adaptor::presenter::application_lifecycle_v1::StartupFailureKindDtoV1::SchemaEvolutionFailed => wire::startup_failure_kind_dto_v1::Value::SchemaEvolutionFailed as i32 }) })
     }
 }
 
@@ -3480,23 +3470,23 @@ impl TryFrom<&str> for wire::StartupFailureKindDtoV1 {
     }
 }
 
-impl TryFrom<crate::adaptor::protocol::application_lifecycle_v1::StartupFailureQuitOutcomeDtoV1>
+impl TryFrom<crate::adaptor::presenter::application_lifecycle_v1::StartupFailureQuitOutcomeDtoV1>
     for wire::StartupFailureQuitOutcomeDtoV1
 {
     type Error = String;
     fn try_from(
-        value: crate::adaptor::protocol::application_lifecycle_v1::StartupFailureQuitOutcomeDtoV1,
+        value: crate::adaptor::presenter::application_lifecycle_v1::StartupFailureQuitOutcomeDtoV1,
     ) -> Result<Self, String> {
-        Ok(Self { variant: Some(match value { crate::adaptor::protocol::application_lifecycle_v1::StartupFailureQuitOutcomeDtoV1::Accepted { correlation_id } => wire::startup_failure_quit_outcome_dto_v1::Variant::Accepted(wire::StartupFailureQuitOutcomeDtoV1Accepted { correlation_id: Some(cv(correlation_id)?) }) }) })
+        Ok(Self { variant: Some(match value { crate::adaptor::presenter::application_lifecycle_v1::StartupFailureQuitOutcomeDtoV1::Accepted { correlation_id } => wire::startup_failure_quit_outcome_dto_v1::Variant::Accepted(wire::StartupFailureQuitOutcomeDtoV1Accepted { correlation_id: Some(cv(correlation_id)?) }) }) })
     }
 }
 
-impl TryFrom<crate::adaptor::protocol::terminal::TerminalInputPerformanceSampleV1>
+impl TryFrom<crate::adaptor::presenter::terminal::TerminalInputPerformanceSampleV1>
     for wire::TerminalInputPerformanceSampleV1
 {
     type Error = String;
     fn try_from(
-        value: crate::adaptor::protocol::terminal::TerminalInputPerformanceSampleV1,
+        value: crate::adaptor::presenter::terminal::TerminalInputPerformanceSampleV1,
     ) -> Result<Self, String> {
         Ok(Self {
             sequence: Some(cv(value.sequence)?),
@@ -3511,12 +3501,12 @@ impl TryFrom<crate::adaptor::protocol::terminal::TerminalInputPerformanceSampleV
     }
 }
 
-impl TryFrom<crate::adaptor::protocol::terminal::TerminalLaunchPerformanceSampleV1>
+impl TryFrom<crate::adaptor::presenter::terminal::TerminalLaunchPerformanceSampleV1>
     for wire::TerminalLaunchPerformanceSampleV1
 {
     type Error = String;
     fn try_from(
-        value: crate::adaptor::protocol::terminal::TerminalLaunchPerformanceSampleV1,
+        value: crate::adaptor::presenter::terminal::TerminalLaunchPerformanceSampleV1,
     ) -> Result<Self, String> {
         Ok(Self {
             phase: Some(cv(value.phase)?),
@@ -3525,12 +3515,12 @@ impl TryFrom<crate::adaptor::protocol::terminal::TerminalLaunchPerformanceSample
     }
 }
 
-impl TryFrom<crate::adaptor::protocol::terminal::TerminalPerformanceSwitchesV1>
+impl TryFrom<crate::adaptor::presenter::terminal::TerminalPerformanceSwitchesV1>
     for wire::TerminalPerformanceSwitchesV1
 {
     type Error = String;
     fn try_from(
-        value: crate::adaptor::protocol::terminal::TerminalPerformanceSwitchesV1,
+        value: crate::adaptor::presenter::terminal::TerminalPerformanceSwitchesV1,
     ) -> Result<Self, String> {
         Ok(Self {
             disable_output_flow_control: Some(cv(value.disable_output_flow_control)?),
@@ -3544,18 +3534,18 @@ impl TryFrom<crate::adaptor::protocol::terminal::TerminalPerformanceSwitchesV1>
 }
 
 impl TryFrom<wire::TerminalSurfaceOwnerV1>
-    for crate::adaptor::protocol::terminal::TerminalSurfaceOwnerV1
+    for crate::adaptor::presenter::terminal::TerminalSurfaceOwnerV1
 {
     type Error = String;
     fn try_from(value: wire::TerminalSurfaceOwnerV1) -> Result<Self, String> {
         Ok(match req(value.variant, "variant")? {
             wire::terminal_surface_owner_v1::Variant::Workspace(value) => {
-                crate::adaptor::protocol::terminal::TerminalSurfaceOwnerV1::Workspace {
+                crate::adaptor::presenter::terminal::TerminalSurfaceOwnerV1::Workspace {
                     workspace_path: cv(req(value.workspace_path, "workspacePath")?)?,
                 }
             }
             wire::terminal_surface_owner_v1::Variant::Session(value) => {
-                crate::adaptor::protocol::terminal::TerminalSurfaceOwnerV1::Session {
+                crate::adaptor::presenter::terminal::TerminalSurfaceOwnerV1::Session {
                     workspace_path: cv(req(value.workspace_path, "workspacePath")?)?,
                     session_id: cv(req(value.session_id, "sessionId")?)?,
                 }
@@ -3564,9 +3554,11 @@ impl TryFrom<wire::TerminalSurfaceOwnerV1>
     }
 }
 
-impl TryFrom<crate::adaptor::protocol::workflow::TokenUsageView> for wire::TokenUsageView {
+impl TryFrom<crate::adaptor::presenter::workflow_wire::TokenUsageView> for wire::TokenUsageView {
     type Error = String;
-    fn try_from(value: crate::adaptor::protocol::workflow::TokenUsageView) -> Result<Self, String> {
+    fn try_from(
+        value: crate::adaptor::presenter::workflow_wire::TokenUsageView,
+    ) -> Result<Self, String> {
         Ok(Self {
             input_tokens: Some(cv(value.input_tokens)?),
             output_tokens: Some(cv(value.output_tokens)?),
@@ -3599,7 +3591,7 @@ impl TryFrom<crate::usecase::code_dto::ViewportDto> for wire::ViewportDto {
     }
 }
 
-impl TryFrom<wire::ViewportInput> for crate::adaptor::protocol::code::ViewportInput {
+impl TryFrom<wire::ViewportInput> for crate::adaptor::presenter::code::ViewportInput {
     type Error = String;
     fn try_from(value: wire::ViewportInput) -> Result<Self, String> {
         Ok(Self {
@@ -3635,12 +3627,12 @@ impl TryFrom<crate::usecase::workflow::dto::WorkflowDto> for wire::WorkflowDto {
     }
 }
 
-impl TryFrom<crate::adaptor::protocol::workflow::WorkflowExecutionView>
+impl TryFrom<crate::adaptor::presenter::workflow_wire::WorkflowExecutionView>
     for wire::WorkflowExecutionView
 {
     type Error = String;
     fn try_from(
-        value: crate::adaptor::protocol::workflow::WorkflowExecutionView,
+        value: crate::adaptor::presenter::workflow_wire::WorkflowExecutionView,
     ) -> Result<Self, String> {
         Ok(Self {
             id: Some(cv(value.id)?),
@@ -3662,16 +3654,16 @@ impl TryFrom<crate::adaptor::protocol::workflow::WorkflowExecutionView>
     }
 }
 
-impl TryFrom<crate::adaptor::protocol::workflow::WorkflowGetOutputResponse>
+impl TryFrom<crate::adaptor::presenter::workflow_wire::WorkflowGetOutputResponse>
     for wire::WorkflowGetOutputResponse
 {
     type Error = String;
     fn try_from(
-        value: crate::adaptor::protocol::workflow::WorkflowGetOutputResponse,
+        value: crate::adaptor::presenter::workflow_wire::WorkflowGetOutputResponse,
     ) -> Result<Self, String> {
         Ok(Self {
             variant: Some(match value {
-                crate::adaptor::protocol::workflow::WorkflowGetOutputResponse::Submitted {
+                crate::adaptor::presenter::workflow_wire::WorkflowGetOutputResponse::Submitted {
                     contract,
                     structured_output,
                     submitted_at,
@@ -3686,7 +3678,7 @@ impl TryFrom<crate::adaptor::protocol::workflow::WorkflowGetOutputResponse>
                         timestamp: Some(cv(timestamp)?),
                     },
                 ),
-                crate::adaptor::protocol::workflow::WorkflowGetOutputResponse::NotSubmitted => {
+                crate::adaptor::presenter::workflow_wire::WorkflowGetOutputResponse::NotSubmitted => {
                     wire::workflow_get_output_response::Variant::NotSubmitted(wire::Unit {})
                 }
             }),
@@ -3783,7 +3775,7 @@ impl TryFrom<&str> for wire::WorkflowSourceFormat {
 }
 
 impl TryFrom<wire::WorkflowSubmitArtifactInput>
-    for crate::adaptor::protocol::workflow::WorkflowSubmitArtifactInput
+    for crate::adaptor::controller::api::protocol::WorkflowSubmitArtifactInput
 {
     type Error = String;
     fn try_from(value: wire::WorkflowSubmitArtifactInput) -> Result<Self, String> {
@@ -3807,19 +3799,19 @@ impl TryFrom<crate::usecase::workflow::dto::WorkflowSummaryDto> for wire::Workfl
     }
 }
 
-impl TryFrom<crate::adaptor::protocol::workflow::WorkflowValidateOutputResponse>
+impl TryFrom<crate::adaptor::presenter::workflow_wire::WorkflowValidateOutputResponse>
     for wire::WorkflowValidateOutputResponse
 {
     type Error = String;
     fn try_from(
-        value: crate::adaptor::protocol::workflow::WorkflowValidateOutputResponse,
+        value: crate::adaptor::presenter::workflow_wire::WorkflowValidateOutputResponse,
     ) -> Result<Self, String> {
         Ok(Self {
             variant: Some(match value {
-                crate::adaptor::protocol::workflow::WorkflowValidateOutputResponse::Valid => {
+                crate::adaptor::presenter::workflow_wire::WorkflowValidateOutputResponse::Valid => {
                     wire::workflow_validate_output_response::Variant::Valid(wire::Unit {})
                 }
-                crate::adaptor::protocol::workflow::WorkflowValidateOutputResponse::Invalid {
+                crate::adaptor::presenter::workflow_wire::WorkflowValidateOutputResponse::Invalid {
                     reason,
                     details,
                 } => wire::workflow_validate_output_response::Variant::Invalid(
@@ -4510,12 +4502,12 @@ impl TryFrom<&str> for wire::WorktreeMode {
     }
 }
 
-impl TryFrom<crate::adaptor::protocol::application_lifecycle_v1::ApplicationQuitOutcomeDtoV1>
+impl TryFrom<crate::adaptor::presenter::application_lifecycle_v1::ApplicationQuitOutcomeDtoV1>
     for wire::ApplicationQuitOutcomeDtoV1
 {
     type Error = String;
     fn try_from(
-        _: crate::adaptor::protocol::application_lifecycle_v1::ApplicationQuitOutcomeDtoV1,
+        _: crate::adaptor::presenter::application_lifecycle_v1::ApplicationQuitOutcomeDtoV1,
     ) -> Result<Self, Self::Error> {
         Ok(Self {
             variant: Some(wire::application_quit_outcome_dto_v1::Variant::Accepted(

@@ -4,26 +4,23 @@ use super::*;
 
 #[derive(Default)]
 struct RecordingEventSink {
-    events: Mutex<Vec<TerminalSurfaceEvent>>,
-    removed: Mutex<Vec<crate::domain::terminal_surface::entities::TerminalSurfaceSummary>>,
+    events: Mutex<Vec<TerminalSurfaceOutputEvent>>,
+    removed: Mutex<Vec<TerminalSurfaceOutputSummary>>,
 }
 
 impl TerminalSurfaceEventSink for RecordingEventSink {
-    fn remove(
-        &self,
-        surface: &crate::domain::terminal_surface::entities::TerminalSurfaceSummary,
-    ) -> bool {
+    fn remove(&self, surface: &TerminalSurfaceOutputSummary) -> bool {
         self.removed.lock().unwrap().push(surface.clone());
         true
     }
 
-    fn publish(&self, event: TerminalSurfaceEvent) {
+    fn publish(&self, event: TerminalSurfaceOutputEvent) {
         self.events.lock().unwrap().push(event);
     }
 }
 
-fn output(sequence: u64) -> TerminalSurfaceEvent {
-    TerminalSurfaceEvent::Output {
+fn output(sequence: u64) -> TerminalSurfaceOutputEvent {
+    TerminalSurfaceOutputEvent::Output {
         session_key: "surface".to_string(),
         data: format!("chunk-{sequence}").into(),
         sequence,
@@ -50,9 +47,9 @@ fn test_ターミナル画面fault中継_次イベントの欠落重複逆転を
         .unwrap()
         .iter()
         .map(|event| match event {
-            TerminalSurfaceEvent::Output { sequence, .. }
-            | TerminalSurfaceEvent::Resize { sequence, .. }
-            | TerminalSurfaceEvent::Exit { sequence, .. } => *sequence,
+            TerminalSurfaceOutputEvent::Output { sequence, .. }
+            | TerminalSurfaceOutputEvent::Resize { sequence, .. }
+            | TerminalSurfaceOutputEvent::Exit { sequence, .. } => *sequence,
         })
         .collect::<Vec<_>>();
     assert_eq!(sequences, vec![2, 2, 4, 3]);
@@ -66,7 +63,8 @@ fn test_ターミナル画面fault中継_削除はfault指定によらず中継�
     let recorded = Arc::new(RecordingEventSink::default());
     let (sink, faults) = fault_injecting_event_sink(recorded.clone());
     let owner = TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/repo")).unwrap();
-    let summary = TerminalSurface::new(1, owner, None).summary();
+    let summary =
+        TerminalSurfaceOutputSummary::from(&TerminalSurface::new(1, owner, None).summary());
 
     for fault in [
         TerminalSurfaceEventFault::DropNext,

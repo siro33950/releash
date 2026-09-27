@@ -11,10 +11,13 @@ use crate::domain::terminal_surface::entities::{
     TerminalSurfaceSummary,
 };
 use crate::domain::terminal_surface::gateway::{
-    TerminalRuntimeSpawnRequest, TerminalSurfaceEvent, TerminalSurfaceEventSink,
-    TerminalSurfaceGateway, TerminalSurfaceGatewayError, TerminalSurfaceInputUnavailableCause,
-    TerminalSurfaceRepository,
+    TerminalRuntimeSpawnRequest, TerminalSurfaceGateway, TerminalSurfaceGatewayError,
+    TerminalSurfaceInputUnavailableCause, TerminalSurfaceRepository,
 };
+use crate::usecase::terminal_surface::output::{
+    TerminalSurfaceEventSink, TerminalSurfaceOutputEvent, TerminalSurfaceOutputSummary,
+};
+
 use crate::domain::terminal_surface::{
     TerminalSurfaceCheckpoint as DomainTerminalCheckpoint, TERMINAL_SURFACE_SCROLLBACK_ROWS,
 };
@@ -301,7 +304,7 @@ impl TerminalSurfaceEventOrder {
     fn advance_and_publish<T>(
         &self,
         event_sink: Option<&dyn TerminalSurfaceEventSink>,
-        advance: impl FnOnce() -> Option<(T, TerminalSurfaceEvent)>,
+        advance: impl FnOnce() -> Option<(T, TerminalSurfaceOutputEvent)>,
     ) -> Option<T> {
         let _serialization = self.serialization.lock();
         let (result, event) = advance()?;
@@ -379,7 +382,7 @@ fn publish_terminal_output(
             }
             Some((
                 sequence,
-                TerminalSurfaceEvent::Output {
+                TerminalSurfaceOutputEvent::Output {
                     session_key: context.session_key.clone(),
                     data,
                     sequence,
@@ -425,7 +428,7 @@ fn publish_terminal_exit(context: &TerminalOutputReaderContext, exit_code: Optio
             }
             Some((
                 sequence,
-                TerminalSurfaceEvent::Exit {
+                TerminalSurfaceOutputEvent::Exit {
                     session_key: context.session_key.clone(),
                     runtime_generation: context.runtime_generation,
                     exit_code,
@@ -889,7 +892,7 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
             let mut registry = self.registry.lock();
             registry.insert(surface);
             if let Some(sink) = &self.event_sink {
-                sink.initialize(&summary);
+                sink.initialize(&TerminalSurfaceOutputSummary::from(&summary));
             }
             registry.len()
         };
@@ -987,9 +990,9 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
             let mut registry = self.registry.lock();
             let removed = registry.remove(runtime_generation);
             let subscribed = removed.as_ref().is_some_and(|surface| {
-                self.event_sink
-                    .as_ref()
-                    .is_some_and(|sink| sink.remove(&surface.summary()))
+                self.event_sink.as_ref().is_some_and(|sink| {
+                    sink.remove(&TerminalSurfaceOutputSummary::from(&surface.summary()))
+                })
             });
             (removed, registry.len(), subscribed)
         };
@@ -1155,7 +1158,7 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
             checkpoint_scheduler.mark_dirty();
         }
         if let Some(event_sink) = self.event_sink.as_deref() {
-            event_sink.publish(TerminalSurfaceEvent::Resize {
+            event_sink.publish(TerminalSurfaceOutputEvent::Resize {
                 session_key,
                 cols,
                 rows,

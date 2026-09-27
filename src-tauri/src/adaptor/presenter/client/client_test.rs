@@ -26,12 +26,11 @@ fn test_型付き応答_protoが成功と失敗を排他的に保持する() {
             Err(error) => {
                 let message: CommandError =
                     to_message("releash.client.v1.CommandError", error).unwrap();
-                let error = crate::adaptor::controller::api::protocol::connect::command_error(
-                    super::CommandFailure {
+                let error =
+                    crate::adaptor::presenter::connect::command_error(super::CommandFailure {
                         kind: connectrpc::ErrorCode::Internal,
                         detail: message,
-                    },
-                );
+                    });
                 use base64::Engine;
                 let bytes = base64::engine::general_purpose::STANDARD_NO_PAD
                     .decode(error.details[0].value.as_ref().unwrap())
@@ -232,18 +231,10 @@ fn test_workflow状態_protoは削除した番号と名前を予約し残る三�
     for value in ["waiting_approval", "interrupted"] {
         assert!(ExecutionStatusView::try_from(value).is_err());
         assert!(WorkspaceHistoryStatus::try_from(value).is_err());
-        assert!(
-            serde_json::from_value::<crate::adaptor::protocol::workflow::ExecutionStatusView>(
-                json!(value)
-            )
-            .is_err()
-        );
-        assert!(
-            serde_json::from_value::<crate::usecase::workflow::dto::ExecutionStatusDto>(json!(
-                value
-            ))
-            .is_err()
-        );
+        assert!(serde_json::from_value::<
+            crate::adaptor::presenter::workflow_wire::ExecutionStatusView,
+        >(json!(value))
+        .is_err());
     }
     assert!(NodeExecutionStatusView::try_from("waiting_approval").is_ok());
 }
@@ -259,7 +250,7 @@ fn test_workflow応答_connectの詳細と一覧は三状態の値を保ち削�
             "totalTokenUsage": {"inputTokens": 13, "outputTokens": 8},
             "nodeExecutions": [], "artifacts": [], "fanouts": [], "approvalTarget": null
         });
-        let view: crate::adaptor::protocol::workflow::WorkflowExecutionView =
+        let view: crate::adaptor::presenter::workflow_wire::WorkflowExecutionView =
             serde_json::from_value(value.clone()).unwrap();
         let wire = WorkflowExecutionView::try_from(view).unwrap();
         let decoded = WorkflowExecutionView::decode(wire.encode_to_vec().as_slice()).unwrap();

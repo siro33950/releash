@@ -7,7 +7,7 @@ use axum::response::{IntoResponse, Response};
 use subtle::ConstantTimeEq;
 
 use super::error::ApiError;
-use crate::adaptor::protocol::terminal::TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX;
+use crate::adaptor::presenter::terminal::TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX;
 
 pub(super) async fn require_bearer(
     State(accepted): State<Arc<str>>,

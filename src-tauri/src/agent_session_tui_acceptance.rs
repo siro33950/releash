@@ -226,7 +226,7 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
             cli_binary: "releash-dev".to_string(),
             terminal: terminal.application(),
             change_notifier: Arc::new(
-                crate::adaptor::gateway::push::ClientAgentSessionChangeNotifier::new(
+                crate::adaptor::presenter::push::ClientAgentSessionChangeNotifier::new(
                     subscriptions.publisher(),
                 ),
             ),
@@ -372,7 +372,8 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
                     ),
                     crate::desktop_test_support::build_watcher_usecase(app.handle()),
                 )
-                .with_state_subscriptions(subscriptions),
+                .with_state_subscriptions(subscriptions)
+                .with_state_presenter(terminal.presenter()),
             )),
             client_binding.terminal_bearer_token(),
         );
@@ -641,12 +642,12 @@ struct AcceptanceSessionReads {
 impl crate::usecase::state_subscription::StateSubscriptionRead for AcceptanceSessionReads {
     async fn read(
         &self,
-        target: &crate::domain::state_subscription::SubscriptionTarget,
+        target: &crate::usecase::state_subscription::SubscriptionTarget,
     ) -> Result<
         crate::usecase::state_subscription::StateValue,
         crate::usecase::state_subscription::StateReadError,
     > {
-        use crate::domain::state_subscription::SubscriptionTarget as T;
+        use crate::usecase::state_subscription::SubscriptionTarget as T;
         use crate::usecase::state_subscription::{StateReadError, StateValue};
         match target {
             T::AgentSession(id) => self
@@ -702,7 +703,7 @@ impl crate::usecase::state_subscription::StateSubscriptionRead for AcceptanceSes
     }
     async fn refresh_workspaces(
         &self,
-        _: Option<crate::domain::state_subscription::StateChangeSource>,
+        _: Option<crate::usecase::state_subscription::StateChangeSource>,
     ) {
     }
     fn repositories(&self) -> Vec<String> {

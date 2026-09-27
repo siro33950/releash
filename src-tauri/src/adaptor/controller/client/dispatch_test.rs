@@ -1,6 +1,6 @@
 use super::*;
-use crate::domain::state_subscription::StateChangeSource;
-use crate::usecase::state_subscription::StateReadsFixture;
+use crate::test_support::state_subscription::StateReadsFixture;
+use crate::usecase::state_subscription::StateChangeSource;
 
 #[tokio::test]
 async fn test_更新通知_成功時だけ購読対象を更新する() {

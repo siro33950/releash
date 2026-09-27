@@ -9,15 +9,15 @@ use crate::domain::repository::file_watcher::FileWatchGateway;
 use crate::infrastructure::file_watcher::FileWatcherManager;
 
 pub(crate) struct FileWatcherGateway {
-    state_publisher: Option<crate::usecase::state_subscription::StateSubscriptionPublisher>,
+    state_publisher: Option<crate::usecase::state_subscription::StateSubscriptionOutputRef>,
     manager: Arc<FileWatcherManager>,
-    sink: std::sync::Arc<crate::infrastructure::push::PushSink>,
+    sink: std::sync::Arc<dyn crate::usecase::push::PushOutput>,
 }
 
 impl FileWatcherGateway {
     pub(crate) fn new(
         manager: Arc<FileWatcherManager>,
-        sink: std::sync::Arc<crate::infrastructure::push::PushSink>,
+        sink: std::sync::Arc<dyn crate::usecase::push::PushOutput>,
     ) -> Self {
         Self {
             manager,
@@ -27,7 +27,7 @@ impl FileWatcherGateway {
     }
     pub(crate) fn with_state_publisher(
         mut self,
-        publisher: crate::usecase::state_subscription::StateSubscriptionPublisher,
+        publisher: crate::usecase::state_subscription::StateSubscriptionOutputRef,
     ) -> Self {
         self.state_publisher = Some(publisher);
         self
@@ -40,7 +40,8 @@ impl FileWatchGateway for FileWatcherGateway {
         let sink = self.sink.clone();
         self.manager
             .start_watching(id, path.to_string(), move |event| {
-                BackendPush::FileChange(file_change_event_from_path(id, &event.path)).emit(&sink);
+                BackendPush::FileChange(file_change_event_from_path(id, &event.path))
+                    .emit(sink.as_ref());
             })
     }
     fn start_tree(&self, path: &str) -> Result<u64, String> {
@@ -62,12 +63,12 @@ impl FileWatchGateway for FileWatcherGateway {
             move |event| {
                 if event.path.starts_with(&path) || path.starts_with(&event.path) {
                     publisher.invalidate(
-                        crate::domain::state_subscription::StateChangeSource::ProviderHistory,
+                        crate::usecase::state_subscription::StateChangeSource::ProviderHistory,
                     );
                 }
             },
         )?;
-        changes.invalidate(crate::domain::state_subscription::StateChangeSource::ProviderHistory);
+        changes.invalidate(crate::usecase::state_subscription::StateChangeSource::ProviderHistory);
         Ok(id)
     }
 

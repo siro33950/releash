@@ -102,7 +102,7 @@ pub struct WorkQueueUsecase {
     query: Arc<super::failure_query_service::FailureQueryService>,
     changed: Notify,
     publisher:
-        std::sync::Mutex<Option<crate::usecase::state_subscription::StateSubscriptionPublisher>>,
+        std::sync::Mutex<Option<crate::usecase::state_subscription::StateSubscriptionOutputRef>>,
 }
 
 #[cfg(test)]
@@ -426,7 +426,7 @@ impl WorkQueueUsecase {
 
     pub(crate) fn set_publisher(
         &self,
-        publisher: crate::usecase::state_subscription::StateSubscriptionPublisher,
+        publisher: crate::usecase::state_subscription::StateSubscriptionOutputRef,
     ) {
         *self.publisher.lock().expect("failure publisher") = Some(publisher);
     }
@@ -461,11 +461,11 @@ impl WorkQueueUsecase {
         if let Some(publisher) = self.publisher.lock().expect("failure publisher").as_ref() {
             if attention_changed && key.operation.starts_with("workflow_") {
                 publisher.invalidate(
-                    crate::domain::state_subscription::StateChangeSource::WorkspaceList,
+                    crate::usecase::state_subscription::StateChangeSource::WorkspaceList,
                 );
             }
             publisher.invalidate(
-                crate::domain::state_subscription::StateChangeSource::Failures(key.target.clone()),
+                crate::usecase::state_subscription::StateChangeSource::Failures(key.target.clone()),
             );
         }
     }

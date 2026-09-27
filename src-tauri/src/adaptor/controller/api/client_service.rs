@@ -22,7 +22,7 @@ async fn subscribe_push(
 > {
     let request: wire::SubscribePushRequest = to_wire(&request.to_owned_message())?;
     let id = request.subscription_id;
-    super::client_stream::validate_identifier(&id)?;
+    crate::adaptor::presenter::connect::validate_identifier(&id)?;
     let id = if id.is_empty() {
         uuid::Uuid::new_v4().to_string()
     } else {
@@ -33,19 +33,13 @@ async fn subscribe_push(
         (self.push.subscribe(), subscription, true),
         |(mut push, permit, initial)| async move {
             let event = if initial {
-                prost::Message::encode_to_vec(&wire::Push {
-                    event: Some(wire::push::Event::Resync(wire::Unit {})),
-                })
-                .into()
+                crate::adaptor::presenter::push::resync()
             } else {
                 match push.recv().await {
                     Ok(bytes) => bytes,
                     Err(ClientPushError::Lagged(_)) => {
                         push.resubscribe();
-                        prost::Message::encode_to_vec(&wire::Push {
-                            event: Some(wire::push::Event::Resync(wire::Unit {})),
-                        })
-                        .into()
+                        crate::adaptor::presenter::push::resync()
                     }
                     Err(ClientPushError::Closed) => return None,
                 }
@@ -114,10 +108,10 @@ async fn open_state_stream(
     use futures_util::StreamExt;
     let request: wire::OpenStateStreamRequest = to_wire(&request.to_owned_message())?;
     let stream = self
-        .state_subscriptions()?
-        .open(request.client_id)
+        .state_presenter()?
+        .stream(self.state_subscriptions()?.clone(), request.client_id)
         .map_err(crate::adaptor::presenter::connect::classified_error)?;
-    connectrpc::Response::stream_ok(Box::pin(stream.map(super::state_subscription::event)))
+    connectrpc::Response::stream_ok(Box::pin(stream.map(crate::adaptor::presenter::state_subscription_wire::event)))
 }
 
 async fn start_state_subscription<'a>(
@@ -127,26 +121,21 @@ async fn start_state_subscription<'a>(
 ) -> connectrpc::ServiceResult<impl connectrpc::Encodable<rpc::Unit> + Send + use<'a>> {
     let _permit = self.request_permit()?;
     let request: wire::StartStateSubscriptionRequest = to_wire(&request.to_owned_message())?;
-    let target = crate::domain::state_subscription::SubscriptionTarget::from_parts(
+    let target = crate::usecase::state_subscription::SubscriptionTarget::from_parts(
         &request.target,
         &request.args.iter().map(String::as_str).collect::<Vec<_>>(),
     )
     .map_err(crate::adaptor::presenter::connect::classified_error)?
     .to_string();
-    let version = request
-        .version
-        .map(|v| crate::domain::state_subscription::Version {
-            epoch: v.epoch,
-            sequence: v.sequence,
-        });
+    let version = request.version.map(|v| (v.epoch, v.sequence));
     let subscriptions = self.state_subscriptions()?;
     if let Some(input_id) = request.terminal_input_id {
         subscriptions
-            .start_terminal(&request.client_id, &target, version.as_ref(), &input_id)
+            .start_terminal(&request.client_id, &target, version.as_ref().map(|(epoch, sequence)| (epoch.as_str(), *sequence)), &input_id)
             .await
     } else {
         subscriptions
-            .start_read(&request.client_id, &target, version.as_ref())
+            .start_read(&request.client_id, &target, version.as_ref().map(|(epoch, sequence)| (epoch.as_str(), *sequence)))
             .await
     }
     .map_err(crate::adaptor::presenter::connect::classified_error)?;
@@ -160,7 +149,7 @@ async fn stop_state_subscription<'a>(
 ) -> connectrpc::ServiceResult<impl connectrpc::Encodable<rpc::Unit> + Send + use<'a>> {
     let _permit = self.request_permit()?;
     let request: wire::StopStateSubscriptionRequest = to_wire(&request.to_owned_message())?;
-    let target = crate::domain::state_subscription::SubscriptionTarget::from_parts(
+    let target = crate::usecase::state_subscription::SubscriptionTarget::from_parts(
         &request.target,
         &request.args.iter().map(String::as_str).collect::<Vec<_>>(),
     )
@@ -180,7 +169,7 @@ async fn report_terminal_processed<'a>(
 ) -> connectrpc::ServiceResult<impl connectrpc::Encodable<rpc::Unit> + Send + use<'a>> {
     let _permit = self.request_permit()?;
     let request: wire::ReportTerminalProcessedRequest = to_wire(&request.to_owned_message())?;
-    let target = crate::domain::state_subscription::SubscriptionTarget::from_parts(
+    let target = crate::usecase::state_subscription::SubscriptionTarget::from_parts(
         "terminal",
         &request.args.iter().map(String::as_str).collect::<Vec<_>>(),
     )

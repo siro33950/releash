@@ -121,7 +121,7 @@ impl WorkflowRuntimeUsecase {
         repository.archive(&id, archived_at, reason).await?;
         if let Some(publisher) = &self.state_publisher {
             publisher.invalidate(
-                crate::domain::state_subscription::StateChangeSource::Worktree(
+                crate::usecase::state_subscription::StateChangeSource::Worktree(
                     target.worktree_path,
                 ),
             );
@@ -172,7 +172,7 @@ impl WorkflowRuntimeUsecase {
             .await?;
         if let Some(publisher) = &self.state_publisher {
             publisher.invalidate(
-                crate::domain::state_subscription::StateChangeSource::Worktree(
+                crate::usecase::state_subscription::StateChangeSource::Worktree(
                     target.worktree_path,
                 ),
             );

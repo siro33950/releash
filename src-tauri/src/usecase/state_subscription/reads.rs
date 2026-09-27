@@ -1,8 +1,6 @@
 use super::StateValue;
-use crate::domain::{
-    failure::TechnicalFailure, state_subscription::SubscriptionTarget,
-    workspace_state::WorkspaceStateRepository,
-};
+use crate::domain::{failure::TechnicalFailure, workspace_state::WorkspaceStateRepository};
+use crate::usecase::state_subscription::SubscriptionTarget;
 use crate::usecase::{
     agent_session::{
         AgentSessionHistoryReadUsecase, AgentSessionHistoryRequest, AgentSessionProviderDto,
@@ -35,7 +33,7 @@ pub(crate) enum StateReadFailure {
     RepositoryState(Box<crate::usecase::repository_state::error::RepositoryStateError>),
     GitHost(Box<crate::domain::git_host::GitHostError>),
     Watcher(Box<crate::usecase::watcher::UsecaseError>),
-    Subscription(Box<crate::domain::state_subscription::SubscriptionError>),
+    Subscription(Box<crate::usecase::state_subscription::SubscriptionError>),
     Technical(Box<TechnicalFailure>),
 }
 impl From<crate::domain::workflow::WorkflowError> for StateReadFailure {
@@ -78,8 +76,8 @@ impl From<crate::usecase::watcher::UsecaseError> for StateReadFailure {
         Self::Watcher(Box::new(error))
     }
 }
-impl From<crate::domain::state_subscription::SubscriptionError> for StateReadFailure {
-    fn from(error: crate::domain::state_subscription::SubscriptionError) -> Self {
+impl From<crate::usecase::state_subscription::SubscriptionError> for StateReadFailure {
+    fn from(error: crate::usecase::state_subscription::SubscriptionError) -> Self {
         Self::Subscription(Box::new(error))
     }
 }
@@ -277,7 +275,7 @@ pub(crate) trait StateSubscriptionRead: Send + Sync {
     }
     async fn refresh_workspaces(
         &self,
-        source: Option<crate::domain::state_subscription::StateChangeSource>,
+        source: Option<crate::usecase::state_subscription::StateChangeSource>,
     );
     fn repositories(&self) -> Vec<String>;
 }
@@ -296,9 +294,9 @@ impl StateSubscriptionRead for WorkspaceStateReads {
     }
     async fn refresh_workspaces(
         &self,
-        source: Option<crate::domain::state_subscription::StateChangeSource>,
+        source: Option<crate::usecase::state_subscription::StateChangeSource>,
     ) {
-        use crate::domain::state_subscription::StateChangeSource;
+        use crate::usecase::state_subscription::StateChangeSource;
         match source {
             Some(StateChangeSource::WorkspaceList) => {}
             Some(StateChangeSource::Repository(paths)) => {
@@ -329,13 +327,13 @@ impl StateSubscriptionRead for WorkspaceStateReads {
     }
 }
 
-#[cfg(test)]
-#[path = "reads_test.rs"]
-pub(crate) mod reads_tests;
-
 impl std::fmt::Display for StateReadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.message)
     }
 }
 impl std::error::Error for StateReadError {}
+
+#[cfg(test)]
+#[path = "reads_test.rs"]
+mod reads_tests;

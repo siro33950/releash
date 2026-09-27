@@ -123,7 +123,7 @@ async fn test_push_server_streamは再同期通知の後にbackend変更を配�
         to_wire::<wire::Push>(&initial).unwrap().event,
         Some(wire::push::Event::Resync(_))
     ));
-    crate::adaptor::gateway::push::BackendPush::ReviewCommentsChanged("/next").emit(&sink);
+    crate::adaptor::gateway::push::BackendPush::ReviewCommentsChanged("/next").emit(sink.as_ref());
     let push = stream
         .message::<rpc::Push>()
         .await
@@ -1106,8 +1106,8 @@ async fn test_状態購読_connectで初期状態と変更と再開を配信す�
     )
     .unwrap();
     assert!(matches!(bookmark.event, Some(Event::Bookmark(_))));
-    crate::domain::repository::RepoPathsNotifier::notify_changed(
-        &crate::adaptor::gateway::repository::notify::RepoPathsNotifyGateway::new(
+    crate::usecase::repo_paths_usecase::RepoPathsNotifier::notify_changed(
+        &crate::adaptor::presenter::repo_paths::RepoPathsNotifyGateway::new(
             subscriptions.publisher(),
         ),
         vec!["/next".into()],
@@ -1325,7 +1325,8 @@ async fn test_購読stream_既定期限を過ぎても配信できる() {
     // When
     tokio::time::advance(std::time::Duration::from_secs(121)).await;
     assert!(futures_util::poll!(body.next()).is_pending());
-    crate::adaptor::gateway::push::BackendPush::ReviewCommentsChanged("/next".into()).emit(&sink);
+    crate::adaptor::gateway::push::BackendPush::ReviewCommentsChanged("/next".into())
+        .emit(sink.as_ref());
     // Then
     let frame = body.next().await.unwrap().unwrap();
     assert_eq!(frame[0], 0);
@@ -1834,11 +1835,11 @@ async fn test_監視rpc_登録後の期限切れでidを返せない監視を解
 
 #[tokio::test]
 async fn test_terminal購読_connectの後段配線と差分再開と流量停止中の応答を保証する() {
-    use crate::adaptor::gateway::terminal_surface::event_hub::TerminalSurfaceEventHub;
+    use crate::adaptor::presenter::terminal_event_hub::TerminalSurfaceEventHub;
     use crate::domain::terminal_surface::entities::TerminalSurface;
-    use crate::domain::terminal_surface::gateway::{
-        TerminalSurfaceEvent, TerminalSurfaceEventSink,
-    };
+    use crate::usecase::terminal_surface::output::TerminalSurfaceEventSink;
+    use crate::usecase::terminal_surface::output::TerminalSurfaceOutputEvent;
+
     use crate::domain::terminal_surface::TerminalSurfaceOwner;
     use crate::domain::workspace_tree::WorkspaceIdentity;
     use crate::usecase::state_subscription::StateSubscriptionUsecase;
@@ -1865,6 +1866,7 @@ async fn test_terminal購読_connectの後段配線と差分再開と流量停�
     let terminal = Arc::new(TerminalSurfaceApplication::new(
         std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
         gateway.clone(),
+        Arc::new(crate::adaptor::gateway::terminal_surface::event_source::TerminalSurfaceEventSourceGateway::new(hub.event_sender())),
         hub.clone(),
     ));
     let (app, _, _) =
@@ -1977,7 +1979,7 @@ async fn test_terminal購読_connectの後段配線と差分再開と流量停�
 
     // When: unprocessed UTF-16 output exceeds the high watermark.
     let data: Arc<str> = "🙂".repeat(50_001).into();
-    hub.publish(TerminalSurfaceEvent::Output {
+    hub.publish(TerminalSurfaceOutputEvent::Output {
         session_key: first.session_key.clone(),
         data: data.clone(),
         sequence: 1,
@@ -2011,7 +2013,7 @@ async fn test_terminal購読_connectの後段配線と差分再開と流量停�
         .is_err());
 
     // Then: another terminal, another RPC, and resize of the paused terminal progress.
-    hub.publish(TerminalSurfaceEvent::Output {
+    hub.publish(TerminalSurfaceOutputEvent::Output {
         session_key: second.session_key.clone(),
         data: "still running".into(),
         sequence: 1,

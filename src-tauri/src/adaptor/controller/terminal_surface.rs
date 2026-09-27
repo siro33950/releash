@@ -5,7 +5,7 @@ pub(crate) use crate::adaptor::presenter::terminal_error::{
 };
 
 use crate::adaptor::controller::state::AppState;
-use crate::adaptor::protocol::terminal::{
+use crate::adaptor::presenter::terminal::{
     GetOrSpawnTerminalV1, TerminalInputPerformanceSampleV1, TerminalLaunchPerformanceSampleV1,
     TerminalPerformanceSwitchesV1, TerminalSurfaceOwnerV1,
 };

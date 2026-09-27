@@ -71,7 +71,7 @@ mod tests {
     fn parse_approve_workflow_node_args(
         args: &serde_json::Value,
     ) -> Result<ApprovalCommand, String> {
-        use crate::adaptor::controller::api::protocol::client as wire;
+        use crate::adaptor::presenter::client as wire;
         let request = wire::CommandRequest::from_value(
             "approve_workflow_node",
             serde_json::json!({"args":args}),

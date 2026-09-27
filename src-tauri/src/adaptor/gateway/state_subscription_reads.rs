@@ -1,4 +1,4 @@
-use crate::domain::state_subscription::{StateChangeSource, SubscriptionTarget};
+use crate::usecase::state_subscription::{StateChangeSource, SubscriptionTarget};
 use crate::usecase::state_subscription::{
     StateReadError, StateSubscriptionRead, WorkspaceStateReads,
 };

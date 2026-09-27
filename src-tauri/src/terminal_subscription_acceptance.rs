@@ -1,10 +1,13 @@
 use crate::adaptor::controller::terminal_surface_runtime::{
     TerminalSurfaceEventFaultController, TerminalSurfaceRuntime,
 };
-use crate::adaptor::protocol::terminal::{TerminalSurfaceOwnerV1, TerminalSurfaceStreamItemV1};
-use crate::domain::state_subscription::{Event, SubscriptionTarget};
+use crate::adaptor::presenter::state_subscription::{
+    StateSubscriptionEvent, StateSubscriptionPresenter,
+};
+use crate::adaptor::presenter::terminal::{TerminalSurfaceOwnerV1, TerminalSurfaceStreamItemV1};
+use crate::infrastructure::state_subscription::Event;
 use crate::usecase::state_subscription::{
-    StateSubscriptionEvent, StateSubscriptionUsecase, StateValue,
+    StateSubscriptionUsecase, StateValue, SubscriptionTarget,
 };
 use futures_util::{Stream, StreamExt};
 use std::{path::PathBuf, pin::Pin, sync::Arc};
@@ -12,6 +15,7 @@ use std::{path::PathBuf, pin::Pin, sync::Arc};
 pub struct TerminalSubscriptionHarness {
     runtime: TerminalSurfaceRuntime,
     subscriptions: StateSubscriptionUsecase,
+    presenter: Arc<StateSubscriptionPresenter>,
 }
 
 impl std::ops::Deref for TerminalSubscriptionHarness {
@@ -39,20 +43,27 @@ impl TerminalSubscriptionHarness {
     }
 
     fn compose(runtime: TerminalSurfaceRuntime) -> Self {
-        let subscriptions = StateSubscriptionUsecase::new(
-            vec![],
+        let presenter = Arc::new(StateSubscriptionPresenter::new(vec![]));
+        let subscriptions = StateSubscriptionUsecase::new_with_output(
+            presenter.clone(),
             Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
         )
         .with_terminal(runtime.application());
         Self {
             runtime,
             subscriptions,
+            presenter,
         }
     }
 
     #[cfg(feature = "desktop")]
     pub(crate) fn subscriptions(&self) -> StateSubscriptionUsecase {
         self.subscriptions.clone()
+    }
+
+    #[cfg(feature = "desktop")]
+    pub(crate) fn presenter(&self) -> Arc<StateSubscriptionPresenter> {
+        self.presenter.clone()
     }
 
     pub async fn subscribe(
@@ -63,8 +74,8 @@ impl TerminalSubscriptionHarness {
         let target = SubscriptionTarget::Terminal(owner.try_into()?).to_string();
         let client = uuid::Uuid::new_v4().to_string();
         let stream = Box::pin(
-            self.subscriptions
-                .open(client.clone())
+            self.presenter
+                .stream(self.subscriptions.clone(), client.clone())
                 .map_err(|e| e.to_string())?,
         );
         self.subscriptions
@@ -108,8 +119,8 @@ impl TerminalSubscription {
             let item: TerminalSurfaceStreamItemV1 = item.clone().into();
             match &item {
                 TerminalSurfaceStreamItemV1::Snapshot { .. } => {
-                    let wire = crate::adaptor::protocol::client::TerminalEvent::from(item.clone());
-                    let Some(crate::adaptor::protocol::client::terminal_event::Item::Snapshot(
+                    let wire = crate::adaptor::presenter::client::TerminalEvent::from(item.clone());
+                    let Some(crate::adaptor::presenter::client::terminal_event::Item::Snapshot(
                         snapshot,
                     )) = wire.item
                     else {

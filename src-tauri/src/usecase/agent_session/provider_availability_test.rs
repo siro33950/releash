@@ -320,7 +320,7 @@ fn test_provider_availability_refresh中のreadへ部分更新snapshotを公開�
 fn test_provider設定_更新とresetとrefresh成功時だけ購読へ通知する() {
     // Given
     let config = Arc::new(FakeProviderExecutableConfigRepository::default());
-    let publisher = crate::usecase::state_subscription::StateSubscriptionPublisher::for_test();
+    let publisher = crate::test_support::state_subscription::test_output();
     let mut changes = publisher.subscribe_changes();
     let usecase = ProviderAvailabilityUsecase::initialize(
         config.clone(),
@@ -334,19 +334,19 @@ fn test_provider設定_更新とresetとrefresh成功時だけ購読へ通知す
         .unwrap();
     assert_eq!(
         changes.try_recv().unwrap(),
-        crate::domain::state_subscription::StateChangeSource::Providers
+        crate::usecase::state_subscription::StateChangeSource::Providers
     );
     usecase
         .reset_configured_executable(ProviderKind::Codex)
         .unwrap();
     assert_eq!(
         changes.try_recv().unwrap(),
-        crate::domain::state_subscription::StateChangeSource::Providers
+        crate::usecase::state_subscription::StateChangeSource::Providers
     );
     usecase.refresh().unwrap();
     assert_eq!(
         changes.try_recv().unwrap(),
-        crate::domain::state_subscription::StateChangeSource::Providers
+        crate::usecase::state_subscription::StateChangeSource::Providers
     );
     config.fail_save();
     assert!(usecase

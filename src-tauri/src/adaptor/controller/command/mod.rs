@@ -150,7 +150,7 @@ mod tests {
                 ])
                 .collect::<Vec<_>>()
         );
-        for command in crate::adaptor::controller::api::protocol::client::COMMAND_NAMES {
+        for command in crate::adaptor::presenter::client::COMMAND_NAMES {
             if !STARTUP_COMMANDS.contains(command) {
                 assert_eq!(router.domain_route_index(command), None, "{command}");
             }
@@ -246,7 +246,7 @@ mod tests {
     }
 
     pub(super) fn registered_command_names() -> Vec<&'static str> {
-        crate::adaptor::controller::api::protocol::client::COMMAND_NAMES
+        crate::adaptor::presenter::client::COMMAND_NAMES
             .iter()
             .copied()
             .chain(desktop_lifecycle::COMMAND_NAMES.iter().copied())

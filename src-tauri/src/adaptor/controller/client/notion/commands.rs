@@ -1,6 +1,6 @@
 use crate::adaptor::controller::state::AppState;
 use crate::adaptor::presenter::error::AppError;
-use crate::adaptor::protocol::notion::{
+use crate::adaptor::presenter::notion::{
     NotionLabelOptionView, NotionRepoConfigView, NotionTaskPageView, NotionTaskQueryInput,
     NotionValidationResultView, PropertyMappingView,
 };

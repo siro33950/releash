@@ -1,10 +1,8 @@
 use super::*;
+use crate::adaptor::presenter::state_subscription::StateSubscriptionEvent;
 use crate::usecase::state_subscription::StateSubscriptionUsecase;
 use crate::usecase::state_subscription::StateValue;
-use crate::{
-    domain::state_subscription::Event,
-    usecase::state_subscription::{StateSubscriptionEvent, REPO_PATHS},
-};
+use crate::{infrastructure::state_subscription::Event, usecase::state_subscription::REPO_PATHS};
 use futures_util::StreamExt;
 use std::sync::Arc;
 #[tokio::test]

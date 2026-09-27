@@ -22,7 +22,7 @@ pub mod terminal_surface {
         initialize_background_work_for_acceptance, TerminalSurfaceEventFault,
         TerminalSurfaceEventFaultController, TerminalSurfaceRuntime,
     };
-    pub use crate::adaptor::protocol::terminal::{
+    pub use crate::adaptor::presenter::terminal::{
         GetOrSpawnTerminalV1, TerminalProcessLaunchV1, TerminalSurfaceOwnerV1,
         TerminalSurfaceStreamItemV1, TerminalSurfaceV1,
     };

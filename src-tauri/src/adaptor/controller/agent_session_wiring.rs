@@ -30,7 +30,7 @@ use crate::usecase::terminal_surface::application::TerminalSurfaceApplication;
 pub(crate) struct AgentSessionCompositionInput {
     pub(crate) queue: Arc<crate::usecase::work_queue::WorkQueueUsecase>,
     pub(crate) state_publisher:
-        Option<crate::usecase::state_subscription::StateSubscriptionPublisher>,
+        Option<crate::usecase::state_subscription::StateSubscriptionOutputRef>,
     pub(crate) store: Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>,
     pub(crate) data_dir: PathBuf,
     pub(crate) provider_executable_config: Arc<dyn ProviderExecutableConfigRepository>,

@@ -10,6 +10,9 @@ use crate::domain::terminal_surface::gateway::{
 };
 use crate::domain::terminal_surface::{TerminalProcessLaunch, TerminalSurfaceOwner};
 use crate::usecase::terminal_surface::error::UsecaseError;
+use crate::usecase::terminal_surface::output::{
+    TerminalSurfaceOutputControl, TerminalSurfaceOutputSummary,
+};
 use crate::usecase::terminal_surface::spawn_usecase::GetOrSpawnTerminalOutcome;
 
 #[derive(Clone)]
@@ -17,6 +20,7 @@ pub(crate) struct TerminalSurfaceApplication {
     performance: Arc<dyn crate::usecase::telemetry::PerformanceOutput>,
     gateway: Arc<dyn TerminalSurfaceGateway + Send + Sync>,
     event_source: Arc<dyn TerminalSurfaceEventSource>,
+    output: Arc<dyn TerminalSurfaceOutputControl>,
     runtime_lifecycle: Arc<RwLock<TerminalSurfaceRuntimeLifecycle>>,
     resize_tails: Arc<Mutex<HashMap<String, std::sync::mpsc::Receiver<()>>>>,
 }
@@ -70,6 +74,20 @@ pub(crate) enum TerminalSurfaceStreamItem {
     },
 }
 
+impl From<&TerminalSurfaceSummary> for TerminalSurfaceOutputSummary {
+    fn from(surface: &TerminalSurfaceSummary) -> Self {
+        Self {
+            session_key: surface.session_key.clone(),
+            target: crate::usecase::state_subscription::SubscriptionTarget::Terminal(
+                surface.owner.clone(),
+            )
+            .to_string(),
+            runtime_generation: surface.runtime_generation.value(),
+            latest_sequence: surface.latest_sequence,
+        }
+    }
+}
+
 impl TerminalSurfaceApplication {
     fn mutation_rejected(_: TerminalSurfaceMutationRejected) -> UsecaseError {
         UsecaseError::Gateway("Terminal Surface runtime is shutting down".to_string())
@@ -79,10 +97,12 @@ impl TerminalSurfaceApplication {
         performance: Arc<dyn crate::usecase::telemetry::PerformanceOutput>,
         gateway: Arc<dyn TerminalSurfaceGateway + Send + Sync>,
         event_source: Arc<dyn TerminalSurfaceEventSource>,
+        output: Arc<dyn TerminalSurfaceOutputControl>,
     ) -> Self {
         Self {
             performance,
             gateway,
+            output,
             event_source,
             resize_tails: Arc::new(Mutex::new(HashMap::new())),
             runtime_lifecycle: Arc::new(RwLock::new(TerminalSurfaceRuntimeLifecycle::new(
@@ -106,11 +126,11 @@ impl TerminalSurfaceApplication {
 
     pub(crate) fn connect_state(
         &self,
-        sink: Arc<dyn crate::domain::terminal_surface::gateway::TerminalSurfaceStateSink>,
+        sink: Arc<dyn crate::usecase::terminal_surface::output::TerminalSurfaceStateSink>,
     ) {
-        self.event_source.set_state_sink(sink.clone());
+        self.output.set_state_sink(sink.clone());
         for summary in self.gateway.list_summaries() {
-            sink.initialize(&summary);
+            sink.initialize(&(&summary).into());
         }
     }
 
@@ -143,7 +163,7 @@ impl TerminalSurfaceApplication {
         input_id: &str,
         units: usize,
     ) {
-        self.event_source
+        self.output
             .subscribe_output(&owner.stable_key(), client, units);
         self.gateway
             .activate_input_attachment(&owner.stable_key(), input_id);
@@ -155,15 +175,13 @@ impl TerminalSurfaceApplication {
         client: &str,
         input_id: &str,
     ) {
-        self.event_source
-            .unsubscribe_output(&owner.stable_key(), client);
+        self.output.unsubscribe_output(&owner.stable_key(), client);
         self.gateway
             .deactivate_input_attachment(&owner.stable_key(), input_id);
     }
 
     pub(crate) fn reset_output(&self, owner: &TerminalSurfaceOwner, client: &str) {
-        self.event_source
-            .subscribe_output(&owner.stable_key(), client, 0);
+        self.output.subscribe_output(&owner.stable_key(), client, 0);
     }
 
     pub(crate) fn processed_output(
@@ -172,7 +190,7 @@ impl TerminalSurfaceApplication {
         client: &str,
         units: usize,
     ) {
-        self.event_source
+        self.output
             .processed_output(&owner.stable_key(), client, units);
     }
 

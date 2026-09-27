@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use serde_saphyr::granit_parser::{Event, Parser, ScanError, Span as ParserSpan};
 
-use crate::adaptor::protocol::workflow::DiagnosticSpan;
+use crate::usecase::workflow::diagnostic_dto::DiagnosticSpan;
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct YamlSpanMap {

@@ -13,7 +13,7 @@ async fn test_変更監視_startの返却idが実際の変更通知へ渡る() {
     let id = gateway.start(directory.path().to_str().unwrap()).unwrap();
     let path = directory.path().join("changed.txt");
     std::fs::write(&path, "changed").unwrap();
-    use crate::adaptor::protocol::client as wire;
+    use crate::adaptor::presenter::client as wire;
     use prost::Message;
     let frame = tokio::time::timeout(std::time::Duration::from_secs(5), receiver.recv())
         .await
@@ -76,7 +76,7 @@ async fn test_履歴監視_未作成のディレクトリの生成を検知し�
     use super::*;
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().canonicalize().unwrap().join("history");
-    let publisher = crate::usecase::state_subscription::StateSubscriptionPublisher::for_test();
+    let publisher = crate::adaptor::presenter::state_subscription::test_output();
     let mut changes = publisher.subscribe_changes();
     let gateway = FileWatcherGateway::new(
         Arc::new(FileWatcherManager::default()),
@@ -86,7 +86,7 @@ async fn test_履歴監視_未作成のディレクトリの生成を検知し�
     let id = gateway.start_tree(path.to_str().unwrap()).unwrap();
     assert_eq!(
         changes.try_recv().unwrap(),
-        crate::domain::state_subscription::StateChangeSource::ProviderHistory
+        crate::usecase::state_subscription::StateChangeSource::ProviderHistory
     );
     std::fs::create_dir(&path).unwrap();
     std::fs::write(path.join("session.json"), "{}").unwrap();
@@ -96,7 +96,7 @@ async fn test_履歴監視_未作成のディレクトリの生成を検知し�
         .unwrap();
     assert_eq!(
         change,
-        crate::domain::state_subscription::StateChangeSource::ProviderHistory
+        crate::usecase::state_subscription::StateChangeSource::ProviderHistory
     );
     gateway.stop(id).unwrap();
 }

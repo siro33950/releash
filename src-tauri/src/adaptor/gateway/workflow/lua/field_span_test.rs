@@ -80,7 +80,7 @@ return r.workflow{{ name = 'example', description = 'large definition', main = r
 #[test]
 fn test_lua宣言位置_解析上限を超えるartifact宣言は呼び出し行で診断する() {
     // Given
-    use crate::adaptor::protocol::workflow::{DiagnosticStage, Severity};
+    use crate::usecase::workflow::diagnostic_dto::{DiagnosticStage, Severity};
     let tmp = tempfile::tempdir().unwrap();
     let source = format!(
         r#"local r = require('releash')

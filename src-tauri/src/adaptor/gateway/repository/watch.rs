@@ -73,11 +73,6 @@ pub struct FileChangeEvent {
     pub kind: String,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-pub struct GitStatusChangedEvent {
-    pub repo_path: String,
-}
-
 pub(crate) fn classify_git_dir_events(events: &[DebouncedEvent]) -> (bool, bool) {
     let has_branch_change = events.iter().any(|e| {
         let p = to_canonical_forward_slash(&e.path.to_string_lossy());

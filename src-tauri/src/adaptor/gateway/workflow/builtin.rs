@@ -5,8 +5,8 @@ use super::domain_mapping::workflow_definition_to_domain;
 use super::facet::{self, FacetError, FacetKind};
 use super::schema::{Summary, WorkflowDefinitionYaml};
 use super::storage;
-use crate::adaptor::protocol::workflow::DiagnosticItem;
 use crate::domain::workflow::validation::{self, ValidationError};
+use crate::usecase::workflow::diagnostic_dto::DiagnosticItem;
 
 const BUILTIN_01_AUTHOR_SPEC: &str = include_str!("../../../../../workflows/01_author-spec.yml");
 const BUILTIN_02_IMPLEMENT_EXISTING_SPEC: &str =

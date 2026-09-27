@@ -1,9 +1,14 @@
 use super::*;
-use crate::adaptor::gateway::terminal_surface::{
-    event_hub::TerminalSurfaceEventHub, runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor,
-};
+use crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor;
+use crate::adaptor::presenter::terminal_event_hub::TerminalSurfaceEventHub;
 use crate::domain::terminal_surface::entities::TerminalSurface;
-use crate::domain::terminal_surface::gateway::{TerminalSurfaceEventSink, TerminalSurfaceGateway};
+use crate::domain::terminal_surface::gateway::TerminalSurfaceGateway;
+use crate::test_support::state_subscription::{Delivery, Event, StateSubscriptionEvent, Version};
+use crate::usecase::state_subscription::SubscriptionTarget;
+use crate::usecase::terminal_surface::output::TerminalSurfaceEventSink;
+use crate::usecase::terminal_surface::output::TerminalSurfaceOutputEvent;
+use crate::usecase::terminal_surface::output::TerminalSurfaceStateSink;
+
 use crate::domain::terminal_surface::TerminalSurfaceOwner;
 use crate::domain::workspace_tree::WorkspaceIdentity;
 
@@ -27,6 +32,7 @@ fn fixture() -> (
         crate::usecase::terminal_surface::application::TerminalSurfaceApplication::new(
             std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
             gateway.clone(),
+            Arc::new(crate::adaptor::gateway::terminal_surface::event_source::TerminalSurfaceEventSourceGateway::new(hub.event_sender())),
             hub.clone(),
         ),
     );
@@ -73,7 +79,7 @@ async fn test_terminal購読_同じstreamでsnapshot差分と区切りを届け�
             .record_output(surface.runtime_generation, std::time::Instant::now())
             .unwrap();
         gateway.insert_surface(surface.clone());
-        hub.publish(TerminalSurfaceEvent::Output {
+        hub.publish(TerminalSurfaceOutputEvent::Output {
             session_key: surface.session_key.clone(),
             data: "🙂".into(),
             sequence,
@@ -109,13 +115,18 @@ async fn test_terminal再開_履歴内ならsnapshotを作らず再起動後は�
         .record_output(surface.runtime_generation, std::time::Instant::now())
         .unwrap();
     gateway.insert_surface(surface.clone());
-    hub.publish(TerminalSurfaceEvent::Output {
+    hub.publish(TerminalSurfaceOutputEvent::Output {
         session_key: surface.session_key.clone(),
         data: "next".into(),
         sequence: 1,
     });
     subscriptions
-        .start_terminal("client", &target, Some(&version), "input-2")
+        .start_terminal(
+            "client",
+            &target,
+            Some((&version.epoch, version.sequence)),
+            "input-2",
+        )
         .await
         .unwrap();
     assert_eq!(gateway.snapshot_materialization_count(), before);
@@ -127,9 +138,17 @@ async fn test_terminal再開_履歴内ならsnapshotを作らず再起動後は�
     let recreated = TerminalSurface::new(2, surface.owner.clone(), None);
     gateway.remove_surface(surface.runtime_generation.value());
     gateway.insert_surface(recreated.clone());
-    subscriptions.publisher.initialize(&recreated.summary());
     subscriptions
-        .start_terminal("client", &target, Some(&version), "input-3")
+        .test_presenter()
+        .unwrap()
+        .initialize(&(&recreated.summary()).into());
+    subscriptions
+        .start_terminal(
+            "client",
+            &target,
+            Some((&version.epoch, version.sequence)),
+            "input-3",
+        )
         .await
         .unwrap();
     assert!(
@@ -148,7 +167,10 @@ async fn test_terminal購読_件数上限がなく停止と切断で流量を解
                 .unwrap();
         let surface = TerminalSurface::new(index + 2, owner.clone(), None);
         gateway.insert_surface(surface.clone());
-        subscriptions.publisher.initialize(&surface.summary());
+        subscriptions
+            .test_presenter()
+            .unwrap()
+            .initialize(&(&surface.summary()).into());
         subscriptions
             .start_terminal(
                 "client",
@@ -159,9 +181,22 @@ async fn test_terminal購読_件数上限がなく停止と切断で流量を解
             .await
             .unwrap();
     }
-    assert_eq!(subscriptions.terminal_inputs.lock().len(), 20);
+    assert_eq!(
+        subscriptions
+            .test_presenter()
+            .unwrap()
+            .terminal_inputs
+            .lock()
+            .len(),
+        20
+    );
     drop(stream);
-    assert!(subscriptions.terminal_inputs.lock().is_empty());
+    assert!(subscriptions
+        .test_presenter()
+        .unwrap()
+        .terminal_inputs
+        .lock()
+        .is_empty());
     assert!(subscriptions
         .terminal_processed(
             "client",
@@ -193,6 +228,7 @@ async fn test_snapshot作成中_別terminalのsnapshotと出力とexecutorを止
         crate::usecase::terminal_surface::application::TerminalSurfaceApplication::new(
             std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
             gateway.clone(),
+            Arc::new(crate::adaptor::gateway::terminal_surface::event_source::TerminalSurfaceEventSourceGateway::new(hub.event_sender())),
             hub.clone(),
         ),
     );
@@ -245,7 +281,7 @@ async fn test_snapshot作成中_別terminalのsnapshotと出力とexecutorを止
     terminal
         .write_attached(&second.owner, "second-input", 0, None, "input")
         .unwrap();
-    hub.publish(TerminalSurfaceEvent::Output {
+    hub.publish(TerminalSurfaceOutputEvent::Output {
         session_key: second.session_key,
         data: "live".into(),
         sequence: 1,
@@ -286,20 +322,20 @@ async fn test_terminal差分_出力の重複を除き同じ出力番号で寸法
     assert!(subscriptions
         .terminal_processed("client", &target, 5000)
         .is_ok());
-    let output = TerminalSurfaceEvent::Output {
+    let output = TerminalSurfaceOutputEvent::Output {
         session_key: surface.session_key.clone(),
         data: "x".into(),
         sequence: 1,
     };
     hub.publish(output.clone());
     hub.publish(output);
-    hub.publish(TerminalSurfaceEvent::Resize {
+    hub.publish(TerminalSurfaceOutputEvent::Resize {
         session_key: surface.session_key.clone(),
         cols: 120,
         rows: 30,
         sequence: 1,
     });
-    hub.publish(TerminalSurfaceEvent::Exit {
+    hub.publish(TerminalSurfaceOutputEvent::Exit {
         session_key: surface.session_key.clone(),
         runtime_generation: 1,
         exit_code: Some(7),
@@ -371,13 +407,13 @@ async fn test_terminal購読_出力前の寸法変更と終了を版ゼロで届
     assert_eq!(version.sequence, 0);
     stream.next().await;
     // When
-    hub.publish(TerminalSurfaceEvent::Resize {
+    hub.publish(TerminalSurfaceOutputEvent::Resize {
         session_key: surface.session_key.clone(),
         cols: 120,
         rows: 30,
         sequence: 0,
     });
-    hub.publish(TerminalSurfaceEvent::Exit {
+    hub.publish(TerminalSurfaceOutputEvent::Exit {
         session_key: surface.session_key.clone(),
         runtime_generation: 1,
         exit_code: Some(7),
@@ -388,7 +424,12 @@ async fn test_terminal購読_出力前の寸法変更と終了を版ゼロで届
         if reconnect {
             subscriptions.stop("client", &target).unwrap();
             subscriptions
-                .start_terminal("client", &target, Some(&version), "input")
+                .start_terminal(
+                    "client",
+                    &target,
+                    Some((&version.epoch, version.sequence)),
+                    "input",
+                )
                 .await
                 .unwrap();
         }
@@ -449,12 +490,12 @@ async fn test_terminal購読_出力と寸法の逆転は古い寸法を捨てず
     surface.checkpoint.rows = 30;
     gateway.insert_surface(surface.clone());
     // When
-    hub.publish(TerminalSurfaceEvent::Output {
+    hub.publish(TerminalSurfaceOutputEvent::Output {
         session_key: surface.session_key.clone(),
         sequence: 1,
         data: "x".into(),
     });
-    hub.publish(TerminalSurfaceEvent::Resize {
+    hub.publish(TerminalSurfaceOutputEvent::Resize {
         session_key: surface.session_key.clone(),
         sequence: 0,
         cols: 120,
@@ -490,12 +531,12 @@ async fn test_terminal削除_経路と履歴を解放し購読と入力は明示
             .unwrap();
         stream.next().await;
         stream.next().await;
-        hub.publish(TerminalSurfaceEvent::Output {
+        hub.publish(TerminalSurfaceOutputEvent::Output {
             session_key: surface.session_key.clone(),
             data: "retained".into(),
             sequence: 1,
         });
-        hub.publish(TerminalSurfaceEvent::Exit {
+        hub.publish(TerminalSurfaceOutputEvent::Exit {
             session_key: surface.session_key.clone(),
             runtime_generation: generation,
             exit_code: Some(0),
@@ -503,9 +544,23 @@ async fn test_terminal削除_経路と履歴を解放し購読と入力は明示
         });
         gateway.remove_surface(generation).unwrap();
         // Then
-        assert!(subscriptions.publisher.terminal_routes.lock().is_empty());
-        assert_eq!(subscriptions.terminal_inputs.lock().len(), 1);
-        let mut state = subscriptions.publisher.state.lock();
+        assert!(subscriptions
+            .test_presenter()
+            .unwrap()
+            .terminal_routes
+            .lock()
+            .is_empty());
+        assert_eq!(
+            subscriptions
+                .test_presenter()
+                .as_ref()
+                .unwrap()
+                .terminal_inputs
+                .lock()
+                .len(),
+            1
+        );
+        let mut state = subscriptions.test_presenter().unwrap().state.lock();
         assert!(state.current_version(&target).is_none());
         state.bookmark("client");
         assert!(state.snapshot_requests("client").is_empty());
@@ -517,19 +572,35 @@ async fn test_terminal削除_経路と履歴を解放し購読と入力は明示
             matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Change(_, _, value))) if matches!(value.as_ref(), StateValue::Terminal(TerminalSurfaceStreamItem::Exit { exit_code: Some(0), .. })))
         );
         assert!(subscriptions
-            .publisher
+            .test_presenter()
+            .unwrap()
             .state
             .lock()
             .is_subscribed("client", &target));
-        assert_eq!(subscriptions.terminal_inputs.lock().len(), 1);
+        assert_eq!(
+            subscriptions
+                .test_presenter()
+                .as_ref()
+                .unwrap()
+                .terminal_inputs
+                .lock()
+                .len(),
+            1
+        );
         subscriptions.stop("client", &target).unwrap();
         assert!(subscriptions
-            .publisher
+            .test_presenter()
+            .unwrap()
             .state
             .lock()
             .active_targets()
             .is_empty());
-        assert!(subscriptions.terminal_inputs.lock().is_empty());
+        assert!(subscriptions
+            .test_presenter()
+            .unwrap()
+            .terminal_inputs
+            .lock()
+            .is_empty());
     }
 }
 
@@ -542,7 +613,8 @@ async fn test_terminal購読開始_古いsummary取得後の再作成でepochを
     tokio::pin!(stream);
     stream.next().await;
     let old_version = subscriptions
-        .publisher
+        .test_presenter()
+        .unwrap()
         .state
         .lock()
         .current_version(&target)
@@ -556,7 +628,12 @@ async fn test_terminal購読開始_古いsummary取得後の再作成でepochを
     }));
     // When
     subscriptions
-        .start_terminal("client", &target, Some(&old_version), "new-input")
+        .start_terminal(
+            "client",
+            &target,
+            Some((&old_version.epoch, old_version.sequence)),
+            "new-input",
+        )
         .await
         .unwrap();
     // Then
@@ -569,7 +646,8 @@ async fn test_terminal購読開始_古いsummary取得後の再作成でepochを
     assert_eq!(
         version,
         subscriptions
-            .publisher
+            .test_presenter()
+            .unwrap()
             .state
             .lock()
             .current_version(&target)
@@ -578,14 +656,26 @@ async fn test_terminal購読開始_古いsummary取得後の再作成でepochを
     assert!(
         matches!(value.as_ref(), StateValue::Terminal(TerminalSurfaceStreamItem::Snapshot(surface)) if surface.runtime_generation == recreated.runtime_generation)
     );
-    subscriptions.publisher.remove(&surface.summary());
+    subscriptions
+        .test_presenter()
+        .unwrap()
+        .remove(&(&surface.summary()).into());
     assert_eq!(
         subscriptions
-            .publisher
+            .test_presenter()
+            .unwrap()
             .state
             .lock()
             .current_version(&target),
         Some(version)
     );
-    assert_eq!(subscriptions.publisher.terminal_routes.lock().len(), 1);
+    assert_eq!(
+        subscriptions
+            .test_presenter()
+            .unwrap()
+            .terminal_routes
+            .lock()
+            .len(),
+        1
+    );
 }

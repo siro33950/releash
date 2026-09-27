@@ -2,12 +2,11 @@ use std::path::Path;
 
 use super::common::CliError;
 use crate::adaptor::controller::api::protocol::{
-    GetArtifactResponse, MutationResponse, SubmitOutputRequest,
+    ProviderLifecycleReceiveRequest, SubmitOutputRequest,
 };
 use crate::adaptor::gateway::local_api::{LocalApiClientError, LocalApiClientGateway};
-use crate::adaptor::protocol::provider_lifecycle::{
-    ProviderLifecycleReceiveRequest, ProviderLifecycleReceiveResponse,
-};
+use crate::adaptor::presenter::api_response::{GetArtifactResponse, MutationResponse};
+use crate::adaptor::presenter::provider_lifecycle_response::ProviderLifecycleReceiveResponse;
 use crate::usecase::workflow::WorkflowGetOutputResult;
 
 #[derive(Debug)]
@@ -49,7 +48,8 @@ impl LocalApiClient {
     pub(super) fn execution_status(
         &self,
         execution_id: &str,
-    ) -> Result<crate::adaptor::protocol::workflow::WorkflowExecutionView, ApiRequestError> {
+    ) -> Result<crate::adaptor::presenter::workflow_wire::WorkflowExecutionView, ApiRequestError>
+    {
         self.transport
             .get_json(&["v1", "workflow", "executions", execution_id], &[])
             .map_err(ApiRequestError::from)

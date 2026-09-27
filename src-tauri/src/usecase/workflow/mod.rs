@@ -1199,7 +1199,12 @@ mod tests {
 
         // Then
         assert_eq!(
-            serde_json::to_value(&report).unwrap()["items"]
+            serde_json::to_value(
+                crate::adaptor::presenter::workflow_api::DiagnosticReportResponse::from(
+                    report.clone()
+                )
+            )
+            .unwrap()["items"]
                 .as_array()
                 .unwrap()
                 .len(),
@@ -1224,7 +1229,12 @@ mod tests {
 
         // Then
         assert_eq!(
-            serde_json::to_value(&report).unwrap()["items"]
+            serde_json::to_value(
+                crate::adaptor::presenter::workflow_api::DiagnosticReportResponse::from(
+                    report.clone()
+                )
+            )
+            .unwrap()["items"]
                 .as_array()
                 .unwrap()
                 .len(),

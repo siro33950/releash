@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use crate::domain::terminal_surface::gateway::{TerminalSurfaceEvent, TerminalSurfaceEventSink};
+use crate::usecase::terminal_surface::output::{
+    TerminalSurfaceEventSink, TerminalSurfaceOutputEvent, TerminalSurfaceOutputSummary,
+};
 
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -19,7 +21,7 @@ pub struct TerminalSurfaceEventFaultController {
 #[derive(Default)]
 struct TerminalSurfaceEventFaultState {
     armed: Option<TerminalSurfaceEventFault>,
-    held: Option<TerminalSurfaceEvent>,
+    held: Option<TerminalSurfaceOutputEvent>,
 }
 
 impl TerminalSurfaceEventFaultController {
@@ -36,16 +38,10 @@ struct FaultInjectingTerminalSurfaceEventSink {
 }
 
 impl TerminalSurfaceEventSink for FaultInjectingTerminalSurfaceEventSink {
-    fn initialize(
-        &self,
-        surface: &crate::domain::terminal_surface::entities::TerminalSurfaceSummary,
-    ) {
+    fn initialize(&self, surface: &TerminalSurfaceOutputSummary) {
         self.target.initialize(surface);
     }
-    fn remove(
-        &self,
-        surface: &crate::domain::terminal_surface::entities::TerminalSurfaceSummary,
-    ) -> bool {
+    fn remove(&self, surface: &TerminalSurfaceOutputSummary) -> bool {
         self.target.remove(surface)
     }
     fn wait_output(&self, session_key: &str) {
@@ -55,7 +51,7 @@ impl TerminalSurfaceEventSink for FaultInjectingTerminalSurfaceEventSink {
         self.target.release_output(session_key);
     }
 
-    fn publish(&self, event: TerminalSurfaceEvent) {
+    fn publish(&self, event: TerminalSurfaceOutputEvent) {
         let events = {
             let mut state = self.state.lock();
             match state.armed {
@@ -104,5 +100,5 @@ pub(crate) fn fault_injecting_event_sink(
 }
 
 #[cfg(test)]
-#[path = "event_fault_relay_test.rs"]
-mod event_fault_relay_tests;
+#[path = "terminal_event_fault_relay_test.rs"]
+mod terminal_event_fault_relay_tests;

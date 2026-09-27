@@ -2,6 +2,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
+use crate::adaptor::controller::api::protocol::{
+    ProviderLifecycleProvider, ProviderLifecycleUnavailableReasonRequest,
+    ProviderLifecycleUnavailableRequest,
+};
 use crate::adaptor::gateway::local_api::LocalApiClientGateway;
 use crate::adaptor::gateway::local_event_store::provider_lifecycle_codec::PROVIDER_LIFECYCLE_EVENT_TYPE;
 use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
@@ -9,10 +13,7 @@ use crate::adaptor::gateway::provider_lifecycle::{
     LocalProviderLifecycleCredentialGateway, LocalProviderLifecycleEventRepository,
     ProviderLaunchContext, ProviderLaunchSpec,
 };
-use crate::adaptor::protocol::provider_lifecycle::{
-    ProviderLifecycleProvider, ProviderLifecycleReceiveResponse,
-    ProviderLifecycleUnavailableReasonRequest, ProviderLifecycleUnavailableRequest,
-};
+use crate::adaptor::presenter::provider_lifecycle_response::ProviderLifecycleReceiveResponse;
 use crate::domain::local_event::{
     LoadStreamRequest, LoadedDomainEvent, LocalDomainEvent, LocalEventTransactionRepository,
     StreamId,

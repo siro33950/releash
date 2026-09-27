@@ -4,7 +4,7 @@ use crate::domain::workspace_state::{
 
 pub(crate) fn save_workspace_state(
     repository: &dyn WorkspaceStateRepository,
-    publisher: Option<&crate::usecase::state_subscription::StateSubscriptionPublisher>,
+    publisher: Option<&crate::usecase::state_subscription::StateSubscriptionOutputRef>,
     worktree_name: &str,
     state: WorkspaceState,
 ) -> Result<(), WorkspaceStateError> {
@@ -12,7 +12,7 @@ pub(crate) fn save_workspace_state(
     repository.save(worktree_name)?;
     if let Some(publisher) = publisher {
         publisher.invalidate(
-            crate::domain::state_subscription::StateChangeSource::WorkspaceState(
+            crate::usecase::state_subscription::StateChangeSource::WorkspaceState(
                 worktree_name.into(),
             ),
         );

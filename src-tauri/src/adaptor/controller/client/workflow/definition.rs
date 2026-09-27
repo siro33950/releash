@@ -1,8 +1,8 @@
-use crate::adaptor::controller::api::protocol::client::{
+use crate::adaptor::controller::state::AppState;
+use crate::adaptor::presenter::client::{
     save_workflow_source_result_dto::Variant, SaveWorkflowDiagnostics, SaveWorkflowSourceResultDto,
     SaveWorkflowSuccess,
 };
-use crate::adaptor::controller::state::AppState;
 use crate::adaptor::presenter::error::AppError;
 use crate::usecase::workflow::dto::{
     workflow_to_dto, workflow_to_dto_with_source_format, WorkflowDto, WorkflowSummaryDto,

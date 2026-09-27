@@ -1,9 +1,10 @@
+use crate::adaptor::controller::api::protocol::WorkflowSubmitArtifactInput;
 use crate::adaptor::presenter::error::AppError;
 use std::sync::Arc;
 
 use crate::adaptor::controller::state::AppState;
-use crate::adaptor::protocol::workflow::{
-    WorkflowGetOutputResponse, WorkflowSubmitArtifactInput, WorkflowValidateOutputResponse,
+use crate::adaptor::presenter::workflow_wire::{
+    WorkflowGetOutputResponse, WorkflowValidateOutputResponse,
 };
 use crate::usecase::workflow::command::{SubmitOutputArtifact, SubmitOutputCommand};
 use crate::usecase::workflow::{

@@ -1,9 +1,9 @@
 use super::*;
-use crate::adaptor::controller::api::protocol::client as wire;
 use crate::adaptor::controller::client::invalid_request;
 use crate::adaptor::controller::client::value;
 use crate::adaptor::controller::client::ClientCommandDispatch;
 use crate::adaptor::controller::client::{convert, required};
+use crate::adaptor::presenter::client as wire;
 
 pub(crate) fn register_shared(
     router: &mut ClientCommandDispatch,

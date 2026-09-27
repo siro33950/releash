@@ -210,7 +210,7 @@ impl std::fmt::Display for SubscriptionTarget {
 }
 
 #[cfg(test)]
-#[path = "subscription_target_test.rs"]
+#[path = "target_test.rs"]
 mod subscription_target_tests;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

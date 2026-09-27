@@ -1,5 +1,24 @@
 mod conversions;
 mod errors;
+pub(crate) fn value<T, U: TryFrom<T>>(value: T) -> Result<U, CommandFailure>
+where
+    U::Error: std::fmt::Display,
+{
+    U::try_from(value).map_err(|error| {
+        crate::adaptor::presenter::error::AppError::new(error.to_string())
+            .with_code("INVALID_RESPONSE")
+            .into()
+    })
+}
+
+pub(crate) fn outcome<T, U: TryFrom<T>, E: Into<CommandFailure>>(
+    result: Result<T, E>,
+) -> Result<U, CommandFailure>
+where
+    U::Error: std::fmt::Display,
+{
+    result.map_err(Into::into).and_then(value)
+}
 pub(crate) use errors::CommandFailure;
 #[cfg(any(test, all(debug_assertions, feature = "desktop")))]
 mod json;
@@ -42,15 +61,17 @@ pub fn from_value(value: impl ClientValue) -> Result<Json, String> {
     value.into_json()
 }
 
-impl From<crate::adaptor::protocol::terminal::TerminalSurfaceStreamItemV1> for TerminalEvent {
-    fn from(value: crate::adaptor::protocol::terminal::TerminalSurfaceStreamItemV1) -> Self {
-        use crate::adaptor::protocol::terminal::TerminalSurfaceStreamItemV1 as Item;
+impl From<crate::adaptor::presenter::terminal::TerminalSurfaceStreamItemV1> for TerminalEvent {
+    fn from(value: crate::adaptor::presenter::terminal::TerminalSurfaceStreamItemV1) -> Self {
+        use crate::adaptor::presenter::terminal::TerminalSurfaceStreamItemV1 as Item;
         use terminal_event::Item as Wire;
         Self {
             item: Some(match value {
                 Item::Snapshot { surface } => Wire::Snapshot(TerminalSnapshot {
                     session_key: surface.session_key,
-                    processed_report_units: crate::domain::terminal_surface::value_objects::output_flow_control::OUTPUT_REPORT_UNITS as u32,
+                    processed_report_units:
+                        crate::infrastructure::terminal::output_flow_control::OUTPUT_REPORT_UNITS
+                            as u32,
                     replay: surface.terminal_surface.replay,
                     sequence: surface.terminal_surface.sequence,
                     cols: surface.terminal_surface.cols.into(),

@@ -1,4 +1,19 @@
 use super::*;
+use crate::usecase::state_subscription::{StateChangeSource, SubscriptionTarget, WatchRequirement};
+
+impl<T: Clone + PartialEq> Subscriptions<T> {
+    fn required_watches(
+        &self,
+        repositories: &[String],
+        history_paths: &[String],
+    ) -> std::collections::HashSet<WatchRequirement> {
+        self.active_targets()
+            .iter()
+            .filter_map(|raw| SubscriptionTarget::parse(raw).ok())
+            .flat_map(|target| target.watches(repositories, history_paths))
+            .collect()
+    }
+}
 
 fn registry() -> Subscriptions<u64> {
     let mut state = Subscriptions::new("boot".into());
@@ -257,12 +272,12 @@ fn test_購読開始失敗_切断済みclientの対象を登録せず既存対�
         Err(SubscriptionError::StreamEnded)
     );
     // Then
-    assert!(!state.registered(&target));
-    assert!(state.registered(&SubscriptionTarget::RepositoryPaths));
+    assert!(!state.registered(&target.to_string()));
+    assert!(state.registered("repository-paths"));
     state
         .start_with_snapshot("client", &target.to_string(), 1, None)
         .unwrap();
-    assert!(state.registered(&target));
+    assert!(state.registered(&target.to_string()));
 }
 
 #[test]
@@ -284,6 +299,7 @@ fn test_branch一覧購読_repository変更を選び監視し変更値を配信�
     let selected: Vec<_> = state
         .active_targets()
         .into_iter()
+        .filter_map(|raw| SubscriptionTarget::parse(&raw).ok())
         .filter(|target| target.affected_by(&source))
         .collect();
     // Then
@@ -332,6 +348,7 @@ fn test_repository購読_path一致の各対象だけに変更値を配信する
             let selected: Vec<_> = state
                 .active_targets()
                 .into_iter()
+                .filter_map(|raw| SubscriptionTarget::parse(&raw).ok())
                 .filter(|candidate| candidate.affected_by(&source))
                 .collect();
             if path == "/other" {
@@ -363,6 +380,7 @@ fn test_購読開始確認_切断後は対象の鍵を解放し他の購読と�
     state
         .register("repository-paths".into(), 0, Delivery::Full)
         .unwrap();
+    state.protect("repository-paths");
     state.open("other".into()).unwrap();
     state.start("other", "providers", None).unwrap();
     state.start("client", "workspaces", None).unwrap();
@@ -371,16 +389,16 @@ fn test_購読開始確認_切断後は対象の鍵を解放し他の購読と�
     state.release_inactive_snapshots();
     // Then
     assert_eq!(
-        state.ensure_active(&SubscriptionTarget::Workspaces),
+        state.ensure_active("workspaces"),
         Err(SubscriptionError::StreamEnded)
     );
-    assert!(!state.registered(&SubscriptionTarget::Workspaces));
-    assert_eq!(state.ensure_active(&SubscriptionTarget::Providers), Ok(()));
+    assert!(!state.registered("workspaces"));
+    assert_eq!(state.ensure_active("providers"), Ok(()));
     assert_eq!(
-        state.ensure_active(&SubscriptionTarget::RepositoryPaths),
+        state.ensure_active("repository-paths"),
         Err(SubscriptionError::StreamEnded)
     );
-    assert!(state.registered(&SubscriptionTarget::RepositoryPaths));
+    assert!(state.registered("repository-paths"));
 }
 
 #[test]
@@ -401,6 +419,7 @@ fn test_provider一覧購読_provider変更だけを選び同じ購読へ更新�
     let selected: Vec<_> = state
         .active_targets()
         .into_iter()
+        .filter_map(|raw| SubscriptionTarget::parse(&raw).ok())
         .filter(|target| target.affected_by(&StateChangeSource::Providers))
         .collect();
     // Then
@@ -431,7 +450,7 @@ fn test_開始失敗で解放した対象_再登録時は以前の版を再利�
         state.start_with_snapshot("closed", "workspaces", 1, None),
         Err(SubscriptionError::StreamEnded)
     );
-    assert!(!state.registered(&SubscriptionTarget::Workspaces));
+    assert!(!state.registered("workspaces"));
     state.open("next".into()).unwrap();
     state
         .start_with_snapshot("next", "workspaces", 2, Some(&version))
@@ -449,10 +468,10 @@ fn test_対象の解放_世代番号が尽きたら版を再利用せずエラ�
     state.target_generation = u64::MAX;
     // When / Then
     assert_eq!(
-        state.ensure_active(&SubscriptionTarget::Workspaces),
+        state.ensure_active("workspaces"),
         Err(SubscriptionError::VersionExhausted)
     );
-    assert!(state.registered(&SubscriptionTarget::Workspaces));
+    assert!(state.registered("workspaces"));
 }
 
 #[test]
@@ -751,7 +770,7 @@ fn test_購読対象再作成_送り待ちが無い購読と溢れた購読も�
         // When
         state.unregister(target).unwrap();
         // Then
-        assert!(!state.registered(&SubscriptionTarget::parse(target).unwrap()));
+        assert!(!state.registered(target));
         assert!(state.is_subscribed("client", target));
         assert!(state.next("client").is_none());
         let new = Version {

@@ -1,6 +1,6 @@
 use crate::adaptor::controller::client::application_lifecycle::request_application_quit_shared;
 use crate::adaptor::gateway::application_lifecycle::DaemonProcessActionPort;
-use crate::adaptor::protocol::application_lifecycle_v1::{
+use crate::adaptor::presenter::application_lifecycle_v1::{
     ApplicationQuitIntentDtoV1, ApplicationQuitOutcomeDtoV1, ApplicationQuitRequestDtoV1,
 };
 

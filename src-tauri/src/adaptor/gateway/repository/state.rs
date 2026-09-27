@@ -2,7 +2,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::adaptor::gateway::push::BackendPush;
 use notify_debouncer_mini::notify::RecursiveMode;
 use notify_debouncer_mini::{new_debouncer, DebouncedEvent};
 
@@ -15,15 +14,14 @@ use crate::usecase::repository_state::service::RepositoryStateRepository;
 use crate::usecase::repository_state::snapshot::RepositorySnapshotParts;
 use crate::usecase::repository_state::worker::InvalidateReason;
 use crate::usecase::repository_state::worktree::{
-    RepositoryStateNotifier, RepositoryStateWatchSession, RepositoryStateWatcher,
-    SnapshotNotification, WorktreeState,
+    RepositoryStateWatchSession, RepositoryStateWatcher, WorktreeState,
 };
 use crate::usecase::repository_state::RepositoryStateError;
 use crate::usecase::repository_usecase::RepositoryUsecase;
 
 use super::watch::{
     canonicalize_event_path, classify_git_dir_events, generate_watcher_id,
-    resolve_file_watch_paths, resolve_git_watch_paths, FileChangeEvent, GitStatusChangedEvent,
+    resolve_file_watch_paths, resolve_git_watch_paths,
 };
 
 type RecommendedDebouncer =
@@ -287,55 +285,6 @@ impl WorktreePathNormalizer for FsWorktreePathNormalizer {
                 path.display()
             ))
         })
-    }
-}
-
-pub struct ClientRepositoryStateNotifier {
-    publisher: crate::usecase::state_subscription::StateSubscriptionPublisher,
-    sink: std::sync::Arc<crate::infrastructure::push::PushSink>,
-}
-
-impl ClientRepositoryStateNotifier {
-    pub fn new(
-        sink: std::sync::Arc<crate::infrastructure::push::PushSink>,
-        publisher: crate::usecase::state_subscription::StateSubscriptionPublisher,
-    ) -> Self {
-        Self { sink, publisher }
-    }
-}
-
-impl RepositoryStateNotifier for ClientRepositoryStateNotifier {
-    fn snapshot_changed(&self, notification: SnapshotNotification) {
-        for worktree_path in &notification.worktree_paths {
-            BackendPush::GitStatusChanged(GitStatusChangedEvent {
-                repo_path: worktree_path.clone(),
-            })
-            .emit(&self.sink);
-        }
-
-        self.publisher.invalidate(
-            crate::domain::state_subscription::StateChangeSource::Repository(
-                notification.worktree_paths.clone(),
-            ),
-        );
-
-        if notification.reason.file_change {
-            let path = notification.reason.path.unwrap_or_else(|| {
-                notification
-                    .worktree_paths
-                    .first()
-                    .cloned()
-                    .unwrap_or_default()
-            });
-            for watcher_id in notification.file_watcher_ids {
-                BackendPush::FileChange(FileChangeEvent {
-                    watcher_id,
-                    path: path.clone(),
-                    kind: "change".to_string(),
-                })
-                .emit(&self.sink);
-            }
-        }
     }
 }
 

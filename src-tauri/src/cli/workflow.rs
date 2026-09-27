@@ -6,7 +6,7 @@ use super::api_client;
 use super::common::{validate_execution_id, CliError};
 use super::file_direct;
 use super::output::OutputSubcommand;
-use crate::adaptor::protocol::workflow::{ExecutionStatusView, WorkflowExecutionView};
+use crate::adaptor::presenter::workflow_wire::{ExecutionStatusView, WorkflowExecutionView};
 
 /// `releash workflow` の Agent-facing command / query 集合。
 #[derive(Subcommand, Debug)]

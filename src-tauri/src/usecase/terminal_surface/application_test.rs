@@ -1,12 +1,29 @@
 use std::sync::Arc;
 
-use crate::adaptor::gateway::terminal_surface::event_hub::TerminalSurfaceEventHub;
+use crate::adaptor::presenter::terminal_event_hub::TerminalSurfaceEventHub;
 use crate::domain::terminal_surface::gateway::TerminalSurfaceGateway;
 use crate::domain::terminal_surface::{
     entities::TerminalSurface, TerminalProcessState, TerminalSurfaceCheckpoint,
     TerminalSurfaceOwner,
 };
 use crate::domain::workspace_tree::WorkspaceIdentity;
+use crate::usecase::terminal_surface::output::TerminalSurfaceOutputSummary;
+
+#[test]
+fn test_ターミナル画面出力_概要を購読対象と単純な値へ変換する() {
+    let owner = TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/repo")).unwrap();
+    let surface = TerminalSurface::new(7, owner.clone(), None);
+
+    let output = TerminalSurfaceOutputSummary::from(&surface.summary());
+
+    assert_eq!(output.session_key, owner.stable_key());
+    assert_eq!(output.runtime_generation, 7);
+    assert_eq!(output.latest_sequence, 0);
+    assert_eq!(
+        crate::usecase::state_subscription::SubscriptionTarget::parse(&output.target).unwrap(),
+        crate::usecase::state_subscription::SubscriptionTarget::Terminal(owner)
+    );
+}
 
 #[test]
 fn test_ターミナル画面_所有者概要lookup_不在とowner不整合を区別する() {
@@ -15,10 +32,12 @@ fn test_ターミナル画面_所有者概要lookup_不在とowner不整合を�
     let gateway = Arc::new(
         crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor::default(),
     );
+    let hub = Arc::new(TerminalSurfaceEventHub::new());
     let application = super::TerminalSurfaceApplication::new(
         std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
         gateway.clone(),
-        Arc::new(TerminalSurfaceEventHub::new()),
+        Arc::new(crate::adaptor::gateway::terminal_surface::event_source::TerminalSurfaceEventSourceGateway::new(hub.event_sender())),
+        hub,
     );
 
     assert_eq!(
@@ -67,10 +86,12 @@ fn test_summary系読み取りはsnapshot全量再構築を伴わない() {
         latest_sequence: 0,
         last_output_at: None,
     });
+    let hub = Arc::new(TerminalSurfaceEventHub::new());
     let application = super::TerminalSurfaceApplication::new(
         std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
         gateway.clone(),
-        Arc::new(TerminalSurfaceEventHub::new()),
+        Arc::new(crate::adaptor::gateway::terminal_surface::event_source::TerminalSurfaceEventSourceGateway::new(hub.event_sender())),
+        hub,
     );
 
     assert!(matches!(
@@ -90,10 +111,12 @@ fn test_summary系読み取りはsnapshot全量再構築を伴わない() {
 async fn test_サイズ更新_別入口からも予約順を守り別terminalを待たせない() {
     // Given
     let gateway = Arc::new(super::super::io_usecase::io_usecase_tests::FakePtyGateway::new());
+    let hub = Arc::new(TerminalSurfaceEventHub::new());
     let application = super::TerminalSurfaceApplication::new(
         std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
         gateway.clone(),
-        Arc::new(TerminalSurfaceEventHub::new()),
+        Arc::new(crate::adaptor::gateway::terminal_surface::event_source::TerminalSurfaceEventSourceGateway::new(hub.event_sender())),
+        hub,
     );
     let other_entry = application.clone();
     let owner = TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/repo")).unwrap();
@@ -128,10 +151,12 @@ async fn test_サイズ更新_別入口からも予約順を守り別terminalを
 fn test_サイズ更新_最後の完了で待機列を解放し後続予約は保持する() {
     // Given
     let gateway = Arc::new(super::super::io_usecase::io_usecase_tests::FakePtyGateway::new());
+    let hub = Arc::new(TerminalSurfaceEventHub::new());
     let application = super::TerminalSurfaceApplication::new(
         std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
         gateway.clone(),
-        Arc::new(TerminalSurfaceEventHub::new()),
+        Arc::new(crate::adaptor::gateway::terminal_surface::event_source::TerminalSurfaceEventSourceGateway::new(hub.event_sender())),
+        hub,
     );
     // When / Then
     for id in 0..10 {
@@ -152,10 +177,12 @@ fn test_サイズ更新_最後の完了で待機列を解放し後続予約は�
 fn test_サイズ更新_予約の破棄と受付失敗でも待機列を解放する() {
     // Given
     let gateway = Arc::new(super::super::io_usecase::io_usecase_tests::FakePtyGateway::new());
+    let hub = Arc::new(TerminalSurfaceEventHub::new());
     let application = super::TerminalSurfaceApplication::new(
         std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
         gateway.clone(),
-        Arc::new(TerminalSurfaceEventHub::new()),
+        Arc::new(crate::adaptor::gateway::terminal_surface::event_source::TerminalSurfaceEventSourceGateway::new(hub.event_sender())),
+        hub,
     );
     let owner = TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/repo")).unwrap();
     // When / Then
@@ -208,10 +235,12 @@ fn test_終了保存_停止と出力排出の失敗後も別terminalと保存へ
             })
             .collect();
         let gateway = Arc::new(gateway);
+        let hub = Arc::new(TerminalSurfaceEventHub::new());
         let application = super::TerminalSurfaceApplication::new(
             std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
             gateway.clone(),
-            Arc::new(TerminalSurfaceEventHub::new()),
+            Arc::new(crate::adaptor::gateway::terminal_surface::event_source::TerminalSurfaceEventSourceGateway::new(hub.event_sender())),
+        hub,
         );
         // When
         let result = application.shutdown();

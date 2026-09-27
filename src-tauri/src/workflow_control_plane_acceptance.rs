@@ -488,8 +488,8 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
 			cli_binary: "releash-dev".to_string(),
 			terminal: terminal.application(),
 			change_notifier: Arc::new(
-				crate::adaptor::gateway::push::ClientAgentSessionChangeNotifier::new(
-					crate::usecase::state_subscription::StateSubscriptionPublisher::for_test(),
+				crate::adaptor::presenter::push::ClientAgentSessionChangeNotifier::new(
+					crate::adaptor::presenter::state_subscription::test_output(),
 				),
 			),
 		})

@@ -1264,7 +1264,7 @@ async fn test_プロセス在否_実供給元の変化が読取と通知と操�
             assert_eq!(
                 broadcasts,
                 vec![
-                    crate::domain::state_subscription::StateChangeSource::Worktree(
+                    crate::usecase::state_subscription::StateChangeSource::Worktree(
                         current.worktree_path.clone()
                     )
                 ]

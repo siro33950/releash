@@ -562,7 +562,7 @@ fn test_クライアント接続情報_停止済みとpid再利用と参照不�
 #[cfg(feature = "desktop")]
 #[tokio::test]
 async fn test_desktop設定_wsの欠落不正切断を設定値へ置き換えない() {
-    use crate::adaptor::protocol::client as wire;
+    use crate::adaptor::presenter::client as wire;
     use crate::infrastructure::local_api::{LocalApiDiscovery, LocalApiDiscoveryFile};
     use crate::usecase::client_connection::ClientConnectionQueryService;
     use prost::Message;

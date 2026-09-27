@@ -1,14 +1,16 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::domain::terminal_surface::gateway::{
-    TerminalSurfaceEvent, TerminalSurfaceEventSink, TerminalSurfaceEventSource,
+use crate::usecase::terminal_surface::output::TerminalSurfaceEventSink;
+use crate::usecase::terminal_surface::output::TerminalSurfaceOutputControl;
+use crate::usecase::terminal_surface::output::{
+    TerminalSurfaceOutputEvent, TerminalSurfaceOutputSummary,
 };
 
 use super::TerminalSurfaceEventHub;
 
-fn output_event(sequence: u64, data: &str) -> TerminalSurfaceEvent {
-    TerminalSurfaceEvent::Output {
+fn output_event(sequence: u64, data: &str) -> TerminalSurfaceOutputEvent {
+    TerminalSurfaceOutputEvent::Output {
         session_key: "session".to_string(),
         data: data.into(),
         sequence,
@@ -21,7 +23,7 @@ fn test_global_broadcastへはexitだけが流れoutputやresizeは流れない(
     let mut global = hub.sender.subscribe();
 
     hub.publish(output_event(1, "x"));
-    hub.publish(TerminalSurfaceEvent::Resize {
+    hub.publish(TerminalSurfaceOutputEvent::Resize {
         session_key: "session".to_string(),
         cols: 80,
         rows: 24,
@@ -32,7 +34,7 @@ fn test_global_broadcastへはexitだけが流れoutputやresizeは流れない(
         Err(tokio::sync::broadcast::error::TryRecvError::Empty)
     ));
 
-    hub.publish(TerminalSurfaceEvent::Exit {
+    hub.publish(TerminalSurfaceOutputEvent::Exit {
         session_key: "session".to_string(),
         runtime_generation: 1,
         exit_code: Some(0),
@@ -40,7 +42,12 @@ fn test_global_broadcastへはexitだけが流れoutputやresizeは流れない(
     });
     assert!(matches!(
         global.try_recv(),
-        Ok(TerminalSurfaceEvent::Exit { sequence: 3, .. })
+        Ok(
+            crate::domain::terminal_surface::gateway::TerminalSurfaceEvent::Exit {
+                sequence: 3,
+                ..
+            }
+        )
     ));
 }
 
@@ -62,7 +69,7 @@ fn test_流量停止_配信を塞がず最も遅い購読が処理すると出�
     // When
     hub.processed_output("session", "fast", 100_000);
     hub.wait_output("another-session");
-    hub.publish(TerminalSurfaceEvent::Resize {
+    hub.publish(TerminalSurfaceOutputEvent::Resize {
         session_key: "session".into(),
         cols: 100,
         rows: 30,
@@ -118,18 +125,18 @@ fn test_流量制御無効_高水位を超える履歴再開と後続出力で�
 
 #[test]
 fn test_ターミナル削除_購読の有無によらず停止中の出力元を解放する() {
-    use crate::domain::terminal_surface::entities::{TerminalSurface, TerminalSurfaceSummary};
-    use crate::domain::terminal_surface::gateway::TerminalSurfaceStateSink;
+    use crate::domain::terminal_surface::entities::TerminalSurface;
     use crate::domain::terminal_surface::TerminalSurfaceOwner;
     use crate::domain::workspace_tree::WorkspaceIdentity;
+    use crate::usecase::terminal_surface::output::TerminalSurfaceStateSink;
 
     struct StateSink(bool);
     impl TerminalSurfaceStateSink for StateSink {
-        fn initialize(&self, _: &TerminalSurfaceSummary) {}
-        fn remove(&self, _: &TerminalSurfaceSummary) -> bool {
+        fn initialize(&self, _: &TerminalSurfaceOutputSummary) {}
+        fn remove(&self, _: &TerminalSurfaceOutputSummary) -> bool {
             self.0
         }
-        fn publish(&self, _: TerminalSurfaceEvent) {}
+        fn publish(&self, _: TerminalSurfaceOutputEvent) {}
     }
 
     for subscribed in [false, true] {
@@ -139,7 +146,7 @@ fn test_ターミナル削除_購読の有無によらず停止中の出力元�
         let owner = TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/repo")).unwrap();
         let surface = TerminalSurface::new(1, owner, None).summary();
         hub.subscribe_output(&surface.session_key, "client", 0);
-        hub.publish(TerminalSurfaceEvent::Output {
+        hub.publish(TerminalSurfaceOutputEvent::Output {
             session_key: surface.session_key.clone(),
             sequence: 1,
             data: "x".repeat(100_001).into(),
@@ -155,7 +162,7 @@ fn test_ターミナル削除_購読の有無によらず停止中の出力元�
         });
         assert!(receiver.recv_timeout(Duration::from_millis(30)).is_err());
         // When
-        assert_eq!(hub.remove(&surface), subscribed);
+        assert_eq!(hub.remove(&(&surface).into()), subscribed);
         // Then
         let completed = receiver.recv_timeout(Duration::from_secs(1));
         pause.set(false);

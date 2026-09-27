@@ -7,13 +7,6 @@ pub use crate::usecase::workflow::diagnostic_dto::{
     FacetUsageEntry, Severity,
 };
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct WorkflowSubmitArtifactInput {
-    pub contract: String,
-    pub value: serde_json::Value,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum WorkflowValidateOutputResponse {

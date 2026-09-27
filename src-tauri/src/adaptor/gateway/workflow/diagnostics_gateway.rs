@@ -66,10 +66,26 @@ mod tests {
             .diagnose_all(WorkflowDiagnosticsTarget::AppliedConfigDirectory)
             .unwrap();
 
-        assert!(serde_json::to_value(&report).unwrap()["items"].is_array());
-        assert!(serde_json::to_value(&report).unwrap()["workflow_summaries"].is_object());
-        assert!(serde_json::to_value(&report).unwrap()["facet_summaries"].is_object());
-        assert!(serde_json::to_value(&report).unwrap()["facet_usage"].is_object());
+        assert!(serde_json::to_value(
+            crate::adaptor::presenter::workflow_api::DiagnosticReportResponse::from(report.clone())
+        )
+        .unwrap()["items"]
+            .is_array());
+        assert!(serde_json::to_value(
+            crate::adaptor::presenter::workflow_api::DiagnosticReportResponse::from(report.clone())
+        )
+        .unwrap()["workflow_summaries"]
+            .is_object());
+        assert!(serde_json::to_value(
+            crate::adaptor::presenter::workflow_api::DiagnosticReportResponse::from(report.clone())
+        )
+        .unwrap()["facet_summaries"]
+            .is_object());
+        assert!(serde_json::to_value(
+            crate::adaptor::presenter::workflow_api::DiagnosticReportResponse::from(report.clone())
+        )
+        .unwrap()["facet_usage"]
+            .is_object());
     }
 
     #[test]
@@ -87,7 +103,10 @@ mod tests {
             .unwrap();
 
         // Then
-        assert!(serde_json::to_value(&report).unwrap()["items"]
+        assert!(serde_json::to_value(
+            crate::adaptor::presenter::workflow_api::DiagnosticReportResponse::from(report.clone())
+        )
+        .unwrap()["items"]
             .as_array()
             .unwrap()
             .iter()
@@ -99,9 +118,12 @@ mod tests {
         // Given
         let workflows = TempDir::new().unwrap();
         let facets = TempDir::new().unwrap();
-        let expected =
-            serde_json::to_value(diagnostics::diagnose_all(workflows.path(), facets.path()))
-                .unwrap();
+        let expected = serde_json::to_value(
+            crate::adaptor::presenter::workflow_api::DiagnosticReportResponse::from(
+                diagnostics::diagnose_all(workflows.path(), facets.path()),
+            ),
+        )
+        .unwrap();
 
         // When
         let actual = WorkflowDiagnosticsFileGateway::new(workflows.path(), facets.path())
@@ -109,7 +131,13 @@ mod tests {
             .unwrap();
 
         // Then
-        assert_eq!(serde_json::to_value(actual).unwrap(), expected);
+        assert_eq!(
+            serde_json::to_value(
+                crate::adaptor::presenter::workflow_api::DiagnosticReportResponse::from(actual)
+            )
+            .unwrap(),
+            expected
+        );
     }
 
     #[test]
