@@ -93,6 +93,11 @@ impl RetryLimiter {
         }
     }
 
+    pub async fn wait(&self, policy: RetryBackoff, failures: u64) {
+        tokio::time::sleep(policy.delay(failures, (self.jitter)())).await;
+        self.acquire().await;
+    }
+
     pub async fn acquire(&self) {
         loop {
             let wait = self
@@ -145,8 +150,7 @@ where
         } else {
             policy
         };
-        tokio::time::sleep(policy.delay(failures, (limiter.jitter)())).await;
-        limiter.acquire().await;
+        limiter.wait(policy, failures).await;
         progress = next;
     }
 }

@@ -2,32 +2,49 @@ use crate::adaptor::presenter::{
     client as wire,
     connect_wire::{rpc, to_rpc, to_wire},
 };
+use crate::common::retry::{bounded, RetryBackoff, RetryLimiter};
+use crate::domain::daemon_supervision::DaemonLiveness;
+use crate::domain::failure::TechnicalFailureNature;
 use crate::usecase::client_connection::ClientConnectionDto;
+use crate::usecase::failure::{
+    attempt_expired, Failure, FailureKey, FailureOutput, WorkFailure, ATTEMPT_LIMIT,
+};
 use connectrpc::client::{ClientConfig, HttpClient};
 use std::sync::Arc;
 
-pub(crate) fn client(
-    endpoint: &ClientConnectionDto,
-) -> Result<rpc::ClientServiceClient<HttpClient>, String> {
-    let config = ClientConfig::new(
+fn config(endpoint: &ClientConnectionDto) -> Result<ClientConfig, String> {
+    Ok(ClientConfig::new(
         endpoint
             .url
             .parse()
             .map_err(|error| format!("Invalid client endpoint: {error}"))?,
     )
-    .with_default_timeout(std::time::Duration::from_secs(30))
     .with_default_header("authorization", format!("Bearer {}", endpoint.token))
-    .with_default_header("origin", "tauri://localhost");
+    .with_default_header("origin", "tauri://localhost"))
+}
+
+pub(crate) fn client(
+    endpoint: &ClientConnectionDto,
+) -> Result<rpc::ClientServiceClient<HttpClient>, String> {
     Ok(rpc::ClientServiceClient::new(
         HttpClient::plaintext(),
-        config,
+        config(endpoint)?.with_default_timeout(std::time::Duration::from_secs(30)),
+    ))
+}
+
+pub(crate) fn stream_client(
+    endpoint: &ClientConnectionDto,
+) -> Result<rpc::ClientServiceClient<HttpClient>, String> {
+    Ok(rpc::ClientServiceClient::new(
+        HttpClient::plaintext(),
+        config(endpoint)?,
     ))
 }
 
 pub(crate) struct DesktopClient {
     client: Arc<rpc::ClientServiceClient<HttpClient>>,
     task: tokio::task::JoinHandle<()>,
-    failure: Arc<parking_lot::Mutex<Option<String>>>,
+    failure: Arc<parking_lot::Mutex<Option<WorkFailure>>>,
 }
 
 impl Drop for DesktopClient {
@@ -37,32 +54,21 @@ impl Drop for DesktopClient {
 }
 
 impl DesktopClient {
-    pub fn start(client: rpc::ClientServiceClient<HttpClient>) -> Self {
-        let client = Arc::new(client);
+    pub fn start(
+        client: rpc::ClientServiceClient<HttpClient>,
+        stream_client: rpc::ClientServiceClient<HttpClient>,
+        key: FailureKey,
+        failures: Arc<dyn FailureOutput>,
+        limiter: Arc<RetryLimiter>,
+    ) -> Self {
         let failure = Arc::new(parking_lot::Mutex::new(None));
-        let monitor = client.clone();
         let failed = failure.clone();
         let task = tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                if let Err(error) = monitor
-                    .get_server_info_with_options(
-                        rpc::Unit::default(),
-                        connectrpc::client::CallOptions::default()
-                            .with_timeout(std::time::Duration::from_secs(5)),
-                    )
-                    .await
-                {
-                    if error.code == connectrpc::ErrorCode::ResourceExhausted {
-                        continue;
-                    }
-                    *failed.lock() = Some(error_message(error));
-                    break;
-                }
-            }
+            let lost = watch(&stream_client, &key, failures.as_ref(), &limiter).await;
+            *failed.lock() = Some(lost);
         });
         Self {
-            client,
+            client: Arc::new(client),
             task,
             failure,
         }
@@ -70,7 +76,7 @@ impl DesktopClient {
     pub fn connected(&self) -> bool {
         !self.task.is_finished()
     }
-    pub fn failure(&self) -> Option<String> {
+    pub fn failure(&self) -> Option<WorkFailure> {
         self.failure.lock().clone()
     }
     pub async fn request(
@@ -78,6 +84,83 @@ impl DesktopClient {
         command: wire::command_request::Command,
     ) -> Result<wire::command_result::Command, String> {
         call(&self.client, command).await.map_err(error_message)
+    }
+}
+
+async fn watch(
+    client: &rpc::ClientServiceClient<HttpClient>,
+    key: &FailureKey,
+    failures: &dyn FailureOutput,
+    limiter: &RetryLimiter,
+) -> WorkFailure {
+    let mut liveness = DaemonLiveness::default();
+    loop {
+        let failure = observe(client, &mut liveness, key, failures).await;
+        failures.observed(key, failure.clone());
+        if liveness.failed() {
+            return failure;
+        }
+        limiter
+            .wait(RetryBackoff::RECOVERY, liveness.consecutive_failures())
+            .await;
+    }
+}
+
+async fn observe(
+    client: &rpc::ClientServiceClient<HttpClient>,
+    liveness: &mut DaemonLiveness,
+    key: &FailureKey,
+    failures: &dyn FailureOutput,
+) -> WorkFailure {
+    let opened = bounded(ATTEMPT_LIMIT, attempt_expired, async {
+        client
+            .open_state_stream(rpc::OpenStateStreamRequest {
+                client_id: uuid::Uuid::new_v4().to_string(),
+                ..Default::default()
+            })
+            .await
+            .map_err(liveness_failure)
+    })
+    .await;
+    let mut stream = match opened {
+        Ok(stream) => stream,
+        Err(failure) => return failure,
+    };
+    loop {
+        match tokio::time::timeout(
+            ATTEMPT_LIMIT,
+            stream.message::<rpc::StateSubscriptionEvent>(),
+        )
+        .await
+        {
+            Ok(Ok(Some(_))) => {
+                if liveness.succeeded() {
+                    failures.resolved(key);
+                }
+            }
+            Ok(Ok(None)) => {
+                return WorkFailure {
+                    kind: Failure::Technical(TechnicalFailureNature::Transient),
+                    message: "State stream ended".into(),
+                }
+            }
+            Ok(Err(error)) => return liveness_failure(error),
+            Err(_) => return attempt_expired(),
+        }
+    }
+}
+
+fn liveness_failure(error: connectrpc::ConnectError) -> WorkFailure {
+    use connectrpc::ErrorCode;
+    let nature = match error.code {
+        ErrorCode::DeadlineExceeded => TechnicalFailureNature::TimedOut,
+        ErrorCode::Unavailable | ErrorCode::ResourceExhausted => TechnicalFailureNature::Transient,
+        ErrorCode::Canceled => TechnicalFailureNature::Cancelled,
+        _ => TechnicalFailureNature::Other,
+    };
+    WorkFailure {
+        kind: Failure::Technical(nature),
+        message: error_message(error),
     }
 }
 

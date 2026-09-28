@@ -522,3 +522,30 @@ fn test_復元完了_最新attachmentと接続と世代が揃ったときだけr
         .finish_restoration(model.connection_generation(), "second", true, 9)
         .is_err());
 }
+
+#[test]
+fn test_生存判定_連続失敗が閾値に達したときだけ切断とする() {
+    // Given
+    let mut liveness = DaemonLiveness::default();
+    // When / Then
+    assert!(!liveness.failed());
+    assert!(!liveness.failed());
+    assert_eq!(liveness.consecutive_failures(), 2);
+    assert!(liveness.failed());
+    assert_eq!(liveness.consecutive_failures(), 3);
+}
+
+#[test]
+fn test_生存判定_成功で連続失敗が消え失敗が続いていたかを返す() {
+    // Given
+    let mut liveness = DaemonLiveness::default();
+    assert!(!liveness.succeeded());
+    liveness.failed();
+    liveness.failed();
+    // When
+    let recovered = liveness.succeeded();
+    // Then
+    assert!(recovered);
+    assert_eq!(liveness.consecutive_failures(), 0);
+    assert!(!liveness.failed());
+}

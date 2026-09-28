@@ -115,6 +115,16 @@ fn test_購読事象_準備変更と定期印の旧転送形式を保つ() {
             event: Some(WireEvent::Bookmark(wire::Unit {})),
         }
     );
+
+    assert_eq!(
+        wire_event(StateSubscriptionEvent::Bookmark),
+        wire::StateSubscriptionEvent {
+            target: String::new(),
+            args: vec![],
+            version: None,
+            event: Some(WireEvent::Bookmark(wire::Unit {})),
+        }
+    );
 }
 
 #[test]

@@ -1,8 +1,10 @@
 use crate::adaptor::presenter::client as wire;
+use crate::common::retry::RetryLimiter;
 use crate::domain::daemon_supervision::{verify_identity, Failure, FailureStage, StopIntent};
 use crate::domain::daemon_supervision::{DaemonExit, DaemonProcessPort};
 use crate::usecase::client_connection::ClientConnectionQueryService;
 use crate::usecase::daemon_supervision::{DaemonConnection, DaemonGateway};
+use crate::usecase::failure::{FailureKey, FailureOutput};
 use std::io::{BufRead, Read};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -26,10 +28,17 @@ pub(crate) struct DaemonProcessGateway {
     process: parking_lot::Mutex<Option<Process>>,
     connection: parking_lot::Mutex<Option<DaemonConnection>>,
     client: parking_lot::Mutex<Option<Arc<super::desktop_client::DesktopClient>>>,
+    limiter: Arc<RetryLimiter>,
+    failures: Arc<dyn FailureOutput>,
 }
 
 impl DaemonProcessGateway {
-    pub fn new(executable: PathBuf, data_dir: PathBuf) -> Self {
+    pub fn new(
+        executable: PathBuf,
+        data_dir: PathBuf,
+        limiter: Arc<RetryLimiter>,
+        failures: Arc<dyn FailureOutput>,
+    ) -> Self {
         Self {
             client: parking_lot::Mutex::new(None),
             origin: std::time::Instant::now(),
@@ -37,6 +46,8 @@ impl DaemonProcessGateway {
             data_dir,
             process: parking_lot::Mutex::new(None),
             connection: parking_lot::Mutex::new(None),
+            limiter,
+            failures,
         }
     }
     pub fn client(&self) -> Result<Arc<super::desktop_client::DesktopClient>, String> {
@@ -60,8 +71,13 @@ impl DaemonProcessGateway {
             .read()
             .map_err(|error| error.to_string())?;
         let info = super::desktop_client::server_info(&endpoint).await?;
-        let client =
-            super::desktop_client::DesktopClient::start(super::desktop_client::client(&endpoint)?);
+        let client = super::desktop_client::DesktopClient::start(
+            super::desktop_client::client(&endpoint)?,
+            super::desktop_client::stream_client(&endpoint)?,
+            FailureKey::new("daemon_liveness", &info.launch_id),
+            self.failures.clone(),
+            self.limiter.clone(),
+        );
         Ok((client, info, endpoint))
     }
     async fn connect_client(&self, launch_id: &str) -> Result<Option<DaemonConnection>, Failure> {
@@ -270,11 +286,11 @@ impl DaemonGateway for DaemonProcessGateway {
             .lock()
             .as_ref()
             .and_then(|client| client.failure());
-        if let Some(reason) = previous_failure {
+        if let Some(failure) = previous_failure {
             self.client.lock().take();
             return Err(Failure {
                 stage: FailureStage::Initialization,
-                reason,
+                reason: failure.message,
             });
         }
         let discovery = crate::infrastructure::local_api::read_local_api_discovery(&self.data_dir)

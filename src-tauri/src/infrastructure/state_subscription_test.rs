@@ -169,6 +169,41 @@ async fn test_定期印_別対象の更新が続いても無通信の購読へ�
     ));
 }
 
+#[tokio::test(start_paused = true)]
+async fn test_定期印_購読の無いstreamにも間隔ごとに送る() {
+    // Given
+    let runtime = StateSubscriptionRuntime::<u64>::new("boot".into());
+    runtime.state.lock().open("client".into()).unwrap();
+    let mut stream = Box::pin(runtime.stream("client".into(), (), |_, _| {}));
+    assert!(matches!(
+        stream.next().await,
+        Some(StateSubscriptionEvent::Ready)
+    ));
+    let waiting = tokio::spawn(async move { stream.next().await });
+    tokio::task::yield_now().await;
+    // When
+    tokio::time::advance(std::time::Duration::from_secs(10)).await;
+    // Then
+    assert!(matches!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), waiting)
+            .await
+            .unwrap()
+            .unwrap(),
+        Some(StateSubscriptionEvent::Bookmark)
+    ));
+}
+
+#[test]
+fn test_定期印_購読の有無を返す() {
+    // Given
+    let mut state = registry();
+    // When / Then
+    assert!(!state.bookmark("client"));
+    assert!(!state.bookmark("unknown"));
+    state.start("client", "workspaces", None).unwrap();
+    assert!(state.bookmark("client"));
+}
+
 #[test]
 fn test_購読_初期状態と区切りの後に変更が届く() {
     // Given

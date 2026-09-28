@@ -71,6 +71,11 @@ pub fn desktop_connection_app<R: tauri::Runtime>(
         crate::adaptor::gateway::daemon_supervision::DaemonProcessGateway::new(
             executable.into(),
             data_dir.into(),
+            Arc::new(crate::common::retry::RetryLimiter::new()),
+            Arc::new(crate::adaptor::presenter::failure::FailurePresenter::new(
+                Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
+                None,
+            )),
         ),
     ));
     builder
@@ -463,6 +468,11 @@ pub async fn terminate_daemon_for_acceptance(
     let gateway = crate::adaptor::gateway::daemon_supervision::DaemonProcessGateway::new(
         executable,
         data_dir.clone(),
+        Arc::new(crate::common::retry::RetryLimiter::new()),
+        Arc::new(crate::adaptor::presenter::failure::FailurePresenter::new(
+            Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
+            None,
+        )),
     );
     gateway.spawn().await?;
     let ready = tokio::time::timeout(std::time::Duration::from_secs(3), async {

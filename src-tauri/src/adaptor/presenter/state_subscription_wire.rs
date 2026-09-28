@@ -123,6 +123,12 @@ pub(crate) fn event(
         StateSubscriptionEvent::Ready => {
             (String::new(), vec![], None, WireEvent::Ready(wire::Unit {}))
         }
+        StateSubscriptionEvent::Bookmark => (
+            String::new(),
+            vec![],
+            None,
+            WireEvent::Bookmark(wire::Unit {}),
+        ),
         StateSubscriptionEvent::Item(target, event) => {
             let version = event.version();
             let version = Some(wire::StateVersion {

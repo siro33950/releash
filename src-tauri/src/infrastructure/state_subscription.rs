@@ -8,6 +8,7 @@ use tokio::sync::Notify;
 pub(crate) enum StateSubscriptionEvent<T> {
     Ready,
     Item(String, Event<T>),
+    Bookmark,
 }
 
 const BOOKMARK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
@@ -160,7 +161,14 @@ impl<T: Clone + PartialEq + Send + Sync + 'static> StateSubscriptionRuntime<T> {
                     }
                     tokio::select! {
                         _ = changed => {},
-                        _ = timer.tick() => runtime.state.lock().bookmark(&id),
+                        _ = timer.tick() => {
+                            if !runtime.state.lock().bookmark(&id) {
+                                return Some((
+                                    StateSubscriptionEvent::Bookmark,
+                                    (id, permit, timer, runtime.clone(), refresh),
+                                ));
+                            }
+                        }
                     }
                 }
             },
@@ -801,18 +809,20 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
         }
     }
 
-    pub fn bookmark(&mut self, client: &str) {
-        if let Some(client) = self.clients.get_mut(client) {
-            for (id, subscription) in &mut client.subscriptions {
-                if subscription.pending.is_empty() && !subscription.overflowed {
-                    if let Some(target) = self.targets.get(id) {
-                        subscription
-                            .pending
-                            .push_back(Event::Bookmark(target.version.clone()));
-                    }
+    pub fn bookmark(&mut self, client: &str) -> bool {
+        let Some(client) = self.clients.get_mut(client) else {
+            return false;
+        };
+        for (id, subscription) in &mut client.subscriptions {
+            if subscription.pending.is_empty() && !subscription.overflowed {
+                if let Some(target) = self.targets.get(id) {
+                    subscription
+                        .pending
+                        .push_back(Event::Bookmark(target.version.clone()));
                 }
             }
         }
+        !client.subscriptions.is_empty()
     }
 
     pub fn next(&mut self, client: &str) -> Option<(String, Event<T>)> {
