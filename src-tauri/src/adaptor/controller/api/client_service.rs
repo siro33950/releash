@@ -3,7 +3,6 @@ async fn get_server_info<'a>(
     _ctx: connectrpc::RequestContext,
     _request: connectrpc::ServiceRequest<'_, rpc::Unit>,
 ) -> connectrpc::ServiceResult<impl connectrpc::Encodable<rpc::ServerInfo> + Send + use<'a>> {
-    let _permit = self.request_permit()?;
     connectrpc::Response::ok(to_rpc::<rpc::ServerInfo>(&wire::ServerInfo {
         launch_id: std::env::var("RELEASH_DAEMON_LAUNCH_ID").unwrap_or_default(),
         release: env!("CARGO_PKG_VERSION").into(),
@@ -129,7 +128,6 @@ async fn start_state_subscription<'a>(
     _ctx: connectrpc::RequestContext,
     request: connectrpc::ServiceRequest<'_, rpc::StartStateSubscriptionRequest>,
 ) -> connectrpc::ServiceResult<impl connectrpc::Encodable<rpc::Unit> + Send + use<'a>> {
-    let _permit = self.request_permit()?;
     let request: wire::StartStateSubscriptionRequest = to_wire(&request.to_owned_message())?;
     let target = crate::usecase::state_subscription::SubscriptionTarget::from_parts(
         &request.target,
@@ -153,7 +151,6 @@ async fn stop_state_subscription<'a>(
     _ctx: connectrpc::RequestContext,
     request: connectrpc::ServiceRequest<'_, rpc::StopStateSubscriptionRequest>,
 ) -> connectrpc::ServiceResult<impl connectrpc::Encodable<rpc::Unit> + Send + use<'a>> {
-    let _permit = self.request_permit()?;
     let request: wire::StopStateSubscriptionRequest = to_wire(&request.to_owned_message())?;
     let target = crate::usecase::state_subscription::SubscriptionTarget::from_parts(
         &request.target,
@@ -173,7 +170,6 @@ async fn report_terminal_processed<'a>(
     _ctx: connectrpc::RequestContext,
     request: connectrpc::ServiceRequest<'_, rpc::ReportTerminalProcessedRequest>,
 ) -> connectrpc::ServiceResult<impl connectrpc::Encodable<rpc::Unit> + Send + use<'a>> {
-    let _permit = self.request_permit()?;
     let request: wire::ReportTerminalProcessedRequest = to_wire(&request.to_owned_message())?;
     let target = crate::usecase::state_subscription::SubscriptionTarget::from_parts(
         "terminal",

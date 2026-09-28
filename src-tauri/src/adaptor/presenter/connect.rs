@@ -647,14 +647,16 @@ impl ConnectFailure for crate::usecase::application_startup::ApplicationUnavaila
     }
 }
 
-pub(crate) fn request_capacity_error() -> connectrpc::ConnectError {
-    let message = "Too many pending client commands";
+pub(crate) fn request_rejected(
+    rejection: &crate::common::concurrency::Rejection,
+) -> connectrpc::ConnectError {
+    let message = rejection.to_string();
     let mut error = command_error(
-        super::error::AppError::capacity_exceeded(message)
+        super::error::AppError::capacity_exceeded(message.clone())
             .with_code("CLIENT_REQUEST_LIMIT")
             .into(),
     );
-    error.message = Some(message.into());
+    error.message = Some(message);
     error
 }
 

@@ -55,13 +55,12 @@ pub(crate) async fn compose(
             state_presenter.change_sender(),
             Arc::new(adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
         );
-    let retrying = usecase::retry::Retrying::new(
-        retry_limiter,
+    let failure_output: Arc<dyn usecase::failure::FailureOutput> =
         Arc::new(adaptor::presenter::failure::FailurePresenter::new(
             failure_store.clone(),
             Some(state_subscriptions.publisher()),
-        )),
-    );
+        ));
+    let retrying = usecase::retry::Retrying::new(retry_limiter, failure_output.clone());
     let push_sink = Arc::new(infrastructure::push::PushSink::new());
 
     let projected_local_event_repository: Arc<
@@ -508,7 +507,8 @@ pub(crate) async fn compose(
             ))
             .with_desktop_settings(usecase::app_config::AppConfigUsecase::new(
                 config_repository,
-            )),
+            ))
+            .with_failure_output(failure_output),
         ),
         Some(provider_lifecycle_ingress.clone()),
     );

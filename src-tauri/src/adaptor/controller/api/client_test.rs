@@ -17,6 +17,25 @@ fn dispatch() -> ClientCommandDispatch {
     ClientCommandDispatch::new(Arc::new(ApplicationStartupAuthority::ready()))
 }
 
+fn unary_request(method: &str, body: &str) -> axum::http::Request<axum::body::Body> {
+    axum::http::Request::post(format!("/releash.client.v1.ClientService/{method}"))
+        .header("content-type", "application/json")
+        .header("connect-protocol-version", "1")
+        .body(axum::body::Body::from(body.to_string()))
+        .unwrap()
+}
+
+fn watch_request(
+    method: &str,
+    subscription_id: &str,
+    request: &str,
+) -> axum::http::Request<axum::body::Body> {
+    unary_request(
+        method,
+        &format!(r#"{{"subscriptionId":"{subscription_id}","request":{request}}}"#),
+    )
+}
+
 async fn serve(
     dispatch: ClientCommandDispatch,
     sink: Arc<PushSink>,
@@ -636,7 +655,7 @@ async fn test_設定保存_対象三操作の成功時だけdesktop再適用を�
 }
 
 #[tokio::test]
-async fn test_監視rpc_通常要求と同じ枠を取得し上限時はblocking前に拒否する() {
+async fn test_監視rpc_interactiveの枠と待ち行列が埋まるとblocking前に拒否し解放後は受理する() {
     use axum::{
         body::{to_bytes, Body},
         http::{Request, StatusCode},
@@ -654,37 +673,33 @@ async fn test_監視rpc_通常要求と同じ枠を取得し上限時はblocking
         ClientPushGateway::new(Arc::new(PushSink::new())),
         watcher,
     );
-    let permits = deps
-        .request_limit
-        .clone()
-        .try_acquire_many_owned(64)
-        .unwrap();
+    let permits = deps.limits.fill("interactive");
     // When / Then
     let router = router(Some(deps.clone()));
-    for (method, request) in [
+    let request = |method: &str, request: serde_json::Value| {
+        let body = serde_json::json!({"subscriptionId": "limited", "request": request});
+        Request::post(format!("/releash.client.v1.ClientService/{method}"))
+            .header("content-type", "application/json")
+            .header("connect-protocol-version", "1")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    };
+    for (method, args) in [
         ("WatchFiles", serde_json::json!({"path": "/repo"})),
         (
             "WatchGitDirectory",
             serde_json::json!({"repoPath": "/repo"}),
         ),
     ] {
-        let body = serde_json::json!({"subscriptionId": "limited", "request": request});
-        let response = router
-            .clone()
-            .oneshot(
-                Request::post(format!("/releash.client.v1.ClientService/{method}"))
-                    .header("content-type", "application/json")
-                    .header("connect-protocol-version", "1")
-                    .body(Body::from(body.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        let response = router.clone().oneshot(request(method, args)).await.unwrap();
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(error["code"], "resource_exhausted");
-        assert_eq!(error["message"], "Too many pending client commands");
+        assert_eq!(
+            error["message"],
+            "interactive requests rejected: queue_full"
+        );
         assert_eq!(error["details"].as_array().unwrap().len(), 1);
         assert_eq!(
             error["details"][0]["type"],
@@ -701,47 +716,41 @@ async fn test_監視rpc_通常要求と同じ枠を取得し上限時はblocking
         assert_eq!(detail.code.as_deref(), Some("CLIENT_REQUEST_LIMIT"));
         assert_eq!(
             detail.message.as_deref(),
-            Some("Too many pending client commands")
+            Some("interactive requests rejected: queue_full")
         );
     }
     assert_eq!(files.next.load(Ordering::SeqCst), 0);
-    assert_eq!(
-        deps.execute(
-            None,
-            wire::command_request::Command::GetExternalEditor(wire::GetExternalEditorRequest {})
-        )
-        .await
-        .unwrap_err()
-        .code,
-        connectrpc::ErrorCode::ResourceExhausted
-    );
     drop(permits);
-    deps.watch(None, "limited".into(), "/repo".into(), false)
+    let response = router
+        .clone()
+        .oneshot(request("WatchFiles", serde_json::json!({"path": "/repo"})))
         .await
         .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(files.next.load(Ordering::SeqCst), 1);
-    assert_eq!(deps.request_limit.available_permits(), 64);
-    assert!(deps
-        .watch(None, "limited".into(), "/missing".into(), false)
+    assert_eq!(deps.limits.available("interactive"), 11);
+    let response = router
+        .clone()
+        .oneshot(request(
+            "WatchFiles",
+            serde_json::json!({"path": "/missing"}),
+        ))
         .await
-        .is_err());
-    assert_eq!(deps.request_limit.available_permits(), 64);
+        .unwrap();
+    assert_ne!(response.status(), StatusCode::OK);
+    assert_eq!(deps.limits.available("interactive"), 11);
     drop(subscription);
 }
 
 #[test]
-fn test_進行中要求の上限_構造化エラーで拒否理由を返し枠解放後は受理する() {
+fn test_拒否_構造化エラーで段と理由を返す() {
     // Given
-    let deps = ClientApiDeps::new(
-        Arc::new(dispatch()),
-        ClientPushGateway::new(Arc::new(PushSink::new())),
-        crate::client_api_acceptance::watcher(),
-    );
-    let permits = (0..64)
-        .map(|_| deps.request_permit().unwrap())
-        .collect::<Vec<_>>();
+    let rejection = crate::common::concurrency::Rejection {
+        level: "default",
+        reason: crate::common::concurrency::RejectReason::TimedOut,
+    };
     // When
-    let error = deps.request_permit().unwrap_err();
+    let error = crate::adaptor::presenter::connect::request_rejected(&rejection);
     // Then
     assert_eq!(error.code, connectrpc::ErrorCode::ResourceExhausted);
     assert_eq!(error.details.len(), 1);
@@ -757,14 +766,16 @@ fn test_進行中要求の上限_構造化エラーで拒否理由を返し枠�
     assert_eq!(detail.code.as_deref(), Some("CLIENT_REQUEST_LIMIT"));
     assert_eq!(
         detail.message.as_deref(),
-        Some("Too many pending client commands")
+        Some("default requests rejected: time-out")
     );
-    drop(permits);
-    assert!(deps.request_permit().is_ok());
+    assert_eq!(
+        error.message.as_deref(),
+        Some("default requests rejected: time-out")
+    );
 }
 
 #[tokio::test]
-async fn test_サーバ情報取得_上限時は設定取得を拒否し成功と失敗で要求枠を解放する() {
+async fn test_サーバ情報取得_全段の枠が埋まっていても受理し枠を使わない() {
     use crate::adaptor::gateway::app_config::config_models::{config_to_domain, ReleashConfig};
     use crate::domain::app_config::{
         repository::{ConfigRepository, ConfigUpdate},
@@ -781,12 +792,14 @@ async fn test_サーバ情報取得_上限時は設定取得を拒否し成功�
     struct Config {
         loads: AtomicUsize,
         failure: AtomicUsize,
-        limit: Arc<tokio::sync::Semaphore>,
+        limits: Arc<crate::common::concurrency::PriorityLimits>,
     }
     impl ConfigRepository for Config {
         fn load(&self) -> Result<AppConfigDocument, AppConfigError> {
             self.loads.fetch_add(1, Ordering::SeqCst);
-            assert_eq!(self.limit.available_permits(), 0);
+            for level in ["interactive", "workflow", "default"] {
+                assert_eq!(self.limits.available(level), 0);
+            }
             match self.failure.load(Ordering::SeqCst) {
                 1 => return Err(AppConfigError::Repository("load failed".into())),
                 2 => return Err(AppConfigError::InvalidInput("invalid settings".into())),
@@ -810,17 +823,12 @@ async fn test_サーバ情報取得_上限時は設定取得を拒否し成功�
     let config = Arc::new(Config {
         loads: AtomicUsize::new(0),
         failure: AtomicUsize::new(0),
-        limit: deps.request_limit.clone(),
+        limits: deps.limits.clone(),
     });
     let deps = deps.with_desktop_settings(crate::usecase::app_config::AppConfigUsecase::new(
         config.clone(),
     ));
-    let _permits = deps
-        .request_limit
-        .clone()
-        .try_acquire_many_owned(63)
-        .unwrap();
-    let last_permit = deps.request_permit().unwrap();
+    let _permits = ["interactive", "workflow", "default"].map(|level| deps.limits.fill(level));
     let router = router(Some(deps.clone()));
     let request = || {
         Request::post("/releash.client.v1.ClientService/GetServerInfo")
@@ -829,16 +837,6 @@ async fn test_サーバ情報取得_上限時は設定取得を拒否し成功�
             .body(Body::from("{}"))
             .unwrap()
     };
-    // When
-    let response = router.clone().oneshot(request()).await.unwrap();
-    // Then
-    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
-    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(error["code"], "resource_exhausted");
-    assert_eq!(config.loads.load(Ordering::SeqCst), 0);
-    drop(last_permit);
-
     // When / Then
     for (failure, expected_status, expected_loads) in [
         (0, StatusCode::OK, 1),
@@ -860,12 +858,12 @@ async fn test_サーバ情報取得_上限時は設定取得を拒否し成功�
             assert!(body["desktopSettings"].is_object());
         }
         assert_eq!(config.loads.load(Ordering::SeqCst), expected_loads);
-        assert_eq!(deps.request_limit.available_permits(), 1);
     }
 }
 
 #[tokio::test]
 async fn test_監視rpc_要求中断でblocking終了前に枠を解放する() {
+    use tower::ServiceExt;
     struct BlockingFiles {
         started: tokio::sync::Notify,
         stopped: tokio::sync::Notify,
@@ -901,10 +899,14 @@ async fn test_監視rpc_要求中断でblocking終了前に枠を解放する() 
         ClientPushGateway::new(Arc::new(PushSink::new())),
         watcher,
     );
-    let task_deps = deps.clone();
+    let router = router(Some(deps.clone()));
     let task = tokio::spawn(async move {
-        task_deps
-            .watch(None, "blocking".into(), "/repo".into(), false)
+        router
+            .oneshot(watch_request(
+                "WatchFiles",
+                "blocking",
+                r#"{"path":"/repo"}"#,
+            ))
             .await
     });
     files.started.notified().await;
@@ -912,10 +914,10 @@ async fn test_監視rpc_要求中断でblocking終了前に枠を解放する() 
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());
     // Then
-    assert_eq!(deps.request_limit.available_permits(), 64);
+    assert_eq!(deps.limits.available("interactive"), 11);
     finish.send(()).unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
-        while deps.request_limit.available_permits() != 64 {
+        while deps.limits.available("interactive") != 11 {
             tokio::task::yield_now().await;
         }
     })
@@ -929,6 +931,7 @@ async fn test_監視rpc_要求中断でblocking終了前に枠を解放する() 
 
 #[tokio::test]
 async fn test_監視停止rpc_要求中断でblocking終了前に枠を解放する() {
+    use tower::ServiceExt;
     struct BlockingFiles {
         started: tokio::sync::Notify,
         finish: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
@@ -959,16 +962,10 @@ async fn test_監視停止rpc_要求中断でblocking終了前に枠を解放す
         ClientPushGateway::new(Arc::new(PushSink::new())),
         watcher,
     );
-    let id = 1;
-    let task_deps = deps.clone();
+    let router = router(Some(deps.clone()));
     let task = tokio::spawn(async move {
-        task_deps
-            .execute(
-                None,
-                wire::command_request::Command::StopWatching(wire::StopWatchingRequest {
-                    watcher_id: Some(id),
-                }),
-            )
+        router
+            .oneshot(unary_request("StopWatching", r#"{"watcherId":1}"#))
             .await
     });
     files.started.notified().await;
@@ -976,8 +973,7 @@ async fn test_監視停止rpc_要求中断でblocking終了前に枠を解放す
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());
     // Then
-    assert_eq!(deps.request_limit.available_permits(), 64);
-    assert!(deps.request_permit().is_ok());
+    assert_eq!(deps.limits.available("interactive"), 11);
     finish.send(()).unwrap();
 }
 
@@ -1273,7 +1269,7 @@ async fn assert_request_deadline(timeout: Option<&str>, seconds: u64) {
     tokio::pin!(call);
     assert!(futures_util::poll!(&mut call).is_pending());
     tokio::task::yield_now().await;
-    assert_eq!(deps.request_limit.available_permits(), 63);
+    assert_eq!(deps.limits.available("default"), 40);
     // When
     tokio::time::advance(std::time::Duration::from_secs(seconds - 1)).await;
     assert!(futures_util::poll!(&mut call).is_pending());
@@ -1284,8 +1280,7 @@ async fn assert_request_deadline(timeout: Option<&str>, seconds: u64) {
     let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(error["code"], "deadline_exceeded");
     stopped.cancelled().await;
-    assert_eq!(deps.request_limit.available_permits(), 64);
-    assert!(deps.request_permit().is_ok());
+    assert_eq!(deps.limits.available("default"), 41);
 }
 
 #[tokio::test(start_paused = true)]
@@ -1305,6 +1300,7 @@ async fn test_単発rpc_clientの長い期限を短縮しない() {
 
 #[tokio::test]
 async fn test_単発rpc_呼び出し破棄でasync処理を止め枠を解放する() {
+    use tower::ServiceExt;
     // Given
     let stopped = tokio_util::sync::CancellationToken::new();
     let signal = stopped.clone();
@@ -1324,16 +1320,15 @@ async fn test_単発rpc_呼び出し破棄でasync処理を止め枠を解放す
         ClientPushGateway::new(Arc::new(PushSink::new())),
         crate::client_api_acceptance::watcher(),
     );
-    let mut call = Box::pin(deps.execute(
-        None,
-        wire::command_request::Command::GetExternalEditor(wire::GetExternalEditorRequest {}),
-    ));
+    let mut call =
+        Box::pin(router(Some(deps.clone())).oneshot(unary_request("GetExternalEditor", "{}")));
     assert!(futures_util::poll!(&mut call).is_pending());
     tokio::task::yield_now().await;
+    assert_eq!(deps.limits.available("default"), 40);
     // When
     drop(call);
     // Then
-    assert_eq!(deps.request_limit.available_permits(), 64);
+    assert_eq!(deps.limits.available("default"), 41);
     tokio::time::timeout(std::time::Duration::from_secs(1), stopped.cancelled())
         .await
         .unwrap();
@@ -1449,7 +1444,7 @@ async fn test_単発rpc_client切断で処理が終了する() {
     let result = tokio::time::timeout(std::time::Duration::from_secs(2), stopped.cancelled()).await;
     server.abort();
     result.unwrap();
-    assert_eq!(deps.request_limit.available_permits(), 64);
+    assert_eq!(deps.limits.available("default"), 41);
 }
 
 #[tokio::test]
@@ -1586,9 +1581,7 @@ async fn test_状態購読操作_上限時は拒否し枠解放後は受理す�
     ));
     let router = router(Some(deps.clone()));
     for method in ["StartStateSubscription", "StopStateSubscription"] {
-        let permits = (0..64)
-            .map(|_| deps.request_permit().unwrap())
-            .collect::<Vec<_>>();
+        let permits = deps.limits.fill("interactive");
         let request = || {
             Request::post(format!("/releash.client.v1.ClientService/{method}"))
                 .header("content-type", "application/json")
@@ -1608,7 +1601,7 @@ async fn test_状態購読操作_上限時は拒否し枠解放後は受理す�
             router.clone().oneshot(request()).await.unwrap().status(),
             StatusCode::OK
         );
-        assert_eq!(deps.request_limit.available_permits(), 64);
+        assert_eq!(deps.limits.available("interactive"), 11);
     }
 }
 
@@ -1688,8 +1681,7 @@ async fn assert_cancelled_blocking_mutation(deadline: bool, repository: bool) {
     }
     stopped.cancelled().await;
     // Then
-    assert_eq!(deps.request_limit.available_permits(), 64);
-    assert!(deps.request_permit().is_ok());
+    assert_eq!(deps.limits.available("default"), 41);
     assert!(futures_util::poll!(&mut deletion).is_pending());
     assert!(runtime.begin_worktree_mutation("/repo").is_err());
     finish.send(()).unwrap();
@@ -1777,7 +1769,6 @@ async fn test_単発rpc_期限と呼出破棄が同期処理の内側まで届�
                 OperationStopped::Cancelled
             }
         );
-        assert_eq!(deps.request_limit.available_permits(), 64);
     }
 }
 
@@ -1844,7 +1835,6 @@ async fn test_監視rpc_期限と呼出破棄が同期処理の内側まで届�
                 OperationStopped::Cancelled
             }
         );
-        assert_eq!(deps.request_limit.available_permits(), 64);
         drop(subscription);
     }
 }
@@ -2299,4 +2289,169 @@ fn test_状態購読配線_usecaseとcontrollerが同じ出力実装を参照す
         deps.presenter.clone();
     // Then
     assert!(Arc::ptr_eq(&deps.usecase.publisher(), &output));
+}
+
+fn pending_editor_dispatch() -> (ClientCommandDispatch, Arc<tokio::sync::Notify>) {
+    let release = Arc::new(tokio::sync::Notify::new());
+    let signal = release.clone();
+    let mut dispatch = dispatch();
+    dispatch.register_domain(
+        &["get_external_editor"],
+        Box::new(move |_| {
+            let signal = signal.clone();
+            Box::pin(async move {
+                signal.notified().await;
+                Ok(wire::command_result::Command::GetExternalEditor(
+                    wire::ResultString {
+                        value: Some("editor".into()),
+                    },
+                ))
+            })
+        }),
+    );
+    (dispatch, release)
+}
+
+#[tokio::test]
+async fn test_流量制御_全段の枠が埋まっていてもReportTerminalProcessedを受理する() {
+    use axum::http::StatusCode;
+    use tower::ServiceExt;
+    // Given
+    let subscriptions = crate::usecase::state_subscription::StateSubscriptionUsecase::new(
+        Vec::new(),
+        Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+    );
+    let _stream = subscriptions.open("limited".into()).unwrap();
+    let presenter = subscriptions.test_presenter().unwrap().clone();
+    let units = presenter.terminal_report_units();
+    let deps = ClientApiDeps::new(
+        Arc::new(dispatch()),
+        ClientPushGateway::new(Arc::new(PushSink::new())),
+        crate::client_api_acceptance::watcher(),
+    )
+    .with_state_subscriptions(StateSubscriptionDeps::new(
+        subscriptions,
+        Arc::new(presenter),
+    ));
+    let _permits = ["interactive", "workflow", "default"].map(|level| deps.limits.fill(level));
+    // When
+    let response = router(Some(deps))
+        .oneshot(unary_request(
+            "ReportTerminalProcessed",
+            &format!(r#"{{"clientId":"limited","args":["session"],"units":{units}}}"#),
+        ))
+        .await
+        .unwrap();
+    // Then
+    assert_ne!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
+async fn test_優先度_defaultが埋まっていてもinteractiveの呼び出しを受理する() {
+    use axum::http::StatusCode;
+    use tower::ServiceExt;
+    // Given
+    let subscriptions = crate::usecase::state_subscription::StateSubscriptionUsecase::new(
+        Vec::new(),
+        Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+    );
+    let _stream = subscriptions.open("limited".into()).unwrap();
+    let deps = ClientApiDeps::new(
+        Arc::new(dispatch()),
+        ClientPushGateway::new(Arc::new(PushSink::new())),
+        crate::client_api_acceptance::watcher(),
+    )
+    .with_state_subscriptions(StateSubscriptionDeps::new(
+        subscriptions.clone(),
+        Arc::new(subscriptions.test_presenter().unwrap().clone()),
+    ));
+    let _permits = deps.limits.fill("default");
+    let router = router(Some(deps.clone()));
+    // When
+    let rejected = router
+        .clone()
+        .oneshot(unary_request("GetExternalEditor", "{}"))
+        .await
+        .unwrap();
+    let accepted = router
+        .oneshot(unary_request(
+            "StartStateSubscription",
+            r#"{"clientId":"limited","target":"repository-paths"}"#,
+        ))
+        .await
+        .unwrap();
+    // Then
+    assert_eq!(rejected.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(accepted.status(), StatusCode::OK);
+    assert_eq!(deps.limits.available("interactive"), 11);
+}
+
+#[tokio::test]
+async fn test_拒否_待ち行列が溢れた拒否を失敗の記録に残す() {
+    use axum::http::StatusCode;
+    use tower::ServiceExt;
+    // Given
+    let store = Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default());
+    let deps = ClientApiDeps::new(
+        Arc::new(dispatch()),
+        ClientPushGateway::new(Arc::new(PushSink::new())),
+        crate::client_api_acceptance::watcher(),
+    )
+    .with_failure_output(Arc::new(
+        crate::adaptor::presenter::failure::FailurePresenter::new(store.clone(), None),
+    ));
+    let _permits = deps.limits.fill("default");
+    // When
+    let response = router(Some(deps))
+        .oneshot(unary_request("GetExternalEditor", "{}"))
+        .await
+        .unwrap();
+    // Then
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    let records = store.records("daemon");
+    assert_eq!(records.len(), 1);
+    let record = &records[0].record;
+    assert_eq!(record.operation, "client_request_limit");
+    assert_eq!(
+        record.kind,
+        crate::usecase::failure::Failure::Technical(
+            crate::domain::failure::TechnicalFailureNature::Transient
+        )
+    );
+    assert_eq!(
+        record.message,
+        "/releash.client.v1.ClientService/GetExternalEditor: default requests rejected: queue_full"
+    );
+    assert!(!records[0].requires_attention);
+}
+
+#[tokio::test]
+async fn test_待ち行列_席が空くまで待ってから受理する() {
+    use axum::http::StatusCode;
+    use tower::ServiceExt;
+    // Given
+    let (dispatch, release) = pending_editor_dispatch();
+    let deps = ClientApiDeps::new(
+        Arc::new(dispatch),
+        ClientPushGateway::new(Arc::new(PushSink::new())),
+        crate::client_api_acceptance::watcher(),
+    );
+    let seats = deps
+        .limits
+        .seats("default")
+        .try_acquire_many_owned(41)
+        .unwrap();
+    let mut call =
+        Box::pin(router(Some(deps.clone())).oneshot(unary_request("GetExternalEditor", "{}")));
+    assert!(futures_util::poll!(&mut call).is_pending());
+    tokio::task::yield_now().await;
+    assert_eq!(deps.limits.queue_length("default"), 49);
+    // When
+    drop(seats);
+    release.notify_one();
+    let response = call.await.unwrap();
+    // Then
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(deps.limits.queue_length("default"), 50);
+    assert_eq!(deps.limits.available("default"), 41);
 }
