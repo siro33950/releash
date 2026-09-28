@@ -15,7 +15,8 @@ pub(crate) struct ClientApiDeps {
     push: ClientPushGateway,
     state_subscriptions: Option<StateSubscriptionDeps>,
     desktop_settings: Option<Arc<crate::usecase::app_config::AppConfigUsecase>>,
-    request_limit: Arc<tokio::sync::Semaphore>,
+    limits: Arc<crate::common::concurrency::PriorityLimits>,
+    failures: Option<Arc<dyn crate::usecase::failure::FailureOutput>>,
     watcher: Arc<crate::usecase::watcher::WatcherUsecase>,
 }
 
@@ -45,13 +46,22 @@ impl ClientApiDeps {
             push,
             state_subscriptions: None,
             desktop_settings: None,
-            request_limit: Arc::new(tokio::sync::Semaphore::new(64)),
+            limits: Arc::new(super::client_priority::limits()),
+            failures: None,
             watcher,
         }
     }
 
     pub(crate) fn with_state_subscriptions(mut self, subscriptions: StateSubscriptionDeps) -> Self {
         self.state_subscriptions = Some(subscriptions);
+        self
+    }
+
+    pub(crate) fn with_failure_output(
+        mut self,
+        failures: Arc<dyn crate::usecase::failure::FailureOutput>,
+    ) -> Self {
+        self.failures = Some(failures);
         self
     }
 
@@ -109,15 +119,6 @@ impl ClientApiDeps {
             .transpose()
     }
 
-    fn request_permit(
-        &self,
-    ) -> Result<tokio::sync::OwnedSemaphorePermit, connectrpc::ConnectError> {
-        self.request_limit
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| crate::adaptor::presenter::connect::request_capacity_error())
-    }
-
     async fn execute(
         &self,
         deadline: Option<std::time::Instant>,
@@ -130,7 +131,6 @@ impl ClientApiDeps {
         &self,
         command: wire::command_request::Command,
     ) -> Result<wire::command_result::Command, connectrpc::ConnectError> {
-        let _permit = self.request_permit()?;
         self.dispatch.admit(command.name()).map_err(command_error)?;
         if let wire::command_request::Command::StopWatching(ref args) = command {
             let id = crate::adaptor::controller::client::required(args.watcher_id, "watcherId")
@@ -177,7 +177,6 @@ impl ClientApiDeps {
         path: String,
         git: bool,
     ) -> Result<rpc::ResultUint64, connectrpc::ConnectError> {
-        let _permit = self.request_permit()?;
         self.dispatch
             .admit(if git {
                 "start_git_dir_watching"
@@ -263,9 +262,14 @@ pub(crate) fn router(deps: Option<ClientApiDeps>) -> Router {
     let Some(deps) = deps else {
         return Router::new();
     };
+    let priority = super::client_priority::PriorityInterceptor {
+        limits: deps.limits.clone(),
+        failures: deps.failures.clone(),
+    };
     let service = connectrpc::Router::new()
         .add_service(Arc::new(deps))
         .into_axum_service()
+        .with_interceptor(priority)
         .with_deadline_policy(
             connectrpc::DeadlinePolicy::new()
                 .with_default_timeout(std::time::Duration::from_secs(120)),

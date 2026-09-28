@@ -535,7 +535,7 @@ async fn test_クライアントconnect_command完了待ちの間も容量を超
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_connect_実行中要求の上限を超える要求を拒否する() {
+async fn test_connect_defaultの枠と待ち行列を超える要求を拒否する() {
     let started = Arc::new(tokio::sync::Notify::new());
     let (resume, receiver) = std::sync::mpsc::channel();
     let fixture = Fixture::with_branch(Arc::new(PausedBranch {
@@ -544,7 +544,7 @@ async fn test_connect_実行中要求の上限を超える要求を拒否する(
     }))
     .await;
     let mut pending = tokio::task::JoinSet::new();
-    for _ in 0..65 {
+    for _ in 0..92 {
         let client = fixture.client();
         let args = fixture.args();
         pending.spawn(async move { request_client(&client, "get_releash_base", args).await });
@@ -559,7 +559,7 @@ async fn test_connect_実行中要求の上限を超える要求を拒否する(
             .code,
         connectrpc::ErrorCode::ResourceExhausted
     );
-    for _ in 0..64 {
+    for _ in 0..91 {
         resume.send(()).unwrap();
     }
     while let Some(result) = pending.join_next().await {
