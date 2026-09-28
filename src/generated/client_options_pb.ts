@@ -2,12 +2,18 @@
 // @generated from file client_options.proto (package releash.client.v1, syntax proto2)
 /* eslint-disable */
 
-import type { GenExtension, GenFile } from "@bufbuild/protobuf/codegenv2";
-import { extDesc, fileDesc } from "@bufbuild/protobuf/codegenv2";
+import type { Message } from "@bufbuild/protobuf";
+import type {
+	GenExtension,
+	GenFile,
+	GenMessage,
+} from "@bufbuild/protobuf/codegenv2";
+import { extDesc, fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2";
 import type {
 	EnumValueOptions,
 	FieldOptions,
 	MessageOptions,
+	ServiceOptions,
 } from "@bufbuild/protobuf/wkt";
 import { file_google_protobuf_descriptor } from "@bufbuild/protobuf/wkt";
 
@@ -17,9 +23,43 @@ import { file_google_protobuf_descriptor } from "@bufbuild/protobuf/wkt";
 export const file_client_options: GenFile =
 	/*@__PURE__*/
 	fileDesc(
-		"ChRjbGllbnRfb3B0aW9ucy5wcm90bxIRcmVsZWFzaC5jbGllbnQudjE6RAoManNvbl93cmFwcGVyEh8uZ29vZ2xlLnByb3RvYnVmLk1lc3NhZ2VPcHRpb25zGLiOAyABKAlSC2pzb25XcmFwcGVyOj4KCWpzb25fdW5pdBIfLmdvb2dsZS5wcm90b2J1Zi5NZXNzYWdlT3B0aW9ucxi5jgMgASgIUghqc29uVW5pdDo8Cghqc29uX3RhZxIfLmdvb2dsZS5wcm90b2J1Zi5NZXNzYWdlT3B0aW9ucxi7jgMgASgJUgdqc29uVGFnOkQKDGpzb25fY29udGVudBIfLmdvb2dsZS5wcm90b2J1Zi5NZXNzYWdlT3B0aW9ucxi8jgMgASgJUgtqc29uQ29udGVudDpGCg1qc29uX3VudGFnZ2VkEh8uZ29vZ2xlLnByb3RvYnVmLk1lc3NhZ2VPcHRpb25zGL6OAyABKAhSDGpzb25VbnRhZ2dlZDpECg1qc29uX3JlcXVpcmVkEh0uZ29vZ2xlLnByb3RvYnVmLkZpZWxkT3B0aW9ucxjCjgMgASgIUgxqc29uUmVxdWlyZWQ6RAoNanNvbl9udWxsYWJsZRIdLmdvb2dsZS5wcm90b2J1Zi5GaWVsZE9wdGlvbnMYw44DIAEoCFIManNvbk51bGxhYmxlOkIKDGpzb25fZGVmYXVsdBIdLmdvb2dsZS5wcm90b2J1Zi5GaWVsZE9wdGlvbnMYxI4DIAEoCFILanNvbkRlZmF1bHQ6RwoPanNvbl9vbWl0X2VtcHR5Eh0uZ29vZ2xlLnByb3RvYnVmLkZpZWxkT3B0aW9ucxjFjgMgASgIUg1qc29uT21pdEVtcHR5OkUKDmpzb25fb21pdF9ub25lEh0uZ29vZ2xlLnByb3RvYnVmLkZpZWxkT3B0aW9ucxjGjgMgASgIUgxqc29uT21pdE5vbmU6QgoManNvbl9saXRlcmFsEh0uZ29vZ2xlLnByb3RvYnVmLkZpZWxkT3B0aW9ucxjHjgMgASgJUgtqc29uTGl0ZXJhbDpCCgxqc29uX2ZsYXR0ZW4SHS5nb29nbGUucHJvdG9idWYuRmllbGRPcHRpb25zGMiOAyABKAhSC2pzb25GbGF0dGVuOkkKDmpzb25fZW51bV9uYW1lEiEuZ29vZ2xlLnByb3RvYnVmLkVudW1WYWx1ZU9wdGlvbnMYzI4DIAEoCVIManNvbkVudW1OYW1l",
+		"ChRjbGllbnRfb3B0aW9ucy5wcm90bxIRcmVsZWFzaC5jbGllbnQudjEiawoRQ29ubmVjdGlvbkJhY2tvZmYSGgoSaW5pdGlhbF9iYWNrb2ZmX21zGAEgASgNEhIKCm11bHRpcGxpZXIYAiABKAISDgoGaml0dGVyGAMgASgCEhYKDm1heF9iYWNrb2ZmX21zGAQgASgNOkQKDGpzb25fd3JhcHBlchIfLmdvb2dsZS5wcm90b2J1Zi5NZXNzYWdlT3B0aW9ucxi4jgMgASgJUgtqc29uV3JhcHBlcjo+Cglqc29uX3VuaXQSHy5nb29nbGUucHJvdG9idWYuTWVzc2FnZU9wdGlvbnMYuY4DIAEoCFIIanNvblVuaXQ6PAoIanNvbl90YWcSHy5nb29nbGUucHJvdG9idWYuTWVzc2FnZU9wdGlvbnMYu44DIAEoCVIHanNvblRhZzpECgxqc29uX2NvbnRlbnQSHy5nb29nbGUucHJvdG9idWYuTWVzc2FnZU9wdGlvbnMYvI4DIAEoCVILanNvbkNvbnRlbnQ6RgoNanNvbl91bnRhZ2dlZBIfLmdvb2dsZS5wcm90b2J1Zi5NZXNzYWdlT3B0aW9ucxi+jgMgASgIUgxqc29uVW50YWdnZWQ6RAoNanNvbl9yZXF1aXJlZBIdLmdvb2dsZS5wcm90b2J1Zi5GaWVsZE9wdGlvbnMYwo4DIAEoCFIManNvblJlcXVpcmVkOkQKDWpzb25fbnVsbGFibGUSHS5nb29nbGUucHJvdG9idWYuRmllbGRPcHRpb25zGMOOAyABKAhSDGpzb25OdWxsYWJsZTpCCgxqc29uX2RlZmF1bHQSHS5nb29nbGUucHJvdG9idWYuRmllbGRPcHRpb25zGMSOAyABKAhSC2pzb25EZWZhdWx0OkcKD2pzb25fb21pdF9lbXB0eRIdLmdvb2dsZS5wcm90b2J1Zi5GaWVsZE9wdGlvbnMYxY4DIAEoCFINanNvbk9taXRFbXB0eTpFCg5qc29uX29taXRfbm9uZRIdLmdvb2dsZS5wcm90b2J1Zi5GaWVsZE9wdGlvbnMYxo4DIAEoCFIManNvbk9taXROb25lOkIKDGpzb25fbGl0ZXJhbBIdLmdvb2dsZS5wcm90b2J1Zi5GaWVsZE9wdGlvbnMYx44DIAEoCVILanNvbkxpdGVyYWw6QgoManNvbl9mbGF0dGVuEh0uZ29vZ2xlLnByb3RvYnVmLkZpZWxkT3B0aW9ucxjIjgMgASgIUgtqc29uRmxhdHRlbjpJCg5qc29uX2VudW1fbmFtZRIhLmdvb2dsZS5wcm90b2J1Zi5FbnVtVmFsdWVPcHRpb25zGMyOAyABKAlSDGpzb25FbnVtTmFtZTp2ChJjb25uZWN0aW9uX2JhY2tvZmYSHy5nb29nbGUucHJvdG9idWYuU2VydmljZU9wdGlvbnMY1o4DIAEoCzIkLnJlbGVhc2guY2xpZW50LnYxLkNvbm5lY3Rpb25CYWNrb2ZmUhFjb25uZWN0aW9uQmFja29mZg",
 		[file_google_protobuf_descriptor],
 	);
+
+/**
+ * @generated from message releash.client.v1.ConnectionBackoff
+ */
+export type ConnectionBackoff =
+	Message<"releash.client.v1.ConnectionBackoff"> & {
+		/**
+		 * @generated from field: optional uint32 initial_backoff_ms = 1;
+		 */
+		initialBackoffMs: number;
+
+		/**
+		 * @generated from field: optional float multiplier = 2;
+		 */
+		multiplier: number;
+
+		/**
+		 * @generated from field: optional float jitter = 3;
+		 */
+		jitter: number;
+
+		/**
+		 * @generated from field: optional uint32 max_backoff_ms = 4;
+		 */
+		maxBackoffMs: number;
+	};
+
+/**
+ * Describes the message releash.client.v1.ConnectionBackoff.
+ * Use `create(ConnectionBackoffSchema)` to create a new message.
+ */
+export const ConnectionBackoffSchema: GenMessage<ConnectionBackoff> =
+	/*@__PURE__*/
+	messageDesc(file_client_options, 0);
 
 /**
  * @generated from extension: optional string json_wrapper = 51000;
@@ -111,3 +151,11 @@ export const json_flatten: GenExtension<FieldOptions, boolean> =
 export const json_enum_name: GenExtension<EnumValueOptions, string> =
 	/*@__PURE__*/
 	extDesc(file_client_options, 12);
+
+/**
+ * @generated from extension: optional releash.client.v1.ConnectionBackoff connection_backoff = 51030;
+ */
+export const connection_backoff: GenExtension<
+	ServiceOptions,
+	ConnectionBackoff
+> = /*@__PURE__*/ extDesc(file_client_options, 13);

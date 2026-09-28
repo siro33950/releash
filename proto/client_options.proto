@@ -21,3 +21,13 @@ extend google.protobuf.FieldOptions {
 extend google.protobuf.EnumValueOptions {
   optional string json_enum_name = 51020;
 }
+
+message ConnectionBackoff {
+  optional uint32 initial_backoff_ms = 1;
+  optional float multiplier = 2;
+  optional float jitter = 3;
+  optional uint32 max_backoff_ms = 4;
+}
+extend google.protobuf.ServiceOptions {
+  optional ConnectionBackoff connection_backoff = 51030;
+}

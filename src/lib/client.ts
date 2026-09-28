@@ -18,6 +18,7 @@ import {
 import type { ClientPushPayloads } from "@/generated/client_types";
 import { clientJson } from "./clientJson";
 import { decodeClientPush, decodeTerminalEvent } from "./clientProtocol";
+import { createConnectionBackoff } from "./connectionBackoff";
 import type { TerminalSurfaceStreamItem } from "./terminalSurfaceStream";
 
 export {
@@ -258,6 +259,15 @@ type StateEntry = {
 type StateStream = { client: Client<typeof ClientService>; id: string };
 const STATE_SILENCE_MS = 30_000;
 const IDLE = "idle";
+const RETRY = "retry";
+const RECONNECT_CODES = new Set([
+	Code.Unavailable,
+	Code.Aborted,
+	Code.ResourceExhausted,
+]);
+function reconnects(error: unknown) {
+	return error instanceof ConnectError && RECONNECT_CODES.has(error.code);
+}
 const states = new Map<string, StateEntry>();
 let stateStream: StateStream | null = null;
 let stateAbort: AbortController | null = null;
@@ -291,6 +301,10 @@ function startState(stream: StateStream, target: string) {
 		})
 		.catch((error) => {
 			if (states.get(target) !== entry || stateStream !== stream) return;
+			if (reconnects(error)) {
+				stateAbort?.abort(RETRY);
+				return;
+			}
 			console.error("State subscription failed", error);
 			for (const receiver of entry.errors) receiver(error);
 		});
@@ -299,6 +313,7 @@ function startState(stream: StateStream, target: string) {
 function ensureStateStream() {
 	if (stateTask || stopped || !states.size) return;
 	stateTask = (async () => {
+		const backoff = createConnectionBackoff();
 		while (!stopped && states.size) {
 			let client: Client<typeof ClientService> | undefined;
 			const abort = new AbortController();
@@ -318,6 +333,7 @@ function ensureStateStream() {
 				)) {
 					alive();
 					if (event.event.case === "ready") {
+						backoff.reset();
 						stateStream = stream;
 						for (const target of states.keys()) startState(stream, target);
 						continue;
@@ -341,7 +357,7 @@ function ensureStateStream() {
 				}
 			} catch (error) {
 				if (stopped) break;
-				if (abort.signal.reason !== IDLE)
+				if (abort.signal.reason !== IDLE && abort.signal.reason !== RETRY)
 					console.debug("State stream ended", error);
 			} finally {
 				clearTimeout(silence);
@@ -350,8 +366,21 @@ function ensureStateStream() {
 			}
 			if (abort.signal.reason === IDLE) continue;
 			if (!stopped && states.size) {
-				refreshClient(client);
-				await new Promise((resolve) => setTimeout(resolve, 1000));
+				if (abort.signal.reason !== RETRY) refreshClient(client);
+				const delay = new AbortController();
+				stateAbort = delay;
+				await new Promise<void>((resolve) => {
+					const timer = setTimeout(resolve, backoff.next());
+					delay.signal.addEventListener(
+						"abort",
+						() => {
+							clearTimeout(timer);
+							resolve();
+						},
+						{ once: true },
+					);
+				});
+				if (stateAbort === delay) stateAbort = null;
 			}
 		}
 	})().finally(() => {
@@ -400,10 +429,16 @@ export function subscribeState<K extends keyof StateValues>(
 		if (!states.size) {
 			stateStream = null;
 			stateAbort?.abort(IDLE);
-		} else if (stateStream)
-			void stateStream.client
-				.stopStateSubscription({ clientId: stateStream.id, target: kind, args })
-				.catch((error) => console.debug("State unsubscribe failed", error));
+		} else if (stateStream) {
+			const stream = stateStream;
+			void stream.client
+				.stopStateSubscription({ clientId: stream.id, target: kind, args })
+				.catch((error) => {
+					if (reconnects(error) && stateStream === stream)
+						stateAbort?.abort(RETRY);
+					else console.debug("State unsubscribe failed", error);
+				});
+		}
 	};
 }
 

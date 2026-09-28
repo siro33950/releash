@@ -18,6 +18,8 @@ import * as clientProtocol from "./clientProtocol";
 import { getErrorMessage } from "./errorMessage";
 
 vi.unmock("@/lib/client");
+const requestUrl = (input: RequestInfo | URL) =>
+	input instanceof Request ? input.url : input.toString();
 afterEach(async () => {
 	window.dispatchEvent(new Event("pagehide"));
 	await new Promise((resolve) => setTimeout(resolve, 0));
@@ -79,12 +81,11 @@ it("送信失敗のPromiseを終了し元要求を保持して再送しない", 
 	if (!original) throw new Error("Missing fetch fixture");
 	let writes = 0;
 	fixture.fetch.mockImplementation(async (input, init) => {
-		const request = new Request(input, init);
-		if (request.url.endsWith("/UpdateExternalEditor")) {
+		if (requestUrl(input).endsWith("/UpdateExternalEditor")) {
 			writes++;
 			throw new TypeError("network failure");
 		}
-		return original(request);
+		return original(input, init);
 	});
 	await expect(
 		invokeClient("update_external_editor", { editor: "vim" }),
@@ -261,12 +262,11 @@ it("旧世代の要求失敗が新接続と進行中の要求を破棄しない"
 	if (!original) throw new Error("Missing fixture implementation");
 	let fail!: () => void;
 	fixture.fetch.mockImplementation(async (input, init) => {
-		const request = new Request(input, init);
-		if (request.url.endsWith("/UpdateExternalEditor"))
+		if (requestUrl(input).endsWith("/UpdateExternalEditor"))
 			return new Promise<Response>((_, reject) => {
 				fail = () => reject(new TypeError("late failure"));
 			});
-		return original(request);
+		return original(input, init);
 	});
 	const old = invokeClient("update_external_editor", { editor: "vim" }).catch(
 		(error) => error,
@@ -720,16 +720,23 @@ it("新規watcher登録は購読全体へ再接続を通知しない", async () 
 
 type StateEvent = MessageInitShape<typeof StateSubscriptionEventSchema>;
 
-function stateFixture(start?: () => Promise<Record<string, never>>) {
+function stateFixture(
+	start?: () => Promise<Record<string, never>>,
+	options: {
+		failBeforeReady?: number;
+		stop?: () => Record<string, never>;
+	} = {},
+) {
 	const streams: {
 		send: (event: StateEvent) => void;
 		fail: () => void;
 		signal: AbortSignal;
+		openedAt: number;
 	}[] = [];
 	const starts: StartStateSubscriptionRequest[] = [];
 	const reports = vi.fn(() => ({}));
-	const stops = vi.fn((_request: { target: string }) => ({}));
-	connectFixture({
+	const stops = vi.fn((_request: { target: string }) => options.stop?.() ?? {});
+	const fixture = connectFixture({
 		async *openStateStream(_, context) {
 			const queue: (StateEvent | Error)[] = [];
 			let wake = () => {};
@@ -741,7 +748,10 @@ function stateFixture(start?: () => Promise<Record<string, never>>) {
 				send: push,
 				fail: () => push(new ConnectError("state lost", Code.Unavailable)),
 				signal: context.signal,
+				openedAt: Date.now(),
 			});
+			if (streams.length <= (options.failBeforeReady ?? 0))
+				throw new ConnectError("open failed", Code.Unavailable);
 			yield { event: { case: "ready", value: {} } };
 			while (!context.signal.aborted) {
 				const item = queue.shift();
@@ -765,8 +775,79 @@ function stateFixture(start?: () => Promise<Record<string, never>>) {
 		stopStateSubscription: stops,
 		reportTerminalProcessed: reports,
 	});
-	return { streams, starts, stops, reports };
+	const serverInfoRequests = () =>
+		fixture.requests.filter((request) => request.url.endsWith("/GetServerInfo"))
+			.length;
+	return { streams, starts, stops, reports, serverInfoRequests };
 }
+
+it("状態のstreamのつなぎ直しは1秒から1.6倍ずつ伸び、readyを受け取ると1秒に戻る", async () => {
+	vi.useFakeTimers();
+	vi.spyOn(Math, "random").mockReturnValue(0.5);
+	try {
+		const fixture = stateFixture(undefined, { failBeforeReady: 3 });
+		subscribeState("repository-paths", vi.fn());
+		await vi.advanceTimersByTimeAsync(6000);
+		await vi.waitFor(() => expect(fixture.starts).toHaveLength(1));
+		expect(fixture.streams).toHaveLength(4);
+		const opened = fixture.streams.map((stream) => stream.openedAt);
+		expect([
+			opened[1] - opened[0],
+			opened[2] - opened[1],
+			opened[3] - opened[2],
+		]).toEqual([1000, 1600, 2560]);
+		const failedAt = Date.now();
+		fixture.streams[3].fail();
+		await vi.advanceTimersByTimeAsync(2000);
+		await vi.waitFor(() => expect(fixture.streams).toHaveLength(5));
+		expect(fixture.streams[4].openedAt - failedAt).toBe(1000);
+	} finally {
+		window.dispatchEvent(new Event("pagehide"));
+		await vi.advanceTimersByTimeAsync(1000);
+		vi.useRealTimers();
+		vi.restoreAllMocks();
+	}
+});
+
+it("購読の開始がつなぎ直しで直る失敗なら接続を使い回してstreamを開き直し同じ対象を再度開始する", async () => {
+	const start = vi
+		.fn<() => Promise<Record<string, never>>>()
+		.mockRejectedValueOnce(new ConnectError("busy", Code.ResourceExhausted))
+		.mockResolvedValue({});
+	const fixture = stateFixture(start);
+	const error = vi.fn();
+	subscribeState("repository-paths", vi.fn(), error);
+	await vi.waitFor(() => expect(fixture.streams).toHaveLength(2), {
+		timeout: 3000,
+	});
+	await vi.waitFor(() => expect(fixture.starts).toHaveLength(2));
+	expect(fixture.streams[0].signal.aborted).toBe(true);
+	expect(fixture.starts.map((request) => request.target)).toEqual([
+		"repository-paths",
+		"repository-paths",
+	]);
+	expect(error).not.toHaveBeenCalled();
+	expect(fixture.serverInfoRequests()).toBe(1);
+});
+
+it("購読の停止がつなぎ直しで直る失敗ならstreamを開き直し残った対象だけを開始する", async () => {
+	const fixture = stateFixture(undefined, {
+		stop: () => {
+			throw new ConnectError("state lost", Code.Unavailable);
+		},
+	});
+	const release = subscribeState("repository-paths", vi.fn());
+	subscribeState("providers", vi.fn());
+	await vi.waitFor(() => expect(fixture.starts).toHaveLength(2));
+	release();
+	await vi.waitFor(() => expect(fixture.streams).toHaveLength(2), {
+		timeout: 3000,
+	});
+	await vi.waitFor(() => expect(fixture.starts).toHaveLength(3));
+	expect(fixture.stops).toHaveBeenCalledOnce();
+	expect(fixture.starts[2].target).toBe("providers");
+	expect(fixture.serverInfoRequests()).toBe(1);
+});
 
 const repositoryPaths = (
 	sequence: number,

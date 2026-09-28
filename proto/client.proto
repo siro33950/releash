@@ -2920,6 +2920,12 @@ message DesktopSettings {
 }
 
 service ClientService {
+  option (connection_backoff) = {
+    initial_backoff_ms: 1000
+    multiplier: 1.6
+    jitter: 0.2
+    max_backoff_ms: 120000
+  };
   rpc OpenStateStream(OpenStateStreamRequest) returns (stream StateSubscriptionEvent);
   rpc StartStateSubscription(StartStateSubscriptionRequest) returns (Unit);
   rpc StopStateSubscription(StopStateSubscriptionRequest) returns (Unit);
