@@ -111,12 +111,16 @@ impl TerminalSurfaceApplication {
     pub(crate) fn connect_state(
         &self,
         sink: Arc<dyn crate::usecase::terminal_surface::output::TerminalSurfaceStateSink>,
-    ) {
-        self.output.set_state_sink(sink);
+    ) -> Result<(), UsecaseError> {
+        self.output.set_state_sink(sink)
     }
 
-    pub(crate) fn with_output_order(&self, runtime_generation: u64, visit: &mut dyn FnMut()) {
-        self.gateway.with_output_order(runtime_generation, visit);
+    pub(crate) fn with_output_order(
+        &self,
+        runtime_generation: u64,
+        visit: &mut dyn FnMut(),
+    ) -> bool {
+        self.gateway.with_output_order(runtime_generation, visit)
     }
 
     pub(crate) fn visit_snapshot(

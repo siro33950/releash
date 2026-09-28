@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_support::state_subscription::WakeFlag;
 
 #[test]
 fn test_配信失敗_usecaseの失敗分類へ意味を保って変換する() {
@@ -30,21 +31,41 @@ fn test_配信失敗_usecaseの失敗分類へ意味を保って変換する() {
     }
 }
 
+#[test]
+fn test_terminal登録_nulを含む識別子を失敗として返す() {
+    // Given
+    let presenter = StateSubscriptionPresenter::new(vec![]);
+
+    // When
+    let path = presenter.initialize(&crate::test_support::state_subscription::registration(
+        "session", "/re\0po", None, 1, 0,
+    ));
+    let session = presenter.initialize(&crate::test_support::state_subscription::registration(
+        "session",
+        "/repo",
+        Some("ses\0sion"),
+        1,
+        0,
+    ));
+
+    // Then
+    assert!(path.is_err());
+    assert!(session.is_err());
+    assert_eq!(presenter.test_runtime().test_terminal_route_count(), 0);
+}
+
 #[tokio::test]
 async fn test_古いterminal寸法_初回の復元要求だけ待機者へ通知する() {
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::task::{Context, Wake, Waker};
-
-    struct WakeFlag(AtomicBool);
-    impl Wake for WakeFlag {
-        fn wake(self: Arc<Self>) {
-            self.0.store(true, Ordering::SeqCst);
-        }
-    }
+    use std::task::{Context, Waker};
 
     // Given
     let presenter = Arc::new(StateSubscriptionPresenter::new(vec![]));
-    presenter.initialize("session", "/repo", None, 1, 2);
+    presenter
+        .initialize(&crate::test_support::state_subscription::registration(
+            "session", "/repo", None, 1, 2,
+        ))
+        .unwrap();
     let usecase = StateSubscriptionUsecase::new_with_output(
         presenter.clone(),
         presenter.change_sender(),
@@ -93,14 +114,7 @@ async fn test_古いterminal寸法_初回の復元要求だけ待機者へ通知
 #[tokio::test]
 async fn test_購読開始失敗_対象削除を待機中streamへ通知する() {
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::task::{Context, Wake, Waker};
-
-    struct WakeFlag(AtomicBool);
-    impl Wake for WakeFlag {
-        fn wake(self: Arc<Self>) {
-            self.0.store(true, Ordering::SeqCst);
-        }
-    }
+    use std::task::{Context, Waker};
 
     // Given
     let presenter = Arc::new(StateSubscriptionPresenter::new(vec![]));
@@ -111,7 +125,11 @@ async fn test_購読開始失敗_対象削除を待機中streamへ通知する()
     .unwrap();
     presenter
         .runtime
-        .update(|state| state.register(target.clone(), payload, Delivery::Full))
+        .update(|state| {
+            state
+                .register(target.clone(), payload, Delivery::Full)
+                .map(|_| true)
+        })
         .unwrap();
     let usecase = StateSubscriptionUsecase::new_with_output(
         presenter.clone(),
@@ -145,14 +163,7 @@ async fn test_購読開始失敗_対象削除を待機中streamへ通知する()
 async fn test_購読再開始_状態不変なら通知せず初回開始だけ通知する() {
     use crate::infrastructure::state_subscription::Event;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::task::{Context, Wake, Waker};
-
-    struct WakeFlag(AtomicBool);
-    impl Wake for WakeFlag {
-        fn wake(self: Arc<Self>) {
-            self.0.store(true, Ordering::SeqCst);
-        }
-    }
+    use std::task::{Context, Waker};
 
     let presenter = Arc::new(StateSubscriptionPresenter::new(vec![]));
     let usecase = StateSubscriptionUsecase::new_with_output(

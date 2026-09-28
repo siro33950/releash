@@ -2,6 +2,8 @@ use super::*;
 use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
 use crate::usecase::terminal_surface::application::TerminalSurfaceStreamItem;
 
+const TERMINAL_INPUT_ID_MAX_BYTES: usize = 128;
+
 fn error(e: impl std::fmt::Display) -> StateReadError {
     StateReadError::from_error(TechnicalFailure {
         nature: TechnicalFailureNature::Other,
@@ -17,7 +19,7 @@ impl StateSubscriptionUsecase {
         input_id: &str,
         cursor: Option<(&str, u64)>,
     ) -> Result<(), StateReadError> {
-        if input_id.trim().is_empty() || input_id.len() > crate::common::SUBSCRIPTION_ID_MAX_BYTES {
+        if input_id.trim().is_empty() || input_id.len() > TERMINAL_INPUT_ID_MAX_BYTES {
             return Err(StateReadError {
                 source: StateReadFailure::InvalidTerminalInput,
                 message: "Invalid terminal input identity".into(),

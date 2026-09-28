@@ -4,20 +4,15 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 
 use crate::domain::terminal_surface::gateway::TerminalSurfaceEvent;
+use crate::usecase::terminal_surface::error::UsecaseError;
 use crate::usecase::terminal_surface::output::{
-    TerminalSurfaceEventSink, TerminalSurfaceOutputControl, TerminalSurfaceOutputEvent,
+    TerminalRegistration, TerminalSurfaceEventSink, TerminalSurfaceOutputControl,
+    TerminalSurfaceOutputEvent,
 };
 
 use crate::infrastructure::terminal::output_flow_control::TerminalOutputFlow;
 
 const TERMINAL_SURFACE_STREAM_CAPACITY: usize = 256;
-
-struct TerminalRegistration {
-    session_key: String,
-    workspace_path: String,
-    session_id: Option<String>,
-    latest_sequence: u64,
-}
 
 pub(crate) struct TerminalSurfaceEventHub {
     sender: tokio::sync::broadcast::Sender<TerminalSurfaceEvent>,
@@ -54,53 +49,34 @@ impl TerminalSurfaceEventHub {
     pub(crate) fn test_subscribed(&self, session: &str, client: &str) -> bool {
         self.output.test_subscribed(session, client)
     }
+
+    #[cfg(test)]
+    pub(crate) fn test_pending_amount(&self, session: &str, client: &str) -> Option<usize> {
+        self.output.test_pending_amount(session, client)
+    }
 }
 
 impl TerminalSurfaceOutputControl for TerminalSurfaceEventHub {
     fn set_state_sink(
         &self,
         sink: Arc<dyn crate::usecase::terminal_surface::output::TerminalSurfaceStateSink>,
-    ) {
+    ) -> Result<(), UsecaseError> {
         let registrations = self.registrations.lock();
-        *self.state_sink.lock() = Some(sink.clone());
-        for (&runtime_generation, registration) in registrations.iter() {
-            sink.initialize(
-                &registration.session_key,
-                &registration.workspace_path,
-                registration.session_id.as_deref(),
-                runtime_generation,
-                registration.latest_sequence,
-            );
+        for registration in registrations.values() {
+            sink.initialize(registration)?;
         }
+        *self.state_sink.lock() = Some(sink);
+        Ok(())
     }
-    fn initialize(
-        &self,
-        session_key: &str,
-        workspace_path: &str,
-        session_id: Option<&str>,
-        runtime_generation: u64,
-        latest_sequence: u64,
-    ) {
+    fn initialize(&self, registration: TerminalRegistration) -> Result<(), UsecaseError> {
         let mut registrations = self.registrations.lock();
-        registrations.insert(
-            runtime_generation,
-            TerminalRegistration {
-                session_key: session_key.into(),
-                workspace_path: workspace_path.into(),
-                session_id: session_id.map(str::to_owned),
-                latest_sequence,
-            },
-        );
-        self.output.reset(session_key, latest_sequence);
         if let Some(sink) = self.state_sink.lock().clone() {
-            sink.initialize(
-                session_key,
-                workspace_path,
-                session_id,
-                runtime_generation,
-                latest_sequence,
-            );
+            sink.initialize(&registration)?;
         }
+        self.output
+            .reset(&registration.session_key, registration.latest_sequence);
+        registrations.insert(registration.runtime_generation, registration);
+        Ok(())
     }
     fn subscribe_output(&self, session_key: &str, client: &str, units: usize) {
         self.output.subscribe(session_key, client, units);

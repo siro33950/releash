@@ -25,7 +25,7 @@ async fn subscribe_push(
     if !crate::adaptor::controller::api::client_stream::valid_subscription_id(&id, true) {
         return Err(crate::adaptor::presenter::connect::classified_error(
             crate::adaptor::presenter::error::AppError::invalid_request(
-                format!("Identifier exceeds {} bytes", crate::common::SUBSCRIPTION_ID_MAX_BYTES),
+                format!("Identifier exceeds {} bytes", crate::adaptor::controller::api::client_stream::SUBSCRIPTION_ID_MAX_BYTES),
             ),
         ));
     }

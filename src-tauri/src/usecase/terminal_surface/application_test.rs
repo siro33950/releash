@@ -36,8 +36,18 @@ impl TerminalSurfaceEventSource for Noop {
 }
 
 impl TerminalSurfaceOutputControl for Noop {
-    fn set_state_sink(&self, _: Arc<dyn TerminalSurfaceStateSink>) {}
-    fn initialize(&self, _: &str, _: &str, _: Option<&str>, _: u64, _: u64) {}
+    fn set_state_sink(
+        &self,
+        _: Arc<dyn TerminalSurfaceStateSink>,
+    ) -> Result<(), crate::usecase::terminal_surface::error::UsecaseError> {
+        Ok(())
+    }
+    fn initialize(
+        &self,
+        _: crate::usecase::terminal_surface::output::TerminalRegistration,
+    ) -> Result<(), crate::usecase::terminal_surface::error::UsecaseError> {
+        Ok(())
+    }
     fn subscribe_output(&self, _: &str, _: &str, _: usize) {}
     fn unsubscribe_output(&self, _: &str, _: &str) {}
     fn processed_output(&self, _: &str, _: &str, _: usize) {}

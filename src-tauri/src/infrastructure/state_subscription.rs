@@ -94,13 +94,13 @@ impl<T: Clone + PartialEq + Send + Sync + 'static> StateSubscriptionRuntime<T> {
 
     pub(crate) fn update(
         &self,
-        update: impl FnOnce(&mut Subscriptions<T>) -> Result<(), SubscriptionError>,
+        update: impl FnOnce(&mut Subscriptions<T>) -> Result<bool, SubscriptionError>,
     ) -> Result<(), SubscriptionError> {
         let result = update(&mut self.state.lock());
-        if result.is_ok() {
+        if matches!(result, Ok(true)) {
             self.changed.notify_waiters();
         }
-        result
+        result.map(|_| ())
     }
 
     pub(crate) fn inspect<R>(&self, read: impl FnOnce(&Subscriptions<T>) -> R) -> R {
@@ -362,7 +362,7 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
     }
 
     pub fn open(&mut self, id: String) -> Result<(), SubscriptionError> {
-        if id.is_empty() || id.len() > crate::common::SUBSCRIPTION_ID_MAX_BYTES {
+        if id.is_empty() {
             return Err(SubscriptionError::InvalidId);
         }
         if self.clients.contains_key(&id) {
@@ -461,14 +461,14 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
         target: &str,
         version: Version,
         pending_limit: usize,
-    ) -> Result<(), SubscriptionError> {
+    ) -> Result<bool, SubscriptionError> {
         let id = target.to_string();
         if self
             .targets
             .get(&id)
             .is_some_and(|value| value.version.epoch == version.epoch)
         {
-            return Ok(());
+            return Ok(false);
         }
         self.targets.insert(
             id.clone(),
@@ -488,7 +488,7 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
                 subscription.overflowed = true;
             }
         }
-        Ok(())
+        Ok(true)
     }
 
     pub fn is_subscribed(&self, client: &str, target: &str) -> bool {
@@ -522,7 +522,7 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
         target: &str,
         version: Version,
         snapshot: T,
-    ) -> Result<(), SubscriptionError> {
+    ) -> Result<bool, SubscriptionError> {
         let id = target.to_string();
         let value = self
             .targets
@@ -531,13 +531,16 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
         if value.version.epoch != version.epoch || value.version.sequence > version.sequence {
             return Err(SubscriptionError::SnapshotRequired);
         }
+        if value.version == version && value.snapshot.as_deref() == Some(&snapshot) {
+            return Ok(false);
+        }
         if value.version.sequence < version.sequence {
             value.history.clear();
             value.history_units.clear();
         }
         value.version = version;
         value.snapshot = Some(Arc::new(snapshot));
-        Ok(())
+        Ok(true)
     }
 
     pub fn publish_delta(
@@ -674,15 +677,15 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
         })
     }
 
-    pub fn stop(&mut self, client: &str, target: &str) -> Result<(), SubscriptionError> {
+    pub fn stop(&mut self, client: &str, target: &str) -> Result<bool, SubscriptionError> {
         let client = self
             .clients
             .get_mut(client)
             .ok_or(SubscriptionError::StreamEnded)?;
         let target = target.to_string();
-        client.subscriptions.remove(&target);
+        let changed = client.subscriptions.remove(&target).is_some();
         client.order.retain(|id| id != &target);
-        Ok(())
+        Ok(changed)
     }
 
     pub fn publish(
@@ -690,14 +693,14 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
         target: &str,
         snapshot: T,
         delta: Option<T>,
-    ) -> Result<(), SubscriptionError> {
+    ) -> Result<bool, SubscriptionError> {
         let target = target.to_string();
         let value = self
             .targets
             .get_mut(&target)
             .ok_or(SubscriptionError::UnknownTarget)?;
         if value.snapshot.as_deref() == Some(&snapshot) {
-            return Ok(());
+            return Ok(false);
         }
         value.version.sequence = value
             .version
@@ -735,7 +738,7 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
                 }
             }
         }
-        Ok(())
+        Ok(true)
     }
 
     pub fn ensure_active(&mut self, target: &str) -> Result<(), SubscriptionError> {
@@ -764,10 +767,13 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
     pub fn release_inactive_snapshots_except(
         &mut self,
         protected: &std::collections::HashSet<String>,
-    ) {
+    ) -> bool {
         let active = self.active_targets();
+        let mut changed = false;
         for (id, target) in &mut self.targets {
             if !target.persistent && !active.contains(id) && !protected.contains(id) {
+                changed |= target.snapshot.is_some()
+                    || (target.delivery == Delivery::Full && !target.history.is_empty());
                 target.snapshot = None;
                 if target.delivery == Delivery::Full {
                     target.history.clear();
@@ -775,6 +781,7 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
                 }
             }
         }
+        changed
     }
 
     pub fn active_targets(&self) -> std::collections::HashSet<String> {

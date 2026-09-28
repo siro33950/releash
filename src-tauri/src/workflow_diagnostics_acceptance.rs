@@ -259,7 +259,6 @@ impl WorkflowDiagnosticsAcceptanceHost {
             binding.terminal_bearer_token(),
             None,
             None,
-            None,
         );
         let local_api = binding.start(router, &tokio::runtime::Handle::current());
         Ok(Self {

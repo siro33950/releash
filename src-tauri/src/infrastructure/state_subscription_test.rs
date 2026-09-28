@@ -24,6 +24,46 @@ async fn test_配信通知_状態を変えた操作だけ待機者を起こす()
     // Then
     assert!(changed.as_mut().now_or_never().is_some());
 }
+
+#[tokio::test]
+async fn test_配信通知_updateも状態が変わった場合だけ待機者を起こす() {
+    // Given
+    let runtime = StateSubscriptionRuntime::<u64>::new("boot".into());
+    let unchanged = runtime.changed.notified();
+    tokio::pin!(unchanged);
+    unchanged.as_mut().enable();
+
+    // When
+    runtime.update(|_| Ok(false)).unwrap();
+
+    // Then
+    assert!(unchanged.as_mut().now_or_never().is_none());
+
+    // Given
+    let changed = runtime.changed.notified();
+    tokio::pin!(changed);
+    changed.as_mut().enable();
+
+    // When
+    runtime
+        .update(|state| {
+            state
+                .register("target".into(), 0, Delivery::Full)
+                .map(|_| true)
+        })
+        .unwrap();
+
+    // Then
+    assert!(changed.as_mut().now_or_never().is_some());
+
+    let repeated = runtime.changed.notified();
+    tokio::pin!(repeated);
+    repeated.as_mut().enable();
+    runtime
+        .update(|state| state.publish("target", 0, None))
+        .unwrap();
+    assert!(repeated.as_mut().now_or_never().is_none());
+}
 fn registry() -> Subscriptions<u64> {
     let mut state = Subscriptions::new("boot".into());
     state

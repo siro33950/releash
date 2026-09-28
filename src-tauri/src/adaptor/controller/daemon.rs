@@ -50,11 +50,15 @@ pub(crate) async fn compose(
     })?;
     let startup_authority =
         Arc::new(usecase::application_startup::ApplicationStartupAuthority::ready());
-    let state_wiring = adaptor::controller::api::StateSubscriptionDeps::build(
-        Vec::new(),
-        Arc::new(adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+    let state_presenter = Arc::new(
+        adaptor::presenter::state_subscription::StateSubscriptionPresenter::new(Vec::new()),
     );
-    let state_subscriptions = state_wiring.usecase().clone();
+    let state_subscriptions =
+        usecase::state_subscription::StateSubscriptionUsecase::new_with_output(
+            state_presenter.clone(),
+            state_presenter.change_sender(),
+            Arc::new(adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+        );
     queue.set_publisher(state_subscriptions.publisher());
     let push_sink = Arc::new(infrastructure::push::PushSink::new());
 
@@ -64,6 +68,8 @@ pub(crate) async fn compose(
     let terminal_surface_runtime =
         terminal_surface::TerminalSurfaceRuntime::new(queue.clone(), data_dir.clone());
     let terminal_surface = terminal_surface_runtime.application();
+    state_presenter.connect_terminal(&terminal_surface)?;
+    let state_subscriptions = state_subscriptions.with_terminal(terminal_surface.clone());
     let review_comment_usecase =
         Arc::new(adaptor::controller::wiring::build_review_comment_usecase());
     let file_watchers = Arc::new(infrastructure::file_watcher::FileWatcherManager::default());
@@ -473,16 +479,16 @@ pub(crate) async fn compose(
         workflow_runtime_usecase.clone(),
         local_api_binding.bearer_token(),
         local_api_binding.client_bearer_token(),
-        Some(adaptor::controller::api::TerminalApiDeps::new(
-            terminal_surface.clone(),
-        )),
         Some(
             adaptor::controller::api::ClientApiDeps::new(
                 client_dispatch.clone(),
                 adaptor::gateway::push::ClientPushGateway::new(push_sink.clone()),
                 dependencies.watcher.clone(),
             )
-            .with_state_subscriptions(state_wiring.with_usecase(state_subscriptions))
+            .with_state_subscriptions(adaptor::controller::api::StateSubscriptionDeps::new(
+                state_subscriptions,
+                state_presenter,
+            ))
             .with_desktop_settings(usecase::app_config::AppConfigUsecase::new(
                 config_repository,
             )),

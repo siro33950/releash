@@ -364,7 +364,6 @@ impl ProviderLifecycleAcceptanceHost {
             binding.bearer_token(),
             binding.terminal_bearer_token(),
             None,
-            None,
             Some(usecase.clone()),
         );
         let server = binding.start(router, &tokio::runtime::Handle::current());

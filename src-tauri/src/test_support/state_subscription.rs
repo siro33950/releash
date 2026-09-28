@@ -5,6 +5,30 @@ pub(crate) use crate::adaptor::presenter::state_subscription::StateSubscriptionE
 pub(crate) use crate::infrastructure::state_subscription::{Delivery, Event, Version};
 pub(crate) use reads_tests::Fixture as StateReadsFixture;
 
+pub(crate) struct WakeFlag(pub(crate) std::sync::atomic::AtomicBool);
+
+impl std::task::Wake for WakeFlag {
+    fn wake(self: std::sync::Arc<Self>) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+pub(crate) fn registration(
+    session_key: &str,
+    workspace_path: &str,
+    session_id: Option<&str>,
+    runtime_generation: u64,
+    latest_sequence: u64,
+) -> crate::usecase::terminal_surface::output::TerminalRegistration {
+    crate::usecase::terminal_surface::output::TerminalRegistration {
+        session_key: session_key.into(),
+        workspace_path: workspace_path.into(),
+        session_id: session_id.map(str::to_owned),
+        runtime_generation,
+        latest_sequence,
+    }
+}
+
 pub(crate) fn start(
     usecase: &crate::usecase::state_subscription::StateSubscriptionUsecase,
     client: &str,

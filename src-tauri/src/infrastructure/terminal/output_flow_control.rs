@@ -147,6 +147,14 @@ impl TerminalOutputFlow {
             .get(session)
             .is_some_and(|(flow, _)| flow.pending.contains_key(client))
     }
+
+    #[cfg(test)]
+    pub(crate) fn test_pending_amount(&self, session: &str, client: &str) -> Option<usize> {
+        self.sessions
+            .lock()
+            .get(session)
+            .and_then(|(flow, _)| flow.pending.get(client).copied())
+    }
 }
 
 #[cfg(test)]

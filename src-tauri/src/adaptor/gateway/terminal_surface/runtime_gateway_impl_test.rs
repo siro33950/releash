@@ -14,6 +14,25 @@ fn session_owner(path: &str, session_id: &str) -> TerminalSurfaceOwner {
     TerminalSurfaceOwner::session(WorkspaceIdentity::new(path), session_id).unwrap()
 }
 
+#[test]
+fn test_出力順序区間_削除済み世代ではcallbackを実行しない() {
+    // Given
+    let gateway = TerminalSurfaceRuntimeGatewayFor::default();
+    gateway.insert_surface(TerminalSurface::new(1, workspace_owner("/repo"), None));
+    let mut visited = false;
+
+    // When
+    assert!(gateway.with_output_order(1, &mut || visited = true));
+    assert!(visited);
+    visited = false;
+    gateway.remove_surface(1).unwrap();
+    let entered = gateway.with_output_order(1, &mut || visited = true);
+
+    // Then
+    assert!(!visited);
+    assert!(!entered);
+}
+
 struct BlockingFirstEventSink {
     first_started: Arc<(StdMutex<bool>, Condvar)>,
     release_first: Arc<(StdMutex<bool>, Condvar)>,
@@ -1224,7 +1243,10 @@ async fn assert_terminal_recreation(drain_exit: bool) {
         Box::new(MockResizer { rows: 24, cols: 80 }),
     );
     gateway.insert_surface(TerminalSurface::new(1, owner.clone(), None));
-    hub.initialize(&key, "/repo", None, 1, 0);
+    hub.initialize(crate::test_support::state_subscription::registration(
+        &key, "/repo", None, 1, 0,
+    ))
+    .unwrap();
     let terminal = Arc::new(TerminalSurfaceApplication::new(
         std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
         gateway.clone(),
@@ -1238,7 +1260,8 @@ async fn assert_terminal_recreation(drain_exit: bool) {
     subscriptions
         .test_presenter()
         .unwrap()
-        .connect_terminal(&terminal);
+        .connect_terminal(&terminal)
+        .unwrap();
     let subscriptions = subscriptions.with_terminal(terminal.clone());
     let stream = subscriptions.open("client".into()).unwrap();
     tokio::pin!(stream);
@@ -1291,7 +1314,10 @@ async fn assert_terminal_recreation(drain_exit: bool) {
         Box::new(MockResizer { rows: 24, cols: 80 }),
     );
     gateway.insert_surface(TerminalSurface::new(2, owner.clone(), None));
-    hub.initialize(&key, "/repo", None, 2, 0);
+    hub.initialize(crate::test_support::state_subscription::registration(
+        &key, "/repo", None, 2, 0,
+    ))
+    .unwrap();
     // Then
     if !drain_exit {
         let next = tokio::time::timeout(Duration::from_secs(2), stream.next())

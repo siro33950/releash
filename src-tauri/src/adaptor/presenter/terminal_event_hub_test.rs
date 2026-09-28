@@ -25,19 +25,16 @@ fn test_ターミナル状態接続_接続前の登録だけを再生し世代�
     impl TerminalSurfaceStateSink for RecordingStateSink {
         fn initialize(
             &self,
-            key: &str,
-            path: &str,
-            session: Option<&str>,
-            generation: u64,
-            sequence: u64,
-        ) {
+            registration: &crate::usecase::terminal_surface::output::TerminalRegistration,
+        ) -> Result<(), crate::usecase::terminal_surface::error::UsecaseError> {
             self.initialized.lock().unwrap().push((
-                key.into(),
-                path.into(),
-                session.map(str::to_owned),
-                generation,
-                sequence,
+                registration.session_key.clone(),
+                registration.workspace_path.clone(),
+                registration.session_id.clone(),
+                registration.runtime_generation,
+                registration.latest_sequence,
             ));
+            Ok(())
         }
         fn remove(&self, key: &str, generation: u64) -> bool {
             self.removed.lock().unwrap().push((key.into(), generation));
@@ -48,16 +45,26 @@ fn test_ターミナル状態接続_接続前の登録だけを再生し世代�
 
     // Given
     let hub = TerminalSurfaceEventHub::with_flags(8, true);
-    hub.initialize("old", "/repo", None, 1, 0);
+    hub.initialize(crate::test_support::state_subscription::registration(
+        "old", "/repo", None, 1, 0,
+    ))
+    .unwrap();
     assert!(!hub.remove(1));
-    hub.initialize("session", "/repo", Some("agent"), 2, 7);
+    hub.initialize(crate::test_support::state_subscription::registration(
+        "session",
+        "/repo",
+        Some("agent"),
+        2,
+        7,
+    ))
+    .unwrap();
     let sink = Arc::new(RecordingStateSink {
         initialized: std::sync::Mutex::new(Vec::new()),
         removed: std::sync::Mutex::new(Vec::new()),
     });
 
     // When
-    hub.set_state_sink(sink.clone());
+    hub.set_state_sink(sink.clone()).unwrap();
     assert!(hub.remove(2));
 
     // Then
@@ -66,6 +73,48 @@ fn test_ターミナル状態接続_接続前の登録だけを再生し世代�
         vec![("session".into(), "/repo".into(), Some("agent".into()), 2, 7)]
     );
     assert_eq!(*sink.removed.lock().unwrap(), vec![("session".into(), 2)]);
+}
+
+#[test]
+fn test_ターミナル登録_配信対象の登録失敗を返しhubに残さない() {
+    struct RejectingStateSink;
+    impl TerminalSurfaceStateSink for RejectingStateSink {
+        fn initialize(
+            &self,
+            _: &crate::usecase::terminal_surface::output::TerminalRegistration,
+        ) -> Result<(), crate::usecase::terminal_surface::error::UsecaseError> {
+            Err(
+                crate::usecase::terminal_surface::error::UsecaseError::Gateway(
+                    "invalid target".into(),
+                ),
+            )
+        }
+        fn remove(&self, _: &str, _: u64) -> bool {
+            false
+        }
+        fn publish(&self, _: TerminalSurfaceOutputEvent) {}
+    }
+
+    // Given
+    let hub = TerminalSurfaceEventHub::with_flags(8, true);
+    hub.set_state_sink(Arc::new(RejectingStateSink)).unwrap();
+
+    // When
+    let result = hub.initialize(crate::test_support::state_subscription::registration(
+        "session", "/repo", None, 1, 0,
+    ));
+
+    // Then
+    assert!(result.is_err());
+    assert!(!hub.remove(1));
+
+    let replay = TerminalSurfaceEventHub::with_flags(8, true);
+    replay
+        .initialize(crate::test_support::state_subscription::registration(
+            "session", "/repo", None, 1, 0,
+        ))
+        .unwrap();
+    assert!(replay.set_state_sink(Arc::new(RejectingStateSink)).is_err());
 }
 
 #[test]
@@ -183,7 +232,12 @@ fn test_ターミナル削除_購読の有無によらず停止中の出力元�
 
     struct StateSink(bool);
     impl TerminalSurfaceStateSink for StateSink {
-        fn initialize(&self, _: &str, _: &str, _: Option<&str>, _: u64, _: u64) {}
+        fn initialize(
+            &self,
+            _: &crate::usecase::terminal_surface::output::TerminalRegistration,
+        ) -> Result<(), crate::usecase::terminal_surface::error::UsecaseError> {
+            Ok(())
+        }
         fn remove(&self, _: &str, _: u64) -> bool {
             self.0
         }
@@ -193,10 +247,17 @@ fn test_ターミナル削除_購読の有無によらず停止中の出力元�
     for subscribed in [false, true] {
         // Given
         let hub = Arc::new(TerminalSurfaceEventHub::with_flags(8, true));
-        hub.set_state_sink(Arc::new(StateSink(subscribed)));
+        hub.set_state_sink(Arc::new(StateSink(subscribed))).unwrap();
         let owner = TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/repo")).unwrap();
         let surface = TerminalSurface::new(1, owner, None).summary();
-        hub.initialize(&surface.session_key, "/repo", None, 1, 0);
+        hub.initialize(crate::test_support::state_subscription::registration(
+            &surface.session_key,
+            "/repo",
+            None,
+            1,
+            0,
+        ))
+        .unwrap();
         hub.subscribe_output(&surface.session_key, "client", 0);
         hub.publish(TerminalSurfaceOutputEvent::Output {
             session_key: surface.session_key.clone(),

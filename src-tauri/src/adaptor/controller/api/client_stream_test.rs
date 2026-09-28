@@ -3,8 +3,8 @@ use super::*;
 #[test]
 fn test_購読識別子_二入口で同じ長さ上限を使い空文字の扱いだけを分ける() {
     // Given
-    let at_limit = "x".repeat(128);
-    let over_limit = "x".repeat(129);
+    let at_limit = "x".repeat(SUBSCRIPTION_ID_MAX_BYTES);
+    let over_limit = "x".repeat(SUBSCRIPTION_ID_MAX_BYTES + 1);
     // When
     let accepted = [
         valid_subscription_id(&at_limit, true),

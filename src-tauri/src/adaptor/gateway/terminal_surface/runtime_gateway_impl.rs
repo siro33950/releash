@@ -70,6 +70,10 @@ pub struct TerminalSurfaceRuntimeGatewayFor {
     snapshot_materialization_count: std::sync::atomic::AtomicUsize,
     #[cfg(test)]
     pub(crate) before_output_order: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    #[cfg(test)]
+    pub(crate) during_output_order: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    #[cfg(test)]
+    test_output_orders: Mutex<HashMap<u64, Arc<TerminalSurfaceEventOrder>>>,
 }
 
 #[cfg(test)]
@@ -88,6 +92,10 @@ impl Default for TerminalSurfaceRuntimeGatewayFor {
             snapshot_materialization_count: std::sync::atomic::AtomicUsize::new(0),
             #[cfg(test)]
             before_output_order: Mutex::new(None),
+            #[cfg(test)]
+            during_output_order: Mutex::new(None),
+            #[cfg(test)]
+            test_output_orders: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -581,6 +589,10 @@ impl TerminalSurfaceRuntimeGatewayFor {
             snapshot_materialization_count: std::sync::atomic::AtomicUsize::new(0),
             #[cfg(test)]
             before_output_order: Mutex::new(None),
+            #[cfg(test)]
+            during_output_order: Mutex::new(None),
+            #[cfg(test)]
+            test_output_orders: Mutex::new(HashMap::new()),
         }
     }
 
@@ -604,6 +616,10 @@ impl TerminalSurfaceRuntimeGatewayFor {
             snapshot_materialization_count: std::sync::atomic::AtomicUsize::new(0),
             #[cfg(test)]
             before_output_order: Mutex::new(None),
+            #[cfg(test)]
+            during_output_order: Mutex::new(None),
+            #[cfg(test)]
+            test_output_orders: Mutex::new(HashMap::new()),
         }
     }
 
@@ -887,6 +903,11 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
     }
 
     fn insert_surface(&self, surface: TerminalSurface) {
+        #[cfg(test)]
+        self.test_output_orders
+            .lock()
+            .entry(surface.runtime_generation.value())
+            .or_insert_with(|| Arc::new(TerminalSurfaceEventOrder::default()));
         let active_count = {
             let mut registry = self.registry.lock();
             registry.insert(surface);
@@ -957,7 +978,7 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
         self.materialize_surface(runtime_generation)
     }
 
-    fn with_output_order(&self, runtime_generation: u64, visit: &mut dyn FnMut()) {
+    fn with_output_order(&self, runtime_generation: u64, visit: &mut dyn FnMut()) -> bool {
         #[cfg(test)]
         {
             let before = self.before_output_order.lock().take();
@@ -970,8 +991,23 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
             .lock()
             .get(&runtime_generation)
             .map(|runtime| runtime.event_order.clone());
-        let _order = order.as_ref().map(|order| order.serialization.lock());
+        #[cfg(test)]
+        let order = order.or_else(|| {
+            self.test_output_orders
+                .lock()
+                .get(&runtime_generation)
+                .cloned()
+        });
+        let Some(order) = order else {
+            return false;
+        };
+        let _order = order.serialization.lock();
+        #[cfg(test)]
+        if let Some(during) = self.during_output_order.lock().take() {
+            during();
+        }
         visit();
+        true
     }
 
     fn select_kill_targets_by_worktree(&self, worktree_path: &str) -> Vec<u64> {
@@ -982,6 +1018,8 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
 
     fn remove_surface(&self, runtime_generation: u64) -> Option<TerminalSurface> {
         self.runtimes.lock().remove(&runtime_generation);
+        #[cfg(test)]
+        self.test_output_orders.lock().remove(&runtime_generation);
         let (removed, active_count, subscribed) = {
             let mut registry = self.registry.lock();
             let removed = registry.remove(runtime_generation);

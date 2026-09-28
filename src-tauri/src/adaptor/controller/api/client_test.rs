@@ -1030,6 +1030,7 @@ async fn test_push購読_idは128byteまで受理し超過を保持前に拒否�
 
 #[tokio::test]
 async fn test_状態購読_購読idを入口で128バイトまで受け付ける() {
+    // Given
     let subscriptions = crate::usecase::state_subscription::StateSubscriptionUsecase::new(
         vec![],
         Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
@@ -1053,6 +1054,7 @@ async fn test_状態購読_購読idを入口で128バイトまで受け付ける
         axum::serve(listener, router(Some(deps))).await.unwrap();
     });
     let client = rpc::ClientServiceClient::new(HttpClient::plaintext(), config);
+    // When
     for id in [String::new(), "x".repeat(129), "あ".repeat(43)] {
         let mut stream = client
             .open_state_stream(rpc::OpenStateStreamRequest {
@@ -1061,6 +1063,7 @@ async fn test_状態購読_購読idを入口で128バイトまで受け付ける
             })
             .await
             .unwrap();
+        // Then
         assert_eq!(
             stream
                 .message::<rpc::StateSubscriptionEvent>()
@@ -1070,6 +1073,7 @@ async fn test_状態購読_購読idを入口で128バイトまで受け付ける
             connectrpc::ErrorCode::InvalidArgument
         );
     }
+    // When
     let mut stream = client
         .open_state_stream(rpc::OpenStateStreamRequest {
             client_id: "x".repeat(128),
@@ -1077,6 +1081,7 @@ async fn test_状態購読_購読idを入口で128バイトまで受け付ける
         })
         .await
         .unwrap();
+    // Then
     assert!(stream
         .message::<rpc::StateSubscriptionEvent>()
         .await
@@ -1935,8 +1940,22 @@ async fn test_terminal購読_connectの後段配線と差分再開と流量停�
     gateway.additional_surfaces = vec![first.clone(), second.clone()];
     let gateway = Arc::new(gateway);
     let hub = Arc::new(TerminalSurfaceEventHub::with_flags(256, true));
-    hub.initialize(&first.session_key, "/first", None, 1, 0);
-    hub.initialize(&second.session_key, "/second", None, 2, 0);
+    hub.initialize(crate::test_support::state_subscription::registration(
+        &first.session_key,
+        "/first",
+        None,
+        1,
+        0,
+    ))
+    .unwrap();
+    hub.initialize(crate::test_support::state_subscription::registration(
+        &second.session_key,
+        "/second",
+        None,
+        2,
+        0,
+    ))
+    .unwrap();
     let terminal = Arc::new(TerminalSurfaceApplication::new(
         std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
         gateway.clone(),
@@ -1964,6 +1983,12 @@ async fn test_terminal購読_connectの後段配線と差分再開と流量停�
         vec!["/repo".into()],
         Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
     );
+    subscriptions
+        .test_presenter()
+        .unwrap()
+        .connect_terminal(&terminal)
+        .unwrap();
+    let subscriptions = subscriptions.with_terminal(terminal);
     let deps = ClientApiDeps::new(
         Arc::new(dispatch),
         ClientPushGateway::new(Arc::new(PushSink::new())),
@@ -1972,8 +1997,7 @@ async fn test_terminal購読_connectの後段配線と差分再開と流量停�
     .with_state_subscriptions(StateSubscriptionDeps::new(
         subscriptions.clone(),
         Arc::new(subscriptions.test_presenter().unwrap().clone()),
-    ))
-    .with_terminal(Some(TerminalApiDeps::new(terminal)));
+    ));
     assert_eq!(*gateway.list_summaries_calls.lock(), 0);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let config = ClientConfig::new(
@@ -2253,10 +2277,15 @@ async fn test_共通入口_期限切れを変換し成功と内部失敗を保�
 #[test]
 fn test_状態購読配線_usecaseとcontrollerが同じ出力実装を参照する() {
     // Given
-    let deps = StateSubscriptionDeps::build(
-        vec![],
+    let presenter = Arc::new(
+        crate::adaptor::presenter::state_subscription::StateSubscriptionPresenter::new(vec![]),
+    );
+    let usecase = crate::usecase::state_subscription::StateSubscriptionUsecase::new_with_output(
+        presenter.clone(),
+        presenter.change_sender(),
         Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
     );
+    let deps = StateSubscriptionDeps::new(usecase, presenter);
     // When
     let output: Arc<dyn crate::usecase::state_subscription::StateSubscriptionOutput> =
         deps.presenter.clone();

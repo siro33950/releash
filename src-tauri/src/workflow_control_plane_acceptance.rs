@@ -582,7 +582,6 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             token.clone(),
             binding.terminal_bearer_token(),
             None,
-            None,
             Some(composition.lifecycle_ingress.clone()),
         );
         let local_api = binding.start(router, &tokio::runtime::Handle::current());

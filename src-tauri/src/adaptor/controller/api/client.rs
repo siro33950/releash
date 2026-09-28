@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use axum::Router;
 
-use super::client_stream::TerminalApiDeps;
 use crate::adaptor::controller::client::ClientCommandDispatch;
 use crate::adaptor::gateway::push::{ClientPushError, ClientPushGateway};
 use crate::adaptor::presenter::client as wire;
@@ -27,34 +26,6 @@ pub(crate) struct StateSubscriptionDeps {
 }
 
 impl StateSubscriptionDeps {
-    pub(crate) fn build(
-        paths: Vec<String>,
-        timer: Arc<dyn crate::usecase::state_subscription::SubscriptionTimer>,
-    ) -> Self {
-        let presenter = Arc::new(
-            crate::adaptor::presenter::state_subscription::StateSubscriptionPresenter::new(paths),
-        );
-        let usecase = crate::usecase::state_subscription::StateSubscriptionUsecase::new_with_output(
-            presenter.clone(),
-            presenter.change_sender(),
-            timer,
-        );
-        Self { usecase, presenter }
-    }
-
-    pub(crate) fn usecase(&self) -> &crate::usecase::state_subscription::StateSubscriptionUsecase {
-        &self.usecase
-    }
-
-    pub(crate) fn with_usecase(
-        mut self,
-        usecase: crate::usecase::state_subscription::StateSubscriptionUsecase,
-    ) -> Self {
-        self.usecase = usecase;
-        self
-    }
-
-    #[cfg(feature = "desktop")]
     pub(crate) fn new(
         usecase: crate::usecase::state_subscription::StateSubscriptionUsecase,
         presenter: Arc<crate::adaptor::presenter::state_subscription::StateSubscriptionPresenter>,
@@ -136,21 +107,6 @@ impl ClientApiDeps {
             .as_ref()
             .map(|settings| settings.desktop_settings().map(Into::into))
             .transpose()
-    }
-
-    pub(super) fn with_terminal(mut self, terminal: Option<TerminalApiDeps>) -> Self {
-        if let Some(terminal) = &terminal {
-            self.state_subscriptions = self.state_subscriptions.take().map(|mut subscriptions| {
-                subscriptions
-                    .presenter
-                    .connect_terminal(&terminal.application);
-                subscriptions.usecase = subscriptions
-                    .usecase
-                    .with_terminal(terminal.application.clone());
-                subscriptions
-            });
-        }
-        self
     }
 
     fn request_permit(

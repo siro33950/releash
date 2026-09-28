@@ -17,40 +17,53 @@ impl crate::usecase::terminal_surface::output::TerminalSurfaceOutputControl for 
     fn set_state_sink(
         &self,
         _: Arc<dyn crate::usecase::terminal_surface::output::TerminalSurfaceStateSink>,
-    ) {
+    ) -> Result<(), UsecaseError> {
+        Ok(())
     }
-    fn initialize(&self, _: &str, _: &str, _: Option<&str>, _: u64, _: u64) {}
+    fn initialize(&self, _: TerminalRegistration) -> Result<(), UsecaseError> {
+        Ok(())
+    }
     fn subscribe_output(&self, _: &str, _: &str, _: usize) {}
     fn unsubscribe_output(&self, _: &str, _: &str) {}
     fn processed_output(&self, _: &str, _: &str, _: usize) {}
 }
 
 #[derive(Default)]
-struct RecordingOutput {
+struct RecordingOutput<'a> {
+    gateway: Option<&'a MockGateway>,
+    fail_initialize: bool,
     initialized: Mutex<Vec<(String, String, Option<String>, u64, u64)>>,
+    registered: Mutex<Vec<bool>>,
 }
 
-impl crate::usecase::terminal_surface::output::TerminalSurfaceOutputControl for RecordingOutput {
+impl crate::usecase::terminal_surface::output::TerminalSurfaceOutputControl
+    for RecordingOutput<'_>
+{
     fn set_state_sink(
         &self,
         _: Arc<dyn crate::usecase::terminal_surface::output::TerminalSurfaceStateSink>,
-    ) {
+    ) -> Result<(), UsecaseError> {
+        Ok(())
     }
-    fn initialize(
-        &self,
-        session_key: &str,
-        workspace_path: &str,
-        session_id: Option<&str>,
-        runtime_generation: u64,
-        latest_sequence: u64,
-    ) {
+    fn initialize(&self, registration: TerminalRegistration) -> Result<(), UsecaseError> {
+        if self.fail_initialize {
+            return Err(UsecaseError::Gateway("registration failed".into()));
+        }
+        if let Some(gateway) = self.gateway {
+            self.registered.lock().unwrap().push(
+                gateway
+                    .find_summary_by_session_key(&registration.session_key)
+                    .is_some(),
+            );
+        }
         self.initialized.lock().unwrap().push((
-            session_key.into(),
-            workspace_path.into(),
-            session_id.map(str::to_owned),
-            runtime_generation,
-            latest_sequence,
+            registration.session_key,
+            registration.workspace_path,
+            registration.session_id,
+            registration.runtime_generation,
+            registration.latest_sequence,
         ));
+        Ok(())
     }
     fn subscribe_output(&self, _: &str, _: &str, _: usize) {}
     fn unsubscribe_output(&self, _: &str, _: &str) {}
@@ -332,7 +345,10 @@ fn test_ターミナル画面取得または生成_上限未到達なら新規�
 fn test_ターミナル生成通知_入力の所有者とcheckpoint番号を新規生成時だけ渡す() {
     // Given
     let gateway = MockGateway::new();
-    let output = RecordingOutput::default();
+    let output = RecordingOutput {
+        gateway: Some(&gateway),
+        ..Default::default()
+    };
     let workspace = workspace_owner("/repo");
     let session = TerminalSurfaceOwner::session(WorkspaceIdentity::new("/repo"), "agent").unwrap();
     let mut checkpoint = TerminalSurfaceCheckpoint::empty(80, 24);
@@ -368,6 +384,48 @@ fn test_ターミナル生成通知_入力の所有者とcheckpoint番号を新�
             ),
         ]
     );
+    assert_eq!(*output.registered.lock().unwrap(), vec![true, true]);
+}
+
+#[test]
+fn test_ターミナル生成通知_登録失敗時に画面と予約を解放する() {
+    // Given
+    let gateway = MockGateway::new();
+    let output = RecordingOutput {
+        fail_initialize: true,
+        ..Default::default()
+    };
+
+    // When
+    let failed = get_or_spawn(
+        &crate::adaptor::gateway::telemetry::TelemetryGateway,
+        &gateway,
+        &output,
+        24,
+        80,
+        None,
+        workspace_owner("/repo"),
+        None,
+    );
+
+    // Then
+    assert_eq!(
+        unwrap_spawn_error(failed),
+        UsecaseError::Gateway("registration failed".into())
+    );
+    assert_eq!(*gateway.killed.lock().unwrap(), vec![1]);
+    assert!(gateway.registry.lock().unwrap().list_summaries().is_empty());
+    get_or_spawn(
+        &crate::adaptor::gateway::telemetry::TelemetryGateway,
+        &gateway,
+        &NoopOutput,
+        24,
+        80,
+        None,
+        workspace_owner("/repo"),
+        None,
+    )
+    .unwrap();
 }
 
 #[test]

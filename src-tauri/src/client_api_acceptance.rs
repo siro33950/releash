@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use tauri::Manager;
 
-use crate::adaptor::controller::api::{ClientApiDeps, TerminalApiDeps};
+use crate::adaptor::controller::api::ClientApiDeps;
 use crate::adaptor::controller::client::ClientCommandDispatch;
 use crate::adaptor::controller::command::CommandRouter;
 use crate::adaptor::controller::terminal_surface_runtime::TerminalSurfaceRuntime;
@@ -201,12 +201,15 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
             operations,
         );
         let terminal = TerminalSurfaceRuntime::new(queue.clone(), data_dir.to_path_buf());
+        state_presenter
+            .connect_terminal(&terminal.application())
+            .unwrap();
+        let state = state.with_terminal(terminal.application());
         let router = crate::adaptor::controller::api::build_router(
             Arc::new(workflow),
             Arc::new(runtime),
             binding.bearer_token(),
             binding.client_bearer_token(),
-            Some(TerminalApiDeps::new(terminal.application())),
             Some(
                 ClientApiDeps::new(
                     dispatch,

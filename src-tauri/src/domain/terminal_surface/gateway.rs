@@ -129,8 +129,9 @@ pub trait TerminalSurfaceGateway: TerminalSurfaceRepository {
         runtime_generation: u64,
     ) -> Result<(), TerminalSurfaceGatewayError>;
     fn snapshot(&self, runtime_generation: u64) -> Option<TerminalSurface>;
-    fn with_output_order(&self, _runtime_generation: u64, visit: &mut dyn FnMut()) {
+    fn with_output_order(&self, _runtime_generation: u64, visit: &mut dyn FnMut()) -> bool {
         visit();
+        true
     }
 
     fn visit_snapshot(
