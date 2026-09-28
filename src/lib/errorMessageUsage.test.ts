@@ -28,7 +28,6 @@ const TARGET_FILES = [
 	"src/screens/useWorktreeGitActions.ts",
 	"src/hooks/useWorkflowConfig.ts",
 	"src/hooks/useAppSettings.ts",
-	"src/hooks/useSettings.ts",
 	"src/components/workspace/DeleteWorktreeDialog.tsx",
 	"src/components/panels/DiffToolbar.tsx",
 	"src/hooks/useWorkspaceList.ts",

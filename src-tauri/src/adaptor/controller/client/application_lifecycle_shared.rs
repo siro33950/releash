@@ -1,38 +1,13 @@
 use super::*;
 use crate::adaptor::controller::client::ClientCommandDispatch;
 use crate::adaptor::controller::client::{convert, required};
-use crate::adaptor::controller::client::{invalid_request, outcome, value};
+use crate::adaptor::controller::client::{invalid_request, outcome};
 use crate::adaptor::presenter::client as wire;
 
 pub(crate) fn register_shared(
     router: &mut ClientCommandDispatch,
     deps: &crate::adaptor::controller::client::ClientDependencies,
 ) {
-    {
-        let authority = deps.application_startup_authority.clone();
-        router.register_domain(
-            &["get_application_startup_outcome"],
-            Box::new(move |command| {
-                let authority = authority.clone();
-                Box::pin(async move {
-                    let wire::command_request::Command::GetApplicationStartupOutcome(_args) =
-                        command
-                    else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move {
-                        let authority = authority
-                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        value(get_application_startup_outcome_shared(&authority))
-                    }
-                    .await?;
-                    Ok(wire::command_result::Command::GetApplicationStartupOutcome(
-                        result,
-                    ))
-                })
-            }),
-        );
-    }
     {
         let authority = deps.application_startup_authority.clone();
         router.register_domain(

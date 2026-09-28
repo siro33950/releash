@@ -141,7 +141,6 @@ fn test_起動期限_期限後のreadyを拒否する() {
     model.ready(STARTUP_TIMEOUT_MS);
     // Then
     assert_eq!(model.phase(), Phase::Starting);
-    assert!(!model.connection_admitted());
 }
 
 #[test]
@@ -214,11 +213,10 @@ fn test_shellの受理判断_起動切替中は復旧と終了だけを許す() 
     // Given
     let mut model = DaemonSupervision::new(0);
     // When
-    let normal = [ShellOperation::Normal, ShellOperation::ApplySettings]
-        .map(|operation| model.shell_command_admitted(operation, true));
+    let normal = model.shell_command_admitted(ShellOperation::Normal, true);
     let recovery = model.shell_command_admitted(ShellOperation::Supervision, true);
     // Then
-    assert_eq!(normal, [false; 2]);
+    assert!(!normal);
     assert!(recovery);
     assert_eq!(
         model.desktop_action(false, true, false),
@@ -378,7 +376,6 @@ fn test_状態復元_失敗を表示し再試行世代の完了後だけ受付�
     assert_eq!(model.phase(), Phase::Failed);
     assert_eq!(model.failure().unwrap().stage, FailureStage::Restoration);
     assert!(model.retry_available());
-    assert!(model.connection_admitted());
     assert!(!model.restart_due(u64::MAX));
     // When
     assert!(model.retry_restoration(2));

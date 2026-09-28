@@ -141,6 +141,79 @@ pub(crate) fn payload(value: &StateValue) -> Result<wire::StatePayload, connectr
                 crate::adaptor::presenter::client::value(value.clone())
                     .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
+            StateValue::DesktopSettings(value) => {
+                wire::state_payload::Value::DesktopSettings((*value).into())
+            }
+            StateValue::NotionConfig(value) => wire::state_payload::Value::NotionConfig(
+                crate::adaptor::presenter::client::value(
+                    value
+                        .clone()
+                        .map(crate::adaptor::presenter::notion::NotionRepoConfigView::from),
+                )
+                .map_err(crate::adaptor::presenter::connect::command_error)?,
+            ),
+            StateValue::ProviderAvailability(value) => {
+                wire::state_payload::Value::ProviderAvailability(
+                    crate::adaptor::presenter::client::value(
+                        crate::adaptor::presenter::agent_session::ProviderAvailabilitySnapshotResponse::from(
+                            value.clone(),
+                        ),
+                    )
+                    .map_err(crate::adaptor::presenter::connect::command_error)?,
+                )
+            }
+            StateValue::ExternalEditor(value) => {
+                wire::state_payload::Value::ExternalEditor(wire::ExternalEditorState {
+                    selected: Some(value.selected.clone()),
+                    editors: Some(
+                        crate::adaptor::presenter::client::value(value.editors.clone())
+                            .map_err(crate::adaptor::presenter::connect::command_error)?,
+                    ),
+                })
+            }
+            StateValue::ReleashBase(value) => wire::state_payload::Value::ReleashBase(
+                crate::adaptor::presenter::client::value(value.clone())
+                    .map_err(crate::adaptor::presenter::connect::command_error)?,
+            ),
+            StateValue::WorkflowConfig(value) => wire::state_payload::Value::WorkflowConfig(
+                crate::adaptor::presenter::client::value(
+                    crate::adaptor::gateway::app_config::workflow_to_model(value.clone()),
+                )
+                .map_err(crate::adaptor::presenter::connect::command_error)?,
+            ),
+            StateValue::PerformanceSwitches(value) => {
+                wire::state_payload::Value::PerformanceSwitches(wire::PerformanceSwitchesV1 {
+                    real_app_mode: Some(value.real_app_mode),
+                    terminal: Some(
+                        crate::adaptor::presenter::client::value(
+                            crate::adaptor::presenter::terminal::TerminalPerformanceSwitchesV1::from(
+                                value.terminal,
+                            ),
+                        )
+                        .map_err(crate::adaptor::presenter::connect::command_error)?,
+                    ),
+                })
+            }
+            StateValue::ProviderHookHealth(value) => {
+                wire::state_payload::Value::ProviderHookHealth(
+                    crate::adaptor::presenter::client::value(
+                        value
+                            .iter()
+                            .cloned()
+                            .map(crate::adaptor::presenter::agent_session::ProviderHookHealthWarningResponse::from)
+                            .collect::<Vec<_>>(),
+                    )
+                    .map_err(crate::adaptor::presenter::connect::command_error)?,
+                )
+            }
+            StateValue::StartupOutcome(value) => wire::state_payload::Value::StartupOutcome(
+                crate::adaptor::presenter::client::value(
+                    crate::adaptor::presenter::application_lifecycle::application_startup_outcome(
+                        value.clone(),
+                    ),
+                )
+                .map_err(crate::adaptor::presenter::connect::command_error)?,
+            ),
 
             StateValue::RepositoryPaths(paths) => {
                 wire::state_payload::Value::RepositoryPaths(wire::Liststring {

@@ -85,13 +85,11 @@ async fn test_connect_生成clientのunaryで結果と構造化エラーを返�
     // Given
     let mut dispatch = dispatch();
     dispatch.register_domain(
-        &["get_external_editor"],
+        &["add_repo_path"],
         Box::new(|_| {
             Box::pin(async {
-                Ok(wire::command_result::Command::GetExternalEditor(
-                    wire::ResultString {
-                        value: Some("/repo".into()),
-                    },
+                Ok(wire::command_result::Command::AddRepoPath(
+                    wire::ResultBool { value: Some(true) },
                 ))
             })
         }),
@@ -114,12 +112,12 @@ async fn test_connect_生成clientのunaryで結果と構造化エラーを返�
     // When / Then
     assert_eq!(
         client
-            .get_external_editor(rpc::GetExternalEditorRequest::default())
+            .add_repo_path(rpc::AddRepoPathRequest::default())
             .await
             .unwrap()
             .into_owned()
             .value,
-        Some("/repo".into())
+        Some(true)
     );
     let error = client
         .build_diff_file_tree(rpc::BuildDiffFileTreeRequest::default())
@@ -285,17 +283,15 @@ async fn test_応答未到達_副作用は完了するが照会と再送は行�
     );
     let count = effects.clone();
     dispatch.register_domain(
-        &["get_performance_telemetry_enabled"],
+        &["add_repo_path"],
         Box::new(move |_| {
             let count = count.clone();
             Box::pin(async move {
-                Ok(
-                    wire::command_result::Command::GetPerformanceTelemetryEnabled(
-                        wire::ResultBool {
-                            value: Some(count.load(Ordering::SeqCst) != 0),
-                        },
-                    ),
-                )
+                Ok(wire::command_result::Command::AddRepoPath(
+                    wire::ResultBool {
+                        value: Some(count.load(Ordering::SeqCst) != 0),
+                    },
+                ))
             })
         }),
     );
@@ -322,7 +318,7 @@ async fn test_応答未到達_副作用は完了するが照会と再送は行�
     // Then
     assert_eq!(
         client
-            .get_performance_telemetry_enabled(rpc::GetPerformanceTelemetryEnabledRequest::default())
+            .add_repo_path(rpc::AddRepoPathRequest::default())
             .await
             .unwrap()
             .into_owned()
@@ -588,73 +584,6 @@ fn test_監視開始_生成serviceは購読付きの二操作だけを公開す�
 }
 
 #[tokio::test]
-async fn test_設定保存_対象三操作の成功時だけdesktop再適用を応答で指示する() {
-    use axum::{body::Body, http::Request};
-    use tower::ServiceExt;
-    // Given
-    let mut dispatch = dispatch();
-    for (names, result) in [
-        (
-            &["update_app_settings"][..],
-            wire::command_result::Command::UpdateAppSettings(wire::Unit {}),
-        ),
-        (
-            &["update_crash_reporting"][..],
-            wire::command_result::Command::UpdateCrashReporting(wire::Unit {}),
-        ),
-        (
-            &["update_performance_telemetry"][..],
-            wire::command_result::Command::UpdatePerformanceTelemetry(wire::Unit {}),
-        ),
-        (
-            &["update_external_editor"][..],
-            wire::command_result::Command::UpdateExternalEditor(wire::Unit {}),
-        ),
-    ] {
-        dispatch.register_domain(
-            names,
-            Box::new(move |_| {
-                let result = result.clone();
-                Box::pin(async move { Ok(result) })
-            }),
-        );
-    }
-    let router = router(Some(ClientApiDeps::new(
-        Arc::new(dispatch),
-        ClientPushGateway::new(Arc::new(PushSink::new())),
-        crate::client_api_acceptance::watcher(),
-    )));
-    // When / Then
-    for (method, changed, success) in [
-        ("UpdateAppSettings", true, true),
-        ("UpdateCrashReporting", true, true),
-        ("UpdatePerformanceTelemetry", true, true),
-        ("UpdateExternalEditor", false, true),
-        ("BuildDiffFileTree", false, false),
-    ] {
-        let response = router
-            .clone()
-            .oneshot(
-                Request::post(format!("/releash.client.v1.ClientService/{method}"))
-                    .header("content-type", "application/json")
-                    .header("connect-protocol-version", "1")
-                    .body(Body::from("{}"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status().is_success(), success);
-        assert_eq!(
-            response
-                .headers()
-                .get("releash-desktop-settings-changed")
-                .map(|value| value.to_str().unwrap()),
-            changed.then_some("true")
-        );
-    }
-}
-
-#[tokio::test]
 async fn test_監視rpc_interactiveの枠と待ち行列が埋まるとblocking前に拒否し解放後は受理する() {
     use axum::{
         body::{to_bytes, Body},
@@ -776,58 +705,17 @@ fn test_拒否_構造化エラーで段と理由を返す() {
 
 #[tokio::test]
 async fn test_サーバ情報取得_全段の枠が埋まっていても受理し枠を使わない() {
-    use crate::adaptor::gateway::app_config::config_models::{config_to_domain, ReleashConfig};
-    use crate::domain::app_config::{
-        repository::{ConfigRepository, ConfigUpdate},
-        value_objects::AppConfigDocument,
-        AppConfigError,
-    };
     use axum::{
         body::{to_bytes, Body},
         http::{Request, StatusCode},
     };
-
     use tower::ServiceExt;
-
-    struct Config {
-        loads: AtomicUsize,
-        failure: AtomicUsize,
-        limits: Arc<crate::common::concurrency::PriorityLimits>,
-    }
-    impl ConfigRepository for Config {
-        fn load(&self) -> Result<AppConfigDocument, AppConfigError> {
-            self.loads.fetch_add(1, Ordering::SeqCst);
-            for level in ["interactive", "workflow", "default"] {
-                assert_eq!(self.limits.available(level), 0);
-            }
-            match self.failure.load(Ordering::SeqCst) {
-                1 => return Err(AppConfigError::Repository("load failed".into())),
-                2 => return Err(AppConfigError::InvalidInput("invalid settings".into())),
-                _ => {}
-            }
-            Ok(config_to_domain(&ReleashConfig::default()))
-        }
-        fn save(&self, _: AppConfigDocument) -> Result<(), AppConfigError> {
-            unreachable!()
-        }
-        fn update(&self, _: ConfigUpdate) -> Result<(), AppConfigError> {
-            unreachable!()
-        }
-    }
     // Given
     let deps = ClientApiDeps::new(
         Arc::new(dispatch()),
         ClientPushGateway::new(Arc::new(PushSink::new())),
         crate::client_api_acceptance::watcher(),
     );
-    let config = Arc::new(Config {
-        loads: AtomicUsize::new(0),
-        failure: AtomicUsize::new(0),
-        limits: deps.limits.clone(),
-    });
-    let deps = deps.with_desktop_settings(crate::usecase::app_config::AppConfigUsecase::new(
-        config.clone(),
-    ));
     let _permits = ["interactive", "workflow", "default"].map(|level| deps.limits.fill(level));
     let router = router(Some(deps.clone()));
     let request = || {
@@ -837,27 +725,15 @@ async fn test_サーバ情報取得_全段の枠が埋まっていても受理�
             .body(Body::from("{}"))
             .unwrap()
     };
-    // When / Then
-    for (failure, expected_status, expected_loads) in [
-        (0, StatusCode::OK, 1),
-        (1, StatusCode::INTERNAL_SERVER_ERROR, 2),
-        (2, StatusCode::BAD_REQUEST, 3),
-    ] {
-        config.failure.store(failure, Ordering::SeqCst);
-        let response = router.clone().oneshot(request()).await.unwrap();
-        assert_eq!(response.status(), expected_status);
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        if failure == 1 {
-            assert_eq!(body["message"], "load failed");
-            assert_eq!(body["code"], "internal");
-        } else if failure == 2 {
-            assert_eq!(body["message"], "invalid settings");
-            assert_eq!(body["code"], "invalid_argument");
-        } else {
-            assert!(body["desktopSettings"].is_object());
-        }
-        assert_eq!(config.loads.load(Ordering::SeqCst), expected_loads);
+    // When
+    let response = router.clone().oneshot(request()).await.unwrap();
+    // Then
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(body["release"], env!("CARGO_PKG_VERSION"));
+    for level in ["interactive", "workflow", "default"] {
+        assert_eq!(deps.limits.available(level), 0);
     }
 }
 
@@ -1245,7 +1121,7 @@ async fn assert_request_deadline(timeout: Option<&str>, seconds: u64) {
     let signal = stopped.clone();
     let mut dispatch = dispatch();
     dispatch.register_domain(
-        &["get_external_editor"],
+        &["update_external_editor"],
         Box::new(move |_| {
             let guard = signal.clone().drop_guard();
             Box::pin(async move {
@@ -1259,7 +1135,7 @@ async fn assert_request_deadline(timeout: Option<&str>, seconds: u64) {
         ClientPushGateway::new(Arc::new(PushSink::new())),
         crate::client_api_acceptance::watcher(),
     );
-    let mut request = Request::post("/releash.client.v1.ClientService/GetExternalEditor")
+    let mut request = Request::post("/releash.client.v1.ClientService/UpdateExternalEditor")
         .header("content-type", "application/json")
         .header("connect-protocol-version", "1");
     if let Some(timeout) = timeout {
@@ -1306,7 +1182,7 @@ async fn test_単発rpc_呼び出し破棄でasync処理を止め枠を解放す
     let signal = stopped.clone();
     let mut dispatch = dispatch();
     dispatch.register_domain(
-        &["get_external_editor"],
+        &["update_external_editor"],
         Box::new(move |_| {
             let guard = signal.clone().drop_guard();
             Box::pin(async move {
@@ -1320,8 +1196,10 @@ async fn test_単発rpc_呼び出し破棄でasync処理を止め枠を解放す
         ClientPushGateway::new(Arc::new(PushSink::new())),
         crate::client_api_acceptance::watcher(),
     );
-    let mut call =
-        Box::pin(router(Some(deps.clone())).oneshot(unary_request("GetExternalEditor", "{}")));
+    let mut call = Box::pin(router(Some(deps.clone())).oneshot(unary_request(
+        "UpdateExternalEditor",
+        r#"{"editor":"code"}"#,
+    )));
     assert!(futures_util::poll!(&mut call).is_pending());
     tokio::task::yield_now().await;
     assert_eq!(deps.limits.available("default"), 40);
@@ -1352,13 +1230,13 @@ async fn test_単発rpc_取り消しはcancelledでpanicはinternalに分類す�
     token.cancel();
     let mut dispatch = dispatch();
     dispatch.register_domain(
-        &["get_external_editor"],
+        &["update_external_editor"],
         Box::new(|_| Box::pin(std::future::pending())),
     );
     let error = run_command(
         &token,
-        dispatch.dispatch_admitted(wire::command_request::Command::GetExternalEditor(
-            wire::GetExternalEditorRequest {},
+        dispatch.dispatch_admitted(wire::command_request::Command::UpdateExternalEditor(
+            Default::default(),
         )),
     )
     .await
@@ -1412,7 +1290,7 @@ async fn test_単発rpc_client切断で処理が終了する() {
     let start_signal = started.clone();
     let mut dispatch = dispatch();
     dispatch.register_domain(
-        &["get_external_editor"],
+        &["update_external_editor"],
         Box::new(move |_| {
             let guard = signal.clone().drop_guard();
             start_signal.cancel();
@@ -1434,7 +1312,7 @@ async fn test_単発rpc_client切断で処理が終了する() {
         axum::serve(listener, router).await.unwrap();
     });
     let mut connection = tokio::net::TcpStream::connect(address).await.unwrap();
-    connection.write_all(b"POST /releash.client.v1.ClientService/GetExternalEditor HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nConnect-Protocol-Version: 1\r\nContent-Length: 2\r\n\r\n{}").await.unwrap();
+    connection.write_all(b"POST /releash.client.v1.ClientService/UpdateExternalEditor HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nConnect-Protocol-Version: 1\r\nContent-Length: 2\r\n\r\n{}").await.unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(2), started.cancelled())
         .await
         .unwrap();
@@ -1715,7 +1593,7 @@ async fn test_単発rpc_期限と呼出破棄が同期処理の内側まで届�
         let (stopped, mut stopped_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut dispatch = dispatch();
         dispatch.register_domain(
-            &["get_external_editor"],
+            &["update_external_editor"],
             Box::new(move |_| {
                 let started = started.clone();
                 let stopped = stopped.clone();
@@ -1745,7 +1623,7 @@ async fn test_単発rpc_期限と呼出破棄が同期処理の内側まで届�
         );
         let mut call = Box::pin(deps.execute(
             expire.then(|| Instant::now() + Duration::from_millis(100)),
-            wire::command_request::Command::GetExternalEditor(wire::GetExternalEditorRequest {}),
+            wire::command_request::Command::UpdateExternalEditor(Default::default()),
         ));
         // When
         tokio::select! { _ = ready.recv() => {}, result = &mut call => panic!("call ended before starting: {result:?}") }
@@ -2296,15 +2174,13 @@ fn pending_editor_dispatch() -> (ClientCommandDispatch, Arc<tokio::sync::Notify>
     let signal = release.clone();
     let mut dispatch = dispatch();
     dispatch.register_domain(
-        &["get_external_editor"],
+        &["update_external_editor"],
         Box::new(move |_| {
             let signal = signal.clone();
             Box::pin(async move {
                 signal.notified().await;
-                Ok(wire::command_result::Command::GetExternalEditor(
-                    wire::ResultString {
-                        value: Some("editor".into()),
-                    },
+                Ok(wire::command_result::Command::UpdateExternalEditor(
+                    wire::Unit {},
                 ))
             })
         }),
@@ -2370,7 +2246,10 @@ async fn test_優先度_defaultが埋まっていてもinteractiveの呼び出�
     // When
     let rejected = router
         .clone()
-        .oneshot(unary_request("GetExternalEditor", "{}"))
+        .oneshot(unary_request(
+            "UpdateExternalEditor",
+            r#"{"editor":"code"}"#,
+        ))
         .await
         .unwrap();
     let accepted = router
@@ -2403,7 +2282,10 @@ async fn test_拒否_待ち行列が溢れた拒否を失敗の記録に残す()
     let _permits = deps.limits.fill("default");
     // When
     let response = router(Some(deps))
-        .oneshot(unary_request("GetExternalEditor", "{}"))
+        .oneshot(unary_request(
+            "UpdateExternalEditor",
+            r#"{"editor":"code"}"#,
+        ))
         .await
         .unwrap();
     // Then
@@ -2420,7 +2302,7 @@ async fn test_拒否_待ち行列が溢れた拒否を失敗の記録に残す()
     );
     assert_eq!(
         record.message,
-        "/releash.client.v1.ClientService/GetExternalEditor: default requests rejected: queue_full"
+        "/releash.client.v1.ClientService/UpdateExternalEditor: default requests rejected: queue_full"
     );
     assert!(!records[0].requires_attention);
 }
@@ -2441,8 +2323,10 @@ async fn test_待ち行列_席が空くまで待ってから受理する() {
         .seats("default")
         .try_acquire_many_owned(41)
         .unwrap();
-    let mut call =
-        Box::pin(router(Some(deps.clone())).oneshot(unary_request("GetExternalEditor", "{}")));
+    let mut call = Box::pin(router(Some(deps.clone())).oneshot(unary_request(
+        "UpdateExternalEditor",
+        r#"{"editor":"code"}"#,
+    )));
     assert!(futures_util::poll!(&mut call).is_pending());
     tokio::task::yield_now().await;
     assert_eq!(deps.limits.queue_length("default"), 49);

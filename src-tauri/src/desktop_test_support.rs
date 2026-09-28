@@ -65,6 +65,7 @@ pub(crate) fn build_client_dependencies<R: tauri::Runtime>(
         provider_hook_health_read_usecase: app.try_state::<std::sync::Arc<crate::usecase::provider_lifecycle::ProviderHookHealthReadUsecase>>().map(|state| state.inner().clone()),
         review_comment_usecase: app.try_state::<std::sync::Arc<crate::usecase::comment::ReviewCommentUsecase>>().map(|state| state.inner().clone()),
         config_repository: app.try_state::<std::sync::Arc<dyn crate::domain::app_config::ConfigRepository>>().map(|state| state.inner().clone()),
+        app_config_usecase: app.try_state::<std::sync::Arc<dyn crate::domain::app_config::ConfigRepository>>().map(|state| std::sync::Arc::new(crate::usecase::app_config::AppConfigUsecase::new(state.inner().clone()))),
         workflow_runtime_usecase: app.try_state::<std::sync::Arc<crate::usecase::workflow::WorkflowRuntimeUsecase>>().map(|state| state.inner().clone()),
         editor_launcher: Arc::new(crate::adaptor::gateway::external_editor::NativeEditorLauncherGateway),
         watcher: build_watcher_usecase(app),

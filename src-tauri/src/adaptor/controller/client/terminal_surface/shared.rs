@@ -40,43 +40,6 @@ pub(crate) fn register_shared(
             }),
         );
     }
-    {
-        router.register_domain(
-            &["get_performance_real_app_mode"],
-            Box::new(move |command| {
-                Box::pin(async move {
-                    let wire::command_request::Command::GetPerformanceRealAppMode(_args) = command
-                    else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result =
-                        async move { value(commands::get_performance_real_app_mode_shared()) }
-                            .await?;
-                    Ok(wire::command_result::Command::GetPerformanceRealAppMode(
-                        result,
-                    ))
-                })
-            }),
-        );
-    }
-    {
-        router.register_domain(
-            &["get_terminal_performance_switches"],
-            Box::new(move |command| {
-                Box::pin(async move {
-                    let wire::command_request::Command::GetTerminalPerformanceSwitches(_args) =
-                        command
-                    else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result =
-                        async move { value(commands::get_terminal_performance_switches_shared()) }
-                            .await?;
-                    Ok(wire::command_result::Command::GetTerminalPerformanceSwitches(result))
-                })
-            }),
-        );
-    }
 
     {
         let state = deps.app_state.clone();

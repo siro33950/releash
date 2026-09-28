@@ -44,6 +44,7 @@ pub(crate) enum ProviderHookHealthUsecaseError {
 
 pub(crate) struct ProviderHookHealthUsecase {
     repository: Arc<dyn ProviderHookHealthRepository>,
+    state_publisher: Option<crate::usecase::state_subscription::StateSubscriptionOutputRef>,
 }
 
 pub(crate) struct ProviderHookHealthReadUsecase {
@@ -88,7 +89,26 @@ impl ProviderHookHealthReadUsecase {
 
 impl ProviderHookHealthUsecase {
     pub(crate) fn new(repository: Arc<dyn ProviderHookHealthRepository>) -> Self {
-        Self { repository }
+        Self {
+            repository,
+            state_publisher: None,
+        }
+    }
+
+    pub(crate) fn with_state_publisher(
+        mut self,
+        publisher: crate::usecase::state_subscription::StateSubscriptionOutputRef,
+    ) -> Self {
+        self.state_publisher = Some(publisher);
+        self
+    }
+
+    fn health_changed(&self) {
+        if let Some(publisher) = &self.state_publisher {
+            publisher.invalidate(
+                crate::usecase::state_subscription::StateChangeSource::ProviderHookHealth,
+            );
+        }
     }
 
     #[cfg(test)]
@@ -127,7 +147,10 @@ impl ProviderHookHealthUsecase {
                 return Ok(());
             }
             match self.repository.save(versioned, caller_request_id).await {
-                Ok(_) => return Ok(()),
+                Ok(_) => {
+                    self.health_changed();
+                    return Ok(());
+                }
                 Err(error)
                     if crate::usecase::failure::Failure::from(&error)
                         == crate::usecase::failure::Failure::Technical(
@@ -162,7 +185,10 @@ impl ProviderHookHealthUsecase {
                 return Ok(());
             }
             match self.repository.save(versioned, caller_request_id).await {
-                Ok(_) => return Ok(()),
+                Ok(_) => {
+                    self.health_changed();
+                    return Ok(());
+                }
                 Err(error)
                     if crate::usecase::failure::Failure::from(&error)
                         == crate::usecase::failure::Failure::Technical(
@@ -196,7 +222,10 @@ impl ProviderHookHealthUsecase {
                 return Ok(());
             }
             match self.repository.save(versioned, caller_request_id).await {
-                Ok(_) => return Ok(()),
+                Ok(_) => {
+                    self.health_changed();
+                    return Ok(());
+                }
                 Err(error)
                     if crate::usecase::failure::Failure::from(&error)
                         == crate::usecase::failure::Failure::Technical(

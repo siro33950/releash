@@ -90,3 +90,28 @@ impl From<crate::domain::agent_session::aggregates::ProviderRegistry>
         }
     }
 }
+
+impl From<crate::usecase::provider_lifecycle::ProviderHookHealthWarning>
+    for ProviderHookHealthWarningResponse
+{
+    fn from(value: crate::usecase::provider_lifecycle::ProviderHookHealthWarning) -> Self {
+        Self {
+            provider: match value.provider {
+                crate::domain::provider_lifecycle::ProviderKind::Claude => {
+                    ProviderHookHealthProviderResponse::Claude
+                }
+                crate::domain::provider_lifecycle::ProviderKind::Codex => {
+                    ProviderHookHealthProviderResponse::Codex
+                }
+            },
+            launch_id: value.launch_id,
+            reason: match value.reason {
+                crate::domain::provider_lifecycle::ProviderLifecycleUnavailableReason::SessionStartDeadlineExceeded => "session_start_deadline_exceeded",
+                crate::domain::provider_lifecycle::ProviderLifecycleUnavailableReason::CodexHookDeliveryUnconfirmed => "codex_hook_delivery_unconfirmed",
+                crate::domain::provider_lifecycle::ProviderLifecycleUnavailableReason::ProviderHookConfigurationRejected => "provider_hook_configuration_rejected",
+                crate::domain::provider_lifecycle::ProviderLifecycleUnavailableReason::LocalApiUnavailable => "local_api_unavailable",
+            }
+            .to_string(),
+        }
+    }
+}

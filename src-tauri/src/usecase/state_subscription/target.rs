@@ -31,6 +31,15 @@ pub(crate) enum SubscriptionTarget {
     Facets(FacetKind),
     Facet(FacetKind, String),
     Diagnostics,
+    DesktopSettings,
+    NotionConfig(String),
+    ProviderAvailability,
+    ExternalEditor,
+    ReleashBase(String),
+    WorkflowConfig,
+    PerformanceSwitches,
+    ProviderHookHealth,
+    StartupOutcome,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -46,6 +55,7 @@ impl SubscriptionTarget {
         history_paths: &[String],
         review_comments_dir: &str,
         workflows_dir: &str,
+        hook_health_markers: &str,
     ) -> Vec<WatchRequirement> {
         match self {
             Self::Workspaces => repositories
@@ -60,7 +70,8 @@ impl SubscriptionTarget {
             | Self::Worktrees(path)
             | Self::RepositoryRoot(path)
             | Self::ReviewSnapshot(path, _)
-            | Self::ReviewFileView(path, _, _, _) => vec![WatchRequirement::Git(path.clone())],
+            | Self::ReviewFileView(path, _, _, _)
+            | Self::ReleashBase(path) => vec![WatchRequirement::Git(path.clone())],
             Self::SessionHistory(_, _) => history_paths
                 .iter()
                 .cloned()
@@ -78,6 +89,10 @@ impl SubscriptionTarget {
             | Self::Diagnostics => vec![WatchRequirement::Files(
                 workflows_dir.to_string(),
                 StateChangeSource::WorkflowDefinitions,
+            )],
+            Self::ProviderHookHealth => vec![WatchRequirement::Files(
+                hook_health_markers.to_string(),
+                StateChangeSource::ProviderHookHealth,
             )],
             _ => vec![],
         }
@@ -106,6 +121,8 @@ pub(crate) enum StateChangeSource {
     /// review comment の変化。`None` は worktree を特定できない外部の書き込み。
     ReviewComments(Option<String>),
     WorkflowDefinitions,
+    AppConfig,
+    ProviderHookHealth,
 }
 
 impl SubscriptionTarget {
@@ -125,7 +142,8 @@ impl SubscriptionTarget {
                 | Self::Worktrees(p)
                 | Self::RepositoryRoot(p)
                 | Self::ReviewSnapshot(p, _)
-                | Self::ReviewFileView(p, _, _, _) => paths.contains(p),
+                | Self::ReviewFileView(p, _, _, _)
+                | Self::ReleashBase(p) => paths.contains(p),
                 _ => false,
             },
             C::Worktree(path) => match self {
@@ -139,7 +157,7 @@ impl SubscriptionTarget {
             C::WorkspaceList => matches!(self, Self::Workspaces),
             C::WorkspaceState(name) => matches!(self, Self::WorkspaceState(n, _) if n == name),
             C::ProviderHistory => matches!(self, Self::SessionHistory(_, _)),
-            C::Providers => matches!(self, Self::Providers),
+            C::Providers => matches!(self, Self::Providers | Self::ProviderAvailability),
             C::Issues(path) => matches!(self, Self::Issues(p) if p == path),
             C::ReviewComments(worktree) => {
                 matches!(self, Self::ReviewThreads(name) if worktree.as_ref().is_none_or(|w| w == name))
@@ -153,6 +171,14 @@ impl SubscriptionTarget {
                     | Self::Facet(_, _)
                     | Self::Diagnostics
             ),
+            C::AppConfig => matches!(
+                self,
+                Self::DesktopSettings
+                    | Self::NotionConfig(_)
+                    | Self::ExternalEditor
+                    | Self::WorkflowConfig
+            ),
+            C::ProviderHookHealth => matches!(self, Self::ProviderHookHealth),
         }
     }
 }

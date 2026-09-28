@@ -13,10 +13,11 @@ import { WorkspaceList } from "@/components/workspace/WorkspaceList";
 import { type MenuHandlers, useMenuEvents } from "@/hooks/useMenuEvents";
 import { useRepoList } from "@/hooks/useRepoList";
 import { useSettings } from "@/hooks/useSettings";
+import { useStateSubscriptionResult } from "@/hooks/useStateSubscription";
 import { useUpdateChecker } from "@/hooks/useUpdateChecker";
 import { useWorkspaceList } from "@/hooks/useWorkspaceList";
 import { useWorkspaceNavigation } from "@/hooks/useWorkspaceNavigation";
-import { firstState } from "@/lib/client";
+import { firstState, invokeClient } from "@/lib/client";
 import { MainLayout } from "@/screens/MainLayout";
 import type { CenterSelection } from "@/types/workspace-tree";
 
@@ -24,25 +25,8 @@ type WorktreeCenterState =
 	| { phase: "awaitingInitial" }
 	| { phase: "selected"; selection: CenterSelection };
 
-type StartupFailureKind =
-	| "store_in_use"
-	| "storage_unavailable"
-	| "unsupported_runtime"
-	| "unsupported_store_version"
-	| "initialization_state_invalid"
-	| "store_validation_failed"
-	| "schema_evolution_failed";
-
 type ApplicationStartupOutcome =
-	| { type: "ready" }
-	| {
-			type: "failed";
-			kind: StartupFailureKind;
-			safeDescription: string;
-			correlationId: string;
-			retryOnNextLaunch: boolean;
-			actions: ["quit"];
-	  };
+	import("@/generated/client_types").ApplicationStartupOutcomeDtoV1;
 
 function StartupFailureScreen({
 	failure,
@@ -54,7 +38,7 @@ function StartupFailureScreen({
 		if (quitting) return;
 		setQuitting(true);
 		try {
-			await invokeTauri("quit_after_startup_failure");
+			await invokeClient("quit_after_startup_failure");
 		} catch {
 			setQuitting(false);
 		}
@@ -335,29 +319,9 @@ function WorkbenchApp() {
 	);
 }
 
-function App() {
-	const [outcome, setOutcome] = useState<ApplicationStartupOutcome | null>(
-		null,
-	);
-	const [outcomeUnavailable, setOutcomeUnavailable] = useState(false);
-
-	useEffect(() => {
-		let active = true;
-		void invokeTauri<ApplicationStartupOutcome>(
-			"get_application_startup_outcome",
-		)
-			.then((result) => {
-				if (active) setOutcome(result);
-			})
-			.catch(() => {
-				if (active) setOutcomeUnavailable(true);
-			});
-		return () => {
-			active = false;
-		};
-	}, []);
-
-	if (outcomeUnavailable) {
+function StartupGate() {
+	const outcome = useStateSubscriptionResult("startup-outcome");
+	if (outcome.error) {
 		return (
 			<main className="flex min-h-screen items-center justify-center bg-background p-6 text-foreground">
 				<section className="w-full max-w-lg rounded-xl border border-border bg-card p-6 shadow-lg">
@@ -373,7 +337,7 @@ function App() {
 			</main>
 		);
 	}
-	if (!outcome) {
+	if (!outcome.value) {
 		return (
 			<main
 				aria-label="Starting Releash"
@@ -383,12 +347,16 @@ function App() {
 			</main>
 		);
 	}
-	if (outcome.type === "failed") {
-		return <StartupFailureScreen failure={outcome} />;
+	if (outcome.value.type === "failed") {
+		return <StartupFailureScreen failure={outcome.value} />;
 	}
+	return <WorkbenchApp />;
+}
+
+function App() {
 	return (
 		<DaemonBoundary>
-			<WorkbenchApp />
+			<StartupGate />
 		</DaemonBoundary>
 	);
 }

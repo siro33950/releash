@@ -3,7 +3,6 @@ use crate::usecase::agent_session::{
     AgentSessionLaunchUsecaseError, AgentSessionLifecycleUsecaseError,
     ProviderAvailabilityUsecaseError,
 };
-use crate::usecase::provider_lifecycle::ProviderHookHealthUsecaseError;
 #[derive(Clone, Copy)]
 pub(crate) enum ProviderParseOperation {
     ConfigureProvider,
@@ -39,9 +38,6 @@ pub(crate) enum ProviderTuiCodedError {
     AgentSessionCorrupt,
     AgentSessionNotFound,
     AgentSessionInvalidOperation,
-    ProviderHookHealthInvalidRequest,
-    ProviderHookHealthStorageUnavailable,
-    ProviderHookHealthCorrupt,
 }
 
 pub(crate) fn provider_tui_coded_error(error: ProviderTuiCodedError) -> AppError {
@@ -127,18 +123,6 @@ pub(crate) fn provider_tui_coded_error(error: ProviderTuiCodedError) -> AppError
         ProviderTuiCodedError::AgentSessionInvalidOperation => (
             "AGENT_SESSION_INVALID_OPERATION",
             "This operation is not available for the AgentSession in its current state. Refresh and try again.",
-        ),
-        ProviderTuiCodedError::ProviderHookHealthInvalidRequest => (
-            "PROVIDER_HOOK_HEALTH_INVALID_REQUEST",
-            "Releash could not load Provider Hook health because the request is invalid.",
-        ),
-        ProviderTuiCodedError::ProviderHookHealthStorageUnavailable => (
-            "PROVIDER_HOOK_HEALTH_STORAGE_UNAVAILABLE",
-            "Releash could not load Provider Hook health. Try again.",
-        ),
-        ProviderTuiCodedError::ProviderHookHealthCorrupt => (
-            "PROVIDER_HOOK_HEALTH_CORRUPT",
-            "Releash could not load Provider Hook health because its saved data is invalid.",
         ),
     };
     AppError::coded(code, message, kind)
@@ -232,30 +216,6 @@ pub(crate) fn lifecycle_error(error: AgentSessionLifecycleUsecaseError) -> AppEr
         }
         AgentSessionLifecycleUsecaseError::Corrupt => {
             provider_tui_coded_error(ProviderTuiCodedError::AgentSessionCorrupt)
-        }
-    };
-    result.with_status(kind)
-}
-
-pub(crate) fn hook_health_error(error: ProviderHookHealthUsecaseError) -> AppError {
-    let kind = error.connect_code();
-    let result = match error {
-        ProviderHookHealthUsecaseError::InvalidInput => {
-            provider_tui_coded_error(ProviderTuiCodedError::ProviderHookHealthInvalidRequest)
-        }
-        ProviderHookHealthUsecaseError::StorageUnavailable => {
-            provider_tui_coded_error(ProviderTuiCodedError::ProviderHookHealthStorageUnavailable)
-        }
-        ProviderHookHealthUsecaseError::Conflict => {
-            AppError::from_failure(crate::domain::workflow::WorkflowError::Conflict(
-                "Provider Hook health changed. Refresh and try again.".into(),
-            ))
-        }
-        ProviderHookHealthUsecaseError::Store(_) => {
-            AppError::new("Releash could not load Provider Hook health. Try again.")
-        }
-        ProviderHookHealthUsecaseError::Corrupt => {
-            provider_tui_coded_error(ProviderTuiCodedError::ProviderHookHealthCorrupt)
         }
     };
     result.with_status(kind)

@@ -219,7 +219,7 @@ async fn test_購読手順_初回読取を共有し変化で再読取して最�
         changes.clone(),
         Arc::new(PendingTimer),
     )
-    .with_reads(reads.clone(), None, vec![]);
+    .with_reads(reads.clone(), None, vec![], String::new());
     let target = SubscriptionTarget::SessionNode("/repo".into(), "node".into());
     usecase.open_client("first".into()).unwrap();
     usecase.open_client("second".into()).unwrap();

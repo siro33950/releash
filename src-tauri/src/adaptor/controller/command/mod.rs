@@ -1,4 +1,3 @@
-pub(crate) mod application_lifecycle;
 pub(crate) mod client;
 pub(crate) mod desktop_lifecycle;
 pub(crate) mod menu;
@@ -15,24 +14,17 @@ struct CommandDomainRoute<H> {
     handler: H,
 }
 
-use super::client::command_admitted;
-#[cfg(test)]
-use super::client::dispatch::STARTUP_COMMANDS;
-
 fn shell_operation(command: &str) -> crate::domain::daemon_supervision::ShellOperation {
     use crate::domain::daemon_supervision::ShellOperation;
     match command {
         "get_daemon_status"
         | "retry_daemon"
         | "quit_desktop"
-        | "get_application_startup_outcome"
-        | "quit_after_startup_failure"
         | "validate_daemon_connection"
         | "get_client_endpoint"
         | "fail_desktop_restoration"
         | "complete_desktop_restoration" => ShellOperation::Supervision,
         "get_login_item_status" => ShellOperation::RestoreState,
-        "apply_desktop_settings" => ShellOperation::ApplySettings,
         _ => ShellOperation::Normal,
     }
 }
@@ -41,16 +33,10 @@ pub(crate) fn gate_invoke_before_domain_routing<R: tauri::Runtime>(
     invoke: tauri::ipc::Invoke<R>,
 ) -> Result<tauri::ipc::Invoke<R>, bool> {
     let admitted = {
-        let authority = invoke.message.state_ref().try_get::<std::sync::Arc<
-            crate::usecase::application_startup::ApplicationStartupAuthority,
-        >>();
         let supervisor = invoke.message.state_ref().try_get::<std::sync::Arc<crate::usecase::daemon_supervision::DaemonSupervisionUsecase>>();
         supervisor.is_none_or(|supervisor| {
             supervisor.command_admitted(shell_operation(invoke.message.command()))
-        }) && command_admitted(
-            invoke.message.command(),
-            authority.map(|authority| authority.inner().as_ref()),
-        )
+        })
     };
     if !admitted {
         invoke.resolver.reject(
@@ -110,7 +96,6 @@ pub(crate) fn register_all(builder: tauri::Builder<tauri::Wry>) -> tauri::Builde
 fn register_shell_commands(router: &mut CommandRouter) {
     desktop_lifecycle::register(router);
     client::register(router);
-    application_lifecycle::register(router);
     menu::register(router);
 }
 
@@ -143,17 +128,11 @@ mod tests {
                 .iter()
                 .copied()
                 .chain(client::COMMAND_NAMES.iter().copied())
-                .chain([
-                    "get_application_startup_outcome",
-                    "quit_after_startup_failure",
-                    "set_menu_items_enabled",
-                ])
+                .chain(["set_menu_items_enabled"])
                 .collect::<Vec<_>>()
         );
         for command in crate::adaptor::presenter::client::COMMAND_NAMES {
-            if !STARTUP_COMMANDS.contains(command) {
-                assert_eq!(router.domain_route_index(command), None, "{command}");
-            }
+            assert_eq!(router.domain_route_index(command), None, "{command}");
         }
     }
 
@@ -236,11 +215,6 @@ mod tests {
                 desktop_lifecycle::register,
             ),
             ("client", client::COMMAND_NAMES, client::register),
-            (
-                "application_lifecycle",
-                application_lifecycle::COMMAND_NAMES,
-                application_lifecycle::register,
-            ),
             ("menu", menu::COMMAND_NAMES, menu::register),
         ]
     }
@@ -253,42 +227,6 @@ mod tests {
             .chain(client::COMMAND_NAMES.iter().copied())
             .chain(menu::COMMAND_NAMES.iter().copied())
             .collect()
-    }
-
-    #[test]
-    fn failed_startup_admits_only_the_two_safe_commands_before_domain_routing() {
-        let failed = crate::usecase::application_startup::ApplicationStartupAuthority::failed_kind(
-            crate::usecase::application_startup::StartupFailureKind::StoreValidationFailed,
-        );
-        let ready = crate::usecase::application_startup::ApplicationStartupAuthority::ready();
-
-        for command in registered_command_names() {
-            assert_eq!(
-                command_admitted(command, Some(&failed)),
-                STARTUP_COMMANDS.contains(&command),
-                "unexpected failed-startup admission for {command}"
-            );
-            assert!(
-                command_admitted(command, Some(&ready)),
-                "ready startup rejected {command}"
-            );
-        }
-    }
-
-    #[test]
-    fn missing_startup_authority_fails_closed_before_any_command_routing() {
-        for command in registered_command_names() {
-            assert!(
-                !command_admitted(command, None),
-                "missing startup authority admitted {command}"
-            );
-        }
-        for command in STARTUP_COMMANDS {
-            assert!(
-                !command_admitted(command, None),
-                "startup command {command} cannot run without its authority"
-            );
-        }
     }
 
     #[tauri::command]
@@ -317,20 +255,12 @@ mod tests {
 
     fn command_gate_test_handler(
     ) -> impl Fn(tauri::ipc::Invoke<tauri::test::MockRuntime>) -> bool + Send + Sync + 'static {
-        tauri::generate_handler![
-            application_lifecycle::get_application_startup_outcome,
-            record_normal_command_effect
-        ]
+        tauri::generate_handler![record_normal_command_effect]
     }
 
-    fn command_gate_test_app(
-        authority: Option<Arc<crate::usecase::application_startup::ApplicationStartupAuthority>>,
-    ) -> (tauri::App<tauri::test::MockRuntime>, Arc<AtomicUsize>) {
+    fn command_gate_test_app() -> (tauri::App<tauri::test::MockRuntime>, Arc<AtomicUsize>) {
         let effects = Arc::new(AtomicUsize::new(0));
-        let mut builder = tauri::test::mock_builder().manage(effects.clone());
-        if let Some(authority) = authority {
-            builder = builder.manage(authority);
-        }
+        let builder = tauri::test::mock_builder().manage(effects.clone());
         let handler = command_gate_test_handler();
         let app = builder
             .invoke_handler(
@@ -344,66 +274,13 @@ mod tests {
         (app, effects)
     }
 
-    #[test]
-    fn failed_and_missing_authority_reject_actual_normal_ipc_before_its_effect() {
-        let failed = Arc::new(
-            crate::usecase::application_startup::ApplicationStartupAuthority::failed_kind(
-                crate::usecase::application_startup::StartupFailureKind::StoreValidationFailed,
-            ),
-        );
-        for authority in [Some(failed), None] {
-            let (app, effects) = command_gate_test_app(authority);
-            let window = tauri::WebviewWindowBuilder::new(
-                &app,
-                crate::infrastructure::platform::window_lifecycle::STARTUP_FAILURE_WINDOW_LABEL,
-                Default::default(),
-            )
-            .build()
-            .expect("build startup command gate window");
-
-            let error = tauri::test::get_ipc_response(
-                &window,
-                invoke_request("record_normal_command_effect"),
-            )
-            .expect_err("normal command must be rejected before its handler");
-            assert_eq!(
-                error,
-                serde_json::json!({ "type": "application_unavailable" })
-            );
-            assert_eq!(effects.load(Ordering::SeqCst), 0);
-
-            let startup = tauri::test::get_ipc_response(
-                &window,
-                invoke_request("get_application_startup_outcome"),
-            );
-            if app
-                .try_state::<Arc<crate::usecase::application_startup::ApplicationStartupAuthority>>(
-                )
-                .is_some()
-            {
-                let startup = startup
-                    .expect("failed authority must expose its startup outcome")
-                    .deserialize::<serde_json::Value>()
-                    .expect("decode startup outcome");
-                assert_eq!(startup["type"], "failed");
-            } else {
-                assert_eq!(
-                    startup.expect_err("missing authority must reject even startup commands"),
-                    serde_json::json!({ "type": "application_unavailable" })
-                );
-            }
-        }
-    }
-
     #[tokio::test(start_paused = true)]
     async fn test_起動中ipc_通常handlerの副作用をrust入口で拒否する() {
         // Given
         let gateway = Arc::new(crate::usecase::test_helpers::FakeDaemon::default());
         let supervisor =
             crate::usecase::daemon_supervision::DaemonSupervisionUsecase::start(gateway.clone());
-        let (app, effects) = command_gate_test_app(Some(Arc::new(
-            crate::usecase::application_startup::ApplicationStartupAuthority::ready(),
-        )));
+        let (app, effects) = command_gate_test_app();
         app.manage(supervisor.clone());
         let window = tauri::WebviewWindowBuilder::new(&app, "startup-failure", Default::default())
             .build()
@@ -413,7 +290,6 @@ mod tests {
             "record_normal_command_effect",
             "set_login_item_enabled",
             "install_cli",
-            "apply_desktop_settings",
         ] {
             let error =
                 tauri::test::get_ipc_response(&window, invoke_request(command)).unwrap_err();
@@ -481,8 +357,9 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
         // Given
         let effects = Arc::new(AtomicUsize::new(0));
-        let authority = Arc::new(ApplicationStartupAuthority::ready());
-        let dispatch = Arc::new(ClientCommandDispatch::new(authority.clone()));
+        let dispatch = Arc::new(ClientCommandDispatch::new(Arc::new(
+            ApplicationStartupAuthority::ready(),
+        )));
         let mut router: CommandRouter<InvokeHandler<tauri::test::MockRuntime>> =
             CommandRouter::new(Box::new(|invoke| {
                 invoke.resolver.resolve("fallback-result");
@@ -493,7 +370,6 @@ mod tests {
             Box::new(tauri::generate_handler![record_normal_command_effect]),
         );
         let app = tauri::test::mock_builder()
-            .manage(authority)
             .manage(dispatch)
             .manage(effects.clone())
             .invoke_handler(move |invoke| router.handle(invoke))

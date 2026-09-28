@@ -73,6 +73,7 @@ pub(crate) struct StateSubscriptionUsecase {
         Option<Arc<crate::usecase::terminal_surface::application::TerminalSurfaceApplication>>,
     timer: Arc<dyn SubscriptionTimer>,
     history_paths: Vec<String>,
+    hook_health_markers: String,
     reads: Option<Arc<dyn StateSubscriptionRead>>,
     watchers: Option<Arc<crate::usecase::watcher::WatcherUsecase>>,
     workers: Arc<Mutex<std::collections::HashMap<SubscriptionTarget, tokio::task::JoinHandle<()>>>>,
@@ -127,6 +128,7 @@ impl StateSubscriptionUsecase {
             terminal: None,
             reads: None,
             history_paths: vec![],
+            hook_health_markers: String::new(),
             watchers: None,
             workers: Default::default(),
             watches: Default::default(),
@@ -147,8 +149,10 @@ impl StateSubscriptionUsecase {
         reads: Arc<dyn StateSubscriptionRead>,
         watcher: Option<Arc<crate::usecase::watcher::WatcherUsecase>>,
         history_paths: Vec<String>,
+        hook_health_markers: String,
     ) -> Self {
         self.history_paths = history_paths;
+        self.hook_health_markers = hook_health_markers;
         self.reads = Some(reads);
         self.watchers = watcher;
         self
@@ -259,6 +263,7 @@ impl StateSubscriptionUsecase {
                         &self.history_paths,
                         &review_comments_dir,
                         &workflows_dir,
+                        &self.hook_health_markers,
                     )
                 })
                 .collect();

@@ -33,6 +33,21 @@ struct Socket {
 }
 type StateStream =
     std::pin::Pin<Box<dyn futures_util::Stream<Item = wire::state_payload::Value> + Send>>;
+async fn read_state(socket: &Socket, target: &str) -> wire::state_payload::Value {
+    subscribe_state(socket, target, vec![])
+        .await
+        .next()
+        .await
+        .unwrap()
+}
+async fn read_external_editor(socket: &Socket) -> String {
+    let wire::state_payload::Value::ExternalEditor(editor) =
+        read_state(socket, "external-editor").await
+    else {
+        panic!("external editor")
+    };
+    editor.selected.unwrap()
+}
 type WorkspaceStream =
     std::pin::Pin<Box<dyn futures_util::Stream<Item = wire::WorkspaceListSnapshotDto> + Send>>;
 async fn subscribe_state(socket: &Socket, target: &str, args: Vec<String>) -> StateStream {
@@ -368,16 +383,7 @@ async fn test_headless単独起動_commandと永続化と再起動とexitを実p
         }),
     )
     .await;
-    let settings = request(
-        &mut socket,
-        "read",
-        C::GetAppSettings(wire::GetAppSettingsRequest {}),
-    )
-    .await;
-    let wire::command_result::Command::GetAppSettings(settings) = settings else {
-        panic!("settings")
-    };
-    assert_eq!(settings.external_editor.as_deref(), Some("daemon-smoke"));
+    assert_eq!(read_external_editor(&socket).await, "daemon-smoke");
     let status = Command::new(env!("CARGO_BIN_EXE_releash-backend"))
         .args(["workflow", "status", "550e8400-e29b-41d4-a716-446655440000"])
         .env("RELEASH_DATA_DIR", directory.path())
@@ -435,26 +441,8 @@ async fn test_headless単独起動_commandと永続化と再起動とexitを実p
     assert_ne!(discovery["token"], next_discovery["token"]);
     let (mut socket, next_instance) = connect(&next_discovery).await;
     assert_ne!(instance, next_instance);
-    let settings = request(
-        &mut socket,
-        "after-restart",
-        C::GetAppSettings(wire::GetAppSettingsRequest {}),
-    )
-    .await;
-    let wire::command_result::Command::GetAppSettings(settings) = settings else {
-        panic!("settings")
-    };
-    assert_eq!(settings.external_editor.as_deref(), Some("daemon-smoke"));
-    let settings = request(
-        &mut socket,
-        "no-replay",
-        C::GetAppSettings(wire::GetAppSettingsRequest {}),
-    )
-    .await;
-    let wire::command_result::Command::GetAppSettings(settings) = settings else {
-        panic!("settings")
-    };
-    assert_eq!(settings.external_editor.as_deref(), Some("daemon-smoke"));
+    assert_eq!(read_external_editor(&socket).await, "daemon-smoke");
+    assert_eq!(read_external_editor(&socket).await, "daemon-smoke");
     quit(&mut restarted, &mut socket, true).await;
 }
 
@@ -466,16 +454,12 @@ async fn test_daemon起動_ログ作成失敗でも従来どおりstoreとapiを
     // When
     let (mut daemon, discovery) = start(directory.path());
     let (mut socket, _) = connect(&discovery).await;
-    let settings = request(
-        &mut socket,
-        "log-free-read",
-        wire::command_request::Command::GetAppSettings(wire::GetAppSettingsRequest {}),
-    )
-    .await;
-    // Then
-    let wire::command_result::Command::GetAppSettings(settings) = settings else {
+    let wire::state_payload::Value::DesktopSettings(settings) =
+        read_state(&socket, "desktop-settings").await
+    else {
         panic!("settings")
     };
+    // Then
     assert_eq!(settings.close_to_tray, Some(true));
     quit(&mut daemon, &mut socket, false).await;
 }

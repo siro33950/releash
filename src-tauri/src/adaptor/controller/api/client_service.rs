@@ -6,9 +6,6 @@ async fn get_server_info<'a>(
     connectrpc::Response::ok(to_rpc::<rpc::ServerInfo>(&wire::ServerInfo {
         launch_id: std::env::var("RELEASH_DAEMON_LAUNCH_ID").unwrap_or_default(),
         release: env!("CARGO_PKG_VERSION").into(),
-        desktop_settings: self
-            .desktop_settings()
-            .map_err(crate::adaptor::presenter::connect::classified_error)?,
     })?)
 }
 

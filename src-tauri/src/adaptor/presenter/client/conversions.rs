@@ -242,50 +242,6 @@ impl TryFrom<crate::usecase::agent_session::AgentSessionTreeLocationDto>
     }
 }
 
-impl TryFrom<crate::adaptor::gateway::app_config::AppSection> for wire::AppSection {
-    type Error = String;
-    fn try_from(value: crate::adaptor::gateway::app_config::AppSection) -> Result<Self, String> {
-        Ok(Self {
-            close_to_tray: Some(cv(value.close_to_tray)?),
-            auto_launch: Some(cv(value.auto_launch)?),
-            start_minimized: Some(cv(value.start_minimized)?),
-            last_root_path: Some(cv(value.last_root_path)?),
-            last_repo_paths: Some(cv(value.last_repo_paths)?),
-            external_editor: Some(cv(value.external_editor)?),
-        })
-    }
-}
-
-impl TryFrom<wire::AppSection> for crate::adaptor::gateway::app_config::AppSection {
-    type Error = String;
-    fn try_from(value: wire::AppSection) -> Result<Self, String> {
-        Ok(Self {
-            close_to_tray: value.close_to_tray.map(cv).transpose()?.unwrap_or(true),
-            auto_launch: value.auto_launch.map(cv).transpose()?.unwrap_or_default(),
-            start_minimized: value
-                .start_minimized
-                .map(cv)
-                .transpose()?
-                .unwrap_or_default(),
-            last_root_path: value
-                .last_root_path
-                .map(cv)
-                .transpose()?
-                .unwrap_or_default(),
-            last_repo_paths: value
-                .last_repo_paths
-                .map(cv)
-                .transpose()?
-                .unwrap_or_default(),
-            external_editor: value
-                .external_editor
-                .map(cv)
-                .transpose()?
-                .unwrap_or_default(),
-        })
-    }
-}
-
 impl TryFrom<crate::adaptor::presenter::application_lifecycle_v1::ApplicationQuitIntentDtoV1>
     for wire::ApplicationQuitIntentDtoV1
 {

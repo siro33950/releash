@@ -1,8 +1,17 @@
 import { invoke as invokeTauri } from "@tauri-apps/api/core";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { invokeClient, onClientRefresh } from "@/lib/client";
+import { invokeClient } from "@/lib/client";
+import { stateSubscriptions } from "@/test/stateSubscriptions";
 import { useBackgroundConfig } from "./useAppSettings";
+
+const states = stateSubscriptions();
+vi.mock("@/lib/client", async (importOriginal) => ({
+	...(await importOriginal<typeof import("@/lib/client")>()),
+	invokeClient: vi.fn(),
+	subscribeState: (...args: Parameters<typeof states.subscribeState>) =>
+		states.subscribeState(...args),
+}));
 
 const settings = {
 	close_to_tray: true,
@@ -10,16 +19,19 @@ const settings = {
 	start_minimized: true,
 };
 
-const serverSettings = {
-	...settings,
-	last_root_path: "",
-	last_repo_paths: [],
-	external_editor: "",
+const desktopSettings = {
+	closeToTray: true,
+	startMinimized: true,
+	crashReporting: false,
+	performanceTelemetry: false,
+	autoLaunch: false,
 };
 
 describe("window preferences", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		states.clear();
+		states.publish("desktop-settings", desktopSettings);
 		vi.mocked(invokeTauri).mockImplementation(async (command, args) => ({
 			enabled:
 				command === "set_login_item_enabled" &&
@@ -30,19 +42,14 @@ describe("window preferences", () => {
 			requiresApproval: false,
 			reason: null,
 		}));
-		vi.mocked(invokeClient).mockImplementation(async (command) =>
-			command === "get_app_settings" ? serverSettings : undefined,
-		);
+		vi.mocked(invokeClient).mockResolvedValue(undefined as never);
 	});
 
-	it("loads and saves daemon settings without relaying shell preferences", async () => {
+	it("loads daemon settings from the subscription and saves without relaying shell preferences", async () => {
 		const { result } = renderHook(() => useBackgroundConfig());
 		await waitFor(() => expect(result.current.loading).toBe(false));
+		expect(result.current.draft).toEqual(settings);
 		expect(invokeTauri).toHaveBeenCalledWith("get_login_item_status");
-		expect(invokeTauri).not.toHaveBeenCalledWith(
-			"apply_desktop_settings",
-			expect.anything(),
-		);
 		expect(
 			vi
 				.mocked(invokeTauri)
@@ -53,11 +60,6 @@ describe("window preferences", () => {
 		expect(invokeClient).toHaveBeenCalledWith("update_app_settings", {
 			app: { close_to_tray: false, start_minimized: true },
 		});
-		expect(invokeTauri).toHaveBeenCalledWith("get_login_item_status");
-		expect(invokeTauri).not.toHaveBeenCalledWith(
-			"apply_desktop_settings",
-			expect.anything(),
-		);
 		expect(
 			vi
 				.mocked(invokeTauri)
@@ -72,11 +74,6 @@ describe("window preferences", () => {
 		const { result } = renderHook(() => useBackgroundConfig());
 		await waitFor(() =>
 			expect(result.current.error).toBe("autostart unavailable"),
-		);
-		expect(invokeTauri).toHaveBeenCalledWith("get_login_item_status");
-		expect(invokeTauri).not.toHaveBeenCalledWith(
-			"apply_desktop_settings",
-			expect.anything(),
 		);
 		expect(
 			vi
@@ -93,11 +90,6 @@ describe("window preferences", () => {
 		await act(async () => {
 			await expect(result.current.save()).rejects.toThrow("save failed");
 		});
-		expect(invokeTauri).toHaveBeenCalledWith("get_login_item_status");
-		expect(invokeTauri).not.toHaveBeenCalledWith(
-			"apply_desktop_settings",
-			expect.anything(),
-		);
 		expect(
 			vi
 				.mocked(invokeTauri)
@@ -106,15 +98,17 @@ describe("window preferences", () => {
 		expect(result.current.isDirty).toBe(true);
 	});
 
-	it.each(["get_login_item_status", "get_app_settings"])(
+	it.each(["get_login_item_status", "desktop-settings"])(
 		"%s の初期取得失敗後の保存は失敗を通知し未保存の編集を保持する",
-		async (command) => {
-			if (command === "get_login_item_status") {
+		async (source) => {
+			if (source === "get_login_item_status") {
 				vi.mocked(invokeTauri).mockRejectedValueOnce(new Error("load failed"));
 			} else {
-				vi.mocked(invokeClient).mockRejectedValueOnce(new Error("load failed"));
+				states.clear();
 			}
 			const { result } = renderHook(() => useBackgroundConfig());
+			if (source === "desktop-settings")
+				act(() => states.fail("desktop-settings", new Error("load failed")));
 			await waitFor(() => expect(result.current.loading).toBe(false));
 			expect(result.current.error).toBe("load failed");
 			const draft = { ...settings, close_to_tray: false };
@@ -136,34 +130,36 @@ describe("window preferences", () => {
 		},
 	);
 
-	it("refreshes settings after reconnect while preserving an unsaved draft", async () => {
+	it("購読で届いた設定は未保存の編集を上書きしない", async () => {
 		const { result } = renderHook(() => useBackgroundConfig());
 		await waitFor(() => expect(result.current.loading).toBe(false));
 		act(() => result.current.setDraft({ ...settings, start_minimized: false }));
-		vi.mocked(invokeClient).mockResolvedValueOnce({
-			...serverSettings,
-			close_to_tray: false,
-		});
-		act(() => {
-			const calls = vi.mocked(onClientRefresh).mock.calls;
-			calls[calls.length - 1][0]();
-		});
-		await waitFor(() => expect(invokeClient).toHaveBeenCalledTimes(2));
-		expect(invokeTauri).toHaveBeenCalledWith("get_login_item_status");
-		expect(invokeTauri).not.toHaveBeenCalledWith(
-			"apply_desktop_settings",
-			expect.anything(),
+		act(() =>
+			states.publish("desktop-settings", {
+				...desktopSettings,
+				closeToTray: false,
+			}),
 		);
-		expect(
-			vi
-				.mocked(invokeTauri)
-				.mock.calls.every(([command]) => command === "get_login_item_status"),
-		).toBe(true);
 		expect(result.current.draft).toEqual({
 			...settings,
 			start_minimized: false,
 		});
+		expect(invokeClient).not.toHaveBeenCalled();
 	});
+
+	it("購読で届いた設定は編集が無ければ表示へ反映する", async () => {
+		const { result } = renderHook(() => useBackgroundConfig());
+		await waitFor(() => expect(result.current.loading).toBe(false));
+		act(() =>
+			states.publish("desktop-settings", {
+				...desktopSettings,
+				closeToTray: false,
+			}),
+		);
+		expect(result.current.draft.close_to_tray).toBe(false);
+		expect(result.current.isDirty).toBe(false);
+	});
+
 	it("ログイン項目の有効化と無効化をRustへ渡し失敗時は保存しない", async () => {
 		const { result } = renderHook(() => useBackgroundConfig());
 		await waitFor(() => expect(result.current.loading).toBe(false));
@@ -191,7 +187,8 @@ describe("window preferences", () => {
 });
 
 it("承認待ちは無効と表示し設定への導線を呼び出せる", async () => {
-	vi.mocked(invokeClient).mockResolvedValue(serverSettings);
+	states.clear();
+	states.publish("desktop-settings", desktopSettings);
 	vi.mocked(invokeTauri).mockResolvedValue({
 		enabled: false,
 		requested: true,
@@ -206,7 +203,8 @@ it("承認待ちは無効と表示し設定への導線を呼び出せる", asyn
 	expect(invokeTauri).toHaveBeenCalledWith("open_login_item_settings");
 });
 it("CLI設置は読み込み時に行わず明示操作だけで実行し失敗理由を表示する", async () => {
-	vi.mocked(invokeClient).mockResolvedValue(serverSettings);
+	states.clear();
+	states.publish("desktop-settings", desktopSettings);
 	vi.mocked(invokeTauri).mockClear().mockResolvedValue({
 		enabled: false,
 		requested: false,
@@ -228,13 +226,11 @@ it("CLI設置は読み込み時に行わず明示操作だけで実行し失敗�
 	expect(result.current.cliMessage).toContain("/usr/local/bin/releash");
 });
 it("承認待ちの間に別項目を保存してもログイン登録の希望を失わない", async () => {
+	states.clear();
+	states.publish("desktop-settings", { ...desktopSettings, autoLaunch: true });
 	vi.mocked(invokeClient)
 		.mockReset()
-		.mockImplementation(async (command) =>
-			command === "get_app_settings"
-				? { ...serverSettings, auto_launch: true }
-				: undefined,
-		);
+		.mockResolvedValue(undefined as never);
 	vi.mocked(invokeTauri).mockReset().mockResolvedValue({
 		enabled: false,
 		requested: true,

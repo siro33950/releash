@@ -63,8 +63,10 @@ function streamForAttachment(attachmentId: unknown) {
 	return stream;
 }
 
+const mockFirstState = vi.fn();
 vi.mock("@/lib/client", () => ({
 	invokeClient: (...args: unknown[]) => mockInvoke(...args),
+	firstState: (...args: unknown[]) => mockFirstState(...args),
 	onClientConnection: (listener: (connected: boolean) => void) => {
 		mockConnectionListener = listener;
 		return vi.fn();
@@ -286,6 +288,7 @@ describe("useTerminal", () => {
 		mockTerminalConstructorOptions = {};
 		mockWebglAddonInstances.length = 0;
 		mockConnectionListener = () => {};
+		mockFirstState.mockReset().mockRejectedValue(new Error("No state fixture"));
 		resetTerminalPerformanceSwitchesCache();
 		delete window.__RELEASH_TERMINAL_PERFORMANCE__;
 
@@ -462,20 +465,15 @@ describe("useTerminal", () => {
 	});
 
 	it("disableWebglRenderer switch時はWebGL addonをロードしない", async () => {
-		const baseImplementation = mockInvoke.getMockImplementation();
-		mockInvoke.mockImplementation(
-			(cmd: string, args?: Record<string, unknown>) => {
-				if (cmd === "get_terminal_performance_switches") {
-					return Promise.resolve({
-						disableOutputFlowControl: false,
-						disableTerminalJournal: false,
-						disableRendererWriteSerialization: false,
-						disableWebglRenderer: true,
-					});
-				}
-				return baseImplementation?.(cmd, args);
+		mockFirstState.mockResolvedValue({
+			realAppMode: false,
+			terminal: {
+				disableOutputFlowControl: false,
+				disableTerminalJournal: false,
+				disableRendererWriteSerialization: false,
+				disableWebglRenderer: true,
 			},
-		);
+		});
 
 		renderHook(() => useTerminal(containerRef));
 
@@ -1838,16 +1836,14 @@ describe("useTerminal", () => {
 	it.each([false, true])(
 		"backend flow control無効=%sでもparse完了後に通知単位ごとに処理済み量を知らせる",
 		async (disabled) => {
-			const previous = mockInvoke.getMockImplementation();
-			mockInvoke.mockImplementation(async (cmd, args) => {
-				if (cmd === "get_terminal_performance_switches")
-					return {
-						disableOutputFlowControl: disabled,
-						disableTerminalJournal: false,
-						disableRendererWriteSerialization: false,
-						disableWebglRenderer: false,
-					};
-				return previous?.(cmd, args);
+			mockFirstState.mockResolvedValue({
+				realAppMode: false,
+				terminal: {
+					disableOutputFlowControl: disabled,
+					disableTerminalJournal: false,
+					disableRendererWriteSerialization: false,
+					disableWebglRenderer: false,
+				},
 			});
 			let parsed!: () => void;
 			renderHook(() => useTerminal(containerRef));

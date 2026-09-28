@@ -2,6 +2,7 @@ use crate::adaptor::presenter::client as wire;
 use crate::common::retry::RetryLimiter;
 use crate::domain::daemon_supervision::{verify_identity, Failure, FailureStage, StopIntent};
 use crate::domain::daemon_supervision::{DaemonExit, DaemonProcessPort};
+use crate::usecase::app_config::query_service::DesktopSettingsDto;
 use crate::usecase::client_connection::ClientConnectionQueryService;
 use crate::usecase::daemon_supervision::{DaemonConnection, DaemonGateway};
 use crate::usecase::failure::{FailureKey, FailureOutput};
@@ -94,14 +95,27 @@ impl DaemonProcessGateway {
             Err(_) => return Ok(None),
         };
         verify_identity(launch_id, &hello.launch_id, &hello.release)?;
-        let settings = hello.desktop_settings.ok_or_else(|| Failure {
-            stage: FailureStage::Initialization,
-            reason: "Daemon settings are unavailable.".into(),
-        })?;
+        let settings = match tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            client.first_settings(),
+        )
+        .await
+        {
+            Ok(Ok(settings)) => settings,
+            Ok(Err(reason)) => {
+                return Err(Failure {
+                    stage: FailureStage::Initialization,
+                    reason,
+                })
+            }
+            Err(_) => return Ok(None),
+        };
+        // 最初の snapshot は接続情報に載せたので、以後の変更だけを settings_update で観測する。
+        let _ = client.settings_update();
         let connection = DaemonConnection {
             connected_at_ms: self.monotonic_ms(),
             endpoint,
-            settings: settings.into(),
+            settings,
             launch_id: hello.launch_id.clone(),
             release: hello.release.clone(),
         };
@@ -319,6 +333,9 @@ impl DaemonGateway for DaemonProcessGateway {
     }
     fn connected(&self) -> bool {
         self.client().is_ok_and(|client| client.connected())
+    }
+    fn settings_update(&self) -> Option<DesktopSettingsDto> {
+        self.client().ok()?.settings_update()
     }
 }
 

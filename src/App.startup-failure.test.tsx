@@ -2,35 +2,44 @@ import { invoke } from "@tauri-apps/api/core";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { invokeClient } from "@/lib/client";
+import { invokeClient, subscribeState } from "@/lib/client";
 import App from "./App";
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 
+const failed = {
+	type: "failed",
+	kind: "store_validation_failed",
+	safeDescription: "The local data store could not be verified safely.",
+	correlationId: "startup-correlation-1",
+	retryOnNextLaunch: false,
+	actions: ["quit"],
+} as const;
+
 describe("B-071 safe startup surface", () => {
 	beforeEach(() => {
 		vi.mocked(invoke).mockReset();
-		vi.mocked(invokeClient).mockClear();
+		vi.mocked(invoke).mockImplementation(async (command: string) => {
+			if (command === "get_daemon_status")
+				return { phase: "ready", connectionGeneration: 1 };
+			throw new Error(`unexpected shell command: ${command}`);
+		});
+		vi.mocked(invokeClient).mockReset();
 	});
 
 	it("mounts no workbench and exposes only safe failure data and Quit", async () => {
-		vi.mocked(invoke).mockImplementation((command: string) => {
-			if (command === "get_application_startup_outcome") {
-				return Promise.resolve({
-					type: "failed",
-					kind: "store_validation_failed",
-					safeDescription: "The local data store could not be verified safely.",
-					correlationId: "startup-correlation-1",
-					retryOnNextLaunch: false,
-					actions: ["quit"],
-				});
-			}
-			if (command === "quit_after_startup_failure") {
-				return Promise.resolve({
+		vi.mocked(subscribeState).mockImplementation((target, receive) => {
+			const kind = typeof target === "string" ? target : target.kind;
+			if (kind === "startup-outcome") receive(failed as never);
+			else throw new Error(`unexpected subscription: ${kind}`);
+			return () => {};
+		});
+		vi.mocked(invokeClient).mockImplementation(async (command) => {
+			if (command === "quit_after_startup_failure")
+				return {
 					type: "accepted",
 					correlationId: "startup-correlation-1",
-				});
-			}
+				} as never;
 			throw new Error(`unexpected normal command: ${command}`);
 		});
 
@@ -48,27 +57,31 @@ describe("B-071 safe startup surface", () => {
 			screen.getByText("Correlation: startup-correlation-1"),
 		).toBeInTheDocument();
 		expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
-		expect(invoke).toHaveBeenCalledTimes(1);
 		expect(invokeClient).not.toHaveBeenCalled();
 
 		await userEvent.click(screen.getByRole("button", { name: "Quit" }));
 		await waitFor(() =>
-			expect(invoke).toHaveBeenLastCalledWith("quit_after_startup_failure"),
+			expect(invokeClient).toHaveBeenLastCalledWith(
+				"quit_after_startup_failure",
+			),
 		);
+		expect(invokeClient).toHaveBeenCalledTimes(1);
 		expect(
 			vi
 				.mocked(invoke)
-				.mock.calls.every(
-					([command]) =>
-						command === "get_application_startup_outcome" ||
-						command === "quit_after_startup_failure",
-				),
+				.mock.calls.every(([command]) => command === "get_daemon_status"),
 		).toBe(true);
 	});
 
 	it("does not synthesize a failure kind, description, correlation, or Quit when the Rust outcome is unavailable", async () => {
-		vi.mocked(invoke).mockRejectedValueOnce(
-			new Error("startup authority missing"),
+		vi.mocked(subscribeState).mockImplementation(
+			(target, _receive, onError) => {
+				const kind = typeof target === "string" ? target : target.kind;
+				if (kind === "startup-outcome")
+					onError?.(new Error("startup authority missing"));
+				else throw new Error(`unexpected subscription: ${kind}`);
+				return () => {};
+			},
 		);
 
 		render(<App />);
@@ -82,10 +95,6 @@ describe("B-071 safe startup surface", () => {
 		expect(
 			screen.queryByRole("button", { name: "Quit" }),
 		).not.toBeInTheDocument();
-		expect(invoke).toHaveBeenCalledTimes(1);
 		expect(invokeClient).not.toHaveBeenCalled();
-		expect(vi.mocked(invoke).mock.calls).toEqual([
-			["get_application_startup_outcome"],
-		]);
 	});
 });

@@ -7,16 +7,8 @@ pub(crate) use crate::adaptor::presenter::terminal_error::{
 use crate::adaptor::controller::state::AppState;
 use crate::adaptor::presenter::terminal::{
     GetOrSpawnTerminalV1, TerminalInputPerformanceSampleV1, TerminalLaunchPerformanceSampleV1,
-    TerminalPerformanceSwitchesV1, TerminalSurfaceOwnerV1,
+    TerminalSurfaceOwnerV1,
 };
-
-pub(crate) fn get_terminal_performance_switches_shared() -> TerminalPerformanceSwitchesV1 {
-    telemetry().terminal_performance_switches().into()
-}
-
-pub(crate) fn get_performance_real_app_mode_shared() -> bool {
-    telemetry().performance_real_app_mode()
-}
 
 pub(crate) fn start_terminal_launch_performance_collection_shared() {
     telemetry().start_terminal_launch_collection();

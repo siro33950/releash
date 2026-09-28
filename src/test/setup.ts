@@ -117,9 +117,26 @@ vi.mock("@/lib/client", async (importOriginal) => {
 						"node-detail",
 						"workflow",
 						"workflow-source",
+						"releash-base",
+						"notion-config",
 					].includes(name)
 				)
 					onValue(null);
+				else if (name === "provider-hook-health") onValue([]);
+				else if (name === "startup-outcome") onValue({ type: "ready" });
+				else if (name === "desktop-settings")
+					onValue({
+						closeToTray: true,
+						startMinimized: false,
+						crashReporting: true,
+						performanceTelemetry: true,
+						autoLaunch: false,
+					});
+				else if (name === "workflow-config")
+					onValue({ approval_auto_approve: false });
+				else if (name === "external-editor")
+					onValue({ selected: "", editors: [] });
+				else if (name === "provider-availability") onValue({ providers: [] });
 				return () => {};
 			},
 		),

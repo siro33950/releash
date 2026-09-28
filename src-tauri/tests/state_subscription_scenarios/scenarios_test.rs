@@ -257,6 +257,7 @@ async fn test_引数付き購読_対象の変更だけを読み直して配信�
         reads.clone(),
         None,
         vec![],
+        String::new(),
     );
     let mut stream = Box::pin(usecase.open("client".into()).unwrap());
     stream.next().await;
@@ -297,6 +298,7 @@ async fn test_外部情報_購読者がいる間だけcache_ttlで取得する()
         reads.clone(),
         None,
         vec![],
+        String::new(),
     );
     let stream = usecase.open("client".into()).unwrap();
     let target = SubscriptionTarget::Issues("/repo".into()).to_string();
@@ -329,6 +331,7 @@ async fn test_履歴購読_件数違いと別clientが監視を共有し最後�
             files.clone(),
         ))),
         vec!["/claude".into(), "/codex".into()],
+        String::new(),
     );
     let first = usecase.open("first".into()).unwrap();
     let second = usecase.open("second".into()).unwrap();
@@ -480,6 +483,7 @@ async fn test_workspaces購読_最後の停止と切断で実際のgit監視を�
                 files.clone(),
             ))),
             vec![],
+            String::new(),
         );
         let first = usecase.open("first".into()).unwrap();
         let second = usecase.open("second".into()).unwrap();
@@ -530,6 +534,7 @@ async fn test_監視開始失敗_購読を残さず次の開始で再度監視�
             files.clone(),
         ))),
         vec!["/missing".into()],
+        String::new(),
     );
     let _stream = usecase.open("client".into()).unwrap();
     let target = SubscriptionTarget::SessionHistory("/repo".into(), 20).to_string();
@@ -549,6 +554,7 @@ async fn test_監視開始失敗_購読を残さず次の開始で再度監視�
             files.clone(),
         ))),
         vec!["/history".into()],
+        String::new(),
     );
     start_read(&usecase, "client", &target, None).await.unwrap();
     assert_eq!(files.active.lock().unwrap().len(), 1);
@@ -597,6 +603,7 @@ async fn test_購読停止_初回読取中の停止要求でも監視とworker�
             files.clone(),
         ))),
         vec!["/history".into()],
+        String::new(),
     );
     let _stream = usecase.open("client".into()).unwrap();
     let target = SubscriptionTarget::SessionHistory("/repo".into(), 20).to_string();
@@ -658,6 +665,7 @@ async fn test_不在対象_初回からnullable_snapshotとして配信する() 
         Arc::new(NullableReads),
         None,
         vec![],
+        String::new(),
     );
     let mut stream = Box::pin(usecase.open("client".into()).unwrap());
     stream.next().await;
@@ -691,6 +699,7 @@ async fn test_購読開始と切断_同じ対象の最終購読者が切断し�
         Arc::new(NullableReads),
         None,
         vec![],
+        String::new(),
     );
     let target = SubscriptionTarget::AgentSession("missing".into()).to_string();
     for index in 0..100 {
@@ -728,6 +737,7 @@ async fn test_初回読取_保持中の版から再開して変更だけ届け�
         }),
         None,
         vec![],
+        String::new(),
     );
     let target = SubscriptionTarget::SessionNode("/repo".into(), "node".into()).to_string();
     let presenter = usecase.test_presenter().unwrap();
@@ -894,6 +904,7 @@ async fn test_外部情報ttl_issueとprを取得し更新値を配信して停�
             reads.clone(),
             None,
             vec![],
+            String::new(),
         );
         let mut stream = Box::pin(usecase.open("client".into()).unwrap());
         stream.next().await;
@@ -950,6 +961,7 @@ async fn test_初回読取中の切断_開始失敗後に対象の鍵もworker�
         reads.clone(),
         None,
         vec![],
+        String::new(),
     );
     let stream = usecase.open("client".into()).unwrap();
     let target = SubscriptionTarget::SessionHistory("/repo".into(), 20);
@@ -1012,6 +1024,7 @@ async fn test_snapshot登録後の切断_開始失敗で対象の鍵を解放す
             None, files,
         ))),
         vec!["/history".into()],
+        String::new(),
     );
     let _stream = usecase.open("client".into()).unwrap();
     let target = SubscriptionTarget::SessionHistory("/repo".into(), 20);

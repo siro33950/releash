@@ -2,7 +2,6 @@ use super::*;
 use crate::usecase::agent_session::{
     AgentSessionLaunchUsecaseError, AgentSessionLifecycleUsecaseError,
 };
-use crate::usecase::provider_lifecycle::ProviderHookHealthUsecaseError;
 
 #[tokio::test(flavor = "current_thread")]
 async fn test_provider_availability_controller_blocking操作中もasync_runtimeを占有しない() {
@@ -173,21 +172,6 @@ fn test_agent_session_controller_対象21codeを利用者向け英語文言へ�
             lifecycle_error(AgentSessionLifecycleUsecaseError::InvalidOperation),
             "AGENT_SESSION_INVALID_OPERATION",
             "This operation is not available for the AgentSession in its current state. Refresh and try again.",
-        ),
-        (
-            hook_health_error(ProviderHookHealthUsecaseError::InvalidInput),
-            "PROVIDER_HOOK_HEALTH_INVALID_REQUEST",
-            "Releash could not load Provider Hook health because the request is invalid.",
-        ),
-        (
-            hook_health_error(ProviderHookHealthUsecaseError::StorageUnavailable),
-            "PROVIDER_HOOK_HEALTH_STORAGE_UNAVAILABLE",
-            "Releash could not load Provider Hook health. Try again.",
-        ),
-        (
-            hook_health_error(ProviderHookHealthUsecaseError::Corrupt),
-            "PROVIDER_HOOK_HEALTH_CORRUPT",
-            "Releash could not load Provider Hook health because its saved data is invalid.",
         ),
     ];
 
@@ -369,9 +353,6 @@ fn test_provider失敗分類_表示コードの生成時に理由を保持する
         (E::AgentSessionCorrupt, F::DataLoss),
         (E::AgentSessionNotFound, F::NotFound),
         (E::AgentSessionInvalidOperation, F::FailedPrecondition),
-        (E::ProviderHookHealthInvalidRequest, F::InvalidArgument),
-        (E::ProviderHookHealthStorageUnavailable, F::Unavailable),
-        (E::ProviderHookHealthCorrupt, F::DataLoss),
     ];
     for (error, expected) in cases {
         // When

@@ -1105,7 +1105,7 @@ describe("ReviewPanel", () => {
 				],
 			});
 			vi.mocked(invokeClient).mockClear();
-			vi.mocked(invokeClient).mockResolvedValue(null);
+			vi.mocked(invokeClient).mockResolvedValue(null as never);
 			const { unmount } = render(
 				<TooltipProvider>
 					<ReviewPanel
@@ -1168,7 +1168,9 @@ describe("ReviewPanel", () => {
 				previous as typeof subscribeState,
 			);
 			mockReviewSnapshot({});
-			vi.mocked(invokeClient).mockReset().mockResolvedValue(null);
+			vi.mocked(invokeClient)
+				.mockReset()
+				.mockResolvedValue(null as never);
 		},
 	);
 });

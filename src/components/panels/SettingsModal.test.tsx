@@ -18,9 +18,81 @@ import {
 	it,
 	vi,
 } from "vitest";
-import { subscribeState } from "@/lib/client";
+import {
+	type StateTarget,
+	type StateValues,
+	subscribeState,
+} from "@/lib/client";
+import { stateSubscriptions } from "@/test/stateSubscriptions";
 import { type AppSettings, DEFAULT_SETTINGS } from "@/types/settings";
 import { SettingsModal } from "./SettingsModal";
+
+const states = stateSubscriptions();
+const REPO = "/repos/my-app";
+const providerSnapshot = {
+	providers: [
+		{
+			provider: "claude",
+			displayName: "Claude",
+			defaultExecutable: "claude",
+			configuredExecutable: "/opt/custom/claude",
+			effectiveExecutable: "/opt/custom/claude",
+			available: true,
+			resolvedExecutable: "/opt/custom/claude",
+			unavailableReason: null,
+		},
+		{
+			provider: "codex",
+			displayName: "Codex",
+			defaultExecutable: "codex",
+			configuredExecutable: null,
+			effectiveExecutable: "codex",
+			available: false,
+			resolvedExecutable: null,
+			unavailableReason: "not_found",
+		},
+	],
+};
+const desktopSettings = {
+	closeToTray: true,
+	startMinimized: false,
+	crashReporting: true,
+	performanceTelemetry: true,
+	autoLaunch: false,
+};
+const editors = [
+	{ name: "Code", path: "code" },
+	{ name: "Zed", path: "zed" },
+];
+const EMPTY_REPORT = {
+	items: [],
+	workflow_summaries: {},
+	facet_summaries: {},
+	facet_usage: {},
+};
+function subscribeStates(values: Record<string, unknown>) {
+	for (const [target, value] of Object.entries(values)) {
+		const [kind, ...args] = target.split(":");
+		states.publish(
+			(args.length ? { kind, args } : kind) as never,
+			value as never,
+		);
+	}
+}
+function publishDefaults({ provider = true } = {}) {
+	states.clear();
+	subscribeStates({ workflows: [], diagnostics: EMPTY_REPORT });
+	states.publish({ kind: "branches", args: [REPO] }, [
+		{ name: "main", is_remote: false },
+		{ name: "develop", is_remote: false },
+	]);
+	states.publish("workflow-config", { approval_auto_approve: false });
+	if (provider) states.publish("provider-availability", providerSnapshot);
+	states.publish("external-editor", { selected: "", editors: [] });
+	states.publish("desktop-settings", desktopSettings);
+	states.publish({ kind: "releash-base", args: [REPO] }, null);
+	states.publish({ kind: "notion-config", args: [REPO] }, null);
+}
 
 const monacoMock = vi.hoisted(() => {
 	const model = {
@@ -53,35 +125,14 @@ beforeAll(() => {
 	HTMLElement.prototype.scrollIntoView = vi.fn() as never;
 });
 
-const EMPTY_REPORT = {
-	items: [],
-	workflow_summaries: {},
-	facet_summaries: {},
-	facet_usage: {},
-};
-function subscribeStates(values: Record<string, unknown>) {
-	vi.mocked(subscribeState).mockImplementation((target, receive) => {
-		const kind = typeof target === "string" ? target : target.kind;
-		const key =
-			typeof target === "string" ? target : [kind, ...target.args].join(":");
-		const value = key in values ? values[key] : values[kind];
-		if (value !== undefined) receive(value as never);
-		return vi.fn();
-	});
-}
-
 describe("SettingsModal", () => {
 	afterEach(() => vi.restoreAllMocks());
 
 	beforeEach(async () => {
-		subscribeStates({
-			branches: [
-				{ name: "main", is_remote: false },
-				{ name: "develop", is_remote: false },
-			],
-			workflows: [],
-			diagnostics: EMPTY_REPORT,
-		});
+		vi.mocked(subscribeState).mockImplementation(((
+			...args: Parameters<typeof states.subscribeState>
+		) => states.subscribeState(...args)) as typeof subscribeState);
+		publishDefaults();
 		vi.mocked(invokeTauri).mockResolvedValue({
 			enabled: false,
 			requiresApproval: false,
@@ -90,43 +141,10 @@ describe("SettingsModal", () => {
 		const { invokeClient: invoke } = await import("@/lib/client");
 		vi.mocked(invoke).mockImplementation((cmd: string) => {
 			switch (cmd) {
-				case "get_workflow_config":
-					return Promise.resolve({
-						approval_auto_approve: false,
-					});
-				case "get_provider_availability":
-					return Promise.resolve({
-						providers: [
-							{
-								provider: "claude",
-								displayName: "Claude",
-								defaultExecutable: "claude",
-								configuredExecutable: "/opt/custom/claude",
-								effectiveExecutable: "/opt/custom/claude",
-								available: true,
-								resolvedExecutable: "/opt/custom/claude",
-								unavailableReason: null,
-							},
-							{
-								provider: "codex",
-								displayName: "Codex",
-								defaultExecutable: "codex",
-								configuredExecutable: null,
-								effectiveExecutable: "codex",
-								available: false,
-								resolvedExecutable: null,
-								unavailableReason: "not_found",
-							},
-						],
-					});
 				case "update_workflow_config":
-					return Promise.resolve(null);
-				case "get_external_editor":
-					return Promise.resolve("");
-				case "detect_editors":
-					return Promise.resolve([]);
+					return Promise.resolve(null as never);
 				default:
-					return Promise.resolve(null);
+					return Promise.resolve(null as never);
 			}
 		});
 	});
@@ -146,20 +164,6 @@ describe("SettingsModal", () => {
 			new Error("login unavailable"),
 		);
 		const { invokeClient } = await import("@/lib/client");
-		const client = vi.mocked(invokeClient).getMockImplementation();
-		if (!client) throw new Error("Missing settings fixture");
-		vi.mocked(invokeClient).mockImplementation((command, args) =>
-			command === "get_app_settings"
-				? Promise.resolve({
-						auto_launch: false,
-						close_to_tray: true,
-						start_minimized: false,
-						last_root_path: "",
-						last_repo_paths: [],
-						external_editor: "",
-					})
-				: client(command, args),
-		);
 		const user = userEvent.setup();
 		render(<SettingsModal {...defaultProps} />);
 		await user.click(screen.getByText("Background"));
@@ -188,21 +192,6 @@ describe("SettingsModal", () => {
 			requiresApproval: true,
 			reason: null,
 		});
-		const { invokeClient } = await import("@/lib/client");
-		const client = vi.mocked(invokeClient).getMockImplementation();
-		if (!client) throw new Error("Missing settings fixture");
-		vi.mocked(invokeClient).mockImplementation((command, args) =>
-			command === "get_app_settings"
-				? Promise.resolve({
-						auto_launch: true,
-						close_to_tray: true,
-						start_minimized: false,
-						last_root_path: "",
-						last_repo_paths: [],
-						external_editor: "",
-					})
-				: client(command, args),
-		);
 		const user = userEvent.setup();
 		render(<SettingsModal {...defaultProps} />);
 		await user.click(screen.getByText("Background"));
@@ -224,21 +213,6 @@ describe("SettingsModal", () => {
 			requiresApproval: false,
 			reason,
 		});
-		const { invokeClient } = await import("@/lib/client");
-		const client = vi.mocked(invokeClient).getMockImplementation();
-		if (!client) throw new Error("Missing settings fixture");
-		vi.mocked(invokeClient).mockImplementation((command, args) =>
-			command === "get_app_settings"
-				? Promise.resolve({
-						auto_launch: false,
-						close_to_tray: true,
-						start_minimized: false,
-						last_root_path: "",
-						last_repo_paths: [],
-						external_editor: "",
-					})
-				: client(command, args),
-		);
 		render(<SettingsModal {...defaultProps} />);
 		fireEvent.click(screen.getByText("Background"));
 		expect(await screen.findByRole("alert")).toHaveTextContent(reason);
@@ -253,21 +227,6 @@ describe("SettingsModal", () => {
 		vi.mocked(invokeTauri).mockImplementation(async (command, args, options) =>
 			command === "install_cli" ? message : delegate?.(command, args, options),
 		);
-		const { invokeClient } = await import("@/lib/client");
-		const client = vi.mocked(invokeClient).getMockImplementation();
-		if (!client) throw new Error("Missing settings fixture");
-		vi.mocked(invokeClient).mockImplementation((command, args) =>
-			command === "get_app_settings"
-				? Promise.resolve({
-						auto_launch: false,
-						close_to_tray: true,
-						start_minimized: false,
-						last_root_path: "",
-						last_repo_paths: [],
-						external_editor: "",
-					})
-				: client(command, args),
-		);
 		const user = userEvent.setup();
 		render(<SettingsModal {...defaultProps} />);
 		await user.click(screen.getByText("Background"));
@@ -280,135 +239,111 @@ describe("SettingsModal", () => {
 		expect(await screen.findByRole("status")).toHaveTextContent(message);
 	});
 
-	it.each(["期限後の応答", "接続回復"])(
-		"%sの通知でpushを購読しない設定も取得し直す",
-		async () => {
-			const { invokeClient, onClientRefresh } = await import("@/lib/client");
-			const commands = [
-				"get_workflow_config",
-				"get_external_editor",
-				"detect_editors",
-				"get_notion_config",
-				"get_provider_availability",
-				"get_app_settings",
-			];
-			const callbacks = new Set<() => void>();
-			vi.mocked(onClientRefresh).mockImplementation((callback) => {
-				callbacks.add(callback);
-				return () => {
-					callbacks.delete(callback);
-				};
-			});
-			const initial = vi.mocked(invokeClient).getMockImplementation();
-			if (!initial) throw new Error("Missing settings fixture");
-			let recovered = false;
-			vi.mocked(invokeClient).mockImplementation((command, args) => {
-				if (commands.includes(command) && !recovered)
-					return Promise.reject(
-						new ConnectError("Request failed", Code.Unavailable),
-					);
-				if (command === "get_notion_config")
-					return Promise.resolve({
-						api_token: "recovered-token",
-						database_id: "recovered-db",
-						property_mapping: {
-							title: "Title",
-							labels: [],
-							branch_name: "Branch",
-							branch_prefix: "fix/",
-						},
-					});
-				if (command === "get_provider_availability")
-					return Promise.resolve({
-						providers: [
-							{
-								provider: "codex",
-								displayName: "Codex",
-								defaultExecutable: "codex",
-								configuredExecutable: "/recovered/codex",
-								effectiveExecutable: "/recovered/codex",
-								available: true,
-								resolvedExecutable: "/recovered/codex",
-								unavailableReason: null,
-							},
-						],
-					});
-				if (command === "get_app_settings")
-					return Promise.resolve({
-						close_to_tray: false,
-						auto_launch: true,
-						start_minimized: true,
-						last_root_path: "",
-						last_repo_paths: [],
-						external_editor: "",
-					});
-				if (command === "get_external_editor")
-					return Promise.resolve("/bin/zed");
-				if (command === "detect_editors")
-					return Promise.resolve([{ name: "Zed", path: "/bin/zed" }]);
-				if (command === "get_workflow_config")
-					return Promise.resolve({ approval_auto_approve: true });
-				return initial(command, args);
-			});
-			const view = render(<SettingsModal {...defaultProps} />);
-			for (const section of ["Editor", "Notion", "Agent", "Background"]) {
-				fireEvent.click(screen.getByText(section));
-				await waitFor(() =>
-					expect(
-						screen.getAllByText(/処理中にエラーが発生しました/).length,
-					).toBeGreaterThan(0),
+	it("購読の失敗を各設定に表示し回復した値で置き換える", async () => {
+		const notion: StateTarget<"notion-config"> = {
+			kind: "notion-config",
+			args: [REPO],
+		};
+		const targets: StateTarget<keyof StateValues>[] = [
+			"workflow-config",
+			"external-editor",
+			"provider-availability",
+			"desktop-settings",
+			notion,
+		];
+		states.clear();
+		states.publish({ kind: "branches", args: [REPO] }, []);
+		states.publish({ kind: "releash-base", args: [REPO] }, null);
+		const view = render(<SettingsModal {...defaultProps} />);
+		await act(async () => {
+			for (const target of targets)
+				states.fail(
+					target,
+					new ConnectError("Request failed", Code.Unavailable),
 				);
-				if (section === "Notion") {
-					expect(screen.getByRole("alert")).toHaveTextContent("/repos/my-app");
-					expect(screen.queryByLabelText("API Token")).not.toBeInTheDocument();
-				}
-			}
-			expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
-			await act(async () => {
-				recovered = true;
-				for (const callback of callbacks) callback();
-			});
+		});
+		for (const section of ["Editor", "Notion", "Agent", "Background"]) {
+			fireEvent.click(screen.getByText(section));
 			await waitFor(() =>
 				expect(
-					screen.queryByText(/操作結果を確認できません/),
-				).not.toBeInTheDocument(),
+					screen.getAllByText(/処理中にエラーが発生しました/).length,
+				).toBeGreaterThan(0),
 			);
+			if (section === "Notion") {
+				expect(screen.getByRole("alert")).toHaveTextContent("/repos/my-app");
+				expect(screen.queryByLabelText("API Token")).not.toBeInTheDocument();
+			}
+		}
+		expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+		await act(async () => {
+			states.publish(notion, {
+				api_token: "recovered-token",
+				database_id: "recovered-db",
+				property_mapping: {
+					title: "Title",
+					labels: [],
+					branch_name: "Branch",
+					branch_prefix: "fix/",
+				},
+			});
+			states.publish("provider-availability", {
+				providers: [
+					{
+						provider: "codex",
+						displayName: "Codex",
+						defaultExecutable: "codex",
+						configuredExecutable: "/recovered/codex",
+						effectiveExecutable: "/recovered/codex",
+						available: true,
+						resolvedExecutable: "/recovered/codex",
+						unavailableReason: null,
+					},
+				],
+			});
+			states.publish("desktop-settings", {
+				...desktopSettings,
+				closeToTray: false,
+				startMinimized: true,
+				autoLaunch: true,
+			});
+			states.publish("external-editor", {
+				selected: "/bin/zed",
+				editors: [{ name: "Zed", path: "/bin/zed" }],
+			});
+			states.publish("workflow-config", { approval_auto_approve: true });
+		});
+		await waitFor(() =>
 			expect(
-				screen.getByRole("checkbox", { name: "Minimize to tray on close" }),
-			).not.toBeChecked();
-			expect(
-				screen.getByRole("checkbox", { name: "Start minimized" }),
-			).toBeChecked();
-			fireEvent.click(screen.getByText("Notion"));
-			expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-			expect(screen.getByLabelText("API Token")).toHaveValue("recovered-token");
-			expect(screen.getByLabelText("Database ID")).toHaveValue("recovered-db");
-			fireEvent.click(screen.getByText("Agent"));
-			expect(
-				screen.queryByText(/操作結果を確認できません/),
-			).not.toBeInTheDocument();
-			expect(screen.getByLabelText("Codex executable override")).toHaveValue(
-				"/recovered/codex",
-			);
-			expect(screen.queryByText("not_found")).not.toBeInTheDocument();
-			fireEvent.click(screen.getByText("Editor"));
-			expect(
-				screen.queryByText(/操作結果を確認できません/),
-			).not.toBeInTheDocument();
-			expect(
-				screen.getByRole("combobox", { name: "External Editor" }),
-			).toHaveTextContent("Zed");
-			for (const command of commands)
-				expect(
-					vi
-						.mocked(invokeClient)
-						.mock.calls.filter(([name]) => name === command).length,
-				).toBeGreaterThanOrEqual(2);
-			view.unmount();
-			expect(callbacks.size).toBe(0);
-			vi.mocked(onClientRefresh).mockImplementation(() => () => {});
-		},
-	);
+				screen.queryByText(/処理中にエラーが発生しました/),
+			).not.toBeInTheDocument(),
+		);
+		expect(
+			screen.getByRole("checkbox", { name: "Minimize to tray on close" }),
+		).not.toBeChecked();
+		expect(
+			screen.getByRole("checkbox", { name: "Start minimized" }),
+		).toBeChecked();
+		fireEvent.click(screen.getByText("Notion"));
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+		expect(screen.getByLabelText("API Token")).toHaveValue("recovered-token");
+		expect(screen.getByLabelText("Database ID")).toHaveValue("recovered-db");
+		fireEvent.click(screen.getByText("Agent"));
+		expect(
+			screen.queryByText(/処理中にエラーが発生しました/),
+		).not.toBeInTheDocument();
+		expect(screen.getByLabelText("Codex executable override")).toHaveValue(
+			"/recovered/codex",
+		);
+		expect(screen.queryByText("not_found")).not.toBeInTheDocument();
+		fireEvent.click(screen.getByText("Editor"));
+		expect(
+			screen.queryByText(/処理中にエラーが発生しました/),
+		).not.toBeInTheDocument();
+		expect(
+			screen.getByRole("combobox", { name: "External Editor" }),
+		).toHaveTextContent("Zed");
+		view.unmount();
+	});
 
 	it.each(["editor", "workflow", "base", "background", "notion", "provider"])(
 		"再取得しても%sの未保存入力と保存可能な状態を保持する",
@@ -418,35 +353,15 @@ describe("SettingsModal", () => {
 				requiresApproval: false,
 				reason: null,
 			});
-			const { invokeClient, onClientRefresh } = await import("@/lib/client");
-			const initial = vi.mocked(invokeClient).getMockImplementation();
-			if (!initial) throw new Error("Missing invoke fixture");
-			const callbacks = new Set<() => void>();
-			vi.mocked(onClientRefresh).mockImplementation((callback) => {
-				callbacks.add(callback);
-				return () => {
-					callbacks.delete(callback);
-				};
-			});
-			vi.mocked(invokeClient).mockImplementation((command, args) => {
-				if (command === "get_external_editor") return Promise.resolve("code");
-				if (command === "detect_editors")
-					return Promise.resolve([
-						{ name: "Code", path: "code" },
-						{ name: "Zed", path: "zed" },
-					]);
-				if (command === "get_app_settings")
-					return Promise.resolve({
-						close_to_tray: true,
-						auto_launch: true,
-						start_minimized: false,
-						last_root_path: "",
-						last_repo_paths: [],
-						external_editor: "",
-					});
-				if (command === "get_releash_base") return Promise.resolve("main");
-				return initial(command, args);
-			});
+			const republish = () => {
+				states.publish("external-editor", { selected: "code", editors });
+				states.publish("desktop-settings", desktopSettings);
+				states.publish({ kind: "releash-base", args: [REPO] }, "main");
+				states.publish("workflow-config", { approval_auto_approve: false });
+				states.publish("provider-availability", providerSnapshot);
+				states.publish({ kind: "notion-config", args: [REPO] }, null);
+			};
+			republish();
 			const user = userEvent.setup();
 			const view = render(<SettingsModal {...defaultProps} />);
 			const sections = {
@@ -486,9 +401,7 @@ describe("SettingsModal", () => {
 				await user.type(input, "unsaved-input");
 			}
 			expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
-			await act(async () => {
-				for (const callback of callbacks) callback();
-			});
+			await act(async () => republish());
 			if (form === "editor" || form === "base") {
 				expect(
 					await screen.findByRole("combobox", {
@@ -511,7 +424,6 @@ describe("SettingsModal", () => {
 			}
 			expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
 			view.unmount();
-			vi.mocked(onClientRefresh).mockImplementation(() => () => {});
 		},
 	);
 
@@ -595,27 +507,25 @@ describe("SettingsModal", () => {
 	it("Provider CLI path変更をglobal Saveからbackendへ保存する", async () => {
 		const user = userEvent.setup();
 		const { invokeClient: invoke } = await import("@/lib/client");
+		states.publish("provider-availability", {
+			providers: [
+				{
+					provider: "claude",
+					displayName: "Claude",
+					defaultExecutable: "claude",
+					configuredExecutable: null,
+					effectiveExecutable: "claude",
+					available: true,
+					resolvedExecutable: "/usr/bin/claude",
+					unavailableReason: null,
+				},
+			],
+		});
 		vi.mocked(invoke).mockImplementation((cmd: string) => {
-			if (cmd === "get_provider_availability") {
-				return Promise.resolve({
-					providers: [
-						{
-							provider: "claude",
-							displayName: "Claude",
-							defaultExecutable: "claude",
-							configuredExecutable: null,
-							effectiveExecutable: "claude",
-							available: true,
-							resolvedExecutable: "/usr/bin/claude",
-							unavailableReason: null,
-						},
-					],
-				});
-			}
 			if (cmd === "update_provider_executable") {
 				return Promise.resolve({ providers: [] });
 			}
-			return Promise.resolve(null);
+			return Promise.resolve(null as never);
 		});
 		render(<SettingsModal {...defaultProps} />);
 		fireEvent.click(screen.getByText("Agent"));
@@ -633,6 +543,7 @@ describe("SettingsModal", () => {
 	it("Provider CLIのresetとrefreshをbackend操作へ転送する", async () => {
 		const user = userEvent.setup();
 		const { invokeClient: invoke } = await import("@/lib/client");
+		vi.mocked(invoke).mockResolvedValue(providerSnapshot as never);
 		render(<SettingsModal {...defaultProps} />);
 		fireEvent.click(screen.getByText("Agent"));
 		await user.click(
@@ -661,21 +572,19 @@ describe("SettingsModal", () => {
 			resolvedExecutable: `/usr/bin/${id}`,
 			unavailableReason: null,
 		});
+		states.publish("provider-availability", {
+			providers: [
+				provider("claude", "/opt/custom/claude"),
+				provider("codex", null),
+			],
+		});
 		vi.mocked(invoke).mockImplementation((command: string) => {
-			if (command === "get_provider_availability") {
-				return Promise.resolve({
-					providers: [
-						provider("claude", "/opt/custom/claude"),
-						provider("codex", null),
-					],
-				});
-			}
 			if (command === "reset_provider_executable") {
 				return Promise.resolve({
 					providers: [provider("claude", null), provider("codex", null)],
 				});
 			}
-			return Promise.resolve(null);
+			return Promise.resolve(null as never);
 		});
 		render(<SettingsModal {...defaultProps} />);
 		fireEvent.click(screen.getByText("Agent"));
@@ -692,27 +601,25 @@ describe("SettingsModal", () => {
 	it("Provider CLI refresh失敗時は直前snapshotを維持してerrorを表示する", async () => {
 		const user = userEvent.setup();
 		const { invokeClient: invoke } = await import("@/lib/client");
+		states.publish("provider-availability", {
+			providers: [
+				{
+					provider: "dynamic-provider",
+					displayName: "Dynamic Provider",
+					defaultExecutable: "dynamic",
+					configuredExecutable: null,
+					effectiveExecutable: "dynamic",
+					available: true,
+					resolvedExecutable: "/bin/dynamic",
+					unavailableReason: null,
+				},
+			],
+		});
 		vi.mocked(invoke).mockImplementation((cmd: string) => {
-			if (cmd === "get_provider_availability") {
-				return Promise.resolve({
-					providers: [
-						{
-							provider: "dynamic-provider",
-							displayName: "Dynamic Provider",
-							defaultExecutable: "dynamic",
-							configuredExecutable: null,
-							effectiveExecutable: "dynamic",
-							available: true,
-							resolvedExecutable: "/bin/dynamic",
-							unavailableReason: null,
-						},
-					],
-				});
-			}
 			if (cmd === "refresh_provider_availability") {
 				return Promise.reject(new Error("refresh failed"));
 			}
-			return Promise.resolve(null);
+			return Promise.resolve(null as never);
 		});
 		render(<SettingsModal {...defaultProps} />);
 		fireEvent.click(screen.getByText("Agent"));
@@ -906,15 +813,15 @@ describe("SettingsModal", () => {
 				return new Promise((resolve) => {
 					resolveTelemetryUpdate = () => {
 						callOrder.push("update_performance_telemetry:done");
-						resolve(null);
+						resolve(null as never);
 					};
 				});
 			}
 			if (cmd === "report_usage_event") {
 				callOrder.push("settings_saved");
-				return Promise.resolve(null);
+				return Promise.resolve(null as never);
 			}
-			return Promise.resolve(null);
+			return Promise.resolve(null as never);
 		});
 		await user.click(screen.getByRole("button", { name: "Save" }));
 
@@ -978,16 +885,6 @@ describe("SettingsModal", () => {
 	});
 
 	it("should display Repositories section in nav and switch to it", async () => {
-		const { invokeClient: invoke } = await import("@/lib/client");
-		vi.mocked(invoke).mockImplementation((cmd: string) => {
-			switch (cmd) {
-				case "get_releash_base":
-					return Promise.resolve(null);
-				default:
-					return Promise.resolve(null);
-			}
-		});
-
 		render(<SettingsModal {...defaultProps} />);
 		expect(screen.getByText("Repositories")).toBeInTheDocument();
 		fireEvent.click(screen.getByText("Repositories"));
@@ -997,16 +894,13 @@ describe("SettingsModal", () => {
 	it("should load and save approval auto-approve independently from agent auto-approve", async () => {
 		const user = userEvent.setup();
 		const { invokeClient: invoke } = await import("@/lib/client");
+		states.publish("workflow-config", { approval_auto_approve: true });
 		vi.mocked(invoke).mockImplementation((cmd: string) => {
 			switch (cmd) {
-				case "get_workflow_config":
-					return Promise.resolve({
-						approval_auto_approve: true,
-					});
 				case "update_workflow_config":
-					return Promise.resolve(null);
+					return Promise.resolve(null as never);
 				default:
-					return Promise.resolve(null);
+					return Promise.resolve(null as never);
 			}
 		});
 
@@ -1036,22 +930,22 @@ describe("SettingsModal", () => {
 	it("should save external editor selection via Save button", async () => {
 		const user = userEvent.setup();
 		const { invokeClient: invoke } = await import("@/lib/client");
+		states.publish("external-editor", {
+			selected: "",
+			editors: [
+				{
+					name: "Visual Studio Code",
+					path: "/Applications/Visual Studio Code.app",
+				},
+				{ name: "Cursor", path: "/Applications/Cursor.app" },
+			],
+		});
 		vi.mocked(invoke).mockImplementation((cmd: string) => {
 			switch (cmd) {
-				case "get_external_editor":
-					return Promise.resolve("");
-				case "detect_editors":
-					return Promise.resolve([
-						{
-							name: "Visual Studio Code",
-							path: "/Applications/Visual Studio Code.app",
-						},
-						{ name: "Cursor", path: "/Applications/Cursor.app" },
-					]);
 				case "update_external_editor":
-					return Promise.resolve(null);
+					return Promise.resolve(null as never);
 				default:
-					return Promise.resolve(null);
+					return Promise.resolve(null as never);
 			}
 		});
 
@@ -1079,12 +973,10 @@ describe("SettingsModal", () => {
 		const { invokeClient: invoke } = await import("@/lib/client");
 		vi.mocked(invoke).mockImplementation((cmd: string) => {
 			switch (cmd) {
-				case "get_releash_base":
-					return Promise.resolve(null);
 				case "set_releash_base":
-					return Promise.resolve(null);
+					return Promise.resolve(null as never);
 				default:
-					return Promise.resolve(null);
+					return Promise.resolve(null as never);
 			}
 		});
 
@@ -1215,7 +1107,7 @@ describe("SettingsModal", () => {
 			],
 			diagnostics: EMPTY_REPORT,
 		});
-		vi.mocked(invoke).mockResolvedValue(null);
+		vi.mocked(invoke).mockResolvedValue(null as never);
 
 		render(<SettingsModal {...defaultProps} />);
 		fireEvent.click(screen.getByText("Automation"));
@@ -1261,14 +1153,7 @@ describe("SettingsModal", () => {
 	describe("Repository removal", () => {
 		const repoMockSetup = async () => {
 			const { invokeClient: invoke } = await import("@/lib/client");
-			vi.mocked(invoke).mockImplementation((cmd: string) => {
-				switch (cmd) {
-					case "get_releash_base":
-						return Promise.resolve(null);
-					default:
-						return Promise.resolve(null);
-				}
-			});
+			vi.mocked(invoke).mockResolvedValue(null as never);
 		};
 
 		it("should show remove button when onRemoveRepo is provided", async () => {
@@ -1342,20 +1227,7 @@ describe("SettingsModal", () => {
 	});
 	it("回復時には未保存入力を保ち、閉じて開き直すと各設定の現在値に戻す", async () => {
 		const user = userEvent.setup();
-		const { invokeClient: invoke, onClientRefresh } = await import(
-			"@/lib/client"
-		);
-		const base = vi.mocked(invoke).getMockImplementation();
-		if (!base) throw new Error("Missing invoke fixture");
-		vi.mocked(invoke).mockImplementation((command, args) => {
-			if (command === "get_external_editor") return Promise.resolve("code");
-			if (command === "detect_editors")
-				return Promise.resolve([
-					{ name: "Code", path: "code" },
-					{ name: "Zed", path: "zed" },
-				]);
-			return base(command, args);
-		});
+		states.publish("external-editor", { selected: "code", editors });
 		const view = render(<SettingsModal {...defaultProps} />);
 		fireEvent.click(screen.getByText("Agent"));
 		const approval = await screen.findByRole("checkbox", {
@@ -1370,7 +1242,9 @@ describe("SettingsModal", () => {
 		);
 		await user.click(screen.getByRole("option", { name: "Zed" }));
 		await act(async () => {
-			for (const [refresh] of vi.mocked(onClientRefresh).mock.calls) refresh();
+			states.publish("external-editor", { selected: "code", editors });
+			states.publish("workflow-config", { approval_auto_approve: false });
+			states.publish("provider-availability", providerSnapshot);
 		});
 		expect(
 			await screen.findByRole("combobox", { name: "External Editor" }),
@@ -1467,7 +1341,7 @@ describe("SettingsModal", () => {
 		"背景設定保存は通信状態を表示せず応答の%sを反映する",
 		async (outcome) => {
 			const client = await import("@/lib/client");
-			const { invokeClient: invoke, onClientRefresh } = client;
+			const { invokeClient: invoke } = client;
 			const base = vi.mocked(invoke).getMockImplementation();
 			if (!base) throw new Error("Missing invoke fixture");
 			vi.mocked(invoke).mockClear();
@@ -1476,15 +1350,6 @@ describe("SettingsModal", () => {
 			let fail!: (error: Error) => void;
 			vi.mocked(invoke).mockImplementation(
 				(command, args, ...extra: unknown[]) => {
-					if (command === "get_app_settings")
-						return Promise.resolve({
-							close_to_tray: true,
-							auto_launch: true,
-							start_minimized: false,
-							last_root_path: "",
-							last_repo_paths: [],
-							external_editor: "",
-						});
 					if (command !== "update_app_settings") return base(command, args);
 					options = extra[0];
 					return new Promise<void>((resolve, reject) => {
@@ -1510,10 +1375,9 @@ describe("SettingsModal", () => {
 				screen.queryByRole("button", { name: "元の操作の結果を確認" }),
 			).not.toBeInTheDocument();
 			fireEvent.click(screen.getByText("Background"));
-			await act(async () => {
-				for (const [refresh] of vi.mocked(onClientRefresh).mock.calls)
-					refresh();
-			});
+			await act(async () =>
+				states.publish("desktop-settings", desktopSettings),
+			);
 			expect(
 				screen.getByRole("checkbox", { name: "Minimize to tray on close" }),
 			).not.toBeChecked();
@@ -1566,12 +1430,6 @@ describe("SettingsModal", () => {
 				value: Awaited<ReturnType<typeof client.invokeClient>>,
 			) => void;
 			let fail!: (error: Error) => void;
-			let confirmed = false;
-			const providerSnapshot = (await base(
-				"get_provider_availability",
-			)) as Awaited<
-				ReturnType<typeof client.invokeClient<"get_provider_availability">>
-			>;
 			const nextProviders = {
 				providers: providerSnapshot.providers.map((provider) =>
 					provider.provider === "claude"
@@ -1607,27 +1465,19 @@ describe("SettingsModal", () => {
 						fail = reject;
 					});
 				}
-				if (name === "detect_editors")
-					return Promise.resolve([
-						{ name: "Code", path: "code" },
-						{ name: "Zed", path: "zed" },
-					]);
-				if (name === "get_external_editor")
-					return Promise.resolve(confirmed ? "zed" : "code");
-				if (name === "get_releash_base")
-					return Promise.resolve(confirmed ? "develop" : "main");
-				if (name === "get_notion_config")
-					return Promise.resolve(
-						confirmed
-							? command === "delete_notion_config"
-								? null
-								: { ...config, api_token: "saved" }
-							: config,
-					);
-				if (name === "get_provider_availability")
-					return Promise.resolve(confirmed ? nextProviders : providerSnapshot);
 				return base(name, args);
 			});
+			const notion: StateTarget<"notion-config"> = {
+				kind: "notion-config",
+				args: [REPO],
+			};
+			const releashBase: StateTarget<"releash-base"> = {
+				kind: "releash-base",
+				args: [REPO],
+			};
+			states.publish("external-editor", { selected: "code", editors });
+			states.publish(releashBase, "main");
+			states.publish(notion, config);
 			render(<SettingsModal {...defaultProps} />);
 			const section =
 				command === "update_external_editor"
@@ -1692,8 +1542,16 @@ describe("SettingsModal", () => {
 			await act(async () => {
 				if (failure) fail(new Error("変更が拒否されました"));
 				else {
-					confirmed = true;
-					complete(section === "Agent" ? nextProviders : null);
+					complete((section === "Agent" ? nextProviders : null) as never);
+					states.publish("external-editor", { selected: "zed", editors });
+					states.publish(releashBase, "develop");
+					states.publish(
+						notion,
+						command === "delete_notion_config"
+							? null
+							: { ...config, api_token: "saved" },
+					);
+					states.publish("provider-availability", nextProviders);
 				}
 			});
 			if (failure) {
@@ -1734,12 +1592,11 @@ describe("SettingsModal", () => {
 			const invoke = vi.mocked(client.invokeClient);
 			const base = invoke.getMockImplementation();
 			if (!base) throw new Error("Missing settings fixture");
-			const snapshot = await base("get_provider_availability");
 			let complete!: () => void;
 			invoke.mockImplementation((name, args) => {
 				if (name !== command) return base(name, args);
 				return new Promise((resolve) => {
-					complete = () => resolve(snapshot);
+					complete = () => resolve(providerSnapshot);
 				});
 			});
 			render(<SettingsModal {...defaultProps} />);
@@ -1768,8 +1625,6 @@ describe("SettingsModal", () => {
 
 	it("providerフォームを開き直すと取得中と取得失敗時にも以前のdraftを保存しない", async () => {
 		const { invokeClient: invoke } = await import("@/lib/client");
-		const base = vi.mocked(invoke).getMockImplementation();
-		if (!base) throw new Error("Missing invoke fixture");
 		vi.mocked(invoke).mockClear();
 		const view = render(<SettingsModal {...defaultProps} />);
 		fireEvent.click(screen.getByText("Agent"));
@@ -1778,21 +1633,16 @@ describe("SettingsModal", () => {
 		});
 		expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
 		view.rerender(<SettingsModal {...defaultProps} open={false} />);
-		let fail!: (error: Error) => void;
-		vi.mocked(invoke).mockImplementation((command, args) =>
-			command === "get_provider_availability"
-				? new Promise((_, reject) => {
-						fail = reject;
-					})
-				: base(command, args),
-		);
+		publishDefaults({ provider: false });
 		view.rerender(<SettingsModal {...defaultProps} open />);
 		fireEvent.click(screen.getByText("Agent"));
 		expect(
 			screen.queryByDisplayValue("/unsaved/claude"),
 		).not.toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
-		await act(async () => fail(new Error("取得できません")));
+		await act(async () =>
+			states.fail("provider-availability", new Error("取得できません")),
+		);
 		expect(screen.getByRole("alert")).toHaveTextContent("取得できません");
 		expect(
 			screen.queryByDisplayValue("/unsaved/claude"),

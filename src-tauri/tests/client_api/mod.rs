@@ -125,7 +125,7 @@ async fn test_クライアントconnect_認証と相関を保ちtauri経路を�
     ] {
         let response = reqwest::Client::new()
             .post(format!(
-                "{}/releash.client.v1.ClientService/GetExternalEditor",
+                "{}/releash.client.v1.ClientService/UpdateExternalEditor",
                 fixture.url
             ))
             .bearer_auth(token)
@@ -374,7 +374,7 @@ async fn test_connect_不正protoと旧ws_routeを拒否する() {
     let http = reqwest::Client::new();
     let response = http
         .post(format!(
-            "{}/releash.client.v1.ClientService/GetExternalEditor",
+            "{}/releash.client.v1.ClientService/UpdateExternalEditor",
             fixture.url
         ))
         .bearer_auth(&*fixture.token)
@@ -507,8 +507,8 @@ async fn test_connect_defaultの枠と待ち行列を超える要求を拒否す
     let mut pending = tokio::task::JoinSet::new();
     for _ in 0..92 {
         let client = fixture.client();
-        let args = fixture.args();
-        pending.spawn(async move { request_client(&client, "get_releash_base", args).await });
+        let args = json!({"filePath": fixture.repo.path().to_str().unwrap()});
+        pending.spawn(async move { request_client(&client, "get_language_from_path", args).await });
     }
     assert_eq!(
         tokio::time::timeout(Duration::from_secs(5), pending.join_next())

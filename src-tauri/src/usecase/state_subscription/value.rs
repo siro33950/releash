@@ -44,4 +44,13 @@ pub(crate) enum StateValue {
     Facets(Vec<FacetSummaryDto>),
     Facet(String),
     Diagnostics(DiagnosticReport),
+    DesktopSettings(crate::usecase::app_config::query_service::DesktopSettingsDto),
+    NotionConfig(Option<crate::domain::app_config::value_objects::NotionRepoConfig>),
+    ProviderAvailability(crate::domain::agent_session::aggregates::ProviderRegistry),
+    ExternalEditor(crate::usecase::external_editor::dto::ExternalEditorState),
+    ReleashBase(Option<String>),
+    WorkflowConfig(crate::domain::app_config::value_objects::WorkflowConfig),
+    PerformanceSwitches(crate::usecase::telemetry::PerformanceSwitches),
+    ProviderHookHealth(Vec<crate::usecase::provider_lifecycle::ProviderHookHealthWarning>),
+    StartupOutcome(crate::usecase::application_startup::ApplicationStartupOutcome),
 }

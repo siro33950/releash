@@ -41,6 +41,10 @@ pub(crate) trait DaemonGateway:
 {
     async fn connection(&self) -> Result<Option<DaemonConnection>, Failure>;
     fn connected(&self) -> bool;
+    /// 接続後に届いた desktop 設定の変更。無ければ `None`。
+    fn settings_update(&self) -> Option<DesktopSettingsDto> {
+        None
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
@@ -349,6 +353,13 @@ impl DaemonSupervisionUsecase {
                         }
                     }
                     if !gateway.connected() { self.state.lock().supervision.connection_lost(now()); }
+                    if let Some(settings) = gateway.settings_update() {
+                        let mut state = self.state.lock();
+                        if let Some(connection) = state.connection.as_mut() {
+                            connection.settings = settings;
+                            self.changes.send_modify(|_| {});
+                        }
+                    }
                     let phase = self.state.lock().supervision.phase();
                     if child_running && phase == Phase::Starting {
                         match gateway.connection().await {
@@ -416,13 +427,9 @@ fn snapshot(supervision: &DaemonSupervision) -> DaemonStatus {
     }
 }
 
-#[async_trait::async_trait]
 impl ClientConnectionQueryService for Arc<DaemonSupervisionUsecase> {
     fn read(&self) -> Result<ClientConnectionDto, ClientConnectionError> {
         Ok(self.connection()?.endpoint)
-    }
-    async fn desktop_settings(&self) -> Result<DesktopSettingsDto, ClientConnectionError> {
-        Ok(self.connection()?.settings)
     }
 }
 

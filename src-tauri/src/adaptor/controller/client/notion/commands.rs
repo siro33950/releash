@@ -68,17 +68,6 @@ pub(crate) async fn save_notion_config_shared(
     .map_err(map_usecase_error)
 }
 
-pub(crate) fn get_notion_config_shared(
-    state: &AppState,
-    repo_path: String,
-) -> Result<Option<NotionRepoConfigView>, AppError> {
-    state
-        .notion_usecase
-        .get_config(&repo_path)
-        .map(|config| config.map(Into::into))
-        .map_err(map_usecase_error)
-}
-
 pub(crate) async fn delete_notion_config_shared(
     state: &AppState,
     repo_path: String,

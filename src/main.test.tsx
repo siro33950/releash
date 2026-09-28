@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { invokeClient } from "./lib/client";
+import { firstState } from "./lib/client";
 import { installPerformanceCollector } from "./test/performance/performanceCollector";
 
 vi.mock("@wdio/tauri-plugin", () => ({}));
@@ -34,16 +34,22 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllEnvs());
 
 it.each([false, true])(
-	"performance bootstrapは実アプリモードをwsで取得する（実アプリ: %s）",
+	"performance bootstrapは実アプリモードを購読の最初の値から取る（実アプリ: %s）",
 	async (realAppMode) => {
-		vi.mocked(invokeClient).mockResolvedValue(realAppMode);
+		vi.mocked(firstState).mockResolvedValue({
+			realAppMode,
+			terminal: {
+				disableOutputFlowControl: false,
+				disableTerminalJournal: false,
+				disableRendererWriteSerialization: false,
+				disableWebglRenderer: false,
+			},
+		});
 
 		await import("./main");
 		await waitFor(() => expect(render).toHaveBeenCalledOnce());
 
-		expect(invokeClient).toHaveBeenCalledExactlyOnceWith(
-			"get_performance_real_app_mode",
-		);
+		expect(firstState).toHaveBeenCalledExactlyOnceWith("performance-switches");
 		expect(invoke).not.toHaveBeenCalled();
 		expect(installPerformanceCollector).toHaveBeenCalledTimes(
 			realAppMode ? 1 : 0,

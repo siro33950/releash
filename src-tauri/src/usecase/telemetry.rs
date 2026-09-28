@@ -22,6 +22,11 @@ pub struct TerminalPerformanceSwitches {
     pub disable_webgl_renderer: bool,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PerformanceSwitches {
+    pub real_app_mode: bool,
+    pub terminal: TerminalPerformanceSwitches,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TerminalLaunch {
     AvailabilityAndLock,
     DurableCreateCommit,

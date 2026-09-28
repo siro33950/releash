@@ -2,14 +2,6 @@ use super::run_blocking;
 use crate::adaptor::controller::state::AppState;
 use crate::adaptor::presenter::error::AppError;
 
-pub(crate) async fn get_releash_base_shared(
-    state: &AppState,
-    repo_path: String,
-) -> Result<Option<String>, AppError> {
-    let uc = state.repository_usecase.clone();
-    run_blocking(move || uc.get_releash_base(&repo_path)).await
-}
-
 pub(crate) async fn set_releash_base_shared(
     state: &AppState,
     repo_path: String,

@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { invokeClient as invoke } from "@/lib/client";
+import { invokeClient as invoke, subscribeState } from "@/lib/client";
 import { getErrorMessage } from "@/lib/errorMessage";
 import type {
 	NotionPropertyInfo,
 	NotionRepoConfig,
 	PropertyMapping,
 } from "@/types/notion";
-import { useClientRefresh } from "./useClientRefresh";
 
 export interface NotionRepoDraft {
 	apiToken: string;
@@ -67,74 +66,53 @@ export interface UseNotionSettingsReturn {
 export function useNotionSettings(
 	repoPaths: string[],
 ): UseNotionSettingsReturn {
-	const clientRefresh = useClientRefresh();
 	const [saveError, setSaveError] = useState<string | null>(null);
 	const [configs, setConfigs] = useState<Map<string, NotionRepoConfig | null>>(
 		new Map(),
 	);
 	const [drafts, setDrafts] = useState<Map<string, NotionRepoDraft>>(new Map());
 	const [errors, setErrors] = useState<Map<string, string>>(new Map());
-	const [loading, setLoading] = useState(true);
-	const repoPathsRef = useRef(repoPaths);
-	repoPathsRef.current = repoPaths;
 	const draftsRef = useRef(drafts);
 	draftsRef.current = drafts;
 	const configsRef = useRef(configs);
 	configsRef.current = configs;
-	const loadSeqRef = useRef(0);
-
-	const load = useCallback(async (paths: string[], refresh: AbortSignal) => {
-		if (refresh.aborted) return;
-		const seq = ++loadSeqRef.current;
-		setLoading(true);
-		try {
-			const results = await Promise.allSettled(
-				paths.map((repoPath) => invoke("get_notion_config", { repoPath })),
-			);
-			if (seq === loadSeqRef.current && !refresh.aborted) {
-				const configMap = new Map<string, NotionRepoConfig | null>();
-				const draftMap = new Map<string, NotionRepoDraft>();
-				const errorMap = new Map<string, string>();
-				results.forEach((result, index) => {
-					const path = paths[index];
-					const draft = draftsRef.current.get(path);
-					const config = configsRef.current.get(path) ?? null;
-					if (draft && draftChanged(draft, config)) {
-						configMap.set(path, config);
-						draftMap.set(path, draft);
-						if (result.status === "rejected")
-							errorMap.set(path, getErrorMessage(result.reason));
-					} else if (result.status === "fulfilled") {
-						configMap.set(path, result.value);
-						draftMap.set(path, configToDraft(result.value));
-					} else {
-						errorMap.set(path, getErrorMessage(result.reason));
-					}
-				});
-				setConfigs(configMap);
-				setDrafts(draftMap);
-				setErrors(errorMap);
-			}
-		} finally {
-			if (seq === loadSeqRef.current && !refresh.aborted) {
-				setLoading(false);
-			}
-		}
-	}, []);
 
 	const repoPathsKey = JSON.stringify(repoPaths);
 
 	useEffect(() => {
 		const paths = JSON.parse(repoPathsKey) as string[];
-		if (paths.length > 0) {
-			load(paths, clientRefresh);
-		} else {
-			setConfigs(new Map());
-			setDrafts(new Map());
-			setErrors(new Map());
-			setLoading(false);
-		}
-	}, [repoPathsKey, load, clientRefresh]);
+		const keep = (map: Map<string, unknown>) =>
+			new Map([...map].filter(([path]) => paths.includes(path)));
+		setConfigs((prev) => keep(prev) as Map<string, NotionRepoConfig | null>);
+		setDrafts((prev) => keep(prev) as Map<string, NotionRepoDraft>);
+		setErrors((prev) => keep(prev) as Map<string, string>);
+		const releases = paths.map((path) =>
+			subscribeState(
+				{ kind: "notion-config", args: [path] },
+				(config) => {
+					const previous = configsRef.current.get(path) ?? null;
+					const draft = draftsRef.current.get(path);
+					setConfigs((prev) => new Map(prev).set(path, config));
+					setErrors((prev) => {
+						const next = new Map(prev);
+						next.delete(path);
+						return next;
+					});
+					if (draft && draftChanged(draft, previous)) return;
+					setDrafts((prev) => new Map(prev).set(path, configToDraft(config)));
+				},
+				(error) =>
+					setErrors((prev) => new Map(prev).set(path, getErrorMessage(error))),
+			),
+		);
+		return () => {
+			for (const release of releases) release();
+		};
+	}, [repoPathsKey]);
+
+	const loading = repoPaths.some(
+		(path) => !configs.has(path) && !errors.has(path),
+	);
 
 	const isDirty = [...drafts].some(([path, draft]) =>
 		draftChanged(draft, configs.get(path) ?? null),
@@ -265,10 +243,8 @@ export function useNotionSettings(
 		} catch (error) {
 			setSaveError(getErrorMessage(error));
 			throw error;
-		} finally {
-			await load(repoPathsRef.current, clientRefresh);
 		}
-	}, [load, clientRefresh]);
+	}, []);
 
 	const reset = useCallback(() => {
 		const draftMap = new Map<string, NotionRepoDraft>();

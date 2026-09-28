@@ -15,10 +15,8 @@ import {
 	AgentSessionOpenResponseSchema,
 	AppendReviewCommentRequestSchema,
 	ApplicationQuitOutcomeDtoV1Schema,
-	ApplicationStartupOutcomeDtoV1Schema,
 	ApproveWorkflowNodeRequestSchema,
 	ApproveWorkspaceNodeRequestSchema,
-	AppSectionSchema,
 	ArchiveAgentSessionRequestSchema,
 	ArchiveWorkspaceWorkflowExecutionRequestSchema,
 	BuildDiffFileTreeRequestSchema,
@@ -40,26 +38,15 @@ import {
 	DeleteNotionConfigRequestSchema,
 	DeleteReviewThreadRequestSchema,
 	DeleteWorkflowRequestSchema,
-	DetectEditorsRequestSchema,
 	DuplicateFacetRequestSchema,
 	DuplicateWorkflowRequestSchema,
 	FetchIssuesRequestSchema,
 	FetchNotionLabelOptionsRequestSchema,
 	FileNavigationResultDtoSchema,
-	GetApplicationStartupOutcomeRequestSchema,
-	GetAppSettingsRequestSchema,
-	GetExternalEditorRequestSchema,
 	GetFileNavigationRequestSchema,
 	GetLanguageFromPathRequestSchema,
-	GetNotionConfigRequestSchema,
 	GetOrSpawnTerminalSurfaceRequestSchema,
 	GetOrSpawnTerminalV1Schema,
-	GetPerformanceRealAppModeRequestSchema,
-	GetPerformanceTelemetryEnabledRequestSchema,
-	GetProviderAvailabilityRequestSchema,
-	GetReleashBaseRequestSchema,
-	GetTerminalPerformanceSwitchesRequestSchema,
-	GetWorkflowConfigRequestSchema,
 	GitCreateBranchRequestSchema,
 	GitStageRequestSchema,
 	GitStageReviewGroupRequestSchema,
@@ -68,20 +55,15 @@ import {
 	KillTerminalSurfaceRequestSchema,
 	ListDiffRangeDtoSchema,
 	ListDiffTreeNodeDtoSchema,
-	ListEditorInfoDtoSchema,
 	ListHiddenRangeDtoSchema,
 	ListInlineChunkDtoSchema,
 	ListNotionLabelOptionViewSchema,
-	ListProviderHookHealthWarningResponseSchema,
-	ListProviderHookHealthWarningsRequestSchema,
 	ListSplitRowDtoSchema,
 	ListTerminalInputPerformanceSampleV1Schema,
 	ListTerminalLaunchPerformanceSampleV1Schema,
 	ListVisibleBlockDtoSchema,
 	NotionTaskPageViewSchema,
 	NotionValidationResultViewSchema,
-	NullableNotionRepoConfigViewSchema,
-	NullablestringSchema,
 	OpenAgentSessionRequestSchema,
 	OpenFacetInEditorRequestSchema,
 	OpenFolderInEditorRequestSchema,
@@ -126,7 +108,6 @@ import {
 	StopWatchingRequestSchema,
 	TakeTerminalInputPerformanceSamplesRequestSchema,
 	TakeTerminalLaunchPerformanceSamplesRequestSchema,
-	TerminalPerformanceSwitchesV1Schema,
 	UnitSchema,
 	UpdateAppSettingsRequestSchema,
 	UpdateCrashReportingRequestSchema,
@@ -138,7 +119,6 @@ import {
 	ValidateNotionConfigRequestSchema,
 	WorkflowGetOutputRequestSchema,
 	WorkflowGetOutputResponseSchema,
-	WorkflowSectionSchema,
 	WorkflowSubmitOutputRequestSchema,
 	WorkflowValidateOutputRequestSchema,
 	WorkflowValidateOutputResponseSchema,
@@ -550,25 +530,6 @@ const commands = {
 		);
 		return result;
 	},
-	detect_editors: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["detect_editors"],
-	) => {
-		const result = decode(
-			ListEditorInfoDtoSchema,
-			await client.detectEditors(
-				fromJson(
-					DetectEditorsRequestSchema,
-					clientJson(
-						DetectEditorsRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
 	duplicate_facet: async (
 		client: Client<typeof ClientService>,
 		args: ClientCommandArgs["duplicate_facet"],
@@ -645,63 +606,6 @@ const commands = {
 		);
 		return result;
 	},
-	get_app_settings: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_app_settings"],
-	) => {
-		const result = decode(
-			AppSectionSchema,
-			await client.getAppSettings(
-				fromJson(
-					GetAppSettingsRequestSchema,
-					clientJson(
-						GetAppSettingsRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	get_application_startup_outcome: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_application_startup_outcome"],
-	) => {
-		const result = decode(
-			ApplicationStartupOutcomeDtoV1Schema,
-			await client.getApplicationStartupOutcome(
-				fromJson(
-					GetApplicationStartupOutcomeRequestSchema,
-					clientJson(
-						GetApplicationStartupOutcomeRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	get_external_editor: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_external_editor"],
-	) => {
-		const result = decode(
-			ResultStringSchema,
-			await client.getExternalEditor(
-				fromJson(
-					GetExternalEditorRequestSchema,
-					clientJson(
-						GetExternalEditorRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
 	get_file_navigation: async (
 		client: Client<typeof ClientService>,
 		args: ClientCommandArgs["get_file_navigation"],
@@ -740,25 +644,6 @@ const commands = {
 		);
 		return result;
 	},
-	get_notion_config: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_notion_config"],
-	) => {
-		const result = decode(
-			NullableNotionRepoConfigViewSchema,
-			await client.getNotionConfig(
-				fromJson(
-					GetNotionConfigRequestSchema,
-					clientJson(
-						GetNotionConfigRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
 	get_or_spawn_terminal_surface: async (
 		client: Client<typeof ClientService>,
 		args: ClientCommandArgs["get_or_spawn_terminal_surface"],
@@ -770,120 +655,6 @@ const commands = {
 					GetOrSpawnTerminalSurfaceRequestSchema,
 					clientJson(
 						GetOrSpawnTerminalSurfaceRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	get_performance_real_app_mode: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_performance_real_app_mode"],
-	) => {
-		const result = decode(
-			ResultBoolSchema,
-			await client.getPerformanceRealAppMode(
-				fromJson(
-					GetPerformanceRealAppModeRequestSchema,
-					clientJson(
-						GetPerformanceRealAppModeRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	get_performance_telemetry_enabled: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_performance_telemetry_enabled"],
-	) => {
-		const result = decode(
-			ResultBoolSchema,
-			await client.getPerformanceTelemetryEnabled(
-				fromJson(
-					GetPerformanceTelemetryEnabledRequestSchema,
-					clientJson(
-						GetPerformanceTelemetryEnabledRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	get_provider_availability: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_provider_availability"],
-	) => {
-		const result = decode(
-			ProviderAvailabilitySnapshotResponseSchema,
-			await client.getProviderAvailability(
-				fromJson(
-					GetProviderAvailabilityRequestSchema,
-					clientJson(
-						GetProviderAvailabilityRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	get_releash_base: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_releash_base"],
-	) => {
-		const result = decode(
-			NullablestringSchema,
-			await client.getReleashBase(
-				fromJson(
-					GetReleashBaseRequestSchema,
-					clientJson(
-						GetReleashBaseRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	get_terminal_performance_switches: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_terminal_performance_switches"],
-	) => {
-		const result = decode(
-			TerminalPerformanceSwitchesV1Schema,
-			await client.getTerminalPerformanceSwitches(
-				fromJson(
-					GetTerminalPerformanceSwitchesRequestSchema,
-					clientJson(
-						GetTerminalPerformanceSwitchesRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	get_workflow_config: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_workflow_config"],
-	) => {
-		const result = decode(
-			WorkflowSectionSchema,
-			await client.getWorkflowConfig(
-				fromJson(
-					GetWorkflowConfigRequestSchema,
-					clientJson(
-						GetWorkflowConfigRequestSchema,
 						JSON.parse(JSON.stringify(args ?? {})),
 						true,
 					),
@@ -998,25 +769,6 @@ const commands = {
 					KillTerminalSurfaceRequestSchema,
 					clientJson(
 						KillTerminalSurfaceRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	list_provider_hook_health_warnings: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["list_provider_hook_health_warnings"],
-	) => {
-		const result = decode(
-			ListProviderHookHealthWarningResponseSchema,
-			await client.listProviderHookHealthWarnings(
-				fromJson(
-					ListProviderHookHealthWarningsRequestSchema,
-					clientJson(
-						ListProviderHookHealthWarningsRequestSchema,
 						JSON.parse(JSON.stringify(args ?? {})),
 						true,
 					),

@@ -10,6 +10,7 @@ use crate::usecase::notion::error::NotionUsecaseError;
 pub(crate) struct NotionUsecase {
     repository: Arc<dyn NotionConfigRepository>,
     api: Arc<dyn NotionApiGateway>,
+    state_publisher: Option<crate::usecase::state_subscription::StateSubscriptionOutputRef>,
 }
 
 impl NotionUsecase {
@@ -17,7 +18,25 @@ impl NotionUsecase {
         repository: Arc<dyn NotionConfigRepository>,
         api: Arc<dyn NotionApiGateway>,
     ) -> Self {
-        Self { repository, api }
+        Self {
+            repository,
+            api,
+            state_publisher: None,
+        }
+    }
+
+    pub(crate) fn with_state_publisher(
+        mut self,
+        publisher: crate::usecase::state_subscription::StateSubscriptionOutputRef,
+    ) -> Self {
+        self.state_publisher = Some(publisher);
+        self
+    }
+
+    fn config_changed(&self) {
+        if let Some(publisher) = &self.state_publisher {
+            publisher.invalidate(crate::usecase::state_subscription::StateChangeSource::AppConfig);
+        }
     }
 
     pub(crate) fn query_tasks(
@@ -45,7 +64,9 @@ impl NotionUsecase {
         repo_path: String,
         config: app_config_vo::NotionRepoConfig,
     ) -> Result<(), NotionUsecaseError> {
-        save_config(self.repository.as_ref(), repo_path, config)
+        save_config(self.repository.as_ref(), repo_path, config)?;
+        self.config_changed();
+        Ok(())
     }
 
     pub(crate) fn get_config(
@@ -56,7 +77,9 @@ impl NotionUsecase {
     }
 
     pub(crate) fn delete_config(&self, repo_path: &str) -> Result<(), NotionUsecaseError> {
-        delete_config(self.repository.as_ref(), repo_path)
+        delete_config(self.repository.as_ref(), repo_path)?;
+        self.config_changed();
+        Ok(())
     }
 
     pub(crate) fn validate_config(

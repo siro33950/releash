@@ -28,9 +28,14 @@ pub fn get_external_editor(settings: &dyn EditorSettingsGateway) -> Result<Strin
 
 pub fn update_external_editor(
     settings: &dyn EditorSettingsGateway,
+    publisher: Option<&crate::usecase::state_subscription::StateSubscriptionOutputRef>,
     editor: String,
 ) -> Result<(), EditorError> {
-    settings.update_selected_editor(editor)
+    settings.update_selected_editor(editor)?;
+    if let Some(publisher) = publisher {
+        publisher.invalidate(crate::usecase::state_subscription::StateChangeSource::AppConfig);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

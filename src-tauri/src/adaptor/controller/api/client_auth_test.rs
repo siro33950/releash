@@ -74,7 +74,7 @@ async fn test_リクエスト認証_許可originとtokenを毎回検証し失効
             .to_str()
             .unwrap()
             .split(", ")
-            .any(|header| header == "releash-desktop-settings-changed"));
+            .any(|header| header == "grpc-status-details-bin"));
     }
     for (origin, bearer, expected) in [
         (

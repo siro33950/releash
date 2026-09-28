@@ -62,20 +62,15 @@ impl DaemonLoginPreference {
     ) -> Result<crate::adaptor::presenter::client::command_result::Command, String> {
         self.0.client()?.request(command).await
     }
-    async fn settings(&self) -> Result<bool, String> {
-        use crate::adaptor::presenter::client as wire;
-        preference_result(
-            self.request(wire::command_request::Command::GetAppSettings(
-                wire::GetAppSettingsRequest {},
-            ))
-            .await?,
-        )
-    }
 }
 #[async_trait::async_trait]
 impl crate::domain::login_item::LoginPreferencePort for DaemonLoginPreference {
     async fn load(&self) -> Result<bool, String> {
-        self.settings().await
+        self.0
+            .client()?
+            .current_settings()
+            .map(|settings| settings.auto_launch)
+            .ok_or_else(|| "Missing login preference".into())
     }
 
     async fn save(&self, requested: bool) -> Result<(), String> {
@@ -84,18 +79,6 @@ impl crate::domain::login_item::LoginPreferencePort for DaemonLoginPreference {
             wire::command_result::Command::UpdateLoginItemPreference(_) => Ok(()),
             _ => Err("Unexpected login preference update result".into()),
         }
-    }
-}
-
-fn preference_result(
-    result: crate::adaptor::presenter::client::command_result::Command,
-) -> Result<bool, String> {
-    use crate::adaptor::presenter::client as wire;
-    match result {
-        wire::command_result::Command::GetAppSettings(settings) => settings
-            .auto_launch
-            .ok_or_else(|| "Missing login preference".into()),
-        _ => Err("Unexpected login preference result".into()),
     }
 }
 

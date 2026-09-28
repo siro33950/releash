@@ -37,12 +37,8 @@ fn test_store失敗_内部の詳細を表示せず文字列と転送コードを
                 "Releash could not access saved AgentSession data. Try again.",
             ),
             (
-                lifecycle_error(AgentSessionLifecycleUsecaseError::Store(failure.clone())),
+                lifecycle_error(AgentSessionLifecycleUsecaseError::Store(failure)),
                 "Releash could not access saved AgentSession data. Try again.",
-            ),
-            (
-                hook_health_error(ProviderHookHealthUsecaseError::Store(failure)),
-                "Releash could not load Provider Hook health. Try again.",
             ),
         ];
         // Then
@@ -54,16 +50,4 @@ fn test_store失敗_内部の詳細を表示せず文字列と転送コードを
             );
         }
     }
-}
-
-#[test]
-fn test_hook_healthの版競合_業務の競合として表示する() {
-    // Given / When
-    let error = hook_health_error(ProviderHookHealthUsecaseError::Conflict);
-    // Then
-    assert_eq!(error.connect_code(), connectrpc::ErrorCode::Aborted);
-    assert_eq!(
-        serde_json::to_value(error).unwrap(),
-        serde_json::json!("conflict: Provider Hook health changed. Refresh and try again.")
-    );
 }

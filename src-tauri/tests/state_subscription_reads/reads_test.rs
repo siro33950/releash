@@ -130,6 +130,65 @@ fn issue(number: u64) -> IssueInfo {
     }
 }
 
+#[derive(Default)]
+struct MemoryHookHealth(
+    Mutex<
+        std::collections::HashMap<
+            crate::domain::provider_lifecycle::ProviderKind,
+            crate::domain::provider_lifecycle::VersionedProviderHookHealth,
+        >,
+    >,
+);
+#[async_trait::async_trait]
+impl crate::domain::provider_lifecycle::ProviderHookHealthRepository for MemoryHookHealth {
+    async fn load(
+        &self,
+        provider: crate::domain::provider_lifecycle::ProviderKind,
+    ) -> Result<
+        crate::domain::provider_lifecycle::VersionedProviderHookHealth,
+        crate::domain::provider_lifecycle::ProviderHookHealthRepositoryError,
+    > {
+        Ok(self.0.lock().get(&provider).cloned().unwrap_or_else(|| {
+            crate::domain::provider_lifecycle::VersionedProviderHookHealth::restored(
+                crate::domain::provider_lifecycle::ProviderHookHealth::new(provider),
+                0,
+            )
+        }))
+    }
+    async fn save(
+        &self,
+        mut health: crate::domain::provider_lifecycle::VersionedProviderHookHealth,
+        _: &str,
+    ) -> Result<
+        crate::domain::provider_lifecycle::VersionedProviderHookHealth,
+        crate::domain::provider_lifecycle::ProviderHookHealthRepositoryError,
+    > {
+        let revision = health.revision()
+            + u64::try_from(health.health_mut().take_uncommitted_events().len()).unwrap();
+        let saved = crate::domain::provider_lifecycle::VersionedProviderHookHealth::restored(
+            health.into_health(),
+            revision,
+        );
+        self.0
+            .lock()
+            .insert(saved.health().provider(), saved.clone());
+        Ok(saved)
+    }
+}
+struct NoHookHealthFailures;
+#[async_trait::async_trait]
+impl crate::usecase::provider_lifecycle::ProviderHookHealthFailureQuery for NoHookHealthFailures {
+    async fn list(
+        &self,
+        _: usize,
+    ) -> Result<
+        Vec<crate::usecase::provider_lifecycle::ProviderHookHealthFailureObservation>,
+        crate::usecase::provider_lifecycle::ProviderHookHealthFailureQueryError,
+    > {
+        Ok(vec![])
+    }
+}
+
 pub(crate) struct Fixture {
     pub(crate) reads: WorkspaceStateReads,
     pub(crate) subscriptions: StateSubscriptionUsecase,
@@ -161,7 +220,7 @@ impl Fixture {
         let repositories = Arc::new(RepoPathsUsecase::new(
             Arc::new(RepoPathsGateway::new(
                 Arc::new(parking_lot::RwLock::new(vec![path.clone()])),
-                config,
+                config.clone(),
             )),
             Arc::new(RepoPathsOutput(publisher.clone())),
         ));
@@ -232,7 +291,7 @@ impl Fixture {
                 ),
             )
             .unwrap()
-            .with_state_publisher(publisher),
+            .with_state_publisher(publisher.clone()),
         );
         let repository_state_for_review = repository_state.clone();
         let reads = WorkspaceStateReads {
@@ -265,9 +324,51 @@ impl Fixture {
             data_dir: root.to_path_buf(),
             review_comments_dir: crate::adaptor::gateway::comment::state_dir(&root),
             workflows_dir: workflows_dir.clone(),
+            app_config: Arc::new(
+                crate::usecase::app_config::AppConfigUsecase::new(config.clone())
+                    .with_state_publisher(publisher.clone()),
+            ),
+            notion: Arc::new(
+                crate::usecase::notion::usecase::NotionUsecase::new(
+                    config.clone(),
+                    Arc::new(crate::adaptor::gateway::notion::NotionApiGatewayImpl::new()),
+                )
+                .with_state_publisher(publisher.clone()),
+            ),
+            editor_settings: Arc::new(
+                crate::adaptor::gateway::external_editor::EditorSettingsConfigGateway::new(
+                    config.clone(),
+                ),
+            ),
+            editor_scanner: Arc::new(
+                crate::adaptor::gateway::external_editor::MacInstalledEditorGateway,
+            ),
+            performance_switches: crate::usecase::telemetry::PerformanceSwitches {
+                real_app_mode: false,
+                terminal: Default::default(),
+            },
+            hook_health: Arc::new(
+                crate::usecase::provider_lifecycle::ProviderHookHealthReadUsecase::new(
+                    Arc::new(
+                        crate::usecase::provider_lifecycle::ProviderHookHealthUsecase::new(
+                            Arc::new(MemoryHookHealth::default()),
+                        )
+                        .with_state_publisher(publisher.clone()),
+                    ),
+                    Arc::new(NoHookHealthFailures),
+                ),
+            ),
+            startup: Arc::new(
+                crate::usecase::application_startup::ApplicationStartupAuthority::ready(),
+            ),
         };
         Self {
-            subscriptions: subscriptions.with_reads(Arc::new(reads.clone()), None, vec![]),
+            subscriptions: subscriptions.with_reads(
+                Arc::new(reads.clone()),
+                None,
+                vec![],
+                String::new(),
+            ),
             reads,
             path,
             issues,
@@ -573,9 +674,10 @@ async fn test_終了済み実行木のarchiveとrestore_取り直しなしでツ
         )
         .0,
     );
-    let subscriptions = fixture
-        .subscriptions
-        .with_reads(Arc::new(reads), None, vec![]);
+    let subscriptions =
+        fixture
+            .subscriptions
+            .with_reads(Arc::new(reads), None, vec![], String::new());
     archive.runtime = archive
         .runtime
         .with_state_publisher(subscriptions.publisher());
@@ -758,9 +860,10 @@ async fn test_失敗購読_node行から実行idの失敗と解消を受け取�
     let mut reads = fixture.reads.clone();
     reads.workflow = Arc::new(workflow);
     reads.failures = failures.clone();
-    let subscriptions = fixture
-        .subscriptions
-        .with_reads(Arc::new(reads), None, vec![]);
+    let subscriptions =
+        fixture
+            .subscriptions
+            .with_reads(Arc::new(reads), None, vec![], String::new());
     let presenter = crate::adaptor::presenter::failure::FailurePresenter::new(
         failures.clone(),
         Some(subscriptions.publisher()),

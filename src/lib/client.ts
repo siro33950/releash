@@ -66,14 +66,7 @@ async function open(abort: AbortController): Promise<Session> {
 			interceptors: [
 				(next) => async (request) => {
 					request.header.set("Authorization", `Bearer ${endpoint.token}`);
-					const response = await next(request);
-					if (
-						response.header.get("releash-desktop-settings-changed") === "true"
-					)
-						await applyClientDesktopSettings(client).catch((error) => {
-							console.error("Failed to synchronize desktop settings", error);
-						});
-					return response;
+					return next(request);
 				},
 			],
 			fetch: (input, init) => {
@@ -90,8 +83,6 @@ async function open(abort: AbortController): Promise<Session> {
 		launchId: info.launchId,
 		release: info.release,
 	});
-	if (info.desktopSettings)
-		await invoke("apply_desktop_settings", { settings: info.desktopSettings });
 	abort.signal.throwIfAborted();
 	const result = { client, endpoint, attachmentId };
 	current = result;
@@ -249,6 +240,17 @@ export type StateValues = {
 	facets: import("@/generated/client_types").FacetSummaryDto[];
 	facet: string;
 	diagnostics: import("@/generated/client_types").DiagnosticReport;
+	"desktop-settings": import("@/generated/client_types").DesktopSettings;
+	"notion-config":
+		| import("@/generated/client_types").NotionRepoConfigView
+		| null;
+	"provider-availability": import("@/generated/client_types").ProviderAvailabilitySnapshotResponse;
+	"external-editor": import("@/generated/client_types").ExternalEditorState;
+	"releash-base": string | null;
+	"workflow-config": import("@/generated/client_types").WorkflowSection;
+	"performance-switches": import("@/generated/client_types").PerformanceSwitchesV1;
+	"provider-hook-health": import("@/generated/client_types").ProviderHookHealthWarningResponse[];
+	"startup-outcome": import("@/generated/client_types").ApplicationStartupOutcomeDtoV1;
 };
 export type StateTarget<K extends keyof StateValues> =
 	| K
@@ -297,26 +299,46 @@ function decodeState(payload: StatePayload | undefined) {
 	return { current: clientJson(field.message, json[field.jsonName], false) };
 }
 
+// 同じ対象の開始と停止は送った順に daemon へ届ける。並行に送ると順序が入れ替わり、
+// 開始済みの対象への開始は無視されるため、後から届いた停止で購読が消える。
+const stateOperations = new Map<string, Promise<void>>();
+function queueStateOperation(
+	target: string,
+	operation: () => Promise<unknown>,
+) {
+	const previous = stateOperations.get(target) ?? Promise.resolve();
+	const next = previous.then(operation).then(
+		() => {},
+		() => {},
+	);
+	stateOperations.set(target, next);
+	void next.then(() => {
+		if (stateOperations.get(target) === next) stateOperations.delete(target);
+	});
+}
+
 function startState(stream: StateStream, target: string) {
 	const entry = states.get(target);
 	if (!entry) return;
-	void stream.client
-		.startStateSubscription({
-			clientId: stream.id,
-			target: entry.kind,
-			args: entry.args,
-			version: entry.version,
-			terminalInputId: entry.terminalInputId,
-		})
-		.catch((error) => {
-			if (states.get(target) !== entry || stateStream !== stream) return;
-			if (reconnects(error)) {
-				stateAbort?.abort(RETRY);
-				return;
-			}
-			console.error("State subscription failed", error);
-			for (const receiver of entry.errors) receiver(error);
-		});
+	queueStateOperation(target, () =>
+		stream.client
+			.startStateSubscription({
+				clientId: stream.id,
+				target: entry.kind,
+				args: entry.args,
+				version: entry.version,
+				terminalInputId: entry.terminalInputId,
+			})
+			.catch((error) => {
+				if (states.get(target) !== entry || stateStream !== stream) return;
+				if (reconnects(error)) {
+					stateAbort?.abort(RETRY);
+					return;
+				}
+				console.error("State subscription failed", error);
+				for (const receiver of entry.errors) receiver(error);
+			}),
+	);
 }
 
 function ensureStateStream() {
@@ -440,13 +462,15 @@ export function subscribeState<K extends keyof StateValues>(
 			stateAbort?.abort(IDLE);
 		} else if (stateStream) {
 			const stream = stateStream;
-			void stream.client
-				.stopStateSubscription({ clientId: stream.id, target: kind, args })
-				.catch((error) => {
-					if (reconnects(error) && stateStream === stream)
-						stateAbort?.abort(RETRY);
-					else console.debug("State unsubscribe failed", error);
-				});
+			queueStateOperation(target, () =>
+				stream.client
+					.stopStateSubscription({ clientId: stream.id, target: kind, args })
+					.catch((error) => {
+						if (reconnects(error) && stateStream === stream)
+							stateAbort?.abort(RETRY);
+						else console.debug("State unsubscribe failed", error);
+					}),
+			);
 		}
 	};
 }
@@ -596,14 +620,6 @@ export async function completeClientRestoration(generation: number) {
 		attachmentId: active.attachmentId,
 		generation,
 	});
-}
-
-async function applyClientDesktopSettings(
-	client: Client<typeof ClientService>,
-) {
-	const info = await client.getServerInfo({});
-	if (info.desktopSettings)
-		await invoke("apply_desktop_settings", { settings: info.desktopSettings });
 }
 
 window.addEventListener("pagehide", () => {

@@ -1,25 +1,18 @@
 use crate::adaptor::presenter::error::AppError;
 use std::sync::Arc;
 
-use crate::adaptor::gateway::app_config::{
-    app_to_model, workflow_to_domain, workflow_to_model, AppSection, WorkflowSection,
-};
-use crate::domain::app_config::ConfigRepository;
+use crate::adaptor::gateway::app_config::{workflow_to_domain, WorkflowSection};
 use crate::usecase::app_config::AppConfigUsecase;
-
-fn build_usecase(app_config: Arc<dyn ConfigRepository>) -> AppConfigUsecase {
-    AppConfigUsecase::new(app_config)
-}
 
 fn map_join_error(error: tokio::task::JoinError) -> AppError {
     AppError::new(format!("task join error: {error}"))
 }
 
 pub(crate) async fn update_performance_telemetry_shared(
-    state: &Arc<dyn ConfigRepository>,
+    usecase: &Arc<AppConfigUsecase>,
     enabled: bool,
 ) -> Result<(), AppError> {
-    let usecase = build_usecase(state.clone());
+    let usecase = usecase.clone();
     crate::common::operation_context::spawn_blocking(move || {
         crate::usecase::telemetry::TelemetryUsecase::new(
             &crate::adaptor::gateway::telemetry::TelemetryGateway,
@@ -32,20 +25,12 @@ pub(crate) async fn update_performance_telemetry_shared(
     Ok(())
 }
 
-pub(crate) fn get_app_settings_shared(
-    state: &Arc<dyn ConfigRepository>,
-) -> Result<AppSection, AppError> {
-    let usecase = build_usecase(state.clone());
-    let app = usecase.get_app_settings().map_err(AppError::from_failure)?;
-    Ok(app_to_model(app))
-}
-
 pub(crate) async fn update_app_settings_shared(
-    state: &Arc<dyn ConfigRepository>,
+    usecase: &Arc<AppConfigUsecase>,
     close_to_tray: bool,
     start_minimized: bool,
 ) -> Result<(), AppError> {
-    let usecase = build_usecase(state.clone());
+    let usecase = usecase.clone();
     crate::common::operation_context::spawn_blocking(move || {
         usecase.update_app_settings(close_to_tray, start_minimized)
     })
@@ -55,10 +40,10 @@ pub(crate) async fn update_app_settings_shared(
 }
 
 pub(crate) async fn update_login_item_preference_shared(
-    state: &Arc<dyn ConfigRepository>,
+    usecase: &Arc<AppConfigUsecase>,
     requested: bool,
 ) -> Result<(), AppError> {
-    let usecase = build_usecase(state.clone());
+    let usecase = usecase.clone();
     crate::common::operation_context::spawn_blocking(move || {
         usecase.update_login_item_preference(requested)
     })
@@ -67,21 +52,11 @@ pub(crate) async fn update_login_item_preference_shared(
     .map_err(AppError::from_failure)
 }
 
-pub(crate) fn get_workflow_config_shared(
-    state: &Arc<dyn ConfigRepository>,
-) -> Result<WorkflowSection, AppError> {
-    let usecase = build_usecase(state.clone());
-    let workflow = usecase
-        .get_workflow_config()
-        .map_err(AppError::from_failure)?;
-    Ok(workflow_to_model(workflow))
-}
-
 pub(crate) async fn update_workflow_config_shared(
-    state: &Arc<dyn ConfigRepository>,
+    usecase: &Arc<AppConfigUsecase>,
     workflow: WorkflowSection,
 ) -> Result<(), AppError> {
-    let usecase = build_usecase(state.clone());
+    let usecase = usecase.clone();
     let workflow = workflow_to_domain(&workflow);
     crate::common::operation_context::spawn_blocking(move || {
         usecase.update_workflow_config(workflow)
@@ -91,20 +66,11 @@ pub(crate) async fn update_workflow_config_shared(
     .map_err(AppError::from_failure)
 }
 
-pub(crate) fn get_performance_telemetry_enabled_shared(
-    state: &Arc<dyn ConfigRepository>,
-) -> Result<bool, AppError> {
-    let usecase = build_usecase(state.clone());
-    usecase
-        .get_performance_telemetry_enabled()
-        .map_err(AppError::from_failure)
-}
-
 pub(crate) async fn update_crash_reporting_shared(
-    state: &Arc<dyn ConfigRepository>,
+    usecase: &Arc<AppConfigUsecase>,
     enabled: bool,
 ) -> Result<(), AppError> {
-    let usecase = build_usecase(state.clone());
+    let usecase = usecase.clone();
     crate::common::operation_context::spawn_blocking(move || {
         crate::usecase::telemetry::TelemetryUsecase::new(
             &crate::adaptor::gateway::telemetry::TelemetryGateway,

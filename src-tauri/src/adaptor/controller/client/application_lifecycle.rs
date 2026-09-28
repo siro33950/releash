@@ -3,19 +3,11 @@ use crate::adaptor::presenter::error::AppError;
 mod shared;
 use crate::adaptor::presenter::application_lifecycle_v1::{
     ApplicationQuitIntentDtoV1, ApplicationQuitOutcomeDtoV1, ApplicationQuitRequestDtoV1,
-    ApplicationStartupOutcomeDtoV1, StartupFailureQuitOutcomeDtoV1,
+    StartupFailureQuitOutcomeDtoV1,
 };
 use crate::domain::application_lifecycle::ApplicationQuitIntent;
 pub(crate) use shared::register_shared;
 use std::sync::Arc;
-
-pub(crate) fn get_application_startup_outcome_shared(
-    authority: &Arc<crate::usecase::application_startup::ApplicationStartupAuthority>,
-) -> ApplicationStartupOutcomeDtoV1 {
-    crate::adaptor::presenter::application_lifecycle::application_startup_outcome(
-        authority.outcome(),
-    )
-}
 
 pub(crate) fn quit_after_startup_failure_shared(
     authority: &Arc<crate::usecase::application_startup::ApplicationStartupAuthority>,

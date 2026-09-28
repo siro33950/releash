@@ -7,13 +7,13 @@ fn test_型付き応答_protoが成功と失敗を排他的に保持する() {
     // Given / When / Then
     for (command, result) in [
         ("update_external_editor", Ok(Json::Null)),
-        ("get_external_editor", Ok(json!("日本語"))),
-        ("get_releash_base", Ok(json!("/a"))),
+        ("get_language_from_path", Ok(json!("日本語"))),
+        ("get_automation_config_dir", Ok(json!("/a"))),
         (
-            "get_external_editor",
+            "get_language_from_path",
             Err(json!({"code":"INVALID_REQUEST","message":"invalid"})),
         ),
-        ("get_external_editor", Err(json!("failure"))),
+        ("get_language_from_path", Err(json!("failure"))),
     ] {
         let decoded = match result.clone() {
             Ok(value) => {

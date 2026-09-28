@@ -205,25 +205,7 @@ mod local_api_tests;
 pub(crate) struct ClientConnectionFileQuery(pub(crate) PathBuf);
 
 #[cfg(any(test, feature = "desktop"))]
-#[async_trait::async_trait]
 impl crate::usecase::client_connection::ClientConnectionQueryService for ClientConnectionFileQuery {
-    #[cfg(feature = "desktop")]
-    async fn desktop_settings(
-        &self,
-    ) -> Result<
-        crate::usecase::app_config::query_service::DesktopSettingsDto,
-        crate::usecase::client_connection::ClientConnectionError,
-    > {
-        let info = super::desktop_client::server_info(&self.read()?)
-            .await
-            .map_err(crate::usecase::client_connection::ClientConnectionError)?;
-        info.desktop_settings.map(Into::into).ok_or_else(|| {
-            crate::usecase::client_connection::ClientConnectionError(
-                "Daemon settings are unavailable".into(),
-            )
-        })
-    }
-
     fn read(
         &self,
     ) -> Result<

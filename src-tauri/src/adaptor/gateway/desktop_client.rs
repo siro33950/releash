@@ -41,16 +41,65 @@ pub(crate) fn stream_client(
     ))
 }
 
+type DesktopSettingsDto = crate::usecase::app_config::query_service::DesktopSettingsDto;
+
 pub(crate) struct DesktopClient {
     client: Arc<rpc::ClientServiceClient<HttpClient>>,
     task: tokio::task::JoinHandle<()>,
+    settings_task: tokio::task::JoinHandle<()>,
+    settings: parking_lot::Mutex<tokio::sync::watch::Receiver<Option<DesktopSettingsDto>>>,
     failure: Arc<parking_lot::Mutex<Option<WorkFailure>>>,
 }
 
 impl Drop for DesktopClient {
     fn drop(&mut self) {
         self.task.abort();
+        self.settings_task.abort();
     }
+}
+
+const DESKTOP_SETTINGS_TARGET: &str = "desktop-settings";
+
+async fn receive_desktop_settings(
+    client: &rpc::ClientServiceClient<HttpClient>,
+    sender: &tokio::sync::watch::Sender<Option<DesktopSettingsDto>>,
+) -> Result<(), String> {
+    let client_id = uuid::Uuid::new_v4().to_string();
+    let mut stream = client
+        .open_state_stream(rpc::OpenStateStreamRequest {
+            client_id: client_id.clone(),
+            ..Default::default()
+        })
+        .await
+        .map_err(error_message)?;
+    while let Some(message) = stream.message().await.map_err(error_message)? {
+        let event: wire::StateSubscriptionEvent =
+            to_wire(&message.to_owned_message()).map_err(|error| error.to_string())?;
+        use wire::state_subscription_event::Event;
+        let payload = match event.event {
+            Some(Event::Ready(_)) => {
+                client
+                    .start_state_subscription(rpc::StartStateSubscriptionRequest {
+                        client_id: client_id.clone(),
+                        target: DESKTOP_SETTINGS_TARGET.into(),
+                        ..Default::default()
+                    })
+                    .await
+                    .map_err(error_message)?;
+                continue;
+            }
+            Some(Event::Snapshot(payload)) => payload,
+            Some(Event::Change(change)) => match change.payload {
+                Some(payload) => payload,
+                None => continue,
+            },
+            _ => continue,
+        };
+        if let Some(wire::state_payload::Value::DesktopSettings(settings)) = payload.value {
+            sender.send_replace(Some(settings.try_into()?));
+        }
+    }
+    Err("Desktop settings stream ended".into())
 }
 
 impl DesktopClient {
@@ -62,6 +111,18 @@ impl DesktopClient {
         limiter: Arc<RetryLimiter>,
     ) -> Self {
         let failure = Arc::new(parking_lot::Mutex::new(None));
+        let (settings_sender, settings) = tokio::sync::watch::channel(None);
+        let settings_client = stream_client.clone();
+        let settings_task = tokio::spawn(async move {
+            loop {
+                if let Err(error) =
+                    receive_desktop_settings(&settings_client, &settings_sender).await
+                {
+                    log::warn!("Desktop settings subscription interrupted: {error}");
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+        });
         let failed = failure.clone();
         let task = tokio::spawn(async move {
             let lost = watch(&stream_client, &key, failures.as_ref(), &limiter).await;
@@ -70,11 +131,35 @@ impl DesktopClient {
         Self {
             client: Arc::new(client),
             task,
+            settings_task,
+            settings: parking_lot::Mutex::new(settings),
             failure,
         }
     }
     pub fn connected(&self) -> bool {
         !self.task.is_finished()
+    }
+    /// 購読で最初に届いた desktop 設定を待つ。
+    pub async fn first_settings(&self) -> Result<DesktopSettingsDto, String> {
+        let mut receiver = self.settings.lock().clone();
+        let settings = receiver
+            .wait_for(|settings| settings.is_some())
+            .await
+            .map_err(|_| "Desktop settings are unavailable.".to_string())?
+            .expect("waited for settings");
+        Ok(settings)
+    }
+    pub fn current_settings(&self) -> Option<DesktopSettingsDto> {
+        *self.settings.lock().borrow()
+    }
+    /// 前回の観測以降に届いた desktop 設定の変更を取り出す。
+    pub fn settings_update(&self) -> Option<DesktopSettingsDto> {
+        let mut receiver = self.settings.lock();
+        if receiver.has_changed().unwrap_or(false) {
+            *receiver.borrow_and_update()
+        } else {
+            None
+        }
     }
     pub fn failure(&self) -> Option<WorkFailure> {
         self.failure.lock().clone()

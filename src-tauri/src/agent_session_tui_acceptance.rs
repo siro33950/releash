@@ -349,9 +349,11 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
                 sessions: composition.read.clone(),
                 history: composition.history_read.clone(),
                 providers: composition.provider_availability.clone(),
+                hook_health: composition.hook_health_read.clone(),
             }),
             None,
             vec![],
+            String::new(),
         );
         let client_router = crate::adaptor::controller::api::authenticated(
             crate::adaptor::controller::api::client::router(Some(
@@ -633,6 +635,7 @@ struct AcceptanceSessionReads {
     sessions: Arc<AgentSessionReadUsecase>,
     history: Arc<AgentSessionHistoryReadUsecase>,
     providers: Arc<crate::usecase::agent_session::ProviderAvailabilityUsecase>,
+    hook_health: Arc<crate::usecase::provider_lifecycle::ProviderHookHealthReadUsecase>,
 }
 #[async_trait::async_trait]
 impl crate::usecase::state_subscription::StateSubscriptionRead for AcceptanceSessionReads {
@@ -685,6 +688,23 @@ impl crate::usecase::state_subscription::StateSubscriptionRead for AcceptanceSes
                             .collect(),
                     )
                 })
+                .map_err(|e| StateReadError {
+                    message: format!("{e:?}"),
+                    source: e.into(),
+                }),
+            T::ProviderAvailability => self
+                .providers
+                .snapshot()
+                .map(StateValue::ProviderAvailability)
+                .map_err(|e| StateReadError {
+                    message: format!("{e:?}"),
+                    source: e.into(),
+                }),
+            T::ProviderHookHealth => self
+                .hook_health
+                .warnings()
+                .await
+                .map(StateValue::ProviderHookHealth)
                 .map_err(|e| StateReadError {
                     message: format!("{e:?}"),
                     source: e.into(),
