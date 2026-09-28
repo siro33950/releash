@@ -88,14 +88,8 @@ impl StateSubscriptionUsecase {
             let mut result = Ok(());
             terminal
                 .visit_snapshot(&owner, &mut |surface| {
-                    result = output.set_terminal_snapshot(
-                        &target,
-                        surface.runtime_generation.value(),
-                        surface.latest_sequence(),
-                        StateValue::Terminal(TerminalSurfaceStreamItem::Snapshot(surface)),
-                    );
-                    if result.is_ok() {
-                        let reset = resets.lock().remove(&target).unwrap_or_default();
+                    let reset = resets.lock().remove(&target).unwrap_or_default();
+                    {
                         let active = inputs.lock();
                         for client in reset {
                             if active.contains_key(&(client.clone(), target.clone())) {
@@ -103,6 +97,12 @@ impl StateSubscriptionUsecase {
                             }
                         }
                     }
+                    result = output.set_terminal_snapshot(
+                        &target,
+                        surface.runtime_generation.value(),
+                        surface.latest_sequence(),
+                        StateValue::Terminal(TerminalSurfaceStreamItem::Snapshot(surface)),
+                    );
                 })
                 .map_err(error)?;
             result.map_err(error)
