@@ -429,8 +429,8 @@ it.each(["end", "failure"])(
 				} else {
 					yield create(PushSchema, {
 						event: {
-							case: "reviewCommentsChanged",
-							value: { value: "/recovered" },
+							case: "fileChange",
+							value: { watcherId: 1n, path: "/recovered", kind: "change" },
 						},
 					});
 					await new Promise<void>((resolve) =>
@@ -448,7 +448,7 @@ it.each(["end", "failure"])(
 			);
 		});
 		const pushed = vi.fn();
-		await listenClient("review-comments-changed", pushed);
+		await listenClient("file-change", pushed);
 		const stop = watchClient({ path: "/repo" }, vi.fn());
 		await vi.waitFor(() => {
 			expect(observed).toEqual([false]);
@@ -461,7 +461,9 @@ it.each(["end", "failure"])(
 			() => {
 				expect(observed).toEqual([false, true]);
 				expect(watch).toHaveBeenCalledTimes(2);
-				expect(pushed).toHaveBeenCalledWith({ payload: "/recovered" });
+				expect(pushed).toHaveBeenCalledWith({
+					payload: { watcher_id: 1, path: "/recovered", kind: "change" },
+				});
 			},
 			{ timeout: 3000 },
 		);
@@ -485,7 +487,10 @@ it("同じpushのpayloadは購読者が複数でも一度だけ復号する", as
 				publish = resolve;
 			});
 			yield create(PushSchema, {
-				event: { case: "reviewCommentsChanged", value: { value: "/repo" } },
+				event: {
+					case: "fileChange",
+					value: { watcherId: 1n, path: "/repo", kind: "change" },
+				},
 			});
 			await new Promise<void>((resolve) =>
 				context.signal.addEventListener("abort", () => resolve(), {
@@ -498,18 +503,17 @@ it("同じpushのpayloadは購読者が複数でも一度だけ復号する", as
 	try {
 		const first = vi.fn();
 		const second = vi.fn();
-		const other = vi.fn();
-		await listenClient("review-comments-changed", first);
-		await listenClient("review-comments-changed", second);
-		await listenClient("git-status-changed", other);
+		await listenClient("file-change", first);
+		await listenClient("file-change", second);
 		await vi.waitFor(() => expect(publish).toBeDefined());
 		publish();
 		await vi.waitFor(() => expect(second).toHaveBeenCalledOnce());
-		expect(first).toHaveBeenCalledWith({ payload: "/repo" });
+		expect(first).toHaveBeenCalledWith({
+			payload: { watcher_id: 1, path: "/repo", kind: "change" },
+		});
 		expect(second.mock.calls[0][0].payload).toBe(
 			first.mock.calls[0][0].payload,
 		);
-		expect(other).not.toHaveBeenCalled();
 		expect(decode).toHaveBeenCalledOnce();
 	} finally {
 		decode.mockRestore();
@@ -528,8 +532,8 @@ it("確立済みpushの途中resyncは両listenerへ復旧を通知し後続push
 			yield create(PushSchema, { event: { case: "resync", value: {} } });
 			yield create(PushSchema, {
 				event: {
-					case: "reviewCommentsChanged",
-					value: { value: "/after-resync" },
+					case: "fileChange",
+					value: { watcherId: 1n, path: "/after-resync", kind: "change" },
 				},
 			});
 			await new Promise<void>((resolve) =>
@@ -543,7 +547,7 @@ it("確立済みpushの途中resyncは両listenerへ復旧を通知し後続push
 	const reconnect = vi.fn();
 	const pushed = vi.fn();
 	onClientRefresh(refresh);
-	await listenClient("review-comments-changed", pushed, reconnect);
+	await listenClient("file-change", pushed, reconnect);
 	await vi.waitFor(() => {
 		expect(refresh).toHaveBeenCalledOnce();
 		expect(reconnect).toHaveBeenCalledOnce();
@@ -551,7 +555,9 @@ it("確立済みpushの途中resyncは両listenerへ復旧を通知し後続push
 	});
 	resync();
 	await vi.waitFor(() =>
-		expect(pushed).toHaveBeenCalledWith({ payload: "/after-resync" }),
+		expect(pushed).toHaveBeenCalledWith({
+			payload: { watcher_id: 1, path: "/after-resync", kind: "change" },
+		}),
 	);
 	expect(refresh).toHaveBeenCalledTimes(2);
 	expect(reconnect).toHaveBeenCalledTimes(2);
@@ -635,8 +641,8 @@ it.each(["start_watching"] as const)(
 				if (context.signal.aborted) return;
 				yield create(PushSchema, {
 					event: {
-						case: "reviewCommentsChanged",
-						value: { value: "/current" },
+						case: "fileChange",
+						value: { watcherId: 1n, path: "/current", kind: "change" },
 					},
 				});
 				await new Promise<void>((resolve) =>
@@ -647,7 +653,7 @@ it.each(["start_watching"] as const)(
 			},
 		});
 		const pushed = vi.fn();
-		const unlisten = await listenClient("review-comments-changed", pushed);
+		const unlisten = await listenClient("file-change", pushed);
 		let watcherId = 0;
 		const observed: Array<{ watcherId: number; value: boolean }> = [];
 		const off = onClientRefresh(() => {
@@ -671,7 +677,9 @@ it.each(["start_watching"] as const)(
 		);
 		publish();
 		await vi.waitFor(() =>
-			expect(pushed).toHaveBeenCalledWith({ payload: "/current" }),
+			expect(pushed).toHaveBeenCalledWith({
+				payload: { watcher_id: 1, path: "/current", kind: "change" },
+			}),
 		);
 		value = true;
 		complete();

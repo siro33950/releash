@@ -105,39 +105,6 @@ impl DiffTreeNodeInput {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ReviewSnapshotInput {
-    pub worktree_path: String,
-    pub base: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ReviewFileViewInput {
-    pub worktree_path: String,
-    pub target: ReviewTargetInput,
-    pub section: String,
-    pub base: String,
-    #[serde(default)]
-    pub snapshot_version: Option<u64>,
-    pub viewport: Option<ViewportInput>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase", tag = "by", content = "value")]
-pub enum ReviewTargetInput {
-    FileId(String),
-    Path(String),
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ViewportInput {
-    pub start_line: u32,
-    pub end_line: u32,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ReviewGroupActionInput {
     pub worktree_path: String,
     pub path: String,
@@ -209,28 +176,6 @@ mod protocol_code_tests {
     }
 
     #[test]
-    fn test_review_file_view_inputはtarget_file_idとviewportを受理する() {
-        let json = r#"{
-            "worktreePath": "/repo",
-            "target": {"by": "fileId", "value": "src/main.rs"},
-            "section": "changes",
-            "base": "head",
-            "snapshotVersion": 12,
-            "viewport": {"startLine": 3, "endLine": 8}
-        }"#;
-
-        let input: ReviewFileViewInput = serde_json::from_str(json).unwrap();
-
-        assert_eq!(input.worktree_path, "/repo");
-        match input.target {
-            ReviewTargetInput::FileId(value) => assert_eq!(value, "src/main.rs"),
-            ReviewTargetInput::Path(_) => panic!("expected fileId target"),
-        }
-        assert_eq!(input.snapshot_version, Some(12));
-        assert_eq!(input.viewport.unwrap().start_line, 3);
-    }
-
-    #[test]
     fn test_review_group_action_inputはcamelcaseを受理する() {
         let json = r#"{
             "worktreePath": "/repo",
@@ -247,14 +192,5 @@ mod protocol_code_tests {
         assert_eq!(input.section, "changes");
         assert_eq!(input.base, "head");
         assert_eq!(input.group_id, "g:abc:0");
-    }
-
-    #[test]
-    fn test_review_snapshot_inputはcamelcaseを受理する() {
-        let input: ReviewSnapshotInput =
-            serde_json::from_str(r#"{"worktreePath":"/repo","base":"branch-base"}"#).unwrap();
-
-        assert_eq!(input.worktree_path, "/repo");
-        assert_eq!(input.base, "branch-base");
     }
 }

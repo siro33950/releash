@@ -34,8 +34,8 @@ const baseIpcHandler: Record<string, unknown> = {
 	start_git_dir_watching: 1,
 	stop_git_dir_watching: null,
 	"workspace-state": null,
-	list_review_threads: [],
-	get_review_snapshot: {
+	"review-threads": [],
+	"review-snapshot": {
 		version: 1,
 		stale: false,
 		loading: false,
@@ -281,7 +281,7 @@ export function buildMockConfig(
 	overrides: Record<string, unknown> = {},
 ): MockConfig {
 	const values = { ...baseIpcHandler, ...overrides };
-    const stateNames = ["repository-paths", "workspaces", "selection", "node-detail", "agent-session", "session-node", "session-history", "providers", "branches", "branch-base", "branch-status", "current-branch", "issues", "worktrees", "repository-root", "startup-repository", "workspace-state"];
+    const stateNames = ["repository-paths", "workspaces", "selection", "node-detail", "agent-session", "session-node", "session-history", "providers", "branches", "branch-base", "branch-status", "current-branch", "issues", "worktrees", "repository-root", "startup-repository", "workspace-state", "review-snapshot", "review-file-view", "review-threads"];
     const states: Record<string, unknown> = { "repository-root": "/test/repo", selection: null };
     for (const kind of stateNames) {
         if (kind in values) { states[kind] = values[kind]; delete values[kind]; }

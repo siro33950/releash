@@ -149,7 +149,7 @@ pub enum InlineChunkKindDto {
 // ── diff_tree（フィールド名は snake_case のまま＝移行前と等価） ──
 
 /// diff ファイルツリーのノードの転送表現。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DiffTreeNodeDto {
     pub id: String,
     pub name: String,
@@ -171,7 +171,7 @@ pub struct FileNavigationResultDto {
 }
 
 /// review ファイル一覧 read model。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewSnapshotDto {
     pub version: u64,
@@ -201,13 +201,6 @@ pub struct ReviewFileEntryDto {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ViewportDto {
-    pub start_line: u32,
-    pub end_line: u32,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum ReviewFileViewDto {
     TextDiff(ReviewTextDiffDto),
@@ -229,7 +222,6 @@ pub struct ReviewTextDiffDto {
     pub hunks: Vec<HunkDto>,
     pub change_groups: Vec<ChangeGroupDto>,
     pub limited: bool,
-    pub viewport: Option<ViewportDto>,
     pub total_lines: u32,
 }
 
@@ -260,8 +252,6 @@ pub struct ReviewBinaryDto {
     pub stale: bool,
     pub file_id: String,
     pub path: String,
-    pub original_url: Option<String>,
-    pub modified_url: Option<String>,
     pub original_size: Option<u64>,
     pub modified_size: Option<u64>,
 }
@@ -549,10 +539,6 @@ mod code_dto_serialize_tests {
                 is_staged: None,
             }],
             limited: false,
-            viewport: Some(ViewportDto {
-                start_line: 1,
-                end_line: 2,
-            }),
             total_lines: 2,
         });
 
@@ -586,7 +572,6 @@ mod code_dto_serialize_tests {
                     "lineOffsetEnd": 1
                 }],
                 "limited": false,
-                "viewport": {"startLine": 1, "endLine": 2},
                 "totalLines": 2
             })
         );

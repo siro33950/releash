@@ -10,38 +10,6 @@ pub(crate) fn register_shared(
     {
         let data_dir = deps.data_dir.clone();
         let usecase = deps.review_comment_usecase.clone();
-        router.register_domain(
-            &["list_review_threads"],
-            Box::new(move |command| {
-                let usecase = usecase.clone();
-                let data_dir = data_dir.clone();
-                Box::pin(async move {
-                    let wire::command_request::Command::ListReviewThreads(args) = command else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move {
-                        let usecase = usecase
-                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        let data_dir = data_dir.map_err(wire::CommandFailure::from)?;
-                        outcome(
-                            commands::list_review_threads_shared(
-                                data_dir,
-                                &usecase,
-                                convert(required(args.worktree_name, "worktreeName")?)?,
-                                optional(args.filter)?,
-                            )
-                            .await,
-                        )
-                    }
-                    .await?;
-                    Ok(wire::command_result::Command::ListReviewThreads(result))
-                })
-            }),
-        );
-    }
-    {
-        let data_dir = deps.data_dir.clone();
-        let usecase = deps.review_comment_usecase.clone();
         let notify = deps.comment_notify.clone();
         router.register_domain(
             &["create_review_thread"],

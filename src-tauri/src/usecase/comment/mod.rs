@@ -1,7 +1,5 @@
-mod watch;
 use std::path::Path;
 use std::sync::Arc;
-pub(crate) use watch::ReviewCommentsWatchUsecase;
 
 pub(crate) mod dto;
 
@@ -11,7 +9,7 @@ use crate::domain::comment::{
     ReviewHistoryEntry, ReviewTarget, ReviewThread, ReviewThreadFilter,
 };
 
-pub(crate) use dto::{ReviewHistoryEntryDto, ReviewThreadDto, ReviewThreadFilterDto};
+pub(crate) use dto::{ReviewHistoryEntryDto, ReviewThreadDto};
 
 pub(crate) type ReviewEventMutation<'a> =
     Box<dyn FnOnce(&[ReviewEvent]) -> Result<Vec<ReviewEvent>, ReviewError> + Send + 'a>;
@@ -362,29 +360,6 @@ mod tests {
     fn agent(backend_id: &str, model: &str) -> ReviewActor {
         let _ = model;
         ReviewActor::provider_agent(backend_id.to_string(), None)
-    }
-
-    #[test]
-    fn review_thread_filter_dto_deserializes_and_maps_to_domain_filter() {
-        let dto: ReviewThreadFilterDto = serde_json::from_value(serde_json::json!({
-            "file": "src/main.rs",
-            "state": "resolved",
-            "author": "mine",
-            "unread": true,
-            "threadId": ["thread-a", "thread-b"]
-        }))
-        .unwrap();
-
-        let filter: ReviewThreadFilter = dto.into();
-
-        assert_eq!(filter.file.as_deref(), Some("src/main.rs"));
-        assert_eq!(filter.state, Some(ReviewThreadState::Resolved));
-        assert_eq!(filter.author, Some(AuthorScope::Mine));
-        assert_eq!(filter.unread, Some(true));
-        assert_eq!(
-            filter.thread_id,
-            vec!["thread-a".to_string(), "thread-b".to_string()]
-        );
     }
 
     #[test]

@@ -1,14 +1,15 @@
-import { act, renderHook, waitFor } from "@testing-library/react";
+import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { invokeClient as invoke } from "@/lib/client";
+import type { StateTarget } from "@/lib/client";
+import { stateSubscriptions } from "@/test/stateSubscriptions";
 import type { ReviewSnapshot } from "@/types/review";
 import { useReviewSnapshot } from "./useReviewSnapshot";
 
+const states = stateSubscriptions();
 vi.mock("@/lib/client", () => ({
-	invokeClient: vi.fn(),
+	subscribeState: (...args: unknown[]) =>
+		(states.subscribeState as (...args: unknown[]) => () => void)(...args),
 }));
-
-const mockInvoke = vi.mocked(invoke);
 
 function snapshot(overrides: Partial<ReviewSnapshot> = {}): ReviewSnapshot {
 	return {
@@ -30,272 +31,106 @@ function snapshot(overrides: Partial<ReviewSnapshot> = {}): ReviewSnapshot {
 }
 
 describe("useReviewSnapshot", () => {
-	beforeEach(() => {
-		mockInvoke.mockReset();
-	});
+	beforeEach(() => states.clear());
 
-	it("invokes get_review_snapshot and exposes backend staged/changed files without rebuilding", async () => {
-		mockInvoke.mockResolvedValue(
-			snapshot({
-				files: [
-					{
-						fileId: "a.ts",
-						path: "a.ts",
-						indexStatus: "none",
-						worktreeStatus: "modified",
-						additions: 1,
-						deletions: 0,
-					},
-				],
-				stagedFiles: [
-					{
-						path: "backend-staged.ts",
-						index_status: "new",
-						worktree_status: "none",
-					},
-				],
-				changedFiles: [
-					{
-						path: "backend-changed.ts",
-						index_status: "none",
-						worktree_status: "modified",
-					},
-				],
-				changesTree: [
-					{
-						id: "a.ts",
-						name: "a.ts",
-						path: "a.ts",
-						node_type: "file",
-						status: "modified",
-						additions: 1,
-						deletions: 0,
-						children: [],
-					},
-				],
-				stagedFileCount: 1,
-				changesFileCount: 1,
-			}),
+	it("worktreeとbaseで購読し届いた一覧をそのまま公開する", () => {
+		const { result } = renderHook(() => useReviewSnapshot("/repo", "head"));
+		expect(states.subscribeState).toHaveBeenCalledWith(
+			{ kind: "review-snapshot", args: ["/repo", "head"] },
+			expect.any(Function),
+			expect.any(Function),
 		);
+		expect(result.current.loading).toBe(true);
 
-		const { result } = renderHook(() => useReviewSnapshot("/repo", "head", 0));
-
-		await waitFor(() => {
-			expect(result.current.loading).toBe(false);
-			expect(result.current.version).toBe(4);
-		});
-
-		expect(mockInvoke).toHaveBeenCalledWith("get_review_snapshot", {
-			input: { worktreePath: "/repo", base: "head" },
-		});
-		expect(result.current.stagedFiles.map((entry) => entry.path)).toEqual([
-			"backend-staged.ts",
-		]);
-		expect(result.current.changedFiles.map((entry) => entry.path)).toEqual([
-			"backend-changed.ts",
-		]);
-		expect(result.current.changesTree[0].path).toBe("a.ts");
-	});
-
-	it("returns empty state when rootPath is null", () => {
-		const { result } = renderHook(() =>
-			useReviewSnapshot(null, "branch-base", 0),
-		);
-
-		expect(result.current.files).toEqual([]);
-		expect(result.current.stagedFiles).toEqual([]);
-		expect(result.current.changedFiles).toEqual([]);
-		expect(mockInvoke).not.toHaveBeenCalled();
-	});
-
-	it("returns empty staged and changed files when fetching fails", async () => {
-		mockInvoke.mockRejectedValue(new Error("boom"));
-
-		const { result } = renderHook(() => useReviewSnapshot("/repo", "head", 0));
-
-		await waitFor(() => {
-			expect(mockInvoke).toHaveBeenCalledTimes(1);
-		});
-
-		expect(result.current.stagedFiles).toEqual([]);
-		expect(result.current.changedFiles).toEqual([]);
-		expect(result.current.version).toBe(0);
-	});
-
-	it("replaces the displayed snapshot when rootPath changes", async () => {
-		mockInvoke.mockImplementation((_, args) => {
-			const worktreePath = (args as { input: { worktreePath: string } }).input
-				.worktreePath;
-			return Promise.resolve(
+		act(() =>
+			states.publish(
+				{ kind: "review-snapshot", args: ["/repo", "head"] },
 				snapshot({
-					version: worktreePath === "/repo-a" ? 10 : 1,
-					files: [
-						{
-							fileId: `${worktreePath}/file.ts`,
-							path: "file.ts",
-							indexStatus: "none",
-							worktreeStatus: "modified",
-							additions: 1,
-							deletions: 0,
-						},
-					],
-				}),
-			);
-		});
-
-		const { result, rerender } = renderHook(
-			({ rootPath }) => useReviewSnapshot(rootPath, "head", 0),
-			{ initialProps: { rootPath: "/repo-a" } },
-		);
-
-		await waitFor(() => {
-			expect(result.current.version).toBe(10);
-		});
-
-		rerender({ rootPath: "/repo-b" });
-
-		await waitFor(() => {
-			expect(result.current.version).toBe(1);
-			expect(result.current.files[0].fileId).toBe("/repo-b/file.ts");
-		});
-	});
-
-	it.each([0, 1])(
-		"updates staged and changed files after the backend version restarts at %i",
-		async (version) => {
-			const beforeCommit = snapshot({
-				version: 10,
-				stagedFiles: [
-					{
-						path: "committed.ts",
-						index_status: "modified",
-						worktree_status: "none",
-					},
-				],
-				changedFiles: [
-					{
-						path: "changed.ts",
-						index_status: "none",
-						worktree_status: "modified",
-					},
-				],
-				stagedFileCount: 1,
-				changesFileCount: 1,
-			});
-			const afterCommit = snapshot({ version });
-			mockInvoke
-				.mockResolvedValueOnce(beforeCommit)
-				.mockResolvedValueOnce(afterCommit);
-			const { result, rerender } = renderHook(
-				({ refreshKey }) => useReviewSnapshot("/repo", "head", refreshKey),
-				{ initialProps: { refreshKey: 0 } },
-			);
-			await waitFor(() =>
-				expect(result.current.snapshot).toEqual(beforeCommit),
-			);
-
-			rerender({ refreshKey: 1 });
-
-			await waitFor(() => expect(result.current.snapshot).toEqual(afterCommit));
-			expect(result.current.version).toBe(version);
-			expect(result.current.stagedFiles).toEqual([]);
-			expect(result.current.changedFiles).toEqual([]);
-			expect(result.current.stagedFileCount).toBe(0);
-			expect(result.current.changesFileCount).toBe(0);
-		},
-	);
-
-	it("keeps only the latest requested response when responses arrive out of order", async () => {
-		let resolveFirst!: (value: ReviewSnapshot) => void;
-		let resolveLast!: (value: ReviewSnapshot) => void;
-		mockInvoke
-			.mockReturnValueOnce(
-				new Promise<ReviewSnapshot>((resolve) => {
-					resolveFirst = resolve;
-				}),
-			)
-			.mockReturnValueOnce(
-				new Promise<ReviewSnapshot>((resolve) => {
-					resolveLast = resolve;
-				}),
-			);
-		const { result, rerender } = renderHook(
-			({ refreshKey }) => useReviewSnapshot("/repo", "head", refreshKey),
-			{ initialProps: { refreshKey: 0 } },
-		);
-		rerender({ refreshKey: 1 });
-		const latest = snapshot({ version: 6 });
-
-		await act(async () => resolveLast(latest));
-		await act(async () => resolveFirst(snapshot({ version: 5 })));
-
-		expect(result.current.snapshot).toEqual(latest);
-		expect(result.current.loading).toBe(false);
-	});
-
-	it("accepts snapshot updates with a newer version", async () => {
-		mockInvoke
-			.mockResolvedValueOnce(
-				snapshot({
-					version: 5,
 					stagedFiles: [
-						{
-							path: "old-staged.ts",
-							index_status: "modified",
-							worktree_status: "none",
-						},
+						{ path: "staged.ts", index_status: "new", worktree_status: "none" },
 					],
 					changedFiles: [
 						{
-							path: "old-changed.ts",
+							path: "changed.ts",
 							index_status: "none",
 							worktree_status: "modified",
 						},
 					],
+					stagedFileCount: 1,
+					changesFileCount: 1,
 				}),
-			)
-			.mockResolvedValueOnce(
-				snapshot({
-					version: 6,
-					stagedFiles: [
-						{
-							path: "newer-staged.ts",
-							index_status: "deleted",
-							worktree_status: "none",
-						},
-					],
-					changedFiles: [
-						{
-							path: "newer-changed.ts",
-							index_status: "none",
-							worktree_status: "new",
-						},
-					],
-				}),
-			);
-
-		const { result, rerender } = renderHook(
-			({ refreshKey }) => useReviewSnapshot("/repo", "head", refreshKey),
-			{ initialProps: { refreshKey: 0 } },
+			),
 		);
 
-		await waitFor(() => {
-			expect(result.current.version).toBe(5);
-			expect(result.current.changedFiles.map((entry) => entry.path)).toEqual([
-				"old-changed.ts",
-			]);
-		});
+		expect(result.current.loading).toBe(false);
+		expect(result.current.version).toBe(4);
+		expect(result.current.stagedFiles.map((file) => file.path)).toEqual([
+			"staged.ts",
+		]);
+		expect(result.current.changedFiles.map((file) => file.path)).toEqual([
+			"changed.ts",
+		]);
+		expect(result.current.stagedFileCount).toBe(1);
+		expect(result.current.changesFileCount).toBe(1);
+	});
 
-		rerender({ refreshKey: 1 });
+	it("Repository未選択では購読せず空の一覧を返す", () => {
+		const { result } = renderHook(() => useReviewSnapshot(null, "branch-base"));
+		expect(states.subscribeState).not.toHaveBeenCalled();
+		expect(result.current.loading).toBe(false);
+		expect(result.current.snapshot.base).toBe("branch-base");
+		expect(result.current.files).toEqual([]);
+	});
 
-		await waitFor(() => {
-			expect(result.current.version).toBe(6);
-			expect(result.current.stagedFiles.map((entry) => entry.path)).toEqual([
-				"newer-staged.ts",
-			]);
-			expect(result.current.changedFiles.map((entry) => entry.path)).toEqual([
-				"newer-changed.ts",
-			]);
-		});
+	it("購読の失敗では空の一覧を表示し読み込み中にしない", () => {
+		const { result } = renderHook(() => useReviewSnapshot("/repo", "head"));
+		act(() =>
+			states.fail(
+				{ kind: "review-snapshot", args: ["/repo", "head"] },
+				new Error("denied"),
+			),
+		);
+		expect(result.current.loading).toBe(false);
+		expect(result.current.stagedFiles).toEqual([]);
+	});
+
+	it("worktreeやbaseが変わると前の一覧を表示せず新しい対象を購読する", () => {
+		const { result, rerender } = renderHook(
+			({ path, base }) => useReviewSnapshot(path, base),
+			{ initialProps: { path: "/repo", base: "head" as const } },
+		);
+		act(() =>
+			states.publish(
+				{ kind: "review-snapshot", args: ["/repo", "head"] },
+				snapshot({ version: 7 }),
+			),
+		);
+		expect(result.current.version).toBe(7);
+
+		rerender({ path: "/other", base: "head" });
+		expect(result.current.version).toBe(0);
+		expect(result.current.loading).toBe(true);
+		expect(states.subscribeState).toHaveBeenLastCalledWith(
+			{ kind: "review-snapshot", args: ["/other", "head"] },
+			expect.any(Function),
+			expect.any(Function),
+		);
+	});
+
+	it("同じ対象の新しい版が届くたびに置き換える", () => {
+		const { result } = renderHook(() => useReviewSnapshot("/repo", "head"));
+		const target: StateTarget<"review-snapshot"> = {
+			kind: "review-snapshot",
+			args: ["/repo", "head"],
+		};
+		act(() => states.publish(target, snapshot({ version: 1 })));
+		act(() =>
+			states.publish(
+				target,
+				snapshot({ version: 2, changedFiles: [], changesFileCount: 3 }),
+			),
+		);
+		expect(result.current.version).toBe(2);
+		expect(result.current.changesFileCount).toBe(3);
 	});
 });

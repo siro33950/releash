@@ -163,45 +163,6 @@ impl From<domain::ReviewThread> for ReviewThreadDto {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum AuthorScopeDto {
-    Mine,
-    Other,
-}
-
-impl From<AuthorScopeDto> for domain::AuthorScope {
-    fn from(scope: AuthorScopeDto) -> Self {
-        match scope {
-            AuthorScopeDto::Mine => Self::Mine,
-            AuthorScopeDto::Other => Self::Other,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct ReviewThreadFilterDto {
-    pub file: Option<String>,
-    pub state: Option<ReviewThreadStateDto>,
-    pub author: Option<AuthorScopeDto>,
-    pub unread: Option<bool>,
-    #[serde(default)]
-    pub thread_id: Vec<String>,
-}
-
-impl From<ReviewThreadFilterDto> for domain::ReviewThreadFilter {
-    fn from(filter: ReviewThreadFilterDto) -> Self {
-        Self {
-            file: filter.file,
-            state: filter.state.map(Into::into),
-            author: filter.author.map(Into::into),
-            unread: filter.unread,
-            thread_id: filter.thread_id,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(
     tag = "kind",

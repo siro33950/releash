@@ -192,9 +192,7 @@ impl ConnectFailure for crate::domain::code::error::CodeError {
             Self::Technical(error) => ConnectFailure::connect_code(error),
             Self::External(_) => connectrpc::ErrorCode::Internal,
             Self::Rule(_) => connectrpc::ErrorCode::FailedPrecondition,
-            Self::StaleReviewBlobVersion { .. } | Self::StaleReviewGroupTarget { .. } => {
-                connectrpc::ErrorCode::Aborted
-            }
+            Self::StaleReviewGroupTarget { .. } => connectrpc::ErrorCode::Aborted,
         }
     }
 }
@@ -562,6 +560,8 @@ impl ConnectFailure for crate::usecase::state_subscription::StateReadError {
             S::GitHost(error) => error.connect_code(),
             S::Watcher(error) => error.connect_code(),
             S::Subscription(error) => error.connect_code(),
+            S::Code(error) => error.connect_code(),
+            S::Review(error) => error.connect_code(),
             S::Technical(error) => error.connect_code(),
         }
     }

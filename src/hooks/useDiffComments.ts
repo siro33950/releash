@@ -1,69 +1,17 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { invokeClient as invoke, listenClient as listen } from "@/lib/client";
-import { getErrorMessage } from "@/lib/errorMessage";
-import {
-	getThreadFilePath,
-	type ReviewDiscussionThread,
-} from "@/types/diffComment";
+import { useCallback } from "react";
+import { useStateSubscriptionResult } from "@/hooks/useStateSubscription";
+import { invokeClient as invoke } from "@/lib/client";
+import { getThreadFilePath } from "@/types/diffComment";
 
 interface UseDiffCommentsOptions {
 	worktreeName: string;
 }
 
 export function useDiffComments({ worktreeName }: UseDiffCommentsOptions) {
-	const [comments, setComments] = useState<ReviewDiscussionThread[]>([]);
-	const [loading, setLoading] = useState(false);
-	const [error, setError] = useState<string | null>(null);
-	const worktreeNameRef = useRef(worktreeName);
-	worktreeNameRef.current = worktreeName;
-
-	const loadComments = useCallback(async () => {
-		if (!worktreeName) return;
-		const requestedWorktree = worktreeName;
-		setLoading(true);
-		try {
-			const result = await invoke("list_review_threads", {
-				worktreeName: requestedWorktree,
-				filter: null,
-			});
-			if (worktreeNameRef.current === requestedWorktree) {
-				setComments(result ?? []);
-				setError(null);
-			}
-		} catch (reason) {
-			if (worktreeNameRef.current === requestedWorktree) {
-				setError(getErrorMessage(reason));
-			}
-		} finally {
-			if (worktreeNameRef.current === requestedWorktree) setLoading(false);
-		}
-	}, [worktreeName]);
-
-	useEffect(() => {
-		loadComments();
-	}, [loadComments]);
-
-	useEffect(() => {
-		const unlisten = listen(
-			"review-comments-changed",
-			(event) => {
-				// payload "*" は CLI/Agent/外部書き込みを拾う file watcher 由来の通知。
-				// worktree 名を逆引きしない設計のため、ワイルドカードのときは全 listener が
-				// それぞれ自分の worktreeName で reload する（無関係 worktree に書き込まれた
-				// 場合の不要 reload は実コスト微小なので許容）。
-				if (
-					event.payload === "*" ||
-					event.payload === worktreeNameRef.current
-				) {
-					loadComments();
-				}
-			},
-			loadComments,
-		);
-		return () => {
-			unlisten.then((fn) => fn());
-		};
-	}, [loadComments]);
+	const subscription = useStateSubscriptionResult(
+		worktreeName ? { kind: "review-threads", args: [worktreeName] } : null,
+	);
+	const comments = subscription.value ?? [];
 
 	const addComment = useCallback(
 		async (params: {
@@ -127,14 +75,15 @@ export function useDiffComments({ worktreeName }: UseDiffCommentsOptions) {
 
 	return {
 		comments,
-		loading,
-		error,
+		loading: Boolean(
+			worktreeName && subscription.value === undefined && !subscription.error,
+		),
+		error: subscription.error,
 		unsentCount: 0,
 		addComment,
 		appendComment,
 		resolveThread,
 		deleteThread,
 		getCommentsForFile,
-		reload: loadComments,
 	};
 }

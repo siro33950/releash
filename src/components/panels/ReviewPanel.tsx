@@ -23,7 +23,6 @@ import {
 import { useDiffComments } from "@/hooks/useDiffComments";
 import { useFileNavigation } from "@/hooks/useFileNavigation";
 import { useGitActions } from "@/hooks/useGitActions";
-import { useGitEventRefresh } from "@/hooks/useGitEventRefresh";
 import { useReviewFileView } from "@/hooks/useReviewFileView";
 import { useReviewPanel } from "@/hooks/useReviewPanel";
 import { useReviewSnapshot } from "@/hooks/useReviewSnapshot";
@@ -162,13 +161,6 @@ export function ReviewPanel({
 		],
 	);
 
-	const [gitRefreshKey, setGitRefreshKey] = useState(0);
-
-	const handleGitEventRefresh = useCallback(() => {
-		setGitRefreshKey((k) => k + 1);
-	}, []);
-	useGitEventRefresh(rootPath, handleGitEventRefresh);
-
 	// Review file list read model
 	const {
 		stagedFiles,
@@ -179,9 +171,7 @@ export function ReviewPanel({
 		changesFileCount,
 		branchBaseTree,
 		branchBaseFileCount,
-		version: reviewSnapshotVersion,
-		refresh: refreshReviewSnapshot,
-	} = useReviewSnapshot(rootPath, diffBase, gitRefreshKey);
+	} = useReviewSnapshot(rootPath, diffBase);
 
 	const totalFileCount =
 		diffBase === "branch-base"
@@ -278,14 +268,7 @@ export function ReviewPanel({
 		changeGroups,
 		imageDiff,
 		error: reviewFileViewError,
-	} = useReviewFileView(
-		rootPath,
-		selectedFile,
-		diffBase,
-		selectedSection,
-		gitRefreshKey,
-		reviewSnapshotVersion,
-	);
+	} = useReviewFileView(rootPath, selectedFile, diffBase, selectedSection);
 	const fallbackView =
 		reviewFileView?.kind === "fallback" ? reviewFileView : null;
 	const binaryView = reviewFileView?.kind === "binary" ? reviewFileView : null;
@@ -389,11 +372,6 @@ export function ReviewPanel({
 	// Stage/Unstage actions
 	const { stage, unstage } = useGitActions();
 
-	const refreshAfterAction = useCallback(() => {
-		setGitRefreshKey((k) => k + 1);
-		refreshReviewSnapshot();
-	}, [refreshReviewSnapshot]);
-
 	// Determine action label and handler based on section
 	const isBranchBase = diffBase === "branch-base";
 	const groupActionLabel = selectedSection === "staged" ? "Unstage" : "Stage";
@@ -403,7 +381,6 @@ export function ReviewPanel({
 		filePath: selectedFile,
 		section: selectedSection,
 		base: diffBase,
-		onGitChanged: refreshAfterAction,
 	});
 
 	const handleGroupAction =
@@ -422,9 +399,8 @@ export function ReviewPanel({
 			if (selectedFile === path) {
 				selectFile(path, "staged");
 			}
-			refreshAfterAction();
 		},
-		[rootPath, selectedFile, selectFile, stage, refreshAfterAction],
+		[rootPath, selectedFile, selectFile, stage],
 	);
 
 	const handleUnstageFile = useCallback(
@@ -434,9 +410,8 @@ export function ReviewPanel({
 			if (selectedFile === path) {
 				selectFile(path, "changes");
 			}
-			refreshAfterAction();
 		},
-		[rootPath, selectedFile, selectFile, unstage, refreshAfterAction],
+		[rootPath, selectedFile, selectFile, unstage],
 	);
 
 	const handleStageAll = useCallback(async () => {
@@ -447,15 +422,7 @@ export function ReviewPanel({
 		if (selectedFile && paths.includes(selectedFile)) {
 			selectFile(selectedFile, "staged");
 		}
-		refreshAfterAction();
-	}, [
-		rootPath,
-		changedFiles,
-		selectedFile,
-		selectFile,
-		stage,
-		refreshAfterAction,
-	]);
+	}, [rootPath, changedFiles, selectedFile, selectFile, stage]);
 
 	const handleUnstageAll = useCallback(async () => {
 		if (!rootPath) return;
@@ -465,15 +432,7 @@ export function ReviewPanel({
 		if (selectedFile && paths.includes(selectedFile)) {
 			selectFile(selectedFile, "changes");
 		}
-		refreshAfterAction();
-	}, [
-		rootPath,
-		stagedFiles,
-		selectedFile,
-		selectFile,
-		unstage,
-		refreshAfterAction,
-	]);
+	}, [rootPath, stagedFiles, selectedFile, selectFile, unstage]);
 
 	// Handle file selection with section
 	const handleSelectFile = useCallback(

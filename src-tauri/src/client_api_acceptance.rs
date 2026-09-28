@@ -15,34 +15,6 @@ use crate::usecase::application_startup::ApplicationStartupAuthority;
 use crate::usecase::repository_usecase::RepositoryUsecase;
 use crate::usecase::workflow::WorkflowRuntimeUsecase;
 
-pub fn spawn_review_comments_watcher(
-    dir: std::path::PathBuf,
-    notify_changed: Arc<dyn Fn() + Send + Sync>,
-) {
-    let work = crate::terminal_surface::initialize_background_work_for_acceptance();
-    let target = dir.to_string_lossy().into_owned();
-    let usecase = Arc::new(crate::usecase::comment::ReviewCommentsWatchUsecase::new(
-        Arc::new(
-            crate::adaptor::gateway::comment::watcher::ReviewCommentsWatchGateway::new(
-                dir,
-                notify_changed,
-            ),
-        ),
-    ));
-    let retrying = work.retrying.clone();
-    work.handle.spawn(async move {
-        crate::adaptor::controller::review_comments_watch::run(
-            retrying,
-            usecase,
-            target,
-            Box::pin(crate::infrastructure::timer::ticks(
-                std::time::Duration::from_secs(1),
-            )),
-        )
-        .await
-    });
-}
-
 pub use crate::adaptor::gateway::push::BackendPush;
 pub use crate::adaptor::gateway::repository::branch::BranchGateway;
 pub use crate::adaptor::gateway::repository::watch::FileChangeEvent;
@@ -266,22 +238,8 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
         }
     }
 
-    pub fn review_comment_notifier(&self) -> Arc<dyn Fn() + Send + Sync> {
-        let sink = crate::desktop_test_support::push_sink(self.app.handle());
-        Arc::new(move || BackendPush::ReviewCommentsChanged("*").emit(sink.as_ref()))
-    }
-
-    pub fn emit(&self, push: BackendPush<'_>) {
+    pub fn emit(&self, push: BackendPush) {
         push.emit(crate::desktop_test_support::push_sink(self.app.handle()).as_ref());
-    }
-
-    pub fn emit_git_status_changed(&self, repo_path: &str) {
-        use crate::usecase::push::PushOutput;
-        crate::desktop_test_support::push_sink(self.app.handle()).publish(
-            crate::usecase::push::PushMessage::GitStatusChanged {
-                repo_path: repo_path.into(),
-            },
-        );
     }
 
     pub fn push_subscription_count(&self) -> usize {

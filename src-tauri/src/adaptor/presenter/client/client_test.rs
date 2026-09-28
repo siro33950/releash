@@ -102,9 +102,14 @@ fn test_terminal_eventは最大sequenceと日本語を保持する() {
 fn test_push_protoが既存payloadを保持し未定義eventを拒否する() {
     // Given / When / Then
     for (event, payload) in [
-        ("review-comments-changed", json!("/a")),
-        ("review-comments-changed", json!("worktree")),
-        ("git-status-changed", json!({"repo_path":"/repo"})),
+        (
+            "file-change",
+            json!({"watcher_id":1,"path":"/a","kind":"change"}),
+        ),
+        (
+            "file-change",
+            json!({"watcher_id":2,"path":"worktree","kind":"remove"}),
+        ),
     ] {
         let message = Push::from_value(event, payload.clone()).unwrap();
         let frame = Push::decode(message.encode_to_vec().as_slice()).unwrap();

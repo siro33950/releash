@@ -248,10 +248,13 @@ impl StateSubscriptionUsecase {
         if let (Some(reads), Some(watcher)) = (&self.reads, &self.watchers) {
             let mut watches = self.watches.lock();
             let repositories = reads.repositories();
+            let review_comments_dir = reads.review_comments_dir();
             let required: std::collections::HashSet<_> = self
                 .active_targets()
                 .into_iter()
-                .flat_map(|target| target.watches(&repositories, &self.history_paths))
+                .flat_map(|target| {
+                    target.watches(&repositories, &self.history_paths, &review_comments_dir)
+                })
                 .collect();
             let current: std::collections::HashSet<_> = watches.keys().cloned().collect();
             let start: Vec<_> = required.difference(&current).cloned().collect();
@@ -268,8 +271,13 @@ impl StateSubscriptionUsecase {
                     crate::usecase::state_subscription::WatchRequirement::Git(path) => {
                         watcher.start_git_dir(path)
                     }
-                    crate::usecase::state_subscription::WatchRequirement::Files(path) => {
-                        watcher.start_files(path)
+                    crate::usecase::state_subscription::WatchRequirement::Files(path, source) => {
+                        let publisher = self.publisher.clone();
+                        let source = source.clone();
+                        watcher.start_files(
+                            path,
+                            Arc::new(move || publisher.invalidate(source.clone())),
+                        )
                     }
                 };
                 match result {

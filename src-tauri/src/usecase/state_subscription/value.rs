@@ -1,5 +1,7 @@
 use crate::usecase::{
     agent_session::{AgentSessionHistoryPageDto, AgentSessionItemDto, AgentSessionProviderDto},
+    code_dto::{ReviewFileViewDto, ReviewSnapshotDto},
+    comment::ReviewThreadDto,
     git_host::IssueInfoDto,
     repository_dto::{BranchDto, WorktreeEntryDto},
     repository_state::snapshot::RepositoryBranchCardsSnapshotDto,
@@ -29,4 +31,7 @@ pub(crate) enum StateValue {
     RepositoryRoot(String),
     StartupRepository(String),
     WorkspaceState(Option<WorkspaceStateDto>),
+    ReviewSnapshot(ReviewSnapshotDto),
+    ReviewFileView(ReviewFileViewDto),
+    ReviewThreads(Vec<ReviewThreadDto>),
 }

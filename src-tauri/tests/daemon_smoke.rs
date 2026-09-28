@@ -31,9 +31,11 @@ struct Socket {
     push: std::pin::Pin<Box<dyn futures_util::Stream<Item = wire::Push> + Send>>,
     subscription_id: String,
 }
+type StateStream =
+    std::pin::Pin<Box<dyn futures_util::Stream<Item = wire::state_payload::Value> + Send>>;
 type WorkspaceStream =
     std::pin::Pin<Box<dyn futures_util::Stream<Item = wire::WorkspaceListSnapshotDto> + Send>>;
-async fn subscribe_workspaces(socket: &Socket) -> WorkspaceStream {
+async fn subscribe_state(socket: &Socket, target: &str, args: Vec<String>) -> StateStream {
     let client_id = uuid::Uuid::new_v4().to_string();
     let mut stream = socket
         .client
@@ -51,7 +53,8 @@ async fn subscribe_workspaces(socket: &Socket) -> WorkspaceStream {
         .client
         .start_state_subscription(rpc::StartStateSubscriptionRequest {
             client_id,
-            target: "workspaces".into(),
+            target: target.into(),
+            args,
             ..Default::default()
         })
         .await
@@ -71,15 +74,42 @@ async fn subscribe_workspaces(socket: &Socket) -> WorkspaceStream {
                     Some(wire::state_subscription_event::Event::Change(value)) => value.payload,
                     _ => None,
                 };
-                if let Some(wire::StatePayload {
-                    value: Some(wire::state_payload::Value::Workspaces(value)),
-                }) = payload
-                {
+                if let Some(wire::StatePayload { value: Some(value) }) = payload {
                     return Some((value, stream));
                 }
             }
         },
     ))
+}
+async fn subscribe_workspaces(socket: &Socket) -> WorkspaceStream {
+    Box::pin(
+        subscribe_state(socket, "workspaces", vec![])
+            .await
+            .filter_map(|value| async move {
+                match value {
+                    wire::state_payload::Value::Workspaces(value) => Some(value),
+                    _ => None,
+                }
+            }),
+    )
+}
+async fn expect_state(
+    stream: &mut StateStream,
+    phase: &str,
+    predicate: impl Fn(&wire::state_payload::Value) -> bool,
+) {
+    let mut last = None;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let value = stream.next().await.unwrap();
+            if predicate(&value) {
+                return;
+            }
+            last = Some(value);
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("state subscription did not reflect {phase}: {last:?}"))
 }
 async fn expect_workspace(
     stream: &mut WorkspaceStream,
@@ -564,16 +594,6 @@ async fn expect_push(socket: &mut Socket, matches: impl Fn(&wire::push::Event) -
     .await
     .expect("production notifier must reach the Connect subscription");
 }
-async fn request_with_push(
-    socket: &mut Socket,
-    id: &str,
-    command: wire::command_request::Command,
-    matches: impl Fn(&wire::push::Event) -> bool,
-) -> wire::command_result::Command {
-    let result = request(socket, id, command).await;
-    expect_push(socket, matches).await;
-    result
-}
 
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
@@ -690,13 +710,28 @@ async fn test_daemon本番配線_状態を購読へ配信し残る通知をpush�
     let execution_id = workflow.value.unwrap();
     expect_workspace(&mut states, "workflow start", |value| worktree_state(value, worktree).snapshot.as_ref().unwrap().nodes.as_ref().unwrap().items.iter().any(|item| matches!(&item.variant, Some(wire::workspace_tree_item_dto::Variant::Node(node)) if node.id.as_deref() == Some(&execution_id) && node.title.as_deref() == Some("push-smoke")))).await;
 
-    // When / Then: comment command notifier (the watcher wildcard cannot satisfy this assertion)
-    request_with_push(&mut socket, "comment", C::CreateReviewThread(wire::CreateReviewThreadRequest {
-        worktree_name: Some("repository".into()), content: Some("production comment".into()), ..Default::default()
-    }), |event| matches!(event, E::ReviewCommentsChanged(value) if value.value.as_deref() == Some("repository"))).await;
-    // When / Then: review watcher, without a comment command
-    std::fs::write(root.join("review-comments/external.events.json"), "[]").unwrap();
-    expect_push(&mut socket, |event| matches!(event, E::ReviewCommentsChanged(value) if value.value.as_deref() == Some("*"))).await;
+    // When / Then: review threads reach the subscription after a comment command
+    let mut threads = subscribe_state(&socket, "review-threads", vec!["repository".into()]).await;
+    expect_state(&mut threads, "initial review threads", |value| matches!(value, wire::state_payload::Value::ReviewThreads(list) if list.items.is_empty())).await;
+    request(
+        &mut socket,
+        "comment",
+        C::CreateReviewThread(wire::CreateReviewThreadRequest {
+            worktree_name: Some("repository".into()),
+            content: Some("production comment".into()),
+            ..Default::default()
+        }),
+    )
+    .await;
+    expect_state(&mut threads, "comment creation", |value| matches!(value, wire::state_payload::Value::ReviewThreads(list) if list.items.iter().any(|thread| thread.comments.as_ref().unwrap().items.iter().any(|comment| comment.content.as_deref() == Some("production comment"))))).await;
+    // When / Then: the subscription owns the review-comments watch, without a comment command
+    for entry in std::fs::read_dir(root.join("review-comments")).unwrap() {
+        let path = entry.unwrap().path();
+        if path.to_string_lossy().ends_with(".events.json") {
+            std::fs::write(&path, "[]").unwrap();
+        }
+    }
+    expect_state(&mut threads, "external comment edit", |value| matches!(value, wire::state_payload::Value::ReviewThreads(list) if list.items.is_empty())).await;
     // When / Then: fallback file watcher, outside a git repository
     let files = root.join("files");
     std::fs::create_dir(&files).unwrap();
@@ -717,6 +752,16 @@ async fn test_daemon本番配線_状態を購読へ配信し残る通知をpush�
     let watched_file = files.join("changed.txt");
     std::fs::write(&watched_file, "changed").unwrap();
     expect_push(&mut socket, |event| matches!(event, E::FileChange(value) if value.watcher_id == watch.value && value.path.as_deref() == watched_file.to_str())).await;
+    // When / Then: the review subscription owns the worktree watch.
+    let mut review = subscribe_state(
+        &socket,
+        "review-snapshot",
+        vec![worktree.into(), "head".into()],
+    )
+    .await;
+    review.next().await.unwrap();
+    std::fs::write(repo_path.join("smoke.txt"), "smoke").unwrap();
+    expect_state(&mut review, "review snapshot after file change", |value| matches!(value, wire::state_payload::Value::ReviewSnapshot(snapshot) if snapshot.changed_files.as_ref().unwrap().items.iter().any(|file| file.path.as_deref() == Some("smoke.txt")))).await;
     // When / Then: the workspace subscription owns the repository watch.
     repository
         .branch(
@@ -725,7 +770,6 @@ async fn test_daemon本番配線_状態を購読へ配信し残る通知をpush�
             false,
         )
         .unwrap();
-    expect_push(&mut socket, |event| matches!(event, E::GitStatusChanged(value) if value.repo_path.as_deref() == Some(worktree))).await;
     expect_workspace(&mut states, "branch creation", |value| {
         value
             .repositories

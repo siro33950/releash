@@ -50,9 +50,8 @@ mod usecase_repository_state_error_test {
             (
                 crate::usecase::repository_state::error::RepositoryStateError::Code(
                     crate::usecase::code_error::CodeUsecaseError::Code(
-                        crate::domain::code::CodeError::StaleReviewBlobVersion {
-                            requested: 1,
-                            current: 2,
+                        crate::domain::code::CodeError::StaleReviewGroupTarget {
+                            group_id: "g".into(),
                         },
                     ),
                 ),
@@ -1667,9 +1666,8 @@ mod usecase_code_error_test {
             ),
             (
                 crate::usecase::code_error::CodeUsecaseError::Code(
-                    crate::domain::code::CodeError::StaleReviewBlobVersion {
-                        requested: 1,
-                        current: 2,
+                    crate::domain::code::CodeError::StaleReviewGroupTarget {
+                        group_id: "g".into(),
                     },
                 ),
                 F::Aborted,
@@ -2214,9 +2212,8 @@ mod domain_code_error_test {
                 F::FailedPrecondition,
             ),
             (
-                crate::domain::code::error::CodeError::StaleReviewBlobVersion {
-                    requested: 1,
-                    current: 2,
+                crate::domain::code::error::CodeError::StaleReviewGroupTarget {
+                    group_id: "g".into(),
                 },
                 F::Aborted,
             ),

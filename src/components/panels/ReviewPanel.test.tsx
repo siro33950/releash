@@ -9,7 +9,7 @@ import {
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { invokeClient, listenClient } from "@/lib/client";
+import { invokeClient, subscribeState } from "@/lib/client";
 import type { GitFileStatus } from "@/types/git";
 import type { DiffTreeNode, ReviewFileView } from "@/types/review";
 import type { DiffViewerSectionProps } from "./DiffViewerSection";
@@ -76,7 +76,6 @@ vi.mock("@/hooks/useReviewSnapshot", () => ({
 		branchBaseFileCount: 0,
 		version: 0,
 		loading: false,
-		refresh: vi.fn(),
 	}),
 }));
 
@@ -101,10 +100,6 @@ vi.mock("@/hooks/useGitActions", () => ({
 	}),
 }));
 
-vi.mock("@/hooks/useGitEventRefresh", () => ({
-	useGitEventRefresh: vi.fn(),
-}));
-
 vi.mock("@/hooks/useFileNavigation", () => ({
 	useFileNavigation: vi.fn().mockReturnValue({
 		fileNavigation: {
@@ -119,7 +114,13 @@ vi.mock("@/hooks/useFileNavigation", () => ({
 }));
 
 vi.mock("@/lib/client", () => ({
-	listenClient: vi.fn().mockResolvedValue(() => {}),
+	subscribeState: vi.fn(
+		(target: string | { kind: string }, onValue: (value: unknown) => void) => {
+			const kind = typeof target === "string" ? target : target.kind;
+			if (kind === "review-threads") onValue([]);
+			return () => {};
+		},
+	),
 	invokeClient: vi.fn().mockResolvedValue(null),
 }));
 
@@ -162,7 +163,6 @@ const { useReviewSnapshot } = await import("@/hooks/useReviewSnapshot");
 const { useReviewFileView } = await import("@/hooks/useReviewFileView");
 const { useReviewPanel } = await import("@/hooks/useReviewPanel");
 const { useGitActions } = await import("@/hooks/useGitActions");
-const { useGitEventRefresh } = await import("@/hooks/useGitEventRefresh");
 
 function mockReviewSnapshot(
 	overrides: Partial<ReturnType<typeof useReviewSnapshot>>,
@@ -179,7 +179,6 @@ function mockReviewSnapshot(
 		branchBaseFileCount: 0,
 		version: 0,
 		loading: false,
-		refresh: vi.fn(),
 		snapshot: {
 			version: 0,
 			stale: false,
@@ -214,7 +213,6 @@ function makeTextDiffView(
 		hunks: [],
 		changeGroups: [],
 		limited: false,
-		viewport: null,
 		totalLines: 0,
 	};
 }
@@ -226,8 +224,6 @@ function makeBinaryView(path: string): ReviewFileView {
 		stale: false,
 		fileId: path,
 		path,
-		originalUrl: null,
-		modifiedUrl: null,
 		originalSize: null,
 		modifiedSize: null,
 	};
@@ -328,25 +324,35 @@ function mockNonEmptyHeadSnapshot(
 }
 
 describe("ReviewPanel", () => {
-	it("再接続時のコメント取得失敗を空のreviewにも表示する", async () => {
-		render(
-			<TooltipProvider>
-				<ReviewPanel
-					rootPath="/repo"
-					diffOnlyMode={false}
-					onDiffOnlyModeChange={vi.fn()}
-				/>
-			</TooltipProvider>,
-		);
-		const reconnect = vi
-			.mocked(listenClient)
-			.mock.calls.find(([event]) => event === "review-comments-changed")?.[2];
-		expect(reconnect).toBeDefined();
-		vi.mocked(invokeClient).mockRejectedValueOnce(new Error("read denied"));
-		await act(async () => reconnect?.());
-		expect(screen.getByRole("alert")).toHaveTextContent(
-			"コメントを取得できません: read denied",
-		);
+	it("コメント購読の失敗を空のreviewにも表示する", () => {
+		const previous = vi.mocked(subscribeState).getMockImplementation();
+		vi.mocked(subscribeState).mockImplementation(((
+			target,
+			_onValue,
+			onError,
+		) => {
+			const kind = typeof target === "string" ? target : target.kind;
+			if (kind === "review-threads") onError?.(new Error("read denied"));
+			return () => {};
+		}) as typeof subscribeState);
+		try {
+			render(
+				<TooltipProvider>
+					<ReviewPanel
+						rootPath="/repo"
+						diffOnlyMode={false}
+						onDiffOnlyModeChange={vi.fn()}
+					/>
+				</TooltipProvider>,
+			);
+			expect(screen.getByRole("alert")).toHaveTextContent(
+				"コメントを取得できません: read denied",
+			);
+		} finally {
+			vi.mocked(subscribeState).mockImplementation(
+				previous as typeof subscribeState,
+			);
+		}
 	});
 
 	it("should show 'No changes' when totalFileCount is 0", () => {
@@ -997,123 +1003,6 @@ describe("ReviewPanel", () => {
 		).not.toBeInTheDocument();
 	});
 
-	describe("useGitEventRefresh integration", () => {
-		it("should pass rootPath and callback to useGitEventRefresh", () => {
-			render(
-				<TooltipProvider>
-					<ReviewPanel
-						rootPath="/repo"
-						diffOnlyMode={false}
-						onDiffOnlyModeChange={vi.fn()}
-					/>
-				</TooltipProvider>,
-			);
-
-			expect(vi.mocked(useGitEventRefresh)).toHaveBeenCalledWith(
-				"/repo",
-				expect.any(Function),
-			);
-		});
-
-		it("should increment gitRefreshKey when refresh callback is invoked", async () => {
-			let capturedRefresh: (() => void) | undefined;
-			vi.mocked(useGitEventRefresh).mockImplementation(
-				(_rootPath, onRefresh) => {
-					capturedRefresh = onRefresh;
-				},
-			);
-
-			const refreshKeys: number[] = [];
-			vi.mocked(useReviewFileView).mockImplementation(((
-				_rootPath,
-				_filePath,
-				_diffBase,
-				_section,
-				gitRefreshKey,
-			) => {
-				refreshKeys.push(gitRefreshKey);
-				return {
-					view: null,
-					originalContent: "",
-					modifiedContent: "",
-					hunks: [],
-					changeGroups: [],
-					imageDiff: { originalUrl: null, modifiedUrl: null, loading: false },
-					loading: false,
-					error: null,
-				};
-			}) as typeof useReviewFileView);
-
-			render(
-				<TooltipProvider>
-					<ReviewPanel
-						rootPath="/repo"
-						diffOnlyMode={false}
-						onDiffOnlyModeChange={vi.fn()}
-					/>
-				</TooltipProvider>,
-			);
-
-			expect(capturedRefresh).toBeDefined();
-
-			await act(async () => {
-				capturedRefresh?.();
-			});
-
-			expect(refreshKeys[refreshKeys.length - 1]).toBe(1);
-		});
-
-		it("should increment gitRefreshKey cumulatively on multiple events", async () => {
-			let capturedRefresh: (() => void) | undefined;
-			vi.mocked(useGitEventRefresh).mockImplementation(
-				(_rootPath, onRefresh) => {
-					capturedRefresh = onRefresh;
-				},
-			);
-
-			const refreshKeys: number[] = [];
-			vi.mocked(useReviewFileView).mockImplementation(((
-				_rootPath,
-				_filePath,
-				_diffBase,
-				_section,
-				gitRefreshKey,
-			) => {
-				refreshKeys.push(gitRefreshKey);
-				return {
-					view: null,
-					originalContent: "",
-					modifiedContent: "",
-					hunks: [],
-					changeGroups: [],
-					imageDiff: { originalUrl: null, modifiedUrl: null, loading: false },
-					loading: false,
-					error: null,
-				};
-			}) as typeof useReviewFileView);
-
-			render(
-				<TooltipProvider>
-					<ReviewPanel
-						rootPath="/repo"
-						diffOnlyMode={false}
-						onDiffOnlyModeChange={vi.fn()}
-					/>
-				</TooltipProvider>,
-			);
-
-			expect(capturedRefresh).toBeDefined();
-
-			await act(async () => {
-				capturedRefresh?.();
-			});
-			await act(async () => {
-				capturedRefresh?.();
-			});
-
-			expect(refreshKeys[refreshKeys.length - 1]).toBe(2);
-		});
-	});
 	it.each(["changes", "staged"] as const)(
 		"staleな差分では%sのhunk操作を表示しない",
 		(section) => {
@@ -1163,7 +1052,7 @@ describe("ReviewPanel", () => {
 		},
 	);
 	it.each(["changes", "staged"] as const)(
-		"番号の振り直し後に%sのhunk操作を実行できる",
+		"新しい版が購読で届いた後に%sのhunk操作を実行できる",
 		async (section) => {
 			const actualSnapshot = await vi.importActual<
 				typeof import("@/hooks/useReviewSnapshot")
@@ -1190,38 +1079,33 @@ describe("ReviewPanel", () => {
 			vi.mocked(useReviewFileView).mockImplementation(
 				actualFileView.useReviewFileView,
 			);
-			let version = 10;
+			const previous = vi.mocked(subscribeState).getMockImplementation();
+			const receivers = new Map<string, (value: unknown) => void>();
+			vi.mocked(subscribeState).mockImplementation(((target, onValue) => {
+				const kind = typeof target === "string" ? target : target.kind;
+				receivers.set(kind, onValue as (value: unknown) => void);
+				if (kind === "review-threads") onValue([] as never);
+				return () => {};
+			}) as typeof subscribeState);
 			const groupId = "group:file.ts:0";
-			vi.mocked(invokeClient).mockClear();
-			vi.mocked(invokeClient).mockImplementation(async (command, args) => {
-				if (command === "get_review_snapshot")
-					return {
-						...initialSnapshot,
-						version,
-						changesTree: [treeFile("file.ts", "modified")],
-						changesFileCount: 1,
-					};
-				if (command === "get_review_file_view")
-					return {
-						...makeTextDiffView("file.ts"),
-						version,
-						stale:
-							(args as { input: { snapshotVersion: number } }).input
-								.snapshotVersion !== version,
-						changeGroups: [
-							{
-								groupIndex: 0,
-								groupId,
-								hunkIndex: 0,
-								newStart: 1,
-								newEnd: 1,
-								lineOffsetStart: 0,
-								lineOffsetEnd: 1,
-							},
-						],
-					};
-				return null;
+			const fileView = (version: number, stale: boolean) => ({
+				...makeTextDiffView("file.ts"),
+				version,
+				stale,
+				changeGroups: [
+					{
+						groupIndex: 0,
+						groupId,
+						hunkIndex: 0,
+						newStart: 1,
+						newEnd: 1,
+						lineOffsetStart: 0,
+						lineOffsetEnd: 1,
+					},
+				],
 			});
+			vi.mocked(invokeClient).mockClear();
+			vi.mocked(invokeClient).mockResolvedValue(null);
 			const { unmount } = render(
 				<TooltipProvider>
 					<ReviewPanel
@@ -1231,6 +1115,15 @@ describe("ReviewPanel", () => {
 					/>
 				</TooltipProvider>,
 			);
+			act(() => {
+				receivers.get("review-snapshot")?.({
+					...initialSnapshot,
+					version: 10,
+					changesTree: [treeFile("file.ts", "modified")],
+					changesFileCount: 1,
+				});
+				receivers.get("review-file-view")?.(fileView(10, false));
+			});
 			const label = section === "staged" ? "Unstage" : "Stage";
 			await waitFor(() =>
 				expect(
@@ -1238,23 +1131,12 @@ describe("ReviewPanel", () => {
 				).toBeEnabled(),
 			);
 
-			version = 1;
-			const refresh = vi.mocked(useGitEventRefresh).mock.lastCall?.[1];
-			expect(refresh).toBeDefined();
-			await act(async () => refresh?.());
+			act(() => receivers.get("review-file-view")?.(fileView(11, true)));
+			expect(
+				screen.queryByRole("button", { name: `${label} hunk` }),
+			).not.toBeInTheDocument();
 
-			await waitFor(() =>
-				expect(invokeClient).toHaveBeenCalledWith("get_review_file_view", {
-					input: {
-						worktreePath: "/repo",
-						target: { by: "path", value: "file.ts" },
-						section,
-						base: "head",
-						snapshotVersion: 1,
-						viewport: null,
-					},
-				}),
-			);
+			act(() => receivers.get("review-file-view")?.(fileView(11, false)));
 			await waitFor(() =>
 				expect(
 					screen.getByRole("button", { name: `${label} hunk` }),
@@ -1277,7 +1159,14 @@ describe("ReviewPanel", () => {
 					},
 				),
 			);
+			expect(invokeClient).not.toHaveBeenCalledWith(
+				expect.stringMatching(/^get_review/),
+				expect.anything(),
+			);
 			unmount();
+			vi.mocked(subscribeState).mockImplementation(
+				previous as typeof subscribeState,
+			);
 			mockReviewSnapshot({});
 			vi.mocked(invokeClient).mockReset().mockResolvedValue(null);
 		},

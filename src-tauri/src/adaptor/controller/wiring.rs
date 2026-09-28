@@ -15,7 +15,6 @@ use crate::adaptor::gateway::code::branch_base::BranchBaseResolverGateway;
 use crate::adaptor::gateway::code::branch_diff::BranchDiffGateway;
 use crate::adaptor::gateway::code::diff_compute::DiffComputerGateway;
 use crate::adaptor::gateway::code::file_content::FileContentGateway;
-use crate::adaptor::gateway::code::review_blob_url::ReviewBlobUrlGateway;
 use crate::adaptor::gateway::code::staging::StagingGateway;
 use crate::adaptor::gateway::comment::{
     FileReviewEventStore, SystemReviewClock, UuidReviewIdGenerator,
@@ -128,11 +127,7 @@ fn build_code_usecase_with_gateways() -> CodeUsecase {
         Arc::new(BranchDiffGateway),
         Arc::new(BranchBaseResolverGateway::new(Arc::new(GitConfigGateway))),
     );
-    CodeUsecase::new(
-        Arc::new(StagingGateway),
-        query,
-        Arc::new(ReviewBlobUrlGateway),
-    )
+    CodeUsecase::new(Arc::new(StagingGateway), query)
 }
 
 pub(crate) fn build_code_usecase() -> CodeUsecase {

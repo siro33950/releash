@@ -220,38 +220,6 @@ async fn test_terminal接続情報_削除済みcommandはtauri_invokeでエラ�
 }
 
 #[tokio::test]
-async fn test_レビューコメント監視_events_json変更がconnectだけへ届く() {
-    // Given
-    let fixture = Fixture::new().await;
-    let mut socket = fixture.connect().await;
-    let received = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let listener_received = received.clone();
-    fixture
-        .host
-        .app
-        .listen("review-comments-changed", move |event| {
-            listener_received
-                .lock()
-                .unwrap()
-                .push(serde_json::from_str::<Value>(event.payload()).unwrap());
-        });
-    let dir = fixture._data.path().join("review-comments");
-    spawn_review_comments_watcher(dir.clone(), fixture.host.review_comment_notifier());
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    // When
-    std::fs::write(dir.join("review.events.json"), b"[]").unwrap();
-
-    // Then
-    assert_eq!(
-        receive(&mut socket).await,
-        json!({"status": "push", "event": "review-comments-changed", "payload": "*"})
-    );
-    assert!(received.lock().unwrap().is_empty());
-    drop(socket);
-}
-
-#[tokio::test]
 async fn test_クライアント購読_失敗と不正引数の分類と説明を保持する() {
     let fixture = Fixture::new().await;
     let client = fixture.client();
@@ -271,51 +239,43 @@ async fn test_クライアント購読_失敗と不正引数の分類と説明�
     }
 }
 #[tokio::test]
-async fn test_backend通知_残る3イベントがconnectだけへ届く() {
+async fn test_backend通知_残るfile_changeがconnectだけへ届く() {
     // Given
     let fixture = Fixture::new().await;
     let mut socket = fixture.connect().await;
     let received = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let events = [
-        "file-change",
-        "git-status-changed",
-        "review-comments-changed",
-    ];
-    for event in events {
+    {
         let received = received.clone();
-        fixture.host.app.listen(event, move |message| {
+        fixture.host.app.listen("file-change", move |message| {
             received
                 .lock()
                 .unwrap()
                 .push(serde_json::from_str::<Value>(message.payload()).unwrap())
         });
     }
-    let file = FileChangeEvent {
-        watcher_id: 1,
-        path: "/repo/file".into(),
-        kind: "change".into(),
-    };
     // When
-    for index in 0..events.len() {
-        match index {
-            0 => fixture.host.emit(BackendPush::FileChange(file.clone())),
-            1 => fixture.host.emit_git_status_changed("/repo"),
-            _ => fixture.host.emit(BackendPush::ReviewCommentsChanged("*")),
-        }
-        let frame = receive(&mut socket).await;
-        // Then
-        assert_eq!(frame["status"], "push");
-        assert_eq!(frame["event"], events[index]);
-        let expected = [
-            json!({"watcher_id":1,"path":"/repo/file","kind":"change"}),
-            json!({"repo_path":"/repo"}),
-            json!("*"),
-        ];
-        assert_eq!(frame["payload"], expected[index]);
-        assert!(received.lock().unwrap().is_empty());
-    }
+    fixture
+        .host
+        .emit(BackendPush::FileChange(file_change("/repo/file")));
+    let frame = receive(&mut socket).await;
+    // Then
+    assert_eq!(frame["status"], "push");
+    assert_eq!(frame["event"], "file-change");
+    assert_eq!(
+        frame["payload"],
+        json!({"watcher_id":1,"path":"/repo/file","kind":"change"})
+    );
+    assert!(received.lock().unwrap().is_empty());
 
     drop(socket);
+}
+
+fn file_change(path: &str) -> FileChangeEvent {
+    FileChangeEvent {
+        watcher_id: 1,
+        path: path.into(),
+        kind: "change".into(),
+    }
 }
 
 #[tokio::test]
@@ -391,7 +351,9 @@ async fn test_push_欠落時は再同期通知後も同じ購読を使える() {
     let fixture = Fixture::new().await;
     let mut socket = fixture.connect().await;
     for _ in 0..65 {
-        fixture.host.emit(BackendPush::ReviewCommentsChanged("*"));
+        fixture
+            .host
+            .emit(BackendPush::FileChange(file_change("/repo/file")));
     }
     assert_eq!(receive(&mut socket).await["event"], "resync");
     assert_eq!(
@@ -400,11 +362,10 @@ async fn test_push_欠落時は再同期通知後も同じ購読を使える() {
             .unwrap(),
         "ws-branch"
     );
-    fixture.host.emit(BackendPush::ReviewCommentsChanged("*"));
-    assert_eq!(
-        receive(&mut socket).await["event"],
-        "review-comments-changed"
-    );
+    fixture
+        .host
+        .emit(BackendPush::FileChange(file_change("/repo/file")));
+    assert_eq!(receive(&mut socket).await["event"], "file-change");
 }
 
 #[tokio::test]
@@ -521,14 +482,14 @@ async fn test_クライアントconnect_command完了待ちの間も容量を超
     for index in 0..65 {
         fixture
             .host
-            .emit(BackendPush::ReviewCommentsChanged("/repo"));
+            .emit(BackendPush::FileChange(file_change("/repo/file")));
         let frame = receive(&mut socket).await;
         assert_eq!(
             frame["status"], "push",
             "push {index} arrived before state read completion"
         );
-        assert_eq!(frame["event"], "review-comments-changed");
-        assert_eq!(frame["payload"], "/repo");
+        assert_eq!(frame["event"], "file-change");
+        assert_eq!(frame["payload"]["path"], "/repo/file");
     }
     resume.send(()).unwrap();
     assert_eq!(pending.await.unwrap(), "ws-branch");

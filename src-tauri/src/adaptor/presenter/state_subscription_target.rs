@@ -1,3 +1,4 @@
+use crate::domain::code::{ReviewBase, ReviewSection};
 use crate::usecase::state_subscription::{SubscriptionError, SubscriptionTarget};
 
 impl SubscriptionTarget {
@@ -79,6 +80,17 @@ impl SubscriptionTarget {
             ("workspace-state", [name, path]) => {
                 Ok(Self::WorkspaceState((*name).into(), (*path).into()))
             }
+            ("review-snapshot", [path, base]) => Ok(Self::ReviewSnapshot(
+                (*path).into(),
+                ReviewBase::parse(base).map_err(|_| SubscriptionError::InvalidId)?,
+            )),
+            ("review-file-view", [path, file, section, base]) => Ok(Self::ReviewFileView(
+                (*path).into(),
+                (*file).into(),
+                ReviewSection::parse(section).map_err(|_| SubscriptionError::InvalidId)?,
+                ReviewBase::parse(base).map_err(|_| SubscriptionError::InvalidId)?,
+            )),
+            ("review-threads", [name]) => Ok(Self::ReviewThreads((*name).into())),
             _ => Err(SubscriptionError::UnknownTarget),
         }?;
         Ok(target)
@@ -132,6 +144,19 @@ impl SubscriptionTarget {
             Self::RepositoryRoot(p) => ("repository-root", vec![p.clone()]),
             Self::StartupRepository => ("startup-repository", vec![]),
             Self::WorkspaceState(n, p) => ("workspace-state", vec![n.clone(), p.clone()]),
+            Self::ReviewSnapshot(p, base) => {
+                ("review-snapshot", vec![p.clone(), base.as_str().into()])
+            }
+            Self::ReviewFileView(p, file, section, base) => (
+                "review-file-view",
+                vec![
+                    p.clone(),
+                    file.clone(),
+                    section.as_str().into(),
+                    base.as_str().into(),
+                ],
+            ),
+            Self::ReviewThreads(name) => ("review-threads", vec![name.clone()]),
         }
     }
 }

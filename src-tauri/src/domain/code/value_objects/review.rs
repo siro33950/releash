@@ -2,7 +2,7 @@
 
 use crate::domain::code::CodeError;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ReviewBase {
     Head,
     BranchBase,
@@ -29,7 +29,7 @@ impl ReviewBase {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ReviewSection {
     Changes,
     Staged,

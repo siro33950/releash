@@ -25,3 +25,17 @@ async fn test_購読読取の境界_非同期queryと外部更新不要の要求
     assert_eq!(reads.read(&target).await.unwrap(), expected);
     assert!(reads.refresh_external(&target).await.is_ok());
 }
+
+#[tokio::test]
+async fn test_購読読取の境界_review対象とcomment置き場を内側へ委譲する() {
+    let fixture = crate::test_support::state_subscription::StateReadsFixture::new();
+    let reads = StateSubscriptionReads(fixture.reads.clone());
+    let target = SubscriptionTarget::ReviewThreads("repository".into());
+    let expected = fixture.reads.read(&target).await.unwrap();
+    assert_eq!(reads.read(&target).await.unwrap(), expected);
+    assert_eq!(
+        reads.review_comments_dir(),
+        fixture.reads.review_comments_dir()
+    );
+    assert!(!reads.review_comments_dir().is_empty());
+}

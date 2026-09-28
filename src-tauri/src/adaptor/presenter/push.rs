@@ -18,14 +18,6 @@ impl PushOutput for PushSink {
                 path: Some(path),
                 kind: Some(kind),
             }),
-            PushMessage::GitStatusChanged { repo_path } => {
-                wire::push::Event::GitStatusChanged(wire::GitStatusChangedEvent {
-                    repo_path: Some(repo_path),
-                })
-            }
-            PushMessage::ReviewCommentsChanged(path) => {
-                wire::push::Event::ReviewCommentsChanged(wire::ResultString { value: Some(path) })
-            }
         };
         self.send(wire::Push { event: Some(event) }.encode_to_vec());
     }

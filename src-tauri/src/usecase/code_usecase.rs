@@ -9,8 +9,7 @@ use std::sync::Arc;
 
 use crate::domain::code::{
     ChangeGroup, DiffFileEntry, DiffSide, DiffTreeNode, Hunk, ReviewBase, ReviewBlobSide,
-    ReviewBlobUrlParams, ReviewBlobUrlProvider, ReviewSection, ReviewSideBytes, ReviewSideMetadata,
-    StagingRepository,
+    ReviewSection, ReviewSideBytes, ReviewSideMetadata, StagingRepository,
 };
 
 use super::code_dto::{
@@ -24,7 +23,6 @@ use super::code_query_service::CodeQueryService;
 pub struct CodeUsecase {
     staging: Arc<dyn StagingRepository>,
     query: CodeQueryService,
-    blob_urls: Arc<dyn ReviewBlobUrlProvider>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,16 +40,8 @@ pub(super) struct SelectedReviewSide {
 }
 
 impl CodeUsecase {
-    pub fn new(
-        staging: Arc<dyn StagingRepository>,
-        query: CodeQueryService,
-        blob_urls: Arc<dyn ReviewBlobUrlProvider>,
-    ) -> Self {
-        Self {
-            staging,
-            query,
-            blob_urls,
-        }
+    pub fn new(staging: Arc<dyn StagingRepository>, query: CodeQueryService) -> Self {
+        Self { staging, query }
     }
 
     // ── staging（書き込み = 差分 Approve） ──
@@ -89,25 +79,6 @@ impl CodeUsecase {
     }
 
     // ── review primitives（snapshot/version orchestration は ReviewUsecase が持つ） ──
-
-    pub(super) fn review_blob_url(
-        &self,
-        worktree_path: &str,
-        path: &str,
-        side: ReviewBlobSide,
-        section: ReviewSection,
-        base: ReviewBase,
-        version: u64,
-    ) -> String {
-        self.blob_urls.url(&ReviewBlobUrlParams {
-            worktree_path: worktree_path.to_string(),
-            path: path.to_string(),
-            side,
-            section: section.as_str().to_string(),
-            base: base.as_str().to_string(),
-            version,
-        })
-    }
 
     pub(super) fn select_review_side_source(
         &self,
@@ -455,17 +426,6 @@ mod code_usecase_tests {
         }
     }
 
-    struct StubBlobUrls;
-    impl ReviewBlobUrlProvider for StubBlobUrls {
-        fn url(&self, params: &ReviewBlobUrlParams) -> String {
-            let side = match params.side {
-                ReviewBlobSide::Original => "original",
-                ReviewBlobSide::Modified => "modified",
-            };
-            format!("blob?side={side}&version={}", params.version)
-        }
-    }
-
     struct StubDiffComputer;
     impl DiffComputer for StubDiffComputer {
         fn diff_buffers(
@@ -518,7 +478,7 @@ mod code_usecase_tests {
             Arc::new(StubBranchDiff),
             Arc::new(StubBranchBase),
         );
-        CodeUsecase::new(staging, query, Arc::new(StubBlobUrls))
+        CodeUsecase::new(staging, query)
     }
 
     fn usecase_with_file_content(file_content: Arc<dyn FileContentRepository>) -> CodeUsecase {
@@ -533,7 +493,6 @@ mod code_usecase_tests {
                 calls: Mutex::new(Vec::new()),
             }),
             query,
-            Arc::new(StubBlobUrls),
         )
     }
 

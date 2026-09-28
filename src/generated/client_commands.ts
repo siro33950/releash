@@ -62,9 +62,6 @@ import {
 	GetPerformanceTelemetryEnabledRequestSchema,
 	GetProviderAvailabilityRequestSchema,
 	GetReleashBaseRequestSchema,
-	GetReviewBlobRequestSchema,
-	GetReviewFileViewRequestSchema,
-	GetReviewSnapshotRequestSchema,
 	GetTerminalPerformanceSwitchesRequestSchema,
 	GetWorkflowConfigRequestSchema,
 	GetWorkflowRequestSchema,
@@ -85,8 +82,6 @@ import {
 	ListNotionLabelOptionViewSchema,
 	ListProviderHookHealthWarningResponseSchema,
 	ListProviderHookHealthWarningsRequestSchema,
-	ListReviewThreadDtoSchema,
-	ListReviewThreadsRequestSchema,
 	ListSplitRowDtoSchema,
 	ListTerminalInputPerformanceSampleV1Schema,
 	ListTerminalLaunchPerformanceSampleV1Schema,
@@ -126,8 +121,6 @@ import {
 	ResumeAgentSessionHistoryCandidateRequestSchema,
 	ResumeWorkspaceSessionNodeRequestSchema,
 	RetryWorkspaceNodeRequestSchema,
-	ReviewFileViewDtoSchema,
-	ReviewSnapshotDtoSchema,
 	ReviewThreadDtoSchema,
 	SaveFacetRequestSchema,
 	SaveNotionConfigRequestSchema,
@@ -169,25 +162,6 @@ import type { ClientCommandArgs, ClientCommandResults } from "./client_types";
 const decode = (schema: DescMessage, message: Message) =>
 	clientJson(schema, toJson(schema, message), false);
 const commands = {
-	get_review_blob: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_review_blob"],
-	) => {
-		const result = decode(
-			ResultStringSchema,
-			await client.getReviewBlob(
-				fromJson(
-					GetReviewBlobRequestSchema,
-					clientJson(
-						GetReviewBlobRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
 	abort_workflow: async (
 		client: Client<typeof ClientService>,
 		args: ClientCommandArgs["abort_workflow"],
@@ -948,44 +922,6 @@ const commands = {
 		);
 		return result;
 	},
-	get_review_file_view: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_review_file_view"],
-	) => {
-		const result = decode(
-			ReviewFileViewDtoSchema,
-			await client.getReviewFileView(
-				fromJson(
-					GetReviewFileViewRequestSchema,
-					clientJson(
-						GetReviewFileViewRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	get_review_snapshot: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_review_snapshot"],
-	) => {
-		const result = decode(
-			ReviewSnapshotDtoSchema,
-			await client.getReviewSnapshot(
-				fromJson(
-					GetReviewSnapshotRequestSchema,
-					clientJson(
-						GetReviewSnapshotRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
 	get_terminal_performance_switches: async (
 		client: Client<typeof ClientService>,
 		args: ClientCommandArgs["get_terminal_performance_switches"],
@@ -1206,25 +1142,6 @@ const commands = {
 					ListProviderHookHealthWarningsRequestSchema,
 					clientJson(
 						ListProviderHookHealthWarningsRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	list_review_threads: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["list_review_threads"],
-	) => {
-		const result = decode(
-			ListReviewThreadDtoSchema,
-			await client.listReviewThreads(
-				fromJson(
-					ListReviewThreadsRequestSchema,
-					clientJson(
-						ListReviewThreadsRequestSchema,
 						JSON.parse(JSON.stringify(args ?? {})),
 						true,
 					),

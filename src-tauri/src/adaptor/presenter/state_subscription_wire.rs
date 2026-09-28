@@ -105,6 +105,18 @@ pub(crate) fn payload(value: &StateValue) -> Result<wire::StatePayload, connectr
                 crate::adaptor::presenter::client::value(value.clone())
                     .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
+            StateValue::ReviewSnapshot(value) => wire::state_payload::Value::ReviewSnapshot(
+                crate::adaptor::presenter::client::value(value.clone())
+                    .map_err(crate::adaptor::presenter::connect::command_error)?,
+            ),
+            StateValue::ReviewFileView(value) => wire::state_payload::Value::ReviewFileView(
+                crate::adaptor::presenter::client::value(value.clone())
+                    .map_err(crate::adaptor::presenter::connect::command_error)?,
+            ),
+            StateValue::ReviewThreads(value) => wire::state_payload::Value::ReviewThreads(
+                crate::adaptor::presenter::client::value(value.clone())
+                    .map_err(crate::adaptor::presenter::connect::command_error)?,
+            ),
 
             StateValue::RepositoryPaths(paths) => {
                 wire::state_payload::Value::RepositoryPaths(wire::Liststring {

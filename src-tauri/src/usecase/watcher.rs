@@ -46,8 +46,14 @@ impl WatcherUsecase {
         self.files.start(path).map_err(UsecaseError::File)
     }
 
-    pub(crate) fn start_files(&self, path: &str) -> Result<u64, UsecaseError> {
-        self.files.start_tree(path).map_err(UsecaseError::File)
+    pub(crate) fn start_files(
+        &self,
+        path: &str,
+        on_change: Arc<dyn Fn() + Send + Sync>,
+    ) -> Result<u64, UsecaseError> {
+        self.files
+            .start_tree(path, on_change)
+            .map_err(UsecaseError::File)
     }
 
     pub(crate) fn start_git_dir(&self, path: &str) -> Result<u64, UsecaseError> {

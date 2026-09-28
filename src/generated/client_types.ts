@@ -423,8 +423,214 @@ export type WorkspaceLayoutStateDto = {
 
 export type WorkspaceCenterTab = "agent" | "editor";
 
-export type InputGetReviewBlobRequest = {
-	reference: string;
+export type ReviewSnapshotDto = {
+	version: number;
+	stale: boolean;
+	loading: boolean;
+	base: DiffBase;
+	files: ListReviewFileEntryDto;
+	stagedFiles: ListFileStatusDto;
+	changedFiles: ListFileStatusDto;
+	diffStats: ListFileDiffStatDto;
+	tree: ListDiffTreeNodeDto;
+	stagedTree: ListDiffTreeNodeDto;
+	changesTree: ListDiffTreeNodeDto;
+	stagedFileCount: number;
+	changesFileCount: number;
+};
+
+export type DiffBase = "branch-base" | "head";
+
+export type ListReviewFileEntryDto = Array<ReviewFileEntryDto>;
+
+export type ReviewFileEntryDto = {
+	fileId: string;
+	path: string;
+	indexStatus: string;
+	worktreeStatus: string;
+	additions: number;
+	deletions: number;
+};
+
+export type ListFileStatusDto = Array<FileStatusDto>;
+
+export type FileStatusDto = {
+	path: string;
+	index_status: GitIndexStatus;
+	worktree_status: GitWorktreeStatus;
+};
+
+export type GitIndexStatus =
+	| "new"
+	| "modified"
+	| "deleted"
+	| "none"
+	| "renamed";
+
+export type GitWorktreeStatus =
+	| "new"
+	| "modified"
+	| "deleted"
+	| "ignored"
+	| "none";
+
+export type ListFileDiffStatDto = Array<FileDiffStatDto>;
+
+export type FileDiffStatDto = {
+	path: string;
+	index_additions: number;
+	index_deletions: number;
+	wt_additions: number;
+	wt_deletions: number;
+};
+
+export type ListDiffTreeNodeDto = Array<DiffTreeNodeDto>;
+
+export type DiffTreeNodeDto = {
+	id: string;
+	name: string;
+	path: string;
+	node_type: DiffTreeNodeType;
+	status: string | null;
+	additions: number | null;
+	deletions: number | null;
+	children: ListDiffTreeNodeDto;
+};
+
+export type DiffTreeNodeType = "file" | "folder";
+
+export type ReviewFileViewDto =
+	| ({ kind: "textDiff" } & ReviewTextDiffDto)
+	| ({ kind: "image" } & ReviewImageDto)
+	| ({ kind: "binary" } & ReviewBinaryDto)
+	| ({ kind: "fallback" } & ReviewFallbackDto);
+
+export type ReviewTextDiffDto = {
+	version: number;
+	stale: boolean;
+	fileId: string;
+	path: string;
+	original: string;
+	modified: string;
+	source: ReviewTextSource;
+	hunks: ListHunkDto;
+	changeGroups: ListChangeGroupDto;
+	limited: boolean;
+	totalLines: number;
+};
+
+export type ReviewTextSource = "diff" | "added" | "deleted";
+
+export type ListHunkDto = Array<HunkDto>;
+
+export type HunkDto = {
+	index: number;
+	hunkId: string;
+	oldStart: number;
+	oldLines: number;
+	newStart: number;
+	newLines: number;
+	lines: Liststring;
+};
+
+export type ListChangeGroupDto = Array<ChangeGroupDto>;
+
+export type ChangeGroupDto = {
+	groupIndex: number;
+	groupId: string;
+	hunkIndex: number;
+	newStart: number;
+	newEnd: number;
+	lineOffsetStart: number;
+	lineOffsetEnd: number;
+	isStaged?: boolean;
+};
+
+export type ReviewImageDto = {
+	version: number;
+	stale: boolean;
+	fileId: string;
+	path: string;
+	originalUrl: string | null;
+	modifiedUrl: string | null;
+	mime: string;
+};
+
+export type ReviewBinaryDto = {
+	version: number;
+	stale: boolean;
+	fileId: string;
+	path: string;
+	originalSize: number | null;
+	modifiedSize: number | null;
+};
+
+export type ReviewFallbackDto = {
+	version: number;
+	stale: boolean;
+	fileId: string;
+	path: string;
+	reason: ReviewLimitReasonDto;
+	totalLines: number | null;
+	sizeBytes: number | null;
+	hunkCount: number | null;
+	limited: true;
+};
+
+export type ReviewLimitReasonDto =
+	| "fileSize"
+	| "lineCount"
+	| "hunkCount"
+	| "tokenization";
+
+export type ListReviewThreadDto = Array<ReviewThreadDto>;
+
+export type ReviewThreadDto = {
+	id: string;
+	worktreeName: string;
+	author: ReviewActorWireDto;
+	target: ReviewTargetWireDto;
+	state: ReviewThreadStateDto;
+	comments: ListReviewCommentDto;
+	resolve: ReviewResolveInfoDto | null;
+	createdAt: number;
+	updatedAt: number;
+	version: number;
+	canResolve: boolean;
+};
+
+export type ReviewActorWireDto = {
+	kind: ReviewActorKindWireDto;
+	backendId: string | null;
+	model: string | null;
+	displayName: string;
+};
+
+export type ReviewActorKindWireDto = "human" | "agent";
+
+export type ReviewTargetWireDto = {
+	filePath: string | null;
+	lineNumber: number | null;
+	endLine: number | null;
+};
+
+export type ReviewThreadStateDto = "open" | "resolved";
+
+export type ListReviewCommentDto = Array<ReviewCommentDto>;
+
+export type ReviewCommentDto = {
+	id: string;
+	threadId: string;
+	author: ReviewActorWireDto;
+	content: string;
+	createdAt: number;
+};
+
+export type ReviewResolveInfoDto = {
+	actor: ReviewActorWireDto;
+	outcome: string;
+	summary: string;
+	resolvedAt: number;
 };
 
 export type InputAbortWorkflowRequest = {
@@ -642,37 +848,6 @@ export type InputGetReleashBaseRequest = {
 	repoPath: string;
 };
 
-export type InputGetReviewFileViewRequest = {
-	input: InputReviewFileViewInput;
-};
-
-export type InputReviewFileViewInput = {
-	worktreePath: string;
-	target: InputReviewTargetInput;
-	section: string;
-	base: string;
-	snapshotVersion?: number | null;
-	viewport?: InputViewportInput | null;
-};
-
-export type InputReviewTargetInput =
-	| { by: "fileId"; value: string }
-	| { by: "path"; value: string };
-
-export type InputViewportInput = {
-	startLine: number;
-	endLine: number;
-};
-
-export type InputGetReviewSnapshotRequest = {
-	input: InputReviewSnapshotInput;
-};
-
-export type InputReviewSnapshotInput = {
-	worktreePath: string;
-	base: string;
-};
-
 export type InputGetTerminalPerformanceSwitchesRequest = Record<string, never>;
 
 export type InputGetWorkflowRequest = {
@@ -727,23 +902,6 @@ export type InputListFacetSummariesRequest = {
 };
 
 export type InputListProviderHookHealthWarningsRequest = Record<string, never>;
-
-export type InputListReviewThreadsRequest = {
-	worktreeName: string;
-	filter?: InputReviewThreadFilterDto | null;
-};
-
-export type InputReviewThreadFilterDto = {
-	file?: string | null;
-	state?: InputReviewThreadStateDto | null;
-	author?: InputAuthorScopeDto | null;
-	unread?: boolean | null;
-	threadId?: InputListstring;
-};
-
-export type InputReviewThreadStateDto = "open" | "resolved";
-
-export type InputAuthorScopeDto = "mine" | "other";
 
 export type InputListWorkflowsRequest = Record<string, never>;
 
@@ -1169,54 +1327,6 @@ export type InputRefreshWorkspacesRequest = {
 
 export type ResultBool = boolean;
 
-export type ReviewThreadDto = {
-	id: string;
-	worktreeName: string;
-	author: ReviewActorWireDto;
-	target: ReviewTargetWireDto;
-	state: ReviewThreadStateDto;
-	comments: ListReviewCommentDto;
-	resolve: ReviewResolveInfoDto | null;
-	createdAt: number;
-	updatedAt: number;
-	version: number;
-	canResolve: boolean;
-};
-
-export type ReviewActorWireDto = {
-	kind: ReviewActorKindWireDto;
-	backendId: string | null;
-	model: string | null;
-	displayName: string;
-};
-
-export type ReviewActorKindWireDto = "human" | "agent";
-
-export type ReviewTargetWireDto = {
-	filePath: string | null;
-	lineNumber: number | null;
-	endLine: number | null;
-};
-
-export type ReviewThreadStateDto = "open" | "resolved";
-
-export type ListReviewCommentDto = Array<ReviewCommentDto>;
-
-export type ReviewCommentDto = {
-	id: string;
-	threadId: string;
-	author: ReviewActorWireDto;
-	content: string;
-	createdAt: number;
-};
-
-export type ReviewResolveInfoDto = {
-	actor: ReviewActorWireDto;
-	outcome: string;
-	summary: string;
-	resolvedAt: number;
-};
-
 export type AgentSessionArchiveResponse = "archived" | "already_archived";
 
 export type ListHiddenRangeDto = Array<HiddenRangeDto>;
@@ -1421,174 +1531,6 @@ export type ProviderAvailabilityItemResponse = {
 	unavailableReason: string | null;
 };
 
-export type ReviewFileViewDto =
-	| ({ kind: "textDiff" } & ReviewTextDiffDto)
-	| ({ kind: "image" } & ReviewImageDto)
-	| ({ kind: "binary" } & ReviewBinaryDto)
-	| ({ kind: "fallback" } & ReviewFallbackDto);
-
-export type ReviewTextDiffDto = {
-	version: number;
-	stale: boolean;
-	fileId: string;
-	path: string;
-	original: string;
-	modified: string;
-	source: ReviewTextSource;
-	hunks: ListHunkDto;
-	changeGroups: ListChangeGroupDto;
-	limited: boolean;
-	viewport: ViewportDto | null;
-	totalLines: number;
-};
-
-export type ReviewTextSource = "diff" | "added" | "deleted";
-
-export type ListHunkDto = Array<HunkDto>;
-
-export type HunkDto = {
-	index: number;
-	hunkId: string;
-	oldStart: number;
-	oldLines: number;
-	newStart: number;
-	newLines: number;
-	lines: Liststring;
-};
-
-export type ListChangeGroupDto = Array<ChangeGroupDto>;
-
-export type ChangeGroupDto = {
-	groupIndex: number;
-	groupId: string;
-	hunkIndex: number;
-	newStart: number;
-	newEnd: number;
-	lineOffsetStart: number;
-	lineOffsetEnd: number;
-	isStaged?: boolean;
-};
-
-export type ViewportDto = {
-	startLine: number;
-	endLine: number;
-};
-
-export type ReviewImageDto = {
-	version: number;
-	stale: boolean;
-	fileId: string;
-	path: string;
-	originalUrl: string | null;
-	modifiedUrl: string | null;
-	mime: string;
-};
-
-export type ReviewBinaryDto = {
-	version: number;
-	stale: boolean;
-	fileId: string;
-	path: string;
-	originalUrl: string | null;
-	modifiedUrl: string | null;
-	originalSize: number | null;
-	modifiedSize: number | null;
-};
-
-export type ReviewFallbackDto = {
-	version: number;
-	stale: boolean;
-	fileId: string;
-	path: string;
-	reason: ReviewLimitReasonDto;
-	totalLines: number | null;
-	sizeBytes: number | null;
-	hunkCount: number | null;
-	limited: true;
-};
-
-export type ReviewLimitReasonDto =
-	| "fileSize"
-	| "lineCount"
-	| "hunkCount"
-	| "tokenization";
-
-export type ReviewSnapshotDto = {
-	version: number;
-	stale: boolean;
-	loading: boolean;
-	base: DiffBase;
-	files: ListReviewFileEntryDto;
-	stagedFiles: ListFileStatusDto;
-	changedFiles: ListFileStatusDto;
-	diffStats: ListFileDiffStatDto;
-	tree: ListDiffTreeNodeDto;
-	stagedTree: ListDiffTreeNodeDto;
-	changesTree: ListDiffTreeNodeDto;
-	stagedFileCount: number;
-	changesFileCount: number;
-};
-
-export type DiffBase = "branch-base" | "head";
-
-export type ListReviewFileEntryDto = Array<ReviewFileEntryDto>;
-
-export type ReviewFileEntryDto = {
-	fileId: string;
-	path: string;
-	indexStatus: string;
-	worktreeStatus: string;
-	additions: number;
-	deletions: number;
-};
-
-export type ListFileStatusDto = Array<FileStatusDto>;
-
-export type FileStatusDto = {
-	path: string;
-	index_status: GitIndexStatus;
-	worktree_status: GitWorktreeStatus;
-};
-
-export type GitIndexStatus =
-	| "new"
-	| "modified"
-	| "deleted"
-	| "none"
-	| "renamed";
-
-export type GitWorktreeStatus =
-	| "new"
-	| "modified"
-	| "deleted"
-	| "ignored"
-	| "none";
-
-export type ListFileDiffStatDto = Array<FileDiffStatDto>;
-
-export type FileDiffStatDto = {
-	path: string;
-	index_additions: number;
-	index_deletions: number;
-	wt_additions: number;
-	wt_deletions: number;
-};
-
-export type ListDiffTreeNodeDto = Array<DiffTreeNodeDto>;
-
-export type DiffTreeNodeDto = {
-	id: string;
-	name: string;
-	path: string;
-	node_type: DiffTreeNodeType;
-	status: string | null;
-	additions: number | null;
-	deletions: number | null;
-	children: ListDiffTreeNodeDto;
-};
-
-export type DiffTreeNodeType = "file" | "folder";
-
 export type TerminalPerformanceSwitchesV1 = {
 	disableOutputFlowControl: boolean;
 	disableTerminalJournal: boolean;
@@ -1776,8 +1718,6 @@ export type ProviderHookHealthWarningResponse = {
 
 export type ProviderHookHealthProviderResponse = "claude" | "codex";
 
-export type ListReviewThreadDto = Array<ReviewThreadDto>;
-
 export type ListWorkflowSummaryDto = Array<WorkflowSummaryDto>;
 
 export type WorkflowSummaryDto = {
@@ -1910,12 +1850,7 @@ export type FileChangeEvent = {
 	kind: string;
 };
 
-export type GitStatusChangedEvent = {
-	repo_path: string;
-};
-
 export interface ClientCommandArgs {
-	get_review_blob: InputGetReviewBlobRequest;
 	abort_workflow: InputAbortWorkflowRequest;
 	add_repo_path: InputAddRepoPathRequest;
 	append_review_comment: InputAppendReviewCommentRequest;
@@ -1956,8 +1891,6 @@ export interface ClientCommandArgs {
 	get_performance_telemetry_enabled: InputGetPerformanceTelemetryEnabledRequest;
 	get_provider_availability: InputGetProviderAvailabilityRequest;
 	get_releash_base: InputGetReleashBaseRequest;
-	get_review_file_view: InputGetReviewFileViewRequest;
-	get_review_snapshot: InputGetReviewSnapshotRequest;
 	get_terminal_performance_switches: InputGetTerminalPerformanceSwitchesRequest;
 	get_workflow: InputGetWorkflowRequest;
 	get_workflow_config: InputGetWorkflowConfigRequest;
@@ -1970,7 +1903,6 @@ export interface ClientCommandArgs {
 	kill_terminal_surface: InputKillTerminalSurfaceRequest;
 	list_facet_summaries: InputListFacetSummariesRequest;
 	list_provider_hook_health_warnings: InputListProviderHookHealthWarningsRequest;
-	list_review_threads: InputListReviewThreadsRequest;
 	list_workflows: InputListWorkflowsRequest;
 	open_agent_session: InputOpenAgentSessionRequest;
 	open_facet_in_editor: InputOpenFacetInEditorRequest;
@@ -2029,9 +1961,6 @@ export interface ClientCommandArgs {
 }
 
 export interface ClientCommands {
-	get_review_blob(
-		args: ClientCommandArgs["get_review_blob"],
-	): Promise<ResultString>;
 	abort_workflow(args: ClientCommandArgs["abort_workflow"]): Promise<void>;
 	add_repo_path(args: ClientCommandArgs["add_repo_path"]): Promise<ResultBool>;
 	append_review_comment(
@@ -2136,12 +2065,6 @@ export interface ClientCommands {
 	get_releash_base(
 		args: ClientCommandArgs["get_releash_base"],
 	): Promise<Nullablestring>;
-	get_review_file_view(
-		args: ClientCommandArgs["get_review_file_view"],
-	): Promise<ReviewFileViewDto>;
-	get_review_snapshot(
-		args: ClientCommandArgs["get_review_snapshot"],
-	): Promise<ReviewSnapshotDto>;
 	get_terminal_performance_switches(
 		args: ClientCommandArgs["get_terminal_performance_switches"],
 	): Promise<TerminalPerformanceSwitchesV1>;
@@ -2172,9 +2095,6 @@ export interface ClientCommands {
 	list_provider_hook_health_warnings(
 		args: ClientCommandArgs["list_provider_hook_health_warnings"],
 	): Promise<ListProviderHookHealthWarningResponse>;
-	list_review_threads(
-		args: ClientCommandArgs["list_review_threads"],
-	): Promise<ListReviewThreadDto>;
 	list_workflows(
 		args: ClientCommandArgs["list_workflows"],
 	): Promise<ListWorkflowSummaryDto>;
@@ -2335,7 +2255,5 @@ export type ClientCommandResults = {
 
 export interface ClientPushPayloads {
 	"file-change": FileChangeEvent;
-	"git-status-changed": GitStatusChangedEvent;
-	"review-comments-changed": ResultString;
 	resync: null;
 }

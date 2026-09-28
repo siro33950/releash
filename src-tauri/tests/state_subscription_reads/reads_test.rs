@@ -14,8 +14,8 @@ use crate::usecase::repo_paths_usecase::{RepoPathsNotifier, RepoPathsUsecase};
 use crate::usecase::repository_state::worktree::{RepositoryStateNotifier, SnapshotNotification};
 use crate::usecase::repository_state::RepositoryStateService;
 use crate::usecase::state_subscription::{
-    StateChangeSource, StateReadFailure, StateSubscriptionOutputRef, StateSubscriptionUsecase,
-    StateValue, SubscriptionTarget, WorkspaceStateReads,
+    StateChangeSource, StateReadFailure, StateSubscriptionOutputRef, StateSubscriptionRead,
+    StateSubscriptionUsecase, StateValue, SubscriptionTarget, WorkspaceStateReads,
 };
 use crate::usecase::workspace_tree::WorkspaceListUsecase;
 use futures_util::StreamExt;
@@ -214,6 +214,7 @@ impl Fixture {
             .unwrap()
             .with_state_publisher(publisher),
         );
+        let repository_state_for_review = repository_state.clone();
         let reads = WorkspaceStateReads {
             failures: Arc::new(
                 crate::adaptor::gateway::failure_records::FailureRecordStore::default(),
@@ -236,6 +237,13 @@ impl Fixture {
                     root.join("workspace"),
                 ),
             ),
+            review: Arc::new(crate::usecase::review_usecase::ReviewUsecase::new(
+                repository_state_for_review,
+                Arc::new(wiring::build_code_usecase()),
+            )),
+            comments: Arc::new(wiring::build_review_comment_usecase()),
+            data_dir: root.to_path_buf(),
+            review_comments_dir: crate::adaptor::gateway::comment::state_dir(&root),
         };
         Self {
             subscriptions: subscriptions.with_reads(Arc::new(reads.clone()), None, vec![]),
@@ -713,4 +721,62 @@ async fn test_失敗購読_node行から実行idの失敗と解消を受け取�
         assert_eq!(failures.records("*")[0].record.active, active);
         assert_eq!(page.requires_attention, Some(active));
     }
+}
+
+#[tokio::test]
+async fn test_状態読取_review対象をworktreeとcomment置き場から読み取る() {
+    use crate::domain::code::{ReviewBase, ReviewSection};
+    use crate::usecase::code_dto::ReviewFileViewDto;
+    use SubscriptionTarget as T;
+    // Given
+    let fixture = Fixture::new();
+    let r = &fixture.reads;
+    let p = &fixture.path;
+    let git = git2::Repository::open(p).unwrap();
+    crate::test_support::git::add_and_commit(&git, "review.txt", "before\n", "tracked");
+    std::fs::write(std::path::Path::new(p).join("review.txt"), "after\n").unwrap();
+    // When
+    let snapshot = r
+        .read(&T::ReviewSnapshot(p.clone(), ReviewBase::Head))
+        .await
+        .unwrap();
+    let view = r
+        .read(&T::ReviewFileView(
+            p.clone(),
+            "review.txt".into(),
+            ReviewSection::Changes,
+            ReviewBase::Head,
+        ))
+        .await
+        .unwrap();
+    let threads = r
+        .read(&T::ReviewThreads("repository".into()))
+        .await
+        .unwrap();
+    // Then
+    assert!(
+        matches!(&snapshot, StateValue::ReviewSnapshot(value) if value.changed_files.iter().any(|file| file.path == "review.txt")),
+        "{snapshot:?}"
+    );
+    assert!(
+        matches!(&view, StateValue::ReviewFileView(ReviewFileViewDto::TextDiff(text)) if text.original == "before\n" && text.modified == "after\n"),
+        "{view:?}"
+    );
+    assert_eq!(threads, StateValue::ReviewThreads(vec![]));
+    assert_eq!(
+        r.review_comments_dir(),
+        crate::adaptor::gateway::comment::state_dir(&r.data_dir)
+            .to_string_lossy()
+            .into_owned()
+    );
+    let error = r
+        .read(&T::ReviewFileView(
+            p.clone(),
+            "missing.txt".into(),
+            ReviewSection::Changes,
+            ReviewBase::Head,
+        ))
+        .await
+        .unwrap_err();
+    assert!(matches!(error.source, StateReadFailure::Code(_)));
 }

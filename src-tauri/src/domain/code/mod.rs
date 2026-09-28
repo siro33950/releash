@@ -16,8 +16,8 @@ pub mod value_objects;
 
 pub use error::CodeError;
 pub use repository::{
-    BranchBaseResolver, DiffComputer, FileContentRepository, ReviewBlobSide, ReviewBlobUrlParams,
-    ReviewBlobUrlProvider, ReviewSideBytes, ReviewSideMetadata, StagingRepository,
+    BranchBaseResolver, DiffComputer, FileContentRepository, ReviewBlobSide, ReviewSideBytes,
+    ReviewSideMetadata, StagingRepository,
 };
 pub use value_objects::{
     ChangeGroup, DiffFileEntry, DiffRange, DiffRangeKind, DiffSide, DiffTreeNode, HiddenRange,

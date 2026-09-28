@@ -17,11 +17,6 @@ impl ClientRepositoryStateNotifier {
 
 impl RepositoryStateNotifier for ClientRepositoryStateNotifier {
     fn snapshot_changed(&self, notification: SnapshotNotification) {
-        for worktree_path in &notification.worktree_paths {
-            self.sink.publish(PushMessage::GitStatusChanged {
-                repo_path: worktree_path.clone(),
-            });
-        }
         self.publisher.invalidate(StateChangeSource::Repository(
             notification.worktree_paths.clone(),
         ));

@@ -8,13 +8,12 @@ use crate::usecase::failure::WorkFailure;
 use crate::usecase::failure::{BusinessFailure, Failure};
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, Write};
+#[cfg(test)]
 use std::path::PathBuf;
 use std::sync::Arc;
 
 #[derive(Serialize, Deserialize)]
 pub(crate) enum Request {
-    WatchStart(PathBuf),
-    WatchPoll,
     RepositoryScan(String),
     CheckpointAppend {
         store: TerminalCheckpointFileStore,
@@ -133,37 +132,11 @@ pub(crate) fn serve(
         writeln!(stdout, "{FRAME_PREFIX}{frame}")?;
         stdout.flush()
     };
-    let mut watcher = None;
     for line in std::io::stdin().lock().lines() {
         let line = line.map_err(|error| error.to_string())?;
         let request: Request = serde_json::from_str(&line).map_err(|error| error.to_string())?;
         let result = (|| -> Result<serde_json::Value, WorkFailure> {
             match request {
-                Request::WatchStart(dir) => {
-                    watcher = Some(
-                        crate::infrastructure::comment::watcher::ReviewCommentsWatcher::start(
-                            dir,
-                            Arc::new(move || {
-                                if let Err(error) = emit("changed") {
-                                    eprintln!("background watch notification failed: {error}");
-                                }
-                            }),
-                        )
-                        .map_err(background_io::failure)?,
-                    );
-                    Ok(serde_json::Value::Null)
-                }
-                Request::WatchPoll => {
-                    watcher
-                        .as_mut()
-                        .ok_or_else(|| WorkFailure {
-                            kind: Failure::Business(BusinessFailure::Other),
-                            message: "watcher is not started".into(),
-                        })?
-                        .poll()
-                        .map_err(background_io::failure)?;
-                    Ok(serde_json::Value::Null)
-                }
                 Request::RepositoryScan(path) => serde_json::to_value(
                     scanner
                         .scan(&path)

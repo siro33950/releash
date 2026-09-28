@@ -369,34 +369,6 @@ impl TryFrom<crate::adaptor::presenter::workflow_wire::ArtifactView> for wire::A
     }
 }
 
-impl TryFrom<wire::AuthorScopeDto> for crate::usecase::comment::dto::AuthorScopeDto {
-    type Error = String;
-    fn try_from(value: wire::AuthorScopeDto) -> Result<Self, String> {
-        Ok(
-            match wire::author_scope_dto::Value::try_from(req(value.value, "value")?)
-                .map_err(|_| "Invalid AuthorScopeDto")?
-            {
-                wire::author_scope_dto::Value::Mine => Self::Mine,
-                wire::author_scope_dto::Value::Other => Self::Other,
-            },
-        )
-    }
-}
-
-impl TryFrom<wire::AuthorScopeDto> for String {
-    type Error = String;
-    fn try_from(value: wire::AuthorScopeDto) -> Result<Self, String> {
-        Ok(
-            match wire::author_scope_dto::Value::try_from(req(value.value, "value")?)
-                .map_err(|_| "Invalid AuthorScopeDto")?
-            {
-                wire::author_scope_dto::Value::Mine => "mine".to_owned(),
-                wire::author_scope_dto::Value::Other => "other".to_owned(),
-            },
-        )
-    }
-}
-
 impl TryFrom<crate::usecase::repository_dto::BranchCardDto> for wire::BranchCardDto {
     type Error = String;
     fn try_from(value: crate::usecase::repository_dto::BranchCardDto) -> Result<Self, String> {
@@ -2808,8 +2780,6 @@ impl TryFrom<crate::usecase::code_dto::ReviewBinaryDto> for wire::ReviewBinaryDt
             stale: Some(cv(value.stale)?),
             file_id: Some(cv(value.file_id)?),
             path: Some(cv(value.path)?),
-            original_url: value.original_url.map(cv).transpose()?,
-            modified_url: value.modified_url.map(cv).transpose()?,
             original_size: value.original_size.map(cv).transpose()?,
             modified_size: value.modified_size.map(cv).transpose()?,
         })
@@ -2878,20 +2848,6 @@ impl TryFrom<crate::usecase::code_dto::ReviewFileViewDto> for wire::ReviewFileVi
                     wire::review_file_view_dto::Variant::Fallback(cv(value)?)
                 }
             }),
-        })
-    }
-}
-
-impl TryFrom<wire::ReviewFileViewInput> for crate::adaptor::presenter::code::ReviewFileViewInput {
-    type Error = String;
-    fn try_from(value: wire::ReviewFileViewInput) -> Result<Self, String> {
-        Ok(Self {
-            worktree_path: cv(req(value.worktree_path, "worktreePath")?)?,
-            target: cv(req(value.target, "target")?)?,
-            section: cv(req(value.section, "section")?)?,
-            base: cv(req(value.base, "base")?)?,
-            snapshot_version: value.snapshot_version.map(cv).transpose()?,
-            viewport: value.viewport.map(cv).transpose()?,
         })
     }
 }
@@ -3003,30 +2959,6 @@ impl TryFrom<crate::usecase::code_dto::ReviewSnapshotDto> for wire::ReviewSnapsh
     }
 }
 
-impl TryFrom<wire::ReviewSnapshotInput> for crate::adaptor::presenter::code::ReviewSnapshotInput {
-    type Error = String;
-    fn try_from(value: wire::ReviewSnapshotInput) -> Result<Self, String> {
-        Ok(Self {
-            worktree_path: cv(req(value.worktree_path, "worktreePath")?)?,
-            base: cv(req(value.base, "base")?)?,
-        })
-    }
-}
-
-impl TryFrom<wire::ReviewTargetInput> for crate::adaptor::presenter::code::ReviewTargetInput {
-    type Error = String;
-    fn try_from(value: wire::ReviewTargetInput) -> Result<Self, String> {
-        Ok(match req(value.variant, "variant")? {
-            wire::review_target_input::Variant::FileId(value) => {
-                crate::adaptor::presenter::code::ReviewTargetInput::FileId(cv(value)?)
-            }
-            wire::review_target_input::Variant::Path(value) => {
-                crate::adaptor::presenter::code::ReviewTargetInput::Path(cv(value)?)
-            }
-        })
-    }
-}
-
 impl TryFrom<crate::usecase::comment::dto::ReviewTargetWireDto> for wire::ReviewTargetWireDto {
     type Error = String;
     fn try_from(value: crate::usecase::comment::dto::ReviewTargetWireDto) -> Result<Self, String> {
@@ -3052,7 +2984,6 @@ impl TryFrom<crate::usecase::code_dto::ReviewTextDiffDto> for wire::ReviewTextDi
             hunks: Some(cv(value.hunks)?),
             change_groups: Some(cv(value.change_groups)?),
             limited: Some(cv(value.limited)?),
-            viewport: value.viewport.map(cv).transpose()?,
             total_lines: Some(cv(value.total_lines)?),
         })
     }
@@ -3113,19 +3044,6 @@ impl TryFrom<crate::usecase::comment::dto::ReviewThreadDto> for wire::ReviewThre
             updated_at: Some(cv(value.updated_at)?),
             version: Some(cv(value.version)?),
             can_resolve: Some(cv(value.can_resolve)?),
-        })
-    }
-}
-
-impl TryFrom<wire::ReviewThreadFilterDto> for crate::usecase::comment::dto::ReviewThreadFilterDto {
-    type Error = String;
-    fn try_from(value: wire::ReviewThreadFilterDto) -> Result<Self, String> {
-        Ok(Self {
-            file: value.file.map(cv).transpose()?,
-            state: value.state.map(cv).transpose()?,
-            author: value.author.map(cv).transpose()?,
-            unread: value.unread.map(cv).transpose()?,
-            thread_id: value.thread_id.map(cv).transpose()?.unwrap_or_default(),
         })
     }
 }
@@ -3577,26 +3495,6 @@ impl TryFrom<wire::Unit> for () {
     fn try_from(value: wire::Unit) -> Result<Self, String> {
         let _ = value;
         Ok(())
-    }
-}
-
-impl TryFrom<crate::usecase::code_dto::ViewportDto> for wire::ViewportDto {
-    type Error = String;
-    fn try_from(value: crate::usecase::code_dto::ViewportDto) -> Result<Self, String> {
-        Ok(Self {
-            start_line: Some(cv(value.start_line)?),
-            end_line: Some(cv(value.end_line)?),
-        })
-    }
-}
-
-impl TryFrom<wire::ViewportInput> for crate::adaptor::presenter::code::ViewportInput {
-    type Error = String;
-    fn try_from(value: wire::ViewportInput) -> Result<Self, String> {
-        Ok(Self {
-            start_line: cv(req(value.start_line, "startLine")?)?,
-            end_line: cv(req(value.end_line, "endLine")?)?,
-        })
     }
 }
 

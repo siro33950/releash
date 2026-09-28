@@ -69,3 +69,49 @@ fn test_失敗購読_ページ指定を検証して往復する() {
         assert!(SubscriptionTarget::from_parts("failures", &["*", offset]).is_err());
     }
 }
+
+#[test]
+fn test_review購読対象_baseとsectionを検証して往復する() {
+    // Given
+    let targets = [
+        SubscriptionTarget::ReviewSnapshot("/作業:repo".into(), ReviewBase::BranchBase),
+        SubscriptionTarget::ReviewFileView(
+            "/repo".into(),
+            "src/a.rs".into(),
+            ReviewSection::Staged,
+            ReviewBase::Head,
+        ),
+        SubscriptionTarget::ReviewThreads("/repo".into()),
+    ];
+    // When / Then
+    for target in targets {
+        assert_eq!(SubscriptionTarget::parse(&target.to_string()), Ok(target));
+    }
+    assert_eq!(
+        SubscriptionTarget::from_parts("review-file-view", &["/repo", "a.rs", "changes", "head"])
+            .unwrap()
+            .parts(),
+        (
+            "review-file-view",
+            vec![
+                "/repo".into(),
+                "a.rs".into(),
+                "changes".into(),
+                "head".into()
+            ]
+        )
+    );
+    for (name, args) in [
+        ("review-snapshot", vec!["/repo", "main"]),
+        ("review-snapshot", vec!["/repo"]),
+        ("review-file-view", vec!["/repo", "a.rs", "all", "head"]),
+        ("review-file-view", vec!["/repo", "a.rs", "changes"]),
+        ("review-threads", vec![]),
+        ("review-threads", vec![""]),
+    ] {
+        assert!(
+            SubscriptionTarget::from_parts(name, &args).is_err(),
+            "{name} {args:?}"
+        );
+    }
+}

@@ -76,28 +76,26 @@ async fn test_履歴監視_未作成のディレクトリの生成を検知し�
     use super::*;
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().canonicalize().unwrap().join("history");
-    let publisher = crate::adaptor::presenter::state_subscription::test_output();
-    let mut changes = crate::test_support::state_subscription::changes(&publisher);
+    let (sender, mut changes) = tokio::sync::mpsc::unbounded_channel();
     let gateway = FileWatcherGateway::new(
         Arc::new(FileWatcherManager::default()),
         Arc::new(crate::infrastructure::push::PushSink::new()),
-    )
-    .with_state_publisher(publisher);
-    let id = gateway.start_tree(path.to_str().unwrap()).unwrap();
-    assert_eq!(
-        changes.try_recv().unwrap(),
-        crate::usecase::state_subscription::StateChangeSource::ProviderHistory
     );
+    let id = gateway
+        .start_tree(
+            path.to_str().unwrap(),
+            Arc::new(move || {
+                let _ = sender.send(());
+            }),
+        )
+        .unwrap();
+    assert!(changes.try_recv().is_ok());
     std::fs::create_dir(&path).unwrap();
     std::fs::write(path.join("session.json"), "{}").unwrap();
-    let change = tokio::time::timeout(std::time::Duration::from_secs(5), changes.recv())
+    tokio::time::timeout(std::time::Duration::from_secs(5), changes.recv())
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(
-        change,
-        crate::usecase::state_subscription::StateChangeSource::ProviderHistory
-    );
     gateway.stop(id).unwrap();
 }
 
