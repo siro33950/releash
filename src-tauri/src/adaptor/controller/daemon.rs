@@ -305,10 +305,13 @@ pub(crate) async fn compose(
         );
     let workflow_usecase = Arc::new(workflow_usecase);
 
-    let notion_usecase = Arc::new(usecase::notion::usecase::NotionUsecase::new(
-        notion_config_repository.clone(),
-        notion_api_gateway.clone(),
-    ));
+    let notion_usecase = Arc::new(
+        usecase::notion::usecase::NotionUsecase::new(
+            notion_config_repository.clone(),
+            notion_api_gateway.clone(),
+        )
+        .with_state_publisher(state_subscriptions.publisher()),
+    );
 
     let repository_state_for_watcher = repository_state.clone();
     let workspace_list = Arc::new(
@@ -407,6 +410,23 @@ pub(crate) async fn compose(
     let reads_data_dir = data_dir.clone();
     let review_usecase_for_reads = app_state.review_usecase.clone();
     let review_comment_usecase_for_reads = review_comment_usecase.clone();
+    let app_config_usecase = Arc::new(
+        usecase::app_config::AppConfigUsecase::new(config_repository.clone())
+            .with_state_publisher(state_subscriptions.publisher()),
+    );
+    let performance_switches = {
+        let telemetry = usecase::telemetry::TelemetryUsecase::new(
+            &adaptor::gateway::telemetry::TelemetryGateway,
+        );
+        usecase::telemetry::PerformanceSwitches {
+            real_app_mode: telemetry.performance_real_app_mode(),
+            terminal: telemetry.terminal_performance_switches(),
+        }
+    };
+    let hook_health_markers = data_dir
+        .join("provider-launches")
+        .to_string_lossy()
+        .into_owned();
     let dependencies = super::client::ClientDependencies {
         application_startup_authority: Some(startup_authority),
         workspace_node_command_usecase: Some(workspace_node_command_usecase),
@@ -420,6 +440,7 @@ pub(crate) async fn compose(
         provider_hook_health_read_usecase: Some(agent_sessions.hook_health_read),
         review_comment_usecase: Some(review_comment_usecase),
         config_repository: Some(config_repository.clone()),
+        app_config_usecase: Some(app_config_usecase.clone()),
         workflow_runtime_usecase: Some(workflow_runtime_usecase.clone()),
         editor_launcher: Arc::new(adaptor::gateway::external_editor::NativeEditorLauncherGateway),
         watcher: Arc::new(usecase::watcher::WatcherUsecase::new(
@@ -482,11 +503,33 @@ pub(crate) async fn compose(
                     data_dir: reads_data_dir,
                     review_comments_dir,
                     workflows_dir: workflows_dir.clone(),
+                    app_config: app_config_usecase,
+                    notion: dependencies
+                        .app_state
+                        .as_ref()
+                        .unwrap()
+                        .notion_usecase
+                        .clone(),
+                    editor_settings: Arc::new(
+                        adaptor::gateway::external_editor::EditorSettingsConfigGateway::new(
+                            config_repository,
+                        ),
+                    ),
+                    editor_scanner: Arc::new(
+                        adaptor::gateway::external_editor::MacInstalledEditorGateway,
+                    ),
+                    performance_switches,
+                    hook_health: dependencies
+                        .provider_hook_health_read_usecase
+                        .clone()
+                        .unwrap(),
+                    startup: dependencies.application_startup_authority.clone().unwrap(),
                 },
             ),
         ),
         Some(dependencies.watcher.clone()),
         history_paths,
+        hook_health_markers,
     );
     client_dispatch.register_dependencies(&dependencies);
     let client_dispatch = Arc::new(client_dispatch);
@@ -505,9 +548,6 @@ pub(crate) async fn compose(
             .with_state_subscriptions(adaptor::controller::api::StateSubscriptionDeps::new(
                 state_subscriptions,
                 state_presenter,
-            ))
-            .with_desktop_settings(usecase::app_config::AppConfigUsecase::new(
-                config_repository,
             ))
             .with_failure_output(failure_output),
         ),

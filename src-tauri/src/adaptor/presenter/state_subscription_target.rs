@@ -98,6 +98,15 @@ impl SubscriptionTarget {
             ("facets", [kind]) => Ok(Self::Facets(facet_kind(kind)?)),
             ("facet", [kind, key]) => Ok(Self::Facet(facet_kind(kind)?, (*key).into())),
             ("diagnostics", []) => Ok(Self::Diagnostics),
+            ("desktop-settings", []) => Ok(Self::DesktopSettings),
+            ("notion-config", [path]) => Ok(Self::NotionConfig((*path).into())),
+            ("provider-availability", []) => Ok(Self::ProviderAvailability),
+            ("external-editor", []) => Ok(Self::ExternalEditor),
+            ("releash-base", [path]) => Ok(Self::ReleashBase((*path).into())),
+            ("workflow-config", []) => Ok(Self::WorkflowConfig),
+            ("performance-switches", []) => Ok(Self::PerformanceSwitches),
+            ("provider-hook-health", []) => Ok(Self::ProviderHookHealth),
+            ("startup-outcome", []) => Ok(Self::StartupOutcome),
             _ => Err(SubscriptionError::UnknownTarget),
         }?;
         Ok(target)
@@ -170,6 +179,15 @@ impl SubscriptionTarget {
             Self::Facets(kind) => ("facets", vec![facet_kind_name(*kind).into()]),
             Self::Facet(kind, key) => ("facet", vec![facet_kind_name(*kind).into(), key.clone()]),
             Self::Diagnostics => ("diagnostics", vec![]),
+            Self::DesktopSettings => ("desktop-settings", vec![]),
+            Self::NotionConfig(p) => ("notion-config", vec![p.clone()]),
+            Self::ProviderAvailability => ("provider-availability", vec![]),
+            Self::ExternalEditor => ("external-editor", vec![]),
+            Self::ReleashBase(p) => ("releash-base", vec![p.clone()]),
+            Self::WorkflowConfig => ("workflow-config", vec![]),
+            Self::PerformanceSwitches => ("performance-switches", vec![]),
+            Self::ProviderHookHealth => ("provider-hook-health", vec![]),
+            Self::StartupOutcome => ("startup-outcome", vec![]),
         }
     }
 }

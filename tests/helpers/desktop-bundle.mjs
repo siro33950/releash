@@ -80,7 +80,7 @@ export async function connect() {
     const call = async (kind, command, args = {}) => {
         const result = await webdriver(`/session/${sessionId}/execute/async`, {
             script: `const [kind, command, args, done] = arguments;
-                const invoke = kind === 'client' ? window.__RELEASH_INVOKE_CLIENT__ : window.__TAURI__.core.invoke;
+                const invoke = kind === 'client' ? window.__RELEASH_INVOKE_CLIENT__ : kind === 'state' ? window.__RELEASH_FIRST_STATE__ : window.__TAURI__.core.invoke;
                 invoke(command, args).then(value => done({ok:true, value}), error => done({ok:false, error:String(error)}));`,
             args: [kind, command, args],
         });
@@ -88,7 +88,7 @@ export async function connect() {
         return result.value;
     };
     await waitFor(async () => (await call("shell", "get_daemon_status")).phase === "ready", "renderer state restoration did not complete");
-    await call("client", "get_app_settings");
+    await call("state", "desktop-settings");
     return { call, execute };
 }
 export function accessibility(pid, script) {

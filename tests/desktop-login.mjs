@@ -64,7 +64,7 @@ if (phase === "prepare") {
     const registered = await client.call("shell", "set_login_item_enabled", { enabled: true });
     assert.equal(registered.requiresApproval, false, "Approve Releash in System Settings before this login acceptance run");
     assert.equal(registered.enabled, true);
-    assert.equal((await client.call("client", "get_app_settings")).auto_launch, true);
+    assert.equal((await client.call("state", "desktop-settings")).autoLaunch, true);
     singleRegistration();
     await quit(bundle, client);
     save("enabled", bundle);
@@ -85,7 +85,7 @@ if (phase === "prepare") {
         const client = await connect();
         assert.equal((await client.call("shell", "get_login_item_status")).enabled, true);
         await client.call("shell", "set_login_item_enabled", { enabled: false });
-        assert.equal((await client.call("client", "get_app_settings")).auto_launch, false);
+        assert.equal((await client.call("state", "desktop-settings")).autoLaunch, false);
         assert.equal((await client.call("shell", "get_login_item_status")).enabled, false);
         await quit(bundle, client);
         save("disabled", bundle);

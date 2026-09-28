@@ -93,6 +93,7 @@ fn test_desktop設定_daemonの設定だけを保持して閉じる操作へ渡�
         start_minimized: true,
         crash_reporting: false,
         performance_telemetry: false,
+        auto_launch: false,
     };
     // When
     super::apply_desktop_settings(app.handle(), settings);
@@ -122,6 +123,7 @@ fn test_desktop設定_クラッシュ送信の無効化と再有効化を再起�
         start_minimized: false,
         crash_reporting: false,
         performance_telemetry: false,
+        auto_launch: false,
     };
     // When / Then
     super::apply_desktop_settings(app.handle(), settings);

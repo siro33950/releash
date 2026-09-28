@@ -1,14 +1,32 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { invokeClient as invoke } from "@/lib/client";
+import { stateSubscriptions } from "@/test/stateSubscriptions";
 import { DEFAULT_SETTINGS } from "@/types/settings";
 import { useSettings } from "./useSettings";
+
+const states = stateSubscriptions();
+vi.mock("@/lib/client", async (importOriginal) => ({
+	...(await importOriginal<typeof import("@/lib/client")>()),
+	invokeClient: vi.fn(),
+	subscribeState: (...args: Parameters<typeof states.subscribeState>) =>
+		states.subscribeState(...args),
+}));
+
+const desktopSettings = (performanceTelemetry: boolean) => ({
+	closeToTray: true,
+	startMinimized: false,
+	crashReporting: true,
+	performanceTelemetry,
+	autoLaunch: false,
+});
 
 describe("useSettings", () => {
 	beforeEach(() => {
 		localStorage.clear();
 		document.documentElement.classList.remove("light", "dark");
 		vi.clearAllMocks();
+		states.clear();
 	});
 
 	afterEach(() => {
@@ -16,15 +34,9 @@ describe("useSettings", () => {
 	});
 
 	it("Rustの状態を表示へ反映するまで読み込み完了にしない", async () => {
-		let complete!: (enabled: boolean) => void;
-		vi.mocked(invoke).mockReturnValueOnce(
-			new Promise<boolean>((resolve) => {
-				complete = resolve;
-			}),
-		);
 		const { result } = renderHook(() => useSettings());
 		expect(result.current.loaded).toBe(false);
-		await act(async () => complete(true));
+		act(() => states.publish("desktop-settings", desktopSettings(true)));
 		expect(result.current.loaded).toBe(true);
 		expect(result.current.settings.performanceTelemetry).toBe(true);
 	});
@@ -35,8 +47,10 @@ describe("useSettings", () => {
 	});
 
 	it("初回取得の失敗理由を返し読み込み完了にしない", async () => {
-		vi.mocked(invoke).mockRejectedValueOnce(new Error("settings unavailable"));
 		const { result } = renderHook(() => useSettings());
+		act(() =>
+			states.fail("desktop-settings", new Error("settings unavailable")),
+		);
 		await waitFor(() =>
 			expect(result.current.loadError).toBe("settings unavailable"),
 		);
@@ -158,12 +172,7 @@ describe("useSettings", () => {
 	});
 
 	it("should initialize performanceTelemetry from Rust without writing localStorage value back", async () => {
-		vi.mocked(invoke).mockImplementation((cmd: string) => {
-			if (cmd === "get_performance_telemetry_enabled") {
-				return Promise.resolve(false);
-			}
-			return Promise.resolve(null);
-		});
+		states.publish("desktop-settings", desktopSettings(false));
 		localStorage.setItem(
 			"releash-settings",
 			JSON.stringify({ performanceTelemetry: true }),
@@ -176,19 +185,13 @@ describe("useSettings", () => {
 		});
 		const stored = JSON.parse(localStorage.getItem("releash-settings") ?? "{}");
 		expect(stored).not.toHaveProperty("performanceTelemetry");
-		expect(invoke).toHaveBeenCalledWith("get_performance_telemetry_enabled");
 		expect(invoke).not.toHaveBeenCalledWith("update_performance_telemetry", {
 			enabled: true,
 		});
 	});
 
 	it("should keep Rust opt-out when localStorage is corrupt", async () => {
-		vi.mocked(invoke).mockImplementation((cmd: string) => {
-			if (cmd === "get_performance_telemetry_enabled") {
-				return Promise.resolve(false);
-			}
-			return Promise.resolve(null);
-		});
+		states.publish("desktop-settings", desktopSettings(false));
 		localStorage.setItem("releash-settings", "not-json");
 
 		const { result } = renderHook(() => useSettings());

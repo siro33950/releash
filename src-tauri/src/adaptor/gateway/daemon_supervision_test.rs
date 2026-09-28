@@ -39,22 +39,68 @@ async fn test_daemon接続_認証と検証が完了した呼び出しで接続�
         },
     )
     .unwrap();
-    let router = axum::Router::new().route(
-        "/releash.client.v1.ClientService/GetServerInfo",
-        axum::routing::post(|headers: axum::http::HeaderMap| async move {
-            assert_eq!(headers["authorization"], "Bearer client-token");
-            assert_eq!(headers["origin"], "tauri://localhost");
-            let info = wire::ServerInfo {
-                launch_id: "launch".into(),
-                release: env!("CARGO_PKG_VERSION").into(),
-                desktop_settings: Some(Default::default()),
-            };
-            (
-                [("content-type", "application/proto")],
-                info.encode_to_vec(),
-            )
-        }),
-    );
+    let router = axum::Router::new()
+        .route(
+            "/releash.client.v1.ClientService/GetServerInfo",
+            axum::routing::post(|headers: axum::http::HeaderMap| async move {
+                assert_eq!(headers["authorization"], "Bearer client-token");
+                assert_eq!(headers["origin"], "tauri://localhost");
+                let info = wire::ServerInfo {
+                    launch_id: "launch".into(),
+                    release: env!("CARGO_PKG_VERSION").into(),
+                };
+                (
+                    [("content-type", "application/proto")],
+                    info.encode_to_vec(),
+                )
+            }),
+        )
+        .route(
+            "/releash.client.v1.ClientService/OpenStateStream",
+            axum::routing::post(|| async move {
+                use wire::state_subscription_event::Event;
+                let settings = wire::DesktopSettings {
+                    close_to_tray: Some(true),
+                    start_minimized: Some(false),
+                    crash_reporting: Some(false),
+                    performance_telemetry: Some(false),
+                    auto_launch: Some(true),
+                };
+                let events = [
+                    wire::StateSubscriptionEvent {
+                        event: Some(Event::Ready(wire::Unit {})),
+                        ..Default::default()
+                    },
+                    wire::StateSubscriptionEvent {
+                        target: "desktop-settings".into(),
+                        event: Some(Event::Snapshot(wire::StatePayload {
+                            value: Some(wire::state_payload::Value::DesktopSettings(settings)),
+                        })),
+                        ..Default::default()
+                    },
+                ];
+                let mut body = Vec::new();
+                for event in events {
+                    let bytes = event.encode_to_vec();
+                    body.push(0);
+                    body.extend((bytes.len() as u32).to_be_bytes());
+                    body.extend(bytes);
+                }
+                body.push(2);
+                body.extend(2u32.to_be_bytes());
+                body.extend(b"{}");
+                ([("content-type", "application/connect+proto")], body)
+            }),
+        )
+        .route(
+            "/releash.client.v1.ClientService/StartStateSubscription",
+            axum::routing::post(|| async {
+                (
+                    [("content-type", "application/proto")],
+                    wire::Unit {}.encode_to_vec(),
+                )
+            }),
+        );
     let peer = tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });
@@ -69,6 +115,7 @@ async fn test_daemon接続_認証と検証が完了した呼び出しで接続�
         .expect("connection must be reported immediately");
     assert_eq!(connection.launch_id, "launch");
     assert_eq!(connection.release, env!("CARGO_PKG_VERSION"));
+    assert!(connection.settings.auto_launch);
     assert!((started_at_ms..=gateway.monotonic_ms()).contains(&connection.connected_at_ms));
     assert!(gateway.connected());
     let cached = gateway.connection().await.unwrap().unwrap();
@@ -184,7 +231,7 @@ fn test_停止応答_acceptedを受理し異なる応答を拒否する() {
     ))
     .is_err());
     assert_eq!(
-        shutdown_response(Command::GetExternalEditor(Default::default())).unwrap_err(),
+        shutdown_response(Command::UpdateExternalEditor(Default::default())).unwrap_err(),
         "Unexpected shutdown response."
     );
 }

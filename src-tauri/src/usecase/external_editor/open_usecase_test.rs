@@ -20,7 +20,7 @@ fn test_editor設定_読書きとgatewayエラーをそのまま返す() {
     let settings = Settings(Mutex::new(Ok("code".into())));
     // When / Then
     assert_eq!(get_external_editor(&settings), Ok("code".into()));
-    update_external_editor(&settings, "zed".into()).unwrap();
+    update_external_editor(&settings, None, "zed".into()).unwrap();
     assert_eq!(get_external_editor(&settings), Ok("zed".into()));
     *settings.0.lock().unwrap() = Err(EditorError::Settings(
         crate::domain::app_config::AppConfigError::Repository("unavailable".into()),
@@ -32,7 +32,7 @@ fn test_editor設定_読書きとgatewayエラーをそのまま返す() {
         ))
     );
     assert_eq!(
-        update_external_editor(&settings, "code".into()),
+        update_external_editor(&settings, None, "code".into()),
         Err(EditorError::Settings(
             crate::domain::app_config::AppConfigError::Repository("unavailable".into())
         ))

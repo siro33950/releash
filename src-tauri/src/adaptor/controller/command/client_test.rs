@@ -12,8 +12,8 @@ async fn test_クライアントdispatch_startup失敗時はusecase実行前に�
     )));
     // When
     let error = dispatch
-        .dispatch(wire::command_request::Command::GetExternalEditor(
-            wire::GetExternalEditorRequest {},
+        .dispatch(wire::command_request::Command::UpdateExternalEditor(
+            Default::default(),
         ))
         .await
         .unwrap_err();
@@ -133,13 +133,6 @@ parity!(
         .await
     )
 );
-parity!(
-    test_agent_session_protoはusecase結果と一致する,
-    app,
-    "get_provider_availability",
-    json!({}),
-    outcome(invoke_tauri(&app, "get_provider_availability", json!({})).await)
-);
 #[test]
 fn test_automation_読み取りrpcは購読への移設後に拒否する() {
     for (command, args) in [
@@ -156,6 +149,10 @@ fn test_automation_読み取りrpcは購読への移設後に拒否する() {
             "{command}"
         );
     }
+}
+#[test]
+fn test_agent_session_読み取りrpcは購読への移設後に拒否する() {
+    assert!(wire::CommandRequest::from_value("get_provider_availability", json!({})).is_err());
 }
 #[test]
 fn test_workspace_tree_読み取りrpcは購読への移設後に拒否する() {
@@ -175,20 +172,17 @@ fn test_workspace_state_読み取りrpcは購読への移設後に拒否する()
     .is_err());
 }
 
-parity!(
-    test_app_config_protoはusecase結果と一致する,
-    app,
-    "get_app_settings",
-    json!({}),
-    outcome(invoke_tauri(&app, "get_app_settings", json!({})).await)
-);
-parity!(
-    test_notion_protoはusecase結果と一致する,
-    app,
-    "get_notion_config",
-    json!({"repoPath":"/missing"}),
-    outcome(invoke_tauri(&app, "get_notion_config", json!({"repoPath": "/missing"})).await)
-);
+#[test]
+fn test_app_config_読み取りrpcは購読への移設後に拒否する() {
+    assert!(wire::CommandRequest::from_value("get_app_settings", json!({})).is_err());
+}
+#[test]
+fn test_notion_読み取りrpcは購読への移設後に拒否する() {
+    assert!(
+        wire::CommandRequest::from_value("get_notion_config", json!({"repoPath":"/missing"}))
+            .is_err()
+    );
+}
 #[test]
 fn test_git_host_読み取りrpcは購読への移設後に拒否する() {
     assert!(
@@ -197,13 +191,10 @@ fn test_git_host_読み取りrpcは購読への移設後に拒否する() {
     );
 }
 
-parity!(
-    test_external_editor_protoはusecase結果と一致する,
-    app,
-    "get_external_editor",
-    json!({}),
-    outcome(invoke_tauri(&app, "get_external_editor", json!({})).await)
-);
+#[test]
+fn test_external_editor_読み取りrpcは購読への移設後に拒否する() {
+    assert!(wire::CommandRequest::from_value("get_external_editor", json!({})).is_err());
+}
 #[tokio::test]
 async fn test_watcher_protoはusecase結果と一致する() {
     use crate::adaptor::controller::api;
@@ -246,40 +237,6 @@ async fn test_watcher_protoはusecase結果と一致する() {
     server.abort();
 }
 #[tokio::test]
-async fn test_application起動結果_protoは本番shell入口の成功と失敗に一致する() {
-    for authority in [
-        ApplicationStartupAuthority::ready(),
-        ApplicationStartupAuthority::failed_kind(
-            crate::usecase::application_startup::StartupFailureKind::StoreValidationFailed,
-        ),
-    ] {
-        // Given
-        let (app, _data_dir, _store) =
-            crate::adaptor::controller::client::workflow::tests::make_read_only_app();
-        app.manage(Arc::new(
-            crate::infrastructure::file_watcher::FileWatcherManager::default(),
-        ));
-        let authority = Arc::new(authority);
-        app.manage(authority.clone());
-        let mut dispatch = ClientCommandDispatch::new(authority);
-        dispatch.register_dependencies(&crate::desktop_test_support::build_client_dependencies(
-            app.handle(),
-        ));
-        // When: the shell must work without a managed client dispatch.
-        let expected = invoke_tauri(&app, "get_application_startup_outcome", json!({})).await;
-        assert!(expected.is_ok());
-        // Then
-        assert_parity(
-            &dispatch,
-            "get_application_startup_outcome",
-            json!({}),
-            expected,
-        )
-        .await;
-    }
-}
-
-#[tokio::test]
 async fn test_telemetry_protoはcommand結果と一致する() {
     // Given
     let _guard = crate::infrastructure::telemetry::metrics::lock_test_telemetry();
@@ -302,7 +259,7 @@ async fn test_クライアントdispatch_proto全commandの登録と引数検証
     // Given
     let (_app, dispatch) = parity_app();
     // When / Then
-    assert_eq!(wire::COMMAND_NAMES.len(), 100);
+    assert_eq!(wire::COMMAND_NAMES.len(), 88);
     assert!(wire::COMMAND_NAMES.contains(&"refresh_workspaces"));
     for removed in [
         "get_terminal_surface",
@@ -333,6 +290,18 @@ async fn test_クライアントdispatch_proto全commandの登録と引数検証
         "list_workspace_workflow_history",
         "get_workflow_execution_state",
         "resolve_active_execution_by_worktree",
+        "get_app_settings",
+        "get_notion_config",
+        "get_provider_availability",
+        "get_external_editor",
+        "detect_editors",
+        "get_releash_base",
+        "get_workflow_config",
+        "get_performance_telemetry_enabled",
+        "get_performance_real_app_mode",
+        "get_terminal_performance_switches",
+        "list_provider_hook_health_warnings",
+        "get_application_startup_outcome",
         "fetch_pr_status",
         "resume_agent_session",
         "confirm_agent_session_archive_delete",
@@ -376,7 +345,6 @@ async fn test_クライアントdispatch_proto全commandの登録と引数検証
     for command in [
         "menu",
         "set_menu_items_enabled",
-        "apply_desktop_settings",
         "get_terminal_stream_endpoint",
         "start_watching",
         "start_git_dir_watching",
@@ -1055,48 +1023,19 @@ pub(crate) async fn invoke_tauri(
     command: &str,
     args: Value,
 ) -> Result<Value, Value> {
-    if ![
-        "get_application_startup_outcome",
-        "quit_after_startup_failure",
-    ]
-    .contains(&command)
-    {
-        let dispatch = app.state::<Arc<ClientCommandDispatch>>();
-        let request = wire::CommandRequest::from_value(command, args)
-            .map_err(|error| json!({"code":"INVALID_REQUEST", "message":error}))?;
-        return dispatch
-            .dispatch(request.command.unwrap())
-            .await
-            .map(|command| {
-                wire::from_value(wire::CommandResult {
-                    command: Some(command),
-                })
-                .unwrap()
+    let dispatch = app.state::<Arc<ClientCommandDispatch>>();
+    let request = wire::CommandRequest::from_value(command, args)
+        .map_err(|error| json!({"code":"INVALID_REQUEST", "message":error}))?;
+    dispatch
+        .dispatch(request.command.unwrap())
+        .await
+        .map(|command| {
+            wire::from_value(wire::CommandResult {
+                command: Some(command),
             })
-            .map_err(|error| wire::from_value(error).unwrap());
-    }
-    let window = tauri::WebviewWindowBuilder::new(
-        app,
-        format!("parity-{}", uuid::Uuid::new_v4()),
-        Default::default(),
-    )
-    .build()
-    .unwrap();
-    let result = tauri::test::get_ipc_response(
-        &window,
-        tauri::webview::InvokeRequest {
-            cmd: command.into(),
-            callback: tauri::ipc::CallbackFn(0),
-            error: tauri::ipc::CallbackFn(1),
-            url: "tauri://localhost".parse().unwrap(),
-            body: tauri::ipc::InvokeBody::Json(args),
-            headers: Default::default(),
-            invoke_key: tauri::test::INVOKE_KEY.to_string(),
-        },
-    )
-    .map(|response| response.deserialize::<Value>().unwrap());
-    window.destroy().unwrap();
-    result
+            .unwrap()
+        })
+        .map_err(|error| wire::from_value(error).unwrap())
 }
 
 #[tokio::test]
@@ -1338,6 +1277,18 @@ fn test_通常要求_connect入口にはsupervisorの受付制御を登録しな
         "list_workspace_workflow_history",
         "get_workflow_execution_state",
         "resolve_active_execution_by_worktree",
+        "get_app_settings",
+        "get_notion_config",
+        "get_provider_availability",
+        "get_external_editor",
+        "detect_editors",
+        "get_releash_base",
+        "get_workflow_config",
+        "get_performance_telemetry_enabled",
+        "get_performance_real_app_mode",
+        "get_terminal_performance_switches",
+        "list_provider_hook_health_warnings",
+        "get_application_startup_outcome",
         "fetch_pr_status",
         "admit_client_command",
         "attach_desktop_client",

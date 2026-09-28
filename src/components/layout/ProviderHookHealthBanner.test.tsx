@@ -1,24 +1,21 @@
 import { act, render, screen } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { invokeClient as invoke } from "@/lib/client";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { stateSubscriptions } from "@/test/stateSubscriptions";
 import { ProviderHookHealthBanner } from "./ProviderHookHealthBanner";
 
-vi.mock("@/lib/client", () => ({ invokeClient: vi.fn() }));
-
-const mockInvoke = vi.mocked(invoke);
+const states = stateSubscriptions();
+vi.mock("@/lib/client", () => ({
+	subscribeState: (...args: Parameters<typeof states.subscribeState>) =>
+		states.subscribeState(...args),
+}));
 
 describe("ProviderHookHealthBanner", () => {
 	beforeEach(() => {
-		vi.useFakeTimers();
-		mockInvoke.mockReset();
+		states.clear();
 	});
 
-	afterEach(() => {
-		vi.useRealTimers();
-	});
-
-	it("Provider別の未解消healthをアプリ全体の警告一つに集約する", async () => {
-		mockInvoke.mockResolvedValueOnce([
+	it("Provider別の未解消healthをアプリ全体の警告一つに集約する", () => {
+		states.publish("provider-hook-health", [
 			{
 				provider: "claude",
 				launchId: "launch-claude",
@@ -32,35 +29,28 @@ describe("ProviderHookHealthBanner", () => {
 		]);
 
 		render(<ProviderHookHealthBanner />);
-		await act(async () => {
-			await Promise.resolve();
-		});
 
 		const warning = screen.getByRole("alert");
 		expect(warning).toHaveTextContent("Claude, Codex");
 		expect(screen.getAllByRole("alert")).toHaveLength(1);
 	});
 
-	it("後続SessionStartでbackend healthが解消されたら警告を消す", async () => {
-		mockInvoke
-			.mockResolvedValueOnce([
+	it("後続SessionStartでbackend healthが解消されたら警告を消す", () => {
+		render(<ProviderHookHealthBanner />);
+		expect(screen.queryByRole("alert")).toBeNull();
+
+		act(() =>
+			states.publish("provider-hook-health", [
 				{
 					provider: "codex",
 					launchId: "launch-codex",
 					reason: "hook_unavailable",
 				},
-			])
-			.mockResolvedValueOnce([]);
-
-		render(<ProviderHookHealthBanner />);
-		await act(async () => {
-			await Promise.resolve();
-		});
+			]),
+		);
 		expect(screen.getByRole("alert")).toBeVisible();
 
-		await act(async () => {
-			await vi.advanceTimersByTimeAsync(5_000);
-		});
+		act(() => states.publish("provider-hook-health", []));
 		expect(screen.queryByRole("alert")).toBeNull();
 	});
 });

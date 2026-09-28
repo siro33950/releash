@@ -152,7 +152,7 @@ impl AgentSessionTuiAcceptanceHost {
     }
 
     fn hook_warnings(&self) -> Result<Vec<AcceptanceHookWarning>, String> {
-        self.invoke("list_provider_hook_health_warnings", serde_json::json!({}))
+        self.read_state("provider-hook-health")
     }
 
     fn hook_health_marker_contents(&self) -> Result<Vec<String>, String> {
@@ -187,7 +187,7 @@ impl AgentSessionTuiAcceptanceHost {
     }
 
     fn provider_availability(&self) -> Result<ProviderAvailabilitySnapshot, String> {
-        self.invoke("get_provider_availability", serde_json::json!({}))
+        self.read_state("provider-availability")
     }
 
     fn update_provider_executable(

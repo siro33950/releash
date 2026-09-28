@@ -6,7 +6,6 @@ import {
 	useState,
 } from "react";
 import { invokeClient as invoke } from "@/lib/client";
-import { getErrorMessage } from "@/lib/errorMessage";
 import {
 	type AppSettings,
 	DEFAULT_SETTINGS,
@@ -14,6 +13,7 @@ import {
 	type DiffMode,
 	type Theme,
 } from "@/types/settings";
+import { useStateSubscriptionResult } from "./useStateSubscription";
 
 const STORAGE_KEY = "releash-settings";
 
@@ -64,33 +64,24 @@ function applyTheme(theme: Theme): void {
 }
 
 export function useSettings() {
-	const [loaded, setLoaded] = useState(false);
-	const [loadError, setLoadError] = useState<string | null>(null);
+	const desktop = useStateSubscriptionResult("desktop-settings");
 	const [settings, setSettings] = useState<AppSettings>(loadSettings);
+	const loaded = desktop.value !== undefined;
+	const loadError = desktop.error;
 
 	useLayoutEffect(() => {
 		applyTheme(settings.theme);
 	}, [settings.theme]);
 
+	const enabled = desktop.value?.performanceTelemetry;
 	useEffect(() => {
-		let cancelled = false;
-		invoke("get_performance_telemetry_enabled")
-			.then((enabled) => {
-				if (cancelled || typeof enabled !== "boolean") return;
-				setLoaded(true);
-				setSettings((prev) =>
-					prev.performanceTelemetry === enabled
-						? prev
-						: { ...prev, performanceTelemetry: enabled },
-				);
-			})
-			.catch((error) => {
-				if (!cancelled) setLoadError(getErrorMessage(error));
-			});
-		return () => {
-			cancelled = true;
-		};
-	}, []);
+		if (enabled === undefined) return;
+		setSettings((prev) =>
+			prev.performanceTelemetry === enabled
+				? prev
+				: { ...prev, performanceTelemetry: enabled },
+		);
+	}, [enabled]);
 
 	useEffect(() => {
 		saveSettings(settings);

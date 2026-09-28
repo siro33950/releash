@@ -20,6 +20,7 @@ impl StateSubscriptionRead for StateSubscriptionReads {
                 | T::Selection(..)
                 | T::NodeDetail(..)
                 | T::SessionNode(..)
+                | T::ProviderHookHealth
         ) {
             return self.0.read(target).await;
         }

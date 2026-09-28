@@ -125,28 +125,29 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
             Arc::new(AcceptanceStateReads(repository.clone())),
             None,
             vec![],
+            String::new(),
         );
         let mut dispatch = ClientCommandDispatch::new(authority.clone());
         dispatch.register_domain(
-            &["get_releash_base"],
+            &["get_language_from_path"],
             Box::new(move |command| {
                 let repository = repository.clone();
                 Box::pin(async move {
-                    let crate::adaptor::presenter::client::command_request::Command::GetReleashBase(
+                    let crate::adaptor::presenter::client::command_request::Command::GetLanguageFromPath(
                         args,
                     ) = command
                     else {
                         unreachable!()
                     };
                     let path =
-                        crate::adaptor::controller::client::required(args.repo_path, "repoPath")?;
+                        crate::adaptor::controller::client::required(args.file_path, "filePath")?;
                     let result =
                         crate::adaptor::controller::client::repository::run_blocking(move || {
                             repository.get_current_branch(&path)
                         })
                         .await;
-                    crate::adaptor::controller::client::outcome(result.map(Some)).map(
-                        crate::adaptor::presenter::client::command_result::Command::GetReleashBase,
+                    crate::adaptor::controller::client::outcome(result).map(
+                        crate::adaptor::presenter::client::command_result::Command::GetLanguageFromPath,
                     )
                 })
             }),
@@ -395,10 +396,10 @@ impl Drop for ClientRecoveryAcceptanceHost {
 pub async fn initialize_desktop_settings<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     use tauri::Manager;
     let settings = app
-        .state::<crate::usecase::client_connection::ClientConnectionUsecase>()
-        .desktop_settings()
-        .await
-        .unwrap();
+        .state::<Arc<crate::usecase::daemon_supervision::DaemonSupervisionUsecase>>()
+        .connection()
+        .unwrap()
+        .settings;
     crate::desktop::apply_desktop_settings(app, settings);
 }
 
@@ -592,9 +593,9 @@ pub async fn read_state(
     stream.message::<rpc::StateSubscriptionEvent>().await?;
     client
         .start_state_subscription(rpc::StartStateSubscriptionRequest {
-            client_id,
+            client_id: client_id.clone(),
             target: name.into(),
-            args,
+            args: args.clone(),
             version: None.into(),
             ..Default::default()
         })
@@ -604,6 +605,15 @@ pub async fn read_state(
         .await?
         .unwrap()
         .to_owned_message();
+    // 毎回の読み取りを最新にするため、snapshot を受け取ったら購読を止めて worker を解放する。
+    client
+        .stop_state_subscription(rpc::StopStateSubscriptionRequest {
+            client_id,
+            target: name.into(),
+            args,
+            ..Default::default()
+        })
+        .await?;
     let Some(rpc::state_subscription_event::Event::Snapshot(payload)) = item.event else {
         panic!("snapshot")
     };
@@ -627,6 +637,17 @@ pub async fn read_state(
         }
         wire::state_payload::Value::Failures(value) => {
             wire::from_message("releash.client.v1.FailureRecords", &value)
+        }
+        wire::state_payload::Value::ProviderAvailability(value) => wire::from_message(
+            "releash.client.v1.ProviderAvailabilitySnapshotResponse",
+            &value,
+        ),
+        wire::state_payload::Value::ProviderHookHealth(value) => wire::from_message(
+            "releash.client.v1.ListProviderHookHealthWarningResponse",
+            &value,
+        ),
+        wire::state_payload::Value::DesktopSettings(value) => {
+            wire::from_message("releash.client.v1.DesktopSettings", &value)
         }
         _ => panic!("Unsupported acceptance state"),
     };

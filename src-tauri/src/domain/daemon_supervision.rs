@@ -99,7 +99,6 @@ pub(crate) enum DesktopAction {
 pub(crate) enum ShellOperation {
     RestoreState,
     Supervision,
-    ApplySettings,
     Normal,
 }
 
@@ -158,13 +157,6 @@ impl DaemonSupervision {
     }
     pub fn connection_pending(&self) -> bool {
         !matches!(self.phase, Phase::Failed | Phase::Stopped)
-    }
-    pub fn connection_admitted(&self) -> bool {
-        matches!(self.phase, Phase::Ready | Phase::Restoring)
-            || self.restoration_failed()
-            || matches!(self.phase, Phase::Stopping | Phase::Failed)
-                && self.stop.is_some()
-                && self.ready_since.is_some()
     }
     pub fn retry_available(&self) -> bool {
         self.phase == Phase::Failed && self.stop.is_none() && !self.termination_unconfirmed
@@ -502,8 +494,7 @@ impl DaemonSupervision {
     pub fn shell_command_admitted(&self, operation: ShellOperation, connected: bool) -> bool {
         connected
             && (self.phase == Phase::Ready
-                || self.phase == Phase::Restoring && operation == ShellOperation::RestoreState
-                || self.connection_admitted() && operation == ShellOperation::ApplySettings)
+                || self.phase == Phase::Restoring && operation == ShellOperation::RestoreState)
             || operation == ShellOperation::Supervision
     }
 }

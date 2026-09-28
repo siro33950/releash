@@ -2,7 +2,7 @@ import { invoke as invokeTauri } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invokeClient as invoke } from "@/lib/client";
 import { getErrorMessage } from "@/lib/errorMessage";
-import { useClientRefresh } from "./useClientRefresh";
+import { useStateSubscriptionResult } from "./useStateSubscription";
 
 export interface BackgroundConfig {
 	close_to_tray: boolean;
@@ -23,53 +23,53 @@ const DEFAULT_CONFIG: BackgroundConfig = {
 };
 
 export function useBackgroundConfig() {
-	const clientRefresh = useClientRefresh();
+	const desktop = useStateSubscriptionResult("desktop-settings");
 	const [config, setConfig] = useState<BackgroundConfig>(DEFAULT_CONFIG);
 	const [draft, setDraft] = useState<BackgroundConfig>(DEFAULT_CONFIG);
 	const isDirty = JSON.stringify(draft) !== JSON.stringify(config);
 	const dirty = useRef(isDirty);
 	dirty.current = isDirty;
 	const [loginItem, setLoginItem] = useState<LoginItemStatus | null>(null);
+	const [loginError, setLoginError] = useState<string | null>(null);
 	const [cliMessage, setCliMessage] = useState<string | null>(null);
-	const [loading, setLoading] = useState(true);
 	const [saving, setSaving] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 
 	useEffect(() => {
-		setLoading(true);
-		setError(null);
-
-		const settingsRequest = invoke("get_app_settings");
-		Promise.all([
-			settingsRequest,
-			invokeTauri<LoginItemStatus>("get_login_item_status"),
-		])
-			.then(([settings, loginStatus]) => {
-				if (clientRefresh.aborted) return;
-				setLoginItem(loginStatus);
-				const cfg: BackgroundConfig = {
-					close_to_tray: settings.close_to_tray,
-					auto_launch: loginStatus.enabled,
-					start_minimized: settings.start_minimized,
-				};
-				if (!dirty.current) {
-					setConfig(cfg);
-					setDraft(cfg);
-				}
+		let active = true;
+		invokeTauri<LoginItemStatus>("get_login_item_status")
+			.then((status) => {
+				if (active) setLoginItem(status);
 			})
 			.catch((e) => {
-				if (!clientRefresh.aborted) setError(getErrorMessage(e));
-			})
-			.finally(() => {
-				if (!clientRefresh.aborted) setLoading(false);
+				if (active) setLoginError(getErrorMessage(e));
 			});
-	}, [clientRefresh]);
+		return () => {
+			active = false;
+		};
+	}, []);
+
+	const settings = desktop.value;
+	useEffect(() => {
+		if (!settings || !loginItem || dirty.current) return;
+		const cfg: BackgroundConfig = {
+			close_to_tray: settings.closeToTray,
+			auto_launch: loginItem.enabled,
+			start_minimized: settings.startMinimized,
+		};
+		setConfig(cfg);
+		setDraft(cfg);
+	}, [settings, loginItem]);
+
+	const loading = !settings || !loginItem;
+	const loadError = desktop.error ?? loginError;
 
 	const save = useCallback(async () => {
 		setSaving(true);
 		setError(null);
 		try {
-			if (!loginItem) throw new Error("Background settings are not loaded.");
+			if (!loginItem || !settings)
+				throw new Error("Background settings are not loaded.");
 			let actualLogin = loginItem;
 			if (draft.auto_launch !== config.auto_launch) {
 				const next = await invokeTauri<LoginItemStatus>(
@@ -101,7 +101,7 @@ export function useBackgroundConfig() {
 		} finally {
 			setSaving(false);
 		}
-	}, [draft, config, loginItem]);
+	}, [draft, config, loginItem, settings]);
 
 	const openLoginSettings = async () => {
 		try {
@@ -126,9 +126,9 @@ export function useBackgroundConfig() {
 		draft,
 		setDraft,
 		isDirty,
-		loading,
+		loading: loading && !loadError,
 		saving,
-		error,
+		error: error ?? loadError,
 		save,
 	};
 }

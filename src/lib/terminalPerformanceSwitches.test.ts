@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { invokeClient as invoke } from "@/lib/client";
+import { firstState } from "@/lib/client";
 import {
 	DEFAULT_TERMINAL_PERFORMANCE_SWITCHES,
 	getTerminalPerformanceSwitches,
@@ -7,23 +7,26 @@ import {
 } from "./terminalPerformanceSwitches";
 
 vi.mock("@/lib/client", () => ({
-	invokeClient: vi.fn(),
+	firstState: vi.fn(),
 }));
 
-const invokeMock = vi.mocked(invoke);
+const firstStateMock = vi.mocked(firstState);
 
 describe("getTerminalPerformanceSwitches", () => {
 	beforeEach(() => {
-		invokeMock.mockReset();
+		firstStateMock.mockReset();
 		resetTerminalPerformanceSwitchesCache();
 	});
 
-	it("backendのswitch値を返しresultをcacheする", async () => {
-		invokeMock.mockResolvedValue({
-			disableOutputFlowControl: true,
-			disableTerminalJournal: false,
-			disableRendererWriteSerialization: true,
-			disableWebglRenderer: false,
+	it("購読の最初の値からterminalのswitch値を返しresultをcacheする", async () => {
+		firstStateMock.mockResolvedValue({
+			realAppMode: false,
+			terminal: {
+				disableOutputFlowControl: true,
+				disableTerminalJournal: false,
+				disableRendererWriteSerialization: true,
+				disableWebglRenderer: false,
+			},
 		});
 
 		const first = await getTerminalPerformanceSwitches();
@@ -32,29 +35,30 @@ describe("getTerminalPerformanceSwitches", () => {
 		expect(first.disableOutputFlowControl).toBe(true);
 		expect(first.disableRendererWriteSerialization).toBe(true);
 		expect(second).toBe(first);
-		expect(invokeMock).toHaveBeenCalledTimes(1);
-		expect(invokeMock).toHaveBeenCalledWith(
-			"get_terminal_performance_switches",
-		);
+		expect(firstStateMock).toHaveBeenCalledTimes(1);
+		expect(firstStateMock).toHaveBeenCalledWith("performance-switches");
 	});
 
-	it("invoke失敗時はdefaultへfallbackしcacheを破棄して次回再試行する", async () => {
+	it("取得失敗時はdefaultへfallbackしcacheを破棄して次回再試行する", async () => {
 		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-		invokeMock.mockRejectedValueOnce(new Error("unavailable"));
+		firstStateMock.mockRejectedValueOnce(new Error("unavailable"));
 
 		const switches = await getTerminalPerformanceSwitches();
 
 		expect(switches).toEqual(DEFAULT_TERMINAL_PERFORMANCE_SWITCHES);
 		expect(warnSpy).toHaveBeenCalledTimes(1);
 
-		invokeMock.mockResolvedValueOnce({
-			...DEFAULT_TERMINAL_PERFORMANCE_SWITCHES,
-			disableWebglRenderer: true,
+		firstStateMock.mockResolvedValueOnce({
+			realAppMode: false,
+			terminal: {
+				...DEFAULT_TERMINAL_PERFORMANCE_SWITCHES,
+				disableWebglRenderer: true,
+			},
 		});
 		const retried = await getTerminalPerformanceSwitches();
 
 		expect(retried.disableWebglRenderer).toBe(true);
-		expect(invokeMock).toHaveBeenCalledTimes(2);
+		expect(firstStateMock).toHaveBeenCalledTimes(2);
 		warnSpy.mockRestore();
 	});
 });

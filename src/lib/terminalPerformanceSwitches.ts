@@ -1,4 +1,4 @@
-import { createCachedInvoke } from "./cachedInvoke";
+import { firstState } from "@/lib/client";
 
 export interface TerminalPerformanceSwitches {
 	disableOutputFlowControl: boolean;
@@ -15,21 +15,22 @@ export const DEFAULT_TERMINAL_PERFORMANCE_SWITCHES: TerminalPerformanceSwitches 
 		disableWebglRenderer: false,
 	};
 
-const cachedSwitches = createCachedInvoke<
-	"get_terminal_performance_switches",
-	TerminalPerformanceSwitches
->({
-	command: "get_terminal_performance_switches",
-	normalize: (switches) => switches ?? DEFAULT_TERMINAL_PERFORMANCE_SWITCHES,
-	fallback: DEFAULT_TERMINAL_PERFORMANCE_SWITCHES,
-	failureMessage:
-		"Failed to load terminal performance switches, using defaults:",
-});
+let cached: Promise<TerminalPerformanceSwitches> | null = null;
 
 export function getTerminalPerformanceSwitches(): Promise<TerminalPerformanceSwitches> {
-	return cachedSwitches.get();
+	cached ??= firstState("performance-switches")
+		.then((switches) => switches.terminal)
+		.catch((error) => {
+			console.warn(
+				"Failed to load terminal performance switches, using defaults:",
+				error,
+			);
+			cached = null;
+			return DEFAULT_TERMINAL_PERFORMANCE_SWITCHES;
+		});
+	return cached;
 }
 
 export function resetTerminalPerformanceSwitchesCache(): void {
-	cachedSwitches.reset();
+	cached = null;
 }

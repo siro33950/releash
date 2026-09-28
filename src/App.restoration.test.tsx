@@ -10,6 +10,13 @@ import type { AppSettings } from "@/types/settings";
 import App from "./App";
 
 const states = stateSubscriptions();
+const desktopSettings = {
+	closeToTray: true,
+	startMinimized: false,
+	crashReporting: true,
+	performanceTelemetry: false,
+	autoLaunch: false,
+};
 vi.mock("@/lib/client", async (importOriginal) => ({
 	...(await importOriginal<typeof import("@/lib/client")>()),
 	invokeClient: vi.fn(),
@@ -99,6 +106,8 @@ beforeEach(() => {
 	states.clear();
 	states.publish("repository-paths", []);
 	states.publish("workspaces", workspaceListSnapshot());
+	states.publish("startup-outcome", { type: "ready" });
+	states.publish("desktop-settings", desktopSettings);
 	status = {
 		phase: "restoring",
 		connectionGeneration: 1,
@@ -107,7 +116,6 @@ beforeEach(() => {
 		reason: null,
 	};
 	vi.mocked(invoke).mockImplementation(async (command, args) => {
-		if (command === "get_application_startup_outcome") return { type: "ready" };
 		if (command === "get_daemon_status") return { ...status };
 		if (command === "fail_desktop_restoration") {
 			status = {
@@ -137,20 +145,15 @@ afterEach(() => vi.useRealTimers());
 
 it("設定の初回失敗後は次の接続の状態を反映してから操作を再開する", async () => {
 	states.clear();
-	let resolveSettings!: (value: boolean) => void;
-	const settings = new Promise<boolean>((resolve) => {
-		resolveSettings = resolve;
-	});
-	vi.mocked(invokeClient).mockImplementation((command) => {
-		if (command === "get_performance_telemetry_enabled")
-			return status.connectionGeneration === 1
-				? Promise.reject(new Error("temporary read failure"))
-				: settings;
-		return Promise.resolve(undefined);
-	});
+	states.publish("startup-outcome", { type: "ready" });
+	vi.mocked(invokeClient).mockResolvedValue(undefined as never);
 	await act(async () => {
 		render(<App />);
 	});
+	await act(() => vi.advanceTimersByTimeAsync(250));
+	await act(async () =>
+		states.fail("desktop-settings", new Error("temporary read failure")),
+	);
 	await act(() => vi.advanceTimersByTimeAsync(250));
 	expect(screen.getByRole("status")).toHaveTextContent(
 		"temporary read failure",
@@ -160,7 +163,7 @@ it("設定の初回失敗後は次の接続の状態を反映してから操作�
 		fireEvent.click(screen.getByRole("button", { name: "Retry" }));
 	});
 	await act(() => vi.advanceTimersByTimeAsync(250));
-	await act(async () => resolveSettings(false));
+	await act(async () => states.publish("desktop-settings", desktopSettings));
 	expect(completeClientRestoration).not.toHaveBeenCalled();
 	await act(async () => states.publish("workspaces", workspaceListSnapshot()));
 	await act(() => vi.advanceTimersByTimeAsync(250));

@@ -1,6 +1,6 @@
 use super::*;
 use crate::domain::app_config::repository::ConfigUpdate;
-use crate::domain::app_config::value_objects::{AppConfigDocument, TelemetryConfig};
+use crate::domain::app_config::value_objects::{AppConfigDocument, AppSettings, TelemetryConfig};
 use crate::domain::app_config::AppConfigError;
 
 struct Config {

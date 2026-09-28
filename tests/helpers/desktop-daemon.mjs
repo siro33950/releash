@@ -52,54 +52,51 @@ const bundle = await build({
     stdin: { contents: 'export * from "./src/lib/client.ts";', resolveDir: process.cwd() },
     bundle: true, platform: "node", format: "esm", write: false,
 });
-const {getClient, firstState, invokeClient, onClientRefresh, completeClientRestoration, refreshClient} = await import(`data:text/javascript;base64,${Buffer.from(`${bundle.outputFiles[0].text}\n//# sourceURL=releash-client-fixture.mjs`).toString("base64")}`);
+const {firstState, subscribeState, invokeClient, completeClientRestoration, refreshClient} = await import(`data:text/javascript;base64,${Buffer.from(`${bundle.outputFiles[0].text}\n//# sourceURL=releash-client-fixture.mjs`).toString("base64")}`);
 async function waitFor(predicate) {
     const deadline = Date.now() + 15_000;
     while (!(await predicate())) { assert.ok(Date.now() < deadline, "desktop recovery deadline"); await setTimeout(10); }
 }
-let refreshedSettings;
+let refreshedEditor;
 const restore = async () => {
-    await Promise.all([firstState("workspaces"), invokeClient("get_performance_telemetry_enabled")]);
+    await Promise.all([firstState("workspaces"), firstState("desktop-settings")]);
     await completeClientRestoration((await invokeHost("get_daemon_status")).connectionGeneration);
     await waitFor(async () => (await invokeHost("get_daemon_status")).phase === "ready");
 };
-const stopRefresh = onClientRefresh(() => {
-    void invokeClient("get_app_settings").then(settings => { refreshedSettings = settings; }).catch(error => { console.error(error instanceof Error ? error.message : error); });
-});
+const stopRefresh = subscribeState("external-editor", editor => { refreshedEditor = editor; }, error => { console.error(error instanceof Error ? error.message : error); });
 try {
     await restore();
     if (restored) {
-        const settings = await invokeClient("get_app_settings");
-        assert.equal(settings.external_editor, "desktop-recovery");
+        assert.equal((await firstState("external-editor")).selected, "desktop-recovery");
         assert.equal(originalSends, 0);
         await invokeClient("update_external_editor", {editor: "confirmed-after-restart"});
-        assert.equal((await invokeClient("get_app_settings")).external_editor, "confirmed-after-restart");
+        await waitFor(() => refreshedEditor?.selected === "confirmed-after-restart");
     } else {
         // Given
-        const initial = await invokeClient("get_app_settings");
-        assert.equal(initial.external_editor, "");
-        assert.equal(initial.close_to_tray, false);
-        assert.equal(initial.start_minimized, true);
+        const initial = await firstState("desktop-settings");
+        assert.equal((await firstState("external-editor")).selected, "");
+        assert.equal(initial.closeToTray, false);
+        assert.equal(initial.startMinimized, true);
         assert.equal(generations.size, 1);
         await invokeClient("update_app_settings", { app: { close_to_tray: true, start_minimized: false } });
         await invokeClient("update_app_settings", { app: { close_to_tray: false, start_minimized: true } });
         await invokeClient("update_crash_reporting", { enabled: false });
-        assert.equal((await (await getClient()).getServerInfo({})).desktopSettings.crashReporting, false);
+        assert.equal((await firstState("desktop-settings")).crashReporting, false);
         await invokeClient("update_crash_reporting", { enabled: true });
-        assert.equal((await (await getClient()).getServerInfo({})).desktopSettings.crashReporting, true);
+        assert.equal((await firstState("desktop-settings")).crashReporting, true);
         await invokeHost("damage_settings");
-        const cached = await invokeClient("get_app_settings");
-        assert.equal(cached.close_to_tray, false);
-        assert.equal(cached.start_minimized, true);
+        const cached = await firstState("desktop-settings");
+        assert.equal(cached.closeToTray, false);
+        assert.equal(cached.startMinimized, true);
         await assert.rejects(invokeClient("update_external_editor", { editor: "desktop-recovery" }));
         await waitFor(() => dropped);
         // When
         await invokeHost("restart");
-        refreshedSettings = undefined;
+        refreshedEditor = undefined;
         refreshClient();
-        await waitFor(() => generations.size === 2 && refreshedSettings);
+        await waitFor(() => generations.size === 2 && refreshedEditor);
         await restore();
-        assert.equal(refreshedSettings.external_editor, "desktop-recovery");
+        assert.equal(refreshedEditor.selected, "desktop-recovery");
         assert.equal(originalSends, 1);
     }
 } finally {

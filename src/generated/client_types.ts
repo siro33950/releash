@@ -867,6 +867,118 @@ export type FacetUsageEntry = {
 	slot: string;
 };
 
+export type DesktopSettings = {
+	closeToTray: boolean;
+	startMinimized: boolean;
+	crashReporting: boolean;
+	performanceTelemetry: boolean;
+	autoLaunch: boolean;
+};
+
+export type NullableNotionRepoConfigView = NotionRepoConfigView | null;
+
+export type NotionRepoConfigView = {
+	api_token: string;
+	database_id: string;
+	property_mapping: PropertyMappingView;
+};
+
+export type PropertyMappingView = {
+	title: string;
+	labels: ListLabelPropertyView;
+	branch_name: string;
+	branch_prefix: string;
+};
+
+export type ListLabelPropertyView = Array<LabelPropertyView>;
+
+export type LabelPropertyView = {
+	name: string;
+	property_type: string;
+};
+
+export type ProviderAvailabilitySnapshotResponse = {
+	providers: ListProviderAvailabilityItemResponse;
+};
+
+export type ListProviderAvailabilityItemResponse =
+	Array<ProviderAvailabilityItemResponse>;
+
+export type ProviderAvailabilityItemResponse = {
+	provider: string;
+	displayName: string;
+	defaultExecutable: string;
+	configuredExecutable: string | null;
+	effectiveExecutable: string;
+	available: boolean;
+	resolvedExecutable: string | null;
+	unavailableReason: string | null;
+};
+
+export type ExternalEditorState = {
+	selected: string;
+	editors: ListEditorInfoDto;
+};
+
+export type ListEditorInfoDto = Array<EditorInfoDto>;
+
+export type EditorInfoDto = {
+	name: string;
+	path: string;
+};
+
+export type WorkflowSection = {
+	approval_auto_approve: boolean;
+};
+
+export type PerformanceSwitchesV1 = {
+	realAppMode: boolean;
+	terminal: TerminalPerformanceSwitchesV1;
+};
+
+export type TerminalPerformanceSwitchesV1 = {
+	disableOutputFlowControl: boolean;
+	disableTerminalJournal: boolean;
+	disableRendererWriteSerialization: boolean;
+	disableWebglRenderer: boolean;
+};
+
+export type ListProviderHookHealthWarningResponse =
+	Array<ProviderHookHealthWarningResponse>;
+
+export type ProviderHookHealthWarningResponse = {
+	provider: ProviderHookHealthProviderResponse;
+	launchId: string;
+	reason: string;
+};
+
+export type ProviderHookHealthProviderResponse = "claude" | "codex";
+
+export type ApplicationStartupOutcomeDtoV1 =
+	| { type: "ready" }
+	| ({ type: "failed" } & ApplicationStartupOutcomeDtoV1Failed);
+
+export type ApplicationStartupOutcomeDtoV1Failed = {
+	kind: StartupFailureKindDtoV1;
+	safeDescription: string;
+	correlationId: string;
+	retryOnNextLaunch: boolean;
+	actions: ListStartupFailureActionDtoV1;
+};
+
+export type StartupFailureKindDtoV1 =
+	| "store_in_use"
+	| "storage_unavailable"
+	| "unsupported_runtime"
+	| "unsupported_store_version"
+	| "initialization_state_invalid"
+	| "store_validation_failed"
+	| "schema_evolution_failed";
+
+export type ListStartupFailureActionDtoV1 = Array<StartupFailureActionDtoV1>;
+
+export type StartupFailureActionDtoV1 = "quit";
+
 export type InputAbortWorkflowRequest = {
 	executionId: string;
 };
@@ -984,8 +1096,6 @@ export type InputDeleteWorkflowRequest = {
 	name: string;
 };
 
-export type InputDetectEditorsRequest = Record<string, never>;
-
 export type InputDuplicateFacetRequest = {
 	kind: string;
 	sourceKey: string;
@@ -1004,12 +1114,6 @@ export type InputFetchIssuesRequest = {
 export type InputFetchNotionLabelOptionsRequest = {
 	repoPath: string;
 };
-
-export type InputGetAppSettingsRequest = Record<string, never>;
-
-export type InputGetApplicationStartupOutcomeRequest = Record<string, never>;
-
-export type InputGetExternalEditorRequest = Record<string, never>;
 
 export type InputGetFileNavigationRequest = {
 	tree: InputListDiffTreeNodeInput;
@@ -1035,10 +1139,6 @@ export type InputGetLanguageFromPathRequest = {
 	filePath: string;
 };
 
-export type InputGetNotionConfigRequest = {
-	repoPath: string;
-};
-
 export type InputGetOrSpawnTerminalSurfaceRequest = {
 	rows: number;
 	cols: number;
@@ -1060,20 +1160,6 @@ export type InputTerminalSurfaceOwnerV1Session = {
 	workspacePath: string;
 	sessionId: string;
 };
-
-export type InputGetPerformanceRealAppModeRequest = Record<string, never>;
-
-export type InputGetPerformanceTelemetryEnabledRequest = Record<string, never>;
-
-export type InputGetProviderAvailabilityRequest = Record<string, never>;
-
-export type InputGetReleashBaseRequest = {
-	repoPath: string;
-};
-
-export type InputGetTerminalPerformanceSwitchesRequest = Record<string, never>;
-
-export type InputGetWorkflowConfigRequest = Record<string, never>;
 
 export type InputGitCreateBranchRequest = {
 	repoPath: string;
@@ -1111,8 +1197,6 @@ export type InputGitUnstageReviewGroupRequest = {
 export type InputKillTerminalSurfaceRequest = {
 	owner: InputTerminalSurfaceOwnerV1;
 };
-
-export type InputListProviderHookHealthWarningsRequest = Record<string, never>;
 
 export type InputOpenAgentSessionRequest = {
 	agentSessionId: string;
@@ -1582,13 +1666,6 @@ export type VisibleBlockDto = {
 	deletedContent?: string;
 };
 
-export type ListEditorInfoDto = Array<EditorInfoDto>;
-
-export type EditorInfoDto = {
-	name: string;
-	path: string;
-};
-
 export type ListNotionLabelOptionView = Array<NotionLabelOptionView>;
 
 export type NotionLabelOptionView = {
@@ -1598,40 +1675,6 @@ export type NotionLabelOptionView = {
 	option_ids: Liststring;
 };
 
-export type AppSection = {
-	close_to_tray: boolean;
-	auto_launch: boolean;
-	start_minimized: boolean;
-	last_root_path: string;
-	last_repo_paths: Liststring;
-	external_editor: string;
-};
-
-export type ApplicationStartupOutcomeDtoV1 =
-	| { type: "ready" }
-	| ({ type: "failed" } & ApplicationStartupOutcomeDtoV1Failed);
-
-export type ApplicationStartupOutcomeDtoV1Failed = {
-	kind: StartupFailureKindDtoV1;
-	safeDescription: string;
-	correlationId: string;
-	retryOnNextLaunch: boolean;
-	actions: ListStartupFailureActionDtoV1;
-};
-
-export type StartupFailureKindDtoV1 =
-	| "store_in_use"
-	| "storage_unavailable"
-	| "unsupported_runtime"
-	| "unsupported_store_version"
-	| "initialization_state_invalid"
-	| "store_validation_failed"
-	| "schema_evolution_failed";
-
-export type ListStartupFailureActionDtoV1 = Array<StartupFailureActionDtoV1>;
-
-export type StartupFailureActionDtoV1 = "quit";
-
 export type FileNavigationResultDto = {
 	current_index: number;
 	total: number;
@@ -1639,71 +1682,9 @@ export type FileNavigationResultDto = {
 	next_file: string | null;
 };
 
-export type NullableNotionRepoConfigView = NotionRepoConfigView | null;
-
-export type NotionRepoConfigView = {
-	api_token: string;
-	database_id: string;
-	property_mapping: PropertyMappingView;
-};
-
-export type PropertyMappingView = {
-	title: string;
-	labels: ListLabelPropertyView;
-	branch_name: string;
-	branch_prefix: string;
-};
-
-export type ListLabelPropertyView = Array<LabelPropertyView>;
-
-export type LabelPropertyView = {
-	name: string;
-	property_type: string;
-};
-
 export type GetOrSpawnTerminalV1 = {
 	session_key: string;
 };
-
-export type ProviderAvailabilitySnapshotResponse = {
-	providers: ListProviderAvailabilityItemResponse;
-};
-
-export type ListProviderAvailabilityItemResponse =
-	Array<ProviderAvailabilityItemResponse>;
-
-export type ProviderAvailabilityItemResponse = {
-	provider: string;
-	displayName: string;
-	defaultExecutable: string;
-	configuredExecutable: string | null;
-	effectiveExecutable: string;
-	available: boolean;
-	resolvedExecutable: string | null;
-	unavailableReason: string | null;
-};
-
-export type TerminalPerformanceSwitchesV1 = {
-	disableOutputFlowControl: boolean;
-	disableTerminalJournal: boolean;
-	disableRendererWriteSerialization: boolean;
-	disableWebglRenderer: boolean;
-};
-
-export type WorkflowSection = {
-	approval_auto_approve: boolean;
-};
-
-export type ListProviderHookHealthWarningResponse =
-	Array<ProviderHookHealthWarningResponse>;
-
-export type ProviderHookHealthWarningResponse = {
-	provider: ProviderHookHealthProviderResponse;
-	launchId: string;
-	reason: string;
-};
-
-export type ProviderHookHealthProviderResponse = "claude" | "codex";
 
 export type AgentSessionOpenResponse =
 	| "attached"
@@ -1849,31 +1830,19 @@ export interface ClientCommandArgs {
 	delete_notion_config: InputDeleteNotionConfigRequest;
 	delete_review_thread: InputDeleteReviewThreadRequest;
 	delete_workflow: InputDeleteWorkflowRequest;
-	detect_editors: InputDetectEditorsRequest;
 	duplicate_facet: InputDuplicateFacetRequest;
 	duplicate_workflow: InputDuplicateWorkflowRequest;
 	fetch_issues: InputFetchIssuesRequest;
 	fetch_notion_label_options: InputFetchNotionLabelOptionsRequest;
-	get_app_settings: InputGetAppSettingsRequest;
-	get_application_startup_outcome: InputGetApplicationStartupOutcomeRequest;
-	get_external_editor: InputGetExternalEditorRequest;
 	get_file_navigation: InputGetFileNavigationRequest;
 	get_language_from_path: InputGetLanguageFromPathRequest;
-	get_notion_config: InputGetNotionConfigRequest;
 	get_or_spawn_terminal_surface: InputGetOrSpawnTerminalSurfaceRequest;
-	get_performance_real_app_mode: InputGetPerformanceRealAppModeRequest;
-	get_performance_telemetry_enabled: InputGetPerformanceTelemetryEnabledRequest;
-	get_provider_availability: InputGetProviderAvailabilityRequest;
-	get_releash_base: InputGetReleashBaseRequest;
-	get_terminal_performance_switches: InputGetTerminalPerformanceSwitchesRequest;
-	get_workflow_config: InputGetWorkflowConfigRequest;
 	git_create_branch: InputGitCreateBranchRequest;
 	git_stage: InputGitStageRequest;
 	git_stage_review_group: InputGitStageReviewGroupRequest;
 	git_unstage: InputGitUnstageRequest;
 	git_unstage_review_group: InputGitUnstageReviewGroupRequest;
 	kill_terminal_surface: InputKillTerminalSurfaceRequest;
-	list_provider_hook_health_warnings: InputListProviderHookHealthWarningsRequest;
 	open_agent_session: InputOpenAgentSessionRequest;
 	open_facet_in_editor: InputOpenFacetInEditorRequest;
 	open_folder_in_editor: InputOpenFolderInEditorRequest;
@@ -1984,9 +1953,6 @@ export interface ClientCommands {
 		args: ClientCommandArgs["delete_review_thread"],
 	): Promise<void>;
 	delete_workflow(args: ClientCommandArgs["delete_workflow"]): Promise<void>;
-	detect_editors(
-		args: ClientCommandArgs["detect_editors"],
-	): Promise<ListEditorInfoDto>;
 	duplicate_facet(args: ClientCommandArgs["duplicate_facet"]): Promise<void>;
 	duplicate_workflow(
 		args: ClientCommandArgs["duplicate_workflow"],
@@ -1995,45 +1961,15 @@ export interface ClientCommands {
 	fetch_notion_label_options(
 		args: ClientCommandArgs["fetch_notion_label_options"],
 	): Promise<ListNotionLabelOptionView>;
-	get_app_settings(
-		args: ClientCommandArgs["get_app_settings"],
-	): Promise<AppSection>;
-	get_application_startup_outcome(
-		args: ClientCommandArgs["get_application_startup_outcome"],
-	): Promise<ApplicationStartupOutcomeDtoV1>;
-	get_external_editor(
-		args: ClientCommandArgs["get_external_editor"],
-	): Promise<ResultString>;
 	get_file_navigation(
 		args: ClientCommandArgs["get_file_navigation"],
 	): Promise<FileNavigationResultDto>;
 	get_language_from_path(
 		args: ClientCommandArgs["get_language_from_path"],
 	): Promise<ResultString>;
-	get_notion_config(
-		args: ClientCommandArgs["get_notion_config"],
-	): Promise<NullableNotionRepoConfigView>;
 	get_or_spawn_terminal_surface(
 		args: ClientCommandArgs["get_or_spawn_terminal_surface"],
 	): Promise<GetOrSpawnTerminalV1>;
-	get_performance_real_app_mode(
-		args: ClientCommandArgs["get_performance_real_app_mode"],
-	): Promise<ResultBool>;
-	get_performance_telemetry_enabled(
-		args: ClientCommandArgs["get_performance_telemetry_enabled"],
-	): Promise<ResultBool>;
-	get_provider_availability(
-		args: ClientCommandArgs["get_provider_availability"],
-	): Promise<ProviderAvailabilitySnapshotResponse>;
-	get_releash_base(
-		args: ClientCommandArgs["get_releash_base"],
-	): Promise<Nullablestring>;
-	get_terminal_performance_switches(
-		args: ClientCommandArgs["get_terminal_performance_switches"],
-	): Promise<TerminalPerformanceSwitchesV1>;
-	get_workflow_config(
-		args: ClientCommandArgs["get_workflow_config"],
-	): Promise<WorkflowSection>;
 	git_create_branch(
 		args: ClientCommandArgs["git_create_branch"],
 	): Promise<void>;
@@ -2048,9 +1984,6 @@ export interface ClientCommands {
 	kill_terminal_surface(
 		args: ClientCommandArgs["kill_terminal_surface"],
 	): Promise<void>;
-	list_provider_hook_health_warnings(
-		args: ClientCommandArgs["list_provider_hook_health_warnings"],
-	): Promise<ListProviderHookHealthWarningResponse>;
 	open_agent_session(
 		args: ClientCommandArgs["open_agent_session"],
 	): Promise<AgentSessionOpenResponse>;

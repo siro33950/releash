@@ -178,10 +178,7 @@ where
 {
     value.map(convert).transpose()
 }
-pub(crate) const STARTUP_COMMANDS: [&str; 2] = [
-    "get_application_startup_outcome",
-    "quit_after_startup_failure",
-];
+pub(crate) const STARTUP_COMMANDS: [&str; 1] = ["quit_after_startup_failure"];
 
 pub(crate) fn command_admitted(
     command: &str,

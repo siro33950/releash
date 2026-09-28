@@ -39,6 +39,10 @@ pub(crate) enum StateReadFailure {
     Subscription(Box<crate::usecase::state_subscription::SubscriptionError>),
     Code(Box<crate::usecase::code_error::CodeUsecaseError>),
     Review(Box<crate::domain::comment::ReviewError>),
+    AppConfig(Box<crate::usecase::app_config::error::UsecaseError>),
+    Notion(Box<crate::usecase::notion::error::NotionUsecaseError>),
+    Editor(Box<crate::domain::external_editor::EditorError>),
+    HookHealth(Box<crate::usecase::provider_lifecycle::ProviderHookHealthUsecaseError>),
     Technical(Box<TechnicalFailure>),
 }
 impl From<crate::usecase::code_error::CodeUsecaseError> for StateReadFailure {
@@ -49,6 +53,26 @@ impl From<crate::usecase::code_error::CodeUsecaseError> for StateReadFailure {
 impl From<crate::domain::comment::ReviewError> for StateReadFailure {
     fn from(error: crate::domain::comment::ReviewError) -> Self {
         Self::Review(Box::new(error))
+    }
+}
+impl From<crate::usecase::app_config::error::UsecaseError> for StateReadFailure {
+    fn from(error: crate::usecase::app_config::error::UsecaseError) -> Self {
+        Self::AppConfig(Box::new(error))
+    }
+}
+impl From<crate::usecase::notion::error::NotionUsecaseError> for StateReadFailure {
+    fn from(error: crate::usecase::notion::error::NotionUsecaseError) -> Self {
+        Self::Notion(Box::new(error))
+    }
+}
+impl From<crate::domain::external_editor::EditorError> for StateReadFailure {
+    fn from(error: crate::domain::external_editor::EditorError) -> Self {
+        Self::Editor(Box::new(error))
+    }
+}
+impl From<crate::usecase::provider_lifecycle::ProviderHookHealthUsecaseError> for StateReadFailure {
+    fn from(error: crate::usecase::provider_lifecycle::ProviderHookHealthUsecaseError) -> Self {
+        Self::HookHealth(Box::new(error))
     }
 }
 impl From<crate::domain::workflow::WorkflowError> for StateReadFailure {
@@ -142,6 +166,13 @@ pub(crate) struct WorkspaceStateReads {
     pub data_dir: PathBuf,
     pub review_comments_dir: PathBuf,
     pub workflows_dir: PathBuf,
+    pub app_config: Arc<crate::usecase::app_config::AppConfigUsecase>,
+    pub notion: Arc<crate::usecase::notion::usecase::NotionUsecase>,
+    pub editor_settings: Arc<dyn crate::domain::external_editor::EditorSettingsGateway>,
+    pub editor_scanner: Arc<dyn crate::domain::external_editor::InstalledEditorGateway>,
+    pub performance_switches: crate::usecase::telemetry::PerformanceSwitches,
+    pub hook_health: Arc<crate::usecase::provider_lifecycle::ProviderHookHealthReadUsecase>,
+    pub startup: Arc<crate::usecase::application_startup::ApplicationStartupAuthority>,
 }
 
 impl WorkspaceStateReads {
@@ -208,6 +239,11 @@ impl WorkspaceStateReads {
                         .list_workflow_summaries()
                         .await
                         .map_err(error)?,
+                ))
+            }
+            T::ProviderHookHealth => {
+                return Ok(StateValue::ProviderHookHealth(
+                    self.hook_health.warnings().await.map_err(error)?,
                 ))
             }
             _ => {}
@@ -327,6 +363,37 @@ impl WorkspaceStateReads {
                     )
                     .map_err(error)?,
             ),
+            T::DesktopSettings => {
+                StateValue::DesktopSettings(self.app_config.desktop_settings().map_err(error)?)
+            }
+            T::NotionConfig(p) => {
+                StateValue::NotionConfig(self.notion.get_config(p).map_err(error)?)
+            }
+            T::ProviderAvailability => {
+                StateValue::ProviderAvailability(self.providers.snapshot().map_err(error)?)
+            }
+            T::ExternalEditor => StateValue::ExternalEditor(
+                crate::usecase::external_editor::dto::ExternalEditorState {
+                    selected: crate::usecase::external_editor::open_usecase::get_external_editor(
+                        self.editor_settings.as_ref(),
+                    )
+                    .map_err(error)?,
+                    editors: crate::usecase::external_editor::detect_usecase::detect_editors(
+                        self.editor_scanner.as_ref(),
+                    )
+                    .into_iter()
+                    .map(Into::into)
+                    .collect(),
+                },
+            ),
+            T::ReleashBase(p) => {
+                StateValue::ReleashBase(self.repository.get_releash_base(p).map_err(error)?)
+            }
+            T::WorkflowConfig => {
+                StateValue::WorkflowConfig(self.app_config.get_workflow_config().map_err(error)?)
+            }
+            T::PerformanceSwitches => StateValue::PerformanceSwitches(self.performance_switches),
+            T::StartupOutcome => StateValue::StartupOutcome(self.startup.outcome()),
             T::Failures(..)
             | T::Terminal(_)
             | T::Workflows
@@ -334,7 +401,8 @@ impl WorkspaceStateReads {
             | T::SessionHistory(_, _)
             | T::Selection(_, _)
             | T::NodeDetail(_, _)
-            | T::SessionNode(_, _) => {
+            | T::SessionNode(_, _)
+            | T::ProviderHookHealth => {
                 unreachable!("async reads handled above")
             }
         })

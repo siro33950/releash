@@ -1,13 +1,11 @@
 use crate::adaptor::presenter::provider_tui::{
-    hook_health_error, launch_error, lifecycle_error, provider_availability_error,
-    provider_tui_coded_error, AgentSessionLaunchOperation, ProviderParseOperation,
-    ProviderTuiCodedError,
+    launch_error, lifecycle_error, provider_availability_error, provider_tui_coded_error,
+    AgentSessionLaunchOperation, ProviderParseOperation, ProviderTuiCodedError,
 };
 use std::sync::Arc;
 
 use crate::adaptor::presenter::agent_session::{
     AgentSessionArchiveResponse, AgentSessionOpenResponse, ProviderAvailabilitySnapshotResponse,
-    ProviderHookHealthProviderResponse, ProviderHookHealthWarningResponse,
 };
 use crate::adaptor::presenter::error::AppError;
 use crate::domain::agent_session::aggregates::AgentSessionArchiveOutcome;
@@ -18,18 +16,6 @@ use crate::usecase::agent_session::{
     AgentSessionLifecycleUsecase, AgentSessionOpenOutcome, ProviderAvailabilityUsecase,
     ProviderAvailabilityUsecaseError,
 };
-use crate::usecase::provider_lifecycle::{
-    ProviderHookHealthReadUsecase, ProviderHookHealthWarning,
-};
-
-pub(crate) fn get_provider_availability_shared(
-    availability: &Arc<ProviderAvailabilityUsecase>,
-) -> Result<ProviderAvailabilitySnapshotResponse, AppError> {
-    availability
-        .snapshot()
-        .map(Into::into)
-        .map_err(provider_availability_error)
-}
 
 pub(crate) async fn refresh_provider_availability_shared(
     availability: &Arc<ProviderAvailabilityUsecase>,
@@ -205,16 +191,6 @@ pub(crate) async fn delete_agent_session_shared(
         .map_err(lifecycle_error)
 }
 
-pub(crate) async fn list_provider_hook_health_warnings_shared(
-    query: &Arc<ProviderHookHealthReadUsecase>,
-) -> Result<Vec<ProviderHookHealthWarningResponse>, AppError> {
-    query
-        .warnings()
-        .await
-        .map(|warnings| warnings.into_iter().map(Into::into).collect())
-        .map_err(hook_health_error)
-}
-
 impl From<AgentSessionOpenOutcome> for AgentSessionOpenResponse {
     fn from(value: AgentSessionOpenOutcome) -> Self {
         match value {
@@ -233,29 +209,6 @@ impl From<AgentSessionArchiveOutcome> for AgentSessionArchiveResponse {
         match value {
             AgentSessionArchiveOutcome::Archived => Self::Archived,
             AgentSessionArchiveOutcome::AlreadyArchived => Self::AlreadyArchived,
-        }
-    }
-}
-
-impl From<ProviderHookHealthWarning> for ProviderHookHealthWarningResponse {
-    fn from(value: ProviderHookHealthWarning) -> Self {
-        Self {
-            provider: match value.provider {
-                crate::domain::provider_lifecycle::ProviderKind::Claude => {
-                    ProviderHookHealthProviderResponse::Claude
-                }
-                crate::domain::provider_lifecycle::ProviderKind::Codex => {
-                    ProviderHookHealthProviderResponse::Codex
-                }
-            },
-            launch_id: value.launch_id,
-            reason: match value.reason {
-                crate::domain::provider_lifecycle::ProviderLifecycleUnavailableReason::SessionStartDeadlineExceeded => "session_start_deadline_exceeded",
-                crate::domain::provider_lifecycle::ProviderLifecycleUnavailableReason::CodexHookDeliveryUnconfirmed => "codex_hook_delivery_unconfirmed",
-                crate::domain::provider_lifecycle::ProviderLifecycleUnavailableReason::ProviderHookConfigurationRejected => "provider_hook_configuration_rejected",
-                crate::domain::provider_lifecycle::ProviderLifecycleUnavailableReason::LocalApiUnavailable => "local_api_unavailable",
-            }
-            .to_string(),
         }
     }
 }

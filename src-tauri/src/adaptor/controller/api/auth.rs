@@ -253,7 +253,7 @@ pub(super) async fn require_client(
         .insert(header::VARY, "Origin".parse().unwrap());
     response.headers_mut().insert(
         header::ACCESS_CONTROL_EXPOSE_HEADERS,
-        "grpc-status, grpc-message, grpc-status-details-bin, releash-desktop-settings-changed"
+        "grpc-status, grpc-message, grpc-status-details-bin"
             .parse()
             .unwrap(),
     );

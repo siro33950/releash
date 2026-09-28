@@ -3,7 +3,6 @@ use super::CommandRouter;
 pub(crate) const COMMAND_NAMES: &[&str] = &[
     "complete_desktop_restoration",
     "fail_desktop_restoration",
-    "apply_desktop_settings",
     "get_client_endpoint",
 ];
 
@@ -13,7 +12,6 @@ pub(crate) fn register<R: tauri::Runtime>(router: &mut CommandRouter<super::Invo
         Box::new(tauri::generate_handler![
             complete_desktop_restoration,
             fail_desktop_restoration,
-            apply_desktop_settings,
             get_client_endpoint
         ]),
     );
@@ -22,14 +20,6 @@ pub(crate) fn register<R: tauri::Runtime>(router: &mut CommandRouter<super::Invo
 #[cfg(test)]
 #[path = "client_test.rs"]
 pub(crate) mod client_tests;
-
-#[tauri::command]
-fn apply_desktop_settings<R: tauri::Runtime>(
-    app: tauri::AppHandle<R>,
-    settings: crate::usecase::app_config::query_service::DesktopSettingsDto,
-) {
-    crate::desktop::apply_desktop_settings(&app, settings);
-}
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]

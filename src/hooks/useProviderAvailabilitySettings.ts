@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invokeClient as invoke } from "@/lib/client";
 import { getErrorMessage } from "@/lib/errorMessage";
-import { useClientRefresh } from "./useClientRefresh";
+import { useStateSubscriptionResult } from "./useStateSubscription";
 
 export interface ProviderAvailabilityItem {
 	provider: string;
@@ -47,15 +47,15 @@ function draftsAfterReset(
 }
 
 export function useProviderAvailabilitySettings(open: boolean) {
-	const clientRefresh = useClientRefresh(open);
-	const wasOpen = useRef(false);
+	const subscription = useStateSubscriptionResult(
+		open ? "provider-availability" : null,
+	);
 	const [snapshot, setSnapshot] = useState<ProviderAvailabilitySnapshot | null>(
 		null,
 	);
 	const [drafts, setDrafts] = useState<Record<string, string>>({});
 	const form = useRef({ snapshot, drafts });
 	form.current = { snapshot, drafts };
-	const [loading, setLoading] = useState(false);
 	const [saving, setSaving] = useState(false);
 	const [refreshing, setRefreshing] = useState(false);
 	const [resetting, setResetting] = useState<Record<string, boolean>>({});
@@ -67,38 +67,23 @@ export function useProviderAvailabilitySettings(open: boolean) {
 	}, []);
 
 	useEffect(() => {
-		const preserveDraft = wasOpen.current;
-		wasOpen.current = open;
-		if (!open) return;
-		if (!preserveDraft) {
-			setSnapshot(null);
-			setDrafts({});
-		}
-		let cancelled = false;
-		setLoading(true);
+		if (open) return;
+		setSnapshot(null);
+		setDrafts({});
 		setError(null);
-		invoke("get_provider_availability")
-			.then((next) => {
-				if (cancelled || clientRefresh.aborted) return;
-				const current = form.current;
-				setSnapshot(next);
-				setDrafts(
-					preserveDraft && current.snapshot
-						? draftsAfterReset("", current.drafts, current.snapshot, next)
-						: draftsFrom(next),
-				);
-			})
-			.catch((cause) => {
-				if (!cancelled && !clientRefresh.aborted)
-					setError(getErrorMessage(cause));
-			})
-			.finally(() => {
-				if (!cancelled && !clientRefresh.aborted) setLoading(false);
-			});
-		return () => {
-			cancelled = true;
-		};
-	}, [open, clientRefresh]);
+	}, [open]);
+
+	const received = subscription.value;
+	useEffect(() => {
+		if (!received) return;
+		const current = form.current;
+		setSnapshot(received);
+		setDrafts(
+			current.snapshot
+				? draftsAfterReset("", current.drafts, current.snapshot, received)
+				: draftsFrom(received),
+		);
+	}, [received]);
 
 	const isDirty = useMemo(
 		() =>
@@ -178,10 +163,10 @@ export function useProviderAvailabilitySettings(open: boolean) {
 	return {
 		providers: snapshot?.providers ?? [],
 		drafts,
-		loading,
+		loading: open && !snapshot && !subscription.error,
 		saving: saving || Object.values(resetting).some(Boolean),
 		refreshing,
-		error,
+		error: error ?? subscription.error,
 		isDirty,
 		setExecutable,
 		save,

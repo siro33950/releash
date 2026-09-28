@@ -1,42 +1,12 @@
 import { AlertTriangle } from "lucide-react";
-import { useEffect, useState } from "react";
-import { invokeClient as invoke } from "@/lib/client";
+import { useStateSubscription } from "@/hooks/useStateSubscription";
 
-interface ProviderHookHealthWarning {
-	provider: string;
-}
-
-const REFRESH_INTERVAL_MS = 5_000;
-
-function providerLabel(
-	provider: ProviderHookHealthWarning["provider"],
-): string {
+function providerLabel(provider: string): string {
 	return `${provider.charAt(0).toUpperCase()}${provider.slice(1)}`;
 }
 
 export function ProviderHookHealthBanner() {
-	const [warnings, setWarnings] = useState<ProviderHookHealthWarning[]>([]);
-
-	useEffect(() => {
-		let active = true;
-		const refresh = async () => {
-			try {
-				const result = await invoke("list_provider_hook_health_warnings");
-				if (active && Array.isArray(result)) setWarnings(result);
-			} catch (error) {
-				console.warn("Failed to refresh provider hook health warnings:", error);
-			}
-		};
-		void refresh();
-		const interval = window.setInterval(
-			() => void refresh(),
-			REFRESH_INTERVAL_MS,
-		);
-		return () => {
-			active = false;
-			window.clearInterval(interval);
-		};
-	}, []);
+	const warnings = useStateSubscription("provider-hook-health") ?? [];
 
 	if (warnings.length === 0) return null;
 	const providers = [

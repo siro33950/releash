@@ -27,15 +27,17 @@ afterEach(async () => {
 });
 
 it("生成RPCで引数と結果を変換する", async () => {
-	const read = vi.fn(() => ({ value: "/repo" }));
-	const fixture = connectFixture({ getExternalEditor: read });
-	await expect(invokeClient("get_external_editor")).resolves.toEqual("/repo");
+	const read = vi.fn(() => ({ value: true }));
+	const fixture = connectFixture({ addRepoPath: read });
+	await expect(invokeClient("add_repo_path", { path: "/repo" })).resolves.toBe(
+		true,
+	);
 	expect(read).toHaveBeenCalledOnce();
 	expect(
 		fixture.requests.map((request) => new URL(request.url).pathname),
 	).toEqual([
 		"/releash.client.v1.ClientService/GetServerInfo",
-		"/releash.client.v1.ClientService/GetExternalEditor",
+		"/releash.client.v1.ClientService/AddRepoPath",
 	]);
 });
 
@@ -48,11 +50,11 @@ it("応答未到達の変更要求では再接続せず明示的な再接続後�
 	});
 	const fixture = connectFixture({
 		updateCrashReporting: mutate,
-		getPerformanceTelemetryEnabled: () => ({ value }),
+		addRepoPath: () => ({ value }),
 	});
 	const observed: boolean[] = [];
 	const refresh = vi.fn(() => {
-		void invokeClient("get_performance_telemetry_enabled").then((value) =>
+		void invokeClient("add_repo_path", { path: "/repo" }).then((value) =>
 			observed.push(value),
 		);
 	});
@@ -255,9 +257,9 @@ it("旧世代の要求失敗が新接続と進行中の要求を破棄しない"
 		await new Promise<void>((resolve) => {
 			release = resolve;
 		});
-		return { value: "/current" };
+		return { value: true };
 	});
-	const fixture = connectFixture({ getExternalEditor: read });
+	const fixture = connectFixture({ addRepoPath: read });
 	const original = fixture.fetch.getMockImplementation();
 	if (!original) throw new Error("Missing fixture implementation");
 	let fail!: () => void;
@@ -274,13 +276,13 @@ it("旧世代の要求失敗が新接続と進行中の要求を破棄しない"
 	await vi.waitFor(() => expect(fail).toBeDefined());
 	refreshClient();
 	const current = await getClient();
-	const pending = invokeClient("get_external_editor");
+	const pending = invokeClient("add_repo_path", { path: "/repo" });
 	await vi.waitFor(() => expect(read).toHaveBeenCalledOnce());
 	fail();
 	expect(await old).toBeInstanceOf(ConnectError);
 	expect(await getClient()).toBe(current);
 	await release();
-	await expect(pending).resolves.toEqual("/current");
+	await expect(pending).resolves.toBe(true);
 });
 
 function commandError(
@@ -299,12 +301,12 @@ function commandError(
 it("実adapterがCommandError detailのcodeとmessageを保持する", async () => {
 	const { getClient } = await import("./client");
 	connectFixture({
-		getExternalEditor: () => {
+		addRepoPath: () => {
 			throw commandError("REPOSITORY_UNAVAILABLE", "Repository is unavailable");
 		},
 	});
 	const client = await getClient();
-	const error = await invokeClient("get_external_editor").catch(
+	const error = await invokeClient("add_repo_path", { path: "/repo" }).catch(
 		(error) => error,
 	);
 	expect(error).toStrictEqual({
@@ -362,13 +364,13 @@ it.each([
 		await new Promise<void>((resolve) => {
 			release = resolve;
 		});
-		return { value: "/repo" };
+		return { value: true };
 	});
 	const reject = () => {
 		throw new ConnectError("request rejected", code);
 	};
 	const fixture = connectFixture({
-		getExternalEditor: read,
+		addRepoPath: read,
 		updateExternalEditor: reject,
 		watchFiles: reject,
 	});
@@ -376,7 +378,7 @@ it.each([
 	onClientRefresh(refreshed);
 	await vi.waitFor(() => expect(refreshed).toHaveBeenCalledOnce());
 	const client = await getClient();
-	const pending = invokeClient("get_external_editor");
+	const pending = invokeClient("add_repo_path", { path: "/repo" });
 	await vi.waitFor(() => expect(read).toHaveBeenCalledOnce());
 	const error = await invokeClient("update_external_editor", {
 		editor: "vim",
@@ -392,9 +394,8 @@ it.each([
 	}
 	expect(await getClient()).toBe(client);
 	expect(
-		fixture.requests.find((request) =>
-			request.url.endsWith("/GetExternalEditor"),
-		)?.signal.aborted,
+		fixture.requests.find((request) => request.url.endsWith("/AddRepoPath"))
+			?.signal.aborted,
 	).toBe(false);
 	expect(
 		fixture.requests.find((request) => request.url.endsWith("/SubscribePush"))
@@ -402,7 +403,7 @@ it.each([
 	).toBe(false);
 	expect(refreshed).toHaveBeenCalledOnce();
 	await release();
-	await expect(pending).resolves.toEqual("/repo");
+	await expect(pending).resolves.toBe(true);
 });
 
 it.each(["end", "failure"])(
@@ -414,7 +415,7 @@ it.each(["end", "failure"])(
 		let value = false;
 		const watch = vi.fn(() => ({ value: 1n }));
 		const fixture = connectFixture({
-			getPerformanceTelemetryEnabled: () => ({ value }),
+			addRepoPath: () => ({ value }),
 			watchFiles: watch,
 			stopWatching: () => ({}),
 			async *subscribePush(_, context) {
@@ -443,7 +444,7 @@ it.each(["end", "failure"])(
 		});
 		const observed: boolean[] = [];
 		onClientRefresh(() => {
-			void invokeClient("get_performance_telemetry_enabled").then((value) =>
+			void invokeClient("add_repo_path", { path: "/repo" }).then((value) =>
 				observed.push(value),
 			);
 		});
@@ -579,14 +580,14 @@ it("AbortSignal.anyが無くても初回RPCとstreamが開始し個別と接続�
 	const { getClient, refreshClient } = await import("./client");
 	const started = vi.fn();
 	const fixture = connectFixture({
-		async getExternalEditor(_, context) {
+		async addRepoPath(_, context) {
 			started();
 			await new Promise<void>((resolve) =>
 				context.signal.addEventListener("abort", () => resolve(), {
 					once: true,
 				}),
 			);
-			return { value: "" };
+			return { value: false };
 		},
 	});
 	expect(AbortSignal.any).toBeUndefined();
@@ -596,7 +597,7 @@ it("AbortSignal.anyが無くても初回RPCとstreamが開始し個別と接続�
 	await vi.waitFor(() => expect(refreshed).toHaveBeenCalledOnce());
 	const abort = new AbortController();
 	const pending = client
-		.getExternalEditor({}, { signal: abort.signal })
+		.addRepoPath({ path: "/repo" }, { signal: abort.signal })
 		.catch((error) => error);
 	await vi.waitFor(() => expect(started).toHaveBeenCalledOnce());
 	abort.abort();
@@ -629,7 +630,7 @@ it.each(["start_watching"] as const)(
 		connectFixture({
 			watchFiles: watch,
 			stopWatching: () => ({}),
-			getPerformanceTelemetryEnabled: () => ({ value }),
+			addRepoPath: () => ({ value }),
 			async *subscribePush(_, context) {
 				yield create(PushSchema, { event: { case: "resync", value: {} } });
 				await new Promise<void>((resolve) => {
@@ -658,7 +659,7 @@ it.each(["start_watching"] as const)(
 		const observed: Array<{ watcherId: number; value: boolean }> = [];
 		const off = onClientRefresh(() => {
 			const id = watcherId;
-			void invokeClient("get_performance_telemetry_enabled").then((value) =>
+			void invokeClient("add_repo_path", { path: "/repo" }).then((value) =>
 				observed.push({ watcherId: id, value }),
 			);
 		});

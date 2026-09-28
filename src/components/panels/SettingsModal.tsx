@@ -39,10 +39,12 @@ import { Separator } from "@/components/ui/separator";
 import { Slider } from "@/components/ui/slider";
 import { useBackgroundConfig } from "@/hooks/useAppSettings";
 import { useAutomation } from "@/hooks/useAutomation";
-import { useClientRefresh } from "@/hooks/useClientRefresh";
 import { useNotionSettings } from "@/hooks/useNotionSettings";
 import { useProviderAvailabilitySettings } from "@/hooks/useProviderAvailabilitySettings";
-import { useStateSubscription } from "@/hooks/useStateSubscription";
+import {
+	useStateSubscription,
+	useStateSubscriptionResult,
+} from "@/hooks/useStateSubscription";
 import { invokeClient as invoke } from "@/lib/client";
 import { getErrorMessage } from "@/lib/errorMessage";
 import { setPerformanceTelemetryEnabled, trackEvent } from "@/lib/telemetry";
@@ -62,43 +64,26 @@ const DEFAULT_WORKFLOW_CONFIG: WorkflowConfig = {
 };
 
 function useWorkflowSettings(open: boolean) {
-	const refresh = useClientRefresh(open);
-	const wasOpen = useRef(false);
+	const subscription = useStateSubscriptionResult(
+		open ? "workflow-config" : null,
+	);
 	const [config, setConfig] = useState<WorkflowConfig>(DEFAULT_WORKFLOW_CONFIG);
 	const [draft, setDraft] = useState<WorkflowConfig>(DEFAULT_WORKFLOW_CONFIG);
 	const isDirty = JSON.stringify(draft) !== JSON.stringify(config);
 	const dirty = useRef(isDirty);
 	dirty.current = isDirty;
-	const [loading, setLoading] = useState(false);
 	const [saving, setSaving] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 
+	const loaded = subscription.value;
 	useEffect(() => {
-		const preserveDraft = wasOpen.current;
-		wasOpen.current = open;
-		if (!open) return;
-		let cancelled = false;
-		setLoading(true);
-		setError(null);
-		invoke("get_workflow_config")
-			.then((loaded) => {
-				if (cancelled || refresh.aborted) return;
-				const normalized = loaded ?? DEFAULT_WORKFLOW_CONFIG;
-				if (!preserveDraft || !dirty.current) {
-					setConfig(normalized);
-					setDraft(normalized);
-				}
-			})
-			.catch((e) => {
-				if (!cancelled && !refresh.aborted) setError(getErrorMessage(e));
-			})
-			.finally(() => {
-				if (!cancelled && !refresh.aborted) setLoading(false);
-			});
-		return () => {
-			cancelled = true;
-		};
-	}, [open, refresh]);
+		if (!loaded || dirty.current) return;
+		setConfig(loaded);
+		setDraft(loaded);
+	}, [loaded]);
+	useEffect(() => {
+		if (!open) setDraft(config);
+	}, [open, config]);
 
 	const save = useCallback(async () => {
 		setSaving(true);
@@ -115,7 +100,15 @@ function useWorkflowSettings(open: boolean) {
 		}
 	}, [draft]);
 
-	return { draft, setDraft, isDirty, loading, saving, error, save };
+	return {
+		draft,
+		setDraft,
+		isDirty,
+		loading: open && !loaded && !subscription.error,
+		saving,
+		error: error ?? subscription.error,
+		save,
+	};
 }
 
 type SettingsSection =
@@ -195,48 +188,25 @@ function AppearanceSection({
 	);
 }
 
-interface EditorInfo {
-	name: string;
-	path: string;
-}
-
 function useExternalEditorConfig(open: boolean) {
-	const refresh = useClientRefresh(open);
-	const wasOpen = useRef(false);
+	const subscription = useStateSubscriptionResult(
+		open ? "external-editor" : null,
+	);
 	const [editor, setEditor] = useState("");
 	const [initialEditor, setInitialEditor] = useState("");
 	const dirty = useRef(false);
 	dirty.current = editor !== initialEditor;
-	const [editors, setEditors] = useState<EditorInfo[]>([]);
-	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState<string | null>(null);
 
+	const loaded = subscription.value;
 	useEffect(() => {
-		const preserveDraft = wasOpen.current;
-		wasOpen.current = open;
-		if (!open) return;
-		let cancelled = false;
-		setLoading(true);
-		setError(null);
-		Promise.all([invoke("get_external_editor"), invoke("detect_editors")])
-			.then(([current, detected]) => {
-				if (cancelled || refresh.aborted) return;
-				if (!preserveDraft || !dirty.current) {
-					setEditor(current);
-					setInitialEditor(current);
-				}
-				setEditors(detected);
-			})
-			.catch((e) => {
-				if (!cancelled && !refresh.aborted) setError(getErrorMessage(e));
-			})
-			.finally(() => {
-				if (!cancelled && !refresh.aborted) setLoading(false);
-			});
-		return () => {
-			cancelled = true;
-		};
-	}, [open, refresh]);
+		if (!loaded || dirty.current) return;
+		setEditor(loaded.selected);
+		setInitialEditor(loaded.selected);
+	}, [loaded]);
+	useEffect(() => {
+		if (!open) setEditor(initialEditor);
+	}, [open, initialEditor]);
 
 	const isDirty = editor !== initialEditor;
 
@@ -254,10 +224,10 @@ function useExternalEditorConfig(open: boolean) {
 	return {
 		editor,
 		setEditor,
-		editors,
+		editors: loaded?.editors ?? [],
 		isDirty,
-		loading,
-		error,
+		loading: !loaded && !subscription.error,
+		error: error ?? subscription.error,
 		save,
 	};
 }
@@ -388,39 +358,29 @@ function RepoBaseBranchItem({
 		selectedBase: string,
 	) => void;
 }) {
-	const refresh = useClientRefresh();
 	const branchValues = useStateSubscription({
 		kind: "branches",
 		args: [repoPath],
 	});
 	const branches = branchValues ?? [];
+	const releashBase = useStateSubscriptionResult({
+		kind: "releash-base",
+		args: [repoPath],
+	});
 	const [selectedBase, setSelectedBase] = useState("");
 	const [initialBase, setInitialBase] = useState("");
 	const dirty = useRef(false);
 	dirty.current = selectedBase !== initialBase;
-	const [loading, setLoading] = useState(true);
-	const [error, setError] = useState<string | null>(null);
+	const loading = releashBase.value === undefined && !releashBase.error;
+	const error = releashBase.error;
 
+	const currentBase = releashBase.value;
 	useEffect(() => {
-		setLoading(true);
-		setError(null);
-
-		invoke("get_releash_base", { repoPath })
-			.then((currentBase) => {
-				if (refresh.aborted) return;
-				const base = currentBase ?? "";
-				if (!dirty.current) {
-					setSelectedBase(base);
-					setInitialBase(base);
-				}
-			})
-			.catch((e) => {
-				if (!refresh.aborted) setError(getErrorMessage(e));
-			})
-			.finally(() => {
-				if (!refresh.aborted) setLoading(false);
-			});
-	}, [repoPath, refresh]);
+		if (currentBase === undefined || dirty.current) return;
+		const base = currentBase ?? "";
+		setSelectedBase(base);
+		setInitialBase(base);
+	}, [currentBase]);
 
 	const handleChange = useCallback(
 		(v: string) => {

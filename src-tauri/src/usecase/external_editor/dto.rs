@@ -6,6 +6,12 @@ pub struct EditorInfoDto {
     pub path: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExternalEditorState {
+    pub selected: String,
+    pub editors: Vec<EditorInfoDto>,
+}
+
 impl From<EditorInfo> for EditorInfoDto {
     fn from(editor: EditorInfo) -> Self {
         Self {

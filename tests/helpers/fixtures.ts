@@ -23,8 +23,8 @@ interface WorktreeBranch {
 
 const baseIpcHandler: Record<string, unknown> = {
 	// App.tsx 初期化
-	get_application_startup_outcome: { type: "ready" },
-	list_provider_hook_health_warnings: [],
+	"startup-outcome": { type: "ready" },
+	"provider-hook-health": [],
 	"startup-repository": "/test/repo",
 	"worktrees": [],
 	set_menu_items_enabled: null,
@@ -58,21 +58,22 @@ const baseIpcHandler: Record<string, unknown> = {
 	"issues": [],
 	fetch_issues: null,
     refresh_workspaces: null,
-	get_releash_base: null,
+	"releash-base": null,
 
 	// Telemetry
 	update_crash_reporting: null,
-	get_performance_telemetry_enabled: true,
 	update_performance_telemetry: null,
 	report_frontend_error: null,
 	report_mounted_xterm_count: null,
 	report_usage_event: null,
 
 	// Background / Autostart
-	get_app_settings: {
-		close_to_tray: false,
-		start_minimized: false,
-		last_root_path: "/test/repo",
+	"desktop-settings": {
+		closeToTray: false,
+		startMinimized: false,
+		crashReporting: true,
+		performanceTelemetry: true,
+		autoLaunch: false,
 	},
 	update_app_settings: null,
 	"plugin:autostart|is_enabled": false,
@@ -99,8 +100,7 @@ const baseIpcHandler: Record<string, unknown> = {
 	kill_terminal_surface: null,
 
 	// External editor
-	get_external_editor: "",
-	detect_editors: [],
+	"external-editor": { selected: "", editors: [] },
 	update_external_editor: null,
 
 	// Repo registry
@@ -119,7 +119,7 @@ const baseIpcHandler: Record<string, unknown> = {
 	"branches": [],
 
 	// NotionPanel
-	get_notion_config: null,
+	"notion-config": null,
 	save_notion_config: null,
 	delete_notion_config: null,
 	validate_notion_config: {
@@ -143,7 +143,7 @@ const baseIpcHandler: Record<string, unknown> = {
 	delete_agent_session: null,
 	"session-history": { items: [], hasMore: false },
 	resume_agent_session_history_candidate: "mock-agent-session-1",
-	get_provider_availability: {
+	"provider-availability": {
 		providers: [
 			{
 				provider: "claude",
@@ -172,6 +172,18 @@ const baseIpcHandler: Record<string, unknown> = {
 
 	// Workflow
 	workflows: [],
+	"workflow-config": { approval_auto_approve: false },
+	// Chromiumで走るmockテストはDOM span/CSSのassertを維持するため
+	// DOMレンダラを明示する（WebGL既定の実機経路はwdio harnessが担う）。
+	"performance-switches": {
+		realAppMode: false,
+		terminal: {
+			disableOutputFlowControl: false,
+			disableTerminalJournal: false,
+			disableRendererWriteSerialization: false,
+			disableWebglRenderer: true,
+		},
+	},
 	diagnostics: {
 		items: [],
 		workflow_summaries: {},
@@ -280,7 +292,7 @@ export function buildMockConfig(
 	overrides: Record<string, unknown> = {},
 ): MockConfig {
 	const values = { ...baseIpcHandler, ...overrides };
-    const stateNames = ["repository-paths", "workspaces", "selection", "node-detail", "agent-session", "session-node", "session-history", "providers", "branches", "branch-base", "branch-status", "current-branch", "issues", "worktrees", "repository-root", "startup-repository", "workspace-state", "review-snapshot", "review-file-view", "review-threads", "workflows", "workflow", "workflow-source", "facets", "facet", "diagnostics"];
+    const stateNames = ["repository-paths", "workspaces", "selection", "node-detail", "agent-session", "session-node", "session-history", "providers", "branches", "branch-base", "branch-status", "current-branch", "issues", "worktrees", "repository-root", "startup-repository", "workspace-state", "review-snapshot", "review-file-view", "review-threads", "workflows", "workflow", "workflow-source", "facets", "facet", "diagnostics", "desktop-settings", "notion-config", "provider-availability", "external-editor", "releash-base", "workflow-config", "performance-switches", "provider-hook-health", "startup-outcome"];
     const states: Record<string, unknown> = { "repository-root": "/test/repo", selection: null };
     for (const kind of stateNames) {
         if (kind in values) { states[kind] = values[kind]; delete values[kind]; }

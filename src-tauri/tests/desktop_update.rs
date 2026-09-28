@@ -98,11 +98,11 @@ impl Renderer {
                 .map(|repo| repo["path"].clone())
                 .collect(),
         );
-        let telemetry = self
-            .request("get_performance_telemetry_enabled", json!({}))
-            .await;
+        let settings = host::read_state(&self.client, "desktop-settings")
+            .await
+            .unwrap();
         assert_eq!(repos, expected_repos);
-        assert!(telemetry.is_boolean());
+        assert!(settings["performanceTelemetry"].is_boolean());
         assert_eq!(
             host::desktop_supervision_status(app.handle())["phase"],
             "restoring"

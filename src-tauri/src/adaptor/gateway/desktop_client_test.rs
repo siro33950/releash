@@ -301,7 +301,7 @@ async fn test_ネイティブ要求_停止とログイン項目の具体的な�
         let (client, _) = start(&endpoint);
         for command in [
             wire::command_request::Command::RequestApplicationQuit(Default::default()),
-            wire::command_request::Command::GetAppSettings(Default::default()),
+            wire::command_request::Command::UpdateAppSettings(Default::default()),
             wire::command_request::Command::UpdateLoginItemPreference(Default::default()),
         ] {
             assert_eq!(client.request(command).await, Err(expected.clone()));

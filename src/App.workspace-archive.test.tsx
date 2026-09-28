@@ -228,6 +228,7 @@ const { default: App } = await import("./App");
 beforeEach(() => {
 	vi.clearAllMocks();
 	states.clear();
+	states.publish("startup-outcome", { type: "ready" });
 	states.publish(
 		"workspaces",
 		workspaceListSnapshot(initialSnapshot, "/repo/wt"),
@@ -242,9 +243,6 @@ beforeEach(() => {
 		command === "get_daemon_status" ? { phase: "ready" } : { type: "ready" },
 	);
 	mocks.invoke.mockImplementation((command: string) => {
-		if (command === "get_application_startup_outcome") {
-			return Promise.resolve({ type: "ready" });
-		}
 		if (command === "archive_workspace_workflow_execution") {
 			mocks.archiveCommitted = true;
 			return Promise.resolve(null);

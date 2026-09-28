@@ -77,13 +77,13 @@ test("配布.appの起動・最小化・閉鎖後のworkflow継続・本番Resta
         tray(second.ui, "Show Releash");
         client = await connect();
         assert.notEqual(discovery().instance_id, initial.instance_id);
-        assert.equal((await client.call("client", "get_app_settings")).external_editor, "bundle-restart-marker");
+        assert.equal((await client.call("state", "external-editor")).selected, "bundle-restart-marker");
         // Then: both menu routes terminate the real UI and its coordinated daemon.
         await quit(bundle, client, "tray");
         start(bundle);
         await waitFor(() => pair(bundle), "relaunch after Quit failed");
         client = await connect();
-        assert.equal((await client.call("client", "get_app_settings")).external_editor, "bundle-restart-marker");
+        assert.equal((await client.call("state", "external-editor")).selected, "bundle-restart-marker");
         await quit(bundle, client, "menu");
         for (const route of ["cmd-q", "dock", "applescript", "logout", "system-restart", "shutdown"]) {
             start(bundle);

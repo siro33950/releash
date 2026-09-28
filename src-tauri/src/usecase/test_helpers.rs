@@ -77,6 +77,7 @@ impl DaemonGateway for FakeDaemon {
                 start_minimized: self.start_minimized.load(Ordering::SeqCst),
                 crash_reporting: false,
                 performance_telemetry: false,
+                auto_launch: false,
             },
             launch_id: if self.wrong_identity.load(Ordering::SeqCst) {
                 "wrong"

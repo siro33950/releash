@@ -38,15 +38,9 @@ beforeEach(() => {
 			? { phase: "ready" }
 			: { type: "ready" };
 	});
-	mockInvoke.mockImplementation((cmd: string) => {
-		if (cmd === "get_application_startup_outcome") {
-			return Promise.resolve({ type: "ready" });
-		}
-		if (cmd === "get_performance_telemetry_enabled") {
-			return Promise.resolve(true);
-		}
-		return Promise.reject(new Error("not in a git repo"));
-	});
+	mockInvoke.mockImplementation(() =>
+		Promise.reject(new Error("not in a git repo")),
+	);
 });
 
 describe("App", () => {
@@ -132,20 +126,29 @@ describe("App", () => {
 			vi.mocked(client.subscribeState).mockImplementation(subscribe);
 	});
 
-	it("reads performance telemetry from Rust without writing localStorage to Rust on startup", async () => {
+	it("reads performance telemetry from the subscription without writing localStorage to Rust on startup", async () => {
 		localStorage.setItem(
 			"releash-settings",
 			JSON.stringify({ performanceTelemetry: true }),
 		);
-		mockInvoke.mockImplementation((cmd: string) => {
-			if (cmd === "get_application_startup_outcome") {
-				return Promise.resolve({ type: "ready" });
-			}
-			if (cmd === "get_performance_telemetry_enabled") {
-				return Promise.resolve(false);
-			}
-			return Promise.reject(new Error("not in a git repo"));
-		});
+		const subscribe = vi.mocked(client.subscribeState).getMockImplementation();
+		const received = vi.fn();
+		vi.mocked(client.subscribeState).mockImplementation(
+			(target, receive, error) => {
+				if (target === "desktop-settings") {
+					received();
+					receive({
+						closeToTray: true,
+						startMinimized: false,
+						crashReporting: true,
+						performanceTelemetry: false,
+						autoLaunch: false,
+					} as never);
+					return () => {};
+				}
+				return subscribe?.(target, receive, error) ?? (() => {});
+			},
+		);
 
 		render(
 			<TooltipProvider>
@@ -153,15 +156,13 @@ describe("App", () => {
 			</TooltipProvider>,
 		);
 
-		await waitFor(() => {
-			expect(mockInvoke).toHaveBeenCalledWith(
-				"get_performance_telemetry_enabled",
-			);
-		});
+		await waitFor(() => expect(received).toHaveBeenCalled());
 		expect(mockInvoke).not.toHaveBeenCalledWith(
 			"update_performance_telemetry",
 			{ enabled: true },
 		);
+		if (subscribe)
+			vi.mocked(client.subscribeState).mockImplementation(subscribe);
 	});
 });
 
@@ -189,8 +190,8 @@ it.each([true, false])(
 			throw new Error("not in a git repo");
 		});
 		mockInvoke.mockImplementation(async (command) => {
-			if (command === "add_repo_path") return undefined;
-			return null;
+			if (command === "add_repo_path") return undefined as never;
+			return null as never;
 		});
 		render(
 			<TooltipProvider>

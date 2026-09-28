@@ -288,9 +288,13 @@ pub(crate) fn compose_agent_sessions(
     ));
     let session_repository = Arc::new(LocalAgentSessionRepository::new(input.store.clone()));
     let sessions = Arc::new(AgentSessionUsecase::new(session_repository.clone()));
-    let hook_health = Arc::new(ProviderHookHealthUsecase::new(Arc::new(
+    let mut hook_health = ProviderHookHealthUsecase::new(Arc::new(
         LocalProviderHookHealthRepository::new(repository, installation_id),
-    )));
+    ));
+    if let Some(publisher) = input.state_publisher.clone() {
+        hook_health = hook_health.with_state_publisher(publisher);
+    }
+    let hook_health = Arc::new(hook_health);
     let hook_health_read = Arc::new(ProviderHookHealthReadUsecase::new(
         hook_health.clone(),
         Arc::new(LocalProviderHookHealthFailureQuery::new(

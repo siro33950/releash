@@ -14,7 +14,6 @@ pub(crate) struct ClientApiDeps {
     dispatch: Arc<ClientCommandDispatch>,
     push: ClientPushGateway,
     state_subscriptions: Option<StateSubscriptionDeps>,
-    desktop_settings: Option<Arc<crate::usecase::app_config::AppConfigUsecase>>,
     limits: Arc<crate::common::concurrency::PriorityLimits>,
     failures: Option<Arc<dyn crate::usecase::failure::FailureOutput>>,
     watcher: Arc<crate::usecase::watcher::WatcherUsecase>,
@@ -45,7 +44,6 @@ impl ClientApiDeps {
             dispatch,
             push,
             state_subscriptions: None,
-            desktop_settings: None,
             limits: Arc::new(super::client_priority::limits()),
             failures: None,
             watcher,
@@ -99,24 +97,6 @@ impl ClientApiDeps {
                     ),
                 )
             })
-    }
-
-    pub(crate) fn with_desktop_settings(
-        mut self,
-        settings: crate::usecase::app_config::AppConfigUsecase,
-    ) -> Self {
-        self.desktop_settings = Some(Arc::new(settings));
-        self
-    }
-
-    fn desktop_settings(
-        &self,
-    ) -> Result<Option<wire::DesktopSettings>, crate::usecase::app_config::error::UsecaseError>
-    {
-        self.desktop_settings
-            .as_ref()
-            .map(|settings| settings.desktop_settings().map(Into::into))
-            .transpose()
     }
 
     async fn execute(
@@ -232,20 +212,6 @@ async fn ingress<T>(
                 ),
             )
         })?
-}
-
-fn response_headers(command: &wire::command_result::Command) -> axum::http::HeaderMap {
-    use wire::command_result::Command;
-    let mut headers = axum::http::HeaderMap::new();
-    if matches!(
-        command,
-        Command::UpdateAppSettings(_)
-            | Command::UpdateCrashReporting(_)
-            | Command::UpdatePerformanceTelemetry(_)
-    ) {
-        headers.insert("releash-desktop-settings-changed", "true".parse().unwrap());
-    }
-    headers
 }
 
 fn task_error(error: tokio::task::JoinError) -> connectrpc::ConnectError {

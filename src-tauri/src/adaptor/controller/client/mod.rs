@@ -20,7 +20,4 @@ pub(crate) use dispatch::{
     convert, finite, invalid_request, optional, required, ClientCommandDispatch,
 };
 
-#[cfg(feature = "desktop")]
-pub(crate) use dispatch::command_admitted;
-
 pub(super) mod worktree_mutation;

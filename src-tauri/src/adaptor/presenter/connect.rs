@@ -562,6 +562,10 @@ impl ConnectFailure for crate::usecase::state_subscription::StateReadError {
             S::Subscription(error) => error.connect_code(),
             S::Code(error) => error.connect_code(),
             S::Review(error) => error.connect_code(),
+            S::AppConfig(error) => error.connect_code(),
+            S::Notion(error) => error.connect_code(),
+            S::Editor(error) => error.connect_code(),
+            S::HookHealth(error) => error.connect_code(),
             S::Technical(error) => error.connect_code(),
         }
     }
@@ -669,15 +673,12 @@ impl ConnectFailure for super::provider_tui::ProviderTuiCodedError {
             | ProviderTuiCodedError::AgentSessionTerminalUnavailable(kind) => *kind,
             ProviderTuiCodedError::ProviderAvailabilityInvalidExecutable
             | ProviderTuiCodedError::AgentSessionInvalidProvider(_)
-            | ProviderTuiCodedError::AgentSessionInvalidInput(_)
-            | ProviderTuiCodedError::ProviderHookHealthInvalidRequest => F::InvalidArgument,
+            | ProviderTuiCodedError::AgentSessionInvalidInput(_) => F::InvalidArgument,
             ProviderTuiCodedError::ProviderAvailabilityConfigUnavailable
             | ProviderTuiCodedError::ProviderAvailabilityRefreshUnavailable
-            | ProviderTuiCodedError::AgentSessionStorageUnavailable
-            | ProviderTuiCodedError::ProviderHookHealthStorageUnavailable => F::Unavailable,
+            | ProviderTuiCodedError::AgentSessionStorageUnavailable => F::Unavailable,
             ProviderTuiCodedError::ProviderAvailabilityCorrupt
-            | ProviderTuiCodedError::AgentSessionCorrupt
-            | ProviderTuiCodedError::ProviderHookHealthCorrupt => F::DataLoss,
+            | ProviderTuiCodedError::AgentSessionCorrupt => F::DataLoss,
             ProviderTuiCodedError::AgentSessionProviderUnavailable
             | ProviderTuiCodedError::AgentSessionInvalidOperation => F::FailedPrecondition,
             ProviderTuiCodedError::AgentSessionConflict(_) => F::Aborted,

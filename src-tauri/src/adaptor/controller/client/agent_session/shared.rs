@@ -97,57 +97,6 @@ pub(crate) fn register_shared(
         );
     }
     {
-        let availability = deps.provider_availability_usecase.clone();
-        router.register_domain(
-            &["get_provider_availability"],
-            Box::new(move |command| {
-                let availability = availability.clone();
-                Box::pin(async move {
-                    let wire::command_request::Command::GetProviderAvailability(_args) = command
-                    else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move {
-                        let availability = availability
-                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        outcome(provider_tui::get_provider_availability_shared(
-                            &availability,
-                        ))
-                    }
-                    .await?;
-                    Ok(wire::command_result::Command::GetProviderAvailability(
-                        result,
-                    ))
-                })
-            }),
-        );
-    }
-    {
-        let query = deps.provider_hook_health_read_usecase.clone();
-        router.register_domain(
-            &["list_provider_hook_health_warnings"],
-            Box::new(move |command| {
-                let query = query.clone();
-                Box::pin(async move {
-                    let wire::command_request::Command::ListProviderHookHealthWarnings(_args) =
-                        command
-                    else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move {
-                        let query = query
-                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        outcome(
-                            provider_tui::list_provider_hook_health_warnings_shared(&query).await,
-                        )
-                    }
-                    .await?;
-                    Ok(wire::command_result::Command::ListProviderHookHealthWarnings(result))
-                })
-            }),
-        );
-    }
-    {
         let lifecycle = deps.agent_session_lifecycle_usecase.clone();
         router.register_domain(
             &["open_agent_session"],

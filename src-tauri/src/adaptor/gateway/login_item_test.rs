@@ -32,19 +32,10 @@ fn test_登録結果_承認待ちだけを登録済みとして扱い他の失�
 }
 
 #[test]
-fn test_登録希望変換_登録希望だけを読み書きし不正な応答は拒否する() {
+fn test_登録希望変換_登録希望だけを書く() {
     use crate::adaptor::presenter::client as wire;
     // Given / When / Then
     for requested in [true, false] {
-        assert_eq!(
-            preference_result(wire::command_result::Command::GetAppSettings(
-                wire::AppSection {
-                    auto_launch: Some(requested),
-                    ..Default::default()
-                }
-            )),
-            Ok(requested)
-        );
         let wire::command_request::Command::UpdateLoginItemPreference(request) =
             preference_request(requested)
         else {
@@ -52,16 +43,4 @@ fn test_登録希望変換_登録希望だけを読み書きし不正な応答�
         };
         assert_eq!(request.requested, Some(requested));
     }
-    assert_eq!(
-        preference_result(wire::command_result::Command::GetAppSettings(
-            Default::default()
-        )),
-        Err("Missing login preference".into())
-    );
-    assert_eq!(
-        preference_result(wire::command_result::Command::UpdateAppSettings(
-            wire::Unit {}
-        )),
-        Err("Unexpected login preference result".into())
-    );
 }

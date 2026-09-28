@@ -29,8 +29,8 @@ async function bootstrap() {
 		]);
 		window.__RELEASH_INVOKE_CLIENT__ = invoke;
 		window.__RELEASH_FIRST_STATE__ = firstState;
-		const realAppMode = await Promise.resolve()
-			.then(() => invoke("get_performance_real_app_mode"))
+		const realAppMode = await firstState("performance-switches")
+			.then((switches) => switches.realAppMode)
 			.catch(() => false);
 		if (realAppMode) {
 			installPerformanceCollector();

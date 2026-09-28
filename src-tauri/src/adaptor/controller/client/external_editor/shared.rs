@@ -1,7 +1,7 @@
 use super::*;
 use crate::adaptor::controller::client::ClientCommandDispatch;
 use crate::adaptor::controller::client::{convert, required};
-use crate::adaptor::controller::client::{invalid_request, outcome, value};
+use crate::adaptor::controller::client::{invalid_request, outcome};
 use crate::adaptor::presenter::client as wire;
 
 pub(crate) fn register_shared(
@@ -9,46 +9,13 @@ pub(crate) fn register_shared(
     deps: &crate::adaptor::controller::client::ClientDependencies,
 ) {
     {
-        router.register_domain(
-            &["detect_editors"],
-            Box::new(move |command| {
-                Box::pin(async move {
-                    let wire::command_request::Command::DetectEditors(_args) = command else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move { value(commands::detect_editors_shared()) }.await?;
-                    Ok(wire::command_result::Command::DetectEditors(result))
-                })
-            }),
-        );
-    }
-    {
         let state = deps.config_repository.clone();
-        router.register_domain(
-            &["get_external_editor"],
-            Box::new(move |command| {
-                let state = state.clone();
-                Box::pin(async move {
-                    let wire::command_request::Command::GetExternalEditor(_args) = command else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move {
-                        let state = state
-                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        outcome(commands::get_external_editor_shared(&state))
-                    }
-                    .await?;
-                    Ok(wire::command_result::Command::GetExternalEditor(result))
-                })
-            }),
-        );
-    }
-    {
-        let state = deps.config_repository.clone();
+        let publisher = router.publisher.clone();
         router.register_domain(
             &["update_external_editor"],
             Box::new(move |command| {
                 let state = state.clone();
+                let publisher = publisher.clone();
                 Box::pin(async move {
                     let wire::command_request::Command::UpdateExternalEditor(args) = command else {
                         return Err(invalid_request("Mismatched command"));
@@ -59,6 +26,7 @@ pub(crate) fn register_shared(
                         outcome(
                             commands::update_external_editor_shared(
                                 &state,
+                                publisher,
                                 convert(required(args.editor, "editor")?)?,
                             )
                             .await,

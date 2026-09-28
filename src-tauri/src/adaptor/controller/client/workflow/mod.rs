@@ -231,9 +231,7 @@ pub(crate) mod tests {
         let config_secret_repository: Arc<dyn crate::domain::app_config::ConfigSecretRepository> =
             app_config.clone();
         tauri::test::mock_builder()
-            .invoke_handler(
-                crate::adaptor::controller::command::application_lifecycle::invoke_handler(),
-            )
+            .invoke_handler(tauri::generate_handler![])
             .manage(Arc::new(crate::infrastructure::push::PushSink::new()))
             .manage(crate::desktop_test_support::TestDataDir(data_dir))
             .manage(app_config)

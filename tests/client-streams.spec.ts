@@ -6,7 +6,7 @@ test("20terminalとpushを保持しても入力・処理済み量通知・状態
 	page,
 }) => {
 	await setupTauriMock(page, buildMockConfig({
-			get_external_editor: "/current",
+			get_language_from_path: "/current",
 			start_state_subscription: { __mockTerminalAttachment: true },
 			write_terminal_surface: null,
 			report_terminal_processed: null,
@@ -79,7 +79,7 @@ test("20terminalとpushを保持しても入力・処理済み量通知・状態
 				});
 			}),
 		);
-		const paths = await invokeClient("get_external_editor");
+		const paths = await invokeClient("get_language_from_path", { filePath: "main.rs" });
 		await window.__releashPush("file-change", { watcher_id: 1, path: "/updated", kind: "change" });
 		const deadline = Date.now() + 3000;
 		while (

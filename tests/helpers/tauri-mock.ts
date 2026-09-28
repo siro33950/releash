@@ -378,20 +378,6 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 				emitTerminalPerformanceOutput(String(args.data ?? ""));
 				return;
 			}
-			// Chromiumで走るmockテストはDOM span/CSSのassertを維持するため
-			// DOMレンダラを明示する（WebGL既定の実機経路はwdio harnessが担う）。
-			if (
-				cmd === "get_terminal_performance_switches" &&
-				!(cmd in cfg.responses)
-			) {
-				return {
-					disableOutputFlowControl: false,
-					disableTerminalJournal: false,
-					disableRendererWriteSerialization: false,
-					disableWebglRenderer: true,
-				};
-			}
-
 			// ユーザー定義コマンド
 			if (cmd in cfg.responses) {
 				let value = cfg.responses[cmd];
@@ -648,9 +634,6 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 			if (cmd === "validate_daemon_connection") return null;
 			if (cmd === "get_login_item_status") return { enabled: false, requiresApproval: false, reason: null };
 			if (cmd === "check_desktop_update") return null;
-			if (cmd === "get_application_startup_outcome") {
-				return { type: "ready" };
-			}
 
 
 			// 未定義コマンドはnull返却（ログ出力）
@@ -677,10 +660,8 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 				if (
 					!cmd.startsWith("plugin:") &&
 					![
-						"get_daemon_status", "retry_daemon", "quit_desktop", "restart_desktop", "validate_daemon_connection", "get_login_item_status", "open_login_item_settings", "install_cli", "set_login_item_enabled", "check_desktop_update", "install_desktop_update", "apply_desktop_settings",
+						"get_daemon_status", "retry_daemon", "quit_desktop", "restart_desktop", "validate_daemon_connection", "get_login_item_status", "open_login_item_settings", "install_cli", "set_login_item_enabled", "check_desktop_update", "install_desktop_update",
 						"complete_desktop_restoration", "fail_desktop_restoration", "get_client_endpoint",
-						"get_application_startup_outcome",
-						"quit_after_startup_failure",
 						"set_menu_items_enabled",
 					].includes(cmd)
 				)

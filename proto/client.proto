@@ -18,6 +18,8 @@ message Push {
 message CommandRequest {
   reserved 11, 35, 69;
   reserved "ack_terminal_surface_output", "detach_terminal_surface", "get_terminal_surface";
+  reserved 36, 43, 46, 53, 58, 60, 61, 62, 63, 68, 71, 90;
+  reserved "detect_editors", "get_app_settings", "get_application_startup_outcome", "get_external_editor", "get_notion_config", "get_performance_real_app_mode", "get_performance_telemetry_enabled", "get_provider_availability", "get_releash_base", "get_terminal_performance_switches", "get_workflow_config", "list_provider_hook_health_warnings";
   reserved 163;
   reserved "fetch_pr_status";
   reserved 116;
@@ -95,28 +97,16 @@ message CommandRequest {
     DeleteNotionConfigRequest delete_notion_config = 32;
     DeleteReviewThreadRequest delete_review_thread = 33;
     DeleteWorkflowRequest delete_workflow = 34;
-    DetectEditorsRequest detect_editors = 36;
     DuplicateFacetRequest duplicate_facet = 38;
     DuplicateWorkflowRequest duplicate_workflow = 39;
     FetchIssuesRequest fetch_issues = 40;
     FetchNotionLabelOptionsRequest fetch_notion_label_options = 41;
 
-    GetAppSettingsRequest get_app_settings = 43;
-    GetApplicationStartupOutcomeRequest get_application_startup_outcome = 46;
-
-    GetExternalEditorRequest get_external_editor = 53;
     GetFileNavigationRequest get_file_navigation = 55;
     GetLanguageFromPathRequest get_language_from_path = 56;
 
-    GetNotionConfigRequest get_notion_config = 58;
     GetOrSpawnTerminalSurfaceRequest get_or_spawn_terminal_surface = 59;
-    GetPerformanceRealAppModeRequest get_performance_real_app_mode = 60;
-    GetPerformanceTelemetryEnabledRequest get_performance_telemetry_enabled = 61;
-    GetProviderAvailabilityRequest get_provider_availability = 62;
-    GetReleashBaseRequest get_releash_base = 63;
 
-    GetTerminalPerformanceSwitchesRequest get_terminal_performance_switches = 68;
-    GetWorkflowConfigRequest get_workflow_config = 71;
 
 
     GitCreateBranchRequest git_create_branch = 77;
@@ -126,7 +116,6 @@ message CommandRequest {
     GitUnstageReviewGroupRequest git_unstage_review_group = 81;
     KillTerminalSurfaceRequest kill_terminal_surface = 82;
 
-    ListProviderHookHealthWarningsRequest list_provider_hook_health_warnings = 90;
 
     OpenAgentSessionRequest open_agent_session = 97;
     OpenFacetInEditorRequest open_facet_in_editor = 98;
@@ -194,6 +183,8 @@ message CommandRequest {
 message CommandResult {
   reserved 11, 35, 69;
   reserved "ack_terminal_surface_output", "detach_terminal_surface", "get_terminal_surface";
+  reserved 36, 43, 46, 53, 58, 60, 61, 62, 63, 68, 71, 90;
+  reserved "detect_editors", "get_app_settings", "get_application_startup_outcome", "get_external_editor", "get_notion_config", "get_performance_real_app_mode", "get_performance_telemetry_enabled", "get_provider_availability", "get_releash_base", "get_terminal_performance_switches", "get_workflow_config", "list_provider_hook_health_warnings";
   reserved 163;
   reserved "fetch_pr_status";
   reserved 116;
@@ -271,28 +262,16 @@ message CommandResult {
     Unit delete_notion_config = 32;
     Unit delete_review_thread = 33;
     Unit delete_workflow = 34;
-    ListEditorInfoDto detect_editors = 36;
     Unit duplicate_facet = 38;
     Unit duplicate_workflow = 39;
     Unit fetch_issues = 40;
     ListNotionLabelOptionView fetch_notion_label_options = 41;
 
-    AppSection get_app_settings = 43;
-    ApplicationStartupOutcomeDtoV1 get_application_startup_outcome = 46;
-
-    ResultString get_external_editor = 53;
     FileNavigationResultDto get_file_navigation = 55;
     ResultString get_language_from_path = 56;
 
-    NullableNotionRepoConfigView get_notion_config = 58;
     GetOrSpawnTerminalV1 get_or_spawn_terminal_surface = 59;
-    ResultBool get_performance_real_app_mode = 60;
-    ResultBool get_performance_telemetry_enabled = 61;
-    ProviderAvailabilitySnapshotResponse get_provider_availability = 62;
-    Nullablestring get_releash_base = 63;
 
-    TerminalPerformanceSwitchesV1 get_terminal_performance_switches = 68;
-    WorkflowSection get_workflow_config = 71;
 
 
     Unit git_create_branch = 77;
@@ -302,7 +281,6 @@ message CommandResult {
     Unit git_unstage_review_group = 81;
     Unit kill_terminal_surface = 82;
 
-    ListProviderHookHealthWarningResponse list_provider_hook_health_warnings = 90;
 
     AgentSessionOpenResponse open_agent_session = 97;
     Unit open_facet_in_editor = 98;
@@ -694,9 +672,7 @@ message DeleteWorkflowRequest {
   optional string name = 1 [json_name = "name", (json_required) = true];
 }
 
-message DetectEditorsRequest {
 
-}
 
 message EditorInfoDto {
   optional string name = 1 [json_name = "name", (json_required) = true];
@@ -917,19 +893,6 @@ message NullableAgentSessionItemDto {
   optional AgentSessionItemDto value = 1 [json_name = "value", (json_nullable) = true];
 }
 
-message GetAppSettingsRequest {
-
-}
-
-message AppSection {
-  optional bool close_to_tray = 1 [json_name = "close_to_tray", (json_default) = true];
-  optional bool auto_launch = 2 [json_name = "auto_launch", (json_default) = true];
-  optional bool start_minimized = 3 [json_name = "start_minimized", (json_default) = true];
-  optional string last_root_path = 4 [json_name = "last_root_path", (json_default) = true];
-  optional Liststring last_repo_paths = 5 [json_name = "last_repo_paths", (json_default) = true];
-  optional string external_editor = 6 [json_name = "external_editor", (json_default) = true];
-}
-
 message ApplicationQuitIntentDtoV1 {
   option (json_tag) = "type";
   oneof variant {
@@ -944,10 +907,6 @@ message ApplicationQuitIntentDtoV1Exit {
 
 message ApplicationQuitIntentDtoV1Restart {
   optional int32 code = 1 [json_name = "code", (json_required) = true];
-}
-
-message GetApplicationStartupOutcomeRequest {
-
 }
 
 message ApplicationStartupOutcomeDtoV1 {
@@ -999,10 +958,6 @@ message Nullablestring {
   optional string value = 1 [json_name = "value", (json_nullable) = true];
 }
 
-message GetExternalEditorRequest {
-
-}
-
 message DiffTreeNodeInput {
   optional string id = 1 [json_name = "id", (json_required) = true];
   optional string name = 2 [json_name = "name", (json_required) = true];
@@ -1035,9 +990,6 @@ message GetLanguageFromPathRequest {
   optional string file_path = 1 [json_name = "filePath", (json_required) = true];
 }
 
-message GetNotionConfigRequest {
-  optional string repo_path = 1 [json_name = "repoPath", (json_required) = true];
-}
 
 message NotionRepoConfigView {
   optional string api_token = 1 [json_name = "api_token", (json_required) = true];
@@ -1081,18 +1033,6 @@ message GetOrSpawnTerminalV1 {
   reserved 2, 3, 4, 5;
 }
 
-message GetPerformanceRealAppModeRequest {
-
-}
-
-message GetPerformanceTelemetryEnabledRequest {
-
-}
-
-message GetProviderAvailabilityRequest {
-
-}
-
 message ProviderAvailabilitySnapshotResponse {
   optional ListProviderAvailabilityItemResponse providers = 1 [json_name = "providers", (json_required) = true];
 }
@@ -1111,10 +1051,6 @@ message ProviderAvailabilityItemResponse {
 message ListProviderAvailabilityItemResponse {
   option (json_wrapper) = "items";
   repeated ProviderAvailabilityItemResponse items = 1;
-}
-
-message GetReleashBaseRequest {
-  optional string repo_path = 1 [json_name = "repoPath", (json_required) = true];
 }
 
 message ReviewFileViewDto {
@@ -1298,10 +1234,6 @@ message DiffTreeNodeDto {
 message ListDiffTreeNodeDto {
   option (json_wrapper) = "items";
   repeated DiffTreeNodeDto items = 1;
-}
-
-message GetTerminalPerformanceSwitchesRequest {
-
 }
 
 message TerminalPerformanceSwitchesV1 {
@@ -1521,10 +1453,6 @@ message SessionDelegateDto {
 message ListNodeDefinitionDto {
   option (json_wrapper) = "items";
   repeated NodeDefinitionDto items = 1;
-}
-
-message GetWorkflowConfigRequest {
-
 }
 
 message WorkflowSection {
@@ -1968,10 +1896,6 @@ message FacetSummaryDto {
 message ListFacetSummaryDto {
   option (json_wrapper) = "items";
   repeated FacetSummaryDto items = 1;
-}
-
-message ListProviderHookHealthWarningsRequest {
-
 }
 
 message ProviderHookHealthWarningResponse {
@@ -2781,10 +2705,21 @@ message WorkflowNumber {
 }
 
 message DesktopSettings {
-  bool close_to_tray = 1;
-  bool start_minimized = 2;
-  bool crash_reporting = 3;
-  bool performance_telemetry = 4;
+  optional bool close_to_tray = 1 [json_name = "closeToTray", (json_required) = true];
+  optional bool start_minimized = 2 [json_name = "startMinimized", (json_required) = true];
+  optional bool crash_reporting = 3 [json_name = "crashReporting", (json_required) = true];
+  optional bool performance_telemetry = 4 [json_name = "performanceTelemetry", (json_required) = true];
+  optional bool auto_launch = 5 [json_name = "autoLaunch", (json_required) = true];
+}
+
+message ExternalEditorState {
+  optional string selected = 1 [json_name = "selected", (json_required) = true];
+  optional ListEditorInfoDto editors = 2 [json_name = "editors", (json_required) = true];
+}
+
+message PerformanceSwitchesV1 {
+  optional bool real_app_mode = 1 [json_name = "realAppMode", (json_required) = true];
+  optional TerminalPerformanceSwitchesV1 terminal = 2 [json_name = "terminal", (json_required) = true];
 }
 
 service ClientService {
@@ -2820,31 +2755,19 @@ service ClientService {
   rpc DeleteNotionConfig(DeleteNotionConfigRequest) returns (Unit);
   rpc DeleteReviewThread(DeleteReviewThreadRequest) returns (Unit);
   rpc DeleteWorkflow(DeleteWorkflowRequest) returns (Unit);
-  rpc DetectEditors(DetectEditorsRequest) returns (ListEditorInfoDto);
   rpc DuplicateFacet(DuplicateFacetRequest) returns (Unit);
   rpc DuplicateWorkflow(DuplicateWorkflowRequest) returns (Unit);
   rpc FetchIssues(FetchIssuesRequest) returns (Unit);
   rpc FetchNotionLabelOptions(FetchNotionLabelOptionsRequest) returns (ListNotionLabelOptionView);
-  rpc GetAppSettings(GetAppSettingsRequest) returns (AppSection);
-  rpc GetApplicationStartupOutcome(GetApplicationStartupOutcomeRequest) returns (ApplicationStartupOutcomeDtoV1);
-  rpc GetExternalEditor(GetExternalEditorRequest) returns (ResultString);
   rpc GetFileNavigation(GetFileNavigationRequest) returns (FileNavigationResultDto);
   rpc GetLanguageFromPath(GetLanguageFromPathRequest) returns (ResultString);
-  rpc GetNotionConfig(GetNotionConfigRequest) returns (NullableNotionRepoConfigView);
   rpc GetOrSpawnTerminalSurface(GetOrSpawnTerminalSurfaceRequest) returns (GetOrSpawnTerminalV1);
-  rpc GetPerformanceRealAppMode(GetPerformanceRealAppModeRequest) returns (ResultBool);
-  rpc GetPerformanceTelemetryEnabled(GetPerformanceTelemetryEnabledRequest) returns (ResultBool);
-  rpc GetProviderAvailability(GetProviderAvailabilityRequest) returns (ProviderAvailabilitySnapshotResponse);
-  rpc GetReleashBase(GetReleashBaseRequest) returns (Nullablestring);
-  rpc GetTerminalPerformanceSwitches(GetTerminalPerformanceSwitchesRequest) returns (TerminalPerformanceSwitchesV1);
-  rpc GetWorkflowConfig(GetWorkflowConfigRequest) returns (WorkflowSection);
   rpc GitCreateBranch(GitCreateBranchRequest) returns (Unit);
   rpc GitStage(GitStageRequest) returns (Unit);
   rpc GitStageReviewGroup(GitStageReviewGroupRequest) returns (Unit);
   rpc GitUnstage(GitUnstageRequest) returns (Unit);
   rpc GitUnstageReviewGroup(GitUnstageReviewGroupRequest) returns (Unit);
   rpc KillTerminalSurface(KillTerminalSurfaceRequest) returns (Unit);
-  rpc ListProviderHookHealthWarnings(ListProviderHookHealthWarningsRequest) returns (ListProviderHookHealthWarningResponse);
   rpc OpenAgentSession(OpenAgentSessionRequest) returns (AgentSessionOpenResponse);
   rpc OpenFacetInEditor(OpenFacetInEditorRequest) returns (Unit);
   rpc OpenFolderInEditor(OpenFolderInEditorRequest) returns (Unit);
@@ -2909,7 +2832,8 @@ message ServerInfo {
   reserved "instance_id";
   string launch_id = 2;
   string release = 3;
-  DesktopSettings desktop_settings = 4;
+  reserved 4;
+  reserved "desktop_settings";
 }
 
 message SubscribePushRequest { string subscription_id = 1; }
@@ -3004,6 +2928,15 @@ message StatePayload {
     ListFacetSummaryDto facets = 43;
     ResultString facet = 44;
     DiagnosticReport diagnostics = 45;
+    DesktopSettings desktop_settings = 50;
+    NullableNotionRepoConfigView notion_config = 51;
+    ProviderAvailabilitySnapshotResponse provider_availability = 52;
+    ExternalEditorState external_editor = 53;
+    Nullablestring releash_base = 54;
+    WorkflowSection workflow_config = 55;
+    PerformanceSwitchesV1 performance_switches = 56;
+    ListProviderHookHealthWarningResponse provider_hook_health = 57;
+    ApplicationStartupOutcomeDtoV1 startup_outcome = 58;
   }
 }
 message StateChange { bool delta = 1; StatePayload payload = 2; }

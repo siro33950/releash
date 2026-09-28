@@ -55,8 +55,7 @@ export function connectFixture(
 			};
 		if (
 			command === "validate_daemon_connection" ||
-			command === "complete_desktop_restoration" ||
-			command === "apply_desktop_settings"
+			command === "complete_desktop_restoration"
 		)
 			return;
 		throw new Error(`Unexpected IPC: ${command}`);
