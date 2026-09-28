@@ -121,10 +121,6 @@ pub trait WorkflowDiagnosticsGateway: Send + Sync {
     ) -> Result<super::diagnostic_dto::DiagnosticReport, WorkflowError>;
 }
 
-pub trait WorkflowConfigPathGateway: Send + Sync {
-    fn automation_config_dir(&self) -> Result<String, WorkflowError>;
-}
-
 #[async_trait::async_trait]
 pub trait WorkflowStartExecutionGateway: Send + Sync {
     async fn resolve_start_execution_worktree(

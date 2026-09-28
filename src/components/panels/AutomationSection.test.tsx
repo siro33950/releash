@@ -69,9 +69,7 @@ function createMockAutomation(
 		selectedFacetContent: null,
 		selectedFacetKey: null,
 		selectedFacetKind: null,
-		fetchAll: vi.fn(),
-		fetchFacets: vi.fn(),
-		refreshDiagnostics: vi.fn(),
+		setFacetKind: vi.fn(),
 		selectWorkflow: vi.fn(),
 		saveWorkflowSource: vi.fn().mockResolvedValue({
 			ok: true,
@@ -86,6 +84,7 @@ function createMockAutomation(
 		duplicateWorkflow: vi.fn().mockResolvedValue({ ok: true }),
 		openWorkflowInEditor: vi.fn(),
 		selectFacet: vi.fn(),
+		clearFacetSelection: vi.fn(),
 		saveFacet: vi.fn().mockResolvedValue({ ok: true }),
 		deleteFacet: vi.fn(),
 		duplicateFacet: vi.fn().mockResolvedValue({ ok: true }),
@@ -93,11 +92,6 @@ function createMockAutomation(
 		renderFacetPreview: vi.fn().mockResolvedValue("preview"),
 		externalChangeDetected: false,
 		clearExternalChange: vi.fn(),
-		setSelectedWorkflow: vi.fn(),
-		setSelectedWorkflowSource: vi.fn(),
-		setSelectedFacetContent: vi.fn(),
-		setSelectedFacetKey: vi.fn(),
-		setSelectedFacetKind: vi.fn(),
 		...overrides,
 	};
 }

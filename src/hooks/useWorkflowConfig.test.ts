@@ -1,165 +1,95 @@
-import { act, renderHook, waitFor } from "@testing-library/react";
+import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { stateSubscriptions } from "@/test/stateSubscriptions";
 import { useWorkflowConfig } from "./useWorkflowConfig";
+
+const states = stateSubscriptions();
+const mocks = vi.hoisted(() => ({ invoke: vi.fn() }));
+vi.mock("@/lib/client", () => ({
+	invokeClient: mocks.invoke,
+	subscribeState: (...args: Parameters<typeof states.subscribeState>) =>
+		states.subscribeState(...args),
+}));
+
+const mockWorkflows = [
+	{
+		name: "quick-fix",
+		description: "Quick fix workflow",
+		builtin: true,
+		sourceFormat: "yaml" as const,
+		is_running: false,
+	},
+];
 
 describe("useWorkflowConfig", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		states.clear();
+		mocks.invoke.mockResolvedValue(undefined);
 	});
 
-	it("should fetch workflows when open is true", async () => {
-		const mockWorkflows = [
-			{
-				name: "quick-fix",
-				description: "Quick fix workflow",
-				builtin: true,
-				sourceFormat: "yaml" as const,
-				is_running: false,
-			},
-		];
-
-		const { invokeClient: invoke } = await import("@/lib/client");
-		vi.mocked(invoke).mockResolvedValue(mockWorkflows);
-
+	it("一覧は購読から届き単発取得を行わない", () => {
 		const { result } = renderHook(() => useWorkflowConfig(true));
-
-		await waitFor(() => {
-			expect(result.current.loading).toBe(false);
-		});
-
+		expect(result.current.loading).toBe(true);
+		act(() => states.publish("workflows", mockWorkflows));
+		expect(result.current.loading).toBe(false);
 		expect(result.current.workflows).toEqual(mockWorkflows);
 		expect(result.current.error).toBeNull();
-		expect(vi.mocked(invoke)).toHaveBeenCalledWith("list_workflows");
+		expect(mocks.invoke).not.toHaveBeenCalled();
 	});
 
-	it("should not fetch workflows when open is false", async () => {
-		const { invokeClient: invoke } = await import("@/lib/client");
-		vi.mocked(invoke).mockResolvedValue([]);
-
-		renderHook(() => useWorkflowConfig(false));
-
-		expect(vi.mocked(invoke)).not.toHaveBeenCalledWith("list_workflows");
+	it("閉じている間は購読しない", () => {
+		const { result } = renderHook(() => useWorkflowConfig(false));
+		expect(states.subscribeState).not.toHaveBeenCalled();
+		expect(result.current.loading).toBe(false);
+		expect(result.current.workflows).toEqual([]);
 	});
 
-	it("should call delete_workflow and refresh list", async () => {
-		const { invokeClient: invoke } = await import("@/lib/client");
-		vi.mocked(invoke).mockImplementation((cmd: string) => {
-			switch (cmd) {
-				case "list_workflows":
-					return Promise.resolve([]);
-				case "delete_workflow":
-					return Promise.resolve(undefined);
-				default:
-					return Promise.resolve(null);
-			}
-		});
-
+	it("should call delete_workflow without refetching", async () => {
+		states.publish("workflows", mockWorkflows);
 		const { result } = renderHook(() => useWorkflowConfig(true));
-
-		await waitFor(() => {
-			expect(result.current.loading).toBe(false);
-		});
-
 		await act(async () => {
 			await result.current.deleteWorkflow("my-workflow");
 		});
-
-		expect(vi.mocked(invoke)).toHaveBeenCalledWith("delete_workflow", {
+		expect(mocks.invoke).toHaveBeenCalledWith("delete_workflow", {
 			name: "my-workflow",
 		});
+		expect(mocks.invoke).toHaveBeenCalledTimes(1);
 	});
 
 	it("should call open_workflow_in_editor", async () => {
-		const { invokeClient: invoke } = await import("@/lib/client");
-		vi.mocked(invoke).mockImplementation((cmd: string) => {
-			switch (cmd) {
-				case "list_workflows":
-					return Promise.resolve([]);
-				case "open_workflow_in_editor":
-					return Promise.resolve(undefined);
-				default:
-					return Promise.resolve(null);
-			}
-		});
-
 		const { result } = renderHook(() => useWorkflowConfig(true));
-
-		await waitFor(() => {
-			expect(result.current.loading).toBe(false);
-		});
-
 		await act(async () => {
 			await result.current.openInEditor("quick-fix");
 		});
-
-		expect(vi.mocked(invoke)).toHaveBeenCalledWith("open_workflow_in_editor", {
+		expect(mocks.invoke).toHaveBeenCalledWith("open_workflow_in_editor", {
 			name: "quick-fix",
 		});
 	});
 
-	it("should set error when fetch fails", async () => {
-		const { invokeClient: invoke } = await import("@/lib/client");
-		vi.mocked(invoke).mockRejectedValue("fetch error");
-
+	it("購読の失敗をerrorに出す", () => {
 		const { result } = renderHook(() => useWorkflowConfig(true));
-
-		await waitFor(() => {
-			expect(result.current.loading).toBe(false);
-		});
-
+		act(() => states.fail("workflows", "fetch error"));
+		expect(result.current.loading).toBe(false);
 		expect(result.current.error).toBe("fetch error");
 		expect(result.current.workflows).toEqual([]);
 	});
 
 	it("should set error when deleteWorkflow fails", async () => {
-		const { invokeClient: invoke } = await import("@/lib/client");
-		vi.mocked(invoke).mockImplementation((cmd: string) => {
-			switch (cmd) {
-				case "list_workflows":
-					return Promise.resolve([]);
-				case "delete_workflow":
-					return Promise.reject("delete error");
-				default:
-					return Promise.resolve(null);
-			}
-		});
-
+		mocks.invoke.mockRejectedValue("delete error");
 		const { result } = renderHook(() => useWorkflowConfig(true));
-
-		await waitFor(() => {
-			expect(result.current.loading).toBe(false);
-		});
-
 		await act(async () => {
 			await result.current.deleteWorkflow("my-workflow");
 		});
-
 		expect(result.current.error).toBe("delete error");
 	});
 
 	it("should set error when openInEditor fails", async () => {
-		const { invokeClient: invoke } = await import("@/lib/client");
-		vi.mocked(invoke).mockImplementation((cmd: string) => {
-			switch (cmd) {
-				case "list_workflows":
-					return Promise.resolve([]);
-				case "open_workflow_in_editor":
-					return Promise.reject("editor error");
-				default:
-					return Promise.resolve(null);
-			}
-		});
-
+		mocks.invoke.mockRejectedValue("editor error");
 		const { result } = renderHook(() => useWorkflowConfig(true));
-
-		await waitFor(() => {
-			expect(result.current.loading).toBe(false);
-		});
-
 		await act(async () => {
 			await result.current.openInEditor("quick-fix");
 		});
-
 		expect(result.current.error).toBe("editor error");
 	});
 });

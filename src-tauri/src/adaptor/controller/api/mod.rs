@@ -550,7 +550,7 @@ pub(crate) mod test_support {
         Arc<RecordingRuntimeGateway>,
     ) {
         let workflow = Arc::new(crate::adaptor::controller::wiring::build_workflow_usecase(
-            data_dir,
+            data_dir, None,
         ));
         let gateway = Arc::new(RecordingRuntimeGateway::default());
         let runtime = Arc::new(WorkflowRuntimeUsecase::new(

@@ -1,7 +1,6 @@
 use crate::adaptor::controller::state::AppState;
 use crate::adaptor::presenter::error::AppError;
 use crate::domain::workflow::FacetKind;
-use crate::usecase::workflow::dto::{facet_summary_to_dto, FacetSummaryDto};
 
 fn parse_domain_facet_kind(kind: &str) -> Result<FacetKind, AppError> {
     match kind {
@@ -12,20 +11,6 @@ fn parse_domain_facet_kind(kind: &str) -> Result<FacetKind, AppError> {
             "Unknown facet kind: {kind}"
         ))),
     }
-}
-
-pub(crate) async fn get_facet_shared(
-    state: &AppState,
-    kind: String,
-    key: String,
-) -> Result<String, AppError> {
-    let kind = parse_domain_facet_kind(&kind)?;
-    let query = state.workflow_usecase.clone();
-    crate::common::operation_context::spawn_blocking(move || {
-        query.get_facet(kind, &key).map_err(AppError::from_failure)
-    })
-    .await
-    .map_err(|e| AppError::new(format!("task join error: {e}")))?
 }
 
 pub(crate) async fn save_facet_shared(
@@ -57,22 +42,6 @@ pub(crate) async fn delete_facet_shared(
     crate::common::operation_context::spawn_blocking(move || {
         usecase
             .delete_facet(kind, &key)
-            .map_err(AppError::from_failure)
-    })
-    .await
-    .map_err(|e| AppError::new(format!("task join error: {e}")))?
-}
-
-pub(crate) async fn list_facet_summaries_shared(
-    state: &AppState,
-    kind: String,
-) -> Result<Vec<FacetSummaryDto>, AppError> {
-    let kind = parse_domain_facet_kind(&kind)?;
-    let query = state.workflow_usecase.clone();
-    crate::common::operation_context::spawn_blocking(move || {
-        query
-            .list_facet_summaries(kind)
-            .map(|summaries| summaries.into_iter().map(facet_summary_to_dto).collect())
             .map_err(AppError::from_failure)
     })
     .await

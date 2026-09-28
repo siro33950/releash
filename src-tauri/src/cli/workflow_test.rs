@@ -79,7 +79,7 @@ async fn test_workflow_status_file直接読取とtauriが同じprojectionを返�
     let cli = file_direct::execution_status(temp.path(), &execution_id)
         .await
         .unwrap();
-    let tauri = crate::adaptor::controller::wiring::build_workflow_usecase(temp.path())
+    let tauri = crate::adaptor::controller::wiring::build_workflow_usecase(temp.path(), None)
         .read_usecase()
         .get_execution_state(&execution_id)
         .await

@@ -41,8 +41,6 @@ import {
 	DeleteReviewThreadRequestSchema,
 	DeleteWorkflowRequestSchema,
 	DetectEditorsRequestSchema,
-	DiagnoseAllCmdRequestSchema,
-	DiagnosticReportSchema,
 	DuplicateFacetRequestSchema,
 	DuplicateWorkflowRequestSchema,
 	FetchIssuesRequestSchema,
@@ -50,9 +48,7 @@ import {
 	FileNavigationResultDtoSchema,
 	GetApplicationStartupOutcomeRequestSchema,
 	GetAppSettingsRequestSchema,
-	GetAutomationConfigDirRequestSchema,
 	GetExternalEditorRequestSchema,
-	GetFacetRequestSchema,
 	GetFileNavigationRequestSchema,
 	GetLanguageFromPathRequestSchema,
 	GetNotionConfigRequestSchema,
@@ -64,8 +60,6 @@ import {
 	GetReleashBaseRequestSchema,
 	GetTerminalPerformanceSwitchesRequestSchema,
 	GetWorkflowConfigRequestSchema,
-	GetWorkflowRequestSchema,
-	GetWorkflowSourceRequestSchema,
 	GitCreateBranchRequestSchema,
 	GitStageRequestSchema,
 	GitStageReviewGroupRequestSchema,
@@ -75,8 +69,6 @@ import {
 	ListDiffRangeDtoSchema,
 	ListDiffTreeNodeDtoSchema,
 	ListEditorInfoDtoSchema,
-	ListFacetSummariesRequestSchema,
-	ListFacetSummaryDtoSchema,
 	ListHiddenRangeDtoSchema,
 	ListInlineChunkDtoSchema,
 	ListNotionLabelOptionViewSchema,
@@ -86,8 +78,6 @@ import {
 	ListTerminalInputPerformanceSampleV1Schema,
 	ListTerminalLaunchPerformanceSampleV1Schema,
 	ListVisibleBlockDtoSchema,
-	ListWorkflowSummaryDtoSchema,
-	ListWorkflowsRequestSchema,
 	NotionTaskPageViewSchema,
 	NotionValidationResultViewSchema,
 	NullableNotionRepoConfigViewSchema,
@@ -146,7 +136,6 @@ import {
 	UpdateProviderExecutableRequestSchema,
 	UpdateWorkflowConfigRequestSchema,
 	ValidateNotionConfigRequestSchema,
-	WorkflowDtoSchema,
 	WorkflowGetOutputRequestSchema,
 	WorkflowGetOutputResponseSchema,
 	WorkflowSectionSchema,
@@ -580,25 +569,6 @@ const commands = {
 		);
 		return result;
 	},
-	diagnose_all_cmd: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["diagnose_all_cmd"],
-	) => {
-		const result = decode(
-			DiagnosticReportSchema,
-			await client.diagnoseAllCmd(
-				fromJson(
-					DiagnoseAllCmdRequestSchema,
-					clientJson(
-						DiagnoseAllCmdRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
 	duplicate_facet: async (
 		client: Client<typeof ClientService>,
 		args: ClientCommandArgs["duplicate_facet"],
@@ -713,25 +683,6 @@ const commands = {
 		);
 		return result;
 	},
-	get_automation_config_dir: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_automation_config_dir"],
-	) => {
-		const result = decode(
-			ResultStringSchema,
-			await client.getAutomationConfigDir(
-				fromJson(
-					GetAutomationConfigDirRequestSchema,
-					clientJson(
-						GetAutomationConfigDirRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
 	get_external_editor: async (
 		client: Client<typeof ClientService>,
 		args: ClientCommandArgs["get_external_editor"],
@@ -743,25 +694,6 @@ const commands = {
 					GetExternalEditorRequestSchema,
 					clientJson(
 						GetExternalEditorRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	get_facet: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_facet"],
-	) => {
-		const result = decode(
-			ResultStringSchema,
-			await client.getFacet(
-				fromJson(
-					GetFacetRequestSchema,
-					clientJson(
-						GetFacetRequestSchema,
 						JSON.parse(JSON.stringify(args ?? {})),
 						true,
 					),
@@ -941,25 +873,6 @@ const commands = {
 		);
 		return result;
 	},
-	get_workflow: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_workflow"],
-	) => {
-		const result = decode(
-			WorkflowDtoSchema,
-			await client.getWorkflow(
-				fromJson(
-					GetWorkflowRequestSchema,
-					clientJson(
-						GetWorkflowRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
 	get_workflow_config: async (
 		client: Client<typeof ClientService>,
 		args: ClientCommandArgs["get_workflow_config"],
@@ -971,25 +884,6 @@ const commands = {
 					GetWorkflowConfigRequestSchema,
 					clientJson(
 						GetWorkflowConfigRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	get_workflow_source: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["get_workflow_source"],
-	) => {
-		const result = decode(
-			ResultStringSchema,
-			await client.getWorkflowSource(
-				fromJson(
-					GetWorkflowSourceRequestSchema,
-					clientJson(
-						GetWorkflowSourceRequestSchema,
 						JSON.parse(JSON.stringify(args ?? {})),
 						true,
 					),
@@ -1112,25 +1006,6 @@ const commands = {
 		);
 		return result;
 	},
-	list_facet_summaries: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["list_facet_summaries"],
-	) => {
-		const result = decode(
-			ListFacetSummaryDtoSchema,
-			await client.listFacetSummaries(
-				fromJson(
-					ListFacetSummariesRequestSchema,
-					clientJson(
-						ListFacetSummariesRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
 	list_provider_hook_health_warnings: async (
 		client: Client<typeof ClientService>,
 		args: ClientCommandArgs["list_provider_hook_health_warnings"],
@@ -1142,25 +1017,6 @@ const commands = {
 					ListProviderHookHealthWarningsRequestSchema,
 					clientJson(
 						ListProviderHookHealthWarningsRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	list_workflows: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["list_workflows"],
-	) => {
-		const result = decode(
-			ListWorkflowSummaryDtoSchema,
-			await client.listWorkflows(
-				fromJson(
-					ListWorkflowsRequestSchema,
-					clientJson(
-						ListWorkflowsRequestSchema,
 						JSON.parse(JSON.stringify(args ?? {})),
 						true,
 					),

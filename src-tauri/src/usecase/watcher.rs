@@ -49,7 +49,7 @@ impl WatcherUsecase {
     pub(crate) fn start_files(
         &self,
         path: &str,
-        on_change: Arc<dyn Fn() + Send + Sync>,
+        on_change: crate::domain::repository::file_watcher::WatchChangeHandler,
     ) -> Result<u64, UsecaseError> {
         self.files
             .start_tree(path, on_change)

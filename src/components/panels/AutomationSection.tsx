@@ -40,21 +40,19 @@ export function AutomationSection({
 		selectedFacetContent,
 		selectedFacetKey,
 		selectedFacetKind,
-		fetchFacets,
+		setFacetKind,
 		selectWorkflow,
 		saveWorkflowSource,
 		deleteWorkflow,
 		duplicateWorkflow,
 		openWorkflowInEditor,
 		selectFacet,
+		clearFacetSelection,
 		saveFacet,
 		deleteFacet,
 		duplicateFacet,
 		openFacetInEditor,
 		renderFacetPreview,
-		setSelectedFacetContent,
-		setSelectedFacetKey,
-		setSelectedFacetKind,
 	} = automation;
 
 	const [tab, setTab] = useState<string>("workflows");
@@ -76,20 +74,18 @@ export function AutomationSection({
 	} | null>(null);
 	const activeWorkflowName = selectedWorkflow?.name ?? selectedWorkflowName;
 
-	// Load facets when switching to facets tab or changing sub-tab
 	useEffect(() => {
-		if (tab === "facets") {
-			fetchFacets(facetSubTab);
-		}
-	}, [tab, facetSubTab, fetchFacets]);
+		setFacetKind(tab === "facets" ? facetSubTab : null);
+	}, [tab, facetSubTab, setFacetKind]);
 
 	const handleEditWorkflow = useCallback(() => {
 		if (!activeWorkflowName) return;
 		setWorkflowSaveDiagnostics(
 			report.items.filter((item) => item.workflow_name === activeWorkflowName),
 		);
+		clearExternalChange();
 		setEditingWorkflow(true);
-	}, [activeWorkflowName, report.items]);
+	}, [activeWorkflowName, report.items, clearExternalChange]);
 
 	const handleSaveWorkflow = useCallback(
 		async (content: string) => {
@@ -100,7 +96,6 @@ export function AutomationSection({
 			if (result.ok) {
 				setEditingWorkflow(false);
 				setWorkflowSaveDiagnostics([]);
-				selectWorkflow(result.workflow.name);
 				return { ok: true as const, workflow: result.workflow };
 			}
 			const diagnostics = result.diagnostics ?? [];
@@ -111,12 +106,13 @@ export function AutomationSection({
 				diagnostics,
 			};
 		},
-		[activeWorkflowName, saveWorkflowSource, selectWorkflow],
+		[activeWorkflowName, saveWorkflowSource],
 	);
 
 	const handleEditFacet = useCallback(() => {
+		clearExternalChange();
 		setEditingFacet(true);
-	}, []);
+	}, [clearExternalChange]);
 
 	const handleSaveFacet = useCallback(
 		async (content: string) => {
@@ -128,13 +124,10 @@ export function AutomationSection({
 				selectedFacetKey,
 				content,
 			);
-			if (result.ok) {
-				setEditingFacet(false);
-				selectFacet(selectedFacetKind, selectedFacetKey);
-			}
+			if (result.ok) setEditingFacet(false);
 			return result;
 		},
-		[selectedFacetKind, selectedFacetKey, saveFacet, selectFacet],
+		[selectedFacetKind, selectedFacetKey, saveFacet],
 	);
 
 	const handleCreateWorkflow = useCallback(
@@ -215,25 +208,10 @@ export function AutomationSection({
 
 	const handleReloadExternal = useCallback(() => {
 		clearExternalChange();
-		if (editingFacet && selectedFacetKind && selectedFacetKey) {
-			setEditingFacet(false);
-			selectFacet(selectedFacetKind, selectedFacetKey);
-		}
-		if (editingWorkflow && activeWorkflowName) {
-			setEditingWorkflow(false);
-			setWorkflowSaveDiagnostics([]);
-			selectWorkflow(activeWorkflowName);
-		}
-	}, [
-		clearExternalChange,
-		editingFacet,
-		editingWorkflow,
-		activeWorkflowName,
-		selectedFacetKind,
-		selectedFacetKey,
-		selectFacet,
-		selectWorkflow,
-	]);
+		setEditingFacet(false);
+		setEditingWorkflow(false);
+		setWorkflowSaveDiagnostics([]);
+	}, [clearExternalChange]);
 
 	if (loading) {
 		return (
@@ -400,9 +378,7 @@ export function AutomationSection({
 							value={facetSubTab}
 							onValueChange={(v) => {
 								setFacetSubTab(v as FacetSubTab);
-								setSelectedFacetContent(null);
-								setSelectedFacetKey(null);
-								setSelectedFacetKind(null);
+								clearFacetSelection();
 								setEditingFacet(false);
 							}}
 						>

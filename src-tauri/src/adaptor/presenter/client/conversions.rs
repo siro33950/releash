@@ -2498,6 +2498,18 @@ where
         })
     }
 }
+impl<T> TryFrom<Option<T>> for wire::NullableWorkflowDto
+where
+    wire::WorkflowDto: TryFrom<T>,
+    <wire::WorkflowDto as TryFrom<T>>::Error: std::fmt::Display,
+{
+    type Error = String;
+    fn try_from(value: Option<T>) -> Result<Self, String> {
+        Ok(Self {
+            value: value.map(cv).transpose()?,
+        })
+    }
+}
 impl<T> TryFrom<Option<T>> for wire::NullableWorkspaceStateDto
 where
     wire::WorkspaceStateDto: TryFrom<T>,

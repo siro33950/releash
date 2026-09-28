@@ -1,4 +1,5 @@
 use crate::domain::code::{ReviewBase, ReviewSection};
+use crate::domain::workflow::FacetKind;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum SubscriptionTarget {
@@ -24,6 +25,12 @@ pub(crate) enum SubscriptionTarget {
     ReviewSnapshot(String, ReviewBase),
     ReviewFileView(String, String, ReviewSection, ReviewBase),
     ReviewThreads(String),
+    Workflows,
+    Workflow(String),
+    WorkflowSource(String),
+    Facets(FacetKind),
+    Facet(FacetKind, String),
+    Diagnostics,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -38,6 +45,7 @@ impl SubscriptionTarget {
         repositories: &[String],
         history_paths: &[String],
         review_comments_dir: &str,
+        workflows_dir: &str,
     ) -> Vec<WatchRequirement> {
         match self {
             Self::Workspaces => repositories
@@ -61,6 +69,15 @@ impl SubscriptionTarget {
             Self::ReviewThreads(_) => vec![WatchRequirement::Files(
                 review_comments_dir.into(),
                 StateChangeSource::ReviewComments(None),
+            )],
+            Self::Workflows
+            | Self::Workflow(_)
+            | Self::WorkflowSource(_)
+            | Self::Facets(_)
+            | Self::Facet(_, _)
+            | Self::Diagnostics => vec![WatchRequirement::Files(
+                workflows_dir.to_string(),
+                StateChangeSource::WorkflowDefinitions,
             )],
             _ => vec![],
         }
@@ -88,6 +105,7 @@ pub(crate) enum StateChangeSource {
     ProviderHistory,
     /// review comment の変化。`None` は worktree を特定できない外部の書き込み。
     ReviewComments(Option<String>),
+    WorkflowDefinitions,
 }
 
 impl SubscriptionTarget {
@@ -111,7 +129,7 @@ impl SubscriptionTarget {
                 _ => false,
             },
             C::Worktree(path) => match self {
-                Self::Workspaces | Self::AgentSession(_) => true,
+                Self::Workspaces | Self::AgentSession(_) | Self::Workflows => true,
                 Self::Selection(p, _)
                 | Self::NodeDetail(p, _)
                 | Self::SessionNode(p, _)
@@ -126,6 +144,15 @@ impl SubscriptionTarget {
             C::ReviewComments(worktree) => {
                 matches!(self, Self::ReviewThreads(name) if worktree.as_ref().is_none_or(|w| w == name))
             }
+            C::WorkflowDefinitions => matches!(
+                self,
+                Self::Workflows
+                    | Self::Workflow(_)
+                    | Self::WorkflowSource(_)
+                    | Self::Facets(_)
+                    | Self::Facet(_, _)
+                    | Self::Diagnostics
+            ),
         }
     }
 }

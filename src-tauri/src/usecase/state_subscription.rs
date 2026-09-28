@@ -249,11 +249,17 @@ impl StateSubscriptionUsecase {
             let mut watches = self.watches.lock();
             let repositories = reads.repositories();
             let review_comments_dir = reads.review_comments_dir();
+            let workflows_dir = reads.workflows_dir();
             let required: std::collections::HashSet<_> = self
                 .active_targets()
                 .into_iter()
                 .flat_map(|target| {
-                    target.watches(&repositories, &self.history_paths, &review_comments_dir)
+                    target.watches(
+                        &repositories,
+                        &self.history_paths,
+                        &review_comments_dir,
+                        &workflows_dir,
+                    )
                 })
                 .collect();
             let current: std::collections::HashSet<_> = watches.keys().cloned().collect();

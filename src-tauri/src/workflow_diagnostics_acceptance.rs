@@ -231,6 +231,7 @@ impl WorkflowDiagnosticsAcceptanceHost {
             Arc::new(DiagnosticsAcceptanceSecretSourceGateway),
             store.clone(),
             None,
+            None,
         )
         .0;
         let workflow = Arc::new(
@@ -280,11 +281,10 @@ impl WorkflowDiagnosticsAcceptanceHost {
         let directory = directory
             .to_str()
             .ok_or_else(|| "diagnostics directory must be valid UTF-8".to_string())?;
-        crate::adaptor::controller::client::workflow::diagnostics::diagnose_all_impl(
-            &self.ui_usecase,
-            Some(directory.to_string()),
-        )
-        .await
+        crate::usecase::workflow::ports::WorkflowDiagnosticsTarget::from_optional_directory(Some(
+            directory.to_string(),
+        ))
+        .and_then(|target| self.ui_usecase.diagnose_all(target))
         .map_err(|error| error.to_string())
         .and_then(|report| {
             serde_json::to_value(

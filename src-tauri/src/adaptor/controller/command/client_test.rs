@@ -140,13 +140,23 @@ parity!(
     json!({}),
     outcome(invoke_tauri(&app, "get_provider_availability", json!({})).await)
 );
-parity!(
-    test_workflow_protoはusecase結果と一致する,
-    app,
-    "list_workflows",
-    json!({}),
-    outcome(invoke_tauri(&app, "list_workflows", json!({})).await)
-);
+#[test]
+fn test_automation_読み取りrpcは購読への移設後に拒否する() {
+    for (command, args) in [
+        ("list_workflows", json!({})),
+        ("get_workflow", json!({"name":"dev"})),
+        ("get_workflow_source", json!({"name":"dev"})),
+        ("list_facet_summaries", json!({"kind":"policy"})),
+        ("get_facet", json!({"kind":"policy","key":"guide"})),
+        ("diagnose_all_cmd", json!({})),
+        ("get_automation_config_dir", json!({})),
+    ] {
+        assert!(
+            wire::CommandRequest::from_value(command, args).is_err(),
+            "{command}"
+        );
+    }
+}
 #[test]
 fn test_workspace_tree_読み取りrpcは購読への移設後に拒否する() {
     assert!(wire::CommandRequest::from_value(
