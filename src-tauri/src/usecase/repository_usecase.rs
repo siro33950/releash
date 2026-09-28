@@ -36,7 +36,7 @@ pub trait WorktreeExecutionArchiver: Send + Sync {
 
 #[derive(Clone)]
 pub struct RepositoryUsecase {
-    state_publisher: Option<crate::usecase::state_subscription::StateSubscriptionPublisher>,
+    state_publisher: Option<crate::usecase::state_subscription::StateSubscriptionOutputRef>,
     branch: Arc<dyn BranchRepository>,
     status: Arc<dyn StatusRepository>,
     worktree: Arc<dyn WorktreeRepository>,
@@ -49,7 +49,7 @@ pub struct RepositoryUsecase {
 impl RepositoryUsecase {
     pub(crate) fn with_state_publisher(
         mut self,
-        publisher: crate::usecase::state_subscription::StateSubscriptionPublisher,
+        publisher: crate::usecase::state_subscription::StateSubscriptionOutputRef,
     ) -> Self {
         self.state_publisher = Some(publisher);
         self
@@ -59,7 +59,6 @@ impl RepositoryUsecase {
         self.query.worktree_operations.clone()
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         branch: Arc<dyn BranchRepository>,
         status: Arc<dyn StatusRepository>,
@@ -84,7 +83,9 @@ impl RepositoryUsecase {
     fn notify_repository_changed(&self, path: &str) {
         if let Some(publisher) = &self.state_publisher {
             publisher.invalidate(
-                crate::domain::state_subscription::StateChangeSource::Repository(vec![path.into()]),
+                crate::usecase::state_subscription::StateChangeSource::Repository(
+                    vec![path.into()],
+                ),
             );
         }
     }
@@ -209,8 +210,6 @@ impl RepositoryUsecase {
 
         Ok(())
     }
-
-    // ── status（読み取り） ──
 
     pub fn get_repository_status_scan(
         &self,
@@ -1561,7 +1560,7 @@ mod repository_usecase_tests {
             assert!(snapshot.branches[0].is_deleting);
             assert_eq!(snapshot.worktree_display_groups.working_areas.len(), 1);
             assert!(snapshot.worktree_display_groups.working_areas[0].is_deleting);
-            let wire: crate::adaptor::protocol::client::BranchCardDto =
+            let wire: crate::adaptor::presenter::client::BranchCardDto =
                 cards.remove(0).try_into().unwrap();
             assert_eq!(wire.is_deleting, Some(true));
             assert!(fake.removed_worktrees.lock().is_empty());
@@ -1656,9 +1655,8 @@ mod repository_usecase_tests {
                     stop_current_branch: Some(stopped),
                     ..Default::default()
                 });
-                let publisher =
-                    crate::usecase::state_subscription::StateSubscriptionPublisher::for_test();
-                let mut changes = publisher.subscribe_changes();
+                let publisher = crate::test_support::state_subscription::test_output();
+                let mut changes = crate::test_support::state_subscription::changes(&publisher);
                 let repository = usecase(fake.clone()).with_state_publisher(publisher);
                 // When
                 let error = repository
@@ -1741,11 +1739,11 @@ mod repository_usecase_tests {
     }
     #[tokio::test]
     async fn test_repository更新_操作成功後だけ購読へ通知する() {
-        use crate::domain::state_subscription::StateChangeSource;
+        use crate::usecase::state_subscription::StateChangeSource;
         // Given
         let fake = Arc::new(<FakeRepo as Default>::default());
-        let publisher = crate::usecase::state_subscription::StateSubscriptionPublisher::for_test();
-        let mut changes = publisher.subscribe_changes();
+        let publisher = crate::test_support::state_subscription::test_output();
+        let mut changes = crate::test_support::state_subscription::changes(&publisher);
         let uc = usecase(fake.clone()).with_state_publisher(publisher.clone());
         // When / Then
         uc.create_worktree("/repo", "feature", true, None).unwrap();

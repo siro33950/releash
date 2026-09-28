@@ -11,6 +11,65 @@ use crate::domain::terminal_surface::gateway::{
 use crate::domain::terminal_surface::{TerminalProcessLaunch, TerminalSurfaceOwner};
 use crate::domain::workspace_tree::WorkspaceIdentity;
 
+struct NoopOutput;
+
+impl crate::usecase::terminal_surface::output::TerminalSurfaceOutputControl for NoopOutput {
+    fn set_state_sink(
+        &self,
+        _: Arc<dyn crate::usecase::terminal_surface::output::TerminalSurfaceStateSink>,
+    ) -> Result<(), UsecaseError> {
+        Ok(())
+    }
+    fn initialize(&self, _: TerminalRegistration) -> Result<(), UsecaseError> {
+        Ok(())
+    }
+    fn subscribe_output(&self, _: &str, _: &str, _: usize) {}
+    fn unsubscribe_output(&self, _: &str, _: &str) {}
+    fn processed_output(&self, _: &str, _: &str, _: usize) {}
+}
+
+#[derive(Default)]
+struct RecordingOutput<'a> {
+    gateway: Option<&'a MockGateway>,
+    fail_initialize: bool,
+    initialized: Mutex<Vec<(String, String, Option<String>, u64, u64)>>,
+    registered: Mutex<Vec<bool>>,
+}
+
+impl crate::usecase::terminal_surface::output::TerminalSurfaceOutputControl
+    for RecordingOutput<'_>
+{
+    fn set_state_sink(
+        &self,
+        _: Arc<dyn crate::usecase::terminal_surface::output::TerminalSurfaceStateSink>,
+    ) -> Result<(), UsecaseError> {
+        Ok(())
+    }
+    fn initialize(&self, registration: TerminalRegistration) -> Result<(), UsecaseError> {
+        if self.fail_initialize {
+            return Err(UsecaseError::Gateway("registration failed".into()));
+        }
+        if let Some(gateway) = self.gateway {
+            self.registered.lock().unwrap().push(
+                gateway
+                    .find_summary_by_session_key(&registration.session_key)
+                    .is_some(),
+            );
+        }
+        self.initialized.lock().unwrap().push((
+            registration.session_key,
+            registration.workspace_path,
+            registration.session_id,
+            registration.runtime_generation,
+            registration.latest_sequence,
+        ));
+        Ok(())
+    }
+    fn subscribe_output(&self, _: &str, _: &str, _: usize) {}
+    fn unsubscribe_output(&self, _: &str, _: &str) {}
+    fn processed_output(&self, _: &str, _: &str, _: usize) {}
+}
+
 struct MockGateway {
     registry: Mutex<TerminalSurfaceRegistry>,
     fail_spawn: AtomicBool,
@@ -270,6 +329,7 @@ fn test_ターミナル画面取得または生成_上限未到達なら新規�
     get_or_spawn(
         &crate::adaptor::gateway::telemetry::TelemetryGateway,
         &gateway,
+        &NoopOutput,
         24,
         80,
         Some("/repo".to_string()),
@@ -282,12 +342,100 @@ fn test_ターミナル画面取得または生成_上限未到達なら新規�
 }
 
 #[test]
+fn test_ターミナル生成通知_入力の所有者とcheckpoint番号を新規生成時だけ渡す() {
+    // Given
+    let gateway = MockGateway::new();
+    let output = RecordingOutput {
+        gateway: Some(&gateway),
+        ..Default::default()
+    };
+    let workspace = workspace_owner("/repo");
+    let session = TerminalSurfaceOwner::session(WorkspaceIdentity::new("/repo"), "agent").unwrap();
+    let mut checkpoint = TerminalSurfaceCheckpoint::empty(80, 24);
+    checkpoint.sequence = 7;
+    *gateway.checkpoint.lock().unwrap() = Some(checkpoint);
+
+    // When
+    for owner in [&workspace, &workspace, &session] {
+        get_or_spawn(
+            &crate::adaptor::gateway::telemetry::TelemetryGateway,
+            &gateway,
+            &output,
+            24,
+            80,
+            None,
+            owner.clone(),
+            None,
+        )
+        .unwrap();
+    }
+
+    // Then
+    assert_eq!(
+        *output.initialized.lock().unwrap(),
+        vec![
+            (workspace.stable_key(), "/repo".into(), None, 1, 7),
+            (
+                session.stable_key(),
+                "/repo".into(),
+                Some("agent".into()),
+                2,
+                7
+            ),
+        ]
+    );
+    assert_eq!(*output.registered.lock().unwrap(), vec![true, true]);
+}
+
+#[test]
+fn test_ターミナル生成通知_登録失敗時に画面と予約を解放する() {
+    // Given
+    let gateway = MockGateway::new();
+    let output = RecordingOutput {
+        fail_initialize: true,
+        ..Default::default()
+    };
+
+    // When
+    let failed = get_or_spawn(
+        &crate::adaptor::gateway::telemetry::TelemetryGateway,
+        &gateway,
+        &output,
+        24,
+        80,
+        None,
+        workspace_owner("/repo"),
+        None,
+    );
+
+    // Then
+    assert_eq!(
+        unwrap_spawn_error(failed),
+        UsecaseError::Gateway("registration failed".into())
+    );
+    assert_eq!(*gateway.killed.lock().unwrap(), vec![1]);
+    assert!(gateway.registry.lock().unwrap().list_summaries().is_empty());
+    get_or_spawn(
+        &crate::adaptor::gateway::telemetry::TelemetryGateway,
+        &gateway,
+        &NoopOutput,
+        24,
+        80,
+        None,
+        workspace_owner("/repo"),
+        None,
+    )
+    .unwrap();
+}
+
+#[test]
 fn test_ターミナル画面生成_新規ptyだけに起動コマンドを一度入力する() {
     let gateway = MockGateway::new();
 
     get_or_spawn_with_startup(
         &crate::adaptor::gateway::telemetry::TelemetryGateway,
         &gateway,
+        &NoopOutput,
         24,
         80,
         Some("/repo".to_string()),
@@ -319,6 +467,7 @@ fn test_agent_session_terminal生成_providerをstructured_root_processとして
     get_or_spawn_with_process(
         &crate::adaptor::gateway::telemetry::TelemetryGateway,
         &gateway,
+        &NoopOutput,
         24,
         80,
         Some("/repo".to_string()),
@@ -350,6 +499,7 @@ fn test_agent_session_terminal再開_終了済みruntimeを新しいprocessへ�
     let result = get_or_spawn_with_process(
         &crate::adaptor::gateway::telemetry::TelemetryGateway,
         &gateway,
+        &NoopOutput,
         24,
         80,
         Some("/repo".to_string()),
@@ -410,6 +560,7 @@ fn test_ターミナル画面_取得または生成_同一所有者の生成中�
             get_or_spawn(
                 &crate::adaptor::gateway::telemetry::TelemetryGateway,
                 gateway.as_ref(),
+                &NoopOutput,
                 24,
                 80,
                 Some("/repo".to_string()),
@@ -429,6 +580,7 @@ fn test_ターミナル画面_取得または生成_同一所有者の生成中�
             get_or_spawn(
                 &crate::adaptor::gateway::telemetry::TelemetryGateway,
                 gateway.as_ref(),
+                &NoopOutput,
                 24,
                 80,
                 Some("/repo".to_string()),
@@ -461,6 +613,7 @@ fn test_ターミナル画面取得または生成_通信文脈を要求しな�
     get_or_spawn(
         &crate::adaptor::gateway::telemetry::TelemetryGateway,
         &gateway,
+        &NoopOutput,
         24,
         80,
         Some("/repo".to_string()),
@@ -480,6 +633,7 @@ fn test_ターミナル画面取得または生成_同一作業木に旧上限�
     get_or_spawn(
         &crate::adaptor::gateway::telemetry::TelemetryGateway,
         &gateway,
+        &NoopOutput,
         24,
         80,
         Some("/repo".to_string()),
@@ -505,6 +659,7 @@ fn test_ターミナル画面取得または生成_異なる作業木に旧総�
     get_or_spawn(
         &crate::adaptor::gateway::telemetry::TelemetryGateway,
         &gateway,
+        &NoopOutput,
         24,
         80,
         Some("/repo".to_string()),
@@ -543,6 +698,7 @@ fn test_ターミナル画面取得または生成_owner衝突を分類する() 
     let result = get_or_spawn_with_process(
         &crate::adaptor::gateway::telemetry::TelemetryGateway,
         &gateway,
+        &NoopOutput,
         24,
         80,
         Some("/repo".to_string()),
@@ -562,6 +718,7 @@ fn test_ターミナル画面生成_実行環境生成失敗時に予約を解�
     let result = get_or_spawn(
         &crate::adaptor::gateway::telemetry::TelemetryGateway,
         &gateway,
+        &NoopOutput,
         24,
         80,
         Some("/repo".to_string()),
@@ -580,6 +737,7 @@ fn test_ターミナル画面生成_実行環境生成失敗時に予約を解�
     get_or_spawn(
         &crate::adaptor::gateway::telemetry::TelemetryGateway,
         &gateway,
+        &NoopOutput,
         24,
         80,
         Some("/repo".to_string()),
@@ -599,6 +757,7 @@ fn test_ターミナル画面生成_復元点読込失敗時に予約を解除�
     let result = get_or_spawn(
         &crate::adaptor::gateway::telemetry::TelemetryGateway,
         &gateway,
+        &NoopOutput,
         24,
         80,
         Some("/repo".to_string()),
@@ -620,6 +779,7 @@ fn test_ターミナル画面生成_復元点読込失敗時に予約を解除�
     get_or_spawn(
         &crate::adaptor::gateway::telemetry::TelemetryGateway,
         &gateway,
+        &NoopOutput,
         24,
         80,
         Some("/repo".to_string()),
@@ -639,6 +799,7 @@ fn test_ターミナル画面生成_出力読取開始失敗時に新規画面�
     let result = get_or_spawn(
         &crate::adaptor::gateway::telemetry::TelemetryGateway,
         &gateway,
+        &NoopOutput,
         24,
         80,
         Some("/repo".to_string()),
@@ -671,6 +832,7 @@ fn test_ターミナル画面生成_出力読取開始失敗時は復元点も�
     let failed = get_or_spawn_with_startup(
         &crate::adaptor::gateway::telemetry::TelemetryGateway,
         &gateway,
+        &NoopOutput,
         24,
         80,
         Some("/repo".to_string()),
@@ -685,6 +847,7 @@ fn test_ターミナル画面生成_出力読取開始失敗時は復元点も�
     get_or_spawn_with_startup(
         &crate::adaptor::gateway::telemetry::TelemetryGateway,
         &gateway,
+        &NoopOutput,
         24,
         80,
         Some("/repo".to_string()),
@@ -719,6 +882,7 @@ fn test_ターミナル画面明示終了_復元点も破棄して再生成の�
     get_or_spawn_with_startup(
         &crate::adaptor::gateway::telemetry::TelemetryGateway,
         &gateway,
+        &NoopOutput,
         24,
         80,
         Some("/repo".to_string()),
@@ -743,6 +907,7 @@ fn test_ターミナル画面生成_後始末終了失敗時は明示再試行�
     let result = get_or_spawn(
         &crate::adaptor::gateway::telemetry::TelemetryGateway,
         &gateway,
+        &NoopOutput,
         24,
         80,
         Some("/repo".to_string()),
@@ -774,6 +939,7 @@ fn test_ターミナル画面取得または生成_既存所有者なら生成�
     let result = get_or_spawn(
         &crate::adaptor::gateway::telemetry::TelemetryGateway,
         &gateway,
+        &NoopOutput,
         24,
         80,
         Some("/repo".to_string()),
@@ -797,6 +963,7 @@ fn test_ターミナル画面取得または生成_既存所有者確認で復�
     let result = get_or_spawn(
         &crate::adaptor::gateway::telemetry::TelemetryGateway,
         &gateway,
+        &NoopOutput,
         24,
         80,
         Some("/repo".to_string()),
@@ -816,6 +983,7 @@ fn test_ターミナル画面取得または生成_別ワークスペースの�
     let result = get_or_spawn(
         &crate::adaptor::gateway::telemetry::TelemetryGateway,
         &gateway,
+        &NoopOutput,
         24,
         80,
         Some("/other".to_string()),
@@ -844,6 +1012,7 @@ fn test_ターミナル画面_再起動復元_復元点寸法で新規ptyを開�
     get_or_spawn_with_startup(
         &crate::adaptor::gateway::telemetry::TelemetryGateway,
         &gateway,
+        &NoopOutput,
         24,
         80,
         Some("/repo".to_string()),

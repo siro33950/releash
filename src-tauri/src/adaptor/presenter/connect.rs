@@ -1,4 +1,4 @@
-use crate::adaptor::protocol::connect::{rpc, to_rpc};
+use crate::adaptor::presenter::connect_wire::{rpc, to_rpc};
 
 pub(crate) fn invalid_request(message: impl Into<String>) -> connectrpc::ConnectError {
     connectrpc::ConnectError::new(connectrpc::ErrorCode::InvalidArgument, message.into())
@@ -14,7 +14,7 @@ pub(crate) fn classified_error(
 }
 
 pub(crate) fn command_error(
-    error: crate::adaptor::protocol::client::CommandFailure,
+    error: crate::adaptor::presenter::client::CommandFailure,
 ) -> connectrpc::ConnectError {
     match to_rpc::<rpc::CommandError>(&error.detail) {
         Ok(detail) => connectrpc::ConnectError::new(error.kind, "Command failed").with_detail(
@@ -299,7 +299,7 @@ impl ConnectFailure for crate::domain::provider_lifecycle::ProviderHookHealthRep
     }
 }
 
-impl ConnectFailure for crate::domain::state_subscription::SubscriptionError {
+impl ConnectFailure for crate::usecase::state_subscription::SubscriptionError {
     fn connect_code(&self) -> connectrpc::ErrorCode {
         match self {
             Self::InvalidId => connectrpc::ErrorCode::InvalidArgument,
@@ -307,7 +307,7 @@ impl ConnectFailure for crate::domain::state_subscription::SubscriptionError {
             Self::StreamEnded | Self::UnknownTarget | Self::SnapshotRequired => {
                 connectrpc::ErrorCode::NotFound
             }
-            Self::VersionExhausted => connectrpc::ErrorCode::Internal,
+            Self::VersionExhausted | Self::EncodingFailed => connectrpc::ErrorCode::Internal,
         }
     }
 }

@@ -1,0 +1,275 @@
+use std::sync::Arc;
+
+use serde::{Deserialize, Serialize};
+
+use crate::domain::terminal_surface::entities::TerminalSurface;
+use crate::domain::terminal_surface::{TerminalProcessLaunch, TerminalSurfaceOwner};
+use crate::domain::workspace_tree::WorkspaceIdentity;
+use crate::usecase::terminal_surface::application::TerminalSurfaceStreamItem;
+use crate::usecase::terminal_surface::spawn_usecase::GetOrSpawnTerminalOutcome;
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalLaunchPerformanceSampleV1 {
+    pub phase: String,
+    pub duration_ms: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalPerformanceSwitchesV1 {
+    pub disable_output_flow_control: bool,
+    pub disable_terminal_journal: bool,
+    pub disable_renderer_write_serialization: bool,
+    pub disable_webgl_renderer: bool,
+}
+
+impl From<crate::usecase::telemetry::TerminalPerformanceSwitches>
+    for TerminalPerformanceSwitchesV1
+{
+    fn from(switches: crate::usecase::telemetry::TerminalPerformanceSwitches) -> Self {
+        Self {
+            disable_output_flow_control: switches.disable_output_flow_control,
+            disable_terminal_journal: switches.disable_terminal_journal,
+            disable_renderer_write_serialization: switches.disable_renderer_write_serialization,
+            disable_webgl_renderer: switches.disable_webgl_renderer,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalInputPerformanceSampleV1 {
+    pub sequence: u64,
+    pub on_data_to_command_ingress_ms: f64,
+    pub command_ingress_to_admission_ms: f64,
+    pub admission_to_writer_enqueue_ms: f64,
+    pub writer_enqueue_to_output_read_ms: f64,
+    pub output_read_to_model_apply_ms: f64,
+    pub model_apply_to_event_publish_ms: f64,
+    pub event_published_at_unix_ms: f64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalProcessLaunchV1 {
+    pub executable: String,
+    pub arguments: Vec<String>,
+    pub environment: Vec<(String, String)>,
+}
+
+impl TryFrom<TerminalProcessLaunchV1> for TerminalProcessLaunch {
+    type Error = String;
+
+    fn try_from(value: TerminalProcessLaunchV1) -> Result<Self, Self::Error> {
+        TerminalProcessLaunch::new(value.executable, value.arguments, value.environment)
+            .map_err(|error| format!("invalid Terminal process launch: {error:?}"))
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct TerminalSurfaceCheckpointV1 {
+    pub replay: String,
+    pub sequence: u64,
+    pub cols: u16,
+    pub rows: u16,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct TerminalSurfaceV1 {
+    pub session_key: String,
+    pub terminal_surface: TerminalSurfaceCheckpointV1,
+    pub is_exited: bool,
+    pub exit_code: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+impl From<TerminalSurface> for TerminalSurfaceV1 {
+    fn from(surface: TerminalSurface) -> Self {
+        Self {
+            session_key: surface.session_key,
+            terminal_surface: TerminalSurfaceCheckpointV1 {
+                replay: surface.checkpoint.replay,
+                sequence: surface.checkpoint.sequence,
+                cols: surface.checkpoint.cols,
+                rows: surface.checkpoint.rows,
+            },
+            is_exited: surface.process_state.is_exited(),
+            exit_code: surface.process_state.exit_code(),
+            label: surface.label,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct GetOrSpawnTerminalV1 {
+    pub session_key: String,
+}
+
+impl From<GetOrSpawnTerminalOutcome> for GetOrSpawnTerminalV1 {
+    fn from(outcome: GetOrSpawnTerminalOutcome) -> Self {
+        let surface = outcome.surface;
+        Self {
+            session_key: surface.session_key,
+        }
+    }
+}
+
+/// terminal WebSocket認証に使うsubprotocolのprefix。クライアントは
+/// `{prefix}{bearer_token}` を Sec-WebSocket-Protocol として送る。
+pub const TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX: &str = "releash-bearer.";
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum TerminalSurfaceStreamItemV1 {
+    Snapshot {
+        surface: TerminalSurfaceV1,
+    },
+    Output {
+        session_key: String,
+        data: Arc<str>,
+        sequence: u64,
+    },
+    Resize {
+        session_key: String,
+        cols: u16,
+        rows: u16,
+        sequence: u64,
+    },
+    Exit {
+        session_key: String,
+        exit_code: Option<i32>,
+        sequence: u64,
+    },
+}
+
+impl From<TerminalSurfaceStreamItem> for TerminalSurfaceStreamItemV1 {
+    fn from(item: TerminalSurfaceStreamItem) -> Self {
+        match item {
+            TerminalSurfaceStreamItem::Snapshot(surface) => Self::Snapshot {
+                surface: surface.into(),
+            },
+            TerminalSurfaceStreamItem::Output {
+                session_key,
+                data,
+                sequence,
+            } => Self::Output {
+                session_key,
+                data,
+                sequence,
+            },
+            TerminalSurfaceStreamItem::Resize {
+                session_key,
+                cols,
+                rows,
+                sequence,
+            } => Self::Resize {
+                session_key,
+                cols,
+                rows,
+                sequence,
+            },
+            TerminalSurfaceStreamItem::Exit {
+                session_key,
+                exit_code,
+                sequence,
+            } => Self::Exit {
+                session_key,
+                exit_code,
+                sequence,
+            },
+        }
+    }
+}
+
+impl TryFrom<&crate::adaptor::presenter::client::TerminalEvent> for TerminalSurfaceStreamItemV1 {
+    type Error = String;
+
+    fn try_from(
+        value: &crate::adaptor::presenter::client::TerminalEvent,
+    ) -> Result<Self, Self::Error> {
+        use crate::adaptor::presenter::client::terminal_event::Item;
+        match value.item.as_ref().ok_or("Missing terminal event")? {
+            Item::Snapshot(snapshot) => Ok(Self::Snapshot {
+                surface: TerminalSurfaceV1 {
+                    session_key: snapshot.session_key.clone(),
+                    terminal_surface: TerminalSurfaceCheckpointV1 {
+                        replay: snapshot.replay.clone(),
+                        sequence: snapshot.sequence,
+                        cols: snapshot
+                            .cols
+                            .try_into()
+                            .map_err(|_| "Invalid terminal columns")?,
+                        rows: snapshot
+                            .rows
+                            .try_into()
+                            .map_err(|_| "Invalid terminal rows")?,
+                    },
+                    is_exited: snapshot.is_exited,
+                    exit_code: snapshot.exit_code,
+                    label: None,
+                },
+            }),
+            Item::Output(output) => Ok(Self::Output {
+                session_key: output.session_key.clone(),
+                data: Arc::from(output.data.as_str()),
+                sequence: output.sequence,
+            }),
+            Item::Resize(resize) => Ok(Self::Resize {
+                session_key: resize.session_key.clone(),
+                cols: resize
+                    .cols
+                    .try_into()
+                    .map_err(|_| "Invalid terminal columns")?,
+                rows: resize
+                    .rows
+                    .try_into()
+                    .map_err(|_| "Invalid terminal rows")?,
+                sequence: resize.sequence,
+            }),
+            Item::Exit(exit) => Ok(Self::Exit {
+                session_key: exit.session_key.clone(),
+                exit_code: exit.exit_code,
+                sequence: exit.sequence,
+            }),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum TerminalSurfaceOwnerV1 {
+    Workspace {
+        workspace_path: String,
+    },
+    Session {
+        workspace_path: String,
+        session_id: String,
+    },
+}
+
+impl TryFrom<TerminalSurfaceOwnerV1> for TerminalSurfaceOwner {
+    type Error = String;
+
+    fn try_from(value: TerminalSurfaceOwnerV1) -> Result<Self, Self::Error> {
+        match value {
+            TerminalSurfaceOwnerV1::Workspace { workspace_path } => {
+                TerminalSurfaceOwner::workspace(WorkspaceIdentity::new(workspace_path))
+            }
+            TerminalSurfaceOwnerV1::Session {
+                workspace_path,
+                session_id,
+            } => TerminalSurfaceOwner::session(WorkspaceIdentity::new(workspace_path), session_id),
+        }
+        .map_err(|error| format!("invalid Terminal Surface owner: {error:?}"))
+    }
+}
+
+#[cfg(test)]
+#[path = "terminal_test.rs"]
+mod terminal_tests;

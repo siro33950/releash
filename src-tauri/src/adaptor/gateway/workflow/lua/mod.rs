@@ -4,7 +4,6 @@ use std::path::Path;
 
 use serde_json::{Number, Value};
 
-use crate::adaptor::protocol::workflow::DiagnosticSpan;
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::workflow::services::{contract_schema, reference};
 use crate::domain::workflow::value_objects::{
@@ -18,6 +17,7 @@ use crate::infrastructure::lua::{
     evaluate, LuaData, LuaEvaluationRequest, LuaFailure, LuaHost, LuaHostError, LuaHostHandle,
     LuaLimits, LuaModule, LuaModuleValue, LuaSourceLocation, LuaTableData, LuaTableKey,
 };
+use crate::usecase::workflow::diagnostic_dto::DiagnosticSpan;
 
 mod field_span;
 mod stubs;

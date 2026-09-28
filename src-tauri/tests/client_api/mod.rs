@@ -295,17 +295,13 @@ async fn test_backend通知_残る3イベントがconnectだけへ届く() {
         path: "/repo/file".into(),
         kind: "change".into(),
     };
-    let git = GitStatusChangedEvent {
-        repo_path: "/repo".into(),
-    };
     // When
-    let pushes = [
-        BackendPush::FileChange(file),
-        BackendPush::GitStatusChanged(git),
-        BackendPush::ReviewCommentsChanged("*"),
-    ];
-    for (index, push) in pushes.into_iter().enumerate() {
-        fixture.host.emit(push);
+    for index in 0..events.len() {
+        match index {
+            0 => fixture.host.emit(BackendPush::FileChange(file.clone())),
+            1 => fixture.host.emit_git_status_changed("/repo"),
+            _ => fixture.host.emit(BackendPush::ReviewCommentsChanged("*")),
+        }
         let frame = receive(&mut socket).await;
         // Then
         assert_eq!(frame["status"], "push");

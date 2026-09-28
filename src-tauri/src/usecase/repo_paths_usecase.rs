@@ -7,9 +7,13 @@
 
 use std::sync::Arc;
 
-use crate::domain::repository::{RepoPathsNotifier, RepoPathsRepository};
+use crate::domain::repository::RepoPathsRepository;
 
 use super::repository_error::UsecaseError;
+
+pub trait RepoPathsNotifier: Send + Sync {
+    fn notify_changed(&self, paths: Vec<String>);
+}
 
 #[derive(Clone)]
 pub struct RepoPathsUsecase {

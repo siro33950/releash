@@ -467,11 +467,16 @@ nodes:
         let WorkflowSourceSaveError::Diagnostics(items) = error else {
             panic!("missing knowledge must remain a structured diagnostic");
         };
-        let items = serde_json::to_value(items)
-            .unwrap()
-            .as_array()
-            .unwrap()
-            .clone();
+        let items = serde_json::to_value(
+            items
+                .into_iter()
+                .map(crate::adaptor::presenter::workflow_api::DiagnosticItemResponse::from)
+                .collect::<Vec<_>>(),
+        )
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .clone();
         let diagnostic = items
             .iter()
             .find(|item| item["code"] == "FAC002")

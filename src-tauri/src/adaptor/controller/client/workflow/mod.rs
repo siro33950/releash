@@ -1296,7 +1296,7 @@ pub(crate) mod tests {
 
     struct NoopRepoPathsNotifier;
 
-    impl crate::domain::repository::RepoPathsNotifier for NoopRepoPathsNotifier {
+    impl crate::usecase::repo_paths_usecase::RepoPathsNotifier for NoopRepoPathsNotifier {
         fn notify_changed(&self, _paths: Vec<String>) {}
     }
 

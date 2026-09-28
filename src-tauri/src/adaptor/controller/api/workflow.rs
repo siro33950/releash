@@ -5,7 +5,11 @@ use axum::{Json, Router};
 use serde::Deserialize;
 
 use crate::adaptor::presenter::workflow::workflow_execution_to_view;
-use crate::adaptor::protocol::workflow::WorkflowExecutionView;
+use crate::adaptor::presenter::workflow_api::{
+    DiagnosticReportResponse, WorkflowEventResponse, WorkflowExecutionSummaryResponse,
+    WorkflowSummaryResponse,
+};
+use crate::adaptor::presenter::workflow_wire::WorkflowExecutionView;
 use crate::domain::workflow::{
     ExecutionOrigin, ExecutionStatusFilter, WorkflowError, WorkflowPageRequest,
 };
@@ -13,16 +17,17 @@ use crate::usecase::workflow::command::{
     AbortExecutionCommand, ApprovalCommand, RetryNodeCommand, StartExecutionCommand,
     SubmitOutputArtifact, SubmitOutputCommand,
 };
-use crate::usecase::workflow::dto::{WorkflowExecutionSummaryDto, WorkflowSummaryDto};
 use crate::usecase::workflow::ports::WorkflowDiagnosticsTarget;
 
 use super::error::ApiError;
 use super::protocol::{
-    ApproveNodeRequest, GetArtifactResponse, MutationResponse, RetryNodeRequest,
-    StartExecutionRequest, StartExecutionResponse, SubmitOutputRequest, ValidateArtifactRequest,
-    ValidateArtifactResponse,
+    ApproveNodeRequest, RetryNodeRequest, StartExecutionRequest, SubmitOutputRequest,
+    ValidateArtifactRequest,
 };
 use super::LocalApiState;
+use crate::adaptor::presenter::api_response::{
+    GetArtifactResponse, MutationResponse, StartExecutionResponse, ValidateArtifactResponse,
+};
 
 const DEFAULT_PAGE_LIMIT: u64 = 100;
 const MAX_PAGE_LIMIT: u64 = 200;
@@ -101,27 +106,27 @@ pub(super) fn router() -> Router<LocalApiState> {
 
 async fn list_workflows(
     State(state): State<LocalApiState>,
-) -> Result<Json<Vec<WorkflowSummaryDto>>, ApiError> {
+) -> Result<Json<Vec<WorkflowSummaryResponse>>, ApiError> {
     let workflow = state.workflow;
     let summaries = (workflow.list_workflow_summaries().await).map_err(ApiError::from)?;
-    Ok(Json(summaries))
+    Ok(Json(summaries.into_iter().map(Into::into).collect()))
 }
 
 async fn diagnose_workflows(
     State(state): State<LocalApiState>,
     query: Result<Query<DiagnosticsQuery>, QueryRejection>,
-) -> Result<Json<crate::usecase::workflow::diagnostic_dto::DiagnosticReport>, ApiError> {
+) -> Result<Json<DiagnosticReportResponse>, ApiError> {
     let Query(query) = query.map_err(|error| ApiError::invalid_request(error.body_text()))?;
     let target = WorkflowDiagnosticsTarget::from_optional_directory(query.dir)?;
     let workflow = state.workflow;
     let report = blocking(move || workflow.diagnose_all(target)).await?;
-    Ok(Json(report))
+    Ok(Json(report.into()))
 }
 
 async fn list_executions(
     State(state): State<LocalApiState>,
     query: Result<Query<ExecutionListQuery>, QueryRejection>,
-) -> Result<Json<Vec<WorkflowExecutionSummaryDto>>, ApiError> {
+) -> Result<Json<Vec<WorkflowExecutionSummaryResponse>>, ApiError> {
     let Query(query) = query.map_err(|error| ApiError::invalid_request(error.body_text()))?;
     let status = parse_status_filter(query.status.as_deref())?;
     let worktree = query.worktree;
@@ -131,7 +136,7 @@ async fn list_executions(
         .list_executions_filtered(status, worktree.as_deref(), page)
         .await)
         .map_err(ApiError::from)?;
-    Ok(Json(executions))
+    Ok(Json(executions.into_iter().map(Into::into).collect()))
 }
 
 async fn start_execution(
@@ -149,7 +154,7 @@ async fn start_execution(
             created_from,
         })
         .await?;
-    Ok(Json(StartExecutionResponse { execution_id }))
+    Ok(Json(execution_id.into()))
 }
 
 async fn get_execution(
@@ -170,13 +175,13 @@ async fn get_execution_log(
     State(state): State<LocalApiState>,
     Path(execution_id): Path<String>,
     query: Result<Query<ExecutionLogQuery>, QueryRejection>,
-) -> Result<Json<Vec<crate::usecase::workflow::WorkflowEventView>>, ApiError> {
+) -> Result<Json<Vec<WorkflowEventResponse>>, ApiError> {
     let Query(query) = query.map_err(|error| ApiError::invalid_request(error.body_text()))?;
     let page = parse_page(query.limit, query.offset)?;
     let workflow = state.workflow;
     let events =
         (workflow.get_execution_log_page(&execution_id, page).await).map_err(ApiError::from)?;
-    Ok(Json(events))
+    Ok(Json(events.into_iter().map(Into::into).collect()))
 }
 
 async fn approve_node(

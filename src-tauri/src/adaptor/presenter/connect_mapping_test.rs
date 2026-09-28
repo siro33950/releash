@@ -1764,24 +1764,32 @@ mod domain_state_subscription_subscriptions_test {
         // Given
         let cases = [
             (
-                crate::domain::state_subscription::SubscriptionError::InvalidId,
+                crate::usecase::state_subscription::SubscriptionError::InvalidId,
                 F::InvalidArgument,
             ),
             (
-                crate::domain::state_subscription::SubscriptionError::AlreadyExists,
+                crate::usecase::state_subscription::SubscriptionError::AlreadyExists,
                 F::AlreadyExists,
             ),
             (
-                crate::domain::state_subscription::SubscriptionError::StreamEnded,
+                crate::usecase::state_subscription::SubscriptionError::StreamEnded,
                 F::NotFound,
             ),
             (
-                crate::domain::state_subscription::SubscriptionError::UnknownTarget,
+                crate::usecase::state_subscription::SubscriptionError::UnknownTarget,
                 F::NotFound,
             ),
             (
-                crate::domain::state_subscription::SubscriptionError::VersionExhausted,
+                crate::usecase::state_subscription::SubscriptionError::VersionExhausted,
                 F::Internal,
+            ),
+            (
+                crate::usecase::state_subscription::SubscriptionError::EncodingFailed,
+                F::Internal,
+            ),
+            (
+                crate::usecase::state_subscription::SubscriptionError::SnapshotRequired,
+                F::NotFound,
             ),
         ];
         for (error, expected) in cases {

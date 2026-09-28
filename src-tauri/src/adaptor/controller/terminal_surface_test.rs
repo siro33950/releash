@@ -138,7 +138,7 @@ fn test_ターミナル起動性能計測_commandは匿名phaseとdurationだけ
     assert_eq!(
         take_terminal_launch_performance_samples_shared(),
         vec![
-            crate::adaptor::protocol::terminal::TerminalLaunchPerformanceSampleV1 {
+            crate::adaptor::presenter::terminal::TerminalLaunchPerformanceSampleV1 {
                 phase: "terminal.launch.pty_open_and_spawn".to_string(),
                 duration_ms: 7.0,
             }
@@ -170,11 +170,11 @@ fn test_ターミナル起動性能計測_rendererは許可したphaseと有限d
     assert_eq!(
         take_terminal_launch_performance_samples_shared(),
         vec![
-            crate::adaptor::protocol::terminal::TerminalLaunchPerformanceSampleV1 {
+            crate::adaptor::presenter::terminal::TerminalLaunchPerformanceSampleV1 {
                 phase: "terminal.launch.first_xterm_parsed".to_string(),
                 duration_ms: 8.0,
             },
-            crate::adaptor::protocol::terminal::TerminalLaunchPerformanceSampleV1 {
+            crate::adaptor::presenter::terminal::TerminalLaunchPerformanceSampleV1 {
                 phase: "terminal.launch.first_paint".to_string(),
                 duration_ms: 13.0,
             },

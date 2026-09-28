@@ -24,8 +24,8 @@ async fn test_クライアントdispatch_startup失敗時はusecase実行前に�
     );
 }
 
-use crate::adaptor::controller::api::protocol::client as wire;
 use crate::adaptor::controller::command as commands;
+use crate::adaptor::presenter::client as wire;
 use prost::Message;
 use serde_json::json;
 
@@ -214,7 +214,7 @@ async fn test_watcher_protoはusecase結果と一致する() {
     // Given
     let (app, dispatch) = parity_app();
     let watcher = crate::desktop_test_support::build_watcher_usecase(app.handle());
-    let expected = api::protocol::connect::command_error(
+    let expected = crate::adaptor::presenter::connect::command_error(
         crate::adaptor::presenter::error::AppError::from_failure(watcher.stop(999).unwrap_err())
             .into(),
     );
@@ -439,7 +439,6 @@ async fn test_クライアントrpc_期限切れで処理を止め要求枠を�
         data.path(),
         "master",
         "client",
-        None,
         Some(api::ClientApiDeps::new(
             Arc::new(dispatch),
             crate::adaptor::gateway::push::ClientPushGateway::new(Arc::new(
@@ -593,7 +592,6 @@ async fn test_計算と操作command_connectの実行結果とエラーがtauri�
         data.path(),
         "master",
         "client",
-        None,
         Some(api::ClientApiDeps::new(
             dispatch,
             crate::adaptor::gateway::push::ClientPushGateway::new(Arc::new(
@@ -1120,7 +1118,6 @@ async fn test_workspace保存_connectがui追加fieldを受理し既存項目を
         data.path(),
         "master",
         "client",
-        None,
         Some(api::ClientApiDeps::new(
             Arc::new(dispatch),
             crate::adaptor::gateway::push::ClientPushGateway::new(Arc::new(

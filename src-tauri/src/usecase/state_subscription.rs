@@ -1,21 +1,16 @@
+mod error;
 mod reads;
-#[cfg(test)]
-pub(crate) use reads::reads_tests::Fixture as StateReadsFixture;
 pub(crate) use reads::StateSubscriptionRead;
 pub(crate) use reads::{StateReadError, StateReadFailure, WorkspaceStateReads};
+mod target;
 mod terminal;
 mod value;
-use crate::domain::state_subscription::{
-    Delivery, Event, SubscriptionError, Subscriptions, Version,
-};
+pub(crate) use error::SubscriptionError;
 use futures_util::{Stream, StreamExt};
 use parking_lot::Mutex;
 use std::sync::Arc;
-use tokio::sync::Notify;
+pub(crate) use target::{StateChangeSource, SubscriptionTarget, WatchRequirement};
 pub(crate) use value::StateValue;
-
-pub(crate) const REPO_PATHS: &str = "repository-paths";
-pub(crate) const BOOKMARK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
 
 pub(crate) trait SubscriptionTimer: Send + Sync {
     fn interval(
@@ -24,58 +19,112 @@ pub(crate) trait SubscriptionTimer: Send + Sync {
     ) -> std::pin::Pin<Box<dyn Stream<Item = ()> + Send>>;
 }
 
-pub(crate) enum StateSubscriptionEvent {
-    Ready,
-    Item(String, Event<StateValue>),
+pub(crate) trait StateSubscriptionOutput: Send + Sync {
+    #[cfg(test)]
+    fn as_any(&self) -> &dyn std::any::Any;
+    fn invalidate(&self, source: StateChangeSource);
+    fn start(
+        &self,
+        client: &str,
+        target: &SubscriptionTarget,
+        cursor: Option<(&str, u64)>,
+        terminal_input_id: Option<&str>,
+    ) -> Result<(), StateReadError>;
+    fn stop(
+        &self,
+        client: &str,
+        target: &SubscriptionTarget,
+        active: &std::collections::HashSet<SubscriptionTarget>,
+    ) -> Result<(), SubscriptionError>;
+    fn publish_initial(
+        &self,
+        target: &SubscriptionTarget,
+        snapshot: StateValue,
+    ) -> Result<(), SubscriptionError>;
+    fn publish(
+        &self,
+        target: &SubscriptionTarget,
+        snapshot: StateValue,
+        delta: Option<StateValue>,
+    ) -> Result<(), SubscriptionError>;
+    fn set_terminal_snapshot(
+        &self,
+        target: &SubscriptionTarget,
+        runtime_generation: u64,
+        sequence: u64,
+        snapshot: StateValue,
+    ) -> Result<(), SubscriptionError>;
 }
+
+pub(crate) type StateSubscriptionOutputRef = Arc<dyn StateSubscriptionOutput>;
 
 #[derive(Clone)]
 pub(crate) struct StateSubscriptionUsecase {
-    publisher: StateSubscriptionPublisher,
+    publisher: StateSubscriptionOutputRef,
+    changes: tokio::sync::broadcast::Sender<StateChangeSource>,
+    clients: Arc<
+        Mutex<std::collections::HashMap<String, std::collections::HashSet<SubscriptionTarget>>>,
+    >,
+    terminal_inputs: Arc<Mutex<std::collections::HashMap<(String, SubscriptionTarget), String>>>,
+    terminal_resets: Arc<
+        Mutex<std::collections::HashMap<SubscriptionTarget, std::collections::HashSet<String>>>,
+    >,
     terminal:
         Option<Arc<crate::usecase::terminal_surface::application::TerminalSurfaceApplication>>,
-    terminal_inputs: Arc<Mutex<std::collections::HashMap<(String, String), String>>>,
     timer: Arc<dyn SubscriptionTimer>,
     history_paths: Vec<String>,
     reads: Option<Arc<dyn StateSubscriptionRead>>,
     watchers: Option<Arc<crate::usecase::watcher::WatcherUsecase>>,
-    workers: Arc<
-        Mutex<
-            std::collections::HashMap<
-                crate::domain::state_subscription::SubscriptionTarget,
-                tokio::task::JoinHandle<()>,
-            >,
-        >,
-    >,
+    workers: Arc<Mutex<std::collections::HashMap<SubscriptionTarget, tokio::task::JoinHandle<()>>>>,
     starts: Arc<tokio::sync::Mutex<()>>,
-    watches: Arc<
-        Mutex<std::collections::HashMap<crate::domain::state_subscription::WatchRequirement, u64>>,
-    >,
+    watches: Arc<Mutex<std::collections::HashMap<WatchRequirement, u64>>>,
 }
 
 impl StateSubscriptionUsecase {
-    pub fn new(paths: Vec<String>, timer: Arc<dyn SubscriptionTimer>) -> Self {
-        let mut state = Subscriptions::new(uuid::Uuid::new_v4().to_string());
-        state
-            .register(
-                REPO_PATHS.into(),
-                StateValue::RepositoryPaths(paths),
-                Delivery::Full,
-            )
-            .expect("unique target");
-        let terminal_inputs = Arc::new(Mutex::new(std::collections::HashMap::new()));
+    pub(crate) async fn start_subscription(
+        &self,
+        client: &str,
+        target: &SubscriptionTarget,
+        terminal_input_id: Option<&str>,
+        cursor: Option<(&str, u64)>,
+    ) -> Result<(), StateReadError> {
+        if let Some(input_id) = terminal_input_id
+            .or_else(|| matches!(target, SubscriptionTarget::Terminal(_)).then_some(client))
+        {
+            self.start_terminal(client, target, input_id, cursor)
+                .await?;
+        } else {
+            self.start_read(client, target).await?;
+            if let Err(error) = self.publisher.start(client, target, cursor, None) {
+                let _ = self.stop(client, target);
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn stop_subscription(
+        &self,
+        client: &str,
+        target: &SubscriptionTarget,
+    ) -> Result<(), SubscriptionError> {
+        self.stop_read(client, target).await?;
+        self.publisher.stop(client, target, &self.active_targets())
+    }
+
+    pub fn new_with_output(
+        publisher: StateSubscriptionOutputRef,
+        changes: tokio::sync::broadcast::Sender<StateChangeSource>,
+        timer: Arc<dyn SubscriptionTimer>,
+    ) -> Self {
         Self {
-            publisher: StateSubscriptionPublisher {
-                state: Arc::new(Mutex::new(state)),
-                changed: Arc::new(Notify::new()),
-                invalidated: tokio::sync::broadcast::channel(64).0,
-                terminal_routes: Default::default(),
-                terminal_inputs: terminal_inputs.clone(),
-                boot: uuid::Uuid::new_v4().to_string(),
-            },
+            publisher,
+            changes,
+            clients: Default::default(),
+            terminal_inputs: Default::default(),
+            terminal_resets: Default::default(),
             timer,
             terminal: None,
-            terminal_inputs,
             reads: None,
             history_paths: vec![],
             watchers: None,
@@ -89,7 +138,6 @@ impl StateSubscriptionUsecase {
         mut self,
         terminal: Arc<crate::usecase::terminal_surface::application::TerminalSurfaceApplication>,
     ) -> Self {
-        terminal.connect_state(Arc::new(self.publisher.clone()));
         self.terminal = Some(terminal);
         self
     }
@@ -109,17 +157,11 @@ impl StateSubscriptionUsecase {
     pub async fn start_read(
         &self,
         client: &str,
-        raw: &str,
-        version: Option<&Version>,
+        target: &SubscriptionTarget,
     ) -> Result<(), StateReadError> {
-        use crate::domain::state_subscription::{StateChangeSource, SubscriptionTarget};
         let convert = StateReadError::from_error;
-        let target = SubscriptionTarget::parse(raw).map_err(convert)?;
-        if let SubscriptionTarget::Terminal(_) = &target {
-            return self.start_terminal(client, raw, version, client).await;
-        }
-        if target == SubscriptionTarget::RepositoryPaths {
-            return self.start(client, raw, version).map_err(convert);
+        if *target == SubscriptionTarget::RepositoryPaths {
+            return self.start(client, target).map_err(convert);
         }
         let reads = self
             .reads
@@ -127,44 +169,32 @@ impl StateSubscriptionUsecase {
             .ok_or_else(|| convert(SubscriptionError::UnknownTarget))?;
         // ponytail: subscription starts are serialized; split by target if initial reads contend.
         let _start = self.starts.lock().await;
-        {
-            let mut state = self.publisher.state.lock();
-            if state.active_targets().contains(&target) {
-                state.start(client, raw, version).map_err(convert)?;
-                self.publisher.changed.notify_waiters();
-                return Ok(());
-            }
+        if self.active_targets().contains(target) {
+            self.start(client, target).map_err(convert)?;
+            return Ok(());
         }
-        let mut changes = self.publisher.invalidated.subscribe();
-        if target == SubscriptionTarget::Workspaces
-            && !self
-                .publisher
-                .state
-                .lock()
-                .active_targets()
-                .contains(&target)
-        {
+        let mut changes = self.changes.subscribe();
+        if *target == SubscriptionTarget::Workspaces && !self.active_targets().contains(target) {
             reads
                 .refresh_workspaces(Some(StateChangeSource::Repositories))
                 .await;
         }
-        reads.refresh_external(&target).await?;
-        let value = reads.read(&target).await?;
-        {
-            let mut state = self.publisher.state.lock();
-            state
-                .start_with_snapshot(client, raw, value, version)
-                .map_err(convert)?;
-        }
-        self.publisher.changed.notify_waiters();
+        reads.refresh_external(target).await?;
+        let value = reads.read(target).await?;
+        self.start(client, target).map_err(convert)?;
         if let Err(error) = self.reconcile_watches() {
-            let _ = self.stop(client, raw);
+            let _ = self.stop(client, target);
             return Err(error);
         }
-        let mut state = self.publisher.state.lock();
-        state.ensure_active(&target).map_err(convert)?;
+        if !self.clients.lock().contains_key(client) {
+            return Err(convert(SubscriptionError::StreamEnded));
+        }
+        if let Err(error) = self.publisher.publish_initial(target, value) {
+            let _ = self.stop(client, target);
+            return Err(convert(error));
+        }
         let mut workers = self.workers.lock();
-        if workers.contains_key(&target) {
+        if workers.contains_key(target) {
             return Ok(());
         }
         let publisher = self.publisher.clone();
@@ -180,7 +210,7 @@ impl StateSubscriptionUsecase {
                         Ok(source) if worker_target.affected_by(&source)
                             || matches!((&worker_target, &source),
                                 (SubscriptionTarget::Failures(_, _),
-                                 crate::domain::state_subscription::StateChangeSource::Failures(_))) => Some(source),
+                                 crate::usecase::state_subscription::StateChangeSource::Failures(_))) => Some(source),
                         Ok(_) => continue,
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => None,
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
@@ -201,9 +231,7 @@ impl StateSubscriptionUsecase {
                 }
                 match reads.read(&worker_target).await {
                     Ok(value) => {
-                        if let Err(error) =
-                            publisher.publish(&worker_target.to_string(), value, None)
-                        {
+                        if let Err(error) = publisher.publish(&worker_target, value, None) {
                             log::error!("State publication failed: {error}");
                         }
                     }
@@ -211,7 +239,7 @@ impl StateSubscriptionUsecase {
                 }
             }
         });
-        workers.insert(target, task);
+        workers.insert(target.clone(), task);
         Ok(())
     }
 
@@ -219,11 +247,15 @@ impl StateSubscriptionUsecase {
         let mut failure = None;
         if let (Some(reads), Some(watcher)) = (&self.reads, &self.watchers) {
             let mut watches = self.watches.lock();
-            let (start, stop) = self
-                .publisher
-                .state
-                .lock()
-                .watch_changes(&reads.repositories(), &self.history_paths);
+            let repositories = reads.repositories();
+            let required: std::collections::HashSet<_> = self
+                .active_targets()
+                .into_iter()
+                .flat_map(|target| target.watches(&repositories, &self.history_paths))
+                .collect();
+            let current: std::collections::HashSet<_> = watches.keys().cloned().collect();
+            let start: Vec<_> = required.difference(&current).cloned().collect();
+            let stop: Vec<_> = current.difference(&required).cloned().collect();
             for requirement in stop {
                 if let Some(id) = watches.remove(&requirement) {
                     if let Err(error) = watcher.stop(id) {
@@ -233,10 +265,10 @@ impl StateSubscriptionUsecase {
             }
             for requirement in start {
                 let result = match &requirement {
-                    crate::domain::state_subscription::WatchRequirement::Git(path) => {
+                    crate::usecase::state_subscription::WatchRequirement::Git(path) => {
                         watcher.start_git_dir(path)
                     }
-                    crate::domain::state_subscription::WatchRequirement::Files(path) => {
+                    crate::usecase::state_subscription::WatchRequirement::Files(path) => {
                         watcher.start_files(path)
                     }
                 };
@@ -245,14 +277,12 @@ impl StateSubscriptionUsecase {
                         watches.insert(requirement, id);
                     }
                     Err(error) => {
-                        self.publisher.state.lock().watch_failed(&requirement);
                         failure = Some(StateReadError::from_error(error));
                     }
                 }
             }
         }
-        let mut state = self.publisher.state.lock();
-        let active = state.active_targets();
+        let active = self.active_targets();
         self.workers.lock().retain(|target, task| {
             if active.contains(target) {
                 true
@@ -261,31 +291,42 @@ impl StateSubscriptionUsecase {
                 false
             }
         });
-        state.release_inactive_snapshots();
         failure.map_or(Ok(()), Err)
     }
 
-    pub fn publisher(&self) -> StateSubscriptionPublisher {
+    pub fn publisher(&self) -> StateSubscriptionOutputRef {
         self.publisher.clone()
     }
 
     pub fn start(
         &self,
         client: &str,
-        target: &str,
-        version: Option<&Version>,
+        target: &SubscriptionTarget,
     ) -> Result<(), SubscriptionError> {
-        self.publisher
-            .update(|state| state.start(client, target, version))
+        let mut clients = self.clients.lock();
+        let subscriptions = clients
+            .get_mut(client)
+            .ok_or(SubscriptionError::StreamEnded)?;
+        subscriptions.insert(target.clone());
+        Ok(())
     }
 
-    pub async fn stop_read(&self, client: &str, target: &str) -> Result<(), SubscriptionError> {
+    pub async fn stop_read(
+        &self,
+        client: &str,
+        target: &SubscriptionTarget,
+    ) -> Result<(), SubscriptionError> {
         let _start = self.starts.lock().await;
         self.stop(client, target)
     }
 
-    pub fn stop(&self, client: &str, target: &str) -> Result<(), SubscriptionError> {
-        self.publisher.update(|state| state.stop(client, target))?;
+    pub fn stop(&self, client: &str, target: &SubscriptionTarget) -> Result<(), SubscriptionError> {
+        let mut clients = self.clients.lock();
+        let subscriptions = clients
+            .get_mut(client)
+            .ok_or(SubscriptionError::StreamEnded)?;
+        subscriptions.remove(target);
+        drop(clients);
         self.stop_terminal(client, target);
         if let Err(error) = self.reconcile_watches() {
             log::error!("State watch cleanup failed: {error}");
@@ -293,142 +334,89 @@ impl StateSubscriptionUsecase {
         Ok(())
     }
 
-    pub fn open(
-        &self,
-        id: String,
-    ) -> Result<impl Stream<Item = StateSubscriptionEvent> + Send + use<>, SubscriptionError> {
-        self.publisher.state.lock().open(id.clone())?;
-        let permit = StreamPermit {
-            usecase: self.clone(),
-            id,
-        };
-        let timer = self.timer.interval(BOOKMARK_INTERVAL);
-        let events = futures_util::stream::unfold(
-            (permit, timer),
-            |(permit, mut timer)| async move {
-                loop {
-                    let notify = permit.usecase.publisher.changed.clone();
-                    let changed = notify.notified();
-                    tokio::pin!(changed);
-                    changed.as_mut().enable();
-                    let requests = permit
-                        .usecase
-                        .publisher
-                        .state
-                        .lock()
-                        .snapshot_requests(&permit.id);
-                    for raw in requests {
-                        let Ok(target) =
-                            crate::domain::state_subscription::SubscriptionTarget::parse(&raw)
-                        else {
-                            continue;
-                        };
-                        let mut workers = permit.usecase.workers.lock();
-                        if workers.get(&target).is_some_and(|task| !task.is_finished()) {
-                            continue;
-                        }
-                        let usecase = permit.usecase.clone();
-                        workers.insert(
-                            target,
-                            tokio::spawn(async move {
-                                match usecase.refresh_terminal(&raw).await {
-                                    Ok(()) => usecase.publisher.changed.notify_waiters(),
-                                    Err(error) => log::error!("Terminal snapshot failed: {error}"),
-                                }
-                            }),
-                        );
-                    }
-                    let item = permit.usecase.publisher.state.lock().next(&permit.id);
-                    if let Some((target, event)) = item {
-                        return Some((
-                            StateSubscriptionEvent::Item(target, event),
-                            (permit, timer),
-                        ));
-                    }
-                    tokio::select! {
-                        _ = changed => {},
-                        _ = timer.next() => permit.usecase.publisher.state.lock().bookmark(&permit.id),
-                    }
-                }
-            },
-        );
-        Ok(futures_util::stream::once(async { StateSubscriptionEvent::Ready }).chain(events))
-    }
-}
-
-#[derive(Clone)]
-pub(crate) struct StateSubscriptionPublisher {
-    state: Arc<Mutex<Subscriptions<StateValue>>>,
-    changed: Arc<Notify>,
-    terminal_routes: Arc<Mutex<std::collections::HashMap<String, String>>>,
-    terminal_inputs: Arc<Mutex<std::collections::HashMap<(String, String), String>>>,
-    boot: String,
-    invalidated:
-        tokio::sync::broadcast::Sender<crate::domain::state_subscription::StateChangeSource>,
-}
-
-impl StateSubscriptionPublisher {
-    #[cfg(test)]
-    pub(crate) fn subscribe_changes(
-        &self,
-    ) -> tokio::sync::broadcast::Receiver<crate::domain::state_subscription::StateChangeSource>
-    {
-        self.invalidated.subscribe()
-    }
-
-    #[cfg(any(test, all(debug_assertions, feature = "desktop")))]
-    pub(crate) fn for_test() -> Self {
-        StateSubscriptionUsecase::new(
-            vec![],
-            Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
-        )
-        .publisher()
-    }
-
-    pub fn invalidate(&self, source: crate::domain::state_subscription::StateChangeSource) {
-        let _ = self.invalidated.send(source);
-    }
-
-    fn update(
-        &self,
-        update: impl FnOnce(&mut Subscriptions<StateValue>) -> Result<(), SubscriptionError>,
-    ) -> Result<(), SubscriptionError> {
-        update(&mut self.state.lock())?;
-        self.changed.notify_waiters();
+    pub(crate) fn open_client(&self, id: String) -> Result<(), SubscriptionError> {
+        let mut clients = self.clients.lock();
+        if clients.contains_key(&id) {
+            return Err(SubscriptionError::AlreadyExists);
+        }
+        clients.insert(id, Default::default());
         Ok(())
     }
 
-    pub fn publish(
-        &self,
-        target: &str,
-        snapshot: StateValue,
-        delta: Option<StateValue>,
-    ) -> Result<(), SubscriptionError> {
-        self.update(|state| state.publish(target, snapshot, delta))
-    }
-}
-
-struct StreamPermit {
-    usecase: StateSubscriptionUsecase,
-    id: String,
-}
-impl Drop for StreamPermit {
-    fn drop(&mut self) {
-        self.usecase.publisher.state.lock().close(&self.id);
-        let targets: Vec<_> = self
-            .usecase
-            .terminal_inputs
+    pub(crate) fn close_client(&self, id: &str) {
+        let targets = self
+            .clients
             .lock()
-            .keys()
-            .filter(|(client, _)| client == &self.id)
-            .map(|(_, target)| target.clone())
-            .collect();
+            .remove(id)
+            .unwrap_or_default()
+            .into_iter()
+            .collect::<Vec<_>>();
         for target in targets {
-            self.usecase.stop_terminal(&self.id, &target);
+            self.stop_terminal(id, &target);
         }
-        if let Err(error) = self.usecase.reconcile_watches() {
+        if let Err(error) = self.reconcile_watches() {
             log::error!("State stream cleanup failed: {error}");
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn output_ref(&self) -> &dyn StateSubscriptionOutput {
+        self.publisher.as_ref()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_worker_count(&self) -> usize {
+        self.workers.lock().len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_watches(&self) -> std::collections::HashMap<WatchRequirement, u64> {
+        self.watches.lock().clone()
+    }
+
+    pub(crate) fn schedule_terminal_refresh(
+        &self,
+        clients: Vec<String>,
+        target: SubscriptionTarget,
+    ) {
+        self.terminal_resets
+            .lock()
+            .entry(target.clone())
+            .or_default()
+            .extend(clients);
+        let mut workers = self.workers.lock();
+        if workers.get(&target).is_some_and(|task| !task.is_finished()) {
+            return;
+        }
+        let usecase = self.clone();
+        workers.insert(
+            target.clone(),
+            tokio::spawn(async move {
+                loop {
+                    let result = usecase.refresh_terminal(&target).await;
+                    if let Err(error) = &result {
+                        log::error!("Terminal snapshot failed: {error}");
+                    }
+                    let resets = usecase.terminal_resets.lock();
+                    if result.is_err()
+                        || resets
+                            .get(&target)
+                            .is_none_or(std::collections::HashSet::is_empty)
+                    {
+                        usecase.workers.lock().remove(&target);
+                        break;
+                    }
+                }
+            }),
+        );
+    }
+
+    pub(crate) fn active_targets(&self) -> std::collections::HashSet<SubscriptionTarget> {
+        self.clients
+            .lock()
+            .values()
+            .flat_map(|targets| targets.iter().cloned())
+            .collect()
     }
 }
 

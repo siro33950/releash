@@ -6,17 +6,18 @@ use axum::routing::post;
 use axum::{Json, Router};
 
 use crate::domain::provider_lifecycle::{
-    ProviderKind, ProviderLifecycleIngressResult, ProviderLifecycleRejection,
-    ProviderLifecycleScope, ProviderLifecycleSignal, ProviderLifecycleSlotId,
-    ProviderLifecycleUnavailableObservation, ProviderLifecycleUnavailableReason,
+    ProviderKind, ProviderLifecycleIngressResult, ProviderLifecycleScope, ProviderLifecycleSignal,
+    ProviderLifecycleSlotId, ProviderLifecycleUnavailableObservation,
+    ProviderLifecycleUnavailableReason,
 };
 
 use super::error::ApiError;
-use crate::adaptor::protocol::provider_lifecycle::{
+use crate::adaptor::controller::api::protocol::{
     ProviderActivityRequest, ProviderLifecycleProvider, ProviderLifecycleReceiveRequest,
-    ProviderLifecycleReceiveResponse, ProviderLifecycleSignalRequest,
-    ProviderLifecycleUnavailableReasonRequest, ProviderLifecycleUnavailableRequest,
+    ProviderLifecycleSignalRequest, ProviderLifecycleUnavailableReasonRequest,
+    ProviderLifecycleUnavailableRequest,
 };
+use crate::adaptor::presenter::provider_lifecycle_response::ProviderLifecycleReceiveResponse;
 #[derive(Clone)]
 struct ProviderLifecycleApiState {
     usecase: Option<Arc<dyn crate::usecase::provider_lifecycle::ProviderLifecycleIngressPort>>,
@@ -50,7 +51,7 @@ async fn receive(
         },
     )
     .await
-    .map(|(result, _)| Json(response(result)))
+    .map(|(result, _)| Json(result.into()))
 }
 
 async fn receive_inner(
@@ -175,34 +176,7 @@ async fn report_unavailable(
         .report_unavailable(&slot_id, &payload.capability, observation)
         .await
         .map_err(ApiError::from)?;
-    Ok(Json(response(result)))
-}
-
-fn response(result: ProviderLifecycleIngressResult) -> ProviderLifecycleReceiveResponse {
-    match result {
-        ProviderLifecycleIngressResult::Applied => ProviderLifecycleReceiveResponse::Applied,
-        ProviderLifecycleIngressResult::Duplicate => ProviderLifecycleReceiveResponse::Duplicate,
-        ProviderLifecycleIngressResult::Rejected(reason) => {
-            ProviderLifecycleReceiveResponse::Rejected {
-                reason: rejection_reason(reason).to_string(),
-            }
-        }
-    }
-}
-
-fn rejection_reason(reason: ProviderLifecycleRejection) -> &'static str {
-    match reason {
-        ProviderLifecycleRejection::BindingNotActive => "binding_not_active",
-        ProviderLifecycleRejection::InvalidCapability => "invalid_capability",
-        ProviderLifecycleRejection::BindingMismatch => "binding_mismatch",
-        ProviderLifecycleRejection::ProviderMismatch => "provider_mismatch",
-        ProviderLifecycleRejection::ScopeMismatch => "scope_mismatch",
-        ProviderLifecycleRejection::BindingExpired => "binding_expired",
-        ProviderLifecycleRejection::SessionAlreadyAssociated => "session_already_associated",
-        ProviderLifecycleRejection::SessionNotAssociated => "session_not_associated",
-        ProviderLifecycleRejection::ProviderSessionMismatch => "provider_session_mismatch",
-        ProviderLifecycleRejection::TranscriptMismatch => "transcript_mismatch",
-    }
+    Ok(Json(result.into()))
 }
 
 #[cfg(test)]

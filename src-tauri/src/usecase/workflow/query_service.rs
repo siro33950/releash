@@ -19,13 +19,11 @@ use super::ports::{
     WorkflowExecutionProjectionRepository,
 };
 
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct WorkflowEventView {
     pub event: String,
     pub execution_id: String,
-    #[serde(rename = "timestampMs")]
     pub timestamp_ms: f64,
-    #[serde(flatten)]
     pub payload: Map<String, Value>,
 }
 
@@ -688,10 +686,9 @@ mod tests {
             .await
             .unwrap();
 
-        let events = serde_json::to_value(events).unwrap();
-        assert_eq!(events.as_array().unwrap().len(), 1);
-        assert_eq!(events[0]["event"], "node_started");
-        assert_eq!(events[0]["timestampMs"].as_f64(), Some(2000.0));
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event, "node_started");
+        assert_eq!(events[0].timestamp_ms, 2000.0);
     }
 
     #[tokio::test]
@@ -880,13 +877,11 @@ mod tests {
             .await
             .unwrap();
 
-        let events = serde_json::to_value(events).unwrap();
-        assert_eq!(events.as_array().unwrap().len(), 1);
-        assert_eq!(events[0]["event"], "execution_started");
-        assert_eq!(events[0]["execution_id"], test_execution_id());
-        assert_eq!(events[0]["workflow_name"], "wf");
-        assert_eq!(events[0]["timestampMs"].as_f64(), Some(1250.0));
-        assert!(events[0].get("timestamp").is_none());
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event, "execution_started");
+        assert_eq!(events[0].execution_id, test_execution_id());
+        assert_eq!(events[0].payload["workflow_name"], "wf");
+        assert_eq!(events[0].timestamp_ms, 1250.0);
     }
 
     #[tokio::test]
@@ -915,9 +910,8 @@ mod tests {
             .await
             .unwrap();
 
-        let events = serde_json::to_value(events).unwrap();
-        assert_eq!(events[0]["submittedAtMs"].as_f64(), Some(4000.0));
-        assert!(events[0].get("submitted_at").is_none());
-        assert_eq!(events[0]["timestampMs"].as_f64(), Some(4000.0));
+        assert_eq!(events[0].payload["submittedAtMs"], 4000.0);
+        assert!(!events[0].payload.contains_key("submitted_at"));
+        assert_eq!(events[0].timestamp_ms, 4000.0);
     }
 }

@@ -9,6 +9,9 @@ use crate::domain::terminal_surface::{
     TerminalSurfaceStartupCommand,
 };
 use crate::usecase::terminal_surface::error::UsecaseError;
+use crate::usecase::terminal_surface::output::{
+    TerminalRegistration, TerminalSurfaceOutputControl,
+};
 
 pub struct GetOrSpawnTerminalOutcome {
     pub surface: TerminalSurfaceSummary,
@@ -18,6 +21,7 @@ pub struct GetOrSpawnTerminalOutcome {
 fn spawn_reserved<G: TerminalSurfaceGateway + ?Sized>(
     performance: &dyn crate::usecase::telemetry::PerformanceOutput,
     manager: &G,
+    output: &dyn TerminalSurfaceOutputControl,
     reservation: TerminalSurfaceSpawnReservation,
     rows: u16,
     cols: u16,
@@ -61,14 +65,29 @@ fn spawn_reserved<G: TerminalSurfaceGateway + ?Sized>(
         });
     }
 
+    let registration = TerminalRegistration {
+        session_key: session_key.clone(),
+        workspace_path: owner.workspace_identity().as_str().into(),
+        session_id: match &owner {
+            TerminalSurfaceOwner::Workspace { .. } => None,
+            TerminalSurfaceOwner::Session { session_id, .. } => Some(session_id.clone()),
+        },
+        runtime_generation,
+        latest_sequence: initial_checkpoint.sequence,
+    };
     let surface =
         TerminalSurface::with_checkpoint(runtime_generation, owner, label, initial_checkpoint);
     let surface_summary = surface.summary();
     manager.insert_surface(surface);
+    if let Err(error) = output.initialize(registration) {
+        cleanup_failed_spawn(manager, runtime_generation, false);
+        manager.rollback_spawn_slot(&reservation);
+        return Err(error);
+    }
     let output_reader_ready = performance
         .start_terminal_launch_phase(crate::usecase::telemetry::TerminalLaunch::OutputReaderReady);
     if let Err(error) = manager.start_output_reader(runtime_generation) {
-        cleanup_failed_spawn(manager, runtime_generation);
+        cleanup_failed_spawn(manager, runtime_generation, false);
         manager.rollback_spawn_slot(&reservation);
         return Err(UsecaseError::OtherSpawnFailure {
             error: error.message().to_string(),
@@ -77,7 +96,7 @@ fn spawn_reserved<G: TerminalSurfaceGateway + ?Sized>(
     output_reader_ready.finish();
     if let Some(startup_input) = startup_input {
         if let Err(error) = manager.write(&session_key, &startup_input) {
-            cleanup_failed_spawn(manager, runtime_generation);
+            cleanup_failed_spawn(manager, runtime_generation, true);
             manager.rollback_spawn_slot(&reservation);
             return Err(UsecaseError::OtherSpawnFailure {
                 error: error.message().to_string(),
@@ -90,17 +109,23 @@ fn spawn_reserved<G: TerminalSurfaceGateway + ?Sized>(
     Ok(surface_summary)
 }
 
-fn cleanup_failed_spawn<G: TerminalSurfaceGateway + ?Sized>(manager: &G, runtime_generation: u64) {
+fn cleanup_failed_spawn<G: TerminalSurfaceGateway + ?Sized>(
+    manager: &G,
+    runtime_generation: u64,
+    output_reader_started: bool,
+) {
     if let Some(surface) = manager.snapshot(runtime_generation) {
         match manager.request_runtime_stop(runtime_generation) {
             Ok(()) => {
-                if let Err(error) = manager.wait_runtime_output_drain(runtime_generation) {
-                    log::error!(
-                        "Failed to drain PTY {} during failed spawn cleanup: {}",
-                        runtime_generation,
-                        error
-                    );
-                    return;
+                if output_reader_started {
+                    if let Err(error) = manager.wait_runtime_output_drain(runtime_generation) {
+                        log::error!(
+                            "Failed to drain PTY {} during failed spawn cleanup: {}",
+                            runtime_generation,
+                            error
+                        );
+                        return;
+                    }
                 }
                 match manager.delete_terminal_checkpoint(&surface.session_key) {
                     Ok(()) => {
@@ -133,19 +158,31 @@ fn cleanup_failed_spawn<G: TerminalSurfaceGateway + ?Sized>(manager: &G, runtime
 pub fn get_or_spawn<G: TerminalSurfaceGateway + ?Sized>(
     performance: &dyn crate::usecase::telemetry::PerformanceOutput,
     manager: &G,
+    output: &dyn TerminalSurfaceOutputControl,
     rows: u16,
     cols: u16,
     cwd: Option<String>,
     owner: TerminalSurfaceOwner,
     label: Option<String>,
 ) -> Result<GetOrSpawnTerminalOutcome, UsecaseError> {
-    get_or_spawn_with_startup(performance, manager, rows, cols, cwd, owner, label, None)
+    get_or_spawn_with_startup(
+        performance,
+        manager,
+        output,
+        rows,
+        cols,
+        cwd,
+        owner,
+        label,
+        None,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
 pub fn get_or_spawn_with_startup<G: TerminalSurfaceGateway + ?Sized>(
     performance: &dyn crate::usecase::telemetry::PerformanceOutput,
     manager: &G,
+    output: &dyn TerminalSurfaceOutputControl,
     rows: u16,
     cols: u16,
     cwd: Option<String>,
@@ -196,6 +233,7 @@ pub fn get_or_spawn_with_startup<G: TerminalSurfaceGateway + ?Sized>(
         let surface = spawn_reserved(
             performance,
             manager,
+            output,
             reservation,
             rows,
             cols,
@@ -215,6 +253,7 @@ pub fn get_or_spawn_with_startup<G: TerminalSurfaceGateway + ?Sized>(
 pub fn get_or_spawn_with_process<G: TerminalSurfaceGateway + ?Sized>(
     performance: &dyn crate::usecase::telemetry::PerformanceOutput,
     manager: &G,
+    output: &dyn TerminalSurfaceOutputControl,
     rows: u16,
     cols: u16,
     cwd: Option<String>,
@@ -275,6 +314,7 @@ pub fn get_or_spawn_with_process<G: TerminalSurfaceGateway + ?Sized>(
         let surface = spawn_reserved(
             performance,
             manager,
+            output,
             reservation,
             rows,
             cols,

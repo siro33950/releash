@@ -1,4 +1,4 @@
-use crate::adaptor::protocol::workflow as workflow_wire;
+use crate::adaptor::presenter::workflow_wire;
 use crate::domain::workflow;
 
 use std::collections::HashSet;

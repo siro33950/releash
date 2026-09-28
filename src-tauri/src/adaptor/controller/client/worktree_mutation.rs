@@ -1,5 +1,5 @@
 use super::dispatch::{invalid_request, required};
-use crate::adaptor::controller::api::protocol::client as wire;
+use crate::adaptor::presenter::client as wire;
 use crate::usecase::workflow::WorkflowRuntimeUsecase;
 use crate::usecase::worktree_operation::WorktreeMutationGuard;
 

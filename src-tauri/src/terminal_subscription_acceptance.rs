@@ -1,17 +1,19 @@
 use crate::adaptor::controller::terminal_surface_runtime::{
     TerminalSurfaceEventFaultController, TerminalSurfaceRuntime,
 };
-use crate::adaptor::protocol::terminal::{TerminalSurfaceOwnerV1, TerminalSurfaceStreamItemV1};
-use crate::domain::state_subscription::{Event, SubscriptionTarget};
-use crate::usecase::state_subscription::{
-    StateSubscriptionEvent, StateSubscriptionUsecase, StateValue,
+use crate::adaptor::presenter::state_subscription::{
+    StateSubscriptionEvent, StateSubscriptionPresenter,
 };
+use crate::adaptor::presenter::terminal::{TerminalSurfaceOwnerV1, TerminalSurfaceStreamItemV1};
+use crate::infrastructure::state_subscription::Event;
+use crate::usecase::state_subscription::{StateSubscriptionUsecase, SubscriptionTarget};
 use futures_util::{Stream, StreamExt};
 use std::{path::PathBuf, pin::Pin, sync::Arc};
 
 pub struct TerminalSubscriptionHarness {
     runtime: TerminalSurfaceRuntime,
     subscriptions: StateSubscriptionUsecase,
+    presenter: Arc<StateSubscriptionPresenter>,
 }
 
 impl std::ops::Deref for TerminalSubscriptionHarness {
@@ -39,14 +41,18 @@ impl TerminalSubscriptionHarness {
     }
 
     fn compose(runtime: TerminalSurfaceRuntime) -> Self {
-        let subscriptions = StateSubscriptionUsecase::new(
-            vec![],
+        let presenter = Arc::new(StateSubscriptionPresenter::new(vec![]));
+        presenter.connect_terminal(&runtime.application()).unwrap();
+        let subscriptions = StateSubscriptionUsecase::new_with_output(
+            presenter.clone(),
+            presenter.change_sender(),
             Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
         )
         .with_terminal(runtime.application());
         Self {
             runtime,
             subscriptions,
+            presenter,
         }
     }
 
@@ -55,20 +61,25 @@ impl TerminalSubscriptionHarness {
         self.subscriptions.clone()
     }
 
+    #[cfg(feature = "desktop")]
+    pub(crate) fn presenter(&self) -> Arc<StateSubscriptionPresenter> {
+        self.presenter.clone()
+    }
+
     pub async fn subscribe(
         &self,
         input_id: String,
         owner: TerminalSurfaceOwnerV1,
     ) -> Result<TerminalSubscription, String> {
-        let target = SubscriptionTarget::Terminal(owner.try_into()?).to_string();
+        let target = SubscriptionTarget::Terminal(owner.try_into()?);
         let client = uuid::Uuid::new_v4().to_string();
         let stream = Box::pin(
-            self.subscriptions
-                .open(client.clone())
+            self.presenter
+                .stream(self.subscriptions.clone(), client.clone())
                 .map_err(|e| e.to_string())?,
         );
         self.subscriptions
-            .start_terminal(&client, &target, None, &input_id)
+            .start_subscription(&client, &target, Some(&input_id), None)
             .await
             .map_err(|e| e.to_string())?;
         Ok(TerminalSubscription {
@@ -86,7 +97,7 @@ pub struct TerminalSubscription {
     stream: Pin<Box<dyn Stream<Item = StateSubscriptionEvent> + Send>>,
     subscriptions: StateSubscriptionUsecase,
     client: String,
-    target: String,
+    target: SubscriptionTarget,
     processed: usize,
     report_units: usize,
 }
@@ -97,21 +108,22 @@ impl TerminalSubscription {
             let StateSubscriptionEvent::Item(target, event) = event else {
                 continue;
             };
-            assert_eq!(target, self.target);
+            assert_eq!(target, self.target.to_string());
             let value = match event {
                 Event::Snapshot(_, value) | Event::Change(_, _, value) => value,
                 _ => continue,
             };
-            let StateValue::Terminal(item) = value.as_ref() else {
+            let Some(crate::adaptor::presenter::client::state_payload::Value::Terminal(wire)) =
+                &value.value
+            else {
                 panic!("expected terminal state");
             };
-            let item: TerminalSurfaceStreamItemV1 = item.clone().into();
+            let item = TerminalSurfaceStreamItemV1::try_from(wire).expect("valid terminal event");
             match &item {
                 TerminalSurfaceStreamItemV1::Snapshot { .. } => {
-                    let wire = crate::adaptor::protocol::client::TerminalEvent::from(item.clone());
-                    let Some(crate::adaptor::protocol::client::terminal_event::Item::Snapshot(
+                    let Some(crate::adaptor::presenter::client::terminal_event::Item::Snapshot(
                         snapshot,
-                    )) = wire.item
+                    )) = &wire.item
                     else {
                         unreachable!()
                     };

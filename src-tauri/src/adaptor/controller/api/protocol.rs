@@ -1,10 +1,4 @@
-pub(crate) use crate::adaptor::protocol::client;
-pub(crate) mod connect;
-
 use serde::{Deserialize, Serialize};
-
-use crate::usecase::workflow::{WorkflowGetOutputResult, WorkflowValidateOutputResult};
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct StartExecutionRequest {
@@ -13,11 +7,6 @@ pub(crate) struct StartExecutionRequest {
     pub(crate) request: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) created_from: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub(crate) struct StartExecutionResponse {
-    pub(crate) execution_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -58,101 +47,77 @@ pub(crate) struct ValidateArtifactRequest {
     pub(crate) value: serde_json::Value,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ProviderLifecycleProvider {
+    Claude,
+    Codex,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ProviderActivityRequest {
+    Working,
+    AwaitingAnswer,
+    AwaitingInstruction,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub(crate) struct MutationResponse {
-    pub(crate) ok: bool,
-}
-
-impl MutationResponse {
-    pub(super) fn ok() -> Self {
-        Self { ok: true }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "status", rename_all = "snake_case")]
-pub(crate) enum ValidateArtifactResponse {
-    Valid,
-    Invalid { reason: String, details: String },
-}
-
-impl From<WorkflowValidateOutputResult> for ValidateArtifactResponse {
-    fn from(result: WorkflowValidateOutputResult) -> Self {
-        match result {
-            WorkflowValidateOutputResult::Valid => Self::Valid,
-            WorkflowValidateOutputResult::Invalid { reason, details } => {
-                Self::Invalid { reason, details }
-            }
-        }
-    }
-}
-
-impl From<ValidateArtifactResponse> for WorkflowValidateOutputResult {
-    fn from(response: ValidateArtifactResponse) -> Self {
-        match response {
-            ValidateArtifactResponse::Valid => Self::Valid,
-            ValidateArtifactResponse::Invalid { reason, details } => {
-                Self::Invalid { reason, details }
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "status", rename_all = "snake_case")]
-pub(crate) enum GetArtifactResponse {
-    Submitted {
-        contract: Option<String>,
-        value: serde_json::Value,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        submitted_at: Option<f64>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        request_id: Option<String>,
-        timestamp: f64,
+#[serde(tag = "event", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum ProviderLifecycleSignalRequest {
+    SessionStarted {
+        provider_session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        transcript_ref: Option<String>,
     },
-    NotSubmitted,
+    StopObserved {
+        provider_session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        transcript_ref: Option<String>,
+    },
+    StopFailed {
+        provider_session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        transcript_ref: Option<String>,
+        reason: String,
+    },
+    ActivityObserved {
+        provider_session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        transcript_ref: Option<String>,
+        activity: ProviderActivityRequest,
+    },
 }
 
-impl From<WorkflowGetOutputResult> for GetArtifactResponse {
-    fn from(result: WorkflowGetOutputResult) -> Self {
-        match result {
-            WorkflowGetOutputResult::Submitted {
-                contract,
-                structured_output,
-                submitted_at,
-                request_id,
-                timestamp,
-            } => Self::Submitted {
-                contract,
-                value: structured_output,
-                submitted_at,
-                request_id,
-                timestamp,
-            },
-            WorkflowGetOutputResult::NotSubmitted => Self::NotSubmitted,
-        }
-    }
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProviderLifecycleReceiveRequest {
+    pub(crate) slot_id: String,
+    pub(crate) binding_id: String,
+    pub(crate) capability: String,
+    pub(crate) provider: ProviderLifecycleProvider,
+    pub(crate) agent_session_id: String,
+    pub(crate) signal: ProviderLifecycleSignalRequest,
 }
 
-impl From<GetArtifactResponse> for WorkflowGetOutputResult {
-    fn from(response: GetArtifactResponse) -> Self {
-        match response {
-            GetArtifactResponse::Submitted {
-                contract,
-                value,
-                submitted_at,
-                request_id,
-                timestamp,
-            } => Self::Submitted {
-                contract,
-                structured_output: value,
-                submitted_at,
-                request_id,
-                timestamp,
-            },
-            GetArtifactResponse::NotSubmitted => Self::NotSubmitted,
-        }
-    }
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ProviderLifecycleUnavailableReasonRequest {
+    SessionStartDeadlineExceeded,
+    CodexHookDeliveryUnconfirmed,
+    ProviderHookConfigurationRejected,
+    LocalApiUnavailable,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProviderLifecycleUnavailableRequest {
+    pub(crate) slot_id: String,
+    pub(crate) binding_id: String,
+    pub(crate) capability: String,
+    pub(crate) provider: ProviderLifecycleProvider,
+    pub(crate) agent_session_id: String,
+    pub(crate) reason: ProviderLifecycleUnavailableReasonRequest,
 }
 
 #[cfg(test)]
@@ -160,41 +125,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn validation_and_get_responses_use_status_tags() {
-        assert_eq!(
-            serde_json::to_value(ValidateArtifactResponse::Valid).unwrap(),
-            serde_json::json!({"status": "valid"})
-        );
-        assert_eq!(
-            serde_json::to_value(GetArtifactResponse::NotSubmitted).unwrap(),
-            serde_json::json!({"status": "not_submitted"})
-        );
-    }
+    fn test_provider活動request_json往復で活動状態とsession参照を保持する() {
+        for (activity, expected) in [
+            (ProviderActivityRequest::Working, "working"),
+            (ProviderActivityRequest::AwaitingAnswer, "awaiting_answer"),
+            (
+                ProviderActivityRequest::AwaitingInstruction,
+                "awaiting_instruction",
+            ),
+        ] {
+            let request = ProviderLifecycleSignalRequest::ActivityObserved {
+                provider_session_id: "provider-session-1".to_string(),
+                transcript_ref: Some("provider://transcript".to_string()),
+                activity,
+            };
+            let encoded = serde_json::to_value(&request).unwrap();
 
-    #[test]
-    fn read_results_round_trip_through_wire_responses() {
-        let validation = WorkflowValidateOutputResult::Invalid {
-            reason: "schema_violation".to_string(),
-            details: "missing status".to_string(),
-        };
-        assert_eq!(
-            WorkflowValidateOutputResult::from(ValidateArtifactResponse::from(validation.clone())),
-            validation
-        );
-
-        let output = WorkflowGetOutputResult::Submitted {
-            contract: Some("review-result".to_string()),
-            structured_output: serde_json::json!({"status": "approved"}),
-            submitted_at: Some(10.0),
-            request_id: Some("request-1".to_string()),
-            timestamp: 11.0,
-        };
-        assert_eq!(
-            WorkflowGetOutputResult::from(GetArtifactResponse::from(output.clone())),
-            output
-        );
-        let wire = serde_json::to_value(GetArtifactResponse::from(output)).unwrap();
-        assert_eq!(wire["value"], serde_json::json!({"status": "approved"}));
-        assert!(wire.get("structured_output").is_none());
+            assert_eq!(
+                encoded,
+                serde_json::json!({
+                    "event": "activity_observed",
+                    "provider_session_id": "provider-session-1",
+                    "transcript_ref": "provider://transcript",
+                    "activity": expected,
+                })
+            );
+            assert_eq!(
+                serde_json::from_value::<ProviderLifecycleSignalRequest>(encoded).unwrap(),
+                request
+            );
+        }
     }
 }

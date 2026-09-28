@@ -5,11 +5,11 @@ use crate::adaptor::presenter::provider_tui::{
 };
 use std::sync::Arc;
 
-use crate::adaptor::presenter::error::AppError;
-use crate::adaptor::protocol::agent_session::{
+use crate::adaptor::presenter::agent_session::{
     AgentSessionArchiveResponse, AgentSessionOpenResponse, ProviderAvailabilitySnapshotResponse,
     ProviderHookHealthProviderResponse, ProviderHookHealthWarningResponse,
 };
+use crate::adaptor::presenter::error::AppError;
 use crate::domain::agent_session::aggregates::AgentSessionArchiveOutcome;
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::workspace_tree::WorkspaceIdentity;
@@ -111,8 +111,8 @@ pub(crate) async fn create_agent_session_shared(
 
 pub(crate) async fn resume_agent_session_history_candidate_shared(
     launch: &Arc<AgentSessionLaunchUsecase>,
-    args: crate::adaptor::controller::api::protocol::client::ResumeAgentSessionHistoryCandidateRequest,
-) -> Result<String, crate::adaptor::controller::api::protocol::client::CommandFailure> {
+    args: crate::adaptor::presenter::client::ResumeAgentSessionHistoryCandidateRequest,
+) -> Result<String, crate::adaptor::presenter::client::CommandFailure> {
     use crate::adaptor::controller::client::{convert, required};
     let provider = parse_provider(
         &required(args.provider, "provider")?,

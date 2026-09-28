@@ -22,7 +22,13 @@ async fn subscribe_push(
 > {
     let request: wire::SubscribePushRequest = to_wire(&request.to_owned_message())?;
     let id = request.subscription_id;
-    super::client_stream::validate_identifier(&id)?;
+    if !crate::adaptor::controller::api::client_stream::valid_subscription_id(&id, true) {
+        return Err(crate::adaptor::presenter::connect::classified_error(
+            crate::adaptor::presenter::error::AppError::invalid_request(
+                format!("Identifier exceeds {} bytes", crate::adaptor::controller::api::client_stream::SUBSCRIPTION_ID_MAX_BYTES),
+            ),
+        ));
+    }
     let id = if id.is_empty() {
         uuid::Uuid::new_v4().to_string()
     } else {
@@ -33,19 +39,13 @@ async fn subscribe_push(
         (self.push.subscribe(), subscription, true),
         |(mut push, permit, initial)| async move {
             let event = if initial {
-                prost::Message::encode_to_vec(&wire::Push {
-                    event: Some(wire::push::Event::Resync(wire::Unit {})),
-                })
-                .into()
+                crate::adaptor::presenter::push::resync()
             } else {
                 match push.recv().await {
                     Ok(bytes) => bytes,
                     Err(ClientPushError::Lagged(_)) => {
                         push.resubscribe();
-                        prost::Message::encode_to_vec(&wire::Push {
-                            event: Some(wire::push::Event::Resync(wire::Unit {})),
-                        })
-                        .into()
+                        crate::adaptor::presenter::push::resync()
                     }
                     Err(ClientPushError::Closed) => return None,
                 }
@@ -111,13 +111,17 @@ async fn open_state_stream(
         impl connectrpc::Encodable<rpc::StateSubscriptionEvent> + Send + use<>,
     >,
 > {
-    use futures_util::StreamExt;
     let request: wire::OpenStateStreamRequest = to_wire(&request.to_owned_message())?;
+    if !crate::adaptor::controller::api::client_stream::valid_subscription_id(&request.client_id, false) {
+        return Err(crate::adaptor::presenter::connect::classified_error(
+            crate::usecase::state_subscription::SubscriptionError::InvalidId,
+        ));
+    }
     let stream = self
-        .state_subscriptions()?
-        .open(request.client_id)
+        .state_presenter()?
+        .stream_wire(self.state_subscriptions()?.clone(), request.client_id)
         .map_err(crate::adaptor::presenter::connect::classified_error)?;
-    connectrpc::Response::stream_ok(Box::pin(stream.map(super::state_subscription::event)))
+    connectrpc::Response::stream_ok(Box::pin(stream))
 }
 
 async fn start_state_subscription<'a>(
@@ -127,29 +131,20 @@ async fn start_state_subscription<'a>(
 ) -> connectrpc::ServiceResult<impl connectrpc::Encodable<rpc::Unit> + Send + use<'a>> {
     let _permit = self.request_permit()?;
     let request: wire::StartStateSubscriptionRequest = to_wire(&request.to_owned_message())?;
-    let target = crate::domain::state_subscription::SubscriptionTarget::from_parts(
+    let target = crate::usecase::state_subscription::SubscriptionTarget::from_parts(
         &request.target,
         &request.args.iter().map(String::as_str).collect::<Vec<_>>(),
     )
-    .map_err(crate::adaptor::presenter::connect::classified_error)?
-    .to_string();
-    let version = request
-        .version
-        .map(|v| crate::domain::state_subscription::Version {
-            epoch: v.epoch,
-            sequence: v.sequence,
-        });
-    let subscriptions = self.state_subscriptions()?;
-    if let Some(input_id) = request.terminal_input_id {
-        subscriptions
-            .start_terminal(&request.client_id, &target, version.as_ref(), &input_id)
-            .await
-    } else {
-        subscriptions
-            .start_read(&request.client_id, &target, version.as_ref())
-            .await
-    }
     .map_err(crate::adaptor::presenter::connect::classified_error)?;
+    let version = request.version.map(|v| (v.epoch, v.sequence));
+    let cursor = version
+        .as_ref()
+        .map(|(epoch, sequence)| (epoch.as_str(), *sequence));
+    let subscriptions = self.state_subscriptions()?;
+    subscriptions
+        .start_subscription(&request.client_id, &target, request.terminal_input_id.as_deref(), cursor)
+        .await
+        .map_err(crate::adaptor::presenter::connect::classified_error)?;
     connectrpc::Response::ok(rpc::Unit::default())
 }
 
@@ -160,14 +155,14 @@ async fn stop_state_subscription<'a>(
 ) -> connectrpc::ServiceResult<impl connectrpc::Encodable<rpc::Unit> + Send + use<'a>> {
     let _permit = self.request_permit()?;
     let request: wire::StopStateSubscriptionRequest = to_wire(&request.to_owned_message())?;
-    let target = crate::domain::state_subscription::SubscriptionTarget::from_parts(
+    let target = crate::usecase::state_subscription::SubscriptionTarget::from_parts(
         &request.target,
         &request.args.iter().map(String::as_str).collect::<Vec<_>>(),
     )
-    .map_err(crate::adaptor::presenter::connect::classified_error)?
-    .to_string();
-    self.state_subscriptions()?
-        .stop_read(&request.client_id, &target)
+    .map_err(crate::adaptor::presenter::connect::classified_error)?;
+    let subscriptions = self.state_subscriptions()?;
+    subscriptions
+        .stop_subscription(&request.client_id, &target)
         .await
         .map_err(crate::adaptor::presenter::connect::classified_error)?;
     connectrpc::Response::ok(rpc::Unit::default())
@@ -180,15 +175,22 @@ async fn report_terminal_processed<'a>(
 ) -> connectrpc::ServiceResult<impl connectrpc::Encodable<rpc::Unit> + Send + use<'a>> {
     let _permit = self.request_permit()?;
     let request: wire::ReportTerminalProcessedRequest = to_wire(&request.to_owned_message())?;
-    let target = crate::domain::state_subscription::SubscriptionTarget::from_parts(
+    let target = crate::usecase::state_subscription::SubscriptionTarget::from_parts(
         "terminal",
         &request.args.iter().map(String::as_str).collect::<Vec<_>>(),
     )
     .map_err(crate::adaptor::presenter::connect::classified_error)?;
+    if request.units as usize != self.state_presenter()?.terminal_report_units() {
+        return Err(crate::adaptor::presenter::connect::classified_error(
+            crate::adaptor::presenter::error::AppError::invalid_request(
+                "Invalid terminal processed units",
+            ),
+        ));
+    }
     self.state_subscriptions()?
         .terminal_processed(
             &request.client_id,
-            &target.to_string(),
+            &target,
             request.units as usize,
         )
         .map_err(crate::adaptor::presenter::connect::classified_error)?;

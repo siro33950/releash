@@ -1,4 +1,4 @@
-use crate::adaptor::controller::api::protocol::client as wire;
+use crate::adaptor::presenter::client as wire;
 use crate::usecase::application_startup::ApplicationStartupAuthority;
 use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
 
@@ -21,7 +21,7 @@ mod tests;
 pub(crate) struct ClientCommandDispatch {
     handlers: HashMap<&'static str, Arc<CommandHandler>>,
     authority: Arc<ApplicationStartupAuthority>,
-    pub(super) publisher: Option<crate::usecase::state_subscription::StateSubscriptionPublisher>,
+    pub(super) publisher: Option<crate::usecase::state_subscription::StateSubscriptionOutputRef>,
     mutations: Option<Arc<crate::usecase::workflow::WorkflowRuntimeUsecase>>,
 }
 
@@ -37,7 +37,7 @@ impl ClientCommandDispatch {
 
     pub(crate) fn with_state_publisher(
         mut self,
-        publisher: crate::usecase::state_subscription::StateSubscriptionPublisher,
+        publisher: crate::usecase::state_subscription::StateSubscriptionOutputRef,
     ) -> Self {
         self.publisher = Some(publisher);
         self
@@ -178,25 +178,6 @@ where
 {
     value.map(convert).transpose()
 }
-pub(crate) fn value<T, U: TryFrom<T>>(value: T) -> Result<U, wire::CommandFailure>
-where
-    U::Error: std::fmt::Display,
-{
-    U::try_from(value).map_err(|error| {
-        crate::adaptor::presenter::error::AppError::new(error.to_string())
-            .with_code("INVALID_RESPONSE")
-            .into()
-    })
-}
-pub(crate) fn outcome<T, U: TryFrom<T>, E: Into<wire::CommandFailure>>(
-    result: Result<T, E>,
-) -> Result<U, wire::CommandFailure>
-where
-    U::Error: std::fmt::Display,
-{
-    result.map_err(Into::into).and_then(value)
-}
-
 pub(crate) const STARTUP_COMMANDS: [&str; 2] = [
     "get_application_startup_outcome",
     "quit_after_startup_failure",

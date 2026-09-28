@@ -1,4 +1,4 @@
-use crate::adaptor::protocol::client as wire;
+use crate::adaptor::presenter::client as wire;
 use crate::domain::daemon_supervision::{verify_identity, Failure, FailureStage, StopIntent};
 use crate::domain::daemon_supervision::{DaemonExit, DaemonProcessPort};
 use crate::usecase::client_connection::ClientConnectionQueryService;

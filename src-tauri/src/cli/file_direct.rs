@@ -13,7 +13,7 @@ use crate::usecase::workflow::{WorkflowGetOutputResult, WorkflowReadUsecase};
 pub(super) async fn execution_status(
     data_dir: &Path,
     execution_id: &str,
-) -> Result<crate::adaptor::protocol::workflow::WorkflowExecutionView, CliError> {
+) -> Result<crate::adaptor::presenter::workflow_wire::WorkflowExecutionView, CliError> {
     ensure_existing_data_dir(data_dir)?;
     let read = read_usecase(data_dir)?;
     ensure_execution_exists(&read, execution_id).await?;

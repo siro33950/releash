@@ -115,6 +115,11 @@ name = "client_api"
 path = "tests/client_api/mod.rs"
 
 [[test]]
+name = "state_subscription_scenarios"
+path = "tests/state_subscription_scenarios.rs"
+test = false
+
+[[test]]
 name = "desktop_restart"
 path = "tests/desktop_restart.rs"
 harness = false

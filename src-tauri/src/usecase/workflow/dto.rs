@@ -174,14 +174,12 @@ pub(crate) enum RuleDto {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct WorkflowSummaryDto {
     pub name: String,
     pub description: String,
     pub builtin: bool,
-    #[serde(default)]
     pub is_running: bool,
-    #[serde(rename = "sourceFormat")]
     pub source_format: domain::WorkflowSourceFormat,
 }
 
@@ -193,16 +191,14 @@ pub(crate) struct FacetSummaryDto {
     pub builtin: bool,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ExecutionStatusDto {
     Running,
     Completed,
     Aborted,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ExecutionOriginDto {
     DesktopUi,
     Cli,
@@ -210,28 +206,23 @@ pub(crate) enum ExecutionOriginDto {
     Api,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TokenUsageDto {
     pub input_tokens: u64,
     pub output_tokens: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct WorkflowExecutionSummaryDto {
     pub execution_id: String,
     pub workflow_name: String,
     pub status: ExecutionStatusDto,
     pub worktree_path: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_node: Option<String>,
     pub created_from: ExecutionOriginDto,
     pub started_at: f64,
     pub updated_at: f64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completed_at: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_reason: Option<String>,
     pub total_token_usage: TokenUsageDto,
 }
@@ -725,22 +716,15 @@ mod tests {
             },
         });
 
-        assert_eq!(
-            serde_json::to_value(summary).unwrap(),
-            serde_json::json!({
-                "executionId": "00000000-0000-4000-8000-000000000001",
-                "workflowName": "wf",
-                "status": "running",
-                "worktreePath": "/repo",
-                "createdFrom": "desktop_ui",
-                "startedAt": 1.0,
-                "updatedAt": 2.0,
-                "totalTokenUsage": {
-                    "inputTokens": 13,
-                    "outputTokens": 8
-                }
-            })
-        );
+        assert_eq!(summary.execution_id, "00000000-0000-4000-8000-000000000001");
+        assert_eq!(summary.workflow_name, "wf");
+        assert_eq!(summary.status, ExecutionStatusDto::Running);
+        assert_eq!(summary.worktree_path, "/repo");
+        assert_eq!(summary.created_from, ExecutionOriginDto::DesktopUi);
+        assert_eq!(summary.started_at, 1.0);
+        assert_eq!(summary.updated_at, 2.0);
+        assert_eq!(summary.total_token_usage.input_tokens, 13);
+        assert_eq!(summary.total_token_usage.output_tokens, 8);
     }
 }
 

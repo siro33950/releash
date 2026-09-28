@@ -4,16 +4,17 @@ use std::sync::Arc;
 use tempfile::TempDir;
 
 use super::*;
+use crate::adaptor::controller::api::protocol::{
+    ProviderActivityRequest, ProviderLifecycleProvider, ProviderLifecycleReceiveRequest,
+    ProviderLifecycleSignalRequest,
+};
 use crate::adaptor::controller::api::test_support as api_test_support;
 use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
 use crate::adaptor::gateway::provider_lifecycle::{
     LocalProviderLifecycleCredentialGateway, LocalProviderLifecycleEventRepository,
     ProviderLaunchContext, ProviderLaunchSpec,
 };
-use crate::adaptor::protocol::provider_lifecycle::{
-    ProviderActivityRequest, ProviderLifecycleProvider, ProviderLifecycleReceiveRequest,
-    ProviderLifecycleReceiveResponse, ProviderLifecycleSignalRequest,
-};
+use crate::adaptor::presenter::provider_lifecycle_response::ProviderLifecycleReceiveResponse;
 use crate::domain::local_event::{
     LoadStreamRequest, LoadedDomainEvent, LocalDomainEvent, LocalEventTransactionRepository,
     StreamId,

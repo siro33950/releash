@@ -32,7 +32,7 @@ pub(crate) fn workflow_dependencies<R: tauri::Runtime>(
         secrets: app
             .try_state::<Arc<dyn crate::domain::app_config::ConfigSecretRepository>>()
             .map(|state| state.inner().clone()),
-        state_changes: crate::usecase::state_subscription::StateSubscriptionPublisher::for_test(),
+        state_changes: crate::adaptor::presenter::state_subscription::test_output(),
     }
 }
 

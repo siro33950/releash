@@ -347,7 +347,7 @@ async fn test_旧sessionarchive移行_128件を越えて時刻と理由と終了
 
 #[tokio::test]
 async fn test_終了済み実行木_archiveとrestore成功後だけ所属worktreeの購読を更新する() {
-    use crate::domain::state_subscription::StateChangeSource;
+    use crate::usecase::state_subscription::StateChangeSource;
     // Given
     let mut fixture = archive_fixture();
     let id = archive_workflow(&fixture).await;
@@ -359,8 +359,8 @@ async fn test_終了済み実行木_archiveとrestore成功後だけ所属worktr
         })
         .await
         .unwrap();
-    let publisher = crate::usecase::state_subscription::StateSubscriptionPublisher::for_test();
-    let mut changes = publisher.subscribe_changes();
+    let publisher = crate::test_support::state_subscription::test_output();
+    let mut changes = crate::test_support::state_subscription::changes(&publisher);
     fixture.runtime = fixture.runtime.with_state_publisher(publisher);
     // When / Then
     fixture
@@ -393,8 +393,8 @@ async fn test_終了済み実行木_archiveとrestore成功後だけ所属worktr
 #[tokio::test]
 async fn test_実行木archiveとrestore_workspace識別子と異なるworktreeパスを通知する() {
     use crate::adaptor::gateway::workflow::fact_log;
-    use crate::domain::state_subscription::StateChangeSource;
     use crate::domain::workflow::{NodeFact, SessionExecutionTreeRootFacts};
+    use crate::usecase::state_subscription::StateChangeSource;
     // Given
     let mut fixture = archive_fixture();
     let id = "agent-session-00000000000040008000000000000113";
@@ -418,8 +418,8 @@ async fn test_実行木archiveとrestore_workspace識別子と異なるworktree�
     .unwrap();
     let target = fixture.repository.target(id).await.unwrap();
     assert_ne!(target.workspace_identity, target.worktree_path);
-    let publisher = crate::usecase::state_subscription::StateSubscriptionPublisher::for_test();
-    let mut changes = publisher.subscribe_changes();
+    let publisher = crate::test_support::state_subscription::test_output();
+    let mut changes = crate::test_support::state_subscription::changes(&publisher);
     fixture.runtime = fixture.runtime.with_state_publisher(publisher);
     // When / Then
     fixture

@@ -10,6 +10,7 @@ use crate::domain::terminal_surface::gateway::{
 };
 use crate::domain::terminal_surface::{TerminalProcessLaunch, TerminalSurfaceOwner};
 use crate::usecase::terminal_surface::error::UsecaseError;
+use crate::usecase::terminal_surface::output::TerminalSurfaceOutputControl;
 use crate::usecase::terminal_surface::spawn_usecase::GetOrSpawnTerminalOutcome;
 
 #[derive(Clone)]
@@ -17,6 +18,7 @@ pub(crate) struct TerminalSurfaceApplication {
     performance: Arc<dyn crate::usecase::telemetry::PerformanceOutput>,
     gateway: Arc<dyn TerminalSurfaceGateway + Send + Sync>,
     event_source: Arc<dyn TerminalSurfaceEventSource>,
+    output: Arc<dyn TerminalSurfaceOutputControl>,
     runtime_lifecycle: Arc<RwLock<TerminalSurfaceRuntimeLifecycle>>,
     resize_tails: Arc<Mutex<HashMap<String, std::sync::mpsc::Receiver<()>>>>,
 }
@@ -79,10 +81,12 @@ impl TerminalSurfaceApplication {
         performance: Arc<dyn crate::usecase::telemetry::PerformanceOutput>,
         gateway: Arc<dyn TerminalSurfaceGateway + Send + Sync>,
         event_source: Arc<dyn TerminalSurfaceEventSource>,
+        output: Arc<dyn TerminalSurfaceOutputControl>,
     ) -> Self {
         Self {
             performance,
             gateway,
+            output,
             event_source,
             resize_tails: Arc::new(Mutex::new(HashMap::new())),
             runtime_lifecycle: Arc::new(RwLock::new(TerminalSurfaceRuntimeLifecycle::new(
@@ -106,16 +110,17 @@ impl TerminalSurfaceApplication {
 
     pub(crate) fn connect_state(
         &self,
-        sink: Arc<dyn crate::domain::terminal_surface::gateway::TerminalSurfaceStateSink>,
-    ) {
-        self.event_source.set_state_sink(sink.clone());
-        for summary in self.gateway.list_summaries() {
-            sink.initialize(&summary);
-        }
+        sink: Arc<dyn crate::usecase::terminal_surface::output::TerminalSurfaceStateSink>,
+    ) -> Result<(), UsecaseError> {
+        self.output.set_state_sink(sink)
     }
 
-    pub(crate) fn with_output_order(&self, runtime_generation: u64, visit: &mut dyn FnMut()) {
-        self.gateway.with_output_order(runtime_generation, visit);
+    pub(crate) fn with_output_order(
+        &self,
+        runtime_generation: u64,
+        visit: &mut dyn FnMut(),
+    ) -> bool {
+        self.gateway.with_output_order(runtime_generation, visit)
     }
 
     pub(crate) fn visit_snapshot(
@@ -141,10 +146,12 @@ impl TerminalSurfaceApplication {
         owner: &TerminalSurfaceOwner,
         client: &str,
         input_id: &str,
-        units: usize,
+        units: Option<usize>,
     ) {
-        self.event_source
-            .subscribe_output(&owner.stable_key(), client, units);
+        if let Some(units) = units {
+            self.output
+                .subscribe_output(&owner.stable_key(), client, units);
+        }
         self.gateway
             .activate_input_attachment(&owner.stable_key(), input_id);
     }
@@ -155,15 +162,13 @@ impl TerminalSurfaceApplication {
         client: &str,
         input_id: &str,
     ) {
-        self.event_source
-            .unsubscribe_output(&owner.stable_key(), client);
+        self.output.unsubscribe_output(&owner.stable_key(), client);
         self.gateway
             .deactivate_input_attachment(&owner.stable_key(), input_id);
     }
 
     pub(crate) fn reset_output(&self, owner: &TerminalSurfaceOwner, client: &str) {
-        self.event_source
-            .subscribe_output(&owner.stable_key(), client, 0);
+        self.output.subscribe_output(&owner.stable_key(), client, 0);
     }
 
     pub(crate) fn processed_output(
@@ -172,7 +177,7 @@ impl TerminalSurfaceApplication {
         client: &str,
         units: usize,
     ) {
-        self.event_source
+        self.output
             .processed_output(&owner.stable_key(), client, units);
     }
 
@@ -254,6 +259,7 @@ impl TerminalSurfaceApplication {
         super::spawn_usecase::get_or_spawn_with_startup(
             self.performance.as_ref(),
             self.gateway.as_ref(),
+            self.output.as_ref(),
             rows,
             cols,
             cwd,
@@ -277,6 +283,7 @@ impl TerminalSurfaceApplication {
         super::spawn_usecase::get_or_spawn_with_process(
             self.performance.as_ref(),
             self.gateway.as_ref(),
+            self.output.as_ref(),
             rows,
             cols,
             cwd,

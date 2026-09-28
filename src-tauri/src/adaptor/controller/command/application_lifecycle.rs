@@ -15,7 +15,7 @@ pub(crate) fn invoke_handler<R: tauri::Runtime>(
 use crate::adaptor::controller::client::application_lifecycle::{
     get_application_startup_outcome_shared, quit_after_startup_failure_shared,
 };
-use crate::adaptor::protocol::application_lifecycle_v1::{
+use crate::adaptor::presenter::application_lifecycle_v1::{
     ApplicationStartupOutcomeDtoV1, StartupFailureQuitOutcomeDtoV1,
 };
 use std::sync::Arc;

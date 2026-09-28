@@ -50,10 +50,15 @@ pub(crate) async fn compose(
     })?;
     let startup_authority =
         Arc::new(usecase::application_startup::ApplicationStartupAuthority::ready());
-    let state_subscriptions = usecase::state_subscription::StateSubscriptionUsecase::new(
-        Vec::new(),
-        Arc::new(adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+    let state_presenter = Arc::new(
+        adaptor::presenter::state_subscription::StateSubscriptionPresenter::new(Vec::new()),
     );
+    let state_subscriptions =
+        usecase::state_subscription::StateSubscriptionUsecase::new_with_output(
+            state_presenter.clone(),
+            state_presenter.change_sender(),
+            Arc::new(adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+        );
     queue.set_publisher(state_subscriptions.publisher());
     let push_sink = Arc::new(infrastructure::push::PushSink::new());
 
@@ -63,6 +68,8 @@ pub(crate) async fn compose(
     let terminal_surface_runtime =
         terminal_surface::TerminalSurfaceRuntime::new(queue.clone(), data_dir.clone());
     let terminal_surface = terminal_surface_runtime.application();
+    state_presenter.connect_terminal(&terminal_surface)?;
+    let state_subscriptions = state_subscriptions.with_terminal(terminal_surface.clone());
     let review_comment_usecase =
         Arc::new(adaptor::controller::wiring::build_review_comment_usecase());
     let file_watchers = Arc::new(infrastructure::file_watcher::FileWatcherManager::default());
@@ -149,7 +156,7 @@ pub(crate) async fn compose(
                         .to_string(),
                         terminal: terminal_surface.clone(),
                         change_notifier: Arc::new(
-                            adaptor::gateway::push::ClientAgentSessionChangeNotifier::new(
+                            adaptor::presenter::push::ClientAgentSessionChangeNotifier::new(
                                 state_subscriptions.publisher(),
                             ),
                         ),
@@ -207,18 +214,17 @@ pub(crate) async fn compose(
     let repo_paths_gateway =
         RepoPathsGateway::new(shared_repo_paths.clone(), config_repository.clone());
 
-    let repo_paths_notifier = Arc::new(
-        adaptor::gateway::repository::notify::RepoPathsNotifyGateway::new(
+    let repo_paths_notifier =
+        Arc::new(adaptor::presenter::repo_paths::RepoPathsNotifyGateway::new(
             state_subscriptions.publisher(),
-        ),
-    );
+        ));
     let repo_paths_usecase = Arc::new(RepoPathsUsecase::new(
         Arc::new(repo_paths_gateway),
         repo_paths_notifier,
     ));
 
     state_subscriptions.publisher().publish(
-        usecase::state_subscription::REPO_PATHS,
+        &usecase::state_subscription::SubscriptionTarget::RepositoryPaths,
         usecase::state_subscription::StateValue::RepositoryPaths(shared_repo_paths.read().clone()),
         None,
     )?;
@@ -243,7 +249,7 @@ pub(crate) async fn compose(
         repository_state_repository,
         repository_scanner,
         Arc::new(
-            adaptor::gateway::repository::state::ClientRepositoryStateNotifier::new(
+            adaptor::presenter::repository_state::ClientRepositoryStateNotifier::new(
                 push_sink.clone(),
                 state_subscriptions.publisher(),
             ),
@@ -299,7 +305,7 @@ pub(crate) async fn compose(
         .with_notifier({
             let publisher = state_subscriptions.publisher();
             move || {
-                publisher.invalidate(domain::state_subscription::StateChangeSource::WorkspaceList)
+                publisher.invalidate(usecase::state_subscription::StateChangeSource::WorkspaceList)
             }
         }),
     );
@@ -370,7 +376,9 @@ pub(crate) async fn compose(
         adaptor::gateway::comment::state_dir(&data_dir),
         Arc::new({
             let app = push_sink.clone();
-            move || adaptor::gateway::push::BackendPush::ReviewCommentsChanged("*").emit(&app)
+            move || {
+                adaptor::gateway::push::BackendPush::ReviewCommentsChanged("*").emit(app.as_ref())
+            }
         }),
     );
 
@@ -471,16 +479,16 @@ pub(crate) async fn compose(
         workflow_runtime_usecase.clone(),
         local_api_binding.bearer_token(),
         local_api_binding.client_bearer_token(),
-        Some(adaptor::controller::api::TerminalApiDeps::new(
-            terminal_surface.clone(),
-        )),
         Some(
             adaptor::controller::api::ClientApiDeps::new(
                 client_dispatch.clone(),
                 adaptor::gateway::push::ClientPushGateway::new(push_sink.clone()),
                 dependencies.watcher.clone(),
             )
-            .with_state_subscriptions(state_subscriptions)
+            .with_state_subscriptions(adaptor::controller::api::StateSubscriptionDeps::new(
+                state_subscriptions,
+                state_presenter,
+            ))
             .with_desktop_settings(usecase::app_config::AppConfigUsecase::new(
                 config_repository,
             )),

@@ -244,6 +244,8 @@ jobs:
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - run: cargo test --locked
         if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
+      - run: cargo test --locked --test state_subscription_scenarios scenarios_tests::
+        if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
 
   rust-test-headless:
     runs-on: ubuntu-latest
@@ -274,6 +276,9 @@ jobs:
       - name: Headless backend unit tests
         if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
         run: cargo test --locked --no-default-features --lib
+      - name: Headless state subscription scenarios
+        if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
+        run: cargo test --locked --no-default-features --test state_subscription_scenarios scenarios_tests::
       - name: Headless daemon protocol smoke test
         if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
         run: cargo test --locked --no-default-features --test daemon_smoke

@@ -9,7 +9,7 @@ pub mod value_objects;
 
 pub use entities::{Branch, FileDiffStat, FileStatus, RepositoryStatusScan, Worktree};
 pub use error::RepositoryError;
-pub use gateway::{RepoPathsNotifier, WorktreeTerminalGateway};
+pub use gateway::WorktreeTerminalGateway;
 pub use repository::{
     BranchRepository, GitConfigRepository, RepoLocator, RepoPathsRepository, StatusRepository,
     WorktreeRepository,

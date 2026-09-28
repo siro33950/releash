@@ -49,17 +49,16 @@ async fn error_server(
 #[tokio::test]
 async fn test_接続監督_要求上限拒否が継続しても接続を維持する() {
     // Given
-    let (endpoint, server, requests) = error_server(
-        crate::adaptor::controller::api::protocol::connect::command_error(
+    let (endpoint, server, requests) =
+        error_server(crate::adaptor::presenter::connect::command_error(
             crate::adaptor::presenter::error::AppError::coded(
                 "CLIENT_REQUEST_LIMIT",
                 "Too many pending client commands",
                 connectrpc::ErrorCode::ResourceExhausted,
             )
             .into(),
-        ),
-    )
-    .await;
+        ))
+        .await;
     let client = DesktopClient::start(super::client(&endpoint).unwrap());
     // When / Then
     tokio::time::timeout(std::time::Duration::from_secs(45), async {
@@ -78,7 +77,7 @@ async fn test_接続監督_要求上限拒否が継続しても接続を維持�
 
 #[tokio::test]
 async fn test_ネイティブ要求_停止とログイン項目の具体的な失敗理由を保持する() {
-    use crate::adaptor::controller::api::protocol::connect::command_error;
+    use crate::adaptor::presenter::connect::command_error;
     // Given / When / Then
     for detail in [
         wire::CommandError::from(crate::adaptor::presenter::error::AppError::new(

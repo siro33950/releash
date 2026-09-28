@@ -1,10 +1,11 @@
 use std::sync::{Arc, Mutex};
 
-use crate::adaptor::gateway::terminal_surface::event_hub::TerminalSurfaceEventHub;
+use crate::adaptor::presenter::terminal_event_hub::TerminalSurfaceEventHub;
 use crate::domain::agent_session::ProviderAgentTerminalObservationGateway;
-use crate::domain::terminal_surface::gateway::{
-    TerminalSurfaceEvent, TerminalSurfaceEventSink, TerminalSurfaceEventSource,
-};
+use crate::domain::terminal_surface::gateway::TerminalSurfaceEventSource;
+use crate::usecase::terminal_surface::output::TerminalSurfaceEventSink;
+use crate::usecase::terminal_surface::output::TerminalSurfaceOutputEvent;
+
 use crate::domain::terminal_surface::TerminalSurfaceOwner;
 use crate::domain::workspace_tree::WorkspaceIdentity;
 use crate::usecase::agent_session::{
@@ -58,7 +59,7 @@ impl ProviderAgentTerminalObservationGateway for FixedTerminalObservation {
 #[tokio::test]
 async fn test_agent_session_exit_observer_frontendなしでexitをusecaseへ渡す() {
     let hub = Arc::new(TerminalSurfaceEventHub::new());
-    let stream = hub.subscribe();
+    let stream = crate::adaptor::gateway::terminal_surface::event_source::TerminalSurfaceEventSourceGateway::new(hub.event_sender()).subscribe();
     let cancellation = stream.cancellation.clone();
     let exits = Arc::new(RecordingExitPort::default());
     let usecase = Arc::new(AgentSessionExitUsecase::new(
@@ -67,7 +68,7 @@ async fn test_agent_session_exit_observer_frontendなしでexitをusecaseへ渡�
     ));
     let task = tokio::spawn(super::run_agent_session_exit_observer(stream, usecase));
 
-    hub.publish(TerminalSurfaceEvent::Exit {
+    hub.publish(TerminalSurfaceOutputEvent::Exit {
         session_key: "agent-surface".to_string(),
         runtime_generation: 3,
         exit_code: Some(0),
@@ -93,7 +94,7 @@ async fn test_agent_session_exit_observer_frontendなしでexitをusecaseへ渡�
 async fn test_終了処理_observer停止後のterminal終了をsessionへ記録しない() {
     // Given
     let hub = TerminalSurfaceEventHub::new();
-    let stream = hub.subscribe();
+    let stream = crate::adaptor::gateway::terminal_surface::event_source::TerminalSurfaceEventSourceGateway::new(hub.event_sender()).subscribe();
     let exits = Arc::new(RecordingExitPort::default());
     let usecase = Arc::new(AgentSessionExitUsecase::new(
         Arc::new(FixedTerminalObservation),
@@ -102,7 +103,7 @@ async fn test_終了処理_observer停止後のterminal終了をsessionへ記録
 
     // When
     stream.cancellation.cancel();
-    hub.publish(TerminalSurfaceEvent::Exit {
+    hub.publish(TerminalSurfaceOutputEvent::Exit {
         session_key: "agent-surface".into(),
         runtime_generation: 3,
         exit_code: Some(0),

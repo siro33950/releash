@@ -21,3 +21,4 @@ pub mod performance_switches;
 pub mod utils;
 
 pub(crate) mod file_lock;
+pub(crate) mod state_subscription;

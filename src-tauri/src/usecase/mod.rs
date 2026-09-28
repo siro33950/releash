@@ -54,4 +54,5 @@ pub(crate) mod work_queue_test_runtime;
 
 pub(crate) mod failure_query_service;
 
+pub(crate) mod push;
 mod work_failure;

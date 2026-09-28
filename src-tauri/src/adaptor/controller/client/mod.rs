@@ -14,9 +14,10 @@ pub(crate) mod terminal_surface;
 pub(crate) mod workflow;
 pub(crate) mod workspace_state;
 pub(crate) mod workspace_tree;
+pub(crate) use crate::adaptor::presenter::client::{outcome, value};
 pub(crate) use dependencies::ClientDependencies;
 pub(crate) use dispatch::{
-    convert, finite, invalid_request, optional, outcome, required, value, ClientCommandDispatch,
+    convert, finite, invalid_request, optional, required, ClientCommandDispatch,
 };
 
 #[cfg(feature = "desktop")]

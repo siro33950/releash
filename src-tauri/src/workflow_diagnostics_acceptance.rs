@@ -259,7 +259,6 @@ impl WorkflowDiagnosticsAcceptanceHost {
             binding.terminal_bearer_token(),
             None,
             None,
-            None,
         );
         let local_api = binding.start(router, &tokio::runtime::Handle::current());
         Ok(Self {
@@ -284,7 +283,12 @@ impl WorkflowDiagnosticsAcceptanceHost {
         )
         .await
         .map_err(|error| error.to_string())
-        .and_then(|report| serde_json::to_value(report).map_err(|error| error.to_string()))
+        .and_then(|report| {
+            serde_json::to_value(
+                crate::adaptor::presenter::workflow_api::DiagnosticReportResponse::from(report),
+            )
+            .map_err(|error| error.to_string())
+        })
     }
 
     pub async fn diagnose(&self, directory: Option<&Path>) -> Result<serde_json::Value, String> {

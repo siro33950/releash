@@ -1,22 +1,9 @@
-use crate::usecase::terminal_surface::application::TerminalSurfaceApplication;
-use connectrpc::ConnectError;
-use std::sync::Arc;
-#[derive(Clone)]
-pub(crate) struct TerminalApiDeps {
-    pub application: Arc<TerminalSurfaceApplication>,
+pub(crate) const SUBSCRIPTION_ID_MAX_BYTES: usize = 128;
+
+pub(crate) fn valid_subscription_id(id: &str, allow_empty: bool) -> bool {
+    id.len() <= SUBSCRIPTION_ID_MAX_BYTES && (allow_empty || !id.is_empty())
 }
-impl TerminalApiDeps {
-    pub(crate) fn new(application: Arc<TerminalSurfaceApplication>) -> Self {
-        Self { application }
-    }
-}
-pub(super) fn validate_identifier(id: &str) -> Result<(), ConnectError> {
-    if id.len() > 128 {
-        return Err(crate::adaptor::presenter::connect::classified_error(
-            crate::adaptor::presenter::error::AppError::invalid_request(
-                "Identifier exceeds 128 bytes",
-            ),
-        ));
-    }
-    Ok(())
-}
+
+#[cfg(test)]
+#[path = "client_stream_test.rs"]
+mod client_stream_tests;

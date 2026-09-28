@@ -2,6 +2,7 @@ use std::ffi::{OsStr, OsString};
 use std::path::Path;
 
 pub(crate) mod git;
+pub(crate) mod state_subscription;
 
 #[path = "../../tests/support/agent_tui_fixture.rs"]
 pub(crate) mod agent_tui_fixture;

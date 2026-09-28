@@ -123,7 +123,7 @@ async fn test_push_server_streamは再同期通知の後にbackend変更を配�
         to_wire::<wire::Push>(&initial).unwrap().event,
         Some(wire::push::Event::Resync(_))
     ));
-    crate::adaptor::gateway::push::BackendPush::ReviewCommentsChanged("/next").emit(&sink);
+    crate::adaptor::gateway::push::BackendPush::ReviewCommentsChanged("/next").emit(sink.as_ref());
     let push = stream
         .message::<rpc::Push>()
         .await
@@ -348,6 +348,7 @@ async fn test_監視unary_pushの購読が所有し明示停止と切断で解�
         .await
         .unwrap()
         .into_owned();
+    assert_eq!(watched.value, Some(0));
     assert_eq!(files.active.lock().unwrap().len(), 1);
     for _ in 1..64 {
         client
@@ -1028,8 +1029,70 @@ async fn test_push購読_idは128byteまで受理し超過を保持前に拒否�
 }
 
 #[tokio::test]
+async fn test_状態購読_購読idを入口で128バイトまで受け付ける() {
+    // Given
+    let subscriptions = crate::usecase::state_subscription::StateSubscriptionUsecase::new(
+        vec![],
+        Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+    );
+    let deps = ClientApiDeps::new(
+        Arc::new(dispatch()),
+        ClientPushGateway::new(Arc::new(PushSink::new())),
+        crate::client_api_acceptance::watcher(),
+    )
+    .with_state_subscriptions(StateSubscriptionDeps::new(
+        subscriptions.clone(),
+        Arc::new(subscriptions.test_presenter().unwrap().clone()),
+    ));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let config = ClientConfig::new(
+        format!("http://{}", listener.local_addr().unwrap())
+            .parse()
+            .unwrap(),
+    );
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router(Some(deps))).await.unwrap();
+    });
+    let client = rpc::ClientServiceClient::new(HttpClient::plaintext(), config);
+    // When
+    for id in [String::new(), "x".repeat(129), "あ".repeat(43)] {
+        let mut stream = client
+            .open_state_stream(rpc::OpenStateStreamRequest {
+                client_id: id,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        // Then
+        assert_eq!(
+            stream
+                .message::<rpc::StateSubscriptionEvent>()
+                .await
+                .unwrap_err()
+                .code,
+            connectrpc::ErrorCode::InvalidArgument
+        );
+    }
+    // When
+    let mut stream = client
+        .open_state_stream(rpc::OpenStateStreamRequest {
+            client_id: "x".repeat(128),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    // Then
+    assert!(stream
+        .message::<rpc::StateSubscriptionEvent>()
+        .await
+        .unwrap()
+        .is_some());
+    server.abort();
+}
+
+#[tokio::test]
 async fn test_状態購読_connectで初期状態と変更と再開を配信する() {
-    use crate::usecase::state_subscription::{StateSubscriptionUsecase, REPO_PATHS};
+    use crate::usecase::state_subscription::{StateSubscriptionUsecase, SubscriptionTarget};
     use wire::state_subscription_event::Event;
     // Given
     let subscriptions = StateSubscriptionUsecase::new(
@@ -1041,7 +1104,10 @@ async fn test_状態購読_connectで初期状態と変更と再開を配信す�
         ClientPushGateway::new(Arc::new(PushSink::new())),
         crate::client_api_acceptance::watcher(),
     )
-    .with_state_subscriptions(subscriptions.clone());
+    .with_state_subscriptions(StateSubscriptionDeps::new(
+        subscriptions.clone(),
+        Arc::new(subscriptions.test_presenter().unwrap().clone()),
+    ));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let config = ClientConfig::new(
         format!("http://{}", listener.local_addr().unwrap())
@@ -1072,7 +1138,7 @@ async fn test_状態購読_connectで初期状態と変更と再開を配信す�
     // When
     let request = wire::StartStateSubscriptionRequest {
         client_id: "state-test".into(),
-        target: REPO_PATHS.into(),
+        target: SubscriptionTarget::RepositoryPaths.to_string(),
         args: vec![],
         version: None,
         terminal_input_id: None,
@@ -1106,8 +1172,8 @@ async fn test_状態購読_connectで初期状態と変更と再開を配信す�
     )
     .unwrap();
     assert!(matches!(bookmark.event, Some(Event::Bookmark(_))));
-    crate::domain::repository::RepoPathsNotifier::notify_changed(
-        &crate::adaptor::gateway::repository::notify::RepoPathsNotifyGateway::new(
+    crate::usecase::repo_paths_usecase::RepoPathsNotifier::notify_changed(
+        &crate::adaptor::presenter::repo_paths::RepoPathsNotifyGateway::new(
             subscriptions.publisher(),
         ),
         vec!["/next".into()],
@@ -1126,7 +1192,7 @@ async fn test_状態購読_connectで初期状態と変更と再開を配信す�
     client
         .stop_state_subscription(rpc::StopStateSubscriptionRequest {
             client_id: "state-test".into(),
-            target: REPO_PATHS.into(),
+            target: SubscriptionTarget::RepositoryPaths.to_string(),
             ..Default::default()
         })
         .await
@@ -1325,7 +1391,8 @@ async fn test_購読stream_既定期限を過ぎても配信できる() {
     // When
     tokio::time::advance(std::time::Duration::from_secs(121)).await;
     assert!(futures_util::poll!(body.next()).is_pending());
-    crate::adaptor::gateway::push::BackendPush::ReviewCommentsChanged("/next".into()).emit(&sink);
+    crate::adaptor::gateway::push::BackendPush::ReviewCommentsChanged("/next".into())
+        .emit(sink.as_ref());
     // Then
     let frame = body.next().await.unwrap().unwrap();
     assert_eq!(frame[0], 0);
@@ -1447,7 +1514,10 @@ async fn test_状態購読_既定期限後もbookmarkが届く() {
         ClientPushGateway::new(Arc::new(PushSink::new())),
         crate::client_api_acceptance::watcher(),
     )
-    .with_state_subscriptions(subscriptions.clone());
+    .with_state_subscriptions(StateSubscriptionDeps::new(
+        subscriptions.clone(),
+        Arc::new(subscriptions.test_presenter().unwrap().clone()),
+    ));
     let payload = br#"{"clientId":"deadline-test"}"#;
     let mut bytes = vec![0];
     bytes.extend_from_slice(&(payload.len() as u32).to_be_bytes());
@@ -1465,9 +1535,13 @@ async fn test_状態購読_既定期限後もbookmarkが届く() {
     assert!(response.status().is_success());
     let mut body = response.into_body().into_data_stream();
     assert!(body.next().await.unwrap().is_ok());
-    subscriptions
-        .start("deadline-test", "repository-paths", None)
-        .unwrap();
+    crate::test_support::state_subscription::start(
+        &subscriptions,
+        "deadline-test",
+        "repository-paths",
+        None,
+    )
+    .unwrap();
     assert!(body.next().await.unwrap().is_ok());
     // When / Then
     for _ in 0..13 {
@@ -1498,7 +1572,10 @@ async fn test_状態購読操作_上限時は拒否し枠解放後は受理す�
         ClientPushGateway::new(Arc::new(PushSink::new())),
         crate::client_api_acceptance::watcher(),
     )
-    .with_state_subscriptions(subscriptions);
+    .with_state_subscriptions(StateSubscriptionDeps::new(
+        subscriptions.clone(),
+        Arc::new(subscriptions.test_presenter().unwrap().clone()),
+    ));
     let router = router(Some(deps.clone()));
     for method in ["StartStateSubscription", "StopStateSubscription"] {
         let permits = (0..64)
@@ -1834,11 +1911,12 @@ async fn test_監視rpc_登録後の期限切れでidを返せない監視を解
 
 #[tokio::test]
 async fn test_terminal購読_connectの後段配線と差分再開と流量停止中の応答を保証する() {
-    use crate::adaptor::gateway::terminal_surface::event_hub::TerminalSurfaceEventHub;
+    use crate::adaptor::presenter::terminal_event_hub::TerminalSurfaceEventHub;
     use crate::domain::terminal_surface::entities::TerminalSurface;
-    use crate::domain::terminal_surface::gateway::{
-        TerminalSurfaceEvent, TerminalSurfaceEventSink,
-    };
+    use crate::usecase::terminal_surface::output::TerminalSurfaceEventSink;
+    use crate::usecase::terminal_surface::output::TerminalSurfaceOutputControl;
+    use crate::usecase::terminal_surface::output::TerminalSurfaceOutputEvent;
+
     use crate::domain::terminal_surface::TerminalSurfaceOwner;
     use crate::domain::workspace_tree::WorkspaceIdentity;
     use crate::usecase::state_subscription::StateSubscriptionUsecase;
@@ -1862,9 +1940,26 @@ async fn test_terminal購読_connectの後段配線と差分再開と流量停�
     gateway.additional_surfaces = vec![first.clone(), second.clone()];
     let gateway = Arc::new(gateway);
     let hub = Arc::new(TerminalSurfaceEventHub::with_flags(256, true));
+    hub.initialize(crate::test_support::state_subscription::registration(
+        &first.session_key,
+        "/first",
+        None,
+        1,
+        0,
+    ))
+    .unwrap();
+    hub.initialize(crate::test_support::state_subscription::registration(
+        &second.session_key,
+        "/second",
+        None,
+        2,
+        0,
+    ))
+    .unwrap();
     let terminal = Arc::new(TerminalSurfaceApplication::new(
         std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
         gateway.clone(),
+        Arc::new(crate::adaptor::gateway::terminal_surface::event_source::TerminalSurfaceEventSourceGateway::new(hub.event_sender())),
         hub.clone(),
     ));
     let (app, _, _) =
@@ -1884,17 +1979,26 @@ async fn test_terminal購読_connectの後段配線と差分再開と流量停�
     ));
     let mut dispatch = dispatch();
     dispatch.register_dependencies(&dependencies);
+    let subscriptions = StateSubscriptionUsecase::new(
+        vec!["/repo".into()],
+        Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+    );
+    subscriptions
+        .test_presenter()
+        .unwrap()
+        .connect_terminal(&terminal)
+        .unwrap();
+    let subscriptions = subscriptions.with_terminal(terminal);
     let deps = ClientApiDeps::new(
         Arc::new(dispatch),
         ClientPushGateway::new(Arc::new(PushSink::new())),
         dependencies.watcher,
     )
-    .with_state_subscriptions(StateSubscriptionUsecase::new(
-        vec!["/repo".into()],
-        Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
-    ))
-    .with_terminal(Some(TerminalApiDeps::new(terminal)));
-    assert_eq!(*gateway.list_summaries_calls.lock(), 1);
+    .with_state_subscriptions(StateSubscriptionDeps::new(
+        subscriptions.clone(),
+        Arc::new(subscriptions.test_presenter().unwrap().clone()),
+    ));
+    assert_eq!(*gateway.list_summaries_calls.lock(), 0);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let config = ClientConfig::new(
         format!("http://{}", listener.local_addr().unwrap())
@@ -1937,7 +2041,7 @@ async fn test_terminal購読_connectの後段配線と差分再開と流量停�
                 client_id: "terminal-client".into(),
                 target: "terminal".into(),
                 args: vec![path.into()],
-                terminal_input_id: Some(format!("input-{path}")).into(),
+                terminal_input_id: (path == "/first").then(|| format!("input-{path}")).into(),
                 ..Default::default()
             })
             .await
@@ -1977,7 +2081,7 @@ async fn test_terminal購読_connectの後段配線と差分再開と流量停�
 
     // When: unprocessed UTF-16 output exceeds the high watermark.
     let data: Arc<str> = "🙂".repeat(50_001).into();
-    hub.publish(TerminalSurfaceEvent::Output {
+    hub.publish(TerminalSurfaceOutputEvent::Output {
         session_key: first.session_key.clone(),
         data: data.clone(),
         sequence: 1,
@@ -2011,7 +2115,7 @@ async fn test_terminal購読_connectの後段配線と差分再開と流量停�
         .is_err());
 
     // Then: another terminal, another RPC, and resize of the paused terminal progress.
-    hub.publish(TerminalSurfaceEvent::Output {
+    hub.publish(TerminalSurfaceOutputEvent::Output {
         session_key: second.session_key.clone(),
         data: "still running".into(),
         sequence: 1,
@@ -2107,7 +2211,15 @@ async fn test_terminal購読_connectの後段配線と差分再開と流量停�
     let resumed = next_event!();
     assert_eq!(resumed.version.unwrap().sequence, 1);
     assert!(matches!(resumed.event, Some(Event::Change(change)) if change.delta));
-    let bookmark = next_event!();
+    let mut bookmark = None;
+    for _ in 0..3 {
+        let event = next_event!();
+        if event.target == "terminal" && event.args.len() == 1 && event.args[0] == "/first" {
+            bookmark = Some(event);
+            break;
+        }
+    }
+    let bookmark = bookmark.expect("resumed terminal bookmark");
     assert_eq!(bookmark.version.unwrap().sequence, 1);
     assert!(matches!(bookmark.event, Some(Event::Bookmark(_))));
     drop(stream);
@@ -2161,4 +2273,22 @@ async fn test_共通入口_期限切れを変換し成功と内部失敗を保�
     .await
     .unwrap_err();
     assert_eq!(error.code, connectrpc::ErrorCode::Unavailable);
+}
+#[test]
+fn test_状態購読配線_usecaseとcontrollerが同じ出力実装を参照する() {
+    // Given
+    let presenter = Arc::new(
+        crate::adaptor::presenter::state_subscription::StateSubscriptionPresenter::new(vec![]),
+    );
+    let usecase = crate::usecase::state_subscription::StateSubscriptionUsecase::new_with_output(
+        presenter.clone(),
+        presenter.change_sender(),
+        Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+    );
+    let deps = StateSubscriptionDeps::new(usecase, presenter);
+    // When
+    let output: Arc<dyn crate::usecase::state_subscription::StateSubscriptionOutput> =
+        deps.presenter.clone();
+    // Then
+    assert!(Arc::ptr_eq(&deps.usecase.publisher(), &output));
 }

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::adaptor::gateway::terminal_surface::event_hub::TerminalSurfaceEventHub;
+use crate::adaptor::presenter::terminal_event_hub::TerminalSurfaceEventHub;
 use crate::domain::agent_session::aggregates::ManagedPtyPresence;
 use crate::domain::agent_session::ProviderAgentTerminalGateway;
 use crate::domain::agent_session::ProviderAgentTerminalSpawnError;
@@ -37,10 +37,12 @@ fn application_with(surface: Option<TerminalSurface>) -> TerminalSurfaceApplicat
     if let Some(surface) = surface {
         gateway.insert_surface(surface);
     }
+    let hub = Arc::new(TerminalSurfaceEventHub::new());
     TerminalSurfaceApplication::new(
         std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
         gateway,
-        Arc::new(TerminalSurfaceEventHub::new()),
+        Arc::new(crate::adaptor::gateway::terminal_surface::event_source::TerminalSurfaceEventSourceGateway::new(hub.event_sender())),
+        hub,
     )
 }
 

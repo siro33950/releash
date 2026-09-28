@@ -31,8 +31,8 @@ fn test_表示状態保存_保存成功後だけ対象名を通知する() {
             fail,
             calls: Default::default(),
         };
-        let publisher = crate::usecase::state_subscription::StateSubscriptionPublisher::for_test();
-        let mut changes = publisher.subscribe_changes();
+        let publisher = crate::test_support::state_subscription::test_output();
+        let mut changes = crate::test_support::state_subscription::changes(&publisher);
         let state = WorkspaceState {
             version: 1,
             tabs: WorkspaceTabsState {
@@ -59,7 +59,7 @@ fn test_表示状態保存_保存成功後だけ対象名を通知する() {
         } else {
             assert_eq!(
                 changes.try_recv().unwrap(),
-                crate::domain::state_subscription::StateChangeSource::WorkspaceState(
+                crate::usecase::state_subscription::StateChangeSource::WorkspaceState(
                     "worktree".into()
                 )
             );

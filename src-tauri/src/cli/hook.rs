@@ -3,13 +3,14 @@ use std::io::Read;
 use super::api_client::{request_classified, ApiRequestError};
 use super::common::{cli_error_stderr, resolve_data_dir, CliError};
 use super::HookProvider;
+use crate::adaptor::controller::api::protocol::{
+    ProviderActivityRequest, ProviderLifecycleProvider, ProviderLifecycleReceiveRequest,
+    ProviderLifecycleSignalRequest,
+};
 use crate::adaptor::gateway::provider_lifecycle::{
     parse_provider_payload, ProviderLifecycleGatewayError,
 };
-use crate::adaptor::protocol::provider_lifecycle::{
-    ProviderActivityRequest, ProviderLifecycleProvider, ProviderLifecycleReceiveRequest,
-    ProviderLifecycleReceiveResponse, ProviderLifecycleSignalRequest,
-};
+use crate::adaptor::presenter::provider_lifecycle_response::ProviderLifecycleReceiveResponse;
 use crate::domain::provider_lifecycle::{
     ProviderKind, ProviderLifecycleScope, ProviderLifecycleSignalKind,
 };

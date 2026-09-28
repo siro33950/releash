@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use tauri::Manager;
 
-use crate::adaptor::controller::api::{ClientApiDeps, TerminalApiDeps};
+use crate::adaptor::controller::api::ClientApiDeps;
 use crate::adaptor::controller::client::ClientCommandDispatch;
 use crate::adaptor::controller::command::CommandRouter;
 use crate::adaptor::controller::terminal_surface_runtime::TerminalSurfaceRuntime;
@@ -29,9 +29,9 @@ pub fn spawn_review_comments_watcher(
 
 pub use crate::adaptor::gateway::push::BackendPush;
 pub use crate::adaptor::gateway::repository::branch::BranchGateway;
-pub use crate::adaptor::gateway::repository::watch::{FileChangeEvent, GitStatusChangedEvent};
-pub use crate::adaptor::protocol::terminal::TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX;
-pub use crate::adaptor::protocol::workflow::*;
+pub use crate::adaptor::gateway::repository::watch::FileChangeEvent;
+pub use crate::adaptor::presenter::terminal::TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX;
+pub use crate::adaptor::presenter::workflow_wire::*;
 pub use crate::domain::repository::{Branch, BranchRepository, RepositoryError};
 
 #[derive(serde::Serialize)]
@@ -120,8 +120,12 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
         );
         let authority = Arc::new(ApplicationStartupAuthority::ready());
         let repository = Arc::new(repository);
-        let state = crate::usecase::state_subscription::StateSubscriptionUsecase::new(
-            vec![],
+        let state_presenter = Arc::new(
+            crate::adaptor::presenter::state_subscription::StateSubscriptionPresenter::new(vec![]),
+        );
+        let state = crate::usecase::state_subscription::StateSubscriptionUsecase::new_with_output(
+            state_presenter.clone(),
+            state_presenter.change_sender(),
             Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
         )
         .with_reads(
@@ -135,7 +139,7 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
             Box::new(move |command| {
                 let repository = repository.clone();
                 Box::pin(async move {
-                    let crate::adaptor::protocol::client::command_request::Command::GetReleashBase(
+                    let crate::adaptor::presenter::client::command_request::Command::GetReleashBase(
                         args,
                     ) = command
                     else {
@@ -149,7 +153,7 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
                         })
                         .await;
                     crate::adaptor::controller::client::outcome(result.map(Some)).map(
-                        crate::adaptor::protocol::client::command_result::Command::GetReleashBase,
+                        crate::adaptor::presenter::client::command_result::Command::GetReleashBase,
                     )
                 })
             }),
@@ -197,19 +201,27 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
             operations,
         );
         let terminal = TerminalSurfaceRuntime::new(queue.clone(), data_dir.to_path_buf());
+        state_presenter
+            .connect_terminal(&terminal.application())
+            .unwrap();
+        let state = state.with_terminal(terminal.application());
         let router = crate::adaptor::controller::api::build_router(
             Arc::new(workflow),
             Arc::new(runtime),
             binding.bearer_token(),
             binding.client_bearer_token(),
-            Some(TerminalApiDeps::new(terminal.application())),
             Some(
                 ClientApiDeps::new(
                     dispatch,
                     ClientPushGateway::new(sink),
                     crate::client_api_acceptance::watcher(),
                 )
-                .with_state_subscriptions(state),
+                .with_state_subscriptions(
+                    crate::adaptor::controller::api::StateSubscriptionDeps::new(
+                        state,
+                        state_presenter,
+                    ),
+                ),
             ),
             None,
         );
@@ -235,11 +247,20 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
 
     pub fn review_comment_notifier(&self) -> Arc<dyn Fn() + Send + Sync> {
         let sink = crate::desktop_test_support::push_sink(self.app.handle());
-        Arc::new(move || BackendPush::ReviewCommentsChanged("*").emit(&sink))
+        Arc::new(move || BackendPush::ReviewCommentsChanged("*").emit(sink.as_ref()))
     }
 
     pub fn emit(&self, push: BackendPush<'_>) {
-        push.emit(&crate::desktop_test_support::push_sink(self.app.handle()));
+        push.emit(crate::desktop_test_support::push_sink(self.app.handle()).as_ref());
+    }
+
+    pub fn emit_git_status_changed(&self, repo_path: &str) {
+        use crate::usecase::push::PushOutput;
+        crate::desktop_test_support::push_sink(self.app.handle()).publish(
+            crate::usecase::push::PushMessage::GitStatusChanged {
+                repo_path: repo_path.into(),
+            },
+        );
     }
 
     pub fn push_subscription_count(&self) -> usize {
@@ -257,7 +278,7 @@ impl<R: tauri::Runtime> Drop for ClientApiAcceptanceHost<R> {
     }
 }
 
-pub use crate::adaptor::protocol::connect::rpc;
+pub use crate::adaptor::presenter::connect_wire::rpc;
 pub type NativeClient = rpc::ClientServiceClient<connectrpc::client::HttpClient>;
 
 pub fn connect_client(endpoint: &ClientEndpoint) -> NativeClient {
@@ -275,7 +296,7 @@ pub async fn request_client(
     name: &str,
     args: serde_json::Value,
 ) -> Result<serde_json::Value, connectrpc::ConnectError> {
-    use crate::adaptor::protocol::client as wire;
+    use crate::adaptor::presenter::client as wire;
     let command = wire::CommandRequest::from_value(name, args)
         .unwrap()
         .command
@@ -290,17 +311,17 @@ pub async fn request_client(
 }
 
 pub fn decode_rpc_push(push: rpc::Push) -> (&'static str, serde_json::Value) {
-    decode_client_push(crate::adaptor::controller::api::protocol::connect::to_wire(&push).unwrap())
+    decode_client_push(crate::adaptor::presenter::connect_wire::to_wire(&push).unwrap())
 }
 
 pub fn decode_client_value(
-    value: impl crate::adaptor::controller::api::protocol::client::ClientValue,
+    value: impl crate::adaptor::presenter::client::ClientValue,
 ) -> serde_json::Value {
-    crate::adaptor::controller::api::protocol::client::from_value(value).unwrap()
+    crate::adaptor::presenter::client::from_value(value).unwrap()
 }
 
 pub fn decode_client_push(
-    push: crate::adaptor::controller::api::protocol::client::Push,
+    push: crate::adaptor::presenter::client::Push,
 ) -> (&'static str, serde_json::Value) {
     push.into_value().unwrap()
 }
@@ -320,7 +341,7 @@ pub struct ClientRecoveryAcceptanceHost {
 
 impl ClientRecoveryAcceptanceHost {
     pub async fn start() -> Self {
-        use crate::adaptor::controller::api::protocol::client as wire;
+        use crate::adaptor::presenter::client as wire;
         let state = Arc::new(std::sync::Mutex::new(ClientRecoveryState::default()));
         let mut dispatch =
             ClientCommandDispatch::new(Arc::new(ApplicationStartupAuthority::ready()));
@@ -518,13 +539,13 @@ struct AcceptanceStateReads(Arc<RepositoryUsecase>);
 impl crate::usecase::state_subscription::StateSubscriptionRead for AcceptanceStateReads {
     async fn read(
         &self,
-        target: &crate::domain::state_subscription::SubscriptionTarget,
+        target: &crate::usecase::state_subscription::SubscriptionTarget,
     ) -> Result<
         crate::usecase::state_subscription::StateValue,
         crate::usecase::state_subscription::StateReadError,
     > {
         use crate::usecase::state_subscription::{StateReadError, StateValue};
-        let crate::domain::state_subscription::SubscriptionTarget::CurrentBranch(path) = target
+        let crate::usecase::state_subscription::SubscriptionTarget::CurrentBranch(path) = target
         else {
             return Err(StateReadError {
                 source: crate::usecase::state_subscription::StateReadFailure::Workflow(Box::new(
@@ -549,7 +570,7 @@ impl crate::usecase::state_subscription::StateSubscriptionRead for AcceptanceSta
     }
     async fn refresh_workspaces(
         &self,
-        _: Option<crate::domain::state_subscription::StateChangeSource>,
+        _: Option<crate::usecase::state_subscription::StateChangeSource>,
     ) {
     }
     fn repositories(&self) -> Vec<String> {
@@ -562,7 +583,7 @@ pub async fn read_current_branch(
     args: serde_json::Value,
 ) -> Result<serde_json::Value, connectrpc::ConnectError> {
     let path = args["repoPath"].as_str().unwrap_or_default();
-    let target = crate::domain::state_subscription::SubscriptionTarget::from_parts(
+    let target = crate::usecase::state_subscription::SubscriptionTarget::from_parts(
         "current-branch",
         &[path],
     )
@@ -574,7 +595,7 @@ pub async fn read_state(
     client: &NativeClient,
     target: &str,
 ) -> Result<serde_json::Value, connectrpc::ConnectError> {
-    let target = crate::domain::state_subscription::SubscriptionTarget::parse(target)
+    let target = crate::usecase::state_subscription::SubscriptionTarget::parse(target)
         .map_err(crate::adaptor::presenter::connect::classified_error)?;
     let (name, args) = target.parts();
     let client_id = uuid::Uuid::new_v4().to_string();
@@ -602,7 +623,7 @@ pub async fn read_state(
     let Some(rpc::state_subscription_event::Event::Snapshot(payload)) = item.event else {
         panic!("snapshot")
     };
-    use crate::adaptor::protocol::{client as wire, connect::to_wire};
+    use crate::adaptor::presenter::{client as wire, connect_wire::to_wire};
     let payload: wire::StatePayload = to_wire(payload.as_ref())?;
     let value = match payload.value.unwrap() {
         wire::state_payload::Value::CurrentBranch(value) => {

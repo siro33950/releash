@@ -2,42 +2,36 @@ use std::sync::Arc;
 
 use axum::Router;
 
-use super::client_stream::TerminalApiDeps;
-use super::protocol::client as wire;
-use super::protocol::connect::{command_error, rpc, to_rpc, to_wire};
 use crate::adaptor::controller::client::ClientCommandDispatch;
 use crate::adaptor::gateway::push::{ClientPushError, ClientPushGateway};
-
-struct EncodedPush(Arc<[u8]>);
-
-impl connectrpc::Encodable<rpc::Push> for EncodedPush {
-    fn encode(
-        &self,
-        codec: connectrpc::CodecFormat,
-    ) -> Result<axum::body::Bytes, connectrpc::ConnectError> {
-        match codec {
-            connectrpc::CodecFormat::Proto => Ok(axum::body::Bytes::from_owner(self.0.clone())),
-            _ => {
-                let push =
-                    <rpc::Push as buffa::Message>::decode_from_slice(&self.0).map_err(|error| {
-                        crate::adaptor::presenter::connect::classified_error(
-                            crate::adaptor::presenter::error::AppError::new(error.to_string()),
-                        )
-                    })?;
-                push.encode(codec)
-            }
-        }
-    }
-}
+use crate::adaptor::presenter::client as wire;
+use crate::adaptor::presenter::connect::command_error;
+use crate::adaptor::presenter::connect_wire::{rpc, to_rpc, to_wire};
+use crate::adaptor::presenter::push::EncodedPush;
 
 #[derive(Clone)]
 pub(crate) struct ClientApiDeps {
     dispatch: Arc<ClientCommandDispatch>,
     push: ClientPushGateway,
-    state_subscriptions: Option<crate::usecase::state_subscription::StateSubscriptionUsecase>,
+    state_subscriptions: Option<StateSubscriptionDeps>,
     desktop_settings: Option<Arc<crate::usecase::app_config::AppConfigUsecase>>,
     request_limit: Arc<tokio::sync::Semaphore>,
     watcher: Arc<crate::usecase::watcher::WatcherUsecase>,
+}
+
+#[derive(Clone)]
+pub(crate) struct StateSubscriptionDeps {
+    usecase: crate::usecase::state_subscription::StateSubscriptionUsecase,
+    presenter: Arc<crate::adaptor::presenter::state_subscription::StateSubscriptionPresenter>,
+}
+
+impl StateSubscriptionDeps {
+    pub(crate) fn new(
+        usecase: crate::usecase::state_subscription::StateSubscriptionUsecase,
+        presenter: Arc<crate::adaptor::presenter::state_subscription::StateSubscriptionPresenter>,
+    ) -> Self {
+        Self { usecase, presenter }
+    }
 }
 
 impl ClientApiDeps {
@@ -56,12 +50,27 @@ impl ClientApiDeps {
         }
     }
 
-    pub(crate) fn with_state_subscriptions(
-        mut self,
-        subscriptions: crate::usecase::state_subscription::StateSubscriptionUsecase,
-    ) -> Self {
+    pub(crate) fn with_state_subscriptions(mut self, subscriptions: StateSubscriptionDeps) -> Self {
         self.state_subscriptions = Some(subscriptions);
         self
+    }
+
+    fn state_presenter(
+        &self,
+    ) -> Result<
+        &Arc<crate::adaptor::presenter::state_subscription::StateSubscriptionPresenter>,
+        connectrpc::ConnectError,
+    > {
+        self.state_subscriptions
+            .as_ref()
+            .map(|deps| &deps.presenter)
+            .ok_or_else(|| {
+                crate::adaptor::presenter::connect::classified_error(
+                    crate::adaptor::presenter::error::AppError::unavailable(
+                        "State subscriptions unavailable",
+                    ),
+                )
+            })
     }
 
     fn state_subscriptions(
@@ -70,13 +79,16 @@ impl ClientApiDeps {
         &crate::usecase::state_subscription::StateSubscriptionUsecase,
         connectrpc::ConnectError,
     > {
-        self.state_subscriptions.as_ref().ok_or_else(|| {
-            crate::adaptor::presenter::connect::classified_error(
-                crate::adaptor::presenter::error::AppError::unavailable(
-                    "State subscriptions unavailable",
-                ),
-            )
-        })
+        self.state_subscriptions
+            .as_ref()
+            .map(|deps| &deps.usecase)
+            .ok_or_else(|| {
+                crate::adaptor::presenter::connect::classified_error(
+                    crate::adaptor::presenter::error::AppError::unavailable(
+                        "State subscriptions unavailable",
+                    ),
+                )
+            })
     }
 
     pub(crate) fn with_desktop_settings(
@@ -95,16 +107,6 @@ impl ClientApiDeps {
             .as_ref()
             .map(|settings| settings.desktop_settings().map(Into::into))
             .transpose()
-    }
-
-    pub(super) fn with_terminal(mut self, terminal: Option<TerminalApiDeps>) -> Self {
-        if let Some(terminal) = &terminal {
-            self.state_subscriptions = self
-                .state_subscriptions
-                .take()
-                .map(|subscriptions| subscriptions.with_terminal(terminal.application.clone()));
-        }
-        self
     }
 
     fn request_permit(
@@ -214,7 +216,7 @@ impl ClientApiDeps {
         .await
         .map_err(task_error)?;
         let id = result?;
-        to_rpc(&wire::ResultUint64 { value: Some(id) })
+        wire::watch_id_to_rpc(id)
     }
 }
 

@@ -3,12 +3,13 @@ use crate::adaptor::controller::agent_session_wiring::{
     compose_agent_sessions, AgentSessionCompositionInput,
 };
 use crate::adaptor::gateway::agent_session::LocalProviderExecutableProbeGateway;
-use crate::adaptor::gateway::push::ClientAgentSessionChangeNotifier;
 use crate::adaptor::gateway::repository::{scanner::DefaultRepositoryScanner, state::*};
 use crate::adaptor::gateway::workflow::{
     node_process::WorkflowNodeProcesses, workflow_host::WorkflowRuntimeDependencies,
     RepositoryIsolatedWorktreeGateway,
 };
+use crate::adaptor::presenter::push::ClientAgentSessionChangeNotifier;
+use crate::adaptor::presenter::repository_state::ClientRepositoryStateNotifier;
 use crate::domain::repository::worktree_operation::WorktreeDeletionTarget;
 use crate::infrastructure::push::PushSink;
 use crate::usecase::repository_state::RepositoryStateService;
@@ -37,7 +38,7 @@ async fn test_worktree削除一覧_本番runtime配線で受理した削除状�
         data_dir.join("releash.toml"),
     ));
     let push = Arc::new(PushSink::new());
-    let publisher = crate::usecase::state_subscription::StateSubscriptionPublisher::for_test();
+    let publisher = crate::adaptor::presenter::state_subscription::test_output();
     let terminal = Arc::new(build_terminal_surface_application_for_tests());
     let sessions = compose_agent_sessions(AgentSessionCompositionInput {
         queue: queue.clone(),

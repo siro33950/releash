@@ -198,9 +198,11 @@ fn test_daemon終了_subprocess() {
             let (started, ready) = tokio::sync::oneshot::channel();
             let (_release, receiver) = std::sync::mpsc::channel();
             *pty.shutdown_gate.lock() = Some((blocked, started, receiver));
+            let hub = Arc::new(adaptor::presenter::terminal_event_hub::TerminalSurfaceEventHub::new());
             let terminal = Arc::new(usecase::terminal_surface::application::TerminalSurfaceApplication::new(std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
                 Arc::new(pty),
-                Arc::new(adaptor::gateway::terminal_surface::event_hub::TerminalSurfaceEventHub::new()),
+                Arc::new(crate::adaptor::gateway::terminal_surface::event_source::TerminalSurfaceEventSourceGateway::new(hub.event_sender())),
+                hub,
             ));
             let server = infrastructure::local_api::LocalApiServerBinding::bind(fixture._directory.path().into())
                 .unwrap().start(axum::Router::new(), &tokio::runtime::Handle::current());

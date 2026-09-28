@@ -11,10 +11,13 @@ use crate::domain::terminal_surface::entities::{
     TerminalSurfaceSummary,
 };
 use crate::domain::terminal_surface::gateway::{
-    TerminalRuntimeSpawnRequest, TerminalSurfaceEvent, TerminalSurfaceEventSink,
-    TerminalSurfaceGateway, TerminalSurfaceGatewayError, TerminalSurfaceInputUnavailableCause,
-    TerminalSurfaceRepository,
+    TerminalRuntimeSpawnRequest, TerminalSurfaceGateway, TerminalSurfaceGatewayError,
+    TerminalSurfaceInputUnavailableCause, TerminalSurfaceRepository,
 };
+use crate::usecase::terminal_surface::output::{
+    TerminalSurfaceEventSink, TerminalSurfaceOutputEvent,
+};
+
 use crate::domain::terminal_surface::{
     TerminalSurfaceCheckpoint as DomainTerminalCheckpoint, TERMINAL_SURFACE_SCROLLBACK_ROWS,
 };
@@ -67,6 +70,10 @@ pub struct TerminalSurfaceRuntimeGatewayFor {
     snapshot_materialization_count: std::sync::atomic::AtomicUsize,
     #[cfg(test)]
     pub(crate) before_output_order: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    #[cfg(test)]
+    pub(crate) during_output_order: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    #[cfg(test)]
+    test_output_orders: Mutex<HashMap<u64, Arc<TerminalSurfaceEventOrder>>>,
 }
 
 #[cfg(test)]
@@ -85,6 +92,10 @@ impl Default for TerminalSurfaceRuntimeGatewayFor {
             snapshot_materialization_count: std::sync::atomic::AtomicUsize::new(0),
             #[cfg(test)]
             before_output_order: Mutex::new(None),
+            #[cfg(test)]
+            during_output_order: Mutex::new(None),
+            #[cfg(test)]
+            test_output_orders: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -301,7 +312,7 @@ impl TerminalSurfaceEventOrder {
     fn advance_and_publish<T>(
         &self,
         event_sink: Option<&dyn TerminalSurfaceEventSink>,
-        advance: impl FnOnce() -> Option<(T, TerminalSurfaceEvent)>,
+        advance: impl FnOnce() -> Option<(T, TerminalSurfaceOutputEvent)>,
     ) -> Option<T> {
         let _serialization = self.serialization.lock();
         let (result, event) = advance()?;
@@ -379,7 +390,7 @@ fn publish_terminal_output(
             }
             Some((
                 sequence,
-                TerminalSurfaceEvent::Output {
+                TerminalSurfaceOutputEvent::Output {
                     session_key: context.session_key.clone(),
                     data,
                     sequence,
@@ -425,7 +436,7 @@ fn publish_terminal_exit(context: &TerminalOutputReaderContext, exit_code: Optio
             }
             Some((
                 sequence,
-                TerminalSurfaceEvent::Exit {
+                TerminalSurfaceOutputEvent::Exit {
                     session_key: context.session_key.clone(),
                     runtime_generation: context.runtime_generation,
                     exit_code,
@@ -578,6 +589,10 @@ impl TerminalSurfaceRuntimeGatewayFor {
             snapshot_materialization_count: std::sync::atomic::AtomicUsize::new(0),
             #[cfg(test)]
             before_output_order: Mutex::new(None),
+            #[cfg(test)]
+            during_output_order: Mutex::new(None),
+            #[cfg(test)]
+            test_output_orders: Mutex::new(HashMap::new()),
         }
     }
 
@@ -601,6 +616,10 @@ impl TerminalSurfaceRuntimeGatewayFor {
             snapshot_materialization_count: std::sync::atomic::AtomicUsize::new(0),
             #[cfg(test)]
             before_output_order: Mutex::new(None),
+            #[cfg(test)]
+            during_output_order: Mutex::new(None),
+            #[cfg(test)]
+            test_output_orders: Mutex::new(HashMap::new()),
         }
     }
 
@@ -884,13 +903,14 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
     }
 
     fn insert_surface(&self, surface: TerminalSurface) {
-        let summary = surface.summary();
+        #[cfg(test)]
+        self.test_output_orders
+            .lock()
+            .entry(surface.runtime_generation.value())
+            .or_insert_with(|| Arc::new(TerminalSurfaceEventOrder::default()));
         let active_count = {
             let mut registry = self.registry.lock();
             registry.insert(surface);
-            if let Some(sink) = &self.event_sink {
-                sink.initialize(&summary);
-            }
             registry.len()
         };
         crate::infrastructure::telemetry::metrics::set_active_pty_count(active_count as u64);
@@ -958,7 +978,7 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
         self.materialize_surface(runtime_generation)
     }
 
-    fn with_output_order(&self, runtime_generation: u64, visit: &mut dyn FnMut()) {
+    fn with_output_order(&self, runtime_generation: u64, visit: &mut dyn FnMut()) -> bool {
         #[cfg(test)]
         {
             let before = self.before_output_order.lock().take();
@@ -971,8 +991,23 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
             .lock()
             .get(&runtime_generation)
             .map(|runtime| runtime.event_order.clone());
-        let _order = order.as_ref().map(|order| order.serialization.lock());
+        #[cfg(test)]
+        let order = order.or_else(|| {
+            self.test_output_orders
+                .lock()
+                .get(&runtime_generation)
+                .cloned()
+        });
+        let Some(order) = order else {
+            return false;
+        };
+        let _order = order.serialization.lock();
+        #[cfg(test)]
+        if let Some(during) = self.during_output_order.lock().take() {
+            during();
+        }
         visit();
+        true
     }
 
     fn select_kill_targets_by_worktree(&self, worktree_path: &str) -> Vec<u64> {
@@ -983,13 +1018,15 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
 
     fn remove_surface(&self, runtime_generation: u64) -> Option<TerminalSurface> {
         self.runtimes.lock().remove(&runtime_generation);
+        #[cfg(test)]
+        self.test_output_orders.lock().remove(&runtime_generation);
         let (removed, active_count, subscribed) = {
             let mut registry = self.registry.lock();
             let removed = registry.remove(runtime_generation);
-            let subscribed = removed.as_ref().is_some_and(|surface| {
+            let subscribed = removed.as_ref().is_some_and(|_| {
                 self.event_sink
                     .as_ref()
-                    .is_some_and(|sink| sink.remove(&surface.summary()))
+                    .is_some_and(|sink| sink.remove(runtime_generation))
             });
             (removed, registry.len(), subscribed)
         };
@@ -1155,7 +1192,7 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
             checkpoint_scheduler.mark_dirty();
         }
         if let Some(event_sink) = self.event_sink.as_deref() {
-            event_sink.publish(TerminalSurfaceEvent::Resize {
+            event_sink.publish(TerminalSurfaceOutputEvent::Resize {
                 session_key,
                 cols,
                 rows,

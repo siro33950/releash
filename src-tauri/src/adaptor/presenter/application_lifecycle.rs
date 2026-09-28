@@ -1,4 +1,4 @@
-use crate::adaptor::protocol::application_lifecycle_v1::{
+use crate::adaptor::presenter::application_lifecycle_v1::{
     ApplicationStartupOutcomeDtoV1, StartupFailureActionDtoV1, StartupFailureKindDtoV1,
 };
 

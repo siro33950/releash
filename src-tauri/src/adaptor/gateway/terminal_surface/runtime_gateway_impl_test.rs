@@ -1,6 +1,7 @@
 use super::*;
 use crate::domain::terminal_surface::TerminalSurfaceOwner;
 use crate::domain::workspace_tree::WorkspaceIdentity;
+use crate::usecase::terminal_surface::output::TerminalSurfaceOutputControl;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex as StdMutex};
 use std::time::Duration;
@@ -13,6 +14,25 @@ fn session_owner(path: &str, session_id: &str) -> TerminalSurfaceOwner {
     TerminalSurfaceOwner::session(WorkspaceIdentity::new(path), session_id).unwrap()
 }
 
+#[test]
+fn test_出力順序区間_削除済み世代ではcallbackを実行しない() {
+    // Given
+    let gateway = TerminalSurfaceRuntimeGatewayFor::default();
+    gateway.insert_surface(TerminalSurface::new(1, workspace_owner("/repo"), None));
+    let mut visited = false;
+
+    // When
+    assert!(gateway.with_output_order(1, &mut || visited = true));
+    assert!(visited);
+    visited = false;
+    gateway.remove_surface(1).unwrap();
+    let entered = gateway.with_output_order(1, &mut || visited = true);
+
+    // Then
+    assert!(!visited);
+    assert!(!entered);
+}
+
 struct BlockingFirstEventSink {
     first_started: Arc<(StdMutex<bool>, Condvar)>,
     release_first: Arc<(StdMutex<bool>, Condvar)>,
@@ -21,21 +41,61 @@ struct BlockingFirstEventSink {
 
 #[derive(Default)]
 struct RecordingEventSink {
-    events: StdMutex<Vec<TerminalSurfaceEvent>>,
+    events: StdMutex<Vec<TerminalSurfaceOutputEvent>>,
 }
 
 impl TerminalSurfaceEventSink for RecordingEventSink {
-    fn publish(&self, event: TerminalSurfaceEvent) {
+    fn publish(&self, event: TerminalSurfaceOutputEvent) {
         self.events.lock().unwrap().push(event);
     }
 }
 
+#[derive(Default)]
+struct SummarySink {
+    removed: StdMutex<Vec<u64>>,
+}
+
+impl TerminalSurfaceEventSink for SummarySink {
+    fn remove(&self, runtime_generation: u64) -> bool {
+        self.removed.lock().unwrap().push(runtime_generation);
+        false
+    }
+
+    fn publish(&self, _: TerminalSurfaceOutputEvent) {}
+}
+
+#[test]
+fn test_ターミナル状態通知_削除時に世代を伝える() {
+    // Given
+    let sink = Arc::new(SummarySink::default());
+    let gateway = TerminalSurfaceRuntimeGatewayFor::new_with_event_sink(
+        crate::usecase::work_queue::shared().clone(),
+        std::path::PathBuf::new(),
+        sink.clone(),
+        false,
+    );
+    let workspace = TerminalSurface::new(1, workspace_owner("/repo"), None);
+    let mut session = TerminalSurface::new(2, session_owner("/repo", "session"), None);
+    session
+        .record_output(session.runtime_generation, std::time::Instant::now())
+        .unwrap();
+
+    // When
+    gateway.insert_surface(workspace.clone());
+    gateway.insert_surface(session.clone());
+    gateway.remove_surface(1).unwrap();
+    gateway.remove_surface(2).unwrap();
+
+    // Then
+    assert_eq!(*sink.removed.lock().unwrap(), vec![1, 2]);
+}
+
 impl TerminalSurfaceEventSink for BlockingFirstEventSink {
-    fn publish(&self, event: TerminalSurfaceEvent) {
+    fn publish(&self, event: TerminalSurfaceOutputEvent) {
         let sequence = match event {
-            TerminalSurfaceEvent::Output { sequence, .. }
-            | TerminalSurfaceEvent::Resize { sequence, .. }
-            | TerminalSurfaceEvent::Exit { sequence, .. } => sequence,
+            TerminalSurfaceOutputEvent::Output { sequence, .. }
+            | TerminalSurfaceOutputEvent::Resize { sequence, .. }
+            | TerminalSurfaceOutputEvent::Exit { sequence, .. } => sequence,
         };
         if sequence == 1 {
             let (started, changed) = &*self.first_started;
@@ -71,7 +131,7 @@ fn test_ターミナル画面イベント_連番採番と配信を一つの順�
                 let sequence = next_sequence.fetch_add(1, Ordering::SeqCst) + 1;
                 Some((
                     sequence,
-                    TerminalSurfaceEvent::Output {
+                    TerminalSurfaceOutputEvent::Output {
                         session_key: "surface".to_string(),
                         data: "first".into(),
                         sequence,
@@ -93,7 +153,7 @@ fn test_ターミナル画面イベント_連番採番と配信を一つの順�
                 let sequence = next_sequence.fetch_add(1, Ordering::SeqCst) + 1;
                 Some((
                     sequence,
-                    TerminalSurfaceEvent::Resize {
+                    TerminalSurfaceOutputEvent::Resize {
                         session_key: "surface".to_string(),
                         cols: 120,
                         rows: 40,
@@ -118,9 +178,9 @@ struct CapturedTerminalOutput {
 }
 
 impl TerminalSurfaceEventSink for CapturedTerminalOutput {
-    fn publish(&self, event: TerminalSurfaceEvent) {
+    fn publish(&self, event: TerminalSurfaceOutputEvent) {
         match event {
-            TerminalSurfaceEvent::Resize {
+            TerminalSurfaceOutputEvent::Resize {
                 cols,
                 rows,
                 sequence,
@@ -128,7 +188,8 @@ impl TerminalSurfaceEventSink for CapturedTerminalOutput {
             } => {
                 self.resizes.lock().unwrap().push((cols, rows, sequence));
             }
-            TerminalSurfaceEvent::Output { .. } | TerminalSurfaceEvent::Exit { .. } => {}
+            TerminalSurfaceOutputEvent::Output { .. } | TerminalSurfaceOutputEvent::Exit { .. } => {
+            }
         }
     }
 }
@@ -160,6 +221,7 @@ fn test_ターミナル画面_再起動復元_復元点破損時は新規画面�
     let result = crate::usecase::terminal_surface::spawn_usecase::get_or_spawn(
         &crate::adaptor::gateway::telemetry::TelemetryGateway,
         &gateway,
+        &crate::adaptor::presenter::terminal_event_hub::TerminalSurfaceEventHub::new(),
         24,
         80,
         Some("/repo".to_string()),
@@ -263,6 +325,7 @@ fn test_ターミナル画面_取得または生成_既存画面の概要取得�
     let outcome = crate::usecase::terminal_surface::spawn_usecase::get_or_spawn(
         &crate::adaptor::gateway::telemetry::TelemetryGateway,
         &gateway,
+        &crate::adaptor::presenter::terminal_event_hub::TerminalSurfaceEventHub::new(),
         24,
         80,
         Some("/repo".to_string()),
@@ -391,11 +454,11 @@ struct BlockingSessionSink {
 }
 
 impl TerminalSurfaceEventSink for BlockingSessionSink {
-    fn publish(&self, event: TerminalSurfaceEvent) {
+    fn publish(&self, event: TerminalSurfaceOutputEvent) {
         let session_key = match event {
-            TerminalSurfaceEvent::Output { session_key, .. }
-            | TerminalSurfaceEvent::Resize { session_key, .. }
-            | TerminalSurfaceEvent::Exit { session_key, .. } => session_key,
+            TerminalSurfaceOutputEvent::Output { session_key, .. }
+            | TerminalSurfaceOutputEvent::Resize { session_key, .. }
+            | TerminalSurfaceOutputEvent::Exit { session_key, .. } => session_key,
         };
         if session_key != self.blocked_session_key {
             return;
@@ -743,7 +806,7 @@ fn test_ターミナル画面_寸法変更_実pty変更中の出力適用を同�
             let sequence = registry.lock().record_output(1, Instant::now())?;
             Some((
                 sequence,
-                TerminalSurfaceEvent::Output {
+                TerminalSurfaceOutputEvent::Output {
                     session_key: "key".to_string(),
                     data: "output-after-resize".into(),
                     sequence,
@@ -931,9 +994,9 @@ async fn test_定期保存の期限切れ_子を回収して保留データと�
 }
 
 struct FlowControlledSink {
-    hub: Arc<super::super::event_hub::TerminalSurfaceEventHub>,
+    hub: Arc<crate::adaptor::presenter::terminal_event_hub::TerminalSurfaceEventHub>,
     waiting: mpsc::Sender<std::thread::ThreadId>,
-    events: mpsc::Sender<TerminalSurfaceEvent>,
+    events: mpsc::Sender<TerminalSurfaceOutputEvent>,
 }
 
 impl TerminalSurfaceEventSink for FlowControlledSink {
@@ -942,7 +1005,7 @@ impl TerminalSurfaceEventSink for FlowControlledSink {
         self.hub.wait_output(session_key);
     }
 
-    fn publish(&self, event: TerminalSurfaceEvent) {
+    fn publish(&self, event: TerminalSurfaceOutputEvent) {
         self.hub.publish(event.clone());
         self.events.send(event).unwrap();
     }
@@ -981,9 +1044,11 @@ impl portable_pty::Child for MockKiller {
 
 #[test]
 fn test_流量停止_実出力readerとprocessorが履歴の低水位まで停止し再開する() {
-    use crate::domain::terminal_surface::gateway::TerminalSurfaceEventSource;
+    use crate::usecase::terminal_surface::output::TerminalSurfaceOutputControl;
     // Given
-    let hub = Arc::new(super::super::event_hub::TerminalSurfaceEventHub::with_flags(8, true));
+    let hub = Arc::new(
+        crate::adaptor::presenter::terminal_event_hub::TerminalSurfaceEventHub::with_flags(8, true),
+    );
     let (waiting, waits) = mpsc::channel();
     let (events, received) = mpsc::channel();
     let sink = Arc::new(FlowControlledSink {
@@ -1038,11 +1103,11 @@ fn test_流量停止_実出力readerとprocessorが履歴の低水位まで停�
         Err(mpsc::RecvTimeoutError::Timeout)
     ));
     assert!(
-        matches!(output, TerminalSurfaceEvent::Output { data, .. } if data.as_ref() == "resumed")
+        matches!(output, TerminalSurfaceOutputEvent::Output { data, .. } if data.as_ref() == "resumed")
     );
     assert!(matches!(
         exit,
-        TerminalSurfaceEvent::Exit {
+        TerminalSurfaceOutputEvent::Exit {
             exit_code: Some(0),
             ..
         }
@@ -1051,9 +1116,11 @@ fn test_流量停止_実出力readerとprocessorが履歴の低水位まで停�
 
 #[test]
 fn test_流量停止_実processorの出力で高水位を超えると後続出力を低水位まで止める() {
-    use crate::domain::terminal_surface::gateway::TerminalSurfaceEventSource;
+    use crate::usecase::terminal_surface::output::TerminalSurfaceOutputControl;
     // Given
-    let hub = Arc::new(super::super::event_hub::TerminalSurfaceEventHub::with_flags(8, true));
+    let hub = Arc::new(
+        crate::adaptor::presenter::terminal_event_hub::TerminalSurfaceEventHub::with_flags(8, true),
+    );
     let (waiting, waits) = mpsc::channel();
     let (events, received) = mpsc::channel();
     let sink = Arc::new(FlowControlledSink {
@@ -1076,7 +1143,7 @@ fn test_流量停止_実processorの出力で高水位を超えると後続出�
     .unwrap();
     let mut published = 0;
     while published < units {
-        let TerminalSurfaceEvent::Output { data, .. } =
+        let TerminalSurfaceOutputEvent::Output { data, .. } =
             received.recv_timeout(Duration::from_secs(1)).unwrap()
         else {
             panic!("output");
@@ -1098,11 +1165,11 @@ fn test_流量停止_実processorの出力で高水位を超えると後続出�
     stopped.unwrap();
     assert!(matches!(premature, Err(mpsc::RecvTimeoutError::Timeout)));
     assert!(
-        matches!(resumed.unwrap(), TerminalSurfaceEvent::Output { data, .. } if data.as_ref() == "next")
+        matches!(resumed.unwrap(), TerminalSurfaceOutputEvent::Output { data, .. } if data.as_ref() == "next")
     );
     assert!(matches!(
         received.recv_timeout(Duration::from_secs(1)).unwrap(),
-        TerminalSurfaceEvent::Exit {
+        TerminalSurfaceOutputEvent::Exit {
             exit_code: Some(0),
             ..
         }
@@ -1151,14 +1218,11 @@ async fn test_ターミナル再作成_送り待ちが空でも購読と入力�
 
 async fn assert_terminal_recreation(drain_exit: bool) {
     // Given
-    use crate::adaptor::gateway::terminal_surface::event_hub::TerminalSurfaceEventHub;
-    use crate::domain::state_subscription::{Event, SubscriptionTarget};
-    use crate::usecase::state_subscription::{
-        StateSubscriptionEvent, StateSubscriptionUsecase, StateValue,
-    };
-    use crate::usecase::terminal_surface::application::{
-        TerminalSurfaceApplication, TerminalSurfaceStreamItem,
-    };
+    use crate::adaptor::presenter::terminal_event_hub::TerminalSurfaceEventHub;
+    use crate::test_support::state_subscription::{Event, StateSubscriptionEvent};
+    use crate::usecase::state_subscription::StateSubscriptionUsecase;
+    use crate::usecase::state_subscription::SubscriptionTarget;
+    use crate::usecase::terminal_surface::application::TerminalSurfaceApplication;
     use futures_util::StreamExt;
     let hub = Arc::new(TerminalSurfaceEventHub::with_flags(256, true));
     let gateway = Arc::new(TerminalSurfaceRuntimeGatewayFor::new_with_event_sink(
@@ -1179,23 +1243,38 @@ async fn assert_terminal_recreation(drain_exit: bool) {
         Box::new(MockResizer { rows: 24, cols: 80 }),
     );
     gateway.insert_surface(TerminalSurface::new(1, owner.clone(), None));
+    hub.initialize(crate::test_support::state_subscription::registration(
+        &key, "/repo", None, 1, 0,
+    ))
+    .unwrap();
     let terminal = Arc::new(TerminalSurfaceApplication::new(
         std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
         gateway.clone(),
+        Arc::new(crate::adaptor::gateway::terminal_surface::event_source::TerminalSurfaceEventSourceGateway::new(hub.event_sender())),
         hub.clone(),
     ));
     let subscriptions = StateSubscriptionUsecase::new(
         vec![],
         Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
-    )
-    .with_terminal(terminal.clone());
+    );
+    subscriptions
+        .test_presenter()
+        .unwrap()
+        .connect_terminal(&terminal)
+        .unwrap();
+    let subscriptions = subscriptions.with_terminal(terminal.clone());
     let stream = subscriptions.open("client".into()).unwrap();
     tokio::pin!(stream);
     stream.next().await;
-    subscriptions
-        .start_terminal("client", &target, None, "input")
-        .await
-        .unwrap();
+    crate::test_support::state_subscription::start_terminal(
+        &subscriptions,
+        "client",
+        &target,
+        None,
+        "input",
+    )
+    .await
+    .unwrap();
     stream.next().await;
     stream.next().await;
     terminal
@@ -1210,7 +1289,7 @@ async fn assert_terminal_recreation(drain_exit: bool) {
     .unwrap();
     assert_eq!(&*old_written.lock(), b"old");
     // When
-    hub.publish(TerminalSurfaceEvent::Exit {
+    hub.publish(TerminalSurfaceOutputEvent::Exit {
         session_key: key.clone(),
         runtime_generation: 1,
         exit_code: Some(7),
@@ -1221,7 +1300,7 @@ async fn assert_terminal_recreation(drain_exit: bool) {
             .await
             .unwrap();
         assert!(
-            matches!(next, Some(StateSubscriptionEvent::Item(_, Event::Change(_, _, value))) if matches!(value.as_ref(), StateValue::Terminal(TerminalSurfaceStreamItem::Exit { exit_code: Some(7), .. })))
+            matches!(next, Some(StateSubscriptionEvent::Item(_, Event::Change(_, _, value))) if matches!(crate::test_support::state_subscription::terminal_item(&value), crate::adaptor::presenter::client::terminal_event::Item::Exit(exit) if exit.exit_code == Some(7)))
         );
     }
     gateway.remove_surface(1).unwrap();
@@ -1235,20 +1314,24 @@ async fn assert_terminal_recreation(drain_exit: bool) {
         Box::new(MockResizer { rows: 24, cols: 80 }),
     );
     gateway.insert_surface(TerminalSurface::new(2, owner.clone(), None));
+    hub.initialize(crate::test_support::state_subscription::registration(
+        &key, "/repo", None, 2, 0,
+    ))
+    .unwrap();
     // Then
     if !drain_exit {
         let next = tokio::time::timeout(Duration::from_secs(2), stream.next())
             .await
             .unwrap();
         assert!(
-            matches!(next, Some(StateSubscriptionEvent::Item(_, Event::Change(_, _, value))) if matches!(value.as_ref(), StateValue::Terminal(TerminalSurfaceStreamItem::Exit { exit_code: Some(7), .. })))
+            matches!(next, Some(StateSubscriptionEvent::Item(_, Event::Change(_, _, value))) if matches!(crate::test_support::state_subscription::terminal_item(&value), crate::adaptor::presenter::client::terminal_event::Item::Exit(exit) if exit.exit_code == Some(7)))
         );
     }
     let next = tokio::time::timeout(Duration::from_secs(2), stream.next())
         .await
         .unwrap();
     assert!(
-        matches!(next, Some(StateSubscriptionEvent::Item(_, Event::Snapshot(_, value))) if matches!(value.as_ref(), StateValue::Terminal(TerminalSurfaceStreamItem::Snapshot(surface)) if surface.runtime_generation.value() == 2))
+        matches!(next, Some(StateSubscriptionEvent::Item(_, Event::Snapshot(version, value))) if version.epoch.ends_with(":2") && matches!(crate::test_support::state_subscription::terminal_item(&value), crate::adaptor::presenter::client::terminal_event::Item::Snapshot(surface) if surface.session_key == key))
     );
     terminal
         .write_attached(&owner, "input", 1, None, "new")
@@ -1261,7 +1344,7 @@ async fn assert_terminal_recreation(drain_exit: bool) {
     .await
     .unwrap();
     assert_eq!(&*new_written.lock(), b"new");
-    hub.publish(TerminalSurfaceEvent::Output {
+    hub.publish(TerminalSurfaceOutputEvent::Output {
         session_key: key.clone(),
         sequence: 1,
         data: "x".repeat(100_001).into(),
@@ -1274,7 +1357,7 @@ async fn assert_terminal_recreation(drain_exit: bool) {
         .await
         .unwrap();
     assert!(
-        matches!(next, Some(StateSubscriptionEvent::Item(_, Event::Change(_, _, value))) if matches!(value.as_ref(), StateValue::Terminal(TerminalSurfaceStreamItem::Output { sequence: 1, data, .. }) if data.len() == 100_001))
+        matches!(next, Some(StateSubscriptionEvent::Item(_, Event::Change(_, _, value))) if matches!(crate::test_support::state_subscription::terminal_item(&value), crate::adaptor::presenter::client::terminal_event::Item::Output(output) if output.sequence == 1 && output.data.len() == 100_001))
     );
     let (sent, received) = tokio::sync::oneshot::channel();
     let waiting_hub = hub.clone();
@@ -1289,20 +1372,28 @@ async fn assert_terminal_recreation(drain_exit: bool) {
             .is_err()
     );
     for _ in 0..20 {
-        subscriptions
-            .terminal_processed("client", &target, 5000)
-            .unwrap();
+        crate::test_support::state_subscription::terminal_processed(
+            &subscriptions,
+            "client",
+            &target,
+            5000,
+        )
+        .unwrap();
     }
     tokio::time::timeout(Duration::from_secs(2), received)
         .await
         .unwrap()
         .unwrap();
     waiter.await.unwrap();
-    subscriptions.stop("client", &target).unwrap();
+    crate::test_support::state_subscription::stop(&subscriptions, "client", &target).unwrap();
     assert!(terminal
         .write_attached(&owner, "input", 2, None, "stale")
         .is_err());
-    assert!(subscriptions
-        .terminal_processed("client", &target, 5000)
-        .is_err());
+    assert!(crate::test_support::state_subscription::terminal_processed(
+        &subscriptions,
+        "client",
+        &target,
+        5000
+    )
+    .is_err());
 }

@@ -1,6 +1,6 @@
-use crate::adaptor::protocol::{
+use crate::adaptor::presenter::{
     client as wire,
-    connect::{rpc, to_rpc, to_wire},
+    connect_wire::{rpc, to_rpc, to_wire},
 };
 use crate::usecase::client_connection::ClientConnectionDto;
 use connectrpc::client::{ClientConfig, HttpClient};
