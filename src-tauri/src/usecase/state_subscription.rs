@@ -110,7 +110,7 @@ impl StateSubscriptionUsecase {
         target: &SubscriptionTarget,
     ) -> Result<(), SubscriptionError> {
         self.stop_read(client, target).await?;
-        self.publisher.stop(client, target, &self.active_targets())
+        self.with_active_targets(|active| self.publisher.stop(client, target, active))
     }
 
     pub fn new_with_output(
@@ -173,8 +173,7 @@ impl StateSubscriptionUsecase {
             .ok_or_else(|| convert(SubscriptionError::UnknownTarget))?;
         // ponytail: subscription starts are serialized; split by target if initial reads contend.
         let _start = self.starts.lock().await;
-        if self.active_targets().contains(target) {
-            self.start(client, target).map_err(convert)?;
+        if self.join_active(client, target).map_err(convert)? {
             return Ok(());
         }
         let mut changes = self.changes.subscribe();
@@ -431,11 +430,38 @@ impl StateSubscriptionUsecase {
     }
 
     pub(crate) fn active_targets(&self) -> std::collections::HashSet<SubscriptionTarget> {
-        self.clients
-            .lock()
+        self.with_active_targets(Clone::clone)
+    }
+
+    /// 購読中の対象を読む間、購読者の登録を止める。出版側の保持を捨てる判断はこの中で行い、
+    /// 判断の後に登録された購読者が捨てられた対象を有効と見なさないようにする。
+    pub(crate) fn with_active_targets<R>(
+        &self,
+        read: impl FnOnce(&std::collections::HashSet<SubscriptionTarget>) -> R,
+    ) -> R {
+        let clients = self.clients.lock();
+        let active = clients
             .values()
             .flat_map(|targets| targets.iter().cloned())
-            .collect()
+            .collect();
+        read(&active)
+    }
+
+    /// 他の購読者が既に購読中の対象なら、同じロックの中で `client` を登録して true を返す。
+    fn join_active(
+        &self,
+        client: &str,
+        target: &SubscriptionTarget,
+    ) -> Result<bool, SubscriptionError> {
+        let mut clients = self.clients.lock();
+        if !clients.values().any(|targets| targets.contains(target)) {
+            return Ok(false);
+        }
+        clients
+            .get_mut(client)
+            .ok_or(SubscriptionError::StreamEnded)?
+            .insert(target.clone());
+        Ok(true)
     }
 }
 

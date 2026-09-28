@@ -63,9 +63,7 @@ pub(crate) fn stop(
 ) -> Result<(), crate::usecase::state_subscription::SubscriptionError> {
     let typed = crate::usecase::state_subscription::SubscriptionTarget::parse(target)?;
     usecase.stop(client, &typed)?;
-    usecase
-        .publisher()
-        .stop(client, &typed, &usecase.active_targets())
+    usecase.with_active_targets(|active| usecase.publisher().stop(client, &typed, active))
 }
 
 pub(crate) async fn stop_read(
