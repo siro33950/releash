@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::time::Duration;
 
 #[derive(Debug, Clone, Copy)]
@@ -62,32 +63,105 @@ impl RetryBucket {
     }
 }
 
-#[cfg(test)]
-#[path = "retry_test.rs"]
-mod retry_tests;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttemptProgress {
+    Continue,
+    Reload,
+}
 
-pub(crate) async fn requested<T, E, A, S, C, F, Fut>(
-    mut attempts: tokio::sync::mpsc::UnboundedReceiver<(A, tokio::sync::oneshot::Sender<S>)>,
-    mut completion: tokio::sync::oneshot::Receiver<C>,
-    mut operation: F,
-    status: impl Fn(&Result<T, E>) -> S,
-) -> Result<T, E>
-where
-    F: FnMut(A) -> Fut,
-    Fut: std::future::Future<Output = Result<T, E>>,
-{
-    let mut result = None;
-    loop {
-        tokio::select! {
-            biased;
-            _ = &mut completion => return result.expect("completed borrowed operation"),
-            request = attempts.recv() => {
-                let Some((action, reply)) = request else { return result.expect("completed borrowed operation"); };
-                let value = operation(action).await;
-                let response = status(&value);
-                result = Some(value);
-                let _ = reply.send(response);
+pub struct RetryLimiter {
+    bucket: std::sync::Mutex<RetryBucket>,
+    origin: tokio::time::Instant,
+    jitter: fn() -> f64,
+}
+
+impl RetryLimiter {
+    pub fn new() -> Self {
+        Self::with_jitter(jitter)
+    }
+
+    #[cfg(test)]
+    pub fn deterministic() -> Self {
+        Self::with_jitter(|| 1.0)
+    }
+
+    fn with_jitter(jitter: fn() -> f64) -> Self {
+        Self {
+            bucket: std::sync::Mutex::new(RetryBucket::new(Duration::ZERO)),
+            origin: tokio::time::Instant::now(),
+            jitter,
+        }
+    }
+
+    pub async fn acquire(&self) {
+        loop {
+            let wait = self
+                .bucket
+                .lock()
+                .expect("retry bucket")
+                .acquire(self.origin.elapsed());
+            if wait.is_zero() {
+                return;
             }
+            tokio::time::sleep(wait).await;
         }
     }
 }
+
+impl Default for RetryLimiter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn jitter() -> f64 {
+    let random = uuid::Uuid::new_v4().as_u128() as u32;
+    1.0 + (random as f64 / u32::MAX as f64 - 0.5) * 0.4
+}
+
+pub async fn attempts<T, E, F, Fut>(
+    policy: RetryBackoff,
+    limiter: &RetryLimiter,
+    decide: impl Fn(&E) -> Option<AttemptProgress>,
+    mut operation: F,
+) -> Result<T, E>
+where
+    F: FnMut(AttemptProgress) -> Fut,
+    Fut: Future<Output = Result<T, E>>,
+{
+    let mut progress = AttemptProgress::Continue;
+    let mut failures = 0u64;
+    loop {
+        let error = match operation(progress).await {
+            Ok(value) => return Ok(value),
+            Err(error) => error,
+        };
+        let Some(next) = decide(&error) else {
+            return Err(error);
+        };
+        failures = failures.saturating_add(1);
+        let policy = if next == AttemptProgress::Reload {
+            RetryBackoff::CONFLICT
+        } else {
+            policy
+        };
+        tokio::time::sleep(policy.delay(failures, (limiter.jitter)())).await;
+        limiter.acquire().await;
+        progress = next;
+    }
+}
+
+pub async fn bounded<T, E>(
+    limit: Duration,
+    expired: impl FnOnce() -> E,
+    operation: impl Future<Output = Result<T, E>>,
+) -> Result<T, E> {
+    match tokio::time::timeout(limit, operation).await {
+        Ok(result) => result,
+        Err(_) => Err(expired()),
+    }
+}
+
+#[cfg(test)]
+#[path = "retry_test.rs"]
+mod retry_tests;

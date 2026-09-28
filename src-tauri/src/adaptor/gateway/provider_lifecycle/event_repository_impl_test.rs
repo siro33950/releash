@@ -263,12 +263,12 @@ async fn test_lifecycle追記_保存競合は状態を再読込して上位か�
         // Then
         assert_eq!(source.commits.load(Ordering::SeqCst), 6);
         assert_eq!(source.reads.load(Ordering::SeqCst), 6);
-        let records = repository.queue.records("*").await;
+        let records = repository.queue.records("*");
         assert_eq!(records.len(), 1);
         assert_eq!(
             records[0].record.kind,
-            crate::domain::failure::Failure::Business(
-                crate::domain::failure::BusinessFailure::VersionConflict
+            crate::usecase::failure::Failure::Business(
+                crate::usecase::failure::BusinessFailure::VersionConflict
             )
         );
         assert_eq!(records[0].record.count, 5);
@@ -279,13 +279,11 @@ fn test_repository(
     source: Arc<dyn LocalEventTransactionRepository>,
 ) -> LocalProviderLifecycleEventRepository {
     let mut repository = LocalProviderLifecycleEventRepository::new(
-        crate::usecase::work_queue::shared().clone(),
+        crate::usecase::retry::shared().clone(),
         source,
         "installation".into(),
     );
-    repository.queue = crate::usecase::work_queue::WorkQueueUsecase::new(Arc::new(
-        crate::usecase::work_queue::ImmediateWorkQueueRuntime::default(),
-    ));
+    repository.queue = crate::usecase::retry::test_retrying();
     repository
 }
 
@@ -321,12 +319,12 @@ async fn test_確定照会の一時失敗_確定状態を再確認して同じ�
         );
         let identities = source.identities.lock().unwrap();
         assert!(identities.iter().all(|identity| identity == &identities[0]));
-        let records = repository.queue.records("*").await;
+        let records = repository.queue.records("*");
         assert_eq!(records.len(), if pending { 1 } else { 2 });
         for record in records {
             assert_eq!(
                 record.record.kind,
-                crate::domain::failure::Failure::Technical(
+                crate::usecase::failure::Failure::Technical(
                     crate::domain::failure::TechnicalFailureNature::Transient
                 )
             );

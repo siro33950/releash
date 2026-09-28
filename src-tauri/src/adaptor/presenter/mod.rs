@@ -8,6 +8,7 @@ pub(crate) mod code;
 pub(crate) mod connect;
 pub(crate) mod connect_wire;
 pub(crate) mod error;
+pub(crate) mod failure;
 pub(crate) mod notion;
 pub(crate) mod provider_lifecycle_response;
 pub(crate) mod provider_tui;

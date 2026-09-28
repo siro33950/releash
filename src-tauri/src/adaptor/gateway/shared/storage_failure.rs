@@ -142,10 +142,10 @@ impl From<crate::usecase::workflow::runtime_error::WorkflowRuntimeError> for Sto
     }
 }
 
-impl From<crate::usecase::work_queue::WorkFailure> for StorageFailure {
-    fn from(error: crate::usecase::work_queue::WorkFailure) -> Self {
-        use crate::domain::failure::{BusinessFailure, Failure};
+impl From<crate::usecase::failure::WorkFailure> for StorageFailure {
+    fn from(error: crate::usecase::failure::WorkFailure) -> Self {
         use crate::domain::workflow::WorkflowError as W;
+        use crate::usecase::failure::{BusinessFailure, Failure};
         match error.kind {
             Failure::Business(BusinessFailure::VersionConflict) => {
                 W::Conflict(error.message).into()

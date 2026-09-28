@@ -179,7 +179,7 @@ mod tests {
         let repository = Arc::new(crate::adaptor::controller::wiring::build_repository_usecase());
         let code = Arc::new(crate::adaptor::controller::wiring::build_code_usecase());
         let scanner = Arc::new(DefaultRepositoryScanner::new(repository, code));
-        let state = crate::usecase::repository_state::worktree::WorktreeState::new(crate::usecase::work_queue::WorkQueueUsecase::new(crate::usecase::work_queue_test_runtime::runtime()),
+        let state = crate::usecase::repository_state::worktree::WorktreeState::new(
             dir.path().to_str().unwrap().to_string(),
             scanner,
             Arc::new(crate::usecase::repository_state::worktree::NoopRepositoryStateNotifier),

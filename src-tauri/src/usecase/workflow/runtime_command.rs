@@ -57,7 +57,7 @@ impl WorkflowRuntimeUsecase {
         execution_archives: Arc<dyn crate::domain::workflow::ExecutionTreeArchiveRepository>,
     ) -> Self {
         Self::new_with_worktree_operations(
-            crate::usecase::work_queue::shared().clone(),
+            crate::usecase::retry::shared().clone(),
             runtime,
             execution_archives,
             Default::default(),
@@ -65,7 +65,7 @@ impl WorkflowRuntimeUsecase {
     }
 
     pub(crate) fn new_with_worktree_operations(
-        queue: std::sync::Arc<crate::usecase::work_queue::WorkQueueUsecase>,
+        retrying: std::sync::Arc<crate::usecase::retry::Retrying>,
         runtime: Arc<dyn WorkflowRuntimeCommandGateway>,
         execution_archives: Arc<dyn crate::domain::workflow::ExecutionTreeArchiveRepository>,
         worktree_operations: Arc<crate::usecase::worktree_operation::WorktreeOperations>,
@@ -79,23 +79,18 @@ impl WorkflowRuntimeUsecase {
             archive_locks: Default::default(),
             start_execution: WorkflowStartExecutionUsecase::new(runtime.clone()),
             abort_execution: WorkflowAbortExecutionUsecase::new(runtime.clone()),
-            retry_node: WorkflowRetryNodeUsecase::new(queue.clone(), control_plane_runtime.clone()),
-            submit_output: WorkflowSubmitOutputUsecase::new(
-                queue.clone(),
+            retry_node: WorkflowRetryNodeUsecase::new(
+                retrying.clone(),
                 control_plane_runtime.clone(),
             ),
-            control_plane: WorkflowControlPlaneUsecase::new(queue.clone(), control_plane_runtime),
+            submit_output: WorkflowSubmitOutputUsecase::new(
+                retrying.clone(),
+                control_plane_runtime.clone(),
+            ),
+            control_plane: WorkflowControlPlaneUsecase::new(retrying, control_plane_runtime),
             #[cfg(test)]
             preflight: WorkflowRuntimeCommandPreflight,
         }
-    }
-
-    pub(crate) fn with_startup(
-        mut self,
-        startup: Option<Arc<super::startup::WorkflowStartupUsecase>>,
-    ) -> Self {
-        self.control_plane = self.control_plane.with_startup(startup);
-        self
     }
 
     pub async fn start_execution(
@@ -104,10 +99,6 @@ impl WorkflowRuntimeUsecase {
     ) -> Result<String, WorkflowError> {
         let _mutation = self.begin_worktree_mutation(&command.worktree_path)?;
         self.start_execution.execute(command).await
-    }
-
-    pub async fn recover_startup(&self) -> Result<(), WorkflowError> {
-        self.control_plane.recover_startup().await
     }
 
     pub async fn abort_execution(
@@ -371,7 +362,6 @@ mod tests {
     #[derive(Default)]
     struct FakeRuntimeGateway {
         calls: Mutex<Vec<&'static str>>,
-        fail_startup: bool,
         failure: Option<WorkflowError>,
     }
 
@@ -554,121 +544,6 @@ mod tests {
         async fn shutdown_active_commands(&self) {
             self.calls.lock().unwrap().push("shutdown_active_commands");
         }
-    }
-
-    #[async_trait::async_trait]
-    impl crate::domain::workflow::repository::WorkflowStartupRepository for FakeRuntimeGateway {
-        async fn list_tree_ids(&self) -> Result<Vec<String>, WorkflowError> {
-            self.calls.lock().unwrap().push("startup_list");
-            if self.fail_startup {
-                Err(WorkflowError::external("startup read failed"))
-            } else {
-                Ok(Vec::new())
-            }
-        }
-
-        async fn load(
-            &self,
-            _tree_id: &str,
-        ) -> Result<Option<crate::domain::workflow::repository::WorkflowStartupRecord>, WorkflowError>
-        {
-            unreachable!("empty startup inventory")
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl super::super::startup::WorkflowStartupGateway for FakeRuntimeGateway {
-        fn current_timestamp(&self) -> f64 {
-            100.0
-        }
-        async fn reconcile_tree(
-            &self,
-            _tree_id: &str,
-            _timestamp: f64,
-        ) -> Result<(), WorkflowError> {
-            unreachable!("empty startup inventory")
-        }
-    }
-
-    fn runtime_with_startup(gateway: Arc<FakeRuntimeGateway>) -> WorkflowRuntimeUsecase {
-        WorkflowRuntimeUsecase::new(
-            gateway.clone(),
-            Arc::new(crate::usecase::workflow::NoopArchiveRepository),
-        )
-        .with_startup(Some(Arc::new(
-            super::super::startup::WorkflowStartupUsecase::new(
-                crate::usecase::work_queue::WorkQueueUsecase::new(std::sync::Arc::new(
-                    crate::usecase::work_queue::ImmediateWorkQueueRuntime::default(),
-                )),
-                gateway.clone(),
-                gateway,
-            ),
-        )))
-    }
-
-    #[tokio::test]
-    async fn test_起動時復旧_構築時には実行せずusecaseの入口から直接呼び出す() {
-        // Given
-        let gateway = Arc::new(FakeRuntimeGateway::default());
-        let usecase = runtime_with_startup(gateway.clone());
-        assert!(gateway.calls.lock().unwrap().is_empty());
-        // When
-        usecase.recover_startup().await.unwrap();
-        // Then
-        assert_eq!(*gateway.calls.lock().unwrap(), ["startup_list"]);
-    }
-
-    #[tokio::test]
-    async fn test_起動時復旧_失敗してもstop受理は復旧を再実行しない() {
-        for fail_startup in [false, true] {
-            // Given
-            let gateway = Arc::new(FakeRuntimeGateway {
-                fail_startup,
-                ..Default::default()
-            });
-            let usecase = runtime_with_startup(gateway.clone());
-            // When
-            let startup = usecase.recover_startup().await;
-            let stop = usecase
-                .record_provider_stop(
-                    crate::usecase::provider_lifecycle::ProviderExecutionTreeStopCommand {
-                        tree_id: "tree".into(),
-                        node_execution_id: "node".into(),
-                        agent_session_id: "session".into(),
-                        binding_id: "binding".into(),
-                    },
-                    Vec::new(),
-                )
-                .await;
-            // Then
-            if fail_startup {
-                assert!(startup
-                    .unwrap_err()
-                    .to_string()
-                    .contains("startup read failed"));
-            } else {
-                startup.unwrap();
-            }
-            stop.unwrap();
-            assert_eq!(
-                *gateway.calls.lock().unwrap(),
-                ["startup_list", "load_active"]
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn test_起動時復旧_永続ストアのない構成は処理を呼ばない() {
-        // Given
-        let gateway = Arc::new(FakeRuntimeGateway::default());
-        let usecase = WorkflowRuntimeUsecase::new(
-            gateway.clone(),
-            Arc::new(crate::usecase::workflow::NoopArchiveRepository),
-        );
-        // When
-        usecase.recover_startup().await.unwrap();
-        // Then
-        assert!(gateway.calls.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

@@ -32,7 +32,7 @@ pub(crate) trait DelegateContinuationGateway: Send + Sync {
 }
 
 pub(crate) struct DelegateContinuationUsecase {
-    pub(crate) queue: std::sync::Arc<crate::usecase::work_queue::WorkQueueUsecase>,
+    pub(crate) retrying: std::sync::Arc<crate::usecase::retry::Retrying>,
     pub(crate) gateway: std::sync::Arc<dyn DelegateContinuationGateway>,
 }
 
@@ -66,16 +66,16 @@ impl DelegateContinuationUsecase {
         self.gateway
             .send_instruction(session_id, &injection.child_execution_id, &instruction)
             .await?;
-        crate::usecase::work_queue::retry(
-            &self.queue,
-            crate::usecase::work_queue::WorkKey::new(
-                "workflow_delegate_injection",
-                &injection.node_execution_id,
-            ),
-            crate::common::retry::RetryBackoff::CONFLICT,
-            || self.record_injected(execution_id, injection),
-        )
-        .await
+        self.retrying
+            .restart(
+                crate::usecase::failure::FailureKey::new(
+                    "workflow_delegate_injection",
+                    &injection.node_execution_id,
+                ),
+                crate::common::retry::RetryBackoff::CONFLICT,
+                |_| self.record_injected(execution_id, injection),
+            )
+            .await
     }
 
     async fn record_injected(

@@ -44,8 +44,12 @@ function steps(job) {
   return job.split(/^      - /m).slice(1);
 }
 
+function command(step) {
+  return value(step, "run")?.replace(/^"(.*)"$/, "$1");
+}
+
 function commands(job) {
-  return steps(job).map(step => value(step, "run")).filter(command => /^(cargo |pnpm (lint|test|build|exec vitest)\b|node --test |python3 |qlty check )/.test(command));
+  return steps(job).map(command).filter(command => /^(cargo |pnpm (lint|test|build|exec vitest)\b|node --test |python3 |qlty check )/.test(command));
 }
 
 const rustCommands = {
@@ -55,10 +59,7 @@ const rustCommands = {
     "cargo deny --locked check",
     "cargo clippy --locked --no-default-features --bin releash-backend -- -D warnings",
   ],
-  "rust-test-desktop": [
-    "cargo test --locked",
-    "cargo test --locked --test state_subscription_scenarios scenarios_tests::",
-  ],
+  "rust-test-desktop": ["cargo test --locked"],
   "rust-test-headless": [
     "cargo test --locked --no-default-features --lib",
     "cargo test --locked --no-default-features --test state_subscription_scenarios scenarios_tests::",
@@ -299,9 +300,9 @@ test("AGENTS validation commands, directories, layers, and coverage environment 
     });
   });
   for (const [config, expected] of [[ciConfig, documented.slice(0, 3).flat()], [nightlyConfig, documented.slice(3).flat()]]) {
-    const actual = Object.values(jobs(config)).flatMap(job => steps(job).filter(step => commands(job).includes(value(step, "run"))).map(step => [
+    const actual = Object.values(jobs(config)).flatMap(job => steps(job).filter(step => commands(job).includes(command(step))).map(step => [
       value(step, "working-directory") ?? value(job.split("    steps:\n")[0], "working-directory") ?? ".",
-      value(step, "run"),
+      command(step),
     ]));
     assert.deepEqual(actual.sort(), expected.sort());
   }

@@ -2,13 +2,13 @@ use super::super::shared::{
     background_io,
     background_worker::{request, Request},
 };
-use crate::common::retry::RetryBackoff;
+use crate::domain::comment::ReviewCommentsWatch;
+use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
 use crate::infrastructure::process::background_worker::BackgroundWorker;
-use crate::usecase::work_queue::AttemptProgress;
-use crate::usecase::work_queue::{WorkFailure, WorkKey};
+use crate::usecase::failure::Failure;
+use crate::usecase::failure::WorkFailure;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::Arc;
 
 type Start = Arc<
     dyn Fn(
@@ -30,54 +30,76 @@ fn start() -> Start {
     })
 }
 
-pub fn spawn_review_comments_watcher(
-    queue: Arc<crate::usecase::work_queue::WorkQueueUsecase>,
-    dir: PathBuf,
-    notify_changed: Arc<dyn Fn() + Send + Sync>,
-) {
-    spawn_watcher(queue, dir, notify_changed, start());
-}
-
-fn spawn_watcher(
-    queue: Arc<crate::usecase::work_queue::WorkQueueUsecase>,
+pub struct ReviewCommentsWatchGateway {
     dir: PathBuf,
     notify_changed: Arc<dyn Fn() + Send + Sync>,
     start: Start,
-) {
-    let key = WorkKey::new("review_comments_watch", &dir.to_string_lossy());
-    let job = watcher_job(dir, notify_changed, start);
-    queue.clone().spawn(Box::pin(async move {
-        queue.enqueue(key, RetryBackoff::ITEM, job).await;
-    }));
+    worker: tokio::sync::Mutex<Option<BackgroundWorker>>,
 }
 
-fn watcher_job(
-    dir: PathBuf,
-    notify_changed: Arc<dyn Fn() + Send + Sync>,
-    start: Start,
-) -> crate::usecase::work_queue::Job {
-    let watcher = Arc::new(Mutex::new(None::<BackgroundWorker>));
-    Arc::new(move |action| {
-        let watcher = watcher.clone();
-        let start = start.clone();
-        let dir = dir.clone();
-        let notify_changed = notify_changed.clone();
-        Box::pin(async move {
-            let mut current = watcher.lock().expect("review watcher lock").take();
-            if action == AttemptProgress::Reload {
-                if let Some(mut worker) = current.take() {
-                    worker.stop().await.map_err(background_io::failure)?;
-                }
-            }
-            let mut current = match current {
-                Some(worker) => worker,
-                None => start(dir, notify_changed).await?,
-            };
-            let result = request::<()>(&mut current, &Request::WatchPoll).await;
-            *watcher.lock().expect("review watcher lock") = Some(current);
-            result.map(|()| Some(Duration::from_secs(1)))
-        })
-    })
+impl ReviewCommentsWatchGateway {
+    pub fn new(dir: PathBuf, notify_changed: Arc<dyn Fn() + Send + Sync>) -> Self {
+        Self::with_start(dir, notify_changed, start())
+    }
+
+    fn with_start(dir: PathBuf, notify_changed: Arc<dyn Fn() + Send + Sync>, start: Start) -> Self {
+        Self {
+            dir,
+            notify_changed,
+            start,
+            worker: tokio::sync::Mutex::new(None),
+        }
+    }
+}
+
+fn technical(failure: WorkFailure) -> TechnicalFailure {
+    TechnicalFailure {
+        nature: match failure.kind {
+            Failure::Technical(nature) => nature,
+            Failure::Business(_) => TechnicalFailureNature::Other,
+        },
+        message: failure.message,
+    }
+}
+
+#[async_trait::async_trait]
+impl ReviewCommentsWatch for ReviewCommentsWatchGateway {
+    async fn ensure_started(&self) -> Result<(), TechnicalFailure> {
+        let mut worker = self.worker.lock().await;
+        if worker.is_none() {
+            *worker = Some(
+                (self.start)(self.dir.clone(), self.notify_changed.clone())
+                    .await
+                    .map_err(technical)?,
+            );
+        }
+        Ok(())
+    }
+
+    async fn poll(&self) -> Result<(), TechnicalFailure> {
+        let mut worker = self.worker.lock().await;
+        let Some(current) = worker.as_mut() else {
+            return Err(TechnicalFailure {
+                nature: TechnicalFailureNature::Other,
+                message: "watcher is not started".into(),
+            });
+        };
+        let polled = request::<()>(current, &Request::WatchPoll).await;
+        if polled.is_err() {
+            *worker = None;
+        }
+        polled.map_err(technical)
+    }
+
+    async fn restart(&self) -> Result<(), TechnicalFailure> {
+        if let Some(mut worker) = self.worker.lock().await.take() {
+            worker
+                .stop()
+                .await
+                .map_err(|error| technical(background_io::failure(error)))?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

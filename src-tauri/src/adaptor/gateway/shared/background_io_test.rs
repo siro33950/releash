@@ -1,5 +1,6 @@
 use super::*;
-use crate::domain::failure::{Failure, TechnicalFailureNature};
+use crate::domain::failure::TechnicalFailureNature;
+use crate::usecase::failure::Failure;
 
 #[test]
 fn test_バックグラウンド実行の失敗_分類と文面を保持する() {

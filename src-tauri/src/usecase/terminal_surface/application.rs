@@ -433,6 +433,16 @@ impl TerminalSurfaceApplication {
         }
     }
 
+    pub(crate) async fn flush_checkpoint(
+        &self,
+        session_key: &str,
+    ) -> Result<(), crate::usecase::failure::WorkFailure> {
+        self.gateway
+            .flush_checkpoint(session_key)
+            .await
+            .map_err(Into::into)
+    }
+
     pub(crate) fn flush_checkpoints(&self) -> Result<(), UsecaseError> {
         self.gateway
             .flush_checkpoints()

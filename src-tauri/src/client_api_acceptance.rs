@@ -19,12 +19,28 @@ pub fn spawn_review_comments_watcher(
     dir: std::path::PathBuf,
     notify_changed: Arc<dyn Fn() + Send + Sync>,
 ) {
-    let queue = crate::terminal_surface::initialize_background_work_for_acceptance();
-    crate::adaptor::gateway::comment::watcher::spawn_review_comments_watcher(
-        queue.clone(),
-        dir,
-        notify_changed,
-    );
+    let work = crate::terminal_surface::initialize_background_work_for_acceptance();
+    let target = dir.to_string_lossy().into_owned();
+    let usecase = Arc::new(crate::usecase::comment::ReviewCommentsWatchUsecase::new(
+        Arc::new(
+            crate::adaptor::gateway::comment::watcher::ReviewCommentsWatchGateway::new(
+                dir,
+                notify_changed,
+            ),
+        ),
+    ));
+    let retrying = work.retrying.clone();
+    work.handle.spawn(async move {
+        crate::adaptor::controller::review_comments_watch::run(
+            retrying,
+            usecase,
+            target,
+            Box::pin(crate::infrastructure::timer::ticks(
+                std::time::Duration::from_secs(1),
+            )),
+        )
+        .await
+    });
 }
 
 pub use crate::adaptor::gateway::push::BackendPush;
@@ -101,7 +117,7 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
         data_dir: &Path,
         branch: Arc<dyn BranchRepository>,
     ) -> Self {
-        let queue = crate::terminal_surface::initialize_background_work_for_acceptance();
+        let work = crate::terminal_surface::initialize_background_work_for_acceptance();
         use crate::adaptor::gateway::repository;
         let operations = Arc::new(crate::usecase::worktree_operation::WorktreeOperations::new(
             Arc::new(repository::worktree_operation::FileWorktreeOperationLocks::new(data_dir)),
@@ -189,7 +205,7 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
         )
         .unwrap();
         let runtime = WorkflowRuntimeUsecase::new_with_worktree_operations(
-            queue.clone(),
+            work.retrying.clone(),
             Arc::new(
                 crate::provider_lifecycle_acceptance::AcceptanceWorkflowRuntimeGateway::default(),
             ),
@@ -200,7 +216,7 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
             ),
             operations,
         );
-        let terminal = TerminalSurfaceRuntime::new(queue.clone(), data_dir.to_path_buf());
+        let terminal = TerminalSurfaceRuntime::new(work.clone(), data_dir.to_path_buf());
         state_presenter
             .connect_terminal(&terminal.application())
             .unwrap();

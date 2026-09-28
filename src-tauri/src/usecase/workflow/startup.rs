@@ -1,6 +1,8 @@
+use crate::common::retry::AttemptProgress;
 use crate::domain::workflow::repository::WorkflowStartupRepository;
 use crate::domain::workflow::WorkflowError;
-use std::sync::Arc;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 
 #[async_trait::async_trait]
 pub(crate) trait WorkflowStartupGateway: Send + Sync {
@@ -11,119 +13,49 @@ pub(crate) trait WorkflowStartupGateway: Send + Sync {
 pub(crate) struct WorkflowStartupUsecase {
     repository: Arc<dyn WorkflowStartupRepository>,
     runtime: Arc<dyn WorkflowStartupGateway>,
-    queue: Arc<crate::usecase::work_queue::WorkQueueUsecase>,
-    recovery_lock: tokio::sync::Mutex<bool>,
+    checked: Mutex<HashSet<String>>,
 }
 
 impl WorkflowStartupUsecase {
     pub(crate) fn new(
-        queue: std::sync::Arc<crate::usecase::work_queue::WorkQueueUsecase>,
         repository: Arc<dyn WorkflowStartupRepository>,
         runtime: Arc<dyn WorkflowStartupGateway>,
     ) -> Self {
         Self {
             repository,
             runtime,
-            queue,
-            recovery_lock: tokio::sync::Mutex::new(false),
+            checked: Mutex::new(HashSet::new()),
         }
     }
 
-    pub(crate) async fn execute(&self) -> Result<(), WorkflowError> {
-        let mut attempted = self.recovery_lock.lock().await;
-        if *attempted {
-            return Ok(());
-        }
-        *attempted = true;
-        let repository = self.repository.clone();
-        let tree_ids = execute_recovery(
-            &self.queue,
-            crate::usecase::work_queue::WorkKey::new("workflow_recovery_list", "daemon"),
-            move |_| {
-                let repository = repository.clone();
-                async move { repository.list_tree_ids().await }
-            },
-        )
-        .await?;
-        let results = futures_util::future::join_all(tree_ids.into_iter().map(|tree_id| {
-            let repository = self.repository.clone();
-            let runtime = self.runtime.clone();
-            let checked = Arc::new(std::sync::atomic::AtomicBool::new(false));
-            async move {
-                execute_recovery(
-                    &self.queue,
-                    crate::usecase::work_queue::WorkKey::new("workflow_recovery", &tree_id),
-                    move |action| {
-                        let repository = repository.clone();
-                        let runtime = runtime.clone();
-                        let tree_id = tree_id.clone();
-                        let checked = checked.clone();
-                        async move {
-                            if action == crate::usecase::work_queue::AttemptProgress::Reload {
-                                checked.store(false, std::sync::atomic::Ordering::Release);
-                            }
-                            if !checked.load(std::sync::atomic::Ordering::Acquire) {
-                                check_startup_definition(repository.as_ref(), &tree_id).await?;
-                                checked.store(true, std::sync::atomic::Ordering::Release);
-                            }
-                            runtime
-                                .reconcile_tree(&tree_id, runtime.current_timestamp())
-                                .await
-                        }
-                    },
-                )
-                .await
-            }
-        }))
-        .await;
-        results.into_iter().collect()
+    pub(crate) async fn list_tree_ids(&self) -> Result<Vec<String>, WorkflowError> {
+        self.repository.list_tree_ids().await
     }
-}
 
-async fn execute_recovery<T, F, Fut>(
-    queue: &Arc<crate::usecase::work_queue::WorkQueueUsecase>,
-    key: crate::usecase::work_queue::WorkKey,
-    operation: F,
-) -> Result<T, WorkflowError>
-where
-    T: Send + 'static,
-    F: Fn(crate::usecase::work_queue::AttemptProgress) -> Fut + Send + Sync + 'static,
-    Fut: std::future::Future<Output = Result<T, WorkflowError>> + Send + 'static,
-{
-    let source = Arc::new(std::sync::Mutex::new(None));
-    let attempt_source = source.clone();
-    queue
-        .execute(
-            key,
-            crate::common::retry::RetryBackoff::RECOVERY,
-            move |progress| {
-                let source = attempt_source.clone();
-                *source.lock().unwrap() = None;
-                let attempt = operation(progress);
-                async move {
-                    attempt.await.map_err(|error| {
-                        let failure = crate::usecase::work_queue::WorkFailure::from_error(&error);
-                        *source.lock().unwrap() = Some(error);
-                        failure
-                    })
-                }
-            },
-        )
-        .await
-        .map_err(|failure| match source.lock().unwrap().take() {
-            Some(error) => {
-                let message = error.to_string();
-                WorkflowError::Store(
-                    crate::domain::failure::StorageFailure::from(error).with_message(message),
-                )
-            }
-            None => recovery_error(failure),
-        })
-}
-
-fn recovery_error(error: crate::usecase::work_queue::WorkFailure) -> WorkflowError {
-    let message = error.message.clone();
-    WorkflowError::Store(crate::domain::failure::StorageFailure::from(error).with_message(message))
+    pub(crate) async fn recover_tree(
+        &self,
+        tree_id: &str,
+        progress: AttemptProgress,
+    ) -> Result<(), WorkflowError> {
+        if progress == AttemptProgress::Reload {
+            self.checked.lock().expect("checked trees").remove(tree_id);
+        }
+        if !self
+            .checked
+            .lock()
+            .expect("checked trees")
+            .contains(tree_id)
+        {
+            check_startup_definition(self.repository.as_ref(), tree_id).await?;
+            self.checked
+                .lock()
+                .expect("checked trees")
+                .insert(tree_id.to_string());
+        }
+        self.runtime
+            .reconcile_tree(tree_id, self.runtime.current_timestamp())
+            .await
+    }
 }
 
 pub(crate) async fn check_startup_definition(

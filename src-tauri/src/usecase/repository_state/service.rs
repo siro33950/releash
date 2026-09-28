@@ -27,7 +27,6 @@ pub trait RepositoryStateRepository: Send + Sync {
 }
 
 pub struct RepositoryStateService {
-    queue: std::sync::Arc<crate::usecase::work_queue::WorkQueueUsecase>,
     repository: Arc<dyn RepositoryStateRepository>,
     scanner: Arc<dyn RepositoryScanner>,
     notifier: Arc<dyn RepositoryStateNotifier>,
@@ -40,7 +39,6 @@ pub struct RepositoryStateService {
 
 impl RepositoryStateService {
     pub fn new(
-        queue: std::sync::Arc<crate::usecase::work_queue::WorkQueueUsecase>,
         repository: Arc<dyn RepositoryStateRepository>,
         scanner: Arc<dyn RepositoryScanner>,
         notifier: Arc<dyn RepositoryStateNotifier>,
@@ -49,7 +47,6 @@ impl RepositoryStateService {
         path_normalizer: Arc<dyn WorktreePathNormalizer>,
     ) -> Self {
         Self {
-            queue,
             repository,
             scanner,
             notifier,
@@ -225,7 +222,6 @@ impl RepositoryStateService {
         // 場合は先に登録された state を採用し、負けた側の watcher は破棄する。
         let canonical_path = key.to_string_lossy().to_string();
         let state = WorktreeState::new(
-            self.queue.clone(),
             canonical_path,
             self.scanner.clone(),
             self.notifier.clone(),
@@ -265,7 +261,6 @@ impl RepositoryStateService {
             return existing.clone();
         }
         let state = WorktreeState::new(
-            self.queue.clone(),
             worktree_path.to_string(),
             self.scanner.clone(),
             self.notifier.clone(),
@@ -451,9 +446,6 @@ pub(crate) mod tests {
 
     fn test_service(scanner: Arc<EmptyScanner>) -> RepositoryStateService {
         RepositoryStateService::new(
-            crate::usecase::work_queue::WorkQueueUsecase::new(
-                crate::usecase::work_queue_test_runtime::runtime(),
-            ),
             Arc::new(TestRepositoryStateRepository),
             scanner,
             Arc::new(NoopRepositoryStateNotifier),
@@ -469,9 +461,6 @@ pub(crate) mod tests {
         notifier: Arc<dyn RepositoryStateNotifier>,
     ) -> RepositoryStateService {
         RepositoryStateService::new(
-            crate::usecase::work_queue::WorkQueueUsecase::new(
-                crate::usecase::work_queue_test_runtime::runtime(),
-            ),
             Arc::new(TestRepositoryStateRepository),
             scanner,
             notifier,
@@ -487,9 +476,6 @@ pub(crate) mod tests {
         watcher: Arc<dyn RepositoryStateWatcher>,
     ) -> RepositoryStateService {
         RepositoryStateService::new(
-            crate::usecase::work_queue::WorkQueueUsecase::new(
-                crate::usecase::work_queue_test_runtime::runtime(),
-            ),
             Arc::new(TestRepositoryStateRepository),
             scanner,
             Arc::new(NoopRepositoryStateNotifier),
@@ -844,9 +830,6 @@ pub(crate) mod tests {
             status.into_iter().map(Into::into).collect(),
         ));
         let service = RepositoryStateService::new(
-            crate::usecase::work_queue::WorkQueueUsecase::new(
-                crate::usecase::work_queue_test_runtime::runtime(),
-            ),
             Arc::new(TestRepositoryStateRepository),
             scanner,
             Arc::new(NoopRepositoryStateNotifier),
@@ -1000,9 +983,6 @@ pub(crate) mod tests {
     fn no_spawn_service(watcher: Arc<dyn RepositoryStateWatcher>) -> Arc<RepositoryStateService> {
         Arc::new(
             RepositoryStateService::new(
-                crate::usecase::work_queue::WorkQueueUsecase::new(
-                    crate::usecase::work_queue_test_runtime::runtime(),
-                ),
                 Arc::new(TestRepositoryStateRepository),
                 Arc::new(CountingScanner::default()),
                 Arc::new(NoopRepositoryStateNotifier),

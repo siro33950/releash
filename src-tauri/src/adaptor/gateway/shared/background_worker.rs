@@ -1,10 +1,11 @@
 use super::background_io;
-use crate::domain::failure::{BusinessFailure, Failure, TechnicalFailureNature};
+use crate::domain::failure::TechnicalFailureNature;
 use crate::infrastructure::process::background_worker::{BackgroundWorker, FRAME_PREFIX};
 use crate::infrastructure::terminal::terminal_emulator::{
     NativeTerminalCheckpoint, NativeTerminalCheckpointRecord, TerminalCheckpointFileStore,
 };
-use crate::usecase::work_queue::WorkFailure;
+use crate::usecase::failure::WorkFailure;
+use crate::usecase::failure::{BusinessFailure, Failure};
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
@@ -88,10 +89,21 @@ pub(crate) async fn request<T: serde::de::DeserializeOwned>(
     #[cfg(test)]
     let request = blocked.as_ref().unwrap_or(request);
     let bytes = serde_json::to_vec(request).map_err(encoding_failure)?;
-    let response = worker
-        .request(&bytes)
-        .await
-        .map_err(background_io::failure)?;
+    let response = match crate::infrastructure::process::attempt::timed(
+        crate::usecase::failure::ATTEMPT_LIMIT,
+        worker.request(&bytes),
+    )
+    .await
+    {
+        Ok(response) => response.map_err(background_io::failure)?,
+        Err(error) => {
+            let mut failure = crate::usecase::failure::attempt_expired();
+            if !error.cleanup_errors.is_empty() {
+                failure.message = format!("{}: {error}", failure.message);
+            }
+            return Err(failure);
+        }
+    };
     let response: Result<T, WorkerFailure> =
         serde_json::from_str(&response).map_err(encoding_failure)?;
     response.map_err(Into::into)

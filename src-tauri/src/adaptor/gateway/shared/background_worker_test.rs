@@ -1,9 +1,11 @@
 use super::*;
-use crate::domain::failure::{BusinessFailure, Failure, TechnicalFailureNature};
-use crate::usecase::work_queue::{Attempt, WorkQueueRuntime};
+use crate::domain::failure::TechnicalFailureNature;
+use crate::usecase::failure::{BusinessFailure, Failure};
 use std::time::Duration;
 
-pub(crate) async fn assert_expired_releases(attempt: Attempt<'static>) {
+pub(crate) async fn assert_expired_releases<T: Send + std::fmt::Debug + 'static>(
+    attempt: impl std::future::Future<Output = Result<T, WorkFailure>> + Send + 'static,
+) {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("resource.lock");
     let child = Arc::new(std::sync::Mutex::new(None));
@@ -13,15 +15,11 @@ pub(crate) async fn assert_expired_releases(attempt: Attempt<'static>) {
     };
     let release_path = path.clone();
     let task = tokio::spawn(async move {
-        let runtime = crate::adaptor::gateway::work_queue::TokioWorkQueueRuntime::default();
         BLOCKED_REQUEST
-            .scope(
-                blocked,
-                runtime.attempt(Box::pin(async move {
-                    let _release = ReleaseAfterChild(release_path);
-                    attempt.await
-                })),
-            )
+            .scope(blocked, async move {
+                let _release = ReleaseAfterChild(release_path);
+                attempt.await
+            })
             .await
     });
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);

@@ -1,5 +1,6 @@
-use crate::domain::failure::{Failure, TechnicalFailureNature};
-use crate::usecase::work_queue::WorkFailure;
+use crate::domain::failure::TechnicalFailureNature;
+use crate::usecase::failure::Failure;
+use crate::usecase::failure::WorkFailure;
 
 pub(crate) fn failure(error: std::io::Error) -> WorkFailure {
     use std::io::ErrorKind as E;

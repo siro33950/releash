@@ -79,7 +79,7 @@ mod agent_session_tests;
 pub(crate) mod provider_availability_tests;
 #[cfg(test)]
 #[path = "provider_session_title_ingestion_test.rs"]
-mod provider_session_title_ingestion_tests;
+pub(crate) mod provider_session_title_ingestion_tests;
 
 pub(crate) use agent_session_read::AgentSessionReadUsecaseError;
 

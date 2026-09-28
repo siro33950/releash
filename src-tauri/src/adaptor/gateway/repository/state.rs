@@ -5,13 +5,8 @@ use std::time::Duration;
 use notify_debouncer_mini::notify::RecursiveMode;
 use notify_debouncer_mini::{new_debouncer, DebouncedEvent};
 
-use crate::usecase::repository_state::runtime::{
-    RepositoryStateInvalidationReceiver, RepositoryStateInvalidationSender,
-    RepositoryStateWorkerFuture, RepositoryStateWorkerRuntime, WorktreePathNormalizer,
-};
-use crate::usecase::repository_state::scanner::RepositoryScanner;
+use crate::usecase::repository_state::runtime::WorktreePathNormalizer;
 use crate::usecase::repository_state::service::RepositoryStateRepository;
-use crate::usecase::repository_state::snapshot::RepositorySnapshotParts;
 use crate::usecase::repository_state::worker::InvalidateReason;
 use crate::usecase::repository_state::worktree::{
     RepositoryStateWatchSession, RepositoryStateWatcher, WorktreeState,
@@ -216,61 +211,6 @@ fn handle_git_events(state: &WorktreeState, events: &[DebouncedEvent]) {
     let (branch_change, index_change) = classify_git_dir_events(events);
     if branch_change || index_change {
         state.invalidate(InvalidateReason::git(branch_change));
-    }
-}
-
-pub struct TokioRepositoryStateWorkerRuntime;
-
-struct TokioInvalidationSender(tokio::sync::mpsc::UnboundedSender<InvalidateReason>);
-
-impl RepositoryStateInvalidationSender for TokioInvalidationSender {
-    fn send(&self, reason: InvalidateReason) -> Result<(), ()> {
-        self.0.send(reason).map_err(|_| ())
-    }
-}
-
-struct TokioInvalidationReceiver(tokio::sync::mpsc::UnboundedReceiver<InvalidateReason>);
-
-#[async_trait::async_trait]
-impl RepositoryStateInvalidationReceiver for TokioInvalidationReceiver {
-    async fn recv(&mut self) -> Option<InvalidateReason> {
-        self.0.recv().await
-    }
-
-    fn try_recv(&mut self) -> Option<InvalidateReason> {
-        self.0.try_recv().ok()
-    }
-}
-
-#[async_trait::async_trait]
-impl RepositoryStateWorkerRuntime for TokioRepositoryStateWorkerRuntime {
-    fn invalidation_channel(
-        &self,
-    ) -> (
-        Box<dyn RepositoryStateInvalidationSender>,
-        Box<dyn RepositoryStateInvalidationReceiver>,
-    ) {
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        (
-            Box::new(TokioInvalidationSender(tx)),
-            Box::new(TokioInvalidationReceiver(rx)),
-        )
-    }
-
-    fn spawn_worker(&self, future: RepositoryStateWorkerFuture) {
-        tokio::spawn(future);
-    }
-
-    async fn sleep(&self, duration: Duration) {
-        tokio::time::sleep(duration).await;
-    }
-
-    async fn scan(
-        &self,
-        scanner: Arc<dyn RepositoryScanner>,
-        repo_path: String,
-    ) -> Result<RepositorySnapshotParts, RepositoryStateError> {
-        scanner.scan_async(&repo_path).await
     }
 }
 

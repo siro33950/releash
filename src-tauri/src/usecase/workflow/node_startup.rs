@@ -1,8 +1,11 @@
 use super::runtime_error::WorkflowRuntimeError;
-use crate::common::retry::RetryBackoff;
-use crate::domain::failure::Failure;
+use crate::common::retry::{attempts, bounded, AttemptProgress, RetryBackoff};
 use crate::domain::workflow::entities::workflow_execution::NodeStart;
-use crate::usecase::work_queue::AttemptProgress;
+use crate::usecase::failure::Failure;
+use crate::usecase::failure::{
+    attempt_expired, next_attempt, FailureKey, WorkFailure, ATTEMPT_LIMIT,
+};
+use crate::usecase::retry::Retrying;
 
 #[derive(Debug, Clone)]
 pub(crate) struct FailedNodeStart {
@@ -15,7 +18,7 @@ impl From<&str> for FailedNodeStart {
     fn from(id: &str) -> Self {
         Self {
             id: id.into(),
-            kind: Failure::Business(crate::domain::failure::BusinessFailure::VersionConflict),
+            kind: Failure::Business(crate::usecase::failure::BusinessFailure::VersionConflict),
         }
     }
 }
@@ -42,22 +45,22 @@ pub(crate) struct NodeStartupError {
     pub error: WorkflowRuntimeError,
 }
 
-pub(crate) async fn retry_failed_nodes_with_queue(
+pub(crate) async fn retry_failed_nodes(
     gateway: &impl NodeStartupGateway,
     failed: Vec<FailedNodeStart>,
-    queue: &std::sync::Arc<crate::usecase::work_queue::WorkQueueUsecase>,
+    retrying: &Retrying,
 ) -> Result<(), NodeStartupError> {
     use futures_util::StreamExt;
     let mut pending = futures_util::stream::FuturesUnordered::new();
     for failure in failed {
-        pending.push(retry_node(gateway, failure, queue));
+        pending.push(retry_node(gateway, failure, retrying));
     }
     let mut first_error = None;
     while let Some(result) = pending.next().await {
         match result {
             Ok(failed) => {
                 for failure in failed {
-                    pending.push(retry_node(gateway, failure, queue));
+                    pending.push(retry_node(gateway, failure, retrying));
                 }
             }
             Err(error) => {
@@ -73,18 +76,17 @@ pub(crate) async fn retry_failed_nodes_with_queue(
 async fn retry_node(
     gateway: &impl NodeStartupGateway,
     failure: FailedNodeStart,
-    queue: &std::sync::Arc<crate::usecase::work_queue::WorkQueueUsecase>,
+    retrying: &Retrying,
 ) -> Result<Vec<FailedNodeStart>, NodeStartupError> {
-    if crate::usecase::work_queue::next_attempt(failure.kind).is_none() {
+    if next_attempt(failure.kind).is_none() {
         return Ok(Vec::new());
     }
-    let key = crate::usecase::work_queue::WorkKey::new("workflow_node_start", &failure.id);
     let state = tokio::sync::Mutex::new((failure, true));
     let state = &state;
-    let work = crate::usecase::work_queue::run_borrowed(
-        queue,
-        key,
+    let work = attempts(
         RetryBackoff::ITEM,
+        &retrying.limiter,
+        |error: &NodeStartupError| next_attempt(Failure::from(error)),
         |action| async move {
             let mut state = state.lock().await;
             let (failure, first) = &mut *state;
@@ -93,7 +95,7 @@ async fn retry_node(
                 return Err(NodeStartupError {
                     node_execution_id: Some(failure.id.clone()),
                     error: WorkflowRuntimeError::storage(
-                        crate::usecase::work_queue::WorkFailure {
+                        WorkFailure {
                             kind: failure.kind,
                             message: "起動を再試行します".into(),
                         },
@@ -104,18 +106,17 @@ async fn retry_node(
             if !gateway.wait(std::time::Duration::ZERO).await {
                 return Ok(Vec::new());
             }
-            let attempted = queue
-                .attempt(async {
-                    match gateway.restart(&failure.id, action).await {
-                        Ok(Some(start)) => {
-                            failure.id = start.node_execution_id().to_string();
-                            (gateway.start(vec![start]).await, None)
-                        }
-                        Ok(None) => (Ok(Vec::new()), None),
-                        Err(error) => (Err(error), Some(failure.id.clone())),
+            let attempted = bounded(ATTEMPT_LIMIT, attempt_expired, async {
+                Ok::<_, WorkFailure>(match gateway.restart(&failure.id, action).await {
+                    Ok(Some(start)) => {
+                        failure.id = start.node_execution_id().to_string();
+                        (gateway.start(vec![start]).await, None)
                     }
+                    Ok(None) => (Ok(Vec::new()), None),
+                    Err(error) => (Err(error), Some(failure.id.clone())),
                 })
-                .await;
+            })
+            .await;
             let (result, node_execution_id) = attempted.unwrap_or_else(|error| {
                 (
                     Err({
@@ -126,15 +127,12 @@ async fn retry_node(
                 )
             });
             match result {
-                Ok(mut failed)
-                    if failed.len() == 1
-                        && crate::usecase::work_queue::next_attempt(failed[0].kind).is_some() =>
-                {
+                Ok(mut failed) if failed.len() == 1 && next_attempt(failed[0].kind).is_some() => {
                     *failure = failed.remove(0);
                     Err(NodeStartupError {
                         node_execution_id: Some(failure.id.clone()),
                         error: WorkflowRuntimeError::storage(
-                            crate::usecase::work_queue::WorkFailure {
+                            WorkFailure {
                                 kind: failure.kind,
                                 message: "起動を再試行します".into(),
                             },
@@ -144,15 +142,10 @@ async fn retry_node(
                 }
                 Ok(failed) => Ok(failed),
                 Err(error) => {
-                    queue
-                        .observe(
-                            &crate::usecase::work_queue::WorkKey::new(
-                                "workflow_node_start",
-                                &failure.id,
-                            ),
-                            &crate::usecase::work_queue::WorkFailure::from_error(&error),
-                        )
-                        .await;
+                    retrying.failures.observed(
+                        &FailureKey::new("workflow_node_start", &failure.id),
+                        WorkFailure::from_error(&error),
+                    );
                     Err(NodeStartupError {
                         node_execution_id,
                         error,
@@ -160,8 +153,6 @@ async fn retry_node(
                 }
             }
         },
-        true,
-        false,
     );
     tokio::select! {
         biased;

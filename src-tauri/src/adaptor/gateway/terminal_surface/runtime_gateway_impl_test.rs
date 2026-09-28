@@ -69,7 +69,7 @@ fn test_ターミナル状態通知_削除時に世代を伝える() {
     // Given
     let sink = Arc::new(SummarySink::default());
     let gateway = TerminalSurfaceRuntimeGatewayFor::new_with_event_sink(
-        crate::usecase::work_queue::shared().clone(),
+        Arc::new(|_| {}),
         std::path::PathBuf::new(),
         sink.clone(),
         false,
@@ -676,33 +676,37 @@ fn journal_output_context(
         },
         true,
     )));
-    let background_calls = flush_calls.clone();
-    let scheduler = DirtyCheckpointScheduler::spawn(
-        crate::usecase::work_queue::shared().clone(),
-        uuid::Uuid::new_v4().to_string(),
-        Duration::from_millis(10),
-        Arc::new(move || {
+    let terminal_surface = Arc::new(Mutex::new(NativeTerminalEmulator::new(
+        80,
+        24,
+        TERMINAL_SURFACE_SCROLLBACK_ROWS,
+    )));
+    let session_key = uuid::Uuid::new_v4().to_string();
+    let scheduler = CheckpointScheduler {
+        dirty: Arc::new(move |_| {
             flush_calls.fetch_add(1, Ordering::SeqCst);
-            Ok(())
         }),
-        Arc::new(move || {
-            let calls = background_calls.clone();
-            Box::pin(async move {
-                calls.fetch_add(1, Ordering::SeqCst);
-                Ok(())
-            })
+        session_key: session_key.clone(),
+        flush: Arc::new(|| Ok(())),
+        background: Arc::new(BackgroundCheckpoint {
+            store: TerminalCheckpointFileStore::new(
+                std::env::temp_dir().as_path(),
+                TERMINAL_SURFACE_SCROLLBACK_ROWS,
+            ),
+            session_key,
+            registry: Arc::clone(&registry),
+            runtime_generation: 1,
+            terminal_surface: Arc::clone(&terminal_surface),
+            journal: Arc::clone(&journal),
+            io: Arc::new(tokio::sync::Mutex::new(())),
         }),
-    );
+    };
     let context = TerminalOutputReaderContext {
         event_sink: None,
         event_order: Arc::new(TerminalSurfaceEventOrder::default()),
         registry,
         runtime_generation: 1,
-        terminal_surface: Arc::new(Mutex::new(NativeTerminalEmulator::new(
-            80,
-            24,
-            TERMINAL_SURFACE_SCROLLBACK_ROWS,
-        ))),
+        terminal_surface,
         checkpoint_scheduler: Some(scheduler),
         session_key: "journal-key".to_string(),
         output_drained: Arc::new((Mutex::new(false), parking_lot::Condvar::new())),
@@ -839,7 +843,7 @@ fn test_ターミナル画面_イベント順序_別画面の配信を相互に�
         release: Arc::clone(&release_first),
     });
     let gateway = Arc::new(TerminalSurfaceRuntimeGatewayFor::new_with_event_sink(
-        crate::usecase::work_queue::shared().clone(),
+        Arc::new(|_| {}),
         data_dir.path().to_path_buf(),
         sink,
         true,
@@ -882,7 +886,7 @@ fn test_ターミナル画面_寸法変更_次の画面_連番で配信する() 
     let data_dir = tempfile::tempdir().unwrap();
     let captured = Arc::new(CapturedTerminalOutput::default());
     let gateway = TerminalSurfaceRuntimeGatewayFor::new_with_event_sink(
-        crate::usecase::work_queue::shared().clone(),
+        Arc::new(|_| {}),
         data_dir.path().to_path_buf(),
         captured.clone(),
         true,
@@ -980,7 +984,7 @@ async fn test_定期保存の期限切れ_子を回収して保留データと�
     });
     let attempt = background.clone();
     // When
-    super::super::super::shared::background_worker::background_worker_tests::assert_expired_releases(Box::pin(async move { attempt.flush().await?; Ok(None) })).await;
+    super::super::super::shared::background_worker::background_worker_tests::assert_expired_releases(async move { attempt.flush().await }).await;
     // Then
     assert!(background.io.try_lock().is_ok());
     let pending = journal.lock().take_pending();
@@ -1226,7 +1230,7 @@ async fn assert_terminal_recreation(drain_exit: bool) {
     use futures_util::StreamExt;
     let hub = Arc::new(TerminalSurfaceEventHub::with_flags(256, true));
     let gateway = Arc::new(TerminalSurfaceRuntimeGatewayFor::new_with_event_sink(
-        crate::usecase::work_queue::shared().clone(),
+        Arc::new(|_| {}),
         std::path::PathBuf::new(),
         hub.clone(),
         false,

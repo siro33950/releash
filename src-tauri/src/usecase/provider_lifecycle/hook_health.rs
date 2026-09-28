@@ -129,8 +129,8 @@ impl ProviderHookHealthUsecase {
             match self.repository.save(versioned, caller_request_id).await {
                 Ok(_) => return Ok(()),
                 Err(error)
-                    if crate::domain::failure::Failure::from(&error)
-                        == crate::domain::failure::Failure::Technical(
+                    if crate::usecase::failure::Failure::from(&error)
+                        == crate::usecase::failure::Failure::Technical(
                             crate::domain::failure::TechnicalFailureNature::Transient,
                         ) =>
                 {
@@ -164,8 +164,8 @@ impl ProviderHookHealthUsecase {
             match self.repository.save(versioned, caller_request_id).await {
                 Ok(_) => return Ok(()),
                 Err(error)
-                    if crate::domain::failure::Failure::from(&error)
-                        == crate::domain::failure::Failure::Technical(
+                    if crate::usecase::failure::Failure::from(&error)
+                        == crate::usecase::failure::Failure::Technical(
                             crate::domain::failure::TechnicalFailureNature::Transient,
                         ) =>
                 {
@@ -198,8 +198,8 @@ impl ProviderHookHealthUsecase {
             match self.repository.save(versioned, caller_request_id).await {
                 Ok(_) => return Ok(()),
                 Err(error)
-                    if crate::domain::failure::Failure::from(&error)
-                        == crate::domain::failure::Failure::Technical(
+                    if crate::usecase::failure::Failure::from(&error)
+                        == crate::usecase::failure::Failure::Technical(
                             crate::domain::failure::TechnicalFailureNature::Transient,
                         ) =>
                 {

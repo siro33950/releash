@@ -8,7 +8,7 @@ use crate::domain::agent_session::aggregates::{
     AgentSession, AgentSessionRecoveryResult, AgentSessionTreeLocation,
 };
 use crate::domain::agent_session::repository::AgentSessionRepository;
-use crate::domain::failure::{BusinessFailure, Failure, TechnicalFailureNature};
+use crate::domain::failure::TechnicalFailureNature;
 use crate::domain::local_event::WorkflowExecutionMetadataRecord;
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::workflow::{
@@ -21,6 +21,7 @@ use crate::domain::workspace_tree::{
 use crate::usecase::agent_session::{
     AgentSessionOperationsDto, AgentSessionProviderDto, AgentSessionUsecase,
 };
+use crate::usecase::failure::{BusinessFailure, Failure};
 
 struct EmptyArchives;
 
@@ -202,7 +203,7 @@ async fn assert_working_session_projection(store: Arc<LocalEventStore>) {
     let workspace = WorkspaceIdentity::new("workspace-activity-read");
     let repository = SqliteWorkspaceTreeRepository::new(store);
     let query = SqliteWorkspaceQueryService::with_repository(
-        crate::usecase::work_queue::shared().clone(),
+        Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
         repository,
         Arc::new(EmptyArchives),
     );
@@ -232,7 +233,7 @@ async fn assert_workflow_child_activity_projection(
     let workspace = WorkspaceIdentity::new("/repo/workflow-child-activity");
     let repository = SqliteWorkspaceTreeRepository::new(store);
     let query = SqliteWorkspaceQueryService::with_repository(
-        crate::usecase::work_queue::shared().clone(),
+        Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
         repository,
         Arc::new(EmptyArchives),
     );
@@ -328,7 +329,7 @@ async fn test_workspace_tree_query_活動未観測のsessionを一覧と詳細�
     // When: Workspace query service から一覧と詳細を読む
     let repository = SqliteWorkspaceTreeRepository::new(store);
     let query = SqliteWorkspaceQueryService::with_repository(
-        crate::usecase::work_queue::shared().clone(),
+        Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
         repository,
         Arc::new(EmptyArchives),
     );
@@ -404,7 +405,7 @@ async fn test_workspace_tree_query_resume直後のsessionを一覧と詳細でat
     // When: Workspace query service から一覧と詳細を読む
     let repository = SqliteWorkspaceTreeRepository::new(store);
     let query = SqliteWorkspaceQueryService::with_repository(
-        crate::usecase::work_queue::shared().clone(),
+        Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
         repository,
         Arc::new(EmptyArchives),
     );
@@ -506,7 +507,7 @@ async fn test_workspace_tree_query_活動終了と再開の反復を一覧と詳
         .unwrap();
     let repository = SqliteWorkspaceTreeRepository::new(store);
     let query = SqliteWorkspaceQueryService::with_repository(
-        crate::usecase::work_queue::shared().clone(),
+        Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
         repository,
         Arc::new(EmptyArchives),
     );
@@ -610,7 +611,7 @@ async fn test_workspace_tree_query_stop事実と後続活動を一覧と詳細�
     let projected_classification = async |store: Arc<LocalEventStore>| {
         let repository = SqliteWorkspaceTreeRepository::new(store);
         let query = SqliteWorkspaceQueryService::with_repository(
-            crate::usecase::work_queue::shared().clone(),
+            Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
             repository,
             Arc::new(EmptyArchives),
         );
@@ -720,7 +721,7 @@ async fn launch区分が同じworktreeのworkflow一覧とsession一覧を分け
         .unwrap();
     let repository = SqliteWorkspaceTreeRepository::new(store);
     let query = SqliteWorkspaceQueryService::with_repository(
-        crate::usecase::work_queue::shared().clone(),
+        Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
         repository.clone(),
         Arc::new(EmptyArchives),
     );
@@ -779,7 +780,7 @@ async fn test_workspace_tree_query_workspace同定子がworktreeと異なるsess
         .unwrap();
     let repository = SqliteWorkspaceTreeRepository::new(store);
     let query = SqliteWorkspaceQueryService::with_repository(
-        crate::usecase::work_queue::shared().clone(),
+        Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
         repository.clone(),
         Arc::new(EmptyArchives),
     );
@@ -837,12 +838,12 @@ async fn test_workspaceツリー投影_同じfoldのworkflow履歴と表示名�
     .unwrap();
     let repository = SqliteWorkspaceTreeRepository::new(store);
     let tree_query = SqliteWorkspaceQueryService::with_repository(
-        crate::usecase::work_queue::shared().clone(),
+        Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
         repository.clone(),
         Arc::new(EmptyArchives),
     );
     let history_query = SqliteWorkspaceQueryService::with_repository(
-        crate::usecase::work_queue::shared().clone(),
+        Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
         repository,
         Arc::new(ArchivedExecution {
             execution_id: execution_id.to_string(),
@@ -896,7 +897,7 @@ async fn test_workspaceツリー投影_単独agent_sessionのpublic_root表示�
         .unwrap();
     let repository = SqliteWorkspaceTreeRepository::new(store);
     let query = SqliteWorkspaceQueryService::with_repository(
-        crate::usecase::work_queue::shared().clone(),
+        Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
         repository,
         Arc::new(EmptyArchives),
     );
@@ -943,7 +944,7 @@ async fn test_workspaceノード詳細_public_rootと子nodeの名前はnodeのt
     .unwrap();
     let repository = SqliteWorkspaceTreeRepository::new(store);
     let query = SqliteWorkspaceQueryService::with_repository(
-        crate::usecase::work_queue::shared().clone(),
+        Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
         repository.clone(),
         Arc::new(EmptyArchives),
     );
@@ -1675,7 +1676,7 @@ async fn test_workspace読取_未対応定義がabort済みでもcommand出力�
                 .unwrap()
                 .unwrap();
             let query = SqliteWorkspaceQueryService::with_repository(
-                crate::usecase::work_queue::shared().clone(),
+                Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
                 repository,
                 Arc::new(EmptyArchives),
             );
@@ -1943,7 +1944,7 @@ async fn test_archive履歴_手動とworktree消失の事実の時刻と理由�
         directory.path(),
     ));
     let query = SqliteWorkspaceQueryService::with_repository(
-        crate::usecase::work_queue::shared().clone(),
+        Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
         SqliteWorkspaceTreeRepository::new(store.clone()),
         archives.clone(),
     );
@@ -2043,7 +2044,7 @@ async fn test_workflow単一取得_単独sessionをworkflow_summaryとして返�
     .await
     .unwrap();
     let query = SqliteWorkspaceQueryService::with_repository(
-        crate::usecase::work_queue::shared().clone(),
+        Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
         SqliteWorkspaceTreeRepository::new(store),
         Arc::new(EmptyArchives),
     );
@@ -2121,7 +2122,7 @@ async fn test_workspace読取_実経路で失敗分類を保持する() {
         LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into())).unwrap();
     let repository = SqliteWorkspaceTreeRepository::new(store.clone());
     let query = SqliteWorkspaceQueryService::with_repository(
-        crate::usecase::work_queue::shared().clone(),
+        Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
         repository,
         Arc::new(EmptyArchives),
     );
@@ -2168,8 +2169,7 @@ fn test_store問い合わせエラー_停止の分類を保持する() {
 
 #[tokio::test]
 async fn test_workspaceツリー投影_背景失敗の対象と理由を表示し成功後は解除する() {
-    use crate::common::retry::RetryBackoff;
-    use crate::usecase::work_queue::{work_queue_tests::queue, WorkFailure, WorkKey};
+    use crate::usecase::failure::{FailureKey, WorkFailure};
 
     // Given
     let directory = tempfile::tempdir().unwrap();
@@ -2201,9 +2201,10 @@ async fn test_workspaceツリー投影_背景失敗の対象と理由を表示�
         )
         .await
         .unwrap();
-    let queue = queue();
+    let failures =
+        Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default());
     let query = SqliteWorkspaceQueryService::with_repository(
-        queue.clone(),
+        failures.clone(),
         SqliteWorkspaceTreeRepository::new(store),
         Arc::new(EmptyArchives),
     );
@@ -2218,27 +2219,23 @@ async fn test_workspaceツリー投影_背景失敗の対象と理由を表示�
     assert_eq!(node.status, "active");
     assert!(node.error_reason.is_none());
     for target in [node.id.as_str(), "workflow-node", execution_id] {
-        let key = WorkKey::new("workflow_recovery", target);
+        let key = FailureKey::new("workflow_recovery", target);
         // When / Then
-        queue
-            .observe(
-                &key,
-                &WorkFailure {
-                    kind: Failure::Technical(TechnicalFailureNature::Cancelled),
-                    message: "cancelled".into(),
-                },
-            )
-            .await;
+        failures.observe(
+            &key,
+            WorkFailure {
+                kind: Failure::Technical(TechnicalFailureNature::Cancelled),
+                message: "cancelled".into(),
+            },
+        );
         assert_eq!(query.workspace_tree(&workspace).await.unwrap(), before);
-        queue
-            .observe(
-                &key,
-                &WorkFailure {
-                    kind: Failure::Business(BusinessFailure::Other),
-                    message: "repair required".into(),
-                },
-            )
-            .await;
+        failures.observe(
+            &key,
+            WorkFailure {
+                kind: Failure::Business(BusinessFailure::Other),
+                message: "repair required".into(),
+            },
+        );
         let snapshot = query.workspace_tree(&workspace).await.unwrap();
         let WorkspaceTreeItemDto::Sequence(root) = &snapshot.nodes[0] else {
             panic!("workflow root");
@@ -2249,10 +2246,7 @@ async fn test_workspaceツリー投影_背景失敗の対象と理由を表示�
         assert_eq!(root.status, "attention");
         assert_eq!(node.status, "attention");
         assert_eq!(node.error_reason.as_deref(), Some("repair required"));
-        queue
-            .execute(key, RetryBackoff::RECOVERY, |_| async { Ok(()) })
-            .await
-            .unwrap();
+        failures.resolve(&key);
         assert_eq!(query.workspace_tree(&workspace).await.unwrap(), before);
     }
 }
@@ -2266,7 +2260,7 @@ async fn test_失敗対象の読取_node行以外はstoreに依存せず未知�
     let store =
         LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into())).unwrap();
     let query = SqliteWorkspaceQueryService::with_repository(
-        crate::usecase::work_queue::shared().clone(),
+        Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
         SqliteWorkspaceTreeRepository::new(store.clone()),
         Arc::new(EmptyArchives),
     );

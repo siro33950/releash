@@ -1,18 +1,18 @@
 use super::*;
-use crate::domain::failure::{BusinessFailure, Failure, TechnicalFailureNature};
+use crate::domain::failure::TechnicalFailureNature;
 use crate::domain::workflow::entities::workflow_execution::{LeafKind, LeafStart};
+use crate::usecase::failure::{BusinessFailure, Failure};
 use std::sync::Mutex;
 
 async fn retry_failed_nodes(
     gateway: &FakeStartup,
     failed: Vec<FailedNodeStart>,
 ) -> Result<(), NodeStartupError> {
-    let queue = crate::usecase::work_queue::WorkQueueUsecase::new(gateway.clock.clone());
-    super::retry_failed_nodes_with_queue(gateway, failed, &queue).await
+    super::retry_failed_nodes(gateway, failed, &crate::usecase::retry::test_retrying()).await
 }
 
 struct FakeStartup {
-    clock: std::sync::Arc<crate::usecase::work_queue::ImmediateWorkQueueRuntime>,
+    origin: tokio::time::Instant,
     failures_left: Mutex<usize>,
     starts: Mutex<Vec<Vec<String>>>,
     restarts: Mutex<Vec<String>>,
@@ -28,7 +28,7 @@ struct FakeStartup {
 impl FakeStartup {
     fn new(failures: usize) -> Self {
         Self {
-            clock: Default::default(),
+            origin: tokio::time::Instant::now(),
             failures_left: Mutex::new(failures),
             starts: Mutex::new(Vec::new()),
             restarts: Mutex::new(Vec::new()),
@@ -117,9 +117,8 @@ impl NodeStartupGateway for FakeStartup {
     }
 
     async fn wait(&self, duration: std::time::Duration) -> bool {
-        use crate::usecase::work_queue::WorkQueueRuntime;
         assert_eq!(duration, std::time::Duration::ZERO);
-        self.waits.lock().unwrap().push(self.clock.now());
+        self.waits.lock().unwrap().push(self.origin.elapsed());
         !self.wait_cancelled
     }
 }
@@ -134,7 +133,7 @@ async fn start_nodes(
         .map_err(|failure| failure.error)
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn test_起動再試行_4回を超えて成功まで継続する() {
     for kind in [LeafKind::Session, LeafKind::Command] {
         let gateway = FakeStartup::new(5);
@@ -157,7 +156,7 @@ async fn test_起動再試行_4回を超えて成功まで継続する() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn startup_stops_retrying_after_success_and_leaves_successful_siblings_alone() {
     let gateway = FakeStartup::new(1);
     start_nodes(
@@ -176,7 +175,7 @@ async fn startup_stops_retrying_after_success_and_leaves_successful_siblings_alo
     assert_eq!(*gateway.restarts.lock().unwrap(), vec!["failed"]);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn startup_does_not_launch_an_attempt_cancelled_during_backoff() {
     let mut gateway = FakeStartup::new(usize::MAX);
     gateway.cancelled = true;
@@ -187,7 +186,7 @@ async fn startup_does_not_launch_an_attempt_cancelled_during_backoff() {
     assert_eq!(gateway.restarts.lock().unwrap().len(), 1);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn test_自動再試行_待機の取消後は新attemptを作らない() {
     let mut gateway = FakeStartup::new(usize::MAX);
     gateway.wait_cancelled = true;
@@ -198,7 +197,7 @@ async fn test_自動再試行_待機の取消後は新attemptを作らない() {
     assert!(gateway.starts.lock().unwrap().is_empty());
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn test_自動再試行_restartエラーを分類し後続nodeも処理する() {
     // Given
     for retryable in [true, false] {
@@ -224,7 +223,7 @@ async fn test_自動再試行_restartエラーを分類し後続nodeも処理す
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn test_自動再試行_後続nodeがなくても競合を再試行する() {
     // Given
     let gateway = FakeStartup::new(0);
@@ -239,7 +238,7 @@ async fn test_自動再試行_後続nodeがなくても競合を再試行する(
     assert_eq!(gateway.starts.lock().unwrap().len(), 1);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn test_自動再試行_startエラーにrestartの発生元を割り当てない() {
     // Given
     let gateway = FakeStartup::new(0);
@@ -258,7 +257,7 @@ async fn test_自動再試行_startエラーにrestartの発生元を割り当�
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn test_自動再試行_一時失敗は同じattemptを起動する() {
     // Given
     let gateway = FakeStartup::new(0);
@@ -283,16 +282,12 @@ async fn test_node起動再試行_restartとstartに共通の20秒期限を適�
         let mut gateway = FakeStartup::new(0);
         gateway.pending_restart = pending_restart;
         gateway.pending_start = !pending_restart;
-        let queue = crate::usecase::work_queue::work_queue_tests::queue();
+        let queue = crate::usecase::retry::test_retrying();
         let started = tokio::time::Instant::now();
         // When
         let failure = tokio::time::timeout(
             std::time::Duration::from_secs(21),
-            super::retry_failed_nodes_with_queue(
-                &gateway,
-                vec!["blocked".into(), "other".into()],
-                &queue,
-            ),
+            super::retry_failed_nodes(&gateway, vec!["blocked".into(), "other".into()], &queue),
         )
         .await
         .expect("node attempt must end at its 20 second deadline")
@@ -311,25 +306,14 @@ async fn test_node起動再試行_restartとstartに共通の20秒期限を適�
         assert_eq!(started.elapsed(), std::time::Duration::from_millis(20_010));
         assert_eq!(*gateway.restarts.lock().unwrap(), ["blocked", "other"]);
         assert_eq!(*gateway.starts.lock().unwrap(), [vec!["other-next"]]);
-        let records = queue.records(target).await;
+        let records = queue.records(target);
         assert_eq!(records.len(), 1);
         assert_eq!(
             records[0].record.kind,
-            crate::domain::failure::Failure::Technical(
+            crate::usecase::failure::Failure::Technical(
                 crate::domain::failure::TechnicalFailureNature::TimedOut
             )
         );
         assert!(records[0].requires_attention);
-        assert_eq!(
-            queue
-                .execute(
-                    crate::usecase::work_queue::WorkKey::new("workflow_node_start", "blocked"),
-                    RetryBackoff::ITEM,
-                    |_| async { Ok(42) },
-                )
-                .await
-                .unwrap(),
-            42
-        );
     }
 }

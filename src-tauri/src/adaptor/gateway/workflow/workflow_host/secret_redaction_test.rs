@@ -81,7 +81,7 @@ schemas:
             .find(|node| node.node_name == "main")
             .unwrap();
         let control = WorkflowControlPlaneUsecase::new(
-            crate::usecase::work_queue::shared().clone(),
+            crate::usecase::retry::shared().clone(),
             Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(
                 fixture.app.clone(),
                 Arc::new(fixture.host.clone()),

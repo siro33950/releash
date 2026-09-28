@@ -4,6 +4,14 @@ use crate::domain::workflow::repository::WorkflowStartupRecord;
 use crate::domain::workflow::{ExecutionOrigin, ExecutionTreeLaunch, NodeFact, TreeRootFact};
 use std::sync::Mutex;
 
+async fn execute(usecase: &WorkflowStartupUsecase) -> Result<(), WorkflowError> {
+    crate::adaptor::controller::workflow_startup::recover(
+        &crate::usecase::retry::test_retrying(),
+        usecase,
+    )
+    .await
+}
+
 struct Repository {
     terminal: Mutex<Option<NodeFact>>,
     concurrent_facts: Mutex<std::collections::VecDeque<Option<NodeFact>>>,
@@ -173,18 +181,10 @@ async fn test_起動時復旧_列挙と定義確認とreconciliationの順序を
         conflict: false,
         temporary: false,
     });
-    let usecase = WorkflowStartupUsecase::new(
-        crate::usecase::work_queue::WorkQueueUsecase::new(std::sync::Arc::new(
-            crate::usecase::work_queue::ImmediateWorkQueueRuntime::default(),
-        )),
-        startup.clone(),
-        startup.clone(),
-    );
+    let usecase = WorkflowStartupUsecase::new(startup.clone(), startup.clone());
 
     // When
-    let (first, second) = tokio::join!(usecase.execute(), usecase.execute());
-    first.unwrap();
-    second.unwrap();
+    execute(&usecase).await.unwrap();
 
     // Then
     let pass = [
@@ -222,17 +222,10 @@ async fn test_起動時復旧_定義確認に失敗したtreeを再生せず後�
                 conflict,
                 temporary: false,
             });
-            let usecase = WorkflowStartupUsecase::new(
-                crate::usecase::work_queue::WorkQueueUsecase::new(std::sync::Arc::new(
-                    crate::usecase::work_queue::ImmediateWorkQueueRuntime::default(),
-                )),
-                startup.clone(),
-                startup.clone(),
-            );
+            let usecase = WorkflowStartupUsecase::new(startup.clone(), startup.clone());
 
             // When
-            let result = usecase.execute().await;
-            usecase.execute().await.unwrap();
+            let result = execute(&usecase).await;
 
             // Then
             if conflict {
@@ -268,16 +261,9 @@ async fn test_起動時復旧_列挙失敗は後続操作を呼ばず返す() {
         conflict: false,
         temporary: false,
     });
-    let usecase = WorkflowStartupUsecase::new(
-        crate::usecase::work_queue::WorkQueueUsecase::new(std::sync::Arc::new(
-            crate::usecase::work_queue::ImmediateWorkQueueRuntime::default(),
-        )),
-        startup.clone(),
-        startup.clone(),
-    );
+    let usecase = WorkflowStartupUsecase::new(startup.clone(), startup.clone());
     // When / Then
-    assert!(usecase
-        .execute()
+    assert!(execute(&usecase)
         .await
         .unwrap_err()
         .to_string()
@@ -316,16 +302,9 @@ async fn test_起動時前進_競合後に読み直して再試行しabortしな
             conflicts,
             calls: Default::default(),
         });
-        let usecase = WorkflowStartupUsecase::new(
-            crate::usecase::work_queue::WorkQueueUsecase::new(std::sync::Arc::new(
-                crate::usecase::work_queue::ImmediateWorkQueueRuntime::default(),
-            )),
-            repository.clone(),
-            runtime.clone(),
-        );
+        let usecase = WorkflowStartupUsecase::new(repository.clone(), runtime.clone());
         // When
-        usecase.execute().await.unwrap();
-        usecase.execute().await.unwrap();
+        execute(&usecase).await.unwrap();
         // Then
         assert_eq!(
             runtime.calls.load(std::sync::atomic::Ordering::SeqCst),
@@ -368,17 +347,10 @@ async fn test_起動失敗abort_追記直前に完了またはabortされた実�
             .push_back(Some(terminal.clone()));
         let repository = Arc::new(repository);
         let runtime = Arc::new(FailedStartup::default());
-        let usecase = WorkflowStartupUsecase::new(
-            crate::usecase::work_queue::WorkQueueUsecase::new(std::sync::Arc::new(
-                crate::usecase::work_queue::ImmediateWorkQueueRuntime::default(),
-            )),
-            repository.clone(),
-            runtime.clone(),
-        );
+        let usecase = WorkflowStartupUsecase::new(repository.clone(), runtime.clone());
 
         // When
-        assert!(usecase.execute().await.is_err());
-        usecase.execute().await.unwrap();
+        assert!(execute(&usecase).await.is_err());
 
         // Then
         assert!(repository.terminal.lock().unwrap().is_none());
@@ -397,17 +369,10 @@ async fn test_起動失敗abort_競合時だけ最新記録で有界に再判定
         *repository.concurrent_facts.lock().unwrap() = vec![None; conflicts].into();
         let repository = Arc::new(repository);
         let runtime = Arc::new(FailedStartup::default());
-        let usecase = WorkflowStartupUsecase::new(
-            crate::usecase::work_queue::WorkQueueUsecase::new(std::sync::Arc::new(
-                crate::usecase::work_queue::ImmediateWorkQueueRuntime::default(),
-            )),
-            repository.clone(),
-            runtime.clone(),
-        );
+        let usecase = WorkflowStartupUsecase::new(repository.clone(), runtime.clone());
 
         // When
-        assert!(usecase.execute().await.is_err());
-        usecase.execute().await.unwrap();
+        assert!(execute(&usecase).await.is_err());
 
         // Then
         assert!(repository.append_attempts.lock().unwrap().is_empty());
@@ -424,17 +389,10 @@ async fn test_起動失敗abort_保存エラーは再試行しない() {
     repository.fail_append = true;
     let repository = Arc::new(repository);
     let runtime = Arc::new(FailedStartup::default());
-    let usecase = WorkflowStartupUsecase::new(
-        crate::usecase::work_queue::WorkQueueUsecase::new(std::sync::Arc::new(
-            crate::usecase::work_queue::ImmediateWorkQueueRuntime::default(),
-        )),
-        repository.clone(),
-        runtime.clone(),
-    );
+    let usecase = WorkflowStartupUsecase::new(repository.clone(), runtime.clone());
 
     // When
-    assert!(usecase.execute().await.is_err());
-    usecase.execute().await.unwrap();
+    assert!(execute(&usecase).await.is_err());
 
     // Then
     assert!(repository.append_attempts.lock().unwrap().is_empty());
@@ -452,17 +410,15 @@ async fn test_起動時復旧_定義不明でも保存を試みず要対応を�
             *repository.unpersisted_appends.lock().unwrap() = unpersisted;
             let repository = Arc::new(repository);
             let runtime = Arc::new(FailedStartup::default());
-            let usecase = WorkflowStartupUsecase::new(
-                crate::usecase::work_queue::WorkQueueUsecase::new(std::sync::Arc::new(
-                    crate::usecase::work_queue::ImmediateWorkQueueRuntime::default(),
-                )),
-                repository.clone(),
-                runtime.clone(),
-            );
+            let usecase = WorkflowStartupUsecase::new(repository.clone(), runtime.clone());
 
             // When
-            assert!(usecase.execute().await.is_err());
-            usecase.execute().await.unwrap();
+            let retrying = crate::usecase::retry::test_retrying();
+            assert!(
+                crate::adaptor::controller::workflow_startup::recover(&retrying, &usecase)
+                    .await
+                    .is_err()
+            );
 
             // Then
             assert!(repository.append_attempts.lock().unwrap().is_empty());
@@ -472,7 +428,7 @@ async fn test_起動時復旧_定義不明でも保存を試みず要対応を�
                 runtime.0.load(std::sync::atomic::Ordering::SeqCst),
                 usize::from(!unreadable)
             );
-            let observations = usecase.queue.failure_query().records("tree").await;
+            let observations = retrying.records("tree");
             assert_eq!(observations.len(), 1);
             assert!(observations[0].requires_attention);
         }
@@ -496,15 +452,9 @@ async fn test_定義不明_追記経路に入らず実行木を維持する() {
             conflicts: 0,
             calls: Default::default(),
         });
-        let usecase = WorkflowStartupUsecase::new(
-            crate::usecase::work_queue::WorkQueueUsecase::new(std::sync::Arc::new(
-                crate::usecase::work_queue::ImmediateWorkQueueRuntime::default(),
-            )),
-            repository.clone(),
-            runtime.clone(),
-        );
+        let usecase = WorkflowStartupUsecase::new(repository.clone(), runtime.clone());
         // When
-        assert!(usecase.execute().await.is_err());
+        assert!(execute(&usecase).await.is_err());
         // Then
         assert!(repository.terminal.lock().unwrap().is_none());
         assert!(repository.appended.lock().unwrap().is_empty());
@@ -521,16 +471,8 @@ async fn test_起動時復旧_一覧の一時的失敗を再試行して各実�
         conflict: false,
         temporary: true,
     });
-    WorkflowStartupUsecase::new(
-        crate::usecase::work_queue::WorkQueueUsecase::new(std::sync::Arc::new(
-            crate::usecase::work_queue::ImmediateWorkQueueRuntime::default(),
-        )),
-        startup.clone(),
-        startup.clone(),
-    )
-    .execute()
-    .await
-    .unwrap();
+    let usecase = WorkflowStartupUsecase::new(startup.clone(), startup.clone());
+    execute(&usecase).await.unwrap();
     let calls = startup.calls.lock().unwrap();
     assert_eq!(&calls[..2], &["list", "list"]);
     for tree in ["first", "second"] {
@@ -569,12 +511,8 @@ async fn test_起動復旧_作業列を通しても元のstore失敗を保持す
         LocalEventQueryError::InvalidRequest,
     ] {
         // Given
-        let queue = crate::usecase::work_queue::WorkQueueUsecase::new(Arc::new(
-            crate::usecase::work_queue::ImmediateWorkQueueRuntime::default(),
-        ));
         let source = crate::domain::failure::StorageFailure::from(source);
         let startup = WorkflowStartupUsecase::new(
-            queue,
             Arc::new(FailingStartupList(WorkflowError::Store(source.clone()))),
             Arc::new(Startup {
                 calls: Default::default(),
@@ -584,106 +522,44 @@ async fn test_起動復旧_作業列を通しても元のstore失敗を保持す
             }),
         );
         // When
-        let error = startup.execute().await.unwrap_err();
+        let error = execute(&startup).await.unwrap_err();
         // Then
         assert!(matches!(error, WorkflowError::Store(failure) if failure.source == source.source));
     }
 }
 
-#[derive(Default)]
-struct CountingRuntime {
-    inner: crate::usecase::work_queue::ImmediateWorkQueueRuntime,
-    attempts: std::sync::atomic::AtomicUsize,
-    expire_on: Option<usize>,
-}
-
-#[async_trait::async_trait]
-impl crate::usecase::work_queue::WorkQueueRuntime for CountingRuntime {
-    fn now(&self) -> std::time::Duration {
-        self.inner.now()
-    }
-    fn timestamp_ms(&self) -> u64 {
-        self.inner.timestamp_ms()
-    }
-    fn jitter(&self) -> f64 {
-        self.inner.jitter()
-    }
-    fn spawn(&self, task: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>) {
-        self.inner.spawn(task);
-    }
-    async fn sleep(&self, duration: std::time::Duration) {
-        self.inner.sleep(duration).await;
-    }
-    async fn attempt(
-        &self,
-        attempt: crate::usecase::work_queue::Attempt<'_>,
-    ) -> Result<Option<std::time::Duration>, crate::usecase::work_queue::WorkFailure> {
-        let count = self
-            .attempts
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-            + 1;
-        if self.expire_on == Some(count) {
-            return Err(crate::usecase::work_queue::WorkFailure {
-                kind: crate::domain::failure::Failure::Technical(
-                    crate::domain::failure::TechnicalFailureNature::TimedOut,
-                ),
-                message: "attempt timed out".into(),
-            });
-        }
-        self.inner.attempt(attempt).await
-    }
-}
-
 #[tokio::test]
-async fn test_起動復旧_列挙と各treeの期限を一度だけ適用する() {
+async fn test_実行木の再開_読み直しのときだけ定義を確かめ直す() {
     // Given
-    let runtime = Arc::new(CountingRuntime::default());
     let startup = Arc::new(Startup {
-        calls: Default::default(),
+        calls: Mutex::new(Vec::new()),
         failure: None,
         conflict: false,
         temporary: false,
     });
-    let usecase = WorkflowStartupUsecase::new(
-        crate::usecase::work_queue::WorkQueueUsecase::new(runtime.clone()),
-        startup.clone(),
-        startup,
-    );
+    let usecase = WorkflowStartupUsecase::new(startup.clone(), startup.clone());
     // When
-    usecase.execute().await.unwrap();
+    usecase
+        .recover_tree("first", crate::common::retry::AttemptProgress::Continue)
+        .await
+        .unwrap();
+    usecase
+        .recover_tree("first", crate::common::retry::AttemptProgress::Continue)
+        .await
+        .unwrap();
+    usecase
+        .recover_tree("first", crate::common::retry::AttemptProgress::Reload)
+        .await
+        .unwrap();
     // Then
     assert_eq!(
-        runtime.attempts.load(std::sync::atomic::Ordering::SeqCst),
-        3
-    );
-}
-
-#[tokio::test]
-async fn test_起動復旧_再試行の期限切れを直前の元失敗で上書きしない() {
-    use crate::domain::failure::{StorageFailureSource, TechnicalFailureNature};
-    // Given
-    let runtime = Arc::new(CountingRuntime {
-        expire_on: Some(2),
-        ..Default::default()
-    });
-    let queue = crate::usecase::work_queue::WorkQueueUsecase::new(runtime);
-    // When
-    let result: Result<(), _> = execute_recovery(
-        &queue,
-        crate::usecase::work_queue::WorkKey::new("workflow_recovery", "tree"),
-        |_| async {
-            Err(WorkflowError::from(
-                crate::domain::local_event::CommitBatchError::QueueBusy,
-            ))
-        },
-    )
-    .await;
-    // Then
-    let WorkflowError::Store(failure) = result.unwrap_err() else {
-        panic!("expected storage failure")
-    };
-    assert_eq!(failure.nature, TechnicalFailureNature::TimedOut);
-    assert!(
-        matches!(failure.source, StorageFailureSource::Technical(error) if error.message == "attempt timed out")
+        *startup.calls.lock().unwrap(),
+        [
+            "load:first",
+            "reconcile:first",
+            "reconcile:first",
+            "load:first",
+            "reconcile:first",
+        ]
     );
 }

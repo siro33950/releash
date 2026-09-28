@@ -17,7 +17,7 @@ pub(crate) use submit_output::WorkflowSubmitOutputUsecase;
 pub use submit_output::{SubmitOutputArtifact, SubmitOutputCommand};
 
 pub(crate) async fn retry_control_plane_conflicts<T, F, Fut>(
-    queue: &std::sync::Arc<crate::usecase::work_queue::WorkQueueUsecase>,
+    retrying: &crate::usecase::retry::Retrying,
     target: &str,
     operation: F,
 ) -> Result<T, crate::domain::workflow::WorkflowError>
@@ -25,27 +25,26 @@ where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<T, crate::domain::workflow::WorkflowError>>,
 {
-    retry_control_plane_operation(queue, target, operation).await
+    retry_control_plane_operation(retrying, target, operation).await
 }
 
 pub(crate) async fn retry_control_plane_operation<T, E, F, Fut>(
-    queue: &std::sync::Arc<crate::usecase::work_queue::WorkQueueUsecase>,
+    retrying: &crate::usecase::retry::Retrying,
     target: &str,
-    operation: F,
+    mut operation: F,
 ) -> Result<T, E>
 where
-    E: std::fmt::Debug,
-    for<'a> crate::domain::failure::Failure: From<&'a E>,
+    E: crate::usecase::failure::RetryFailure,
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<T, E>>,
 {
-    crate::usecase::work_queue::retry(
-        queue,
-        crate::usecase::work_queue::WorkKey::new("workflow_control_plane", target),
-        crate::common::retry::RetryBackoff::CONFLICT,
-        operation,
-    )
-    .await
+    retrying
+        .restart(
+            crate::usecase::failure::FailureKey::new("workflow_control_plane", target),
+            crate::common::retry::RetryBackoff::CONFLICT,
+            |_| operation(),
+        )
+        .await
 }
 
 #[cfg(test)]
@@ -219,7 +218,7 @@ mod tests {
         let attempts = AtomicUsize::new(0);
 
         let result = super::retry_control_plane_conflicts(
-            crate::usecase::work_queue::shared(),
+            crate::usecase::retry::shared(),
             "test",
             || async {
                 if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
@@ -240,7 +239,7 @@ mod tests {
         let attempts = AtomicUsize::new(0);
 
         let result = super::retry_control_plane_conflicts(
-            crate::usecase::work_queue::shared(),
+            crate::usecase::retry::shared(),
             "test",
             || async {
                 if attempts.fetch_add(1, Ordering::SeqCst) < 5 {
@@ -303,7 +302,7 @@ mod tests {
             .await
             .is_err());
         assert!(WorkflowSubmitOutputUsecase::new(
-            crate::usecase::work_queue::shared().clone(),
+            crate::usecase::retry::shared().clone(),
             gateway.clone()
         )
         .execute(SubmitOutputCommand {

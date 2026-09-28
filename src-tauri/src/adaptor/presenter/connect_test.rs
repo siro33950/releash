@@ -99,7 +99,8 @@ fn test_技術的な失敗_自身の性質だけから転送コードを決め�
 
 #[test]
 fn test_失敗記録の分類_六種類を固定文字列として表示する() {
-    use crate::domain::failure::{BusinessFailure, Failure, TechnicalFailureNature};
+    use crate::domain::failure::TechnicalFailureNature;
+    use crate::usecase::failure::{BusinessFailure, Failure};
     for (failure, expected) in [
         (
             Failure::Business(BusinessFailure::VersionConflict),
