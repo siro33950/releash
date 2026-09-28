@@ -62,7 +62,6 @@ impl ConnectFailure for crate::usecase::failure::WorkFailure {
 impl ConnectFailure for crate::usecase::watcher::UsecaseError {
     fn connect_code(&self) -> connectrpc::ErrorCode {
         match self {
-            Self::Subscription(error) => error.connect_code(),
             Self::Repository(error) => error.connect_code(),
             Self::File(_) => connectrpc::ErrorCode::Internal,
             Self::RepositoryUnavailable => connectrpc::ErrorCode::FailedPrecondition,
@@ -100,16 +99,6 @@ impl ConnectFailure for crate::domain::repository::error::RepositoryError {
             Self::Technical(error) => ConnectFailure::connect_code(error),
             Self::External(_) => connectrpc::ErrorCode::Internal,
             Self::Rule(_) => connectrpc::ErrorCode::FailedPrecondition,
-        }
-    }
-}
-
-impl ConnectFailure for crate::domain::repository::watch_subscriptions::WatchSubscriptionError {
-    fn connect_code(&self) -> connectrpc::ErrorCode {
-        match self {
-            Self::NotFound => connectrpc::ErrorCode::NotFound,
-            Self::AlreadyExists => connectrpc::ErrorCode::AlreadyExists,
-            Self::Limit => connectrpc::ErrorCode::ResourceExhausted,
         }
     }
 }

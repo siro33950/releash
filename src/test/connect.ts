@@ -13,14 +13,6 @@ export function connectFixture(
 			launchId: "launch",
 			release: "test",
 		}),
-		async *subscribePush(_, context) {
-			yield { event: { case: "resync" as const, value: {} } };
-			await new Promise<void>((resolve) =>
-				context.signal.addEventListener("abort", () => resolve(), {
-					once: true,
-				}),
-			);
-		},
 		...implementation,
 	});
 	const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

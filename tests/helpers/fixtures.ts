@@ -50,7 +50,6 @@ const baseIpcHandler: Record<string, unknown> = {
 		stagedFileCount: 0,
 		changesFileCount: 0,
 	},
-	stop_watching: null,
 	"current-branch": "feat/test-branch",
 
 	// RepoKanbanBoard

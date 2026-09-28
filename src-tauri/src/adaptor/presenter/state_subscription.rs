@@ -277,17 +277,19 @@ struct StreamPermit {
 impl Drop for StreamPermit {
     fn drop(&mut self) {
         self.usecase.close_client(&self.id);
-        let protected = protected_targets(&self.usecase.active_targets());
-        self.runtime.mutate(|state| {
-            let targets = state.active_targets();
-            state.close(&self.id);
-            for target in targets {
-                if !protected.contains(&target) {
-                    let _ = state.ensure_active(&target);
+        self.usecase.with_active_targets(|active| {
+            let protected = protected_targets(active);
+            self.runtime.mutate(|state| {
+                let targets = state.active_targets();
+                state.close(&self.id);
+                for target in targets {
+                    if !protected.contains(&target) {
+                        let _ = state.ensure_active(&target);
+                    }
                 }
-            }
-            state.release_inactive_snapshots_except(&protected);
-            ((), true)
+                state.release_inactive_snapshots_except(&protected);
+                ((), true)
+            })
         });
     }
 }

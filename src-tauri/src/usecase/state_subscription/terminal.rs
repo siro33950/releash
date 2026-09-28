@@ -43,7 +43,7 @@ impl StateSubscriptionUsecase {
             {
                 terminal.unsubscribe_output(owner, client, input_id);
             }
-            let _ = self.publisher.stop(client, target, &self.active_targets());
+            let _ = self.with_active_targets(|active| self.publisher.stop(client, target, active));
             return Err(error);
         }
         Ok(())

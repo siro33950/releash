@@ -44,19 +44,8 @@ fn generate_client_protocol() {
     for (message, module) in [
         ("CommandRequest", "command_request"),
         ("CommandResult", "command_result"),
-        ("Push", "push"),
     ] {
         let descriptor = messages.iter().find(|item| item.name() == message).unwrap();
-        let oneof = if message == "Push" {
-            "event"
-        } else {
-            "command"
-        };
-        let enum_name = if message == "Push" {
-            "Event"
-        } else {
-            "Command"
-        };
         let harness_only = "#[cfg(any(test, all(debug_assertions, feature = \"desktop\")))] ";
         let decode_test = if message == "CommandRequest" {
             "#[cfg(test)] "
@@ -68,9 +57,9 @@ fn generate_client_protocol() {
         } else {
             "#[cfg(test)] "
         };
-        let mut decode = format!("{harness_only}impl {message} {{ {decode_test}pub(crate) fn into_value(self) -> Result<(&'static str, serde_json::Value), String> {{ match self.{oneof}.ok_or(\"Missing {oneof}\")? {{\n");
-        let mut encode = format!("{harness_only}impl {message} {{ {encode_test}pub(crate) fn from_value(name: &str, value: serde_json::Value) -> Result<Self, String> {{ Ok(Self {{ {oneof}: Some(match name {{\n");
-        let mut command_names = format!("impl {module}::{enum_name} {{ pub(crate) fn name(&self) -> &'static str {{ match self {{\n");
+        let mut decode = format!("{harness_only}impl {message} {{ {decode_test}pub(crate) fn into_value(self) -> Result<(&'static str, serde_json::Value), String> {{ match self.command.ok_or(\"Missing command\")? {{\n");
+        let mut encode = format!("{harness_only}impl {message} {{ {encode_test}pub(crate) fn from_value(name: &str, value: serde_json::Value) -> Result<Self, String> {{ Ok(Self {{ command: Some(match name {{\n");
+        let mut command_names = format!("impl {module}::Command {{ pub(crate) fn name(&self) -> &'static str {{ match self {{\n");
         let mut names = String::from("#[cfg(test)] pub const COMMAND_NAMES: &[&str] = &[\n");
         for field in descriptor
             .field
@@ -86,15 +75,12 @@ fn generate_client_protocol() {
                 })
                 .collect::<String>();
             let type_name = field.type_name().trim_start_matches('.');
-            let public_name = if message == "Push" {
-                name.replace('_', "-")
-            } else {
-                name.to_string()
-            };
             names.push_str(&format!("{name:?},\n"));
-            command_names.push_str(&format!("Self::{variant}(..) => {public_name:?},\n"));
-            decode.push_str(&format!("{module}::{enum_name}::{variant}(value) => Ok(({public_name:?}, from_message({type_name:?}, &value)?)),\n"));
-            encode.push_str(&format!("{public_name:?} => {module}::{enum_name}::{variant}(to_message({type_name:?}, value)?),\n"));
+            command_names.push_str(&format!("Self::{variant}(..) => {name:?},\n"));
+            decode.push_str(&format!("{module}::Command::{variant}(value) => Ok(({name:?}, from_message({type_name:?}, &value)?)),\n"));
+            encode.push_str(&format!(
+                "{name:?} => {module}::Command::{variant}(to_message({type_name:?}, value)?),\n"
+            ));
         }
         decode.push_str("} } }\n");
         encode.push_str("_ => return Err(format!(\"Unknown protocol name: {name}\")), })");

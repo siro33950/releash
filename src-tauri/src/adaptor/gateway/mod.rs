@@ -21,7 +21,7 @@ pub(crate) mod workflow;
 pub(crate) mod workspace_state;
 pub(crate) mod workspace_tree;
 
-pub(crate) mod push;
+pub(crate) mod comment_change;
 
 pub(crate) mod telemetry;
 

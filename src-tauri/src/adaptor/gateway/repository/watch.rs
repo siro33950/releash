@@ -1,6 +1,5 @@
 use crate::adaptor::gateway::shared::git_operation;
 use notify_debouncer_mini::DebouncedEvent;
-use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -44,33 +43,10 @@ pub(crate) fn resolve_file_watch_paths(
     vec![path.canonicalize().unwrap_or(path)]
 }
 
-pub(crate) fn canonicalize_event_path(path: &Path) -> String {
-    if let Ok(canonical) = path.canonicalize() {
-        return to_canonical_forward_slash(&canonical.to_string_lossy());
-    }
-    if let (Some(parent), Some(file_name)) = (path.parent(), path.file_name()) {
-        if let Ok(canonical_parent) = parent.canonicalize() {
-            let path = canonical_parent
-                .join(file_name)
-                .to_string_lossy()
-                .to_string();
-            return to_canonical_forward_slash(&path);
-        }
-    }
-    to_canonical_forward_slash(&path.to_string_lossy())
-}
-
 static WATCHER_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) fn generate_watcher_id() -> u64 {
     WATCHER_ID_COUNTER.fetch_add(1, Ordering::SeqCst)
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-pub struct FileChangeEvent {
-    pub watcher_id: u64,
-    pub path: String,
-    pub kind: String,
 }
 
 pub(crate) fn classify_git_dir_events(events: &[DebouncedEvent]) -> (bool, bool) {
@@ -274,32 +250,5 @@ mod tests {
         let (branch, index) = classify_git_dir_events(&events);
         assert!(!branch);
         assert!(index);
-    }
-
-    #[test]
-    fn canonicalize_existing_file() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let file_path = dir.path().join("test.txt");
-        std::fs::write(&file_path, "hello").unwrap();
-
-        let result = canonicalize_event_path(&file_path);
-        assert!(result.ends_with("test.txt"));
-        assert!(!result.contains(".."));
-    }
-
-    #[test]
-    fn canonicalize_deleted_file_falls_back_to_parent() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let file_path = dir.path().join("deleted.txt");
-
-        let result = canonicalize_event_path(&file_path);
-        assert!(result.ends_with("deleted.txt"));
-    }
-
-    #[test]
-    fn canonicalize_nonexistent_parent_falls_back_to_normalized_path() {
-        let path = PathBuf::from(r"C:\nonexistent\parent\file.txt");
-        let result = canonicalize_event_path(&path);
-        assert_eq!(result, "C:/nonexistent/parent/file.txt");
     }
 }

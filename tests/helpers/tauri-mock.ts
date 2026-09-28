@@ -4,7 +4,7 @@ import { clientJson } from "../../src/lib/clientJson";
 import { create, fromJson, toJson, type Message } from "@bufbuild/protobuf";
 import { Code, ConnectError, createConnectRouter } from "@connectrpc/connect";
 import { createFetchHandler } from "@connectrpc/connect/protocol";
-import { ClientService, CommandRequestSchema, CommandErrorSchema, PushSchema, StateSubscriptionEventSchema, StatePayloadSchema, TerminalEventSchema } from "../../src/generated/client_pb";
+import { ClientService, CommandRequestSchema, CommandErrorSchema, StateSubscriptionEventSchema, StatePayloadSchema, TerminalEventSchema } from "../../src/generated/client_pb";
 import type { BranchCardDto, WorkspaceTreeSnapshotDto, WorkspaceWorkflowHistoryItemDto, WorkspaceListSnapshotDto } from "../../src/generated/client_types";
 import type { TerminalSurfaceStreamItem } from "../../src/lib/terminalSurfaceStream";
 import type { Page } from "@playwright/test";
@@ -41,7 +41,6 @@ interface TauriEventPluginInternals {
 
 declare global {
 	interface Window {
-		__releashPush: (event: string, payload: unknown) => Promise<void>;
 		__releashTerminalEvent: (
 			attachmentId: string,
 			item: TerminalSurfaceStreamItem,
@@ -70,7 +69,6 @@ declare global {
  */
 export async function setupTauriMock(page: Page, config: MockConfig) {
     const clientRequests: Array<{ request_id: string; command: string; args: Record<string, unknown> }> = [];
-    const pushes = new Set<ReadableStreamDefaultController<Message>>();
     const attachments = new Map<string, { output: ReadableStreamDefaultController<Message>; args: string[]; clientId: string }>();
     const stateStreams = new Map<string, ReadableStreamDefaultController<Message>>();
     const subscriptions = new Map<string, Map<string, { sequence: bigint; json: string }>>();
@@ -103,13 +101,6 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
             stateStreams.get(clientId)?.enqueue(create(StateSubscriptionEventSchema, { target: parseTarget(target).kind, args: parseTarget(target).args, version: { epoch: "fixture", sequence: current.sequence }, event: { case: "change", value: { payload: statePayload(target, value) } } }));
         }
     }
-    const push = (event: string, payload: unknown) => {
-        const field = PushSchema.fields.find(field => field.name.replaceAll("_", "-") === event);
-        if (!field?.message) throw new Error(`Unknown client event: ${event}`);
-        const message = fromJson(PushSchema, { [field.jsonName]: clientJson(field.message, payload, true) });
-        for (const stream of pushes) stream.enqueue(message);
-    };
-    await page.exposeFunction("__releashPush", push);
     await page.exposeFunction("__releashTerminalEvent", (attachmentId: string, item: TerminalSurfaceStreamItem) => {
         const attachment = attachments.get(attachmentId);
         if (!attachment) return;
@@ -178,27 +169,6 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
         }); continue; }
         if (method.name === "ReportTerminalProcessed") { router.rpc(method, async request => { await execute("report_terminal_processed", {clientId: request.clientId, args: request.args, units: request.units}); return {}; }); continue; }
         if (method.name === "GetServerInfo") { router.rpc(method, () => ({ launchId: "fixture" })); continue; }
-        if (method.name === "SubscribePush") {
-            router.rpc(method, async function* (_, context) {
-                let controller: ReadableStreamDefaultController<Message>;
-                const stream = new ReadableStream<Message>({ start(value) { controller = value; pushes.add(value); } });
-                const stop = () => { pushes.delete(controller); controller.close(); };
-                context.signal.addEventListener("abort", stop, { once: true });
-                try { yield create(PushSchema, {event: {case: "resync", value: {}}}); yield* stream; }
-                finally { pushes.delete(controller!); context.signal.removeEventListener("abort", stop); }
-            });
-            continue;
-        }
-        if (method.name === "WatchFiles" || method.name === "WatchGitDirectory") {
-            const command = method.name === "WatchFiles" ? "start_watching" : "start_git_dir_watching";
-            const schema = method.input.fields.find(field => field.name === "request")?.message;
-            if (!schema) throw new Error(`Missing watch request schema: ${method.name}`);
-            router.rpc(method, async request => {
-                const args = clientJson(schema, toJson(schema, request.request!), false) as Record<string, unknown>;
-                return fromJson(method.output, clientJson(method.output, await execute(command, args), true));
-            });
-            continue;
-        }
         const command = CommandRequestSchema.fields.find(field => field.message?.typeName === method.input.typeName)!.name;
         const argsFor = (request: Message) => clientJson(method.input, toJson(method.input, request), false) as Record<string, unknown>;
         if (method.methodKind === "server_streaming") {
@@ -685,26 +655,10 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 				unregisterCallback(id),
 		};
 	}, config);
-	return { clientRequests, stateRequests, refreshStates, push };
+	return { clientRequests, stateRequests, refreshStates };
 }
 
 /**
  * ブラウザ側で Tauri イベントを発火させるヘルパー。
  * setupTauriMock 適用済みのページでのみ使用可能。
  */
-export async function emitTauriEvent(
-	page: Page,
-	event: string,
-	payload: unknown,
-) {
-	await page.evaluate(
-		async ({ event, payload }) => {
-			const internals = window.__TAURI_INTERNALS__;
-			if (!internals) throw new Error("Tauri mock not initialized");
-			if (["menu-event", "native-file-drop"].includes(event))
-				await internals.invoke("plugin:event|emit", { event, payload });
-			else await window.__releashPush(event, payload);
-		},
-		{ event, payload },
-	);
-}

@@ -232,7 +232,6 @@ pub(crate) mod tests {
             app_config.clone();
         tauri::test::mock_builder()
             .invoke_handler(tauri::generate_handler![])
-            .manage(Arc::new(crate::infrastructure::push::PushSink::new()))
             .manage(crate::desktop_test_support::TestDataDir(data_dir))
             .manage(app_config)
             .manage(config_repository)

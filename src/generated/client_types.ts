@@ -1453,10 +1453,6 @@ export type InputStartWorkflowRequest = {
 	createdFrom?: string | null;
 };
 
-export type InputStopWatchingRequest = {
-	watcherId: number;
-};
-
 export type InputTakeTerminalInputPerformanceSamplesRequest = Record<
 	string,
 	never
@@ -1802,12 +1798,6 @@ export type WorkflowGetOutputResponseSubmitted = {
 	timestamp: number;
 };
 
-export type FileChangeEvent = {
-	watcher_id: number;
-	path: string;
-	kind: string;
-};
-
 export interface ClientCommandArgs {
 	abort_workflow: InputAbortWorkflowRequest;
 	add_repo_path: InputAddRepoPathRequest;
@@ -1877,7 +1867,6 @@ export interface ClientCommandArgs {
 	start_terminal_input_performance_collection: InputStartTerminalInputPerformanceCollectionRequest;
 	start_terminal_launch_performance_collection: InputStartTerminalLaunchPerformanceCollectionRequest;
 	start_workflow: InputStartWorkflowRequest;
-	stop_watching: InputStopWatchingRequest;
 	take_terminal_input_performance_samples: InputTakeTerminalInputPerformanceSamplesRequest;
 	take_terminal_launch_performance_samples: InputTakeTerminalLaunchPerformanceSamplesRequest;
 	update_app_settings: InputUpdateAppSettingsRequest;
@@ -2076,7 +2065,6 @@ export interface ClientCommands {
 	start_workflow(
 		args: ClientCommandArgs["start_workflow"],
 	): Promise<ResultString>;
-	stop_watching(args: ClientCommandArgs["stop_watching"]): Promise<void>;
 	take_terminal_input_performance_samples(
 		args: ClientCommandArgs["take_terminal_input_performance_samples"],
 	): Promise<ListTerminalInputPerformanceSampleV1>;
@@ -2138,8 +2126,3 @@ export interface ClientCommands {
 export type ClientCommandResults = {
 	[K in keyof ClientCommands]: Awaited<ReturnType<ClientCommands[K]>>;
 };
-
-export interface ClientPushPayloads {
-	"file-change": FileChangeEvent;
-	resync: null;
-}

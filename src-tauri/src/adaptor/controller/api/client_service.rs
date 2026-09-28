@@ -9,95 +9,6 @@ async fn get_server_info<'a>(
     })?)
 }
 
-async fn subscribe_push(
-    &self,
-    _ctx: connectrpc::RequestContext,
-    request: connectrpc::ServiceRequest<'_, rpc::SubscribePushRequest>,
-) -> connectrpc::ServiceResult<
-    connectrpc::ServiceStream<impl connectrpc::Encodable<rpc::Push> + Send + use<>>,
-> {
-    let request: wire::SubscribePushRequest = to_wire(&request.to_owned_message())?;
-    let id = request.subscription_id;
-    if !crate::adaptor::controller::api::client_stream::valid_subscription_id(&id, true) {
-        return Err(crate::adaptor::presenter::connect::classified_error(
-            crate::adaptor::presenter::error::AppError::invalid_request(
-                format!("Identifier exceeds {} bytes", crate::adaptor::controller::api::client_stream::SUBSCRIPTION_ID_MAX_BYTES),
-            ),
-        ));
-    }
-    let id = if id.is_empty() {
-        uuid::Uuid::new_v4().to_string()
-    } else {
-        id
-    };
-    let subscription = self.watcher.subscribe(id).map_err(watch_error)?;
-    let stream = futures_util::stream::unfold(
-        (self.push.subscribe(), subscription, true),
-        |(mut push, permit, initial)| async move {
-            let event = if initial {
-                crate::adaptor::presenter::push::resync()
-            } else {
-                match push.recv().await {
-                    Ok(bytes) => bytes,
-                    Err(ClientPushError::Lagged(_)) => {
-                        push.resubscribe();
-                        crate::adaptor::presenter::push::resync()
-                    }
-                    Err(ClientPushError::Closed) => return None,
-                }
-            };
-            Some((Ok(EncodedPush(event)), (push, permit, false)))
-        },
-    );
-    connectrpc::Response::stream_ok(Box::pin(stream))
-}
-
-async fn watch_files<'a>(
-    &'a self,
-    _ctx: connectrpc::RequestContext,
-    request: connectrpc::ServiceRequest<'_, rpc::WatchFilesRequest>,
-) -> connectrpc::ServiceResult<impl connectrpc::Encodable<rpc::ResultUint64> + Send + use<'a>> {
-    let request: wire::WatchFilesRequest = to_wire(&request.to_owned_message())?;
-    let args = request.request.ok_or_else(|| {
-        crate::adaptor::presenter::connect::classified_error(
-            crate::adaptor::presenter::error::AppError::invalid_request("Missing watch request"),
-        )
-    })?;
-    connectrpc::Response::ok(
-        self.watch(
-            _ctx.deadline(),
-            request.subscription_id,
-            crate::adaptor::controller::client::required(args.path, "path")
-                .map_err(command_error)?,
-            false,
-        )
-        .await?,
-    )
-}
-
-async fn watch_git_directory<'a>(
-    &'a self,
-    _ctx: connectrpc::RequestContext,
-    request: connectrpc::ServiceRequest<'_, rpc::WatchGitDirectoryRequest>,
-) -> connectrpc::ServiceResult<impl connectrpc::Encodable<rpc::ResultUint64> + Send + use<'a>> {
-    let request: wire::WatchGitDirectoryRequest = to_wire(&request.to_owned_message())?;
-    let args = request.request.ok_or_else(|| {
-        crate::adaptor::presenter::connect::classified_error(
-            crate::adaptor::presenter::error::AppError::invalid_request("Missing watch request"),
-        )
-    })?;
-    connectrpc::Response::ok(
-        self.watch(
-            _ctx.deadline(),
-            request.subscription_id,
-            crate::adaptor::controller::client::required(args.repo_path, "repoPath")
-                .map_err(command_error)?,
-            true,
-        )
-        .await?,
-    )
-}
-
 async fn open_state_stream(
     &self,
     _ctx: connectrpc::RequestContext,
@@ -108,7 +19,7 @@ async fn open_state_stream(
     >,
 > {
     let request: wire::OpenStateStreamRequest = to_wire(&request.to_owned_message())?;
-    if !crate::adaptor::controller::api::client_stream::valid_subscription_id(&request.client_id, false) {
+    if !crate::adaptor::controller::api::client_stream::valid_subscription_id(&request.client_id) {
         return Err(crate::adaptor::presenter::connect::classified_error(
             crate::usecase::state_subscription::SubscriptionError::InvalidId,
         ));

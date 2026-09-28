@@ -3,11 +3,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useRepoList } from "./useRepoList";
 
 const mockInvoke = vi.fn();
-const mockListen = vi.fn();
 const mockSubscribe = vi.fn();
 vi.mock("@/lib/client", () => ({
 	invokeClient: (...args: unknown[]) => mockInvoke(...args),
-	listenClient: (...args: unknown[]) => mockListen(...args),
 	subscribeState: (...args: unknown[]) => mockSubscribe(...args),
 }));
 
@@ -30,7 +28,6 @@ describe("useRepoList", () => {
 		unmount();
 		expect(unsubscribe).toHaveBeenCalledOnce();
 		expect(mockInvoke).not.toHaveBeenCalled();
-		expect(mockListen).not.toHaveBeenCalled();
 	});
 	it("should call invoke('add_repo_path') when addRepo is called", async () => {
 		const { result } = renderHook(() => useRepoList());

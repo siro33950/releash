@@ -73,14 +73,9 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 
 vi.mock("@/lib/client", async (importOriginal) => {
 	const original = await importOriginal<typeof import("@/lib/client")>();
-	const invokeClient = vi.fn().mockResolvedValue(1);
-	const { mockWatchClient } = await import("./watchClient");
 	return {
 		...original,
-		invokeClient,
-		watchClient: mockWatchClient(invokeClient),
-		onClientRefresh: vi.fn().mockReturnValue(() => {}),
-		listenClient: vi.fn().mockResolvedValue(() => {}),
+		invokeClient: vi.fn().mockResolvedValue(1),
 		firstState: vi.fn().mockRejectedValue(new Error("No state fixture")),
 		subscribeState: vi.fn(
 			(

@@ -1,19 +1,16 @@
 use super::*;
 
 #[test]
-fn test_購読識別子_二入口で同じ長さ上限を使い空文字の扱いだけを分ける() {
+fn test_購読識別子_長さ上限まで受け付け空文字と超過を拒否する() {
     // Given
     let at_limit = "x".repeat(SUBSCRIPTION_ID_MAX_BYTES);
     let over_limit = "x".repeat(SUBSCRIPTION_ID_MAX_BYTES + 1);
     // When
     let accepted = [
-        valid_subscription_id(&at_limit, true),
-        valid_subscription_id(&at_limit, false),
-        valid_subscription_id(&over_limit, true),
-        valid_subscription_id(&over_limit, false),
-        valid_subscription_id("", true),
-        valid_subscription_id("", false),
+        valid_subscription_id(&at_limit),
+        valid_subscription_id(&over_limit),
+        valid_subscription_id(""),
     ];
     // Then
-    assert_eq!(accepted, [true, true, false, false, true, false]);
+    assert_eq!(accepted, [true, false, false]);
 }

@@ -20,8 +20,6 @@ const desktopSettings = {
 vi.mock("@/lib/client", async (importOriginal) => ({
 	...(await importOriginal<typeof import("@/lib/client")>()),
 	invokeClient: vi.fn(),
-	listenClient: vi.fn().mockResolvedValue(() => {}),
-	watchClient: vi.fn().mockReturnValue(() => {}),
 	completeClientRestoration: vi.fn(),
 	subscribeState: (...args: Parameters<typeof states.subscribeState>) =>
 		states.subscribeState(...args),

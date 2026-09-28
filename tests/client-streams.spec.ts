@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import { buildMockConfig } from "./helpers/fixtures";
 import { setupTauriMock } from "./helpers/tauri-mock";
 
-test("20terminalとpushを保持しても入力・処理済み量通知・状態取得がHTTP/1.1で継続する", async ({
+test("20terminalを保持しても入力・処理済み量通知・状態取得がHTTP/1.1で継続する", async ({
 	page,
 }) => {
 	await setupTauriMock(page, buildMockConfig({
@@ -15,7 +15,7 @@ test("20terminalとpushを保持しても入力・処理済み量通知・状態
 	await page.goto("/tests/helpers/client-streams.html");
 	const subscriptions: string[] = [];
 	page.on("request", (request) => {
-		if (/\/(?:SubscribePush|OpenStateStream)$/.test(request.url()))
+		if (/\/OpenStateStream$/.test(request.url()))
 			subscriptions.push(request.url());
 	});
 	const result = await page.evaluate(async () => {
@@ -23,14 +23,9 @@ test("20terminalとpushを保持しても入力・処理済み量通知・状態
 			subscribeTerminalState,
 			reportTerminalProcessed,
 			getClient,
-			listenClient,
 			invokeClient,
 		} = await import("/src/lib/client.ts");
 		const events = new Map<string, string[]>();
-		let pushed = false;
-		const stopPush = await listenClient("file-change", () => {
-			pushed = true;
-		});
 		const releases: Array<() => Promise<void>> = [];
 		for (let index = 0; index < 20; index++) {
 			const id = `pane-${index}`;
@@ -80,18 +75,15 @@ test("20terminalとpushを保持しても入力・処理済み量通知・状態
 			}),
 		);
 		const paths = await invokeClient("get_language_from_path", { filePath: "main.rs" });
-		await window.__releashPush("file-change", { watcher_id: 1, path: "/updated", kind: "change" });
 		const deadline = Date.now() + 3000;
 		while (
-			(!pushed || [...events.values()].some((output) => output.length < 2)) &&
+			[...events.values()].some((output) => output.length < 2) &&
 			Date.now() < deadline
 		)
 			await new Promise((resolve) => setTimeout(resolve, 10));
 		await Promise.all(releases.map((release) => release()));
-		stopPush();
 		return {
 			paths,
-			pushed,
 			outputs: [...events.values()],
 			inputs: window
 				.__RELEASH_BACKEND__!.invocations.filter(
@@ -105,14 +97,8 @@ test("20terminalとpushを保持しても入力・処理済み量通知・状態
 				.map((item) => item.args),
 		};
 	});
-	expect(
-		subscriptions.filter((url) => url.endsWith("/SubscribePush")),
-	).toHaveLength(1);
-	expect(
-		subscriptions.filter((url) => url.endsWith("/OpenStateStream")),
-	).toHaveLength(1);
+	expect(subscriptions).toHaveLength(1);
 	expect(result.paths).toEqual("/current");
-	expect(result.pushed).toBe(true);
 	expect(result.outputs).toEqual(
 		Array.from({ length: 20 }, (_, index) => [
 			`output-${index}`,

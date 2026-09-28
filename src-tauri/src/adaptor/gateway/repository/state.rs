@@ -15,8 +15,7 @@ use crate::usecase::repository_state::RepositoryStateError;
 use crate::usecase::repository_usecase::RepositoryUsecase;
 
 use super::watch::{
-    canonicalize_event_path, classify_git_dir_events, generate_watcher_id,
-    resolve_file_watch_paths, resolve_git_watch_paths,
+    classify_git_dir_events, generate_watcher_id, resolve_file_watch_paths, resolve_git_watch_paths,
 };
 
 type RecommendedDebouncer =
@@ -201,16 +200,15 @@ fn start_git_watcher(
 }
 
 fn handle_file_events(state: &WorktreeState, events: Vec<DebouncedEvent>) {
-    for event in events {
-        let event_path = canonicalize_event_path(&event.path);
-        state.invalidate(InvalidateReason::file(Some(event_path)));
+    if !events.is_empty() {
+        state.invalidate(InvalidateReason::change());
     }
 }
 
 fn handle_git_events(state: &WorktreeState, events: &[DebouncedEvent]) {
     let (branch_change, index_change) = classify_git_dir_events(events);
     if branch_change || index_change {
-        state.invalidate(InvalidateReason::git(branch_change));
+        state.invalidate(InvalidateReason::change());
     }
 }
 

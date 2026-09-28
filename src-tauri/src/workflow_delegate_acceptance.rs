@@ -128,7 +128,7 @@ impl WorkflowDelegateAcceptanceHost {
             repository,
             runtime,
             Arc::new(
-                crate::adaptor::presenter::push::ClientAgentSessionChangeNotifier::new(
+                crate::adaptor::presenter::agent_session_change::ClientAgentSessionChangeNotifier::new(
                     dependencies.state_changes.clone(),
                 ),
             ),

@@ -196,47 +196,6 @@ fn test_external_editor_読み取りrpcは購読への移設後に拒否する()
     assert!(wire::CommandRequest::from_value("get_external_editor", json!({})).is_err());
 }
 #[tokio::test]
-async fn test_watcher_protoはusecase結果と一致する() {
-    use crate::adaptor::controller::api;
-    // Given
-    let (app, dispatch) = parity_app();
-    let watcher = crate::desktop_test_support::build_watcher_usecase(app.handle());
-    let expected = crate::adaptor::presenter::connect::command_error(
-        crate::adaptor::presenter::error::AppError::from_failure(watcher.stop(999).unwrap_err())
-            .into(),
-    );
-    let router = api::client::router(Some(api::ClientApiDeps::new(
-        dispatch,
-        crate::adaptor::gateway::push::ClientPushGateway::new(Arc::new(
-            crate::infrastructure::push::PushSink::new(),
-        )),
-        watcher,
-    )));
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let client = crate::client_api_acceptance::connect_client(
-        &crate::client_api_acceptance::ClientEndpoint {
-            url: format!("http://{}", listener.local_addr().unwrap()),
-            token: "client".into(),
-            launch_id: String::new(),
-        },
-    );
-    let server = tokio::spawn(async move {
-        axum::serve(listener, router).await.unwrap();
-    });
-    // When
-    let actual = crate::client_api_acceptance::request_client(
-        &client,
-        "stop_watching",
-        json!({"watcherId": 999}),
-    )
-    .await
-    .unwrap_err();
-    // Then
-    assert_eq!(actual.code, expected.code);
-    assert_eq!(value(actual.details), value(expected.details));
-    server.abort();
-}
-#[tokio::test]
 async fn test_telemetry_protoはcommand結果と一致する() {
     // Given
     let _guard = crate::infrastructure::telemetry::metrics::lock_test_telemetry();
@@ -259,7 +218,7 @@ async fn test_クライアントdispatch_proto全commandの登録と引数検証
     // Given
     let (_app, dispatch) = parity_app();
     // When / Then
-    assert_eq!(wire::COMMAND_NAMES.len(), 88);
+    assert_eq!(wire::COMMAND_NAMES.len(), 87);
     assert!(wire::COMMAND_NAMES.contains(&"refresh_workspaces"));
     for removed in [
         "get_terminal_surface",
@@ -336,11 +295,7 @@ async fn test_クライアントdispatch_proto全commandの登録と引数検証
     }
     assert!(!commands::tests::registered_command_names().contains(&"get_terminal_stream_endpoint"));
     for command in wire::COMMAND_NAMES {
-        assert_eq!(
-            dispatch.contains(command),
-            !["stop_watching"].contains(command),
-            "{command}"
-        );
+        assert!(dispatch.contains(command), "{command}");
     }
     for command in [
         "menu",
@@ -348,6 +303,7 @@ async fn test_クライアントdispatch_proto全commandの登録と引数検証
         "get_terminal_stream_endpoint",
         "start_watching",
         "start_git_dir_watching",
+        "stop_watching",
     ]
     .into_iter()
     .chain(commands::desktop_lifecycle::COMMAND_NAMES.iter().copied())
@@ -414,13 +370,7 @@ async fn test_クライアントrpc_期限切れで処理を止め要求枠を�
         data.path(),
         "master",
         "client",
-        Some(api::ClientApiDeps::new(
-            Arc::new(dispatch),
-            crate::adaptor::gateway::push::ClientPushGateway::new(Arc::new(
-                crate::infrastructure::push::PushSink::new(),
-            )),
-            crate::client_api_acceptance::watcher(),
-        )),
+        Some(api::ClientApiDeps::new(Arc::new(dispatch))),
         None,
     )
     .0;
@@ -567,13 +517,7 @@ async fn test_計算と操作command_connectの実行結果とエラーがtauri�
         data.path(),
         "master",
         "client",
-        Some(api::ClientApiDeps::new(
-            dispatch,
-            crate::adaptor::gateway::push::ClientPushGateway::new(Arc::new(
-                crate::infrastructure::push::PushSink::new(),
-            )),
-            crate::desktop_test_support::build_watcher_usecase(app.handle()),
-        )),
+        Some(api::ClientApiDeps::new(dispatch)),
         None,
     )
     .0;
@@ -1057,13 +1001,7 @@ async fn test_workspace保存_connectがui追加fieldを受理し既存項目を
         data.path(),
         "master",
         "client",
-        Some(api::ClientApiDeps::new(
-            Arc::new(dispatch),
-            crate::adaptor::gateway::push::ClientPushGateway::new(Arc::new(
-                crate::infrastructure::push::PushSink::new(),
-            )),
-            crate::desktop_test_support::build_watcher_usecase(app.handle()),
-        )),
+        Some(api::ClientApiDeps::new(Arc::new(dispatch))),
         None,
     )
     .0;

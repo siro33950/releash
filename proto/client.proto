@@ -2,19 +2,6 @@ syntax = "proto3";
 package releash.client.v1;
 import "client_options.proto";
 
-message Push {
-  reserved 1, 2, 8, 10;
-  reserved "agent_session_changed", "branch_list_sync", "workflow_execution_changed", "workspace_list_changed";
-  reserved 5, 6;
-  reserved "repository_snapshot_changed", "repo_paths_changed";
-  reserved 4, 7;
-  reserved "git_status_changed", "review_comments_changed";
-  oneof event {
-    FileChangeEvent file_change = 3;
-
-    Unit resync = 9;
-  }
-}
 message CommandRequest {
   reserved 11, 35, 69;
   reserved "ack_terminal_surface_output", "detach_terminal_surface", "get_terminal_surface";
@@ -73,6 +60,8 @@ message CommandRequest {
   reserved 121, 123, 131, 134, 137;
   reserved "resume_agent_session", "stop_workflow", "resume_workflow", "confirm_agent_session_archive_delete";
   reserved "start_git_dir_watching", "start_watching";
+  reserved 136;
+  reserved "stop_watching";
   reserved 65, 66, 91, 183;
   reserved "get_review_file_view", "get_review_snapshot", "list_review_threads", "get_review_blob";
   oneof command {
@@ -152,7 +141,6 @@ message CommandRequest {
     StartTerminalInputPerformanceCollectionRequest start_terminal_input_performance_collection = 132;
     StartTerminalLaunchPerformanceCollectionRequest start_terminal_launch_performance_collection = 133;
     StartWorkflowRequest start_workflow = 135;
-    StopWatchingRequest stop_watching = 136;
     TakeTerminalInputPerformanceSamplesRequest take_terminal_input_performance_samples = 138;
     TakeTerminalLaunchPerformanceSamplesRequest take_terminal_launch_performance_samples = 139;
     UpdateAppSettingsRequest update_app_settings = 140;
@@ -238,6 +226,8 @@ message CommandResult {
   reserved 121, 123, 131, 134, 137;
   reserved "resume_agent_session", "stop_workflow", "resume_workflow", "confirm_agent_session_archive_delete";
   reserved "start_git_dir_watching", "start_watching";
+  reserved 136;
+  reserved "stop_watching";
   reserved 65, 66, 91, 183;
   reserved "get_review_file_view", "get_review_snapshot", "list_review_threads", "get_review_blob";
   oneof command {
@@ -317,7 +307,6 @@ message CommandResult {
     Unit start_terminal_input_performance_collection = 132;
     Unit start_terminal_launch_performance_collection = 133;
     ResultString start_workflow = 135;
-    Unit stop_watching = 136;
     ListTerminalInputPerformanceSampleV1 take_terminal_input_performance_samples = 138;
     ListTerminalLaunchPerformanceSampleV1 take_terminal_launch_performance_samples = 139;
     Unit update_app_settings = 140;
@@ -2250,10 +2239,6 @@ message SetReleashBaseRequest {
   optional string base = 2 [json_name = "base", (json_nullable) = true];
 }
 
-message StartGitDirWatchingRequest {
-  optional string repo_path = 1 [json_name = "repoPath", (json_required) = true];
-}
-
 message ResultUint64 {
   option (json_wrapper) = "value";
   optional uint64 value = 1 [json_name = "value", (json_required) = true];
@@ -2267,19 +2252,11 @@ message StartTerminalLaunchPerformanceCollectionRequest {
 
 }
 
-message StartWatchingRequest {
-  optional string path = 1 [json_name = "path", (json_required) = true];
-}
-
 message StartWorkflowRequest {
   optional string workflow_name = 1 [json_name = "workflowName", (json_required) = true];
   optional string worktree_path = 2 [json_name = "worktreePath", (json_required) = true];
   optional string request = 3 [json_name = "request", (json_nullable) = true];
   optional string created_from = 4 [json_name = "createdFrom", (json_nullable) = true];
-}
-
-message StopWatchingRequest {
-  optional uint64 watcher_id = 1 [json_name = "watcherId", (json_required) = true];
 }
 
 message TakeTerminalInputPerformanceSamplesRequest {
@@ -2495,12 +2472,6 @@ message WorkflowGetOutputResponseSubmitted {
   optional double submitted_at = 3 [json_name = "submitted_at"];
   optional string request_id = 4 [json_name = "request_id"];
   optional double timestamp = 5 [json_name = "timestamp", (json_required) = true];
-}
-
-message FileChangeEvent {
-  optional uint64 watcher_id = 1 [json_name = "watcher_id", (json_required) = true];
-  optional string path = 2 [json_name = "path", (json_required) = true];
-  optional string kind = 3 [json_name = "kind", (json_required) = true];
 }
 
 message CommandError {
@@ -2802,7 +2773,6 @@ service ClientService {
   rpc StartTerminalInputPerformanceCollection(StartTerminalInputPerformanceCollectionRequest) returns (Unit);
   rpc StartTerminalLaunchPerformanceCollection(StartTerminalLaunchPerformanceCollectionRequest) returns (Unit);
   rpc StartWorkflow(StartWorkflowRequest) returns (ResultString);
-  rpc StopWatching(StopWatchingRequest) returns (Unit);
   rpc TakeTerminalInputPerformanceSamples(TakeTerminalInputPerformanceSamplesRequest) returns (ListTerminalInputPerformanceSampleV1);
   rpc TakeTerminalLaunchPerformanceSamples(TakeTerminalLaunchPerformanceSamplesRequest) returns (ListTerminalLaunchPerformanceSampleV1);
   rpc UpdateAppSettings(UpdateAppSettingsRequest) returns (Unit);
@@ -2822,9 +2792,6 @@ service ClientService {
   rpc WorkflowValidateOutput(WorkflowValidateOutputRequest) returns (WorkflowValidateOutputResponse);
   rpc WorkflowGetOutput(WorkflowGetOutputRequest) returns (WorkflowGetOutputResponse);
   rpc GetServerInfo(Unit) returns (ServerInfo);
-  rpc SubscribePush(SubscribePushRequest) returns (stream Push);
-  rpc WatchFiles(WatchFilesRequest) returns (ResultUint64);
-  rpc WatchGitDirectory(WatchGitDirectoryRequest) returns (ResultUint64);
 }
 
 message ServerInfo {
@@ -2835,10 +2802,6 @@ message ServerInfo {
   reserved 4;
   reserved "desktop_settings";
 }
-
-message SubscribePushRequest { string subscription_id = 1; }
-message WatchFilesRequest { string subscription_id = 1; StartWatchingRequest request = 2; }
-message WatchGitDirectoryRequest { string subscription_id = 1; StartGitDirWatchingRequest request = 2; }
 
 message RefreshWorkspacesRequest {
   optional string repo_path = 2 [json_name = "repoPath", (json_nullable) = true];

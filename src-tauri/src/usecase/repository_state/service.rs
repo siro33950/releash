@@ -12,7 +12,6 @@ use super::error::RepositoryStateError;
 use super::runtime::{RepositoryStateWorkerRuntime, WorktreePathNormalizer};
 use super::scanner::RepositoryScanner;
 use super::snapshot::{RepositoryBranchCardsSnapshotDto, RepositorySnapshot};
-use super::worktree::WatchSubscriptionKind;
 use super::worktree::{RepositoryStateNotifier, RepositoryStateWatcher, WorktreeState};
 
 const DEFAULT_DEBOUNCE: Duration = Duration::from_millis(300);
@@ -64,18 +63,8 @@ impl RepositoryStateService {
         self
     }
 
-    pub fn start_file_watching_if_repository(
-        &self,
-        path: &str,
-    ) -> Result<Option<u64>, RepositoryStateError> {
-        if self.repository.main_repo_path(path).is_err() {
-            return Ok(None);
-        }
-        Ok(Some(self.subscribe(path, WatchSubscriptionKind::File)?))
-    }
-
     pub fn start_git_dir_watching(&self, repo_path: &str) -> Result<u64, RepositoryStateError> {
-        self.subscribe(repo_path, WatchSubscriptionKind::Git)
+        self.subscribe(repo_path)
     }
 
     pub fn get_snapshot(
@@ -155,7 +144,7 @@ impl RepositoryStateService {
         Ok(self.release_watching(watcher_id))
     }
 
-    pub(crate) fn release_watching(&self, watcher_id: u64) -> bool {
+    fn release_watching(&self, watcher_id: u64) -> bool {
         let mut found = false;
         let mut removed = None;
 
@@ -186,13 +175,9 @@ impl RepositoryStateService {
         found
     }
 
-    fn subscribe(
-        &self,
-        worktree_path: &str,
-        kind: WatchSubscriptionKind,
-    ) -> Result<u64, RepositoryStateError> {
+    fn subscribe(&self, worktree_path: &str) -> Result<u64, RepositoryStateError> {
         let subscription_id = self.watcher.next_watcher_id();
-        self.ensure_watching_with_subscription(worktree_path, Some((subscription_id, kind)))?;
+        self.ensure_watching_with_subscription(worktree_path, Some(subscription_id))?;
         Ok(subscription_id)
     }
 
@@ -207,12 +192,12 @@ impl RepositoryStateService {
     fn ensure_watching_with_subscription(
         &self,
         worktree_path: &str,
-        subscription: Option<(u64, WatchSubscriptionKind)>,
+        subscription: Option<u64>,
     ) -> Result<Arc<WorktreeState>, RepositoryStateError> {
         let key = self.canonical_worktree_key(worktree_path)?;
         if let Some(existing) = self.worktrees.read().get(&key) {
-            if let Some((id, kind)) = subscription {
-                existing.add_subscription(id, kind, worktree_path.to_string());
+            if let Some(id) = subscription {
+                existing.add_subscription(id, worktree_path.to_string());
             }
             return Ok(existing.clone());
         }
@@ -235,16 +220,16 @@ impl RepositoryStateService {
 
         let mut worktrees = self.worktrees.write();
         if let Some(existing) = worktrees.get(&key) {
-            if let Some((id, kind)) = subscription {
-                existing.add_subscription(id, kind, worktree_path.to_string());
+            if let Some(id) = subscription {
+                existing.add_subscription(id, worktree_path.to_string());
             }
             let existing = existing.clone();
             drop(worktrees);
             state.shutdown();
             return Ok(existing);
         }
-        if let Some((id, kind)) = subscription {
-            state.add_subscription(id, kind, worktree_path.to_string());
+        if let Some(id) = subscription {
+            state.add_subscription(id, worktree_path.to_string());
         }
         worktrees.insert(key, state.clone());
         Ok(state)
@@ -567,9 +552,7 @@ pub(crate) mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().to_str().unwrap();
 
-        service
-            .subscribe(path, WatchSubscriptionKind::File)
-            .unwrap();
+        service.subscribe(path).unwrap();
         for _ in 0..100 {
             if service.get_snapshot(path).unwrap().version >= 1 {
                 break;
@@ -610,9 +593,7 @@ pub(crate) mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().to_str().unwrap();
 
-        service
-            .subscribe(path, WatchSubscriptionKind::File)
-            .unwrap();
+        service.subscribe(path).unwrap();
         for _ in 0..100 {
             if service.get_snapshot(path).unwrap().version >= 1 {
                 break;
@@ -649,7 +630,7 @@ pub(crate) mod tests {
         assert_eq!(watcher.start_count(), 0);
         assert_eq!(service.worktree_count(), 0);
 
-        service.start_file_watching_if_repository(path).unwrap();
+        service.start_git_dir_watching(path).unwrap();
         assert_eq!(watcher.start_count(), 1);
         assert_eq!(service.worktree_count(), 1);
 
@@ -690,7 +671,7 @@ pub(crate) mod tests {
             0,
         );
 
-        first.invalidate(InvalidateReason::file(Some("a.txt".to_string())));
+        first.invalidate(InvalidateReason::change());
 
         for _ in 0..100 {
             if first.snapshot_for_read().version >= 2 {
@@ -711,13 +692,9 @@ pub(crate) mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().to_str().unwrap();
 
-        service
-            .subscribe(path, WatchSubscriptionKind::File)
-            .unwrap();
-        service.subscribe(path, WatchSubscriptionKind::Git).unwrap();
-        service
-            .subscribe(path, WatchSubscriptionKind::File)
-            .unwrap();
+        service.subscribe(path).unwrap();
+        service.subscribe(path).unwrap();
+        service.subscribe(path).unwrap();
 
         assert_eq!(watcher.start_count(), 1);
         assert_eq!(service.worktree_count(), 1);
@@ -733,12 +710,8 @@ pub(crate) mod tests {
         let first_path = first.path().to_str().unwrap();
         let second_path = second.path().to_str().unwrap();
 
-        service
-            .subscribe(first_path, WatchSubscriptionKind::File)
-            .unwrap();
-        service
-            .subscribe(second_path, WatchSubscriptionKind::Git)
-            .unwrap();
+        service.subscribe(first_path).unwrap();
+        service.subscribe(second_path).unwrap();
 
         let started_paths = watcher.started_paths();
         assert_eq!(started_paths.len(), 2);
@@ -851,10 +824,8 @@ pub(crate) mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().to_str().unwrap();
 
-        let first = service
-            .subscribe(path, WatchSubscriptionKind::File)
-            .unwrap();
-        let second = service.subscribe(path, WatchSubscriptionKind::Git).unwrap();
+        let first = service.subscribe(path).unwrap();
+        let second = service.subscribe(path).unwrap();
 
         assert_ne!(first, second);
         assert_eq!(service.worktree_count(), 1);
@@ -877,16 +848,12 @@ pub(crate) mod tests {
 
         let original_path = dir.path().to_str().unwrap();
         let alias_path = alias.to_str().unwrap();
-        service
-            .subscribe(original_path, WatchSubscriptionKind::File)
-            .unwrap();
-        service
-            .subscribe(alias_path, WatchSubscriptionKind::Git)
-            .unwrap();
+        service.subscribe(original_path).unwrap();
+        service.subscribe(alias_path).unwrap();
         let state = service.ensure_watching(original_path).unwrap();
         notifier.take();
 
-        state.invalidate(InvalidateReason::git(false));
+        state.invalidate(InvalidateReason::change());
 
         for _ in 0..100 {
             let notifications = notifier.take();
@@ -899,7 +866,6 @@ pub(crate) mod tests {
                     .worktree_paths
                     .iter()
                     .any(|path| path == alias_path));
-                assert_eq!(committed.file_watcher_ids.len(), 1);
                 return;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -1003,9 +969,7 @@ pub(crate) mod tests {
             drop_entered: drop_entered.clone(),
             release: release.clone(),
         }));
-        let id = service
-            .subscribe("/repo", WatchSubscriptionKind::File)
-            .unwrap();
+        let id = service.subscribe("/repo").unwrap();
 
         let stopper = {
             let service = service.clone();
@@ -1044,11 +1008,7 @@ pub(crate) mod tests {
 
         let subscriber = {
             let service = service.clone();
-            std::thread::spawn(move || {
-                service
-                    .subscribe("/blocked", WatchSubscriptionKind::File)
-                    .unwrap()
-            })
+            std::thread::spawn(move || service.subscribe("/blocked").unwrap())
         };
         while start_entered.load(Ordering::SeqCst) == 0 {
             std::thread::yield_now();
@@ -1083,19 +1043,11 @@ pub(crate) mod tests {
 
         let first = {
             let service = service.clone();
-            std::thread::spawn(move || {
-                service
-                    .subscribe("/repo", WatchSubscriptionKind::File)
-                    .unwrap()
-            })
+            std::thread::spawn(move || service.subscribe("/repo").unwrap())
         };
         let second = {
             let service = service.clone();
-            std::thread::spawn(move || {
-                service
-                    .subscribe("/repo", WatchSubscriptionKind::Git)
-                    .unwrap()
-            })
+            std::thread::spawn(move || service.subscribe("/repo").unwrap())
         };
         while start_entered.load(Ordering::SeqCst) < 2 {
             std::thread::yield_now();
@@ -1138,9 +1090,7 @@ pub(crate) mod tests {
             next_id: AtomicU64::new(0),
         }));
 
-        assert!(service
-            .subscribe("/repo", WatchSubscriptionKind::File)
-            .is_err());
+        assert!(service.subscribe("/repo").is_err());
         assert_eq!(service.worktree_count(), 0);
     }
 }

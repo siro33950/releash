@@ -1,17 +1,9 @@
-use futures_util::StreamExt;
 use releash_lib::client_api_acceptance::*;
 use serde_json::{json, Value};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tauri::Listener;
 
-struct ClientConnection {
-    client: NativeClient,
-    push: std::pin::Pin<
-        Box<dyn futures_util::Stream<Item = Result<rpc::Push, connectrpc::ConnectError>> + Send>,
-    >,
-}
 struct Fixture {
     host: ClientApiAcceptanceHost<tauri::test::MockRuntime>,
     url: String,
@@ -65,53 +57,15 @@ impl Fixture {
             launch_id: String::new(),
         })
     }
-    async fn connect(&self) -> ClientConnection {
-        let client = self.client();
-        let mut stream = client
-            .subscribe_push(rpc::SubscribePushRequest::default())
-            .await
-            .unwrap();
-        let initial = stream
-            .message::<rpc::Push>()
-            .await
-            .unwrap()
-            .unwrap()
-            .to_owned_message();
-        assert!(matches!(initial.event, Some(rpc::push::Event::Resync(_))));
-        let push = Box::pin(futures_util::stream::unfold(
-            stream,
-            |mut stream| async move {
-                match stream.message::<rpc::Push>().await {
-                    Ok(Some(value)) => Some((Ok(value.to_owned_message()), stream)),
-                    Ok(None) => None,
-                    Err(error) => Some((Err(error), stream)),
-                }
-            },
-        ));
-        ClientConnection { client, push }
-    }
-
     fn args(&self) -> Value {
         json!({"repoPath":self.repo.path().to_str().unwrap()})
     }
 }
 
-async fn receive(connection: &mut ClientConnection) -> Value {
-    let push = tokio::time::timeout(Duration::from_secs(5), connection.push.next())
+async fn request(client: &NativeClient, frame: Value) -> Value {
+    let result = read_current_branch(client, frame.get("args").cloned().unwrap_or(json!({})))
         .await
-        .unwrap()
-        .unwrap()
         .unwrap();
-    let (event, payload) = decode_rpc_push(push);
-    json!({"status":"push", "event":event, "payload":payload})
-}
-async fn request(connection: &mut ClientConnection, frame: Value) -> Value {
-    let result = read_current_branch(
-        &connection.client,
-        frame.get("args").cloned().unwrap_or(json!({})),
-    )
-    .await
-    .unwrap();
     json!({"request_id":frame["request_id"],"result":result})
 }
 
@@ -137,10 +91,10 @@ async fn test_クライアントconnect_認証と相関を保ちtauri経路を�
             .unwrap();
         assert_eq!(response.status().as_u16(), status);
     }
-    let mut socket = fixture.connect().await;
+    let client = fixture.client();
     // When
     let response = request(
-        &mut socket,
+        &client,
         json!({"request_id":"one","command":"current-branch","args":fixture.args()}),
     )
     .await;
@@ -159,14 +113,12 @@ async fn test_クライアントconnect_認証と相関を保ちtauri経路を�
     assert!(tauri::test::get_ipc_response(&window, invoke).is_err());
     assert_eq!(response["request_id"], "one");
     assert_eq!(response["result"], "ws-branch");
-    drop(socket);
 }
 
 #[tokio::test]
 async fn test_クライアント認証_wsで有効な非master_tokenはhttp入口で拒否する() {
     // Given
     let fixture = Fixture::new().await;
-    let socket = fixture.connect().await;
     let mut url = url::Url::parse(&fixture.url).unwrap();
     url.set_scheme("http").unwrap();
     url.set_path("/v1/workflows");
@@ -189,7 +141,6 @@ async fn test_クライアント認証_wsで有効な非master_tokenはhttp入�
             .unwrap();
         assert_eq!(response.status(), expected);
     }
-    drop(socket);
 }
 
 #[tokio::test]
@@ -238,56 +189,17 @@ async fn test_クライアント購読_失敗と不正引数の分類と説明�
             .is_some_and(|message| !message.is_empty()));
     }
 }
-#[tokio::test]
-async fn test_backend通知_残るfile_changeがconnectだけへ届く() {
-    // Given
-    let fixture = Fixture::new().await;
-    let mut socket = fixture.connect().await;
-    let received = Arc::new(std::sync::Mutex::new(Vec::new()));
-    {
-        let received = received.clone();
-        fixture.host.app.listen("file-change", move |message| {
-            received
-                .lock()
-                .unwrap()
-                .push(serde_json::from_str::<Value>(message.payload()).unwrap())
-        });
-    }
-    // When
-    fixture
-        .host
-        .emit(BackendPush::FileChange(file_change("/repo/file")));
-    let frame = receive(&mut socket).await;
-    // Then
-    assert_eq!(frame["status"], "push");
-    assert_eq!(frame["event"], "file-change");
-    assert_eq!(
-        frame["payload"],
-        json!({"watcher_id":1,"path":"/repo/file","kind":"change"})
-    );
-    assert!(received.lock().unwrap().is_empty());
-
-    drop(socket);
-}
-
-fn file_change(path: &str) -> FileChangeEvent {
-    FileChangeEvent {
-        watcher_id: 1,
-        path: path.into(),
-        kind: "change".into(),
-    }
-}
 
 #[tokio::test]
 #[ignore = "local Connect latency measurement"]
 async fn test_クライアントconnect_往復レイテンシ実測() {
     let fixture = Fixture::new().await;
-    let mut socket = fixture.connect().await;
+    let client = fixture.client();
     let mut samples = Vec::new();
     for index in 0..1100 {
         let frame = json!({"request_id":index.to_string(),"command":"current-branch","args":fixture.args()});
         let start = Instant::now();
-        let response = request(&mut socket, frame).await;
+        let response = request(&client, frame).await;
         let elapsed = start.elapsed().as_secs_f64() * 1000.0;
         assert_eq!(response["result"], "ws-branch");
         if index >= 100 {
@@ -298,74 +210,6 @@ async fn test_クライアントconnect_往復レイテンシ実測() {
     assert!(samples[949] <= 1.0, "p95 exceeds 1ms: {}", samples[949]);
     assert!(samples[989] <= 2.0, "p99 exceeds 2ms: {}", samples[989]);
     println!("client-ws current-branch n={} warmup=100 min_ms={:.6} median_ms={:.6} p95_ms={:.6} p99_ms={:.6} max_ms={:.6} mean_ms={:.6}", samples.len(), samples[0], samples[499], samples[949], samples[989], samples[999], samples.iter().sum::<f64>() / samples.len() as f64);
-    drop(socket);
-}
-
-#[tokio::test]
-async fn test_ui_shell通知_wsのpush_sinkを経由しない() {
-    // Given
-    use tauri::Emitter;
-    let fixture = Fixture::new().await;
-    let mut push = fixture.host.subscribe_push();
-    // When
-    fixture.host.app.emit("menu-event", "test").unwrap();
-    fixture.host.app.emit("native-file-drop", "test").unwrap();
-    // Then
-    assert!(matches!(
-        push.try_recv(),
-        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
-    ));
-}
-
-#[tokio::test]
-async fn test_push_購読数上限と切断後の解放() {
-    let fixture = Fixture::new().await;
-    let mut connections = Vec::new();
-    for _ in 0..16 {
-        connections.push(fixture.connect().await);
-    }
-    let client = fixture.client();
-    let mut excess = client
-        .subscribe_push(rpc::SubscribePushRequest::default())
-        .await
-        .unwrap();
-    assert_eq!(
-        excess.message::<rpc::Push>().await.unwrap_err().code,
-        connectrpc::ErrorCode::ResourceExhausted
-    );
-    connections.clear();
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while fixture.host.push_subscription_count() != 0 {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("disconnected push subscriptions must release all slots");
-    for _ in 0..16 {
-        connections.push(fixture.connect().await);
-    }
-}
-
-#[tokio::test]
-async fn test_push_欠落時は再同期通知後も同じ購読を使える() {
-    let fixture = Fixture::new().await;
-    let mut socket = fixture.connect().await;
-    for _ in 0..65 {
-        fixture
-            .host
-            .emit(BackendPush::FileChange(file_change("/repo/file")));
-    }
-    assert_eq!(receive(&mut socket).await["event"], "resync");
-    assert_eq!(
-        read_current_branch(&socket.client, fixture.args())
-            .await
-            .unwrap(),
-        "ws-branch"
-    );
-    fixture
-        .host
-        .emit(BackendPush::FileChange(file_change("/repo/file")));
-    assert_eq!(receive(&mut socket).await["event"], "file-change");
 }
 
 #[tokio::test]
@@ -458,41 +302,6 @@ impl BranchRepository for PausedBranch {
     fn delete(&self, repo_path: &str, branch_name: &str) -> Result<(), RepositoryError> {
         BranchGateway.delete(repo_path, branch_name)
     }
-}
-
-#[tokio::test]
-async fn test_クライアントconnect_command完了待ちの間も容量を超える累計pushを届ける() {
-    // Given
-    let started = Arc::new(tokio::sync::Notify::new());
-    let (resume, receiver) = std::sync::mpsc::channel();
-    let fixture = Fixture::with_branch(Arc::new(PausedBranch {
-        started: started.clone(),
-        resume: std::sync::Mutex::new(receiver),
-    }))
-    .await;
-    let mut socket = fixture.connect().await;
-    let client = fixture.client();
-    let args = fixture.args();
-    let pending = tokio::spawn(async move { read_current_branch(&client, args).await.unwrap() });
-    tokio::time::timeout(Duration::from_secs(5), started.notified())
-        .await
-        .unwrap();
-
-    // When / Then
-    for index in 0..65 {
-        fixture
-            .host
-            .emit(BackendPush::FileChange(file_change("/repo/file")));
-        let frame = receive(&mut socket).await;
-        assert_eq!(
-            frame["status"], "push",
-            "push {index} arrived before state read completion"
-        );
-        assert_eq!(frame["event"], "file-change");
-        assert_eq!(frame["payload"]["path"], "/repo/file");
-    }
-    resume.send(()).unwrap();
-    assert_eq!(pending.await.unwrap(), "ws-branch");
 }
 
 #[tokio::test(flavor = "multi_thread")]
