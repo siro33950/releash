@@ -5,7 +5,11 @@ use crate::usecase::{
     git_host::IssueInfoDto,
     repository_dto::{BranchDto, WorktreeEntryDto},
     repository_state::snapshot::RepositoryBranchCardsSnapshotDto,
-    workflow::{WorkspaceNodeDetailDto, WorkspaceTreeSelectionSnapshotDto},
+    workflow::{
+        diagnostic_dto::DiagnosticReport,
+        dto::{FacetSummaryDto, WorkflowDto, WorkflowSummaryDto},
+        WorkspaceNodeDetailDto, WorkspaceTreeSelectionSnapshotDto,
+    },
     workspace_state::dto::WorkspaceStateDto,
     workspace_tree::WorkspaceListSnapshotDto,
 };
@@ -34,4 +38,10 @@ pub(crate) enum StateValue {
     ReviewSnapshot(ReviewSnapshotDto),
     ReviewFileView(ReviewFileViewDto),
     ReviewThreads(Vec<ReviewThreadDto>),
+    Workflows(Vec<WorkflowSummaryDto>),
+    Workflow(Option<WorkflowDto>),
+    WorkflowSource(Option<String>),
+    Facets(Vec<FacetSummaryDto>),
+    Facet(String),
+    Diagnostics(DiagnosticReport),
 }

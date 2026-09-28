@@ -54,6 +54,9 @@ impl StateSubscriptionRead for StateSubscriptionReads {
     fn review_comments_dir(&self) -> String {
         self.0.review_comments_dir()
     }
+    fn workflows_dir(&self) -> String {
+        self.0.workflows_dir()
+    }
 }
 fn task_error(error: tokio::task::JoinError) -> StateReadError {
     StateReadError::from_error(crate::domain::failure::TechnicalFailure {

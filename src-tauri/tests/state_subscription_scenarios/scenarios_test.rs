@@ -218,6 +218,9 @@ impl StateSubscriptionRead for FakeReads {
             crate::usecase::state_subscription::SubscriptionTarget::SessionNode(_, _) => {
                 StateValue::SessionNode(Some(self.value.lock().clone()))
             }
+            crate::usecase::state_subscription::SubscriptionTarget::WorkflowSource(_) => {
+                StateValue::WorkflowSource(Some(self.value.lock().clone()))
+            }
             crate::usecase::state_subscription::SubscriptionTarget::SessionHistory(_, _) => {
                 StateValue::SessionHistory(
                     crate::usecase::agent_session::AgentSessionHistoryPageDto {
@@ -236,6 +239,9 @@ impl StateSubscriptionRead for FakeReads {
     }
     fn repositories(&self) -> Vec<String> {
         vec![]
+    }
+    fn workflows_dir(&self) -> String {
+        "/workflows".into()
     }
 }
 
@@ -342,6 +348,121 @@ async fn test_履歴購読_件数違いと別clientが監視を共有し最後�
     drop(first);
     assert!(files.active.lock().unwrap().is_empty());
     assert_eq!(usecase.test_worker_count(), 0);
+}
+
+#[tokio::test]
+async fn test_automation購読_置き場の監視を共有し最後の終了で解放する() {
+    use crate::usecase::state_subscription::{StateChangeSource, WatchRequirement};
+    // Given
+    let files = Arc::new(crate::usecase::watcher::watcher_tests::SubscriptionFiles::default());
+    let usecase = StateSubscriptionUsecase::new(vec![], Arc::new(TestTimer)).with_reads(
+        Arc::new(FakeReads {
+            value: Mutex::new(String::new()),
+            calls: Default::default(),
+        }),
+        Some(Arc::new(crate::usecase::watcher::WatcherUsecase::new(
+            None,
+            files.clone(),
+        ))),
+        vec![],
+    );
+    let first = usecase.open("first".into()).unwrap();
+    let second = usecase.open("second".into()).unwrap();
+    // When
+    start_read(&usecase, "first", "workflows", None)
+        .await
+        .unwrap();
+    start_read(&usecase, "second", "diagnostics", None)
+        .await
+        .unwrap();
+    // Then
+    let requirement =
+        WatchRequirement::Files("/workflows".into(), StateChangeSource::WorkflowDefinitions);
+    assert_eq!(
+        usecase.test_watches().keys().collect::<Vec<_>>(),
+        vec![&requirement]
+    );
+    assert_eq!(files.active.lock().unwrap().len(), 1);
+    assert_eq!(usecase.test_worker_count(), 2);
+    drop(first);
+    assert_eq!(files.active.lock().unwrap().len(), 1);
+    assert_eq!(usecase.test_worker_count(), 1);
+    drop(second);
+    assert!(files.active.lock().unwrap().is_empty());
+    assert!(usecase.test_watches().is_empty());
+    assert_eq!(usecase.test_worker_count(), 0);
+}
+
+struct CapturingFiles {
+    on_change: Mutex<Option<crate::domain::repository::file_watcher::WatchChangeHandler>>,
+}
+impl crate::domain::repository::file_watcher::FileWatchGateway for CapturingFiles {
+    fn release(&self, _: u64) {}
+    fn start(&self, _: &str) -> Result<u64, String> {
+        Ok(1)
+    }
+    fn start_tree(
+        &self,
+        _: &str,
+        on_change: crate::domain::repository::file_watcher::WatchChangeHandler,
+    ) -> Result<u64, String> {
+        *self.on_change.lock() = Some(on_change);
+        Ok(1)
+    }
+    fn stop(&self, _: u64) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn test_automation購読_置き場のファイル変化で読み直して配信する() {
+    // Given
+    let files = Arc::new(CapturingFiles {
+        on_change: Mutex::new(None),
+    });
+    let reads = Arc::new(FakeReads {
+        value: Mutex::new("first".into()),
+        calls: Default::default(),
+    });
+    let usecase = StateSubscriptionUsecase::new(vec![], Arc::new(TestTimer)).with_reads(
+        reads.clone(),
+        Some(Arc::new(crate::usecase::watcher::WatcherUsecase::new(
+            None,
+            files.clone(),
+        ))),
+        vec![],
+    );
+    let mut stream = Box::pin(usecase.open("client".into()).unwrap());
+    stream.next().await;
+    let target =
+        crate::usecase::state_subscription::SubscriptionTarget::WorkflowSource("dev".into())
+            .to_string();
+    start_read(&usecase, "client", &target, None).await.unwrap();
+    assert!(matches!(
+        stream.next().await,
+        Some(StateSubscriptionEvent::Item(_, Event::Snapshot(..)))
+    ));
+    let on_change = files.on_change.lock().clone().unwrap();
+    // When
+    *reads.value.lock() = "second".into();
+    on_change();
+    // Then
+    let value = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if let Some(StateSubscriptionEvent::Item(id, Event::Change(_, _, value))) =
+                stream.next().await
+            {
+                assert_eq!(id, target);
+                break value;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert!(same(
+        &value,
+        &StateValue::WorkflowSource(Some("second".into()))
+    ));
 }
 
 #[tokio::test]

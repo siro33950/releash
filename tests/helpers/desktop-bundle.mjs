@@ -8,6 +8,7 @@ import { setTimeout } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 
 export const dataDir = join(homedir(), "Library/Application Support/com.releash.app.performance");
+export const workflowsDir = join(homedir(), "Library/Application Support/releash/workflows");
 export const service = `gui/${process.getuid?.()}/com.releash.app`;
 export const port = 4445;
 export function requireDisposableAccount() {
@@ -111,7 +112,7 @@ export async function quit(bundle, client, from = "tray") {
     execFileSync("/usr/bin/git", ["init", worktreePath]);
     await client.call("client", "add_repo_path", { path: worktreePath });
     const workflowName = `releash-quit-${current.daemon}`;
-    const workflowFile = join(await client.call("client", "get_automation_config_dir"), `${workflowName}.yml`);
+    const workflowFile = join(workflowsDir, `${workflowName}.yml`);
     const marker = join(worktreePath, "command-pid");
     const stopped = join(worktreePath, "command-stopped");
     rmSync(marker, { force: true });

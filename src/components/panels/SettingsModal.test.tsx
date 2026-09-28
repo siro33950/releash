@@ -53,17 +53,34 @@ beforeAll(() => {
 	HTMLElement.prototype.scrollIntoView = vi.fn() as never;
 });
 
+const EMPTY_REPORT = {
+	items: [],
+	workflow_summaries: {},
+	facet_summaries: {},
+	facet_usage: {},
+};
+function subscribeStates(values: Record<string, unknown>) {
+	vi.mocked(subscribeState).mockImplementation((target, receive) => {
+		const kind = typeof target === "string" ? target : target.kind;
+		const key =
+			typeof target === "string" ? target : [kind, ...target.args].join(":");
+		const value = key in values ? values[key] : values[kind];
+		if (value !== undefined) receive(value as never);
+		return vi.fn();
+	});
+}
+
 describe("SettingsModal", () => {
 	afterEach(() => vi.restoreAllMocks());
 
 	beforeEach(async () => {
-		vi.mocked(subscribeState).mockImplementation((target, receive) => {
-			if ((typeof target === "string" ? target : target.kind) === "branches")
-				receive([
-					{ name: "main", is_remote: false },
-					{ name: "develop", is_remote: false },
-				]);
-			return vi.fn();
+		subscribeStates({
+			branches: [
+				{ name: "main", is_remote: false },
+				{ name: "develop", is_remote: false },
+			],
+			workflows: [],
+			diagnostics: EMPTY_REPORT,
 		});
 		vi.mocked(invokeTauri).mockResolvedValue({
 			enabled: false,
@@ -108,15 +125,6 @@ describe("SettingsModal", () => {
 					return Promise.resolve("");
 				case "detect_editors":
 					return Promise.resolve([]);
-				case "list_workflows":
-					return Promise.resolve([]);
-				case "diagnose_all_cmd":
-					return Promise.resolve({
-						items: [],
-						workflow_summaries: {},
-						facet_summaries: {},
-						facet_usage: {},
-					});
 				default:
 					return Promise.resolve(null);
 			}
@@ -1101,37 +1109,24 @@ describe("SettingsModal", () => {
 	});
 
 	it("should show workflow list in Automation section", async () => {
-		const { invokeClient: invoke } = await import("@/lib/client");
-		const emptyReport = {
-			items: [],
-			workflow_summaries: {},
-			facet_summaries: {},
-			facet_usage: {},
-		};
-		vi.mocked(invoke).mockImplementation((cmd: string) => {
-			switch (cmd) {
-				case "list_workflows":
-					return Promise.resolve([
-						{
-							name: "quick-fix",
-							description: "素早いバグ修正",
-							builtin: true,
-							sourceFormat: "yaml" as const,
-							is_running: false,
-						},
-						{
-							name: "my-workflow",
-							description: "カスタムワークフロー",
-							builtin: false,
-							sourceFormat: "yaml" as const,
-							is_running: false,
-						},
-					]);
-				case "diagnose_all_cmd":
-					return Promise.resolve(emptyReport);
-				default:
-					return Promise.resolve(null);
-			}
+		subscribeStates({
+			workflows: [
+				{
+					name: "quick-fix",
+					description: "素早いバグ修正",
+					builtin: true,
+					sourceFormat: "yaml" as const,
+					is_running: false,
+				},
+				{
+					name: "my-workflow",
+					description: "カスタムワークフロー",
+					builtin: false,
+					sourceFormat: "yaml" as const,
+					is_running: false,
+				},
+			],
+			diagnostics: EMPTY_REPORT,
 		});
 
 		render(<SettingsModal {...defaultProps} />);
@@ -1161,39 +1156,25 @@ describe("SettingsModal", () => {
 	it("should open custom workflow in the panel editor", async () => {
 		const user = userEvent.setup();
 		const { invokeClient: invoke } = await import("@/lib/client");
-		const emptyReport = {
-			items: [],
-			workflow_summaries: {},
-			facet_summaries: {},
-			facet_usage: {},
-		};
-		vi.mocked(invoke).mockImplementation((cmd: string) => {
-			switch (cmd) {
-				case "list_workflows":
-					return Promise.resolve([
-						{
-							name: "my-workflow",
-							description: "カスタムワークフロー",
-							builtin: false,
-							sourceFormat: "yaml" as const,
-							is_running: false,
-						},
-					]);
-				case "get_workflow_source":
-					return Promise.resolve("name: my-workflow\nnodes: []\n");
-				case "get_workflow":
-					return Promise.resolve({
-						name: "my-workflow",
-						description: "カスタムワークフロー",
-						builtin: false,
-						sourceFormat: "yaml",
-						nodes: [],
-					});
-				case "diagnose_all_cmd":
-					return Promise.resolve(emptyReport);
-				default:
-					return Promise.resolve(null);
-			}
+		subscribeStates({
+			workflows: [
+				{
+					name: "my-workflow",
+					description: "カスタムワークフロー",
+					builtin: false,
+					sourceFormat: "yaml" as const,
+					is_running: false,
+				},
+			],
+			"workflow-source:my-workflow": "name: my-workflow\nnodes: []\n",
+			"workflow:my-workflow": {
+				name: "my-workflow",
+				description: "カスタムワークフロー",
+				builtin: false,
+				sourceFormat: "yaml",
+				nodes: [],
+			},
+			diagnostics: EMPTY_REPORT,
 		});
 
 		render(<SettingsModal {...defaultProps} />);
@@ -1208,9 +1189,11 @@ describe("SettingsModal", () => {
 		await waitFor(() => {
 			expect(screen.getByText("Workflow YAML")).toBeInTheDocument();
 		});
-		expect(vi.mocked(invoke)).toHaveBeenCalledWith("get_workflow_source", {
-			name: "my-workflow",
-		});
+		expect(vi.mocked(subscribeState)).toHaveBeenCalledWith(
+			{ kind: "workflow-source", args: ["my-workflow"] },
+			expect.anything(),
+			expect.anything(),
+		);
 		expect(vi.mocked(invoke)).not.toHaveBeenCalledWith(
 			"open_workflow_in_editor",
 			expect.anything(),
@@ -1220,32 +1203,19 @@ describe("SettingsModal", () => {
 	it("should call delete_workflow when Delete button is clicked", async () => {
 		const user = userEvent.setup();
 		const { invokeClient: invoke } = await import("@/lib/client");
-		const emptyReport = {
-			items: [],
-			workflow_summaries: {},
-			facet_summaries: {},
-			facet_usage: {},
-		};
-		vi.mocked(invoke).mockImplementation((cmd: string) => {
-			switch (cmd) {
-				case "list_workflows":
-					return Promise.resolve([
-						{
-							name: "my-workflow",
-							description: "カスタムワークフロー",
-							builtin: false,
-							sourceFormat: "yaml" as const,
-							is_running: false,
-						},
-					]);
-				case "delete_workflow":
-					return Promise.resolve(null);
-				case "diagnose_all_cmd":
-					return Promise.resolve(emptyReport);
-				default:
-					return Promise.resolve(null);
-			}
+		subscribeStates({
+			workflows: [
+				{
+					name: "my-workflow",
+					description: "カスタムワークフロー",
+					builtin: false,
+					sourceFormat: "yaml" as const,
+					is_running: false,
+				},
+			],
+			diagnostics: EMPTY_REPORT,
 		});
+		vi.mocked(invoke).mockResolvedValue(null);
 
 		render(<SettingsModal {...defaultProps} />);
 		fireEvent.click(screen.getByText("Automation"));
@@ -1265,30 +1235,17 @@ describe("SettingsModal", () => {
 	});
 
 	it("should not show delete button for builtin workflows", async () => {
-		const { invokeClient: invoke } = await import("@/lib/client");
-		const emptyReport = {
-			items: [],
-			workflow_summaries: {},
-			facet_summaries: {},
-			facet_usage: {},
-		};
-		vi.mocked(invoke).mockImplementation((cmd: string) => {
-			switch (cmd) {
-				case "list_workflows":
-					return Promise.resolve([
-						{
-							name: "quick-fix",
-							description: "素早いバグ修正",
-							builtin: true,
-							sourceFormat: "yaml" as const,
-							is_running: false,
-						},
-					]);
-				case "diagnose_all_cmd":
-					return Promise.resolve(emptyReport);
-				default:
-					return Promise.resolve(null);
-			}
+		subscribeStates({
+			workflows: [
+				{
+					name: "quick-fix",
+					description: "素早いバグ修正",
+					builtin: true,
+					sourceFormat: "yaml" as const,
+					is_running: false,
+				},
+			],
+			diagnostics: EMPTY_REPORT,
 		});
 
 		render(<SettingsModal {...defaultProps} />);

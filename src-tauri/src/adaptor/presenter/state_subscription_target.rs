@@ -1,4 +1,5 @@
 use crate::domain::code::{ReviewBase, ReviewSection};
+use crate::domain::workflow::FacetKind;
 use crate::usecase::state_subscription::{SubscriptionError, SubscriptionTarget};
 
 impl SubscriptionTarget {
@@ -91,6 +92,12 @@ impl SubscriptionTarget {
                 ReviewBase::parse(base).map_err(|_| SubscriptionError::InvalidId)?,
             )),
             ("review-threads", [name]) => Ok(Self::ReviewThreads((*name).into())),
+            ("workflows", []) => Ok(Self::Workflows),
+            ("workflow", [name]) => Ok(Self::Workflow((*name).into())),
+            ("workflow-source", [name]) => Ok(Self::WorkflowSource((*name).into())),
+            ("facets", [kind]) => Ok(Self::Facets(facet_kind(kind)?)),
+            ("facet", [kind, key]) => Ok(Self::Facet(facet_kind(kind)?, (*key).into())),
+            ("diagnostics", []) => Ok(Self::Diagnostics),
             _ => Err(SubscriptionError::UnknownTarget),
         }?;
         Ok(target)
@@ -157,7 +164,30 @@ impl SubscriptionTarget {
                 ],
             ),
             Self::ReviewThreads(name) => ("review-threads", vec![name.clone()]),
+            Self::Workflows => ("workflows", vec![]),
+            Self::Workflow(name) => ("workflow", vec![name.clone()]),
+            Self::WorkflowSource(name) => ("workflow-source", vec![name.clone()]),
+            Self::Facets(kind) => ("facets", vec![facet_kind_name(*kind).into()]),
+            Self::Facet(kind, key) => ("facet", vec![facet_kind_name(*kind).into(), key.clone()]),
+            Self::Diagnostics => ("diagnostics", vec![]),
         }
+    }
+}
+
+fn facet_kind(kind: &str) -> Result<FacetKind, SubscriptionError> {
+    match kind {
+        "policy" => Ok(FacetKind::Policy),
+        "knowledge" => Ok(FacetKind::Knowledge),
+        "instruction" => Ok(FacetKind::Instruction),
+        _ => Err(SubscriptionError::InvalidId),
+    }
+}
+
+fn facet_kind_name(kind: FacetKind) -> &'static str {
+    match kind {
+        FacetKind::Policy => "policy",
+        FacetKind::Knowledge => "knowledge",
+        FacetKind::Instruction => "instruction",
     }
 }
 

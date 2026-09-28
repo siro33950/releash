@@ -117,6 +117,30 @@ pub(crate) fn payload(value: &StateValue) -> Result<wire::StatePayload, connectr
                 crate::adaptor::presenter::client::value(value.clone())
                     .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
+            StateValue::Workflows(value) => wire::state_payload::Value::Workflows(
+                crate::adaptor::presenter::client::value(value.clone())
+                    .map_err(crate::adaptor::presenter::connect::command_error)?,
+            ),
+            StateValue::Workflow(value) => wire::state_payload::Value::Workflow(
+                crate::adaptor::presenter::client::value(value.clone())
+                    .map_err(crate::adaptor::presenter::connect::command_error)?,
+            ),
+            StateValue::WorkflowSource(value) => wire::state_payload::Value::WorkflowSource(
+                crate::adaptor::presenter::client::value(value.clone())
+                    .map_err(crate::adaptor::presenter::connect::command_error)?,
+            ),
+            StateValue::Facets(value) => wire::state_payload::Value::Facets(
+                crate::adaptor::presenter::client::value(value.clone())
+                    .map_err(crate::adaptor::presenter::connect::command_error)?,
+            ),
+            StateValue::Facet(value) => wire::state_payload::Value::Facet(
+                crate::adaptor::presenter::client::value(value.clone())
+                    .map_err(crate::adaptor::presenter::connect::command_error)?,
+            ),
+            StateValue::Diagnostics(value) => wire::state_payload::Value::Diagnostics(
+                crate::adaptor::presenter::client::value(value.clone())
+                    .map_err(crate::adaptor::presenter::connect::command_error)?,
+            ),
 
             StateValue::RepositoryPaths(paths) => {
                 wire::state_payload::Value::RepositoryPaths(wire::Liststring {

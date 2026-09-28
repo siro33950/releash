@@ -481,6 +481,7 @@ pub(crate) async fn compose(
                     comments: review_comment_usecase_for_reads,
                     data_dir: reads_data_dir,
                     review_comments_dir,
+                    workflows_dir: workflows_dir.clone(),
                 },
             ),
         ),

@@ -32,6 +32,8 @@ message CommandRequest {
   reserved "get_cached_pr_status";
   reserved 96;
   reserved "load_workspace_state";
+  reserved 37, 47, 54, 70, 73, 88, 92;
+  reserved "diagnose_all_cmd", "get_automation_config_dir", "get_facet", "get_workflow", "get_workflow_source", "list_facet_summaries", "list_workflows";
   reserved 52;
   reserved "get_cwd";
   reserved 57;
@@ -94,7 +96,6 @@ message CommandRequest {
     DeleteReviewThreadRequest delete_review_thread = 33;
     DeleteWorkflowRequest delete_workflow = 34;
     DetectEditorsRequest detect_editors = 36;
-    DiagnoseAllCmdRequest diagnose_all_cmd = 37;
     DuplicateFacetRequest duplicate_facet = 38;
     DuplicateWorkflowRequest duplicate_workflow = 39;
     FetchIssuesRequest fetch_issues = 40;
@@ -102,10 +103,8 @@ message CommandRequest {
 
     GetAppSettingsRequest get_app_settings = 43;
     GetApplicationStartupOutcomeRequest get_application_startup_outcome = 46;
-    GetAutomationConfigDirRequest get_automation_config_dir = 47;
 
     GetExternalEditorRequest get_external_editor = 53;
-    GetFacetRequest get_facet = 54;
     GetFileNavigationRequest get_file_navigation = 55;
     GetLanguageFromPathRequest get_language_from_path = 56;
 
@@ -117,10 +116,8 @@ message CommandRequest {
     GetReleashBaseRequest get_releash_base = 63;
 
     GetTerminalPerformanceSwitchesRequest get_terminal_performance_switches = 68;
-    GetWorkflowRequest get_workflow = 70;
     GetWorkflowConfigRequest get_workflow_config = 71;
 
-    GetWorkflowSourceRequest get_workflow_source = 73;
 
     GitCreateBranchRequest git_create_branch = 77;
     GitStageRequest git_stage = 78;
@@ -129,9 +126,7 @@ message CommandRequest {
     GitUnstageReviewGroupRequest git_unstage_review_group = 81;
     KillTerminalSurfaceRequest kill_terminal_surface = 82;
 
-    ListFacetSummariesRequest list_facet_summaries = 88;
     ListProviderHookHealthWarningsRequest list_provider_hook_health_warnings = 90;
-    ListWorkflowsRequest list_workflows = 92;
 
     OpenAgentSessionRequest open_agent_session = 97;
     OpenFacetInEditorRequest open_facet_in_editor = 98;
@@ -213,6 +208,8 @@ message CommandResult {
   reserved "get_cached_pr_status";
   reserved 96;
   reserved "load_workspace_state";
+  reserved 37, 47, 54, 70, 73, 88, 92;
+  reserved "diagnose_all_cmd", "get_automation_config_dir", "get_facet", "get_workflow", "get_workflow_source", "list_facet_summaries", "list_workflows";
   reserved 52;
   reserved "get_cwd";
   reserved 57;
@@ -275,7 +272,6 @@ message CommandResult {
     Unit delete_review_thread = 33;
     Unit delete_workflow = 34;
     ListEditorInfoDto detect_editors = 36;
-    DiagnosticReport diagnose_all_cmd = 37;
     Unit duplicate_facet = 38;
     Unit duplicate_workflow = 39;
     Unit fetch_issues = 40;
@@ -283,10 +279,8 @@ message CommandResult {
 
     AppSection get_app_settings = 43;
     ApplicationStartupOutcomeDtoV1 get_application_startup_outcome = 46;
-    ResultString get_automation_config_dir = 47;
 
     ResultString get_external_editor = 53;
-    ResultString get_facet = 54;
     FileNavigationResultDto get_file_navigation = 55;
     ResultString get_language_from_path = 56;
 
@@ -298,10 +292,8 @@ message CommandResult {
     Nullablestring get_releash_base = 63;
 
     TerminalPerformanceSwitchesV1 get_terminal_performance_switches = 68;
-    WorkflowDto get_workflow = 70;
     WorkflowSection get_workflow_config = 71;
 
-    ResultString get_workflow_source = 73;
 
     Unit git_create_branch = 77;
     Unit git_stage = 78;
@@ -310,9 +302,7 @@ message CommandResult {
     Unit git_unstage_review_group = 81;
     Unit kill_terminal_surface = 82;
 
-    ListFacetSummaryDto list_facet_summaries = 88;
     ListProviderHookHealthWarningResponse list_provider_hook_health_warnings = 90;
-    ListWorkflowSummaryDto list_workflows = 92;
 
     AgentSessionOpenResponse open_agent_session = 97;
     Unit open_facet_in_editor = 98;
@@ -718,10 +708,6 @@ message ListEditorInfoDto {
   repeated EditorInfoDto items = 1;
 }
 
-message DiagnoseAllCmdRequest {
-  optional string dir = 1 [json_name = "dir", (json_nullable) = true];
-}
-
 message DiagnosticReport {
   optional ListDiagnosticItem items = 1 [json_name = "items", (json_required) = true];
   optional MapDiagnosticSummary workflow_summaries = 2 [json_name = "workflow_summaries", (json_required) = true];
@@ -1007,9 +993,6 @@ message ListStartupFailureActionDtoV1 {
   repeated StartupFailureActionDtoV1 items = 1;
 }
 
-message GetAutomationConfigDirRequest {
-
-}
 
 message Nullablestring {
   option (json_wrapper) = "value";
@@ -1018,11 +1001,6 @@ message Nullablestring {
 
 message GetExternalEditorRequest {
 
-}
-
-message GetFacetRequest {
-  optional string kind = 1 [json_name = "kind", (json_required) = true];
-  optional string key = 2 [json_name = "key", (json_required) = true];
 }
 
 message DiffTreeNodeInput {
@@ -1333,9 +1311,6 @@ message TerminalPerformanceSwitchesV1 {
   optional bool disable_webgl_renderer = 4 [json_name = "disableWebglRenderer", (json_required) = true];
 }
 
-message GetWorkflowRequest {
-  optional string name = 1 [json_name = "name", (json_required) = true];
-}
 
 message WorkflowDto {
   optional string name = 1 [json_name = "name", (json_required) = true];
@@ -1724,9 +1699,6 @@ message ApprovalTargetView {
   optional string session_id = 3 [json_name = "sessionId", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
 }
 
-message GetWorkflowSourceRequest {
-  optional string name = 1 [json_name = "name", (json_required) = true];
-}
 
 message WorkspaceNodeDetailDto {
   optional NodeProcessPresence process_presence = 15 [json_name = "processPresence", (json_required) = true];
@@ -1783,6 +1755,11 @@ message WorkspaceCommandResultDto {
 message NullableWorkspaceNodeDetailDto {
   option (json_wrapper) = "value";
   optional WorkspaceNodeDetailDto value = 1 [json_name = "value", (json_nullable) = true];
+}
+
+message NullableWorkflowDto {
+  option (json_wrapper) = "value";
+  optional WorkflowDto value = 1 [json_name = "value", (json_nullable) = true];
 }
 
 message WorkspaceTreeSelectionSnapshotDto {
@@ -1981,10 +1958,6 @@ message WorktreeDisplayGroupsDto {
   optional ListBranchCardDto working_areas = 1 [json_name = "working_areas", (json_required) = true];
 }
 
-message ListFacetSummariesRequest {
-  optional string kind = 1 [json_name = "kind", (json_required) = true];
-}
-
 message FacetSummaryDto {
   optional string key = 1 [json_name = "key", (json_required) = true];
   optional string kind = 2 [json_name = "kind", (json_required) = true];
@@ -2024,10 +1997,6 @@ message ListProviderHookHealthWarningResponse {
 message ListReviewThreadDto {
   option (json_wrapper) = "items";
   repeated ReviewThreadDto items = 1;
-}
-
-message ListWorkflowsRequest {
-
 }
 
 message WorkflowSummaryDto {
@@ -2852,16 +2821,13 @@ service ClientService {
   rpc DeleteReviewThread(DeleteReviewThreadRequest) returns (Unit);
   rpc DeleteWorkflow(DeleteWorkflowRequest) returns (Unit);
   rpc DetectEditors(DetectEditorsRequest) returns (ListEditorInfoDto);
-  rpc DiagnoseAllCmd(DiagnoseAllCmdRequest) returns (DiagnosticReport);
   rpc DuplicateFacet(DuplicateFacetRequest) returns (Unit);
   rpc DuplicateWorkflow(DuplicateWorkflowRequest) returns (Unit);
   rpc FetchIssues(FetchIssuesRequest) returns (Unit);
   rpc FetchNotionLabelOptions(FetchNotionLabelOptionsRequest) returns (ListNotionLabelOptionView);
   rpc GetAppSettings(GetAppSettingsRequest) returns (AppSection);
   rpc GetApplicationStartupOutcome(GetApplicationStartupOutcomeRequest) returns (ApplicationStartupOutcomeDtoV1);
-  rpc GetAutomationConfigDir(GetAutomationConfigDirRequest) returns (ResultString);
   rpc GetExternalEditor(GetExternalEditorRequest) returns (ResultString);
-  rpc GetFacet(GetFacetRequest) returns (ResultString);
   rpc GetFileNavigation(GetFileNavigationRequest) returns (FileNavigationResultDto);
   rpc GetLanguageFromPath(GetLanguageFromPathRequest) returns (ResultString);
   rpc GetNotionConfig(GetNotionConfigRequest) returns (NullableNotionRepoConfigView);
@@ -2871,18 +2837,14 @@ service ClientService {
   rpc GetProviderAvailability(GetProviderAvailabilityRequest) returns (ProviderAvailabilitySnapshotResponse);
   rpc GetReleashBase(GetReleashBaseRequest) returns (Nullablestring);
   rpc GetTerminalPerformanceSwitches(GetTerminalPerformanceSwitchesRequest) returns (TerminalPerformanceSwitchesV1);
-  rpc GetWorkflow(GetWorkflowRequest) returns (WorkflowDto);
   rpc GetWorkflowConfig(GetWorkflowConfigRequest) returns (WorkflowSection);
-  rpc GetWorkflowSource(GetWorkflowSourceRequest) returns (ResultString);
   rpc GitCreateBranch(GitCreateBranchRequest) returns (Unit);
   rpc GitStage(GitStageRequest) returns (Unit);
   rpc GitStageReviewGroup(GitStageReviewGroupRequest) returns (Unit);
   rpc GitUnstage(GitUnstageRequest) returns (Unit);
   rpc GitUnstageReviewGroup(GitUnstageReviewGroupRequest) returns (Unit);
   rpc KillTerminalSurface(KillTerminalSurfaceRequest) returns (Unit);
-  rpc ListFacetSummaries(ListFacetSummariesRequest) returns (ListFacetSummaryDto);
   rpc ListProviderHookHealthWarnings(ListProviderHookHealthWarningsRequest) returns (ListProviderHookHealthWarningResponse);
-  rpc ListWorkflows(ListWorkflowsRequest) returns (ListWorkflowSummaryDto);
   rpc OpenAgentSession(OpenAgentSessionRequest) returns (AgentSessionOpenResponse);
   rpc OpenFacetInEditor(OpenFacetInEditorRequest) returns (Unit);
   rpc OpenFolderInEditor(OpenFolderInEditorRequest) returns (Unit);
@@ -3036,6 +2998,12 @@ message StatePayload {
     ReviewSnapshotDto review_snapshot = 30;
     ReviewFileViewDto review_file_view = 31;
     ListReviewThreadDto review_threads = 32;
+    ListWorkflowSummaryDto workflows = 40;
+    NullableWorkflowDto workflow = 41;
+    Nullablestring workflow_source = 42;
+    ListFacetSummaryDto facets = 43;
+    ResultString facet = 44;
+    DiagnosticReport diagnostics = 45;
   }
 }
 message StateChange { bool delta = 1; StatePayload payload = 2; }

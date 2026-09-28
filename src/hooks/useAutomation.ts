@@ -1,18 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-	invokeClient as invoke,
-	listenClient as listen,
-	onClientRefresh,
-	watchClient,
-} from "@/lib/client";
+import { invokeClient as invoke } from "@/lib/client";
 import { getErrorMessage } from "@/lib/errorMessage";
-import type {
-	DiagnosticReport,
-	FacetKind,
-	FacetSummary,
-	WorkflowDefinition,
-	WorkflowDefinitionSummary,
-} from "@/types/workflow";
+import type { DiagnosticReport, FacetKind } from "@/types/workflow";
+import { useStateSubscriptionResult } from "./useStateSubscription";
 
 const EMPTY_REPORT: DiagnosticReport = {
 	items: [],
@@ -24,193 +14,115 @@ const EMPTY_REPORT: DiagnosticReport = {
 export type FacetSubTab = "policy" | "knowledge" | "instruction";
 
 export function useAutomation(open: boolean) {
-	const [workflows, setWorkflows] = useState<WorkflowDefinitionSummary[]>([]);
-	const facetKind = useRef<FacetKind | null>(null);
-	const [facets, setFacets] = useState<FacetSummary[]>([]);
-	const [report, setReport] = useState<DiagnosticReport>(EMPTY_REPORT);
-	const [loading, setLoading] = useState(false);
-	const [error, setError] = useState<string | null>(null);
+	const workflowsSubscription = useStateSubscriptionResult(
+		open ? "workflows" : null,
+	);
+	const diagnosticsSubscription = useStateSubscriptionResult(
+		open ? "diagnostics" : null,
+	);
+	const [facetKind, setFacetKind] = useState<FacetKind | null>(null);
+	const facetsSubscription = useStateSubscriptionResult(
+		open && facetKind ? { kind: "facets", args: [facetKind] } : null,
+	);
+	const [operationError, setOperationError] = useState<string | null>(null);
 
-	const [selectedWorkflow, setSelectedWorkflow] =
-		useState<WorkflowDefinition | null>(null);
 	const [selectedWorkflowName, setSelectedWorkflowName] = useState<
 		string | null
+	>(null);
+	const workflows = workflowsSubscription.value ?? [];
+	const selectedSourceFormat = selectedWorkflowName
+		? workflows.find((workflow) => workflow.name === selectedWorkflowName)
+				?.sourceFormat
+		: undefined;
+	const workflowSubscription = useStateSubscriptionResult(
+		open && selectedWorkflowName
+			? { kind: "workflow", args: [selectedWorkflowName] }
+			: null,
+	);
+	const sourceSubscription = useStateSubscriptionResult(
+		open && selectedWorkflowName && selectedSourceFormat === "yaml"
+			? { kind: "workflow-source", args: [selectedWorkflowName] }
+			: null,
+	);
+	const [selectedWorkflow, setSelectedWorkflow] = useState<
+		import("@/types/workflow").WorkflowDefinition | null
 	>(null);
 	const [selectedWorkflowSource, setSelectedWorkflowSource] = useState<
 		string | null
 	>(null);
+
+	const [selectedFacet, setSelectedFacet] = useState<{
+		kind: FacetKind;
+		key: string;
+	} | null>(null);
+	const facetSubscription = useStateSubscriptionResult(
+		open && selectedFacet
+			? { kind: "facet", args: [selectedFacet.kind, selectedFacet.key] }
+			: null,
+	);
 	const [selectedFacetContent, setSelectedFacetContent] = useState<
 		string | null
 	>(null);
-	const [selectedFacetKey, setSelectedFacetKey] = useState<string | null>(null);
-	const [selectedFacetKind, setSelectedFacetKind] = useState<FacetKind | null>(
-		null,
-	);
 
 	const [externalChangeDetected, setExternalChangeDetected] = useState(false);
-
 	const clearExternalChange = useCallback(() => {
 		setExternalChangeDetected(false);
 	}, []);
-
-	const fetchAll = useCallback(async () => {
-		setLoading(true);
-		setError(null);
-		try {
-			const [wfList, diagReport] = await Promise.all([
-				invoke("list_workflows"),
-				invoke("diagnose_all_cmd"),
-			]);
-			setWorkflows(wfList);
-			setReport(diagReport);
-		} catch (e) {
-			setError(getErrorMessage(e));
-		} finally {
-			setLoading(false);
-		}
-	}, []);
-
-	const fetchFacets = useCallback(async (kind: FacetKind) => {
-		facetKind.current = kind;
-		try {
-			const list = await invoke("list_facet_summaries", {
-				kind,
-			});
-			if (facetKind.current === kind) setFacets(list);
-		} catch (e) {
-			setError(getErrorMessage(e));
-		}
-	}, []);
-
-	const refreshDiagnostics = useCallback(async () => {
-		try {
-			const diagReport = await invoke("diagnose_all_cmd");
-			setReport(diagReport);
-		} catch (e) {
-			setError(getErrorMessage(e));
-		}
-	}, []);
+	const sourceSeenFor = useRef<string | null>(null);
+	const lastSavedSource = useRef<string | null>(null);
+	const facetSeenFor = useRef<string | null>(null);
+	const lastSavedFacet = useRef<string | null>(null);
 
 	useEffect(() => {
-		if (open) {
-			fetchAll();
-		}
-		return () => {
-			setSelectedWorkflow(null);
-			setSelectedWorkflowName(null);
+		if (open) return;
+		setSelectedWorkflow(null);
+		setSelectedWorkflowName(null);
+		setSelectedWorkflowSource(null);
+		setSelectedFacet(null);
+		setSelectedFacetContent(null);
+	}, [open]);
+
+	useEffect(() => {
+		if (workflowSubscription.value !== undefined)
+			setSelectedWorkflow(workflowSubscription.value);
+	}, [workflowSubscription.value]);
+
+	useEffect(() => {
+		if (!selectedWorkflowName || selectedSourceFormat === undefined) return;
+		if (selectedSourceFormat !== "yaml") {
 			setSelectedWorkflowSource(null);
-			setSelectedFacetContent(null);
-			setSelectedFacetKey(null);
-			setSelectedFacetKind(null);
-		};
-	}, [open, fetchAll]);
+			return;
+		}
+		const source = sourceSubscription.value;
+		if (source === undefined) return;
+		if (
+			sourceSeenFor.current === selectedWorkflowName &&
+			source !== lastSavedSource.current
+		)
+			setExternalChangeDetected(true);
+		sourceSeenFor.current = selectedWorkflowName;
+		setSelectedWorkflowSource(source);
+	}, [selectedWorkflowName, selectedSourceFormat, sourceSubscription.value]);
 
-	// File watcher for workflow/facet directory changes
 	useEffect(() => {
-		if (!open) return;
-
-		let disposed = false;
-		let unlisten: (() => void) | null = null;
-		let watcherId: number | null = null;
-		let stopWatch: (() => void) | undefined;
-
-		let preparation = 0;
-		const prepareWatcher = async () => {
-			if (stopWatch) return;
-			const current = ++preparation;
-			try {
-				const dir = await invoke("get_automation_config_dir");
-				if (disposed || current !== preparation) return;
-				stopWatch = watchClient({ path: dir }, (id) => {
-					watcherId = id;
-				});
-			} catch (e) {
-				if (!disposed && current === preparation) setError(getErrorMessage(e));
-			}
-		};
-		const refresh = () => {
-			void fetchAll();
-			if (facetKind.current) void fetchFacets(facetKind.current);
-		};
-		const setup = async () => {
-			const off = await listen(
-				"file-change",
-				(event) => {
-					if (
-						!disposed &&
-						watcherId !== null &&
-						event.payload.watcher_id === watcherId
-					) {
-						setExternalChangeDetected(true);
-						refresh();
-					}
-				},
-				() => {
-					refresh();
-					void prepareWatcher();
-				},
-			);
-			if (disposed) {
-				off();
-				return;
-			}
-			unlisten = off;
-			await prepareWatcher();
-		};
-		void setup();
-
-		return () => {
-			disposed = true;
-			unlisten?.();
-			stopWatch?.();
-		};
-	}, [open, fetchAll, fetchFacets]);
+		if (!selectedFacet) return;
+		const content = facetSubscription.value;
+		if (content === undefined) return;
+		const id = `${selectedFacet.kind}/${selectedFacet.key}`;
+		if (facetSeenFor.current === id && content !== lastSavedFacet.current)
+			setExternalChangeDetected(true);
+		facetSeenFor.current = id;
+		setSelectedFacetContent(content);
+	}, [selectedFacet, facetSubscription.value]);
 
 	// --- Workflow operations ---
 
-	const selectionSequence = useRef(0);
-	const selectWorkflow = useCallback(
-		async (name: string) => {
-			const sequence = ++selectionSequence.current;
-			setSelectedWorkflowName(name);
-			setError(null);
-			try {
-				const sourceFormat =
-					workflows.find((workflow) => workflow.name === name)?.sourceFormat ??
-					"yaml";
-				if (sourceFormat === "yaml") {
-					const source = await invoke("get_workflow_source", { name });
-					if (sequence !== selectionSequence.current) return;
-					setSelectedWorkflowSource(source);
-				} else {
-					setSelectedWorkflowSource(null);
-				}
-				try {
-					const wf = await invoke("get_workflow", { name });
-					if (sequence !== selectionSequence.current) return;
-					setSelectedWorkflow(wf);
-				} catch (e) {
-					if (sequence !== selectionSequence.current) return;
-					setSelectedWorkflow(null);
-					setError(getErrorMessage(e));
-					await refreshDiagnostics();
-				}
-			} catch (e) {
-				if (sequence !== selectionSequence.current) return;
-				setSelectedWorkflow(null);
-				setSelectedWorkflowSource(null);
-				setError(getErrorMessage(e));
-			}
-		},
-		[refreshDiagnostics, workflows],
-	);
-
-	useEffect(() => {
-		if (!open || !selectedWorkflowName) return;
-		return onClientRefresh(() => {
-			void selectWorkflow(selectedWorkflowName);
-		});
-	}, [open, selectedWorkflowName, selectWorkflow]);
+	const selectWorkflow = useCallback((name: string) => {
+		setOperationError(null);
+		setExternalChangeDetected(false);
+		sourceSeenFor.current = null;
+		setSelectedWorkflowName(name);
+	}, []);
 
 	const saveWorkflowSource = useCallback(
 		async (source: string, originalName?: string) => {
@@ -227,17 +139,17 @@ export function useAutomation(open: boolean) {
 					};
 				}
 				const { workflow } = response;
+				lastSavedSource.current = source;
+				sourceSeenFor.current = workflow.name;
 				setSelectedWorkflow(workflow);
 				setSelectedWorkflowName(workflow.name);
 				setSelectedWorkflowSource(source);
-				await fetchAll();
 				return { ok: true as const, workflow };
 			} catch (e) {
-				await refreshDiagnostics();
 				return { ok: false as const, error: getErrorMessage(e) };
 			}
 		},
-		[fetchAll, refreshDiagnostics],
+		[],
 	);
 
 	const deleteWorkflow = useCallback(
@@ -249,12 +161,11 @@ export function useAutomation(open: boolean) {
 					setSelectedWorkflowName(null);
 					setSelectedWorkflowSource(null);
 				}
-				await fetchAll();
 			} catch (e) {
-				setError(getErrorMessage(e));
+				setOperationError(getErrorMessage(e));
 			}
 		},
-		[fetchAll, selectedWorkflow, selectedWorkflowName],
+		[selectedWorkflow, selectedWorkflowName],
 	);
 
 	const duplicateWorkflow = useCallback(
@@ -264,34 +175,34 @@ export function useAutomation(open: boolean) {
 					sourceName,
 					newName,
 				});
-				await fetchAll();
 				return { ok: true as const };
 			} catch (e) {
 				return { ok: false as const, error: getErrorMessage(e) };
 			}
 		},
-		[fetchAll],
+		[],
 	);
 
 	const openWorkflowInEditor = useCallback(async (name: string) => {
 		try {
 			await invoke("open_workflow_in_editor", { name });
 		} catch (e) {
-			setError(getErrorMessage(e));
+			setOperationError(getErrorMessage(e));
 		}
 	}, []);
 
 	// --- Facet operations ---
 
-	const selectFacet = useCallback(async (kind: FacetKind, key: string) => {
-		try {
-			const content = await invoke("get_facet", { kind, key });
-			setSelectedFacetContent(content);
-			setSelectedFacetKey(key);
-			setSelectedFacetKind(kind);
-		} catch (e) {
-			setError(getErrorMessage(e));
-		}
+	const selectFacet = useCallback((kind: FacetKind, key: string) => {
+		setOperationError(null);
+		setExternalChangeDetected(false);
+		facetSeenFor.current = null;
+		setSelectedFacet({ kind, key });
+	}, []);
+
+	const clearFacetSelection = useCallback(() => {
+		setSelectedFacet(null);
+		setSelectedFacetContent(null);
 	}, []);
 
 	const saveFacet = useCallback(
@@ -303,30 +214,26 @@ export function useAutomation(open: boolean) {
 					content,
 					isNew: isNew ?? null,
 				});
-				await Promise.all([fetchFacets(kind), refreshDiagnostics()]);
+				lastSavedFacet.current = content;
 				return { ok: true as const };
 			} catch (e) {
 				return { ok: false as const, error: getErrorMessage(e) };
 			}
 		},
-		[fetchFacets, refreshDiagnostics],
+		[],
 	);
 
 	const deleteFacet = useCallback(
 		async (kind: FacetKind, key: string) => {
 			try {
 				await invoke("delete_facet", { kind, key });
-				if (selectedFacetKey === key && selectedFacetKind === kind) {
-					setSelectedFacetContent(null);
-					setSelectedFacetKey(null);
-					setSelectedFacetKind(null);
-				}
-				await Promise.all([fetchFacets(kind), refreshDiagnostics()]);
+				if (selectedFacet?.key === key && selectedFacet.kind === kind)
+					clearFacetSelection();
 			} catch (e) {
-				setError(getErrorMessage(e));
+				setOperationError(getErrorMessage(e));
 			}
 		},
-		[fetchFacets, refreshDiagnostics, selectedFacetKey, selectedFacetKind],
+		[selectedFacet, clearFacetSelection],
 	);
 
 	const duplicateFacet = useCallback(
@@ -337,13 +244,12 @@ export function useAutomation(open: boolean) {
 					sourceKey,
 					newKey,
 				});
-				await Promise.all([fetchFacets(kind), refreshDiagnostics()]);
 				return { ok: true as const };
 			} catch (e) {
 				return { ok: false as const, error: getErrorMessage(e) };
 			}
 		},
-		[fetchFacets, refreshDiagnostics],
+		[],
 	);
 
 	const openFacetInEditor = useCallback(
@@ -351,7 +257,7 @@ export function useAutomation(open: boolean) {
 			try {
 				await invoke("open_facet_in_editor", { kind, key });
 			} catch (e) {
-				setError(getErrorMessage(e));
+				setOperationError(getErrorMessage(e));
 			}
 		},
 		[],
@@ -366,20 +272,33 @@ export function useAutomation(open: boolean) {
 				});
 				return rendered;
 			} catch (e) {
-				setError(getErrorMessage(e));
+				setOperationError(getErrorMessage(e));
 				return content;
 			}
 		},
 		[],
 	);
 
+	const error =
+		operationError ??
+		workflowsSubscription.error ??
+		diagnosticsSubscription.error ??
+		facetsSubscription.error ??
+		workflowSubscription.error ??
+		sourceSubscription.error ??
+		facetSubscription.error;
+
 	return {
 		workflows,
-		facets,
-		report,
-		loading,
+		facets: facetsSubscription.value ?? [],
+		report: diagnosticsSubscription.value ?? EMPTY_REPORT,
+		loading:
+			open &&
+			(workflowsSubscription.value === undefined ||
+				diagnosticsSubscription.value === undefined) &&
+			!error,
 		error,
-		setError,
+		setError: setOperationError,
 
 		externalChangeDetected,
 		clearExternalChange,
@@ -388,12 +307,10 @@ export function useAutomation(open: boolean) {
 		selectedWorkflowName,
 		selectedWorkflowSource,
 		selectedFacetContent,
-		selectedFacetKey,
-		selectedFacetKind,
+		selectedFacetKey: selectedFacet?.key ?? null,
+		selectedFacetKind: selectedFacet?.kind ?? null,
 
-		fetchAll,
-		fetchFacets,
-		refreshDiagnostics,
+		setFacetKind,
 
 		selectWorkflow,
 		saveWorkflowSource,
@@ -402,16 +319,11 @@ export function useAutomation(open: boolean) {
 		openWorkflowInEditor,
 
 		selectFacet,
+		clearFacetSelection,
 		saveFacet,
 		deleteFacet,
 		duplicateFacet,
 		openFacetInEditor,
 		renderFacetPreview,
-
-		setSelectedWorkflow,
-		setSelectedWorkflowSource,
-		setSelectedFacetContent,
-		setSelectedFacetKey,
-		setSelectedFacetKind,
 	};
 }

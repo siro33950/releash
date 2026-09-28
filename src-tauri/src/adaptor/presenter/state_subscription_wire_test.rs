@@ -561,6 +561,94 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
                 }),
             }),
         ),
+        (
+            StateValue::Workflows(vec![crate::usecase::workflow::dto::WorkflowSummaryDto {
+                name: "dev".into(),
+                description: "develop".into(),
+                builtin: false,
+                is_running: true,
+                source_format: crate::domain::workflow::WorkflowSourceFormat::Lua,
+            }]),
+            W::Workflows(wire::ListWorkflowSummaryDto {
+                items: vec![wire::WorkflowSummaryDto {
+                    name: Some("dev".into()),
+                    description: Some("develop".into()),
+                    builtin: Some(false),
+                    is_running: Some(true),
+                    source_format: Some(wire::WorkflowSourceFormat {
+                        value: Some(wire::workflow_source_format::Value::Lua as i32),
+                    }),
+                }],
+            }),
+        ),
+        (
+            StateValue::Workflow(None),
+            W::Workflow(wire::NullableWorkflowDto { value: None }),
+        ),
+        (
+            StateValue::Workflow(Some(crate::usecase::workflow::dto::WorkflowDto {
+                name: "dev".into(),
+                description: "develop".into(),
+                builtin: true,
+                source_format: crate::domain::workflow::WorkflowSourceFormat::Yaml,
+                schemas: Default::default(),
+                nodes: vec![],
+            })),
+            W::Workflow(wire::NullableWorkflowDto {
+                value: Some(wire::WorkflowDto {
+                    name: Some("dev".into()),
+                    description: Some("develop".into()),
+                    builtin: Some(true),
+                    source_format: Some(wire::WorkflowSourceFormat {
+                        value: Some(wire::workflow_source_format::Value::Yaml as i32),
+                    }),
+                    schemas: Some(Default::default()),
+                    nodes: Some(Default::default()),
+                }),
+            }),
+        ),
+        (
+            StateValue::WorkflowSource(Some("name: dev".into())),
+            W::WorkflowSource(wire::Nullablestring {
+                value: Some("name: dev".into()),
+            }),
+        ),
+        (
+            StateValue::Facets(vec![crate::usecase::workflow::dto::FacetSummaryDto {
+                key: "guide".into(),
+                kind: "policy".into(),
+                description: "guide".into(),
+                builtin: false,
+            }]),
+            W::Facets(wire::ListFacetSummaryDto {
+                items: vec![wire::FacetSummaryDto {
+                    key: Some("guide".into()),
+                    kind: Some("policy".into()),
+                    description: Some("guide".into()),
+                    builtin: Some(false),
+                }],
+            }),
+        ),
+        (
+            StateValue::Facet("# guide".into()),
+            W::Facet(wire::ResultString {
+                value: Some("# guide".into()),
+            }),
+        ),
+        (
+            StateValue::Diagnostics(crate::usecase::workflow::diagnostic_dto::DiagnosticReport {
+                items: vec![],
+                workflow_summaries: Default::default(),
+                facet_summaries: Default::default(),
+                facet_usage: Default::default(),
+            }),
+            W::Diagnostics(wire::DiagnosticReport {
+                items: Some(Default::default()),
+                workflow_summaries: Some(Default::default()),
+                facet_summaries: Some(Default::default()),
+                facet_usage: Some(Default::default()),
+            }),
+        ),
     ];
 
     for (value, expected) in values {

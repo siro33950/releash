@@ -39,12 +39,11 @@ use crate::adaptor::gateway::workflow::{
 };
 use crate::adaptor::gateway::workflow::{
     ExecutionTreeArchiveFactRepository, RepoPathsManagedWorktreeGateway,
-    RepositoryManagedWorktreeGateway, WorkflowConfigPathFileGateway,
-    WorkflowDefinitionFileRepository, WorkflowDefinitionFileSourceGateway,
-    WorkflowDiagnosticsFileGateway, WorkflowEventLogRepository,
-    WorkflowExecutionProjectionLogRepository, WorkflowExternalEditorGateway,
-    WorkflowFacetFileRepository, WorkflowRuntimeCommandGateway, WorkflowRuntimeCommandGatewayDeps,
-    WorkflowSecretSourceConfigGateway,
+    RepositoryManagedWorktreeGateway, WorkflowDefinitionFileRepository,
+    WorkflowDefinitionFileSourceGateway, WorkflowDiagnosticsFileGateway,
+    WorkflowEventLogRepository, WorkflowExecutionProjectionLogRepository,
+    WorkflowExternalEditorGateway, WorkflowFacetFileRepository, WorkflowRuntimeCommandGateway,
+    WorkflowRuntimeCommandGatewayDeps, WorkflowSecretSourceConfigGateway,
 };
 use crate::domain::app_config::{ConfigRepository, ConfigSecretRepository};
 use crate::domain::git_host::{CacheTtl, IssueInfo, PrStatus};
@@ -191,8 +190,11 @@ pub(crate) fn build_workspace_node_command_usecase(
 
 /// Test helper using the same mandatory canonical store wiring as production.
 #[cfg(test)]
-pub(crate) fn build_workflow_usecase(data_dir: impl Into<std::path::PathBuf>) -> WorkflowUsecase {
-    build_workflow_usecase_and_store(data_dir).0
+pub(crate) fn build_workflow_usecase(
+    data_dir: impl Into<std::path::PathBuf>,
+    workflows_dir: Option<std::path::PathBuf>,
+) -> WorkflowUsecase {
+    build_workflow_usecase_and_store(data_dir, workflows_dir).0
 }
 
 /// Test composition hook that exposes the single writer owned by the workflow
@@ -201,6 +203,7 @@ pub(crate) fn build_workflow_usecase(data_dir: impl Into<std::path::PathBuf>) ->
 #[cfg(test)]
 pub(crate) fn build_workflow_usecase_and_store(
     data_dir: impl Into<std::path::PathBuf>,
+    workflows_dir: Option<std::path::PathBuf>,
 ) -> (WorkflowUsecase, Arc<LocalEventStore>) {
     let data_dir = data_dir.into();
     let local_event_store =
@@ -214,6 +217,7 @@ pub(crate) fn build_workflow_usecase_and_store(
         Arc::new(EmptySecretSourceGateway),
         local_event_store.clone(),
         None,
+        workflows_dir,
     )
     .0;
     (workflow_usecase, local_event_store)
@@ -243,6 +247,7 @@ pub(crate) fn build_workflow_services_with_repository_worktrees(
         Arc::new(WorkflowSecretSourceConfigGateway::new(config_secrets)),
         local_event_store,
         Some(processes),
+        None,
     )
 }
 
@@ -330,6 +335,7 @@ pub(crate) fn build_canonical_workflow_read_usecase(
 
 /// gateway を呼び出し側から差し替えられる workflow composition。production 配線と
 /// acceptance harness の双方がこの一箇所を通る。
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_workflow_services_with_gateways(
     failures: Arc<crate::adaptor::gateway::failure_records::FailureRecordStore>,
     data_dir: impl Into<std::path::PathBuf>,
@@ -338,9 +344,11 @@ pub(crate) fn build_workflow_services_with_gateways(
     secrets: Arc<dyn SecretSourceGateway>,
     store: Arc<LocalEventStore>,
     processes: Option<Arc<dyn crate::domain::workflow::NodeProcessReader>>,
+    workflows_dir: Option<std::path::PathBuf>,
 ) -> (WorkflowUsecase, Arc<dyn WorkspaceQueryService>) {
     let data_dir = data_dir.into();
-    let workflows_dir = WorkflowDefinitionFileRepository::default_workflows_dir();
+    let workflows_dir =
+        workflows_dir.unwrap_or_else(WorkflowDefinitionFileRepository::default_workflows_dir);
     let facets_base_dir = workflows_dir.clone();
     let execution_archives = Arc::new(ExecutionTreeArchiveFactRepository::new(
         store.clone(),
@@ -374,7 +382,6 @@ pub(crate) fn build_workflow_services_with_gateways(
         workflows_dir.clone(),
         facets_base_dir,
     ));
-    let config_paths = Arc::new(WorkflowConfigPathFileGateway::new(workflows_dir));
     let query = WorkflowQueryService::new(
         definitions.clone(),
         definition_sources.clone(),
@@ -390,7 +397,6 @@ pub(crate) fn build_workflow_services_with_gateways(
         worktrees.clone(),
         editors,
         diagnostics,
-        config_paths,
         secrets,
         execution_archives.clone(),
         workspace_nodes,
@@ -599,6 +605,7 @@ mod tests {
             Arc::new(NoopWorkflowExternalEditorGateway),
             Arc::new(EmptySecretSourceGateway),
             store.clone(),
+            None,
             None,
         );
         let standalone =

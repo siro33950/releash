@@ -115,3 +115,58 @@ fn test_review購読対象_baseとsectionを検証して往復する() {
         );
     }
 }
+
+#[test]
+fn test_automation購読対象_facet種別を検証して往復する() {
+    use crate::domain::workflow::FacetKind;
+    // Given / When / Then
+    for (name, args, target) in [
+        ("workflows", vec![], SubscriptionTarget::Workflows),
+        (
+            "workflow",
+            vec!["dev"],
+            SubscriptionTarget::Workflow("dev".into()),
+        ),
+        (
+            "workflow-source",
+            vec!["dev"],
+            SubscriptionTarget::WorkflowSource("dev".into()),
+        ),
+        (
+            "facets",
+            vec!["policy"],
+            SubscriptionTarget::Facets(FacetKind::Policy),
+        ),
+        (
+            "facet",
+            vec!["instruction", "review:guide"],
+            SubscriptionTarget::Facet(FacetKind::Instruction, "review:guide".into()),
+        ),
+        ("diagnostics", vec![], SubscriptionTarget::Diagnostics),
+    ] {
+        let parsed = SubscriptionTarget::from_parts(name, &args).unwrap();
+        assert_eq!(parsed, target);
+        assert_eq!(
+            parsed.parts(),
+            (
+                name,
+                args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>()
+            )
+        );
+        assert_eq!(SubscriptionTarget::parse(&parsed.to_string()), Ok(parsed));
+    }
+    for (name, args) in [
+        ("workflows", vec!["extra"]),
+        ("workflow", vec![]),
+        ("facets", vec!["policies"]),
+        ("facets", vec!["Policy"]),
+        ("facet", vec!["policy"]),
+        ("facet", vec!["unknown", "key"]),
+        ("diagnostics", vec!["/dir"]),
+    ] {
+        assert!(
+            SubscriptionTarget::from_parts(name, &args).is_err(),
+            "{name} {args:?}"
+        );
+    }
+}

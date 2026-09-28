@@ -141,6 +141,7 @@ pub(crate) struct WorkspaceStateReads {
     pub comments: Arc<ReviewCommentUsecase>,
     pub data_dir: PathBuf,
     pub review_comments_dir: PathBuf,
+    pub workflows_dir: PathBuf,
 }
 
 impl WorkspaceStateReads {
@@ -196,6 +197,15 @@ impl WorkspaceStateReads {
                 return Ok(StateValue::SessionNode(
                     self.workflow
                         .get_workspace_session_node_id(p, id)
+                        .await
+                        .map_err(error)?,
+                ))
+            }
+            T::Workflows => {
+                return Ok(StateValue::Workflows(
+                    self.workflow
+                        .read_usecase()
+                        .list_workflow_summaries()
                         .await
                         .map_err(error)?,
                 ))
@@ -295,8 +305,31 @@ impl WorkspaceStateReads {
                     .map(ReviewThreadDto::from)
                     .collect(),
             ),
+            T::Workflow(name) => StateValue::Workflow(self.workflow.get_workflow_dto(name)),
+            T::WorkflowSource(name) => {
+                StateValue::WorkflowSource(self.workflow.get_workflow_source(name).map_err(error)?)
+            }
+            T::Facets(kind) => StateValue::Facets(
+                self.workflow
+                    .list_facet_summaries(*kind)
+                    .map_err(error)?
+                    .into_iter()
+                    .map(crate::usecase::workflow::dto::facet_summary_to_dto)
+                    .collect(),
+            ),
+            T::Facet(kind, key) => {
+                StateValue::Facet(self.workflow.get_facet(*kind, key).map_err(error)?)
+            }
+            T::Diagnostics => StateValue::Diagnostics(
+                self.workflow
+                    .diagnose_all(
+                        crate::usecase::workflow::ports::WorkflowDiagnosticsTarget::AppliedConfigDirectory,
+                    )
+                    .map_err(error)?,
+            ),
             T::Failures(..)
             | T::Terminal(_)
+            | T::Workflows
             | T::AgentSession(_)
             | T::SessionHistory(_, _)
             | T::Selection(_, _)
@@ -320,6 +353,9 @@ pub(crate) trait StateSubscriptionRead: Send + Sync {
     );
     fn repositories(&self) -> Vec<String>;
     fn review_comments_dir(&self) -> String {
+        String::new()
+    }
+    fn workflows_dir(&self) -> String {
         String::new()
     }
 }
@@ -371,6 +407,9 @@ impl StateSubscriptionRead for WorkspaceStateReads {
     }
     fn review_comments_dir(&self) -> String {
         self.review_comments_dir.to_string_lossy().into_owned()
+    }
+    fn workflows_dir(&self) -> String {
+        self.workflows_dir.to_string_lossy().into_owned()
     }
 }
 

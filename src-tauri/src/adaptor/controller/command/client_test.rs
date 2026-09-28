@@ -140,13 +140,23 @@ parity!(
     json!({}),
     outcome(invoke_tauri(&app, "get_provider_availability", json!({})).await)
 );
-parity!(
-    test_workflow_protoはusecase結果と一致する,
-    app,
-    "list_workflows",
-    json!({}),
-    outcome(invoke_tauri(&app, "list_workflows", json!({})).await)
-);
+#[test]
+fn test_automation_読み取りrpcは購読への移設後に拒否する() {
+    for (command, args) in [
+        ("list_workflows", json!({})),
+        ("get_workflow", json!({"name":"dev"})),
+        ("get_workflow_source", json!({"name":"dev"})),
+        ("list_facet_summaries", json!({"kind":"policy"})),
+        ("get_facet", json!({"kind":"policy","key":"guide"})),
+        ("diagnose_all_cmd", json!({})),
+        ("get_automation_config_dir", json!({})),
+    ] {
+        assert!(
+            wire::CommandRequest::from_value(command, args).is_err(),
+            "{command}"
+        );
+    }
+}
 #[test]
 fn test_workspace_tree_読み取りrpcは購読への移設後に拒否する() {
     assert!(wire::CommandRequest::from_value(
@@ -292,7 +302,7 @@ async fn test_クライアントdispatch_proto全commandの登録と引数検証
     // Given
     let (_app, dispatch) = parity_app();
     // When / Then
-    assert_eq!(wire::COMMAND_NAMES.len(), 107);
+    assert_eq!(wire::COMMAND_NAMES.len(), 100);
     assert!(wire::COMMAND_NAMES.contains(&"refresh_workspaces"));
     for removed in [
         "get_terminal_surface",
@@ -335,6 +345,13 @@ async fn test_クライアントdispatch_proto全commandの登録と引数検証
         "list_pending_application_attempts",
         "acknowledge_application_attempt",
         "compact_application_shutdown_details",
+        "list_workflows",
+        "get_workflow",
+        "get_workflow_source",
+        "list_facet_summaries",
+        "get_facet",
+        "diagnose_all_cmd",
+        "get_automation_config_dir",
     ] {
         assert!(!wire::COMMAND_NAMES.contains(&removed));
         assert!(!dispatch.contains(removed));

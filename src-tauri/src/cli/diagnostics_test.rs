@@ -1,6 +1,5 @@
 use super::*;
 
-use crate::adaptor::controller::client::workflow::diagnostics::diagnose_all_impl;
 use crate::cli::test_helpers::start_local_api_test_host as start_host;
 
 const VALID_WORKFLOW: &str = r#"name: valid-fixture
@@ -200,7 +199,7 @@ fn test_診断_cli_sourceにdiagnostic_code_literalを持たない() {
 }
 
 #[test]
-fn test_診断_ui経路は存在しない指定directoryをerrorにする() {
+fn test_診断_usecase経路は存在しない指定directoryをerrorにする() {
     // Given
     let client_data = tempfile::tempdir().unwrap();
     let query_data = tempfile::tempdir().unwrap();
@@ -214,11 +213,13 @@ fn test_診断_ui経路は存在しない指定directoryをerrorにする() {
 
     // When
     let error = host
-        .server_runtime
-        .block_on(diagnose_all_impl(
-            &host.workflow,
-            Some(missing.to_string_lossy().into_owned()),
-        ))
+        .workflow
+        .diagnose_all(
+            crate::usecase::workflow::ports::WorkflowDiagnosticsTarget::from_optional_directory(
+                Some(missing.to_string_lossy().into_owned()),
+            )
+            .unwrap(),
+        )
         .unwrap_err();
 
     // Then

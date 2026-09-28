@@ -243,6 +243,12 @@ export type StateValues = {
 	"review-snapshot": import("@/types/review").ReviewSnapshot;
 	"review-file-view": import("@/types/review").ReviewFileView;
 	"review-threads": import("@/types/diffComment").ReviewDiscussionThread[];
+	workflows: import("@/generated/client_types").WorkflowSummaryDto[];
+	workflow: import("@/generated/client_types").WorkflowDto | null;
+	"workflow-source": string | null;
+	facets: import("@/generated/client_types").FacetSummaryDto[];
+	facet: string;
+	diagnostics: import("@/generated/client_types").DiagnosticReport;
 };
 export type StateTarget<K extends keyof StateValues> =
 	| K

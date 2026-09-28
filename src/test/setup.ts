@@ -96,13 +96,28 @@ vi.mock("@/lib/client", async (importOriginal) => {
 						"issues",
 						"worktrees",
 						"review-threads",
+						"workflows",
+						"facets",
 					].includes(name)
 				)
 					onValue([]);
 				else if (name === "session-history")
 					onValue({ items: [], hasMore: false });
+				else if (name === "diagnostics")
+					onValue({
+						items: [],
+						workflow_summaries: {},
+						facet_summaries: {},
+						facet_usage: {},
+					});
 				else if (
-					["workspace-state", "agent-session", "node-detail"].includes(name)
+					[
+						"workspace-state",
+						"agent-session",
+						"node-detail",
+						"workflow",
+						"workflow-source",
+					].includes(name)
 				)
 					onValue(null);
 				return () => {};

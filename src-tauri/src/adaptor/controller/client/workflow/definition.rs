@@ -4,59 +4,8 @@ use crate::adaptor::presenter::client::{
     SaveWorkflowSuccess,
 };
 use crate::adaptor::presenter::error::AppError;
-use crate::usecase::workflow::dto::{
-    workflow_to_dto, workflow_to_dto_with_source_format, WorkflowDto, WorkflowSummaryDto,
-};
+use crate::usecase::workflow::dto::workflow_to_dto;
 use crate::usecase::workflow::ports::WorkflowSourceSaveError;
-
-pub(crate) async fn list_workflows_shared(
-    state: &AppState,
-) -> Result<Vec<WorkflowSummaryDto>, AppError> {
-    let read = state.workflow_usecase.read_usecase();
-    read.list_workflow_summaries()
-        .await
-        .map_err(AppError::from_failure)
-}
-
-pub(crate) async fn get_workflow_shared(
-    state: &AppState,
-    name: String,
-) -> Result<WorkflowDto, AppError> {
-    let query = state.workflow_usecase.clone();
-    crate::common::operation_context::spawn_blocking(move || {
-        query
-            .get_workflow(&name)
-            .map_err(AppError::from_failure)?
-            .ok_or_else(|| {
-                AppError::missing_target(format!("ワークフロー '{name}' が見つかりません"))
-            })
-            .and_then(|workflow| {
-                query
-                    .get_workflow_source_format(&name)
-                    .map(|format| workflow_to_dto_with_source_format(&workflow, format))
-                    .map_err(AppError::from_failure)
-            })
-    })
-    .await
-    .map_err(|e| AppError::new(format!("task join error: {e}")))?
-}
-
-pub(crate) async fn get_workflow_source_shared(
-    state: &AppState,
-    name: String,
-) -> Result<String, AppError> {
-    let query = state.workflow_usecase.clone();
-    crate::common::operation_context::spawn_blocking(move || {
-        query
-            .get_workflow_source(&name)
-            .map_err(AppError::from_failure)?
-            .ok_or_else(|| {
-                AppError::missing_target(format!("ワークフロー '{name}' が見つかりません"))
-            })
-    })
-    .await
-    .map_err(|e| AppError::new(format!("task join error: {e}")))?
-}
 
 pub(crate) async fn save_workflow_source_shared(
     state: &AppState,

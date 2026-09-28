@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { setTimeout } from "node:timers/promises";
 import test from "node:test";
-import { accessibility, alive, connect, dataDir, discovery, launchctl, pair, processes, quit, requireDisposableAccount, service, start, tray, waitFor } from "./helpers/desktop-bundle.mjs";
+import { accessibility, alive, connect, dataDir, discovery, launchctl, pair, processes, quit, requireDisposableAccount, service, start, tray, waitFor, workflowsDir } from "./helpers/desktop-bundle.mjs";
 
 // Run after `pnpm build:desktop:acceptance` in a disposable macOS account.
 // The copied .app is the only test input; no CARGO_BIN_EXE path is injected.
@@ -38,7 +38,7 @@ test("配布.appの起動・最小化・閉鎖後のworkflow継続・本番Resta
         execFileSync("/usr/bin/git", ["init", worktreePath]);
         await client.call("client", "add_repo_path", { path: worktreePath });
         const workflowName = basename(directory);
-        const sourceFile = join(await client.call("client", "get_automation_config_dir"), `${workflowName}.yml`);
+        const sourceFile = join(workflowsDir, `${workflowName}.yml`);
         writeFileSync(sourceFile, `name: ${workflowName}\ndescription: window close acceptance\nnodes:\n  main:\n    command: printf running > window-close-running; while [ ! -f window-close-finish ]; do sleep 0.1; done\n`, { flag: "wx" });
         workflowFile = sourceFile;
         const executionId = await client.call("client", "start_workflow", { workflowName, worktreePath });

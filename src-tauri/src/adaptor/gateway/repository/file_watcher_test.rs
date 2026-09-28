@@ -72,8 +72,9 @@ fn test_変更通知_存在しないpathをスラッシュへ統一する() {
 }
 
 #[tokio::test]
-async fn test_履歴監視_未作成のディレクトリの生成を検知して購読へ通知する() {
+async fn test_木監視_未作成のディレクトリの生成を検知して変化を通知する() {
     use super::*;
+    // Given
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().canonicalize().unwrap().join("history");
     let (sender, mut changes) = tokio::sync::mpsc::unbounded_channel();
@@ -81,6 +82,7 @@ async fn test_履歴監視_未作成のディレクトリの生成を検知し�
         Arc::new(FileWatcherManager::default()),
         Arc::new(crate::infrastructure::push::PushSink::new()),
     );
+    // When
     let id = gateway
         .start_tree(
             path.to_str().unwrap(),
@@ -89,7 +91,8 @@ async fn test_履歴監視_未作成のディレクトリの生成を検知し�
             }),
         )
         .unwrap();
-    assert!(changes.try_recv().is_ok());
+    // Then
+    changes.try_recv().unwrap();
     std::fs::create_dir(&path).unwrap();
     std::fs::write(path.join("session.json"), "{}").unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(5), changes.recv())

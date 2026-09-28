@@ -5,6 +5,7 @@ use crate::adaptor::gateway::{
     repository::{repo_paths::RepoPathsGateway, scanner::DefaultRepositoryScanner, state::*},
 };
 use crate::domain::git_host::{CacheTtl, GitHostError, GitHostProvider, IssueInfo, PrStatus};
+use crate::domain::workflow::FacetKind;
 use crate::test_support::state_subscription::start_read;
 use crate::test_support::state_subscription::StateSubscriptionEvent;
 use crate::usecase::agent_session::*;
@@ -17,6 +18,7 @@ use crate::usecase::state_subscription::{
     StateChangeSource, StateReadFailure, StateSubscriptionOutputRef, StateSubscriptionRead,
     StateSubscriptionUsecase, StateValue, SubscriptionTarget, WorkspaceStateReads,
 };
+use crate::usecase::workflow::ports::WorkflowDiagnosticsTarget;
 use crate::usecase::workspace_tree::WorkspaceListUsecase;
 use futures_util::StreamExt;
 use parking_lot::Mutex;
@@ -178,7 +180,25 @@ impl Fixture {
             ),
             Arc::new(FsWorktreePathNormalizer),
         ));
-        let workflow = Arc::new(wiring::build_workflow_usecase(root.join("data")));
+        let workflows_dir = root.join("workflows");
+        std::fs::create_dir_all(workflows_dir.join("instructions")).unwrap();
+        std::fs::write(
+            workflows_dir.join("fixture.yml"),
+            "name: fixture\ndescription: fixture workflow\nnodes:\n  main:\n    session:\n      provider: claude\n      facets:\n        instruction: fixture-instruction\n",
+        )
+        .unwrap();
+        std::fs::write(workflows_dir.join("broken.yml"), "name: [").unwrap();
+        std::fs::write(
+            workflows_dir
+                .join("instructions")
+                .join("fixture-instruction.md"),
+            "# fixture instruction\n",
+        )
+        .unwrap();
+        let workflow = Arc::new(wiring::build_workflow_usecase(
+            root.join("data"),
+            Some(workflows_dir.clone()),
+        ));
         let issues = Arc::new(Issues::default());
         *issues.values.lock() = vec![issue(1)];
         let git_host = Arc::new(
@@ -244,6 +264,7 @@ impl Fixture {
             comments: Arc::new(wiring::build_review_comment_usecase()),
             data_dir: root.to_path_buf(),
             review_comments_dir: crate::adaptor::gateway::comment::state_dir(&root),
+            workflows_dir: workflows_dir.clone(),
         };
         Self {
             subscriptions: subscriptions.with_reads(Arc::new(reads.clone()), None, vec![]),
@@ -376,10 +397,78 @@ async fn test_状態読取_全対象を対応するサービスへ引数付き�
             T::WorkspaceState("repo".into(), p.clone()),
             StateValue::WorkspaceState(Some(workspace)),
         ),
+        (
+            T::Workflows,
+            StateValue::Workflows(
+                r.workflow
+                    .read_usecase()
+                    .list_workflow_summaries()
+                    .await
+                    .unwrap(),
+            ),
+        ),
+        (
+            T::Workflow("fixture".into()),
+            StateValue::Workflow(r.workflow.get_workflow_dto("fixture")),
+        ),
+        (T::Workflow("broken".into()), StateValue::Workflow(None)),
+        (T::Workflow("missing".into()), StateValue::Workflow(None)),
+        (
+            T::WorkflowSource("fixture".into()),
+            StateValue::WorkflowSource(r.workflow.get_workflow_source("fixture").unwrap()),
+        ),
+        (
+            T::Facets(FacetKind::Instruction),
+            StateValue::Facets(
+                r.workflow
+                    .list_facet_summaries(FacetKind::Instruction)
+                    .unwrap()
+                    .into_iter()
+                    .map(crate::usecase::workflow::dto::facet_summary_to_dto)
+                    .collect(),
+            ),
+        ),
+        (
+            T::Facet(FacetKind::Instruction, "fixture-instruction".into()),
+            StateValue::Facet("# fixture instruction\n".into()),
+        ),
+        (
+            T::Diagnostics,
+            StateValue::Diagnostics(
+                r.workflow
+                    .diagnose_all(WorkflowDiagnosticsTarget::AppliedConfigDirectory)
+                    .unwrap(),
+            ),
+        ),
     ];
     for (target, expected) in cases {
-        assert_eq!(r.read(&target).await.unwrap(), expected, "{target}");
+        let value = r
+            .read(&target)
+            .await
+            .unwrap_or_else(|error| panic!("{target}: {error}"));
+        assert_eq!(value, expected, "{target}");
     }
+    let StateValue::Workflows(workflows) = r.read(&T::Workflows).await.unwrap() else {
+        unreachable!()
+    };
+    assert!(workflows.iter().any(|workflow| workflow.name == "fixture"));
+    let StateValue::Workflow(Some(fixture_workflow)) =
+        r.read(&T::Workflow("fixture".into())).await.unwrap()
+    else {
+        panic!("fixture workflow is loadable")
+    };
+    assert_eq!(fixture_workflow.name, "fixture");
+    let StateValue::Diagnostics(report) = r.read(&T::Diagnostics).await.unwrap() else {
+        unreachable!()
+    };
+    assert!(report.workflow_summaries.contains_key("broken"));
+    assert!(matches!(
+        r.read(&T::Facet(FacetKind::Instruction, "missing-facet".into()))
+            .await
+            .unwrap_err()
+            .source,
+        StateReadFailure::Workflow(_)
+    ));
     assert_eq!(
         *fixture.sessions.calls.lock(),
         ["missing-session".to_string(), format!("{p}:120")]
@@ -479,6 +568,7 @@ async fn test_終了済み実行木のarchiveとrestore_取り直しなしでツ
             Arc::new(NoopWorkflowExternalEditorGateway),
             Arc::new(EmptySecretSourceGateway),
             archive.store.clone(),
+            None,
             None,
         )
         .0,
@@ -636,7 +726,7 @@ async fn test_失敗購読_node行から実行idの失敗と解消を受け取�
     // Given
     let fixture = Fixture::new();
     let (workflow, store) =
-        wiring::build_workflow_usecase_and_store(fixture._directory.path().join("failures"));
+        wiring::build_workflow_usecase_and_store(fixture._directory.path().join("failures"), None);
     seed_workflow_session_facts(
         &store,
         WorkflowSessionFactSeed {

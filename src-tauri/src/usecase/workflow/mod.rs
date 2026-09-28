@@ -39,8 +39,8 @@ use crate::domain::workflow::{
     WorkflowDefinitionRepository, WorkflowError, WorkflowExecutionSummary, WorkflowPageRequest,
 };
 use crate::usecase::workflow::ports::{
-    ExternalEditorGateway, WorkflowConfigPathGateway, WorkflowDefinitionSourceGateway,
-    WorkflowDiagnosticsGateway, WorkflowDiagnosticsTarget, WorkflowSourceSaveError,
+    ExternalEditorGateway, WorkflowDefinitionSourceGateway, WorkflowDiagnosticsGateway,
+    WorkflowDiagnosticsTarget, WorkflowSourceSaveError,
 };
 
 use definition::WorkflowDefinitionUsecase;
@@ -193,7 +193,6 @@ pub struct WorkflowUsecase {
     output: WorkflowOutputUsecase,
     worktrees: std::sync::Arc<dyn ManagedWorktreeGateway>,
     editors: std::sync::Arc<dyn ExternalEditorGateway>,
-    config_paths: std::sync::Arc<dyn WorkflowConfigPathGateway>,
     execution_archives: std::sync::Arc<dyn ExecutionTreeArchiveRepository>,
     workspace_nodes: std::sync::Arc<dyn crate::domain::workspace_tree::WorkspaceTreeRepository>,
     workspace_query: std::sync::Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
@@ -210,7 +209,6 @@ impl WorkflowUsecase {
         worktrees: std::sync::Arc<dyn ManagedWorktreeGateway>,
         editors: std::sync::Arc<dyn ExternalEditorGateway>,
         diagnostics: std::sync::Arc<dyn WorkflowDiagnosticsGateway>,
-        config_paths: std::sync::Arc<dyn WorkflowConfigPathGateway>,
         secrets: std::sync::Arc<dyn SecretSourceGateway>,
         execution_archives: std::sync::Arc<dyn ExecutionTreeArchiveRepository>,
         workspace_nodes: std::sync::Arc<dyn crate::domain::workspace_tree::WorkspaceTreeRepository>,
@@ -233,7 +231,6 @@ impl WorkflowUsecase {
             output,
             worktrees,
             editors,
-            config_paths,
             execution_archives,
             workspace_nodes,
             workspace_query,
@@ -329,22 +326,24 @@ impl WorkflowUsecase {
         self.worktrees.resolve(worktree_path)
     }
 
-    pub fn get_workflow(
-        &self,
-        file_stem: &str,
-    ) -> Result<Option<WorkflowDefinition>, WorkflowError> {
-        self.query.get_workflow(file_stem)
-    }
-
     pub fn get_workflow_source(&self, file_stem: &str) -> Result<Option<String>, WorkflowError> {
         self.query.get_workflow_source(file_stem)
     }
 
-    pub fn get_workflow_source_format(
-        &self,
-        file_stem: &str,
-    ) -> Result<crate::domain::workflow::WorkflowSourceFormat, WorkflowError> {
-        self.query.get_workflow_source_format(file_stem)
+    /// 定義が無い・読み込めないときは `None`。理由は診断が運ぶ。
+    pub fn get_workflow_dto(&self, file_stem: &str) -> Option<dto::WorkflowDto> {
+        let workflow = match self.query.get_workflow(file_stem) {
+            Ok(workflow) => workflow?,
+            Err(error) => {
+                log::warn!("Workflow '{file_stem}' is not loadable: {error}");
+                return None;
+            }
+        };
+        let format = self
+            .query
+            .get_workflow_source_format(file_stem)
+            .unwrap_or(crate::domain::workflow::WorkflowSourceFormat::Yaml);
+        Some(dto::workflow_to_dto_with_source_format(&workflow, format))
     }
 
     pub fn get_facet(&self, kind: FacetKind, key: &str) -> Result<String, WorkflowError> {
@@ -429,10 +428,6 @@ impl WorkflowUsecase {
         self.read.diagnose_all(target)
     }
 
-    pub fn automation_config_dir(&self) -> Result<String, WorkflowError> {
-        self.config_paths.automation_config_dir()
-    }
-
     pub fn render_facet_preview(
         &self,
         content: &str,
@@ -470,9 +465,8 @@ mod tests {
         WorkflowSummary,
     };
     use crate::usecase::workflow::ports::{
-        ExternalEditorGateway, WorkflowConfigPathGateway, WorkflowDiagnosticsGateway,
-        WorkflowDiagnosticsTarget, WorkflowEventDraft, WorkflowEventRepository,
-        WorkflowExecutionProjectionRepository,
+        ExternalEditorGateway, WorkflowDiagnosticsGateway, WorkflowDiagnosticsTarget,
+        WorkflowEventDraft, WorkflowEventRepository, WorkflowExecutionProjectionRepository,
     };
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
@@ -743,14 +737,6 @@ mod tests {
         }
     }
 
-    struct FakeConfigPathGateway;
-
-    impl WorkflowConfigPathGateway for FakeConfigPathGateway {
-        fn automation_config_dir(&self) -> Result<String, WorkflowError> {
-            Ok("/automation".to_string())
-        }
-    }
-
     struct FakeSecretSourceGateway;
 
     impl SecretSourceGateway for FakeSecretSourceGateway {
@@ -863,7 +849,6 @@ mod tests {
                 Arc::new(FakeManagedWorktreeGateway),
                 editors.clone(),
                 diagnostics.clone(),
-                Arc::new(FakeConfigPathGateway),
                 Arc::new(FakeSecretSourceGateway),
                 Arc::new(NoopArchiveRepository),
                 workspace_nodes.clone(),
@@ -1221,16 +1206,6 @@ mod tests {
         assert_eq!(
             fixture.diagnostics.targets(),
             vec![WorkflowDiagnosticsTarget::AppliedConfigDirectory]
-        );
-    }
-
-    #[test]
-    fn config_path_delegates_to_gateway() {
-        let fixture = Fixture::new();
-
-        assert_eq!(
-            fixture.usecase.automation_config_dir().unwrap(),
-            "/automation"
         );
     }
 }

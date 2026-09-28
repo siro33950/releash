@@ -8,7 +8,6 @@ mod execution_parent_wire;
 mod predicate_wire;
 
 pub(crate) mod builtin;
-mod config_path_gateway;
 mod definition_repository;
 pub(crate) mod diagnostics;
 mod diagnostics_gateway;
@@ -49,7 +48,6 @@ pub(crate) mod workflow_host;
 pub(crate) mod worktree_context;
 mod worktree_gateway;
 
-pub(crate) use config_path_gateway::WorkflowConfigPathFileGateway;
 pub(crate) use definition_repository::{
     WorkflowDefinitionFileRepository, WorkflowDefinitionFileSourceGateway,
 };

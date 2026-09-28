@@ -1,58 +1,34 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { invokeClient as invoke } from "@/lib/client";
 import { getErrorMessage } from "@/lib/errorMessage";
-import type { WorkflowDefinitionSummary } from "@/types/workflow";
+import { useStateSubscriptionResult } from "./useStateSubscription";
 
 export function useWorkflowConfig(open: boolean) {
-	const [workflows, setWorkflows] = useState<WorkflowDefinitionSummary[]>([]);
-	const [loading, setLoading] = useState(false);
-	const [error, setError] = useState<string | null>(null);
+	const subscription = useStateSubscriptionResult(open ? "workflows" : null);
+	const [operationError, setOperationError] = useState<string | null>(null);
 
-	const fetchWorkflows = useCallback(async () => {
-		setLoading(true);
-		setError(null);
+	const deleteWorkflow = useCallback(async (name: string) => {
+		setOperationError(null);
 		try {
-			const list = await invoke("list_workflows");
-			setWorkflows(list);
+			await invoke("delete_workflow", { name });
 		} catch (e) {
-			setError(getErrorMessage(e));
-		} finally {
-			setLoading(false);
+			setOperationError(getErrorMessage(e));
 		}
 	}, []);
 
-	useEffect(() => {
-		if (open) {
-			fetchWorkflows();
-		}
-	}, [open, fetchWorkflows]);
-
-	const deleteWorkflow = useCallback(
-		async (name: string) => {
-			setError(null);
-			try {
-				await invoke("delete_workflow", { name });
-				await fetchWorkflows();
-			} catch (e) {
-				setError(getErrorMessage(e));
-			}
-		},
-		[fetchWorkflows],
-	);
-
 	const openInEditor = useCallback(async (name: string) => {
-		setError(null);
+		setOperationError(null);
 		try {
 			await invoke("open_workflow_in_editor", { name });
 		} catch (e) {
-			setError(getErrorMessage(e));
+			setOperationError(getErrorMessage(e));
 		}
 	}, []);
 
 	return {
-		workflows,
-		loading,
-		error,
+		workflows: subscription.value ?? [],
+		loading: open && subscription.value === undefined && !subscription.error,
+		error: operationError ?? subscription.error,
 		deleteWorkflow,
 		openInEditor,
 	};

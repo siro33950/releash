@@ -21,7 +21,8 @@ async fn test_archive_restore認可_別名は受理し非管理対象と別workt
     let outside_path = outside.path().canonicalize().unwrap();
     let managed_id = "agent-session-00000000000040008000000000000001";
     let unmanaged_id = "agent-session-00000000000040008000000000000002";
-    let (mut usecase, store) = build_workflow_usecase_and_store(directory.path().join("data"));
+    let (mut usecase, store) =
+        build_workflow_usecase_and_store(directory.path().join("data"), None);
     usecase.worktrees = Arc::new(RepoPathsManagedWorktreeGateway::new(
         Arc::new(build_repository_usecase()),
         vec![repo_dir.path().to_str().unwrap().to_string()],

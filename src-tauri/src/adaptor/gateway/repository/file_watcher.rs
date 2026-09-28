@@ -5,7 +5,7 @@ use crate::adaptor::gateway::push::BackendPush;
 use crate::adaptor::gateway::repository::watch::{
     canonicalize_event_path, generate_watcher_id, FileChangeEvent,
 };
-use crate::domain::repository::file_watcher::FileWatchGateway;
+use crate::domain::repository::file_watcher::{FileWatchGateway, WatchChangeHandler};
 use crate::infrastructure::file_watcher::FileWatcherManager;
 
 pub(crate) struct FileWatcherGateway {
@@ -32,11 +32,7 @@ impl FileWatchGateway for FileWatcherGateway {
                     .emit(sink.as_ref());
             })
     }
-    fn start_tree(
-        &self,
-        path: &str,
-        on_change: Arc<dyn Fn() + Send + Sync>,
-    ) -> Result<u64, String> {
+    fn start_tree(&self, path: &str, on_change: WatchChangeHandler) -> Result<u64, String> {
         let id = generate_watcher_id();
         let path = std::path::absolute(path).map_err(|error| error.to_string())?;
         let watch_path = path

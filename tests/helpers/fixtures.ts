@@ -171,15 +171,14 @@ const baseIpcHandler: Record<string, unknown> = {
 	save_workspace_state: null,
 
 	// Workflow
-	list_workflows: [],
-	get_workflow_config: { approval_auto_approve: false },
-	get_automation_config_dir: "/test/automation",
-	diagnose_all_cmd: {
+	workflows: [],
+	diagnostics: {
 		items: [],
 		workflow_summaries: {},
 		facet_summaries: {},
 		facet_usage: {},
 	},
+	get_workflow_config: { approval_auto_approve: false },
 	start_workflow: null,
 	abort_workflow: null,
 	approve_workflow_node: null,
@@ -281,7 +280,7 @@ export function buildMockConfig(
 	overrides: Record<string, unknown> = {},
 ): MockConfig {
 	const values = { ...baseIpcHandler, ...overrides };
-    const stateNames = ["repository-paths", "workspaces", "selection", "node-detail", "agent-session", "session-node", "session-history", "providers", "branches", "branch-base", "branch-status", "current-branch", "issues", "worktrees", "repository-root", "startup-repository", "workspace-state", "review-snapshot", "review-file-view", "review-threads"];
+    const stateNames = ["repository-paths", "workspaces", "selection", "node-detail", "agent-session", "session-node", "session-history", "providers", "branches", "branch-base", "branch-status", "current-branch", "issues", "worktrees", "repository-root", "startup-repository", "workspace-state", "review-snapshot", "review-file-view", "review-threads", "workflows", "workflow", "workflow-source", "facets", "facet", "diagnostics"];
     const states: Record<string, unknown> = { "repository-root": "/test/repo", selection: null };
     for (const kind of stateNames) {
         if (kind in values) { states[kind] = values[kind]; delete values[kind]; }

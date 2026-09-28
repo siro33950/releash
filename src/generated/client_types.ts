@@ -633,6 +633,240 @@ export type ReviewResolveInfoDto = {
 	resolvedAt: number;
 };
 
+export type ListWorkflowSummaryDto = Array<WorkflowSummaryDto>;
+
+export type WorkflowSummaryDto = {
+	name: string;
+	description: string;
+	builtin: boolean;
+	is_running: boolean;
+	sourceFormat: WorkflowSourceFormat;
+};
+
+export type WorkflowSourceFormat = "yaml" | "lua";
+
+export type NullableWorkflowDto = WorkflowDto | null;
+
+export type WorkflowDto = {
+	name: string;
+	description: string;
+	builtin: boolean;
+	sourceFormat: WorkflowSourceFormat;
+	schemas?: WorkflowValueObject;
+	nodes: ListNodeDefinitionDto;
+};
+
+export type WorkflowValueObject = { [key: string]: WorkflowValue };
+
+export type WorkflowValue =
+	| null
+	| ResultBool
+	| WorkflowInteger
+	| ResultUint64
+	| WorkflowNumber
+	| ResultString
+	| WorkflowValueList
+	| WorkflowValueObject;
+
+export type ResultBool = boolean;
+
+export type WorkflowInteger = number;
+
+export type ResultUint64 = number;
+
+export type WorkflowNumber = number;
+
+export type WorkflowValueList = Array<WorkflowValue>;
+
+export type ListNodeDefinitionDto = Array<NodeDefinitionDto>;
+
+export type NodeDefinitionDto = {
+	name: string;
+	kind: NodeKindDto;
+	command?: string;
+	session?: SessionSpecDto;
+	fanout?: FanoutSpecDto;
+	sequence?: SequenceSpecDto;
+	artifact?: string;
+	input?: ListInputParamDto;
+	completion?: NodeCompletionDto;
+	worktree?: WorktreeMode;
+};
+
+export type NodeKindDto = "session" | "command" | "fanout" | "sequence";
+
+export type SessionSpecDto = {
+	provider: SessionProviderDto;
+	model?: string;
+	permission?: string;
+	facets: FacetRefsDto;
+};
+
+export type SessionProviderDto = "claude" | "codex";
+
+export type FacetRefsDto = {
+	policy?: string;
+	knowledge?: Liststring;
+	instruction?: string;
+};
+
+export type FanoutSpecDto = {
+	children: ListChildEntryDto;
+	items?: ItemsSourceDto;
+};
+
+export type ListChildEntryDto = Array<ChildEntryDto>;
+
+export type ChildEntryDto = {
+	name: string;
+	inputs?: ListChildInputDto;
+	rules?: ListRuleDto;
+};
+
+export type ListChildInputDto = Array<ChildInputDto>;
+
+export type ChildInputDto = {
+	parameter: string;
+	source: string;
+};
+
+export type ListRuleDto = Array<RuleDto>;
+
+export type RuleDto =
+	| ({ type: "when" } & RuleDtoWhen)
+	| ({ type: "switch" } & RuleDtoSwitch)
+	| ({ type: "loop_guard" } & RuleDtoLoopGuard)
+	| ({ type: "next" } & RuleDtoNext);
+
+export type RuleDtoWhen = {
+	on: PredicateDto;
+	then: string;
+	next: string;
+};
+
+export type PredicateDto = string | PredicateDtoAnd | PredicateDtoOr;
+
+export type PredicateDtoAnd = {
+	and: ListPredicateDto;
+};
+
+export type ListPredicateDto = Array<PredicateDto>;
+
+export type PredicateDtoOr = {
+	or: ListPredicateDto;
+};
+
+export type RuleDtoSwitch = {
+	on: string;
+	cases: Mapstring;
+	next: string;
+};
+
+export type Mapstring = { [key: string]: string };
+
+export type RuleDtoLoopGuard = {
+	max_iterations: number;
+	on_exhausted: string;
+};
+
+export type RuleDtoNext = {
+	next: string;
+};
+
+export type ItemsSourceDto = WorkflowValueList | string;
+
+export type SequenceSpecDto = {
+	entry?: string;
+	children: ListChildEntryDto;
+};
+
+export type ListInputParamDto = Array<InputParamDto>;
+
+export type InputParamDto = {
+	name: string;
+	contract?: string;
+};
+
+export type NodeCompletionDto = {
+	require?: CompletionRequirementDto;
+	delegate?: SessionDelegateDto;
+};
+
+export type CompletionRequirementDto = "approval";
+
+export type SessionDelegateDto = {
+	child: string;
+	inputs: ListChildInputDto;
+	when: PredicateDto;
+	max_iterations: number;
+};
+
+export type WorktreeMode = "shared" | "isolated";
+
+export type ListFacetSummaryDto = Array<FacetSummaryDto>;
+
+export type FacetSummaryDto = {
+	key: string;
+	kind: string;
+	description: string;
+	builtin: boolean;
+};
+
+export type DiagnosticReport = {
+	items: ListDiagnosticItem;
+	workflow_summaries: MapDiagnosticSummary;
+	facet_summaries: MapDiagnosticSummary;
+	facet_usage: MapListFacetUsageEntry;
+};
+
+export type ListDiagnosticItem = Array<DiagnosticItem>;
+
+export type DiagnosticItem = {
+	code: string;
+	severity: Severity;
+	stage: DiagnosticStage;
+	span?: DiagnosticSpan;
+	message: string;
+	workflow_name?: string;
+	node_name?: string;
+	facet_key?: string;
+	facet_kind?: string;
+	field?: string;
+};
+
+export type Severity = "error" | "info";
+
+export type DiagnosticStage =
+	| "parse_shape"
+	| "resolve"
+	| "typecheck"
+	| "control_flow";
+
+export type DiagnosticSpan = {
+	source?: string;
+	start_line: number;
+	start_col: number;
+	end_line: number;
+	end_col: number;
+};
+
+export type MapDiagnosticSummary = { [key: string]: DiagnosticSummary };
+
+export type DiagnosticSummary = {
+	error_count: number;
+	info_count: number;
+};
+
+export type MapListFacetUsageEntry = { [key: string]: ListFacetUsageEntry };
+
+export type ListFacetUsageEntry = Array<FacetUsageEntry>;
+
+export type FacetUsageEntry = {
+	workflow_name: string;
+	node_name: string;
+	slot: string;
+};
+
 export type InputAbortWorkflowRequest = {
 	executionId: string;
 };
@@ -752,10 +986,6 @@ export type InputDeleteWorkflowRequest = {
 
 export type InputDetectEditorsRequest = Record<string, never>;
 
-export type InputDiagnoseAllCmdRequest = {
-	dir?: string | null;
-};
-
 export type InputDuplicateFacetRequest = {
 	kind: string;
 	sourceKey: string;
@@ -779,14 +1009,7 @@ export type InputGetAppSettingsRequest = Record<string, never>;
 
 export type InputGetApplicationStartupOutcomeRequest = Record<string, never>;
 
-export type InputGetAutomationConfigDirRequest = Record<string, never>;
-
 export type InputGetExternalEditorRequest = Record<string, never>;
-
-export type InputGetFacetRequest = {
-	kind: string;
-	key: string;
-};
 
 export type InputGetFileNavigationRequest = {
 	tree: InputListDiffTreeNodeInput;
@@ -850,15 +1073,7 @@ export type InputGetReleashBaseRequest = {
 
 export type InputGetTerminalPerformanceSwitchesRequest = Record<string, never>;
 
-export type InputGetWorkflowRequest = {
-	name: string;
-};
-
 export type InputGetWorkflowConfigRequest = Record<string, never>;
-
-export type InputGetWorkflowSourceRequest = {
-	name: string;
-};
 
 export type InputGitCreateBranchRequest = {
 	repoPath: string;
@@ -897,13 +1112,7 @@ export type InputKillTerminalSurfaceRequest = {
 	owner: InputTerminalSurfaceOwnerV1;
 };
 
-export type InputListFacetSummariesRequest = {
-	kind: string;
-};
-
 export type InputListProviderHookHealthWarningsRequest = Record<string, never>;
-
-export type InputListWorkflowsRequest = Record<string, never>;
 
 export type InputOpenAgentSessionRequest = {
 	agentSessionId: string;
@@ -1325,8 +1534,6 @@ export type InputRefreshWorkspacesRequest = {
 	worktreePath?: string | null;
 };
 
-export type ResultBool = boolean;
-
 export type AgentSessionArchiveResponse = "archived" | "already_archived";
 
 export type ListHiddenRangeDto = Array<HiddenRangeDto>;
@@ -1380,61 +1587,6 @@ export type ListEditorInfoDto = Array<EditorInfoDto>;
 export type EditorInfoDto = {
 	name: string;
 	path: string;
-};
-
-export type DiagnosticReport = {
-	items: ListDiagnosticItem;
-	workflow_summaries: MapDiagnosticSummary;
-	facet_summaries: MapDiagnosticSummary;
-	facet_usage: MapListFacetUsageEntry;
-};
-
-export type ListDiagnosticItem = Array<DiagnosticItem>;
-
-export type DiagnosticItem = {
-	code: string;
-	severity: Severity;
-	stage: DiagnosticStage;
-	span?: DiagnosticSpan;
-	message: string;
-	workflow_name?: string;
-	node_name?: string;
-	facet_key?: string;
-	facet_kind?: string;
-	field?: string;
-};
-
-export type Severity = "error" | "info";
-
-export type DiagnosticStage =
-	| "parse_shape"
-	| "resolve"
-	| "typecheck"
-	| "control_flow";
-
-export type DiagnosticSpan = {
-	source?: string;
-	start_line: number;
-	start_col: number;
-	end_line: number;
-	end_col: number;
-};
-
-export type MapDiagnosticSummary = { [key: string]: DiagnosticSummary };
-
-export type DiagnosticSummary = {
-	error_count: number;
-	info_count: number;
-};
-
-export type MapListFacetUsageEntry = { [key: string]: ListFacetUsageEntry };
-
-export type ListFacetUsageEntry = Array<FacetUsageEntry>;
-
-export type FacetUsageEntry = {
-	workflow_name: string;
-	node_name: string;
-	slot: string;
 };
 
 export type ListNotionLabelOptionView = Array<NotionLabelOptionView>;
@@ -1538,173 +1690,8 @@ export type TerminalPerformanceSwitchesV1 = {
 	disableWebglRenderer: boolean;
 };
 
-export type WorkflowDto = {
-	name: string;
-	description: string;
-	builtin: boolean;
-	sourceFormat: WorkflowSourceFormat;
-	schemas?: WorkflowValueObject;
-	nodes: ListNodeDefinitionDto;
-};
-
-export type WorkflowSourceFormat = "yaml" | "lua";
-
-export type WorkflowValueObject = { [key: string]: WorkflowValue };
-
-export type WorkflowValue =
-	| null
-	| ResultBool
-	| WorkflowInteger
-	| ResultUint64
-	| WorkflowNumber
-	| ResultString
-	| WorkflowValueList
-	| WorkflowValueObject;
-
-export type WorkflowInteger = number;
-
-export type ResultUint64 = number;
-
-export type WorkflowNumber = number;
-
-export type WorkflowValueList = Array<WorkflowValue>;
-
-export type ListNodeDefinitionDto = Array<NodeDefinitionDto>;
-
-export type NodeDefinitionDto = {
-	name: string;
-	kind: NodeKindDto;
-	command?: string;
-	session?: SessionSpecDto;
-	fanout?: FanoutSpecDto;
-	sequence?: SequenceSpecDto;
-	artifact?: string;
-	input?: ListInputParamDto;
-	completion?: NodeCompletionDto;
-	worktree?: WorktreeMode;
-};
-
-export type NodeKindDto = "session" | "command" | "fanout" | "sequence";
-
-export type SessionSpecDto = {
-	provider: SessionProviderDto;
-	model?: string;
-	permission?: string;
-	facets: FacetRefsDto;
-};
-
-export type SessionProviderDto = "claude" | "codex";
-
-export type FacetRefsDto = {
-	policy?: string;
-	knowledge?: Liststring;
-	instruction?: string;
-};
-
-export type FanoutSpecDto = {
-	children: ListChildEntryDto;
-	items?: ItemsSourceDto;
-};
-
-export type ListChildEntryDto = Array<ChildEntryDto>;
-
-export type ChildEntryDto = {
-	name: string;
-	inputs?: ListChildInputDto;
-	rules?: ListRuleDto;
-};
-
-export type ListChildInputDto = Array<ChildInputDto>;
-
-export type ChildInputDto = {
-	parameter: string;
-	source: string;
-};
-
-export type ListRuleDto = Array<RuleDto>;
-
-export type RuleDto =
-	| ({ type: "when" } & RuleDtoWhen)
-	| ({ type: "switch" } & RuleDtoSwitch)
-	| ({ type: "loop_guard" } & RuleDtoLoopGuard)
-	| ({ type: "next" } & RuleDtoNext);
-
-export type RuleDtoWhen = {
-	on: PredicateDto;
-	then: string;
-	next: string;
-};
-
-export type PredicateDto = string | PredicateDtoAnd | PredicateDtoOr;
-
-export type PredicateDtoAnd = {
-	and: ListPredicateDto;
-};
-
-export type ListPredicateDto = Array<PredicateDto>;
-
-export type PredicateDtoOr = {
-	or: ListPredicateDto;
-};
-
-export type RuleDtoSwitch = {
-	on: string;
-	cases: Mapstring;
-	next: string;
-};
-
-export type Mapstring = { [key: string]: string };
-
-export type RuleDtoLoopGuard = {
-	max_iterations: number;
-	on_exhausted: string;
-};
-
-export type RuleDtoNext = {
-	next: string;
-};
-
-export type ItemsSourceDto = WorkflowValueList | string;
-
-export type SequenceSpecDto = {
-	entry?: string;
-	children: ListChildEntryDto;
-};
-
-export type ListInputParamDto = Array<InputParamDto>;
-
-export type InputParamDto = {
-	name: string;
-	contract?: string;
-};
-
-export type NodeCompletionDto = {
-	require?: CompletionRequirementDto;
-	delegate?: SessionDelegateDto;
-};
-
-export type CompletionRequirementDto = "approval";
-
-export type SessionDelegateDto = {
-	child: string;
-	inputs: ListChildInputDto;
-	when: PredicateDto;
-	max_iterations: number;
-};
-
-export type WorktreeMode = "shared" | "isolated";
-
 export type WorkflowSection = {
 	approval_auto_approve: boolean;
-};
-
-export type ListFacetSummaryDto = Array<FacetSummaryDto>;
-
-export type FacetSummaryDto = {
-	key: string;
-	kind: string;
-	description: string;
-	builtin: boolean;
 };
 
 export type ListProviderHookHealthWarningResponse =
@@ -1717,16 +1704,6 @@ export type ProviderHookHealthWarningResponse = {
 };
 
 export type ProviderHookHealthProviderResponse = "claude" | "codex";
-
-export type ListWorkflowSummaryDto = Array<WorkflowSummaryDto>;
-
-export type WorkflowSummaryDto = {
-	name: string;
-	description: string;
-	builtin: boolean;
-	is_running: boolean;
-	sourceFormat: WorkflowSourceFormat;
-};
 
 export type AgentSessionOpenResponse =
 	| "attached"
@@ -1873,16 +1850,13 @@ export interface ClientCommandArgs {
 	delete_review_thread: InputDeleteReviewThreadRequest;
 	delete_workflow: InputDeleteWorkflowRequest;
 	detect_editors: InputDetectEditorsRequest;
-	diagnose_all_cmd: InputDiagnoseAllCmdRequest;
 	duplicate_facet: InputDuplicateFacetRequest;
 	duplicate_workflow: InputDuplicateWorkflowRequest;
 	fetch_issues: InputFetchIssuesRequest;
 	fetch_notion_label_options: InputFetchNotionLabelOptionsRequest;
 	get_app_settings: InputGetAppSettingsRequest;
 	get_application_startup_outcome: InputGetApplicationStartupOutcomeRequest;
-	get_automation_config_dir: InputGetAutomationConfigDirRequest;
 	get_external_editor: InputGetExternalEditorRequest;
-	get_facet: InputGetFacetRequest;
 	get_file_navigation: InputGetFileNavigationRequest;
 	get_language_from_path: InputGetLanguageFromPathRequest;
 	get_notion_config: InputGetNotionConfigRequest;
@@ -1892,18 +1866,14 @@ export interface ClientCommandArgs {
 	get_provider_availability: InputGetProviderAvailabilityRequest;
 	get_releash_base: InputGetReleashBaseRequest;
 	get_terminal_performance_switches: InputGetTerminalPerformanceSwitchesRequest;
-	get_workflow: InputGetWorkflowRequest;
 	get_workflow_config: InputGetWorkflowConfigRequest;
-	get_workflow_source: InputGetWorkflowSourceRequest;
 	git_create_branch: InputGitCreateBranchRequest;
 	git_stage: InputGitStageRequest;
 	git_stage_review_group: InputGitStageReviewGroupRequest;
 	git_unstage: InputGitUnstageRequest;
 	git_unstage_review_group: InputGitUnstageReviewGroupRequest;
 	kill_terminal_surface: InputKillTerminalSurfaceRequest;
-	list_facet_summaries: InputListFacetSummariesRequest;
 	list_provider_hook_health_warnings: InputListProviderHookHealthWarningsRequest;
-	list_workflows: InputListWorkflowsRequest;
 	open_agent_session: InputOpenAgentSessionRequest;
 	open_facet_in_editor: InputOpenFacetInEditorRequest;
 	open_folder_in_editor: InputOpenFolderInEditorRequest;
@@ -2017,9 +1987,6 @@ export interface ClientCommands {
 	detect_editors(
 		args: ClientCommandArgs["detect_editors"],
 	): Promise<ListEditorInfoDto>;
-	diagnose_all_cmd(
-		args: ClientCommandArgs["diagnose_all_cmd"],
-	): Promise<DiagnosticReport>;
 	duplicate_facet(args: ClientCommandArgs["duplicate_facet"]): Promise<void>;
 	duplicate_workflow(
 		args: ClientCommandArgs["duplicate_workflow"],
@@ -2034,13 +2001,9 @@ export interface ClientCommands {
 	get_application_startup_outcome(
 		args: ClientCommandArgs["get_application_startup_outcome"],
 	): Promise<ApplicationStartupOutcomeDtoV1>;
-	get_automation_config_dir(
-		args: ClientCommandArgs["get_automation_config_dir"],
-	): Promise<ResultString>;
 	get_external_editor(
 		args: ClientCommandArgs["get_external_editor"],
 	): Promise<ResultString>;
-	get_facet(args: ClientCommandArgs["get_facet"]): Promise<ResultString>;
 	get_file_navigation(
 		args: ClientCommandArgs["get_file_navigation"],
 	): Promise<FileNavigationResultDto>;
@@ -2068,13 +2031,9 @@ export interface ClientCommands {
 	get_terminal_performance_switches(
 		args: ClientCommandArgs["get_terminal_performance_switches"],
 	): Promise<TerminalPerformanceSwitchesV1>;
-	get_workflow(args: ClientCommandArgs["get_workflow"]): Promise<WorkflowDto>;
 	get_workflow_config(
 		args: ClientCommandArgs["get_workflow_config"],
 	): Promise<WorkflowSection>;
-	get_workflow_source(
-		args: ClientCommandArgs["get_workflow_source"],
-	): Promise<ResultString>;
 	git_create_branch(
 		args: ClientCommandArgs["git_create_branch"],
 	): Promise<void>;
@@ -2089,15 +2048,9 @@ export interface ClientCommands {
 	kill_terminal_surface(
 		args: ClientCommandArgs["kill_terminal_surface"],
 	): Promise<void>;
-	list_facet_summaries(
-		args: ClientCommandArgs["list_facet_summaries"],
-	): Promise<ListFacetSummaryDto>;
 	list_provider_hook_health_warnings(
 		args: ClientCommandArgs["list_provider_hook_health_warnings"],
 	): Promise<ListProviderHookHealthWarningResponse>;
-	list_workflows(
-		args: ClientCommandArgs["list_workflows"],
-	): Promise<ListWorkflowSummaryDto>;
 	open_agent_session(
 		args: ClientCommandArgs["open_agent_session"],
 	): Promise<AgentSessionOpenResponse>;
