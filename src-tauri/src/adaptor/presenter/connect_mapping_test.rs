@@ -1783,6 +1783,10 @@ mod domain_state_subscription_subscriptions_test {
                 crate::usecase::state_subscription::SubscriptionError::VersionExhausted,
                 F::Internal,
             ),
+            (
+                crate::usecase::state_subscription::SubscriptionError::EncodingFailed,
+                F::Internal,
+            ),
         ];
         for (error, expected) in cases {
             // When / Then

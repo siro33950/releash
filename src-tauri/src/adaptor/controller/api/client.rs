@@ -21,9 +21,18 @@ pub(crate) struct ClientApiDeps {
 }
 
 #[derive(Clone)]
-struct StateSubscriptionDeps {
+pub(crate) struct StateSubscriptionDeps {
     usecase: crate::usecase::state_subscription::StateSubscriptionUsecase,
     presenter: Arc<crate::adaptor::presenter::state_subscription::StateSubscriptionPresenter>,
+}
+
+impl StateSubscriptionDeps {
+    pub(crate) fn new(
+        usecase: crate::usecase::state_subscription::StateSubscriptionUsecase,
+        presenter: Arc<crate::adaptor::presenter::state_subscription::StateSubscriptionPresenter>,
+    ) -> Self {
+        Self { usecase, presenter }
+    }
 }
 
 impl ClientApiDeps {
@@ -42,15 +51,8 @@ impl ClientApiDeps {
         }
     }
 
-    pub(crate) fn with_state_subscriptions(
-        mut self,
-        subscriptions: crate::usecase::state_subscription::StateSubscriptionUsecase,
-        presenter: Arc<crate::adaptor::presenter::state_subscription::StateSubscriptionPresenter>,
-    ) -> Self {
-        self.state_subscriptions = Some(StateSubscriptionDeps {
-            usecase: subscriptions,
-            presenter,
-        });
+    pub(crate) fn with_state_subscriptions(mut self, subscriptions: StateSubscriptionDeps) -> Self {
+        self.state_subscriptions = Some(subscriptions);
         self
     }
 

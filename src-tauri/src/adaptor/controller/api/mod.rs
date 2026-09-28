@@ -1,7 +1,7 @@
 mod auth;
 pub(crate) mod client;
 pub(crate) mod client_stream;
-pub(crate) use client::ClientApiDeps;
+pub(crate) use client::{ClientApiDeps, StateSubscriptionDeps};
 pub(crate) mod error;
 pub(crate) mod protocol;
 pub(crate) mod provider_lifecycle;

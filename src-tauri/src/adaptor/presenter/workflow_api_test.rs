@@ -98,6 +98,32 @@ fn test_実行一覧応答_任意フィールドの値を維持する() {
 }
 
 #[test]
+fn test_実行一覧応答_未設定の完了時刻と失敗理由を省略する() {
+    // Given
+    let summary = dto::WorkflowExecutionSummaryDto {
+        execution_id: "id".into(),
+        workflow_name: "demo".into(),
+        status: dto::ExecutionStatusDto::Running,
+        worktree_path: "/repo".into(),
+        current_node: None,
+        created_from: dto::ExecutionOriginDto::Cli,
+        started_at: 1.0,
+        updated_at: 2.0,
+        completed_at: None,
+        error_reason: None,
+        total_token_usage: dto::TokenUsageDto {
+            input_tokens: 0,
+            output_tokens: 0,
+        },
+    };
+    // When
+    let value = serde_json::to_value(WorkflowExecutionSummaryResponse::from(summary)).unwrap();
+    // Then
+    assert!(value.get("completedAt").is_none());
+    assert!(value.get("errorReason").is_none());
+}
+
+#[test]
 fn test_実行ログ応答_payloadを展開する() {
     // Given
     let response = WorkflowEventResponse::from(WorkflowEventView {

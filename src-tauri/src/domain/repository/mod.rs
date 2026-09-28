@@ -7,12 +7,11 @@ pub mod gateway;
 pub mod repository;
 pub mod value_objects;
 
-pub use entities::{Branch, FileDiffStat, FileStatus, RepositoryStatusScan, Worktree};
+pub use entities::{Branch, Worktree};
 pub use error::RepositoryError;
 pub use gateway::WorktreeTerminalGateway;
 pub use repository::{
-    BranchRepository, GitConfigRepository, RepoLocator, RepoPathsRepository, StatusRepository,
-    WorktreeRepository,
+    BranchRepository, GitConfigRepository, RepoLocator, RepoPathsRepository, WorktreeRepository,
 };
 pub use value_objects::{normalize_repo_path, worktree_dir, worktree_path};
 

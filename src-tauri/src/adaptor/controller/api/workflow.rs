@@ -154,7 +154,7 @@ async fn start_execution(
             created_from,
         })
         .await?;
-    Ok(Json(StartExecutionResponse { execution_id }))
+    Ok(Json(execution_id.into()))
 }
 
 async fn get_execution(

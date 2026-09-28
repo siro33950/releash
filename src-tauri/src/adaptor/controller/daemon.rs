@@ -486,7 +486,10 @@ pub(crate) async fn compose(
                 adaptor::gateway::push::ClientPushGateway::new(push_sink.clone()),
                 dependencies.watcher.clone(),
             )
-            .with_state_subscriptions(state_subscriptions, state_presenter)
+            .with_state_subscriptions(adaptor::controller::api::StateSubscriptionDeps::new(
+                state_subscriptions,
+                state_presenter,
+            ))
             .with_desktop_settings(usecase::app_config::AppConfigUsecase::new(
                 config_repository,
             )),

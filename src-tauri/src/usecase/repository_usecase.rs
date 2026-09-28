@@ -11,8 +11,7 @@ use std::sync::Arc;
 use crate::domain::path::to_canonical_forward_slash;
 use crate::domain::repository::{
     worktree_path as derive_worktree_path, Branch, BranchRepository, GitConfigRepository,
-    RepoLocator, RepositoryError, RepositoryStatusScan, StatusRepository, WorktreeRepository,
-    WorktreeTerminalGateway,
+    RepoLocator, RepositoryError, WorktreeRepository, WorktreeTerminalGateway,
 };
 
 use super::repository_dto::{BranchCardDto, WorktreeEntryDto};
@@ -38,7 +37,6 @@ pub trait WorktreeExecutionArchiver: Send + Sync {
 pub struct RepositoryUsecase {
     state_publisher: Option<crate::usecase::state_subscription::StateSubscriptionOutputRef>,
     branch: Arc<dyn BranchRepository>,
-    status: Arc<dyn StatusRepository>,
     worktree: Arc<dyn WorktreeRepository>,
     git_config: Arc<dyn GitConfigRepository>,
     locator: Arc<dyn RepoLocator>,
@@ -59,10 +57,8 @@ impl RepositoryUsecase {
         self.query.worktree_operations.clone()
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         branch: Arc<dyn BranchRepository>,
-        status: Arc<dyn StatusRepository>,
         worktree: Arc<dyn WorktreeRepository>,
         git_config: Arc<dyn GitConfigRepository>,
         locator: Arc<dyn RepoLocator>,
@@ -72,7 +68,6 @@ impl RepositoryUsecase {
         Self {
             state_publisher: None,
             branch,
-            status,
             worktree,
             git_config,
             locator,
@@ -210,15 +205,6 @@ impl RepositoryUsecase {
         }
 
         Ok(())
-    }
-
-    // ── status（読み取り） ──
-
-    pub fn get_repository_status_scan(
-        &self,
-        repo_path: &str,
-    ) -> Result<RepositoryStatusScan, UsecaseError> {
-        Ok(self.status.status_scan(repo_path)?)
     }
 
     // ── worktree（読み取り） ──
@@ -449,9 +435,51 @@ impl RepositoryUsecase {
 #[cfg(test)]
 mod repository_usecase_tests {
     use super::*;
-    use crate::domain::repository::{RepositoryError, RepositoryStatusScan, Worktree};
+    use crate::domain::repository::{RepositoryError, Worktree};
     use crate::usecase::repository_query_service::BranchCardQuery;
     use parking_lot::Mutex;
+
+    struct FakeStatusScanner(Arc<RepositoryUsecase>);
+
+    #[async_trait::async_trait]
+    impl crate::usecase::repository_state::scanner::RepositoryScanner for FakeStatusScanner {
+        async fn scan_async(
+            &self,
+            repo_path: &str,
+        ) -> Result<
+            crate::usecase::repository_state::snapshot::RepositorySnapshotParts,
+            crate::usecase::repository_state::RepositoryStateError,
+        > {
+            self.scan(repo_path)
+        }
+
+        fn scan(
+            &self,
+            repo_path: &str,
+        ) -> Result<
+            crate::usecase::repository_state::snapshot::RepositorySnapshotParts,
+            crate::usecase::repository_state::RepositoryStateError,
+        > {
+            Ok(
+                crate::usecase::repository_state::snapshot::RepositorySnapshotParts {
+                    status: vec![],
+                    diff_stats: vec![],
+                    branch_cards: self.0.list_branches_with_status_for_scan(repo_path, 0)?,
+                    diff_file_tree: vec![],
+                    staged_diff_file_tree: vec![],
+                    changes_diff_file_tree: vec![],
+                },
+            )
+        }
+
+        fn prune_stale_branch_bases(
+            &self,
+            _: &str,
+            _: &[String],
+        ) -> Result<(), crate::usecase::repository_state::RepositoryStateError> {
+            Ok(())
+        }
+    }
 
     /// 委譲・順序・変換を検証するための記録付き手書き fake。
     /// 1 つの構造体で repository ドメインの全 trait を実装する。
@@ -567,16 +595,6 @@ mod repository_usecase_tests {
         fn delete(&self, _repo_path: &str, branch_name: &str) -> Result<(), RepositoryError> {
             self.deleted_branches.lock().push(branch_name.to_string());
             Ok(())
-        }
-    }
-
-    impl StatusRepository for FakeRepo {
-        fn status_scan(&self, _repo_path: &str) -> Result<RepositoryStatusScan, RepositoryError> {
-            Ok(RepositoryStatusScan {
-                status: Vec::new(),
-                diff_stats: Vec::new(),
-                dirty_count: 0,
-            })
         }
     }
 
@@ -811,7 +829,6 @@ mod repository_usecase_tests {
     fn usecase(fake: Arc<FakeRepo>) -> RepositoryUsecase {
         let query = RepositoryQueryService::new(fake.clone(), fake.operations.clone());
         RepositoryUsecase::new(
-            fake.clone(),
             fake.clone(),
             fake.clone(),
             fake.clone(),
@@ -1522,9 +1539,7 @@ mod repository_usecase_tests {
             let repository = Arc::new(usecase(fake.clone()));
             let state = crate::usecase::repository_state::RepositoryStateService::new(crate::usecase::work_queue::WorkQueueUsecase::new(crate::usecase::work_queue_test_runtime::runtime()),
                 Arc::new(crate::adaptor::gateway::repository::state::RepositoryStateRepositoryGateway::new(repository.clone())),
-                Arc::new(crate::adaptor::gateway::repository::scanner::DefaultRepositoryScanner::new(
-                    repository.clone(), Arc::new(crate::adaptor::controller::wiring::build_code_usecase())
-                )),
+                Arc::new(FakeStatusScanner(repository.clone())),
                 Arc::new(crate::usecase::repository_state::worktree::NoopRepositoryStateNotifier),
                 Arc::new(crate::usecase::repository_state::worktree::NoopRepositoryStateWatcher),
                 Arc::new(crate::usecase::repository_state::runtime::tests_support::TestRepositoryStateWorkerRuntime),
@@ -1548,7 +1563,6 @@ mod repository_usecase_tests {
             assert_eq!(*fake.archived_worktrees.lock(), vec![("/wt".into(), 0)]);
             assert!(fake.operations.mutate("/wt").is_err());
             assert!(fake.operations.mutate("/other").is_ok());
-            assert!(repository.get_repository_status_scan("/wt").is_ok());
             assert!(repository
                 .remove_worktree(fake.as_ref(), "/repo", "/wt", false)
                 .await
@@ -1616,7 +1630,6 @@ mod repository_usecase_tests {
         assert_eq!(cards.len(), 1);
         assert!(cards[0].is_deleting);
         assert!(fake.operations.mutate("/wt").is_err());
-        assert!(repository.get_repository_status_scan("/wt").is_ok());
         release.send(()).unwrap();
         fake.wait_for_deletion("/wt").await;
         let mut cards = Vec::new();

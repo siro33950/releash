@@ -151,7 +151,7 @@ fn test_ターミナル削除_購読の有無によらず停止中の出力元�
             sequence: 1,
             data: "x".repeat(100_001).into(),
         });
-        let pause = hub.output.lock()[&surface.session_key].1.clone();
+        let pause = hub.output.test_pause(&surface.session_key).unwrap();
         let (done, receiver) = std::sync::mpsc::channel();
         let worker = std::thread::spawn({
             let pause = pause.clone();
@@ -168,6 +168,6 @@ fn test_ターミナル削除_購読の有無によらず停止中の出力元�
         pause.set(false);
         worker.join().unwrap();
         completed.unwrap();
-        assert!(!hub.output.lock().contains_key(&surface.session_key));
+        assert!(hub.output.test_pause(&surface.session_key).is_none());
     }
 }

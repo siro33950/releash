@@ -1,13 +1,52 @@
 use std::sync::Arc;
 
-use crate::adaptor::presenter::terminal_event_hub::TerminalSurfaceEventHub;
-use crate::domain::terminal_surface::gateway::TerminalSurfaceGateway;
+use crate::domain::terminal_surface::gateway::{
+    TerminalSurfaceEventSource, TerminalSurfaceEventStream,
+};
 use crate::domain::terminal_surface::{
     entities::TerminalSurface, TerminalProcessState, TerminalSurfaceCheckpoint,
     TerminalSurfaceOwner,
 };
 use crate::domain::workspace_tree::WorkspaceIdentity;
-use crate::usecase::terminal_surface::output::TerminalSurfaceOutputSummary;
+use crate::usecase::terminal_surface::output::{
+    TerminalSurfaceOutputControl, TerminalSurfaceOutputSummary, TerminalSurfaceStateSink,
+};
+
+struct Noop;
+
+impl crate::usecase::telemetry::TerminalLaunchCompletion for Noop {
+    fn finish(self: Box<Self>) {}
+}
+
+impl crate::usecase::telemetry::PerformanceOutput for Noop {
+    fn start_terminal_launch_phase(
+        &self,
+        _: crate::usecase::telemetry::TerminalLaunch,
+    ) -> Box<dyn crate::usecase::telemetry::TerminalLaunchCompletion> {
+        Box::new(Self)
+    }
+    fn start_terminal_input_trace(&self, _: &str, _: u64, _: f64) {}
+    fn record_terminal_input_admission(&self, _: &str, _: u64) {}
+}
+
+impl TerminalSurfaceEventSource for Noop {
+    fn subscribe(&self) -> TerminalSurfaceEventStream {
+        unreachable!()
+    }
+}
+
+impl TerminalSurfaceOutputControl for Noop {
+    fn set_state_sink(&self, _: Arc<dyn TerminalSurfaceStateSink>) {}
+    fn subscribe_output(&self, _: &str, _: &str, _: usize) {}
+    fn unsubscribe_output(&self, _: &str, _: &str) {}
+    fn processed_output(&self, _: &str, _: &str, _: usize) {}
+}
+
+fn make_application(
+    gateway: Arc<super::super::io_usecase::io_usecase_tests::FakePtyGateway>,
+) -> super::TerminalSurfaceApplication {
+    super::TerminalSurfaceApplication::new(Arc::new(Noop), gateway, Arc::new(Noop), Arc::new(Noop))
+}
 
 #[test]
 fn test_ターミナル画面出力_概要を所有者と単純な値へ変換する() {
@@ -26,23 +65,16 @@ fn test_ターミナル画面出力_概要を所有者と単純な値へ変換�
 fn test_ターミナル画面_所有者概要lookup_不在とowner不整合を区別する() {
     let owner =
         TerminalSurfaceOwner::session(WorkspaceIdentity::new("/repo"), "agent-session-1").unwrap();
-    let gateway = Arc::new(
-        crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor::default(),
-    );
-    let hub = Arc::new(TerminalSurfaceEventHub::new());
-    let application = super::TerminalSurfaceApplication::new(
-        std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
-        gateway.clone(),
-        Arc::new(crate::adaptor::gateway::terminal_surface::event_source::TerminalSurfaceEventSourceGateway::new(hub.event_sender())),
-        hub,
-    );
+    let gateway = Arc::new(super::super::io_usecase::io_usecase_tests::FakePtyGateway::new());
+    let application = make_application(gateway);
 
     assert_eq!(
         application.find_owned_summary(&owner),
         super::OwnedTerminalSummaryLookup::Absent
     );
 
-    gateway.insert_surface(TerminalSurface {
+    let mut gateway = super::super::io_usecase::io_usecase_tests::FakePtyGateway::new();
+    gateway.surface = Some(TerminalSurface {
         session_key: owner.stable_key(),
         owner: TerminalSurfaceOwner::session(
             WorkspaceIdentity::new("/other-repo"),
@@ -57,6 +89,7 @@ fn test_ターミナル画面_所有者概要lookup_不在とowner不整合を�
         latest_sequence: 0,
         last_output_at: None,
     });
+    let application = make_application(Arc::new(gateway));
 
     assert_eq!(
         application.find_owned_summary(&owner),
@@ -69,10 +102,8 @@ fn test_ターミナル画面_所有者概要lookup_不在とowner不整合を�
 fn test_summary系読み取りはsnapshot全量再構築を伴わない() {
     let owner =
         TerminalSurfaceOwner::session(WorkspaceIdentity::new("/repo"), "agent-session-1").unwrap();
-    let gateway = Arc::new(
-        crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor::default(),
-    );
-    gateway.insert_surface(TerminalSurface {
+    let mut gateway = super::super::io_usecase::io_usecase_tests::FakePtyGateway::new();
+    gateway.surface = Some(TerminalSurface {
         session_key: owner.stable_key(),
         owner: owner.clone(),
         worktree_path: Some("/repo".to_string()),
@@ -83,13 +114,12 @@ fn test_summary系読み取りはsnapshot全量再構築を伴わない() {
         latest_sequence: 0,
         last_output_at: None,
     });
-    let hub = Arc::new(TerminalSurfaceEventHub::new());
-    let application = super::TerminalSurfaceApplication::new(
-        std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
-        gateway.clone(),
-        Arc::new(crate::adaptor::gateway::terminal_surface::event_source::TerminalSurfaceEventSourceGateway::new(hub.event_sender())),
-        hub,
-    );
+    let gateway = Arc::new(gateway);
+    let application = make_application(gateway.clone());
+    let (started, observed) = std::sync::mpsc::channel();
+    let (release, blocked) = std::sync::mpsc::channel();
+    release.send(()).unwrap();
+    *gateway.snapshot_gate.lock() = Some((started, blocked));
 
     assert!(matches!(
         application.find_owned_summary(&owner),
@@ -101,20 +131,15 @@ fn test_summary系読み取りはsnapshot全量再構築を伴わない() {
         .expect("summary for registered owner");
     assert_eq!(summary.session_key, owner.stable_key());
     assert!(!summary.process_state.is_exited());
-    assert_eq!(gateway.snapshot_materialization_count(), 0);
+    assert!(gateway.snapshot_gate.lock().is_some());
+    assert!(observed.try_recv().is_err());
 }
 
 #[tokio::test]
 async fn test_サイズ更新_別入口からも予約順を守り別terminalを待たせない() {
     // Given
     let gateway = Arc::new(super::super::io_usecase::io_usecase_tests::FakePtyGateway::new());
-    let hub = Arc::new(TerminalSurfaceEventHub::new());
-    let application = super::TerminalSurfaceApplication::new(
-        std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
-        gateway.clone(),
-        Arc::new(crate::adaptor::gateway::terminal_surface::event_source::TerminalSurfaceEventSourceGateway::new(hub.event_sender())),
-        hub,
-    );
+    let application = make_application(gateway.clone());
     let other_entry = application.clone();
     let owner = TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/repo")).unwrap();
     let other_owner = TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/other")).unwrap();
@@ -148,13 +173,7 @@ async fn test_サイズ更新_別入口からも予約順を守り別terminalを
 fn test_サイズ更新_最後の完了で待機列を解放し後続予約は保持する() {
     // Given
     let gateway = Arc::new(super::super::io_usecase::io_usecase_tests::FakePtyGateway::new());
-    let hub = Arc::new(TerminalSurfaceEventHub::new());
-    let application = super::TerminalSurfaceApplication::new(
-        std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
-        gateway.clone(),
-        Arc::new(crate::adaptor::gateway::terminal_surface::event_source::TerminalSurfaceEventSourceGateway::new(hub.event_sender())),
-        hub,
-    );
+    let application = make_application(gateway.clone());
     // When / Then
     for id in 0..10 {
         let owner =
@@ -174,13 +193,7 @@ fn test_サイズ更新_最後の完了で待機列を解放し後続予約は�
 fn test_サイズ更新_予約の破棄と受付失敗でも待機列を解放する() {
     // Given
     let gateway = Arc::new(super::super::io_usecase::io_usecase_tests::FakePtyGateway::new());
-    let hub = Arc::new(TerminalSurfaceEventHub::new());
-    let application = super::TerminalSurfaceApplication::new(
-        std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
-        gateway.clone(),
-        Arc::new(crate::adaptor::gateway::terminal_surface::event_source::TerminalSurfaceEventSourceGateway::new(hub.event_sender())),
-        hub,
-    );
+    let application = make_application(gateway.clone());
     let owner = TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/repo")).unwrap();
     // When / Then
     let resize = application.prepare_resize(owner.clone(), 40, 80);
@@ -232,13 +245,7 @@ fn test_終了保存_停止と出力排出の失敗後も別terminalと保存へ
             })
             .collect();
         let gateway = Arc::new(gateway);
-        let hub = Arc::new(TerminalSurfaceEventHub::new());
-        let application = super::TerminalSurfaceApplication::new(
-            std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
-            gateway.clone(),
-            Arc::new(crate::adaptor::gateway::terminal_surface::event_source::TerminalSurfaceEventSourceGateway::new(hub.event_sender())),
-        hub,
-        );
+        let application = make_application(gateway.clone());
         // When
         let result = application.shutdown();
         // Then

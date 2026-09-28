@@ -22,7 +22,7 @@ async fn subscribe_push(
 > {
     let request: wire::SubscribePushRequest = to_wire(&request.to_owned_message())?;
     let id = request.subscription_id;
-    if id.len() > 128 {
+    if !crate::adaptor::controller::api::client_stream::valid_subscription_id(&id, true) {
         return Err(crate::adaptor::presenter::connect::classified_error(
             crate::adaptor::presenter::error::AppError::invalid_request(
                 "Identifier exceeds 128 bytes",
@@ -111,18 +111,17 @@ async fn open_state_stream(
         impl connectrpc::Encodable<rpc::StateSubscriptionEvent> + Send + use<>,
     >,
 > {
-    use futures_util::StreamExt;
     let request: wire::OpenStateStreamRequest = to_wire(&request.to_owned_message())?;
-    if request.client_id.is_empty() || request.client_id.len() > 128 {
+    if !crate::adaptor::controller::api::client_stream::valid_subscription_id(&request.client_id, false) {
         return Err(crate::adaptor::presenter::connect::classified_error(
             crate::usecase::state_subscription::SubscriptionError::InvalidId,
         ));
     }
     let stream = self
         .state_presenter()?
-        .stream(self.state_subscriptions()?.clone(), request.client_id)
+        .stream_wire(self.state_subscriptions()?.clone(), request.client_id)
         .map_err(crate::adaptor::presenter::connect::classified_error)?;
-    connectrpc::Response::stream_ok(Box::pin(stream.map(crate::adaptor::presenter::state_subscription_wire::event)))
+    connectrpc::Response::stream_ok(Box::pin(stream))
 }
 
 async fn start_state_subscription<'a>(
@@ -142,16 +141,8 @@ async fn start_state_subscription<'a>(
         .as_ref()
         .map(|(epoch, sequence)| (epoch.as_str(), *sequence));
     let subscriptions = self.state_subscriptions()?;
-    let terminal_input_id = request.terminal_input_id.or_else(|| {
-        matches!(target, crate::usecase::state_subscription::SubscriptionTarget::Terminal(_))
-            .then(|| request.client_id.clone())
-    });
-    let started = subscriptions
-        .start_subscription(&request.client_id, &target, terminal_input_id.as_deref())
-        .await
-        .map_err(crate::adaptor::presenter::connect::classified_error)?;
-    self.state_presenter()?
-        .present_start(subscriptions, &started, cursor)
+    subscriptions
+        .start_subscription(&request.client_id, &target, request.terminal_input_id.as_deref(), cursor)
         .await
         .map_err(crate::adaptor::presenter::connect::classified_error)?;
     connectrpc::Response::ok(rpc::Unit::default())
@@ -170,12 +161,9 @@ async fn stop_state_subscription<'a>(
     )
     .map_err(crate::adaptor::presenter::connect::classified_error)?;
     let subscriptions = self.state_subscriptions()?;
-    let stopped = subscriptions
+    subscriptions
         .stop_subscription(&request.client_id, &target)
         .await
-        .map_err(crate::adaptor::presenter::connect::classified_error)?;
-    self.state_presenter()?
-        .present_stop(subscriptions, &stopped)
         .map_err(crate::adaptor::presenter::connect::classified_error)?;
     connectrpc::Response::ok(rpc::Unit::default())
 }

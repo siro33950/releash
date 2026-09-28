@@ -6,6 +6,12 @@ pub(crate) struct StartExecutionResponse {
     pub(crate) execution_id: String,
 }
 
+impl From<String> for StartExecutionResponse {
+    fn from(execution_id: String) -> Self {
+        Self { execution_id }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct MutationResponse {
     pub(crate) ok: bool,
@@ -95,6 +101,19 @@ impl From<GetArtifactResponse> for WorkflowGetOutputResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn start_execution_response_converts_id_and_preserves_json_shape() {
+        // Given
+        let execution_id = "execution-1".to_string();
+        // When
+        let response = StartExecutionResponse::from(execution_id);
+        // Then
+        assert_eq!(
+            serde_json::to_value(response).unwrap(),
+            serde_json::json!({"execution_id": "execution-1"})
+        );
+    }
 
     #[test]
     fn validation_and_get_responses_use_status_tags() {

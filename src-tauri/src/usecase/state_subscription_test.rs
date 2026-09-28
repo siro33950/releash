@@ -3,6 +3,10 @@ use super::*;
 #[derive(Default)]
 struct RecordingOutput {
     initial: Mutex<Vec<SubscriptionTarget>>,
+    starts: Mutex<Vec<SubscriptionTarget>>,
+    cursors: Mutex<Vec<Option<(String, u64)>>>,
+    stops: Mutex<Vec<SubscriptionTarget>>,
+    fail_start: std::sync::atomic::AtomicBool,
     updates: Mutex<Vec<SubscriptionTarget>>,
     updated: tokio::sync::Notify,
 }
@@ -14,6 +18,33 @@ impl StateSubscriptionOutput for RecordingOutput {
 
     fn invalidate(&self, _: StateChangeSource) {
         unreachable!()
+    }
+
+    fn start(
+        &self,
+        _: &str,
+        target: &SubscriptionTarget,
+        cursor: Option<(&str, u64)>,
+        _: Option<&str>,
+    ) -> Result<(), StateReadError> {
+        if self.fail_start.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(StateReadError::from_error(SubscriptionError::UnknownTarget));
+        }
+        self.starts.lock().push(target.clone());
+        self.cursors
+            .lock()
+            .push(cursor.map(|(epoch, sequence)| (epoch.into(), sequence)));
+        Ok(())
+    }
+
+    fn stop(
+        &self,
+        _: &str,
+        target: &SubscriptionTarget,
+        _: &std::collections::HashSet<SubscriptionTarget>,
+    ) -> Result<(), SubscriptionError> {
+        self.stops.lock().push(target.clone());
+        Ok(())
     }
 
     fn publish_initial(
@@ -58,27 +89,51 @@ impl SubscriptionTimer for PendingTimer {
 #[tokio::test]
 async fn test_購読手順_開始と停止で購読状態と出力を更新する() {
     // Given
+    let output = Arc::new(RecordingOutput::default());
     let usecase = StateSubscriptionUsecase::new_with_output(
-        Arc::new(RecordingOutput::default()),
+        output.clone(),
         tokio::sync::broadcast::channel(1).0,
         Arc::new(PendingTimer),
     );
     let target = SubscriptionTarget::RepositoryPaths;
     usecase.open_client("client".into()).unwrap();
     // When
-    let started = usecase
-        .start_subscription("client", &target, None)
+    usecase
+        .start_subscription("client", &target, None, Some(("prior", 4)))
         .await
         .unwrap();
-    assert_eq!(started.client, "client");
-    assert_eq!(started.target, target);
-    assert!(started.terminal_input_id.is_none());
     assert!(usecase.active_targets().contains(&target));
-    let stopped = usecase.stop_subscription("client", &target).await.unwrap();
+    usecase.stop_subscription("client", &target).await.unwrap();
     // Then
     assert!(usecase.active_targets().is_empty());
-    assert_eq!(stopped.client, "client");
-    assert_eq!(stopped.target, target);
+    assert_eq!(*output.starts.lock(), vec![target.clone()]);
+    assert_eq!(*output.cursors.lock(), vec![Some(("prior".into(), 4))]);
+    assert_eq!(*output.stops.lock(), vec![target]);
+}
+
+#[tokio::test]
+async fn test_購読手順_配信側の開始失敗時にclientの対象を戻す() {
+    // Given
+    let output = Arc::new(RecordingOutput::default());
+    output
+        .fail_start
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let usecase = StateSubscriptionUsecase::new_with_output(
+        output,
+        tokio::sync::broadcast::channel(1).0,
+        Arc::new(PendingTimer),
+    );
+    let target = SubscriptionTarget::RepositoryPaths;
+    usecase.open_client("client".into()).unwrap();
+    // When
+    let result = usecase
+        .start_subscription("client", &target, None, None)
+        .await;
+    // Then
+    assert!(matches!(result, Err(StateReadError {
+        source: StateReadFailure::Subscription(error), ..
+    }) if *error == SubscriptionError::UnknownTarget));
+    assert!(usecase.active_targets().is_empty());
 }
 
 #[tokio::test]
@@ -91,7 +146,9 @@ async fn test_購読手順_streamが無いと開始できない() {
     );
     let target = SubscriptionTarget::RepositoryPaths;
     // When
-    let result = usecase.start_subscription("client", &target, None).await;
+    let result = usecase
+        .start_subscription("client", &target, None, None)
+        .await;
     // Then
     assert!(matches!(
         result,

@@ -628,7 +628,67 @@ fn test_terminal開始_登録後の出力でsnapshotが消えても現在状態�
 }
 
 #[test]
-fn test_差分購読_送り待ちは出力の単位だけを数える() {
+fn test_terminal開始_snapshot未確定の差分対象を登録してから作り直す() {
+    // Given
+    let mut state = registry();
+    let target = "terminal:3:pty";
+    let version = Version {
+        epoch: "runtime".into(),
+        sequence: 0,
+    };
+    state.register_delta(target, version.clone(), 100).unwrap();
+    // When
+    state.start("client", target, None).unwrap();
+    // Then
+    assert_eq!(state.snapshot_requests("client"), vec![target]);
+    assert!(state.next("client").is_none());
+    state
+        .set_delta_snapshot(target, version.clone(), 7)
+        .unwrap();
+    assert!(
+        matches!(state.next("client"), Some((_, Event::Snapshot(v, value))) if v == version && *value == 7)
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_定期印_変更の配信で周期の起点をずらさない() {
+    // Given
+    let runtime = StateSubscriptionRuntime::new("boot".into());
+    runtime
+        .state
+        .lock()
+        .register("target".into(), 0_u64, Delivery::Full)
+        .unwrap();
+    runtime.state.lock().open("client".into()).unwrap();
+    runtime
+        .state
+        .lock()
+        .start("client", "target", None)
+        .unwrap();
+    let mut stream = Box::pin(runtime.stream("client".into(), (), |_, _| {}));
+    stream.next().await;
+    stream.next().await;
+    stream.next().await;
+    // When
+    tokio::time::advance(std::time::Duration::from_secs(9)).await;
+    runtime
+        .update(|state| state.publish("target", 1, None))
+        .unwrap();
+    assert!(matches!(
+        stream.next().await,
+        Some(StateSubscriptionEvent::Item(_, Event::Change(_, _, _)))
+    ));
+    tokio::time::advance(std::time::Duration::from_secs(1)).await;
+    // Then
+    assert!(matches!(
+        stream.next().await,
+        Some(StateSubscriptionEvent::Item(_, Event::Bookmark(_)))
+    ));
+}
+
+#[test]
+fn test_差分購読_零単位の要素も一単位として数える() {
+    // Given
     let mut state = registry();
     let target = "terminal:3:pty";
     let version = Version {
@@ -643,6 +703,7 @@ fn test_差分購読_送り待ちは出力の単位だけを数える() {
     state.next("client");
     state.next("client");
 
+    // When
     state
         .publish_delta(target, version.clone(), 1, 0, false)
         .unwrap();
@@ -659,7 +720,8 @@ fn test_差分購読_送り待ちは出力の単位だけを数える() {
         )
         .unwrap();
 
-    assert_eq!(state.pending_amount("client", target), 4);
+    // Then
+    assert_eq!(state.pending_amount("client", target), 5);
     state.next("client");
     assert_eq!(state.pending_amount("client", target), 4);
     state.next("client");

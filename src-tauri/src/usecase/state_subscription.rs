@@ -23,6 +23,19 @@ pub(crate) trait StateSubscriptionOutput: Send + Sync {
     #[cfg(test)]
     fn as_any(&self) -> &dyn std::any::Any;
     fn invalidate(&self, source: StateChangeSource);
+    fn start(
+        &self,
+        client: &str,
+        target: &SubscriptionTarget,
+        cursor: Option<(&str, u64)>,
+        terminal_input_id: Option<&str>,
+    ) -> Result<(), StateReadError>;
+    fn stop(
+        &self,
+        client: &str,
+        target: &SubscriptionTarget,
+        active: &std::collections::HashSet<SubscriptionTarget>,
+    ) -> Result<(), SubscriptionError>;
     fn publish_initial(
         &self,
         target: &SubscriptionTarget,
@@ -44,12 +57,6 @@ pub(crate) trait StateSubscriptionOutput: Send + Sync {
 }
 
 pub(crate) type StateSubscriptionOutputRef = Arc<dyn StateSubscriptionOutput>;
-
-pub(crate) struct StateSubscriptionChange {
-    pub client: String,
-    pub target: SubscriptionTarget,
-    pub terminal_input_id: Option<String>,
-}
 
 #[derive(Clone)]
 pub(crate) struct StateSubscriptionUsecase {
@@ -79,30 +86,30 @@ impl StateSubscriptionUsecase {
         client: &str,
         target: &SubscriptionTarget,
         terminal_input_id: Option<&str>,
-    ) -> Result<StateSubscriptionChange, StateReadError> {
-        if let Some(input_id) = terminal_input_id {
-            self.start_terminal(client, target, input_id).await?;
+        cursor: Option<(&str, u64)>,
+    ) -> Result<(), StateReadError> {
+        if let Some(input_id) = terminal_input_id
+            .or_else(|| matches!(target, SubscriptionTarget::Terminal(_)).then_some(client))
+        {
+            self.start_terminal(client, target, input_id, cursor)
+                .await?;
         } else {
             self.start_read(client, target).await?;
+            if let Err(error) = self.publisher.start(client, target, cursor, None) {
+                let _ = self.stop(client, target);
+                return Err(error);
+            }
         }
-        Ok(StateSubscriptionChange {
-            client: client.into(),
-            target: target.clone(),
-            terminal_input_id: terminal_input_id.map(str::to_owned),
-        })
+        Ok(())
     }
 
     pub(crate) async fn stop_subscription(
         &self,
         client: &str,
         target: &SubscriptionTarget,
-    ) -> Result<StateSubscriptionChange, SubscriptionError> {
+    ) -> Result<(), SubscriptionError> {
         self.stop_read(client, target).await?;
-        Ok(StateSubscriptionChange {
-            client: client.into(),
-            target: target.clone(),
-            terminal_input_id: None,
-        })
+        self.publisher.stop(client, target, &self.active_targets())
     }
 
     pub fn new_with_output(
@@ -154,7 +161,7 @@ impl StateSubscriptionUsecase {
     ) -> Result<(), StateReadError> {
         let convert = StateReadError::from_error;
         if let SubscriptionTarget::Terminal(_) = target {
-            return self.start_terminal(client, target, client).await;
+            return self.start_terminal(client, target, client, None).await;
         }
         if *target == SubscriptionTarget::RepositoryPaths {
             return self.start(client, target).map_err(convert);
@@ -388,8 +395,20 @@ impl StateSubscriptionUsecase {
         workers.insert(
             target.clone(),
             tokio::spawn(async move {
-                if let Err(error) = usecase.refresh_terminal(&target).await {
-                    log::error!("Terminal snapshot failed: {error}");
+                loop {
+                    let result = usecase.refresh_terminal(&target).await;
+                    if let Err(error) = &result {
+                        log::error!("Terminal snapshot failed: {error}");
+                    }
+                    let resets = usecase.terminal_resets.lock();
+                    if result.is_err()
+                        || resets
+                            .get(&target)
+                            .is_none_or(std::collections::HashSet::is_empty)
+                    {
+                        usecase.workers.lock().remove(&target);
+                        break;
+                    }
                 }
             }),
         );

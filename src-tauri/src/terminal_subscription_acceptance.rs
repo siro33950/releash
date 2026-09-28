@@ -78,13 +78,8 @@ impl TerminalSubscriptionHarness {
                 .stream(self.subscriptions.clone(), client.clone())
                 .map_err(|e| e.to_string())?,
         );
-        let started = self
-            .subscriptions
-            .start_subscription(&client, &target, Some(&input_id))
-            .await
-            .map_err(|e| e.to_string())?;
-        self.presenter
-            .present_start(&self.subscriptions, &started, None)
+        self.subscriptions
+            .start_subscription(&client, &target, Some(&input_id), None)
             .await
             .map_err(|e| e.to_string())?;
         Ok(TerminalSubscription {

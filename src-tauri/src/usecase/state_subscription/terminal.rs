@@ -15,6 +15,7 @@ impl StateSubscriptionUsecase {
         client: &str,
         target: &SubscriptionTarget,
         input_id: &str,
+        cursor: Option<(&str, u64)>,
     ) -> Result<(), StateReadError> {
         if input_id.trim().is_empty() || input_id.len() > 128 {
             return Err(StateReadError {
@@ -29,18 +30,28 @@ impl StateSubscriptionUsecase {
             .as_ref()
             .ok_or_else(|| error("Terminal unavailable"))?;
         self.start(client, target)
-            .map_err(StateReadError::from_error)
+            .map_err(StateReadError::from_error)?;
+        if let Err(error) = self.publisher.start(client, target, cursor, Some(input_id)) {
+            let _ = self.stop(client, target);
+            return Err(error);
+        }
+        if let Err(error) = self.attach_terminal(client, target, input_id) {
+            if let (Some(terminal), SubscriptionTarget::Terminal(owner)) = (&self.terminal, target)
+            {
+                terminal.unsubscribe_output(owner, client, input_id);
+            }
+            let _ = self.publisher.stop(client, target, &self.active_targets());
+            return Err(error);
+        }
+        Ok(())
     }
 
-    pub(crate) fn attach_terminal(
+    fn attach_terminal(
         &self,
         client: &str,
         target: &SubscriptionTarget,
         input_id: &str,
     ) -> Result<(), StateReadError> {
-        let SubscriptionTarget::Terminal(_) = target else {
-            return Err(error("Not a terminal target"));
-        };
         let clients = self.clients.lock();
         if !clients
             .get(client)
@@ -73,7 +84,6 @@ impl StateSubscriptionUsecase {
             let mut result = Ok(());
             terminal
                 .visit_snapshot(&owner, &mut |surface| {
-                    let reset = resets.lock().remove(&target).unwrap_or_default();
                     result = output.set_terminal_snapshot(
                         &target,
                         surface.runtime_generation.value(),
@@ -81,6 +91,7 @@ impl StateSubscriptionUsecase {
                         StateValue::Terminal(TerminalSurfaceStreamItem::Snapshot(surface)),
                     );
                     if result.is_ok() {
+                        let reset = resets.lock().remove(&target).unwrap_or_default();
                         for client in reset {
                             terminal.reset_output(&owner, &client);
                         }

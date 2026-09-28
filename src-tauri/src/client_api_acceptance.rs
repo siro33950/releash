@@ -108,7 +108,6 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
         ));
         let repository = RepositoryUsecase::new(
             branch,
-            Arc::new(repository::status::StatusGateway),
             Arc::new(repository::worktree::WorktreeGateway),
             Arc::new(repository::git_config::GitConfigGateway),
             Arc::new(repository::util::RepoLocatorGateway),
@@ -213,7 +212,12 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
                     ClientPushGateway::new(sink),
                     crate::client_api_acceptance::watcher(),
                 )
-                .with_state_subscriptions(state, state_presenter),
+                .with_state_subscriptions(
+                    crate::adaptor::controller::api::StateSubscriptionDeps::new(
+                        state,
+                        state_presenter,
+                    ),
+                ),
             ),
             None,
         );

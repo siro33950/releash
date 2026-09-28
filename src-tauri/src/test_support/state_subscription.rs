@@ -27,11 +27,8 @@ pub(crate) async fn start_read(
 ) -> Result<(), crate::usecase::state_subscription::StateReadError> {
     let typed = crate::usecase::state_subscription::SubscriptionTarget::parse(target)
         .map_err(crate::usecase::state_subscription::StateReadError::from_error)?;
-    let started = usecase.start_subscription(client, &typed, None).await?;
     usecase
-        .test_presenter()
-        .expect("test presenter")
-        .present_start(usecase, &started, cursor)
+        .start_subscription(client, &typed, None, cursor)
         .await
 }
 
@@ -43,9 +40,8 @@ pub(crate) fn stop(
     let typed = crate::usecase::state_subscription::SubscriptionTarget::parse(target)?;
     usecase.stop(client, &typed)?;
     usecase
-        .test_presenter()
-        .expect("test presenter")
-        .stop(usecase, client, target)
+        .publisher()
+        .stop(client, &typed, &usecase.active_targets())
 }
 
 pub(crate) async fn stop_read(
@@ -54,11 +50,7 @@ pub(crate) async fn stop_read(
     target: &str,
 ) -> Result<(), crate::usecase::state_subscription::SubscriptionError> {
     let typed = crate::usecase::state_subscription::SubscriptionTarget::parse(target)?;
-    let stopped = usecase.stop_subscription(client, &typed).await?;
-    usecase
-        .test_presenter()
-        .expect("test presenter")
-        .present_stop(usecase, &stopped)
+    usecase.stop_subscription(client, &typed).await
 }
 
 pub(crate) async fn start_terminal(
@@ -71,13 +63,8 @@ pub(crate) async fn start_terminal(
     use crate::usecase::state_subscription::StateReadError;
     let typed = crate::usecase::state_subscription::SubscriptionTarget::parse(target)
         .map_err(StateReadError::from_error)?;
-    let started = usecase
-        .start_subscription(client, &typed, Some(input_id))
-        .await?;
     usecase
-        .test_presenter()
-        .expect("test presenter")
-        .present_start(usecase, &started, cursor)
+        .start_subscription(client, &typed, Some(input_id), cursor)
         .await
 }
 
@@ -121,9 +108,10 @@ pub(crate) fn changes(
 
 pub(crate) fn same(
     value: &crate::adaptor::presenter::client::StatePayload,
-    expected: &crate::usecase::state_subscription::StateValue,
+    expected: impl std::borrow::Borrow<crate::usecase::state_subscription::StateValue>,
 ) -> bool {
-    *value == crate::adaptor::presenter::state_subscription_wire::payload(expected).unwrap()
+    *value
+        == crate::adaptor::presenter::state_subscription_wire::payload(expected.borrow()).unwrap()
 }
 
 pub(crate) fn terminal_item(

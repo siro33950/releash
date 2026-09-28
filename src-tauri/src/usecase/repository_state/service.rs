@@ -839,11 +839,7 @@ pub(crate) mod tests {
         std::fs::write(dir.path().join("typechange").join("child.txt"), "child").unwrap();
 
         let path = dir.path().to_str().unwrap();
-        let status = crate::adaptor::gateway::repository::status::get_git_status(path)
-            .unwrap()
-            .into_iter()
-            .map(Into::into)
-            .collect();
+        let status = crate::adaptor::gateway::repository::status::get_git_status(path).unwrap();
         let scanner = Arc::new(CountingScanner::with_status(status));
         let service = RepositoryStateService::new(
             crate::usecase::work_queue::WorkQueueUsecase::new(

@@ -1038,10 +1038,10 @@ async fn test_状態購読_購読idを入口で128バイトまで受け付ける
         ClientPushGateway::new(Arc::new(PushSink::new())),
         crate::client_api_acceptance::watcher(),
     )
-    .with_state_subscriptions(
+    .with_state_subscriptions(StateSubscriptionDeps::new(
         subscriptions.clone(),
         Arc::new(subscriptions.test_presenter().unwrap().clone()),
-    );
+    ));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let config = ClientConfig::new(
         format!("http://{}", listener.local_addr().unwrap())
@@ -1098,10 +1098,10 @@ async fn test_状態購読_connectで初期状態と変更と再開を配信す�
         ClientPushGateway::new(Arc::new(PushSink::new())),
         crate::client_api_acceptance::watcher(),
     )
-    .with_state_subscriptions(
+    .with_state_subscriptions(StateSubscriptionDeps::new(
         subscriptions.clone(),
         Arc::new(subscriptions.test_presenter().unwrap().clone()),
-    );
+    ));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let config = ClientConfig::new(
         format!("http://{}", listener.local_addr().unwrap())
@@ -1508,10 +1508,10 @@ async fn test_状態購読_既定期限後もbookmarkが届く() {
         ClientPushGateway::new(Arc::new(PushSink::new())),
         crate::client_api_acceptance::watcher(),
     )
-    .with_state_subscriptions(
+    .with_state_subscriptions(StateSubscriptionDeps::new(
         subscriptions.clone(),
         Arc::new(subscriptions.test_presenter().unwrap().clone()),
-    );
+    ));
     let payload = br#"{"clientId":"deadline-test"}"#;
     let mut bytes = vec![0];
     bytes.extend_from_slice(&(payload.len() as u32).to_be_bytes());
@@ -1566,10 +1566,10 @@ async fn test_状態購読操作_上限時は拒否し枠解放後は受理す�
         ClientPushGateway::new(Arc::new(PushSink::new())),
         crate::client_api_acceptance::watcher(),
     )
-    .with_state_subscriptions(
+    .with_state_subscriptions(StateSubscriptionDeps::new(
         subscriptions.clone(),
         Arc::new(subscriptions.test_presenter().unwrap().clone()),
-    );
+    ));
     let router = router(Some(deps.clone()));
     for method in ["StartStateSubscription", "StopStateSubscription"] {
         let permits = (0..64)
@@ -1965,10 +1965,10 @@ async fn test_terminal購読_connectの後段配線と差分再開と流量停�
         ClientPushGateway::new(Arc::new(PushSink::new())),
         dependencies.watcher,
     )
-    .with_state_subscriptions(
+    .with_state_subscriptions(StateSubscriptionDeps::new(
         subscriptions.clone(),
         Arc::new(subscriptions.test_presenter().unwrap().clone()),
-    )
+    ))
     .with_terminal(Some(TerminalApiDeps::new(terminal)));
     assert_eq!(*gateway.list_summaries_calls.lock(), 1);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

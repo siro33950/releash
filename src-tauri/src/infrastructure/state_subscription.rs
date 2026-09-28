@@ -14,9 +14,9 @@ const BOOKMARK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10
 
 #[derive(Clone)]
 pub(crate) struct StateSubscriptionRuntime<T> {
-    pub(crate) state: Arc<Mutex<Subscriptions<T>>>,
+    state: Arc<Mutex<Subscriptions<T>>>,
     changed: Arc<Notify>,
-    pub(crate) terminal_routes: Arc<Mutex<HashMap<String, String>>>,
+    terminal_routes: Arc<Mutex<HashMap<String, String>>>,
     terminal_boot: String,
 }
 
@@ -37,17 +37,78 @@ impl<T: Clone + PartialEq + Send + Sync + 'static> StateSubscriptionRuntime<T> {
         }
     }
 
+    pub(crate) fn register_terminal(
+        &self,
+        session: &str,
+        target: &str,
+        version: Version,
+        pending_limit: usize,
+    ) -> Result<(), SubscriptionError> {
+        let mut routes = self.terminal_routes.lock();
+        let previous = routes.insert(session.into(), target.into());
+        if let Err(error) =
+            self.update(|state| state.register_delta(target, version, pending_limit))
+        {
+            match previous {
+                Some(previous) => {
+                    routes.insert(session.into(), previous);
+                }
+                None => {
+                    routes.remove(session);
+                }
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn unregister_terminal(&self, session: &str, epoch: &str) -> Option<bool> {
+        let mut routes = self.terminal_routes.lock();
+        let target = routes.get(session)?.clone();
+        let subscribed = self.mutate(|state| {
+            if state
+                .current_version(&target)
+                .is_none_or(|version| version.epoch != epoch)
+            {
+                return None;
+            }
+            state.unregister(&target).ok()?;
+            Some(state.has_subscribers(&target))
+        });
+        if subscribed.is_some() {
+            routes.remove(session);
+        }
+        subscribed
+    }
+
+    pub(crate) fn terminal_route(&self, session: &str) -> Option<String> {
+        self.terminal_routes.lock().get(session).cloned()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_terminal_route_count(&self) -> usize {
+        self.terminal_routes.lock().len()
+    }
+
     pub(crate) fn update(
         &self,
         update: impl FnOnce(&mut Subscriptions<T>) -> Result<(), SubscriptionError>,
     ) -> Result<(), SubscriptionError> {
-        update(&mut self.state.lock())?;
-        self.changed.notify_waiters();
-        Ok(())
+        let result = update(&mut self.state.lock());
+        if result.is_ok() {
+            self.changed.notify_waiters();
+        }
+        result
     }
 
-    pub(crate) fn notify(&self) {
+    pub(crate) fn inspect<R>(&self, read: impl FnOnce(&Subscriptions<T>) -> R) -> R {
+        read(&self.state.lock())
+    }
+
+    pub(crate) fn mutate<R>(&self, update: impl FnOnce(&mut Subscriptions<T>) -> R) -> R {
+        let result = update(&mut self.state.lock());
         self.changed.notify_waiters();
+        result
     }
 
     pub(crate) fn stream<P, F>(
@@ -88,7 +149,6 @@ impl<T: Clone + PartialEq + Send + Sync + 'static> StateSubscriptionRuntime<T> {
                         refresh(raw, clients);
                     }
                     if let Some((target, event)) = runtime.state.lock().next(&id) {
-                        timer.reset_at(tokio::time::Instant::now() + BOOKMARK_INTERVAL);
                         return Some((
                             StateSubscriptionEvent::Item(target, event),
                             (id, permit, timer, runtime.clone(), refresh),
@@ -429,6 +489,7 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
             .any(|client| client.subscriptions.contains_key(target))
     }
 
+    #[cfg(test)]
     pub fn needs_snapshot(
         &self,
         target: &str,
@@ -473,6 +534,7 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
         units: usize,
         advances_version: bool,
     ) -> Result<(), SubscriptionError> {
+        let units = units.max(1);
         let id = target.to_string();
         let value = self
             .targets

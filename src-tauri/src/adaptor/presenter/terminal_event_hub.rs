@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -9,24 +8,15 @@ use crate::usecase::terminal_surface::output::{
     TerminalSurfaceOutputSummary,
 };
 
-use crate::infrastructure::terminal::output_pause::OutputPause;
+use crate::infrastructure::terminal::output_flow_control::TerminalOutputFlow;
 
 const TERMINAL_SURFACE_STREAM_CAPACITY: usize = 256;
 
 pub(crate) struct TerminalSurfaceEventHub {
     sender: tokio::sync::broadcast::Sender<TerminalSurfaceEvent>,
-    flow_control_enabled: bool,
     state_sink:
         Mutex<Option<Arc<dyn crate::usecase::terminal_surface::output::TerminalSurfaceStateSink>>>,
-    output: Mutex<
-        HashMap<
-            String,
-            (
-                crate::infrastructure::terminal::output_flow_control::OutputFlowControl,
-                Arc<OutputPause>,
-            ),
-        >,
-    >,
+    output: TerminalOutputFlow,
 }
 
 impl TerminalSurfaceEventHub {
@@ -42,14 +32,18 @@ impl TerminalSurfaceEventHub {
         let (sender, _) = tokio::sync::broadcast::channel(capacity);
         Self {
             sender,
-            flow_control_enabled,
             state_sink: Mutex::new(None),
-            output: Mutex::new(HashMap::new()),
+            output: TerminalOutputFlow::new(flow_control_enabled),
         }
     }
 
     pub(crate) fn event_sender(&self) -> tokio::sync::broadcast::Sender<TerminalSurfaceEvent> {
         self.sender.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_subscribed(&self, session: &str, client: &str) -> bool {
+        self.output.test_subscribed(session, client)
     }
 }
 
@@ -61,22 +55,13 @@ impl TerminalSurfaceOutputControl for TerminalSurfaceEventHub {
         *self.state_sink.lock() = Some(sink);
     }
     fn subscribe_output(&self, session_key: &str, client: &str, units: usize) {
-        if !self.flow_control_enabled {
-            return;
-        }
-        let mut output = self.output.lock();
-        let (flow, pause) = output.entry(session_key.into()).or_default();
-        pause.set(flow.subscribe(client, units));
+        self.output.subscribe(session_key, client, units);
     }
     fn unsubscribe_output(&self, session_key: &str, client: &str) {
-        if let Some((flow, pause)) = self.output.lock().get_mut(session_key) {
-            pause.set(flow.unsubscribe(client));
-        }
+        self.output.unsubscribe(session_key, client);
     }
     fn processed_output(&self, session_key: &str, client: &str, units: usize) {
-        if let Some((flow, pause)) = self.output.lock().get_mut(session_key) {
-            pause.set(flow.processed(client, units));
-        }
+        self.output.processed(session_key, client, units);
     }
 }
 
@@ -86,10 +71,8 @@ mod terminal_event_hub_tests;
 
 impl TerminalSurfaceEventSink for TerminalSurfaceEventHub {
     fn initialize(&self, surface: &TerminalSurfaceOutputSummary) {
-        if let Some((flow, pause)) = self.output.lock().get_mut(&surface.session_key) {
-            flow.reset(surface.latest_sequence);
-            pause.set(false);
-        }
+        self.output
+            .reset(&surface.session_key, surface.latest_sequence);
         if let Some(sink) = self.state_sink.lock().clone() {
             sink.initialize(surface);
         }
@@ -104,27 +87,15 @@ impl TerminalSurfaceEventSink for TerminalSurfaceEventHub {
         subscribed
     }
     fn release_output(&self, session_key: &str) {
-        if let Some((_, pause)) = self.output.lock().remove(session_key) {
-            pause.set(false);
-        }
+        self.output.release(session_key);
     }
     fn wait_output(&self, session_key: &str) {
-        let pause = self
-            .output
-            .lock()
-            .get(session_key)
-            .map(|(_, pause)| pause.clone());
-        if let Some(pause) = pause {
-            pause.wait();
-        }
+        self.output.wait(session_key);
     }
     fn publish(&self, event: TerminalSurfaceOutputEvent) {
-        if self.flow_control_enabled {
-            if let TerminalSurfaceOutputEvent::Output { data, sequence, .. } = &event {
-                if let Some((flow, pause)) = self.output.lock().get_mut(event.session_key()) {
-                    pause.set(flow.output(*sequence, data.encode_utf16().count()));
-                }
-            }
+        if let TerminalSurfaceOutputEvent::Output { data, sequence, .. } = &event {
+            self.output
+                .output(event.session_key(), *sequence, data.encode_utf16().count());
         }
         if let Some(sink) = self.state_sink.lock().clone() {
             sink.publish(event.clone());

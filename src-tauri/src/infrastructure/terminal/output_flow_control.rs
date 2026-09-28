@@ -1,4 +1,9 @@
 use std::collections::HashMap;
+use std::sync::Arc;
+
+use parking_lot::Mutex;
+
+use super::output_pause::OutputPause;
 
 pub(crate) const OUTPUT_HIGH_WATERMARK: usize = 100_000;
 pub(crate) const OUTPUT_LOW_WATERMARK: usize = 5_000;
@@ -57,6 +62,90 @@ impl OutputFlowControl {
             self.paused = false;
         }
         self.paused
+    }
+}
+
+pub(crate) struct TerminalOutputFlow {
+    enabled: bool,
+    sessions: Mutex<HashMap<String, (OutputFlowControl, Arc<OutputPause>)>>,
+}
+
+impl TerminalOutputFlow {
+    pub(crate) fn new(enabled: bool) -> Self {
+        Self {
+            enabled,
+            sessions: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub(crate) fn subscribe(&self, session: &str, client: &str, units: usize) {
+        if !self.enabled {
+            return;
+        }
+        let mut sessions = self.sessions.lock();
+        let (flow, pause) = sessions.entry(session.into()).or_default();
+        pause.set(flow.subscribe(client, units));
+    }
+
+    pub(crate) fn unsubscribe(&self, session: &str, client: &str) {
+        if let Some((flow, pause)) = self.sessions.lock().get_mut(session) {
+            pause.set(flow.unsubscribe(client));
+        }
+    }
+
+    pub(crate) fn processed(&self, session: &str, client: &str, units: usize) {
+        if let Some((flow, pause)) = self.sessions.lock().get_mut(session) {
+            pause.set(flow.processed(client, units));
+        }
+    }
+
+    pub(crate) fn reset(&self, session: &str, sequence: u64) {
+        if let Some((flow, pause)) = self.sessions.lock().get_mut(session) {
+            flow.reset(sequence);
+            pause.set(false);
+        }
+    }
+
+    pub(crate) fn release(&self, session: &str) {
+        if let Some((_, pause)) = self.sessions.lock().remove(session) {
+            pause.set(false);
+        }
+    }
+
+    pub(crate) fn wait(&self, session: &str) {
+        let pause = self
+            .sessions
+            .lock()
+            .get(session)
+            .map(|(_, pause)| pause.clone());
+        if let Some(pause) = pause {
+            pause.wait();
+        }
+    }
+
+    pub(crate) fn output(&self, session: &str, sequence: u64, units: usize) {
+        if !self.enabled {
+            return;
+        }
+        if let Some((flow, pause)) = self.sessions.lock().get_mut(session) {
+            pause.set(flow.output(sequence, units));
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_pause(&self, session: &str) -> Option<Arc<OutputPause>> {
+        self.sessions
+            .lock()
+            .get(session)
+            .map(|(_, pause)| pause.clone())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_subscribed(&self, session: &str, client: &str) -> bool {
+        self.sessions
+            .lock()
+            .get(session)
+            .is_some_and(|(flow, _)| flow.pending.contains_key(client))
     }
 }
 

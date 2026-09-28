@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::usecase::code_usecase::CodeUsecase;
+#[cfg(test)]
 use crate::usecase::repository_dto::{FileDiffStatDto, FileStatusDto};
 use crate::usecase::repository_state::scanner::{
     changes_diff_tree_entries, diff_tree_entries, staged_diff_tree_entries, RepositoryScanner,
@@ -38,11 +39,11 @@ impl RepositoryScanner for DefaultRepositoryScanner {
     }
 
     fn scan(&self, repo_path: &str) -> Result<RepositorySnapshotParts, RepositoryStateError> {
-        let status_scan = self.repository.get_repository_status_scan(repo_path)?;
+        let status_scan = super::status::get_repository_status_scan_dto(repo_path)
+            .map_err(crate::usecase::repository_error::UsecaseError::from)?;
         let current_dirty_count = status_scan.dirty_count;
-        let status: Vec<FileStatusDto> = status_scan.status.into_iter().map(Into::into).collect();
-        let diff_stats: Vec<FileDiffStatDto> =
-            status_scan.diff_stats.into_iter().map(Into::into).collect();
+        let status = status_scan.status;
+        let diff_stats = status_scan.diff_stats;
         let branch_cards = self
             .repository
             .list_branches_with_status_for_scan(repo_path, current_dirty_count)?;
@@ -112,17 +113,9 @@ mod tests {
         );
 
         let expected_status: Vec<FileStatusDto> =
-            crate::adaptor::gateway::repository::status::get_git_status(repo_path)
-                .unwrap()
-                .into_iter()
-                .map(Into::into)
-                .collect();
+            crate::adaptor::gateway::repository::status::get_git_status(repo_path).unwrap();
         let expected_diff_stats: Vec<FileDiffStatDto> =
-            crate::adaptor::gateway::repository::status::get_status_diff_stats(repo_path)
-                .unwrap()
-                .into_iter()
-                .map(Into::into)
-                .collect();
+            crate::adaptor::gateway::repository::status::get_status_diff_stats(repo_path).unwrap();
         let expected_branch_cards = repository
             .list_branches_with_status_read_only(repo_path)
             .unwrap();
