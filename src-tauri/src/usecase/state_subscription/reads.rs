@@ -6,13 +6,16 @@ use crate::usecase::{
         AgentSessionHistoryReadUsecase, AgentSessionHistoryRequest, AgentSessionProviderDto,
         AgentSessionReadUsecase, ProviderAvailabilityUsecase,
     },
+    comment::{ReviewCommentUsecase, ReviewThreadDto},
     git_host::GitHostUsecase,
     repo_paths_usecase::RepoPathsUsecase,
     repository_state::RepositoryStateService,
     repository_usecase::RepositoryUsecase,
+    review_usecase::ReviewUsecase,
     workflow::WorkflowUsecase,
     workspace_tree::WorkspaceListUsecase,
 };
+use std::path::PathBuf;
 use std::sync::Arc;
 
 #[derive(Debug)]
@@ -34,7 +37,19 @@ pub(crate) enum StateReadFailure {
     GitHost(Box<crate::domain::git_host::GitHostError>),
     Watcher(Box<crate::usecase::watcher::UsecaseError>),
     Subscription(Box<crate::usecase::state_subscription::SubscriptionError>),
+    Code(Box<crate::usecase::code_error::CodeUsecaseError>),
+    Review(Box<crate::domain::comment::ReviewError>),
     Technical(Box<TechnicalFailure>),
+}
+impl From<crate::usecase::code_error::CodeUsecaseError> for StateReadFailure {
+    fn from(error: crate::usecase::code_error::CodeUsecaseError) -> Self {
+        Self::Code(Box::new(error))
+    }
+}
+impl From<crate::domain::comment::ReviewError> for StateReadFailure {
+    fn from(error: crate::domain::comment::ReviewError) -> Self {
+        Self::Review(Box::new(error))
+    }
 }
 impl From<crate::domain::workflow::WorkflowError> for StateReadFailure {
     fn from(error: crate::domain::workflow::WorkflowError) -> Self {
@@ -122,6 +137,10 @@ pub(crate) struct WorkspaceStateReads {
     pub providers: Arc<ProviderAvailabilityUsecase>,
     pub git_host: Arc<GitHostUsecase>,
     pub workspace_state: Arc<dyn WorkspaceStateRepository>,
+    pub review: Arc<ReviewUsecase>,
+    pub comments: Arc<ReviewCommentUsecase>,
+    pub data_dir: PathBuf,
+    pub review_comments_dir: PathBuf,
 }
 
 impl WorkspaceStateReads {
@@ -253,6 +272,29 @@ impl WorkspaceStateReads {
                 )
                 .map(Into::into),
             ),
+            T::ReviewSnapshot(path, base) => StateValue::ReviewSnapshot(
+                self.review
+                    .get_review_snapshot(path, base.as_str())
+                    .map_err(error)?,
+            ),
+            T::ReviewFileView(path, file, section, base) => StateValue::ReviewFileView(
+                self.review
+                    .get_review_file_view(path, file, section.as_str(), base.as_str())
+                    .map_err(error)?,
+            ),
+            T::ReviewThreads(name) => StateValue::ReviewThreads(
+                self.comments
+                    .list_threads(
+                        &self.data_dir,
+                        name,
+                        None,
+                        crate::domain::comment::ReviewActor::human(),
+                    )
+                    .map_err(error)?
+                    .into_iter()
+                    .map(ReviewThreadDto::from)
+                    .collect(),
+            ),
             T::Failures(..)
             | T::Terminal(_)
             | T::AgentSession(_)
@@ -277,6 +319,9 @@ pub(crate) trait StateSubscriptionRead: Send + Sync {
         source: Option<crate::usecase::state_subscription::StateChangeSource>,
     );
     fn repositories(&self) -> Vec<String>;
+    fn review_comments_dir(&self) -> String {
+        String::new()
+    }
 }
 
 #[async_trait::async_trait]
@@ -323,6 +368,9 @@ impl StateSubscriptionRead for WorkspaceStateReads {
     }
     fn repositories(&self) -> Vec<String> {
         self.workspaces.watch_paths()
+    }
+    fn review_comments_dir(&self) -> String {
+        self.review_comments_dir.to_string_lossy().into_owned()
     }
 }
 

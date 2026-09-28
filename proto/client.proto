@@ -2,17 +2,16 @@ syntax = "proto3";
 package releash.client.v1;
 import "client_options.proto";
 
-
 message Push {
   reserved 1, 2, 8, 10;
   reserved "agent_session_changed", "branch_list_sync", "workflow_execution_changed", "workspace_list_changed";
   reserved 5, 6;
   reserved "repository_snapshot_changed", "repo_paths_changed";
+  reserved 4, 7;
+  reserved "git_status_changed", "review_comments_changed";
   oneof event {
     FileChangeEvent file_change = 3;
-    GitStatusChangedEvent git_status_changed = 4;
 
-    ResultString review_comments_changed = 7;
     Unit resync = 9;
   }
 }
@@ -70,8 +69,9 @@ message CommandRequest {
   reserved 121, 123, 131, 134, 137;
   reserved "resume_agent_session", "stop_workflow", "resume_workflow", "confirm_agent_session_archive_delete";
   reserved "start_git_dir_watching", "start_watching";
+  reserved 65, 66, 91, 183;
+  reserved "get_review_file_view", "get_review_snapshot", "list_review_threads", "get_review_blob";
   oneof command {
-    GetReviewBlobRequest get_review_blob = 183;
     AbortWorkflowRequest abort_workflow = 10;
     AddRepoPathRequest add_repo_path = 13;
     AppendReviewCommentRequest append_review_comment = 14;
@@ -116,8 +116,6 @@ message CommandRequest {
     GetProviderAvailabilityRequest get_provider_availability = 62;
     GetReleashBaseRequest get_releash_base = 63;
 
-    GetReviewFileViewRequest get_review_file_view = 65;
-    GetReviewSnapshotRequest get_review_snapshot = 66;
     GetTerminalPerformanceSwitchesRequest get_terminal_performance_switches = 68;
     GetWorkflowRequest get_workflow = 70;
     GetWorkflowConfigRequest get_workflow_config = 71;
@@ -133,7 +131,6 @@ message CommandRequest {
 
     ListFacetSummariesRequest list_facet_summaries = 88;
     ListProviderHookHealthWarningsRequest list_provider_hook_health_warnings = 90;
-    ListReviewThreadsRequest list_review_threads = 91;
     ListWorkflowsRequest list_workflows = 92;
 
     OpenAgentSessionRequest open_agent_session = 97;
@@ -253,8 +250,9 @@ message CommandResult {
   reserved 121, 123, 131, 134, 137;
   reserved "resume_agent_session", "stop_workflow", "resume_workflow", "confirm_agent_session_archive_delete";
   reserved "start_git_dir_watching", "start_watching";
+  reserved 65, 66, 91, 183;
+  reserved "get_review_file_view", "get_review_snapshot", "list_review_threads", "get_review_blob";
   oneof command {
-    ResultString get_review_blob = 183;
     Unit abort_workflow = 10;
     ResultBool add_repo_path = 13;
     ReviewThreadDto append_review_comment = 14;
@@ -299,8 +297,6 @@ message CommandResult {
     ProviderAvailabilitySnapshotResponse get_provider_availability = 62;
     Nullablestring get_releash_base = 63;
 
-    ReviewFileViewDto get_review_file_view = 65;
-    ReviewSnapshotDto get_review_snapshot = 66;
     TerminalPerformanceSwitchesV1 get_terminal_performance_switches = 68;
     WorkflowDto get_workflow = 70;
     WorkflowSection get_workflow_config = 71;
@@ -316,7 +312,6 @@ message CommandResult {
 
     ListFacetSummaryDto list_facet_summaries = 88;
     ListProviderHookHealthWarningResponse list_provider_hook_health_warnings = 90;
-    ListReviewThreadDto list_review_threads = 91;
     ListWorkflowSummaryDto list_workflows = 92;
 
     AgentSessionOpenResponse open_agent_session = 97;
@@ -389,8 +384,6 @@ message AbortWorkflowRequest {
 message Unit {
   option (json_unit) = true;
 }
-
-
 
 message AddRepoPathRequest {
   optional string path = 1 [json_name = "path", (json_required) = true];
@@ -514,8 +507,6 @@ message TerminalSurfaceOwnerV1Session {
   optional string workspace_path = 1 [json_name = "workspacePath", (json_required) = true];
   optional string session_id = 2 [json_name = "sessionId", (json_required) = true];
 }
-
-
 
 message BuildReviewThreadHandoffRequest {
   optional string worktree_name = 1 [json_name = "worktreeName", (json_required) = true];
@@ -650,7 +641,6 @@ message ListVisibleBlockDto {
   repeated VisibleBlockDto items = 1;
 }
 
-
 message CreateAgentSessionRequest {
   optional string workspace_identity = 1 [json_name = "workspaceIdentity", (json_required) = true];
   optional string worktree_path = 2 [json_name = "worktreePath", (json_required) = true];
@@ -713,8 +703,6 @@ message DeleteReviewThreadRequest {
 message DeleteWorkflowRequest {
   optional string name = 1 [json_name = "name", (json_required) = true];
 }
-
-
 
 message DetectEditorsRequest {
 
@@ -892,7 +880,6 @@ message ListNotionLabelOptionView {
   repeated NotionLabelOptionView items = 1;
 }
 
-
 message AgentSessionItemDto {
   optional string id = 1 [json_name = "id", (json_required) = true];
   optional string workspace_identity = 2 [json_name = "workspaceIdentity", (json_required) = true];
@@ -1024,7 +1011,6 @@ message GetAutomationConfigDirRequest {
 
 }
 
-
 message Nullablestring {
   option (json_wrapper) = "value";
   optional string value = 1 [json_name = "value", (json_nullable) = true];
@@ -1070,7 +1056,6 @@ message FileNavigationResultDto {
 message GetLanguageFromPathRequest {
   optional string file_path = 1 [json_name = "filePath", (json_required) = true];
 }
-
 
 message GetNotionConfigRequest {
   optional string repo_path = 1 [json_name = "repoPath", (json_required) = true];
@@ -1154,34 +1139,6 @@ message GetReleashBaseRequest {
   optional string repo_path = 1 [json_name = "repoPath", (json_required) = true];
 }
 
-
-message ReviewFileViewInput {
-  optional string worktree_path = 1 [json_name = "worktreePath", (json_required) = true];
-  optional ReviewTargetInput target = 2 [json_name = "target", (json_required) = true];
-  optional string section = 3 [json_name = "section", (json_required) = true];
-  optional string base = 4 [json_name = "base", (json_required) = true];
-  optional uint64 snapshot_version = 5 [json_name = "snapshotVersion", (json_nullable) = true, (json_default) = true];
-  optional ViewportInput viewport = 6 [json_name = "viewport", (json_nullable) = true];
-}
-
-message ReviewTargetInput {
-  option (json_tag) = "by";
-  option (json_content) = "value";
-  oneof variant {
-    string file_id = 1 [json_name = "fileId"];
-    string path = 2 [json_name = "path"];
-  }
-}
-
-message ViewportInput {
-  optional uint32 start_line = 1 [json_name = "startLine", (json_required) = true];
-  optional uint32 end_line = 2 [json_name = "endLine", (json_required) = true];
-}
-
-message GetReviewFileViewRequest {
-  optional ReviewFileViewInput input = 1 [json_name = "input", (json_required) = true];
-}
-
 message ReviewFileViewDto {
   option (json_tag) = "kind";
   oneof variant {
@@ -1193,6 +1150,8 @@ message ReviewFileViewDto {
 }
 
 message ReviewTextDiffDto {
+  reserved 11;
+  reserved "viewport";
   optional uint64 version = 1 [json_name = "version", (json_required) = true];
   optional bool stale = 2 [json_name = "stale", (json_required) = true];
   optional string file_id = 3 [json_name = "fileId", (json_required) = true];
@@ -1203,7 +1162,6 @@ message ReviewTextDiffDto {
   optional ListHunkDto hunks = 8 [json_name = "hunks", (json_required) = true];
   optional ListChangeGroupDto change_groups = 9 [json_name = "changeGroups", (json_required) = true];
   optional bool limited = 10 [json_name = "limited", (json_required) = true];
-  optional ViewportDto viewport = 11 [json_name = "viewport", (json_nullable) = true];
   optional uint32 total_lines = 12 [json_name = "totalLines", (json_required) = true];
 }
 
@@ -1248,11 +1206,6 @@ message ListChangeGroupDto {
   repeated ChangeGroupDto items = 1;
 }
 
-message ViewportDto {
-  optional uint32 start_line = 1 [json_name = "startLine", (json_required) = true];
-  optional uint32 end_line = 2 [json_name = "endLine", (json_required) = true];
-}
-
 message ReviewImageDto {
   optional uint64 version = 1 [json_name = "version", (json_required) = true];
   optional bool stale = 2 [json_name = "stale", (json_required) = true];
@@ -1264,12 +1217,12 @@ message ReviewImageDto {
 }
 
 message ReviewBinaryDto {
+  reserved 5, 6;
+  reserved "original_url", "modified_url";
   optional uint64 version = 1 [json_name = "version", (json_required) = true];
   optional bool stale = 2 [json_name = "stale", (json_required) = true];
   optional string file_id = 3 [json_name = "fileId", (json_required) = true];
   optional string path = 4 [json_name = "path", (json_required) = true];
-  optional string original_url = 5 [json_name = "originalUrl", (json_nullable) = true];
-  optional string modified_url = 6 [json_name = "modifiedUrl", (json_nullable) = true];
   optional uint64 original_size = 7 [json_name = "originalSize", (json_nullable) = true];
   optional uint64 modified_size = 8 [json_name = "modifiedSize", (json_nullable) = true];
 }
@@ -1295,15 +1248,6 @@ message ReviewLimitReasonDto {
     tokenization = 3 [(json_enum_name) = "tokenization"];
   }
   optional Value value = 1 [json_name = "value", (json_required) = true];
-}
-
-message ReviewSnapshotInput {
-  optional string worktree_path = 1 [json_name = "worktreePath", (json_required) = true];
-  optional string base = 2 [json_name = "base", (json_required) = true];
-}
-
-message GetReviewSnapshotRequest {
-  optional ReviewSnapshotInput input = 1 [json_name = "input", (json_required) = true];
 }
 
 message ReviewSnapshotDto {
@@ -1388,10 +1332,6 @@ message TerminalPerformanceSwitchesV1 {
   optional bool disable_renderer_write_serialization = 3 [json_name = "disableRendererWriteSerialization", (json_required) = true];
   optional bool disable_webgl_renderer = 4 [json_name = "disableWebglRenderer", (json_required) = true];
 }
-
-
-
-
 
 message GetWorkflowRequest {
   optional string name = 1 [json_name = "name", (json_required) = true];
@@ -1616,7 +1556,6 @@ message WorkflowSection {
   optional bool approval_auto_approve = 1 [json_name = "approval_auto_approve", (json_default) = true];
 }
 
-
 message WorkflowExecutionView {
   reserved 11, 12;
   reserved "interruption_reason", "resume_from_node";
@@ -1788,7 +1727,6 @@ message ApprovalTargetView {
 message GetWorkflowSourceRequest {
   optional string name = 1 [json_name = "name", (json_required) = true];
 }
-
 
 message WorkspaceNodeDetailDto {
   optional NodeProcessPresence process_presence = 15 [json_name = "processPresence", (json_required) = true];
@@ -1977,7 +1915,6 @@ message KillTerminalSurfaceRequest {
   optional TerminalSurfaceOwnerV1 owner = 1 [json_name = "owner", (json_required) = true];
 }
 
-
 message AgentSessionHistoryPageDto {
   optional ListAgentSessionHistoryCandidateDto items = 1 [json_name = "items", (json_required) = true];
   reserved 2;
@@ -1997,12 +1934,10 @@ message ListAgentSessionHistoryCandidateDto {
   repeated AgentSessionHistoryCandidateDto items = 1;
 }
 
-
 message ListAgentSessionProviderDto {
   option (json_wrapper) = "items";
   repeated AgentSessionProviderDto items = 1;
 }
-
 
 message BranchDto {
   optional string name = 1 [json_name = "name", (json_required) = true];
@@ -2013,7 +1948,6 @@ message ListBranchDto {
   option (json_wrapper) = "items";
   repeated BranchDto items = 1;
 }
-
 
 message BranchCardDto {
   optional string name = 1 [json_name = "name", (json_required) = true];
@@ -2032,7 +1966,6 @@ message ListBranchCardDto {
   option (json_wrapper) = "items";
   repeated BranchCardDto items = 1;
 }
-
 
 message RepositoryBranchCardsSnapshotDto {
   reserved 4;
@@ -2088,28 +2021,6 @@ message ListProviderHookHealthWarningResponse {
   repeated ProviderHookHealthWarningResponse items = 1;
 }
 
-message ReviewThreadFilterDto {
-  optional string file = 1 [json_name = "file", (json_nullable) = true];
-  optional ReviewThreadStateDto state = 2 [json_name = "state", (json_nullable) = true];
-  optional AuthorScopeDto author = 3 [json_name = "author", (json_nullable) = true];
-  optional bool unread = 4 [json_name = "unread", (json_nullable) = true];
-  optional Liststring thread_id = 5 [json_name = "threadId", (json_default) = true];
-}
-
-message AuthorScopeDto {
-  option (json_wrapper) = "value";
-  enum Value {
-    mine = 0 [(json_enum_name) = "mine"];
-    other = 1 [(json_enum_name) = "other"];
-  }
-  optional Value value = 1 [json_name = "value", (json_required) = true];
-}
-
-message ListReviewThreadsRequest {
-  optional string worktree_name = 1 [json_name = "worktreeName", (json_required) = true];
-  optional ReviewThreadFilterDto filter = 2 [json_name = "filter", (json_nullable) = true];
-}
-
 message ListReviewThreadDto {
   option (json_wrapper) = "items";
   repeated ReviewThreadDto items = 1;
@@ -2132,7 +2043,6 @@ message ListWorkflowSummaryDto {
   repeated WorkflowSummaryDto items = 1;
 }
 
-
 message WorkspaceWorkflowHistoryItemDto {
   optional string execution_id = 1 [json_name = "executionId", (json_required) = true];
   optional string worktree_path = 2 [json_name = "worktreePath", (json_required) = true];
@@ -2152,7 +2062,6 @@ message ListWorktreeEntryDto {
   option (json_wrapper) = "items";
   repeated WorktreeEntryDto items = 1;
 }
-
 
 message WorkspaceStateDto {
   optional uint32 version = 1 [json_name = "version", (json_required) = true, (json_literal) = "1"];
@@ -2357,7 +2266,6 @@ message ResizeTerminalSurfaceRequest {
   optional uint32 cols = 3 [json_name = "cols", (json_required) = true];
 }
 
-
 message ResolveReviewThreadRequest {
   optional string worktree_name = 1 [json_name = "worktreeName", (json_required) = true];
   optional string thread_id = 2 [json_name = "threadId", (json_required) = true];
@@ -2386,7 +2294,6 @@ message ResumeAgentSessionHistoryCandidateRequest {
   optional uint32 cols = 6 [json_name = "cols", (json_required) = true];
   optional string caller_request_id = 7 [json_name = "callerRequestId", (json_required) = true];
 }
-
 
 message RetryWorkspaceNodeRequest {
   optional string worktree_path = 1 [json_name = "worktreePath", (json_required) = true];
@@ -2481,7 +2388,6 @@ message StartWorkflowRequest {
 message StopWatchingRequest {
   optional uint64 watcher_id = 1 [json_name = "watcherId", (json_required) = true];
 }
-
 
 message TakeTerminalInputPerformanceSamplesRequest {
 
@@ -2704,10 +2610,6 @@ message FileChangeEvent {
   optional string kind = 3 [json_name = "kind", (json_required) = true];
 }
 
-message GitStatusChangedEvent {
-  optional string repo_path = 1 [json_name = "repo_path", (json_required) = true];
-}
-
 message CommandError {
   option (json_untagged) = true;
   oneof variant {
@@ -2908,9 +2810,6 @@ message WorkflowNumber {
   option (json_wrapper) = "value";
   optional double value = 1 [(json_required) = true];
 }
-message GetReviewBlobRequest {
-  optional string reference = 1 [(json_required) = true];
-}
 
 message DesktopSettings {
   bool close_to_tray = 1;
@@ -2930,7 +2829,6 @@ service ClientService {
   rpc StartStateSubscription(StartStateSubscriptionRequest) returns (Unit);
   rpc StopStateSubscription(StopStateSubscriptionRequest) returns (Unit);
   rpc RefreshWorkspaces(RefreshWorkspacesRequest) returns (Unit);
-  rpc GetReviewBlob(GetReviewBlobRequest) returns (ResultString);
   rpc AbortWorkflow(AbortWorkflowRequest) returns (Unit);
   rpc ReportTerminalProcessed(ReportTerminalProcessedRequest) returns (Unit);
   rpc AddRepoPath(AddRepoPathRequest) returns (ResultBool);
@@ -2972,8 +2870,6 @@ service ClientService {
   rpc GetPerformanceTelemetryEnabled(GetPerformanceTelemetryEnabledRequest) returns (ResultBool);
   rpc GetProviderAvailability(GetProviderAvailabilityRequest) returns (ProviderAvailabilitySnapshotResponse);
   rpc GetReleashBase(GetReleashBaseRequest) returns (Nullablestring);
-  rpc GetReviewFileView(GetReviewFileViewRequest) returns (ReviewFileViewDto);
-  rpc GetReviewSnapshot(GetReviewSnapshotRequest) returns (ReviewSnapshotDto);
   rpc GetTerminalPerformanceSwitches(GetTerminalPerformanceSwitchesRequest) returns (TerminalPerformanceSwitchesV1);
   rpc GetWorkflow(GetWorkflowRequest) returns (WorkflowDto);
   rpc GetWorkflowConfig(GetWorkflowConfigRequest) returns (WorkflowSection);
@@ -2986,7 +2882,6 @@ service ClientService {
   rpc KillTerminalSurface(KillTerminalSurfaceRequest) returns (Unit);
   rpc ListFacetSummaries(ListFacetSummariesRequest) returns (ListFacetSummaryDto);
   rpc ListProviderHookHealthWarnings(ListProviderHookHealthWarningsRequest) returns (ListProviderHookHealthWarningResponse);
-  rpc ListReviewThreads(ListReviewThreadsRequest) returns (ListReviewThreadDto);
   rpc ListWorkflows(ListWorkflowsRequest) returns (ListWorkflowSummaryDto);
   rpc OpenAgentSession(OpenAgentSessionRequest) returns (AgentSessionOpenResponse);
   rpc OpenFacetInEditor(OpenFacetInEditorRequest) returns (Unit);
@@ -3058,12 +2953,6 @@ message ServerInfo {
 message SubscribePushRequest { string subscription_id = 1; }
 message WatchFilesRequest { string subscription_id = 1; StartWatchingRequest request = 2; }
 message WatchGitDirectoryRequest { string subscription_id = 1; StartGitDirWatchingRequest request = 2; }
-
-
-
-
-
-
 
 message RefreshWorkspacesRequest {
   optional string repo_path = 2 [json_name = "repoPath", (json_nullable) = true];
@@ -3144,6 +3033,9 @@ message StatePayload {
     ResultString repository_root = 15;
     ResultString startup_repository = 16;
     NullableWorkspaceStateDto workspace_state = 17;
+    ReviewSnapshotDto review_snapshot = 30;
+    ReviewFileViewDto review_file_view = 31;
+    ListReviewThreadDto review_threads = 32;
   }
 }
 message StateChange { bool delta = 1; StatePayload payload = 2; }

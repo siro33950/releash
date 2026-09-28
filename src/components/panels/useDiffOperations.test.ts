@@ -15,7 +15,6 @@ describe("useDiffOperations", () => {
 	});
 
 	it("handleStageGroup delegates to the Rust review group command", async () => {
-		const onGitChanged = vi.fn();
 		mockInvoke.mockResolvedValue(undefined);
 
 		const { result } = renderHook(() =>
@@ -24,7 +23,6 @@ describe("useDiffOperations", () => {
 				filePath: "relative/path.ts",
 				section: "changes",
 				base: "head",
-				onGitChanged,
 			}),
 		);
 
@@ -41,11 +39,9 @@ describe("useDiffOperations", () => {
 				groupId: "g:stage:0",
 			},
 		});
-		expect(onGitChanged).toHaveBeenCalled();
 	});
 
 	it("handleUnstageGroup delegates to the Rust review group command", async () => {
-		const onGitChanged = vi.fn();
 		mockInvoke.mockResolvedValue(undefined);
 
 		const { result } = renderHook(() =>
@@ -54,7 +50,6 @@ describe("useDiffOperations", () => {
 				filePath: "relative/path.ts",
 				section: "staged",
 				base: "head",
-				onGitChanged,
 			}),
 		);
 
@@ -71,7 +66,6 @@ describe("useDiffOperations", () => {
 				groupId: "g:unstage:0",
 			},
 		});
-		expect(onGitChanged).toHaveBeenCalled();
 	});
 
 	it("does nothing when target identifiers are missing", async () => {
@@ -108,8 +102,9 @@ describe("useDiffOperations", () => {
 		expect(mockInvoke).not.toHaveBeenCalled();
 	});
 
-	it("refreshes when the Rust command reports a stale review group target", async () => {
-		const onGitChanged = vi.fn();
+	it("staleなreview groupの拒否は警告だけにし次の版の配信を待つ", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const error = vi.spyOn(console, "error").mockImplementation(() => {});
 		mockInvoke.mockRejectedValue({
 			code: "STALE_REVIEW_GROUP_TARGET",
 			message: "review group target stale: g:old:0",
@@ -121,7 +116,6 @@ describe("useDiffOperations", () => {
 				filePath: "relative/path.ts",
 				section: "changes",
 				base: "head",
-				onGitChanged,
 			}),
 		);
 
@@ -129,6 +123,9 @@ describe("useDiffOperations", () => {
 			await result.current.handleStageGroup("g:old:0");
 		});
 
-		expect(onGitChanged).toHaveBeenCalled();
+		expect(warn).toHaveBeenCalledOnce();
+		expect(error).not.toHaveBeenCalled();
+		warn.mockRestore();
+		error.mockRestore();
 	});
 });

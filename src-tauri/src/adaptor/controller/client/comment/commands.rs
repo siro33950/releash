@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::domain::comment::{ReviewActor, ReviewTarget};
 use crate::infrastructure::platform::path_aliases::{alias_name_for_profile, BuildProfile};
-use crate::usecase::comment::{ReviewCommentUsecase, ReviewThreadDto, ReviewThreadFilterDto};
+use crate::usecase::comment::{ReviewCommentUsecase, ReviewThreadDto};
 
 async fn blocking<T, F>(f: F) -> Result<T, AppError>
 where
@@ -14,27 +14,6 @@ where
     crate::adaptor::controller::client::worktree_mutation::spawn_blocking(f)
         .await
         .map_err(|e| AppError::new(format!("task join error: {e}")))?
-}
-
-pub(crate) async fn list_review_threads_shared(
-    data_dir: PathBuf,
-    usecase: &Arc<ReviewCommentUsecase>,
-    worktree_name: String,
-    filter: Option<ReviewThreadFilterDto>,
-) -> Result<Vec<ReviewThreadDto>, AppError> {
-    let usecase = Arc::clone(usecase);
-    blocking(move || {
-        usecase
-            .list_threads(
-                &data_dir,
-                &worktree_name,
-                filter.map(Into::into),
-                ReviewActor::human(),
-            )
-            .map(|threads| threads.into_iter().map(ReviewThreadDto::from).collect())
-            .map_err(AppError::from_failure)
-    })
-    .await
 }
 
 pub(crate) async fn create_review_thread_shared(

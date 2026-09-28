@@ -393,26 +393,6 @@ pub(crate) async fn compose(
 
     let workflow_query_usecase = workflow_usecase.clone();
     let review_comments_dir = adaptor::gateway::comment::state_dir(&data_dir);
-    tokio::spawn(adaptor::controller::review_comments_watch::run(
-        retrying.clone(),
-        Arc::new(usecase::comment::ReviewCommentsWatchUsecase::new(Arc::new(
-            adaptor::gateway::comment::watcher::ReviewCommentsWatchGateway::new(
-                review_comments_dir.clone(),
-                Arc::new({
-                    let app = push_sink.clone();
-                    move || {
-                        adaptor::gateway::push::BackendPush::ReviewCommentsChanged("*")
-                            .emit(app.as_ref())
-                    }
-                }),
-            ),
-        ))),
-        review_comments_dir.to_string_lossy().into_owned(),
-        Box::pin(infrastructure::timer::ticks(
-            std::time::Duration::from_secs(1),
-        )),
-    ));
-
     adaptor::controller::wiring::spawn_startup_app_data_gc(
         app_data.clone(),
         shared_repo_paths.clone(),
@@ -425,6 +405,9 @@ pub(crate) async fn compose(
     let mut client_dispatch =
         adaptor::controller::client::ClientCommandDispatch::new(startup_authority.clone())
             .with_state_publisher(state_subscriptions.publisher());
+    let reads_data_dir = data_dir.clone();
+    let review_usecase_for_reads = app_state.review_usecase.clone();
+    let review_comment_usecase_for_reads = review_comment_usecase.clone();
     let dependencies = super::client::ClientDependencies {
         application_startup_authority: Some(startup_authority),
         workspace_node_command_usecase: Some(workspace_node_command_usecase),
@@ -446,13 +429,12 @@ pub(crate) async fn compose(
                 adaptor::gateway::repository::file_watcher::FileWatcherGateway::new(
                     file_watchers,
                     push_sink.clone(),
-                )
-                .with_state_publisher(state_subscriptions.publisher()),
+                ),
             ),
         )),
         data_dir: Ok(data_dir),
         comment_notify: Arc::new(adaptor::gateway::push::CommentChangeGateway::new(
-            push_sink.clone(),
+            state_subscriptions.publisher(),
         )),
         process_port: Arc::new(
             adaptor::gateway::application_lifecycle::DaemonProcessActionPort(exit_sender),
@@ -496,6 +478,10 @@ pub(crate) async fn compose(
                         .git_host_usecase
                         .clone(),
                     workspace_state: dependencies.workspace_state_store.clone().unwrap(),
+                    review: review_usecase_for_reads,
+                    comments: review_comment_usecase_for_reads,
+                    data_dir: reads_data_dir,
+                    review_comments_dir,
                 },
             ),
         ),

@@ -3,13 +3,13 @@ use std::sync::Arc;
 use crate::adaptor::gateway::repository::watch::FileChangeEvent;
 use crate::infrastructure::push::PushSink;
 use crate::usecase::push::{PushMessage, PushOutput};
+use crate::usecase::state_subscription::{StateChangeSource, StateSubscriptionOutputRef};
 
-pub enum BackendPush<'a> {
+pub enum BackendPush {
     FileChange(FileChangeEvent),
-    ReviewCommentsChanged(&'a str),
 }
 
-impl BackendPush<'_> {
+impl BackendPush {
     pub(crate) fn emit(self, output: &dyn PushOutput) {
         output.publish(match self {
             Self::FileChange(value) => PushMessage::FileChange {
@@ -17,24 +17,20 @@ impl BackendPush<'_> {
                 path: value.path,
                 kind: value.kind,
             },
-            Self::ReviewCommentsChanged(value) => PushMessage::ReviewCommentsChanged(value.into()),
         });
     }
 }
 
 pub(crate) struct CommentChangeGateway {
-    notify: Box<dyn Fn(&str) + Send + Sync>,
+    publisher: StateSubscriptionOutputRef,
 }
 impl CommentChangeGateway {
-    pub(crate) fn new(sink: std::sync::Arc<dyn PushOutput>) -> Self {
-        Self {
-            notify: Box::new(move |worktree| {
-                BackendPush::ReviewCommentsChanged(worktree).emit(sink.as_ref())
-            }),
-        }
+    pub(crate) fn new(publisher: StateSubscriptionOutputRef) -> Self {
+        Self { publisher }
     }
     pub(crate) fn notify(&self, worktree: &str) {
-        (self.notify)(worktree);
+        self.publisher
+            .invalidate(StateChangeSource::ReviewComments(Some(worktree.into())));
     }
 }
 

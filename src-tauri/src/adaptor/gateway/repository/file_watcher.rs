@@ -9,7 +9,6 @@ use crate::domain::repository::file_watcher::FileWatchGateway;
 use crate::infrastructure::file_watcher::FileWatcherManager;
 
 pub(crate) struct FileWatcherGateway {
-    state_publisher: Option<crate::usecase::state_subscription::StateSubscriptionOutputRef>,
     manager: Arc<FileWatcherManager>,
     sink: std::sync::Arc<dyn crate::usecase::push::PushOutput>,
 }
@@ -19,18 +18,7 @@ impl FileWatcherGateway {
         manager: Arc<FileWatcherManager>,
         sink: std::sync::Arc<dyn crate::usecase::push::PushOutput>,
     ) -> Self {
-        Self {
-            manager,
-            sink,
-            state_publisher: None,
-        }
-    }
-    pub(crate) fn with_state_publisher(
-        mut self,
-        publisher: crate::usecase::state_subscription::StateSubscriptionOutputRef,
-    ) -> Self {
-        self.state_publisher = Some(publisher);
-        self
+        Self { manager, sink }
     }
 }
 
@@ -44,31 +32,29 @@ impl FileWatchGateway for FileWatcherGateway {
                     .emit(sink.as_ref());
             })
     }
-    fn start_tree(&self, path: &str) -> Result<u64, String> {
+    fn start_tree(
+        &self,
+        path: &str,
+        on_change: Arc<dyn Fn() + Send + Sync>,
+    ) -> Result<u64, String> {
         let id = generate_watcher_id();
         let path = std::path::absolute(path).map_err(|error| error.to_string())?;
         let watch_path = path
             .ancestors()
             .find(|parent| parent.is_dir())
-            .ok_or("No existing history directory ancestor")?
+            .ok_or("No existing watch directory ancestor")?
             .to_path_buf();
-        let publisher = self
-            .state_publisher
-            .clone()
-            .ok_or("State publisher unavailable")?;
-        let changes = publisher.clone();
+        let changed = on_change.clone();
         self.manager.start_watching(
             id,
             watch_path.to_string_lossy().into_owned(),
             move |event| {
                 if event.path.starts_with(&path) || path.starts_with(&event.path) {
-                    publisher.invalidate(
-                        crate::usecase::state_subscription::StateChangeSource::ProviderHistory,
-                    );
+                    changed();
                 }
             },
         )?;
-        changes.invalidate(crate::usecase::state_subscription::StateChangeSource::ProviderHistory);
+        on_change();
         Ok(id)
     }
 

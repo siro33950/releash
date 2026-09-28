@@ -912,3 +912,62 @@ async fn test_snapshot登録後の切断_開始失敗で対象の鍵を解放す
         .inspect(|state| state.registered(&SubscriptionTarget::RepositoryPaths.to_string())));
     assert_eq!(usecase.test_worker_count(), 0);
 }
+
+#[tokio::test]
+async fn test_review_threads購読_comment操作で再配信し最後の停止でfile監視を解放する() {
+    use crate::usecase::state_subscription::{StateChangeSource, WatchRequirement};
+    // Given
+    let fixture = StateReadsFixture::new();
+    let files = Arc::new(crate::usecase::watcher::watcher_tests::SubscriptionFiles::default());
+    let usecase = fixture.subscriptions.clone().with_reads(
+        Arc::new(fixture.reads.clone()),
+        Some(Arc::new(crate::usecase::watcher::WatcherUsecase::new(
+            None,
+            files.clone(),
+        ))),
+        vec![],
+    );
+    let mut stream = Box::pin(usecase.open("client".into()).unwrap());
+    stream.next().await;
+    let target = SubscriptionTarget::ReviewThreads("repository".into()).to_string();
+    // When
+    start_read(&usecase, "client", &target, None).await.unwrap();
+    // Then
+    assert!(
+        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Snapshot(_, value))) if same(&value, StateValue::ReviewThreads(vec![])))
+    );
+    stream.next().await;
+    let requirement = WatchRequirement::Files(
+        fixture
+            .reads
+            .review_comments_dir
+            .to_string_lossy()
+            .into_owned(),
+        StateChangeSource::ReviewComments(None),
+    );
+    assert!(usecase.test_watches().contains_key(&requirement));
+    let thread = fixture
+        .reads
+        .comments
+        .create_thread(
+            &fixture.reads.data_dir,
+            "repository",
+            crate::domain::comment::ReviewActor::human(),
+            crate::domain::comment::ReviewTarget {
+                file_path: None,
+                line_number: None,
+                end_line: None,
+            },
+            "subscription comment".into(),
+        )
+        .unwrap();
+    crate::adaptor::gateway::push::CommentChangeGateway::new(usecase.publisher())
+        .notify("repository");
+    assert!(
+        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Change(_, _, value))) if same(&value, StateValue::ReviewThreads(vec![thread.into()])))
+    );
+    stop_read(&usecase, "client", &target).await.unwrap();
+    assert!(usecase.test_watches().is_empty());
+    assert_eq!(usecase.test_worker_count(), 0);
+    assert!(files.active.lock().unwrap().is_empty());
+}

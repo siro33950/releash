@@ -73,9 +73,7 @@ impl From<&crate::domain::code::error::CodeError> for Failure {
             E::Technical(error) => Failure::from(error),
             E::External(_) => Failure::Technical(TechnicalFailureNature::Other),
             E::Rule(_) => Failure::Business(BusinessFailure::Other),
-            E::StaleReviewBlobVersion { .. } | E::StaleReviewGroupTarget { .. } => {
-                Failure::Business(BusinessFailure::VersionConflict)
-            }
+            E::StaleReviewGroupTarget { .. } => Failure::Business(BusinessFailure::VersionConflict),
         }
     }
 }

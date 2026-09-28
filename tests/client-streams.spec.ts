@@ -28,7 +28,7 @@ test("20terminalとpushを保持しても入力・処理済み量通知・状態
 		} = await import("/src/lib/client.ts");
 		const events = new Map<string, string[]>();
 		let pushed = false;
-		const stopPush = await listenClient("review-comments-changed", () => {
+		const stopPush = await listenClient("file-change", () => {
 			pushed = true;
 		});
 		const releases: Array<() => Promise<void>> = [];
@@ -80,7 +80,7 @@ test("20terminalとpushを保持しても入力・処理済み量通知・状態
 			}),
 		);
 		const paths = await invokeClient("get_external_editor");
-		await window.__releashPush("review-comments-changed", "/updated");
+		await window.__releashPush("file-change", { watcher_id: 1, path: "/updated", kind: "change" });
 		const deadline = Date.now() + 3000;
 		while (
 			(!pushed || [...events.values()].some((output) => output.length < 2)) &&

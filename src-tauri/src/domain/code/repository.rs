@@ -26,20 +26,6 @@ pub enum ReviewBlobSide {
     Modified,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReviewBlobUrlParams {
-    pub worktree_path: String,
-    pub path: String,
-    pub side: ReviewBlobSide,
-    pub section: String,
-    pub base: String,
-    pub version: u64,
-}
-
-pub trait ReviewBlobUrlProvider: Send + Sync {
-    fn url(&self, params: &ReviewBlobUrlParams) -> String;
-}
-
 /// 各リビジョン時点のファイル内容参照（テキスト／バイナリ bytes / Base64）。
 pub trait FileContentRepository: Send + Sync {
     fn review_file_metadata_at_ref(

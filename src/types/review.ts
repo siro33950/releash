@@ -46,11 +46,6 @@ export interface ReviewSnapshot {
 	changesFileCount: number;
 }
 
-export interface ReviewViewport {
-	startLine: number;
-	endLine: number;
-}
-
 type ReviewTextSource = "diff" | "added" | "deleted";
 type ReviewLimitReason =
 	| "fileSize"
@@ -70,7 +65,6 @@ interface ReviewTextDiffView {
 	hunks: Hunk[];
 	changeGroups: ChangeGroup[];
 	limited: boolean;
-	viewport: ReviewViewport | null;
 	totalLines: number;
 }
 
@@ -91,8 +85,6 @@ export interface ReviewBinaryView {
 	stale: boolean;
 	fileId: string;
 	path: string;
-	originalUrl: string | null;
-	modifiedUrl: string | null;
 	originalSize: number | null;
 	modifiedSize: number | null;
 }

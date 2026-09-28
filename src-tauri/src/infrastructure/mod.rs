@@ -1,5 +1,4 @@
 pub(crate) mod app_data_path;
-pub(crate) mod comment;
 pub(crate) mod file_watcher;
 pub mod git;
 pub(crate) mod local_api;

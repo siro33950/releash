@@ -4,10 +4,6 @@ pub(crate) enum PushMessage {
         path: String,
         kind: String,
     },
-    GitStatusChanged {
-        repo_path: String,
-    },
-    ReviewCommentsChanged(String),
 }
 
 pub(crate) trait PushOutput: Send + Sync {

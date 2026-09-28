@@ -69,7 +69,7 @@ pub(crate) fn build_client_dependencies<R: tauri::Runtime>(
         editor_launcher: Arc::new(crate::adaptor::gateway::external_editor::NativeEditorLauncherGateway),
         watcher: build_watcher_usecase(app),
         data_dir: data_dir(app).map_err(crate::adaptor::presenter::error::AppError::new),
-        comment_notify: Arc::new(crate::adaptor::gateway::push::CommentChangeGateway::new(push_sink(app))),
+        comment_notify: Arc::new(crate::adaptor::gateway::push::CommentChangeGateway::new(crate::adaptor::presenter::state_subscription::test_output())),
         process_port: Arc::new(crate::adaptor::gateway::application_lifecycle::TauriApplicationQuitIntentPort::new(app.clone())),
     }
 }

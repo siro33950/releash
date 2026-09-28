@@ -134,20 +134,6 @@ parity!(
     )
 );
 parity!(
-    test_comment_protoはusecaseの不正入力エラーと一致する,
-    app,
-    "list_review_threads",
-    json!({"worktreeName":"../invalid"}),
-    outcome(
-        invoke_tauri(
-            &app,
-            "list_review_threads",
-            json!({"worktreeName": "../invalid","filter": null})
-        )
-        .await
-    )
-);
-parity!(
     test_agent_session_protoはusecase結果と一致する,
     app,
     "get_provider_availability",
@@ -306,12 +292,16 @@ async fn test_クライアントdispatch_proto全commandの登録と引数検証
     // Given
     let (_app, dispatch) = parity_app();
     // When / Then
-    assert_eq!(wire::COMMAND_NAMES.len(), 111);
+    assert_eq!(wire::COMMAND_NAMES.len(), 107);
     assert!(wire::COMMAND_NAMES.contains(&"refresh_workspaces"));
     for removed in [
         "get_terminal_surface",
         "ack_terminal_surface_output",
         "detach_terminal_surface",
+        "get_review_snapshot",
+        "get_review_file_view",
+        "get_review_blob",
+        "list_review_threads",
         "get_workspaces",
         "get_workspace_tree_selection_reconciliation",
         "get_workspace_node_detail",
@@ -876,7 +866,7 @@ async fn test_staging変更_protoは複数pathとusecaseエラーを保持する
 
 #[tokio::test]
 async fn test_review_group変更_protoは複合引数と部分stagingとusecaseエラーを保持する() {
-    use crate::usecase::{code_dto::ReviewFileViewDto, review_usecase::ReviewTarget};
+    use crate::usecase::code_dto::ReviewFileViewDto;
 
     for (command, section) in [
         ("git_stage_review_group", "changes"),
@@ -920,14 +910,7 @@ async fn test_review_group変更_protoは複合引数と部分stagingとusecase�
         }
         let ReviewFileViewDto::TextDiff(view) = state
             .review_usecase
-            .get_review_file_view(
-                &path,
-                ReviewTarget::Path(file.into()),
-                section,
-                "head",
-                None,
-                None,
-            )
+            .get_review_file_view(&path, file, section, "head")
             .unwrap()
         else {
             panic!("text diff");

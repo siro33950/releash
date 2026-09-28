@@ -95,6 +95,7 @@ vi.mock("@/lib/client", async (importOriginal) => {
 						"providers",
 						"issues",
 						"worktrees",
+						"review-threads",
 					].includes(name)
 				)
 					onValue([]);

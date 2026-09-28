@@ -240,6 +240,9 @@ export type StateValues = {
 	"workspace-state":
 		| import("@/generated/client_types").WorkspaceStateDto
 		| null;
+	"review-snapshot": import("@/types/review").ReviewSnapshot;
+	"review-file-view": import("@/types/review").ReviewFileView;
+	"review-threads": import("@/types/diffComment").ReviewDiscussionThread[];
 };
 export type StateTarget<K extends keyof StateValues> =
 	| K

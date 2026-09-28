@@ -15,11 +15,6 @@ pub enum CodeError {
     /// ドメインルール／前提条件の違反（bare repository・未ステージ・unborn branch 等）。
     /// 移行前の `GitError::Custom` が表していたメッセージと等価に保つ。
     Rule(String),
-    /// review-blob URI が参照する snapshot version が現在の snapshot と一致しない。
-    StaleReviewBlobVersion {
-        requested: u64,
-        current: u64,
-    },
     /// review group action の stable id が現在の snapshot 上で解決できない。
     StaleReviewGroupTarget {
         group_id: String,
@@ -31,10 +26,6 @@ impl std::fmt::Display for CodeError {
         match self {
             Self::Technical(error) => std::fmt::Display::fmt(error, f),
             Self::External(msg) | Self::Rule(msg) => f.write_str(msg),
-            Self::StaleReviewBlobVersion { requested, current } => write!(
-                f,
-                "stale review blob version: requested {requested}, current {current}"
-            ),
             Self::StaleReviewGroupTarget { group_id } => {
                 write!(f, "review group target stale: {group_id}")
             }

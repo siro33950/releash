@@ -18,7 +18,7 @@ use crate::domain::code::{
 use super::code_dto::{
     BranchDiffSummaryDto, ChangeGroupDto, DiffHunksResultDto, DiffTreeNodeDto, HunkDto,
     ReviewBinaryDto, ReviewFallbackDto, ReviewFileEntryDto, ReviewFileViewDto, ReviewImageDto,
-    ReviewLimitReasonDto, ReviewSnapshotDto, ReviewTextDiffDto, ReviewTextSource, ViewportDto,
+    ReviewLimitReasonDto, ReviewSnapshotDto, ReviewTextDiffDto, ReviewTextSource,
 };
 use super::code_error::CodeUsecaseError;
 use super::code_usecase::{CodeUsecase, ReviewContentSource, SelectedReviewSide};
@@ -38,18 +38,6 @@ impl ReviewSnapshotProvider for RepositoryStateService {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ReviewTarget {
-    FileId(String),
-    Path(String),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ReviewViewport {
-    pub start_line: u32,
-    pub end_line: u32,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 struct ReviewTextSides {
     original: String,
     modified: String,
@@ -65,10 +53,8 @@ struct StableDiffSources<'a> {
 
 #[derive(Debug, Clone, Copy)]
 struct ReviewBlobViewContext<'a> {
-    worktree_path: &'a str,
     relative_path: &'a str,
-    section: ReviewSection,
-    base: ReviewBase,
+    file_path: &'a str,
     version: u64,
 }
 
@@ -96,16 +82,6 @@ trait ReviewCodePort: Send + Sync {
     ) -> Result<ReviewSideBytes, CodeUsecaseError>;
 
     fn review_binary_by_attributes(&self, file_path: &str) -> Result<bool, CodeUsecaseError>;
-
-    fn review_blob_url(
-        &self,
-        worktree_path: &str,
-        path: &str,
-        side: ReviewBlobSide,
-        section: ReviewSection,
-        base: ReviewBase,
-        version: u64,
-    ) -> String;
 
     fn compute_diff_hunks(
         &self,
@@ -154,18 +130,6 @@ impl ReviewCodePort for CodeUsecase {
 
     fn review_binary_by_attributes(&self, file_path: &str) -> Result<bool, CodeUsecaseError> {
         CodeUsecase::review_binary_by_attributes(self, file_path)
-    }
-
-    fn review_blob_url(
-        &self,
-        worktree_path: &str,
-        path: &str,
-        side: ReviewBlobSide,
-        section: ReviewSection,
-        base: ReviewBase,
-        version: u64,
-    ) -> String {
-        CodeUsecase::review_blob_url(self, worktree_path, path, side, section, base, version)
     }
 
     fn compute_diff_hunks(
@@ -230,24 +194,19 @@ impl ReviewUsecase {
     pub fn get_review_file_view(
         &self,
         worktree_path: &str,
-        target: ReviewTarget,
+        path: &str,
         section: &str,
         base: &str,
-        viewport: Option<ReviewViewport>,
-        snapshot_version: Option<u64>,
     ) -> Result<ReviewFileViewDto, CodeUsecaseError> {
         let section = ReviewSection::parse(section)?;
         let base = ReviewBase::parse(base)?;
         let snapshot = self.snapshot(worktree_path)?;
         let review_snapshot =
             self.review_snapshot_with_branch_recheck(worktree_path, base, snapshot.as_ref())?;
-        let relative_path = resolve_review_target(worktree_path, &target)?;
+        let relative_path = resolve_review_target(worktree_path, path)?;
         ensure_review_target_in_snapshot(&review_snapshot, &relative_path, section, base)?;
         let version = review_snapshot.version;
-        let stale = review_snapshot.stale
-            || snapshot_version
-                .map(|expected| expected != snapshot.version)
-                .unwrap_or(false);
+        let stale = review_snapshot.stale;
         let file_path = absolute_review_file_path(worktree_path, &relative_path)?;
         let original_source = self.code.select_review_side_source(
             &file_path,
@@ -270,10 +229,8 @@ impl ReviewUsecase {
             );
         }
         let blob_context = ReviewBlobViewContext {
-            worktree_path,
             relative_path: &relative_path,
-            section,
-            base,
+            file_path: &file_path,
             version,
         };
 
@@ -296,27 +253,25 @@ impl ReviewUsecase {
         }
 
         if ReviewBlobContentType::image_from_path(&relative_path).is_some() {
+            let mime = review_blob_mime_for_path(&relative_path);
             return Ok(ReviewFileViewDto::Image(ReviewImageDto {
                 version,
                 stale,
                 file_id: relative_path.clone(),
                 path: relative_path.clone(),
-                original_url: self.blob_url_if_present(
-                    ReviewBlobSide::Original,
-                    original_metadata,
-                    blob_context,
-                ),
-                modified_url: self.blob_url_if_present(
-                    ReviewBlobSide::Modified,
-                    modified_metadata,
-                    blob_context,
-                ),
-                mime: review_blob_mime_for_path(&relative_path).to_string(),
+                original_url: self.blob_data_url_if_present(original_source, blob_context, mime)?,
+                modified_url: self.blob_data_url_if_present(modified_source, blob_context, mime)?,
+                mime: mime.to_string(),
             }));
         }
 
         if self.code.review_binary_by_attributes(&file_path)? {
-            return Ok(self.binary_view(blob_context, stale, original_metadata, modified_metadata));
+            return Ok(binary_view(
+                blob_context,
+                stale,
+                original_metadata,
+                modified_metadata,
+            ));
         }
 
         let original_bytes = self
@@ -327,7 +282,12 @@ impl ReviewUsecase {
             .read_review_source_bytes(&file_path, modified_source.source)?;
 
         if side_bytes_look_binary(&original_bytes) || side_bytes_look_binary(&modified_bytes) {
-            return Ok(self.binary_view(blob_context, stale, original_metadata, modified_metadata));
+            return Ok(binary_view(
+                blob_context,
+                stale,
+                original_metadata,
+                modified_metadata,
+            ));
         }
 
         let source = text_source(&original_bytes, &modified_bytes);
@@ -343,7 +303,6 @@ impl ReviewUsecase {
                 modified,
                 source,
             },
-            viewport,
         )
     }
 
@@ -387,39 +346,6 @@ impl ReviewUsecase {
         self.code.git_unstage_hunk(worktree_path, &patch)
     }
 
-    pub fn read_review_blob_bytes(
-        &self,
-        worktree_path: &str,
-        path: &str,
-        side: ReviewBlobSide,
-        section: &str,
-        base: &str,
-        version: u64,
-    ) -> Result<Vec<u8>, CodeUsecaseError> {
-        let snapshot = self.snapshot(worktree_path)?;
-        ensure_current_review_blob_version(snapshot.as_ref(), version)?;
-        let section = ReviewSection::parse(section)?;
-        let base = ReviewBase::parse(base)?;
-        let review_snapshot =
-            self.review_snapshot_with_blob_version_recheck(worktree_path, base, snapshot.as_ref())?;
-        let relative_path =
-            resolve_review_target(worktree_path, &ReviewTarget::Path(path.to_string()))?;
-        ensure_review_target_in_snapshot(&review_snapshot, &relative_path, section, base)?;
-        let file_path = absolute_review_file_path(worktree_path, &relative_path)?;
-        let selected = self
-            .code
-            .select_review_side_source(&file_path, side, section, base)?;
-        match self
-            .code
-            .read_review_source_bytes(&file_path, selected.source)?
-        {
-            ReviewSideBytes::Present(bytes) => Ok(bytes),
-            ReviewSideBytes::Missing => {
-                Err(CodeError::Rule(format!("review blob not found: {relative_path}")).into())
-            }
-        }
-    }
-
     fn snapshot(&self, worktree_path: &str) -> Result<Arc<RepositorySnapshot>, CodeUsecaseError> {
         self.repository_state.snapshot(worktree_path)
     }
@@ -438,20 +364,6 @@ impl ReviewUsecase {
                 dto.version = current.version;
                 dto.stale = true;
             }
-        }
-        Ok(dto)
-    }
-
-    fn review_snapshot_with_blob_version_recheck(
-        &self,
-        worktree_path: &str,
-        base: ReviewBase,
-        snapshot: &RepositorySnapshot,
-    ) -> Result<ReviewSnapshotDto, CodeUsecaseError> {
-        let dto = self.review_snapshot_from_snapshot(worktree_path, base, snapshot)?;
-        if base.is_branch_base() {
-            let current = self.snapshot(worktree_path)?;
-            ensure_current_review_blob_version(current.as_ref(), snapshot.version)?;
         }
         Ok(dto)
     }
@@ -549,7 +461,6 @@ impl ReviewUsecase {
         stale: bool,
         section: ReviewSection,
         sides: ReviewTextSides,
-        viewport: Option<ReviewViewport>,
     ) -> Result<ReviewFileViewDto, CodeUsecaseError> {
         let ReviewTextSides {
             original,
@@ -560,39 +471,6 @@ impl ReviewUsecase {
         let original_lines = line_count(&original);
         let modified_lines = line_count(&modified);
         let total_lines = original_lines.max(modified_lines);
-
-        if let Some(requested_viewport) = viewport {
-            let stable_original = original.clone();
-            let stable_modified = modified.clone();
-            let stable_line_offset = requested_viewport.start_line.max(1).saturating_sub(1);
-            let (original, modified, viewport) =
-                apply_viewport(original, modified, Some(requested_viewport));
-            let hunks = self.compute_review_diff_hunks_with_stable_sources(
-                &original,
-                &modified,
-                StableDiffSources {
-                    original: &stable_original,
-                    modified: &stable_modified,
-                    line_offset: stable_line_offset,
-                },
-                Some(relative_path),
-                section,
-            )?;
-            return Ok(ReviewFileViewDto::TextDiff(ReviewTextDiffDto {
-                version,
-                stale,
-                file_id: relative_path.to_string(),
-                path: relative_path.to_string(),
-                original,
-                modified,
-                source,
-                hunks: hunks.hunks,
-                change_groups: hunks.change_groups,
-                limited: true,
-                viewport,
-                total_lines: total_lines as u32,
-            }));
-        }
 
         if let Some(reason) = thresholds.line_count_limit(total_lines) {
             return Ok(fallback_view(
@@ -645,54 +523,34 @@ impl ReviewUsecase {
             hunks: hunks.hunks,
             change_groups: hunks.change_groups,
             limited: false,
-            viewport: None,
             total_lines: total_lines as u32,
         }))
     }
 
-    fn binary_view(
+    fn blob_data_url_if_present(
         &self,
+        side: SelectedReviewSide,
         context: ReviewBlobViewContext<'_>,
-        stale: bool,
-        original_metadata: ReviewSideMetadata,
-        modified_metadata: ReviewSideMetadata,
-    ) -> ReviewFileViewDto {
-        ReviewFileViewDto::Binary(ReviewBinaryDto {
-            version: context.version,
-            stale,
-            file_id: context.relative_path.to_string(),
-            path: context.relative_path.to_string(),
-            original_url: self.blob_url_if_present(
-                ReviewBlobSide::Original,
-                original_metadata,
-                context,
-            ),
-            modified_url: self.blob_url_if_present(
-                ReviewBlobSide::Modified,
-                modified_metadata,
-                context,
-            ),
-            original_size: original_metadata.size_bytes(),
-            modified_size: modified_metadata.size_bytes(),
-        })
-    }
-
-    fn blob_url_if_present(
-        &self,
-        side: ReviewBlobSide,
-        metadata: ReviewSideMetadata,
-        context: ReviewBlobViewContext<'_>,
-    ) -> Option<String> {
-        metadata.is_present().then(|| {
-            self.code.review_blob_url(
-                context.worktree_path,
-                context.relative_path,
-                side,
-                context.section,
-                context.base,
-                context.version,
-            )
-        })
+        mime: &str,
+    ) -> Result<Option<String>, CodeUsecaseError> {
+        use base64::Engine;
+        if !side.metadata.is_present() {
+            return Ok(None);
+        }
+        match self
+            .code
+            .read_review_source_bytes(context.file_path, side.source)?
+        {
+            ReviewSideBytes::Present(bytes) => Ok(Some(format!(
+                "data:{mime};base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(bytes)
+            ))),
+            ReviewSideBytes::Missing => Err(CodeError::Rule(format!(
+                "review blob not found: {}",
+                context.relative_path
+            ))
+            .into()),
+        }
     }
 
     fn compute_review_diff_hunks(
@@ -795,8 +653,7 @@ impl ReviewUsecase {
         }
 
         let review_snapshot = self.review_snapshot_from_snapshot(worktree_path, base, snapshot)?;
-        let relative_path =
-            resolve_review_target(worktree_path, &ReviewTarget::Path(path.to_string()))?;
+        let relative_path = resolve_review_target(worktree_path, path)?;
         if !review_snapshot_contains_target(&review_snapshot, &relative_path, section, base) {
             return Err(CodeError::StaleReviewGroupTarget {
                 group_id: group_id.to_string(),
@@ -849,20 +706,6 @@ impl ReviewUsecase {
             &change_group_dto_to_domain(group),
         ))
     }
-}
-
-fn ensure_current_review_blob_version(
-    snapshot: &RepositorySnapshot,
-    version: u64,
-) -> Result<(), CodeUsecaseError> {
-    if version != snapshot.version {
-        return Err(CodeError::StaleReviewBlobVersion {
-            requested: version,
-            current: snapshot.version,
-        }
-        .into());
-    }
-    Ok(())
 }
 
 fn head_review_snapshot(base: ReviewBase, snapshot: &RepositorySnapshot) -> ReviewSnapshotDto {
@@ -976,13 +819,7 @@ fn stats_by_path(diff_stats: &[FileDiffStatDto]) -> HashMap<&str, &FileDiffStatD
         .collect()
 }
 
-fn resolve_review_target(
-    worktree_path: &str,
-    target: &ReviewTarget,
-) -> Result<String, CodeUsecaseError> {
-    let raw = match target {
-        ReviewTarget::FileId(value) | ReviewTarget::Path(value) => value,
-    };
+fn resolve_review_target(worktree_path: &str, raw: &str) -> Result<String, CodeUsecaseError> {
     let worktree = Path::new(worktree_path);
     let path = Path::new(raw);
     let relative = if path.is_absolute() {
@@ -1152,47 +989,6 @@ fn text_source(original: &ReviewSideBytes, modified: &ReviewSideBytes) -> Review
     }
 }
 
-fn apply_viewport(
-    original: String,
-    modified: String,
-    viewport: Option<ReviewViewport>,
-) -> (String, String, Option<ViewportDto>) {
-    let Some(viewport) = viewport else {
-        return (original, modified, None);
-    };
-    let start = viewport.start_line.max(1);
-    let end = viewport.end_line;
-    if end < start {
-        return (
-            String::new(),
-            String::new(),
-            Some(ViewportDto {
-                start_line: start,
-                end_line: end,
-            }),
-        );
-    }
-    (
-        slice_lines(&original, start, end),
-        slice_lines(&modified, start, end),
-        Some(ViewportDto {
-            start_line: start,
-            end_line: end,
-        }),
-    )
-}
-
-fn slice_lines(content: &str, start_line: u32, end_line: u32) -> String {
-    content
-        .split_inclusive('\n')
-        .enumerate()
-        .filter_map(|(index, line)| {
-            let line_no = index as u32 + 1;
-            (line_no >= start_line && line_no <= end_line).then_some(line)
-        })
-        .collect()
-}
-
 fn fallback_view(
     relative_path: &str,
     version: u64,
@@ -1215,6 +1011,22 @@ fn fallback_view(
     })
 }
 
+fn binary_view(
+    context: ReviewBlobViewContext<'_>,
+    stale: bool,
+    original_metadata: ReviewSideMetadata,
+    modified_metadata: ReviewSideMetadata,
+) -> ReviewFileViewDto {
+    ReviewFileViewDto::Binary(ReviewBinaryDto {
+        version: context.version,
+        stale,
+        file_id: context.relative_path.to_string(),
+        path: context.relative_path.to_string(),
+        original_size: original_metadata.size_bytes(),
+        modified_size: modified_metadata.size_bytes(),
+    })
+}
+
 fn limit_reason_to_dto(reason: ReviewLimitReason) -> ReviewLimitReasonDto {
     match reason {
         ReviewLimitReason::FileSize => ReviewLimitReasonDto::FileSize,
@@ -1228,7 +1040,7 @@ fn looks_binary(bytes: &[u8]) -> bool {
     bytes.iter().take(8192).any(|byte| *byte == 0)
 }
 
-pub(crate) fn review_blob_mime_for_path(path: &str) -> &'static str {
+fn review_blob_mime_for_path(path: &str) -> &'static str {
     match path
         .rsplit('.')
         .next()
@@ -1250,122 +1062,6 @@ pub(crate) fn review_blob_mime_for_path(path: &str) -> &'static str {
 
 fn repository_state_error(error: RepositoryStateError) -> CodeUsecaseError {
     CodeError::External(error.to_string()).into()
-}
-
-#[cfg(test)]
-pub(crate) mod tests_support {
-    use super::*;
-    use crate::usecase::repository_state::snapshot::SnapshotFlags;
-
-    pub(crate) fn review_usecase_with_snapshot_version(snapshot_version: u64) -> ReviewUsecase {
-        ReviewUsecase::new_with_ports(
-            Arc::new(StaticSnapshotProvider {
-                snapshot: Arc::new(RepositorySnapshot {
-                    version: snapshot_version,
-                    flags: SnapshotFlags {
-                        stale: false,
-                        loading: false,
-                    },
-                    status: Vec::new(),
-                    diff_stats: Vec::new(),
-                    branch_cards: Vec::new(),
-                    diff_file_tree: Vec::new(),
-                    staged_diff_file_tree: Vec::new(),
-                    changes_diff_file_tree: Vec::new(),
-                }),
-            }),
-            Arc::new(PanicReviewCode),
-        )
-    }
-
-    struct StaticSnapshotProvider {
-        snapshot: Arc<RepositorySnapshot>,
-    }
-
-    impl ReviewSnapshotProvider for StaticSnapshotProvider {
-        fn snapshot(
-            &self,
-            _worktree_path: &str,
-        ) -> Result<Arc<RepositorySnapshot>, CodeUsecaseError> {
-            Ok(self.snapshot.clone())
-        }
-    }
-
-    struct PanicReviewCode;
-
-    impl ReviewCodePort for PanicReviewCode {
-        fn get_branch_diff_summary(
-            &self,
-            _repo_path: &str,
-            _base_branch: Option<&str>,
-        ) -> Result<BranchDiffSummaryDto, CodeUsecaseError> {
-            panic!("review code port should not be called for stale review blob versions")
-        }
-
-        fn build_diff_file_tree(&self, _entries: Vec<DiffFileEntry>) -> Vec<DiffTreeNodeDto> {
-            panic!("review code port should not be called for stale review blob versions")
-        }
-
-        fn select_review_side_source(
-            &self,
-            _file_path: &str,
-            _side: ReviewBlobSide,
-            _section: ReviewSection,
-            _base: ReviewBase,
-        ) -> Result<SelectedReviewSide, CodeUsecaseError> {
-            panic!("review code port should not be called for stale review blob versions")
-        }
-
-        fn read_review_source_bytes(
-            &self,
-            _file_path: &str,
-            _source: ReviewContentSource,
-        ) -> Result<ReviewSideBytes, CodeUsecaseError> {
-            panic!("review code port should not be called for stale review blob versions")
-        }
-
-        fn review_binary_by_attributes(&self, _file_path: &str) -> Result<bool, CodeUsecaseError> {
-            panic!("review code port should not be called for stale review blob versions")
-        }
-
-        fn review_blob_url(
-            &self,
-            _worktree_path: &str,
-            _path: &str,
-            _side: ReviewBlobSide,
-            _section: ReviewSection,
-            _base: ReviewBase,
-            _version: u64,
-        ) -> String {
-            panic!("review code port should not be called for stale review blob versions")
-        }
-
-        fn compute_diff_hunks(
-            &self,
-            _original: &str,
-            _modified: &str,
-            _file_path: Option<&str>,
-        ) -> Result<DiffHunksResultDto, CodeUsecaseError> {
-            panic!("review code port should not be called for stale review blob versions")
-        }
-
-        fn generate_group_patch(
-            &self,
-            _file_path: &str,
-            _hunk: &Hunk,
-            _group: &ChangeGroup,
-        ) -> String {
-            panic!("review code port should not be called for stale review blob versions")
-        }
-
-        fn git_stage_hunk(&self, _repo_path: &str, _patch: &str) -> Result<(), CodeUsecaseError> {
-            panic!("review code port should not be called for stale review blob versions")
-        }
-
-        fn git_unstage_hunk(&self, _repo_path: &str, _patch: &str) -> Result<(), CodeUsecaseError> {
-            panic!("review code port should not be called for stale review blob versions")
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1627,26 +1323,6 @@ mod tests {
                 .get(file_path)
                 .copied()
                 .unwrap_or(false))
-        }
-
-        fn review_blob_url(
-            &self,
-            _worktree_path: &str,
-            path: &str,
-            side: ReviewBlobSide,
-            section: ReviewSection,
-            base: ReviewBase,
-            version: u64,
-        ) -> String {
-            let side = match side {
-                ReviewBlobSide::Original => "original",
-                ReviewBlobSide::Modified => "modified",
-            };
-            format!(
-                "blob?path={path}&side={side}&section={}&base={}&version={version}",
-                section.as_str(),
-                base.as_str()
-            )
         }
 
         fn compute_diff_hunks(
@@ -2214,7 +1890,7 @@ mod tests {
     }
 
     #[test]
-    fn review_file_view_resolves_file_id_and_path_and_switches_head_sections() {
+    fn review_file_view_resolves_path_and_switches_head_sections() {
         let path = "/repo/src/app.rs";
         let code = FakeReviewCode::new()
             .with_source_bytes(path, ReviewContentSource::Head, present_text("head\n"))
@@ -2234,26 +1910,12 @@ mod tests {
 
         let changes = text_view(
             usecase
-                .get_review_file_view(
-                    "/repo",
-                    ReviewTarget::FileId("src/app.rs".to_string()),
-                    "changes",
-                    "head",
-                    None,
-                    Some(7),
-                )
+                .get_review_file_view("/repo", "src/app.rs", "changes", "head")
                 .unwrap(),
         );
         let staged = text_view(
             usecase
-                .get_review_file_view(
-                    "/repo",
-                    ReviewTarget::Path("src/app.rs".to_string()),
-                    "staged",
-                    "head",
-                    None,
-                    Some(7),
-                )
+                .get_review_file_view("/repo", "src/app.rs", "staged", "head")
                 .unwrap(),
         );
 
@@ -2264,60 +1926,6 @@ mod tests {
         assert_eq!(staged.original, "head\n");
         assert_eq!(staged.modified, "staged\n");
         assert_eq!(staged.source, ReviewTextSource::Diff);
-    }
-
-    #[test]
-    fn test_差分取得_一覧がstaleでなくても番号不一致ならstaleを返す() {
-        for section in ["changes", "staged"] {
-            for (snapshot_version, expected_stale) in [
-                (Some(10), true),
-                (Some(0), true),
-                (Some(1), false),
-                (None, false),
-            ] {
-                // Given
-                let snapshot = snapshot_with_single_status(1, "file.txt", "modified", "modified");
-                assert!(!snapshot.flags.stale);
-                let code = FakeReviewCode::new()
-                    .with_source_bytes(
-                        "/repo/file.txt",
-                        ReviewContentSource::Head,
-                        present_text("head\n"),
-                    )
-                    .with_source_bytes(
-                        "/repo/file.txt",
-                        ReviewContentSource::Staged,
-                        present_text("staged\n"),
-                    )
-                    .with_source_bytes(
-                        "/repo/file.txt",
-                        ReviewContentSource::WorkingTree,
-                        present_text("working\n"),
-                    );
-                let usecase = usecase_with_code(vec![snapshot], code);
-
-                // When
-                let view = text_view(
-                    usecase
-                        .get_review_file_view(
-                            "/repo",
-                            ReviewTarget::Path("file.txt".to_string()),
-                            section,
-                            "head",
-                            None,
-                            snapshot_version,
-                        )
-                        .unwrap(),
-                );
-
-                // Then
-                assert_eq!(view.version, 1);
-                assert_eq!(
-                    view.stale, expected_stale,
-                    "{section}: {snapshot_version:?}"
-                );
-            }
-        }
     }
 
     #[test]
@@ -2345,26 +1953,12 @@ mod tests {
 
         let added = text_view(
             usecase
-                .get_review_file_view(
-                    "/repo",
-                    ReviewTarget::Path("/repo/new.txt".to_string()),
-                    "staged",
-                    "head",
-                    None,
-                    Some(1),
-                )
+                .get_review_file_view("/repo", "/repo/new.txt", "staged", "head")
                 .unwrap(),
         );
         let deleted = text_view(
             usecase
-                .get_review_file_view(
-                    "/repo",
-                    ReviewTarget::FileId("deleted.txt".to_string()),
-                    "changes",
-                    "head",
-                    None,
-                    Some(1),
-                )
+                .get_review_file_view("/repo", "deleted.txt", "changes", "head")
                 .unwrap(),
         );
 
@@ -2377,145 +1971,8 @@ mod tests {
     }
 
     #[test]
-    fn review_file_view_applies_viewport_to_text_diff() {
-        let path = "/repo/src/view.rs";
-        let code = FakeReviewCode::new()
-            .with_source_bytes(
-                path,
-                ReviewContentSource::Staged,
-                present_text("old1\nold2\nold3\nold4\n"),
-            )
-            .with_source_bytes(
-                path,
-                ReviewContentSource::WorkingTree,
-                present_text("new1\nnew2\nnew3\nnew4\n"),
-            );
-        let usecase = usecase_with_code(
-            vec![snapshot_with_single_status(
-                3,
-                "src/view.rs",
-                "modified",
-                "modified",
-            )],
-            code,
-        );
-
-        let view = text_view(
-            usecase
-                .get_review_file_view(
-                    "/repo",
-                    ReviewTarget::Path("src/view.rs".to_string()),
-                    "changes",
-                    "head",
-                    Some(ReviewViewport {
-                        start_line: 2,
-                        end_line: 3,
-                    }),
-                    Some(3),
-                )
-                .unwrap(),
-        );
-
-        assert_eq!(view.original, "old2\nold3\n");
-        assert_eq!(view.modified, "new2\nnew3\n");
-        assert!(view.limited);
-        assert_eq!(
-            view.viewport,
-            Some(ViewportDto {
-                start_line: 2,
-                end_line: 3,
-            })
-        );
-        assert_eq!(view.total_lines, 4);
-    }
-
-    #[test]
-    fn review_file_view_viewport_stable_ids_use_full_file_occurrence_for_group_actions() {
-        let path = "/repo/file.txt";
-        let relative_path = "file.txt";
-        let original = concat!(
-            "c1\n", "c2\n", "c3\n", "a\n", "c4\n", "c5\n", "c6\n", "gap1\n", "gap2\n", "gap3\n",
-            "gap4\n", "gap5\n", "gap6\n", "gap7\n", "c1\n", "c2\n", "c3\n", "a\n", "c4\n", "c5\n",
-            "c6\n",
-        );
-        let working = concat!(
-            "c1\n", "c2\n", "c3\n", "A\n", "c4\n", "c5\n", "c6\n", "gap1\n", "gap2\n", "gap3\n",
-            "gap4\n", "gap5\n", "gap6\n", "gap7\n", "c1\n", "c2\n", "c3\n", "A\n", "c4\n", "c5\n",
-            "c6\n",
-        );
-        let code = Arc::new(
-            FakeReviewCode::new()
-                .with_real_diff()
-                .with_source_bytes(path, ReviewContentSource::Staged, present_text(original))
-                .with_source_bytes(
-                    path,
-                    ReviewContentSource::WorkingTree,
-                    present_text(working),
-                ),
-        );
-        let usecase = ReviewUsecase::new_with_ports(
-            Arc::new(FakeSnapshotProvider::new(vec![
-                snapshot_for_group_action(1, relative_path, "stage"),
-                snapshot_for_group_action(2, relative_path, "stage"),
-                snapshot_for_group_action(3, relative_path, "stage"),
-            ])),
-            code.clone(),
-        );
-
-        let viewport_view = text_view(
-            usecase
-                .get_review_file_view(
-                    "/repo",
-                    ReviewTarget::Path(relative_path.to_string()),
-                    "changes",
-                    "head",
-                    Some(ReviewViewport {
-                        start_line: 15,
-                        end_line: 21,
-                    }),
-                    Some(1),
-                )
-                .unwrap(),
-        );
-        let full_view = text_view(
-            usecase
-                .get_review_file_view(
-                    "/repo",
-                    ReviewTarget::Path(relative_path.to_string()),
-                    "changes",
-                    "head",
-                    None,
-                    Some(2),
-                )
-                .unwrap(),
-        );
-
-        assert_eq!(viewport_view.hunks.len(), 1);
-        assert_eq!(viewport_view.change_groups.len(), 1);
-        assert_eq!(full_view.hunks.len(), 2);
-        assert_eq!(full_view.change_groups.len(), 2);
-        assert_eq!(viewport_view.hunks[0].hunk_id, full_view.hunks[1].hunk_id);
-        assert_eq!(
-            viewport_view.change_groups[0].group_id,
-            full_view.change_groups[1].group_id
-        );
-
-        let group_id = viewport_view.change_groups[0].group_id.clone();
-        usecase
-            .git_stage_review_group("/repo", relative_path, "changes", "head", &group_id)
-            .unwrap();
-
-        assert_eq!(
-            code.calls(),
-            vec![
-                "generate-patch:file.txt:1:1".to_string(),
-                "stage-hunk:/repo".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn review_file_view_returns_image_and_binary_blob_urls_without_data_urls() {
+    fn test_差分表示_画像はdata_urlを埋め込みバイナリはサイズだけを返す() {
+        // Given
         let image_path = "/repo/assets/logo.png";
         let binary_path = "/repo/assets/archive.bin";
         let code = FakeReviewCode::new()
@@ -2528,6 +1985,16 @@ mod tests {
                 image_path,
                 ReviewContentSource::WorkingTree,
                 present_metadata(13),
+            )
+            .with_source_bytes(
+                image_path,
+                ReviewContentSource::Staged,
+                ReviewSideBytes::Present(vec![1, 2, 3]),
+            )
+            .with_source_bytes(
+                image_path,
+                ReviewContentSource::WorkingTree,
+                ReviewSideBytes::Present(vec![4, 5, 6, 7]),
             )
             .with_source_metadata(
                 binary_path,
@@ -2548,51 +2015,33 @@ mod tests {
             code,
         );
 
+        // When
         let image = usecase
-            .get_review_file_view(
-                "/repo",
-                ReviewTarget::Path("assets/logo.png".to_string()),
-                "changes",
-                "head",
-                None,
-                Some(4),
-            )
+            .get_review_file_view("/repo", "assets/logo.png", "changes", "head")
             .unwrap();
         let binary = usecase
-            .get_review_file_view(
-                "/repo",
-                ReviewTarget::Path("assets/archive.bin".to_string()),
-                "changes",
-                "head",
-                None,
-                Some(4),
-            )
+            .get_review_file_view("/repo", "assets/archive.bin", "changes", "head")
             .unwrap();
 
+        // Then
         let ReviewFileViewDto::Image(image) = image else {
             panic!("expected image view");
         };
         assert_eq!(image.mime, "image/png");
-        assert!(image.original_url.as_deref().unwrap().starts_with("blob?"));
-        assert!(image.modified_url.as_deref().unwrap().starts_with("blob?"));
-        assert!(!image.modified_url.as_deref().unwrap().starts_with("data:"));
+        assert_eq!(
+            image.original_url.as_deref(),
+            Some("data:image/png;base64,AQID")
+        );
+        assert_eq!(
+            image.modified_url.as_deref(),
+            Some("data:image/png;base64,BAUGBw==")
+        );
 
         let ReviewFileViewDto::Binary(binary) = binary else {
             panic!("expected binary view");
         };
         assert_eq!(binary.original_size, Some(21));
         assert_eq!(binary.modified_size, Some(34));
-        assert!(binary
-            .original_url
-            .as_deref()
-            .unwrap()
-            .contains("side=original"));
-        assert!(binary
-            .modified_url
-            .as_deref()
-            .unwrap()
-            .contains("side=modified"));
-        assert!(!binary.modified_url.as_deref().unwrap().starts_with("data:"));
     }
 
     #[test]
@@ -2615,20 +2064,11 @@ mod tests {
 
         let binary = binary_view_dto(
             usecase
-                .get_review_file_view(
-                    "/repo",
-                    ReviewTarget::Path("assets/data.bin".to_string()),
-                    "changes",
-                    "head",
-                    None,
-                    Some(6),
-                )
+                .get_review_file_view("/repo", "assets/data.bin", "changes", "head")
                 .unwrap(),
         );
 
-        assert_eq!(binary.original_url, None);
-        assert!(binary.modified_url.as_deref().unwrap().starts_with("blob?"));
-        assert!(!binary.modified_url.as_deref().unwrap().starts_with("data:"));
+        assert_eq!(binary.path, "assets/data.bin");
     }
 
     #[test]
@@ -2651,20 +2091,11 @@ mod tests {
 
         let binary = binary_view_dto(
             usecase
-                .get_review_file_view(
-                    "/repo",
-                    ReviewTarget::Path("assets/non-utf8.dat".to_string()),
-                    "changes",
-                    "head",
-                    None,
-                    Some(6),
-                )
+                .get_review_file_view("/repo", "assets/non-utf8.dat", "changes", "head")
                 .unwrap(),
         );
 
-        assert_eq!(binary.original_url, None);
-        assert!(binary.modified_url.as_deref().unwrap().starts_with("blob?"));
-        assert!(!binary.modified_url.as_deref().unwrap().starts_with("data:"));
+        assert_eq!(binary.path, "assets/non-utf8.dat");
     }
 
     #[test]
@@ -2687,14 +2118,7 @@ mod tests {
 
         let view = text_view(
             usecase
-                .get_review_file_view(
-                    "/repo",
-                    ReviewTarget::Path("src/nested/file.txt".to_string()),
-                    "changes",
-                    "head",
-                    None,
-                    Some(9),
-                )
+                .get_review_file_view("/repo", "src/nested/file.txt", "changes", "head")
                 .unwrap(),
         );
 
@@ -2791,98 +2215,42 @@ mod tests {
 
         let exact_size = text_view(
             usecase
-                .get_review_file_view(
-                    "/repo",
-                    ReviewTarget::Path("exact-size.txt".to_string()),
-                    "changes",
-                    "head",
-                    None,
-                    Some(5),
-                )
+                .get_review_file_view("/repo", "exact-size.txt", "changes", "head")
                 .unwrap(),
         );
         let above_size = fallback_view_dto(
             usecase
-                .get_review_file_view(
-                    "/repo",
-                    ReviewTarget::Path("above-size.txt".to_string()),
-                    "changes",
-                    "head",
-                    None,
-                    Some(5),
-                )
+                .get_review_file_view("/repo", "above-size.txt", "changes", "head")
                 .unwrap(),
         );
         let exact_lines = text_view(
             usecase
-                .get_review_file_view(
-                    "/repo",
-                    ReviewTarget::Path("exact-lines.txt".to_string()),
-                    "changes",
-                    "head",
-                    None,
-                    Some(5),
-                )
+                .get_review_file_view("/repo", "exact-lines.txt", "changes", "head")
                 .unwrap(),
         );
         let above_lines = fallback_view_dto(
             usecase
-                .get_review_file_view(
-                    "/repo",
-                    ReviewTarget::Path("above-lines.txt".to_string()),
-                    "changes",
-                    "head",
-                    None,
-                    Some(5),
-                )
+                .get_review_file_view("/repo", "above-lines.txt", "changes", "head")
                 .unwrap(),
         );
         let exact_hunks = text_view(
             usecase
-                .get_review_file_view(
-                    "/repo",
-                    ReviewTarget::Path("exact-hunks.txt".to_string()),
-                    "changes",
-                    "head",
-                    None,
-                    Some(5),
-                )
+                .get_review_file_view("/repo", "exact-hunks.txt", "changes", "head")
                 .unwrap(),
         );
         let above_hunks = fallback_view_dto(
             usecase
-                .get_review_file_view(
-                    "/repo",
-                    ReviewTarget::Path("above-hunks.txt".to_string()),
-                    "changes",
-                    "head",
-                    None,
-                    Some(5),
-                )
+                .get_review_file_view("/repo", "above-hunks.txt", "changes", "head")
                 .unwrap(),
         );
         let exact_token = text_view(
             usecase
-                .get_review_file_view(
-                    "/repo",
-                    ReviewTarget::Path("exact-token.txt".to_string()),
-                    "changes",
-                    "head",
-                    None,
-                    Some(5),
-                )
+                .get_review_file_view("/repo", "exact-token.txt", "changes", "head")
                 .unwrap(),
         );
         let above_token = fallback_view_dto(
             usecase
-                .get_review_file_view(
-                    "/repo",
-                    ReviewTarget::Path("above-token.txt".to_string()),
-                    "changes",
-                    "head",
-                    None,
-                    Some(5),
-                )
+                .get_review_file_view("/repo", "above-token.txt", "changes", "head")
                 .unwrap(),
         );
 
@@ -2922,14 +2290,7 @@ mod tests {
         );
         let view = text_view(
             usecase
-                .get_review_file_view(
-                    "/repo",
-                    ReviewTarget::Path("file.txt".to_string()),
-                    "changes",
-                    "head",
-                    None,
-                    Some(1),
-                )
+                .get_review_file_view("/repo", "file.txt", "changes", "head")
                 .unwrap(),
         );
         let group_id = view.change_groups[0].group_id.clone();
@@ -2962,14 +2323,7 @@ mod tests {
         );
         let view = text_view(
             usecase
-                .get_review_file_view(
-                    "/repo",
-                    ReviewTarget::Path("file.txt".to_string()),
-                    "staged",
-                    "head",
-                    None,
-                    Some(1),
-                )
+                .get_review_file_view("/repo", "file.txt", "staged", "head")
                 .unwrap(),
         );
         let group_id = view.change_groups[0].group_id.clone();
@@ -3122,14 +2476,7 @@ mod tests {
             let section = group_action_section(action);
             let view = text_view(
                 usecase
-                    .get_review_file_view(
-                        "/repo",
-                        ReviewTarget::Path(relative_path.to_string()),
-                        section,
-                        "head",
-                        None,
-                        Some(1),
-                    )
+                    .get_review_file_view("/repo", relative_path, section, "head")
                     .unwrap(),
             );
             let group_id = view.change_groups[0].group_id.clone();
@@ -3187,14 +2534,7 @@ mod tests {
             let section = group_action_section(action);
             let view = text_view(
                 usecase
-                    .get_review_file_view(
-                        "/repo",
-                        ReviewTarget::Path(relative_path.to_string()),
-                        section,
-                        "head",
-                        None,
-                        Some(1),
-                    )
+                    .get_review_file_view("/repo", relative_path, section, "head")
                     .unwrap(),
             );
             let group_id = view.change_groups[0].group_id.clone();
@@ -3264,14 +2604,7 @@ mod tests {
         );
         let view = text_view(
             usecase
-                .get_review_file_view(
-                    "/repo",
-                    ReviewTarget::Path(relative_path.to_string()),
-                    "changes",
-                    "head",
-                    None,
-                    Some(1),
-                )
+                .get_review_file_view("/repo", relative_path, "changes", "head")
                 .unwrap(),
         );
         assert_eq!(view.change_groups.len(), 2);
@@ -3333,28 +2666,14 @@ mod tests {
 
         let initial_view = text_view(
             usecase
-                .get_review_file_view(
-                    "/repo",
-                    ReviewTarget::Path(relative_path.to_string()),
-                    "changes",
-                    "head",
-                    None,
-                    Some(1),
-                )
+                .get_review_file_view("/repo", relative_path, "changes", "head")
                 .unwrap(),
         );
         assert_eq!(initial_view.hunks.len(), 2);
         let later_hunk_id = initial_view.hunks[1].hunk_id.clone();
         let refreshed_view = text_view(
             usecase
-                .get_review_file_view(
-                    "/repo",
-                    ReviewTarget::Path(relative_path.to_string()),
-                    "changes",
-                    "head",
-                    None,
-                    Some(2),
-                )
+                .get_review_file_view("/repo", relative_path, "changes", "head")
                 .unwrap(),
         );
 
@@ -3384,14 +2703,7 @@ mod tests {
             let section = group_action_section(action);
             let view = text_view(
                 usecase
-                    .get_review_file_view(
-                        "/repo",
-                        ReviewTarget::Path(relative_path.to_string()),
-                        section,
-                        "head",
-                        None,
-                        Some(1),
-                    )
+                    .get_review_file_view("/repo", relative_path, section, "head")
                     .unwrap(),
             );
             let group_id = view.change_groups[0].group_id.clone();
@@ -3468,132 +2780,16 @@ mod tests {
     }
 
     #[test]
-    fn review_blob_rejects_stale_version_before_code_port() {
-        let provider = Arc::new(FakeSnapshotProvider::new(vec![repository_snapshot(
-            8, false,
-        )]));
-        let code = Arc::new(FakeReviewCode::new());
-        let usecase = ReviewUsecase::new_with_ports(provider, code.clone());
-
-        let err = usecase
-            .read_review_blob_bytes(
-                "/repo",
-                "image.png",
-                ReviewBlobSide::Modified,
-                "changes",
-                "head",
-                7,
-            )
-            .unwrap_err()
-            .to_string();
-
-        assert!(err.contains("stale review blob version: requested 7, current 8"));
-        assert!(code.calls().is_empty());
-    }
-
-    #[test]
-    fn review_blob_rejects_stale_version_with_typed_error() {
-        let provider = Arc::new(FakeSnapshotProvider::new(vec![repository_snapshot(
-            8, false,
-        )]));
-        let code = Arc::new(FakeReviewCode::new());
-        let usecase = ReviewUsecase::new_with_ports(provider, code);
-
-        let err = usecase
-            .read_review_blob_bytes(
-                "/repo",
-                "image.png",
-                ReviewBlobSide::Modified,
-                "changes",
-                "head",
-                7,
-            )
-            .unwrap_err();
-
-        match err {
-            CodeUsecaseError::Code(CodeError::StaleReviewBlobVersion { requested, current }) => {
-                assert_eq!(requested, 7);
-                assert_eq!(current, 8);
-            }
-            other => panic!("expected stale review blob version, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn review_blob_returns_present_bytes_for_current_version() {
-        let path = "/repo/image.png";
-        let bytes = vec![1, 2, 3, 4];
-        let code = FakeReviewCode::new().with_source_bytes(
-            path,
-            ReviewContentSource::WorkingTree,
-            ReviewSideBytes::Present(bytes.clone()),
-        );
-        let usecase = usecase_with_code(
-            vec![snapshot_with_single_status(
-                8,
-                "image.png",
-                "none",
-                "modified",
-            )],
-            code,
-        );
-
-        let result = usecase
-            .read_review_blob_bytes(
-                "/repo",
-                "image.png",
-                ReviewBlobSide::Modified,
-                "changes",
-                "head",
-                8,
-            )
-            .unwrap();
-
-        assert_eq!(result, bytes);
-    }
-
-    #[test]
-    fn review_blob_rejects_missing_source_bytes() {
-        let usecase = usecase_with_code(
-            vec![snapshot_with_single_status(
-                8,
-                "image.png",
-                "none",
-                "modified",
-            )],
-            FakeReviewCode::new(),
-        );
-
-        let err = usecase
-            .read_review_blob_bytes(
-                "/repo",
-                "image.png",
-                ReviewBlobSide::Modified,
-                "changes",
-                "head",
-                8,
-            )
-            .unwrap_err()
-            .to_string();
-
-        assert!(err.contains("review blob not found: image.png"));
-    }
-
-    #[test]
     fn review_target_rejects_invalid_and_empty_paths() {
         for raw in ["../secret.txt", "src/../secret.txt", "/etc/passwd", "/"] {
-            let err = resolve_review_target("/repo", &ReviewTarget::Path(raw.to_string()))
-                .unwrap_err()
-                .to_string();
+            let err = resolve_review_target("/repo", raw).unwrap_err().to_string();
             assert!(
                 err.contains("invalid review target path"),
                 "unexpected error for {raw}: {err}"
             );
         }
 
-        let err = resolve_review_target("/repo", &ReviewTarget::Path(String::new()))
-            .unwrap_err()
-            .to_string();
+        let err = resolve_review_target("/repo", "").unwrap_err().to_string();
         assert!(err.contains("empty review target path"));
     }
 

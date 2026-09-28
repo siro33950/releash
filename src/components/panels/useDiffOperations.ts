@@ -7,7 +7,6 @@ export interface UseDiffOperationsParams {
 	filePath: string | null;
 	section: DiffSection;
 	base: DiffBase;
-	onGitChanged?: () => void;
 }
 
 export interface UseDiffOperationsResult {
@@ -30,7 +29,6 @@ export function useDiffOperations({
 	filePath,
 	section,
 	base,
-	onGitChanged,
 }: UseDiffOperationsParams): UseDiffOperationsResult {
 	const applyGroupAction = useCallback(
 		async (
@@ -49,17 +47,18 @@ export function useDiffOperations({
 						groupId,
 					},
 				});
-				onGitChanged?.();
 			} catch (e) {
 				if (isStaleReviewGroupTarget(e)) {
-					console.warn("Review group target is stale; refreshing snapshot:", e);
-					onGitChanged?.();
+					console.warn(
+						"Review group target is stale; waiting for the next snapshot:",
+						e,
+					);
 					return;
 				}
 				console.error("Group action failed:", e);
 			}
 		},
-		[rootPath, filePath, section, base, onGitChanged],
+		[rootPath, filePath, section, base],
 	);
 
 	const handleStageGroup = useCallback(

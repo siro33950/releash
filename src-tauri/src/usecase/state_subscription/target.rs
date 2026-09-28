@@ -1,3 +1,5 @@
+use crate::domain::code::{ReviewBase, ReviewSection};
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum SubscriptionTarget {
     Failures(String, usize),
@@ -19,12 +21,15 @@ pub(crate) enum SubscriptionTarget {
     RepositoryRoot(String),
     StartupRepository,
     WorkspaceState(String, String),
+    ReviewSnapshot(String, ReviewBase),
+    ReviewFileView(String, String, ReviewSection, ReviewBase),
+    ReviewThreads(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum WatchRequirement {
     Git(String),
-    Files(String),
+    Files(String, StateChangeSource),
 }
 
 impl SubscriptionTarget {
@@ -32,6 +37,7 @@ impl SubscriptionTarget {
         &self,
         repositories: &[String],
         history_paths: &[String],
+        review_comments_dir: &str,
     ) -> Vec<WatchRequirement> {
         match self {
             Self::Workspaces => repositories
@@ -44,12 +50,18 @@ impl SubscriptionTarget {
             | Self::BranchStatus(path)
             | Self::CurrentBranch(path)
             | Self::Worktrees(path)
-            | Self::RepositoryRoot(path) => vec![WatchRequirement::Git(path.clone())],
+            | Self::RepositoryRoot(path)
+            | Self::ReviewSnapshot(path, _)
+            | Self::ReviewFileView(path, _, _, _) => vec![WatchRequirement::Git(path.clone())],
             Self::SessionHistory(_, _) => history_paths
                 .iter()
                 .cloned()
-                .map(WatchRequirement::Files)
+                .map(|path| WatchRequirement::Files(path, StateChangeSource::ProviderHistory))
                 .collect(),
+            Self::ReviewThreads(_) => vec![WatchRequirement::Files(
+                review_comments_dir.into(),
+                StateChangeSource::ReviewComments(None),
+            )],
             _ => vec![],
         }
     }
@@ -74,6 +86,8 @@ pub(crate) enum StateChangeSource {
     Providers,
     Issues(String),
     ProviderHistory,
+    /// review comment の変化。`None` は worktree を特定できない外部の書き込み。
+    ReviewComments(Option<String>),
 }
 
 impl SubscriptionTarget {
@@ -91,7 +105,9 @@ impl SubscriptionTarget {
                 | Self::BranchStatus(p)
                 | Self::CurrentBranch(p)
                 | Self::Worktrees(p)
-                | Self::RepositoryRoot(p) => paths.contains(p),
+                | Self::RepositoryRoot(p)
+                | Self::ReviewSnapshot(p, _)
+                | Self::ReviewFileView(p, _, _, _) => paths.contains(p),
                 _ => false,
             },
             C::Worktree(path) => match self {
@@ -107,6 +123,9 @@ impl SubscriptionTarget {
             C::ProviderHistory => matches!(self, Self::SessionHistory(_, _)),
             C::Providers => matches!(self, Self::Providers),
             C::Issues(path) => matches!(self, Self::Issues(p) if p == path),
+            C::ReviewComments(worktree) => {
+                matches!(self, Self::ReviewThreads(name) if worktree.as_ref().is_none_or(|w| w == name))
+            }
         }
     }
 }

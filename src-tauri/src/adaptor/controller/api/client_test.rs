@@ -1,4 +1,12 @@
 use super::*;
+
+fn file_change(path: &str) -> crate::adaptor::gateway::repository::watch::FileChangeEvent {
+    crate::adaptor::gateway::repository::watch::FileChangeEvent {
+        watcher_id: 1,
+        path: path.into(),
+        kind: "change".into(),
+    }
+}
 use crate::infrastructure::push::PushSink;
 use crate::usecase::application_startup::ApplicationStartupAuthority;
 use connectrpc::client::{ClientConfig, HttpClient};
@@ -123,19 +131,19 @@ async fn test_push_server_streamは再同期通知の後にbackend変更を配�
         to_wire::<wire::Push>(&initial).unwrap().event,
         Some(wire::push::Event::Resync(_))
     ));
-    crate::adaptor::gateway::push::BackendPush::ReviewCommentsChanged("/next").emit(sink.as_ref());
+    crate::adaptor::gateway::push::BackendPush::FileChange(file_change("/next"))
+        .emit(sink.as_ref());
     let push = stream
         .message::<rpc::Push>()
         .await
         .unwrap()
         .unwrap()
         .to_owned_message();
-    let Some(wire::push::Event::ReviewCommentsChanged(value)) =
-        to_wire::<wire::Push>(&push).unwrap().event
+    let Some(wire::push::Event::FileChange(value)) = to_wire::<wire::Push>(&push).unwrap().event
     else {
-        panic!("repo paths push");
+        panic!("file change push");
     };
-    assert_eq!(value.value.as_deref(), Some("/next"));
+    assert_eq!(value.path.as_deref(), Some("/next"));
     drop(stream);
     server.abort();
 }
@@ -178,11 +186,11 @@ async fn test_push配信_符号化済みpayloadを保持しlagged後も配信す
         resync
     );
     let event = wire::Push {
-        event: Some(wire::push::Event::ReviewCommentsChanged(
-            wire::ResultString {
-                value: Some("/next".into()),
-            },
-        )),
+        event: Some(wire::push::Event::FileChange(wire::FileChangeEvent {
+            watcher_id: Some(1),
+            path: Some("/next".into()),
+            kind: Some("change".into()),
+        })),
     };
     let mut bytes = resync.clone();
     bytes.extend(event.encode_to_vec());
@@ -194,7 +202,7 @@ async fn test_push配信_符号化済みpayloadを保持しlagged後も配信す
         serde_json::from_slice(&push.encode(CodecFormat::Json).unwrap()).unwrap();
     assert_eq!(
         json,
-        serde_json::json!({"reviewCommentsChanged": {"value": "/next"}})
+        serde_json::json!({"fileChange": {"watcher_id": "1", "path": "/next", "kind": "change"}})
     );
     for _ in 0..65 {
         sink.send(bytes.clone());
@@ -1391,7 +1399,7 @@ async fn test_購読stream_既定期限を過ぎても配信できる() {
     // When
     tokio::time::advance(std::time::Duration::from_secs(121)).await;
     assert!(futures_util::poll!(body.next()).is_pending());
-    crate::adaptor::gateway::push::BackendPush::ReviewCommentsChanged("/next".into())
+    crate::adaptor::gateway::push::BackendPush::FileChange(file_change("/next"))
         .emit(sink.as_ref());
     // Then
     let frame = body.next().await.unwrap().unwrap();

@@ -254,9 +254,8 @@ fn test_監視_repositoryの再走査競合と下位エラーの分類を保持�
             crate::domain::repository::RepositoryError::rule("state").into(),
         ),
         RepositoryStateError::Code(
-            crate::domain::code::CodeError::StaleReviewBlobVersion {
-                requested: 1,
-                current: 2,
+            crate::domain::code::CodeError::StaleReviewGroupTarget {
+                group_id: "g".into(),
             }
             .into(),
         ),

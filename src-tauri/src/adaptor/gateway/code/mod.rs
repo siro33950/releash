@@ -15,7 +15,6 @@ pub(crate) mod branch_diff;
 pub(crate) mod diff_compute;
 mod error;
 pub(crate) mod file_content;
-pub(crate) mod review_blob_url;
 pub(crate) mod staging;
 
 use git2::Repository;

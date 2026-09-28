@@ -5,14 +5,13 @@ use crate::usecase::repository_state::worker::InvalidateReason;
 use prost::Message;
 
 #[test]
-fn test_スキャン完了通知_gitとbranchとfileのみclientへ送る() {
+fn test_スキャン完了通知_fileだけをclientへ送り購読を無効化する() {
     // Given
     let sink = Arc::new(PushSink::new());
     let mut receiver = sink.subscribe();
-    let notifier = ClientRepositoryStateNotifier::new(
-        sink,
-        crate::adaptor::presenter::state_subscription::test_output(),
-    );
+    let publisher = crate::adaptor::presenter::state_subscription::test_output();
+    let mut changes = crate::test_support::state_subscription::changes(&publisher);
+    let notifier = ClientRepositoryStateNotifier::new(sink, publisher);
 
     // When
     notifier.snapshot_changed(SnapshotNotification {
@@ -28,15 +27,14 @@ fn test_スキャン完了通知_gitとbranchとfileのみclientへ送る() {
     }
     assert_eq!(
         events,
-        vec![
-            wire::push::Event::GitStatusChanged(wire::GitStatusChangedEvent {
-                repo_path: Some("/repo".into()),
-            }),
-            wire::push::Event::FileChange(wire::FileChangeEvent {
-                watcher_id: Some(7),
-                path: Some("/repo/file.txt".into()),
-                kind: Some("change".into()),
-            }),
-        ]
+        vec![wire::push::Event::FileChange(wire::FileChangeEvent {
+            watcher_id: Some(7),
+            path: Some("/repo/file.txt".into()),
+            kind: Some("change".into()),
+        })]
+    );
+    assert_eq!(
+        changes.try_recv().unwrap(),
+        crate::usecase::state_subscription::StateChangeSource::Repository(vec!["/repo".into()])
     );
 }

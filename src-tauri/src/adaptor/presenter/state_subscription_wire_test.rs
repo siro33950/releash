@@ -567,3 +567,48 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
         assert_eq!(payload(&value).unwrap().value, Some(expected), "{value:?}");
     }
 }
+
+#[test]
+fn test_購読payload_review対象をreview欄へ変換する() {
+    use crate::usecase::code_dto::{ReviewBinaryDto, ReviewFileViewDto, ReviewSnapshotDto};
+    use wire::state_payload::Value as W;
+    // Given
+    let snapshot = ReviewSnapshotDto {
+        version: 3,
+        stale: false,
+        loading: true,
+        base: "head".into(),
+        files: vec![],
+        staged_files: vec![],
+        changed_files: vec![],
+        diff_stats: vec![],
+        tree: vec![],
+        staged_tree: vec![],
+        changes_tree: vec![],
+        staged_file_count: 0,
+        changes_file_count: 0,
+    };
+    let view = ReviewFileViewDto::Binary(ReviewBinaryDto {
+        version: 3,
+        stale: false,
+        file_id: "a.bin".into(),
+        path: "a.bin".into(),
+        original_size: None,
+        modified_size: Some(4),
+    });
+    // When / Then
+    assert!(matches!(
+        payload(&StateValue::ReviewSnapshot(snapshot)).unwrap().value,
+        Some(W::ReviewSnapshot(value)) if value.version == Some(3) && value.loading == Some(true)
+    ));
+    assert!(matches!(
+        payload(&StateValue::ReviewFileView(view)).unwrap().value,
+        Some(W::ReviewFileView(wire::ReviewFileViewDto {
+            variant: Some(wire::review_file_view_dto::Variant::Binary(binary)),
+        })) if binary.modified_size == Some(4)
+    ));
+    assert!(matches!(
+        payload(&StateValue::ReviewThreads(vec![])).unwrap().value,
+        Some(W::ReviewThreads(list)) if list.items.is_empty()
+    ));
+}
