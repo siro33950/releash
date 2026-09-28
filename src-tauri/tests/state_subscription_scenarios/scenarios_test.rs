@@ -196,6 +196,10 @@ async fn test_購読_開始と配信と停止が待機中streamを起こす() {
         .unwrap();
     assert!(stream.as_mut().poll_next(&mut cx).is_pending());
     tokio::time::advance(BOOKMARK_INTERVAL).await;
+    assert!(matches!(
+        stream.as_mut().poll_next(&mut cx),
+        Poll::Ready(Some(StateSubscriptionEvent::Bookmark))
+    ));
     assert!(stream.as_mut().poll_next(&mut cx).is_pending());
 }
 

@@ -3,6 +3,25 @@ pub(crate) const QUIT_TIMEOUT_MS: u64 = 15_000;
 const RESTORATION_TIMEOUT_MS: u64 = 30_000;
 const STABLE_READY_MS: u64 = 60_000;
 const RETRY_DELAYS_MS: [u64; 3] = [1_000, 2_000, 4_000];
+pub(crate) const LIVENESS_FAILURE_THRESHOLD: u32 = 3;
+
+#[derive(Debug, Default)]
+pub(crate) struct DaemonLiveness {
+    consecutive_failures: u32,
+}
+
+impl DaemonLiveness {
+    pub fn succeeded(&mut self) -> bool {
+        std::mem::take(&mut self.consecutive_failures) > 0
+    }
+    pub fn failed(&mut self) -> bool {
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        self.consecutive_failures >= LIVENESS_FAILURE_THRESHOLD
+    }
+    pub fn consecutive_failures(&self) -> u64 {
+        self.consecutive_failures.into()
+    }
+}
 
 pub(crate) struct DaemonExit {
     pub success: bool,

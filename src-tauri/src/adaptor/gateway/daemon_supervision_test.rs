@@ -1,6 +1,18 @@
 use super::*;
 use std::{cell::Cell, time::Duration};
 
+fn gateway(data_dir: PathBuf) -> DaemonProcessGateway {
+    DaemonProcessGateway::new(
+        PathBuf::new(),
+        data_dir,
+        Arc::new(RetryLimiter::new()),
+        Arc::new(crate::adaptor::presenter::failure::FailurePresenter::new(
+            Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
+            None,
+        )),
+    )
+}
+
 #[tokio::test]
 async fn test_daemon接続_認証と検証が完了した呼び出しで接続情報を返す() {
     use crate::infrastructure::local_api::{
@@ -9,7 +21,7 @@ async fn test_daemon接続_認証と検証が完了した呼び出しで接続�
     use prost::Message;
     // Given
     let directory = tempfile::tempdir().unwrap();
-    let gateway = DaemonProcessGateway::new(PathBuf::new(), directory.path().into());
+    let gateway = gateway(directory.path().into());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let discovery = LocalApiDiscovery {
         port: listener.local_addr().unwrap().port(),
@@ -151,7 +163,7 @@ async fn test_daemon停止_終了観測とkillのエラーを伝播する() {
 #[tokio::test]
 async fn test_daemon停止_子がない場合は即座に完了する() {
     // Given
-    let gateway = DaemonProcessGateway::new(PathBuf::new(), PathBuf::new());
+    let gateway = gateway(PathBuf::new());
     // When / Then
     gateway.terminate_and_wait().await.unwrap();
 }

@@ -1,26 +1,243 @@
 use super::*;
+use crate::adaptor::gateway::failure_records::FailureRecordStore;
+use crate::adaptor::presenter::failure::FailurePresenter;
+use futures_util::StreamExt;
 use std::sync::atomic::Ordering;
 
-#[tokio::test]
-async fn test_接続監督_通信失敗は次の接続観測に反映する() {
-    // Given
+const KEY_TARGET: &str = "launch";
+
+fn start(endpoint: &ClientConnectionDto) -> (DesktopClient, Arc<FailureRecordStore>) {
+    let store = Arc::new(FailureRecordStore::default());
     let client = DesktopClient::start(
-        super::client(&ClientConnectionDto {
-            url: "http://127.0.0.1:1".into(),
-            token: "client".into(),
-        })
-        .unwrap(),
+        super::client(endpoint).unwrap(),
+        super::stream_client(endpoint).unwrap(),
+        FailureKey::new("daemon_liveness", KEY_TARGET),
+        Arc::new(FailurePresenter::new(store.clone(), None)),
+        Arc::new(RetryLimiter::deterministic()),
     );
-    // When
-    tokio::time::timeout(std::time::Duration::from_secs(7), async {
+    (client, store)
+}
+
+async fn wait_for_disconnect(client: &DesktopClient, limit: std::time::Duration) {
+    tokio::time::timeout(limit, async {
         while client.connected() {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
     })
     .await
     .unwrap();
+}
+
+fn envelope(event: rpc::StateSubscriptionEvent) -> Vec<u8> {
+    use prost::Message;
+    let event: wire::StateSubscriptionEvent = to_wire(&event).unwrap();
+    let payload = event.encode_to_vec();
+    let mut bytes = vec![0];
+    bytes.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+    bytes.extend_from_slice(&payload);
+    bytes
+}
+
+fn ready_event() -> rpc::StateSubscriptionEvent {
+    to_rpc(&wire::StateSubscriptionEvent {
+        event: Some(wire::state_subscription_event::Event::Ready(wire::Unit {})),
+        ..Default::default()
+    })
+    .unwrap()
+}
+
+async fn stream_server(
+    events: Vec<rpc::StateSubscriptionEvent>,
+    hold: bool,
+) -> (ClientConnectionDto, tokio::task::JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = ClientConnectionDto {
+        url: format!("http://{}", listener.local_addr().unwrap()),
+        token: "client".into(),
+    };
+    let mut frames: Vec<Vec<u8>> = events.into_iter().map(envelope).collect();
+    if !hold {
+        frames.push(vec![2, 0, 0, 0, 2, b'{', b'}']);
+    }
+    let router = axum::Router::new().route(
+        "/releash.client.v1.ClientService/OpenStateStream",
+        axum::routing::post(move || {
+            let frames = frames.clone();
+            async move {
+                let body = futures_util::stream::iter(
+                    frames.into_iter().map(Ok::<_, std::convert::Infallible>),
+                );
+                let body: std::pin::Pin<
+                    Box<
+                        dyn futures_util::Stream<Item = Result<Vec<u8>, std::convert::Infallible>>
+                            + Send,
+                    >,
+                > = if hold {
+                    Box::pin(body.chain(futures_util::stream::pending()))
+                } else {
+                    Box::pin(body)
+                };
+                (
+                    [("content-type", "application/connect+proto")],
+                    axum::body::Body::from_stream(body),
+                )
+            }
+        }),
+    );
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    (endpoint, server)
+}
+
+#[tokio::test]
+async fn test_生存確認_接続拒否が3回続いたときだけ接続を失い分類を記録する() {
+    // Given
+    let endpoint = ClientConnectionDto {
+        url: "http://127.0.0.1:1".into(),
+        token: "client".into(),
+    };
+    let (client, store) = start(&endpoint);
+    // When
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     // Then
-    assert!(client.failure().is_some());
+    assert!(client.connected());
+    assert_eq!(client.failure(), None);
+    let records = store.records(KEY_TARGET);
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].record.count, 1);
+    // When
+    wait_for_disconnect(&client, std::time::Duration::from_secs(10)).await;
+    // Then
+    let failure = client.failure().unwrap();
+    assert_eq!(
+        failure.kind,
+        Failure::Technical(TechnicalFailureNature::Transient)
+    );
+    let records = store.records(KEY_TARGET);
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].record.count, 3);
+    assert_eq!(records[0].record.operation, "daemon_liveness");
+    assert_eq!(records[0].record.kind, failure.kind);
+    assert!(records[0].record.active);
+}
+
+#[tokio::test]
+async fn test_生存確認_streamが届く間は接続を維持し記録しない() {
+    // Given
+    let (endpoint, server) = stream_server(vec![ready_event()], true).await;
+    let (client, store) = start(&endpoint);
+    // When
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    // Then
+    assert!(client.connected());
+    assert_eq!(client.failure(), None);
+    assert!(store.records(KEY_TARGET).is_empty());
+    server.abort();
+}
+
+#[tokio::test]
+async fn test_生存確認_streamの終了が3回続くと一時的な失敗として接続を失う() {
+    // Given
+    let (endpoint, server) = stream_server(vec![], false).await;
+    let (client, store) = start(&endpoint);
+    // When
+    wait_for_disconnect(&client, std::time::Duration::from_secs(10)).await;
+    // Then
+    let failure = client.failure().unwrap();
+    assert_eq!(
+        failure.kind,
+        Failure::Technical(TechnicalFailureNature::Transient)
+    );
+    assert_eq!(failure.message, "State stream ended");
+    let records = store.records(KEY_TARGET);
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].record.count, 3);
+    server.abort();
+}
+
+#[derive(Default)]
+struct RecordedCalls(parking_lot::Mutex<Vec<&'static str>>);
+
+impl FailureOutput for RecordedCalls {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn observed(&self, _key: &FailureKey, _failure: WorkFailure) {
+        self.0.lock().push("observed");
+    }
+    fn resolved(&self, _key: &FailureKey) {
+        self.0.lock().push("resolved");
+    }
+}
+
+#[tokio::test]
+async fn test_生存確認_失敗の後に届けば連続失敗が消え記録を解消する() {
+    // Given
+    let (endpoint, server) = stream_server(vec![ready_event()], false).await;
+    let calls = Arc::new(RecordedCalls::default());
+    let client = DesktopClient::start(
+        super::client(&endpoint).unwrap(),
+        super::stream_client(&endpoint).unwrap(),
+        FailureKey::new("daemon_liveness", KEY_TARGET),
+        calls.clone(),
+        Arc::new(RetryLimiter::deterministic()),
+    );
+    // When
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    // Then
+    assert!(client.connected());
+    assert_eq!(client.failure(), None);
+    let calls = calls.0.lock().clone();
+    assert!(calls.len() >= 4, "{calls:?}");
+    assert_eq!(calls[0], "observed");
+    assert_eq!(calls[1], "resolved");
+    assert_eq!(calls[2], "observed");
+    server.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_生存確認_応答が無い期限超過が3回続くと接続を失う() {
+    // Given
+    let (endpoint, server) = stream_server(vec![], true).await;
+    let (client, store) = start(&endpoint);
+    // When
+    wait_for_disconnect(&client, std::time::Duration::from_secs(120)).await;
+    // Then
+    let failure = client.failure().unwrap();
+    assert_eq!(
+        failure.kind,
+        Failure::Technical(TechnicalFailureNature::TimedOut)
+    );
+    let records = store.records(KEY_TARGET);
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].record.count, 3);
+    server.abort();
+}
+
+#[test]
+fn test_生存確認_connectの失敗を技術的な失敗の性質へ写す() {
+    use connectrpc::ErrorCode;
+    // Given / When / Then
+    for (code, nature) in [
+        (
+            ErrorCode::DeadlineExceeded,
+            TechnicalFailureNature::TimedOut,
+        ),
+        (ErrorCode::Unavailable, TechnicalFailureNature::Transient),
+        (
+            ErrorCode::ResourceExhausted,
+            TechnicalFailureNature::Transient,
+        ),
+        (ErrorCode::Canceled, TechnicalFailureNature::Cancelled),
+        (ErrorCode::Internal, TechnicalFailureNature::Other),
+        (ErrorCode::Unauthenticated, TechnicalFailureNature::Other),
+    ] {
+        let failure = liveness_failure(connectrpc::ConnectError::new(code, "reason"));
+        assert_eq!(failure.kind, Failure::Technical(nature));
+        assert_eq!(
+            failure.message,
+            connectrpc::ConnectError::new(code, "reason").to_string()
+        );
+    }
 }
 
 async fn error_server(
@@ -44,35 +261,6 @@ async fn error_server(
     };
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     (endpoint, server, requests)
-}
-
-#[tokio::test]
-async fn test_接続監督_要求上限拒否が継続しても接続を維持する() {
-    // Given
-    let (endpoint, server, requests) =
-        error_server(crate::adaptor::presenter::connect::command_error(
-            crate::adaptor::presenter::error::AppError::coded(
-                "CLIENT_REQUEST_LIMIT",
-                "Too many pending client commands",
-                connectrpc::ErrorCode::ResourceExhausted,
-            )
-            .into(),
-        ))
-        .await;
-    let client = DesktopClient::start(super::client(&endpoint).unwrap());
-    // When / Then
-    tokio::time::timeout(std::time::Duration::from_secs(45), async {
-        while requests.load(Ordering::SeqCst) < 8 {
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            assert!(client.connected());
-            assert_eq!(client.failure(), None);
-        }
-    })
-    .await
-    .unwrap();
-    assert!(client.connected());
-    assert_eq!(client.failure(), None);
-    server.abort();
 }
 
 #[tokio::test]
@@ -110,7 +298,7 @@ async fn test_ネイティブ要求_停止とログイン項目の具体的な�
             detail,
         }))
         .await;
-        let client = DesktopClient::start(super::client(&endpoint).unwrap());
+        let (client, _) = start(&endpoint);
         for command in [
             wire::command_request::Command::RequestApplicationQuit(Default::default()),
             wire::command_request::Command::GetAppSettings(Default::default()),
@@ -144,36 +332,4 @@ fn test_ネイティブエラー_detailが無いか不正な場合は元の診�
             expected
         );
     }
-}
-
-#[tokio::test]
-async fn test_接続監督_応答が無くなった場合は期限超過で接続を失う() {
-    // Given
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let endpoint = ClientConnectionDto {
-        url: format!("http://{}", listener.local_addr().unwrap()),
-        token: "client".into(),
-    };
-    let server = tokio::spawn(async move {
-        axum::serve(
-            listener,
-            axum::Router::new().fallback(axum::routing::post(|| async {
-                std::future::pending::<axum::http::StatusCode>().await
-            })),
-        )
-        .await
-        .unwrap();
-    });
-    let client = DesktopClient::start(super::client(&endpoint).unwrap());
-    // When
-    tokio::time::timeout(std::time::Duration::from_secs(12), async {
-        while client.connected() {
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .unwrap();
-    // Then
-    assert!(client.failure().is_some());
-    server.abort();
 }
