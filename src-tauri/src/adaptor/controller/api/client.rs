@@ -27,6 +27,34 @@ pub(crate) struct StateSubscriptionDeps {
 }
 
 impl StateSubscriptionDeps {
+    pub(crate) fn build(
+        paths: Vec<String>,
+        timer: Arc<dyn crate::usecase::state_subscription::SubscriptionTimer>,
+    ) -> Self {
+        let presenter = Arc::new(
+            crate::adaptor::presenter::state_subscription::StateSubscriptionPresenter::new(paths),
+        );
+        let usecase = crate::usecase::state_subscription::StateSubscriptionUsecase::new_with_output(
+            presenter.clone(),
+            presenter.change_sender(),
+            timer,
+        );
+        Self { usecase, presenter }
+    }
+
+    pub(crate) fn usecase(&self) -> &crate::usecase::state_subscription::StateSubscriptionUsecase {
+        &self.usecase
+    }
+
+    pub(crate) fn with_usecase(
+        mut self,
+        usecase: crate::usecase::state_subscription::StateSubscriptionUsecase,
+    ) -> Self {
+        self.usecase = usecase;
+        self
+    }
+
+    #[cfg(feature = "desktop")]
     pub(crate) fn new(
         usecase: crate::usecase::state_subscription::StateSubscriptionUsecase,
         presenter: Arc<crate::adaptor::presenter::state_subscription::StateSubscriptionPresenter>,
@@ -232,7 +260,7 @@ impl ClientApiDeps {
         .await
         .map_err(task_error)?;
         let id = result?;
-        to_rpc(&wire::ResultUint64 { value: Some(id) })
+        wire::watch_id_to_rpc(id)
     }
 }
 

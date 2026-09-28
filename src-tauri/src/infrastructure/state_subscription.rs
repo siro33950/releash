@@ -70,10 +70,12 @@ impl<T: Clone + PartialEq + Send + Sync + 'static> StateSubscriptionRuntime<T> {
                 .current_version(&target)
                 .is_none_or(|version| version.epoch != epoch)
             {
-                return None;
+                return (None, false);
             }
-            state.unregister(&target).ok()?;
-            Some(state.has_subscribers(&target))
+            match state.unregister(&target) {
+                Ok(()) => (Some(state.has_subscribers(&target)), true),
+                Err(_) => (None, false),
+            }
         });
         if subscribed.is_some() {
             routes.remove(session);
@@ -105,9 +107,11 @@ impl<T: Clone + PartialEq + Send + Sync + 'static> StateSubscriptionRuntime<T> {
         read(&self.state.lock())
     }
 
-    pub(crate) fn mutate<R>(&self, update: impl FnOnce(&mut Subscriptions<T>) -> R) -> R {
-        let result = update(&mut self.state.lock());
-        self.changed.notify_waiters();
+    pub(crate) fn mutate<R>(&self, update: impl FnOnce(&mut Subscriptions<T>) -> (R, bool)) -> R {
+        let (result, changed) = update(&mut self.state.lock());
+        if changed {
+            self.changed.notify_waiters();
+        }
         result
     }
 
@@ -358,7 +362,7 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
     }
 
     pub fn open(&mut self, id: String) -> Result<(), SubscriptionError> {
-        if id.is_empty() || id.len() > 128 {
+        if id.is_empty() || id.len() > crate::common::SUBSCRIPTION_ID_MAX_BYTES {
             return Err(SubscriptionError::InvalidId);
         }
         if self.clients.contains_key(&id) {
@@ -435,6 +439,17 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
             .unwrap_or(0)
     }
 
+    pub fn awaiting_snapshot(&self, client: &str, target: &str) -> bool {
+        self.clients
+            .get(client)
+            .and_then(|client| client.subscriptions.get(target))
+            .is_some_and(|subscription| subscription.overflowed)
+            && self
+                .targets
+                .get(target)
+                .is_some_and(|target| target.snapshot.is_none())
+    }
+
     pub fn current_version(&self, target: &str) -> Option<Version> {
         self.targets
             .get(target)
@@ -476,7 +491,6 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
         Ok(())
     }
 
-    #[cfg(test)]
     pub fn is_subscribed(&self, client: &str, target: &str) -> bool {
         self.clients
             .get(client)
@@ -600,25 +614,33 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
         Ok(())
     }
 
-    pub fn require_delta_snapshot(&mut self, target: &str) -> Result<(), SubscriptionError> {
+    pub fn require_delta_snapshot(&mut self, target: &str) -> Result<bool, SubscriptionError> {
         let id = target.to_string();
         let value = self
             .targets
             .get_mut(&id)
             .ok_or(SubscriptionError::UnknownTarget)?;
+        let mut changed = value.snapshot.is_some()
+            || !value.history.is_empty()
+            || !value.history_units.is_empty()
+            || value.discarded_through != Some(value.version.sequence);
         value.snapshot = None;
         value.history.clear();
         value.history_units.clear();
         value.discarded_through = Some(value.version.sequence);
         for client in self.clients.values_mut() {
             if let Some(subscription) = client.subscriptions.get_mut(&id) {
+                changed |= !subscription.pending.is_empty()
+                    || !subscription.sizes.is_empty()
+                    || subscription.pending_units != 0
+                    || !subscription.overflowed;
                 subscription.pending.clear();
                 subscription.sizes.clear();
                 subscription.pending_units = 0;
                 subscription.overflowed = true;
             }
         }
-        Ok(())
+        Ok(changed)
     }
 
     pub fn snapshot_requests(&self, client: &str) -> Vec<String> {

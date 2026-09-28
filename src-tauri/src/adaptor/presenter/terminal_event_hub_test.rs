@@ -3,9 +3,8 @@ use std::time::Duration;
 
 use crate::usecase::terminal_surface::output::TerminalSurfaceEventSink;
 use crate::usecase::terminal_surface::output::TerminalSurfaceOutputControl;
-use crate::usecase::terminal_surface::output::{
-    TerminalSurfaceOutputEvent, TerminalSurfaceOutputSummary,
-};
+use crate::usecase::terminal_surface::output::TerminalSurfaceOutputEvent;
+use crate::usecase::terminal_surface::output::TerminalSurfaceStateSink;
 
 use super::TerminalSurfaceEventHub;
 
@@ -15,6 +14,58 @@ fn output_event(sequence: u64, data: &str) -> TerminalSurfaceOutputEvent {
         data: data.into(),
         sequence,
     }
+}
+
+#[test]
+fn test_ターミナル状態接続_接続前の登録だけを再生し世代による削除を届ける() {
+    struct RecordingStateSink {
+        initialized: std::sync::Mutex<Vec<(String, String, Option<String>, u64, u64)>>,
+        removed: std::sync::Mutex<Vec<(String, u64)>>,
+    }
+    impl TerminalSurfaceStateSink for RecordingStateSink {
+        fn initialize(
+            &self,
+            key: &str,
+            path: &str,
+            session: Option<&str>,
+            generation: u64,
+            sequence: u64,
+        ) {
+            self.initialized.lock().unwrap().push((
+                key.into(),
+                path.into(),
+                session.map(str::to_owned),
+                generation,
+                sequence,
+            ));
+        }
+        fn remove(&self, key: &str, generation: u64) -> bool {
+            self.removed.lock().unwrap().push((key.into(), generation));
+            true
+        }
+        fn publish(&self, _: TerminalSurfaceOutputEvent) {}
+    }
+
+    // Given
+    let hub = TerminalSurfaceEventHub::with_flags(8, true);
+    hub.initialize("old", "/repo", None, 1, 0);
+    assert!(!hub.remove(1));
+    hub.initialize("session", "/repo", Some("agent"), 2, 7);
+    let sink = Arc::new(RecordingStateSink {
+        initialized: std::sync::Mutex::new(Vec::new()),
+        removed: std::sync::Mutex::new(Vec::new()),
+    });
+
+    // When
+    hub.set_state_sink(sink.clone());
+    assert!(hub.remove(2));
+
+    // Then
+    assert_eq!(
+        *sink.initialized.lock().unwrap(),
+        vec![("session".into(), "/repo".into(), Some("agent".into()), 2, 7)]
+    );
+    assert_eq!(*sink.removed.lock().unwrap(), vec![("session".into(), 2)]);
 }
 
 #[test]
@@ -132,8 +183,8 @@ fn test_ターミナル削除_購読の有無によらず停止中の出力元�
 
     struct StateSink(bool);
     impl TerminalSurfaceStateSink for StateSink {
-        fn initialize(&self, _: &TerminalSurfaceOutputSummary) {}
-        fn remove(&self, _: &TerminalSurfaceOutputSummary) -> bool {
+        fn initialize(&self, _: &str, _: &str, _: Option<&str>, _: u64, _: u64) {}
+        fn remove(&self, _: &str, _: u64) -> bool {
             self.0
         }
         fn publish(&self, _: TerminalSurfaceOutputEvent) {}
@@ -145,6 +196,7 @@ fn test_ターミナル削除_購読の有無によらず停止中の出力元�
         hub.set_state_sink(Arc::new(StateSink(subscribed)));
         let owner = TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/repo")).unwrap();
         let surface = TerminalSurface::new(1, owner, None).summary();
+        hub.initialize(&surface.session_key, "/repo", None, 1, 0);
         hub.subscribe_output(&surface.session_key, "client", 0);
         hub.publish(TerminalSurfaceOutputEvent::Output {
             session_key: surface.session_key.clone(),
@@ -162,7 +214,7 @@ fn test_ターミナル削除_購読の有無によらず停止中の出力元�
         });
         assert!(receiver.recv_timeout(Duration::from_millis(30)).is_err());
         // When
-        assert_eq!(hub.remove(&(&surface).into()), subscribed);
+        assert_eq!(hub.remove(surface.runtime_generation.value()), subscribed);
         // Then
         let completed = receiver.recv_timeout(Duration::from_secs(1));
         pause.set(false);

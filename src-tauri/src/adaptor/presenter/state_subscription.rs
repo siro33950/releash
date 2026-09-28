@@ -20,7 +20,7 @@ use crate::usecase::state_subscription::{
 };
 use crate::usecase::terminal_surface::application::TerminalSurfaceStreamItem;
 use crate::usecase::terminal_surface::output::{
-    TerminalSurfaceOutputEvent, TerminalSurfaceOutputSummary, TerminalSurfaceStateSink,
+    TerminalSurfaceOutputEvent, TerminalSurfaceStateSink,
 };
 
 impl From<crate::infrastructure::state_subscription::SubscriptionError> for SubscriptionError {
@@ -55,13 +55,17 @@ impl StateSubscriptionPresenter {
     ) {
         *self.terminal.lock() = Some(terminal.clone());
         terminal.connect_state(Arc::new(self.clone()));
-        for summary in terminal.summaries() {
-            self.initialize(&(&summary).into());
-        }
     }
 
     pub(crate) fn change_sender(&self) -> tokio::sync::broadcast::Sender<StateChangeSource> {
         self.invalidated.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_runtime(
+        &self,
+    ) -> &StateSubscriptionRuntime<crate::adaptor::presenter::client::StatePayload> {
+        &self.runtime
     }
 
     pub(crate) fn new(paths: Vec<String>) -> Self {
@@ -69,17 +73,20 @@ impl StateSubscriptionPresenter {
         let target = SubscriptionTarget::RepositoryPaths.to_string();
         runtime
             .mutate(|state| {
-                state.register(
-                    target.clone(),
-                    crate::adaptor::presenter::state_subscription_wire::payload(
-                        &StateValue::RepositoryPaths(paths),
-                    )
-                    .expect("repository paths encode"),
-                    Delivery::Full,
+                (
+                    state.register(
+                        target.clone(),
+                        crate::adaptor::presenter::state_subscription_wire::payload(
+                            &StateValue::RepositoryPaths(paths),
+                        )
+                        .expect("repository paths encode"),
+                        Delivery::Full,
+                    ),
+                    true,
                 )
             })
             .expect("unique target");
-        runtime.mutate(|state| state.protect(&target));
+        runtime.mutate(|state| (state.protect(&target), true));
         Self {
             runtime,
             invalidated: tokio::sync::broadcast::channel(64).0,
@@ -104,13 +111,19 @@ impl StateSubscriptionPresenter {
         cursor: Option<(&str, u64)>,
     ) -> Result<(), SubscriptionError> {
         let version = cursor_version(cursor);
-        self.update(|state| {
-            let result = state.start(client, target, version.as_ref());
-            if result.is_err() {
-                let _ = state.ensure_active(target);
-            }
-            result
-        })
+        self.runtime
+            .mutate(|state| {
+                let subscribed = state.is_subscribed(client, target);
+                let result = state.start(client, target, version.as_ref());
+                let mut changed = result.is_ok() && !subscribed;
+                if result.is_err() {
+                    let existed = state.registered(target);
+                    let _ = state.ensure_active(target);
+                    changed = existed && !state.registered(target);
+                }
+                (result, changed)
+            })
+            .map_err(Into::into)
     }
 
     pub(crate) fn stop(
@@ -131,6 +144,11 @@ impl StateSubscriptionPresenter {
     pub(crate) fn terminal_pending_amount(&self, client: &str, target: &str) -> usize {
         self.runtime
             .inspect(|state| state.pending_amount(client, target))
+    }
+
+    fn terminal_awaiting_snapshot(&self, client: &str, target: &str) -> bool {
+        self.runtime
+            .inspect(|state| state.awaiting_snapshot(client, target))
     }
 
     pub(crate) fn terminal_report_units(&self) -> usize {
@@ -199,18 +217,35 @@ impl StateSubscriptionPresenter {
             .lock()
             .clone()
             .ok_or_else(|| terminal_read_error("Terminal unavailable"))?;
-        let summary = terminal.get_summary(owner).map_err(terminal_read_error)?;
-        let mut result = Ok(());
-        terminal.with_output_order(summary.runtime_generation.value(), &mut || {
-            result = self
-                .start(client, raw, cursor)
-                .map_err(StateReadError::from_error);
-            if result.is_ok() {
-                let pending = self.terminal_pending_amount(client, raw);
-                terminal.subscribe_output(owner, client, input_id, pending);
+        loop {
+            let generation = terminal
+                .get_summary(owner)
+                .map_err(terminal_read_error)?
+                .runtime_generation;
+            let mut result = None;
+            terminal.with_output_order(generation.value(), &mut || {
+                match terminal.get_summary(owner) {
+                    Ok(current) if current.runtime_generation != generation => return,
+                    Err(error) => {
+                        result = Some(Err(terminal_read_error(error)));
+                        return;
+                    }
+                    _ => {}
+                }
+                let started = self
+                    .start(client, raw, cursor)
+                    .map_err(StateReadError::from_error);
+                if started.is_ok() {
+                    let pending = (!self.terminal_awaiting_snapshot(client, raw))
+                        .then(|| self.terminal_pending_amount(client, raw));
+                    terminal.subscribe_output(owner, client, input_id, pending);
+                }
+                result = Some(started);
+            });
+            if let Some(result) = result {
+                return result;
             }
-        });
-        result
+        }
     }
 }
 
@@ -245,6 +280,7 @@ impl Drop for StreamPermit {
                 }
             }
             state.release_inactive_snapshots_except(&protected);
+            ((), true)
         });
     }
 }
@@ -346,28 +382,30 @@ impl StateSubscriptionOutput for StateSubscriptionPresenter {
 }
 
 impl TerminalSurfaceStateSink for StateSubscriptionPresenter {
-    fn initialize(&self, surface: &TerminalSurfaceOutputSummary) {
-        let target = SubscriptionTarget::Terminal(surface.owner.clone()).to_string();
+    fn initialize(
+        &self,
+        session_key: &str,
+        workspace_path: &str,
+        session_id: Option<&str>,
+        runtime_generation: u64,
+        latest_sequence: u64,
+    ) {
+        let target = terminal_target(workspace_path, session_id).to_string();
         let version = self
             .runtime
-            .terminal_version(surface.runtime_generation, surface.latest_sequence);
-        if let Err(error) = self.runtime.register_terminal(
-            &surface.session_key,
-            &target,
-            version,
-            OUTPUT_PENDING_LIMIT,
-        ) {
+            .terminal_version(runtime_generation, latest_sequence);
+        if let Err(error) =
+            self.runtime
+                .register_terminal(session_key, &target, version, OUTPUT_PENDING_LIMIT)
+        {
             log::error!("Terminal registration failed: {error}");
         }
     }
 
-    fn remove(&self, surface: &TerminalSurfaceOutputSummary) -> bool {
-        let epoch = self
-            .runtime
-            .terminal_version(surface.runtime_generation, 0)
-            .epoch;
+    fn remove(&self, session_key: &str, runtime_generation: u64) -> bool {
+        let epoch = self.runtime.terminal_version(runtime_generation, 0).epoch;
         self.runtime
-            .unregister_terminal(&surface.session_key, &epoch)
+            .unregister_terminal(session_key, &epoch)
             .unwrap_or(false)
     }
 
@@ -436,35 +474,41 @@ impl TerminalSurfaceStateSink for StateSubscriptionPresenter {
         };
         self.runtime.mutate(|state| {
             let Some(mut version) = state.current_version(&target) else {
-                return;
+                return ((), false);
             };
             if sequence < version.sequence && !advances_version {
-                if let Err(error) = state.require_delta_snapshot(&target) {
-                    log::error!("Terminal resynchronization failed: {error}");
-                }
-                return;
+                let changed = match state.require_delta_snapshot(&target) {
+                    Ok(changed) => changed,
+                    Err(error) => {
+                        log::error!("Terminal resynchronization failed: {error}");
+                        false
+                    }
+                };
+                return ((), changed);
             }
             if advances_version && sequence <= version.sequence {
-                return;
+                return ((), false);
             }
             version.sequence = sequence;
-            if let Err(error) =
-                state.publish_delta(&target, version, payload, units, advances_version)
-            {
-                log::error!("Terminal publication failed: {error}");
+            match state.publish_delta(&target, version, payload, units, advances_version) {
+                Ok(()) => ((), true),
+                Err(error) => {
+                    log::error!("Terminal publication failed: {error}");
+                    ((), false)
+                }
             }
         });
     }
 }
 
+fn terminal_target(workspace_path: &str, session_id: Option<&str>) -> SubscriptionTarget {
+    let mut args = vec![workspace_path];
+    if let Some(session_id) = session_id {
+        args.push(session_id);
+    }
+    SubscriptionTarget::from_parts("terminal", &args).expect("validated terminal owner")
+}
+
 #[cfg(test)]
 #[path = "state_subscription_test.rs"]
 mod state_subscription_tests;
-
-#[cfg(test)]
-#[path = "state_subscription_flow_unit_test.rs"]
-mod state_subscription_flow_tests;
-
-#[cfg(test)]
-#[path = "state_subscription_terminal_unit_test.rs"]
-mod state_subscription_terminal_tests;

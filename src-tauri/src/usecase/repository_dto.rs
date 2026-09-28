@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::domain::repository::Branch;
+use crate::domain::repository::{Branch, FileDiffStat, FileStatus};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BranchDto {
@@ -30,6 +30,16 @@ pub struct FileStatusDto {
     pub worktree_status: String,
 }
 
+impl From<FileStatus> for FileStatusDto {
+    fn from(status: FileStatus) -> Self {
+        Self {
+            path: status.path,
+            index_status: status.index_status,
+            worktree_status: status.worktree_status,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FileDiffStatDto {
     pub path: String,
@@ -39,10 +49,16 @@ pub struct FileDiffStatDto {
     pub wt_deletions: u32,
 }
 
-pub(crate) struct RepositoryStatusScanDto {
-    pub status: Vec<FileStatusDto>,
-    pub diff_stats: Vec<FileDiffStatDto>,
-    pub dirty_count: usize,
+impl From<FileDiffStat> for FileDiffStatDto {
+    fn from(stat: FileDiffStat) -> Self {
+        Self {
+            path: stat.path,
+            index_additions: stat.index_additions,
+            index_deletions: stat.index_deletions,
+            wt_additions: stat.wt_additions,
+            wt_deletions: stat.wt_deletions,
+        }
+    }
 }
 
 /// ワークツリー一覧の 1 エントリ（旧 `WorktreeEntry`）の read model。

@@ -2,7 +2,7 @@ use crate::usecase::terminal_surface::application::TerminalSurfaceApplication;
 use std::sync::Arc;
 
 pub(crate) fn valid_subscription_id(id: &str, allow_empty: bool) -> bool {
-    id.len() <= 128 && (allow_empty || !id.is_empty())
+    id.len() <= crate::common::SUBSCRIPTION_ID_MAX_BYTES && (allow_empty || !id.is_empty())
 }
 
 #[cfg(test)]

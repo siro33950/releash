@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::usecase::terminal_surface::output::{
-    TerminalSurfaceEventSink, TerminalSurfaceOutputEvent, TerminalSurfaceOutputSummary,
+    TerminalSurfaceEventSink, TerminalSurfaceOutputEvent,
 };
 
 #[doc(hidden)]
@@ -38,11 +38,8 @@ struct FaultInjectingTerminalSurfaceEventSink {
 }
 
 impl TerminalSurfaceEventSink for FaultInjectingTerminalSurfaceEventSink {
-    fn initialize(&self, surface: &TerminalSurfaceOutputSummary) {
-        self.target.initialize(surface);
-    }
-    fn remove(&self, surface: &TerminalSurfaceOutputSummary) -> bool {
-        self.target.remove(surface)
+    fn remove(&self, runtime_generation: u64) -> bool {
+        self.target.remove(runtime_generation)
     }
     fn wait_output(&self, session_key: &str) {
         self.target.wait_output(session_key);

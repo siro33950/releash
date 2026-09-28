@@ -28,6 +28,7 @@ use crate::adaptor::gateway::local_event_store::LocalEventStoreConfig;
 use crate::adaptor::gateway::repository::branch::BranchGateway;
 use crate::adaptor::gateway::repository::branch_card::BranchCardGateway;
 use crate::adaptor::gateway::repository::git_config::GitConfigGateway;
+use crate::adaptor::gateway::repository::status::StatusGateway;
 use crate::adaptor::gateway::repository::util::RepoLocatorGateway;
 use crate::adaptor::gateway::repository::worktree::WorktreeGateway;
 use crate::adaptor::gateway::repository::worktree_terminal::NoopWorktreeTerminalGateway;
@@ -98,6 +99,7 @@ fn build_repository_usecase_inner(
 ) -> RepositoryUsecase {
     RepositoryUsecase::new(
         Arc::new(BranchGateway),
+        Arc::new(StatusGateway),
         Arc::new(WorktreeGateway),
         Arc::new(GitConfigGateway),
         Arc::new(RepoLocatorGateway),

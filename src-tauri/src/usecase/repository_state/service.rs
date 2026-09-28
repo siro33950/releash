@@ -840,7 +840,9 @@ pub(crate) mod tests {
 
         let path = dir.path().to_str().unwrap();
         let status = crate::adaptor::gateway::repository::status::get_git_status(path).unwrap();
-        let scanner = Arc::new(CountingScanner::with_status(status));
+        let scanner = Arc::new(CountingScanner::with_status(
+            status.into_iter().map(Into::into).collect(),
+        ));
         let service = RepositoryStateService::new(
             crate::usecase::work_queue::WorkQueueUsecase::new(
                 crate::usecase::work_queue_test_runtime::runtime(),

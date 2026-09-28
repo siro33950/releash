@@ -10,7 +10,5 @@ fn test_差分行数_各操作の停止をゼロ行に変えず後続へ進ま�
     crate::test_support::git::add_and_commit(&repo, "file", "before\n", "file");
     std::fs::write(dir.path().join("file"), "after\nextra\n").unwrap();
     // When / Then
-    assert_stops_at_each_checkpoint(|| {
-        get_repository_status_scan_dto(dir.path().to_str().unwrap())
-    });
+    assert_stops_at_each_checkpoint(|| get_repository_status_scan(dir.path().to_str().unwrap()));
 }

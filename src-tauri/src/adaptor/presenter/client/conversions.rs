@@ -2735,10 +2735,9 @@ impl TryFrom<wire::ResultString> for String {
     }
 }
 
-impl TryFrom<u64> for wire::ResultUint64 {
-    type Error = String;
-    fn try_from(value: u64) -> Result<Self, String> {
-        Ok(Self { value: Some(value) })
+impl From<u64> for wire::ResultUint64 {
+    fn from(value: u64) -> Self {
+        Self { value: Some(value) }
     }
 }
 

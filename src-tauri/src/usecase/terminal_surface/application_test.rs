@@ -9,7 +9,7 @@ use crate::domain::terminal_surface::{
 };
 use crate::domain::workspace_tree::WorkspaceIdentity;
 use crate::usecase::terminal_surface::output::{
-    TerminalSurfaceOutputControl, TerminalSurfaceOutputSummary, TerminalSurfaceStateSink,
+    TerminalSurfaceOutputControl, TerminalSurfaceStateSink,
 };
 
 struct Noop;
@@ -37,6 +37,7 @@ impl TerminalSurfaceEventSource for Noop {
 
 impl TerminalSurfaceOutputControl for Noop {
     fn set_state_sink(&self, _: Arc<dyn TerminalSurfaceStateSink>) {}
+    fn initialize(&self, _: &str, _: &str, _: Option<&str>, _: u64, _: u64) {}
     fn subscribe_output(&self, _: &str, _: &str, _: usize) {}
     fn unsubscribe_output(&self, _: &str, _: &str) {}
     fn processed_output(&self, _: &str, _: &str, _: usize) {}
@@ -46,19 +47,6 @@ fn make_application(
     gateway: Arc<super::super::io_usecase::io_usecase_tests::FakePtyGateway>,
 ) -> super::TerminalSurfaceApplication {
     super::TerminalSurfaceApplication::new(Arc::new(Noop), gateway, Arc::new(Noop), Arc::new(Noop))
-}
-
-#[test]
-fn test_ターミナル画面出力_概要を所有者と単純な値へ変換する() {
-    let owner = TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/repo")).unwrap();
-    let surface = TerminalSurface::new(7, owner.clone(), None);
-
-    let output = TerminalSurfaceOutputSummary::from(&surface.summary());
-
-    assert_eq!(output.session_key, owner.stable_key());
-    assert_eq!(output.runtime_generation, 7);
-    assert_eq!(output.latest_sequence, 0);
-    assert_eq!(output.owner, owner);
 }
 
 #[test]

@@ -114,6 +114,12 @@ pub(crate) fn same(
         == crate::adaptor::presenter::state_subscription_wire::payload(expected.borrow()).unwrap()
 }
 
+pub(crate) fn payload(
+    value: &crate::usecase::state_subscription::StateValue,
+) -> Result<crate::adaptor::presenter::client::StatePayload, connectrpc::ConnectError> {
+    crate::adaptor::presenter::state_subscription_wire::payload(value)
+}
+
 pub(crate) fn terminal_item(
     value: &crate::adaptor::presenter::client::StatePayload,
 ) -> &crate::adaptor::presenter::client::terminal_event::Item {

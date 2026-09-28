@@ -142,10 +142,12 @@ impl TerminalSurfaceApplication {
         owner: &TerminalSurfaceOwner,
         client: &str,
         input_id: &str,
-        units: usize,
+        units: Option<usize>,
     ) {
-        self.output
-            .subscribe_output(&owner.stable_key(), client, units);
+        if let Some(units) = units {
+            self.output
+                .subscribe_output(&owner.stable_key(), client, units);
+        }
         self.gateway
             .activate_input_attachment(&owner.stable_key(), input_id);
     }
@@ -253,6 +255,7 @@ impl TerminalSurfaceApplication {
         super::spawn_usecase::get_or_spawn_with_startup(
             self.performance.as_ref(),
             self.gateway.as_ref(),
+            self.output.as_ref(),
             rows,
             cols,
             cwd,
@@ -276,6 +279,7 @@ impl TerminalSurfaceApplication {
         super::spawn_usecase::get_or_spawn_with_process(
             self.performance.as_ref(),
             self.gateway.as_ref(),
+            self.output.as_ref(),
             rows,
             cols,
             cwd,

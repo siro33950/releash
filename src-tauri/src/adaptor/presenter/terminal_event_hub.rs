@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -5,17 +6,24 @@ use parking_lot::Mutex;
 use crate::domain::terminal_surface::gateway::TerminalSurfaceEvent;
 use crate::usecase::terminal_surface::output::{
     TerminalSurfaceEventSink, TerminalSurfaceOutputControl, TerminalSurfaceOutputEvent,
-    TerminalSurfaceOutputSummary,
 };
 
 use crate::infrastructure::terminal::output_flow_control::TerminalOutputFlow;
 
 const TERMINAL_SURFACE_STREAM_CAPACITY: usize = 256;
 
+struct TerminalRegistration {
+    session_key: String,
+    workspace_path: String,
+    session_id: Option<String>,
+    latest_sequence: u64,
+}
+
 pub(crate) struct TerminalSurfaceEventHub {
     sender: tokio::sync::broadcast::Sender<TerminalSurfaceEvent>,
     state_sink:
         Mutex<Option<Arc<dyn crate::usecase::terminal_surface::output::TerminalSurfaceStateSink>>>,
+    registrations: Mutex<HashMap<u64, TerminalRegistration>>,
     output: TerminalOutputFlow,
 }
 
@@ -33,6 +41,7 @@ impl TerminalSurfaceEventHub {
         Self {
             sender,
             state_sink: Mutex::new(None),
+            registrations: Mutex::new(HashMap::new()),
             output: TerminalOutputFlow::new(flow_control_enabled),
         }
     }
@@ -52,7 +61,46 @@ impl TerminalSurfaceOutputControl for TerminalSurfaceEventHub {
         &self,
         sink: Arc<dyn crate::usecase::terminal_surface::output::TerminalSurfaceStateSink>,
     ) {
-        *self.state_sink.lock() = Some(sink);
+        let registrations = self.registrations.lock();
+        *self.state_sink.lock() = Some(sink.clone());
+        for (&runtime_generation, registration) in registrations.iter() {
+            sink.initialize(
+                &registration.session_key,
+                &registration.workspace_path,
+                registration.session_id.as_deref(),
+                runtime_generation,
+                registration.latest_sequence,
+            );
+        }
+    }
+    fn initialize(
+        &self,
+        session_key: &str,
+        workspace_path: &str,
+        session_id: Option<&str>,
+        runtime_generation: u64,
+        latest_sequence: u64,
+    ) {
+        let mut registrations = self.registrations.lock();
+        registrations.insert(
+            runtime_generation,
+            TerminalRegistration {
+                session_key: session_key.into(),
+                workspace_path: workspace_path.into(),
+                session_id: session_id.map(str::to_owned),
+                latest_sequence,
+            },
+        );
+        self.output.reset(session_key, latest_sequence);
+        if let Some(sink) = self.state_sink.lock().clone() {
+            sink.initialize(
+                session_key,
+                workspace_path,
+                session_id,
+                runtime_generation,
+                latest_sequence,
+            );
+        }
     }
     fn subscribe_output(&self, session_key: &str, client: &str, units: usize) {
         self.output.subscribe(session_key, client, units);
@@ -70,20 +118,16 @@ impl TerminalSurfaceOutputControl for TerminalSurfaceEventHub {
 mod terminal_event_hub_tests;
 
 impl TerminalSurfaceEventSink for TerminalSurfaceEventHub {
-    fn initialize(&self, surface: &TerminalSurfaceOutputSummary) {
-        self.output
-            .reset(&surface.session_key, surface.latest_sequence);
-        if let Some(sink) = self.state_sink.lock().clone() {
-            sink.initialize(surface);
-        }
-    }
-    fn remove(&self, surface: &TerminalSurfaceOutputSummary) -> bool {
+    fn remove(&self, runtime_generation: u64) -> bool {
+        let Some(registration) = self.registrations.lock().remove(&runtime_generation) else {
+            return false;
+        };
         let subscribed = self
             .state_sink
             .lock()
             .as_ref()
-            .is_some_and(|sink| sink.remove(surface));
-        self.release_output(&surface.session_key);
+            .is_some_and(|sink| sink.remove(&registration.session_key, runtime_generation));
+        self.release_output(&registration.session_key);
         subscribed
     }
     fn release_output(&self, session_key: &str) {

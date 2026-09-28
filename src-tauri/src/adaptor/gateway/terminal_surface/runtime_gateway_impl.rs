@@ -15,19 +15,8 @@ use crate::domain::terminal_surface::gateway::{
     TerminalSurfaceInputUnavailableCause, TerminalSurfaceRepository,
 };
 use crate::usecase::terminal_surface::output::{
-    TerminalSurfaceEventSink, TerminalSurfaceOutputEvent, TerminalSurfaceOutputSummary,
+    TerminalSurfaceEventSink, TerminalSurfaceOutputEvent,
 };
-
-impl From<&TerminalSurfaceSummary> for TerminalSurfaceOutputSummary {
-    fn from(surface: &TerminalSurfaceSummary) -> Self {
-        Self {
-            session_key: surface.session_key.clone(),
-            owner: surface.owner.clone(),
-            runtime_generation: surface.runtime_generation.value(),
-            latest_sequence: surface.latest_sequence,
-        }
-    }
-}
 
 use crate::domain::terminal_surface::{
     TerminalSurfaceCheckpoint as DomainTerminalCheckpoint, TERMINAL_SURFACE_SCROLLBACK_ROWS,
@@ -898,13 +887,9 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
     }
 
     fn insert_surface(&self, surface: TerminalSurface) {
-        let summary = surface.summary();
         let active_count = {
             let mut registry = self.registry.lock();
             registry.insert(surface);
-            if let Some(sink) = &self.event_sink {
-                sink.initialize(&TerminalSurfaceOutputSummary::from(&summary));
-            }
             registry.len()
         };
         crate::infrastructure::telemetry::metrics::set_active_pty_count(active_count as u64);
@@ -1000,10 +985,10 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
         let (removed, active_count, subscribed) = {
             let mut registry = self.registry.lock();
             let removed = registry.remove(runtime_generation);
-            let subscribed = removed.as_ref().is_some_and(|surface| {
-                self.event_sink.as_ref().is_some_and(|sink| {
-                    sink.remove(&TerminalSurfaceOutputSummary::from(&surface.summary()))
-                })
+            let subscribed = removed.as_ref().is_some_and(|_| {
+                self.event_sink
+                    .as_ref()
+                    .is_some_and(|sink| sink.remove(runtime_generation))
             });
             (removed, registry.len(), subscribed)
         };

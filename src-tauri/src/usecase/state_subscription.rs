@@ -160,9 +160,6 @@ impl StateSubscriptionUsecase {
         target: &SubscriptionTarget,
     ) -> Result<(), StateReadError> {
         let convert = StateReadError::from_error;
-        if let SubscriptionTarget::Terminal(_) = target {
-            return self.start_terminal(client, target, client, None).await;
-        }
         if *target == SubscriptionTarget::RepositoryPaths {
             return self.start(client, target).map_err(convert);
         }

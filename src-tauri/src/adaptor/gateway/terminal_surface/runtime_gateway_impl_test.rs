@@ -1,6 +1,7 @@
 use super::*;
 use crate::domain::terminal_surface::TerminalSurfaceOwner;
 use crate::domain::workspace_tree::WorkspaceIdentity;
+use crate::usecase::terminal_surface::output::TerminalSurfaceOutputControl;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex as StdMutex};
 use std::time::Duration;
@@ -28,6 +29,46 @@ impl TerminalSurfaceEventSink for RecordingEventSink {
     fn publish(&self, event: TerminalSurfaceOutputEvent) {
         self.events.lock().unwrap().push(event);
     }
+}
+
+#[derive(Default)]
+struct SummarySink {
+    removed: StdMutex<Vec<u64>>,
+}
+
+impl TerminalSurfaceEventSink for SummarySink {
+    fn remove(&self, runtime_generation: u64) -> bool {
+        self.removed.lock().unwrap().push(runtime_generation);
+        false
+    }
+
+    fn publish(&self, _: TerminalSurfaceOutputEvent) {}
+}
+
+#[test]
+fn test_ターミナル状態通知_削除時に世代を伝える() {
+    // Given
+    let sink = Arc::new(SummarySink::default());
+    let gateway = TerminalSurfaceRuntimeGatewayFor::new_with_event_sink(
+        crate::usecase::work_queue::shared().clone(),
+        std::path::PathBuf::new(),
+        sink.clone(),
+        false,
+    );
+    let workspace = TerminalSurface::new(1, workspace_owner("/repo"), None);
+    let mut session = TerminalSurface::new(2, session_owner("/repo", "session"), None);
+    session
+        .record_output(session.runtime_generation, std::time::Instant::now())
+        .unwrap();
+
+    // When
+    gateway.insert_surface(workspace.clone());
+    gateway.insert_surface(session.clone());
+    gateway.remove_surface(1).unwrap();
+    gateway.remove_surface(2).unwrap();
+
+    // Then
+    assert_eq!(*sink.removed.lock().unwrap(), vec![1, 2]);
 }
 
 impl TerminalSurfaceEventSink for BlockingFirstEventSink {
@@ -161,6 +202,7 @@ fn test_ターミナル画面_再起動復元_復元点破損時は新規画面�
     let result = crate::usecase::terminal_surface::spawn_usecase::get_or_spawn(
         &crate::adaptor::gateway::telemetry::TelemetryGateway,
         &gateway,
+        &crate::adaptor::presenter::terminal_event_hub::TerminalSurfaceEventHub::new(),
         24,
         80,
         Some("/repo".to_string()),
@@ -264,6 +306,7 @@ fn test_ターミナル画面_取得または生成_既存画面の概要取得�
     let outcome = crate::usecase::terminal_surface::spawn_usecase::get_or_spawn(
         &crate::adaptor::gateway::telemetry::TelemetryGateway,
         &gateway,
+        &crate::adaptor::presenter::terminal_event_hub::TerminalSurfaceEventHub::new(),
         24,
         80,
         Some("/repo".to_string()),
@@ -1181,6 +1224,7 @@ async fn assert_terminal_recreation(drain_exit: bool) {
         Box::new(MockResizer { rows: 24, cols: 80 }),
     );
     gateway.insert_surface(TerminalSurface::new(1, owner.clone(), None));
+    hub.initialize(&key, "/repo", None, 1, 0);
     let terminal = Arc::new(TerminalSurfaceApplication::new(
         std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
         gateway.clone(),
@@ -1247,6 +1291,7 @@ async fn assert_terminal_recreation(drain_exit: bool) {
         Box::new(MockResizer { rows: 24, cols: 80 }),
     );
     gateway.insert_surface(TerminalSurface::new(2, owner.clone(), None));
+    hub.initialize(&key, "/repo", None, 2, 0);
     // Then
     if !drain_exit {
         let next = tokio::time::timeout(Duration::from_secs(2), stream.next())

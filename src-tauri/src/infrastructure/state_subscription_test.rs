@@ -1,4 +1,29 @@
 use super::*;
+use futures_util::FutureExt;
+
+#[tokio::test]
+async fn test_配信通知_状態を変えた操作だけ待機者を起こす() {
+    // Given
+    let runtime = StateSubscriptionRuntime::<u64>::new("boot".into());
+    let unchanged = runtime.changed.notified();
+    tokio::pin!(unchanged);
+    unchanged.as_mut().enable();
+    // When
+    runtime.mutate(|_| ((), false));
+    // Then
+    assert!(unchanged.as_mut().now_or_never().is_none());
+
+    // Given
+    let changed = runtime.changed.notified();
+    tokio::pin!(changed);
+    changed.as_mut().enable();
+    // When
+    runtime
+        .mutate(|state| (state.open("client".into()), true))
+        .unwrap();
+    // Then
+    assert!(changed.as_mut().now_or_never().is_some());
+}
 fn registry() -> Subscriptions<u64> {
     let mut state = Subscriptions::new("boot".into());
     state
@@ -880,7 +905,7 @@ fn test_差分復元要求_同じ対象の全購読を現在状態から再開�
         state.next(client);
     }
     // When
-    state.require_delta_snapshot(target).unwrap();
+    assert!(state.require_delta_snapshot(target).unwrap());
     // Then
     for client in ["client", "second"] {
         assert_eq!(state.snapshot_requests(client), vec![target]);
@@ -889,6 +914,8 @@ fn test_差分復元要求_同じ対象の全購読を現在状態から再開�
     let mut clients = state.snapshot_request_clients(target);
     clients.sort();
     assert_eq!(clients, ["client", "second"]);
+    assert!(!state.require_delta_snapshot(target).unwrap());
+    assert_eq!(state.snapshot_request_clients(target).len(), 2);
     state
         .set_delta_snapshot(target, version.clone(), 20)
         .unwrap();

@@ -9,6 +9,7 @@ use crate::domain::terminal_surface::{
     TerminalSurfaceStartupCommand,
 };
 use crate::usecase::terminal_surface::error::UsecaseError;
+use crate::usecase::terminal_surface::output::TerminalSurfaceOutputControl;
 
 pub struct GetOrSpawnTerminalOutcome {
     pub surface: TerminalSurfaceSummary,
@@ -18,6 +19,7 @@ pub struct GetOrSpawnTerminalOutcome {
 fn spawn_reserved<G: TerminalSurfaceGateway + ?Sized>(
     performance: &dyn crate::usecase::telemetry::PerformanceOutput,
     manager: &G,
+    output: &dyn TerminalSurfaceOutputControl,
     reservation: TerminalSurfaceSpawnReservation,
     rows: u16,
     cols: u16,
@@ -61,6 +63,17 @@ fn spawn_reserved<G: TerminalSurfaceGateway + ?Sized>(
         });
     }
 
+    let session_id = match &owner {
+        TerminalSurfaceOwner::Workspace { .. } => None,
+        TerminalSurfaceOwner::Session { session_id, .. } => Some(session_id.as_str()),
+    };
+    output.initialize(
+        &session_key,
+        owner.workspace_identity().as_str(),
+        session_id,
+        runtime_generation,
+        initial_checkpoint.sequence,
+    );
     let surface =
         TerminalSurface::with_checkpoint(runtime_generation, owner, label, initial_checkpoint);
     let surface_summary = surface.summary();
@@ -133,19 +146,31 @@ fn cleanup_failed_spawn<G: TerminalSurfaceGateway + ?Sized>(manager: &G, runtime
 pub fn get_or_spawn<G: TerminalSurfaceGateway + ?Sized>(
     performance: &dyn crate::usecase::telemetry::PerformanceOutput,
     manager: &G,
+    output: &dyn TerminalSurfaceOutputControl,
     rows: u16,
     cols: u16,
     cwd: Option<String>,
     owner: TerminalSurfaceOwner,
     label: Option<String>,
 ) -> Result<GetOrSpawnTerminalOutcome, UsecaseError> {
-    get_or_spawn_with_startup(performance, manager, rows, cols, cwd, owner, label, None)
+    get_or_spawn_with_startup(
+        performance,
+        manager,
+        output,
+        rows,
+        cols,
+        cwd,
+        owner,
+        label,
+        None,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
 pub fn get_or_spawn_with_startup<G: TerminalSurfaceGateway + ?Sized>(
     performance: &dyn crate::usecase::telemetry::PerformanceOutput,
     manager: &G,
+    output: &dyn TerminalSurfaceOutputControl,
     rows: u16,
     cols: u16,
     cwd: Option<String>,
@@ -196,6 +221,7 @@ pub fn get_or_spawn_with_startup<G: TerminalSurfaceGateway + ?Sized>(
         let surface = spawn_reserved(
             performance,
             manager,
+            output,
             reservation,
             rows,
             cols,
@@ -215,6 +241,7 @@ pub fn get_or_spawn_with_startup<G: TerminalSurfaceGateway + ?Sized>(
 pub fn get_or_spawn_with_process<G: TerminalSurfaceGateway + ?Sized>(
     performance: &dyn crate::usecase::telemetry::PerformanceOutput,
     manager: &G,
+    output: &dyn TerminalSurfaceOutputControl,
     rows: u16,
     cols: u16,
     cwd: Option<String>,
@@ -275,6 +302,7 @@ pub fn get_or_spawn_with_process<G: TerminalSurfaceGateway + ?Sized>(
         let surface = spawn_reserved(
             performance,
             manager,
+            output,
             reservation,
             rows,
             cols,

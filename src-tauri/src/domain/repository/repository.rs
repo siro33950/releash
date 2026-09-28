@@ -8,7 +8,7 @@
 //! （`spawn_blocking`）は controller 層で被せる方針のため、各 trait の
 //! メソッドは同期シグネチャで定義する。
 
-use super::entities::{Branch, Worktree};
+use super::entities::{Branch, RepositoryStatusScan, Worktree};
 use super::error::RepositoryError;
 
 /// ブランチの参照・作成・削除。
@@ -20,6 +20,11 @@ pub trait BranchRepository: Send + Sync {
     /// 単一ブランチを削除する純粋プリミティブ。既定/チェックアウト中ブランチの
     /// 拒否や紐づく worktree の事前削除といった業務手順は usecase が担う。
     fn delete(&self, repo_path: &str, branch_name: &str) -> Result<(), RepositoryError>;
+}
+
+/// 作業ツリー状態の読み取り。
+pub trait StatusRepository: Send + Sync {
+    fn status_scan(&self, repo_path: &str) -> Result<RepositoryStatusScan, RepositoryError>;
 }
 
 /// ワークツリーの参照・作成・削除。

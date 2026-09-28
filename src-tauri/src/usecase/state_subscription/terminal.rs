@@ -17,7 +17,7 @@ impl StateSubscriptionUsecase {
         input_id: &str,
         cursor: Option<(&str, u64)>,
     ) -> Result<(), StateReadError> {
-        if input_id.trim().is_empty() || input_id.len() > 128 {
+        if input_id.trim().is_empty() || input_id.len() > crate::common::SUBSCRIPTION_ID_MAX_BYTES {
             return Err(StateReadError {
                 source: StateReadFailure::InvalidTerminalInput,
                 message: "Invalid terminal input identity".into(),
@@ -31,6 +31,7 @@ impl StateSubscriptionUsecase {
             .ok_or_else(|| error("Terminal unavailable"))?;
         self.start(client, target)
             .map_err(StateReadError::from_error)?;
+        self.attach_terminal(client, target, input_id)?;
         if let Err(error) = self.publisher.start(client, target, cursor, Some(input_id)) {
             let _ = self.stop(client, target);
             return Err(error);
@@ -80,6 +81,7 @@ impl StateSubscriptionUsecase {
         let output = self.publisher.clone();
         let target = target.clone();
         let resets = self.terminal_resets.clone();
+        let inputs = self.terminal_inputs.clone();
         tokio::task::spawn_blocking(move || {
             let mut result = Ok(());
             terminal
@@ -92,8 +94,11 @@ impl StateSubscriptionUsecase {
                     );
                     if result.is_ok() {
                         let reset = resets.lock().remove(&target).unwrap_or_default();
+                        let active = inputs.lock();
                         for client in reset {
-                            terminal.reset_output(&owner, &client);
+                            if active.contains_key(&(client.clone(), target.clone())) {
+                                terminal.reset_output(&owner, &client);
+                            }
                         }
                     }
                 })
@@ -143,3 +148,7 @@ impl StateSubscriptionUsecase {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "terminal_test.rs"]
+mod terminal_tests;

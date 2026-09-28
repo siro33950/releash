@@ -103,7 +103,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn start_execution_response_converts_id_and_preserves_json_shape() {
+    fn test_実行開始応答_識別子とjson形式を保つ() {
         // Given
         let execution_id = "execution-1".to_string();
         // When

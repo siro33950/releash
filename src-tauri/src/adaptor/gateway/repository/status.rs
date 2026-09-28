@@ -1,9 +1,10 @@
 //! status 責務の gateway 実装。git2 による作業ツリー状態取得を封じ込める。
 
 use crate::adaptor::gateway::shared::git_operation;
-use crate::domain::repository::RepositoryError;
+use crate::domain::repository::{
+    FileDiffStat, FileStatus, RepositoryError, RepositoryStatusScan, StatusRepository,
+};
 use crate::infrastructure::git::client;
-use crate::usecase::repository_dto::{FileDiffStatDto, FileStatusDto, RepositoryStatusScanDto};
 use git2::{ErrorCode, Repository, StatusOptions};
 use std::collections::HashMap;
 
@@ -61,20 +62,11 @@ fn worktree_status_from_flags(status: git2::Status) -> &'static str {
 }
 
 #[cfg(test)]
-pub(crate) fn get_git_status(repo_path: &str) -> Result<Vec<FileStatusDto>, RepositoryError> {
-    Ok(
-        collect_git_status(&git_operation::run(|| client::open(repo_path))?)?
-            .into_iter()
-            .map(|(path, index_status, worktree_status)| FileStatusDto {
-                path,
-                index_status,
-                worktree_status,
-            })
-            .collect(),
-    )
+pub(crate) fn get_git_status(repo_path: &str) -> Result<Vec<FileStatus>, RepositoryError> {
+    collect_git_status(&git_operation::run(|| client::open(repo_path))?)
 }
 
-fn collect_git_status(repo: &Repository) -> Result<Vec<(String, String, String)>, RepositoryError> {
+fn collect_git_status(repo: &Repository) -> Result<Vec<FileStatus>, RepositoryError> {
     let mut opts = StatusOptions::new();
     opts.include_untracked(true).recurse_untracked_dirs(true);
 
@@ -82,7 +74,7 @@ fn collect_git_status(repo: &Repository) -> Result<Vec<(String, String, String)>
     STATUS_WALK_COUNT.with(|count| count.set(count.get() + 1));
     let statuses = git_operation::run(|| repo.statuses(Some(&mut opts)))?;
 
-    let result = statuses
+    let result: Vec<FileStatus> = statuses
         .iter()
         .filter_map(|entry| {
             let path = entry.path().ok()?.to_string();
@@ -93,7 +85,11 @@ fn collect_git_status(repo: &Repository) -> Result<Vec<(String, String, String)>
             if idx == "none" && wt == "none" {
                 return None;
             }
-            Some((path, idx.to_string(), wt.to_string()))
+            Some(FileStatus {
+                path,
+                index_status: idx.to_string(),
+                worktree_status: wt.to_string(),
+            })
         })
         .collect();
 
@@ -152,9 +148,7 @@ fn collect_diff_stats(diff: &git2::Diff) -> Result<HashMap<String, (u32, u32)>, 
 }
 
 #[cfg(test)]
-pub(crate) fn get_status_diff_stats(
-    repo_path: &str,
-) -> Result<Vec<FileDiffStatDto>, RepositoryError> {
+pub(crate) fn get_status_diff_stats(repo_path: &str) -> Result<Vec<FileDiffStat>, RepositoryError> {
     crate::infrastructure::telemetry::metrics::measure_result(
         crate::infrastructure::telemetry::metrics::HotPath::DiffStats,
         || get_status_diff_stats_inner(repo_path),
@@ -162,27 +156,12 @@ pub(crate) fn get_status_diff_stats(
 }
 
 #[cfg(test)]
-fn get_status_diff_stats_inner(repo_path: &str) -> Result<Vec<FileDiffStatDto>, RepositoryError> {
+fn get_status_diff_stats_inner(repo_path: &str) -> Result<Vec<FileDiffStat>, RepositoryError> {
     let repo = git_operation::run(|| client::open(repo_path))?;
-    Ok(collect_status_diff_stats(&repo)?
-        .into_iter()
-        .map(
-            |(path, index_additions, index_deletions, wt_additions, wt_deletions)| {
-                FileDiffStatDto {
-                    path,
-                    index_additions,
-                    index_deletions,
-                    wt_additions,
-                    wt_deletions,
-                }
-            },
-        )
-        .collect())
+    collect_status_diff_stats(&repo)
 }
 
-type RawDiffStat = (String, u32, u32, u32, u32);
-
-fn collect_status_diff_stats(repo: &Repository) -> Result<Vec<RawDiffStat>, RepositoryError> {
+fn collect_status_diff_stats(repo: &Repository) -> Result<Vec<FileDiffStat>, RepositoryError> {
     // HEAD tree (may not exist for unborn branch)
     let head_tree = match git_operation::run(|| repo.head()) {
         Ok(head) => Some(git_operation::run(|| head.peel_to_tree())?),
@@ -218,61 +197,27 @@ fn collect_status_diff_stats(repo: &Repository) -> Result<Vec<RawDiffStat>, Repo
         .map(|path| {
             let (ia, id) = index_stats.get(&path).copied().unwrap_or((0, 0));
             let (wa, wd) = wt_stats.get(&path).copied().unwrap_or((0, 0));
-            (path, ia, id, wa, wd)
+            FileDiffStat {
+                path,
+                index_additions: ia,
+                index_deletions: id,
+                wt_additions: wa,
+                wt_deletions: wd,
+            }
         })
         .collect();
 
     Ok(result)
 }
 
-struct RawStatusScan {
-    status: Vec<(String, String, String)>,
-    diff_stats: Vec<RawDiffStat>,
-    dirty_count: usize,
-}
-
-pub(crate) fn get_repository_status_scan_dto(
+pub(crate) fn get_repository_status_scan(
     repo_path: &str,
-) -> Result<RepositoryStatusScanDto, RepositoryError> {
+) -> Result<RepositoryStatusScan, RepositoryError> {
     crate::common::telemetry::observe_result(
         || {
             crate::infrastructure::telemetry::metrics::measure_result(
                 crate::infrastructure::telemetry::metrics::HotPath::GitStatusScan,
-                || {
-                    get_repository_status_scan_inner(repo_path).map(|raw| RepositoryStatusScanDto {
-                        status: raw
-                            .status
-                            .into_iter()
-                            .map(|(path, index_status, worktree_status)| FileStatusDto {
-                                path,
-                                index_status,
-                                worktree_status,
-                            })
-                            .collect(),
-                        diff_stats: raw
-                            .diff_stats
-                            .into_iter()
-                            .map(
-                                |(
-                                    path,
-                                    index_additions,
-                                    index_deletions,
-                                    wt_additions,
-                                    wt_deletions,
-                                )| {
-                                    FileDiffStatDto {
-                                        path,
-                                        index_additions,
-                                        index_deletions,
-                                        wt_additions,
-                                        wt_deletions,
-                                    }
-                                },
-                            )
-                            .collect(),
-                        dirty_count: raw.dirty_count,
-                    })
-                },
+                || get_repository_status_scan_inner(repo_path),
             )
         },
         |result, _| {
@@ -283,23 +228,34 @@ pub(crate) fn get_repository_status_scan_dto(
     )
 }
 
-fn get_repository_status_scan_inner(repo_path: &str) -> Result<RawStatusScan, RepositoryError> {
+fn get_repository_status_scan_inner(
+    repo_path: &str,
+) -> Result<RepositoryStatusScan, RepositoryError> {
     let repo = git_operation::run(|| client::open(repo_path))?;
     let status = collect_git_status(&repo)?;
     let dirty_count = status
         .iter()
-        .filter(|(_, _, worktree_status)| worktree_status != "ignored")
+        .filter(|entry| entry.worktree_status != "ignored")
         .count();
     let diff_stats = crate::infrastructure::telemetry::metrics::measure_result(
         crate::infrastructure::telemetry::metrics::HotPath::DiffStats,
         || collect_status_diff_stats(&repo),
     )?;
 
-    Ok(RawStatusScan {
+    Ok(RepositoryStatusScan {
         status,
         diff_stats,
         dirty_count,
     })
+}
+
+/// `StatusRepository` の git2 実装。
+pub struct StatusGateway;
+
+impl StatusRepository for StatusGateway {
+    fn status_scan(&self, repo_path: &str) -> Result<RepositoryStatusScan, RepositoryError> {
+        get_repository_status_scan(repo_path)
+    }
 }
 
 #[cfg(test)]
@@ -333,7 +289,7 @@ mod status_gateway_tests {
         );
 
         let invalid = tempfile::TempDir::new().unwrap();
-        assert!(get_repository_status_scan_dto(invalid.path().to_str().unwrap()).is_err());
+        assert!(get_repository_status_scan(invalid.path().to_str().unwrap()).is_err());
         assert!(
             !crate::infrastructure::telemetry::metrics::first_repo_snapshot_recorded_for_tests()
         );
@@ -345,8 +301,8 @@ mod status_gateway_tests {
 
         let (dir, repo) = create_test_repo();
         create_initial_commit(&repo);
-        get_repository_status_scan_dto(dir.path().to_str().unwrap()).unwrap();
-        get_repository_status_scan_dto(dir.path().to_str().unwrap()).unwrap();
+        get_repository_status_scan(dir.path().to_str().unwrap()).unwrap();
+        get_repository_status_scan(dir.path().to_str().unwrap()).unwrap();
 
         let startup_records: Vec<_> =
             crate::infrastructure::telemetry::metrics::test_metric_records()
@@ -450,7 +406,7 @@ mod status_gateway_tests {
         let expected_diff_stats = get_status_diff_stats(repo_path).unwrap();
 
         reset_status_walk_count_for_tests();
-        let scan = get_repository_status_scan_dto(repo_path).unwrap();
+        let scan = get_repository_status_scan(repo_path).unwrap();
 
         assert_eq!(scan.status, expected_status);
         assert_eq!(scan.diff_stats, expected_diff_stats);

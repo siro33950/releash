@@ -50,15 +50,11 @@ pub(crate) async fn compose(
     })?;
     let startup_authority =
         Arc::new(usecase::application_startup::ApplicationStartupAuthority::ready());
-    let state_presenter = Arc::new(
-        adaptor::presenter::state_subscription::StateSubscriptionPresenter::new(Vec::new()),
+    let state_wiring = adaptor::controller::api::StateSubscriptionDeps::build(
+        Vec::new(),
+        Arc::new(adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
     );
-    let state_subscriptions =
-        usecase::state_subscription::StateSubscriptionUsecase::new_with_output(
-            state_presenter.clone(),
-            state_presenter.change_sender(),
-            Arc::new(adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
-        );
+    let state_subscriptions = state_wiring.usecase().clone();
     queue.set_publisher(state_subscriptions.publisher());
     let push_sink = Arc::new(infrastructure::push::PushSink::new());
 
@@ -486,10 +482,7 @@ pub(crate) async fn compose(
                 adaptor::gateway::push::ClientPushGateway::new(push_sink.clone()),
                 dependencies.watcher.clone(),
             )
-            .with_state_subscriptions(adaptor::controller::api::StateSubscriptionDeps::new(
-                state_subscriptions,
-                state_presenter,
-            ))
+            .with_state_subscriptions(state_wiring.with_usecase(state_subscriptions))
             .with_desktop_settings(usecase::app_config::AppConfigUsecase::new(
                 config_repository,
             )),

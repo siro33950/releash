@@ -348,6 +348,7 @@ async fn test_監視unary_pushの購読が所有し明示停止と切断で解�
         .await
         .unwrap()
         .into_owned();
+    assert_eq!(watched.value, Some(0));
     assert_eq!(files.active.lock().unwrap().len(), 1);
     for _ in 1..64 {
         client
@@ -1908,6 +1909,7 @@ async fn test_terminal購読_connectの後段配線と差分再開と流量停�
     use crate::adaptor::presenter::terminal_event_hub::TerminalSurfaceEventHub;
     use crate::domain::terminal_surface::entities::TerminalSurface;
     use crate::usecase::terminal_surface::output::TerminalSurfaceEventSink;
+    use crate::usecase::terminal_surface::output::TerminalSurfaceOutputControl;
     use crate::usecase::terminal_surface::output::TerminalSurfaceOutputEvent;
 
     use crate::domain::terminal_surface::TerminalSurfaceOwner;
@@ -1933,6 +1935,8 @@ async fn test_terminal購読_connectの後段配線と差分再開と流量停�
     gateway.additional_surfaces = vec![first.clone(), second.clone()];
     let gateway = Arc::new(gateway);
     let hub = Arc::new(TerminalSurfaceEventHub::with_flags(256, true));
+    hub.initialize(&first.session_key, "/first", None, 1, 0);
+    hub.initialize(&second.session_key, "/second", None, 2, 0);
     let terminal = Arc::new(TerminalSurfaceApplication::new(
         std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
         gateway.clone(),
@@ -1970,7 +1974,7 @@ async fn test_terminal購読_connectの後段配線と差分再開と流量停�
         Arc::new(subscriptions.test_presenter().unwrap().clone()),
     ))
     .with_terminal(Some(TerminalApiDeps::new(terminal)));
-    assert_eq!(*gateway.list_summaries_calls.lock(), 1);
+    assert_eq!(*gateway.list_summaries_calls.lock(), 0);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let config = ClientConfig::new(
         format!("http://{}", listener.local_addr().unwrap())
@@ -2245,4 +2249,17 @@ async fn test_共通入口_期限切れを変換し成功と内部失敗を保�
     .await
     .unwrap_err();
     assert_eq!(error.code, connectrpc::ErrorCode::Unavailable);
+}
+#[test]
+fn test_状態購読配線_usecaseとcontrollerが同じ出力実装を参照する() {
+    // Given
+    let deps = StateSubscriptionDeps::build(
+        vec![],
+        Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+    );
+    // When
+    let output: Arc<dyn crate::usecase::state_subscription::StateSubscriptionOutput> =
+        deps.presenter.clone();
+    // Then
+    assert!(Arc::ptr_eq(&deps.usecase.publisher(), &output));
 }
