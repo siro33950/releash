@@ -59,10 +59,7 @@ const rustCommands = {
     "cargo deny --locked check",
     "cargo clippy --locked --no-default-features --bin releash-backend -- -D warnings",
   ],
-  "rust-test-desktop": [
-    "cargo test --locked",
-    "cargo test --locked --test state_subscription_scenarios scenarios_tests::",
-  ],
+  "rust-test-desktop": ["cargo test --locked"],
   "rust-test-headless": [
     "cargo test --locked --no-default-features --lib",
     "cargo test --locked --no-default-features --test state_subscription_scenarios scenarios_tests::",
