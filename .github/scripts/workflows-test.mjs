@@ -33,7 +33,7 @@ function section(text, heading) {
 }
 
 function value(text, key) {
-  return text.match(new RegExp(`^ *(?:- )?${key}: (.+)$`, "m"))?.[1];
+  return text.match(new RegExp(`^ *(?:- )?${key}: (.+)$`, "m"))?.[1]?.replace(/^"(.*)"$/, "$1");
 }
 
 function jobs(config) {
