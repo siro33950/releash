@@ -64,7 +64,7 @@ async fn test_repository走査_一時的な失敗をやり直して走査を終�
         Duration::ZERO,
     );
     // When
-    state.invalidate(InvalidateReason::initial());
+    state.invalidate(InvalidateReason::change());
     tokio::time::sleep(Duration::from_secs(5)).await;
     // Then
     assert_eq!(scanner.scans.load(Ordering::SeqCst), 3);

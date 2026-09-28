@@ -18,8 +18,6 @@ pub use value_objects::{normalize_repo_path, worktree_dir, worktree_path};
 
 pub(crate) mod file_watcher;
 
-pub(crate) mod watch_subscriptions;
-
 pub(crate) mod worktree_operation;
 
 mod branch_inventory;

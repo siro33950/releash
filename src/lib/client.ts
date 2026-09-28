@@ -1,4 +1,4 @@
-import { fromJson, toJson } from "@bufbuild/protobuf";
+import { toJson } from "@bufbuild/protobuf";
 import {
 	type Client,
 	Code,
@@ -10,14 +10,12 @@ import { createConnectTransport } from "@connectrpc/connect-web";
 import { invoke } from "@tauri-apps/api/core";
 import {
 	ClientService,
-	StartWatchingRequestSchema,
 	type StatePayload,
 	StatePayloadSchema,
 	type StateVersion,
 } from "@/generated/client_pb";
-import type { ClientPushPayloads } from "@/generated/client_types";
 import { clientJson } from "./clientJson";
-import { decodeClientPush, decodeTerminalEvent } from "./clientProtocol";
+import { decodeTerminalEvent } from "./clientProtocol";
 import { createConnectionBackoff } from "./connectionBackoff";
 import type { TerminalSurfaceStreamItem } from "./terminalSurfaceStream";
 
@@ -36,20 +34,8 @@ type Session = {
 let session: Promise<Session> | null = null;
 let current: Session | null = null;
 let connectionAbort = new AbortController();
-let pushTask: Promise<void> | null = null;
 let stopped = false;
-type PushSubscription = { client: Client<typeof ClientService>; id: string };
-let activeSubscription: PushSubscription | null = null;
-const watchers = new Set<
-	(subscription: PushSubscription, refreshOnReady?: boolean) => Promise<void>
->();
-const refreshListeners = new Set<() => void>();
 const connectionListeners = new Set<(connected: boolean) => void>();
-const listeners = new Set<{
-	event: keyof ClientPushPayloads;
-	listener: (payload: never) => void;
-	onReconnect: () => void;
-}>();
 
 async function open(abort: AbortController): Promise<Session> {
 	const attachmentId = crypto.randomUUID();
@@ -106,103 +92,11 @@ export async function getClient(): Promise<Client<typeof ClientService>> {
 export function refreshClient(failedClient?: Client<typeof ClientService>) {
 	if (failedClient && current?.client !== failedClient) return;
 	const previous = current;
-	activeSubscription = null;
 	current = null;
 	session = null;
 	connectionAbort.abort();
 	connectionAbort = new AbortController();
 	if (previous) for (const listener of connectionListeners) listener(false);
-	ensurePush();
-}
-
-function refreshState() {
-	for (const listener of refreshListeners) listener();
-	for (const entry of listeners) entry.onReconnect();
-}
-
-function ensurePush() {
-	if (pushTask || stopped) return;
-	pushTask = (async () => {
-		while (!stopped) {
-			let client: Client<typeof ClientService> | undefined;
-			try {
-				client = await getClient();
-				const subscription = { client, id: crypto.randomUUID() };
-				let initial = true;
-				for await (const push of client.subscribePush(
-					{ subscriptionId: subscription.id },
-					{ timeoutMs: 0 },
-				)) {
-					if (push.event.case === "resync") {
-						if (initial) {
-							initial = false;
-							activeSubscription = subscription;
-							void Promise.all(
-								[...watchers].map((watcher) => watcher(subscription, false)),
-							)
-								.then(() => {
-									if (activeSubscription === subscription) refreshState();
-								})
-								.catch((error) => {
-									console.debug("Client watcher restoration failed", error);
-									refreshClient(subscription.client);
-								});
-							continue;
-						}
-						if (activeSubscription === subscription) refreshState();
-						continue;
-					}
-					const matching = [...listeners].filter(
-						(entry) =>
-							push.event.case ===
-							entry.event.replace(/-([a-z])/g, (_, letter: string) =>
-								letter.toUpperCase(),
-							),
-					);
-					if (matching.length) {
-						const payload = decodeClientPush(push, matching[0].event);
-						for (const entry of matching) entry.listener(payload as never);
-					}
-				}
-			} catch (error) {
-				if (stopped) break;
-				console.debug("Client subscription ended", error);
-			}
-			if (!stopped) {
-				refreshClient(client);
-				await new Promise((resolve) => setTimeout(resolve, 1000));
-			}
-		}
-	})().finally(() => {
-		pushTask = null;
-	});
-}
-
-export function onClientRefresh(listener: () => void) {
-	stopped = false;
-	refreshListeners.add(listener);
-	ensurePush();
-	return () => {
-		refreshListeners.delete(listener);
-	};
-}
-
-export async function listenClient<K extends keyof ClientPushPayloads>(
-	event: K,
-	listener: (event: { payload: ClientPushPayloads[K] }) => void,
-	onReconnect = () => {},
-) {
-	const entry = {
-		event,
-		listener: (payload: never) => listener({ payload }),
-		onReconnect,
-	};
-	stopped = false;
-	listeners.add(entry);
-	ensurePush();
-	return () => {
-		listeners.delete(entry);
-	};
 }
 
 export type StateValues = {
@@ -476,86 +370,9 @@ export function subscribeState<K extends keyof StateValues>(
 }
 
 export function onClientConnection(listener: (connected: boolean) => void) {
-	stopped = false;
 	connectionListeners.add(listener);
-	ensurePush();
 	return () => {
 		connectionListeners.delete(listener);
-	};
-}
-
-export function watchClient(
-	args: Record<string, unknown>,
-	onReady: (id: number) => void,
-	onError: (error: unknown) => void = console.error,
-) {
-	let abort = new AbortController();
-	let release: (() => void) | undefined;
-	let retry: ReturnType<typeof setTimeout> | undefined;
-	let closed = false;
-	const start = (subscription: PushSubscription, refreshOnReady = true) => {
-		clearTimeout(retry);
-		abort.abort();
-		release?.();
-		release = undefined;
-		abort = new AbortController();
-		const signal = abort.signal;
-		const { client, id: subscriptionId } = subscription;
-		const request = client.watchFiles(
-			{
-				subscriptionId,
-				request: fromJson(
-					StartWatchingRequestSchema,
-					clientJson(
-						StartWatchingRequestSchema,
-						JSON.parse(JSON.stringify(args)),
-						true,
-					),
-				),
-			},
-			{ signal },
-		);
-		return request
-			.then((ready) => {
-				const stop = () => {
-					if (activeSubscription?.client !== client) return;
-					void client
-						.stopWatching({ watcherId: ready.value })
-						.catch((error) => console.debug("Watcher cleanup failed", error));
-				};
-				if (closed || signal.aborted) {
-					stop();
-					return;
-				}
-				release = stop;
-				onReady(Number(ready.value));
-				if (refreshOnReady) refreshState();
-			})
-			.catch((error) => {
-				if (signal.aborted || closed) return;
-				onError(error);
-				if (
-					error instanceof ConnectError &&
-					error.code === Code.ResourceExhausted
-				) {
-					retry = setTimeout(() => {
-						if (!closed && activeSubscription === subscription)
-							start(subscription);
-					}, 1000);
-				}
-			});
-	};
-	watchers.add(start);
-	if (activeSubscription) void start(activeSubscription, false);
-	else {
-		stopped = false;
-		ensurePush();
-	}
-	return () => {
-		closed = true;
-		clearTimeout(retry);
-		watchers.delete(start);
-		release?.();
 	};
 }
 
@@ -627,11 +444,7 @@ window.addEventListener("pagehide", () => {
 	connectionAbort.abort();
 	session = null;
 	current = null;
-	listeners.clear();
-	refreshListeners.clear();
 	connectionListeners.clear();
-	activeSubscription = null;
-	watchers.clear();
 	states.clear();
 	stateAbort?.abort();
 });

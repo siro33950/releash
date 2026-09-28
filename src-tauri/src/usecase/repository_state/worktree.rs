@@ -27,31 +27,10 @@ pub trait RepositoryStateWatcher: Send + Sync {
 #[derive(Clone)]
 pub struct SnapshotNotification {
     pub worktree_paths: Vec<String>,
-    pub file_watcher_ids: Vec<u64>,
-    pub reason: InvalidateReason,
 }
 
 pub trait RepositoryStateNotifier: Send + Sync {
     fn snapshot_changed(&self, notification: SnapshotNotification);
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WatchSubscriptionKind {
-    File,
-    Git,
-}
-
-#[derive(Debug, Clone)]
-struct WatchSubscription {
-    id: u64,
-    kind: WatchSubscriptionKind,
-    worktree_path: String,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct NotificationTargets {
-    worktree_paths: Vec<String>,
-    file_watcher_ids: Vec<u64>,
 }
 
 #[cfg(test)]
@@ -93,7 +72,7 @@ pub struct WorktreeState {
     shutdown: AtomicBool,
     invalidate_tx: Box<dyn RepositoryStateInvalidationSender>,
     watchers: Mutex<Option<Box<dyn RepositoryStateWatchSession>>>,
-    subscriptions: Mutex<HashMap<u64, WatchSubscription>>,
+    subscriptions: Mutex<HashMap<u64, String>>,
     notifier: Arc<dyn RepositoryStateNotifier>,
 }
 
@@ -164,7 +143,7 @@ impl WorktreeState {
                         self.worktree_path
                     );
                 }
-                self.notify_snapshot_changed(reason);
+                self.notify_snapshot_changed();
                 None
             }
             Ok(None) => Some(reason),
@@ -174,7 +153,7 @@ impl WorktreeState {
                     self.worktree_path
                 );
                 self.mark_scan_failed();
-                self.notify_snapshot_changed(reason);
+                self.notify_snapshot_changed();
                 None
             }
         }
@@ -196,15 +175,8 @@ impl WorktreeState {
         self.refreshing.store(refreshing, Ordering::SeqCst);
     }
 
-    pub fn add_subscription(&self, id: u64, kind: WatchSubscriptionKind, worktree_path: String) {
-        self.subscriptions.lock().insert(
-            id,
-            WatchSubscription {
-                id,
-                kind,
-                worktree_path,
-            },
-        );
+    pub fn add_subscription(&self, id: u64, worktree_path: String) {
+        self.subscriptions.lock().insert(id, worktree_path);
     }
 
     pub fn release_subscription(&self, id: u64) -> bool {
@@ -235,7 +207,7 @@ impl WorktreeState {
         *watchers = Some(watcher.start_watchers(self.clone())?);
         drop(watchers);
 
-        self.invalidate(InvalidateReason::initial());
+        self.invalidate(InvalidateReason::change());
         Ok(())
     }
 
@@ -280,12 +252,9 @@ impl WorktreeState {
         Some(snapshot)
     }
 
-    pub(crate) fn notify_snapshot_changed(&self, reason: InvalidateReason) {
-        let targets = self.notification_targets();
+    pub(crate) fn notify_snapshot_changed(&self) {
         self.notifier.snapshot_changed(SnapshotNotification {
-            worktree_paths: targets.worktree_paths,
-            file_watcher_ids: targets.file_watcher_ids,
-            reason,
+            worktree_paths: self.notification_paths(),
         });
     }
 
@@ -297,27 +266,18 @@ impl WorktreeState {
         }
     }
 
-    fn notification_targets(&self) -> NotificationTargets {
+    fn notification_paths(&self) -> Vec<String> {
         let subscriptions = self.subscriptions.lock();
-        let mut targets = NotificationTargets::default();
-        for subscription in subscriptions.values() {
-            if !targets
-                .worktree_paths
-                .iter()
-                .any(|path| path == &subscription.worktree_path)
-            {
-                targets
-                    .worktree_paths
-                    .push(subscription.worktree_path.clone());
-            }
-            if subscription.kind == WatchSubscriptionKind::File {
-                targets.file_watcher_ids.push(subscription.id);
+        let mut paths = Vec::new();
+        for path in subscriptions.values() {
+            if !paths.contains(path) {
+                paths.push(path.clone());
             }
         }
-        if targets.worktree_paths.is_empty() {
-            targets.worktree_paths.push(self.worktree_path.clone());
+        if paths.is_empty() {
+            paths.push(self.worktree_path.clone());
         }
-        targets
+        paths
     }
 }
 
@@ -507,7 +467,7 @@ mod tests {
         assert_eq!(initial.version, 0);
         assert!(initial.flags.loading);
 
-        state.invalidate(InvalidateReason::initial());
+        state.invalidate(InvalidateReason::change());
         let ready = wait_for_version(&state, 1).await;
 
         assert_eq!(ready.version, 1);
@@ -521,12 +481,12 @@ mod tests {
         let scanner = Arc::new(FakeScanner::new("first.txt").with_sleep(Duration::from_millis(80)));
         let state = test_state(scanner.clone(), Duration::ZERO);
 
-        state.invalidate(InvalidateReason::initial());
+        state.invalidate(InvalidateReason::change());
         let first = wait_for_version(&state, 1).await;
         assert_eq!(first.status[0].path, "first.txt");
 
         scanner.set_value("second.txt");
-        state.invalidate(InvalidateReason::git(false));
+        state.invalidate(InvalidateReason::change());
         tokio::time::sleep(Duration::from_millis(10)).await;
 
         let stale = state.snapshot_for_read();
@@ -545,7 +505,7 @@ mod tests {
         let scanner = Arc::new(FakeScanner::new("first.txt"));
         let notifier = Arc::new(CapturingNotifier::default());
         let state = test_state_with_notifier(scanner.clone(), notifier.clone());
-        state.invalidate(InvalidateReason::initial());
+        state.invalidate(InvalidateReason::change());
         wait_for_version(&state, 1).await;
         assert_eq!(notifier.take().len(), 1);
 
@@ -562,7 +522,7 @@ mod tests {
         scanner.set_value("second.txt");
 
         // When
-        state.invalidate(InvalidateReason::git(false));
+        state.invalidate(InvalidateReason::change());
         tokio::task::spawn_blocking(move || started_rx.recv_timeout(Duration::from_secs(5)))
             .await
             .unwrap()
@@ -586,7 +546,6 @@ mod tests {
         assert!(!snapshot.flags.stale);
         let notifications = notifier.take();
         assert_eq!(notifications.len(), 1);
-        assert_eq!(notifications[0].reason, InvalidateReason::git(false));
         state.shutdown();
     }
 
@@ -595,9 +554,9 @@ mod tests {
         let scanner = Arc::new(FakeScanner::new("file.txt"));
         let state = test_state(scanner.clone(), Duration::from_millis(40));
 
-        state.invalidate(InvalidateReason::file(None));
-        state.invalidate(InvalidateReason::file(None));
-        state.invalidate(InvalidateReason::git(false));
+        state.invalidate(InvalidateReason::change());
+        state.invalidate(InvalidateReason::change());
+        state.invalidate(InvalidateReason::change());
         wait_for_version(&state, 1).await;
 
         assert_eq!(scanner.scan_count(), 1);
@@ -608,7 +567,7 @@ mod tests {
         let scanner = Arc::new(FakeScanner::new("old.txt").with_sleep(Duration::from_millis(80)));
         let state = test_state(scanner.clone(), Duration::ZERO);
 
-        state.invalidate(InvalidateReason::initial());
+        state.invalidate(InvalidateReason::change());
         wait_for_version(&state, 1).await;
 
         let (tx, rx) = std_mpsc::channel();
@@ -618,13 +577,13 @@ mod tests {
             }
         });
 
-        state.invalidate(InvalidateReason::git(false));
+        state.invalidate(InvalidateReason::change());
         tokio::task::spawn_blocking(move || rx.recv_timeout(Duration::from_secs(1)))
             .await
             .unwrap()
             .unwrap();
         scanner.set_value("new.txt");
-        state.invalidate(InvalidateReason::file(None));
+        state.invalidate(InvalidateReason::change());
 
         let latest = wait_for_version(&state, 2).await;
         assert_eq!(latest.status[0].path, "new.txt");
@@ -638,7 +597,7 @@ mod tests {
         scanner.set_fail(true);
         let state = test_state(scanner.clone(), Duration::ZERO);
 
-        state.invalidate(InvalidateReason::initial());
+        state.invalidate(InvalidateReason::change());
         tokio::time::sleep(Duration::from_millis(30)).await;
 
         let snapshot = state.snapshot_for_read();

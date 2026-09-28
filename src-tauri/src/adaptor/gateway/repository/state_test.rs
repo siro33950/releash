@@ -156,7 +156,7 @@ fn watcher_callbacks_only_invalidate_until_worker_commit() {
         },
         state.requested_generation(),
     );
-    state.notify_snapshot_changed(InvalidateReason::git(true));
+    state.notify_snapshot_changed();
 
     assert_eq!(notifier.snapshot_committed.load(Ordering::SeqCst), 1);
 }

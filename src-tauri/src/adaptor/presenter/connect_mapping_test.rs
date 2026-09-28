@@ -1726,27 +1726,21 @@ mod usecase_watcher_test {
         use connectrpc::ErrorCode as F;
         // Given
         let cases = [
-        (
-            crate::usecase::watcher::UsecaseError::Subscription(crate::domain::repository::watch_subscriptions::WatchSubscriptionError::NotFound),
-            F::NotFound,
-        ),
-        (
-            crate::usecase::watcher::UsecaseError::Subscription(crate::domain::repository::watch_subscriptions::WatchSubscriptionError::AlreadyExists),
-            F::AlreadyExists,
-        ),
-        (
-            crate::usecase::watcher::UsecaseError::Subscription(crate::domain::repository::watch_subscriptions::WatchSubscriptionError::Limit),
-            F::ResourceExhausted,
-        ),
-        (
-            crate::usecase::watcher::UsecaseError::Repository(
-                crate::usecase::repository_state::RepositoryStateError::Watcher("io".into()),
+            (
+                crate::usecase::watcher::UsecaseError::Repository(
+                    crate::usecase::repository_state::RepositoryStateError::Watcher("io".into()),
+                ),
+                F::Internal,
             ),
-            F::Internal,
-        ),
-        (crate::usecase::watcher::UsecaseError::File("io".into()), F::Internal),
-        (crate::usecase::watcher::UsecaseError::RepositoryUnavailable, F::FailedPrecondition),
-    ];
+            (
+                crate::usecase::watcher::UsecaseError::File("io".into()),
+                F::Internal,
+            ),
+            (
+                crate::usecase::watcher::UsecaseError::RepositoryUnavailable,
+                F::FailedPrecondition,
+            ),
+        ];
         for (error, expected) in cases {
             // When / Then
             assert_eq!(error.connect_code(), expected, "{error:?}");
@@ -2391,24 +2385,6 @@ mod domain_agent_session_provider_history_gateway_test {
                 F::DeadlineExceeded,
             ),
         ];
-        for (error, expected) in cases {
-            // When / Then
-            assert_eq!(error.connect_code(), expected, "{error:?}");
-        }
-    }
-}
-
-mod domain_repository_watch_subscriptions_test {
-    #[test]
-    fn test_失敗分類_watch_subscription_error_理由に対応する() {
-        use crate::adaptor::presenter::connect::ConnectFailure;
-        use connectrpc::ErrorCode as F;
-        // Given
-        let cases = [
-        (crate::domain::repository::watch_subscriptions::WatchSubscriptionError::NotFound, F::NotFound),
-        (crate::domain::repository::watch_subscriptions::WatchSubscriptionError::AlreadyExists, F::AlreadyExists),
-        (crate::domain::repository::watch_subscriptions::WatchSubscriptionError::Limit, F::ResourceExhausted),
-    ];
         for (error, expected) in cases {
             // When / Then
             assert_eq!(error.connect_code(), expected, "{error:?}");

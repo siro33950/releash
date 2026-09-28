@@ -11,14 +11,6 @@ pub(crate) fn data_dir<R: tauri::Runtime>(
         .unwrap_or_else(crate::infrastructure::platform::app_data_dir::resolve_data_dir)
 }
 
-pub(crate) fn push_sink<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-) -> Arc<crate::infrastructure::push::PushSink> {
-    app.state::<Arc<crate::infrastructure::push::PushSink>>()
-        .inner()
-        .clone()
-}
-
 pub(crate) fn workflow_dependencies<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> crate::adaptor::gateway::workflow::workflow_host::WorkflowRuntimeDependencies {
@@ -43,7 +35,7 @@ pub(crate) fn build_watcher_usecase<R: tauri::Runtime>(
     std::sync::Arc::new(crate::usecase::watcher::WatcherUsecase::new(
         app.try_state::<crate::adaptor::controller::state::AppState>().map(|state| state.repository_state.clone()),
         std::sync::Arc::new(crate::adaptor::gateway::repository::file_watcher::FileWatcherGateway::new(
-            app.state::<std::sync::Arc<crate::infrastructure::file_watcher::FileWatcherManager>>().inner().clone(), push_sink(app),
+            app.state::<std::sync::Arc<crate::infrastructure::file_watcher::FileWatcherManager>>().inner().clone(),
         )),
     ))
 }
@@ -70,7 +62,7 @@ pub(crate) fn build_client_dependencies<R: tauri::Runtime>(
         editor_launcher: Arc::new(crate::adaptor::gateway::external_editor::NativeEditorLauncherGateway),
         watcher: build_watcher_usecase(app),
         data_dir: data_dir(app).map_err(crate::adaptor::presenter::error::AppError::new),
-        comment_notify: Arc::new(crate::adaptor::gateway::push::CommentChangeGateway::new(crate::adaptor::presenter::state_subscription::test_output())),
+        comment_notify: Arc::new(crate::adaptor::gateway::comment_change::CommentChangeGateway::new(crate::adaptor::presenter::state_subscription::test_output())),
         process_port: Arc::new(crate::adaptor::gateway::application_lifecycle::TauriApplicationQuitIntentPort::new(app.clone())),
     }
 }

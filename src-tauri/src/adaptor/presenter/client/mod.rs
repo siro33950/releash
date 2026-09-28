@@ -20,11 +20,6 @@ where
     result.map_err(Into::into).and_then(value)
 }
 
-pub(crate) fn watch_id_to_rpc(
-    id: u64,
-) -> Result<crate::adaptor::presenter::connect_wire::rpc::ResultUint64, connectrpc::ConnectError> {
-    crate::adaptor::presenter::connect_wire::to_rpc(&ResultUint64::from(id))
-}
 pub(crate) use errors::CommandFailure;
 #[cfg(any(test, all(debug_assertions, feature = "desktop")))]
 mod json;

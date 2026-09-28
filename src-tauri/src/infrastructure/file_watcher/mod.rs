@@ -77,7 +77,7 @@ impl FileWatcherManager {
         }
     }
 
-    pub(crate) fn release_watching(&self, watcher_id: u64) -> bool {
+    fn release_watching(&self, watcher_id: u64) -> bool {
         let Some(session) = self.sessions.lock().remove(&watcher_id) else {
             return false;
         };

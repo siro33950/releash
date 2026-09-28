@@ -1,20 +1,13 @@
-import { create, type MessageInitShape } from "@bufbuild/protobuf";
+import type { MessageInitShape } from "@bufbuild/protobuf";
 import { Code, ConnectError, type HandlerContext } from "@connectrpc/connect";
 import { afterEach, expect, it, vi } from "vitest";
 import {
 	CommandErrorSchema,
-	PushSchema,
 	type StartStateSubscriptionRequest,
 	type StateSubscriptionEventSchema,
 } from "@/generated/client_pb";
 import { connectFixture } from "@/test/connect";
-import {
-	firstState,
-	invokeClient,
-	onClientRefresh,
-	subscribeState,
-} from "./client";
-import * as clientProtocol from "./clientProtocol";
+import { firstState, invokeClient, subscribeState } from "./client";
 import { getErrorMessage } from "./errorMessage";
 
 vi.unmock("@/lib/client");
@@ -41,40 +34,23 @@ it("生成RPCで引数と結果を変換する", async () => {
 	]);
 });
 
-it("応答未到達の変更要求では再接続せず明示的な再接続後に現在状態だけを再取得する", async () => {
-	const { getClient, refreshClient } = await import("./client");
-	let value = false;
+it("応答未到達の変更要求では再接続せず同じ変更を再送しない", async () => {
+	const { getClient } = await import("./client");
 	const mutate = vi.fn(() => {
-		value = true;
 		throw new ConnectError("response lost", Code.Unavailable);
 	});
-	const fixture = connectFixture({
-		updateCrashReporting: mutate,
-		addRepoPath: () => ({ value }),
-	});
-	const observed: boolean[] = [];
-	const refresh = vi.fn(() => {
-		void invokeClient("add_repo_path", { path: "/repo" }).then((value) =>
-			observed.push(value),
-		);
-	});
-	const stop = onClientRefresh(refresh);
-	await vi.waitFor(() => expect(observed).toContain(false));
+	const fixture = connectFixture({ updateCrashReporting: mutate });
 	const client = await getClient();
 	await expect(
 		invokeClient("update_crash_reporting", { enabled: true }),
 	).rejects.toBeInstanceOf(ConnectError);
 	expect(await getClient()).toBe(client);
-	expect(observed).toEqual([false]);
-	refreshClient();
-	await vi.waitFor(() => expect(observed).toContain(true), { timeout: 3000 });
 	expect(mutate).toHaveBeenCalledOnce();
 	expect(
 		fixture.requests.every(
 			(request) => !/Operation|Query|AckRequest/.test(request.url),
 		),
 	).toBe(true);
-	stop();
 });
 
 it("送信失敗のPromiseを終了し元要求を保持して再送しない", async () => {
@@ -122,133 +98,6 @@ it("設定保存が期限超過してもPromiseを終了し同じ変更を再送
 		vi.useRealTimers();
 	}
 });
-
-it("監視はpush一本を共有し切断後に再登録して解除時に停止する", async () => {
-	const { watchClient, refreshClient } = await import("./client");
-	let attempts = 0;
-	const stopWatching = vi.fn((_request: { watcherId?: bigint }) => ({}));
-	const fixture = connectFixture({
-		watchFiles: () => ({ value: BigInt(++attempts) }),
-		stopWatching,
-	});
-	const ready = vi.fn();
-	const stop = watchClient({ path: "/repo" }, ready, vi.fn());
-	await vi.waitFor(() => expect(ready).toHaveBeenCalledWith(1));
-	refreshClient();
-	await vi.waitFor(() => expect(ready).toHaveBeenCalledWith(2), {
-		timeout: 3000,
-	});
-	expect(
-		fixture.requests.filter((request) =>
-			request.url.endsWith("/SubscribePush"),
-		),
-	).toHaveLength(2);
-	stop();
-	await vi.waitFor(() => expect(stopWatching).toHaveBeenCalledOnce());
-	expect(stopWatching.mock.calls.map((call) => call[0])).toEqual([
-		expect.objectContaining({ watcherId: 2n }),
-	]);
-});
-
-it("監視登録中の解除は応答後に資源を停止する", async () => {
-	const { watchClient } = await import("./client");
-	let complete!: () => void;
-	const registered = vi.fn(async () => {
-		await new Promise<void>((resolve) => {
-			complete = resolve;
-		});
-		return { value: 7n };
-	});
-	const stopped = vi.fn(() => ({}));
-	connectFixture({ watchFiles: registered, stopWatching: stopped });
-	const ready = vi.fn();
-	const stop = watchClient({ path: "/repo" }, ready);
-	await vi.waitFor(() => expect(registered).toHaveBeenCalledOnce());
-	stop();
-	complete();
-	await vi.waitFor(() => expect(stopped).toHaveBeenCalledOnce());
-	expect(ready).not.toHaveBeenCalled();
-});
-
-it.each(["start_watching"] as const)(
-	"%sは再購読時の上限超過後も枠が空けば同じ購読で監視を復旧する",
-	async () => {
-		vi.useFakeTimers();
-		const { getClient, refreshClient, watchClient } = await import("./client");
-		let available = true;
-		const watch = vi.fn((_request: { subscriptionId: string }) => {
-			if (!available)
-				throw new ConnectError(
-					"Too many subscriptions",
-					Code.ResourceExhausted,
-				);
-			return { value: 1n };
-		});
-		const fixture = connectFixture({
-			watchFiles: watch,
-			stopWatching: () => ({}),
-		});
-		const ready = vi.fn();
-		const failed = vi.fn();
-		const stop = watchClient({ path: "/repo" }, ready, failed);
-		try {
-			await vi.waitFor(() => expect(ready).toHaveBeenCalledOnce());
-			available = false;
-			refreshClient();
-			await vi.waitFor(() => expect(failed).toHaveBeenCalledOnce(), {
-				timeout: 2000,
-			});
-			const client = await getClient();
-			await vi.advanceTimersByTimeAsync(1000);
-			expect(watch).toHaveBeenCalledTimes(3);
-			available = true;
-			await vi.advanceTimersByTimeAsync(1000);
-			expect(ready).toHaveBeenCalledTimes(2);
-			expect(await getClient()).toBe(client);
-			const ids = watch.mock.calls.map(([request]) => request.subscriptionId);
-			expect(ids[0]).not.toBe(ids[1]);
-			expect(ids.slice(1)).toEqual([ids[1], ids[1], ids[1]]);
-			expect(
-				fixture.requests.filter((request) =>
-					request.url.endsWith("/SubscribePush"),
-				),
-			).toHaveLength(2);
-		} finally {
-			stop();
-			window.dispatchEvent(new Event("pagehide"));
-			await vi.advanceTimersByTimeAsync(1000);
-			vi.useRealTimers();
-		}
-	},
-);
-
-it.each(["stop", "pagehide", "reconnect"])(
-	"監視登録の再試行待ちで%sした旧購読を再登録しない",
-	async (ending) => {
-		vi.useFakeTimers();
-		const { refreshClient, watchClient } = await import("./client");
-		const watch = vi.fn(() => {
-			throw new ConnectError("Too many subscriptions", Code.ResourceExhausted);
-		});
-		connectFixture({ watchFiles: watch });
-		const failed = vi.fn();
-		const stop = watchClient({ path: "/repo" }, vi.fn(), failed);
-		try {
-			await vi.waitFor(() => expect(failed).toHaveBeenCalledOnce());
-			if (ending === "stop") stop();
-			else if (ending === "pagehide")
-				window.dispatchEvent(new Event("pagehide"));
-			else refreshClient();
-			await vi.advanceTimersByTimeAsync(1000);
-			expect(watch).toHaveBeenCalledTimes(ending === "reconnect" ? 2 : 1);
-		} finally {
-			stop();
-			window.dispatchEvent(new Event("pagehide"));
-			await vi.advanceTimersByTimeAsync(1000);
-			vi.useRealTimers();
-		}
-	},
-);
 
 it("旧世代の要求失敗が新接続と進行中の要求を破棄しない", async () => {
 	const { refreshClient, getClient } = await import("./client");
@@ -357,8 +206,8 @@ it.each([
 	Code.OutOfRange,
 	Code.Unimplemented,
 	Code.DataLoss,
-])("RPC失敗code %sは共有接続と進行中のRPCとpushを中断しない", async (code) => {
-	const { getClient, watchClient } = await import("./client");
+])("RPC失敗code %sは共有接続と進行中のRPCを中断しない", async (code) => {
+	const { getClient } = await import("./client");
 	let release!: () => void;
 	const read = vi.fn(async () => {
 		await new Promise<void>((resolve) => {
@@ -366,17 +215,12 @@ it.each([
 		});
 		return { value: true };
 	});
-	const reject = () => {
-		throw new ConnectError("request rejected", code);
-	};
 	const fixture = connectFixture({
 		addRepoPath: read,
-		updateExternalEditor: reject,
-		watchFiles: reject,
+		updateExternalEditor: () => {
+			throw new ConnectError("request rejected", code);
+		},
 	});
-	const refreshed = vi.fn();
-	onClientRefresh(refreshed);
-	await vi.waitFor(() => expect(refreshed).toHaveBeenCalledOnce());
 	const client = await getClient();
 	const pending = invokeClient("add_repo_path", { path: "/repo" });
 	await vi.waitFor(() => expect(read).toHaveBeenCalledOnce());
@@ -385,188 +229,13 @@ it.each([
 	}).catch((error) => error);
 	expect(error).toBeInstanceOf(ConnectError);
 	expect(error).toMatchObject({ code, rawMessage: "request rejected" });
-	{
-		const failed = vi.fn();
-		const stop = watchClient({ path: "/repo" }, vi.fn(), failed);
-		await vi.waitFor(() => expect(failed).toHaveBeenCalledOnce());
-		expect(failed.mock.calls[0][0]).toMatchObject({ code });
-		stop();
-	}
 	expect(await getClient()).toBe(client);
 	expect(
 		fixture.requests.find((request) => request.url.endsWith("/AddRepoPath"))
 			?.signal.aborted,
 	).toBe(false);
-	expect(
-		fixture.requests.find((request) => request.url.endsWith("/SubscribePush"))
-			?.signal.aborted,
-	).toBe(false);
-	expect(refreshed).toHaveBeenCalledOnce();
 	await release();
 	await expect(pending).resolves.toBe(true);
-});
-
-it.each(["end", "failure"])(
-	"push単独の%sから再購読と状態再取得を行う",
-	async (ending) => {
-		const { listenClient, watchClient } = await import("./client");
-		let finish!: () => void;
-		let subscriptions = 0;
-		let value = false;
-		const watch = vi.fn(() => ({ value: 1n }));
-		const fixture = connectFixture({
-			addRepoPath: () => ({ value }),
-			watchFiles: watch,
-			stopWatching: () => ({}),
-			async *subscribePush(_, context) {
-				const attempt = ++subscriptions;
-				yield create(PushSchema, { event: { case: "resync", value: {} } });
-				if (attempt === 1) {
-					await new Promise<void>((resolve) => {
-						finish = resolve;
-					});
-					if (ending === "failure")
-						throw new ConnectError("push lost", Code.Unavailable);
-				} else {
-					yield create(PushSchema, {
-						event: {
-							case: "fileChange",
-							value: { watcherId: 1n, path: "/recovered", kind: "change" },
-						},
-					});
-					await new Promise<void>((resolve) =>
-						context.signal.addEventListener("abort", () => resolve(), {
-							once: true,
-						}),
-					);
-				}
-			},
-		});
-		const observed: boolean[] = [];
-		onClientRefresh(() => {
-			void invokeClient("add_repo_path", { path: "/repo" }).then((value) =>
-				observed.push(value),
-			);
-		});
-		const pushed = vi.fn();
-		await listenClient("file-change", pushed);
-		const stop = watchClient({ path: "/repo" }, vi.fn());
-		await vi.waitFor(() => {
-			expect(observed).toEqual([false]);
-			expect(watch).toHaveBeenCalledOnce();
-			expect(finish).toBeDefined();
-		});
-		value = true;
-		finish();
-		await vi.waitFor(
-			() => {
-				expect(observed).toEqual([false, true]);
-				expect(watch).toHaveBeenCalledTimes(2);
-				expect(pushed).toHaveBeenCalledWith({
-					payload: { watcher_id: 1, path: "/recovered", kind: "change" },
-				});
-			},
-			{ timeout: 3000 },
-		);
-		expect(subscriptions).toBe(2);
-		expect(
-			fixture.requests.filter((request) =>
-				request.url.endsWith("/GetServerInfo"),
-			),
-		).toHaveLength(2);
-		stop();
-	},
-);
-
-it("同じpushのpayloadは購読者が複数でも一度だけ復号する", async () => {
-	const { listenClient } = await import("./client");
-	let publish!: () => void;
-	connectFixture({
-		async *subscribePush(_, context) {
-			yield create(PushSchema, { event: { case: "resync", value: {} } });
-			await new Promise<void>((resolve) => {
-				publish = resolve;
-			});
-			yield create(PushSchema, {
-				event: {
-					case: "fileChange",
-					value: { watcherId: 1n, path: "/repo", kind: "change" },
-				},
-			});
-			await new Promise<void>((resolve) =>
-				context.signal.addEventListener("abort", () => resolve(), {
-					once: true,
-				}),
-			);
-		},
-	});
-	const decode = vi.spyOn(clientProtocol, "decodeClientPush");
-	try {
-		const first = vi.fn();
-		const second = vi.fn();
-		await listenClient("file-change", first);
-		await listenClient("file-change", second);
-		await vi.waitFor(() => expect(publish).toBeDefined());
-		publish();
-		await vi.waitFor(() => expect(second).toHaveBeenCalledOnce());
-		expect(first).toHaveBeenCalledWith({
-			payload: { watcher_id: 1, path: "/repo", kind: "change" },
-		});
-		expect(second.mock.calls[0][0].payload).toBe(
-			first.mock.calls[0][0].payload,
-		);
-		expect(decode).toHaveBeenCalledOnce();
-	} finally {
-		decode.mockRestore();
-	}
-});
-
-it("確立済みpushの途中resyncは両listenerへ復旧を通知し後続pushも配信する", async () => {
-	const { listenClient } = await import("./client");
-	let resync!: () => void;
-	const fixture = connectFixture({
-		async *subscribePush(_, context) {
-			yield create(PushSchema, { event: { case: "resync", value: {} } });
-			await new Promise<void>((resolve) => {
-				resync = resolve;
-			});
-			yield create(PushSchema, { event: { case: "resync", value: {} } });
-			yield create(PushSchema, {
-				event: {
-					case: "fileChange",
-					value: { watcherId: 1n, path: "/after-resync", kind: "change" },
-				},
-			});
-			await new Promise<void>((resolve) =>
-				context.signal.addEventListener("abort", () => resolve(), {
-					once: true,
-				}),
-			);
-		},
-	});
-	const refresh = vi.fn();
-	const reconnect = vi.fn();
-	const pushed = vi.fn();
-	onClientRefresh(refresh);
-	await listenClient("file-change", pushed, reconnect);
-	await vi.waitFor(() => {
-		expect(refresh).toHaveBeenCalledOnce();
-		expect(reconnect).toHaveBeenCalledOnce();
-		expect(resync).toBeDefined();
-	});
-	resync();
-	await vi.waitFor(() =>
-		expect(pushed).toHaveBeenCalledWith({
-			payload: { watcher_id: 1, path: "/after-resync", kind: "change" },
-		}),
-	);
-	expect(refresh).toHaveBeenCalledTimes(2);
-	expect(reconnect).toHaveBeenCalledTimes(2);
-	expect(
-		fixture.requests.filter((request) =>
-			request.url.endsWith("/SubscribePush"),
-		),
-	).toHaveLength(1);
 });
 
 it("AbortSignal.anyが無くても初回RPCとstreamが開始し個別と接続のabortが効く", async () => {
@@ -580,6 +249,15 @@ it("AbortSignal.anyが無くても初回RPCとstreamが開始し個別と接続�
 	const { getClient, refreshClient } = await import("./client");
 	const started = vi.fn();
 	const fixture = connectFixture({
+		async *openStateStream(_, context) {
+			yield { event: { case: "ready", value: {} } };
+			await new Promise<void>((resolve) =>
+				context.signal.addEventListener("abort", () => resolve(), {
+					once: true,
+				}),
+			);
+		},
+		startStateSubscription: () => ({}),
 		async addRepoPath(_, context) {
 			started();
 			await new Promise<void>((resolve) =>
@@ -592,9 +270,14 @@ it("AbortSignal.anyが無くても初回RPCとstreamが開始し個別と接続�
 	});
 	expect(AbortSignal.any).toBeUndefined();
 	const client = await getClient();
-	const refreshed = vi.fn();
-	onClientRefresh(refreshed);
-	await vi.waitFor(() => expect(refreshed).toHaveBeenCalledOnce());
+	const release = subscribeState("repository-paths", vi.fn());
+	await vi.waitFor(() =>
+		expect(
+			fixture.requests.some((request) =>
+				request.url.endsWith("/StartStateSubscription"),
+			),
+		).toBe(true),
+	);
 	const abort = new AbortController();
 	const pending = client
 		.addRepoPath({ path: "/repo" }, { signal: abort.signal })
@@ -603,128 +286,12 @@ it("AbortSignal.anyが無くても初回RPCとstreamが開始し個別と接続�
 	abort.abort();
 	expect(await pending).toMatchObject({ code: Code.Canceled });
 	const streaming = fixture.requests.find((request) =>
-		request.url.endsWith("/SubscribePush"),
+		request.url.endsWith("/OpenStateStream"),
 	);
 	expect(streaming?.signal.aborted).toBe(false);
 	refreshClient();
 	expect(streaming?.signal.aborted).toBe(true);
-});
-
-it.each(["start_watching"] as const)(
-	"%sの再登録待ちに変わった状態をonReadyの後に再取得する",
-	async () => {
-		const { watchClient, refreshClient, listenClient } = await import(
-			"./client"
-		);
-		let value = false;
-		let registration = 0;
-		let complete!: () => void;
-		let publish!: () => void;
-		const watch = async () => {
-			if (++registration === 2)
-				await new Promise<void>((resolve) => {
-					complete = resolve;
-				});
-			return { value: BigInt(registration) };
-		};
-		connectFixture({
-			watchFiles: watch,
-			stopWatching: () => ({}),
-			addRepoPath: () => ({ value }),
-			async *subscribePush(_, context) {
-				yield create(PushSchema, { event: { case: "resync", value: {} } });
-				await new Promise<void>((resolve) => {
-					publish = resolve;
-					context.signal.addEventListener("abort", () => resolve(), {
-						once: true,
-					});
-				});
-				if (context.signal.aborted) return;
-				yield create(PushSchema, {
-					event: {
-						case: "fileChange",
-						value: { watcherId: 1n, path: "/current", kind: "change" },
-					},
-				});
-				await new Promise<void>((resolve) =>
-					context.signal.addEventListener("abort", () => resolve(), {
-						once: true,
-					}),
-				);
-			},
-		});
-		const pushed = vi.fn();
-		const unlisten = await listenClient("file-change", pushed);
-		let watcherId = 0;
-		const observed: Array<{ watcherId: number; value: boolean }> = [];
-		const off = onClientRefresh(() => {
-			const id = watcherId;
-			void invokeClient("add_repo_path", { path: "/repo" }).then((value) =>
-				observed.push({ watcherId: id, value }),
-			);
-		});
-		const stop = watchClient({ path: "/repo" }, (id) => {
-			watcherId = id;
-		});
-		await vi.waitFor(() => expect(watcherId).toBe(1));
-		observed.length = 0;
-		refreshClient();
-		await vi.waitFor(
-			() => {
-				expect(complete).toBeDefined();
-				expect(observed).toEqual([]);
-			},
-			{ timeout: 3000 },
-		);
-		publish();
-		await vi.waitFor(() =>
-			expect(pushed).toHaveBeenCalledWith({
-				payload: { watcher_id: 1, path: "/current", kind: "change" },
-			}),
-		);
-		value = true;
-		complete();
-		await vi.waitFor(() =>
-			expect(observed).toContainEqual({ watcherId: 2, value: true }),
-		);
-		stop();
-		off();
-		unlisten();
-	},
-);
-
-it("watcher復旧後の再取得通知が失敗してもpushを再購読する", async () => {
-	const fixture = connectFixture();
-	const refreshed = vi.fn(() => {
-		if (refreshed.mock.calls.length === 1) throw new Error("refresh failed");
-	});
-	const off = onClientRefresh(refreshed);
-	await vi.waitFor(() => expect(refreshed).toHaveBeenCalledTimes(2), {
-		timeout: 3000,
-	});
-	expect(
-		fixture.requests.filter((request) =>
-			request.url.endsWith("/SubscribePush"),
-		),
-	).toHaveLength(2);
-	off();
-});
-
-it("新規watcher登録は購読全体へ再接続を通知しない", async () => {
-	const { watchClient } = await import("./client");
-	connectFixture({
-		watchFiles: () => ({ value: 1n }),
-		stopWatching: () => ({}),
-	});
-	const refreshed = vi.fn();
-	const off = onClientRefresh(refreshed);
-	await vi.waitFor(() => expect(refreshed).toHaveBeenCalledOnce());
-	const ready = vi.fn();
-	const stop = watchClient({ path: "/repo" }, ready);
-	await vi.waitFor(() => expect(ready).toHaveBeenCalledWith(1));
-	expect(refreshed).toHaveBeenCalledOnce();
-	stop();
-	off();
+	release();
 });
 
 type StateEvent = MessageInitShape<typeof StateSubscriptionEventSchema>;
@@ -923,6 +490,25 @@ it("状態のstreamが切れたら最後に受け取った版から購読を再�
 	});
 	fixture.streams[1].send(repositoryPaths(3, ["/c"]));
 	await vi.waitFor(() => expect(receive).toHaveBeenLastCalledWith(["/c"]));
+});
+
+it("接続を作り直すと状態のstreamのつなぎ直しで接続の回復を通知する", async () => {
+	const { onClientConnection, refreshClient } = await import("./client");
+	const fixture = stateFixture();
+	subscribeState("repository-paths", vi.fn());
+	await vi.waitFor(() => expect(fixture.starts).toHaveLength(1));
+	const connection = vi.fn();
+	const off = onClientConnection(connection);
+	refreshClient();
+	await vi.waitFor(() => expect(fixture.starts).toHaveLength(2), {
+		timeout: 3000,
+	});
+	expect(connection.mock.calls.map(([connected]) => connected)).toEqual([
+		false,
+		true,
+	]);
+	expect(fixture.serverInfoRequests()).toBe(2);
+	off();
 });
 
 it("状態のstreamが無通信のまま続いたらつなぎ直す", async () => {

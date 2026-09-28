@@ -28,8 +28,6 @@ fn to_rpc<T: buffa::Message>(value: &impl prost::Message) -> Result<T, connectrp
 include!(concat!(env!("OUT_DIR"), "/client_calls.rs"));
 struct Socket {
     client: rpc::ClientServiceClient<connectrpc::client::HttpClient>,
-    push: std::pin::Pin<Box<dyn futures_util::Stream<Item = wire::Push> + Send>>,
-    subscription_id: String,
 }
 type StateStream =
     std::pin::Pin<Box<dyn futures_util::Stream<Item = wire::state_payload::Value> + Send>>;
@@ -238,39 +236,7 @@ async fn connect(discovery: &Value) -> (Socket, String) {
         .into_owned();
     assert!(!info.launch_id.is_empty());
     assert_eq!(info.release, env!("CARGO_PKG_VERSION"));
-    let subscription_id = uuid::Uuid::new_v4().to_string();
-    let mut stream = client
-        .subscribe_push(rpc::SubscribePushRequest {
-            subscription_id: subscription_id.clone(),
-            ..Default::default()
-        })
-        .await
-        .unwrap();
-    let initial = stream
-        .message::<rpc::Push>()
-        .await
-        .unwrap()
-        .unwrap()
-        .to_owned_message();
-    assert!(matches!(initial.event, Some(rpc::push::Event::Resync(_))));
-    let push = Box::pin(futures_util::stream::unfold(
-        stream,
-        |mut stream| async move {
-            stream
-                .message::<rpc::Push>()
-                .await
-                .unwrap()
-                .map(|message| (to_wire(&message.to_owned_message()).unwrap(), stream))
-        },
-    ));
-    (
-        Socket {
-            client,
-            push,
-            subscription_id,
-        },
-        info.launch_id,
-    )
+    (Socket { client }, info.launch_id)
 }
 async fn request(
     socket: &mut Socket,
@@ -566,25 +532,11 @@ async fn test_daemon本番配線_repository一覧が購読へ配信される() {
     quit(&mut daemon, &mut socket, true).await;
 }
 
-async fn expect_push(socket: &mut Socket, matches: impl Fn(&wire::push::Event) -> bool) {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while let Some(push) = socket.push.next().await {
-            if push.event.as_ref().is_some_and(&matches) {
-                return;
-            }
-        }
-        panic!("push stream closed");
-    })
-    .await
-    .expect("production notifier must reach the Connect subscription");
-}
-
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
-async fn test_daemon本番配線_状態を購読へ配信し残る通知をpushへ届ける() {
+async fn test_daemon本番配線_状態を購読へ配信する() {
     use std::os::unix::fs::PermissionsExt;
     use wire::command_request::Command as C;
-    use wire::push::Event as E;
     // Given
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().canonicalize().unwrap();
@@ -716,26 +668,6 @@ async fn test_daemon本番配線_状態を購読へ配信し残る通知をpush�
         }
     }
     expect_state(&mut threads, "external comment edit", |value| matches!(value, wire::state_payload::Value::ReviewThreads(list) if list.items.is_empty())).await;
-    // When / Then: fallback file watcher, outside a git repository
-    let files = root.join("files");
-    std::fs::create_dir(&files).unwrap();
-    let watch = socket
-        .client
-        .watch_files(rpc::WatchFilesRequest {
-            subscription_id: socket.subscription_id.clone(),
-            request: rpc::StartWatchingRequest {
-                path: Some(files.to_str().unwrap().into()),
-                ..Default::default()
-            }
-            .into(),
-            ..Default::default()
-        })
-        .await
-        .unwrap()
-        .into_owned();
-    let watched_file = files.join("changed.txt");
-    std::fs::write(&watched_file, "changed").unwrap();
-    expect_push(&mut socket, |event| matches!(event, E::FileChange(value) if value.watcher_id == watch.value && value.path.as_deref() == watched_file.to_str())).await;
     // When / Then: the review subscription owns the worktree watch.
     let mut review = subscribe_state(
         &socket,

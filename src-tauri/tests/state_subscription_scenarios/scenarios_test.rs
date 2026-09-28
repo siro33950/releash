@@ -401,10 +401,6 @@ struct CapturingFiles {
     on_change: Mutex<Option<crate::domain::repository::file_watcher::WatchChangeHandler>>,
 }
 impl crate::domain::repository::file_watcher::FileWatchGateway for CapturingFiles {
-    fn release(&self, _: u64) {}
-    fn start(&self, _: &str) -> Result<u64, String> {
-        Ok(1)
-    }
     fn start_tree(
         &self,
         _: &str,
@@ -999,8 +995,11 @@ struct DisconnectingFiles {
     usecase: StateSubscriptionUsecase,
 }
 impl crate::domain::repository::file_watcher::FileWatchGateway for DisconnectingFiles {
-    fn release(&self, _: u64) {}
-    fn start(&self, _: &str) -> Result<u64, String> {
+    fn start_tree(
+        &self,
+        _: &str,
+        _: crate::domain::repository::file_watcher::WatchChangeHandler,
+    ) -> Result<u64, String> {
         self.usecase.close_client("client");
         Ok(1)
     }
@@ -1098,7 +1097,7 @@ async fn test_review_threads購読_comment操作で再配信し最後の停止�
             "subscription comment".into(),
         )
         .unwrap();
-    crate::adaptor::gateway::push::CommentChangeGateway::new(usecase.publisher())
+    crate::adaptor::gateway::comment_change::CommentChangeGateway::new(usecase.publisher())
         .notify("repository");
     assert!(
         matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Change(_, _, value))) if same(&value, StateValue::ReviewThreads(vec![thread.into()])))

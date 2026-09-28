@@ -99,26 +99,6 @@ fn test_terminal_eventは最大sequenceと日本語を保持する() {
 }
 
 #[test]
-fn test_push_protoが既存payloadを保持し未定義eventを拒否する() {
-    // Given / When / Then
-    for (event, payload) in [
-        (
-            "file-change",
-            json!({"watcher_id":1,"path":"/a","kind":"change"}),
-        ),
-        (
-            "file-change",
-            json!({"watcher_id":2,"path":"worktree","kind":"remove"}),
-        ),
-    ] {
-        let message = Push::from_value(event, payload.clone()).unwrap();
-        let frame = Push::decode(message.encode_to_vec().as_slice()).unwrap();
-        assert_eq!(frame.into_value().unwrap(), (event, payload));
-    }
-    assert!(Push::from_value("unknown", Json::Null).is_err());
-}
-
-#[test]
 fn test_workspace過去試行_両commandでnodeタグとchildren省略を保持する() {
     use crate::usecase::workflow as dto;
     // Given

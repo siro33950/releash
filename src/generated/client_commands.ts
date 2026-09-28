@@ -105,7 +105,6 @@ import {
 	StartTerminalLaunchPerformanceCollectionRequestSchema,
 	StartupFailureQuitOutcomeDtoV1Schema,
 	StartWorkflowRequestSchema,
-	StopWatchingRequestSchema,
 	TakeTerminalInputPerformanceSamplesRequestSchema,
 	TakeTerminalLaunchPerformanceSamplesRequestSchema,
 	UnitSchema,
@@ -1415,25 +1414,6 @@ const commands = {
 					StartWorkflowRequestSchema,
 					clientJson(
 						StartWorkflowRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	stop_watching: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["stop_watching"],
-	) => {
-		const result = decode(
-			UnitSchema,
-			await client.stopWatching(
-				fromJson(
-					StopWatchingRequestSchema,
-					clientJson(
-						StopWatchingRequestSchema,
 						JSON.parse(JSON.stringify(args ?? {})),
 						true,
 					),

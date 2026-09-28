@@ -8,7 +8,6 @@ import {
 import { describe, expect, it } from "vitest";
 import {
 	NodeExecutionStatusViewSchema,
-	PushSchema,
 	RefreshWorkspacesRequestSchema,
 	TerminalEventSchema,
 	UpdateCrashReportingRequestSchema,
@@ -17,28 +16,9 @@ import {
 	WriteTerminalSurfaceRequestSchema,
 } from "@/generated/client_pb";
 import { clientJson } from "./clientJson";
-import { decodeClientPush, decodeTerminalEvent } from "./clientProtocol";
+import { decodeTerminalEvent } from "./clientProtocol";
 
 describe("Connect message codecs", () => {
-	it("生成されたpushを既存の表示用payloadへ戻す", () => {
-		const push = create(PushSchema, {
-			event: {
-				case: "fileChange",
-				value: { watcherId: 1n, path: "/repo", kind: "change" },
-			},
-		});
-		expect(decodeClientPush(push, "file-change")).toEqual({
-			watcher_id: 1,
-			path: "/repo",
-			kind: "change",
-		});
-		const resync = create(PushSchema, {
-			event: { case: "resync", value: {} },
-		});
-		expect(() => decodeClientPush(resync, "file-change")).toThrow(
-			"Invalid push event",
-		);
-	});
 	it("terminalのsnapshotと出力と終了を復号する", () => {
 		expect(
 			decodeTerminalEvent(

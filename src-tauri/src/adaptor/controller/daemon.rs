@@ -61,7 +61,6 @@ pub(crate) async fn compose(
             Some(state_subscriptions.publisher()),
         ));
     let retrying = usecase::retry::Retrying::new(retry_limiter, failure_output.clone());
-    let push_sink = Arc::new(infrastructure::push::PushSink::new());
 
     let projected_local_event_repository: Arc<
         dyn domain::local_event::LocalEventTransactionRepository,
@@ -163,7 +162,7 @@ pub(crate) async fn compose(
                         .to_string(),
                         terminal: terminal_surface.clone(),
                         change_notifier: Arc::new(
-                            adaptor::presenter::push::ClientAgentSessionChangeNotifier::new(
+                            adaptor::presenter::agent_session_change::ClientAgentSessionChangeNotifier::new(
                                 state_subscriptions.publisher(),
                             ),
                         ),
@@ -262,7 +261,6 @@ pub(crate) async fn compose(
         repository_scanner,
         Arc::new(
             adaptor::presenter::repository_state::ClientRepositoryStateNotifier::new(
-                push_sink.clone(),
                 state_subscriptions.publisher(),
             ),
         ),
@@ -446,14 +444,11 @@ pub(crate) async fn compose(
         watcher: Arc::new(usecase::watcher::WatcherUsecase::new(
             Some(repository_state_for_watcher),
             Arc::new(
-                adaptor::gateway::repository::file_watcher::FileWatcherGateway::new(
-                    file_watchers,
-                    push_sink.clone(),
-                ),
+                adaptor::gateway::repository::file_watcher::FileWatcherGateway::new(file_watchers),
             ),
         )),
         data_dir: Ok(data_dir),
-        comment_notify: Arc::new(adaptor::gateway::push::CommentChangeGateway::new(
+        comment_notify: Arc::new(adaptor::gateway::comment_change::CommentChangeGateway::new(
             state_subscriptions.publisher(),
         )),
         process_port: Arc::new(
@@ -540,16 +535,12 @@ pub(crate) async fn compose(
         local_api_binding.bearer_token(),
         local_api_binding.client_bearer_token(),
         Some(
-            adaptor::controller::api::ClientApiDeps::new(
-                client_dispatch.clone(),
-                adaptor::gateway::push::ClientPushGateway::new(push_sink.clone()),
-                dependencies.watcher.clone(),
-            )
-            .with_state_subscriptions(adaptor::controller::api::StateSubscriptionDeps::new(
-                state_subscriptions,
-                state_presenter,
-            ))
-            .with_failure_output(failure_output),
+            adaptor::controller::api::ClientApiDeps::new(client_dispatch.clone())
+                .with_state_subscriptions(adaptor::controller::api::StateSubscriptionDeps::new(
+                    state_subscriptions,
+                    state_presenter,
+                ))
+                .with_failure_output(failure_output),
         ),
         Some(provider_lifecycle_ingress.clone()),
     );

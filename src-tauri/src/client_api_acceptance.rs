@@ -8,16 +8,12 @@ use crate::adaptor::controller::client::ClientCommandDispatch;
 use crate::adaptor::controller::command::CommandRouter;
 use crate::adaptor::controller::terminal_surface_runtime::TerminalSurfaceRuntime;
 use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
-use crate::adaptor::gateway::push::ClientPushGateway;
 use crate::infrastructure::local_api::{LocalApiServer, LocalApiServerBinding};
-use crate::infrastructure::push::PushSink;
 use crate::usecase::application_startup::ApplicationStartupAuthority;
 use crate::usecase::repository_usecase::RepositoryUsecase;
 use crate::usecase::workflow::WorkflowRuntimeUsecase;
 
-pub use crate::adaptor::gateway::push::BackendPush;
 pub use crate::adaptor::gateway::repository::branch::BranchGateway;
-pub use crate::adaptor::gateway::repository::watch::FileChangeEvent;
 pub use crate::adaptor::presenter::terminal::TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX;
 pub use crate::adaptor::presenter::workflow_wire::*;
 pub use crate::domain::repository::{Branch, BranchRepository, RepositoryError};
@@ -155,14 +151,12 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
         let dispatch = Arc::new(dispatch);
         let router: CommandRouter<Box<dyn Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync>> =
             CommandRouter::new(Box::new(|_| false));
-        let sink = Arc::new(PushSink::new());
         let binding = LocalApiServerBinding::bind(data_dir.to_path_buf()).unwrap();
         let master_subprotocol = format!(
             "{TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX}{}",
             binding.bearer_token()
         );
         let app = builder
-            .manage(sink.clone())
             .manage(authority)
             .manage(dispatch.clone())
             .manage(crate::usecase::client_connection::ClientConnectionUsecase(
@@ -204,19 +198,9 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
             Arc::new(runtime),
             binding.bearer_token(),
             binding.client_bearer_token(),
-            Some(
-                ClientApiDeps::new(
-                    dispatch,
-                    ClientPushGateway::new(sink),
-                    crate::client_api_acceptance::watcher(),
-                )
-                .with_state_subscriptions(
-                    crate::adaptor::controller::api::StateSubscriptionDeps::new(
-                        state,
-                        state_presenter,
-                    ),
-                ),
-            ),
+            Some(ClientApiDeps::new(dispatch).with_state_subscriptions(
+                crate::adaptor::controller::api::StateSubscriptionDeps::new(state, state_presenter),
+            )),
             None,
         );
         Self {
@@ -237,18 +221,6 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
             token: endpoint.token,
             launch_id: String::new(),
         }
-    }
-
-    pub fn emit(&self, push: BackendPush) {
-        push.emit(crate::desktop_test_support::push_sink(self.app.handle()).as_ref());
-    }
-
-    pub fn push_subscription_count(&self) -> usize {
-        self.app.state::<Arc<PushSink>>().subscriber_count()
-    }
-
-    pub fn subscribe_push(&self) -> tokio::sync::broadcast::Receiver<Arc<[u8]>> {
-        self.app.state::<Arc<PushSink>>().subscribe()
     }
 }
 
@@ -290,20 +262,10 @@ pub async fn request_client(
     .1)
 }
 
-pub fn decode_rpc_push(push: rpc::Push) -> (&'static str, serde_json::Value) {
-    decode_client_push(crate::adaptor::presenter::connect_wire::to_wire(&push).unwrap())
-}
-
 pub fn decode_client_value(
     value: impl crate::adaptor::presenter::client::ClientValue,
 ) -> serde_json::Value {
     crate::adaptor::presenter::client::from_value(value).unwrap()
-}
-
-pub fn decode_client_push(
-    push: crate::adaptor::presenter::client::Push,
-) -> (&'static str, serde_json::Value) {
-    push.into_value().unwrap()
 }
 
 #[derive(Default, Debug, PartialEq)]
@@ -361,11 +323,7 @@ impl ClientRecoveryAcceptanceHost {
         let mut urls = Vec::new();
         let mut servers = Vec::new();
         for _ in 0..2 {
-            let deps = ClientApiDeps::new(
-                dispatch.clone(),
-                ClientPushGateway::new(Arc::new(PushSink::new())),
-                crate::client_api_acceptance::watcher(),
-            );
+            let deps = ClientApiDeps::new(dispatch.clone());
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             urls.push(format!("http://{}", listener.local_addr().unwrap()));
             servers.push(tokio::spawn(async move {
@@ -505,18 +463,6 @@ pub async fn apply_desktop_update<R: tauri::Runtime>(
     .apply()
     .await
     .map_err(|e| e.to_string())
-}
-
-pub(crate) fn watcher() -> Arc<crate::usecase::watcher::WatcherUsecase> {
-    Arc::new(crate::usecase::watcher::WatcherUsecase::new(
-        None,
-        Arc::new(
-            crate::adaptor::gateway::repository::file_watcher::FileWatcherGateway::new(
-                Arc::new(crate::infrastructure::file_watcher::FileWatcherManager::default()),
-                Arc::new(PushSink::new()),
-            ),
-        ),
-    ))
 }
 
 struct AcceptanceStateReads(Arc<RepositoryUsecase>);

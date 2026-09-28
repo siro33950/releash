@@ -15,15 +15,13 @@ function WorkspaceList(
 }
 
 const states = stateSubscriptions();
-const mocks = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn() }));
+const mocks = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@/lib/client", () => ({
 	invokeClient: mocks.invoke,
 	subscribeState: (...args: Parameters<typeof states.subscribeState>) =>
 		states.subscribeState(...args),
 	firstState: (...args: Parameters<typeof states.firstState>) =>
 		states.firstState(...args),
-	listenClient: mocks.listen,
-	watchClient: () => () => {},
 }));
 vi.mock("@/hooks/useWorkflowConfig", () => ({
 	useWorkflowConfig: () => ({ workflows: [], loading: false, error: null }),
@@ -87,7 +85,6 @@ describe("Workspaces subscriptions", () => {
 		states.clear();
 		states.publish("workspaces", workspaceListSnapshot(tree));
 		mocks.invoke.mockResolvedValue(undefined);
-		mocks.listen.mockResolvedValue(vi.fn());
 	});
 	it.each([
 		["*", "review_comments_watch"],

@@ -214,7 +214,7 @@ async fn test_監視走査との競合_共有snapshotへのcommitを直列化す
         }
     }));
     let state = service.ensure_watching("/repo").unwrap();
-    state.invalidate(super::super::worker::InvalidateReason::git(false));
+    state.invalidate(super::super::worker::InvalidateReason::change());
     started.notified().await;
     // When
     let refresh = {
@@ -262,7 +262,7 @@ async fn test_明示再走査_途中で失効した結果を公開せず再走�
         tokio::spawn(async move { service.rescan_branches("/repo").await.unwrap() })
     };
     started.notified().await;
-    state.invalidate(super::super::worker::InvalidateReason::git(false));
+    state.invalidate(super::super::worker::InvalidateReason::change());
     release.send(()).unwrap();
     tokio::time::timeout(Duration::from_secs(2), started.notified())
         .await
@@ -298,7 +298,7 @@ async fn test_snapshot公開_失効世代はversionと前回情報を変更し�
     let obsolete = scanner.scan("/repo").unwrap();
     // When
     let _scan = state.scan_lock.lock().await;
-    state.invalidate(super::super::worker::InvalidateReason::git(false));
+    state.invalidate(super::super::worker::InvalidateReason::change());
     let result = state.commit_snapshot(obsolete, generation);
     // Then
     assert!(result.is_none());
@@ -335,7 +335,7 @@ async fn test_明示再走査_失効が続くと終了してscanロックを解�
         .unwrap();
     *scanner.on_scan.lock() = Some(Box::new({
         let state = state.clone();
-        move || state.invalidate(super::super::worker::InvalidateReason::git(false))
+        move || state.invalidate(super::super::worker::InvalidateReason::change())
     }));
     // When
     let result = tokio::time::timeout(Duration::from_secs(2), service.rescan_branches("/repo"))

@@ -189,7 +189,7 @@ mod tests {
             std::time::Duration::ZERO,
         );
 
-        state.invalidate(crate::usecase::repository_state::worker::InvalidateReason::initial());
+        state.invalidate(crate::usecase::repository_state::worker::InvalidateReason::change());
         let mut ready = false;
         for _ in 0..100 {
             let snapshot = state.snapshot_for_read();

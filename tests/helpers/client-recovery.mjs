@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { setTimeout } from "node:timers/promises";
 import { build } from "esbuild";
 let url = process.argv[2];
 const requests = [];
@@ -27,21 +26,17 @@ const bundle = await build({
     stdin: { contents: 'export * from "./src/lib/client.ts";', resolveDir: process.cwd() },
     bundle: true, platform: "node", format: "esm", write: false,
 });
-const { invokeClient, onClientRefresh, refreshClient } = await import(`data:text/javascript;base64,${Buffer.from(`${bundle.outputFiles[0].text}\n//# sourceURL=releash-client-fixture.mjs`).toString("base64")}`);
-let refreshes = 0;
-const stop = onClientRefresh(() => { refreshes++; });
+const { getClient, invokeClient, refreshClient } = await import(`data:text/javascript;base64,${Buffer.from(`${bundle.outputFiles[0].text}\n//# sourceURL=releash-client-fixture.mjs`).toString("base64")}`);
 try {
     await assert.rejects(invokeClient("update_crash_reporting", { enabled: true }));
     await invokeClient("report_mounted_xterm_count", { count: 3 });
     await invokeClient("update_crash_reporting", { enabled: false });
-    const before = refreshes;
     url = process.argv[3];
     refreshClient();
-    const deadline = Date.now() + 5000;
-    while (refreshes <= before) { assert.ok(Date.now() < deadline); await setTimeout(10); }
+    await getClient();
+    assert.equal(requests.filter(path => path.endsWith("/GetServerInfo")).length, 2);
     assert.equal(requests.filter(path => path.endsWith("/UpdateCrashReporting")).length, 2);
     assert.ok(requests.every(path => !/Operation|Ack|Retry/.test(path)));
 } finally {
-    stop();
     window.dispatchEvent(new Event("pagehide"));
 }

@@ -31,7 +31,7 @@ pub(crate) struct ClientDependencies {
     pub(crate) editor_launcher: Arc<dyn crate::domain::external_editor::EditorLauncherGateway>,
     pub(crate) watcher: Arc<crate::usecase::watcher::WatcherUsecase>,
     pub(crate) data_dir: Result<std::path::PathBuf, crate::adaptor::presenter::error::AppError>,
-    pub(crate) comment_notify: Arc<crate::adaptor::gateway::push::CommentChangeGateway>,
+    pub(crate) comment_notify: Arc<crate::adaptor::gateway::comment_change::CommentChangeGateway>,
     pub(crate) process_port:
         Arc<dyn crate::domain::application_lifecycle::ApplicationQuitIntentPort>,
 }

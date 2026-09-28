@@ -175,7 +175,6 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
         app: tauri::App<R>,
     ) -> Result<Self, String> {
         let work = crate::terminal_surface::initialize_background_work_for_acceptance();
-        app.manage(Arc::new(crate::infrastructure::push::PushSink::new()));
         std::fs::create_dir_all(&config.data_dir).map_err(|error| error.to_string())?;
         let store =
             LocalEventStore::open(LocalEventStoreConfig::production(config.data_dir.clone()))
@@ -226,7 +225,7 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
             cli_binary: "releash-dev".to_string(),
             terminal: terminal.application(),
             change_notifier: Arc::new(
-                crate::adaptor::presenter::push::ClientAgentSessionChangeNotifier::new(
+                crate::adaptor::presenter::agent_session_change::ClientAgentSessionChangeNotifier::new(
                     subscriptions.publisher(),
                 ),
             ),
@@ -357,21 +356,13 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
         );
         let client_router = crate::adaptor::controller::api::authenticated(
             crate::adaptor::controller::api::client::router(Some(
-                crate::adaptor::controller::api::ClientApiDeps::new(
-                    dispatch,
-                    crate::adaptor::gateway::push::ClientPushGateway::new(
-                        app.state::<Arc<crate::infrastructure::push::PushSink>>()
-                            .inner()
-                            .clone(),
+                crate::adaptor::controller::api::ClientApiDeps::new(dispatch)
+                    .with_state_subscriptions(
+                        crate::adaptor::controller::api::StateSubscriptionDeps::new(
+                            subscriptions,
+                            terminal.presenter(),
+                        ),
                     ),
-                    crate::desktop_test_support::build_watcher_usecase(app.handle()),
-                )
-                .with_state_subscriptions(
-                    crate::adaptor::controller::api::StateSubscriptionDeps::new(
-                        subscriptions,
-                        terminal.presenter(),
-                    ),
-                ),
             )),
             client_binding.terminal_bearer_token(),
         );

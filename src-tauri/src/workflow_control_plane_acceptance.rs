@@ -460,7 +460,6 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
         let store =
             LocalEventStore::open(LocalEventStoreConfig::production(config.data_dir.clone()))
                 .map_err(|error| error.to_string())?;
-        app.manage(Arc::new(crate::infrastructure::push::PushSink::new()));
         app.manage(store.clone());
         app.manage(crate::desktop_test_support::TestDataDir(
             config.data_dir.clone(),
@@ -489,7 +488,7 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
 			cli_binary: "releash-dev".to_string(),
 			terminal: terminal.application(),
 			change_notifier: Arc::new(
-				crate::adaptor::presenter::push::ClientAgentSessionChangeNotifier::new(
+				crate::adaptor::presenter::agent_session_change::ClientAgentSessionChangeNotifier::new(
 					crate::adaptor::presenter::state_subscription::test_output(),
 				),
 			),

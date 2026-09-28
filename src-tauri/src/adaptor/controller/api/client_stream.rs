@@ -1,7 +1,7 @@
 pub(crate) const SUBSCRIPTION_ID_MAX_BYTES: usize = 128;
 
-pub(crate) fn valid_subscription_id(id: &str, allow_empty: bool) -> bool {
-    id.len() <= SUBSCRIPTION_ID_MAX_BYTES && (allow_empty || !id.is_empty())
+pub(crate) fn valid_subscription_id(id: &str) -> bool {
+    id.len() <= SUBSCRIPTION_ID_MAX_BYTES && !id.is_empty()
 }
 
 #[cfg(test)]

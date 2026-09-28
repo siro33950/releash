@@ -19,10 +19,7 @@ pub(crate) fn priority_level(path: &str) -> Option<&'static str> {
         | "WritePathsToTerminalSurface"
         | "ResizeTerminalSurface"
         | "StartStateSubscription"
-        | "StopStateSubscription"
-        | "WatchFiles"
-        | "WatchGitDirectory"
-        | "StopWatching" => Some("interactive"),
+        | "StopStateSubscription" => Some("interactive"),
         "StartWorkflow"
         | "AbortWorkflow"
         | "ApproveWorkspaceNode"

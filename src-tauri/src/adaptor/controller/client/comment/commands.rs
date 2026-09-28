@@ -18,7 +18,7 @@ where
 
 pub(crate) async fn create_review_thread_shared(
     data_dir: PathBuf,
-    notify: &crate::adaptor::gateway::push::CommentChangeGateway,
+    notify: &crate::adaptor::gateway::comment_change::CommentChangeGateway,
     usecase: &Arc<ReviewCommentUsecase>,
     worktree_name: String,
     target: ReviewTarget,
@@ -45,7 +45,7 @@ pub(crate) async fn create_review_thread_shared(
 
 pub(crate) async fn append_review_comment_shared(
     data_dir: PathBuf,
-    notify: &crate::adaptor::gateway::push::CommentChangeGateway,
+    notify: &crate::adaptor::gateway::comment_change::CommentChangeGateway,
     usecase: &Arc<ReviewCommentUsecase>,
     worktree_name: String,
     thread_id: String,
@@ -72,7 +72,7 @@ pub(crate) async fn append_review_comment_shared(
 
 pub(crate) async fn resolve_review_thread_shared(
     data_dir: PathBuf,
-    notify: &crate::adaptor::gateway::push::CommentChangeGateway,
+    notify: &crate::adaptor::gateway::comment_change::CommentChangeGateway,
     usecase: &Arc<ReviewCommentUsecase>,
     worktree_name: String,
     thread_id: String,
@@ -101,7 +101,7 @@ pub(crate) async fn resolve_review_thread_shared(
 
 pub(crate) async fn delete_review_thread_shared(
     data_dir: PathBuf,
-    notify: &crate::adaptor::gateway::push::CommentChangeGateway,
+    notify: &crate::adaptor::gateway::comment_change::CommentChangeGateway,
     usecase: &Arc<ReviewCommentUsecase>,
     worktree_name: String,
     thread_id: String,

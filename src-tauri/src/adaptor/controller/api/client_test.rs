@@ -1,13 +1,5 @@
 use super::*;
 
-fn file_change(path: &str) -> crate::adaptor::gateway::repository::watch::FileChangeEvent {
-    crate::adaptor::gateway::repository::watch::FileChangeEvent {
-        watcher_id: 1,
-        path: path.into(),
-        kind: "change".into(),
-    }
-}
-use crate::infrastructure::push::PushSink;
 use crate::usecase::application_startup::ApplicationStartupAuthority;
 use connectrpc::client::{ClientConfig, HttpClient};
 use prost::Message;
@@ -25,44 +17,18 @@ fn unary_request(method: &str, body: &str) -> axum::http::Request<axum::body::Bo
         .unwrap()
 }
 
-fn watch_request(
-    method: &str,
-    subscription_id: &str,
-    request: &str,
-) -> axum::http::Request<axum::body::Body> {
-    unary_request(
-        method,
-        &format!(r#"{{"subscriptionId":"{subscription_id}","request":{request}}}"#),
-    )
-}
-
 async fn serve(
     dispatch: ClientCommandDispatch,
-    sink: Arc<PushSink>,
 ) -> (
     rpc::ClientServiceClient<HttpClient>,
     tokio::task::JoinHandle<()>,
 ) {
-    serve_with_watcher(dispatch, sink, crate::client_api_acceptance::watcher()).await
-}
-
-async fn serve_with_watcher(
-    dispatch: ClientCommandDispatch,
-    sink: Arc<PushSink>,
-    watcher: Arc<crate::usecase::watcher::WatcherUsecase>,
-) -> (
-    rpc::ClientServiceClient<HttpClient>,
-    tokio::task::JoinHandle<()>,
-) {
-    let router = router(Some(ClientApiDeps::new(
-        Arc::new(dispatch),
-        ClientPushGateway::new(sink),
-        watcher,
-    )))
-    .layer(axum::middleware::from_fn_with_state(
-        crate::infrastructure::local_api::ClientBearerToken::from(Arc::<str>::from("client")),
-        super::super::auth::require_client,
-    ));
+    let router = router(Some(ClientApiDeps::new(Arc::new(dispatch)))).layer(
+        axum::middleware::from_fn_with_state(
+            crate::infrastructure::local_api::ClientBearerToken::from(Arc::<str>::from("client")),
+            super::super::auth::require_client,
+        ),
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let config = ClientConfig::new(
         format!("http://{}", listener.local_addr().unwrap())
@@ -108,7 +74,7 @@ async fn test_connect_生成clientのunaryで結果と構造化エラーを返�
             })
         }),
     );
-    let (client, server) = serve(dispatch, Arc::new(PushSink::new())).await;
+    let (client, server) = serve(dispatch).await;
     // When / Then
     assert_eq!(
         client
@@ -126,137 +92,6 @@ async fn test_connect_生成clientのunaryで結果と構造化エラーを返�
     assert_eq!(error.code, connectrpc::ErrorCode::InvalidArgument);
     assert_eq!(error.details[0].type_url, "releash.client.v1.CommandError");
     server.abort();
-}
-
-#[tokio::test]
-async fn test_push_server_streamは再同期通知の後にbackend変更を配信する() {
-    // Given
-    let sink = Arc::new(PushSink::new());
-    let (client, server) = serve(dispatch(), sink.clone()).await;
-    let mut stream = client
-        .subscribe_push(rpc::SubscribePushRequest::default())
-        .await
-        .unwrap();
-    // When / Then
-    let initial = stream
-        .message::<rpc::Push>()
-        .await
-        .unwrap()
-        .unwrap()
-        .to_owned_message();
-    assert!(matches!(
-        to_wire::<wire::Push>(&initial).unwrap().event,
-        Some(wire::push::Event::Resync(_))
-    ));
-    crate::adaptor::gateway::push::BackendPush::FileChange(file_change("/next"))
-        .emit(sink.as_ref());
-    let push = stream
-        .message::<rpc::Push>()
-        .await
-        .unwrap()
-        .unwrap()
-        .to_owned_message();
-    let Some(wire::push::Event::FileChange(value)) = to_wire::<wire::Push>(&push).unwrap().event
-    else {
-        panic!("file change push");
-    };
-    assert_eq!(value.path.as_deref(), Some("/next"));
-    drop(stream);
-    server.abort();
-}
-
-#[tokio::test]
-async fn test_push配信_符号化済みpayloadを保持しlagged後も配信する() {
-    use buffa::view::HasMessageView;
-    use connectrpc::{CodecFormat, Encodable};
-    use futures_util::StreamExt;
-    use rpc::ClientService;
-    // Given
-    let sink = Arc::new(PushSink::new());
-    let deps = ClientApiDeps::new(
-        Arc::new(dispatch()),
-        ClientPushGateway::new(sink.clone()),
-        crate::client_api_acceptance::watcher(),
-    );
-    let body = axum::body::Bytes::new();
-    let view = rpc::SubscribePushRequest::decode_view(&body).unwrap();
-    let mut stream = deps
-        .subscribe_push(
-            connectrpc::RequestContext::default(),
-            connectrpc::ServiceRequest::from_parts(&view, &body),
-        )
-        .await
-        .unwrap()
-        .body;
-    let resync = wire::Push {
-        event: Some(wire::push::Event::Resync(wire::Unit {})),
-    }
-    .encode_to_vec();
-    assert_eq!(
-        stream
-            .next()
-            .await
-            .unwrap()
-            .unwrap()
-            .encode(CodecFormat::Proto)
-            .unwrap(),
-        resync
-    );
-    let event = wire::Push {
-        event: Some(wire::push::Event::FileChange(wire::FileChangeEvent {
-            watcher_id: Some(1),
-            path: Some("/next".into()),
-            kind: Some("change".into()),
-        })),
-    };
-    let mut bytes = resync.clone();
-    bytes.extend(event.encode_to_vec());
-    // When / Then
-    sink.send(bytes.clone());
-    let push = stream.next().await.unwrap().unwrap();
-    assert_eq!(push.encode(CodecFormat::Proto).unwrap(), bytes);
-    let json: serde_json::Value =
-        serde_json::from_slice(&push.encode(CodecFormat::Json).unwrap()).unwrap();
-    assert_eq!(
-        json,
-        serde_json::json!({"fileChange": {"watcher_id": "1", "path": "/next", "kind": "change"}})
-    );
-    for _ in 0..65 {
-        sink.send(bytes.clone());
-    }
-    assert_eq!(
-        stream
-            .next()
-            .await
-            .unwrap()
-            .unwrap()
-            .encode(CodecFormat::Proto)
-            .unwrap(),
-        resync
-    );
-    sink.send(bytes.clone());
-    assert_eq!(
-        stream
-            .next()
-            .await
-            .unwrap()
-            .unwrap()
-            .encode(CodecFormat::Proto)
-            .unwrap(),
-        bytes
-    );
-    sink.send(vec![0xff]);
-    assert_eq!(
-        stream
-            .next()
-            .await
-            .unwrap()
-            .unwrap()
-            .encode(CodecFormat::Json)
-            .unwrap_err()
-            .code,
-        connectrpc::ErrorCode::Internal
-    );
 }
 
 #[tokio::test]
@@ -295,7 +130,7 @@ async fn test_応答未到達_副作用は完了するが照会と再送は行�
             })
         }),
     );
-    let (client, server) = serve(dispatch, Arc::new(PushSink::new())).await;
+    let (client, server) = serve(dispatch).await;
     // When
     let request = client.update_crash_reporting_with_options(
         rpc::UpdateCrashReportingRequest {
@@ -330,137 +165,6 @@ async fn test_応答未到達_副作用は完了するが照会と再送は行�
 }
 
 #[tokio::test]
-async fn test_監視unary_pushの購読が所有し明示停止と切断で解放する() {
-    // Given
-    let files = Arc::new(crate::usecase::watcher::watcher_tests::SubscriptionFiles::default());
-    let watcher = Arc::new(crate::usecase::watcher::WatcherUsecase::new(
-        None,
-        files.clone(),
-    ));
-    let (client, server) = serve_with_watcher(dispatch(), Arc::new(PushSink::new()), watcher).await;
-    let mut push = client
-        .subscribe_push(rpc::SubscribePushRequest {
-            subscription_id: "watchers".into(),
-            ..Default::default()
-        })
-        .await
-        .unwrap();
-    push.message::<rpc::Push>().await.unwrap().unwrap();
-    let mut duplicate = client
-        .subscribe_push(rpc::SubscribePushRequest {
-            subscription_id: "watchers".into(),
-            ..Default::default()
-        })
-        .await
-        .unwrap();
-    assert_eq!(
-        duplicate.message::<rpc::Push>().await.unwrap_err().code,
-        connectrpc::ErrorCode::AlreadyExists
-    );
-    // When
-    let watched = client
-        .watch_files(rpc::WatchFilesRequest {
-            subscription_id: "watchers".into(),
-            request: rpc::StartWatchingRequest {
-                path: Some("/repo".into()),
-                ..Default::default()
-            }
-            .into(),
-            ..Default::default()
-        })
-        .await
-        .unwrap()
-        .into_owned();
-    assert_eq!(watched.value, Some(0));
-    assert_eq!(files.active.lock().unwrap().len(), 1);
-    for _ in 1..64 {
-        client
-            .watch_files(rpc::WatchFilesRequest {
-                subscription_id: "watchers".into(),
-                request: rpc::StartWatchingRequest {
-                    path: Some("/repo".into()),
-                    ..Default::default()
-                }
-                .into(),
-                ..Default::default()
-            })
-            .await
-            .unwrap();
-    }
-    assert_eq!(
-        client
-            .watch_files(rpc::WatchFilesRequest {
-                subscription_id: "watchers".into(),
-                request: rpc::StartWatchingRequest {
-                    path: Some("/repo".into()),
-                    ..Default::default()
-                }
-                .into(),
-                ..Default::default()
-            })
-            .await
-            .unwrap_err()
-            .code,
-        connectrpc::ErrorCode::ResourceExhausted
-    );
-    assert_eq!(files.active.lock().unwrap().len(), 64);
-    files.fail_stop.store(true, Ordering::SeqCst);
-    let error = client
-        .stop_watching(rpc::StopWatchingRequest {
-            watcher_id: watched.value,
-            ..Default::default()
-        })
-        .await
-        .unwrap_err();
-    assert_eq!(error.code, connectrpc::ErrorCode::Internal);
-    assert_eq!(files.active.lock().unwrap().len(), 64);
-    files.fail_stop.store(false, Ordering::SeqCst);
-    client
-        .stop_watching(rpc::StopWatchingRequest {
-            watcher_id: watched.value,
-            ..Default::default()
-        })
-        .await
-        .unwrap();
-    assert_eq!(files.active.lock().unwrap().len(), 63);
-    drop(push);
-    // Then
-    tokio::time::timeout(std::time::Duration::from_secs(1), async {
-        while !files.active.lock().unwrap().is_empty() {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap();
-    assert_eq!(
-        client
-            .watch_files(rpc::WatchFilesRequest {
-                subscription_id: "watchers".into(),
-                request: rpc::StartWatchingRequest {
-                    path: Some("/repo".into()),
-                    ..Default::default()
-                }
-                .into(),
-                ..Default::default()
-            })
-            .await
-            .unwrap_err()
-            .code,
-        connectrpc::ErrorCode::NotFound
-    );
-    assert_eq!(
-        client
-            .watch_files(rpc::WatchFilesRequest::default())
-            .await
-            .unwrap_err()
-            .code,
-        connectrpc::ErrorCode::InvalidArgument
-    );
-    assert_eq!(files.active.lock().unwrap().len(), 0);
-    server.abort();
-}
-
-#[tokio::test]
 async fn test_connect_変更前と同じ16mibまで要求を受理する() {
     // Given
     let received = Arc::new(AtomicUsize::new(0));
@@ -481,7 +185,7 @@ async fn test_connect_変更前と同じ16mibまで要求を受理する() {
             })
         }),
     );
-    let (client, server) = serve(dispatch, Arc::new(PushSink::new())).await;
+    let (client, server) = serve(dispatch).await;
     // When / Then
     let accepted = 16 * 1024 * 1024 - 5;
     client
@@ -505,170 +209,6 @@ async fn test_connect_変更前と同じ16mibまで要求を受理する() {
     );
     assert_eq!(received.load(Ordering::SeqCst), accepted);
     server.abort();
-}
-
-#[tokio::test]
-async fn test_git監視_購読に束縛した公開経路から停止結果を返す() {
-    // Given
-    let directory = tempfile::tempdir().unwrap();
-    let repository = Arc::new(crate::usecase::repository_state::service::tests::watching_service());
-    let watcher = Arc::new(crate::usecase::watcher::WatcherUsecase::new(
-        Some(repository.clone()),
-        Arc::new(crate::usecase::watcher::watcher_tests::SubscriptionFiles::default()),
-    ));
-    let (client, server) = serve_with_watcher(dispatch(), Arc::new(PushSink::new()), watcher).await;
-    let request = || rpc::WatchGitDirectoryRequest {
-        subscription_id: "git".into(),
-        request: rpc::StartGitDirWatchingRequest {
-            repo_path: Some(directory.path().to_str().unwrap().into()),
-            ..Default::default()
-        }
-        .into(),
-        ..Default::default()
-    };
-    // When / Then
-    assert_eq!(
-        client
-            .watch_git_directory(request())
-            .await
-            .unwrap_err()
-            .code,
-        connectrpc::ErrorCode::NotFound
-    );
-    let mut push = client
-        .subscribe_push(rpc::SubscribePushRequest {
-            subscription_id: "git".into(),
-            ..Default::default()
-        })
-        .await
-        .unwrap();
-    push.message::<rpc::Push>().await.unwrap().unwrap();
-    let id = client
-        .watch_git_directory(request())
-        .await
-        .unwrap()
-        .into_owned()
-        .value
-        .unwrap();
-    client
-        .stop_watching(rpc::StopWatchingRequest {
-            watcher_id: Some(id),
-            ..Default::default()
-        })
-        .await
-        .unwrap();
-    assert!(!repository.stop_watching(id).unwrap());
-    drop(push);
-    server.abort();
-}
-
-#[test]
-fn test_監視開始_生成serviceは購読付きの二操作だけを公開する() {
-    // Given
-    let descriptor = prost_reflect::DescriptorPool::decode(
-        include_bytes!(concat!(env!("OUT_DIR"), "/client_descriptor.bin")).as_slice(),
-    )
-    .unwrap();
-    let service = descriptor
-        .get_service_by_name("releash.client.v1.ClientService")
-        .unwrap();
-    let methods = service
-        .methods()
-        .map(|method| method.name().to_owned())
-        .collect::<Vec<_>>();
-    // Then
-    assert!(methods.iter().any(|method| method == "WatchFiles"));
-    assert!(methods.iter().any(|method| method == "WatchGitDirectory"));
-    assert!(!methods.iter().any(|method| method == "StartWatching"));
-    assert!(!methods.iter().any(|method| method == "StartGitDirWatching"));
-}
-
-#[tokio::test]
-async fn test_監視rpc_interactiveの枠と待ち行列が埋まるとblocking前に拒否し解放後は受理する() {
-    use axum::{
-        body::{to_bytes, Body},
-        http::{Request, StatusCode},
-    };
-    use tower::ServiceExt;
-    // Given
-    let files = Arc::new(crate::usecase::watcher::watcher_tests::SubscriptionFiles::default());
-    let watcher = Arc::new(crate::usecase::watcher::WatcherUsecase::new(
-        None,
-        files.clone(),
-    ));
-    let subscription = watcher.subscribe("limited".into()).unwrap();
-    let deps = ClientApiDeps::new(
-        Arc::new(dispatch()),
-        ClientPushGateway::new(Arc::new(PushSink::new())),
-        watcher,
-    );
-    let permits = deps.limits.fill("interactive");
-    // When / Then
-    let router = router(Some(deps.clone()));
-    let request = |method: &str, request: serde_json::Value| {
-        let body = serde_json::json!({"subscriptionId": "limited", "request": request});
-        Request::post(format!("/releash.client.v1.ClientService/{method}"))
-            .header("content-type", "application/json")
-            .header("connect-protocol-version", "1")
-            .body(Body::from(body.to_string()))
-            .unwrap()
-    };
-    for (method, args) in [
-        ("WatchFiles", serde_json::json!({"path": "/repo"})),
-        (
-            "WatchGitDirectory",
-            serde_json::json!({"repoPath": "/repo"}),
-        ),
-    ] {
-        let response = router.clone().oneshot(request(method, args)).await.unwrap();
-        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(error["code"], "resource_exhausted");
-        assert_eq!(
-            error["message"],
-            "interactive requests rejected: queue_full"
-        );
-        assert_eq!(error["details"].as_array().unwrap().len(), 1);
-        assert_eq!(
-            error["details"][0]["type"],
-            "releash.client.v1.CommandError"
-        );
-        use base64::Engine;
-        let bytes = base64::engine::general_purpose::STANDARD_NO_PAD
-            .decode(error["details"][0]["value"].as_str().unwrap())
-            .unwrap();
-        let detail = wire::CommandError::decode(bytes.as_slice()).unwrap();
-        let Some(wire::command_error::Variant::Coded(detail)) = detail.variant else {
-            panic!("coded error");
-        };
-        assert_eq!(detail.code.as_deref(), Some("CLIENT_REQUEST_LIMIT"));
-        assert_eq!(
-            detail.message.as_deref(),
-            Some("interactive requests rejected: queue_full")
-        );
-    }
-    assert_eq!(files.next.load(Ordering::SeqCst), 0);
-    drop(permits);
-    let response = router
-        .clone()
-        .oneshot(request("WatchFiles", serde_json::json!({"path": "/repo"})))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(files.next.load(Ordering::SeqCst), 1);
-    assert_eq!(deps.limits.available("interactive"), 11);
-    let response = router
-        .clone()
-        .oneshot(request(
-            "WatchFiles",
-            serde_json::json!({"path": "/missing"}),
-        ))
-        .await
-        .unwrap();
-    assert_ne!(response.status(), StatusCode::OK);
-    assert_eq!(deps.limits.available("interactive"), 11);
-    drop(subscription);
 }
 
 #[test]
@@ -711,11 +251,7 @@ async fn test_サーバ情報取得_全段の枠が埋まっていても受理�
     };
     use tower::ServiceExt;
     // Given
-    let deps = ClientApiDeps::new(
-        Arc::new(dispatch()),
-        ClientPushGateway::new(Arc::new(PushSink::new())),
-        crate::client_api_acceptance::watcher(),
-    );
+    let deps = ClientApiDeps::new(Arc::new(dispatch()));
     let _permits = ["interactive", "workflow", "default"].map(|level| deps.limits.fill(level));
     let router = router(Some(deps.clone()));
     let request = || {
@@ -738,192 +274,18 @@ async fn test_サーバ情報取得_全段の枠が埋まっていても受理�
 }
 
 #[tokio::test]
-async fn test_監視rpc_要求中断でblocking終了前に枠を解放する() {
-    use tower::ServiceExt;
-    struct BlockingFiles {
-        started: tokio::sync::Notify,
-        stopped: tokio::sync::Notify,
-        finish: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
-    }
-    impl crate::domain::repository::file_watcher::FileWatchGateway for BlockingFiles {
-        fn release(&self, _: u64) {
-            self.stopped.notify_one();
-        }
-        fn start(&self, _: &str) -> Result<u64, String> {
-            self.started.notify_one();
-            self.finish.lock().unwrap().recv().unwrap();
-            Ok(1)
-        }
-        fn stop(&self, _: u64) -> Result<(), String> {
-            Err("ordinary stop failed".into())
-        }
-    }
-    // Given
-    let (finish, receiver) = std::sync::mpsc::channel();
-    let files = Arc::new(BlockingFiles {
-        started: tokio::sync::Notify::new(),
-        stopped: tokio::sync::Notify::new(),
-        finish: std::sync::Mutex::new(receiver),
-    });
-    let watcher = Arc::new(crate::usecase::watcher::WatcherUsecase::new(
-        None,
-        files.clone(),
-    ));
-    let subscription = watcher.subscribe("blocking".into()).unwrap();
-    let deps = ClientApiDeps::new(
-        Arc::new(dispatch()),
-        ClientPushGateway::new(Arc::new(PushSink::new())),
-        watcher,
-    );
-    let router = router(Some(deps.clone()));
-    let task = tokio::spawn(async move {
-        router
-            .oneshot(watch_request(
-                "WatchFiles",
-                "blocking",
-                r#"{"path":"/repo"}"#,
-            ))
-            .await
-    });
-    files.started.notified().await;
-    // When
-    task.abort();
-    assert!(task.await.unwrap_err().is_cancelled());
-    // Then
-    assert_eq!(deps.limits.available("interactive"), 11);
-    finish.send(()).unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(1), async {
-        while deps.limits.available("interactive") != 11 {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(1), files.stopped.notified())
-        .await
-        .unwrap();
-    drop(subscription);
-}
-
-#[tokio::test]
-async fn test_監視停止rpc_要求中断でblocking終了前に枠を解放する() {
-    use tower::ServiceExt;
-    struct BlockingFiles {
-        started: tokio::sync::Notify,
-        finish: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
-    }
-    impl crate::domain::repository::file_watcher::FileWatchGateway for BlockingFiles {
-        fn release(&self, _: u64) {}
-        fn start(&self, _: &str) -> Result<u64, String> {
-            Ok(1)
-        }
-        fn stop(&self, _: u64) -> Result<(), String> {
-            self.started.notify_one();
-            self.finish.lock().unwrap().recv().unwrap();
-            Ok(())
-        }
-    }
-    // Given
-    let (finish, receiver) = std::sync::mpsc::channel();
-    let files = Arc::new(BlockingFiles {
-        started: tokio::sync::Notify::new(),
-        finish: std::sync::Mutex::new(receiver),
-    });
-    let watcher = Arc::new(crate::usecase::watcher::WatcherUsecase::new(
-        None,
-        files.clone(),
-    ));
-    let deps = ClientApiDeps::new(
-        Arc::new(dispatch()),
-        ClientPushGateway::new(Arc::new(PushSink::new())),
-        watcher,
-    );
-    let router = router(Some(deps.clone()));
-    let task = tokio::spawn(async move {
-        router
-            .oneshot(unary_request("StopWatching", r#"{"watcherId":1}"#))
-            .await
-    });
-    files.started.notified().await;
-    // When
-    task.abort();
-    assert!(task.await.unwrap_err().is_cancelled());
-    // Then
-    assert_eq!(deps.limits.available("interactive"), 11);
-    finish.send(()).unwrap();
-}
-
-#[tokio::test]
-async fn test_push配信_不正payloadの復号失敗はstreamのinternalエラーとして返す() {
-    // Given
-    let sink = Arc::new(PushSink::new());
-    let (client, server) = serve(dispatch(), sink.clone()).await;
-    let mut stream = client
-        .subscribe_push(rpc::SubscribePushRequest::default())
-        .await
-        .unwrap();
-    stream.message::<rpc::Push>().await.unwrap().unwrap();
-    // When
-    sink.send(vec![0xff]);
-    // Then
-    assert_eq!(
-        stream.message::<rpc::Push>().await.unwrap_err().code,
-        connectrpc::ErrorCode::Internal
-    );
-    server.abort();
-}
-
-#[tokio::test]
-async fn test_push購読_idは128byteまで受理し超過を保持前に拒否する() {
-    // Given
-    let watcher = crate::client_api_acceptance::watcher();
-    let (client, server) =
-        serve_with_watcher(dispatch(), Arc::new(PushSink::new()), watcher.clone()).await;
-    for id in ["x".repeat(129), "あ".repeat(43)] {
-        // When
-        let mut stream = client
-            .subscribe_push(rpc::SubscribePushRequest {
-                subscription_id: id.clone(),
-                ..Default::default()
-            })
-            .await
-            .unwrap();
-        // Then
-        assert_eq!(
-            stream.message::<rpc::Push>().await.unwrap_err().code,
-            connectrpc::ErrorCode::InvalidArgument
-        );
-        assert!(watcher.subscribe(id).is_ok());
-    }
-    for id in ["x".repeat(128), uuid::Uuid::new_v4().to_string()] {
-        let mut stream = client
-            .subscribe_push(rpc::SubscribePushRequest {
-                subscription_id: id,
-                ..Default::default()
-            })
-            .await
-            .unwrap();
-        assert!(stream.message::<rpc::Push>().await.unwrap().is_some());
-    }
-    server.abort();
-}
-
-#[tokio::test]
 async fn test_状態購読_購読idを入口で128バイトまで受け付ける() {
     // Given
     let subscriptions = crate::usecase::state_subscription::StateSubscriptionUsecase::new(
         vec![],
         Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
     );
-    let deps = ClientApiDeps::new(
-        Arc::new(dispatch()),
-        ClientPushGateway::new(Arc::new(PushSink::new())),
-        crate::client_api_acceptance::watcher(),
-    )
-    .with_state_subscriptions(StateSubscriptionDeps::new(
-        subscriptions.clone(),
-        Arc::new(subscriptions.test_presenter().unwrap().clone()),
-    ));
+    let deps = ClientApiDeps::new(Arc::new(dispatch())).with_state_subscriptions(
+        StateSubscriptionDeps::new(
+            subscriptions.clone(),
+            Arc::new(subscriptions.test_presenter().unwrap().clone()),
+        ),
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let config = ClientConfig::new(
         format!("http://{}", listener.local_addr().unwrap())
@@ -979,15 +341,12 @@ async fn test_状態購読_connectで初期状態と変更と再開を配信す�
         vec!["/repo".into()],
         Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
     );
-    let deps = ClientApiDeps::new(
-        Arc::new(dispatch()),
-        ClientPushGateway::new(Arc::new(PushSink::new())),
-        crate::client_api_acceptance::watcher(),
-    )
-    .with_state_subscriptions(StateSubscriptionDeps::new(
-        subscriptions.clone(),
-        Arc::new(subscriptions.test_presenter().unwrap().clone()),
-    ));
+    let deps = ClientApiDeps::new(Arc::new(dispatch())).with_state_subscriptions(
+        StateSubscriptionDeps::new(
+            subscriptions.clone(),
+            Arc::new(subscriptions.test_presenter().unwrap().clone()),
+        ),
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let config = ClientConfig::new(
         format!("http://{}", listener.local_addr().unwrap())
@@ -1130,11 +489,7 @@ async fn assert_request_deadline(timeout: Option<&str>, seconds: u64) {
             })
         }),
     );
-    let deps = ClientApiDeps::new(
-        Arc::new(dispatch),
-        ClientPushGateway::new(Arc::new(PushSink::new())),
-        crate::client_api_acceptance::watcher(),
-    );
+    let deps = ClientApiDeps::new(Arc::new(dispatch));
     let mut request = Request::post("/releash.client.v1.ClientService/UpdateExternalEditor")
         .header("content-type", "application/json")
         .header("connect-protocol-version", "1");
@@ -1191,11 +546,7 @@ async fn test_単発rpc_呼び出し破棄でasync処理を止め枠を解放す
             })
         }),
     );
-    let deps = ClientApiDeps::new(
-        Arc::new(dispatch),
-        ClientPushGateway::new(Arc::new(PushSink::new())),
-        crate::client_api_acceptance::watcher(),
-    );
+    let deps = ClientApiDeps::new(Arc::new(dispatch));
     let mut call = Box::pin(router(Some(deps.clone())).oneshot(unary_request(
         "UpdateExternalEditor",
         r#"{"editor":"code"}"#,
@@ -1244,42 +595,6 @@ async fn test_単発rpc_取り消しはcancelledでpanicはinternalに分類す�
     assert_eq!(error.code, connectrpc::ErrorCode::Canceled);
 }
 
-#[tokio::test(start_paused = true)]
-async fn test_購読stream_既定期限を過ぎても配信できる() {
-    use axum::{body::Body, http::Request};
-    use futures_util::StreamExt;
-    use tower::ServiceExt;
-    // Given
-    let sink = Arc::new(PushSink::new());
-    let deps = ClientApiDeps::new(
-        Arc::new(dispatch()),
-        ClientPushGateway::new(sink.clone()),
-        crate::client_api_acceptance::watcher(),
-    );
-    let response = router(Some(deps))
-        .oneshot(
-            Request::post("/releash.client.v1.ClientService/SubscribePush")
-                .header("content-type", "application/connect+json")
-                .header("connect-protocol-version", "1")
-                .body(Body::from(vec![0, 0, 0, 0, 2, b'{', b'}']))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert!(response.status().is_success());
-    let mut body = response.into_body().into_data_stream();
-    assert!(body.next().await.unwrap().is_ok());
-    // When
-    tokio::time::advance(std::time::Duration::from_secs(121)).await;
-    assert!(futures_util::poll!(body.next()).is_pending());
-    crate::adaptor::gateway::push::BackendPush::FileChange(file_change("/next"))
-        .emit(sink.as_ref());
-    // Then
-    let frame = body.next().await.unwrap().unwrap();
-    assert_eq!(frame[0], 0);
-    assert!(std::str::from_utf8(&frame[5..]).unwrap().contains("/next"));
-}
-
 #[tokio::test]
 async fn test_単発rpc_client切断で処理が終了する() {
     use tokio::io::AsyncWriteExt;
@@ -1300,11 +615,7 @@ async fn test_単発rpc_client切断で処理が終了する() {
             })
         }),
     );
-    let deps = ClientApiDeps::new(
-        Arc::new(dispatch),
-        ClientPushGateway::new(Arc::new(PushSink::new())),
-        crate::client_api_acceptance::watcher(),
-    );
+    let deps = ClientApiDeps::new(Arc::new(dispatch));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let router = router(Some(deps.clone()));
@@ -1390,15 +701,12 @@ async fn test_状態購読_既定期限後もbookmarkが届く() {
         Vec::new(),
         Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
     );
-    let deps = ClientApiDeps::new(
-        Arc::new(dispatch()),
-        ClientPushGateway::new(Arc::new(PushSink::new())),
-        crate::client_api_acceptance::watcher(),
-    )
-    .with_state_subscriptions(StateSubscriptionDeps::new(
-        subscriptions.clone(),
-        Arc::new(subscriptions.test_presenter().unwrap().clone()),
-    ));
+    let deps = ClientApiDeps::new(Arc::new(dispatch())).with_state_subscriptions(
+        StateSubscriptionDeps::new(
+            subscriptions.clone(),
+            Arc::new(subscriptions.test_presenter().unwrap().clone()),
+        ),
+    );
     let payload = br#"{"clientId":"deadline-test"}"#;
     let mut bytes = vec![0];
     bytes.extend_from_slice(&(payload.len() as u32).to_be_bytes());
@@ -1448,15 +756,12 @@ async fn test_状態購読操作_上限時は拒否し枠解放後は受理す�
         Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
     );
     let _stream = subscriptions.open("limited".into()).unwrap();
-    let deps = ClientApiDeps::new(
-        Arc::new(dispatch()),
-        ClientPushGateway::new(Arc::new(PushSink::new())),
-        crate::client_api_acceptance::watcher(),
-    )
-    .with_state_subscriptions(StateSubscriptionDeps::new(
-        subscriptions.clone(),
-        Arc::new(subscriptions.test_presenter().unwrap().clone()),
-    ));
+    let deps = ClientApiDeps::new(Arc::new(dispatch())).with_state_subscriptions(
+        StateSubscriptionDeps::new(
+            subscriptions.clone(),
+            Arc::new(subscriptions.test_presenter().unwrap().clone()),
+        ),
+    );
     let router = router(Some(deps.clone()));
     for method in ["StartStateSubscription", "StopStateSubscription"] {
         let permits = deps.limits.fill("interactive");
@@ -1532,11 +837,7 @@ async fn assert_cancelled_blocking_mutation(deadline: bool, repository: bool) {
             })
         }),
     );
-    let deps = ClientApiDeps::new(
-        Arc::new(dispatch),
-        ClientPushGateway::new(Arc::new(PushSink::new())),
-        crate::client_api_acceptance::watcher(),
-    );
+    let deps = ClientApiDeps::new(Arc::new(dispatch));
     let request = Request::post("/releash.client.v1.ClientService/GitStage")
         .header("content-type", "application/json")
         .header("connect-protocol-version", "1")
@@ -1616,11 +917,7 @@ async fn test_単発rpc_期限と呼出破棄が同期処理の内側まで届�
                 })
             }),
         );
-        let deps = ClientApiDeps::new(
-            Arc::new(dispatch),
-            ClientPushGateway::new(Arc::new(PushSink::new())),
-            crate::client_api_acceptance::watcher(),
-        );
+        let deps = ClientApiDeps::new(Arc::new(dispatch));
         let mut call = Box::pin(deps.execute(
             expire.then(|| Instant::now() + Duration::from_millis(100)),
             wire::command_request::Command::UpdateExternalEditor(Default::default()),
@@ -1648,141 +945,6 @@ async fn test_単発rpc_期限と呼出破棄が同期処理の内側まで届�
             }
         );
     }
-}
-
-#[tokio::test]
-async fn test_監視rpc_期限と呼出破棄が同期処理の内側まで届く() {
-    use crate::common::operation_context::OperationStopped;
-    use std::time::{Duration, Instant};
-    struct ContextFiles {
-        started: tokio::sync::mpsc::UnboundedSender<()>,
-        stopped: tokio::sync::mpsc::UnboundedSender<OperationStopped>,
-    }
-    impl crate::domain::repository::file_watcher::FileWatchGateway for ContextFiles {
-        fn release(&self, _: u64) {}
-        fn start(&self, _: &str) -> Result<u64, String> {
-            self.started.send(()).unwrap();
-            let error = crate::common::operation_context::sleep(
-                &crate::common::operation_context::current(),
-                Duration::from_secs(30),
-            )
-            .unwrap_err();
-            self.stopped.send(error).unwrap();
-            Err(error.to_string())
-        }
-        fn stop(&self, _: u64) -> Result<(), String> {
-            Ok(())
-        }
-    }
-    for expire in [false, true] {
-        let (started, mut ready) = tokio::sync::mpsc::unbounded_channel();
-        let (stopped, mut stopped_rx) = tokio::sync::mpsc::unbounded_channel();
-        let watcher = Arc::new(crate::usecase::watcher::WatcherUsecase::new(
-            None,
-            Arc::new(ContextFiles { started, stopped }),
-        ));
-        let subscription = watcher.subscribe("context".into()).unwrap();
-        let deps = ClientApiDeps::new(
-            Arc::new(dispatch()),
-            ClientPushGateway::new(Arc::new(PushSink::new())),
-            watcher,
-        );
-        let mut call = Box::pin(deps.watch(
-            expire.then(|| Instant::now() + Duration::from_millis(100)),
-            "context".into(),
-            "/repo".into(),
-            false,
-        ));
-        tokio::select! { _ = ready.recv() => {}, result = &mut call => panic!("call ended before starting: {result:?}") }
-        if expire {
-            assert_eq!(
-                call.await.unwrap_err().code,
-                connectrpc::ErrorCode::DeadlineExceeded
-            );
-        } else {
-            drop(call);
-        }
-        assert_eq!(
-            tokio::time::timeout(Duration::from_secs(2), stopped_rx.recv())
-                .await
-                .unwrap()
-                .unwrap(),
-            if expire {
-                OperationStopped::Expired
-            } else {
-                OperationStopped::Cancelled
-            }
-        );
-        drop(subscription);
-    }
-}
-
-#[tokio::test]
-async fn test_監視rpc_登録後の期限切れでidを返せない監視を解除する() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::time::{Duration, Instant};
-    struct Files {
-        started: AtomicUsize,
-        stopped: AtomicUsize,
-    }
-    impl crate::domain::repository::file_watcher::FileWatchGateway for Files {
-        fn release(&self, id: u64) {
-            assert_eq!(id, 42);
-            self.stopped.fetch_add(1, Ordering::SeqCst);
-        }
-        fn start(&self, _: &str) -> Result<u64, String> {
-            self.started.fetch_add(1, Ordering::SeqCst);
-            let _ = crate::common::operation_context::sleep(
-                &crate::common::operation_context::current(),
-                Duration::from_secs(5),
-            );
-            Ok(42)
-        }
-        fn stop(&self, id: u64) -> Result<(), String> {
-            assert_eq!(id, 42);
-            Err("ordinary stop failed".into())
-        }
-    }
-    // Given
-    let files = Arc::new(Files {
-        started: AtomicUsize::new(0),
-        stopped: AtomicUsize::new(0),
-    });
-    let watcher = Arc::new(crate::usecase::watcher::WatcherUsecase::new(
-        None,
-        files.clone(),
-    ));
-    let subscription = watcher.subscribe("expires".into()).unwrap();
-    let deps = ClientApiDeps::new(
-        Arc::new(dispatch()),
-        ClientPushGateway::new(Arc::new(PushSink::new())),
-        watcher,
-    );
-    // When / Then
-    let error = deps
-        .watch(
-            Some(Instant::now()),
-            "expires".into(),
-            "/repo".into(),
-            false,
-        )
-        .await
-        .unwrap_err();
-    assert_eq!(error.code, connectrpc::ErrorCode::DeadlineExceeded);
-    assert_eq!(files.started.load(Ordering::SeqCst), 0);
-    let error = deps
-        .watch(
-            Some(Instant::now() + Duration::from_millis(100)),
-            "expires".into(),
-            "/repo".into(),
-            false,
-        )
-        .await
-        .unwrap_err();
-    assert_eq!(error.code, connectrpc::ErrorCode::DeadlineExceeded);
-    assert_eq!(files.started.load(Ordering::SeqCst), 1);
-    assert_eq!(files.stopped.load(Ordering::SeqCst), 1);
-    drop(subscription);
 }
 
 #[tokio::test]
@@ -1865,15 +1027,12 @@ async fn test_terminal購読_connectの後段配線と差分再開と流量停�
         .connect_terminal(&terminal)
         .unwrap();
     let subscriptions = subscriptions.with_terminal(terminal);
-    let deps = ClientApiDeps::new(
-        Arc::new(dispatch),
-        ClientPushGateway::new(Arc::new(PushSink::new())),
-        dependencies.watcher,
-    )
-    .with_state_subscriptions(StateSubscriptionDeps::new(
-        subscriptions.clone(),
-        Arc::new(subscriptions.test_presenter().unwrap().clone()),
-    ));
+    let deps = ClientApiDeps::new(Arc::new(dispatch)).with_state_subscriptions(
+        StateSubscriptionDeps::new(
+            subscriptions.clone(),
+            Arc::new(subscriptions.test_presenter().unwrap().clone()),
+        ),
+    );
     assert_eq!(*gateway.list_summaries_calls.lock(), 0);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let config = ClientConfig::new(
@@ -2200,15 +1359,9 @@ async fn test_流量制御_全段の枠が埋まっていてもReportTerminalPro
     let _stream = subscriptions.open("limited".into()).unwrap();
     let presenter = subscriptions.test_presenter().unwrap().clone();
     let units = presenter.terminal_report_units();
-    let deps = ClientApiDeps::new(
-        Arc::new(dispatch()),
-        ClientPushGateway::new(Arc::new(PushSink::new())),
-        crate::client_api_acceptance::watcher(),
-    )
-    .with_state_subscriptions(StateSubscriptionDeps::new(
-        subscriptions,
-        Arc::new(presenter),
-    ));
+    let deps = ClientApiDeps::new(Arc::new(dispatch())).with_state_subscriptions(
+        StateSubscriptionDeps::new(subscriptions, Arc::new(presenter)),
+    );
     let _permits = ["interactive", "workflow", "default"].map(|level| deps.limits.fill(level));
     // When
     let response = router(Some(deps))
@@ -2232,15 +1385,12 @@ async fn test_優先度_defaultが埋まっていてもinteractiveの呼び出�
         Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
     );
     let _stream = subscriptions.open("limited".into()).unwrap();
-    let deps = ClientApiDeps::new(
-        Arc::new(dispatch()),
-        ClientPushGateway::new(Arc::new(PushSink::new())),
-        crate::client_api_acceptance::watcher(),
-    )
-    .with_state_subscriptions(StateSubscriptionDeps::new(
-        subscriptions.clone(),
-        Arc::new(subscriptions.test_presenter().unwrap().clone()),
-    ));
+    let deps = ClientApiDeps::new(Arc::new(dispatch())).with_state_subscriptions(
+        StateSubscriptionDeps::new(
+            subscriptions.clone(),
+            Arc::new(subscriptions.test_presenter().unwrap().clone()),
+        ),
+    );
     let _permits = deps.limits.fill("default");
     let router = router(Some(deps.clone()));
     // When
@@ -2271,12 +1421,7 @@ async fn test_拒否_待ち行列が溢れた拒否を失敗の記録に残す()
     use tower::ServiceExt;
     // Given
     let store = Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default());
-    let deps = ClientApiDeps::new(
-        Arc::new(dispatch()),
-        ClientPushGateway::new(Arc::new(PushSink::new())),
-        crate::client_api_acceptance::watcher(),
-    )
-    .with_failure_output(Arc::new(
+    let deps = ClientApiDeps::new(Arc::new(dispatch())).with_failure_output(Arc::new(
         crate::adaptor::presenter::failure::FailurePresenter::new(store.clone(), None),
     ));
     let _permits = deps.limits.fill("default");
@@ -2313,11 +1458,7 @@ async fn test_待ち行列_席が空くまで待ってから受理する() {
     use tower::ServiceExt;
     // Given
     let (dispatch, release) = pending_editor_dispatch();
-    let deps = ClientApiDeps::new(
-        Arc::new(dispatch),
-        ClientPushGateway::new(Arc::new(PushSink::new())),
-        crate::client_api_acceptance::watcher(),
-    );
+    let deps = ClientApiDeps::new(Arc::new(dispatch));
     let seats = deps
         .limits
         .seats("default")

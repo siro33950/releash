@@ -1,35 +1,5 @@
-import { toJson } from "@bufbuild/protobuf";
-import {
-	type Push,
-	PushSchema,
-	type TerminalEvent,
-} from "@/generated/client_pb";
-import type { ClientPushPayloads } from "@/generated/client_types";
-import { clientJson } from "./clientJson";
+import type { TerminalEvent } from "@/generated/client_pb";
 import type { TerminalSurfaceStreamItem } from "./terminalSurfaceStream";
-
-export function decodeClientPush<K extends keyof ClientPushPayloads>(
-	value: Push,
-	event: K,
-): ClientPushPayloads[K] {
-	const field = PushSchema.fields.find(
-		(field) => field.name.replace(/_/g, "-") === event,
-	);
-	const json = toJson(PushSchema, value);
-	if (
-		!field?.message ||
-		!json ||
-		typeof json !== "object" ||
-		Array.isArray(json) ||
-		!(field.jsonName in json)
-	)
-		throw new Error("Invalid push event");
-	return clientJson(
-		field.message,
-		json[field.jsonName],
-		false,
-	) as ClientPushPayloads[K];
-}
 
 export function decodeTerminalEvent({
 	item,

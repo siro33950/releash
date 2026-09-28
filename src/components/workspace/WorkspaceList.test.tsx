@@ -97,7 +97,6 @@ vi.mock("@/lib/client", async (importOriginal) => ({
 	subscribeState: (...args: Parameters<typeof subscribeState>) =>
 		subscribeState(...args),
 	firstState: (...args: Parameters<typeof readState>) => readState(...args),
-	listenClient: mocks.listen,
 }));
 vi.mock("@tauri-apps/api/event", () => ({
 	emit: mocks.emit,

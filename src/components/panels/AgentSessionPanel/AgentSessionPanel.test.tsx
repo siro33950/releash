@@ -16,7 +16,6 @@ vi.mock("@/lib/client", () => ({
 	invokeClient: vi.fn(),
 	subscribeState: (...args: Parameters<typeof states.subscribeState>) =>
 		states.subscribeState(...args),
-	listenClient: vi.fn().mockResolvedValue(() => {}),
 }));
 vi.mock("@/components/panels/TerminalPanel", () => ({
 	TerminalPanel: (props: Record<string, unknown>) => {
