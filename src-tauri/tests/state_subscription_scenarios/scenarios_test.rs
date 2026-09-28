@@ -368,6 +368,7 @@ async fn test_automation購読_置き場の監視を共有し最後の終了で�
             files.clone(),
         ))),
         vec![],
+        String::new(),
     );
     let first = usecase.open("first".into()).unwrap();
     let second = usecase.open("second".into()).unwrap();
@@ -434,6 +435,7 @@ async fn test_automation購読_置き場のファイル変化で読み直して�
             files.clone(),
         ))),
         vec![],
+        String::new(),
     );
     let mut stream = Box::pin(usecase.open("client".into()).unwrap());
     stream.next().await;

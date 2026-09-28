@@ -8,7 +8,7 @@ fn test_型付き応答_protoが成功と失敗を排他的に保持する() {
     for (command, result) in [
         ("update_external_editor", Ok(Json::Null)),
         ("get_language_from_path", Ok(json!("日本語"))),
-        ("get_automation_config_dir", Ok(json!("/a"))),
+        ("start_workflow", Ok(json!("/a"))),
         (
             "get_language_from_path",
             Err(json!({"code":"INVALID_REQUEST","message":"invalid"})),
