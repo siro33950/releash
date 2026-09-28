@@ -1060,6 +1060,7 @@ async fn test_review_threads購読_comment操作で再配信し最後の停止�
             files.clone(),
         ))),
         vec![],
+        String::new(),
     );
     let mut stream = Box::pin(usecase.open("client".into()).unwrap());
     stream.next().await;
