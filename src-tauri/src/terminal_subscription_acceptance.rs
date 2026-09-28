@@ -24,19 +24,16 @@ impl std::ops::Deref for TerminalSubscriptionHarness {
 }
 
 impl TerminalSubscriptionHarness {
-    pub fn new(
-        queue: Arc<crate::usecase::work_queue::WorkQueueUsecase>,
-        data_dir: PathBuf,
-    ) -> Self {
-        Self::compose(TerminalSurfaceRuntime::new(queue, data_dir))
+    pub fn new(work: Arc<crate::terminal_surface::BackgroundWork>, data_dir: PathBuf) -> Self {
+        Self::compose(TerminalSurfaceRuntime::new(work, data_dir))
     }
 
     pub fn new_with_data_dir_and_event_faults(
-        queue: Arc<crate::usecase::work_queue::WorkQueueUsecase>,
+        work: Arc<crate::terminal_surface::BackgroundWork>,
         data_dir: PathBuf,
     ) -> (Self, TerminalSurfaceEventFaultController) {
         let (runtime, faults) =
-            TerminalSurfaceRuntime::new_with_data_dir_and_event_faults(queue, data_dir);
+            TerminalSurfaceRuntime::new_with_data_dir_and_event_faults(work, data_dir);
         (Self::compose(runtime), faults)
     }
 

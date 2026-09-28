@@ -2,7 +2,9 @@ use super::*;
 use crate::usecase::repository_dto::BranchCardDto;
 use crate::usecase::repository_state::runtime::{
     RepositoryStateInvalidationReceiver, RepositoryStateInvalidationSender,
+    RepositoryStateWorkerRuntime, ScanWorker,
 };
+use crate::usecase::repository_state::scanner::RepositoryScanner;
 use crate::usecase::repository_state::snapshot::RepositorySnapshotParts;
 use crate::usecase::repository_state::worktree::{RepositoryStateNotifier, SnapshotNotification};
 use notify_debouncer_mini::DebouncedEventKind;
@@ -42,7 +44,7 @@ impl RepositoryStateWorkerRuntime for InertRuntime {
         (Box::new(InertSender), Box::new(InertReceiver))
     }
 
-    fn spawn_worker(&self, _future: RepositoryStateWorkerFuture) {}
+    fn spawn_worker(&self, _worker: ScanWorker) {}
 
     async fn sleep(&self, _duration: Duration) {}
 
@@ -109,9 +111,6 @@ fn event(path: &std::path::Path) -> DebouncedEvent {
 
 fn state_with_notifier(notifier: Arc<CountingNotifier>) -> Arc<WorktreeState> {
     WorktreeState::new(
-        crate::usecase::work_queue::WorkQueueUsecase::new(
-            crate::usecase::work_queue_test_runtime::runtime(),
-        ),
         "/repo".to_string(),
         Arc::new(EmptyScanner),
         notifier,
@@ -380,19 +379,23 @@ async fn test_repository走査の期限切れ_旧走査を回収して同じ対�
     // When
     super::super::super::shared::background_worker::background_worker_tests::assert_expired_releases(Box::pin(async move {
         let _scan = attempt_lock.lock().await;
-        TokioRepositoryStateWorkerRuntime.scan(attempt_scanner, attempt_path).await.map_err(|error| crate::usecase::work_queue::WorkFailure::from_error(&error))?;
-        Ok(None)
+        crate::adaptor::controller::repository_scan::RepositoryScanWorkerRuntime::new(crate::usecase::retry::test_retrying()).scan(attempt_scanner, attempt_path).await.map_err(|error| crate::usecase::failure::WorkFailure::from_error(&error))?;
+        Ok(())
     })).await;
     // Then
     assert!(scan_lock.try_lock().is_ok());
-    TokioRepositoryStateWorkerRuntime
-        .scan(scanner.clone(), path)
-        .await
-        .unwrap();
+    crate::adaptor::controller::repository_scan::RepositoryScanWorkerRuntime::new(
+        crate::usecase::retry::test_retrying(),
+    )
+    .scan(scanner.clone(), path)
+    .await
+    .unwrap();
     let (other, repo) = crate::test_support::git::create_test_repo();
     crate::test_support::git::create_initial_commit(&repo);
-    TokioRepositoryStateWorkerRuntime
-        .scan(scanner, other.path().to_str().unwrap().into())
-        .await
-        .unwrap();
+    crate::adaptor::controller::repository_scan::RepositoryScanWorkerRuntime::new(
+        crate::usecase::retry::test_retrying(),
+    )
+    .scan(scanner, other.path().to_str().unwrap().into())
+    .await
+    .unwrap();
 }

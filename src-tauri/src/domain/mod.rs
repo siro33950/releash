@@ -24,7 +24,4 @@ pub(crate) mod workspace_tree;
 #[cfg(feature = "desktop")]
 pub(crate) mod login_item;
 
-pub(crate) mod failure_records;
-pub(crate) mod work_queue;
-
 pub(crate) mod identity;

@@ -17,18 +17,6 @@ impl std::fmt::Display for TechnicalFailure {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BusinessFailure {
-    VersionConflict,
-    Other,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Failure {
-    Business(BusinessFailure),
-    Technical(TechnicalFailureNature),
-}
-
 #[cfg(test)]
 #[path = "failure_test.rs"]
 mod failure_tests;

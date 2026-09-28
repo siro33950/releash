@@ -1,8 +1,9 @@
 use super::*;
+use crate::common::retry::AttemptProgress;
 use crate::domain::failure::{StorageFailure, TechnicalFailure};
 use crate::domain::local_event::{CommitBatchError, LocalEventQueryError, StreamVersion};
 use crate::domain::workflow::WorkflowError;
-use crate::usecase::work_queue::{next_attempt, AttemptProgress};
+use crate::usecase::failure::next_attempt;
 
 #[test]
 fn test_作業列の失敗_版競合だけが業務の手順を読み直す() {

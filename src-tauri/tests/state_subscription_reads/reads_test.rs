@@ -4,11 +4,11 @@ use crate::adaptor::gateway::{
     git_host::InMemoryTtlCache,
     repository::{repo_paths::RepoPathsGateway, scanner::DefaultRepositoryScanner, state::*},
 };
-use crate::domain::failure::{BusinessFailure, Failure};
 use crate::domain::git_host::{CacheTtl, GitHostError, GitHostProvider, IssueInfo, PrStatus};
 use crate::test_support::state_subscription::start_read;
 use crate::test_support::state_subscription::StateSubscriptionEvent;
 use crate::usecase::agent_session::*;
+use crate::usecase::failure::{BusinessFailure, Failure};
 use crate::usecase::git_host::GitHostUsecase;
 use crate::usecase::repo_paths_usecase::{RepoPathsNotifier, RepoPathsUsecase};
 use crate::usecase::repository_state::worktree::{RepositoryStateNotifier, SnapshotNotification};
@@ -164,9 +164,6 @@ impl Fixture {
             Arc::new(RepoPathsOutput(publisher.clone())),
         ));
         let repository_state = Arc::new(RepositoryStateService::new(
-            crate::usecase::work_queue::WorkQueueUsecase::new(
-                crate::usecase::work_queue_test_runtime::runtime(),
-            ),
             Arc::new(RepositoryStateRepositoryGateway::new(repository.clone())),
             Arc::new(DefaultRepositoryScanner::new(
                 repository.clone(),
@@ -174,7 +171,11 @@ impl Fixture {
             )),
             Arc::new(RepositoryStateOutput(publisher.clone())),
             Arc::new(NotifyRepositoryStateWatcher::new(repository.clone())),
-            Arc::new(TokioRepositoryStateWorkerRuntime),
+            Arc::new(
+                crate::adaptor::controller::repository_scan::RepositoryScanWorkerRuntime::new(
+                    crate::usecase::retry::test_retrying(),
+                ),
+            ),
             Arc::new(FsWorktreePathNormalizer),
         ));
         let workflow = Arc::new(wiring::build_workflow_usecase(root.join("data")));
@@ -214,7 +215,9 @@ impl Fixture {
             .with_state_publisher(publisher),
         );
         let reads = WorkspaceStateReads {
-            queue: crate::usecase::work_queue::shared().clone(),
+            failures: Arc::new(
+                crate::adaptor::gateway::failure_records::FailureRecordStore::default(),
+            ),
             repositories,
             repository,
             repository_state,
@@ -462,7 +465,7 @@ async fn test_終了済み実行木のarchiveとrestore_取り直しなしでツ
     let mut reads = fixture.reads.clone();
     reads.workflow = Arc::new(
         wiring::build_workflow_services_with_gateways(
-            crate::usecase::work_queue::shared().clone(),
+            Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
             archive.directory.path(),
             Arc::new(PassthroughManagedWorktreeGateway),
             Arc::new(NoopWorkflowExternalEditorGateway),
@@ -621,7 +624,7 @@ async fn test_失敗購読_node行から実行idの失敗と解消を受け取�
         seed_workflow_session_facts, WorkflowSessionFactSeed,
     };
     use crate::test_support::state_subscription::Event;
-    use crate::usecase::work_queue::{work_queue_tests::queue, WorkFailure, WorkKey};
+    use crate::usecase::failure::{FailureKey, FailureOutput, WorkFailure};
     // Given
     let fixture = Fixture::new();
     let (workflow, store) =
@@ -652,14 +655,18 @@ async fn test_失敗購読_node行から実行idの失敗と解消を受け取�
         panic!("node")
     };
     let target = SubscriptionTarget::Failures(node.id.clone(), 0).to_string();
-    let queue = queue();
+    let failures =
+        Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default());
     let mut reads = fixture.reads.clone();
     reads.workflow = Arc::new(workflow);
-    reads.queue = queue.clone();
+    reads.failures = failures.clone();
     let subscriptions = fixture
         .subscriptions
         .with_reads(Arc::new(reads), None, vec![]);
-    queue.set_publisher(subscriptions.publisher());
+    let presenter = crate::adaptor::presenter::failure::FailurePresenter::new(
+        failures.clone(),
+        Some(subscriptions.publisher()),
+    );
     let mut stream = Box::pin(subscriptions.open("client".into()).unwrap());
     stream.next().await;
     start_read(&subscriptions, "client", &target, None)
@@ -671,27 +678,18 @@ async fn test_失敗購読_node行から実行idの失敗と解消を受け取�
     ));
     stream.next().await;
     // When / Then
-    let key = WorkKey::new("workflow_delegate_injection", "parent");
+    let key = FailureKey::new("workflow_delegate_injection", "parent");
     for active in [true, false] {
         if active {
-            queue
-                .observe(
-                    &key,
-                    &WorkFailure {
-                        kind: Failure::Business(BusinessFailure::Other),
-                        message: "failed".into(),
-                    },
-                )
-                .await;
+            presenter.observed(
+                &key,
+                WorkFailure {
+                    kind: Failure::Business(BusinessFailure::Other),
+                    message: "failed".into(),
+                },
+            );
         } else {
-            queue
-                .execute(
-                    key.clone(),
-                    crate::common::retry::RetryBackoff::CONFLICT,
-                    |_| async { Ok(()) },
-                )
-                .await
-                .unwrap();
+            presenter.resolved(&key);
         }
         let value = tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
@@ -712,7 +710,7 @@ async fn test_失敗購読_node行から実行idの失敗と解消を受け取�
         };
         assert_eq!(page.items.len(), 1);
         assert_eq!(page.items[0].target.as_deref(), Some("parent"));
-        assert_eq!(queue.records("*").await[0].record.active, active);
+        assert_eq!(failures.records("*")[0].record.active, active);
         assert_eq!(page.requires_attention, Some(active));
     }
 }

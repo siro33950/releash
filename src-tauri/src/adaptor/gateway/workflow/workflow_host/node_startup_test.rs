@@ -37,28 +37,28 @@ async fn test_一時失敗の再起動_保存済み実行を読み直しleafと�
 }
 
 #[tokio::test]
-async fn test_起動再試行登録_読込の一時失敗を作業列で再試行し停止分類は終了する() {
+async fn test_起動再試行登録_読込の一時失敗をやり直し停止分類は終了する() {
     use crate::adaptor::gateway::local_event_store::test_helpers::ReadFailure;
     use crate::domain::local_event::LocalEventQueryError;
     use crate::usecase::workflow::node_startup::FailedNodeStart;
 
     for (kind, read_failure, should_start) in [
         (
-            crate::domain::failure::Failure::Technical(
+            crate::usecase::failure::Failure::Technical(
                 crate::domain::failure::TechnicalFailureNature::Transient,
             ),
             ReadFailure::Query(LocalEventQueryError::QueryBusy),
             true,
         ),
         (
-            crate::domain::failure::Failure::Business(
-                crate::domain::failure::BusinessFailure::VersionConflict,
+            crate::usecase::failure::Failure::Business(
+                crate::usecase::failure::BusinessFailure::VersionConflict,
             ),
             ReadFailure::Query(LocalEventQueryError::QueryBusy),
             true,
         ),
         (
-            crate::domain::failure::Failure::Technical(
+            crate::usecase::failure::Failure::Technical(
                 crate::domain::failure::TechnicalFailureNature::Transient,
             ),
             ReadFailure::Sqlite(rusqlite::ffi::SQLITE_IOERR),
@@ -92,21 +92,21 @@ async fn test_起動再試行登録_読込の一時失敗を作業列で再試�
         if should_start {
             assert_eq!(
                 activated[0] == *id,
-                kind == crate::domain::failure::Failure::Technical(
+                kind == crate::usecase::failure::Failure::Technical(
                     crate::domain::failure::TechnicalFailureNature::Transient
                 )
             );
         }
-        let observations = fixture.host.queue.failure_query().records(id).await;
+        let observations = fixture.host.queue.records(id);
         assert!(observations
             .iter()
             .any(|observation| observation.record.kind
                 == if should_start {
-                    crate::domain::failure::Failure::Technical(
+                    crate::usecase::failure::Failure::Technical(
                         crate::domain::failure::TechnicalFailureNature::Transient,
                     )
                 } else {
-                    crate::domain::failure::Failure::Technical(
+                    crate::usecase::failure::Failure::Technical(
                         crate::domain::failure::TechnicalFailureNature::Other,
                     )
                 }));

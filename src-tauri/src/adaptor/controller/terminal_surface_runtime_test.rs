@@ -1,10 +1,9 @@
 use super::*;
-use crate::domain::failure::{BusinessFailure, Failure};
-
-use crate::usecase::work_queue::{WorkFailure, WorkKey};
+use crate::usecase::failure::{BusinessFailure, Failure};
+use crate::usecase::failure::{FailureKey, WorkFailure};
 
 #[tokio::test]
-async fn test_作業列配線_複数のcompositionで失敗状態を共有しない() {
+async fn test_背景処理の配線_複数のcompositionで失敗状態を共有しない() {
     // Given
     let first = initialize_background_work_for_acceptance();
     let second = initialize_background_work_for_acceptance();
@@ -14,18 +13,16 @@ async fn test_作業列配線_複数のcompositionで失敗状態を共有しな
         TerminalSurfaceRuntime::new(second.clone(), directory.path().join("second"));
 
     // When
-    first
-        .observe(
-            &WorkKey::new("terminal_checkpoint", "terminal"),
-            &WorkFailure {
-                kind: Failure::Business(BusinessFailure::Other),
-                message: "repair required".into(),
-            },
-        )
-        .await;
+    first.retrying.failures.observed(
+        &FailureKey::new("terminal_checkpoint", "terminal"),
+        WorkFailure {
+            kind: Failure::Business(BusinessFailure::Other),
+            message: "repair required".into(),
+        },
+    );
 
     // Then
     assert!(!Arc::ptr_eq(&first, &second));
-    assert!(first.records("terminal").await[0].requires_attention);
-    assert!(second.records("terminal").await.is_empty());
+    assert!(first.failures.records("terminal")[0].requires_attention);
+    assert!(second.failures.records("terminal").is_empty());
 }

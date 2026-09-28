@@ -11,7 +11,7 @@ mod usecase_repository_state_error_test {
             ),
             (
                 crate::usecase::repository_state::error::RepositoryStateError::Background {
-                    kind: crate::domain::failure::Failure::Technical(
+                    kind: crate::usecase::failure::Failure::Technical(
                         crate::domain::failure::TechnicalFailureNature::Transient,
                     ),
                     message: "worker".into(),
@@ -20,7 +20,7 @@ mod usecase_repository_state_error_test {
             ),
             (
                 crate::usecase::repository_state::error::RepositoryStateError::Background {
-                    kind: crate::domain::failure::Failure::Technical(
+                    kind: crate::usecase::failure::Failure::Technical(
                         crate::domain::failure::TechnicalFailureNature::TimedOut,
                     ),
                     message: "deadline".into(),

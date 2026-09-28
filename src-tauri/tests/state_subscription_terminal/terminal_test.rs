@@ -65,7 +65,7 @@ fn fixture() -> (
 ) {
     let hub = Arc::new(TerminalSurfaceEventHub::new());
     let gateway = Arc::new(TerminalSurfaceRuntimeGatewayFor::new_with_event_sink(
-        crate::usecase::work_queue::shared().clone(),
+        Arc::new(|_| {}),
         std::path::PathBuf::new(),
         hub.clone(),
         false,

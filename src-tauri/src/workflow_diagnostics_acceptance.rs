@@ -212,16 +212,19 @@ pub struct WorkflowDiagnosticsAcceptanceHost {
 
 impl WorkflowDiagnosticsAcceptanceHost {
     pub fn start(data_dir: PathBuf, applied_directory: PathBuf) -> Result<Self, String> {
-        let queue = crate::usecase::work_queue::WorkQueueUsecase::with_retry_bucket(
-            Arc::new(crate::adaptor::gateway::work_queue::TokioWorkQueueRuntime::default()),
-            Arc::new(tokio::sync::Mutex::new(
-                crate::common::retry::RetryBucket::new(std::time::Duration::ZERO),
+        let failures =
+            Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default());
+        let retrying = crate::usecase::retry::Retrying::new(
+            Arc::new(crate::common::retry::RetryLimiter::new()),
+            Arc::new(crate::adaptor::presenter::failure::FailurePresenter::new(
+                failures.clone(),
+                None,
             )),
         );
         let store = LocalEventStore::open(LocalEventStoreConfig::production(data_dir.clone()))
             .map_err(|error| error.to_string())?;
         let ui_usecase = crate::adaptor::controller::wiring::build_workflow_services_with_gateways(
-            queue.clone(),
+            failures.clone(),
             data_dir.clone(),
             Arc::new(DiagnosticsAcceptanceWorktreeGateway),
             Arc::new(DiagnosticsAcceptanceExternalEditorGateway),
@@ -237,7 +240,7 @@ impl WorkflowDiagnosticsAcceptanceHost {
             )
             .map_err(|error| error.to_string())?,
         );
-        let runtime = Arc::new(WorkflowRuntimeUsecase::new_with_worktree_operations(queue,
+        let runtime = Arc::new(WorkflowRuntimeUsecase::new_with_worktree_operations(retrying,
             Arc::new(DiagnosticsAcceptanceRuntimeGateway),
             Arc::new(
                 crate::adaptor::gateway::workflow::ExecutionTreeArchiveFactRepository::new(

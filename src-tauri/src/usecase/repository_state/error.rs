@@ -7,7 +7,7 @@ pub enum RepositoryStateError {
     ScanInvalidated,
     #[error("{message}")]
     Background {
-        kind: crate::domain::failure::Failure,
+        kind: crate::usecase::failure::Failure,
         message: String,
     },
     #[error(transparent)]

@@ -10,21 +10,38 @@ pub struct TerminalSurfaceRuntime {
     application: Arc<crate::usecase::terminal_surface::application::TerminalSurfaceApplication>,
 }
 
+pub struct BackgroundWork {
+    pub retrying: Arc<crate::usecase::retry::Retrying>,
+    pub failures: Arc<crate::adaptor::gateway::failure_records::FailureRecordStore>,
+    pub handle: tokio::runtime::Handle,
+}
+
+impl BackgroundWork {
+    pub(crate) fn new(
+        retrying: Arc<crate::usecase::retry::Retrying>,
+        failures: Arc<crate::adaptor::gateway::failure_records::FailureRecordStore>,
+        handle: tokio::runtime::Handle,
+    ) -> Self {
+        Self {
+            retrying,
+            failures,
+            handle,
+        }
+    }
+}
+
 pub use crate::adaptor::presenter::terminal_event_fault_relay::{
     TerminalSurfaceEventFault, TerminalSurfaceEventFaultController,
 };
 
 impl TerminalSurfaceRuntime {
-    pub fn new(
-        queue: Arc<crate::usecase::work_queue::WorkQueueUsecase>,
-        data_dir: PathBuf,
-    ) -> Self {
-        Self::compose(queue, data_dir)
+    pub fn new(work: Arc<BackgroundWork>, data_dir: PathBuf) -> Self {
+        Self::compose(work, data_dir)
     }
 
     #[doc(hidden)]
     pub fn new_with_data_dir_and_event_faults(
-        queue: Arc<crate::usecase::work_queue::WorkQueueUsecase>,
+        work: Arc<BackgroundWork>,
         data_dir: PathBuf,
     ) -> (Self, TerminalSurfaceEventFaultController) {
         let event_hub =
@@ -35,23 +52,20 @@ impl TerminalSurfaceRuntime {
                 event_target,
             );
         (
-            Self::compose_with_event_transport(queue, data_dir, event_hub, event_sink),
+            Self::compose_with_event_transport(work, data_dir, event_hub, event_sink),
             faults,
         )
     }
 
-    fn compose(
-        queue: Arc<crate::usecase::work_queue::WorkQueueUsecase>,
-        data_dir: PathBuf,
-    ) -> Self {
+    fn compose(work: Arc<BackgroundWork>, data_dir: PathBuf) -> Self {
         let event_hub =
             Arc::new(crate::adaptor::presenter::terminal_event_hub::TerminalSurfaceEventHub::new());
         let event_sink: Arc<dyn TerminalSurfaceEventSink> = event_hub.clone();
-        Self::compose_with_event_transport(queue, data_dir, event_hub, event_sink)
+        Self::compose_with_event_transport(work, data_dir, event_hub, event_sink)
     }
 
     fn compose_with_event_transport(
-        queue: Arc<crate::usecase::work_queue::WorkQueueUsecase>,
+        work: Arc<BackgroundWork>,
         data_dir: PathBuf,
         event_hub: Arc<crate::adaptor::presenter::terminal_event_hub::TerminalSurfaceEventHub>,
         event_sink: Arc<dyn TerminalSurfaceEventSink>,
@@ -59,7 +73,8 @@ impl TerminalSurfaceRuntime {
         let journal_enabled =
             !crate::infrastructure::performance_switches::terminal_performance_switches()
                 .disable_terminal_journal;
-        let gateway = Arc::new(crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor::new_with_event_sink(queue,
+        let (dirty, dirty_receiver) = super::terminal_checkpoint::dirty_channel();
+        let gateway = Arc::new(crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor::new_with_event_sink(dirty,
             data_dir,
             event_sink,
             journal_enabled,
@@ -72,6 +87,16 @@ impl TerminalSurfaceRuntime {
                 event_hub,
             ),
         );
+        let terminal = application.clone();
+        work.handle.spawn(super::terminal_checkpoint::run(
+            work.retrying.clone(),
+            move |session_key| {
+                let terminal = terminal.clone();
+                async move { terminal.flush_checkpoint(&session_key).await }
+            },
+            dirty_receiver,
+            super::terminal_checkpoint::CHECKPOINT_PERSIST_INTERVAL,
+        ));
         Self { application }
     }
 
@@ -178,23 +203,29 @@ impl TerminalSurfaceRuntime {
 }
 
 #[doc(hidden)]
-pub fn initialize_background_work_for_acceptance(
-) -> Arc<crate::usecase::work_queue::WorkQueueUsecase> {
+pub fn initialize_background_work_for_acceptance() -> Arc<BackgroundWork> {
     static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
     let runtime = RUNTIME.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
             .build()
-            .expect("acceptance work queue runtime")
+            .expect("acceptance background runtime")
     });
     let _entered = runtime.enter();
-    crate::usecase::work_queue::WorkQueueUsecase::with_retry_bucket(
-        Arc::new(crate::adaptor::gateway::work_queue::TokioWorkQueueRuntime::default()),
-        Arc::new(tokio::sync::Mutex::new(
-            crate::common::retry::RetryBucket::new(std::time::Duration::ZERO),
-        )),
-    )
+    let failures =
+        Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default());
+    Arc::new(BackgroundWork::new(
+        crate::usecase::retry::Retrying::new(
+            Arc::new(crate::common::retry::RetryLimiter::new()),
+            Arc::new(crate::adaptor::presenter::failure::FailurePresenter::new(
+                failures.clone(),
+                None,
+            )),
+        ),
+        failures,
+        runtime.handle().clone(),
+    ))
 }
 
 #[cfg(test)]

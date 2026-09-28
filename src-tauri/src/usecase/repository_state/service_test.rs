@@ -105,9 +105,6 @@ impl RepositoryStateNotifier for Notifier {
 }
 fn service(scanner: Arc<Scanner>, notifier: Arc<Notifier>) -> RepositoryStateService {
     RepositoryStateService::new(
-        crate::usecase::work_queue::WorkQueueUsecase::new(
-            crate::usecase::work_queue_test_runtime::runtime(),
-        ),
         Arc::new(Repository),
         scanner,
         notifier,

@@ -2,9 +2,8 @@ use parking_lot::{Condvar, Mutex};
 use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use super::checkpoint_scheduler::DirtyCheckpointScheduler;
 use crate::domain::terminal_surface::entities::{
     TerminalSurface, TerminalSurfaceInputIngressError, TerminalSurfaceInputIngressRegistry,
     TerminalSurfaceRegistry, TerminalSurfaceSpawnReservation, TerminalSurfaceSpawnReservationError,
@@ -34,14 +33,14 @@ use crate::infrastructure::terminal::terminal_emulator::{
     TerminalCheckpointFileStore,
 };
 use crate::infrastructure::terminal::utf8_decoder::decode_utf8_chunk;
-use crate::usecase::work_queue::WorkFailure;
+use crate::usecase::failure::WorkFailure;
 
 pub(crate) struct AttachedTerminalRuntime {
     native_pty: NativePtyRuntime,
     output: Option<NativePtyOutput>,
     event_order: Arc<TerminalSurfaceEventOrder>,
     terminal_surface: Arc<Mutex<NativeTerminalEmulator>>,
-    checkpoint_scheduler: Option<DirtyCheckpointScheduler>,
+    checkpoint_scheduler: Option<CheckpointScheduler>,
     session_key: String,
     output_drained: Arc<(Mutex<bool>, Condvar)>,
     checkpoint_journal: Option<Arc<Mutex<IncrementalCheckpointJournal>>>,
@@ -54,10 +53,8 @@ pub(crate) struct AttachedTerminalRuntime {
 #[cfg(test)]
 pub type TerminalSurfaceRuntimeGateway = TerminalSurfaceRuntimeGatewayFor;
 
-const CHECKPOINT_PERSIST_INTERVAL: Duration = Duration::from_millis(250);
-
 pub struct TerminalSurfaceRuntimeGatewayFor {
-    queue: std::sync::Arc<crate::usecase::work_queue::WorkQueueUsecase>,
+    checkpoint_dirty: Arc<dyn Fn(&str) + Send + Sync>,
     data_dir: Option<std::path::PathBuf>,
     event_sink: Option<Arc<dyn TerminalSurfaceEventSink>>,
     registry: Arc<Mutex<TerminalSurfaceRegistry>>,
@@ -80,7 +77,7 @@ pub struct TerminalSurfaceRuntimeGatewayFor {
 impl Default for TerminalSurfaceRuntimeGatewayFor {
     fn default() -> Self {
         Self {
-            queue: crate::usecase::work_queue::shared().clone(),
+            checkpoint_dirty: Arc::new(|_| {}),
             data_dir: None,
             event_sink: None,
             registry: Arc::new(Mutex::new(TerminalSurfaceRegistry::default())),
@@ -179,8 +176,8 @@ fn compact_checkpoint(
 ) -> Result<(), WorkFailure> {
     let checkpoint = materialize_checkpoint(registry, runtime_generation, terminal_surface)
         .map_err(|message| WorkFailure {
-            kind: crate::domain::failure::Failure::Business(
-                crate::domain::failure::BusinessFailure::Other,
+            kind: crate::usecase::failure::Failure::Business(
+                crate::usecase::failure::BusinessFailure::Other,
             ),
             message,
         })?;
@@ -259,6 +256,38 @@ impl Drop for PendingFlush {
     }
 }
 
+type CheckpointFlush = Arc<dyn Fn() -> Result<(), WorkFailure> + Send + Sync>;
+
+#[derive(Clone)]
+struct CheckpointScheduler {
+    dirty: Arc<dyn Fn(&str) + Send + Sync>,
+    session_key: String,
+    flush: CheckpointFlush,
+    background: Arc<BackgroundCheckpoint>,
+}
+
+impl CheckpointScheduler {
+    fn mark_dirty(&self) {
+        (self.dirty)(&self.session_key);
+    }
+
+    fn flush(&self) -> Result<(), String> {
+        (self.flush)().map_err(|error| error.to_string())
+    }
+}
+
+fn technical_failure(failure: WorkFailure) -> crate::domain::failure::TechnicalFailure {
+    crate::domain::failure::TechnicalFailure {
+        nature: match failure.kind {
+            crate::usecase::failure::Failure::Technical(nature) => nature,
+            crate::usecase::failure::Failure::Business(_) => {
+                crate::domain::failure::TechnicalFailureNature::Other
+            }
+        },
+        message: failure.message,
+    }
+}
+
 impl BackgroundCheckpoint {
     async fn flush(&self) -> Result<(), WorkFailure> {
         use super::super::shared::background_worker::{execute, Request};
@@ -283,8 +312,8 @@ impl BackgroundCheckpoint {
                 &self.terminal_surface,
             )
             .map_err(|message| WorkFailure {
-                kind: crate::domain::failure::Failure::Business(
-                    crate::domain::failure::BusinessFailure::Other,
+                kind: crate::usecase::failure::Failure::Business(
+                    crate::usecase::failure::BusinessFailure::Other,
                 ),
                 message,
             })?;
@@ -329,7 +358,7 @@ struct TerminalOutputReaderContext {
     registry: Arc<Mutex<TerminalSurfaceRegistry>>,
     runtime_generation: u64,
     terminal_surface: Arc<Mutex<NativeTerminalEmulator>>,
-    checkpoint_scheduler: Option<DirtyCheckpointScheduler>,
+    checkpoint_scheduler: Option<CheckpointScheduler>,
     session_key: String,
     output_drained: Arc<(Mutex<bool>, Condvar)>,
     checkpoint_journal: Option<Arc<Mutex<IncrementalCheckpointJournal>>>,
@@ -575,9 +604,8 @@ fn wait_for_output_drain(output_drained: &Arc<(Mutex<bool>, Condvar)>) {
 impl TerminalSurfaceRuntimeGatewayFor {
     #[cfg(test)]
     pub fn new(data_dir: std::path::PathBuf) -> Self {
-        let queue = crate::usecase::work_queue::shared().clone();
         Self {
-            queue,
+            checkpoint_dirty: Arc::new(|_| {}),
             data_dir: Some(data_dir),
             event_sink: None,
             registry: Arc::new(Mutex::new(TerminalSurfaceRegistry::default())),
@@ -597,13 +625,13 @@ impl TerminalSurfaceRuntimeGatewayFor {
     }
 
     pub fn new_with_event_sink(
-        queue: std::sync::Arc<crate::usecase::work_queue::WorkQueueUsecase>,
+        checkpoint_dirty: Arc<dyn Fn(&str) + Send + Sync>,
         data_dir: std::path::PathBuf,
         event_sink: Arc<dyn TerminalSurfaceEventSink>,
         journal_enabled: bool,
     ) -> Self {
         Self {
-            queue,
+            checkpoint_dirty,
             data_dir: Some(data_dir),
             event_sink: Some(event_sink),
             registry: Arc::new(Mutex::new(TerminalSurfaceRegistry::default())),
@@ -852,11 +880,10 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
                 journal: checkpoint_journal.clone(),
                 io: checkpoint_io.clone(),
             });
-            DirtyCheckpointScheduler::spawn(
-                self.queue.clone(),
-                request.session_key.clone(),
-                CHECKPOINT_PERSIST_INTERVAL,
-                Arc::new(move || {
+            CheckpointScheduler {
+                dirty: self.checkpoint_dirty.clone(),
+                session_key: request.session_key.clone(),
+                flush: Arc::new(move || {
                     let _io = futures_executor::block_on(checkpoint_io.lock());
                     flush_incremental_checkpoint(
                         &store,
@@ -867,11 +894,8 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
                         &checkpoint_journal,
                     )
                 }),
-                Arc::new(move || {
-                    let background = background.clone();
-                    Box::pin(async move { background.flush().await })
-                }),
-            )
+                background,
+            }
         });
         let runtime = AttachedTerminalRuntime {
             native_pty: backend_session.runtime,
@@ -1247,6 +1271,31 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
 
     fn remove_runtime(&self, runtime_generation: u64) {
         self.runtimes.lock().remove(&runtime_generation);
+    }
+
+    fn flush_checkpoint(
+        &self,
+        session_key: &str,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<(), crate::domain::failure::TechnicalFailure>>
+                + Send
+                + '_,
+        >,
+    > {
+        let background = self
+            .runtimes
+            .lock()
+            .values()
+            .find(|runtime| runtime.session_key == session_key)
+            .and_then(|runtime| runtime.checkpoint_scheduler.as_ref())
+            .map(|scheduler| Arc::clone(&scheduler.background));
+        Box::pin(async move {
+            match background {
+                Some(background) => background.flush().await.map_err(technical_failure),
+                None => Ok(()),
+            }
+        })
     }
 
     fn flush_checkpoints(&self) -> Result<(), TerminalSurfaceGatewayError> {

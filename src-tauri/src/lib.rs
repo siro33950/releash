@@ -19,7 +19,7 @@ pub mod workflow_delegate_acceptance;
 pub mod workflow_diagnostics_acceptance;
 pub mod terminal_surface {
     pub use crate::adaptor::controller::terminal_surface_runtime::{
-        initialize_background_work_for_acceptance, TerminalSurfaceEventFault,
+        initialize_background_work_for_acceptance, BackgroundWork, TerminalSurfaceEventFault,
         TerminalSurfaceEventFaultController, TerminalSurfaceRuntime,
     };
     pub use crate::adaptor::presenter::terminal::{

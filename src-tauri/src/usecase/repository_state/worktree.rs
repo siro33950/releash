@@ -6,10 +6,10 @@ use std::time::Duration;
 use parking_lot::{Mutex, RwLock};
 
 use super::error::RepositoryStateError;
-use super::runtime::{RepositoryStateInvalidationSender, RepositoryStateWorkerRuntime};
+use super::runtime::{RepositoryStateInvalidationSender, RepositoryStateWorkerRuntime, ScanWorker};
 use super::scanner::RepositoryScanner;
 use super::snapshot::{RepositorySnapshot, RepositorySnapshotParts};
-use super::worker::{run_worker, InvalidateReason};
+use super::worker::InvalidateReason;
 
 pub trait RepositoryStateWatchSession: Send + Sync {}
 
@@ -99,7 +99,6 @@ pub struct WorktreeState {
 
 impl WorktreeState {
     pub fn new(
-        queue: std::sync::Arc<crate::usecase::work_queue::WorkQueueUsecase>,
         worktree_path: String,
         scanner: Arc<dyn RepositoryScanner>,
         notifier: Arc<dyn RepositoryStateNotifier>,
@@ -121,15 +120,64 @@ impl WorktreeState {
             subscriptions: Mutex::new(HashMap::new()),
             notifier,
         });
-        runtime.spawn_worker(Box::pin(run_worker(
-            queue,
-            state.clone(),
+        runtime.spawn_worker(ScanWorker {
+            state: state.clone(),
             scanner,
-            runtime.clone(),
-            invalidate_rx,
+            receiver: invalidate_rx,
             debounce,
-        )));
+        });
         state
+    }
+
+    pub async fn scan_once(
+        &self,
+        scanner: Arc<dyn RepositoryScanner>,
+        runtime: &dyn RepositoryStateWorkerRuntime,
+    ) -> Result<Option<Arc<RepositorySnapshot>>, RepositoryStateError> {
+        let _scan = self.scan_lock.lock().await;
+        if self.is_shutdown() {
+            return Ok(None);
+        }
+        self.set_refreshing(true);
+        let generation = self.requested_generation();
+        let parts = runtime.scan(scanner, self.worktree_path.clone()).await?;
+        Ok(self.commit_snapshot(parts, generation))
+    }
+
+    pub fn finish_scan(
+        &self,
+        scanner: &dyn RepositoryScanner,
+        result: Result<Option<Arc<RepositorySnapshot>>, RepositoryStateError>,
+        reason: InvalidateReason,
+    ) -> Option<InvalidateReason> {
+        self.set_refreshing(false);
+        match result {
+            Ok(Some(snapshot)) => {
+                let names: Vec<String> = snapshot
+                    .branch_cards
+                    .iter()
+                    .map(|card| card.name.clone())
+                    .collect();
+                if let Err(err) = scanner.prune_stale_branch_bases(&self.worktree_path, &names) {
+                    log::warn!(
+                        "repository snapshot branch base GC failed for {}: {err}",
+                        self.worktree_path
+                    );
+                }
+                self.notify_snapshot_changed(reason);
+                None
+            }
+            Ok(None) => Some(reason),
+            Err(err) => {
+                log::warn!(
+                    "repository snapshot scan failed for {}: {err}",
+                    self.worktree_path
+                );
+                self.mark_scan_failed();
+                self.notify_snapshot_changed(reason);
+                None
+            }
+        }
     }
 
     pub fn worktree_path(&self) -> &str {
@@ -418,9 +466,6 @@ mod tests {
 
     fn test_state(scanner: Arc<dyn RepositoryScanner>, debounce: Duration) -> Arc<WorktreeState> {
         WorktreeState::new(
-            crate::usecase::work_queue::WorkQueueUsecase::new(
-                crate::usecase::work_queue_test_runtime::runtime(),
-            ),
             "/repo".to_string(),
             scanner,
             Arc::new(NoopRepositoryStateNotifier),
@@ -434,9 +479,6 @@ mod tests {
         notifier: Arc<dyn RepositoryStateNotifier>,
     ) -> Arc<WorktreeState> {
         WorktreeState::new(
-            crate::usecase::work_queue::WorkQueueUsecase::new(
-                crate::usecase::work_queue_test_runtime::runtime(),
-            ),
             "/repo".to_string(),
             scanner,
             notifier,

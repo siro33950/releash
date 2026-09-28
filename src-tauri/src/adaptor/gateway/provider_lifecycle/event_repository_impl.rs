@@ -18,7 +18,7 @@ pub(crate) struct LocalProviderLifecycleEventRepository {
     repository: Arc<dyn LocalEventTransactionRepository>,
     installation_id: String,
     pending: Mutex<HashMap<[u8; 32], PreparedCommit>>,
-    queue: Arc<crate::usecase::work_queue::WorkQueueUsecase>,
+    queue: Arc<crate::usecase::retry::Retrying>,
 }
 
 #[derive(Clone)]
@@ -32,7 +32,7 @@ struct PreparedCommit {
 
 impl LocalProviderLifecycleEventRepository {
     pub(crate) fn new(
-        queue: std::sync::Arc<crate::usecase::work_queue::WorkQueueUsecase>,
+        queue: std::sync::Arc<crate::usecase::retry::Retrying>,
         repository: Arc<dyn LocalEventTransactionRepository>,
         installation_id: String,
     ) -> Self {
@@ -61,17 +61,16 @@ impl LocalProviderLifecycleEventRepository {
             .take_pending(&semantic_key)?
             .map(Ok)
             .unwrap_or_else(|| self.prepare_commit(&scoped_events))?;
-        crate::adaptor::gateway::work_queue::retry(
-            &self.queue,
-            crate::usecase::work_queue::WorkKey::new(
-                "provider_lifecycle_append",
-                &prepared.identity,
-            ),
-            crate::common::retry::RetryBackoff::SERVICE,
-            || self.append_prepared(semantic_key, &prepared),
-            true,
-        )
-        .await
+        self.queue
+            .restart(
+                crate::usecase::failure::FailureKey::new(
+                    "provider_lifecycle_append",
+                    &prepared.identity,
+                ),
+                crate::common::retry::RetryBackoff::SERVICE,
+                |_| self.append_prepared(semantic_key, &prepared),
+            )
+            .await
     }
 
     async fn append_prepared(
@@ -205,23 +204,22 @@ impl LocalProviderLifecycleEventRepository {
         &self,
         identity: &CommitIdentity,
     ) -> Result<CommitResolution, ProviderLifecycleRepositoryError> {
-        let key = crate::usecase::work_queue::WorkKey::new(
+        let key = crate::usecase::failure::FailureKey::new(
             "provider_lifecycle_resolution",
             &format!("{identity:?}"),
         );
-        crate::adaptor::gateway::work_queue::retry(
-            &self.queue,
-            key,
-            crate::common::retry::RetryBackoff::SERVICE,
-            || async {
-                self.repository
-                    .resolve_commit(identity.clone())
-                    .await
-                    .map_err(ProviderLifecycleRepositoryError::from)
-            },
-            false,
-        )
-        .await
+        self.queue
+            .stage(
+                key,
+                crate::common::retry::RetryBackoff::SERVICE,
+                |_| async {
+                    self.repository
+                        .resolve_commit(identity.clone())
+                        .await
+                        .map_err(ProviderLifecycleRepositoryError::from)
+                },
+            )
+            .await
     }
 
     fn take_pending(

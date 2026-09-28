@@ -111,7 +111,7 @@ where
 
 #[derive(Clone)]
 pub(crate) struct WorkspaceStateReads {
-    pub queue: std::sync::Arc<crate::usecase::work_queue::WorkQueueUsecase>,
+    pub failures: Arc<dyn crate::usecase::failure::FailureQueryService>,
     pub repositories: Arc<RepoPathsUsecase>,
     pub repository: Arc<RepositoryUsecase>,
     pub repository_state: Arc<RepositoryStateService>,
@@ -130,9 +130,8 @@ impl WorkspaceStateReads {
         match target {
             T::Failures(target, offset) => {
                 return Ok(StateValue::Failures(
-                    self.queue
-                        .failure_query()
-                        .records_page_for_targets(
+                    self.failures
+                        .page(
                             &self.workflow.failure_targets(target).await.map_err(error)?,
                             *offset,
                         )

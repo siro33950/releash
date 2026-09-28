@@ -46,13 +46,9 @@ pub(crate) mod cli_install;
 
 pub mod worktree_operation;
 
+pub(crate) mod failure;
+pub(crate) mod retry;
 pub(crate) mod state_subscription;
-pub(crate) mod work_queue;
-
-#[cfg(test)]
-pub(crate) mod work_queue_test_runtime;
-
-pub(crate) mod failure_query_service;
 
 pub(crate) mod push;
 mod work_failure;

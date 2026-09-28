@@ -288,7 +288,7 @@ impl Fixture {
         });
         let sessions = Arc::new(TestSessions::default());
         let mut host = WorkflowRuntimeHost::with_runtime_ports(
-            crate::usecase::work_queue::shared().clone(),
+            crate::usecase::retry::shared().clone(),
             Arc::new(super::workflow_host_tests::UnusedWorkflowResolver),
             Arc::new(super::workflow_host_tests::AcceptingWorktreeResolver),
             workspace_query(store.clone()),
@@ -390,7 +390,7 @@ impl Fixture {
 
     pub(super) fn restarted_host(&self) -> WorkflowRuntimeHost {
         let mut host = WorkflowRuntimeHost::with_runtime_ports(
-            crate::usecase::work_queue::shared().clone(),
+            crate::usecase::retry::shared().clone(),
             Arc::new(super::workflow_host_tests::UnusedWorkflowResolver),
             Arc::new(super::workflow_host_tests::AcceptingWorktreeResolver),
             self.host.workspace_query.clone(),
@@ -470,7 +470,7 @@ pub(super) fn take_workflow_execution_broadcasts(
 
 pub(super) fn workspace_query(store: Arc<LocalEventStore>) -> Arc<SqliteWorkspaceQueryService> {
     SqliteWorkspaceQueryService::with_repository(
-        crate::usecase::work_queue::shared().clone(),
+        Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
         SqliteWorkspaceTreeRepository::new(store.clone()),
         Arc::new(ExecutionTreeArchiveFactRepository::from_backend(
             workflow_fact_log::FactLogReadBackend::Live(store),
@@ -520,14 +520,14 @@ pub(crate) fn archive_fixture_with_resolver(
         directory.path(),
     ));
     let query = SqliteWorkspaceQueryService::with_repository(
-        crate::usecase::work_queue::shared().clone(),
+        Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
         SqliteWorkspaceTreeRepository::new(store.clone()),
         repository.clone(),
     );
     let app = test_helpers::dependencies(Some(store.clone()));
     let sessions = Arc::new(TestSessions::default());
     let host = Arc::new(WorkflowRuntimeHost::with_runtime_ports(
-        crate::usecase::work_queue::shared().clone(),
+        crate::usecase::retry::shared().clone(),
         Arc::new(UnusedWorkflowResolver),
         resolver,
         query.clone(),
@@ -572,16 +572,15 @@ pub(crate) async fn reconcile_startup(
     app: &WorkflowRuntimeDependencies,
 ) -> Result<(), WorkflowRuntimeError> {
     match crate::adaptor::controller::wiring::wire_workflow_startup(
-        crate::usecase::work_queue::WorkQueueUsecase::new(std::sync::Arc::new(
-            crate::usecase::work_queue::ImmediateWorkQueueRuntime::default(),
-        )),
         app.clone(),
         Arc::new(host.clone()),
     ) {
-        Some(startup) => startup
-            .execute()
-            .await
-            .map_err(|error| WorkflowRuntimeError::SessionStore(error.to_string())),
+        Some(startup) => crate::adaptor::controller::workflow_startup::recover(
+            &crate::usecase::retry::test_retrying(),
+            &startup,
+        )
+        .await
+        .map_err(|error| WorkflowRuntimeError::SessionStore(error.to_string())),
         None => Ok(()),
     }
 }

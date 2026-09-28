@@ -132,15 +132,13 @@ async fn test_隔離起動_生成失敗後は自動で新しいattemptだけを�
         .iter()
         .filter(|node| node.node_name == "work")
         .collect::<Vec<_>>();
-    let failures = crate::usecase::work_queue::shared()
-        .records(&attempts[0].id)
-        .await;
+    let failures = crate::usecase::retry::shared().records(&attempts[0].id);
     assert!(failures
         .iter()
         .any(|failure| failure.record.operation == "workflow_node_start"
             && failure.record.kind
-                == crate::domain::failure::Failure::Business(
-                    crate::domain::failure::BusinessFailure::VersionConflict
+                == crate::usecase::failure::Failure::Business(
+                    crate::usecase::failure::BusinessFailure::VersionConflict
                 )
             && failure.record.count == 1));
     assert_eq!(attempts.len(), 2);
@@ -185,15 +183,13 @@ async fn test_隔離起動_合成子の生成失敗では子を起動せず復�
         .get_state_by_execution_id(&fixture.app, &execution_id)
         .await
         .unwrap();
-    let failures = crate::usecase::work_queue::shared()
-        .records(&snapshot.node_executions[0].id)
-        .await;
+    let failures = crate::usecase::retry::shared().records(&snapshot.node_executions[0].id);
     assert!(failures
         .iter()
         .any(|failure| failure.record.operation == "workflow_node_start"
             && failure.record.kind
-                == crate::domain::failure::Failure::Business(
-                    crate::domain::failure::BusinessFailure::VersionConflict
+                == crate::usecase::failure::Failure::Business(
+                    crate::usecase::failure::BusinessFailure::VersionConflict
                 )
             && failure.record.count == 1));
     assert_eq!(snapshot.node_executions.len(), 1);
@@ -609,7 +605,7 @@ fn control(
     fixture: &Fixture,
 ) -> crate::usecase::workflow::control_plane::WorkflowControlPlaneUsecase {
     crate::usecase::workflow::control_plane::WorkflowControlPlaneUsecase::new(
-        crate::usecase::work_queue::shared().clone(),
+        crate::usecase::retry::shared().clone(),
         Arc::new(
             crate::adaptor::gateway::workflow::WorkflowRuntimeCommandGateway::new_with_driver(
                 fixture.app.clone(),
@@ -1664,7 +1660,8 @@ async fn test_起動時再開_実経路でstore失敗の分類を保持する() 
 #[tokio::test]
 async fn test_node起動失敗_版競合だけは失敗として記録しない() {
     // Given
-    use crate::domain::failure::{Failure, TechnicalFailure, TechnicalFailureNature};
+    use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
+    use crate::usecase::failure::Failure;
     for (error, retry, version_conflict) in [
         (
             WorkflowRuntimeError::Store(
@@ -1733,7 +1730,7 @@ async fn test_node起動失敗_版競合だけは失敗として記録しない(
             // Then
             assert_eq!(failed.len(), usize::from(retry), "{error:?}");
             if let Some(failure) = failed.first() { assert_eq!(failure.kind, kind); assert_eq!(&failure.id, node_id); }
-            let records = crate::usecase::work_queue::shared().records(node_id).await;
+            let records = crate::usecase::retry::shared().records(node_id);
             let observed = records.iter().find(|record| record.record.operation == "workflow_node_start").unwrap();
             assert_eq!(observed.record.kind, kind);
             assert_eq!(observed.record.count, 1);

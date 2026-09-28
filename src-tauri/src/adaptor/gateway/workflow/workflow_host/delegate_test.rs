@@ -12,10 +12,7 @@ fn control(fixture: &Fixture, host: &WorkflowRuntimeHost) -> WorkflowControlPlan
         fixture.app.clone(),
         Arc::new(host.clone()),
     );
-    WorkflowControlPlaneUsecase::new(
-        crate::usecase::work_queue::shared().clone(),
-        Arc::new(gateway),
-    )
+    WorkflowControlPlaneUsecase::new(crate::usecase::retry::shared().clone(), Arc::new(gateway))
 }
 
 async fn submit(control: &WorkflowControlPlaneUsecase, id: &str, value: serde_json::Value) {
@@ -1834,26 +1831,17 @@ async fn test_delegate_新attemptのresumeでも未注入結果を送り再生�
         assert!(targets.contains(&next.id));
         assert!(!targets.contains(&child.id));
         for id in [&parent.id, &next.id, &child.id] {
-            fixture
-                .host
-                .queue
-                .observe(
-                    &crate::usecase::work_queue::WorkKey::new("workflow_delegate_injection", id),
-                    &crate::usecase::work_queue::WorkFailure {
-                        kind: crate::domain::failure::Failure::Business(
-                            crate::domain::failure::BusinessFailure::Other,
-                        ),
-                        message: "injection failed".into(),
-                    },
-                )
-                .await;
+            fixture.host.queue.failures.observed(
+                &crate::usecase::failure::FailureKey::new("workflow_delegate_injection", id),
+                crate::usecase::failure::WorkFailure {
+                    kind: crate::usecase::failure::Failure::Business(
+                        crate::usecase::failure::BusinessFailure::Other,
+                    ),
+                    message: "injection failed".into(),
+                },
+            );
         }
-        let page = fixture
-            .host
-            .queue
-            .failure_query()
-            .records_page_for_targets(&targets, 0)
-            .await;
+        let page = failure_page(&fixture.host.queue, &targets).await;
         assert!(page
             .items
             .iter()
@@ -2168,7 +2156,7 @@ async fn test_delegate_保存の競合が続いてもabortを完了し注入も�
     let mut host = fixture.host.clone();
     host.delegate_continuation = Some(Arc::new(
         crate::usecase::workflow::delegate::DelegateContinuationUsecase {
-            queue: host.queue.clone(),
+            retrying: host.queue.clone(),
             gateway: Arc::new(ConflictingContinuation {
                 inner: HostDelegateContinuation {
                     host: host.clone(),
@@ -2187,11 +2175,7 @@ async fn test_delegate_保存の競合が続いてもabortを完了し注入も�
     let abort = async {
         loop {
             let targets = host.workspace_query.failure_targets(&tree).await.unwrap();
-            let page = host
-                .queue
-                .failure_query()
-                .records_page_for_targets(&targets, 0)
-                .await;
+            let page = failure_page(&host.queue, &targets).await;
             if let Some(item) = page.items.iter().find(|item| item.record.count >= 2) {
                 assert_eq!(item.record.target, parent.id);
                 assert!(item.record.active);
@@ -2300,4 +2284,19 @@ async fn test_delegate_resumeの注入失敗を返し親を失敗として確定
         .iter()
         .any(|record| record.meta.node_execution_id == parent.id
             && matches!(record.fact, NodeFact::RuntimeFailureObserved(_))));
+}
+
+async fn failure_page(
+    retrying: &crate::usecase::retry::Retrying,
+    targets: &[String],
+) -> crate::usecase::failure::FailurePage {
+    use crate::usecase::failure::FailureQueryService;
+    retrying
+        .failures
+        .as_any()
+        .downcast_ref::<crate::adaptor::presenter::failure::FailurePresenter>()
+        .expect("test failure presenter")
+        .store()
+        .page(targets, 0)
+        .await
 }

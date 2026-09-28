@@ -1,5 +1,7 @@
+mod watch;
 use std::path::Path;
 use std::sync::Arc;
+pub(crate) use watch::ReviewCommentsWatchUsecase;
 
 pub(crate) mod dto;
 

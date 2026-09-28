@@ -1232,7 +1232,7 @@ pub(crate) mod tests {
             ),
         );
         let repository_state = Arc::new(
-            crate::usecase::repository_state::RepositoryStateService::new(crate::usecase::work_queue::shared().clone(),
+            crate::usecase::repository_state::RepositoryStateService::new(
                 repository_state_repository,
                 repository_scanner,
                 Arc::new(crate::usecase::repository_state::worktree::NoopRepositoryStateNotifier),
@@ -1257,7 +1257,7 @@ pub(crate) mod tests {
         .unwrap();
         let (workflow_usecase, _) =
             crate::adaptor::controller::wiring::build_workflow_services_with_repository_worktrees(
-                crate::usecase::work_queue::shared().clone(),
+                Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
                 data_dir.clone(),
                 repository_usecase.clone(),
                 config_repository,

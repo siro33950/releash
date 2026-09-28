@@ -233,15 +233,12 @@ async fn test_起動時recovery_通常起動と同じsessionを一度だけ起�
     use crate::domain::workflow::NodeFact;
     // Given
     let fixture = archive_fixture();
-    let runtime = fixture.runtime.clone().with_startup(
-        crate::adaptor::controller::wiring::wire_workflow_startup(
-            crate::usecase::work_queue::WorkQueueUsecase::new(std::sync::Arc::new(
-                crate::usecase::work_queue::ImmediateWorkQueueRuntime::default(),
-            )),
-            fixture.app.clone(),
-            fixture.host.clone(),
-        ),
-    );
+    let startup = crate::adaptor::controller::wiring::wire_workflow_startup(
+        fixture.app.clone(),
+        fixture.host.clone(),
+    )
+    .unwrap();
+    let retrying = crate::usecase::retry::test_retrying();
     let mut gates = fixture.host.runtime_activation_locks.lock().await;
     let mut start = Box::pin(archive_workflow(&fixture));
     assert!(futures_util::poll!(start.as_mut()).is_pending());
@@ -266,7 +263,9 @@ async fn test_起動時recovery_通常起動と同じsessionを一度だけ起�
     gates.insert(id.clone(), Arc::downgrade(&gate));
     drop(gates);
     test_helpers::poll_until_pending(start.as_mut(), || Arc::strong_count(&gate) > 1).await;
-    let mut recovery = Box::pin(runtime.recover_startup());
+    let mut recovery = Box::pin(crate::adaptor::controller::workflow_startup::recover(
+        &retrying, &startup,
+    ));
     assert!(futures_util::poll!(recovery.as_mut()).is_pending());
 
     // When
@@ -380,7 +379,7 @@ async fn test_workflow永続化_本番構成で起動から完了とabortまで�
                 .unwrap();
         let app = test_helpers::dependencies(Some(store.clone()));
         let query = SqliteWorkspaceQueryService::with_repository(
-            crate::usecase::work_queue::shared().clone(),
+            Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
             SqliteWorkspaceTreeRepository::new(store.clone()),
             Arc::new(ExecutionTreeArchiveFactRepository::new(
                 store.clone(),
@@ -388,7 +387,7 @@ async fn test_workflow永続化_本番構成で起動から完了とabortまで�
             )),
         );
         let host = Arc::new(WorkflowRuntimeHost::with_runtime_ports(
-            crate::usecase::work_queue::shared().clone(),
+            crate::usecase::retry::shared().clone(),
             Arc::new(UnusedWorkflowResolver),
             Arc::new(AcceptingWorktreeResolver),
             query.clone(),
@@ -427,7 +426,7 @@ async fn test_workflow永続化_本番構成で起動から完了とabortまで�
         } else {
             let node = &snapshot.node_executions[0];
             let control = WorkflowControlPlaneUsecase::new(
-                crate::usecase::work_queue::shared().clone(),
+                crate::usecase::retry::shared().clone(),
                 Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(app, host)),
             );
             control
@@ -1703,7 +1702,7 @@ async fn test_記録からの操作_agent_sessionが再開を保存した後にs
         .unwrap();
     repository.save(saved, "record-only-resume").await.unwrap();
     let control = WorkflowControlPlaneUsecase::new(
-        crate::usecase::work_queue::shared().clone(),
+        crate::usecase::retry::shared().clone(),
         Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(
             fixture.app.clone(),
             Arc::new(fixture.restarted_host()),
@@ -1760,15 +1759,17 @@ async fn test_起動時前進_恒久失敗でもabortせず他の木を進める
         .await;
     let host = Arc::new(fixture.restarted_host());
     let startup = crate::adaptor::controller::wiring::wire_workflow_startup(
-        crate::usecase::work_queue::WorkQueueUsecase::new(std::sync::Arc::new(
-            crate::usecase::work_queue::ImmediateWorkQueueRuntime::default(),
-        )),
         fixture.app.clone(),
         host.clone(),
     )
     .unwrap();
     // When
-    assert!(startup.execute().await.is_err());
+    assert!(crate::adaptor::controller::workflow_startup::recover(
+        &crate::usecase::retry::test_retrying(),
+        &startup,
+    )
+    .await
+    .is_err());
     let failed_records = workflow_fact_log::read_tree_records(&fixture.store, &failed.execution_id)
         .await
         .unwrap();
@@ -1776,7 +1777,6 @@ async fn test_起動時前進_恒久失敗でもabortせず他の木を進める
         workflow_fact_log::read_tree_records(&fixture.store, &healthy.execution_id)
             .await
             .unwrap();
-    startup.execute().await.unwrap();
     // Then
     assert!(!failed_records.iter().any(|record| matches!(&record.fact,
         crate::domain::workflow::NodeFact::AbortRequested(fact) if fact.reason.as_ref().is_some_and(|reason| reason.contains("missing-startup-facet-1840")))));
@@ -1858,9 +1858,6 @@ async fn test_起動時前進_reply喪失後は保存済みなら続行し未保
         }
         let host = Arc::new(fixture.restarted_host());
         let startup = crate::adaptor::controller::wiring::wire_workflow_startup(
-            crate::usecase::work_queue::WorkQueueUsecase::new(std::sync::Arc::new(
-                crate::usecase::work_queue::ImmediateWorkQueueRuntime::default(),
-            )),
             fixture.app.clone(),
             host.clone(),
         )
@@ -1868,7 +1865,11 @@ async fn test_起動時前進_reply喪失後は保存済みなら続行し未保
         fixture.store.fault_injector().arm_drop_reply();
 
         // When
-        let result = startup.execute().await;
+        let result = crate::adaptor::controller::workflow_startup::recover(
+            &crate::usecase::retry::test_retrying(),
+            &startup,
+        )
+        .await;
         let records =
             workflow_fact_log::read_tree_records(&fixture.store, &interrupted.execution_id)
                 .await
@@ -1877,7 +1878,6 @@ async fn test_起動時前進_reply喪失後は保存済みなら続行し未保
             workflow_fact_log::read_tree_records(&fixture.store, &healthy.execution_id)
                 .await
                 .unwrap();
-        startup.execute().await.unwrap();
 
         // Then
         assert_eq!(result.is_ok(), persisted, "{result:?}");
@@ -1962,9 +1962,6 @@ async fn test_起動時session紐付け_reply喪失後は保存済みなら起�
         }
         let host = Arc::new(fixture.restarted_host());
         let startup = crate::adaptor::controller::wiring::wire_workflow_startup(
-            crate::usecase::work_queue::WorkQueueUsecase::new(std::sync::Arc::new(
-                crate::usecase::work_queue::ImmediateWorkQueueRuntime::default(),
-            )),
             fixture.app.clone(),
             host.clone(),
         )
@@ -1972,7 +1969,11 @@ async fn test_起動時session紐付け_reply喪失後は保存済みなら起�
         fixture.store.fault_injector().arm_drop_reply();
 
         // When
-        let result = startup.execute().await;
+        let result = crate::adaptor::controller::workflow_startup::recover(
+            &crate::usecase::retry::test_retrying(),
+            &startup,
+        )
+        .await;
         let records =
             workflow_fact_log::read_tree_records(&fixture.store, &interrupted.execution_id)
                 .await
@@ -1981,7 +1982,6 @@ async fn test_起動時session紐付け_reply喪失後は保存済みなら起�
             workflow_fact_log::read_tree_records(&fixture.store, &healthy.execution_id)
                 .await
                 .unwrap();
-        startup.execute().await.unwrap();
 
         // Then
         assert_eq!(result.is_ok(), persisted, "{result:?}");
@@ -2768,7 +2768,7 @@ async fn test_記録からの承認_外部writerの完了信号で承認待ち�
     .await
     .unwrap();
     let control = WorkflowControlPlaneUsecase::new(
-        crate::usecase::work_queue::shared().clone(),
+        crate::usecase::retry::shared().clone(),
         Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(
             fixture.app.clone(),
             Arc::new(fixture.host.clone()),
@@ -2838,7 +2838,7 @@ async fn test_記録からのretry_外部writerが作った最新attemptを再�
     .await
     .unwrap();
     let control = WorkflowControlPlaneUsecase::new(
-        crate::usecase::work_queue::shared().clone(),
+        crate::usecase::retry::shared().clone(),
         Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(
             fixture.app.clone(),
             Arc::new(fixture.host.clone()),
@@ -3440,18 +3440,17 @@ async fn test_runtime再試行_競合だけを上限まで再実行する() {
         // Given
         let calls = AtomicUsize::new(0);
         // When
-        let result =
-            retry_runtime_conflicts(crate::usecase::work_queue::shared(), "test", || async {
-                let attempt = calls.fetch_add(1, Ordering::SeqCst);
-                if storage_error {
-                    Err(WorkflowRuntimeError::SessionStore("unavailable".into()))
-                } else if attempt < conflicts {
-                    Err(WorkflowRuntimeError::Conflict("advanced".into()))
-                } else {
-                    Ok(())
-                }
-            })
-            .await;
+        let result = retry_runtime_conflicts(crate::usecase::retry::shared(), "test", || async {
+            let attempt = calls.fetch_add(1, Ordering::SeqCst);
+            if storage_error {
+                Err(WorkflowRuntimeError::SessionStore("unavailable".into()))
+            } else if attempt < conflicts {
+                Err(WorkflowRuntimeError::Conflict("advanced".into()))
+            } else {
+                Ok(())
+            }
+        })
+        .await;
         // Then
         assert_eq!(calls.load(Ordering::SeqCst), (conflicts + 1));
         assert_eq!(result.is_ok(), !storage_error);

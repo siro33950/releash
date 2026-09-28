@@ -1,7 +1,7 @@
 use super::*;
+use crate::common::retry::AttemptProgress;
 use crate::domain::workflow::entities::workflow_execution::SessionResumeAction;
 use crate::domain::workflow::{NodeProcessPresence, NodeProcessReader};
-use crate::usecase::work_queue::AttemptProgress;
 use crate::usecase::workflow::node_startup::{FailedNodeStart, NodeStartupGateway};
 
 pub(super) struct HostNodeStartup<'a> {
@@ -122,13 +122,12 @@ impl WorkflowRuntimeHost {
                     worktree_path: &worktree_path,
                     cancelled,
                 };
-                if let Err(failure) =
-                    crate::usecase::workflow::node_startup::retry_failed_nodes_with_queue(
-                        &gateway,
-                        failed,
-                        &host.queue,
-                    )
-                    .await
+                if let Err(failure) = crate::usecase::workflow::node_startup::retry_failed_nodes(
+                    &gateway,
+                    failed,
+                    &host.queue,
+                )
+                .await
                 {
                     let error = &failure.error;
                     log::warn!("workflow {execution_id}: startup retries failed: {error}");

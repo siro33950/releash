@@ -1,6 +1,4 @@
-use std::future::Future;
 use std::path::PathBuf;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -9,7 +7,12 @@ use super::scanner::RepositoryScanner;
 use super::snapshot::RepositorySnapshotParts;
 use super::worker::InvalidateReason;
 
-pub type RepositoryStateWorkerFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
+pub struct ScanWorker {
+    pub state: Arc<super::worktree::WorktreeState>,
+    pub scanner: Arc<dyn RepositoryScanner>,
+    pub receiver: Box<dyn RepositoryStateInvalidationReceiver>,
+    pub debounce: Duration,
+}
 
 pub trait RepositoryStateInvalidationSender: Send + Sync {
     fn send(&self, reason: InvalidateReason) -> Result<(), ()>;
@@ -30,7 +33,7 @@ pub trait RepositoryStateWorkerRuntime: Send + Sync {
         Box<dyn RepositoryStateInvalidationReceiver>,
     );
 
-    fn spawn_worker(&self, future: RepositoryStateWorkerFuture);
+    fn spawn_worker(&self, worker: ScanWorker);
 
     async fn sleep(&self, duration: Duration);
 
@@ -88,8 +91,13 @@ pub(crate) mod tests_support {
             )
         }
 
-        fn spawn_worker(&self, future: RepositoryStateWorkerFuture) {
-            tokio::spawn(future);
+        fn spawn_worker(&self, worker: ScanWorker) {
+            let runtime: Arc<dyn RepositoryStateWorkerRuntime> = Arc::new(Self);
+            tokio::spawn(crate::adaptor::controller::repository_scan::run_worker(
+                crate::usecase::retry::shared().clone(),
+                worker,
+                runtime,
+            ));
         }
 
         async fn sleep(&self, duration: Duration) {
@@ -126,7 +134,7 @@ pub(crate) mod tests_support {
             )
         }
 
-        fn spawn_worker(&self, _future: RepositoryStateWorkerFuture) {}
+        fn spawn_worker(&self, _worker: ScanWorker) {}
 
         async fn sleep(&self, _duration: Duration) {}
 

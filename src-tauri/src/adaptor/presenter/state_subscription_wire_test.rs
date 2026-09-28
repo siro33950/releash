@@ -119,18 +119,18 @@ fn test_購読事象_準備変更と定期印の旧転送形式を保つ() {
 
 #[test]
 fn test_購読payload_全種類を旧wire型とフィールドへ変換する() {
-    use crate::domain::failure::{BusinessFailure, Failure};
-    use crate::domain::failure_records::FailureRecord;
     use crate::usecase::agent_session::{
         AgentSessionHistoryCandidateDto, AgentSessionHistoryPageDto, AgentSessionItemDto,
         AgentSessionLifecycleDto, AgentSessionOperationsDto, AgentSessionProviderDto,
         AgentSessionTreeLocationDto,
     };
+    use crate::usecase::failure::FailureRecord;
+    use crate::usecase::failure::{BusinessFailure, Failure};
+    use crate::usecase::failure::{FailureObservation, FailurePage};
     use crate::usecase::git_host::dto::{IssueInfoDto, IssueLabelDto, MilestoneDto, PrAuthorDto};
     use crate::usecase::repository_dto::{BranchDto, WorktreeDisplayGroupsDto, WorktreeEntryDto};
     use crate::usecase::repository_state::snapshot::RepositoryBranchCardsSnapshotDto;
     use crate::usecase::terminal_surface::application::TerminalSurfaceStreamItem;
-    use crate::usecase::work_queue::{FailureObservation, FailurePage};
     use crate::usecase::workflow::{
         WorkspaceNodeCapabilitiesDto, WorkspaceNodeContentDto, WorkspaceNodeDetailDto,
         WorkspaceSelectionReconciliationDto, WorkspaceSessionNodeContentDto,

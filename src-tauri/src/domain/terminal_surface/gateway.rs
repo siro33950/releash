@@ -190,4 +190,16 @@ pub trait TerminalSurfaceGateway: TerminalSurfaceRepository {
     fn flush_checkpoints(&self) -> Result<(), TerminalSurfaceGatewayError> {
         Ok(())
     }
+    fn flush_checkpoint(
+        &self,
+        _session_key: &str,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<(), crate::domain::failure::TechnicalFailure>>
+                + Send
+                + '_,
+        >,
+    > {
+        Box::pin(async { Ok(()) })
+    }
 }

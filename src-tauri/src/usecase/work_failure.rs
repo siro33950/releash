@@ -1,4 +1,5 @@
-use crate::domain::failure::{BusinessFailure, Failure, TechnicalFailureNature};
+use crate::domain::failure::TechnicalFailureNature;
+use crate::usecase::failure::{BusinessFailure, Failure};
 
 impl From<&crate::usecase::code_error::CodeUsecaseError> for Failure {
     fn from(error: &crate::usecase::code_error::CodeUsecaseError) -> Self {
@@ -233,8 +234,8 @@ impl From<&crate::domain::failure::StorageFailure> for Failure {
         }
     }
 }
-impl From<&super::work_queue::WorkFailure> for Failure {
-    fn from(error: &super::work_queue::WorkFailure) -> Self {
+impl From<&super::failure::WorkFailure> for Failure {
+    fn from(error: &super::failure::WorkFailure) -> Self {
         error.kind
     }
 }

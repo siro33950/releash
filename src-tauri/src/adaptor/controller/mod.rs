@@ -10,8 +10,13 @@ pub(crate) mod command;
 pub(crate) mod daemon;
 #[cfg(feature = "desktop")]
 pub(crate) mod desktop_lifecycle;
+pub(crate) mod provider_session_title;
+pub(crate) mod repository_scan;
+pub(crate) mod review_comments_watch;
 pub(crate) mod state;
+pub(crate) mod terminal_checkpoint;
 pub(crate) mod terminal_surface_runtime;
 pub(crate) mod wiring;
+pub(crate) mod workflow_startup;
 
 pub(crate) mod terminal_surface;

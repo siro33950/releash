@@ -1,6 +1,8 @@
+mod watch;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::Path;
+pub use watch::ReviewCommentsWatch;
 
 pub(crate) const MAX_REVIEW_TEXT_BYTES: usize = 65_536;
 pub(crate) const MAX_REVIEW_TARGET_PATH_BYTES: usize = 4096;

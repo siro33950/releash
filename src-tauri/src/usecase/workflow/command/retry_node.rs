@@ -24,11 +24,11 @@ pub(crate) struct WorkflowRetryNodeUsecase {
 
 impl WorkflowRetryNodeUsecase {
     pub(crate) fn new(
-        queue: std::sync::Arc<crate::usecase::work_queue::WorkQueueUsecase>,
+        retrying: std::sync::Arc<crate::usecase::retry::Retrying>,
         runtime: Arc<dyn WorkflowControlPlaneGateway>,
     ) -> Self {
         Self {
-            control_plane: WorkflowControlPlaneUsecase::new(queue, runtime),
+            control_plane: WorkflowControlPlaneUsecase::new(retrying, runtime),
         }
     }
 

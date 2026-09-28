@@ -22,26 +22,46 @@ use crate::usecase::workflow::{
 use crate::usecase::workspace_tree::WorkspaceQueryService;
 
 pub(crate) struct SqliteWorkspaceQueryService {
-    failures: Arc<crate::usecase::failure_query_service::FailureQueryService>,
+    failures: Arc<crate::adaptor::gateway::failure_records::FailureRecordStore>,
     repository: Arc<SqliteWorkspaceTreeRepository>,
     archives: Arc<dyn ExecutionTreeArchiveRepository>,
 }
 
 impl SqliteWorkspaceQueryService {
+    fn apply_workflow_failures(&self, tree: &mut WorkspaceTree) {
+        let targets: std::collections::HashSet<_> = tree
+            .nodes()
+            .iter()
+            .flat_map(|node| {
+                [
+                    Some(node.id.clone()),
+                    node.node_execution_id.clone(),
+                    node.execution_id.clone(),
+                ]
+            })
+            .flatten()
+            .collect();
+        for target in targets {
+            for message in self.failures.attention_messages(&target) {
+                tree.observe_background_failure(&target, &message);
+            }
+        }
+    }
+
     pub(crate) fn with_repository(
-        queue: std::sync::Arc<crate::usecase::work_queue::WorkQueueUsecase>,
+        failures: Arc<crate::adaptor::gateway::failure_records::FailureRecordStore>,
         repository: Arc<SqliteWorkspaceTreeRepository>,
         archives: Arc<dyn ExecutionTreeArchiveRepository>,
     ) -> Arc<Self> {
         Arc::new(Self {
-            failures: queue.failure_query(),
+            failures,
             repository,
             archives,
         })
     }
 
     pub(crate) fn new_read_only(
-        failures: Arc<crate::usecase::failure_query_service::FailureQueryService>,
+        failures: Arc<crate::adaptor::gateway::failure_records::FailureRecordStore>,
         store: Arc<LocalEventReadStore>,
         archives: Arc<dyn ExecutionTreeArchiveRepository>,
     ) -> Arc<Self> {
@@ -175,7 +195,7 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
             .workspace_tree_from_folded(workspace_identity.as_str(), &folded)
             .map_err(query_error)?
             .unwrap_or_else(|| WorkspaceTree::empty(workspace_identity.as_str()));
-        self.failures.apply_workflow_failures(&mut tree).await;
+        self.apply_workflow_failures(&mut tree);
         let session_tree_ids = folded
             .iter()
             .filter(|(tree, _)| {

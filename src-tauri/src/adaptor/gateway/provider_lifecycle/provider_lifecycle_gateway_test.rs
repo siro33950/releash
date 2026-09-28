@@ -815,7 +815,7 @@ fn setup_persistence_usecase() -> (TempDir, Arc<LocalEventStore>, ProviderLifecy
     ))
     .unwrap();
     let events = LocalProviderLifecycleEventRepository::new(
-        crate::usecase::work_queue::shared().clone(),
+        crate::usecase::retry::shared().clone(),
         store.clone() as Arc<dyn LocalEventTransactionRepository>,
         store.installation_id().to_string(),
     );
@@ -1184,7 +1184,7 @@ async fn test_providerライフサイクル再試行_outcome_unknownの照会失
     .unwrap();
     let repository = Arc::new(ResolveFailureOnceRepository::new(store.clone()));
     let events = LocalProviderLifecycleEventRepository::new(
-        crate::usecase::work_queue::shared().clone(),
+        crate::usecase::retry::shared().clone(),
         repository as Arc<dyn LocalEventTransactionRepository>,
         store.installation_id().to_string(),
     );
@@ -1227,7 +1227,7 @@ async fn test_providerライフサイクル再試行_中断後も同一commitを
     .unwrap();
     let repository = Arc::new(ResolveFailureRepository::new(store.clone()));
     let events = LocalProviderLifecycleEventRepository::new(
-        crate::usecase::work_queue::shared().clone(),
+        crate::usecase::retry::shared().clone(),
         repository.clone() as Arc<dyn LocalEventTransactionRepository>,
         store.installation_id().to_string(),
     );

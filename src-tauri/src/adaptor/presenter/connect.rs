@@ -28,8 +28,9 @@ pub(crate) fn command_error(
 #[path = "connect_test.rs"]
 mod tests;
 
-pub(crate) fn failure_classification(failure: crate::domain::failure::Failure) -> &'static str {
-    use crate::domain::failure::{BusinessFailure, Failure, TechnicalFailureNature};
+pub(crate) fn failure_classification(failure: crate::usecase::failure::Failure) -> &'static str {
+    use crate::domain::failure::TechnicalFailureNature;
+    use crate::usecase::failure::{BusinessFailure, Failure};
     match failure {
         Failure::Business(BusinessFailure::VersionConflict) => "VersionConflict",
         Failure::Business(BusinessFailure::Other) => "BusinessFailure",
@@ -52,7 +53,7 @@ impl ConnectFailure for crate::usecase::code_error::CodeUsecaseError {
     }
 }
 
-impl ConnectFailure for crate::usecase::work_queue::WorkFailure {
+impl ConnectFailure for crate::usecase::failure::WorkFailure {
     fn connect_code(&self) -> connectrpc::ErrorCode {
         self.kind.connect_code()
     }
@@ -629,9 +630,9 @@ impl ConnectFailure for crate::domain::failure::StorageFailure {
     }
 }
 
-impl ConnectFailure for crate::domain::failure::Failure {
+impl ConnectFailure for crate::usecase::failure::Failure {
     fn connect_code(&self) -> connectrpc::ErrorCode {
-        use crate::domain::failure::{BusinessFailure, Failure};
+        use crate::usecase::failure::{BusinessFailure, Failure};
         match self {
             Failure::Business(BusinessFailure::VersionConflict) => connectrpc::ErrorCode::Aborted,
             Failure::Business(BusinessFailure::Other) => connectrpc::ErrorCode::FailedPrecondition,

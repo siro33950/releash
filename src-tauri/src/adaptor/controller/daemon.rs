@@ -26,12 +26,8 @@ pub(crate) async fn compose(
         infrastructure::process::search_path::LoginShellPathError,
     >,
 ) -> Result<Daemon, Box<dyn std::error::Error>> {
-    let queue = usecase::work_queue::WorkQueueUsecase::with_retry_bucket(
-        Arc::new(adaptor::gateway::work_queue::TokioWorkQueueRuntime::default()),
-        Arc::new(tokio::sync::Mutex::new(
-            crate::common::retry::RetryBucket::new(std::time::Duration::ZERO),
-        )),
-    );
+    let retry_limiter = Arc::new(crate::common::retry::RetryLimiter::new());
+    let failure_store = Arc::new(adaptor::gateway::failure_records::FailureRecordStore::default());
     infrastructure::telemetry::metrics::set_startup_origin(std::time::Instant::now());
     let (exit_sender, exit_receiver) = tokio::sync::mpsc::channel(1);
     let app_data = super::app_data_composition::ProductionAppDataComposition::new(data_dir.clone());
@@ -59,14 +55,26 @@ pub(crate) async fn compose(
             state_presenter.change_sender(),
             Arc::new(adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
         );
-    queue.set_publisher(state_subscriptions.publisher());
+    let retrying = usecase::retry::Retrying::new(
+        retry_limiter,
+        Arc::new(adaptor::presenter::failure::FailurePresenter::new(
+            failure_store.clone(),
+            Some(state_subscriptions.publisher()),
+        )),
+    );
     let push_sink = Arc::new(infrastructure::push::PushSink::new());
 
     let projected_local_event_repository: Arc<
         dyn domain::local_event::LocalEventTransactionRepository,
     > = local_event_store.clone();
-    let terminal_surface_runtime =
-        terminal_surface::TerminalSurfaceRuntime::new(queue.clone(), data_dir.clone());
+    let terminal_surface_runtime = terminal_surface::TerminalSurfaceRuntime::new(
+        Arc::new(terminal_surface::BackgroundWork::new(
+            retrying.clone(),
+            failure_store.clone(),
+            tokio::runtime::Handle::current(),
+        )),
+        data_dir.clone(),
+    );
     let terminal_surface = terminal_surface_runtime.application();
     state_presenter.connect_terminal(&terminal_surface)?;
     let state_subscriptions = state_subscriptions.with_terminal(terminal_surface.clone());
@@ -131,7 +139,7 @@ pub(crate) async fn compose(
     let agent_sessions =
                 adaptor::controller::agent_session_wiring::compose_agent_sessions(
                     adaptor::controller::agent_session_wiring::AgentSessionCompositionInput {
-                        queue: queue.clone(),
+                        retrying: retrying.clone(),
                         state_publisher: Some(state_subscriptions.publisher()),
                         store: local_event_store.clone(),
                         data_dir: data_dir.clone(),
@@ -172,7 +180,13 @@ pub(crate) async fn compose(
     let provider_execution_tree_stops = agent_sessions.execution_tree_stops.clone();
     let started_execution_tree_registrations = agent_sessions.execution_tree_registrations.clone();
     let provider_session_title_ingestion = agent_sessions.provider_session_title_ingestion.clone();
-    provider_session_title_ingestion.start().await;
+    tokio::spawn(adaptor::controller::provider_session_title::run(
+        retrying.clone(),
+        provider_session_title_ingestion.clone(),
+        Box::pin(infrastructure::timer::ticks(
+            domain::agent_session::PROVIDER_SESSION_TITLE_TICK_INTERVAL,
+        )),
+    ));
     let provider_agent_terminal_events = terminal_surface.subscribe_events();
     let shutdown_provider_exit_observer: Arc<dyn Fn() + Send + Sync> = Arc::new({
         let cancellation = provider_agent_terminal_events.cancellation.clone();
@@ -245,7 +259,6 @@ pub(crate) async fn compose(
         ),
     );
     let repository_state = Arc::new(usecase::repository_state::RepositoryStateService::new(
-        queue.clone(),
         repository_state_repository,
         repository_scanner,
         Arc::new(
@@ -259,7 +272,11 @@ pub(crate) async fn compose(
                 repository_usecase.clone(),
             ),
         ),
-        Arc::new(adaptor::gateway::repository::state::TokioRepositoryStateWorkerRuntime),
+        Arc::new(
+            adaptor::controller::repository_scan::RepositoryScanWorkerRuntime::new(
+                retrying.clone(),
+            ),
+        ),
         Arc::new(adaptor::gateway::repository::state::FsWorktreePathNormalizer),
     ));
 
@@ -279,7 +296,7 @@ pub(crate) async fn compose(
     );
     let (workflow_usecase, workspace_query_service) =
         adaptor::controller::wiring::build_workflow_services_with_repository_worktrees(
-            queue.clone(),
+            failure_store.clone(),
             data_dir.clone(),
             repository_usecase.clone(),
             config_repository.clone(),
@@ -321,9 +338,9 @@ pub(crate) async fn compose(
         terminal_surface: terminal_surface.clone(),
         git_host_usecase,
     };
-    let workflow_runtime_usecase = Arc::new(
+    let (workflow_runtime_usecase, workflow_startup) =
         adaptor::controller::wiring::build_workflow_runtime_usecase(
-            queue.clone(),
+            retrying.clone(),
             adaptor::gateway::workflow::workflow_host::WorkflowRuntimeDependencies {
                 store: Some(local_event_store.clone()),
                 config: Some(config_repository.clone()),
@@ -344,8 +361,8 @@ pub(crate) async fn compose(
                 ),
             },
         )
-        .map_err(|error| format!("workflow recovery admission failed: {error}"))?,
-    );
+        .map_err(|error| format!("workflow recovery admission failed: {error}"))?;
+    let workflow_runtime_usecase = Arc::new(workflow_runtime_usecase);
     let workspace_node_resolver: Arc<dyn usecase::workflow::WorkspaceNodeActionResolver> =
         workflow_usecase.clone();
     let workspace_node_command_usecase = Arc::new(
@@ -363,24 +380,38 @@ pub(crate) async fn compose(
         &workflow_runtime_usecase,
     )
     .await?;
-    let pending_workflow_recovery = workflow_runtime_usecase.clone();
-    tokio::spawn(async move {
-        if let Err(error) = pending_workflow_recovery.recover_startup().await {
-            log::warn!("workflow startup advancement failed: {error}");
-        }
-    });
+    if let Some(startup) = workflow_startup {
+        let retrying = retrying.clone();
+        tokio::spawn(async move {
+            if let Err(error) =
+                adaptor::controller::workflow_startup::recover(&retrying, &startup).await
+            {
+                log::warn!("workflow startup advancement failed: {error}");
+            }
+        });
+    }
 
     let workflow_query_usecase = workflow_usecase.clone();
-    adaptor::gateway::comment::watcher::spawn_review_comments_watcher(
-        queue.clone(),
-        adaptor::gateway::comment::state_dir(&data_dir),
-        Arc::new({
-            let app = push_sink.clone();
-            move || {
-                adaptor::gateway::push::BackendPush::ReviewCommentsChanged("*").emit(app.as_ref())
-            }
-        }),
-    );
+    let review_comments_dir = adaptor::gateway::comment::state_dir(&data_dir);
+    tokio::spawn(adaptor::controller::review_comments_watch::run(
+        retrying.clone(),
+        Arc::new(usecase::comment::ReviewCommentsWatchUsecase::new(Arc::new(
+            adaptor::gateway::comment::watcher::ReviewCommentsWatchGateway::new(
+                review_comments_dir.clone(),
+                Arc::new({
+                    let app = push_sink.clone();
+                    move || {
+                        adaptor::gateway::push::BackendPush::ReviewCommentsChanged("*")
+                            .emit(app.as_ref())
+                    }
+                }),
+            ),
+        ))),
+        review_comments_dir.to_string_lossy().into_owned(),
+        Box::pin(infrastructure::timer::ticks(
+            std::time::Duration::from_secs(1),
+        )),
+    ));
 
     adaptor::controller::wiring::spawn_startup_app_data_gc(
         app_data.clone(),
@@ -431,7 +462,7 @@ pub(crate) async fn compose(
         Arc::new(
             adaptor::gateway::state_subscription_reads::StateSubscriptionReads(
                 usecase::state_subscription::WorkspaceStateReads {
-                    queue: queue.clone(),
+                    failures: failure_store.clone(),
                     repositories: dependencies
                         .app_state
                         .as_ref()
