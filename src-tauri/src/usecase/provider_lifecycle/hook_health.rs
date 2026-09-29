@@ -14,9 +14,34 @@ pub(crate) struct ProviderHookHealthWarning {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProviderHookHealthWarningDto {
-    pub(crate) provider: crate::usecase::agent_session::AgentSessionProviderDto,
+    pub(crate) provider: crate::usecase::provider_dto::AgentSessionProviderDto,
     pub(crate) launch_id: String,
-    pub(crate) reason: String,
+    pub(crate) reason: ProviderHookHealthReasonDto,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProviderHookHealthReasonDto {
+    SessionStartDeadlineExceeded,
+    CodexHookDeliveryUnconfirmed,
+    ProviderHookConfigurationRejected,
+    LocalApiUnavailable,
+}
+
+impl From<ProviderLifecycleUnavailableReason> for ProviderHookHealthReasonDto {
+    fn from(value: ProviderLifecycleUnavailableReason) -> Self {
+        match value {
+            ProviderLifecycleUnavailableReason::SessionStartDeadlineExceeded => {
+                Self::SessionStartDeadlineExceeded
+            }
+            ProviderLifecycleUnavailableReason::CodexHookDeliveryUnconfirmed => {
+                Self::CodexHookDeliveryUnconfirmed
+            }
+            ProviderLifecycleUnavailableReason::ProviderHookConfigurationRejected => {
+                Self::ProviderHookConfigurationRejected
+            }
+            ProviderLifecycleUnavailableReason::LocalApiUnavailable => Self::LocalApiUnavailable,
+        }
+    }
 }
 
 impl From<ProviderHookHealthWarning> for ProviderHookHealthWarningDto {
@@ -24,19 +49,7 @@ impl From<ProviderHookHealthWarning> for ProviderHookHealthWarningDto {
         Self {
             provider: value.provider.into(),
             launch_id: value.launch_id,
-            reason: match value.reason {
-                ProviderLifecycleUnavailableReason::SessionStartDeadlineExceeded => {
-                    "session_start_deadline_exceeded"
-                }
-                ProviderLifecycleUnavailableReason::CodexHookDeliveryUnconfirmed => {
-                    "codex_hook_delivery_unconfirmed"
-                }
-                ProviderLifecycleUnavailableReason::ProviderHookConfigurationRejected => {
-                    "provider_hook_configuration_rejected"
-                }
-                ProviderLifecycleUnavailableReason::LocalApiUnavailable => "local_api_unavailable",
-            }
-            .to_string(),
+            reason: value.reason.into(),
         }
     }
 }

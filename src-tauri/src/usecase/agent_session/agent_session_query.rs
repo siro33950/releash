@@ -1,20 +1,6 @@
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum AgentSessionProviderDto {
-    Claude,
-    Codex,
-}
-
-impl From<crate::domain::provider_lifecycle::ProviderKind> for AgentSessionProviderDto {
-    fn from(provider: crate::domain::provider_lifecycle::ProviderKind) -> Self {
-        match provider {
-            crate::domain::provider_lifecycle::ProviderKind::Claude => Self::Claude,
-            crate::domain::provider_lifecycle::ProviderKind::Codex => Self::Codex,
-        }
-    }
-}
+use crate::usecase::provider_dto::AgentSessionProviderDto;
 
 /// AgentSession が属する実行木と NodeExecution の所在。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

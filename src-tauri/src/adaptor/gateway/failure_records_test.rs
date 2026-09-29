@@ -309,3 +309,52 @@ async fn test_要対応_取消後は対象表示と全体ページの両方か�
     assert!(!store.page(&["target".into()], 0).await.requires_attention);
     assert!(!store.page(&["*".into()], 0).await.requires_attention);
 }
+
+#[tokio::test]
+async fn test_失敗ページ_六種類の分類を保存記録から出力へ写す() {
+    use crate::usecase::failure::FailureClassificationDto as C;
+
+    // Given
+    let store = FailureRecordStore::default();
+    let cases = [
+        (
+            Failure::Business(BusinessFailure::VersionConflict),
+            C::VersionConflict,
+        ),
+        (
+            Failure::Business(BusinessFailure::Other),
+            C::BusinessFailure,
+        ),
+        (
+            Failure::Technical(TechnicalFailureNature::Transient),
+            C::Transient,
+        ),
+        (
+            Failure::Technical(TechnicalFailureNature::TimedOut),
+            C::TimedOut,
+        ),
+        (
+            Failure::Technical(TechnicalFailureNature::Cancelled),
+            C::Cancelled,
+        ),
+        (
+            Failure::Technical(TechnicalFailureNature::Other),
+            C::TechnicalFailure,
+        ),
+    ];
+    for (index, (kind, _)) in cases.iter().enumerate() {
+        store.observe_at(
+            &key("workflow", &format!("target-{index}")),
+            failure(*kind, "message"),
+            index as u64,
+        );
+    }
+
+    // When
+    for (index, (_, expected)) in cases.iter().enumerate() {
+        let page = store.page(&[format!("target-{index}")], 0).await;
+        // Then
+        assert_eq!(page.items[0].record.classification, *expected);
+        assert_eq!(page.items[0].record.message, "message");
+    }
+}

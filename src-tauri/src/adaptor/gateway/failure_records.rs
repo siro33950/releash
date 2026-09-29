@@ -1,5 +1,10 @@
 use crate::domain::failure::{FailureKey, FailureRecord, FailureRecordRepository, WorkFailure};
-use crate::usecase::failure::{FailureObservation, FailurePage, FailureQueryService};
+#[cfg(test)]
+use crate::usecase::failure::FailureObservation;
+use crate::usecase::failure::{
+    FailureClassificationDto, FailureObservationDto, FailurePage, FailureQueryService,
+    FailureRecordDto,
+};
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
@@ -135,6 +140,7 @@ fn matches_key(record: &FailureRecord, key: &FailureKey) -> bool {
     record.operation == key.operation && record.target == key.target
 }
 
+#[cfg(test)]
 fn observation(record: FailureRecord) -> FailureObservation {
     let requires_attention = record.active && record.requires_attention;
     FailureObservation {
@@ -172,8 +178,18 @@ impl FailureQueryService for FailureRecordStore {
         let items = matching()
             .skip(offset)
             .take(PAGE_SIZE)
-            .cloned()
-            .map(observation)
+            .map(|record| FailureObservationDto {
+                record: FailureRecordDto {
+                    operation: record.operation.clone(),
+                    target: record.target.clone(),
+                    classification: FailureClassificationDto::from(record.kind),
+                    message: record.message.clone(),
+                    count: record.count,
+                    first_observed_ms: record.first_observed_ms,
+                    last_observed_ms: record.last_observed_ms,
+                },
+                requires_attention: record.active && record.requires_attention,
+            })
             .collect();
         FailurePage {
             items,

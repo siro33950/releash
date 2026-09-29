@@ -329,6 +329,7 @@ pub(crate) async fn compose(
     let notion_usecase = Arc::new(
         usecase::notion::usecase::NotionUsecase::new(
             notion_config_repository.clone(),
+            app_config.clone(),
             notion_api_gateway.clone(),
         )
         .with_state_publisher(state_subscriptions.clone()),

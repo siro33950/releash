@@ -2018,7 +2018,8 @@ async fn test_workspace共通read_modelは同じworkspaceのsessionをid昇順�
 }
 
 #[tokio::test]
-async fn test_agent_session_query_service_idで一件の表示モデルを返す() {
+async fn test_agent_session読取_idで一件の表示モデルを返す() {
+    // Given
     let directory = TempDir::new().unwrap();
     let store = open_store(&directory);
     let repository = new_repository(&store);
@@ -2035,6 +2036,7 @@ async fn test_agent_session_query_service_idで一件の表示モデルを返す
         .unwrap();
     let query_service = LocalAgentSessionQueryService::new(store.clone());
 
+    // When
     let detail = query_service
         .get("agent-session-detail")
         .await
@@ -2046,13 +2048,14 @@ async fn test_agent_session_query_service_idで一件の表示モデルを返す
         .unwrap()
         .unwrap();
 
+    // Then
     assert_eq!(detail.id, "agent-session-detail");
     assert_eq!(repeated_detail, detail);
     assert_eq!(detail.workspace_identity, "/repo/worktree");
     assert_eq!(detail.worktree_path, "/repo/worktree");
     assert_eq!(
         detail.provider,
-        crate::usecase::agent_session::AgentSessionProviderDto::Claude
+        crate::usecase::provider_dto::AgentSessionProviderDto::Claude
     );
     assert_eq!(detail.tree_location.tree_id, "agent-session-detail");
     assert_eq!(

@@ -188,19 +188,19 @@ impl TryFrom<crate::usecase::agent_session::AgentSessionOperationsDto>
     }
 }
 
-impl TryFrom<crate::usecase::agent_session::AgentSessionProviderDto>
+impl TryFrom<crate::usecase::provider_dto::AgentSessionProviderDto>
     for wire::AgentSessionProviderDto
 {
     type Error = String;
     fn try_from(
-        value: crate::usecase::agent_session::AgentSessionProviderDto,
+        value: crate::usecase::provider_dto::AgentSessionProviderDto,
     ) -> Result<Self, String> {
         Ok(Self {
             value: Some(match value {
-                crate::usecase::agent_session::AgentSessionProviderDto::Claude => {
+                crate::usecase::provider_dto::AgentSessionProviderDto::Claude => {
                     wire::agent_session_provider_dto::Value::Claude as i32
                 }
-                crate::usecase::agent_session::AgentSessionProviderDto::Codex => {
+                crate::usecase::provider_dto::AgentSessionProviderDto::Codex => {
                     wire::agent_session_provider_dto::Value::Codex as i32
                 }
             }),
@@ -3138,17 +3138,17 @@ impl TryFrom<crate::usecase::workflow::dto::SessionDelegateDto> for wire::Sessio
     }
 }
 
-impl TryFrom<crate::usecase::agent_session::AgentSessionProviderDto> for wire::SessionProviderDto {
+impl TryFrom<crate::usecase::provider_dto::AgentSessionProviderDto> for wire::SessionProviderDto {
     type Error = String;
     fn try_from(
-        value: crate::usecase::agent_session::AgentSessionProviderDto,
+        value: crate::usecase::provider_dto::AgentSessionProviderDto,
     ) -> Result<Self, String> {
         Ok(Self {
             value: Some(match value {
-                crate::usecase::agent_session::AgentSessionProviderDto::Claude => {
+                crate::usecase::provider_dto::AgentSessionProviderDto::Claude => {
                     wire::session_provider_dto::Value::Claude as i32
                 }
-                crate::usecase::agent_session::AgentSessionProviderDto::Codex => {
+                crate::usecase::provider_dto::AgentSessionProviderDto::Codex => {
                     wire::session_provider_dto::Value::Codex as i32
                 }
             }),
@@ -4521,3 +4521,7 @@ impl TryFrom<Vec<crate::usecase::workspace_tree::WorkspaceRepositoryListDto>>
         })
     }
 }
+
+#[cfg(test)]
+#[path = "conversions_test.rs"]
+mod conversions_tests;

@@ -667,7 +667,7 @@ impl crate::usecase::state_subscription::StateSubscriptionRead for AcceptanceSes
                     StateValue::Providers(
                         providers
                             .into_iter()
-                            .map(crate::usecase::agent_session::AgentSessionProviderDto::from)
+                            .map(crate::usecase::provider_dto::AgentSessionProviderDto::from)
                             .collect(),
                     )
                 })

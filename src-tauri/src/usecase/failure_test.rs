@@ -3,31 +3,40 @@ use crate::adaptor::gateway::failure_records::FailureRecordStore;
 use std::sync::Arc;
 
 #[test]
-fn test_失敗ページ_購読用出力に分類を写す() {
-    let page = FailurePage {
-        items: vec![FailureObservation {
-            record: FailureRecord {
-                operation: "workflow_start".into(),
-                target: "tree".into(),
-                kind: Failure::Technical(TechnicalFailureNature::TimedOut),
-                message: "deadline".into(),
-                active: true,
-                requires_attention: true,
-                count: 2,
-                first_observed_ms: 3,
-                last_observed_ms: 4,
-            },
-            requires_attention: true,
-        }],
-        next_offset: Some(5),
-        requires_attention: true,
-    };
+fn test_失敗分類_六種類のdomain値を出力へ写す() {
+    // Given
+    let cases = [
+        (
+            Failure::Business(BusinessFailure::VersionConflict),
+            FailureClassificationDto::VersionConflict,
+        ),
+        (
+            Failure::Business(BusinessFailure::Other),
+            FailureClassificationDto::BusinessFailure,
+        ),
+        (
+            Failure::Technical(TechnicalFailureNature::Transient),
+            FailureClassificationDto::Transient,
+        ),
+        (
+            Failure::Technical(TechnicalFailureNature::TimedOut),
+            FailureClassificationDto::TimedOut,
+        ),
+        (
+            Failure::Technical(TechnicalFailureNature::Cancelled),
+            FailureClassificationDto::Cancelled,
+        ),
+        (
+            Failure::Technical(TechnicalFailureNature::Other),
+            FailureClassificationDto::TechnicalFailure,
+        ),
+    ];
 
-    let output = FailurePageDto::from(page);
-
-    assert_eq!(output.items[0].record.classification, "TimedOut");
-    assert_eq!(output.items[0].record.message, "deadline");
-    assert_eq!(output.next_offset, Some(5));
+    // When
+    for (domain, expected) in cases {
+        // Then
+        assert_eq!(FailureClassificationDto::from(domain), expected);
+    }
 }
 
 #[test]
@@ -135,7 +144,7 @@ async fn test_要対応の通知_設定と解除で同じ購読対象に通知�
     // Given
     let (presenter, store, mut changes) = presenter();
     let key = FailureKey::new("workflow_recovery", "tree");
-    // When / Then
+    // When
     presenter.observed(
         &key,
         WorkFailure {
@@ -143,6 +152,7 @@ async fn test_要対応の通知_設定と解除で同じ購読対象に通知�
             message: "repair".into(),
         },
     );
+    // Then
     assert_eq!(
         changes.recv().await.unwrap(),
         crate::usecase::state_subscription::StateChangeSource::WorkspaceList

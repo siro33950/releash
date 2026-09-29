@@ -53,7 +53,7 @@ pub(crate) enum OwnedTerminalSummaryLookup {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum TerminalSurfaceStreamItem {
-    Snapshot(TerminalSurface),
+    Snapshot(crate::usecase::state_subscription::TerminalSurfaceSnapshotDto),
     Output {
         session_key: String,
         data: Arc<str>,

@@ -105,15 +105,18 @@ fn test_設定保存_一般設定と登録希望の保存失敗を呼び出し�
 
 #[test]
 fn test_workflow設定_入力を保存し購読用出力で読み取る() {
+    // Given
     let repository = repository(false);
     let usecase = AppConfigUsecase::new(repository.clone(), repository.clone());
 
+    // When
     usecase
         .update_workflow_config(WorkflowConfigInput {
             approval_auto_approve: true,
         })
         .unwrap();
 
+    // Then
     assert!(repository.load().unwrap().workflow.approval_auto_approve);
     assert!(usecase.get_workflow_config().unwrap().approval_auto_approve);
 }

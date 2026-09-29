@@ -1,9 +1,9 @@
 use crate::common::retry::AttemptProgress;
 use crate::domain::failure::TechnicalFailureNature;
 
-pub use crate::domain::failure::{
-    BusinessFailure, Failure, FailureKey, FailureRecord, WorkFailure,
-};
+#[cfg(test)]
+pub use crate::domain::failure::FailureRecord;
+pub use crate::domain::failure::{BusinessFailure, Failure, FailureKey, WorkFailure};
 
 pub const ATTEMPT_LIMIT: std::time::Duration = std::time::Duration::from_secs(20);
 
@@ -44,6 +44,7 @@ retry_failure_from_debug!(
     crate::usecase::repository_state::error::RepositoryStateError,
 );
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FailureObservation {
     pub record: FailureRecord,
@@ -52,16 +53,32 @@ pub struct FailureObservation {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FailurePage {
-    pub items: Vec<FailureObservation>,
+    pub items: Vec<FailureObservationDto>,
     pub next_offset: Option<usize>,
     pub requires_attention: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FailurePageDto {
-    pub items: Vec<FailureObservationDto>,
-    pub next_offset: Option<usize>,
-    pub requires_attention: bool,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailureClassificationDto {
+    VersionConflict,
+    BusinessFailure,
+    Transient,
+    TimedOut,
+    Cancelled,
+    TechnicalFailure,
+}
+
+impl From<Failure> for FailureClassificationDto {
+    fn from(value: Failure) -> Self {
+        match value {
+            Failure::Business(BusinessFailure::VersionConflict) => Self::VersionConflict,
+            Failure::Business(BusinessFailure::Other) => Self::BusinessFailure,
+            Failure::Technical(TechnicalFailureNature::Transient) => Self::Transient,
+            Failure::Technical(TechnicalFailureNature::TimedOut) => Self::TimedOut,
+            Failure::Technical(TechnicalFailureNature::Cancelled) => Self::Cancelled,
+            Failure::Technical(TechnicalFailureNature::Other) => Self::TechnicalFailure,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,50 +91,11 @@ pub struct FailureObservationDto {
 pub struct FailureRecordDto {
     pub operation: String,
     pub target: String,
-    pub classification: &'static str,
+    pub classification: FailureClassificationDto,
     pub message: String,
     pub count: u64,
     pub first_observed_ms: u64,
     pub last_observed_ms: u64,
-}
-
-impl From<FailurePage> for FailurePageDto {
-    fn from(page: FailurePage) -> Self {
-        Self {
-            items: page
-                .items
-                .into_iter()
-                .map(|observation| {
-                    let record = observation.record;
-                    FailureObservationDto {
-                        record: FailureRecordDto {
-                            operation: record.operation,
-                            target: record.target,
-                            classification: failure_classification(record.kind),
-                            message: record.message,
-                            count: record.count,
-                            first_observed_ms: record.first_observed_ms,
-                            last_observed_ms: record.last_observed_ms,
-                        },
-                        requires_attention: observation.requires_attention,
-                    }
-                })
-                .collect(),
-            next_offset: page.next_offset,
-            requires_attention: page.requires_attention,
-        }
-    }
-}
-
-pub(crate) fn failure_classification(failure: Failure) -> &'static str {
-    match failure {
-        Failure::Business(BusinessFailure::VersionConflict) => "VersionConflict",
-        Failure::Business(BusinessFailure::Other) => "BusinessFailure",
-        Failure::Technical(TechnicalFailureNature::Transient) => "Transient",
-        Failure::Technical(TechnicalFailureNature::TimedOut) => "TimedOut",
-        Failure::Technical(TechnicalFailureNature::Cancelled) => "Cancelled",
-        Failure::Technical(TechnicalFailureNature::Other) => "TechnicalFailure",
-    }
 }
 
 pub struct FailureRecordingUsecase {

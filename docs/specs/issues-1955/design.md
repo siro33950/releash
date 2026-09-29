@@ -1,7 +1,7 @@
 # Design
 
 ## 変える部分
-- 配信する 8 種類の Output Data 化: `Failures`・`Terminal`・`Workflows`・`Workflow`・`NotionConfig`・`ProviderAvailability`・`WorkflowConfig`・`ProviderHookHealth` が運ぶ型を、domain の型を含まない usecase の Output Data にし、それを作る読み取りと presenter の変換を Output Data からの変換にする。根拠: R-001「購読で配信する状態は、domain の型を含まない Output Data だけでできている」、B-001、R-009、B-009。ルート: 委任
+- 配信する 8 種類の Output Data 化: `Failures`・`Terminal`・`Workflows`・`Workflow`・`NotionConfig`・`ProviderAvailability`・`WorkflowConfig`・`ProviderHookHealth` が運ぶ型を、domain の型を含まない usecase の Output Data にし、それを作る読み取りと presenter の変換を Output Data からの変換にする。根拠: R-001「購読で配信する状態は、domain の型を含まない Output Data だけでできている」、B-001、R-009、B-009。ルート: `Failures` と `NotionConfig` は QueryService の gateway の実装が Output Data を直接組み立てる。`ProviderAvailability`・`Terminal`・`ProviderHookHealth`・`Workflows`・`Workflow` は Usecase で Output Data に写す。それ以外は委任
 - `WorkflowConfig` の配信の変換: presenter が gateway の `workflow_to_model` と保存用の型 `WorkflowSection` を使わず、Output Data から転送の形に変える。根拠: R-002「presenter は gateway に依存しない」、B-002。ルート: 配信は Output Data から変換する
 - `update_workflow_config` の入力: controller が gateway の保存用の型 `WorkflowSection` と `workflow_to_domain` を使わず、転送の形から Input Data に変えて Usecase に渡す。presenter の `wire::WorkflowSection` と gateway の `WorkflowSection` の間の変換（両方の向き）を無くす。根拠: R-002、R-003「`update_workflow_config` の入力は Input Data として Usecase に渡り、controller は gateway の保存用の型と変換を使わない」、B-003。ルート: 保存の入力は Input Data から変換し、controller は Input Data を Usecase に渡す
 - `FactReadError` の対応付け: presenter の `impl ConnectFailure for FactReadError` を無くす。gateway が `FactReadError` を domain の失敗に変えてから外へ出し、gateway のテストもそれに合わせる。根拠: R-002、R-004「gateway の失敗は、gateway の中で domain の失敗に変えてから presenter に届く」、B-004。ルート: gateway が domain の失敗（`TechnicalFailure` 等。#1929 の規則）に変えてから外へ出し、presenter は domain の失敗だけを対応付ける
@@ -14,6 +14,10 @@
 - 配信は Output Data から、保存の入力は Input Data から転送の形と相互に変換する。controller は gateway の保存用の型と変換を使わず、Input Data を Usecase に渡す。理由: 規約で adaptor が依存してよいのは usecase と domain だけであり、presenter と controller が gateway の保存用の型を経由すると、#1897 の「presenter が gateway に依存しない」を満たせない。
 - gateway のエラー型は gateway の外へ出さない。gateway が domain の失敗（`TechnicalFailure` 等。#1929 の規則）に変えてから外へ出し、presenter は domain の失敗だけを対応付ける。gateway のテストもそれに合わせる。理由: 問題は、gateway のエラー型が presenter まで漏れていることにある。
 - provider を表す Output Data の型と `ProviderKind` からの写し方は、usecase に 1 つずつ置く。一本化の対象は、Current Behavior の 6 か所、新しく作る 2 つの Output Data、gateway の 2 つの QueryService とする。理由: 正しい写し方を 1 つ足して既存を残すと、重複を増やすことになる。QueryService の戻り値も Output Data であり、この変更が扱う型と同じ種類である。
+- 配信する Output Data の組み立て方は、読み取り元で分ける。
+  - データのもとを読んで詰め替えているもの（`Failures`・`NotionConfig`）: QueryService の gateway の実装が Output Data を直接組み立てる。`Failures` の QueryService は domain の `FailureRecord` を含む値を返さない。理由: QueryService はフロントの言語で書き（USECASE.md「QueryService」）、Repository を再利用して Entity から Output Data に詰め替えてはならない（USECASE.md:32）。
+  - メモリ上の状態（`ProviderAvailability`・`Terminal`）と、domain の規則や評価の結果（`ProviderHookHealth`・`Workflows`・`Workflow`）: Usecase で Output Data に写す。理由: メモリ上の状態には読み出す保存データが無い。domain の規則や評価の結果を QueryService で組み立て直すと、domain の判断を読み取り側で重複させる。
+  - この変更で触らない Output Data（`usecase/workflow/dto.rs` の各 `*_to_dto`、`IssueInfoDto` などの From 実装）の組み立て方は対象外とする。
 
 ## 変えないもの
 - provider を記録の key や保存の形へ文字列化する処理（`usecase/provider_lifecycle/hook_health.rs:276-281` の `provider_label`、`adaptor/gateway/local_event_store/*_codec.rs` ほか）。理由: 記録の key と保存の形は変わってはいけない識別子であり、画面へ出す形と連動させない。

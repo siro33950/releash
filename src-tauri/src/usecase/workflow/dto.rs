@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 
 use crate::domain::workflow as domain;
 use crate::domain::workflow::services::contract_schema;
-use crate::usecase::agent_session::AgentSessionProviderDto;
+use crate::usecase::provider_dto::AgentSessionProviderDto;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
@@ -482,6 +482,7 @@ mod tests {
 
     #[test]
     fn workflow_dto_serializes_like_canonical_wire_shape() {
+        // Given
         let workflow = WorkflowDto {
             name: "wf".to_string(),
             description: "desc".to_string(),
@@ -518,8 +519,12 @@ mod tests {
             }],
         };
 
+        // When
+        let actual = serde_json::to_value(workflow).unwrap();
+
+        // Then
         assert_eq!(
-            serde_json::to_value(workflow).unwrap(),
+            actual,
             serde_json::json!({
                 "name": "wf",
                 "description": "desc",

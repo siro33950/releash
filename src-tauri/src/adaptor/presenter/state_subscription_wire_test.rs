@@ -131,13 +131,13 @@ fn test_購読事象_準備変更と定期印の旧転送形式を保つ() {
 fn test_購読payload_全種類を旧wire型とフィールドへ変換する() {
     use crate::usecase::agent_session::{
         AgentSessionHistoryCandidateDto, AgentSessionHistoryPageDto, AgentSessionItemDto,
-        AgentSessionLifecycleDto, AgentSessionOperationsDto, AgentSessionProviderDto,
-        AgentSessionTreeLocationDto,
+        AgentSessionLifecycleDto, AgentSessionOperationsDto, AgentSessionTreeLocationDto,
     };
-    use crate::usecase::failure::FailureRecord;
-    use crate::usecase::failure::{BusinessFailure, Failure};
-    use crate::usecase::failure::{FailureObservation, FailurePage};
+    use crate::usecase::failure::{
+        FailureClassificationDto, FailureObservationDto, FailurePage, FailureRecordDto,
+    };
     use crate::usecase::git_host::dto::{IssueInfoDto, IssueLabelDto, MilestoneDto, PrAuthorDto};
+    use crate::usecase::provider_dto::AgentSessionProviderDto;
     use crate::usecase::repository_dto::{BranchDto, WorktreeDisplayGroupsDto, WorktreeEntryDto};
     use crate::usecase::repository_state::snapshot::RepositoryBranchCardsSnapshotDto;
     use crate::usecase::terminal_surface::application::TerminalSurfaceStreamItem;
@@ -152,32 +152,28 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
     use crate::usecase::workspace_tree::{WorkspaceListSnapshotDto, WorkspaceListStatusDto};
     use wire::state_payload::Value as W;
 
+    // Given
     let provider = wire::AgentSessionProviderDto {
         value: Some(wire::agent_session_provider_dto::Value::Codex as i32),
     };
     let values = vec![
         (
-            StateValue::Failures(
-                FailurePage {
-                    items: vec![FailureObservation {
-                        record: FailureRecord {
-                            operation: "run".into(),
-                            target: "node".into(),
-                            kind: Failure::Business(BusinessFailure::Other),
-                            message: "failed".into(),
-                            active: true,
-                            requires_attention: true,
-                            count: 2,
-                            first_observed_ms: 3,
-                            last_observed_ms: 4,
-                        },
-                        requires_attention: true,
-                    }],
-                    next_offset: Some(5),
+            StateValue::Failures(FailurePage {
+                items: vec![FailureObservationDto {
+                    record: FailureRecordDto {
+                        operation: "run".into(),
+                        target: "node".into(),
+                        classification: FailureClassificationDto::BusinessFailure,
+                        message: "failed".into(),
+                        count: 2,
+                        first_observed_ms: 3,
+                        last_observed_ms: 4,
+                    },
                     requires_attention: true,
-                }
-                .into(),
-            ),
+                }],
+                next_offset: Some(5),
+                requires_attention: true,
+            }),
             W::Failures(wire::FailureRecords {
                 items: vec![wire::FailureRecord {
                     operation: Some("run".into()),
@@ -654,7 +650,9 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
         ),
     ];
 
+    // When
     for (value, expected) in values {
+        // Then
         assert_eq!(payload(&value).unwrap().value, Some(expected), "{value:?}");
     }
 }
@@ -687,7 +685,8 @@ fn test_購読payload_review対象をreview欄へ変換する() {
         original_size: None,
         modified_size: Some(4),
     });
-    // When / Then
+    // When
+    // Then
     assert!(matches!(
         payload(&StateValue::ReviewSnapshot(snapshot)).unwrap().value,
         Some(W::ReviewSnapshot(value)) if value.version == Some(3) && value.loading == Some(true)
@@ -706,16 +705,17 @@ fn test_購読payload_review対象をreview欄へ変換する() {
 
 #[test]
 fn test_購読payload_設定とproviderの出力値を維持する() {
-    use crate::usecase::agent_session::AgentSessionProviderDto;
     use crate::usecase::agent_session::{
         ProviderAvailabilityItemDto, ProviderAvailabilitySnapshotDto,
     };
     use crate::usecase::notion::usecase::{
         NotionLabelPropertyDto, NotionPropertyMappingDto, NotionRepoConfigDto,
     };
+    use crate::usecase::provider_dto::AgentSessionProviderDto;
     use crate::usecase::provider_lifecycle::ProviderHookHealthWarningDto;
     use wire::state_payload::Value as W;
 
+    // Given
     let values = [
         (
             StateValue::NotionConfig(Some(NotionRepoConfigDto {
@@ -744,7 +744,7 @@ fn test_購読payload_設定とproviderの出力値を維持する() {
                     effective_executable: "codex".into(),
                     available: false,
                     resolved_executable: None,
-                    unavailable_reason: Some("not_found".into()),
+                    unavailable_reason: Some(crate::usecase::agent_session::ProviderUnavailableReasonDto::NotFound),
                 }],
             }),
             "releash.client.v1.ProviderAvailabilitySnapshotResponse",
@@ -763,12 +763,13 @@ fn test_購読payload_設定とproviderの出力値を維持する() {
             StateValue::ProviderHookHealth(vec![ProviderHookHealthWarningDto {
                 provider: AgentSessionProviderDto::Claude,
                 launch_id: "launch".into(),
-                reason: "local_api_unavailable".into(),
+                reason: crate::usecase::provider_lifecycle::ProviderHookHealthReasonDto::LocalApiUnavailable,
             }]),
             "releash.client.v1.ListProviderHookHealthWarningResponse",
             serde_json::json!([{"provider":"claude","launchId":"launch","reason":"local_api_unavailable"}]),
         ),
     ];
+    // When
     for (value, name, expected) in values {
         let actual = match payload(&value).unwrap().value.unwrap() {
             W::NotionConfig(value) => wire::from_message(name, &value),
@@ -778,6 +779,92 @@ fn test_購読payload_設定とproviderの出力値を維持する() {
             other => panic!("unexpected payload: {other:?}"),
         }
         .unwrap();
+        // Then
         assert_eq!(actual, expected, "{name}");
+    }
+}
+
+#[test]
+fn test_terminal購読payload_四種類の転送値を保つ() {
+    use crate::usecase::terminal_surface::application::TerminalSurfaceStreamItem as Item;
+
+    // Given
+    let values = [
+        (
+            Item::Snapshot(
+                crate::usecase::state_subscription::TerminalSurfaceSnapshotDto {
+                    session_key: "terminal".into(),
+                    replay: "history".into(),
+                    sequence: 7,
+                    cols: 100,
+                    rows: 30,
+                    is_exited: true,
+                    exit_code: Some(9),
+                    label: Some("Shell".into()),
+                },
+            ),
+            wire::terminal_event::Item::Snapshot(wire::TerminalSnapshot {
+                session_key: "terminal".into(),
+                processed_report_units:
+                    crate::infrastructure::terminal::output_flow_control::OUTPUT_REPORT_UNITS as u32,
+                replay: "history".into(),
+                sequence: 7,
+                cols: 100,
+                rows: 30,
+                is_exited: true,
+                exit_code: Some(9),
+            }),
+        ),
+        (
+            Item::Output {
+                session_key: "terminal".into(),
+                data: Arc::from("output"),
+                sequence: 8,
+            },
+            wire::terminal_event::Item::Output(wire::TerminalOutput {
+                session_key: "terminal".into(),
+                data: "output".into(),
+                sequence: 8,
+            }),
+        ),
+        (
+            Item::Resize {
+                session_key: "terminal".into(),
+                cols: 120,
+                rows: 40,
+                sequence: 9,
+            },
+            wire::terminal_event::Item::Resize(wire::TerminalResize {
+                session_key: "terminal".into(),
+                cols: 120,
+                rows: 40,
+                sequence: 9,
+            }),
+        ),
+        (
+            Item::Exit {
+                session_key: "terminal".into(),
+                exit_code: Some(42),
+                sequence: 10,
+            },
+            wire::terminal_event::Item::Exit(wire::TerminalExit {
+                session_key: "terminal".into(),
+                exit_code: Some(42),
+                sequence: 10,
+            }),
+        ),
+    ];
+
+    // When
+    for (item, expected) in values {
+        // Then
+        assert_eq!(
+            payload(&StateValue::Terminal(item)).unwrap(),
+            wire::StatePayload {
+                value: Some(wire::state_payload::Value::Terminal(wire::TerminalEvent {
+                    item: Some(expected)
+                }))
+            },
+        );
     }
 }

@@ -281,4 +281,61 @@ describe("useProviderAvailabilitySettings", () => {
 		);
 		expect(result.current.isDirty).toBe(false);
 	});
+	it.each(["save", "reset"] as const)(
+		"%s失敗後はエラーと両providerの入力を保ち次の購読でも消さない",
+		async (operation) => {
+			const { invokeClient } = await import("@/lib/client");
+			const provider = (id: string, configuredExecutable: string | null) => ({
+				provider: id,
+				displayName: id,
+				defaultExecutable: id,
+				configuredExecutable,
+				effectiveExecutable: configuredExecutable ?? id,
+				available: true,
+				resolvedExecutable: null,
+				unavailableReason: null,
+			});
+			const providers = [provider("claude", "/old"), provider("codex", null)];
+			states.publish("provider-availability", { providers });
+			vi.mocked(invokeClient).mockRejectedValue(new Error("operation failed"));
+			const { result } = renderHook(() =>
+				useProviderAvailabilitySettings(true),
+			);
+			await waitFor(() => expect(result.current.providers).toHaveLength(2));
+			act(() => result.current.setExecutable("claude", "/draft/claude"));
+			act(() => result.current.setExecutable("codex", "/draft/codex"));
+			await act(async () => {
+				if (operation === "save") {
+					await expect(result.current.save()).rejects.toThrow(
+						"operation failed",
+					);
+				} else {
+					await result.current.reset("claude");
+				}
+			});
+			expect(invokeClient).toHaveBeenCalledWith(
+				operation === "save"
+					? "update_provider_executable"
+					: "reset_provider_executable",
+				expect.objectContaining({ provider: "claude" }),
+			);
+			expect(result.current.error).toBe("operation failed");
+			expect(result.current.drafts).toEqual({
+				claude: "/draft/claude",
+				codex: "/draft/codex",
+			});
+			act(() =>
+				states.publish("provider-availability", {
+					providers: [
+						provider("claude", "/server/claude"),
+						provider("codex", "/server/codex"),
+					],
+				}),
+			);
+			expect(result.current.drafts).toEqual({
+				claude: "/draft/claude",
+				codex: "/draft/codex",
+			});
+		},
+	);
 });

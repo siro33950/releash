@@ -3,11 +3,12 @@ use crate::domain::{failure::TechnicalFailure, workspace_state::WorkspaceStateRe
 use crate::usecase::state_subscription::SubscriptionTarget;
 use crate::usecase::{
     agent_session::{
-        AgentSessionHistoryReadUsecase, AgentSessionHistoryRequest, AgentSessionProviderDto,
-        AgentSessionReadUsecase, ProviderAvailabilityUsecase,
+        AgentSessionHistoryReadUsecase, AgentSessionHistoryRequest, AgentSessionReadUsecase,
+        ProviderAvailabilityUsecase,
     },
     comment::{ReviewCommentUsecase, ReviewThreadDto},
     git_host::GitHostUsecase,
+    provider_dto::AgentSessionProviderDto,
     repo_paths_usecase::RepoPathsUsecase,
     repository_state::RepositoryStateService,
     repository_usecase::RepositoryUsecase,
@@ -186,8 +187,7 @@ impl WorkspaceStateReads {
                             &self.workflow.failure_targets(target).await.map_err(error)?,
                             *offset,
                         )
-                        .await
-                        .into(),
+                        .await,
                 ))
             }
             T::AgentSession(id) => {

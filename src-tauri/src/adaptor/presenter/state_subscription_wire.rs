@@ -19,7 +19,7 @@ pub(crate) fn payload(value: &StateValue) -> Result<wire::StatePayload, connectr
                             wire::FailureRecord {
                                 operation: Some(record.operation.clone()),
                                 target: Some(record.target.clone()),
-                                classification: Some(record.classification.into()),
+                                classification: Some(failure_classification(record.classification).into()),
                                 message: Some(record.message.clone()),
                                 count: Some(record.count),
                                 first_observed_ms: Some(record.first_observed_ms),
@@ -215,6 +215,20 @@ pub(crate) fn payload(value: &StateValue) -> Result<wire::StatePayload, connectr
             }
         }),
     })
+}
+
+pub(crate) fn failure_classification(
+    classification: crate::usecase::failure::FailureClassificationDto,
+) -> &'static str {
+    use crate::usecase::failure::FailureClassificationDto as C;
+    match classification {
+        C::VersionConflict => "VersionConflict",
+        C::BusinessFailure => "BusinessFailure",
+        C::Transient => "Transient",
+        C::TimedOut => "TimedOut",
+        C::Cancelled => "Cancelled",
+        C::TechnicalFailure => "TechnicalFailure",
+    }
 }
 
 pub(crate) fn event(

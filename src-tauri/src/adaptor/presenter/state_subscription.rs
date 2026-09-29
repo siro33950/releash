@@ -463,7 +463,7 @@ impl TerminalSurfaceStateSink for StateSubscriptionPresenter {
             ),
         };
         let payload = match crate::adaptor::presenter::state_subscription_wire::payload(
-            &StateValue::Terminal(item.into()),
+            &StateValue::Terminal(item),
         ) {
             Ok(payload) => payload,
             Err(error) => {

@@ -10,19 +10,25 @@ use crate::domain::provider_lifecycle::{
 };
 
 #[test]
-fn test_provider_hook警告_購読用出力にproviderと理由を写す() {
-    let output = ProviderHookHealthWarningDto::from(ProviderHookHealthWarning {
+fn test_provider警告_購読用出力にproviderと理由を写す() {
+    // Given
+    let warning = ProviderHookHealthWarning {
         provider: ProviderKind::Codex,
         launch_id: "launch".into(),
         reason: ProviderLifecycleUnavailableReason::LocalApiUnavailable,
-    });
-
+    };
+    // When
+    let output = ProviderHookHealthWarningDto::from(warning);
+    // Then
     assert_eq!(
         output.provider,
-        crate::usecase::agent_session::AgentSessionProviderDto::Codex
+        crate::usecase::provider_dto::AgentSessionProviderDto::Codex
     );
     assert_eq!(output.launch_id, "launch");
-    assert_eq!(output.reason, "local_api_unavailable");
+    assert_eq!(
+        output.reason,
+        ProviderHookHealthReasonDto::LocalApiUnavailable
+    );
 }
 
 #[derive(Default)]
@@ -608,4 +614,38 @@ async fn test_provider_hook_health_正常session_start後の同一launch欠落�
         .await
         .unwrap();
     assert!(health.warnings().await.unwrap().is_empty());
+}
+
+#[test]
+fn test_provider警告_四種類の理由を出力へ写す() {
+    // Given
+    let cases = [
+        (
+            ProviderLifecycleUnavailableReason::SessionStartDeadlineExceeded,
+            ProviderHookHealthReasonDto::SessionStartDeadlineExceeded,
+        ),
+        (
+            ProviderLifecycleUnavailableReason::CodexHookDeliveryUnconfirmed,
+            ProviderHookHealthReasonDto::CodexHookDeliveryUnconfirmed,
+        ),
+        (
+            ProviderLifecycleUnavailableReason::ProviderHookConfigurationRejected,
+            ProviderHookHealthReasonDto::ProviderHookConfigurationRejected,
+        ),
+        (
+            ProviderLifecycleUnavailableReason::LocalApiUnavailable,
+            ProviderHookHealthReasonDto::LocalApiUnavailable,
+        ),
+    ];
+
+    // When
+    for (domain, expected) in cases {
+        let output = ProviderHookHealthWarningDto::from(ProviderHookHealthWarning {
+            provider: ProviderKind::Claude,
+            launch_id: "launch".into(),
+            reason: domain,
+        });
+        // Then
+        assert_eq!(output.reason, expected);
+    }
 }

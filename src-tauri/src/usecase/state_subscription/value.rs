@@ -1,8 +1,9 @@
 use crate::usecase::{
-    agent_session::{AgentSessionHistoryPageDto, AgentSessionItemDto, AgentSessionProviderDto},
+    agent_session::{AgentSessionHistoryPageDto, AgentSessionItemDto},
     code_dto::{ReviewFileViewDto, ReviewSnapshotDto},
     comment::ReviewThreadDto,
     git_host::IssueInfoDto,
+    provider_dto::AgentSessionProviderDto,
     repository_dto::{BranchDto, WorktreeEntryDto},
     repository_state::snapshot::RepositoryBranchCardsSnapshotDto,
     workflow::{
@@ -13,7 +14,6 @@ use crate::usecase::{
     workspace_state::dto::WorkspaceStateDto,
     workspace_tree::WorkspaceListSnapshotDto,
 };
-use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TerminalSurfaceSnapshotDto {
@@ -44,73 +44,10 @@ impl From<crate::domain::terminal_surface::entities::TerminalSurface>
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum TerminalSurfaceStreamItemDto {
-    Snapshot(TerminalSurfaceSnapshotDto),
-    Output {
-        session_key: String,
-        data: Arc<str>,
-        sequence: u64,
-    },
-    Resize {
-        session_key: String,
-        cols: u16,
-        rows: u16,
-        sequence: u64,
-    },
-    Exit {
-        session_key: String,
-        exit_code: Option<i32>,
-        sequence: u64,
-    },
-}
-
-impl From<crate::usecase::terminal_surface::application::TerminalSurfaceStreamItem>
-    for TerminalSurfaceStreamItemDto
-{
-    fn from(
-        value: crate::usecase::terminal_surface::application::TerminalSurfaceStreamItem,
-    ) -> Self {
-        use crate::usecase::terminal_surface::application::TerminalSurfaceStreamItem as Item;
-        match value {
-            Item::Snapshot(surface) => Self::Snapshot(surface.into()),
-            Item::Output {
-                session_key,
-                data,
-                sequence,
-            } => Self::Output {
-                session_key,
-                data,
-                sequence,
-            },
-            Item::Resize {
-                session_key,
-                cols,
-                rows,
-                sequence,
-            } => Self::Resize {
-                session_key,
-                cols,
-                rows,
-                sequence,
-            },
-            Item::Exit {
-                session_key,
-                exit_code,
-                sequence,
-            } => Self::Exit {
-                session_key,
-                exit_code,
-                sequence,
-            },
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum StateValue {
-    Failures(crate::usecase::failure::FailurePageDto),
-    Terminal(TerminalSurfaceStreamItemDto),
+    Failures(crate::usecase::failure::FailurePage),
+    Terminal(crate::usecase::terminal_surface::application::TerminalSurfaceStreamItem),
     RepositoryPaths(Vec<String>),
     Workspaces(WorkspaceListSnapshotDto),
     Selection(WorkspaceTreeSelectionSnapshotDto),

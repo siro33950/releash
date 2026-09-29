@@ -11,6 +11,7 @@ use crate::test_support::state_subscription::StateSubscriptionEvent;
 use crate::usecase::agent_session::*;
 use crate::usecase::failure::{BusinessFailure, Failure};
 use crate::usecase::git_host::GitHostUsecase;
+use crate::usecase::provider_dto::AgentSessionProviderDto;
 use crate::usecase::repo_paths_usecase::RepoPathsUsecase;
 use crate::usecase::repository_state::RepositoryStateService;
 use crate::usecase::state_subscription::{
@@ -307,6 +308,7 @@ impl Fixture {
             ),
             notion: Arc::new(
                 crate::usecase::notion::usecase::NotionUsecase::new(
+                    config.clone(),
                     config.clone(),
                     Arc::new(crate::adaptor::gateway::notion::NotionApiGatewayImpl::new()),
                 )

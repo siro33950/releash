@@ -62,8 +62,8 @@ impl From<crate::usecase::agent_session::ProviderAvailabilitySnapshotDto>
                 .into_iter()
                 .map(|entry| ProviderAvailabilityItemResponse {
                     provider: match entry.provider {
-                        crate::usecase::agent_session::AgentSessionProviderDto::Claude => "claude",
-                        crate::usecase::agent_session::AgentSessionProviderDto::Codex => "codex",
+                        crate::usecase::provider_dto::AgentSessionProviderDto::Claude => "claude",
+                        crate::usecase::provider_dto::AgentSessionProviderDto::Codex => "codex",
                     }
                     .to_string(),
                     display_name: entry.display_name,
@@ -72,7 +72,12 @@ impl From<crate::usecase::agent_session::ProviderAvailabilitySnapshotDto>
                     effective_executable: entry.effective_executable,
                     available: entry.available,
                     resolved_executable: entry.resolved_executable,
-                    unavailable_reason: entry.unavailable_reason,
+                    unavailable_reason: entry.unavailable_reason.map(|reason| match reason {
+                        crate::usecase::agent_session::ProviderUnavailableReasonDto::NotFound => "not_found",
+                        crate::usecase::agent_session::ProviderUnavailableReasonDto::NotExecutable => "not_executable",
+                        crate::usecase::agent_session::ProviderUnavailableReasonDto::SearchPathUnavailable => "search_path_unavailable",
+                        crate::usecase::agent_session::ProviderUnavailableReasonDto::ProbeFailed => "probe_failed",
+                    }.to_string()),
                 })
                 .collect(),
         }
@@ -85,15 +90,24 @@ impl From<crate::usecase::provider_lifecycle::ProviderHookHealthWarningDto>
     fn from(value: crate::usecase::provider_lifecycle::ProviderHookHealthWarningDto) -> Self {
         Self {
             provider: match value.provider {
-                crate::usecase::agent_session::AgentSessionProviderDto::Claude => {
+                crate::usecase::provider_dto::AgentSessionProviderDto::Claude => {
                     ProviderHookHealthProviderResponse::Claude
                 }
-                crate::usecase::agent_session::AgentSessionProviderDto::Codex => {
+                crate::usecase::provider_dto::AgentSessionProviderDto::Codex => {
                     ProviderHookHealthProviderResponse::Codex
                 }
             },
             launch_id: value.launch_id,
-            reason: value.reason,
+            reason: match value.reason {
+                crate::usecase::provider_lifecycle::ProviderHookHealthReasonDto::SessionStartDeadlineExceeded => "session_start_deadline_exceeded",
+                crate::usecase::provider_lifecycle::ProviderHookHealthReasonDto::CodexHookDeliveryUnconfirmed => "codex_hook_delivery_unconfirmed",
+                crate::usecase::provider_lifecycle::ProviderHookHealthReasonDto::ProviderHookConfigurationRejected => "provider_hook_configuration_rejected",
+                crate::usecase::provider_lifecycle::ProviderHookHealthReasonDto::LocalApiUnavailable => "local_api_unavailable",
+            }.to_string(),
         }
     }
 }
+
+#[cfg(test)]
+#[path = "agent_session_test.rs"]
+mod agent_session_tests;

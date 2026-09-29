@@ -80,3 +80,7 @@ pub(crate) async fn update_crash_reporting_shared(
     .map_err(AppError::from_failure)?;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "commands_test.rs"]
+mod commands_tests;

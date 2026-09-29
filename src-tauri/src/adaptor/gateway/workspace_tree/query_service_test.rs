@@ -18,10 +18,9 @@ use crate::domain::workflow::{
 use crate::domain::workspace_tree::{
     WorkspaceNodeStatus, WorkspaceNodeStatusClassification, WorkspaceTreeNode,
 };
-use crate::usecase::agent_session::{
-    AgentSessionOperationsDto, AgentSessionProviderDto, AgentSessionUsecase,
-};
+use crate::usecase::agent_session::{AgentSessionOperationsDto, AgentSessionUsecase};
 use crate::usecase::failure::{BusinessFailure, Failure};
+use crate::usecase::provider_dto::AgentSessionProviderDto;
 
 struct EmptyArchives;
 

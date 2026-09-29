@@ -20,8 +20,9 @@ mod ingress;
 pub(crate) use hook_health::ProviderHookHealthWarning;
 pub(crate) use hook_health::{
     ProviderHookHealthFailureObservation, ProviderHookHealthFailureQuery,
-    ProviderHookHealthFailureQueryError, ProviderHookHealthReadUsecase, ProviderHookHealthUsecase,
-    ProviderHookHealthUsecaseError, ProviderHookHealthWarningDto,
+    ProviderHookHealthFailureQueryError, ProviderHookHealthReadUsecase,
+    ProviderHookHealthReasonDto, ProviderHookHealthUsecase, ProviderHookHealthUsecaseError,
+    ProviderHookHealthWarningDto,
 };
 pub(crate) use ingress::{
     ProviderExecutionTreeStopCommand, ProviderExecutionTreeStopTransaction,

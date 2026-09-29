@@ -4,9 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::domain::terminal_surface::{TerminalProcessLaunch, TerminalSurfaceOwner};
 use crate::domain::workspace_tree::WorkspaceIdentity;
-use crate::usecase::state_subscription::{
-    TerminalSurfaceSnapshotDto, TerminalSurfaceStreamItemDto,
-};
+use crate::usecase::state_subscription::TerminalSurfaceSnapshotDto;
 use crate::usecase::terminal_surface::spawn_usecase::GetOrSpawnTerminalOutcome;
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -151,13 +149,19 @@ pub enum TerminalSurfaceStreamItemV1 {
     },
 }
 
-impl From<TerminalSurfaceStreamItemDto> for TerminalSurfaceStreamItemV1 {
-    fn from(item: TerminalSurfaceStreamItemDto) -> Self {
+impl From<crate::usecase::terminal_surface::application::TerminalSurfaceStreamItem>
+    for TerminalSurfaceStreamItemV1
+{
+    fn from(
+        item: crate::usecase::terminal_surface::application::TerminalSurfaceStreamItem,
+    ) -> Self {
         match item {
-            TerminalSurfaceStreamItemDto::Snapshot(surface) => Self::Snapshot {
+            crate::usecase::terminal_surface::application::TerminalSurfaceStreamItem::Snapshot(
+                surface,
+            ) => Self::Snapshot {
                 surface: surface.into(),
             },
-            TerminalSurfaceStreamItemDto::Output {
+            crate::usecase::terminal_surface::application::TerminalSurfaceStreamItem::Output {
                 session_key,
                 data,
                 sequence,
@@ -166,7 +170,7 @@ impl From<TerminalSurfaceStreamItemDto> for TerminalSurfaceStreamItemV1 {
                 data,
                 sequence,
             },
-            TerminalSurfaceStreamItemDto::Resize {
+            crate::usecase::terminal_surface::application::TerminalSurfaceStreamItem::Resize {
                 session_key,
                 cols,
                 rows,
@@ -177,7 +181,7 @@ impl From<TerminalSurfaceStreamItemDto> for TerminalSurfaceStreamItemV1 {
                 rows,
                 sequence,
             },
-            TerminalSurfaceStreamItemDto::Exit {
+            crate::usecase::terminal_surface::application::TerminalSurfaceStreamItem::Exit {
                 session_key,
                 exit_code,
                 sequence,

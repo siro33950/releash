@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
 import { invokeClient as invoke } from "@/lib/client";
 import { getErrorMessage } from "@/lib/errorMessage";
 import { useStateSubscriptionResult } from "./useStateSubscription";
@@ -22,9 +22,21 @@ interface PendingDraft {
 	draft: string;
 	configured: string | null;
 	completed: boolean;
-	received: boolean;
-	receivedConfigured: string | null;
+	receivedConfigured?: string | null;
 }
+
+interface FormState {
+	snapshot: ProviderAvailabilitySnapshot | null;
+	drafts: Record<string, string>;
+	pending: Record<string, PendingDraft>;
+}
+
+type FormAction =
+	| { type: "receive"; snapshot: ProviderAvailabilitySnapshot }
+	| { type: "start"; provider: string; operation: PendingDraft }
+	| { type: "complete" | "fail"; provider: string }
+	| { type: "input"; provider: string; executable: string }
+	| { type: "clear" };
 
 function draftsFrom(
 	snapshot: ProviderAvailabilitySnapshot,
@@ -41,7 +53,7 @@ function mergeDrafts(
 	current: Record<string, string>,
 	previous: ProviderAvailabilitySnapshot,
 	next: ProviderAvailabilitySnapshot,
-	pending: Record<string, PendingDraft>,
+	pending: Readonly<Record<string, PendingDraft>>,
 ): Record<string, string> {
 	const merged = draftsFrom(next);
 	for (const entry of previous.providers) {
@@ -52,14 +64,11 @@ function mergeDrafts(
 				(item) => item.provider === entry.provider,
 			);
 			if (!nextEntry) continue;
-			operation.received = true;
-			operation.receivedConfigured = nextEntry.configuredExecutable;
 			if (
 				nextEntry.configuredExecutable !== operation.configured ||
 				operation.completed
 			) {
 				if (draft !== operation.draft) merged[entry.provider] = draft;
-				delete pending[entry.provider];
 			} else {
 				merged[entry.provider] = draft;
 			}
@@ -72,57 +81,106 @@ function mergeDrafts(
 	return merged;
 }
 
+function formReducer(state: FormState, action: FormAction): FormState {
+	switch (action.type) {
+		case "clear":
+			return { snapshot: null, drafts: {}, pending: {} };
+		case "input":
+			return {
+				...state,
+				drafts: { ...state.drafts, [action.provider]: action.executable },
+			};
+		case "start":
+			return {
+				...state,
+				pending: { ...state.pending, [action.provider]: action.operation },
+			};
+		case "fail": {
+			const { [action.provider]: _, ...pending } = state.pending;
+			return { ...state, pending };
+		}
+		case "complete": {
+			const operation = state.pending[action.provider];
+			if (!operation) return state;
+			if (operation.receivedConfigured === undefined) {
+				return {
+					...state,
+					pending: {
+						...state.pending,
+						[action.provider]: { ...operation, completed: true },
+					},
+				};
+			}
+			const { [action.provider]: _, ...pending } = state.pending;
+			return {
+				...state,
+				pending,
+				drafts:
+					state.drafts[action.provider] === operation.draft
+						? {
+								...state.drafts,
+								[action.provider]: operation.receivedConfigured ?? "",
+							}
+						: state.drafts,
+			};
+		}
+		case "receive": {
+			const drafts = state.snapshot
+				? mergeDrafts(
+						state.drafts,
+						state.snapshot,
+						action.snapshot,
+						state.pending,
+					)
+				: draftsFrom(action.snapshot);
+			const pending = Object.fromEntries(
+				Object.entries(state.pending).flatMap(([provider, operation]) => {
+					const entry = action.snapshot.providers.find(
+						(item) => item.provider === provider,
+					);
+					if (
+						!entry ||
+						entry.configuredExecutable !== operation.configured ||
+						operation.completed
+					)
+						return [];
+					return [
+						[
+							provider,
+							{ ...operation, receivedConfigured: entry.configuredExecutable },
+						],
+					];
+				}),
+			);
+			return { snapshot: action.snapshot, drafts, pending };
+		}
+	}
+}
+
 export function useProviderAvailabilitySettings(open: boolean) {
 	const subscription = useStateSubscriptionResult(
 		open ? "provider-availability" : null,
 	);
-	const [snapshot, setSnapshot] = useState<ProviderAvailabilitySnapshot | null>(
-		null,
-	);
-	const [drafts, setDrafts] = useState<Record<string, string>>({});
-	const form = useRef({ snapshot, drafts });
-	const pendingDrafts = useRef<Record<string, PendingDraft>>({});
-	form.current = { snapshot, drafts };
+	const [form, dispatch] = useReducer(formReducer, {
+		snapshot: null,
+		drafts: {},
+		pending: {},
+	});
+	const { snapshot, drafts } = form;
 	const [saving, setSaving] = useState(false);
 	const [refreshing, setRefreshing] = useState(false);
 	const [resetting, setResetting] = useState<Record<string, boolean>>({});
 	const [error, setError] = useState<string | null>(null);
-	const completePending = useCallback((provider: string) => {
-		const pending = pendingDrafts.current[provider];
-		if (!pending) return;
-		pending.completed = true;
-		if (!pending.received) return;
-		setDrafts((current) =>
-			current[provider] === pending.draft
-				? { ...current, [provider]: pending.receivedConfigured ?? "" }
-				: current,
-		);
-		delete pendingDrafts.current[provider];
-	}, []);
-
 	useEffect(() => {
-		if (open) return;
-		setSnapshot(null);
-		setDrafts({});
-		pendingDrafts.current = {};
-		setError(null);
+		if (!open) {
+			dispatch({ type: "clear" });
+			setError(null);
+		}
 	}, [open]);
 
 	const received = subscription.value;
 	useEffect(() => {
-		if (!received) return;
-		const current = form.current;
-		setSnapshot(received);
-		setDrafts(
-			current.snapshot
-				? mergeDrafts(
-						current.drafts,
-						current.snapshot,
-						received,
-						pendingDrafts.current,
-					)
-				: draftsFrom(received),
-		);
+		if (received) dispatch({ type: "receive", snapshot: received });
 	}, [received]);
 
 	const isDirty = useMemo(
@@ -135,7 +193,7 @@ export function useProviderAvailabilitySettings(open: boolean) {
 	);
 
 	const setExecutable = useCallback((provider: string, executable: string) => {
-		setDrafts((current) => ({ ...current, [provider]: executable }));
+		dispatch({ type: "input", provider, executable });
 	}, []);
 
 	const save = useCallback(async () => {
@@ -146,21 +204,23 @@ export function useProviderAvailabilitySettings(open: boolean) {
 			for (const provider of snapshot.providers) {
 				const executable = drafts[provider.provider] ?? "";
 				if (executable === (provider.configuredExecutable ?? "")) continue;
-				pendingDrafts.current[provider.provider] = {
-					draft: executable,
-					configured: provider.configuredExecutable,
-					completed: false,
-					received: false,
-					receivedConfigured: null,
-				};
+				dispatch({
+					type: "start",
+					provider: provider.provider,
+					operation: {
+						draft: executable,
+						configured: provider.configuredExecutable,
+						completed: false,
+					},
+				});
 				try {
 					await invoke("update_provider_executable", {
 						provider: provider.provider,
 						executable,
 					});
-					completePending(provider.provider);
+					dispatch({ type: "complete", provider: provider.provider });
 				} catch (cause) {
-					delete pendingDrafts.current[provider.provider];
+					dispatch({ type: "fail", provider: provider.provider });
 					throw cause;
 				}
 			}
@@ -170,33 +230,35 @@ export function useProviderAvailabilitySettings(open: boolean) {
 		} finally {
 			setSaving(false);
 		}
-	}, [snapshot, drafts, completePending]);
+	}, [snapshot, drafts]);
 
 	const reset = useCallback(
 		async (provider: string) => {
 			if (!snapshot) return;
 			setResetting((current) => ({ ...current, [provider]: true }));
 			setError(null);
-			pendingDrafts.current[provider] = {
-				draft: drafts[provider] ?? "",
-				configured:
-					snapshot.providers.find((item) => item.provider === provider)
-						?.configuredExecutable ?? null,
-				completed: false,
-				received: false,
-				receivedConfigured: null,
-			};
+			dispatch({
+				type: "start",
+				provider,
+				operation: {
+					draft: drafts[provider] ?? "",
+					configured:
+						snapshot.providers.find((item) => item.provider === provider)
+							?.configuredExecutable ?? null,
+					completed: false,
+				},
+			});
 			try {
 				await invoke("reset_provider_executable", { provider });
-				completePending(provider);
+				dispatch({ type: "complete", provider });
 			} catch (cause) {
-				delete pendingDrafts.current[provider];
+				dispatch({ type: "fail", provider });
 				setError(getErrorMessage(cause));
 			} finally {
 				setResetting((current) => ({ ...current, [provider]: false }));
 			}
 		},
-		[snapshot, drafts, completePending],
+		[snapshot, drafts],
 	);
 
 	const refresh = useCallback(async () => {

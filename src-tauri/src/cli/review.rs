@@ -10,10 +10,9 @@ use crate::domain::comment::{
     AuthorScope, ReviewActor, ReviewError, ReviewHistoryEntry, ReviewTarget, ReviewThread,
     ReviewThreadFilter, ReviewThreadState,
 };
-use crate::usecase::agent_session::{
-    AgentSessionItemDto, AgentSessionLifecycleDto, AgentSessionProviderDto,
-};
+use crate::usecase::agent_session::{AgentSessionItemDto, AgentSessionLifecycleDto};
 use crate::usecase::comment::{ReviewHistoryEntryDto, ReviewThreadDto};
+use crate::usecase::provider_dto::AgentSessionProviderDto;
 
 enum ReviewSessionContext {
     Provider(AgentSessionItemDto),

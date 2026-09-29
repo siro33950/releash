@@ -118,6 +118,42 @@ impl WorkflowConfigQueryService for AppConfig {
     }
 }
 
+impl crate::usecase::notion::query_service::NotionConfigQueryService for AppConfig {
+    fn get_config(
+        &self,
+        repo_path: &str,
+    ) -> Result<Option<crate::usecase::notion::usecase::NotionRepoConfigDto>, AppConfigError> {
+        use crate::usecase::notion::usecase::{
+            NotionLabelPropertyDto, NotionPropertyMappingDto, NotionRepoConfigDto,
+        };
+        let config = self
+            .config
+            .lock()
+            .map_err(|error| AppConfigError::Repository(format!("ロック取得失敗: {error}")))?;
+        Ok(config
+            .notion
+            .get(repo_path)
+            .map(|stored| NotionRepoConfigDto {
+                api_token: stored.api_token.clone(),
+                database_id: stored.database_id.clone(),
+                property_mapping: NotionPropertyMappingDto {
+                    title: stored.property_mapping.title.clone(),
+                    labels: stored
+                        .property_mapping
+                        .labels
+                        .iter()
+                        .map(|label| NotionLabelPropertyDto {
+                            name: label.name.clone(),
+                            property_type: label.property_type.clone(),
+                        })
+                        .collect(),
+                    branch_name: stored.property_mapping.branch_name.clone(),
+                    branch_prefix: stored.property_mapping.branch_prefix.clone(),
+                },
+            }))
+    }
+}
+
 impl ProviderExecutableConfigRepository for AppConfig {
     fn configured_executable(
         &self,
