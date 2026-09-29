@@ -19,7 +19,7 @@ test("performance harness starts an isolated external daemon with fixture enviro
         });
         const discovery = JSON.parse(await readFile(join(directory, "client-api.json"), "utf8"));
         const client = await connectPerformanceClient(discovery);
-        const result = await client.getProviderAvailability({});
+        const result = await client.refreshProviderAvailability({});
         const providers = result.providers.items;
         assert.equal(providers.length, 2);
         for (const provider of providers) {
