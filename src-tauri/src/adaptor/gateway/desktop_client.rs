@@ -377,9 +377,7 @@ fn liveness_failure(error: connectrpc::ConnectError) -> TechnicalFailure {
     use connectrpc::ErrorCode;
     let nature = match error.code {
         ErrorCode::DeadlineExceeded => TechnicalFailureNature::TimedOut,
-        ErrorCode::Unavailable | ErrorCode::ResourceExhausted | ErrorCode::Aborted => {
-            TechnicalFailureNature::Transient
-        }
+        ErrorCode::Unavailable | ErrorCode::ResourceExhausted => TechnicalFailureNature::Transient,
         ErrorCode::Canceled => TechnicalFailureNature::Cancelled,
         _ => TechnicalFailureNature::Other,
     };

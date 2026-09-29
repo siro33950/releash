@@ -406,9 +406,6 @@ async fn test_設定受信_生存確認と同じstreamで受け取る() {
             envelope(event(wire::state_subscription_event::Event::Ready(
                 wire::Unit {},
             ))),
-            envelope(event(wire::state_subscription_event::Event::Ready(
-                wire::Unit {},
-            ))),
             envelope(event(wire::state_subscription_event::Event::Snapshot(
                 wire::StatePayload {
                     value: Some(wire::state_payload::Value::DesktopSettings(settings)),
@@ -436,6 +433,51 @@ async fn test_設定受信_生存確認と同じstreamで受け取る() {
     assert_eq!(opens.load(Ordering::SeqCst), 1);
     assert_eq!(starts.load(Ordering::SeqCst), 1);
     assert!(client.connected());
+    server.abort();
+}
+
+#[tokio::test]
+async fn test_購読開始_重複したreadyで開始要求が増えない() {
+    // Given
+    let settings = wire::DesktopSettings {
+        close_to_tray: Some(true),
+        start_minimized: Some(false),
+        crash_reporting: Some(false),
+        performance_telemetry: Some(false),
+        auto_launch: Some(true),
+    };
+    let (endpoint, server, _, starts) = stream_server(
+        vec![
+            envelope(event(wire::state_subscription_event::Event::Ready(
+                wire::Unit {},
+            ))),
+            envelope(event(wire::state_subscription_event::Event::Ready(
+                wire::Unit {},
+            ))),
+            envelope(event(wire::state_subscription_event::Event::Snapshot(
+                wire::StatePayload {
+                    value: Some(wire::state_payload::Value::DesktopSettings(settings)),
+                },
+            ))),
+        ],
+        true,
+    )
+    .await;
+    let client = start(&endpoint);
+    // When
+    tokio::time::timeout(Duration::from_secs(2), client.first_settings())
+        .await
+        .unwrap()
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while starts.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    // Then
+    assert_eq!(starts.load(Ordering::SeqCst), 1);
     server.abort();
 }
 
@@ -720,12 +762,16 @@ fn test_生存確認_connectの失敗を技術的な失敗の性質へ写す() {
             ErrorCode::ResourceExhausted,
             TechnicalFailureNature::Transient,
         ),
-        (ErrorCode::Aborted, TechnicalFailureNature::Transient),
+        (ErrorCode::Aborted, TechnicalFailureNature::Other),
+        (ErrorCode::Unauthenticated, TechnicalFailureNature::Other),
         (ErrorCode::Canceled, TechnicalFailureNature::Cancelled),
         (ErrorCode::Internal, TechnicalFailureNature::Other),
     ] {
-        let failure = liveness_failure(connectrpc::ConnectError::new(code, "reason"));
+        let error = connectrpc::ConnectError::new(code, "reason");
+        let message = error.to_string();
+        let failure = liveness_failure(error);
         assert_eq!(failure.nature, nature);
+        assert_eq!(failure.message, message);
     }
 }
 
