@@ -305,7 +305,7 @@ function stateFixture(
 ) {
 	const streams: {
 		send: (event: StateEvent) => void;
-		fail: () => void;
+		fail: (code?: Code) => void;
 		signal: AbortSignal;
 		openedAt: number;
 	}[] = [];
@@ -322,7 +322,8 @@ function stateFixture(
 			};
 			streams.push({
 				send: push,
-				fail: () => push(new ConnectError("state lost", Code.Unavailable)),
+				fail: (code = Code.Unavailable) =>
+					push(new ConnectError("state lost", code)),
 				signal: context.signal,
 				openedAt: Date.now(),
 			});
@@ -357,26 +358,25 @@ function stateFixture(
 	return { streams, starts, stops, reports, serverInfoRequests };
 }
 
-it("状態のstreamのつなぎ直しは1秒から1.6倍ずつ伸び、readyを受け取ると1秒に戻る", async () => {
+it("状態のstreamがreadyの直後に切れ続けても待ちが伸びる", async () => {
 	vi.useFakeTimers();
 	vi.spyOn(Math, "random").mockReturnValue(0.5);
 	try {
-		const fixture = stateFixture(undefined, { failBeforeReady: 3 });
+		const fixture = stateFixture();
 		subscribeState("repository-paths", vi.fn());
-		await vi.advanceTimersByTimeAsync(6000);
 		await vi.waitFor(() => expect(fixture.starts).toHaveLength(1));
-		expect(fixture.streams).toHaveLength(4);
-		const opened = fixture.streams.map((stream) => stream.openedAt);
+		const firstFailedAt = Date.now();
+		fixture.streams[0].fail();
+		await vi.advanceTimersByTimeAsync(1000);
+		await vi.waitFor(() => expect(fixture.starts).toHaveLength(2));
+		const secondFailedAt = Date.now();
+		fixture.streams[1].fail();
+		await vi.advanceTimersByTimeAsync(1600);
+		await vi.waitFor(() => expect(fixture.starts).toHaveLength(3));
 		expect([
-			opened[1] - opened[0],
-			opened[2] - opened[1],
-			opened[3] - opened[2],
-		]).toEqual([1000, 1600, 2560]);
-		const failedAt = Date.now();
-		fixture.streams[3].fail();
-		await vi.advanceTimersByTimeAsync(2000);
-		await vi.waitFor(() => expect(fixture.streams).toHaveLength(5));
-		expect(fixture.streams[4].openedAt - failedAt).toBe(1000);
+			fixture.streams[1].openedAt - firstFailedAt,
+			fixture.streams[2].openedAt - secondFailedAt,
+		]).toEqual([1000, 1600]);
 	} finally {
 		window.dispatchEvent(new Event("pagehide"));
 		await vi.advanceTimersByTimeAsync(1000);
@@ -385,45 +385,131 @@ it("状態のstreamのつなぎ直しは1秒から1.6倍ずつ伸び、readyを�
 	}
 });
 
-it("購読の開始がつなぎ直しで直る失敗なら接続を使い回してstreamを開き直し同じ対象を再度開始する", async () => {
-	const start = vi
-		.fn<() => Promise<Record<string, never>>>()
-		.mockRejectedValueOnce(new ConnectError("busy", Code.ResourceExhausted))
-		.mockResolvedValue({});
-	const fixture = stateFixture(start);
-	const error = vi.fn();
-	subscribeState("repository-paths", vi.fn(), error);
-	await vi.waitFor(() => expect(fixture.streams).toHaveLength(2), {
-		timeout: 3000,
-	});
-	await vi.waitFor(() => expect(fixture.starts).toHaveLength(2));
-	expect(fixture.streams[0].signal.aborted).toBe(true);
-	expect(fixture.starts.map((request) => request.target)).toEqual([
-		"repository-paths",
-		"repository-paths",
-	]);
-	expect(error).not.toHaveBeenCalled();
-	expect(fixture.serverInfoRequests()).toBe(1);
+it("購読開始が失敗し続けても同じ待ちが伸びる", async () => {
+	vi.useFakeTimers();
+	vi.spyOn(Math, "random").mockReturnValue(0.5);
+	try {
+		const fixture = stateFixture(async () => {
+			throw new ConnectError("busy", Code.Aborted);
+		});
+		subscribeState("repository-paths", vi.fn());
+		await vi.advanceTimersByTimeAsync(6000);
+		expect(fixture.streams).toHaveLength(4);
+		const opened = fixture.streams.map((stream) => stream.openedAt);
+		expect([
+			opened[1] - opened[0],
+			opened[2] - opened[1],
+			opened[3] - opened[2],
+		]).toEqual([1000, 1600, 2560]);
+		expect(fixture.serverInfoRequests()).toBe(1);
+	} finally {
+		window.dispatchEvent(new Event("pagehide"));
+		await vi.advanceTimersByTimeAsync(1000);
+		vi.useRealTimers();
+		vi.restoreAllMocks();
+	}
 });
 
-it("購読の停止がつなぎ直しで直る失敗ならstreamを開き直し残った対象だけを開始する", async () => {
-	const fixture = stateFixture(undefined, {
-		stop: () => {
-			throw new ConnectError("state lost", Code.Unavailable);
-		},
-	});
-	const release = subscribeState("repository-paths", vi.fn());
-	subscribeState("providers", vi.fn());
-	await vi.waitFor(() => expect(fixture.starts).toHaveLength(2));
-	release();
-	await vi.waitFor(() => expect(fixture.streams).toHaveLength(2), {
-		timeout: 3000,
-	});
-	await vi.waitFor(() => expect(fixture.starts).toHaveLength(3));
-	expect(fixture.stops).toHaveBeenCalledOnce();
-	expect(fixture.starts[2].target).toBe("providers");
-	expect(fixture.serverInfoRequests()).toBe(1);
+it("ready前の失敗でも待ちが伸びる", async () => {
+	vi.useFakeTimers();
+	vi.spyOn(Math, "random").mockReturnValue(0.5);
+	try {
+		const fixture = stateFixture(undefined, { failBeforeReady: 3 });
+		subscribeState("repository-paths", vi.fn());
+		await vi.advanceTimersByTimeAsync(6000);
+		expect(fixture.streams).toHaveLength(4);
+		const opened = fixture.streams.map((stream) => stream.openedAt);
+		expect([
+			opened[1] - opened[0],
+			opened[2] - opened[1],
+			opened[3] - opened[2],
+		]).toEqual([1000, 1600, 2560]);
+	} finally {
+		window.dispatchEvent(new Event("pagehide"));
+		await vi.advanceTimersByTimeAsync(1000);
+		vi.useRealTimers();
+		vi.restoreAllMocks();
+	}
 });
+
+it("つなぎ直してから2分を超えてstreamが続くと次の待ちは1秒に戻る", async () => {
+	vi.useFakeTimers();
+	vi.spyOn(Math, "random").mockReturnValue(0.5);
+	try {
+		const fixture = stateFixture();
+		subscribeState("repository-paths", vi.fn());
+		await vi.waitFor(() => expect(fixture.starts).toHaveLength(1));
+		fixture.streams[0].fail();
+		await vi.advanceTimersByTimeAsync(1000);
+		await vi.waitFor(() => expect(fixture.starts).toHaveLength(2));
+		for (let i = 0; i < 6; i++) {
+			await vi.advanceTimersByTimeAsync(20000);
+			fixture.streams[1].send({
+				target: "repository-paths",
+				version: { epoch: "boot", sequence: BigInt(i) },
+				event: { case: "bookmark", value: {} },
+			});
+			await vi.advanceTimersByTimeAsync(0);
+		}
+		await vi.advanceTimersByTimeAsync(1);
+		const failedAt = Date.now();
+		fixture.streams[1].fail();
+		await vi.advanceTimersByTimeAsync(1000);
+		await vi.waitFor(() => expect(fixture.streams).toHaveLength(3));
+		expect(fixture.streams[2].openedAt - failedAt).toBe(1000);
+	} finally {
+		window.dispatchEvent(new Event("pagehide"));
+		await vi.advanceTimersByTimeAsync(1000);
+		vi.useRealTimers();
+		vi.restoreAllMocks();
+	}
+});
+
+it.each([Code.Unavailable, Code.Aborted, Code.ResourceExhausted])(
+	"購読の開始がcode %sで失敗したら接続を使い回してstreamを開き直す",
+	async (code) => {
+		const start = vi
+			.fn<() => Promise<Record<string, never>>>()
+			.mockRejectedValueOnce(new ConnectError("busy", code))
+			.mockResolvedValue({});
+		const fixture = stateFixture(start);
+		const error = vi.fn();
+		subscribeState("repository-paths", vi.fn(), error);
+		await vi.waitFor(() => expect(fixture.streams).toHaveLength(2), {
+			timeout: 3000,
+		});
+		await vi.waitFor(() => expect(fixture.starts).toHaveLength(2));
+		expect(fixture.streams[0].signal.aborted).toBe(true);
+		expect(fixture.starts.map((request) => request.target)).toEqual([
+			"repository-paths",
+			"repository-paths",
+		]);
+		expect(error).not.toHaveBeenCalled();
+		expect(fixture.serverInfoRequests()).toBe(1);
+	},
+);
+
+it.each([Code.Unavailable, Code.Aborted, Code.ResourceExhausted])(
+	"購読の停止がcode %sで失敗したらstreamを開き直し残った対象だけを開始する",
+	async (code) => {
+		const fixture = stateFixture(undefined, {
+			stop: () => {
+				throw new ConnectError("state lost", code);
+			},
+		});
+		const release = subscribeState("repository-paths", vi.fn());
+		subscribeState("providers", vi.fn());
+		await vi.waitFor(() => expect(fixture.starts).toHaveLength(2));
+		release();
+		await vi.waitFor(() => expect(fixture.streams).toHaveLength(2), {
+			timeout: 3000,
+		});
+		await vi.waitFor(() => expect(fixture.starts).toHaveLength(3));
+		expect(fixture.stops).toHaveBeenCalledOnce();
+		expect(fixture.starts[2].target).toBe("providers");
+		expect(fixture.serverInfoRequests()).toBe(1);
+	},
+);
 
 const repositoryPaths = (
 	sequence: number,
@@ -472,25 +558,28 @@ it("状態の購読は同じ対象を一度だけ開始し最初の状態と変�
 	expect(fixture.starts).toHaveLength(1);
 });
 
-it("状態のstreamが切れたら最後に受け取った版から購読を再開する", async () => {
-	const fixture = stateFixture();
-	const receive = vi.fn();
-	subscribeState("repository-paths", receive);
-	await vi.waitFor(() => expect(fixture.starts).toHaveLength(1));
-	fixture.streams[0].send(repositoryPaths(0, ["/a"], "snapshot"));
-	fixture.streams[0].send(repositoryPaths(2, ["/b"]));
-	await vi.waitFor(() => expect(receive).toHaveBeenCalledWith(["/b"]));
-	fixture.streams[0].fail();
-	await vi.waitFor(() => expect(fixture.starts).toHaveLength(2), {
-		timeout: 3000,
-	});
-	expect(fixture.starts[1].version).toMatchObject({
-		epoch: "boot",
-		sequence: 2n,
-	});
-	fixture.streams[1].send(repositoryPaths(3, ["/c"]));
-	await vi.waitFor(() => expect(receive).toHaveBeenLastCalledWith(["/c"]));
-});
+it.each([Code.Unavailable, Code.Aborted, Code.ResourceExhausted])(
+	"状態のstreamがcode %sで切れたら最後に受け取った版から購読を再開する",
+	async (code) => {
+		const fixture = stateFixture();
+		const receive = vi.fn();
+		subscribeState("repository-paths", receive);
+		await vi.waitFor(() => expect(fixture.starts).toHaveLength(1));
+		fixture.streams[0].send(repositoryPaths(0, ["/a"], "snapshot"));
+		fixture.streams[0].send(repositoryPaths(2, ["/b"]));
+		await vi.waitFor(() => expect(receive).toHaveBeenCalledWith(["/b"]));
+		fixture.streams[0].fail(code);
+		await vi.waitFor(() => expect(fixture.starts).toHaveLength(2), {
+			timeout: 3000,
+		});
+		expect(fixture.starts[1].version).toMatchObject({
+			epoch: "boot",
+			sequence: 2n,
+		});
+		fixture.streams[1].send(repositoryPaths(3, ["/c"]));
+		await vi.waitFor(() => expect(receive).toHaveBeenLastCalledWith(["/c"]));
+	},
+);
 
 it("接続を作り直すと状態のstreamのつなぎ直しで接続の回復を通知する", async () => {
 	const { onClientConnection, refreshClient } = await import("./client");

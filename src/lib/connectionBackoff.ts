@@ -6,8 +6,14 @@ const policy = getOption(ClientService, connection_backoff);
 
 export function createConnectionBackoff() {
 	let current: number | undefined;
+	let lastAttemptAt: number | undefined;
 	return {
 		next() {
+			if (
+				lastAttemptAt !== undefined &&
+				Date.now() - lastAttemptAt > policy.resetAfterMs
+			)
+				current = undefined;
 			if (current === undefined) {
 				current = policy.initialBackoffMs;
 				return current;
@@ -16,8 +22,8 @@ export function createConnectionBackoff() {
 			const spread = policy.jitter * current;
 			return Math.round(current + (Math.random() * 2 - 1) * spread);
 		},
-		reset() {
-			current = undefined;
+		attemptStarted() {
+			lastAttemptAt = Date.now();
 		},
 	};
 }

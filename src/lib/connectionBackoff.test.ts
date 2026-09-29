@@ -26,11 +26,35 @@ it("2回目以降は±20%の範囲でずらす", () => {
 	expect(backoff.next()).toBe(3072);
 });
 
-it("resetで初回の待ちに戻る", () => {
+it("前回の待ちが終わってから2分ちょうどでは伸び、2分を超えると初回へ戻る", () => {
+	vi.useFakeTimers();
 	vi.spyOn(Math, "random").mockReturnValue(0.5);
-	const backoff = createConnectionBackoff();
-	backoff.next();
-	backoff.next();
-	backoff.reset();
-	expect(backoff.next()).toBe(1000);
+	try {
+		const backoff = createConnectionBackoff();
+		expect(backoff.next()).toBe(1000);
+		vi.setSystemTime(1000);
+		backoff.attemptStarted();
+		vi.setSystemTime(121000);
+		expect(backoff.next()).toBe(1600);
+		vi.setSystemTime(122600);
+		backoff.attemptStarted();
+		vi.setSystemTime(242601);
+		expect(backoff.next()).toBe(1000);
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+it("1回の待ちが2分を超えても、待ちが終わった時点から次の2分を測る", () => {
+	vi.useFakeTimers();
+	vi.spyOn(Math, "random").mockReturnValue(0.5);
+	try {
+		const backoff = createConnectionBackoff();
+		for (let i = 0; i < 12; i++) backoff.next();
+		vi.setSystemTime(144000);
+		backoff.attemptStarted();
+		expect(backoff.next()).toBe(120000);
+	} finally {
+		vi.useRealTimers();
+	}
 });

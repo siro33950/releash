@@ -1,13 +1,13 @@
-import { toJson } from "@bufbuild/protobuf";
-import {
-	type Client,
-	Code,
-	ConnectError,
-	createClient,
-} from "@connectrpc/connect";
+import { getOption, toJson } from "@bufbuild/protobuf";
+import { type Client, ConnectError, createClient } from "@connectrpc/connect";
 import { createLinkedAbortController } from "@connectrpc/connect/protocol";
 import { createConnectTransport } from "@connectrpc/connect-web";
 import { invoke } from "@tauri-apps/api/core";
+import {
+	default_timeout_ms,
+	reconnect_status_code,
+	state_stream_silence_ms,
+} from "@/generated/client_options_pb";
 import {
 	ClientService,
 	type StatePayload,
@@ -48,7 +48,7 @@ async function open(abort: AbortController): Promise<Session> {
 		createConnectTransport({
 			baseUrl: endpoint.url,
 			useBinaryFormat: true,
-			defaultTimeoutMs: 120_000,
+			defaultTimeoutMs: getOption(ClientService, default_timeout_ms),
 			interceptors: [
 				(next) => async (request) => {
 					request.header.set("Authorization", `Bearer ${endpoint.token}`);
@@ -162,14 +162,12 @@ type StateEntry = {
 	value?: { current: unknown };
 };
 type StateStream = { client: Client<typeof ClientService>; id: string };
-const STATE_SILENCE_MS = 30_000;
+const STATE_SILENCE_MS = getOption(ClientService, state_stream_silence_ms);
 const IDLE = "idle";
 const RETRY = "retry";
-const RECONNECT_CODES = new Set([
-	Code.Unavailable,
-	Code.Aborted,
-	Code.ResourceExhausted,
-]);
+const RECONNECT_CODES = new Set<number>(
+	getOption(ClientService, reconnect_status_code),
+);
 function reconnects(error: unknown) {
 	return error instanceof ConnectError && RECONNECT_CODES.has(error.code);
 }
@@ -258,7 +256,6 @@ function ensureStateStream() {
 				)) {
 					alive();
 					if (event.event.case === "ready") {
-						backoff.reset();
 						stateStream = stream;
 						for (const target of states.keys()) startState(stream, target);
 						continue;
@@ -306,6 +303,7 @@ function ensureStateStream() {
 					);
 				});
 				if (stateAbort === delay) stateAbort = null;
+				if (!stopped && states.size) backoff.attemptStarted();
 			}
 		}
 	})().finally(() => {
