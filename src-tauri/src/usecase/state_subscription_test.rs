@@ -284,3 +284,51 @@ async fn test_購読手順_任意の対象で配信完了を待ち一度だけ�
     assert_eq!(reads.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
     assert_eq!(*output.updates.lock(), vec![target]);
 }
+
+#[tokio::test]
+async fn test_配信完了待機_待機対象以外の対象にも同じ変化を配信する() {
+    // Given
+    let output = Arc::new(RecordingOutput::default());
+    let reads = Arc::new(RecordingReads {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let usecase = StateSubscriptionUsecase::new_with_output(output.clone(), Arc::new(PendingTimer))
+        .with_reads(reads.clone(), None, vec![], String::new());
+    let waited = SubscriptionTarget::SessionNode("/repo".into(), "one".into());
+    let other = SubscriptionTarget::SessionNode("/repo".into(), "two".into());
+    usecase.open_client("client".into()).unwrap();
+    usecase.start_read("client", &waited).await.unwrap();
+    usecase.start_read("client", &other).await.unwrap();
+
+    // When
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        tokio::task::spawn_blocking({
+            let usecase = usecase.clone();
+            let waited = waited.clone();
+            move || usecase.notify_and_wait(StateChangeSource::Worktree("/repo".into()), &waited)
+        }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if output.updates.lock().len() == 2 {
+                break;
+            }
+            output.updated.notified().await;
+        }
+    })
+    .await
+    .unwrap();
+
+    // Then
+    let updates = output.updates.lock();
+    assert_eq!(
+        updates.iter().filter(|target| **target == waited).count(),
+        1
+    );
+    assert_eq!(updates.iter().filter(|target| **target == other).count(), 1);
+    assert_eq!(reads.calls.load(std::sync::atomic::Ordering::SeqCst), 4);
+}

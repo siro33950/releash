@@ -40,10 +40,7 @@ impl RepoPathsUsecase {
         let _mutation = self.mutation.lock();
         let added = self.repo.add(path)?;
         if added {
-            self.subscriptions.notify_and_wait(
-                crate::usecase::state_subscription::StateChangeSource::Repositories,
-                &crate::usecase::state_subscription::SubscriptionTarget::RepositoryPaths,
-            );
+            self.notify_changed();
         }
         Ok(added)
     }
@@ -54,12 +51,16 @@ impl RepoPathsUsecase {
         let _mutation = self.mutation.lock();
         let removed = self.repo.remove(path)?;
         if removed {
-            self.subscriptions.notify_and_wait(
-                crate::usecase::state_subscription::StateChangeSource::Repositories,
-                &crate::usecase::state_subscription::SubscriptionTarget::RepositoryPaths,
-            );
+            self.notify_changed();
         }
         Ok(removed)
+    }
+
+    fn notify_changed(&self) {
+        self.subscriptions.notify_and_wait(
+            crate::usecase::state_subscription::StateChangeSource::Repositories,
+            &crate::usecase::state_subscription::SubscriptionTarget::RepositoryPaths,
+        );
     }
 }
 
@@ -133,11 +134,14 @@ mod repo_paths_usecase_tests {
     #[test]
     fn test_追加削除成功時のみ購読口へ通知する() {
         use crate::usecase::state_subscription::StateChangeSource;
+        // Given
         let (uc, mut changes) = usecase_with(Arc::new(FakeRepoPaths::default()));
+        // When
         assert!(uc.add("/repo/a").unwrap());
         assert!(!uc.add("/repo/a").unwrap());
         assert!(uc.remove("/repo/a").unwrap());
         assert!(!uc.remove("/repo/a").unwrap());
+        // Then
         assert_eq!(changes.try_recv().unwrap(), StateChangeSource::Repositories);
         assert_eq!(changes.try_recv().unwrap(), StateChangeSource::Repositories);
         assert!(changes.try_recv().is_err());
@@ -151,6 +155,7 @@ mod repo_paths_usecase_tests {
         };
         use futures_util::StreamExt;
 
+        // Given
         let subscriptions = StateSubscriptionUsecase::new(
             vec![],
             Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
@@ -181,6 +186,7 @@ mod repo_paths_usecase_tests {
             Some(StateSubscriptionEvent::Item(_, Event::Bookmark(_)))
         ));
 
+        // When
         let usecase = RepoPathsUsecase::new(repo, subscriptions);
         tokio::task::spawn_blocking(move || {
             assert!(usecase.add("/repo").unwrap());
@@ -189,6 +195,7 @@ mod repo_paths_usecase_tests {
         .await
         .unwrap();
 
+        // Then
         assert!(
             matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Change(_, _, value))) if same(&value, StateValue::RepositoryPaths(vec!["/repo".into()])))
         );

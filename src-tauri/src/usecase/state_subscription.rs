@@ -353,27 +353,26 @@ impl StateSubscriptionUsecase {
     }
 
     pub(crate) fn notify(&self, source: StateChangeSource) {
-        #[cfg(test)]
-        let _ = self.test_changes.send(source.clone());
-        let _ = self.changes.send(StateChange { source, skip: None });
+        self.send_change(source, None);
     }
 
     pub(crate) fn notify_and_wait(&self, source: StateChangeSource, target: &SubscriptionTarget) {
-        #[cfg(test)]
-        let _ = self.test_changes.send(source.clone());
         let worker = self.waiting_workers.lock().get(target).cloned();
         if let Some(worker) = worker {
             let (completed, receiver) = std::sync::mpsc::channel();
-            let _ = self.changes.send(StateChange {
-                source: source.clone(),
-                skip: Some(target.clone()),
-            });
+            self.send_change(source.clone(), Some(target.clone()));
             if worker.send(PendingChange { source, completed }).is_ok() {
                 let _ = receiver.recv();
             }
         } else {
-            let _ = self.changes.send(StateChange { source, skip: None });
+            self.send_change(source, None);
         }
+    }
+
+    fn send_change(&self, source: StateChangeSource, skip: Option<SubscriptionTarget>) {
+        #[cfg(test)]
+        let _ = self.test_changes.send(source.clone());
+        let _ = self.changes.send(StateChange { source, skip });
     }
 
     #[cfg(test)]

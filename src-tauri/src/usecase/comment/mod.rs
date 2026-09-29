@@ -371,10 +371,12 @@ mod tests {
     #[test]
     fn test_comment変更_成功した操作だけ購読口へ通知する() {
         use crate::usecase::state_subscription::StateChangeSource;
+        // Given
         let subscriptions = crate::test_support::state_subscription::test_subscriptions();
         let mut changes = subscriptions.changes();
         let usecase = usecase().with_subscriptions(subscriptions);
         let dir = TempDir::new().unwrap();
+        // When
         let thread = usecase
             .create_thread(
                 dir.path(),
@@ -415,6 +417,7 @@ mod tests {
         usecase
             .delete_thread(dir.path(), "repository", ReviewActor::human(), &thread.id)
             .unwrap();
+        // Then
         for _ in 0..4 {
             assert_eq!(
                 changes.try_recv().unwrap(),

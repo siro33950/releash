@@ -2,9 +2,14 @@ use super::*;
 
 #[test]
 fn test_repository一覧購読_repository一覧の変更だけで読み直す() {
+    // Given
     let target = SubscriptionTarget::RepositoryPaths;
-    assert!(target.affected_by(&StateChangeSource::Repositories));
-    assert!(!target.affected_by(&StateChangeSource::Repository(vec!["/repo".into()])));
+    // When
+    let repository_list = target.affected_by(&StateChangeSource::Repositories);
+    let repository_state = target.affected_by(&StateChangeSource::Repository(vec!["/repo".into()]));
+    // Then
+    assert!(repository_list);
+    assert!(!repository_state);
 }
 
 #[test]

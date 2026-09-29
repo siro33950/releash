@@ -162,11 +162,16 @@ impl RecordedWorktrees {
     pub(crate) fn lock(&self) -> std::sync::LockResult<std::sync::MutexGuard<'_, Vec<String>>> {
         let mut values = self.values.lock()?;
         let mut changes = self.changes.lock().expect("state change receiver");
-        while let Ok(change) = changes.try_recv() {
-            if let crate::usecase::state_subscription::StateChangeSource::Worktree(path) = change {
-                values.push(path);
-            }
-        }
+        values.extend(
+            take_changes(&mut changes)
+                .into_iter()
+                .filter_map(|change| match change {
+                    crate::usecase::state_subscription::StateChangeSource::Worktree(path) => {
+                        Some(path)
+                    }
+                    _ => None,
+                }),
+        );
         Ok(values)
     }
 }

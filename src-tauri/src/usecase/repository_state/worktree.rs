@@ -300,13 +300,15 @@ mod tests {
     impl CapturingNotifier {
         fn take(&self) -> Vec<Vec<String>> {
             let mut changes = self.changes.lock();
-            let mut paths = Vec::new();
-            while let Ok(crate::usecase::state_subscription::StateChangeSource::Repository(value)) =
-                changes.try_recv()
-            {
-                paths.push(value);
-            }
-            paths
+            crate::test_support::state_subscription::take_changes(&mut changes)
+                .into_iter()
+                .filter_map(|change| match change {
+                    crate::usecase::state_subscription::StateChangeSource::Repository(paths) => {
+                        Some(paths)
+                    }
+                    _ => None,
+                })
+                .collect()
         }
     }
 

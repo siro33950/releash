@@ -54,9 +54,11 @@ fn test_記録する失敗_作業の失敗は文面をそのまま他はdebug表
 
 #[test]
 fn test_失敗記録_usecaseが要対応を判定してrepositoryへ渡す() {
+    // Given
     let store = Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default());
     let recording = FailureRecordingUsecase::new(store.clone(), None);
     let key = FailureKey::new("workflow_start", "tree");
+    // When
     recording.observed(
         &key,
         WorkFailure {
@@ -64,7 +66,9 @@ fn test_失敗記録_usecaseが要対応を判定してrepositoryへ渡す() {
             message: "repair".into(),
         },
     );
+    // Then
     assert!(store.records("tree")[0].record.requires_attention);
+    // When
     recording.observed(
         &key,
         WorkFailure {
@@ -72,6 +76,7 @@ fn test_失敗記録_usecaseが要対応を判定してrepositoryへ渡す() {
             message: "busy".into(),
         },
     );
+    // Then
     assert!(
         !store
             .records("tree")

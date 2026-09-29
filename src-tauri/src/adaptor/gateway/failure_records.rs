@@ -152,6 +152,11 @@ fn now_ms() -> u64 {
 
 #[async_trait::async_trait]
 impl FailureQueryService for FailureRecordStore {
+    #[cfg(test)]
+    fn records(&self, target: &str) -> Vec<FailureObservation> {
+        FailureRecordStore::records(self, target)
+    }
+
     async fn page(&self, targets: &[String], offset: usize) -> FailurePage {
         let records = self.records.lock().expect("failure records");
         let matching = || {

@@ -101,6 +101,9 @@ impl FailureRecordingUsecase {
 #[async_trait::async_trait]
 pub trait FailureQueryService: Send + Sync {
     async fn page(&self, targets: &[String], offset: usize) -> FailurePage;
+
+    #[cfg(test)]
+    fn records(&self, target: &str) -> Vec<FailureObservation>;
 }
 
 pub(crate) fn requires_attention(kind: Failure) -> bool {

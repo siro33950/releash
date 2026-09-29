@@ -7,7 +7,7 @@ pub struct Retrying {
     pub(crate) limiter: Arc<RetryLimiter>,
     pub(crate) failures: Arc<FailureRecordingUsecase>,
     #[cfg(test)]
-    test_store: Option<Arc<crate::adaptor::gateway::failure_records::FailureRecordStore>>,
+    pub(crate) test_query: Option<Arc<dyn crate::usecase::failure::FailureQueryService>>,
 }
 
 impl Retrying {
@@ -19,7 +19,7 @@ impl Retrying {
             limiter,
             failures,
             #[cfg(test)]
-            test_store: None,
+            test_query: None,
         })
     }
 
@@ -85,7 +85,7 @@ impl Retrying {
 
     #[cfg(test)]
     pub(crate) fn records(&self, target: &str) -> Vec<crate::usecase::failure::FailureObservation> {
-        self.test_store
+        self.test_query
             .as_ref()
             .expect("test failure store")
             .records(target)
@@ -97,8 +97,7 @@ impl Retrying {
         targets: &[String],
         offset: usize,
     ) -> crate::usecase::failure::FailurePage {
-        use crate::usecase::failure::FailureQueryService;
-        self.test_store
+        self.test_query
             .as_ref()
             .expect("test failure store")
             .page(targets, offset)
@@ -116,23 +115,7 @@ impl Retrying {
 }
 
 #[cfg(test)]
-pub(crate) fn test_retrying() -> Arc<Retrying> {
-    let store = Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default());
-    Arc::new(Retrying {
-        limiter: Arc::new(RetryLimiter::deterministic()),
-        failures: Arc::new(crate::usecase::failure::FailureRecordingUsecase::new(
-            store.clone(),
-            None,
-        )),
-        test_store: Some(store),
-    })
-}
-
-#[cfg(test)]
-pub(crate) fn shared() -> &'static Arc<Retrying> {
-    static SHARED: std::sync::OnceLock<Arc<Retrying>> = std::sync::OnceLock::new();
-    SHARED.get_or_init(test_retrying)
-}
+pub(crate) use crate::test_support::retry::{shared, test_retrying};
 
 #[cfg(test)]
 #[path = "retry_test.rs"]
