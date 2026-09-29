@@ -80,6 +80,17 @@ impl ConfigRepository for Config {
         self.save(document)
     }
 }
+impl crate::usecase::app_config::query_service::WorkflowConfigQueryService for Config {
+    fn get_workflow_config(
+        &self,
+    ) -> Result<crate::usecase::app_config::query_service::WorkflowConfigDto, AppConfigError> {
+        Ok(
+            crate::usecase::app_config::query_service::WorkflowConfigDto {
+                approval_auto_approve: self.document.lock().unwrap().workflow.approval_auto_approve,
+            },
+        )
+    }
+}
 
 #[test]
 fn test_telemetry設定_永続化成功時だけruntime設定を更新する() {
@@ -105,7 +116,8 @@ fn test_telemetry設定_永続化成功時だけruntime設定を更新する() {
             }),
             fail,
         });
-        let config = crate::usecase::app_config::AppConfigUsecase::new(repository);
+        let config =
+            crate::usecase::app_config::AppConfigUsecase::new(repository.clone(), repository);
         let port = Port::default();
         let usecase = TelemetryUsecase::new(&port);
         assert_eq!(

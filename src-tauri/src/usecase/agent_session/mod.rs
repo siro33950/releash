@@ -43,8 +43,10 @@ pub(crate) use agent_session_read::AgentSessionReadUsecase;
 pub(crate) use agent_session_rename::{
     AgentSessionRenameError, AgentSessionRenameExecutor, AgentSessionRenameUsecase,
 };
+#[cfg(test)]
+pub(crate) use provider_availability::ProviderAvailabilityItemDto;
 pub(crate) use provider_availability::{
-    ProviderAvailabilityUsecase, ProviderAvailabilityUsecaseError,
+    ProviderAvailabilitySnapshotDto, ProviderAvailabilityUsecase, ProviderAvailabilityUsecaseError,
 };
 pub(crate) use provider_session_title_ingestion::ProviderSessionTitleIngestionUsecase;
 pub(crate) use usecase::{

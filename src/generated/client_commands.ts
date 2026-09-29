@@ -69,7 +69,6 @@ import {
 	OpenFolderInEditorRequestSchema,
 	OpenInEditorRequestSchema,
 	OpenWorkflowInEditorRequestSchema,
-	ProviderAvailabilitySnapshotResponseSchema,
 	QueryNotionTasksRequestSchema,
 	QuitAfterStartupFailureRequestSchema,
 	RecordTerminalLaunchRendererPhaseRequestSchema,
@@ -933,7 +932,7 @@ const commands = {
 		args: ClientCommandArgs["refresh_provider_availability"],
 	) => {
 		const result = decode(
-			ProviderAvailabilitySnapshotResponseSchema,
+			UnitSchema,
 			await client.refreshProviderAvailability(
 				fromJson(
 					RefreshProviderAvailabilityRequestSchema,
@@ -1104,7 +1103,7 @@ const commands = {
 		args: ClientCommandArgs["reset_provider_executable"],
 	) => {
 		const result = decode(
-			ProviderAvailabilitySnapshotResponseSchema,
+			UnitSchema,
 			await client.resetProviderExecutable(
 				fromJson(
 					ResetProviderExecutableRequestSchema,
@@ -1560,7 +1559,7 @@ const commands = {
 		args: ClientCommandArgs["update_provider_executable"],
 	) => {
 		const result = decode(
-			ProviderAvailabilitySnapshotResponseSchema,
+			UnitSchema,
 			await client.updateProviderExecutable(
 				fromJson(
 					UpdateProviderExecutableRequestSchema,

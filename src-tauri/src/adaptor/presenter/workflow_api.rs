@@ -12,7 +12,7 @@ pub(crate) struct WorkflowSummaryResponse {
     builtin: bool,
     is_running: bool,
     #[serde(rename = "sourceFormat")]
-    source_format: crate::domain::workflow::WorkflowSourceFormat,
+    source_format: dto::WorkflowSourceFormatDto,
 }
 
 impl From<dto::WorkflowSummaryDto> for WorkflowSummaryResponse {

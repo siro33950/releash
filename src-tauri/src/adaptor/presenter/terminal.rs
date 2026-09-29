@@ -2,10 +2,11 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::domain::terminal_surface::entities::TerminalSurface;
 use crate::domain::terminal_surface::{TerminalProcessLaunch, TerminalSurfaceOwner};
 use crate::domain::workspace_tree::WorkspaceIdentity;
-use crate::usecase::terminal_surface::application::TerminalSurfaceStreamItem;
+use crate::usecase::state_subscription::{
+    TerminalSurfaceSnapshotDto, TerminalSurfaceStreamItemDto,
+};
 use crate::usecase::terminal_surface::spawn_usecase::GetOrSpawnTerminalOutcome;
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -85,20 +86,26 @@ pub struct TerminalSurfaceV1 {
     pub label: Option<String>,
 }
 
-impl From<TerminalSurface> for TerminalSurfaceV1 {
-    fn from(surface: TerminalSurface) -> Self {
+impl From<TerminalSurfaceSnapshotDto> for TerminalSurfaceV1 {
+    fn from(surface: TerminalSurfaceSnapshotDto) -> Self {
         Self {
             session_key: surface.session_key,
             terminal_surface: TerminalSurfaceCheckpointV1 {
-                replay: surface.checkpoint.replay,
-                sequence: surface.checkpoint.sequence,
-                cols: surface.checkpoint.cols,
-                rows: surface.checkpoint.rows,
+                replay: surface.replay,
+                sequence: surface.sequence,
+                cols: surface.cols,
+                rows: surface.rows,
             },
-            is_exited: surface.process_state.is_exited(),
-            exit_code: surface.process_state.exit_code(),
+            is_exited: surface.is_exited,
+            exit_code: surface.exit_code,
             label: surface.label,
         }
+    }
+}
+
+impl From<crate::domain::terminal_surface::entities::TerminalSurface> for TerminalSurfaceV1 {
+    fn from(surface: crate::domain::terminal_surface::entities::TerminalSurface) -> Self {
+        TerminalSurfaceSnapshotDto::from(surface).into()
     }
 }
 
@@ -144,13 +151,13 @@ pub enum TerminalSurfaceStreamItemV1 {
     },
 }
 
-impl From<TerminalSurfaceStreamItem> for TerminalSurfaceStreamItemV1 {
-    fn from(item: TerminalSurfaceStreamItem) -> Self {
+impl From<TerminalSurfaceStreamItemDto> for TerminalSurfaceStreamItemV1 {
+    fn from(item: TerminalSurfaceStreamItemDto) -> Self {
         match item {
-            TerminalSurfaceStreamItem::Snapshot(surface) => Self::Snapshot {
+            TerminalSurfaceStreamItemDto::Snapshot(surface) => Self::Snapshot {
                 surface: surface.into(),
             },
-            TerminalSurfaceStreamItem::Output {
+            TerminalSurfaceStreamItemDto::Output {
                 session_key,
                 data,
                 sequence,
@@ -159,7 +166,7 @@ impl From<TerminalSurfaceStreamItem> for TerminalSurfaceStreamItemV1 {
                 data,
                 sequence,
             },
-            TerminalSurfaceStreamItem::Resize {
+            TerminalSurfaceStreamItemDto::Resize {
                 session_key,
                 cols,
                 rows,
@@ -170,7 +177,7 @@ impl From<TerminalSurfaceStreamItem> for TerminalSurfaceStreamItemV1 {
                 rows,
                 sequence,
             },
-            TerminalSurfaceStreamItem::Exit {
+            TerminalSurfaceStreamItemDto::Exit {
                 session_key,
                 exit_code,
                 sequence,

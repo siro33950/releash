@@ -57,6 +57,69 @@ pub struct FailurePage {
     pub requires_attention: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FailurePageDto {
+    pub items: Vec<FailureObservationDto>,
+    pub next_offset: Option<usize>,
+    pub requires_attention: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FailureObservationDto {
+    pub record: FailureRecordDto,
+    pub requires_attention: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FailureRecordDto {
+    pub operation: String,
+    pub target: String,
+    pub classification: &'static str,
+    pub message: String,
+    pub count: u64,
+    pub first_observed_ms: u64,
+    pub last_observed_ms: u64,
+}
+
+impl From<FailurePage> for FailurePageDto {
+    fn from(page: FailurePage) -> Self {
+        Self {
+            items: page
+                .items
+                .into_iter()
+                .map(|observation| {
+                    let record = observation.record;
+                    FailureObservationDto {
+                        record: FailureRecordDto {
+                            operation: record.operation,
+                            target: record.target,
+                            classification: failure_classification(record.kind),
+                            message: record.message,
+                            count: record.count,
+                            first_observed_ms: record.first_observed_ms,
+                            last_observed_ms: record.last_observed_ms,
+                        },
+                        requires_attention: observation.requires_attention,
+                    }
+                })
+                .collect(),
+            next_offset: page.next_offset,
+            requires_attention: page.requires_attention,
+        }
+    }
+}
+
+pub(crate) fn failure_classification(failure: Failure) -> &'static str {
+    match failure {
+        Failure::Business(BusinessFailure::VersionConflict) => "VersionConflict",
+        Failure::Business(BusinessFailure::Other) => "BusinessFailure",
+        Failure::Technical(TechnicalFailureNature::Transient) => "Transient",
+        Failure::Technical(TechnicalFailureNature::TimedOut) => "TimedOut",
+        Failure::Technical(TechnicalFailureNature::Cancelled) => "Cancelled",
+        Failure::Technical(TechnicalFailureNature::Other) => "TechnicalFailure",
+    }
+}
+
 pub struct FailureRecordingUsecase {
     repository: std::sync::Arc<dyn crate::domain::failure::FailureRecordRepository>,
     subscriptions: Option<crate::usecase::state_subscription::StateSubscriptionUsecase>,

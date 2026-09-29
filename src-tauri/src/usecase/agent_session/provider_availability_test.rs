@@ -135,6 +135,38 @@ fn test_provider_availability_初期化時にconfigとprobeから全providerのs
 }
 
 #[test]
+fn test_provider_availability_購読用出力にproviderと利用不可理由を写す() {
+    let availability = ProviderAvailabilityUsecase::initialize(
+        Arc::new(FakeProviderExecutableConfigRepository::with_override(
+            ProviderKind::Codex,
+            "missing-codex",
+        )),
+        Arc::new(FakeProviderExecutableProbeGateway::default()),
+    )
+    .unwrap();
+
+    let snapshot = availability.snapshot_dto().unwrap();
+
+    assert_eq!(
+        snapshot.providers[0].provider,
+        super::AgentSessionProviderDto::Claude
+    );
+    assert_eq!(
+        snapshot.providers[1].provider,
+        super::AgentSessionProviderDto::Codex
+    );
+    assert_eq!(
+        snapshot.providers[1].configured_executable.as_deref(),
+        Some("missing-codex")
+    );
+    assert_eq!(
+        snapshot.providers[1].unavailable_reason.as_deref(),
+        Some("not_found")
+    );
+    assert!(!snapshot.providers[1].available);
+}
+
+#[test]
 fn test_provider_availability_利用可能候補とlaunch実行fileを同じsnapshotから返す() {
     let availability = ProviderAvailabilityUsecase::initialize(
         Arc::new(FakeProviderExecutableConfigRepository::with_override(
@@ -170,9 +202,10 @@ fn test_provider_availability_updateは保存後に対象を再判定しresetで
     )
     .unwrap();
 
-    let updated = availability
+    availability
         .update_configured_executable(ProviderKind::Claude, "/custom/claude")
         .unwrap();
+    let updated = availability.snapshot().unwrap();
     assert_eq!(
         updated
             .entry(ProviderKind::Claude)
@@ -189,9 +222,10 @@ fn test_provider_availability_updateは保存後に対象を再判定しresetで
         "/custom/claude"
     );
 
-    let reset = availability
+    availability
         .reset_configured_executable(ProviderKind::Claude)
         .unwrap();
+    let reset = availability.snapshot().unwrap();
     assert_eq!(
         reset.entry(ProviderKind::Claude).configured_executable(),
         None
@@ -236,7 +270,8 @@ fn test_provider_availability_refreshは探索環境更新後に全providerを�
     assert_eq!(availability.available_providers().unwrap().len(), 2);
     probe.set_force_missing(true);
 
-    let refreshed = availability.refresh().unwrap();
+    availability.refresh().unwrap();
+    let refreshed = availability.snapshot().unwrap();
 
     assert_eq!(*probe.refreshes.lock().unwrap(), 1);
     assert!(refreshed
@@ -310,7 +345,8 @@ fn test_provider_availability_refresh中のreadへ部分更新snapshotを公開�
     probe.entered.wait();
     assert_eq!(availability.snapshot().unwrap(), before);
     probe.release.wait();
-    let after = refreshing.join().unwrap();
+    refreshing.join().unwrap();
+    let after = availability.snapshot().unwrap();
 
     assert_eq!(availability.snapshot().unwrap(), after);
     assert!(after.entries().iter().all(|entry| !entry.is_available()));

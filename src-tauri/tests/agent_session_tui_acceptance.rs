@@ -194,7 +194,7 @@ impl AgentSessionTuiAcceptanceHost {
         &self,
         provider: AcceptanceProvider,
         executable: &Path,
-    ) -> Result<ProviderAvailabilitySnapshot, String> {
+    ) -> Result<(), String> {
         self.invoke(
             "update_provider_executable",
             serde_json::json!({
@@ -204,17 +204,14 @@ impl AgentSessionTuiAcceptanceHost {
         )
     }
 
-    fn reset_provider_executable(
-        &self,
-        provider: AcceptanceProvider,
-    ) -> Result<ProviderAvailabilitySnapshot, String> {
+    fn reset_provider_executable(&self, provider: AcceptanceProvider) -> Result<(), String> {
         self.invoke(
             "reset_provider_executable",
             serde_json::json!({ "provider": provider_name(provider) }),
         )
     }
 
-    fn refresh_provider_availability(&self) -> Result<ProviderAvailabilitySnapshot, String> {
+    fn refresh_provider_availability(&self) -> Result<(), String> {
         self.invoke("refresh_provider_availability", serde_json::json!({}))
     }
 
@@ -543,13 +540,13 @@ async fn test_atui_025_初期化した全providerの利用可否と理由をprod
     let snapshot = host.provider_availability().unwrap();
 
     assert!(host
-        .invoke::<ProviderAvailabilitySnapshot>(
+        .invoke::<()>(
             "update_provider_executable",
             serde_json::json!({ "provider": "unknown", "executable": "agent" }),
         )
         .is_err());
     assert!(host
-        .invoke::<ProviderAvailabilitySnapshot>(
+        .invoke::<()>(
             "update_provider_executable",
             serde_json::json!({ "provider": "claude", "executable": "  " }),
         )
@@ -583,7 +580,8 @@ async fn test_atui_025_初期化した全providerの利用可否と理由をprod
         AcceptanceProvider::Codex,
         4,
     );
-    let refreshed = host.refresh_provider_availability().unwrap();
+    host.refresh_provider_availability().unwrap();
+    let refreshed = host.provider_availability().unwrap();
     let claude = refreshed
         .providers
         .iter()
@@ -607,9 +605,9 @@ async fn test_atui_025_初期化した全providerの利用可否と理由をprod
         AcceptanceProvider::Codex,
         4,
     );
-    let updated = host
-        .update_provider_executable(AcceptanceProvider::Codex, &replacement)
+    host.update_provider_executable(AcceptanceProvider::Codex, &replacement)
         .unwrap();
+    let updated = host.provider_availability().unwrap();
     let codex = updated
         .providers
         .iter()
@@ -661,7 +659,8 @@ async fn test_atui_025_初期化した全providerの利用可否と理由をprod
         .is_ok());
 
     std::fs::remove_file(&replacement).unwrap();
-    let refreshed = host.refresh_provider_availability().unwrap();
+    host.refresh_provider_availability().unwrap();
+    let refreshed = host.provider_availability().unwrap();
     let codex = refreshed
         .providers
         .iter()
@@ -697,9 +696,9 @@ async fn test_atui_025_初期化した全providerの利用可否と理由をprod
         .unwrap();
     receive_until(&mut standalone, "received-0:still-running").await;
 
-    let reset = host
-        .reset_provider_executable(AcceptanceProvider::Codex)
+    host.reset_provider_executable(AcceptanceProvider::Codex)
         .unwrap();
+    let reset = host.provider_availability().unwrap();
     let codex = reset
         .providers
         .iter()

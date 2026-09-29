@@ -3,6 +3,34 @@ use crate::adaptor::gateway::failure_records::FailureRecordStore;
 use std::sync::Arc;
 
 #[test]
+fn test_失敗ページ_購読用出力に分類を写す() {
+    let page = FailurePage {
+        items: vec![FailureObservation {
+            record: FailureRecord {
+                operation: "workflow_start".into(),
+                target: "tree".into(),
+                kind: Failure::Technical(TechnicalFailureNature::TimedOut),
+                message: "deadline".into(),
+                active: true,
+                requires_attention: true,
+                count: 2,
+                first_observed_ms: 3,
+                last_observed_ms: 4,
+            },
+            requires_attention: true,
+        }],
+        next_offset: Some(5),
+        requires_attention: true,
+    };
+
+    let output = FailurePageDto::from(page);
+
+    assert_eq!(output.items[0].record.classification, "TimedOut");
+    assert_eq!(output.items[0].record.message, "deadline");
+    assert_eq!(output.next_offset, Some(5));
+}
+
+#[test]
 fn test_要対応判定_六種類の失敗の意味だけから決まる() {
     for (kind, expected) in [
         (Failure::Business(BusinessFailure::VersionConflict), false),

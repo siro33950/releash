@@ -2,6 +2,31 @@ use super::*;
 
 struct PendingTimer;
 
+#[test]
+fn test_terminal復元点_購読用出力に画面の値を写す() {
+    let owner = crate::domain::terminal_surface::TerminalSurfaceOwner::workspace(
+        crate::domain::workspace_tree::WorkspaceIdentity::new("/repo"),
+    )
+    .unwrap();
+    let surface = crate::domain::terminal_surface::entities::TerminalSurface::new(
+        1,
+        owner,
+        Some("Shell".into()),
+    );
+    let expected_key = surface.session_key.clone();
+
+    let output = TerminalSurfaceStreamItemDto::from(
+        crate::usecase::terminal_surface::application::TerminalSurfaceStreamItem::Snapshot(surface),
+    );
+
+    assert!(
+        matches!(output, TerminalSurfaceStreamItemDto::Snapshot(snapshot)
+        if snapshot.session_key == expected_key && snapshot.cols == 80
+        && snapshot.rows == 24 && snapshot.label.as_deref() == Some("Shell")
+        && !snapshot.is_exited)
+    );
+}
+
 impl SubscriptionTimer for PendingTimer {
     fn interval(
         &self,

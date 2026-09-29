@@ -8,7 +8,7 @@ fn test_workflow一覧応答_既存のjsonフィールドを維持する() {
         description: "description".into(),
         builtin: true,
         is_running: false,
-        source_format: crate::domain::workflow::WorkflowSourceFormat::Yaml,
+        source_format: dto::WorkflowSourceFormatDto::Yaml,
     });
     // When
     let value = serde_json::to_value(response).unwrap();

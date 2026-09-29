@@ -9,7 +9,7 @@ use crate::domain::agent_session::{
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::usecase::agent_session::{
     AgentSessionHistoryCandidateDto, AgentSessionHistoryPageDto, AgentSessionHistoryQueryError,
-    AgentSessionHistoryQueryService, AgentSessionHistoryRequest, AgentSessionProviderDto,
+    AgentSessionHistoryQueryService, AgentSessionHistoryRequest,
 };
 
 const MAX_SCAN_PER_PROVIDER: usize = 201;
@@ -133,10 +133,7 @@ impl AgentSessionHistoryQueryService for LocalAgentSessionHistoryQueryService {
                         first_user_prompt.as_deref(),
                     );
                     AgentSessionHistoryCandidateDto {
-                        provider: match entry.provider {
-                            ProviderKind::Claude => AgentSessionProviderDto::Claude,
-                            ProviderKind::Codex => AgentSessionProviderDto::Codex,
-                        },
+                        provider: entry.provider.into(),
                         provider_session_id: entry.provider_session_id,
                         label,
                         updated_at_ms: entry.updated_at_ms,

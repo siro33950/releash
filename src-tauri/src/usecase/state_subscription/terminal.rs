@@ -101,7 +101,7 @@ impl StateSubscriptionUsecase {
                         &target,
                         surface.runtime_generation.value(),
                         surface.latest_sequence(),
-                        StateValue::Terminal(TerminalSurfaceStreamItem::Snapshot(surface)),
+                        StateValue::Terminal(TerminalSurfaceStreamItem::Snapshot(surface).into()),
                     );
                 })
                 .map_err(error)?;

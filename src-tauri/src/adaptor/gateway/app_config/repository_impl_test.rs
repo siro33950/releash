@@ -3,6 +3,34 @@ use crate::domain::workflow::secret_masker;
 use tempfile::TempDir;
 
 #[test]
+fn test_workflow設定の読み取り_設定モデルから出力値を返す() {
+    let mut config = ReleashConfig::default();
+    config.workflow.approval_auto_approve = true;
+    let gateway = AppConfig::new(config, std::path::PathBuf::new());
+
+    assert!(gateway.get_workflow_config().unwrap().approval_auto_approve);
+}
+
+#[test]
+fn test_workflow設定の読み取り_ロック破損を失敗として返す() {
+    let gateway = std::sync::Arc::new(AppConfig::new(
+        ReleashConfig::default(),
+        std::path::PathBuf::new(),
+    ));
+    let poisoned = gateway.clone();
+    let _ = std::thread::spawn(move || {
+        let _lock = poisoned.config.lock().unwrap();
+        panic!("poison config lock");
+    })
+    .join();
+
+    assert!(matches!(
+        gateway.get_workflow_config(),
+        Err(AppConfigError::Repository(_))
+    ));
+}
+
+#[test]
 fn test_設定の秘匿対象_旧serverとnotionの単独値を出力とartifactで秘匿する() {
     // Given
     let dir = TempDir::new().unwrap();

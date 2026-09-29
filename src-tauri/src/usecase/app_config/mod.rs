@@ -3,3 +3,4 @@ pub(crate) mod query_service;
 pub(crate) mod usecase;
 
 pub(crate) use usecase::AppConfigUsecase;
+pub(crate) use usecase::WorkflowConfigInput;

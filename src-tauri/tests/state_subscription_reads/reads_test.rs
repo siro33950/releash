@@ -302,7 +302,7 @@ impl Fixture {
             review_comments_dir: crate::adaptor::gateway::comment::state_dir(&root),
             workflows_dir: workflows_dir.clone(),
             app_config: Arc::new(
-                crate::usecase::app_config::AppConfigUsecase::new(config.clone())
+                crate::usecase::app_config::AppConfigUsecase::new(config.clone(), config.clone())
                     .with_state_publisher(publisher.clone()),
             ),
             notion: Arc::new(

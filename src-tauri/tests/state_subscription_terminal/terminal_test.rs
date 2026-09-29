@@ -903,7 +903,7 @@ async fn test_terminal差分_出力の重複を除き同じ出力番号で寸法
         assert_eq!(
             *value,
             crate::adaptor::presenter::state_subscription_wire::payload(&StateValue::Terminal(
-                expected
+                expected.into()
             ))
             .unwrap()
         );

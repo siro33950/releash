@@ -9,6 +9,22 @@ use crate::domain::provider_lifecycle::{
     ProviderLifecycleUnavailableReason, VersionedProviderHookHealth,
 };
 
+#[test]
+fn test_provider_hook警告_購読用出力にproviderと理由を写す() {
+    let output = ProviderHookHealthWarningDto::from(ProviderHookHealthWarning {
+        provider: ProviderKind::Codex,
+        launch_id: "launch".into(),
+        reason: ProviderLifecycleUnavailableReason::LocalApiUnavailable,
+    });
+
+    assert_eq!(
+        output.provider,
+        crate::usecase::agent_session::AgentSessionProviderDto::Codex
+    );
+    assert_eq!(output.launch_id, "launch");
+    assert_eq!(output.reason, "local_api_unavailable");
+}
+
 #[derive(Default)]
 struct FakeCredentials {
     next: AtomicU8,

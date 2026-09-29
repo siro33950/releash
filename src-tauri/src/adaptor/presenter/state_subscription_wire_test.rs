@@ -157,24 +157,27 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
     };
     let values = vec![
         (
-            StateValue::Failures(FailurePage {
-                items: vec![FailureObservation {
-                    record: FailureRecord {
-                        operation: "run".into(),
-                        target: "node".into(),
-                        kind: Failure::Business(BusinessFailure::Other),
-                        message: "failed".into(),
-                        active: true,
+            StateValue::Failures(
+                FailurePage {
+                    items: vec![FailureObservation {
+                        record: FailureRecord {
+                            operation: "run".into(),
+                            target: "node".into(),
+                            kind: Failure::Business(BusinessFailure::Other),
+                            message: "failed".into(),
+                            active: true,
+                            requires_attention: true,
+                            count: 2,
+                            first_observed_ms: 3,
+                            last_observed_ms: 4,
+                        },
                         requires_attention: true,
-                        count: 2,
-                        first_observed_ms: 3,
-                        last_observed_ms: 4,
-                    },
+                    }],
+                    next_offset: Some(5),
                     requires_attention: true,
-                }],
-                next_offset: Some(5),
-                requires_attention: true,
-            }),
+                }
+                .into(),
+            ),
             W::Failures(wire::FailureRecords {
                 items: vec![wire::FailureRecord {
                     operation: Some("run".into()),
@@ -191,11 +194,14 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
             }),
         ),
         (
-            StateValue::Terminal(TerminalSurfaceStreamItem::Output {
-                session_key: "terminal".into(),
-                data: Arc::from("output"),
-                sequence: 6,
-            }),
+            StateValue::Terminal(
+                TerminalSurfaceStreamItem::Output {
+                    session_key: "terminal".into(),
+                    data: Arc::from("output"),
+                    sequence: 6,
+                }
+                .into(),
+            ),
             W::Terminal(wire::TerminalEvent {
                 item: Some(wire::terminal_event::Item::Output(wire::TerminalOutput {
                     session_key: "terminal".into(),
@@ -564,7 +570,7 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
                 description: "develop".into(),
                 builtin: false,
                 is_running: true,
-                source_format: crate::domain::workflow::WorkflowSourceFormat::Lua,
+                source_format: crate::usecase::workflow::dto::WorkflowSourceFormatDto::Lua,
             }]),
             W::Workflows(wire::ListWorkflowSummaryDto {
                 items: vec![wire::WorkflowSummaryDto {
@@ -587,7 +593,7 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
                 name: "dev".into(),
                 description: "develop".into(),
                 builtin: true,
-                source_format: crate::domain::workflow::WorkflowSourceFormat::Yaml,
+                source_format: crate::usecase::workflow::dto::WorkflowSourceFormatDto::Yaml,
                 schemas: Default::default(),
                 nodes: vec![],
             })),
@@ -696,4 +702,82 @@ fn test_購読payload_review対象をreview欄へ変換する() {
         payload(&StateValue::ReviewThreads(vec![])).unwrap().value,
         Some(W::ReviewThreads(list)) if list.items.is_empty()
     ));
+}
+
+#[test]
+fn test_購読payload_設定とproviderの出力値を維持する() {
+    use crate::usecase::agent_session::AgentSessionProviderDto;
+    use crate::usecase::agent_session::{
+        ProviderAvailabilityItemDto, ProviderAvailabilitySnapshotDto,
+    };
+    use crate::usecase::notion::usecase::{
+        NotionLabelPropertyDto, NotionPropertyMappingDto, NotionRepoConfigDto,
+    };
+    use crate::usecase::provider_lifecycle::ProviderHookHealthWarningDto;
+    use wire::state_payload::Value as W;
+
+    let values = [
+        (
+            StateValue::NotionConfig(Some(NotionRepoConfigDto {
+                api_token: "token".into(),
+                database_id: "db".into(),
+                property_mapping: NotionPropertyMappingDto {
+                    title: "Name".into(),
+                    labels: vec![NotionLabelPropertyDto {
+                        name: "Status".into(),
+                        property_type: "select".into(),
+                    }],
+                    branch_name: "Branch".into(),
+                    branch_prefix: "feat/".into(),
+                },
+            })),
+            "releash.client.v1.NullableNotionRepoConfigView",
+            serde_json::json!({"api_token":"token","database_id":"db","property_mapping":{"title":"Name","labels":[{"name":"Status","property_type":"select"}],"branch_name":"Branch","branch_prefix":"feat/"}}),
+        ),
+        (
+            StateValue::ProviderAvailability(ProviderAvailabilitySnapshotDto {
+                providers: vec![ProviderAvailabilityItemDto {
+                    provider: AgentSessionProviderDto::Codex,
+                    display_name: "Codex".into(),
+                    default_executable: "codex".into(),
+                    configured_executable: None,
+                    effective_executable: "codex".into(),
+                    available: false,
+                    resolved_executable: None,
+                    unavailable_reason: Some("not_found".into()),
+                }],
+            }),
+            "releash.client.v1.ProviderAvailabilitySnapshotResponse",
+            serde_json::json!({"providers":[{"provider":"codex","displayName":"Codex","defaultExecutable":"codex","configuredExecutable":null,"effectiveExecutable":"codex","available":false,"resolvedExecutable":null,"unavailableReason":"not_found"}]}),
+        ),
+        (
+            StateValue::WorkflowConfig(
+                crate::usecase::app_config::query_service::WorkflowConfigDto {
+                    approval_auto_approve: true,
+                },
+            ),
+            "releash.client.v1.WorkflowSection",
+            serde_json::json!({"approval_auto_approve":true}),
+        ),
+        (
+            StateValue::ProviderHookHealth(vec![ProviderHookHealthWarningDto {
+                provider: AgentSessionProviderDto::Claude,
+                launch_id: "launch".into(),
+                reason: "local_api_unavailable".into(),
+            }]),
+            "releash.client.v1.ListProviderHookHealthWarningResponse",
+            serde_json::json!([{"provider":"claude","launchId":"launch","reason":"local_api_unavailable"}]),
+        ),
+    ];
+    for (value, name, expected) in values {
+        let actual = match payload(&value).unwrap().value.unwrap() {
+            W::NotionConfig(value) => wire::from_message(name, &value),
+            W::ProviderAvailability(value) => wire::from_message(name, &value),
+            W::WorkflowConfig(value) => wire::from_message(name, &value),
+            W::ProviderHookHealth(value) => wire::from_message(name, &value),
+            other => panic!("unexpected payload: {other:?}"),
+        }
+        .unwrap();
+        assert_eq!(actual, expected, "{name}");
+    }
 }

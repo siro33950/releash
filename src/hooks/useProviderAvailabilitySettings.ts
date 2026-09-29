@@ -18,6 +18,14 @@ interface ProviderAvailabilitySnapshot {
 	providers: ProviderAvailabilityItem[];
 }
 
+interface PendingDraft {
+	draft: string;
+	configured: string | null;
+	completed: boolean;
+	received: boolean;
+	receivedConfigured: string | null;
+}
+
 function draftsFrom(
 	snapshot: ProviderAvailabilitySnapshot,
 ): Record<string, string> {
@@ -29,16 +37,34 @@ function draftsFrom(
 	);
 }
 
-function draftsAfterReset(
-	provider: string,
+function mergeDrafts(
 	current: Record<string, string>,
 	previous: ProviderAvailabilitySnapshot,
 	next: ProviderAvailabilitySnapshot,
+	pending: Record<string, PendingDraft>,
 ): Record<string, string> {
 	const merged = draftsFrom(next);
 	for (const entry of previous.providers) {
-		if (entry.provider === provider) continue;
 		const draft = current[entry.provider] ?? "";
+		const operation = pending[entry.provider];
+		if (operation) {
+			const nextEntry = next.providers.find(
+				(item) => item.provider === entry.provider,
+			);
+			if (!nextEntry) continue;
+			operation.received = true;
+			operation.receivedConfigured = nextEntry.configuredExecutable;
+			if (
+				nextEntry.configuredExecutable !== operation.configured ||
+				operation.completed
+			) {
+				if (draft !== operation.draft) merged[entry.provider] = draft;
+				delete pending[entry.provider];
+			} else {
+				merged[entry.provider] = draft;
+			}
+			continue;
+		}
 		if (draft !== (entry.configuredExecutable ?? "")) {
 			merged[entry.provider] = draft;
 		}
@@ -55,21 +81,30 @@ export function useProviderAvailabilitySettings(open: boolean) {
 	);
 	const [drafts, setDrafts] = useState<Record<string, string>>({});
 	const form = useRef({ snapshot, drafts });
+	const pendingDrafts = useRef<Record<string, PendingDraft>>({});
 	form.current = { snapshot, drafts };
 	const [saving, setSaving] = useState(false);
 	const [refreshing, setRefreshing] = useState(false);
 	const [resetting, setResetting] = useState<Record<string, boolean>>({});
 	const [error, setError] = useState<string | null>(null);
-
-	const acceptSnapshot = useCallback((next: ProviderAvailabilitySnapshot) => {
-		setSnapshot(next);
-		setDrafts(draftsFrom(next));
+	const completePending = useCallback((provider: string) => {
+		const pending = pendingDrafts.current[provider];
+		if (!pending) return;
+		pending.completed = true;
+		if (!pending.received) return;
+		setDrafts((current) =>
+			current[provider] === pending.draft
+				? { ...current, [provider]: pending.receivedConfigured ?? "" }
+				: current,
+		);
+		delete pendingDrafts.current[provider];
 	}, []);
 
 	useEffect(() => {
 		if (open) return;
 		setSnapshot(null);
 		setDrafts({});
+		pendingDrafts.current = {};
 		setError(null);
 	}, [open]);
 
@@ -80,7 +115,12 @@ export function useProviderAvailabilitySettings(open: boolean) {
 		setSnapshot(received);
 		setDrafts(
 			current.snapshot
-				? draftsAfterReset("", current.drafts, current.snapshot, received)
+				? mergeDrafts(
+						current.drafts,
+						current.snapshot,
+						received,
+						pendingDrafts.current,
+					)
 				: draftsFrom(received),
 		);
 	}, [received]);
@@ -103,62 +143,73 @@ export function useProviderAvailabilitySettings(open: boolean) {
 		setSaving(true);
 		setError(null);
 		try {
-			let latest = snapshot;
 			for (const provider of snapshot.providers) {
 				const executable = drafts[provider.provider] ?? "";
 				if (executable === (provider.configuredExecutable ?? "")) continue;
-				latest = await invoke("update_provider_executable", {
-					provider: provider.provider,
-					executable,
-				});
-				setSnapshot(latest);
+				pendingDrafts.current[provider.provider] = {
+					draft: executable,
+					configured: provider.configuredExecutable,
+					completed: false,
+					received: false,
+					receivedConfigured: null,
+				};
+				try {
+					await invoke("update_provider_executable", {
+						provider: provider.provider,
+						executable,
+					});
+					completePending(provider.provider);
+				} catch (cause) {
+					delete pendingDrafts.current[provider.provider];
+					throw cause;
+				}
 			}
-			acceptSnapshot(latest);
 		} catch (cause) {
 			setError(getErrorMessage(cause));
 			throw cause;
 		} finally {
 			setSaving(false);
 		}
-	}, [snapshot, drafts, acceptSnapshot]);
+	}, [snapshot, drafts, completePending]);
 
 	const reset = useCallback(
 		async (provider: string) => {
 			if (!snapshot) return;
 			setResetting((current) => ({ ...current, [provider]: true }));
 			setError(null);
+			pendingDrafts.current[provider] = {
+				draft: drafts[provider] ?? "",
+				configured:
+					snapshot.providers.find((item) => item.provider === provider)
+						?.configuredExecutable ?? null,
+				completed: false,
+				received: false,
+				receivedConfigured: null,
+			};
 			try {
-				const next = await invoke("reset_provider_executable", { provider });
-				setSnapshot(next);
-				const current = form.current;
-				setDrafts(
-					draftsAfterReset(
-						provider,
-						current.drafts,
-						current.snapshot ?? snapshot,
-						next,
-					),
-				);
+				await invoke("reset_provider_executable", { provider });
+				completePending(provider);
 			} catch (cause) {
+				delete pendingDrafts.current[provider];
 				setError(getErrorMessage(cause));
 			} finally {
 				setResetting((current) => ({ ...current, [provider]: false }));
 			}
 		},
-		[snapshot],
+		[snapshot, drafts, completePending],
 	);
 
 	const refresh = useCallback(async () => {
 		setRefreshing(true);
 		setError(null);
 		try {
-			acceptSnapshot(await invoke("refresh_provider_availability"));
+			await invoke("refresh_provider_availability");
 		} catch (cause) {
 			setError(getErrorMessage(cause));
 		} finally {
 			setRefreshing(false);
 		}
-	}, [acceptSnapshot]);
+	}, []);
 
 	return {
 		providers: snapshot?.providers ?? [],

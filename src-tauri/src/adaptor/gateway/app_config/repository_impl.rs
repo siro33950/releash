@@ -15,6 +15,7 @@ use crate::domain::app_config::repository::{
 };
 use crate::domain::app_config::value_objects as domain_vo;
 use crate::domain::provider_lifecycle::ProviderKind;
+use crate::usecase::app_config::query_service::{WorkflowConfigDto, WorkflowConfigQueryService};
 
 use super::config_models::{
     apply_domain_to_config, config_to_domain, NotionLabelPropertyModel, NotionPropertyMappingModel,
@@ -102,6 +103,18 @@ impl ConfigRepository for AppConfig {
         f(&mut domain)?;
         apply_domain_to_config(&mut config, domain);
         write_config(&self.config_path, &config).map_err(AppConfigError::Repository)
+    }
+}
+
+impl WorkflowConfigQueryService for AppConfig {
+    fn get_workflow_config(&self) -> Result<WorkflowConfigDto, AppConfigError> {
+        let config = self
+            .config
+            .lock()
+            .map_err(|error| AppConfigError::Repository(format!("ロック取得失敗: {error}")))?;
+        Ok(WorkflowConfigDto {
+            approval_auto_approve: config.workflow.approval_auto_approve,
+        })
     }
 }
 

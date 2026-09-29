@@ -124,7 +124,10 @@ fn test_失敗記録の分類_六種類を固定文字列として表示する()
             "TechnicalFailure",
         ),
     ] {
-        assert_eq!(super::failure_classification(failure), expected);
+        assert_eq!(
+            crate::usecase::failure::failure_classification(failure),
+            expected
+        );
     }
 }
 

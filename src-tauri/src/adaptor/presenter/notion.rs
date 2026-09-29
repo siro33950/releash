@@ -192,8 +192,8 @@ impl From<notion_domain::NotionPropertyInfo> for NotionPropertyInfoView {
     }
 }
 
-impl From<app_config_vo::NotionRepoConfig> for NotionRepoConfigView {
-    fn from(config: app_config_vo::NotionRepoConfig) -> Self {
+impl From<crate::usecase::notion::usecase::NotionRepoConfigDto> for NotionRepoConfigView {
+    fn from(config: crate::usecase::notion::usecase::NotionRepoConfigDto) -> Self {
         Self {
             api_token: config.api_token,
             database_id: config.database_id,
@@ -212,8 +212,8 @@ impl From<NotionRepoConfigView> for app_config_vo::NotionRepoConfig {
     }
 }
 
-impl From<app_config_vo::NotionPropertyMapping> for PropertyMappingView {
-    fn from(mapping: app_config_vo::NotionPropertyMapping) -> Self {
+impl From<crate::usecase::notion::usecase::NotionPropertyMappingDto> for PropertyMappingView {
+    fn from(mapping: crate::usecase::notion::usecase::NotionPropertyMappingDto) -> Self {
         Self {
             title: mapping.title,
             labels: mapping.labels.into_iter().map(Into::into).collect(),
@@ -234,8 +234,8 @@ impl From<PropertyMappingView> for app_config_vo::NotionPropertyMapping {
     }
 }
 
-impl From<app_config_vo::NotionLabelProperty> for LabelPropertyView {
-    fn from(label: app_config_vo::NotionLabelProperty) -> Self {
+impl From<crate::usecase::notion::usecase::NotionLabelPropertyDto> for LabelPropertyView {
+    fn from(label: crate::usecase::notion::usecase::NotionLabelPropertyDto) -> Self {
         Self {
             name: label.name,
             property_type: label.property_type,

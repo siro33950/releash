@@ -10,12 +10,10 @@ use crate::domain::agent_session::aggregates::{
     derive_agent_session_operations, AgentSessionLifecycle, AgentSessionOperations,
 };
 use crate::domain::agent_session::services::{derive_session_fields, SessionExecutionContext};
-use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::workflow::{ExecutionTreeLaunch, NodeFact, NodeFactRecord};
 use crate::usecase::agent_session::{
     AgentSessionItemDto, AgentSessionLifecycleDto, AgentSessionOperationsDto,
-    AgentSessionProviderDto, AgentSessionQueryError, AgentSessionQueryService,
-    AgentSessionTreeLocationDto,
+    AgentSessionQueryError, AgentSessionQueryService, AgentSessionTreeLocationDto,
 };
 
 /// 統一 Node 事実ログから session を読む query service。
@@ -161,10 +159,7 @@ fn agent_session_item_from_facts(
         workspace_identity: derived.workspace_identity,
         worktree_path: derived.worktree_path,
         workspace_worktree_path: context.workspace_worktree_path.clone(),
-        provider: match derived.provider {
-            ProviderKind::Claude => AgentSessionProviderDto::Claude,
-            ProviderKind::Codex => AgentSessionProviderDto::Codex,
-        },
+        provider: derived.provider.into(),
         tree_location: AgentSessionTreeLocationDto {
             tree_id: derived.tree_location.tree_id().to_string(),
             node_execution_id: derived.tree_location.node_execution_id().to_string(),

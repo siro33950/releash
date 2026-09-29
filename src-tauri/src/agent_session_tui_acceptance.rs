@@ -667,14 +667,7 @@ impl crate::usecase::state_subscription::StateSubscriptionRead for AcceptanceSes
                     StateValue::Providers(
                         providers
                             .into_iter()
-                            .map(|provider| match provider {
-                                ProviderKind::Claude => {
-                                    crate::usecase::agent_session::AgentSessionProviderDto::Claude
-                                }
-                                ProviderKind::Codex => {
-                                    crate::usecase::agent_session::AgentSessionProviderDto::Codex
-                                }
-                            })
+                            .map(crate::usecase::agent_session::AgentSessionProviderDto::from)
                             .collect(),
                     )
                 })
@@ -684,7 +677,7 @@ impl crate::usecase::state_subscription::StateSubscriptionRead for AcceptanceSes
                 }),
             T::ProviderAvailability => self
                 .providers
-                .snapshot()
+                .snapshot_dto()
                 .map(StateValue::ProviderAvailability)
                 .map_err(|e| StateReadError {
                     message: format!("{e:?}"),
@@ -694,7 +687,9 @@ impl crate::usecase::state_subscription::StateSubscriptionRead for AcceptanceSes
                 .hook_health
                 .warnings()
                 .await
-                .map(StateValue::ProviderHookHealth)
+                .map(|warnings| {
+                    StateValue::ProviderHookHealth(warnings.into_iter().map(Into::into).collect())
+                })
                 .map_err(|e| StateReadError {
                     message: format!("{e:?}"),
                     source: e.into(),

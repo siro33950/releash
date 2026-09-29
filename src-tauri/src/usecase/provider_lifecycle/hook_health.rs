@@ -13,6 +13,35 @@ pub(crate) struct ProviderHookHealthWarning {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProviderHookHealthWarningDto {
+    pub(crate) provider: crate::usecase::agent_session::AgentSessionProviderDto,
+    pub(crate) launch_id: String,
+    pub(crate) reason: String,
+}
+
+impl From<ProviderHookHealthWarning> for ProviderHookHealthWarningDto {
+    fn from(value: ProviderHookHealthWarning) -> Self {
+        Self {
+            provider: value.provider.into(),
+            launch_id: value.launch_id,
+            reason: match value.reason {
+                ProviderLifecycleUnavailableReason::SessionStartDeadlineExceeded => {
+                    "session_start_deadline_exceeded"
+                }
+                ProviderLifecycleUnavailableReason::CodexHookDeliveryUnconfirmed => {
+                    "codex_hook_delivery_unconfirmed"
+                }
+                ProviderLifecycleUnavailableReason::ProviderHookConfigurationRejected => {
+                    "provider_hook_configuration_rejected"
+                }
+                ProviderLifecycleUnavailableReason::LocalApiUnavailable => "local_api_unavailable",
+            }
+            .to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProviderHookHealthFailureObservation {
     pub(crate) provider: ProviderKind,
     pub(crate) launch_id: String,

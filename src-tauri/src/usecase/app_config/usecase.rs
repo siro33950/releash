@@ -4,7 +4,14 @@ use crate::domain::app_config::error::AppConfigError;
 use crate::domain::app_config::repository::ConfigRepository;
 use crate::domain::app_config::value_objects::{AppConfigDocument, WorkflowConfig};
 use crate::usecase::app_config::error::UsecaseError;
-use crate::usecase::app_config::query_service::AppConfigQueryService;
+use crate::usecase::app_config::query_service::{
+    AppConfigQueryService, WorkflowConfigQueryService,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct WorkflowConfigInput {
+    pub approval_auto_approve: bool,
+}
 
 pub struct AppConfigUsecase {
     repository: Arc<dyn ConfigRepository>,
@@ -13,8 +20,11 @@ pub struct AppConfigUsecase {
 }
 
 impl AppConfigUsecase {
-    pub fn new(repository: Arc<dyn ConfigRepository>) -> Self {
-        let query = AppConfigQueryService::new(repository.clone());
+    pub(crate) fn new(
+        repository: Arc<dyn ConfigRepository>,
+        workflow_query: Arc<dyn WorkflowConfigQueryService>,
+    ) -> Self {
+        let query = AppConfigQueryService::new(repository.clone(), workflow_query);
         Self {
             repository,
             query,
@@ -36,7 +46,9 @@ impl AppConfigUsecase {
         self.query.desktop_settings()
     }
 
-    pub fn get_workflow_config(&self) -> Result<WorkflowConfig, UsecaseError> {
+    pub fn get_workflow_config(
+        &self,
+    ) -> Result<super::query_service::WorkflowConfigDto, UsecaseError> {
         self.query.get_workflow_config()
     }
 
@@ -77,9 +89,11 @@ impl AppConfigUsecase {
         })
     }
 
-    pub fn update_workflow_config(&self, workflow: WorkflowConfig) -> Result<(), UsecaseError> {
+    pub fn update_workflow_config(&self, input: WorkflowConfigInput) -> Result<(), UsecaseError> {
         self.update(move |config| {
-            config.workflow = workflow;
+            config.workflow = WorkflowConfig {
+                approval_auto_approve: input.approval_auto_approve,
+            };
             Ok(())
         })
     }

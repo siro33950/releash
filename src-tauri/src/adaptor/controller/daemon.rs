@@ -427,7 +427,7 @@ pub(crate) async fn compose(
     let review_usecase_for_reads = app_state.review_usecase.clone();
     let review_comment_usecase_for_reads = review_comment_usecase.clone();
     let app_config_usecase = Arc::new(
-        usecase::app_config::AppConfigUsecase::new(config_repository.clone())
+        usecase::app_config::AppConfigUsecase::new(config_repository.clone(), app_config.clone())
             .with_state_publisher(state_subscriptions.clone()),
     );
     let performance_switches = {

@@ -10,7 +10,7 @@ use futures_util::{Stream, StreamExt};
 use parking_lot::Mutex;
 use std::sync::Arc;
 pub(crate) use target::{StateChangeSource, SubscriptionTarget, WatchRequirement};
-pub(crate) use value::StateValue;
+pub(crate) use value::{StateValue, TerminalSurfaceSnapshotDto, TerminalSurfaceStreamItemDto};
 
 pub(crate) trait SubscriptionTimer: Send + Sync {
     fn interval(

@@ -280,7 +280,7 @@ message CommandResult {
     NotionTaskPageView query_notion_tasks = 102;
     StartupFailureQuitOutcomeDtoV1 quit_after_startup_failure = 103;
     Unit record_terminal_launch_renderer_phase = 104;
-    ProviderAvailabilitySnapshotResponse refresh_provider_availability = 105;
+    Unit refresh_provider_availability = 105;
     ResultBool remove_repo_path = 106;
     Unit remove_worktree = 107;
     Unit rename_workspace_session_node = 108;
@@ -289,7 +289,7 @@ message CommandResult {
     Unit report_mounted_xterm_count = 111;
     Unit report_usage_event = 112;
     ApplicationQuitOutcomeDtoV1 request_application_quit = 113;
-    ProviderAvailabilitySnapshotResponse reset_provider_executable = 114;
+    Unit reset_provider_executable = 114;
     Unit resize_terminal_surface = 115;
 
     ReviewThreadDto resolve_review_thread = 117;
@@ -314,7 +314,7 @@ message CommandResult {
     Unit update_crash_reporting = 141;
     Unit update_external_editor = 142;
     Unit update_performance_telemetry = 143;
-    ProviderAvailabilitySnapshotResponse update_provider_executable = 144;
+    Unit update_provider_executable = 144;
     Unit update_workflow_config = 145;
     NotionValidationResultView validate_notion_config = 146;
     Unit write_paths_to_terminal_surface = 147;
@@ -2755,7 +2755,7 @@ service ClientService {
   rpc QueryNotionTasks(QueryNotionTasksRequest) returns (NotionTaskPageView);
   rpc QuitAfterStartupFailure(QuitAfterStartupFailureRequest) returns (StartupFailureQuitOutcomeDtoV1);
   rpc RecordTerminalLaunchRendererPhase(RecordTerminalLaunchRendererPhaseRequest) returns (Unit);
-  rpc RefreshProviderAvailability(RefreshProviderAvailabilityRequest) returns (ProviderAvailabilitySnapshotResponse);
+  rpc RefreshProviderAvailability(RefreshProviderAvailabilityRequest) returns (Unit);
   rpc RemoveRepoPath(RemoveRepoPathRequest) returns (ResultBool);
   rpc RemoveWorktree(RemoveWorktreeRequest) returns (Unit);
   rpc RenameWorkspaceSessionNode(RenameWorkspaceSessionNodeRequest) returns (Unit);
@@ -2764,7 +2764,7 @@ service ClientService {
   rpc ReportMountedXtermCount(ReportMountedXtermCountRequest) returns (Unit);
   rpc ReportUsageEvent(ReportUsageEventRequest) returns (Unit);
   rpc RequestApplicationQuit(RequestApplicationQuitRequest) returns (ApplicationQuitOutcomeDtoV1);
-  rpc ResetProviderExecutable(ResetProviderExecutableRequest) returns (ProviderAvailabilitySnapshotResponse);
+  rpc ResetProviderExecutable(ResetProviderExecutableRequest) returns (Unit);
   rpc ResizeTerminalSurface(ResizeTerminalSurfaceRequest) returns (Unit);
   rpc ResolveReviewThread(ResolveReviewThreadRequest) returns (ReviewThreadDto);
   rpc RestoreAgentSession(RestoreAgentSessionRequest) returns (AgentSessionOpenResponse);
@@ -2788,7 +2788,7 @@ service ClientService {
   rpc UpdateCrashReporting(UpdateCrashReportingRequest) returns (Unit);
   rpc UpdateExternalEditor(UpdateExternalEditorRequest) returns (Unit);
   rpc UpdatePerformanceTelemetry(UpdatePerformanceTelemetryRequest) returns (Unit);
-  rpc UpdateProviderExecutable(UpdateProviderExecutableRequest) returns (ProviderAvailabilitySnapshotResponse);
+  rpc UpdateProviderExecutable(UpdateProviderExecutableRequest) returns (Unit);
   rpc UpdateWorkflowConfig(UpdateWorkflowConfigRequest) returns (Unit);
   rpc ValidateNotionConfig(ValidateNotionConfigRequest) returns (NotionValidationResultView);
   rpc WritePathsToTerminalSurface(WritePathsToTerminalSurfaceRequest) returns (Unit);
