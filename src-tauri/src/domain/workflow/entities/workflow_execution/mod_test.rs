@@ -38,6 +38,199 @@ fn id_source() -> impl FnMut() -> String {
     }
 }
 
+#[test]
+fn test_単独session_node完了事実はworkflowの木で拒否される() {
+    // Given
+    let mut tree = execution(
+        "name: session\ndescription: test\nnodes:\n  main: {session: {provider: codex}}\n",
+    );
+    tree.begin_node_attempt(
+        "main".into(),
+        NodeKindName::Session,
+        1,
+        None,
+        "root".into(),
+        1.0,
+    )
+    .unwrap();
+    let root_before = tree.node_execution("root").unwrap().clone();
+
+    // When
+    assert_eq!(
+        tree.complete_standalone_session_node("root", 2.0),
+        TransitionOutcome::NotApplicable
+    );
+    // Then
+    assert_eq!(tree.node_execution("root").unwrap(), &root_before);
+}
+
+#[test]
+fn test_単独session_node完了事実は子nodeで拒否される() {
+    // Given
+    let mut tree = execution(
+        "name: session\ndescription: test\nnodes:\n  main: {session: {provider: codex}}\n  child: {session: {provider: codex}}\n",
+    );
+    tree.begin_node_attempt(
+        "main".into(),
+        NodeKindName::Session,
+        1,
+        None,
+        "root".into(),
+        1.0,
+    )
+    .unwrap();
+    tree.begin_node_attempt(
+        "child".into(),
+        NodeKindName::Session,
+        1,
+        Some(ExecutionParentRef::delegate_child("root")),
+        "child".into(),
+        1.0,
+    )
+    .unwrap();
+    tree.runtime.launched_as = ExecutionTreeLaunch::Session;
+    let child_before = tree.node_execution("child").unwrap().clone();
+    // When
+    assert_eq!(
+        tree.complete_standalone_session_node("child", 2.0),
+        TransitionOutcome::NotApplicable
+    );
+    // Then
+    assert_eq!(tree.node_execution("child").unwrap(), &child_before);
+}
+
+#[test]
+fn test_単独session_node完了事実は存在しないnodeで拒否される() {
+    // Given
+    let mut tree = execution(
+        "name: session\ndescription: test\nnodes:\n  main: {session: {provider: codex}}\n",
+    );
+    tree.begin_node_attempt(
+        "main".into(),
+        NodeKindName::Session,
+        1,
+        None,
+        "root".into(),
+        1.0,
+    )
+    .unwrap();
+    tree.runtime.launched_as = ExecutionTreeLaunch::Session;
+    let nodes_before = tree.node_executions().to_vec();
+    // When
+    assert_eq!(
+        tree.complete_standalone_session_node("missing", 2.0),
+        TransitionOutcome::NotApplicable
+    );
+    // Then
+    assert_eq!(tree.node_executions(), nodes_before);
+}
+
+#[test]
+fn test_単独session_node完了事実はrootを一度だけ完了する() {
+    // Given
+    let mut tree = execution(
+        "name: session\ndescription: test\nnodes:\n  main: {session: {provider: codex}}\n",
+    );
+    tree.begin_node_attempt(
+        "main".into(),
+        NodeKindName::Session,
+        1,
+        None,
+        "root".into(),
+        1.0,
+    )
+    .unwrap();
+    tree.runtime.launched_as = ExecutionTreeLaunch::Session;
+    // When
+    let outcome = tree.complete_standalone_session_node("root", 2.0);
+    // Then
+    assert_eq!(outcome, TransitionOutcome::Applied);
+    assert_eq!(
+        tree.node_execution("root").unwrap().status,
+        RuntimeNodeExecutionStatus::Succeeded
+    );
+    assert_eq!(tree.node_execution("root").unwrap().completed_at, Some(2.0));
+
+    // When
+    let repeated = tree.complete_standalone_session_node("root", 3.0);
+    // Then
+    assert_eq!(repeated, TransitionOutcome::AlreadyApplied);
+    assert_eq!(
+        tree.node_execution("root").unwrap().status,
+        RuntimeNodeExecutionStatus::Succeeded
+    );
+    assert_eq!(tree.node_execution("root").unwrap().completed_at, Some(2.0));
+}
+
+#[test]
+fn test_provider停止_完了済みsessionではstopを受理しnodeの完了シグナルは適用しない() {
+    // Given
+    let mut tree = execution(
+        "name: session\ndescription: test\nnodes:\n  main: {session: {provider: codex}}\n",
+    );
+    tree.begin_node_attempt(
+        "main".into(),
+        NodeKindName::Session,
+        1,
+        None,
+        "root".into(),
+        1.0,
+    )
+    .unwrap();
+    tree.runtime.launched_as = ExecutionTreeLaunch::Session;
+    tree.attach_node_session("root", "agent".into(), 2.0);
+    assert_eq!(
+        tree.complete_standalone_session_node("root", 3.0),
+        TransitionOutcome::Applied
+    );
+    let node_before = tree.node_execution("root").unwrap().clone();
+    // When
+    let outcome = tree.record_provider_stop("root", "agent", 4.0);
+    // Then
+    assert_eq!(
+        outcome,
+        Ok(ProviderStopAccepted {
+            node_signal: TransitionOutcome::NotApplicable
+        })
+    );
+    assert_eq!(tree.node_execution("root").unwrap(), &node_before);
+}
+
+#[test]
+fn test_provider停止_中断済みsessionではstopを受理しnodeの完了シグナルは適用しない() {
+    // Given
+    let mut tree = execution(
+        "name: session\ndescription: test\nnodes:\n  main: {session: {provider: codex}}\n",
+    );
+    tree.begin_node_attempt(
+        "main".into(),
+        NodeKindName::Session,
+        1,
+        None,
+        "root".into(),
+        1.0,
+    )
+    .unwrap();
+    tree.attach_node_session("root", "agent".into(), 2.0);
+    assert_eq!(
+        tree.abort_node_execution("root", 3.0),
+        TransitionOutcome::Applied
+    );
+    let node_before = tree.node_execution("root").unwrap().clone();
+
+    // When
+    let outcome = tree.record_provider_stop("root", "agent", 4.0);
+
+    // Then
+    assert_eq!(
+        outcome,
+        Ok(ProviderStopAccepted {
+            node_signal: TransitionOutcome::NotApplicable
+        })
+    );
+    assert_eq!(tree.node_execution("root").unwrap(), &node_before);
+}
+
 fn finish_leaf(
     execution: &mut ExecutionTree,
     leaf: &LeafStart,

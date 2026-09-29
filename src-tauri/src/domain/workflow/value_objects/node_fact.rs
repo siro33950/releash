@@ -74,6 +74,7 @@ pub enum NodeFact {
     RetryRequested,
     /// 人間の行動: 再開の指示。
     ResumeRequested,
+    StandaloneSessionNodeCompleted,
     ExecutionCompleted,
     /// 人間または起動時処理による中止。
     AbortRequested(AbortRequestedFact),
@@ -148,6 +149,7 @@ pub struct SessionExecutionTreeRootFacts {
     pub meta: NodeFactMeta,
     pub started: NodeFact,
     pub attached: NodeFact,
+    pub node_completed: NodeFact,
 }
 
 impl SessionExecutionTreeRootFacts {
@@ -221,13 +223,15 @@ impl SessionExecutionTreeRootFacts {
                 transcript_ref: None,
                 initial_instruction_admitted: false,
             }),
+            node_completed: NodeFact::StandaloneSessionNodeCompleted,
         })
     }
 
-    pub fn into_facts(self) -> [(NodeFactMeta, NodeFact); 2] {
+    pub fn into_facts(self) -> [(NodeFactMeta, NodeFact); 3] {
         [
             (self.meta.clone(), self.started),
-            (self.meta, self.attached),
+            (self.meta.clone(), self.attached),
+            (self.meta, self.node_completed),
         ]
     }
 }

@@ -3969,7 +3969,6 @@ impl TryFrom<crate::usecase::workflow::WorkspaceNodeDetailDto> for wire::Workspa
             id: Some(cv(value.id)?),
             title: Some(cv(value.title)?),
             status: Some(cv(value.status)?),
-            status_classification: Some(cv(value.status_classification)?),
             submit_received: Some(cv(value.submit_received)?),
             stop_received: Some(cv(value.stop_received)?),
             waiting_for: value.waiting_for.map(cv).transpose()?,
@@ -4138,7 +4137,6 @@ impl TryFrom<String> for wire::WorkspaceStatusClassification {
                 "active" => wire::workspace_status_classification::Value::Active as i32,
                 "attention" => wire::workspace_status_classification::Value::Attention as i32,
                 "idle" => wire::workspace_status_classification::Value::Idle as i32,
-                "unbound" => wire::workspace_status_classification::Value::Unbound as i32,
                 _ => return Err(format!("Invalid WorkspaceStatusClassification: {value}")),
             }),
         })

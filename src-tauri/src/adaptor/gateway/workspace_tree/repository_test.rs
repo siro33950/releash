@@ -1320,3 +1320,178 @@ async fn test_workspace_repository読取_実経路で失敗分類を保持する
         assert_eq!(classified_error(error).code, expected);
     }
 }
+
+#[tokio::test]
+async fn test_workspace_tree読取_delegate親はworkingの子から青を導出する() {
+    // Given
+    let activity = crate::domain::workflow::AgentSessionActivity::Working;
+    // When
+    let status = delegate_parent_status_from_store(activity).await;
+    // Then
+    assert_eq!(
+        status,
+        crate::domain::workspace_tree::WorkspaceNodeStatusClassification::Active
+    );
+}
+
+#[tokio::test]
+async fn test_workspace_tree読取_delegate親は回答待ちの子から黄を導出する() {
+    // Given
+    let activity = crate::domain::workflow::AgentSessionActivity::AwaitingAnswer;
+    // When
+    let status = delegate_parent_status_from_store(activity).await;
+    // Then
+    assert_eq!(
+        status,
+        crate::domain::workspace_tree::WorkspaceNodeStatusClassification::Attention
+    );
+}
+
+async fn delegate_parent_status_from_store(
+    activity: crate::domain::workflow::AgentSessionActivity,
+) -> crate::domain::workspace_tree::WorkspaceNodeStatusClassification {
+    use crate::adaptor::gateway::workflow::fact_log::{
+        append_single_fact, fold_tree_from, FactLogReadBackend,
+    };
+    use crate::domain::workflow::{
+        AgentActivityObservedFact, ArtifactProducedFact, NodeFact, NodeFactMeta, Predicate,
+        SessionAttachedFact, SessionDelegate, StartedFact, StopReceivedFact, SubmitReceivedFact,
+        TreeRootFact,
+    };
+
+    const TREE: &str = "00000000-0000-4000-8000-000000001958";
+    const CHILD: &str = "00000000-0000-4000-8000-000000001959";
+    let definition = WorkflowDefinition {
+        name: "delegate".into(),
+        entry: "main".into(),
+        nodes: vec![
+            NodeDefinition {
+                name: "main".into(),
+                kind: NodeKind::Session(SessionSpec::default()),
+                artifact: Some("result".into()),
+                completion: NodeCompletion {
+                    delegate: Some(SessionDelegate {
+                        child: "verify".into(),
+                        inputs: Vec::new(),
+                        when: Predicate::Ref("child.done".into()),
+                        max_iterations: 2,
+                    }),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            NodeDefinition {
+                name: "verify".into(),
+                kind: NodeKind::Session(SessionSpec::default()),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let parent = NodeFactMeta {
+        tree_id: TREE.into(),
+        node_execution_id: TREE.into(),
+        parent_id: None,
+        node_name: "main".into(),
+        kind: NodeKindName::Session,
+        attempt: 1,
+    };
+    let child = NodeFactMeta {
+        tree_id: TREE.into(),
+        node_execution_id: CHILD.into(),
+        parent_id: Some(TREE.into()),
+        node_name: "verify".into(),
+        kind: NodeKindName::Session,
+        attempt: 1,
+    };
+    let facts = [
+        (
+            parent.clone(),
+            NodeFact::Started(StartedFact {
+                worktree: None,
+                parent: None,
+                root: Some(Box::new(TreeRootFact {
+                    repository_root: None,
+                    workspace_identity: WorkspaceIdentity::new("/repo").as_str().into(),
+                    worktree_path: "/repo".into(),
+                    created_from: ExecutionOrigin::DesktopUi,
+                    request: "test".into(),
+                    workflow_name: "delegate".into(),
+                    definition: Some(definition),
+                    launched_as: crate::domain::workflow::ExecutionTreeLaunch::Workflow,
+                })),
+            }),
+        ),
+        (
+            parent.clone(),
+            NodeFact::SessionAttached(SessionAttachedFact {
+                session_id: "parent-session".into(),
+                provider_session_id: None,
+                transcript_ref: None,
+                initial_instruction_admitted: false,
+            }),
+        ),
+        (
+            parent.clone(),
+            NodeFact::SubmitReceived(SubmitReceivedFact { request_id: None }),
+        ),
+        (
+            parent.clone(),
+            NodeFact::ArtifactProduced(ArtifactProducedFact {
+                contract: Some("result".into()),
+                value: serde_json::json!({"done": false}),
+                request_id: None,
+            }),
+        ),
+        (
+            parent.clone(),
+            NodeFact::StopReceived(StopReceivedFact {
+                result_summary: None,
+                token_usage: None,
+            }),
+        ),
+        (
+            child.clone(),
+            NodeFact::Started(StartedFact {
+                worktree: None,
+                parent: Some(ExecutionParentRef::delegate_child(TREE)),
+                root: None,
+            }),
+        ),
+        (
+            child.clone(),
+            NodeFact::SessionAttached(SessionAttachedFact {
+                session_id: "child-session".into(),
+                provider_session_id: None,
+                transcript_ref: None,
+                initial_instruction_admitted: false,
+            }),
+        ),
+        (
+            child,
+            NodeFact::AgentActivityObserved(AgentActivityObservedFact { activity }),
+        ),
+    ];
+    let directory = tempfile::tempdir().unwrap();
+    let store =
+        LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into())).unwrap();
+    for (index, (meta, fact)) in facts.iter().enumerate() {
+        append_single_fact(&store, meta, fact, (index as i64 + 1) * 1000)
+            .await
+            .unwrap();
+    }
+
+    let restored = fold_tree_from(&FactLogReadBackend::Live(store.clone()), TREE)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(restored.aggregate.delegate_waits_for_child(TREE));
+    assert_eq!(restored.session_activities[CHILD], activity);
+    let repository = SqliteWorkspaceTreeRepository::new(store);
+    repository
+        .load_node_by_node_execution_id(TREE)
+        .await
+        .unwrap()
+        .unwrap()
+        .status_classification
+}

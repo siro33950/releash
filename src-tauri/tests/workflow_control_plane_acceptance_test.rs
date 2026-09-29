@@ -911,7 +911,8 @@ async fn test_atui_042_片側signalは再起動後も同じattemptへ復元さ�
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_issue_1696_session起動木はretryを拒否しsubmitとstopで資源を解放する() {
+async fn test_issue_1958_session起動木は完了済みnodeへのsubmitとretryを拒否しstopで緑になる() {
+    // Given
     let root = tempfile::TempDir::new().unwrap();
     let worktree = root.path().join("standalone-session-tree");
     let provider_launch_root = root.path().join("releash-data/provider-launches");
@@ -944,10 +945,17 @@ async fn test_issue_1696_session起動木はretryを拒否しsubmitとstopで資
         .unwrap());
     assert_eq!(host.active_provider_process_count(), 1);
     assert!(provider_launch_root.read_dir().unwrap().next().is_some());
-    host.submit(&session_id).await.unwrap();
+    // When
+    let submit_error = host.submit(&session_id).await.unwrap_err();
+    // Then
+    assert!(submit_error.starts_with("HTTP 409:"), "{submit_error}");
     let before_retry = host.execution_direct(&session_id).await.unwrap().unwrap();
     assert_eq!(before_retry.node_executions.len(), 1);
-    assert!(before_retry.node_executions[0].submit_received);
+    assert_eq!(
+        before_retry.node_executions[0].status,
+        AcceptanceNodeExecutionStatus::Succeeded
+    );
+    assert!(!before_retry.node_executions[0].submit_received);
     assert_eq!(
         host.agent_session_lifecycle(&session_id).await.unwrap(),
         Some(AcceptanceAgentSessionLifecycle::Open)
@@ -984,51 +992,38 @@ async fn test_issue_1696_session起動木はretryを拒否しsubmitとstopで資
         Some(AcceptanceAgentSessionLifecycle::Open)
     );
 
+    // When
     emit_provider_stop(&host, &mut terminal, &terminal_owner, "provider-issue-1696").await;
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            let paused = host.agent_session_lifecycle(&session_id).await.unwrap()
-                == Some(AcceptanceAgentSessionLifecycle::Paused);
-            let binding_released = !host
-                .agent_session_has_active_launch_binding(&session_id)
-                .await
-                .unwrap();
-            let launch_resources_released = provider_launch_root
-                .read_dir()
-                .map(|mut entries| entries.next().is_none())
-                .unwrap_or(true);
-            if paused
-                && binding_released
-                && launch_resources_released
-                && host.active_provider_process_count() == 0
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("Submit と Stop の完了後に AgentSession の起動資源が解放される");
+    // Then
+    assert_eq!(
+        host.workspace_node_status(&session_id).await.unwrap(),
+        Some(AcceptanceWorkspaceNodeStatus::Idle)
+    );
+    let after_stop = host.execution_direct(&session_id).await.unwrap().unwrap();
+    assert_eq!(
+        after_stop.node_executions[0].status,
+        AcceptanceNodeExecutionStatus::Succeeded
+    );
+    assert!(!after_stop.node_executions[0].submit_received);
+    assert!(!after_stop.node_executions[0].stop_received);
     assert_eq!(
         host.agent_session_lifecycle(&session_id).await.unwrap(),
-        Some(AcceptanceAgentSessionLifecycle::Paused)
+        Some(AcceptanceAgentSessionLifecycle::Open)
     );
-    assert!(host.terminal().get(terminal_owner).is_err());
-    assert!(!host
+    assert!(host.terminal().get(terminal_owner).is_ok());
+    assert!(host
         .agent_session_has_active_launch_binding(&session_id)
         .await
         .unwrap());
-    assert!(provider_launch_root
-        .read_dir()
-        .map(|mut entries| entries.next().is_none())
-        .unwrap_or(true));
-    assert_eq!(host.active_provider_process_count(), 0);
+    assert!(provider_launch_root.read_dir().unwrap().next().is_some());
+    assert_eq!(host.active_provider_process_count(), 1);
 
     host.shutdown().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_issue_1826_session木のarchiveはabortしrestoreでは手動resumeを待つ() {
+    // Given
     let root = tempfile::TempDir::new().unwrap();
     let worktree = root.path().join("standalone-archive-restore");
     std::fs::create_dir_all(&worktree).unwrap();
@@ -1064,7 +1059,9 @@ async fn test_issue_1826_session木のarchiveはabortしrestoreでは手動resum
     )
     .await;
 
+    // When
     host.archive_agent_session(&session_id).await.unwrap();
+    // Then
     assert_eq!(
         host.agent_session_lifecycle(&session_id).await.unwrap(),
         Some(AcceptanceAgentSessionLifecycle::Archived)
@@ -1079,10 +1076,12 @@ async fn test_issue_1826_session木のarchiveはabortしrestoreでは手動resum
     assert_eq!(archived.status, AcceptanceWorkflowExecutionStatus::Aborted);
     assert_eq!(
         archived.node_executions[0].status,
-        AcceptanceNodeExecutionStatus::Aborted
+        AcceptanceNodeExecutionStatus::Succeeded
     );
 
+    // When
     host.restore_agent_session(&session_id).await.unwrap();
+    // Then
     assert_eq!(
         host.agent_session_lifecycle(&session_id).await.unwrap(),
         Some(AcceptanceAgentSessionLifecycle::Paused)
@@ -1100,7 +1099,9 @@ async fn test_issue_1826_session木のarchiveはabortしrestoreでは手動resum
         .iter()
         .any(|event| event == "resume_requested"));
 
+    // When
     host.resume_session_node(&session_id).await.unwrap();
+    // Then
     assert_eq!(
         host.agent_session_lifecycle(&session_id).await.unwrap(),
         Some(AcceptanceAgentSessionLifecycle::Open)
@@ -1144,7 +1145,9 @@ async fn test_issue_1826_session木のarchiveはabortしrestoreでは手動resum
         .position(|event| event == "resume_requested")
         .unwrap();
     assert!(abort < archive && archive < restore && restore < resume);
+    // When
     host.archive_agent_session(&session_id).await.unwrap();
+    // Then
     assert_eq!(host.active_provider_process_count(), 0);
 
     host.shutdown().await.unwrap();
@@ -1193,13 +1196,6 @@ async fn test_issue_1700_stopとworkingを何度往復してもrunning_nodeの�
             host.workspace_node_status(&node.id).await.unwrap(),
             Some(AcceptanceWorkspaceNodeStatus::Active)
         );
-        assert_eq!(
-            host.workspace_node_detail_status(&worktree, &node.id)
-                .await
-                .unwrap()
-                .as_deref(),
-            Some("active")
-        );
 
         emit_provider_stop(
             &host,
@@ -1220,13 +1216,6 @@ async fn test_issue_1700_stopとworkingを何度往復してもrunning_nodeの�
             Some(AcceptanceWorkspaceNodeStatus::Attention)
         );
         assert_eq!(
-            host.workspace_node_detail_status(&worktree, &node.id)
-                .await
-                .unwrap()
-                .as_deref(),
-            Some("attention")
-        );
-        assert_eq!(
             host.execution_fact_event_types(&execution_id)
                 .await
                 .unwrap()
@@ -1241,7 +1230,8 @@ async fn test_issue_1700_stopとworkingを何度往復してもrunning_nodeの�
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_issue_1700_waiting_approval_nodeのstopも活動分類をattentionへ戻す() {
+async fn test_issue_1700_waiting_approval_nodeはworkingとstopの両方でattentionを維持する() {
+    // Given
     let root = tempfile::TempDir::new().unwrap();
     let worktree = root.path().join("waiting-approval-repeated-stop");
     std::fs::create_dir_all(&worktree).unwrap();
@@ -1270,6 +1260,7 @@ async fn test_issue_1700_waiting_approval_nodeのstopも活動分類をattention
         "provider-issue-1700-waiting-approval",
     )
     .await;
+    // When
     host.submit(&node.id).await.unwrap();
     emit_provider_stop(
         &host,
@@ -1278,12 +1269,14 @@ async fn test_issue_1700_waiting_approval_nodeのstopも活動分類をattention
         "provider-issue-1700-waiting-approval",
     )
     .await;
+    // Then
     let waiting = host.execution(&execution_id).await.unwrap().unwrap();
     assert_eq!(
         waiting.node_executions[0].status,
         AcceptanceNodeExecutionStatus::WaitingApproval
     );
 
+    // When
     emit_provider_working(
         &host,
         &mut terminal,
@@ -1291,10 +1284,12 @@ async fn test_issue_1700_waiting_approval_nodeのstopも活動分類をattention
         "provider-issue-1700-waiting-approval",
     )
     .await;
+    // Then
     assert_eq!(
         host.workspace_node_status(&node.id).await.unwrap(),
-        Some(AcceptanceWorkspaceNodeStatus::Active)
+        Some(AcceptanceWorkspaceNodeStatus::Attention)
     );
+    // When
     emit_provider_stop(
         &host,
         &mut terminal,
@@ -1303,6 +1298,7 @@ async fn test_issue_1700_waiting_approval_nodeのstopも活動分類をattention
     )
     .await;
 
+    // Then
     let after_second_stop = host.execution(&execution_id).await.unwrap().unwrap();
     assert_eq!(
         after_second_stop.node_executions[0].status,
@@ -1311,13 +1307,6 @@ async fn test_issue_1700_waiting_approval_nodeのstopも活動分類をattention
     assert_eq!(
         host.workspace_node_status(&node.id).await.unwrap(),
         Some(AcceptanceWorkspaceNodeStatus::Attention)
-    );
-    assert_eq!(
-        host.workspace_node_detail_status(&worktree, &node.id)
-            .await
-            .unwrap()
-            .as_deref(),
-        Some("attention")
     );
     assert_eq!(
         host.execution_fact_event_types(&execution_id)

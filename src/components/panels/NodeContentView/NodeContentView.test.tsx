@@ -1,11 +1,7 @@
 import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type {
-	WorkspaceNodeDetail,
-	WorkspaceNodeStatus,
-	WorkspaceNodeStatusClassification,
-} from "@/types/workspace-tree";
+import type { WorkspaceNodeDetail } from "@/types/workspace-tree";
 import { NodeContentView } from "./NodeContentView";
 
 const mocks = vi.hoisted(() => ({
@@ -54,7 +50,6 @@ function sessionDetail(
 		id,
 		title: `Session ${id}`,
 		status: "running",
-		statusClassification: "active",
 		processPresence: "unknown",
 		submitReceived: false,
 		stopReceived: false,
@@ -238,7 +233,6 @@ describe("NodeContentView", () => {
 		mocks.detailState.detail = {
 			...sessionDetail("missing", null),
 			status: "running",
-			statusClassification: "attention",
 		};
 		renderView("missing");
 
@@ -251,7 +245,6 @@ describe("NodeContentView", () => {
 			id: "command-node",
 			title: "Run checks",
 			status: "completed",
-			statusClassification: "idle",
 			processPresence: "unknown",
 			submitReceived: false,
 			stopReceived: false,
@@ -312,97 +305,13 @@ describe("NodeContentView", () => {
 		expect(screen.queryByText(/item 2 child 1/i)).not.toBeInTheDocument();
 	});
 
-	it("uses the backend status as the Node status tooltip", () => {
-		mocks.detailState.detail = {
-			...sessionDetail("absent-session"),
-			status: "running",
-			statusClassification: "attention",
-			errorReason: "Agent process exited unexpectedly",
-		};
-		renderView("absent-session");
-
-		expect(screen.getByTitle("running")).toBeVisible();
-	});
-
-	it("falls back to the status as the Node status tooltip", () => {
-		mocks.detailState.detail = {
-			...sessionDetail("running-session"),
-			status: "running",
-			errorReason: "stale reason",
-		};
+	it("does not show a status icon in the Session header", () => {
+		mocks.detailState.detail = sessionDetail("running-session");
 		renderView("running-session");
-
-		expect(screen.getByTitle("running")).toBeVisible();
+		const header = screen.getByText("Session running-session").parentElement;
+		expect(header).toBeVisible();
+		expect(header?.querySelector("svg")).toBeNull();
 	});
-
-	it.each<[WorkspaceNodeStatus, WorkspaceNodeStatusClassification, string]>([
-		["running", "active", "lucide-loader-circle"],
-		["waiting", "attention", "lucide-clock"],
-		["completed", "idle", "lucide-circle-check"],
-		["aborted", "idle", "lucide-ban"],
-	])(
-		"uses the existing %s shape and never pulses in the detail pane",
-		(status, statusClassification, expectedShapeClass) => {
-			mocks.detailState.detail = {
-				...sessionDetail(`${status}-shape`),
-				status,
-				statusClassification,
-			};
-
-			renderView(`${status}-shape`);
-
-			const icon = screen.getByTitle(status).querySelector("svg");
-			expect(icon).toHaveClass(expectedShapeClass);
-			expect(icon).not.toHaveClass("animate-pulse");
-		},
-	);
-
-	it.each<
-		[
-			WorkspaceNodeStatus,
-			WorkspaceNodeStatusClassification,
-			string,
-			string,
-			string,
-		]
-	>([
-		[
-			"running",
-			"active",
-			"lucide-loader-circle",
-			"text-blue-600",
-			"dark:text-blue-300",
-		],
-		[
-			"waiting",
-			"attention",
-			"lucide-clock",
-			"text-yellow-600",
-			"dark:text-yellow-300",
-		],
-		[
-			"completed",
-			"idle",
-			"lucide-circle-check",
-			"text-green-600",
-			"dark:text-green-300",
-		],
-	])(
-		"colors the %s detail shape from the %s classification without pulsing",
-		(status, statusClassification, shapeClass, lightClass, darkClass) => {
-			mocks.detailState.detail = {
-				...sessionDetail(`${statusClassification}-color`),
-				status,
-				statusClassification,
-			};
-
-			renderView(`${statusClassification}-color`);
-
-			const icon = screen.getByTitle(status).querySelector("svg");
-			expect(icon).toHaveClass(shapeClass, lightClass, darkClass);
-			expect(icon).not.toHaveClass("animate-pulse");
-		},
-	);
 
 	it("shows and executes Approve only from backend capability", async () => {
 		const user = userEvent.setup();
@@ -571,7 +480,7 @@ it.each(["live", "confirmed_absent", "unknown"] as const)(
 			processPresence: presence,
 		};
 		renderView("presence");
-		expect(screen.getByTitle("running")).toBeVisible();
+		expect(screen.queryByTitle("running")).not.toBeInTheDocument();
 		expect(
 			screen.getByText(
 				presence === "live"

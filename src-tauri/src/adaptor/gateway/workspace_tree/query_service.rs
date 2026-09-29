@@ -570,7 +570,6 @@ fn node_detail(node: WorkspaceTreeNode) -> WorkspaceNodeDetailDto {
         id: node.id,
         title: node.title,
         status: node.status.as_public_str().to_string(),
-        status_classification: node.status_classification.as_public_str().to_string(),
         submit_received,
         stop_received,
         waiting_for,

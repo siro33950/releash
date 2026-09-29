@@ -19,7 +19,6 @@ const detail: WorkspaceNodeDetail = {
 	title: "Node",
 	processPresence: "confirmed_absent",
 	status: "completed",
-	statusClassification: "idle",
 	submitReceived: false,
 	stopReceived: false,
 	hasArtifact: false,

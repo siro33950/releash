@@ -19,6 +19,7 @@ pub struct RuntimeSnapshotNodeProjection<'a> {
     pub node_executions:
         &'a [crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecution],
     pub retry_predecessors: &'a std::collections::HashMap<String, String>,
+    pub delegate_waiting_node_ids: &'a std::collections::HashSet<String>,
     pub execution_active: bool,
     pub started_at: f64,
     pub updated_at: f64,
@@ -48,6 +49,7 @@ pub fn runtime_snapshot_nodes(
         workflow_definition,
         node_executions,
         retry_predecessors,
+        delegate_waiting_node_ids,
         execution_active,
         started_at,
         updated_at,
@@ -166,6 +168,7 @@ pub fn runtime_snapshot_nodes(
             continue;
         };
         node.completion_signals = runtime.completion_signals;
+        node.delegate_waits_for_child = delegate_waiting_node_ids.contains(&runtime.id);
         node.has_artifact = runtime.artifact.is_some();
         node.process_presence = process_presences
             .get(&runtime.id)
@@ -211,10 +214,10 @@ mod tests {
         WorkspaceTreeNode,
     };
 
-    const EXECUTION_ID: &str = "00000000-0000-4000-8000-000000000901";
+    pub(super) const EXECUTION_ID: &str = "00000000-0000-4000-8000-000000000901";
     const OTHER_EXECUTION_ID: &str = "00000000-0000-4000-8000-000000000902";
 
-    fn node(
+    pub(super) fn node(
         id: &str,
         execution_id: &str,
         status: RuntimeNodeExecutionStatus,
@@ -240,7 +243,7 @@ mod tests {
         }
     }
 
-    fn execution() -> WorkflowExecutionMetadataRecord {
+    pub(super) fn execution() -> WorkflowExecutionMetadataRecord {
         WorkflowExecutionMetadataRecord {
             execution_id: EXECUTION_ID.to_string(),
             workflow_name: "workflow".to_string(),
@@ -266,6 +269,7 @@ mod tests {
             workflow_definition: Some(&WorkflowDefinition::default()),
             node_executions: &[runtime],
             retry_predecessors: &std::collections::HashMap::new(),
+            delegate_waiting_node_ids: &Default::default(),
             execution_active: true,
             started_at: 1.0,
             updated_at: 10.0,
@@ -462,6 +466,7 @@ mod tests {
             workflow_definition: Some(&definition),
             node_executions: &node_executions,
             retry_predecessors: &std::collections::HashMap::new(),
+            delegate_waiting_node_ids: &Default::default(),
             execution_active: true,
             started_at: 1.0,
             updated_at: 10.0,
@@ -521,6 +526,7 @@ mod tests {
             workflow_definition: Some(&WorkflowDefinition::default()),
             node_executions: &[session],
             retry_predecessors: &std::collections::HashMap::new(),
+            delegate_waiting_node_ids: &Default::default(),
             execution_active: true,
             started_at: 1.0,
             updated_at: 10.0,
@@ -568,6 +574,7 @@ mod tests {
             workflow_definition: Some(&definition),
             node_executions: &[waiting.clone()],
             retry_predecessors: &std::collections::HashMap::new(),
+            delegate_waiting_node_ids: &Default::default(),
             execution_active: true,
             started_at: 1.0,
             updated_at: 10.0,
@@ -597,6 +604,7 @@ mod tests {
             workflow_definition: Some(&definition),
             node_executions: &[waiting.clone()],
             retry_predecessors: &std::collections::HashMap::new(),
+            delegate_waiting_node_ids: &Default::default(),
             execution_active: false,
             started_at: 1.0,
             updated_at: 10.0,
@@ -642,6 +650,7 @@ mod tests {
             workflow_definition: Some(&WorkflowDefinition::default()),
             node_executions: &[first, second, latest, loop_visit],
             retry_predecessors: &retry_predecessors,
+            delegate_waiting_node_ids: &Default::default(),
             execution_active: true,
             started_at: 1.0,
             updated_at: 10.0,
@@ -709,6 +718,7 @@ mod tests {
             workflow_definition: Some(&WorkflowDefinition::default()),
             node_executions: &runtime_nodes,
             retry_predecessors: &std::collections::HashMap::new(),
+            delegate_waiting_node_ids: &Default::default(),
             execution_active: true,
             started_at: 1.0,
             updated_at: 10.0,
@@ -731,8 +741,7 @@ mod tests {
     }
 
     #[test]
-    fn test_runtime_snapshot分類_session_workingはstop_receivedでもactiveにしてcapabilityを維持する(
-    ) {
+    fn test_runtime_snapshot分類_sessionはstop_receivedなら黄でcapabilityを維持する() {
         // Given
         let mut sequence = node(
             "sequence",
@@ -760,7 +769,7 @@ mod tests {
         let runtime_nodes = [sequence, stopped_child];
         let session_activities = std::collections::HashMap::from([(
             "stopped-child".to_string(),
-            crate::domain::workflow::AgentSessionActivity::Working,
+            crate::domain::workflow::AgentSessionActivity::AwaitingInstruction,
         )]);
 
         // When
@@ -772,6 +781,7 @@ mod tests {
             workflow_definition: Some(&WorkflowDefinition::default()),
             node_executions: &runtime_nodes,
             retry_predecessors: &std::collections::HashMap::new(),
+            delegate_waiting_node_ids: &Default::default(),
             execution_active: true,
             started_at: 1.0,
             updated_at: 10.0,
@@ -792,11 +802,11 @@ mod tests {
         // Then
         assert_eq!(
             by_execution_id["stopped-child"].status_classification,
-            WorkspaceNodeStatusClassification::Active
+            WorkspaceNodeStatusClassification::Attention
         );
         assert_eq!(
             by_execution_id["sequence"].status_classification,
-            WorkspaceNodeStatusClassification::Active
+            WorkspaceNodeStatusClassification::Attention
         );
         assert_eq!(
             capability_state(by_execution_id["stopped-child"]),
@@ -809,7 +819,8 @@ mod tests {
     }
 
     #[test]
-    fn test_runtime_snapshot分類_session承認待ちでもworkingならactiveになる() {
+    fn test_runtime_snapshot分類_session承認待ちはworkingでも黄になる() {
+        // Given
         let mut waiting = node(
             "waiting-session",
             EXECUTION_ID,
@@ -824,6 +835,7 @@ mod tests {
             crate::domain::workflow::AgentSessionActivity::Working,
         )]);
 
+        // When
         let nodes = runtime_snapshot_nodes(RuntimeSnapshotNodeProjection {
             process_presences: &std::collections::HashMap::new(),
             execution_id: EXECUTION_ID,
@@ -832,6 +844,7 @@ mod tests {
             workflow_definition: Some(&WorkflowDefinition::default()),
             node_executions: &[waiting],
             retry_predecessors: &std::collections::HashMap::new(),
+            delegate_waiting_node_ids: &Default::default(),
             execution_active: true,
             started_at: 1.0,
             updated_at: 10.0,
@@ -845,9 +858,10 @@ mod tests {
             .find(|node| node.node_execution_id.as_deref() == Some("waiting-session"))
             .unwrap();
 
+        // Then
         assert_eq!(
             waiting.status_classification,
-            WorkspaceNodeStatusClassification::Active
+            WorkspaceNodeStatusClassification::Attention
         );
         assert!(waiting.can_approve);
         assert_eq!(
@@ -899,6 +913,7 @@ mod tests {
                     workflow_definition: Some(&definition),
                     node_executions: &runtime_nodes,
                     retry_predecessors: &std::collections::HashMap::new(),
+                    delegate_waiting_node_ids: &Default::default(),
                     execution_active: true,
                     started_at: 1.0,
                     updated_at: 10.0,
@@ -956,6 +971,7 @@ mod tests {
                 workflow_definition: Some(&WorkflowDefinition::default()),
                 node_executions: &[runtime],
                 retry_predecessors: &Default::default(),
+                delegate_waiting_node_ids: &Default::default(),
                 execution_active: false,
                 started_at: 1.0,
                 updated_at: 2.0,
@@ -999,6 +1015,7 @@ mod tests {
                         workflow_definition: Some(&WorkflowDefinition::default()),
                         node_executions: &[runtime],
                         retry_predecessors: &Default::default(),
+                        delegate_waiting_node_ids: &Default::default(),
                         execution_active: true,
                         started_at: 1.0,
                         updated_at: 2.0,
@@ -1032,3 +1049,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "projection_test.rs"]
+mod projection_tests;

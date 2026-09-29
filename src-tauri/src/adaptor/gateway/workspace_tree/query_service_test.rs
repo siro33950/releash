@@ -218,8 +218,7 @@ async fn assert_working_session_projection(store: Arc<LocalEventStore>) {
         .await
         .unwrap()
         .expect("Session detail must exist");
-    assert_eq!(detail.status, "running");
-    assert_eq!(detail.status_classification, "active");
+    assert_eq!(detail.status, "completed");
     let snapshot_json = serde_json::to_string(&snapshot).unwrap();
     let detail_json = serde_json::to_string(&detail).unwrap();
     assert!(!snapshot_json.contains("\"activity\":"));
@@ -252,7 +251,6 @@ async fn assert_workflow_child_activity_projection(
         .unwrap()
         .expect("workflow child Session detail must exist");
     assert_eq!(detail.status, "running");
-    assert_eq!(detail.status_classification, expected_classification);
 }
 
 #[tokio::test]
@@ -296,7 +294,7 @@ async fn test_workspace_tree_query_記録済み活動状態を一覧と詳細へ
 }
 
 #[tokio::test]
-async fn test_workspace_tree_query_活動未観測のsessionを一覧と詳細でattentionにする() {
+async fn test_workspace_tree_query_活動未観測の単独sessionは完了nodeと緑行になる() {
     // Given: create 後に活動事実を一度も記録していない単独 Session
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
@@ -343,14 +341,13 @@ async fn test_workspace_tree_query_活動未観測のsessionを一覧と詳細�
         .unwrap()
         .expect("Session detail must exist");
 
-    // Then: fold と projection を通った一覧・詳細の双方が attention になる
-    assert_eq!(node.status, "attention");
-    assert_eq!(detail.status, "running");
-    assert_eq!(detail.status_classification, "attention");
+    // Then: fold と projection を通った一覧は緑、Node は完了
+    assert_eq!(node.status, "idle");
+    assert_eq!(detail.status, "completed");
 }
 
 #[tokio::test]
-async fn test_workspace_tree_query_resume直後のsessionを一覧と詳細でattentionにする() {
+async fn test_workspace_tree_query_resume直後の単独sessionは緑になる() {
     // Given: Working の後に正常終了し、provider resume が完了した単独 Session
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
@@ -419,10 +416,9 @@ async fn test_workspace_tree_query_resume直後のsessionを一覧と詳細でat
         .unwrap()
         .expect("Session detail must exist");
 
-    // Then: resume 後に新しい活動を観測するまでは一覧・詳細の双方が attention になる
-    assert_eq!(node.status, "attention");
-    assert_eq!(detail.status, "running");
-    assert_eq!(detail.status_classification, "attention");
+    // Then: resume 後に新しい活動を観測するまでは緑
+    assert_eq!(node.status, "idle");
+    assert_eq!(detail.status, "completed");
 }
 
 #[tokio::test]
@@ -521,19 +517,15 @@ async fn test_workspace_tree_query_活動終了と再開の反復を一覧と詳
             .await
             .unwrap()
             .expect("Session detail must exist");
-        (
-            node.status.clone(),
-            detail.status,
-            detail.status_classification,
-        )
+        (node.status.clone(), detail.status)
     };
 
     // When: Working と AwaitingInstruction を2往復させる
     let transitions = [
         (AgentSessionActivity::Working, "active"),
-        (AgentSessionActivity::AwaitingInstruction, "attention"),
+        (AgentSessionActivity::AwaitingInstruction, "idle"),
         (AgentSessionActivity::Working, "active"),
-        (AgentSessionActivity::AwaitingInstruction, "attention"),
+        (AgentSessionActivity::AwaitingInstruction, "idle"),
         (AgentSessionActivity::Working, "active"),
     ];
     let mut observed_classifications = Vec::new();
@@ -544,16 +536,15 @@ async fn test_workspace_tree_query_活動終了と再開の反復を一覧と詳
             .await
             .unwrap();
 
-        // Then: 一覧の status と詳細の statusClassification が毎回追従する
-        let (tree_status, detail_status, detail_classification) = projected_statuses().await;
+        // Then: 一覧の status は agent activity に追従し、Node は完了したまま
+        let (tree_status, detail_status) = projected_statuses().await;
         assert_eq!(tree_status, expected_classification);
-        assert_eq!(detail_status, "running");
-        assert_eq!(detail_classification, expected_classification);
+        assert_eq!(detail_status, "completed");
         observed_classifications.push(tree_status);
     }
     assert_eq!(
         observed_classifications,
-        ["active", "attention", "active", "attention", "active"]
+        ["active", "idle", "active", "idle", "active"]
     );
 }
 
@@ -624,17 +615,17 @@ async fn test_workspace_tree_query_stop事実と後続活動を一覧と詳細�
             .await
             .unwrap()
             .expect("Session detail must exist");
-        assert_eq!(detail.status, "running");
-        (node.status.clone(), detail.status_classification)
+        assert_eq!(detail.status, "completed");
+        node.status.clone()
     };
 
     // When: 活動観測を追加せず StopReceived だけを追記する
     append_stop(10).await;
 
-    // Then: 一覧と詳細は Stop 事実から attention を導出し、再起動後も再現する
+    // Then: 一覧は idle、詳細 Node は completed と導出され、再起動後も再現する
     assert_eq!(
         projected_classification(store.clone()).await,
-        ("attention".to_string(), "attention".to_string())
+        "idle".to_string()
     );
     drop(sessions);
     drop(store);
@@ -644,7 +635,7 @@ async fn test_workspace_tree_query_stop事実と後続活動を一覧と詳細�
     .unwrap();
     assert_eq!(
         projected_classification(reopened.clone()).await,
-        ("attention".to_string(), "attention".to_string())
+        "idle".to_string()
     );
 
     // When / Then: 後続の Working が青へ戻し、再度の Stop と Working にも同じく追従する
@@ -661,7 +652,7 @@ async fn test_workspace_tree_query_stop事実と後続活動を一覧と詳細�
             .unwrap();
         assert_eq!(
             projected_classification(reopened.clone()).await,
-            ("active".to_string(), "active".to_string())
+            "active".to_string()
         );
         if index == 0 {
             crate::adaptor::gateway::workflow::fact_log::append_single_fact(
@@ -677,7 +668,7 @@ async fn test_workspace_tree_query_stop事実と後続活動を一覧と詳細�
             .unwrap();
             assert_eq!(
                 projected_classification(reopened.clone()).await,
-                ("attention".to_string(), "attention".to_string())
+                "idle".to_string()
             );
         }
     }
@@ -990,6 +981,8 @@ fn node() -> WorkspaceTreeNode {
         title: "Review".to_string(),
         status: WorkspaceNodeStatus::Waiting,
         status_classification: WorkspaceNodeStatusClassification::Attention,
+        delegate_waits_for_child: false,
+        background_failure: false,
         activity: Some(crate::domain::workflow::AgentSessionActivity::AwaitingInstruction),
         error_reason: None,
         updated_at_bits: 1.0f64.to_bits(),
@@ -1395,7 +1388,7 @@ fn workflow_node_detail_exposes_backend_owned_signal_and_capabilities_without_at
 }
 
 #[test]
-fn test_workspaceツリー契約_nodeとsequenceとfanoutは4分類だけを返す() {
+fn test_workspaceツリー契約_nodeとsequenceとfanoutは3分類だけを返す() {
     // Given
     let execution_id = "workflow-execution";
     let owner = tree_owner(execution_id);
@@ -1453,56 +1446,14 @@ fn test_workspaceツリー契約_nodeとsequenceとfanoutは4分類だけを返�
 }
 
 #[test]
-fn test_workspaceノード詳細契約_詳細状態と5分類を同時に返す() {
-    // Given
-    let cases = [
-        (
-            WorkspaceNodeStatus::Running,
-            WorkspaceNodeStatusClassification::Active,
-            "running",
-            "active",
-        ),
-        (
-            WorkspaceNodeStatus::Waiting,
-            WorkspaceNodeStatusClassification::Attention,
-            "waiting",
-            "attention",
-        ),
-        (
-            WorkspaceNodeStatus::Aborted,
-            WorkspaceNodeStatusClassification::Idle,
-            "aborted",
-            "idle",
-        ),
-        (
-            WorkspaceNodeStatus::Completed,
-            WorkspaceNodeStatusClassification::Idle,
-            "completed",
-            "idle",
-        ),
-        (
-            WorkspaceNodeStatus::Running,
-            WorkspaceNodeStatusClassification::Unbound,
-            "running",
-            "unbound",
-        ),
-    ];
-
-    // When / Then
-    for (status, classification, expected_status, expected_classification) in cases {
-        let mut current = node();
-        current.status = status;
-        current.status_classification = classification;
-        let detail = serde_json::to_value(node_detail(current)).unwrap();
-        assert_eq!(detail["status"], expected_status);
-        assert_eq!(detail["statusClassification"], expected_classification);
-        assert_ne!(detail["status"], "interrupted");
-        assert_ne!(detail["statusClassification"], "interrupted");
-    }
+fn test_workspaceノード詳細契約_状態アイコン用分類を返さない() {
+    let detail = serde_json::to_value(node_detail(node())).unwrap();
+    assert_eq!(detail["status"], "waiting");
+    assert!(detail.get("statusClassification").is_none());
 }
 
 #[test]
-fn test_workspaceツリー契約_can_renameとunboundをdomain_nodeからそのまま公開する() {
+fn test_workspaceツリー契約_bind前sessionを青で公開する() {
     let execution_id = "workflow-execution";
     let owner = tree_owner(execution_id);
     let mut session = child_node(
@@ -1512,7 +1463,7 @@ fn test_workspaceツリー契約_can_renameとunboundをdomain_nodeからその�
         WorkspaceNodeKind::WorkflowSession,
         "session",
     );
-    session.status_classification = WorkspaceNodeStatusClassification::Unbound;
+    session.status_classification = WorkspaceNodeStatusClassification::Active;
     session.can_rename = true;
     let tree = WorkspaceTree::restore("/repo", vec![owner, session]).unwrap();
 
@@ -1524,7 +1475,7 @@ fn test_workspaceツリー契約_can_renameとunboundをdomain_nodeからその�
     ))
     .unwrap();
 
-    assert_eq!(json[0]["status"], "unbound");
+    assert_eq!(json[0]["status"], "active");
     assert_eq!(json[0]["capabilities"]["canRename"], false);
     assert!(json[0].get("workflowCapabilities").is_some());
 }

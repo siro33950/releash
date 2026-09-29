@@ -97,6 +97,10 @@ mod session_execution_tree_root_facts_tests {
                 initial_instruction_admitted: false,
             })
         );
+        assert_eq!(
+            facts.node_completed,
+            NodeFact::StandaloneSessionNodeCompleted
+        );
     }
 
     #[test]

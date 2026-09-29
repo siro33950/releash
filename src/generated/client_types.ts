@@ -138,11 +138,7 @@ export type WorkspaceNodeDto = {
 
 export type NodeProcessPresence = "unknown" | "live" | "confirmed_absent";
 
-export type WorkspaceStatusClassification =
-	| "active"
-	| "attention"
-	| "idle"
-	| "unbound";
+export type WorkspaceStatusClassification = "active" | "attention" | "idle";
 
 export type WorkspaceContentKind = "session" | "command";
 
@@ -260,7 +256,6 @@ export type WorkspaceNodeDetailDto = {
 	id: string;
 	title: string;
 	status: WorkspaceNodeStatus;
-	statusClassification: WorkspaceStatusClassification;
 	submitReceived: boolean;
 	stopReceived: boolean;
 	waitingFor?: WorkspaceWaitingFor;

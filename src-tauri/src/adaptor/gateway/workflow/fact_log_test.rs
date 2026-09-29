@@ -1009,7 +1009,8 @@ mod reconciliation_tests {
     }
 
     #[tokio::test]
-    async fn test_session起動由来のstop受信済みnodeをreconcileしてもattentionを維持する() {
+    async fn test_session起動由来の完了済みnodeはstop事実後のreconcileでもidleを維持する() {
+        // Given
         let (_root, store) = open_store();
         let session_id = "agent-session-restart";
         LocalAgentSessionRepository::new(store.clone())
@@ -1043,11 +1044,13 @@ mod reconciliation_tests {
             .any(|record| matches!(record.fact, NodeFact::ProcessExited(_))));
 
         let mut new_id = test_id_source();
+        // When
         let reconciliation = reconcile_tree_pass(&store, session_id, 10.0, &mut new_id)
             .await
             .unwrap()
             .unwrap();
 
+        // Then
         assert!(reconciliation.starts.is_empty());
         assert_eq!(
             reconciliation
@@ -1056,7 +1059,7 @@ mod reconciliation_tests {
                 .node_execution(session_id)
                 .unwrap()
                 .completion_signals,
-            crate::domain::workflow::NodeCompletionSignalState::StopReceived
+            crate::domain::workflow::NodeCompletionSignalState::Pending
         );
         assert!(!read_tree_records(&store, session_id)
             .await
@@ -1070,7 +1073,7 @@ mod reconciliation_tests {
             .unwrap();
         assert_eq!(
             node.status_classification,
-            WorkspaceNodeStatusClassification::Attention
+            WorkspaceNodeStatusClassification::Idle
         );
     }
 
@@ -1356,9 +1359,13 @@ mod round_trip_tests {
             .is_empty());
         append_fact_batch_for_seed(&store, &facts, 1, "session-seed-atomic").unwrap();
         let records = read_tree_records(&store, session_id).await.unwrap();
-        assert_eq!(records.len(), 2);
+        assert_eq!(records.len(), 3);
         assert_eq!(fact_codec::event_type(&records[0].fact), "started");
         assert_eq!(fact_codec::event_type(&records[1].fact), "session_attached");
+        assert_eq!(
+            fact_codec::event_type(&records[2].fact),
+            "standalone_session_node_completed"
+        );
     }
 
     /// エンジンが発するイベント列を写像して append した事実ログが、

@@ -1623,7 +1623,8 @@ message WorkspaceNodeDetailDto {
   optional string id = 2 [json_name = "id", (json_required) = true];
   optional string title = 3 [json_name = "title", (json_required) = true];
   optional WorkspaceNodeStatus status = 4 [json_name = "status", (json_required) = true];
-  optional WorkspaceStatusClassification status_classification = 5 [json_name = "statusClassification", (json_required) = true];
+  reserved 5;
+  reserved "status_classification";
   optional bool submit_received = 6 [json_name = "submitReceived", (json_required) = true];
   optional bool stop_received = 7 [json_name = "stopReceived", (json_required) = true];
   optional WorkspaceWaitingFor waiting_for = 8 [json_name = "waitingFor", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
@@ -2553,7 +2554,8 @@ message WorkspaceStatusClassification {
     reserved 2;
     reserved "failure";
     idle = 3 [(json_enum_name) = "idle"];
-    unbound = 4 [(json_enum_name) = "unbound"];
+    reserved 4;
+    reserved "unbound";
   }
   optional Value value = 1 [(json_required) = true];
 }

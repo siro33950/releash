@@ -677,13 +677,13 @@ describe("WorkspaceList", () => {
 		).not.toHaveClass("animate-pulse");
 	});
 
-	it("bind前のSession Nodeを灰色の回転loaderで描画しrename入口を出さない", () => {
+	it("bind前のSession Nodeを青いアイコンで描画しrename入口を出さない", () => {
 		mocks.treeStateOverrides.set("/repo/wt", {
 			nodes: [
 				standaloneSessionNode({
 					id: "unbound-session",
 					title: "session",
-					status: "unbound",
+					status: "active",
 					canRename: false,
 				}),
 			],
@@ -691,13 +691,9 @@ describe("WorkspaceList", () => {
 		});
 		renderWorkspaceList();
 
-		const row = screen.getByRole("button", { name: "session, unbound" });
-		const icon = within(row).getByTitle("session, unbound").firstChild;
-		expect(icon).toHaveClass(
-			"lucide-loader-circle",
-			"animate-spin",
-			"text-muted-foreground",
-		);
+		const row = screen.getByRole("button", { name: "session, active" });
+		const icon = within(row).getByTitle("session, active").firstChild;
+		expect(icon).toHaveClass("lucide-bot", "animate-pulse", "text-blue-600");
 		expect(
 			screen.queryByRole("button", { name: "Rename session" }),
 		).not.toBeInTheDocument();

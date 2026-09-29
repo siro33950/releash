@@ -24,11 +24,7 @@ export type WorkspaceNodeStatus =
 	| "aborted"
 	| "completed";
 
-export type WorkspaceNodeStatusClassification =
-	| "active"
-	| "attention"
-	| "idle"
-	| "unbound";
+export type WorkspaceNodeStatusClassification = "active" | "attention" | "idle";
 
 export interface WorkspaceNodeCapabilities {
 	canRename: boolean;
@@ -135,7 +131,6 @@ export interface WorkspaceNodeDetail {
 	id: string;
 	title: string;
 	status: WorkspaceNodeStatus;
-	statusClassification: WorkspaceNodeStatusClassification;
 	submitReceived: boolean;
 	stopReceived: boolean;
 	waitingFor?: "submit" | "stop";

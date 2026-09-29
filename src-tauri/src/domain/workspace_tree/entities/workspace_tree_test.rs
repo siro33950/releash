@@ -1349,7 +1349,7 @@ fn branch_status_capabilities_and_session_activity_are_backend_aggregated() {
     assert_eq!(workflow.status, WorkspaceNodeStatus::Running);
     assert_eq!(
         workflow.status_classification,
-        WorkspaceNodeStatusClassification::Active
+        WorkspaceNodeStatusClassification::Attention
     );
     assert!(workflow.can_abort);
     assert!(workflow.can_archive);
@@ -1813,7 +1813,7 @@ fn test_session表示名変更可否_session_bind後だけ真になる() {
         .unwrap();
     assert_eq!(
         unbound.status_classification,
-        WorkspaceNodeStatusClassification::Unbound
+        WorkspaceNodeStatusClassification::Active
     );
 
     WorkspaceTreeProjector::project(
@@ -1829,9 +1829,9 @@ fn test_session表示名変更可否_session_bind後だけ真になる() {
 
     let session = tree.session_node("agent-session").unwrap();
     assert!(session.can_rename);
-    assert_ne!(
+    assert_eq!(
         session.status_classification,
-        WorkspaceNodeStatusClassification::Unbound
+        WorkspaceNodeStatusClassification::Attention
     );
     assert!(tree
         .nodes()
@@ -1841,7 +1841,7 @@ fn test_session表示名変更可否_session_bind後だけ真になる() {
 }
 
 #[test]
-fn test_親分類集約_bind前sessionだけならunboundで他の子があればその状態になる() {
+fn test_親分類集約_bind前sessionも青で集約する() {
     for kind in [NodeKindName::Sequence, NodeKindName::Fanout] {
         let execution_id = format!("00000000-0000-4000-8000-00000000002{}", kind as u8);
         let mut tree = WorkspaceTree::empty("/repo");
@@ -1883,7 +1883,7 @@ fn test_親分類集約_bind前sessionだけならunboundで他の子があれ�
             .unwrap();
         assert_eq!(
             branch.status_classification,
-            WorkspaceNodeStatusClassification::Unbound,
+            WorkspaceNodeStatusClassification::Active,
             "{kind:?}"
         );
 
@@ -1918,7 +1918,7 @@ fn test_親分類集約_bind前sessionの終了状態をsequenceとfanoutへ反�
     let cases = [(
         NodeExecutionFailureKind::UserAbort,
         WorkspaceNodeStatus::Aborted,
-        WorkspaceNodeStatusClassification::Idle,
+        WorkspaceNodeStatusClassification::Active,
         WorkspaceNodeStatusClassification::Active,
     )];
     for kind in [NodeKindName::Sequence, NodeKindName::Fanout] {
