@@ -11,8 +11,8 @@ pub(crate) struct DaemonLiveness {
 }
 
 impl DaemonLiveness {
-    pub fn succeeded(&mut self) -> bool {
-        std::mem::take(&mut self.consecutive_failures) > 0
+    pub fn succeeded(&mut self) {
+        self.consecutive_failures = 0;
     }
     pub fn failed(&mut self) -> bool {
         self.consecutive_failures = self.consecutive_failures.saturating_add(1);

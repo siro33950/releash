@@ -20,16 +20,6 @@ async fn wait_for_disconnect(client: &DesktopClient, limit: Duration) {
     .unwrap();
 }
 
-async fn wait_for_watch_exit(client: &DesktopClient) {
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while !client.task.is_finished() {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .unwrap();
-}
-
 fn envelope(event: rpc::StateSubscriptionEvent) -> Vec<u8> {
     use prost::Message;
     let event: wire::StateSubscriptionEvent = to_wire(&event).unwrap();
@@ -218,7 +208,7 @@ async fn test_生存確認_接続拒否が2回続くと切断する() {
 }
 
 #[tokio::test]
-async fn test_生存確認_再接続対象外の開始失敗1回では不在と判定しない() {
+async fn test_生存確認_再接続対象外の開始失敗も2回続けば切断する() {
     // Given
     let (endpoint, server, requests) = error_server(connectrpc::ConnectError::new(
         connectrpc::ErrorCode::InvalidArgument,
@@ -227,16 +217,18 @@ async fn test_生存確認_再接続対象外の開始失敗1回では不在と�
     .await;
     let client = start(&endpoint);
     // When
-    wait_for_watch_exit(&client).await;
+    wait_for_disconnect(&client, Duration::from_secs(5)).await;
     // Then
-    assert_eq!(requests.load(Ordering::SeqCst), 1);
-    assert!(client.connected());
-    assert_eq!(client.failure(), None);
+    assert_eq!(requests.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        client.failure().unwrap().nature,
+        TechnicalFailureNature::Other
+    );
     server.abort();
 }
 
 #[tokio::test]
-async fn test_生存確認_再接続対象外の受信失敗1回では不在と判定しない() {
+async fn test_生存確認_再接続対象外の受信失敗も2回続けば切断する() {
     // Given
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = ClientConnectionDto {
@@ -261,11 +253,10 @@ async fn test_生存確認_再接続対象外の受信失敗1回では不在と�
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let client = start(&endpoint);
     // When
-    wait_for_watch_exit(&client).await;
+    wait_for_disconnect(&client, Duration::from_secs(5)).await;
     // Then
-    assert_eq!(opens.load(Ordering::SeqCst), 1);
-    assert!(client.connected());
-    assert_eq!(client.failure(), None);
+    assert_eq!(opens.load(Ordering::SeqCst), 2);
+    assert!(client.failure().is_some());
     server.abort();
 }
 

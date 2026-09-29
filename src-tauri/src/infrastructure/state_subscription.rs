@@ -153,30 +153,28 @@ impl<T: Clone + PartialEq + Send + Sync + 'static> StateSubscriptionRuntime<T> {
                     for (raw, clients) in requests {
                         refresh(raw, clients);
                     }
-                    if timer.tick().now_or_never().is_some() && !runtime.state.lock().bookmark(&id)
-                    {
-                        return Some((
-                            StateSubscriptionEvent::Bookmark,
-                            (id, permit, timer, runtime.clone(), refresh),
-                        ));
-                    }
-                    if let Some((target, event)) = runtime.state.lock().next(&id) {
-                        return Some((
-                            StateSubscriptionEvent::Item(target, event),
-                            (id, permit, timer, runtime.clone(), refresh),
-                        ));
-                    }
-                    tokio::select! {
-                        _ = changed => {},
-                        _ = timer.tick() => {
-                            if !runtime.state.lock().bookmark(&id) {
-                                return Some((
-                                    StateSubscriptionEvent::Bookmark,
-                                    (id, permit, timer, runtime.clone(), refresh),
-                                ));
-                            }
+                    let stream_bookmark = timer.tick().now_or_never().is_some()
+                        && !runtime.state.lock().bookmark(&id);
+                    if !stream_bookmark {
+                        if let Some((target, event)) = runtime.state.lock().next(&id) {
+                            return Some((
+                                StateSubscriptionEvent::Item(target, event),
+                                (id, permit, timer, runtime.clone(), refresh),
+                            ));
+                        }
+                        tokio::select! {
+                            _ = changed => continue,
+                            _ = timer.tick() => {
+                                if runtime.state.lock().bookmark(&id) {
+                                    continue;
+                                }
+                            },
                         }
                     }
+                    return Some((
+                        StateSubscriptionEvent::Bookmark,
+                        (id, permit, timer, runtime.clone(), refresh),
+                    ));
                 }
             },
         );

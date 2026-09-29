@@ -1,3 +1,4 @@
+use crate::adaptor::presenter::client::descriptor;
 use crate::adaptor::presenter::{
     client as wire,
     connect_wire::{rpc, to_rpc, to_wire},
@@ -8,7 +9,6 @@ use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
 use crate::usecase::client_connection::ClientConnectionDto;
 use connectrpc::client::{ClientConfig, HttpClient};
 use futures_util::future::BoxFuture;
-use prost_reflect::DescriptorPool;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
@@ -22,20 +22,11 @@ struct ConnectionPolicy {
 }
 
 static POLICY: LazyLock<ConnectionPolicy> = LazyLock::new(|| {
-    let pool = DescriptorPool::decode(
-        include_bytes!(concat!(env!("OUT_DIR"), "/client_descriptor.bin")).as_slice(),
-    )
-    .expect("client descriptors");
-    let options = pool
+    let options = descriptor::pool()
         .get_service_by_name("releash.client.v1.ClientService")
         .expect("ClientService descriptor")
         .options();
-    let option = |name: &str| {
-        let extension = pool
-            .get_extension_by_name(&format!("releash.client.v1.{name}"))
-            .expect("client service option");
-        options.get_extension(&extension).into_owned()
-    };
+    let option = |name: &str| descriptor::option(&options, name);
     let backoff = option("connection_backoff");
     let backoff = backoff.as_message().expect("connection_backoff message");
     let millis = |name: &str| {
@@ -117,12 +108,7 @@ pub(crate) struct DesktopClient {
     client: Arc<rpc::ClientServiceClient<HttpClient>>,
     task: tokio::task::JoinHandle<()>,
     settings: parking_lot::Mutex<tokio::sync::watch::Receiver<Option<DesktopSettingsDto>>>,
-    exit: Arc<parking_lot::Mutex<Option<WatchExit>>>,
-}
-
-enum WatchExit {
-    Absent(TechnicalFailure),
-    Unretryable(TechnicalFailure),
+    exit: Arc<parking_lot::Mutex<Option<TechnicalFailure>>>,
 }
 
 impl Drop for DesktopClient {
@@ -145,9 +131,6 @@ impl DesktopClient {
         let call_client = client.clone();
         let task = tokio::spawn(async move {
             let result = watch(&call_client, &stream_client, &settings_sender, &limiter).await;
-            if let WatchExit::Unretryable(failure) = &result {
-                log::warn!("State stream cannot reconnect: {}", failure.message);
-            }
             *observed_exit.lock() = Some(result);
         });
         Self {
@@ -158,11 +141,7 @@ impl DesktopClient {
         }
     }
     pub fn connected(&self) -> bool {
-        match self.exit.lock().as_ref() {
-            Some(WatchExit::Absent(_)) => false,
-            Some(WatchExit::Unretryable(_)) => true,
-            None => !self.task.is_finished(),
-        }
+        self.exit.lock().is_none() && !self.task.is_finished()
     }
     /// 購読で最初に届いた desktop 設定を待つ。
     pub async fn first_settings(&self) -> Result<DesktopSettingsDto, String> {
@@ -187,10 +166,7 @@ impl DesktopClient {
         }
     }
     pub fn failure(&self) -> Option<TechnicalFailure> {
-        match self.exit.lock().as_ref() {
-            Some(WatchExit::Absent(failure)) => Some(failure.clone()),
-            _ => None,
-        }
+        self.exit.lock().clone()
     }
     pub async fn request(
         &self,
@@ -205,17 +181,14 @@ async fn watch(
     stream_client: &rpc::ClientServiceClient<HttpClient>,
     settings: &tokio::sync::watch::Sender<Option<DesktopSettingsDto>>,
     limiter: &RetryLimiter,
-) -> WatchExit {
+) -> TechnicalFailure {
     let mut liveness = DaemonLiveness::default();
     let mut reconnects = 0u64;
     loop {
         let attempt_started = tokio::time::Instant::now();
         let observed = observe(client, stream_client, settings, &mut liveness).await;
         if observed.liveness && liveness.failed() {
-            return WatchExit::Absent(observed.failure);
-        }
-        if !observed.reconnect {
-            return WatchExit::Unretryable(observed.failure);
+            return observed.failure;
         }
         if attempt_started.elapsed() > POLICY.reset_after {
             reconnects = 0;
@@ -230,17 +203,59 @@ async fn watch(
 struct Observation {
     failure: TechnicalFailure,
     liveness: bool,
-    reconnect: bool,
 }
 
 fn connection_error(error: connectrpc::ConnectError, liveness: bool) -> Observation {
-    let reconnect = POLICY
-        .reconnect_codes
-        .contains(&(error.code.grpc_code() as i32));
     Observation {
         failure: liveness_failure(error),
         liveness,
-        reconnect,
+    }
+}
+
+fn subscription_result(result: Result<(), connectrpc::ConnectError>) -> Option<Observation> {
+    let Err(error) = result else { return None };
+    let reconnect = POLICY
+        .reconnect_codes
+        .contains(&(error.code.grpc_code() as i32));
+    let observed = connection_error(error, false);
+    if reconnect {
+        Some(observed)
+    } else {
+        log::warn!(
+            "Desktop settings subscription failed: {}",
+            observed.failure.message
+        );
+        None
+    }
+}
+
+fn start_settings_subscription(
+    client: &rpc::ClientServiceClient<HttpClient>,
+    client_id: String,
+) -> BoxFuture<'_, Result<(), connectrpc::ConnectError>> {
+    Box::pin(async move {
+        client
+            .start_state_subscription(rpc::StartStateSubscriptionRequest {
+                client_id,
+                target: DESKTOP_SETTINGS_TARGET.into(),
+                ..Default::default()
+            })
+            .await
+            .map(|_| ())
+    })
+}
+
+fn apply_settings(
+    payload: wire::StatePayload,
+    settings: &tokio::sync::watch::Sender<Option<DesktopSettingsDto>>,
+) {
+    if let Some(wire::state_payload::Value::DesktopSettings(value)) = payload.value {
+        match value.try_into() {
+            Ok(value) => {
+                settings.send_replace(Some(value));
+            }
+            Err(error) => log::warn!("Desktop settings decode failed: {error}"),
+        }
     }
 }
 
@@ -271,12 +286,8 @@ async fn observe(
         let message = tokio::select! {
             result = async { subscription_start.as_mut().expect("pending subscription").await }, if subscription_start.is_some() => {
                 subscription_start = None;
-                if let Err(error) = result {
-                    let observed = connection_error(error, false);
-                    if observed.reconnect {
-                        return observed;
-                    }
-                    log::warn!("Desktop settings subscription failed: {}", observed.failure.message);
+                if let Some(observed) = subscription_result(result) {
+                    return observed;
                 }
                 continue;
             }
@@ -291,7 +302,6 @@ async fn observe(
                         message: "State stream ended".into(),
                     },
                     liveness: true,
-                    reconnect: true,
                 };
             }
             Ok(Err(error)) => return connection_error(error, true),
@@ -314,16 +324,8 @@ async fn observe(
             Some(Event::Ready(_)) => {
                 if !subscription_requested {
                     subscription_requested = true;
-                    subscription_start = Some(Box::pin(async {
-                        client
-                            .start_state_subscription(rpc::StartStateSubscriptionRequest {
-                                client_id: client_id.clone(),
-                                target: DESKTOP_SETTINGS_TARGET.into(),
-                                ..Default::default()
-                            })
-                            .await
-                            .map(|_| ())
-                    }));
+                    subscription_start =
+                        Some(start_settings_subscription(client, client_id.clone()));
                 }
                 continue;
             }
@@ -334,14 +336,7 @@ async fn observe(
             },
             _ => continue,
         };
-        if let Some(wire::state_payload::Value::DesktopSettings(value)) = payload.value {
-            match value.try_into() {
-                Ok(value) => {
-                    settings.send_replace(Some(value));
-                }
-                Err(error) => log::warn!("Desktop settings decode failed: {error}"),
-            }
-        }
+        apply_settings(payload, settings);
     }
 }
 
@@ -352,7 +347,6 @@ fn silence_failure() -> Observation {
             message: "State stream was silent".into(),
         },
         liveness: true,
-        reconnect: true,
     }
 }
 
