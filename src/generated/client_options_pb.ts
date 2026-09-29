@@ -4,11 +4,17 @@
 
 import type { Message } from "@bufbuild/protobuf";
 import type {
+	GenEnum,
 	GenExtension,
 	GenFile,
 	GenMessage,
 } from "@bufbuild/protobuf/codegenv2";
-import { extDesc, fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2";
+import {
+	enumDesc,
+	extDesc,
+	fileDesc,
+	messageDesc,
+} from "@bufbuild/protobuf/codegenv2";
 import type {
 	EnumValueOptions,
 	FieldOptions,
@@ -23,7 +29,7 @@ import { file_google_protobuf_descriptor } from "@bufbuild/protobuf/wkt";
 export const file_client_options: GenFile =
 	/*@__PURE__*/
 	fileDesc(
-		"ChRjbGllbnRfb3B0aW9ucy5wcm90bxIRcmVsZWFzaC5jbGllbnQudjEiawoRQ29ubmVjdGlvbkJhY2tvZmYSGgoSaW5pdGlhbF9iYWNrb2ZmX21zGAEgASgNEhIKCm11bHRpcGxpZXIYAiABKAISDgoGaml0dGVyGAMgASgCEhYKDm1heF9iYWNrb2ZmX21zGAQgASgNOkQKDGpzb25fd3JhcHBlchIfLmdvb2dsZS5wcm90b2J1Zi5NZXNzYWdlT3B0aW9ucxi4jgMgASgJUgtqc29uV3JhcHBlcjo+Cglqc29uX3VuaXQSHy5nb29nbGUucHJvdG9idWYuTWVzc2FnZU9wdGlvbnMYuY4DIAEoCFIIanNvblVuaXQ6PAoIanNvbl90YWcSHy5nb29nbGUucHJvdG9idWYuTWVzc2FnZU9wdGlvbnMYu44DIAEoCVIHanNvblRhZzpECgxqc29uX2NvbnRlbnQSHy5nb29nbGUucHJvdG9idWYuTWVzc2FnZU9wdGlvbnMYvI4DIAEoCVILanNvbkNvbnRlbnQ6RgoNanNvbl91bnRhZ2dlZBIfLmdvb2dsZS5wcm90b2J1Zi5NZXNzYWdlT3B0aW9ucxi+jgMgASgIUgxqc29uVW50YWdnZWQ6RAoNanNvbl9yZXF1aXJlZBIdLmdvb2dsZS5wcm90b2J1Zi5GaWVsZE9wdGlvbnMYwo4DIAEoCFIManNvblJlcXVpcmVkOkQKDWpzb25fbnVsbGFibGUSHS5nb29nbGUucHJvdG9idWYuRmllbGRPcHRpb25zGMOOAyABKAhSDGpzb25OdWxsYWJsZTpCCgxqc29uX2RlZmF1bHQSHS5nb29nbGUucHJvdG9idWYuRmllbGRPcHRpb25zGMSOAyABKAhSC2pzb25EZWZhdWx0OkcKD2pzb25fb21pdF9lbXB0eRIdLmdvb2dsZS5wcm90b2J1Zi5GaWVsZE9wdGlvbnMYxY4DIAEoCFINanNvbk9taXRFbXB0eTpFCg5qc29uX29taXRfbm9uZRIdLmdvb2dsZS5wcm90b2J1Zi5GaWVsZE9wdGlvbnMYxo4DIAEoCFIManNvbk9taXROb25lOkIKDGpzb25fbGl0ZXJhbBIdLmdvb2dsZS5wcm90b2J1Zi5GaWVsZE9wdGlvbnMYx44DIAEoCVILanNvbkxpdGVyYWw6QgoManNvbl9mbGF0dGVuEh0uZ29vZ2xlLnByb3RvYnVmLkZpZWxkT3B0aW9ucxjIjgMgASgIUgtqc29uRmxhdHRlbjpJCg5qc29uX2VudW1fbmFtZRIhLmdvb2dsZS5wcm90b2J1Zi5FbnVtVmFsdWVPcHRpb25zGMyOAyABKAlSDGpzb25FbnVtTmFtZTp2ChJjb25uZWN0aW9uX2JhY2tvZmYSHy5nb29nbGUucHJvdG9idWYuU2VydmljZU9wdGlvbnMY1o4DIAEoCzIkLnJlbGVhc2guY2xpZW50LnYxLkNvbm5lY3Rpb25CYWNrb2ZmUhFjb25uZWN0aW9uQmFja29mZg",
+		"ChRjbGllbnRfb3B0aW9ucy5wcm90bxIRcmVsZWFzaC5jbGllbnQudjEigwEKEUNvbm5lY3Rpb25CYWNrb2ZmEhoKEmluaXRpYWxfYmFja29mZl9tcxgBIAEoDRISCgptdWx0aXBsaWVyGAIgASgCEg4KBmppdHRlchgDIAEoAhIWCg5tYXhfYmFja29mZl9tcxgEIAEoDRIWCg5yZXNldF9hZnRlcl9tcxgFIAEoDSq0AQoTUmVjb25uZWN0U3RhdHVzQ29kZRIlCiFSRUNPTk5FQ1RfU1RBVFVTX0NPREVfVU5TUEVDSUZJRUQQABIsCihSRUNPTk5FQ1RfU1RBVFVTX0NPREVfUkVTT1VSQ0VfRVhIQVVTVEVEEAgSIQodUkVDT05ORUNUX1NUQVRVU19DT0RFX0FCT1JURUQQChIlCiFSRUNPTk5FQ1RfU1RBVFVTX0NPREVfVU5BVkFJTEFCTEUQDjpECgxqc29uX3dyYXBwZXISHy5nb29nbGUucHJvdG9idWYuTWVzc2FnZU9wdGlvbnMYuI4DIAEoCVILanNvbldyYXBwZXI6PgoJanNvbl91bml0Eh8uZ29vZ2xlLnByb3RvYnVmLk1lc3NhZ2VPcHRpb25zGLmOAyABKAhSCGpzb25Vbml0OjwKCGpzb25fdGFnEh8uZ29vZ2xlLnByb3RvYnVmLk1lc3NhZ2VPcHRpb25zGLuOAyABKAlSB2pzb25UYWc6RAoManNvbl9jb250ZW50Eh8uZ29vZ2xlLnByb3RvYnVmLk1lc3NhZ2VPcHRpb25zGLyOAyABKAlSC2pzb25Db250ZW50OkYKDWpzb25fdW50YWdnZWQSHy5nb29nbGUucHJvdG9idWYuTWVzc2FnZU9wdGlvbnMYvo4DIAEoCFIManNvblVudGFnZ2VkOkQKDWpzb25fcmVxdWlyZWQSHS5nb29nbGUucHJvdG9idWYuRmllbGRPcHRpb25zGMKOAyABKAhSDGpzb25SZXF1aXJlZDpECg1qc29uX251bGxhYmxlEh0uZ29vZ2xlLnByb3RvYnVmLkZpZWxkT3B0aW9ucxjDjgMgASgIUgxqc29uTnVsbGFibGU6QgoManNvbl9kZWZhdWx0Eh0uZ29vZ2xlLnByb3RvYnVmLkZpZWxkT3B0aW9ucxjEjgMgASgIUgtqc29uRGVmYXVsdDpHCg9qc29uX29taXRfZW1wdHkSHS5nb29nbGUucHJvdG9idWYuRmllbGRPcHRpb25zGMWOAyABKAhSDWpzb25PbWl0RW1wdHk6RQoOanNvbl9vbWl0X25vbmUSHS5nb29nbGUucHJvdG9idWYuRmllbGRPcHRpb25zGMaOAyABKAhSDGpzb25PbWl0Tm9uZTpCCgxqc29uX2xpdGVyYWwSHS5nb29nbGUucHJvdG9idWYuRmllbGRPcHRpb25zGMeOAyABKAlSC2pzb25MaXRlcmFsOkIKDGpzb25fZmxhdHRlbhIdLmdvb2dsZS5wcm90b2J1Zi5GaWVsZE9wdGlvbnMYyI4DIAEoCFILanNvbkZsYXR0ZW46SQoOanNvbl9lbnVtX25hbWUSIS5nb29nbGUucHJvdG9idWYuRW51bVZhbHVlT3B0aW9ucxjMjgMgASgJUgxqc29uRW51bU5hbWU6dgoSY29ubmVjdGlvbl9iYWNrb2ZmEh8uZ29vZ2xlLnByb3RvYnVmLlNlcnZpY2VPcHRpb25zGNaOAyABKAsyJC5yZWxlYXNoLmNsaWVudC52MS5Db25uZWN0aW9uQmFja29mZlIRY29ubmVjdGlvbkJhY2tvZmY6fQoVcmVjb25uZWN0X3N0YXR1c19jb2RlEh8uZ29vZ2xlLnByb3RvYnVmLlNlcnZpY2VPcHRpb25zGNeOAyADKA4yJi5yZWxlYXNoLmNsaWVudC52MS5SZWNvbm5lY3RTdGF0dXNDb2RlUhNyZWNvbm5lY3RTdGF0dXNDb2RlOlgKF3N0YXRlX3N0cmVhbV9zaWxlbmNlX21zEh8uZ29vZ2xlLnByb3RvYnVmLlNlcnZpY2VPcHRpb25zGNiOAyABKA1SFHN0YXRlU3RyZWFtU2lsZW5jZU1zOk8KEmRlZmF1bHRfdGltZW91dF9tcxIfLmdvb2dsZS5wcm90b2J1Zi5TZXJ2aWNlT3B0aW9ucxjZjgMgASgNUhBkZWZhdWx0VGltZW91dE1z",
 		[file_google_protobuf_descriptor],
 	);
 
@@ -51,6 +57,11 @@ export type ConnectionBackoff =
 		 * @generated from field: optional uint32 max_backoff_ms = 4;
 		 */
 		maxBackoffMs: number;
+
+		/**
+		 * @generated from field: optional uint32 reset_after_ms = 5;
+		 */
+		resetAfterMs: number;
 	};
 
 /**
@@ -60,6 +71,38 @@ export type ConnectionBackoff =
 export const ConnectionBackoffSchema: GenMessage<ConnectionBackoff> =
 	/*@__PURE__*/
 	messageDesc(file_client_options, 0);
+
+/**
+ * @generated from enum releash.client.v1.ReconnectStatusCode
+ */
+export enum ReconnectStatusCode {
+	/**
+	 * @generated from enum value: RECONNECT_STATUS_CODE_UNSPECIFIED = 0;
+	 */
+	UNSPECIFIED = 0,
+
+	/**
+	 * @generated from enum value: RECONNECT_STATUS_CODE_RESOURCE_EXHAUSTED = 8;
+	 */
+	RESOURCE_EXHAUSTED = 8,
+
+	/**
+	 * @generated from enum value: RECONNECT_STATUS_CODE_ABORTED = 10;
+	 */
+	ABORTED = 10,
+
+	/**
+	 * @generated from enum value: RECONNECT_STATUS_CODE_UNAVAILABLE = 14;
+	 */
+	UNAVAILABLE = 14,
+}
+
+/**
+ * Describes the enum releash.client.v1.ReconnectStatusCode.
+ */
+export const ReconnectStatusCodeSchema: GenEnum<ReconnectStatusCode> =
+	/*@__PURE__*/
+	enumDesc(file_client_options, 0);
 
 /**
  * @generated from extension: optional string json_wrapper = 51000;
@@ -159,3 +202,25 @@ export const connection_backoff: GenExtension<
 	ServiceOptions,
 	ConnectionBackoff
 > = /*@__PURE__*/ extDesc(file_client_options, 13);
+
+/**
+ * @generated from extension: repeated releash.client.v1.ReconnectStatusCode reconnect_status_code = 51031;
+ */
+export const reconnect_status_code: GenExtension<
+	ServiceOptions,
+	ReconnectStatusCode[]
+> = /*@__PURE__*/ extDesc(file_client_options, 14);
+
+/**
+ * @generated from extension: optional uint32 state_stream_silence_ms = 51032;
+ */
+export const state_stream_silence_ms: GenExtension<ServiceOptions, number> =
+	/*@__PURE__*/
+	extDesc(file_client_options, 15);
+
+/**
+ * @generated from extension: optional uint32 default_timeout_ms = 51033;
+ */
+export const default_timeout_ms: GenExtension<ServiceOptions, number> =
+	/*@__PURE__*/
+	extDesc(file_client_options, 16);

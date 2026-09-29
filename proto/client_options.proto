@@ -27,7 +27,18 @@ message ConnectionBackoff {
   optional float multiplier = 2;
   optional float jitter = 3;
   optional uint32 max_backoff_ms = 4;
+  optional uint32 reset_after_ms = 5;
+}
+
+enum ReconnectStatusCode {
+  RECONNECT_STATUS_CODE_UNSPECIFIED = 0;
+  RECONNECT_STATUS_CODE_RESOURCE_EXHAUSTED = 8;
+  RECONNECT_STATUS_CODE_ABORTED = 10;
+  RECONNECT_STATUS_CODE_UNAVAILABLE = 14;
 }
 extend google.protobuf.ServiceOptions {
   optional ConnectionBackoff connection_backoff = 51030;
+  repeated ReconnectStatusCode reconnect_status_code = 51031;
+  optional uint32 state_stream_silence_ms = 51032;
+  optional uint32 default_timeout_ms = 51033;
 }
