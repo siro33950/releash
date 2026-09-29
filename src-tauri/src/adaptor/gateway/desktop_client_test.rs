@@ -692,6 +692,9 @@ async fn test_長時間続いたstreamの後は初回の待ちへ戻る() {
             }
         }),
     );
+    let listener = axum::serve::ListenerExt::tap_io(listener, |stream| {
+        stream.set_nodelay(true).unwrap();
+    });
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let client = start(&endpoint);
     // When
