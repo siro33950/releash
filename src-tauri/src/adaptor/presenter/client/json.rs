@@ -1,29 +1,16 @@
-use std::sync::LazyLock;
-
 use prost::Message;
 #[cfg(any(test, all(debug_assertions, feature = "desktop")))]
 use prost_reflect::MessageDescriptor;
-use prost_reflect::{DescriptorPool, DynamicMessage, FieldDescriptor, Kind, ReflectMessage, Value};
+use prost_reflect::{DynamicMessage, FieldDescriptor, Kind, ReflectMessage, Value};
 use serde_json::{Map, Value as Json};
 
-static POOL: LazyLock<DescriptorPool> = LazyLock::new(|| {
-    DescriptorPool::decode(
-        include_bytes!(concat!(env!("OUT_DIR"), "/client_descriptor.bin")).as_slice(),
-    )
-    .expect("client descriptors")
-});
-
-fn option(options: DynamicMessage, name: &str) -> Value {
-    let extension = POOL
-        .get_extension_by_name(&format!("releash.client.v1.{name}"))
-        .expect("protocol option");
-    options.get_extension(&extension).into_owned()
-}
 fn flag(options: DynamicMessage, name: &str) -> bool {
-    option(options, name).as_bool().unwrap_or(false)
+    super::descriptor::option(&options, name)
+        .as_bool()
+        .unwrap_or(false)
 }
 fn label(options: DynamicMessage, name: &str) -> String {
-    option(options, name)
+    super::descriptor::option(&options, name)
         .as_str()
         .unwrap_or_default()
         .to_string()
@@ -31,7 +18,7 @@ fn label(options: DynamicMessage, name: &str) -> String {
 
 #[cfg(any(test, all(debug_assertions, feature = "desktop")))]
 pub(super) fn to_message<M: Message + Default>(name: &str, value: Json) -> Result<M, String> {
-    let descriptor = POOL
+    let descriptor = super::descriptor::pool()
         .get_message_by_name(name)
         .ok_or_else(|| format!("Unknown message {name}"))?;
     to_dynamic(descriptor, value)?
@@ -40,7 +27,7 @@ pub(super) fn to_message<M: Message + Default>(name: &str, value: Json) -> Resul
 }
 
 pub(crate) fn from_message<M: Message>(name: &str, value: &M) -> Result<Json, String> {
-    let descriptor = POOL
+    let descriptor = super::descriptor::pool()
         .get_message_by_name(name)
         .ok_or_else(|| format!("Unknown message {name}"))?;
     let mut dynamic = DynamicMessage::new(descriptor);

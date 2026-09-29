@@ -3,6 +3,21 @@ use crate::domain::daemon_supervision::DaemonExit;
 use crate::usecase::test_helpers::{restore_desktop, tick, FakeDaemon};
 use std::sync::atomic::Ordering;
 
+#[test]
+fn test_監督状態_接続失敗の分類を画面用のstageへ写す() {
+    // Given
+    let mut supervision = DaemonSupervision::new(0);
+    supervision.connection_failed(crate::domain::daemon_supervision::Failure {
+        stage: FailureStage::Connection(crate::domain::failure::TechnicalFailureNature::TimedOut),
+        reason: "State stream was silent".into(),
+    });
+    // When
+    let status = snapshot(&supervision);
+    // Then
+    assert_eq!(status.stage, Some("backend_connection_timed_out"));
+    assert_eq!(status.reason.as_deref(), Some("State stream was silent"));
+}
+
 #[tokio::test(start_paused = true)]
 async fn test_起動監督_期限直前の接続は次の巡回が期限後でも停止せず復元できる() {
     // Given

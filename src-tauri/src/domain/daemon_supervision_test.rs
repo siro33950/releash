@@ -526,23 +526,53 @@ fn test_生存判定_連続失敗が閾値に達したときだけ切断とす�
     let mut liveness = DaemonLiveness::default();
     // When / Then
     assert!(!liveness.failed());
-    assert!(!liveness.failed());
-    assert_eq!(liveness.consecutive_failures(), 2);
     assert!(liveness.failed());
-    assert_eq!(liveness.consecutive_failures(), 3);
 }
 
 #[test]
-fn test_生存判定_成功で連続失敗が消え失敗が続いていたかを返す() {
+fn test_生存判定_成功で連続失敗が消える() {
     // Given
     let mut liveness = DaemonLiveness::default();
-    assert!(!liveness.succeeded());
-    liveness.failed();
+    liveness.succeeded();
     liveness.failed();
     // When
-    let recovered = liveness.succeeded();
+    liveness.succeeded();
     // Then
-    assert!(recovered);
-    assert_eq!(liveness.consecutive_failures(), 0);
     assert!(!liveness.failed());
+}
+
+#[test]
+fn test_起動期限超過_最後の接続失敗の分類を保持する() {
+    // Given
+    let mut model = DaemonSupervision::new(0);
+    let failure = Failure {
+        stage: FailureStage::Connection(crate::domain::failure::TechnicalFailureNature::TimedOut),
+        reason: "State stream was silent".into(),
+    };
+    // When
+    let interruption = model
+        .startup_interruption(STARTUP_TIMEOUT_MS, Some(failure.clone()))
+        .unwrap();
+    model.startup_terminated(interruption, STARTUP_TIMEOUT_MS);
+    // Then
+    assert_eq!(model.failure(), Some(&failure));
+    assert_eq!(model.phase(), Phase::Backoff);
+}
+
+#[test]
+fn test_接続監督_分類付きの失敗を保持し再接続で解消する() {
+    // Given
+    let mut supervision = DaemonSupervision::new(0);
+    let failure = Failure {
+        stage: FailureStage::Connection(crate::domain::failure::TechnicalFailureNature::TimedOut),
+        reason: "State stream was silent".into(),
+    };
+    // When
+    supervision.connection_failed(failure.clone());
+    // Then
+    assert_eq!(supervision.failure(), Some(&failure));
+    // When
+    assert!(supervision.connected(1));
+    // Then
+    assert_eq!(supervision.failure(), None);
 }

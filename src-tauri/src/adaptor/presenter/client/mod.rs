@@ -1,4 +1,6 @@
 mod conversions;
+#[cfg(any(test, feature = "desktop"))]
+pub(crate) mod descriptor;
 mod errors;
 pub(crate) fn value<T, U: TryFrom<T>>(value: T) -> Result<U, CommandFailure>
 where

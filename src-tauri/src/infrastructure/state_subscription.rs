@@ -1,7 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
-use futures_util::{Stream, StreamExt};
+use futures_util::{FutureExt, Stream, StreamExt};
 use parking_lot::Mutex;
 use tokio::sync::Notify;
 
@@ -153,23 +153,28 @@ impl<T: Clone + PartialEq + Send + Sync + 'static> StateSubscriptionRuntime<T> {
                     for (raw, clients) in requests {
                         refresh(raw, clients);
                     }
-                    if let Some((target, event)) = runtime.state.lock().next(&id) {
-                        return Some((
-                            StateSubscriptionEvent::Item(target, event),
-                            (id, permit, timer, runtime.clone(), refresh),
-                        ));
-                    }
-                    tokio::select! {
-                        _ = changed => {},
-                        _ = timer.tick() => {
-                            if !runtime.state.lock().bookmark(&id) {
-                                return Some((
-                                    StateSubscriptionEvent::Bookmark,
-                                    (id, permit, timer, runtime.clone(), refresh),
-                                ));
-                            }
+                    let stream_bookmark = timer.tick().now_or_never().is_some()
+                        && !runtime.state.lock().bookmark(&id);
+                    if !stream_bookmark {
+                        if let Some((target, event)) = runtime.state.lock().next(&id) {
+                            return Some((
+                                StateSubscriptionEvent::Item(target, event),
+                                (id, permit, timer, runtime.clone(), refresh),
+                            ));
+                        }
+                        tokio::select! {
+                            _ = changed => continue,
+                            _ = timer.tick() => {
+                                if runtime.state.lock().bookmark(&id) {
+                                    continue;
+                                }
+                            },
                         }
                     }
+                    return Some((
+                        StateSubscriptionEvent::Bookmark,
+                        (id, permit, timer, runtime.clone(), refresh),
+                    ));
                 }
             },
         );
@@ -804,16 +809,18 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
         let Some(client) = self.clients.get_mut(client) else {
             return false;
         };
+        let mut queued = false;
         for (id, subscription) in &mut client.subscriptions {
             if subscription.pending.is_empty() && !subscription.overflowed {
                 if let Some(target) = self.targets.get(id) {
                     subscription
                         .pending
                         .push_back(Event::Bookmark(target.version.clone()));
+                    queued = true;
                 }
             }
         }
-        !client.subscriptions.is_empty()
+        queued
     }
 
     pub fn next(&mut self, client: &str) -> Option<(String, Event<T>)> {

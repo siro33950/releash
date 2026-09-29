@@ -1,26 +1,19 @@
 use super::*;
-use crate::adaptor::gateway::failure_records::FailureRecordStore;
 use futures_util::StreamExt;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-const KEY_TARGET: &str = "launch";
-
-fn start(endpoint: &ClientConnectionDto) -> (DesktopClient, Arc<FailureRecordStore>) {
-    let store = Arc::new(FailureRecordStore::default());
-    let client = DesktopClient::start(
+fn start(endpoint: &ClientConnectionDto) -> DesktopClient {
+    DesktopClient::start(
         super::client(endpoint).unwrap(),
         super::stream_client(endpoint).unwrap(),
-        FailureKey::new("daemon_liveness", KEY_TARGET),
-        Arc::new(FailureRecordingUsecase::new(store.clone(), None)),
         Arc::new(RetryLimiter::deterministic()),
-    );
-    (client, store)
+    )
 }
 
-async fn wait_for_disconnect(client: &DesktopClient, limit: std::time::Duration) {
+async fn wait_for_disconnect(client: &DesktopClient, limit: Duration) {
     tokio::time::timeout(limit, async {
         while client.connected() {
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await
@@ -37,32 +30,331 @@ fn envelope(event: rpc::StateSubscriptionEvent) -> Vec<u8> {
     bytes
 }
 
-fn ready_event() -> rpc::StateSubscriptionEvent {
+fn event(event: wire::state_subscription_event::Event) -> rpc::StateSubscriptionEvent {
     to_rpc(&wire::StateSubscriptionEvent {
-        event: Some(wire::state_subscription_event::Event::Ready(wire::Unit {})),
+        event: Some(event),
         ..Default::default()
     })
     .unwrap()
 }
 
 async fn stream_server(
-    events: Vec<rpc::StateSubscriptionEvent>,
+    mut frames: Vec<Vec<u8>>,
     hold: bool,
-) -> (ClientConnectionDto, tokio::task::JoinHandle<()>) {
+) -> (
+    ClientConnectionDto,
+    tokio::task::JoinHandle<()>,
+    Arc<AtomicUsize>,
+    Arc<AtomicUsize>,
+) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = ClientConnectionDto {
         url: format!("http://{}", listener.local_addr().unwrap()),
         token: "client".into(),
     };
-    let mut frames: Vec<Vec<u8>> = events.into_iter().map(envelope).collect();
     if !hold {
         frames.push(vec![2, 0, 0, 0, 2, b'{', b'}']);
     }
+    let opens = Arc::new(AtomicUsize::new(0));
+    let requests = opens.clone();
+    let starts = Arc::new(AtomicUsize::new(0));
+    let subscriptions = starts.clone();
+    let router = axum::Router::new()
+        .route(
+            "/releash.client.v1.ClientService/OpenStateStream",
+            axum::routing::post(move || {
+                let frames = frames.clone();
+                let requests = requests.clone();
+                async move {
+                    requests.fetch_add(1, Ordering::SeqCst);
+                    let body = futures_util::stream::iter(
+                        frames.into_iter().map(Ok::<_, std::convert::Infallible>),
+                    );
+                    let body: std::pin::Pin<
+                        Box<
+                            dyn futures_util::Stream<
+                                    Item = Result<Vec<u8>, std::convert::Infallible>,
+                                > + Send,
+                        >,
+                    > = if hold {
+                        Box::pin(body.chain(futures_util::stream::pending()))
+                    } else {
+                        Box::pin(body)
+                    };
+                    (
+                        [("content-type", "application/connect+proto")],
+                        axum::body::Body::from_stream(body),
+                    )
+                }
+            }),
+        )
+        .route(
+            "/releash.client.v1.ClientService/StartStateSubscription",
+            axum::routing::post(move || {
+                let subscriptions = subscriptions.clone();
+                async move {
+                    subscriptions.fetch_add(1, Ordering::SeqCst);
+                    use prost::Message;
+                    (
+                        [("content-type", "application/proto")],
+                        wire::Unit {}.encode_to_vec(),
+                    )
+                }
+            }),
+        );
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    (endpoint, server, opens, starts)
+}
+
+#[test]
+fn test_接続規則_protoの値を読む() {
+    // Given / When / Then
+    assert_eq!(POLICY.silence, Duration::from_secs(20));
+    assert_eq!(POLICY.default_timeout, Duration::from_secs(120));
+    assert_eq!(POLICY.reset_after, Duration::from_secs(120));
+    assert_eq!(POLICY.backoff.delay(1, 1.0), Duration::from_secs(1));
+    assert!((POLICY.backoff.delay(2, 1.0).as_secs_f64() - 1.6).abs() < 0.0001);
+    assert_eq!(POLICY.backoff.delay(100, 1.0), Duration::from_secs(120));
+    assert!((POLICY.jitter - 0.2).abs() < 0.0001);
+    assert_eq!(POLICY.reconnect_codes, [14, 10, 8]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_接続規則_protoの待ちを共通の計算で適用する() {
+    // Given
+    let limiter = RetryLimiter::deterministic();
+    let start = tokio::time::Instant::now();
+    // When
+    limiter
+        .wait_with_spread(POLICY.backoff, 1, POLICY.jitter)
+        .await;
+    // Then
+    assert_eq!(start.elapsed(), Duration::from_secs(1));
+    // When
+    limiter
+        .wait_with_spread(POLICY.backoff, 2, POLICY.jitter)
+        .await;
+    // Then
+    assert!(
+        (start.elapsed().as_secs_f64() - 2.6).abs() < 0.002,
+        "{:?}",
+        start.elapsed()
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_単発呼び出し_期限指定が無ければprotoの既定期限で切れる() {
+    // Given
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = ClientConnectionDto {
+        url: format!("http://{}", listener.local_addr().unwrap()),
+        token: "client".into(),
+    };
+    let received = Arc::new(AtomicUsize::new(0));
+    let requests = received.clone();
+    let router = axum::Router::new().route(
+        "/releash.client.v1.ClientService/GetServerInfo",
+        axum::routing::post(move || {
+            let requests = requests.clone();
+            async move {
+                requests.fetch_add(1, Ordering::SeqCst);
+                std::future::pending::<axum::http::StatusCode>().await
+            }
+        }),
+    );
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let call = tokio::spawn(async move {
+        client(&endpoint)
+            .unwrap()
+            .get_server_info(rpc::Unit::default())
+            .await
+    });
+    for _ in 0..1000 {
+        if received.load(Ordering::SeqCst) > 0 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(received.load(Ordering::SeqCst), 1);
+    // When
+    tokio::time::advance(Duration::from_secs(119)).await;
+    // Then
+    assert!(!call.is_finished());
+    // When
+    tokio::time::advance(Duration::from_secs(1)).await;
+    // Then
+    let error = call.await.unwrap().unwrap_err();
+    assert_eq!(error.code, connectrpc::ErrorCode::DeadlineExceeded);
+    server.abort();
+}
+
+#[tokio::test]
+async fn test_生存確認_接続拒否が2回続くと切断する() {
+    // Given
+    let endpoint = ClientConnectionDto {
+        url: "http://127.0.0.1:1".into(),
+        token: "client".into(),
+    };
+    let client = start(&endpoint);
+    // When
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    // Then
+    assert!(client.connected());
+    wait_for_disconnect(&client, Duration::from_secs(5)).await;
+    assert_eq!(
+        client.failure().unwrap().nature,
+        TechnicalFailureNature::Transient
+    );
+}
+
+#[tokio::test]
+async fn test_生存確認_再接続対象外の開始失敗も2回続けば切断する() {
+    // Given
+    let (endpoint, server, requests) = error_server(connectrpc::ConnectError::new(
+        connectrpc::ErrorCode::InvalidArgument,
+        "invalid stream request",
+    ))
+    .await;
+    let client = start(&endpoint);
+    // When
+    wait_for_disconnect(&client, Duration::from_secs(5)).await;
+    // Then
+    assert_eq!(requests.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        client.failure().unwrap().nature,
+        TechnicalFailureNature::Other
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn test_生存確認_再接続対象外の受信失敗も2回続けば切断する() {
+    // Given
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = ClientConnectionDto {
+        url: format!("http://{}", listener.local_addr().unwrap()),
+        token: "client".into(),
+    };
+    let opens = Arc::new(AtomicUsize::new(0));
+    let requests = opens.clone();
     let router = axum::Router::new().route(
         "/releash.client.v1.ClientService/OpenStateStream",
         axum::routing::post(move || {
-            let frames = frames.clone();
+            let requests = requests.clone();
             async move {
+                requests.fetch_add(1, Ordering::SeqCst);
+                (
+                    [("content-type", "application/connect+proto")],
+                    axum::body::Body::empty(),
+                )
+            }
+        }),
+    );
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = start(&endpoint);
+    // When
+    wait_for_disconnect(&client, Duration::from_secs(5)).await;
+    // Then
+    assert_eq!(opens.load(Ordering::SeqCst), 2);
+    assert!(client.failure().is_some());
+    server.abort();
+}
+
+#[tokio::test]
+async fn test_生存確認_stream終了が2回続くと切断する() {
+    // Given
+    let (endpoint, server, opens, _) = stream_server(vec![], false).await;
+    let client = start(&endpoint);
+    // When
+    wait_for_disconnect(&client, Duration::from_secs(5)).await;
+    // Then
+    assert_eq!(opens.load(Ordering::SeqCst), 2);
+    assert_eq!(client.failure().unwrap().message, "State stream ended");
+    server.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_生存確認_無音が20秒を超えると再接続し2回目で切断する() {
+    // Given
+    let (endpoint, server, opens, _) = stream_server(vec![], true).await;
+    let client = start(&endpoint);
+    // When
+    wait_for_disconnect(&client, Duration::from_secs(50)).await;
+    // Then
+    assert_eq!(opens.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        client.failure().unwrap().nature,
+        TechnicalFailureNature::TimedOut
+    );
+    server.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_生存確認_変更が続いてもbookmarkが無ければ無音と判定する() {
+    // Given
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = ClientConnectionDto {
+        url: format!("http://{}", listener.local_addr().unwrap()),
+        token: "client".into(),
+    };
+    let router = axum::Router::new().route(
+        "/releash.client.v1.ClientService/OpenStateStream",
+        axum::routing::post(|| async {
+            let body = futures_util::stream::unfold((), |_| async {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                Some((
+                    Ok::<_, std::convert::Infallible>(envelope(event(
+                        wire::state_subscription_event::Event::Change(wire::StateChange {
+                            delta: false,
+                            payload: None,
+                        }),
+                    ))),
+                    (),
+                ))
+            });
+            (
+                [("content-type", "application/connect+proto")],
+                axum::body::Body::from_stream(body),
+            )
+        }),
+    );
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = start(&endpoint);
+    // When
+    wait_for_disconnect(&client, Duration::from_secs(50)).await;
+    // Then
+    assert_eq!(
+        client.failure().unwrap().nature,
+        TechnicalFailureNature::TimedOut
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn test_生存確認_bookmarkが届くと連続失敗を消す() {
+    // Given
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = ClientConnectionDto {
+        url: format!("http://{}", listener.local_addr().unwrap()),
+        token: "client".into(),
+    };
+    let opens = Arc::new(AtomicUsize::new(0));
+    let count = opens.clone();
+    let router = axum::Router::new().route(
+        "/releash.client.v1.ClientService/OpenStateStream",
+        axum::routing::post(move || {
+            let attempt = count.fetch_add(1, Ordering::SeqCst);
+            async move {
+                let mut frames = if attempt == 1 {
+                    vec![envelope(event(
+                        wire::state_subscription_event::Event::Bookmark(wire::Unit {}),
+                    ))]
+                } else {
+                    vec![]
+                };
+                if attempt < 2 {
+                    frames.push(vec![2, 0, 0, 0, 2, b'{', b'}']);
+                }
                 let body = futures_util::stream::iter(
                     frames.into_iter().map(Ok::<_, std::convert::Infallible>),
                 );
@@ -71,7 +363,7 @@ async fn stream_server(
                         dyn futures_util::Stream<Item = Result<Vec<u8>, std::convert::Infallible>>
                             + Send,
                     >,
-                > = if hold {
+                > = if attempt >= 2 {
                     Box::pin(body.chain(futures_util::stream::pending()))
                 } else {
                     Box::pin(body)
@@ -84,135 +376,373 @@ async fn stream_server(
         }),
     );
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    (endpoint, server)
+    let client = start(&endpoint);
+    // When
+    tokio::time::timeout(Duration::from_secs(6), async {
+        while opens.load(Ordering::SeqCst) < 3 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    // Then
+    assert!(client.connected());
+    assert_eq!(client.failure(), None);
+    server.abort();
 }
 
 #[tokio::test]
-async fn test_生存確認_接続拒否が3回続いたときだけ接続を失い分類を記録する() {
+async fn test_設定受信_生存確認と同じstreamで受け取る() {
     // Given
-    let endpoint = ClientConnectionDto {
+    let settings = wire::DesktopSettings {
+        close_to_tray: Some(true),
+        start_minimized: Some(false),
+        crash_reporting: Some(false),
+        performance_telemetry: Some(false),
+        auto_launch: Some(true),
+    };
+    let (endpoint, server, opens, starts) = stream_server(
+        vec![
+            envelope(event(wire::state_subscription_event::Event::Ready(
+                wire::Unit {},
+            ))),
+            envelope(event(wire::state_subscription_event::Event::Snapshot(
+                wire::StatePayload {
+                    value: Some(wire::state_payload::Value::DesktopSettings(settings)),
+                },
+            ))),
+        ],
+        true,
+    )
+    .await;
+    let client = start(&endpoint);
+    // When
+    let received = tokio::time::timeout(Duration::from_secs(2), client.first_settings())
+        .await
+        .unwrap()
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while starts.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    // Then
+    assert!(received.close_to_tray);
+    assert_eq!(opens.load(Ordering::SeqCst), 1);
+    assert_eq!(starts.load(Ordering::SeqCst), 1);
+    assert!(client.connected());
+    server.abort();
+}
+
+#[test]
+fn test_購読開始_重複したreadyで開始要求が増えない() {
+    // Given
+    let client = super::client(&ClientConnectionDto {
         url: "http://127.0.0.1:1".into(),
         token: "client".into(),
+    })
+    .unwrap();
+    let mut subscription = SettingsSubscription::default();
+    subscription.request_if_needed(&client, "client-id");
+    let requested = subscription.has_pending();
+    subscription.pending = None;
+    // When
+    subscription.request_if_needed(&client, "client-id");
+    // Then
+    assert!(requested);
+    assert!(!subscription.has_pending());
+}
+
+async fn subscription_error_server(
+    code: connectrpc::ErrorCode,
+    status: axum::http::StatusCode,
+) -> (
+    ClientConnectionDto,
+    tokio::task::JoinHandle<()>,
+    Arc<AtomicUsize>,
+    Arc<AtomicUsize>,
+) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = ClientConnectionDto {
+        url: format!("http://{}", listener.local_addr().unwrap()),
+        token: "client".into(),
     };
-    let (client, store) = start(&endpoint);
-    // When
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    // Then
-    assert!(client.connected());
-    assert_eq!(client.failure(), None);
-    let records = store.records(KEY_TARGET);
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0].record.count, 1);
-    // When
-    wait_for_disconnect(&client, std::time::Duration::from_secs(10)).await;
-    // Then
-    let failure = client.failure().unwrap();
-    assert_eq!(
-        failure.kind,
-        Failure::Technical(TechnicalFailureNature::Transient)
-    );
-    let records = store.records(KEY_TARGET);
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0].record.count, 3);
-    assert_eq!(records[0].record.operation, "daemon_liveness");
-    assert_eq!(records[0].record.kind, failure.kind);
-    assert!(records[0].record.active);
+    let opens = Arc::new(AtomicUsize::new(0));
+    let requests = opens.clone();
+    let starts = Arc::new(AtomicUsize::new(0));
+    let subscriptions = starts.clone();
+    let router = axum::Router::new()
+        .route(
+            "/releash.client.v1.ClientService/OpenStateStream",
+            axum::routing::post(move || {
+                let requests = requests.clone();
+                async move {
+                    requests.fetch_add(1, Ordering::SeqCst);
+                    let body = futures_util::stream::once(async {
+                        Ok::<_, std::convert::Infallible>(envelope(event(
+                            wire::state_subscription_event::Event::Ready(wire::Unit {}),
+                        )))
+                    })
+                    .chain(futures_util::stream::pending());
+                    (
+                        [("content-type", "application/connect+proto")],
+                        axum::body::Body::from_stream(body),
+                    )
+                }
+            }),
+        )
+        .route(
+            "/releash.client.v1.ClientService/StartStateSubscription",
+            axum::routing::post(move || {
+                let subscriptions = subscriptions.clone();
+                async move {
+                    subscriptions.fetch_add(1, Ordering::SeqCst);
+                    (
+                        status,
+                        axum::Json(connectrpc::ConnectError::new(code, "subscription failed")),
+                    )
+                }
+            }),
+        );
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    (endpoint, server, opens, starts)
 }
 
 #[tokio::test]
-async fn test_生存確認_streamが届く間は接続を維持し記録しない() {
+async fn test_購読開始_再接続対象の失敗を生存失敗に数えない() {
     // Given
-    let (endpoint, server) = stream_server(vec![ready_event()], true).await;
-    let (client, store) = start(&endpoint);
+    let (endpoint, server, opens, starts) = subscription_error_server(
+        connectrpc::ErrorCode::Unavailable,
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+    )
+    .await;
+    let client = start(&endpoint);
     // When
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    tokio::time::timeout(Duration::from_secs(6), async {
+        while starts.load(Ordering::SeqCst) < 3 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
     // Then
     assert!(client.connected());
+    assert_eq!(opens.load(Ordering::SeqCst), 3);
     assert_eq!(client.failure(), None);
-    assert!(store.records(KEY_TARGET).is_empty());
-    server.abort();
-}
-
-#[tokio::test]
-async fn test_生存確認_streamの終了が3回続くと一時的な失敗として接続を失う() {
-    // Given
-    let (endpoint, server) = stream_server(vec![], false).await;
-    let (client, store) = start(&endpoint);
-    // When
-    wait_for_disconnect(&client, std::time::Duration::from_secs(10)).await;
-    // Then
-    let failure = client.failure().unwrap();
-    assert_eq!(
-        failure.kind,
-        Failure::Technical(TechnicalFailureNature::Transient)
-    );
-    assert_eq!(failure.message, "State stream ended");
-    let records = store.records(KEY_TARGET);
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0].record.count, 3);
-    server.abort();
-}
-
-#[derive(Default)]
-struct RecordedCalls(parking_lot::Mutex<Vec<&'static str>>);
-
-impl crate::domain::failure::FailureRecordRepository for RecordedCalls {
-    fn record_observed(
-        &self,
-        _key: &FailureKey,
-        _failure: WorkFailure,
-        _requires_attention: bool,
-    ) -> bool {
-        self.0.lock().push("observed");
-        false
-    }
-    fn record_resolved(&self, _key: &FailureKey) -> bool {
-        self.0.lock().push("resolved");
-        false
-    }
-}
-
-#[tokio::test]
-async fn test_生存確認_失敗の後に届けば連続失敗が消え記録を解消する() {
-    // Given
-    let (endpoint, server) = stream_server(vec![ready_event()], false).await;
-    let calls = Arc::new(RecordedCalls::default());
-    let client = DesktopClient::start(
-        super::client(&endpoint).unwrap(),
-        super::stream_client(&endpoint).unwrap(),
-        FailureKey::new("daemon_liveness", KEY_TARGET),
-        Arc::new(FailureRecordingUsecase::new(calls.clone(), None)),
-        Arc::new(RetryLimiter::deterministic()),
-    );
-    // When
-    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-    // Then
-    assert!(client.connected());
-    assert_eq!(client.failure(), None);
-    let calls = calls.0.lock().clone();
-    assert!(calls.len() >= 4, "{calls:?}");
-    assert_eq!(calls[0], "observed");
-    assert_eq!(calls[1], "resolved");
-    assert_eq!(calls[2], "observed");
     server.abort();
 }
 
 #[tokio::test(start_paused = true)]
-async fn test_生存確認_応答が無い期限超過が3回続くと接続を失う() {
+async fn test_購読開始_再接続対象外の失敗でも生存監視を続ける() {
     // Given
-    let (endpoint, server) = stream_server(vec![], true).await;
-    let (client, store) = start(&endpoint);
+    let (endpoint, server, opens, starts) = subscription_error_server(
+        connectrpc::ErrorCode::InvalidArgument,
+        axum::http::StatusCode::BAD_REQUEST,
+    )
+    .await;
+    let client = start(&endpoint);
     // When
-    wait_for_disconnect(&client, std::time::Duration::from_secs(120)).await;
+    wait_for_disconnect(&client, Duration::from_secs(50)).await;
     // Then
-    let failure = client.failure().unwrap();
+    assert_eq!(starts.load(Ordering::SeqCst), 2);
+    assert_eq!(opens.load(Ordering::SeqCst), 2);
     assert_eq!(
-        failure.kind,
-        Failure::Technical(TechnicalFailureNature::TimedOut)
+        client.failure().unwrap().nature,
+        TechnicalFailureNature::TimedOut
     );
-    let records = store.records(KEY_TARGET);
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0].record.count, 3);
+    server.abort();
+}
+
+#[tokio::test]
+async fn test_購読開始_再接続対象外の失敗を初回の設定の失敗として返す() {
+    // Given
+    let (endpoint, server, _, _) = subscription_error_server(
+        connectrpc::ErrorCode::InvalidArgument,
+        axum::http::StatusCode::BAD_REQUEST,
+    )
+    .await;
+    let client = start(&endpoint);
+    // When
+    let failure = tokio::time::timeout(Duration::from_secs(2), client.first_settings())
+        .await
+        .unwrap()
+        .unwrap_err();
+    // Then
+    assert_eq!(failure.nature, TechnicalFailureNature::Other);
+    assert!(failure.message.contains("subscription failed"));
+    assert!(client.connected());
+    server.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_設定変換失敗_生存監視を続ける() {
+    // Given
+    let (endpoint, server, opens, _) = stream_server(
+        vec![envelope(event(
+            wire::state_subscription_event::Event::Snapshot(wire::StatePayload {
+                value: Some(wire::state_payload::Value::DesktopSettings(
+                    wire::DesktopSettings::default(),
+                )),
+            }),
+        ))],
+        true,
+    )
+    .await;
+    let client = start(&endpoint);
+    // When
+    wait_for_disconnect(&client, Duration::from_secs(50)).await;
+    // Then
+    assert_eq!(opens.load(Ordering::SeqCst), 2);
+    assert_eq!(client.current_settings(), None);
+    assert_eq!(
+        client.failure().unwrap().nature,
+        TechnicalFailureNature::TimedOut
+    );
+    server.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_購読開始_応答待ちでも無音でつなぎ直す() {
+    // Given
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = ClientConnectionDto {
+        url: format!("http://{}", listener.local_addr().unwrap()),
+        token: "client".into(),
+    };
+    let opens = Arc::new(AtomicUsize::new(0));
+    let stream_count = opens.clone();
+    let starts = Arc::new(AtomicUsize::new(0));
+    let start_count = starts.clone();
+    let router = axum::Router::new()
+        .route(
+            "/releash.client.v1.ClientService/OpenStateStream",
+            axum::routing::post(move || {
+                let stream_count = stream_count.clone();
+                async move {
+                    stream_count.fetch_add(1, Ordering::SeqCst);
+                    let body = futures_util::stream::once(async {
+                        Ok::<_, std::convert::Infallible>(envelope(event(
+                            wire::state_subscription_event::Event::Ready(wire::Unit {}),
+                        )))
+                    })
+                    .chain(futures_util::stream::pending());
+                    (
+                        [("content-type", "application/connect+proto")],
+                        axum::body::Body::from_stream(body),
+                    )
+                }
+            }),
+        )
+        .route(
+            "/releash.client.v1.ClientService/StartStateSubscription",
+            axum::routing::post(move || {
+                let start_count = start_count.clone();
+                async move {
+                    start_count.fetch_add(1, Ordering::SeqCst);
+                    std::future::pending::<axum::http::StatusCode>().await
+                }
+            }),
+        );
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = start(&endpoint);
+    // When
+    wait_for_disconnect(&client, Duration::from_secs(50)).await;
+    // Then
+    assert_eq!(opens.load(Ordering::SeqCst), 2);
+    assert_eq!(starts.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        client.failure().unwrap().nature,
+        TechnicalFailureNature::TimedOut
+    );
+    server.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_長時間続いたstreamの後は初回の待ちへ戻る() {
+    // Given
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = ClientConnectionDto {
+        url: format!("http://{}", listener.local_addr().unwrap()),
+        token: "client".into(),
+    };
+    let opened = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let attempts = opened.clone();
+    let router = axum::Router::new().route(
+        "/releash.client.v1.ClientService/OpenStateStream",
+        axum::routing::post(move || {
+            let attempt = {
+                let mut opened = attempts.lock();
+                opened.push(tokio::time::Instant::now());
+                opened.len()
+            };
+            async move {
+                let body: std::pin::Pin<
+                    Box<
+                        dyn futures_util::Stream<Item = Result<Vec<u8>, std::convert::Infallible>>
+                            + Send,
+                    >,
+                > = match attempt {
+                    1 => Box::pin(futures_util::stream::iter([Ok(vec![
+                        2, 0, 0, 0, 2, b'{', b'}',
+                    ])])),
+                    2 => Box::pin(
+                        futures_util::stream::unfold(0, |count| async move {
+                            if count >= 13 {
+                                return None;
+                            }
+                            tokio::time::sleep(Duration::from_secs(10)).await;
+                            Some((
+                                Ok(envelope(event(
+                                    wire::state_subscription_event::Event::Bookmark(wire::Unit {}),
+                                ))),
+                                count + 1,
+                            ))
+                        })
+                        .chain(futures_util::stream::once(async {
+                            Ok(vec![2, 0, 0, 0, 2, b'{', b'}'])
+                        })),
+                    ),
+                    _ => Box::pin(futures_util::stream::pending()),
+                };
+                (
+                    [("content-type", "application/connect+proto")],
+                    axum::body::Body::from_stream(body),
+                )
+            }
+        }),
+    );
+    let listener = axum::serve::ListenerExt::tap_io(listener, |stream| {
+        stream.set_nodelay(true).unwrap();
+    });
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = start(&endpoint);
+    // When
+    let connected = tokio::time::timeout(Duration::from_secs(135), async {
+        while opened.lock().len() < 3 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert!(
+        connected.is_ok(),
+        "opens={:?}, connected={}, failure={:?}",
+        *opened.lock(),
+        client.connected(),
+        client.failure()
+    );
+    // Then
+    let opened = opened.lock();
+    assert!(opened[1].duration_since(opened[0]) >= Duration::from_secs(1));
+    assert!(opened[1].duration_since(opened[0]) < Duration::from_millis(1_200));
+    assert!(opened[2].duration_since(opened[1]) >= Duration::from_secs(131));
+    assert!(
+        opened[2].duration_since(opened[1]) < Duration::from_millis(131_200),
+        "{:?}",
+        opened[2].duration_since(opened[1])
+    );
+    assert!(client.connected());
     server.abort();
 }
 
@@ -230,16 +760,16 @@ fn test_生存確認_connectの失敗を技術的な失敗の性質へ写す() {
             ErrorCode::ResourceExhausted,
             TechnicalFailureNature::Transient,
         ),
+        (ErrorCode::Aborted, TechnicalFailureNature::Other),
+        (ErrorCode::Unauthenticated, TechnicalFailureNature::Other),
         (ErrorCode::Canceled, TechnicalFailureNature::Cancelled),
         (ErrorCode::Internal, TechnicalFailureNature::Other),
-        (ErrorCode::Unauthenticated, TechnicalFailureNature::Other),
     ] {
-        let failure = liveness_failure(connectrpc::ConnectError::new(code, "reason"));
-        assert_eq!(failure.kind, Failure::Technical(nature));
-        assert_eq!(
-            failure.message,
-            connectrpc::ConnectError::new(code, "reason").to_string()
-        );
+        let error = connectrpc::ConnectError::new(code, "reason");
+        let message = error.to_string();
+        let failure = liveness_failure(error);
+        assert_eq!(failure.nature, nature);
+        assert_eq!(failure.message, message);
     }
 }
 
@@ -248,9 +778,9 @@ async fn error_server(
 ) -> (
     ClientConnectionDto,
     tokio::task::JoinHandle<()>,
-    Arc<std::sync::atomic::AtomicUsize>,
+    Arc<AtomicUsize>,
 ) {
-    let requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let requests = Arc::new(AtomicUsize::new(0));
     let count = requests.clone();
     let router = axum::Router::new().fallback(axum::routing::post(move || {
         let error = error.clone();
@@ -301,7 +831,7 @@ async fn test_ネイティブ要求_停止とログイン項目の具体的な�
             detail,
         }))
         .await;
-        let (client, _) = start(&endpoint);
+        let client = start(&endpoint);
         for command in [
             wire::command_request::Command::RequestApplicationQuit(Default::default()),
             wire::command_request::Command::UpdateAppSettings(Default::default()),

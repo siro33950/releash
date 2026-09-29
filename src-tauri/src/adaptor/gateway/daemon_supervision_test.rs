@@ -1,16 +1,26 @@
 use super::*;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{cell::Cell, time::Duration};
 
 fn gateway(data_dir: PathBuf) -> DaemonProcessGateway {
-    DaemonProcessGateway::new(
-        PathBuf::new(),
-        data_dir,
-        Arc::new(RetryLimiter::new()),
-        Arc::new(crate::usecase::failure::FailureRecordingUsecase::new(
-            Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
-            None,
-        )),
-    )
+    DaemonProcessGateway::new(PathBuf::new(), data_dir, Arc::new(RetryLimiter::new()))
+}
+
+#[test]
+fn test_接続失敗_技術的分類を監督へ渡す() {
+    // Given
+    let failure = TechnicalFailure {
+        nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
+        message: "State stream was silent".into(),
+    };
+    // When
+    let result = supervised_connection_failure(failure);
+    // Then
+    assert_eq!(
+        result.stage,
+        FailureStage::Connection(crate::domain::failure::TechnicalFailureNature::TimedOut)
+    );
+    assert_eq!(result.reason, "State stream was silent");
 }
 
 #[tokio::test]
@@ -122,6 +132,226 @@ async fn test_daemon接続_認証と検証が完了した呼び出しで接続�
     assert_eq!(cached.launch_id, connection.launch_id);
     assert_eq!(cached.connected_at_ms, connection.connected_at_ms);
     peer.abort();
+}
+
+#[tokio::test]
+async fn test_初回設定待ち_購読開始失敗後も同じclientがprotoの待ちで再接続する() {
+    use crate::infrastructure::local_api::{
+        process_start_time, LocalApiDiscovery, LocalApiDiscoveryFile,
+    };
+    use axum::response::IntoResponse;
+    use futures_util::StreamExt;
+    use prost::Message;
+    use wire::state_subscription_event::Event;
+
+    // Given
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let endpoint = crate::usecase::client_connection::ClientConnectionDto {
+        url: format!("http://{}", listener.local_addr().unwrap()),
+        token: "client".into(),
+    };
+    let frame = |event| {
+        let bytes = wire::StateSubscriptionEvent {
+            event: Some(event),
+            ..Default::default()
+        }
+        .encode_to_vec();
+        let mut frame = vec![0];
+        frame.extend((bytes.len() as u32).to_be_bytes());
+        frame.extend(bytes);
+        frame
+    };
+    let ready = frame(Event::Ready(wire::Unit {}));
+    let snapshot = frame(Event::Snapshot(wire::StatePayload {
+        value: Some(wire::state_payload::Value::DesktopSettings(
+            wire::DesktopSettings {
+                close_to_tray: Some(true),
+                start_minimized: Some(false),
+                crash_reporting: Some(false),
+                performance_telemetry: Some(false),
+                auto_launch: Some(true),
+            },
+        )),
+    }));
+    let opened = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let open_times = opened.clone();
+    let starts = Arc::new(AtomicUsize::new(0));
+    let start_count = starts.clone();
+    let subscribed = Arc::new(tokio::sync::Notify::new());
+    let stream_subscribed = subscribed.clone();
+    let start_subscribed = subscribed.clone();
+    let router = axum::Router::new()
+        .route(
+            "/releash.client.v1.ClientService/GetServerInfo",
+            axum::routing::post(|| async {
+                (
+                    [("content-type", "application/proto")],
+                    wire::ServerInfo {
+                        launch_id: "launch".into(),
+                        release: env!("CARGO_PKG_VERSION").into(),
+                    }
+                    .encode_to_vec(),
+                )
+            }),
+        )
+        .route(
+            "/releash.client.v1.ClientService/OpenStateStream",
+            axum::routing::post(move || {
+                let opened = open_times.clone();
+                let ready = ready.clone();
+                let snapshot = snapshot.clone();
+                let subscribed = stream_subscribed.clone();
+                async move {
+                    let attempt = {
+                        let mut opened = opened.lock();
+                        opened.push(tokio::time::Instant::now());
+                        opened.len()
+                    };
+                    let ready = futures_util::stream::once(async {
+                        Ok::<_, std::convert::Infallible>(ready)
+                    });
+                    let body: std::pin::Pin<
+                        Box<
+                            dyn futures_util::Stream<
+                                    Item = Result<Vec<u8>, std::convert::Infallible>,
+                                > + Send,
+                        >,
+                    > = if attempt == 3 {
+                        Box::pin(
+                            ready
+                                .chain(futures_util::stream::once(async move {
+                                    subscribed.notified().await;
+                                    Ok(snapshot)
+                                }))
+                                .chain(futures_util::stream::pending()),
+                        )
+                    } else {
+                        Box::pin(ready.chain(futures_util::stream::pending()))
+                    };
+                    (
+                        [("content-type", "application/connect+proto")],
+                        axum::body::Body::from_stream(body),
+                    )
+                }
+            }),
+        )
+        .route(
+            "/releash.client.v1.ClientService/StartStateSubscription",
+            axum::routing::post(move || {
+                let starts = start_count.clone();
+                let subscribed = start_subscribed.clone();
+                async move {
+                    if starts.fetch_add(1, Ordering::SeqCst) < 2 {
+                        (
+                            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                            axum::Json(connectrpc::ConnectError::new(
+                                connectrpc::ErrorCode::Unavailable,
+                                "subscription failed",
+                            )),
+                        )
+                            .into_response()
+                    } else {
+                        subscribed.notify_one();
+                        (
+                            [("content-type", "application/proto")],
+                            wire::Unit {}.encode_to_vec(),
+                        )
+                            .into_response()
+                    }
+                }
+            }),
+        );
+    let peer = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let directory = tempfile::tempdir().unwrap();
+    let discovery = LocalApiDiscovery {
+        port,
+        token: "master-token".into(),
+        instance_id: "instance".into(),
+        pid: std::process::id(),
+        process_started_at: process_start_time(std::process::id()).unwrap(),
+    };
+    LocalApiDiscoveryFile::create(directory.path(), discovery.clone()).unwrap();
+    LocalApiDiscoveryFile::create_client(
+        directory.path(),
+        LocalApiDiscovery {
+            token: endpoint.token,
+            ..discovery
+        },
+    )
+    .unwrap();
+    let gateway = DaemonProcessGateway::new(
+        PathBuf::new(),
+        directory.path().into(),
+        Arc::new(RetryLimiter::deterministic()),
+    );
+
+    // When
+    assert!(gateway.connect_client("launch").await.unwrap().is_none());
+    assert!(gateway.pending.lock().is_some());
+    let connection = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(connection) = gateway.connection().await.unwrap() {
+                break connection;
+            }
+        }
+    })
+    .await
+    .unwrap();
+
+    // Then
+    let opened = opened.lock();
+    assert_eq!(opened.len(), 3);
+    assert!(opened[1].duration_since(opened[0]) >= Duration::from_secs(1));
+    assert!(opened[2].duration_since(opened[1]) >= Duration::from_millis(1_600));
+    assert_eq!(starts.load(Ordering::SeqCst), 3);
+    assert!(connection.settings.auto_launch);
+    assert!(gateway.pending.lock().is_none());
+    assert!(gateway.connected());
+    peer.abort();
+}
+
+#[tokio::test]
+async fn test_初回設定待ち_生存失敗が確定したら分類を保って監督へ渡す() {
+    // Given
+    let gateway = gateway(PathBuf::new());
+    let endpoint = crate::usecase::client_connection::ClientConnectionDto {
+        url: "http://127.0.0.1:1".into(),
+        token: "client".into(),
+    };
+    let client = Arc::new(super::super::desktop_client::DesktopClient::start(
+        super::super::desktop_client::client(&endpoint).unwrap(),
+        super::super::desktop_client::stream_client(&endpoint).unwrap(),
+        Arc::new(RetryLimiter::deterministic()),
+    ));
+    *gateway.pending.lock() = Some(PendingConnection {
+        client,
+        hello: wire::ServerInfo {
+            launch_id: "launch".into(),
+            release: env!("CARGO_PKG_VERSION").into(),
+        },
+        endpoint,
+    });
+
+    // When
+    let failure = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match gateway.connection().await {
+                Err(failure) => break failure,
+                Ok(None) => {}
+                Ok(Some(_)) => panic!("no settings were delivered"),
+            }
+        }
+    })
+    .await
+    .unwrap();
+
+    // Then
+    assert_eq!(
+        failure.stage,
+        FailureStage::Connection(crate::domain::failure::TechnicalFailureNature::Transient)
+    );
+    assert!(gateway.pending.lock().is_none());
 }
 
 #[tokio::test(start_paused = true)]

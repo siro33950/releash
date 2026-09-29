@@ -368,7 +368,10 @@ impl DaemonSupervisionUsecase {
                                 Err(failure) => last_connection_error = Some(failure),
                             },
                             Ok(None) => {},
-                            Err(failure) => last_connection_error = Some(failure),
+                            Err(failure) => {
+                                self.state.lock().supervision.connection_failed(failure.clone());
+                                last_connection_error = Some(failure);
+                            },
                         }
                         let interruption = self.state.lock().supervision.startup_interruption(now(), last_connection_error.clone());
                         if let Some(interruption) = interruption {
@@ -413,6 +416,18 @@ fn snapshot(supervision: &DaemonSupervision) -> DaemonStatus {
         stage: supervision.failure().map(|f| match f.stage {
             FailureStage::Spawn => "spawn",
             FailureStage::Initialization => "backend_initialization",
+            FailureStage::Connection(crate::domain::failure::TechnicalFailureNature::Transient) => {
+                "backend_connection_transient"
+            }
+            FailureStage::Connection(crate::domain::failure::TechnicalFailureNature::TimedOut) => {
+                "backend_connection_timed_out"
+            }
+            FailureStage::Connection(crate::domain::failure::TechnicalFailureNature::Cancelled) => {
+                "backend_connection_cancelled"
+            }
+            FailureStage::Connection(crate::domain::failure::TechnicalFailureNature::Other) => {
+                "backend_connection_other"
+            }
             FailureStage::StartupTimeout => "startup_timeout",
             FailureStage::UnexpectedExit => "unexpected_exit",
             FailureStage::Identity => "connection_identity",

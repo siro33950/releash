@@ -152,10 +152,7 @@ fn test_workspace過去試行_両commandでnodeタグとchildren省略を保持�
 #[test]
 fn test_workflow状態_protoは削除した番号と名前を予約し残る三状態を保持する() {
     // Given
-    let pool = prost_reflect::DescriptorPool::decode(
-        include_bytes!(concat!(env!("OUT_DIR"), "/client_descriptor.bin")).as_slice(),
-    )
-    .unwrap();
+    let pool = descriptor::pool();
     // When / Then
     for (name, numbers) in [
         ("ExecutionStatusView", [1, 4]),
@@ -248,10 +245,7 @@ fn test_workflow応答_connectの詳細と一覧は三状態の値を保ち削�
 
 #[test]
 fn removed_workflow_commands_and_node_fields_cannot_reuse_their_wire_tags() {
-    let pool = prost_reflect::DescriptorPool::decode(
-        include_bytes!(concat!(env!("OUT_DIR"), "/client_descriptor.bin")).as_slice(),
-    )
-    .unwrap();
+    let pool = descriptor::pool();
     for name in ["CommandRequest", "CommandResult"] {
         let message = pool
             .get_message_by_name(&format!("releash.client.v1.{name}"))
@@ -339,10 +333,7 @@ fn test_実行状態_削除した未解決状態のwire値を受け入れない(
 #[test]
 fn test_状態分類_到達不能なfailureを公開せず番号と名前を予約する() {
     // Given
-    let pool = prost_reflect::DescriptorPool::decode(
-        include_bytes!(concat!(env!("OUT_DIR"), "/client_descriptor.bin")).as_slice(),
-    )
-    .unwrap();
+    let pool = descriptor::pool();
     let status = pool
         .get_enum_by_name("releash.client.v1.WorkspaceStatusClassification.Value")
         .unwrap();

@@ -2,10 +2,10 @@ use crate::adaptor::presenter::client as wire;
 use crate::common::retry::RetryLimiter;
 use crate::domain::daemon_supervision::{verify_identity, Failure, FailureStage, StopIntent};
 use crate::domain::daemon_supervision::{DaemonExit, DaemonProcessPort};
+use crate::domain::failure::TechnicalFailure;
 use crate::usecase::app_config::query_service::DesktopSettingsDto;
 use crate::usecase::client_connection::ClientConnectionQueryService;
 use crate::usecase::daemon_supervision::{DaemonConnection, DaemonGateway};
-use crate::usecase::failure::{FailureKey, FailureRecordingUsecase};
 use std::io::{BufRead, Read};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -22,6 +22,12 @@ struct Process {
     readers: Vec<tokio::sync::oneshot::Receiver<()>>,
 }
 
+struct PendingConnection {
+    client: Arc<super::desktop_client::DesktopClient>,
+    hello: wire::ServerInfo,
+    endpoint: crate::usecase::client_connection::ClientConnectionDto,
+}
+
 pub(crate) struct DaemonProcessGateway {
     origin: std::time::Instant,
     executable: PathBuf,
@@ -29,26 +35,28 @@ pub(crate) struct DaemonProcessGateway {
     process: parking_lot::Mutex<Option<Process>>,
     connection: parking_lot::Mutex<Option<DaemonConnection>>,
     client: parking_lot::Mutex<Option<Arc<super::desktop_client::DesktopClient>>>,
+    pending: parking_lot::Mutex<Option<PendingConnection>>,
     limiter: Arc<RetryLimiter>,
-    failures: Arc<FailureRecordingUsecase>,
+}
+
+fn supervised_connection_failure(failure: TechnicalFailure) -> Failure {
+    Failure {
+        stage: FailureStage::Connection(failure.nature),
+        reason: failure.message,
+    }
 }
 
 impl DaemonProcessGateway {
-    pub fn new(
-        executable: PathBuf,
-        data_dir: PathBuf,
-        limiter: Arc<RetryLimiter>,
-        failures: Arc<FailureRecordingUsecase>,
-    ) -> Self {
+    pub fn new(executable: PathBuf, data_dir: PathBuf, limiter: Arc<RetryLimiter>) -> Self {
         Self {
             client: parking_lot::Mutex::new(None),
+            pending: parking_lot::Mutex::new(None),
             origin: std::time::Instant::now(),
             executable,
             data_dir,
             process: parking_lot::Mutex::new(None),
             connection: parking_lot::Mutex::new(None),
             limiter,
-            failures,
         }
     }
     pub fn client(&self) -> Result<Arc<super::desktop_client::DesktopClient>, String> {
@@ -75,8 +83,6 @@ impl DaemonProcessGateway {
         let client = super::desktop_client::DesktopClient::start(
             super::desktop_client::client(&endpoint)?,
             super::desktop_client::stream_client(&endpoint)?,
-            FailureKey::new("daemon_liveness", &info.launch_id),
-            self.failures.clone(),
             self.limiter.clone(),
         );
         Ok((client, info, endpoint))
@@ -95,6 +101,25 @@ impl DaemonProcessGateway {
             Err(_) => return Ok(None),
         };
         verify_identity(launch_id, &hello.launch_id, &hello.release)?;
+        *self.pending.lock() = Some(PendingConnection {
+            client: Arc::new(client),
+            hello,
+            endpoint,
+        });
+        self.finish_pending().await
+    }
+    async fn finish_pending(&self) -> Result<Option<DaemonConnection>, Failure> {
+        let client = self
+            .pending
+            .lock()
+            .as_ref()
+            .expect("pending connection")
+            .client
+            .clone();
+        if let Some(failure) = client.failure() {
+            self.pending.lock().take();
+            return Err(supervised_connection_failure(failure));
+        }
         let settings = match tokio::time::timeout(
             std::time::Duration::from_millis(500),
             client.first_settings(),
@@ -102,24 +127,23 @@ impl DaemonProcessGateway {
         .await
         {
             Ok(Ok(settings)) => settings,
-            Ok(Err(reason)) => {
-                return Err(Failure {
-                    stage: FailureStage::Initialization,
-                    reason,
-                })
+            Ok(Err(failure)) => {
+                self.pending.lock().take();
+                return Err(supervised_connection_failure(failure));
             }
             Err(_) => return Ok(None),
         };
+        let pending = self.pending.lock().take().expect("pending connection");
         // 最初の snapshot は接続情報に載せたので、以後の変更だけを settings_update で観測する。
         let _ = client.settings_update();
         let connection = DaemonConnection {
             connected_at_ms: self.monotonic_ms(),
-            endpoint,
+            endpoint: pending.endpoint,
             settings,
-            launch_id: hello.launch_id.clone(),
-            release: hello.release.clone(),
+            launch_id: pending.hello.launch_id,
+            release: pending.hello.release,
         };
-        *self.client.lock() = Some(Arc::new(client));
+        *self.client.lock() = Some(pending.client);
         *self.connection.lock() = Some(connection.clone());
         Ok(Some(connection))
     }
@@ -192,6 +216,7 @@ impl DaemonProcessPort for DaemonProcessGateway {
             readers: vec![diagnostic_reader, output_reader],
         });
         *self.client.lock() = None;
+        *self.pending.lock() = None;
         *self.connection.lock() = None;
         Ok(launch_id)
     }
@@ -218,6 +243,7 @@ impl DaemonProcessPort for DaemonProcessGateway {
             .trim()
             .to_owned();
         *self.client.lock() = None;
+        *self.pending.lock() = None;
         *self.connection.lock() = None;
         Ok(Some(DaemonExit {
             success: status.success(),
@@ -302,10 +328,10 @@ impl DaemonGateway for DaemonProcessGateway {
             .and_then(|client| client.failure());
         if let Some(failure) = previous_failure {
             self.client.lock().take();
-            return Err(Failure {
-                stage: FailureStage::Initialization,
-                reason: failure.message,
-            });
+            return Err(supervised_connection_failure(failure));
+        }
+        if self.pending.lock().is_some() {
+            return self.finish_pending().await;
         }
         let discovery = crate::infrastructure::local_api::read_local_api_discovery(&self.data_dir)
             .map_err(|error| Failure {

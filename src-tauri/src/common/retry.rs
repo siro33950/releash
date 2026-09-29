@@ -26,7 +26,7 @@ impl RetryBackoff {
     }
 
     pub fn delay(self, failure_count: u64, jitter: f64) -> Duration {
-        assert!((0.8..=1.2).contains(&jitter));
+        assert!(jitter.is_finite() && jitter >= 0.0);
         let exponent = failure_count.saturating_sub(1).min(i32::MAX as u64) as i32;
         Duration::from_secs_f64(
             (self.initial.as_secs_f64() * self.multiplier.powi(exponent))
@@ -77,12 +77,12 @@ pub struct RetryLimiter {
 
 impl RetryLimiter {
     pub fn new() -> Self {
-        Self::with_jitter(jitter)
+        Self::with_jitter(jitter_fraction)
     }
 
     #[cfg(test)]
     pub fn deterministic() -> Self {
-        Self::with_jitter(|| 1.0)
+        Self::with_jitter(|| 0.0)
     }
 
     fn with_jitter(jitter: fn() -> f64) -> Self {
@@ -94,7 +94,11 @@ impl RetryLimiter {
     }
 
     pub async fn wait(&self, policy: RetryBackoff, failures: u64) {
-        tokio::time::sleep(policy.delay(failures, (self.jitter)())).await;
+        self.wait_with_spread(policy, failures, 0.2).await;
+    }
+
+    pub async fn wait_with_spread(&self, policy: RetryBackoff, failures: u64, spread: f64) {
+        tokio::time::sleep(policy.delay(failures, 1.0 + (self.jitter)() * spread)).await;
         self.acquire().await;
     }
 
@@ -119,9 +123,14 @@ impl Default for RetryLimiter {
     }
 }
 
+#[cfg(test)]
 fn jitter() -> f64 {
+    1.0 + jitter_fraction() * 0.2
+}
+
+fn jitter_fraction() -> f64 {
     let random = uuid::Uuid::new_v4().as_u128() as u32;
-    1.0 + (random as f64 / u32::MAX as f64 - 0.5) * 0.4
+    (random as f64 / u32::MAX as f64 - 0.5) * 2.0
 }
 
 pub async fn attempts<T, E, F, Fut>(
