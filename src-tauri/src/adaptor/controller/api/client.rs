@@ -11,8 +11,7 @@ use crate::adaptor::presenter::connect_wire::{rpc, to_rpc, to_wire};
 pub(crate) struct ClientApiDeps {
     dispatch: Arc<ClientCommandDispatch>,
     state_subscriptions: Option<StateSubscriptionDeps>,
-    limits: Arc<crate::common::concurrency::PriorityLimits>,
-    failures: Option<Arc<crate::usecase::failure::FailureRecordingUsecase>>,
+    priority: super::client_priority::PriorityInterceptor,
 }
 
 #[derive(Clone)]
@@ -31,12 +30,14 @@ impl StateSubscriptionDeps {
 }
 
 impl ClientApiDeps {
-    pub(crate) fn new(dispatch: Arc<ClientCommandDispatch>) -> Self {
+    pub(crate) fn new(
+        dispatch: Arc<ClientCommandDispatch>,
+        priority: super::client_priority::PriorityInterceptor,
+    ) -> Self {
         Self {
             dispatch,
             state_subscriptions: None,
-            limits: Arc::new(super::client_priority::limits()),
-            failures: None,
+            priority,
         }
     }
 
@@ -45,12 +46,9 @@ impl ClientApiDeps {
         self
     }
 
-    pub(crate) fn with_failure_output(
-        mut self,
-        failures: Arc<crate::usecase::failure::FailureRecordingUsecase>,
-    ) -> Self {
-        self.failures = Some(failures);
-        self
+    #[cfg(test)]
+    fn priority_limits(&self) -> &crate::common::concurrency::PriorityLimits {
+        self.priority.gate.limits()
     }
 
     fn state_presenter(
@@ -146,10 +144,7 @@ pub(crate) fn router(deps: Option<ClientApiDeps>) -> Router {
     let Some(deps) = deps else {
         return Router::new();
     };
-    let priority = super::client_priority::PriorityInterceptor {
-        limits: deps.limits.clone(),
-        failures: deps.failures.clone(),
-    };
+    let priority = deps.priority.clone();
     let service = connectrpc::Router::new()
         .add_service(Arc::new(deps))
         .into_axum_service()

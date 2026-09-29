@@ -197,9 +197,18 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
             Arc::new(runtime),
             binding.bearer_token(),
             binding.client_bearer_token(),
-            Some(ClientApiDeps::new(dispatch).with_state_subscriptions(
-                crate::adaptor::controller::api::StateSubscriptionDeps::new(state, state_presenter),
-            )),
+            Some(
+                ClientApiDeps::new(
+                    dispatch,
+                    crate::adaptor::controller::daemon::client_priority_interceptor(None),
+                )
+                .with_state_subscriptions(
+                    crate::adaptor::controller::api::StateSubscriptionDeps::new(
+                        state,
+                        state_presenter,
+                    ),
+                ),
+            ),
             None,
         );
         Self {
@@ -322,7 +331,10 @@ impl ClientRecoveryAcceptanceHost {
         let mut urls = Vec::new();
         let mut servers = Vec::new();
         for _ in 0..2 {
-            let deps = ClientApiDeps::new(dispatch.clone());
+            let deps = ClientApiDeps::new(
+                dispatch.clone(),
+                crate::adaptor::controller::daemon::client_priority_interceptor(None),
+            );
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             urls.push(format!("http://{}", listener.local_addr().unwrap()));
             servers.push(tokio::spawn(async move {

@@ -1,41 +1,14 @@
+use parking_lot::Mutex;
 use std::sync::Arc;
 
-use crate::common::concurrency::PriorityLimits;
+use crate::common::concurrency::Rejection;
+use crate::common::priority::{PriorityEvents, PriorityGate};
+use crate::domain::failure::TechnicalFailureNature;
 use crate::usecase::failure::{Failure, FailureKey, FailureRecordingUsecase, WorkFailure};
 
-pub(crate) const TOTAL_SEATS: usize = 64;
-pub(crate) const QUEUE_LENGTH: usize = 50;
-pub(crate) const SHARES: &[(&str, u32)] =
-    &[("interactive", 30), ("workflow", 40), ("default", 120)];
-
-pub(crate) fn limits() -> PriorityLimits {
-    PriorityLimits::new(TOTAL_SEATS, SHARES, QUEUE_LENGTH)
-}
-
-pub(crate) fn priority_level(path: &str) -> Option<&'static str> {
-    match path.rsplit('/').next().unwrap_or_default() {
-        "GetServerInfo" | "ReportTerminalProcessed" => None,
-        "WriteTerminalSurface"
-        | "WritePathsToTerminalSurface"
-        | "ResizeTerminalSurface"
-        | "StartStateSubscription"
-        | "StopStateSubscription" => Some("interactive"),
-        "StartWorkflow"
-        | "AbortWorkflow"
-        | "ApproveWorkspaceNode"
-        | "ApproveWorkflowNode"
-        | "RetryWorkspaceNode"
-        | "ResumeWorkspaceSessionNode"
-        | "WorkflowSubmitOutput"
-        | "WorkflowValidateOutput"
-        | "WorkflowGetOutput" => Some("workflow"),
-        _ => Some("default"),
-    }
-}
-
+#[derive(Clone)]
 pub(crate) struct PriorityInterceptor {
-    pub(crate) limits: Arc<PriorityLimits>,
-    pub(crate) failures: Option<Arc<FailureRecordingUsecase>>,
+    pub(crate) gate: Arc<PriorityGate>,
 }
 
 #[connectrpc::async_trait]
@@ -45,29 +18,69 @@ impl connectrpc::Interceptor for PriorityInterceptor {
         req: connectrpc::interceptor::UnaryRequest,
         next: connectrpc::Next<'_>,
     ) -> Result<connectrpc::interceptor::UnaryResponse, connectrpc::ConnectError> {
-        let path = req.ctx.path().unwrap_or_default();
-        let Some(level) = priority_level(path) else {
-            return next.run(req).await;
-        };
-        let _seat = match self.limits.admit(level, req.ctx.deadline()).await {
-            Ok(seat) => seat,
-            Err(rejection) => {
-                if let Some(failures) = &self.failures {
-                    failures.observed(
-                        &FailureKey::new("client_request_limit", "daemon"),
-                        WorkFailure {
-                            kind: Failure::Technical(
-                                crate::domain::failure::TechnicalFailureNature::Transient,
-                            ),
-                            message: format!("{path}: {rejection}"),
-                        },
-                    );
-                }
-                return Err(crate::adaptor::presenter::connect::request_rejected(
-                    &rejection,
-                ));
-            }
-        };
-        next.run(req).await
+        let deadline = req.ctx.deadline();
+        self.gate
+            .run(
+                req,
+                |req| {
+                    req.ctx
+                        .path()
+                        .expect("dispatch sets path before interceptors run")
+                },
+                deadline,
+                |req| next.run(req),
+                |rejection| crate::adaptor::presenter::connect::request_rejected(&rejection),
+            )
+            .await
     }
 }
+
+pub(crate) struct PriorityFailureReporter {
+    failures: Option<Arc<FailureRecordingUsecase>>,
+    pending: Mutex<bool>,
+}
+
+impl PriorityFailureReporter {
+    pub(crate) fn new(failures: Option<Arc<FailureRecordingUsecase>>) -> Self {
+        Self {
+            failures,
+            pending: Mutex::new(false),
+        }
+    }
+}
+
+fn priority_failure_key() -> FailureKey {
+    FailureKey::new("client_request_limit", "daemon")
+}
+
+impl PriorityEvents for PriorityFailureReporter {
+    fn rejected(&self, path: &str, rejection: &Rejection) {
+        let Some(failures) = &self.failures else {
+            return;
+        };
+        let mut pending = self.pending.lock();
+        failures.observed(
+            &priority_failure_key(),
+            WorkFailure {
+                kind: Failure::Technical(TechnicalFailureNature::Transient),
+                message: format!("{path}: {rejection}"),
+            },
+        );
+        *pending = true;
+    }
+
+    fn admitted(&self) {
+        let Some(failures) = &self.failures else {
+            return;
+        };
+        let mut pending = self.pending.lock();
+        if *pending {
+            failures.resolved(&priority_failure_key());
+            *pending = false;
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "client_priority_test.rs"]
+mod client_priority_tests;
