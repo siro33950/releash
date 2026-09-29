@@ -371,9 +371,19 @@ fn test_中断済みsession_nodeへのstopはnodeを変えずactivityを停止�
         root_meta.clone(),
         NodeFact::AbortRequested(Default::default()),
     );
+    log.push(
+        root_meta.clone(),
+        NodeFact::AgentActivityObserved(AgentActivityObservedFact {
+            activity: AgentSessionActivity::Working,
+        }),
+    );
     let before = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
     let node_before = before.aggregate.node_executions()[0].clone();
     assert_eq!(node_before.status, RuntimeNodeExecutionStatus::Aborted);
+    assert_eq!(
+        before.session_activities[TREE],
+        AgentSessionActivity::Working
+    );
 
     // When
     log.push(root_meta, stop());

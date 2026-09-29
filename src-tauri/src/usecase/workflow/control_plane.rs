@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use crate::domain::provider_lifecycle::ScopedProviderLifecycleEvent;
 use crate::domain::workflow::entities::workflow_execution::{
-    ExecutionTree as DomainExecutionTree, ProviderStopDecision, ProviderStopRejection,
-    SessionResumeAction, TransitionOutcome,
+    ExecutionTree as DomainExecutionTree, ProviderStopRejection, SessionResumeAction,
+    TransitionOutcome,
 };
 use crate::domain::workflow::services::secret_masker as workflow_secret_masker;
 use crate::domain::workflow::{NodeCompletionSignal, WorkflowError, WorkflowEvent};
@@ -628,32 +628,12 @@ impl WorkflowControlPlaneUsecase {
         };
         let timestamp = self.runtime.current_timestamp();
         let mut candidate = current.clone();
-        let (mut workflow_events, provider_stop_outcome) = match candidate.record_provider_stop(
+        let provider_stop_outcome = match candidate.record_provider_stop(
             &command.node_execution_id,
             &command.agent_session_id,
             timestamp,
         ) {
-            Ok(ProviderStopDecision::NodeSignalApplied) => (
-                vec![WorkflowEvent::NodeStopReceived {
-                    execution_id: command.tree_id.clone(),
-                    node_execution_id: command.node_execution_id.clone(),
-                    timestamp,
-                }],
-                TransitionOutcome::Applied,
-            ),
-            Ok(
-                ProviderStopDecision::NodeSignalAlreadyApplied | ProviderStopDecision::ActivityOnly,
-            ) => (
-                vec![WorkflowEvent::NodeStopReceived {
-                    execution_id: command.tree_id.clone(),
-                    node_execution_id: command.node_execution_id.clone(),
-                    timestamp,
-                }],
-                TransitionOutcome::AlreadyApplied,
-            ),
-            Ok(ProviderStopDecision::NotApplicable) => {
-                (Vec::new(), TransitionOutcome::NotApplicable)
-            }
+            Ok(accepted) => accepted.node_signal,
             Err(ProviderStopRejection::NodeExecutionNotFound) => {
                 return Err(WorkflowError::invalid_state(format!(
                     "node execution '{}' is not part of workflow '{}'",
@@ -667,9 +647,11 @@ impl WorkflowControlPlaneUsecase {
                 )))
             }
         };
-        if workflow_events.is_empty() && lifecycle_events.is_empty() {
-            return Ok(());
-        }
+        let mut workflow_events = vec![WorkflowEvent::NodeStopReceived {
+            execution_id: command.tree_id.clone(),
+            node_execution_id: command.node_execution_id.clone(),
+            timestamp,
+        }];
         let outcome = if provider_stop_outcome == TransitionOutcome::Applied {
             let mut new_id = self.node_execution_id_source();
             let (outcome, events) = apply_completion_handshake(

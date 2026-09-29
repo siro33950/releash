@@ -415,12 +415,11 @@ pub enum ProviderStopRejection {
     SessionDoesNotOwnAttempt,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProviderStopDecision {
-    NodeSignalApplied,
-    NodeSignalAlreadyApplied,
-    ActivityOnly,
-    NotApplicable,
+/// agent の Stop を受理した結果。Stop は Node の状態に関係なく agent の事実として記録し、
+/// `node_signal` は Node の完了シグナルとしての結果を表す。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderStopAccepted {
+    pub node_signal: TransitionOutcome,
 }
 
 /// Stable rejection reasons returned by aggregate admission methods.
@@ -2698,7 +2697,7 @@ impl ExecutionTree {
         node_execution_id: &str,
         agent_session_id: &str,
         timestamp: f64,
-    ) -> Result<ProviderStopDecision, ProviderStopRejection> {
+    ) -> Result<ProviderStopAccepted, ProviderStopRejection> {
         let execution = self
             .runtime
             .node_executions
@@ -2708,20 +2707,13 @@ impl ExecutionTree {
         if execution.session_id.as_deref() != Some(agent_session_id) {
             return Err(ProviderStopRejection::SessionDoesNotOwnAttempt);
         }
-        if !execution.status.is_active() {
-            return Ok(ProviderStopDecision::ActivityOnly);
-        }
-        Ok(
-            match self.record_node_completion_signal(
+        Ok(ProviderStopAccepted {
+            node_signal: self.record_node_completion_signal(
                 node_execution_id,
                 NodeCompletionSignal::Stop,
                 timestamp,
-            ) {
-                TransitionOutcome::Applied => ProviderStopDecision::NodeSignalApplied,
-                TransitionOutcome::AlreadyApplied => ProviderStopDecision::NodeSignalAlreadyApplied,
-                _ => ProviderStopDecision::NotApplicable,
-            },
-        )
+            ),
+        })
     }
 
     pub fn admit_node_submit(
@@ -4072,11 +4064,15 @@ mod tests {
         );
         assert_eq!(
             execution.record_provider_stop(&node_execution_id, "session-1", 13.0),
-            Ok(ProviderStopDecision::NodeSignalApplied)
+            Ok(ProviderStopAccepted {
+                node_signal: TransitionOutcome::Applied
+            })
         );
         assert_eq!(
             execution.record_provider_stop(&node_execution_id, "session-1", 14.0),
-            Ok(ProviderStopDecision::NodeSignalAlreadyApplied)
+            Ok(ProviderStopAccepted {
+                node_signal: TransitionOutcome::AlreadyApplied
+            })
         );
     }
 
