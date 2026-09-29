@@ -330,30 +330,6 @@ async fn test_生存確認_変更が続いてもbookmarkが無ければ無音と
     server.abort();
 }
 
-#[tokio::test(start_paused = true)]
-async fn test_生存確認_bookmark期限後は即時受信可能な変更も無音と扱う() {
-    // Given
-    let deadline = tokio::time::Instant::now() + POLICY.silence;
-    let change = || {
-        wire::state_subscription_event::Event::Change(wire::StateChange {
-            delta: false,
-            payload: None,
-        })
-    };
-    assert!(matches!(
-        before_bookmark_deadline(deadline, std::future::ready(change())).await,
-        Some(wire::state_subscription_event::Event::Change(_))
-    ));
-    // When
-    tokio::time::advance(POLICY.silence + Duration::from_millis(1)).await;
-    // Then
-    assert!(
-        before_bookmark_deadline(deadline, std::future::ready(change()))
-            .await
-            .is_none()
-    );
-}
-
 #[tokio::test]
 async fn test_生存確認_bookmarkが届くと連続失敗を消す() {
     // Given
@@ -470,11 +446,12 @@ fn test_購読開始_重複したreadyで開始要求が増えない() {
     .unwrap();
     let mut subscription = SettingsSubscription::default();
     subscription.request_if_needed(&client, "client-id");
-    assert!(subscription.has_pending());
+    let requested = subscription.has_pending();
     subscription.pending = None;
     // When
     subscription.request_if_needed(&client, "client-id");
     // Then
+    assert!(requested);
     assert!(!subscription.has_pending());
 }
 

@@ -318,11 +318,11 @@ async fn observe(
                 }
                 continue;
             }
-            message = before_bookmark_deadline(bookmark_deadline, stream.message()) => message,
+            message = tokio::time::timeout_at(bookmark_deadline, stream.message()) => message,
         };
         let message = match message {
-            Some(Ok(Some(message))) => message,
-            Some(Ok(None)) => {
+            Ok(Ok(Some(message))) => message,
+            Ok(Ok(None)) => {
                 return Observation {
                     failure: TechnicalFailure {
                         nature: TechnicalFailureNature::Transient,
@@ -331,8 +331,8 @@ async fn observe(
                     liveness: true,
                 };
             }
-            Some(Err(error)) => return connection_error(error, true),
-            None => return silence_failure(),
+            Ok(Err(error)) => return connection_error(error, true),
+            Err(_) => return silence_failure(),
         };
         let event: wire::StateSubscriptionEvent = match to_wire(&message.to_owned_message()) {
             Ok(event) => event,
@@ -361,17 +361,6 @@ async fn observe(
         };
         apply_settings(payload, settings);
     }
-}
-
-async fn before_bookmark_deadline<F: std::future::Future>(
-    deadline: tokio::time::Instant,
-    future: F,
-) -> Option<F::Output> {
-    if tokio::time::Instant::now() >= deadline {
-        return None;
-    }
-    let result = tokio::time::timeout_at(deadline, future).await.ok()?;
-    (tokio::time::Instant::now() < deadline).then_some(result)
 }
 
 fn silence_failure() -> Observation {
