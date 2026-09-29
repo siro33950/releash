@@ -58,11 +58,30 @@ pub(crate) trait StateSubscriptionOutput: Send + Sync {
 pub(crate) type StateSubscriptionOutputRef = Arc<dyn StateSubscriptionOutput>;
 
 #[derive(Clone)]
+struct StateChange {
+    source: StateChangeSource,
+    skip: Option<SubscriptionTarget>,
+}
+
+struct PendingChange {
+    source: StateChangeSource,
+    completed: std::sync::mpsc::Sender<()>,
+}
+
+#[derive(Clone)]
 pub(crate) struct StateSubscriptionUsecase {
     publisher: StateSubscriptionOutputRef,
-    changes: tokio::sync::broadcast::Sender<StateChangeSource>,
-    repository_path_worker:
-        Arc<Mutex<Option<tokio::sync::mpsc::UnboundedSender<std::sync::mpsc::Sender<()>>>>>,
+    changes: tokio::sync::broadcast::Sender<StateChange>,
+    waiting_workers: Arc<
+        Mutex<
+            std::collections::HashMap<
+                SubscriptionTarget,
+                tokio::sync::mpsc::UnboundedSender<PendingChange>,
+            >,
+        >,
+    >,
+    #[cfg(test)]
+    test_changes: tokio::sync::broadcast::Sender<StateChangeSource>,
     clients: Arc<
         Mutex<std::collections::HashMap<String, std::collections::HashSet<SubscriptionTarget>>>,
     >,
@@ -123,7 +142,9 @@ impl StateSubscriptionUsecase {
         Self {
             publisher,
             changes: tokio::sync::broadcast::channel(64).0,
-            repository_path_worker: Default::default(),
+            waiting_workers: Default::default(),
+            #[cfg(test)]
+            test_changes: tokio::sync::broadcast::channel(64).0,
             clients: Default::default(),
             terminal_inputs: Default::default(),
             terminal_resets: Default::default(),
@@ -202,11 +223,10 @@ impl StateSubscriptionUsecase {
         if workers.contains_key(target) {
             return Ok(());
         }
-        let (repository_path_sender, mut repository_path_changes) =
-            tokio::sync::mpsc::unbounded_channel();
-        if *target == SubscriptionTarget::RepositoryPaths {
-            *self.repository_path_worker.lock() = Some(repository_path_sender);
-        }
+        let (waiting_sender, mut waiting_changes) = tokio::sync::mpsc::unbounded_channel();
+        self.waiting_workers
+            .lock()
+            .insert(target.clone(), waiting_sender);
         let publisher = self.publisher.clone();
         let timer = self.timer.clone();
         let worker_target = target.clone();
@@ -217,17 +237,17 @@ impl StateSubscriptionUsecase {
             loop {
                 let (source, completed) = tokio::select! {
                     result = changes.recv() => match result {
-                        Ok(source) if worker_target.affected_by(&source)
-                            || matches!((&worker_target, &source),
-                                (SubscriptionTarget::Failures(_, _),
-                                 crate::usecase::state_subscription::StateChangeSource::Failures(_))) => (Some(source), None),
+                        Ok(change) if change.skip.as_ref() == Some(&worker_target) => continue,
+                        Ok(change) if worker_target.affected_by(&change.source)
+                            || matches!((&worker_target, &change.source),
+                                (SubscriptionTarget::Failures(_, _), StateChangeSource::Failures(_))) => (Some(change.source), None),
                         Ok(_) => continue,
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => (None, None),
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     },
-                    result = repository_path_changes.recv(), if worker_target == SubscriptionTarget::RepositoryPaths => {
-                        let Some(completed) = result else { break; };
-                        (Some(StateChangeSource::Repositories), Some(completed))
+                    result = waiting_changes.recv() => match result {
+                        Some(change) => (Some(change.source), Some(change.completed)),
+                        None => break,
                     },
                     _ = interval.next(), if worker_target.external_information() => (None, None),
                 };
@@ -315,13 +335,11 @@ impl StateSubscriptionUsecase {
             }
         }
         let active = self.active_targets();
-        if !active.contains(&SubscriptionTarget::RepositoryPaths) {
-            self.repository_path_worker.lock().take();
-        }
         self.workers.lock().retain(|target, task| {
             if active.contains(target) {
                 true
             } else {
+                self.waiting_workers.lock().remove(target);
                 task.abort();
                 false
             }
@@ -335,22 +353,32 @@ impl StateSubscriptionUsecase {
     }
 
     pub(crate) fn notify(&self, source: StateChangeSource) {
-        let _ = self.changes.send(source);
+        #[cfg(test)]
+        let _ = self.test_changes.send(source.clone());
+        let _ = self.changes.send(StateChange { source, skip: None });
     }
 
-    pub(crate) fn notify_repositories_and_wait(&self) {
-        self.notify(StateChangeSource::Repositories);
-        if let Some(worker) = self.repository_path_worker.lock().clone() {
-            let (completed, wait) = std::sync::mpsc::channel();
-            if worker.send(completed).is_ok() {
-                let _ = wait.recv();
+    pub(crate) fn notify_and_wait(&self, source: StateChangeSource, target: &SubscriptionTarget) {
+        #[cfg(test)]
+        let _ = self.test_changes.send(source.clone());
+        let worker = self.waiting_workers.lock().get(target).cloned();
+        if let Some(worker) = worker {
+            let (completed, receiver) = std::sync::mpsc::channel();
+            let _ = self.changes.send(StateChange {
+                source: source.clone(),
+                skip: Some(target.clone()),
+            });
+            if worker.send(PendingChange { source, completed }).is_ok() {
+                let _ = receiver.recv();
             }
+        } else {
+            let _ = self.changes.send(StateChange { source, skip: None });
         }
     }
 
     #[cfg(test)]
     pub(crate) fn changes(&self) -> tokio::sync::broadcast::Receiver<StateChangeSource> {
-        self.changes.subscribe()
+        self.test_changes.subscribe()
     }
 
     pub fn start(

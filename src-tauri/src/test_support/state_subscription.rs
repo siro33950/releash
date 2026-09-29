@@ -130,6 +130,18 @@ pub(crate) fn changes(
     subscriptions.changes()
 }
 
+pub(crate) fn take_changes(
+    receiver: &mut tokio::sync::broadcast::Receiver<
+        crate::usecase::state_subscription::StateChangeSource,
+    >,
+) -> Vec<crate::usecase::state_subscription::StateChangeSource> {
+    let mut changes = Vec::new();
+    while let Ok(change) = receiver.try_recv() {
+        changes.push(change);
+    }
+    changes
+}
+
 pub(crate) struct RecordedWorktrees {
     changes: std::sync::Mutex<
         tokio::sync::broadcast::Receiver<crate::usecase::state_subscription::StateChangeSource>,

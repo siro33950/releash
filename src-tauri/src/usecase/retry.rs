@@ -6,6 +6,8 @@ use std::sync::Arc;
 pub struct Retrying {
     pub(crate) limiter: Arc<RetryLimiter>,
     pub(crate) failures: Arc<FailureRecordingUsecase>,
+    #[cfg(test)]
+    test_store: Option<Arc<crate::adaptor::gateway::failure_records::FailureRecordStore>>,
 }
 
 impl Retrying {
@@ -13,7 +15,12 @@ impl Retrying {
         limiter: Arc<RetryLimiter>,
         failures: Arc<FailureRecordingUsecase>,
     ) -> Arc<Self> {
-        Arc::new(Self { limiter, failures })
+        Arc::new(Self {
+            limiter,
+            failures,
+            #[cfg(test)]
+            test_store: None,
+        })
     }
 
     pub(crate) async fn restart<T, E, F, Fut>(
@@ -78,7 +85,24 @@ impl Retrying {
 
     #[cfg(test)]
     pub(crate) fn records(&self, target: &str) -> Vec<crate::usecase::failure::FailureObservation> {
-        self.failures.test_store().records(target)
+        self.test_store
+            .as_ref()
+            .expect("test failure store")
+            .records(target)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn page_targets(
+        &self,
+        targets: &[String],
+        offset: usize,
+    ) -> crate::usecase::failure::FailurePage {
+        use crate::usecase::failure::FailureQueryService;
+        self.test_store
+            .as_ref()
+            .expect("test failure store")
+            .page(targets, offset)
+            .await
     }
 
     #[cfg(test)]
@@ -87,23 +111,21 @@ impl Retrying {
         target: &str,
         offset: usize,
     ) -> crate::usecase::failure::FailurePage {
-        use crate::usecase::failure::FailureQueryService;
-        self.failures
-            .test_store()
-            .page(&[target.to_string()], offset)
-            .await
+        self.page_targets(&[target.to_string()], offset).await
     }
 }
 
 #[cfg(test)]
 pub(crate) fn test_retrying() -> Arc<Retrying> {
-    Retrying::new(
-        Arc::new(RetryLimiter::deterministic()),
-        Arc::new(crate::usecase::failure::FailureRecordingUsecase::new(
-            Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
+    let store = Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default());
+    Arc::new(Retrying {
+        limiter: Arc::new(RetryLimiter::deterministic()),
+        failures: Arc::new(crate::usecase::failure::FailureRecordingUsecase::new(
+            store.clone(),
             None,
         )),
-    )
+        test_store: Some(store),
+    })
 }
 
 #[cfg(test)]

@@ -96,16 +96,6 @@ impl FailureRecordingUsecase {
             crate::usecase::state_subscription::StateChangeSource::Failures(key.target.clone()),
         );
     }
-
-    #[cfg(test)]
-    pub(crate) fn test_store(
-        &self,
-    ) -> &crate::adaptor::gateway::failure_records::FailureRecordStore {
-        self.repository
-            .as_any()
-            .downcast_ref()
-            .expect("test failure store")
-    }
 }
 
 #[async_trait::async_trait]

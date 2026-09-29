@@ -967,7 +967,7 @@ async fn test_pr反映通知_現行世代だけ通知し古い世代と削除済
         tokio::time::timeout(Duration::from_secs(2), started.notified())
             .await
             .unwrap();
-        let before_pr = drain_changes(&mut changes);
+        let before_pr = crate::test_support::state_subscription::take_changes(&mut changes).len();
         assert_eq!(before_pr, 3);
 
         // When
@@ -993,7 +993,7 @@ async fn test_pr反映通知_現行世代だけ通知し古い世代と削除済
 
         // Then
         assert_eq!(
-            before_pr + drain_changes(&mut changes),
+            before_pr + crate::test_support::state_subscription::take_changes(&mut changes).len(),
             before_pr + usize::from(outcome == "current")
         );
         let snapshot = usecase.snapshot();
@@ -1168,16 +1168,4 @@ async fn test_pr定期取得_遅いrepositoryが他repositoryの取得を止め�
     release.send(()).unwrap();
     result.unwrap();
     refresh.await.unwrap();
-}
-
-fn drain_changes(
-    changes: &mut tokio::sync::broadcast::Receiver<
-        crate::usecase::state_subscription::StateChangeSource,
-    >,
-) -> usize {
-    let mut count = 0;
-    while changes.try_recv().is_ok() {
-        count += 1;
-    }
-    count
 }

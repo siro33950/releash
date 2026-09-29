@@ -315,9 +315,7 @@ impl AgentSessionLifecycleUsecase {
             .restore_execution_tree(session.session().tree_location().tree_id())
             .await
             .map_err(map_workflow_error)?;
-        self.subscriptions.notify(StateChangeSource::Worktree(
-            session.session().workspace().as_str().into(),
-        ));
+        self.notify_worktree(session.session().workspace().as_str());
         Ok(AgentSessionOpenOutcome::Restored)
     }
 
@@ -335,9 +333,7 @@ impl AgentSessionLifecycleUsecase {
             .archive_execution_tree(session.session().tree_location().tree_id())
             .await
             .map_err(map_workflow_error)?;
-        self.subscriptions.notify(StateChangeSource::Worktree(
-            session.session().workspace().as_str().into(),
-        ));
+        self.notify_worktree(session.session().workspace().as_str());
         Ok(outcome)
     }
 
@@ -370,9 +366,7 @@ impl AgentSessionLifecycleUsecase {
             .await
             .map_err(map_session_error)?;
         if outcome == AgentSessionMutationOutcome::Applied {
-            self.subscriptions.notify(StateChangeSource::Worktree(
-                session.session().workspace().as_str().into(),
-            ));
+            self.notify_worktree(session.session().workspace().as_str());
         }
         self.release_launch_binding(agent_session_id).await?;
         self.launch_gateway
@@ -473,9 +467,7 @@ impl AgentSessionLifecycleUsecase {
             .await
             .map_err(map_session_error)?;
         if outcome == AgentSessionProcessExitOutcome::Paused {
-            self.subscriptions.notify(StateChangeSource::Worktree(
-                session.session().workspace().as_str().into(),
-            ));
+            self.notify_worktree(session.session().workspace().as_str());
         }
         if outcome != AgentSessionProcessExitOutcome::GcRequired {
             self.release_launch_binding(agent_session_id).await?;
@@ -639,9 +631,7 @@ impl AgentSessionLifecycleUsecase {
             .delete(agent_session_id, caller_request_id)
             .await
             .map_err(map_session_error)?;
-        self.subscriptions.notify(StateChangeSource::Worktree(
-            owner.workspace_identity().as_str().into(),
-        ));
+        self.notify_worktree(owner.workspace_identity().as_str());
         self.release_deleted_execution_tree(tree_id).await;
         Ok(())
     }
@@ -700,9 +690,7 @@ impl AgentSessionLifecycleUsecase {
             )
             .await
             .map_err(map_session_error)?;
-        self.subscriptions.notify(StateChangeSource::Worktree(
-            owner.workspace_identity().as_str().into(),
-        ));
+        self.notify_worktree(owner.workspace_identity().as_str());
         self.release_deleted_execution_tree(tree_id).await;
         Ok(())
     }
@@ -715,6 +703,11 @@ impl AgentSessionLifecycleUsecase {
         {
             log::warn!("failed to release deleted execution tree from runtime cache: {error:?}");
         }
+    }
+
+    fn notify_worktree(&self, workspace_path: &str) {
+        self.subscriptions
+            .notify(StateChangeSource::Worktree(workspace_path.into()));
     }
 
     async fn release_launch_binding(

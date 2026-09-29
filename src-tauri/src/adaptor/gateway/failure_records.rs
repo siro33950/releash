@@ -117,11 +117,6 @@ impl FailureRecordStore {
 }
 
 impl FailureRecordRepository for FailureRecordStore {
-    #[cfg(test)]
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
     fn record_observed(
         &self,
         key: &FailureKey,

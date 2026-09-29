@@ -133,8 +133,6 @@ pub struct FailureRecord {
 }
 
 pub trait FailureRecordRepository: Send + Sync {
-    #[cfg(test)]
-    fn as_any(&self) -> &dyn std::any::Any;
     fn record_observed(
         &self,
         key: &FailureKey,

@@ -256,3 +256,31 @@ async fn test_購読手順_初回読取を共有し変化で再読取して最�
     // Then
     assert_eq!(usecase.test_worker_count(), 0);
 }
+
+#[tokio::test]
+async fn test_購読手順_任意の対象で配信完了を待ち一度だけ読み直す() {
+    // Given
+    let output = Arc::new(RecordingOutput::default());
+    let reads = Arc::new(RecordingReads {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let usecase = StateSubscriptionUsecase::new_with_output(output.clone(), Arc::new(PendingTimer))
+        .with_reads(reads.clone(), None, vec![], String::new());
+    let target = SubscriptionTarget::SessionNode("/repo".into(), "node".into());
+    usecase.open_client("client".into()).unwrap();
+    usecase.start_read("client", &target).await.unwrap();
+    // When
+    let wait_target = target.clone();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        tokio::task::spawn_blocking(move || {
+            usecase.notify_and_wait(StateChangeSource::Worktree("/repo".into()), &wait_target);
+        }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    // Then
+    assert_eq!(reads.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(*output.updates.lock(), vec![target]);
+}

@@ -157,9 +157,6 @@ async fn test_生存確認_streamの終了が3回続くと一時的な失敗と�
 struct RecordedCalls(parking_lot::Mutex<Vec<&'static str>>);
 
 impl crate::domain::failure::FailureRecordRepository for RecordedCalls {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
     fn record_observed(
         &self,
         _key: &FailureKey,

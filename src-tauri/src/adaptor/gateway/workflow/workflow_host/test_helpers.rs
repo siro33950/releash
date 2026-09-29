@@ -461,11 +461,7 @@ pub(super) fn take_workflow_execution_broadcasts(
         crate::usecase::state_subscription::StateChangeSource,
     >,
 ) -> Vec<crate::usecase::state_subscription::StateChangeSource> {
-    let mut changes = Vec::new();
-    while let Ok(change) = receiver.try_recv() {
-        changes.push(change);
-    }
-    changes
+    crate::test_support::state_subscription::take_changes(receiver)
 }
 
 pub(super) fn workspace_query(store: Arc<LocalEventStore>) -> Arc<SqliteWorkspaceQueryService> {

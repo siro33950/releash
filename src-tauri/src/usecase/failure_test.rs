@@ -1,4 +1,5 @@
 use super::*;
+use crate::adaptor::gateway::failure_records::FailureRecordStore;
 use std::sync::Arc;
 
 #[test]
@@ -81,18 +82,17 @@ fn test_失敗記録_usecaseが要対応を判定してrepositoryへ渡す() {
     );
 }
 
-use crate::adaptor::gateway::failure_records::FailureRecordStore;
-use crate::domain::failure::TechnicalFailureNature;
-use crate::usecase::failure::{BusinessFailure, Failure};
-
 fn presenter() -> (
     FailureRecordingUsecase,
+    Arc<FailureRecordStore>,
     tokio::sync::broadcast::Receiver<crate::usecase::state_subscription::StateChangeSource>,
 ) {
     let output = crate::test_support::state_subscription::test_subscriptions();
     let changes = crate::test_support::state_subscription::changes(&output);
+    let store = Arc::new(FailureRecordStore::default());
     (
-        FailureRecordingUsecase::new(Arc::new(FailureRecordStore::default()), Some(output)),
+        FailureRecordingUsecase::new(store.clone(), Some(output)),
+        store,
         changes,
     )
 }
@@ -100,7 +100,7 @@ fn presenter() -> (
 #[tokio::test]
 async fn test_要対応の通知_設定と解除で同じ購読対象に通知する() {
     // Given
-    let (presenter, mut changes) = presenter();
+    let (presenter, store, mut changes) = presenter();
     let key = FailureKey::new("workflow_recovery", "tree");
     // When / Then
     presenter.observed(
@@ -133,10 +133,7 @@ async fn test_要対応の通知_設定と解除で同じ購読対象に通知�
         changes.recv().await.unwrap(),
         crate::usecase::state_subscription::StateChangeSource::Failures("tree".into())
     );
-    assert_eq!(
-        presenter.test_store().records("tree")[0].record.message,
-        "new repair reason"
-    );
+    assert_eq!(store.records("tree")[0].record.message, "new repair reason");
     presenter.resolved(&key);
     assert_eq!(
         changes.recv().await.unwrap(),
@@ -151,7 +148,7 @@ async fn test_要対応の通知_設定と解除で同じ購読対象に通知�
 #[tokio::test]
 async fn test_要対応の通知_workflow以外の操作と要対応でない失敗は対象の購読だけに通知する() {
     // Given
-    let (presenter, mut changes) = presenter();
+    let (presenter, _, mut changes) = presenter();
     // When
     presenter.observed(
         &FailureKey::new("repository_scan", "/repo"),

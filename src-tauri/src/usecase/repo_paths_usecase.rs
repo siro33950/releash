@@ -40,7 +40,10 @@ impl RepoPathsUsecase {
         let _mutation = self.mutation.lock();
         let added = self.repo.add(path)?;
         if added {
-            self.subscriptions.notify_repositories_and_wait();
+            self.subscriptions.notify_and_wait(
+                crate::usecase::state_subscription::StateChangeSource::Repositories,
+                &crate::usecase::state_subscription::SubscriptionTarget::RepositoryPaths,
+            );
         }
         Ok(added)
     }
@@ -51,7 +54,10 @@ impl RepoPathsUsecase {
         let _mutation = self.mutation.lock();
         let removed = self.repo.remove(path)?;
         if removed {
-            self.subscriptions.notify_repositories_and_wait();
+            self.subscriptions.notify_and_wait(
+                crate::usecase::state_subscription::StateChangeSource::Repositories,
+                &crate::usecase::state_subscription::SubscriptionTarget::RepositoryPaths,
+            );
         }
         Ok(removed)
     }
@@ -188,6 +194,86 @@ mod repo_paths_usecase_tests {
         );
         assert!(
             matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Change(_, _, value))) if same(&value, StateValue::RepositoryPaths(vec![])))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_並行に開始した追加削除_各更新後の一覧を順に配信する() {
+        use crate::test_support::state_subscription::{same, Event, StateSubscriptionEvent};
+        use crate::usecase::state_subscription::{
+            StateSubscriptionUsecase, StateValue, SubscriptionTarget,
+        };
+        use futures_util::StreamExt;
+
+        // Given
+        let subscriptions = StateSubscriptionUsecase::new(
+            vec!["/repo/a".into()],
+            Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+        );
+        let repo = Arc::new(FakeRepoPaths {
+            paths: subscriptions
+                .test_repository_paths
+                .as_ref()
+                .unwrap()
+                .clone(),
+            fail: false,
+        });
+        let mut stream = Box::pin(subscriptions.open("client".into()).unwrap());
+        assert!(matches!(
+            stream.next().await,
+            Some(StateSubscriptionEvent::Ready)
+        ));
+        subscriptions
+            .start_subscription("client", &SubscriptionTarget::RepositoryPaths, None, None)
+            .await
+            .unwrap();
+        assert!(matches!(
+            stream.next().await,
+            Some(StateSubscriptionEvent::Item(_, Event::Snapshot(_, _)))
+        ));
+        assert!(matches!(
+            stream.next().await,
+            Some(StateSubscriptionEvent::Item(_, Event::Bookmark(_)))
+        ));
+        let usecase = RepoPathsUsecase::new(repo, subscriptions);
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let add = tokio::task::spawn_blocking({
+            let usecase = usecase.clone();
+            let barrier = barrier.clone();
+            move || {
+                barrier.wait();
+                usecase.add("/repo/b").unwrap()
+            }
+        });
+        let remove = tokio::task::spawn_blocking(move || {
+            barrier.wait();
+            usecase.remove("/repo/a").unwrap()
+        });
+        // When
+        let (added, removed) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            tokio::join!(add, remove)
+        })
+        .await
+        .unwrap();
+        assert!(added.unwrap());
+        assert!(removed.unwrap());
+        let first = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+            .await
+            .unwrap()
+            .unwrap();
+        let second = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+            .await
+            .unwrap()
+            .unwrap();
+        // Then
+        assert!(
+            matches!(first, StateSubscriptionEvent::Item(_, Event::Change(_, _, value))
+            if same(&value, StateValue::RepositoryPaths(vec!["/repo/a".into(), "/repo/b".into()]))
+                || same(&value, StateValue::RepositoryPaths(vec![])))
+        );
+        assert!(
+            matches!(second, StateSubscriptionEvent::Item(_, Event::Change(_, _, value))
+            if same(&value, StateValue::RepositoryPaths(vec!["/repo/b".into()])))
         );
     }
 }
