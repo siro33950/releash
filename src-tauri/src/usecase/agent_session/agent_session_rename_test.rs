@@ -79,13 +79,13 @@ impl AgentSessionRepository for RenameRepository {
 
 struct RenameNotifier {
     subscriptions: crate::usecase::state_subscription::StateSubscriptionUsecase,
-    worktrees: crate::test_support::state_subscription::RecordedWorktrees,
+    worktrees: crate::test_support::state_subscription::CapturingNotifier<String>,
 }
 impl Default for RenameNotifier {
     fn default() -> Self {
         let subscriptions = crate::test_support::state_subscription::test_subscriptions();
         let worktrees =
-            crate::test_support::state_subscription::RecordedWorktrees::new(&subscriptions);
+            crate::test_support::state_subscription::CapturingNotifier::worktrees(&subscriptions);
         Self {
             subscriptions,
             worktrees,

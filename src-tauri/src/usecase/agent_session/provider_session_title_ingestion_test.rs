@@ -207,13 +207,13 @@ impl ProviderSessionTitleGateway for FixedTitleGateway {
 
 pub(crate) struct RecordingNotifier {
     pub(crate) subscriptions: crate::usecase::state_subscription::StateSubscriptionUsecase,
-    pub(crate) worktrees: crate::test_support::state_subscription::RecordedWorktrees,
+    pub(crate) worktrees: crate::test_support::state_subscription::CapturingNotifier<String>,
 }
 impl Default for RecordingNotifier {
     fn default() -> Self {
         let subscriptions = crate::test_support::state_subscription::test_subscriptions();
         let worktrees =
-            crate::test_support::state_subscription::RecordedWorktrees::new(&subscriptions);
+            crate::test_support::state_subscription::CapturingNotifier::worktrees(&subscriptions);
         Self {
             subscriptions,
             worktrees,

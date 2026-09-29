@@ -117,9 +117,10 @@ impl Notifier {
     }
     fn count(&self) -> usize {
         if let Ok(mut changes) = self.changes.try_lock() {
-            while changes.try_recv().is_ok() {
-                self.notifications.fetch_add(1, Ordering::SeqCst);
-            }
+            self.notifications.fetch_add(
+                crate::test_support::state_subscription::take_changes(&mut changes).len(),
+                Ordering::SeqCst,
+            );
         }
         self.notifications.load(Ordering::SeqCst)
     }

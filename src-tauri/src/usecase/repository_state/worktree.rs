@@ -279,38 +279,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize};
     use std::sync::mpsc as std_mpsc;
 
-    struct CapturingNotifier {
-        subscriptions: crate::usecase::state_subscription::StateSubscriptionUsecase,
-        changes: parking_lot::Mutex<
-            tokio::sync::broadcast::Receiver<crate::usecase::state_subscription::StateChangeSource>,
-        >,
-    }
-
-    impl Default for CapturingNotifier {
-        fn default() -> Self {
-            let subscriptions = crate::test_support::state_subscription::test_subscriptions();
-            let changes = parking_lot::Mutex::new(subscriptions.changes());
-            Self {
-                subscriptions,
-                changes,
-            }
-        }
-    }
-
-    impl CapturingNotifier {
-        fn take(&self) -> Vec<Vec<String>> {
-            let mut changes = self.changes.lock();
-            crate::test_support::state_subscription::take_changes(&mut changes)
-                .into_iter()
-                .filter_map(|change| match change {
-                    crate::usecase::state_subscription::StateChangeSource::Repository(paths) => {
-                        Some(paths)
-                    }
-                    _ => None,
-                })
-                .collect()
-        }
-    }
+    use crate::test_support::state_subscription::CapturingNotifier;
 
     type OnScanHook = Box<dyn Fn(usize) + Send + Sync>;
 

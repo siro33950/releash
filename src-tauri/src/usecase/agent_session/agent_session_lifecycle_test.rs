@@ -51,13 +51,13 @@ fn workflow_location(tree_id: &str, node_execution_id: &str) -> AgentSessionTree
 
 struct RecordingChangeNotifier {
     subscriptions: crate::usecase::state_subscription::StateSubscriptionUsecase,
-    notified: crate::test_support::state_subscription::RecordedWorktrees,
+    notified: crate::test_support::state_subscription::CapturingNotifier<String>,
 }
 impl Default for RecordingChangeNotifier {
     fn default() -> Self {
         let subscriptions = crate::test_support::state_subscription::test_subscriptions();
         let notified =
-            crate::test_support::state_subscription::RecordedWorktrees::new(&subscriptions);
+            crate::test_support::state_subscription::CapturingNotifier::worktrees(&subscriptions);
         Self {
             subscriptions,
             notified,

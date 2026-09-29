@@ -142,37 +142,65 @@ pub(crate) fn take_changes(
     changes
 }
 
-pub(crate) struct RecordedWorktrees {
+pub(crate) struct CapturingNotifier<T> {
+    pub(crate) subscriptions: crate::usecase::state_subscription::StateSubscriptionUsecase,
     changes: std::sync::Mutex<
         tokio::sync::broadcast::Receiver<crate::usecase::state_subscription::StateChangeSource>,
     >,
-    values: std::sync::Mutex<Vec<String>>,
+    values: std::sync::Mutex<Vec<T>>,
+    extract: fn(crate::usecase::state_subscription::StateChangeSource) -> Option<T>,
 }
 
-impl RecordedWorktrees {
-    pub(crate) fn new(
-        subscriptions: &crate::usecase::state_subscription::StateSubscriptionUsecase,
+impl<T> CapturingNotifier<T> {
+    fn new(
+        subscriptions: crate::usecase::state_subscription::StateSubscriptionUsecase,
+        extract: fn(crate::usecase::state_subscription::StateChangeSource) -> Option<T>,
     ) -> Self {
         Self {
             changes: std::sync::Mutex::new(subscriptions.changes()),
+            subscriptions,
             values: std::sync::Mutex::new(Vec::new()),
+            extract,
         }
     }
 
-    pub(crate) fn lock(&self) -> std::sync::LockResult<std::sync::MutexGuard<'_, Vec<String>>> {
+    pub(crate) fn lock(&self) -> std::sync::LockResult<std::sync::MutexGuard<'_, Vec<T>>> {
         let mut values = self.values.lock()?;
         let mut changes = self.changes.lock().expect("state change receiver");
         values.extend(
             take_changes(&mut changes)
                 .into_iter()
-                .filter_map(|change| match change {
-                    crate::usecase::state_subscription::StateChangeSource::Worktree(path) => {
-                        Some(path)
-                    }
-                    _ => None,
-                }),
+                .filter_map(self.extract),
         );
         Ok(values)
+    }
+
+    pub(crate) fn take(&self) -> Vec<T> {
+        std::mem::take(
+            &mut self
+                .lock()
+                .unwrap_or_else(|_| panic!("captured state changes")),
+        )
+    }
+}
+
+impl Default for CapturingNotifier<Vec<String>> {
+    fn default() -> Self {
+        Self::new(test_subscriptions(), |change| match change {
+            crate::usecase::state_subscription::StateChangeSource::Repository(paths) => Some(paths),
+            _ => None,
+        })
+    }
+}
+
+impl CapturingNotifier<String> {
+    pub(crate) fn worktrees(
+        subscriptions: &crate::usecase::state_subscription::StateSubscriptionUsecase,
+    ) -> Self {
+        Self::new(subscriptions.clone(), |change| match change {
+            crate::usecase::state_subscription::StateChangeSource::Worktree(path) => Some(path),
+            _ => None,
+        })
     }
 }
 
