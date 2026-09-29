@@ -106,11 +106,10 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
         let authority = Arc::new(ApplicationStartupAuthority::ready());
         let repository = Arc::new(repository);
         let state_presenter = Arc::new(
-            crate::adaptor::presenter::state_subscription::StateSubscriptionPresenter::new(vec![]),
+            crate::adaptor::presenter::state_subscription::StateSubscriptionPresenter::new(),
         );
         let state = crate::usecase::state_subscription::StateSubscriptionUsecase::new_with_output(
             state_presenter.clone(),
-            state_presenter.change_sender(),
             Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
         )
         .with_reads(
