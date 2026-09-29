@@ -472,8 +472,9 @@ mod tests {
     async fn test_スキャン通知_開始時はstaleとloadingにして通知せず正常完了時だけ通知する() {
         // Given
         let scanner = Arc::new(FakeScanner::new("first.txt"));
-        let notifier = Arc::new(CapturingNotifier::default());
-        let state = test_state_with_notifier(scanner.clone(), notifier.subscriptions.clone());
+        let subscriptions = crate::test_support::state_subscription::test_subscriptions();
+        let notifier = Arc::new(CapturingNotifier::repositories(&subscriptions));
+        let state = test_state_with_notifier(scanner.clone(), subscriptions);
         state.invalidate(InvalidateReason::change());
         wait_for_version(&state, 1).await;
         assert_eq!(notifier.take().len(), 1);

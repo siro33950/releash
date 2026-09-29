@@ -822,8 +822,9 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn canonical_state_notifies_each_subscriber_path_alias() {
         let scanner = Arc::new(EmptyScanner);
-        let notifier = Arc::new(CapturingNotifier::default());
-        let service = test_service_with_notifier(scanner, notifier.subscriptions.clone());
+        let subscriptions = crate::test_support::state_subscription::test_subscriptions();
+        let notifier = Arc::new(CapturingNotifier::repositories(&subscriptions));
+        let service = test_service_with_notifier(scanner, subscriptions);
         let dir = tempfile::TempDir::new().unwrap();
         let alias_parent = tempfile::TempDir::new().unwrap();
         let alias = alias_parent.path().join("alias");
