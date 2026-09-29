@@ -2253,7 +2253,8 @@ mod workflow_host_tests {
         WorkflowDefinition,
     };
     use crate::domain::workspace_tree::{
-        WorkspaceIdentity, WorkspaceNodeStatusClassification, WorkspaceTreeRepository,
+        WorkspaceIdentity, WorkspaceNodeStatus, WorkspaceNodeStatusClassification,
+        WorkspaceTreeRepository,
     };
     use crate::usecase::provider_lifecycle::ProviderExecutionTreeStopCommand;
     use crate::usecase::workflow::command::{ApprovalCommand, SubmitOutputCommand};
@@ -3426,6 +3427,7 @@ nodes:
 
         struct SequentialRuntimeEffectFixture {
             _app: WorkflowRuntimeDependencies,
+            store: Arc<LocalEventStore>,
             host: Arc<WorkflowRuntimeHost>,
             control_plane: WorkflowControlPlaneUsecase,
             calls: Arc<std::sync::Mutex<Vec<RuntimeEffectCall>>>,
@@ -3636,6 +3638,7 @@ nodes:
                 WorkflowControlPlaneUsecase::new(crate::usecase::retry::shared().clone(), gateway);
             SequentialRuntimeEffectFixture {
                 _app: app,
+                store,
                 host,
                 control_plane,
                 calls,
@@ -3855,6 +3858,10 @@ nodes:
                 crate::domain::workflow::NodeCompletionSignalState::Pending
             );
             assert_eq!(node.status, NodeExecutionStatus::Succeeded);
+            assert_eq!(
+                folded.session_activities[session_id],
+                crate::domain::workflow::AgentSessionActivity::AwaitingInstruction
+            );
             let workspace_node = SqliteWorkspaceTreeRepository::new(fixture.store.clone())
                 .load_node_by_node_execution_id(session_id)
                 .await
@@ -3890,6 +3897,10 @@ nodes:
             assert_eq!(
                 restarted_node.completion_signals,
                 crate::domain::workflow::NodeCompletionSignalState::Pending
+            );
+            assert_eq!(
+                restarted_fold.session_activities[session_id],
+                crate::domain::workflow::AgentSessionActivity::AwaitingInstruction
             );
             assert_eq!(
                 SqliteWorkspaceTreeRepository::new(fixture.store.clone())
@@ -4141,6 +4152,168 @@ nodes:
                         NodeExecutionStatus::Running
                     }
                 );
+            }
+        }
+
+        #[tokio::test]
+        async fn test_provider停止_完了済みworkflowと単独sessionはプロセスliveでも行が緑になる() {
+            struct LiveSessionProcess;
+
+            impl crate::domain::workflow::NodeProcessReader for LiveSessionProcess {
+                fn presence(
+                    &self,
+                    _workspace: &str,
+                    _node_execution_id: &str,
+                    _kind: NodeKindName,
+                    _session_id: Option<&str>,
+                ) -> Result<
+                    crate::domain::workflow::NodeProcessPresence,
+                    crate::domain::workflow::WorkflowError,
+                > {
+                    Ok(crate::domain::workflow::NodeProcessPresence::Live)
+                }
+            }
+
+            // Given
+            let fixture = sequential_runtime_effect_fixture().await;
+            let workflow_stop = ProviderExecutionTreeStopCommand {
+                agent_session_id: fixture.first_agent_session_id.clone(),
+                tree_id: fixture.execution_id.clone(),
+                node_execution_id: fixture.first_node_execution_id.clone(),
+                binding_id: "binding-completed-workflow".to_string(),
+            };
+            fixture
+                .control_plane
+                .record_provider_stop(workflow_stop.clone(), Vec::new())
+                .await
+                .unwrap();
+            fixture
+                .control_plane
+                .submit_output(SubmitOutputCommand {
+                    node_execution_id: fixture.first_node_execution_id.clone(),
+                    artifact: None,
+                })
+                .await
+                .unwrap();
+            let records =
+                workflow_fact_log::read_tree_records(&fixture.store, &fixture.execution_id)
+                    .await
+                    .unwrap();
+            let workflow_meta = &records
+                .iter()
+                .find(|record| record.meta.node_execution_id == fixture.first_node_execution_id)
+                .unwrap()
+                .meta;
+            workflow_fact_log::append_single_fact(
+                &fixture.store,
+                workflow_meta,
+                &NodeFact::AgentActivityObserved(
+                    crate::domain::workflow::AgentActivityObservedFact {
+                        activity: crate::domain::workflow::AgentSessionActivity::Working,
+                    },
+                ),
+                (current_timestamp() * 1000.0) as i64,
+            )
+            .await
+            .unwrap();
+
+            let standalone_id = "agent-session-completed-stop";
+            LocalAgentSessionRepository::new(fixture.store.clone())
+                .create(
+                    AgentSession::create(
+                        standalone_id,
+                        WorkspaceIdentity::new(EFFECT_WORKTREE_PATH),
+                        EFFECT_WORKTREE_PATH,
+                        ProviderKind::Codex,
+                        AgentSessionTreeLocation::session_tree_root(standalone_id).unwrap(),
+                    )
+                    .unwrap(),
+                    "create-completed-stop",
+                )
+                .await
+                .unwrap();
+            fixture
+                .host
+                .register_started_execution_tree(&fixture._app, standalone_id)
+                .await
+                .unwrap();
+            let standalone_records =
+                workflow_fact_log::read_tree_records(&fixture.store, standalone_id)
+                    .await
+                    .unwrap();
+            let standalone_meta = &standalone_records
+                .iter()
+                .find(|record| record.meta.node_execution_id == standalone_id)
+                .unwrap()
+                .meta;
+            workflow_fact_log::append_single_fact(
+                &fixture.store,
+                standalone_meta,
+                &NodeFact::AgentActivityObserved(
+                    crate::domain::workflow::AgentActivityObservedFact {
+                        activity: crate::domain::workflow::AgentSessionActivity::Working,
+                    },
+                ),
+                (current_timestamp() * 1000.0) as i64,
+            )
+            .await
+            .unwrap();
+            let mut repository = SqliteWorkspaceTreeRepository::new(fixture.store.clone());
+            Arc::get_mut(&mut repository).unwrap().processes = Some(Arc::new(LiveSessionProcess));
+            let standalone_node_id = standalone_id.to_string();
+            for node_id in [&fixture.first_node_execution_id, &standalone_node_id] {
+                let node = repository
+                    .load_node_by_node_execution_id(node_id)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    node.status_classification,
+                    WorkspaceNodeStatusClassification::Active
+                );
+                assert_eq!(
+                    node.process_presence,
+                    crate::domain::workflow::NodeProcessPresence::Live
+                );
+                assert_eq!(node.status, WorkspaceNodeStatus::Completed);
+            }
+
+            // When
+            fixture
+                .control_plane
+                .record_provider_stop(workflow_stop, Vec::new())
+                .await
+                .unwrap();
+            fixture
+                .control_plane
+                .record_provider_stop(
+                    ProviderExecutionTreeStopCommand {
+                        agent_session_id: standalone_id.to_string(),
+                        tree_id: standalone_id.to_string(),
+                        node_execution_id: standalone_id.to_string(),
+                        binding_id: "binding-completed-standalone".to_string(),
+                    },
+                    Vec::new(),
+                )
+                .await
+                .unwrap();
+
+            // Then
+            for node_id in [&fixture.first_node_execution_id, &standalone_node_id] {
+                let node = repository
+                    .load_node_by_node_execution_id(node_id)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    node.status_classification,
+                    WorkspaceNodeStatusClassification::Idle
+                );
+                assert_eq!(
+                    node.process_presence,
+                    crate::domain::workflow::NodeProcessPresence::Live
+                );
+                assert_eq!(node.status, WorkspaceNodeStatus::Completed);
             }
         }
 

@@ -133,14 +133,26 @@ fn session_root() -> TreeRootFact {
     *root
 }
 
-fn standalone_log(path: &str, complete_node: bool) -> (FactLog, NodeFactMeta) {
+fn completed_standalone_log(path: &str) -> (FactLog, NodeFactMeta) {
     let seed =
         SessionExecutionTreeRootFacts::new(TREE, path, path, ProviderKind::Codex, None).unwrap();
     let root_meta = seed.meta.clone();
     let mut log = FactLog::new();
-    let facts = seed.into_facts();
-    for (meta, fact) in facts.into_iter().take(if complete_node { 3 } else { 2 }) {
+    for (meta, fact) in seed.into_facts() {
         log.push(meta, fact);
+    }
+    (log, root_meta)
+}
+
+fn legacy_standalone_log(path: &str) -> (FactLog, NodeFactMeta) {
+    let seed =
+        SessionExecutionTreeRootFacts::new(TREE, path, path, ProviderKind::Codex, None).unwrap();
+    let root_meta = seed.meta.clone();
+    let mut log = FactLog::new();
+    for (meta, fact) in seed.into_facts() {
+        if !matches!(fact, NodeFact::StandaloneSessionNodeCompleted) {
+            log.push(meta, fact);
+        }
     }
     (log, root_meta)
 }
@@ -148,7 +160,7 @@ fn standalone_log(path: &str, complete_node: bool) -> (FactLog, NodeFactMeta) {
 #[test]
 fn test_単独session新規起動_完了済みnodeはstopとsubmitを受け付けない() {
     // Given
-    let (mut log, root_meta) = standalone_log("/repo", true);
+    let (mut log, root_meta) = completed_standalone_log("/repo");
     log.push(root_meta.clone(), stop());
     log.push(root_meta, submit());
     // When
@@ -168,7 +180,7 @@ fn test_単独session新規起動_完了済みnodeはstopとsubmitを受け付�
 #[test]
 fn test_単独session新規起動_nodeは完了済みである() {
     // Given
-    let (log, _) = standalone_log("/repo", true);
+    let (log, _) = completed_standalone_log("/repo");
     // When
     let folded = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
     // Then
@@ -232,7 +244,7 @@ fn test_完了済みsession_nodeはworkflowと単独の両方で後続stopをact
         }),
     );
 
-    let (mut standalone, standalone_meta) = standalone_log("/repo", true);
+    let (mut standalone, standalone_meta) = completed_standalone_log("/repo");
     standalone.push(
         standalone_meta.clone(),
         NodeFact::AgentActivityObserved(AgentActivityObservedFact {
@@ -305,8 +317,7 @@ fn test_完了済みsession_nodeはworkflowと単独の両方で後続stopをact
         (&mut workflow, workflow_meta),
         (&mut standalone, standalone_meta),
     ] {
-        log.push(meta.clone(), stop());
-        log.push(meta, submit());
+        log.push(meta, stop());
     }
     let workflow_after = fold_execution_tree(TREE, &workflow.records)
         .unwrap()
@@ -353,9 +364,33 @@ fn test_完了済みsession_nodeはworkflowと単独の両方で後続stopをact
 }
 
 #[test]
+fn test_中断済みsession_nodeへのstopはnodeを変えずactivityを停止にする() {
+    // Given
+    let (mut log, root_meta) = legacy_standalone_log("/repo");
+    log.push(
+        root_meta.clone(),
+        NodeFact::AbortRequested(Default::default()),
+    );
+    let before = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+    let node_before = before.aggregate.node_executions()[0].clone();
+    assert_eq!(node_before.status, RuntimeNodeExecutionStatus::Aborted);
+
+    // When
+    log.push(root_meta, stop());
+    let after = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+
+    // Then
+    assert_eq!(after.aggregate.node_executions()[0], node_before);
+    assert_eq!(
+        after.session_activities[TREE],
+        AgentSessionActivity::AwaitingInstruction
+    );
+}
+
+#[test]
 fn test_旧単独sessionはstopのみでは未完了を保つ() {
     // Given
-    let (mut legacy, root_meta) = standalone_log("/repo", false);
+    let (mut legacy, root_meta) = legacy_standalone_log("/repo");
     legacy.push(root_meta, stop());
     // When
     let folded = fold_execution_tree(TREE, &legacy.records).unwrap().unwrap();
@@ -369,7 +404,7 @@ fn test_旧単独sessionはstopのみでは未完了を保つ() {
 #[test]
 fn test_単独session_node完了事実は対象外nodeで拒否される() {
     // Given
-    let (mut wrong_node, _) = standalone_log("/repo", false);
+    let (mut wrong_node, _) = legacy_standalone_log("/repo");
     wrong_node.push(
         meta("other", None, "session", NodeKindName::Session, 1),
         NodeFact::StandaloneSessionNodeCompleted,
@@ -2908,7 +2943,7 @@ fn test_実行木archive_rootの事実で子sessionもarchiveされrestoreでは
 #[test]
 fn test_repository所属の観測_旧実行木の不足だけを補い子の所属を混ぜない() {
     // Given
-    let (mut log, root_meta) = standalone_log("/gone", true);
+    let (mut log, root_meta) = completed_standalone_log("/gone");
     let mut child_meta = root_meta.clone();
     child_meta.parent_id = Some(root_meta.node_execution_id.clone());
     child_meta.node_execution_id = "child".into();

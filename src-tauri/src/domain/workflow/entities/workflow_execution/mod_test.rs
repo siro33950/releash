@@ -163,7 +163,7 @@ fn test_単独session_node完了事実はrootを一度だけ完了する() {
 }
 
 #[test]
-fn test_provider_stop_完了済みsessionでもnodeを変えずにstop事実を受理する() {
+fn test_provider停止_完了済みsessionではnodeを変えずactivityのみ記録する() {
     // Given
     let mut tree = execution(
         "name: session\ndescription: test\nnodes:\n  main: {session: {provider: codex}}\n",
@@ -187,7 +187,37 @@ fn test_provider_stop_完了済みsessionでもnodeを変えずにstop事実を�
     // When
     let outcome = tree.record_provider_stop("root", "agent", 4.0);
     // Then
-    assert_eq!(outcome, Ok(TransitionOutcome::AlreadyApplied));
+    assert_eq!(outcome, Ok(ProviderStopDecision::ActivityOnly));
+    assert_eq!(tree.node_execution("root").unwrap(), &node_before);
+}
+
+#[test]
+fn test_provider停止_中断済みsessionではnodeを変えずactivityのみ記録する() {
+    // Given
+    let mut tree = execution(
+        "name: session\ndescription: test\nnodes:\n  main: {session: {provider: codex}}\n",
+    );
+    tree.begin_node_attempt(
+        "main".into(),
+        NodeKindName::Session,
+        1,
+        None,
+        "root".into(),
+        1.0,
+    )
+    .unwrap();
+    tree.attach_node_session("root", "agent".into(), 2.0);
+    assert_eq!(
+        tree.abort_node_execution("root", 3.0),
+        TransitionOutcome::Applied
+    );
+    let node_before = tree.node_execution("root").unwrap().clone();
+
+    // When
+    let outcome = tree.record_provider_stop("root", "agent", 4.0);
+
+    // Then
+    assert_eq!(outcome, Ok(ProviderStopDecision::ActivityOnly));
     assert_eq!(tree.node_execution("root").unwrap(), &node_before);
 }
 

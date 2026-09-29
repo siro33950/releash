@@ -415,6 +415,14 @@ pub enum ProviderStopRejection {
     SessionDoesNotOwnAttempt,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderStopDecision {
+    NodeSignalApplied,
+    NodeSignalAlreadyApplied,
+    ActivityOnly,
+    NotApplicable,
+}
+
 /// Stable rejection reasons returned by aggregate admission methods.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransitionRejection {
@@ -2690,7 +2698,7 @@ impl ExecutionTree {
         node_execution_id: &str,
         agent_session_id: &str,
         timestamp: f64,
-    ) -> Result<TransitionOutcome, ProviderStopRejection> {
+    ) -> Result<ProviderStopDecision, ProviderStopRejection> {
         let execution = self
             .runtime
             .node_executions
@@ -2701,13 +2709,19 @@ impl ExecutionTree {
             return Err(ProviderStopRejection::SessionDoesNotOwnAttempt);
         }
         if !execution.status.is_active() {
-            return Ok(TransitionOutcome::AlreadyApplied);
+            return Ok(ProviderStopDecision::ActivityOnly);
         }
-        Ok(self.record_node_completion_signal(
-            node_execution_id,
-            NodeCompletionSignal::Stop,
-            timestamp,
-        ))
+        Ok(
+            match self.record_node_completion_signal(
+                node_execution_id,
+                NodeCompletionSignal::Stop,
+                timestamp,
+            ) {
+                TransitionOutcome::Applied => ProviderStopDecision::NodeSignalApplied,
+                TransitionOutcome::AlreadyApplied => ProviderStopDecision::NodeSignalAlreadyApplied,
+                _ => ProviderStopDecision::NotApplicable,
+            },
+        )
     }
 
     pub fn admit_node_submit(
@@ -4058,11 +4072,11 @@ mod tests {
         );
         assert_eq!(
             execution.record_provider_stop(&node_execution_id, "session-1", 13.0),
-            Ok(TransitionOutcome::Applied)
+            Ok(ProviderStopDecision::NodeSignalApplied)
         );
         assert_eq!(
             execution.record_provider_stop(&node_execution_id, "session-1", 14.0),
-            Ok(TransitionOutcome::AlreadyApplied)
+            Ok(ProviderStopDecision::NodeSignalAlreadyApplied)
         );
     }
 

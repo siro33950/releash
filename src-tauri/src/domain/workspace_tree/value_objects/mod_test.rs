@@ -86,33 +86,48 @@ fn test_表示状態分類_実行中の紐づき済みsessionがawaiting_answer�
 }
 
 #[test]
-fn test_表示状態分類_完了済みsessionもagent状態を反映する() {
-    use WorkspaceNodeStatusClassification as C;
+fn test_表示状態分類_完了済みsessionのworkingは青() {
     // Given
     let mut session = node(
         WorkspaceNodeKind::WorkflowSession,
         WorkspaceNodeStatus::Completed,
     );
     session.process_presence = NodeProcessPresence::Live;
+    session.activity = Some(AgentSessionActivity::Working);
     // When
-    let cases = [
-        ("working", AgentSessionActivity::Working, C::Active),
-        (
-            "awaiting answer",
-            AgentSessionActivity::AwaitingAnswer,
-            C::Attention,
-        ),
-        (
-            "stopped",
-            AgentSessionActivity::AwaitingInstruction,
-            C::Idle,
-        ),
-    ];
+    let status = session.classify_status([]);
     // Then
-    for (name, activity, expected) in cases {
-        session.activity = Some(activity);
-        assert_eq!(session.classify_status([]), expected, "{name}");
-    }
+    assert_eq!(status, WorkspaceNodeStatusClassification::Active);
+}
+
+#[test]
+fn test_表示状態分類_完了済みsessionの回答待ちは黄() {
+    // Given
+    let mut session = node(
+        WorkspaceNodeKind::WorkflowSession,
+        WorkspaceNodeStatus::Completed,
+    );
+    session.process_presence = NodeProcessPresence::Live;
+    session.activity = Some(AgentSessionActivity::AwaitingAnswer);
+    // When
+    let status = session.classify_status([]);
+    // Then
+    assert_eq!(status, WorkspaceNodeStatusClassification::Attention);
+}
+
+#[test]
+fn test_表示状態分類_完了済みsessionのstopは緑() {
+    // Given
+    let mut session = node(
+        WorkspaceNodeKind::WorkflowSession,
+        WorkspaceNodeStatus::Completed,
+    );
+    session.process_presence = NodeProcessPresence::Live;
+    session.activity = Some(AgentSessionActivity::AwaitingInstruction);
+    // When
+    let status = session.classify_status([]);
+    // Then
+    assert_eq!(status, WorkspaceNodeStatusClassification::Idle);
 }
 
 #[test]
@@ -218,8 +233,7 @@ fn test_表示状態分類_裏の失敗は黄() {
 }
 
 #[test]
-fn test_表示状態分類_delegate親は子の色を反映する() {
-    use WorkspaceNodeStatusClassification as C;
+fn test_表示状態分類_delegate親は動作中の子を青として反映する() {
     // Given
     let mut session = node(
         WorkspaceNodeKind::WorkflowSession,
@@ -228,14 +242,24 @@ fn test_表示状態分類_delegate親は子の色を反映する() {
     session.delegate_waits_for_child = true;
     session.activity = Some(AgentSessionActivity::AwaitingInstruction);
     // When
-    let cases = [
-        ("working child", C::Active),
-        ("answer waiting child", C::Attention),
-    ];
+    let status = session.classify_status([WorkspaceNodeStatusClassification::Active]);
     // Then
-    for (name, child) in cases {
-        assert_eq!(session.classify_status([child]), child, "{name}");
-    }
+    assert_eq!(status, WorkspaceNodeStatusClassification::Active);
+}
+
+#[test]
+fn test_表示状態分類_delegate親は回答待ちの子を黄として反映する() {
+    // Given
+    let mut session = node(
+        WorkspaceNodeKind::WorkflowSession,
+        WorkspaceNodeStatus::Running,
+    );
+    session.delegate_waits_for_child = true;
+    session.activity = Some(AgentSessionActivity::AwaitingInstruction);
+    // When
+    let status = session.classify_status([WorkspaceNodeStatusClassification::Attention]);
+    // Then
+    assert_eq!(status, WorkspaceNodeStatusClassification::Attention);
 }
 
 #[test]
@@ -279,54 +303,97 @@ fn test_表示状態分類_完了済みcommandは緑() {
 }
 
 #[test]
-fn test_表示状態分類_sequenceとfanoutは最も重い子を反映する() {
-    use WorkspaceNodeStatusClassification as C;
+fn test_表示状態分類_sequenceの青い子は青として反映する() {
     // Given
-    let kinds = [
-        ("sequence", WorkspaceNodeKind::Sequence),
-        ("fanout", WorkspaceNodeKind::Fanout),
-    ];
-    let children = [
-        ("blue only", vec![C::Active], C::Active),
-        ("green only", vec![C::Idle], C::Idle),
-        (
-            "includes yellow",
-            vec![C::Active, C::Attention],
-            C::Attention,
-        ),
-    ];
-    for (kind_name, kind) in kinds {
-        let branch = node(kind, WorkspaceNodeStatus::Completed);
-        for (case_name, child_statuses, expected) in &children {
-            // When
-            let status = branch.classify_status(child_statuses.iter().copied());
-            // Then
-            assert_eq!(status, *expected, "{kind_name}: {case_name}");
-        }
-    }
+    let branch = node(WorkspaceNodeKind::Sequence, WorkspaceNodeStatus::Completed);
+    // When
+    let status = branch.classify_status([WorkspaceNodeStatusClassification::Active]);
+    // Then
+    assert_eq!(status, WorkspaceNodeStatusClassification::Active);
 }
 
 #[test]
-fn test_表示状態分類_公開値は黄青緑の3種類() {
+fn test_表示状態分類_sequenceの緑の子は緑として反映する() {
     // Given
-    let cases = [
-        (
-            "active",
-            WorkspaceNodeStatusClassification::Active,
-            "active",
-        ),
-        (
-            "attention",
-            WorkspaceNodeStatusClassification::Attention,
-            "attention",
-        ),
-        ("idle", WorkspaceNodeStatusClassification::Idle, "idle"),
-    ];
+    let branch = node(WorkspaceNodeKind::Sequence, WorkspaceNodeStatus::Completed);
     // When
-    let values = cases
-        .map(|(name, classification, expected)| (name, classification.as_public_str(), expected));
+    let status = branch.classify_status([WorkspaceNodeStatusClassification::Idle]);
     // Then
-    for (name, actual, expected) in values {
-        assert_eq!(actual, expected, "{name}");
-    }
+    assert_eq!(status, WorkspaceNodeStatusClassification::Idle);
+}
+
+#[test]
+fn test_表示状態分類_sequenceの子に黄があれば黄として反映する() {
+    // Given
+    let branch = node(WorkspaceNodeKind::Sequence, WorkspaceNodeStatus::Completed);
+    // When
+    let status = branch.classify_status([
+        WorkspaceNodeStatusClassification::Active,
+        WorkspaceNodeStatusClassification::Attention,
+    ]);
+    // Then
+    assert_eq!(status, WorkspaceNodeStatusClassification::Attention);
+}
+
+#[test]
+fn test_表示状態分類_fanoutの青い子は青として反映する() {
+    // Given
+    let branch = node(WorkspaceNodeKind::Fanout, WorkspaceNodeStatus::Completed);
+    // When
+    let status = branch.classify_status([WorkspaceNodeStatusClassification::Active]);
+    // Then
+    assert_eq!(status, WorkspaceNodeStatusClassification::Active);
+}
+
+#[test]
+fn test_表示状態分類_fanoutの緑の子は緑として反映する() {
+    // Given
+    let branch = node(WorkspaceNodeKind::Fanout, WorkspaceNodeStatus::Completed);
+    // When
+    let status = branch.classify_status([WorkspaceNodeStatusClassification::Idle]);
+    // Then
+    assert_eq!(status, WorkspaceNodeStatusClassification::Idle);
+}
+
+#[test]
+fn test_表示状態分類_fanoutの子に黄があれば黄として反映する() {
+    // Given
+    let branch = node(WorkspaceNodeKind::Fanout, WorkspaceNodeStatus::Completed);
+    // When
+    let status = branch.classify_status([
+        WorkspaceNodeStatusClassification::Active,
+        WorkspaceNodeStatusClassification::Attention,
+    ]);
+    // Then
+    assert_eq!(status, WorkspaceNodeStatusClassification::Attention);
+}
+
+#[test]
+fn test_表示状態分類_青の公開値はactive() {
+    // Given
+    let classification = WorkspaceNodeStatusClassification::Active;
+    // When
+    let value = classification.as_public_str();
+    // Then
+    assert_eq!(value, "active");
+}
+
+#[test]
+fn test_表示状態分類_黄の公開値はattention() {
+    // Given
+    let classification = WorkspaceNodeStatusClassification::Attention;
+    // When
+    let value = classification.as_public_str();
+    // Then
+    assert_eq!(value, "attention");
+}
+
+#[test]
+fn test_表示状態分類_緑の公開値はidle() {
+    // Given
+    let classification = WorkspaceNodeStatusClassification::Idle;
+    // When
+    let value = classification.as_public_str();
+    // Then
+    assert_eq!(value, "idle");
 }

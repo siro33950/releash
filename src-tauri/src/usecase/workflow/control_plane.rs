@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use crate::domain::provider_lifecycle::ScopedProviderLifecycleEvent;
 use crate::domain::workflow::entities::workflow_execution::{
-    ExecutionTree as DomainExecutionTree, ProviderStopRejection, SessionResumeAction,
-    TransitionOutcome,
+    ExecutionTree as DomainExecutionTree, ProviderStopDecision, ProviderStopRejection,
+    SessionResumeAction, TransitionOutcome,
 };
 use crate::domain::workflow::services::secret_masker as workflow_secret_masker;
 use crate::domain::workflow::{NodeCompletionSignal, WorkflowError, WorkflowEvent};
@@ -633,27 +633,25 @@ impl WorkflowControlPlaneUsecase {
             &command.agent_session_id,
             timestamp,
         ) {
-            Ok(crate::domain::workflow::entities::workflow_execution::TransitionOutcome::Applied) => {
-                (
-                    vec![WorkflowEvent::NodeStopReceived {
-                        execution_id: command.tree_id.clone(),
-                        node_execution_id: command.node_execution_id.clone(),
-                        timestamp,
-                    }],
-                    TransitionOutcome::Applied,
-                )
-            }
-            Ok(crate::domain::workflow::entities::workflow_execution::TransitionOutcome::AlreadyApplied) => {
-                (
-                    vec![WorkflowEvent::NodeStopReceived {
-                        execution_id: command.tree_id.clone(),
-                        node_execution_id: command.node_execution_id.clone(),
-                        timestamp,
-                    }],
-                    TransitionOutcome::AlreadyApplied,
-                )
-            }
-            Ok(crate::domain::workflow::entities::workflow_execution::TransitionOutcome::NotApplicable) => {
+            Ok(ProviderStopDecision::NodeSignalApplied) => (
+                vec![WorkflowEvent::NodeStopReceived {
+                    execution_id: command.tree_id.clone(),
+                    node_execution_id: command.node_execution_id.clone(),
+                    timestamp,
+                }],
+                TransitionOutcome::Applied,
+            ),
+            Ok(
+                ProviderStopDecision::NodeSignalAlreadyApplied | ProviderStopDecision::ActivityOnly,
+            ) => (
+                vec![WorkflowEvent::NodeStopReceived {
+                    execution_id: command.tree_id.clone(),
+                    node_execution_id: command.node_execution_id.clone(),
+                    timestamp,
+                }],
+                TransitionOutcome::AlreadyApplied,
+            ),
+            Ok(ProviderStopDecision::NotApplicable) => {
                 (Vec::new(), TransitionOutcome::NotApplicable)
             }
             Err(ProviderStopRejection::NodeExecutionNotFound) => {
@@ -666,12 +664,6 @@ impl WorkflowControlPlaneUsecase {
                 return Err(WorkflowError::invalid_state(format!(
                     "AgentSession '{}' does not own node execution '{}'",
                     command.agent_session_id, command.node_execution_id
-                )))
-            }
-            _ => {
-                return Err(WorkflowError::invalid_state(format!(
-                    "node execution '{}' cannot accept Provider Stop",
-                    command.node_execution_id
                 )))
             }
         };
